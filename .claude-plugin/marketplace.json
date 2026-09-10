@@ -1,0 +1,12 @@
+{
+  "name": "jo-wolff-plugins",
+  "owner": { "name": "Jo Wolff" },
+  "description": "Agent output discipline, published for anyone to install.",
+  "plugins": [
+    {
+      "name": "output-types",
+      "source": "./plugins/output-types",
+      "description": "Type and receipt every statement an agent returns, so a reader can tell what was checked from what was assumed."
+    }
+  ]
+}
