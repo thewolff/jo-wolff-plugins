@@ -1,0 +1,9 @@
+{
+  "name": "output-types",
+  "description": "Type and receipt every statement an agent returns — CLAIM, CITE, GUESS, ACTION, QUESTION — so a reader can tell what was checked from what was assumed.",
+  "version": "0.1.0",
+  "author": { "name": "Jo Wolff" },
+  "license": "MIT",
+  "repository": "https://github.com/thewolff/jo-wolff-plugins",
+  "keywords": ["agents", "verification", "reporting", "receipts"]
+}
