@@ -96,10 +96,7 @@ JSON. Every field optional; an empty object is valid and yields the defaults.
   "traits": [
     "reads the first two lines of any message and skims the rest",
     "wants the decision named before the reasoning that produced it"
-  ],
-  "markers": ["Needs you"],
-  "minProseChars": 200,
-  "graceChars": 0
+  ]
 }
 ```
 
@@ -108,8 +105,10 @@ JSON. Every field optional; an empty object is valid and yields the defaults.
 - **`traits`** — zero or more plain sentences about how that person reads. Emitted verbatim as a
   list under the default rules. **This is the whole of the reader-specific surface.** The plugin
   has no opinion about what a trait says and ships none.
-- **`markers`**, **`minProseChars`**, **`graceChars`** — defaults for the shipped check, so the
-  check and the delivered text agree about what a needs-you section looks like.
+
+**The shipped check's options are not profile fields.** `markers`, `minProseChars` and
+`graceChars` are set by whatever code calls the check, as a function argument — no shipped code
+path reads them from the operator profile. They are documented under *The shipped check* above.
 
 Resolution order: `$COMMUNICATION_RULES_PROFILE`, then `~/.claude/communication-rules.json`. A
 missing profile is normal and not an error. A profile that exists but does not parse is reported
