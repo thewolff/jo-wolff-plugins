@@ -61,7 +61,8 @@ skill still loads on demand.
 
 The default shape holds for any reader. Anything reader-specific comes from a JSON file you
 write on your own machine. The plugin ships the mechanism and no reader-specific content;
-`example.communication-rules.json` is a complete generic illustration and describes nobody:
+`example.communication-rules.json` is a complete generic illustration and describes nobody. It
+has two fields, shown here without the file's own `_comment`:
 
 ```json
 {
@@ -70,10 +71,7 @@ write on your own machine. The plugin ships the mechanism and no reader-specific
     "reads the first two lines of any message and skims the rest",
     "wants the decision named before the reasoning that produced it",
     "treats an unanswered question as answered unless it is the last line"
-  ],
-  "markers": ["Needs you"],
-  "minProseChars": 200,
-  "graceChars": 0
+  ]
 }
 ```
 
@@ -92,10 +90,11 @@ standing instruction that where a trait conflicts with one of the delivered rule
 wins and the agent says which rule it set aside.
 
 **What the hook does not read:** `markers`, `minProseChars` and `graceChars`. Those are the
-shipped check's option names, and the check takes its options as a function argument rather
-than loading any file — it touches no filesystem, which is what keeps it testable. Putting
-them in the profile keeps one place to record what a needs-you section looks like for whoever
-wires the check up; no code path in this plugin reads them.
+shipped check's option names and they are not profile fields at all. The exported function
+takes them as an argument and reads no file, which is what keeps it testable; the module
+reaches the filesystem only when it is run directly as a CLI, and then only to load the
+message being checked. So the call site is the only place these three can be set, and nothing
+in this plugin reads them from a profile.
 
 **Keep your profile out of version control if it describes a real person.** A sentence about how
 somebody reads is information about somebody, it is attributable to whoever owns the repository
@@ -167,7 +166,9 @@ cat message.md | node plugins/communication-rules/checks/needs-you-first.mjs
 
 Exit 0 is unconditional. It exits 0 when it flags, when it does not, and when it cannot read
 its input at all — in that last case it prints `{"error": "could not read …"}` and still exits
-0. It is log-only, including about its own failures.
+0. It is log-only, including about its own failures. The CLI takes no flags and passes no
+options, so it always runs on the three defaults above; setting them means calling the exported
+function from your own code.
 
 ## What the check deliberately does not do
 
