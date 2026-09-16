@@ -229,8 +229,9 @@ node --test plugins/communication-rules/checks/*.test.mjs
 needing nothing of its reader, a short misordered message, a heading above the marker, a marker
 inside a code fence, a marker quoted from an earlier message, an interleaved message, a trailing
 HTML-comment envelope, the marker's own three spellings, and a preamble within `graceChars`. Two
-cover the finding the check exists for, and two cover the contract: that operator markers replace
-the default, and that the function never throws and never reports `flagged` without `applicable`.
+cover the finding the check exists for, and two cover the contract: that caller-supplied markers
+replace the default rather than extending it, and that the function never throws and never
+reports `flagged` without `applicable`.
 
 The proportion is deliberate. A structural check earns its place by what it leaves alone, so the
 false-positive cases are the part of the suite that is load-bearing.
