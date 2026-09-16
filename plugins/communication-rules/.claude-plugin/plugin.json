@@ -1,7 +1,7 @@
 {
   "name": "communication-rules",
   "description": "Shape a message around what it needs from its reader — decisions first, one closing ask, no batching by label — and record which of those rules a machine can actually check.",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "author": { "name": "Jo Wolff" },
   "license": "MIT",
   "repository": "https://github.com/thewolff/jo-wolff-plugins",
