@@ -64,7 +64,8 @@ Returns a plain object and never throws:
 
 `reason` is one of `below-floor`, `no-marker`, `marker-first`, `prose-precedes-marker`.
 
-**Options**, all optional, all overridable from the operator profile:
+**Options**, all optional, all set by whatever code calls the check — no shipped code path reads
+them from the operator profile:
 
 | Option | Default | Meaning |
 |---|---|---|
