@@ -7,6 +7,11 @@
       "name": "output-types",
       "source": "./plugins/output-types",
       "description": "Type and receipt every statement an agent returns, so a reader can tell what was checked from what was assumed."
+    },
+    {
+      "name": "communication-rules",
+      "source": "./plugins/communication-rules",
+      "description": "Shape a message around what it needs from its reader — decisions first, one closing ask, no batching by label — and record which of those rules a machine can actually check."
     }
   ]
 }
