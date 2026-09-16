@@ -1,0 +1,12 @@
+{
+  "_comment": "A generic example. It describes nobody. Copy it to ~/.claude/communication-rules.json, replace every value with traits your own reader actually has, and keep that copy out of version control if it describes a real person.",
+  "reader": "the engineer who owns this service",
+  "traits": [
+    "reads the first two lines of any message and skims the rest",
+    "wants the decision named before the reasoning that produced it",
+    "treats an unanswered question as answered unless it is the last line"
+  ],
+  "markers": ["Needs you"],
+  "minProseChars": 200,
+  "graceChars": 0
+}
