@@ -148,8 +148,8 @@ export function checkNeedsYouFirst(text, options = {}) {
   return result;
 }
 
-// Profile loading lives with the hook; the check takes plain options so it stays testable with no
-// filesystem at all.
+// Profile loading lives with the hook; the exported function takes plain options so it stays
+// testable with no filesystem at all; the CLI block below reads one.
 const invokedDirectly =
   process.argv[1] && import.meta.url === new URL(`file://${process.argv[1]}`).href;
 
