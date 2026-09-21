@@ -303,3 +303,84 @@ test("an operator can upgrade name-the-artifact to block per-rule", () => {
   assert.equal(out.decision, "block");
   assert.match(out.reason, /Name the artifact/);
 });
+
+// ─── R3 through the hook: trigger + judge ────────────────────────────────────
+
+const batchyMessage =
+  `${body(6)}\n\n## Questions\n\nIs the cache warm before the second run?\n` +
+  `What happens to the timeout when the judge is slow?\nShould the skip be logged?`;
+
+// A fake judge: prints a fixed verdict. Proves the hook dispatches, parses, and respects the
+// verdict without paying a model bill.
+const fakeJudgePath = (home) => join(home, "fake-judge.mjs");
+const writeFakeJudge = (home, verdict, reason) =>
+  writeFileSync(
+    fakeJudgePath(home),
+    `process.stdout.write(JSON.stringify({ violation: ${verdict}, reason: ${JSON.stringify(reason)} }));\n`,
+  );
+
+test("a judge verdict of violation blocks with the batch-by-label reason", () => {
+  const home = mkhome();
+  writeFakeJudge(home, true, "terminal dump of detached questions");
+  writeFileSync(
+    join(home, ".claude", "communication-rules.json"),
+    JSON.stringify({ enforcement: { judgeCommand: `node ${fakeJudgePath(home)}` } }),
+  );
+  const r = runHook({ session_id: "j1", last_assistant_message: batchyMessage }, home);
+  const out = parseOut(r.stdout);
+  assert.equal(out.decision, "block");
+  assert.match(out.reason, /Do not batch by label/);
+  assert.match(out.reason, /trailing "Questions" section/);
+  assert.match(out.reason, /terminal dump of detached questions/);
+  assert.match(out.reason, /paste the corrected sections only/i);
+});
+
+test("a judge verdict of no violation does not block", () => {
+  const home = mkhome();
+  writeFakeJudge(home, false, "legitimate terminal summary");
+  writeFileSync(
+    join(home, ".claude", "communication-rules.json"),
+    JSON.stringify({ enforcement: { judgeCommand: `node ${fakeJudgePath(home)}` } }),
+  );
+  const r = runHook({ session_id: "j2", last_assistant_message: batchyMessage }, home);
+  assert.equal(r.status, 0);
+  assert.equal(r.stdout, "");
+});
+
+test("a fired trigger with no judge command lands in skipped.log, named", () => {
+  const home = mkhome();
+  const r = runHook({ session_id: "j3", last_assistant_message: batchyMessage }, home);
+  assert.equal(r.status, 0);
+  assert.equal(r.stdout, "");
+  assert.match(readLog(home, "skipped.log"), /rule=do-not-batch-by-label reason=no-judge-command/);
+});
+
+test("a judge rule in warn mode warns instead of blocking", () => {
+  const home = mkhome();
+  writeFakeJudge(home, true, "terminal dump");
+  writeFileSync(
+    join(home, ".claude", "communication-rules.json"),
+    JSON.stringify({
+      enforcement: {
+        judgeCommand: `node ${fakeJudgePath(home)}`,
+        rules: { "do-not-batch-by-label": "warn" },
+      },
+    }),
+  );
+  const r = runHook({ session_id: "j4", last_assistant_message: batchyMessage }, home);
+  assert.equal(r.status, 0);
+  assert.equal(r.stdout, "");
+  assert.match(readLog(home, "warnings.log"), /rule=do-not-batch-by-label/);
+});
+
+test("a failing judge fails open: no block, judge-failures.log carries it", () => {
+  const home = mkhome();
+  writeFileSync(
+    join(home, ".claude", "communication-rules.json"),
+    JSON.stringify({ enforcement: { judgeCommand: "printf 'vibes only'" } }),
+  );
+  const r = runHook({ session_id: "j5", last_assistant_message: batchyMessage }, home);
+  assert.equal(r.status, 0);
+  assert.equal(r.stdout, "");
+  assert.match(readLog(home, "judge-failures.log"), /rule=do-not-batch-by-label error=judge-unparseable/);
+});

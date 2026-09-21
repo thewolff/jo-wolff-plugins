@@ -52,6 +52,8 @@ import { checkNeedsYouFirst } from "../checks/needs-you-first.mjs";
 import { checkNamesArtifact } from "../checks/name-the-artifact.mjs";
 import { loadEnforcement, effectiveMode } from "../lib/config.mjs";
 import { stateDir, killSwitchPath, lastBlockedPath, sha256hex, appendLog } from "../lib/state.mjs";
+import { findTrailingBatchSection, batchByLabelQuestion, batchJudgeContext } from "../triggers/batch-heading.mjs";
+import { askJudge } from "../judge/ask.mjs";
 
 const MASTER_FLOOR = 200;
 
@@ -207,7 +209,50 @@ async function main() {
   // 6–7. Checks per configured modes.
   const config = loadEnforcement();
   const findings = [...runDeterministicChecks(text, config)];
-  // Judge-gated rules are dispatched here as their triggers land (commits 5–9).
+
+  // Judge-gated rules: deterministic trigger first; the judge runs only where a trigger fired
+  // AND a judge command is configured. A skipped judge rule leaves a line in skipped.log —
+  // inspectable, never silently dead. Judge jobs run in parallel: the host gives a Stop hook
+  // ~60s and one slow verdict must not serialize into a timeout for the fifth.
+  const judgeJobs = [];
+  if (effectiveMode(config, "do-not-batch-by-label") !== "off") {
+    const t = findTrailingBatchSection(text);
+    if (t.applicable) {
+      judgeJobs.push({
+        rule: "do-not-batch-by-label",
+        question: batchByLabelQuestion,
+        contextText: batchJudgeContext(text, t),
+        heading: t.heading,
+      });
+    }
+  }
+
+  if (judgeJobs.length) {
+    if (!config.judgeCommand) {
+      for (const job of judgeJobs) {
+        appendLog("skipped.log", `rule=${job.rule} reason=no-judge-command`);
+      }
+    } else {
+      const verdicts = await Promise.all(
+        judgeJobs.map((job) => askJudge(job.rule, job.question, job.contextText, config)),
+      );
+      for (let i = 0; i < judgeJobs.length; i++) {
+        const v = verdicts[i];
+        if (v.error) continue; // already in judge-failures.log; fail open
+        if (v.violation) {
+          findings.push({
+            rule: judgeJobs[i].rule,
+            mode: effectiveMode(config, judgeJobs[i].rule),
+            text:
+              `Do not batch by label — the trailing "${judgeJobs[i].heading}" section is judged a ` +
+              `batched dump (judge: ${v.reason}). Move each item next to the thing it is about; a lead needs-you ` +
+              `section pulling decisions to the top stays compliant. Paste the corrected sections only; never ` +
+              `resend the whole message.`,
+          });
+        }
+      }
+    }
+  }
 
   // 8. Emit.
   for (const f of findings) {
