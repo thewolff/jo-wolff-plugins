@@ -49,6 +49,7 @@
 import { existsSync, readFileSync, writeFileSync, mkdirSync } from "node:fs";
 import { checkClosingAskLast } from "../checks/closing-ask-last.mjs";
 import { checkNeedsYouFirst } from "../checks/needs-you-first.mjs";
+import { checkNamesArtifact } from "../checks/name-the-artifact.mjs";
 import { loadEnforcement, effectiveMode } from "../lib/config.mjs";
 import { stateDir, killSwitchPath, lastBlockedPath, sha256hex, appendLog } from "../lib/state.mjs";
 
@@ -132,6 +133,22 @@ function runDeterministicChecks(text, config) {
         rule: "closing-ask-last",
         mode: effectiveMode(config, "closing-ask-last"),
         text: `One closing ask — ${detail} Paste the corrected ending lines only; never resend the whole message.`,
+      });
+    }
+  }
+
+  // R5 — name the artifact. WARN by default (a vocabulary check, labeled as one); the
+  // built-in default lives in lib/config.mjs, overridable per-rule or globally.
+  if (effectiveMode(config, "name-the-artifact") !== "off") {
+    const r = checkNamesArtifact(text);
+    if (r.flagged) {
+      findings.push({
+        rule: "name-the-artifact",
+        mode: effectiveMode(config, "name-the-artifact"),
+        text:
+          `Name the artifact — this report-shaped message (${r.proseChars} chars, "${r.matchedVerb}" language) ` +
+          `names no file, path, command, or URL. Add the artifact for the work described so the claim can be ` +
+          `checked and resumed. (Vocabulary check; warn mode by default.)`,
       });
     }
   }

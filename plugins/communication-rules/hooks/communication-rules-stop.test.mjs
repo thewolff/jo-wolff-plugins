@@ -275,3 +275,31 @@ test("prose after the single ask blocks; a clean ask-last message does not", () 
   assert.equal(passed.status, 0);
   assert.equal(passed.stdout, "");
 });
+
+// ─── R5 through the hook: warn by default ───────────────────────────────────
+
+const artifactlessReport =
+  "I fixed the login flow today and verified the behavior by hand. " +
+  "The session handling was wrong before and now behaves as intended. " +
+  `${body(7)}Everything was checked twice and the work is complete for this slice.`;
+
+test("a report naming no artifact warns by default — warnings.log, no block", () => {
+  const home = mkhome();
+  const r = runHook({ session_id: "n1", last_assistant_message: artifactlessReport }, home);
+  assert.equal(r.status, 0);
+  assert.equal(r.stdout, "");
+  assert.match(readLog(home, "warnings.log"), /rule=name-the-artifact/);
+  assert.match(readLog(home, "warnings.log"), /names no file, path, command, or URL/);
+});
+
+test("an operator can upgrade name-the-artifact to block per-rule", () => {
+  const home = mkhome();
+  writeFileSync(
+    join(home, ".claude", "communication-rules.json"),
+    JSON.stringify({ enforcement: { rules: { "name-the-artifact": "block" } } }),
+  );
+  const r = runHook({ session_id: "n2", last_assistant_message: artifactlessReport }, home);
+  const out = parseOut(r.stdout);
+  assert.equal(out.decision, "block");
+  assert.match(out.reason, /Name the artifact/);
+});
