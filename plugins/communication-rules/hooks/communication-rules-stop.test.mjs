@@ -517,3 +517,34 @@ test("all-completed todos do not dispatch R7 even with a judge configured", () =
   assert.equal(r.status, 0);
   assert.equal(r.stdout, "");
 });
+
+// ─── R8 through the hook: lexicon gate + judge ───────────────────────────────
+
+const badNewsMessage = `${body(5)}The migration failed last night and the index is now missing three rows, ` +
+  `which nobody has noticed yet but will tomorrow.`;
+
+test("bad news below the fold dispatches R8 and blocks on a violating verdict", () => {
+  const home = mkhome();
+  writeFakeJudge(home, true, "the failure arrives after five sentences of context");
+  writeFileSync(
+    join(home, ".claude", "communication-rules.json"),
+    JSON.stringify({ enforcement: { judgeCommand: `node ${fakeJudgePath(home)}` } }),
+  );
+  const r = runHook({ session_id: "b1", last_assistant_message: badNewsMessage }, home);
+  const out = parseOut(r.stdout);
+  assert.equal(out.decision, "block");
+  assert.match(out.reason, /Bad news first/);
+  assert.match(out.reason, /after five sentences of context/);
+});
+
+test("a clean message with no lexicon word never dispatches R8", () => {
+  const home = mkhome();
+  writeFakeJudge(home, true, "should not be asked");
+  writeFileSync(
+    join(home, ".claude", "communication-rules.json"),
+    JSON.stringify({ enforcement: { judgeCommand: `node ${fakeJudgePath(home)}` } }),
+  );
+  const r = runHook({ session_id: "b2", last_assistant_message: body(6) }, home);
+  assert.equal(r.status, 0);
+  assert.equal(r.stdout, "");
+});
