@@ -7,7 +7,7 @@
 //   {
 //     "reader": "…", "traits": ["…"],
 //     "enforcement": {
-//       "mode": "block",                       // block | warn | off; unset = per-rule built-ins
+//       "mode": "block",                       // block | warn | off; unset = every rule warns (measured)
 //       "judgeCommand": "codex exec --skip-git-repo-check -",
 //       "rules": { "name-the-artifact": "warn", "bad-news-first": "warn" }
 //     }
@@ -17,11 +17,17 @@
 //   1. the kill-switch file (handled by the hook, before any of this is read)
 //   2. enforcement.rules[rule]                  — a per-rule mode
 //   3. enforcement.mode, WHEN THE OPERATOR SET IT — an explicit global override
-//   4. the rule's built-in default              — warn for name-the-artifact, block otherwise
+//   4. the measured default                      — warn, for every rule
 //
-// The built-in layer is why an unset `mode` still leaves name-the-artifact at warn: that rule
-// is a vocabulary check and is labeled as one. Setting `mode` explicitly overrides built-ins
-// in both directions — "warn" downgrades the block rules, "block" upgrades the warn rules.
+// WHY EVERY RULE DEFAULTS TO WARN (measured 2026-09-21, 304-message house corpus, full
+// adjudication): needs-you-first 16/18 flags false-positive (89%), closing-ask-last 17/18
+// (94%), conclusion-first 3/3 violations FP at a 92% trigger rate, bad-news-first 10/15
+// (67%), do-not-batch-by-label 0 triggers in 50 (unexercised), name-the-artifact 0/4 FP.
+// No rule's measured rate supports block-by-default: the cheapest way to satisfy a guard
+// that fires on correct output is to stop writing the thing it misreads. Block arms by
+// EXPLICIT configuration — enforcement.mode: "block", or enforcement.rules[rule]: "block"
+// — and stays one flip away. Findings still land in warnings.log at the default, so the
+// signal is collected without the teeth.
 //
 // A missing file or field is normal and silent. A file that exists but does not parse, or a
 // value of the wrong shape, falls back to defaults AND leaves one line in errors.log — a
@@ -34,10 +40,10 @@ import { appendLog } from "./state.mjs";
 
 const MODES = new Set(["block", "warn", "off"]);
 
-// Built-in per-rule modes. Everything not listed here defaults to "block".
-const BUILT_IN_MODES = {
-  "name-the-artifact": "warn", // a vocabulary check, labeled as one
-};
+// Built-in per-rule modes. EMPTY since the 2026-09-21 corpus measurement (header): no
+// rule's false-positive rate supports block-by-default, so the map is kept only as the
+// shape a future measurement would refill — one entry per rule that earns block.
+const BUILT_IN_MODES = {};
 
 export function defaultProfilePath() {
   const explicit = process.env.COMMUNICATION_RULES_PROFILE;
@@ -94,5 +100,5 @@ export function loadEnforcement(path = defaultProfilePath()) {
 export function effectiveMode(config, rule) {
   if (config.rules[rule]) return config.rules[rule];
   if (config.mode) return config.mode;
-  return BUILT_IN_MODES[rule] ?? "block";
+  return BUILT_IN_MODES[rule] ?? "warn"; // the measured default; block arms by explicit config
 }

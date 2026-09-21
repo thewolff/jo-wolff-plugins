@@ -71,6 +71,15 @@ const readLog = (home, name) => {
   return existsSync(p) ? readFileSync(p, "utf8") : "";
 };
 
+// The measured default is warn for every rule (lib/config.mjs, 2026-09-21 corpus pass), so
+// every teeth-path test arms block explicitly — the assertions below test the TEETH, and the
+// teeth are config-gated by design. The one default-behavior test asserts warn.
+const blockProfile = (home, extra = {}) =>
+  writeFileSync(
+    join(home, ".claude", "communication-rules.json"),
+    JSON.stringify({ enforcement: { mode: "block", ...extra } }),
+  );
+
 // ─── chosen silence: the kill switch ─────────────────────────────────────────
 
 test("the kill-switch file silences the hook completely, even on a violating message", () => {
@@ -113,6 +122,7 @@ test("an empty payload is no text, no opinion", () => {
 
 test("last_assistant_message shape: an R1 violation blocks with the house reason format", () => {
   const home = mkhome();
+  blockProfile(home);
   const r = runHook({ session_id: "s1", last_assistant_message: misordered }, home);
   assert.equal(r.status, 0);
   const out = parseOut(r.stdout);
@@ -125,6 +135,7 @@ test("last_assistant_message shape: an R1 violation blocks with the house reason
 
 test("transcript_path shape: the last assistant entry with TEXT is the message", () => {
   const home = mkhome();
+  blockProfile(home);
   const transcript = join(home, "transcript.jsonl");
   const entries = [
     JSON.stringify({ type: "user", message: { role: "user", content: "go" } }),
@@ -170,6 +181,7 @@ test("a well-formed message does not block", () => {
 
 test("a block is recorded, and the same text with stop_hook_active passes", () => {
   const home = mkhome();
+  blockProfile(home);
   const first = runHook({ session_id: "lg", last_assistant_message: misordered }, home);
   assert.equal(parseOut(first.stdout).decision, "block");
   const stateDir = join(home, ".claude", ".communication-rules-state");
@@ -185,6 +197,7 @@ test("a block is recorded, and the same text with stop_hook_active passes", () =
 
 test("stop_hook_active with DIFFERENT text blocks again — the guard is per message, not per session", () => {
   const home = mkhome();
+  blockProfile(home);
   runHook({ session_id: "lg2", last_assistant_message: misordered }, home);
   const retry = runHook(
     { session_id: "lg2", last_assistant_message: `${body(7)}\n\n## Needs you\n\nApprove now.` , stop_hook_active: true },
@@ -205,19 +218,16 @@ test("stop_hook_active with no prior block is not special — the message is jud
 
 // ─── modes from the operator profile ─────────────────────────────────────────
 
-test("a per-rule warn mode logs to warnings.log and does not block", () => {
+test("a per-rule warn overrides an armed global block — the teeth stay per-rule", () => {
   const home = mkhome();
-  writeFileSync(
-    join(home, ".claude", "communication-rules.json"),
-    JSON.stringify({ enforcement: { rules: { "needs-you-first": "warn" } } }),
-  );
+  blockProfile(home, { rules: { "needs-you-first": "warn" } });
   const r = runHook({ session_id: "w1", last_assistant_message: misordered }, home);
   assert.equal(r.status, 0);
   assert.equal(r.stdout, "");
   assert.match(readLog(home, "warnings.log"), /rule=needs-you-first/);
 });
 
-test("a global mode of warn downgrades every rule, including the block defaults", () => {
+test("an explicit global mode of warn logs to warnings.log and does not block", () => {
   const home = mkhome();
   writeFileSync(
     join(home, ".claude", "communication-rules.json"),
@@ -227,6 +237,15 @@ test("a global mode of warn downgrades every rule, including the block defaults"
   assert.equal(r.status, 0);
   assert.equal(r.stdout, "");
   assert.match(readLog(home, "warnings.log"), /rule=needs-you-first/);
+});
+
+test("the MEASURED default is warn: no profile, no block, the finding lands in warnings.log", () => {
+  const home = mkhome(); // deliberately no profile — defaults apply
+  const r = runHook({ session_id: "d1", last_assistant_message: misordered }, home);
+  assert.equal(r.status, 0);
+  assert.equal(r.stdout, "", "warn default never blocks");
+  assert.match(readLog(home, "warnings.log"), /rule=needs-you-first/);
+  assert.match(readLog(home, "warnings.log"), /Needs you first/);
 });
 
 test("mode off disables enforcement without the kill-switch file", () => {
@@ -241,11 +260,13 @@ test("mode off disables enforcement without the kill-switch file", () => {
   assert.equal(readLog(home, "warnings.log"), "");
 });
 
-test("an unparseable profile means defaults (block) plus one errors.log line", () => {
+test("an unparseable profile means the measured defaults (warn) plus one errors.log line", () => {
   const home = mkhome();
   writeFileSync(join(home, ".claude", "communication-rules.json"), "{ not json");
   const r = runHook({ session_id: "b1", last_assistant_message: misordered }, home);
-  assert.equal(parseOut(r.stdout).decision, "block"); // defaults still enforce
+  assert.equal(r.status, 0);
+  assert.equal(r.stdout, ""); // defaults are warn since the corpus measurement
+  assert.match(readLog(home, "warnings.log"), /rule=needs-you-first/);
   assert.match(readLog(home, "errors.log"), /does not parse/);
 });
 
@@ -253,6 +274,7 @@ test("an unparseable profile means defaults (block) plus one errors.log line", (
 
 test("two closing-ask markers block with the ending-lines-only reason", () => {
   const home = mkhome();
+  blockProfile(home);
   const msg = `${body(6)}\n\n## Closing ask\n\nApprove the deploy.\n\n${body(2)}\n\n**Closing ask**\n\nAlso answer the question.`;
   const r = runHook({ session_id: "c1", last_assistant_message: msg }, home);
   const out = parseOut(r.stdout);
@@ -264,6 +286,7 @@ test("two closing-ask markers block with the ending-lines-only reason", () => {
 
 test("prose after the single ask blocks; a clean ask-last message does not", () => {
   const home = mkhome();
+  blockProfile(home);
   const overtime = `${body(6)}\n\n## Closing ask\n\nApprove the deploy.\n\n${body(2)}`;
   const blocked = runHook({ session_id: "c2", last_assistant_message: overtime }, home);
   assert.equal(parseOut(blocked.stdout).decision, "block");
@@ -324,7 +347,7 @@ test("a judge verdict of violation blocks with the batch-by-label reason", () =>
   writeFakeJudge(home, true, "terminal dump of detached questions");
   writeFileSync(
     join(home, ".claude", "communication-rules.json"),
-    JSON.stringify({ enforcement: { judgeCommand: `node ${fakeJudgePath(home)}` } }),
+    JSON.stringify({ enforcement: { mode: "block", judgeCommand: `node ${fakeJudgePath(home)}` } }),
   );
   const r = runHook({ session_id: "j1", last_assistant_message: batchyMessage }, home);
   const out = parseOut(r.stdout);
@@ -396,7 +419,7 @@ test("conclusion-first dispatches on two paragraphs and blocks on a violating ve
   writeFakeJudge(home, true, "verdict buried under three paragraphs of context");
   writeFileSync(
     join(home, ".claude", "communication-rules.json"),
-    JSON.stringify({ enforcement: { judgeCommand: `node ${fakeJudgePath(home)}` } }),
+    JSON.stringify({ enforcement: { mode: "block", judgeCommand: `node ${fakeJudgePath(home)}` } }),
   );
   const r = runHook({ session_id: "k1", last_assistant_message: twoParagraphReport }, home);
   const out = parseOut(r.stdout);
@@ -420,7 +443,7 @@ test("a resume marker dispatches R6, and the marker is consumed exactly once", (
   writeFakeJudge(home, true, "continues without restating subject or pending work");
   writeFileSync(
     join(home, ".claude", "communication-rules.json"),
-    JSON.stringify({ enforcement: { judgeCommand: `node ${fakeJudgePath(home)}` } }),
+    JSON.stringify({ enforcement: { mode: "block", judgeCommand: `node ${fakeJudgePath(home)}` } }),
   );
   const marker = join(home, ".claude", ".communication-rules-state", "resume-r6a");
   mkdirSync(join(home, ".claude", ".communication-rules-state"), { recursive: true });
@@ -484,7 +507,7 @@ test("unfinished todos at the last write dispatch R7 and block on a violating ve
   writeFakeJudge(home, true, "neither item's status is reported");
   writeFileSync(
     join(home, ".claude", "communication-rules.json"),
-    JSON.stringify({ enforcement: { judgeCommand: `node ${fakeJudgePath(home)}` } }),
+    JSON.stringify({ enforcement: { mode: "block", judgeCommand: `node ${fakeJudgePath(home)}` } }),
   );
   const tp = todoTranscript(home, [
     { content: "wire the hook", status: "completed" },
@@ -528,7 +551,7 @@ test("bad news below the fold dispatches R8 and blocks on a violating verdict", 
   writeFakeJudge(home, true, "the failure arrives after five sentences of context");
   writeFileSync(
     join(home, ".claude", "communication-rules.json"),
-    JSON.stringify({ enforcement: { judgeCommand: `node ${fakeJudgePath(home)}` } }),
+    JSON.stringify({ enforcement: { mode: "block", judgeCommand: `node ${fakeJudgePath(home)}` } }),
   );
   const r = runHook({ session_id: "b1", last_assistant_message: badNewsMessage }, home);
   const out = parseOut(r.stdout);
