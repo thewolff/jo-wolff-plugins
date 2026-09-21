@@ -87,16 +87,17 @@ optional; an empty object is valid.
   "reader": "the engineer who owns this service",
   "traits": ["reads the first two lines of any message and skims the rest"],
   "enforcement": {
-    "mode": "block",
+    "mode": "warn",
     "judgeCommand": "codex exec --skip-git-repo-check -",
-    "rules": { "name-the-artifact": "warn", "bad-news-first": "warn" }
+    "rules": { "name-the-artifact": "block" }
   }
 }
 ```
 
 - **`mode`** — `block` | `warn` | `off`. Unset means each rule keeps its built-in default
-  (warn for name-the-artifact, block for the rest); setting it overrides built-ins in both
-  directions.
+  (warn for every rule — the measured defaults; the 2026-09-21 corpus adjudication and the
+  recalibration path that re-earns block live in reference.md); setting it overrides
+  built-ins in both directions.
 - **`judgeCommand`** — `null`/absent = judge rules inactive (logged). A string with a
   `{prompt}` placeholder gets the shell-escaped prompt substituted; a bare command receives
   the prompt on stdin. The suggested command above is the stdin form probed working on

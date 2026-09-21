@@ -7,11 +7,10 @@
     "treats an unanswered question as answered unless it is the last line"
   ],
   "enforcement": {
-    "mode": "block",
+    "mode": "warn",
     "judgeCommand": "codex exec --skip-git-repo-check -",
     "rules": {
-      "name-the-artifact": "warn",
-      "bad-news-first": "warn"
+      "name-the-artifact": "block"
     }
   }
 }

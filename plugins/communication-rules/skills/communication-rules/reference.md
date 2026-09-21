@@ -16,14 +16,14 @@ non-enforcement.
 
 | Rule | Instrument | Trigger / condition | Default mode |
 |---|---|---|---|
-| Needs you first | Deterministic — `checkNeedsYouFirst` | A needs-you marker exists and substantive prose precedes it | block |
-| One closing ask, last | Deterministic — `checkClosingAskLast` | A closing-ask marker exists; more than one, or substantive prose follows the ask section | block |
-| Do not batch by label | Judge-in-hook — `findTrailingBatchSection` | A trailing labeled section (Uncertainties, Open questions, Questions, Caveats, Notes — configurable) with substance | block |
-| Conclusion first | Judge-in-hook — `conclusionFirstApplicable` | ≥ 400 substantive chars and ≥ 2 substantive paragraphs | block |
+| Needs you first | Deterministic — `checkNeedsYouFirst` | A needs-you marker exists and substantive prose precedes it | warn |
+| One closing ask, last | Deterministic — `checkClosingAskLast` | A closing-ask marker exists; more than one, or substantive prose follows the ask section | warn |
+| Do not batch by label | Judge-in-hook — `findTrailingBatchSection` | A trailing labeled section (Uncertainties, Open questions, Questions, Caveats, Notes — configurable) with substance | warn |
+| Conclusion first | Judge-in-hook — `conclusionFirstApplicable` | ≥ 400 substantive chars and ≥ 2 substantive paragraphs | warn |
 | Name the file, command, or line | Deterministic — `checkNamesArtifact` | Report-shaped (≥ 400 chars + a report verb) and no artifact token anywhere | **warn** |
-| Restate a resumed thread | Injector marker + judge | Session source was resume/compact; first substantive message after it | block |
-| Report what you did not do | Todo trigger + judge | The transcript's last todo write has items not completed | block |
-| Bad news in the first sentence | Lexicon gate + judge | ≥ 200 chars and a negative-lexicon word in substantive lines | block |
+| Restate a resumed thread | Injector marker + judge | Session source was resume/compact; first substantive message after it | warn |
+| Report what you did not do | Todo trigger + judge | The transcript's last todo write has items not completed | warn |
+| Bad news in the first sentence | Lexicon gate + judge | ≥ 200 chars and a negative-lexicon word in substantive lines | warn |
 
 **The one boundary that stays absolute:** *report what you did not do* is enforced exactly
 where a todo list exists. **With no tracked plan the violation is silence and no instrument
@@ -31,10 +31,29 @@ sees it** — no check of emitted text can detect an omission with no correspond
 Likewise no instrument here decides whether a named artifact is the *right* one; that
 remains the reader's judgment.
 
-False-positive rates are **not claimed anywhere in this file** — the deterministic checks
-and judge questions have not yet been measured against a real corpus of messages. The
-floors and the judge questions' "when unsure, answer violation=false" defaults exist for
-exactly that reason. Measure before you trust.
+**Measured, not claimed — 2026-09-21, one real corpus.** 304 final assistant messages, 46
+sessions, 11 seats, 2026-09-16 → 09-21; every flag hand-adjudicated; judge dispatch via
+`codex exec --skip-git-repo-check -` (75 calls, 0 errors, 0 unparseable, median ~10.7s).
+These adjudicated false-positive rates are why every default in the table above is `warn`:
+
+| Check | Measured on | Flags / violations | Adjudicated FP | Verdict and the fix that would re-earn block |
+|---|---|---|---|---|
+| needs-you-first | 45 applicable | 18 flags | **16 (89%)** — PMDW-label + short-opener shapes counted as substantive preceding prose | warn; treat a label line + short opener as non-substantive, or graceChars covering it |
+| closing-ask-last | 41 applicable | 18 flags | **17 (94%)** — the ask section ends before the question's paragraphs and the attached recommendation | warn; the ask section must extend through the question, a following fence, and an attached recommendation paragraph |
+| name-the-artifact | 198 applicable | 4 flags | **0 (n=4)** — all four genuine artifact-less reports | warn; a second corpus at 0 FP justifies block |
+| do-not-batch-by-label | 50 sampled | 0 triggers | unexercised | warn; unmeasured, not proven |
+| conclusion-first | 46 judged | 3 violations | **3 (100%)** — receipt-first ACTION openers read as buried conclusions | warn; add the receipt-first shape to the judge question's compliant list |
+| bad-news-first | 29 judged | 15 violations | **10 (67%)**, with 5 true positives | warn; raise the judge's bar to present-unresolved-cost |
+| restate-resumed-thread, report-what-you-did-not-do | — | — | not measurable retroactively (resume markers are runtime; todo triggers need transcript todo writes) | warn; unmeasured |
+
+**Arming block is one explicit config flip** — `enforcement.mode: "block"`, or per-rule —
+and the re-arming criteria are the recalibration directions above plus a second corpus. A
+check whose measured rate is ~90% FP must not stop turns by default. The same measurement
+says the machinery catches real violations — 2 + 1 + 4 deterministic true positives and 5
+judge true positives, including bad news buried behind "nothing is broken" — so the
+instrument is live, not parked. Adjudications with per-flag pointers:
+`/Users/jowolff/agent-scratch/orchestrator/communication-rules-fp/adjudications.json`
+(local to the measuring machine, mode 0700, real message bodies confined there).
 
 ## The Stop hook
 
