@@ -412,3 +412,48 @@ test("a single-paragraph message never reaches the judge — no skip, no bill", 
   assert.equal(r.stdout, "");
   assert.equal(readLog(home, "skipped.log"), ""); // trigger never fired: not a skip
 });
+
+// ─── R6 through the hook: marker consumed, judge dispatched ─────────────────
+
+test("a resume marker dispatches R6, and the marker is consumed exactly once", () => {
+  const home = mkhome();
+  writeFakeJudge(home, true, "continues without restating subject or pending work");
+  writeFileSync(
+    join(home, ".claude", "communication-rules.json"),
+    JSON.stringify({ enforcement: { judgeCommand: `node ${fakeJudgePath(home)}` } }),
+  );
+  const marker = join(home, ".claude", ".communication-rules-state", "resume-r6a");
+  mkdirSync(join(home, ".claude", ".communication-rules-state"), { recursive: true });
+  writeFileSync(marker, "2026-09-21T00:00:00.000Z\n");
+
+  const first = runHook({ session_id: "r6a", last_assistant_message: body(6) }, home);
+  const out = parseOut(first.stdout);
+  assert.equal(out.decision, "block");
+  assert.match(out.reason, /Restate the resumed thread/);
+  assert.match(out.reason, /without restating subject or pending work/);
+  assert.ok(!existsSync(marker), "marker consumed by the first stop");
+
+  const second = runHook({ session_id: "r6a", last_assistant_message: body(6) + " More." }, home);
+  assert.equal(second.status, 0);
+  assert.equal(second.stdout, ""); // one-shot: the second message is not re-judged for R6
+});
+
+test("a consumed marker with no judge command lands in skipped.log", () => {
+  const home = mkhome();
+  const marker = join(home, ".claude", ".communication-rules-state", "resume-r6b");
+  mkdirSync(join(home, ".claude", ".communication-rules-state"), { recursive: true });
+  writeFileSync(marker, "2026-09-21T00:00:00.000Z\n");
+  const r = runHook({ session_id: "r6b", last_assistant_message: body(6) }, home);
+  assert.equal(r.status, 0);
+  assert.equal(r.stdout, "");
+  assert.ok(!existsSync(marker), "marker still consumed — the skip is logged, not deferred");
+  assert.match(readLog(home, "skipped.log"), /rule=restate-resumed-thread reason=no-judge-command/);
+});
+
+test("no marker means no R6 job at all", () => {
+  const home = mkhome();
+  const r = runHook({ session_id: "r6c", last_assistant_message: body(6) }, home);
+  assert.equal(r.status, 0);
+  assert.equal(r.stdout, "");
+  assert.equal(readLog(home, "skipped.log"), "");
+});

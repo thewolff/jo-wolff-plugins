@@ -46,15 +46,25 @@
 //   Any thrown error → exit 0, nothing on stdout, one line in errors.log. Carried from the
 //   session-start hook's contract: fail-open, but not fail-silent.
 
-import { existsSync, readFileSync, writeFileSync, mkdirSync } from "node:fs";
+import { existsSync, readFileSync, writeFileSync, mkdirSync, rmSync } from "node:fs";
 import { checkClosingAskLast } from "../checks/closing-ask-last.mjs";
 import { checkNeedsYouFirst } from "../checks/needs-you-first.mjs";
 import { checkNamesArtifact } from "../checks/name-the-artifact.mjs";
 import { loadEnforcement, effectiveMode } from "../lib/config.mjs";
-import { stateDir, killSwitchPath, lastBlockedPath, sha256hex, appendLog } from "../lib/state.mjs";
+import { stateDir, killSwitchPath, lastBlockedPath, resumeMarkerPath, sha256hex, appendLog } from "../lib/state.mjs";
 import { findTrailingBatchSection, batchByLabelQuestion, batchJudgeContext } from "../triggers/batch-heading.mjs";
 import { conclusionFirstApplicable, conclusionFirstQuestion } from "../triggers/conclusion-first.mjs";
 import { askJudge } from "../judge/ask.mjs";
+
+// R6's judge question. Static per rule — variable data rides in the context, so the verdict
+// cache key covers everything the judge sees.
+const restateQuestion =
+  "Rule 'restate the resumed thread': when a session resumes an earlier thread, the first " +
+  "message restates the thread's subject and what is pending before continuing it — naming " +
+  "the thread is not restating it. This IS the first assistant message after a resume. " +
+  "violation=true when the message continues the thread without restating subject and pending " +
+  "work. A message that itself summarizes or hands off (naming subject and status) is " +
+  "compliant. When unsure, answer violation=false.";
 
 const MASTER_FLOOR = 200;
 
@@ -176,6 +186,13 @@ function judgeReason(job, verdict) {
         `later (judge: ${verdict.reason}). Move the decision to the first sentence and let the rest earn ` +
         `it. Paste the corrected opening lines only; never resend the whole message.`
       );
+    case "restate-resumed-thread":
+      return (
+        `Restate the resumed thread — this is the first message after a resume and it is judged to ` +
+        `continue without restating the thread's subject and pending work (judge: ${verdict.reason}). ` +
+        `Add a short restatement of subject and pending work at the top. Paste the corrected opening ` +
+        `lines only; never resend the whole message.`
+      );
     default:
       return `${job.rule} — judge: ${verdict.reason}. Paste the corrected lines only; never resend the whole message.`;
   }
@@ -237,6 +254,21 @@ async function main() {
   // inspectable, never silently dead. Judge jobs run in parallel: the host gives a Stop hook
   // ~60s and one slow verdict must not serialize into a timeout for the fifth.
   const judgeJobs = [];
+
+  // R6 — restate the resumed thread. The injector left a one-shot marker at session start
+  // when the session came from resume/compact; THIS stop is the first substantive message
+  // after it. Consuming the marker before dispatch means the judgment is one-shot even when
+  // no judge is configured (the skip is logged) — a marker that survives a fired trigger
+  // would re-judge every message in the session.
+  if (effectiveMode(config, "restate-resumed-thread") !== "off" && existsSync(resumeMarkerPath(sessionId))) {
+    try {
+      rmSync(resumeMarkerPath(sessionId), { force: true });
+      judgeJobs.push({ rule: "restate-resumed-thread", question: restateQuestion, contextText: text });
+    } catch (err) {
+      appendLog("errors.log", `could not consume resume marker for ${sessionId}: ${err.message}`);
+    }
+  }
+
   if (effectiveMode(config, "do-not-batch-by-label") !== "off") {
     const t = findTrailingBatchSection(text);
     if (t.applicable) {
