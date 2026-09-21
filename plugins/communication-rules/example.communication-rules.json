@@ -1,9 +1,17 @@
 {
-  "_comment": "A generic example. It describes nobody. Copy it to ~/.claude/communication-rules.json, replace every value with traits your own reader actually has, and keep that copy out of version control if it describes a real person. The hook reads reader and traits and nothing else: the shipped check's markers, minProseChars and graceChars are set by whatever code calls the check, as a function argument, so they are not profile fields.",
+  "_comment": "A generic example. It describes nobody. Copy it to ~/.claude/communication-rules.json, replace every value with traits your own reader actually has, and keep that copy out of version control if it describes a real person. The injection half reads reader and traits. The enforcement half reads the optional enforcement object: mode (block | warn | off, unset = per-rule built-ins), judgeCommand (null = the five judge-gated rules are inactive and each fired trigger is logged to skipped.log), and rules (per-rule mode overrides). The suggested judgeCommand below is the stdin form probed working on 2026-09-21: the trailing dash reads the prompt from stdin, verdict JSON comes back on stdout.",
   "reader": "the engineer who owns this service",
   "traits": [
     "reads the first two lines of any message and skims the rest",
     "wants the decision named before the reasoning that produced it",
     "treats an unanswered question as answered unless it is the last line"
-  ]
+  ],
+  "enforcement": {
+    "mode": "block",
+    "judgeCommand": "codex exec --skip-git-repo-check -",
+    "rules": {
+      "name-the-artifact": "warn",
+      "bad-news-first": "warn"
+    }
+  }
 }

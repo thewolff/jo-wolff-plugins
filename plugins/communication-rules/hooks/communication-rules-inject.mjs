@@ -45,8 +45,9 @@ const START = "\n<!-- inject:start -->\n";
 const END = "\n<!-- inject:end -->";
 
 const POINTER =
-  "\nThe enforceability verdict for each rule, the operator-profile schema, and the one shipped " +
-  "check are in the `communication-rules` skill. Nothing here inspects what you send.";
+  "\nThe enforcement scoreboard, the operator-profile schema, and every check's contract are in " +
+  "the `communication-rules` skill. A Stop hook enforces these rules now; a flag file at " +
+  "~/.claude/.communication-rules-off disables it within one turn.";
 
 function emit(text) {
   process.stdout.write(

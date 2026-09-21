@@ -37,36 +37,44 @@ reader-specific comes from a profile the operator writes on their own machine �
   that explains it. The explanation is still welcome; it goes second.
 <!-- inject:end -->
 
-## What this skill does not do
+## What enforces this, and what does not
 
-**Nothing here inspects what you send.** This skill is text delivered to a model, and the one
-predicate this plugin ships is registered nowhere and runs only when a person runs it. There is
-no hook that reads your message, no verdict, and no refusal. If you emit a message with the
-decision buried on line 80, it goes out exactly that way.
+**A Stop hook inspects every substantive final message against these eight rules** (0.2.0;
+DEC-040's deferred wiring, built). Three are decided deterministically: needs-you-first,
+closing-ask-last, and name-the-artifact (warn mode — a vocabulary check). Five go to a judge
+command the operator configures: do-not-batch-by-label, conclusion-first,
+restate-resumed-thread, report-what-you-did-not-do, and bad-news-first. A model-graded
+check that runs automatically inside a hook is still machinery — a different instrument
+with a different error profile, not a non-enforcement. The hook fails open on every error,
+blocks ask for corrected lines only, and `~/.claude/.communication-rules-off` disables it
+within one turn.
 
-`reference.md` records, rule by rule, which of these are mechanically checkable at all, which need
-a model to grade, and which are unenforceable by construction — including the two whose violation
-is *silence*, which no check of emitted text can ever detect.
+Two boundaries remain honest. *Report what you did not do* is enforced exactly where a todo
+list exists — with no tracked plan the violation is silence and no instrument sees it. And
+no check decides whether a named artifact is the RIGHT one; that is still judgment, and the
+reader's.
 
-## The one shipped check
+`reference.md` carries the scoreboard, every check's contract and options, the judge
+machinery, and the config schema.
 
-`checks/needs-you-first.mjs` — a single predicate over one message: **if a needs-you section
-exists, is it before the body?** Deliberately narrow in three ways:
+## The deterministic checks
 
-1. **It flags misordering, never absence.** A message with nothing needing the reader is correct
-   and is never flagged. A check that demanded a needs-you section in every message would be
-   satisfied by an empty *"Needs you: nothing."* header — ceremony in the position the reader
-   reads first.
-2. **It is log-only.** It returns a result. It does not block, rewrite, or refuse, and it is wired
-   to no hook event by this plugin.
-3. **It has a length floor** (200 characters of prose by default). Short messages are the
-   false-positive population for any structural check.
+`checks/needs-you-first.mjs`, `checks/closing-ask-last.mjs`,
+`checks/name-the-artifact.mjs` — each a predicate over one message, callable as a library
+or CLI. Shared shape, shared narrowness:
 
-Run it yourself:
+1. **They flag misordering or absence-of-artifact, never ceremony.** A message with nothing
+   needing the reader, or no closing ask, is correct and never flagged — the cheap way to
+   satisfy a check that demanded those is an empty header in the scarcest position.
+2. **They have length floors** (200 chars for the first two, 400 plus a report-verb gate
+   for name-the-artifact). Short messages are the false-positive population for any
+   structural check.
+
+Run them yourself:
 
 ```
 node plugins/communication-rules/checks/needs-you-first.mjs path/to/message.md
-node --test plugins/communication-rules/checks/*.test.mjs
+node --test plugins/communication-rules/checks/ plugins/communication-rules/triggers/ plugins/communication-rules/judge/ plugins/communication-rules/hooks/
 ```
 
 ## Operator profile
