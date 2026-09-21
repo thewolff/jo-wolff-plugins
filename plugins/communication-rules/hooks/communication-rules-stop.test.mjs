@@ -248,3 +248,30 @@ test("an unparseable profile means defaults (block) plus one errors.log line", (
   assert.equal(parseOut(r.stdout).decision, "block"); // defaults still enforce
   assert.match(readLog(home, "errors.log"), /does not parse/);
 });
+
+// ─── R2 through the hook ─────────────────────────────────────────────────────
+
+test("two closing-ask markers block with the ending-lines-only reason", () => {
+  const home = mkhome();
+  const msg = `${body(6)}\n\n## Closing ask\n\nApprove the deploy.\n\n${body(2)}\n\n**Closing ask**\n\nAlso answer the question.`;
+  const r = runHook({ session_id: "c1", last_assistant_message: msg }, home);
+  const out = parseOut(r.stdout);
+  assert.equal(out.decision, "block");
+  assert.match(out.reason, /One closing ask/);
+  assert.match(out.reason, /2 closing-ask markers/);
+  assert.match(out.reason, /paste the corrected ending lines only/i);
+});
+
+test("prose after the single ask blocks; a clean ask-last message does not", () => {
+  const home = mkhome();
+  const overtime = `${body(6)}\n\n## Closing ask\n\nApprove the deploy.\n\n${body(2)}`;
+  const blocked = runHook({ session_id: "c2", last_assistant_message: overtime }, home);
+  assert.equal(parseOut(blocked.stdout).decision, "block");
+  assert.match(parseOut(blocked.stdout).reason, /prose follow the closing-ask marker/);
+
+  const home2 = mkhome();
+  const clean = `${body(6)}\n\n## Closing ask\n\nApprove the deploy.`;
+  const passed = runHook({ session_id: "c3", last_assistant_message: clean }, home2);
+  assert.equal(passed.status, 0);
+  assert.equal(passed.stdout, "");
+});
