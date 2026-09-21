@@ -30,10 +30,11 @@
 // Contract: read JSON on stdin (SessionStart payload; unused, but consumed so the pipe closes).
 // Emit hookSpecificOutput.additionalContext, exit 0.
 
-import { readFileSync } from "node:fs";
+import { readFileSync, writeFileSync, mkdirSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { stateDir, resumeMarkerPath, appendLog } from "../lib/state.mjs";
 
 const SKILL_PATH = fileURLToPath(
   new URL("../skills/communication-rules/SKILL.md", import.meta.url),
@@ -109,12 +110,43 @@ function readProfile() {
   return { text: lines.join("\n"), note: "" };
 }
 
-try {
+// One-shot marker for the Stop hook: this session's next substantive message is the one the
+// restate-the-resumed-thread rule judges. Fail-open (errors.log), never session-visible.
+function writeResumeMarker(rawStdin) {
+  let payload = {};
   try {
-    readFileSync(0, "utf8"); // drain stdin; the payload is not needed
+    payload = JSON.parse(rawStdin || "{}");
+  } catch {
+    return; // an unparseable payload is not this hook's failure; no marker, no judgment
+  }
+  const source = typeof payload.source === "string" ? payload.source.toLowerCase() : "";
+  const sessionId = typeof payload.session_id === "string" ? payload.session_id.trim() : "";
+  const reason = typeof payload.reason === "string" ? payload.reason : "";
+  const resumeish =
+    source === "resume" || source === "compact" || (source === "clear" && /compact/i.test(reason));
+  if (!resumeish || !sessionId) return;
+  try {
+    mkdirSync(stateDir(), { recursive: true });
+    writeFileSync(resumeMarkerPath(sessionId), `${new Date().toISOString()}\n`);
+  } catch (err) {
+    appendLog("errors.log", `could not write resume marker for ${sessionId}: ${err.message}`);
+  }
+}
+try {
+  let rawStdin = "";
+  try {
+    rawStdin = readFileSync(0, "utf8"); // the payload IS needed now — see writeResumeMarker
   } catch {
     /* no stdin is fine */
   }
+
+  // R6 trigger, session-start half: a resume or compact means the NEXT assistant message is
+  // the one the restate-the-thread rule judges. Leave a one-shot marker for the Stop hook to
+  // consume. Assumption documented: Claude Code SessionStart sources are startup | resume |
+  // clear | compact; where a host reports "clear" with a reason mentioning compact, that is
+  // treated as a compact. Unverifiable payload shapes fail open (no marker), and the Stop
+  // hook simply has nothing to consume.
+  writeResumeMarker(rawStdin);
 
   if (String(process.env.COMMUNICATION_RULES_INJECT || "").toLowerCase() === "off") process.exit(0);
 
