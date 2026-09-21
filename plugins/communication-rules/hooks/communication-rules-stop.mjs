@@ -55,6 +55,7 @@ import { stateDir, killSwitchPath, lastBlockedPath, resumeMarkerPath, sha256hex,
 import { findTrailingBatchSection, batchByLabelQuestion, batchJudgeContext } from "../triggers/batch-heading.mjs";
 import { conclusionFirstApplicable, conclusionFirstQuestion } from "../triggers/conclusion-first.mjs";
 import { lastIncompleteTodos, reportQuestion, todoJudgeContext } from "../triggers/todo-unfinished.mjs";
+import { badNewsGate, badNewsQuestion } from "../triggers/bad-news-lexicon.mjs";
 import { askJudge } from "../judge/ask.mjs";
 
 // R6's judge question. Static per rule — variable data rides in the context, so the verdict
@@ -200,6 +201,13 @@ function judgeReason(job, verdict) {
         `message is judged not to report (judge: ${verdict.reason}). Add one line per unfinished item: ` +
         `done, or not done with why. Paste the added lines only; never resend the whole message.`
       );
+    case "bad-news-first":
+      return (
+        `Bad news first — the message is judged to carry bad news that the first substantive ` +
+        `sentence neither states nor points to (judge: ${verdict.reason}). Move the bad news to the ` +
+        `first sentence; the explanation goes second. Paste the corrected opening lines only; never ` +
+        `resend the whole message.`
+      );
     default:
       return `${job.rule} — judge: ${verdict.reason}. Paste the corrected lines only; never resend the whole message.`;
   }
@@ -314,6 +322,15 @@ async function main() {
         question: reportQuestion,
         contextText: todoJudgeContext(text, todos),
       });
+    }
+  }
+
+  // R8 — bad news first: the lexicon gate decides applicability only. "Fixed the error"
+  // trips the gate and is exactly the message the judge must acquit.
+  if (effectiveMode(config, "bad-news-first") !== "off") {
+    const t = badNewsGate(text);
+    if (t.applicable) {
+      judgeJobs.push({ rule: "bad-news-first", question: badNewsQuestion, contextText: text });
     }
   }
   if (judgeJobs.length) {
