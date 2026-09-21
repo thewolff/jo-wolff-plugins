@@ -41,11 +41,12 @@ export function sha256hex(text) {
   return createHash("sha256").update(String(text), "utf8").digest("hex");
 }
 
-// One timestamped line to <stateDir>/<file>. Never throws.
-export function appendLog(file, text) {
+// One timestamped line to <dir>/<file>; dir defaults to the shared state directory and exists
+// as a parameter so the judge machinery can be tested against a temp home. Never throws.
+export function appendLog(file, text, dir = stateDir()) {
   try {
-    mkdirSync(stateDir(), { recursive: true });
-    appendFileSync(join(stateDir(), file), `${new Date().toISOString()} ${String(text).replace(/\s+/g, " ").trim()}\n`);
+    mkdirSync(dir, { recursive: true });
+    appendFileSync(join(dir, file), `${new Date().toISOString()} ${String(text).replace(/\s+/g, " ").trim()}\n`);
   } catch {
     // Lost by design; see the header. A log failure must not become the hook's failure.
   }
