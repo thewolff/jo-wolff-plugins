@@ -367,7 +367,9 @@ test("a judge rule in warn mode warns instead of blocking", () => {
       },
     }),
   );
-  const r = runHook({ session_id: "j4", last_assistant_message: batchyMessage }, home);
+  // Under 400 total prose chars so ONLY R3 fires — R4's floor keeps it out of this test.
+  const r3Only = `${body(4)}\n\n## Questions\n\nIs the cache warm?\nWhat about the timeout?\nIs the skip logged?`;
+  const r = runHook({ session_id: "j4", last_assistant_message: r3Only }, home);
   assert.equal(r.status, 0);
   assert.equal(r.stdout, "");
   assert.match(readLog(home, "warnings.log"), /rule=do-not-batch-by-label/);
@@ -383,4 +385,30 @@ test("a failing judge fails open: no block, judge-failures.log carries it", () =
   assert.equal(r.status, 0);
   assert.equal(r.stdout, "");
   assert.match(readLog(home, "judge-failures.log"), /rule=do-not-batch-by-label error=judge-unparseable/);
+});
+
+// ─── R4 through the hook ─────────────────────────────────────────────────────
+
+const twoParagraphReport = `${body(7)}\n\n${body(7)}`;
+
+test("conclusion-first dispatches on two paragraphs and blocks on a violating verdict", () => {
+  const home = mkhome();
+  writeFakeJudge(home, true, "verdict buried under three paragraphs of context");
+  writeFileSync(
+    join(home, ".claude", "communication-rules.json"),
+    JSON.stringify({ enforcement: { judgeCommand: `node ${fakeJudgePath(home)}` } }),
+  );
+  const r = runHook({ session_id: "k1", last_assistant_message: twoParagraphReport }, home);
+  const out = parseOut(r.stdout);
+  assert.equal(out.decision, "block");
+  assert.match(out.reason, /Conclusion first/);
+  assert.match(out.reason, /verdict buried under three paragraphs of context/);
+});
+
+test("a single-paragraph message never reaches the judge — no skip, no bill", () => {
+  const home = mkhome();
+  const r = runHook({ session_id: "k2", last_assistant_message: body(10) }, home);
+  assert.equal(r.status, 0);
+  assert.equal(r.stdout, "");
+  assert.equal(readLog(home, "skipped.log"), ""); // trigger never fired: not a skip
 });

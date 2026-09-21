@@ -53,6 +53,7 @@ import { checkNamesArtifact } from "../checks/name-the-artifact.mjs";
 import { loadEnforcement, effectiveMode } from "../lib/config.mjs";
 import { stateDir, killSwitchPath, lastBlockedPath, sha256hex, appendLog } from "../lib/state.mjs";
 import { findTrailingBatchSection, batchByLabelQuestion, batchJudgeContext } from "../triggers/batch-heading.mjs";
+import { conclusionFirstApplicable, conclusionFirstQuestion } from "../triggers/conclusion-first.mjs";
 import { askJudge } from "../judge/ask.mjs";
 
 const MASTER_FLOOR = 200;
@@ -158,6 +159,27 @@ function runDeterministicChecks(text, config) {
   return findings;
 }
 
+// House reason format for judge findings: rule named, what to move or add, judge's one-liner
+// carried, corrected-lines-only, never a full resend. One builder per rule id.
+function judgeReason(job, verdict) {
+  switch (job.rule) {
+    case "do-not-batch-by-label":
+      return (
+        `Do not batch by label — the trailing "${job.heading}" section is judged a batched dump ` +
+        `(judge: ${verdict.reason}). Move each item next to the thing it is about; a lead needs-you ` +
+        `section pulling decisions to the top stays compliant. Paste the corrected sections only; ` +
+        `never resend the whole message.`
+      );
+    case "conclusion-first":
+      return (
+        `Conclusion first — the first substantive sentence is judged setup while the verdict arrives ` +
+        `later (judge: ${verdict.reason}). Move the decision to the first sentence and let the rest earn ` +
+        `it. Paste the corrected opening lines only; never resend the whole message.`
+      );
+    default:
+      return `${job.rule} — judge: ${verdict.reason}. Paste the corrected lines only; never resend the whole message.`;
+  }
+}
 function recordBlock(sessionId, textHash, rules) {
   try {
     mkdirSync(stateDir(), { recursive: true });
@@ -227,6 +249,15 @@ async function main() {
     }
   }
 
+  // R4 — conclusion first: two paragraphs is the minimum shape in which a conclusion can be
+  // buried; below that the judge would only be guessing at "setup".
+  if (effectiveMode(config, "conclusion-first") !== "off") {
+    const t = conclusionFirstApplicable(text);
+    if (t.applicable) {
+      judgeJobs.push({ rule: "conclusion-first", question: conclusionFirstQuestion, contextText: text });
+    }
+  }
+
   if (judgeJobs.length) {
     if (!config.judgeCommand) {
       for (const job of judgeJobs) {
@@ -243,11 +274,7 @@ async function main() {
           findings.push({
             rule: judgeJobs[i].rule,
             mode: effectiveMode(config, judgeJobs[i].rule),
-            text:
-              `Do not batch by label — the trailing "${judgeJobs[i].heading}" section is judged a ` +
-              `batched dump (judge: ${v.reason}). Move each item next to the thing it is about; a lead needs-you ` +
-              `section pulling decisions to the top stays compliant. Paste the corrected sections only; never ` +
-              `resend the whole message.`,
+            text: judgeReason(judgeJobs[i], v),
           });
         }
       }
