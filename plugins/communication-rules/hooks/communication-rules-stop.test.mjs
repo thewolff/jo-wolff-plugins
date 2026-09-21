@@ -457,3 +457,63 @@ test("no marker means no R6 job at all", () => {
   assert.equal(r.stdout, "");
   assert.equal(readLog(home, "skipped.log"), "");
 });
+
+// ─── R7 through the hook: todo trigger + judge ───────────────────────────────
+
+const todoTranscript = (home, todos) => {
+  const p = join(home, "transcript.jsonl");
+  writeFileSync(
+    p,
+    [
+      JSON.stringify({ type: "user", message: { role: "user", content: "go" } }),
+      JSON.stringify({
+        type: "assistant",
+        message: {
+          role: "assistant",
+          content: [{ type: "tool_use", id: "t1", name: "TodoWrite", input: { todos } }],
+        },
+      }),
+      JSON.stringify({ type: "assistant", message: { role: "assistant", content: [{ type: "text", text: body(6) }] } }),
+    ].join("\n") + "\n",
+  );
+  return p;
+};
+
+test("unfinished todos at the last write dispatch R7 and block on a violating verdict", () => {
+  const home = mkhome();
+  writeFakeJudge(home, true, "neither item's status is reported");
+  writeFileSync(
+    join(home, ".claude", "communication-rules.json"),
+    JSON.stringify({ enforcement: { judgeCommand: `node ${fakeJudgePath(home)}` } }),
+  );
+  const tp = todoTranscript(home, [
+    { content: "wire the hook", status: "completed" },
+    { content: "update the docs", status: "in_progress" },
+  ]);
+  const r = runHook({ session_id: "t1", transcript_path: tp }, home);
+  const out = parseOut(r.stdout);
+  assert.equal(out.decision, "block");
+  assert.match(out.reason, /Report what you did not do/);
+  assert.match(out.reason, /neither item's status is reported/);
+});
+
+test("no todo data (OMP last_assistant_message shape) is not applicable and not a skip", () => {
+  const home = mkhome();
+  const r = runHook({ session_id: "t2", last_assistant_message: body(6) }, home);
+  assert.equal(r.status, 0);
+  assert.equal(r.stdout, "");
+  assert.equal(readLog(home, "skipped.log"), ""); // nothing fired: the boundary is silence
+});
+
+test("all-completed todos do not dispatch R7 even with a judge configured", () => {
+  const home = mkhome();
+  writeFakeJudge(home, true, "should not be asked");
+  writeFileSync(
+    join(home, ".claude", "communication-rules.json"),
+    JSON.stringify({ enforcement: { judgeCommand: `node ${fakeJudgePath(home)}` } }),
+  );
+  const tp = todoTranscript(home, [{ content: "wire the hook", status: "completed" }]);
+  const r = runHook({ session_id: "t3", transcript_path: tp }, home);
+  assert.equal(r.status, 0);
+  assert.equal(r.stdout, "");
+});

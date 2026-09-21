@@ -54,6 +54,7 @@ import { loadEnforcement, effectiveMode } from "../lib/config.mjs";
 import { stateDir, killSwitchPath, lastBlockedPath, resumeMarkerPath, sha256hex, appendLog } from "../lib/state.mjs";
 import { findTrailingBatchSection, batchByLabelQuestion, batchJudgeContext } from "../triggers/batch-heading.mjs";
 import { conclusionFirstApplicable, conclusionFirstQuestion } from "../triggers/conclusion-first.mjs";
+import { lastIncompleteTodos, reportQuestion, todoJudgeContext } from "../triggers/todo-unfinished.mjs";
 import { askJudge } from "../judge/ask.mjs";
 
 // R6's judge question. Static per rule — variable data rides in the context, so the verdict
@@ -193,6 +194,12 @@ function judgeReason(job, verdict) {
         `Add a short restatement of subject and pending work at the top. Paste the corrected opening ` +
         `lines only; never resend the whole message.`
       );
+    case "report-what-you-did-not-do":
+      return (
+        `Report what you did not do — the last todo list had unfinished item(s) whose status this ` +
+        `message is judged not to report (judge: ${verdict.reason}). Add one line per unfinished item: ` +
+        `done, or not done with why. Paste the added lines only; never resend the whole message.`
+      );
     default:
       return `${job.rule} — judge: ${verdict.reason}. Paste the corrected lines only; never resend the whole message.`;
   }
@@ -290,6 +297,25 @@ async function main() {
     }
   }
 
+  // R7 — report what you did not do. Needs the transcript: the trigger reads the session's
+  // LAST todo write. OMP payloads that carry only last_assistant_message have no todo data,
+  // and the boundary is documented: with no tracked plan the violation is silence.
+  if (effectiveMode(config, "report-what-you-did-not-do") !== "off" && typeof payload.transcript_path === "string") {
+    let transcriptRaw = "";
+    try {
+      transcriptRaw = readFileSync(payload.transcript_path, "utf8");
+    } catch {
+      transcriptRaw = ""; // unreadable transcript: not applicable, same as none
+    }
+    const todos = lastIncompleteTodos(transcriptRaw);
+    if (todos.applicable) {
+      judgeJobs.push({
+        rule: "report-what-you-did-not-do",
+        question: reportQuestion,
+        contextText: todoJudgeContext(text, todos),
+      });
+    }
+  }
   if (judgeJobs.length) {
     if (!config.judgeCommand) {
       for (const job of judgeJobs) {
