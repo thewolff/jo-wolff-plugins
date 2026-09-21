@@ -47,6 +47,7 @@
 //   session-start hook's contract: fail-open, but not fail-silent.
 
 import { existsSync, readFileSync, writeFileSync, mkdirSync } from "node:fs";
+import { checkClosingAskLast } from "../checks/closing-ask-last.mjs";
 import { checkNeedsYouFirst } from "../checks/needs-you-first.mjs";
 import { loadEnforcement, effectiveMode } from "../lib/config.mjs";
 import { stateDir, killSwitchPath, lastBlockedPath, sha256hex, appendLog } from "../lib/state.mjs";
@@ -114,6 +115,23 @@ function runDeterministicChecks(text, config) {
           `Needs you first — ${r.prosePrecedingChars} chars of substantive prose precede the Needs-you marker ` +
           `(line ${r.markerLine}). Move what needs the reader above the body. ` +
           `Paste the corrected opening lines only; never resend the whole message.`,
+      });
+    }
+  }
+
+  // R2 — one closing ask, and it goes last.
+  if (effectiveMode(config, "closing-ask-last") !== "off") {
+    const r = checkClosingAskLast(text);
+    if (r.flagged) {
+      const detail =
+        r.reason === "multiple-markers"
+          ? `${r.markerCount} closing-ask markers (first at line ${r.markerLine}). Keep exactly one and fold the others into it.`
+          : `${r.proseAfterChars} chars of substantive prose follow the closing-ask marker (line ${r.markerLine}). ` +
+            `Move that prose above the ask so the ask is the last substantive thing.`;
+      findings.push({
+        rule: "closing-ask-last",
+        mode: effectiveMode(config, "closing-ask-last"),
+        text: `One closing ask — ${detail} Paste the corrected ending lines only; never resend the whole message.`,
       });
     }
   }

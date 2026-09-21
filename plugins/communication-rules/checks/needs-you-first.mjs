@@ -35,38 +35,12 @@ const DEFAULTS = {
   graceChars: 0,
 };
 
-// A heading is navigation and carries no content, so it neither counts as prose nor blocks a
-// marker. Bold and colons are stripped so "**Needs you**", "## Needs you" and "Needs you:" are
-// one marker rather than three.
-function normalizeLine(line) {
-  return line
-    .replace(/^\s{0,3}#{1,6}\s+/, "")
-    .replace(/^\s*[-*+]\s+/, "")
-    .replace(/[*_`]/g, "")
-    .replace(/\s*:\s*$/, "")
-    .trim();
-}
-
-function isHeading(line) {
-  return /^\s{0,3}#{1,6}\s+\S/.test(line);
-}
-
-// Lines that contribute no substantive prose: blanks, rules, bare bullets, HTML comments,
-// blockquotes (quoted material is not the author's assertion), and anything inside a fence.
-function isStructural(line) {
-  const t = line.trim();
-  if (t === "") return true;
-  if (/^(-{3,}|\*{3,}|_{3,})$/.test(t)) return true;
-  if (/^[-*+]$/.test(t)) return true;
-  if (t.startsWith(">")) return true;
-  if (t.startsWith("<!--") || t.endsWith("-->")) return true;
-  if (/^\|[\s|:-]*\|$/.test(t)) return true; // table separator row
-  return false;
-}
-
-function isFence(line) {
-  return /^\s*(```|~~~)/.test(line);
-}
+// Line classification (fences, HTML-comment envelopes, structural lines, headings, prose)
+// and the marker normalization below moved to lines.mjs in 0.2.0, when closing-ask-last
+// needed the identical semantics. This check consumes them from there; its 13-test suite is
+// the regression proof the move changed nothing. The comments that explained each rule now
+// live with the code they explain.
+import { classifyLines } from "./lines.mjs";
 
 export function checkNeedsYouFirst(text, options = {}) {
   const opts = { ...DEFAULTS, ...options };
@@ -83,46 +57,24 @@ export function checkNeedsYouFirst(text, options = {}) {
     proseChars: 0,
   };
 
-  const lines = String(text ?? "").split(/\r?\n/);
-  let inFence = false;
-  let inComment = false;
   let markerLine = null;
   let proseBefore = 0;
   let proseTotal = 0;
 
-  for (let i = 0; i < lines.length; i++) {
-    const raw = lines[i];
-
-    if (isFence(raw)) {
-      inFence = !inFence;
-      continue;
+  for (const { number, kind, norm } of classifyLines(text)) {
+    // Headings and prose lines are the marker candidates; a marker line is a section opener
+    // and never counts as prose, whichever kind it arrived as.
+    if (markerLine === null && (kind === "heading" || kind === "prose")) {
+      const lower = norm.toLowerCase();
+      if (markers.some((m) => lower === m || lower.startsWith(m + " "))) {
+        markerLine = number;
+        continue;
+      }
     }
-    // A marker inside a code block is an example of a marker, not one.
-    if (inFence) continue;
-
-    // Multi-line HTML comments (the output-types envelope is one) count as neither.
-    if (!inComment && raw.trim().startsWith("<!--") && !raw.includes("-->")) inComment = true;
-    else if (inComment) {
-      if (raw.includes("-->")) inComment = false;
-      continue;
+    if (kind === "prose") {
+      proseTotal += norm.length;
+      if (markerLine === null) proseBefore += norm.length;
     }
-    if (inComment) continue;
-
-    if (isStructural(raw)) continue;
-
-    const norm = normalizeLine(raw);
-    if (norm === "") continue;
-
-    if (markerLine === null && markers.some((m) => norm.toLowerCase() === m || norm.toLowerCase().startsWith(m + " "))) {
-      markerLine = i + 1;
-      continue;
-    }
-
-    // Headings are navigation: they do not count as prose and do not delay a marker.
-    if (isHeading(raw)) continue;
-
-    proseTotal += norm.length;
-    if (markerLine === null) proseBefore += norm.length;
   }
 
   result.proseChars = proseTotal;
