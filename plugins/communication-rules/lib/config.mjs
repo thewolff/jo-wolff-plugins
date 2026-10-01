@@ -26,8 +26,14 @@
 //            unless the profile explicitly arms them;
 //        (b) armOmp === true and stop_hook_active === true → every block becomes warn: a
 //            revision that follows a block is re-checked but never blocked a second time.
+//            On OMP the hook does not see the host's flag. OMP sets that flag after ANY
+//            extension's continuation, so the adapter sends true only when the host flag is
+//            true and its own previous result for the session was a block: (b) fires on a
+//            revision after THIS plugin's block, never after another extension's.
 //      The hook's same-text loop guard runs before any check, so an identical repeat still
 //      passes untouched. See harnessCapsBlocks below and the hook's emit stage.
+//      armOmp is read, and a malformed value logged, only under the omp tag: an untagged
+//      Claude Code run never looks at the field, so it never logs about it either.
 //
 // WHY EVERY RULE DEFAULTS TO WARN (measured 2026-09-21, 304-message house corpus, full
 // adjudication): needs-you-first 16/18 flags false-positive (89%), closing-ask-last 17/18
@@ -62,7 +68,8 @@ export function defaultProfilePath() {
 }
 
 // Never throws. Returns { mode, judgeCommand, rules, armOmp } with defaults applied.
-export function loadEnforcement(path = defaultProfilePath()) {
+// `harness` is the hook's COMMUNICATION_RULES_HARNESS; armOmp is read only when it is "omp".
+export function loadEnforcement(harness, path = defaultProfilePath()) {
   const out = { mode: null, judgeCommand: null, rules: {}, armOmp: false };
   let raw;
   try {
@@ -104,7 +111,7 @@ export function loadEnforcement(path = defaultProfilePath()) {
       appendLog("errors.log", "enforcement: rules is not an object; ignored");
     }
   }
-  if (e.armOmp !== undefined) {
+  if (harness === "omp" && e.armOmp !== undefined) {
     if (typeof e.armOmp === "boolean") out.armOmp = e.armOmp;
     else appendLog("errors.log", `enforcement: armOmp ${JSON.stringify(e.armOmp)} is not a boolean; treated as false`);
   }
@@ -123,5 +130,5 @@ export function effectiveMode(config, rule) {
 export function harnessCapsBlocks(config, harness, stopHookActive) {
   if (harness !== "omp") return false;
   if (config.armOmp !== true) return true; // (a) OMP unarmed
-  return stopHookActive === true; // (b) armed, but this is a revision after a block
+  return stopHookActive === true; // (b) armed, but this stop revises this plugin's own block
 }

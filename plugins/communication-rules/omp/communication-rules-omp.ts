@@ -10,12 +10,17 @@
 // ~/.omp/agent/extensions/ does not contain it. REGISTRATION.md beside this file records the
 // steps NOT taken, the exact reversal, and the canary that would prove it live.
 //
-// LOOP GUARD, in the core only: the host's stop_hook_active is forwarded to the CLI as is,
-// and every stop is checked, a revision that follows a block included. The CLI then (a) lets
-// an identical repeat through on its text-hash guard, and (b) under the omp harness tag never
-// blocks a stop that carries stop_hook_active: a changed revision is re-checked but can only
-// warn. That bounds the loop OMP itself does not bound (it exempts decision:"block" from its
-// session_stop continuation cap): at most one block per stop.
+// LOOP GUARD, keyed on this plugin's own block: OMP sets stop_hook_active after ANY
+// session_stop continuation, another extension's `continue: true` included
+// (pi-coding-agent session/agent-session.ts, #sessionStopContinuationContext and
+// #emitSessionStop). So the CLI is sent stop_hook_active: true only when the host flag is
+// true AND this handler's previous result for the same session_id was a block; see
+// blockedLastStop below. Every stop is checked, a revision that follows a block included.
+// The CLI then (a) lets an identical repeat through on its text-hash guard, and (b) under
+// the omp harness tag never blocks a stop sent with stop_hook_active: a changed revision is
+// re-checked but can only warn. That bounds the loop OMP itself does not bound (it exempts
+// decision:"block" from its session_stop continuation cap): this plugin blocks at most once
+// per continuation chain, and another extension's continuation does not spend that block.
 //
 // WARN UNLESS ARMED, in the core: the child's env carries COMMUNICATION_RULES_HARNESS=omp,
 // and the core turns every block into a warn unless the profile sets
@@ -77,6 +82,14 @@ type HandlerDeps = {
   stateDir?: string;
   timeoutMs?: number;
 };
+
+// Session ids whose most recent result from this handler was a block. One per loaded module,
+// so one per omp process. Bounded without eviction: an id is added only on a block and
+// removed on that session's next call through this handler, whatever its result, so the set
+// holds at most the sessions whose latest stop this plugin blocked and that have not stopped
+// since. A missing or non-string session_id shares the key "", which keeps the cap rather
+// than dropping it.
+const blockedLastStop = new Set<string>();
 
 // Structural stand-in for the host's extension API: the one event this adapter registers.
 // Deliberately local — importing @oh-my-pi would couple an unregistered file to a host.
@@ -197,10 +210,15 @@ export async function sessionStopHandler(
   deps?: HandlerDeps,
 ): Promise<{ decision: "block"; reason: string } | undefined> {
   const stateDir = deps?.stateDir ?? DEFAULT_STATE_DIR;
+  const key = typeof event.session_id === "string" ? event.session_id : "";
+  const followsOwnBlock = !!event.stop_hook_active && blockedLastStop.has(key);
+  blockedLastStop.delete(key); // re-added below only if this call blocks
   try {
     const runCli = deps?.runCli ?? defaultRunCli;
-    const verdict = await runCli(buildStopPayload(event, ctx.cwd), ctx.cwd, deps?.timeoutMs ?? CLI_TIMEOUT_MS);
+    const payload = buildStopPayload({ ...event, stop_hook_active: followsOwnBlock }, ctx.cwd);
+    const verdict = await runCli(payload, ctx.cwd, deps?.timeoutMs ?? CLI_TIMEOUT_MS);
     if (verdict?.decision === "block" && typeof verdict.reason === "string" && verdict.reason) {
+      blockedLastStop.add(key);
       return { decision: "block", reason: verdict.reason };
     }
     return undefined; // quiet or non-block verdict: nothing to gate, nothing to log
