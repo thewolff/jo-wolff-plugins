@@ -9,7 +9,8 @@
 //     "enforcement": {
 //       "mode": "block",                       // block | warn | off; unset = every rule warns (measured)
 //       "judgeCommand": "codex exec --skip-git-repo-check -",
-//       "rules": { "name-the-artifact": "warn", "bad-news-first": "warn" }
+//       "rules": { "name-the-artifact": "warn", "bad-news-first": "warn" },
+//       "armOmp": false                        // true = OMP seats may block too (see below)
 //     }
 //   }
 //
@@ -18,6 +19,21 @@
 //   2. enforcement.rules[rule]                  — a per-rule mode
 //   3. enforcement.mode, WHEN THE OPERATOR SET IT — an explicit global override
 //   4. the measured default                      — warn, for every rule
+//   5. the harness cap, applied LAST to whatever 2-4 produced. It runs only when the hook's
+//      env carries COMMUNICATION_RULES_HARNESS=omp (the OMP adapter sets it on its child;
+//      Claude Code never does, so Claude behavior is untouched). Under that tag:
+//        (a) enforcement.armOmp !== true      → every block becomes warn: OMP seats warn
+//            unless the profile explicitly arms them;
+//        (b) armOmp === true and stop_hook_active === true → every block becomes warn: a
+//            revision that follows a block is re-checked but never blocked a second time.
+//            On OMP the hook does not see the host's flag. OMP sets that flag after ANY
+//            extension's continuation, so the adapter sends true only when the host flag is
+//            true and its own previous result for the session was a block: (b) fires on a
+//            revision after THIS plugin's block, never after another extension's.
+//      The hook's same-text loop guard runs before any check, so an identical repeat still
+//      passes untouched. See harnessCapsBlocks below and the hook's emit stage.
+//      armOmp is read, and a malformed value logged, only under the omp tag: an untagged
+//      Claude Code run never looks at the field, so it never logs about it either.
 //
 // WHY EVERY RULE DEFAULTS TO WARN (measured 2026-09-21, 304-message house corpus, full
 // adjudication): needs-you-first 16/18 flags false-positive (89%), closing-ask-last 17/18
@@ -51,9 +67,10 @@ export function defaultProfilePath() {
   return join(homedir(), ".claude", "communication-rules.json");
 }
 
-// Never throws. Returns { mode, judgeCommand, rules } with defaults applied.
-export function loadEnforcement(path = defaultProfilePath()) {
-  const out = { mode: null, judgeCommand: null, rules: {} };
+// Never throws. Returns { mode, judgeCommand, rules, armOmp } with defaults applied.
+// `harness` is the hook's COMMUNICATION_RULES_HARNESS; armOmp is read only when it is "omp".
+export function loadEnforcement(harness, path = defaultProfilePath()) {
+  const out = { mode: null, judgeCommand: null, rules: {}, armOmp: false };
   let raw;
   try {
     raw = readFileSync(path, "utf8");
@@ -94,6 +111,10 @@ export function loadEnforcement(path = defaultProfilePath()) {
       appendLog("errors.log", "enforcement: rules is not an object; ignored");
     }
   }
+  if (harness === "omp" && e.armOmp !== undefined) {
+    if (typeof e.armOmp === "boolean") out.armOmp = e.armOmp;
+    else appendLog("errors.log", `enforcement: armOmp ${JSON.stringify(e.armOmp)} is not a boolean; treated as false`);
+  }
   return out;
 }
 
@@ -101,4 +122,13 @@ export function effectiveMode(config, rule) {
   if (config.rules[rule]) return config.rules[rule];
   if (config.mode) return config.mode;
   return BUILT_IN_MODES[rule] ?? "warn"; // the measured default; block arms by explicit config
+}
+
+// Precedence tier 5 (header). True when every block-mode finding of this stop must be
+// emitted as warn instead. False whenever the harness tag is not exactly "omp", so a hook
+// run by Claude Code is never affected.
+export function harnessCapsBlocks(config, harness, stopHookActive) {
+  if (harness !== "omp") return false;
+  if (config.armOmp !== true) return true; // (a) OMP unarmed
+  return stopHookActive === true; // (b) armed, but this stop revises this plugin's own block
 }

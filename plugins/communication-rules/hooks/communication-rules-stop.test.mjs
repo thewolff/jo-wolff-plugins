@@ -51,6 +51,7 @@ function runHook(payload, home, extraEnv = {}) {
     HOME: home,
     COMMUNICATION_RULES_ENFORCE: "",
     COMMUNICATION_RULES_PROFILE: "",
+    COMMUNICATION_RULES_HARNESS: "", // only the OMP adapter sets it; tests opt in per call
     ...extraEnv,
   };
   return spawnSync(process.execPath, [HOOK], {
@@ -570,4 +571,76 @@ test("a clean message with no lexicon word never dispatches R8", () => {
   const r = runHook({ session_id: "b2", last_assistant_message: body(6) }, home);
   assert.equal(r.status, 0);
   assert.equal(r.stdout, "");
+});
+
+// ─── the OMP harness cap (COMMUNICATION_RULES_HARNESS=omp) ───────────────────────────
+
+const OMP = { COMMUNICATION_RULES_HARNESS: "omp" };
+const revised = `${body(7)}\n\n## Needs you\n\nApprove now.`; // a DIFFERENT text that still violates R1
+
+test("omp tag, profile blocks, OMP not armed → warn with the real rule id, no block, no hash", () => {
+  const home = mkhome();
+  blockProfile(home);
+  const r = runHook({ session_id: "o1", last_assistant_message: misordered }, home, OMP);
+  assert.equal(r.status, 0);
+  assert.equal(r.stdout, "", "unarmed OMP never blocks");
+  assert.match(readLog(home, "warnings.log"), /rule=needs-you-first Needs you first/);
+  assert.ok(!existsSync(join(home, ".claude", ".communication-rules-state", "last-blocked-o1.json")));
+});
+
+test("omp tag, unarmed: a judge-gated block is capped to warn too", () => {
+  const home = mkhome();
+  writeFakeJudge(home, true, "the failure arrives after five sentences of context");
+  blockProfile(home, { judgeCommand: `node ${fakeJudgePath(home)}` });
+  const r = runHook({ session_id: "o2", last_assistant_message: badNewsMessage }, home, OMP);
+  assert.equal(r.stdout, "");
+  assert.match(readLog(home, "warnings.log"), /rule=bad-news-first Bad news first/);
+});
+
+test("omp tag, armed, first stop → block, and the hash is recorded", () => {
+  const home = mkhome();
+  blockProfile(home, { armOmp: true });
+  const r = runHook({ session_id: "o3", last_assistant_message: misordered }, home, OMP);
+  assert.equal(parseOut(r.stdout).decision, "block");
+  assert.ok(existsSync(join(home, ".claude", ".communication-rules-state", "last-blocked-o3.json")));
+});
+
+test("omp tag, armed, stop_hook_active with a changed violating text → warn, never a second block", () => {
+  const home = mkhome();
+  blockProfile(home, { armOmp: true });
+  runHook({ session_id: "o4", last_assistant_message: misordered }, home, OMP);
+  const retry = runHook({ session_id: "o4", last_assistant_message: revised, stop_hook_active: true }, home, OMP);
+  assert.equal(retry.status, 0);
+  assert.equal(retry.stdout, "", "a revision is re-checked but cannot be blocked");
+  assert.match(readLog(home, "warnings.log"), /rule=needs-you-first/, "the re-check ran and logged its finding");
+});
+
+test("omp tag, armed, stop_hook_active with identical text → passes before any check", () => {
+  const home = mkhome();
+  blockProfile(home, { armOmp: true });
+  runHook({ session_id: "o5", last_assistant_message: misordered }, home, OMP);
+  const retry = runHook({ session_id: "o5", last_assistant_message: misordered, stop_hook_active: true }, home, OMP);
+  assert.equal(retry.stdout, "");
+  assert.equal(readLog(home, "warnings.log"), "", "the hash guard returned before the checks ran");
+});
+
+test("armOmp of the wrong type is one errors.log line and reads as false", () => {
+  const home = mkhome();
+  blockProfile(home, { armOmp: "yes" });
+  const r = runHook({ session_id: "o6", last_assistant_message: misordered }, home, OMP);
+  assert.equal(r.stdout, "", "a non-boolean does not arm OMP");
+  assert.match(readLog(home, "errors.log"), /armOmp "yes" is not a boolean; treated as false/);
+  assert.match(readLog(home, "warnings.log"), /rule=needs-you-first/);
+});
+
+test("untagged (Claude Code): a malformed armOmp changes nothing — same stdout, no errors.log line", () => {
+  const plain = mkhome();
+  blockProfile(plain);
+  const malformed = mkhome();
+  blockProfile(malformed, { armOmp: "yes" });
+  const a = runHook({ session_id: "u1", last_assistant_message: misordered }, plain);
+  const b = runHook({ session_id: "u1", last_assistant_message: misordered }, malformed);
+  assert.equal(parseOut(b.stdout).decision, "block", "the Claude path still blocks");
+  assert.equal(b.stdout, a.stdout);
+  assert.equal(readLog(malformed, "errors.log"), "", "the field is never read without the omp tag");
 });

@@ -27,16 +27,25 @@
 //   3. Extract the final assistant text: last_assistant_message when it is a non-empty
 //      string, else the transcript JSONL scanned backwards for the last type:"assistant"
 //      entry with text content (tool-call-only entries are skipped; the message is the text).
-//   4. Loop guard — stop_hook_active means the host already showed one block for this stop.
-//      If the sha256 of this text equals the hash recorded at that block, exit 0: never
-//      block the same message twice, or a model that ignores the reason loops forever.
+//   4. Loop guard — stop_hook_active says this stop follows a continuation: under Claude Code
+//      it is the host's flag (any Stop hook's continuation); under OMP the adapter sends true
+//      only after its OWN block in this session, because OMP's flag is set by any extension.
+//      If the sha256 of this text equals the hash recorded at this plugin's last block, exit
+//      0: never block the same message twice, or a model that ignores the reason loops forever.
 //   5. Master floor — under 200 substantive chars nothing runs. Short messages are the
 //      false-positive population for every structural check this plugin ships.
 //   6. Deterministic checks run per their configured modes; findings collect.
 //   7. Judge-gated checks run only where their deterministic trigger fired and a judge
 //      command is configured; a skipped one leaves a line in skipped.log naming the rule —
 //      a skipped check must be inspectable, never silently dead.
-//   8. One block-mode finding is enough: emit the block, record the text hash for (4).
+//   8. Harness cap — only when COMMUNICATION_RULES_HARNESS=omp (set by the OMP adapter on its
+//      child, never by Claude Code): harnessCapsBlocks in lib/config.mjs turns every
+//      block-mode finding into a warn one when the profile does not set enforcement.armOmp,
+//      or when it does and stop_hook_active is true, which on OMP means this stop revises
+//      this plugin's own block (a revision is re-checked, never blocked twice). Applied here,
+//      to the one findings list every check feeds, so it covers every rule; a capped finding
+//      takes the ordinary warn path in (9).
+//   9. One block-mode finding is enough: emit the block, record the text hash for (4).
 //      Warn-mode findings go to warnings.log. Block reasons follow the house ruling of
 //      2026-09-18 (identifier resolver): name the rule, say exactly what to move or add,
 //      and NEVER demand a resend of the whole message — "paste the corrected opening lines
@@ -50,7 +59,7 @@ import { existsSync, readFileSync, writeFileSync, mkdirSync, rmSync } from "node
 import { checkClosingAskLast } from "../checks/closing-ask-last.mjs";
 import { checkNeedsYouFirst } from "../checks/needs-you-first.mjs";
 import { checkNamesArtifact } from "../checks/name-the-artifact.mjs";
-import { loadEnforcement, effectiveMode } from "../lib/config.mjs";
+import { loadEnforcement, effectiveMode, harnessCapsBlocks } from "../lib/config.mjs";
 import { stateDir, killSwitchPath, lastBlockedPath, resumeMarkerPath, sha256hex, appendLog } from "../lib/state.mjs";
 import { findTrailingBatchSection, batchByLabelQuestion, batchJudgeContext } from "../triggers/batch-heading.mjs";
 import { conclusionFirstApplicable, conclusionFirstQuestion } from "../triggers/conclusion-first.mjs";
@@ -261,7 +270,8 @@ async function main() {
   if (r1.proseChars < MASTER_FLOOR) return;
 
   // 6–7. Checks per configured modes.
-  const config = loadEnforcement();
+  const harness = process.env.COMMUNICATION_RULES_HARNESS;
+  const config = loadEnforcement(harness);
   const findings = [...runDeterministicChecks(text, config)];
 
   // Judge-gated rules: deterministic trigger first; the judge runs only where a trigger fired
@@ -356,7 +366,16 @@ async function main() {
     }
   }
 
-  // 8. Emit.
+  // 8. Harness cap. Every finding, deterministic or judge-gated, is in `findings` by now, so
+  // this one pass covers every rule. Without the omp tag harnessCapsBlocks is false and
+  // nothing here runs.
+  if (harnessCapsBlocks(config, harness, payload.stop_hook_active)) {
+    for (const f of findings) {
+      if (f.mode === "block") f.mode = "warn";
+    }
+  }
+
+  // 9. Emit.
   for (const f of findings) {
     if (f.mode === "warn") appendLog("warnings.log", `rule=${f.rule} ${f.text}`);
   }
