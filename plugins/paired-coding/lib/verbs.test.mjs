@@ -2,11 +2,15 @@
 // directories. pair_run tests use the real /usr/bin/sandbox-exec and skip where it is missing.
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, statSync, writeFileSync } from "node:fs";
+import { createHash } from "node:crypto";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { endSession, executeVerb, recordTrustedInput, verdict } from "./verbs.mjs";
-import { reapGroups } from "./host-io.mjs";
+import {
+  CARRY_MAX_AGE_MS, PLUGIN_ROOT, carryInto, endSession, executeVerb, recordTrustedInput, takeCarryMarker, verdict, writeCarryMarker,
+} from "./verbs.mjs";
+import { loadState, reapGroups, writeSandboxed } from "./host-io.mjs";
+import { pairRunProfile, pairWriteProfile } from "../core/gate.mjs";
 
 const hasSandbox = process.platform === "darwin" && existsSync("/usr/bin/sandbox-exec");
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -199,4 +203,186 @@ test("an escaped writer from change set A is caught by change set B's comparison
 
 test("reapGroups is safe on a group that is already gone", () => {
   assert.deepEqual(reapGroups([999999]), []);
+});
+
+// ─── typed stop ─────────────────────────────────────────────────────────────────────────
+
+test("a typed 'pair stop' ends pairing in any phase and the host's tools open again", { skip: !hasSandbox }, async () => {
+  const f = fixture();
+  await openChangeSet(f);
+  assert.equal(verdict("Write", { sessionDir: f.dir }).allow, false);
+  const r = typed(f, "  Pair Stop ");
+  assert.equal(r.stopped, true);
+  assert.equal(verdict("Write", { sessionDir: f.dir }).allow, true);
+  assert.equal(loadState(f.dir).phase, "inactive");
+  assert.equal(journal(f).at(-1).verb, "typed-stop");
+});
+
+test("an untrusted 'pair stop' changes nothing, and the agent has no stop tool", { skip: !hasSandbox }, async () => {
+  const f = fixture();
+  await executeVerb("pair_start", {}, f.ctx);
+  for (const source of ["claude:mid-turn", "claude:queued/human", "extension", "rpc"]) {
+    const r = recordTrustedInput({ sessionDir: f.dir, text: "pair stop", source });
+    assert.equal(r.stopped, undefined, source);
+    assert.equal(verdict("Write", { sessionDir: f.dir }).allow, false, source);
+  }
+  const stop = await executeVerb("pair_stop", { quote: "pair stop" }, f.ctx);
+  assert.equal(stop.ok, false);
+  assert.match(stop.text, /unknown pairing verb/);
+  assert.equal(loadState(f.dir).phase, "closed");
+});
+
+// ─── carried sessions and the /clear marker ─────────────────────────────────────────────
+
+test("the carry marker is single-use", () => {
+  const f = fixture();
+  writeCarryMarker(f.base, { root: f.root, from: "sess-1", exclusions: [".git"] });
+  const m = takeCarryMarker(f.base, f.root);
+  assert.equal(m.root, f.root);
+  assert.equal(m.from, "sess-1");
+  assert.equal(takeCarryMarker(f.base, f.root), null);
+});
+
+test("an expired carry marker is not used, and is deleted", () => {
+  const f = fixture();
+  writeCarryMarker(f.base, { root: f.root, from: "sess-1" });
+  assert.equal(takeCarryMarker(f.base, f.root, { now: Date.now() + CARRY_MAX_AGE_MS + 1000 }), null);
+  assert.equal(takeCarryMarker(f.base, f.root), null);
+});
+
+test("a carry marker for another worktree is not used", () => {
+  const f = fixture();
+  const other = join(f.top, "other-repo");
+  writeCarryMarker(f.base, { root: other, from: "sess-1" });
+  assert.equal(takeCarryMarker(f.base, f.root), null);
+  // A marker whose recorded root disagrees with its key is refused too.
+  const key = createHash("sha256").update(f.root).digest("hex").slice(0, 32);
+  writeFileSync(join(f.base, "carry", `${key}.json`), JSON.stringify({ root: other, from: "x", at: Date.now() }));
+  assert.equal(takeCarryMarker(f.base, f.root), null);
+  assert.notEqual(takeCarryMarker(f.base, other), null);
+});
+
+test("a session carried after a clear refuses host writes until pair_start, which restarts it", { skip: !hasSandbox }, async () => {
+  const f = fixture();
+  await executeVerb("pair_start", {}, f.ctx);
+  const ended = endSession({ sessionDir: f.dir });
+  assert.equal(ended.carry.root, f.root);
+  const next = { sessionId: "sess-2", sessionDir: join(f.base, "sess-2"), root: f.root };
+  assert.equal(carryInto({ ...next, exclusions: ended.carry.exclusions, protect: ended.carry.protect, from: "sess-1" }).ok, true);
+  assert.equal(verdict("Write", { sessionDir: next.sessionDir }).allow, false);
+  assert.equal((await executeVerb("pair_propose", { boundary: ["src/a.txt"] }, next)).ok, false);
+  assert.equal(readFileSync(join(next.sessionDir, "journal.jsonl"), "utf8").includes('"carried-after-clear"'), true);
+  const start = await executeVerb("pair_start", {}, next);
+  assert.equal(start.ok, true, start.text);
+  assert.equal((await executeVerb("pair_propose", { boundary: ["src/a.txt"] }, next)).ok, true);
+});
+
+test("every pair_run profile denies the plugin's own root, also in a carried session", { skip: !hasSandbox }, async () => {
+  // A worktree that contains this plugin (pairing on the plugin itself) must not let a run
+  // rewrite the gate: the deny comes after the boundary allow, so it wins inside the boundary.
+  const f = fixture();
+  const denied = `(deny file-write* (subpath ${JSON.stringify(PLUGIN_ROOT)}))`;
+  await executeVerb("pair_start", {}, f.ctx);
+  const s = loadState(f.dir);
+  assert.ok(s.protect.includes(PLUGIN_ROOT));
+  assert.ok(pairRunProfile(s).includes(denied));
+  const ended = endSession({ sessionDir: f.dir });
+  const next = { sessionId: "sess-2", sessionDir: join(f.base, "sess-2"), root: f.root };
+  assert.equal(carryInto({ ...next, exclusions: ended.carry.exclusions, protect: [], from: "sess-1" }).ok, true);
+  assert.ok(pairRunProfile(loadState(next.sessionDir)).includes(denied));
+});
+
+test("an inactive session leaves no carry", () => {
+  const f = fixture();
+  assert.equal(endSession({ sessionDir: f.dir }).carry, undefined);
+});
+
+// ─── kernel-enforced pair_write ─────────────────────────────────────────────────────────
+
+test("pair_write runs under the kernel: a path checkWrite passes but the profile denies does not land", { skip: !hasSandbox }, async () => {
+  const f = fixture();
+  mkdirSync(join(f.root, "src", "guarded"));
+  const ctx = { ...f.ctx, protect: [join(f.root, "src", "guarded")] };
+  assert.equal((await executeVerb("pair_start", {}, ctx)).ok, true);
+  const p = await executeVerb("pair_propose", { boundary: ["src/**"] }, ctx);
+  typed(f, "go ahead");
+  assert.equal((await executeVerb("pair_begin", { cardId: p.result.card.id, quote: "go ahead" }, ctx)).ok, true);
+  const w = await executeVerb("pair_write", { path: "src/guarded/x.txt", content: "pwned" }, ctx);
+  assert.equal(w.ok, false, w.text);
+  assert.match(w.text, /sandboxed write failed/);
+  assert.equal(existsSync(join(f.root, "src", "guarded", "x.txt")), false);
+  const ok = await executeVerb("pair_write", { path: "src/new/deep/y.txt", content: "fine" }, ctx);
+  assert.equal(ok.ok, true, ok.text);
+  assert.equal(readFileSync(join(f.root, "src", "new", "deep", "y.txt"), "utf8"), "fine");
+});
+
+test("the pair_write profile refuses a boundary path that a symlink points outside, temp included", { skip: !hasSandbox }, async () => {
+  const f = fixture();
+  await openChangeSet(f, ["src/a.txt", "src/link.txt"]);
+  const tempFile = join(f.top, "outside.txt");
+  writeFileSync(tempFile, "untouched");
+  const profile = pairWriteProfile(loadState(f.dir));
+  for (const target of [tempFile, join(f.root, "src", "b.txt"), join(f.dir, "state.json")]) {
+    const before = readFileSync(target, "utf8");
+    rmSync(join(f.root, "src", "link.txt"), { force: true });
+    symlinkSync(target, join(f.root, "src", "link.txt"));
+    assert.equal(writeSandboxed({ profile, path: join(f.root, "src", "link.txt"), content: "pwned" }).ok, false, target);
+    assert.equal(readFileSync(target, "utf8"), before, target);
+  }
+  assert.equal(writeSandboxed({ profile, path: join(f.root, "src", "a.txt"), content: "A" }).ok, true);
+});
+
+// ─── roadmap ────────────────────────────────────────────────────────────────────────────
+
+const roadmap = [
+  { id: "parser", title: "Split the parser", status: "done" },
+  { id: "cache", title: "Add the cache", status: "open" },
+  { id: "auth", title: "Auth refresh", status: "not-ready", note: "waits on the token API" },
+];
+
+test("pair_done lists the roadmap items still open or not ready", { skip: !hasSandbox }, async () => {
+  const f = fixture();
+  await executeVerb("pair_start", {}, f.ctx);
+  assert.equal((await executeVerb("pair_note", { roadmap }, f.ctx)).ok, true);
+  const p = await executeVerb("pair_propose", { boundary: ["src/a.txt"] }, f.ctx);
+  typed(f, "go ahead");
+  await executeVerb("pair_begin", { cardId: p.result.card.id, quote: "go ahead" }, f.ctx);
+  const done = await executeVerb("pair_done", { cardId: p.result.card.id }, f.ctx);
+  assert.deepEqual(done.result.roadmapOpen.map((i) => i.id), ["cache", "auth"]);
+  assert.match(done.text, /\[not-ready\] auth: Auth refresh \(waits on the token API\)/);
+});
+
+test("pair_start offers the open roadmap of the latest earlier session in the same worktree, read-only", { skip: !hasSandbox }, async () => {
+  const f = fixture();
+  await executeVerb("pair_start", {}, f.ctx);
+  await executeVerb("pair_note", { roadmap }, f.ctx);
+  await executeVerb("pair_note", { text: "free text after the roadmap" }, f.ctx);
+  endSession({ sessionDir: f.dir });
+  const oldJournal = readFileSync(join(f.dir, "journal.jsonl"));
+  const s2 = { sessionId: "sess-2", sessionDir: join(f.base, "sess-2"), root: f.root };
+  const r = await executeVerb("pair_start", {}, s2);
+  assert.equal(r.ok, true, r.text);
+  assert.equal(r.result.roadmapOffer.fromSession, "sess-1");
+  assert.deepEqual(r.result.roadmapOffer.items.map((i) => i.id), ["cache", "auth"]);
+  assert.match(r.text, /\[open\] cache: Add the cache/);
+  assert.deepEqual(readFileSync(join(f.dir, "journal.jsonl")), oldJournal);
+  // Nothing reopens: the new session has no roadmap of its own until a note records one.
+  assert.equal(loadState(s2.sessionDir).roadmap, null);
+});
+
+test("pair_start makes no offer for another worktree, or when the latest earlier session has none open", { skip: !hasSandbox }, async () => {
+  const f = fixture();
+  await executeVerb("pair_start", {}, f.ctx);
+  await executeVerb("pair_note", { roadmap }, f.ctx);
+  endSession({ sessionDir: f.dir });
+  const otherRoot = join(f.top, "other");
+  mkdirSync(join(otherRoot, ".git"), { recursive: true });
+  const elsewhere = await executeVerb("pair_start", {}, { sessionId: "sess-x", sessionDir: join(f.base, "sess-x"), root: otherRoot });
+  assert.equal(elsewhere.result.roadmapOffer, null);
+  const s2 = { sessionId: "sess-2", sessionDir: join(f.base, "sess-2"), root: f.root };
+  await executeVerb("pair_start", {}, s2);
+  await executeVerb("pair_note", { roadmap: roadmap.map((i) => ({ ...i, status: "done", note: undefined })) }, s2);
+  endSession({ sessionDir: s2.sessionDir });
+  const s3 = await executeVerb("pair_start", {}, { sessionId: "sess-3", sessionDir: join(f.base, "sess-3"), root: f.root });
+  assert.equal(s3.result.roadmapOffer, null);
 });

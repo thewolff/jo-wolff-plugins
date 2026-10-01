@@ -16,15 +16,21 @@
 //   phase "closed"    pairing active, no change set open.
 //   phase "open"      a change set is open; `changeSet` names its card, boundary and quote.
 //   Once a session has been activated, a missing, unreadable or malformed state reads as
-//   "closed", never "inactive" (readState). That is the fail-closed rule.
+//   "closed", never "inactive" (readState). That is the fail-closed rule. A closed state
+//   carrying `carried` was activated by a session change (Claude Code /clear, an OMP session
+//   switch) rather than by pair_start: only pair_start or a typed stop leaves it.
 //
 // AGREEMENT
 //   The agent judges that agreement was reached and calls pair_begin with a quote of the
 //   user's words. The gate binds the quote to the user's own latest turn: that turn came from
 //   the host's human-input signal (recordInput, adapter machinery only), it arrived after the
-//   card was shown, and it contains the quote verbatim. The boundary files must still hash to
-//   their values when the card was proposed. pair_stop is bound the same way, so the agent
-//   cannot end pairing on its own and then write freely.
+//   card was shown, and it contains the quote verbatim at word boundaries. The boundary files
+//   must still hash to their values when the card was proposed.
+//
+// ENDING
+//   Only the user ends pairing, by typing a turn whose whole text is "pair stop" (trimmed,
+//   any case). recordInput sees it on the trusted path and ends pairing in any phase. The
+//   agent has no stop verb; an untrusted turn with the same words changes nothing.
 //
 // RESULTS
 //   Verbs return { ok, reason?, state, journal, ...extra }. A refusal returns the input state
@@ -79,6 +85,16 @@
  * @property {Array<{path: string, change: string}>} [unreviewed]
  * @property {{ reason: string, at?: unknown } | null} [halt]
  * @property {string | null} [degraded]
+ * @property {{ from: string | null, reason: string, at?: unknown } | null} [carried]
+ *   set when a session change activated this session closed; pair_start restarts it
+ * @property {RoadmapItem[] | null} [roadmap]  the latest roadmap pair_note recorded
+ */
+/**
+ * @typedef {object} RoadmapItem
+ * @property {string} id
+ * @property {string} title
+ * @property {"open" | "done" | "skipped" | "dropped" | "not-ready"} status
+ * @property {string} [note]  required, one line, for "not-ready"
  */
 /**
  * @typedef {object} Io
@@ -90,10 +106,9 @@
  */
 /** @typedef {{ ok: boolean, reason?: string, state: State, journal: JournalEntry[], [key: string]: unknown }} Result */
 
-/** The pairing verbs the adapter registers as model-callable tools. */
+/** The pairing verbs the adapter registers as model-callable tools. There is no stop verb. */
 export const PAIR_TOOLS = Object.freeze([
   "pair_start",
-  "pair_stop",
   "pair_note",
   "pair_propose",
   "pair_begin",
@@ -102,6 +117,17 @@ export const PAIR_TOOLS = Object.freeze([
   "pair_edit",
   "pair_run",
 ]);
+
+/** What the user types, as a whole turn, to end pairing. */
+export const STOP_PHRASE = "pair stop";
+
+/** Whether a turn's whole text, trimmed and case-insensitive, is the stop phrase. */
+export function isStopPhrase(text) {
+  return typeof text === "string" && text.trim().toLowerCase() === STOP_PHRASE;
+}
+
+/** Roadmap item statuses. "open" and "not-ready" count as still to do. */
+export const ROADMAP_STATUSES = Object.freeze(["open", "done", "skipped", "dropped", "not-ready"]);
 
 /** Read-only host tools, OMP and Claude Code spellings. Allowed while pairing. */
 export const READ_ONLY_TOOLS = Object.freeze([
@@ -123,7 +149,9 @@ const READ_SET = new Set(READ_ONLY_TOOLS);
 const MUTATING_SET = new Set(HOST_MUTATING_TOOLS);
 const DISPATCH_SET = new Set(DISPATCH_TOOLS);
 const PHASES = new Set(["inactive", "closed", "open"]);
+const STATUS_SET = new Set(ROADMAP_STATUSES);
 const CONTROL = /[\u0000-\u001f\u007f]/;
+const CARRIED_REASON = "pairing was carried over a session change and stays closed; call pair_start to restart it, or your partner types pair stop to end it";
 
 // ─── state ──────────────────────────────────────────────────────────────────────────────
 
@@ -205,6 +233,10 @@ function isValidState(s) {
   if (s.baseline !== null && !isSnapshot(s.baseline)) return false;
   if (!Array.isArray(s.unreviewed)) return false;
   if (s.halt !== null && !(isObj(s.halt) && typeof s.halt.reason === "string")) return false;
+  if (s.carried !== undefined && s.carried !== null) {
+    if (!isObj(s.carried) || typeof s.carried.reason !== "string" || s.phase !== "closed" || s.card !== null) return false;
+  }
+  if (s.roadmap !== undefined && s.roadmap !== null && roadmapProblem(s.roadmap) !== null) return false;
   if (s.phase === "open") {
     const c = s.changeSet;
     if (!isObj(c) || typeof c.cardId !== "string" || typeof c.quote !== "string" || !isSeq(c.inputSeq)) return false;
@@ -393,9 +425,11 @@ function sameHashes(a, b) {
 
 /**
  * Record one human turn. ADAPTER MACHINERY ONLY: call it from the host's human-input signal
- * (OMP `input` event; Claude Code `UserPromptSubmit`), never from a model-callable tool. Only
- * `source: "interactive"` enters the trusted store; any other source is journaled as
- * untrusted and changes nothing.
+ * (OMP `input` event; Claude Code `UserPromptSubmit`, judged from the transcript), never from a
+ * model-callable tool. Only `source: "interactive"` enters the trusted store; any other source
+ * is journaled as untrusted and changes nothing. A trusted turn whose whole text is the stop
+ * phrase ends pairing in any phase, like sessionEnd with verb "typed-stop": every run is
+ * reaped, the final snapshot is judged, and the state goes inactive.
  * @param {State} state
  * @param {{ text: unknown, source: unknown }} event
  * @param {Io} [io]
@@ -410,33 +444,47 @@ export function recordInput(state, event, io) {
   const next = clone(state);
   next.inputSeq += 1;
   next.lastInput = { seq: next.inputSeq, text, at: stamp(io) };
-  return { ok: true, trusted: true, state: next, journal: [entry("input", io, { seq: next.inputSeq, text })] };
+  const recorded = entry("input", io, { seq: next.inputSeq, text });
+  if (!isStopPhrase(text)) return { ok: true, trusted: true, state: next, journal: [recorded] };
+  const r = endPairing(next, io, "typed-stop");
+  return { ...r, trusted: true, stopped: true, journal: [recorded, ...r.journal] };
 }
 
+const WORD_START = /^[\p{L}\p{N}]/u;
+const WORD_END = /[\p{L}\p{N}]$/u;
+
 /**
- * Why a quote does not bind to the user's latest turn after `anchorSeq`, or null. Shared by
- * pair_begin and pair_stop.
+ * Whether `quote` occurs in `text` without splitting a word: where the quote begins with a
+ * letter or digit, the character before it is not one; where it ends with one, the character
+ * after it is not one. Letters and digits are Unicode's (\p{L}, \p{N}).
+ * @param {string} text
+ * @param {string} quote
  */
+export function occursAtWordBoundaries(text, quote) {
+  if (typeof text !== "string" || typeof quote !== "string" || quote === "") return false;
+  const head = WORD_START.test(quote);
+  const tail = WORD_END.test(quote);
+  for (let i = text.indexOf(quote); i !== -1; i = text.indexOf(quote, i + 1)) {
+    if (head && WORD_END.test(text.slice(0, i))) continue;
+    if (tail && WORD_START.test(text.slice(i + quote.length))) continue;
+    return true;
+  }
+  return false;
+}
+
+/** Why a quote does not bind to the user's latest turn after `anchorSeq`, or null. */
 function quoteProblem(state, anchorSeq, quote) {
   if (typeof quote !== "string" || quote.trim() === "") return "the quote of your partner's words is empty";
   const last = state.lastInput;
   if (!last || last.seq <= anchorSeq) return "your partner has not typed a turn since the card was shown";
-  if (!last.text.includes(quote)) return "the quote does not occur verbatim in your partner's latest turn";
+  if (!occursAtWordBoundaries(last.text, quote)) return "the quote does not occur verbatim, as whole words, in your partner's latest turn";
   return null;
 }
 
 // ─── verbs ──────────────────────────────────────────────────────────────────────────────
 
-/**
- * pair_start: activate pairing (inactive -> closed) and take the first snapshot. Agent-callable
- * with no binding, because it only adds restrictions. The adapter supplies the paths.
- * @param {State} state
- * @param {{ sessionId?: string, root: string, stateDir: string, tempPaths?: string[], protect?: string[], exclusions?: string[] }} args
- * @param {Io} io
- * @returns {Result}
- */
-export function pairStart(state, args, io) {
-  if (state.phase !== "inactive") return refuse(state, "pair_start", "pairing is already active", io);
+/** The checked, canonical paths of a new closed state, or { error }. */
+function sessionPaths(args, io) {
   const canon = (p) => {
     if (!isAbs(p)) return null;
     if (typeof io?.realpath !== "function") return p;
@@ -445,29 +493,27 @@ export function pairStart(state, args, io) {
   };
   const root = canon(args?.root);
   const stateDir = canon(args?.stateDir);
-  if (!root) return refuse(state, "pair_start", "the worktree root is not a usable absolute path", io);
-  if (!stateDir) return refuse(state, "pair_start", "the state directory is not a usable absolute path", io);
-  if (root === "/" || within(stateDir, root)) return refuse(state, "pair_start", "the worktree lies inside the state directory", io);
+  if (!root) return { error: "the worktree root is not a usable absolute path" };
+  if (!stateDir) return { error: "the state directory is not a usable absolute path" };
+  if (root === "/" || within(stateDir, root)) return { error: "the worktree lies inside the state directory" };
   const tempPaths = args.tempPaths ?? [];
   const protect = args.protect ?? [];
   const exclusions = args.exclusions ?? [];
-  if (!isStrArr(tempPaths) || !tempPaths.every(isAbs)) return refuse(state, "pair_start", "a temp path is not absolute", io);
-  if (!isStrArr(protect) || !protect.every(isAbs)) return refuse(state, "pair_start", "a protected path is not absolute", io);
+  if (!isStrArr(tempPaths) || !tempPaths.every(isAbs)) return { error: "a temp path is not absolute" };
+  if (!isStrArr(protect) || !protect.every(isAbs)) return { error: "a protected path is not absolute" };
   if (!isStrArr(exclusions) || exclusions.some((e) => boundaryProblem([e]) !== null)) {
-    return refuse(state, "pair_start", "a snapshot exclusion is not a clean worktree-relative path", io);
+    return { error: "a snapshot exclusion is not a clean worktree-relative path" };
   }
-  const snap = takeSnapshot(io);
-  if (snap.error) return refuse(state, "pair_start", `could not snapshot the worktree: ${snap.error}`, io);
-  /** @type {State} */
-  const next = {
+  return { root, stateDir, tempPaths, protect, exclusions };
+}
+
+/** A closed state with no card, no input and no change set. */
+function closedState(sessionId, paths, baseline) {
+  return {
     v: 1,
     phase: "closed",
-    sessionId: typeof args.sessionId === "string" ? args.sessionId : null,
-    root,
-    stateDir,
-    tempPaths,
-    protect,
-    exclusions,
+    sessionId: typeof sessionId === "string" ? sessionId : null,
+    ...paths,
     inputSeq: 0,
     lastInput: null,
     startSeq: 0,
@@ -475,50 +521,79 @@ export function pairStart(state, args, io) {
     card: null,
     changeSet: null,
     running: [],
-    baseline: snap.value,
+    baseline,
     unreviewed: [],
     halt: null,
     degraded: null,
+    carried: null,
+    roadmap: null,
   };
-  return { ok: true, state: next, journal: [entry("start", io, { sessionId: next.sessionId, root, stateDir, exclusions })] };
 }
 
 /**
- * pair_stop: end pairing (closed -> inactive). Bound like pair_begin: `quote` must occur
- * verbatim in the user's latest trusted turn, and that turn must have arrived after the
- * latest card (or after pair_start when no card exists). Refused while a change set is open
- * or a pair_run is running. Returns the changes since the last read-back for the summary.
+ * pair_start: activate pairing (inactive -> closed) and take the first snapshot. Agent-callable
+ * with no binding, because it only adds restrictions. The adapter supplies the paths. It also
+ * restarts a session that a session change left carried and closed.
  * @param {State} state
- * @param {{ quote: unknown }} args
+ * @param {{ sessionId?: string, root: string, stateDir: string, tempPaths?: string[], protect?: string[], exclusions?: string[] }} args
  * @param {Io} io
  * @returns {Result}
  */
-export function pairStop(state, args, io) {
-  if (state.phase === "inactive") return refuse(state, "pair_stop", "pairing is not active", io);
-  if (state.phase === "open") return refuse(state, "pair_stop", "a change set is open; finish it with pair_done first", io);
-  if (state.running.length > 0) return refuse(state, "pair_stop", "a pair_run is still running", io);
-  const anchor = state.card ? state.card.inputSeq : state.startSeq;
-  const problem = quoteProblem(state, anchor, args?.quote);
-  if (problem) return refuse(state, "pair_stop", problem, io);
-  return finish(state, io, "pair_stop", { quote: args.quote });
+export function pairStart(state, args, io) {
+  const restart = state.phase === "closed" && isObj(state.carried);
+  if (state.phase !== "inactive" && !restart) return refuse(state, "pair_start", "pairing is already active", io);
+  const paths = sessionPaths(args, io);
+  if (paths.error) return refuse(state, "pair_start", paths.error, io);
+  const snap = takeSnapshot(io);
+  if (snap.error) return refuse(state, "pair_start", `could not snapshot the worktree: ${snap.error}`, io);
+  const next = closedState(args.sessionId, paths, snap.value);
+  const fields = { sessionId: next.sessionId, root: next.root, stateDir: next.stateDir, exclusions: next.exclusions };
+  if (restart) fields.restartedAfter = state.carried.reason;
+  return { ok: true, state: next, journal: [entry("start", io, fields)] };
 }
 
 /**
- * Session end, ADAPTER MACHINERY ONLY (host shutdown), never a model-callable tool. Reaps
- * every run, takes the final snapshot and judges it, then goes inactive.
+ * Activate a session closed because pairing was active in the session it replaced (Claude Code
+ * /clear; an OMP session switch). ADAPTER MACHINERY ONLY. The new session has no card, no
+ * change set, no trusted input and no baseline: host writes are refused until pair_start
+ * restarts pairing, and a typed stop ends it. Refused on a session that is already pairing.
+ * @param {State} state
+ * @param {{ sessionId?: string, root: string, stateDir: string, tempPaths?: string[], protect?: string[], exclusions?: string[], from?: string | null, reason?: string }} args
+ * @param {Io} [io]
+ * @returns {Result}
+ */
+export function carryClosed(state, args, io) {
+  if (state.phase !== "inactive") return refuse(state, "carry", "this session is already pairing", io);
+  const paths = sessionPaths(args, io);
+  if (paths.error) return refuse(state, "carry", paths.error, io);
+  const next = closedState(args.sessionId, paths, null);
+  const reason = typeof args.reason === "string" && args.reason !== "" ? args.reason : "clear";
+  const from = typeof args.from === "string" ? args.from : null;
+  next.carried = { from, reason, at: stamp(io) };
+  return { ok: true, state: next, journal: [entry("carried-after-clear", io, { from, reason, root: next.root })] };
+}
+
+/**
+ * Session end, ADAPTER MACHINERY ONLY (host shutdown or session change), never a
+ * model-callable tool. Reaps every run, takes the final snapshot and judges it, then goes
+ * inactive.
  * @param {State} state
  * @param {Io} io
  * @returns {Result}
  */
 export function sessionEnd(state, io) {
   if (state.phase === "inactive") return { ok: true, state, journal: [] };
+  return endPairing(state, io, "session-end");
+}
+
+function endPairing(state, io, verb) {
   const runIds = [...new Set([...(state.changeSet?.runs ?? []), ...state.running.map((r) => r.runId)])];
   const journal = [];
   if (runIds.length > 0) {
     const reaped = callIo(io, "reapRuns", runIds);
     if (reaped.error) journal.push(entry("reap-failed", io, { runIds, reason: reaped.error }));
   }
-  const r = finish({ ...state, running: [] }, io, "session-end", {});
+  const r = finish({ ...state, running: [] }, io, verb, {});
   return { ...r, journal: [...journal, ...r.journal] };
 }
 
@@ -545,17 +620,71 @@ function finish(state, io, verb, fields) {
 }
 
 /**
- * pair_note: append a note (roadmap, observations) to the journal. The agent's only way to
- * keep notes while pairing; the state directory is not writable by any agent tool.
+ * Why a roadmap is unusable, or null. A roadmap is a list of items { id, title, status, note? }
+ * with unique non-empty ids and titles; status is one of ROADMAP_STATUSES; a "not-ready" item
+ * carries a one-line note saying what it waits for.
+ * @param {unknown} items
+ * @returns {string | null}
+ */
+export function roadmapProblem(items) {
+  if (!Array.isArray(items)) return "the roadmap is not a list of items";
+  const ids = new Set();
+  for (const [i, it] of items.entries()) {
+    if (!isObj(it)) return `roadmap item ${i + 1} is not an object`;
+    if (typeof it.id !== "string" || it.id.trim() === "") return `roadmap item ${i + 1} has no id`;
+    if (ids.has(it.id)) return `roadmap item id ${JSON.stringify(it.id)} appears twice`;
+    ids.add(it.id);
+    if (typeof it.title !== "string" || it.title.trim() === "") return `roadmap item ${it.id} has no title`;
+    if (!STATUS_SET.has(it.status)) return `roadmap item ${it.id} has status ${JSON.stringify(it.status)}; use one of ${ROADMAP_STATUSES.join(", ")}`;
+    if (it.note !== undefined && typeof it.note !== "string") return `roadmap item ${it.id} has a note that is not text`;
+    if (it.status === "not-ready" && (typeof it.note !== "string" || it.note.trim() === "" || /[\r\n]/.test(it.note))) {
+      return `roadmap item ${it.id} is not-ready and needs a one-line note saying what it waits for`;
+    }
+  }
+  return null;
+}
+
+/** The items still to do: status "open" or "not-ready". */
+export function openRoadmapItems(items) {
+  return Array.isArray(items) ? items.filter((it) => it.status === "open" || it.status === "not-ready") : [];
+}
+
+/** The roadmap of the latest journal note that carries one, or null. */
+export function latestRoadmap(entries) {
+  if (!Array.isArray(entries)) return null;
+  for (let i = entries.length - 1; i >= 0; i--) {
+    const e = entries[i];
+    if (isObj(e) && e.type === "note" && Array.isArray(e.roadmap) && roadmapProblem(e.roadmap) === null) return e.roadmap;
+  }
+  return null;
+}
+
+/**
+ * pair_note: append a note to the journal: free text, a structured roadmap, or both. The
+ * latest roadmap replaces the one before it (state.roadmap) and pair_done lists its open and
+ * not-ready items. The agent's only way to keep notes while pairing; the state directory is
+ * not writable by any agent tool.
  * @param {State} state
- * @param {{ text: unknown }} args
+ * @param {{ text?: unknown, roadmap?: unknown }} args
  * @param {Io} [io]
  * @returns {Result}
  */
 export function pairNote(state, args, io) {
   if (state.phase === "inactive") return refuse(state, "pair_note", "pairing is not active", io);
-  if (typeof args?.text !== "string" || args.text.trim() === "") return refuse(state, "pair_note", "the note is empty", io);
-  return { ok: true, state, journal: [entry("note", io, { text: args.text })] };
+  if (state.carried) return refuse(state, "pair_note", CARRIED_REASON, io);
+  const hasText = typeof args?.text === "string" && args.text.trim() !== "";
+  if (args?.text !== undefined && typeof args.text !== "string") return refuse(state, "pair_note", "the note text is not a string", io);
+  if (args?.roadmap === undefined) {
+    if (!hasText) return refuse(state, "pair_note", "the note is empty", io);
+    return { ok: true, state, journal: [entry("note", io, { text: args.text })] };
+  }
+  const problem = roadmapProblem(args.roadmap);
+  if (problem) return refuse(state, "pair_note", problem, io);
+  const roadmap = args.roadmap.map((it) => ({ id: it.id, title: it.title, status: it.status, ...(it.note !== undefined ? { note: it.note } : {}) }));
+  const next = clone(state);
+  next.roadmap = roadmap;
+  const fields = hasText ? { text: args.text, roadmap } : { roadmap };
+  return { ok: true, state: next, roadmapOpen: openRoadmapItems(roadmap), journal: [entry("note", io, fields)] };
 }
 
 /**
@@ -569,9 +698,10 @@ export function pairNote(state, args, io) {
  */
 export function pairPropose(state, card, io) {
   if (state.phase === "inactive") return refuse(state, "pair_propose", "pairing is not active", io);
+  if (state.carried) return refuse(state, "pair_propose", CARRIED_REASON, io);
   if (state.halt) return refuse(state, "pair_propose", `the session is stopped: ${state.halt.reason}`, io);
   if (state.phase === "open") return refuse(state, "pair_propose", "a change set is open; finish it with pair_done before the next card", io);
-  if (!state.root) return refuse(state, "pair_propose", "the state lost its worktree root; stop and start pairing again", io);
+  if (!state.root) return refuse(state, "pair_propose", "the state lost its worktree root; your partner types pair stop, then start pairing again", io);
   if (!isObj(card)) return refuse(state, "pair_propose", "the card is not an object", io);
   const problem = boundaryProblem(card.boundary);
   if (problem) return refuse(state, "pair_propose", problem, io);
@@ -682,7 +812,7 @@ export function pairDone(state, args, io) {
     next.halt = { reason: `unapproved write outside change set ${cs.cardId}: ${unapproved.map((d) => d.path).join(", ")}`, at: stamp(io) };
     journal.push(entry("unapproved-write", io, { cardId: cs.cardId, paths: unapproved }));
   }
-  return { ok: true, state: next, journal, changed, unapproved, halted: unapproved.length > 0 };
+  return { ok: true, state: next, journal, changed, unapproved, halted: unapproved.length > 0, roadmapOpen: openRoadmapItems(state.roadmap) };
 }
 
 // ─── tool verdicts ──────────────────────────────────────────────────────────────────────
@@ -765,7 +895,7 @@ function targetProblem(state, abs) {
 export function runStart(state, args, io) {
   if (state.phase === "inactive") return refuse(state, "pair_run", "pairing is not active", io);
   if (state.halt) return refuse(state, "pair_run", `the session is stopped: ${state.halt.reason}`, io);
-  if (!state.root || !state.stateDir) return refuse(state, "pair_run", "the state lost its worktree root; stop and start pairing again", io);
+  if (!state.root || !state.stateDir) return refuse(state, "pair_run", "the state lost its worktree root; your partner types pair stop, then start pairing again", io);
   const runId = args?.runId;
   if (typeof runId !== "string" || runId === "") return refuse(state, "pair_run", "the run has no id", io);
   if (state.running.some((r) => r.runId === runId)) return refuse(state, "pair_run", "a run with this id is already running", io);
@@ -808,31 +938,66 @@ function sbplRegex(source) {
 }
 
 /**
- * The Seatbelt profile for pair_run in the current phase. Later Seatbelt rules win, so the
- * order below is the precedence, last one strongest.
- *   closed: everything allowed except writes to the worktree, the state directory and the
- *           protected paths.
- *   open:   all writes denied; then the temp paths and the few /dev files a shell needs
- *           allowed; then the whole worktree denied again (a worktree that sits under a temp
- *           path stays fenced); then the boundary allowed; then the state directory and the
- *           protected paths denied, even where a boundary or temp path covers them.
+ * The directories a boundary entry needs to exist, absolute: every ancestor of a file entry,
+ * and every directory above the first glob segment of a glob entry. Creating one of them as a
+ * directory is part of writing the entry.
+ */
+function boundaryAncestors(root, boundary) {
+  const out = new Set();
+  for (const raw of boundary) {
+    const segs = normalizeEntry(raw).split("/");
+    const fixed = [];
+    for (const seg of segs.slice(0, -1)) {
+      if (isGlob(seg)) break;
+      fixed.push(seg);
+      out.add(`${root}/${fixed.join("/")}`);
+    }
+  }
+  return [...out];
+}
+
+/**
+ * The Seatbelt profile for pair_run in the current phase, and for the kernel-fenced write of
+ * pair_write and pair_edit while open. Later Seatbelt rules win, so the order below is the
+ * precedence, last one strongest. Both phases deny every write by default:
+ *   1. all writes denied;
+ *   2. the temp paths and the few /dev files a shell needs allowed;
+ *   3. the whole worktree denied again (a worktree that sits under a temp path stays fenced);
+ *   4. open only: the boundary allowed, and creating the directories above it as directories;
+ *   5. the state directory and the protected paths denied, even where a boundary or temp path
+ *      covers them.
+ * So in the closed phase pair_run writes nowhere but temp and /dev.
  * @param {State} state
  * @returns {string}
  */
 export function pairRunProfile(state) {
-  const denyRoot = `(deny file-write* (subpath ${sbplString(state.root)}))`;
-  const denyTail = [state.stateDir, ...(state.protect ?? [])].map((p) => `(deny file-write* (subpath ${sbplString(p)}))`).join("");
-  if (state.phase !== "open") return `(version 1)(allow default)${denyRoot}${denyTail}`;
   const outside = [
     ...["/dev/null", "/dev/zero", "/dev/tty", "/dev/dtracehelper"].map((p) => `(literal ${sbplString(p)})`),
     `(subpath ${sbplString("/dev/fd")})`,
     ...(state.tempPaths ?? []).map((p) => `(subpath ${sbplString(p)})`),
   ];
+  const head = `(version 1)(allow default)(deny file-write*)(allow file-write* ${outside.join(" ")})(deny file-write* (subpath ${sbplString(state.root)}))`;
+  const tail = [state.stateDir, ...(state.protect ?? [])].map((p) => `(deny file-write* (subpath ${sbplString(p)}))`).join("");
+  if (state.phase !== "open") return `${head}${tail}`;
   const boundary = state.changeSet.boundary.map((raw) => {
     const e = normalizeEntry(raw);
     if (!isGlob(e)) return `(literal ${sbplString(`${state.root}/${e}`)})`;
     const root = state.root.replace(REGEX_META, (ch) => `\\${ch}`);
     return `(regex ${sbplRegex(`^${root}/${globToRegexSource(e)}$`)})`;
   });
-  return `(version 1)(allow default)(deny file-write*)(allow file-write* ${outside.join(" ")})${denyRoot}(allow file-write* ${boundary.join(" ")})${denyTail}`;
+  const dirs = boundaryAncestors(state.root, state.changeSet.boundary).map((p) => `(literal ${sbplString(p)})`);
+  const mkdirs = dirs.length ? `(allow file-write-create (require-all (vnode-type DIRECTORY) (require-any ${dirs.join(" ")})))` : "";
+  return `${head}(allow file-write* ${boundary.join(" ")})${mkdirs}${tail}`;
+}
+
+/**
+ * The Seatbelt profile pair_write and pair_edit write under: the open profile with no temp
+ * paths, so a path that resolves anywhere but the boundary (a temp directory included) is
+ * refused by the kernel. Open phase only.
+ * @param {State} state
+ * @returns {string}
+ */
+export function pairWriteProfile(state) {
+  if (state.phase !== "open") throw new Error("pair_write needs an open change set");
+  return pairRunProfile({ ...state, tempPaths: [] });
 }

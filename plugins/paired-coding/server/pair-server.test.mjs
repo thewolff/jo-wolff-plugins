@@ -39,7 +39,7 @@ test("initialize, tools/list and unknown methods follow JSON-RPC and MCP", async
   assert.equal(init.result.protocolVersion, "2025-06-18");
   assert.ok(init.result.capabilities.tools);
   const list = await s.request("tools/list", {}).done;
-  assert.deepEqual(list.result.tools.map((t) => t.name).sort(), ["pair_begin", "pair_done", "pair_edit", "pair_note", "pair_propose", "pair_run", "pair_start", "pair_stop", "pair_write"]);
+  assert.deepEqual(list.result.tools.map((t) => t.name).sort(), ["pair_begin", "pair_done", "pair_edit", "pair_note", "pair_propose", "pair_run", "pair_start", "pair_write"]);
   assert.ok(list.result.tools.every((t) => t._meta["anthropic/alwaysLoad"] === true && t.inputSchema.type === "object"));
   const unknown = await s.request("server/discover", {}).done;
   assert.equal(unknown.error.code, -32601);

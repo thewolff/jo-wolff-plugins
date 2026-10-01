@@ -3,7 +3,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { appendFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, writeFileSync } from "node:fs";
+import { appendFileSync, chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -168,4 +168,95 @@ test("SessionEnd ends pairing: the next session state is inactive and the gate o
   assert.equal(JSON.parse(readFileSync(join(f.base, "s1", "state.json"), "utf8")).phase, "inactive");
   assert.equal(handle("pre-tool-use", { ...f.common, tool_name: "Write", tool_input: {}, tool_use_id: tuid() }, { env: f.env }), null);
   assert.ok(readdirSync(join(f.base, "s1")).includes("journal.jsonl"));
+});
+
+const writeCall = (f, common = f.common) => handle("pre-tool-use", { ...common, tool_name: "Write", tool_input: {}, tool_use_id: tuid() }, { env: f.env, waitMs: 100 });
+const phaseOf = (f, sid) => JSON.parse(readFileSync(join(f.base, sid, "state.json"), "utf8")).phase;
+
+test("a typed 'pair stop' in a turn with no tool call ends pairing at Stop; the next Write is allowed", { skip: !hasSandbox }, async () => {
+  const f = fixture();
+  await call(f, "pair_start", {});
+  assert.notEqual(writeCall(f), null);
+  const note = typedPrompt(f, "pair stop");
+  assert.match(note.hookSpecificOutput.additionalContext, /asks to end pairing/);
+  assert.equal(phaseOf(f, "s1"), "closed", "not judged until the transcript entry exists");
+  assert.equal(handle("stop", { ...f.common }, { env: f.env, waitMs: 100 }), null);
+  assert.equal(phaseOf(f, "s1"), "inactive");
+  assert.equal(writeCall(f), null);
+});
+
+test("a queued turn left unjudged is judged at the next UserPromptSubmit", { skip: !hasSandbox }, async () => {
+  const f = fixture();
+  await call(f, "pair_start", {});
+  typedPrompt(f, "pair stop");
+  assert.equal(typedPrompt(f, "next turn"), null, "pairing already ended, so the next turn is not queued");
+  assert.equal(phaseOf(f, "s1"), "inactive");
+});
+
+test("an injected 'pair stop' never ends pairing", { skip: !hasSandbox }, async () => {
+  const f = fixture();
+  await call(f, "pair_start", {});
+  typedPrompt(f, "pair stop", { promptSource: "system", origin: null });
+  typedPrompt(f, "pair stop", { promptSource: "system", origin: { kind: "task-notification" } });
+  handle("stop", { ...f.common }, { env: f.env, waitMs: 100 });
+  assert.equal(phaseOf(f, "s1"), "closed");
+  assert.notEqual(writeCall(f), null);
+});
+
+test("/clear while pairing: the new session refuses Write until pair_start, which then works", { skip: !hasSandbox }, async () => {
+  const f = fixture();
+  await call(f, "pair_start", {});
+  assert.equal(handle("session-end", { ...f.common, reason: "clear" }, { env: f.env }), null);
+  assert.equal(phaseOf(f, "s1"), "inactive");
+  const s2 = { ...f.common, session_id: "s2" };
+  const start = handle("session-start", { ...s2, source: "clear" }, { env: f.env });
+  assert.match(start.hookSpecificOutput.additionalContext, /starts closed/);
+  assert.notEqual(writeCall(f, s2), null);
+  const journal = readFileSync(join(f.base, "s2", "journal.jsonl"), "utf8");
+  assert.match(journal, /"carried-after-clear"/);
+  const id = tuid();
+  assert.equal(handle("pre-tool-use", { ...s2, ...own("pair_start"), tool_input: {}, tool_use_id: id }, { env: f.env }), null);
+  const r = await callTool({ name: "pair_start", arguments: {}, _meta: { "claudecode/toolUseId": id } }, { env: f.env });
+  assert.equal(r.isError, false, r.content[0].text);
+  assert.equal(phaseOf(f, "s2"), "closed");
+  // The marker was single-use: a second cleared session starts inert.
+  assert.equal(handle("session-start", { ...f.common, session_id: "s3", source: "clear" }, { env: f.env }), null);
+  assert.equal(writeCall(f, { ...f.common, session_id: "s3" }), null);
+});
+
+test("without a /clear marker every new session stays inert", { skip: !hasSandbox }, async () => {
+  const f = fixture();
+  await call(f, "pair_start", {});
+  handle("session-end", { ...f.common, reason: "logout" }, { env: f.env });
+  assert.equal(handle("session-start", { ...f.common, session_id: "s2", source: "clear" }, { env: f.env }), null);
+  assert.equal(writeCall(f, { ...f.common, session_id: "s2" }), null);
+  // A clear in a session that never paired leaves nothing behind either.
+  handle("session-end", { ...f.common, session_id: "s4", reason: "clear" }, { env: f.env });
+  assert.equal(handle("session-start", { ...f.common, session_id: "s5", source: "clear" }, { env: f.env }), null);
+});
+
+test("a /clear marker is only taken by a cleared session in the same worktree", { skip: !hasSandbox }, async () => {
+  const f = fixture();
+  await call(f, "pair_start", {});
+  handle("session-end", { ...f.common, reason: "clear" }, { env: f.env });
+  const elsewhere = join(f.top, "other");
+  mkdirSync(join(elsewhere, ".git"), { recursive: true });
+  assert.equal(handle("session-start", { ...f.common, session_id: "s2", cwd: elsewhere, source: "clear" }, { env: f.env }), null);
+  assert.equal(handle("session-start", { ...f.common, session_id: "s3", source: "startup" }, { env: f.env }), null);
+  assert.notEqual(handle("session-start", { ...f.common, session_id: "s4", source: "clear" }, { env: f.env }), null);
+});
+
+test("/clear: the carry marker is written before the session-end work, so a failed end still carries", { skip: !hasSandbox }, async () => {
+  const f = fixture();
+  await call(f, "pair_start", {});
+  // A session directory the end cannot write to: the reap and final snapshot fail.
+  chmodSync(join(f.base, "s1"), 0o500);
+  try {
+    assert.throws(() => handle("session-end", { ...f.common, reason: "clear" }, { env: f.env }));
+  } finally {
+    chmodSync(join(f.base, "s1"), 0o700);
+  }
+  const start = handle("session-start", { ...f.common, session_id: "s2", source: "clear" }, { env: f.env });
+  assert.notEqual(start, null, "the cleared session starts closed");
+  assert.notEqual(writeCall(f, { ...f.common, session_id: "s2" }), null);
 });

@@ -1,20 +1,24 @@
 # jo-wolff-plugins
 
-Two plugins about the same problem from opposite ends: what an agent's output is made of, and
-what shape it arrives in.
+Three plugins about working with an agent: what its output is made of, what shape that output
+arrives in, and when it may write code at all.
 
 - **[output-types](#output-types)** — label every statement and attach the receipt that earns
   the label.
 - **[communication-rules](#communication-rules)** — put what needs a decision where the reader
   looks first.
+- **[paired-coding](#paired-coding)** — pair with the agent one change set at a time, behind a
+  gate that refuses writes you have not agreed to.
 
-Both deliver text. Neither reads what the agent sends back; see each section's *delivers, does
-not enforce* note.
+The first two deliver text. Neither reads what the agent sends back; see each section's
+*delivers, does not enforce* note. paired-coding is the one that enforces, at the tool boundary,
+within the limits in its *what this enforces, and what it does not* note.
 
 ```
 /plugin marketplace add thewolff/jo-wolff-plugins
 /plugin install output-types@jo-wolff-plugins
 /plugin install communication-rules@jo-wolff-plugins
+/plugin install paired-coding@jo-wolff-plugins
 ```
 
 ## output-types
@@ -148,6 +152,62 @@ and hand-adjudicate thirty flags — before you wire it to anything.
 
 If you want the injection off without uninstalling, set `COMMUNICATION_RULES_INJECT=off`; the
 hook then emits nothing and the skill still loads on demand.
+
+## paired-coding
+
+A plugin for pairing with an agent on code, one change set at a time. The agent drives and you
+navigate. Before each change set it shows you a **card** naming the decision inside the change,
+the code it touches, the effect it will have and the exact files it will write. It writes only
+after the two of you agree on that card, then shows you the real diff.
+
+The problem it addresses: agent code arrives faster than a person can recognise the decisions
+inside it, so a wrong direction is found after a whole feature exists. Pairing moves the
+decision point to before each change set is written, while it is still cheap to steer.
+
+### Install
+
+```
+/plugin marketplace add thewolff/jo-wolff-plugins
+/plugin install paired-coding@jo-wolff-plugins
+```
+
+On OMP, load the adapter into one process with `omp -e <checkout>/plugins/paired-coding/omp/paired-coding-omp.ts`;
+`plugins/paired-coding/omp/REGISTRATION.md` has both registration routes and the exact reversal.
+
+### What you get
+
+- **A skill** that runs the session: define the work, recon into a roadmap of cards, then a
+  loop of card, discussion, agreement, the change set, and a read-back with the diff.
+- **A roadmap you can leave and come back to.** Cards can be marked not ready, and a later
+  session in the same worktree offers to pick up the unfinished ones; you can decline.
+- **A gate at the tool boundary** on Claude Code (hooks plus a bundled MCP server) and on OMP
+  (an extension). While pairing, the host's own write, edit, shell, eval and sub-agent tools are
+  refused; the agent writes and runs commands only through the plugin's `pair_*` tools, inside
+  the agreed change set's files, and every run sits under a macOS Seatbelt sandbox.
+- **A journal** of every card, quote, verdict, refusal and diff, kept outside the worktree.
+- **A stop only you can give:** pairing ends when you type `pair stop` as a message of its own.
+
+### What this enforces, and what it does not
+
+**It enforces the write boundary, not your agreement.** The agent judges when you have agreed
+and quotes your words to open a change set. The gate checks that the quote is whole words from
+a turn you typed after the card, that the card has no open points and that its files have not
+changed since you saw it. It cannot check that those words meant yes. A misread go-ahead can
+open a change set, but only for that card's files, and the quote sits in the journal for you to
+audit.
+
+**It runs on macOS only, on two hosts.** The gate is built for Claude Code and OMP and was
+tested live on both. Codex, and skill discovery on plain OMP, are unverified. Elsewhere the
+skill runs as conversation and nothing at the tool boundary stops a write.
+
+**Some of it rests on undocumented host fields, and fails closed.** On Claude Code, "you typed
+it" is read from transcript fields Claude Code does not document. If they change, every turn
+reads as untrusted and pairing can never open a change set; it does not open one by mistake.
+
+**A process that escapes the sandbox is caught late.** It is caught at the next read-back, and
+only if it writes inside the worktree.
+
+The plugin's own README carries the full list, with the evidence behind each line.
 
 ## License
 

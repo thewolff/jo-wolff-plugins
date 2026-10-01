@@ -357,6 +357,29 @@ export function reapGroups(pgids, { timeoutMs = 3000 } = {}) {
 }
 
 /**
+ * Write `content` to the absolute `path` from inside the Seatbelt `profile`, creating missing
+ * parent directories there too. The kernel checks the resolved target of every create and write,
+ * so a path that a swapped symlink turns toward somewhere the profile denies fails instead of
+ * landing. Synchronous: pair_write and pair_edit run under the session lock.
+ * @param {{ profile: string, path: string, content: string }} opts
+ * @returns {{ ok: boolean, error?: string }}
+ */
+export function writeSandboxed(opts) {
+  const script = '/bin/mkdir -p -- "${1%/*}" && /bin/cat > "$1"';
+  const res = spawnSync("/usr/bin/sandbox-exec", ["-p", opts.profile, "/bin/sh", "-c", script, "pair-write", opts.path], {
+    input: Buffer.from(opts.content, "utf8"),
+    stdio: ["pipe", "ignore", "pipe"],
+    timeout: 30_000,
+  });
+  if (res.error) return { ok: false, error: String(res.error.message ?? res.error) };
+  if (res.status !== 0) {
+    const err = String(res.stderr ?? "").trim();
+    return { ok: false, error: err || `exit ${res.status}${res.signal ? ` (signal ${res.signal})` : ""}` };
+  }
+  return { ok: true };
+}
+
+/**
  * Run `command` with /bin/sh under the Seatbelt `profile`, in its own process group, in the
  * foreground. On timeout or abort the whole group is killed and reaped before this resolves.
  * On a normal exit the group is left as it is (pair_done reaps it before its snapshot).

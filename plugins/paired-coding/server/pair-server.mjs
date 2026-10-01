@@ -26,14 +26,28 @@ export const TOOLS = [
     inputSchema: { type: "object", properties: { exclusions: strs("Worktree-relative directories to leave out of snapshots (large generated directories). .git is always excluded.") } },
   },
   {
-    name: "pair_stop",
-    description: "End paired coding. Needs a verbatim quote from your partner's latest typed turn asking to stop. Refused while a change set is open or a pair_run is running.",
-    inputSchema: { type: "object", properties: { quote: str("Your partner's words, copied exactly from their latest turn.") }, required: ["quote"] },
-  },
-  {
     name: "pair_note",
-    description: "Append a note (roadmap, observation) to the pairing journal. The only way to keep notes while pairing.",
-    inputSchema: { type: "object", properties: { text: str("The note.") }, required: ["text"] },
+    description: "Append a note to the pairing journal: free text, a roadmap, or both. The latest roadmap replaces the one before; pair_done lists its items still open or not ready, and the next pair_start in this worktree offers them. The only way to keep notes while pairing.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        text: str("The note."),
+        roadmap: {
+          type: "array",
+          description: "The whole roadmap, replacing the previous one.",
+          items: {
+            type: "object",
+            properties: {
+              id: str("A short id, unique in the roadmap."),
+              title: str("What the item is."),
+              status: { type: "string", enum: ["open", "done", "skipped", "dropped", "not-ready"] },
+              note: str("One line. Required for not-ready: what it waits for."),
+            },
+            required: ["id", "title", "status"],
+          },
+        },
+      },
+    },
   },
   {
     name: "pair_propose",
@@ -83,7 +97,7 @@ export const TOOLS = [
   },
   {
     name: "pair_run",
-    description: "Run a shell command in the worktree, in the foreground, under a macOS sandbox built from the pairing state: with no change set open the worktree is read-only; with one open only its boundary and temp are writable. Times out and kills the whole process group. In Claude Code the timeout stays under the host's automatic-backgrounding threshold (2 minutes unless CLAUDE_CODE_MCP_AUTO_BACKGROUND_MS says otherwise; 0 lifts the cap).",
+    description: "Run a shell command in the worktree, in the foreground, under a macOS sandbox built from the pairing state: with no change set open it writes nowhere but temp; with one open only its boundary and temp are writable. Times out and kills the whole process group. In Claude Code the timeout stays under the host's automatic-backgrounding threshold (2 minutes unless CLAUDE_CODE_MCP_AUTO_BACKGROUND_MS says otherwise; 0 lifts the cap).",
     inputSchema: { type: "object", properties: { command: str("The /bin/sh command."), timeoutSeconds: { type: "number", description: "Default 600, at most 3600, and capped below Claude Code's automatic-backgrounding threshold." } }, required: ["command"] },
   },
 ].map((t) => ({ ...t, _meta: { "anthropic/alwaysLoad": true } }));
@@ -157,7 +171,7 @@ function main() {
           protocolVersion: SUPPORTED.includes(asked) ? asked : SUPPORTED[0],
           capabilities: { tools: { listChanged: false } },
           serverInfo: { name: "paired-coding", version: "0.1.0" },
-          instructions: "Paired coding tools. Inert until pair_start. While pairing, write only with pair_write/pair_edit inside an agreed change set and run commands only with pair_run.",
+          instructions: "Paired coding tools. Inert until pair_start. While pairing, write only with pair_write/pair_edit inside an agreed change set and run commands only with pair_run. Only your partner ends pairing, by typing pair stop as a whole message.",
         },
       });
     } else if (method === "tools/list") {
