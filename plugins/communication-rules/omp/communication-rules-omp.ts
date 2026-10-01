@@ -10,17 +10,19 @@
 // ~/.omp/agent/extensions/ does not contain it. REGISTRATION.md beside this file records the
 // steps NOT taken, the exact reversal, and the canary that would prove it live.
 //
-// LOOP GUARDS, two layers (Claude Code's design): (1) host — event.stop_hook_active returns
-// before the CLI is spawned, because a handler that ignores it loops forever on an
-// always-firing rule; (2) CLI — the text-hash guard inside communication-rules-stop.mjs
-// (never blocks the same message twice) stays inside the CLI and is not duplicated here.
+// LOOP GUARD, in the core only: the host's stop_hook_active is forwarded to the CLI as is,
+// and every stop is checked, a revision that follows a block included. The CLI then (a) lets
+// an identical repeat through on its text-hash guard, and (b) under the omp harness tag never
+// blocks a stop that carries stop_hook_active: a changed revision is re-checked but can only
+// warn. That bounds the loop OMP itself does not bound (it exempts decision:"block" from its
+// session_stop continuation cap): at most one block per stop.
 //
-// WARN-ONLY BY CONSTRUCTION. The shared profile arms rules at block for Claude; OMP is armed
-// separately, so a CLI block verdict is DOWNGRADED: one line in warnings.log, return
-// undefined, the turn settles. The arming act is deliberate and happens at registration —
-// set COMMUNICATION_RULES_OMP_MODE=block in the seat's environment. That env is read PER
-// INVOCATION, inline in the handler (never cached at module scope); any value other than
-// exactly "block" reads as warn.
+// WARN UNLESS ARMED, in the core: the child's env carries COMMUNICATION_RULES_HARNESS=omp,
+// and the core turns every block into a warn unless the profile sets
+// enforcement.armOmp: true (lib/config.mjs, harnessCapsBlocks). A capped block takes the
+// core's own warn path, so warnings.log carries the real rule id and no block hash is
+// recorded for a block that was never delivered. This file returns the CLI's verdict as is;
+// it holds no mode of its own.
 //
 // KILL SWITCH: the CLI's own — `touch $HOME/.claude/.communication-rules-off`, checked
 // inside the CLI per invocation and effective within one turn. This adapter has none of its
@@ -142,6 +144,7 @@ function defaultRunCli(payload: string, cwd: string, timeoutMs: number): Promise
   const child = spawn("sh", ["-lc", `node "${root}/hooks/communication-rules-stop.mjs"`], {
     cwd,
     detached: true,
+    env: { ...process.env, COMMUNICATION_RULES_HARNESS: "omp" },
     stdio: ["pipe", "pipe", "ignore"],
   });
   let stdout = "";
@@ -195,12 +198,10 @@ export async function sessionStopHandler(
 ): Promise<{ decision: "block"; reason: string } | undefined> {
   const stateDir = deps?.stateDir ?? DEFAULT_STATE_DIR;
   try {
-    if (event?.stop_hook_active) return undefined; // host loop guard; the CLI is never invoked
     const runCli = deps?.runCli ?? defaultRunCli;
     const verdict = await runCli(buildStopPayload(event, ctx.cwd), ctx.cwd, deps?.timeoutMs ?? CLI_TIMEOUT_MS);
     if (verdict?.decision === "block" && typeof verdict.reason === "string" && verdict.reason) {
-      if (process.env.COMMUNICATION_RULES_OMP_MODE === "block") return { decision: "block", reason: verdict.reason };
-      appendLog(stateDir, "warnings.log", `rule=omp-adapter mode=warn-only reason=${collapse(verdict.reason)}`);
+      return { decision: "block", reason: verdict.reason };
     }
     return undefined; // quiet or non-block verdict: nothing to gate, nothing to log
   } catch (err) {
