@@ -70,7 +70,9 @@ dead.
 A block names the rule, states exactly what to move or add, and asks for the corrected lines
 only — never a resend of the whole message. The loop guard records the blocked text's hash
 per session, so the same message arriving again with `stop_hook_active` passes: a model that
-ignores the reason cannot loop forever.
+ignores the reason cannot loop forever. On an OMP seat the cap is tighter: a revision that
+arrives with `stop_hook_active` is checked again but can only warn, so one stop is blocked
+at most once (see `armOmp` below).
 
 **Kill switch:** `touch ~/.claude/.communication-rules-off` disables enforcement within one
 turn (checked per invocation, never cached). `COMMUNICATION_RULES_ENFORCE=off` is a
@@ -95,7 +97,8 @@ optional; an empty object is valid.
   "enforcement": {
     "mode": "warn",
     "judgeCommand": "codex exec --skip-git-repo-check -",
-    "rules": { "name-the-artifact": "block" }
+    "rules": { "name-the-artifact": "block" },
+    "armOmp": false
   }
 }
 ```
@@ -109,7 +112,16 @@ optional; an empty object is valid.
   the prompt on stdin. The suggested command above is the stdin form probed working on
   2026-09-21 (`claude -p` was probed the same day and its OAuth was expired).
 - **`rules`** — per-rule mode overrides beating both the global mode and built-ins.
-- Precedence overall: kill-switch file > `rules[rule]` > explicit `mode` > built-in default.
+- **`armOmp`** — `true` lets OMP seats block; absent or `false` means OMP seats warn
+  whatever the modes above say. A non-boolean is one `errors.log` line and reads as
+  `false`. It applies only when the hook runs with `COMMUNICATION_RULES_HARNESS=omp`, which
+  the OMP adapter (`omp/communication-rules-omp.ts`) sets on its child; Claude Code never
+  sets it, so Claude Code ignores this field. Armed, an OMP seat still never blocks a stop
+  that carries `stop_hook_active`: a revision after a block is re-checked and warns.
+- Precedence overall: kill-switch file > `rules[rule]` > explicit `mode` > built-in
+  default, and then, on OMP seats only, the harness cap turns the resulting block into a
+  warn (unarmed, or armed on a `stop_hook_active` revision). The same-text loop guard runs
+  before any of the modes are consulted, so an identical repeat passes on both harnesses.
 - The injection half reads `reader` and `traits`. The check options (`markers`,
   `minProseChars`, `graceChars`, `headings`, `lexicon`, `reportVerbs`) are NOT profile
   fields — they remain call-site arguments, and the hook calls every check on its defaults.

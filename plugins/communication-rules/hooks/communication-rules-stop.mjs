@@ -36,7 +36,13 @@
 //   7. Judge-gated checks run only where their deterministic trigger fired and a judge
 //      command is configured; a skipped one leaves a line in skipped.log naming the rule —
 //      a skipped check must be inspectable, never silently dead.
-//   8. One block-mode finding is enough: emit the block, record the text hash for (4).
+//   8. Harness cap — only when COMMUNICATION_RULES_HARNESS=omp (set by the OMP adapter on its
+//      child, never by Claude Code): harnessCapsBlocks in lib/config.mjs turns every
+//      block-mode finding into a warn one when the profile does not set enforcement.armOmp,
+//      or when it does and stop_hook_active is true (a revision is re-checked, never blocked
+//      twice). Applied here, to the one findings list every check feeds, so it covers every
+//      rule; a capped finding takes the ordinary warn path in (9).
+//   9. One block-mode finding is enough: emit the block, record the text hash for (4).
 //      Warn-mode findings go to warnings.log. Block reasons follow the house ruling of
 //      2026-09-18 (identifier resolver): name the rule, say exactly what to move or add,
 //      and NEVER demand a resend of the whole message — "paste the corrected opening lines
@@ -50,7 +56,7 @@ import { existsSync, readFileSync, writeFileSync, mkdirSync, rmSync } from "node
 import { checkClosingAskLast } from "../checks/closing-ask-last.mjs";
 import { checkNeedsYouFirst } from "../checks/needs-you-first.mjs";
 import { checkNamesArtifact } from "../checks/name-the-artifact.mjs";
-import { loadEnforcement, effectiveMode } from "../lib/config.mjs";
+import { loadEnforcement, effectiveMode, harnessCapsBlocks } from "../lib/config.mjs";
 import { stateDir, killSwitchPath, lastBlockedPath, resumeMarkerPath, sha256hex, appendLog } from "../lib/state.mjs";
 import { findTrailingBatchSection, batchByLabelQuestion, batchJudgeContext } from "../triggers/batch-heading.mjs";
 import { conclusionFirstApplicable, conclusionFirstQuestion } from "../triggers/conclusion-first.mjs";
@@ -356,7 +362,16 @@ async function main() {
     }
   }
 
-  // 8. Emit.
+  // 8. Harness cap. Every finding, deterministic or judge-gated, is in `findings` by now, so
+  // this one pass covers every rule. Without the omp tag harnessCapsBlocks is false and
+  // nothing here runs.
+  if (harnessCapsBlocks(config, process.env.COMMUNICATION_RULES_HARNESS, payload.stop_hook_active)) {
+    for (const f of findings) {
+      if (f.mode === "block") f.mode = "warn";
+    }
+  }
+
+  // 9. Emit.
   for (const f of findings) {
     if (f.mode === "warn") appendLog("warnings.log", `rule=${f.rule} ${f.text}`);
   }
