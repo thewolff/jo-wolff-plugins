@@ -1,24 +1,31 @@
 #!/usr/bin/env node
-// paired-coding-hook.mjs — the Claude Code adapter's hook side. One entry, three events:
+// paired-coding-hook.mjs — the Claude Code adapter's hook side. One entry, five events:
 //
 //   pre-tool-use        first record every queued turn (see below), then refuse the host's tools
 //                       while pairing (permissionDecision "deny", which wins over every other
 //                       hook's decision), and bind each call of this plugin's pair_* tools to the
 //                       session for the MCP server (binding.mjs).
-//   user-prompt-submit  queue the turn. Claude Code writes the transcript entry that says who
-//                       typed it only after this hook returns, so the turn is judged and handed
-//                       to the core at the next PreToolUse, which always precedes any pair_* call.
-//   session-end         reap pair_run process groups, final snapshot, go inactive.
+//   user-prompt-submit  record any turn still queued, then queue this one. Claude Code writes the
+//                       transcript entry that says who typed it only after this hook returns, so
+//                       the turn is judged and handed to the core at the next PreToolUse (which
+//                       always precedes any pair_* call) or at Stop, whichever comes first.
+//   stop                record every queued turn. A typed "pair stop" in a turn that made no tool
+//                       call ends pairing here, before the next turn's first tool call.
+//   session-end         reap pair_run process groups, final snapshot, go inactive. With reason
+//                       "clear" while pairing, leave a carry marker for the worktree.
+//   session-start       with source "clear" and a live carry marker for this worktree, activate
+//                       the new session closed (core carryClosed).
 //
 // Inert until pair_start: for a session with no activation marker every event exits 0 with no
-// output and touches no file, except that a call of this plugin's own pair_* tools is bound.
+// output and touches no file, except that a call of this plugin's own pair_* tools is bound and
+// a cleared session's start looks for a carry marker.
 
 import { appendFileSync, closeSync, fstatSync, openSync, readFileSync, readSync, realpathSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { PAIR_TOOLS } from "../core/gate.mjs";
-import { activated, loadState, stateBase, withLock } from "../lib/host-io.mjs";
-import { endSession, recordTrustedInput, sessionDirFor, verdict } from "../lib/verbs.mjs";
+import { PAIR_TOOLS, isStopPhrase } from "../core/gate.mjs";
+import { activated, findRoot, loadState, stateBase, withLock } from "../lib/host-io.mjs";
+import { carryInto, endSession, pairingCarry, recordTrustedInput, sessionDirFor, takeCarryMarker, verdict, writeCarryMarker } from "../lib/verbs.mjs";
 import { HOST_ALLOW, bareToolName, writeBinding } from "../server/binding.mjs";
 
 const sleepSync = (ms) => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
@@ -173,15 +180,43 @@ export function handle(event, input, opts = {}) {
       return null;
     }
   }
+  if (event === "session-start") {
+    // A /clear while pairing left a carry marker for this worktree: the new session starts
+    // closed instead of inert. Any other start, or no live marker, stays inert.
+    if (!dir || input?.source !== "clear" || typeof input?.cwd !== "string") return null;
+    let root;
+    try { root = realpathSync(findRoot(input.cwd)); } catch { return null; }
+    const m = takeCarryMarker(stateBase(env), root);
+    if (!m) return null;
+    const r = carryInto({ sessionId: input.session_id, sessionDir: dir, root, exclusions: m.exclusions ?? undefined, protect: m.protect ?? [], from: m.from, reason: "clear" });
+    if (!r.ok) return null;
+    const note = "paired-coding: pairing was on when the conversation was cleared, so this session starts closed: host write, edit, shell and sub-agent tools are refused. Call pair_start to restart pairing; your partner ends it by typing pair stop.";
+    return { hookSpecificOutput: { hookEventName: "SessionStart", additionalContext: note } };
+  }
   if (!dir || !activated(dir)) return null;
   if (event === "user-prompt-submit") {
+    // Turns still queued from earlier (a turn that ended with no tool call) are judged first.
+    resolvePending(dir, { waitMs: opts.waitMs });
     if (loadState(dir).phase === "inactive") return null;
     queueInput(dir, input);
-    const note =
-      "paired-coding: pairing is on. Only words from a turn your partner typed at the keyboard can be quoted to pair_begin or pair_stop; whether this turn counts is decided from Claude Code's transcript before your next tool call.";
+    const note = isStopPhrase(input?.prompt)
+      ? "paired-coding: this turn asks to end pairing. If Claude Code's transcript shows your partner typed it, pairing ends before your next tool call; you cannot end pairing yourself."
+      : "paired-coding: pairing is on. Only words from a turn your partner typed at the keyboard can be quoted to pair_begin; whether this turn counts is decided from Claude Code's transcript before your next tool call. Only your partner ends pairing, by typing pair stop as a whole message.";
     return { hookSpecificOutput: { hookEventName: "UserPromptSubmit", additionalContext: note } };
   }
+  if (event === "stop") {
+    // The turn ended. A turn with no tool call never reached PreToolUse, so judge its queued
+    // input now: a typed stop takes effect before the next turn's first tool call.
+    resolvePending(dir, { waitMs: opts.waitMs });
+    return null;
+  }
   if (event === "session-end") {
+    // The marker goes first: SessionEnd hooks share a short budget, and a cancelled hook must
+    // still leave the cleared session closed. Reaping and the final snapshot come after.
+    if (input?.reason === "clear") {
+      const carry = pairingCarry(dir);
+      if (carry) writeCarryMarker(stateBase(env), { root: carry.root, from: input.session_id, exclusions: carry.exclusions, protect: carry.protect });
+    }
     endSession({ sessionDir: dir });
     return null;
   }

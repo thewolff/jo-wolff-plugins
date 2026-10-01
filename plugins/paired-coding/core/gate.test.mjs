@@ -21,19 +21,24 @@ import {
   PAIR_TOOLS,
   boundaryMatches,
   boundaryProblem,
+  carryClosed,
   checkWrite,
   diffSnapshots,
   inactiveState,
+  isStopPhrase,
+  latestRoadmap,
+  occursAtWordBoundaries,
+  openRoadmapItems,
   pairBegin,
   pairDone,
   pairNote,
   pairPropose,
   pairRunProfile,
   pairStart,
-  pairStop,
   readState,
   recordInput,
   resolvePath,
+  roadmapProblem,
   runEnd,
   runStart,
   serializeState,
@@ -119,7 +124,7 @@ describe("inactive: the gate does nothing", () => {
     const host = fakeHost();
     refusedWith(pairPropose(s, card(), host.io), /not active/);
     refusedWith(pairBegin(s, { cardId: "card-1", quote: "x" }, host.io), /not active/);
-    refusedWith(pairStop(s, { quote: "x" }, host.io), /not active/);
+    assert.equal(recordInput(s, { text: "pair stop", source: "interactive" }).state, s);
     refusedWith(pairNote(s, { text: "n" }, host.io), /not active/);
     refusedWith(runStart(s, { runId: "r" }, host.io), /not active/);
     assert.match(checkWrite(s, { path: "src/a.ts" }).reason, /not active/);
@@ -393,7 +398,7 @@ describe("pair_done", () => {
     assert.match(r.state.halt.reason, /src\/b\.ts/);
   });
 
-  test("a stopped session refuses every way forward except pair_stop", () => {
+  test("a stopped session refuses every way forward except a typed stop", () => {
     const host = fakeHost();
     let s = opened(host);
     host.files.set("src/b.ts", "stray");
@@ -401,8 +406,7 @@ describe("pair_done", () => {
     refusedWith(pairPropose(s, card(), host.io), /stopped/);
     refusedWith(pairBegin(s, { cardId: "card-1", quote: "x" }, host.io), /stopped/);
     refusedWith(runStart(s, { runId: "r9" }, host.io), /stopped/);
-    s = say(s, "ok, stop pairing");
-    assert.equal(pairStop(s, { quote: "stop pairing" }, host.io).state.phase, "inactive");
+    assert.equal(recordInput(s, { text: "pair stop", source: "interactive" }, host.io).state.phase, "inactive");
   });
 
   test("a failed snapshot refuses the close and keeps the change set open", () => {
@@ -426,7 +430,7 @@ describe("pair_done", () => {
 describe("toolVerdict while pairing", () => {
   test("read-only tools and the pair verbs are allowed in closed and open", () => {
     for (const s of [started(), opened()]) {
-      for (const toolName of ["read", "grep", "glob", "find", "Read", "Grep", "Glob", "pair_propose", "pair_note", "pair_run", "pair_stop"]) {
+      for (const toolName of ["read", "grep", "glob", "find", "Read", "Grep", "Glob", "pair_propose", "pair_note", "pair_run"]) {
         assert.equal(toolVerdict(s, { toolName }).allow, true, toolName);
       }
     }
@@ -508,7 +512,8 @@ describe("runStart and runEnd", () => {
     const r = runStart(started(), { runId: "r1" });
     assert.equal(r.ok, true);
     assert.deepEqual(r.state.running, [{ runId: "r1", cardId: null }]);
-    assert.match(r.profile, /^\(version 1\)\(allow default\)\(deny file-write\* \(subpath "\/work\/repo"\)\)/);
+    assert.match(r.profile, /^\(version 1\)\(allow default\)\(deny file-write\*\)\(allow file-write\* \(literal "\/dev\/null"\)/);
+    assert.match(r.profile, /\(deny file-write\* \(subpath "\/work\/repo"\)\)/);
   });
 
   test("open: tied to the change set; pair_done refuses until it ends", () => {
@@ -536,61 +541,219 @@ describe("runStart and runEnd", () => {
   });
 });
 
-// ─── pair_note ──────────────────────────────────────────────────────────────────────────
+// ─── pair_note and the roadmap ──────────────────────────────────────────────────────────
 
-test("pair_note journals a note and refuses an empty one", () => {
-  const r = pairNote(started(), { text: "roadmap: 1. parser 2. cache" });
-  assert.equal(r.journal[0].type, "note");
-  refusedWith(pairNote(started(), { text: "  " }), /empty/);
+const item = (id, status, over = {}) => ({ id, title: `item ${id}`, status, ...over });
+
+describe("pair_note", () => {
+  test("journals free text and refuses an empty note", () => {
+    const r = pairNote(started(), { text: "roadmap: 1. parser 2. cache" });
+    assert.equal(r.journal[0].type, "note");
+    assert.equal(r.state.roadmap, null);
+    refusedWith(pairNote(started(), { text: "  " }), /empty/);
+  });
+
+  test("a roadmap note records the roadmap; the latest one wins", () => {
+    let s = started();
+    const first = pairNote(s, { roadmap: [item("a", "open"), item("b", "done")] });
+    s = ok(first);
+    assert.deepEqual(first.journal[0].roadmap.map((i) => i.id), ["a", "b"]);
+    const second = pairNote(s, { text: "reordered", roadmap: [item("c", "not-ready", { note: "waits on the API" }), item("a", "skipped")] });
+    s = ok(second);
+    assert.deepEqual(s.roadmap.map((i) => i.id), ["c", "a"]);
+    assert.deepEqual(second.roadmapOpen.map((i) => i.id), ["c"]);
+    assert.equal(second.journal[0].text, "reordered");
+  });
+
+  test("refuses a malformed roadmap and keeps the state", () => {
+    const s = started();
+    refusedWith(pairNote(s, { roadmap: [item("a", "pending")] }), /status "pending"/);
+    refusedWith(pairNote(s, { roadmap: [item("a", "not-ready")] }), /one-line note/);
+    refusedWith(pairNote(s, { roadmap: [item("a", "not-ready", { note: "two\nlines" })] }), /one-line note/);
+    refusedWith(pairNote(s, { roadmap: [item("a", "open"), item("a", "done")] }), /appears twice/);
+    refusedWith(pairNote(s, { roadmap: [{ id: "a", status: "open" }] }), /no title/);
+    refusedWith(pairNote(s, { roadmap: "1. parser" }), /not a list/);
+  });
+
+  test("roadmapProblem accepts every status, a note on any item, and an empty roadmap", () => {
+    assert.equal(roadmapProblem([item("a", "open"), item("b", "done", { note: "shipped" }), item("c", "skipped"), item("d", "dropped"), item("e", "not-ready", { note: "blocked" })]), null);
+    assert.equal(roadmapProblem([]), null);
+  });
+
+  test("openRoadmapItems keeps open and not-ready, in order", () => {
+    const items = [item("a", "done"), item("b", "not-ready", { note: "x" }), item("c", "open"), item("d", "dropped")];
+    assert.deepEqual(openRoadmapItems(items).map((i) => i.id), ["b", "c"]);
+  });
+
+  test("latestRoadmap reads the newest valid roadmap note from a journal", () => {
+    const entries = [
+      { type: "note", roadmap: [item("old", "open")] },
+      { type: "note", text: "free text only" },
+      { type: "note", roadmap: [item("new", "open")] },
+      { type: "input", roadmap: [item("forged", "open")] },
+      { type: "note", roadmap: [item("bad", "pending")] },
+    ];
+    assert.deepEqual(latestRoadmap(entries).map((i) => i.id), ["new"]);
+    assert.equal(latestRoadmap([{ type: "note", text: "x" }]), null);
+  });
+
+  test("pair_done lists the roadmap items still open or not ready", () => {
+    const host = fakeHost();
+    let s = started(host);
+    s = ok(pairNote(s, { roadmap: [item("a", "done"), item("b", "open"), item("c", "not-ready", { note: "needs a key" })] }));
+    s = ok(pairPropose(s, card(), host.io));
+    s = say(s, "go ahead");
+    s = ok(pairBegin(s, { cardId: s.card.id, quote: "go ahead" }, host.io));
+    const r = pairDone(s, { cardId: "card-1" }, host.io);
+    assert.deepEqual(r.roadmapOpen.map((i) => i.id), ["b", "c"]);
+    assert.deepEqual(pairDone(opened(), { cardId: "card-1" }, fakeHost().io).roadmapOpen, []);
+  });
 });
 
-// ─── pair_stop and session end ──────────────────────────────────────────────────────────
+// ─── typed stop and session end ─────────────────────────────────────────────────────────
 
-describe("pair_stop", () => {
-  test("ends pairing on a quote from the user's turn after the latest card", () => {
+describe("typed stop", () => {
+  test("a typed turn that is exactly 'pair stop' ends pairing, journaled as typed-stop", () => {
     const host = fakeHost();
-    let s = ok(pairPropose(started(host), card(), host.io));
-    s = say(s, "let's stop pairing for today");
-    const r = pairStop(s, { quote: "stop pairing" }, host.io);
+    const r = recordInput(started(host), { text: "pair stop", source: "interactive" }, host.io);
     assert.equal(r.state.phase, "inactive");
-    assert.equal(r.journal.at(-1).type, "stop");
-    assert.equal(r.journal.at(-1).quote, "stop pairing");
+    assert.equal(r.stopped, true);
+    assert.deepEqual(r.journal.map((e) => e.type), ["input", "stop"]);
+    assert.equal(r.journal.at(-1).verb, "typed-stop");
   });
 
-  test("with no card yet, the turn must come after pair_start", () => {
-    const host = fakeHost();
-    const s = say(started(host), "stop");
-    assert.equal(pairStop(s, { quote: "stop" }, host.io).ok, true);
+  test("matches the whole turn, trimmed and in any case", () => {
+    for (const text of ["pair stop", "  Pair STOP\n", "PAIR STOP"]) assert.equal(isStopPhrase(text), true, text);
+    for (const text of ["please pair stop", "pair stop now", "pair  stop", "pair stopping", "pairstop", "stop", ""]) {
+      assert.equal(isStopPhrase(text), false, text);
+      assert.equal(say(started(), text).phase, "closed", text);
+    }
   });
 
-  test("refuses a quote from before the latest card", () => {
+  test("works while open: reaps runs, takes the final snapshot and journals unapproved writes", () => {
     const host = fakeHost();
-    let s = say(started(host), "we can stop after this one");
-    s = ok(pairPropose(s, card(), host.io));
-    refusedWith(pairStop(s, { quote: "stop" }, host.io), /not typed a turn since the card/);
+    let s = ok(runStart(opened(host), { runId: "r1" }));
+    host.files.set("src/b.ts", "stray");
+    const r = recordInput(s, { text: "pair stop", source: "interactive" }, host.io);
+    assert.equal(r.state.phase, "inactive");
+    assert.deepEqual(host.log.slice(-2), ["reap:r1", "snapshot"]);
+    assert.deepEqual(r.unapproved, [{ path: "src/b.ts", change: "modified" }]);
+    assert.ok(r.journal.some((e) => e.type === "unapproved-write"));
+    assert.equal(r.journal.at(-1).verb, "typed-stop");
   });
 
-  test("refuses a quote that is not verbatim, or empty", () => {
+  test("works on a halted session and reports what changed since the last read-back", () => {
     const host = fakeHost();
-    const s = say(started(host), "keep going");
-    refusedWith(pairStop(s, { quote: "stop" }, host.io), /does not occur verbatim/);
-    refusedWith(pairStop(s, { quote: "" }, host.io), /empty/);
-  });
-
-  test("refuses while a change set is open or a pair_run is running", () => {
-    const host = fakeHost();
-    const open = say(opened(host), "stop");
-    refusedWith(pairStop(open, { quote: "stop" }, host.io), /change set is open/);
-    const running = say(ok(runStart(started(host), { runId: "r1" })), "stop");
-    refusedWith(pairStop(running, { quote: "stop" }, host.io), /still running/);
-  });
-
-  test("reports what changed since the last read-back", () => {
-    const host = fakeHost();
-    let s = say(started(host), "stop now");
+    let s = say(started(host), "hello");
     host.files.set("README.md", "r2");
-    const r = pairStop(s, { quote: "stop now" }, host.io);
+    s = { ...s, halt: { reason: "unapproved write" } };
+    const r = recordInput(s, { text: "pair stop", source: "interactive" }, host.io);
+    assert.equal(r.state.phase, "inactive");
     assert.deepEqual(r.changedSinceReadBack, [{ path: "README.md", change: "modified" }]);
+  });
+
+  test("untrusted input with the same words never stops", () => {
+    const host = fakeHost();
+    for (const source of ["rpc", "extension", "claude:mid-turn", "claude:queued/human", undefined]) {
+      const s = opened(host);
+      const r = recordInput(s, { text: "pair stop", source }, host.io);
+      assert.equal(r.state, s, String(source));
+      assert.equal(r.trusted, false);
+      assert.equal(r.journal[0].type, "untrusted-input");
+    }
+  });
+
+  test("the agent has no stop verb: pair_stop is not a pairing tool and is refused", () => {
+    assert.equal(PAIR_TOOLS.includes("pair_stop"), false);
+    const v = toolVerdict(started(), { toolName: "pair_stop" });
+    assert.equal(v.allow, false);
+    assert.match(v.reason, /not on the pairing allowlist/);
+  });
+});
+
+// ─── word-boundary quotes ───────────────────────────────────────────────────────────────
+
+describe("pair_begin quotes bind at word boundaries", () => {
+  const proposed = (host) => ok(pairPropose(started(host), card(), host.io));
+
+  test("a quote of 'y' against a typed 'why?' is refused", () => {
+    const host = fakeHost();
+    const s = say(proposed(host), "why?");
+    refusedWith(pairBegin(s, { cardId: s.card.id, quote: "y" }, host.io), /as whole words/);
+  });
+
+  test("whole words pass, with punctuation either side", () => {
+    const host = fakeHost();
+    const s = say(proposed(host), "ok, go ahead!");
+    assert.equal(pairBegin(s, { cardId: s.card.id, quote: "go ahead" }, host.io).ok, true);
+    assert.equal(pairBegin(s, { cardId: s.card.id, quote: "ok, go ahead!" }, host.io).ok, true);
+  });
+
+  test("occursAtWordBoundaries: letters and digits are Unicode's, and a later occurrence can match", () => {
+    assert.equal(occursAtWordBoundaries("why?", "y"), false);
+    assert.equal(occursAtWordBoundaries("yes", "ye"), false);
+    assert.equal(occursAtWordBoundaries("ago", "go"), false);
+    assert.equal(occursAtWordBoundaries("café", "caf"), false);
+    assert.equal(occursAtWordBoundaries("über", "ber"), false);
+    assert.equal(occursAtWordBoundaries("v2", "v"), false);
+    assert.equal(occursAtWordBoundaries("goal: go", "go"), true);
+    assert.equal(occursAtWordBoundaries("sí, adelante", "sí"), true);
+    assert.equal(occursAtWordBoundaries("ship it!", "it!"), true);
+    assert.equal(occursAtWordBoundaries("ok", ""), false);
+  });
+});
+
+// ─── carried sessions ───────────────────────────────────────────────────────────────────
+
+describe("carried session (a session change while pairing)", () => {
+  const carried = (host = fakeHost()) => ok(carryClosed(inactiveState(), { sessionId: "s2", root: ROOT, stateDir: "/state/s2", from: "s1", reason: "clear" }, host.io));
+
+  test("starts closed with no card, no change set and no trusted input, journaled carried-after-clear", () => {
+    const host = fakeHost();
+    const r = carryClosed(inactiveState(), { sessionId: "s2", root: ROOT, stateDir: "/state/s2", from: "s1", reason: "clear" }, host.io);
+    assert.equal(r.state.phase, "closed");
+    assert.equal(r.state.card, null);
+    assert.equal(r.state.changeSet, null);
+    assert.equal(r.state.lastInput, null);
+    assert.equal(r.state.carried.from, "s1");
+    assert.equal(r.journal[0].type, "carried-after-clear");
+  });
+
+  test("refuses host writes and every pairing step but pair_start and a typed stop", () => {
+    const host = fakeHost();
+    const s = carried(host);
+    for (const toolName of ["write", "Write", "edit", "Bash", "pair_write"]) assert.equal(toolVerdict(s, { toolName }).allow, false, toolName);
+    assert.equal(checkWrite(s, { path: "src/a.ts" }).ok, false);
+    refusedWith(pairPropose(s, card(), host.io), /carried/);
+    refusedWith(pairNote(s, { text: "n" }, host.io), /carried/);
+    refusedWith(pairBegin(say(s, "go"), { cardId: "card-1", quote: "go" }, host.io), /no card/);
+  });
+
+  test("pair_start restarts pairing", () => {
+    const host = fakeHost();
+    const r = pairStart(carried(host), { sessionId: "s2", root: ROOT, stateDir: "/state/s2" }, host.io);
+    assert.equal(r.ok, true, r.reason);
+    assert.equal(r.state.carried, null);
+    assert.ok(r.state.baseline);
+    assert.equal(r.journal[0].restartedAfter, "clear");
+    assert.equal(pairPropose(r.state, card(), host.io).ok, true);
+  });
+
+  test("pair_start still refuses on a session that is pairing normally", () => {
+    refusedWith(pairStart(started(), { root: ROOT, stateDir: STATE_DIR }, fakeHost().io), /already active/);
+  });
+
+  test("a typed stop ends it; carryClosed refuses a session already pairing", () => {
+    const host = fakeHost();
+    assert.equal(say(carried(host), "pair stop").phase, "inactive");
+    refusedWith(carryClosed(started(), { root: ROOT, stateDir: STATE_DIR }, host.io), /already pairing/);
+  });
+
+  test("the carried state survives a round trip and a carried open state is malformed", () => {
+    const s = carried();
+    assert.deepEqual(readState(serializeState(s)), s);
+    const bad = readState(JSON.stringify({ ...opened(), carried: { reason: "clear", from: null } }), { activated: true });
+    assert.equal(bad.degraded, "state file malformed");
   });
 });
 
@@ -603,6 +766,7 @@ describe("sessionEnd (adapter machinery)", () => {
     assert.deepEqual(host.log.slice(-2), ["reap:r1", "snapshot"]);
     assert.equal(r.state.phase, "inactive");
     assert.deepEqual(r.unapproved, [{ path: "src/b.ts", change: "modified" }]);
+    assert.equal(r.journal.at(-1).verb, "session-end");
   });
 });
 
@@ -628,7 +792,7 @@ test("boundaryProblem accepts clean entries", () => {
 });
 
 test("PAIR_TOOLS are the model-callable verbs", () => {
-  assert.deepEqual([...PAIR_TOOLS].sort(), ["pair_begin", "pair_done", "pair_edit", "pair_note", "pair_propose", "pair_run", "pair_start", "pair_stop", "pair_write"]);
+  assert.deepEqual([...PAIR_TOOLS].sort(), ["pair_begin", "pair_done", "pair_edit", "pair_note", "pair_propose", "pair_run", "pair_start", "pair_write"]);
 });
 
 // ─── adversarial gate tests ─────────────────────────────────────────────────────────────
@@ -798,25 +962,47 @@ describe("adversarial 13: open keeps every write inside the boundary", () => {
     }
   });
 
-  test("pair_run: open denies writes outside the worktree and temp; closed allows them; protected paths deny both", { skip: liveSkip }, () => {
+  test("pair_run: both phases deny writes outside the worktree and temp; protected paths deny both", { skip: liveSkip }, () => {
     const dirs = liveDirs();
     const other = realpathSync(mkdtempSync(join(tmpdir(), "pair-gate-other-")));
     const guarded = realpathSync(mkdtempSync(join(tmpdir(), "pair-gate-guarded-")));
     try {
       const io = { snapshot: () => ({}), hashBoundary: () => ({}) };
       let s = ok(pairStart(inactiveState(), { root: dirs.root, stateDir: dirs.stateDir, tempPaths: [dirs.base], protect: [guarded] }, io));
-      assert.equal(sandboxed(s, `echo c > ${other}/closed.txt`, dirs.base).status, 0);
+      const closedOk = sandboxed(s, `echo t > ${dirs.base}/closed-temp.txt && echo d > /dev/null`, dirs.base);
+      assert.equal(closedOk.status, 0, closedOk.stderr);
+      assert.notEqual(sandboxed(s, `echo c > ${other}/closed.txt`, dirs.base).status, 0);
+      assert.notEqual(sandboxed(s, `mkdir ${other}/closed-dir`, dirs.base).status, 0);
       assert.notEqual(sandboxed(s, `echo c > ${guarded}/closed.txt`, dirs.base).status, 0);
       s = ok(pairPropose(s, card(), io));
       s = ok(pairBegin(say(s, "go"), { cardId: s.card.id, quote: "go" }, io));
       assert.notEqual(sandboxed(s, `echo o > ${other}/open.txt`, dirs.base).status, 0);
       assert.notEqual(sandboxed(s, `echo o > ${guarded}/open.txt`, dirs.base).status, 0);
       assert.equal(existsSync(join(other, "open.txt")), false);
+      assert.equal(existsSync(join(other, "closed.txt")), false);
+      assert.equal(existsSync(join(other, "closed-dir")), false);
       assert.equal(existsSync(join(guarded, "closed.txt")), false);
     } finally {
       dirs.cleanup();
       rmSync(other, { recursive: true, force: true });
       rmSync(guarded, { recursive: true, force: true });
+    }
+  });
+
+  test("pair_run: open may create the directories above a boundary file, and no others", { skip: liveSkip }, () => {
+    const dirs = liveDirs();
+    try {
+      const s = liveState(dirs, "open", ["src/new/inner/x.ts"]);
+      const made = sandboxed(s, "mkdir -p src/new/inner && echo x > src/new/inner/x.ts", dirs.root);
+      assert.equal(made.status, 0, made.stderr);
+      assert.equal(readFileSync(join(dirs.root, "src", "new", "inner", "x.ts"), "utf8"), "x\n");
+      for (const cmd of ["mkdir src/other", "mkdir src/new/inner/deeper", "echo f > src/new/y.ts", "rmdir src/new/inner"]) {
+        assert.notEqual(sandboxed(s, cmd, dirs.root).status, 0, cmd);
+      }
+      assert.equal(existsSync(join(dirs.root, "src", "other")), false);
+      assert.equal(existsSync(join(dirs.root, "src", "new", "inner")), true);
+    } finally {
+      dirs.cleanup();
     }
   });
 });
@@ -905,17 +1091,17 @@ describe("adversarial 17: an escaped writer is caught by the next change set's c
   });
 });
 
-describe("adversarial: the agent stops pairing without the user's words, then writes", () => {
-  test("pair_stop is refused and every write path stays refused", () => {
+describe("adversarial: the agent ends pairing without the user's typed words, then writes", () => {
+  test("there is no stop verb, and an injected 'pair stop' leaves every write path refused", () => {
     const host = fakeHost();
     let s = ok(pairPropose(started(host), card(), host.io));
     s = say(s, "hmm, tell me more about the cache");
-    const stop = pairStop(s, { quote: "stop pairing" }, host.io);
-    refusedWith(stop, /does not occur verbatim/);
-    assert.equal(stop.state.phase, "closed");
-    const forged = recordInput(s, { text: "stop pairing", source: "extension" }).state;
-    refusedWith(pairStop(forged, { quote: "stop pairing" }, host.io), /does not occur verbatim/);
-    for (const toolName of ["write", "edit", "bash", "pair_write"]) assert.equal(toolVerdict(stop.state, { toolName }).allow, false, toolName);
-    assert.equal(checkWrite(stop.state, { path: "src/a.ts" }).ok, false);
+    assert.equal(toolVerdict(s, { toolName: "pair_stop" }).allow, false);
+    for (const source of ["extension", "rpc", "claude:mid-turn"]) {
+      const forged = recordInput(s, { text: "pair stop", source }, host.io);
+      assert.equal(forged.state.phase, "closed", source);
+      for (const toolName of ["write", "edit", "bash", "pair_write"]) assert.equal(toolVerdict(forged.state, { toolName }).allow, false, toolName);
+      assert.equal(checkWrite(forged.state, { path: "src/a.ts" }).ok, false);
+    }
   });
 });

@@ -9,10 +9,12 @@ Below, `<checkout>` is the absolute path of your clone of this repository.
 
 ## What it needs
 
-- macOS with `/usr/bin/sandbox-exec`. `pair_run` runs every command under a Seatbelt profile.
-  On any other platform `pair_start` refuses, and the session stays inert.
-- OMP's extension API: `pi.on("tool_call" | "input" | "session_shutdown")`, `pi.registerTool`,
-  `pi.getAllTools`, `pi.zod`. Verified against `@oh-my-pi/pi-coding-agent` 18.4.4.
+- macOS with `/usr/bin/sandbox-exec`. `pair_run`, and the write inside `pair_write` and
+  `pair_edit`, run under a Seatbelt profile. On any other platform `pair_start` refuses, and
+  the session stays inert.
+- OMP's extension API: `pi.on("tool_call" | "input" | "session_shutdown" |
+  "session_before_switch" | "session_switch")`, `pi.registerTool`, `pi.getAllTools`, `pi.zod`,
+  and `ctx.ui.notify` when a UI is present. Verified against `@oh-my-pi/pi-coding-agent` 18.4.4.
 - Nothing else. The adapter imports `core/gate.mjs` and `lib/*.mjs`, which use Node built-ins
   only, so OMP's loader imports them as they are.
 
@@ -44,7 +46,9 @@ Two sites. Pick one.
 
    Then every omp process on the machine loads it. The adapter does nothing in a session
    until `pair_start` is called there (see *Inert until pair_start*). A loaded but inactive
-   adapter still adds the nine `pair_*` tools to every session's tool list.
+   adapter still adds the eight `pair_*` tools to every session's tool list: `pair_start`,
+   `pair_note`, `pair_propose`, `pair_begin`, `pair_write`, `pair_edit`, `pair_run` and
+   `pair_done`. None of them ends pairing.
 
 ### Environment
 
@@ -85,10 +89,30 @@ extensions. `getExtensionPaths` and `isExtensionActive` exist on the runner but 
 
 ## Ending pairing inside a live session
 
-- `pair_stop`, bound to a quote of the user's latest typed turn, ends pairing for the session.
-  It is refused while a change set is open or a `pair_run` is running.
+- Typing `pair stop` in the editor, as the whole message (case and surrounding spaces do not
+  matter), ends pairing for the session in any phase. The adapter kills and reaps every
+  `pair_run` process group, takes the final snapshot, journals any write it did not approve,
+  journals `stop` with verb `typed-stop`, and returns the session to inactive. The same words
+  arriving from an extension or over RPC end nothing.
+- No tool ends pairing. The agent cannot stop the gate it works under.
 - Exiting omp ends pairing. On `session_shutdown` the adapter kills and reaps every `pair_run`
   process group, takes the final snapshot and returns the session to inactive.
+- `/new`, `/fork` and `/resume` keep this extension loaded but give the agent a new session id
+  (`session_before_switch` and `session_switch`, reasons `new`, `fork` and `resume`, in
+  `src/session/agent-session.ts`). If the session being left was pairing, the adapter ends it as
+  on shutdown and starts the new session `closed`: no card, no open change set, host writes,
+  `pair_note` and `pair_propose` refused, journal entry `carried-after-clear` with reason
+  `omp:new`, `omp:fork` or `omp:resume`. The editor shows "paired coding carried into this
+  session closed: call pair_start to restart it, or type pair stop to end it".
+- OMP's own `/clear` drops the conversation but keeps the session id
+  (`src/slash-commands/builtin-lifecycle.ts`, "Clear the conversation context in place, keeping
+  the session"), and it fires no extension event. It does append a `reset_boundary` entry to the
+  session (`appendResetBoundary` in `src/session/session-manager.ts`), which the extension can
+  read through `ctx.sessionManager.getEntries()`. Before every `input` and `tool_call` the adapter
+  looks for a new one. If pairing was active, it ends pairing as on shutdown, finishing any open
+  change set, and keeps the same session `closed`, journaling `carried-after-clear` with reason
+  `omp:clear`. The editor shows "paired coding is closed because the conversation was cleared:
+  call pair_start to restart it, or type pair stop to end it".
 - There is no separate kill switch. To run omp without the gate, start a process that does
   not load this file.
 
@@ -98,7 +122,7 @@ The trusted-input signal is OMP's `input` event. The interactive editor emits th
 `source: "interactive"` (`src/modes/controllers/input-controller.ts`, the `emitInput(...,
 "interactive")` call). Text that an extension injects with `pi.sendUserMessage` does not pass
 through it. Text arriving over RPC carries `source: "rpc"`. Only `interactive` turns can carry
-the agreement that `pair_begin` and `pair_stop` quote.
+the agreement that `pair_begin` quotes, or a `pair stop`.
 
 ## Live proof
 
@@ -107,13 +131,26 @@ These runs used one omp process per test session, started with `--no-extensions 
 them. Every verdict was judged by content snapshots of the repository: every path, including
 untracked and ignored files, with its type and a content hash.
 
-- The plan's adversarial tests 11 to 17 behaved as expected, on OMP 18.4.4 with the cheapest
-  available model.
+- The adversarial tests 11 to 17 listed in the plugin README behaved as expected, on OMP
+  18.4.4 with the cheapest available model.
 - Test 16 loaded a second extension that rewrote every `pair_write` path and every `pair_run`
   command to a target outside the boundary. Both writes were still refused.
 - Test 14 killed and reaped the process group on abort and on timeout, checked by pid.
 - A session with the adapter loaded but no `pair_start` let `write`, `bash` and `eval` create
   files, and created no state directory.
+
+Those runs predate the typed stop, whole-word quotes and session carry-over. These were then
+run with the same launch flags, judged from the journal and the tool results:
+
+- A typed `pair stop` in a turn with no tool call ended pairing, and the next `write` was
+  allowed. A `pair stop` injected with `pi.sendUserMessage` changed nothing, and the next
+  `write` was refused.
+- A `pair_begin` quote of `y` against a typed `why? …` was refused as not whole words.
+- `/new` while pairing started the new session closed: `write` refused until `pair_start`.
+- `/clear` with a change set open and a stray file in the worktree journaled the stray file as
+  an unapproved write, closed the change set, and kept the session closed: `pair_write` refused
+  with "no change set is open", `write` refused, `pair_start` restarted pairing, and a typed
+  `pair stop` ended it.
 
 Two things the runs did leave behind. First, omp's own prompt history
 (`~/.omp/agent/history.db`) records prompts typed in the TUI, whatever extensions are loaded.

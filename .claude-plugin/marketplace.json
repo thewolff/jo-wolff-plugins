@@ -1,7 +1,7 @@
 {
   "name": "jo-wolff-plugins",
   "owner": { "name": "Jo Wolff" },
-  "description": "Agent output discipline, published for anyone to install.",
+  "description": "What an agent's output is made of, what shape it arrives in, and when an agent may write code: published for anyone to install.",
   "plugins": [
     {
       "name": "output-types",
@@ -12,6 +12,11 @@
       "name": "communication-rules",
       "source": "./plugins/communication-rules",
       "description": "Shape a message around what it needs from its reader — decisions first, one closing ask, no batching by label — and record which of those rules a machine can actually check."
+    },
+    {
+      "name": "paired-coding",
+      "source": "./plugins/paired-coding",
+      "description": "Pair with an agent one change set at a time: it proposes a card naming the decision inside the change, you agree in conversation, and a gate at the tool boundary refuses every write outside the agreed change set. Gate on Claude Code and OMP, macOS only."
     }
   ]
 }

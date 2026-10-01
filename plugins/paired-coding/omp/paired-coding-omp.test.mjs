@@ -35,10 +35,13 @@ function setup({ otherTools = [], env = {} } = {}) {
   const repo = realpathSync(mkdtempSync(join(tmpdir(), "pc-omp-repo-")));
   mkdirSync(join(repo, ".git"));
   const base = realpathSync(mkdtempSync(join(tmpdir(), "pc-omp-state-")));
-  const sessionId = randomUUID();
+  const current = { id: randomUUID() };
+  const sessionId = current.id;
   const handlers = {};
   const tools = new Map();
   const notes = [];
+  // The session's entries, as OMP's ReadonlySessionManager.getEntries() returns them.
+  const entries = [{ type: "message", id: "e0" }];
   const pi = {
     zod,
     on(event, h) { (handlers[event] ??= []).push(h); },
@@ -48,10 +51,15 @@ function setup({ otherTools = [], env = {} } = {}) {
   const ctx = {
     cwd: repo,
     hasUI: true,
-    sessionManager: { getSessionId: () => sessionId },
+    sessionManager: { getSessionId: () => current.id, getEntries: () => [...entries] },
     ui: { notify: (m, level) => notes.push({ m, level }) },
   };
   pairedCodingOmp(pi, { env: { PAIRED_CODING_STATE_DIR: base, ...env } });
+  /** A fresh adapter instance on the same session, as an extension reload gives. */
+  const reload = () => {
+    for (const k of Object.keys(handlers)) delete handlers[k];
+    pairedCodingOmp(pi, { env: { PAIRED_CODING_STATE_DIR: base, ...env } });
+  };
   let n = 0;
   const emit = async (event, payload) => {
     let last;
@@ -66,9 +74,20 @@ function setup({ otherTools = [], env = {} } = {}) {
     return { ok: !r.isError, text: r.content[0].text, details: r.details };
   };
   const dir = join(base, sessionId);
-  const journal = () => (existsSync(join(dir, "journal.jsonl")) ? readFileSync(join(dir, "journal.jsonl"), "utf8").trim().split("\n").map((l) => JSON.parse(l)) : []);
-  const type = (text) => emit("input", { type: "input", text, source: "interactive" });
-  return { repo, base, dir, sessionId, ctx, tools, notes, emit, call, journal, type };
+  const journal = (d = dir) => (existsSync(join(d, "journal.jsonl")) ? readFileSync(join(d, "journal.jsonl"), "utf8").trim().split("\n").map((l) => JSON.parse(l)) : []);
+  const type = (text, source = "interactive") => emit("input", { type: "input", text, source });
+  /** As OMP does for /new, /fork and /resume: before_switch with the old id, then switch with the new. */
+  const switchTo = async (id, reason = "new") => {
+    await emit("session_before_switch", { type: "session_before_switch", reason });
+    current.id = id;
+    await emit("session_switch", { type: "session_switch", reason });
+    return join(base, id);
+  };
+  /** A new session entry of `type`, as the host appends them. */
+  const append = (type) => entries.push({ type, id: `${type}-${entries.length}` });
+  /** As OMP's /clear does: same session id, a reset_boundary entry appended, no extension event. */
+  const clear = () => append("reset_boundary");
+  return { repo, base, dir, sessionId, ctx, tools, notes, emit, call, journal, type, switchTo, clear, append, reload };
 }
 
 /** Start pairing, propose a card over `boundary`, have the user agree, open the change set. */
@@ -278,4 +297,130 @@ test("every pair_* verb of the core is registered as an OMP tool", () => {
   const s = setup();
   assert.deepEqual([...s.tools.keys()].sort(), [...PAIR_TOOLS].sort());
   for (const t of s.tools.values()) assert.equal(t.loadMode, "essential", `${t.name} must be visible without discovery`);
+});
+
+const blocked = async (s, toolName = "write") => (await s.emit("tool_call", { toolName, input: {} }))?.block === true;
+
+describe("ending pairing", () => {
+  sandboxOnly("a typed 'pair stop' ends pairing before the agent's next tool call", async () => {
+    const s = setup();
+    assert.equal((await s.call("pair_start")).ok, true);
+    assert.equal(await blocked(s), true);
+    await s.type("Pair stop");
+    assert.equal(await blocked(s), false);
+    assert.ok(s.journal().some((e) => e.type === "stop" && e.verb === "typed-stop"));
+    assert.ok(s.notes.some((n) => /you typed pair stop/.test(n.m)));
+  });
+
+  sandboxOnly("an injected 'pair stop' changes nothing, and there is no stop tool", async () => {
+    const s = setup();
+    assert.equal((await s.call("pair_start")).ok, true);
+    for (const source of ["extension", "rpc"]) await s.type("pair stop", source);
+    assert.equal(await blocked(s), true);
+    assert.equal(s.tools.has("pair_stop"), false);
+    assert.equal(await blocked(s, "pair_stop"), true);
+  });
+
+  sandboxOnly("a pair_begin quote of 'y' against a typed 'why?' is refused", async () => {
+    const s = setup();
+    assert.equal((await s.call("pair_start")).ok, true);
+    assert.equal((await s.call("pair_propose", { boundary: ["a.txt"] })).ok, true);
+    await s.type("why?");
+    const r = await s.call("pair_begin", { cardId: "card-1", quote: "y" });
+    assert.equal(r.ok, false);
+    assert.match(r.text, /as whole words/);
+  });
+});
+
+describe("session switch inside the running process", () => {
+  sandboxOnly("switching away while pairing ends the old session and starts the new one closed", async () => {
+    const s = setup();
+    assert.equal((await s.call("pair_start")).ok, true);
+    const next = await s.switchTo(randomUUID(), "new");
+    assert.ok(s.journal().some((e) => e.type === "stop" && e.verb === "session-end"));
+    assert.equal(await blocked(s), true, "the new session refuses host writes");
+    assert.ok(s.journal(next).some((e) => e.type === "carried-after-clear" && e.reason === "omp:new"));
+    assert.equal((await s.call("pair_propose", { boundary: ["a.txt"] })).ok, false);
+    assert.equal((await s.call("pair_start")).ok, true, "pair_start restarts pairing");
+    assert.equal((await s.call("pair_propose", { boundary: ["a.txt"] })).ok, true);
+  });
+
+  sandboxOnly("a typed stop ends a carried session", async () => {
+    const s = setup();
+    assert.equal((await s.call("pair_start")).ok, true);
+    await s.switchTo(randomUUID(), "resume");
+    await s.type("pair stop");
+    assert.equal(await blocked(s), false);
+  });
+
+  test("switching from a session that never paired leaves the new one inert", async () => {
+    const s = setup();
+    const next = await s.switchTo(randomUUID(), "new");
+    assert.equal(await blocked(s), false);
+    assert.equal(existsSync(next), false);
+  });
+});
+
+describe("/clear keeps the session id but drops the agent's context", () => {
+  sandboxOnly("an open change set is finished, unapproved writes journaled, and the session carried closed", async () => {
+    const s = setup();
+    await openChangeSet(s, ["a.txt"]);
+    writeFileSync(join(s.repo, "stray.txt"), "outside the boundary\n");
+    s.clear();
+    assert.equal(await blocked(s), true, "host writes stay refused");
+    const j = s.journal();
+    const stop = j.find((e) => e.type === "stop" && e.verb === "session-end");
+    assert.ok(stop, "pairing ended as on a session change");
+    assert.ok(j.some((e) => e.type === "unapproved-write" && JSON.stringify(e.paths).includes("stray.txt")), "the unapproved write is journaled");
+    assert.ok(s.notes.some((n) => /conversation was cleared/.test(n.m)));
+    const w = await s.call("pair_write", { path: "a.txt", content: "x" });
+    assert.notEqual(w.ok, true, "the change set is gone");
+    assert.notEqual((await s.call("pair_begin", { cardId: "card-1", quote: "go ahead" })).ok, true);
+    assert.equal((await s.call("pair_start")).ok, true, "pair_start restarts pairing");
+    assert.equal(await blocked(s), true);
+    await s.type("pair stop");
+    assert.equal(await blocked(s), false);
+  });
+
+  sandboxOnly("a clear seen at the next input closes pairing before the input is recorded", async () => {
+    const s = setup();
+    assert.equal((await s.call("pair_start")).ok, true);
+    s.clear();
+    await s.type("hello again");
+    const j = s.journal();
+    const carried = j.findIndex((e) => e.type === "carried-after-clear");
+    const typed = j.findIndex((e) => e.type === "input" && e.text === "hello again");
+    assert.ok(carried !== -1 && carried < typed);
+    // A second look with no new boundary changes nothing.
+    await s.emit("tool_call", { toolName: "read", input: {} });
+    assert.equal(s.journal().filter((e) => e.type === "carried-after-clear").length, 1);
+  });
+
+  sandboxOnly("new entries of other kinds are not a clear", async () => {
+    const s = setup();
+    assert.equal((await s.call("pair_start")).ok, true);
+    for (const kind of ["message", "custom", "compaction"]) {
+      s.append(kind);
+      await s.type(`after a ${kind}`);
+    }
+    assert.equal(s.journal().some((e) => e.type === "carried-after-clear"), false);
+  });
+
+  sandboxOnly("a clear from before this adapter instance first looked is not taken as new", async () => {
+    const s = setup();
+    s.clear();
+    assert.equal((await s.call("pair_start")).ok, true);
+    s.reload();
+    await s.type("still pairing");
+    assert.equal(s.journal().some((e) => e.type === "carried-after-clear"), false);
+  });
+
+  test("a clear when not pairing changes nothing and creates no file", async () => {
+    const s = setup();
+    await s.type("hello");
+    s.clear();
+    await s.type("hello");
+    assert.equal(await blocked(s), false);
+    assert.equal(existsSync(s.dir), false);
+  });
 });
