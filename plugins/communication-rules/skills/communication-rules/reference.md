@@ -197,7 +197,7 @@ optional; an empty object is valid and yields the defaults.
 - **`traits`** — plain sentences about how that person reads, emitted verbatim. This is the
   whole of the reader-specific surface; the plugin ships none.
 - **`enforcement.mode`** — `block | warn | off`. Unset = each rule's built-in default (warn
-  for name-the-artifact, block for the rest); set = overrides built-ins both ways.
+  for every rule — the measured default above); set = overrides built-ins both ways.
 - **`enforcement.judgeCommand`** — see the judge section.
 - **`enforcement.rules`** — per-rule mode overrides; beat the global mode and built-ins.
 - **`enforcement.armOmp`** — boolean, default `false`. Read only under the OMP harness tag
