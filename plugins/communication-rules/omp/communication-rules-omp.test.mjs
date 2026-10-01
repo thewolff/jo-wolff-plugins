@@ -108,7 +108,48 @@ test("a CLI block verdict is returned as is, with nothing logged by the adapter"
   assert.equal(readLog(dir, "errors.log"), "");
 });
 
-test("the real spawn runs on stop_hook_active, forwards it on stdin, and tags the child's env omp", async () => {
+// The flag the CLI receives, read off the payload handed to runCli.
+const sentFlag = async (over, verdict) => {
+  let sent;
+  await sessionStopHandler(event(over), ctx, {
+    stateDir: mkstate(),
+    runCli: async (payload) => {
+      sent = JSON.parse(payload).stop_hook_active;
+      return verdict;
+    },
+    timeoutMs: 1_000,
+  });
+  return sent;
+};
+
+test("host flag true after a non-block result (another extension continued) → the core is sent false", async () => {
+  assert.equal(await sentFlag({ session_id: "fwd-quiet" }, undefined), false);
+  assert.equal(await sentFlag({ session_id: "fwd-quiet", stop_hook_active: true }, undefined), false);
+  assert.equal(await sentFlag({ session_id: "fwd-never", stop_hook_active: true }, undefined), false, "no prior call at all");
+});
+
+test("host flag true after this handler's own block → the core is sent true, once", async () => {
+  assert.equal(await sentFlag({ session_id: "fwd-chain" }, { ...blockVerdict }), false);
+  assert.equal(await sentFlag({ session_id: "fwd-chain", stop_hook_active: true }, undefined), true);
+  assert.equal(
+    await sentFlag({ session_id: "fwd-chain", stop_hook_active: true }, undefined),
+    false,
+    "the record follows the latest result: a non-block clears it",
+  );
+});
+
+test("host flag false after this handler's own block → the core is sent false (OMP reset the chain)", async () => {
+  await sentFlag({ session_id: "fwd-reset" }, { ...blockVerdict });
+  assert.equal(await sentFlag({ session_id: "fwd-reset", stop_hook_active: false }, undefined), false);
+});
+
+test("the record is per session: a block in one session does not mark another", async () => {
+  await sentFlag({ session_id: "iso-a" }, { ...blockVerdict });
+  assert.equal(await sentFlag({ session_id: "iso-b", stop_hook_active: true }, undefined), false);
+  assert.equal(await sentFlag({ session_id: "iso-a", stop_hook_active: true }, undefined), true);
+});
+
+test("the real spawn tags the child's env omp and carries the forwarded flag on stdin", async () => {
   const dir = mkstate();
   // A stand-in core that reports what it received instead of judging anything.
   const root = fakeCore(`
@@ -117,10 +158,12 @@ const payload = JSON.parse(readFileSync(0, "utf8"));
 const reason = "harness=" + process.env.COMMUNICATION_RULES_HARNESS + " stop_hook_active=" + payload.stop_hook_active;
 process.stdout.write(JSON.stringify({ decision: "block", reason }));
 `);
-  const out = await withEnv({ COMMUNICATION_RULES_PLUGIN_ROOT: root, COMMUNICATION_RULES_HARNESS: undefined }, () =>
-    sessionStopHandler(event({ stop_hook_active: true }), spawnCtx, { stateDir: dir, timeoutMs: 10_000 }),
-  );
-  assert.deepEqual(out, { decision: "block", reason: "harness=omp stop_hook_active=true" });
+  const stop = (stop_hook_active) =>
+    withEnv({ COMMUNICATION_RULES_PLUGIN_ROOT: root, COMMUNICATION_RULES_HARNESS: undefined }, () =>
+      sessionStopHandler(event({ session_id: "spawn-1", stop_hook_active }), spawnCtx, { stateDir: dir, timeoutMs: 10_000 }),
+    );
+  assert.deepEqual(await stop(false), { decision: "block", reason: "harness=omp stop_hook_active=false" });
+  assert.deepEqual(await stop(true), { decision: "block", reason: "harness=omp stop_hook_active=true" });
 });
 
 // ─── quiet and non-block verdicts ──────────────────────────────────────────────────────
@@ -213,39 +256,42 @@ const body = (n) => "This sentence is ordinary body prose carrying findings and 
 const misordered = `${body(6)}\n\n## Needs you\n\nApprove the deploy before Friday.\n\n${body(2)}`;
 
 // The core's own state dir under a temp HOME, plus an optional profile. The harness tag is
-// scrubbed from this process: only the adapter may put it on the child.
-const realCore = async (enforcement) => {
+// scrubbed from this process: only the adapter may put it on the child. run() is one stop.
+const realCore = (enforcement) => {
   const home = mkdtempSync(join(tmpdir(), "omp-adapter-home-"));
   mkdirSync(join(home, ".claude"));
   if (enforcement) writeFileSync(join(home, ".claude", "communication-rules.json"), JSON.stringify({ enforcement }));
   const stateDir = join(home, ".claude", ".communication-rules-state");
-  const out = await withEnv(
-    {
-      HOME: home,
-      COMMUNICATION_RULES_PLUGIN_ROOT: PLUGIN_ROOT,
-      COMMUNICATION_RULES_PROFILE: undefined,
-      COMMUNICATION_RULES_ENFORCE: undefined,
-      COMMUNICATION_RULES_HARNESS: undefined,
-    },
-    () =>
-      sessionStopHandler(
-        event({ session_file: join(home, "absent.jsonl"), last_assistant_message: { content: misordered } }),
-        { cwd: home },
-        { stateDir, timeoutMs: 10_000 },
-      ),
-  );
-  return { out, stateDir };
+  const run = (over = {}) =>
+    withEnv(
+      {
+        HOME: home,
+        COMMUNICATION_RULES_PLUGIN_ROOT: PLUGIN_ROOT,
+        COMMUNICATION_RULES_PROFILE: undefined,
+        COMMUNICATION_RULES_ENFORCE: undefined,
+        COMMUNICATION_RULES_HARNESS: undefined,
+      },
+      () =>
+        sessionStopHandler(
+          event({ session_file: join(home, "absent.jsonl"), last_assistant_message: { content: misordered }, ...over }),
+          { cwd: home },
+          { stateDir, timeoutMs: 10_000 },
+        ),
+    );
+  return { run, stateDir };
 };
 
 test("integration: real spawn + real core, temp HOME, no profile → undefined and the core's own warn line", async () => {
-  const { out, stateDir } = await realCore(null);
+  const { run, stateDir } = realCore(null);
+  const out = await run();
   assert.equal(out, undefined, "no profile: every rule warns, so no block reaches the host");
   assert.equal(readLog(stateDir, "errors.log"), "", "the spawn did not fail open");
   assert.match(readLog(stateDir, "warnings.log"), /rule=needs-you-first/, "the real core ran under the temp HOME");
 });
 
 test("integration: profile blocks the rule but does not arm OMP → undefined, warn line with the real rule id", async () => {
-  const { out, stateDir } = await realCore({ rules: { "needs-you-first": "block" } });
+  const { run, stateDir } = realCore({ rules: { "needs-you-first": "block" } });
+  const out = await run();
   assert.equal(out, undefined, "the harness tag reached the core and capped the block");
   assert.equal(readLog(stateDir, "errors.log"), "");
   assert.match(readLog(stateDir, "warnings.log"), /rule=needs-you-first Needs you first/);
@@ -253,10 +299,28 @@ test("integration: profile blocks the rule but does not arm OMP → undefined, w
 });
 
 test("integration: profile blocks the rule and arms OMP → the core's block reaches the host", async () => {
-  const { out, stateDir } = await realCore({ rules: { "needs-you-first": "block" }, armOmp: true });
+  const { run, stateDir } = realCore({ rules: { "needs-you-first": "block" }, armOmp: true });
+  const out = await run({ session_id: "armed-1" });
   assert.equal(out?.decision, "block");
   assert.match(out.reason, /^Needs you first/);
   assert.equal(readLog(stateDir, "warnings.log"), "");
+});
+
+// Another violating text: substantive prose still precedes the needs-you marker.
+const revisedText = `${body(7)}\n\n## Needs you\n\nApprove now.`;
+
+test("integration, armed: another extension's continuation does not spend the block; this plugin's own revision only warns", async () => {
+  const { run, stateDir } = realCore({ rules: { "needs-you-first": "block" }, armOmp: true });
+  // OMP's flag is already true (another extension continued), but this handler never blocked here.
+  const first = await run({ session_id: "chain-1", stop_hook_active: true });
+  assert.equal(first?.decision, "block", "the first block of the chain is this plugin's to give");
+  const revision = await run({
+    session_id: "chain-1",
+    stop_hook_active: true,
+    last_assistant_message: { content: revisedText },
+  });
+  assert.equal(revision, undefined, "re-checked after its own block, never blocked twice");
+  assert.match(readLog(stateDir, "warnings.log"), /rule=needs-you-first/);
 });
 
 // ─── pure helpers ──────────────────────────────────────────────────────────────────────

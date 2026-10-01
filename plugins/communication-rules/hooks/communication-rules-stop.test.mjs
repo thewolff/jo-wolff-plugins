@@ -632,3 +632,15 @@ test("armOmp of the wrong type is one errors.log line and reads as false", () =>
   assert.match(readLog(home, "errors.log"), /armOmp "yes" is not a boolean; treated as false/);
   assert.match(readLog(home, "warnings.log"), /rule=needs-you-first/);
 });
+
+test("untagged (Claude Code): a malformed armOmp changes nothing — same stdout, no errors.log line", () => {
+  const plain = mkhome();
+  blockProfile(plain);
+  const malformed = mkhome();
+  blockProfile(malformed, { armOmp: "yes" });
+  const a = runHook({ session_id: "u1", last_assistant_message: misordered }, plain);
+  const b = runHook({ session_id: "u1", last_assistant_message: misordered }, malformed);
+  assert.equal(parseOut(b.stdout).decision, "block", "the Claude path still blocks");
+  assert.equal(b.stdout, a.stdout);
+  assert.equal(readLog(malformed, "errors.log"), "", "the field is never read without the omp tag");
+});
