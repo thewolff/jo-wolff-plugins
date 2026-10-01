@@ -965,19 +965,26 @@ function boundaryAncestors(root, boundary) {
  *   3. the whole worktree denied again (a worktree that sits under a temp path stays fenced);
  *   4. open only: the boundary allowed, and creating the directories above it as directories;
  *   5. the state directory and the protected paths denied, even where a boundary or temp path
- *      covers them.
+ *      covers them;
+ *   6. creating a hard link denied everywhere. Seatbelt rules match paths, so a link inside the
+ *      boundary to a file outside it would let a later write to the boundary path land on the
+ *      outside file.
  * So in the closed phase pair_run writes nowhere but temp and /dev.
  * @param {State} state
  * @returns {string}
  */
 export function pairRunProfile(state) {
+  return profileFor(state, []);
+}
+
+function profileFor(state, extraAllow) {
   const outside = [
     ...["/dev/null", "/dev/zero", "/dev/tty", "/dev/dtracehelper"].map((p) => `(literal ${sbplString(p)})`),
     `(subpath ${sbplString("/dev/fd")})`,
     ...(state.tempPaths ?? []).map((p) => `(subpath ${sbplString(p)})`),
   ];
   const head = `(version 1)(allow default)(deny file-write*)(allow file-write* ${outside.join(" ")})(deny file-write* (subpath ${sbplString(state.root)}))`;
-  const tail = [state.stateDir, ...(state.protect ?? [])].map((p) => `(deny file-write* (subpath ${sbplString(p)}))`).join("");
+  const tail = `${[state.stateDir, ...(state.protect ?? [])].map((p) => `(deny file-write* (subpath ${sbplString(p)}))`).join("")}(deny file-link)`;
   if (state.phase !== "open") return `${head}${tail}`;
   const boundary = state.changeSet.boundary.map((raw) => {
     const e = normalizeEntry(raw);
@@ -985,19 +992,29 @@ export function pairRunProfile(state) {
     const root = state.root.replace(REGEX_META, (ch) => `\\${ch}`);
     return `(regex ${sbplRegex(`^${root}/${globToRegexSource(e)}$`)})`;
   });
+  const extra = extraAllow.map((p) => `(literal ${sbplString(p)})`);
   const dirs = boundaryAncestors(state.root, state.changeSet.boundary).map((p) => `(literal ${sbplString(p)})`);
   const mkdirs = dirs.length ? `(allow file-write-create (require-all (vnode-type DIRECTORY) (require-any ${dirs.join(" ")})))` : "";
-  return `${head}(allow file-write* ${boundary.join(" ")})${mkdirs}${tail}`;
+  return `${head}(allow file-write* ${[...boundary, ...extra].join(" ")})${mkdirs}${tail}`;
 }
+
+/** The name pair_write's temp file must have: a dotfile, a 16-hex-digit nonce, ".tmp". */
+const WRITE_TEMP = /\/\.pair-write-[0-9a-f]{16}\.tmp$/;
 
 /**
  * The Seatbelt profile pair_write and pair_edit write under: the open profile with no temp
  * paths, so a path that resolves anywhere but the boundary (a temp directory included) is
- * refused by the kernel. Open phase only.
+ * refused by the kernel, plus the one temp file the write is staged in. The write goes to
+ * `tempPath` and is renamed over the target, so it never writes through the target's inode:
+ * a hard link to a file outside the boundary is replaced, never written. Open phase only.
  * @param {State} state
+ * @param {string} tempPath  absolute, in the worktree, named .pair-write-<16 hex>.tmp
  * @returns {string}
  */
-export function pairWriteProfile(state) {
+export function pairWriteProfile(state, tempPath) {
   if (state.phase !== "open") throw new Error("pair_write needs an open change set");
-  return pairRunProfile({ ...state, tempPaths: [] });
+  if (typeof tempPath !== "string" || !WRITE_TEMP.test(tempPath) || !within(state.root, tempPath) || tempPath.includes("/../")) {
+    throw new Error("pair_write needs a staging file in the worktree named .pair-write-<16 hex>.tmp");
+  }
+  return profileFor({ ...state, tempPaths: [] }, [tempPath]);
 }

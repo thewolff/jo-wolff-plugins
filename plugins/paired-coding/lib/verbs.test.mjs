@@ -3,7 +3,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, linkSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -316,20 +316,98 @@ test("pair_write runs under the kernel: a path checkWrite passes but the profile
   assert.equal(readFileSync(join(f.root, "src", "new", "deep", "y.txt"), "utf8"), "fine");
 });
 
+const stage = (f) => join(f.root, "src", `.pair-write-${"ab".repeat(8)}.tmp`);
+
 test("the pair_write profile refuses a boundary path that a symlink points outside, temp included", { skip: !hasSandbox }, async () => {
   const f = fixture();
   await openChangeSet(f, ["src/a.txt", "src/link.txt"]);
   const tempFile = join(f.top, "outside.txt");
   writeFileSync(tempFile, "untouched");
-  const profile = pairWriteProfile(loadState(f.dir));
+  const tempPath = stage(f);
+  const profile = pairWriteProfile(loadState(f.dir), tempPath);
   for (const target of [tempFile, join(f.root, "src", "b.txt"), join(f.dir, "state.json")]) {
     const before = readFileSync(target, "utf8");
     rmSync(join(f.root, "src", "link.txt"), { force: true });
     symlinkSync(target, join(f.root, "src", "link.txt"));
-    assert.equal(writeSandboxed({ profile, path: join(f.root, "src", "link.txt"), content: "pwned" }).ok, false, target);
+    writeSandboxed({ profile, path: join(f.root, "src", "link.txt"), tempPath, content: "pwned" });
     assert.equal(readFileSync(target, "utf8"), before, target);
   }
-  assert.equal(writeSandboxed({ profile, path: join(f.root, "src", "a.txt"), content: "A" }).ok, true);
+  assert.equal(writeSandboxed({ profile, path: join(f.root, "src", "a.txt"), tempPath, content: "A" }).ok, true);
+  assert.equal(readFileSync(join(f.root, "src", "a.txt"), "utf8"), "A");
+  assert.equal(existsSync(tempPath), false);
+});
+
+test("the pair_write profile takes only a staging file named for it inside the worktree", async () => {
+  const f = fixture();
+  await openChangeSet(f, ["src/a.txt"]);
+  const s = loadState(f.dir);
+  for (const bad of [undefined, join(f.root, "src", "x.tmp"), join(f.top, `.pair-write-${"ab".repeat(8)}.tmp`), `${f.root}/src/../../.pair-write-${"ab".repeat(8)}.tmp`]) {
+    assert.throws(() => pairWriteProfile(s, bad), /staging file/, String(bad));
+  }
+  assert.doesNotThrow(() => pairWriteProfile(s, stage(f)));
+});
+
+test("a sandboxed write to a directory is refused and leaves nothing behind, even under a glob boundary", { skip: !hasSandbox }, async () => {
+  const f = fixture();
+  mkdirSync(join(f.root, "src", "d"));
+  await openChangeSet(f, ["src/**"]);
+  const tempPath = stage(f);
+  const w = writeSandboxed({ profile: pairWriteProfile(loadState(f.dir), tempPath), path: join(f.root, "src", "d"), tempPath, content: "x" });
+  assert.equal(w.ok, false);
+  assert.deepEqual(readdirSync(join(f.root, "src", "d")), []);
+  assert.equal(existsSync(tempPath), false);
+});
+
+test("a staged write the kernel refuses at the rename leaves no staging file behind", { skip: !hasSandbox }, async () => {
+  const f = fixture();
+  await openChangeSet(f, ["src/a.txt"]);
+  const tempPath = stage(f);
+  const w = writeSandboxed({ profile: pairWriteProfile(loadState(f.dir), tempPath), path: join(f.root, "src", "b.txt"), tempPath, content: "pwned" });
+  assert.equal(w.ok, false);
+  assert.equal(readFileSync(join(f.root, "src", "b.txt"), "utf8"), "bravo\n");
+  assert.deepEqual(readdirSync(join(f.root, "src")).filter((n) => n.startsWith(".pair-write-")), []);
+});
+
+test("a boundary directory swapped for a symlink into a temp path takes no staged write, temp paths notwithstanding", { skip: !hasSandbox }, async () => {
+  const f = fixture();
+  await openChangeSet(f, ["src/sub/x.txt"]);
+  const away = join(f.top, "away");
+  mkdirSync(away);
+  symlinkSync(away, join(f.root, "src", "sub"));
+  const tempPath = join(f.root, "src", "sub", `.pair-write-${"cd".repeat(8)}.tmp`);
+  const state = { ...loadState(f.dir), tempPaths: [away] };
+  const w = writeSandboxed({ profile: pairWriteProfile(state, tempPath), path: join(f.root, "src", "sub", "x.txt"), tempPath, content: "pwned" });
+  assert.equal(w.ok, false);
+  assert.deepEqual(readdirSync(away), []);
+});
+
+for (const verb of ["pair_write", "pair_edit"]) {
+  test(`${verb} replaces a hard link at its target instead of writing through it to the file outside`, { skip: !hasSandbox }, async () => {
+    const f = fixture();
+    await openChangeSet(f, ["src/a.txt", "src/hl.txt"]);
+    const outside = join(f.top, "outside-secret.txt");
+    writeFileSync(outside, "secret");
+    chmodSync(outside, 0o640);
+    linkSync(outside, join(f.root, "src", "hl.txt"));
+    const args = verb === "pair_write" ? { path: "src/hl.txt", content: "pwned" } : { path: "src/hl.txt", oldString: "secret", newString: "pwned" };
+    const r = await executeVerb(verb, args, f.ctx);
+    assert.equal(r.ok, true, r.text);
+    assert.equal(readFileSync(outside, "utf8"), "secret");
+    assert.equal(statSync(outside).nlink, 1);
+    assert.equal(readFileSync(join(f.root, "src", "hl.txt"), "utf8"), "pwned");
+    assert.equal(statSync(join(f.root, "src", "hl.txt")).mode & 0o777, 0o640);
+    assert.deepEqual(readdirSync(join(f.root, "src")).filter((n) => n.startsWith(".pair-write-")), []);
+  });
+}
+
+test("pair_write keeps the permission bits of the file it replaces", { skip: !hasSandbox }, async () => {
+  const f = fixture();
+  await openChangeSet(f, ["src/a.txt", "src/run.sh"]);
+  writeFileSync(join(f.root, "src", "run.sh"), "#!/bin/sh\n");
+  chmodSync(join(f.root, "src", "run.sh"), 0o750);
+  const r = await executeVerb("pair_write", { path: "src/run.sh", content: "#!/bin/sh\necho hi\n" }, f.ctx);
+  assert.equal(r.ok, true, r.text);
+  assert.equal(statSync(join(f.root, "src", "run.sh")).mode & 0o777, 0o750);
 });
 
 // ─── roadmap ────────────────────────────────────────────────────────────────────────────
