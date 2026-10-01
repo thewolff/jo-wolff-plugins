@@ -53,8 +53,9 @@ you start pairing again in the same worktree, the agent offers to pick up an unf
 from the last session there; you can say no and start fresh. Nothing reopens on its own: every
 picked-up card still needs its own card and agreement.
 
-**Ending.** Only you end pairing: type `pair stop` as a message of its own. The agent has no
-tool that ends it.
+**Ending.** A done roadmap does not end pairing: the agent reports it done and the gate stays
+closed. Only you end pairing: type `pair stop` as a message of its own. The agent has no tool
+that ends it.
 
 The skill holds the conversation; the gate below holds the writes. The contract is the two
 together: where the skill says what the agent should do, the gate decides what it can do.
@@ -85,9 +86,13 @@ How it works:
 - `pair_run` runs every command in the foreground under a macOS Seatbelt profile built from the
   state. Both profiles deny every write by default. With no change set open a command may write
   only temp directories and `/dev`. With one open it may also write the boundary files. The
-  state directory and the plugin's own install root are never writable. The write inside
-  `pair_write` and `pair_edit` runs under the open profile, without the temp directories, so a
-  symlink swapped in after the path check still cannot land outside the boundary.
+  state directory and the plugin's own install root are never writable, and no command may
+  create a hard link anywhere, even between two paths it could write.
+- `pair_write` and `pair_edit` write inside the sandbox too, under the open profile without the
+  temp directories. They write the new content to a fresh file beside the target and rename it
+  over the target, keeping an existing file's permission bits. So a hard link or symlink at a
+  boundary path is replaced rather than written through, a symlink swapped in after the path
+  check cannot land the write outside the boundary, and a directory at the path is refused.
 - `pair_done` returns the diff of the boundary, computed by the gate, and lists the roadmap cards
   still `open` or `not-ready`. Every card, quote, verdict, refusal and diff goes into a journal
   outside the worktree, under `$PAIRED_CODING_STATE_DIR` (default
@@ -133,8 +138,10 @@ checked live as follows, and by the unit suite:
 
 The closed `pair_run` profile was also run directly under `sandbox-exec`, outside any host:
 writes to a stand-in plugin cache and a stand-in `~/.claude/settings.json` were denied, and so
-was `launchctl submit`. A symlink swapped back and forth 90,239 times during 2,567 `pair_write`
-attempts never moved a write outside the boundary.
+was `launchctl submit`. A symlink swapped back and forth 95,189 times during 1,913 `pair_write`
+attempts never moved a write outside the boundary. Before this release, a hard link inside the
+boundary pointing at a file outside it let `pair_write` and `pair_edit` overwrite that file; in a
+direct check of the fix, five variants of that attack all left the outside file unchanged.
 
 ## What this enforces, and what it does not
 
