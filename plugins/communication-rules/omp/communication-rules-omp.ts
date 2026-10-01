@@ -28,21 +28,38 @@
 //
 // FAIL-OPEN CONTRACT. A dead adapter must be visible, never fatal: every failure path (CLI
 // crash, non-zero exit, unparseable stdout, timeout, any thrown error anywhere) returns
-// undefined, counts one fail-open in <stateDir>/omp-adapter-failures.json, and leaves one
-// line in errors.log. The timeout is 25s against the host's 30s budget — lose the race, not
-// the turn.
+// undefined and leaves one `omp-adapter fail-open: …` line in errors.log. That line is the
+// tally: `grep -c 'omp-adapter fail-open' errors.log`.
+//
+// TIMEOUT: 32s, owned by defaultRunCli, which SIGKILLs the CLI's whole process group when it
+// fires. The arithmetic, from the core: one stop runs its judge calls in PARALLEL
+// (communication-rules-stop.mjs, Promise.all over askJudge), each capped at
+// DEFAULT_TIMEOUT_MS = 30_000 (judge/ask.mjs:49), which SIGKILLs the judge's /bin/sh. Nothing
+// the core reads changes that cap: askJudge takes timeoutMs only as a test option the hook
+// never passes, and the profile has no timeout field. Worst case for a judge that dies with
+// its /bin/sh = 30_000ms + spawn/startup/checks, measured 30_056ms end to end
+// (judgeCommand `sleep 45`); the same overhead without a judge measured 38-60ms. 32s clears
+// that by ~2s, so the adapter never kills a run the core would finish. Two limits it does
+// not fix: (1) a judge whose grandchild survives that SIGKILL (`sleep 45 | cat` measured
+// 45_055ms) holds the core open with no cap of its own; the group kill here is what bounds
+// it, at 32s; (2) OMP abandons any session_stop handler at a fixed 30s
+// (EXTENSION_HANDLER_TIMEOUT_MS, pi-coding-agent extensibility/extensions/runner.ts), so a
+// stop whose judge runs to its 30s cap loses its verdict to the host whatever this value
+// is. Only a core judge-budget knob closes (2); none exists, and this adapter adds none.
 //
 // SYNTAX: erasable-types TypeScript only, so node v24.13 strips the types and imports this
-// module without Bun. globalThis.Bun is referenced LAZILY inside defaultRunCli, so importing
-// under node never throws. `pi` is typed structurally — zero imports from @oh-my-pi.
+// module without Bun. The spawn is node:child_process, which Bun implements, so the default
+// path runs under both node --test and the omp host. `pi` is typed structurally — zero
+// imports from @oh-my-pi.
 
-import { appendFileSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { spawn } from "node:child_process";
+import { appendFileSync, mkdirSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 
 const DEFAULT_PLUGIN_ROOT = "/Users/jowolff/code/jo-wolff-plugins/plugins/communication-rules";
 const DEFAULT_STATE_DIR = join(homedir(), ".claude", ".communication-rules-state");
-const CLI_TIMEOUT_MS = 25_000;
+const CLI_TIMEOUT_MS = 32_000;
 
 type StopEvent = {
   session_id?: unknown;
@@ -54,7 +71,7 @@ type StopEvent = {
 type CliVerdict = { decision?: unknown; reason?: unknown };
 
 type HandlerDeps = {
-  runCli?: (payload: string, cwd: string) => Promise<CliVerdict | undefined>;
+  runCli?: (payload: string, cwd: string, timeoutMs: number) => Promise<CliVerdict | undefined>;
   stateDir?: string;
   timeoutMs?: number;
 };
@@ -65,23 +82,8 @@ type PiLike = {
   on(name: "session_stop", handler: (event: StopEvent, ctx: { cwd: string }) => unknown): void;
 };
 
-// Structural stand-in for the Bun global, read lazily so node imports never touch it.
-type BunLike = {
-  spawn(options: {
-    cmd: string[];
-    cwd?: string;
-    stdin?: string;
-    stdout?: string;
-    stderr?: string;
-  }): {
-    stdin: { write(data: string): void; end(): void };
-    stdout: ReadableStream<Uint8Array>;
-    exited: Promise<number>;
-  };
-};
-
-// Whitespace collapsed, trimmed, capped — the shape every log line and persisted error
-// string shares (appendLog collapses again; that pass is idempotent).
+// Whitespace collapsed, trimmed, capped — the shape every log line shares (appendLog
+// collapses again; that pass is idempotent).
 const collapse = (text: string, max = 300): string => text.replace(/\s+/g, " ").trim().slice(0, max);
 
 // The finished message's text: string content, or text-block content joined by newlines.
@@ -114,35 +116,6 @@ export function buildStopPayload(event: StopEvent, cwd: string): string {
   });
 }
 
-// Fail-open counter, mirroring the live adapter's heartbeat (newdle-hooks.ts:368-384, 428-431)
-// without its dependencies: every fail-open is counted so a dead adapter is distinguishable
-// from a healthy one. Persisted rather than in-memory (the live one dies with its process and
-// loses the tally); a corrupt or missing file reads as 0 — the counter itself fails open.
-export function makeFailOpenCounter(stateDir: string): { record(err: unknown): number } {
-  const file = join(stateDir, "omp-adapter-failures.json");
-  const read = (): number => {
-    try {
-      const parsed = JSON.parse(readFileSync(file, "utf8")) as { count?: unknown };
-      if (parsed && typeof parsed.count === "number") return parsed.count;
-    } catch {
-      // missing or corrupt → 0; the counter must never be the thing that breaks
-    }
-    return 0;
-  };
-  return {
-    record(err: unknown): number {
-      const count = read() + 1;
-      try {
-        mkdirSync(stateDir, { recursive: true });
-        writeFileSync(file, JSON.stringify({ count, lastError: collapse(String(err)), at: new Date().toISOString() }));
-      } catch {
-        // lost by design, same ruling as appendLog below
-      }
-      return count;
-    },
-  };
-}
-
 // One line in the plugin's shared state dir, appendLog-compatible (lib/state.mjs:46-53):
 // ISO timestamp, whitespace collapsed, trailing newline, mkdir -p, never throws — a read-only
 // home must not turn a fail-open adapter into a crashing one. Same file names as the CLI, so
@@ -157,35 +130,64 @@ function appendLog(dir: string, file: string, text: string): void {
 }
 
 // The spawn, mirroring the live adapter's proven shape (newdle-hooks.ts:186-210): sh -lc,
-// node, payload on stdin, stdout parsed as JSON. Bun is read LAZILY from globalThis so a node
-// import never touches it. Failure semantics differ from the live runCommand on purpose: a
-// non-zero exit or unparseable stdout THROWS instead of dissolving into undefined, because
-// this adapter counts and logs every fail-open rather than silently passing.
-async function defaultRunCli(payload: string, cwd: string): Promise<CliVerdict | undefined> {
-  const globals = globalThis as { Bun?: BunLike }; // unchecked cast: host global, absent under node
-  const bun = globals.Bun;
-  if (!bun) throw new Error("omp-adapter: no Bun runtime — the default spawn needs the omp host");
+// node, payload on stdin, stdout parsed as JSON. Failure semantics differ from the live
+// runCommand on purpose: a non-zero exit or unparseable stdout REJECTS instead of dissolving
+// into undefined, because this adapter logs every fail-open rather than silently passing.
+// The timeout lives here, next to the child it has to kill. detached puts sh/node and every
+// judge the core spawns in one fresh process group, so one negative-pid SIGKILL reaps them
+// all without touching the host's own group.
+function defaultRunCli(payload: string, cwd: string, timeoutMs: number): Promise<CliVerdict | undefined> {
   const root = process.env.COMMUNICATION_RULES_PLUGIN_ROOT ?? DEFAULT_PLUGIN_ROOT;
-  const child = bun.spawn({
-    cmd: ["sh", "-lc", `node "${root}/hooks/communication-rules-stop.mjs"`],
+  const { promise, resolve, reject } = Promise.withResolvers<CliVerdict | undefined>();
+  const child = spawn("sh", ["-lc", `node "${root}/hooks/communication-rules-stop.mjs"`], {
     cwd,
-    stdin: "pipe",
-    stdout: "pipe",
-    stderr: "pipe",
+    detached: true,
+    stdio: ["pipe", "pipe", "ignore"],
   });
-  child.stdin.write(payload);
-  child.stdin.end();
-  const stdout = await new Response(child.stdout).text();
-  const exitCode = await child.exited;
-  if (exitCode !== 0) {
-    throw new Error(`omp-adapter: CLI exited ${exitCode}${stdout.trim() ? `: ${collapse(stdout)}` : " with no output"}`);
-  }
-  if (!stdout.trim()) return undefined; // the CLI's documented quiet path: no verdict, exit 0
-  return JSON.parse(stdout) as CliVerdict;
+  let stdout = "";
+  let settled = false;
+  const settle = (finish: () => void): void => {
+    if (settled) return;
+    settled = true;
+    clearTimeout(timer);
+    finish();
+  };
+  const timer = setTimeout(() => {
+    try {
+      if (child.pid) process.kill(-child.pid, "SIGKILL");
+    } catch {
+      // the group already exited between the last event and this timer
+    }
+    settle(() => reject(new Error(`omp-adapter: CLI timed out after ${timeoutMs}ms`)));
+  }, timeoutMs);
+  child.stdout.setEncoding("utf8");
+  child.stdout.on("data", (chunk: string) => {
+    stdout += chunk;
+  });
+  child.on("error", (err) => settle(() => reject(err)));
+  child.on("close", (code, signal) =>
+    settle(() => {
+      if (code !== 0) {
+        const detail = stdout.trim() ? `: ${collapse(stdout)}` : " with no output";
+        reject(new Error(`omp-adapter: CLI exited ${code ?? signal}${detail}`));
+      } else if (!stdout.trim()) {
+        resolve(undefined); // the CLI's documented quiet path: no verdict, exit 0
+      } else {
+        try {
+          resolve(JSON.parse(stdout) as CliVerdict);
+        } catch (err) {
+          reject(err);
+        }
+      }
+    }),
+  );
+  child.stdin.on("error", () => {}); // a CLI that exits before reading stdin is not a crash
+  child.stdin.end(payload);
+  return promise;
 }
 
 // The whole gate. deps exists so node --test can inject a fake runCli, a temp stateDir, and a
-// tight timeoutMs — the default spawn is Bun-only by nature and is never exercised under node.
+// tight timeoutMs; the default spawn runs under node too, so the real path is tested as well.
 export async function sessionStopHandler(
   event: StopEvent,
   ctx: { cwd: string },
@@ -195,24 +197,13 @@ export async function sessionStopHandler(
   try {
     if (event?.stop_hook_active) return undefined; // host loop guard; the CLI is never invoked
     const runCli = deps?.runCli ?? defaultRunCli;
-    const timeoutMs = deps?.timeoutMs ?? CLI_TIMEOUT_MS;
-    let timer: NodeJS.Timeout | undefined;
-    const expired = new Promise<never>((_, reject) => {
-      timer = setTimeout(() => reject(new Error(`omp-adapter: CLI timed out after ${timeoutMs}ms`)), timeoutMs);
-    });
-    let verdict: CliVerdict | undefined;
-    try {
-      verdict = await Promise.race([runCli(buildStopPayload(event, ctx.cwd), ctx.cwd), expired]);
-    } finally {
-      clearTimeout(timer); // no lingering timer on the healthy path
-    }
+    const verdict = await runCli(buildStopPayload(event, ctx.cwd), ctx.cwd, deps?.timeoutMs ?? CLI_TIMEOUT_MS);
     if (verdict?.decision === "block" && typeof verdict.reason === "string" && verdict.reason) {
       if (process.env.COMMUNICATION_RULES_OMP_MODE === "block") return { decision: "block", reason: verdict.reason };
       appendLog(stateDir, "warnings.log", `rule=omp-adapter mode=warn-only reason=${collapse(verdict.reason)}`);
     }
     return undefined; // quiet or non-block verdict: nothing to gate, nothing to log
   } catch (err) {
-    makeFailOpenCounter(stateDir).record(err);
     const detail = err instanceof Error ? err.message : String(err);
     appendLog(stateDir, "errors.log", `omp-adapter fail-open: ${detail}`);
     return undefined;

@@ -1,28 +1,27 @@
 // communication-rules-omp.test.mjs — node --test
 //
-// Hermetic by construction: every handler test injects its own temp stateDir and a fake
-// runCli, so the real HOME, the real plugin state dir, and the real CLI are never touched.
-// The default runCli is Bun-only (it lives for the omp host), so its failure semantics —
-// throw on crash, throw on non-zero exit, throw on unparseable stdout — are reproduced by
-// the fakes; what these tests prove is the handler's contract around them.
+// Hermetic by construction: every test injects its own temp stateDir, so the real plugin
+// state dir is never touched. Most handler tests inject a fake runCli to pin the handler's
+// contract. The failure-path and integration tests run the REAL default spawn
+// (node:child_process, the same code the omp host runs): a stand-in core under a temp plugin
+// root reproduces junk stdout and a hang, and one test spawns this checkout's real
+// hooks/communication-rules-stop.mjs under a temp HOME with no profile.
 //
 // Importing the .ts subject directly is itself a test: node v24.13 strips the erasable types
 // and loads the module without Bun.
 //
-// Run: node --test plugins/communication-rules/omp/
+// Run, from plugins/communication-rules/: node --test
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { existsSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-
-
+import { fileURLToPath } from "node:url";
 
 import communicationRulesOmp, {
   assistantText,
   buildStopPayload,
-  makeFailOpenCounter,
   sessionStopHandler,
 } from "./communication-rules-omp.ts";
 
@@ -31,8 +30,6 @@ import communicationRulesOmp, {
 delete process.env.COMMUNICATION_RULES_OMP_MODE;
 
 const mkstate = () => mkdtempSync(join(tmpdir(), "omp-adapter-state-"));
-const counterFile = (dir) => join(dir, "omp-adapter-failures.json");
-const readCount = (dir) => JSON.parse(readFileSync(counterFile(dir), "utf8")).count;
 
 const readLog = (dir, name) => {
   const p = join(dir, name);
@@ -55,6 +52,52 @@ const event = (over = {}) => ({
 const ctx = { cwd: "/work/canary" };
 const lines = (text) => text.split("\n").filter(Boolean);
 
+// ─── real-spawn helpers ───────────────────────────────────────────────────────────────
+// The default runCli spawns node "$COMMUNICATION_RULES_PLUGIN_ROOT/hooks/communication-rules-stop.mjs"
+// with the handler's process.env. PLUGIN_ROOT is this checkout's real core; fakeCore builds a
+// stand-in root whose hook runs `source`.
+const PLUGIN_ROOT = fileURLToPath(new URL("..", import.meta.url));
+const spawnCtx = { cwd: tmpdir() }; // the spawn needs a cwd that exists
+
+const fakeCore = (source) => {
+  const root = mkdtempSync(join(tmpdir(), "omp-adapter-core-"));
+  mkdirSync(join(root, "hooks"));
+  writeFileSync(join(root, "hooks", "communication-rules-stop.mjs"), source);
+  return root;
+};
+
+// Sets env vars for the duration of fn (undefined deletes one), then restores them. The
+// child inherits process.env at spawn time, so this is how HOME and the root reach it.
+const withEnv = async (vars, fn) => {
+  const saved = Object.fromEntries(Object.keys(vars).map((k) => [k, process.env[k]]));
+  const apply = (values) => {
+    for (const [k, v] of Object.entries(values)) {
+      if (v === undefined) delete process.env[k];
+      else process.env[k] = v;
+    }
+  };
+  apply(vars);
+  try {
+    return await fn();
+  } finally {
+    apply(saved);
+  }
+};
+
+// true once kill(pid, 0) reports ESRCH; polls up to 2s so the kernel can reap the zombie.
+const isGone = async (pid) => {
+  for (let i = 0; i < 40; i++) {
+    try {
+      process.kill(pid, 0);
+    } catch (err) {
+      if (err.code === "ESRCH") return true;
+      throw err;
+    }
+    await new Promise((r) => setTimeout(r, 50));
+  }
+  return false;
+};
+
 // ─── host loop guard ──────────────────────────────────────────────────────────────────
 
 test("stop_hook_active short-circuits and the CLI is never invoked", async () => {
@@ -72,7 +115,6 @@ test("stop_hook_active short-circuits and the CLI is never invoked", async () =>
   assert.equal(calls, 0, "the fake CLI must not run");
   assert.equal(readLog(dir, "warnings.log"), "");
   assert.equal(readLog(dir, "errors.log"), "");
-  assert.ok(!existsSync(counterFile(dir)), "short-circuit is not a failure; counter untouched");
 });
 
 // ─── warn-only downgrade (the default) ────────────────────────────────────────────────
@@ -91,7 +133,6 @@ test("CLI block verdict downgrades to exactly one warnings.log line in warn mode
   assert.ok(warn.includes("Name the artifact"), "the reason rides the line");
   assert.ok(warn.endsWith("\n"), "appendLog shape: trailing newline");
   assert.equal(readLog(dir, "errors.log"), "", "a downgrade is not a failure");
-  assert.ok(!existsSync(counterFile(dir)), "counter untouched on the warn path");
 });
 
 test("warn reason collapses whitespace and caps at 300 chars", async () => {
@@ -117,7 +158,6 @@ test("re-run safety: identical verdicts produce one warn line per call, no cross
   const warn = readLog(dir, "warnings.log");
   assert.equal(lines(warn).length, 2);
   assert.ok(lines(warn).every((l) => l.includes("rule=omp-adapter mode=warn-only")));
-  assert.ok(!existsSync(counterFile(dir)));
 });
 
 // ─── the mode flip ─────────────────────────────────────────────────────────────────────
@@ -173,22 +213,20 @@ test("quiet and non-block verdicts return undefined with nothing logged", async 
     assert.equal(out, undefined);
     assert.equal(readLog(dir, "warnings.log"), "");
     assert.equal(readLog(dir, "errors.log"), "");
-    assert.ok(!existsSync(counterFile(dir)));
   }
 });
 
-// ─── failure paths: counter + one errors.log line + undefined ──────────────────────────
+// ─── failure paths: one errors.log line + undefined ────────────────────────────────────
 
 const assertFailOpen = (dir, out, fragment) => {
   assert.equal(out, undefined, "every failure path returns undefined");
-  assert.equal(readCount(dir), 1, "counter incremented exactly once");
   const errors = readLog(dir, "errors.log");
   assert.equal(lines(errors).length, 1, "exactly one errors.log line");
   assert.match(errors, /omp-adapter fail-open: /);
   assert.ok(errors.includes(fragment), `the error detail rides the line: expected "${fragment}"`);
 };
 
-test("crashing CLI → undefined, counter 1, one errors.log line", async () => {
+test("crashing CLI → undefined, one errors.log line", async () => {
   const dir = mkstate();
   const out = await sessionStopHandler(event(), ctx, {
     stateDir: dir,
@@ -201,50 +239,72 @@ test("crashing CLI → undefined, counter 1, one errors.log line", async () => {
   assert.equal(readLog(dir, "warnings.log"), "");
 });
 
-test("junk stdout → undefined, counter 1, one errors.log line", async () => {
+test("junk stdout through the real spawn → undefined, one errors.log line with JSON.parse's error", async () => {
   const dir = mkstate();
-  // the default spawn throws on unparseable stdout (deliberately, unlike the live
-  // runCommand); the fake reproduces that throw
-  const out = await sessionStopHandler(event(), ctx, {
-    stateDir: dir,
-    runCli: async () => {
-      throw new Error("omp-adapter: CLI stdout unparseable: <html>");
+  const root = fakeCore(`process.stdout.write("<html>");`); // exits 0 with unparseable stdout
+  const out = await withEnv({ COMMUNICATION_RULES_PLUGIN_ROOT: root }, () =>
+    sessionStopHandler(event(), spawnCtx, { stateDir: dir, timeoutMs: 10_000 }),
+  );
+  assertFailOpen(dir, out, "JSON"); // node: `… is not valid JSON`; bun: `JSON Parse error: …`
+});
+
+test("timeout through the real spawn → undefined, one errors.log line, the CLI and its child both dead", async () => {
+  const dir = mkstate();
+  const pidFile = join(dir, "pids.json");
+  // A stand-in core that hangs, with a child of its own — the shape of a core waiting on a judge.
+  const root = fakeCore(`
+import { spawn } from "node:child_process";
+import { writeFileSync } from "node:fs";
+const judge = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], { stdio: "ignore" });
+writeFileSync(${JSON.stringify(pidFile)}, JSON.stringify({ core: process.pid, judge: judge.pid }));
+setInterval(() => {}, 1000);
+`);
+  const out = await withEnv({ COMMUNICATION_RULES_PLUGIN_ROOT: root }, () =>
+    sessionStopHandler(event(), spawnCtx, { stateDir: dir, timeoutMs: 1_500 }),
+  );
+  assertFailOpen(dir, out, "timed out after 1500ms");
+  const { core, judge } = JSON.parse(readFileSync(pidFile, "utf8"));
+  const coreGone = await isGone(core);
+  const judgeGone = await isGone(judge);
+  for (const pid of [core, judge]) {
+    try {
+      process.kill(pid, "SIGKILL"); // a regression must fail this test, not hang the run on a live child
+    } catch {
+      // already gone: the expected case
+    }
+  }
+  assert.ok(coreGone, `core pid ${core} outlived the timeout`);
+  assert.ok(judgeGone, `the core's child pid ${judge} outlived the timeout`);
+});
+
+// ─── integration: the real spawn against the real core ─────────────────────────────────
+
+const body = (n) => "This sentence is ordinary body prose carrying findings and context. ".repeat(n);
+// Violates needs-you-first (substantive prose before the marker) — the core's own fixture shape.
+const misordered = `${body(6)}\n\n## Needs you\n\nApprove the deploy before Friday.\n\n${body(2)}`;
+
+test("integration: real spawn + real core, temp HOME, no profile → undefined and the core's own warn line", async () => {
+  const home = mkdtempSync(join(tmpdir(), "omp-adapter-home-"));
+  const stateDir = join(home, ".claude", ".communication-rules-state"); // the core's own state dir under HOME
+  const out = await withEnv(
+    {
+      HOME: home,
+      COMMUNICATION_RULES_PLUGIN_ROOT: PLUGIN_ROOT,
+      COMMUNICATION_RULES_PROFILE: undefined,
+      COMMUNICATION_RULES_ENFORCE: undefined,
     },
-    timeoutMs: 1_000,
-  });
-  assertFailOpen(dir, out, "unparseable");
-});
-
-test("timeout → undefined, counter 1, one errors.log line", async () => {
-  const dir = mkstate();
-  const out = await sessionStopHandler(event(), ctx, {
-    stateDir: dir,
-    runCli: () => new Promise(() => {}), // never resolves
-    timeoutMs: 20,
-  });
-  assertFailOpen(dir, out, "timed out after 20ms");
-});
-
-// ─── the fail-open counter ─────────────────────────────────────────────────────────────
-
-test("counter persists across makeFailOpenCounter instances", () => {
-  const dir = mkstate();
-  const a = makeFailOpenCounter(dir);
-  assert.equal(a.record(new Error("one")), 1);
-  const b = makeFailOpenCounter(dir);
-  assert.equal(b.record(new Error("two")), 2);
-  assert.equal(a.record(new Error("three")), 3, "a stale instance still sees fresh state");
-  const state = JSON.parse(readFileSync(counterFile(dir), "utf8"));
-  assert.equal(state.count, 3);
-  assert.equal(state.lastError, "Error: three");
-  assert.ok(typeof state.at === "string" && state.at, "an ISO timestamp is recorded");
-});
-
-test("corrupt counter file resets to 0 and recovers on the next record", () => {
-  const dir = mkstate();
-  writeFileSync(counterFile(dir), "{not json", "utf8");
-  assert.equal(makeFailOpenCounter(dir).record(new Error("x")), 1, "corrupt reads as 0, then increments");
-  assert.equal(readCount(dir), 1, "the file is valid JSON again after the record");
+    () =>
+      sessionStopHandler(
+        event({ session_file: join(home, "absent.jsonl"), last_assistant_message: { content: misordered } }),
+        { cwd: home },
+        { stateDir, timeoutMs: 10_000 },
+      ),
+  );
+  assert.equal(out, undefined, "no profile: every rule warns, so no block reaches the host");
+  assert.equal(readLog(stateDir, "errors.log"), "", "the spawn did not fail open");
+  const warn = readLog(stateDir, "warnings.log");
+  assert.match(warn, /rule=needs-you-first/, "the real core ran under the temp HOME and logged its own finding");
+  assert.ok(!warn.includes("rule=omp-adapter"), "a warn verdict is the core's line, not an adapter downgrade");
 });
 
 // ─── pure helpers ──────────────────────────────────────────────────────────────────────
