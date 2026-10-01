@@ -57,9 +57,12 @@ only when no card is `open` or `not-ready`; until then, say the work is unfinish
 
 ## Ending pairing
 
+A done roadmap does not end pairing. After the final read-back, tell your partner the roadmap
+is done and keep the gate closed: propose nothing further unless they ask for more.
+
 Only your partner ends pairing, by typing `pair stop` as a message of its own; no tool of yours
-ends it. When the roadmap is done or they want to stop, tell them to type `pair stop`, then give
-a closing summary. The gate ends pairing in any phase, including mid change set. It ignores the
+ends it. When they say they want to end pairing, ask them to type `pair stop`, then give a
+closing summary. The gate ends pairing in any phase, including mid change set. It ignores the
 same words when they were injected, or on Claude Code typed while a tool was running.
 
 After `/clear` (and on OMP `/new`, `/fork` or `/resume`) pairing stays closed: any open change
@@ -138,9 +141,13 @@ this session. The host's own write, edit, shell, eval and sub-agent tools are re
 any tool the gate does not know.
 
 When the `pair_*` tools are not installed, the contract holds as conversation. Run every phase
-as written, keep the roadmap in the conversation, and hold every write to the agreed boundary
-yourself: use the host's tools only inside an open change set, and show the real diff of the
-boundary files from version control in the read-back.
+as written and keep the roadmap in the conversation. Use the host's read-only tools for
+exploration at any time; use tools that modify files only inside an agreed change set and
+within its boundary. Before the first write of each change set, save the boundary files'
+contents, and whether each exists, as that change set's baseline. In the read-back, show the
+diff from that baseline, including added and deleted files, not the diff from version control;
+list edits that predate the baseline, yours from earlier change sets or your partner's,
+separately. Pairing ends when your partner says so.
 
 ## XP practices: purpose kept, mechanism changed
 
