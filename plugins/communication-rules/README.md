@@ -43,14 +43,20 @@ text entry (Claude Code) — and enforces:
 
 | Rule | Instrument | Default mode |
 |---|---|---|
-| Needs you first | deterministic (`checkNeedsYouFirst`) | block |
-| One closing ask, last | deterministic (`checkClosingAskLast`) | block |
-| Do not batch by label | trigger + judge | block |
-| Conclusion first | trigger + judge | block |
-| Name the artifact | deterministic (`checkNamesArtifact`) | **warn** |
-| Restate a resumed thread | injector marker + judge | block |
-| Report what you did not do | todo trigger + judge | block |
-| Bad news in the first sentence | lexicon gate + judge | block |
+| Needs you first | deterministic (`checkNeedsYouFirst`) | warn |
+| One closing ask, last | deterministic (`checkClosingAskLast`) | warn |
+| Do not batch by label | trigger + judge | warn |
+| Conclusion first | trigger + judge | warn |
+| Name the artifact | deterministic (`checkNamesArtifact`) | warn |
+| Restate a resumed thread | injector marker + judge | warn |
+| Report what you did not do | todo trigger + judge | warn |
+| Bad news in the first sentence | lexicon gate + judge | warn |
+
+Every rule defaults to warn: findings land in `warnings.log` and nothing blocks until the
+profile arms it, globally (`enforcement.mode: "block"`) or per rule
+(`enforcement.rules[rule]: "block"`). The default is measured, not cautious — the 2026-09-21
+corpus adjudication found no rule whose false-positive rate supports blocking by default;
+the rates and the path to re-earn block are in `reference.md`.
 
 A model-graded check that runs automatically inside a hook is still machinery: it fires on a
 deterministic trigger, it returns pass or fail, and every dispatch failure mode (timeout,
@@ -127,7 +133,7 @@ prose in later paragraphs is the overtime finding.
 `checks/name-the-artifact.mjs` — a report-shaped message (400+ substantive chars, speaking
 in report verbs) that names no path, `file:line`, fenced block, inline code, URL, or
 command-looking line. This is a vocabulary check — it answers "does the message name an
-artifact", never "is the artifact right" — which is why it ships in warn mode.
+artifact", never "is the artifact right".
 
 The judge-gated rules and their triggers are documented in `reference.md`, including the one
 boundary stated plainly: **report-what-you-did-not-do is enforced exactly where a todo list
