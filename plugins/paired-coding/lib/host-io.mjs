@@ -358,15 +358,28 @@ export function reapGroups(pgids, { timeoutMs = 3000 } = {}) {
 
 /**
  * Write `content` to the absolute `path` from inside the Seatbelt `profile`, creating missing
- * parent directories there too. The kernel checks the resolved target of every create and write,
- * so a path that a swapped symlink turns toward somewhere the profile denies fails instead of
- * landing. Synchronous: pair_write and pair_edit run under the session lock.
- * @param {{ profile: string, path: string, content: string }} opts
+ * parent directories there too. The content goes to `tempPath` (a new file in the same
+ * directory, created exclusively) and is renamed over `path`, so the write never goes through
+ * the target's existing inode: a hard link or a symlink at `path` is replaced, and the file it
+ * pointed at is left as it was. An existing target's permission bits are kept. The kernel checks
+ * the resolved path of every create and rename, so a parent directory a swapped symlink turns
+ * toward somewhere the profile denies fails instead of landing. Synchronous: pair_write and pair_edit
+ * run under the session lock.
+ * @param {{ profile: string, path: string, tempPath: string, content: string }} opts
  * @returns {{ ok: boolean, error?: string }}
  */
 export function writeSandboxed(opts) {
-  const script = '/bin/mkdir -p -- "${1%/*}" && /bin/cat > "$1"';
-  const res = spawnSync("/usr/bin/sandbox-exec", ["-p", opts.profile, "/bin/sh", "-c", script, "pair-write", opts.path], {
+  const script = [
+    "set -eC",
+    'p="$1"; t="$2"',
+    '/bin/mkdir -p -- "${p%/*}"',
+    "trap '/bin/rm -f -- \"$t\"' EXIT",
+    'if [ -d "$p" ]; then echo "the target is a directory" >&2; exit 1; fi',
+    '/bin/cat > "$t"',
+    'if [ -f "$p" ]; then /bin/chmod "$(/usr/bin/stat -L -f %Lp -- "$p")" "$t"; fi',
+    '/bin/mv -f -- "$t" "$p"',
+  ].join("\n");
+  const res = spawnSync("/usr/bin/sandbox-exec", ["-p", opts.profile, "/bin/sh", "-c", script, "pair-write", opts.path, opts.tempPath], {
     input: Buffer.from(opts.content, "utf8"),
     stdio: ["pipe", "ignore", "pipe"],
     timeout: 30_000,

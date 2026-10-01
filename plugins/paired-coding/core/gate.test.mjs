@@ -1005,6 +1005,23 @@ describe("adversarial 13: open keeps every write inside the boundary", () => {
       dirs.cleanup();
     }
   });
+
+  test("pair_run cannot make a hard link in either phase, even between two paths it may write", { skip: liveSkip }, () => {
+    const dirs = liveDirs();
+    try {
+      writeFileSync(join(dirs.base, "secret.txt"), "secret");
+      const closed = liveState(dirs, "closed");
+      assert.notEqual(sandboxed(closed, `ln ${dirs.base}/secret.txt ${dirs.base}/link.txt`, dirs.base).status, 0);
+      assert.equal(existsSync(join(dirs.base, "link.txt")), false);
+      const open = liveState(dirs, "open", ["src/a.ts", "src/link.ts"]);
+      assert.notEqual(sandboxed(open, `ln ${dirs.base}/secret.txt src/link.ts`, dirs.root).status, 0);
+      assert.equal(existsSync(join(dirs.root, "src", "link.ts")), false);
+      const sym = sandboxed(open, `ln -s ${dirs.base}/secret.txt src/link.ts`, dirs.root);
+      assert.equal(sym.status, 0, sym.stderr);
+    } finally {
+      dirs.cleanup();
+    }
+  });
 });
 
 describe("adversarial 14: no write lands after the read-back", () => {

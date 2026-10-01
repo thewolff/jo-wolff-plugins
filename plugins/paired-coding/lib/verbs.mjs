@@ -408,7 +408,10 @@ function writeVerb(name, args, ctx) {
     }
     // The write itself runs under the open-phase Seatbelt profile, so the kernel checks the
     // resolved target: a symlink swapped in after checkWrite cannot carry it out of the boundary.
-    const w = writeSandboxed({ profile: pairWriteProfile(s), path: c.absPath, content: text });
+    // It is staged in a new file beside the target and renamed over it, so a hard link at the
+    // target is replaced rather than written through to a file outside the boundary.
+    const tempPath = join(dirname(c.absPath), `.pair-write-${randomBytes(8).toString("hex")}.tmp`);
+    const w = writeSandboxed({ profile: pairWriteProfile(s, tempPath), path: c.absPath, tempPath, content: text });
     if (!w.ok) {
       appendJournal(dir, [{ type: "refusal", verb: name, path: String(args.path), reason: `the sandboxed write failed: ${w.error}`, at: new Date().toISOString() }]);
       return fail(name, `the sandboxed write failed: ${w.error}`);
