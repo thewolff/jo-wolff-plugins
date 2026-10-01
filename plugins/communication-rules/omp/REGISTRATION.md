@@ -66,11 +66,15 @@ Environment and profile at registration:
   stop came from OMP. Claude Code never sets it.
 - `enforcement.armOmp` in the shared profile (`~/.claude/communication-rules.json`) —
   **leave it absent or `false` for the first live run.** Absent, `false`, or any non-boolean
-  (which also writes one `errors.log` line) means OMP seats warn on every rule, whatever the
-  profile's `mode` and `rules` say. Setting it to `true` is the deliberate arming act — the
-  moment OMP seats start actually gating turns. That is Jo's call, not the installer's.
-  Armed, a stop that carries `stop_hook_active` is still checked but can only warn, so one
-  stop is blocked at most once.
+  (which also writes one `errors.log` line on an OMP stop) means OMP seats warn on every
+  rule, whatever the profile's `mode` and `rules` say. Setting it to `true` is the
+  deliberate arming act — the moment OMP seats start actually gating turns. That is Jo's
+  call, not the installer's. Armed, the revision that follows this plugin's own block is
+  still checked but can only warn, so the plugin blocks at most once per continuation
+  chain. OMP's `stop_hook_active` is set after any extension's continuation, so another
+  extension's `continue: true` does not count: the adapter forwards `true` to the core only
+  when the host flag is set and the adapter's own previous result for that session was a
+  block (an in-memory set of session ids, one per omp process).
 
 ## Exact reversal
 

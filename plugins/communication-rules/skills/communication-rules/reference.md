@@ -79,7 +79,10 @@ Order of operations, each early return silent:
 8. **Harness cap** — only when the env carries `COMMUNICATION_RULES_HARNESS=omp` (the OMP
    adapter sets it on its child; Claude Code never does). Every block-mode finding becomes
    warn when `enforcement.armOmp` is not `true`, or when it is and the payload carries
-   `stop_hook_active`: a revision after a block is re-checked but never blocked twice.
+   `stop_hook_active`: a revision after a block is re-checked but never blocked twice. On
+   OMP that payload flag is the adapter's, not the host's: OMP sets its own flag after any
+   extension's continuation, so the adapter sends `true` only when the host flag is set and
+   its previous result for the session was a block.
 9. One block-mode finding emits the block and records the hash; warn findings, capped ones
    included, → `warnings.log` with their real rule id. Reasons name the rule, say what to
    move or add, and ask for corrected lines only — never a resend of the whole message.
@@ -202,10 +205,11 @@ optional; an empty object is valid and yields the defaults.
 - **`enforcement.rules`** — per-rule mode overrides; beat the global mode and built-ins.
 - **`enforcement.armOmp`** — boolean, default `false`. Read only under the OMP harness tag
   (stop-hook step 8): `true` lets OMP seats block on a first stop; anything else keeps them
-  at warn. A non-boolean is one `errors.log` line and reads as `false`.
+  at warn. Under the tag a non-boolean is one `errors.log` line and reads as `false`;
+  without the tag the field is never read, so a malformed value logs nothing.
 - Precedence: kill-switch file > `rules[rule]` > explicit `mode` > built-in default, then
-  the OMP harness cap last (OMP seats only: unarmed → warn; armed + `stop_hook_active` →
-  warn). The same-text loop guard precedes all of it.
+  the OMP harness cap last (OMP seats only: unarmed → warn; armed + a revision after this
+  plugin's own block → warn). The same-text loop guard precedes all of it.
 
 A missing file or field is silent defaults. An unparseable file, or a value of the wrong
 shape, is defaults plus one `errors.log` line — a config failure reads exactly like a

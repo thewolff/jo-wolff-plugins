@@ -64,9 +64,11 @@ dead.
 A block names the rule, states exactly what to move or add, and asks for the corrected lines
 only — never a resend of the whole message. The loop guard records the blocked text's hash
 per session, so the same message arriving again with `stop_hook_active` passes: a model that
-ignores the reason cannot loop forever. On an OMP seat the cap is tighter: a revision that
-arrives with `stop_hook_active` is checked again but can only warn, so one stop is blocked
-at most once (see `armOmp` below).
+ignores the reason cannot loop forever. On an OMP seat the cap is tighter: once this plugin
+has blocked, the revision that follows is checked again but can only warn, so this plugin
+blocks at most once per continuation chain (see `armOmp` below). OMP marks a stop
+`stop_hook_active` after any extension's continuation, so the adapter tracks its own last
+block per session and tells the core about that, not about the host's flag.
 
 **Kill switch:** `touch ~/.claude/.communication-rules-off` disables enforcement within one
 turn (checked per invocation, never cached). `COMMUNICATION_RULES_ENFORCE=off` is a
@@ -107,15 +109,17 @@ optional; an empty object is valid.
   2026-09-21 (`claude -p` was probed the same day and its OAuth was expired).
 - **`rules`** — per-rule mode overrides beating both the global mode and built-ins.
 - **`armOmp`** — `true` lets OMP seats block; absent or `false` means OMP seats warn
-  whatever the modes above say. A non-boolean is one `errors.log` line and reads as
-  `false`. It applies only when the hook runs with `COMMUNICATION_RULES_HARNESS=omp`, which
-  the OMP adapter (`omp/communication-rules-omp.ts`) sets on its child; Claude Code never
-  sets it, so Claude Code ignores this field. Armed, an OMP seat still never blocks a stop
-  that carries `stop_hook_active`: a revision after a block is re-checked and warns.
+  whatever the modes above say. It is read only when the hook runs with
+  `COMMUNICATION_RULES_HARNESS=omp`, which the OMP adapter (`omp/communication-rules-omp.ts`)
+  sets on its child; Claude Code never sets it, so Claude Code ignores this field, a
+  malformed value included. Under the tag, a non-boolean is one `errors.log` line and reads
+  as `false`. Armed, an OMP seat still never blocks the revision that follows this plugin's
+  own block: it is re-checked and warns.
 - Precedence overall: kill-switch file > `rules[rule]` > explicit `mode` > built-in
   default, and then, on OMP seats only, the harness cap turns the resulting block into a
-  warn (unarmed, or armed on a `stop_hook_active` revision). The same-text loop guard runs
-  before any of the modes are consulted, so an identical repeat passes on both harnesses.
+  warn (unarmed, or armed on a revision after this plugin's own block). The same-text loop
+  guard runs before any of the modes are consulted, so an identical repeat passes on both
+  harnesses.
 - The injection half reads `reader` and `traits`. The check options (`markers`,
   `minProseChars`, `graceChars`, `headings`, `lexicon`, `reportVerbs`) are NOT profile
   fields — they remain call-site arguments, and the hook calls every check on its defaults.
@@ -169,11 +173,11 @@ batching.
 node --test plugins/communication-rules/checks/*.test.mjs plugins/communication-rules/triggers/*.test.mjs plugins/communication-rules/judge/*.test.mjs plugins/communication-rules/hooks/*.test.mjs
 ```
 
-133 tests, all passing. The proportion is deliberate: the majority prove what does NOT flag
-— a structural check earns its place by what it leaves alone. The hook suites run the hooks
-as subprocesses against an isolated `$HOME`, covering the kill switch, the loop guard, both
-stdin shapes, mode precedence, marker consumption, and fail-open on malformed input. The
-judge suite drives only fake judges — no real CLI, no bill.
+The suite is expected to pass in full. The proportion is deliberate: most tests prove what
+does NOT flag — a structural check earns its place by what it leaves alone. The hook suites
+run the hooks as subprocesses against an isolated `$HOME`, covering the kill switch, the
+loop guard, both stdin shapes, mode precedence, marker consumption, and fail-open on
+malformed input. The judge suite drives only fake judges — no real CLI, no bill.
 
 ## License
 
