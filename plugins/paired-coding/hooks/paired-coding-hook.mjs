@@ -12,13 +12,15 @@
 //   stop                record every queued turn. A typed "pair stop" in a turn that made no tool
 //                       call ends pairing here, before the next turn's first tool call.
 //   session-end         reap pair_run process groups, final snapshot, go inactive. With reason
-//                       "clear" while pairing, leave a carry marker for the worktree.
-//   session-start       with source "clear" and a live carry marker for this worktree, activate
+//                       "clear" or "resume" (/clear, /resume, /branch) while pairing, leave a
+//                       carry marker for the worktree.
+//   session-start       with source "clear", "resume" or "fork" and a live carry marker for this
+//                       worktree, or source "fork" from a session that is still pairing, activate
 //                       the new session closed (core carryClosed).
 //
 // Inert until pair_start: for a session with no activation marker every event exits 0 with no
 // output and touches no file, except that a call of this plugin's own pair_* tools is bound and
-// a cleared session's start looks for a carry marker.
+// a cleared, resumed or forked session's start looks for the session it replaced.
 
 import { appendFileSync, closeSync, fstatSync, openSync, readFileSync, readSync, realpathSync, rmSync } from "node:fs";
 import { join } from "node:path";
@@ -29,6 +31,15 @@ import { carryInto, endSession, pairingCarry, recordTrustedInput, sessionDirFor,
 import { HOST_ALLOW, bareToolName, writeBinding } from "../server/binding.mjs";
 
 const sleepSync = (ms) => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+
+/** SessionEnd reasons that replace the session in the same process: leave a carry marker. */
+const CARRY_END = new Set(["clear", "resume"]);
+/** SessionStart sources that replace an earlier session, and how the closed note names it. */
+const CARRY_START = new Map([
+  ["clear", "when the conversation was cleared"],
+  ["resume", "in the session you switched away from"],
+  ["fork", "in the session this one was forked from"],
+]);
 
 /** Read the tail of a file (the newest transcript entries are at the end). */
 function readTail(path, bytes = 2 * 1024 * 1024) {
@@ -41,6 +52,42 @@ function readTail(path, bytes = 2 * 1024 * 1024) {
     return buf.toString("utf8");
   } finally {
     closeSync(fd);
+  }
+}
+
+/** Read the head of a file (a forked transcript's copied entries come first). */
+function readHead(path, bytes = 1024 * 1024) {
+  const fd = openSync(path, "r");
+  try {
+    const buf = Buffer.alloc(Math.min(fstatSync(fd).size, bytes));
+    readSync(fd, buf, 0, buf.length, 0);
+    return buf.toString("utf8");
+  } finally {
+    closeSync(fd);
+  }
+}
+
+/**
+ * The session a forked session was forked from, read from its transcript, or null. SessionStart
+ * input names no parent; Claude Code stamps each entry it copies into a fork with
+ * `forkedFrom: { sessionId, messageUuid }`. Waits briefly in case the copy is still being written.
+ * @param {unknown} transcriptPath
+ */
+export function forkParent(transcriptPath, { waitMs = 1000 } = {}) {
+  if (typeof transcriptPath !== "string" || transcriptPath === "") return null;
+  const end = Date.now() + waitMs;
+  for (;;) {
+    let text = "";
+    try { text = readHead(transcriptPath); } catch { /* not written yet */ }
+    for (const line of text.split("\n")) {
+      if (!line.includes("forkedFrom")) continue;
+      let e;
+      try { e = JSON.parse(line); } catch { continue; }
+      const id = e?.forkedFrom?.sessionId ?? e?.forkedFromSessionId;
+      if (typeof id === "string" && id !== "") return id;
+    }
+    if (Date.now() > end) return null;
+    sleepSync(50);
   }
 }
 
@@ -181,16 +228,25 @@ export function handle(event, input, opts = {}) {
     }
   }
   if (event === "session-start") {
-    // A /clear while pairing left a carry marker for this worktree: the new session starts
-    // closed instead of inert. Any other start, or no live marker, stays inert.
-    if (!dir || input?.source !== "clear" || typeof input?.cwd !== "string") return null;
+    // The session this one replaced was pairing: a /clear, /resume or /branch left a carry marker
+    // for this worktree (session-end below), or this is a fork of a session that is still pairing
+    // (the /fork background copy, --fork-session). Either way the new session starts closed
+    // instead of inert. Any other start stays inert.
+    const source = input?.source;
+    if (!dir || !CARRY_START.has(source) || typeof input?.cwd !== "string") return null;
     let root;
     try { root = realpathSync(findRoot(input.cwd)); } catch { return null; }
-    const m = takeCarryMarker(stateBase(env), root);
-    if (!m) return null;
-    const r = carryInto({ sessionId: input.session_id, sessionDir: dir, root, exclusions: m.exclusions ?? undefined, protect: m.protect ?? [], from: m.from, reason: "clear" });
+    let carry = takeCarryMarker(stateBase(env), root);
+    let from = carry?.from ?? null;
+    if (!carry && source === "fork") {
+      from = forkParent(input.transcript_path, { waitMs: opts.waitMs });
+      const parentDir = from && from !== input.session_id ? sessionDirFor(from, env) : null;
+      carry = parentDir ? pairingCarry(parentDir) : null;
+    }
+    if (!carry) return null;
+    const r = carryInto({ sessionId: input.session_id, sessionDir: dir, root, exclusions: carry.exclusions ?? undefined, protect: carry.protect ?? [], from, reason: source });
     if (!r.ok) return null;
-    const note = "paired-coding: pairing was on when the conversation was cleared, so this session starts closed: host write, edit, shell and sub-agent tools are refused. Call pair_start to restart pairing; your partner ends it by typing pair stop.";
+    const note = `paired-coding: pairing was on ${CARRY_START.get(source)}, so this session starts closed: host write, edit, shell and sub-agent tools are refused. Call pair_start to restart pairing; your partner ends it by typing pair stop.`;
     return { hookSpecificOutput: { hookEventName: "SessionStart", additionalContext: note } };
   }
   if (!dir || !activated(dir)) return null;
@@ -213,7 +269,7 @@ export function handle(event, input, opts = {}) {
   if (event === "session-end") {
     // The marker goes first: SessionEnd hooks share a short budget, and a cancelled hook must
     // still leave the cleared session closed. Reaping and the final snapshot come after.
-    if (input?.reason === "clear") {
+    if (CARRY_END.has(input?.reason)) {
       const carry = pairingCarry(dir);
       if (carry) writeCarryMarker(stateBase(env), { root: carry.root, from: input.session_id, exclusions: carry.exclusions, protect: carry.protect });
     }

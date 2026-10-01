@@ -21,14 +21,16 @@
 //                         rewritten (adversarial test 16). There is no stop tool.
 //   session_shutdown   -> endSession(): reap every pair_run process group, take the final
 //                         snapshot, go inactive.
-//   session_before_switch, session_switch
-//                      -> a session change inside the running process (/new, /fork, /resume,
-//                         branching into a new session file) keeps this extension loaded but
-//                         gives the agent a new session id. When the session being left was
-//                         pairing, it ends like session_shutdown and the new session starts
-//                         closed (carryInto): host writes refused until pair_start, ended by a
-//                         typed stop. The old id is taken at session_before_switch, because by
-//                         session_switch the context already reports the new one.
+//   session_before_switch, session_switch, session_before_branch, session_branch
+//                      -> a session change inside the running process (/new, /fork, /resume
+//                         emit the switch events; /branch and /btw's branch emit the branch
+//                         events) keeps this extension loaded but gives the agent a new session
+//                         id. When the session being left was pairing, it ends like
+//                         session_shutdown and the new session starts closed (carryInto): host
+//                         writes refused until pair_start, ended by a typed stop. The old id is
+//                         taken at the before event, because after it the context already
+//                         reports the new one. /tree navigation keeps the session id and fires
+//                         session_tree, which this adapter does not handle.
 //   /clear             -> OMP's /clear keeps the session id and drops the agent's context, and
 //                         fires no extension event. It does append a `reset_boundary` entry to
 //                         the session, so before every input and tool call the adapter compares
@@ -94,8 +96,8 @@ export type PiLike = {
 	on(event: "tool_call", handler: (event: { toolName: string }, ctx: OmpContext) => unknown): void;
 	on(event: "input", handler: (event: { text: string; source: string }, ctx: OmpContext) => unknown): void;
 	on(event: "session_shutdown", handler: (event: unknown, ctx: OmpContext) => unknown): void;
-	on(event: "session_before_switch", handler: (event: { reason?: string }, ctx: OmpContext) => unknown): void;
-	on(event: "session_switch", handler: (event: { reason?: string }, ctx: OmpContext) => unknown): void;
+	on(event: "session_before_switch" | "session_before_branch", handler: (event: unknown, ctx: OmpContext) => unknown): void;
+	on(event: "session_switch" | "session_branch", handler: (event: { reason?: string }, ctx: OmpContext) => unknown): void;
 	registerTool(tool: ToolDefinition): void;
 	getAllTools(): Array<{ name: string }>;
 };
@@ -306,14 +308,13 @@ export default function pairedCodingOmp(pi: PiLike, deps: AdapterDeps = {}): voi
 		return undefined;
 	});
 
-	// The session being left, taken before the switch; consumed by the session_switch after it.
+	// The session being left, taken before the switch or branch; consumed by the event after it.
 	let leaving: string | null = null;
-	pi.on("session_before_switch", (_event, ctx) => {
+	const takeLeaving = (_event: unknown, ctx: OmpContext) => {
 		leaving = ctx.sessionManager.getSessionId();
 		return undefined;
-	});
-
-	pi.on("session_switch", (event, ctx) => {
+	};
+	const carryAcross = (reason: string, ctx: OmpContext) => {
 		const from = leaving;
 		leaving = null;
 		const to = ctx.sessionManager.getSessionId();
@@ -323,12 +324,18 @@ export default function pairedCodingOmp(pi: PiLike, deps: AdapterDeps = {}): voi
 		if (!fromDir) return undefined;
 		const ended = endSession({ sessionDir: fromDir });
 		if (!ended.carry || !toDir) return undefined;
-		const r = carryInto({ sessionId: to, sessionDir: toDir, root: ended.carry.root, exclusions: ended.carry.exclusions, protect: ended.carry.protect, from, reason: `omp:${event?.reason ?? "switch"}` });
+		const r = carryInto({ sessionId: to, sessionDir: toDir, root: ended.carry.root, exclusions: ended.carry.exclusions, protect: ended.carry.protect, from, reason: `omp:${reason}` });
 		if (r.ok && ctx.hasUI && ctx.ui) {
 			ctx.ui.notify("paired coding carried into this session closed: call pair_start to restart it, or type pair stop to end it", "info");
 		}
 		return undefined;
-	});
+	};
+	pi.on("session_before_switch", takeLeaving);
+	pi.on("session_switch", (event, ctx) => carryAcross(event?.reason ?? "switch", ctx));
+	// /branch, and /btw's branch: OMP mints a new session id (createBranchedSession or newSession)
+	// and emits session_branch, not session_switch.
+	pi.on("session_before_branch", takeLeaving);
+	pi.on("session_branch", (_event, ctx) => carryAcross("branch", ctx));
 
 	for (const name of PAIR_TOOLS) {
 		const spec = SPECS[name];

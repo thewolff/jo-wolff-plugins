@@ -90,6 +90,33 @@ test("pair_begin binds only to a trusted turn typed after the card", { skip: !ha
   assert.equal((await executeVerb("pair_begin", { cardId: "card-1", quote: "ship it" }, f.ctx)).ok, true);
 });
 
+test("a quote of a turn typed while a tool ran is refused with a request to say it again, across saved state", { skip: !hasSandbox }, async () => {
+  const f = fixture();
+  await executeVerb("pair_start", {}, f.ctx);
+  const p = await executeVerb("pair_propose", { boundary: ["src/a.txt"] }, f.ctx);
+  assert.equal(recordTrustedInput({ sessionDir: f.dir, text: "ship it now", source: "claude:mid-turn" }).trusted, false);
+  const r = await executeVerb("pair_begin", { cardId: p.result.card.id, quote: "ship it now" }, f.ctx);
+  assert.equal(r.ok, false);
+  assert.match(r.text, /your partner's words arrived while a tool was running, so they don't count as agreement; ask them to say it again/);
+  assert.equal(loadState(f.dir).phase, "closed");
+});
+
+test("a forged inactive state.json does not switch the gate off; only the gate ending pairing does", { skip: !hasSandbox }, async () => {
+  const f = fixture();
+  const forge = () => writeFileSync(join(f.dir, "state.json"), JSON.stringify({ v: 1, phase: "inactive" }));
+  await executeVerb("pair_start", {}, f.ctx);
+  forge();
+  assert.equal(verdict("Write", { sessionDir: f.dir }).allow, false, "forged while pairing");
+  assert.equal(loadState(f.dir).phase, "closed");
+  assert.equal(typed(f, "pair stop").stopped, true);
+  assert.equal(verdict("Write", { sessionDir: f.dir }).allow, true, "ended by a typed stop");
+  assert.equal((await executeVerb("pair_start", {}, f.ctx)).ok, true);
+  forge();
+  assert.equal(verdict("Write", { sessionDir: f.dir }).allow, false, "forged after pairing restarted");
+  assert.equal(endSession({ sessionDir: f.dir }).ok, true);
+  assert.equal(verdict("Write", { sessionDir: f.dir }).allow, true, "ended by the session ending");
+});
+
 test("pair_write and pair_edit write inside the boundary only, never the state dir", { skip: !hasSandbox }, async () => {
   const f = fixture();
   await openChangeSet(f);

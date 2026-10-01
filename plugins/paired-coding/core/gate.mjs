@@ -76,6 +76,10 @@
  * @property {string[]} [exclusions]     worktree-relative directories left out of snapshots
  * @property {number} [inputSeq]
  * @property {{ seq: number, text: string, at?: unknown } | null} [lastInput]
+ * @property {Array<{ cardId: string, text: string }>} [midTurn]
+ *   turns typed while a tool ran (Claude Code `claude:mid-turn`) since the current card was
+ *   proposed, newest last, at most MID_TURN_MAX. Untrusted: used only to word a pair_begin
+ *   refusal, never to bind a quote
  * @property {number} [startSeq]
  * @property {number} [cardSeq]
  * @property {Card | null} [card]
@@ -164,9 +168,11 @@ export function inactiveState() {
  * Parse a persisted state. Fail closed: a present file that does not parse or validate, or a
  * missing file in a session the adapter knows it activated, reads as "closed" with no card,
  * no trusted input and no change set, marked `degraded`. Only a missing file in a session that
- * was never activated reads as "inactive".
+ * was never activated reads as "inactive". In an activated session an inactive state counts
+ * only when the adapter's marker says pairing ended (`ended`), which only the gate writes, when
+ * it saves the inactive state itself; any other inactive state reads as closed.
  * @param {string | null | undefined} text
- * @param {{ activated?: boolean, sessionId?: string, root?: string, stateDir?: string }} [opts]
+ * @param {{ activated?: boolean, ended?: boolean, sessionId?: string, root?: string, stateDir?: string }} [opts]
  * @returns {State}
  */
 export function readState(text, opts = {}) {
@@ -180,6 +186,7 @@ export function readState(text, opts = {}) {
     return degradedState("state file unreadable", opts);
   }
   if (!isValidState(parsed)) return degradedState("state file malformed", opts);
+  if (parsed.phase === "inactive" && opts.activated && !opts.ended) return degradedState("the state reads inactive, but pairing never ended in this session", opts);
   return parsed;
 }
 
@@ -202,6 +209,7 @@ function degradedState(reason, opts) {
     exclusions: [],
     inputSeq: 0,
     lastInput: null,
+    midTurn: [],
     startSeq: 0,
     cardSeq: 0,
     card: null,
@@ -228,6 +236,7 @@ function isValidState(s) {
   if (!isStrArr(s.exclusions)) return false;
   if (!isSeq(s.inputSeq) || !isSeq(s.startSeq) || !isSeq(s.cardSeq)) return false;
   if (s.lastInput !== null && !(isObj(s.lastInput) && isSeq(s.lastInput.seq) && typeof s.lastInput.text === "string")) return false;
+  if (s.midTurn !== undefined && !isMidTurn(s.midTurn)) return false;
   if (s.card !== null && !isValidCard(s.card)) return false;
   if (!Array.isArray(s.running) || !s.running.every((r) => isObj(r) && typeof r.runId === "string")) return false;
   if (s.baseline !== null && !isSnapshot(s.baseline)) return false;
@@ -439,7 +448,13 @@ export function recordInput(state, event, io) {
   if (state.phase === "inactive") return { ok: true, state, journal: [] };
   const text = typeof event?.text === "string" ? event.text : "";
   if (event?.source !== "interactive") {
-    return { ok: true, trusted: false, state, journal: [entry("untrusted-input", io, { source: String(event?.source), text })] };
+    const journal = [entry("untrusted-input", io, { source: String(event?.source), text })];
+    if (event?.source !== MID_TURN_SOURCE || state.phase !== "closed" || !state.card) return { ok: true, trusted: false, state, journal };
+    // Remembered only to tell the agent why a quote of it is refused; it never binds.
+    const next = clone(state);
+    const kept = (next.midTurn ?? []).filter((m) => m.cardId === state.card.id);
+    next.midTurn = [...kept, { cardId: state.card.id, text }].slice(-MID_TURN_MAX);
+    return { ok: true, trusted: false, state: next, journal };
   }
   const next = clone(state);
   next.inputSeq += 1;
@@ -472,13 +487,29 @@ export function occursAtWordBoundaries(text, quote) {
   return false;
 }
 
+/** The source Claude Code's adapter gives a turn typed while a tool was running. */
+export const MID_TURN_SOURCE = "claude:mid-turn";
+const MID_TURN_MAX = 8;
+
+/** The pair_begin refusal when the quote is from a turn typed while a tool ran. */
+export const MID_TURN_REASON = "your partner's words arrived while a tool was running, so they don't count as agreement; ask them to say it again";
+
+function isMidTurn(x) {
+  return Array.isArray(x) && x.length <= MID_TURN_MAX && x.every((m) => isObj(m) && typeof m.cardId === "string" && typeof m.text === "string");
+}
+
 /** Why a quote does not bind to the user's latest turn after `anchorSeq`, or null. */
 function quoteProblem(state, anchorSeq, quote) {
   if (typeof quote !== "string" || quote.trim() === "") return "the quote of your partner's words is empty";
+  if (!/[\p{L}\p{N}]/u.test(quote)) return "the quote has no letter or digit; quote your partner's words";
   const last = state.lastInput;
-  if (!last || last.seq <= anchorSeq) return "your partner has not typed a turn since the card was shown";
-  if (!occursAtWordBoundaries(last.text, quote)) return "the quote does not occur verbatim, as whole words, in your partner's latest turn";
-  return null;
+  const fresh = last && last.seq > anchorSeq;
+  if (fresh && occursAtWordBoundaries(last.text, quote)) return null;
+  // The quote is refused either way; a turn typed during a tool call only changes the wording,
+  // and only for that source, so no other untrusted text is confirmed back to the agent.
+  if ((state.midTurn ?? []).some((m) => m.cardId === state.card?.id && occursAtWordBoundaries(m.text, quote))) return MID_TURN_REASON;
+  if (!fresh) return "your partner has not typed a turn since the card was shown";
+  return "the quote does not occur verbatim, as whole words, in your partner's latest turn";
 }
 
 // ─── verbs ──────────────────────────────────────────────────────────────────────────────
@@ -516,6 +547,7 @@ function closedState(sessionId, paths, baseline) {
     ...paths,
     inputSeq: 0,
     lastInput: null,
+    midTurn: [],
     startSeq: 0,
     cardSeq: 0,
     card: null,
@@ -729,6 +761,7 @@ export function pairPropose(state, card, io) {
   };
   next.card = JSON.parse(JSON.stringify(recorded));
   next.unreviewed = [];
+  next.midTurn = [];
   return { ok: true, state: next, card: next.card, journal: [entry("card", io, { card: next.card })] };
 }
 
@@ -969,6 +1002,10 @@ function boundaryAncestors(root, boundary) {
  *   6. creating a hard link denied everywhere. Seatbelt rules match paths, so a link inside the
  *      boundary to a file outside it would let a later write to the boundary path land on the
  *      outside file.
+ * Every profile also denies connecting to a Unix-domain socket, except mDNSResponder's (DNS
+ * lookups go through it). A local daemon reached over a socket (Docker's, for one) writes with
+ * its own rights, not the sandbox's, so it could write the state directory for pair_run.
+ * TCP is left open, local services included.
  * So in the closed phase pair_run writes nowhere but temp and /dev.
  * @param {State} state
  * @returns {string}
@@ -977,13 +1014,16 @@ export function pairRunProfile(state) {
   return profileFor(state, []);
 }
 
+/** No Unix-domain socket connections from a sandboxed command, except the DNS resolver's. */
+const UNIX_SOCKETS = '(deny network-outbound (remote unix-socket))(allow network-outbound (remote unix-socket (path-literal "/private/var/run/mDNSResponder")))';
+
 function profileFor(state, extraAllow) {
   const outside = [
     ...["/dev/null", "/dev/zero", "/dev/tty", "/dev/dtracehelper"].map((p) => `(literal ${sbplString(p)})`),
     `(subpath ${sbplString("/dev/fd")})`,
     ...(state.tempPaths ?? []).map((p) => `(subpath ${sbplString(p)})`),
   ];
-  const head = `(version 1)(allow default)(deny file-write*)(allow file-write* ${outside.join(" ")})(deny file-write* (subpath ${sbplString(state.root)}))`;
+  const head = `(version 1)(allow default)${UNIX_SOCKETS}(deny file-write*)(allow file-write* ${outside.join(" ")})(deny file-write* (subpath ${sbplString(state.root)}))`;
   const tail = `${[state.stateDir, ...(state.protect ?? [])].map((p) => `(deny file-write* (subpath ${sbplString(p)}))`).join("")}(deny file-link)`;
   if (state.phase !== "open") return `${head}${tail}`;
   const boundary = state.changeSet.boundary.map((raw) => {

@@ -73,8 +73,10 @@ without agreement" true. One gate core (`core/`, no host imports) and one sessio
 How it works:
 
 - Pairing state is `inactive` until `pair_start`, then `closed` between change sets and `open`
-  during one. Missing or damaged state in an activated session reads as `closed`. A session
-  that never calls `pair_start` is untouched: host tools work and no state is written.
+  during one. Missing or damaged state in an activated session reads as `closed`, and so does a
+  state file that says `inactive` when the gate itself never ended pairing (a typed `pair stop`
+  or the session's end): editing the state file cannot switch the gate off. A session that never
+  calls `pair_start` is untouched: host tools work and no state is written.
 - The agent registers each card with `pair_propose` and opens it with `pair_begin`, quoting
   you. The gate accepts the quote only if it is whole words from your latest turn that the host
   recorded as typed by a person after the card, only if the card has no open points, and only
@@ -87,7 +89,10 @@ How it works:
   state. Both profiles deny every write by default. With no change set open a command may write
   only temp directories and `/dev`. With one open it may also write the boundary files. The
   state directory and the plugin's own install root are never writable, and no command may
-  create a hard link anywhere, even between two paths it could write.
+  create a hard link anywhere, even between two paths it could write. Both profiles also refuse
+  connections to Unix-domain sockets, except the DNS resolver's, because a local daemon reached
+  over a socket writes with its own rights. So the Docker CLI, `ssh-agent`, and a database on a
+  local socket are out of reach from `pair_run`. TCP is not fenced: HTTPS and DNS lookups work.
 - `pair_write` and `pair_edit` write inside the sandbox too, under the open profile without the
   temp directories. They write the new content to a fresh file beside the target and rename it
   over the target, keeping an existing file's permission bits. So a hard link or symlink at a
@@ -147,10 +152,11 @@ direct check of the fix, five variants of that attack all left the outside file 
 
 **The write boundary is enforced; agreement is judged.** The agent decides when you have agreed.
 The gate proves that the quote is whole words from a real typed turn after a real card, and
-nothing more. A misread go-ahead can open a change set, but only for that card's files, and the
-quote sits in the journal for you to audit. The gate cannot tell whether behavior inside the
-boundary drifted from what was agreed; that is the skill's reopen rule and your read of the real
-diff.
+nothing more. A quote with no letter or digit, such as `?` or `...`, is refused: "the quote has
+no letter or digit; quote your partner's words". A misread go-ahead can open a change set, but
+only for that card's files, and the quote sits in the journal for you to audit. The gate cannot
+tell whether behavior inside the boundary drifted from what was agreed; that is the skill's
+reopen rule and your read of the real diff.
 
 **What counts as typed.** On OMP, a turn is trusted when the `input` event carries
 `source: "interactive"`, which only the editor emits; text injected by an extension or sent over
@@ -159,7 +165,10 @@ entry Claude Code writes for the prompt and trusts it only when its `promptSourc
 its `origin.kind` is `human`, and it is the only entry with that prompt id. Scheduled prompts,
 task notifications, `-p` and SDK prompts never count. A message you type while a tool is running
 never counts either: Claude Code folds it into the running turn without an ordinary transcript
-entry, so retype it after the turn ends. The same rule decides whether a typed `pair stop` counts.
+entry, so retype it after the turn ends. If the agent quotes such a message to `pair_begin`, the
+refusal says so: "your partner's words arrived while a tool was running, so they don't count as
+agreement; ask them to say it again". Other untrusted text gets the ordinary quote refusal. The
+same rule decides whether a typed `pair stop` counts.
 
 **Undocumented Claude Code fields, failing closed.** The transcript fields `promptSource` and
 `origin` are not documented by Claude Code, and neither is `_meta["claudecode/toolUseId"]`, the id
@@ -180,18 +189,28 @@ command at that threshold minus 10 seconds: 110 seconds by default. Set
 `CLAUDE_CODE_DISABLE_BACKGROUND_TASKS=1`, turns backgrounding off and lifts the cap; the limits
 that apply on OMP then hold: 10 minutes by default, at most an hour.
 
-**Session changes fail closed.** `/clear` on Claude Code starts a new session; on OMP, `/new`,
-`/fork` and `/resume` do, and `/clear` resets the conversation inside the same session. If
-pairing was active, the gate ends it (reaping runs, taking the final snapshot, journaling any
-write it did not approve, finishing an open change set) and pairing continues `closed`: no card,
-no open change set, host writes refused, `pair_note` and `pair_propose` refused, and the
-journal records `carried-after-clear`. `pair_start` restarts pairing, and a typed `pair stop`
-ends it. On Claude Code the hand-over is a marker written at `SessionEnd` before the final
-snapshot, so a `SessionEnd` cut short by Claude Code's hook time budget still leaves the new
-session closed; what can be cut short is the old session's final snapshot. The marker is
-single-use, tied to the worktree, and expires after 10 minutes; a session started any other way
-stays untouched. On OMP, `/clear` fires no extension event, so the gate notices the reset
-marker OMP writes into the session at the next typed turn or tool call.
+**Session changes fail closed.** On Claude Code, `/clear`, `/resume` and `/branch` start a new
+session, and so does a fork (`/fork`, `--fork-session`). On OMP, `/new`, `/fork`, `/resume`,
+`/branch` and the branch `/btw` makes do, and `/clear` resets the conversation inside the same
+session. If pairing was active, the gate ends it (reaping runs, taking the final snapshot,
+journaling any write it did not approve, finishing an open change set) and pairing continues
+`closed`: no card, no open change set, host writes refused, `pair_note` and `pair_propose`
+refused, and the journal records `carried-after-clear`. `pair_start` restarts pairing, and a
+typed `pair stop` ends it. On Claude Code the hand-over for `/clear`, `/resume` and `/branch` is
+a marker written at `SessionEnd` before the final snapshot, so a `SessionEnd` cut short by
+Claude Code's hook time budget still leaves the new session closed; what can be cut short is the
+old session's final snapshot. The marker is single-use, tied to the worktree, and expires after
+10 minutes. A fork is linked instead through the `forkedFrom` session id Claude Code writes into
+the fork's transcript, since the hook input names no parent: a fork of a session that is still
+pairing starts closed. A session started any other way stays untouched. On OMP, `/clear` fires
+no extension event, so the gate notices the reset marker OMP writes into the session at the next
+typed turn or tool call.
+
+Three limits. On Claude Code, only `/clear` has been run live; `/resume`, `/branch` and forks
+are covered by unit tests only, and `forkedFrom` is undocumented. A fork of a session that had
+already ended pairing some other way (a typed `pair stop`, or exiting Claude Code) starts
+untouched, not closed. On OMP, `/tree` keeps the session id and only moves within the session
+tree, so pairing carries on unchanged.
 
 **One write gate per session, on OMP.** If another gate in your OMP sessions also owns write
 enforcement, set `PAIRED_CODING_CONFLICTING_TOOLS` to a comma-separated list of tool names it
@@ -207,6 +226,13 @@ and rename it over the target, so they never write through a symlink or hard lin
 path. The file the link pointed to is never touched, and the linked path becomes a plain copy
 holding the new content. That includes links you keep on purpose, such as pnpm-style linked
 files: an agreed write to one of them unlinks it.
+
+**The sandbox fences file writes and local sockets, not the network.** Apart from file writes,
+hard links and Unix-domain sockets, the Seatbelt profile allows everything. Local TCP is open:
+a run reached `sshd` on `127.0.0.1:22`, and only the missing credentials stopped a login. If a
+private key in `~/.ssh` is in your own `authorized_keys`, `pair_run` could probably log in and
+get a shell outside the sandbox; that route was not tried. `open`, `osascript` and Apple Events
+are not denied either, and were not probed.
 
 **Escaped writers are caught late, and only inside the worktree.** A process that leaves its
 run's process group survives the reap and keeps the write permission its run had (test 17). A

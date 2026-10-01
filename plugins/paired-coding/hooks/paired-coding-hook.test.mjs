@@ -260,3 +260,56 @@ test("/clear: the carry marker is written before the session-end work, so a fail
   assert.notEqual(start, null, "the cleared session starts closed");
   assert.notEqual(writeCall(f, { ...f.common, session_id: "s2" }), null);
 });
+
+const carriedReason = (f, sid) => readFileSync(join(f.base, sid, "journal.jsonl"), "utf8").split("\n").filter(Boolean).map((l) => JSON.parse(l)).find((e) => e.type === "carried-after-clear")?.reason;
+
+test("/resume or /branch while pairing: the session switched to starts closed", { skip: !hasSandbox }, async () => {
+  for (const source of ["resume", "fork"]) {
+    const f = fixture();
+    await call(f, "pair_start", {});
+    // Interactive /resume ends the old session with reason "resume"; /branch resumes into the branch.
+    assert.equal(handle("session-end", { ...f.common, reason: "resume" }, { env: f.env }), null);
+    const s2 = { ...f.common, session_id: "s2" };
+    const start = handle("session-start", { ...s2, source }, { env: f.env, waitMs: 0 });
+    assert.match(start.hookSpecificOutput.additionalContext, /starts closed/, source);
+    assert.notEqual(writeCall(f, s2), null, source);
+    assert.equal(carriedReason(f, "s2"), source);
+    // A launch never takes a marker: only a session that replaced another does.
+    handle("session-end", { ...s2, reason: "resume" }, { env: f.env });
+    assert.equal(handle("session-start", { ...f.common, session_id: "s3", source: "startup" }, { env: f.env }), null, source);
+  }
+});
+
+/** A fork's transcript as Claude Code writes it: each copied entry names the session it came from. */
+function forkTranscript(f, sid, parent) {
+  const path = join(f.top, "projects", "p", `${sid}.jsonl`);
+  const copied = parent ? { forkedFrom: { sessionId: parent, messageUuid: "u1" } } : {};
+  writeFileSync(path, `${JSON.stringify({ type: "user", uuid: "u1", sessionId: sid, message: { role: "user", content: "hi" }, ...copied })}\n`);
+  return { ...f.common, session_id: sid, transcript_path: path };
+}
+
+test("a fork of a session that is still pairing starts closed, linked through its transcript", { skip: !hasSandbox }, async () => {
+  const f = fixture();
+  await call(f, "pair_start", {});
+  const fork = forkTranscript(f, "s2", "s1");
+  const start = handle("session-start", { ...fork, source: "fork" }, { env: f.env, waitMs: 0 });
+  assert.match(start.hookSpecificOutput.additionalContext, /forked from, so this session starts closed/);
+  assert.notEqual(writeCall(f, fork), null);
+  assert.equal(carriedReason(f, "s2"), "fork");
+  assert.equal(phaseOf(f, "s1"), "closed", "the parent keeps pairing");
+});
+
+test("a fork stays inert when its parent is not pairing or its transcript names no parent", { skip: !hasSandbox }, async () => {
+  const f = fixture();
+  await call(f, "pair_start", {});
+  handle("session-end", { ...f.common, reason: "other" }, { env: f.env });
+  const ofEnded = forkTranscript(f, "s2", "s1");
+  assert.equal(handle("session-start", { ...ofEnded, source: "fork" }, { env: f.env, waitMs: 0 }), null);
+  assert.equal(writeCall(f, ofEnded), null);
+  const g = fixture();
+  await call(g, "pair_start", {});
+  const unlinked = forkTranscript(g, "s3", null);
+  assert.equal(handle("session-start", { ...unlinked, source: "fork" }, { env: g.env, waitMs: 0 }), null);
+  // A resume with no marker left behind stays inert too, even while another session pairs.
+  assert.equal(handle("session-start", { ...g.common, session_id: "s4", source: "resume" }, { env: g.env, waitMs: 0 }), null);
+});

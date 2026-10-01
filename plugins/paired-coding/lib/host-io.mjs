@@ -170,7 +170,10 @@ export function activated(dir) {
   return existsSync(join(dir, MARKER));
 }
 
-/** Write the activation marker; it also remembers the root and state dir for a degraded read. */
+/**
+ * Write the activation marker; it also remembers the root and state dir for a degraded read.
+ * A fresh marker is not ended: pairing is on until the gate itself saves an inactive state.
+ */
 export function markActivated(dir, info) {
   mkdirSync(dir, { recursive: true, mode: 0o700 });
   writeAtomic(join(dir, MARKER), JSON.stringify({ at: new Date().toISOString(), root: info?.root ?? null, stateDir: info?.stateDir ?? null }));
@@ -198,7 +201,7 @@ export function loadState(dir, opts = {}) {
   }
   const isOn = activated(dir);
   const marker = isOn ? readMarker(dir) : {};
-  return readState(text, { activated: isOn, root: marker.root ?? undefined, stateDir: marker.stateDir ?? undefined, ...opts });
+  return readState(text, { activated: isOn, ended: marker.ended === true, root: marker.root ?? undefined, stateDir: marker.stateDir ?? undefined, ...opts });
 }
 
 /** Atomic write: temp file in the same directory, then rename. */
@@ -209,8 +212,16 @@ function writeAtomic(path, text) {
   renameSync(tmp, path);
 }
 
+/**
+ * Save the state. Saving an inactive state in an activated session first marks the marker ended:
+ * only the gate ending pairing writes that, so an inactive state.json written by anything else
+ * in a session whose marker is not ended reads as closed (readState).
+ */
 export function saveState(dir, state) {
   mkdirSync(dir, { recursive: true, mode: 0o700 });
+  if (state.phase === "inactive" && activated(dir)) {
+    writeAtomic(join(dir, MARKER), JSON.stringify({ ...readMarker(dir), ended: true, endedAt: new Date().toISOString() }));
+  }
   writeAtomic(join(dir, STATE), serializeState(state));
 }
 
