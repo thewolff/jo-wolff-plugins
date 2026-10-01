@@ -43,14 +43,20 @@ text entry (Claude Code) — and enforces:
 
 | Rule | Instrument | Default mode |
 |---|---|---|
-| Needs you first | deterministic (`checkNeedsYouFirst`) | block |
-| One closing ask, last | deterministic (`checkClosingAskLast`) | block |
-| Do not batch by label | trigger + judge | block |
-| Conclusion first | trigger + judge | block |
-| Name the artifact | deterministic (`checkNamesArtifact`) | **warn** |
-| Restate a resumed thread | injector marker + judge | block |
-| Report what you did not do | todo trigger + judge | block |
-| Bad news in the first sentence | lexicon gate + judge | block |
+| Needs you first | deterministic (`checkNeedsYouFirst`) | warn |
+| One closing ask, last | deterministic (`checkClosingAskLast`) | warn |
+| Do not batch by label | trigger + judge | warn |
+| Conclusion first | trigger + judge | warn |
+| Name the artifact | deterministic (`checkNamesArtifact`) | warn |
+| Restate a resumed thread | injector marker + judge | warn |
+| Report what you did not do | todo trigger + judge | warn |
+| Bad news in the first sentence | lexicon gate + judge | warn |
+
+Every rule defaults to warn: findings land in `warnings.log` and nothing blocks until the
+profile arms it, globally (`enforcement.mode: "block"`) or per rule
+(`enforcement.rules[rule]: "block"`). The default is measured, not cautious — the 2026-09-21
+corpus adjudication found no rule whose false-positive rate supports blocking by default;
+the rates and the path to re-earn block are in `reference.md`.
 
 A model-graded check that runs automatically inside a hook is still machinery: it fires on a
 deterministic trigger, it returns pass or fail, and every dispatch failure mode (timeout,
@@ -64,7 +70,11 @@ dead.
 A block names the rule, states exactly what to move or add, and asks for the corrected lines
 only — never a resend of the whole message. The loop guard records the blocked text's hash
 per session, so the same message arriving again with `stop_hook_active` passes: a model that
-ignores the reason cannot loop forever.
+ignores the reason cannot loop forever. On an OMP seat the cap is tighter: once this plugin
+has blocked, the revision that follows is checked again but can only warn, so this plugin
+blocks at most once per continuation chain (see `armOmp` below). OMP marks a stop
+`stop_hook_active` after any extension's continuation, so the adapter tracks its own last
+block per session and tells the core about that, not about the host's flag.
 
 **Kill switch:** `touch ~/.claude/.communication-rules-off` disables enforcement within one
 turn (checked per invocation, never cached). `COMMUNICATION_RULES_ENFORCE=off` is a
@@ -89,7 +99,8 @@ optional; an empty object is valid.
   "enforcement": {
     "mode": "warn",
     "judgeCommand": "codex exec --skip-git-repo-check -",
-    "rules": { "name-the-artifact": "block" }
+    "rules": { "name-the-artifact": "block" },
+    "armOmp": false
   }
 }
 ```
@@ -103,7 +114,18 @@ optional; an empty object is valid.
   the prompt on stdin. The suggested command above is the stdin form probed working on
   2026-09-21 (`claude -p` was probed the same day and its OAuth was expired).
 - **`rules`** — per-rule mode overrides beating both the global mode and built-ins.
-- Precedence overall: kill-switch file > `rules[rule]` > explicit `mode` > built-in default.
+- **`armOmp`** — `true` lets OMP seats block; absent or `false` means OMP seats warn
+  whatever the modes above say. It is read only when the hook runs with
+  `COMMUNICATION_RULES_HARNESS=omp`, which the OMP adapter (`omp/communication-rules-omp.ts`)
+  sets on its child; Claude Code never sets it, so Claude Code ignores this field, a
+  malformed value included. Under the tag, a non-boolean is one `errors.log` line and reads
+  as `false`. Armed, an OMP seat still never blocks the revision that follows this plugin's
+  own block: it is re-checked and warns.
+- Precedence overall: kill-switch file > `rules[rule]` > explicit `mode` > built-in
+  default, and then, on OMP seats only, the harness cap turns the resulting block into a
+  warn (unarmed, or armed on a revision after this plugin's own block). The same-text loop
+  guard runs before any of the modes are consulted, so an identical repeat passes on both
+  harnesses.
 - The injection half reads `reader` and `traits`. The check options (`markers`,
   `minProseChars`, `graceChars`, `headings`, `lexicon`, `reportVerbs`) are NOT profile
   fields — they remain call-site arguments, and the hook calls every check on its defaults.
@@ -127,7 +149,7 @@ prose in later paragraphs is the overtime finding.
 `checks/name-the-artifact.mjs` — a report-shaped message (400+ substantive chars, speaking
 in report verbs) that names no path, `file:line`, fenced block, inline code, URL, or
 command-looking line. This is a vocabulary check — it answers "does the message name an
-artifact", never "is the artifact right" — which is why it ships in warn mode.
+artifact", never "is the artifact right".
 
 The judge-gated rules and their triggers are documented in `reference.md`, including the one
 boundary stated plainly: **report-what-you-did-not-do is enforced exactly where a todo list
@@ -157,11 +179,11 @@ batching.
 node --test plugins/communication-rules/checks/*.test.mjs plugins/communication-rules/triggers/*.test.mjs plugins/communication-rules/judge/*.test.mjs plugins/communication-rules/hooks/*.test.mjs
 ```
 
-133 tests, all passing. The proportion is deliberate: the majority prove what does NOT flag
-— a structural check earns its place by what it leaves alone. The hook suites run the hooks
-as subprocesses against an isolated `$HOME`, covering the kill switch, the loop guard, both
-stdin shapes, mode precedence, marker consumption, and fail-open on malformed input. The
-judge suite drives only fake judges — no real CLI, no bill.
+The suite is expected to pass in full. The proportion is deliberate: most tests prove what
+does NOT flag — a structural check earns its place by what it leaves alone. The hook suites
+run the hooks as subprocesses against an isolated `$HOME`, covering the kill switch, the
+loop guard, both stdin shapes, mode precedence, marker consumption, and fail-open on
+malformed input. The judge suite drives only fake judges — no real CLI, no bill.
 
 ## License
 

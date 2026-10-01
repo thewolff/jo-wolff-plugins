@@ -1,5 +1,5 @@
 {
-  "_comment": "A generic example. It describes nobody. Copy it to ~/.claude/communication-rules.json, replace every value with traits your own reader actually has, and keep that copy out of version control if it describes a real person. The injection half reads reader and traits. The enforcement half reads the optional enforcement object: mode (block | warn | off, unset = per-rule built-ins), judgeCommand (null = the five judge-gated rules are inactive and each fired trigger is logged to skipped.log), and rules (per-rule mode overrides). The suggested judgeCommand below is the stdin form probed working on 2026-09-21: the trailing dash reads the prompt from stdin, verdict JSON comes back on stdout.",
+  "_comment": "A generic example. It describes nobody. Copy it to ~/.claude/communication-rules.json, replace every value with traits your own reader actually has, and keep that copy out of version control if it describes a real person. The injection half reads reader and traits. The enforcement half reads the optional enforcement object: mode (block | warn | off, unset = per-rule built-ins), judgeCommand (null = the five judge-gated rules are inactive and each fired trigger is logged to skipped.log), rules (per-rule mode overrides), and armOmp (true lets OMP seats block; absent or false keeps OMP seats at warn, and Claude Code ignores it). The suggested judgeCommand below is the stdin form probed working on 2026-09-21: the trailing dash reads the prompt from stdin, verdict JSON comes back on stdout.",
   "reader": "the engineer who owns this service",
   "traits": [
     "reads the first two lines of any message and skims the rest",
@@ -11,6 +11,7 @@
     "judgeCommand": "codex exec --skip-git-repo-check -",
     "rules": {
       "name-the-artifact": "block"
-    }
+    },
+    "armOmp": false
   }
 }

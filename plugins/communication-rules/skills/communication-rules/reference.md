@@ -72,13 +72,20 @@ Order of operations, each early return silent:
    JSONL scanned backwards for the last `type:"assistant"` entry with text content
    (tool-call-only entries are skipped).
 4. **Loop guard** — with `stop_hook_active`, a text hash equal to the recorded one passes:
-   never block the same message twice.
+   never block the same message twice. This runs before any check, on both harnesses.
 5. **Master floor** — under 200 substantive chars, nothing runs.
 6. Deterministic checks per their modes.
 7. Judge jobs where triggers fired; a fired trigger with no judge command → `skipped.log`.
-8. One block-mode finding emits the block and records the hash; warn findings →
-   `warnings.log`. Reasons name the rule, say what to move or add, and ask for corrected
-   lines only — never a resend of the whole message.
+8. **Harness cap** — only when the env carries `COMMUNICATION_RULES_HARNESS=omp` (the OMP
+   adapter sets it on its child; Claude Code never does). Every block-mode finding becomes
+   warn when `enforcement.armOmp` is not `true`, or when it is and the payload carries
+   `stop_hook_active`: a revision after a block is re-checked but never blocked twice. On
+   OMP that payload flag is the adapter's, not the host's: OMP sets its own flag after any
+   extension's continuation, so the adapter sends `true` only when the host flag is set and
+   its previous result for the session was a block.
+9. One block-mode finding emits the block and records the hash; warn findings, capped ones
+   included, → `warnings.log` with their real rule id. Reasons name the rule, say what to
+   move or add, and ask for corrected lines only — never a resend of the whole message.
 
 Fail-open everywhere with `errors.log` as the single failure channel.
 
@@ -183,7 +190,8 @@ optional; an empty object is valid and yields the defaults.
   "enforcement": {
     "mode": "block",
     "judgeCommand": "codex exec --skip-git-repo-check -",
-    "rules": { "name-the-artifact": "warn", "bad-news-first": "warn" }
+    "rules": { "name-the-artifact": "warn", "bad-news-first": "warn" },
+    "armOmp": false
   }
 }
 ```
@@ -192,10 +200,16 @@ optional; an empty object is valid and yields the defaults.
 - **`traits`** — plain sentences about how that person reads, emitted verbatim. This is the
   whole of the reader-specific surface; the plugin ships none.
 - **`enforcement.mode`** — `block | warn | off`. Unset = each rule's built-in default (warn
-  for name-the-artifact, block for the rest); set = overrides built-ins both ways.
+  for every rule — the measured default above); set = overrides built-ins both ways.
 - **`enforcement.judgeCommand`** — see the judge section.
 - **`enforcement.rules`** — per-rule mode overrides; beat the global mode and built-ins.
-- Precedence: kill-switch file > `rules[rule]` > explicit `mode` > built-in default.
+- **`enforcement.armOmp`** — boolean, default `false`. Read only under the OMP harness tag
+  (stop-hook step 8): `true` lets OMP seats block on a first stop; anything else keeps them
+  at warn. Under the tag a non-boolean is one `errors.log` line and reads as `false`;
+  without the tag the field is never read, so a malformed value logs nothing.
+- Precedence: kill-switch file > `rules[rule]` > explicit `mode` > built-in default, then
+  the OMP harness cap last (OMP seats only: unarmed → warn; armed + a revision after this
+  plugin's own block → warn). The same-text loop guard precedes all of it.
 
 A missing file or field is silent defaults. An unparseable file, or a value of the wrong
 shape, is defaults plus one `errors.log` line — a config failure reads exactly like a
