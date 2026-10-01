@@ -202,6 +202,12 @@ registers. `pair_start` refuses while any listed tool is in the session's tool l
 (`/usr/bin/sandbox-exec`). Elsewhere `pair_start` refuses and the skill works as conversation
 only.
 
+**Links inside the boundary become plain files.** `pair_write` and `pair_edit` write a new file
+and rename it over the target, so they never write through a symlink or hard link at a boundary
+path. The file the link pointed to is never touched, and the linked path becomes a plain copy
+holding the new content. That includes links you keep on purpose, such as pnpm-style linked
+files: an agreed write to one of them unlinks it.
+
 **Escaped writers are caught late, and only inside the worktree.** A process that leaves its
 run's process group survives the reap and keeps the write permission its run had (test 17). A
 process that got out of the sandbox altogether would write with your own permissions; the one
@@ -209,6 +215,29 @@ route probed, `launchctl submit`, was denied, but no probe proves there is no ot
 is caught only by content snapshots, at the next `pair_done`, which then stops the session: the
 first write is not prevented. Snapshots cover the worktree only and leave out `.git`, so a write
 outside the worktree, inside an excluded directory, or after the final snapshot is not detected.
+
+## Files
+
+Test files (`*.test.mjs`, beside each module) are left out.
+
+The bundled MCP server is the Claude Code half of the `pair_*` tools. Claude Code runs it from
+`.mcp.json`, and each tool's checks run inside the server, on the arguments the call finally
+carries. Only Claude Code uses it; OMP gets the same verbs as extension tools registered by
+`omp/paired-coding-omp.ts`. Both call into the same `lib/` modules.
+
+- `.claude-plugin/plugin.json`: the plugin manifest.
+- `.mcp.json`: registers the bundled MCP server `pair` with Claude Code.
+- `README.md`: this file.
+- `skills/paired-coding/SKILL.md`: the skill the agent follows while pairing.
+- `core/gate.mjs`: the gate core: pairing state, verdicts and Seatbelt profiles, with no host imports.
+- `lib/verbs.mjs`: the `pair_*` verbs and session lifecycle, shared by the MCP server, the hooks and the OMP adapter.
+- `lib/host-io.mjs`: file, snapshot, lock and sandboxed-process I/O, shared the same way.
+- `server/pair-server.mjs`: the MCP server over stdio that serves the `pair_*` tools to Claude Code.
+- `server/binding.mjs`: ties each `pair_*` call to its session through a one-shot file the hook writes; a call the hook never saw is refused.
+- `hooks/hooks.json`: registers the Claude Code hooks.
+- `hooks/paired-coding-hook.mjs`: the Claude Code hook handler: refusals, typed input, stop, `/clear`.
+- `omp/paired-coding-omp.ts`: the OMP extension, registering the same verbs as OMP tools.
+- `omp/REGISTRATION.md`: how to load the OMP extension, and how to reverse it.
 
 ## License
 
