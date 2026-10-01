@@ -83,11 +83,18 @@ function setup({ otherTools = [], env = {} } = {}) {
     await emit("session_switch", { type: "session_switch", reason });
     return join(base, id);
   };
+  /** As OMP's /branch does: session_before_branch with the old id, then session_branch with a new one. */
+  const branchTo = async (id) => {
+    await emit("session_before_branch", { type: "session_before_branch", entryId: "e0" });
+    current.id = id;
+    await emit("session_branch", { type: "session_branch", previousSessionFile: "/x/old.jsonl" });
+    return join(base, id);
+  };
   /** A new session entry of `type`, as the host appends them. */
   const append = (type) => entries.push({ type, id: `${type}-${entries.length}` });
   /** As OMP's /clear does: same session id, a reset_boundary entry appended, no extension event. */
   const clear = () => append("reset_boundary");
-  return { repo, base, dir, sessionId, ctx, tools, notes, emit, call, journal, type, switchTo, clear, append, reload };
+  return { repo, base, dir, sessionId, ctx, tools, notes, emit, call, journal, type, switchTo, branchTo, clear, append, reload };
 }
 
 /** Start pairing, propose a card over `boundary`, have the user agree, open the change set. */
@@ -358,6 +365,17 @@ describe("session switch inside the running process", () => {
     const next = await s.switchTo(randomUUID(), "new");
     assert.equal(await blocked(s), false);
     assert.equal(existsSync(next), false);
+  });
+
+  sandboxOnly("branching while pairing ends the old session and starts the branch closed", async () => {
+    const s = setup();
+    await openChangeSet(s, ["a.txt"]);
+    const next = await s.branchTo(randomUUID());
+    assert.ok(s.journal().some((e) => e.type === "stop" && e.verb === "session-end"));
+    assert.equal(await blocked(s), true, "the branch refuses host writes");
+    assert.ok(s.journal(next).some((e) => e.type === "carried-after-clear" && e.reason === "omp:branch"));
+    const w = await s.call("pair_write", { path: "a.txt", content: "x" });
+    assert.ok(w.blocked || w.ok === false, "no change set carries over");
   });
 });
 

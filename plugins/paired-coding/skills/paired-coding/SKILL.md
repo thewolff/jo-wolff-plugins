@@ -117,6 +117,11 @@ These stay discussion, and the card stays closed:
 The quote you pass to `pair_begin` is the evidence: whole words that carry the go-ahead, copied
 exactly from your partner's latest typed turn after the current card.
 
+If `pair_begin` refuses because your partner's words arrived while a tool was running, tell your
+partner in one line that their agreement came in while you were working, and ask them to say it
+again. Do not treat those words as agreement, and do not go quiet: the card stays closed until
+they type it again after your turn ends.
+
 ## When agreement reopens
 
 Stop, show what you found, and return to discussion with a revised card when:

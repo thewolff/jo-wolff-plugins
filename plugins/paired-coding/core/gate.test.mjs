@@ -13,7 +13,8 @@
 
 import { test, describe } from "node:test";
 import assert from "node:assert/strict";
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
+import { createServer } from "node:net";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -44,6 +45,7 @@ import {
   serializeState,
   sessionEnd,
   toolVerdict,
+  MID_TURN_REASON,
 } from "./gate.mjs";
 
 const ROOT = "/work/repo";
@@ -152,6 +154,16 @@ describe("readState fails closed once activated", () => {
     const s = opened();
     const broken = { ...s, changeSet: { ...s.changeSet, boundary: ["/etc/passwd"] } };
     assert.equal(readState(JSON.stringify(broken)).phase, "closed");
+  });
+
+  test("an inactive state in an activated session counts only when pairing ended", () => {
+    const forged = JSON.stringify({ v: 1, phase: "inactive" });
+    const s = readState(forged, { activated: true, root: ROOT, stateDir: STATE_DIR });
+    assert.equal(s.phase, "closed");
+    assert.match(s.degraded, /never ended/);
+    assert.equal(toolVerdict(s, { toolName: "Write" }).allow, false);
+    assert.equal(readState(forged, { activated: true, ended: true, root: ROOT, stateDir: STATE_DIR }).phase, "inactive");
+    assert.equal(readState(forged).phase, "inactive");
   });
 
   test("a valid state round-trips", () => {
@@ -512,7 +524,7 @@ describe("runStart and runEnd", () => {
     const r = runStart(started(), { runId: "r1" });
     assert.equal(r.ok, true);
     assert.deepEqual(r.state.running, [{ runId: "r1", cardId: null }]);
-    assert.match(r.profile, /^\(version 1\)\(allow default\)\(deny file-write\*\)\(allow file-write\* \(literal "\/dev\/null"\)/);
+    assert.match(r.profile, /^\(version 1\)\(allow default\)\(deny network-outbound \(remote unix-socket\)\).*\(deny file-write\*\)\(allow file-write\* \(literal "\/dev\/null"\)/);
     assert.match(r.profile, /\(deny file-write\* \(subpath "\/work\/repo"\)\)/);
   });
 
@@ -682,6 +694,19 @@ describe("pair_begin quotes bind at word boundaries", () => {
     refusedWith(pairBegin(s, { cardId: s.card.id, quote: "y" }, host.io), /as whole words/);
   });
 
+  test("a quote with no letter or digit is refused: '?' from 'why?' and '.' from 'hmm, no.'", () => {
+    for (const [turn, quote] of [["why?", "?"], ["hmm, no.", "."], ["ok...", "..."]]) {
+      const host = fakeHost();
+      const s = say(proposed(host), turn);
+      const r = pairBegin(s, { cardId: s.card.id, quote }, host.io);
+      refusedWith(r, /no letter or digit/);
+      assert.equal(r.state.phase, "closed", turn);
+    }
+    const host = fakeHost();
+    const s = say(proposed(host), "ok 2 go");
+    assert.equal(pairBegin(s, { cardId: s.card.id, quote: "2" }, host.io).ok, true);
+  });
+
   test("whole words pass, with punctuation either side", () => {
     const host = fakeHost();
     const s = say(proposed(host), "ok, go ahead!");
@@ -700,6 +725,83 @@ describe("pair_begin quotes bind at word boundaries", () => {
     assert.equal(occursAtWordBoundaries("sí, adelante", "sí"), true);
     assert.equal(occursAtWordBoundaries("ship it!", "it!"), true);
     assert.equal(occursAtWordBoundaries("ok", ""), false);
+  });
+});
+
+// ─── turns typed while a tool ran ───────────────────────────────────────────────────────
+
+describe("pair_begin names a quote from a turn typed while a tool ran", () => {
+  const proposed = (host) => ok(pairPropose(started(host), card(), host.io));
+  const MID = "claude:mid-turn";
+
+  test("the refusal asks for the words again, whether or not a trusted turn followed", () => {
+    assert.equal(MID_TURN_REASON, "your partner's words arrived while a tool was running, so they don't count as agreement; ask them to say it again");
+    const host = fakeHost();
+    let s = say(proposed(host), "yes, go ahead", MID);
+    let r = pairBegin(s, { cardId: s.card.id, quote: "go ahead" }, host.io);
+    refusedWith(r, /while a tool was running/);
+    assert.equal(r.reason, MID_TURN_REASON);
+    s = say(s, "hmm, one sec");
+    r = pairBegin(s, { cardId: s.card.id, quote: "go ahead" }, host.io);
+    assert.equal(r.reason, MID_TURN_REASON);
+  });
+
+  test("a mid-turn match never opens a change set; a typed retype does", () => {
+    const host = fakeHost();
+    const before = proposed(host);
+    let s = before;
+    for (let i = 0; i < 3; i++) s = say(s, "go ahead", MID);
+    assert.equal(s.inputSeq, before.inputSeq);
+    assert.deepEqual(s.lastInput, before.lastInput);
+    const r = pairBegin(s, { cardId: s.card.id, quote: "go ahead" }, host.io);
+    assert.equal(r.ok, false);
+    assert.equal(r.state.phase, "closed");
+    assert.equal(r.state.changeSet, null);
+    const reread = readState(serializeState(s), { activated: true, root: ROOT, stateDir: STATE_DIR });
+    assert.equal(pairBegin(reread, { cardId: s.card.id, quote: "go ahead" }, host.io).reason, MID_TURN_REASON);
+    s = say(s, "go ahead");
+    assert.equal(ok(pairBegin(s, { cardId: s.card.id, quote: "go ahead" }, host.io)).phase, "open");
+  });
+
+  test("a match in injected or other untrusted input keeps the generic reason", () => {
+    const host = fakeHost();
+    for (const source of ["claude:system/unknown", "claude:no-transcript-entry", "rpc", "extension", "claude:mid-turn-x"]) {
+      const s = say(proposed(host), "yes, go ahead", source);
+      assert.equal(pairBegin(s, { cardId: s.card.id, quote: "go ahead" }, host.io).reason, "your partner has not typed a turn since the card was shown", String(source));
+      const t = say(s, "hmm");
+      assert.match(pairBegin(t, { cardId: t.card.id, quote: "go ahead" }, host.io).reason, /does not occur verbatim/, String(source));
+    }
+  });
+
+  test("only a mid-turn turn after the current card counts, and only as whole words", () => {
+    const host = fakeHost();
+    let s = say(started(host), "go ahead", MID);
+    s = ok(pairPropose(s, card(), host.io));
+    assert.match(pairBegin(s, { cardId: s.card.id, quote: "go ahead" }, host.io).reason, /has not typed a turn/);
+    s = say(s, "go ahead", MID);
+    s = ok(pairPropose(s, card({ decision: "a second card" }), host.io));
+    assert.deepEqual(s.midTurn, []);
+    assert.match(pairBegin(s, { cardId: s.card.id, quote: "go ahead" }, host.io).reason, /has not typed a turn/);
+    s = say(s, "why?", MID);
+    assert.match(pairBegin(s, { cardId: s.card.id, quote: "y" }, host.io).reason, /has not typed a turn/);
+  });
+
+  test("the memory keeps the newest eight and a malformed one reads as corrupt", () => {
+    const host = fakeHost();
+    let s = proposed(host);
+    for (let i = 0; i < 10; i++) s = say(s, `turn ${i}`, MID);
+    assert.deepEqual(s.midTurn.map((m) => m.text), ["turn 2", "turn 3", "turn 4", "turn 5", "turn 6", "turn 7", "turn 8", "turn 9"]);
+    assert.match(pairBegin(s, { cardId: s.card.id, quote: "turn 1" }, host.io).reason, /has not typed a turn/);
+    const bad = readState(JSON.stringify({ ...s, midTurn: [{ cardId: 1, text: "x" }] }), { activated: true, root: ROOT, stateDir: STATE_DIR });
+    assert.notEqual(bad.degraded, null);
+  });
+
+  test("a stored mid-turn entry for an earlier card does not count for the current one", () => {
+    const host = fakeHost();
+    const s = proposed(host);
+    const stored = readState(JSON.stringify({ ...s, midTurn: [{ cardId: "card-0", text: "go ahead" }] }), { activated: true, root: ROOT, stateDir: STATE_DIR });
+    assert.equal(stored.degraded, null);
+    assert.match(pairBegin(stored, { cardId: s.card.id, quote: "go ahead" }, host.io).reason, /has not typed a turn/);
   });
 });
 
@@ -1019,6 +1121,28 @@ describe("adversarial 13: open keeps every write inside the boundary", () => {
       const sym = sandboxed(open, `ln -s ${dirs.base}/secret.txt src/link.ts`, dirs.root);
       assert.equal(sym.status, 0, sym.stderr);
     } finally {
+      dirs.cleanup();
+    }
+  });
+
+  test("pair_run cannot connect to a local Unix socket (a daemon's) in either phase; the DNS resolver's stays open", { skip: liveSkip }, async () => {
+    const dirs = liveDirs();
+    const sock = `/tmp/pc-gate-${process.pid}.sock`;
+    const server = createServer((c) => c.end());
+    await new Promise((r) => server.listen(sock, r));
+    const connect = (state, target) => new Promise((resolve) => {
+      const r = runStart(state, { runId: "live" });
+      const child = spawn(SANDBOX, ["-p", r.profile, "/usr/bin/nc", "-U", "-w", "2", target], { stdio: "ignore" });
+      child.on("exit", (code) => resolve(code));
+    });
+    try {
+      assert.equal(await connect(liveState(dirs, "closed"), sock), 1, "closed");
+      assert.equal(await connect(liveState(dirs, "open"), sock), 1, "open");
+      assert.equal(await connect(liveState(dirs, "closed"), "/private/var/run/mDNSResponder"), 0, "DNS resolver");
+      const unsandboxed = await new Promise((resolve) => spawn("/usr/bin/nc", ["-U", "-w", "2", sock], { stdio: "ignore" }).on("exit", resolve));
+      assert.equal(unsandboxed, 0, "control: the socket accepts outside the sandbox");
+    } finally {
+      server.close();
       dirs.cleanup();
     }
   });

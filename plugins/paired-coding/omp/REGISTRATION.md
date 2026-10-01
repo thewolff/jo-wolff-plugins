@@ -10,11 +10,13 @@ Below, `<checkout>` is the absolute path of your clone of this repository.
 ## What it needs
 
 - macOS with `/usr/bin/sandbox-exec`. `pair_run`, and the write inside `pair_write` and
-  `pair_edit`, run under a Seatbelt profile. On any other platform `pair_start` refuses, and
-  the session stays inert.
+  `pair_edit`, run under a Seatbelt profile that fences file writes, hard links and Unix-domain
+  socket connections (the DNS resolver's excepted), and leaves TCP open. On any other platform
+  `pair_start` refuses, and the session stays inert.
 - OMP's extension API: `pi.on("tool_call" | "input" | "session_shutdown" |
-  "session_before_switch" | "session_switch")`, `pi.registerTool`, `pi.getAllTools`, `pi.zod`,
-  and `ctx.ui.notify` when a UI is present. Verified against `@oh-my-pi/pi-coding-agent` 18.4.4.
+  "session_before_switch" | "session_switch" | "session_before_branch" | "session_branch")`,
+  `pi.registerTool`, `pi.getAllTools`, `pi.zod`, and `ctx.ui.notify` when a UI is present.
+  Verified against `@oh-my-pi/pi-coding-agent` 18.4.4.
 - Nothing else. The adapter imports `core/gate.mjs` and `lib/*.mjs`, which use Node built-ins
   only, so OMP's loader imports them as they are.
 
@@ -99,11 +101,15 @@ extensions. `getExtensionPaths` and `isExtensionActive` exist on the runner but 
   process group, takes the final snapshot and returns the session to inactive.
 - `/new`, `/fork` and `/resume` keep this extension loaded but give the agent a new session id
   (`session_before_switch` and `session_switch`, reasons `new`, `fork` and `resume`, in
-  `src/session/agent-session.ts`). If the session being left was pairing, the adapter ends it as
-  on shutdown and starts the new session `closed`: no card, no open change set, host writes,
-  `pair_note` and `pair_propose` refused, journal entry `carried-after-clear` with reason
-  `omp:new`, `omp:fork` or `omp:resume`. The editor shows "paired coding carried into this
-  session closed: call pair_start to restart it, or type pair stop to end it".
+  `src/session/agent-session.ts`). `/branch`, and the branch `/btw` makes, do the same through
+  `session_before_branch` and `session_branch`. If the session being left was pairing, the
+  adapter ends it as on shutdown and starts the new session `closed`: no card, no open change
+  set, host writes, `pair_note` and `pair_propose` refused, journal entry `carried-after-clear`
+  with reason `omp:new`, `omp:fork`, `omp:resume` or `omp:branch`. The editor shows "paired
+  coding carried into this session closed: call pair_start to restart it, or type pair stop to
+  end it".
+- `/tree` keeps the session id and only moves within the session tree (`session_tree`, which
+  this adapter does not handle), so pairing carries on unchanged.
 - OMP's own `/clear` drops the conversation but keeps the session id
   (`src/slash-commands/builtin-lifecycle.ts`, "Clear the conversation context in place, keeping
   the session"), and it fires no extension event. It does append a `reset_boundary` entry to the
