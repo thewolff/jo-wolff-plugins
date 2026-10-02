@@ -12,8 +12,10 @@
 //                         emitInput call in #runInputHandlers). Messages an extension injects
 //                         with sendUserMessage never pass through it, so they never count as the
 //                         user's words. A typed turn that is exactly "pair stop" ends pairing
-//                         here, before the turn reaches the agent. The handler returns nothing:
-//                         it never revises input.
+//                         here, before the turn reaches the agent, and queues STOP_NOTICE as
+//                         hidden context for that turn (sendMessage, deliverAs "nextTurn"), so
+//                         the agent learns pairing ended. The handler returns nothing: it never
+//                         revises input.
 //   registerTool       -> one OMP tool per PAIR_TOOLS entry. Each execute() calls executeVerb()
 //                         on the arguments it received, which are the final ones: OMP hands
 //                         execute the last tool_call revision, so a later extension that
@@ -23,14 +25,20 @@
 //                         snapshot, go inactive.
 //   session_before_switch, session_switch, session_before_branch, session_branch
 //                      -> a session change inside the running process (/new, /fork, /resume
-//                         emit the switch events; /branch and /btw's branch emit the branch
-//                         events) keeps this extension loaded but gives the agent a new session
-//                         id. When the session being left was pairing, it ends like
+//                         emit the switch events; /btw's branch and a branch requested over RPC
+//                         or by an extension, AgentSession.branch, emit the branch events)
+//                         keeps this extension loaded but gives the agent a new session id.
+//                         When the session being left was pairing, it ends like
 //                         session_shutdown and the new session starts closed (carryInto): host
 //                         writes refused until pair_start, ended by a typed stop. The old id is
 //                         taken at the before event, because after it the context already
-//                         reports the new one. /tree navigation keeps the session id and fires
-//                         session_tree, which this adapter does not handle.
+//                         reports the new one.
+//   session_tree       -> a leaf move inside the same session file. /tree, and the interactive
+//                         /branch to an earlier message (the selector calls navigateTree), keep
+//                         the session id and fire session_tree after the move. The agent's
+//                         context is then another branch, which does not hold the agreement, so
+//                         a move while pairing is handled like /clear (clearInPlace): pairing
+//                         ends, the card is dropped and the same session carries closed.
 //   /clear             -> OMP's /clear keeps the session id and drops the agent's context, and
 //                         fires no extension event. It does append a `reset_boundary` entry to
 //                         the session, so before every input and tool call the adapter compares
@@ -52,7 +60,7 @@
 // SYNTAX: erasable-types TypeScript only, so node strips the types and imports this file in the
 // unit tests without Bun. `pi` is typed structurally; there are no imports from the host.
 
-import { PAIR_TOOLS, ROADMAP_STATUSES } from "../core/gate.mjs";
+import { CARRIED_PHRASE, EARLIER_ROADMAP_CHOICES, PAIR_TOOLS, ROADMAP_STATUSES } from "../core/gate.mjs";
 import { carryInto, clearInPlace, endSession, executeVerb, recordTrustedInput, sessionDirFor, verdict } from "../lib/verbs.mjs";
 
 // ─── host shapes (structural; only what this adapter reads) ────────────────────────────
@@ -98,9 +106,15 @@ export type PiLike = {
 	on(event: "session_shutdown", handler: (event: unknown, ctx: OmpContext) => unknown): void;
 	on(event: "session_before_switch" | "session_before_branch", handler: (event: unknown, ctx: OmpContext) => unknown): void;
 	on(event: "session_switch" | "session_branch", handler: (event: { reason?: string }, ctx: OmpContext) => unknown): void;
+	on(event: "session_tree", handler: (event: { newLeafId?: string | null; oldLeafId?: string | null }, ctx: OmpContext) => unknown): void;
 	registerTool(tool: ToolDefinition): void;
 	getAllTools(): Array<{ name: string }>;
+	sendMessage?(message: { customType: string; content: string; display: boolean }, options: { deliverAs: "nextTurn" }): void;
 };
+
+/** What the agent is told, as hidden context on the turn, when the partner typed pair stop. */
+export const STOP_NOTICE =
+	"paired-coding: your partner typed pair stop, so pairing has ended in this session. The gate no longer refuses host tools. Pairing starts again only if your partner asks for it and you call pair_start.";
 
 // ─── session binding ───────────────────────────────────────────────────────────────────
 
@@ -170,7 +184,7 @@ const SPECS: Record<string, ToolSpec> = {
 	pair_note: {
 		label: "Pair: note",
 		description:
-			"Append a note to the pairing journal: free text, a roadmap, or both. The latest roadmap replaces the one before; pair_done lists its items still open or not ready, and the next pair_start in this worktree offers them. The only place to keep notes while pairing.",
+			"Append a note to the pairing journal: free text, a roadmap, or both. The latest roadmap replaces the one before; pair_done lists its items still open or not ready, and the next pair_start in this worktree offers them. Answer a roadmap pair_start offered with earlierRoadmap. The only place to keep notes while pairing.",
 		approval: "read",
 		parameters: (z) =>
 			z.object({
@@ -186,6 +200,10 @@ const SPECS: Record<string, ToolSpec> = {
 					)
 					.describe("The whole roadmap, replacing the previous one.")
 					.optional(),
+				earlierRoadmap: OPT_STR(
+					z,
+					`Your partner's answer to the earlier roadmap pair_start offered, one of ${EARLIER_ROADMAP_CHOICES.join(", ")}: pick-up carries it into this session, start-fresh sets it aside for good. Not with roadmap.`,
+				),
 			}),
 	},
 	pair_propose: {
@@ -281,7 +299,7 @@ export default function pairedCodingOmp(pi: PiLike, deps: AdapterDeps = {}): voi
 		if (!known || before === latest) return;
 		const r = clearInPlace({ sessionId: id, sessionDir: dir, reason: "omp:clear" });
 		if (r.carried && ctx.hasUI && ctx.ui) {
-			ctx.ui.notify("paired coding is closed because the conversation was cleared: call pair_start to restart it, or type pair stop to end it", "info");
+			ctx.ui.notify(`paired coding: ${CARRIED_PHRASE}, because the conversation was cleared. Tell the agent to keep pairing, or type pair stop to end it`, "info");
 		}
 	};
 
@@ -298,7 +316,10 @@ export default function pairedCodingOmp(pi: PiLike, deps: AdapterDeps = {}): voi
 		if (!dir) return undefined;
 		checkReset(ctx, dir);
 		const r = recordTrustedInput({ sessionDir: dir, text: event.text, source: event.source });
-		if (r.stopped && ctx.hasUI && ctx.ui) ctx.ui.notify("paired coding is off: you typed pair stop", "info");
+		if (r.stopped) {
+			pi.sendMessage?.({ customType: "paired-coding", content: STOP_NOTICE, display: false }, { deliverAs: "nextTurn" });
+			if (ctx.hasUI && ctx.ui) ctx.ui.notify("paired coding is off: you typed pair stop", "info");
+		}
 		return undefined;
 	});
 
@@ -326,16 +347,27 @@ export default function pairedCodingOmp(pi: PiLike, deps: AdapterDeps = {}): voi
 		if (!ended.carry || !toDir) return undefined;
 		const r = carryInto({ sessionId: to, sessionDir: toDir, root: ended.carry.root, exclusions: ended.carry.exclusions, protect: ended.carry.protect, from, reason: `omp:${reason}` });
 		if (r.ok && ctx.hasUI && ctx.ui) {
-			ctx.ui.notify("paired coding carried into this session closed: call pair_start to restart it, or type pair stop to end it", "info");
+			ctx.ui.notify(`paired coding: ${CARRIED_PHRASE} in this session. Tell the agent to keep pairing, or type pair stop to end it`, "info");
 		}
 		return undefined;
 	};
 	pi.on("session_before_switch", takeLeaving);
 	pi.on("session_switch", (event, ctx) => carryAcross(event?.reason ?? "switch", ctx));
-	// /branch, and /btw's branch: OMP mints a new session id (createBranchedSession or newSession)
-	// and emits session_branch, not session_switch.
+	// /btw's branch and AgentSession.branch: OMP mints a new session id (createBranchedSession or
+	// newSession) and emits session_branch, not session_switch.
 	pi.on("session_before_branch", takeLeaving);
 	pi.on("session_branch", (_event, ctx) => carryAcross("branch", ctx));
+	pi.on("session_tree", (event, ctx) => {
+		if (!event || event.newLeafId === event.oldLeafId) return undefined;
+		const dir = dirOf(ctx, env);
+		if (!dir) return undefined;
+		checkReset(ctx, dir);
+		const r = clearInPlace({ sessionId: ctx.sessionManager.getSessionId(), sessionDir: dir, reason: "omp:tree" });
+		if (r.carried && ctx.hasUI && ctx.ui) {
+			ctx.ui.notify(`paired coding: ${CARRIED_PHRASE}, because you moved to another point in the conversation. Tell the agent to keep pairing, or type pair stop to end it`, "info");
+		}
+		return undefined;
+	});
 
 	for (const name of PAIR_TOOLS) {
 		const spec = SPECS[name];

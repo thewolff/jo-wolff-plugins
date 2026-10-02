@@ -20,6 +20,21 @@ export const TOOL_PREFIX = `mcp__plugin_${PLUGIN}_${SERVER}__`;
 export const SERVER_NAME = `plugin:${PLUGIN}:${SERVER}`;
 /** Claude Code tools that pairing must not break and that cannot write or run code. */
 export const HOST_ALLOW = Object.freeze(["ToolSearch", "TodoWrite", "AskUserQuestion"]);
+/** This plugin's own skill, as Claude Code's Skill tool names a plugin-qualified skill. */
+export const OWN_SKILL = `${PLUGIN}:paired-coding`;
+
+/**
+ * The host tools to allow for this call: HOST_ALLOW, plus `Skill` when the call loads this
+ * plugin's own skill (`tool_input.skill`, trimmed, one leading slash dropped, as Claude Code's
+ * Skill tool reads it). Any other skill stays refused while pairing.
+ * @param {{ tool_name?: unknown, tool_input?: { skill?: unknown } }} input
+ */
+export function hostAllowFor(input) {
+  const skill = input?.tool_name === "Skill" ? input.tool_input?.skill : undefined;
+  if (typeof skill !== "string") return HOST_ALLOW;
+  const name = skill.trim();
+  return (name.startsWith("/") ? name.slice(1) : name) === OWN_SKILL ? [...HOST_ALLOW, "Skill"] : HOST_ALLOW;
+}
 
 const SAFE_ID = /^[A-Za-z0-9_-]{1,128}$/;
 const MAX_AGE_MS = 10 * 60 * 1000;

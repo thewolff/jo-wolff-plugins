@@ -19,7 +19,7 @@ import { join } from "node:path";
 import { randomUUID } from "node:crypto";
 
 import { PAIR_TOOLS } from "../core/gate.mjs";
-import pairedCodingOmp from "./paired-coding-omp.ts";
+import pairedCodingOmp, { STOP_NOTICE } from "./paired-coding-omp.ts";
 
 const HAS_SANDBOX = process.platform === "darwin" && existsSync("/usr/bin/sandbox-exec");
 const sandboxOnly = HAS_SANDBOX ? test : test.skip;
@@ -40,6 +40,8 @@ function setup({ otherTools = [], env = {} } = {}) {
   const handlers = {};
   const tools = new Map();
   const notes = [];
+  // Messages the adapter queued for the agent with pi.sendMessage.
+  const sent = [];
   // The session's entries, as OMP's ReadonlySessionManager.getEntries() returns them.
   const entries = [{ type: "message", id: "e0" }];
   const pi = {
@@ -47,6 +49,7 @@ function setup({ otherTools = [], env = {} } = {}) {
     on(event, h) { (handlers[event] ??= []).push(h); },
     registerTool(t) { tools.set(t.name, t); },
     getAllTools() { return [...otherTools, ...[...tools.keys()].map((name) => ({ name }))]; },
+    sendMessage(message, options) { sent.push({ message, options }); },
   };
   const ctx = {
     cwd: repo,
@@ -94,7 +97,9 @@ function setup({ otherTools = [], env = {} } = {}) {
   const append = (type) => entries.push({ type, id: `${type}-${entries.length}` });
   /** As OMP's /clear does: same session id, a reset_boundary entry appended, no extension event. */
   const clear = () => append("reset_boundary");
-  return { repo, base, dir, sessionId, ctx, tools, notes, emit, call, journal, type, switchTo, branchTo, clear, append, reload };
+  /** As OMP's /tree and the interactive /branch do: same session id, the leaf moved, session_tree after. */
+  const tree = (newLeafId, oldLeafId) => emit("session_tree", { type: "session_tree", newLeafId, oldLeafId });
+  return { repo, base, dir, sessionId, ctx, tools, notes, sent, emit, call, journal, type, switchTo, branchTo, clear, tree, append, reload };
 }
 
 /** Start pairing, propose a card over `boundary`, have the user agree, open the change set. */
@@ -123,6 +128,8 @@ describe("inert until pair_start", () => {
     assert.equal(r.ok, false);
     assert.match(r.text, /not active/);
     assert.equal(existsSync(s.dir), false, "no session directory before pair_start");
+    await s.type("pair stop");
+    assert.deepEqual(s.sent, [], "a stop typed while not pairing tells the agent nothing");
   });
 });
 
@@ -317,6 +324,9 @@ describe("ending pairing", () => {
     assert.equal(await blocked(s), false);
     assert.ok(s.journal().some((e) => e.type === "stop" && e.verb === "typed-stop"));
     assert.ok(s.notes.some((n) => /you typed pair stop/.test(n.m)));
+    // The agent hears it too: hidden context on the stop turn, not a revision of the input.
+    assert.deepEqual(s.sent, [{ message: { customType: "paired-coding", content: STOP_NOTICE, display: false }, options: { deliverAs: "nextTurn" } }]);
+    assert.match(STOP_NOTICE, /^paired-coding: your partner typed pair stop, so pairing has ended/);
   });
 
   sandboxOnly("an injected 'pair stop' changes nothing, and there is no stop tool", async () => {
@@ -326,6 +336,7 @@ describe("ending pairing", () => {
     assert.equal(await blocked(s), true);
     assert.equal(s.tools.has("pair_stop"), false);
     assert.equal(await blocked(s, "pair_stop"), true);
+    assert.deepEqual(s.sent, [], "an injected stop sends the agent no notice");
   });
 
   sandboxOnly("a pair_begin quote of 'y' against a typed 'why?' is refused", async () => {
@@ -440,5 +451,52 @@ describe("/clear keeps the session id but drops the agent's context", () => {
     await s.type("hello");
     assert.equal(await blocked(s), false);
     assert.equal(existsSync(s.dir), false);
+  });
+});
+
+describe("a leaf move in the same session (/tree, the interactive /branch) is handled like /clear", () => {
+  sandboxOnly("pairing ends, the card and change set are dropped, and the same session carries closed", async () => {
+    const s = setup();
+    await openChangeSet(s, ["a.txt"]);
+    await s.tree("e0", "leaf-9");
+    const j = s.journal();
+    assert.ok(j.some((e) => e.type === "stop" && e.verb === "session-end"), "pairing ended as on a session change");
+    assert.ok(j.some((e) => e.type === "carried-after-clear" && e.reason === "omp:tree"));
+    assert.ok(s.notes.some((n) => /pairing is still on and the card is closed, because you moved to another point in the conversation/.test(n.m)));
+    assert.equal(await blocked(s), true, "host writes stay refused");
+    const w = await s.call("pair_write", { path: "a.txt", content: "x" });
+    assert.notEqual(w.ok, true, "the change set is gone");
+    // The carried refusal tells the agent to wait for its partner, on OMP too.
+    const p = await s.call("pair_propose", { boundary: ["a.txt"] });
+    assert.equal(p.ok, false);
+    assert.match(p.text, /pairing is still on and the card is closed after a session change\. Tell your partner pairing carried over closed and wait for their answer/);
+    assert.equal((await s.call("pair_start")).ok, true, "pair_start restarts pairing");
+    const again = await s.call("pair_propose", { boundary: ["a.txt"] });
+    assert.equal(again.details.card.id, "card-2", "the card id is not reused in this journal");
+  });
+
+  sandboxOnly("a tree event that did not move the leaf changes nothing", async () => {
+    const s = setup();
+    assert.equal((await s.call("pair_start")).ok, true);
+    await s.tree("leaf-3", "leaf-3");
+    assert.equal(s.journal().some((e) => e.type === "carried-after-clear" || e.type === "stop"), false);
+    assert.equal(await blocked(s), true);
+  });
+
+  test("a leaf move when not pairing changes nothing and creates no file", async () => {
+    const s = setup();
+    await s.tree("e0", "leaf-5");
+    assert.equal(await blocked(s), false);
+    assert.equal(existsSync(s.dir), false);
+  });
+
+  sandboxOnly("after /clear, pair_start numbers cards on from the session's journal", async () => {
+    const s = setup();
+    await openChangeSet(s, ["a.txt"]);
+    s.clear();
+    await s.type("keep pairing");
+    assert.equal((await s.call("pair_start")).ok, true);
+    const p = await s.call("pair_propose", { boundary: ["a.txt"] });
+    assert.equal(p.details.card.id, "card-2");
   });
 });

@@ -14,8 +14,9 @@ Below, `<checkout>` is the absolute path of your clone of this repository.
   socket connections (the DNS resolver's excepted), and leaves TCP open. On any other platform
   `pair_start` refuses, and the session stays inert.
 - OMP's extension API: `pi.on("tool_call" | "input" | "session_shutdown" |
-  "session_before_switch" | "session_switch" | "session_before_branch" | "session_branch")`,
-  `pi.registerTool`, `pi.getAllTools`, `pi.zod`, and `ctx.ui.notify` when a UI is present.
+  "session_before_switch" | "session_switch" | "session_before_branch" | "session_branch" |
+  "session_tree")`, `pi.registerTool`, `pi.getAllTools`, `pi.sendMessage`, `pi.zod`, and
+  `ctx.ui.notify` when a UI is present.
   Verified against `@oh-my-pi/pi-coding-agent` 18.4.4.
 - Nothing else. The adapter imports `core/gate.mjs` and `lib/*.mjs`, which use Node built-ins
   only, so OMP's loader imports them as they are.
@@ -51,11 +52,17 @@ Routes 2 and 3 load the file from a checkout without installing the plugin. Use 
 instead of route 1, not as well.
 
 2. **One omp process only** (a first try without installing). Pass the file with `-e`
-   (`--extension`) to a single omp started by hand:
+   (`--extension`) to a single omp started by hand, together with `--plugin-dir` for the skill:
 
    ```
-   omp -e <checkout>/plugins/paired-coding/omp/paired-coding-omp.ts
+   omp --plugin-dir <checkout>/plugins/paired-coding \
+       -e <checkout>/plugins/paired-coding/omp/paired-coding-omp.ts
    ```
+
+   Each flag loads half: `--plugin-dir` loads the skill but not the `pair_*` tools, and `-e`
+   loads the tools but not the skill. Tested on OMP 18.4.4 with both: the eight `pair_*` tools
+   appeared once each, the skill was listed, and the journal recorded one input entry per typed
+   turn, so one copy of the gate ran.
 
    Only that process loads the adapter, and nothing on disk changes to register it. `-e` and
    `--extension` push onto the same list (`setExtension` in `src/cli/flag-tables.ts` of
@@ -121,31 +128,46 @@ extensions. `getExtensionPaths` and `isExtensionActive` exist on the runner but 
 - Typing `pair stop` in the editor, as the whole message (case and surrounding spaces do not
   matter), ends pairing for the session in any phase. The adapter kills and reaps every
   `pair_run` process group, takes the final snapshot, journals any write it did not approve,
-  journals `stop` with verb `typed-stop`, and returns the session to inactive. The same words
-  arriving from an extension or over RPC end nothing.
+  journals `stop` with verb `typed-stop`, and returns the session to inactive. The editor shows
+  "paired coding is off: you typed pair stop", and the agent gets hidden context on that turn:
+  "paired-coding: your partner typed pair stop, so pairing has ended in this session. The gate
+  no longer refuses host tools. Pairing starts again only if your partner asks for it and you
+  call pair_start." Your typed text is not changed. The same words arriving from an extension
+  or over RPC end nothing.
 - No tool ends pairing. The agent cannot stop the gate it works under.
 - Exiting omp ends pairing. On `session_shutdown` the adapter kills and reaps every `pair_run`
   process group, takes the final snapshot and returns the session to inactive.
 - `/new`, `/fork` and `/resume` keep this extension loaded but give the agent a new session id
   (`session_before_switch` and `session_switch`, reasons `new`, `fork` and `resume`, in
-  `src/session/agent-session.ts`). `/branch`, and the branch `/btw` makes, do the same through
-  `session_before_branch` and `session_branch`. If the session being left was pairing, the
-  adapter ends it as on shutdown and starts the new session `closed`: no card, no open change
-  set, host writes, `pair_note` and `pair_propose` refused, journal entry `carried-after-clear`
-  with reason `omp:new`, `omp:fork`, `omp:resume` or `omp:branch`. The editor shows "paired
-  coding carried into this session closed: call pair_start to restart it, or type pair stop to
-  end it".
-- `/tree` keeps the session id and only moves within the session tree (`session_tree`, which
-  this adapter does not handle), so pairing carries on unchanged.
+  `src/session/agent-session.ts`). The branch `/btw` makes, and a branch requested over RPC or
+  by an extension, do the same through `session_before_branch` and `session_branch`. If the
+  session being left was pairing, the adapter ends it as on shutdown and starts the new session
+  with pairing still on and the card closed: no card, no open change set, host writes,
+  `pair_note` and `pair_propose` refused, journal entry `carried-after-clear` with reason
+  `omp:new`, `omp:fork`, `omp:resume` or `omp:branch`. The editor shows "paired coding:
+  pairing is still on and the card is closed in this session. Tell the agent to keep pairing,
+  or type pair stop to end it". The agent waits for your answer and calls `pair_start` only
+  once you say to keep pairing.
+- `/tree`, and the interactive `/branch` back to an earlier message, keep the session id and
+  move to another point in the same session file; in 18.4.4 they fire `session_tree`, not
+  `session_branch`. The agent's context is then another branch, which does not hold the
+  agreement, so the adapter handles the move like `/clear`: pairing ends, the card and change
+  set are dropped, and the same session carries on with pairing still on and the card closed,
+  journaling `carried-after-clear` with reason `omp:tree`. The editor shows "paired coding:
+  pairing is still on and the card is closed, because you moved to another point in the
+  conversation. Tell the agent to keep pairing, or type pair stop to end it".
 - OMP's own `/clear` drops the conversation but keeps the session id
   (`src/slash-commands/builtin-lifecycle.ts`, "Clear the conversation context in place, keeping
   the session"), and it fires no extension event. It does append a `reset_boundary` entry to the
   session (`appendResetBoundary` in `src/session/session-manager.ts`), which the extension can
   read through `ctx.sessionManager.getEntries()`. Before every `input` and `tool_call` the adapter
   looks for a new one. If pairing was active, it ends pairing as on shutdown, finishing any open
-  change set, and keeps the same session `closed`, journaling `carried-after-clear` with reason
-  `omp:clear`. The editor shows "paired coding is closed because the conversation was cleared:
-  call pair_start to restart it, or type pair stop to end it".
+  change set, and keeps the same session with pairing still on and the card closed, journaling
+  `carried-after-clear` with reason `omp:clear`. The editor shows "paired coding: pairing is
+  still on and the card is closed, because the conversation was cleared. Tell the agent to keep
+  pairing, or type pair stop to end it". Because the session id is kept, the next `pair_start`
+  also offers the roadmap this session recorded before the clear, if cards are still open or
+  not ready.
 - There is no separate kill switch. To run omp without the gate, start a process that does
   not load this file.
 

@@ -3,11 +3,11 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { chmodSync, existsSync, linkSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, linkSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, statSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
-  CARRY_MAX_AGE_MS, PLUGIN_ROOT, carryInto, endSession, executeVerb, recordTrustedInput, takeCarryMarker, verdict, writeCarryMarker,
+  CARRY_MAX_AGE_MS, PLUGIN_ROOT, ROADMAP_WALK_LIMIT, carryInto, clearInPlace, endSession, executeVerb, recordTrustedInput, takeCarryMarker, verdict, writeCarryMarker,
 } from "./verbs.mjs";
 import { loadState, reapGroups, writeSandboxed } from "./host-io.mjs";
 import { pairRunProfile, pairWriteProfile } from "../core/gate.mjs";
@@ -490,4 +490,133 @@ test("pair_start makes no offer for another worktree, or when the latest earlier
   endSession({ sessionDir: s2.sessionDir });
   const s3 = await executeVerb("pair_start", {}, { sessionId: "sess-3", sessionDir: join(f.base, "sess-3"), root: f.root });
   assert.equal(s3.result.roadmapOffer, null);
+});
+
+const sessionCtx = (f, name) => ({ sessionId: name, sessionDir: join(f.base, name), root: f.root });
+
+/** sess-1 records the roadmap and quits; every later session's journal is written after it. */
+async function roadmapLeftOpen(f) {
+  await executeVerb("pair_start", {}, f.ctx);
+  await executeVerb("pair_note", { roadmap }, f.ctx);
+  endSession({ sessionDir: f.dir });
+  await sleep(10);
+}
+
+test("pair_start walks back past sessions that recorded no roadmap: a carried, restarted middle session", { skip: !hasSandbox }, async () => {
+  const f = fixture();
+  await roadmapLeftOpen(f);
+  // The trial's shape: /clear carries sess-2 closed, the agent restarts pairing, the partner stops.
+  const s2 = sessionCtx(f, "sess-2");
+  assert.equal(carryInto({ ...s2, from: "sess-1", reason: "clear" }).ok, true);
+  assert.equal((await executeVerb("pair_start", {}, s2)).ok, true);
+  typed({ dir: s2.sessionDir }, "pair stop");
+  await sleep(10);
+  // A third session that never answered the offer before it ended does not stop the walk either.
+  const s3 = sessionCtx(f, "sess-3");
+  assert.equal((await executeVerb("pair_start", {}, s3)).result.roadmapOffer.fromSession, "sess-1");
+  endSession({ sessionDir: s3.sessionDir });
+  await sleep(10);
+  const r = await executeVerb("pair_start", {}, sessionCtx(f, "sess-4"));
+  assert.equal(r.result.roadmapOffer.fromSession, "sess-1");
+  assert.deepEqual(r.result.roadmapOffer.items.map((i) => i.id), ["cache", "auth"]);
+  assert.match(r.text, /earlierRoadmap/);
+});
+
+test("a start-fresh decline stops the walk for every later session", { skip: !hasSandbox }, async () => {
+  const f = fixture();
+  await roadmapLeftOpen(f);
+  const s2 = sessionCtx(f, "sess-2");
+  assert.equal((await executeVerb("pair_start", {}, s2)).result.roadmapOffer.fromSession, "sess-1");
+  const declined = await executeVerb("pair_note", { earlierRoadmap: "start-fresh" }, s2);
+  assert.equal(declined.ok, true, declined.text);
+  assert.match(declined.text, /not offered again/);
+  assert.equal(loadState(s2.sessionDir).roadmap, null);
+  endSession({ sessionDir: s2.sessionDir });
+  await sleep(10);
+  const s3 = sessionCtx(f, "sess-3");
+  assert.equal((await executeVerb("pair_start", {}, s3)).result.roadmapOffer, null);
+  endSession({ sessionDir: s3.sessionDir });
+  await sleep(10);
+  assert.equal((await executeVerb("pair_start", {}, sessionCtx(f, "sess-4"))).result.roadmapOffer, null);
+});
+
+test("a picked-up roadmap is copied forward: after a quit, the next fresh start offers it from the new journal", { skip: !hasSandbox }, async () => {
+  const f = fixture();
+  await roadmapLeftOpen(f);
+  const firstJournal = readFileSync(join(f.dir, "journal.jsonl"));
+  const s2 = sessionCtx(f, "sess-2");
+  await executeVerb("pair_start", {}, s2);
+  const picked = await executeVerb("pair_note", { earlierRoadmap: "pick-up" }, s2);
+  assert.equal(picked.ok, true, picked.text);
+  assert.deepEqual(loadState(s2.sessionDir).roadmap, roadmap);
+  assert.ok(journal({ dir: s2.sessionDir }).some((e) => e.type === "note" && e.carriedFrom === "sess-1"));
+  endSession({ sessionDir: s2.sessionDir });
+  await sleep(10);
+  const r = await executeVerb("pair_start", {}, sessionCtx(f, "sess-3"));
+  assert.equal(r.result.roadmapOffer.fromSession, "sess-2");
+  assert.deepEqual(r.result.roadmapOffer.items.map((i) => i.id), ["cache", "auth"]);
+  assert.deepEqual(readFileSync(join(f.dir, "journal.jsonl")), firstJournal, "the earlier journal stays as it is");
+});
+
+test("an OMP /clear in place offers the roadmap the same session recorded before it", { skip: !hasSandbox }, async () => {
+  const f = fixture();
+  await executeVerb("pair_start", {}, f.ctx);
+  await executeVerb("pair_note", { roadmap }, f.ctx);
+  assert.equal(clearInPlace({ sessionId: "sess-1", sessionDir: f.dir, reason: "clear" }).carried, true);
+  const r = await executeVerb("pair_start", {}, f.ctx);
+  assert.equal(r.result.roadmapOffer.fromSession, "sess-1");
+});
+
+test("the OMP joint test's shape: two cards and a not-ready item, /clear in place, then pair_start offers it and numbers on", { skip: !hasSandbox }, async () => {
+  const f = fixture();
+  await executeVerb("pair_start", {}, f.ctx);
+  for (const boundary of [["src/a.txt"], ["src/b.txt"]]) assert.equal((await executeVerb("pair_propose", { boundary }, f.ctx)).ok, true);
+  const trial = [
+    { id: "shout", title: "Shout the greeting", status: "done" },
+    { id: "readme", title: "Document it in the README", status: "not-ready", note: "waits on the wording" },
+  ];
+  assert.equal((await executeVerb("pair_note", { roadmap: trial }, f.ctx)).ok, true);
+  // OMP /clear: the same session dir ends with stop session-end and carries closed.
+  assert.equal(clearInPlace({ sessionId: "sess-1", sessionDir: f.dir, reason: "omp:clear" }).carried, true);
+  const refused = await executeVerb("pair_propose", { boundary: ["src/a.txt"] }, f.ctx);
+  assert.equal(refused.ok, false);
+  assert.match(refused.text, /pairing is still on and the card is closed after a session change\. Tell your partner pairing carried over closed and wait for their answer/);
+  const r = await executeVerb("pair_start", {}, f.ctx);
+  assert.equal(r.ok, true, r.text);
+  assert.equal(r.result.roadmapOffer.fromSession, "sess-1");
+  assert.deepEqual(r.result.roadmapOffer.items.map((i) => `${i.id}:${i.status}`), ["readme:not-ready"]);
+  const types = journal(f).map((e) => e.type === "stop" ? `stop:${e.verb}` : e.type);
+  assert.deepEqual(types.slice(types.indexOf("stop:session-end")), ["stop:session-end", "carried-after-clear", "refusal", "start", "roadmap-offered"]);
+  // The new card does not reuse an id this journal already holds.
+  const next = await executeVerb("pair_propose", { boundary: ["src/a.txt"] }, f.ctx);
+  assert.equal(next.result.card.id, "card-3");
+  assert.equal(journal(f).filter((e) => e.type === "card").map((e) => e.card.id).join(","), "card-1,card-2,card-3");
+});
+
+test("card numbering continues after a typed stop and a later pair_start in the same session", { skip: !hasSandbox }, async () => {
+  const f = fixture();
+  assert.equal(await openChangeSet(f), "card-1");
+  typed(f, "pair stop");
+  assert.equal(loadState(f.dir).phase, "inactive");
+  assert.equal(await openChangeSet(f), "card-2", "pair_start after the stop numbers on from the same journal");
+});
+
+test(`the walk reads at most ${ROADMAP_WALK_LIMIT} journals, newest first`, { skip: !hasSandbox }, async () => {
+  const f = fixture();
+  await roadmapLeftOpen(f);
+  const old = statSync(join(f.dir, "journal.jsonl")).mtime.getTime() / 1000;
+  const empty = (i) => {
+    const dir = join(f.base, `empty-${i}`);
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(join(dir, "activated"), JSON.stringify({ root: f.root, stateDir: dir, ended: true }));
+    writeFileSync(join(dir, "journal.jsonl"), `${JSON.stringify({ type: "start" })}\n`);
+    utimesSync(join(dir, "journal.jsonl"), old + 1 + i, old + 1 + i);
+  };
+  for (let i = 0; i < ROADMAP_WALK_LIMIT - 1; i++) empty(i);
+  assert.equal((await executeVerb("pair_start", {}, sessionCtx(f, "within"))).result.roadmapOffer.fromSession, "sess-1");
+  // "within" holds only an unanswered offer; age it below sess-1 so exactly ROADMAP_WALK_LIMIT
+  // empty journals sit above sess-1, which puts sess-1 one past the limit.
+  utimesSync(join(f.base, "within", "journal.jsonl"), old - 1, old - 1);
+  empty(ROADMAP_WALK_LIMIT);
+  assert.equal((await executeVerb("pair_start", {}, sessionCtx(f, "beyond"))).result.roadmapOffer, null);
 });

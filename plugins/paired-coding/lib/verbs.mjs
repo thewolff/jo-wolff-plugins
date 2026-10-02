@@ -16,7 +16,7 @@ import { dirname, join } from "node:path";
 import { createHash, randomBytes } from "node:crypto";
 import { fileURLToPath } from "node:url";
 import {
-  boundaryMatches, carryClosed, checkWrite, latestRoadmap, openRoadmapItems, pairBegin, pairDone, pairNote, pairPropose,
+  boundaryMatches, carryClosed, checkWrite, lastCardSeq, openRoadmapItems, pairBegin, pairDone, pairNote, pairPropose, roadmapRecord,
   pairStart, pairWriteProfile, recordInput, runEnd, runStart, sessionEnd, toolVerdict,
 } from "../core/gate.mjs";
 import {
@@ -213,7 +213,7 @@ export async function executeVerb(name, args, ctx) {
     args = args && typeof args === "object" ? args : {};
     switch (name) {
       case "pair_start": return pairStartVerb(args, ctx);
-      case "pair_note": return simple(name, ctx, (s, io) => pairNote(s, { text: args.text, roadmap: args.roadmap }, io), noteText);
+      case "pair_note": return simple(name, ctx, (s, io) => pairNote(s, { text: args.text, roadmap: args.roadmap, earlierRoadmap: args.earlierRoadmap }, io), noteText);
       case "pair_propose": return simple(name, ctx, (s, io) => pairPropose(s, cardArgs(args), io), (r) => `Card ${r.card.id} recorded. Show it to your partner and wait for their reply.\n${JSON.stringify(r.card, null, 2)}`);
       case "pair_begin": return pairBeginVerb(args, ctx);
       case "pair_done": return pairDoneVerb(args, ctx);
@@ -253,6 +253,7 @@ function roadmapLines(items) {
 }
 
 function noteText(r) {
+  if (r.declined) return "Started fresh. The earlier roadmap stays in its own journal and is not offered again.";
   if (!r.roadmapOpen) return "Noted in the pairing journal.";
   const open = r.roadmapOpen;
   return open.length
@@ -260,38 +261,49 @@ function noteText(r) {
     : `Roadmap recorded (${r.state.roadmap.length} items). Nothing is left open or not ready.`;
 }
 
+/** How many of a worktree's journals, newest first, the pair_start roadmap offer reads at most. */
+export const ROADMAP_WALK_LIMIT = 20;
+
+function readJournal(dir) {
+  const entries = [];
+  let lines;
+  try { lines = readFileSync(join(dir, "journal.jsonl"), "utf8").split("\n"); } catch { return entries; }
+  for (const line of lines) {
+    if (!line) continue;
+    try { entries.push(JSON.parse(line)); } catch { /* a torn line is skipped */ }
+  }
+  return entries;
+}
+
 /**
- * The roadmap items still open or not ready in the latest earlier session for the same
- * canonical worktree root under the state base, or null. "Latest" is the session whose journal
- * changed last. Read-only: no journal is modified and nothing reopens.
+ * The earlier roadmap pair_start offers, or null. Walks the journals of every session
+ * activated for the same canonical worktree root under the state base, newest journal first
+ * and at most ROADMAP_WALK_LIMIT of them, past sessions that recorded no roadmap. It stops at
+ * the first journal that recorded a roadmap or a start-fresh decline; the core (pairStart)
+ * offers that roadmap only when it still has items open or not ready. Read-only: no journal is
+ * modified.
  * @param {string} base
  * @param {string} root
- * @param {string} self  the current session's directory name, skipped
+ * @returns {{ fromSession: string, roadmap: object[] } | null}
  */
-export function roadmapOffer(base, root, self) {
-  let latest = null;
+export function roadmapOffer(base, root) {
   let names;
   try { names = readdirSync(base); } catch { return null; }
+  const sessions = [];
   for (const name of names) {
-    if (name === self) continue;
     const dir = join(base, name);
     let marker;
     try { marker = JSON.parse(readFileSync(join(dir, "activated"), "utf8")); } catch { continue; }
     if (!marker || marker.root !== root) continue;
-    let mtime;
-    try { mtime = statSync(join(dir, "journal.jsonl")).mtimeMs; } catch { continue; }
-    if (!latest || mtime > latest.mtime) latest = { name, dir, mtime };
+    try { sessions.push({ name, dir, mtime: statSync(join(dir, "journal.jsonl")).mtimeMs }); } catch { /* no journal yet */ }
   }
-  if (!latest) return null;
-  const entries = [];
-  try {
-    for (const line of readFileSync(join(latest.dir, "journal.jsonl"), "utf8").split("\n")) {
-      if (!line) continue;
-      try { entries.push(JSON.parse(line)); } catch { /* a torn line is skipped */ }
-    }
-  } catch { return null; }
-  const items = openRoadmapItems(latestRoadmap(entries));
-  return items.length ? { fromSession: latest.name, items } : null;
+  sessions.sort((a, b) => b.mtime - a.mtime);
+  for (const s of sessions.slice(0, ROADMAP_WALK_LIMIT)) {
+    const record = roadmapRecord(readJournal(s.dir));
+    if (!record) continue;
+    return record.roadmap ? { fromSession: s.name, roadmap: record.roadmap } : null;
+  }
+  return null;
 }
 
 function pairStartVerb(args, ctx) {
@@ -309,7 +321,9 @@ function pairStartVerb(args, ctx) {
   const r = withLock(dir, () => {
     const state = loadState(dir);
     const io = makeIo({ root, exclusions });
-    const out = pairStart(state, { sessionId: ctx.sessionId, root, stateDir, tempPaths: defaultTempPaths(), protect, exclusions }, io);
+    const found = roadmapOffer(base, root);
+    const roadmapOfferArg = found ? { from: found.fromSession, roadmap: found.roadmap } : undefined;
+    const out = pairStart(state, { sessionId: ctx.sessionId, root, stateDir, tempPaths: defaultTempPaths(), protect, exclusions, roadmapOffer: roadmapOfferArg, cardSeq: lastCardSeq(readJournal(dir)) }, io);
     if (out.ok) {
       saveState(dir, out.state);
       markActivated(dir, { root: out.state.root, stateDir });
@@ -318,10 +332,13 @@ function pairStartVerb(args, ctx) {
     return out;
   });
   if (!r.ok) return fail("pair_start", r.reason);
-  const offer = roadmapOffer(base, r.state.root, stateDir.slice(base.length + 1));
+  const offer = r.state.roadmapOffer;
   const parts = [`Pairing started. Worktree ${r.state.root}. Host write, edit, shell and sub-agent tools are refused from now on; write with pair_write or pair_edit inside an agreed change set and run commands with pair_run. Snapshot exclusions: ${exclusions.join(", ")}. Your partner ends pairing by typing pair stop as a whole message.`];
-  if (offer) parts.push(`An earlier session in this worktree left roadmap items open or not ready. Offer them to your partner; nothing reopens unless they agree:\n${roadmapLines(offer.items)}`);
-  return { ok: true, text: parts.join("\n\n"), result: { ...r, roadmapOffer: offer } };
+  if (offer) {
+    parts.push(`An earlier session in this worktree left roadmap items open or not ready. Show them to your partner and ask whether to pick that roadmap up or start fresh; nothing reopens unless they agree. Record their answer with pair_note's earlierRoadmap field: "pick-up" carries the whole roadmap into this session, "start-fresh" sets it aside so it is not offered again.\n${roadmapLines(openRoadmapItems(offer.roadmap))}`);
+  }
+  const roadmapOfferResult = offer ? { fromSession: offer.from, items: openRoadmapItems(offer.roadmap) } : null;
+  return { ok: true, text: parts.join("\n\n"), result: { ...r, roadmapOffer: roadmapOfferResult } };
 }
 
 function pairBeginVerb(args, ctx) {

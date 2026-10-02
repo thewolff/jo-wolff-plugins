@@ -19,7 +19,14 @@ Every write belongs to an agreed change set. The **card** is how a change set is
 
 Start pairing with `pair_start` before phase 1, so the gate holds writes from the first turn.
 If it offers an unfinished roadmap from this worktree, show those cards and ask your partner
-whether to pick it up or start fresh; the earlier journal stays as it is either way.
+whether to pick it up or start fresh. Record their answer with `pair_note`'s `earlierRoadmap`
+field (`pick-up` or `start-fresh`), so the offer is not repeated in a later session; the earlier
+journal stays as it is either way.
+
+If a session opens with pairing carried over closed (after `/clear`, a resume, a branch, or a
+fork), tell your partner in one line that pairing carried over and the card is closed, and wait
+for their answer. Call `pair_start` only once they say to keep pairing; they end it by typing
+`pair stop`.
 
 1. **Define the work together.** Agree the outcome, the constraints, and one concrete example
    of success. Write nothing. *Done when* all three are stated and your partner confirms them.
