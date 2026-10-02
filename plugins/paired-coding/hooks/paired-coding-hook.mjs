@@ -11,12 +11,12 @@
 //                       always precedes any pair_* call) or at Stop, whichever comes first.
 //   stop                record every queued turn. A typed "pair stop" in a turn that made no tool
 //                       call ends pairing here, before the next turn's first tool call.
-//   session-end         reap pair_run process groups, final snapshot, go inactive. With reason
-//                       "clear" or "resume" (/clear, /resume, /branch) while pairing, leave a
-//                       carry marker for the worktree.
+//   session-end         reap pair_run process groups, final snapshot, go inactive. While pairing,
+//                       whatever the reason (/clear, /resume, /branch, quit), first leave a carry
+//                       marker for the worktree.
 //   session-start       with source "clear", "resume" or "fork" and a live carry marker for this
 //                       worktree, or source "fork" from a session that is still pairing, activate
-//                       the new session closed (core carryClosed).
+//                       the new session closed (core carryClosed). A "startup" stays inert.
 //
 // Inert until pair_start: for a session with no activation marker every event exits 0 with no
 // output and touches no file, except that a call of this plugin's own pair_* tools is bound and
@@ -32,12 +32,10 @@ import { HOST_ALLOW, bareToolName, writeBinding } from "../server/binding.mjs";
 
 const sleepSync = (ms) => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
 
-/** SessionEnd reasons that replace the session in the same process: leave a carry marker. */
-const CARRY_END = new Set(["clear", "resume"]);
 /** SessionStart sources that replace an earlier session, and how the closed note names it. */
 const CARRY_START = new Map([
   ["clear", "when the conversation was cleared"],
-  ["resume", "in the session you switched away from"],
+  ["resume", "in the session before this one"],
   ["fork", "in the session this one was forked from"],
 ]);
 
@@ -166,9 +164,10 @@ export function queueInput(dir, input) {
 /**
  * PreToolUse: judge every queued turn, oldest first, and hand each to the core. Runs before the
  * tool's own verdict, so a turn typed before a card is recorded before that card exists, and a
- * turn typed after it is recorded before pair_begin reaches the server. Only the newest turn
- * waits for its transcript entry: entries are appended in order, so an older one that is still
- * missing never arrives.
+ * turn typed after it is recorded before pair_begin reaches the server. Claude Code writes a
+ * turn's transcript entry only after UserPromptSubmit returns, so any queued entry, older ones
+ * included, may still be on its way. The batch shares one deadline: each turn waits only for
+ * what is left of `waitMs`, and every turn is read at least once even after it passes.
  */
 export function resolvePending(dir, { waitMs = 2000 } = {}) {
   const pdir = join(dir, PENDING);
@@ -181,9 +180,10 @@ export function resolvePending(dir, { waitMs = 2000 } = {}) {
       return;
     }
     const items = lines.map((l) => { try { return JSON.parse(l); } catch { return null; } });
-    items.forEach((it, i) => {
+    const deadline = Date.now() + waitMs;
+    items.forEach((it) => {
       const o = it
-        ? promptOrigin(it.transcriptPath, it.promptId, it.text, { waitMs: i === items.length - 1 ? waitMs : 0 })
+        ? promptOrigin(it.transcriptPath, it.promptId, it.text, { waitMs: Math.max(0, deadline - Date.now()) })
         : { trusted: false, source: "claude:unreadable-queue-entry" };
       recordTrustedInput({
         sessionDir: dir,
@@ -228,10 +228,11 @@ export function handle(event, input, opts = {}) {
     }
   }
   if (event === "session-start") {
-    // The session this one replaced was pairing: a /clear, /resume or /branch left a carry marker
-    // for this worktree (session-end below), or this is a fork of a session that is still pairing
-    // (the /fork background copy, --fork-session). Either way the new session starts closed
-    // instead of inert. Any other start stays inert.
+    // The session this one replaced was pairing: its end left a carry marker for this worktree
+    // (session-end below: /clear, /resume, /branch, or a quit followed by --resume), or this is
+    // a fork of a session that is still pairing (the /fork background copy, --fork-session).
+    // Either way the new session starts closed instead of inert. A fresh launch ("startup")
+    // never takes the marker, so quitting and starting a new conversation stays inert.
     const source = input?.source;
     if (!dir || !CARRY_START.has(source) || typeof input?.cwd !== "string") return null;
     let root;
@@ -268,11 +269,11 @@ export function handle(event, input, opts = {}) {
   }
   if (event === "session-end") {
     // The marker goes first: SessionEnd hooks share a short budget, and a cancelled hook must
-    // still leave the cleared session closed. Reaping and the final snapshot come after.
-    if (CARRY_END.has(input?.reason)) {
-      const carry = pairingCarry(dir);
-      if (carry) writeCarryMarker(stateBase(env), { root: carry.root, from: input.session_id, exclusions: carry.exclusions, protect: carry.protect });
-    }
+    // still leave the next session closed. It is left for every reason, quitting included; only
+    // a session that replaces this one (clear, resume, fork) takes it, within its expiry.
+    // Reaping and the final snapshot come after.
+    const carry = pairingCarry(dir);
+    if (carry) writeCarryMarker(stateBase(env), { root: carry.root, from: input.session_id, exclusions: carry.exclusions, protect: carry.protect });
     endSession({ sessionDir: dir });
     return null;
   }

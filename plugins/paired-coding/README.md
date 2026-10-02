@@ -23,9 +23,25 @@ Claude Code:
 To try it for one session without installing, start `claude --plugin-dir <checkout>/plugins/paired-coding`,
 where `<checkout>` is your clone of this repository.
 
-OMP: the gate is an extension, `omp/paired-coding-omp.ts`. Nothing registers it for you.
-[`omp/REGISTRATION.md`](omp/REGISTRATION.md) gives the two ways to load it and the exact
-reversal.
+OMP:
+
+```
+omp plugin marketplace add thewolff/jo-wolff-plugins
+omp plugin install paired-coding@jo-wolff-plugins
+```
+
+Inside a running OMP session the commands are `/marketplace add` and `/marketplace install`, with
+the same arguments; `/plugin install` inside OMP installs nothing. On OMP the gate is an
+extension, `omp/paired-coding-omp.ts`, and the install registers it: `package.json` declares it
+under `omp.extensions`, and `.omp-plugin/plugin.json` hides the bundled MCP server, which only
+works on Claude Code. Tested on OMP 18.4.4: after the install, with no `-e`, the eight `pair_*`
+tools were registered natively and no MCP route appeared; `pair_start` then refused a host
+`write`, and a session that never called `pair_start` wrote normally and created no state. The
+gate is then loaded in every omp process you run, in any repository, and stays inert until
+`pair_start`. `omp plugin upgrade` keeps it registered, `omp --no-extensions` starts a process
+without it, and `omp plugin uninstall paired-coding@jo-wolff-plugins` removes it.
+[`omp/REGISTRATION.md`](omp/REGISTRATION.md) also gives two ways to load the gate without
+installing the plugin, and their exact reversal.
 
 ## What happens when you pair
 
@@ -112,7 +128,7 @@ How it works:
 | Host | Gate | Live result |
 |---|---|---|
 | Claude Code, macOS | Built: hooks and a bundled MCP server | Verified on Claude Code v2.1.287, loaded with `--plugin-dir`: tests 11 to 17, then the release checks below |
-| OMP, macOS | Built: an extension, loaded with `-e` | Verified on OMP 18.4.4, loaded with `-e`: tests 11 to 17, then the release checks below. Skill discovery on plain OMP is unverified |
+| OMP, macOS | Built: an extension, registered by `omp plugin install` or loaded with `-e` | Verified on OMP 18.4.4, loaded with `-e`: tests 11 to 17, then the release checks below. After a plain `omp plugin install`, a scripted stand-in model saw the skill listed, the eight `pair_*` tools registered, and a host `write` refused after `pair_start`; tests 11 to 17 were not re-run that way |
 | Codex | None | Unverified; the skill is included but has not been run there |
 | Linux, Windows, anything else | `pair_start` refuses | The skill runs as conversation only |
 
@@ -163,18 +179,40 @@ reopen rule and your read of the real diff.
 RPC is not. On Claude Code, the hook input carries no source, so the gate reads the transcript
 entry Claude Code writes for the prompt and trusts it only when its `promptSource` is `typed`,
 its `origin.kind` is `human`, and it is the only entry with that prompt id. Scheduled prompts,
-task notifications, `-p` and SDK prompts never count. A message you type while a tool is running
-never counts either: Claude Code folds it into the running turn without an ordinary transcript
-entry, so retype it after the turn ends. If the agent quotes such a message to `pair_begin`, the
-refusal says so: "your partner's words arrived while a tool was running, so they don't count as
-agreement; ask them to say it again". Other untrusted text gets the ordinary quote refusal. The
-same rule decides whether a typed `pair stop` counts.
+task notifications, `-p` and SDK prompts never count, and neither does anything you say through
+a slash command: its prompt carries no typed source, so agreement given that way is refused.
+Type it as a plain message. A message you type while a tool is running never counts either:
+Claude Code folds it into the running turn without an ordinary transcript entry, so retype it
+after the turn ends. If the agent quotes such a message to `pair_begin`, the refusal says so:
+"your partner's words arrived while a tool was running, so they don't count as agreement; ask
+them to say it again". Other untrusted text gets the ordinary quote refusal. The same rule
+decides whether a typed `pair stop` counts.
+
+**Trust waits briefly for the transcript.** Claude Code writes a prompt's transcript entry
+after the prompt is submitted, and usually after the next tool call has started: measured on
+2.1.287, the entry was missing when that call began in 11 of 11 checks, and appeared 51 to 105
+ms later in the 6 that waited for it. So the hook polls for the entry for up to 2 seconds before
+judging the turn. Without that wait every agreement would be refused. When several turns are
+queued, they share that one 2-second wait, so an older turn whose entry lands late is still
+judged on it. If an entry is still missing when the wait runs out, its turn reads as untrusted:
+a slow write refuses agreement, it never grants it.
+
+**A coarser `source` field is coming.** The Claude Agent SDK 0.3.287 declares an upcoming
+`source` field on `UserPromptSubmit`, which Claude Code 2.1.287 does not send yet. It reports
+typed prompts, queued prompts and accepted suggestions all as `user`, so it can serve only as a
+fast refusal for anything that is not `user`. It cannot replace the typed-prompt check.
 
 **Undocumented Claude Code fields, failing closed.** The transcript fields `promptSource` and
 `origin` are not documented by Claude Code, and neither is `_meta["claudecode/toolUseId"]`, the id
 the MCP server uses to tie each `pair_*` call to the hook that checked it. If the transcript
 fields change, every turn reads as untrusted and no change set can open. If the id stops
-arriving, every `pair_*` call is refused. Neither change can open the gate.
+arriving, every `pair_*` call is refused. Neither change can open the gate. Measured on 2.1.287,
+the id matched the hook's `tool_use_id` in 11 of 11 live calls, while the documented
+`CLAUDE_CODE_SESSION_ID` went stale after `/clear`, so it cannot do the same job. If the id
+disappears, the fallback is a one-shot nonce that the hook passes into the call through
+`PreToolUse` `updatedInput`, checked against the binding file. That fallback is not built, and
+two of its edges are undocumented too: what happens when several hooks return `updatedInput`,
+and whether `updatedInput` applies without a permission decision.
 
 **Claude Code v2.1.274 or later.** The gate recognises its own tools by the `mcp_server` field of
 the `PreToolUse` input, which [Claude Code's hooks reference](https://code.claude.com/docs/en/hooks)
@@ -196,21 +234,33 @@ session. If pairing was active, the gate ends it (reaping runs, taking the final
 journaling any write it did not approve, finishing an open change set) and pairing continues
 `closed`: no card, no open change set, host writes refused, `pair_note` and `pair_propose`
 refused, and the journal records `carried-after-clear`. `pair_start` restarts pairing, and a
-typed `pair stop` ends it. On Claude Code the hand-over for `/clear`, `/resume` and `/branch` is
-a marker written at `SessionEnd` before the final snapshot, so a `SessionEnd` cut short by
-Claude Code's hook time budget still leaves the new session closed; what can be cut short is the
-old session's final snapshot. The marker is single-use, tied to the worktree, and expires after
-10 minutes. A fork is linked instead through the `forkedFrom` session id Claude Code writes into
-the fork's transcript, since the hook input names no parent: a fork of a session that is still
-pairing starts closed. A session started any other way stays untouched. On OMP, `/clear` fires
-no extension event, so the gate notices the reset marker OMP writes into the session at the next
-typed turn or tool call.
+typed `pair stop` ends it. On OMP, `/clear` fires no extension event, so the gate notices the
+reset marker OMP writes into the session at the next typed turn or tool call.
 
-Three limits. On Claude Code, only `/clear` has been run live; `/resume`, `/branch` and forks
-are covered by unit tests only, and `forkedFrom` is undocumented. A fork of a session that had
-already ended pairing some other way (a typed `pair stop`, or exiting Claude Code) starts
-untouched, not closed. On OMP, `/tree` keeps the session id and only moves within the session
-tree, so pairing carries on unchanged.
+On Claude Code the hand-over is a marker. Every `SessionEnd` while pairing leaves one for the
+worktree, whatever the reason: `/clear`, `/resume`, `/branch`, or quitting. It is written
+before the final snapshot, so a `SessionEnd` cut short by Claude Code's hook time budget still
+leaves it; what can be cut short is the old session's final snapshot. The marker is single-use,
+tied to the worktree, and expires after 10 minutes. Only a session that replaces another takes
+it: one that starts from `/clear`, a resume or a fork. So quitting while pairing and then
+running `claude --resume`, `--continue` or `--fork-session` in the same worktree within 10
+minutes starts closed, while a fresh `claude` launch stays untouched. A fork of a session that is
+still pairing (the `/fork` background copy) is linked instead through the `forkedFrom` session
+id Claude Code writes into the fork's transcript, since the hook input names no parent.
+
+Four limits:
+
+- On Claude Code, only `/clear` has been run live. Resume, `/branch`, quitting and forks are
+  covered by unit tests only, and `forkedFrom` is undocumented.
+- On Claude Code, a resume or fork starts untouched, not closed, when pairing had already ended
+  with a typed `pair stop`, when the marker is older than 10 minutes, when it belongs to another
+  worktree, or when an earlier `/clear`, resume or fork already took it.
+- A fresh launch leaves the marker in place. If you quit while pairing, start a new
+  conversation in the same worktree, and use `/clear` or `/resume` in it within 10 minutes,
+  that session takes the marker and starts closed. Type `pair stop`, or let the agent call
+  `pair_start`.
+- On OMP, `/tree` keeps the session id and only moves within the session tree, so pairing
+  carries on unchanged.
 
 **One write gate per session, on OMP.** If another gate in your OMP sessions also owns write
 enforcement, set `PAIRED_CODING_CONFLICTING_TOOLS` to a comma-separated list of tool names it
@@ -252,6 +302,8 @@ carries. Only Claude Code uses it; OMP gets the same verbs as extension tools re
 `omp/paired-coding-omp.ts`. Both call into the same `lib/` modules.
 
 - `.claude-plugin/plugin.json`: the plugin manifest.
+- `.omp-plugin/plugin.json`: OMP's manifest; its empty `mcpServers` hides the bundled MCP server on OMP.
+- `package.json`: declares `omp/paired-coding-omp.ts` under `omp.extensions`, so `omp plugin install` registers the gate.
 - `.mcp.json`: registers the bundled MCP server `pair` with Claude Code.
 - `README.md`: this file.
 - `skills/paired-coding/SKILL.md`: the skill the agent follows while pairing.

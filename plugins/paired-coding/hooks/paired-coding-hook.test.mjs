@@ -2,12 +2,12 @@
 // bundled MCP server, and the provenance check on UserPromptSubmit.
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { appendFileSync, chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { handle, promptOrigin } from "./paired-coding-hook.mjs";
+import { handle, promptOrigin, queueInput, resolvePending } from "./paired-coding-hook.mjs";
 import { callTool } from "../server/pair-server.mjs";
 import { TOOL_PREFIX, SERVER_NAME } from "../server/binding.mjs";
 
@@ -145,6 +145,54 @@ test("promptOrigin refuses a mid-turn message, a missing entry and a duplicated 
   assert.equal(promptOrigin(f.transcript, "turn", "first").trusted, false);
 });
 
+/** A typed turn's transcript entry, as Claude Code writes it. */
+const typedEntry = (promptId, text) => ({ type: "user", promptId, message: { role: "user", content: text }, promptSource: "typed", origin: { kind: "human" } });
+
+/**
+ * Append `entries` to the transcript from another process after `ms`, as Claude Code does: the
+ * hook blocks while it polls, so the late write has to come from outside this thread.
+ */
+function appendLater(path, entries, ms) {
+  const body = entries.map((e) => `${JSON.stringify(e)}\n`).join("");
+  const child = spawn(process.execPath, ["-e", `setTimeout(() => require("node:fs").appendFileSync(${JSON.stringify(path)}, ${JSON.stringify(body)}), ${ms})`], { stdio: "ignore" });
+  return new Promise((resolve) => child.on("exit", resolve));
+}
+
+test("promptOrigin's default wait finds an entry written after PreToolUse starts; with no wait it is missed", async () => {
+  // Live, the entry was missing at PreToolUse start every time and landed about 50-105 ms later.
+  const f = fixture();
+  let written = appendLater(f.transcript, [typedEntry("late", "go ahead")], 400);
+  const found = promptOrigin(f.transcript, "late", "go ahead");
+  await written;
+  assert.deepEqual([found.trusted, found.source], [true, "interactive"]);
+  written = appendLater(f.transcript, [typedEntry("late2", "go ahead")], 400);
+  const missed = promptOrigin(f.transcript, "late2", "go ahead", { waitMs: 0 });
+  await written;
+  assert.deepEqual([missed.trusted, missed.source], [false, "claude:no-transcript-entry"]);
+});
+
+test("queued turns share one wait: an older entry that lands late is still trusted, and the batch waits once", { skip: !hasSandbox }, async () => {
+  const f = fixture();
+  await call(f, "pair_start", {});
+  const dir = join(f.base, "s1");
+  const inputs = () => readFileSync(join(dir, "journal.jsonl"), "utf8").trim().split("\n").map((l) => JSON.parse(l))
+    .filter((e) => e.type === "input" || e.type === "untrusted-input").map((e) => [e.type, e.text, e.source ?? "interactive"]);
+  // Two typed turns queued (a turn with no tool call, then the next); neither entry is on disk yet.
+  queueInput(dir, { prompt_id: "older", prompt: "looks right", transcript_path: f.transcript });
+  queueInput(dir, { prompt_id: "newer", prompt: "go ahead", transcript_path: f.transcript });
+  const written = appendLater(f.transcript, [typedEntry("older", "looks right"), typedEntry("newer", "go ahead")], 400);
+  resolvePending(dir);
+  await written;
+  assert.deepEqual(inputs(), [["input", "looks right", "interactive"], ["input", "go ahead", "interactive"]]);
+  // Three turns that never land: the batch gives up after one wait, not one per turn.
+  for (const id of ["x1", "x2", "x3"]) queueInput(dir, { prompt_id: id, prompt: "never", transcript_path: f.transcript });
+  const t0 = Date.now();
+  resolvePending(dir, { waitMs: 300 });
+  const elapsed = Date.now() - t0;
+  assert.ok(elapsed < 600, `waited ${elapsed} ms for three missing turns`);
+  assert.deepEqual(inputs().slice(2).map((e) => e[2]), Array(3).fill("claude:no-transcript-entry"));
+});
+
 test("final arguments decide: a path rewritten after the hook ran is still checked by the server", { skip: !hasSandbox }, async () => {
   const f = fixture();
   writeFileSync(join(f.root, "b.txt"), "bravo\n");
@@ -224,10 +272,14 @@ test("/clear while pairing: the new session refuses Write until pair_start, whic
   assert.equal(writeCall(f, { ...f.common, session_id: "s3" }), null);
 });
 
-test("without a /clear marker every new session stays inert", { skip: !hasSandbox }, async () => {
+test("without a carry marker every new session stays inert", { skip: !hasSandbox }, async () => {
   const f = fixture();
   await call(f, "pair_start", {});
-  handle("session-end", { ...f.common, reason: "logout" }, { env: f.env });
+  // Pairing already ended by a typed stop: the session end leaves no marker.
+  typedPrompt(f, "pair stop");
+  handle("stop", { ...f.common }, { env: f.env, waitMs: 100 });
+  assert.equal(phaseOf(f, "s1"), "inactive");
+  handle("session-end", { ...f.common, reason: "clear" }, { env: f.env });
   assert.equal(handle("session-start", { ...f.common, session_id: "s2", source: "clear" }, { env: f.env }), null);
   assert.equal(writeCall(f, { ...f.common, session_id: "s2" }), null);
   // A clear in a session that never paired leaves nothing behind either.
@@ -299,9 +351,11 @@ test("a fork of a session that is still pairing starts closed, linked through it
   assert.equal(phaseOf(f, "s1"), "closed", "the parent keeps pairing");
 });
 
-test("a fork stays inert when its parent is not pairing or its transcript names no parent", { skip: !hasSandbox }, async () => {
+test("a fork stays inert when its parent ended pairing by a typed stop or its transcript names no parent", { skip: !hasSandbox }, async () => {
   const f = fixture();
   await call(f, "pair_start", {});
+  typedPrompt(f, "pair stop");
+  handle("stop", { ...f.common }, { env: f.env, waitMs: 100 });
   handle("session-end", { ...f.common, reason: "other" }, { env: f.env });
   const ofEnded = forkTranscript(f, "s2", "s1");
   assert.equal(handle("session-start", { ...ofEnded, source: "fork" }, { env: f.env, waitMs: 0 }), null);
@@ -312,4 +366,30 @@ test("a fork stays inert when its parent is not pairing or its transcript names 
   assert.equal(handle("session-start", { ...unlinked, source: "fork" }, { env: g.env, waitMs: 0 }), null);
   // A resume with no marker left behind stays inert too, even while another session pairs.
   assert.equal(handle("session-start", { ...g.common, session_id: "s4", source: "resume" }, { env: g.env, waitMs: 0 }), null);
+});
+
+test("quitting while pairing, then --resume or --fork-session: the session starts closed", { skip: !hasSandbox }, async () => {
+  for (const source of ["resume", "fork"]) {
+    const f = fixture();
+    await call(f, "pair_start", {});
+    assert.equal(handle("session-end", { ...f.common, reason: "prompt_input_exit" }, { env: f.env }), null);
+    assert.equal(phaseOf(f, "s1"), "inactive");
+    const next = source === "fork" ? forkTranscript(f, "s2", "s1") : { ...f.common, session_id: "s2" };
+    const start = handle("session-start", { ...next, source }, { env: f.env, waitMs: 0 });
+    assert.match(start.hookSpecificOutput.additionalContext, /starts closed/, source);
+    assert.notEqual(writeCall(f, next), null, source);
+    assert.equal(carriedReason(f, "s2"), source);
+  }
+});
+
+test("quitting while pairing, then a fresh launch: the new session stays inert", { skip: !hasSandbox }, async () => {
+  const f = fixture();
+  await call(f, "pair_start", {});
+  handle("session-end", { ...f.common, reason: "prompt_input_exit" }, { env: f.env });
+  const s2 = { ...f.common, session_id: "s2" };
+  assert.equal(handle("session-start", { ...s2, source: "startup" }, { env: f.env, waitMs: 0 }), null);
+  assert.equal(writeCall(f, s2), null);
+  assert.equal(existsSync(join(f.base, "s2")), false, "the fresh session touched no state");
+  // The launch did not take the marker: resuming the quit session still starts closed.
+  assert.notEqual(handle("session-start", { ...f.common, session_id: "s3", source: "resume" }, { env: f.env, waitMs: 0 }), null);
 });

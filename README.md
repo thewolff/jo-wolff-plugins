@@ -21,6 +21,20 @@ within the limits in its *what this enforces, and what it does not* note.
 /plugin install paired-coding@jo-wolff-plugins
 ```
 
+On OMP, from a shell:
+
+```
+omp plugin marketplace add thewolff/jo-wolff-plugins
+omp plugin install output-types@jo-wolff-plugins
+omp plugin install communication-rules@jo-wolff-plugins
+omp plugin install paired-coding@jo-wolff-plugins
+```
+
+Inside a running OMP session the commands are `/marketplace add` and `/marketplace install`, with
+the same arguments. `/plugin install` inside OMP installs nothing. On OMP the first two plugins
+deliver their skill only; their hooks do not run there. paired-coding installs its gate as an
+OMP extension (see each section).
+
 ## output-types
 
 A plugin that makes an agent label every statement it returns — CLAIM, CITE, GUESS, ACTION,
@@ -39,6 +53,22 @@ and a different cost when it is wrong.
 /plugin install output-types@jo-wolff-plugins
 ```
 
+#### Install on OMP
+
+```
+omp plugin marketplace add thewolff/jo-wolff-plugins
+omp plugin install output-types@jo-wolff-plugins
+```
+
+Inside a running OMP session, use `/marketplace add thewolff/jo-wolff-plugins` and then
+`/marketplace install output-types@jo-wolff-plugins`. `/plugin install` inside OMP installs
+nothing: it prints the installed-plugin list and returns.
+
+**On OMP only the skill loads.** Tested on OMP 18.4.4: OMP does not run a plugin's
+`hooks/hooks.json`, so the session-start hook never fires and the core is never injected. The
+skill is listed and loads on demand, so the contract is in force only once the model has read
+it. Name the skill in your instructions if you want it from the first turn.
+
 ### What you get
 
 - **Six labels**, each with the receipt that earns it, and the rule that a receipt rather than
@@ -52,7 +82,8 @@ and a different cost when it is wrong.
 - A **reference file** with the report skeleton, a worked example, the parent-side handling rules,
   and the rules for handing a command to a person to run.
 - A **session-start hook** that emits the operative core before the first tool call, reading it out
-  of the skill file so there is only ever one copy of that text.
+  of the skill file so there is only ever one copy of that text. Claude Code only; see *Install
+  on OMP*.
 
 ### What this does, and what it does not do: it delivers, it does not enforce
 
@@ -102,9 +133,27 @@ decision ends up on line 80 under three headings of context that the reader neve
 /plugin install communication-rules@jo-wolff-plugins
 ```
 
+#### Install on OMP
+
+```
+omp plugin marketplace add thewolff/jo-wolff-plugins
+omp plugin install communication-rules@jo-wolff-plugins
+```
+
+Inside a running OMP session, use `/marketplace add thewolff/jo-wolff-plugins` and then
+`/marketplace install communication-rules@jo-wolff-plugins`. `/plugin install` inside OMP installs
+nothing: it prints the installed-plugin list and returns.
+
+**On OMP only the skill loads.** Tested on OMP 18.4.4: OMP does not run a plugin's
+`hooks/hooks.json`, so neither the session-start hook nor the `Stop` hook fires, and the rules
+and your profile are never injected. The skill is listed and loads on demand. The plugin also
+carries an OMP adapter for the `Stop` hook, `omp/communication-rules-omp.ts`; installing the
+plugin does not register it, and its `omp/REGISTRATION.md` marks it unregistered.
+
 ### What you get
 
-- **Eight rules** covering the shape of a message to a person, delivered before the first turn.
+- **Eight rules** covering the shape of a message to a person, delivered before the first turn
+  on Claude Code (on OMP, through the skill only; see *Install on OMP*).
 - **An enforceability verdict for every one of them** — mechanically checkable, model-graded, or
   unenforceable by construction — because a rule nothing can ever check should be written down as
   a principle rather than bolded beside one a machine refuses on. Four of the eight say *never*.
@@ -171,8 +220,25 @@ decision point to before each change set is written, while it is still cheap to 
 /plugin install paired-coding@jo-wolff-plugins
 ```
 
-On OMP, load the adapter into one process with `omp -e <checkout>/plugins/paired-coding/omp/paired-coding-omp.ts`;
-`plugins/paired-coding/omp/REGISTRATION.md` has both registration routes and the exact reversal.
+#### Install on OMP
+
+```
+omp plugin marketplace add thewolff/jo-wolff-plugins
+omp plugin install paired-coding@jo-wolff-plugins
+```
+
+Inside a running OMP session, use `/marketplace add thewolff/jo-wolff-plugins` and then
+`/marketplace install paired-coding@jo-wolff-plugins`. `/plugin install` inside OMP installs
+nothing: it prints the installed-plugin list and returns.
+
+Tested on OMP 18.4.4, the install registers the gate as an OMP extension: the eight `pair_*`
+tools appear natively in every omp process you run, in any repository, with no `-e`. It stays
+inert until `pair_start`, so a session that never pairs is untouched. The bundled MCP server is
+built for Claude Code and is hidden on OMP. `omp plugin upgrade` keeps the gate registered, and
+`omp --no-extensions` starts a process without it. To remove it, run
+`omp plugin uninstall paired-coding@jo-wolff-plugins`.
+`plugins/paired-coding/omp/REGISTRATION.md` also has the routes that load the gate without
+installing the plugin.
 
 ### What you get
 
