@@ -1,9 +1,9 @@
-# REGISTRATION.md: how this adapter would go live (it has not)
+# REGISTRATION.md: how this adapter goes live on OMP
 
-Status: **unregistered**. `paired-coding-omp.ts` exists in this repo and is tested by the suite
-beside it. Nothing loads it: no OMP seat profile or extension directory refers to it, and
-`~/.omp/agent/extensions/` does not contain it. Registration should be a deliberate act with
-a written reversal. It should never happen because a directory was auto-discovered.
+`paired-coding-omp.ts` is the OMP half of the gate and is tested by the suite beside it. Nothing
+loads it until you choose to, and each way of loading it below has a written reversal: the
+install command, a flag you pass, or a symlink you make. OMP never picks it up from a checkout
+on its own.
 
 Below, `<checkout>` is the absolute path of your clone of this repository.
 
@@ -20,11 +20,37 @@ Below, `<checkout>` is the absolute path of your clone of this repository.
 - Nothing else. The adapter imports `core/gate.mjs` and `lib/*.mjs`, which use Node built-ins
   only, so OMP's loader imports them as they are.
 
-## Registration steps NOT TAKEN
+## Registration routes
 
-Two sites. Pick one.
+Three routes. Pick one.
 
-1. **One omp process only** (the right choice for a first use). Pass the file with `-e`
+1. **Install the plugin** (the usual route). From a shell:
+
+   ```
+   omp plugin marketplace add thewolff/jo-wolff-plugins
+   omp plugin install paired-coding@jo-wolff-plugins
+   ```
+
+   Inside a running session use `/marketplace add` and `/marketplace install` with the same
+   arguments; `/plugin install` inside OMP installs nothing. The plugin's `package.json` declares
+   this file under `omp.extensions`, which OMP loads for installed marketplace plugins, and its
+   `.omp-plugin/plugin.json` sets `mcpServers` to `{}`, so the Claude Code MCP server `pair`
+   stays hidden on OMP. Every omp process you then run, in any repository, loads the adapter,
+   which stays inert until `pair_start`. Tested on OMP 18.4.4 with a scratch home: install
+   exited 0; with no `-e`, the eight `pair_*` tools registered, no MCP route appeared, and there
+   were no extension errors; `pair_start` then refused a host `write`, and a session without
+   `pair_start` wrote normally and created no state. `omp plugin upgrade` and
+   `omp plugin install --force` keep the adapter registered. `omp --no-extensions` starts one
+   process without it. Do not also pass `-e` for this file in an installed setup: whether two
+   copies of the gate then both run was not checked.
+
+   The versions in `package.json` and `.omp-plugin/plugin.json` move with
+   `.claude-plugin/plugin.json` on every release, because OMP upgrades by version number.
+
+Routes 2 and 3 load the file from a checkout without installing the plugin. Use one of them
+instead of route 1, not as well.
+
+2. **One omp process only** (a first try without installing). Pass the file with `-e`
    (`--extension`) to a single omp started by hand:
 
    ```
@@ -39,7 +65,7 @@ Two sites. Pick one.
    named with `-e` still load (`mode: parsedArgs.noExtensions ? "explicit-only" : "merge"` in
    `src/main.ts`).
 
-2. **Shared auto-discovery.** Symlink the file into the directory every omp process scans:
+3. **Shared auto-discovery.** Symlink the file into the directory every omp process scans:
 
    ```
    ln -s <checkout>/plugins/paired-coding/omp/paired-coding-omp.ts \
@@ -81,8 +107,9 @@ extensions. `getExtensionPaths` and `isExtensionActive` exist on the runner but 
 
 ## Exact reversal
 
-1. Remove the registration. For the one-process site, exit that omp process; there is nothing
-   on disk to undo. For the shared site:
+1. Remove the registration. For the install route:
+   `omp plugin uninstall paired-coding@jo-wolff-plugins`. For the one-process site, exit that
+   omp process; there is nothing on disk to undo. For the shared site:
    `rm ~/.omp/agent/extensions/paired-coding-omp.ts`.
 2. Optional: delete the session state, `rm -r "${PAIRED_CODING_STATE_DIR:-$HOME/.local/state/paired-coding}"`.
    The journal is the record of what pairing allowed and refused, so read it first if anything
