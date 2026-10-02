@@ -19,15 +19,18 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync,
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
+  CARRIED_REASON,
   PAIR_TOOLS,
   boundaryMatches,
   boundaryProblem,
   carryClosed,
   checkWrite,
   diffSnapshots,
+  isGitControl,
   inactiveState,
   isStopPhrase,
-  latestRoadmap,
+  lastCardSeq,
+  roadmapRecord,
   occursAtWordBoundaries,
   openRoadmapItems,
   pairBegin,
@@ -597,16 +600,83 @@ describe("pair_note", () => {
     assert.deepEqual(openRoadmapItems(items).map((i) => i.id), ["b", "c"]);
   });
 
-  test("latestRoadmap reads the newest valid roadmap note from a journal", () => {
+  test("roadmapRecord reads the newest valid roadmap note or start-fresh decline from a journal", () => {
     const entries = [
       { type: "note", roadmap: [item("old", "open")] },
       { type: "note", text: "free text only" },
       { type: "note", roadmap: [item("new", "open")] },
       { type: "input", roadmap: [item("forged", "open")] },
       { type: "note", roadmap: [item("bad", "pending")] },
+      { type: "roadmap-offered", from: "s0", roadmap: [item("offered", "open")] },
     ];
-    assert.deepEqual(latestRoadmap(entries).map((i) => i.id), ["new"]);
-    assert.equal(latestRoadmap([{ type: "note", text: "x" }]), null);
+    assert.deepEqual(roadmapRecord(entries).roadmap.map((i) => i.id), ["new"]);
+    assert.equal(roadmapRecord([{ type: "note", text: "x" }]), null);
+    assert.deepEqual(roadmapRecord([...entries, { type: "roadmap-declined", from: "s0" }]), { declined: true });
+    assert.deepEqual(roadmapRecord([{ type: "roadmap-declined", from: "s0" }, ...entries]).roadmap.map((i) => i.id), ["new"]);
+  });
+
+  describe("an earlier roadmap pair_start offered", () => {
+    const offer = { from: "s0", roadmap: [item("a", "done"), item("b", "not-ready", { note: "waits on the API" }), item("c", "open")] };
+    const offered = (host = fakeHost()) => pairStart(inactiveState(), { sessionId: "s1", root: ROOT, stateDir: STATE_DIR, roadmapOffer: offer }, host.io);
+
+    test("pair_start records it in the state and the journal, and the state round-trips", () => {
+      const r = offered();
+      const s = ok(r);
+      assert.deepEqual(s.roadmapOffer, offer);
+      assert.equal(s.roadmap, null, "nothing reopens until the partner picks it up");
+      assert.deepEqual(r.journal.map((e) => e.type), ["start", "roadmap-offered"]);
+      assert.equal(r.journal[1].from, "s0");
+      assert.deepEqual(readState(serializeState(s)).roadmapOffer, offer);
+      const forged = readState(serializeState({ ...s, roadmapOffer: { from: "s0", roadmap: [item("a", "pending")] } }));
+      assert.equal(typeof forged.degraded, "string", "a malformed stored offer degrades the state");
+      assert.equal(forged.roadmapOffer, undefined);
+    });
+
+    test("pair_start records no offer with nothing open, or a malformed one", () => {
+      const done = { from: "s0", roadmap: [item("a", "done"), item("b", "dropped")] };
+      for (const bad of [done, { from: "", roadmap: offer.roadmap }, { from: "s0", roadmap: [item("a", "pending")] }]) {
+        const r = pairStart(inactiveState(), { sessionId: "s1", root: ROOT, stateDir: STATE_DIR, roadmapOffer: bad }, fakeHost().io);
+        assert.equal(ok(r).roadmapOffer, null);
+        assert.deepEqual(r.journal.map((e) => e.type), ["start"]);
+      }
+    });
+
+    test("pick-up records the whole roadmap in this journal and ends the offer", () => {
+      const r = pairNote(ok(offered()), { earlierRoadmap: "pick-up", text: "picking the cache work back up" });
+      const s = ok(r);
+      assert.deepEqual(s.roadmap, offer.roadmap);
+      assert.equal(s.roadmapOffer, null);
+      assert.deepEqual(r.roadmapOpen.map((i) => i.id), ["b", "c"]);
+      assert.equal(r.journal[0].type, "note");
+      assert.equal(r.journal[0].carriedFrom, "s0");
+      assert.equal(r.journal[0].text, "picking the cache work back up");
+      assert.deepEqual(roadmapRecord(r.journal).roadmap, offer.roadmap);
+      refusedWith(pairNote(s, { earlierRoadmap: "pick-up" }), /no earlier roadmap is on offer/);
+    });
+
+    test("start-fresh records a decline, keeps no roadmap and ends the offer", () => {
+      const r = pairNote(ok(offered()), { earlierRoadmap: "start-fresh" });
+      const s = ok(r);
+      assert.equal(s.roadmap, null);
+      assert.equal(s.roadmapOffer, null);
+      assert.equal(r.declined, "s0");
+      assert.deepEqual(r.journal.map((e) => [e.type, e.from]), [["roadmap-declined", "s0"]]);
+      assert.deepEqual(roadmapRecord(r.journal), { declined: true });
+      refusedWith(pairNote(s, { earlierRoadmap: "start-fresh" }), /no earlier roadmap is on offer/);
+    });
+
+    test("refuses an unknown answer, an answer with a roadmap, and an answer with no offer", () => {
+      const s = ok(offered());
+      refusedWith(pairNote(s, { earlierRoadmap: "yes" }), /pick-up, start-fresh/);
+      refusedWith(pairNote(s, { earlierRoadmap: "pick-up", roadmap: [item("x", "open")] }), /not both/);
+      refusedWith(pairNote(started(), { earlierRoadmap: "pick-up" }), /no earlier roadmap is on offer/);
+    });
+
+    test("a new roadmap supersedes the offer", () => {
+      const s = ok(pairNote(ok(offered()), { roadmap: [item("x", "open")] }));
+      assert.equal(s.roadmapOffer, null);
+      assert.deepEqual(s.roadmap.map((i) => i.id), ["x"]);
+    });
   });
 
   test("pair_done lists the roadmap items still open or not ready", () => {
@@ -828,6 +898,11 @@ describe("carried session (a session change while pairing)", () => {
     assert.equal(checkWrite(s, { path: "src/a.ts" }).ok, false);
     refusedWith(pairPropose(s, card(), host.io), /carried/);
     refusedWith(pairNote(s, { text: "n" }, host.io), /carried/);
+    // The refusal tells the agent to wait for its partner, not to restart pairing itself.
+    for (const r of [pairPropose(s, card(), host.io), pairNote(s, { text: "n" }, host.io)]) {
+      assert.ok(r.reason.includes(CARRIED_REASON), r.reason);
+      assert.match(r.reason, /pairing is still on and the card is closed.*wait for their answer: call pair_start only once they say to keep pairing/);
+    }
     refusedWith(pairBegin(say(s, "go"), { cardId: "card-1", quote: "go" }, host.io), /no card/);
   });
 
@@ -856,6 +931,40 @@ describe("carried session (a session change while pairing)", () => {
     assert.deepEqual(readState(serializeState(s)), s);
     const bad = readState(JSON.stringify({ ...opened(), carried: { reason: "clear", from: null } }), { activated: true });
     assert.equal(bad.degraded, "state file malformed");
+  });
+});
+
+describe("card ids stay unique in a session's journal", () => {
+  test("lastCardSeq reads the highest card-N on cards and agreements, ignoring anything else", () => {
+    assert.equal(lastCardSeq([]), 0);
+    assert.equal(lastCardSeq(undefined), 0);
+    const entries = [
+      { type: "card", card: { id: "card-1" } },
+      { type: "agreement", cardId: "card-4" },
+      { type: "card", card: { id: "card-2" } },
+      { type: "note", cardId: "card-9" },
+      { type: "card", card: { id: "card-x7" } },
+      { type: "card", card: { id: "card-12-b" } },
+      { type: "card", card: null },
+      null,
+      "card-50",
+    ];
+    assert.equal(lastCardSeq(entries), 4);
+    assert.equal(lastCardSeq([{ type: "card", card: { id: "card-10" } }, { type: "card", card: { id: "card-9" } }]), 10, "numeric, not string, order");
+  });
+
+  test("pair_start continues numbering from the journal's highest card id", () => {
+    const host = fakeHost();
+    const r = ok(pairStart(inactiveState(), { root: ROOT, stateDir: STATE_DIR, cardSeq: 2 }, host.io));
+    assert.equal(pairPropose(r, card(), host.io).card.id, "card-3");
+  });
+
+  test("a malformed cardSeq is ignored and numbering starts at card-1", () => {
+    for (const cardSeq of [-1, 1.5, "2", null]) {
+      const host = fakeHost();
+      const r = ok(pairStart(inactiveState(), { root: ROOT, stateDir: STATE_DIR, cardSeq }, host.io));
+      assert.equal(pairPropose(r, card(), host.io).card.id, "card-1", String(cardSeq));
+    }
   });
 });
 
@@ -1243,6 +1352,56 @@ describe("adversarial: the agent ends pairing without the user's typed words, th
       assert.equal(forged.state.phase, "closed", source);
       for (const toolName of ["write", "edit", "bash", "pair_write"]) assert.equal(toolVerdict(forged.state, { toolName }).allow, false, toolName);
       assert.equal(checkWrite(forged.state, { path: "src/a.ts" }).ok, false);
+    }
+  });
+});
+
+describe("git's own configuration and hooks stay unwritable with .git/ in the boundary", () => {
+  const controlled = [
+    ".git", "sub/.git", ".git/hooks", ".git/hooks/pre-commit", ".git/config", ".git/config.lock", ".git/config.worktree",
+    ".git/commondir", ".git/info/attributes", ".git/info/exclude", ".git/worktrees/w/config.worktree", ".git/worktrees/w/commondir",
+    ".git/modules/m/hooks/post-checkout", ".git/modules/m/config", ".git/modules/a/b/info/x", ".git/modules/a/modules/b/config",
+    "vendor/lib/.git/config", "vendor/lib/.git/hooks/pre-push",
+  ];
+  const ordinary = [
+    ".git/HEAD", ".git/index", ".git/index.lock", ".git/COMMIT_EDITMSG", ".git/objects/ab/cdef", ".git/refs/heads/main", ".git/logs/HEAD",
+    ".git/configs", ".git/hooksx", ".gitattributes", ".gitmodules", ".github/workflows/ci.yml", "src/.gitkeep", "a.git/config",
+  ];
+
+  test("isGitControl names git's control paths and nothing a commit writes", () => {
+    for (const rel of controlled) assert.equal(isGitControl(rel), true, rel);
+    for (const rel of ordinary) assert.equal(isGitControl(rel), false, rel);
+  });
+
+  test("pair_write and pair_edit refuse them even inside the boundary", () => {
+    const s = opened(fakeHost(), { boundary: [".git/", "sub/", "src/a.ts"] });
+    for (const path of [".git/hooks/pre-commit", ".git/config", ".git/modules/m/hooks/x", "sub/.git"]) {
+      const r = checkWrite(s, { path, toolName: "pair_edit" });
+      assert.equal(r.ok, false, path);
+      assert.match(r.reason, /git's own configuration or hooks/);
+    }
+    assert.equal(checkWrite(s, { path: ".git/refs/heads/main" }).ok, true);
+  });
+
+  test("pair_run can commit with .git/ in the boundary, but never write a hook or the config", { skip: liveSkip }, () => {
+    const dirs = liveDirs();
+    try {
+      const git = (...args) => spawnSync("git", args, { cwd: dirs.root, encoding: "utf8" });
+      assert.equal(git("init", "-q").status, 0);
+      const config = readFileSync(join(dirs.root, ".git", "config"), "utf8");
+      const s = liveState(dirs, "open", [".git/", "src/a.ts"]);
+      const commit = sandboxed(s, "echo a2 > src/a.ts && git add src/a.ts && git -c user.name=t -c user.email=t@example.com commit -qm one", dirs.root);
+      assert.equal(commit.status, 0, commit.stderr);
+      assert.equal(git("log", "--format=%s").stdout.trim(), "one");
+      for (const command of ["echo 'touch /tmp/pwned' > .git/hooks/pre-commit", "git config core.hooksPath /tmp", "echo x >> .git/config", "mkdir -p .git/modules/m/hooks", "echo x > .git/commondir", "echo x > .git/info/attributes"]) {
+        const r = sandboxed(s, command, dirs.root);
+        assert.notEqual(r.status, 0, command);
+      }
+      assert.equal(existsSync(join(dirs.root, ".git", "hooks", "pre-commit")), false);
+      assert.equal(existsSync(join(dirs.root, ".git", "commondir")), false);
+      assert.equal(readFileSync(join(dirs.root, ".git", "config"), "utf8"), config);
+    } finally {
+      dirs.cleanup();
     }
   });
 });

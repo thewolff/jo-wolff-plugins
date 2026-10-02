@@ -27,7 +27,7 @@ export const TOOLS = [
   },
   {
     name: "pair_note",
-    description: "Append a note to the pairing journal: free text, a roadmap, or both. The latest roadmap replaces the one before; pair_done lists its items still open or not ready, and the next pair_start in this worktree offers them. The only way to keep notes while pairing.",
+    description: "Append a note to the pairing journal: free text, a roadmap, or both. The latest roadmap replaces the one before; pair_done lists its items still open or not ready, and the next pair_start in this worktree offers them. Answer a roadmap pair_start offered with earlierRoadmap. The only way to keep notes while pairing.",
     inputSchema: {
       type: "object",
       properties: {
@@ -46,6 +46,7 @@ export const TOOLS = [
             required: ["id", "title", "status"],
           },
         },
+        earlierRoadmap: { type: "string", enum: ["pick-up", "start-fresh"], description: "Your partner's answer to the earlier roadmap pair_start offered: pick-up carries it into this session, start-fresh sets it aside for good. Not with roadmap." },
       },
     },
   },

@@ -41,7 +41,13 @@ gate is then loaded in every omp process you run, in any repository, and stays i
 `pair_start`. `omp plugin upgrade` keeps it registered, `omp --no-extensions` starts a process
 without it, and `omp plugin uninstall paired-coding@jo-wolff-plugins` removes it.
 [`omp/REGISTRATION.md`](omp/REGISTRATION.md) also gives two ways to load the gate without
-installing the plugin, and their exact reversal.
+installing the plugin, and their exact reversal. Without installing, OMP needs both flags:
+`--plugin-dir <checkout>/plugins/paired-coding` loads the skill but not the `pair_*` tools, and
+`-e <checkout>/plugins/paired-coding/omp/paired-coding-omp.ts` loads the tools but not the
+skill. Tested on OMP 18.4.4 with both flags: the eight `pair_*` tools appeared once each, the
+skill was listed, and one copy of the gate ran. If your OMP settings carry a
+`skills.includeSkills` allowlist, add `paired-coding` to it: a non-empty allowlist that does not
+match the skill filters it out, even with `--plugin-dir`, while the `pair_*` tools still load.
 
 ## What happens when you pair
 
@@ -65,8 +71,15 @@ stops and brings a revised card.
 **The roadmap.** Each card on it is `open`, `not-ready` (with a one-line note on what it waits
 for), `done`, `skipped` or `dropped`. The agent works the next ready card, shows the open and
 not-ready ones at every read-back, and does not call the roadmap done while any is left. When
-you start pairing again in the same worktree, the agent offers to pick up an unfinished roadmap
-from the last session there; you can say no and start fresh. Nothing reopens on its own: every
+you start pairing again in the same worktree, `pair_start` looks back through that worktree's
+earlier sessions, newest first and at most 20, past any that recorded nothing (a cleared
+session, for one). It stops at the first one that recorded a roadmap or your decision to start
+fresh, and offers that roadmap only if cards are still open or not ready. On OMP, where `/clear`
+keeps the session, that includes the roadmap the same session recorded before the clear. The
+agent asks whether to pick it up or start fresh and records your answer with `pair_note`'s
+`earlierRoadmap` field: `pick-up` copies the whole roadmap into this session, so it carries on
+to later ones, and `start-fresh` sets it aside for good. Recording a new roadmap also replaces
+the offer. The earlier session's journal is never changed. Nothing reopens on its own: every
 picked-up card still needs its own card and agreement.
 
 **Ending.** A done roadmap does not end pairing: the agent reports it done and the gate stays
@@ -98,8 +111,10 @@ How it works:
   recorded as typed by a person after the card, only if the card has no open points, and only
   if the card's files are unchanged since it was shown.
 - While pairing, the host's own write, edit, shell, eval and sub-agent tools are refused, and so
-  is any tool the gate does not know. The agent writes through `pair_write` and `pair_edit`,
-  which accept only paths inside the open change set's boundary, and runs commands through
+  is any tool the gate does not know. On Claude Code the `Skill` tool is allowed only for this
+  plugin's own skill, `paired-coding:paired-coding`, so the agent can reload it after `/clear`;
+  every other skill is refused. The agent writes through `pair_write` and `pair_edit`, which
+  accept only paths inside the open change set's boundary, and runs commands through
   `pair_run`.
 - `pair_run` runs every command in the foreground under a macOS Seatbelt profile built from the
   state. Both profiles deny every write by default. With no change set open a command may write
@@ -114,6 +129,14 @@ How it works:
   over the target, keeping an existing file's permission bits. So a hard link or symlink at a
   boundary path is replaced rather than written through, a symlink swapped in after the path
   check cannot land the write outside the boundary, and a directory at the path is refused.
+- Git's own control paths are never writable, even when an agreed boundary covers `.git/`:
+  every `.git` entry itself, so no gitfile can be planted, and inside any git directory,
+  including nested repositories and `.git/modules/`, the `hooks/`, `info/` and `worktrees/`
+  directories and the `config`, `config.worktree`, `config.lock` and `commondir` files. Git
+  would run what they name outside the sandbox. `pair_run` cannot write them, and `pair_write`
+  and `pair_edit` refuse with "the path is git's own configuration or hooks, which git would run
+  outside the sandbox; no change set writes there". Objects, refs, the index and logs stay
+  writable, so `git commit` inside `pair_run` still works; `git config` fails.
 - `pair_done` returns the diff of the boundary, computed by the gate, and lists the roadmap cards
   still `open` or `not-ready`. Every card, quote, verdict, refusal and diff goes into a journal
   outside the worktree, under `$PAIRED_CODING_STATE_DIR` (default
@@ -121,14 +144,21 @@ How it works:
 - Typing `pair stop` ends pairing in any phase: the gate reaps running commands, takes a final
   snapshot, journals any write it did not approve, journals the stop as `typed-stop`, and
   returns the session to inactive. On Claude Code the stop takes effect when the turn ends or at
-  the next tool call, whichever comes first; on OMP, when the turn is submitted.
+  the next tool call, whichever comes first; on OMP, when the turn is submitted. On OMP the
+  agent is also told, as hidden context on that turn, that pairing has ended, that host tools
+  are no longer refused, and that pairing starts again only if you ask for it and it calls
+  `pair_start`; you see "paired coding is off: you typed pair stop".
+- Card ids are unique within a session's journal. After OMP `/clear`, `/tree` or an interactive
+  `/branch` back to an earlier message, or a typed `pair stop` and a later `pair_start` in the
+  same session, numbering continues (`card-3` after `card-1` and `card-2`) instead of starting
+  again at `card-1`.
 
 ## Hosts
 
 | Host | Gate | Live result |
 |---|---|---|
 | Claude Code, macOS | Built: hooks and a bundled MCP server | Verified on Claude Code v2.1.287, loaded with `--plugin-dir`: tests 11 to 17, then the release checks below |
-| OMP, macOS | Built: an extension, registered by `omp plugin install` or loaded with `-e` | Verified on OMP 18.4.4, loaded with `-e`: tests 11 to 17, then the release checks below. After a plain `omp plugin install`, a scripted stand-in model saw the skill listed, the eight `pair_*` tools registered, and a host `write` refused after `pair_start`; tests 11 to 17 were not re-run that way |
+| OMP, macOS | Built: an extension, registered by `omp plugin install`, or loaded with `--plugin-dir` and `-e` together | Verified on OMP 18.4.4, loaded with `-e`: tests 11 to 17, then the release checks below. After a plain `omp plugin install`, a scripted stand-in model saw the skill listed, the eight `pair_*` tools registered, and a host `write` refused after `pair_start`; tests 11 to 17 were not re-run that way |
 | Codex | None | Unverified; the skill is included but has not been run there |
 | Linux, Windows, anything else | `pair_start` refuses | The skill runs as conversation only |
 
@@ -228,14 +258,24 @@ command at that threshold minus 10 seconds: 110 seconds by default. Set
 that apply on OMP then hold: 10 minutes by default, at most an hour.
 
 **Session changes fail closed.** On Claude Code, `/clear`, `/resume` and `/branch` start a new
-session, and so does a fork (`/fork`, `--fork-session`). On OMP, `/new`, `/fork`, `/resume`,
-`/branch` and the branch `/btw` makes do, and `/clear` resets the conversation inside the same
-session. If pairing was active, the gate ends it (reaping runs, taking the final snapshot,
-journaling any write it did not approve, finishing an open change set) and pairing continues
-`closed`: no card, no open change set, host writes refused, `pair_note` and `pair_propose`
-refused, and the journal records `carried-after-clear`. `pair_start` restarts pairing, and a
-typed `pair stop` ends it. On OMP, `/clear` fires no extension event, so the gate notices the
-reset marker OMP writes into the session at the next typed turn or tool call.
+session, and so does a fork (`/fork`, `--fork-session`). On OMP, `/new`, `/fork`, `/resume` and
+the branch `/btw` makes start a new session. OMP's `/clear`, `/tree`, and its interactive
+`/branch` back to an earlier message stay in the same session: `/clear` resets the conversation,
+and the other two move to another point in it. If pairing was active, the gate ends it (reaping
+runs, taking the final snapshot, journaling any write it did not approve, finishing an open
+change set), and pairing is still on and the card is closed: no card, no open change set, host
+writes refused, `pair_note` and `pair_propose` refused, and the journal records
+`carried-after-clear`. The agent tells you that pairing carried over closed and waits for your
+answer. If you want to keep pairing, it calls `pair_start` and then proposes a card; it does not
+call `pair_start` on its own. To end it, type `pair stop`. A host tool the agent tries in the
+meantime is refused with "<tool> is refused: pairing is still on and the card is closed after a
+session change. Tell your partner pairing carried over closed and wait for their answer: call
+pair_start only once they say to keep pairing; they end it by typing pair stop". The same text
+refuses `pair_note` and `pair_propose`, on both hosts. On OMP, `/clear` fires no extension
+event, so the gate notices the reset marker OMP writes into the session at the next typed turn
+or tool call; a move with `/tree` or `/branch` is caught when OMP reports it, and you see
+"paired coding: pairing is still on and the card is closed, because you moved to another point
+in the conversation. Tell the agent to keep pairing, or type pair stop to end it".
 
 On Claude Code the hand-over is a marker. Every `SessionEnd` while pairing leaves one for the
 worktree, whatever the reason: `/clear`, `/resume`, `/branch`, or quitting. It is written
@@ -248,7 +288,7 @@ minutes starts closed, while a fresh `claude` launch stays untouched. A fork of 
 still pairing (the `/fork` background copy) is linked instead through the `forkedFrom` session
 id Claude Code writes into the fork's transcript, since the hook input names no parent.
 
-Four limits:
+Three limits:
 
 - On Claude Code, only `/clear` has been run live. Resume, `/branch`, quitting and forks are
   covered by unit tests only, and `forkedFrom` is undocumented.
@@ -257,15 +297,15 @@ Four limits:
   worktree, or when an earlier `/clear`, resume or fork already took it.
 - A fresh launch leaves the marker in place. If you quit while pairing, start a new
   conversation in the same worktree, and use `/clear` or `/resume` in it within 10 minutes,
-  that session takes the marker and starts closed. Type `pair stop`, or let the agent call
-  `pair_start`.
-- On OMP, `/tree` keeps the session id and only moves within the session tree, so pairing
-  carries on unchanged.
+  that session takes the marker and pairing is still on and the card is closed. Type
+  `pair stop`, or tell the agent to keep pairing.
 
 **One write gate per session, on OMP.** If another gate in your OMP sessions also owns write
 enforcement, set `PAIRED_CODING_CONFLICTING_TOOLS` to a comma-separated list of tool names it
-registers. `pair_start` refuses while any listed tool is in the session's tool list; see
-`omp/REGISTRATION.md`. Claude Code does not read this variable.
+registers. While any listed tool is in the session's tool list, `pair_start` refuses with
+"another write gate is loaded in this session (its tool … is listed in
+PAIRED_CODING_CONFLICTING_TOOLS), so this adapter stays off", the session stays untouched, and
+nothing crashes; see `omp/REGISTRATION.md`. Claude Code does not read this variable.
 
 **macOS only.** `pair_run` and the writes inside `pair_write` and `pair_edit` depend on Seatbelt
 (`/usr/bin/sandbox-exec`). Elsewhere `pair_start` refuses and the skill works as conversation
@@ -283,6 +323,13 @@ a run reached `sshd` on `127.0.0.1:22`, and only the missing credentials stopped
 private key in `~/.ssh` is in your own `authorized_keys`, `pair_run` could probably log in and
 get a shell outside the sandbox; that route was not tried. `open`, `osascript` and Apple Events
 are not denied either, and were not probed.
+
+**Git control paths are fenced; two neighbours are not.** Because the repository's own git
+config cannot be written, `.gitattributes` can only select filter or diff drivers already
+defined in your own git config. A repository whose config points `core.hooksPath` at a
+directory in the worktree (husky's `.husky/`, for one) runs hooks from there, and `pair_run`
+can write that directory when it is in the boundary; unlike `.git/`, such a write shows in the
+read-back diff.
 
 **Escaped writers are caught late, and only inside the worktree.** A process that leaves its
 run's process group survives the reap and keeps the write permission its run had (test 17). A

@@ -92,6 +92,9 @@
  * @property {{ from: string | null, reason: string, at?: unknown } | null} [carried]
  *   set when a session change activated this session closed; pair_start restarts it
  * @property {RoadmapItem[] | null} [roadmap]  the latest roadmap pair_note recorded
+ * @property {{ from: string, roadmap: RoadmapItem[] } | null} [roadmapOffer]
+ *   an earlier session's roadmap pair_start offered, until pair_note's earlierRoadmap picks it
+ *   up or starts fresh, or a new roadmap supersedes it
  */
 /**
  * @typedef {object} RoadmapItem
@@ -155,7 +158,9 @@ const DISPATCH_SET = new Set(DISPATCH_TOOLS);
 const PHASES = new Set(["inactive", "closed", "open"]);
 const STATUS_SET = new Set(ROADMAP_STATUSES);
 const CONTROL = /[\u0000-\u001f\u007f]/;
-const CARRIED_REASON = "pairing was carried over a session change and stays closed; call pair_start to restart it, or your partner types pair stop to end it";
+/** How every host text names a session a session change carried over closed. */
+export const CARRIED_PHRASE = "pairing is still on and the card is closed";
+export const CARRIED_REASON = `${CARRIED_PHRASE} after a session change. Tell your partner pairing carried over closed and wait for their answer: call pair_start only once they say to keep pairing; they end it by typing pair stop`;
 
 // ─── state ──────────────────────────────────────────────────────────────────────────────
 
@@ -246,6 +251,7 @@ function isValidState(s) {
     if (!isObj(s.carried) || typeof s.carried.reason !== "string" || s.phase !== "closed" || s.card !== null) return false;
   }
   if (s.roadmap !== undefined && s.roadmap !== null && roadmapProblem(s.roadmap) !== null) return false;
+  if (s.roadmapOffer !== undefined && s.roadmapOffer !== null && !isRoadmapOffer(s.roadmapOffer)) return false;
   if (s.phase === "open") {
     const c = s.changeSet;
     if (!isObj(c) || typeof c.cardId !== "string" || typeof c.quote !== "string" || !isSeq(c.inputSeq)) return false;
@@ -391,6 +397,28 @@ export function boundaryMatches(boundary, rel) {
     const e = normalizeEntry(raw);
     return isGlob(e) ? new RegExp(`^${globToRegexSource(e)}$`).test(rel) : rel === e;
   });
+}
+
+/**
+ * Worktree-relative regex sources, in syntax shared by JavaScript and Seatbelt, for the paths
+ * git reads as configuration or runs as code: every `.git` entry itself (so no gitfile can be
+ * planted or swapped), and inside any git directory, its submodule git directories under
+ * modules/ included: hooks/, info/, worktrees/, config, config.worktree, config.lock and the
+ * commondir redirect. Git would run what they name outside the sandbox, and snapshots leave
+ * .git out, so a write there would never show in a read-back. Every write is refused there,
+ * even when an agreed boundary covers `.git/`: objects, refs, the index and logs stay
+ * writable, so a commit still works.
+ */
+export const GIT_CONTROL = Object.freeze([
+  String.raw`(.*/)?\.git`,
+  String.raw`(.*/)?\.git/(modules/(.+/)?)?(hooks|info|worktrees)(/.*)?`,
+  String.raw`(.*/)?\.git/(modules/(.+/)?)?(config|config\.worktree|config\.lock|commondir)`,
+]);
+const GIT_CONTROL_RES = GIT_CONTROL.map((source) => new RegExp(`^${source}$`));
+
+/** Whether a worktree-relative path is one of git's own configuration or hook paths. */
+export function isGitControl(rel) {
+  return typeof rel === "string" && GIT_CONTROL_RES.some((re) => re.test(rel));
 }
 
 // ─── snapshots ──────────────────────────────────────────────────────────────────────────
@@ -559,15 +587,17 @@ function closedState(sessionId, paths, baseline) {
     degraded: null,
     carried: null,
     roadmap: null,
+    roadmapOffer: null,
   };
 }
 
 /**
  * pair_start: activate pairing (inactive -> closed) and take the first snapshot. Agent-callable
- * with no binding, because it only adds restrictions. The adapter supplies the paths. It also
- * restarts a session that a session change left carried and closed.
+ * with no binding, because it only adds restrictions. The adapter supplies the paths, and the
+ * earlier roadmap to offer when it found one. It also restarts a session that a session change
+ * left carried and closed.
  * @param {State} state
- * @param {{ sessionId?: string, root: string, stateDir: string, tempPaths?: string[], protect?: string[], exclusions?: string[] }} args
+ * @param {{ sessionId?: string, root: string, stateDir: string, tempPaths?: string[], protect?: string[], exclusions?: string[], roadmapOffer?: { from: string, roadmap: RoadmapItem[] }, cardSeq?: number }} args
  * @param {Io} io
  * @returns {Result}
  */
@@ -579,9 +609,17 @@ export function pairStart(state, args, io) {
   const snap = takeSnapshot(io);
   if (snap.error) return refuse(state, "pair_start", `could not snapshot the worktree: ${snap.error}`, io);
   const next = closedState(args.sessionId, paths, snap.value);
+  // Card ids stay unique in the session's journal: an OMP /clear or a stop and restart keeps
+  // the same journal, so numbering continues from the highest card id it already holds.
+  if (isSeq(args.cardSeq)) next.cardSeq = args.cardSeq;
   const fields = { sessionId: next.sessionId, root: next.root, stateDir: next.stateDir, exclusions: next.exclusions };
   if (restart) fields.restartedAfter = state.carried.reason;
-  return { ok: true, state: next, journal: [entry("start", io, fields)] };
+  const journal = [entry("start", io, fields)];
+  if (isRoadmapOffer(args.roadmapOffer)) {
+    next.roadmapOffer = { from: args.roadmapOffer.from, roadmap: args.roadmapOffer.roadmap.map(roadmapItem) };
+    journal.push(entry("roadmap-offered", io, next.roadmapOffer));
+  }
+  return { ok: true, state: next, journal };
 }
 
 /**
@@ -681,23 +719,64 @@ export function openRoadmapItems(items) {
   return Array.isArray(items) ? items.filter((it) => it.status === "open" || it.status === "not-ready") : [];
 }
 
-/** The roadmap of the latest journal note that carries one, or null. */
-export function latestRoadmap(entries) {
+/** A checked roadmap item, copied without any extra fields. */
+function roadmapItem(it) {
+  return { id: it.id, title: it.title, status: it.status, ...(it.note !== undefined ? { note: it.note } : {}) };
+}
+
+/** An offer pair_start can record: a valid earlier roadmap with something still to do. */
+function isRoadmapOffer(x) {
+  return isObj(x) && typeof x.from === "string" && x.from !== "" && roadmapProblem(x.roadmap) === null && openRoadmapItems(x.roadmap).length > 0;
+}
+
+/**
+ * The newest roadmap decision a journal recorded, or null when it recorded none: `{ roadmap }`
+ * for a note carrying a valid roadmap (a picked-up one included), `{ declined: true }` for a
+ * partner's start-fresh. The pair_start offer stops at the first earlier journal with either.
+ * @param {unknown} entries
+ * @returns {{ roadmap: RoadmapItem[] } | { declined: true } | null}
+ */
+export function roadmapRecord(entries) {
   if (!Array.isArray(entries)) return null;
   for (let i = entries.length - 1; i >= 0; i--) {
     const e = entries[i];
-    if (isObj(e) && e.type === "note" && Array.isArray(e.roadmap) && roadmapProblem(e.roadmap) === null) return e.roadmap;
+    if (!isObj(e)) continue;
+    if (e.type === "roadmap-declined") return { declined: true };
+    if (e.type === "note" && Array.isArray(e.roadmap) && roadmapProblem(e.roadmap) === null) return { roadmap: e.roadmap };
   }
   return null;
 }
 
 /**
+ * The highest `card-N` number a journal recorded on a card or an agreement, 0 for none.
+ * pair_start continues card numbering from it, so a card id names one card per journal.
+ * @param {unknown} entries
+ * @returns {number}
+ */
+export function lastCardSeq(entries) {
+  if (!Array.isArray(entries)) return 0;
+  let max = 0;
+  for (const e of entries) {
+    if (!isObj(e)) continue;
+    const id = e.type === "card" && isObj(e.card) ? e.card.id : e.type === "agreement" ? e.cardId : null;
+    const m = typeof id === "string" ? /^card-(\d+)$/.exec(id) : null;
+    if (m) max = Math.max(max, Number(m[1]));
+  }
+  return max;
+}
+
+/** pair_note's answers to an earlier roadmap pair_start offered. */
+export const EARLIER_ROADMAP_CHOICES = Object.freeze(["pick-up", "start-fresh"]);
+
+/**
  * pair_note: append a note to the journal: free text, a structured roadmap, or both. The
  * latest roadmap replaces the one before it (state.roadmap) and pair_done lists its open and
- * not-ready items. The agent's only way to keep notes while pairing; the state directory is
- * not writable by any agent tool.
+ * not-ready items. `earlierRoadmap` answers the roadmap pair_start offered: "pick-up" records
+ * that whole roadmap in this journal, "start-fresh" records the decline, so a later pair_start
+ * stops at this journal either way. The agent's only way to keep notes while pairing; the
+ * state directory is not writable by any agent tool.
  * @param {State} state
- * @param {{ text?: unknown, roadmap?: unknown }} args
+ * @param {{ text?: unknown, roadmap?: unknown, earlierRoadmap?: unknown }} args
  * @param {Io} [io]
  * @returns {Result}
  */
@@ -706,17 +785,33 @@ export function pairNote(state, args, io) {
   if (state.carried) return refuse(state, "pair_note", CARRIED_REASON, io);
   const hasText = typeof args?.text === "string" && args.text.trim() !== "";
   if (args?.text !== undefined && typeof args.text !== "string") return refuse(state, "pair_note", "the note text is not a string", io);
+  const text = hasText ? { text: args.text } : {};
+  if (args?.earlierRoadmap !== undefined) {
+    if (!EARLIER_ROADMAP_CHOICES.includes(args.earlierRoadmap)) {
+      return refuse(state, "pair_note", `earlierRoadmap is ${JSON.stringify(args.earlierRoadmap)}; use one of ${EARLIER_ROADMAP_CHOICES.join(", ")}`, io);
+    }
+    if (args.roadmap !== undefined) return refuse(state, "pair_note", "pass earlierRoadmap or roadmap, not both", io);
+    const offer = state.roadmapOffer;
+    if (!offer) return refuse(state, "pair_note", "no earlier roadmap is on offer in this session", io);
+    const next = clone(state);
+    next.roadmapOffer = null;
+    if (args.earlierRoadmap === "start-fresh") {
+      return { ok: true, state: next, declined: offer.from, journal: [entry("roadmap-declined", io, { from: offer.from, ...text })] };
+    }
+    next.roadmap = offer.roadmap.map(roadmapItem);
+    return { ok: true, state: next, roadmapOpen: openRoadmapItems(next.roadmap), journal: [entry("note", io, { ...text, roadmap: next.roadmap, carriedFrom: offer.from })] };
+  }
   if (args?.roadmap === undefined) {
     if (!hasText) return refuse(state, "pair_note", "the note is empty", io);
     return { ok: true, state, journal: [entry("note", io, { text: args.text })] };
   }
   const problem = roadmapProblem(args.roadmap);
   if (problem) return refuse(state, "pair_note", problem, io);
-  const roadmap = args.roadmap.map((it) => ({ id: it.id, title: it.title, status: it.status, ...(it.note !== undefined ? { note: it.note } : {}) }));
+  const roadmap = args.roadmap.map(roadmapItem);
   const next = clone(state);
   next.roadmap = roadmap;
-  const fields = hasText ? { text: args.text, roadmap } : { roadmap };
-  return { ok: true, state: next, roadmapOpen: openRoadmapItems(roadmap), journal: [entry("note", io, fields)] };
+  next.roadmapOffer = null;
+  return { ok: true, state: next, roadmapOpen: openRoadmapItems(roadmap), journal: [entry("note", io, { ...text, roadmap })] };
 }
 
 /**
@@ -872,9 +967,11 @@ export function toolVerdict(state, call, opts = {}, io) {
     return pass();
   }
   if (READ_SET.has(name)) return pass();
+  const hostAllowed = !MUTATING_SET.has(name) && !DISPATCH_SET.has(name) && Array.isArray(opts.allow) && opts.allow.includes(name);
+  if (hostAllowed) return pass();
+  if (state.carried) return deny(`${name || "(unnamed tool)"} is refused: ${CARRIED_REASON}`);
   if (MUTATING_SET.has(name)) return deny(`${name} is the host's own mutating tool; while pairing, write with pair_write or pair_edit and run commands with pair_run`);
   if (DISPATCH_SET.has(name)) return deny("sub-agent dispatch is refused while pairing; do the recon in this session");
-  if (Array.isArray(opts.allow) && opts.allow.includes(name)) return pass();
   return deny(`${name || "(unnamed tool)"} is not on the pairing allowlist`);
 }
 
@@ -909,7 +1006,9 @@ export function checkWrite(state, args, io) {
 function targetProblem(state, abs) {
   if (!abs) return "the path is not usable";
   if (within(state.stateDir, abs)) return "the path is inside the pairing state directory";
-  if (!boundaryMatches(state.changeSet.boundary, relativeTo(state.root, abs))) return "outside the agreed boundary; reopen";
+  const rel = relativeTo(state.root, abs);
+  if (!boundaryMatches(state.changeSet.boundary, rel)) return "outside the agreed boundary; reopen";
+  if (isGitControl(rel)) return "the path is git's own configuration or hooks, which git would run outside the sandbox; no change set writes there";
   return null;
 }
 
@@ -997,8 +1096,8 @@ function boundaryAncestors(root, boundary) {
  *   2. the temp paths and the few /dev files a shell needs allowed;
  *   3. the whole worktree denied again (a worktree that sits under a temp path stays fenced);
  *   4. open only: the boundary allowed, and creating the directories above it as directories;
- *   5. the state directory and the protected paths denied, even where a boundary or temp path
- *      covers them;
+ *   5. git's own configuration and hook paths (GIT_CONTROL), the state directory and the
+ *      protected paths denied, even where a boundary or temp path covers them;
  *   6. creating a hard link denied everywhere. Seatbelt rules match paths, so a link inside the
  *      boundary to a file outside it would let a later write to the boundary path land on the
  *      outside file.
@@ -1024,12 +1123,13 @@ function profileFor(state, extraAllow) {
     ...(state.tempPaths ?? []).map((p) => `(subpath ${sbplString(p)})`),
   ];
   const head = `(version 1)(allow default)${UNIX_SOCKETS}(deny file-write*)(allow file-write* ${outside.join(" ")})(deny file-write* (subpath ${sbplString(state.root)}))`;
-  const tail = `${[state.stateDir, ...(state.protect ?? [])].map((p) => `(deny file-write* (subpath ${sbplString(p)}))`).join("")}(deny file-link)`;
+  const root = state.root.replace(REGEX_META, (ch) => `\\${ch}`);
+  const git = GIT_CONTROL.map((source) => `(deny file-write* (regex ${sbplRegex(`^${root}/${source}$`)}))`).join("");
+  const tail = `${git}${[state.stateDir, ...(state.protect ?? [])].map((p) => `(deny file-write* (subpath ${sbplString(p)}))`).join("")}(deny file-link)`;
   if (state.phase !== "open") return `${head}${tail}`;
   const boundary = state.changeSet.boundary.map((raw) => {
     const e = normalizeEntry(raw);
     if (!isGlob(e)) return `(literal ${sbplString(`${state.root}/${e}`)})`;
-    const root = state.root.replace(REGEX_META, (ch) => `\\${ch}`);
     return `(regex ${sbplRegex(`^${root}/${globToRegexSource(e)}$`)})`;
   });
   const extra = extraAllow.map((p) => `(literal ${sbplString(p)})`);

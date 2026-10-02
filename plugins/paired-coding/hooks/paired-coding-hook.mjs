@@ -25,10 +25,10 @@
 import { appendFileSync, closeSync, fstatSync, openSync, readFileSync, readSync, realpathSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { PAIR_TOOLS, isStopPhrase } from "../core/gate.mjs";
+import { CARRIED_PHRASE, PAIR_TOOLS, isStopPhrase } from "../core/gate.mjs";
 import { activated, findRoot, loadState, stateBase, withLock } from "../lib/host-io.mjs";
 import { carryInto, endSession, pairingCarry, recordTrustedInput, sessionDirFor, takeCarryMarker, verdict, writeCarryMarker } from "../lib/verbs.mjs";
-import { HOST_ALLOW, bareToolName, writeBinding } from "../server/binding.mjs";
+import { bareToolName, hostAllowFor, writeBinding } from "../server/binding.mjs";
 
 const sleepSync = (ms) => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
 
@@ -210,7 +210,7 @@ export function handle(event, input, opts = {}) {
     if (!dir) return PAIR_TOOLS.includes(name) ? deny("the session id is unusable; pairing cannot bind this call") : null;
     try {
       if (activated(dir)) resolvePending(dir, { waitMs: opts.waitMs });
-      const v = verdict(name, { sessionDir: dir, allow: HOST_ALLOW });
+      const v = verdict(name, { sessionDir: dir, allow: hostAllowFor(input) });
       if (!v.allow) return deny(v.reason ?? "refused while pairing");
       if (PAIR_TOOLS.includes(name)) {
         writeBinding(stateBase(env), input.tool_use_id, {
@@ -247,18 +247,21 @@ export function handle(event, input, opts = {}) {
     if (!carry) return null;
     const r = carryInto({ sessionId: input.session_id, sessionDir: dir, root, exclusions: carry.exclusions ?? undefined, protect: carry.protect ?? [], from, reason: source });
     if (!r.ok) return null;
-    const note = `paired-coding: pairing was on ${CARRY_START.get(source)}, so this session starts closed: host write, edit, shell and sub-agent tools are refused. Call pair_start to restart pairing; your partner ends it by typing pair stop.`;
+    const note = `paired-coding: pairing was on ${CARRY_START.get(source)}, so ${CARRIED_PHRASE}: this session has no card and no change set, and host write, edit, shell and sub-agent tools are refused. Tell your partner that pairing carried over closed, then wait for their answer. If they want to keep pairing, call pair_start and propose the next card; to end it, they type pair stop. Do not call pair_start before they answer.`;
     return { hookSpecificOutput: { hookEventName: "SessionStart", additionalContext: note } };
   }
   if (!dir || !activated(dir)) return null;
   if (event === "user-prompt-submit") {
     // Turns still queued from earlier (a turn that ended with no tool call) are judged first.
     resolvePending(dir, { waitMs: opts.waitMs });
-    if (loadState(dir).phase === "inactive") return null;
+    const state = loadState(dir);
+    if (state.phase === "inactive") return null;
     queueInput(dir, input);
     const note = isStopPhrase(input?.prompt)
       ? "paired-coding: this turn asks to end pairing. If Claude Code's transcript shows your partner typed it, pairing ends before your next tool call; you cannot end pairing yourself."
-      : "paired-coding: pairing is on. Only words from a turn your partner typed at the keyboard can be quoted to pair_begin; whether this turn counts is decided from Claude Code's transcript before your next tool call. Only your partner ends pairing, by typing pair stop as a whole message.";
+      : state.carried
+        ? `paired-coding: ${CARRIED_PHRASE} after a session change. If your partner has not answered yet, tell them pairing carried over closed and wait; call pair_start only once they say to keep pairing. Only your partner ends pairing, by typing pair stop as a whole message.`
+        : "paired-coding: pairing is on. Only words from a turn your partner typed at the keyboard can be quoted to pair_begin; whether this turn counts is decided from Claude Code's transcript before your next tool call. Only your partner ends pairing, by typing pair stop as a whole message.";
     return { hookSpecificOutput: { hookEventName: "UserPromptSubmit", additionalContext: note } };
   }
   if (event === "stop") {

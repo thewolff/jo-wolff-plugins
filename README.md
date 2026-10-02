@@ -264,8 +264,8 @@ open a change set, but only for that card's files, and the quote sits in the jou
 audit.
 
 **It runs on macOS only, on two hosts.** The gate is built for Claude Code and OMP and was
-tested live on both. Codex, and skill discovery on plain OMP, are unverified. Elsewhere the
-skill runs as conversation and nothing at the tool boundary stops a write.
+tested live on both. Codex is unverified. Elsewhere the skill runs as conversation and nothing
+at the tool boundary stops a write.
 
 **Some of it rests on undocumented host fields, and fails closed.** On Claude Code, "you typed
 it" is read from transcript fields Claude Code does not document. If they change, every turn

@@ -94,6 +94,27 @@ test("while pairing the hook denies host writers, shells, dispatch and unknown t
   }
 });
 
+test("while pairing, Skill loads only this plugin's own skill, in a started session and in one carried closed after /clear", { skip: !hasSandbox }, async () => {
+  const f = fixture();
+  await call(f, "pair_start", {});
+  const skill = (common, tool_input) => handle("pre-tool-use", { ...common, tool_name: "Skill", tool_input, tool_use_id: tuid() }, { env: f.env });
+  const check = (common, refusal) => {
+    for (const name of ["paired-coding:paired-coding", "/paired-coding:paired-coding", " paired-coding:paired-coding\n"]) {
+      assert.equal(skill(common, { skill: name }), null, JSON.stringify(name));
+    }
+    for (const input of [{ skill: "commit" }, { skill: "other:paired-coding" }, { skill: "paired-coding" }, { skill: "paired-coding:paired-coding-x" }, { skill: "//paired-coding:paired-coding" }, {}]) {
+      const out = skill(common, input);
+      assert.equal(out?.hookSpecificOutput?.permissionDecision, "deny", JSON.stringify(input));
+      assert.match(out.hookSpecificOutput.permissionDecisionReason, refusal);
+    }
+  };
+  check(f.common, /Skill is not on the pairing allowlist/);
+  handle("session-end", { ...f.common, reason: "clear" }, { env: f.env });
+  const s2 = { ...f.common, session_id: "s2" };
+  assert.notEqual(handle("session-start", { ...s2, source: "clear" }, { env: f.env }), null);
+  check(s2, /Skill is refused: pairing is still on and the card is closed/);
+});
+
 test("a look-alike pair_write from a server that is not this plugin's is refused and never bound", { skip: !hasSandbox }, async () => {
   const f = fixture();
   await call(f, "pair_start", {});
@@ -258,15 +279,22 @@ test("/clear while pairing: the new session refuses Write until pair_start, whic
   assert.equal(phaseOf(f, "s1"), "inactive");
   const s2 = { ...f.common, session_id: "s2" };
   const start = handle("session-start", { ...s2, source: "clear" }, { env: f.env });
-  assert.match(start.hookSpecificOutput.additionalContext, /starts closed/);
-  assert.notEqual(writeCall(f, s2), null);
+  const said = start.hookSpecificOutput.additionalContext;
+  assert.match(said, /so pairing is still on and the card is closed/);
+  assert.match(said, /Tell your partner that pairing carried over closed, then wait for their answer/);
+  assert.match(said, /Do not call pair_start before they answer/);
+  assert.doesNotMatch(said, /starts closed|Call pair_start to restart/);
+  assert.match(writeCall(f, s2).hookSpecificOutput.permissionDecisionReason, /Write is refused: pairing is still on and the card is closed after a session change\. Tell your partner/);
+  const prompt = (text) => handle("user-prompt-submit", { ...s2, prompt: text, prompt_id: `p-${++seq}` }, { env: f.env, waitMs: 0 }).hookSpecificOutput.additionalContext;
+  assert.match(prompt("what happened?"), /^paired-coding: pairing is still on and the card is closed after a session change\. If your partner has not answered yet/);
   const journal = readFileSync(join(f.base, "s2", "journal.jsonl"), "utf8");
   assert.match(journal, /"carried-after-clear"/);
   const id = tuid();
-  assert.equal(handle("pre-tool-use", { ...s2, ...own("pair_start"), tool_input: {}, tool_use_id: id }, { env: f.env }), null);
+  assert.equal(handle("pre-tool-use", { ...s2, ...own("pair_start"), tool_input: {}, tool_use_id: id }, { env: f.env, waitMs: 0 }), null);
   const r = await callTool({ name: "pair_start", arguments: {}, _meta: { "claudecode/toolUseId": id } }, { env: f.env });
   assert.equal(r.isError, false, r.content[0].text);
   assert.equal(phaseOf(f, "s2"), "closed");
+  assert.match(prompt("ok, keep going"), /^paired-coding: pairing is on\./, "a restarted session is ordinary pairing again");
   // The marker was single-use: a second cleared session starts inert.
   assert.equal(handle("session-start", { ...f.common, session_id: "s3", source: "clear" }, { env: f.env }), null);
   assert.equal(writeCall(f, { ...f.common, session_id: "s3" }), null);
@@ -323,7 +351,7 @@ test("/resume or /branch while pairing: the session switched to starts closed", 
     assert.equal(handle("session-end", { ...f.common, reason: "resume" }, { env: f.env }), null);
     const s2 = { ...f.common, session_id: "s2" };
     const start = handle("session-start", { ...s2, source }, { env: f.env, waitMs: 0 });
-    assert.match(start.hookSpecificOutput.additionalContext, /starts closed/, source);
+    assert.match(start.hookSpecificOutput.additionalContext, /in the session (before this one|this one was forked from), so pairing is still on and the card is closed/, source);
     assert.notEqual(writeCall(f, s2), null, source);
     assert.equal(carriedReason(f, "s2"), source);
     // A launch never takes a marker: only a session that replaced another does.
@@ -345,7 +373,7 @@ test("a fork of a session that is still pairing starts closed, linked through it
   await call(f, "pair_start", {});
   const fork = forkTranscript(f, "s2", "s1");
   const start = handle("session-start", { ...fork, source: "fork" }, { env: f.env, waitMs: 0 });
-  assert.match(start.hookSpecificOutput.additionalContext, /forked from, so this session starts closed/);
+  assert.match(start.hookSpecificOutput.additionalContext, /forked from, so pairing is still on and the card is closed/);
   assert.notEqual(writeCall(f, fork), null);
   assert.equal(carriedReason(f, "s2"), "fork");
   assert.equal(phaseOf(f, "s1"), "closed", "the parent keeps pairing");
@@ -376,7 +404,7 @@ test("quitting while pairing, then --resume or --fork-session: the session start
     assert.equal(phaseOf(f, "s1"), "inactive");
     const next = source === "fork" ? forkTranscript(f, "s2", "s1") : { ...f.common, session_id: "s2" };
     const start = handle("session-start", { ...next, source }, { env: f.env, waitMs: 0 });
-    assert.match(start.hookSpecificOutput.additionalContext, /starts closed/, source);
+    assert.match(start.hookSpecificOutput.additionalContext, /so pairing is still on and the card is closed/, source);
     assert.notEqual(writeCall(f, next), null, source);
     assert.equal(carriedReason(f, "s2"), source);
   }
