@@ -116,6 +116,14 @@ How it works:
   every other skill is refused. The agent writes through `pair_write` and `pair_edit`, which
   accept only paths inside the open change set's boundary, and runs commands through
   `pair_run`.
+- On OMP, a tool device the agent calls as `write xd://<device>` reaches the gate as the host's
+  `write` tool. The gate judges by tool name and does not read the path, so while pairing every
+  `xd://` device is refused like any host write ("write is the host's own mutating tool"),
+  read-only ones such as a search device included. Allowing them all would also open the
+  devices that edit code or change outside systems, so they stay refused. For a read-only
+  lookup while pairing, the agent runs the equivalent command-line tool through `pair_run`
+  instead, as long as that tool does not reach a local daemon over a Unix socket (see the next
+  point).
 - `pair_run` runs every command in the foreground under a macOS Seatbelt profile built from the
   state. Both profiles deny every write by default. With no change set open a command may write
   only temp directories and `/dev`. With one open it may also write the boundary files. The
@@ -275,7 +283,11 @@ refuses `pair_note` and `pair_propose`, on both hosts. On OMP, `/clear` fires no
 event, so the gate notices the reset marker OMP writes into the session at the next typed turn
 or tool call; a move with `/tree` or `/branch` is caught when OMP reports it, and you see
 "paired coding: pairing is still on and the card is closed, because you moved to another point
-in the conversation. Tell the agent to keep pairing, or type pair stop to end it".
+in the conversation. Tell the agent to keep pairing, or type pair stop to end it". The agent
+is also told, as hidden context on its next turn, that the conversation moved but the files
+were not rewound, so edits made for later cards may already be on disk, and that it should tell
+you so in one line, ask plainly whether to keep pairing or whether you will type `pair stop`,
+and wait.
 
 On Claude Code the hand-over is a marker. Every `SessionEnd` while pairing leaves one for the
 worktree, whatever the reason: `/clear`, `/resume`, `/branch`, or quitting. It is written

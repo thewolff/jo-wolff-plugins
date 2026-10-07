@@ -24,9 +24,11 @@ field (`pick-up` or `start-fresh`), so the offer is not repeated in a later sess
 journal stays as it is either way.
 
 If a session opens with pairing carried over closed (after `/clear`, a resume, a branch, or a
-fork), tell your partner in one line that pairing carried over and the card is closed, and wait
-for their answer. Call `pair_start` only once they say to keep pairing; they end it by typing
-`pair stop`.
+fork), tell your partner in one line that pairing carried over and the card is closed, and ask
+plainly whether to keep pairing or whether they will type `pair stop`; then wait for their
+answer. Call `pair_start` only once they say to keep pairing. If only the conversation moved
+back to an earlier point (a branch or tree move inside the same session), also say that the
+files were not rewound, so edits from later cards may already be on disk.
 
 1. **Define the work together.** Agree the outcome, the constraints, and one concrete example
    of success. Write nothing. *Done when* all three are stated and your partner confirms them.

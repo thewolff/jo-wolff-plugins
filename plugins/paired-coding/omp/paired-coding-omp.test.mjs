@@ -18,8 +18,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
 
-import { PAIR_TOOLS } from "../core/gate.mjs";
-import pairedCodingOmp, { STOP_NOTICE } from "./paired-coding-omp.ts";
+import { CARRIED_PHRASE, PAIR_TOOLS } from "../core/gate.mjs";
+import pairedCodingOmp, { STOP_NOTICE, TREE_NOTICE } from "./paired-coding-omp.ts";
 
 const HAS_SANDBOX = process.platform === "darwin" && existsSync("/usr/bin/sandbox-exec");
 const sandboxOnly = HAS_SANDBOX ? test : test.skip;
@@ -475,12 +475,25 @@ describe("a leaf move in the same session (/tree, the interactive /branch) is ha
     assert.equal(again.details.card.id, "card-2", "the card id is not reused in this journal");
   });
 
+  sandboxOnly("the agent is told the files were not rewound and is asked to put keep-or-stop to its partner", async () => {
+    const s = setup();
+    await openChangeSet(s, ["a.txt"]);
+    await s.tree("e0", "leaf-9");
+    // Hidden context on the agent's next turn, as the typed-stop notice is sent.
+    assert.deepEqual(s.sent, [{ message: { customType: "paired-coding", content: TREE_NOTICE, display: false }, options: { deliverAs: "nextTurn" } }]);
+    const told = s.sent[0].message.content;
+    assert.match(told, /files were not rewound: edits made for later cards may already be on disk/);
+    assert.ok(told.includes(CARRIED_PHRASE), "the agent hears the same carried-over wording as the refusals");
+    assert.match(told, /ask plainly whether to keep pairing or whether they will type pair stop, and wait/);
+  });
+
   sandboxOnly("a tree event that did not move the leaf changes nothing", async () => {
     const s = setup();
     assert.equal((await s.call("pair_start")).ok, true);
     await s.tree("leaf-3", "leaf-3");
     assert.equal(s.journal().some((e) => e.type === "carried-after-clear" || e.type === "stop"), false);
     assert.equal(await blocked(s), true);
+    assert.deepEqual(s.sent, [], "no move, no notice to the agent");
   });
 
   test("a leaf move when not pairing changes nothing and creates no file", async () => {
@@ -488,6 +501,7 @@ describe("a leaf move in the same session (/tree, the interactive /branch) is ha
     await s.tree("e0", "leaf-5");
     assert.equal(await blocked(s), false);
     assert.equal(existsSync(s.dir), false);
+    assert.deepEqual(s.sent, [], "not pairing, no notice to the agent");
   });
 
   sandboxOnly("after /clear, pair_start numbers cards on from the session's journal", async () => {
