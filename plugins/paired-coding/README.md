@@ -78,9 +78,12 @@ fresh, and offers that roadmap only if cards are still open or not ready. On OMP
 keeps the session, that includes the roadmap the same session recorded before the clear. The
 agent asks whether to pick it up or start fresh and records your answer with `pair_note`'s
 `earlierRoadmap` field: `pick-up` copies the whole roadmap into this session, so it carries on
-to later ones, and `start-fresh` sets it aside for good. Recording a new roadmap also replaces
-the offer. The earlier session's journal is never changed. Nothing reopens on its own: every
-picked-up card still needs its own card and agreement.
+to later ones, and `start-fresh` records that you declined it, so later sessions stop looking
+back at that point. That is all `start-fresh` does: the agent can still record the same items
+again as a new roadmap with `pair_note`, which takes no words from you. Recording a new roadmap
+also replaces the offer. The earlier session's journal is never changed. Nothing on a roadmap
+is written on its own: each item, picked up or recorded again, still needs its own card and
+your typed agreement.
 
 **Ending.** A done roadmap does not end pairing: the agent reports it done and the gate stays
 closed. Only you end pairing: type `pair stop` as a message of its own. The agent has no tool
@@ -91,9 +94,12 @@ together: where the skill says what the agent should do, the gate decides what i
 
 ## The gate
 
-A skill can describe the conversation; only a gate at the tool boundary can make "no write
-without agreement" true. One gate core (`core/`, no host imports) and one session layer
-(`lib/`) are shared by both host adapters:
+A skill can describe the conversation; only a gate at the tool boundary can hold the agent's
+own tools to "no write without agreement". It fences the files the agent writes and the files
+its commands write themselves. It does not fence a process outside the sandbox that a command
+asks to write; see "The sandbox fences file writes and local sockets, not the network" below.
+One gate core (`core/`, no host imports) and one session layer (`lib/`) are shared by both
+host adapters:
 
 - **Claude Code:** hooks (`hooks/hooks.json`) plus a bundled MCP server named `pair`
   (`.mcp.json`, `server/`), whose tools appear as `mcp__plugin_paired-coding_pair__pair_*`.
@@ -103,9 +109,14 @@ How it works:
 
 - Pairing state is `inactive` until `pair_start`, then `closed` between change sets and `open`
   during one. Missing or damaged state in an activated session reads as `closed`, and so does a
-  state file that says `inactive` when the gate itself never ended pairing (a typed `pair stop`
-  or the session's end): editing the state file cannot switch the gate off. A session that never
-  calls `pair_start` is untouched: host tools work and no state is written.
+  state file that says `inactive` without the gate's own end stamp. The gate writes that stamp
+  into the session's activation marker only when it ends pairing itself (a typed `pair stop` or
+  the session's end), so rewriting the state file alone cannot switch the gate off. The marker
+  sits in the same state directory as the state file and is written the same way, so a process
+  that can write that whole directory can forge an ended session. No agent tool can: the
+  `pair_run` profile, which `pair_write` and `pair_edit` also write under, denies the whole
+  state base. A session that never calls `pair_start` is untouched: host tools work and no state
+  is written.
 - The agent registers each card with `pair_propose` and opens it with `pair_begin`, quoting
   you. The gate accepts the quote only if it is whole words from your latest turn that the host
   recorded as typed by a person after the card, only if the card has no open points, and only
@@ -137,14 +148,21 @@ How it works:
   over the target, keeping an existing file's permission bits. So a hard link or symlink at a
   boundary path is replaced rather than written through, a symlink swapped in after the path
   check cannot land the write outside the boundary, and a directory at the path is refused.
-- Git's own control paths are never writable, even when an agreed boundary covers `.git/`:
-  every `.git` entry itself, so no gitfile can be planted, and inside any git directory,
-  including nested repositories and `.git/modules/`, the `hooks/`, `info/` and `worktrees/`
-  directories and the `config`, `config.worktree`, `config.lock` and `commondir` files. Git
-  would run what they name outside the sandbox. `pair_run` cannot write them, and `pair_write`
-  and `pair_edit` refuse with "the path is git's own configuration or hooks, which git would run
-  outside the sandbox; no change set writes there". Objects, refs, the index and logs stay
-  writable, so `git commit` inside `pair_run` still works; `git config` fails.
+- Under any `.git`, only what `git add` and `git commit` write is writable, even when an agreed
+  boundary covers `.git/`: `objects/`, `refs/`, `logs/`, `index`, `HEAD`, `ORIG_HEAD`,
+  `COMMIT_EDITMSG`, `packed-refs` and `AUTO_MERGE`, each with its `.lock` file. The same list
+  holds in nested repositories and in each submodule's git directory under `.git/modules/`.
+  Everything else under `.git` is refused, because git would read or run it outside the
+  sandbox later: the `.git` entry itself (so no gitfile or symlink can be planted), `config`,
+  `hooks/`, `info/`, and the state of an interrupted operation such as `rebase-merge/`, whose
+  todo list git runs when the rebase continues. Letter case does not matter: the worktree
+  volume is usually case-insensitive, so `.GIT/CONFIG` is refused like `.git/config`.
+  `pair_run` cannot write these paths, and `pair_write` and `pair_edit` refuse them with "the
+  path is git's own control data under .git". The list is only left unfenced, never granted:
+  a commit inside `pair_run` works only when the boundary covers `.git/`. `git config` fails.
+- In a linked worktree (one made with `git worktree add`), git's real directory sits in the
+  main repository's `.git/worktrees/`, outside the worktree, so `git add` and `git commit`
+  inside `pair_run` fail there whatever the boundary says. Commit outside `pair_run`.
 - `pair_done` returns the diff of the boundary, computed by the gate, and lists the roadmap cards
   still `open` or `not-ready`. Every card, quote, verdict, refusal and diff goes into a journal
   outside the worktree, under `$PAIRED_CODING_STATE_DIR` (default
@@ -310,7 +328,10 @@ Three limits:
 - A fresh launch leaves the marker in place. If you quit while pairing, start a new
   conversation in the same worktree, and use `/clear` or `/resume` in it within 10 minutes,
   that session takes the marker and pairing is still on and the card is closed. Type
-  `pair stop`, or tell the agent to keep pairing.
+  `pair stop`, or tell the agent to keep pairing. A headless `claude -c -p` in that window is a
+  resume, so it starts closed, and no one can type `pair stop` in it because `-p` prompts never
+  count as typed: wait out the 10 minutes after the last such run, or run `claude --continue`
+  without `-p` and type `pair stop` there.
 
 **One write gate per session, on OMP.** If another gate in your OMP sessions also owns write
 enforcement, set `PAIRED_CODING_CONFLICTING_TOOLS` to a comma-separated list of tool names it
@@ -334,14 +355,17 @@ hard links and Unix-domain sockets, the Seatbelt profile allows everything. Loca
 a run reached `sshd` on `127.0.0.1:22`, and only the missing credentials stopped a login. If a
 private key in `~/.ssh` is in your own `authorized_keys`, `pair_run` could probably log in and
 get a shell outside the sandbox; that route was not tried. `open`, `osascript` and Apple Events
-are not denied either, and were not probed.
+are not denied either, and were not probed. So a command can ask a process outside the sandbox
+to write for it: under the closed profile, in a direct check, a command could not write a file,
+and a listener on `127.0.0.1` it sent the text to wrote that file.
 
-**Git control paths are fenced; two neighbours are not.** Because the repository's own git
-config cannot be written, `.gitattributes` can only select filter or diff drivers already
-defined in your own git config. A repository whose config points `core.hooksPath` at a
-directory in the worktree (husky's `.husky/`, for one) runs hooks from there, and `pair_run`
-can write that directory when it is in the boundary; unlike `.git/`, such a write shows in the
-read-back diff.
+**Git's directory is fenced; two neighbours are not.** Under `.git` only what a commit writes
+is writable, in any letter case. Two paths outside `.git` also steer git, and only the agreed
+boundary governs them. `.gitattributes` can select filter and diff drivers, but only ones
+already defined in a git config, and the repository's own config cannot be written. A
+repository whose config points `core.hooksPath` at a directory in the worktree (husky's
+`.husky/`, for one) runs hooks from there, and `pair_run` can write that directory when it is
+in the boundary; unlike `.git/`, such a write shows in the read-back diff.
 
 **Escaped writers are caught late, and only inside the worktree.** A process that leaves its
 run's process group survives the reap and keeps the write permission its run had (test 17). A

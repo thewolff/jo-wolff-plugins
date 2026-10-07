@@ -248,9 +248,11 @@ installing the plugin.
   session in the same worktree offers to pick up the unfinished ones; you can decline.
 - **A gate at the tool boundary** on Claude Code (hooks plus a bundled MCP server) and on OMP
   (an extension). While pairing, the host's own write, edit, shell, eval and sub-agent tools are
-  refused; the agent writes and runs commands only through the plugin's `pair_*` tools, inside
-  the agreed change set's files. Every run sits under a macOS Seatbelt sandbox that fences file
-  writes and local Unix-socket connections, not the network.
+  refused; the agent writes and runs commands only through the plugin's `pair_*` tools, and
+  its own writes land only in the agreed change set's files and temp directories. Every run
+  sits under a macOS Seatbelt sandbox that fences the files the run writes itself and its local
+  Unix-socket connections, not the network, so a run can still ask a process outside the
+  sandbox to write for it.
 - **A journal** of every card, quote, verdict, refusal and diff, kept outside the worktree.
 - **A stop only you can give:** pairing ends when you type `pair stop` as a message of its own.
 
@@ -271,8 +273,9 @@ at the tool boundary stops a write.
 it" is read from transcript fields Claude Code does not document. If they change, every turn
 reads as untrusted and pairing can never open a change set; it does not open one by mistake.
 
-**The sandbox fences writes, not the network.** Local services over TCP stay reachable from a
-run, `sshd` on `127.0.0.1` included, and `open`, `osascript` and Apple Events are not blocked.
+**The sandbox fences a run's own writes, not the network.** Local services over TCP stay
+reachable from a run, `sshd` on `127.0.0.1` included, and `open`, `osascript` and Apple Events
+are not blocked, so a run can ask a process outside the sandbox to write for it.
 
 **A process that escapes the sandbox is caught late.** It is caught at the next read-back, and
 only if it writes inside the worktree.
