@@ -130,7 +130,7 @@ export function clearInPlace(ctx) {
 export function carryInto(ctx) {
   const dir = ctx.sessionDir;
   mkdirSync(dir, { recursive: true, mode: 0o700 });
-  const stateDir = realpathSync(dir);
+  const stateDir = realpathSync.native(dir);
   const base = dirname(stateDir);
   const protect = [...new Set([base, PLUGIN_ROOT, ...(ctx.protect ?? [])])];
   const exclusions = Array.isArray(ctx.exclusions) ? ctx.exclusions : [...DEFAULT_EXCLUSIONS];
@@ -139,7 +139,7 @@ export function carryInto(ctx) {
     const out = carryClosed(state, {
       sessionId: ctx.sessionId, root: ctx.root, stateDir, tempPaths: defaultTempPaths(), protect, exclusions,
       from: ctx.from ?? null, reason: ctx.reason ?? "clear",
-    }, makeIo({ realpath: realpathSync }));
+    }, makeIo({ realpath: realpathSync.native }));
     if (out.ok) {
       saveState(dir, out.state);
       markActivated(dir, { root: out.state.root, stateDir });
@@ -311,9 +311,9 @@ function pairStartVerb(args, ctx) {
   if (problem) return fail("pair_start", `${problem}; the gate cannot fence pair_run here, so pairing stays conversation-only`);
   const dir = ctx.sessionDir;
   mkdirSync(dir, { recursive: true, mode: 0o700 });
-  const stateDir = realpathSync(dir);
+  const stateDir = realpathSync.native(dir);
   const base = dirname(stateDir);
-  const root = realpathSync(ctx.root ?? findRoot(ctx.cwd ?? process.cwd()));
+  const root = realpathSync.native(ctx.root ?? findRoot(ctx.cwd ?? process.cwd()));
   if (base === root || base.startsWith(`${root}/`)) return fail("pair_start", "the pairing state directory lies inside the worktree; set PAIRED_CODING_STATE_DIR outside it");
   const extra = Array.isArray(args.exclusions) ? args.exclusions : [];
   const exclusions = [...new Set([...DEFAULT_EXCLUSIONS, ...extra])];

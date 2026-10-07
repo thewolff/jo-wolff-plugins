@@ -236,7 +236,7 @@ export function handle(event, input, opts = {}) {
     const source = input?.source;
     if (!dir || !CARRY_START.has(source) || typeof input?.cwd !== "string") return null;
     let root;
-    try { root = realpathSync(findRoot(input.cwd)); } catch { return null; }
+    try { root = realpathSync.native(findRoot(input.cwd)); } catch { return null; }
     let carry = takeCarryMarker(stateBase(env), root);
     let from = carry?.from ?? null;
     if (!carry && source === "fork") {
