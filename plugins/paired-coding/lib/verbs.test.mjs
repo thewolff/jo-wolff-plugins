@@ -9,7 +9,7 @@ import { join } from "node:path";
 import {
   CARRY_MAX_AGE_MS, PLUGIN_ROOT, ROADMAP_WALK_LIMIT, carryInto, clearInPlace, endSession, executeVerb, recordTrustedInput, takeCarryMarker, verdict, writeCarryMarker,
 } from "./verbs.mjs";
-import { loadState, reapGroups, writeSandboxed } from "./host-io.mjs";
+import { loadState, realpathLoose, reapGroups, writeSandboxed } from "./host-io.mjs";
 import { pairRunProfile, pairWriteProfile } from "../core/gate.mjs";
 
 const hasSandbox = process.platform === "darwin" && existsSync("/usr/bin/sandbox-exec");
@@ -128,6 +128,28 @@ test("pair_write and pair_edit write inside the boundary only, never the state d
   }
   assert.equal(readFileSync(join(f.root, "src/b.txt"), "utf8"), "bravo\n");
   assert.equal(JSON.parse(readFileSync(join(f.dir, "state.json"), "utf8")).phase, "open");
+});
+
+test("a worktree named in another letter case is recorded in its on-disk spelling, and writes still land", { skip: !hasSandbox }, async (t) => {
+  const f = fixture();
+  const shouted = join(f.top, "REPO");
+  if (!existsSync(shouted)) return t.skip("this volume is case-sensitive");
+  const g = { ...f, ctx: { ...f.ctx, root: shouted } };
+  await openChangeSet(g, ["src/a.txt", ".git/"]);
+  assert.equal(loadState(f.dir).root, f.root);
+  const w = await executeVerb("pair_write", { path: "src/a.txt", content: "written\n" }, g.ctx);
+  assert.equal(w.ok, true, w.text);
+  assert.equal(readFileSync(join(f.root, "src", "a.txt"), "utf8"), "written\n");
+  const c = await executeVerb("pair_write", { path: ".GIT/config", content: "[core]\n\thooksPath = /tmp\n" }, g.ctx);
+  assert.equal(c.ok, false, c.text);
+  assert.equal(existsSync(join(f.root, ".git", "config")), false);
+});
+
+test("realpathLoose returns existing components in their on-disk spelling, so .GIT/hooks/x is .git/hooks/x", (t) => {
+  const f = fixture();
+  mkdirSync(join(f.root, ".git", "hooks"));
+  if (!existsSync(join(f.root, ".GIT"))) return t.skip("this volume is case-sensitive");
+  assert.equal(realpathLoose(join(f.top, "REPO", ".GIT", "Hooks", "pre-commit")), join(f.root, ".git", "hooks", "pre-commit"));
 });
 
 test("pair_run is fenced by the phase: closed denies worktree writes, open allows only the boundary", { skip: !hasSandbox }, async () => {

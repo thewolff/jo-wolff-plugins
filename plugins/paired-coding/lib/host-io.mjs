@@ -45,13 +45,18 @@ export function sessionDir(base, sessionId) {
     : null;
 }
 
-/** realpath for a path that may not exist yet: the deepest existing ancestor is resolved. */
+/**
+ * realpath for a path that may not exist yet: the deepest existing ancestor is resolved. The
+ * native realpath returns each existing component in its on-disk spelling, so on a
+ * case-insensitive volume `.GIT/config` comes back as `.git/config`; every path the gate
+ * compares (root, state directory, write targets) is resolved this way, so they agree.
+ */
 export function realpathLoose(abs) {
   const rest = [];
   let cur = abs;
   for (;;) {
     try {
-      const real = realpathSync(cur);
+      const real = realpathSync.native(cur);
       return rest.length ? join(real, ...rest.reverse()) : real;
     } catch (err) {
       if (err?.code !== "ENOENT" && err?.code !== "ENOTDIR") throw err;
@@ -65,7 +70,7 @@ export function realpathLoose(abs) {
 
 /** The worktree for a working directory: the nearest ancestor holding `.git`, else the directory. */
 export function findRoot(cwd) {
-  const start = realpathSync(cwd);
+  const start = realpathSync.native(cwd);
   for (let dir = start; ; dir = dirname(dir)) {
     if (existsSync(join(dir, ".git"))) return dir;
     if (dirname(dir) === dir) return start;
@@ -76,7 +81,7 @@ export function findRoot(cwd) {
 export function defaultTempPaths() {
   const out = new Set();
   for (const p of [tmpdir(), "/tmp", "/private/var/folders"]) {
-    try { out.add(realpathSync(p)); } catch { /* absent on this machine */ }
+    try { out.add(realpathSync.native(p)); } catch { /* absent on this machine */ }
   }
   return [...out];
 }

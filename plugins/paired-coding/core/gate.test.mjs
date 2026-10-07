@@ -1356,34 +1356,43 @@ describe("adversarial: the agent ends pairing without the user's typed words, th
   });
 });
 
-describe("git's own configuration and hooks stay unwritable with .git/ in the boundary", () => {
+describe("under .git only what a commit writes is writable, in any letter case, with .git/ in the boundary", () => {
   const controlled = [
     ".git", "sub/.git", ".git/hooks", ".git/hooks/pre-commit", ".git/config", ".git/config.lock", ".git/config.worktree",
     ".git/commondir", ".git/info/attributes", ".git/info/exclude", ".git/worktrees/w/config.worktree", ".git/worktrees/w/commondir",
     ".git/modules/m/hooks/post-checkout", ".git/modules/m/config", ".git/modules/a/b/info/x", ".git/modules/a/modules/b/config",
     "vendor/lib/.git/config", "vendor/lib/.git/hooks/pre-push",
+    // letter case: the worktree volume is usually case-insensitive
+    ".GIT/config", ".Git/hooks/x", ".git/CONFIG", ".git/Hooks/pre-commit", ".GIT", "vendor/.Git/config",
+    // the allowlist: anything under .git a commit does not write
+    ".git/rebase-merge/git-rebase-todo", ".git/rebase-apply/patch", ".git/sequencer/todo", ".git/MERGE_MSG", ".git/description",
+    ".git/FETCH_HEAD", ".git/configs", ".git/hooksx", ".git/indexes", ".git/modules", ".git/modules/m", ".git/modules/m/description",
+    // a submodule named a/logs: its config must not pass as a file in submodule a's logs/
+    ".git/modules/a/logs/config", ".git/modules/a/objects/hooks/pre-commit", ".git/modules/a/refs/rebase-merge/git-rebase-todo",
   ];
   const ordinary = [
-    ".git/HEAD", ".git/index", ".git/index.lock", ".git/COMMIT_EDITMSG", ".git/objects/ab/cdef", ".git/refs/heads/main", ".git/logs/HEAD",
-    ".git/configs", ".git/hooksx", ".gitattributes", ".gitmodules", ".github/workflows/ci.yml", "src/.gitkeep", "a.git/config",
+    ".git/HEAD", ".git/HEAD.lock", ".git/index", ".git/index.lock", ".git/COMMIT_EDITMSG", ".git/ORIG_HEAD", ".git/AUTO_MERGE.lock",
+    ".git/packed-refs", ".git/packed-refs.lock", ".git/objects/ab/cdef", ".git/refs/heads/main", ".git/refs/heads/main.lock", ".git/logs/HEAD",
+    ".git/logs/refs/heads/main", ".git/head", ".GIT/OBJECTS/ab/cdef", ".git/modules/m/objects/ab/cdef", ".git/modules/m/HEAD", "sub/.git/index",
+    ".gitattributes", ".gitmodules", ".github/workflows/ci.yml", "src/.gitkeep", "a.git/config", "src/git/config",
   ];
 
-  test("isGitControl names git's control paths and nothing a commit writes", () => {
+  test("isGitControl names everything under .git but what a commit writes", () => {
     for (const rel of controlled) assert.equal(isGitControl(rel), true, rel);
     for (const rel of ordinary) assert.equal(isGitControl(rel), false, rel);
   });
 
   test("pair_write and pair_edit refuse them even inside the boundary", () => {
-    const s = opened(fakeHost(), { boundary: [".git/", "sub/", "src/a.ts"] });
-    for (const path of [".git/hooks/pre-commit", ".git/config", ".git/modules/m/hooks/x", "sub/.git"]) {
+    const s = opened(fakeHost(), { boundary: [".git/", ".GIT/", "sub/", "src/a.ts"] });
+    for (const path of [".git/hooks/pre-commit", ".git/config", ".git/modules/m/hooks/x", "sub/.git", ".GIT/config", ".git/rebase-merge/git-rebase-todo"]) {
       const r = checkWrite(s, { path, toolName: "pair_edit" });
       assert.equal(r.ok, false, path);
-      assert.match(r.reason, /git's own configuration or hooks/);
+      assert.match(r.reason, /git's own control data/);
     }
     assert.equal(checkWrite(s, { path: ".git/refs/heads/main" }).ok, true);
   });
 
-  test("pair_run can commit with .git/ in the boundary, but never write a hook or the config", { skip: liveSkip }, () => {
+  test("pair_run can commit with .git/ in the boundary, but never write git's control data in any case", { skip: liveSkip }, () => {
     const dirs = liveDirs();
     try {
       const git = (...args) => spawnSync("git", args, { cwd: dirs.root, encoding: "utf8" });
@@ -1392,8 +1401,13 @@ describe("git's own configuration and hooks stay unwritable with .git/ in the bo
       const s = liveState(dirs, "open", [".git/", "src/a.ts"]);
       const commit = sandboxed(s, "echo a2 > src/a.ts && git add src/a.ts && git -c user.name=t -c user.email=t@example.com commit -qm one", dirs.root);
       assert.equal(commit.status, 0, commit.stderr);
+      assert.doesNotMatch(commit.stderr, /error|fatal/i);
       assert.equal(git("log", "--format=%s").stdout.trim(), "one");
-      for (const command of ["echo 'touch /tmp/pwned' > .git/hooks/pre-commit", "git config core.hooksPath /tmp", "echo x >> .git/config", "mkdir -p .git/modules/m/hooks", "echo x > .git/commondir", "echo x > .git/info/attributes"]) {
+      for (const command of [
+        "echo 'touch /tmp/pwned' > .git/hooks/pre-commit", "git config core.hooksPath /tmp", "echo x >> .git/config", "mkdir -p .git/modules/m/hooks",
+        "echo x > .git/commondir", "echo x > .git/info/attributes", "echo x >> .GIT/config", "echo x > .Git/Hooks/pre-commit",
+        "mkdir -p .git/rebase-merge && echo 'exec touch /tmp/pwned' > .git/rebase-merge/git-rebase-todo", "echo x > .git/description",
+      ]) {
         const r = sandboxed(s, command, dirs.root);
         assert.notEqual(r.status, 0, command);
       }

@@ -400,25 +400,54 @@ export function boundaryMatches(boundary, rel) {
 }
 
 /**
- * Worktree-relative regex sources, in syntax shared by JavaScript and Seatbelt, for the paths
- * git reads as configuration or runs as code: every `.git` entry itself (so no gitfile can be
- * planted or swapped), and inside any git directory, its submodule git directories under
- * modules/ included: hooks/, info/, worktrees/, config, config.worktree, config.lock and the
- * commondir redirect. Git would run what they name outside the sandbox, and snapshots leave
- * .git out, so a write there would never show in a read-back. Every write is refused there,
- * even when an agreed boundary covers `.git/`: objects, refs, the index and logs stay
- * writable, so a commit still works.
+ * A regex source that matches its letters in either case, in syntax shared by JavaScript and
+ * Seatbelt: every ASCII letter becomes a two-letter class. Worktrees usually sit on a
+ * case-insensitive volume, where `.GIT/CONFIG` is `.git/config`. Only for sources whose
+ * letters are all literal (no escapes such as \d, no classes).
  */
+function anyCase(source) {
+  return source.replace(/[A-Za-z]/g, (ch) => `[${ch.toLowerCase()}${ch.toUpperCase()}]`);
+}
+
+/**
+ * The git fence, as worktree-relative regex sources in syntax shared by JavaScript and
+ * Seatbelt, any letter case. Under a `.git` directory (the worktree's, a nested repository's,
+ * or a submodule's under modules/) a write is allowed only to what `git add` and `git commit`
+ * write: GIT_WRITABLE. Everything else there is git's own control data, which git reads or
+ * runs outside the sandbox later (config, hooks, the todo list of an interrupted rebase), and
+ * snapshots leave .git out, so a write there would never show in a read-back. Every such write
+ * is refused, even when an agreed boundary covers `.git/`; GIT_WRITABLE is only ever left
+ * undenied, never granted, so the boundary still decides whether it is writable at all.
+ *
+ * GIT_PATHS: every path at or under a `.git` entry, the entry itself included (so no gitfile
+ * or symlink can be planted or swapped).
+ * GIT_WRITABLE: objects/, refs/, logs/, index, HEAD, ORIG_HEAD, COMMIT_EDITMSG, packed-refs
+ * and AUTO_MERGE, and their lock files, directly in a git directory. `git commit` takes
+ * AUTO_MERGE.lock even with no merge in progress (seen with git 2.50), and prints an error
+ * without it.
+ * GIT_CONTROL: refused even where GIT_WRITABLE matches. A submodule's name may hold a slash,
+ * so `.git/modules/a/logs/config` is either a file in submodule a's logs/ or the config of a
+ * submodule named a/logs; these paths are refused under every such reading, and every `.git`
+ * entry is refused wherever it sits.
+ */
+export const GIT_PATHS = anyCase(String.raw`(.*/)?\.git(/.*)?`);
+export const GIT_WRITABLE = anyCase(
+  String.raw`(.*/)?\.git/(modules/.+/)?((objects|refs|logs)(/.*)?|index|index\.lock|HEAD|HEAD\.lock|ORIG_HEAD|COMMIT_EDITMSG|packed-refs|packed-refs\.lock|AUTO_MERGE|AUTO_MERGE\.lock)`,
+);
 export const GIT_CONTROL = Object.freeze([
   String.raw`(.*/)?\.git`,
-  String.raw`(.*/)?\.git/(modules/(.+/)?)?(hooks|info|worktrees)(/.*)?`,
+  String.raw`(.*/)?\.git/(modules/(.+/)?)?(hooks|info|worktrees|rebase-merge|rebase-apply|sequencer)(/.*)?`,
   String.raw`(.*/)?\.git/(modules/(.+/)?)?(config|config\.worktree|config\.lock|commondir)`,
-]);
+].map(anyCase));
+const GIT_PATHS_RE = new RegExp(`^${GIT_PATHS}$`);
+const GIT_WRITABLE_RE = new RegExp(`^${GIT_WRITABLE}$`);
 const GIT_CONTROL_RES = GIT_CONTROL.map((source) => new RegExp(`^${source}$`));
 
-/** Whether a worktree-relative path is one of git's own configuration or hook paths. */
+/** Whether a worktree-relative path is under `.git` and not something a commit writes. */
 export function isGitControl(rel) {
-  return typeof rel === "string" && GIT_CONTROL_RES.some((re) => re.test(rel));
+  if (typeof rel !== "string") return false;
+  if (GIT_CONTROL_RES.some((re) => re.test(rel))) return true;
+  return GIT_PATHS_RE.test(rel) && !GIT_WRITABLE_RE.test(rel);
 }
 
 // ─── snapshots ──────────────────────────────────────────────────────────────────────────
@@ -1008,7 +1037,7 @@ function targetProblem(state, abs) {
   if (within(state.stateDir, abs)) return "the path is inside the pairing state directory";
   const rel = relativeTo(state.root, abs);
   if (!boundaryMatches(state.changeSet.boundary, rel)) return "outside the agreed boundary; reopen";
-  if (isGitControl(rel)) return "the path is git's own configuration or hooks, which git would run outside the sandbox; no change set writes there";
+  if (isGitControl(rel)) return "the path is git's own control data under .git, which git would read or run outside the sandbox; under .git a change set writes only what a commit writes (objects/, refs/, logs/, index, HEAD, ORIG_HEAD, COMMIT_EDITMSG, packed-refs, AUTO_MERGE)";
   return null;
 }
 
@@ -1096,8 +1125,9 @@ function boundaryAncestors(root, boundary) {
  *   2. the temp paths and the few /dev files a shell needs allowed;
  *   3. the whole worktree denied again (a worktree that sits under a temp path stays fenced);
  *   4. open only: the boundary allowed, and creating the directories above it as directories;
- *   5. git's own configuration and hook paths (GIT_CONTROL), the state directory and the
- *      protected paths denied, even where a boundary or temp path covers them;
+ *   5. under any `.git`, everything but what a commit writes denied (GIT_PATHS less
+ *      GIT_WRITABLE, plus GIT_CONTROL always), then the state directory and the protected
+ *      paths denied, even where a boundary or temp path covers them;
  *   6. creating a hard link denied everywhere. Seatbelt rules match paths, so a link inside the
  *      boundary to a file outside it would let a later write to the boundary path land on the
  *      outside file.
@@ -1124,7 +1154,8 @@ function profileFor(state, extraAllow) {
   ];
   const head = `(version 1)(allow default)${UNIX_SOCKETS}(deny file-write*)(allow file-write* ${outside.join(" ")})(deny file-write* (subpath ${sbplString(state.root)}))`;
   const root = state.root.replace(REGEX_META, (ch) => `\\${ch}`);
-  const git = GIT_CONTROL.map((source) => `(deny file-write* (regex ${sbplRegex(`^${root}/${source}$`)}))`).join("");
+  const rx = (source) => `(regex ${sbplRegex(`^${root}/${source}$`)})`;
+  const git = `${GIT_CONTROL.map((source) => `(deny file-write* ${rx(source)})`).join("")}(deny file-write* (require-all ${rx(GIT_PATHS)} (require-not ${rx(GIT_WRITABLE)})))`;
   const tail = `${git}${[state.stateDir, ...(state.protect ?? [])].map((p) => `(deny file-write* (subpath ${sbplString(p)}))`).join("")}(deny file-link)`;
   if (state.phase !== "open") return `${head}${tail}`;
   const boundary = state.changeSet.boundary.map((raw) => {
