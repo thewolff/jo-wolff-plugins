@@ -155,7 +155,11 @@ extensions. `getExtensionPaths` and `isExtensionActive` exist on the runner but 
   set are dropped, and the same session carries on with pairing still on and the card closed,
   journaling `carried-after-clear` with reason `omp:tree`. The editor shows "paired coding:
   pairing is still on and the card is closed, because you moved to another point in the
-  conversation. Tell the agent to keep pairing, or type pair stop to end it".
+  conversation. Tell the agent to keep pairing, or type pair stop to end it". The agent gets
+  hidden context on its next turn (`TREE_NOTICE` in the adapter): the conversation moved but
+  the files were not rewound, so edits made for later cards may already be on disk; pairing is
+  still on and the card is closed; it tells you so in one line, asks plainly whether to keep
+  pairing or whether you will type `pair stop`, and waits.
 - OMP's own `/clear` drops the conversation but keeps the session id
   (`src/slash-commands/builtin-lifecycle.ts`, "Clear the conversation context in place, keeping
   the session"), and it fires no extension event. It does append a `reset_boundary` entry to the

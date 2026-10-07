@@ -38,7 +38,10 @@
 //                         the session id and fire session_tree after the move. The agent's
 //                         context is then another branch, which does not hold the agreement, so
 //                         a move while pairing is handled like /clear (clearInPlace): pairing
-//                         ends, the card is dropped and the same session carries closed.
+//                         ends, the card is dropped and the same session carries closed. The
+//                         agent is told so as hidden context on its next turn (TREE_NOTICE,
+//                         sendMessage deliverAs "nextTurn"), including that the files on disk
+//                         were not rewound with the conversation.
 //   /clear             -> OMP's /clear keeps the session id and drops the agent's context, and
 //                         fires no extension event. It does append a `reset_boundary` entry to
 //                         the session, so before every input and tool call the adapter compares
@@ -115,6 +118,14 @@ export type PiLike = {
 /** What the agent is told, as hidden context on the turn, when the partner typed pair stop. */
 export const STOP_NOTICE =
 	"paired-coding: your partner typed pair stop, so pairing has ended in this session. The gate no longer refuses host tools. Pairing starts again only if your partner asks for it and you call pair_start.";
+
+/**
+ * What the agent is told, as hidden context on the next turn, when a leaf move (/tree, the
+ * interactive /branch to an earlier message) carried pairing over closed. The move rewinds the
+ * conversation and nothing on disk, so the agent may meet edits it no longer remembers making.
+ */
+export const TREE_NOTICE =
+	`paired-coding: the conversation was moved to another point in it (OMP /tree, or /branch to an earlier message). The files were not rewound: edits made for later cards may already be on disk. Because of the move, ${CARRIED_PHRASE}: there is no card and no change set, and host write, edit, shell and sub-agent tools are refused. Tell your partner this in one line, then ask plainly whether to keep pairing or whether they will type pair stop, and wait for their answer. Call pair_start only once they say to keep pairing.`;
 
 // ─── session binding ───────────────────────────────────────────────────────────────────
 
@@ -363,8 +374,11 @@ export default function pairedCodingOmp(pi: PiLike, deps: AdapterDeps = {}): voi
 		if (!dir) return undefined;
 		checkReset(ctx, dir);
 		const r = clearInPlace({ sessionId: ctx.sessionManager.getSessionId(), sessionDir: dir, reason: "omp:tree" });
-		if (r.carried && ctx.hasUI && ctx.ui) {
-			ctx.ui.notify(`paired coding: ${CARRIED_PHRASE}, because you moved to another point in the conversation. Tell the agent to keep pairing, or type pair stop to end it`, "info");
+		if (r.carried) {
+			pi.sendMessage?.({ customType: "paired-coding", content: TREE_NOTICE, display: false }, { deliverAs: "nextTurn" });
+			if (ctx.hasUI && ctx.ui) {
+				ctx.ui.notify(`paired coding: ${CARRIED_PHRASE}, because you moved to another point in the conversation. Tell the agent to keep pairing, or type pair stop to end it`, "info");
+			}
 		}
 		return undefined;
 	});
