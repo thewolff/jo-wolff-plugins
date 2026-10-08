@@ -1,21 +1,39 @@
 # jo-wolff-plugins
 
-Two plugins about the same problem from opposite ends: what an agent's output is made of, and
-what shape it arrives in.
+Three plugins about working with an agent: what its output is made of, what shape that output
+arrives in, and when it may write code at all.
 
 - **[output-types](#output-types)** — label every statement and attach the receipt that earns
   the label.
 - **[communication-rules](#communication-rules)** — put what needs a decision where the reader
   looks first.
+- **[paired-coding](#paired-coding)** — pair with the agent one change set at a time, behind a
+  gate that refuses writes you have not agreed to.
 
-Both deliver text. Neither reads what the agent sends back; see each section's *delivers, does
-not enforce* note.
+The first two deliver text. Neither reads what the agent sends back; see each section's
+*delivers, does not enforce* note. paired-coding is the one that enforces, at the tool boundary,
+within the limits in its *what this enforces, and what it does not* note.
 
 ```
 /plugin marketplace add thewolff/jo-wolff-plugins
 /plugin install output-types@jo-wolff-plugins
 /plugin install communication-rules@jo-wolff-plugins
+/plugin install paired-coding@jo-wolff-plugins
 ```
+
+On OMP, from a shell:
+
+```
+omp plugin marketplace add thewolff/jo-wolff-plugins
+omp plugin install output-types@jo-wolff-plugins
+omp plugin install communication-rules@jo-wolff-plugins
+omp plugin install paired-coding@jo-wolff-plugins
+```
+
+Inside a running OMP session the commands are `/marketplace add` and `/marketplace install`, with
+the same arguments. `/plugin install` inside OMP installs nothing. On OMP the first two plugins
+deliver their skill only; their hooks do not run there. paired-coding installs its gate as an
+OMP extension (see each section).
 
 ## output-types
 
@@ -35,6 +53,22 @@ and a different cost when it is wrong.
 /plugin install output-types@jo-wolff-plugins
 ```
 
+#### Install on OMP
+
+```
+omp plugin marketplace add thewolff/jo-wolff-plugins
+omp plugin install output-types@jo-wolff-plugins
+```
+
+Inside a running OMP session, use `/marketplace add thewolff/jo-wolff-plugins` and then
+`/marketplace install output-types@jo-wolff-plugins`. `/plugin install` inside OMP installs
+nothing: it prints the installed-plugin list and returns.
+
+**On OMP only the skill loads.** Tested on OMP 18.4.4: OMP does not run a plugin's
+`hooks/hooks.json`, so the session-start hook never fires and the core is never injected. The
+skill is listed and loads on demand, so the contract is in force only once the model has read
+it. Name the skill in your instructions if you want it from the first turn.
+
 ### What you get
 
 - **Six labels**, each with the receipt that earns it, and the rule that a receipt rather than
@@ -48,7 +82,8 @@ and a different cost when it is wrong.
 - A **reference file** with the report skeleton, a worked example, the parent-side handling rules,
   and the rules for handing a command to a person to run.
 - A **session-start hook** that emits the operative core before the first tool call, reading it out
-  of the skill file so there is only ever one copy of that text.
+  of the skill file so there is only ever one copy of that text. Claude Code only; see *Install
+  on OMP*.
 
 ### What this does, and what it does not do: it delivers, it does not enforce
 
@@ -98,9 +133,27 @@ decision ends up on line 80 under three headings of context that the reader neve
 /plugin install communication-rules@jo-wolff-plugins
 ```
 
+#### Install on OMP
+
+```
+omp plugin marketplace add thewolff/jo-wolff-plugins
+omp plugin install communication-rules@jo-wolff-plugins
+```
+
+Inside a running OMP session, use `/marketplace add thewolff/jo-wolff-plugins` and then
+`/marketplace install communication-rules@jo-wolff-plugins`. `/plugin install` inside OMP installs
+nothing: it prints the installed-plugin list and returns.
+
+**On OMP only the skill loads.** Tested on OMP 18.4.4: OMP does not run a plugin's
+`hooks/hooks.json`, so neither the session-start hook nor the `Stop` hook fires, and the rules
+and your profile are never injected. The skill is listed and loads on demand. The plugin also
+carries an OMP adapter for the `Stop` hook, `omp/communication-rules-omp.ts`; installing the
+plugin does not register it, and its `omp/REGISTRATION.md` marks it unregistered.
+
 ### What you get
 
-- **Eight rules** covering the shape of a message to a person, delivered before the first turn.
+- **Eight rules** covering the shape of a message to a person, delivered before the first turn
+  on Claude Code (on OMP, through the skill only; see *Install on OMP*).
 - **An enforceability verdict for every one of them** — mechanically checkable, model-graded, or
   unenforceable by construction — because a rule nothing can ever check should be written down as
   a principle rather than bolded beside one a machine refuses on. Four of the eight say *never*.
@@ -148,6 +201,86 @@ and hand-adjudicate thirty flags — before you wire it to anything.
 
 If you want the injection off without uninstalling, set `COMMUNICATION_RULES_INJECT=off`; the
 hook then emits nothing and the skill still loads on demand.
+
+## paired-coding
+
+A plugin for pairing with an agent on code, one change set at a time. The agent drives and you
+navigate. Before each change set it shows you a **card** naming the decision inside the change,
+the code it touches, the effect it will have and the exact files it will write. It writes only
+after the two of you agree on that card, then shows you the real diff.
+
+The problem it addresses: agent code arrives faster than a person can recognise the decisions
+inside it, so a wrong direction is found after a whole feature exists. Pairing moves the
+decision point to before each change set is written, while it is still cheap to steer.
+
+### Install
+
+```
+/plugin marketplace add thewolff/jo-wolff-plugins
+/plugin install paired-coding@jo-wolff-plugins
+```
+
+#### Install on OMP
+
+```
+omp plugin marketplace add thewolff/jo-wolff-plugins
+omp plugin install paired-coding@jo-wolff-plugins
+```
+
+Inside a running OMP session, use `/marketplace add thewolff/jo-wolff-plugins` and then
+`/marketplace install paired-coding@jo-wolff-plugins`. `/plugin install` inside OMP installs
+nothing: it prints the installed-plugin list and returns.
+
+Tested on OMP 18.4.4, the install registers the gate as an OMP extension: the eight `pair_*`
+tools appear natively in every omp process you run, in any repository, with no `-e`. It stays
+inert until `pair_start`, so a session that never pairs is untouched. The bundled MCP server is
+built for Claude Code and is hidden on OMP. `omp plugin upgrade` keeps the gate registered, and
+`omp --no-extensions` starts a process without it. To remove it, run
+`omp plugin uninstall paired-coding@jo-wolff-plugins`.
+`plugins/paired-coding/omp/REGISTRATION.md` also has the routes that load the gate without
+installing the plugin.
+
+### What you get
+
+- **A skill** that runs the session: define the work, recon into a roadmap of cards, then a
+  loop of card, discussion, agreement, the change set, and a read-back with the diff.
+- **A roadmap you can leave and come back to.** Cards can be marked not ready, and a later
+  session in the same worktree offers to pick up the unfinished ones; you can decline.
+- **A gate at the tool boundary** on Claude Code (hooks plus a bundled MCP server) and on OMP
+  (an extension). While pairing, the host's own write, edit, shell, eval and sub-agent tools are
+  refused; the agent writes and runs commands only through the plugin's `pair_*` tools, and
+  its own writes land only in the agreed change set's files and temp directories. Every run
+  sits under a macOS Seatbelt sandbox that fences the files the run writes itself and its local
+  Unix-socket connections, not the network, so a run can still ask a process outside the
+  sandbox to write for it.
+- **A journal** of every card, quote, verdict, refusal and diff, kept outside the worktree.
+- **A stop only you can give:** pairing ends when you type `pair stop` as a message of its own.
+
+### What this enforces, and what it does not
+
+**It enforces the write boundary, not your agreement.** The agent judges when you have agreed
+and quotes your words to open a change set. The gate checks that the quote is whole words from
+a turn you typed after the card, that the card has no open points and that its files have not
+changed since you saw it. It cannot check that those words meant yes. A misread go-ahead can
+open a change set, but only for that card's files, and the quote sits in the journal for you to
+audit.
+
+**It runs on macOS only, on two hosts.** The gate is built for Claude Code and OMP and was
+tested live on both. Codex is unverified. Elsewhere the skill runs as conversation and nothing
+at the tool boundary stops a write.
+
+**Some of it rests on undocumented host fields, and fails closed.** On Claude Code, "you typed
+it" is read from transcript fields Claude Code does not document. If they change, every turn
+reads as untrusted and pairing can never open a change set; it does not open one by mistake.
+
+**The sandbox fences a run's own writes, not the network.** Local services over TCP stay
+reachable from a run, `sshd` on `127.0.0.1` included, and `open`, `osascript` and Apple Events
+are not blocked, so a run can ask a process outside the sandbox to write for it.
+
+**A process that escapes the sandbox is caught late.** It is caught at the next read-back, and
+only if it writes inside the worktree.
+
+The plugin's own README carries the full list, with the evidence behind each line.
 
 ## License
 
