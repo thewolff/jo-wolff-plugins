@@ -12,13 +12,11 @@ import {
   CARRY_MAX_AGE_MS, PLUGIN_ROOT, ROADMAP_WALK_LIMIT, carryInto, clearInPlace, endSession, executeVerb, recordTrustedInput, takeCarryMarker, verdict, writeCarryMarker,
 } from "./verbs.mjs";
 import { loadState, realpathLoose, reapGroups, sandboxBackend, sandboxProblem, writeSandboxed } from "./host-io.mjs";
-import { bwrapProblem } from "./bwrap.mjs";
 import { pairRunProfile, pairWriteProfile } from "../core/gate.mjs";
 
 const hasSandbox = sandboxProblem() === null;
 const BACKEND = hasSandbox ? sandboxBackend().name : null;
-// Linux with Landlock and no usable bubblewrap: what Landlock cannot express is refused.
-const NO_FALLBACK = BACKEND === "landlock" && bwrapProblem() !== null;
+const NEEDS_LANDLOCK = BACKEND === "landlock" ? false : "needs the Linux Landlock backend";
 const LINUX = process.platform === "linux";
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
@@ -415,16 +413,23 @@ test("pair_write runs under the kernel: a path checkWrite passes but the profile
   assert.equal(w.ok, false, w.text);
   assert.match(w.text, /sandboxed write failed/);
   assert.equal(existsSync(join(f.root, "src", "guarded", "x.txt")), false);
+  // Under Landlock the grant for a new file would be on src, which holds src/guarded, so the
+  // gate makes src/new/deep/y.txt on the host and writes it through a grant on that one file.
   const ok = await executeVerb("pair_write", { path: "src/new/deep/y.txt", content: "fine" }, ctx);
-  if (NO_FALLBACK) {
-    // The grant would be on src, which holds src/guarded; only bubblewrap could fence this.
-    assert.equal(ok.ok, false);
-    assert.match(ok.text, /Landlock cannot fence this \(a new file here needs a grant on src, which would hold .*src\/guarded\), and bubblewrap is unavailable/);
-    assert.equal(existsSync(join(f.root, "src", "new")), false);
-  } else {
-    assert.equal(ok.ok, true, ok.text);
-    assert.equal(readFileSync(join(f.root, "src", "new", "deep", "y.txt"), "utf8"), "fine");
-  }
+  assert.equal(ok.ok, true, ok.text);
+  assert.doesNotMatch(ok.text, /under bubblewrap/);
+  assert.equal(readFileSync(join(f.root, "src", "new", "deep", "y.txt"), "utf8"), "fine");
+});
+
+test("pair_run names the boundary paths a Landlock run cannot create, and says pair_write can", { skip: NEEDS_LANDLOCK }, async () => {
+  const f = fixture();
+  await openChangeSet(f, ["newpkg/**", "src/a.txt"]);
+  const r = await executeVerb("pair_run", { command: "echo changed > src/a.txt" }, f.ctx);
+  assert.equal(r.ok, true, r.text);
+  assert.deepEqual(r.result.uncreatable, ["newpkg/**"]);
+  assert.match(r.text, /could not create newpkg\/\*\*.*Create it with pair_write first/s);
+  assert.doesNotMatch(r.text, /under bubblewrap/);
+  assert.equal(readFileSync(join(f.root, "src", "a.txt"), "utf8"), "changed\n");
 });
 
 const stage = (f) => join(f.root, "src", `.pair-write-${"ab".repeat(8)}.tmp`);

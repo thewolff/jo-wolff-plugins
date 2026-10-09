@@ -411,7 +411,9 @@ directory it would make writable holds a `.git` entry (a submodule under `lib/**
 instance), the state directory, a protected path or the worktree root, or when a temp path
 holds the worktree or the state directory (a worktree under `/tmp` does). A file it would grant
 that has a second hard link goes to bubblewrap too. If bubblewrap does not work on the machine,
-that run or write is refused.
+that run or write is refused. Two cases stay on Landlock instead, whether or not bubblewrap
+works: a boundary path that does not exist yet, whose only grant would be such a directory
+(below), and a new file `pair_write` makes there.
 
 In a Docker container with the default security options Landlock worked and bubblewrap did
 not, so a container needs no extra options when its kernel has Landlock.
@@ -420,7 +422,13 @@ not, so a container needs no extra options when its kernel has Landlock.
 existing file outside the boundary, as Seatbelt does:
 
 - A literal entry that exists is writable as that one file. A literal that does not exist yet
-  cannot be created by `pair_run`; `pair_write` creates it.
+  cannot be created by `pair_run`, and the run's result names it; `pair_write` creates it.
+- A glob entry whose directory does not exist yet (`newpkg/**`) needs a writable directory
+  above it for `pair_run` to create anything there. Where that directory would be the worktree
+  root, or would hold a `.git`, the state directory or a protected path, the gate leaves that
+  one grant out rather than handing the run to bubblewrap: the run goes ahead on Landlock, it
+  cannot create the path, and its result names the path and says to create it with
+  `pair_write` first.
 - An existing file under a glob entry is writable when it matches. One that does not match is
   refused by the kernel, even in a directory the glob covers.
 - New files under a glob entry are fenced per directory, the one gap left. Landlock attaches
@@ -451,8 +459,16 @@ existing file outside the boundary, as Seatbelt does:
   write instead of taking it. A target that is a symlink or has a second hard link would carry
   an in-place write elsewhere, so it gets the staged write, under a grant on its directory
   that only the gate's own staging command uses. Where that grant would hold a `.git`, the
-  state directory or a protected path, and for a new file or a link directly in the worktree
-  root, the write goes to bubblewrap's staged write (below).
+  state directory or a protected path, or for a link directly in the worktree root, the write
+  goes to bubblewrap's staged write (below).
+- A new file whose directory grant would be the worktree root, or would hold a `.git`, the
+  state directory or a protected path (a new `README.md` at the root, or `newpkg/x.ts`), is
+  made by the gate itself, outside the sandbox, and then written through a grant on that one
+  file. The gate first refuses if any directory above the path is a symlink, then makes each
+  missing directory without following links, and creates the file empty with `O_EXCL`, which
+  refuses any name that already exists there, a symlink or a hard link included. If the write
+  then fails, the gate removes the file only while it is the same file and still empty, and
+  the directories only while they are empty, and its result names anything it left behind.
 - Every process a run starts ends when the run does, including one that left the process
   group with `setsid` or a double fork: the helper stays outside the sandbox as the run's
   supervisor and kills them all when the command exits, times out or is aborted. On kernels

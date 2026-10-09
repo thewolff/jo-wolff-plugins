@@ -479,7 +479,11 @@ async function runVerb(args, ctx) {
     : res.error ? `could not run: ${res.error}`
     : `exit ${res.exitCode}${res.signal ? ` (signal ${res.signal})` : ""}`;
   const under = res.fellBack ? `; under bubblewrap: ${res.fellBack}` : "";
-  const text = [`pair_run ${head} (phase ${start.state.phase}${under}).`, res.stdout && `stdout:\n${res.stdout}`, res.stderr && `stderr:\n${res.stderr}`].filter(Boolean).join("\n");
-  return { ok: !res.timedOut && !res.aborted && !res.error && res.exitCode === 0, text, result: { exitCode: res.exitCode, timedOut: res.timedOut, aborted: res.aborted, runId, ...(res.backend ? { sandbox: res.backend } : {}) } };
+  const one = res.uncreatable?.length === 1;
+  const note = res.uncreatable?.length
+    ? `Note: under Landlock this run could not create ${res.uncreatable.join(", ")}: Landlock lets a run make a new file only under a directory grant, and no grant here covers ${one ? "it" : "them"} without also reaching a path outside the agreement. Create ${one ? "it" : "them"} with pair_write first, then run again.`
+    : "";
+  const text = [`pair_run ${head} (phase ${start.state.phase}${under}).`, note, res.stdout && `stdout:\n${res.stdout}`, res.stderr && `stderr:\n${res.stderr}`].filter(Boolean).join("\n");
+  return { ok: !res.timedOut && !res.aborted && !res.error && res.exitCode === 0, text, result: { exitCode: res.exitCode, timedOut: res.timedOut, aborted: res.aborted, runId, ...(res.backend ? { sandbox: res.backend } : {}), ...(res.uncreatable?.length ? { uncreatable: res.uncreatable } : {}) } };
 }
 
