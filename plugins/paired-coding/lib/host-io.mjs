@@ -126,7 +126,7 @@ export function pickLinuxBackend(landlock, bwrap) {
 /** How pair_start names each bubblewrap /proc mode (core/gate.mjs BWRAP_PROC_ARGS). */
 export const PROC_LABELS = Object.freeze({
   fresh: "its own /proc",
-  "ro-bind": "Docker: /proc is the container's, read-only",
+  "ro-bind": "/proc is the container's, read-only",
 });
 
 /**
