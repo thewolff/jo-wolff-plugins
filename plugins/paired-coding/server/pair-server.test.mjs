@@ -1,9 +1,9 @@
 // Tests for the bundled MCP server over its real stdio transport.
-import { test } from "node:test";
+import { after, test } from "node:test";
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { mkdirSync, mkdtempSync, readFileSync, realpathSync, statSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createInterface } from "node:readline";
@@ -15,6 +15,12 @@ import { sandboxProblem } from "../lib/host-io.mjs";
 const SERVER = join(dirname(fileURLToPath(import.meta.url)), "pair-server.mjs");
 const hasSandbox = sandboxProblem() === null;
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+// The fixtures live under $HOME, not /tmp: pair_run may write the temp directories, so a
+// worktree inside one is not fenced the way a real one is, and on Linux Landlock cannot express
+// that run at all (the temp grant would hold the worktree's .git) and hands it to bubblewrap.
+const FIXTURES = realpathSync(mkdtempSync(join(homedir(), ".pc-srv-")));
+after(() => rmSync(FIXTURES, { recursive: true, force: true }));
 
 function startServer(env) {
   const child = spawn("node", [SERVER], { env: { ...process.env, ...env }, stdio: ["pipe", "pipe", "inherit"] });
@@ -35,7 +41,7 @@ function startServer(env) {
 }
 
 test("initialize, tools/list and unknown methods follow JSON-RPC and MCP", async () => {
-  const s = startServer({ PAIRED_CODING_STATE_DIR: mkdtempSync(join(tmpdir(), "pc-srv-")) });
+  const s = startServer({ PAIRED_CODING_STATE_DIR: mkdtempSync(join(FIXTURES, "state-")) });
   const init = await s.request("initialize", { protocolVersion: "2025-06-18", capabilities: {}, clientInfo: { name: "t", version: "0" } }).done;
   assert.equal(init.result.protocolVersion, "2025-06-18");
   assert.ok(init.result.capabilities.tools);
@@ -48,34 +54,37 @@ test("initialize, tools/list and unknown methods follow JSON-RPC and MCP", async
 });
 
 test("notifications/cancelled aborts a running pair_run and kills its process group", { skip: !hasSandbox }, async () => {
-  const top = realpathSync(mkdtempSync(join(tmpdir(), "pc-srv-")));
+  const top = mkdtempSync(join(FIXTURES, "f-"));
   const root = join(top, "repo");
   mkdirSync(join(root, ".git"), { recursive: true });
   writeFileSync(join(root, "a.txt"), "alpha\n");
   const base = join(top, "state");
   const s = startServer({ PAIRED_CODING_STATE_DIR: base });
-  await s.request("initialize", { protocolVersion: "2025-06-18" }).done;
-  let n = 0;
-  const call = (name, args) => {
-    const id = `toolu_srv${++n}`;
-    writeBinding(base, id, { sessionId: "s1", tool: name, cwd: root });
-    return s.request("tools/call", { name, arguments: args, _meta: { "claudecode/toolUseId": id } });
-  };
-  assert.equal((await call("pair_start", {}).done).result.isError, false);
-  assert.equal((await call("pair_propose", { boundary: ["a.txt"] }).done).result.isError, false);
-  recordTrustedInput({ sessionDir: join(base, "s1"), text: "go ahead", source: "interactive" });
-  assert.equal((await call("pair_begin", { cardId: "card-1", quote: "go ahead" }).done).result.isError, false);
-  const run = call("pair_run", { command: "(while :; do echo tick >> a.txt; sleep 0.05; done) & sleep 60" });
-  await sleep(700);
-  s.notify("notifications/cancelled", { requestId: run.id, reason: "user typed" });
-  const res = await run.done;
-  assert.match(res.result.content[0].text, /aborted; its process group was killed/);
-  const size = statSync(join(root, "a.txt")).size;
-  await sleep(400);
-  assert.equal(statSync(join(root, "a.txt")).size, size);
-  const state = JSON.parse(readFileSync(join(base, "s1", "state.json"), "utf8"));
-  assert.deepEqual(state.running, []);
-  s.close();
+  try {
+    await s.request("initialize", { protocolVersion: "2025-06-18" }).done;
+    let n = 0;
+    const call = (name, args) => {
+      const id = `toolu_srv${++n}`;
+      writeBinding(base, id, { sessionId: "s1", tool: name, cwd: root });
+      return s.request("tools/call", { name, arguments: args, _meta: { "claudecode/toolUseId": id } });
+    };
+    assert.equal((await call("pair_start", {}).done).result.isError, false);
+    assert.equal((await call("pair_propose", { boundary: ["a.txt"] }).done).result.isError, false);
+    recordTrustedInput({ sessionDir: join(base, "s1"), text: "go ahead", source: "interactive" });
+    assert.equal((await call("pair_begin", { cardId: "card-1", quote: "go ahead" }).done).result.isError, false);
+    const run = call("pair_run", { command: "(while :; do echo tick >> a.txt; sleep 0.05; done) & sleep 60" });
+    await sleep(700);
+    s.notify("notifications/cancelled", { requestId: run.id, reason: "user typed" });
+    const res = await run.done;
+    assert.match(res.result.content[0].text, /aborted; its process group was killed/);
+    const size = statSync(join(root, "a.txt")).size;
+    await sleep(400);
+    assert.equal(statSync(join(root, "a.txt")).size, size);
+    const state = JSON.parse(readFileSync(join(base, "s1", "state.json"), "utf8"));
+    assert.deepEqual(state.running, []);
+  } finally {
+    s.close();
+  }
 });
 
 test("pair_run's timeout stays under Claude Code's automatic-backgrounding threshold", () => {

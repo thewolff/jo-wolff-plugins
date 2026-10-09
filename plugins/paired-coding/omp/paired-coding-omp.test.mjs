@@ -11,10 +11,10 @@
 // Importing the .ts subject directly is itself a test: node strips the erasable types and loads
 // the module without Bun.
 
-import { test, describe } from "node:test";
+import { after, test, describe } from "node:test";
 import assert from "node:assert/strict";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { homedir } from "node:os";
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
 
@@ -25,6 +25,12 @@ import pairedCodingOmp, { STOP_NOTICE, TREE_NOTICE } from "./paired-coding-omp.t
 const HAS_SANDBOX = sandboxProblem() === null;
 const sandboxOnly = HAS_SANDBOX ? test : test.skip;
 
+// The fixtures live under $HOME, not /tmp: pair_run may write the temp directories, so a
+// worktree inside one is not fenced the way a real one is, and on Linux Landlock cannot express
+// that run at all (the temp grant would hold the worktree's .git) and hands it to bubblewrap.
+const FIXTURES = realpathSync(mkdtempSync(join(homedir(), ".pc-omp-")));
+after(() => rmSync(FIXTURES, { recursive: true, force: true }));
+
 // A schema builder with the chain the adapter uses; the host's real one is checked live.
 const node = () => {
   const n = { describe: () => n, optional: () => n };
@@ -33,9 +39,9 @@ const node = () => {
 const zod = { object: () => node(), string: node, number: node, boolean: node, array: () => node() };
 
 function setup({ otherTools = [], env = {} } = {}) {
-  const repo = realpathSync(mkdtempSync(join(tmpdir(), "pc-omp-repo-")));
+  const repo = mkdtempSync(join(FIXTURES, "repo-"));
   mkdirSync(join(repo, ".git"));
-  const base = realpathSync(mkdtempSync(join(tmpdir(), "pc-omp-state-")));
+  const base = mkdtempSync(join(FIXTURES, "state-"));
   const current = { id: randomUUID() };
   const sessionId = current.id;
   const handlers = {};
@@ -115,8 +121,9 @@ async function openChangeSet(s, boundary) {
 
 /**
  * Whether a process a run started is still alive. On macOS by the pid the run echoed. On Linux
- * that pid is one inside bubblewrap's PID namespace and names nothing out here, so by `token`,
- * a string the command carries in its own text, looked for in every host process's command line.
+ * under bubblewrap that pid is one inside its PID namespace and names nothing out here, so on
+ * Linux (Landlock too, for one rule) by `token`, a string the command carries in its own text,
+ * looked for in every host process's command line.
  */
 const alive = (pid, token) => {
   if (process.platform === "linux") {
@@ -191,17 +198,21 @@ describe("trusted input comes only from the interactive input event", () => {
 describe("pair_write and pair_edit check their final arguments", () => {
   test("a path outside the boundary is refused at execute, inside it is written", async () => {
     const s = setup();
-    await openChangeSet(s, ["a.txt"]);
+    // In src/, not the worktree root: a new file in the root needs bubblewrap on Linux (a
+    // Landlock grant there would hold .git), and this test is about the arguments, not that.
+    mkdirSync(join(s.repo, "src"));
+    await openChangeSet(s, ["src/a.txt"]);
     // What execute receives is whatever the last tool_call revision left, e.g. a rewritten path.
-    const out = await s.call("pair_write", { path: "outside.txt", content: "x" });
+    const out = await s.call("pair_write", { path: "src/outside.txt", content: "x" });
     assert.equal(out.ok, false);
     assert.match(out.text, /outside the agreed boundary/);
-    assert.equal(existsSync(join(s.repo, "outside.txt")), false);
+    assert.equal(existsSync(join(s.repo, "src", "outside.txt")), false);
     const escape = await s.call("pair_write", { path: join(s.dir, "state.json"), content: "{}" });
     assert.equal(escape.ok, false);
-    assert.equal((await s.call("pair_write", { path: "a.txt", content: "one\n" })).ok, true);
-    assert.equal((await s.call("pair_edit", { path: "a.txt", oldString: "one", newString: "two" })).ok, true);
-    assert.equal(readFileSync(join(s.repo, "a.txt"), "utf8"), "two\n");
+    const first = await s.call("pair_write", { path: "src/a.txt", content: "one\n" });
+    assert.equal(first.ok, true, first.text);
+    assert.equal((await s.call("pair_edit", { path: "src/a.txt", oldString: "one", newString: "two" })).ok, true);
+    assert.equal(readFileSync(join(s.repo, "src", "a.txt"), "utf8"), "two\n");
     const done = await s.call("pair_done", { cardId: "card-1" });
     assert.equal(done.ok, true);
     assert.match(done.text, /\+two/);
@@ -257,23 +268,32 @@ describe("pair_start refusals", () => {
   });
 });
 
+// The runs write in run/, a directory the boundary agrees by glob: Landlock gives a pair_run
+// no grant for a literal file that does not exist yet, and none in the worktree root.
+function runSetup() {
+  const s = setup();
+  mkdirSync(join(s.repo, "run"));
+  return s;
+}
+
 describe("pair_run process groups (real sandbox)", () => {
   sandboxOnly("closed: a worktree write through pair_run is denied by the sandbox", async () => {
     const s = setup();
     await s.call("pair_start");
     const r = await s.call("pair_run", { command: "echo x > file.txt" });
     assert.equal(r.ok, false);
-    assert.match(r.text, /not permitted|Read-only file system/i);
+    // Seatbelt: "Operation not permitted"; bubblewrap: a read-only bind; Landlock: EACCES.
+    assert.match(r.text, /not permitted|Read-only file system|Permission denied/i);
     assert.equal(existsSync(join(s.repo, "file.txt")), false);
   });
 
   sandboxOnly("abort kills and reaps the whole group before execute returns", { timeout: 8000 }, async () => {
-    const s = setup();
-    await openChangeSet(s, ["pid.txt", "out.txt"]);
+    const s = runSetup();
+    await openChangeSet(s, ["run/**"]);
     const ac = new AbortController();
     const tok = uniqueSleep(0);
     // Bounded (~15s) so a broken abort fails on the test timeout instead of leaking a writer.
-    const running = s.call("pair_run", { command: `: ${tok}; (i=0; while [ $i -lt 150 ]; do echo tick >> out.txt; i=$((i+1)); sleep 0.1; done) & echo $! > pid.txt; wait` }, ac.signal);
+    const running = s.call("pair_run", { command: `: ${tok}; (i=0; while [ $i -lt 150 ]; do echo tick >> run/out.txt; i=$((i+1)); sleep 0.1; done) & echo $! > run/pid.txt; wait` }, ac.signal);
     await new Promise((r) => setTimeout(r, 700));
     // pair_done while the run is live is refused: the run is foreground and tied to the change set.
     const early = await s.call("pair_done", { cardId: "card-1" });
@@ -282,42 +302,43 @@ describe("pair_run process groups (real sandbox)", () => {
     ac.abort();
     const r = await running;
     assert.match(r.text, /aborted; its process group was killed/);
-    const pid = Number(readFileSync(join(s.repo, "pid.txt"), "utf8"));
+    const pid = Number(readFileSync(join(s.repo, "run", "pid.txt"), "utf8"));
     assert.equal(alive(pid, tok), false, `writer ${pid} must be dead`);
-    const size = readFileSync(join(s.repo, "out.txt"), "utf8").length;
+    const size = readFileSync(join(s.repo, "run", "out.txt"), "utf8").length;
     await new Promise((r) => setTimeout(r, 400));
-    assert.equal(readFileSync(join(s.repo, "out.txt"), "utf8").length, size, "no write after the abort");
+    assert.equal(readFileSync(join(s.repo, "run", "out.txt"), "utf8").length, size, "no write after the abort");
   });
 
   sandboxOnly("timeout kills and reaps the whole group", async () => {
-    const s = setup();
-    await openChangeSet(s, ["pid.txt"]);
+    const s = runSetup();
+    await openChangeSet(s, ["run/**"]);
     const len = uniqueSleep(30);
-    const r = await s.call("pair_run", { command: `sleep ${len} & echo $! > pid.txt; wait`, timeoutSeconds: 1 });
+    const r = await s.call("pair_run", { command: `sleep ${len} & echo $! > run/pid.txt; wait`, timeoutSeconds: 1 });
     assert.match(r.text, /timed out after 1s/);
-    assert.equal(alive(Number(readFileSync(join(s.repo, "pid.txt"), "utf8")), len), false);
+    assert.equal(alive(Number(readFileSync(join(s.repo, "run", "pid.txt"), "utf8")), len), false);
   });
 
-  sandboxOnly("pair_done reaps a process a finished run left behind, before its snapshot", { skip: process.platform === "linux" && "on Linux bubblewrap's PID namespace ends every process the run started when the run exits, so none is left for pair_done; lib/bwrap.test.mjs checks that" }, async () => {
-    const s = setup();
-    await openChangeSet(s, ["pid.txt", "late.txt"]);
-    const r = await s.call("pair_run", { command: "(sleep 1; echo late > late.txt) > /dev/null 2>&1 & echo $! > pid.txt" });
+  sandboxOnly("pair_done reaps a process a finished run left behind, before its snapshot", { skip: process.platform === "linux" && "on Linux the sandbox ends every process the run started when the run exits (bubblewrap's PID namespace, or pair-landlock as their subreaper), so none is left for pair_done; lib/bwrap.test.mjs and lib/landlock.test.mjs check that" }, async () => {
+    const s = runSetup();
+    await openChangeSet(s, ["run/**"]);
+    const r = await s.call("pair_run", { command: "(sleep 1; echo late > run/late.txt) > /dev/null 2>&1 & echo $! > run/pid.txt" });
     assert.equal(r.ok, true, r.text);
-    const pid = Number(readFileSync(join(s.repo, "pid.txt"), "utf8"));
+    const pid = Number(readFileSync(join(s.repo, "run", "pid.txt"), "utf8"));
     assert.equal(alive(pid), true, "left running by a normal exit");
     const done = await s.call("pair_done", { cardId: "card-1" });
     assert.equal(done.ok, true);
     assert.equal(alive(pid), false);
     await new Promise((res) => setTimeout(res, 1500));
-    assert.equal(existsSync(join(s.repo, "late.txt")), false, "no write lands after the read-back");
+    assert.equal(existsSync(join(s.repo, "run", "late.txt")), false, "no write lands after the read-back");
   });
 
   sandboxOnly("session_shutdown reaps live groups and ends pairing", async () => {
-    const s = setup();
-    await openChangeSet(s, ["pid.txt"]);
+    const s = runSetup();
+    await openChangeSet(s, ["run/**"]);
     const len = uniqueSleep(30);
-    await s.call("pair_run", { command: `sleep ${len} > /dev/null 2>&1 & echo $! > pid.txt` });
-    const pid = Number(readFileSync(join(s.repo, "pid.txt"), "utf8"));
+    const r = await s.call("pair_run", { command: `sleep ${len} > /dev/null 2>&1 & echo $! > run/pid.txt` });
+    assert.equal(r.ok, true, r.text);
+    const pid = Number(readFileSync(join(s.repo, "run", "pid.txt"), "utf8"));
     await s.emit("session_shutdown", { type: "session_shutdown" });
     assert.equal(alive(pid, len), false);
     assert.ok(s.journal().some((e) => e.type === "stop" && e.verb === "session-end"));

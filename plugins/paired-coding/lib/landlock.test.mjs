@@ -10,7 +10,7 @@ import { test, describe } from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { chmodSync, existsSync, linkSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, statSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, linkSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { createServer } from "node:net";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
@@ -332,6 +332,72 @@ describe("live Landlock: pair_run", () => {
     const ps = spawnSync("ps", ["-eo", "pgid=,stat="], { encoding: "utf8" }).stdout.split("\n").map((l) => l.trim().split(/\s+/));
     assert.deepEqual(ps.filter(([g, stat]) => Number(g) === r.pgid && !stat.startsWith("Z")), []);
   });
+
+  live("in a clean glob directory, and below it, rm, mv and sed -i of agreed files work", async () => {
+    const f = liveState(["lib/**"]);
+    mkdirSync(join(f.root, "lib", "sub"));
+    writeFileSync(join(f.root, "lib", "m.txt"), "mike\n");
+    writeFileSync(join(f.root, "lib", "sub", "s.txt"), "sierra\n");
+    writeFileSync(join(f.root, "lib", "sub", "r.txt"), "romeo\n");
+    const r = await run(f.state, "rm lib/l.txt && mv lib/m.txt lib/m2.txt && sed -i s/sierra/SIERRA/ lib/sub/s.txt && rm lib/sub/r.txt && mv lib/m2.txt lib/sub/m3.txt");
+    assert.equal(r.exitCode, 0, r.stderr || r.error);
+    assert.equal(r.backend, "landlock");
+    assert.deepEqual(readdirSync(join(f.root, "lib")).sort(), ["sub"]);
+    assert.deepEqual(readdirSync(join(f.root, "lib", "sub")).sort(), ["m3.txt", "s.txt"]);
+    assert.equal(read(f.root, "lib", "sub", "s.txt"), "SIERRA\n");
+    assert.equal(read(f.root, "lib", "sub", "m3.txt"), "mike\n");
+  });
+
+  live("a literal file cannot be deleted or renamed, and nothing leaves a clean glob directory", async () => {
+    const f = liveState(["src/a.txt", "lib/**"]);
+    for (const cmd of ["rm -f src/a.txt", "mv src/a.txt src/a2.txt", "sed -i s/alpha/x/ src/a.txt", "mv lib/l.txt notes2.txt", `mv lib/l.txt '${f.top}/out.txt'`]) {
+      const r = await run(f.state, cmd);
+      assert.equal(r.backend, "landlock");
+      assert.notEqual(r.exitCode, 0, cmd);
+      assert.match(r.stderr, /Permission denied|Invalid cross-device link/, cmd);
+    }
+    assert.equal(read(f.root, "src", "a.txt"), "alpha\n");
+    assert.equal(read(f.root, "lib", "l.txt"), "lima\n");
+    assert.equal(existsSync(join(f.root, "notes2.txt")), false);
+    assert.equal(existsSync(join(f.top, "out.txt")), false);
+  });
+
+  /** A loop that appends to lib/bg-<name>.txt from a new session, outside the run's group. */
+  const escapee = (name) => `setsid sh -c 'while :; do echo t >> lib/bg-${name}.txt; sleep 0.05; done' </dev/null >/dev/null 2>&1 &`;
+  const stopsGrowing = async (f, name) => {
+    const size = () => statSync(join(f.root, "lib", `bg-${name}.txt`)).size;
+    const a = size();
+    await new Promise((resolve) => setTimeout(resolve, 400));
+    return { a, b: size() };
+  };
+
+  live("a writer that leaves the process group with setsid stops once pair_run returns", async () => {
+    const f = liveState(["lib/**"]);
+    const r = await run(f.state, `${escapee("exit")} sleep 0.3`);
+    assert.equal(r.exitCode, 0, r.stderr || r.error);
+    assert.equal(r.backend, "landlock");
+    const { a, b } = await stopsGrowing(f, "exit");
+    assert.ok(a > 0, "the writer ran");
+    assert.equal(b, a, "the writer kept writing after pair_run returned");
+  });
+
+  live("timeout and abort end a writer that left the process group, too", async () => {
+    const f = liveState(["lib/**"]);
+    const t = await run(f.state, `${escapee("timeout")} sleep 30`, { timeoutMs: 800 });
+    assert.equal(t.timedOut, true);
+    assert.equal(t.error, undefined);
+    const ta = await stopsGrowing(f, "timeout");
+    assert.ok(ta.a > 0, "the writer ran");
+    assert.equal(ta.b, ta.a, "the writer outlived the timeout");
+    const ctl = new AbortController();
+    setTimeout(() => ctl.abort(), 800);
+    const ab = await run(f.state, `${escapee("abort")} sleep 30`, { signal: ctl.signal });
+    assert.equal(ab.aborted, true);
+    assert.equal(ab.error, undefined);
+    const aa = await stopsGrowing(f, "abort");
+    assert.ok(aa.a > 0, "the writer ran");
+    assert.equal(aa.b, aa.a, "the writer outlived the abort");
+  });
 });
 
 describe("live Landlock: pair_write", () => {
@@ -370,8 +436,8 @@ describe("live Landlock: pair_write", () => {
     assert.equal(read(f.stateDir, "state.json"), "{}");
   });
 
-  live("a target with a second hard link, or a symlink, goes to the staged write and the file outside is untouched", async () => {
-    const f = liveState(["src/a.txt", "src/l.txt"]);
+  live("a target with a second hard link, or a symlink, is replaced by the staged write and the file outside is untouched", async () => {
+    const f = liveState(["src/a.txt", "src/l.txt", "notes.txt"]);
     writeFileSync(join(f.top, "outside.txt"), "outside\n");
     // src/a.txt replaced by a hard link to the outside file; src/l.txt a symlink to it.
     const a = join(f.root, "src", "a.txt");
@@ -380,15 +446,27 @@ describe("live Landlock: pair_write", () => {
     symlinkSync(join(f.top, "outside.txt"), join(f.root, "src", "l.txt"));
     for (const path of [a, join(f.root, "src", "l.txt")]) {
       const w = write({ state: f.state, path, content: "new\n" });
-      if (BWRAP === null) {
-        assert.equal(w.ok, true, w.error);
-        assert.equal(w.backend, "bwrap");
-        assert.match(w.fellBack, /hard links|symlink/);
-        assert.equal(read(path), "new\n");
-      } else {
-        assert.equal(w.ok, false);
-        assert.match(w.error, /bubblewrap is unavailable/);
-      }
+      assert.equal(w.ok, true, w.error);
+      assert.equal(w.backend, "landlock");
+      assert.equal(w.fellBack, undefined);
+      assert.equal(read(path), "new\n");
+      const st = lstatSync(path);
+      assert.equal(st.isFile() && st.nlink === 1, true, `${path} is now a file of its own`);
+    }
+    assert.deepEqual(readdirSync(join(f.root, "src")).sort(), ["a.txt", "b.txt", "l.txt"], "no temp file is left");
+    // In the worktree root the grant would hold .git, so bubblewrap stages it, where it works.
+    const n = join(f.root, "notes.txt");
+    spawnSync("/bin/rm", ["-f", n]);
+    linkSync(join(f.top, "outside.txt"), n);
+    const w = write({ state: f.state, path: n, content: "notes2\n" });
+    if (BWRAP === null) {
+      assert.equal(w.ok, true, w.error);
+      assert.equal(w.backend, "bwrap");
+      assert.match(w.fellBack, /2 hard links.*worktree root/);
+      assert.equal(read(n), "notes2\n");
+    } else {
+      assert.equal(w.ok, false);
+      assert.match(w.error, /bubblewrap is unavailable/);
     }
     assert.equal(read(f.top, "outside.txt"), "outside\n");
   });
