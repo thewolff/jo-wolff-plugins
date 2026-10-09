@@ -27,6 +27,15 @@ P_ABSTRACT='use Socket; socket(my $s, AF_UNIX, SOCK_STREAM, 0) or do { print 0+$
 P_PATHSOCK='use Socket; socket(my $s, AF_UNIX, SOCK_STREAM, 0) or do { print 0+$!, " $!\n"; exit }; connect($s, pack_sockaddr_un($ARGV[0])) ? print "ok\n" : print 0+$!, " $!\n"'
 P_PAIR='use Socket; socketpair(my $p1, my $p2, AF_UNIX, SOCK_STREAM, 0) or do { print 0+$!, " $!\n"; exit }; syswrite($p1, "hi"); sysread($p2, my $x, 2); print "$x\n"'
 P_KILL='kill(9, $ARGV[0]) ? print "ok\n" : print 0+$!, " $!\n"'
+P_TCGETS='open(my $f, "<", $ARGV[0]) or die "open: $!"; ioctl($f, 0x5401, my $b = "\0" x 64) ? print "ok\n" : print 0+$!, " $!\n"'
+# Runs "$@" (stdin passed through, stdout to /dev/null), sends it signal $1 after 0.5 s unless
+# $1 is empty, and prints how it ended: "exit <code>" or "signal <number>". A shell's $? folds
+# the two together; this tells them apart.
+ended() {
+  perl -e 'my $sig = shift; my $p = fork // die; if (!$p) { open STDOUT, ">", "/dev/null"; exec @ARGV; exit 127 }
+    if ($sig ne "") { select undef, undef, undef, 0.5; kill $sig, $p } waitpid($p, 0);
+    print $? & 127 ? "signal " . ($? & 127) . "\n" : "exit " . ($? >> 8) . "\n"' "$@"
+}
 
 abi=$("$BIN" --abi) || { echo "Landlock is missing or below ABI 3 here (--abi printed '$abi'); nothing to test"; exit 1; }
 echo "kernel $(uname -r), $(uname -m), uid $(id -u), Landlock ABI $abi, binary $BIN"
@@ -133,19 +142,15 @@ check "a setsid writer stops when the command exits" stopped "$(stops_growing se
 check "no setsid writer is left" 0 "$(survivors setsid)"
 rm_sandboxed "( setsid sh -c '$(writer double)' </dev/null >/dev/null 2>&1 & ); sleep 0.3" >/dev/null
 check "a double-forked setsid writer stops when the command exits" stopped "$(stops_growing double)"
-rules_rm "setsid sh -c '$(writer term)' </dev/null >/dev/null 2>&1 & sleep 30" | "$BIN" >/dev/null 2>&1 &
-helper=$!
-sleep 0.5
-kill -TERM "$helper"
-wait "$helper"
-check "SIGTERM to the helper: it dies of SIGTERM" 143 "$?"
+check "SIGTERM to the helper: it ends the run and exits 143, not by the signal" "exit 143" "$(rules_rm "setsid sh -c '$(writer term)' </dev/null >/dev/null 2>&1 & sleep 30" | ended TERM "$BIN" 2>/dev/null)"
 check "SIGTERM to the helper: the setsid writer stops" stopped "$(stops_growing term)"
 check "SIGTERM to the helper: no writer is left" 0 "$(survivors term)"
 if [ "$abi" -ge 6 ]; then
   # The command's shell is the supervisor's child, so $PPID inside it is the supervisor.
   check "the command cannot signal the helper (ABI 6 signal scope)" "1 Operation not permitted" "$(rm_perl "$P_KILL" '$PPID')"
 fi
-check "a command killed by a signal: the helper dies of the same one" 143 "$(rules 'kill -TERM $$' | "$BIN" >/dev/null 2>&1; echo $?)"
+check "a command killed by a signal: the helper exits 128 plus its number" "exit 143" "$(rules 'kill -TERM $$' | ended "" "$BIN" 2>/dev/null)"
+check "SIGKILL to the helper: it dies of the signal, which the caller can tell from any end it chose" "signal 9" "$(rules 'sleep 2' | ended KILL "$BIN" 2>/dev/null)"
 
 echo "--- symlinks are resolved at open"
 check "write through a symlink to an unlisted file" "13 Permission denied" "$(inside_perl "$P_OPENW" "$W/repo/link-to-secret")"
@@ -165,6 +170,16 @@ check "exit status of the command passes through" 7 "$(rules 'exit 7' | "$BIN" >
 check "SIGPIPE is default inside (yes | head ends quietly)" "y" "$(sandboxed 'yes | head -n 1')"
 check "/dev/null is not writable unless listed" "13 Permission denied" "$(inside_perl "$P_OPENW" /dev/null)"
 check "/dev/null writable when listed" ok "$(rules_with '["/dev/null"]' "perl -e '$P_OPENW' /dev/null" | "$BIN" 2>&1)"
+check "a device ioctl outside the sandbox reaches the driver (TCGETS on /dev/null)" "25 Inappropriate ioctl for device" "$(perl -e "$P_TCGETS" /dev/null 2>&1)"
+if [ "$abi" -ge 5 ]; then
+  check "a device ioctl inside is refused (IOCTL_DEV handled from ABI 5, granted nowhere)" "13 Permission denied" "$(inside_perl "$P_TCGETS" /dev/null)"
+else
+  check "a device ioctl inside still reaches the driver below ABI 5" "25 Inappropriate ioctl for device" "$(inside_perl "$P_TCGETS" /dev/null)"
+fi
+chmod 644 "$W/outside/secret.txt"
+sandboxed "chmod 600 $W/outside/secret.txt" >/dev/null
+check "chmod of an unlisted file is not fenced: Landlock has no right for it" 600 "$(stat -c %a "$W/outside/secret.txt")"
+check "the unlisted file's content is unchanged" secret "$(cat "$W/outside/secret.txt")"
 
 echo "--- Unix sockets: abstract ones scoped from ABI 6; below ABI 9 the seccomp filter refuses every new one"
 perl -e 'use Socket; socket(my $s, AF_UNIX, SOCK_STREAM, 0) or die; bind($s, pack_sockaddr_un("\0$ARGV[0]")) or die "bind: $!"; listen($s, 5) or die; sleep 20' "pair-landlock-$$" &

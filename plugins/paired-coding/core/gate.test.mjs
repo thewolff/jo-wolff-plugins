@@ -571,6 +571,30 @@ describe("runStart and runEnd", () => {
     const s = ok(runEnd(ok(runStart(opened(), { runId: "r1" })), { runId: "r1", exitCode: 0, links: [] }));
     assert.equal(s.halt, null);
   });
+
+  test("a run whose Landlock supervisor was killed by a signal the gate did not send stops the session", () => {
+    const host = fakeHost();
+    let s = ok(runStart(opened(host), { runId: "r1" }));
+    const end = runEnd(s, { runId: "r1", exitCode: null, links: [], supervisorKilled: "SIGKILL" });
+    s = ok(end);
+    assert.match(s.halt.reason, /Landlock supervisor was killed by SIGKILL/);
+    assert.deepEqual(end.journal.filter((e) => e.type === "supervisor-killed").map((e) => e.signal), ["SIGKILL"]);
+    assert.deepEqual(s.running, []);
+    refusedWith(pairDone(s, { cardId: "card-1" }, host.io), /stopped.*only your partner ends it, by typing pair stop/);
+    refusedWith(runStart(s, { runId: "r2" }), /stopped/);
+  });
+
+  test("a link and a killed supervisor in one run both reach the stop reason", () => {
+    const s = ok(runEnd(ok(runStart(opened(), { runId: "r1" })), { runId: "r1", exitCode: null, links: ["src/ln"], supervisorKilled: "SIGKILL" }));
+    assert.match(s.halt.reason, /src\/ln.*; pair_run's Landlock supervisor was killed by SIGKILL/);
+  });
+
+  test("an empty or non-string supervisorKilled leaves the session as it was", () => {
+    for (const v of ["", null, undefined, 9, true]) {
+      const s = ok(runEnd(ok(runStart(opened(), { runId: "r1" })), { runId: "r1", exitCode: 0, links: [], supervisorKilled: v }));
+      assert.equal(s.halt, null, String(v));
+    }
+  });
 });
 
 // ─── pair_note and the roadmap ──────────────────────────────────────────────────────────
@@ -1006,6 +1030,18 @@ test("diffSnapshots names added, removed and modified paths and skips exclusions
     { path: "a", change: "modified" },
     { path: "b", change: "removed" },
     { path: "c", change: "added" },
+  ]);
+});
+
+test("diffSnapshots compares a pre-1.2 entry with a full-mode one on the hash and the executable bit only", () => {
+  const h = "a".repeat(64);
+  const g = "b".repeat(64);
+  const before = { same: `file:-:${h}`, exec: `file:x:${h}`, chmodx: `file:-:${h}`, edited: `file:-:${h}`, newer: `file:0644:${h}` };
+  const after = { same: `file:0600:${h}`, exec: `file:0755:${h}`, chmodx: `file:0744:${h}`, edited: `file:0644:${g}`, newer: `file:0664:${h}` };
+  assert.deepEqual(diffSnapshots(before, after), [
+    { path: "chmodx", change: "modified" },
+    { path: "edited", change: "modified" },
+    { path: "newer", change: "modified" },
   ]);
 });
 

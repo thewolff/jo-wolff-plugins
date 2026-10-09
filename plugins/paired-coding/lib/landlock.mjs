@@ -8,6 +8,7 @@
 //   - landlockProblem: the same, probed once per process; only success is remembered.
 //   - landlockCommand: the helper and the ruleset line it reads on stdin.
 //   - landlockIo: the filesystem facts the core's builders take.
+//   - parseMountinfo: the mount points in a /proc/<pid>/mountinfo text.
 //
 // RULES IT KEEPS
 //   - Node built-ins only and no top-level await (host-io.mjs imports it everywhere).
@@ -111,6 +112,21 @@ export function landlockCommand(rules, command) {
 
 const typeOf = (st) => (st.isSymbolicLink() ? "symlink" : st.isDirectory() ? "dir" : st.isFile() ? "file" : "other");
 
+/**
+ * The mount points in a mountinfo text (proc(5): the fifth field of each line, with space,
+ * tab, newline and backslash written as three-digit octal escapes).
+ * @param {string} text
+ * @returns {string[]}
+ */
+export function parseMountinfo(text) {
+  const out = [];
+  for (const line of text.split("\n")) {
+    const point = line.split(" ")[4];
+    if (point) out.push(point.replace(/\\([0-7]{3})/g, (_, o) => String.fromCharCode(Number.parseInt(o, 8))));
+  }
+  return out;
+}
+
 /** The filesystem facts core/gate.mjs's Landlock builders take. */
 export const landlockIo = Object.freeze({
   lstat(abs) {
@@ -121,15 +137,17 @@ export const landlockIo = Object.freeze({
       return null;
     }
   },
+  // A directory that cannot be listed, or an entry that cannot be looked at, is reported
+  // rather than skipped, so the builder treats it as holding something outside the boundary.
   walk(dir) {
     const out = [];
     const visit = (d) => {
       let names;
-      try { names = readdirSync(d); } catch { return; }
+      try { names = readdirSync(d); } catch { out.push({ path: `${d}/`, type: "unreadable", nlink: 0 }); return; }
       for (const n of names) {
         const abs = join(d, n);
         let st;
-        try { st = lstatSync(abs); } catch { continue; }
+        try { st = lstatSync(abs); } catch { out.push({ path: abs, type: "unreadable", nlink: 0 }); continue; }
         const type = typeOf(st);
         out.push({ path: abs, type, nlink: st.nlink });
         if (type === "dir" && n.toLowerCase() !== ".git") visit(abs);
@@ -137,5 +155,12 @@ export const landlockIo = Object.freeze({
     };
     visit(dir);
     return out;
+  },
+  mounts() {
+    try {
+      return parseMountinfo(readFileSync("/proc/self/mountinfo", "utf8"));
+    } catch {
+      return null;
+    }
   },
 });
