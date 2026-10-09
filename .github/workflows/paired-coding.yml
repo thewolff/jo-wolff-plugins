@@ -100,3 +100,51 @@ jobs:
         run: node --test --test-timeout=120000
         env:
           PAIRED_CODING_REQUIRE_LANDLOCK: "1"
+
+  docker-masked-proc:
+    # Docker without --security-opt systempaths=unconfined masks parts of the container's /proc
+    # (/proc/kcore, /proc/keys and others), and with those masks in place the kernel refuses
+    # bubblewrap a fresh /proc even where user namespaces work. bubblewrap then binds the
+    # container's /proc read-only (lib/bwrap.mjs chooseProc), and the live bubblewrap cases,
+    # including the ro-bind ones, have to run and pass under it.
+    name: node --test in Docker with /proc masked, bubblewrap on its /proc fallback (${{ matrix.runner }})
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [ubuntu-24.04, ubuntu-24.04-arm]
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+      - name: Allow unprivileged user namespaces
+        # As in the linux job: the runner's AppArmor restricts them, in containers too.
+        run: |
+          if [ -e /proc/sys/kernel/apparmor_restrict_unprivileged_userns ]; then
+            sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+          fi
+      - name: Start Ubuntu 24.04 with seccomp unconfined and Docker's /proc masks left on
+        # seccomp=unconfined lets bubblewrap make user namespaces. No systempaths=unconfined: the
+        # masks are what this job tests. apparmor=unconfined because Docker's default AppArmor
+        # profile denies every mount (https://github.com/moby/profiles, apparmor/template.go),
+        # which bubblewrap needs whatever its /proc. The runner's node is mounted in.
+        run: |
+          docker run -d --name pc --security-opt seccomp=unconfined --security-opt apparmor=unconfined \
+            -v "$GITHUB_WORKSPACE:/src:ro" -v "$(dirname "$(dirname "$(command -v node)")"):/opt/node:ro" \
+            ubuntu:24.04 sleep infinity
+          docker exec pc sh -c 'apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends bubblewrap ca-certificates git diffutils procps python3'
+      - name: A fresh /proc is refused here, and the read-only bind of the container's works
+        run: |
+          if docker exec -u ubuntu pc bwrap --ro-bind / / --dev /dev --proc /proc --unshare-all /bin/true; then
+            echo "a fresh /proc works in this container, so it does not test the fallback"
+            exit 1
+          fi
+          docker exec -u ubuntu pc bwrap --ro-bind / / --dev /dev --ro-bind /proc /proc --unshare-all /bin/true
+      - name: Tests, with the live bubblewrap cases required to run under the /proc fallback
+        run: |
+          docker exec -u ubuntu -w /home/ubuntu \
+            -e PATH=/opt/node/bin:/usr/bin:/bin \
+            -e PAIRED_CODING_REQUIRE_BWRAP=1 -e PAIRED_CODING_REQUIRE_LANDLOCK=1 -e PAIRED_CODING_REQUIRE_PROC_FALLBACK=1 \
+            pc sh -c 'cp -r /src/plugins/paired-coding pc && cd pc && node --test --test-timeout=120000'
