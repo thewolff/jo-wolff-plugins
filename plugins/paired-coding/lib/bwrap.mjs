@@ -113,7 +113,7 @@ function findBwrap(env = process.env) {
 
 let probed = null;
 
-const USERNS_FIX = "unprivileged user namespaces look switched off. Ubuntu 23.10 and later: sudo sysctl kernel.apparmor_restrict_unprivileged_userns=0 (lasting: put that setting in /etc/sysctl.d/), or load the bwrap-userns-restrict AppArmor profile from apparmor-profiles; Debian: sudo sysctl kernel.unprivileged_userns_clone=1; in a container, unconfined seccomp and system paths (docker run --security-opt seccomp=unconfined --security-opt systempaths=unconfined)";
+const USERNS_FIX = "unprivileged user namespaces look switched off. Ubuntu 23.10 and later: sudo sysctl kernel.apparmor_restrict_unprivileged_userns=0 (lasting: put that setting in /etc/sysctl.d/), or load the bwrap-userns-restrict AppArmor profile from apparmor-profiles; Debian: sudo sysctl kernel.unprivileged_userns_clone=1; in a Docker container, unconfined seccomp, and unconfined AppArmor where the host runs it (docker run --security-opt seccomp=unconfined --security-opt apparmor=unconfined; add --security-opt systempaths=unconfined for a fresh /proc)";
 
 /** What bwrap prints when the kernel will not mount it a fresh procfs. */
 const FRESH_PROC_REFUSED = /Can't mount proc on /;

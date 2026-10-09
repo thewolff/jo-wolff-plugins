@@ -193,7 +193,7 @@ describe("pair_start names the /proc mode", () => {
   test("the Sandbox: line, for bubblewrap as the backend", () => {
     const why = "Landlock ABI 2 is below 3";
     assert.equal(describeSandbox({ name: "bwrap", why }, "fresh"), `Sandbox: bubblewrap (its own /proc), which fences writes per directory (Landlock is not usable here: ${why}).`);
-    assert.equal(describeSandbox({ name: "bwrap", why }, "ro-bind"), `Sandbox: bubblewrap (Docker: /proc is the container's, read-only), which fences writes per directory (Landlock is not usable here: ${why}).`);
+    assert.equal(describeSandbox({ name: "bwrap", why }, "ro-bind"), `Sandbox: bubblewrap (/proc is the container's, read-only), which fences writes per directory (Landlock is not usable here: ${why}).`);
     assert.deepEqual(Object.keys(PROC_LABELS).sort(), Object.keys(BWRAP_PROC_ARGS).sort());
   });
 

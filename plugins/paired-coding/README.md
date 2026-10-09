@@ -35,12 +35,14 @@ bubblewrap needs two things:
      file under `/etc/sysctl.d/` to keep it across reboots. Or load the `bwrap-userns-restrict`
      profile from the `apparmor-profiles` package, which lets only bubblewrap through.
    - **Debian kernels with `kernel.unprivileged_userns_clone`:** set it to 1.
-   - **Docker containers:** run with
-     `--security-opt seccomp=unconfined --security-opt systempaths=unconfined`, and bubblewrap
-     gets a fresh `/proc` of its own. With `seccomp=unconfined` alone, Docker masks parts of the
+   - **Docker containers:** run with `--security-opt seccomp=unconfined`, and on a host that runs
+     AppArmor (Ubuntu does) also `--security-opt apparmor=unconfined`: Docker's default AppArmor
+     profile stops bubblewrap with "Failed to make / slave: Permission denied". Add
+     `--security-opt systempaths=unconfined` and bubblewrap gets a fresh `/proc` of its own.
+     Without it, Docker masks parts of the
      container's `/proc`, so the check fails with "Can't mount proc on /newroot/proc". The gate
      then falls back to the container's own `/proc`, bound read-only, and `pair_start` says so:
-     its "Sandbox:" line reads "bubblewrap (Docker: /proc is the container's, read-only)". See
+     its "Sandbox:" line reads "bubblewrap (/proc is the container's, read-only)". See
      "Linux: bubblewrap" below for what that changes.
 
 With neither Landlock ABI 3 nor a working bubblewrap, the plugin still installs, but
@@ -413,8 +415,8 @@ under every sandbox.
 **Linux: which sandbox.** The gate picks one when it first needs it in a process, and
 `pair_start` says which, in a line that starts "Sandbox:"; the journal's `start` entry records
 it as `sandbox`. Wherever bubblewrap works, the line also says how bubblewrap gets `/proc`
-("its own /proc", or in a Docker container that masks `/proc`, "Docker: /proc is the
-container's, read-only"), and the `start` entry records that as `bwrapProc` (`fresh` or
+("its own /proc", or in a container that masks `/proc`, "/proc is the container's,
+read-only"), and the `start` entry records that as `bwrapProc` (`fresh` or
 `ro-bind`; see "Linux: bubblewrap").
 
 1. Landlock, when the kernel has Landlock ABI 3 or later (ABI 3 is the first that can refuse
@@ -577,25 +579,41 @@ needs:
   file under `/etc/sysctl.d/` to keep it; or load the `bwrap-userns-restrict` profile from the
   `apparmor-profiles` package, which lets bubblewrap alone through. On a Debian kernel that has
   `kernel.unprivileged_userns_clone`, set it to 1. In a Docker container, run it with
-  `--security-opt seccomp=unconfined --security-opt systempaths=unconfined`. `pair_start`'s
+  `--security-opt seccomp=unconfined`, plus `--security-opt apparmor=unconfined` where the host
+  runs AppArmor, and `--security-opt systempaths=unconfined` for a fresh `/proc`. `pair_start`'s
   refusal names the same fixes.
 
 **A container that masks `/proc`.** Docker without `--security-opt systempaths=unconfined`
 covers parts of the container's `/proc` (`/proc/kcore`, `/proc/keys` and others), and with
 those in place the kernel will not mount a fresh `/proc` for bubblewrap: the check above fails
-with "Can't mount proc on /newroot/proc", even though user namespaces work. When that is the
-only failure, the gate runs bubblewrap with the container's own `/proc` bound read-only
-instead, and `pair_start`'s "Sandbox:" line reads "bubblewrap (Docker: /proc is the
-container's, read-only)". Every namespace is still unshared, so each run still has its own PID
-namespace, and every process it starts still ends with it. Any other failure is refused as
-before. With `systempaths=unconfined` the masks are gone and bubblewrap gets a fresh `/proc`.
-The write boundary is unchanged: the bound `/proc` is read-only, and a run cannot reach
-another process's files through `/proc/<pid>/root`, `cwd`, `fd` or `exe`, nor signal it.
-What a run gains is sight of the container's other processes: their process IDs, command
-lines, status, mount tables and open file-descriptor numbers, though not their environment.
-Anything passed on a command line inside the container is readable to a run, so pass secrets
-through the environment or a file. An empty `/proc` would hide this but breaks ordinary
-tools: bash process substitution (`<(...)`) reads `/dev/fd`, which points into `/proc`.
+with "Can't mount proc on /newroot/proc", even though user namespaces work. Other container
+runtimes that mount over parts of `/proc` can hit the same refusal. When that is the only
+failure, the gate runs bubblewrap with the container's own `/proc` bound read-only instead, and
+`pair_start`'s "Sandbox:" line reads "bubblewrap (/proc is the container's, read-only)". Every
+namespace is still unshared, so each run still has its own PID namespace, and every process it
+starts still ends with it. Any other failure is refused as before. With `systempaths=unconfined`
+the masks are gone and bubblewrap gets a fresh `/proc`.
+
+The write boundary is the same in both modes: the bound `/proc` is read-only. In a measured
+unprivileged Docker container, writes and reads through another process's
+`/proc/<pid>/root`, `cwd`, `fd` and `exe` were refused, as were signals to processes outside
+the run. The live tests in the masked-`/proc` CI job check the write and the signal against
+the gate's own process. Not measured: a privileged container, `/proc/<pid>/mem`, and entering
+another process's namespaces through `/proc/<pid>/ns`.
+
+What a run gains is sight of the container's other processes. It can read their process IDs,
+command lines, status, mount tables and open file-descriptor numbers; their environment was
+not readable. So keep secrets off command lines inside the container. This does not make
+files private: every bubblewrap run already sees the whole filesystem read-only, apart from
+`/tmp`.
+
+Under the bound `/proc` there are three differences inside a run:
+- `/proc` numbers processes as the container does, not as the run's own PID namespace does.
+  So `ps`, `pgrep` and `/proc/$$` do not show the run's own process IDs, and `pkill` can miss.
+  `/proc/self` and `/dev/fd` are correct.
+- Writes under `/proc`, such as `/proc/self/oom_score_adj`, fail.
+- An empty `/proc` would hide the other processes, but it breaks ordinary tools: bash process
+  substitution (`<(...)`) reads `/dev/fd`, which points into `/proc`.
 
 bubblewrap mounts paths writable; it cannot match each write against the boundary's patterns
 the way Seatbelt and Landlock do. So under bubblewrap:
