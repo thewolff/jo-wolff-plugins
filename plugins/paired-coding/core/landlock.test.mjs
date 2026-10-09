@@ -181,7 +181,7 @@ describe("landlockRulesFor", () => {
     const io2 = fakeFs([...BASE_DIRS, `${ROOT}/lib`], [...BASE_FILES, `${ROOT}/lib/.git`]);
     assert.match(landlockRulesFor(open(["lib/**"]), [], io2).notExpressible, /lib\/\.git/);
     // bubblewrap can still take that run.
-    assert.ok(bwrapArgsFor(open(["lib/**"]), [], io).writable.includes(`${ROOT}/lib`));
+    assert.ok(bwrapArgsFor(open(["lib/**"]), [], io, "fresh").writable.includes(`${ROOT}/lib`));
   });
 
   test("a directory grant that would hold a protected path is not expressible", () => {
@@ -429,7 +429,7 @@ describe("parity: Landlock against the Seatbelt profile from the same state", ()
     ];
     for (const [s, fs] of cases) {
       assert.ok("notExpressible" in landlockRulesFor(s, [], fs), JSON.stringify(s.changeSet.boundary));
-      assert.doesNotThrow(() => bwrapArgsFor(s, [], fs));
+      assert.doesNotThrow(() => bwrapArgsFor(s, [], fs, "fresh"));
     }
   });
 });

@@ -1327,14 +1327,40 @@ export function boundaryRoots(state) {
  * @property {string[]} readOnly  what is bound read-only back on top of them
  */
 
-const BWRAP_BASE = Object.freeze(["--ro-bind", "/", "/", "--dev", "/dev", "--proc", "/proc", "--tmpfs", "/tmp", "--unshare-all", "--die-with-parent", "--new-session"]);
+/**
+ * How a bubblewrap sandbox gets its /proc. lib/bwrap.mjs probes which one this machine allows
+ * and hands it to every builder below:
+ *   fresh    a new procfs for the sandbox's own PID namespace (--proc /proc);
+ *   ro-bind  the host's /proc bound read-only, for a container (Docker without
+ *            systempaths=unconfined) that masks parts of /proc, where the kernel refuses a fresh
+ *            procfs (--ro-bind /proc /proc).
+ * Every namespace is unshared in both; only the /proc options differ. There is no mode without
+ * the host's /proc: leaving the option out still carries it in through the recursive
+ * `--ro-bind / /`, and an empty /proc breaks /dev/fd (bash's `<(...)`) and /proc/self/exe.
+ */
+export const BWRAP_PROC_ARGS = Object.freeze({
+  fresh: Object.freeze(["--proc", "/proc"]),
+  "ro-bind": Object.freeze(["--ro-bind", "/proc", "/proc"]),
+});
+
+/**
+ * The options every bubblewrap sandbox starts with, the probe's included: the filesystem
+ * read-only, a fresh /dev, /proc as `proc` says, a private /tmp, and every namespace unshared.
+ * @param {keyof typeof BWRAP_PROC_ARGS} proc
+ * @returns {string[]}
+ */
+export function bwrapBase(proc) {
+  if (!Object.hasOwn(BWRAP_PROC_ARGS, proc)) throw new Error(`no bubblewrap /proc mode ${JSON.stringify(proc)}`);
+  return ["--ro-bind", "/", "/", "--dev", "/dev", ...BWRAP_PROC_ARGS[proc], "--tmpfs", "/tmp", "--unshare-all", "--die-with-parent", "--new-session"];
+}
 
 /**
  * The bubblewrap options pair_run runs under on Linux, built from the same state as the Seatbelt
  * profile (profileFor), so the two backends read one source. bwrap mounts in argument order and
  * a later mount covers an earlier one, so as in the profile the order is the precedence, last
  * one strongest:
- *   1. the whole filesystem read-only, a fresh /dev and /proc, and a private, empty /tmp;
+ *   1. the whole filesystem read-only, a fresh /dev, /proc as `proc` says (bwrapBase), and a
+ *      private, empty /tmp;
  *   2. the temp paths read-write, except /tmp itself, which is the private one;
  *   3. the worktree read-only again where a temp path or the private /tmp covered it;
  *   4. open only: read-write binds for the boundary (boundaryRoots) and `extraAllow`. A path
@@ -1350,10 +1376,11 @@ const BWRAP_BASE = Object.freeze(["--ro-bind", "/", "/", "--dev", "/dev", "--pro
  * @param {State} state
  * @param {string[]} extraAllow  absolute paths also writable
  * @param {BwrapIo} io
+ * @param {keyof typeof BWRAP_PROC_ARGS} proc  the /proc mode bubblewrap's probe settled on
  * @returns {BwrapPlan}
  */
-export function bwrapArgsFor(state, extraAllow, io) {
-  return bwrapPlan(state, [...boundaryRoots(state), ...extraAllow], { temps: state.tempPaths ?? [], network: true, recursiveGit: true }, io);
+export function bwrapArgsFor(state, extraAllow, io, proc) {
+  return bwrapPlan(state, [...boundaryRoots(state), ...extraAllow], { temps: state.tempPaths ?? [], network: true, recursiveGit: true, proc }, io);
 }
 
 /**
@@ -1365,11 +1392,12 @@ export function bwrapArgsFor(state, extraAllow, io) {
  * @param {State} state
  * @param {string} tempPath  absolute, in the worktree, named .pair-write-<16 hex>.tmp
  * @param {BwrapIo} io
+ * @param {keyof typeof BWRAP_PROC_ARGS} proc  the /proc mode bubblewrap's probe settled on
  * @returns {BwrapPlan}
  */
-export function pairWriteBwrap(state, tempPath, io) {
+export function pairWriteBwrap(state, tempPath, io, proc) {
   checkWriteTemp(state, tempPath);
-  return bwrapPlan(state, [tempPath.slice(0, tempPath.lastIndexOf("/"))], { temps: [], network: false, recursiveGit: false }, io);
+  return bwrapPlan(state, [tempPath.slice(0, tempPath.lastIndexOf("/"))], { temps: [], network: false, recursiveGit: false, proc }, io);
 }
 
 function bwrapPath(path) {
@@ -1394,7 +1422,7 @@ function outermost(paths) {
 function bwrapPlan(state, wanted, opts, io) {
   const root = bwrapPath(state.root);
   const denied = [state.stateDir, ...(state.protect ?? [])].map(bwrapPath);
-  const args = [...BWRAP_BASE, ...(opts.network ? ["--share-net"] : [])];
+  const args = [...bwrapBase(opts.proc), ...(opts.network ? ["--share-net"] : [])];
   const temps = outermost(opts.temps.map(bwrapPath).filter((t) => t !== "/tmp" && io.kind(t) === "dir" && !denied.some((d) => within(d, t))));
   for (const t of temps) args.push("--bind", t, t);
   if (within("/tmp", root) || temps.some((t) => within(t, root))) args.push("--ro-bind", root, root);

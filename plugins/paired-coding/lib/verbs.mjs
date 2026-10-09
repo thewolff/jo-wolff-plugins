@@ -21,7 +21,7 @@ import {
 } from "../core/gate.mjs";
 import {
   activated, appendJournal, defaultTempPaths, findRoot, loadState, makeIo, markActivated, reapGroups, saveState,
-  closedRunProblem, describeSandbox, recordRun, runPgids, runSandboxed, sandboxBackend, sandboxProblem, sessionDir, stateBase, withLock, withSession, writeSandboxed,
+  closedRunProblem, describeSandbox, recordRun, runPgids, runSandboxed, sandboxBackend, sandboxJournal, sandboxProblem, sessionDir, stateBase, withLock, withSession, writeSandboxed,
 } from "./host-io.mjs";
 
 /** Directories left out of every snapshot unless the user's own exclusions say otherwise. */
@@ -331,8 +331,9 @@ function pairStartVerb(args, ctx) {
       saveState(dir, out.state);
       markActivated(dir, { root: out.state.root, stateDir });
     }
-    // The journal names the sandbox this session's writes and runs had (sandboxBackend).
-    appendJournal(dir, out.ok ? out.journal.map((e) => (e.type === "start" ? { ...e, sandbox: backend.name } : e)) : out.journal);
+    // The journal names the sandbox this session's writes and runs had (sandboxBackend), and
+    // bubblewrap's /proc mode where bubblewrap can run (sandboxJournal).
+    appendJournal(dir, out.ok ? out.journal.map((e) => (e.type === "start" ? { ...e, ...sandboxJournal(backend) } : e)) : out.journal);
     return out;
   });
   if (!r.ok) return fail("pair_start", r.reason);

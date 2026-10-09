@@ -8,7 +8,7 @@
 
 import { test, describe } from "node:test";
 import assert from "node:assert/strict";
-import { boundaryMatches, boundaryRoots, bwrapArgsFor, isGitControl, pairRunProfile, pairWriteBwrap } from "./gate.mjs";
+import { BWRAP_PROC_ARGS, boundaryMatches, boundaryRoots, bwrapArgsFor, bwrapBase, isGitControl, pairRunProfile, pairWriteBwrap } from "./gate.mjs";
 
 const ROOT = "/w/repo";
 
@@ -56,7 +56,7 @@ const BASE_FILES = [`${ROOT}/src/a.ts`, `${ROOT}/src/b.ts`, `${ROOT}/README.md`]
 describe("bwrapArgsFor", () => {
   test("closed: the filesystem read-only, a private /tmp, network kept, no worktree bind", () => {
     const io = fakeFs([...BASE_DIRS, "/var", "/var/tmpx"]);
-    const plan = bwrapArgsFor({ ...open([]), phase: "closed", changeSet: null, tempPaths: ["/tmp", "/var/tmpx"] }, [], io);
+    const plan = bwrapArgsFor({ ...open([]), phase: "closed", changeSet: null, tempPaths: ["/tmp", "/var/tmpx"] }, [], io, "fresh");
     assert.deepEqual(plan.args.slice(0, 13), ["--ro-bind", "/", "/", "--dev", "/dev", "--proc", "/proc", "--tmpfs", "/tmp", "--unshare-all", "--die-with-parent", "--new-session", "--share-net"]);
     assert.deepEqual(plan.writable, []);
     assert.deepEqual(plan.temps, ["/var/tmpx"]);
@@ -64,30 +64,30 @@ describe("bwrapArgsFor", () => {
   });
 
   test("a literal entry binds that file itself, never its directory", () => {
-    const plan = bwrapArgsFor(open(["src/a.ts"]), [], fakeFs(BASE_DIRS, BASE_FILES));
+    const plan = bwrapArgsFor(open(["src/a.ts"]), [], fakeFs(BASE_DIRS, BASE_FILES), "fresh");
     assert.deepEqual(plan.writable, [`${ROOT}/src/a.ts`]);
     assert.deepEqual(binds(plan.args, "--bind"), [`${ROOT}/src/a.ts`]);
   });
 
   test("a literal that does not exist yet is bound through its deepest existing ancestor", () => {
-    const plan = bwrapArgsFor(open(["src/new/deep/x.ts"]), [], fakeFs(BASE_DIRS, BASE_FILES));
+    const plan = bwrapArgsFor(open(["src/new/deep/x.ts"]), [], fakeFs(BASE_DIRS, BASE_FILES), "fresh");
     assert.deepEqual(plan.writable, [`${ROOT}/src`]);
   });
 
   test("a glob binds the directory above its first glob segment; a leading glob binds the root", () => {
     const io = fakeFs([...BASE_DIRS, `${ROOT}/lib`], BASE_FILES);
-    assert.deepEqual(bwrapArgsFor(open(["lib/**/*.mjs"]), [], io).writable, [`${ROOT}/lib`]);
-    assert.deepEqual(bwrapArgsFor(open(["**/*.md"]), [], io).writable, [ROOT]);
+    assert.deepEqual(bwrapArgsFor(open(["lib/**/*.mjs"]), [], io, "fresh").writable, [`${ROOT}/lib`]);
+    assert.deepEqual(bwrapArgsFor(open(["**/*.md"]), [], io, "fresh").writable, [ROOT]);
   });
 
   test("only the outermost of nested binds is kept", () => {
-    const plan = bwrapArgsFor(open(["src/**", "src/a.ts"]), [], fakeFs(BASE_DIRS, BASE_FILES));
+    const plan = bwrapArgsFor(open(["src/**", "src/a.ts"]), [], fakeFs(BASE_DIRS, BASE_FILES), "fresh");
     assert.deepEqual(plan.writable, [`${ROOT}/src`]);
   });
 
   test("every .git entry under a directory bind goes back read-only, nested and gitfile ones too, after the bind", () => {
     const io = fakeFs([...BASE_DIRS, `${ROOT}/sub`, `${ROOT}/sub/.git`, `${ROOT}/vendor`, `${ROOT}/vendor/m`], [...BASE_FILES, `${ROOT}/vendor/m/.GIT`]);
-    const plan = bwrapArgsFor(open(["**"]), [], io);
+    const plan = bwrapArgsFor(open(["**"]), [], io, "fresh");
     assert.deepEqual(plan.writable, [ROOT]);
     assert.deepEqual(new Set(plan.readOnly), new Set([`${ROOT}/.git`, `${ROOT}/sub/.git`, `${ROOT}/vendor/m/.GIT`]));
     assert.deepEqual(io.calls, [{ dir: ROOT, recursive: true }]);
@@ -97,14 +97,14 @@ describe("bwrapArgsFor", () => {
 
   test("nothing at or under a .git segment is bound read-write, in any letter case", () => {
     const io = fakeFs([...BASE_DIRS, `${ROOT}/sub`, `${ROOT}/sub/.Git`], BASE_FILES);
-    const plan = bwrapArgsFor(open([".git/HEAD", ".git/**", "sub/.Git/refs/x", "src/a.ts"]), [], io);
+    const plan = bwrapArgsFor(open([".git/HEAD", ".git/**", "sub/.Git/refs/x", "src/a.ts"]), [], io, "fresh");
     assert.deepEqual(plan.writable, [`${ROOT}/src/a.ts`]);
     assert.deepEqual(boundaryRoots(open([".git/**", "sub/.GIT/x"])), []);
   });
 
   test("the state directory and protected paths go back read-only where a bind covers them, at their deepest existing ancestor", () => {
     const io = fakeFs([...BASE_DIRS, `${ROOT}/plugin`, "/var", "/var/tmpx", "/var/tmpx/state"], BASE_FILES);
-    const plan = bwrapArgsFor(open(["**"], { stateDir: "/var/tmpx/state/s1", tempPaths: ["/var/tmpx"], protect: [`${ROOT}/plugin`, "/elsewhere"] }), [], io);
+    const plan = bwrapArgsFor(open(["**"], { stateDir: "/var/tmpx/state/s1", tempPaths: ["/var/tmpx"], protect: [`${ROOT}/plugin`, "/elsewhere"] }), [], io, "fresh");
     assert.ok(plan.readOnly.includes("/var/tmpx/state"));
     assert.ok(plan.readOnly.includes(`${ROOT}/plugin`));
     assert.ok(!plan.readOnly.includes("/elsewhere"));
@@ -114,30 +114,30 @@ describe("bwrapArgsFor", () => {
 
   test("a boundary inside the state directory or a protected path is not bound at all", () => {
     const io = fakeFs([...BASE_DIRS, `${ROOT}/plugin`], [...BASE_FILES, `${ROOT}/plugin/x.mjs`]);
-    const plan = bwrapArgsFor(open(["plugin/x.mjs", "src/a.ts"], { protect: [`${ROOT}/plugin`] }), [], io);
+    const plan = bwrapArgsFor(open(["plugin/x.mjs", "src/a.ts"], { protect: [`${ROOT}/plugin`] }), [], io, "fresh");
     assert.deepEqual(plan.writable, [`${ROOT}/src/a.ts`]);
   });
 
   test("/tmp is private: never bound back; a temp path that is missing or under a denied path is not bound", () => {
     const io = fakeFs([...BASE_DIRS, "/var", "/var/tmpx", "/state/s1/tmp"], BASE_FILES);
-    const plan = bwrapArgsFor(open([], { phase: "closed", changeSet: null, tempPaths: ["/tmp", "/var/tmpx", "/nope", "/state/s1/tmp"] }), [], io);
+    const plan = bwrapArgsFor(open([], { phase: "closed", changeSet: null, tempPaths: ["/tmp", "/var/tmpx", "/nope", "/state/s1/tmp"] }), [], io, "fresh");
     assert.deepEqual(plan.temps, ["/var/tmpx"]);
   });
 
   test("a worktree under /tmp or under a temp path is bound read-only again before the boundary binds", () => {
     const root = "/tmp/w";
     const io = fakeFs(["/", "/tmp", root, `${root}/src`], [`${root}/src/a.ts`]);
-    const plan = bwrapArgsFor(open(["src/a.ts"], { root, stateDir: "/state/s1", tempPaths: ["/tmp"] }), [], io);
+    const plan = bwrapArgsFor(open(["src/a.ts"], { root, stateDir: "/state/s1", tempPaths: ["/tmp"] }), [], io, "fresh");
     const ro = plan.args.indexOf(root);
     assert.equal(plan.args[ro - 1], "--ro-bind");
     assert.ok(ro < plan.args.indexOf("--bind"));
     const io2 = fakeFs(["/", "/var", "/var/tmpx", "/var/tmpx/w"], []);
-    const plan2 = bwrapArgsFor({ ...open([], { root: "/var/tmpx/w", tempPaths: ["/var/tmpx"] }), phase: "closed", changeSet: null }, [], io2);
+    const plan2 = bwrapArgsFor({ ...open([], { root: "/var/tmpx/w", tempPaths: ["/var/tmpx"] }), phase: "closed", changeSet: null }, [], io2, "fresh");
     assert.deepEqual(plan2.args.slice(-6), ["--bind", "/var/tmpx", "/var/tmpx", "--ro-bind", "/var/tmpx/w", "/var/tmpx/w"]);
   });
 
   test("a path with a control character refuses the plan", () => {
-    assert.throws(() => bwrapArgsFor(open(["src/a.ts"], { root: "/w/re\npo" }), [], fakeFs(BASE_DIRS)), /not usable/);
+    assert.throws(() => bwrapArgsFor(open(["src/a.ts"], { root: "/w/re\npo" }), [], fakeFs(BASE_DIRS), "fresh"), /not usable/);
   });
 });
 
@@ -146,7 +146,7 @@ describe("pairWriteBwrap", () => {
 
   test("binds only the staging file's directory, with no temp path and no network", () => {
     const io = fakeFs([...BASE_DIRS, "/var", "/var/tmpx"], BASE_FILES);
-    const plan = pairWriteBwrap(open(["src/a.ts"], { tempPaths: ["/var/tmpx"] }), temp, io);
+    const plan = pairWriteBwrap(open(["src/a.ts"], { tempPaths: ["/var/tmpx"] }), temp, io, "fresh");
     assert.deepEqual(plan.writable, [`${ROOT}/src`]);
     assert.deepEqual(plan.temps, []);
     assert.equal(plan.args.includes("--share-net"), false);
@@ -154,15 +154,60 @@ describe("pairWriteBwrap", () => {
   });
 
   test("a staging directory that does not exist yet is bound through its deepest existing ancestor", () => {
-    const plan = pairWriteBwrap(open(["src/new/x.ts"]), `${ROOT}/src/new/.pair-write-${"cd".repeat(8)}.tmp`, fakeFs(BASE_DIRS, BASE_FILES));
+    const plan = pairWriteBwrap(open(["src/new/x.ts"]), `${ROOT}/src/new/.pair-write-${"cd".repeat(8)}.tmp`, fakeFs(BASE_DIRS, BASE_FILES), "fresh");
     assert.deepEqual(plan.writable, [`${ROOT}/src`]);
   });
 
   test("takes only a staging file named for it inside the worktree, in an open change set", () => {
     for (const bad of [undefined, `${ROOT}/src/x.tmp`, `/w/.pair-write-${"ab".repeat(8)}.tmp`, `${ROOT}/src/../../.pair-write-${"ab".repeat(8)}.tmp`]) {
-      assert.throws(() => pairWriteBwrap(open(["src/a.ts"]), bad, fakeFs(BASE_DIRS)), /staging file/, String(bad));
+      assert.throws(() => pairWriteBwrap(open(["src/a.ts"]), bad, fakeFs(BASE_DIRS), "fresh"), /staging file/, String(bad));
     }
-    assert.throws(() => pairWriteBwrap({ ...open([]), phase: "closed" }, temp, fakeFs(BASE_DIRS)), /open change set/);
+    assert.throws(() => pairWriteBwrap({ ...open([]), phase: "closed" }, temp, fakeFs(BASE_DIRS), "fresh"), /open change set/);
+  });
+});
+
+describe("the /proc mode", () => {
+  const io = () => fakeFs([...BASE_DIRS, "/var", "/var/tmpx"], BASE_FILES);
+  const temp = `${ROOT}/src/.pair-write-${"ab".repeat(8)}.tmp`;
+  const plans = (proc) => [
+    bwrapArgsFor(open(["src/a.ts"], { tempPaths: ["/var/tmpx"] }), [], io(), proc),
+    pairWriteBwrap(open(["src/a.ts"]), temp, io(), proc),
+  ];
+  /** The args with the /proc options taken out, wherever they sit. */
+  const withoutProc = (args, proc) => {
+    const p = BWRAP_PROC_ARGS[proc];
+    const at = args.findIndex((_, i) => p.every((a, j) => args[i + j] === a));
+    assert.notEqual(at, -1, `${proc}: ${p.join(" ")} missing from ${args.join(" ")}`);
+    return [...args.slice(0, at), ...args.slice(at + p.length)];
+  };
+
+  test("each mode gives its own /proc options and nothing else of /proc", () => {
+    assert.deepEqual(Object.keys(BWRAP_PROC_ARGS).sort(), ["fresh", "ro-bind"]);
+    assert.deepEqual(bwrapBase("fresh").slice(0, 7), ["--ro-bind", "/", "/", "--dev", "/dev", "--proc", "/proc"]);
+    assert.deepEqual(bwrapBase("ro-bind").slice(0, 8), ["--ro-bind", "/", "/", "--dev", "/dev", "--ro-bind", "/proc", "/proc"]);
+    for (const proc of Object.keys(BWRAP_PROC_ARGS)) {
+      for (const plan of plans(proc)) {
+        const procMentions = plan.args.filter((a) => a === "/proc").length;
+        assert.equal(procMentions, BWRAP_PROC_ARGS[proc].filter((a) => a === "/proc").length, `${proc}: ${plan.args.join(" ")}`);
+        assert.equal(plan.args.includes("--proc"), proc === "fresh", proc);
+      }
+    }
+  });
+
+  test("ro-bind unshares every namespace: its plans differ from fresh only in the /proc options", () => {
+    const fresh = plans("fresh");
+    plans("ro-bind").forEach((plan, i) => {
+      assert.deepEqual(withoutProc(plan.args, "ro-bind"), withoutProc(fresh[i].args, "fresh"));
+      for (const flag of ["--unshare-all", "--die-with-parent", "--new-session"]) assert.equal(plan.args.filter((a) => a === flag).length, 1, flag);
+      assert.equal(plan.args.some((a) => a.startsWith("--share-") && a !== "--share-net"), false);
+    });
+  });
+
+  test("a missing or unknown mode refuses the plan rather than picking one", () => {
+    for (const proc of [undefined, null, "", "Fresh", "toString", "__proto__"]) {
+      assert.throws(() => bwrapArgsFor(open(["src/a.ts"]), [], io(), proc), /no bubblewrap \/proc mode/, String(proc));
+      assert.throws(() => pairWriteBwrap(open(["src/a.ts"]), temp, io(), proc), /no bubblewrap \/proc mode/, String(proc));
+    }
   });
 });
 
@@ -220,7 +265,7 @@ describe("parity: bubblewrap against the Seatbelt profile from the same state", 
     tempPaths: ["/tmp", "/var/tmpx", "/nope/tmp"],
     protect: [`${ROOT}/lib/vendor`],
   });
-  const plan = bwrapArgsFor(state, [], io);
+  const plan = bwrapArgsFor(state, [], io, "fresh");
   const probes = [
     `${ROOT}/src/a.ts`, `${ROOT}/src/b.ts`, `${ROOT}/src/new/x.ts`, `${ROOT}/src/new/y.ts`, `${ROOT}/README.md`,
     `${ROOT}/.git/HEAD`, `${ROOT}/.git/config`, `${ROOT}/lib/x.txt`, `${ROOT}/lib/a/b.mjs`, `${ROOT}/lib/vendor/v.mjs`,
