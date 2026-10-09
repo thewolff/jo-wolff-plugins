@@ -408,12 +408,13 @@ Under Landlock, a single run or write that Landlock cannot fence goes to bubblew
 result says so ("under bubblewrap:" and the reason). Landlock can only grant: nothing inside a
 writable directory can be taken back out. So the gate hands a run to bubblewrap when a
 directory it would make writable holds a `.git` entry (a submodule under `lib/**`, for
-instance), the state directory, a protected path or the worktree root, or when a temp path
-holds the worktree or the state directory (a worktree under `/tmp` does). A file it would grant
-that has a second hard link goes to bubblewrap too. If bubblewrap does not work on the machine,
-that run or write is refused. Two cases stay on Landlock instead, whether or not bubblewrap
-works: a boundary path that does not exist yet, whose only grant would be such a directory
-(below), and a new file `pair_write` makes there.
+instance), the state directory or a protected path, or when a temp path holds the worktree or
+the state directory (a worktree under `/tmp` does). A file it would grant that has a second
+hard link goes to bubblewrap too. If bubblewrap does not work on the machine, that run or write
+is refused. The worktree root is never made writable, since it holds `.git`; what that leaves
+out (below) stays on Landlock whether or not bubblewrap works, and so does a new file
+`pair_write` makes where a directory grant would hold the root, a `.git`, the state directory
+or a protected path.
 
 In a Docker container with the default security options Landlock worked and bubblewrap did
 not, so a container needs no extra options when its kernel has Landlock.
@@ -423,6 +424,10 @@ existing file outside the boundary, as Seatbelt does:
 
 - A literal entry that exists is writable as that one file. A literal that does not exist yet
   cannot be created by `pair_run`, and the run's result names it; `pair_write` creates it.
+- A glob entry at the worktree root (`*.md`, `**`) grants the existing root files it matches
+  one by one, and the directories below the root as for any other glob. `pair_run` can write
+  an existing `README.md` under `*.md` but cannot create `x.md` in the root, and its result
+  names `*.md` and says to create such a file with `pair_write` first.
 - A glob entry whose directory does not exist yet (`newpkg/**`) needs a writable directory
   above it for `pair_run` to create anything there. Where that directory would be the worktree
   root, or would hold a `.git`, the state directory or a protected path, the gate leaves that

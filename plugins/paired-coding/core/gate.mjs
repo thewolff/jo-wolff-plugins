@@ -1394,10 +1394,16 @@ export const LANDLOCK_DEVICES = Object.freeze(["/dev/null", "/dev/zero", "/dev/t
  *      each existing matching file under the directory above its first glob segment as a
  *      `files` entry, and a `dirs` grant only on a directory the glob could hold a file under
  *      and none of whose existing files is outside the boundary (the outermost such ones), so
- *      that no existing file outside the boundary becomes writable. A glob whose fixed
- *      directory does not exist yet gets a `dirs` grant on its deepest existing directory
- *      under the same condition. `make_dir` only where the glob allows new directories: one
- *      with a `**` segment, or one whose fixed directory is missing;
+ *      that no existing file outside the boundary becomes writable. The worktree root never
+ *      gets one, since it holds .git: a glob at the root (`*.md`, `**`) has its matching root
+ *      files granted one by one and its subdirectories looked at in turn, and cannot create a
+ *      file directly in the root. A glob whose fixed directory does not exist yet gets a
+ *      `dirs` grant on its deepest existing directory under the same condition, unless that
+ *      grant would hold the root, a .git, the state directory or a protected path. `make_dir`
+ *      only where the glob allows new directories: one with a `**` segment, or one whose fixed
+ *      directory is missing. `uncreatable` names the entries whose new files no grant covers:
+ *      a missing literal, a glob whose missing directory got no grant, and a glob that could
+ *      hold a file directly in the root;
  *   4. nothing at or under a `.git` segment, the state directory or a protected path.
  * A `dirs` grant lets a command create a file of any name under it; that is the one way new
  * files can be allowed, since a rule needs an existing inode. So new files under a glob are
@@ -1406,17 +1412,18 @@ export const LANDLOCK_DEVICES = Object.freeze(["/dev/null", "/dev/zero", "/dev/t
  * agreed files, or ones the run made, as Seatbelt's per-path unlink allows. A rename cannot
  * take a file out of the grant, since Landlock wants REFER and MAKE_REG at the destination.
  * Literal files get no `remove`: deleting one needs a right on its whole directory.
- * Returns { notExpressible: reason } when an `rw_trees` or `dirs` path would hold the worktree
- * root, a `.git` entry, the state directory or a protected path, or when a file it would grant
- * has more than one hard link (a rule on an inode reaches every name it has). The adapter then
- * runs the command under bubblewrap. Throws when a path the ruleset would name passes through
- * a symlink inside the worktree, which refuses the run as bubblewrap's pinned binds do.
+ * Returns { notExpressible: reason } when an `rw_trees` path, or a `dirs` path wanted for an
+ * existing file, would hold the worktree root, a `.git` entry, the state directory or a
+ * protected path, or when a file it would grant has more than one hard link (a rule on an
+ * inode reaches every name it has). The adapter then runs the command under bubblewrap.
+ * Throws when a path the ruleset would name passes through a symlink inside the worktree,
+ * which refuses the run as bubblewrap's pinned binds do.
  * The adapter adds `command`, the socket filter is the helper's own, and the adapter checks
  * after each run that no link appeared where the run could write, as it does for bubblewrap.
  * @param {State} state
  * @param {string[]} extraAllow  absolute paths in the worktree also writable, as literal entries
  * @param {LandlockIo} io
- * @returns {LandlockRules | { notExpressible: string }}
+ * @returns {(LandlockRules & { uncreatable?: string[] }) | { notExpressible: string }}
  */
 export function landlockRulesFor(state, extraAllow, io) {
   const root = bwrapPath(state.root);
@@ -1482,9 +1489,11 @@ export function landlockRulesFor(state, extraAllow, io) {
   // reaches the whole tree, so there it makes no existing file writable that was not agreed,
   // and lets new files appear only where the boundary could have them. (.git and the denied
   // paths are left to the notExpressible checks below; everything under a fenced path is
-  // fenced too, so its subtree needs no look.) Computed bottom-up, once per directory.
+  // fenced too, so its subtree needs no look.) The worktree root is never clean: it holds
+  // .git, so a glob at the root is granted per file there and per directory below. Computed
+  // bottom-up, once per directory.
   /** @type {Map<string, boolean>} */
-  const cleanness = new Map();
+  const cleanness = new Map([[root, false]]);
   const clean = (dir) => {
     let c = cleanness.get(dir);
     if (c === undefined) {
@@ -1504,6 +1513,8 @@ export function landlockRulesFor(state, extraAllow, io) {
   };
   /** Boundary entries naming a path that does not exist yet: entry -> that path. */
   const missing = new Map();
+  /** Glob entries that could hold a file directly in the root, which no grant can create. */
+  const atRoot = new Set();
   const literal = (abs, entry) => {
     if (!grantable(abs)) return;
     checkNoSymlinkAbove(root, abs, io);
@@ -1518,6 +1529,7 @@ export function landlockRulesFor(state, extraAllow, io) {
     for (const seg of e.split("/")) { if (isGlob(seg)) break; fixed.push(seg); }
     const top = fixed.length ? `${root}/${fixed.join("/")}` : root;
     if (top !== root && !grantable(top)) continue;
+    if (top === root && e.split("/").slice(0, -1).every((seg) => seg === "**")) atRoot.add(raw);
     const makeDir = e.split("/").includes("**");
     checkNoSymlinkAbove(root, top, io);
     const st = io.lstat(top);
@@ -1538,13 +1550,13 @@ export function landlockRulesFor(state, extraAllow, io) {
     descend(top);
   }
   for (const p of extraAllow) literal(bwrapPath(p));
-  // A grant wanted only to make a missing path, where it would hold the root, a .git, the state
-  // directory or a protected path, is dropped rather than failing the run: the run goes ahead
-  // without it, and its note names the paths it cannot make (pair_write can).
+  // A grant wanted only to make a missing path, where it would hold a .git, the state directory
+  // or a protected path, is dropped rather than failing the run: the run goes ahead without it,
+  // and its note names the paths it cannot make (pair_write can). The root is never wanted.
   for (const d of forCreating) {
     if (forExisting.has(d)) continue;
     const hasGit = subtree(d).some((e) => e.path.split("/").at(-1).toLowerCase() === ".git");
-    if (within(d, root) || hasGit || denied.some((x) => within(d, x))) wantDirs.delete(d);
+    if (hasGit || denied.some((x) => within(d, x))) wantDirs.delete(d);
   }
   const dirs = outermost([...wantDirs.keys()]);
   for (const d of dirs) {
@@ -1575,7 +1587,7 @@ export function landlockRulesFor(state, extraAllow, io) {
     }
     return false;
   };
-  const uncreatable = [...missing].filter(([, abs]) => !makeable(abs)).map(([entry]) => entry);
+  const uncreatable = [...new Set(boundary)].filter((raw) => atRoot.has(raw) || (missing.has(raw) && !makeable(missing.get(raw))));
   return {
     files: [...files, ...outFiles],
     dirs: dirs.sort().map((path) => ({ path, make_dir: wantDirs.get(path), remove: true })),
