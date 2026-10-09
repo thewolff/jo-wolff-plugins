@@ -213,11 +213,17 @@ test("pair_run times out and kills its whole process group", { skip: !hasSandbox
   await openChangeSet(f);
   const t0 = Date.now();
   const r = await executeVerb("pair_run", { command: "(while :; do echo tick >> src/a.txt; sleep 0.05; done) & sleep 60", timeoutSeconds: 1 }, f.ctx);
-  assert.equal(r.result.timedOut, true);
+  assert.equal(r.result?.timedOut, true, r.text);
   assert.ok(Date.now() - t0 < 10000);
   const size = statSync(join(f.root, "src/a.txt")).size;
   await sleep(400);
   assert.equal(statSync(join(f.root, "src/a.txt")).size, size, "the background writer is dead");
+  // A timeout whose run ended in time is not a killed supervisor: the session stays open.
+  assert.doesNotMatch(r.text, /STOPPED/);
+  const state = JSON.parse(readFileSync(join(f.dir, "state.json"), "utf8"));
+  assert.equal(state.halt, null);
+  assert.equal(state.phase, "open");
+  assert.equal(journal(f).some((e) => e.type === "supervisor-killed"), false);
 });
 
 test("an aborted pair_run kills its group before it returns", { skip: !hasSandbox }, async () => {
@@ -226,10 +232,12 @@ test("an aborted pair_run kills its group before it returns", { skip: !hasSandbo
   const ac = new AbortController();
   setTimeout(() => ac.abort(), 500);
   const r = await executeVerb("pair_run", { command: "(while :; do echo tick >> src/a.txt; sleep 0.05; done) & sleep 60" }, { ...f.ctx, signal: ac.signal });
-  assert.equal(r.result.aborted, true);
+  assert.equal(r.result?.aborted, true, r.text);
   const size = statSync(join(f.root, "src/a.txt")).size;
   await sleep(400);
   assert.equal(statSync(join(f.root, "src/a.txt")).size, size);
+  assert.doesNotMatch(r.text, /STOPPED/);
+  assert.equal(JSON.parse(readFileSync(join(f.dir, "state.json"), "utf8")).halt, null, "an abort that ended in time leaves the session open");
 });
 
 test("pair_done refuses while a run is going, then reaps leftovers before its snapshot", { skip: !hasSandbox }, async () => {
@@ -330,19 +338,58 @@ test("a directory's mode change outside the boundary is an unapproved change at 
   assert.deepEqual(done.result.unapproved.map((u) => u.path), ["docs"]);
 });
 
-test("snapshotTree records each directory's mode and the root's as '.', and hashBoundary leaves directories out", () => {
+test("snapshotTree records each directory's mode and the root's as '.'; hashBoundary holds only the directories the boundary covers", () => {
   const f = fixture();
   mkdirSync(join(f.root, "src", "deep"));
   chmodSync(join(f.root, "src", "deep"), 0o2750);
+  chmodSync(join(f.root, "src"), 0o755);
   chmodSync(f.root, 0o755);
   const snap = snapshotTree(f.root, [".git"]);
   assert.equal(snap["."], "dir:0755");
   assert.equal(snap["src/deep"], "dir:2750");
   assert.match(snap["src/a.txt"], /^file:0[0-7]{3}:[0-9a-f]{64}$/);
   assert.equal(Object.keys(snap).some((k) => k === ".git" || k.startsWith(".git/")), false);
-  const hashed = hashBoundary(["src/**", "**"], f.root, [".git"]);
-  assert.equal(Object.values(hashed).some((fp) => fp.startsWith("dir:")), false);
-  assert.ok(hashed["src/a.txt"]);
+  const subtree = hashBoundary(["src/"], f.root, [".git"]);
+  assert.equal(subtree.src, "dir:0755");
+  assert.equal(subtree["src/deep"], "dir:2750");
+  assert.ok(subtree["src/a.txt"]);
+  assert.equal(hashBoundary(["**"], f.root, [".git"])["."], undefined, "never the root");
+  const files = hashBoundary(["src/*.txt"], f.root, [".git"]);
+  assert.equal(Object.values(files).some((fp) => fp.startsWith("dir:")), false);
+});
+
+test("a chmod of the worktree root is an unapproved change at pair_done, even under **", { skip: !hasSandbox }, async () => {
+  const f = fixture();
+  chmodSync(f.root, 0o755);
+  const cardId = await openChangeSet(f, ["**"]);
+  if (BACKEND === "landlock") {
+    const r = await executeVerb("pair_run", { command: "chmod 0777 ." }, f.ctx);
+    assert.equal(r.ok, true, r.text);
+    assert.equal(r.result.sandbox, "landlock", r.text);
+  } else {
+    // Seatbelt and bubblewrap refuse that chmod in a run, so here it comes from outside the sandbox.
+    chmodSync(f.root, 0o777);
+  }
+  assert.equal(statSync(f.root).mode & 0o777, 0o777);
+  const done = await executeVerb("pair_done", { cardId }, f.ctx);
+  assert.equal(done.result.halted, true, done.text);
+  assert.deepEqual(done.result.unapproved.map((u) => u.path), ["."]);
+});
+
+test("a chmod of a boundary directory between pair_propose and pair_begin makes the card stale", { skip: !hasSandbox }, async () => {
+  const f = fixture();
+  const docs = join(f.root, "docs");
+  mkdirSync(docs);
+  chmodSync(docs, 0o755);
+  writeFileSync(join(docs, "a.md"), "a\n");
+  assert.equal((await executeVerb("pair_start", {}, f.ctx)).ok, true);
+  const p = await executeVerb("pair_propose", { boundary: ["docs/"], decision: "d" }, f.ctx);
+  assert.equal(p.ok, true, p.text);
+  typed(f, "yes, go ahead with that");
+  chmodSync(docs, 0o777);
+  const b = await executeVerb("pair_begin", { cardId: p.result.card.id, quote: "go ahead" }, f.ctx);
+  assert.equal(b.ok, false, b.text);
+  assert.match(b.text, /a boundary file or directory changed since the card was shown; the card is stale/);
 });
 
 test("a pair_run that makes a link where it could write stops the session until a typed stop", { skip: !hasSandbox }, async () => {
