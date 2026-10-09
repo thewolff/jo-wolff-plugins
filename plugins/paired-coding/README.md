@@ -488,7 +488,7 @@ existing file outside the boundary, as Seatbelt does:
   group with `setsid` or a double fork: the helper stays outside the sandbox as the run's
   supervisor and kills them all when the command exits, times out or is aborted. On kernels
   before Landlock ABI 6 a run's own process can kill the supervisor first; a process that left
-  the group would then keep running with its run's write permission. Once the command exists,
+  the group would then keep running with its run's write permission. Once the helper has forked the command,
   the helper never dies of a signal by its own choice, so whenever it does, the gate stops the
   session, as for a link, until your partner types `pair stop`. That includes the gate's own
   `SIGKILL` when a timed-out or aborted run's helper has not ended within 3 seconds of its
@@ -502,7 +502,9 @@ existing file outside the boundary, as Seatbelt does:
   outside the boundary too. `pair_done`'s read-back records each worktree file's and
   directory's permission bits, so a permission change to a worktree file or directory outside
   the boundary stops the session there. The worktree root's own mode is never inside the
-  boundary, even under `**`. A directory created or removed with nothing in it is not a change
+  boundary, even under `**`. A chmod of the directory a subtree entry names (`docs` for
+  `docs/`) stops the session at `pair_done`: the entry covers what is under the directory, not
+  the directory itself. A directory created or removed with nothing in it is not a change
   in `pair_done`. The read-back skips `.git` and the snapshot
   exclusions, so under Landlock a `chmod +x` on an existing hook in `.git/hooks` goes unseen.
   It does not record owners, timestamps or extended attributes, and it never sees a change
