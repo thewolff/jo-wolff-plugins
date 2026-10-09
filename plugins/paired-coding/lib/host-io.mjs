@@ -25,7 +25,7 @@ import {
 import { homedir, tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import {
-  boundaryMatches, boundaryRoots, bwrapArgsFor, landlockRulesFor, pairRunProfile, pairWriteBwrap, pairWriteLandlock, pairWriteProfile,
+  boundaryMatches, boundaryRoots, bwrapArgsFor, directoryInBoundary, landlockRulesFor, pairRunProfile, pairWriteBwrap, pairWriteLandlock, pairWriteProfile,
   readState, serializeState, shQuote,
 } from "../core/gate.mjs";
 import { bwrapCommand, bwrapIo, bwrapProblem } from "./bwrap.mjs";
@@ -205,14 +205,16 @@ export function snapshotTree(root, exclusions = []) {
 }
 
 /**
- * Fingerprints of the files a boundary covers right now (directories' modes left out). A
- * literal entry that does not exist is recorded as "absent", so creating it also changes the
- * hash.
+ * Fingerprints of the files a boundary covers right now, and the modes of the directories it
+ * covers (directoryInBoundary). A literal entry that does not exist is recorded as "absent",
+ * so creating it also changes the hash.
  */
 export function hashBoundary(boundary, root, exclusions = []) {
   const snap = snapshotTree(root, exclusions);
   const out = {};
-  for (const [rel, fp] of Object.entries(snap)) if (!fp.startsWith("dir:") && boundaryMatches(boundary, rel)) out[rel] = fp;
+  for (const [rel, fp] of Object.entries(snap)) {
+    if (fp.startsWith("dir:") ? directoryInBoundary(boundary, rel) : boundaryMatches(boundary, rel)) out[rel] = fp;
+  }
   for (const e of boundary) {
     const literal = !/[*?]/.test(e) && !e.endsWith("/");
     if (literal && !Object.hasOwn(out, e)) out[e] = "absent";
@@ -719,6 +721,14 @@ export function writeSandboxed(opts) {
 }
 
 /**
+ * The signals pair-landlock blocks before it forks the command (landlock/src/main.rs: run()
+ * calls block_supervisor_signals, then fork). From then on each of them only makes it end the
+ * run and exit with a code, so a helper that died of one died before any command existed,
+ * for example on an abort at spawn, and nothing of the run can still be writing.
+ */
+const HELPER_BLOCKS_BEFORE_FORK = new Set(["SIGTERM", "SIGINT", "SIGHUP"]);
+
+/**
  * Run `command` with /bin/sh in the sandbox the state calls for (pairRunProfile on macOS;
  * landlockRulesFor on Linux, or bwrapArgsFor when Landlock is not this machine's backend or
  * cannot express the run), in its own process group, in the foreground. On timeout or abort the
@@ -735,7 +745,8 @@ export function writeSandboxed(opts) {
  * timeout or abort included: the helper ends everything its command started and then exits
  * with a code, also on the SIGTERM this function sends first, and never dies of a signal by its
  * own choice. One that did was killed before it ended the run's processes, and a process that
- * left the run's group may still be running with the run's write grant.
+ * left the run's group may still be running with the run's write grant. SIGTERM, SIGINT and
+ * SIGHUP are the exception (HELPER_BLOCKS_BEFORE_FORK).
  * @param {{ state: import("../core/gate.mjs").State, command: string, cwd: string, timeoutMs?: number, signal?: AbortSignal,
  *   onSpawn?: (pgid: number) => void, env?: Record<string, string>, maxOutput?: number,
  *   linkCheck?: { sinceMs: number, exclusions: string[] }, backend?: "landlock" | "bwrap" }} opts
@@ -811,7 +822,7 @@ export function runSandboxed(opts) {
       child.stderr.destroy();
       const error = failure ?? reapError;
       // An exit signal means a helper process ran; a spawn that never made one has none.
-      const killed = ran.backend === "landlock" && exitInfo.sig !== null;
+      const killed = ran.backend === "landlock" && exitInfo.sig !== null && !HELPER_BLOCKS_BEFORE_FORK.has(exitInfo.sig);
       resolve({ exitCode: exitInfo.code, signal: exitInfo.sig, stdout, stderr, timedOut, aborted, pgid, links: linksMade(), ...ran, ...(killed ? { supervisorKilled: exitInfo.sig } : {}), ...(error ? { error } : {}) });
     };
     child.on("error", (err) => {

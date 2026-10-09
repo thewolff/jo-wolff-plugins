@@ -125,10 +125,13 @@ the helper gets `SIGTERM`, `SIGINT` or `SIGHUP`, the helper:
 2. reaps them, and repeats until it has no child left;
 3. exits as the command did: with its exit code, or with 128 plus the signal number when a
    signal ended the command, as a shell reports it. A `SIGTERM`, `SIGINT` or `SIGHUP` to the
-   helper ends it the same way, with 128 plus that signal's number.
+   helper ends it the same way, with 128 plus that signal's number. The helper blocks those
+   three before it forks the command; one that arrives earlier, while it still reads its
+   ruleset, kills it before any command exists.
 
-So the helper never dies of a signal by its own choice. One that does was killed by a signal
-it does not handle (`SIGKILL`, for one) before it could end the command's processes.
+So once the command exists the helper never dies of a signal by its own choice. One that does
+was killed by a signal it does not handle (`SIGKILL`, for one) before it could end the
+command's processes.
 
 The helper forks before it restricts itself, so it is outside the sandbox. From ABI 6 the
 signal scope stops the command's processes from signalling it. On ABI 3 to 5 nothing stops
@@ -136,9 +139,9 @@ them: a process that kills the helper with `SIGKILL` ends the supervision. The c
 process-group kill still ends whatever stayed in the group, but a process that left the
 group keeps running, under the write grant it started with. An outside `SIGKILL` of the
 helper does the same on any ABI, so the gate sends `SIGTERM` first, and `SIGKILL` only to a
-helper still alive 3 seconds later. Whenever the helper dies of a signal, the gate's own
-`SIGKILL` included, supervision did not finish, and the gate stops the pairing session until
-the partner types `pair stop`.
+helper still alive 3 seconds later. Whenever the helper dies of a signal other than
+`SIGTERM`, `SIGINT` or `SIGHUP`, the gate's own `SIGKILL` included, supervision did not finish,
+and the gate stops the pairing session until the partner types `pair stop`.
 
 ## Exit codes
 

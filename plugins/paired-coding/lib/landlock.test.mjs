@@ -554,6 +554,10 @@ describe("live Landlock: pair_run", () => {
     const t = await run(f.state, `${escapee("timeout")} sleep 30`, { timeoutMs: 800 });
     assert.equal(t.timedOut, true);
     assert.equal(t.error, undefined);
+    // The helper ended the run on the gate's SIGTERM and exited 128+15: no killed supervisor.
+    assert.equal(t.signal, null);
+    assert.equal(t.exitCode, 143);
+    assert.equal(t.supervisorKilled, undefined);
     const ta = await stopsGrowing(f, "timeout");
     assert.ok(ta.a > 0, "the writer ran");
     assert.equal(ta.b, ta.a, "the writer outlived the timeout");
@@ -562,9 +566,45 @@ describe("live Landlock: pair_run", () => {
     const ab = await run(f.state, `${escapee("abort")} sleep 30`, { signal: ctl.signal });
     assert.equal(ab.aborted, true);
     assert.equal(ab.error, undefined);
+    assert.equal(ab.signal, null);
+    assert.equal(ab.exitCode, 143);
+    assert.equal(ab.supervisorKilled, undefined);
     const aa = await stopsGrowing(f, "abort");
     assert.ok(aa.a > 0, "the writer ran");
     assert.equal(aa.b, aa.a, "the writer outlived the abort");
+  });
+
+  live("a helper that dies of SIGTERM on an abort at spawn, before it forks, is not a killed supervisor", async () => {
+    const f = liveState(["lib/**"]);
+    // An already-aborted run is reaped before this process's event loop turns again. A plain
+    // command's ruleset line reaches the helper at once, so it has usually blocked SIGTERM and
+    // forked by then and ends the run with exit 143; a slow start can still die of the SIGTERM.
+    // A ruleset line longer than a pipe holds keeps the helper reading stdin, before it blocks
+    // any signal, until the event loop sends the rest: the gate's SIGTERM kills it there, every
+    // time, and no command ever ran.
+    const pad = `: ${"x".repeat(100_000)}; `;
+    for (const [label, file, mustDieEarly] of [["plain", "early.txt", false], ["long ruleset", "early-long.txt", true]]) {
+      const ctl = new AbortController();
+      ctl.abort();
+      let pgid = null;
+      try {
+        const command = `${mustDieEarly ? pad : ""}echo ran > lib/${file}; sleep 30`;
+        const r = await run(f.state, command, { signal: ctl.signal, onSpawn: (g) => { pgid = g; } });
+        assert.equal(r.backend, "landlock", label);
+        assert.equal(r.aborted, true, label);
+        assert.equal(r.error, undefined, label);
+        assert.equal(r.supervisorKilled, undefined, `${label}: signal ${r.signal}, exit ${r.exitCode}`);
+        if (mustDieEarly) assert.equal(r.signal, "SIGTERM", label);
+        if (r.signal === "SIGTERM") {
+          assert.equal(existsSync(join(f.root, "lib", file)), false, `${label}: the helper died before it forked`);
+        } else {
+          assert.equal(r.signal, null, label);
+          assert.equal(r.exitCode, 143, label);
+        }
+      } finally {
+        if (pgid) try { process.kill(-pgid, "SIGKILL"); } catch { /* already gone */ }
+      }
+    }
   });
 
   /** SIGKILL every process still appending to lib/bg-<name>.txt, wherever it is. */
