@@ -1,12 +1,16 @@
 //! pair-landlock: paired-coding's Linux write fence.
 //!
 //! Reads one JSON ruleset from the first line of stdin, turns it into a Landlock ruleset that
-//! handles every file-system write right the running kernel supports, sets no_new_privs,
-//! restricts itself, and execs `/bin/sh -c <command>`. Below Landlock ABI 9, which cannot
-//! refuse a connect to a pathname Unix socket, it also installs a seccomp filter that makes
-//! `socket(AF_UNIX, ...)` fail with EPERM. Everything on stdin after the first newline is left
-//! unread for the command. See README.md beside this crate for the contract.
+//! handles every file-system write right the running kernel supports, and runs
+//! `/bin/sh -c <command>` under it in a child that sets no_new_privs and restricts itself.
+//! Below Landlock ABI 9, which cannot refuse a connect to a pathname Unix socket, the child
+//! also installs a seccomp filter that makes `socket(AF_UNIX, ...)` fail with EPERM. The helper
+//! itself stays outside the sandbox as a child subreaper: when the command exits, or the helper
+//! gets SIGTERM, SIGINT or SIGHUP, it kills and reaps every process the command left behind,
+//! including ones that left its process group. Everything on stdin after the first newline is
+//! left unread for the command. See README.md beside this crate for the contract.
 
+use std::collections::HashMap;
 use serde::Deserialize;
 use std::ffi::CString;
 use std::io::{self, Write};
@@ -46,6 +50,7 @@ const REFER: u64 = 1 << 13;
 const TRUNCATE: u64 = 1 << 14;
 const RESOLVE_UNIX: u64 = 1 << 16;
 const SCOPE_ABSTRACT_UNIX_SOCKET: u64 = 1 << 0;
+const SCOPE_SIGNAL: u64 = 1 << 1;
 
 /// Rights on a listed file: rewrite it and truncate it.
 const FILE_RIGHTS: u64 = WRITE_FILE | TRUNCATE;
@@ -54,6 +59,11 @@ const FILE_RIGHTS: u64 = WRITE_FILE | TRUNCATE;
 /// all MAKE_REG alone allows; WRITE_FILE and TRUNCATE therefore reach every existing file in
 /// the tree as well.
 const DIR_RIGHTS: u64 = MAKE_REG | WRITE_FILE | TRUNCATE;
+/// Extra rights on a `dirs` entry marked `remove`: delete files under it and rename them within
+/// it. Landlock needs REFER on both ends of a rename or link that crosses directories, and
+/// MAKE_REG at the destination, so a file under a `remove` entry cannot be moved anywhere
+/// that is not granted the same way.
+const REMOVE_RIGHTS: u64 = REMOVE_FILE | REFER;
 
 /// The first ABI whose RESOLVE_UNIX right covers connecting to a pathname Unix socket. Below
 /// it the seccomp filter refuses every new Unix socket instead.
@@ -164,6 +174,8 @@ struct DirEntry {
     path: String,
     #[serde(default)]
     make_dir: bool,
+    #[serde(default)]
+    remove: bool,
 }
 
 struct Fail(i32, String);
@@ -197,10 +209,11 @@ fn handled_fs(abi: i64) -> u64 {
     h
 }
 
-/// Abstract Unix sockets outside the sandbox are unreachable from ABI 6.
+/// From ABI 6: abstract Unix sockets outside the sandbox are unreachable, and so is every
+/// process outside it by signal, the helper's own supervising process included.
 fn scoped(abi: i64) -> u64 {
     if abi >= 6 {
-        SCOPE_ABSTRACT_UNIX_SOCKET
+        SCOPE_ABSTRACT_UNIX_SOCKET | SCOPE_SIGNAL
     } else {
         0
     }
@@ -354,7 +367,14 @@ fn rules_for(rs: &Ruleset, handled: u64) -> Result<Vec<(i32, u64, String)>, Fail
         wanted.push((f, Kind::File, FILE_RIGHTS));
     }
     for d in &rs.dirs {
-        wanted.push((&d.path, Kind::Dir, if d.make_dir { DIR_RIGHTS | MAKE_DIR } else { DIR_RIGHTS }));
+        let mut rights = DIR_RIGHTS;
+        if d.make_dir {
+            rights |= MAKE_DIR;
+        }
+        if d.remove {
+            rights |= REMOVE_RIGHTS;
+        }
+        wanted.push((&d.path, Kind::Dir, rights));
     }
     for t in &rs.rw_trees {
         wanted.push((t, Kind::Dir, rw_tree_rights(handled)));
@@ -432,9 +452,181 @@ fn run() -> Result<(), Fail> {
     let abi = classify(running_abi())?;
     let rs = parse(&read_ruleset_line()?)?;
     let rules = rules_for(&rs, handled_fs(abi))?;
-    enforce(abi, &rules)?;
-    let err = Command::new("/bin/sh").arg("-c").arg(&rs.command).exec();
-    fail(EXIT_EXEC, format!("exec /bin/sh: {err}"))
+    // Block the signals the supervisor waits for before the child exists, so none is lost and
+    // none kills the supervisor before it can end what the command started.
+    let (wait_set, old_mask) = block_supervisor_signals();
+    // SAFETY: plain prctl with integer arguments.
+    if unsafe { libc::prctl(libc::PR_SET_CHILD_SUBREAPER, 1, 0, 0, 0) } < 0 {
+        return fail(EXIT_SANDBOX, format!("prctl(PR_SET_CHILD_SUBREAPER): {}", os_err(errno())));
+    }
+    // SAFETY: the helper is single-threaded here, so the child may run any code before exec.
+    let child = unsafe { libc::fork() };
+    if child < 0 {
+        return fail(EXIT_SANDBOX, format!("fork: {}", os_err(errno())));
+    }
+    if child == 0 {
+        // The subreaper attribute is not inherited across fork; the mask is, so restore it.
+        // SAFETY: old_mask is the mask sigprocmask returned.
+        unsafe { libc::sigprocmask(libc::SIG_SETMASK, &old_mask, std::ptr::null_mut()) };
+        enforce(abi, &rules)?;
+        let err = Command::new("/bin/sh").arg("-c").arg(&rs.command).exec();
+        return fail(EXIT_EXEC, format!("exec /bin/sh: {err}"));
+    }
+    for (fd, _, _) in &rules {
+        // SAFETY: closes the supervisor's copies of the O_PATH rule descriptors.
+        unsafe { libc::close(*fd) };
+    }
+    // stdin belongs to the command alone: a writer sees EPIPE once the command stops reading.
+    // SAFETY: closing fd 0 affects nothing else in this process.
+    unsafe { libc::close(0) };
+    let ended = supervise(child, &wait_set);
+    end_descendants();
+    exit_like(ended)
+}
+
+/// The signals that end a run early. The supervisor also waits for SIGCHLD.
+const STOP_SIGNALS: [i32; 3] = [libc::SIGTERM, libc::SIGINT, libc::SIGHUP];
+
+/// Blocks SIGCHLD and STOP_SIGNALS; returns that set and the mask before it.
+fn block_supervisor_signals() -> (libc::sigset_t, libc::sigset_t) {
+    // SAFETY: sigset_t is a plain bit set that sigemptyset initialises.
+    unsafe {
+        let mut set: libc::sigset_t = std::mem::zeroed();
+        let mut old: libc::sigset_t = std::mem::zeroed();
+        libc::sigemptyset(&mut set);
+        libc::sigaddset(&mut set, libc::SIGCHLD);
+        for s in STOP_SIGNALS {
+            libc::sigaddset(&mut set, s);
+        }
+        libc::sigprocmask(libc::SIG_BLOCK, &set, &mut old);
+        (set, old)
+    }
+}
+
+/// How the run ended: the command's wait status, or a stop signal that reached the supervisor
+/// while the command was still running.
+enum Ended {
+    Status(i32),
+    Stopped(i32),
+}
+
+/// Waits until the command exits or a stop signal arrives, reaping every child on the way:
+/// orphans that left the process group are reparented to this subreaper and end here too.
+fn supervise(main: libc::pid_t, wait_set: &libc::sigset_t) -> Ended {
+    loop {
+        loop {
+            let mut st = 0;
+            // SAFETY: waitpid with a valid status pointer.
+            let r = unsafe { libc::waitpid(-1, &mut st, libc::WNOHANG) };
+            if r == main {
+                return Ended::Status(st);
+            }
+            if r <= 0 {
+                break;
+            }
+        }
+        // SAFETY: wait_set holds signals this thread has blocked.
+        let sig = unsafe { libc::sigwaitinfo(wait_set, std::ptr::null_mut()) };
+        if STOP_SIGNALS.contains(&sig) {
+            return Ended::Stopped(sig);
+        }
+    }
+}
+
+/// The parent pid and state from the text of /proc/<pid>/stat. The command name in field 2 may
+/// itself hold spaces and parentheses, so parsing starts after its last `)`.
+fn stat_ppid(stat: &[u8]) -> Option<libc::pid_t> {
+    let close = stat.iter().rposition(|&b| b == b')')?;
+    let rest = std::str::from_utf8(&stat[close + 1..]).ok()?;
+    let mut fields = rest.split_ascii_whitespace();
+    fields.next()?;
+    fields.next()?.parse().ok()
+}
+
+/// Every live descendant of `me`, from the parent links in /proc.
+fn descendants(me: libc::pid_t) -> Vec<libc::pid_t> {
+    let mut parent: HashMap<libc::pid_t, libc::pid_t> = HashMap::new();
+    if let Ok(dir) = std::fs::read_dir("/proc") {
+        for e in dir.flatten() {
+            let Some(pid) = e.file_name().to_str().and_then(|s| s.parse::<libc::pid_t>().ok()) else { continue };
+            if let Some(ppid) = std::fs::read(format!("/proc/{pid}/stat")).ok().as_deref().and_then(stat_ppid) {
+                parent.insert(pid, ppid);
+            }
+        }
+    }
+    descendants_in(&parent, me)
+}
+
+fn descendants_in(parent: &HashMap<libc::pid_t, libc::pid_t>, me: libc::pid_t) -> Vec<libc::pid_t> {
+    let mut out: Vec<libc::pid_t> = parent
+        .keys()
+        .copied()
+        .filter(|&p| {
+            let mut q = p;
+            // Bounded, in case pid reuse during the scan made a cycle.
+            for _ in 0..=parent.len() {
+                match parent.get(&q) {
+                    Some(&pp) if pp == me => return true,
+                    Some(&pp) if pp > 1 => q = pp,
+                    _ => return false,
+                }
+            }
+            false
+        })
+        .collect();
+    out.sort_unstable();
+    out
+}
+
+/// Kills every remaining descendant and reaps them until this process has no child left. A
+/// process killed while it had children leaves them to this subreaper, and the next scan finds
+/// them, so the loop ends only when the whole tree the command started is gone.
+fn end_descendants() {
+    // SAFETY: getpid cannot fail.
+    let me = unsafe { libc::getpid() };
+    loop {
+        for pid in descendants(me) {
+            // SAFETY: plain kill; ESRCH for a process that already ended is harmless.
+            unsafe { libc::kill(pid, libc::SIGKILL) };
+        }
+        let mut reaped = false;
+        loop {
+            let mut st = 0;
+            // SAFETY: waitpid with a valid status pointer.
+            let r = unsafe { libc::waitpid(-1, &mut st, libc::WNOHANG) };
+            if r > 0 {
+                reaped = true;
+                continue;
+            }
+            if r < 0 && errno() == libc::ECHILD {
+                return;
+            }
+            break;
+        }
+        if !reaped {
+            std::thread::sleep(std::time::Duration::from_millis(2));
+        }
+    }
+}
+
+/// Exits as the command did: with its exit code, or by the signal that ended it (or that ended
+/// the run), so the caller sees what it would have seen without the supervisor.
+fn exit_like(ended: Ended) -> ! {
+    let sig = match ended {
+        Ended::Status(st) if libc::WIFEXITED(st) => std::process::exit(libc::WEXITSTATUS(st)),
+        Ended::Status(st) => libc::WTERMSIG(st),
+        Ended::Stopped(sig) => sig,
+    };
+    // SAFETY: resets one signal to its default action, unblocks it and raises it.
+    unsafe {
+        libc::signal(sig, libc::SIG_DFL);
+        let mut set: libc::sigset_t = std::mem::zeroed();
+        libc::sigemptyset(&mut set);
+        libc::sigaddset(&mut set, sig);
+        libc::sigprocmask(libc::SIG_UNBLOCK, &set, std::ptr::null_mut());
+        libc::kill(libc::getpid(), sig);
+    }
+    std::process::exit(128 + sig)
 }
 
 fn main() {
@@ -472,7 +664,7 @@ mod tests {
         // Reading, listing and executing are never handled, so they stay allowed.
         assert_eq!(handled_fs(99) & 0b1101, 0);
         assert_eq!(scoped(5), 0);
-        assert_eq!(scoped(6), SCOPE_ABSTRACT_UNIX_SOCKET);
+        assert_eq!(scoped(6), SCOPE_ABSTRACT_UNIX_SOCKET | SCOPE_SIGNAL);
     }
 
     /// A classic-BPF interpreter for the opcodes socket_filter uses, over one seccomp_data.
@@ -538,23 +730,55 @@ mod tests {
     }
 
     #[test]
-    fn refer_is_never_granted() {
+    fn refer_and_remove_come_only_with_a_remove_dirs_entry() {
         for abi in 3..=12 {
             let h = handled_fs(abi);
             assert_eq!(rw_tree_rights(h) & REFER, 0);
             assert_eq!(rw_tree_rights(h) & RESOLVE_UNIX, 0);
-            assert_eq!((DIR_RIGHTS | MAKE_DIR | FILE_RIGHTS) & REFER, 0);
+            assert_eq!((DIR_RIGHTS | MAKE_DIR | FILE_RIGHTS) & (REFER | REMOVE_FILE), 0);
+            assert_eq!(REMOVE_RIGHTS & h, REMOVE_FILE | REFER);
         }
+        // Directories are never removable or renamable, even under a remove entry.
+        assert_eq!(REMOVE_RIGHTS & (REMOVE_DIR | MAKE_SYM), 0);
+        let base = std::fs::canonicalize(std::env::temp_dir()).unwrap();
+        let p = base.to_str().unwrap();
+        let line = format!(r#"{{"command":"true","dirs":[{{"path":"{p}"}},{{"path":"{p}","remove":true}},{{"path":"{p}","make_dir":true,"remove":true}}]}}"#);
+        let rules = rules_for(&parse(line.as_bytes()).ok().unwrap(), handled_fs(6)).ok().unwrap();
+        let rights: Vec<u64> = rules.iter().map(|r| r.1).collect();
+        for (fd, _, _) in &rules {
+            unsafe { libc::close(*fd) };
+        }
+        assert_eq!(rights, vec![DIR_RIGHTS, DIR_RIGHTS | REMOVE_RIGHTS, DIR_RIGHTS | MAKE_DIR | REMOVE_RIGHTS]);
     }
 
     #[test]
     fn parse_rejects_unknown_fields_and_empty_commands() {
         assert!(parse(br#"{"command":"true"}"#).is_ok());
         assert!(parse(br#"{"command":"true","dirs":[{"path":"/x","make_dir":true}]}"#).is_ok());
+        assert!(parse(br#"{"command":"true","dirs":[{"path":"/x","remove":true}]}"#).is_ok());
         assert!(parse(br#"{"command":"true","refer":["/x"]}"#).is_err());
         assert!(parse(br#"{"command":"true","dirs":[{"path":"/x","refer":true}]}"#).is_err());
         assert!(parse(br#"{"command":""}"#).is_err());
         assert!(parse(br#"{"files":[]}"#).is_err());
+    }
+
+    #[test]
+    fn stat_parsing_survives_odd_command_names() {
+        assert_eq!(stat_ppid(b"42 (sh) S 7 42 42 0 -1"), Some(7));
+        assert_eq!(stat_ppid(b"42 (a) b) (c) R 9 1 1"), Some(9));
+        assert_eq!(stat_ppid(b"42 (x y) Z 1 0 0"), Some(1));
+        assert_eq!(stat_ppid(b"garbage"), None);
+    }
+
+    #[test]
+    fn descendants_follow_parent_links_to_any_depth() {
+        // 10 is the helper; 11 its child; 12 an orphan reparented to it; 13 under 11; 20 and
+        // 21 belong to someone else; 30 and 31 point at each other (pid reuse mid-scan).
+        let parent: HashMap<libc::pid_t, libc::pid_t> =
+            [(10, 1), (11, 10), (12, 10), (13, 11), (14, 13), (20, 1), (21, 20), (30, 31), (31, 30)].into_iter().collect();
+        assert_eq!(descendants_in(&parent, 10), vec![11, 12, 13, 14]);
+        assert_eq!(descendants_in(&parent, 20), vec![21]);
+        assert_eq!(descendants_in(&parent, 99), Vec::<libc::pid_t>::new());
     }
 
     #[test]

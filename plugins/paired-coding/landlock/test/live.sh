@@ -26,6 +26,7 @@ P_OPENW='open(my $f, ">>", $ARGV[0]) ? print "ok\n" : print 0+$!, " $!\n"'
 P_ABSTRACT='use Socket; socket(my $s, AF_UNIX, SOCK_STREAM, 0) or do { print 0+$!, " $!\n"; exit }; connect($s, pack_sockaddr_un("\0$ARGV[0]")) ? print "ok\n" : print 0+$!, " $!\n"'
 P_PATHSOCK='use Socket; socket(my $s, AF_UNIX, SOCK_STREAM, 0) or do { print 0+$!, " $!\n"; exit }; connect($s, pack_sockaddr_un($ARGV[0])) ? print "ok\n" : print 0+$!, " $!\n"'
 P_PAIR='use Socket; socketpair(my $p1, my $p2, AF_UNIX, SOCK_STREAM, 0) or do { print 0+$!, " $!\n"; exit }; syswrite($p1, "hi"); sysread($p2, my $x, 2); print "$x\n"'
+P_KILL='kill(9, $ARGV[0]) ? print "ok\n" : print 0+$!, " $!\n"'
 
 abi=$("$BIN" --abi) || { echo "Landlock is missing or below ABI 3 here (--abi printed '$abi'); nothing to test"; exit 1; }
 echo "kernel $(uname -r), $(uname -m), uid $(id -u), Landlock ABI $abi, binary $BIN"
@@ -83,6 +84,68 @@ check "rename out of a dirs entry" "13 Permission denied" "$(inside_perl "$P_REN
 check "rename out of an rw_tree into a dirs entry" "18 Invalid cross-device link" "$(sandboxed "printf t > $W/tmp/t; perl -e '$P_RENAME' $W/tmp/t $W/repo/newdir/t")"
 check "mv out of a dirs entry (copy fallback) also refused" 1 "$(sandboxed "mv $W/repo/newdir/moveme $W/outside/moved 2>$W/tmp/mv.err; echo \$?")"
 check "moveme still in place" m "$(cat "$W/repo/newdir/moveme")"
+
+echo "--- dirs with remove: delete and rename files under it, never directories, never out of it"
+mkdir -p "$W/repo/clean/sub" "$W/repo/clean/emptysub" "$W/repo/clean2"
+printf a > "$W/repo/clean/a.txt"
+printf b > "$W/repo/clean/b.txt"
+printf s > "$W/repo/clean/sub/s.txt"
+printf r > "$W/repo/clean/sub/r.txt"
+printf o > "$W/repo/clean/out.txt"
+printf t > "$W/repo/clean/to-tmp.txt"
+# listed.txt is a files entry; clean and clean2 are remove entries; newdir is a plain dirs entry.
+rules_rm() {
+  printf '{"files":["%s","/dev/null"],"dirs":[{"path":"%s","remove":true},{"path":"%s","remove":true},{"path":"%s"}],"rw_trees":["%s"],"command":%s}\n' \
+    "$W/repo/listed.txt" "$W/repo/clean" "$W/repo/clean2" "$W/repo/newdir" "$W/tmp" "$(json "$1")"
+}
+rm_sandboxed() { rules_rm "$1" | "$BIN" 2>&1; }
+rm_perl() { rules_rm "perl -e '$1' $2" | "$BIN" 2>&1; }
+check "rm in a remove entry" gone "$(rm_sandboxed "rm $W/repo/clean/a.txt && [ ! -e $W/repo/clean/a.txt ] && echo gone")"
+check "mv within a remove entry" b "$(rm_sandboxed "mv $W/repo/clean/b.txt $W/repo/clean/b2.txt && cat $W/repo/clean/b2.txt")"
+check "sed -i in a subdirectory of a remove entry" S "$(rm_sandboxed "sed -i s/s/S/ $W/repo/clean/sub/s.txt && cat $W/repo/clean/sub/s.txt")"
+check "rm in a subdirectory of a remove entry" gone "$(rm_sandboxed "rm $W/repo/clean/sub/r.txt && [ ! -e $W/repo/clean/sub/r.txt ] && echo gone")"
+check "rename(2) from one remove entry to another" ok "$(rm_perl "$P_RENAME" "$W/repo/clean/b2.txt $W/repo/clean2/b.txt")"
+check "rename(2) out of a remove entry to an ungranted dir" "13 Permission denied" "$(rm_perl "$P_RENAME" "$W/repo/clean/out.txt $W/outside/out.txt")"
+check "mv out of a remove entry to an ungranted dir is refused" 1 "$(rm_sandboxed "mv $W/repo/clean/out.txt $W/outside/out.txt 2>/dev/null; echo \$?")"
+check "the file mv tried to take out is still in place" o "$(cat "$W/repo/clean/out.txt")"
+check "rename(2) out of a remove entry into an rw_tree (no REFER there)" "18 Invalid cross-device link" "$(rm_perl "$P_RENAME" "$W/repo/clean/to-tmp.txt $W/tmp/to-tmp.txt")"
+check "rename(2) from a remove entry into a plain dirs entry (no REFER there)" "18 Invalid cross-device link" "$(rm_perl "$P_RENAME" "$W/repo/clean/to-tmp.txt $W/repo/newdir/to-tmp.txt")"
+check "hard link from outside into a remove entry" "18 Invalid cross-device link" "$(rm_perl "$P_LINK" "$W/outside/secret.txt $W/repo/clean/hl")"
+check "rmdir in a remove entry" "13 Permission denied" "$(rm_perl 'rmdir($ARGV[0]) ? print "ok\n" : print 0+$!, " $!\n"' "$W/repo/clean/emptysub")"
+check "symlink in a remove entry" "13 Permission denied" "$(rm_perl 'symlink($ARGV[0], $ARGV[1]) ? print "ok\n" : print 0+$!, " $!\n"' "$W/outside/secret.txt $W/repo/clean/sym")"
+check "rm of a files entry is refused next to remove entries" kept "$(rm_sandboxed "rm -f $W/repo/listed.txt 2>/dev/null; [ -e $W/repo/listed.txt ] && echo kept")"
+check "rm in a plain dirs entry is still refused" kept "$(rm_sandboxed "rm -f $W/repo/newdir/existing.txt 2>/dev/null; [ -e $W/repo/newdir/existing.txt ] && echo kept")"
+
+echo "--- the helper ends every process the command started, inside or outside its process group"
+# The writer appends to bg-<case>.txt every 50 ms; once the helper returns, the file must stop
+# growing. A marker in its command line finds any survivor in /proc without procps.
+writer() { printf "while :; do echo t >> $W/repo/clean2/bg-%s.txt; sleep 0.05; done # pair-landlock-bg-%s-$$" "$1" "$1"; }
+# "b[g]" so that grep's own command line, which holds the pattern, does not match it.
+survivors() { grep -l "pair-landlock-b[g]-$1-$$" /proc/[0-9]*/cmdline 2>/dev/null | wc -l | tr -d ' '; }
+stops_growing() {
+  a=$(wc -c < "$W/repo/clean2/bg-$1.txt" | tr -d ' ')
+  sleep 0.4
+  b=$(wc -c < "$W/repo/clean2/bg-$1.txt" | tr -d ' ')
+  if [ "$a" -gt 0 ] && [ "$a" = "$b" ]; then echo stopped; else echo "grew from $a to $b"; fi
+}
+rm_sandboxed "setsid sh -c '$(writer setsid)' </dev/null >/dev/null 2>&1 & sleep 0.3" >/dev/null
+check "a setsid writer stops when the command exits" stopped "$(stops_growing setsid)"
+check "no setsid writer is left" 0 "$(survivors setsid)"
+rm_sandboxed "( setsid sh -c '$(writer double)' </dev/null >/dev/null 2>&1 & ); sleep 0.3" >/dev/null
+check "a double-forked setsid writer stops when the command exits" stopped "$(stops_growing double)"
+rules_rm "setsid sh -c '$(writer term)' </dev/null >/dev/null 2>&1 & sleep 30" | "$BIN" >/dev/null 2>&1 &
+helper=$!
+sleep 0.5
+kill -TERM "$helper"
+wait "$helper"
+check "SIGTERM to the helper: it dies of SIGTERM" 143 "$?"
+check "SIGTERM to the helper: the setsid writer stops" stopped "$(stops_growing term)"
+check "SIGTERM to the helper: no writer is left" 0 "$(survivors term)"
+if [ "$abi" -ge 6 ]; then
+  # The command's shell is the supervisor's child, so $PPID inside it is the supervisor.
+  check "the command cannot signal the helper (ABI 6 signal scope)" "1 Operation not permitted" "$(rm_perl "$P_KILL" '$PPID')"
+fi
+check "a command killed by a signal: the helper dies of the same one" 143 "$(rules 'kill -TERM $$' | "$BIN" >/dev/null 2>&1; echo $?)"
 
 echo "--- symlinks are resolved at open"
 check "write through a symlink to an unlisted file" "13 Permission denied" "$(inside_perl "$P_OPENW" "$W/repo/link-to-secret")"

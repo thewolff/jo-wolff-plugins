@@ -26,7 +26,7 @@ import { homedir, tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import {
   boundaryMatches, boundaryRoots, bwrapArgsFor, landlockRulesFor, pairRunProfile, pairWriteBwrap, pairWriteLandlock, pairWriteProfile,
-  readState, serializeState,
+  readState, serializeState, shQuote,
 } from "../core/gate.mjs";
 import { bwrapCommand, bwrapIo, bwrapProblem } from "./bwrap.mjs";
 import { landlockAbi, landlockCommand, landlockIo, landlockProblem } from "./landlock.mjs";
@@ -402,8 +402,20 @@ function liveMembers(pgids) {
 }
 
 /**
+ * Whether `pid` is a pair-landlock supervisor: the helper stays outside the sandbox as a child
+ * subreaper and kills every process the command started, in its group or not, when it gets
+ * SIGTERM. Its command name is the binary's, cut to 15 bytes ("pair-landlock-x").
+ */
+function landlockSupervisor(pid) {
+  try { return readFileSync(`/proc/${pid}/comm`, "utf8").startsWith("pair-landlock"); } catch { return false; }
+}
+
+/**
  * Kill every process in each group and wait until none is left alive (zombies count as dead:
- * a zombie whose parent is this blocked event loop cannot be reaped while we wait). Synchronous.
+ * a zombie whose parent is this blocked event loop cannot be reaped while we wait). A group led
+ * by a pair-landlock supervisor first gets SIGTERM at its leader, and up to `timeoutMs` for the
+ * leader to end, so that it can kill the processes that left the group; SIGKILL to the group
+ * would end the supervisor first and leave them running. Synchronous.
  * Throws when a group is still alive after `timeoutMs`.
  * @param {number[]} pgids
  * @returns {number[]} the groups that still had live members when called
@@ -413,6 +425,17 @@ export function reapGroups(pgids, { timeoutMs = 3000 } = {}) {
   if (groups.length === 0) return [];
   const alive = [...new Set(liveMembers(groups).map((m) => m.pgid))];
   const end = Date.now() + timeoutMs;
+  const supervisors = process.platform === "linux" ? groups.filter(landlockSupervisor) : [];
+  if (supervisors.length) {
+    for (const g of supervisors) {
+      try { process.kill(g, "SIGTERM"); } catch (err) { if (err?.code !== "ESRCH" && err?.code !== "EPERM") throw err; }
+    }
+    while (Date.now() <= end) {
+      const live = new Set(liveMembers(supervisors).map((m) => m.pid));
+      if (!supervisors.some((g) => live.has(g))) break;
+      sleepSync(20);
+    }
+  }
   for (;;) {
     for (const g of groups) {
       try { process.kill(-g, "SIGKILL"); } catch (err) { if (err?.code !== "ESRCH" && err?.code !== "EPERM") throw err; }
@@ -494,9 +517,10 @@ function runCommand(state, command, cwd, override) {
 
 /**
  * What the sandbox runs for pair_write's `script` (writeSandboxed): sandbox-exec with the
- * open-phase profile on macOS; on Linux an in-place write through the pair-landlock helper
- * (pairWriteLandlock), or bubblewrap's staged write (pairWriteBwrap) when Landlock is not this
- * machine's backend or cannot keep the write to the file it names.
+ * open-phase profile on macOS; on Linux the pair-landlock helper with pairWriteLandlock's plan,
+ * which writes in place or, for a target that is a link, runs `script` with a grant on the
+ * target's directory; or bubblewrap's staged write (pairWriteBwrap) when Landlock is not this
+ * machine's backend or cannot express the write.
  * @param {{ state: import("../core/gate.mjs").State, path: string, tempPath: string, backend?: "landlock" | "bwrap" }} opts
  * @param {string} script
  * @returns {SandboxedCommand}
@@ -510,7 +534,9 @@ function writeCommand(opts, script) {
   if (linuxBackend(opts.backend) === "landlock") {
     const plan = pairWriteLandlock(opts.state, opts.path, landlockIo);
     if (!("notExpressible" in plan)) {
-      const { file, input } = landlockCommand(plan, plan.command);
+      if ("staged" in plan && dirname(opts.tempPath) !== dirname(opts.path)) throw new Error("the staged write's temp file has to be beside its target");
+      const command = "staged" in plan ? `set -- ${shQuote(opts.path)} ${shQuote(opts.tempPath)}\n${script}` : plan.command;
+      const { file, input } = landlockCommand(plan, command);
       return { file, args: [], fds: [], close: noop, input, backend: "landlock", writable: [] };
     }
     fellBack = fallBack(plan.notExpressible);
@@ -536,8 +562,10 @@ function writeCommand(opts, script) {
  * straight into the target, in place: Landlock grants the one existing file, or for a new one
  * its directory with the shell's noclobber on, so the create fails on anything already there.
  * A target that is a symlink or has a second hard link, which an in-place write would follow,
- * goes to bubblewrap's staged write instead (`fellBack` says why). Landlock opens every path
- * component as the kernel resolves it, so a swapped symlink fails there too.
+ * gets the staged write above under a Landlock grant on its directory; where that grant would
+ * hold .git (the worktree root, for one), bubblewrap stages it instead (`fellBack` says why).
+ * Landlock opens every path component as the kernel resolves it, so a swapped symlink fails
+ * there too.
  *
  * Synchronous: pair_write and pair_edit run under the session lock.
  * @param {{ state: import("../core/gate.mjs").State, path: string, tempPath: string, content: string, backend?: "landlock" | "bwrap" }} opts
@@ -587,8 +615,9 @@ export function writeSandboxed(opts) {
  * landlockRulesFor on Linux, or bwrapArgsFor when Landlock is not this machine's backend or
  * cannot express the run), in its own process group, in the foreground. On timeout or abort the
  * whole group is killed and reaped before this resolves. On a normal exit the group is left as
- * it is (pair_done reaps it before its snapshot); under bubblewrap its own PID namespace ends
- * every process the command started when the command exits. With `linkCheck`, `links` in the
+ * it is (pair_done reaps it before its snapshot); under bubblewrap its own PID namespace, and
+ * under Landlock the helper's supervising subreaper, ends every process the command started
+ * when the command exits, whether it stayed in the group or not. With `linkCheck`, `links` in the
  * result lists what the run made where it could write in the worktree that a later write could
  * follow out of the agreement (newLinks, since `linkCheck.sinceMs`), checked after every
  * process of a killed run is gone. `backend` names the sandbox the run had, and `fellBack` why
