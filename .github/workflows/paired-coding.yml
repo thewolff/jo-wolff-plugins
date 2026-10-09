@@ -1,0 +1,47 @@
+name: paired-coding
+
+on:
+  push:
+    paths:
+      - "plugins/paired-coding/**"
+      - ".github/workflows/paired-coding.yml"
+  pull_request:
+    paths:
+      - "plugins/paired-coding/**"
+      - ".github/workflows/paired-coding.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  linux:
+    name: node --test, bubblewrap live (${{ matrix.runner }})
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [ubuntu-24.04, ubuntu-24.04-arm]
+    runs-on: ${{ matrix.runner }}
+    defaults:
+      run:
+        working-directory: plugins/paired-coding
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+      - name: Install bubblewrap
+        run: sudo apt-get update && sudo apt-get install -y bubblewrap
+      - name: Allow unprivileged user namespaces
+        # Ubuntu 24.04 runners restrict them through AppArmor
+        # (https://github.com/actions/runner-images/issues/10443); the image change that would have
+        # lifted it (https://github.com/actions/runner-images/pull/11489) was closed unmerged.
+        run: |
+          if [ -e /proc/sys/kernel/apparmor_restrict_unprivileged_userns ]; then
+            sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+          fi
+      - name: bubblewrap smoke check
+        run: bwrap --ro-bind / / --dev /dev --proc /proc --unshare-all /bin/true && echo ok
+      - name: Tests, with the live bubblewrap cases required to run
+        run: node --test
+        env:
+          PAIRED_CODING_REQUIRE_BWRAP: "1"

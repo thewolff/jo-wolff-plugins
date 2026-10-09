@@ -554,6 +554,23 @@ describe("runStart and runEnd", () => {
     const s = { ...opened(), halt: { reason: "unapproved write" } };
     assert.match(checkWrite(s, { path: "src/a.ts" }).reason, /stopped/);
   });
+
+  test("a run that made a link stops the session: pair_done refuses, only a typed stop ends it", () => {
+    const host = fakeHost();
+    let s = ok(runStart(opened(host), { runId: "r1" }));
+    const end = runEnd(s, { runId: "r1", exitCode: 0, links: ["src/ln", ".git"] });
+    s = ok(end);
+    assert.match(s.halt.reason, /made a link or a \.git entry.*src\/ln, \.git/);
+    assert.deepEqual(end.journal.map((e) => e.type).filter((t) => t === "link-made"), ["link-made"]);
+    refusedWith(pairDone(s, { cardId: "card-1" }, host.io), /stopped.*only your partner ends it, by typing pair stop/);
+    refusedWith(runStart(s, { runId: "r2" }), /stopped/);
+    assert.match(checkWrite(s, { path: "src/a.ts" }).reason, /stopped/);
+  });
+
+  test("a run that made no link leaves the session as it was", () => {
+    const s = ok(runEnd(ok(runStart(opened(), { runId: "r1" })), { runId: "r1", exitCode: 0, links: [] }));
+    assert.equal(s.halt, null);
+  });
 });
 
 // ─── pair_note and the roadmap ──────────────────────────────────────────────────────────

@@ -4,24 +4,25 @@
 // adapter registers, and the tests fire OMP's events at them the way the host does (tool_call
 // before a tool, input on a typed turn, execute with the tool's final arguments,
 // session_shutdown at exit). Nothing below the adapter is faked: the shared session layer, the
-// gate core, the file store and the real macOS sandbox all run, against a temp worktree and a
-// temp state base, so the real ~/.local/state is never touched. Sandbox cases skip where
-// sandbox-exec does not exist.
+// gate core, the file store and the real sandbox (Seatbelt on macOS, bubblewrap on Linux) all
+// run, against a temp worktree and a temp state base, so the real ~/.local/state is never
+// touched. Sandbox cases skip where neither sandbox is usable.
 //
 // Importing the .ts subject directly is itself a test: node strips the erasable types and loads
 // the module without Bun.
 
 import { test, describe } from "node:test";
 import assert from "node:assert/strict";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
 
 import { CARRIED_PHRASE, PAIR_TOOLS } from "../core/gate.mjs";
+import { sandboxProblem } from "../lib/host-io.mjs";
 import pairedCodingOmp, { STOP_NOTICE, TREE_NOTICE } from "./paired-coding-omp.ts";
 
-const HAS_SANDBOX = process.platform === "darwin" && existsSync("/usr/bin/sandbox-exec");
+const HAS_SANDBOX = sandboxProblem() === null;
 const sandboxOnly = HAS_SANDBOX ? test : test.skip;
 
 // A schema builder with the chain the adapter uses; the host's real one is checked live.
@@ -112,9 +113,23 @@ async function openChangeSet(s, boundary) {
   assert.equal(begun.ok, true, begun.text);
 }
 
-const alive = (pid) => {
+/**
+ * Whether a process a run started is still alive. On macOS by the pid the run echoed. On Linux
+ * that pid is one inside bubblewrap's PID namespace and names nothing out here, so by `token`,
+ * a string the command carries in its own text, looked for in every host process's command line.
+ */
+const alive = (pid, token) => {
+  if (process.platform === "linux") {
+    for (const p of readdirSync("/proc")) {
+      if (!/^\d+$/.test(p)) continue;
+      try { if (readFileSync(`/proc/${p}/cmdline`, "utf8").includes(token)) return true; } catch { /* gone */ }
+    }
+    return false;
+  }
   try { process.kill(pid, 0); return true; } catch (err) { return err.code !== "ESRCH"; }
 };
+/** A sleep length no other test uses, so it doubles as the token alive() looks for. */
+const uniqueSleep = (secs) => `${secs}.${String(Math.floor(Math.random() * 1e9)).padStart(9, "0")}`;
 
 describe("inert until pair_start", () => {
   test("host tools pass and no file is created, for every event the adapter handles", async () => {
@@ -227,14 +242,14 @@ describe("pair_start refusals", () => {
     assert.equal((await blanks.call("pair_start")).ok, true, "only empty entries: check skipped");
   });
 
-  test("refused on a platform without sandbox-exec, and the session stays inert", async () => {
+  test("refused on a platform with neither Seatbelt nor bubblewrap, and the session stays inert", async () => {
     const s = setup();
     const real = Object.getOwnPropertyDescriptor(process, "platform");
-    Object.defineProperty(process, "platform", { value: "linux" });
+    Object.defineProperty(process, "platform", { value: "win32" });
     try {
       const r = await s.call("pair_start");
       assert.equal(r.ok, false);
-      assert.match(r.text, /sandbox-exec/);
+      assert.match(r.text, /needs macOS Seatbelt or Linux bubblewrap/);
     } finally {
       Object.defineProperty(process, "platform", real);
     }
@@ -248,7 +263,7 @@ describe("pair_run process groups (real sandbox)", () => {
     await s.call("pair_start");
     const r = await s.call("pair_run", { command: "echo x > file.txt" });
     assert.equal(r.ok, false);
-    assert.match(r.text, /not permitted/i);
+    assert.match(r.text, /not permitted|Read-only file system/i);
     assert.equal(existsSync(join(s.repo, "file.txt")), false);
   });
 
@@ -256,8 +271,9 @@ describe("pair_run process groups (real sandbox)", () => {
     const s = setup();
     await openChangeSet(s, ["pid.txt", "out.txt"]);
     const ac = new AbortController();
+    const tok = uniqueSleep(0);
     // Bounded (~15s) so a broken abort fails on the test timeout instead of leaking a writer.
-    const running = s.call("pair_run", { command: "(i=0; while [ $i -lt 150 ]; do echo tick >> out.txt; i=$((i+1)); sleep 0.1; done) & echo $! > pid.txt; wait" }, ac.signal);
+    const running = s.call("pair_run", { command: `: ${tok}; (i=0; while [ $i -lt 150 ]; do echo tick >> out.txt; i=$((i+1)); sleep 0.1; done) & echo $! > pid.txt; wait` }, ac.signal);
     await new Promise((r) => setTimeout(r, 700));
     // pair_done while the run is live is refused: the run is foreground and tied to the change set.
     const early = await s.call("pair_done", { cardId: "card-1" });
@@ -267,7 +283,7 @@ describe("pair_run process groups (real sandbox)", () => {
     const r = await running;
     assert.match(r.text, /aborted; its process group was killed/);
     const pid = Number(readFileSync(join(s.repo, "pid.txt"), "utf8"));
-    assert.equal(alive(pid), false, `writer ${pid} must be dead`);
+    assert.equal(alive(pid, tok), false, `writer ${pid} must be dead`);
     const size = readFileSync(join(s.repo, "out.txt"), "utf8").length;
     await new Promise((r) => setTimeout(r, 400));
     assert.equal(readFileSync(join(s.repo, "out.txt"), "utf8").length, size, "no write after the abort");
@@ -276,12 +292,13 @@ describe("pair_run process groups (real sandbox)", () => {
   sandboxOnly("timeout kills and reaps the whole group", async () => {
     const s = setup();
     await openChangeSet(s, ["pid.txt"]);
-    const r = await s.call("pair_run", { command: "sleep 30 & echo $! > pid.txt; wait", timeoutSeconds: 1 });
+    const len = uniqueSleep(30);
+    const r = await s.call("pair_run", { command: `sleep ${len} & echo $! > pid.txt; wait`, timeoutSeconds: 1 });
     assert.match(r.text, /timed out after 1s/);
-    assert.equal(alive(Number(readFileSync(join(s.repo, "pid.txt"), "utf8"))), false);
+    assert.equal(alive(Number(readFileSync(join(s.repo, "pid.txt"), "utf8")), len), false);
   });
 
-  sandboxOnly("pair_done reaps a process a finished run left behind, before its snapshot", async () => {
+  sandboxOnly("pair_done reaps a process a finished run left behind, before its snapshot", { skip: process.platform === "linux" && "on Linux bubblewrap's PID namespace ends every process the run started when the run exits, so none is left for pair_done; lib/bwrap.test.mjs checks that" }, async () => {
     const s = setup();
     await openChangeSet(s, ["pid.txt", "late.txt"]);
     const r = await s.call("pair_run", { command: "(sleep 1; echo late > late.txt) > /dev/null 2>&1 & echo $! > pid.txt" });
@@ -298,10 +315,11 @@ describe("pair_run process groups (real sandbox)", () => {
   sandboxOnly("session_shutdown reaps live groups and ends pairing", async () => {
     const s = setup();
     await openChangeSet(s, ["pid.txt"]);
-    await s.call("pair_run", { command: "sleep 30 > /dev/null 2>&1 & echo $! > pid.txt" });
+    const len = uniqueSleep(30);
+    await s.call("pair_run", { command: `sleep ${len} > /dev/null 2>&1 & echo $! > pid.txt` });
     const pid = Number(readFileSync(join(s.repo, "pid.txt"), "utf8"));
     await s.emit("session_shutdown", { type: "session_shutdown" });
-    assert.equal(alive(pid), false);
+    assert.equal(alive(pid, len), false);
     assert.ok(s.journal().some((e) => e.type === "stop" && e.verb === "session-end"));
     assert.equal(await s.emit("tool_call", { toolName: "write", input: {} }), undefined, "inactive after session end");
   });
