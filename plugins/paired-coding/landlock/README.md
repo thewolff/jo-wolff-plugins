@@ -92,7 +92,7 @@ connects.
 - **Unix sockets.**
   - From ABI 6, connecting to an abstract Unix socket that a process outside the sandbox created fails with `EPERM`.
   - From ABI 9, connecting to a pathname socket outside the sandbox (Docker's, for one) is refused.
-  - On ABI 3 to 8, Landlock cannot refuse pathname-socket connects. A process with that access could ask a local daemon to write for it.
+  - On ABI 3 to 8, Landlock cannot refuse pathname-socket connects, so the helper adds a seccomp filter after `landlock_restrict_self`: `socket(AF_UNIX, …)` and `io_uring_setup` fail with `EPERM`, and so does every 32-bit x86 system call on x86_64. It is the same program as bubblewrap's in `lib/bwrap.mjs` (`seccompFilter`), and a unit test holds the two instruction for instruction. `socketpair` is not filtered, so pipes between a command's own processes work. TCP and DNS lookups over UDP or TCP work; a resolver reached only over a Unix socket would not. If the filter cannot be installed, the helper exits 122 and runs nothing.
 - **`no_new_privs`** is set before `landlock_restrict_self`, as Landlock requires of an unprivileged caller, so setuid binaries cannot gain privileges inside.
 
 ## Exit codes
@@ -102,7 +102,7 @@ connects.
 | command's own | The ruleset was enforced and `/bin/sh -c` ran. | the command |
 | 120 | Landlock is missing or disabled, or its ABI is below 3, so truncation cannot be denied. The caller falls back to bwrap. `--abi` exits 120 in the same cases. | nothing |
 | 121 | Bad input: malformed or unknown JSON, an empty command, or a path that is relative, not canonical, missing, the wrong kind, or a file with several hard links. | nothing |
-| 122 | A Landlock or `prctl` call failed while building or enforcing the ruleset. | nothing |
+| 122 | A Landlock or `prctl` call failed while building or enforcing the ruleset, the socket filter included. | nothing |
 | 123 | The ruleset was enforced, but `/bin/sh` could not be executed. | nothing |
 
 Errors go to stderr, prefixed `pair-landlock: `. A command can exit 120 to 123 itself, so
@@ -129,8 +129,8 @@ one byte.
 
 ## Tests
 
-- `cargo test` holds the unit tests: rights per ABI, `REFER` never granted, input parsing, and path checks.
-- `sh test/live.sh [binary]` runs the live checks against the running kernel, as a non-root user.
+- `cargo test` holds the unit tests: rights per ABI, `REFER` never granted, input parsing, path checks, and the socket filter, run through a small classic-BPF interpreter and compared with `lib/bwrap.mjs`'s instruction for instruction.
+- `sh test/live.sh [binary]` runs the live checks against the running kernel, as a non-root user: among them, below ABI 9 a pathname-socket connect fails with `EPERM` while `socketpair`, TCP and DNS lookups still work.
 - `sh test/docker.sh [x86_64|aarch64]` runs `test/live.sh` in `ubuntu:24.04` as uid 1000. It then simulates a kernel without Landlock with a seccomp profile that fails `landlock_create_ruleset` with `ENOSYS`, and checks for exit 120 with nothing run.
 
 CI runs all three on `ubuntu-latest` (x86_64) and `ubuntu-24.04-arm` (aarch64).
