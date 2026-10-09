@@ -21,7 +21,7 @@ import {
 } from "../core/gate.mjs";
 import {
   activated, appendJournal, defaultTempPaths, findRoot, loadState, makeIo, markActivated, reapGroups, saveState,
-  recordRun, runPgids, runSandboxed, sandboxProblem, sessionDir, stateBase, withLock, withSession, writeSandboxed,
+  describeSandbox, recordRun, runPgids, runSandboxed, sandboxBackend, sandboxProblem, sessionDir, stateBase, withLock, withSession, writeSandboxed,
 } from "./host-io.mjs";
 
 /** Directories left out of every snapshot unless the user's own exclusions say otherwise. */
@@ -307,8 +307,8 @@ export function roadmapOffer(base, root) {
 }
 
 function pairStartVerb(args, ctx) {
-  const problem = sandboxProblem();
-  if (problem) return fail("pair_start", `${problem}; the gate cannot fence pair_run here, so pairing stays conversation-only`);
+  const backend = sandboxBackend();
+  if ("problem" in backend) return fail("pair_start", `${backend.problem}; the gate cannot fence pair_run here, so pairing stays conversation-only`);
   const dir = ctx.sessionDir;
   mkdirSync(dir, { recursive: true, mode: 0o700 });
   const stateDir = realpathSync.native(dir);
@@ -328,12 +328,13 @@ function pairStartVerb(args, ctx) {
       saveState(dir, out.state);
       markActivated(dir, { root: out.state.root, stateDir });
     }
-    appendJournal(dir, out.journal);
+    // The journal names the sandbox this session's writes and runs had (sandboxBackend).
+    appendJournal(dir, out.ok ? out.journal.map((e) => (e.type === "start" ? { ...e, sandbox: backend.name } : e)) : out.journal);
     return out;
   });
   if (!r.ok) return fail("pair_start", r.reason);
   const offer = r.state.roadmapOffer;
-  const parts = [`Pairing started. Worktree ${r.state.root}. Host write, edit, shell and sub-agent tools are refused from now on; write with pair_write or pair_edit inside an agreed change set and run commands with pair_run. Snapshot exclusions: ${exclusions.join(", ")}. Your partner ends pairing by typing pair stop as a whole message.`];
+  const parts = [`Pairing started. Worktree ${r.state.root}. Host write, edit, shell and sub-agent tools are refused from now on; write with pair_write or pair_edit inside an agreed change set and run commands with pair_run. Snapshot exclusions: ${exclusions.join(", ")}. Your partner ends pairing by typing pair stop as a whole message.`, describeSandbox(backend)];
   if (offer) {
     parts.push(`An earlier session in this worktree left roadmap items open or not ready. Show them to your partner and ask whether to pick that roadmap up or start fresh; nothing reopens unless they agree. Record their answer with pair_note's earlierRoadmap field: "pick-up" carries the whole roadmap into this session, "start-fresh" sets it aside so it is not offered again.\n${roadmapLines(openRoadmapItems(offer.roadmap))}`);
   }
@@ -423,11 +424,12 @@ function writeVerb(name, args, ctx) {
       if (count > 1 && args.replaceAll !== true) return fail(name, `oldString occurs ${count} times; pass replaceAll or a longer oldString`);
       text = args.replaceAll === true ? current.split(args.oldString).join(args.newString) : current.replace(args.oldString, () => args.newString);
     }
-    // The write itself runs in the open-phase sandbox (Seatbelt on macOS, bubblewrap on Linux),
-    // so the kernel checks the resolved target: a symlink swapped in after checkWrite cannot
-    // carry it out of the boundary. It is staged in a new file beside the target and renamed
-    // over it, so a hard link at the target is replaced rather than written through to a file
-    // outside the boundary.
+    // The write itself runs in the open-phase sandbox (Seatbelt on macOS, Landlock or
+    // bubblewrap on Linux), so the kernel checks the resolved target: a symlink swapped in
+    // after checkWrite cannot carry it out of the boundary. Seatbelt and bubblewrap stage it in
+    // a new file beside the target and rename it over the target, so a hard link at the target
+    // is replaced rather than written through to a file outside the boundary; Landlock writes
+    // in place, and leaves a target with a second link or a symlink to bubblewrap.
     const tempPath = join(dirname(c.absPath), `.pair-write-${randomBytes(8).toString("hex")}.tmp`);
     const w = writeSandboxed({ state: s, path: c.absPath, tempPath, content: text });
     if (!w.ok) {
@@ -435,7 +437,8 @@ function writeVerb(name, args, ctx) {
       return fail(name, `the sandboxed write failed: ${w.error}`);
     }
     appendJournal(dir, c.journal);
-    return { ok: true, text: `${name === "pair_write" ? "Wrote" : "Edited"} ${args.path}.` };
+    const note = w.fellBack ? ` (under bubblewrap: ${w.fellBack})` : "";
+    return { ok: true, text: `${name === "pair_write" ? "Wrote" : "Edited"} ${args.path}${note}.` };
   });
 }
 
@@ -475,7 +478,8 @@ async function runVerb(args, ctx) {
     : res.aborted ? "aborted; its process group was killed"
     : res.error ? `could not run: ${res.error}`
     : `exit ${res.exitCode}${res.signal ? ` (signal ${res.signal})` : ""}`;
-  const text = [`pair_run ${head} (phase ${start.state.phase}).`, res.stdout && `stdout:\n${res.stdout}`, res.stderr && `stderr:\n${res.stderr}`].filter(Boolean).join("\n");
-  return { ok: !res.timedOut && !res.aborted && !res.error && res.exitCode === 0, text, result: { exitCode: res.exitCode, timedOut: res.timedOut, aborted: res.aborted, runId } };
+  const under = res.fellBack ? `; under bubblewrap: ${res.fellBack}` : "";
+  const text = [`pair_run ${head} (phase ${start.state.phase}${under}).`, res.stdout && `stdout:\n${res.stdout}`, res.stderr && `stderr:\n${res.stderr}`].filter(Boolean).join("\n");
+  return { ok: !res.timedOut && !res.aborted && !res.error && res.exitCode === 0, text, result: { exitCode: res.exitCode, timedOut: res.timedOut, aborted: res.aborted, runId, ...(res.backend ? { sandbox: res.backend } : {}) } };
 }
 

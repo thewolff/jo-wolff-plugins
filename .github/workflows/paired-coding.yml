@@ -15,7 +15,7 @@ permissions:
 
 jobs:
   linux:
-    name: node --test, bubblewrap live (${{ matrix.runner }})
+    name: node --test, bubblewrap and Landlock live (${{ matrix.runner }})
     strategy:
       fail-fast: false
       matrix:
@@ -45,7 +45,11 @@ jobs:
           fi
       - name: bubblewrap smoke check
         run: bwrap --ro-bind / / --dev /dev --proc /proc --unshare-all /bin/true && echo ok
-      - name: Tests, with the live bubblewrap cases required to run
+      - name: Landlock smoke check
+        # pair-landlock prints the kernel's Landlock ABI; 1.2 needs 3 or later.
+        run: landlock/bin/pair-landlock-$(uname -m)-linux --abi
+      - name: Tests, with the live bubblewrap and Landlock cases required to run
         run: node --test --test-timeout=120000
         env:
           PAIRED_CODING_REQUIRE_BWRAP: "1"
+          PAIRED_CODING_REQUIRE_LANDLOCK: "1"
