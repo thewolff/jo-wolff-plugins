@@ -190,6 +190,20 @@ check "getent hosts localhost" resolves "$(sandboxed 'getent hosts localhost | g
 outside_dns=$(getent hosts example.com | grep -q . && echo resolves || echo "does not resolve")
 check "a DNS name resolves inside exactly when it resolves outside (example.com $outside_dns outside)" "$outside_dns" "$(sandboxed 'getent hosts example.com | grep -q . && echo resolves || echo "does not resolve"')"
 
+echo "--- many rules under a low open-file limit: each rule descriptor is closed once its rule is added"
+mkdir "$W/many"
+list=""
+i=0
+while [ $i -lt 3000 ]; do
+  : > "$W/many/f$i"
+  list="$list${list:+,}\"$W/many/f$i\""
+  i=$((i + 1))
+done
+got=$(ulimit -Sn 256 && rules_with "[$list]" "printf many > $W/many/f1500 && echo ran" | "$BIN" 2>&1; echo "rc=$?")
+check "3000 file rules with a soft limit of 256 descriptors" "ran rc=0" "$(printf '%s' "$got" | tr '\n' ' ' | sed 's/ $//')"
+check "the write to one granted file of the 3000 landed" many "$(cat "$W/many/f1500")"
+check "a file outside the 3000 is still refused" "13 Permission denied" "$(ulimit -Sn 256 && rules_with "[$list]" "perl -e '$P_OPENW' $W/repo/sibling.txt" | "$BIN" 2>&1)"
+
 echo "--- refused input: exit 121 and the command never runs"
 marker="$W/tmp/ran"
 check "malformed JSON" 121 "$(printf '{nope\n' | "$BIN" >/dev/null 2>&1; echo $?)"

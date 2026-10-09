@@ -360,11 +360,11 @@ fn open_for_rule(path: &str, kind: Kind) -> Result<i32, Fail> {
     Ok(fd)
 }
 
-/// Every (fd, rights, path) the ruleset grants, opened before anything is enforced.
-fn rules_for(rs: &Ruleset, handled: u64) -> Result<Vec<(i32, u64, String)>, Fail> {
-    let mut wanted: Vec<(&str, Kind, u64)> = Vec::new();
+/// Every (path, kind, rights) the ruleset grants, the rights masked to what this ABI handles.
+fn wanted(rs: &Ruleset, handled: u64) -> Vec<(&str, Kind, u64)> {
+    let mut out: Vec<(&str, Kind, u64)> = Vec::new();
     for f in &rs.files {
-        wanted.push((f, Kind::File, FILE_RIGHTS));
+        out.push((f, Kind::File, FILE_RIGHTS & handled));
     }
     for d in &rs.dirs {
         let mut rights = DIR_RIGHTS;
@@ -374,20 +374,19 @@ fn rules_for(rs: &Ruleset, handled: u64) -> Result<Vec<(i32, u64, String)>, Fail
         if d.remove {
             rights |= REMOVE_RIGHTS;
         }
-        wanted.push((&d.path, Kind::Dir, rights));
+        out.push((&d.path, Kind::Dir, rights & handled));
     }
     for t in &rs.rw_trees {
-        wanted.push((t, Kind::Dir, rw_tree_rights(handled)));
+        out.push((t, Kind::Dir, rw_tree_rights(handled) & handled));
     }
-    let mut out = Vec::with_capacity(wanted.len());
-    for (path, kind, rights) in wanted {
-        let fd = open_for_rule(path, kind)?;
-        out.push((fd, rights & handled, path.to_string()));
-    }
-    Ok(out)
+    out
 }
 
-fn enforce(abi: i64, rules: &[(i32, u64, String)]) -> Result<(), Fail> {
+/// Builds the ruleset before anything is enforced. Each rule path is opened with O_PATH, added
+/// and closed again at once, as the kernel's own example closes `parent_fd` right after
+/// `landlock_add_rule`: the rule holds the object, not the descriptor. So the helper holds two
+/// descriptors here however many rules there are. Returns the ruleset descriptor.
+fn ruleset_for(rs: &Ruleset, abi: i64) -> Result<i32, Fail> {
     let handled = handled_fs(abi);
     let attr = RulesetAttr { handled_access_fs: handled, handled_access_net: 0, scoped: scoped(abi) };
     // SAFETY: attr is a valid landlock_ruleset_attr prefix of the size passed.
@@ -403,26 +402,43 @@ fn enforce(abi: i64, rules: &[(i32, u64, String)]) -> Result<(), Fail> {
         return fail(EXIT_SANDBOX, format!("landlock_create_ruleset: {}", os_err(errno())));
     }
     let ruleset = ruleset as i32;
-    for (fd, rights, path) in rules {
-        if *rights == 0 {
-            continue;
+    let add = |path: &str, kind: Kind, rights: u64| -> Result<(), Fail> {
+        let fd = open_for_rule(path, kind)?;
+        let mut err = None;
+        if rights != 0 {
+            let rule = PathBeneathAttr { allowed_access: rights, parent_fd: fd };
+            // SAFETY: rule is a valid packed landlock_path_beneath_attr.
+            let r = unsafe {
+                libc::syscall(
+                    libc::SYS_landlock_add_rule,
+                    ruleset,
+                    RULE_PATH_BENEATH,
+                    &rule as *const PathBeneathAttr,
+                    0u32,
+                )
+            };
+            if r < 0 {
+                err = Some(errno());
+            }
         }
-        let rule = PathBeneathAttr { allowed_access: *rights, parent_fd: *fd };
-        // SAFETY: rule is a valid packed landlock_path_beneath_attr.
-        let r = unsafe {
-            libc::syscall(
-                libc::SYS_landlock_add_rule,
-                ruleset,
-                RULE_PATH_BENEATH,
-                &rule as *const PathBeneathAttr,
-                0u32,
-            )
-        };
-        if r < 0 {
-            return fail(EXIT_SANDBOX, format!("landlock_add_rule {path:?}: {}", os_err(errno())));
+        // SAFETY: fd is the O_PATH descriptor open_for_rule returned; nothing else holds it.
+        unsafe { libc::close(fd) };
+        match err {
+            Some(e) => fail(EXIT_SANDBOX, format!("landlock_add_rule {path:?}: {}", os_err(e))),
+            None => Ok(()),
         }
-        unsafe { libc::close(*fd) };
+    };
+    for (path, kind, rights) in wanted(rs, handled) {
+        if let Err(e) = add(path, kind, rights) {
+            // SAFETY: ruleset is the descriptor landlock_create_ruleset returned.
+            unsafe { libc::close(ruleset) };
+            return Err(e);
+        }
     }
+    Ok(ruleset)
+}
+
+fn enforce(abi: i64, ruleset: i32) -> Result<(), Fail> {
     // SAFETY: plain prctl and syscall with integer arguments.
     if unsafe { libc::prctl(libc::PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) } < 0 {
         return fail(EXIT_SANDBOX, format!("prctl(PR_SET_NO_NEW_PRIVS): {}", os_err(errno())));
@@ -451,7 +467,7 @@ fn run() -> Result<(), Fail> {
     }
     let abi = classify(running_abi())?;
     let rs = parse(&read_ruleset_line()?)?;
-    let rules = rules_for(&rs, handled_fs(abi))?;
+    let ruleset = ruleset_for(&rs, abi)?;
     // Block the signals the supervisor waits for before the child exists, so none is lost and
     // none kills the supervisor before it can end what the command started.
     let (wait_set, old_mask) = block_supervisor_signals();
@@ -468,14 +484,12 @@ fn run() -> Result<(), Fail> {
         // The subreaper attribute is not inherited across fork; the mask is, so restore it.
         // SAFETY: old_mask is the mask sigprocmask returned.
         unsafe { libc::sigprocmask(libc::SIG_SETMASK, &old_mask, std::ptr::null_mut()) };
-        enforce(abi, &rules)?;
+        enforce(abi, ruleset)?;
         let err = Command::new("/bin/sh").arg("-c").arg(&rs.command).exec();
         return fail(EXIT_EXEC, format!("exec /bin/sh: {err}"));
     }
-    for (fd, _, _) in &rules {
-        // SAFETY: closes the supervisor's copies of the O_PATH rule descriptors.
-        unsafe { libc::close(*fd) };
-    }
+    // SAFETY: closes the supervisor's copy of the ruleset descriptor.
+    unsafe { libc::close(ruleset) };
     // stdin belongs to the command alone: a writer sees EPIPE once the command stops reading.
     // SAFETY: closing fd 0 affects nothing else in this process.
     unsafe { libc::close(0) };
@@ -743,11 +757,7 @@ mod tests {
         let base = std::fs::canonicalize(std::env::temp_dir()).unwrap();
         let p = base.to_str().unwrap();
         let line = format!(r#"{{"command":"true","dirs":[{{"path":"{p}"}},{{"path":"{p}","remove":true}},{{"path":"{p}","make_dir":true,"remove":true}}]}}"#);
-        let rules = rules_for(&parse(line.as_bytes()).ok().unwrap(), handled_fs(6)).ok().unwrap();
-        let rights: Vec<u64> = rules.iter().map(|r| r.1).collect();
-        for (fd, _, _) in &rules {
-            unsafe { libc::close(*fd) };
-        }
+        let rights: Vec<u64> = wanted(&parse(line.as_bytes()).ok().unwrap(), handled_fs(6)).iter().map(|r| r.2).collect();
         assert_eq!(rights, vec![DIR_RIGHTS, DIR_RIGHTS | REMOVE_RIGHTS, DIR_RIGHTS | MAKE_DIR | REMOVE_RIGHTS]);
     }
 
