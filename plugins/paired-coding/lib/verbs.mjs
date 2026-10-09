@@ -21,7 +21,7 @@ import {
 } from "../core/gate.mjs";
 import {
   activated, appendJournal, defaultTempPaths, findRoot, loadState, makeIo, markActivated, reapGroups, saveState,
-  describeSandbox, recordRun, runPgids, runSandboxed, sandboxBackend, sandboxProblem, sessionDir, stateBase, withLock, withSession, writeSandboxed,
+  closedRunProblem, describeSandbox, recordRun, runPgids, runSandboxed, sandboxBackend, sandboxProblem, sessionDir, stateBase, withLock, withSession, writeSandboxed,
 } from "./host-io.mjs";
 
 /** Directories left out of every snapshot unless the user's own exclusions say otherwise. */
@@ -323,7 +323,10 @@ function pairStartVerb(args, ctx) {
     const io = makeIo({ root, exclusions });
     const found = roadmapOffer(base, root);
     const roadmapOfferArg = found ? { from: found.fromSession, roadmap: found.roadmap } : undefined;
-    const out = pairStart(state, { sessionId: ctx.sessionId, root, stateDir, tempPaths: defaultTempPaths(), protect, exclusions, roadmapOffer: roadmapOfferArg, cardSeq: lastCardSeq(readJournal(dir)) }, io);
+    let out = pairStart(state, { sessionId: ctx.sessionId, root, stateDir, tempPaths: defaultTempPaths(), protect, exclusions, roadmapOffer: roadmapOfferArg, cardSeq: lastCardSeq(readJournal(dir)) }, io);
+    // A temp layout no sandbox here can fence would refuse every pair_run; say so now.
+    const unfenced = out.ok ? closedRunProblem(out.state, backend) : null;
+    if (unfenced) out = { ok: false, reason: `${unfenced}; pairing is not started`, state, journal: [] };
     if (out.ok) {
       saveState(dir, out.state);
       markActivated(dir, { root: out.state.root, stateDir });
@@ -467,12 +470,15 @@ async function runVerb(args, ctx) {
     linkCheck: { sinceMs, exclusions: start.state.exclusions ?? [] },
   });
   withSession(dir, {}, (s) => {
-    const out = runEnd(s, { runId, exitCode: res.exitCode, links: res.links }, makeIo({}));
+    const out = runEnd(s, { runId, exitCode: res.exitCode, links: res.links, supervisorKilled: res.supervisorKilled }, makeIo({}));
     out.journal = out.journal.map((e) => ({ ...e, timedOut: res.timedOut, aborted: res.aborted, signal: res.signal }));
     return out;
   });
-  if (res.links.length > 0) {
-    return fail("pair_run", `STOPPED: pair_run made a link or a .git entry inside the paths it could write (${res.links.join(", ")}). A later write could follow it out of the agreement, so pairing is stopped. Show this to your partner; only your partner ends the session, by typing pair stop.`);
+  const stops = [];
+  if (res.links.length > 0) stops.push(`pair_run made a link or a .git entry inside the paths it could write (${res.links.join(", ")}). A later write could follow it out of the agreement`);
+  if (res.supervisorKilled) stops.push(`pair_run's Landlock supervisor was killed by ${res.supervisorKilled}, which the gate did not send, so a process the run started may still be running with its write permission`);
+  if (stops.length > 0) {
+    return fail("pair_run", `STOPPED: ${stops.join(". ")}, so pairing is stopped. Show this to your partner; only your partner ends the session, by typing pair stop.`);
   }
   const head = res.timedOut ? `timed out after ${timeoutMs / 1000}s; its process group was killed`
     : res.aborted ? "aborted; its process group was killed"

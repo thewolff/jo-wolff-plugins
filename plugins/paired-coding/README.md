@@ -161,9 +161,11 @@ How it works:
   point).
 - `pair_run` runs every command in the foreground under a sandbox built from the state: a
   Seatbelt profile on macOS; on Linux Landlock, or bubblewrap where Landlock cannot be used,
-  where some of what follows differs (see **Linux: which sandbox** below). Every sandbox denies
-  every write by default. With no change set open a command may write only temp directories
-  and `/dev`. With one open it may also write the boundary files. The state directory and the
+  where some of what follows differs (see **Linux: which sandbox** below). Every sandbox refuses
+  any write, create, delete or rename beyond what follows; Landlock does not fence permission,
+  owner, timestamp or extended-attribute changes (see **Linux: Landlock**). With no change set
+  open a command may write only temp directories and `/dev`. With one open it may also write
+  the boundary files. The state directory and the
   plugin's own install root are never writable, and on macOS no command may create a hard link
   anywhere, even between two paths it could write (on Linux one made inside a writable
   directory stops the session; see below). Every sandbox also refuses connections to
@@ -411,7 +413,8 @@ directory it would make writable holds a `.git` entry (a submodule under `lib/**
 instance), the state directory or a protected path, or when a temp path holds the worktree or
 the state directory (a worktree under `/tmp` does). A file it would grant that has a second
 hard link goes to bubblewrap too. If bubblewrap does not work on the machine, that run or write
-is refused. The worktree root is never made writable, since it holds `.git`; what that leaves
+is refused. A temp path holding the worktree or the state directory would refuse every run, so
+there `pair_start` refuses instead and names the reason. The worktree root is never made writable, since it holds `.git`; what that leaves
 out (below) stays on Landlock whether or not bubblewrap works, and so does a new file
 `pair_write` makes where a directory grant would hold the root, a `.git`, the state directory
 or a protected path.
@@ -423,7 +426,8 @@ not, so a container needs no extra options when its kernel has Landlock.
 existing file outside the boundary, as Seatbelt does:
 
 - A literal entry that exists is writable as that one file. A literal that does not exist yet
-  cannot be created by `pair_run`, and the run's result names it; `pair_write` creates it.
+  gets no grant of its own, and the run's result names it; `pair_write` creates it. `pair_run`
+  can still create it when a glob entry makes the directory it would go in writable (below).
 - A glob entry at the worktree root (`*.md`, `**`) grants the existing root files it matches
   one by one, and the directories below the root as for any other glob. `pair_run` can write
   an existing `README.md` under `*.md` but cannot create `x.md` in the root, and its result
@@ -439,8 +443,11 @@ existing file outside the boundary, as Seatbelt does:
 - New files under a glob entry are fenced per directory, the one gap left. Landlock attaches
   a rule to a file that exists, so the only way to let a command create a file is to make a
   directory writable, and then a file of any name can be created there. The gate makes a
-  directory writable only when every file already in it matches the boundary and the glob could
-  hold a file in each of its subdirectories. With `src/**/*.ts` agreed, where `src` holds
+  directory writable only when everything already in it is a regular file with one link that
+  matches the boundary, or a directory that passes the same test, and the glob could hold a
+  file in each of its subdirectories. A symlink, a FIFO, a socket or a device in it, a
+  subdirectory it cannot list, or a mount point at or below it keeps the grant per file there.
+  With `src/**/*.ts` agreed, where `src` holds
   `README.md` and `src/lib` holds only `.ts` files, the live tests show: `pair_run` cannot write
   `src/README.md`, cannot create `src/new.md`, and cannot create `src/new.ts` either, because
   `src` holds a file outside the boundary; it can write `src/a.ts`; and in `src/lib` it can
@@ -477,9 +484,19 @@ existing file outside the boundary, as Seatbelt does:
 - Every process a run starts ends when the run does, including one that left the process
   group with `setsid` or a double fork: the helper stays outside the sandbox as the run's
   supervisor and kills them all when the command exits, times out or is aborted. On kernels
-  before Landlock ABI 6 a run's own process can kill the supervisor first, and a process that
-  left the group then keeps running with its run's write permission until `pair_done`'s
-  read-back catches what it writes (`landlock/README.md`, **Supervision**).
+  before Landlock ABI 6 a run's own process can kill the supervisor first; a process that left
+  the group would then keep running with its run's write permission. The gate sees that the
+  supervisor died of a signal it did not send and stops the session, as for a link, until your
+  partner types `pair stop`; `pair_start` says so on such a kernel (`landlock/README.md`,
+  **Supervision**).
+- Landlock does not fence `chmod`, `chown`, `utime` or `setxattr`
+  ([kernel documentation](https://docs.kernel.org/userspace-api/landlock.html)), so a run can
+  change the permissions, timestamps and extended attributes of any file your user may change,
+  outside the boundary too. `pair_done`'s read-back records each worktree file's permission
+  bits, so a permission change to a worktree file outside the boundary stops the session there.
+  It does not record owners, timestamps or extended attributes, and it never sees a change
+  outside the worktree. Seatbelt and bubblewrap refuse these changes outside what a run may
+  write.
 - On kernels before Landlock ABI 9, Landlock cannot refuse a connection to a pathname Unix
   socket, so the helper installs the same seccomp filter as bubblewrap's (below): no
   Unix-domain socket can be created, the DNS resolver's included, and `socketpair` still works.
@@ -573,8 +590,8 @@ in the boundary; unlike `.git/`, such a write shows in the read-back diff.
 
 **Escaped writers are caught late, and only inside the worktree.** On macOS a process that
 leaves its run's process group survives the reap and keeps the write permission its run had
-(test 17); bubblewrap and Landlock end it with the run (on Landlock before ABI 6, unless it
-kills the supervisor first). A process that got out of the sandbox
+(test 17); bubblewrap and Landlock end it with the run. On Landlock before ABI 6 a run can
+kill the supervisor first, and the gate then stops the session. A process that got out of the sandbox
 altogether would write with your own permissions; the one route probed on macOS, `launchctl
 submit`, was denied, but no probe proves there is no other. Either kind is caught only by
 content snapshots, at the next `pair_done`, which then stops the session: the first write is

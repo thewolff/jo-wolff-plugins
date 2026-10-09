@@ -14,10 +14,10 @@ import { chmodSync, existsSync, linkSync, lstatSync, mkdirSync, mkdtempSync, rea
 import { createServer } from "node:net";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
-import { pairWriteLandlock } from "../core/gate.mjs";
+import { landlockRulesFor, pairWriteLandlock } from "../core/gate.mjs";
 import { bwrapProblem, seccompFilter } from "./bwrap.mjs";
-import { createOnHost, describeSandbox, pickLinuxBackend, runSandboxed, writeSandboxed } from "./host-io.mjs";
-import { HELPER_ARCHES, LANDLOCK_DIR, landlockAbi, landlockIo, landlockProblem, probeLandlock } from "./landlock.mjs";
+import { createOnHost, describeSandbox, pickLinuxBackend, runSandboxed, snapshotTree, writeSandboxed } from "./host-io.mjs";
+import { HELPER_ARCHES, LANDLOCK_DIR, landlockAbi, landlockIo, landlockProblem, parseMountinfo, probeLandlock } from "./landlock.mjs";
 
 // ─── finding and checking the helper ────────────────────────────────────────────────────
 
@@ -127,6 +127,41 @@ describe("backend choice", () => {
     assert.match(describeSandbox({ name: "bwrap", why: "Landlock ABI 2 is below 3" }), /^Sandbox: bubblewrap, which fences writes per directory \(Landlock is not usable here: Landlock ABI 2/);
     assert.match(describeSandbox({ problem: "nothing here" }), /^No sandbox: nothing here\./);
   });
+
+  test("on Landlock, pair_start says plainly when a run can kill its supervisor, below ABI 6", { skip: landlockProblem() !== null && "needs a usable Landlock helper" }, () => {
+    const said = describeSandbox({ name: "landlock" });
+    assert.match(said, new RegExp(`^Sandbox: Landlock \\(kernel ABI ${landlockAbi()}, helper checksum verified\\)`));
+    if (landlockAbi() < 6) assert.match(said, /below 6\) a command pair_run starts can kill the helper that supervises it; .* the gate stops the session until your partner types pair stop\./);
+    else assert.doesNotMatch(said, /below 6/);
+  });
+});
+
+describe("the facts the builder takes", () => {
+  test("parseMountinfo reads each line's mount point and undoes the octal escapes", () => {
+    const text = [
+      "22 1 0:21 / / rw,relatime shared:1 - overlay overlay rw,lowerdir=/l",
+      "35 22 0:30 / /proc rw,nosuid,nodev,noexec,relatime shared:12 - proc proc rw",
+      "61 22 254:1 /home/u/data /home/u/my\\040repo/src/m rw,relatime shared:30 - ext4 /dev/vda1 rw",
+      "62 22 254:1 /etc/hosts /home/u/repo/tab\\011and\\134slash rw - ext4 /dev/vda1 rw",
+      "",
+    ].join("\n");
+    assert.deepEqual(parseMountinfo(text), ["/", "/proc", "/home/u/my repo/src/m", "/home/u/repo/tab\tand\\slash"]);
+  });
+
+  test("walk reports a directory it cannot list, rather than skipping it", { skip: process.getuid?.() === 0 && "root lists every directory" }, () => {
+    const top = realpathSync(mkdtempSync(join(tmpdir(), "pc-walk-")));
+    mkdirSync(join(top, "locked"));
+    writeFileSync(join(top, "locked", "x"), "");
+    chmodSync(join(top, "locked"), 0o111);
+    try {
+      assert.deepEqual(landlockIo.walk(top).map(({ path, type }) => ({ path, type })), [
+        { path: join(top, "locked"), type: "dir" },
+        { path: `${join(top, "locked")}/`, type: "unreadable" },
+      ]);
+    } finally {
+      chmodSync(join(top, "locked"), 0o755);
+    }
+  });
 });
 
 // ─── live: Landlock really fences ───────────────────────────────────────────────────────
@@ -179,6 +214,14 @@ const run = (state, command, extra = {}) => runSandboxed({ state, command, cwd: 
 const write = (opts) => writeSandboxed({ tempPath: join(opts.path, "..", ".pair-write-0000000000000000.tmp"), ...opts, backend: "landlock" });
 const EACCES = /Permission denied/;
 const read = (...p) => readFileSync(join(...p), "utf8");
+
+// A bind mount needs a mount namespace, which an unprivileged user gets only inside a user
+// namespace of its own: where those are refused (under Docker's default seccomp profile, for
+// one), or granted without the right to mount, the mount case skips even when
+// PAIRED_CODING_REQUIRE_LANDLOCK=1. The probe binds $HOME onto itself, inside the namespace.
+const NO_USERNS = process.platform !== "linux" ? "not Linux"
+  : spawnSync("unshare", ["-rm", "/bin/sh", "-c", 'mount --bind "$HOME" "$HOME"']).status === 0 ? null : "needs an unprivileged user namespace that may make a bind mount";
+const libUrl = (f) => new URL(f, import.meta.url).href;
 
 describe("live Landlock: pair_run", () => {
   live("a write inside the boundary lands", async () => {
@@ -281,6 +324,73 @@ describe("live Landlock: pair_run", () => {
       assert.equal((await run(f.state, "echo x > src/README.md", { backend: "bwrap" })).exitCode, 0);
       assert.equal(read(f.root, "src", "README.md"), "x\n");
     }
+  });
+
+  live("a symlink or a FIFO in a directory keeps it from a grant, so pair_run cannot delete either", async () => {
+    const f = liveState(["src/**/*.ts"]);
+    mkdirSync(join(f.root, "src", "lib"));
+    writeFileSync(join(f.root, "src", "lib", "b.ts"), "b\n");
+    symlinkSync("../a.txt", join(f.root, "src", "lib", "link"));
+    assert.equal(spawnSync("mkfifo", [join(f.root, "src", "lib", "pipe")]).status, 0);
+    assert.deepEqual(landlockRulesFor(f.state, [], landlockIo).dirs, []);
+    for (const name of ["link", "pipe"]) {
+      const r = await run(f.state, `rm -f src/lib/${name}`);
+      assert.equal(r.backend, "landlock");
+      assert.notEqual(r.exitCode, 0, name);
+      assert.match(r.stderr, EACCES, name);
+    }
+    assert.equal(lstatSync(join(f.root, "src", "lib", "link")).isSymbolicLink(), true);
+    assert.equal(lstatSync(join(f.root, "src", "lib", "pipe")).isFIFO(), true);
+  });
+
+  live("a directory that cannot be listed gets no grant, so a file in it outside the boundary stays unwritable", async () => {
+    const f = liveState(["src/**/*.ts"]);
+    mkdirSync(join(f.root, "src", "locked"));
+    writeFileSync(join(f.root, "src", "locked", "hidden.md"), "hidden\n");
+    assert.equal(snapshotTree(f.root)["src/locked/hidden.md"]?.startsWith("file:"), true, "the snapshot holds it");
+    chmodSync(join(f.root, "src", "locked"), 0o111);
+    try {
+      assert.deepEqual(landlockRulesFor(f.state, [], landlockIo).dirs, []);
+      const r = await run(f.state, "echo pwned > src/locked/hidden.md");
+      assert.equal(r.backend, "landlock");
+      assert.match(r.stderr, EACCES);
+    } finally {
+      chmodSync(join(f.root, "src", "locked"), 0o755);
+    }
+    assert.equal(read(f.root, "src", "locked", "hidden.md"), "hidden\n");
+  });
+
+  test("a directory that holds a mount point gets no grant: nothing new lands in it or in the mount", PROBLEM !== null && !REQUIRED ? { skip: PROBLEM } : NO_USERNS ? { skip: NO_USERNS } : {}, () => {
+    assert.equal(PROBLEM, null, "PAIRED_CODING_REQUIRE_LANDLOCK=1 and Landlock cannot run");
+    const f = liveState(["src/**"]);
+    const data = join(f.top, "data");
+    mkdirSync(data);
+    writeFileSync(join(data, "d.txt"), "delta\n");
+    mkdirSync(join(f.root, "src", "m"));
+    // The mount, the builder and the run all live in one new user and mount namespace; the
+    // builder reads that namespace's /proc/self/mountinfo, as the gate would on a real mount.
+    const code = `
+      const { landlockRulesFor } = await import(${JSON.stringify(libUrl("../core/gate.mjs"))});
+      const { landlockIo, landlockProblem } = await import(${JSON.stringify(libUrl("./landlock.mjs"))});
+      landlockProblem();
+      const { runSandboxed } = await import(${JSON.stringify(libUrl("./host-io.mjs"))});
+      const state = JSON.parse(process.env.PC_STATE);
+      const rules = landlockRulesFor(state, [], landlockIo);
+      const r = await runSandboxed({ state, command: "echo x > src/m/new.txt; echo y > src/new.txt; echo z >> src/m/d.txt", cwd: state.root, timeoutMs: 30000, backend: "landlock" });
+      console.log(JSON.stringify({ rules, backend: r.backend, stderr: r.stderr, error: r.error }));`;
+    const res = spawnSync("unshare", ["-rm", "/bin/sh", "-c", 'mount --bind "$PC_DATA" "$PC_MNT" && exec "$PC_NODE" --input-type=module -e "$PC_CODE"'], {
+      encoding: "utf8",
+      env: { ...process.env, PC_DATA: data, PC_MNT: join(f.root, "src", "m"), PC_NODE: process.execPath, PC_CODE: code, PC_STATE: JSON.stringify(f.state) },
+    });
+    assert.equal(res.status, 0, res.stderr);
+    const out = JSON.parse(res.stdout.trim().split("\n").at(-1));
+    assert.equal(out.backend, "landlock", out.error);
+    assert.deepEqual(out.rules.dirs, [], "neither src nor the mount is granted as a directory");
+    assert.ok(out.rules.files.includes(join(f.root, "src", "m", "d.txt")), "a matching file under the mount is granted by itself");
+    assert.match(out.stderr, EACCES);
+    assert.equal(existsSync(join(data, "new.txt")), false, "nothing new landed in the mounted directory");
+    assert.equal(existsSync(join(f.root, "src", "new.txt")), false, "nothing new landed beside the mount");
+    assert.equal(read(data, "d.txt"), "delta\nz\n", "the granted file under the mount was written");
   });
 
   live("a literal that does not exist yet is not creatable by pair_run, and pair_write creates it", async () => {
@@ -430,6 +540,49 @@ describe("live Landlock: pair_run", () => {
     const aa = await stopsGrowing(f, "abort");
     assert.ok(aa.a > 0, "the writer ran");
     assert.equal(aa.b, aa.a, "the writer outlived the abort");
+  });
+
+  live("a helper killed from outside by SIGKILL is reported as a killed supervisor", async () => {
+    const f = liveState(["lib/**"]);
+    let pgid = null;
+    try {
+      const r = await run(f.state, "sleep 5", { onSpawn: (g) => { pgid = g; setTimeout(() => process.kill(g, "SIGKILL"), 300); } });
+      assert.equal(r.backend, "landlock");
+      assert.equal(r.signal, "SIGKILL");
+      assert.equal(r.timedOut, false);
+      assert.equal(r.supervisorKilled, "SIGKILL");
+    } finally {
+      // The helper never ended its command, so the sleep is still in the group.
+      if (pgid) try { process.kill(-pgid, "SIGKILL"); } catch { /* already gone */ }
+    }
+  });
+
+  live("a helper that ends by itself, after a command killed by a signal, is not a killed supervisor", async () => {
+    const f = liveState(["lib/**"]);
+    const r = await run(f.state, "kill -KILL $$");
+    assert.equal(r.backend, "landlock");
+    assert.equal(r.exitCode, 137, r.stderr || r.error);
+    assert.equal(r.signal, null);
+    assert.equal(r.supervisorKilled, undefined);
+  });
+
+  live("the run itself can kill its supervisor only below Landlock ABI 6, and is reported when it does", async () => {
+    const f = liveState(["lib/**"]);
+    let pgid = null;
+    try {
+      // In the run's shell $PPID is the helper, which forked it.
+      const r = await run(f.state, "kill -KILL $PPID; sleep 1", { onSpawn: (g) => { pgid = g; } });
+      assert.equal(r.backend, "landlock");
+      if (landlockAbi() >= 6) {
+        assert.equal(r.supervisorKilled, undefined, r.stderr);
+        assert.equal(r.exitCode, 0, "sleep 1 ran to the end");
+        assert.match(r.stderr, /Operation not permitted/, "Landlock's signal scope refuses the kill");
+      } else {
+        assert.equal(r.supervisorKilled, "SIGKILL", r.stderr);
+      }
+    } finally {
+      if (pgid) try { process.kill(-pgid, "SIGKILL"); } catch { /* already gone */ }
+    }
   });
 });
 

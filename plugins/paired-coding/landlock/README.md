@@ -40,7 +40,7 @@ Unknown fields are refused. Every list may be omitted, and `command` must not be
 |---|---|---|
 | `files` | `WRITE_FILE`, `TRUNCATE` on that one file | Rewrite, append to, and truncate the file. Nothing else: the file cannot be renamed, deleted, or created again. |
 | `dirs` | `MAKE_REG`, `WRITE_FILE`, `TRUNCATE` on the tree, plus `MAKE_DIR` when `make_dir` is true, plus `REMOVE_FILE` and `REFER` when `remove` is true | Create regular files anywhere under the directory and write them. Every file already under it becomes writable too (see below). Creating subdirectories needs `make_dir`. With `remove`, files under it can be deleted and renamed, which `rm`, `mv` and `sed -i` need; without it, deleting and renaming stay refused. Symlinks and removing directories stay refused either way. `make_dir` and `remove` default to false. |
-| `rw_trees` | Every handled right except `REFER` and `RESOLVE_UNIX` | Temp paths: create, write, delete, and rename within one directory. |
+| `rw_trees` | Every handled right except `REFER`, `IOCTL_DEV` and `RESOLVE_UNIX` | Temp paths: create, write, delete, and rename within one directory. |
 
 Every path must be:
 - **absolute and canonical.** It must be byte-identical to its `realpath`, with no symlink in any component, no `.`, no `..`, no `//`, and no trailing `/`. A rule lands on the object the path resolves to, so the helper insists the caller names that object.
@@ -74,12 +74,22 @@ out of the boundary.
 The helper handles every file-system write right the running ABI supports:
 - `WRITE_FILE`, `REMOVE_DIR`, `REMOVE_FILE`, and `MAKE_*` (char, dir, reg, sock, fifo, block, sym);
 - `REFER` (ABI 2) and `TRUNCATE` (ABI 3);
+- from ABI 5, `IOCTL_DEV`, which covers `ioctl` on character and block devices. No rule grants
+  it, so a command cannot send a device ioctl through a device file it opens; descriptors it
+  inherits are not affected, and the kernel still allows a few generic ones such as `FIONBIO`;
 - from ABI 9, `RESOLVE_UNIX`, which covers connecting to pathname Unix sockets.
 
 It also sets the ABI-6 scopes: one blocks abstract Unix sockets, the other blocks signals to
-processes outside the sandbox. Reading, listing, executing, device ioctls and TCP are not
-handled, so they stay allowed. That matches the macOS profile, which allows everything except
-file writes and Unix-socket connects.
+processes outside the sandbox. Reading, listing, executing and TCP are not handled, so they
+stay allowed.
+
+Landlock cannot restrict `chmod`, `chown`, `utime`, `setxattr` and some other calls on files
+at all ([kernel documentation](https://docs.kernel.org/userspace-api/landlock.html),
+"Filesystem flags"), so a command can change the permissions, timestamps and extended
+attributes of any file its user may change, listed or not. The macOS profile and bubblewrap
+refuse those changes outside what a run may write. The gate's read-back records permission
+bits, so it sees such a change to a worktree file; it records no owner, timestamp or
+extended attribute, and nothing outside the worktree.
 
 - **`REFER` comes only with `remove`.** A link or rename that moves a file into a different
   directory needs `REFER` on both sides, and the kernel refuses it when the file would gain
@@ -112,16 +122,21 @@ the helper gets `SIGTERM`, `SIGINT` or `SIGHUP`, the helper:
 
 1. kills every descendant it finds through the parent links in `/proc` with `SIGKILL`;
 2. reaps them, and repeats until it has no child left;
-3. exits as the command did: with its exit code, or by re-raising the signal that ended the
-   command (or the one that ended the run), so the caller sees what it would have seen
-   without the supervisor.
+3. exits as the command did: with its exit code, or with 128 plus the signal number when a
+   signal ended the command, as a shell reports it. A `SIGTERM`, `SIGINT` or `SIGHUP` to the
+   helper ends it the same way, with 128 plus that signal's number.
+
+So the helper never dies of a signal by its own choice. One that does was killed by a signal
+it does not handle (`SIGKILL`, for one) before it could end the command's processes.
 
 The helper forks before it restricts itself, so it is outside the sandbox. From ABI 6 the
 signal scope stops the command's processes from signalling it. On ABI 3 to 5 nothing stops
 them: a process that kills the helper with `SIGKILL` ends the supervision. The caller's
 process-group kill still ends whatever stayed in the group, but a process that left the
 group keeps running, under the write grant it started with. An outside `SIGKILL` of the
-helper does the same on any ABI, so the gate sends `SIGTERM` first.
+helper does the same on any ABI, so the gate sends `SIGTERM` first. When the helper dies of a
+signal the gate did not send, the gate stops the pairing session until the partner types
+`pair stop`.
 
 ## Exit codes
 
@@ -157,8 +172,8 @@ one byte.
 
 ## Tests
 
-- `cargo test` holds the unit tests: rights per ABI, `REFER` and `REMOVE_FILE` only with `remove`, input parsing, path checks, the `/proc/<pid>/stat` parent parsing and descendant walk, and the socket filter, run through a small classic-BPF interpreter and compared with `lib/bwrap.mjs`'s instruction for instruction.
-- `sh test/live.sh [binary]` runs the live checks against the running kernel, as a non-root user: among them, below ABI 9 a pathname-socket connect fails with `EPERM` while `socketpair`, TCP and DNS lookups still work; `rm`, `mv` and `sed -i` work in a `remove` entry while rename out of it, `rmdir` and symlinks fail; a `setsid` or double-forked writer stops when the command exits or the helper gets `SIGTERM`; and 3000 file rules run under a soft limit of 256 open files.
+- `cargo test` holds the unit tests: rights per ABI (`IOCTL_DEV` from ABI 5, granted by no rule), `REFER` and `REMOVE_FILE` only with `remove`, input parsing, path checks, the `/proc/<pid>/stat` parent parsing and descendant walk, and the socket filter, run through a small classic-BPF interpreter and compared with `lib/bwrap.mjs`'s instruction for instruction.
+- `sh test/live.sh [binary]` runs the live checks against the running kernel, as a non-root user: among them, below ABI 9 a pathname-socket connect fails with `EPERM` while `socketpair`, TCP and DNS lookups still work; `rm`, `mv` and `sed -i` work in a `remove` entry while rename out of it, `rmdir` and symlinks fail; from ABI 5 a `TCGETS` ioctl on `/dev/null` opened inside fails with `EACCES`; `chmod` of an unlisted file lands, which Landlock cannot refuse; a `setsid` or double-forked writer stops when the command exits or the helper gets `SIGTERM`; the helper exits 143 after a `SIGTERM` and dies of a `SIGKILL`; and 3000 file rules run under a soft limit of 256 open files.
 - `sh test/docker.sh [x86_64|aarch64]` runs `test/live.sh` in `ubuntu:24.04` as uid 1000. It then simulates a kernel without Landlock with a seccomp profile that fails `landlock_create_ruleset` with `ENOSYS`, and checks for exit 120 with nothing run.
 
 CI runs all three on `ubuntu-latest` (x86_64) and `ubuntu-24.04-arm` (aarch64).

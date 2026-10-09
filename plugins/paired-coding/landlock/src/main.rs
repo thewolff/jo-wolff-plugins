@@ -48,6 +48,7 @@ const MAKE_BLOCK: u64 = 1 << 11;
 const MAKE_SYM: u64 = 1 << 12;
 const REFER: u64 = 1 << 13;
 const TRUNCATE: u64 = 1 << 14;
+const IOCTL_DEV: u64 = 1 << 15;
 const RESOLVE_UNIX: u64 = 1 << 16;
 const SCOPE_ABSTRACT_UNIX_SOCKET: u64 = 1 << 0;
 const SCOPE_SIGNAL: u64 = 1 << 1;
@@ -184,7 +185,8 @@ fn fail<T>(code: i32, msg: impl Into<String>) -> Result<T, Fail> {
     Err(Fail(code, msg.into()))
 }
 
-/// Every write right the ABI handles, plus pathname Unix-socket connects from ABI 9.
+/// Every write right the ABI handles, ioctl on devices from ABI 5 (never granted, so a run
+/// cannot drive a device it opens), plus pathname Unix-socket connects from ABI 9.
 /// Reading and executing stay unhandled, so they stay allowed.
 fn handled_fs(abi: i64) -> u64 {
     let mut h = WRITE_FILE
@@ -203,6 +205,9 @@ fn handled_fs(abi: i64) -> u64 {
     if abi >= 3 {
         h |= TRUNCATE;
     }
+    if abi >= 5 {
+        h |= IOCTL_DEV;
+    }
     if abi >= 9 {
         h |= RESOLVE_UNIX;
     }
@@ -219,10 +224,10 @@ fn scoped(abi: i64) -> u64 {
     }
 }
 
-/// A temp tree gets every handled right except REFER (never granted) and RESOLVE_UNIX
-/// (a socket a process outside the sandbox made under /tmp stays unreachable).
+/// A temp tree gets every handled right except REFER and IOCTL_DEV (never granted) and
+/// RESOLVE_UNIX (a socket a process outside the sandbox made under /tmp stays unreachable).
 fn rw_tree_rights(handled: u64) -> u64 {
-    handled & !(REFER | RESOLVE_UNIX)
+    handled & !(REFER | IOCTL_DEV | RESOLVE_UNIX)
 }
 
 fn errno() -> i32 {
@@ -623,24 +628,16 @@ fn end_descendants() {
     }
 }
 
-/// Exits as the command did: with its exit code, or by the signal that ended it (or that ended
-/// the run), so the caller sees what it would have seen without the supervisor.
+/// Exits with the command's exit code, or with 128 plus the number of the signal that ended the
+/// command (or that ended the run), as a shell reports it. The helper never dies of a signal by
+/// its own choice, so a caller that sees it die of one knows it was killed by a signal it does
+/// not handle (SIGKILL among them) before it could end what the command left behind.
 fn exit_like(ended: Ended) -> ! {
-    let sig = match ended {
+    match ended {
         Ended::Status(st) if libc::WIFEXITED(st) => std::process::exit(libc::WEXITSTATUS(st)),
-        Ended::Status(st) => libc::WTERMSIG(st),
-        Ended::Stopped(sig) => sig,
-    };
-    // SAFETY: resets one signal to its default action, unblocks it and raises it.
-    unsafe {
-        libc::signal(sig, libc::SIG_DFL);
-        let mut set: libc::sigset_t = std::mem::zeroed();
-        libc::sigemptyset(&mut set);
-        libc::sigaddset(&mut set, sig);
-        libc::sigprocmask(libc::SIG_UNBLOCK, &set, std::ptr::null_mut());
-        libc::kill(libc::getpid(), sig);
+        Ended::Status(st) => std::process::exit(128 + libc::WTERMSIG(st)),
+        Ended::Stopped(sig) => std::process::exit(128 + sig),
     }
-    std::process::exit(128 + sig)
 }
 
 fn main() {
@@ -675,6 +672,8 @@ mod tests {
         assert_eq!(handled_fs(2) & TRUNCATE, 0);
         assert_eq!(handled_fs(8) & RESOLVE_UNIX, 0);
         assert_eq!(handled_fs(9) & RESOLVE_UNIX, RESOLVE_UNIX);
+        assert_eq!(handled_fs(4) & IOCTL_DEV, 0);
+        assert_eq!(handled_fs(5) & IOCTL_DEV, IOCTL_DEV);
         // Reading, listing and executing are never handled, so they stay allowed.
         assert_eq!(handled_fs(99) & 0b1101, 0);
         assert_eq!(scoped(5), 0);
@@ -749,6 +748,8 @@ mod tests {
             let h = handled_fs(abi);
             assert_eq!(rw_tree_rights(h) & REFER, 0);
             assert_eq!(rw_tree_rights(h) & RESOLVE_UNIX, 0);
+            // Device ioctls are handled from ABI 5 and granted by no kind of rule.
+            assert_eq!((rw_tree_rights(h) | DIR_RIGHTS | MAKE_DIR | REMOVE_RIGHTS | FILE_RIGHTS) & IOCTL_DEV, 0);
             assert_eq!((DIR_RIGHTS | MAKE_DIR | FILE_RIGHTS) & (REFER | REMOVE_FILE), 0);
             assert_eq!(REMOVE_RIGHTS & h, REMOVE_FILE | REFER);
         }
