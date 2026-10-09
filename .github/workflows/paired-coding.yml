@@ -21,6 +21,9 @@ jobs:
       matrix:
         runner: [ubuntu-24.04, ubuntu-24.04-arm]
     runs-on: ${{ matrix.runner }}
+    # A sandbox regression that lets a run's children outlive it hangs rather than fails; the
+    # per-test timeout turns it into a failure, and this caps the job if that is not enough.
+    timeout-minutes: 15
     defaults:
       run:
         working-directory: plugins/paired-coding
@@ -42,6 +45,6 @@ jobs:
       - name: bubblewrap smoke check
         run: bwrap --ro-bind / / --dev /dev --proc /proc --unshare-all /bin/true && echo ok
       - name: Tests, with the live bubblewrap cases required to run
-        run: node --test
+        run: node --test --test-timeout=120000 --test-force-exit
         env:
           PAIRED_CODING_REQUIRE_BWRAP: "1"
