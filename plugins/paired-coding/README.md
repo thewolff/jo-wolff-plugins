@@ -136,21 +136,24 @@ How it works:
   instead, as long as that tool does not reach a local daemon over a Unix socket (see the next
   point).
 - `pair_run` runs every command in the foreground under a sandbox built from the state: a
-  Seatbelt profile on macOS, bubblewrap on Linux, where some of what follows differs (see
-  **Linux: bubblewrap** below). Both profiles deny every write by default. With no change set
-  open a command may write only temp directories and `/dev`. With one open it may also write
-  the boundary files. The state directory and the plugin's own install root are never
-  writable, and on macOS no command may create a hard link anywhere, even between two paths it
-  could write (on Linux one made inside a writable directory stops the session; see below).
-  Both profiles also refuse connections to Unix-domain sockets, except the DNS resolver's on
-  macOS, because a local daemon reached over a socket writes with its own rights. So the Docker
-  CLI, `ssh-agent`, and a database on a local socket are out of reach from `pair_run`. TCP is
-  not fenced: HTTPS and DNS lookups work.
+  Seatbelt profile on macOS; on Linux Landlock, or bubblewrap where Landlock cannot be used,
+  where some of what follows differs (see **Linux: which sandbox** below). Every sandbox denies
+  every write by default. With no change set open a command may write only temp directories
+  and `/dev`. With one open it may also write the boundary files. The state directory and the
+  plugin's own install root are never writable, and on macOS no command may create a hard link
+  anywhere, even between two paths it could write (on Linux one made inside a writable
+  directory stops the session; see below). Every sandbox also refuses connections to
+  Unix-domain sockets, except the DNS resolver's on macOS, because a local daemon reached over
+  a socket writes with its own rights. So the Docker CLI, `ssh-agent`, and a database on a
+  local socket are out of reach from `pair_run`. TCP is not fenced: HTTPS and DNS lookups work.
 - `pair_write` and `pair_edit` write inside the sandbox too, under the open profile without the
-  temp directories. They write the new content to a fresh file beside the target and rename it
-  over the target, keeping an existing file's permission bits. So a hard link or symlink at a
-  boundary path is replaced rather than written through, a symlink swapped in after the path
-  check cannot land the write outside the boundary, and a directory at the path is refused.
+  temp directories. On macOS and under bubblewrap they write the new content to a fresh file
+  beside the target and rename it over the target, keeping an existing file's permission bits.
+  So a hard link or symlink at a boundary path is replaced rather than written through, a
+  symlink swapped in after the path check cannot land the write outside the boundary, and a
+  directory at the path is refused. Under Landlock they write in place, which keeps the file
+  itself, inode and permission bits included; a target that is a symlink or has a second hard
+  link goes to bubblewrap's staged write instead (see **Linux: Landlock** below).
 - Under any `.git`, only what `git add` and `git commit` write is writable, even when an agreed
   boundary covers `.git/`: `objects/`, `refs/`, `logs/`, `index`, `HEAD`, `ORIG_HEAD`,
   `COMMIT_EDITMSG`, `packed-refs` and `AUTO_MERGE`, each with its `.lock` file. The same list
@@ -191,9 +194,9 @@ How it works:
 |---|---|---|
 | Claude Code, macOS | Built: hooks and a bundled MCP server | Verified on Claude Code v2.1.287, loaded with `--plugin-dir`: tests 11 to 17, then the release checks below |
 | OMP, macOS | Built: an extension, registered by `omp plugin install`, or loaded with `--plugin-dir` and `-e` together | Verified on OMP 18.4.4, loaded with `-e`: tests 11 to 17, then the release checks below. After a plain `omp plugin install`, a scripted stand-in model saw the skill listed, the eight `pair_*` tools registered, and a host `write` refused after `pair_start`; tests 11 to 17 were not re-run that way |
-| Claude Code and OMP, Linux | Built: the same gate, with bubblewrap as the sandbox | The unit suite and the live bubblewrap cases pass in an Ubuntu 24.04 container as a non-root user. Neither host has been run live on Linux |
+| Claude Code and OMP, Linux | Built: the same gate, with Landlock or bubblewrap as the sandbox | The unit suite and the live Landlock and bubblewrap cases pass in an Ubuntu 24.04 container as a non-root user. Neither host has been run live on Linux |
 | Codex | None | Unverified; the skill is included but has not been run there |
-| Windows, anything else, or Linux without a working bubblewrap | `pair_start` refuses | The skill runs as conversation only |
+| Windows, anything else, or Linux with neither Landlock nor a working bubblewrap | `pair_start` refuses | The skill runs as conversation only |
 
 The adversarial tests, run live with a cheap model in throwaway git repositories and judged by
 content snapshots of every file (untracked and ignored included):
@@ -348,20 +351,97 @@ registers. While any listed tool is in the session's tool list, `pair_start` ref
 PAIRED_CODING_CONFLICTING_TOOLS), so this adapter stays off", the session stays untouched, and
 nothing crashes; see `omp/REGISTRATION.md`. Claude Code does not read this variable.
 
-**Two sandboxes: Seatbelt on macOS, bubblewrap on Linux.** `pair_run` and the writes inside
-`pair_write` and `pair_edit` run under Seatbelt (`/usr/bin/sandbox-exec`) on macOS and under
-bubblewrap (`bwrap`) on Linux, on x86_64 and aarch64. Elsewhere, or where the sandbox cannot
-run, `pair_start` refuses with the reason and the skill works as conversation only.
+**Three sandboxes: Seatbelt on macOS, Landlock or bubblewrap on Linux.** `pair_run` and the
+writes inside `pair_write` and `pair_edit` run under Seatbelt (`/usr/bin/sandbox-exec`) on
+macOS. On Linux, on x86_64 and aarch64, they run under Landlock through the plugin's own helper
+(`landlock/`), or under bubblewrap (`bwrap`) where Landlock cannot be used. Elsewhere, or where
+no sandbox can run, `pair_start` refuses with the reason and the skill works as conversation
+only.
 
 **A run that makes a link stops the session.** After each `pair_run` the gate looks where the
 run could write for a symlink or a hard link it made, and for a `.git` entry that is new or was
 replaced. If it finds one, `pair_run` returns "STOPPED: pair_run made a link or a .git entry
 inside the paths it could write (…)", the journal records `link-made`, and `pair_done` refuses
 until you type `pair stop`. A link there would carry a later write, your editor's included, to
-wherever it points. Snapshot exclusions such as `node_modules` are not searched. This holds on
-both platforms.
+wherever it points. Snapshot exclusions such as `node_modules` are not searched. This holds
+under every sandbox.
 
-**Linux: bubblewrap.** bubblewrap runs as you, inside a user namespace. It needs:
+**Linux: which sandbox.** The gate picks one when it first needs it in a process, and
+`pair_start` says which, in a line that starts "Sandbox:"; the journal's `start` entry records
+it as `sandbox`.
+
+1. Landlock, when the kernel has Landlock ABI 3 or later (ABI 3 is the first that can refuse
+   truncation). The gate checks the helper binary for this machine against
+   `landlock/SHA256SUMS` before it first runs it, then asks it for the ABI.
+2. bubblewrap, when the kernel has no Landlock or only ABI 1 or 2, and bubblewrap works.
+3. Otherwise `pair_start` refuses, naming both reasons.
+
+A helper whose bytes do not match `SHA256SUMS`, a machine that is neither x86_64 nor aarch64,
+or a helper that cannot run refuses pairing outright, even where bubblewrap would work: those
+mean the plugin is not what was shipped. Reinstall it, or rebuild the helper (below).
+
+Under Landlock, a single run or write that Landlock cannot fence goes to bubblewrap, and its
+result says so ("under bubblewrap:" and the reason). Landlock can only grant: nothing inside a
+writable directory can be taken back out. So the gate hands a run to bubblewrap when a
+directory it would make writable holds a `.git` entry (a submodule under `lib/**`, for
+instance), the state directory, a protected path or the worktree root, or when a temp path
+holds the worktree or the state directory (a worktree under `/tmp` does). A file it would grant
+that has a second hard link goes to bubblewrap too. If bubblewrap does not work on the machine,
+that run or write is refused.
+
+In a Docker container with the default security options Landlock worked and bubblewrap did
+not, so a container needs no extra options when its kernel has Landlock.
+
+**Linux: Landlock.** Landlock grants writes per file, so the kernel refuses a write to any
+existing file outside the boundary, as Seatbelt does:
+
+- A literal entry that exists is writable as that one file. A literal that does not exist yet
+  cannot be created by `pair_run`; `pair_write` creates it.
+- An existing file under a glob entry is writable when it matches. One that does not match is
+  refused by the kernel, even in a directory the glob covers.
+- New files under a glob entry are fenced per directory, the one gap left. Landlock attaches
+  a rule to a file that exists, so the only way to let a command create a file is to make a
+  directory writable, and then a file of any name can be created there. The gate makes a
+  directory writable only when every file already in it matches the boundary and the glob could
+  hold a file in each of its subdirectories. With `src/**/*.ts` agreed, where `src` holds
+  `README.md` and `src/lib` holds only `.ts` files, the live tests show: `pair_run` cannot write
+  `src/README.md`, cannot create `src/new.md`, and cannot create `src/new.ts` either, because
+  `src` holds a file outside the boundary; it can write `src/a.ts`; and in `src/lib` it can
+  create `src/lib/new.ts`, a new directory with a `.ts` file in it, and also `src/lib/new.md`.
+  `pair_done`'s read-back shows such a write and stops the session on it. `pair_write` creates
+  `src/new.ts` where `pair_run` cannot.
+- `pair_run` cannot delete, rename or symlink anything outside the temp directories. So
+  `rm`, `mv`, and tools that rename a new file over the old one (`sed -i`, many formatters)
+  fail with "Permission denied", whatever the boundary. Run them outside pairing, or write the
+  result with `pair_write`.
+- Nothing under `.git` is writable, so `git commit` inside `pair_run` fails (see the `.git`
+  points above).
+- Temp directories, `/tmp` included, are shared, as on macOS.
+- `pair_write` and `pair_edit` write the file in place: the content passes through the helper
+  straight into the one granted file, which keeps its inode and permission bits. A new file is
+  created with the shell's noclobber on, so anything that appears at the path first fails the
+  write instead of taking it. A target that is a symlink or has a second hard link would carry
+  an in-place write elsewhere, so it goes to bubblewrap's staged write (below), as does a new
+  file directly in the worktree root.
+- A process that leaves its run's process group keeps running after the run, with the write
+  permission its run had, as on macOS; `pair_done` reaps the group before its snapshot.
+- On kernels before Landlock ABI 9, Landlock cannot refuse a connection to a pathname Unix
+  socket, so the helper installs the same seccomp filter as bubblewrap's (below): no
+  Unix-domain socket can be created, the DNS resolver's included, and `socketpair` still works.
+  DNS lookups worked in the test container. From ABI 9 Landlock refuses those connections
+  itself and the filter is not installed.
+- The helper is a small static Rust program, committed as `landlock/bin/pair-landlock-x86_64-linux`
+  and `landlock/bin/pair-landlock-aarch64-linux` with their SHA256 sums in
+  `landlock/SHA256SUMS`. `sh landlock/build.sh` rebuilds both from source in a pinned Rust
+  image and needs only Docker; CI rebuilds them on every change and fails if one byte differs.
+  `landlock/README.md` describes its input and what the kernel enforces.
+
+The live Landlock cases run where the helper reports ABI 3 or later; set
+`PAIRED_CODING_REQUIRE_LANDLOCK=1` to make them fail instead of skip, as CI does.
+
+**Linux: bubblewrap.** bubblewrap is the sandbox where the kernel has no Landlock ABI 3, and
+takes the runs and writes Landlock cannot fence. It runs as you, inside a user namespace. It
+needs:
 
 - The `bubblewrap` package, with `--bind-fd`: bubblewrap 0.10.0 or later, or a distribution
   build carrying the CVE-2024-42472 fix (Ubuntu 24.04's 0.9.0 has it).
@@ -380,7 +460,7 @@ both platforms.
   refusal names the same fixes.
 
 bubblewrap mounts paths writable; it cannot match each write against the boundary's patterns
-the way Seatbelt does. So on Linux:
+the way Seatbelt and Landlock do. So under bubblewrap:
 
 - A glob entry makes the whole directory above its first wildcard writable to `pair_run`: with
   `src/**/*.ts` agreed, a run can also write `src/notes.md`. `pair_done`'s read-back shows such
@@ -408,11 +488,13 @@ the way Seatbelt does. So on Linux:
 - A path the sandbox would make writable that turns out to be a symlink refuses the run, so a
   swapped-in symlink cannot carry a mount outside the worktree.
 
-**Links inside the boundary become plain files.** `pair_write` and `pair_edit` write a new file
-and rename it over the target, so they never write through a symlink or hard link at a boundary
-path. The file the link pointed to is never touched, and the linked path becomes a plain copy
-holding the new content. That includes links you keep on purpose, such as pnpm-style linked
-files: an agreed write to one of them unlinks it.
+**Links inside the boundary become plain files, or are left alone.** On macOS and under
+bubblewrap, `pair_write` and `pair_edit` write a new file and rename it over the target, so
+they never write through a symlink or hard link at a boundary path. The file the link pointed
+to is never touched, and the linked path becomes a plain copy holding the new content. That
+includes links you keep on purpose, such as pnpm-style linked files: an agreed write to one of
+them unlinks it. Under Landlock the same write goes to bubblewrap; where bubblewrap does not
+work, it is refused and the link stays as it was.
 
 **The sandbox fences file writes and local sockets, not the network.** Apart from file writes,
 hard links and Unix-domain sockets, the Seatbelt profile allows everything. Local TCP is open:
@@ -431,9 +513,9 @@ repository whose config points `core.hooksPath` at a directory in the worktree (
 `.husky/`, for one) runs hooks from there, and `pair_run` can write that directory when it is
 in the boundary; unlike `.git/`, such a write shows in the read-back diff.
 
-**Escaped writers are caught late, and only inside the worktree.** On macOS a process that
-leaves its run's process group survives the reap and keeps the write permission its run had
-(test 17); on Linux bubblewrap ends it with the run. A process that got out of the sandbox
+**Escaped writers are caught late, and only inside the worktree.** On macOS and under Landlock
+a process that leaves its run's process group survives the reap and keeps the write permission
+its run had (test 17); bubblewrap ends it with the run. A process that got out of the sandbox
 altogether would write with your own permissions; the one route probed on macOS, `launchctl
 submit`, was denied, but no probe proves there is no other. Either kind is caught only by
 content snapshots, at the next `pair_done`, which then stops the session: the first write is
@@ -455,10 +537,12 @@ carries. Only Claude Code uses it; OMP gets the same verbs as extension tools re
 - `.mcp.json`: registers the bundled MCP server `pair` with Claude Code.
 - `README.md`: this file.
 - `skills/paired-coding/SKILL.md`: the skill the agent follows while pairing.
-- `core/gate.mjs`: the gate core: pairing state, verdicts, Seatbelt profiles and bubblewrap options, with no host imports.
+- `core/gate.mjs`: the gate core: pairing state, verdicts, Seatbelt profiles, Landlock rulesets and bubblewrap options, with no host imports.
 - `lib/verbs.mjs`: the `pair_*` verbs and session lifecycle, shared by the MCP server, the hooks and the OMP adapter.
 - `lib/host-io.mjs`: file, snapshot, lock and sandboxed-process I/O, and the post-run link check, shared the same way.
-- `lib/bwrap.mjs`: the Linux sandbox: the bubblewrap probe, the seccomp filter, and descriptor-pinned mounts.
+- `lib/bwrap.mjs`: the Linux sandbox under bubblewrap: the bubblewrap probe, the seccomp filter, and descriptor-pinned mounts.
+- `lib/landlock.mjs`: the Linux sandbox under Landlock: picking the helper for this machine, checking it against `SHA256SUMS`, and the ABI probe.
+- `landlock/`: the `pair-landlock` helper: its Rust source, the two committed binaries, `SHA256SUMS`, `build.sh` and its own tests.
 - `server/pair-server.mjs`: the MCP server over stdio that serves the `pair_*` tools to Claude Code.
 - `server/binding.mjs`: ties each `pair_*` call to its session through a one-shot file the hook writes; a call the hook never saw is refused.
 - `hooks/hooks.json`: registers the Claude Code hooks.

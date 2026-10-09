@@ -2,8 +2,10 @@
 //!
 //! Reads one JSON ruleset from the first line of stdin, turns it into a Landlock ruleset that
 //! handles every file-system write right the running kernel supports, sets no_new_privs,
-//! restricts itself, and execs `/bin/sh -c <command>`. Everything on stdin after the first
-//! newline is left unread for the command. See README.md beside this crate for the contract.
+//! restricts itself, and execs `/bin/sh -c <command>`. Below Landlock ABI 9, which cannot
+//! refuse a connect to a pathname Unix socket, it also installs a seccomp filter that makes
+//! `socket(AF_UNIX, ...)` fail with EPERM. Everything on stdin after the first newline is left
+//! unread for the command. See README.md beside this crate for the contract.
 
 use serde::Deserialize;
 use std::ffi::CString;
@@ -52,6 +54,84 @@ const FILE_RIGHTS: u64 = WRITE_FILE | TRUNCATE;
 /// all MAKE_REG alone allows; WRITE_FILE and TRUNCATE therefore reach every existing file in
 /// the tree as well.
 const DIR_RIGHTS: u64 = MAKE_REG | WRITE_FILE | TRUNCATE;
+
+/// The first ABI whose RESOLVE_UNIX right covers connecting to a pathname Unix socket. Below
+/// it the seccomp filter refuses every new Unix socket instead.
+const RESOLVE_UNIX_ABI: i64 = 9;
+
+/// Per-architecture numbers for the seccomp filter, the same table as lib/bwrap.mjs's
+/// SECCOMP_ARCHES: the audit architecture (include/uapi/linux/audit.h) and the syscall numbers
+/// (arch/x86/entry/syscalls/syscall_64.tbl; scripts/syscall.tbl, which arm64 uses). x86_64
+/// also accepts x32 calls under the same audit architecture, with bit 30 set.
+struct SeccompArch {
+    audit: u32,
+    socket: u32,
+    io_uring_setup: u32,
+    x32_bit: u32,
+}
+
+#[allow(dead_code)]
+const ARCH_X86_64: SeccompArch = SeccompArch { audit: 0xc000_003e, socket: 41, io_uring_setup: 425, x32_bit: 0x4000_0000 };
+#[allow(dead_code)]
+const ARCH_AARCH64: SeccompArch = SeccompArch { audit: 0xc000_00b7, socket: 198, io_uring_setup: 425, x32_bit: 0 };
+#[cfg(target_arch = "x86_64")]
+const HOST_ARCH: &SeccompArch = &ARCH_X86_64;
+#[cfg(target_arch = "aarch64")]
+const HOST_ARCH: &SeccompArch = &ARCH_AARCH64;
+
+const BPF_LD_W_ABS: u16 = 0x20;
+const BPF_JMP_JEQ_K: u16 = 0x15;
+const BPF_JMP_JGE_K: u16 = 0x35;
+const BPF_RET_K: u16 = 0x06;
+const RET_ALLOW: u32 = 0x7fff_0000;
+const RET_EPERM: u32 = 0x0005_0000 | 1;
+const AF_UNIX: u32 = 1;
+// struct seccomp_data: int nr at 0, __u32 arch at 4, __u64 instruction_pointer at 8, __u64 args[6] at 16.
+const OFF_NR: u32 = 0;
+const OFF_ARCH: u32 = 4;
+const OFF_ARG0_LOW: u32 = 16;
+
+/// The seccomp program, instruction for instruction the one lib/bwrap.mjs's seccompFilter
+/// builds: a syscall from another architecture, an x32 syscall, io_uring_setup (an io_uring
+/// can create a socket without the socket syscall) and socket() with domain AF_UNIX return
+/// EPERM; everything else is allowed. socketpair stays allowed: it reaches no one outside.
+fn socket_filter(a: &SeccompArch) -> Vec<(u16, u8, u8, u32)> {
+    let mut prog = vec![
+        (BPF_LD_W_ABS, 0, 0, OFF_ARCH),
+        (BPF_JMP_JEQ_K, 1, 0, a.audit),
+        (BPF_RET_K, 0, 0, RET_EPERM),
+        (BPF_LD_W_ABS, 0, 0, OFF_NR),
+    ];
+    if a.x32_bit != 0 {
+        prog.push((BPF_JMP_JGE_K, 0, 1, a.x32_bit));
+        prog.push((BPF_RET_K, 0, 0, RET_EPERM));
+    }
+    prog.extend([
+        (BPF_JMP_JEQ_K, 0, 1, a.io_uring_setup),
+        (BPF_RET_K, 0, 0, RET_EPERM),
+        (BPF_JMP_JEQ_K, 0, 3, a.socket),
+        (BPF_LD_W_ABS, 0, 0, OFF_ARG0_LOW),
+        (BPF_JMP_JEQ_K, 0, 1, AF_UNIX),
+        (BPF_RET_K, 0, 0, RET_EPERM),
+        (BPF_RET_K, 0, 0, RET_ALLOW),
+    ]);
+    prog
+}
+
+/// Installs the socket filter for this process and everything it starts. no_new_privs must
+/// already be set.
+fn install_socket_filter() -> Result<(), Fail> {
+    let mut filter: Vec<libc::sock_filter> = socket_filter(HOST_ARCH)
+        .into_iter()
+        .map(|(code, jt, jf, k)| libc::sock_filter { code, jt, jf, k })
+        .collect();
+    let prog = libc::sock_fprog { len: filter.len() as u16, filter: filter.as_mut_ptr() };
+    // SAFETY: prog points at a valid filter array that outlives the call; the kernel copies it.
+    if unsafe { libc::prctl(libc::PR_SET_SECCOMP, libc::SECCOMP_MODE_FILTER, &prog as *const libc::sock_fprog) } < 0 {
+        return fail(EXIT_SANDBOX, format!("prctl(PR_SET_SECCOMP): {}", os_err(errno())));
+    }
+    Ok(())
+}
 
 #[repr(C)]
 struct RulesetAttr {
@@ -331,6 +411,9 @@ fn enforce(abi: i64, rules: &[(i32, u64, String)]) -> Result<(), Fail> {
         return fail(EXIT_SANDBOX, format!("landlock_restrict_self: {}", os_err(errno())));
     }
     unsafe { libc::close(ruleset) };
+    if abi < RESOLVE_UNIX_ABI {
+        install_socket_filter()?;
+    }
     Ok(())
 }
 
@@ -390,6 +473,68 @@ mod tests {
         assert_eq!(handled_fs(99) & 0b1101, 0);
         assert_eq!(scoped(5), 0);
         assert_eq!(scoped(6), SCOPE_ABSTRACT_UNIX_SOCKET);
+    }
+
+    /// A classic-BPF interpreter for the opcodes socket_filter uses, over one seccomp_data.
+    fn run_filter(prog: &[(u16, u8, u8, u32)], arch: u32, nr: u32, arg0: u32) -> u32 {
+        let mut acc = 0u32;
+        let mut pc = 0usize;
+        loop {
+            let (code, jt, jf, k) = prog[pc];
+            pc += 1;
+            match code {
+                BPF_LD_W_ABS => {
+                    acc = match k {
+                        OFF_NR => nr,
+                        OFF_ARCH => arch,
+                        OFF_ARG0_LOW => arg0,
+                        _ => panic!("unexpected load offset {k}"),
+                    }
+                }
+                BPF_JMP_JEQ_K => pc += if acc == k { jt } else { jf } as usize,
+                BPF_JMP_JGE_K => pc += if acc >= k { jt } else { jf } as usize,
+                BPF_RET_K => return k,
+                _ => panic!("unexpected opcode {code:#x}"),
+            }
+        }
+    }
+
+    #[test]
+    fn the_socket_filter_refuses_unix_sockets_and_io_uring_only() {
+        for a in [&ARCH_X86_64, &ARCH_AARCH64] {
+            let p = socket_filter(a);
+            assert_eq!(run_filter(&p, a.audit, a.socket, AF_UNIX), RET_EPERM);
+            assert_eq!(run_filter(&p, a.audit, a.socket, 2), RET_ALLOW, "AF_INET");
+            assert_eq!(run_filter(&p, a.audit, a.socket, 10), RET_ALLOW, "AF_INET6");
+            assert_eq!(run_filter(&p, a.audit, a.socket, 16), RET_ALLOW, "AF_NETLINK");
+            assert_eq!(run_filter(&p, a.audit, a.io_uring_setup, 0), RET_EPERM);
+            assert_eq!(run_filter(&p, a.audit, 0, AF_UNIX), RET_ALLOW, "read with a 1 in arg0");
+            assert_eq!(run_filter(&p, 0x4000_0003, a.socket, 2), RET_EPERM, "i386 audit arch");
+        }
+        // socketpair: x86_64 53, arm64 199.
+        assert_eq!(run_filter(&socket_filter(&ARCH_X86_64), ARCH_X86_64.audit, 53, AF_UNIX), RET_ALLOW);
+        assert_eq!(run_filter(&socket_filter(&ARCH_AARCH64), ARCH_AARCH64.audit, 199, AF_UNIX), RET_ALLOW);
+        let x = socket_filter(&ARCH_X86_64);
+        assert_eq!(run_filter(&x, ARCH_X86_64.audit, 0x4000_0000 | 41, 2), RET_EPERM, "x32 socket");
+        assert_eq!(run_filter(&x, ARCH_X86_64.audit, 0x4000_0000, 0), RET_EPERM, "x32 read");
+    }
+
+    #[test]
+    fn the_socket_filter_matches_bwrap_mjs_instruction_for_instruction() {
+        // lib/bwrap.mjs seccompFilter("x64") and seccompFilter("arm64"), as (code, jt, jf, k).
+        let x86 = vec![
+            (0x20, 0, 0, 4), (0x15, 1, 0, 0xc000_003e), (0x06, 0, 0, 0x0005_0001), (0x20, 0, 0, 0),
+            (0x35, 0, 1, 0x4000_0000), (0x06, 0, 0, 0x0005_0001),
+            (0x15, 0, 1, 425), (0x06, 0, 0, 0x0005_0001), (0x15, 0, 3, 41), (0x20, 0, 0, 16),
+            (0x15, 0, 1, 1), (0x06, 0, 0, 0x0005_0001), (0x06, 0, 0, 0x7fff_0000),
+        ];
+        let arm = vec![
+            (0x20, 0, 0, 4), (0x15, 1, 0, 0xc000_00b7), (0x06, 0, 0, 0x0005_0001), (0x20, 0, 0, 0),
+            (0x15, 0, 1, 425), (0x06, 0, 0, 0x0005_0001), (0x15, 0, 3, 198), (0x20, 0, 0, 16),
+            (0x15, 0, 1, 1), (0x06, 0, 0, 0x0005_0001), (0x06, 0, 0, 0x7fff_0000),
+        ];
+        assert_eq!(socket_filter(&ARCH_X86_64), x86);
+        assert_eq!(socket_filter(&ARCH_AARCH64), arm);
     }
 
     #[test]

@@ -242,14 +242,14 @@ describe("pair_start refusals", () => {
     assert.equal((await blanks.call("pair_start")).ok, true, "only empty entries: check skipped");
   });
 
-  test("refused on a platform with neither Seatbelt nor bubblewrap, and the session stays inert", async () => {
+  test("refused on a platform with neither Seatbelt nor Landlock nor bubblewrap, and the session stays inert", async () => {
     const s = setup();
     const real = Object.getOwnPropertyDescriptor(process, "platform");
     Object.defineProperty(process, "platform", { value: "win32" });
     try {
       const r = await s.call("pair_start");
       assert.equal(r.ok, false);
-      assert.match(r.text, /needs macOS Seatbelt or Linux bubblewrap/);
+      assert.match(r.text, /needs macOS Seatbelt or Linux Landlock or bubblewrap/);
     } finally {
       Object.defineProperty(process, "platform", real);
     }
