@@ -39,10 +39,14 @@ bubblewrap needs two things:
      `--security-opt seccomp=unconfined --security-opt systempaths=unconfined`.
 
 With neither Landlock ABI 3 nor a working bubblewrap, the plugin still installs, but
-`pair_start` refuses and names both reasons. On such a machine, keep the plugin off temp paths
-too: with `HOME` under `/tmp`, the installed plugin sits in a temp path, Landlock cannot fence
-it there, and `pair_start` refuses. With a working bubblewrap, those runs go to bubblewrap
-instead. The details, and what each sandbox does and does not enforce, are under **Linux: which
+`pair_start` refuses and names both reasons.
+
+On a machine with Landlock but no working bubblewrap (a stock Ubuntu 24.04), keep the
+worktree, the session state and the installed plugin off temp paths. With `HOME` under `/tmp`,
+for instance, the installed plugin sits in a temp path, Landlock cannot fence it there, and
+`pair_start` refuses. With a working bubblewrap, those runs go to bubblewrap instead.
+
+The details, and what each sandbox does and does not enforce, are under **Linux: which
 sandbox**, **Linux: Landlock** and **Linux: bubblewrap** in
 [What this enforces, and what it does not](#what-this-enforces-and-what-it-does-not).
 
@@ -432,8 +436,10 @@ out (below) stays on Landlock whether or not bubblewrap works, and so does a new
 or a protected path.
 
 Nothing under a protected path is ever granted. A worktree inside one cannot be written at all:
-`pair_start` succeeds, and then every write inside fails with a plain "Permission denied".
-Claude Code keeps transcripts under `~/.claude/projects/`, so this needs a worktree there.
+`pair_start` succeeds, and then every write inside fails with a plain "Permission denied". So
+keep worktrees out of `~/.claude/projects/` (where Claude Code keeps transcripts), out of the
+plugin's directory, and out of `$PAIRED_CODING_STATE_DIR` (default
+`~/.local/state/paired-coding`).
 
 In a Docker container with the default security options Landlock worked and bubblewrap did
 not, so a container needs no extra options when its kernel has Landlock.
