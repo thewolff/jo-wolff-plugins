@@ -13,8 +13,13 @@ change set is written, while it is still cheap to steer.
 
 ## Install
 
-**Linux: before you install.** On Linux the gate runs the agent's writes and commands inside
-bubblewrap, so the machine needs two things. macOS needs nothing extra.
+**Linux: before you install.** On Linux, on x86_64 and aarch64, the gate runs the agent's writes
+and commands under Landlock, through a small helper the plugin ships. That needs a kernel with
+Landlock ABI 3 or later, and nothing else; `pair_start` checks for it. macOS needs nothing extra.
+
+Where the kernel has no Landlock ABI 3, the gate uses bubblewrap instead. It also uses
+bubblewrap for the few layouts Landlock cannot fence, so it is worth installing anyway.
+bubblewrap needs two things:
 
 1. The `bubblewrap` package (`sudo apt install bubblewrap` on Debian and Ubuntu), version 0.10.0
    or later, or a distribution build with the CVE-2024-42472 fix. Ubuntu 24.04's 0.9.0 has it.
@@ -33,8 +38,9 @@ bubblewrap, so the machine needs two things. macOS needs nothing extra.
    - **Docker containers:** run with
      `--security-opt seccomp=unconfined --security-opt systempaths=unconfined`.
 
-Without these, the plugin still installs, but `pair_start` refuses and names the same fixes.
-The details, and what bubblewrap does and does not enforce, are under **Linux: bubblewrap** in
+With neither Landlock ABI 3 nor a working bubblewrap, the plugin still installs, but
+`pair_start` refuses and names both reasons. The details, and what each sandbox does and does
+not enforce, are under **Linux: which sandbox**, **Linux: Landlock** and **Linux: bubblewrap** in
 [What this enforces, and what it does not](#what-this-enforces-and-what-it-does-not).
 
 Claude Code:
