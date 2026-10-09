@@ -2,7 +2,9 @@
 // core builds (core/gate.mjs bwrapArgsFor, pairWriteBwrap).
 //
 // WHAT IT PROVIDES
-//   - bwrapProblem: whether bubblewrap can fence pair_run on this machine, from a one-time probe.
+//   - bwrapProblem: whether bubblewrap can fence pair_run on this machine, from a one-time probe,
+//     and bwrapProc: the /proc mode that probe settled on ("fresh", or "ro-bind" in a container
+//     that masks /proc).
 //   - seccompFilter: the classic-BPF program that makes socket(AF_UNIX, ...) and io_uring_setup
 //     fail with EPERM, matching the Seatbelt profile's Unix-socket deny.
 //   - bwrapCommand: the full bwrap argv for a plan, with every read-write bind pinned to a file
@@ -17,6 +19,7 @@ import { spawnSync } from "node:child_process";
 import { closeSync, constants, mkdtempSync, openSync, readdirSync, readlinkSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { arch as osArch, tmpdir } from "node:os";
 import { delimiter, join } from "node:path";
+import { bwrapBase } from "../core/gate.mjs";
 
 // ─── seccomp ────────────────────────────────────────────────────────────────────────────
 
@@ -110,14 +113,36 @@ function findBwrap(env = process.env) {
 
 let probed = null;
 
-const USERNS_FIX = "unprivileged user namespaces look switched off. Ubuntu 23.10 and later: sudo sysctl kernel.apparmor_restrict_unprivileged_userns=0 (lasting: put that setting in /etc/sysctl.d/), or load the bwrap-userns-restrict AppArmor profile from apparmor-profiles; Debian: sudo sysctl kernel.unprivileged_userns_clone=1; in a container, unconfined seccomp and system paths (docker run --security-opt seccomp=unconfined --security-opt systempaths=unconfined)";
+const USERNS_FIX = "unprivileged user namespaces look switched off. Ubuntu 23.10 and later: sudo sysctl kernel.apparmor_restrict_unprivileged_userns=0 (lasting: put that setting in /etc/sysctl.d/), or load the bwrap-userns-restrict AppArmor profile from apparmor-profiles; Debian: sudo sysctl kernel.unprivileged_userns_clone=1; in a Docker container, unconfined seccomp, and unconfined AppArmor where the host runs it (docker run --security-opt seccomp=unconfined --security-opt apparmor=unconfined; add --security-opt systempaths=unconfined for a fresh /proc)";
+
+/** What bwrap prints when the kernel will not mount it a fresh procfs. */
+const FRESH_PROC_REFUSED = /Can't mount proc on /;
+
+/**
+ * Which /proc mode the probe settles on, from `attempt`, which runs the probe sandbox with a
+ * given mode (core/gate.mjs BWRAP_PROC_ARGS). A fresh procfs first. Only when that failed on the
+ * procfs mount itself, as under Docker's /proc masks, the host's /proc bound read-only, and only
+ * if the sandbox then works with it. Any other failure (no user namespaces, a bwrap without
+ * --bind-fd) is that failure, with no second attempt.
+ * @param {(proc: "fresh" | "ro-bind") => { ok: boolean, err: string }} attempt
+ * @returns {{ proc: "fresh" | "ro-bind" } | { err: string, freshProcRefused: boolean }}
+ *   `freshProcRefused`: the fresh procfs was refused, and `err` is why the read-only bind failed too
+ */
+export function chooseProc(attempt) {
+  const fresh = attempt("fresh");
+  if (fresh.ok) return { proc: "fresh" };
+  if (!FRESH_PROC_REFUSED.test(fresh.err)) return { err: fresh.err, freshProcRefused: false };
+  const bound = attempt("ro-bind");
+  return bound.ok ? { proc: "ro-bind" } : { err: bound.err, freshProcRefused: true };
+}
 
 /**
  * Why bubblewrap cannot fence pair_run here, or null. Probes once per process: the probe runs
  * /bin/true with the options every run uses (a pinned bind, the seccomp filter, every namespace
  * unshared), so a missing bwrap, user namespaces switched off, a bwrap without --bind-fd and a
- * filter for the wrong architecture are all refused before pairing starts. Only success is
- * remembered.
+ * filter for the wrong architecture are all refused before pairing starts. A kernel that refuses
+ * a fresh /proc under an otherwise working sandbox gets the host's /proc bound read-only instead
+ * (chooseProc). Only success is remembered, with its /proc mode (bwrapProc).
  */
 export function bwrapProblem() {
   if (probed) return null;
@@ -129,14 +154,18 @@ export function bwrapProblem() {
   try {
     dirFd = openSync("/", constants.O_RDONLY | constants.O_DIRECTORY);
     secFd = filterFd();
-    const res = spawnSync(bwrap, [...PROBE_ARGS, "--bind-fd", "3", "/tmp", "--seccomp", "4", "--", "/bin/true"], { stdio: ["ignore", "ignore", "pipe", dirFd, secFd], encoding: "utf8", timeout: 10_000 });
-    if (res.status === 0) {
-      probed = { bwrap };
+    const attempt = (proc) => {
+      const res = spawnSync(bwrap, [...bwrapBase(proc), "--share-net", "--bind-fd", "3", "/tmp", "--seccomp", "4", "--", "/bin/true"], { stdio: ["ignore", "ignore", "pipe", dirFd, secFd], encoding: "utf8", timeout: 10_000 });
+      return { ok: res.status === 0, err: String(res.stderr ?? res.error ?? "").trim() || `exit ${res.status}` };
+    };
+    const got = chooseProc(attempt);
+    if ("proc" in got) {
+      probed = { bwrap, proc: got.proc };
       return null;
     }
-    const err = String(res.stderr ?? res.error ?? "").trim();
-    if (/bind-fd/.test(err)) return `bubblewrap at ${bwrap} is too old: it has no --bind-fd (bubblewrap 0.10.0 or later, or a distribution build carrying the CVE-2024-42472 fix). It said: ${err}`;
-    return `bubblewrap at ${bwrap} cannot make its sandbox here (${err || `exit ${res.status}`}); ${USERNS_FIX}`;
+    if (/bind-fd/.test(got.err)) return `bubblewrap at ${bwrap} is too old: it has no --bind-fd (bubblewrap 0.10.0 or later, or a distribution build carrying the CVE-2024-42472 fix). It said: ${got.err}`;
+    if (got.freshProcRefused) return `bubblewrap at ${bwrap} cannot mount a fresh /proc here, as in a container that masks parts of /proc, and the sandbox fails with the container's /proc bound read-only too (${got.err}); run the container with --security-opt systempaths=unconfined`;
+    return `bubblewrap at ${bwrap} cannot make its sandbox here (${got.err}); ${USERNS_FIX}`;
   } catch (err) {
     return `could not probe bubblewrap: ${err instanceof Error ? err.message : String(err)}`;
   } finally {
@@ -145,7 +174,10 @@ export function bwrapProblem() {
   }
 }
 
-const PROBE_ARGS = Object.freeze(["--ro-bind", "/", "/", "--dev", "/dev", "--proc", "/proc", "--tmpfs", "/tmp", "--unshare-all", "--share-net", "--die-with-parent", "--new-session"]);
+/** The /proc mode the probe settled on ("fresh" or "ro-bind"); null until bwrapProblem succeeds. */
+export function bwrapProc() {
+  return probed ? probed.proc : null;
+}
 
 // ─── running a plan ─────────────────────────────────────────────────────────────────────
 

@@ -124,7 +124,7 @@ describe("backend choice", () => {
 
   test("pair_start names the sandbox", () => {
     assert.match(describeSandbox({ name: "seatbelt" }), /^Sandbox: macOS Seatbelt/);
-    assert.match(describeSandbox({ name: "bwrap", why: "Landlock ABI 2 is below 3" }), /^Sandbox: bubblewrap, which fences writes per directory \(Landlock is not usable here: Landlock ABI 2/);
+    assert.match(describeSandbox({ name: "bwrap", why: "Landlock ABI 2 is below 3" }, "fresh"), /^Sandbox: bubblewrap \(its own \/proc\), which fences writes per directory \(Landlock is not usable here: Landlock ABI 2/);
     assert.match(describeSandbox({ problem: "nothing here" }), /^No sandbox: nothing here\./);
   });
 
