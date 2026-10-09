@@ -296,9 +296,8 @@ describe("live Landlock: pair_run", () => {
   });
 
   live("a missing glob directory pair_run cannot get a grant for does not stop the run: the rest runs on Landlock, and it is named", async () => {
-    // With notes.txt outside the boundary the root is not clean and gets no grant; with the rest
-    // of the root in the boundary it is clean, and the grant that would make newpkg (on the root,
-    // so holding .git) is dropped.
+    // The worktree root is never granted, so newpkg cannot be made there: with notes.txt outside
+    // the boundary, and with the whole rest of the root inside it.
     for (const boundary of [["newpkg/**", "src/a.txt"], ["newpkg/**", "src/**", "lib/**", "notes.txt"]]) {
       const f = liveState(boundary);
       const r = await run(f.state, "echo changed > src/a.txt && mkdir -p newpkg && echo x > newpkg/x");
@@ -310,6 +309,21 @@ describe("live Landlock: pair_run", () => {
       assert.equal(read(f.root, "src", "a.txt"), "changed\n");
       assert.equal(existsSync(join(f.root, "newpkg")), false);
     }
+  });
+
+  live("a glob at the root grants the root files it matches one by one: an existing one is written, a new one is named", async () => {
+    const f = liveState(["*.md", "src/**"]);
+    writeFileSync(join(f.root, "README.md"), "readme\n");
+    const r = await run(f.state, "echo edited > README.md && echo changed > src/a.txt && echo x > x.md");
+    assert.equal(r.backend, "landlock", "the same whether or not bubblewrap works here");
+    assert.equal(r.fellBack, undefined);
+    assert.deepEqual(r.uncreatable, ["*.md"]);
+    assert.notEqual(r.exitCode, 0);
+    assert.match(r.stderr, EACCES);
+    assert.equal(read(f.root, "README.md"), "edited\n");
+    assert.equal(read(f.root, "src", "a.txt"), "changed\n");
+    assert.equal(existsSync(join(f.root, "x.md")), false);
+    assert.equal(read(f.root, "notes.txt"), "notes\n");
   });
 
   live("a pathname Unix socket outside the sandbox cannot be reached", async (t) => {

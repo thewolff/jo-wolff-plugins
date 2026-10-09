@@ -107,8 +107,26 @@ describe("landlockRulesFor", () => {
       { files: DEVICES, dirs: [], rw_trees: [], uncreatable: ["src/new/**"] });
     assert.deepEqual(landlockRulesFor(open(["src/new/**"], { stateDir: `${ROOT}/src/st` }), [], bare(`${ROOT}/src/st`)),
       { files: DEVICES, dirs: [], rw_trees: [], uncreatable: ["src/new/**"] });
-    // The same grant, wanted for existing files too, still sends the run to bubblewrap.
-    assert.match(landlockRulesFor(open(["**", "newpkg/**"]), [], io).notExpressible, /whole worktree/);
+    // The root is never granted, so with `**` agreed as well newpkg still cannot be made there.
+    assert.deepEqual(landlockRulesFor(open(["**", "newpkg/**"]), [], fakeFs(BASE_DIRS, BASE_FILES)), {
+      files: [...DEVICES, `${ROOT}/README.md`], dirs: [{ path: `${ROOT}/src`, make_dir: true, remove: true }], rw_trees: [], uncreatable: ["**", "newpkg/**"],
+    });
+  });
+
+  test("the worktree root is never granted: a glob there grants its matching root files one by one, and names itself", () => {
+    // The tree of the round-3 premise check: src/a.ts, README.md and .git/HEAD.
+    const io = fakeFs(["/", "/dev", "/w", ROOT, `${ROOT}/src`, `${ROOT}/.git`, "/state", "/state/s1"], [...DEVICES, `${ROOT}/src/a.ts`, `${ROOT}/README.md`, `${ROOT}/.git/HEAD`]);
+    const src = { path: `${ROOT}/src`, make_dir: true, remove: true };
+    assert.deepEqual(landlockRulesFor(open(["**"]), [], io), { files: [...DEVICES, `${ROOT}/README.md`], dirs: [src], rw_trees: [], uncreatable: ["**"] });
+    assert.deepEqual(landlockRulesFor(open(["newpkg/**", "src/**", "*.md"]), [], io),
+      { files: [...DEVICES, `${ROOT}/README.md`], dirs: [src], rw_trees: [], uncreatable: ["newpkg/**", "*.md"] });
+    // A root file outside the boundary stays out, and a glob that cannot hold a root file is not
+    // named: `*/a.ts` gets the clean src as a directory without make_dir.
+    const io2 = fakeFs(["/", "/dev", "/w", ROOT, `${ROOT}/src`, `${ROOT}/.git`, "/state", "/state/s1"], [...DEVICES, `${ROOT}/src/a.ts`, `${ROOT}/README.md`, `${ROOT}/notes.txt`]);
+    assert.deepEqual(landlockRulesFor(open(["*.md", "*/a.ts"]), [], io2),
+      { files: [...DEVICES, `${ROOT}/README.md`], dirs: [{ ...src, make_dir: false }], rw_trees: [], uncreatable: ["*.md"] });
+    assert.deepEqual(landlockRulesFor(open(["**/*.ts"]), [], io2),
+      { files: DEVICES, dirs: [src], rw_trees: [], uncreatable: ["**/*.ts"] });
   });
 
   test("a glob grants each existing match, and a directory only where every existing file matches", () => {
@@ -154,11 +172,9 @@ describe("landlockRulesFor", () => {
     assert.ok(bwrapArgsFor(open(["lib/**"]), [], io).writable.includes(`${ROOT}/lib`));
   });
 
-  test("a directory grant that would hold a protected path, or the worktree root, is not expressible", () => {
+  test("a directory grant that would hold a protected path is not expressible", () => {
     const io = fakeFs([...BASE_DIRS, `${ROOT}/lib`, `${ROOT}/lib/vendor`], [...BASE_FILES, `${ROOT}/lib/a.mjs`]);
     assert.match(landlockRulesFor(open(["lib/**"], { protect: [`${ROOT}/lib/vendor/keep`] }), [], io).notExpressible, /lib\/vendor\/keep/);
-    const flat = fakeFs(["/", "/dev", "/w", ROOT, `${ROOT}/.git`, "/state", "/state/s1"], [...LANDLOCK_DEVICES, `${ROOT}/a.md`, `${ROOT}/.git/HEAD`]);
-    assert.match(landlockRulesFor(open(["**"]), [], flat).notExpressible, /whole worktree/);
   });
 
   test("a granted file with a second hard link is not expressible, through a literal or a directory", () => {
@@ -284,8 +300,12 @@ function seatbeltAllows(state, abs) {
 }
 
 const glob = (e) => /[*?]/.test(e) || e.endsWith("/");
-const uncreatableGlob = (rules, state, abs) =>
-  (rules.uncreatable ?? []).some((e) => glob(e) && within(state.root, abs) && boundaryMatches([e], abs.slice(state.root.length + 1)));
+/** A new path the run names as uncreatable: directly in the root, or in a directory still missing. */
+const uncreatableGlob = (rules, state, abs, io) => {
+  const parent = abs.slice(0, abs.lastIndexOf("/"));
+  return (parent === state.root || io.lstat(parent) === null)
+    && (rules.uncreatable ?? []).some((e) => glob(e) && within(state.root, abs) && boundaryMatches([e], abs.slice(state.root.length + 1)));
+};
 
 /**
  * Every legitimate difference between the backends, for a ruleset Landlock can express. `sb`
@@ -297,9 +317,9 @@ const DIFFERENCES = {
   "a new file under a glob is fenced per directory: any name lands in a granted directory": ({ sb, ll, abs, io, rules }) =>
     !sb && ll && io.lstat(abs) === null && rules.dirs.some((d) => within(d.path, abs)),
   "a glob's directory that holds a file outside the boundary takes no new file from pair_run": ({ sb, ll, abs, state, io, rules }) =>
-    sb && !ll && io.lstat(abs) === null && !rules.dirs.some((d) => within(d.path, abs)) && !uncreatableGlob(rules, state, abs),
-  "a missing glob directory whose grant would hold the root, a .git or a protected path takes no new file from pair_run (the run names it; pair_write can)": ({ sb, ll, abs, state, io, rules }) =>
-    sb && !ll && io.lstat(abs) === null && uncreatableGlob(rules, state, abs),
+    sb && !ll && io.lstat(abs) === null && !rules.dirs.some((d) => within(d.path, abs)) && !uncreatableGlob(rules, state, abs, io),
+  "a glob takes no new file from pair_run directly in the worktree root, or in a missing directory whose grant would hold the root, a .git or a protected path (the run names the entry; pair_write can)": ({ sb, ll, abs, state, io, rules }) =>
+    sb && !ll && io.lstat(abs) === null && uncreatableGlob(rules, state, abs, io),
   "a temp path that does not exist when the run starts is not granted": ({ sb, ll, abs, state, io }) =>
     sb && !ll && state.tempPaths.some((t) => io.lstat(t) === null && within(t, abs)),
 };
@@ -309,13 +329,13 @@ describe("parity: Landlock against the Seatbelt profile from the same state", ()
     [...BASE_DIRS, "/tmp", `${ROOT}/lib`, `${ROOT}/lib/a`, `${ROOT}/lib/vendor`, `${ROOT}/docs`, "/var", "/var/tmpx"],
     [...BASE_FILES, `${ROOT}/lib/x.txt`, `${ROOT}/lib/a/b.mjs`, `${ROOT}/lib/vendor/v.mjs`, `${ROOT}/docs/guide.md`, `${ROOT}/.git/config`],
   );
-  const state = open(["src/a.ts", "src/new/x.ts", "lib/**/*.mjs", "docs/**", "newpkg/**"], {
+  const state = open(["src/a.ts", "src/new/x.ts", "lib/**/*.mjs", "docs/**", "newpkg/**", "*.md"], {
     tempPaths: ["/tmp", "/var/tmpx", "/nope/tmp"],
     protect: [`${ROOT}/lib/vendor`],
   });
   const rules = landlockRulesFor(state, [], io);
   const probes = [
-    `${ROOT}/src/a.ts`, `${ROOT}/src/b.ts`, `${ROOT}/src/new/x.ts`, `${ROOT}/src/new/y.ts`, `${ROOT}/src/c.ts`, `${ROOT}/README.md`,
+    `${ROOT}/src/a.ts`, `${ROOT}/src/b.ts`, `${ROOT}/src/new/x.ts`, `${ROOT}/src/new/y.ts`, `${ROOT}/src/c.ts`, `${ROOT}/README.md`, `${ROOT}/NEW.md`,
     `${ROOT}/.git/HEAD`, `${ROOT}/.git/config`, `${ROOT}/.git/objects/ab/cd`, `${ROOT}/lib/x.txt`, `${ROOT}/lib/new.mjs`, `${ROOT}/lib/a/b.mjs`,
     `${ROOT}/lib/a/c.mjs`, `${ROOT}/lib/a/new.txt`, `${ROOT}/lib/a/n/d.mjs`, `${ROOT}/lib/vendor/v.mjs`, `${ROOT}/lib/vendor/w.mjs`,
     `${ROOT}/docs/guide.md`, `${ROOT}/docs/new/deep.md`, `${ROOT}/newpkg/x.ts`, `${ROOT}/newpkg/deep/y.ts`,
@@ -360,7 +380,6 @@ describe("parity: Landlock against the Seatbelt profile from the same state", ()
     const cases = [
       [open(["sub/**"]), sub],
       [open(["src/a.ts"], { stateDir: "/var/tmpx/state/s1", tempPaths: ["/var/tmpx"] }), fakeFs([...BASE_DIRS, "/var", "/var/tmpx", "/var/tmpx/state", "/var/tmpx/state/s1"], BASE_FILES)],
-      [open(["**"]), fakeFs(BASE_DIRS, BASE_FILES)],
     ];
     for (const [s, fs] of cases) {
       assert.ok("notExpressible" in landlockRulesFor(s, [], fs), JSON.stringify(s.changeSet.boundary));
@@ -373,7 +392,8 @@ describe("parity: Landlock against the Seatbelt profile from the same state", ()
  * The first landlockRulesFor, kept here only as a reference: it asks each directory question
  * of the whole walk, so it costs directories times files, and the gate's indexed, memoized
  * version has to give exactly its answers. Its private helpers are copied with it, and it has
- * the one later rule (dropping a grant wanted only to make a missing path) written its own way.
+ * the two later rules (dropping a grant wanted only to make a missing path, and never granting
+ * the worktree root) written their own way.
  */
 function referenceRulesFor(state, extraAllow, io) {
   const path = (p) => {
@@ -450,7 +470,7 @@ function referenceRulesFor(state, extraAllow, io) {
   const creatingOnly = new Set();
   const existing = new Set();
   const wantDir = (dir, makeDir, creating = false) => {
-    if (!clean(dir)) return;
+    if (dir === root || !clean(dir)) return;
     wantDirs.set(dir, (wantDirs.get(dir) ?? false) || makeDir);
     (creating ? creatingOnly : existing).add(dir);
   };
@@ -479,7 +499,7 @@ function referenceRulesFor(state, extraAllow, io) {
     for (const f of walk(top)) if (f.type === "file" && matches(f.path)) wantFiles.add(f.path);
     const descend = (dir) => {
       if (!globCanHold(e, relativeTo(root, dir) ?? "")) return;
-      if (clean(dir)) { wantDir(dir, makeDir); return; }
+      if (dir !== root && clean(dir)) { wantDir(dir, makeDir); return; }
       for (const c of under(dir)) {
         if (c.type === "dir" && c.path.lastIndexOf("/") === dir.length && grantable(c.path)) descend(c.path);
       }
@@ -487,12 +507,12 @@ function referenceRulesFor(state, extraAllow, io) {
     descend(top);
   }
   for (const p of extraAllow) literal(path(p));
-  // Round 3: a grant wanted only to make a missing path is dropped where it would hold the root,
-  // a .git, the state directory or a protected path.
+  // Round 3: a grant wanted only to make a missing path is dropped where it would hold a .git,
+  // the state directory or a protected path.
   for (const d of creatingOnly) {
     if (existing.has(d)) continue;
     const git = under(d).some((e) => e.path.split("/").at(-1).toLowerCase() === ".git");
-    if (within(d, root) || git || denied.some((x) => within(d, x))) wantDirs.delete(d);
+    if (git || denied.some((x) => within(d, x))) wantDirs.delete(d);
   }
   const dirs = outermost([...wantDirs.keys()]);
   for (const d of dirs) {
