@@ -28,7 +28,7 @@ import {
   boundaryMatches, boundaryRoots, bwrapArgsFor, directoryInBoundary, landlockRulesFor, pairRunProfile, pairWriteBwrap, pairWriteLandlock, pairWriteProfile,
   readState, serializeState, shQuote,
 } from "../core/gate.mjs";
-import { bwrapCommand, bwrapIo, bwrapProblem } from "./bwrap.mjs";
+import { bwrapCommand, bwrapIo, bwrapProblem, bwrapProc } from "./bwrap.mjs";
 import { landlockAbi, landlockCommand, landlockIo, landlockProblem } from "./landlock.mjs";
 
 // ─── paths ──────────────────────────────────────────────────────────────────────────────
@@ -123,20 +123,45 @@ export function pickLinuxBackend(landlock, bwrap) {
   return { problem: `Landlock is not usable (${landlock.problem}), and ${bw}` };
 }
 
+/** How pair_start names each bubblewrap /proc mode (core/gate.mjs BWRAP_PROC_ARGS). */
+export const PROC_LABELS = Object.freeze({
+  fresh: "its own /proc",
+  "ro-bind": "/proc is the container's, read-only",
+});
+
+/**
+ * The /proc mode bubblewrap runs with on this machine (lib/bwrap.mjs bwrapProc), or null where
+ * bubblewrap is not usable, macOS included.
+ */
+export function bwrapMode() {
+  return process.platform === "linux" && bwrapProblem() === null ? bwrapProc() : null;
+}
+
 /**
  * What pair_start tells the agent and its partner about the active sandbox, in a sentence or two.
  * @param {ReturnType<typeof sandboxBackend>} backend
+ * @param {string | null} [proc]  bubblewrap's /proc mode (bwrapMode)
  */
-export function describeSandbox(backend) {
+export function describeSandbox(backend, proc = bwrapMode()) {
   if ("problem" in backend) return `No sandbox: ${backend.problem}.`;
   if (backend.name === "seatbelt") return "Sandbox: macOS Seatbelt (sandbox-exec).";
-  if (backend.name === "bwrap") return `Sandbox: bubblewrap, which fences writes per directory (Landlock is not usable here: ${backend.why}).`;
+  if (backend.name === "bwrap") return `Sandbox: bubblewrap (${PROC_LABELS[proc]}), which fences writes per directory (Landlock is not usable here: ${backend.why}).`;
   const bw = bwrapProblem();
   const abi = landlockAbi();
-  const fallback = `a run whose boundary Landlock cannot express goes to bubblewrap${bw === null ? "" : `, which is unavailable here (${bw}), so such a run is refused`}`;
+  const fallback = `a run whose boundary Landlock cannot express goes to bubblewrap${bw === null ? ` (${PROC_LABELS[proc]})` : `, which is unavailable here (${bw}), so such a run is refused`}`;
   // Below ABI 6 Landlock cannot scope signals, so a run can kill the helper supervising it.
   const supervision = abi < 6 ? ` On this kernel (Landlock ABI ${abi}, below 6) a command pair_run starts can kill the helper that supervises it; if that happens, a process the command left running may keep writing, so the gate stops the session until your partner types pair stop.` : "";
   return `Sandbox: Landlock (kernel ABI ${abi}, helper checksum verified), which fences writes per file; ${fallback}.${supervision}`;
+}
+
+/**
+ * What the journal's start entry records about the sandbox: the backend, and bubblewrap's /proc
+ * mode wherever bubblewrap can run (it also takes what Landlock cannot express).
+ * @param {ReturnType<typeof sandboxBackend>} backend
+ * @param {string | null} [proc]  bwrapMode
+ */
+export function sandboxJournal(backend, proc = bwrapMode()) {
+  return { sandbox: "name" in backend ? backend.name : null, ...(proc ? { bwrapProc: proc } : {}) };
 }
 
 /**
@@ -543,7 +568,7 @@ function runCommand(state, command, cwd, override) {
     }
     fellBack = fallBack(rules.notExpressible);
   }
-  const plan = bwrapArgsFor(state, [], bwrapIo);
+  const plan = bwrapArgsFor(state, [], bwrapIo, bwrapProc());
   return { ...bwrapCommand(plan, { argv, cwd }), backend: "bwrap", ...(fellBack ? { fellBack } : {}), writable: plan.writable };
 }
 
@@ -643,7 +668,7 @@ function writeCommand(opts, script) {
     }
     fellBack = fallBack(plan.notExpressible);
   }
-  return { ...bwrapCommand(pairWriteBwrap(opts.state, opts.tempPath, bwrapIo), { argv }), backend: "bwrap", ...(fellBack ? { fellBack } : {}), writable: [] };
+  return { ...bwrapCommand(pairWriteBwrap(opts.state, opts.tempPath, bwrapIo, bwrapProc()), { argv }), backend: "bwrap", ...(fellBack ? { fellBack } : {}), writable: [] };
 }
 
 /**

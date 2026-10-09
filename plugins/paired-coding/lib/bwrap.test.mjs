@@ -1,21 +1,24 @@
 // bwrap.test.mjs — node --test, run from plugins/paired-coding/.
 //
 // The Linux sandbox. The seccomp program is run here through a small classic-BPF interpreter,
-// and the link check over real temp directories, so both run on every platform. The live
-// cases run bubblewrap for real: they skip where it cannot run (not Linux, no bwrap, user
-// namespaces off) and fail instead when PAIRED_CODING_REQUIRE_BWRAP=1, which CI and the Docker
-// recipe set so a broken setup cannot pass as all-skipped.
+// the link check over real temp directories, and the /proc fallback decision over fake probe
+// results and a fake bwrap on PATH, so all of those run on every platform. The live cases run
+// bubblewrap for real: they skip where it cannot run (not Linux, no bwrap, user namespaces off)
+// and fail instead when PAIRED_CODING_REQUIRE_BWRAP=1, which CI and the Docker recipe set so a
+// broken setup cannot pass as all-skipped. PAIRED_CODING_REQUIRE_PROC_FALLBACK=1 (CI's masked-/proc
+// container) also requires that they ran with the host's /proc bound read-only.
 
 import { test, describe } from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { randomBytes } from "node:crypto";
-import { existsSync, linkSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, renameSync, statSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, linkSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, renameSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import { SECCOMP_ARCHES, bwrapProblem, seccompFilter } from "./bwrap.mjs";
-import { gitBaseline, newLinks, runSandboxed, writeSandboxed } from "./host-io.mjs";
+import { BWRAP_PROC_ARGS } from "../core/gate.mjs";
+import { SECCOMP_ARCHES, bwrapProblem, bwrapProc, chooseProc, seccompFilter } from "./bwrap.mjs";
+import { PROC_LABELS, describeSandbox, gitBaseline, newLinks, runSandboxed, sandboxJournal, writeSandboxed } from "./host-io.mjs";
 
 // ─── the seccomp program ────────────────────────────────────────────────────────────────
 
@@ -95,6 +98,113 @@ test("without bwrap on PATH, Linux pairing is refused with the package to instal
   assert.match(r.stdout, /needs bubblewrap \(bwrap\) on PATH; install the bubblewrap package/);
 });
 
+// ─── the /proc mode ─────────────────────────────────────────────────────────────────────
+
+const PROC_REFUSED = "bwrap: Can't mount proc on /newroot/proc: Operation not permitted";
+const NO_USERNS = "bwrap: No permissions to create new namespace, likely because the kernel does not allow non-privileged user namespaces.";
+
+/** A fake probe: `results` maps a mode to its error, or to null for success; it records each mode tried. */
+function attempts(results) {
+  const tried = [];
+  const attempt = (proc) => {
+    tried.push(proc);
+    const err = results[proc];
+    return err === null ? { ok: true, err: "" } : { ok: false, err: err ?? `no result for ${proc}` };
+  };
+  return { tried, attempt };
+}
+
+describe("the probe's /proc fallback", () => {
+  test("a fresh /proc that works is used, with nothing else tried", () => {
+    const a = attempts({ fresh: null, "ro-bind": null });
+    assert.deepEqual(chooseProc(a.attempt), { proc: "fresh" });
+    assert.deepEqual(a.tried, ["fresh"]);
+  });
+
+  test("a fresh /proc the kernel refuses, under a sandbox that works with ro-bind, gets ro-bind", () => {
+    const a = attempts({ fresh: PROC_REFUSED, "ro-bind": null });
+    assert.deepEqual(chooseProc(a.attempt), { proc: "ro-bind" });
+    assert.deepEqual(a.tried, ["fresh", "ro-bind"]);
+  });
+
+  test("any other failure is that failure: ro-bind is not tried", () => {
+    for (const err of [NO_USERNS, "bwrap: Unknown option --bind-fd", "bwrap: Can't find source path /x: No such file or directory", "exit 1"]) {
+      const a = attempts({ fresh: err, "ro-bind": null });
+      assert.deepEqual(chooseProc(a.attempt), { err, freshProcRefused: false }, err);
+      assert.deepEqual(a.tried, ["fresh"], err);
+    }
+  });
+
+  test("a ro-bind attempt that fails too is a refusal, with its own error", () => {
+    const a = attempts({ fresh: PROC_REFUSED, "ro-bind": NO_USERNS });
+    assert.deepEqual(chooseProc(a.attempt), { err: NO_USERNS, freshProcRefused: true });
+    assert.deepEqual(a.tried, ["fresh", "ro-bind"]);
+  });
+
+  // bwrapProblem itself, against a fake bwrap that logs its options: these check which options
+  // each attempt really gets, not only the decision.
+  const fakeBwrap = (script) => {
+    const dir = realpathSync(mkdtempSync(join(tmpdir(), "pc-fake-bwrap-")));
+    writeFileSync(join(dir, "bwrap"), `#!/bin/sh\nprintf '%s\\n' "$*" >> "${dir}/log"\n${script}\n`);
+    chmodSync(join(dir, "bwrap"), 0o755);
+    const mod = new URL("./bwrap.mjs", import.meta.url).href;
+    const r = spawnSync(process.execPath, ["--input-type=module", "-e", `import(${JSON.stringify(mod)}).then((m) => console.log(JSON.stringify({ problem: m.bwrapProblem(), proc: m.bwrapProc() })))`], { env: { PATH: `${dir}:/usr/bin:/bin` }, encoding: "utf8" });
+    assert.equal(r.status, 0, r.stderr);
+    const log = existsSync(join(dir, "log")) ? readFileSync(join(dir, "log"), "utf8").trim().split("\n") : [];
+    return { ...JSON.parse(r.stdout), log };
+  };
+  const fakeable = process.platform === "linux" || process.platform === "darwin" ? {} : { skip: "needs /bin/sh" };
+  const ROBIND = BWRAP_PROC_ARGS["ro-bind"].join(" ");
+
+  test("bwrapProblem: a refused fresh /proc retries with ro-bind's options and every namespace still unshared", fakeable, () => {
+    const got = fakeBwrap(`case " $* " in *" --proc /proc "*) echo "${PROC_REFUSED}" >&2; exit 1;; esac`);
+    assert.match(got.log[0], / --proc \/proc .*--unshare-all/);
+    assert.equal(got.problem, null);
+    assert.equal(got.proc, "ro-bind");
+    assert.equal(got.log.length, 2);
+    assert.ok(got.log[1].includes(` ${ROBIND} `), got.log[1]);
+    assert.doesNotMatch(got.log[1], /--proc /);
+    assert.equal(got.log[1].replace(ROBIND, "PROC"), got.log[0].replace(BWRAP_PROC_ARGS.fresh.join(" "), "PROC"));
+  });
+
+  test("bwrapProblem: when ro-bind fails too, pairing is refused with its error and the Docker fix", fakeable, () => {
+    const got = fakeBwrap(`case " $* " in *" --proc /proc "*) echo "${PROC_REFUSED}" >&2;; *) echo "${NO_USERNS}" >&2;; esac; exit 1`);
+    assert.equal(got.proc, null);
+    assert.match(got.problem, /cannot mount a fresh \/proc here, .*read-only too \(bwrap: No permissions to create new namespace.*\); run the container with --security-opt systempaths=unconfined$/);
+    assert.equal(got.log.length, 2);
+    assert.ok(got.log[1].includes(` ${ROBIND} `), got.log[1]);
+  });
+
+  test("bwrapProblem: a general failure is refused after one attempt, with the user-namespace fix", fakeable, () => {
+    const got = fakeBwrap(`echo "${NO_USERNS}" >&2; exit 1`);
+    assert.equal(got.proc, null);
+    assert.match(got.problem, /cannot make its sandbox here \(bwrap: No permissions to create new namespace.*\); unprivileged user namespaces look switched off/);
+    assert.equal(got.log.length, 1);
+  });
+
+  test("bwrapProblem: a working fresh /proc is the mode", fakeable, () => {
+    const got = fakeBwrap("exit 0");
+    assert.deepEqual({ problem: got.problem, proc: got.proc }, { problem: null, proc: "fresh" });
+    assert.equal(got.log.length, 1);
+  });
+});
+
+describe("pair_start names the /proc mode", () => {
+  test("the Sandbox: line, for bubblewrap as the backend", () => {
+    const why = "Landlock ABI 2 is below 3";
+    assert.equal(describeSandbox({ name: "bwrap", why }, "fresh"), `Sandbox: bubblewrap (its own /proc), which fences writes per directory (Landlock is not usable here: ${why}).`);
+    assert.equal(describeSandbox({ name: "bwrap", why }, "ro-bind"), `Sandbox: bubblewrap (/proc is the container's, read-only), which fences writes per directory (Landlock is not usable here: ${why}).`);
+    assert.deepEqual(Object.keys(PROC_LABELS).sort(), Object.keys(BWRAP_PROC_ARGS).sort());
+  });
+
+  test("the journal's start entry", () => {
+    assert.deepEqual(sandboxJournal({ name: "bwrap", why: "x" }, "ro-bind"), { sandbox: "bwrap", bwrapProc: "ro-bind" });
+    assert.deepEqual(sandboxJournal({ name: "landlock" }, "fresh"), { sandbox: "landlock", bwrapProc: "fresh" });
+    assert.deepEqual(sandboxJournal({ name: "landlock" }, null), { sandbox: "landlock" });
+    assert.deepEqual(sandboxJournal({ name: "seatbelt" }, null), { sandbox: "seatbelt" });
+  });
+});
+
 // ─── the link check ─────────────────────────────────────────────────────────────────────
 
 function tree() {
@@ -169,6 +279,30 @@ const REQUIRED = process.env.PAIRED_CODING_REQUIRE_BWRAP === "1";
 function live(name, fn) {
   test(name, PROBLEM === null || REQUIRED ? {} : { skip: PROBLEM }, async (t) => {
     assert.equal(PROBLEM, null, "PAIRED_CODING_REQUIRE_BWRAP=1 and bubblewrap cannot run");
+    await fn(t);
+  });
+}
+
+// Docker's default masked paths over /proc, as this machine's mounts show them (the mount point is
+// mountinfo's fifth field). Where they are, the kernel refuses bubblewrap a fresh procfs, so every
+// live case here runs with the host's /proc bound read-only; PAIRED_CODING_REQUIRE_PROC_FALLBACK=1
+// makes that required.
+const PROC_MASKED = process.platform === "linux" && /^(?:\S+ ){4}\/proc\/(?:kcore|keys|timer_list|sysrq-trigger|acpi|scsi|latency_stats|sched_debug)\s/m.test(readFileSync("/proc/self/mountinfo", "utf8"));
+const PROC_REQUIRED = process.env.PAIRED_CODING_REQUIRE_PROC_FALLBACK === "1";
+
+test("PAIRED_CODING_REQUIRE_PROC_FALLBACK=1: /proc is masked here and bubblewrap runs with ro-bind", PROC_REQUIRED ? {} : { skip: "PAIRED_CODING_REQUIRE_PROC_FALLBACK is not set" }, () => {
+  assert.equal(PROC_MASKED, true, "no masked /proc here");
+  assert.equal(PROBLEM, null);
+  assert.equal(bwrapProc(), "ro-bind");
+});
+
+/** A live case that needs the ro-bind /proc: it runs under a masked /proc, and is required with PAIRED_CODING_REQUIRE_PROC_FALLBACK=1. */
+function liveRoBind(name, fn) {
+  const on = (PROBLEM === null || REQUIRED) && (PROC_MASKED || PROC_REQUIRED);
+  test(name, on ? {} : { skip: PROC_MASKED ? PROBLEM : "no masked /proc here" }, async (t) => {
+    assert.equal(PROC_MASKED, true, "PAIRED_CODING_REQUIRE_PROC_FALLBACK=1 and no masked /proc here");
+    assert.equal(PROBLEM, null, "bubblewrap cannot run");
+    assert.equal(bwrapProc(), "ro-bind");
     await fn(t);
   });
 }
@@ -289,6 +423,40 @@ describe("live bubblewrap: pair_run", () => {
     const r = await run(state, "echo x > src/plugin/gate.mjs");
     assert.match(r.stderr, EROFS);
     assert.equal(existsSync(join(f.root, "src", "plugin", "gate.mjs")), false);
+  });
+
+  live("the /proc mode is this machine's: fresh, or ro-bind under a masked /proc", async () => {
+    assert.equal(bwrapProc(), PROC_MASKED ? "ro-bind" : "fresh");
+  });
+
+  live("the run has its own PID namespace, whatever the /proc mode", async () => {
+    const f = liveState(["src/a.txt"]);
+    const r = await run(f.state, "echo $$");
+    assert.equal(r.exitCode, 0, r.stderr);
+    assert.ok(Number(r.stdout.trim()) < 10, `the run's shell is PID ${r.stdout.trim()}, not one of the first in a new namespace`);
+  });
+
+  liveRoBind("with ro-bind, a write through /proc/<gate pid>/root to a file outside the boundary is refused", async () => {
+    const f = liveState(["src/a.txt"]);
+    const outside = join(f.root, "notes.txt");
+    const r = await run(f.state, `echo x > '/proc/${process.pid}/root${outside}'`);
+    assert.notEqual(r.exitCode, 0, r.stdout);
+    assert.equal(readFileSync(outside, "utf8"), "notes\n");
+  });
+
+  liveRoBind("with ro-bind, the run cannot signal the gate", async () => {
+    const f = liveState(["src/a.txt"]);
+    let signalled = false;
+    const caught = () => { signalled = true; };
+    process.on("SIGTERM", caught);
+    try {
+      const r = await run(f.state, `kill -TERM ${process.pid}`);
+      assert.notEqual(r.exitCode, 0, r.stdout);
+      await new Promise((done) => setTimeout(done, 200));
+    } finally {
+      process.off("SIGTERM", caught);
+    }
+    assert.equal(signalled, false, "the gate got the run's SIGTERM");
   });
 
   live("/tmp is private to the run", async () => {

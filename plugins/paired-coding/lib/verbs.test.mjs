@@ -11,9 +11,9 @@ import { join } from "node:path";
 import {
   CARRY_MAX_AGE_MS, PLUGIN_ROOT, ROADMAP_WALK_LIMIT, carryInto, clearInPlace, endSession, executeVerb, recordTrustedInput, takeCarryMarker, verdict, writeCarryMarker,
 } from "./verbs.mjs";
-import { hashBoundary, loadState, realpathLoose, reapGroups, sandboxBackend, sandboxProblem, snapshotTree, writeSandboxed } from "./host-io.mjs";
+import { PROC_LABELS, hashBoundary, loadState, realpathLoose, reapGroups, sandboxBackend, sandboxProblem, snapshotTree, writeSandboxed } from "./host-io.mjs";
 import { pairRunProfile, pairWriteProfile } from "../core/gate.mjs";
-import { bwrapProblem } from "./bwrap.mjs";
+import { bwrapProblem, bwrapProc } from "./bwrap.mjs";
 
 const hasSandbox = sandboxProblem() === null;
 const BACKEND = hasSandbox ? sandboxBackend().name : null;
@@ -104,6 +104,17 @@ test("pair_start closes the gate: host writers, shells and dispatch refused, rea
   const w = await executeVerb("pair_write", { path: "src/a.txt", content: "x" }, f.ctx);
   assert.equal(w.ok, false);
   assert.equal(readFileSync(join(f.root, "src/a.txt"), "utf8"), "alpha\n");
+});
+
+test("pair_start's journal entry and message name the sandbox, and bubblewrap's /proc mode where bubblewrap can run", { skip: !hasSandbox }, async () => {
+  const f = fixture();
+  const r = await executeVerb("pair_start", {}, f.ctx);
+  assert.equal(r.ok, true, r.text);
+  const start = journal(f).find((e) => e.type === "start");
+  assert.equal(start.sandbox, BACKEND);
+  const proc = LINUX && bwrapProblem() === null ? bwrapProc() : null;
+  assert.equal(start.bwrapProc, proc ?? undefined);
+  if (proc) assert.ok(r.text.includes(`bubblewrap (${PROC_LABELS[proc]})`), r.text);
 });
 
 test("pair_begin binds only to a trusted turn typed after the card", { skip: !hasSandbox }, async () => {
