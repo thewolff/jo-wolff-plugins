@@ -23,7 +23,9 @@ P_LINK='link($ARGV[0], $ARGV[1]) ? print "ok\n" : print 0+$!, " $!\n"'
 P_RENAME='rename($ARGV[0], $ARGV[1]) ? print "ok\n" : print 0+$!, " $!\n"'
 P_TRUNC='truncate($ARGV[0], 0) ? print "ok\n" : print 0+$!, " $!\n"'
 P_OPENW='open(my $f, ">>", $ARGV[0]) ? print "ok\n" : print 0+$!, " $!\n"'
-P_ABSTRACT='use Socket; socket(my $s, AF_UNIX, SOCK_STREAM, 0) or die; connect($s, pack_sockaddr_un("\0$ARGV[0]")) ? print "ok\n" : print 0+$!, " $!\n"'
+P_ABSTRACT='use Socket; socket(my $s, AF_UNIX, SOCK_STREAM, 0) or do { print 0+$!, " $!\n"; exit }; connect($s, pack_sockaddr_un("\0$ARGV[0]")) ? print "ok\n" : print 0+$!, " $!\n"'
+P_PATHSOCK='use Socket; socket(my $s, AF_UNIX, SOCK_STREAM, 0) or do { print 0+$!, " $!\n"; exit }; connect($s, pack_sockaddr_un($ARGV[0])) ? print "ok\n" : print 0+$!, " $!\n"'
+P_PAIR='use Socket; socketpair(my $p1, my $p2, AF_UNIX, SOCK_STREAM, 0) or do { print 0+$!, " $!\n"; exit }; syswrite($p1, "hi"); sysread($p2, my $x, 2); print "$x\n"'
 
 abi=$("$BIN" --abi) || { echo "Landlock is missing or below ABI 3 here (--abi printed '$abi'); nothing to test"; exit 1; }
 echo "kernel $(uname -r), $(uname -m), uid $(id -u), Landlock ABI $abi, binary $BIN"
@@ -101,17 +103,29 @@ check "SIGPIPE is default inside (yes | head ends quietly)" "y" "$(sandboxed 'ye
 check "/dev/null is not writable unless listed" "13 Permission denied" "$(inside_perl "$P_OPENW" /dev/null)"
 check "/dev/null writable when listed" ok "$(rules_with '["/dev/null"]' "perl -e '$P_OPENW' /dev/null" | "$BIN" 2>&1)"
 
-echo "--- abstract Unix sockets (scoped from ABI 6)"
+echo "--- Unix sockets: abstract ones scoped from ABI 6; below ABI 9 the seccomp filter refuses every new one"
 perl -e 'use Socket; socket(my $s, AF_UNIX, SOCK_STREAM, 0) or die; bind($s, pack_sockaddr_un("\0$ARGV[0]")) or die "bind: $!"; listen($s, 5) or die; sleep 20' "pair-landlock-$$" &
 srv=$!
+perl -e 'use Socket; socket(my $s, AF_UNIX, SOCK_STREAM, 0) or die; bind($s, pack_sockaddr_un($ARGV[0])) or die "bind: $!"; listen($s, 5) or die; sleep 20' "$W/outside/daemon.sock" &
+psrv=$!
 sleep 1
 check "abstract socket outside the sandbox, unsandboxed connect" ok "$(perl -e "$P_ABSTRACT" "pair-landlock-$$")"
-if [ "$abi" -ge 6 ]; then
-  check "abstract socket outside the sandbox, sandboxed connect" "1 Operation not permitted" "$(inside_perl "$P_ABSTRACT" "pair-landlock-$$")"
+check "abstract socket outside the sandbox, sandboxed connect" "1 Operation not permitted" "$(inside_perl "$P_ABSTRACT" "pair-landlock-$$")"
+check "pathname socket outside the sandbox, unsandboxed connect" ok "$(perl -e "$P_PATHSOCK" "$W/outside/daemon.sock")"
+if [ "$abi" -lt 9 ]; then
+  check "pathname socket outside the sandbox, sandboxed connect (seccomp, ABI < 9)" "1 Operation not permitted" "$(inside_perl "$P_PATHSOCK" "$W/outside/daemon.sock")"
 else
-  check "abstract socket reachable below ABI 6 (documented gap)" ok "$(inside_perl "$P_ABSTRACT" "pair-landlock-$$")"
+  got=$(inside_perl "$P_PATHSOCK" "$W/outside/daemon.sock")
+  if [ "$got" != ok ]; then ok "pathname socket outside the sandbox, sandboxed connect (RESOLVE_UNIX)  ($got)"; else bad "pathname socket outside the sandbox, sandboxed connect (RESOLVE_UNIX)  (connected)"; fi
 fi
-kill "$srv" 2>/dev/null
+check "socketpair still works inside" hi "$(inside_perl "$P_PAIR" "")"
+check "TCP sockets can still be made inside" ok "$(sandboxed "perl -e 'use Socket; socket(my \$s, AF_INET, SOCK_STREAM, 0) ? print qq(ok\n) : print 0+\$!, qq( \$!\n)'")"
+kill "$srv" "$psrv" 2>/dev/null
+
+echo "--- name resolution still works inside (no /dev/null grant here, so grep -q, not a redirect)"
+check "getent hosts localhost" resolves "$(sandboxed 'getent hosts localhost | grep -q . && echo resolves || echo "does not resolve"')"
+outside_dns=$(getent hosts example.com | grep -q . && echo resolves || echo "does not resolve")
+check "a DNS name resolves inside exactly when it resolves outside (example.com $outside_dns outside)" "$outside_dns" "$(sandboxed 'getent hosts example.com | grep -q . && echo resolves || echo "does not resolve"')"
 
 echo "--- refused input: exit 121 and the command never runs"
 marker="$W/tmp/ran"

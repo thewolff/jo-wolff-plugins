@@ -14,8 +14,8 @@ import { existsSync, linkSync, mkdirSync, mkdtempSync, readFileSync, readdirSync
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import { SECCOMP_ARCHES, seccompFilter } from "./bwrap.mjs";
-import { gitBaseline, newLinks, runSandboxed, sandboxProblem, writeSandboxed } from "./host-io.mjs";
+import { SECCOMP_ARCHES, bwrapProblem, seccompFilter } from "./bwrap.mjs";
+import { gitBaseline, newLinks, runSandboxed, writeSandboxed } from "./host-io.mjs";
 
 // ─── the seccomp program ────────────────────────────────────────────────────────────────
 
@@ -161,7 +161,9 @@ describe("newLinks", () => {
 
 // ─── live: bubblewrap really fences ─────────────────────────────────────────────────────
 
-const PROBLEM = process.platform === "linux" ? sandboxProblem() : "needs Linux bubblewrap";
+// These cases pin the backend to bubblewrap: on a machine with Landlock, sandboxBackend would
+// pick Landlock first (lib/landlock.test.mjs has its live cases).
+const PROBLEM = process.platform === "linux" ? bwrapProblem() : "needs Linux bubblewrap";
 const REQUIRED = process.env.PAIRED_CODING_REQUIRE_BWRAP === "1";
 
 function live(name, fn) {
@@ -204,7 +206,8 @@ function liveState(boundary, over = {}) {
   return { top, root, temp, stateDir, state };
 }
 
-const run = (state, command, extra = {}) => runSandboxed({ state, command, cwd: state.root, timeoutMs: 30_000, ...extra });
+const run = (state, command, extra = {}) => runSandboxed({ state, command, cwd: state.root, timeoutMs: 30_000, backend: "bwrap", ...extra });
+const write = (opts) => writeSandboxed({ ...opts, backend: "bwrap" });
 const EROFS = /Read-only file system/;
 
 describe("live bubblewrap: pair_run", () => {
@@ -355,7 +358,7 @@ describe("live bubblewrap: pair_write", () => {
 
   live("staging and rename land the write and leave no staging file", async () => {
     const f = liveState(["src/a.txt"]);
-    const w = writeSandboxed({ state: f.state, path: join(f.root, "src", "a.txt"), tempPath: temp(join(f.root, "src")), content: "A" });
+    const w = write({ state: f.state, path: join(f.root, "src", "a.txt"), tempPath: temp(join(f.root, "src")), content: "A" });
     assert.equal(w.ok, true, w.error);
     assert.equal(readFileSync(join(f.root, "src", "a.txt"), "utf8"), "A");
     assert.deepEqual(readdirSync(join(f.root, "src")).sort(), ["a.txt", "b.txt"]);
@@ -364,7 +367,7 @@ describe("live bubblewrap: pair_write", () => {
   live("a new file in a new directory lands", async () => {
     const f = liveState(["src/new/deep/x.txt"]);
     const path = join(f.root, "src", "new", "deep", "x.txt");
-    const w = writeSandboxed({ state: f.state, path, tempPath: temp(dirname(path)), content: "x" });
+    const w = write({ state: f.state, path, tempPath: temp(dirname(path)), content: "x" });
     assert.equal(w.ok, true, w.error);
     assert.equal(readFileSync(path, "utf8"), "x");
   });
@@ -373,12 +376,12 @@ describe("live bubblewrap: pair_write", () => {
     const f = liveState(["src/a.txt"]);
     const home = join(process.env.HOME ?? "/nonexistent", ".pc-bwrap-write-probe");
     for (const path of [home, join(f.root, "notes.txt"), join(f.root, ".git", "HEAD")]) {
-      const w = writeSandboxed({ state: f.state, path, tempPath: temp(join(f.root, "src")), content: "pwned" });
+      const w = write({ state: f.state, path, tempPath: temp(join(f.root, "src")), content: "pwned" });
       assert.equal(w.ok, false, path);
     }
     // The state dir is not even there: it sits under the host's /tmp, which the write sees as its
     // private one, so whatever lands there is gone when the write ends.
-    writeSandboxed({ state: f.state, path: join(f.stateDir, "state.json"), tempPath: temp(join(f.root, "src")), content: "pwned" });
+    write({ state: f.state, path: join(f.stateDir, "state.json"), tempPath: temp(join(f.root, "src")), content: "pwned" });
     assert.equal(readFileSync(join(f.stateDir, "state.json"), "utf8"), "{}");
     assert.equal(readFileSync(join(f.root, ".git", "HEAD"), "utf8"), "ref: refs/heads/main\n");
     assert.equal(existsSync(home), false);

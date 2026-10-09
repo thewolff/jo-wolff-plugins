@@ -1348,3 +1348,251 @@ function bwrapPlan(state, wanted, opts, io) {
   for (const p of ro) args.push("--ro-bind", p, p);
   return { args, writable, temps, readOnly: ro };
 }
+
+// ─── the Linux sandbox (Landlock) ───────────────────────────────────────────────────────
+
+/**
+ * The filesystem facts the Landlock builders need, injected so the core stays free of I/O.
+ * Neither function follows a symlink.
+ * @typedef {object} LandlockIo
+ * @property {(abs: string) => { type: "file" | "dir" | "symlink" | "other", nlink: number } | null} lstat
+ *   what is at `abs` itself; null when nothing is
+ * @property {(dir: string) => Array<{ path: string, type: "file" | "dir" | "symlink" | "other", nlink: number }>} walk
+ *   every entry under `dir` (not `dir` itself), absolute. An entry named `.git` in any letter
+ *   case is listed but not descended into, and a symlinked directory is not followed
+ */
+
+/**
+ * @typedef {object} LandlockRules  the pair-landlock ruleset (landlock/README.md), less `command`
+ * @property {string[]} files  WRITE_FILE and TRUNCATE on each one file
+ * @property {Array<{ path: string, make_dir: boolean }>} dirs  MAKE_REG, WRITE_FILE and TRUNCATE
+ *   under each tree, MAKE_DIR too where make_dir
+ * @property {string[]} rw_trees  the temp paths: every right but REFER under each tree
+ */
+
+/** The few device files a shell writes to, which Landlock does not grant implicitly. */
+export const LANDLOCK_DEVICES = Object.freeze(["/dev/null", "/dev/zero", "/dev/tty"]);
+
+/**
+ * The pair-landlock ruleset pair_run runs under on Linux, built from the same state as the
+ * Seatbelt profile (profileFor) and the bubblewrap options (bwrapArgsFor). Landlock only
+ * grants: a path with no rule cannot be written, and nothing inside a granted tree can be
+ * taken back out. So:
+ *   1. /dev/null, /dev/zero and /dev/tty, where they exist, as `files`;
+ *   2. each temp path that exists as an `rw_trees` entry, except one inside the worktree;
+ *   3. open only: each existing literal boundary file as a `files` entry; a literal that does
+ *      not exist yet gets nothing, so pair_run cannot create it (pair_write can). For a glob,
+ *      each existing matching file under the directory above its first glob segment as a
+ *      `files` entry, and a `dirs` grant only on a directory the glob could hold a file under
+ *      and none of whose existing files is outside the boundary (the outermost such ones), so
+ *      that no existing file outside the boundary becomes writable. A glob whose fixed
+ *      directory does not exist yet gets a `dirs` grant on its deepest existing directory
+ *      under the same condition. `make_dir` only where the glob allows new directories: one
+ *      with a `**` segment, or one whose fixed directory is missing;
+ *   4. nothing at or under a `.git` segment, the state directory or a protected path.
+ * A `dirs` grant lets a command create a file of any name under it; that is the one way new
+ * files can be allowed, since a rule needs an existing inode. So new files under a glob are
+ * fenced per directory, and every other write per file.
+ * Returns { notExpressible: reason } when an `rw_trees` or `dirs` path would hold the worktree
+ * root, a `.git` entry, the state directory or a protected path, or when a file it would grant
+ * has more than one hard link (a rule on an inode reaches every name it has). The adapter then
+ * runs the command under bubblewrap. Throws when a path the ruleset would name passes through
+ * a symlink inside the worktree, which refuses the run as bubblewrap's pinned binds do.
+ * The adapter adds `command`, the socket filter is the helper's own, and the adapter checks
+ * after each run that no link appeared where the run could write, as it does for bubblewrap.
+ * @param {State} state
+ * @param {string[]} extraAllow  absolute paths in the worktree also writable, as literal entries
+ * @param {LandlockIo} io
+ * @returns {LandlockRules | { notExpressible: string }}
+ */
+export function landlockRulesFor(state, extraAllow, io) {
+  const root = bwrapPath(state.root);
+  const denied = [state.stateDir, ...(state.protect ?? [])].map(bwrapPath);
+  const files = LANDLOCK_DEVICES.filter((p) => io.lstat(p) !== null);
+  const rwTrees = [];
+  for (const t of outermost((state.tempPaths ?? []).map(bwrapPath))) {
+    if (io.lstat(t)?.type !== "dir" || within(root, t)) continue;
+    if (within(t, root)) return { notExpressible: `the temp path ${t} holds the worktree, and Landlock cannot fence the worktree inside it` };
+    const held = denied.find((d) => within(t, d));
+    if (held) return { notExpressible: `the temp path ${t} holds ${held}, which Landlock cannot fence inside it` };
+    rwTrees.push(t);
+  }
+  if (state.phase !== "open" || !state.changeSet) return { files, dirs: [], rw_trees: rwTrees };
+  const boundary = state.changeSet.boundary;
+  const grantable = (abs) => {
+    const rel = relativeTo(root, abs);
+    return rel !== null && !inGitDir(rel) && !denied.some((d) => within(d, abs));
+  };
+  const matches = (abs) => grantable(abs) && boundaryMatches(boundary, relativeTo(root, abs)) && !isGitControl(relativeTo(root, abs));
+  const wantFiles = new Set();
+  /** @type {Map<string, boolean>} candidate dirs -> make_dir */
+  const wantDirs = new Map();
+  const walks = new Map();
+  const walk = (dir) => {
+    if (!walks.has(dir)) walks.set(dir, io.walk(dir));
+    return walks.get(dir);
+  };
+  const under = (dir) => walk(walks.has(dir) ? dir : [...walks.keys()].find((w) => within(w, dir)) ?? dir).filter((e) => within(dir, e.path) && e.path !== dir);
+  const globs = boundary.map(normalizeEntry).filter(isGlob);
+  const fenced = (abs) => inGitDir(relativeTo(root, abs) ?? "") || denied.some((d) => within(d, abs));
+  // A directory is clean when none of its existing regular files is outside the boundary and
+  // a glob entry could hold a file under each of its existing subdirectories: a `dirs` grant
+  // reaches the whole tree, so there it makes no existing file writable that was not agreed,
+  // and lets new files appear only where the boundary could have them. (.git and the denied
+  // paths are left to the notExpressible checks below.)
+  const clean = (dir) => under(dir).every((e) => fenced(e.path)
+    || (e.type === "file" ? matches(e.path) : e.type !== "dir" || globs.some((g) => globCanHold(g, relativeTo(root, e.path) ?? ""))));
+  const wantDir = (dir, makeDir) => { if (clean(dir)) wantDirs.set(dir, (wantDirs.get(dir) ?? false) || makeDir); };
+  const literal = (abs) => {
+    if (!grantable(abs)) return;
+    checkNoSymlinkAbove(root, abs, io);
+    if (io.lstat(abs)?.type === "file") wantFiles.add(abs);
+  };
+  for (const raw of boundary) {
+    const e = normalizeEntry(raw);
+    if (!isGlob(e)) { literal(`${root}/${e}`); continue; }
+    const fixed = [];
+    for (const seg of e.split("/")) { if (isGlob(seg)) break; fixed.push(seg); }
+    const top = fixed.length ? `${root}/${fixed.join("/")}` : root;
+    if (top !== root && !grantable(top)) continue;
+    const makeDir = e.split("/").includes("**");
+    checkNoSymlinkAbove(root, top, io);
+    const st = io.lstat(top);
+    if (st === null) {
+      const at = deepestExistingL(top, root, io);
+      if (at !== null && io.lstat(at)?.type === "dir") wantDir(at, true);
+      continue;
+    }
+    if (st.type === "symlink") throw new Error(`${top} is a symlink; pair_run grants only paths that are what they name`);
+    if (st.type !== "dir") continue;
+    for (const f of walk(top)) if (f.type === "file" && matches(f.path)) wantFiles.add(f.path);
+    const descend = (dir) => {
+      if (!globCanHold(e, relativeTo(root, dir) ?? "")) return;
+      if (clean(dir)) { wantDir(dir, makeDir); return; }
+      for (const c of under(dir)) {
+        if (c.type === "dir" && c.path.lastIndexOf("/") === dir.length && grantable(c.path)) descend(c.path);
+      }
+    };
+    descend(top);
+  }
+  for (const p of extraAllow) literal(bwrapPath(p));
+  const dirs = outermost([...wantDirs.keys()]);
+  for (const d of dirs) {
+    if (within(d, root)) return { notExpressible: "a directory grant would hold the whole worktree, and Landlock cannot fence .git or the state inside it" };
+    const git = under(d).find((e) => e.path.split("/").at(-1).toLowerCase() === ".git");
+    if (git) return { notExpressible: `a directory grant on ${relativeTo(root, d)} would hold ${relativeTo(root, git.path)}, and Landlock cannot fence it inside the grant` };
+    const held = denied.find((x) => within(d, x));
+    if (held) return { notExpressible: `a directory grant on ${relativeTo(root, d)} would hold ${held}, and Landlock cannot fence it inside the grant` };
+    const linked = under(d).find((e) => e.type === "file" && e.nlink > 1);
+    if (linked) return { notExpressible: `${relativeTo(root, linked.path)} has ${linked.nlink} hard links, and a grant on it would reach every one` };
+  }
+  const outFiles = [...wantFiles].filter((f) => !dirs.some((d) => within(d, f))).sort();
+  for (const f of outFiles) {
+    const n = io.lstat(f)?.nlink ?? 1;
+    if (n > 1) return { notExpressible: `${relativeTo(root, f)} has ${n} hard links, and a grant on it would reach every one` };
+  }
+  return {
+    files: [...files, ...outFiles],
+    dirs: dirs.sort().map((path) => ({ path, make_dir: wantDirs.get(path) })),
+    rw_trees: rwTrees,
+  };
+}
+
+/**
+ * Whether a file matching the glob boundary entry `entry` could lie under the
+ * worktree-relative directory `dirRel` ("" for the root), at any depth.
+ * @param {string} entry  normalized
+ * @param {string} dirRel
+ */
+function globCanHold(entry, dirRel) {
+  const g = entry.split("/");
+  const d = dirRel === "" ? [] : dirRel.split("/");
+  const seg = (s, name) => new RegExp(`^${globToRegexSource(s)}$`).test(name);
+  const m = (i, j) => {
+    if (j === g.length) return false;
+    if (g[j] === "**") return i === d.length || m(i, j + 1) || m(i + 1, j);
+    if (i === d.length) return true;
+    return seg(g[j], d[i]) && m(i + 1, j + 1);
+  };
+  return m(0, 0);
+}
+
+/**
+ * The pair-landlock ruleset and command pair_write and pair_edit write under on Linux. The
+ * write goes in place, the content passing through the helper's stdin, rather than staged and
+ * renamed: a Landlock rename needs REMOVE_FILE and MAKE_REG on the whole directory.
+ *   - an existing target: a `files` grant on it alone, and `/bin/cat > target`. The rule is on
+ *     the target's inode, and the helper refuses an inode with a second name, so the write can
+ *     reach no file but the target;
+ *   - a target that does not exist yet: a `dirs` grant on its deepest existing directory
+ *     (MAKE_DIR when directories are missing), and a create with noclobber, so a file or a
+ *     symlink that appears at the target in the meantime fails the write rather than takes it.
+ * A target outside the boundary, or in .git, the state directory or a protected path, gets no
+ * grant at all: the kernel refuses the write, as the Seatbelt profile does.
+ * Returns { notExpressible: reason } for a target in-place writing cannot keep safe: a
+ * symlink (in place would follow it; bubblewrap's staged write replaces it), a file with more
+ * than one hard link (in place would write every name; staging replaces it), anything but a
+ * regular file, or a new file whose `dirs` grant would hold the worktree root, a `.git`, the
+ * state directory or a protected path. Throws when the target is a directory or a path above
+ * it is a symlink inside the worktree. Open phase only.
+ * @param {State} state
+ * @param {string} target  absolute, checkWrite's absPath
+ * @param {LandlockIo} io
+ * @returns {(LandlockRules & { command: string }) | { notExpressible: string }}
+ */
+export function pairWriteLandlock(state, target, io) {
+  if (state.phase !== "open") throw new Error("pair_write needs an open change set");
+  const root = bwrapPath(state.root);
+  const abs = bwrapPath(target);
+  if (!within(root, abs) || abs === root || abs.split("/").some((s) => s === "." || s === "..")) throw new Error("pair_write needs a target inside the worktree");
+  const denied = [state.stateDir, ...(state.protect ?? [])].map(bwrapPath);
+  const rel = relativeTo(root, abs);
+  checkNoSymlinkAbove(root, abs, io);
+  const st = io.lstat(abs);
+  if (st?.type === "dir") throw new Error("the target is a directory");
+  const parent = abs.slice(0, abs.lastIndexOf("/"));
+  const inBoundary = !inGitDir(rel) && !denied.some((d) => within(d, abs)) && boundaryMatches(state.changeSet.boundary, rel) && !isGitControl(rel);
+  const create = `set -C && /bin/mkdir -p -- ${shQuote(parent)} && /bin/cat > ${shQuote(abs)}`;
+  if (!inBoundary) return { files: [], dirs: [], rw_trees: [], command: st === null ? create : `/bin/cat > ${shQuote(abs)}` };
+  if (st?.type === "symlink") return { notExpressible: "the target is a symlink, which an in-place write would follow; the staged write replaces it" };
+  if (st && st.type !== "file") return { notExpressible: "the target is not a regular file" };
+  if (st && st.nlink > 1) return { notExpressible: `the target has ${st.nlink} hard links, which an in-place write would all reach; the staged write replaces it` };
+  if (st) return { files: [abs], dirs: [], rw_trees: [], command: `/bin/cat > ${shQuote(abs)}` };
+  const at = deepestExistingL(abs, root, io);
+  if (at === null || io.lstat(at)?.type !== "dir") throw new Error(`no directory to create ${rel} in`);
+  if (at === root) return { notExpressible: "a new file whose nearest existing directory is the worktree root needs a grant that would hold .git" };
+  const inside = io.walk(at);
+  const git = inside.find((e) => e.path.split("/").at(-1).toLowerCase() === ".git");
+  if (git) return { notExpressible: `the grant on ${relativeTo(root, at)} would hold ${relativeTo(root, git.path)}` };
+  const held = denied.find((d) => within(at, d));
+  if (held) return { notExpressible: `the grant on ${relativeTo(root, at)} would hold ${held}` };
+  return { files: [], dirs: [{ path: at, make_dir: at !== parent }], rw_trees: [], command: create };
+}
+
+/** A POSIX shell single-quoted word. */
+function shQuote(s) {
+  return `'${s.replaceAll("'", "'\\''")}'`;
+}
+
+function deepestExistingL(path, stop, io) {
+  let p = path;
+  while (p !== stop && io.lstat(p) === null) p = p.slice(0, p.lastIndexOf("/")) || "/";
+  return io.lstat(p) === null ? null : p;
+}
+
+/**
+ * Throws when a directory between the worktree root and `abs` is a symlink. pair-landlock
+ * takes only paths that are their own realpath, so such a path would fail there anyway; the
+ * message here says why.
+ */
+function checkNoSymlinkAbove(root, abs, io) {
+  const rel = relativeTo(root, abs);
+  if (rel === null) return;
+  let p = root;
+  for (const seg of rel.split("/").slice(0, -1)) {
+    p = `${p}/${seg}`;
+    const st = io.lstat(p);
+    if (st === null) return;
+    if (st.type === "symlink") throw new Error(`${p} is a symlink; pair_run grants only paths that are what they name`);
+  }
+}
