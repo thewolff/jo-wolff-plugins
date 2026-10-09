@@ -142,6 +142,14 @@ jobs:
             exit 1
           fi
           docker exec -u ubuntu pc bwrap --ro-bind / / --dev /dev --ro-bind /proc /proc --unshare-all /bin/true
+      - name: "DIAGNOSTIC: the README's flags only (seccomp unconfined, Docker's AppArmor profile on)"
+        run: |
+          docker run --rm --security-opt seccomp=unconfined ubuntu:24.04 sh -c '
+            apt-get update >/dev/null && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends bubblewrap >/dev/null
+            cat /proc/self/attr/current 2>&1 || true
+            for p in "--proc /proc" "--ro-bind /proc /proc"; do
+              su ubuntu -s /bin/sh -c "bwrap --ro-bind / / --dev /dev $p --unshare-all /bin/true" 2>&1; echo "$p rc=$?"
+            done' || true
       - name: Tests, with the live bubblewrap cases required to run under the /proc fallback
         run: |
           docker exec -u ubuntu -w /home/ubuntu \
