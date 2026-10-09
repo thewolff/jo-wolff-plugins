@@ -939,7 +939,8 @@ export function pairBegin(state, args, io) {
  * pair_done: close the open change set. Refused while a pair_run under it is running. On
  * success it first reaps every process group of the change set's runs (io.reapRuns), then
  * snapshots, so the read-back is taken after writes have stopped. Every changed path must lie
- * inside the boundary; any that does not is an unapproved write and stops the session.
+ * inside the boundary; any that does not is an unapproved write and stops the session. Refused
+ * while the session is stopped (a run that made a link: runEnd), so no read-back is shown then.
  * Returns `changed` (inside the boundary, for the read-back diff) and `unapproved`.
  * @param {State} state
  * @param {{ cardId: unknown }} args
@@ -950,6 +951,7 @@ export function pairDone(state, args, io) {
   if (state.phase !== "open") return refuse(state, "pair_done", "no change set is open", io);
   const cs = state.changeSet;
   if (args?.cardId !== cs.cardId) return refuse(state, "pair_done", "that card is not the open change set", io);
+  if (state.halt) return refuse(state, "pair_done", `the session is stopped: ${state.halt.reason}; only your partner ends it, by typing pair stop`, io);
   if (state.running.some((r) => r.cardId === cs.cardId)) return refuse(state, "pair_done", "a pair_run under this change set is still running", io);
   if (cs.runs.length > 0) {
     const reaped = callIo(io, "reapRuns", [...cs.runs]);
@@ -1045,9 +1047,10 @@ function targetProblem(state, abs) {
 
 /**
  * Admit one pair_run and return the Seatbelt profile it must run under, built from the state
- * at this moment. The command itself plays no part: whatever command arrives at execution,
- * after any other extension rewrote it, runs under this profile. Runs started while open are
- * tied to the change set so pair_done can refuse while they run and reap them afterwards.
+ * at this moment (on Linux the adapter builds bwrapArgsFor from the same returned state). The
+ * command itself plays no part: whatever command arrives at execution, after any other
+ * extension rewrote it, runs under this sandbox. Runs started while open are tied to the
+ * change set so pair_done can refuse while they run and reap them afterwards.
  * @param {State} state
  * @param {{ runId: unknown }} args
  * @param {Io} [io]
@@ -1074,9 +1077,14 @@ export function runStart(state, args, io) {
 }
 
 /**
- * Record that a pair_run returned (exited, timed out or was aborted and reaped).
+ * Record that a pair_run returned (exited, timed out or was aborted and reaped). `links` are the
+ * worktree-relative paths the adapter found the run made since it started: a symlink, a hard
+ * link, or a `.git` entry in the paths it could write. Any stops the session: a link inside the
+ * boundary would carry a later write, the partner's own editor's included, to wherever it
+ * points, and a new `.git` holds hooks and config git runs outside the sandbox. pair_done then
+ * refuses until the partner types pair stop.
  * @param {State} state
- * @param {{ runId: unknown, exitCode?: unknown }} args
+ * @param {{ runId: unknown, exitCode?: unknown, links?: unknown }} args
  * @param {Io} [io]
  * @returns {Result}
  */
@@ -1084,7 +1092,13 @@ export function runEnd(state, args, io) {
   if (state.phase === "inactive" || !Array.isArray(state.running)) return { ok: true, state, journal: [] };
   const next = clone(state);
   next.running = next.running.filter((r) => r.runId !== args?.runId);
-  return { ok: true, state: next, journal: [entry("run-end", io, { runId: args?.runId, exitCode: args?.exitCode })] };
+  const journal = [entry("run-end", io, { runId: args?.runId, exitCode: args?.exitCode })];
+  const links = Array.isArray(args?.links) ? args.links.filter((l) => typeof l === "string" && l !== "") : [];
+  if (links.length > 0) {
+    next.halt = { reason: `pair_run made a link or a .git entry inside the paths it could write: ${links.join(", ")}`, at: stamp(io) };
+    journal.push(entry("link-made", io, { runId: args?.runId, paths: links }));
+  }
+  return { ok: true, state: next, journal };
 }
 
 /** A Seatbelt string literal; control characters are refused rather than guessed at. */
@@ -1183,9 +1197,154 @@ const WRITE_TEMP = /\/\.pair-write-[0-9a-f]{16}\.tmp$/;
  * @returns {string}
  */
 export function pairWriteProfile(state, tempPath) {
+  checkWriteTemp(state, tempPath);
+  return profileFor({ ...state, tempPaths: [] }, [tempPath]);
+}
+
+function checkWriteTemp(state, tempPath) {
   if (state.phase !== "open") throw new Error("pair_write needs an open change set");
   if (typeof tempPath !== "string" || !WRITE_TEMP.test(tempPath) || !within(state.root, tempPath) || tempPath.includes("/../")) {
     throw new Error("pair_write needs a staging file in the worktree named .pair-write-<16 hex>.tmp");
   }
-  return profileFor({ ...state, tempPaths: [] }, [tempPath]);
+}
+
+// ─── the Linux sandbox (bubblewrap) ─────────────────────────────────────────────────────
+
+/** Whether a worktree-relative path has a `.git` segment, in any letter case. */
+function inGitDir(rel) {
+  return rel.split("/").some((seg) => seg.toLowerCase() === ".git");
+}
+
+/**
+ * Where an open change set lets a write land in the worktree, absolute: each literal boundary
+ * entry itself, and for a glob entry the directory above its first glob segment (the root for
+ * an entry that starts with one). Nothing at or under a `.git` segment. Seatbelt fences writes
+ * inside these by pattern; bubblewrap can only bind them, and pair_run's link check walks them.
+ * @param {State} state
+ * @returns {string[]}
+ */
+export function boundaryRoots(state) {
+  if (state.phase !== "open" || !state.changeSet) return [];
+  const out = new Set();
+  for (const raw of state.changeSet.boundary) {
+    const fixed = [];
+    for (const seg of normalizeEntry(raw).split("/")) {
+      if (isGlob(seg)) break;
+      fixed.push(seg);
+    }
+    const rel = fixed.join("/");
+    if (rel !== "" && inGitDir(rel)) continue;
+    out.add(rel === "" ? state.root : `${state.root}/${rel}`);
+  }
+  return [...out];
+}
+
+/**
+ * The filesystem facts the bubblewrap builders need, injected so the core stays free of I/O.
+ * @typedef {object} BwrapIo
+ * @property {(abs: string) => "dir" | "file" | "other" | null} kind  what is at `abs`, symlinks
+ *   followed; null when nothing is
+ * @property {(dir: string, recursive: boolean) => string[]} gitEntries  every entry named `.git`
+ *   (any letter case, directory, gitfile or symlink) under `dir`, absolute; recursive or only
+ *   `dir`'s own children. A `.git` is not descended into, and symlinked directories are not followed
+ */
+
+/**
+ * @typedef {object} BwrapPlan
+ * @property {string[]} args  bwrap options, without the command; binds are plain `--bind SRC
+ *   DEST`, which the adapter pins to open file descriptors before it runs them
+ * @property {string[]} writable  the read-write binds in the worktree
+ * @property {string[]} temps  the read-write binds of temp paths
+ * @property {string[]} readOnly  what is bound read-only back on top of them
+ */
+
+const BWRAP_BASE = Object.freeze(["--ro-bind", "/", "/", "--dev", "/dev", "--proc", "/proc", "--tmpfs", "/tmp", "--unshare-all", "--die-with-parent", "--new-session"]);
+
+/**
+ * The bubblewrap options pair_run runs under on Linux, built from the same state as the Seatbelt
+ * profile (profileFor), so the two backends read one source. bwrap mounts in argument order and
+ * a later mount covers an earlier one, so as in the profile the order is the precedence, last
+ * one strongest:
+ *   1. the whole filesystem read-only, a fresh /dev and /proc, and a private, empty /tmp;
+ *   2. the temp paths read-write, except /tmp itself, which is the private one;
+ *   3. the worktree read-only again where a temp path or the private /tmp covered it;
+ *   4. open only: read-write binds for the boundary (boundaryRoots) and `extraAllow`. A path
+ *      that does not exist yet is bound through its deepest existing ancestor. Nothing at or
+ *      under a `.git` segment, the state directory or a protected path is bound;
+ *   5. every `.git` entry under a worktree bind read-only, so all of git's directory is
+ *      read-only (Seatbelt leaves what a commit writes writable; per-directory binds cannot);
+ *   6. the state directory and the protected paths read-only wherever a bind covers them (a
+ *      path that does not exist yet: its deepest existing ancestor).
+ * Every namespace is unshared except the network, which the Seatbelt profile also leaves open.
+ * The adapter adds the seccomp filter that refuses Unix-domain sockets and checks after each run
+ * that no link appeared in the binds (bubblewrap has no per-operation deny for either).
+ * @param {State} state
+ * @param {string[]} extraAllow  absolute paths also writable
+ * @param {BwrapIo} io
+ * @returns {BwrapPlan}
+ */
+export function bwrapArgsFor(state, extraAllow, io) {
+  return bwrapPlan(state, [...boundaryRoots(state), ...extraAllow], { temps: state.tempPaths ?? [], network: true, recursiveGit: true }, io);
+}
+
+/**
+ * The bubblewrap options pair_write and pair_edit write under on Linux: only the staging file's
+ * directory (its deepest existing ancestor) is writable, no temp path, no network. A rename over
+ * a file that is itself a bind mount fails, so the directory is bound rather than the target;
+ * the gate's own write script is the only thing that runs there, and it writes the staging file
+ * and renames it over the target checkWrite passed. Open phase only.
+ * @param {State} state
+ * @param {string} tempPath  absolute, in the worktree, named .pair-write-<16 hex>.tmp
+ * @param {BwrapIo} io
+ * @returns {BwrapPlan}
+ */
+export function pairWriteBwrap(state, tempPath, io) {
+  checkWriteTemp(state, tempPath);
+  return bwrapPlan(state, [tempPath.slice(0, tempPath.lastIndexOf("/"))], { temps: [], network: false, recursiveGit: false }, io);
+}
+
+function bwrapPath(path) {
+  if (typeof path !== "string" || !path.startsWith("/") || CONTROL.test(path)) throw new Error(`a sandboxed path is not usable (${JSON.stringify(path)})`);
+  return path;
+}
+
+function deepestExisting(path, stop, io) {
+  let p = path;
+  while (p !== stop && io.kind(p) === null) p = p.slice(0, p.lastIndexOf("/")) || "/";
+  return io.kind(p) === null ? null : p;
+}
+
+function outermost(paths) {
+  const out = [];
+  for (const p of [...new Set(paths)].sort((a, b) => a.length - b.length)) {
+    if (!out.some((o) => within(o, p))) out.push(p);
+  }
+  return out;
+}
+
+function bwrapPlan(state, wanted, opts, io) {
+  const root = bwrapPath(state.root);
+  const denied = [state.stateDir, ...(state.protect ?? [])].map(bwrapPath);
+  const args = [...BWRAP_BASE, ...(opts.network ? ["--share-net"] : [])];
+  const temps = outermost(opts.temps.map(bwrapPath).filter((t) => t !== "/tmp" && io.kind(t) === "dir" && !denied.some((d) => within(d, t))));
+  for (const t of temps) args.push("--bind", t, t);
+  if (within("/tmp", root) || temps.some((t) => within(t, root))) args.push("--ro-bind", root, root);
+  const writable = outermost(wanted.map(bwrapPath).flatMap((want) => {
+    if (!within(root, want)) return [];
+    const at = deepestExisting(want, root, io);
+    if (at === null || inGitDir(relativeTo(root, at) ?? "")) return [];
+    return denied.some((d) => within(d, at)) ? [] : [at];
+  }));
+  for (const w of writable) args.push("--bind", w, w);
+  const readOnly = [];
+  for (const w of writable) if (io.kind(w) === "dir") readOnly.push(...io.gitEntries(w, opts.recursiveGit).map(bwrapPath));
+  for (const d of denied) {
+    const cover = [...temps, ...writable].find((b) => within(b, d));
+    if (!cover) continue;
+    const at = deepestExisting(d, cover, io);
+    if (at !== null) readOnly.push(at);
+  }
+  const ro = [...new Set(readOnly)];
+  for (const p of ro) args.push("--ro-bind", p, p);
+  return { args, writable, temps, readOnly: ro };
 }
