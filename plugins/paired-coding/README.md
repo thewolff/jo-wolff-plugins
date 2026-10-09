@@ -39,8 +39,11 @@ bubblewrap needs two things:
      `--security-opt seccomp=unconfined --security-opt systempaths=unconfined`.
 
 With neither Landlock ABI 3 nor a working bubblewrap, the plugin still installs, but
-`pair_start` refuses and names both reasons. The details, and what each sandbox does and does
-not enforce, are under **Linux: which sandbox**, **Linux: Landlock** and **Linux: bubblewrap** in
+`pair_start` refuses and names both reasons. On such a machine, keep the plugin off temp paths
+too: with `HOME` under `/tmp`, the installed plugin sits in a temp path, Landlock cannot fence
+it there, and `pair_start` refuses. With a working bubblewrap, those runs go to bubblewrap
+instead. The details, and what each sandbox does and does not enforce, are under **Linux: which
+sandbox**, **Linux: Landlock** and **Linux: bubblewrap** in
 [What this enforces, and what it does not](#what-this-enforces-and-what-it-does-not).
 
 Claude Code:
@@ -416,14 +419,21 @@ Under Landlock, a single run or write that Landlock cannot fence goes to bubblew
 result says so ("under bubblewrap:" and the reason). Landlock can only grant: nothing inside a
 writable directory can be taken back out. So the gate hands a run to bubblewrap when a
 directory it would make writable holds a `.git` entry (a submodule under `lib/**`, for
-instance), the state directory or a protected path, or when a temp path holds the worktree or
-the state directory (a worktree under `/tmp` does). A file it would grant that has a second
-hard link goes to bubblewrap too. If bubblewrap does not work on the machine, that run or write
-is refused. A temp path holding the worktree or the state directory would refuse every run, so
-there `pair_start` refuses instead and names the reason. The worktree root is never made writable, since it holds `.git`; what that leaves
+instance), the state directory or a protected path, or when a temp path holds the worktree,
+the state directory or a protected path (a worktree under `/tmp` does, and so does a plugin
+installed under `/tmp`). The protected paths are the plugin's own directory, the directory that
+holds the session state, and the directory of the Claude Code transcript. A file it would grant
+that has a second hard link goes to bubblewrap too. If bubblewrap does not work on the machine,
+that run or write is refused. A temp path holding the worktree, the state directory or a
+protected path would refuse every run, so there `pair_start` refuses instead and names the
+reason. The worktree root is never made writable, since it holds `.git`; what that leaves
 out (below) stays on Landlock whether or not bubblewrap works, and so does a new file
 `pair_write` makes where a directory grant would hold the root, a `.git`, the state directory
 or a protected path.
+
+Nothing under a protected path is ever granted. A worktree inside one cannot be written at all:
+`pair_start` succeeds, and then every write inside fails with a plain "Permission denied".
+Claude Code keeps transcripts under `~/.claude/projects/`, so this needs a worktree there.
 
 In a Docker container with the default security options Landlock worked and bubblewrap did
 not, so a container needs no extra options when its kernel has Landlock.
@@ -510,7 +520,9 @@ existing file outside the boundary, as Seatbelt does:
   the boundary stops the session there. The worktree root's own mode is never inside the
   boundary, even under `**`. A chmod of the directory a subtree entry names (`docs` for
   `docs/`) stops the session at `pair_done`: the entry covers what is under the directory, not
-  the directory itself. A directory created or removed with nothing in it is not a change
+  the directory itself. A glob over a directory's files (`src/*.txt`) does not cover the
+  directory either: `src` is outside that boundary, and its mode is not on the card. A
+  directory created or removed with nothing in it is not a change
   in `pair_done`. The read-back skips `.git` and the snapshot
   exclusions, so under Landlock a `chmod +x` on an existing hook in `.git/hooks` goes unseen.
   It does not record owners, timestamps or extended attributes, and it never sees a change
