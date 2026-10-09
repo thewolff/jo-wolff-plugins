@@ -177,7 +177,7 @@ How it works:
   symlink swapped in after the path check cannot land the write outside the boundary, and a
   directory at the path is refused. Under Landlock they write in place, which keeps the file
   itself, inode and permission bits included; a target that is a symlink or has a second hard
-  link goes to bubblewrap's staged write instead (see **Linux: Landlock** below).
+  link gets the same staged write instead (see **Linux: Landlock** below).
 - Under any `.git`, only what `git add` and `git commit` write is writable, even when an agreed
   boundary covers `.git/`: `objects/`, `refs/`, `logs/`, `index`, `HEAD`, `ORIG_HEAD`,
   `COMMIT_EDITMSG`, `packed-refs` and `AUTO_MERGE`, each with its `.lock` file. The same list
@@ -218,7 +218,7 @@ How it works:
 |---|---|---|
 | Claude Code, macOS | Built: hooks and a bundled MCP server | Verified on Claude Code v2.1.287, loaded with `--plugin-dir`: tests 11 to 17, then the release checks below |
 | OMP, macOS | Built: an extension, registered by `omp plugin install`, or loaded with `--plugin-dir` and `-e` together | Verified on OMP 18.4.4, loaded with `-e`: tests 11 to 17, then the release checks below. After a plain `omp plugin install`, a scripted stand-in model saw the skill listed, the eight `pair_*` tools registered, and a host `write` refused after `pair_start`; tests 11 to 17 were not re-run that way |
-| Claude Code and OMP, Linux | Built: the same gate, with Landlock or bubblewrap as the sandbox | The unit suite and the live Landlock and bubblewrap cases pass in an Ubuntu 24.04 container as a non-root user. Neither host has been run live on Linux |
+| Claude Code and OMP, Linux | Built: the same gate, with Landlock or bubblewrap as the sandbox | The unit suite and the live Landlock and bubblewrap cases pass in an Ubuntu 24.04 container as a non-root user, and the suite with the live Landlock cases passes in one with Docker's default security options, where bubblewrap cannot run. Neither host has been run live on Linux |
 | Codex | None | Unverified; the skill is included but has not been run there |
 | Windows, anything else, or Linux with neither Landlock nor a working bubblewrap | `pair_start` refuses | The skill runs as conversation only |
 
@@ -434,10 +434,14 @@ existing file outside the boundary, as Seatbelt does:
   create `src/lib/new.ts`, a new directory with a `.ts` file in it, and also `src/lib/new.md`.
   `pair_done`'s read-back shows such a write and stops the session on it. `pair_write` creates
   `src/new.ts` where `pair_run` cannot.
-- `pair_run` cannot delete, rename or symlink anything outside the temp directories. So
-  `rm`, `mv`, and tools that rename a new file over the old one (`sed -i`, many formatters)
-  fail with "Permission denied", whatever the boundary. Run them outside pairing, or write the
-  result with `pair_write`.
+- In a directory the gate makes writable (above), `pair_run` can also delete and rename
+  files, so `rm`, `mv` within the directory, and tools that rename a new file over the old one
+  (`sed -i`, many formatters) work there, in its subdirectories too. A literal entry is
+  granted as the file alone, so it cannot be deleted or renamed, and `sed -i` on it fails with
+  "Permission denied": write the result with `pair_write`, or agree a glob such as `src/*.ts`.
+  A file cannot be moved out of a writable directory into the rest of the worktree, nothing
+  can be symlinked, and directories cannot be removed. Moving a file into a temp directory
+  works as a copy and a delete, which `cp` and `rm` could do anyway.
 - Nothing under `.git` is writable, so `git commit` inside `pair_run` fails (see the `.git`
   points above).
 - Temp directories, `/tmp` included, are shared, as on macOS.
@@ -445,10 +449,16 @@ existing file outside the boundary, as Seatbelt does:
   straight into the one granted file, which keeps its inode and permission bits. A new file is
   created with the shell's noclobber on, so anything that appears at the path first fails the
   write instead of taking it. A target that is a symlink or has a second hard link would carry
-  an in-place write elsewhere, so it goes to bubblewrap's staged write (below), as does a new
-  file directly in the worktree root.
-- A process that leaves its run's process group keeps running after the run, with the write
-  permission its run had, as on macOS; `pair_done` reaps the group before its snapshot.
+  an in-place write elsewhere, so it gets the staged write, under a grant on its directory
+  that only the gate's own staging command uses. Where that grant would hold a `.git`, the
+  state directory or a protected path, and for a new file or a link directly in the worktree
+  root, the write goes to bubblewrap's staged write (below).
+- Every process a run starts ends when the run does, including one that left the process
+  group with `setsid` or a double fork: the helper stays outside the sandbox as the run's
+  supervisor and kills them all when the command exits, times out or is aborted. On kernels
+  before Landlock ABI 6 a run's own process can kill the supervisor first, and a process that
+  left the group then keeps running with its run's write permission until `pair_done`'s
+  read-back catches what it writes (`landlock/README.md`, **Supervision**).
 - On kernels before Landlock ABI 9, Landlock cannot refuse a connection to a pathname Unix
   socket, so the helper installs the same seccomp filter as bubblewrap's (below): no
   Unix-domain socket can be created, the DNS resolver's included, and `socketpair` still works.
@@ -461,7 +471,9 @@ existing file outside the boundary, as Seatbelt does:
   `landlock/README.md` describes its input and what the kernel enforces.
 
 The live Landlock cases run where the helper reports ABI 3 or later; set
-`PAIRED_CODING_REQUIRE_LANDLOCK=1` to make them fail instead of skip, as CI does.
+`PAIRED_CODING_REQUIRE_LANDLOCK=1` to make them fail instead of skip, as CI does. CI runs the
+suite twice on each architecture: once with bubblewrap working, and once with it unusable
+(the runner's AppArmor restriction left on), as on a stock Ubuntu 24.04 machine.
 
 **Linux: bubblewrap.** bubblewrap is the sandbox where the kernel has no Landlock ABI 3, and
 takes the runs and writes Landlock cannot fence. It runs as you, inside a user namespace. It
@@ -517,8 +529,9 @@ bubblewrap, `pair_write` and `pair_edit` write a new file and rename it over the
 they never write through a symlink or hard link at a boundary path. The file the link pointed
 to is never touched, and the linked path becomes a plain copy holding the new content. That
 includes links you keep on purpose, such as pnpm-style linked files: an agreed write to one of
-them unlinks it. Under Landlock the same write goes to bubblewrap; where bubblewrap does not
-work, it is refused and the link stays as it was.
+them unlinks it. Under Landlock the same write is staged the same way; where Landlock cannot
+grant the link's directory (above) it goes to bubblewrap, and where bubblewrap does not work
+either, it is refused and the link stays as it was.
 
 **The sandbox fences file writes and local sockets, not the network.** Apart from file writes,
 hard links and Unix-domain sockets, the Seatbelt profile allows everything. Local TCP is open:
@@ -537,9 +550,10 @@ repository whose config points `core.hooksPath` at a directory in the worktree (
 `.husky/`, for one) runs hooks from there, and `pair_run` can write that directory when it is
 in the boundary; unlike `.git/`, such a write shows in the read-back diff.
 
-**Escaped writers are caught late, and only inside the worktree.** On macOS and under Landlock
-a process that leaves its run's process group survives the reap and keeps the write permission
-its run had (test 17); bubblewrap ends it with the run. A process that got out of the sandbox
+**Escaped writers are caught late, and only inside the worktree.** On macOS a process that
+leaves its run's process group survives the reap and keeps the write permission its run had
+(test 17); bubblewrap and Landlock end it with the run (on Landlock before ABI 6, unless it
+kills the supervisor first). A process that got out of the sandbox
 altogether would write with your own permissions; the one route probed on macOS, `launchctl
 submit`, was denied, but no probe proves there is no other. Either kind is caught only by
 content snapshots, at the next `pair_done`, which then stops the session: the first write is
