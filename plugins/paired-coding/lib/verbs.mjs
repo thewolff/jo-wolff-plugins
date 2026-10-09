@@ -476,7 +476,7 @@ async function runVerb(args, ctx) {
   });
   const stops = [];
   if (res.links.length > 0) stops.push(`pair_run made a link or a .git entry inside the paths it could write (${res.links.join(", ")}). A later write could follow it out of the agreement`);
-  if (res.supervisorKilled) stops.push(`pair_run's Landlock supervisor was killed by ${res.supervisorKilled}, which the gate did not send, so a process the run started may still be running with its write permission`);
+  if (res.supervisorKilled) stops.push(`pair_run's Landlock supervisor was killed by ${res.supervisorKilled} before it ended the run's processes, so a process the run started may still be running with its write permission`);
   if (stops.length > 0) {
     return fail("pair_run", `STOPPED: ${stops.join(". ")}, so pairing is stopped. Show this to your partner; only your partner ends the session, by typing pair stop.`);
   }

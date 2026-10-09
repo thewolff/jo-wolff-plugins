@@ -14,7 +14,7 @@ import { chmodSync, existsSync, linkSync, lstatSync, mkdirSync, mkdtempSync, rea
 import { createServer } from "node:net";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
-import { landlockRulesFor, pairWriteLandlock } from "../core/gate.mjs";
+import { diffSnapshots, landlockRulesFor, pairWriteLandlock } from "../core/gate.mjs";
 import { bwrapProblem, seccompFilter } from "./bwrap.mjs";
 import { createOnHost, describeSandbox, pickLinuxBackend, runSandboxed, snapshotTree, writeSandboxed } from "./host-io.mjs";
 import { HELPER_ARCHES, LANDLOCK_DIR, landlockAbi, landlockIo, landlockProblem, parseMountinfo, probeLandlock } from "./landlock.mjs";
@@ -505,6 +505,31 @@ describe("live Landlock: pair_run", () => {
     assert.equal(existsSync(join(f.top, "out.txt")), false);
   });
 
+  live("a hard link from a granted file to a path outside the grants is refused", async () => {
+    const f = liveState(["lib/**", "src/a.txt"]);
+    for (const cmd of ["ln src/a.txt notes-link.txt", "ln lib/l.txt notes2.txt", `ln lib/l.txt '${f.top}/out-link'`, `ln src/a.txt '${f.top}/out-link2'`]) {
+      const r = await run(f.state, cmd);
+      assert.equal(r.backend, "landlock");
+      assert.notEqual(r.exitCode, 0, cmd);
+      assert.match(r.stderr, /Permission denied|Invalid cross-device link/, cmd);
+    }
+    for (const p of [join(f.root, "notes-link.txt"), join(f.root, "notes2.txt"), join(f.top, "out-link"), join(f.top, "out-link2")]) {
+      assert.equal(existsSync(p), false, p);
+    }
+    assert.equal(statSync(join(f.root, "src", "a.txt")).nlink, 1);
+    assert.equal(statSync(join(f.root, "lib", "l.txt")).nlink, 1);
+  });
+
+  live("a directory's mode change outside the boundary shows in the snapshot diff", async () => {
+    const f = liveState(["lib/**"]);
+    mkdirSync(join(f.root, "docs"));
+    const before = snapshotTree(f.root, [".git"]);
+    const r = await run(f.state, "chmod 0777 docs");
+    assert.equal(r.backend, "landlock");
+    assert.equal(r.exitCode, 0, "Landlock does not fence chmod");
+    assert.deepEqual(diffSnapshots(before, snapshotTree(f.root, [".git"])), [{ path: "docs", change: "modified" }]);
+  });
+
   /** A loop that appends to lib/bg-<name>.txt from a new session, outside the run's group. */
   const escapee = (name) => `setsid sh -c 'while :; do echo t >> lib/bg-${name}.txt; sleep 0.05; done' </dev/null >/dev/null 2>&1 &`;
   const stopsGrowing = async (f, name) => {
@@ -540,6 +565,53 @@ describe("live Landlock: pair_run", () => {
     const aa = await stopsGrowing(f, "abort");
     assert.ok(aa.a > 0, "the writer ran");
     assert.equal(aa.b, aa.a, "the writer outlived the abort");
+  });
+
+  /** SIGKILL every process still appending to lib/bg-<name>.txt, wherever it is. */
+  const killEscapees = (name) => {
+    for (const pid of readdirSync("/proc").filter((p) => /^\d+$/.test(p))) {
+      let cmd = "";
+      try { cmd = readFileSync(`/proc/${pid}/cmdline`, "utf8"); } catch { continue; }
+      if (cmd.includes(`bg-${name}.txt`)) try { process.kill(Number(pid), "SIGKILL"); } catch { /* already gone */ }
+    }
+  };
+
+  live("the gate's own SIGKILL of a helper that did not end after a timeout is reported as a killed supervisor", async () => {
+    const f = liveState(["lib/**"]);
+    let pgid = null;
+    try {
+      // A stopped helper cannot act on the gate's SIGTERM, so the escalation SIGKILL ends it.
+      const r = await run(f.state, `${escapee("stopped")} sleep 30`, { timeoutMs: 1000, onSpawn: (g) => { pgid = g; setTimeout(() => process.kill(g, "SIGSTOP"), 300); } });
+      assert.equal(r.backend, "landlock");
+      assert.equal(r.timedOut, true);
+      assert.equal(r.signal, "SIGKILL");
+      assert.equal(r.supervisorKilled, "SIGKILL");
+      const { a, b } = await stopsGrowing(f, "stopped");
+      assert.ok(a > 0, "the writer ran");
+      assert.ok(b > a, "the writer outlived its killed supervisor, which is why the session stops");
+    } finally {
+      killEscapees("stopped");
+      if (pgid) try { process.kill(-pgid, "SIGKILL"); } catch { /* already gone */ }
+    }
+  });
+
+  live("a helper killed from outside just before an abort is still reported as a killed supervisor", async () => {
+    const f = liveState(["lib/**"]);
+    const ctl = new AbortController();
+    let pgid = null;
+    try {
+      const r = await run(f.state, `${escapee("aborted")} sleep 30`, {
+        signal: ctl.signal,
+        onSpawn: (g) => { pgid = g; setTimeout(() => { process.kill(g, "SIGKILL"); ctl.abort(); }, 300); },
+      });
+      assert.equal(r.backend, "landlock");
+      assert.equal(r.aborted, true);
+      assert.equal(r.signal, "SIGKILL");
+      assert.equal(r.supervisorKilled, "SIGKILL");
+    } finally {
+      killEscapees("aborted");
+      if (pgid) try { process.kill(-pgid, "SIGKILL"); } catch { /* already gone */ }
+    }
   });
 
   live("a helper killed from outside by SIGKILL is reported as a killed supervisor", async () => {
