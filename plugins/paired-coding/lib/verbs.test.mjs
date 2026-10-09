@@ -1,25 +1,34 @@
 // Tests for the host-neutral session layer (verbs.mjs over host-io.mjs) on real temp
 // directories. pair_run and pair_write tests use the real sandbox (sandbox-exec on macOS,
-// bubblewrap on Linux) and skip where neither is usable. A few cases differ by backend on
-// purpose; each names the difference where it skips.
-import { test } from "node:test";
+// Landlock or bubblewrap on Linux) and skip where none is usable. A few cases differ by backend
+// on purpose; each names the difference where it skips.
+import { after, test } from "node:test";
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { chmodSync, existsSync, linkSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, statSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   CARRY_MAX_AGE_MS, PLUGIN_ROOT, ROADMAP_WALK_LIMIT, carryInto, clearInPlace, endSession, executeVerb, recordTrustedInput, takeCarryMarker, verdict, writeCarryMarker,
 } from "./verbs.mjs";
-import { loadState, realpathLoose, reapGroups, sandboxProblem, writeSandboxed } from "./host-io.mjs";
+import { hashBoundary, loadState, realpathLoose, reapGroups, sandboxBackend, sandboxProblem, snapshotTree, writeSandboxed } from "./host-io.mjs";
 import { pairRunProfile, pairWriteProfile } from "../core/gate.mjs";
+import { bwrapProblem } from "./bwrap.mjs";
 
 const hasSandbox = sandboxProblem() === null;
+const BACKEND = hasSandbox ? sandboxBackend().name : null;
+const NEEDS_LANDLOCK = BACKEND === "landlock" ? false : "needs the Linux Landlock backend";
 const LINUX = process.platform === "linux";
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
+// The fixtures live under $HOME, not /tmp: pair_run may write the temp directories, so a
+// worktree inside one is not fenced the way a real one is, and on Linux Landlock cannot express
+// that run at all (the temp grant would hold the worktree's .git) and hands it to bubblewrap.
+const FIXTURES = realpathSync(mkdtempSync(join(homedir(), ".pc-verbs-")));
+after(() => rmSync(FIXTURES, { recursive: true, force: true }));
+
 function fixture() {
-  const top = realpathSync(mkdtempSync(join(tmpdir(), "pc-verbs-")));
+  const top = mkdtempSync(join(FIXTURES, "f-"));
   const root = join(top, "repo");
   mkdirSync(join(root, ".git"), { recursive: true });
   mkdirSync(join(root, "src"));
@@ -61,6 +70,25 @@ test("a refused pair_start does not activate the session", { skip: !hasSandbox }
   assert.equal(r.ok, false);
   assert.match(r.text, /inside the worktree/);
   assert.equal(verdict("Write", { sessionDir: inside.sessionDir }).allow, true);
+});
+
+test("pair_start refuses a temp layout Landlock cannot fence when bubblewrap is unavailable to fence it instead", { skip: NEEDS_LANDLOCK }, async () => {
+  const f = fixture();
+  // A state directory inside a temp path pair_run may write: Landlock cannot deny it there.
+  const stateTop = realpathSync(mkdtempSync(join(tmpdir(), "pc-verbs-state-")));
+  try {
+    const ctx = { ...f.ctx, sessionDir: join(stateTop, "sess-1") };
+    const r = await executeVerb("pair_start", {}, ctx);
+    if (bwrapProblem() === null) {
+      assert.equal(r.ok, true, r.text);
+    } else {
+      assert.equal(r.ok, false);
+      assert.match(r.text, /Landlock cannot fence pair_run in this layout \(the temp path .* holds .*\), and bubblewrap is unavailable to fence it instead: .*; pairing is not started/);
+      assert.equal(verdict("Write", { sessionDir: ctx.sessionDir }).allow, true, "the session stays inert");
+    }
+  } finally {
+    rmSync(stateTop, { recursive: true, force: true });
+  }
 });
 
 test("pair_start closes the gate: host writers, shells and dispatch refused, reads allowed", { skip: !hasSandbox }, async () => {
@@ -185,11 +213,17 @@ test("pair_run times out and kills its whole process group", { skip: !hasSandbox
   await openChangeSet(f);
   const t0 = Date.now();
   const r = await executeVerb("pair_run", { command: "(while :; do echo tick >> src/a.txt; sleep 0.05; done) & sleep 60", timeoutSeconds: 1 }, f.ctx);
-  assert.equal(r.result.timedOut, true);
+  assert.equal(r.result?.timedOut, true, r.text);
   assert.ok(Date.now() - t0 < 10000);
   const size = statSync(join(f.root, "src/a.txt")).size;
   await sleep(400);
   assert.equal(statSync(join(f.root, "src/a.txt")).size, size, "the background writer is dead");
+  // A timeout whose run ended in time is not a killed supervisor: the session stays open.
+  assert.doesNotMatch(r.text, /STOPPED/);
+  const state = JSON.parse(readFileSync(join(f.dir, "state.json"), "utf8"));
+  assert.equal(state.halt, null);
+  assert.equal(state.phase, "open");
+  assert.equal(journal(f).some((e) => e.type === "supervisor-killed"), false);
 });
 
 test("an aborted pair_run kills its group before it returns", { skip: !hasSandbox }, async () => {
@@ -198,10 +232,12 @@ test("an aborted pair_run kills its group before it returns", { skip: !hasSandbo
   const ac = new AbortController();
   setTimeout(() => ac.abort(), 500);
   const r = await executeVerb("pair_run", { command: "(while :; do echo tick >> src/a.txt; sleep 0.05; done) & sleep 60" }, { ...f.ctx, signal: ac.signal });
-  assert.equal(r.result.aborted, true);
+  assert.equal(r.result?.aborted, true, r.text);
   const size = statSync(join(f.root, "src/a.txt")).size;
   await sleep(400);
   assert.equal(statSync(join(f.root, "src/a.txt")).size, size);
+  assert.doesNotMatch(r.text, /STOPPED/);
+  assert.equal(JSON.parse(readFileSync(join(f.dir, "state.json"), "utf8")).halt, null, "an abort that ended in time leaves the session open");
 });
 
 test("pair_done refuses while a run is going, then reaps leftovers before its snapshot", { skip: !hasSandbox }, async () => {
@@ -238,7 +274,7 @@ test("a corrupted or deleted state file reads as closed, never inactive", { skip
   assert.ok(ends.includes("refusal"));
 });
 
-test("an escaped writer from change set A is caught by change set B's comparison", { skip: !hasSandbox || (LINUX && "on Linux bubblewrap's PID namespace ends every process the run started when it exits, so no writer escapes; the next test checks that") }, async () => {
+test("an escaped writer from change set A is caught by change set B's comparison", { skip: !hasSandbox || (LINUX && "on Linux the sandbox ends every process the run started when it exits (bubblewrap's PID namespace, or pair-landlock as their subreaper), so no writer escapes; the next test checks that") }, async () => {
   const f = fixture();
   const a = await openChangeSet(f, ["src/a.txt"]);
   // Leaves the process group (perl setsid), then writes A's file after A is done.
@@ -255,7 +291,7 @@ test("an escaped writer from change set A is caught by change set B's comparison
   assert.equal((await executeVerb("pair_write", { path: "src/b.txt", content: "x" }, f.ctx)).ok, false, "stopped session refuses writes");
 });
 
-test("on Linux a writer that leaves the process group still ends with its run", { skip: !hasSandbox || (!LINUX && "macOS has no PID namespace; the test above covers a writer that escapes there") }, async () => {
+test("on Linux a writer that leaves the process group still ends with its run", { skip: !hasSandbox || (!LINUX && "macOS has neither a PID namespace nor a subreaper helper; the test above covers a writer that escapes there") }, async () => {
   const f = fixture();
   const a = await openChangeSet(f, ["src/a.txt"]);
   const r = await executeVerb("pair_run", { command: "perl -e 'use POSIX; if (fork()==0) { POSIX::setsid(); sleep 1; open(F, \">>\", \"src/a.txt\"); print F \"late\\n\"; close F; exit 0 }' ; exit 0" }, f.ctx);
@@ -265,12 +301,109 @@ test("on Linux a writer that leaves the process group still ends with its run", 
   assert.equal(readFileSync(join(f.root, "src", "a.txt"), "utf8"), "alpha\n", "the setsid child died with the run");
 });
 
+test("a mode change outside the boundary is an unapproved change at pair_done", { skip: !hasSandbox }, async () => {
+  const f = fixture();
+  const cardId = await openChangeSet(f, ["src/a.txt"]);
+  const notes = join(f.root, "notes.txt");
+  assert.notEqual(statSync(notes).mode & 0o777, 0o600);
+  if (BACKEND === "landlock") {
+    // Landlock does not fence chmod, so the run's change lands and only the read-back sees it.
+    const r = await executeVerb("pair_run", { command: "chmod 600 notes.txt" }, f.ctx);
+    assert.equal(r.ok, true, r.text);
+  } else {
+    // Seatbelt and bubblewrap refuse that chmod in a run, so here it comes from outside the sandbox.
+    chmodSync(notes, 0o600);
+  }
+  assert.equal(statSync(notes).mode & 0o777, 0o600);
+  const done = await executeVerb("pair_done", { cardId }, f.ctx);
+  assert.equal(done.result.halted, true, done.text);
+  assert.deepEqual(done.result.unapproved.map((u) => u.path), ["notes.txt"]);
+});
+
+test("a directory's mode change outside the boundary is an unapproved change at pair_done", { skip: !hasSandbox }, async () => {
+  const f = fixture();
+  const docs = join(f.root, "docs");
+  mkdirSync(docs);
+  chmodSync(docs, 0o755);
+  const cardId = await openChangeSet(f, ["src/a.txt"]);
+  if (BACKEND === "landlock") {
+    const r = await executeVerb("pair_run", { command: "chmod 0777 docs" }, f.ctx);
+    assert.equal(r.ok, true, r.text);
+  } else {
+    chmodSync(docs, 0o777);
+  }
+  assert.equal(statSync(docs).mode & 0o777, 0o777);
+  const done = await executeVerb("pair_done", { cardId }, f.ctx);
+  assert.equal(done.result.halted, true, done.text);
+  assert.deepEqual(done.result.unapproved.map((u) => u.path), ["docs"]);
+});
+
+test("snapshotTree records each directory's mode and the root's as '.'; hashBoundary holds only the directories the boundary covers", () => {
+  const f = fixture();
+  mkdirSync(join(f.root, "src", "deep"));
+  chmodSync(join(f.root, "src", "deep"), 0o2750);
+  chmodSync(join(f.root, "src"), 0o755);
+  chmodSync(f.root, 0o755);
+  const snap = snapshotTree(f.root, [".git"]);
+  assert.equal(snap["."], "dir:0755");
+  assert.equal(snap["src/deep"], "dir:2750");
+  assert.match(snap["src/a.txt"], /^file:0[0-7]{3}:[0-9a-f]{64}$/);
+  assert.equal(Object.keys(snap).some((k) => k === ".git" || k.startsWith(".git/")), false);
+  const subtree = hashBoundary(["src/"], f.root, [".git"]);
+  assert.equal(subtree.src, "dir:0755");
+  assert.equal(subtree["src/deep"], "dir:2750");
+  assert.ok(subtree["src/a.txt"]);
+  assert.equal(hashBoundary(["**"], f.root, [".git"])["."], undefined, "never the root");
+  const files = hashBoundary(["src/*.txt"], f.root, [".git"]);
+  assert.equal(Object.values(files).some((fp) => fp.startsWith("dir:")), false);
+});
+
+test("a chmod of the worktree root is an unapproved change at pair_done, even under **", { skip: !hasSandbox }, async () => {
+  const f = fixture();
+  chmodSync(f.root, 0o755);
+  const cardId = await openChangeSet(f, ["**"]);
+  if (BACKEND === "landlock") {
+    const r = await executeVerb("pair_run", { command: "chmod 0777 ." }, f.ctx);
+    assert.equal(r.ok, true, r.text);
+    assert.equal(r.result.sandbox, "landlock", r.text);
+  } else {
+    // Seatbelt and bubblewrap refuse that chmod in a run, so here it comes from outside the sandbox.
+    chmodSync(f.root, 0o777);
+  }
+  assert.equal(statSync(f.root).mode & 0o777, 0o777);
+  const done = await executeVerb("pair_done", { cardId }, f.ctx);
+  assert.equal(done.result.halted, true, done.text);
+  assert.deepEqual(done.result.unapproved.map((u) => u.path), ["."]);
+});
+
+test("a chmod of a boundary directory between pair_propose and pair_begin makes the card stale", { skip: !hasSandbox }, async () => {
+  const f = fixture();
+  const docs = join(f.root, "docs");
+  mkdirSync(docs);
+  chmodSync(docs, 0o755);
+  writeFileSync(join(docs, "a.md"), "a\n");
+  assert.equal((await executeVerb("pair_start", {}, f.ctx)).ok, true);
+  const p = await executeVerb("pair_propose", { boundary: ["docs/"], decision: "d" }, f.ctx);
+  assert.equal(p.ok, true, p.text);
+  typed(f, "yes, go ahead with that");
+  chmodSync(docs, 0o777);
+  const b = await executeVerb("pair_begin", { cardId: p.result.card.id, quote: "go ahead" }, f.ctx);
+  assert.equal(b.ok, false, b.text);
+  assert.match(b.text, /a boundary file or directory changed since the card was shown; the card is stale/);
+});
+
 test("a pair_run that makes a link where it could write stops the session until a typed stop", { skip: !hasSandbox }, async () => {
   const f = fixture();
   const cardId = await openChangeSet(f, ["src/**"]);
-  const r = await executeVerb("pair_run", { command: "ln -s ../notes.txt src/ln" }, f.ctx);
+  // Landlock grants no symlink creation, so there the link a run can make is a second hard link
+  // to a file in the same clean directory, and both names of it are listed.
+  const landlock = BACKEND === "landlock";
+  const command = landlock ? "ln -s ../notes.txt src/sym; ln src/a.txt src/ln" : "ln -s ../notes.txt src/ln";
+  const r = await executeVerb("pair_run", { command }, f.ctx);
   assert.equal(r.ok, false);
-  assert.match(r.text, /STOPPED: pair_run made a link or a \.git entry inside the paths it could write \(src\/ln\)/);
+  const listed = landlock ? "src/a.txt, src/ln" : "src/ln";
+  assert.ok(r.text.includes(`STOPPED: pair_run made a link or a .git entry inside the paths it could write (${listed})`), r.text);
+  if (BACKEND === "landlock") assert.equal(existsSync(join(f.root, "src", "sym")), false, "Landlock refused the symlink");
   assert.ok(journal(f).some((e) => e.type === "link-made"));
   const done = await executeVerb("pair_done", { cardId }, f.ctx);
   assert.equal(done.ok, false);
@@ -287,6 +420,54 @@ test("a pair_run that makes no link leaves the session going", { skip: !hasSandb
   const r = await executeVerb("pair_run", { command: "mkdir -p src/n && echo x > src/n/x.txt && mv src/n/x.txt src/n/y.txt" }, f.ctx);
   assert.equal(r.ok, true, r.text);
   assert.equal((await executeVerb("pair_done", { cardId }, f.ctx)).ok, true);
+});
+
+test("a pair_run whose Landlock supervisor is killed from outside stops the session until a typed stop", { skip: NEEDS_LANDLOCK }, async () => {
+  const f = fixture();
+  const cardId = await openChangeSet(f, ["src/**"]);
+  const running = executeVerb("pair_run", { command: "sleep 5" }, { ...f.ctx, runId: "sk" });
+  let pgid = null;
+  for (let i = 0; i < 100 && !pgid; i++) {
+    await sleep(50);
+    try { pgid = JSON.parse(readFileSync(join(f.dir, "runs.json"), "utf8")).sk?.pgid ?? null; } catch { /* not written yet */ }
+  }
+  assert.ok(pgid, "the run recorded its group");
+  try {
+    process.kill(pgid, "SIGKILL");
+    const r = await running;
+    assert.equal(r.ok, false);
+    assert.match(r.text, /STOPPED: pair_run's Landlock supervisor was killed by SIGKILL before it ended the run's processes/);
+    assert.ok(journal(f).some((e) => e.type === "supervisor-killed" && e.signal === "SIGKILL"));
+    const done = await executeVerb("pair_done", { cardId }, f.ctx);
+    assert.equal(done.ok, false);
+    assert.match(done.text, /only your partner ends it, by typing pair stop/);
+    assert.equal(typed(f, "pair stop").stopped, true);
+  } finally {
+    try { process.kill(-pgid, "SIGKILL"); } catch { /* already gone */ }
+  }
+});
+
+test("a pair_run whose stopped Landlock supervisor the gate itself kills after a timeout stops the session", { skip: NEEDS_LANDLOCK }, async () => {
+  const f = fixture();
+  await openChangeSet(f, ["src/**"]);
+  const running = executeVerb("pair_run", { command: "sleep 30" }, { ...f.ctx, runId: "st", timeoutMs: 1000 });
+  let pgid = null;
+  for (let i = 0; i < 100 && !pgid; i++) {
+    await sleep(50);
+    try { pgid = JSON.parse(readFileSync(join(f.dir, "runs.json"), "utf8")).st?.pgid ?? null; } catch { /* not written yet */ }
+  }
+  assert.ok(pgid, "the run recorded its group");
+  try {
+    // A stopped helper cannot act on the gate's SIGTERM, so the gate's escalation SIGKILL ends it.
+    process.kill(pgid, "SIGSTOP");
+    const r = await running;
+    assert.equal(r.ok, false);
+    assert.match(r.text, /STOPPED: pair_run's Landlock supervisor was killed by SIGKILL before it ended the run's processes/);
+    assert.ok(journal(f).some((e) => e.type === "supervisor-killed" && e.signal === "SIGKILL"));
+    assert.equal(typed(f, "pair stop").stopped, true);
+  } finally {
+    try { process.kill(-pgid, "SIGKILL"); } catch { /* already gone */ }
+  }
 });
 
 test("reapGroups is safe on a group that is already gone", () => {
@@ -399,9 +580,23 @@ test("pair_write runs under the kernel: a path checkWrite passes but the profile
   assert.equal(w.ok, false, w.text);
   assert.match(w.text, /sandboxed write failed/);
   assert.equal(existsSync(join(f.root, "src", "guarded", "x.txt")), false);
+  // Under Landlock the grant for a new file would be on src, which holds src/guarded, so the
+  // gate makes src/new/deep/y.txt on the host and writes it through a grant on that one file.
   const ok = await executeVerb("pair_write", { path: "src/new/deep/y.txt", content: "fine" }, ctx);
   assert.equal(ok.ok, true, ok.text);
+  assert.doesNotMatch(ok.text, /under bubblewrap/);
   assert.equal(readFileSync(join(f.root, "src", "new", "deep", "y.txt"), "utf8"), "fine");
+});
+
+test("pair_run names the boundary paths a Landlock run cannot create, and says pair_write can", { skip: NEEDS_LANDLOCK }, async () => {
+  const f = fixture();
+  await openChangeSet(f, ["newpkg/**", "src/a.txt"]);
+  const r = await executeVerb("pair_run", { command: "echo changed > src/a.txt" }, f.ctx);
+  assert.equal(r.ok, true, r.text);
+  assert.deepEqual(r.result.uncreatable, ["newpkg/**"]);
+  assert.match(r.text, /could not create newpkg\/\*\*.*Create it with pair_write first/s);
+  assert.doesNotMatch(r.text, /under bubblewrap/);
+  assert.equal(readFileSync(join(f.root, "src", "a.txt"), "utf8"), "changed\n");
 });
 
 const stage = (f) => join(f.root, "src", `.pair-write-${"ab".repeat(8)}.tmp`);
@@ -446,7 +641,7 @@ test("a sandboxed write to a directory is refused and leaves nothing behind, eve
   assert.equal(existsSync(tempPath), false);
 });
 
-test("a staged write the kernel refuses at the rename leaves no staging file behind", { skip: !hasSandbox || (LINUX && "on Linux the kernel fences pair_write at the target's directory, so a sibling of the target is checkWrite's to refuse; the README lists this") }, async () => {
+test("a staged write the kernel refuses at the rename leaves no staging file behind", { skip: !hasSandbox || (BACKEND === "bwrap" && "bubblewrap fences pair_write at the target's directory, so a sibling of the target is checkWrite's to refuse; the README lists this") }, async () => {
   const f = fixture();
   await openChangeSet(f, ["src/a.txt"]);
   const tempPath = stage(f);
@@ -541,6 +736,8 @@ test("pair_start makes no offer for another worktree, or when the latest earlier
   await executeVerb("pair_start", {}, f.ctx);
   await executeVerb("pair_note", { roadmap }, f.ctx);
   endSession({ sessionDir: f.dir });
+  // sess-2's journal has to be newer than sess-1's; a coarse clock can give both the same mtime.
+  await sleep(10);
   const otherRoot = join(f.top, "other");
   mkdirSync(join(otherRoot, ".git"), { recursive: true });
   const elsewhere = await executeVerb("pair_start", {}, { sessionId: "sess-x", sessionDir: join(f.base, "sess-x"), root: otherRoot });

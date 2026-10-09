@@ -15,7 +15,7 @@ permissions:
 
 jobs:
   linux:
-    name: node --test, bubblewrap live (${{ matrix.runner }})
+    name: node --test, bubblewrap and Landlock live (${{ matrix.runner }})
     strategy:
       fail-fast: false
       matrix:
@@ -45,7 +45,58 @@ jobs:
           fi
       - name: bubblewrap smoke check
         run: bwrap --ro-bind / / --dev /dev --proc /proc --unshare-all /bin/true && echo ok
-      - name: Tests, with the live bubblewrap cases required to run
+      - name: Landlock smoke check
+        # pair-landlock prints the kernel's Landlock ABI; 1.2 needs 3 or later.
+        run: landlock/bin/pair-landlock-$(uname -m)-linux --abi
+      - name: Tests, with the live bubblewrap and Landlock cases required to run
         run: node --test --test-timeout=120000
         env:
           PAIRED_CODING_REQUIRE_BWRAP: "1"
+          PAIRED_CODING_REQUIRE_LANDLOCK: "1"
+
+  landlock-only:
+    # The machine most Ubuntu 24.04 users have: Landlock works, bubblewrap does not (AppArmor
+    # restricts unprivileged user namespaces, and bubblewrap may not be installed at all). Every
+    # run and write Landlock can express has to work here, and the rest has to be refused.
+    name: node --test, Landlock only, bubblewrap unusable (${{ matrix.runner }})
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [ubuntu-24.04, ubuntu-24.04-arm]
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: plugins/paired-coding
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+      - name: Keep unprivileged user namespaces restricted
+        # The image default; set it anyway, so a change of default cannot quietly make bubblewrap
+        # usable here.
+        run: |
+          if [ -e /proc/sys/kernel/apparmor_restrict_unprivileged_userns ]; then
+            sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=1
+          fi
+      - name: Make sure bubblewrap is unusable
+        # The runner image does not list bubblewrap. If it is there and can make its sandbox anyway,
+        # remove it. Then the gate's own probe has to report it unusable.
+        run: |
+          if command -v bwrap && bwrap --ro-bind / / --dev /dev --proc /proc --unshare-all /bin/true; then
+            echo "bubblewrap works here; removing it"
+            sudo apt-get remove -y bubblewrap
+          fi
+          node --input-type=module -e '
+            const { bwrapProblem } = await import("./lib/bwrap.mjs");
+            const problem = bwrapProblem();
+            if (problem === null) { console.error("bubblewrap is usable"); process.exit(1); }
+            console.log(`bubblewrap unusable: ${problem}`);
+          '
+      - name: Landlock smoke check
+        run: landlock/bin/pair-landlock-$(uname -m)-linux --abi
+      - name: Tests, with the live Landlock cases required to run
+        run: node --test --test-timeout=120000
+        env:
+          PAIRED_CODING_REQUIRE_LANDLOCK: "1"

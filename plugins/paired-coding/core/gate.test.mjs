@@ -1,7 +1,8 @@
 // gate.test.mjs — node --test, run from plugins/paired-coding/.
 //
 // Every verdict in the gate core, driven by fake events: a fake worktree (a Map of path to
-// content) supplies hashBoundary and snapshot, and a fake clock stamps the journal. The
+// content, and one of directory to mode, the root "." among them) supplies hashBoundary and
+// snapshot, and a fake clock stamps the journal. The
 // pair_run cases also run the real profile under macOS `sandbox-exec` against a temp
 // directory, because a Seatbelt profile is only proven by the kernel refusing a write; those
 // cases skip where sandbox-exec does not exist.
@@ -22,6 +23,7 @@ import {
   CARRIED_REASON,
   PAIR_TOOLS,
   boundaryMatches,
+  directoryInBoundary,
   boundaryProblem,
   carryClosed,
   checkWrite,
@@ -58,23 +60,25 @@ const STATE_DIR = "/state/session-1";
 
 function fakeHost(initial = { "src/a.ts": "a1", "src/b.ts": "b1", "README.md": "r1" }) {
   const files = new Map(Object.entries(initial));
+  const dirs = new Map([[".", "0755"]]);
   const log = [];
   let clock = 1000;
   const io = {
     now: () => ++clock,
     snapshot: () => {
       log.push("snapshot");
-      return Object.fromEntries([...files].map(([p, c]) => [p, `file:${c}`]));
+      return Object.fromEntries([...[...dirs].map(([p, m]) => [p, `dir:${m}`]), ...[...files].map(([p, c]) => [p, `file:${c}`])]);
     },
     hashBoundary: (boundary) => {
       const out = {};
+      for (const [p, m] of dirs) if (directoryInBoundary(boundary, p)) out[p] = `dir:${m}`;
       for (const [p, c] of files) if (boundaryMatches(boundary, p)) out[p] = `file:${c}`;
       for (const e of boundary) if (!/[*?]/.test(e) && !e.endsWith("/") && !(e in out)) out[e] = "absent";
       return out;
     },
     reapRuns: (ids) => log.push(`reap:${ids.join(",")}`),
   };
-  return { files, io, log };
+  return { files, dirs, io, log };
 }
 
 const card = (over = {}) => ({
@@ -194,7 +198,7 @@ describe("pair_start", () => {
     const host = fakeHost();
     const r = pairStart(inactiveState(), { root: ROOT, stateDir: STATE_DIR, exclusions: ["node_modules"] }, host.io);
     assert.equal(r.state.phase, "closed");
-    assert.deepEqual(Object.keys(r.state.baseline).sort(), ["README.md", "src/a.ts", "src/b.ts"]);
+    assert.deepEqual(Object.keys(r.state.baseline).sort(), [".", "README.md", "src/a.ts", "src/b.ts"]);
     assert.equal(r.journal[0].type, "start");
     assert.deepEqual(r.journal[0].exclusions, ["node_modules"]);
   });
@@ -570,6 +574,30 @@ describe("runStart and runEnd", () => {
   test("a run that made no link leaves the session as it was", () => {
     const s = ok(runEnd(ok(runStart(opened(), { runId: "r1" })), { runId: "r1", exitCode: 0, links: [] }));
     assert.equal(s.halt, null);
+  });
+
+  test("a run whose Landlock supervisor died of a signal, whoever sent it, stops the session", () => {
+    const host = fakeHost();
+    let s = ok(runStart(opened(host), { runId: "r1" }));
+    const end = runEnd(s, { runId: "r1", exitCode: null, links: [], supervisorKilled: "SIGKILL" });
+    s = ok(end);
+    assert.match(s.halt.reason, /Landlock supervisor was killed by SIGKILL/);
+    assert.deepEqual(end.journal.filter((e) => e.type === "supervisor-killed").map((e) => e.signal), ["SIGKILL"]);
+    assert.deepEqual(s.running, []);
+    refusedWith(pairDone(s, { cardId: "card-1" }, host.io), /stopped.*only your partner ends it, by typing pair stop/);
+    refusedWith(runStart(s, { runId: "r2" }), /stopped/);
+  });
+
+  test("a link and a killed supervisor in one run both reach the stop reason", () => {
+    const s = ok(runEnd(ok(runStart(opened(), { runId: "r1" })), { runId: "r1", exitCode: null, links: ["src/ln"], supervisorKilled: "SIGKILL" }));
+    assert.match(s.halt.reason, /src\/ln.*; pair_run's Landlock supervisor was killed by SIGKILL/);
+  });
+
+  test("an empty or non-string supervisorKilled leaves the session as it was", () => {
+    for (const v of ["", null, undefined, 9, true]) {
+      const s = ok(runEnd(ok(runStart(opened(), { runId: "r1" })), { runId: "r1", exitCode: 0, links: [], supervisorKilled: v }));
+      assert.equal(s.halt, null, String(v));
+    }
   });
 });
 
@@ -1009,6 +1037,99 @@ test("diffSnapshots names added, removed and modified paths and skips exclusions
   ]);
 });
 
+test("diffSnapshots reports a directory's mode change, never its creation or removal alone", () => {
+  const before = { ".": "dir:0755", src: "dir:0755", lib: "dir:0755", gone: "dir:0700", "gone/x": "file:0644:1", swap: "dir:0755" };
+  const after = { ".": "dir:0777", src: "dir:0755", lib: "dir:2755", made: "dir:0755", "made/y": "file:0644:2", swap: "file:0644:3" };
+  assert.deepEqual(diffSnapshots(before, after), [
+    { path: ".", change: "modified" },
+    { path: "gone/x", change: "removed" },
+    { path: "lib", change: "modified" },
+    { path: "made/y", change: "added" },
+    { path: "swap", change: "added" },
+  ]);
+  assert.deepEqual(diffSnapshots({ e: "dir:0755" }, {}), [], "an empty directory removed is not a change");
+  assert.deepEqual(diffSnapshots({}, { e: "dir:0755" }), [], "an empty directory made is not a change");
+});
+
+test("a session whose baseline or card predates 1.2 is refused, never compared on the executable bit", () => {
+  const h = "a".repeat(64);
+  // The new snapshot differs from the old baseline only in a permission bit the old one never held.
+  const host = fakeHost({ "src/a.ts": `0600:${h}` });
+  const s = opened(host);
+  const old = { ...s, baseline: { ".": "dir:0755", "src/a.ts": `file:-:${h}` } };
+  const done = pairDone(old, { cardId: s.changeSet.cardId }, host.io);
+  refusedWith(done, /started by an older paired-coding.*type pair stop, then start pairing again/);
+  assert.equal(done.changed, undefined, "no read-back, and never an empty one");
+  const closed = { ...old, phase: "closed", changeSet: null };
+  refusedWith(pairPropose(closed, card(), host.io), /started by an older paired-coding/);
+  const fresh = say(ok(pairPropose({ ...closed, baseline: s.baseline }, card(), host.io)), "go ahead");
+  const staleCard = { ...fresh, card: { ...fresh.card, hashes: { "src/a.ts": `file:x:${h}` } } };
+  refusedWith(pairBegin(staleCard, { cardId: fresh.card.id, quote: "go ahead" }, host.io), /started by an older paired-coding/);
+});
+
+test("a baseline without the root entry is pre-1.2 too: an empty one, and one of links only", () => {
+  const host = fakeHost();
+  const s = opened(host);
+  for (const baseline of [{}, { "src/l": "link:../x", "lib/m": "link:/etc" }]) {
+    const old = { ...s, baseline };
+    refusedWith(pairDone(old, { cardId: s.changeSet.cardId }, host.io), /started by an older paired-coding/);
+    refusedWith(pairPropose({ ...old, phase: "closed", changeSet: null }, card(), host.io), /started by an older paired-coding/);
+  }
+});
+
+test("pair stop on a pre-1.2 session journals one snapshot-incomparable entry and no diff", () => {
+  const h = "a".repeat(64);
+  const host = fakeHost({ "src/a.ts": `0600:${h}`, "README.md": `0644:${h}` });
+  const s = opened(host);
+  const old = { ...s, baseline: { ".": "dir:0755", "src/a.ts": `file:-:${h}`, "README.md": `file:-:${h}` } };
+  host.log.length = 0;
+  const r = recordInput(old, { text: "pair stop", source: "interactive" }, host.io);
+  assert.equal(r.stopped, true);
+  assert.deepEqual(r.journal.map((e) => e.type), ["input", "snapshot-incomparable", "stop"]);
+  assert.equal(r.journal[1].verb, "typed-stop");
+  assert.deepEqual(r.unapproved, []);
+  assert.deepEqual(r.changedSinceReadBack, []);
+  assert.equal(host.log.includes("snapshot"), false, "no snapshot is taken to compare");
+});
+
+test("the worktree root is never inside the boundary: its mode change is unapproved under **", () => {
+  assert.equal(boundaryMatches(["**"], "."), false);
+  assert.equal(boundaryMatches(["*"], "."), false);
+  const host = fakeHost();
+  const s = opened(host, { boundary: ["**"] });
+  host.dirs.set(".", "0777");
+  const done = pairDone(s, { cardId: s.changeSet.cardId }, host.io);
+  assert.equal(done.ok, true, done.reason);
+  assert.deepEqual(done.unapproved.map((u) => u.path), ["."]);
+  assert.match(done.state.halt?.reason ?? "", /unapproved write outside change set card-1: \./);
+});
+
+test("directoryInBoundary: glob matches and named subtrees, never a literal or the root", () => {
+  assert.equal(directoryInBoundary(["docs/"], "docs"), true);
+  assert.equal(directoryInBoundary(["docs/**"], "docs"), true);
+  assert.equal(directoryInBoundary(["docs/"], "docs/sub"), true);
+  assert.equal(directoryInBoundary(["**"], "src"), true);
+  assert.equal(directoryInBoundary(["src/**/*.ts"], "src"), false);
+  assert.equal(directoryInBoundary(["src/**/*.ts"], "src/lib"), false);
+  assert.equal(directoryInBoundary(["docs"], "docs"), false, "a literal entry names one file");
+  assert.equal(directoryInBoundary(["**"], "."), false);
+  assert.equal(directoryInBoundary(["docs/"], "documents"), false);
+});
+
+test("a card covers its boundary directories' modes: a chmod before pair_begin makes it stale, making or removing one does not", () => {
+  const host = fakeHost({ "docs/a.md": "a1", "src/a.ts": "s1" });
+  host.dirs.set("docs", "0755");
+  const s = say(ok(pairPropose(started(host), card({ boundary: ["docs/"] }), host.io)), "go ahead");
+  assert.equal(s.card.hashes.docs, "dir:0755");
+  assert.equal(s.card.hashes["."], undefined, "the root is never in a card");
+  host.dirs.set("docs/empty", "0700");
+  const made = pairBegin(s, { cardId: s.card.id, quote: "go ahead" }, host.io);
+  assert.equal(made.ok, true, made.reason);
+  host.dirs.delete("docs/empty");
+  host.dirs.set("docs", "0777");
+  refusedWith(pairBegin(s, { cardId: s.card.id, quote: "go ahead" }, host.io), /a boundary file or directory changed since the card was shown; the card is stale/);
+});
+
 test("resolvePath collapses dot segments lexically", () => {
   assert.equal(resolvePath(ROOT, "src/../x"), `${ROOT}/x`);
   assert.equal(resolvePath(ROOT, "/a/./b"), "/a/b");
@@ -1043,7 +1164,7 @@ function liveDirs() {
 }
 
 function liveState(dirs, phase, boundary = ["src/a.ts"]) {
-  const io = { snapshot: () => ({}), hashBoundary: () => ({}) };
+  const io = { snapshot: () => ({ ".": "dir:0755" }), hashBoundary: () => ({}) };
   let s = ok(pairStart(inactiveState(), { root: dirs.root, stateDir: dirs.stateDir, tempPaths: [dirs.base] }, io));
   if (phase === "open") {
     s = ok(pairPropose(s, card({ boundary }), io));
@@ -1195,7 +1316,7 @@ describe("adversarial 13: open keeps every write inside the boundary", () => {
     const other = realpathSync(mkdtempSync(join(tmpdir(), "pair-gate-other-")));
     const guarded = realpathSync(mkdtempSync(join(tmpdir(), "pair-gate-guarded-")));
     try {
-      const io = { snapshot: () => ({}), hashBoundary: () => ({}) };
+      const io = { snapshot: () => ({ ".": "dir:0755" }), hashBoundary: () => ({}) };
       let s = ok(pairStart(inactiveState(), { root: dirs.root, stateDir: dirs.stateDir, tempPaths: [dirs.base], protect: [guarded] }, io));
       const closedOk = sandboxed(s, `echo t > ${dirs.base}/closed-temp.txt && echo d > /dev/null`, dirs.base);
       assert.equal(closedOk.status, 0, closedOk.stderr);

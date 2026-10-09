@@ -44,7 +44,7 @@
  * @typedef {object} Card
  * @property {string} id
  * @property {string[]} boundary  worktree-relative paths, globs (* ? **), or "dir/" subtrees
- * @property {Record<string, string>} hashes  boundary file fingerprints at proposal time
+ * @property {Record<string, string>} hashes  boundary file fingerprints, and the modes of directories the boundary covers (directoryInBoundary), at proposal time; these include the directory a subtree entry names (`docs` for `docs/`), whose own mode the change set itself may not change (pair_done judges it by boundaryMatches)
  * @property {number} inputSeq  sequence number of the latest trusted input when proposed
  * @property {unknown} [at]
  * @property {string} [whyNow]
@@ -386,16 +386,42 @@ export function boundaryProblem(boundary) {
   return null;
 }
 
+/** Compiled, anchored regexes for glob entries or segments, so a check over a large tree compiles each once. */
+const GLOB_REGEX = new Map();
+function globRegex(glob) {
+  let re = GLOB_REGEX.get(glob);
+  if (!re) GLOB_REGEX.set(glob, (re = new RegExp(`^${globToRegexSource(glob)}$`)));
+  return re;
+}
+
 /**
- * Whether a worktree-relative path lies inside the boundary.
+ * Whether a worktree-relative path lies inside the boundary. The worktree root itself, which a
+ * snapshot names ".", never does: no run may write it and no boundary entry can name it, so a
+ * change to its mode is always unapproved, also under `**`.
  * @param {string[]} boundary
  * @param {string} rel
  */
 export function boundaryMatches(boundary, rel) {
-  if (typeof rel !== "string" || rel === "") return false;
+  if (typeof rel !== "string" || rel === "" || rel === ".") return false;
   return boundary.some((raw) => {
     const e = normalizeEntry(raw);
-    return isGlob(e) ? new RegExp(`^${globToRegexSource(e)}$`).test(rel) : rel === e;
+    return isGlob(e) ? globRegex(e).test(rel) : rel === e;
+  });
+}
+
+/**
+ * Whether a card's hashes hold a directory's mode: the directory matches a glob entry, or an
+ * entry names its whole subtree (`docs/`, `docs/**`). A literal entry names one file, so it
+ * never holds a directory's mode. Never the root.
+ * @param {string[]} boundary
+ * @param {string} rel
+ */
+export function directoryInBoundary(boundary, rel) {
+  if (typeof rel !== "string" || rel === "" || rel === ".") return false;
+  return boundary.some((raw) => {
+    const e = normalizeEntry(raw);
+    if (!isGlob(e)) return false;
+    return globRegex(e).test(rel) || (e.endsWith("/**") && boundaryMatches([e.slice(0, -3)], rel));
   });
 }
 
@@ -454,7 +480,9 @@ export function isGitControl(rel) {
 
 /**
  * Paths whose fingerprint differs between two snapshots, sorted. Paths under `exclusions`
- * (worktree-relative directories) are ignored.
+ * (worktree-relative directories) are ignored. A directory's entry (`dir:<mode>`) counts only
+ * when the directory is in both snapshots and its mode changed: a directory created or removed
+ * shows through its files, and an empty one not at all.
  * @param {Snapshot} before
  * @param {Snapshot} after
  * @param {string[]} [exclusions]
@@ -462,11 +490,16 @@ export function isGitControl(rel) {
  */
 export function diffSnapshots(before, after, exclusions = []) {
   const excluded = (p) => exclusions.some((d) => p === d || p.startsWith(d.endsWith("/") ? d : `${d}/`));
+  const isDir = (fp) => fp !== undefined && fp.startsWith("dir:");
   const out = [];
   for (const path of new Set([...Object.keys(before), ...Object.keys(after)])) {
     if (excluded(path)) continue;
-    const a = Object.hasOwn(before, path) ? before[path] : undefined;
-    const b = Object.hasOwn(after, path) ? after[path] : undefined;
+    let a = Object.hasOwn(before, path) ? before[path] : undefined;
+    let b = Object.hasOwn(after, path) ? after[path] : undefined;
+    if (isDir(a) !== isDir(b)) {
+      if (isDir(a)) a = undefined;
+      else b = undefined;
+    }
     if (a === b) continue;
     out.push({ path, change: a === undefined ? "added" : b === undefined ? "removed" : "modified" });
   }
@@ -480,11 +513,25 @@ function takeSnapshot(io) {
   return r;
 }
 
+/**
+ * Snapshots before 1.2 recorded only a file's executable bit (`file:x:<hash>`, `file:-:<hash>`)
+ * and no directories, so a session whose baseline or card was taken by that plugin cannot show
+ * a permission change since: it is refused until the partner types pair stop and pairing starts
+ * again. A 1.2 baseline always holds the root's entry "."; card hashes never do, so they are
+ * judged by their file entries alone.
+ */
+const OLD_FILE = /^file:[x-]:[0-9a-f]{64}$/;
+const OLDER_PLUGIN = "this session was started by an older paired-coding, whose snapshots do not record permission bits, so its changes cannot be checked; ask your partner to type pair stop, then start pairing again";
+const olderSnapshot = (snap) => isObj(snap) && Object.values(snap).some((fp) => typeof fp === "string" && OLD_FILE.test(fp));
+const olderBaseline = (snap) => isObj(snap) && (!Object.hasOwn(snap, ".") || olderSnapshot(snap));
+
+/**
+ * Whether a card's hashes still hold, on the snapshot comparison's terms: a directory's mode
+ * counts only when the directory is there both times, so making or removing one does not
+ * make the card stale; its files do.
+ */
 function sameHashes(a, b) {
-  if (!isObj(a) || !isObj(b)) return false;
-  const ka = Object.keys(a).sort();
-  const kb = Object.keys(b).sort();
-  return ka.length === kb.length && ka.every((k, i) => k === kb[i] && a[k] === b[k]);
+  return isObj(a) && isObj(b) && diffSnapshots(a, b).length === 0;
 }
 
 // ─── trusted input ──────────────────────────────────────────────────────────────────────
@@ -697,22 +744,27 @@ function endPairing(state, io, verb) {
 }
 
 function finish(state, io, verb, fields) {
-  const snap = takeSnapshot(io);
   const journal = [];
   let changedSinceReadBack = [];
   let unapproved = [];
-  if (snap.error) {
-    journal.push(entry("snapshot-failed", io, { verb, reason: snap.error }));
-  } else if (state.baseline) {
-    const diff = diffSnapshots(state.baseline, snap.value, state.exclusions);
-    if (state.phase === "open") {
-      unapproved = diff.filter((d) => !boundaryMatches(state.changeSet.boundary, d.path));
-      changedSinceReadBack = diff.filter((d) => boundaryMatches(state.changeSet.boundary, d.path));
-      if (unapproved.length) journal.push(entry("unapproved-write", io, { cardId: state.changeSet.cardId, paths: unapproved }));
-    } else {
-      changedSinceReadBack = diff;
+  if (olderBaseline(state.baseline)) {
+    // Compared with this plugin's snapshot, every file of an older baseline would show as changed.
+    journal.push(entry("snapshot-incomparable", io, { verb, reason: "the baseline was taken by an older paired-coding, so the final snapshot is not compared with it" }));
+  } else {
+    const snap = takeSnapshot(io);
+    if (snap.error) {
+      journal.push(entry("snapshot-failed", io, { verb, reason: snap.error }));
+    } else if (state.baseline) {
+      const diff = diffSnapshots(state.baseline, snap.value, state.exclusions);
+      if (state.phase === "open") {
+        unapproved = diff.filter((d) => !boundaryMatches(state.changeSet.boundary, d.path));
+        changedSinceReadBack = diff.filter((d) => boundaryMatches(state.changeSet.boundary, d.path));
+        if (unapproved.length) journal.push(entry("unapproved-write", io, { cardId: state.changeSet.cardId, paths: unapproved }));
+      } else {
+        changedSinceReadBack = diff;
+      }
+      if (changedSinceReadBack.length) journal.push(entry("between-change-sets", io, { changes: changedSinceReadBack }));
     }
-    if (changedSinceReadBack.length) journal.push(entry("between-change-sets", io, { changes: changedSinceReadBack }));
   }
   journal.push(entry("stop", io, { verb, ...fields }));
   return { ok: true, state: inactiveState(), journal, changedSinceReadBack: [...state.unreviewed, ...changedSinceReadBack], unapproved };
@@ -857,6 +909,7 @@ export function pairPropose(state, card, io) {
   if (state.carried) return refuse(state, "pair_propose", CARRIED_REASON, io);
   if (state.halt) return refuse(state, "pair_propose", `the session is stopped: ${state.halt.reason}`, io);
   if (state.phase === "open") return refuse(state, "pair_propose", "a change set is open; finish it with pair_done before the next card", io);
+  if (olderBaseline(state.baseline)) return refuse(state, "pair_propose", OLDER_PLUGIN, io);
   if (!state.root) return refuse(state, "pair_propose", "the state lost its worktree root; your partner types pair stop, then start pairing again", io);
   if (!isObj(card)) return refuse(state, "pair_propose", "the card is not an object", io);
   const problem = boundaryProblem(card.boundary);
@@ -905,6 +958,7 @@ export function pairBegin(state, args, io) {
   if (state.phase === "inactive") return refuse(state, "pair_begin", "pairing is not active", io);
   if (state.halt) return refuse(state, "pair_begin", `the session is stopped: ${state.halt.reason}`, io);
   if (state.phase === "open") return refuse(state, "pair_begin", "a change set is already open", io);
+  if (olderBaseline(state.baseline) || olderSnapshot(state.card?.hashes)) return refuse(state, "pair_begin", OLDER_PLUGIN, io);
   const card = state.card;
   if (!card) return refuse(state, "pair_begin", "no card has been proposed", io);
   if (args?.cardId !== card.id) return refuse(state, "pair_begin", "that card is not the latest card; re-propose it", io);
@@ -913,7 +967,7 @@ export function pairBegin(state, args, io) {
   if (problem) return refuse(state, "pair_begin", problem, io);
   const hashed = callIo(io, "hashBoundary", [...card.boundary], state.root);
   if (hashed.error) return refuse(state, "pair_begin", `could not hash the boundary: ${hashed.error}`, io);
-  if (!sameHashes(hashed.value, card.hashes)) return refuse(state, "pair_begin", "a boundary file changed since the card was shown; the card is stale, re-propose it", io);
+  if (!sameHashes(hashed.value, card.hashes)) return refuse(state, "pair_begin", "a boundary file or directory changed since the card was shown; the card is stale, re-propose it", io);
   const snap = takeSnapshot(io);
   if (snap.error) return refuse(state, "pair_begin", `could not snapshot the worktree: ${snap.error}`, io);
   const next = clone(state);
@@ -953,6 +1007,7 @@ export function pairDone(state, args, io) {
   if (args?.cardId !== cs.cardId) return refuse(state, "pair_done", "that card is not the open change set", io);
   if (state.halt) return refuse(state, "pair_done", `the session is stopped: ${state.halt.reason}; only your partner ends it, by typing pair stop`, io);
   if (state.running.some((r) => r.cardId === cs.cardId)) return refuse(state, "pair_done", "a pair_run under this change set is still running", io);
+  if (olderBaseline(state.baseline)) return refuse(state, "pair_done", OLDER_PLUGIN, io);
   if (cs.runs.length > 0) {
     const reaped = callIo(io, "reapRuns", [...cs.runs]);
     if (reaped.error) return refuse(state, "pair_done", `could not reap the change set's process groups: ${reaped.error}`, io);
@@ -1081,10 +1136,17 @@ export function runStart(state, args, io) {
  * worktree-relative paths the adapter found the run made since it started: a symlink, a hard
  * link, or a `.git` entry in the paths it could write. Any stops the session: a link inside the
  * boundary would carry a later write, the partner's own editor's included, to wherever it
- * points, and a new `.git` holds hooks and config git runs outside the sandbox. pair_done then
- * refuses until the partner types pair stop.
+ * points, and a new `.git` holds hooks and config git runs outside the sandbox.
+ * `supervisorKilled` is the signal a Landlock run's supervising helper died of, whoever sent
+ * it: the run itself before Landlock ABI 6, someone outside, or the adapter's own SIGKILL when
+ * the helper did not end in time after a timeout or abort. Once the helper has forked the
+ * command it never dies of a signal by its own choice, so it was killed before it ended the
+ * processes that left the run's group, which may still write with its grant. That stops the
+ * session the same way, at the cost of a stop after a helper that was only slow. pair_done then
+ * refuses until the partner types pair stop. The adapter never reports SIGTERM, SIGINT or
+ * SIGHUP here: the helper blocks them before it forks, so dying of one means no command ran.
  * @param {State} state
- * @param {{ runId: unknown, exitCode?: unknown, links?: unknown }} args
+ * @param {{ runId: unknown, exitCode?: unknown, links?: unknown, supervisorKilled?: unknown }} args
  * @param {Io} [io]
  * @returns {Result}
  */
@@ -1094,10 +1156,17 @@ export function runEnd(state, args, io) {
   next.running = next.running.filter((r) => r.runId !== args?.runId);
   const journal = [entry("run-end", io, { runId: args?.runId, exitCode: args?.exitCode })];
   const links = Array.isArray(args?.links) ? args.links.filter((l) => typeof l === "string" && l !== "") : [];
+  const reasons = [];
   if (links.length > 0) {
-    next.halt = { reason: `pair_run made a link or a .git entry inside the paths it could write: ${links.join(", ")}`, at: stamp(io) };
+    reasons.push(`pair_run made a link or a .git entry inside the paths it could write: ${links.join(", ")}`);
     journal.push(entry("link-made", io, { runId: args?.runId, paths: links }));
   }
+  const killedBy = typeof args?.supervisorKilled === "string" && args.supervisorKilled !== "" ? args.supervisorKilled : null;
+  if (killedBy) {
+    reasons.push(`pair_run's Landlock supervisor was killed by ${killedBy} before it ended the run's processes, so a process the run started may still be writing`);
+    journal.push(entry("supervisor-killed", io, { runId: args?.runId, signal: killedBy }));
+  }
+  if (reasons.length > 0) next.halt = { reason: reasons.join("; "), at: stamp(io) };
   return { ok: true, state: next, journal };
 }
 
@@ -1347,4 +1416,372 @@ function bwrapPlan(state, wanted, opts, io) {
   const ro = [...new Set(readOnly)];
   for (const p of ro) args.push("--ro-bind", p, p);
   return { args, writable, temps, readOnly: ro };
+}
+
+// ─── the Linux sandbox (Landlock) ───────────────────────────────────────────────────────
+
+/**
+ * The filesystem facts the Landlock builders need, injected so the core stays free of I/O.
+ * Neither function follows a symlink.
+ * @typedef {object} LandlockIo
+ * @property {(abs: string) => { type: "file" | "dir" | "symlink" | "other", nlink: number } | null} lstat
+ *   what is at `abs` itself; null when nothing is
+ * @property {(dir: string) => Array<{ path: string, type: "file" | "dir" | "symlink" | "other" | "unreadable", nlink: number }>} walk
+ *   every entry under `dir` (not `dir` itself), absolute. An entry named `.git` in any letter
+ *   case is listed but not descended into, and a symlinked directory is not followed. An
+ *   entry that cannot be looked at is listed as "unreadable", and a directory (`dir` itself
+ *   included) that cannot be listed gets one "unreadable" entry at `<directory>/`
+ * @property {() => string[] | null} mounts
+ *   every mount point, absolute (/proc/self/mountinfo); null when they cannot be read
+ */
+
+/**
+ * @typedef {object} LandlockRules  the pair-landlock ruleset (landlock/README.md), less `command`
+ * @property {string[]} files  WRITE_FILE and TRUNCATE on each one file
+ * @property {Array<{ path: string, make_dir: boolean, remove: boolean }>} dirs  MAKE_REG,
+ *   WRITE_FILE and TRUNCATE under each tree, MAKE_DIR too where make_dir, and REMOVE_FILE and
+ *   REFER (delete files, rename them between granted directories) where remove
+ * @property {string[]} rw_trees  the temp paths: every right but REFER under each tree
+ */
+
+/** The few device files a shell writes to, which Landlock does not grant implicitly. */
+export const LANDLOCK_DEVICES = Object.freeze(["/dev/null", "/dev/zero", "/dev/tty"]);
+
+/**
+ * The pair-landlock ruleset pair_run runs under on Linux, built from the same state as the
+ * Seatbelt profile (profileFor) and the bubblewrap options (bwrapArgsFor). Landlock only
+ * grants: a path with no rule cannot be written, and nothing inside a granted tree can be
+ * taken back out. So:
+ *   1. /dev/null, /dev/zero and /dev/tty, where they exist, as `files`;
+ *   2. each temp path that exists as an `rw_trees` entry, except one inside the worktree;
+ *   3. open only: each existing literal boundary file as a `files` entry; a literal that does
+ *      not exist yet gets nothing of its own, so pair_run can create it only where a glob's
+ *      `dirs` grant already covers its parent (pair_write can always create it). For a glob,
+ *      each existing matching file under the directory above its first glob segment as a
+ *      `files` entry, and a `dirs` grant only on a clean directory the glob could hold a file
+ *      under (the outermost such ones): every existing non-directory in its tree is a regular
+ *      file inside the boundary with one link, and no mount point is at or under it, so that
+ *      no existing file outside the boundary becomes writable or removable. The worktree root never
+ *      gets one, since it holds .git: a glob at the root (`*.md`, `**`) has its matching root
+ *      files granted one by one and its subdirectories looked at in turn, and cannot create a
+ *      file directly in the root. A glob whose fixed directory does not exist yet gets a
+ *      `dirs` grant on its deepest existing directory under the same condition, unless that
+ *      grant would hold the root, a .git, the state directory or a protected path. `make_dir`
+ *      only where the glob allows new directories: one with a `**` segment, or one whose fixed
+ *      directory is missing. `uncreatable` names the entries whose new files no grant covers:
+ *      a missing literal, a glob whose missing directory got no grant, and a glob that could
+ *      hold a file directly in the root;
+ *   4. nothing at or under a `.git` segment, the state directory or a protected path.
+ * A `dirs` grant lets a command create a file of any name under it; that is the one way new
+ * files can be allowed, since a rule needs an existing inode. So new files under a glob are
+ * fenced per directory, and every other write per file. Every `dirs` grant here is on a clean
+ * directory, so each also carries `remove`: deleting or renaming a file there touches only
+ * agreed files, or ones the run made, as Seatbelt's per-path unlink allows. A rename cannot
+ * take a file out of the grant, since Landlock wants REFER and MAKE_REG at the destination.
+ * Literal files get no `remove`: deleting one needs a right on its whole directory.
+ * Returns { notExpressible: reason } when an `rw_trees` path, or a `dirs` path wanted for an
+ * existing file, would hold the worktree root, a `.git` entry, the state directory or a
+ * protected path, or when a file it would grant has more than one hard link (a rule on an
+ * inode reaches every name it has). The adapter then runs the command under bubblewrap.
+ * Throws when a path the ruleset would name passes through a symlink inside the worktree,
+ * which refuses the run as bubblewrap's pinned binds do.
+ * The adapter adds `command`, the socket filter is the helper's own, and the adapter checks
+ * after each run that no link appeared where the run could write, as it does for bubblewrap.
+ * @param {State} state
+ * @param {string[]} extraAllow  absolute paths in the worktree also writable, as literal entries
+ * @param {LandlockIo} io
+ * @returns {(LandlockRules & { uncreatable?: string[] }) | { notExpressible: string }}
+ */
+export function landlockRulesFor(state, extraAllow, io) {
+  const root = bwrapPath(state.root);
+  const denied = [state.stateDir, ...(state.protect ?? [])].map(bwrapPath);
+  const files = LANDLOCK_DEVICES.filter((p) => io.lstat(p) !== null);
+  const rwTrees = [];
+  for (const t of outermost((state.tempPaths ?? []).map(bwrapPath))) {
+    if (io.lstat(t)?.type !== "dir" || within(root, t)) continue;
+    if (within(t, root)) return { notExpressible: `the temp path ${t} holds the worktree, and Landlock cannot fence the worktree inside it` };
+    const held = denied.find((d) => within(t, d));
+    if (held) return { notExpressible: `the temp path ${t} holds ${held}, which Landlock cannot fence inside it` };
+    rwTrees.push(t);
+  }
+  if (state.phase !== "open" || !state.changeSet) return { files, dirs: [], rw_trees: rwTrees };
+  const boundary = state.changeSet.boundary;
+  const grantable = (abs) => {
+    const rel = relativeTo(root, abs);
+    return rel !== null && !inGitDir(rel) && !denied.some((d) => within(d, abs));
+  };
+  const matches = (abs) => grantable(abs) && boundaryMatches(boundary, relativeTo(root, abs)) && !isGitControl(relativeTo(root, abs));
+  const wantFiles = new Set();
+  /** @type {Map<string, boolean>} candidate dirs -> make_dir */
+  const wantDirs = new Map();
+  // Each walk is indexed by parent directory, so a question about a directory costs its own
+  // subtree once, not the whole walk: on a large tree (a node_modules) the cost stays linear.
+  // The index holds exactly what io.walk returns; nothing is skipped beyond what it skips.
+  const tops = [];
+  /** @type {Map<string, ReturnType<LandlockIo["walk"]>>} directory -> its direct entries */
+  const kids = new Map();
+  const cover = (dir) => {
+    if (tops.some((t) => within(t, dir))) return;
+    const before = [...tops];
+    tops.push(dir);
+    for (const e of io.walk(dir)) {
+      const parent = e.path.slice(0, e.path.lastIndexOf("/")) || "/";
+      // A directory an earlier walk covered already has its entries.
+      if (before.some((t) => within(t, parent))) continue;
+      const list = kids.get(parent);
+      if (list) list.push(e);
+      else kids.set(parent, [e]);
+    }
+  };
+  const children = (dir) => {
+    cover(dir);
+    return kids.get(dir) ?? [];
+  };
+  const subtree = (dir) => {
+    const out = [];
+    const stack = [dir];
+    while (stack.length) {
+      for (const e of children(stack.pop())) {
+        out.push(e);
+        if (e.type === "dir") stack.push(e.path);
+      }
+    }
+    return out;
+  };
+  const globs = boundary.map(normalizeEntry).filter(isGlob);
+  const fenced = (abs) => inGitDir(relativeTo(root, abs) ?? "") || denied.some((d) => within(d, abs));
+  const canHold = (abs) => globs.some((g) => globCanHold(g, relativeTo(root, abs) ?? ""));
+  // Mount points below the root. A grant on a directory reaches through a mount under it, to
+  // a tree nobody looked at when the ruleset was built; when they cannot be read, every
+  // directory counts as holding one.
+  const allMounts = io.mounts();
+  const mounts = allMounts && allMounts.filter((m) => m !== root && within(root, m));
+  const holdsMount = (dir) => mounts === null || mounts.some((m) => within(dir, m));
+  // A directory is clean when every existing entry in it that is not a directory is a regular
+  // file inside the boundary with one link, a glob entry could hold a file under each of its
+  // existing subdirectories, and no mount point is at or under it: a `dirs` grant reaches the
+  // whole tree and can delete in it, so there it makes no existing file writable or removable
+  // that was not agreed, and lets new files appear only where the boundary could have them. A
+  // symlink, FIFO, socket or device, an entry that cannot be looked at, and a directory that
+  // cannot be listed all make it dirty. (.git and the denied paths are left to the
+  // notExpressible checks below; everything under a fenced path is fenced too, so its subtree
+  // needs no look.) The worktree root is never clean: it holds .git, so a glob at the root is
+  // granted per file there and per directory below. Computed bottom-up, once per directory.
+  /** @type {Map<string, boolean>} */
+  const cleanness = new Map([[root, false]]);
+  const clean = (dir) => {
+    let c = cleanness.get(dir);
+    if (c === undefined) {
+      c = !holdsMount(dir) && children(dir).every((e) => fenced(e.path)
+        || (e.type === "dir" ? canHold(e.path) && clean(e.path) : e.type === "file" && e.nlink === 1 && matches(e.path)));
+      cleanness.set(dir, c);
+    }
+    return c;
+  };
+  /** Directories wanted for existing files, and ones wanted only so a missing path can be made. */
+  const forExisting = new Set();
+  const forCreating = new Set();
+  const wantDir = (dir, makeDir, creating = false) => {
+    if (!clean(dir)) return;
+    wantDirs.set(dir, (wantDirs.get(dir) ?? false) || makeDir);
+    (creating ? forCreating : forExisting).add(dir);
+  };
+  /** Boundary entries naming a path that does not exist yet: entry -> that path. */
+  const missing = new Map();
+  /** Glob entries that could hold a file directly in the root, which no grant can create. */
+  const atRoot = new Set();
+  const literal = (abs, entry) => {
+    if (!grantable(abs)) return;
+    checkNoSymlinkAbove(root, abs, io);
+    const st = io.lstat(abs);
+    if (st?.type === "file") wantFiles.add(abs);
+    else if (st === null && entry !== undefined) missing.set(entry, abs);
+  };
+  for (const raw of boundary) {
+    const e = normalizeEntry(raw);
+    if (!isGlob(e)) { literal(`${root}/${e}`, raw); continue; }
+    const fixed = [];
+    for (const seg of e.split("/")) { if (isGlob(seg)) break; fixed.push(seg); }
+    const top = fixed.length ? `${root}/${fixed.join("/")}` : root;
+    if (top !== root && !grantable(top)) continue;
+    if (top === root && e.split("/").slice(0, -1).every((seg) => seg === "**")) atRoot.add(raw);
+    const makeDir = e.split("/").includes("**");
+    checkNoSymlinkAbove(root, top, io);
+    const st = io.lstat(top);
+    if (st === null) {
+      missing.set(raw, top);
+      const at = deepestExistingL(top, root, io);
+      if (at !== null && io.lstat(at)?.type === "dir") wantDir(at, true, true);
+      continue;
+    }
+    if (st.type === "symlink") throw new Error(`${top} is a symlink; pair_run grants only paths that are what they name`);
+    if (st.type !== "dir") continue;
+    for (const f of subtree(top)) if (f.type === "file" && matches(f.path)) wantFiles.add(f.path);
+    const descend = (dir) => {
+      if (!globCanHold(e, relativeTo(root, dir) ?? "")) return;
+      if (clean(dir)) { wantDir(dir, makeDir); return; }
+      for (const c of children(dir)) if (c.type === "dir" && grantable(c.path)) descend(c.path);
+    };
+    descend(top);
+  }
+  for (const p of extraAllow) literal(bwrapPath(p));
+  // A grant wanted only to make a missing path, where it would hold a .git, the state directory
+  // or a protected path, is dropped rather than failing the run: the run goes ahead without it,
+  // and its note names the paths it cannot make (pair_write can). The root is never wanted.
+  for (const d of forCreating) {
+    if (forExisting.has(d)) continue;
+    const hasGit = subtree(d).some((e) => e.path.split("/").at(-1).toLowerCase() === ".git");
+    if (hasGit || denied.some((x) => within(d, x))) wantDirs.delete(d);
+  }
+  const dirs = outermost([...wantDirs.keys()]);
+  for (const d of dirs) {
+    if (within(d, root)) return { notExpressible: "a directory grant would hold the whole worktree, and Landlock cannot fence .git or the state inside it" };
+    const below = subtree(d);
+    const git = below.find((e) => e.path.split("/").at(-1).toLowerCase() === ".git");
+    if (git) return { notExpressible: `a directory grant on ${relativeTo(root, d)} would hold ${relativeTo(root, git.path)}, and Landlock cannot fence it inside the grant` };
+    const held = denied.find((x) => within(d, x));
+    if (held) return { notExpressible: `a directory grant on ${relativeTo(root, d)} would hold ${held}, and Landlock cannot fence it inside the grant` };
+  }
+  const granted = new Set(dirs);
+  const inGrant = (f) => {
+    for (let p = f.slice(0, f.lastIndexOf("/")); p; p = p.slice(0, p.lastIndexOf("/"))) if (granted.has(p)) return true;
+    return false;
+  };
+  const outFiles = [...wantFiles].filter((f) => !inGrant(f)).sort();
+  for (const f of outFiles) {
+    const n = io.lstat(f)?.nlink ?? 1;
+    if (n > 1) return { notExpressible: `${relativeTo(root, f)} has ${n} hard links, and a grant on it would reach every one` };
+  }
+  // A missing path can be made where a grant holds it: in the grant's own directory, or below
+  // it where the grant has make_dir.
+  const makeable = (abs) => {
+    for (let p = abs.slice(0, abs.lastIndexOf("/")); p; p = p.slice(0, p.lastIndexOf("/"))) {
+      if (granted.has(p)) return wantDirs.get(p) || abs.lastIndexOf("/") === p.length;
+    }
+    return false;
+  };
+  const uncreatable = [...new Set(boundary)].filter((raw) => atRoot.has(raw) || (missing.has(raw) && !makeable(missing.get(raw))));
+  return {
+    files: [...files, ...outFiles],
+    dirs: dirs.sort().map((path) => ({ path, make_dir: wantDirs.get(path), remove: true })),
+    rw_trees: rwTrees,
+    ...(uncreatable.length ? { uncreatable } : {}),
+  };
+}
+
+/**
+ * Whether a file matching the glob boundary entry `entry` could lie under the
+ * worktree-relative directory `dirRel` ("" for the root), at any depth.
+ * @param {string} entry  normalized
+ * @param {string} dirRel
+ */
+function globCanHold(entry, dirRel) {
+  const g = entry.split("/");
+  const d = dirRel === "" ? [] : dirRel.split("/");
+  const seg = (s, name) => globRegex(s).test(name);
+  const m = (i, j) => {
+    if (j === g.length) return false;
+    if (g[j] === "**") return i === d.length || m(i, j + 1) || m(i + 1, j);
+    if (i === d.length) return true;
+    return seg(g[j], d[i]) && m(i + 1, j + 1);
+  };
+  return m(0, 0);
+}
+
+/**
+ * The pair-landlock ruleset and command pair_write and pair_edit write under on Linux. Most
+ * writes go in place, the content passing through the helper's stdin:
+ *   - an existing target: a `files` grant on it alone, and `/bin/cat > target`. The rule is on
+ *     the target's inode, and the helper refuses an inode with a second name, so the write can
+ *     reach no file but the target;
+ *   - a target that does not exist yet: a `dirs` grant on its deepest existing directory
+ *     (MAKE_DIR when directories are missing), and a create with noclobber, so a file or a
+ *     symlink that appears at the target in the meantime fails the write rather than takes it;
+ *   - a target that does not exist yet where that grant would hold the worktree root, a
+ *     `.git`, the state directory or a protected path: `create` names the missing directories
+ *     and the empty file the caller makes on the host first (lib/host-io.mjs createOnHost,
+ *     which follows no link), and the write then goes in place through a `files` grant on it.
+ * A target that is a symlink or has a second hard link would be followed by an in-place
+ * write, so it gets the staged write instead (`staged`, no `command`: the caller runs its own
+ * staging script, the one Seatbelt and bubblewrap run): a `dirs` grant with `remove` on the
+ * target's directory, where the content goes to a new temp file that is renamed over the
+ * target, replacing the link rather than writing through it. The grant is wide, but the only
+ * command under it is that script.
+ * A target outside the boundary, or in .git, the state directory or a protected path, gets no
+ * grant at all: the kernel refuses the write, as the Seatbelt profile does.
+ * Returns { notExpressible: reason } for anything but a regular file or a link, or when the
+ * staged write's `dirs` grant would hold the worktree root, a `.git`, the state directory or a
+ * protected path.
+ * Throws when the target is a directory or a path above it is a symlink inside the worktree.
+ * Open phase only.
+ * @param {State} state
+ * @param {string} target  absolute, checkWrite's absPath
+ * @param {LandlockIo} io
+ * @returns {(LandlockRules & ({ command: string, create?: { dirs: string[], file: string } } | { staged: true })) | { notExpressible: string }}
+ */
+export function pairWriteLandlock(state, target, io) {
+  if (state.phase !== "open") throw new Error("pair_write needs an open change set");
+  const root = bwrapPath(state.root);
+  const abs = bwrapPath(target);
+  if (!within(root, abs) || abs === root || abs.split("/").some((s) => s === "." || s === "..")) throw new Error("pair_write needs a target inside the worktree");
+  const denied = [state.stateDir, ...(state.protect ?? [])].map(bwrapPath);
+  const rel = relativeTo(root, abs);
+  checkNoSymlinkAbove(root, abs, io);
+  const st = io.lstat(abs);
+  if (st?.type === "dir") throw new Error("the target is a directory");
+  const parent = abs.slice(0, abs.lastIndexOf("/"));
+  const inBoundary = !inGitDir(rel) && !denied.some((d) => within(d, abs)) && boundaryMatches(state.changeSet.boundary, rel) && !isGitControl(rel);
+  const create = `set -C && /bin/mkdir -p -- ${shQuote(parent)} && /bin/cat > ${shQuote(abs)}`;
+  if (!inBoundary) return { files: [], dirs: [], rw_trees: [], command: st === null ? create : `/bin/cat > ${shQuote(abs)}` };
+  /** Why a `dirs` grant on `dir` cannot be given, or null. */
+  const grantProblem = (dir, what) => {
+    if (dir === root) return `${what} needs a grant on the worktree root, which would hold .git`;
+    const git = io.walk(dir).find((e) => e.path.split("/").at(-1).toLowerCase() === ".git");
+    if (git) return `${what} needs a grant on ${relativeTo(root, dir)}, which would hold ${relativeTo(root, git.path)}`;
+    const held = denied.find((d) => within(dir, d));
+    return held ? `${what} needs a grant on ${relativeTo(root, dir)}, which would hold ${held}` : null;
+  };
+  if (st && (st.type === "symlink" || (st.type === "file" && st.nlink > 1))) {
+    const what = st.type === "symlink" ? "the target is a symlink, and the staged write that replaces it" : `the target has ${st.nlink} hard links, and the staged write that replaces it`;
+    const problem = grantProblem(parent, what);
+    return problem ? { notExpressible: problem } : { files: [], dirs: [{ path: parent, make_dir: false, remove: true }], rw_trees: [], staged: true };
+  }
+  if (st && st.type !== "file") return { notExpressible: "the target is not a regular file" };
+  if (st) return { files: [abs], dirs: [], rw_trees: [], command: `/bin/cat > ${shQuote(abs)}` };
+  const at = deepestExistingL(abs, root, io);
+  if (at === null || io.lstat(at)?.type !== "dir") throw new Error(`no directory to create ${rel} in`);
+  if (grantProblem(at, "a new file here")) {
+    const dirs = [];
+    for (let p = parent; p !== at; p = p.slice(0, p.lastIndexOf("/"))) dirs.unshift(p);
+    return { files: [abs], dirs: [], rw_trees: [], command: `/bin/cat > ${shQuote(abs)}`, create: { dirs, file: abs } };
+  }
+  return { files: [], dirs: [{ path: at, make_dir: at !== parent, remove: false }], rw_trees: [], command: create };
+}
+
+/** A POSIX shell single-quoted word. */
+export function shQuote(s) {
+  return `'${s.replaceAll("'", "'\\''")}'`;
+}
+
+function deepestExistingL(path, stop, io) {
+  let p = path;
+  while (p !== stop && io.lstat(p) === null) p = p.slice(0, p.lastIndexOf("/")) || "/";
+  return io.lstat(p) === null ? null : p;
+}
+
+/**
+ * Throws when a directory between the worktree root and `abs` is a symlink. pair-landlock
+ * takes only paths that are their own realpath, so such a path would fail there anyway; the
+ * message here says why.
+ */
+function checkNoSymlinkAbove(root, abs, io) {
+  const rel = relativeTo(root, abs);
+  if (rel === null) return;
+  let p = root;
+  for (const seg of rel.split("/").slice(0, -1)) {
+    p = `${p}/${seg}`;
+    const st = io.lstat(p);
+    if (st === null) return;
+    if (st.type === "symlink") throw new Error(`${p} is a symlink; pair_run grants only paths that are what they name`);
+  }
 }
