@@ -19,8 +19,8 @@
 import { spawn, spawnSync } from "node:child_process";
 import { createHash, randomBytes } from "node:crypto";
 import {
-  appendFileSync, closeSync, existsSync, lstatSync, mkdirSync, openSync, readFileSync, readdirSync,
-  readlinkSync, realpathSync, renameSync, rmSync, statSync, writeSync,
+  appendFileSync, closeSync, constants as fsc, existsSync, fstatSync, lstatSync, mkdirSync, openSync, readFileSync, readdirSync,
+  readlinkSync, realpathSync, renameSync, rmdirSync, rmSync, statSync, unlinkSync, writeSync,
 } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
@@ -449,10 +449,11 @@ export function reapGroups(pgids, { timeoutMs = 3000 } = {}) {
 
 /**
  * @typedef {{ file: string, args: string[], fds: number[], close: () => void, input?: string,
- *   backend: "seatbelt" | "landlock" | "bwrap", fellBack?: string, writable: string[] }} SandboxedCommand
+ *   backend: "seatbelt" | "landlock" | "bwrap", fellBack?: string, writable: string[], uncreatable?: string[] }} SandboxedCommand
  *   `input`: what goes to the helper's stdin before anything else (Landlock's rules line);
  *   `fellBack`: why a Landlock machine ran this under bubblewrap instead; `writable`: where in
- *   the worktree the command can write, for the link check
+ *   the worktree the command can write, for the link check; `uncreatable`: boundary entries
+ *   naming a missing path a Landlock run cannot make (landlockRulesFor)
  */
 
 /**
@@ -507,7 +508,7 @@ function runCommand(state, command, cwd, override) {
       const { file, input } = landlockCommand(rules, command);
       const inTree = (p) => p === state.root || p.startsWith(`${state.root}/`);
       const writable = [...rules.files, ...rules.dirs.map((d) => d.path)].filter(inTree);
-      return { file, args: [], fds: [], close: noop, input, backend: "landlock", writable };
+      return { file, args: [], fds: [], close: noop, input, backend: "landlock", writable, ...(rules.uncreatable ? { uncreatable: rules.uncreatable } : {}) };
     }
     fellBack = fallBack(rules.notExpressible);
   }
@@ -516,14 +517,83 @@ function runCommand(state, command, cwd, override) {
 }
 
 /**
+ * Make on the host what a Landlock pair_write of a new file needs before its `files` grant can
+ * name it (pairWriteLandlock's `create`): each missing directory, then the empty file. Nothing
+ * here follows a link: a name that already exists where a directory is to be made has to be a
+ * plain directory, each directory made has to be the path it names (no symlink above it), and
+ * the file is created exclusively. Its mode is 0666 less the umask, as a shell's `>` gives.
+ * On any failure what was made so far is taken back (undoCreate) and the error is thrown.
+ * @param {{ dirs: string[], file: string }} create
+ * @returns {{ dirs: string[], file: { path: string, dev: number, ino: number } }}  what was made
+ */
+export function createOnHost(create) {
+  /** @type {{ dirs: string[], file: { path: string, dev: number, ino: number } | null }} */
+  const made = { dirs: [], file: null };
+  const canonical = (p) => {
+    if (realpathSync(p) !== p) throw new Error(`${p} does not resolve to itself; a link above it was swapped in`);
+  };
+  try {
+    for (const d of create.dirs) {
+      try {
+        mkdirSync(d);
+        made.dirs.push(d);
+      } catch (err) {
+        if (err?.code !== "EEXIST") throw err;
+        if (!lstatSync(d).isDirectory()) throw new Error(`${d} already exists and is not a directory`);
+      }
+      canonical(d);
+    }
+    // O_EXCL already refuses any existing name, a symlink included; O_NOFOLLOW is a second guard.
+    const fd = openSync(create.file, fsc.O_WRONLY | fsc.O_CREAT | fsc.O_EXCL | fsc.O_NOFOLLOW, 0o666);
+    try {
+      const st = fstatSync(fd);
+      made.file = { path: create.file, dev: st.dev, ino: st.ino };
+    } finally {
+      closeSync(fd);
+    }
+    canonical(dirname(create.file));
+    return /** @type {{ dirs: string[], file: { path: string, dev: number, ino: number } }} */ (made);
+  } catch (err) {
+    const left = undoCreate(made);
+    const why = err?.code === "EEXIST" && !made.file && err.path === create.file ? `${create.file} appeared before it could be created` : err instanceof Error ? err.message : String(err);
+    throw new Error(left.length ? `${why}; left behind: ${left.join(", ")}` : why);
+  }
+}
+
+/**
+ * Take back what createOnHost made: the file only if it is still that inode and still empty,
+ * then each directory it made, deepest first, only if it is still empty.
+ * @param {{ dirs: string[], file: { path: string, dev: number, ino: number } | null }} made
+ * @returns {string[]}  what was left in place
+ */
+export function undoCreate(made) {
+  const left = [];
+  if (made.file) {
+    let st = null;
+    try { st = lstatSync(made.file.path); } catch { /* gone already */ }
+    if (st && st.isFile() && st.dev === made.file.dev && st.ino === made.file.ino && st.size === 0) {
+      try { unlinkSync(made.file.path); } catch { left.push(made.file.path); }
+    } else if (st) {
+      left.push(made.file.path);
+    }
+  }
+  for (const d of [...made.dirs].reverse()) {
+    try { rmdirSync(d); } catch (err) { if (err?.code !== "ENOENT") left.push(d); }
+  }
+  return left;
+}
+
+/**
  * What the sandbox runs for pair_write's `script` (writeSandboxed): sandbox-exec with the
  * open-phase profile on macOS; on Linux the pair-landlock helper with pairWriteLandlock's plan,
- * which writes in place or, for a target that is a link, runs `script` with a grant on the
- * target's directory; or bubblewrap's staged write (pairWriteBwrap) when Landlock is not this
- * machine's backend or cannot express the write.
+ * which writes in place (into a file createOnHost makes first, where the plan says so) or, for
+ * a target that is a link, runs `script` with a grant on the target's directory; or
+ * bubblewrap's staged write (pairWriteBwrap) when Landlock is not this machine's backend or
+ * cannot express the write. `created` is what createOnHost made, for writeSandboxed to take
+ * back if the write fails.
  * @param {{ state: import("../core/gate.mjs").State, path: string, tempPath: string, backend?: "landlock" | "bwrap" }} opts
  * @param {string} script
- * @returns {SandboxedCommand}
+ * @returns {SandboxedCommand & { created?: ReturnType<typeof createOnHost> }}
  */
 function writeCommand(opts, script) {
   const argv = ["/bin/sh", "-c", script, "pair-write", opts.path, opts.tempPath];
@@ -537,7 +607,8 @@ function writeCommand(opts, script) {
       if ("staged" in plan && dirname(opts.tempPath) !== dirname(opts.path)) throw new Error("the staged write's temp file has to be beside its target");
       const command = "staged" in plan ? `set -- ${shQuote(opts.path)} ${shQuote(opts.tempPath)}\n${script}` : plan.command;
       const { file, input } = landlockCommand(plan, command);
-      return { file, args: [], fds: [], close: noop, input, backend: "landlock", writable: [] };
+      const created = "create" in plan && plan.create ? createOnHost(plan.create) : undefined;
+      return { file, args: [], fds: [], close: noop, input, backend: "landlock", writable: [], ...(created ? { created } : {}) };
     }
     fellBack = fallBack(plan.notExpressible);
   }
@@ -561,11 +632,15 @@ function writeCommand(opts, script) {
  * On Linux under Landlock (pairWriteLandlock) the content goes through the helper's stdin
  * straight into the target, in place: Landlock grants the one existing file, or for a new one
  * its directory with the shell's noclobber on, so the create fails on anything already there.
- * A target that is a symlink or has a second hard link, which an in-place write would follow,
- * gets the staged write above under a Landlock grant on its directory; where that grant would
- * hold .git (the worktree root, for one), bubblewrap stages it instead (`fellBack` says why).
- * Landlock opens every path component as the kernel resolves it, so a swapped symlink fails
- * there too.
+ * Where that directory grant would hold .git (the worktree root, for one), the state directory
+ * or a protected path, the host makes the missing directories and the empty file first
+ * (createOnHost, which follows no link) and the write goes through a grant on that file; if the
+ * write then fails, what the host made is taken back where it is still empty (undoCreate), and
+ * the error says what was left. A target that is a symlink or has a second hard link, which an
+ * in-place write would follow, gets the staged write above under a Landlock grant on its
+ * directory; where that grant would hold .git, bubblewrap stages it instead (`fellBack` says
+ * why). Landlock opens every path component as the kernel resolves it, so a swapped symlink
+ * fails there too.
  *
  * Synchronous: pair_write and pair_edit run under the session lock.
  * @param {{ state: import("../core/gate.mjs").State, path: string, tempPath: string, content: string, backend?: "landlock" | "bwrap" }} opts
@@ -602,10 +677,14 @@ export function writeSandboxed(opts) {
   } finally {
     cmd.close();
   }
-  if (res.error) return { ok: false, error: String(res.error.message ?? res.error), ...ran };
+  const failed = (error) => {
+    const left = cmd.created ? undoCreate(cmd.created) : [];
+    return { ok: false, error: left.length ? `${error}; left behind: ${left.join(", ")}` : error, ...ran };
+  };
+  if (res.error) return failed(String(res.error.message ?? res.error));
   if (res.status !== 0) {
     const err = String(res.stderr ?? "").trim();
-    return { ok: false, error: err || `exit ${res.status}${res.signal ? ` (signal ${res.signal})` : ""}`, ...ran };
+    return failed(err || `exit ${res.status}${res.signal ? ` (signal ${res.signal})` : ""}`);
   }
   return { ok: true, ...ran };
 }
@@ -620,15 +699,16 @@ export function writeSandboxed(opts) {
  * when the command exits, whether it stayed in the group or not. With `linkCheck`, `links` in the
  * result lists what the run made where it could write in the worktree that a later write could
  * follow out of the agreement (newLinks, since `linkCheck.sinceMs`), checked after every
- * process of a killed run is gone. `backend` names the sandbox the run had, and `fellBack` why
- * a Landlock machine ran it under bubblewrap.
+ * process of a killed run is gone. `backend` names the sandbox the run had, `fellBack` why
+ * a Landlock machine ran it under bubblewrap, and `uncreatable` the boundary entries naming a
+ * missing path the Landlock run could not make (pair_write can).
  * @param {{ state: import("../core/gate.mjs").State, command: string, cwd: string, timeoutMs?: number, signal?: AbortSignal,
  *   onSpawn?: (pgid: number) => void, env?: Record<string, string>, maxOutput?: number,
  *   linkCheck?: { sinceMs: number, exclusions: string[] }, backend?: "landlock" | "bwrap" }} opts
  *   `backend`: overrides this process's Linux backend (tests)
  * @returns {Promise<{ exitCode: number | null, signal: string | null, stdout: string, stderr: string,
  *   timedOut: boolean, aborted: boolean, pgid: number | null, links: string[], error?: string,
- *   backend?: string, fellBack?: string }>}
+ *   backend?: string, fellBack?: string, uncreatable?: string[] }>}
  */
 export function runSandboxed(opts) {
   const max = opts.maxOutput ?? 64 * 1024;
@@ -640,7 +720,7 @@ export function runSandboxed(opts) {
     try {
       const cmd = runCommand(opts.state, opts.command, opts.cwd, opts.backend);
       writable = cmd.writable;
-      ran = { backend: cmd.backend, ...(cmd.fellBack ? { fellBack: cmd.fellBack } : {}) };
+      ran = { backend: cmd.backend, ...(cmd.fellBack ? { fellBack: cmd.fellBack } : {}), ...(cmd.uncreatable ? { uncreatable: cmd.uncreatable } : {}) };
       try {
         if (opts.linkCheck) gitBefore = gitBaseline(opts.state.root, writable, opts.linkCheck.exclusions);
         child = spawn(cmd.file, cmd.args, {
