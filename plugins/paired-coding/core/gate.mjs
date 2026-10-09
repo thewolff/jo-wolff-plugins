@@ -44,7 +44,7 @@
  * @typedef {object} Card
  * @property {string} id
  * @property {string[]} boundary  worktree-relative paths, globs (* ? **), or "dir/" subtrees
- * @property {Record<string, string>} hashes  boundary file fingerprints at proposal time
+ * @property {Record<string, string>} hashes  boundary file fingerprints, and the modes of directories the boundary covers (directoryInBoundary), at proposal time
  * @property {number} inputSeq  sequence number of the latest trusted input when proposed
  * @property {unknown} [at]
  * @property {string} [whyNow]
@@ -395,15 +395,33 @@ function globRegex(glob) {
 }
 
 /**
- * Whether a worktree-relative path lies inside the boundary.
+ * Whether a worktree-relative path lies inside the boundary. The worktree root itself, which a
+ * snapshot names ".", never does: no run may write it and no boundary entry can name it, so a
+ * change to its mode is always unapproved, also under `**`.
  * @param {string[]} boundary
  * @param {string} rel
  */
 export function boundaryMatches(boundary, rel) {
-  if (typeof rel !== "string" || rel === "") return false;
+  if (typeof rel !== "string" || rel === "" || rel === ".") return false;
   return boundary.some((raw) => {
     const e = normalizeEntry(raw);
     return isGlob(e) ? globRegex(e).test(rel) : rel === e;
+  });
+}
+
+/**
+ * Whether a card's hashes hold a directory's mode: the directory matches a glob entry, or an
+ * entry names its whole subtree (`docs/`, `docs/**`). A literal entry names one file, so it
+ * never holds a directory's mode. Never the root.
+ * @param {string[]} boundary
+ * @param {string} rel
+ */
+export function directoryInBoundary(boundary, rel) {
+  if (typeof rel !== "string" || rel === "" || rel === ".") return false;
+  return boundary.some((raw) => {
+    const e = normalizeEntry(raw);
+    if (!isGlob(e)) return false;
+    return globRegex(e).test(rel) || (e.endsWith("/**") && boundaryMatches([e.slice(0, -3)], rel));
   });
 }
 
@@ -496,19 +514,24 @@ function takeSnapshot(io) {
 }
 
 /**
- * Snapshots before 1.2 recorded only a file's executable bit (`file:x:<hash>`, `file:-:<hash>`),
- * so a session whose baseline or card was taken by that plugin cannot show a permission change
- * since: it is refused until the partner types pair stop and pairing starts again.
+ * Snapshots before 1.2 recorded only a file's executable bit (`file:x:<hash>`, `file:-:<hash>`)
+ * and no directories, so a session whose baseline or card was taken by that plugin cannot show
+ * a permission change since: it is refused until the partner types pair stop and pairing starts
+ * again. A 1.2 baseline always holds the root's entry "."; card hashes never do, so they are
+ * judged by their file entries alone.
  */
 const OLD_FILE = /^file:[x-]:[0-9a-f]{64}$/;
 const OLDER_PLUGIN = "this session was started by an older paired-coding, whose snapshots do not record permission bits, so its changes cannot be checked; ask your partner to type pair stop, then start pairing again";
 const olderSnapshot = (snap) => isObj(snap) && Object.values(snap).some((fp) => typeof fp === "string" && OLD_FILE.test(fp));
+const olderBaseline = (snap) => isObj(snap) && (!Object.hasOwn(snap, ".") || olderSnapshot(snap));
 
+/**
+ * Whether a card's hashes still hold, on the snapshot comparison's terms: a directory's mode
+ * counts only when the directory is there both times, so making or removing one does not
+ * make the card stale; its files do.
+ */
 function sameHashes(a, b) {
-  if (!isObj(a) || !isObj(b)) return false;
-  const ka = Object.keys(a).sort();
-  const kb = Object.keys(b).sort();
-  return ka.length === kb.length && ka.every((k, i) => k === kb[i] && a[k] === b[k]);
+  return isObj(a) && isObj(b) && diffSnapshots(a, b).length === 0;
 }
 
 // ─── trusted input ──────────────────────────────────────────────────────────────────────
@@ -721,22 +744,27 @@ function endPairing(state, io, verb) {
 }
 
 function finish(state, io, verb, fields) {
-  const snap = takeSnapshot(io);
   const journal = [];
   let changedSinceReadBack = [];
   let unapproved = [];
-  if (snap.error) {
-    journal.push(entry("snapshot-failed", io, { verb, reason: snap.error }));
-  } else if (state.baseline) {
-    const diff = diffSnapshots(state.baseline, snap.value, state.exclusions);
-    if (state.phase === "open") {
-      unapproved = diff.filter((d) => !boundaryMatches(state.changeSet.boundary, d.path));
-      changedSinceReadBack = diff.filter((d) => boundaryMatches(state.changeSet.boundary, d.path));
-      if (unapproved.length) journal.push(entry("unapproved-write", io, { cardId: state.changeSet.cardId, paths: unapproved }));
-    } else {
-      changedSinceReadBack = diff;
+  if (olderBaseline(state.baseline)) {
+    // Compared with this plugin's snapshot, every file of an older baseline would show as changed.
+    journal.push(entry("snapshot-incomparable", io, { verb, reason: "the baseline was taken by an older paired-coding, so the final snapshot is not compared with it" }));
+  } else {
+    const snap = takeSnapshot(io);
+    if (snap.error) {
+      journal.push(entry("snapshot-failed", io, { verb, reason: snap.error }));
+    } else if (state.baseline) {
+      const diff = diffSnapshots(state.baseline, snap.value, state.exclusions);
+      if (state.phase === "open") {
+        unapproved = diff.filter((d) => !boundaryMatches(state.changeSet.boundary, d.path));
+        changedSinceReadBack = diff.filter((d) => boundaryMatches(state.changeSet.boundary, d.path));
+        if (unapproved.length) journal.push(entry("unapproved-write", io, { cardId: state.changeSet.cardId, paths: unapproved }));
+      } else {
+        changedSinceReadBack = diff;
+      }
+      if (changedSinceReadBack.length) journal.push(entry("between-change-sets", io, { changes: changedSinceReadBack }));
     }
-    if (changedSinceReadBack.length) journal.push(entry("between-change-sets", io, { changes: changedSinceReadBack }));
   }
   journal.push(entry("stop", io, { verb, ...fields }));
   return { ok: true, state: inactiveState(), journal, changedSinceReadBack: [...state.unreviewed, ...changedSinceReadBack], unapproved };
@@ -881,7 +909,7 @@ export function pairPropose(state, card, io) {
   if (state.carried) return refuse(state, "pair_propose", CARRIED_REASON, io);
   if (state.halt) return refuse(state, "pair_propose", `the session is stopped: ${state.halt.reason}`, io);
   if (state.phase === "open") return refuse(state, "pair_propose", "a change set is open; finish it with pair_done before the next card", io);
-  if (olderSnapshot(state.baseline)) return refuse(state, "pair_propose", OLDER_PLUGIN, io);
+  if (olderBaseline(state.baseline)) return refuse(state, "pair_propose", OLDER_PLUGIN, io);
   if (!state.root) return refuse(state, "pair_propose", "the state lost its worktree root; your partner types pair stop, then start pairing again", io);
   if (!isObj(card)) return refuse(state, "pair_propose", "the card is not an object", io);
   const problem = boundaryProblem(card.boundary);
@@ -930,7 +958,7 @@ export function pairBegin(state, args, io) {
   if (state.phase === "inactive") return refuse(state, "pair_begin", "pairing is not active", io);
   if (state.halt) return refuse(state, "pair_begin", `the session is stopped: ${state.halt.reason}`, io);
   if (state.phase === "open") return refuse(state, "pair_begin", "a change set is already open", io);
-  if (olderSnapshot(state.baseline) || olderSnapshot(state.card?.hashes)) return refuse(state, "pair_begin", OLDER_PLUGIN, io);
+  if (olderBaseline(state.baseline) || olderSnapshot(state.card?.hashes)) return refuse(state, "pair_begin", OLDER_PLUGIN, io);
   const card = state.card;
   if (!card) return refuse(state, "pair_begin", "no card has been proposed", io);
   if (args?.cardId !== card.id) return refuse(state, "pair_begin", "that card is not the latest card; re-propose it", io);
@@ -939,7 +967,7 @@ export function pairBegin(state, args, io) {
   if (problem) return refuse(state, "pair_begin", problem, io);
   const hashed = callIo(io, "hashBoundary", [...card.boundary], state.root);
   if (hashed.error) return refuse(state, "pair_begin", `could not hash the boundary: ${hashed.error}`, io);
-  if (!sameHashes(hashed.value, card.hashes)) return refuse(state, "pair_begin", "a boundary file changed since the card was shown; the card is stale, re-propose it", io);
+  if (!sameHashes(hashed.value, card.hashes)) return refuse(state, "pair_begin", "a boundary file or directory changed since the card was shown; the card is stale, re-propose it", io);
   const snap = takeSnapshot(io);
   if (snap.error) return refuse(state, "pair_begin", `could not snapshot the worktree: ${snap.error}`, io);
   const next = clone(state);
@@ -979,7 +1007,7 @@ export function pairDone(state, args, io) {
   if (args?.cardId !== cs.cardId) return refuse(state, "pair_done", "that card is not the open change set", io);
   if (state.halt) return refuse(state, "pair_done", `the session is stopped: ${state.halt.reason}; only your partner ends it, by typing pair stop`, io);
   if (state.running.some((r) => r.cardId === cs.cardId)) return refuse(state, "pair_done", "a pair_run under this change set is still running", io);
-  if (olderSnapshot(state.baseline)) return refuse(state, "pair_done", OLDER_PLUGIN, io);
+  if (olderBaseline(state.baseline)) return refuse(state, "pair_done", OLDER_PLUGIN, io);
   if (cs.runs.length > 0) {
     const reaped = callIo(io, "reapRuns", [...cs.runs]);
     if (reaped.error) return refuse(state, "pair_done", `could not reap the change set's process groups: ${reaped.error}`, io);
