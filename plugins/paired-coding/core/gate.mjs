@@ -44,7 +44,7 @@
  * @typedef {object} Card
  * @property {string} id
  * @property {string[]} boundary  worktree-relative paths, globs (* ? **), or "dir/" subtrees
- * @property {Record<string, string>} hashes  boundary file fingerprints, and the modes of directories the boundary covers (directoryInBoundary), at proposal time
+ * @property {Record<string, string>} hashes  boundary file fingerprints, and the modes of directories the boundary covers (directoryInBoundary), at proposal time; these include the directory a subtree entry names (`docs` for `docs/`), whose own mode the change set itself may not change (pair_done judges it by boundaryMatches)
  * @property {number} inputSeq  sequence number of the latest trusted input when proposed
  * @property {unknown} [at]
  * @property {string} [whyNow]
@@ -1139,11 +1139,12 @@ export function runStart(state, args, io) {
  * points, and a new `.git` holds hooks and config git runs outside the sandbox.
  * `supervisorKilled` is the signal a Landlock run's supervising helper died of, whoever sent
  * it: the run itself before Landlock ABI 6, someone outside, or the adapter's own SIGKILL when
- * the helper did not end in time after a timeout or abort. The helper never dies of a signal
- * by its own choice, so it was killed before it ended the processes that left the run's group,
- * which may still write with its grant. That stops the session the same way, at the cost of a
- * stop after a helper that was only slow. pair_done then refuses until the partner types pair
- * stop.
+ * the helper did not end in time after a timeout or abort. Once the helper has forked the
+ * command it never dies of a signal by its own choice, so it was killed before it ended the
+ * processes that left the run's group, which may still write with its grant. That stops the
+ * session the same way, at the cost of a stop after a helper that was only slow. pair_done then
+ * refuses until the partner types pair stop. The adapter never reports SIGTERM, SIGINT or
+ * SIGHUP here: the helper blocks them before it forks, so dying of one means no command ran.
  * @param {State} state
  * @param {{ runId: unknown, exitCode?: unknown, links?: unknown, supervisorKilled?: unknown }} args
  * @param {Io} [io]
