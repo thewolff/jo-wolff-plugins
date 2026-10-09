@@ -1,5 +1,7 @@
 // Tests for the host-neutral session layer (verbs.mjs over host-io.mjs) on real temp
-// directories. pair_run tests use the real /usr/bin/sandbox-exec and skip where it is missing.
+// directories. pair_run and pair_write tests use the real sandbox (sandbox-exec on macOS,
+// bubblewrap on Linux) and skip where neither is usable. A few cases differ by backend on
+// purpose; each names the difference where it skips.
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
@@ -9,10 +11,11 @@ import { join } from "node:path";
 import {
   CARRY_MAX_AGE_MS, PLUGIN_ROOT, ROADMAP_WALK_LIMIT, carryInto, clearInPlace, endSession, executeVerb, recordTrustedInput, takeCarryMarker, verdict, writeCarryMarker,
 } from "./verbs.mjs";
-import { loadState, realpathLoose, reapGroups, writeSandboxed } from "./host-io.mjs";
+import { loadState, realpathLoose, reapGroups, sandboxProblem, writeSandboxed } from "./host-io.mjs";
 import { pairRunProfile, pairWriteProfile } from "../core/gate.mjs";
 
-const hasSandbox = process.platform === "darwin" && existsSync("/usr/bin/sandbox-exec");
+const hasSandbox = sandboxProblem() === null;
+const LINUX = process.platform === "linux";
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 function fixture() {
@@ -163,7 +166,9 @@ test("pair_run is fenced by the phase: closed denies worktree writes, open allow
   await executeVerb("pair_begin", { cardId: p.result.card.id, quote: "go ahead" }, f.ctx);
   assert.equal((await executeVerb("pair_run", { command: "echo new > src/a.txt" }, f.ctx)).ok, true);
   assert.equal(readFileSync(join(f.root, "src/a.txt"), "utf8"), "new\n");
-  for (const cmd of ["echo x > src/b.txt", `echo x > '${f.dir}/state.json'`, `rm -f '${f.dir}/state.json'`, `echo x > '${f.base}/other'`]) {
+  // `rm` without -f: on Linux the state dir under the host's /tmp is not there at all for the run
+  // (its /tmp is private), and `rm -f` of a missing file succeeds without touching anything.
+  for (const cmd of ["echo x > src/b.txt", `echo x > '${f.dir}/state.json'`, `rm '${f.dir}/state.json'`, `echo x > '${f.base}/other'`]) {
     const r = await executeVerb("pair_run", { command: cmd }, f.ctx);
     assert.equal(r.ok, false, cmd);
   }
@@ -233,7 +238,7 @@ test("a corrupted or deleted state file reads as closed, never inactive", { skip
   assert.ok(ends.includes("refusal"));
 });
 
-test("an escaped writer from change set A is caught by change set B's comparison", { skip: !hasSandbox }, async () => {
+test("an escaped writer from change set A is caught by change set B's comparison", { skip: !hasSandbox || (LINUX && "on Linux bubblewrap's PID namespace ends every process the run started when it exits, so no writer escapes; the next test checks that") }, async () => {
   const f = fixture();
   const a = await openChangeSet(f, ["src/a.txt"]);
   // Leaves the process group (perl setsid), then writes A's file after A is done.
@@ -248,6 +253,40 @@ test("an escaped writer from change set A is caught by change set B's comparison
   assert.equal(done.result.halted, true, done.text);
   assert.deepEqual(done.result.unapproved.map((u) => u.path), ["src/a.txt"]);
   assert.equal((await executeVerb("pair_write", { path: "src/b.txt", content: "x" }, f.ctx)).ok, false, "stopped session refuses writes");
+});
+
+test("on Linux a writer that leaves the process group still ends with its run", { skip: !hasSandbox || (!LINUX && "macOS has no PID namespace; the test above covers a writer that escapes there") }, async () => {
+  const f = fixture();
+  const a = await openChangeSet(f, ["src/a.txt"]);
+  const r = await executeVerb("pair_run", { command: "perl -e 'use POSIX; if (fork()==0) { POSIX::setsid(); sleep 1; open(F, \">>\", \"src/a.txt\"); print F \"late\\n\"; close F; exit 0 }' ; exit 0" }, f.ctx);
+  assert.equal(r.ok, true, r.text);
+  assert.equal((await executeVerb("pair_done", { cardId: a }, f.ctx)).ok, true);
+  await sleep(1500);
+  assert.equal(readFileSync(join(f.root, "src", "a.txt"), "utf8"), "alpha\n", "the setsid child died with the run");
+});
+
+test("a pair_run that makes a link where it could write stops the session until a typed stop", { skip: !hasSandbox }, async () => {
+  const f = fixture();
+  const cardId = await openChangeSet(f, ["src/**"]);
+  const r = await executeVerb("pair_run", { command: "ln -s ../notes.txt src/ln" }, f.ctx);
+  assert.equal(r.ok, false);
+  assert.match(r.text, /STOPPED: pair_run made a link or a \.git entry inside the paths it could write \(src\/ln\)/);
+  assert.ok(journal(f).some((e) => e.type === "link-made"));
+  const done = await executeVerb("pair_done", { cardId }, f.ctx);
+  assert.equal(done.ok, false);
+  assert.match(done.text, /only your partner ends it, by typing pair stop/);
+  assert.equal((await executeVerb("pair_write", { path: "src/a.txt", content: "x" }, f.ctx)).ok, false);
+  assert.equal((await executeVerb("pair_run", { command: "true" }, f.ctx)).ok, false);
+  assert.equal(typed(f, "pair stop").stopped, true);
+  assert.equal(verdict("Write", { sessionDir: f.dir }).allow, true);
+});
+
+test("a pair_run that makes no link leaves the session going", { skip: !hasSandbox }, async () => {
+  const f = fixture();
+  const cardId = await openChangeSet(f, ["src/**"]);
+  const r = await executeVerb("pair_run", { command: "mkdir -p src/n && echo x > src/n/x.txt && mv src/n/x.txt src/n/y.txt" }, f.ctx);
+  assert.equal(r.ok, true, r.text);
+  assert.equal((await executeVerb("pair_done", { cardId }, f.ctx)).ok, true);
 });
 
 test("reapGroups is safe on a group that is already gone", () => {
@@ -373,15 +412,15 @@ test("the pair_write profile refuses a boundary path that a symlink points outsi
   const tempFile = join(f.top, "outside.txt");
   writeFileSync(tempFile, "untouched");
   const tempPath = stage(f);
-  const profile = pairWriteProfile(loadState(f.dir), tempPath);
+  const s = loadState(f.dir);
   for (const target of [tempFile, join(f.root, "src", "b.txt"), join(f.dir, "state.json")]) {
     const before = readFileSync(target, "utf8");
     rmSync(join(f.root, "src", "link.txt"), { force: true });
     symlinkSync(target, join(f.root, "src", "link.txt"));
-    writeSandboxed({ profile, path: join(f.root, "src", "link.txt"), tempPath, content: "pwned" });
+    writeSandboxed({ state: s, path: join(f.root, "src", "link.txt"), tempPath, content: "pwned" });
     assert.equal(readFileSync(target, "utf8"), before, target);
   }
-  assert.equal(writeSandboxed({ profile, path: join(f.root, "src", "a.txt"), tempPath, content: "A" }).ok, true);
+  assert.equal(writeSandboxed({ state: s, path: join(f.root, "src", "a.txt"), tempPath, content: "A" }).ok, true);
   assert.equal(readFileSync(join(f.root, "src", "a.txt"), "utf8"), "A");
   assert.equal(existsSync(tempPath), false);
 });
@@ -401,17 +440,17 @@ test("a sandboxed write to a directory is refused and leaves nothing behind, eve
   mkdirSync(join(f.root, "src", "d"));
   await openChangeSet(f, ["src/**"]);
   const tempPath = stage(f);
-  const w = writeSandboxed({ profile: pairWriteProfile(loadState(f.dir), tempPath), path: join(f.root, "src", "d"), tempPath, content: "x" });
+  const w = writeSandboxed({ state: loadState(f.dir), path: join(f.root, "src", "d"), tempPath, content: "x" });
   assert.equal(w.ok, false);
   assert.deepEqual(readdirSync(join(f.root, "src", "d")), []);
   assert.equal(existsSync(tempPath), false);
 });
 
-test("a staged write the kernel refuses at the rename leaves no staging file behind", { skip: !hasSandbox }, async () => {
+test("a staged write the kernel refuses at the rename leaves no staging file behind", { skip: !hasSandbox || (LINUX && "on Linux the kernel fences pair_write at the target's directory, so a sibling of the target is checkWrite's to refuse; the README lists this") }, async () => {
   const f = fixture();
   await openChangeSet(f, ["src/a.txt"]);
   const tempPath = stage(f);
-  const w = writeSandboxed({ profile: pairWriteProfile(loadState(f.dir), tempPath), path: join(f.root, "src", "b.txt"), tempPath, content: "pwned" });
+  const w = writeSandboxed({ state: loadState(f.dir), path: join(f.root, "src", "b.txt"), tempPath, content: "pwned" });
   assert.equal(w.ok, false);
   assert.equal(readFileSync(join(f.root, "src", "b.txt"), "utf8"), "bravo\n");
   assert.deepEqual(readdirSync(join(f.root, "src")).filter((n) => n.startsWith(".pair-write-")), []);
@@ -425,7 +464,7 @@ test("a boundary directory swapped for a symlink into a temp path takes no stage
   symlinkSync(away, join(f.root, "src", "sub"));
   const tempPath = join(f.root, "src", "sub", `.pair-write-${"cd".repeat(8)}.tmp`);
   const state = { ...loadState(f.dir), tempPaths: [away] };
-  const w = writeSandboxed({ profile: pairWriteProfile(state, tempPath), path: join(f.root, "src", "sub", "x.txt"), tempPath, content: "pwned" });
+  const w = writeSandboxed({ state, path: join(f.root, "src", "sub", "x.txt"), tempPath, content: "pwned" });
   assert.equal(w.ok, false);
   assert.deepEqual(readdirSync(away), []);
 });

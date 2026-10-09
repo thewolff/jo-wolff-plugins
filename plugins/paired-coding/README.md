@@ -135,14 +135,17 @@ How it works:
   lookup while pairing, the agent runs the equivalent command-line tool through `pair_run`
   instead, as long as that tool does not reach a local daemon over a Unix socket (see the next
   point).
-- `pair_run` runs every command in the foreground under a macOS Seatbelt profile built from the
-  state. Both profiles deny every write by default. With no change set open a command may write
-  only temp directories and `/dev`. With one open it may also write the boundary files. The
-  state directory and the plugin's own install root are never writable, and no command may
-  create a hard link anywhere, even between two paths it could write. Both profiles also refuse
-  connections to Unix-domain sockets, except the DNS resolver's, because a local daemon reached
-  over a socket writes with its own rights. So the Docker CLI, `ssh-agent`, and a database on a
-  local socket are out of reach from `pair_run`. TCP is not fenced: HTTPS and DNS lookups work.
+- `pair_run` runs every command in the foreground under a sandbox built from the state: a
+  Seatbelt profile on macOS, bubblewrap on Linux, where some of what follows differs (see
+  **Linux: bubblewrap** below). Both profiles deny every write by default. With no change set
+  open a command may write only temp directories and `/dev`. With one open it may also write
+  the boundary files. The state directory and the plugin's own install root are never
+  writable, and on macOS no command may create a hard link anywhere, even between two paths it
+  could write (on Linux one made inside a writable directory stops the session; see below).
+  Both profiles also refuse connections to Unix-domain sockets, except the DNS resolver's on
+  macOS, because a local daemon reached over a socket writes with its own rights. So the Docker
+  CLI, `ssh-agent`, and a database on a local socket are out of reach from `pair_run`. TCP is
+  not fenced: HTTPS and DNS lookups work.
 - `pair_write` and `pair_edit` write inside the sandbox too, under the open profile without the
   temp directories. They write the new content to a fresh file beside the target and rename it
   over the target, keeping an existing file's permission bits. So a hard link or symlink at a
@@ -160,6 +163,9 @@ How it works:
   `pair_run` cannot write these paths, and `pair_write` and `pair_edit` refuse them with "the
   path is git's own control data under .git". The list is only left unfenced, never granted:
   a commit inside `pair_run` works only when the boundary covers `.git/`. `git config` fails.
+- On Linux all of `.git` is read-only inside `pair_run`, nested repositories and submodules
+  included, whatever the boundary says, so `git commit` there fails with "Unable to create
+  '…/.git/index.lock': Read-only file system". Commit outside `pair_run`.
 - In a linked worktree (one made with `git worktree add`), git's real directory sits in the
   main repository's `.git/worktrees/`, outside the worktree, so `git add` and `git commit`
   inside `pair_run` fail there whatever the boundary says. Commit outside `pair_run`.
@@ -185,8 +191,9 @@ How it works:
 |---|---|---|
 | Claude Code, macOS | Built: hooks and a bundled MCP server | Verified on Claude Code v2.1.287, loaded with `--plugin-dir`: tests 11 to 17, then the release checks below |
 | OMP, macOS | Built: an extension, registered by `omp plugin install`, or loaded with `--plugin-dir` and `-e` together | Verified on OMP 18.4.4, loaded with `-e`: tests 11 to 17, then the release checks below. After a plain `omp plugin install`, a scripted stand-in model saw the skill listed, the eight `pair_*` tools registered, and a host `write` refused after `pair_start`; tests 11 to 17 were not re-run that way |
+| Claude Code and OMP, Linux | Built: the same gate, with bubblewrap as the sandbox | The unit suite and the live bubblewrap cases pass in an Ubuntu 24.04 container as a non-root user. Neither host has been run live on Linux |
 | Codex | None | Unverified; the skill is included but has not been run there |
-| Linux, Windows, anything else | `pair_start` refuses | The skill runs as conversation only |
+| Windows, anything else, or Linux without a working bubblewrap | `pair_start` refuses | The skill runs as conversation only |
 
 The adversarial tests, run live with a cheap model in throwaway git repositories and judged by
 content snapshots of every file (untracked and ignored included):
@@ -340,9 +347,65 @@ registers. While any listed tool is in the session's tool list, `pair_start` ref
 PAIRED_CODING_CONFLICTING_TOOLS), so this adapter stays off", the session stays untouched, and
 nothing crashes; see `omp/REGISTRATION.md`. Claude Code does not read this variable.
 
-**macOS only.** `pair_run` and the writes inside `pair_write` and `pair_edit` depend on Seatbelt
-(`/usr/bin/sandbox-exec`). Elsewhere `pair_start` refuses and the skill works as conversation
-only.
+**Two sandboxes: Seatbelt on macOS, bubblewrap on Linux.** `pair_run` and the writes inside
+`pair_write` and `pair_edit` run under Seatbelt (`/usr/bin/sandbox-exec`) on macOS and under
+bubblewrap (`bwrap`) on Linux, on x86_64 and aarch64. Elsewhere, or where the sandbox cannot
+run, `pair_start` refuses with the reason and the skill works as conversation only.
+
+**A run that makes a link stops the session.** After each `pair_run` the gate looks where the
+run could write for a symlink or a hard link it made, and for a `.git` entry that is new or was
+replaced. If it finds one, `pair_run` returns "STOPPED: pair_run made a link or a .git entry
+inside the paths it could write (…)", the journal records `link-made`, and `pair_done` refuses
+until you type `pair stop`. A link there would carry a later write, your editor's included, to
+wherever it points. Snapshot exclusions such as `node_modules` are not searched. This holds on
+both platforms.
+
+**Linux: bubblewrap.** bubblewrap runs as you, inside a user namespace. It needs:
+
+- The `bubblewrap` package, with `--bind-fd`: bubblewrap 0.10.0 or later, or a distribution
+  build carrying the CVE-2024-42472 fix (Ubuntu 24.04's 0.9.0 has it).
+- Unprivileged user namespaces. Check with:
+
+  ```sh
+  bwrap --ro-bind / / --dev /dev --proc /proc --unshare-all /bin/true && echo ok
+  ```
+
+  If that fails: on Ubuntu 23.10 and later, AppArmor restricts them. Run
+  `sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0`, and put that setting in a
+  file under `/etc/sysctl.d/` to keep it; or load the `bwrap-userns-restrict` profile from the
+  `apparmor-profiles` package, which lets bubblewrap alone through. On a Debian kernel that has
+  `kernel.unprivileged_userns_clone`, set it to 1. In a Docker container, run it with
+  `--security-opt seccomp=unconfined --security-opt systempaths=unconfined`. `pair_start`'s
+  refusal names the same fixes.
+
+bubblewrap mounts paths writable; it cannot match each write against the boundary's patterns
+the way Seatbelt does. So on Linux:
+
+- A glob entry makes the whole directory above its first wildcard writable to `pair_run`: with
+  `src/**/*.ts` agreed, a run can also write `src/notes.md`. `pair_done`'s read-back shows such
+  a write and stops the session on it, like any write outside the change set, but the kernel
+  does not prevent it.
+- A literal entry that does not exist yet makes its nearest existing directory writable, for
+  the same reason. If none of its directories exist yet, that is the worktree root.
+- `pair_write` and `pair_edit` are fenced by the kernel at the target's directory, not the
+  target: the path check keeps them to the agreed file, and the kernel keeps them out of
+  everything outside that directory.
+- A literal entry that exists is its own mount, so a tool that replaces it by renaming a new
+  file over it (`sed -i`, many formatters) fails inside `pair_run`. Agree a glob such as
+  `src/*.ts` to let one through.
+- All of `.git` is read-only, so `git commit` inside `pair_run` fails (see the `.git` points
+  above).
+- Each run gets its own empty `/tmp`, and what it writes there is gone when it ends. Other temp
+  directories (`$TMPDIR` when it is set) are shared, as on macOS.
+- Every process a run starts ends when the run ends. Nothing stays behind in the background.
+- No Unix-domain socket can be created at all, the DNS resolver's included: a seccomp filter
+  makes it fail with "Operation not permitted". `socketpair` still works, so pipes between a
+  run's own processes do. Name lookups worked in the test container; a system whose only
+  resolver sits behind a Unix socket would lose them. The filter also refuses `io_uring` (it
+  can open sockets past the filter) and 32-bit x86 system calls, so 32-bit binaries fail on
+  x86_64.
+- A path the sandbox would make writable that turns out to be a symlink refuses the run, so a
+  swapped-in symlink cannot carry a mount outside the worktree.
 
 **Links inside the boundary become plain files.** `pair_write` and `pair_edit` write a new file
 and rename it over the target, so they never write through a symlink or hard link at a boundary
@@ -367,13 +430,14 @@ repository whose config points `core.hooksPath` at a directory in the worktree (
 `.husky/`, for one) runs hooks from there, and `pair_run` can write that directory when it is
 in the boundary; unlike `.git/`, such a write shows in the read-back diff.
 
-**Escaped writers are caught late, and only inside the worktree.** A process that leaves its
-run's process group survives the reap and keeps the write permission its run had (test 17). A
-process that got out of the sandbox altogether would write with your own permissions; the one
-route probed, `launchctl submit`, was denied, but no probe proves there is no other. Either kind
-is caught only by content snapshots, at the next `pair_done`, which then stops the session: the
-first write is not prevented. Snapshots cover the worktree only and leave out `.git`, so a write
-outside the worktree, inside an excluded directory, or after the final snapshot is not detected.
+**Escaped writers are caught late, and only inside the worktree.** On macOS a process that
+leaves its run's process group survives the reap and keeps the write permission its run had
+(test 17); on Linux bubblewrap ends it with the run. A process that got out of the sandbox
+altogether would write with your own permissions; the one route probed on macOS, `launchctl
+submit`, was denied, but no probe proves there is no other. Either kind is caught only by
+content snapshots, at the next `pair_done`, which then stops the session: the first write is
+not prevented. Snapshots cover the worktree only and leave out `.git`, so a write outside the
+worktree, inside an excluded directory, or after the final snapshot is not detected.
 
 ## Files
 
@@ -390,9 +454,10 @@ carries. Only Claude Code uses it; OMP gets the same verbs as extension tools re
 - `.mcp.json`: registers the bundled MCP server `pair` with Claude Code.
 - `README.md`: this file.
 - `skills/paired-coding/SKILL.md`: the skill the agent follows while pairing.
-- `core/gate.mjs`: the gate core: pairing state, verdicts and Seatbelt profiles, with no host imports.
+- `core/gate.mjs`: the gate core: pairing state, verdicts, Seatbelt profiles and bubblewrap options, with no host imports.
 - `lib/verbs.mjs`: the `pair_*` verbs and session lifecycle, shared by the MCP server, the hooks and the OMP adapter.
-- `lib/host-io.mjs`: file, snapshot, lock and sandboxed-process I/O, shared the same way.
+- `lib/host-io.mjs`: file, snapshot, lock and sandboxed-process I/O, and the post-run link check, shared the same way.
+- `lib/bwrap.mjs`: the Linux sandbox: the bubblewrap probe, the seccomp filter, and descriptor-pinned mounts.
 - `server/pair-server.mjs`: the MCP server over stdio that serves the `pair_*` tools to Claude Code.
 - `server/binding.mjs`: ties each `pair_*` call to its session through a one-shot file the hook writes; a call the hook never saw is refused.
 - `hooks/hooks.json`: registers the Claude Code hooks.

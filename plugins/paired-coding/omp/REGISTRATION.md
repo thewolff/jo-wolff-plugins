@@ -9,10 +9,13 @@ Below, `<checkout>` is the absolute path of your clone of this repository.
 
 ## What it needs
 
-- macOS with `/usr/bin/sandbox-exec`. `pair_run`, and the write inside `pair_write` and
-  `pair_edit`, run under a Seatbelt profile that fences file writes, hard links and Unix-domain
-  socket connections (the DNS resolver's excepted), and leaves TCP open. On any other platform
-  `pair_start` refuses, and the session stays inert.
+- macOS with `/usr/bin/sandbox-exec`, or Linux (x86_64 or aarch64) with bubblewrap and
+  unprivileged user namespaces. `pair_run`, and the write inside `pair_write` and `pair_edit`,
+  run under a Seatbelt profile on macOS, or bubblewrap with a seccomp filter on Linux, that
+  fences file writes and Unix-domain socket connections (on macOS the DNS resolver's excepted),
+  and leaves TCP open; the plugin README's "Linux: bubblewrap" section lists how the two differ.
+  On any other platform, or where the sandbox cannot run, `pair_start` refuses, and the session
+  stays inert.
 - OMP's extension API: `pi.on("tool_call" | "input" | "session_shutdown" |
   "session_before_switch" | "session_switch" | "session_before_branch" | "session_branch" |
   "session_tree")`, `pi.registerTool`, `pi.getAllTools`, `pi.sendMessage`, `pi.zod`, and

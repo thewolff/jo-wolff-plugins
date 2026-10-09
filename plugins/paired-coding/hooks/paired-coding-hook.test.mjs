@@ -10,9 +10,10 @@ import { fileURLToPath } from "node:url";
 import { handle, promptOrigin, queueInput, resolvePending } from "./paired-coding-hook.mjs";
 import { callTool } from "../server/pair-server.mjs";
 import { TOOL_PREFIX, SERVER_NAME } from "../server/binding.mjs";
+import { sandboxProblem } from "../lib/host-io.mjs";
 
 const HOOK = join(dirname(fileURLToPath(import.meta.url)), "paired-coding-hook.mjs");
-const hasSandbox = process.platform === "darwin" && existsSync("/usr/bin/sandbox-exec");
+const hasSandbox = sandboxProblem() === null;
 
 function fixture() {
   const top = realpathSync(mkdtempSync(join(tmpdir(), "pc-hook-")));

@@ -16,7 +16,7 @@
     {
       "name": "paired-coding",
       "source": "./plugins/paired-coding",
-      "description": "Pair with an agent one change set at a time: it proposes a card naming the decision inside the change, you agree in conversation, and a gate at the tool boundary refuses every write outside the agreed change set. Gate on Claude Code and OMP, macOS only."
+      "description": "Pair with an agent one change set at a time: it proposes a card naming the decision inside the change, you agree in conversation, and a gate at the tool boundary refuses every write outside the agreed change set. Gate on Claude Code and OMP, on macOS and Linux."
     }
   ]
 }
