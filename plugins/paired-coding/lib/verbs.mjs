@@ -21,7 +21,7 @@ import {
 } from "../core/gate.mjs";
 import {
   activated, appendJournal, defaultTempPaths, findRoot, loadState, makeIo, markActivated, reapGroups, saveState,
-  recordRun, runPgids, runSandboxed, sandboxProblem, sessionDir, stateBase, withLock, withSession, writeSandboxed,
+  closedRunProblem, describeSandbox, recordRun, runPgids, runSandboxed, sandboxBackend, sandboxProblem, sessionDir, stateBase, withLock, withSession, writeSandboxed,
 } from "./host-io.mjs";
 
 /** Directories left out of every snapshot unless the user's own exclusions say otherwise. */
@@ -307,8 +307,8 @@ export function roadmapOffer(base, root) {
 }
 
 function pairStartVerb(args, ctx) {
-  const problem = sandboxProblem();
-  if (problem) return fail("pair_start", `${problem}; the gate cannot fence pair_run here, so pairing stays conversation-only`);
+  const backend = sandboxBackend();
+  if ("problem" in backend) return fail("pair_start", `${backend.problem}; the gate cannot fence pair_run here, so pairing stays conversation-only`);
   const dir = ctx.sessionDir;
   mkdirSync(dir, { recursive: true, mode: 0o700 });
   const stateDir = realpathSync.native(dir);
@@ -323,17 +323,21 @@ function pairStartVerb(args, ctx) {
     const io = makeIo({ root, exclusions });
     const found = roadmapOffer(base, root);
     const roadmapOfferArg = found ? { from: found.fromSession, roadmap: found.roadmap } : undefined;
-    const out = pairStart(state, { sessionId: ctx.sessionId, root, stateDir, tempPaths: defaultTempPaths(), protect, exclusions, roadmapOffer: roadmapOfferArg, cardSeq: lastCardSeq(readJournal(dir)) }, io);
+    let out = pairStart(state, { sessionId: ctx.sessionId, root, stateDir, tempPaths: defaultTempPaths(), protect, exclusions, roadmapOffer: roadmapOfferArg, cardSeq: lastCardSeq(readJournal(dir)) }, io);
+    // A temp layout no sandbox here can fence would refuse every pair_run; say so now.
+    const unfenced = out.ok ? closedRunProblem(out.state, backend) : null;
+    if (unfenced) out = { ok: false, reason: `${unfenced}; pairing is not started`, state, journal: [] };
     if (out.ok) {
       saveState(dir, out.state);
       markActivated(dir, { root: out.state.root, stateDir });
     }
-    appendJournal(dir, out.journal);
+    // The journal names the sandbox this session's writes and runs had (sandboxBackend).
+    appendJournal(dir, out.ok ? out.journal.map((e) => (e.type === "start" ? { ...e, sandbox: backend.name } : e)) : out.journal);
     return out;
   });
   if (!r.ok) return fail("pair_start", r.reason);
   const offer = r.state.roadmapOffer;
-  const parts = [`Pairing started. Worktree ${r.state.root}. Host write, edit, shell and sub-agent tools are refused from now on; write with pair_write or pair_edit inside an agreed change set and run commands with pair_run. Snapshot exclusions: ${exclusions.join(", ")}. Your partner ends pairing by typing pair stop as a whole message.`];
+  const parts = [`Pairing started. Worktree ${r.state.root}. Host write, edit, shell and sub-agent tools are refused from now on; write with pair_write or pair_edit inside an agreed change set and run commands with pair_run. Snapshot exclusions: ${exclusions.join(", ")}. Your partner ends pairing by typing pair stop as a whole message.`, describeSandbox(backend)];
   if (offer) {
     parts.push(`An earlier session in this worktree left roadmap items open or not ready. Show them to your partner and ask whether to pick that roadmap up or start fresh; nothing reopens unless they agree. Record their answer with pair_note's earlierRoadmap field: "pick-up" carries the whole roadmap into this session, "start-fresh" sets it aside so it is not offered again.\n${roadmapLines(openRoadmapItems(offer.roadmap))}`);
   }
@@ -423,11 +427,12 @@ function writeVerb(name, args, ctx) {
       if (count > 1 && args.replaceAll !== true) return fail(name, `oldString occurs ${count} times; pass replaceAll or a longer oldString`);
       text = args.replaceAll === true ? current.split(args.oldString).join(args.newString) : current.replace(args.oldString, () => args.newString);
     }
-    // The write itself runs in the open-phase sandbox (Seatbelt on macOS, bubblewrap on Linux),
-    // so the kernel checks the resolved target: a symlink swapped in after checkWrite cannot
-    // carry it out of the boundary. It is staged in a new file beside the target and renamed
-    // over it, so a hard link at the target is replaced rather than written through to a file
-    // outside the boundary.
+    // The write itself runs in the open-phase sandbox (Seatbelt on macOS, Landlock or
+    // bubblewrap on Linux), so the kernel checks the resolved target: a symlink swapped in
+    // after checkWrite cannot carry it out of the boundary. Seatbelt and bubblewrap stage it in
+    // a new file beside the target and rename it over the target, so a hard link at the target
+    // is replaced rather than written through to a file outside the boundary; Landlock writes
+    // in place, and stages the same way for a target with a second link or a symlink.
     const tempPath = join(dirname(c.absPath), `.pair-write-${randomBytes(8).toString("hex")}.tmp`);
     const w = writeSandboxed({ state: s, path: c.absPath, tempPath, content: text });
     if (!w.ok) {
@@ -435,7 +440,8 @@ function writeVerb(name, args, ctx) {
       return fail(name, `the sandboxed write failed: ${w.error}`);
     }
     appendJournal(dir, c.journal);
-    return { ok: true, text: `${name === "pair_write" ? "Wrote" : "Edited"} ${args.path}.` };
+    const note = w.fellBack ? ` (under bubblewrap: ${w.fellBack})` : "";
+    return { ok: true, text: `${name === "pair_write" ? "Wrote" : "Edited"} ${args.path}${note}.` };
   });
 }
 
@@ -464,18 +470,26 @@ async function runVerb(args, ctx) {
     linkCheck: { sinceMs, exclusions: start.state.exclusions ?? [] },
   });
   withSession(dir, {}, (s) => {
-    const out = runEnd(s, { runId, exitCode: res.exitCode, links: res.links }, makeIo({}));
+    const out = runEnd(s, { runId, exitCode: res.exitCode, links: res.links, supervisorKilled: res.supervisorKilled }, makeIo({}));
     out.journal = out.journal.map((e) => ({ ...e, timedOut: res.timedOut, aborted: res.aborted, signal: res.signal }));
     return out;
   });
-  if (res.links.length > 0) {
-    return fail("pair_run", `STOPPED: pair_run made a link or a .git entry inside the paths it could write (${res.links.join(", ")}). A later write could follow it out of the agreement, so pairing is stopped. Show this to your partner; only your partner ends the session, by typing pair stop.`);
+  const stops = [];
+  if (res.links.length > 0) stops.push(`pair_run made a link or a .git entry inside the paths it could write (${res.links.join(", ")}). A later write could follow it out of the agreement`);
+  if (res.supervisorKilled) stops.push(`pair_run's Landlock supervisor was killed by ${res.supervisorKilled} before it ended the run's processes, so a process the run started may still be running with its write permission`);
+  if (stops.length > 0) {
+    return fail("pair_run", `STOPPED: ${stops.join(". ")}, so pairing is stopped. Show this to your partner; only your partner ends the session, by typing pair stop.`);
   }
   const head = res.timedOut ? `timed out after ${timeoutMs / 1000}s; its process group was killed`
     : res.aborted ? "aborted; its process group was killed"
     : res.error ? `could not run: ${res.error}`
     : `exit ${res.exitCode}${res.signal ? ` (signal ${res.signal})` : ""}`;
-  const text = [`pair_run ${head} (phase ${start.state.phase}).`, res.stdout && `stdout:\n${res.stdout}`, res.stderr && `stderr:\n${res.stderr}`].filter(Boolean).join("\n");
-  return { ok: !res.timedOut && !res.aborted && !res.error && res.exitCode === 0, text, result: { exitCode: res.exitCode, timedOut: res.timedOut, aborted: res.aborted, runId } };
+  const under = res.fellBack ? `; under bubblewrap: ${res.fellBack}` : "";
+  const one = res.uncreatable?.length === 1;
+  const note = res.uncreatable?.length
+    ? `Note: under Landlock this run could not create ${res.uncreatable.join(", ")}: Landlock lets a run make a new file only under a directory grant, and no grant here covers ${one ? "it" : "them"} without also reaching a path outside the agreement. Create ${one ? "it" : "them"} with pair_write first, then run again.`
+    : "";
+  const text = [`pair_run ${head} (phase ${start.state.phase}${under}).`, note, res.stdout && `stdout:\n${res.stdout}`, res.stderr && `stderr:\n${res.stderr}`].filter(Boolean).join("\n");
+  return { ok: !res.timedOut && !res.aborted && !res.error && res.exitCode === 0, text, result: { exitCode: res.exitCode, timedOut: res.timedOut, aborted: res.aborted, runId, ...(res.backend ? { sandbox: res.backend } : {}), ...(res.uncreatable?.length ? { uncreatable: res.uncreatable } : {}) } };
 }
 
