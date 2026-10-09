@@ -19,9 +19,13 @@ const inGit = (abs) => abs.split("/").some((seg) => seg.toLowerCase() === ".git"
 /**
  * A fake filesystem for the Landlock builders: `dirs` and `files` exist (a file may be
  * `[path, nlink]`), `links` are symlinks. walk lists everything under a directory and does not
- * descend into `.git` or a symlink, as landlockIo does.
+ * descend into `.git` or a symlink, as landlockIo does. `extra.others` are FIFOs, sockets or
+ * devices; `extra.unlisted` are directories that cannot be listed (walk gives one
+ * "unreadable" entry for each, as landlockIo does, and nothing under it); `extra.mounts` is
+ * what io.mounts returns.
+ * @param {{ others?: string[], unlisted?: string[], mounts?: string[] | null }} [extra]
  */
-function fakeFs(dirs, files = [], links = []) {
+function fakeFs(dirs, files = [], links = [], extra = {}) {
   const entries = new Map();
   for (const d of dirs) entries.set(d, { type: "dir", nlink: 2 });
   for (const f of files) {
@@ -29,13 +33,21 @@ function fakeFs(dirs, files = [], links = []) {
     entries.set(path, { type: "file", nlink });
   }
   for (const l of links) entries.set(l, { type: "symlink", nlink: 1 });
+  for (const o of extra.others ?? []) entries.set(o, { type: "other", nlink: 1 });
+  const unlisted = extra.unlisted ?? [];
   return {
     lstat: (abs) => entries.get(abs) ?? null,
     walk(dir) {
-      return [...entries.entries()]
-        .filter(([p]) => p.startsWith(`${dir}/`) && !p.slice(dir.length + 1).split("/").slice(0, -1).some((s) => s.toLowerCase() === ".git"))
-        .map(([path, st]) => ({ path, ...st }));
+      if (unlisted.includes(dir)) return [{ path: `${dir}/`, type: "unreadable", nlink: 0 }];
+      const hidden = (p) => unlisted.some((u) => p.startsWith(`${u}/`));
+      return [
+        ...[...entries.entries()]
+          .filter(([p]) => p.startsWith(`${dir}/`) && !hidden(p) && !p.slice(dir.length + 1).split("/").slice(0, -1).some((s) => s.toLowerCase() === ".git"))
+          .map(([path, st]) => ({ path, ...st })),
+        ...unlisted.filter((u) => u.startsWith(`${dir}/`) && !hidden(u)).map((u) => ({ path: `${u}/`, type: "unreadable", nlink: 0 })),
+      ];
     },
+    mounts: () => (extra.mounts === undefined ? [] : extra.mounts),
     // the bwrapArgsFor half of the same filesystem, for the fallback case
     kind: (abs) => {
       const t = entries.get(abs)?.type;
@@ -195,10 +207,44 @@ describe("landlockRulesFor", () => {
     assert.throws(() => landlockRulesFor(open(["ln/**"]), [], io), /ln is a symlink/);
   });
 
-  test("a glob does not descend into a symlinked directory", () => {
+  test("a glob does not descend into a symlinked directory, and a symlink keeps its directory from a grant even when the glob matches it", () => {
     const io = fakeFs([...BASE_DIRS], [...BASE_FILES, `${ROOT}/src/x.md`], [`${ROOT}/src/out`]);
-    assert.deepEqual(landlockRulesFor(open(["src/**"]), [], fakeFs(BASE_DIRS, BASE_FILES, [`${ROOT}/src/out`])).dirs, [{ path: `${ROOT}/src`, make_dir: true, remove: true }]);
+    const rules = landlockRulesFor(open(["src/**"]), [], fakeFs(BASE_DIRS, BASE_FILES, [`${ROOT}/src/out`]));
+    assert.deepEqual(rules.dirs, []);
+    assert.deepEqual(rules.files, [...DEVICES, `${ROOT}/src/a.ts`, `${ROOT}/src/b.ts`]);
     assert.deepEqual(landlockRulesFor(open(["src/**/*.ts"]), [], io).dirs, []);
+  });
+
+  test("a FIFO, socket or device, or a directory that cannot be listed, keeps every directory above it from a grant", () => {
+    const lib = `${ROOT}/src/lib`;
+    const grant = (path) => [{ path, make_dir: true, remove: true }];
+    const tree = (extra) => fakeFs([...BASE_DIRS, lib, `${lib}/deep`], [...BASE_FILES, `${lib}/c.ts`, `${lib}/deep/d.ts`], [], extra);
+    assert.deepEqual(landlockRulesFor(open(["src/**"]), [], tree({})).dirs, grant(`${ROOT}/src`), "the clean tree is granted whole");
+    // A FIFO in src/lib: src/lib and src are dirty, src/lib/deep is still clean.
+    const fifo = landlockRulesFor(open(["src/**"]), [], tree({ others: [`${lib}/pipe`] }));
+    assert.deepEqual(fifo.dirs, grant(`${lib}/deep`));
+    assert.deepEqual(fifo.files, [...DEVICES, `${ROOT}/src/a.ts`, `${ROOT}/src/b.ts`, `${lib}/c.ts`]);
+    // src/lib cannot be listed: it might hold anything, so neither it nor src gets a grant, and
+    // nothing below it is looked at.
+    const unlisted = landlockRulesFor(open(["src/**"]), [], tree({ unlisted: [lib] }));
+    assert.deepEqual(unlisted.dirs, []);
+    assert.deepEqual(unlisted.files, [...DEVICES, `${ROOT}/src/a.ts`, `${ROOT}/src/b.ts`]);
+    // A directory the glob starts at that cannot be listed gets no grant either.
+    assert.deepEqual(landlockRulesFor(open(["src/lib/**"]), [], tree({ unlisted: [lib] })).dirs, []);
+  });
+
+  test("a directory that is or holds a mount point gets no grant; matching files under it are granted one by one", () => {
+    const lib = `${ROOT}/src/lib`;
+    const tree = (mounts) => fakeFs([...BASE_DIRS, lib, `${lib}/m`], [...BASE_FILES, `${lib}/c.ts`, `${lib}/m/d.ts`], [], { mounts });
+    const atM = landlockRulesFor(open(["src/**"]), [], tree(["/", "/proc", ROOT, `${lib}/m`]));
+    assert.deepEqual(atM.dirs, [], "src/lib/m is a mount point, so it, src/lib and src are dirty");
+    assert.deepEqual(atM.files, [...DEVICES, `${ROOT}/src/a.ts`, `${ROOT}/src/b.ts`, `${lib}/c.ts`, `${lib}/m/d.ts`]);
+    // A file bind-mounted over src/lib/c.ts makes src/lib dirty, and leaves src/lib/m clean.
+    assert.deepEqual(landlockRulesFor(open(["src/**"]), [], tree([`${lib}/c.ts`])).dirs, [{ path: `${lib}/m`, make_dir: true, remove: true }]);
+    // Mounts at or above the worktree root (a container's volume) do not count against it.
+    assert.deepEqual(landlockRulesFor(open(["src/**"]), [], tree(["/", ROOT])).dirs, [{ path: `${ROOT}/src`, make_dir: true, remove: true }]);
+    // When the mount table cannot be read, no directory is granted.
+    assert.deepEqual(landlockRulesFor(open(["src/**"]), [], tree(null)).dirs, []);
   });
 
   test("literal files get no directory grant, so pair_run cannot delete or rename them", () => {
@@ -312,11 +358,11 @@ const uncreatableGlob = (rules, state, abs, io) => {
  * and `ll` are what each allows; a difference applies only in the direction it names.
  */
 const DIFFERENCES = {
-  "a literal that does not exist yet cannot be created by pair_run (pair_write can)": ({ sb, ll, abs, state, io }) =>
+  "a literal that does not exist yet gets no grant of its own, so only a granted directory above it lets pair_run create it (pair_write can)": ({ sb, ll, abs, state, io }) =>
     sb && !ll && io.lstat(abs) === null && state.changeSet.boundary.some((e) => !glob(e) && `${state.root}/${e}` === abs),
   "a new file under a glob is fenced per directory: any name lands in a granted directory": ({ sb, ll, abs, io, rules }) =>
     !sb && ll && io.lstat(abs) === null && rules.dirs.some((d) => within(d.path, abs)),
-  "a glob's directory that holds a file outside the boundary takes no new file from pair_run": ({ sb, ll, abs, state, io, rules }) =>
+  "a glob's directory that is not clean (a file outside the boundary, a link, a special file, an unlistable directory or a mount) takes no new file from pair_run": ({ sb, ll, abs, state, io, rules }) =>
     sb && !ll && io.lstat(abs) === null && !rules.dirs.some((d) => within(d.path, abs)) && !uncreatableGlob(rules, state, abs, io),
   "a glob takes no new file from pair_run directly in the worktree root, or in a missing directory whose grant would hold the root, a .git or a protected path (the run names the entry; pair_write can)": ({ sb, ll, abs, state, io, rules }) =>
     sb && !ll && io.lstat(abs) === null && uncreatableGlob(rules, state, abs, io),
@@ -465,8 +511,11 @@ function referenceRulesFor(state, extraAllow, io) {
   const under = (dir) => walk(walks.has(dir) ? dir : [...walks.keys()].find((w) => within(w, dir)) ?? dir).filter((e) => within(dir, e.path) && e.path !== dir);
   const globs = boundary.map(normalizeEntry).filter(isGlob);
   const fenced = (abs) => inGitDir(relativeTo(root, abs) ?? "") || denied.some((d) => within(d, abs));
-  const clean = (dir) => under(dir).every((e) => fenced(e.path)
-    || (e.type === "file" ? matches(e.path) : e.type !== "dir" || globs.some((g) => globCanHold(g, relativeTo(root, e.path) ?? ""))));
+  // Round 6: every non-directory must be a matching regular file with one link, and no mount
+  // point may be at or under the directory (every directory counts when mounts are unknown).
+  const mounts = io.mounts();
+  const clean = (dir) => (mounts !== null && !mounts.some((m) => m !== root && within(dir, m))) && under(dir).every((e) => fenced(e.path)
+    || (e.type === "dir" ? globs.some((g) => globCanHold(g, relativeTo(root, e.path) ?? "")) : e.type === "file" && e.nlink === 1 && matches(e.path)));
   const creatingOnly = new Set();
   const existing = new Set();
   const wantDir = (dir, makeDir, creating = false) => {
@@ -586,7 +635,7 @@ describe("landlockRulesFor gives the reference implementation's answers", () => 
     assert.deepEqual(landlockRulesFor(open(["src/*.ts", "src/x/*.ts"]), [], deep).dirs, []);
   });
 
-  test("generated trees, boundaries and protected paths", () => {
+  test("generated trees, boundaries and protected paths, with special files, unlisted directories and mounts", () => {
     let seed = 1;
     const rand = (n) => {
       seed = (seed * 1103515245 + 12345) % 2147483648;
@@ -616,7 +665,14 @@ describe("landlockRulesFor gives the reference implementation's answers", () => 
         }
       };
       grow(`${ROOT}/src`, 0);
-      const io = fakeFs([...new Set(dirs)], files, [...new Set(links)].filter((l) => !dirs.includes(l)));
+      const below = [...new Set(dirs)].filter((d) => d.startsWith(`${ROOT}/src/`));
+      const pick = () => below[rand(below.length)];
+      const extra = {
+        others: rand(5) === 0 ? [`${rand(2) && below.length ? pick() : `${ROOT}/src`}/p${rand(3)}`] : [],
+        unlisted: rand(6) === 0 && below.length ? [pick()] : [],
+        mounts: rand(10) === 0 ? null : rand(5) === 0 && below.length ? [pick()] : [],
+      };
+      const io = fakeFs([...new Set(dirs)], files, [...new Set(links)].filter((l) => !dirs.includes(l)), extra);
       const boundary = [...new Set(Array.from({ length: 1 + rand(3) }, () => globPool[rand(globPool.length)]))];
       const ours = files.map((f) => (Array.isArray(f) ? f[0] : f)).filter((f) => within(`${ROOT}/src`, f));
       if (rand(3) === 0 && ours.length) boundary.push(ours[rand(ours.length)].slice(ROOT.length + 1));

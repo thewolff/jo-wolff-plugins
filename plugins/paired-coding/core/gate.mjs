@@ -475,7 +475,7 @@ export function diffSnapshots(before, after, exclusions = []) {
     if (excluded(path)) continue;
     const a = Object.hasOwn(before, path) ? before[path] : undefined;
     const b = Object.hasOwn(after, path) ? after[path] : undefined;
-    if (a === b) continue;
+    if (a === b || (a !== undefined && b !== undefined && sameAcrossFormats(a, b))) continue;
     out.push({ path, change: a === undefined ? "added" : b === undefined ? "removed" : "modified" });
   }
   return out.sort((x, y) => (x.path < y.path ? -1 : x.path > y.path ? 1 : 0));
@@ -488,11 +488,27 @@ function takeSnapshot(io) {
   return r;
 }
 
+/**
+ * Snapshots before 1.2 recorded only the executable bit (`file:x:<hash>` or `file:-:<hash>`);
+ * later ones record four octal mode digits (`file:0644:<hash>`). A session whose baseline or
+ * card was taken by the older plugin compares an old entry with a new one on what the old one
+ * holds: the hash and the executable bit. Two entries in the same format compare as text.
+ */
+const OLD_FILE = /^file:([x-]):([0-9a-f]{64})$/;
+const NEW_FILE = /^file:([0-7]{4}):([0-9a-f]{64})$/;
+function sameAcrossFormats(a, b) {
+  const [oldFp, newFp] = OLD_FILE.test(a) ? [a, b] : [b, a];
+  const o = OLD_FILE.exec(oldFp);
+  const n = NEW_FILE.exec(newFp);
+  if (!o || !n) return false;
+  return o[2] === n[2] && (o[1] === "x") === ((Number.parseInt(n[1], 8) & 0o111) !== 0);
+}
+
 function sameHashes(a, b) {
   if (!isObj(a) || !isObj(b)) return false;
   const ka = Object.keys(a).sort();
   const kb = Object.keys(b).sort();
-  return ka.length === kb.length && ka.every((k, i) => k === kb[i] && a[k] === b[k]);
+  return ka.length === kb.length && ka.every((k, i) => k === kb[i] && (a[k] === b[k] || sameAcrossFormats(a[k], b[k])));
 }
 
 // ─── trusted input ──────────────────────────────────────────────────────────────────────
@@ -1089,10 +1105,13 @@ export function runStart(state, args, io) {
  * worktree-relative paths the adapter found the run made since it started: a symlink, a hard
  * link, or a `.git` entry in the paths it could write. Any stops the session: a link inside the
  * boundary would carry a later write, the partner's own editor's included, to wherever it
- * points, and a new `.git` holds hooks and config git runs outside the sandbox. pair_done then
- * refuses until the partner types pair stop.
+ * points, and a new `.git` holds hooks and config git runs outside the sandbox.
+ * `supervisorKilled` is the signal a Landlock run's supervising helper died of that the adapter
+ * did not send (before Landlock ABI 6 the run itself can send it): the helper could not end the
+ * processes that left the run's group, which may still write with its grant. That stops the
+ * session the same way. pair_done then refuses until the partner types pair stop.
  * @param {State} state
- * @param {{ runId: unknown, exitCode?: unknown, links?: unknown }} args
+ * @param {{ runId: unknown, exitCode?: unknown, links?: unknown, supervisorKilled?: unknown }} args
  * @param {Io} [io]
  * @returns {Result}
  */
@@ -1102,10 +1121,17 @@ export function runEnd(state, args, io) {
   next.running = next.running.filter((r) => r.runId !== args?.runId);
   const journal = [entry("run-end", io, { runId: args?.runId, exitCode: args?.exitCode })];
   const links = Array.isArray(args?.links) ? args.links.filter((l) => typeof l === "string" && l !== "") : [];
+  const reasons = [];
   if (links.length > 0) {
-    next.halt = { reason: `pair_run made a link or a .git entry inside the paths it could write: ${links.join(", ")}`, at: stamp(io) };
+    reasons.push(`pair_run made a link or a .git entry inside the paths it could write: ${links.join(", ")}`);
     journal.push(entry("link-made", io, { runId: args?.runId, paths: links }));
   }
+  const killedBy = typeof args?.supervisorKilled === "string" && args.supervisorKilled !== "" ? args.supervisorKilled : null;
+  if (killedBy) {
+    reasons.push(`pair_run's Landlock supervisor was killed by ${killedBy}, which the gate did not send, so a process the run started may still be writing`);
+    journal.push(entry("supervisor-killed", io, { runId: args?.runId, signal: killedBy }));
+  }
+  if (reasons.length > 0) next.halt = { reason: reasons.join("; "), at: stamp(io) };
   return { ok: true, state: next, journal };
 }
 
@@ -1365,9 +1391,13 @@ function bwrapPlan(state, wanted, opts, io) {
  * @typedef {object} LandlockIo
  * @property {(abs: string) => { type: "file" | "dir" | "symlink" | "other", nlink: number } | null} lstat
  *   what is at `abs` itself; null when nothing is
- * @property {(dir: string) => Array<{ path: string, type: "file" | "dir" | "symlink" | "other", nlink: number }>} walk
+ * @property {(dir: string) => Array<{ path: string, type: "file" | "dir" | "symlink" | "other" | "unreadable", nlink: number }>} walk
  *   every entry under `dir` (not `dir` itself), absolute. An entry named `.git` in any letter
- *   case is listed but not descended into, and a symlinked directory is not followed
+ *   case is listed but not descended into, and a symlinked directory is not followed. An
+ *   entry that cannot be looked at is listed as "unreadable", and a directory (`dir` itself
+ *   included) that cannot be listed gets one "unreadable" entry at `<directory>/`
+ * @property {() => string[] | null} mounts
+ *   every mount point, absolute (/proc/self/mountinfo); null when they cannot be read
  */
 
 /**
@@ -1390,11 +1420,13 @@ export const LANDLOCK_DEVICES = Object.freeze(["/dev/null", "/dev/zero", "/dev/t
  *   1. /dev/null, /dev/zero and /dev/tty, where they exist, as `files`;
  *   2. each temp path that exists as an `rw_trees` entry, except one inside the worktree;
  *   3. open only: each existing literal boundary file as a `files` entry; a literal that does
- *      not exist yet gets nothing, so pair_run cannot create it (pair_write can). For a glob,
+ *      not exist yet gets nothing of its own, so pair_run can create it only where a glob's
+ *      `dirs` grant already covers its parent (pair_write can always create it). For a glob,
  *      each existing matching file under the directory above its first glob segment as a
- *      `files` entry, and a `dirs` grant only on a directory the glob could hold a file under
- *      and none of whose existing files is outside the boundary (the outermost such ones), so
- *      that no existing file outside the boundary becomes writable. The worktree root never
+ *      `files` entry, and a `dirs` grant only on a clean directory the glob could hold a file
+ *      under (the outermost such ones): every existing non-directory in its tree is a regular
+ *      file inside the boundary with one link, and no mount point is at or under it, so that
+ *      no existing file outside the boundary becomes writable or removable. The worktree root never
  *      gets one, since it holds .git: a glob at the root (`*.md`, `**`) has its matching root
  *      files granted one by one and its subdirectories looked at in turn, and cannot create a
  *      file directly in the root. A glob whose fixed directory does not exist yet gets a
@@ -1484,21 +1516,29 @@ export function landlockRulesFor(state, extraAllow, io) {
   const globs = boundary.map(normalizeEntry).filter(isGlob);
   const fenced = (abs) => inGitDir(relativeTo(root, abs) ?? "") || denied.some((d) => within(d, abs));
   const canHold = (abs) => globs.some((g) => globCanHold(g, relativeTo(root, abs) ?? ""));
-  // A directory is clean when none of its existing regular files is outside the boundary and
-  // a glob entry could hold a file under each of its existing subdirectories: a `dirs` grant
-  // reaches the whole tree, so there it makes no existing file writable that was not agreed,
-  // and lets new files appear only where the boundary could have them. (.git and the denied
-  // paths are left to the notExpressible checks below; everything under a fenced path is
-  // fenced too, so its subtree needs no look.) The worktree root is never clean: it holds
-  // .git, so a glob at the root is granted per file there and per directory below. Computed
-  // bottom-up, once per directory.
+  // Mount points below the root. A grant on a directory reaches through a mount under it, to
+  // a tree nobody looked at when the ruleset was built; when they cannot be read, every
+  // directory counts as holding one.
+  const allMounts = io.mounts();
+  const mounts = allMounts && allMounts.filter((m) => m !== root && within(root, m));
+  const holdsMount = (dir) => mounts === null || mounts.some((m) => within(dir, m));
+  // A directory is clean when every existing entry in it that is not a directory is a regular
+  // file inside the boundary with one link, a glob entry could hold a file under each of its
+  // existing subdirectories, and no mount point is at or under it: a `dirs` grant reaches the
+  // whole tree and can delete in it, so there it makes no existing file writable or removable
+  // that was not agreed, and lets new files appear only where the boundary could have them. A
+  // symlink, FIFO, socket or device, an entry that cannot be looked at, and a directory that
+  // cannot be listed all make it dirty. (.git and the denied paths are left to the
+  // notExpressible checks below; everything under a fenced path is fenced too, so its subtree
+  // needs no look.) The worktree root is never clean: it holds .git, so a glob at the root is
+  // granted per file there and per directory below. Computed bottom-up, once per directory.
   /** @type {Map<string, boolean>} */
   const cleanness = new Map([[root, false]]);
   const clean = (dir) => {
     let c = cleanness.get(dir);
     if (c === undefined) {
-      c = children(dir).every((e) => fenced(e.path)
-        || (e.type === "file" ? matches(e.path) : e.type !== "dir" || (canHold(e.path) && clean(e.path))));
+      c = !holdsMount(dir) && children(dir).every((e) => fenced(e.path)
+        || (e.type === "dir" ? canHold(e.path) && clean(e.path) : e.type === "file" && e.nlink === 1 && matches(e.path)));
       cleanness.set(dir, c);
     }
     return c;
@@ -1566,8 +1606,6 @@ export function landlockRulesFor(state, extraAllow, io) {
     if (git) return { notExpressible: `a directory grant on ${relativeTo(root, d)} would hold ${relativeTo(root, git.path)}, and Landlock cannot fence it inside the grant` };
     const held = denied.find((x) => within(d, x));
     if (held) return { notExpressible: `a directory grant on ${relativeTo(root, d)} would hold ${held}, and Landlock cannot fence it inside the grant` };
-    const linked = below.find((e) => e.type === "file" && e.nlink > 1);
-    if (linked) return { notExpressible: `${relativeTo(root, linked.path)} has ${linked.nlink} hard links, and a grant on it would reach every one` };
   }
   const granted = new Set(dirs);
   const inGrant = (f) => {
