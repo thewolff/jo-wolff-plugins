@@ -172,15 +172,19 @@ function fileHash(abs) {
   return createHash("sha256").update(readFileSync(abs)).digest("hex");
 }
 
+const modeBits = (st) => (st.mode & 0o7777).toString(8).padStart(4, "0");
+
 /**
- * Every non-directory path under `root` (untracked and ignored files included) with its type,
- * permission bits (four octal digits, setuid/setgid/sticky included) and content hash, so a
- * chmod shows as a change. Directories themselves are not entries: creating a parent directory
- * for a boundary file is not a change. `exclusions` are worktree-relative directories left out.
+ * Every path under `root` (untracked and ignored files included) with its type and permission
+ * bits (four octal digits, setuid/setgid/sticky included), and for a file its content hash, so
+ * a chmod shows as a change. A directory's entry (`dir:<mode>`; the root itself as `.`) holds
+ * only its mode: diffSnapshots reports it when the mode changes, never when the directory is
+ * created or removed, so creating a parent directory for a boundary file is not a change.
+ * `exclusions` are worktree-relative directories left out, entry and contents.
  * @returns {Record<string, string>}
  */
 export function snapshotTree(root, exclusions = []) {
-  const out = {};
+  const out = { ".": `dir:${modeBits(lstatSync(root))}` };
   const skip = new Set(exclusions.map((e) => e.replace(/\/+$/, "")));
   const walk = (absDir, relDir) => {
     for (const name of readdirSync(absDir)) {
@@ -188,9 +192,11 @@ export function snapshotTree(root, exclusions = []) {
       if (skip.has(rel)) continue;
       const abs = join(absDir, name);
       const st = lstatSync(abs);
-      if (st.isDirectory()) walk(abs, rel);
-      else if (st.isSymbolicLink()) out[rel] = `link:${readlinkSync(abs)}`;
-      else if (st.isFile()) out[rel] = `file:${(st.mode & 0o7777).toString(8).padStart(4, "0")}:${fileHash(abs)}`;
+      if (st.isDirectory()) {
+        out[rel] = `dir:${modeBits(st)}`;
+        walk(abs, rel);
+      } else if (st.isSymbolicLink()) out[rel] = `link:${readlinkSync(abs)}`;
+      else if (st.isFile()) out[rel] = `file:${modeBits(st)}:${fileHash(abs)}`;
       else out[rel] = `other:${st.mode}`;
     }
   };
@@ -199,13 +205,14 @@ export function snapshotTree(root, exclusions = []) {
 }
 
 /**
- * Fingerprints of the files a boundary covers right now. A literal entry that does not exist is
- * recorded as "absent", so creating it also changes the hash.
+ * Fingerprints of the files a boundary covers right now (directories' modes left out). A
+ * literal entry that does not exist is recorded as "absent", so creating it also changes the
+ * hash.
  */
 export function hashBoundary(boundary, root, exclusions = []) {
   const snap = snapshotTree(root, exclusions);
   const out = {};
-  for (const [rel, fp] of Object.entries(snap)) if (boundaryMatches(boundary, rel)) out[rel] = fp;
+  for (const [rel, fp] of Object.entries(snap)) if (!fp.startsWith("dir:") && boundaryMatches(boundary, rel)) out[rel] = fp;
   for (const e of boundary) {
     const literal = !/[*?]/.test(e) && !e.endsWith("/");
     if (literal && !Object.hasOwn(out, e)) out[e] = "absent";
@@ -724,10 +731,11 @@ export function writeSandboxed(opts) {
  * process of a killed run is gone. `backend` names the sandbox the run had, `fellBack` why
  * a Landlock machine ran it under bubblewrap, and `uncreatable` the boundary entries naming a
  * missing path the Landlock run could not make (pair_write can). `supervisorKilled` names the
- * signal a Landlock run's helper died of when this function did not send one: the helper
- * exits with a code after ending everything its command started, and never dies of a signal by
- * its own choice, so one that did was killed before it could, and a process that left the
- * run's group may still be running with the run's write grant.
+ * signal a Landlock run's helper died of, whoever sent it, this function's own SIGKILL after a
+ * timeout or abort included: the helper ends everything its command started and then exits
+ * with a code, also on the SIGTERM this function sends first, and never dies of a signal by its
+ * own choice. One that did was killed before it ended the run's processes, and a process that
+ * left the run's group may still be running with the run's write grant.
  * @param {{ state: import("../core/gate.mjs").State, command: string, cwd: string, timeoutMs?: number, signal?: AbortSignal,
  *   onSpawn?: (pgid: number) => void, env?: Record<string, string>, maxOutput?: number,
  *   linkCheck?: { sinceMs: number, exclusions: string[] }, backend?: "landlock" | "bwrap" }} opts
@@ -802,7 +810,8 @@ export function runSandboxed(opts) {
       child.stdout.destroy();
       child.stderr.destroy();
       const error = failure ?? reapError;
-      const killed = ran.backend === "landlock" && exitInfo.sig !== null && !timedOut && !aborted && !failure;
+      // An exit signal means a helper process ran; a spawn that never made one has none.
+      const killed = ran.backend === "landlock" && exitInfo.sig !== null;
       resolve({ exitCode: exitInfo.code, signal: exitInfo.sig, stdout, stderr, timedOut, aborted, pgid, links: linksMade(), ...ran, ...(killed ? { supervisorKilled: exitInfo.sig } : {}), ...(error ? { error } : {}) });
     };
     child.on("error", (err) => {
