@@ -429,7 +429,7 @@ function writeVerb(name, args, ctx) {
     // after checkWrite cannot carry it out of the boundary. Seatbelt and bubblewrap stage it in
     // a new file beside the target and rename it over the target, so a hard link at the target
     // is replaced rather than written through to a file outside the boundary; Landlock writes
-    // in place, and leaves a target with a second link or a symlink to bubblewrap.
+    // in place, and stages the same way for a target with a second link or a symlink.
     const tempPath = join(dirname(c.absPath), `.pair-write-${randomBytes(8).toString("hex")}.tmp`);
     const w = writeSandboxed({ state: s, path: c.absPath, tempPath, content: text });
     if (!w.ok) {
