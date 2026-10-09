@@ -1,10 +1,10 @@
 // Tests for the Claude Code hook: event wiring, the deny shape, session binding for the
 // bundled MCP server, and the provenance check on UserPromptSubmit.
-import { test } from "node:test";
+import { after, test } from "node:test";
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
-import { appendFileSync, chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { appendFileSync, chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { handle, promptOrigin, queueInput, resolvePending } from "./paired-coding-hook.mjs";
@@ -15,8 +15,14 @@ import { sandboxProblem } from "../lib/host-io.mjs";
 const HOOK = join(dirname(fileURLToPath(import.meta.url)), "paired-coding-hook.mjs");
 const hasSandbox = sandboxProblem() === null;
 
+// The fixtures live under $HOME, not /tmp: a temp directory pair_run may write that holds the
+// worktree is a layout Linux Landlock cannot express, and where bubblewrap is unavailable too,
+// pair_start refuses it.
+const FIXTURES = realpathSync(mkdtempSync(join(homedir(), ".pc-hook-")));
+after(() => rmSync(FIXTURES, { recursive: true, force: true }));
+
 function fixture() {
-  const top = realpathSync(mkdtempSync(join(tmpdir(), "pc-hook-")));
+  const top = mkdtempSync(join(FIXTURES, "f-"));
   const root = join(top, "repo");
   mkdirSync(join(root, ".git"), { recursive: true });
   writeFileSync(join(root, "a.txt"), "alpha\n");

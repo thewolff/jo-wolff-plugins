@@ -124,7 +124,7 @@ export function pickLinuxBackend(landlock, bwrap) {
 }
 
 /**
- * One sentence naming the active sandbox, for pair_start to tell the agent and its partner.
+ * What pair_start tells the agent and its partner about the active sandbox, in a sentence or two.
  * @param {ReturnType<typeof sandboxBackend>} backend
  */
 export function describeSandbox(backend) {
@@ -132,7 +132,11 @@ export function describeSandbox(backend) {
   if (backend.name === "seatbelt") return "Sandbox: macOS Seatbelt (sandbox-exec).";
   if (backend.name === "bwrap") return `Sandbox: bubblewrap, which fences writes per directory (Landlock is not usable here: ${backend.why}).`;
   const bw = bwrapProblem();
-  return `Sandbox: Landlock (kernel ABI ${landlockAbi()}, helper checksum verified), which fences writes per file; a run whose boundary Landlock cannot express goes to bubblewrap${bw === null ? "" : `, which is unavailable here (${bw}), so such a run is refused`}.`;
+  const abi = landlockAbi();
+  const fallback = `a run whose boundary Landlock cannot express goes to bubblewrap${bw === null ? "" : `, which is unavailable here (${bw}), so such a run is refused`}`;
+  // Below ABI 6 Landlock cannot scope signals, so a run can kill the helper supervising it.
+  const supervision = abi < 6 ? ` On this kernel (Landlock ABI ${abi}, below 6) a command pair_run starts can kill the helper that supervises it; if that happens, a process the command left running may keep writing, so the gate stops the session until your partner types pair stop.` : "";
+  return `Sandbox: Landlock (kernel ABI ${abi}, helper checksum verified), which fences writes per file; ${fallback}.${supervision}`;
 }
 
 /**
@@ -141,6 +145,23 @@ export function describeSandbox(backend) {
 export function sandboxProblem() {
   const b = sandboxBackend();
   return "problem" in b ? b.problem : null;
+}
+
+/**
+ * Why pair_run could not be fenced at all under `state`'s temp layout, or null. Landlock's rules
+ * for a closed session hang only on the temp paths, the state directory and the protect list,
+ * and every later run has the same ones, so a layout Landlock cannot express (a temp path
+ * holding the state directory or the worktree) is found by pair_start, not by the first run.
+ * It matters only when bubblewrap, which would run those instead, is unavailable too.
+ * @param {import("../core/gate.mjs").State} state  the session pair_start is about to save
+ * @param {ReturnType<typeof sandboxBackend>} backend
+ */
+export function closedRunProblem(state, backend) {
+  if (!("name" in backend) || backend.name !== "landlock") return null;
+  const rules = landlockRulesFor(state, [], landlockIo);
+  if (!("notExpressible" in rules)) return null;
+  const bw = bwrapProblem();
+  return bw === null ? null : `Landlock cannot fence pair_run in this layout (${rules.notExpressible}), and bubblewrap is unavailable to fence it instead: ${bw}`;
 }
 
 const SANDBOX_EXEC = "/usr/bin/sandbox-exec";
@@ -152,9 +173,10 @@ function fileHash(abs) {
 }
 
 /**
- * Every non-directory path under `root` (untracked and ignored files included) with its type
- * and content hash. Directories themselves are not entries: creating a parent directory for a
- * boundary file is not a change. `exclusions` are worktree-relative directories left out.
+ * Every non-directory path under `root` (untracked and ignored files included) with its type,
+ * permission bits (four octal digits, setuid/setgid/sticky included) and content hash, so a
+ * chmod shows as a change. Directories themselves are not entries: creating a parent directory
+ * for a boundary file is not a change. `exclusions` are worktree-relative directories left out.
  * @returns {Record<string, string>}
  */
 export function snapshotTree(root, exclusions = []) {
@@ -168,7 +190,7 @@ export function snapshotTree(root, exclusions = []) {
       const st = lstatSync(abs);
       if (st.isDirectory()) walk(abs, rel);
       else if (st.isSymbolicLink()) out[rel] = `link:${readlinkSync(abs)}`;
-      else if (st.isFile()) out[rel] = `file:${st.mode & 0o111 ? "x" : "-"}:${fileHash(abs)}`;
+      else if (st.isFile()) out[rel] = `file:${(st.mode & 0o7777).toString(8).padStart(4, "0")}:${fileHash(abs)}`;
       else out[rel] = `other:${st.mode}`;
     }
   };
@@ -701,14 +723,18 @@ export function writeSandboxed(opts) {
  * follow out of the agreement (newLinks, since `linkCheck.sinceMs`), checked after every
  * process of a killed run is gone. `backend` names the sandbox the run had, `fellBack` why
  * a Landlock machine ran it under bubblewrap, and `uncreatable` the boundary entries naming a
- * missing path the Landlock run could not make (pair_write can).
+ * missing path the Landlock run could not make (pair_write can). `supervisorKilled` names the
+ * signal a Landlock run's helper died of when this function did not send one: the helper
+ * exits with a code after ending everything its command started, and never dies of a signal by
+ * its own choice, so one that did was killed before it could, and a process that left the
+ * run's group may still be running with the run's write grant.
  * @param {{ state: import("../core/gate.mjs").State, command: string, cwd: string, timeoutMs?: number, signal?: AbortSignal,
  *   onSpawn?: (pgid: number) => void, env?: Record<string, string>, maxOutput?: number,
  *   linkCheck?: { sinceMs: number, exclusions: string[] }, backend?: "landlock" | "bwrap" }} opts
  *   `backend`: overrides this process's Linux backend (tests)
  * @returns {Promise<{ exitCode: number | null, signal: string | null, stdout: string, stderr: string,
  *   timedOut: boolean, aborted: boolean, pgid: number | null, links: string[], error?: string,
- *   backend?: string, fellBack?: string, uncreatable?: string[] }>}
+ *   backend?: string, fellBack?: string, uncreatable?: string[], supervisorKilled?: string }>}
  */
 export function runSandboxed(opts) {
   const max = opts.maxOutput ?? 64 * 1024;
@@ -776,7 +802,8 @@ export function runSandboxed(opts) {
       child.stdout.destroy();
       child.stderr.destroy();
       const error = failure ?? reapError;
-      resolve({ exitCode: exitInfo.code, signal: exitInfo.sig, stdout, stderr, timedOut, aborted, pgid, links: linksMade(), ...ran, ...(error ? { error } : {}) });
+      const killed = ran.backend === "landlock" && exitInfo.sig !== null && !timedOut && !aborted && !failure;
+      resolve({ exitCode: exitInfo.code, signal: exitInfo.sig, stdout, stderr, timedOut, aborted, pgid, links: linksMade(), ...ran, ...(killed ? { supervisorKilled: exitInfo.sig } : {}), ...(error ? { error } : {}) });
     };
     child.on("error", (err) => {
       failure = String(err);
