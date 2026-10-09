@@ -95,7 +95,7 @@ file writes and Unix-socket connects.
   - Writing through a symlink to an unlisted file is refused.
   - Writing through a symlink to a listed file is allowed, because the listed file is what gets written.
   - Creating a symlink needs `MAKE_SYM`, which only `rw_trees` grant.
-- **Files opened before the restriction are not affected.** The helper opens rule paths with `O_PATH | O_CLOEXEC`, and none of them reach the command. The command still inherits stdin, stdout, and stderr as the caller passed them.
+- **Files opened before the restriction are not affected.** The helper opens each rule path with `O_PATH | O_CLOEXEC`, adds its rule and closes it again at once, before the command starts, so none of them reach the command and the number of descriptors the helper holds does not grow with the number of rules. The command still inherits stdin, stdout, and stderr as the caller passed them.
 - **Unix sockets.**
   - From ABI 6, connecting to an abstract Unix socket that a process outside the sandbox created fails with `EPERM`.
   - From ABI 9, connecting to a pathname socket outside the sandbox (Docker's, for one) is refused.
@@ -158,7 +158,7 @@ one byte.
 ## Tests
 
 - `cargo test` holds the unit tests: rights per ABI, `REFER` and `REMOVE_FILE` only with `remove`, input parsing, path checks, the `/proc/<pid>/stat` parent parsing and descendant walk, and the socket filter, run through a small classic-BPF interpreter and compared with `lib/bwrap.mjs`'s instruction for instruction.
-- `sh test/live.sh [binary]` runs the live checks against the running kernel, as a non-root user: among them, below ABI 9 a pathname-socket connect fails with `EPERM` while `socketpair`, TCP and DNS lookups still work; `rm`, `mv` and `sed -i` work in a `remove` entry while rename out of it, `rmdir` and symlinks fail; and a `setsid` or double-forked writer stops when the command exits or the helper gets `SIGTERM`.
+- `sh test/live.sh [binary]` runs the live checks against the running kernel, as a non-root user: among them, below ABI 9 a pathname-socket connect fails with `EPERM` while `socketpair`, TCP and DNS lookups still work; `rm`, `mv` and `sed -i` work in a `remove` entry while rename out of it, `rmdir` and symlinks fail; a `setsid` or double-forked writer stops when the command exits or the helper gets `SIGTERM`; and 3000 file rules run under a soft limit of 256 open files.
 - `sh test/docker.sh [x86_64|aarch64]` runs `test/live.sh` in `ubuntu:24.04` as uid 1000. It then simulates a kernel without Landlock with a seccomp profile that fails `landlock_create_ruleset` with `ENOSYS`, and checks for exit 120 with nothing run.
 
 CI runs all three on `ubuntu-latest` (x86_64) and `ubuntu-24.04-arm` (aarch64).
