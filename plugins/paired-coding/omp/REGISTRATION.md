@@ -153,9 +153,10 @@ extensions. `getExtensionPaths` and `isExtensionActive` exist on the runner but 
   `session_branch`. The agent's context is then another branch, which does not hold the
   agreement, so the adapter handles the move like `/clear`: pairing ends, the card and change
   set are dropped, and the same session carries on with pairing still on and the card closed,
-  journaling `carried-after-clear` with reason `omp:tree`. The editor shows "paired coding:
-  pairing is still on and the card is closed, because you moved to another point in the
-  conversation. Tell the agent to keep pairing, or type pair stop to end it". The agent gets
+  journaling `carried-after-clear` with reason `omp:tree`. The extension posts an editor notice
+  ("paired coding: pairing is still on and the card is closed, because you moved to another
+  point in the conversation…"), but in a live OMP 18.4.4 run it never appeared on screen: OMP's
+  own "Rewound to selected point" status was what showed. The agent gets
   hidden context on its next turn (`TREE_NOTICE` in the adapter): the conversation moved but
   the files were not rewound, so edits made for later cards may already be on disk; pairing is
   still on and the card is closed; it tells you so in one line, asks plainly whether to keep

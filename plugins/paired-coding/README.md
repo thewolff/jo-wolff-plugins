@@ -299,13 +299,14 @@ session change. Tell your partner pairing carried over closed and wait for their
 pair_start only once they say to keep pairing; they end it by typing pair stop". The same text
 refuses `pair_note` and `pair_propose`, on both hosts. On OMP, `/clear` fires no extension
 event, so the gate notices the reset marker OMP writes into the session at the next typed turn
-or tool call; a move with `/tree` or `/branch` is caught when OMP reports it, and you see
-"paired coding: pairing is still on and the card is closed, because you moved to another point
-in the conversation. Tell the agent to keep pairing, or type pair stop to end it". The agent
-is also told, as hidden context on its next turn, that the conversation moved but the files
-were not rewound, so edits made for later cards may already be on disk, and that it should tell
-you so in one line, ask plainly whether to keep pairing or whether you will type `pair stop`,
-and wait.
+or tool call; a move with `/tree` or `/branch` is caught when OMP reports it. The agent is told,
+as hidden context on its next turn, that the conversation moved but the files were not rewound,
+so edits made for later cards may already be on disk, and that it should tell you so in one
+line, ask plainly whether to keep pairing or whether you will type `pair stop`, and wait. That
+reply is how you find out. The gate also posts an editor notice ("paired coding: pairing is
+still on and the card is closed, because you moved to another point in the conversation…"),
+but OMP's own "Rewound to selected point" status can replace it before you see it, so do not
+rely on it.
 
 On Claude Code the hand-over is a marker. Every `SessionEnd` while pairing leaves one for the
 worktree, whatever the reason: `/clear`, `/resume`, `/branch`, or quitting. It is written
