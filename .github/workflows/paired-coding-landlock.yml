@@ -2,7 +2,6 @@ name: paired-coding landlock helper
 
 on:
   push:
-    branches: [main]
     paths:
       - plugins/paired-coding/landlock/**
       - .github/workflows/paired-coding-landlock.yml
