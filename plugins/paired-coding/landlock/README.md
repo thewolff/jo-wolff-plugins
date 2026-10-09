@@ -1,7 +1,9 @@
 # pair-landlock
 
 paired-coding's write fence for Linux kernels with Landlock. It reads a ruleset, forks, and
-the child restricts itself with Landlock so that only the listed paths can be written, then
+the child restricts itself with Landlock so that only the listed paths can have their content
+written, be created, deleted, linked or renamed (permission, owner, timestamp and extended
+attribute changes are not fenced; see **What the kernel enforces**), then
 runs `/bin/sh -c <command>`. Every process the command starts inherits the restriction, and
 nothing inside can lift it. The helper itself stays outside the sandbox as the command's
 supervisor: when the command ends, it kills every process the command started, including
@@ -47,7 +49,9 @@ Every path must be:
 - **already in existence.** Landlock attaches a rule to an existing inode, so a file that does not exist yet cannot get a rule of its own. Put its parent directory in `dirs` instead.
 - **the right kind.** A `files` entry must be a regular file with exactly one hard link, or a character device such as `/dev/null`. `dirs` and `rw_trees` entries must be directories.
 
-No path is writable unless it is listed, and that includes `/dev/null`. A command that
+No path's content can be written, and no path created, deleted, linked or renamed, unless it
+is listed (metadata changes are the exception; see **What the kernel enforces**), and that
+includes `/dev/null`. A command that
 redirects to `/dev/null` needs `/dev/null` in `files`. The Seatbelt profile allows the same
 short list, which the caller passes explicitly.
 
@@ -126,10 +130,10 @@ the helper gets `SIGTERM`, `SIGINT` or `SIGHUP`, the helper:
 3. exits as the command did: with its exit code, or with 128 plus the signal number when a
    signal ended the command, as a shell reports it. A `SIGTERM`, `SIGINT` or `SIGHUP` to the
    helper ends it the same way, with 128 plus that signal's number. The helper blocks those
-   three before it forks the command; one that arrives earlier, while it still reads its
-   ruleset, kills it before any command exists.
+   three before it forks the command; one that arrives earlier, while it still reads and
+   checks its ruleset, kills it before any command exists.
 
-So once the command exists the helper never dies of a signal by its own choice. One that does
+So once the helper has forked the command it never dies of a signal by its own choice. One that does
 was killed by a signal it does not handle (`SIGKILL`, for one) before it could end the
 command's processes.
 
