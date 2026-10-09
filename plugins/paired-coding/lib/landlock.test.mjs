@@ -10,13 +10,14 @@ import { test, describe } from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { chmodSync, existsSync, linkSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, statSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, linkSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, readlinkSync, realpathSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { createServer } from "node:net";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
+import { pairWriteLandlock } from "../core/gate.mjs";
 import { bwrapProblem, seccompFilter } from "./bwrap.mjs";
-import { describeSandbox, pickLinuxBackend, runSandboxed, writeSandboxed } from "./host-io.mjs";
-import { HELPER_ARCHES, LANDLOCK_DIR, landlockAbi, landlockProblem, probeLandlock } from "./landlock.mjs";
+import { createOnHost, describeSandbox, pickLinuxBackend, runSandboxed, writeSandboxed } from "./host-io.mjs";
+import { HELPER_ARCHES, LANDLOCK_DIR, landlockAbi, landlockIo, landlockProblem, probeLandlock } from "./landlock.mjs";
 
 // ─── finding and checking the helper ────────────────────────────────────────────────────
 
@@ -286,11 +287,29 @@ describe("live Landlock: pair_run", () => {
     const f = liveState(["src/new.txt"]);
     const r = await run(f.state, "echo x > src/new.txt");
     assert.match(r.stderr, EACCES);
+    assert.deepEqual(r.uncreatable, ["src/new.txt"]);
     assert.equal(existsSync(join(f.root, "src", "new.txt")), false);
     const w = write({ state: f.state, path: join(f.root, "src", "new.txt"), content: "made\n" });
     assert.equal(w.ok, true, w.error);
     assert.equal(w.backend, "landlock");
     assert.equal(read(f.root, "src", "new.txt"), "made\n");
+  });
+
+  live("a missing glob directory pair_run cannot get a grant for does not stop the run: the rest runs on Landlock, and it is named", async () => {
+    // With notes.txt outside the boundary the root is not clean and gets no grant; with the rest
+    // of the root in the boundary it is clean, and the grant that would make newpkg (on the root,
+    // so holding .git) is dropped.
+    for (const boundary of [["newpkg/**", "src/a.txt"], ["newpkg/**", "src/**", "lib/**", "notes.txt"]]) {
+      const f = liveState(boundary);
+      const r = await run(f.state, "echo changed > src/a.txt && mkdir -p newpkg && echo x > newpkg/x");
+      assert.equal(r.backend, "landlock", `${boundary}: the same whether or not bubblewrap works here`);
+      assert.equal(r.fellBack, undefined);
+      assert.deepEqual(r.uncreatable, ["newpkg/**"]);
+      assert.notEqual(r.exitCode, 0);
+      assert.match(r.stderr, EACCES);
+      assert.equal(read(f.root, "src", "a.txt"), "changed\n");
+      assert.equal(existsSync(join(f.root, "newpkg")), false);
+    }
   });
 
   live("a pathname Unix socket outside the sandbox cannot be reached", async (t) => {
@@ -469,5 +488,75 @@ describe("live Landlock: pair_write", () => {
       assert.match(w.error, /bubblewrap is unavailable/);
     }
     assert.equal(read(f.top, "outside.txt"), "outside\n");
+  });
+
+  live("a new file whose grant would hold .git is made on the host: a root-level file and a new package both land", async () => {
+    const f = liveState(["new.md", "newpkg/**"]);
+    for (const [path, content] of [[join(f.root, "new.md"), "# new\n"], [join(f.root, "newpkg", "deep", "x.ts"), "export {};\n"]]) {
+      const w = write({ state: f.state, path, content });
+      assert.equal(w.ok, true, w.error);
+      assert.equal(w.backend, "landlock", "the same whether or not bubblewrap works here");
+      assert.equal(w.fellBack, undefined);
+      assert.equal(read(path), content);
+      const st = lstatSync(path);
+      assert.equal(st.isFile() && st.nlink === 1, true);
+      assert.equal(st.mode & 0o777, 0o666 & ~process.umask());
+    }
+    assert.equal(lstatSync(join(f.root, "newpkg", "deep")).isDirectory(), true);
+  });
+
+  live("a symlink or a hard link planted at the target between plan and create refuses, and the file outside is untouched", async () => {
+    const f = liveState(["new.md", "newpkg/**"]);
+    const outside = join(f.top, "outside.txt");
+    writeFileSync(outside, "outside\n");
+    for (const [target, plant] of [
+      [join(f.root, "new.md"), (p) => symlinkSync(outside, p)],
+      [join(f.root, "newpkg", "x.ts"), (p) => linkSync(outside, p)],
+    ]) {
+      const plan = pairWriteLandlock(f.state, target, landlockIo);
+      assert.ok(plan.create, "planned as a host create");
+      if (plan.create.dirs.length) mkdirSync(plan.create.dirs.at(-1), { recursive: true });
+      plant(target);
+      const before = lstatSync(target);
+      assert.throws(() => createOnHost(plan.create), /appeared before it could be created/);
+      const after = lstatSync(target);
+      assert.equal(after.ino, before.ino, `${target} is still what was planted`);
+      if (before.isSymbolicLink()) assert.equal(readlinkSync(target), outside);
+    }
+    assert.equal(read(outside), "outside\n");
+    assert.equal(lstatSync(outside).nlink, 2, "only the planted hard link, nothing more");
+  });
+
+  live("a symlinked parent refuses before anything is made", async () => {
+    const f = liveState(["newpkg/**"]);
+    mkdirSync(join(f.top, "elsewhere"));
+    symlinkSync(join(f.top, "elsewhere"), join(f.root, "newpkg"));
+    const w = write({ state: f.state, path: join(f.root, "newpkg", "deep", "x.ts"), content: "x" });
+    assert.equal(w.ok, false);
+    assert.match(w.error, /symlink/);
+    assert.deepEqual(readdirSync(join(f.top, "elsewhere")), []);
+  });
+
+  live("a write that fails after the host made the file leaves no empty file or directory behind", async () => {
+    const f = liveState(["newpkg/**"]);
+    const path = join(f.root, "newpkg", "deep", "x.ts");
+    // The helper inherits a file-size limit of 0, so its `cat` dies with SIGXFSZ on the first byte.
+    const code = `
+      import { writeSandboxed } from ${JSON.stringify(new URL("./host-io.mjs", import.meta.url).href)};
+      import { landlockProblem } from ${JSON.stringify(new URL("./landlock.mjs", import.meta.url).href)};
+      landlockProblem();
+      const o = JSON.parse(process.env.PC_WRITE);
+      process.stdout.write(JSON.stringify(writeSandboxed({ ...o, backend: "landlock" })));
+    `;
+    const opts = { state: f.state, path, tempPath: join(f.root, "newpkg", "deep", ".pair-write-0000000000000000.tmp"), content: "x" };
+    const res = spawnSync("/bin/sh", ["-c", 'ulimit -f 0 && exec "$0" --input-type=module -e "$1"', process.execPath, code], {
+      encoding: "utf8", env: { ...process.env, PC_WRITE: JSON.stringify(opts) },
+    });
+    assert.equal(res.status, 0, res.stderr);
+    const w = JSON.parse(res.stdout);
+    assert.equal(w.ok, false);
+    assert.equal(w.backend, "landlock");
+    assert.doesNotMatch(w.error, /left behind/);
+    assert.equal(existsSync(join(f.root, "newpkg")), false);
   });
 });

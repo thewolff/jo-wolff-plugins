@@ -1494,15 +1494,26 @@ export function landlockRulesFor(state, extraAllow, io) {
     }
     return c;
   };
-  const wantDir = (dir, makeDir) => { if (clean(dir)) wantDirs.set(dir, (wantDirs.get(dir) ?? false) || makeDir); };
-  const literal = (abs) => {
+  /** Directories wanted for existing files, and ones wanted only so a missing path can be made. */
+  const forExisting = new Set();
+  const forCreating = new Set();
+  const wantDir = (dir, makeDir, creating = false) => {
+    if (!clean(dir)) return;
+    wantDirs.set(dir, (wantDirs.get(dir) ?? false) || makeDir);
+    (creating ? forCreating : forExisting).add(dir);
+  };
+  /** Boundary entries naming a path that does not exist yet: entry -> that path. */
+  const missing = new Map();
+  const literal = (abs, entry) => {
     if (!grantable(abs)) return;
     checkNoSymlinkAbove(root, abs, io);
-    if (io.lstat(abs)?.type === "file") wantFiles.add(abs);
+    const st = io.lstat(abs);
+    if (st?.type === "file") wantFiles.add(abs);
+    else if (st === null && entry !== undefined) missing.set(entry, abs);
   };
   for (const raw of boundary) {
     const e = normalizeEntry(raw);
-    if (!isGlob(e)) { literal(`${root}/${e}`); continue; }
+    if (!isGlob(e)) { literal(`${root}/${e}`, raw); continue; }
     const fixed = [];
     for (const seg of e.split("/")) { if (isGlob(seg)) break; fixed.push(seg); }
     const top = fixed.length ? `${root}/${fixed.join("/")}` : root;
@@ -1511,8 +1522,9 @@ export function landlockRulesFor(state, extraAllow, io) {
     checkNoSymlinkAbove(root, top, io);
     const st = io.lstat(top);
     if (st === null) {
+      missing.set(raw, top);
       const at = deepestExistingL(top, root, io);
-      if (at !== null && io.lstat(at)?.type === "dir") wantDir(at, true);
+      if (at !== null && io.lstat(at)?.type === "dir") wantDir(at, true, true);
       continue;
     }
     if (st.type === "symlink") throw new Error(`${top} is a symlink; pair_run grants only paths that are what they name`);
@@ -1526,6 +1538,14 @@ export function landlockRulesFor(state, extraAllow, io) {
     descend(top);
   }
   for (const p of extraAllow) literal(bwrapPath(p));
+  // A grant wanted only to make a missing path, where it would hold the root, a .git, the state
+  // directory or a protected path, is dropped rather than failing the run: the run goes ahead
+  // without it, and its note names the paths it cannot make (pair_write can).
+  for (const d of forCreating) {
+    if (forExisting.has(d)) continue;
+    const hasGit = subtree(d).some((e) => e.path.split("/").at(-1).toLowerCase() === ".git");
+    if (within(d, root) || hasGit || denied.some((x) => within(d, x))) wantDirs.delete(d);
+  }
   const dirs = outermost([...wantDirs.keys()]);
   for (const d of dirs) {
     if (within(d, root)) return { notExpressible: "a directory grant would hold the whole worktree, and Landlock cannot fence .git or the state inside it" };
@@ -1547,10 +1567,20 @@ export function landlockRulesFor(state, extraAllow, io) {
     const n = io.lstat(f)?.nlink ?? 1;
     if (n > 1) return { notExpressible: `${relativeTo(root, f)} has ${n} hard links, and a grant on it would reach every one` };
   }
+  // A missing path can be made where a grant holds it: in the grant's own directory, or below
+  // it where the grant has make_dir.
+  const makeable = (abs) => {
+    for (let p = abs.slice(0, abs.lastIndexOf("/")); p; p = p.slice(0, p.lastIndexOf("/"))) {
+      if (granted.has(p)) return wantDirs.get(p) || abs.lastIndexOf("/") === p.length;
+    }
+    return false;
+  };
+  const uncreatable = [...missing].filter(([, abs]) => !makeable(abs)).map(([entry]) => entry);
   return {
     files: [...files, ...outFiles],
     dirs: dirs.sort().map((path) => ({ path, make_dir: wantDirs.get(path), remove: true })),
     rw_trees: rwTrees,
+    ...(uncreatable.length ? { uncreatable } : {}),
   };
 }
 
@@ -1581,7 +1611,11 @@ function globCanHold(entry, dirRel) {
  *     reach no file but the target;
  *   - a target that does not exist yet: a `dirs` grant on its deepest existing directory
  *     (MAKE_DIR when directories are missing), and a create with noclobber, so a file or a
- *     symlink that appears at the target in the meantime fails the write rather than takes it.
+ *     symlink that appears at the target in the meantime fails the write rather than takes it;
+ *   - a target that does not exist yet where that grant would hold the worktree root, a
+ *     `.git`, the state directory or a protected path: `create` names the missing directories
+ *     and the empty file the caller makes on the host first (lib/host-io.mjs createOnHost,
+ *     which follows no link), and the write then goes in place through a `files` grant on it.
  * A target that is a symlink or has a second hard link would be followed by an in-place
  * write, so it gets the staged write instead (`staged`, no `command`: the caller runs its own
  * staging script, the one Seatbelt and bubblewrap run): a `dirs` grant with `remove` on the
@@ -1591,13 +1625,14 @@ function globCanHold(entry, dirRel) {
  * A target outside the boundary, or in .git, the state directory or a protected path, gets no
  * grant at all: the kernel refuses the write, as the Seatbelt profile does.
  * Returns { notExpressible: reason } for anything but a regular file or a link, or when the
- * `dirs` grant would hold the worktree root, a `.git`, the state directory or a protected path.
+ * staged write's `dirs` grant would hold the worktree root, a `.git`, the state directory or a
+ * protected path.
  * Throws when the target is a directory or a path above it is a symlink inside the worktree.
  * Open phase only.
  * @param {State} state
  * @param {string} target  absolute, checkWrite's absPath
  * @param {LandlockIo} io
- * @returns {(LandlockRules & ({ command: string } | { staged: true })) | { notExpressible: string }}
+ * @returns {(LandlockRules & ({ command: string, create?: { dirs: string[], file: string } } | { staged: true })) | { notExpressible: string }}
  */
 export function pairWriteLandlock(state, target, io) {
   if (state.phase !== "open") throw new Error("pair_write needs an open change set");
@@ -1630,8 +1665,11 @@ export function pairWriteLandlock(state, target, io) {
   if (st) return { files: [abs], dirs: [], rw_trees: [], command: `/bin/cat > ${shQuote(abs)}` };
   const at = deepestExistingL(abs, root, io);
   if (at === null || io.lstat(at)?.type !== "dir") throw new Error(`no directory to create ${rel} in`);
-  const problem = grantProblem(at, "a new file here");
-  if (problem) return { notExpressible: problem };
+  if (grantProblem(at, "a new file here")) {
+    const dirs = [];
+    for (let p = parent; p !== at; p = p.slice(0, p.lastIndexOf("/"))) dirs.unshift(p);
+    return { files: [abs], dirs: [], rw_trees: [], command: `/bin/cat > ${shQuote(abs)}`, create: { dirs, file: abs } };
+  }
   return { files: [], dirs: [{ path: at, make_dir: at !== parent, remove: false }], rw_trees: [], command: create };
 }
 
