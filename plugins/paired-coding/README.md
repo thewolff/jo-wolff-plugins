@@ -447,6 +447,9 @@ existing file outside the boundary, as Seatbelt does:
   matches the boundary, or a directory that passes the same test, and the glob could hold a
   file in each of its subdirectories. A symlink, a FIFO, a socket or a device in it, a
   subdirectory it cannot list, or a mount point at or below it keeps the grant per file there.
+  These are preflight checks, made once as the run starts, against a filesystem that holds
+  still; a change your other processes make to the worktree while the run is going, such as a
+  new mount or link, is outside what the gate models.
   With `src/**/*.ts` agreed, where `src` holds
   `README.md` and `src/lib` holds only `.ts` files, the live tests show: `pair_run` cannot write
   `src/README.md`, cannot create `src/new.md`, and cannot create `src/new.ts` either, because
@@ -485,15 +488,19 @@ existing file outside the boundary, as Seatbelt does:
   group with `setsid` or a double fork: the helper stays outside the sandbox as the run's
   supervisor and kills them all when the command exits, times out or is aborted. On kernels
   before Landlock ABI 6 a run's own process can kill the supervisor first; a process that left
-  the group would then keep running with its run's write permission. The gate sees that the
-  supervisor died of a signal it did not send and stops the session, as for a link, until your
-  partner types `pair stop`; `pair_start` says so on such a kernel (`landlock/README.md`,
-  **Supervision**).
+  the group would then keep running with its run's write permission. The helper never dies of
+  a signal by its own choice, so whenever it does, the gate stops the session, as for a link,
+  until your partner types `pair stop`. That includes the gate's own `SIGKILL` when a timed-out
+  or aborted run's helper has not ended within 3 seconds of its `SIGTERM`, so a helper that
+  was only slow also stops the session. `pair_start` says so on a kernel before ABI 6
+  (`landlock/README.md`, **Supervision**).
 - Landlock does not fence `chmod`, `chown`, `utime` or `setxattr`
   ([kernel documentation](https://docs.kernel.org/userspace-api/landlock.html)), so a run can
   change the permissions, timestamps and extended attributes of any file your user may change,
-  outside the boundary too. `pair_done`'s read-back records each worktree file's permission
-  bits, so a permission change to a worktree file outside the boundary stops the session there.
+  outside the boundary too. `pair_done`'s read-back records each worktree file's and
+  directory's permission bits, so a permission change to a worktree file or directory outside
+  the boundary stops the session there. The read-back skips `.git` and the snapshot
+  exclusions, so under Landlock a `chmod +x` on an existing hook in `.git/hooks` goes unseen.
   It does not record owners, timestamps or extended attributes, and it never sees a change
   outside the worktree. Seatbelt and bubblewrap refuse these changes outside what a run may
   write.
@@ -591,7 +598,9 @@ in the boundary; unlike `.git/`, such a write shows in the read-back diff.
 **Escaped writers are caught late, and only inside the worktree.** On macOS a process that
 leaves its run's process group survives the reap and keeps the write permission its run had
 (test 17); bubblewrap and Landlock end it with the run. On Landlock before ABI 6 a run can
-kill the supervisor first, and the gate then stops the session. A process that got out of the sandbox
+kill the supervisor first, and so can anything outside on any ABI; whenever the supervisor dies
+of a signal, the gate's own `SIGKILL` after a timeout included, the gate stops the session. A
+process that got out of the sandbox
 altogether would write with your own permissions; the one route probed on macOS, `launchctl
 submit`, was denied, but no probe proves there is no other. Either kind is caught only by
 content snapshots, at the next `pair_done`, which then stops the session: the first write is

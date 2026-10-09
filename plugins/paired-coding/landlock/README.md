@@ -87,9 +87,10 @@ Landlock cannot restrict `chmod`, `chown`, `utime`, `setxattr` and some other ca
 at all ([kernel documentation](https://docs.kernel.org/userspace-api/landlock.html),
 "Filesystem flags"), so a command can change the permissions, timestamps and extended
 attributes of any file its user may change, listed or not. The macOS profile and bubblewrap
-refuse those changes outside what a run may write. The gate's read-back records permission
-bits, so it sees such a change to a worktree file; it records no owner, timestamp or
-extended attribute, and nothing outside the worktree.
+refuse those changes outside what a run may write. The gate's read-back records the permission
+bits of worktree files and directories, so it sees such a change there, except under `.git`
+and the snapshot exclusions; it records no owner, timestamp or extended attribute, and nothing
+outside the worktree.
 
 - **`REFER` comes only with `remove`.** A link or rename that moves a file into a different
   directory needs `REFER` on both sides, and the kernel refuses it when the file would gain
@@ -134,9 +135,10 @@ signal scope stops the command's processes from signalling it. On ABI 3 to 5 not
 them: a process that kills the helper with `SIGKILL` ends the supervision. The caller's
 process-group kill still ends whatever stayed in the group, but a process that left the
 group keeps running, under the write grant it started with. An outside `SIGKILL` of the
-helper does the same on any ABI, so the gate sends `SIGTERM` first. When the helper dies of a
-signal the gate did not send, the gate stops the pairing session until the partner types
-`pair stop`.
+helper does the same on any ABI, so the gate sends `SIGTERM` first, and `SIGKILL` only to a
+helper still alive 3 seconds later. Whenever the helper dies of a signal, the gate's own
+`SIGKILL` included, supervision did not finish, and the gate stops the pairing session until
+the partner types `pair stop`.
 
 ## Exit codes
 

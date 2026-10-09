@@ -572,7 +572,7 @@ describe("runStart and runEnd", () => {
     assert.equal(s.halt, null);
   });
 
-  test("a run whose Landlock supervisor was killed by a signal the gate did not send stops the session", () => {
+  test("a run whose Landlock supervisor died of a signal, whoever sent it, stops the session", () => {
     const host = fakeHost();
     let s = ok(runStart(opened(host), { runId: "r1" }));
     const end = runEnd(s, { runId: "r1", exitCode: null, links: [], supervisorKilled: "SIGKILL" });
@@ -1033,16 +1033,34 @@ test("diffSnapshots names added, removed and modified paths and skips exclusions
   ]);
 });
 
-test("diffSnapshots compares a pre-1.2 entry with a full-mode one on the hash and the executable bit only", () => {
-  const h = "a".repeat(64);
-  const g = "b".repeat(64);
-  const before = { same: `file:-:${h}`, exec: `file:x:${h}`, chmodx: `file:-:${h}`, edited: `file:-:${h}`, newer: `file:0644:${h}` };
-  const after = { same: `file:0600:${h}`, exec: `file:0755:${h}`, chmodx: `file:0744:${h}`, edited: `file:0644:${g}`, newer: `file:0664:${h}` };
+test("diffSnapshots reports a directory's mode change, never its creation or removal alone", () => {
+  const before = { ".": "dir:0755", src: "dir:0755", lib: "dir:0755", gone: "dir:0700", "gone/x": "file:0644:1", swap: "dir:0755" };
+  const after = { ".": "dir:0777", src: "dir:0755", lib: "dir:2755", made: "dir:0755", "made/y": "file:0644:2", swap: "file:0644:3" };
   assert.deepEqual(diffSnapshots(before, after), [
-    { path: "chmodx", change: "modified" },
-    { path: "edited", change: "modified" },
-    { path: "newer", change: "modified" },
+    { path: ".", change: "modified" },
+    { path: "gone/x", change: "removed" },
+    { path: "lib", change: "modified" },
+    { path: "made/y", change: "added" },
+    { path: "swap", change: "added" },
   ]);
+  assert.deepEqual(diffSnapshots({ e: "dir:0755" }, {}), [], "an empty directory removed is not a change");
+  assert.deepEqual(diffSnapshots({}, { e: "dir:0755" }), [], "an empty directory made is not a change");
+});
+
+test("a session whose baseline or card predates 1.2 is refused, never compared on the executable bit", () => {
+  const h = "a".repeat(64);
+  // The new snapshot differs from the old baseline only in a permission bit the old one never held.
+  const host = fakeHost({ "src/a.ts": `0600:${h}` });
+  const s = opened(host);
+  const old = { ...s, baseline: { "src/a.ts": `file:-:${h}` } };
+  const done = pairDone(old, { cardId: s.changeSet.cardId }, host.io);
+  refusedWith(done, /started by an older paired-coding.*type pair stop, then start pairing again/);
+  assert.equal(done.changed, undefined, "no read-back, and never an empty one");
+  const closed = { ...old, phase: "closed", changeSet: null };
+  refusedWith(pairPropose(closed, card(), host.io), /started by an older paired-coding/);
+  const fresh = say(ok(pairPropose({ ...closed, baseline: s.baseline }, card(), host.io)), "go ahead");
+  const staleCard = { ...fresh, card: { ...fresh.card, hashes: { "src/a.ts": `file:x:${h}` } } };
+  refusedWith(pairBegin(staleCard, { cardId: fresh.card.id, quote: "go ahead" }, host.io), /started by an older paired-coding/);
 });
 
 test("resolvePath collapses dot segments lexically", () => {

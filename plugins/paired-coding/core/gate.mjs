@@ -462,7 +462,9 @@ export function isGitControl(rel) {
 
 /**
  * Paths whose fingerprint differs between two snapshots, sorted. Paths under `exclusions`
- * (worktree-relative directories) are ignored.
+ * (worktree-relative directories) are ignored. A directory's entry (`dir:<mode>`) counts only
+ * when the directory is in both snapshots and its mode changed: a directory created or removed
+ * shows through its files, and an empty one not at all.
  * @param {Snapshot} before
  * @param {Snapshot} after
  * @param {string[]} [exclusions]
@@ -470,12 +472,17 @@ export function isGitControl(rel) {
  */
 export function diffSnapshots(before, after, exclusions = []) {
   const excluded = (p) => exclusions.some((d) => p === d || p.startsWith(d.endsWith("/") ? d : `${d}/`));
+  const isDir = (fp) => fp !== undefined && fp.startsWith("dir:");
   const out = [];
   for (const path of new Set([...Object.keys(before), ...Object.keys(after)])) {
     if (excluded(path)) continue;
-    const a = Object.hasOwn(before, path) ? before[path] : undefined;
-    const b = Object.hasOwn(after, path) ? after[path] : undefined;
-    if (a === b || (a !== undefined && b !== undefined && sameAcrossFormats(a, b))) continue;
+    let a = Object.hasOwn(before, path) ? before[path] : undefined;
+    let b = Object.hasOwn(after, path) ? after[path] : undefined;
+    if (isDir(a) !== isDir(b)) {
+      if (isDir(a)) a = undefined;
+      else b = undefined;
+    }
+    if (a === b) continue;
     out.push({ path, change: a === undefined ? "added" : b === undefined ? "removed" : "modified" });
   }
   return out.sort((x, y) => (x.path < y.path ? -1 : x.path > y.path ? 1 : 0));
@@ -489,26 +496,19 @@ function takeSnapshot(io) {
 }
 
 /**
- * Snapshots before 1.2 recorded only the executable bit (`file:x:<hash>` or `file:-:<hash>`);
- * later ones record four octal mode digits (`file:0644:<hash>`). A session whose baseline or
- * card was taken by the older plugin compares an old entry with a new one on what the old one
- * holds: the hash and the executable bit. Two entries in the same format compare as text.
+ * Snapshots before 1.2 recorded only a file's executable bit (`file:x:<hash>`, `file:-:<hash>`),
+ * so a session whose baseline or card was taken by that plugin cannot show a permission change
+ * since: it is refused until the partner types pair stop and pairing starts again.
  */
-const OLD_FILE = /^file:([x-]):([0-9a-f]{64})$/;
-const NEW_FILE = /^file:([0-7]{4}):([0-9a-f]{64})$/;
-function sameAcrossFormats(a, b) {
-  const [oldFp, newFp] = OLD_FILE.test(a) ? [a, b] : [b, a];
-  const o = OLD_FILE.exec(oldFp);
-  const n = NEW_FILE.exec(newFp);
-  if (!o || !n) return false;
-  return o[2] === n[2] && (o[1] === "x") === ((Number.parseInt(n[1], 8) & 0o111) !== 0);
-}
+const OLD_FILE = /^file:[x-]:[0-9a-f]{64}$/;
+const OLDER_PLUGIN = "this session was started by an older paired-coding, whose snapshots do not record permission bits, so its changes cannot be checked; ask your partner to type pair stop, then start pairing again";
+const olderSnapshot = (snap) => isObj(snap) && Object.values(snap).some((fp) => typeof fp === "string" && OLD_FILE.test(fp));
 
 function sameHashes(a, b) {
   if (!isObj(a) || !isObj(b)) return false;
   const ka = Object.keys(a).sort();
   const kb = Object.keys(b).sort();
-  return ka.length === kb.length && ka.every((k, i) => k === kb[i] && (a[k] === b[k] || sameAcrossFormats(a[k], b[k])));
+  return ka.length === kb.length && ka.every((k, i) => k === kb[i] && a[k] === b[k]);
 }
 
 // ─── trusted input ──────────────────────────────────────────────────────────────────────
@@ -881,6 +881,7 @@ export function pairPropose(state, card, io) {
   if (state.carried) return refuse(state, "pair_propose", CARRIED_REASON, io);
   if (state.halt) return refuse(state, "pair_propose", `the session is stopped: ${state.halt.reason}`, io);
   if (state.phase === "open") return refuse(state, "pair_propose", "a change set is open; finish it with pair_done before the next card", io);
+  if (olderSnapshot(state.baseline)) return refuse(state, "pair_propose", OLDER_PLUGIN, io);
   if (!state.root) return refuse(state, "pair_propose", "the state lost its worktree root; your partner types pair stop, then start pairing again", io);
   if (!isObj(card)) return refuse(state, "pair_propose", "the card is not an object", io);
   const problem = boundaryProblem(card.boundary);
@@ -929,6 +930,7 @@ export function pairBegin(state, args, io) {
   if (state.phase === "inactive") return refuse(state, "pair_begin", "pairing is not active", io);
   if (state.halt) return refuse(state, "pair_begin", `the session is stopped: ${state.halt.reason}`, io);
   if (state.phase === "open") return refuse(state, "pair_begin", "a change set is already open", io);
+  if (olderSnapshot(state.baseline) || olderSnapshot(state.card?.hashes)) return refuse(state, "pair_begin", OLDER_PLUGIN, io);
   const card = state.card;
   if (!card) return refuse(state, "pair_begin", "no card has been proposed", io);
   if (args?.cardId !== card.id) return refuse(state, "pair_begin", "that card is not the latest card; re-propose it", io);
@@ -977,6 +979,7 @@ export function pairDone(state, args, io) {
   if (args?.cardId !== cs.cardId) return refuse(state, "pair_done", "that card is not the open change set", io);
   if (state.halt) return refuse(state, "pair_done", `the session is stopped: ${state.halt.reason}; only your partner ends it, by typing pair stop`, io);
   if (state.running.some((r) => r.cardId === cs.cardId)) return refuse(state, "pair_done", "a pair_run under this change set is still running", io);
+  if (olderSnapshot(state.baseline)) return refuse(state, "pair_done", OLDER_PLUGIN, io);
   if (cs.runs.length > 0) {
     const reaped = callIo(io, "reapRuns", [...cs.runs]);
     if (reaped.error) return refuse(state, "pair_done", `could not reap the change set's process groups: ${reaped.error}`, io);
@@ -1106,10 +1109,13 @@ export function runStart(state, args, io) {
  * link, or a `.git` entry in the paths it could write. Any stops the session: a link inside the
  * boundary would carry a later write, the partner's own editor's included, to wherever it
  * points, and a new `.git` holds hooks and config git runs outside the sandbox.
- * `supervisorKilled` is the signal a Landlock run's supervising helper died of that the adapter
- * did not send (before Landlock ABI 6 the run itself can send it): the helper could not end the
- * processes that left the run's group, which may still write with its grant. That stops the
- * session the same way. pair_done then refuses until the partner types pair stop.
+ * `supervisorKilled` is the signal a Landlock run's supervising helper died of, whoever sent
+ * it: the run itself before Landlock ABI 6, someone outside, or the adapter's own SIGKILL when
+ * the helper did not end in time after a timeout or abort. The helper never dies of a signal
+ * by its own choice, so it was killed before it ended the processes that left the run's group,
+ * which may still write with its grant. That stops the session the same way, at the cost of a
+ * stop after a helper that was only slow. pair_done then refuses until the partner types pair
+ * stop.
  * @param {State} state
  * @param {{ runId: unknown, exitCode?: unknown, links?: unknown, supervisorKilled?: unknown }} args
  * @param {Io} [io]
@@ -1128,7 +1134,7 @@ export function runEnd(state, args, io) {
   }
   const killedBy = typeof args?.supervisorKilled === "string" && args.supervisorKilled !== "" ? args.supervisorKilled : null;
   if (killedBy) {
-    reasons.push(`pair_run's Landlock supervisor was killed by ${killedBy}, which the gate did not send, so a process the run started may still be writing`);
+    reasons.push(`pair_run's Landlock supervisor was killed by ${killedBy} before it ended the run's processes, so a process the run started may still be writing`);
     journal.push(entry("supervisor-killed", io, { runId: args?.runId, signal: killedBy }));
   }
   if (reasons.length > 0) next.halt = { reason: reasons.join("; "), at: stamp(io) };

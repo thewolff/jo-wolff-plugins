@@ -11,7 +11,7 @@ import { join } from "node:path";
 import {
   CARRY_MAX_AGE_MS, PLUGIN_ROOT, ROADMAP_WALK_LIMIT, carryInto, clearInPlace, endSession, executeVerb, recordTrustedInput, takeCarryMarker, verdict, writeCarryMarker,
 } from "./verbs.mjs";
-import { loadState, realpathLoose, reapGroups, sandboxBackend, sandboxProblem, writeSandboxed } from "./host-io.mjs";
+import { hashBoundary, loadState, realpathLoose, reapGroups, sandboxBackend, sandboxProblem, snapshotTree, writeSandboxed } from "./host-io.mjs";
 import { pairRunProfile, pairWriteProfile } from "../core/gate.mjs";
 import { bwrapProblem } from "./bwrap.mjs";
 
@@ -312,6 +312,39 @@ test("a mode change outside the boundary is an unapproved change at pair_done", 
   assert.deepEqual(done.result.unapproved.map((u) => u.path), ["notes.txt"]);
 });
 
+test("a directory's mode change outside the boundary is an unapproved change at pair_done", { skip: !hasSandbox }, async () => {
+  const f = fixture();
+  const docs = join(f.root, "docs");
+  mkdirSync(docs);
+  chmodSync(docs, 0o755);
+  const cardId = await openChangeSet(f, ["src/a.txt"]);
+  if (BACKEND === "landlock") {
+    const r = await executeVerb("pair_run", { command: "chmod 0777 docs" }, f.ctx);
+    assert.equal(r.ok, true, r.text);
+  } else {
+    chmodSync(docs, 0o777);
+  }
+  assert.equal(statSync(docs).mode & 0o777, 0o777);
+  const done = await executeVerb("pair_done", { cardId }, f.ctx);
+  assert.equal(done.result.halted, true, done.text);
+  assert.deepEqual(done.result.unapproved.map((u) => u.path), ["docs"]);
+});
+
+test("snapshotTree records each directory's mode and the root's as '.', and hashBoundary leaves directories out", () => {
+  const f = fixture();
+  mkdirSync(join(f.root, "src", "deep"));
+  chmodSync(join(f.root, "src", "deep"), 0o2750);
+  chmodSync(f.root, 0o755);
+  const snap = snapshotTree(f.root, [".git"]);
+  assert.equal(snap["."], "dir:0755");
+  assert.equal(snap["src/deep"], "dir:2750");
+  assert.match(snap["src/a.txt"], /^file:0[0-7]{3}:[0-9a-f]{64}$/);
+  assert.equal(Object.keys(snap).some((k) => k === ".git" || k.startsWith(".git/")), false);
+  const hashed = hashBoundary(["src/**", "**"], f.root, [".git"]);
+  assert.equal(Object.values(hashed).some((fp) => fp.startsWith("dir:")), false);
+  assert.ok(hashed["src/a.txt"]);
+});
+
 test("a pair_run that makes a link where it could write stops the session until a typed stop", { skip: !hasSandbox }, async () => {
   const f = fixture();
   const cardId = await openChangeSet(f, ["src/**"]);
@@ -356,11 +389,34 @@ test("a pair_run whose Landlock supervisor is killed from outside stops the sess
     process.kill(pgid, "SIGKILL");
     const r = await running;
     assert.equal(r.ok, false);
-    assert.match(r.text, /STOPPED: pair_run's Landlock supervisor was killed by SIGKILL/);
+    assert.match(r.text, /STOPPED: pair_run's Landlock supervisor was killed by SIGKILL before it ended the run's processes/);
     assert.ok(journal(f).some((e) => e.type === "supervisor-killed" && e.signal === "SIGKILL"));
     const done = await executeVerb("pair_done", { cardId }, f.ctx);
     assert.equal(done.ok, false);
     assert.match(done.text, /only your partner ends it, by typing pair stop/);
+    assert.equal(typed(f, "pair stop").stopped, true);
+  } finally {
+    try { process.kill(-pgid, "SIGKILL"); } catch { /* already gone */ }
+  }
+});
+
+test("a pair_run whose stopped Landlock supervisor the gate itself kills after a timeout stops the session", { skip: NEEDS_LANDLOCK }, async () => {
+  const f = fixture();
+  await openChangeSet(f, ["src/**"]);
+  const running = executeVerb("pair_run", { command: "sleep 30" }, { ...f.ctx, runId: "st", timeoutMs: 1000 });
+  let pgid = null;
+  for (let i = 0; i < 100 && !pgid; i++) {
+    await sleep(50);
+    try { pgid = JSON.parse(readFileSync(join(f.dir, "runs.json"), "utf8")).st?.pgid ?? null; } catch { /* not written yet */ }
+  }
+  assert.ok(pgid, "the run recorded its group");
+  try {
+    // A stopped helper cannot act on the gate's SIGTERM, so the gate's escalation SIGKILL ends it.
+    process.kill(pgid, "SIGSTOP");
+    const r = await running;
+    assert.equal(r.ok, false);
+    assert.match(r.text, /STOPPED: pair_run's Landlock supervisor was killed by SIGKILL before it ended the run's processes/);
+    assert.ok(journal(f).some((e) => e.type === "supervisor-killed" && e.signal === "SIGKILL"));
     assert.equal(typed(f, "pair stop").stopped, true);
   } finally {
     try { process.kill(-pgid, "SIGKILL"); } catch { /* already gone */ }
