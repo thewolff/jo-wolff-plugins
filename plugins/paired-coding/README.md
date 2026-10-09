@@ -13,6 +13,30 @@ change set is written, while it is still cheap to steer.
 
 ## Install
 
+**Linux: before you install.** On Linux the gate runs the agent's writes and commands inside
+bubblewrap, so the machine needs two things. macOS needs nothing extra.
+
+1. The `bubblewrap` package (`sudo apt install bubblewrap` on Debian and Ubuntu), version 0.10.0
+   or later, or a distribution build with the CVE-2024-42472 fix. Ubuntu 24.04's 0.9.0 has it.
+2. Unprivileged user namespaces. Check with:
+
+   ```sh
+   bwrap --ro-bind / / --dev /dev --proc /proc --unshare-all /bin/true && echo ok
+   ```
+
+   If it prints `ok`, you're done. If it fails:
+   - **Ubuntu 23.10 and later:** AppArmor blocks them. Run
+     `sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0`, and put that setting in a
+     file under `/etc/sysctl.d/` to keep it across reboots. Or load the `bwrap-userns-restrict`
+     profile from the `apparmor-profiles` package, which lets only bubblewrap through.
+   - **Debian kernels with `kernel.unprivileged_userns_clone`:** set it to 1.
+   - **Docker containers:** run with
+     `--security-opt seccomp=unconfined --security-opt systempaths=unconfined`.
+
+Without these, the plugin still installs, but `pair_start` refuses and names the same fixes.
+The details, and what bubblewrap does and does not enforce, are under **Linux: bubblewrap** in
+[What this enforces, and what it does not](#what-this-enforces-and-what-it-does-not).
+
 Claude Code:
 
 ```
