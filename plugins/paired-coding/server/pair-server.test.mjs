@@ -2,7 +2,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, statSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, realpathSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -10,9 +10,10 @@ import { createInterface } from "node:readline";
 import { writeBinding } from "./binding.mjs";
 import { foregroundCapMs } from "./pair-server.mjs";
 import { recordTrustedInput } from "../lib/verbs.mjs";
+import { sandboxProblem } from "../lib/host-io.mjs";
 
 const SERVER = join(dirname(fileURLToPath(import.meta.url)), "pair-server.mjs");
-const hasSandbox = process.platform === "darwin" && existsSync("/usr/bin/sandbox-exec");
+const hasSandbox = sandboxProblem() === null;
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 function startServer(env) {

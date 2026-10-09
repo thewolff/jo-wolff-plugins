@@ -17,7 +17,7 @@ import { createHash, randomBytes } from "node:crypto";
 import { fileURLToPath } from "node:url";
 import {
   boundaryMatches, carryClosed, checkWrite, lastCardSeq, openRoadmapItems, pairBegin, pairDone, pairNote, pairPropose, roadmapRecord,
-  pairStart, pairWriteProfile, recordInput, runEnd, runStart, sessionEnd, toolVerdict,
+  pairStart, recordInput, runEnd, runStart, sessionEnd, toolVerdict,
 } from "../core/gate.mjs";
 import {
   activated, appendJournal, defaultTempPaths, findRoot, loadState, makeIo, markActivated, reapGroups, saveState,
@@ -423,12 +423,13 @@ function writeVerb(name, args, ctx) {
       if (count > 1 && args.replaceAll !== true) return fail(name, `oldString occurs ${count} times; pass replaceAll or a longer oldString`);
       text = args.replaceAll === true ? current.split(args.oldString).join(args.newString) : current.replace(args.oldString, () => args.newString);
     }
-    // The write itself runs under the open-phase Seatbelt profile, so the kernel checks the
-    // resolved target: a symlink swapped in after checkWrite cannot carry it out of the boundary.
-    // It is staged in a new file beside the target and renamed over it, so a hard link at the
-    // target is replaced rather than written through to a file outside the boundary.
+    // The write itself runs in the open-phase sandbox (Seatbelt on macOS, bubblewrap on Linux),
+    // so the kernel checks the resolved target: a symlink swapped in after checkWrite cannot
+    // carry it out of the boundary. It is staged in a new file beside the target and renamed
+    // over it, so a hard link at the target is replaced rather than written through to a file
+    // outside the boundary.
     const tempPath = join(dirname(c.absPath), `.pair-write-${randomBytes(8).toString("hex")}.tmp`);
-    const w = writeSandboxed({ profile: pairWriteProfile(s, tempPath), path: c.absPath, tempPath, content: text });
+    const w = writeSandboxed({ state: s, path: c.absPath, tempPath, content: text });
     if (!w.ok) {
       appendJournal(dir, [{ type: "refusal", verb: name, path: String(args.path), reason: `the sandboxed write failed: ${w.error}`, at: new Date().toISOString() }]);
       return fail(name, `the sandboxed write failed: ${w.error}`);
@@ -450,19 +451,26 @@ async function runVerb(args, ctx) {
   const timeoutMs = Math.min(asked, ctx.maxTimeoutMs ?? MAX_TIMEOUT_MS, MAX_TIMEOUT_MS);
   const start = withSession(dir, {}, (s) => runStart(s, { runId }, ioFor(dir, s)));
   if (!start.ok) return fail("pair_run", start.reason);
+  // Anything the run makes from here on has a change time at or after state.json's, which
+  // runStart just wrote: the link check's floor, on the filesystem's own clock.
+  const sinceMs = statSync(join(dir, "state.json")).mtimeMs;
   const res = await runSandboxed({
-    profile: start.profile,
+    state: start.state,
     command: args.command,
     cwd: start.state.root,
     timeoutMs,
     signal: ctx.signal,
     onSpawn: (pgid) => recordRun(dir, runId, pgid),
+    linkCheck: { sinceMs, exclusions: start.state.exclusions ?? [] },
   });
   withSession(dir, {}, (s) => {
-    const out = runEnd(s, { runId, exitCode: res.exitCode }, makeIo({}));
+    const out = runEnd(s, { runId, exitCode: res.exitCode, links: res.links }, makeIo({}));
     out.journal = out.journal.map((e) => ({ ...e, timedOut: res.timedOut, aborted: res.aborted, signal: res.signal }));
     return out;
   });
+  if (res.links.length > 0) {
+    return fail("pair_run", `STOPPED: pair_run made a link or a .git entry inside the paths it could write (${res.links.join(", ")}). A later write could follow it out of the agreement, so pairing is stopped. Show this to your partner; only your partner ends the session, by typing pair stop.`);
+  }
   const head = res.timedOut ? `timed out after ${timeoutMs / 1000}s; its process group was killed`
     : res.aborted ? "aborted; its process group was killed"
     : res.error ? `could not run: ${res.error}`

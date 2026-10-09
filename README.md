@@ -250,9 +250,9 @@ installing the plugin.
   (an extension). While pairing, the host's own write, edit, shell, eval and sub-agent tools are
   refused; the agent writes and runs commands only through the plugin's `pair_*` tools, and
   its own writes land only in the agreed change set's files and temp directories. Every run
-  sits under a macOS Seatbelt sandbox that fences the files the run writes itself and its local
-  Unix-socket connections, not the network, so a run can still ask a process outside the
-  sandbox to write for it.
+  sits under a sandbox (Seatbelt on macOS, bubblewrap on Linux) that fences the files the run
+  writes itself and its local Unix-socket connections, not the network, so a run can still ask
+  a process outside the sandbox to write for it.
 - **A journal** of every card, quote, verdict, refusal and diff, kept outside the worktree.
 - **A stop only you can give:** pairing ends when you type `pair stop` as a message of its own.
 
@@ -265,9 +265,11 @@ changed since you saw it. It cannot check that those words meant yes. A misread 
 open a change set, but only for that card's files, and the quote sits in the journal for you to
 audit.
 
-**It runs on macOS only, on two hosts.** The gate is built for Claude Code and OMP and was
-tested live on both. Codex is unverified. Elsewhere the skill runs as conversation and nothing
-at the tool boundary stops a write.
+**It runs on macOS and Linux, on two hosts.** The gate is built for Claude Code and OMP and was
+tested live on both, on macOS. On Linux it needs bubblewrap and unprivileged user namespaces,
+and fences some writes per directory rather than per file; its sandbox was tested in an Ubuntu
+container, and neither host has been run live on Linux. Codex is unverified. Elsewhere the
+skill runs as conversation and nothing at the tool boundary stops a write.
 
 **Some of it rests on undocumented host fields, and fails closed.** On Claude Code, "you typed
 it" is read from transcript fields Claude Code does not document. If they change, every turn

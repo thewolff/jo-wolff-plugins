@@ -5,8 +5,9 @@
 //     snapshots (makeIo).
 //   - A file-backed, locked session store: state.json and journal.jsonl in one directory per
 //     session (loadState, saveState, appendJournal, withSession).
-//   - pair_run's process machinery: run a command under a Seatbelt profile in its own process
-//     group (runSandboxed), and kill and reap whole process groups (reapGroups).
+//   - pair_run's process machinery: run a command in the sandbox (a Seatbelt profile on macOS,
+//     bubblewrap on Linux: lib/bwrap.mjs) in its own process group (runSandboxed), check it made
+//     no link where it could write (newLinks), and kill and reap whole process groups (reapGroups).
 //
 // RULES IT KEEPS
 //   - Node built-ins only and no top-level await, so Node hooks, a Node MCP server and Bun
@@ -22,7 +23,10 @@ import {
 } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
-import { boundaryMatches, readState, serializeState } from "../core/gate.mjs";
+import {
+  boundaryMatches, boundaryRoots, bwrapArgsFor, pairRunProfile, pairWriteBwrap, pairWriteProfile, readState, serializeState,
+} from "../core/gate.mjs";
+import { bwrapCommand, bwrapIo, bwrapProblem } from "./bwrap.mjs";
 
 // ─── paths ──────────────────────────────────────────────────────────────────────────────
 
@@ -86,12 +90,17 @@ export function defaultTempPaths() {
   return [...out];
 }
 
-/** Why pair_run cannot be fenced on this machine, or null. */
+/**
+ * Why pair_run cannot be fenced on this machine, or null: macOS needs sandbox-exec, Linux needs
+ * a bubblewrap that passes its probe (bwrapProblem). Every other platform is refused.
+ */
 export function sandboxProblem() {
-  if (process.platform !== "darwin") return "pair_run needs macOS Seatbelt (sandbox-exec); this platform has none";
-  if (!existsSync("/usr/bin/sandbox-exec")) return "/usr/bin/sandbox-exec is missing";
-  return null;
+  if (process.platform === "darwin") return existsSync(SANDBOX_EXEC) ? null : `${SANDBOX_EXEC} is missing`;
+  if (process.platform === "linux") return bwrapProblem();
+  return `pair_run needs macOS Seatbelt or Linux bubblewrap to fence its writes, and ${process.platform} has neither`;
 }
+
+const SANDBOX_EXEC = "/usr/bin/sandbox-exec";
 
 // ─── snapshots and hashing ──────────────────────────────────────────────────────────────
 
@@ -373,18 +382,31 @@ export function reapGroups(pgids, { timeoutMs = 3000 } = {}) {
 }
 
 /**
- * Write `content` to the absolute `path` from inside the Seatbelt `profile`, creating missing
- * parent directories there too. The content goes to `tempPath` (a new file in the same
- * directory, created exclusively) and is renamed over `path`, so the write never goes through
- * the target's existing inode: a hard link or a symlink at `path` is replaced, and the file it
- * pointed at is left as it was. An existing target's permission bits are kept. The kernel checks
- * the resolved path of every create and rename, so a parent directory a swapped symlink turns
- * toward somewhere the profile denies fails instead of landing. Synchronous: pair_write and pair_edit
- * run under the session lock.
- * @param {{ profile: string, path: string, tempPath: string, content: string }} opts
+ * What the sandbox runs for `argv` on this platform: sandbox-exec with the Seatbelt profile on
+ * macOS, bubblewrap with the plan's pinned binds and the seccomp filter on Linux. `close`
+ * releases the descriptors handed to bwrap once it has started.
+ */
+function sandboxed(profile, plan, argv, cwd) {
+  if (process.platform === "linux") return bwrapCommand(plan(), { argv, cwd });
+  return { file: SANDBOX_EXEC, args: ["-p", profile(), ...argv], fds: [], close: () => {} };
+}
+
+/**
+ * Write `content` to the absolute `path` in the sandbox, creating missing parent directories
+ * there too: under the open-phase Seatbelt profile (pairWriteProfile) on macOS, under a bwrap
+ * that can write only the target's directory (pairWriteBwrap) on Linux. The content goes to
+ * `tempPath` (a new file in the same directory, created exclusively) and is renamed over
+ * `path`, so the write never goes through the target's existing inode: a hard link or a symlink
+ * at `path` is replaced, and the file it pointed at is left as it was. An existing target's
+ * permission bits are kept. Seatbelt checks the resolved path of every create and rename; on
+ * Linux the bound directory is opened without following symlinks and checked to be the path it
+ * names, so in both a parent directory a swapped symlink turns elsewhere fails instead of
+ * landing. Synchronous: pair_write and pair_edit run under the session lock.
+ * @param {{ state: import("../core/gate.mjs").State, path: string, tempPath: string, content: string }} opts
  * @returns {{ ok: boolean, error?: string }}
  */
 export function writeSandboxed(opts) {
+  const mode = process.platform === "linux" ? "-c %a" : "-f %Lp";
   const script = [
     "set -eC",
     'p="$1"; t="$2"',
@@ -392,14 +414,26 @@ export function writeSandboxed(opts) {
     "trap '/bin/rm -f -- \"$t\"' EXIT",
     'if [ -d "$p" ]; then echo "the target is a directory" >&2; exit 1; fi',
     '/bin/cat > "$t"',
-    'if [ -f "$p" ]; then /bin/chmod "$(/usr/bin/stat -L -f %Lp -- "$p")" "$t"; fi',
+    `if [ -f "$p" ]; then /bin/chmod "$(/usr/bin/stat -L ${mode} -- "$p")" "$t"; fi`,
     '/bin/mv -f -- "$t" "$p"',
   ].join("\n");
-  const res = spawnSync("/usr/bin/sandbox-exec", ["-p", opts.profile, "/bin/sh", "-c", script, "pair-write", opts.path, opts.tempPath], {
-    input: Buffer.from(opts.content, "utf8"),
-    stdio: ["pipe", "ignore", "pipe"],
-    timeout: 30_000,
-  });
+  let cmd;
+  try {
+    cmd = sandboxed(() => pairWriteProfile(opts.state, opts.tempPath), () => pairWriteBwrap(opts.state, opts.tempPath, bwrapIo),
+      ["/bin/sh", "-c", script, "pair-write", opts.path, opts.tempPath]);
+  } catch (err) {
+    return { ok: false, error: err instanceof Error ? err.message : String(err) };
+  }
+  let res;
+  try {
+    res = spawnSync(cmd.file, cmd.args, {
+      input: Buffer.from(opts.content, "utf8"),
+      stdio: ["pipe", "ignore", "pipe", ...cmd.fds],
+      timeout: 30_000,
+    });
+  } finally {
+    cmd.close();
+  }
   if (res.error) return { ok: false, error: String(res.error.message ?? res.error) };
   if (res.status !== 0) {
     const err = String(res.stderr ?? "").trim();
@@ -409,29 +443,48 @@ export function writeSandboxed(opts) {
 }
 
 /**
- * Run `command` with /bin/sh under the Seatbelt `profile`, in its own process group, in the
- * foreground. On timeout or abort the whole group is killed and reaped before this resolves.
- * On a normal exit the group is left as it is (pair_done reaps it before its snapshot).
- * @param {{ profile: string, command: string, cwd: string, timeoutMs?: number, signal?: AbortSignal,
- *   onSpawn?: (pgid: number) => void, env?: Record<string, string>, maxOutput?: number }} opts
+ * Run `command` with /bin/sh in the sandbox the state calls for (pairRunProfile on macOS,
+ * bwrapArgsFor on Linux), in its own process group, in the foreground. On timeout or abort the
+ * whole group is killed and reaped before this resolves. On a normal exit the group is left as
+ * it is (pair_done reaps it before its snapshot); on Linux bubblewrap's own PID namespace ends
+ * every process the command started when the command exits. With `linkCheck`, `links` in the
+ * result lists what the run made where it could write in the worktree that a later write could
+ * follow out of the agreement (newLinks, since `linkCheck.sinceMs`), checked after every
+ * process of a killed run is gone.
+ * @param {{ state: import("../core/gate.mjs").State, command: string, cwd: string, timeoutMs?: number, signal?: AbortSignal,
+ *   onSpawn?: (pgid: number) => void, env?: Record<string, string>, maxOutput?: number,
+ *   linkCheck?: { sinceMs: number, exclusions: string[] } }} opts
  * @returns {Promise<{ exitCode: number | null, signal: string | null, stdout: string, stderr: string,
- *   timedOut: boolean, aborted: boolean, pgid: number | null, error?: string }>}
+ *   timedOut: boolean, aborted: boolean, pgid: number | null, links: string[], error?: string }>}
  */
 export function runSandboxed(opts) {
   const max = opts.maxOutput ?? 64 * 1024;
   return new Promise((resolve) => {
     let child;
+    let writable = boundaryRoots(opts.state);
+    let gitBefore = null;
     try {
-      child = spawn("/usr/bin/sandbox-exec", ["-p", opts.profile, "/bin/sh", "-c", opts.command], {
-        cwd: opts.cwd,
-        detached: true,
-        stdio: ["ignore", "pipe", "pipe"],
-        env: opts.env ?? process.env,
-      });
+      const cmd = sandboxed(() => pairRunProfile(opts.state), () => {
+        const plan = bwrapArgsFor(opts.state, [], bwrapIo);
+        writable = plan.writable;
+        return plan;
+      }, ["/bin/sh", "-c", opts.command], opts.cwd);
+      try {
+        if (opts.linkCheck) gitBefore = gitBaseline(opts.state.root, writable, opts.linkCheck.exclusions);
+        child = spawn(cmd.file, cmd.args, {
+          cwd: opts.cwd,
+          detached: true,
+          stdio: ["ignore", "pipe", "pipe", ...cmd.fds],
+          env: opts.env ?? process.env,
+        });
+      } finally {
+        cmd.close();
+      }
     } catch (err) {
-      resolve({ exitCode: null, signal: null, stdout: "", stderr: "", timedOut: false, aborted: false, pgid: null, error: String(err) });
+      resolve({ exitCode: null, signal: null, stdout: "", stderr: "", timedOut: false, aborted: false, pgid: null, links: [], error: err instanceof Error ? err.message : String(err) });
       return;
     }
+    const linksMade = () => (gitBefore ? newLinks(opts.state.root, writable, opts.linkCheck.sinceMs, gitBefore, opts.linkCheck.exclusions) : []);
     const pgid = child.pid ?? null;
     let stdout = "";
     let stderr = "";
@@ -464,7 +517,7 @@ export function runSandboxed(opts) {
       child.stdout.destroy();
       child.stderr.destroy();
       const error = failure ?? reapError;
-      resolve({ exitCode: exitInfo.code, signal: exitInfo.sig, stdout, stderr, timedOut, aborted, pgid, ...(error ? { error } : {}) });
+      resolve({ exitCode: exitInfo.code, signal: exitInfo.sig, stdout, stderr, timedOut, aborted, pgid, links: linksMade(), ...(error ? { error } : {}) });
     };
     child.on("error", (err) => {
       failure = String(err);
@@ -489,4 +542,66 @@ export function runSandboxed(opts) {
       }
     }
   });
+}
+
+// ─── the post-run link check ────────────────────────────────────────────────────────────
+
+/**
+ * The `.git` entries (any letter case) under `roots`, worktree-relative, each with its inode, so
+ * a later newLinks can tell one that is new or replaced from one that only changed. `.git` is
+ * not walked into, nor are `exclusions`, nor symlinked directories.
+ * @param {string} root
+ * @param {string[]} roots  absolute paths in the worktree
+ * @param {string[]} [exclusions]
+ * @returns {Record<string, number>}
+ */
+export function gitBaseline(root, roots, exclusions = []) {
+  const out = {};
+  walkRoots(root, roots, exclusions, (rel, st, isGit) => { if (isGit) out[rel] = st.ino; });
+  return out;
+}
+
+/**
+ * What a run made under `roots` that a later write could follow out of the agreement:
+ * worktree-relative paths that are a symlink or a file with more than one hard link whose
+ * change time is at or after `sinceMs` (making a link sets it, and so does writing a file that
+ * already had a second link), and every `.git` entry that is not in `gitBefore` with the same
+ * inode (a `.git` directory's own times change whenever git works in it, so it goes by inode).
+ * Sorted.
+ * @param {string} root
+ * @param {string[]} roots  absolute paths in the worktree
+ * @param {number} sinceMs
+ * @param {Record<string, number>} gitBefore  from gitBaseline before the run
+ * @param {string[]} [exclusions]
+ * @returns {string[]}
+ */
+export function newLinks(root, roots, sinceMs, gitBefore, exclusions = []) {
+  const found = new Set();
+  walkRoots(root, roots, exclusions, (rel, st, isGit) => {
+    if (isGit) {
+      if (gitBefore[rel] !== st.ino) found.add(rel);
+    } else if (st.ctimeMs >= sinceMs && (st.isSymbolicLink() || (!st.isDirectory() && st.nlink > 1))) {
+      found.add(rel);
+    }
+  });
+  return [...found].sort();
+}
+
+function walkRoots(root, roots, exclusions, visitFn) {
+  const skip = new Set(exclusions.map((e) => e.replace(/\/+$/, "")));
+  const seen = new Set();
+  const visit = (abs) => {
+    if (seen.has(abs)) return;
+    seen.add(abs);
+    let st;
+    try { st = lstatSync(abs); } catch { return; }
+    const rel = abs === root ? "." : abs.slice(root.length + 1);
+    const isGit = basename(abs).toLowerCase() === ".git";
+    visitFn(rel, st, isGit);
+    if (isGit || !st.isDirectory() || skip.has(rel)) return;
+    let names;
+    try { names = readdirSync(abs); } catch { return; }
+    for (const n of names) visit(join(abs, n));
+  };
+  for (const r of roots) if (r === root || r.startsWith(`${root}/`)) visit(r);
 }
