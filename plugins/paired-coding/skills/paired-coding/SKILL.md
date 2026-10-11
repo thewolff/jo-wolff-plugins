@@ -51,9 +51,23 @@ files were not rewound, so edits from later cards may already be on disk.
       `pair_write` and `pair_edit`, and run commands with `pair_run`. *Done when* every check
       in the boundary has run and passes, or a reopen trigger fired.
    5. **Read-back.** Call `pair_done`, then record the roadmap with this card `done`. Show the
-      diff `pair_done` returns, the check output, two lines on what the change means, and the
-      cards `pair_note` lists as still open or not ready, with each note. *Done when* all four
-      are shown; then the next ready card.
+      diff `pair_done` returns; the checks under the heading `Checks I ran:`, never a bare
+      `Check:`, one line per check with its result, plus a line starting `Not run:` with the
+      reason for any boundary check you did not run; two lines on what the change means; and
+      the cards `pair_note` lists as still open or not ready, with each note. End with one line
+      to your partner saying what, if anything, you need from them (see *Ending a read-back*).
+      *Done when* all five are shown.
+
+## Ending a read-back
+
+The last line of a read-back tells your partner, in plain words, what you need from them. Never
+leave them to infer it from the check output.
+
+- **A next card is ready:** say the next card follows and that a yes, `y` included, opens it;
+  then show it. Its open points still need settling first.
+- **No card is ready:** write "Nothing is needed from you." and say they can steer the roadmap
+  or tell you what to continue.
+- **The roadmap is done:** tell your partner, as *Ending pairing* says.
 
 ## The roadmap
 
