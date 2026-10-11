@@ -50,12 +50,13 @@ files were not rewound, so edits from later cards may already be on disk.
       warrants one, and the checks. Work straight through the mechanical steps. Write with
       `pair_write` and `pair_edit`, and run commands with `pair_run`. *Done when* every check
       in the boundary has run and passes, or a reopen trigger fired.
-   5. **Read-back.** Call `pair_done`, then record the roadmap with this card `done`. Show the
-      diff `pair_done` returns; the checks under the heading `Checks I ran:`, never a bare
-      `Check:`, one line per check with its result, plus a line starting `Not run:` with the
-      reason for any boundary check you did not run; two lines on what the change means; and
-      the cards `pair_note` lists as still open or not ready, with each note. End with one line
-      to your partner saying what, if anything, you need from them (see *Ending a read-back*).
+   5. **Read-back.** Only once step 4 is done with every boundary check run and passing; if a
+      reopen trigger fired instead, this card is not `done` (see *When agreement reopens*).
+      Call `pair_done`, then record the roadmap with this card `done`. Show the diff
+      `pair_done` returns; the checks under the heading `Checks I ran:`, never a bare `Check:`,
+      one line per check with its result; two lines on what the change means; and the cards
+      `pair_note` lists as still open or not ready, with each note. End with one line to your
+      partner saying what, if anything, you need from them (see *Ending a read-back*).
       *Done when* all five are shown.
 
 ## Ending a read-back
@@ -65,8 +66,9 @@ leave them to infer it from the check output.
 
 - **A next card is ready:** say the next card follows and that a yes, `y` included, opens it;
   then show it. Its open points still need settling first.
-- **No card is ready:** write "Nothing is needed from you." and say they can steer the roadmap
-  or tell you what to continue.
+- **No card is ready:** say what each remaining card waits for. If any waits on your partner (a
+  note or an open point only they can settle), ask for that. Only when none does, write
+  "Nothing is needed from you." and say they can steer the roadmap or tell you what to continue.
 - **The roadmap is done:** tell your partner, as *Ending pairing* says.
 
 ## The roadmap
@@ -153,9 +155,14 @@ Stop, show what you found, and return to discussion with a revised card when:
 - the approach **materially expands**: a file outside the boundary, a new dependency, a new
   public interface, a storage or schema contract, or removal of existing behavior;
 - a check fails and the fix lies outside the agreed approach;
-- the actual diff differs from what the card said.
+- the actual diff differs from what the card said;
+- your partner drops a check from the boundary.
 
 A gate refusal that says "outside the agreed boundary; reopen" is this rule firing: reopen.
+
+A reopened card is not `done`, and no check is skipped quietly. Show the checks you ran under
+`Checks I ran:`, and each boundary check you did not run on its own line starting `Not run:`,
+with the reason. Then bring the revised card for a new agreement.
 
 A failing check whose fix stays inside the agreed approach and boundary (a typo, an import, a
 test assertion off by the agreed behavior's own definition) is part of making the change set.
