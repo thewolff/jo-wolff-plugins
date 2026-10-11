@@ -102,8 +102,9 @@ Ask for it in words: "pair with me", "let's pair on this", "paired coding". The 
    is written.
 2. **Recon.** The agent explores read-only and proposes a roadmap of cards, one line each.
 3. **Pairing loop.** For each card: discussion, agreement, the agent makes the whole change set,
-   then a read-back with the diff, the check output, what the change means, and the cards still
-   to play.
+   then a read-back with the diff, the checks it ran (and any it did not), what the change
+   means, the cards still to play, and one closing line saying what, if anything, it needs
+   from you.
 
 A change set is the smallest change in code whose effect can be checked on its own. Agreement
 is a shared understanding of the behavior, the approach and the boundary, evidenced by you
