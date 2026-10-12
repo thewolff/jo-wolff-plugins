@@ -506,6 +506,27 @@ export function diffSnapshots(before, after, exclusions = []) {
   return out.sort((x, y) => (x.path < y.path ? -1 : x.path > y.path ? 1 : 0));
 }
 
+/**
+ * The part of a snapshot a boundary covers: its files (boundaryMatches), the modes of the
+ * directories it covers (directoryInBoundary), and "absent" for a literal entry the snapshot
+ * does not hold, so creating it changes the hash. The host's hashBoundary takes a fresh
+ * snapshot and reduces it with this; pair_done reduces the snapshot it already took.
+ * @param {string[]} boundary
+ * @param {Snapshot} snap
+ * @returns {Record<string, string>}
+ */
+export function boundaryHashes(boundary, snap) {
+  const out = {};
+  for (const [rel, fp] of Object.entries(snap)) {
+    if (fp.startsWith("dir:") ? directoryInBoundary(boundary, rel) : boundaryMatches(boundary, rel)) out[rel] = fp;
+  }
+  for (const e of boundary) {
+    const literal = !/[*?]/.test(e) && !e.endsWith("/");
+    if (literal && !Object.hasOwn(out, e)) out[e] = "absent";
+  }
+  return out;
+}
+
 function takeSnapshot(io) {
   const r = callIo(io, "snapshot");
   if (r.error) return r;
@@ -846,6 +867,111 @@ export function lastCardSeq(entries) {
   return max;
 }
 
+/** The receipt's own line on what it records and what it does not claim. */
+export const RECEIPT_MEANS =
+  "An accepted change set is one your partner agreed to by its card and pair_done closed inside its boundary: the hashes are what the boundary's paths held at that pair_done, and the runs are the pair_run commands under it with their exit codes. That is sign-off on the approach. Nothing here says the code works; a later review takes correctness and the tests as its scope.";
+
+/**
+ * The pair-accepted receipt, built from a session's journal at a stop: one record per change
+ * set pair_done closed (`accepted`: its boundary, what each boundary path held at pair_done, the
+ * card's declared checks and the pair_run commands under it), the change sets pair_begin opened
+ * that pairing ended before pair_done (`notAccepted`), and every unapproved write journaled
+ * (`unapproved`). It covers the whole journal, so a session that paired, stopped and paired
+ * again gets one receipt for all of it. `sessionId` and `root` come from the caller's state
+ * when given, else from the journal's start entries.
+ * @param {unknown} entries
+ * @param {{ version: string, sessionId?: string | null, root?: string | null }} opts
+ */
+export function pairAcceptedReceipt(entries, opts) {
+  const all = Array.isArray(entries) ? entries.filter(isObj) : [];
+  const cards = new Map();
+  const agreed = new Map();
+  const runs = new Map();
+  const done = new Map();
+  const unapproved = [];
+  let sessionId = null;
+  let root = null;
+  let startedAt;
+  let stop = null;
+  for (const e of all) {
+    switch (e.type) {
+      case "start":
+        if (typeof e.sessionId === "string") sessionId = e.sessionId;
+        if (typeof e.root === "string") root = e.root;
+        if (startedAt === undefined) startedAt = e.at;
+        break;
+      case "carried-after-clear":
+        if (typeof e.root === "string") root = e.root;
+        break;
+      case "card":
+        if (isObj(e.card) && typeof e.card.id === "string") cards.set(e.card.id, e.card);
+        break;
+      case "agreement":
+        if (typeof e.cardId === "string" && !agreed.has(e.cardId)) agreed.set(e.cardId, e);
+        break;
+      case "run-start":
+        if (typeof e.cardId === "string" && typeof e.runId === "string") {
+          if (!runs.has(e.cardId)) runs.set(e.cardId, []);
+          runs.get(e.cardId).push({ runId: e.runId, command: typeof e.command === "string" ? e.command : null, exitCode: null });
+        }
+        break;
+      case "run-end":
+        for (const list of runs.values()) {
+          const run = list.find((r) => r.runId === e.runId);
+          if (!run) continue;
+          run.exitCode = typeof e.exitCode === "number" ? e.exitCode : null;
+          if (e.timedOut === true) run.timedOut = true;
+          if (e.aborted === true) run.aborted = true;
+          if (typeof e.signal === "string") run.signal = e.signal;
+        }
+        break;
+      case "done":
+        if (typeof e.cardId === "string") done.set(e.cardId, e);
+        break;
+      case "unapproved-write":
+        unapproved.push({ cardId: typeof e.cardId === "string" ? e.cardId : null, at: e.at, paths: Array.isArray(e.paths) ? e.paths : [] });
+        break;
+      case "stop":
+        stop = e;
+        break;
+      default:
+    }
+  }
+  const accepted = [];
+  const notAccepted = [];
+  for (const [cardId, a] of agreed) {
+    const card = cards.get(cardId);
+    const d = done.get(cardId);
+    if (!d) {
+      notAccepted.push({ cardId, agreedAt: a.at, boundary: isStrArr(card?.boundary) ? card.boundary : [], reason: "pairing ended before pair_done" });
+      continue;
+    }
+    accepted.push({
+      cardId,
+      agreedAt: a.at,
+      quote: typeof a.quote === "string" ? a.quote : null,
+      doneAt: d.at,
+      boundary: isStrArr(d.boundary) ? d.boundary : isStrArr(card?.boundary) ? card.boundary : [],
+      // A done entry from before 1.3.0 recorded no hashes; null says so rather than guessing.
+      hashes: isObj(d.hashes) ? d.hashes : null,
+      checks: { declared: isStrArr(card?.checks) ? card.checks : [], runs: runs.get(cardId) ?? [] },
+    });
+  }
+  return {
+    pairAccepted: 1,
+    pairedCoding: opts.version,
+    sessionId: opts.sessionId ?? sessionId,
+    root: opts.root ?? root,
+    startedAt: startedAt ?? null,
+    stoppedAt: stop?.at ?? null,
+    stoppedBy: typeof stop?.verb === "string" ? stop.verb : null,
+    accepted,
+    notAccepted,
+    unapproved,
+    means: RECEIPT_MEANS,
+  };
+}
+
 /** pair_note's answers to an earlier roadmap pair_start offered. */
 export const EARLIER_ROADMAP_CHOICES = Object.freeze(["pick-up", "start-fresh"]);
 
@@ -995,7 +1121,9 @@ export function pairBegin(state, args, io) {
  * snapshots, so the read-back is taken after writes have stopped. Every changed path must lie
  * inside the boundary; any that does not is an unapproved write and stops the session. Refused
  * while the session is stopped (a run that made a link: runEnd), so no read-back is shown then.
- * Returns `changed` (inside the boundary, for the read-back diff) and `unapproved`.
+ * Returns `changed` (inside the boundary, for the read-back diff) and `unapproved`. The `done`
+ * journal entry records the boundary and what its paths held at this snapshot (boundaryHashes),
+ * which the pair-accepted receipt copies at the stop (pairAcceptedReceipt).
  * @param {State} state
  * @param {{ cardId: unknown }} args
  * @param {Io} io
@@ -1021,7 +1149,7 @@ export function pairDone(state, args, io) {
   next.phase = "closed";
   next.changeSet = null;
   next.baseline = snap.value;
-  const journal = [entry("done", io, { cardId: cs.cardId, changed })];
+  const journal = [entry("done", io, { cardId: cs.cardId, boundary: [...cs.boundary], hashes: boundaryHashes(cs.boundary, snap.value), changed })];
   if (unapproved.length) {
     next.halt = { reason: `unapproved write outside change set ${cs.cardId}: ${unapproved.map((d) => d.path).join(", ")}`, at: stamp(io) };
     journal.push(entry("unapproved-write", io, { cardId: cs.cardId, paths: unapproved }));
@@ -1103,11 +1231,13 @@ function targetProblem(state, abs) {
 /**
  * Admit one pair_run and return the Seatbelt profile it must run under, built from the state
  * at this moment (on Linux the adapter builds bwrapArgsFor from the same returned state). The
- * command itself plays no part: whatever command arrives at execution, after any other
- * extension rewrote it, runs under this sandbox. Runs started while open are tied to the
- * change set so pair_done can refuse while they run and reap them afterwards.
+ * command itself plays no part in the sandbox: whatever command arrives at execution, after any
+ * other extension rewrote it, runs under it. The adapter passes the command it is about to run
+ * as `command`, and the run-start entry records it for the pair-accepted receipt. Runs started
+ * while open are tied to the change set so pair_done can refuse while they run and reap them
+ * afterwards.
  * @param {State} state
- * @param {{ runId: unknown }} args
+ * @param {{ runId: unknown, command?: unknown }} args
  * @param {Io} [io]
  * @returns {Result & { profile?: string }}
  */
@@ -1128,7 +1258,8 @@ export function runStart(state, args, io) {
   const cardId = next.phase === "open" ? next.changeSet.cardId : null;
   next.running.push({ runId, cardId });
   if (cardId) next.changeSet.runs.push(runId);
-  return { ok: true, state: next, profile, journal: [entry("run-start", io, { runId, cardId, phase: next.phase })] };
+  const command = typeof args.command === "string" ? { command: args.command } : {};
+  return { ok: true, state: next, profile, journal: [entry("run-start", io, { runId, cardId, phase: next.phase, ...command })] };
 }
 
 /**

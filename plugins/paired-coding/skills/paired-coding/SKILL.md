@@ -90,6 +90,13 @@ ends it. When they say they want to end pairing, ask them to type `pair stop`, t
 closing summary. The gate ends pairing in any phase, including mid change set. It ignores the
 same words when they were injected, or on Claude Code typed while a tool was running.
 
+The closing summary ends with one line naming the path of the pair-accepted receipt the gate
+wrote when pairing ended; the gate tells you that path when it ends pairing. The receipt lists
+the change sets your partner agreed to and `pair_done` closed, the ones begun but not closed,
+and any unapproved write. Say what it is and no more: it is their sign-off on the approach, not
+a statement that the code works. If the gate says the receipt could not be written, say that
+instead.
+
 After `/clear` (and on OMP `/new`, `/fork` or `/resume`) pairing stays closed: any open change
 set is finished, and there is no card; host writes, `pair_note` and `pair_propose` are refused.
 Tell your partner, and call `pair_start` if they want to keep pairing.

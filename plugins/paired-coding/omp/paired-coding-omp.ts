@@ -12,17 +12,17 @@
 //                         emitInput call in #runInputHandlers). Messages an extension injects
 //                         with sendUserMessage never pass through it, so they never count as the
 //                         user's words. A typed turn that is exactly "pair stop" ends pairing
-//                         here, before the turn reaches the agent, and queues STOP_NOTICE as
+//                         here, before the turn reaches the agent, and queues stopNotice as
 //                         hidden context for that turn (sendMessage, deliverAs "nextTurn"), so
-//                         the agent learns pairing ended. The handler returns nothing: it never
-//                         revises input.
+//                         the agent learns pairing ended and where the pair-accepted receipt
+//                         is. The handler returns nothing: it never revises input.
 //   registerTool       -> one OMP tool per PAIR_TOOLS entry. Each execute() calls executeVerb()
 //                         on the arguments it received, which are the final ones: OMP hands
 //                         execute the last tool_call revision, so a later extension that
 //                         rewrites a pair_write path or a pair_run command is checked as
 //                         rewritten (adversarial test 16). There is no stop tool.
 //   session_shutdown   -> endSession(): reap every pair_run process group, take the final
-//                         snapshot, go inactive.
+//                         snapshot, write the pair-accepted receipt, go inactive.
 //   session_before_switch, session_switch, session_before_branch, session_branch
 //                      -> a session change inside the running process (/new, /fork, /resume
 //                         emit the switch events; /btw's branch and a branch requested over RPC
@@ -115,9 +115,17 @@ export type PiLike = {
 	sendMessage?(message: { customType: string; content: string; display: boolean }, options: { deliverAs: "nextTurn" }): void;
 };
 
-/** What the agent is told, as hidden context on the turn, when the partner typed pair stop. */
-export const STOP_NOTICE =
-	"paired-coding: your partner typed pair stop, so pairing has ended in this session. The gate no longer refuses host tools. Pairing starts again only if your partner asks for it and you call pair_start.";
+/**
+ * What the agent is told, as hidden context on the turn, when the partner typed pair stop.
+ * `receipt` is the pair-accepted receipt's path, or null when it could not be written (the
+ * journal then records `receipt-failed`).
+ */
+export function stopNotice(receipt: string | null | undefined): string {
+	const where = receipt
+		? `The pair-accepted receipt is at ${receipt}; name that path in your closing summary. It records which change sets your partner agreed to and pair_done closed, and it does not say the code works.`
+		: "The pair-accepted receipt could not be written; say so in your closing summary.";
+	return `paired-coding: your partner typed pair stop, so pairing has ended in this session. The gate no longer refuses host tools. ${where} Pairing starts again only if your partner asks for it and you call pair_start.`;
+}
 
 /**
  * What the agent is told, as hidden context on the next turn, when a leaf move (/tree, the
@@ -328,7 +336,7 @@ export default function pairedCodingOmp(pi: PiLike, deps: AdapterDeps = {}): voi
 		checkReset(ctx, dir);
 		const r = recordTrustedInput({ sessionDir: dir, text: event.text, source: event.source });
 		if (r.stopped) {
-			pi.sendMessage?.({ customType: "paired-coding", content: STOP_NOTICE, display: false }, { deliverAs: "nextTurn" });
+			pi.sendMessage?.({ customType: "paired-coding", content: stopNotice(r.receipt), display: false }, { deliverAs: "nextTurn" });
 			if (ctx.hasUI && ctx.ui) ctx.ui.notify("paired coding is off: you typed pair stop", "info");
 		}
 		return undefined;

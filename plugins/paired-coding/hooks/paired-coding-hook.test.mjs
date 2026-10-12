@@ -237,13 +237,17 @@ test("final arguments decide: a path rewritten after the hook ran is still check
   assert.equal(readFileSync(join(f.root, "b.txt"), "utf8"), "bravo\n");
 });
 
-test("SessionEnd ends pairing: the next session state is inactive and the gate opens", { skip: !hasSandbox }, async () => {
+test("SessionEnd ends pairing: the next session state is inactive, the gate opens, and the receipt is written", { skip: !hasSandbox }, async () => {
   const f = fixture();
   await call(f, "pair_start", {});
   assert.equal(handle("session-end", { ...f.common }, { env: f.env }), null);
   assert.equal(JSON.parse(readFileSync(join(f.base, "s1", "state.json"), "utf8")).phase, "inactive");
   assert.equal(handle("pre-tool-use", { ...f.common, tool_name: "Write", tool_input: {}, tool_use_id: tuid() }, { env: f.env }), null);
   assert.ok(readdirSync(join(f.base, "s1")).includes("journal.jsonl"));
+  const receipt = JSON.parse(readFileSync(join(f.base, "s1", "pair-accepted.json"), "utf8"));
+  assert.equal(receipt.stoppedBy, "session-end");
+  assert.equal(receipt.sessionId, "s1");
+  assert.deepEqual(receipt.accepted, []);
 });
 
 const writeCall = (f, common = f.common) => handle("pre-tool-use", { ...common, tool_name: "Write", tool_input: {}, tool_use_id: tuid() }, { env: f.env, waitMs: 100 });
@@ -255,10 +259,15 @@ test("a typed 'pair stop' in a turn with no tool call ends pairing at Stop; the 
   assert.notEqual(writeCall(f), null);
   const note = typedPrompt(f, "pair stop");
   assert.match(note.hookSpecificOutput.additionalContext, /asks to end pairing/);
+  // The note names where the receipt will be, so the closing summary can name it: the hook has
+  // no channel to the agent after the stop itself takes effect.
+  const receipt = join(f.base, "s1", "pair-accepted.json");
+  assert.ok(note.hookSpecificOutput.additionalContext.includes(`receipt is written to ${receipt}; name that path in your closing summary`));
   assert.equal(phaseOf(f, "s1"), "closed", "not judged until the transcript entry exists");
   assert.equal(handle("stop", { ...f.common }, { env: f.env, waitMs: 100 }), null);
   assert.equal(phaseOf(f, "s1"), "inactive");
   assert.equal(writeCall(f), null);
+  assert.equal(JSON.parse(readFileSync(receipt, "utf8")).stoppedBy, "typed-stop");
 });
 
 test("a queued turn left unjudged is judged at the next UserPromptSubmit", { skip: !hasSandbox }, async () => {
