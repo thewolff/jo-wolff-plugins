@@ -59,6 +59,14 @@ sandbox**, **Linux: Landlock** and **Linux: bubblewrap** in
 
 Claude Code:
 
+**Requirements on Claude Code.** Node.js on your `PATH`: every hook and the bundled MCP server
+run as `node …`. CI tests on Node 24.
+
+**Claude Code v2.1.274 or later.** The gate recognises its own tools by the `mcp_server` field of
+the `PreToolUse` input, which [Claude Code's hooks reference](https://code.claude.com/docs/en/hooks)
+says "requires Claude Code v2.1.274 or later". On an older Claude Code, every `pair_*` call is
+refused, so pairing cannot start.
+
 ```
 /plugin marketplace add thewolff/jo-wolff-plugins
 /plugin install paired-coding@jo-wolff-plugins
@@ -389,11 +397,6 @@ disappears, the fallback is a one-shot nonce that the hook passes into the call 
 `PreToolUse` `updatedInput`, checked against the binding file. That fallback is not built, and
 two of its edges are undocumented too: what happens when several hooks return `updatedInput`,
 and whether `updatedInput` applies without a permission decision.
-
-**Claude Code v2.1.274 or later.** The gate recognises its own tools by the `mcp_server` field of
-the `PreToolUse` input, which [Claude Code's hooks reference](https://code.claude.com/docs/en/hooks)
-says "requires Claude Code v2.1.274 or later". On an older Claude Code, every `pair_*` call is
-refused, so pairing cannot start.
 
 **`pair_run`'s time limit on Claude Code.** Claude Code moves an MCP call that runs longer than
 its automatic-backgrounding threshold (two minutes by default) into a background task, and a
