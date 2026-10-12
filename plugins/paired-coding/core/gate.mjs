@@ -869,31 +869,80 @@ export function lastCardSeq(entries) {
 
 /** The receipt's own line on what it records and what it does not claim. */
 export const RECEIPT_MEANS =
-  "An accepted change set is one your partner agreed to by its card and pair_done closed inside its boundary: the hashes are what the boundary's paths held at that pair_done, and the runs are the pair_run commands under it with their exit codes. That is sign-off on the approach. Nothing here says the code works; a later review takes correctness and the tests as its scope.";
+  "An export of the gate's journal, written by the gate at stop. An accepted record is a gate-recorded typed agreement followed by pair_done, with hashes of the boundary at that moment; unapproved writes are listed and may coexist with acceptance; whether the implementation matches the agreed approach is not established by this file, and nothing here says the code works. The journal and this file are protected only while pairing is active: journal.entries and journal.sha256 are the journal bytes this file was built from, each restart records the journal's hash as a resume entry, and a record marked suspect rests on journal bytes that no longer match a hash the gate recorded, or that lie outside any pairing span. A consumer who needs this file tamper-evident takes a copy at stop time.";
+
+/** Journal entry types the gate writes only while pairing is active (between a start and a stop). */
+const ACTIVE_ONLY = new Set(["card", "agreement", "done", "unapproved-write", "run-start", "run-end"]);
+
+/** `lines` (each without its newline) as the bytes appendJournal wrote them. */
+const journalBytes = (lines) => lines.map((l) => `${l}\n`).join("");
+
+/**
+ * The journal indexes whose records a receipt marks suspect. Two rules. A checkpoint (a
+ * `receipt` entry the stop wrote, a `resume` entry a restart wrote) records how many entries
+ * preceded it and the hash of their bytes; when the bytes before it no longer hash to that,
+ * every entry since the previous checkpoint is suspect. And an entry the gate writes only while
+ * pairing is active, found between a stop and the next start, is suspect: the gate never wrote
+ * it there. The hash rule needs the raw lines and a hash function; without them only the span
+ * rule applies.
+ * @param {unknown[]} all
+ * @param {string[] | null} lines
+ * @param {((text: string) => string) | undefined} sha256
+ */
+function suspectIndexes(all, lines, sha256) {
+  const out = new Set();
+  let active = false;
+  let verifiedFrom = 0;
+  for (let i = 0; i < all.length; i++) {
+    const e = all[i];
+    if (!isObj(e)) continue;
+    if (e.type === "start" || e.type === "carried-after-clear") active = true;
+    else if (e.type === "stop") active = false;
+    else if (e.type === "receipt" || e.type === "resume") {
+      if (!lines) continue;
+      const matches = isObj(e.journal) && e.journal.entries === i && e.journal.sha256 === sha256(journalBytes(lines.slice(0, i)));
+      if (!matches) for (let j = verifiedFrom; j < i; j++) out.add(j);
+      verifiedFrom = i + 1;
+    } else if (ACTIVE_ONLY.has(e.type) && !active) out.add(i);
+  }
+  return out;
+}
 
 /**
  * The pair-accepted receipt, built from a session's journal at a stop: one record per change
  * set pair_done closed (`accepted`: its boundary, what each boundary path held at pair_done, the
- * card's declared checks and the pair_run commands under it), the change sets pair_begin opened
- * that pairing ended before pair_done (`notAccepted`), and every unapproved write journaled
- * (`unapproved`). It covers the whole journal, so a session that paired, stopped and paired
- * again gets one receipt for all of it. `sessionId` and `root` come from the caller's state
- * when given, else from the journal's start entries.
+ * writes outside the boundary found at that pair_done, the card's declared checks and the
+ * pair_run commands under it), the change sets pair_begin opened that pairing ended before
+ * pair_done (`notAccepted`), and every unapproved write journaled (`unapproved`). It covers
+ * the whole journal, so a session that paired, stopped and paired again gets one receipt for
+ * all of it. `sessionId` and `root` come from the caller's state when given, else from the
+ * journal's start entries. With `lines` (the journal's raw lines, one per entry, without
+ * newlines) and `sha256`, `journal` names the bytes the receipt was built from and every record
+ * carries `suspect` (suspectIndexes); without them `journal` is null and only the span rule
+ * sets `suspect`.
  * @param {unknown} entries
- * @param {{ version: string, sessionId?: string | null, root?: string | null }} opts
+ * @param {{ version: string, sessionId?: string | null, root?: string | null, lines?: string[], sha256?: (text: string) => string }} opts
  */
 export function pairAcceptedReceipt(entries, opts) {
-  const all = Array.isArray(entries) ? entries.filter(isObj) : [];
+  const all = Array.isArray(entries) ? entries : [];
+  const lines = Array.isArray(opts.lines) && opts.lines.length === all.length && typeof opts.sha256 === "function" ? opts.lines : null;
+  const suspect = suspectIndexes(all, lines, opts.sha256);
   const cards = new Map();
   const agreed = new Map();
   const runs = new Map();
   const done = new Map();
+  const doneOutside = new Map();
   const unapproved = [];
   let sessionId = null;
   let root = null;
   let startedAt;
   let stop = null;
-  for (const e of all) {
+  let afterDone = null;
+  for (let i = 0; i < all.length; i++) {
+    const e = all[i];
+    if (!isObj(e)) continue;
+    const justDone = afterDone;
+    afterDone = null;
     switch (e.type) {
       case "start":
         if (typeof e.sessionId === "string") sessionId = e.sessionId;
@@ -907,7 +956,7 @@ export function pairAcceptedReceipt(entries, opts) {
         if (isObj(e.card) && typeof e.card.id === "string") cards.set(e.card.id, e.card);
         break;
       case "agreement":
-        if (typeof e.cardId === "string" && !agreed.has(e.cardId)) agreed.set(e.cardId, e);
+        if (typeof e.cardId === "string" && !agreed.has(e.cardId)) agreed.set(e.cardId, { e, i });
         break;
       case "run-start":
         if (typeof e.cardId === "string" && typeof e.runId === "string") {
@@ -926,11 +975,18 @@ export function pairAcceptedReceipt(entries, opts) {
         }
         break;
       case "done":
-        if (typeof e.cardId === "string") done.set(e.cardId, e);
+        if (typeof e.cardId === "string") {
+          done.set(e.cardId, { e, i });
+          afterDone = e.cardId;
+        }
         break;
-      case "unapproved-write":
-        unapproved.push({ cardId: typeof e.cardId === "string" ? e.cardId : null, at: e.at, paths: Array.isArray(e.paths) ? e.paths : [] });
+      case "unapproved-write": {
+        const paths = Array.isArray(e.paths) ? e.paths : [];
+        unapproved.push({ cardId: typeof e.cardId === "string" ? e.cardId : null, at: e.at, paths, suspect: suspect.has(i) });
+        // pair_done journals the writes it found outside the boundary right after its done entry.
+        if (justDone !== null && e.cardId === justDone) doneOutside.set(justDone, paths);
         break;
+      }
       case "stop":
         stop = e;
         break;
@@ -943,18 +999,20 @@ export function pairAcceptedReceipt(entries, opts) {
     const card = cards.get(cardId);
     const d = done.get(cardId);
     if (!d) {
-      notAccepted.push({ cardId, agreedAt: a.at, boundary: isStrArr(card?.boundary) ? card.boundary : [], reason: "pairing ended before pair_done" });
+      notAccepted.push({ cardId, agreedAt: a.e.at, boundary: isStrArr(card?.boundary) ? card.boundary : [], reason: "pairing ended before pair_done", suspect: suspect.has(a.i) });
       continue;
     }
     accepted.push({
       cardId,
-      agreedAt: a.at,
-      quote: typeof a.quote === "string" ? a.quote : null,
-      doneAt: d.at,
-      boundary: isStrArr(d.boundary) ? d.boundary : isStrArr(card?.boundary) ? card.boundary : [],
+      agreedAt: a.e.at,
+      quote: typeof a.e.quote === "string" ? a.e.quote : null,
+      doneAt: d.e.at,
+      boundary: isStrArr(d.e.boundary) ? d.e.boundary : isStrArr(card?.boundary) ? card.boundary : [],
       // A done entry from before 1.3.0 recorded no hashes; null says so rather than guessing.
-      hashes: isObj(d.hashes) ? d.hashes : null,
+      hashes: isObj(d.e.hashes) ? d.e.hashes : null,
+      outsideBoundaryWrites: doneOutside.get(cardId) ?? [],
       checks: { declared: isStrArr(card?.checks) ? card.checks : [], runs: runs.get(cardId) ?? [] },
+      suspect: suspect.has(a.i) || suspect.has(d.i),
     });
   }
   return {
@@ -965,6 +1023,7 @@ export function pairAcceptedReceipt(entries, opts) {
     startedAt: startedAt ?? null,
     stoppedAt: stop?.at ?? null,
     stoppedBy: typeof stop?.verb === "string" ? stop.verb : null,
+    journal: lines ? { entries: all.length, sha256: opts.sha256(journalBytes(lines)) } : null,
     accepted,
     notAccepted,
     unapproved,
@@ -981,7 +1040,7 @@ export const EARLIER_ROADMAP_CHOICES = Object.freeze(["pick-up", "start-fresh"])
  * not-ready items. `earlierRoadmap` answers the roadmap pair_start offered: "pick-up" records
  * that whole roadmap in this journal, "start-fresh" records the decline, so a later pair_start
  * stops at this journal either way. The agent's only way to keep notes while pairing; the
- * state directory is not writable by any agent tool.
+ * state directory is not writable by any agent tool while pairing is active.
  * @param {State} state
  * @param {{ text?: unknown, roadmap?: unknown, earlierRoadmap?: unknown }} args
  * @param {Io} [io]

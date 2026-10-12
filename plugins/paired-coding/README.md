@@ -132,9 +132,10 @@ your typed agreement.
 
 **Ending.** A done roadmap does not end pairing: the agent reports it done and the gate stays
 closed. Only you end pairing: type `pair stop` as a message of its own. The agent has no tool
-that ends it. When pairing ends, the gate writes a pair-accepted receipt beside the journal
-saying which change sets you agreed to and `pair_done` closed, and the agent's closing summary
-names its path (see **Pair-accepted receipt** below).
+that ends it. When pairing ends, the gate writes a pair-accepted receipt beside the journal, an
+export of the journal saying which change sets you agreed to and `pair_done` closed, and the
+agent's closing summary names its path once the gate has confirmed it (see **Pair-accepted
+receipt** below).
 
 The skill holds the conversation; the gate below holds the writes. The contract is the two
 together: where the skill says what the agent should do, the gate decides what it can do.
@@ -231,11 +232,15 @@ How it works:
   receipt** below) and returns the session to inactive. On Claude Code the stop takes effect
   when the turn ends or at the next tool call, whichever comes first; on OMP, when the turn is
   submitted. On OMP the agent is also told, as hidden context on that turn, that pairing has
-  ended, that host tools are no longer refused, where the receipt is, and that pairing starts
-  again only if you ask for it and it calls `pair_start`; you see "paired coding is off: you
-  typed pair stop". On Claude Code the hook has no channel to the agent once the stop has taken
-  effect, so it names the receipt's path on the stop turn itself, before the turn is judged.
-  The session's end writes the same receipt.
+  ended, that host tools are no longer refused, where the receipt is (or that it could not be
+  written), and that pairing starts again only if you ask for it and it calls `pair_start`;
+  you see "paired coding is off: you typed pair stop". On Claude Code the stop turn's own note
+  says only where the receipt will be if the stop is accepted, since the turn is judged after
+  that note; the outcome (accepted and the receipt written, accepted but the write failed, or
+  refused because the transcript does not show you typed it) reaches the agent as a note with
+  the tool result that judged it, or, for a turn that made no tool call, at the start of the
+  next turn or its first tool call. The skill has the closing summary say which of those it
+  has heard. The session's end writes the same receipt.
 - Card ids are unique within a session's journal. After OMP `/clear`, `/tree` or an interactive
   `/branch` back to an earlier message, or a typed `pair stop` and a later `pair_start` in the
   same session, numbering continues (`card-3` after `card-1` and `card-2`) instead of starting
@@ -296,33 +301,54 @@ reopen rule and your read of the real diff.
 **Pair-accepted receipt.** When pairing ends, by a typed `pair stop` or by the session ending,
 the gate writes `pair-accepted.json` beside the journal (under `$PAIRED_CODING_STATE_DIR`,
 default `~/.local/state/paired-coding/<session-id>/`), and the agent names that path in its
-closing summary. It records the plugin version, the session id and worktree root, when pairing
-started and when and how it stopped, and then three lists, built from the journal:
+closing summary once the gate has confirmed it. The file is an export of the gate's journal: it
+records the plugin version, the session id and worktree root, when pairing started and when and
+how it stopped, the journal it was built from (`journal`: how many entries, and the SHA-256 of
+their bytes), and then three lists, built from the journal:
 
 - `accepted`: one record per change set that reached `pair_done`: the card id, when it was agreed
   and the quote that agreed it, when `pair_done` closed it, the agreed boundary, the fingerprint
   of every path in that boundary as of `pair_done` (the boundary's part of the snapshot
   `pair_done` already takes: mode bits and content hash for a file, mode for a directory,
-  `absent` for a literal path that did not exist), the checks the card declared, and the
-  `pair_run` commands run under the change set with their exit codes.
+  `absent` for a literal path that did not exist), the writes outside the boundary that
+  `pair_done` found at that moment (`outsideBoundaryWrites`, empty when there were none), the
+  checks the card declared, and the `pair_run` commands run under the change set with their
+  exit codes.
 - `notAccepted`: change sets `pair_begin` opened that pairing ended before `pair_done`, with
   their boundaries.
 - `unapproved`: every write the gate journaled as unapproved, by card and path.
 
 The receipt covers the whole session: if pairing stopped and started again in the same session,
 the later receipt replaces the earlier one and holds both. Its `means` field says in its own
-words what it claims, and the claim is narrow: an accepted change set is one you agreed to by its
-card and `pair_done` closed inside its boundary. That is sign-off on the approach. The receipt
-does not say the code works, that a declared check was run, or that the diff matched what the
-card said: an exit code is a fact about one command, the read-back is the agent's account of the
-rest, and the receipt puts the card's declared checks beside the commands the gate actually ran
-so the two can be compared. A reviewer or an
-orchestrator that takes the work over afterwards can use the receipt to scope its review to
-correctness and tests, and to tell which files were touched under agreement, rather than
-re-litigating the approach; it waives nothing. The hashes let it check that a path still holds
-what it held at `pair_done`. If the receipt cannot be written, the stop still goes through and
-the journal records `receipt-failed` with the reason. The file is written by the gate only; the
-state directory is not writable by any agent tool.
+words what it claims, and the claim is literal: an accepted record is a gate-recorded typed
+agreement followed by `pair_done`, with hashes of the boundary at that moment; unapproved
+writes are listed and may coexist with acceptance (a change set that reached `pair_done` with a
+write outside its boundary is in `accepted` with that write under `outsideBoundaryWrites`, and
+in `unapproved`); whether the implementation matches the agreed approach is not established by
+this file. Nor does it say the code works, that a declared check was run, or that the diff
+matched what the card said: an exit code is a fact about one command, the read-back is the
+agent's account of the rest, and the receipt puts the card's declared checks beside the commands
+the gate actually ran so the two can be compared. The quote, the approach, and `unapproved` are
+for a reviewer to read, not settled by this file; it waives nothing. The hashes let a reviewer
+check that a path still holds what it held at `pair_done`. If the receipt cannot be written, or
+the journal cannot be read in full (unreadable, a torn or malformed line), the stop still goes
+through, no receipt is written, and the journal records `receipt-failed` with the reason; a
+receipt built over a gap would read as complete.
+
+The receipt is written by the gate at stop and, like the journal, is protected only while
+pairing is active: once pairing has stopped the host's tools are no longer refused, so an agent
+can edit both files. A consumer who needs the receipt tamper-evident takes a copy at stop time;
+`journal.sha256` then lets it check that the journal's first `journal.entries` lines are still
+what the receipt was built from. Tampering is also made detectable from the journal itself:
+the stop appends a `receipt` entry carrying the same `journal` field, a restart (`pair_start`
+with a journal already there) appends a `resume` entry with the journal's entry count and
+SHA-256 at that moment, and the next receipt verifies each such checkpoint against the bytes
+that precede it. Every record in the three lists carries `suspect`: true when the record rests
+on journal bytes that no longer hash to what a checkpoint recorded (every entry since the
+previous checkpoint is marked), or on an entry the gate writes only while pairing is active (a
+card, agreement, `done`, run or unapproved write) found between a stop and the next start.
+This detects edits and insertions; it does not stop them, and a rewrite that recomputes the
+checkpoints as well is caught only by the copy taken at stop.
 
 **What counts as typed.** On OMP, a turn is trusted when the `input` event carries
 `source: "interactive"`, which only the editor emits; text injected by an extension or sent over
