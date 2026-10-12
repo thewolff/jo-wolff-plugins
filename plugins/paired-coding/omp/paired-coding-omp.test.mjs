@@ -20,7 +20,7 @@ import { randomUUID } from "node:crypto";
 
 import { CARRIED_PHRASE, PAIR_TOOLS } from "../core/gate.mjs";
 import { sandboxProblem } from "../lib/host-io.mjs";
-import pairedCodingOmp, { STOP_NOTICE, TREE_NOTICE } from "./paired-coding-omp.ts";
+import pairedCodingOmp, { TREE_NOTICE, stopNotice } from "./paired-coding-omp.ts";
 
 const HAS_SANDBOX = sandboxProblem() === null;
 const sandboxOnly = HAS_SANDBOX ? test : test.skip;
@@ -363,9 +363,14 @@ describe("ending pairing", () => {
     assert.equal(await blocked(s), false);
     assert.ok(s.journal().some((e) => e.type === "stop" && e.verb === "typed-stop"));
     assert.ok(s.notes.some((n) => /you typed pair stop/.test(n.m)));
-    // The agent hears it too: hidden context on the stop turn, not a revision of the input.
-    assert.deepEqual(s.sent, [{ message: { customType: "paired-coding", content: STOP_NOTICE, display: false }, options: { deliverAs: "nextTurn" } }]);
-    assert.match(STOP_NOTICE, /^paired-coding: your partner typed pair stop, so pairing has ended/);
+    // The agent hears it too: hidden context on the stop turn, not a revision of the input,
+    // naming the pair-accepted receipt the stop wrote beside the journal.
+    const receipt = join(s.dir, "pair-accepted.json");
+    assert.equal(existsSync(receipt), true, "the receipt is written at the stop");
+    assert.deepEqual(s.sent, [{ message: { customType: "paired-coding", content: stopNotice(receipt), display: false }, options: { deliverAs: "nextTurn" } }]);
+    assert.match(stopNotice(receipt), /^paired-coding: your partner typed pair stop, so pairing has ended/);
+    assert.ok(stopNotice(receipt).includes(`receipt is at ${receipt}; name that path in your closing summary`));
+    assert.match(stopNotice(null), /receipt could not be written/);
   });
 
   sandboxOnly("an injected 'pair stop' changes nothing, and there is no stop tool", async () => {

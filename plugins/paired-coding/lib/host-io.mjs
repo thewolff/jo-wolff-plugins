@@ -25,7 +25,7 @@ import {
 import { homedir, tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import {
-  boundaryMatches, boundaryRoots, bwrapArgsFor, directoryInBoundary, landlockRulesFor, pairRunProfile, pairWriteBwrap, pairWriteLandlock, pairWriteProfile,
+  boundaryHashes, boundaryMatches, boundaryRoots, bwrapArgsFor, landlockRulesFor, pairRunProfile, pairWriteBwrap, pairWriteLandlock, pairWriteProfile,
   readState, serializeState, shQuote,
 } from "../core/gate.mjs";
 import { bwrapCommand, bwrapIo, bwrapProblem, bwrapProc } from "./bwrap.mjs";
@@ -232,19 +232,11 @@ export function snapshotTree(root, exclusions = []) {
 /**
  * Fingerprints of the files a boundary covers right now, and the modes of the directories it
  * covers (directoryInBoundary). A literal entry that does not exist is recorded as "absent",
- * so creating it also changes the hash.
+ * so creating it also changes the hash. The same reduction pair_done applies to its own
+ * snapshot (core boundaryHashes).
  */
 export function hashBoundary(boundary, root, exclusions = []) {
-  const snap = snapshotTree(root, exclusions);
-  const out = {};
-  for (const [rel, fp] of Object.entries(snap)) {
-    if (fp.startsWith("dir:") ? directoryInBoundary(boundary, rel) : boundaryMatches(boundary, rel)) out[rel] = fp;
-  }
-  for (const e of boundary) {
-    const literal = !/[*?]/.test(e) && !e.endsWith("/");
-    if (literal && !Object.hasOwn(out, e)) out[e] = "absent";
-  }
-  return out;
+  return boundaryHashes(boundary, snapshotTree(root, exclusions));
 }
 
 /**
@@ -318,7 +310,7 @@ export function loadState(dir, opts = {}) {
 }
 
 /** Atomic write: temp file in the same directory, then rename. */
-function writeAtomic(path, text) {
+export function writeAtomic(path, text) {
   const tmp = `${path}.${process.pid}.${randomBytes(4).toString("hex")}.tmp`;
   const fd = openSync(tmp, "w", 0o600);
   try { writeSync(fd, text); } finally { closeSync(fd); }

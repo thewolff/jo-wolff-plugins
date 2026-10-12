@@ -10,8 +10,10 @@
 //                       the turn is judged and handed to the core at the next PreToolUse (which
 //                       always precedes any pair_* call) or at Stop, whichever comes first.
 //   stop                record every queued turn. A typed "pair stop" in a turn that made no tool
-//                       call ends pairing here, before the next turn's first tool call.
-//   session-end         reap pair_run process groups, final snapshot, go inactive. While pairing,
+//                       call ends pairing here, before the next turn's first tool call. Either
+//                       way a typed stop writes the pair-accepted receipt beside the journal.
+//   session-end         reap pair_run process groups, final snapshot, write the pair-accepted
+//                       receipt, go inactive. While pairing,
 //                       whatever the reason (/clear, /resume, /branch, quit), first leave a carry
 //                       marker for the worktree.
 //   session-start       with source "clear", "resume" or "fork" and a live carry marker for this
@@ -27,7 +29,7 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { CARRIED_PHRASE, PAIR_TOOLS, isStopPhrase } from "../core/gate.mjs";
 import { activated, findRoot, loadState, stateBase, withLock } from "../lib/host-io.mjs";
-import { carryInto, endSession, pairingCarry, recordTrustedInput, sessionDirFor, takeCarryMarker, verdict, writeCarryMarker } from "../lib/verbs.mjs";
+import { RECEIPT_FILE, carryInto, endSession, pairingCarry, recordTrustedInput, sessionDirFor, takeCarryMarker, verdict, writeCarryMarker } from "../lib/verbs.mjs";
 import { bareToolName, hostAllowFor, writeBinding } from "../server/binding.mjs";
 
 const sleepSync = (ms) => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
@@ -258,7 +260,7 @@ export function handle(event, input, opts = {}) {
     if (state.phase === "inactive") return null;
     queueInput(dir, input);
     const note = isStopPhrase(input?.prompt)
-      ? "paired-coding: this turn asks to end pairing. If Claude Code's transcript shows your partner typed it, pairing ends before your next tool call; you cannot end pairing yourself."
+      ? `paired-coding: this turn asks to end pairing. If Claude Code's transcript shows your partner typed it, pairing ends before your next tool call and the pair-accepted receipt is written to ${join(dir, RECEIPT_FILE)}; name that path in your closing summary. It records which change sets your partner agreed to and pair_done closed, and it does not say the code works. You cannot end pairing yourself.`
       : state.carried
         ? `paired-coding: ${CARRIED_PHRASE} after a session change. If your partner has not answered yet, tell them pairing carried over closed and wait; call pair_start only once they say to keep pairing. Only your partner ends pairing, by typing pair stop as a whole message.`
         : "paired-coding: pairing is on. Only words from a turn your partner typed at the keyboard can be quoted to pair_begin; whether this turn counts is decided from Claude Code's transcript before your next tool call. Only your partner ends pairing, by typing pair stop as a whole message.";

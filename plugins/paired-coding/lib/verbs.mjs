@@ -16,12 +16,12 @@ import { dirname, join } from "node:path";
 import { createHash, randomBytes } from "node:crypto";
 import { fileURLToPath } from "node:url";
 import {
-  boundaryMatches, carryClosed, checkWrite, lastCardSeq, openRoadmapItems, pairBegin, pairDone, pairNote, pairPropose, roadmapRecord,
+  boundaryMatches, carryClosed, checkWrite, lastCardSeq, openRoadmapItems, pairAcceptedReceipt, pairBegin, pairDone, pairNote, pairPropose, roadmapRecord,
   pairStart, recordInput, runEnd, runStart, sessionEnd, toolVerdict,
 } from "../core/gate.mjs";
 import {
   activated, appendJournal, defaultTempPaths, findRoot, loadState, makeIo, markActivated, reapGroups, saveState,
-  closedRunProblem, describeSandbox, recordRun, runPgids, runSandboxed, sandboxBackend, sandboxJournal, sandboxProblem, sessionDir, stateBase, withLock, withSession, writeSandboxed,
+  closedRunProblem, describeSandbox, recordRun, runPgids, runSandboxed, sandboxBackend, sandboxJournal, sandboxProblem, sessionDir, stateBase, withLock, withSession, writeAtomic, writeSandboxed,
 } from "./host-io.mjs";
 
 /** Directories left out of every snapshot unless the user's own exclusions say otherwise. */
@@ -37,6 +37,12 @@ export const PLUGIN_ROOT = (() => {
   const p = join(dirname(fileURLToPath(import.meta.url)), "..");
   try { return realpathSync(p); } catch { return p; }
 })();
+
+/** The plugin's own version, from the manifest that manifest.test.mjs keeps in step with the others. */
+export const VERSION = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")).version;
+
+/** The pair-accepted receipt's name in the session directory; written at every stop. */
+export const RECEIPT_FILE = "pair-accepted.json";
 
 /** `$PAIRED_CODING_STATE_DIR/<sessionId>` (base defaults to ~/.local/state/paired-coding), or null. */
 export function sessionDirFor(sessionId, env = process.env) {
@@ -68,21 +74,42 @@ export function verdict(toolName, ctx) {
 
 /**
  * Record one human turn. Only `source: "interactive"` is trusted (the core decides), and a
- * trusted turn that is exactly the stop phrase ends pairing (`stopped`). Inert unless activated.
+ * trusted turn that is exactly the stop phrase ends pairing (`stopped`) and writes the
+ * pair-accepted receipt (`receipt`, its path). Inert unless activated.
  * ADAPTER MACHINERY ONLY: never reachable from a model-callable tool.
  * @param {{ sessionDir: string, text: string, source: string, meta?: object }} ctx
- * @returns {{ recorded: boolean, trusted: boolean, active: boolean, stopped?: boolean, changedSinceReadBack?: object[], unapproved?: object[] }}
+ * @returns {{ recorded: boolean, trusted: boolean, active: boolean, stopped?: boolean, receipt?: string, changedSinceReadBack?: object[], unapproved?: object[] }}
  */
 export function recordTrustedInput(ctx) {
   if (!ctx?.sessionDir || !activated(ctx.sessionDir)) return { recorded: false, trusted: false, active: false };
   const dir = ctx.sessionDir;
+  let receipt = null;
   const r = withSession(dir, {}, (s) => {
     const out = recordInput(s, { text: ctx.text, source: ctx.source }, ioFor(dir, s));
     if (ctx.meta && out.journal.length) out.journal = out.journal.map((e) => ({ ...e, ...ctx.meta }));
+    if (out.stopped === true) receipt = writeReceipt(dir, s, out.journal);
     return out;
   });
   if (r.stopped !== true) return { recorded: true, trusted: r.trusted === true, active: true };
-  return { recorded: true, trusted: true, active: true, stopped: true, changedSinceReadBack: r.changedSinceReadBack ?? [], unapproved: r.unapproved ?? [] };
+  return { recorded: true, trusted: true, active: true, stopped: true, receipt, changedSinceReadBack: r.changedSinceReadBack ?? [], unapproved: r.unapproved ?? [] };
+}
+
+/**
+ * Write the pair-accepted receipt beside the journal, from the journal as it will stand once
+ * `pending` (the stop's own entries, not yet appended) is added. Called inside the session
+ * lock, by the two paths that end pairing. Returns the receipt's path, or null when it could
+ * not be written: the stop still goes through, and the journal records `receipt-failed`.
+ */
+function writeReceipt(dir, state, pending) {
+  const path = join(dir, RECEIPT_FILE);
+  try {
+    const receipt = pairAcceptedReceipt([...readJournal(dir), ...pending], { version: VERSION, sessionId: state.sessionId ?? null, root: state.root ?? null });
+    writeAtomic(path, `${JSON.stringify(receipt, null, 2)}\n`);
+    return path;
+  } catch (err) {
+    pending.push({ type: "receipt-failed", at: new Date().toISOString(), path, reason: err instanceof Error ? err.message : String(err) });
+    return null;
+  }
 }
 
 /** What a session replacing this one needs (carryInto), read without ending it; null unless pairing. */
@@ -96,17 +123,21 @@ function carryOf(s) {
 }
 
 /**
- * Session end: reap every run, final snapshot, go inactive. Inert unless activated. When the
- * session was pairing, `carry` holds what a session that replaces it needs (carryInto).
+ * Session end: reap every run, final snapshot, go inactive, and write the pair-accepted receipt
+ * (`receipt`, its path). Inert unless activated. When the session was pairing, `carry` holds
+ * what a session that replaces it needs (carryInto).
  */
 export function endSession(ctx) {
   if (!ctx?.sessionDir || !activated(ctx.sessionDir)) return { ok: true, active: false };
   let carry = null;
+  let receipt = null;
   const r = withSession(ctx.sessionDir, {}, (s) => {
     carry = carryOf(s);
-    return sessionEnd(s, ioFor(ctx.sessionDir, s));
+    const out = sessionEnd(s, ioFor(ctx.sessionDir, s));
+    if (out.journal.length) receipt = writeReceipt(ctx.sessionDir, s, out.journal);
+    return out;
   });
-  return { ok: r.ok, active: true, carry, changedSinceReadBack: r.changedSinceReadBack ?? [], unapproved: r.unapproved ?? [] };
+  return { ok: r.ok, active: true, carry, receipt, changedSinceReadBack: r.changedSinceReadBack ?? [], unapproved: r.unapproved ?? [] };
 }
 
 /**
@@ -119,7 +150,7 @@ export function clearInPlace(ctx) {
   const ended = endSession({ sessionDir: ctx.sessionDir });
   if (!ended.carry) return { ok: true, carried: false };
   const r = carryInto({ sessionId: ctx.sessionId, sessionDir: ctx.sessionDir, root: ended.carry.root, exclusions: ended.carry.exclusions, protect: ended.carry.protect, from: ctx.sessionId, reason: ctx.reason });
-  return { ok: r.ok, carried: r.ok, unapproved: ended.unapproved };
+  return { ok: r.ok, carried: r.ok, receipt: ended.receipt ?? null, unapproved: ended.unapproved };
 }
 
 /**
@@ -456,7 +487,7 @@ async function runVerb(args, ctx) {
   const runId = ctx.runId ?? `run-${Date.now()}-${randomBytes(4).toString("hex")}`;
   const asked = Number(args.timeoutSeconds) > 0 ? Number(args.timeoutSeconds) * 1000 : ctx.timeoutMs ?? DEFAULT_TIMEOUT_MS;
   const timeoutMs = Math.min(asked, ctx.maxTimeoutMs ?? MAX_TIMEOUT_MS, MAX_TIMEOUT_MS);
-  const start = withSession(dir, {}, (s) => runStart(s, { runId }, ioFor(dir, s)));
+  const start = withSession(dir, {}, (s) => runStart(s, { runId, command: args.command }, ioFor(dir, s)));
   if (!start.ok) return fail("pair_run", start.reason);
   // Anything the run makes from here on has a change time at or after state.json's, which
   // runStart just wrote: the link check's floor, on the filesystem's own clock.
