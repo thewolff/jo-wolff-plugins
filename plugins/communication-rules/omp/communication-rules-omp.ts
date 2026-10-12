@@ -63,8 +63,11 @@ import { spawn } from "node:child_process";
 import { appendFileSync, mkdirSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 
-const DEFAULT_PLUGIN_ROOT = "/Users/jowolff/code/jo-wolff-plugins/plugins/communication-rules";
+// The plugin root is this module's parent directory (omp/..), so the adapter finds its core
+// wherever the plugin is checked out. COMMUNICATION_RULES_PLUGIN_ROOT still overrides it.
+const DEFAULT_PLUGIN_ROOT = fileURLToPath(new URL("..", import.meta.url));
 const DEFAULT_STATE_DIR = join(homedir(), ".claude", ".communication-rules-state");
 const CLI_TIMEOUT_MS = 32_000;
 
@@ -102,7 +105,7 @@ type PiLike = {
 const collapse = (text: string, max = 300): string => text.replace(/\s+/g, " ").trim().slice(0, max);
 
 // The finished message's text: string content, or text-block content joined by newlines.
-// Semantics verbatim from the live adapter's reducer (newdle-hooks.ts:80-92) — empty string
+// Semantics verbatim from the live adapter's reducer — empty string
 // and missing content are both undefined, so the payload fallback "" applies downstream.
 export function assistantText(message: unknown): string | undefined {
   if (!message || typeof message !== "object") return undefined;
@@ -144,7 +147,7 @@ function appendLog(dir: string, file: string, text: string): void {
   }
 }
 
-// The spawn, mirroring the live adapter's proven shape (newdle-hooks.ts:186-210): sh -lc,
+// The spawn, mirroring the live adapter's proven shape: sh -lc,
 // node, payload on stdin, stdout parsed as JSON. Failure semantics differ from the live
 // runCommand on purpose: a non-zero exit or unparseable stdout REJECTS instead of dissolving
 // into undefined, because this adapter logs every fail-open rather than silently passing.

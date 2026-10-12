@@ -14,26 +14,26 @@ Two sites; pick one:
    process loads unconditionally:
 
    ```
-   ln -s /Users/jowolff/code/jo-wolff-plugins/plugins/communication-rules/omp/communication-rules-omp.ts \
+   ln -s <your-checkout>/plugins/communication-rules/omp/communication-rules-omp.ts \
          ~/.omp/agent/extensions/communication-rules-omp.ts
    ```
 
    Cost of this site: every omp process on the machine loads it — the `extensions/*.{ts,js}`
    directory is scanned unconditionally and the `extensions` settings array can only ADD to
-   that set — so this is the broad arm. The live precedent running exactly this way is
-   `newdle-hooks.ts`, whose `pi.on("session_stop", …)` registration block
-   (`~/.omp/agent/extensions/newdle-hooks.ts:1259-1316`) is the shape this adapter copies.
+   that set — so this is the broad arm. Any extension already living in that directory with
+   a `pi.on("session_stop", …)` registration runs the same way; that is the shape this
+   adapter copies.
 
 2. **One omp process only** — pass the file with `-e` (`--extension`) to a single omp
    launched by hand, in a scratch directory:
 
    ```
-   cd "$(mktemp -d)" && /Users/jowolff/.bun/bin/omp \
-     -e /Users/jowolff/code/jo-wolff-plugins/plugins/communication-rules/omp/communication-rules-omp.ts
+   cd "$(mktemp -d)" && omp \
+     -e <your-checkout>/plugins/communication-rules/omp/communication-rules-omp.ts
    ```
 
-   The `omp` path is absolute because a seat pane's `PATH` puts the launcher shim
-   `~/.omp/agent/seat-launchers/seat-bin/omp` first, and that shim adds its own flags.
+   If a wrapper or launcher shim sits ahead of the real `omp` on your `PATH` and adds its
+   own flags, call the `omp` binary by its absolute path instead.
 
    Only that process loads the adapter; nothing on disk changes. It still loads every file
    in `~/.omp/agent/extensions/`, as every omp process does. Narrower blast radius; the
@@ -51,16 +51,16 @@ Two sites; pick one:
    (`~/.omp/agent/seat-launchers/launch-seat`). It passes the same fixed
    `--hook "$ADAPTER" --hook "$COMPACTION_OWNER" --extension "$SEAT_REGISTRY"` set to every
    seat, in both the foreground path and the background `seat-bin/omp` shim, and has no slot
-   for one more extension on one seat. `OMP_SEAT_ADAPTER` *replaces* `newdle-hooks.ts`
-   rather than adding to it. Registering a managed seat narrowly would mean changing
-   `launch-seat`, which this file does not document.
+   for one more extension on one seat. `OMP_SEAT_ADAPTER` *replaces* the seat's default
+   adapter extension rather than adding to it. Registering a managed seat narrowly would mean
+   changing `launch-seat`, which this file does not document.
 
 Environment and profile at registration:
 
-- `COMMUNICATION_RULES_PLUGIN_ROOT` — set ONLY if the plugin is not at
-  `/Users/jowolff/code/jo-wolff-plugins/plugins/communication-rules` (for instance after a
-  move into the marketplace cache). The adapter spawns
-  `node "$ROOT/hooks/communication-rules-stop.mjs"` with this override.
+- `COMMUNICATION_RULES_PLUGIN_ROOT` — normally unset. The adapter resolves the plugin root
+  from its own location (the directory above `omp/`), so it follows the checkout wherever
+  it lives. Set it only to point the adapter at a different copy of the plugin. The adapter
+  spawns `node "$ROOT/hooks/communication-rules-stop.mjs"` with this root.
 - `COMMUNICATION_RULES_HARNESS` — never set it by hand. The adapter puts
   `COMMUNICATION_RULES_HARNESS=omp` on its child's env, and that tag is how the core knows a
   stop came from OMP. Claude Code never sets it.
@@ -84,7 +84,7 @@ Environment and profile at registration:
    with the adapter unloaded it is read by nothing, but leaving it armed arms the next
    registration. The core's `warnings.log` / `errors.log` lines from OMP stops live in the
    plugin's shared logs; leave them.
-2. `git revert <this commit's sha>` in `/Users/jowolff/code/jo-wolff-plugins`.
+2. `git revert <this commit's sha>` in your checkout of this repo.
 
 ## The kill switch (works the moment this is live)
 
