@@ -94,22 +94,78 @@ export function recordTrustedInput(ctx) {
   return { recorded: true, trusted: true, active: true, stopped: true, receipt, changedSinceReadBack: r.changedSinceReadBack ?? [], unapproved: r.unapproved ?? [] };
 }
 
+const sha256 = (text) => createHash("sha256").update(text).digest("hex");
+
+/**
+ * The journal, strictly, for the receipt: `{ entries, lines }` (the raw lines, one per entry,
+ * without newlines), or `{ error }` when the file is missing or unreadable, a line is not a
+ * JSON object with a type, or the last line is torn. Every schema this plugin ever wrote
+ * passes; damage does not. The permissive readJournal is for discovery (the roadmap offer, card
+ * numbering), where a gap costs little; a receipt built over a gap would read as complete.
+ */
+function readJournalStrict(dir) {
+  let text;
+  try {
+    text = readFileSync(join(dir, "journal.jsonl"), "utf8");
+  } catch (err) {
+    return { error: `journal unreadable: ${err instanceof Error ? err.message : String(err)}` };
+  }
+  if (text === "") return { entries: [], lines: [] };
+  if (!text.endsWith("\n")) return { error: "journal torn: the last line has no newline" };
+  const lines = text.slice(0, -1).split("\n");
+  const entries = [];
+  for (const [i, line] of lines.entries()) {
+    let e;
+    try { e = JSON.parse(line); } catch { return { error: `journal line ${i + 1} is malformed` }; }
+    if (!e || typeof e !== "object" || Array.isArray(e) || typeof e.type !== "string") return { error: `journal line ${i + 1} is not a journal entry` };
+    entries.push(e);
+  }
+  return { entries, lines };
+}
+
 /**
  * Write the pair-accepted receipt beside the journal, from the journal as it will stand once
  * `pending` (the stop's own entries, not yet appended) is added. Called inside the session
  * lock, by the two paths that end pairing. Returns the receipt's path, or null when it could
- * not be written: the stop still goes through, and the journal records `receipt-failed`.
+ * not be built or written: the stop still goes through, and the journal records
+ * `receipt-failed` with the reason. A written receipt is followed in the journal by a
+ * `receipt` entry carrying the same `journal` field (how many entries preceded it, and their
+ * bytes' sha256), the checkpoint the next receipt verifies (pairAcceptedReceipt).
  */
 function writeReceipt(dir, state, pending) {
   const path = join(dir, RECEIPT_FILE);
-  try {
-    const receipt = pairAcceptedReceipt([...readJournal(dir), ...pending], { version: VERSION, sessionId: state.sessionId ?? null, root: state.root ?? null });
-    writeAtomic(path, `${JSON.stringify(receipt, null, 2)}\n`);
-    return path;
-  } catch (err) {
-    pending.push({ type: "receipt-failed", at: new Date().toISOString(), path, reason: err instanceof Error ? err.message : String(err) });
+  const at = new Date().toISOString();
+  const read = readJournalStrict(dir);
+  if (read.error) {
+    pending.push({ type: "receipt-failed", at, path, reason: read.error });
     return null;
   }
+  try {
+    const receipt = pairAcceptedReceipt([...read.entries, ...pending], {
+      version: VERSION, sessionId: state.sessionId ?? null, root: state.root ?? null,
+      lines: [...read.lines, ...pending.map((e) => JSON.stringify(e))], sha256,
+    });
+    writeAtomic(path, `${JSON.stringify(receipt, null, 2)}\n`);
+    pending.push({ type: "receipt", at, path, journal: receipt.journal });
+    return path;
+  } catch (err) {
+    pending.push({ type: "receipt-failed", at, path, reason: err instanceof Error ? err.message : String(err) });
+    return null;
+  }
+}
+
+/**
+ * The `resume` entry a pair_start journals when the session's journal already has entries (a
+ * restart after a stop, or after a session change carried pairing closed): how many entries the
+ * journal holds and the sha256 of its bytes at that moment, a checkpoint the next receipt
+ * verifies. Null when there is no journal yet.
+ */
+function resumeEntry(dir) {
+  let text;
+  try { text = readFileSync(join(dir, "journal.jsonl"), "utf8"); } catch { return null; }
+  if (text === "") return null;
+  const entries = text.split("\n").length - (text.endsWith("\n") ? 1 : 0);
+  return { type: "resume", at: new Date().toISOString(), journal: { entries, sha256: sha256(text) } };
 }
 
 /** What a session replacing this one needs (carryInto), read without ending it; null unless pairing. */
@@ -363,8 +419,10 @@ function pairStartVerb(args, ctx) {
       markActivated(dir, { root: out.state.root, stateDir });
     }
     // The journal names the sandbox this session's writes and runs had (sandboxBackend), and
-    // bubblewrap's /proc mode where bubblewrap can run (sandboxJournal).
-    appendJournal(dir, out.ok ? out.journal.map((e) => (e.type === "start" ? { ...e, ...sandboxJournal(backend) } : e)) : out.journal);
+    // bubblewrap's /proc mode where bubblewrap can run (sandboxJournal). A restart first
+    // checkpoints the journal as it stood (resumeEntry), for the receipt's tamper check.
+    const resume = out.ok ? resumeEntry(dir) : null;
+    appendJournal(dir, out.ok ? [...(resume ? [resume] : []), ...out.journal.map((e) => (e.type === "start" ? { ...e, ...sandboxJournal(backend) } : e))] : out.journal);
     return out;
   });
   if (!r.ok) return fail("pair_start", r.reason);
