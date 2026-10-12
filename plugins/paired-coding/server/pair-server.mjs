@@ -7,17 +7,13 @@
 // hook did to the input before the call reached here, these are the final arguments.
 // No dependencies: newline-delimited JSON-RPC 2.0 over stdin/stdout, written by hand.
 
-import { readFileSync } from "node:fs";
 import { createInterface } from "node:readline";
 import { dirname } from "node:path";
 import { stateBase } from "../lib/host-io.mjs";
-import { executeVerb, sessionDirFor } from "../lib/verbs.mjs";
+import { VERSION, executeVerb, sessionDirFor } from "../lib/verbs.mjs";
 import { takeBinding } from "./binding.mjs";
 
 const SUPPORTED = ["2025-11-25", "2025-06-18", "2025-03-26", "2024-11-05"];
-
-/** The plugin's own version, from the manifest that manifest.test.mjs keeps in step with the others. */
-export const VERSION = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")).version;
 
 const str = (description) => ({ type: "string", description });
 const strs = (description) => ({ type: "array", items: { type: "string" }, description });

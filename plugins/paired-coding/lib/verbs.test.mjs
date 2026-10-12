@@ -9,7 +9,7 @@ import { chmodSync, existsSync, linkSync, mkdirSync, mkdtempSync, readFileSync, 
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import {
-  CARRY_MAX_AGE_MS, PLUGIN_ROOT, ROADMAP_WALK_LIMIT, carryInto, clearInPlace, endSession, executeVerb, recordTrustedInput, takeCarryMarker, verdict, writeCarryMarker,
+  CARRY_MAX_AGE_MS, PLUGIN_ROOT, RECEIPT_FILE, ROADMAP_WALK_LIMIT, VERSION, carryInto, clearInPlace, endSession, executeVerb, recordTrustedInput, takeCarryMarker, verdict, writeCarryMarker,
 } from "./verbs.mjs";
 import { PROC_LABELS, hashBoundary, loadState, realpathLoose, reapGroups, sandboxBackend, sandboxProblem, snapshotTree, writeSandboxed } from "./host-io.mjs";
 import { pairRunProfile, pairWriteProfile } from "../core/gate.mjs";
@@ -510,6 +510,116 @@ test("an untrusted 'pair stop' changes nothing, and the agent has no stop tool",
   assert.equal(stop.ok, false);
   assert.match(stop.text, /unknown pairing verb/);
   assert.equal(loadState(f.dir).phase, "closed");
+});
+
+// ─── pair-accepted receipt ──────────────────────────────────────────────────────────────
+
+const receiptOf = (f) => JSON.parse(readFileSync(join(f.dir, RECEIPT_FILE), "utf8"));
+
+/** card-1 agreed, written, run under, closed; card-2 agreed and still open; a stray write outside both. */
+async function pairedSession(f) {
+  const cardId = await openChangeSet(f, ["src/a.txt"]);
+  assert.equal((await executeVerb("pair_write", { path: "src/a.txt", content: "alpha, revised\n" }, f.ctx)).ok, true);
+  const run = await executeVerb("pair_run", { command: "true" }, f.ctx);
+  assert.equal(run.ok, true, run.text);
+  const done = await executeVerb("pair_done", { cardId }, f.ctx);
+  assert.equal(done.ok, true, done.text);
+  const p = await executeVerb("pair_propose", { boundary: ["src/b.txt"], decision: "d", checks: ["node --test"] }, f.ctx);
+  assert.equal(p.ok, true, p.text);
+  typed(f, "yes, go ahead with that");
+  const b = await executeVerb("pair_begin", { cardId: p.result.card.id, quote: "go ahead" }, f.ctx);
+  assert.equal(b.ok, true, b.text);
+  writeFileSync(join(f.root, "notes.txt"), "the partner's own edit\n");
+  return { done: cardId, open: p.result.card.id, runId: run.result.runId };
+}
+
+function checkReceipt(f, r, ids, stoppedBy) {
+  assert.equal(r.pairAccepted, 1);
+  assert.equal(r.pairedCoding, VERSION);
+  assert.equal(r.sessionId, "sess-1");
+  assert.equal(r.root, realpathSync(f.root));
+  assert.equal(r.stoppedBy, stoppedBy);
+  assert.equal(typeof r.startedAt, "string");
+  assert.equal(r.stoppedAt, journal(f).findLast((e) => e.type === "stop").at);
+  assert.equal(r.accepted.length, 1);
+  const [a] = r.accepted;
+  assert.equal(a.cardId, ids.done);
+  assert.deepEqual(a.boundary, ["src/a.txt"]);
+  // The hashes are the boundary's part of the snapshot pair_done took, the content hash included,
+  // so they match a fresh hash of the same files, which have not changed since.
+  assert.deepEqual(a.hashes, hashBoundary(["src/a.txt"], f.root, [".git"]));
+  assert.deepEqual(a.hashes, journal(f).find((e) => e.type === "done" && e.cardId === ids.done).hashes);
+  assert.equal(a.hashes["src/a.txt"], `file:0644:${createHash("sha256").update("alpha, revised\n").digest("hex")}`);
+  assert.deepEqual(a.checks, { declared: [], runs: [{ runId: ids.runId, command: "true", exitCode: 0 }] });
+  assert.deepEqual(r.notAccepted, [{ cardId: ids.open, agreedAt: journal(f).findLast((e) => e.type === "agreement").at, boundary: ["src/b.txt"], reason: "pairing ended before pair_done" }]);
+  assert.deepEqual(r.unapproved, [{ cardId: ids.open, at: journal(f).find((e) => e.type === "unapproved-write").at, paths: [{ path: "notes.txt", change: "modified" }] }]);
+  assert.match(r.means, /Nothing here says the code works/);
+}
+
+test("a typed 'pair stop' writes the pair-accepted receipt beside the journal and names its path", { skip: !hasSandbox }, async () => {
+  const f = fixture();
+  chmodSync(join(f.root, "src", "a.txt"), 0o644);
+  const ids = await pairedSession(f);
+  assert.equal(existsSync(join(f.dir, RECEIPT_FILE)), false, "nothing before the stop");
+  const r = typed(f, "pair stop");
+  assert.equal(r.stopped, true);
+  assert.equal(r.receipt, join(f.dir, RECEIPT_FILE));
+  checkReceipt(f, receiptOf(f), ids, "typed-stop");
+});
+
+test("the session's end writes the same receipt, and clearInPlace passes its path on", { skip: !hasSandbox }, async () => {
+  const f = fixture();
+  chmodSync(join(f.root, "src", "a.txt"), 0o644);
+  const ids = await pairedSession(f);
+  const r = endSession({ sessionDir: f.dir });
+  assert.equal(r.ok, true);
+  assert.equal(r.receipt, join(f.dir, RECEIPT_FILE));
+  checkReceipt(f, receiptOf(f), ids, "session-end");
+  // Ending an already-ended session writes nothing new.
+  const before = readFileSync(join(f.dir, RECEIPT_FILE), "utf8");
+  assert.equal(endSession({ sessionDir: f.dir }).receipt, null);
+  assert.equal(readFileSync(join(f.dir, RECEIPT_FILE), "utf8"), before);
+
+  const g = fixture();
+  chmodSync(join(g.root, "src", "a.txt"), 0o644);
+  const gids = await pairedSession(g);
+  const c = clearInPlace({ sessionId: "sess-1", sessionDir: g.dir, reason: "omp:clear" });
+  assert.equal(c.carried, true);
+  assert.equal(c.receipt, join(g.dir, RECEIPT_FILE));
+  checkReceipt(g, receiptOf(g), gids, "session-end");
+});
+
+test("a session that paired, stopped and paired again gets one receipt covering both", { skip: !hasSandbox }, async () => {
+  const f = fixture();
+  chmodSync(join(f.root, "src", "a.txt"), 0o644);
+  const ids = await pairedSession(f);
+  typed(f, "pair stop");
+  const first = receiptOf(f);
+  assert.deepEqual(first.accepted.map((a) => a.cardId), [ids.done]);
+  assert.equal((await executeVerb("pair_start", {}, f.ctx)).ok, true);
+  const p = await executeVerb("pair_propose", { boundary: ["src/b.txt"], decision: "d" }, f.ctx);
+  typed(f, "go ahead");
+  assert.equal((await executeVerb("pair_begin", { cardId: p.result.card.id, quote: "go ahead" }, f.ctx)).ok, true);
+  assert.equal((await executeVerb("pair_done", { cardId: p.result.card.id }, f.ctx)).ok, true);
+  typed(f, "pair stop");
+  const second = receiptOf(f);
+  assert.equal(second.startedAt, first.startedAt, "the session's first start");
+  assert.deepEqual(second.accepted.map((a) => a.cardId), [ids.done, p.result.card.id]);
+  assert.deepEqual(second.notAccepted.map((n) => n.cardId), [ids.open]);
+});
+
+test("a receipt that cannot be written does not hold up the stop; the journal says so", { skip: !hasSandbox }, async () => {
+  const f = fixture();
+  await openChangeSet(f);
+  // A directory where the receipt's name is: the atomic rename over it fails.
+  mkdirSync(join(f.dir, RECEIPT_FILE));
+  const r = typed(f, "pair stop");
+  assert.equal(r.stopped, true);
+  assert.equal(r.receipt, null);
+  assert.equal(loadState(f.dir).phase, "inactive");
+  const types = journal(f).map((e) => e.type);
+  assert.deepEqual(types.slice(-2), ["stop", "receipt-failed"]);
+  assert.equal(journal(f).at(-1).path, join(f.dir, RECEIPT_FILE));
 });
 
 // ─── carried sessions and the /clear marker ─────────────────────────────────────────────

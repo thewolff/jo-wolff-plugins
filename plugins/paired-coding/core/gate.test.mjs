@@ -22,6 +22,7 @@ import { join } from "node:path";
 import {
   CARRIED_REASON,
   PAIR_TOOLS,
+  boundaryHashes,
   boundaryMatches,
   directoryInBoundary,
   boundaryProblem,
@@ -35,6 +36,7 @@ import {
   roadmapRecord,
   occursAtWordBoundaries,
   openRoadmapItems,
+  pairAcceptedReceipt,
   pairBegin,
   pairDone,
   pairNote,
@@ -398,6 +400,20 @@ describe("pair_done", () => {
     assert.deepEqual(r.changed, [{ path: "src/a.ts", change: "modified" }]);
     assert.deepEqual(r.unapproved, []);
     assert.equal(r.halted, false);
+  });
+
+  test("journals the boundary and what its paths held at the close, for the pair-accepted receipt", () => {
+    const host = fakeHost();
+    const s = opened(host, { boundary: ["src/a.ts", "src/new.ts"] });
+    host.files.set("src/a.ts", "a2");
+    const r = pairDone(s, { cardId: "card-1" }, host.io);
+    const done = r.journal.find((e) => e.type === "done");
+    assert.deepEqual(done.boundary, ["src/a.ts", "src/new.ts"]);
+    // The same reduction hashBoundary applies, on the snapshot pair_done just took: a literal
+    // entry the snapshot does not hold is "absent", and nothing outside the boundary is kept.
+    assert.deepEqual(done.hashes, { "src/a.ts": "file:a2", "src/new.ts": "absent" });
+    assert.deepEqual(done.hashes, boundaryHashes(["src/a.ts", "src/new.ts"], host.io.snapshot()));
+    assert.deepEqual(boundaryHashes(["src/**"], host.io.snapshot()), { "src/a.ts": "file:a2", "src/b.ts": "file:b1" });
   });
 
   test("refuses when nothing is open or the card is not the open one", () => {
@@ -1023,6 +1039,96 @@ describe("sessionEnd (adapter machinery)", () => {
     assert.equal(r.state.phase, "inactive");
     assert.deepEqual(r.unapproved, [{ path: "src/b.ts", change: "modified" }]);
     assert.equal(r.journal.at(-1).verb, "session-end");
+  });
+});
+
+// ─── pair-accepted receipt ──────────────────────────────────────────────────────────────
+
+describe("pairAcceptedReceipt", () => {
+  /** A whole session's journal: card-1 done with a run under it, card-2 begun but open at the stop, and a stray write at the stop. */
+  function journalOf(host, stopWith) {
+    const journal = [];
+    const step = (r) => { journal.push(...r.journal); return ok(r); };
+    let s = step(pairStart(inactiveState(), { sessionId: "s1", root: ROOT, stateDir: STATE_DIR }, host.io));
+    s = step(pairPropose(s, card({ boundary: ["src/a.ts"], checks: ["node --test", "npm run lint"] }), host.io));
+    s = step(recordInput(s, { text: "yes, go ahead", source: "interactive" }, host.io));
+    s = step(pairBegin(s, { cardId: "card-1", quote: "go ahead" }, host.io));
+    s = step(runStart(s, { runId: "r1", command: "node --test" }, host.io));
+    s = step(runEnd(s, { runId: "r1", exitCode: 0 }, host.io));
+    host.files.set("src/a.ts", "a2");
+    s = step(pairDone(s, { cardId: "card-1" }, host.io));
+    s = step(pairPropose(s, card({ boundary: ["src/b.ts"] }), host.io));
+    s = step(recordInput(s, { text: "go ahead", source: "interactive" }, host.io));
+    s = step(pairBegin(s, { cardId: "card-2", quote: "go ahead" }, host.io));
+    host.files.set("README.md", "stray");
+    journal.push(...stopWith(s).journal);
+    return journal;
+  }
+
+  test("one record per change set pair_done closed, with the done entry's hashes and the runs under it", () => {
+    const host = fakeHost();
+    const journal = journalOf(host, (s) => recordInput(s, { text: "pair stop", source: "interactive" }, host.io));
+    const r = pairAcceptedReceipt(journal, { version: "1.3.0" });
+    assert.equal(r.pairAccepted, 1);
+    assert.equal(r.pairedCoding, "1.3.0");
+    assert.equal(r.sessionId, "s1");
+    assert.equal(r.root, ROOT);
+    assert.equal(r.startedAt, journal.find((e) => e.type === "start").at);
+    assert.equal(r.stoppedAt, journal.at(-1).at);
+    assert.equal(r.stoppedBy, "typed-stop");
+    assert.equal(r.accepted.length, 1);
+    const [a] = r.accepted;
+    assert.equal(a.cardId, "card-1");
+    assert.equal(a.quote, "go ahead");
+    assert.equal(a.agreedAt, journal.find((e) => e.type === "agreement").at);
+    assert.equal(a.doneAt, journal.find((e) => e.type === "done").at);
+    assert.deepEqual(a.boundary, ["src/a.ts"]);
+    assert.deepEqual(a.hashes, { "src/a.ts": "file:a2" }, "what the boundary held at pair_done, from its own snapshot");
+    assert.deepEqual(a.hashes, journal.find((e) => e.type === "done").hashes);
+    assert.deepEqual(a.checks, { declared: ["node --test", "npm run lint"], runs: [{ runId: "r1", command: "node --test", exitCode: 0 }] });
+    assert.match(r.means, /does not say the code works|Nothing here says the code works/);
+  });
+
+  test("a change set begun but open at the stop is not accepted, and the stop's stray write is unapproved", () => {
+    const host = fakeHost();
+    const journal = journalOf(host, (s) => sessionEnd(s, host.io));
+    const r = pairAcceptedReceipt(journal, { version: "1.3.0", sessionId: "from-state", root: "/from/state" });
+    assert.equal(r.stoppedBy, "session-end");
+    assert.equal(r.sessionId, "from-state", "the caller's state wins over the journal");
+    assert.equal(r.root, "/from/state");
+    assert.deepEqual(r.accepted.map((a) => a.cardId), ["card-1"]);
+    assert.deepEqual(r.notAccepted, [{ cardId: "card-2", agreedAt: journal.findLast((e) => e.type === "agreement").at, boundary: ["src/b.ts"], reason: "pairing ended before pair_done" }]);
+    assert.deepEqual(r.unapproved, [{ cardId: "card-2", at: journal.find((e) => e.type === "unapproved-write").at, paths: [{ path: "README.md", change: "modified" }] }]);
+  });
+
+  test("an unapproved write found at pair_done is listed, and the card still counts as closed by pair_done", () => {
+    const host = fakeHost();
+    const journal = [];
+    const step = (r) => { journal.push(...r.journal); return ok(r); };
+    let s = step(pairStart(inactiveState(), { sessionId: "s1", root: ROOT, stateDir: STATE_DIR }, host.io));
+    s = step(pairPropose(s, card(), host.io));
+    s = step(recordInput(s, { text: "go ahead", source: "interactive" }, host.io));
+    s = step(pairBegin(s, { cardId: "card-1", quote: "go ahead" }, host.io));
+    host.files.set("src/b.ts", "stray");
+    s = step(pairDone(s, { cardId: "card-1" }, host.io));
+    journal.push(...recordInput(s, { text: "pair stop", source: "interactive" }, host.io).journal);
+    const r = pairAcceptedReceipt(journal, { version: "1.3.0" });
+    assert.deepEqual(r.accepted.map((a) => a.cardId), ["card-1"]);
+    assert.deepEqual(r.unapproved.map((u) => [u.cardId, u.paths]), [["card-1", [{ path: "src/b.ts", change: "modified" }]]]);
+  });
+
+  test("a done entry from before 1.3.0 has no hashes: null, not a guess; unusable input gives an empty receipt", () => {
+    const old = [
+      { type: "start", at: 1, sessionId: "s0", root: "/r" },
+      { type: "card", at: 2, card: { id: "card-1", boundary: ["x.ts"], checks: ["c"] } },
+      { type: "agreement", at: 3, cardId: "card-1", quote: "ok" },
+      { type: "done", at: 4, cardId: "card-1", changed: [] },
+      { type: "stop", at: 5, verb: "typed-stop" },
+    ];
+    const r = pairAcceptedReceipt(old, { version: "1.3.0" });
+    assert.deepEqual(r.accepted, [{ cardId: "card-1", agreedAt: 3, quote: "ok", doneAt: 4, boundary: ["x.ts"], hashes: null, checks: { declared: ["c"], runs: [] } }]);
+    const empty = pairAcceptedReceipt("not a journal", { version: "1.3.0" });
+    assert.deepEqual([empty.accepted, empty.notAccepted, empty.unapproved, empty.sessionId, empty.stoppedBy], [[], [], [], null, null]);
   });
 });
 
