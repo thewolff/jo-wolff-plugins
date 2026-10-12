@@ -22,10 +22,10 @@ durable: false (pending Jo's call — only the gaslight-before-arming sequence i
 - Unregistered: nothing in `~/.omp` loads it. Nothing pushed; remote main stays `7921ad3`.
 - Context-only artifacts landed outside the repo (nothing here references them as shipped
   docs):
-  - `/Users/jowolff/agent-scratch/orchestrator/reports/rule-graduation-loop-2026-09-22.md`
-  - `/Users/jowolff/agent-scratch/orchestrator/reports/onboarding-new-user-review-2026-09-22.md`
+  - `~/agent-scratch/orchestrator/reports/rule-graduation-loop-2026-09-22.md`
+  - `~/agent-scratch/orchestrator/reports/onboarding-new-user-review-2026-09-22.md`
   - Installer v3 (name-the-artifact armed at install, Jo-only by construction):
-    `/Users/jowolff/agent-scratch/orchestrator/install-communication-rules-enforcement.sh`,
+    `~/agent-scratch/orchestrator/install-communication-rules-enforcement.sh`,
     sha256 `398180ee3baec1cd20a39886627f1b83f9e4af1b53605b78b865a7477a2b6437`. The log beside
     it is a fake-HOME battery run (tmp.kM4Dt3sxwi paths) — **not a real install**; Jo's
     `~/.claude/communication-rules.json` and `.communication-rules-state` are still absent.
@@ -60,9 +60,9 @@ durable: false (pending Jo's call — only the gaslight-before-arming sequence i
 ## Heads-up
 
 - **Gaslight over this adapter is staged, not returned.** Lintel's brief:
-  `/Users/jowolff/agent-scratch/orchestrator/briefs/gaslight-omp-adapter.md`; leg prompts and
+  `~/agent-scratch/orchestrator/briefs/gaslight-omp-adapter.md`; leg prompts and
   the gpt-5.6-sol probe (PROBE-OK) at
-  `/Users/jowolff/agent-scratch/orchestrator/gaslight-omp-adapter/`. Findings will come back
+  `~/agent-scratch/orchestrator/gaslight-omp-adapter/`. Findings will come back
   verbatim to its runner. **If findings demand changes:** fix on this branch, re-run both
   suites (18/18 + 152/152), amend or add a commit — do not start a second adapter.
 - Sequence Jo has gated: gaslight findings land → Jo accepts (or asks for changes) → Jo runs

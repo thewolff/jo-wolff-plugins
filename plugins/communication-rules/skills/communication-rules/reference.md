@@ -51,9 +51,9 @@ and the re-arming criteria are the recalibration directions above plus a second 
 check whose measured rate is ~90% FP must not stop turns by default. The same measurement
 says the machinery catches real violations — 2 + 1 + 4 deterministic true positives and 5
 judge true positives, including bad news buried behind "nothing is broken" — so the
-instrument is live, not parked. Adjudications with per-flag pointers:
-`/Users/jowolff/agent-scratch/orchestrator/communication-rules-fp/adjudications.json`
-(local to the measuring machine, mode 0700, real message bodies confined there).
+instrument is live, not parked. The adjudications, with per-flag pointers, are kept in a
+private file on the measuring machine (mode 0700) and are not published, because they
+contain real message bodies.
 
 ## The Stop hook
 
