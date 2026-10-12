@@ -15,6 +15,7 @@
 import { test, describe } from "node:test";
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import { createServer } from "node:net";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -1085,8 +1086,15 @@ describe("pairAcceptedReceipt", () => {
     assert.deepEqual(a.boundary, ["src/a.ts"]);
     assert.deepEqual(a.hashes, { "src/a.ts": "file:a2" }, "what the boundary held at pair_done, from its own snapshot");
     assert.deepEqual(a.hashes, journal.find((e) => e.type === "done").hashes);
+    assert.deepEqual(a.outsideBoundaryWrites, []);
     assert.deepEqual(a.checks, { declared: ["node --test", "npm run lint"], runs: [{ runId: "r1", command: "node --test", exitCode: 0 }] });
-    assert.match(r.means, /does not say the code works|Nothing here says the code works/);
+    assert.equal(a.suspect, false);
+    assert.equal(r.journal, null, "no raw lines given: the receipt names no journal bytes");
+    assert.match(r.means, /nothing here says the code works/);
+    assert.match(r.means, /unapproved writes are listed and may coexist with acceptance/);
+    assert.match(r.means, /whether the implementation matches the agreed approach is not established by this file/);
+    assert.match(r.means, /protected only while pairing is active/);
+    assert.doesNotMatch(r.means, /correctness and the tests|re-litigat|sign-off/, "no instruction narrowing a later review");
   });
 
   test("a change set begun but open at the stop is not accepted, and the stop's stray write is unapproved", () => {
@@ -1097,11 +1105,11 @@ describe("pairAcceptedReceipt", () => {
     assert.equal(r.sessionId, "from-state", "the caller's state wins over the journal");
     assert.equal(r.root, "/from/state");
     assert.deepEqual(r.accepted.map((a) => a.cardId), ["card-1"]);
-    assert.deepEqual(r.notAccepted, [{ cardId: "card-2", agreedAt: journal.findLast((e) => e.type === "agreement").at, boundary: ["src/b.ts"], reason: "pairing ended before pair_done" }]);
-    assert.deepEqual(r.unapproved, [{ cardId: "card-2", at: journal.find((e) => e.type === "unapproved-write").at, paths: [{ path: "README.md", change: "modified" }] }]);
+    assert.deepEqual(r.notAccepted, [{ cardId: "card-2", agreedAt: journal.findLast((e) => e.type === "agreement").at, boundary: ["src/b.ts"], reason: "pairing ended before pair_done", suspect: false }]);
+    assert.deepEqual(r.unapproved, [{ cardId: "card-2", at: journal.find((e) => e.type === "unapproved-write").at, paths: [{ path: "README.md", change: "modified" }], suspect: false }]);
   });
 
-  test("an unapproved write found at pair_done is listed, and the card still counts as closed by pair_done", () => {
+  test("an unapproved write found at pair_done is listed on the accepted record and in unapproved; acceptance does not certify the boundary", () => {
     const host = fakeHost();
     const journal = [];
     const step = (r) => { journal.push(...r.journal); return ok(r); };
@@ -1114,7 +1122,76 @@ describe("pairAcceptedReceipt", () => {
     journal.push(...recordInput(s, { text: "pair stop", source: "interactive" }, host.io).journal);
     const r = pairAcceptedReceipt(journal, { version: "1.3.0" });
     assert.deepEqual(r.accepted.map((a) => a.cardId), ["card-1"]);
+    assert.deepEqual(r.accepted[0].outsideBoundaryWrites, [{ path: "src/b.ts", change: "modified" }], "the accepted record itself carries the write pair_done found outside the boundary");
     assert.deepEqual(r.unapproved.map((u) => [u.cardId, u.paths]), [["card-1", [{ path: "src/b.ts", change: "modified" }]]]);
+    assert.match(r.means, /may coexist with acceptance/);
+  });
+
+  test("a legacy run-start without command text gives command null, and a nonzero exit is recorded as it was", () => {
+    const journal = [
+      { type: "start", at: 1, sessionId: "s0", root: "/r" },
+      { type: "card", at: 2, card: { id: "card-1", boundary: ["x.ts"] } },
+      { type: "agreement", at: 3, cardId: "card-1", quote: "ok" },
+      { type: "run-start", at: 4, cardId: "card-1", runId: "r1" },
+      { type: "run-end", at: 5, runId: "r1", exitCode: 3 },
+      { type: "done", at: 6, cardId: "card-1", boundary: ["x.ts"], hashes: { "x.ts": "file:h" }, changed: [] },
+      { type: "stop", at: 7, verb: "typed-stop" },
+    ];
+    const r = pairAcceptedReceipt(journal, { version: "1.3.0" });
+    assert.deepEqual(r.accepted[0].checks.runs, [{ runId: "r1", command: null, exitCode: 3 }]);
+  });
+
+  /** A journal's raw lines as appendJournal writes them, and the hash the adapter injects. */
+  const linesOf = (journal) => journal.map((e) => JSON.stringify(e));
+  const sha256 = (text) => createHash("sha256").update(text).digest("hex");
+  const bytes = (lines) => lines.map((l) => `${l}\n`).join("");
+
+  test("with its raw lines the receipt names the journal bytes it was built from, and checkpoints that match leave nothing suspect", () => {
+    const host = fakeHost();
+    const journal = journalOf(host, (s) => recordInput(s, { text: "pair stop", source: "interactive" }, host.io));
+    const lines = linesOf(journal);
+    const r = pairAcceptedReceipt(journal, { version: "1.3.0", lines, sha256 });
+    assert.deepEqual(r.journal, { entries: journal.length, sha256: sha256(bytes(lines)) });
+    // The stop appends a receipt checkpoint; a restart appends a resume checkpoint; both match.
+    const receiptEntry = { type: "receipt", at: 100, path: "/p", journal: r.journal };
+    const withReceipt = [...journal, receiptEntry];
+    const resumeEntry = { type: "resume", at: 101, journal: { entries: withReceipt.length, sha256: sha256(bytes(linesOf(withReceipt))) } };
+    const second = [...withReceipt, resumeEntry, { type: "start", at: 102, sessionId: "s1", root: ROOT }, { type: "stop", at: 103, verb: "typed-stop" }];
+    const r2 = pairAcceptedReceipt(second, { version: "1.3.0", lines: linesOf(second), sha256 });
+    assert.deepEqual([...r2.accepted, ...r2.notAccepted, ...r2.unapproved].map((x) => x.suspect), [false, false, false]);
+    // Lines that do not match the entries one for one are not trusted as the journal's bytes.
+    assert.equal(pairAcceptedReceipt(journal, { version: "1.3.0", lines: lines.slice(1), sha256 }).journal, null);
+  });
+
+  test("a checkpoint whose preceding bytes changed marks every record since the previous checkpoint suspect; an entry outside any pairing span is suspect", () => {
+    const host = fakeHost();
+    const journal = journalOf(host, (s) => recordInput(s, { text: "pair stop", source: "interactive" }, host.io));
+    const r1 = pairAcceptedReceipt(journal, { version: "1.3.0", lines: linesOf(journal), sha256 });
+    const sealed = [...journal, { type: "receipt", at: 100, path: "/p", journal: r1.journal }];
+    // Between stop and restart: the done entry's hash is edited in place, and an agreement plus
+    // done for a card the gate never saw are appended.
+    const tampered = sealed.map((e) => (e.type === "done" ? { ...e, hashes: { "src/a.ts": "file:forged" } } : e));
+    tampered.push(
+      { type: "card", at: 200, card: { id: "card-9", boundary: ["src/z.ts"] } },
+      { type: "agreement", at: 201, cardId: "card-9", quote: "go ahead" },
+      { type: "done", at: 202, cardId: "card-9", boundary: ["src/z.ts"], hashes: { "src/z.ts": "file:forged" }, changed: [] },
+    );
+    const resume = { type: "resume", at: 300, journal: { entries: tampered.length, sha256: sha256(bytes(linesOf(tampered))) } };
+    const step = (r) => { all.push(...r.journal); return ok(r); };
+    const all = [...tampered, resume];
+    let s = step(pairStart(inactiveState(), { sessionId: "s1", root: ROOT, stateDir: STATE_DIR, cardSeq: 2 }, host.io));
+    s = step(pairPropose(s, card({ boundary: ["src/c.ts"] }), host.io));
+    s = step(recordInput(s, { text: "go ahead", source: "interactive" }, host.io));
+    s = step(pairBegin(s, { cardId: "card-3", quote: "go ahead" }, host.io));
+    s = step(pairDone(s, { cardId: "card-3" }, host.io));
+    all.push(...recordInput(s, { text: "pair stop", source: "interactive" }, host.io).journal);
+    const r2 = pairAcceptedReceipt(all, { version: "1.3.0", lines: linesOf(all), sha256 });
+    const byId = Object.fromEntries(r2.accepted.map((a) => [a.cardId, a]));
+    assert.equal(byId["card-1"].suspect, true, "its bytes no longer hash to what the receipt checkpoint recorded");
+    assert.equal(byId["card-9"].suspect, true, "agreed and done between a stop and the next start, where the gate writes neither");
+    assert.equal(byId["card-3"].suspect, false, "the span after the resume checkpoint is intact");
+    assert.equal(r2.notAccepted.find((n) => n.cardId === "card-2").suspect, true);
+    assert.equal(r2.unapproved[0].suspect, true);
   });
 
   test("a done entry from before 1.3.0 has no hashes: null, not a guess; unusable input gives an empty receipt", () => {
@@ -1126,7 +1203,7 @@ describe("pairAcceptedReceipt", () => {
       { type: "stop", at: 5, verb: "typed-stop" },
     ];
     const r = pairAcceptedReceipt(old, { version: "1.3.0" });
-    assert.deepEqual(r.accepted, [{ cardId: "card-1", agreedAt: 3, quote: "ok", doneAt: 4, boundary: ["x.ts"], hashes: null, checks: { declared: ["c"], runs: [] } }]);
+    assert.deepEqual(r.accepted, [{ cardId: "card-1", agreedAt: 3, quote: "ok", doneAt: 4, boundary: ["x.ts"], hashes: null, outsideBoundaryWrites: [], checks: { declared: ["c"], runs: [] }, suspect: false }]);
     const empty = pairAcceptedReceipt("not a journal", { version: "1.3.0" });
     assert.deepEqual([empty.accepted, empty.notAccepted, empty.unapproved, empty.sessionId, empty.stoppedBy], [[], [], [], null, null]);
   });

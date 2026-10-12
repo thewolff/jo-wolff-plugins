@@ -495,7 +495,8 @@ test("a typed 'pair stop' ends pairing in any phase and the host's tools open ag
   assert.equal(r.stopped, true);
   assert.equal(verdict("Write", { sessionDir: f.dir }).allow, true);
   assert.equal(loadState(f.dir).phase, "inactive");
-  assert.equal(journal(f).at(-1).verb, "typed-stop");
+  assert.equal(journal(f).at(-2).verb, "typed-stop");
+  assert.equal(journal(f).at(-1).type, "receipt", "the stop checkpoints the journal after the receipt is written");
 });
 
 test("an untrusted 'pair stop' changes nothing, and the agent has no stop tool", { skip: !hasSandbox }, async () => {
@@ -550,10 +551,26 @@ function checkReceipt(f, r, ids, stoppedBy) {
   assert.deepEqual(a.hashes, hashBoundary(["src/a.txt"], f.root, [".git"]));
   assert.deepEqual(a.hashes, journal(f).find((e) => e.type === "done" && e.cardId === ids.done).hashes);
   assert.equal(a.hashes["src/a.txt"], `file:0644:${createHash("sha256").update("alpha, revised\n").digest("hex")}`);
+  assert.deepEqual(a.outsideBoundaryWrites, []);
   assert.deepEqual(a.checks, { declared: [], runs: [{ runId: ids.runId, command: "true", exitCode: 0 }] });
-  assert.deepEqual(r.notAccepted, [{ cardId: ids.open, agreedAt: journal(f).findLast((e) => e.type === "agreement").at, boundary: ["src/b.txt"], reason: "pairing ended before pair_done" }]);
-  assert.deepEqual(r.unapproved, [{ cardId: ids.open, at: journal(f).find((e) => e.type === "unapproved-write").at, paths: [{ path: "notes.txt", change: "modified" }] }]);
-  assert.match(r.means, /Nothing here says the code works/);
+  assert.equal(a.suspect, false);
+  assert.deepEqual(r.notAccepted, [{ cardId: ids.open, agreedAt: journal(f).findLast((e) => e.type === "agreement").at, boundary: ["src/b.txt"], reason: "pairing ended before pair_done", suspect: false }]);
+  assert.deepEqual(r.unapproved, [{ cardId: ids.open, at: journal(f).find((e) => e.type === "unapproved-write").at, paths: [{ path: "notes.txt", change: "modified" }], suspect: false }]);
+  assert.match(r.means, /nothing here says the code works/);
+  assert.match(r.means, /A consumer who needs this file tamper-evident takes a copy at stop time/);
+  // `journal` names the bytes the receipt was built from: every line before the receipt entry
+  // the stop appended, which carries the same field. An independent hash of those lines agrees.
+  const raw = readFileSync(join(f.dir, "journal.jsonl"), "utf8").split("\n").filter(Boolean);
+  const receiptAt = raw.findIndex((l) => JSON.parse(l).type === "receipt");
+  assert.ok(receiptAt > 0, "the stop appended a receipt entry");
+  assert.deepEqual(r.journal, { entries: receiptAt, sha256: createHash("sha256").update(raw.slice(0, receiptAt).map((l) => `${l}\n`).join("")).digest("hex") });
+  assert.deepEqual(JSON.parse(raw[receiptAt]).journal, r.journal);
+}
+
+/** Replace the journal's bytes in place, as an agent with the host's tools could once pairing stopped. */
+function rewriteJournal(f, edit) {
+  const path = join(f.dir, "journal.jsonl");
+  writeFileSync(path, edit(readFileSync(path, "utf8")));
 }
 
 test("a typed 'pair stop' writes the pair-accepted receipt beside the journal and names its path", { skip: !hasSandbox }, async () => {
@@ -606,6 +623,100 @@ test("a session that paired, stopped and paired again gets one receipt covering 
   assert.equal(second.startedAt, first.startedAt, "the session's first start");
   assert.deepEqual(second.accepted.map((a) => a.cardId), [ids.done, p.result.card.id]);
   assert.deepEqual(second.notAccepted.map((n) => n.cardId), [ids.open]);
+  // Untouched between the stop and the restart: the resume entry hashes the journal as the
+  // receipt entry left it, and nothing in the second receipt is suspect.
+  const resume = journal(f).find((e) => e.type === "resume");
+  const receiptEntry = journal(f).find((e) => e.type === "receipt");
+  assert.equal(resume.journal.entries, receiptEntry.journal.entries + 1, "the receipt entry itself is the one line after what the receipt hashed");
+  assert.deepEqual([...second.accepted, ...second.notAccepted, ...second.unapproved].map((x) => x.suspect), [false, false, false, false]);
+});
+
+test("a journal edited between a stop and a restart is flagged by the next receipt: suspect on the records it touched", { skip: !hasSandbox }, async () => {
+  const f = fixture();
+  chmodSync(join(f.root, "src", "a.txt"), 0o644);
+  const ids = await pairedSession(f);
+  typed(f, "pair stop");
+  const first = receiptOf(f);
+  assert.equal(verdict("Write", { sessionDir: f.dir }).allow, true, "once stopped, the host's tools are not refused: the plugin cannot protect the journal here");
+  // What a copy taken at stop time lets a consumer check later: the journal's first
+  // `entries` lines still hash to the receipt's sha256. Here they do, and after the edit they do not.
+  const prefix = (n) => readFileSync(join(f.dir, "journal.jsonl"), "utf8").split("\n").slice(0, n).map((l) => `${l}\n`).join("");
+  assert.equal(createHash("sha256").update(prefix(first.journal.entries)).digest("hex"), first.journal.sha256);
+  rewriteJournal(f, (text) => {
+    // The done entry's hash edited in place, and an agreement plus done for a card the gate never saw appended.
+    const forged = text.split("\n").map((l) => (l && JSON.parse(l).type === "done" ? JSON.stringify({ ...JSON.parse(l), hashes: { "src/a.txt": "file:0644:forged" } }) : l)).join("\n");
+    return `${forged}${JSON.stringify({ type: "card", at: "x", card: { id: "card-9", boundary: ["src/z.txt"], hashes: {}, inputSeq: 0 } })}\n${JSON.stringify({ type: "agreement", at: "x", cardId: "card-9", quote: "go ahead" })}\n${JSON.stringify({ type: "done", at: "x", cardId: "card-9", boundary: ["src/z.txt"], hashes: { "src/z.txt": "file:0644:forged" }, changed: [] })}\n`;
+  });
+  assert.notEqual(createHash("sha256").update(prefix(first.journal.entries)).digest("hex"), first.journal.sha256);
+  assert.equal((await executeVerb("pair_start", {}, f.ctx)).ok, true);
+  const p = await executeVerb("pair_propose", { boundary: ["src/b.txt"], decision: "d" }, f.ctx);
+  typed(f, "go ahead");
+  assert.equal((await executeVerb("pair_begin", { cardId: p.result.card.id, quote: "go ahead" }, f.ctx)).ok, true);
+  assert.equal((await executeVerb("pair_done", { cardId: p.result.card.id }, f.ctx)).ok, true);
+  typed(f, "pair stop");
+  const second = receiptOf(f);
+  const byId = Object.fromEntries(second.accepted.map((a) => [a.cardId, a]));
+  assert.equal(byId[ids.done].suspect, true, "its bytes no longer hash to what the receipt entry recorded");
+  assert.equal(byId["card-9"].suspect, true, "agreed and done between a stop and the next start");
+  assert.equal(byId[p.result.card.id].suspect, false, "the span after the resume checkpoint is intact");
+  assert.equal(second.notAccepted.find((n) => n.cardId === ids.open).suspect, true);
+  assert.equal(second.unapproved[0].suspect, true);
+});
+
+test("a journal the receipt cannot read in full gives receipt-failed, not a receipt that looks complete", { skip: !hasSandbox }, async () => {
+  // Unreadable: write-only, so the stop's own append still lands.
+  const f = fixture();
+  await openChangeSet(f);
+  const path = join(f.dir, "journal.jsonl");
+  chmodSync(path, 0o200);
+  try {
+    const r = typed(f, "pair stop");
+    assert.equal(r.stopped, true);
+    assert.equal(r.receipt, null);
+  } finally {
+    chmodSync(path, 0o600);
+  }
+  assert.equal(existsSync(join(f.dir, RECEIPT_FILE)), false);
+  assert.equal(loadState(f.dir).phase, "inactive");
+  assert.deepEqual(journal(f).slice(-2).map((e) => e.type), ["stop", "receipt-failed"]);
+  assert.match(journal(f).at(-1).reason, /journal unreadable: EACCES/);
+
+  // One malformed line among valid ones: the permissive reader would skip it; the receipt refuses.
+  const g = fixture();
+  await openChangeSet(g);
+  const lines = readFileSync(join(g.dir, "journal.jsonl"), "utf8").split("\n");
+  rewriteJournal(g, (text) => text.replace(lines[1], "{not json"));
+  const r = typed(g, "pair stop");
+  assert.equal(r.stopped, true);
+  assert.equal(r.receipt, null);
+  assert.equal(existsSync(join(g.dir, RECEIPT_FILE)), false);
+  const tail = readFileSync(join(g.dir, "journal.jsonl"), "utf8").trim().split("\n").slice(-2).map((l) => JSON.parse(l));
+  assert.deepEqual(tail.map((e) => e.type), ["stop", "receipt-failed"]);
+  assert.equal(tail[1].reason, "journal line 2 is malformed");
+});
+
+test("a card's hashes are what its boundary held at its own pair_done: a later card on the same file does not move them", { skip: !hasSandbox }, async () => {
+  const f = fixture();
+  chmodSync(join(f.root, "src", "a.txt"), 0o644);
+  const first = await openChangeSet(f, ["src/a.txt"]);
+  assert.equal((await executeVerb("pair_write", { path: "src/a.txt", content: "first\n" }, f.ctx)).ok, true);
+  assert.equal((await executeVerb("pair_done", { cardId: first }, f.ctx)).ok, true);
+  const p = await executeVerb("pair_propose", { boundary: ["src/a.txt"], decision: "again" }, f.ctx);
+  typed(f, "go ahead");
+  assert.equal((await executeVerb("pair_begin", { cardId: p.result.card.id, quote: "go ahead" }, f.ctx)).ok, true);
+  assert.equal((await executeVerb("pair_write", { path: "src/a.txt", content: "second\n" }, f.ctx)).ok, true);
+  const run = await executeVerb("pair_run", { command: "exit 3" }, f.ctx);
+  assert.equal(run.ok, false, "a nonzero exit is reported as not ok");
+  assert.equal(run.result.exitCode, 3);
+  assert.equal((await executeVerb("pair_done", { cardId: p.result.card.id }, f.ctx)).ok, true);
+  typed(f, "pair stop");
+  const r = receiptOf(f);
+  const [a, b] = r.accepted;
+  const h = (content) => `file:0644:${createHash("sha256").update(content).digest("hex")}`;
+  assert.equal(a.cardId, first);
+  assert.equal(a.hashes["src/a.txt"], h("first\n"), "the first card keeps its done-time hash, not a rehash at the stop");
+  assert.equal(b.hashes["src/a.txt"], h("second\n"));
+  assert.deepEqual(b.checks.runs, [{ runId: run.result.runId, command: "exit 3", exitCode: 3 }], "a nonzero exit is recorded as it was");
 });
 
 test("a receipt that cannot be written does not hold up the stop; the journal says so", { skip: !hasSandbox }, async () => {
@@ -965,7 +1076,7 @@ test("the OMP joint test's shape: two cards and a not-ready item, /clear in plac
   assert.equal(r.result.roadmapOffer.fromSession, "sess-1");
   assert.deepEqual(r.result.roadmapOffer.items.map((i) => `${i.id}:${i.status}`), ["readme:not-ready"]);
   const types = journal(f).map((e) => e.type === "stop" ? `stop:${e.verb}` : e.type);
-  assert.deepEqual(types.slice(types.indexOf("stop:session-end")), ["stop:session-end", "carried-after-clear", "refusal", "start", "roadmap-offered"]);
+  assert.deepEqual(types.slice(types.indexOf("stop:session-end")), ["stop:session-end", "receipt", "carried-after-clear", "refusal", "resume", "start", "roadmap-offered"]);
   // The new card does not reuse an id this journal already holds.
   const next = await executeVerb("pair_propose", { boundary: ["src/a.txt"] }, f.ctx);
   assert.equal(next.result.card.id, "card-3");
