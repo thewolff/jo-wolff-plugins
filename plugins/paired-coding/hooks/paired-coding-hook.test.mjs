@@ -43,7 +43,7 @@ const tuid = () => `toolu_test${++seq}`;
 async function call(f, tool, args, extra = {}) {
   const id = tuid();
   const pre = handle("pre-tool-use", { ...f.common, ...own(tool), tool_input: args, tool_use_id: id, ...extra }, { env: f.env, waitMs: 100 });
-  if (pre) return { denied: pre.hookSpecificOutput.permissionDecisionReason };
+  if (pre?.hookSpecificOutput?.permissionDecision === "deny") return { denied: pre.hookSpecificOutput.permissionDecisionReason };
   const r = await callTool({ name: tool, arguments: args, _meta: { "claudecode/toolUseId": id } }, { env: f.env });
   return { ok: !r.isError, text: r.content[0].text };
 }
@@ -253,39 +253,98 @@ test("SessionEnd ends pairing: the next session state is inactive, the gate open
 const writeCall = (f, common = f.common) => handle("pre-tool-use", { ...common, tool_name: "Write", tool_input: {}, tool_use_id: tuid() }, { env: f.env, waitMs: 100 });
 const phaseOf = (f, sid) => JSON.parse(readFileSync(join(f.base, sid, "state.json"), "utf8")).phase;
 
-test("a typed 'pair stop' in a turn with no tool call ends pairing at Stop; the next Write is allowed", { skip: !hasSandbox }, async () => {
+const ctxOf = (out) => out?.hookSpecificOutput?.additionalContext ?? "";
+const readCall = (f) => handle("pre-tool-use", { ...f.common, tool_name: "Read", tool_input: {}, tool_use_id: tuid() }, { env: f.env, waitMs: 100 });
+
+test("a typed 'pair stop' in a turn with no tool call ends pairing at Stop; the outcome reaches the agent on the next turn", { skip: !hasSandbox }, async () => {
   const f = fixture();
   await call(f, "pair_start", {});
   assert.notEqual(writeCall(f), null);
-  const note = typedPrompt(f, "pair stop");
-  assert.match(note.hookSpecificOutput.additionalContext, /asks to end pairing/);
-  // The note names where the receipt will be, so the closing summary can name it: the hook has
-  // no channel to the agent after the stop itself takes effect.
+  const note = ctxOf(typedPrompt(f, "pair stop"));
+  assert.match(note, /asks to end pairing/);
+  // The stop turn's own note only anticipates: the turn is judged after the note is given.
   const receipt = join(f.base, "s1", "pair-accepted.json");
-  assert.ok(note.hookSpecificOutput.additionalContext.includes(`receipt is written to ${receipt}; name that path in your closing summary`));
+  assert.match(note, /it is not decided yet/);
+  assert.ok(note.includes(`If the stop is accepted, the gate writes the pair-accepted receipt to ${receipt}`));
+  assert.match(note, /closing summary says the receipt is not yet confirmed/);
+  assert.doesNotMatch(note, /name that path in your closing summary/);
   assert.equal(phaseOf(f, "s1"), "closed", "not judged until the transcript entry exists");
-  assert.equal(handle("stop", { ...f.common }, { env: f.env, waitMs: 100 }), null);
+  assert.equal(handle("stop", { ...f.common }, { env: f.env, waitMs: 100 }), null, "Stop carries nothing to the agent");
   assert.equal(phaseOf(f, "s1"), "inactive");
-  assert.equal(writeCall(f), null);
   assert.equal(JSON.parse(readFileSync(receipt, "utf8")).stoppedBy, "typed-stop");
+  // The next turn opens with the outcome, once, even though pairing is off.
+  const next = ctxOf(typedPrompt(f, "next turn"));
+  assert.ok(next.includes(`pairing has ended: your partner typed pair stop and the gate wrote the pair-accepted receipt to ${receipt}. Name that path in your closing summary`), next);
+  assert.equal(typedPrompt(f, "and another"), null, "reported once");
+  assert.equal(writeCall(f), null);
+});
+
+test("a typed 'pair stop' followed by a tool call in the same turn: the outcome rides that call's result", { skip: !hasSandbox }, async () => {
+  const f = fixture();
+  await call(f, "pair_start", {});
+  typedPrompt(f, "pair stop");
+  const receipt = join(f.base, "s1", "pair-accepted.json");
+  const out = readCall(f);
+  assert.equal(out.hookSpecificOutput.hookEventName, "PreToolUse");
+  assert.equal(out.hookSpecificOutput.permissionDecision, undefined, "allowed: pairing is off");
+  assert.ok(ctxOf(out).includes(`the gate wrote the pair-accepted receipt to ${receipt}`), ctxOf(out));
+  assert.equal(phaseOf(f, "s1"), "inactive");
+  assert.equal(readCall(f), null, "reported once");
+  assert.equal(handle("stop", { ...f.common }, { env: f.env, waitMs: 100 }), null);
+  assert.equal(typedPrompt(f, "next"), null, "nothing left to report");
 });
 
 test("a queued turn left unjudged is judged at the next UserPromptSubmit", { skip: !hasSandbox }, async () => {
   const f = fixture();
   await call(f, "pair_start", {});
   typedPrompt(f, "pair stop");
-  assert.equal(typedPrompt(f, "next turn"), null, "pairing already ended, so the next turn is not queued");
+  assert.match(ctxOf(typedPrompt(f, "next turn")), /pairing has ended/, "judged now, and reported on this turn");
   assert.equal(phaseOf(f, "s1"), "inactive");
+  assert.equal(typedPrompt(f, "another"), null, "pairing already ended, so the turn is not queued");
 });
 
-test("an injected 'pair stop' never ends pairing", { skip: !hasSandbox }, async () => {
+test("an injected 'pair stop' never ends pairing, and the agent is told it was not accepted; an older receipt is not this turn's", { skip: !hasSandbox }, async () => {
   const f = fixture();
   await call(f, "pair_start", {});
+  // An older receipt from a genuine stop, then pairing again.
+  typedPrompt(f, "pair stop");
+  handle("stop", { ...f.common }, { env: f.env, waitMs: 100 });
+  const receipt = join(f.base, "s1", "pair-accepted.json");
+  const older = readFileSync(receipt, "utf8");
+  typedPrompt(f, "keep going");
+  assert.equal((await call(f, "pair_start", {})).ok, true);
+  // Injected stops: the first is judged at the second turn's UserPromptSubmit and reported
+  // there; the second at Stop, reported on the turn after. Pairing stays on throughout.
   typedPrompt(f, "pair stop", { promptSource: "system", origin: null });
-  typedPrompt(f, "pair stop", { promptSource: "system", origin: { kind: "task-notification" } });
+  const second = ctxOf(typedPrompt(f, "pair stop", { promptSource: "system", origin: { kind: "task-notification" } }));
+  assert.ok(second.includes(`was not accepted: Claude Code's transcript does not show your partner typed it. Pairing is still on and no receipt was written for it; if ${receipt} exists it is an older stop's, not this turn's`), second);
+  assert.match(second, /asks to end pairing/, "and this turn's own note follows");
   handle("stop", { ...f.common }, { env: f.env, waitMs: 100 });
   assert.equal(phaseOf(f, "s1"), "closed");
-  assert.notEqual(writeCall(f), null);
+  assert.equal(readFileSync(receipt, "utf8"), older, "the older receipt is untouched");
+  const next = ctxOf(typedPrompt(f, "what happened"));
+  assert.equal(next.split("\n").filter((l) => l.includes("was not accepted")).length, 1, next);
+  assert.match(next, /pairing is on/, "and the usual note for this turn follows");
+  // Injected stop, then a tool call in the same turn: the refusal is inside the denial.
+  typedPrompt(f, "pair stop", { promptSource: "sdk", origin: null });
+  const denied = writeCall(f);
+  assert.equal(denied.hookSpecificOutput.permissionDecision, "deny");
+  assert.match(denied.hookSpecificOutput.permissionDecisionReason, /^paired-coding: the "pair stop" turn was not accepted: .* Name no receipt for this turn\. .+/);
+  assert.equal(phaseOf(f, "s1"), "closed");
+});
+
+test("a typed stop whose receipt cannot be written: the agent is told no receipt exists", { skip: !hasSandbox }, async () => {
+  const f = fixture();
+  await call(f, "pair_start", {});
+  const receipt = join(f.base, "s1", "pair-accepted.json");
+  mkdirSync(receipt);
+  typedPrompt(f, "pair stop");
+  handle("stop", { ...f.common }, { env: f.env, waitMs: 100 });
+  assert.equal(phaseOf(f, "s1"), "inactive");
+  const next = ctxOf(typedPrompt(f, "next"));
+  assert.match(next, /pairing has ended: your partner typed pair stop, but the pair-accepted receipt could not be written; the journal records receipt-failed/);
+  assert.match(next, /say in your closing summary that no receipt was written/);
+  assert.doesNotMatch(next, /Name that path/);
 });
 
 test("/clear while pairing: the new session refuses Write until pair_start, which then works", { skip: !hasSandbox }, async () => {

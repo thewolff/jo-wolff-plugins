@@ -8,7 +8,11 @@
 //   user-prompt-submit  record any turn still queued, then queue this one. Claude Code writes the
 //                       transcript entry that says who typed it only after this hook returns, so
 //                       the turn is judged and handed to the core at the next PreToolUse (which
-//                       always precedes any pair_* call) or at Stop, whichever comes first.
+//                       always precedes any pair_* call) or at Stop, whichever comes first. A
+//                       "pair stop" turn is told here only where the receipt will be if the stop
+//                       is accepted; the outcome (accepted and written, accepted but the write
+//                       failed, or refused) is a note on the event that judges it when that is a
+//                       PreToolUse, else on the next UserPromptSubmit or PreToolUse.
 //   stop                record every queued turn. A typed "pair stop" in a turn that made no tool
 //                       call ends pairing here, before the next turn's first tool call. Either
 //                       way a typed stop writes the pair-accepted receipt beside the journal.
@@ -164,16 +168,30 @@ export function queueInput(dir, input) {
 }
 
 /**
+ * What the agent is told once a queued "pair stop" turn has been judged (stopOutcome): the
+ * receipt the gate wrote, or that none was. `r` is recordTrustedInput's result for that turn.
+ */
+export function stopOutcome(r, dir) {
+  const path = join(dir, RECEIPT_FILE);
+  if (r.stopped !== true) return `paired-coding: the "pair stop" turn was not accepted: Claude Code's transcript does not show your partner typed it. Pairing is still on and no receipt was written for it; if ${path} exists it is an older stop's, not this turn's. Name no receipt for this turn.`;
+  if (r.receipt) return `paired-coding: pairing has ended: your partner typed pair stop and the gate wrote the pair-accepted receipt to ${r.receipt}. Name that path in your closing summary; it records which change sets your partner agreed to and pair_done closed, and it does not say the code works. The gate no longer refuses host tools; pairing starts again only if your partner asks for it and you call pair_start.`;
+  return `paired-coding: pairing has ended: your partner typed pair stop, but the pair-accepted receipt could not be written; the journal records receipt-failed with the reason. No receipt exists for this stop, and if ${path} exists it is an older stop's: say in your closing summary that no receipt was written. The gate no longer refuses host tools.`;
+}
+
+/**
  * PreToolUse: judge every queued turn, oldest first, and hand each to the core. Runs before the
  * tool's own verdict, so a turn typed before a card is recorded before that card exists, and a
  * turn typed after it is recorded before pair_begin reaches the server. Claude Code writes a
  * turn's transcript entry only after UserPromptSubmit returns, so any queued entry, older ones
  * included, may still be on its way. The batch shares one deadline: each turn waits only for
  * what is left of `waitMs`, and every turn is read at least once even after it passes.
+ * Returns the outcome note (stopOutcome) of every judged turn that was the stop phrase, for the
+ * caller to surface on this event or stash for the next (stashNotices).
  */
 export function resolvePending(dir, { waitMs = 2000 } = {}) {
   const pdir = join(dir, PENDING);
   const path = join(pdir, PENDING_FILE);
+  const notices = [];
   withLock(pdir, () => {
     let lines;
     try {
@@ -187,16 +205,45 @@ export function resolvePending(dir, { waitMs = 2000 } = {}) {
       const o = it
         ? promptOrigin(it.transcriptPath, it.promptId, it.text, { waitMs: Math.max(0, deadline - Date.now()) })
         : { trusted: false, source: "claude:unreadable-queue-entry" };
-      recordTrustedInput({
+      const text = typeof it?.text === "string" ? it.text : "";
+      const r = recordTrustedInput({
         sessionDir: dir,
-        text: typeof it?.text === "string" ? it.text : "",
+        text,
         source: o.source,
         meta: { promptId: it?.promptId, promptSource: o.promptSource, origin: o.origin, submittedAt: it?.at },
       });
+      // A stop turn judged after pairing already ended (an earlier queued stop took it) gets no note.
+      if (isStopPhrase(text) && r.active) notices.push(stopOutcome(r, dir));
     });
     rmSync(path, { force: true });
   });
+  return notices;
 }
+
+const NOTICES_FILE = "notices.jsonl";
+
+/** Keep outcome notes an event cannot carry (Stop) for the next event that can. */
+function stashNotices(dir, notices) {
+  if (notices.length === 0) return;
+  const pdir = join(dir, PENDING);
+  withLock(pdir, () => {
+    appendFileSync(join(pdir, NOTICES_FILE), `${notices.map((n) => JSON.stringify(n)).join("\n")}\n`, { mode: 0o600 });
+  });
+}
+
+/** Take (read and delete) the stashed outcome notes. */
+function takeNotices(dir) {
+  const pdir = join(dir, PENDING);
+  const path = join(pdir, NOTICES_FILE);
+  return withLock(pdir, () => {
+    let text;
+    try { text = readFileSync(path, "utf8"); } catch { return []; }
+    rmSync(path, { force: true });
+    return text.split("\n").filter(Boolean).map((l) => { try { return JSON.parse(l); } catch { return null; } }).filter((n) => typeof n === "string");
+  });
+}
+
+const context = (hookEventName, notes) => ({ hookSpecificOutput: { hookEventName, additionalContext: notes.join("\n") } });
 
 /**
  * The hook's decision for one event. Returns the JSON to print, or null for no output.
@@ -211,9 +258,11 @@ export function handle(event, input, opts = {}) {
     const name = bareToolName(input);
     if (!dir) return PAIR_TOOLS.includes(name) ? deny("the session id is unusable; pairing cannot bind this call") : null;
     try {
-      if (activated(dir)) resolvePending(dir, { waitMs: opts.waitMs });
+      // A stop judged here (or stashed by an earlier Stop event) is reported alongside this
+      // tool's result, or inside the refusal when pairing is still on.
+      const notices = activated(dir) ? [...takeNotices(dir), ...resolvePending(dir, { waitMs: opts.waitMs })] : [];
       const v = verdict(name, { sessionDir: dir, allow: hostAllowFor(input) });
-      if (!v.allow) return deny(v.reason ?? "refused while pairing");
+      if (!v.allow) return deny([...notices.map((n) => n.replace(/^paired-coding: /, "")), v.reason ?? "refused while pairing"].join(" "));
       if (PAIR_TOOLS.includes(name)) {
         writeBinding(stateBase(env), input.tool_use_id, {
           sessionId: input.session_id,
@@ -222,7 +271,7 @@ export function handle(event, input, opts = {}) {
           transcriptPath: input.transcript_path,
         });
       }
-      return null;
+      return notices.length ? context("PreToolUse", notices) : null;
     } catch (err) {
       // Fail closed once activated; stay out of the way of a session that never paired.
       if (activated(dir) || PAIR_TOOLS.includes(name)) return deny(`adapter error: ${err instanceof Error ? err.message : String(err)}`);
@@ -254,22 +303,25 @@ export function handle(event, input, opts = {}) {
   }
   if (!dir || !activated(dir)) return null;
   if (event === "user-prompt-submit") {
-    // Turns still queued from earlier (a turn that ended with no tool call) are judged first.
-    resolvePending(dir, { waitMs: opts.waitMs });
+    // Turns still queued from earlier (a turn that ended with no tool call) are judged first,
+    // and the outcome of any stop among them, or stashed by the Stop event, is reported here.
+    const notices = [...takeNotices(dir), ...resolvePending(dir, { waitMs: opts.waitMs })];
     const state = loadState(dir);
-    if (state.phase === "inactive") return null;
+    if (state.phase === "inactive") return notices.length ? context("UserPromptSubmit", notices) : null;
     queueInput(dir, input);
     const note = isStopPhrase(input?.prompt)
-      ? `paired-coding: this turn asks to end pairing. If Claude Code's transcript shows your partner typed it, pairing ends before your next tool call and the pair-accepted receipt is written to ${join(dir, RECEIPT_FILE)}; name that path in your closing summary. It records which change sets your partner agreed to and pair_done closed, and it does not say the code works. You cannot end pairing yourself.`
+      ? `paired-coding: this turn asks to end pairing. Whether your partner typed it is decided from Claude Code's transcript at your next tool call or when this turn ends, whichever comes first; it is not decided yet. If the stop is accepted, the gate writes the pair-accepted receipt to ${join(dir, RECEIPT_FILE)} and tells you so in a later note (with your next tool result, or at the start of the next turn); if it is refused, or the receipt cannot be written, a note says that instead. Until that note arrives, your closing summary says the receipt is not yet confirmed and where it will be if the stop is accepted; do not name an older receipt as this one. The receipt records which change sets your partner agreed to and pair_done closed, and it does not say the code works. You cannot end pairing yourself.`
       : state.carried
         ? `paired-coding: ${CARRIED_PHRASE} after a session change. If your partner has not answered yet, tell them pairing carried over closed and wait; call pair_start only once they say to keep pairing. Only your partner ends pairing, by typing pair stop as a whole message.`
         : "paired-coding: pairing is on. Only words from a turn your partner typed at the keyboard can be quoted to pair_begin; whether this turn counts is decided from Claude Code's transcript before your next tool call. Only your partner ends pairing, by typing pair stop as a whole message.";
-    return { hookSpecificOutput: { hookEventName: "UserPromptSubmit", additionalContext: note } };
+    return context("UserPromptSubmit", [...notices, note]);
   }
   if (event === "stop") {
     // The turn ended. A turn with no tool call never reached PreToolUse, so judge its queued
-    // input now: a typed stop takes effect before the next turn's first tool call.
-    resolvePending(dir, { waitMs: opts.waitMs });
+    // input now: a typed stop takes effect before the next turn's first tool call. This event
+    // carries no context to the agent without reopening the turn, so a stop's outcome is kept
+    // for the next event that does (the next UserPromptSubmit or PreToolUse).
+    stashNotices(dir, resolvePending(dir, { waitMs: opts.waitMs }));
     return null;
   }
   if (event === "session-end") {
