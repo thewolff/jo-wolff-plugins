@@ -36,7 +36,7 @@ const node = () => {
   const n = { describe: () => n, optional: () => n };
   return n;
 };
-const zod = { object: () => node(), string: node, number: node, boolean: node, array: () => node() };
+const zod = { object: () => node(), string: node, enum: () => node(), number: node, boolean: node, array: () => node() };
 
 function setup({ otherTools = [], env = {} } = {}) {
   const repo = mkdtempSync(join(FIXTURES, "repo-"));

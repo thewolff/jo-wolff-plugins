@@ -1039,8 +1039,10 @@ export const EARLIER_ROADMAP_CHOICES = Object.freeze(["pick-up", "start-fresh"])
  * latest roadmap replaces the one before it (state.roadmap) and pair_done lists its open and
  * not-ready items. `earlierRoadmap` answers the roadmap pair_start offered: "pick-up" records
  * that whole roadmap in this journal, "start-fresh" records the decline, so a later pair_start
- * stops at this journal either way. The agent's only way to keep notes while pairing; the
- * state directory is not writable by any agent tool while pairing is active.
+ * stops at this journal either way. An empty or null `earlierRoadmap` counts as absent: some
+ * clients send "" for an optional field the model left unset. The agent's only way to keep
+ * notes while pairing; the state directory is not writable by any agent tool while pairing is
+ * active.
  * @param {State} state
  * @param {{ text?: unknown, roadmap?: unknown, earlierRoadmap?: unknown }} args
  * @param {Io} [io]
@@ -1052,16 +1054,17 @@ export function pairNote(state, args, io) {
   const hasText = typeof args?.text === "string" && args.text.trim() !== "";
   if (args?.text !== undefined && typeof args.text !== "string") return refuse(state, "pair_note", "the note text is not a string", io);
   const text = hasText ? { text: args.text } : {};
-  if (args?.earlierRoadmap !== undefined) {
-    if (!EARLIER_ROADMAP_CHOICES.includes(args.earlierRoadmap)) {
-      return refuse(state, "pair_note", `earlierRoadmap is ${JSON.stringify(args.earlierRoadmap)}; use one of ${EARLIER_ROADMAP_CHOICES.join(", ")}`, io);
+  const earlierRoadmap = args?.earlierRoadmap === "" || args?.earlierRoadmap === null ? undefined : args?.earlierRoadmap;
+  if (earlierRoadmap !== undefined) {
+    if (!EARLIER_ROADMAP_CHOICES.includes(earlierRoadmap)) {
+      return refuse(state, "pair_note", `earlierRoadmap is ${JSON.stringify(earlierRoadmap)}; use one of ${EARLIER_ROADMAP_CHOICES.join(", ")}`, io);
     }
     if (args.roadmap !== undefined) return refuse(state, "pair_note", "pass earlierRoadmap or roadmap, not both", io);
     const offer = state.roadmapOffer;
     if (!offer) return refuse(state, "pair_note", "no earlier roadmap is on offer in this session", io);
     const next = clone(state);
     next.roadmapOffer = null;
-    if (args.earlierRoadmap === "start-fresh") {
+    if (earlierRoadmap === "start-fresh") {
       return { ok: true, state: next, declined: offer.from, journal: [entry("roadmap-declined", io, { from: offer.from, ...text })] };
     }
     next.roadmap = offer.roadmap.map(roadmapItem);
