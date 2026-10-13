@@ -81,6 +81,7 @@ type Schema = unknown;
 type ZodLike = {
 	object(shape: Record<string, Schema>): Schema;
 	string(): { describe(d: string): Schema & { optional(): Schema } } & { optional(): Schema };
+	enum(values: readonly [string, ...string[]]): { describe(d: string): Schema & { optional(): Schema } };
 	number(): { describe(d: string): Schema & { optional(): Schema } };
 	boolean(): { describe(d: string): Schema & { optional(): Schema } };
 	array(item: Schema): { describe(d: string): Schema & { optional(): Schema } };
@@ -219,10 +220,12 @@ const SPECS: Record<string, ToolSpec> = {
 					)
 					.describe("The whole roadmap, replacing the previous one.")
 					.optional(),
-				earlierRoadmap: OPT_STR(
-					z,
-					`Your partner's answer to the earlier roadmap pair_start offered, one of ${EARLIER_ROADMAP_CHOICES.join(", ")}: pick-up carries it into this session, start-fresh sets it aside for good. Not with roadmap.`,
-				),
+				earlierRoadmap: z
+					.enum(EARLIER_ROADMAP_CHOICES as unknown as readonly [string, ...string[]])
+					.describe(
+						`Your partner's answer to the earlier roadmap pair_start offered, one of ${EARLIER_ROADMAP_CHOICES.join(", ")}: pick-up carries it into this session, start-fresh sets it aside for good. Not with roadmap.`,
+					)
+					.optional(),
 			}),
 	},
 	pair_propose: {

@@ -734,6 +734,15 @@ describe("pair_note", () => {
       refusedWith(pairNote(started(), { earlierRoadmap: "pick-up" }), /no earlier roadmap is on offer/);
     });
 
+    test("an empty or null answer counts as no answer: a note with a roadmap goes through as without it", () => {
+      for (const s of [started(), ok(offered())]) {
+        const args = { text: "where we are", roadmap: [item("x", "open")] };
+        const without = pairNote(s, args);
+        ok(without);
+        for (const unset of ["", null]) assert.deepEqual(pairNote(s, { ...args, earlierRoadmap: unset }), without, JSON.stringify(unset));
+      }
+    });
+
     test("a new roadmap supersedes the offer", () => {
       const s = ok(pairNote(ok(offered()), { roadmap: [item("x", "open")] }));
       assert.equal(s.roadmapOffer, null);
