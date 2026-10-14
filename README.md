@@ -283,6 +283,8 @@ things that were cheap to start and expensive to keep.
 Graham agreed to be named and quoted: "100%. Nothing would make me happier." His answers are in
 the plugin, verbatim, typos included.
 
+The package README is [`plugins/ask-graham/README.md`](plugins/ask-graham/README.md).
+
 ### Install
 
 ```
