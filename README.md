@@ -1,7 +1,8 @@
 # jo-wolff-plugins
 
-Three plugins about working with an agent: what its output is made of, what shape that output
-arrives in, and when it may write code at all.
+Four plugins about working with an agent: what its output is made of, what shape that output
+arrives in, when it may write code at all, and whether the thing is worth building in the first
+place.
 
 - **[output-types](#output-types)** — label every statement and attach the receipt that earns
   the label.
@@ -9,16 +10,20 @@ arrives in, and when it may write code at all.
   looks first.
 - **[paired-coding](#paired-coding)** — pair with the agent one change set at a time, behind a
   gate that refuses writes you have not agreed to.
+- **[ask-graham](#ask-graham)** — answer "should we build X?" with one engineer's stated
+  judgment and a single verdict.
 
 The first two deliver text. Neither reads what the agent sends back; see each section's
 *delivers, does not enforce* note. paired-coding is the one that enforces, at the tool boundary,
-within the limits in its *what this enforces, and what it does not* note.
+within the limits in its *what this enforces, and what it does not* note. ask-graham is a skill
+and nothing else.
 
 ```
 /plugin marketplace add thewolff/jo-wolff-plugins
 /plugin install output-types@jo-wolff-plugins
 /plugin install communication-rules@jo-wolff-plugins
 /plugin install paired-coding@jo-wolff-plugins
+/plugin install ask-graham@jo-wolff-plugins
 ```
 
 On OMP, from a shell:
@@ -28,12 +33,13 @@ omp plugin marketplace add thewolff/jo-wolff-plugins
 omp plugin install output-types@jo-wolff-plugins
 omp plugin install communication-rules@jo-wolff-plugins
 omp plugin install paired-coding@jo-wolff-plugins
+omp plugin install ask-graham@jo-wolff-plugins
 ```
 
 Inside a running OMP session the commands are `/marketplace add` and `/marketplace install`, with
 the same arguments. `/plugin install` inside OMP installs nothing. On OMP the first two plugins
 deliver their skill only; their hooks do not run there. paired-coding installs its gate as an
-OMP extension (see each section).
+OMP extension, and ask-graham is a skill on both hosts (see each section).
 
 ## output-types
 
@@ -286,6 +292,82 @@ are not blocked, so a run can ask a process outside the sandbox to write for it.
 only if it writes inside the worktree.
 
 The plugin's own README carries the full list, with the evidence behind each line.
+
+## ask-graham
+
+A skill that answers "should we build X?" the way Graham, a frontend engineer, says he decides:
+five gate questions, a short list of red flags, the 2-minute rule from GTD, and fewer lines wins.
+It ends in exactly one verdict: **do it now**, **backlog**, **backlog, prioritize now**, or
+**don't build**, with a breakdown scaled to the size of the work.
+
+The problem it addresses: an agent asked "can we build X?" hears "build X". It does not stop to
+ask why, whether something already does it, or who will maintain it, so the backlog fills with
+things that were cheap to start and expensive to keep.
+
+Graham agreed to be named and quoted: "100%. Nothing would make me happier." His answers are in
+the plugin, verbatim, typos included.
+
+### Install
+
+```
+/plugin marketplace add thewolff/jo-wolff-plugins
+/plugin install ask-graham@jo-wolff-plugins
+```
+
+Then ask "should we build X?", or type `/ask-graham <the thing to build>`.
+
+#### Install on OMP
+
+```
+omp plugin marketplace add thewolff/jo-wolff-plugins
+omp plugin install ask-graham@jo-wolff-plugins
+```
+
+Inside a running OMP session, use `/marketplace add thewolff/jo-wolff-plugins` and then
+`/marketplace install ask-graham@jo-wolff-plugins`. `/plugin install` inside OMP installs
+nothing: it prints the installed-plugin list and returns.
+
+**The plugin is a skill and nothing else**, so it is the same on both hosts: no hooks, no MCP
+server, no extension. Tested on OMP 18.8.6, `omp plugin install` puts the skill in OMP's plugin
+cache, and the skill loads on demand like any other.
+
+### What you get
+
+- **Graham's five gate questions**, answered from evidence (the repo, its issue tracker, its
+  backlog files) rather than put back to you. You are asked only what no tool can settle: who
+  will own it, or which reason matters to you.
+- **A search for what already exists** before anything else, delegated to a subagent when it
+  spans repos.
+- **Graham's red flags** for technical asks: an enum invented for a platform you do not control,
+  a JSON round-trip, JSON built by hand, and a homegrown type system where an established one
+  exists.
+- **One verdict**, then a breakdown only as deep as the work needs: High Level Design, epics,
+  stories, tasks of hours to a few days, each with acceptance criteria and no prescribed code.
+- **Every rule tagged with its source**: *Graham #N* for his words, *Jo* for the author's
+  overrides, *Skill* for mechanics the skill adds. The skill never presents its own mechanics as
+  Graham's view.
+
+### Where Jo overrides Graham
+
+Graham listed type systems as something he would kill or defer. The skill does not follow him
+there: using types is never counted against an ask. Building your own type system when an
+established one exists is a red flag, and that flag is Jo's, not Graham's.
+
+### Your own open-work sources
+
+Open work does not all live in the repo. List the other places on your machine in
+`${XDG_CONFIG_HOME:-$HOME/.config}/ask-graham/sources.md`, one bullet per source with the
+read-only command or path to check:
+
+```markdown
+- **Prior sessions:** `my-history-tool search --limit 5 -- "<the ask>"`
+- **Open work items:** `sqlite3 -readonly ~/work/tracker.db "SELECT id, title FROM items WHERE status='open';"`
+- **Decisions waiting on me:** `~/notes/HELD.md`
+```
+
+The file is optional; without it the skill checks the repo, its issue tracker, and any backlog
+file the project's `AGENTS.md` or `CLAUDE.md` names. Keep it out of version control: it
+describes your machine. Every source in it is read-only to the skill.
 
 ## License
 
