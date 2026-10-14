@@ -9,9 +9,10 @@
       "description": "Type and receipt every statement an agent returns, so a reader can tell what was checked from what was assumed."
     },
     {
-      "name": "communication-rules",
-      "source": "./plugins/communication-rules",
-      "description": "Shape a message around what it needs from its reader — decisions first, one closing ask, no batching by label — and record which of those rules a machine can actually check."
+      "name": "i-have-audhd",
+      "displayName": "I have AuDHD",
+      "source": "./plugins/i-have-audhd",
+      "description": "How to write to someone who is ADHD and autistic: the rules, the research behind each one, and a Stop hook that warns when a message buries what the reader needs."
     },
     {
       "name": "paired-coding",

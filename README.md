@@ -6,22 +6,23 @@ place.
 
 - **[output-types](#output-types)** — label every statement and attach the receipt that earns
   the label.
-- **[communication-rules](#communication-rules)** — put what needs a decision where the reader
-  looks first.
+- **[i-have-audhd](#i-have-audhd)** — how to write to someone who is ADHD and autistic, with the
+  research behind each rule and a Stop hook that warns when a message buries what they need.
 - **[paired-coding](#paired-coding)** — pair with the agent one change set at a time, behind a
   gate that refuses writes you have not agreed to.
 - **[ask-graham](#ask-graham)** — answer "should we build X?" with one engineer's stated
   judgment and a single verdict, when you ask or on every new idea.
 
-The first two deliver text. Neither reads what the agent sends back; see each section's
-*delivers, does not enforce* note. paired-coding is the one that enforces, at the tool boundary,
-within the limits in its *what this enforces, and what it does not* note. ask-graham is a skill
-plus a one-line prompt nudge you can turn off.
+output-types delivers text and does not read what the agent sends back; see its *delivers, does
+not enforce* note. i-have-audhd delivers its rules and checks every finished message, warning by
+default. paired-coding enforces at the tool boundary, within the limits in its *what this
+enforces, and what it does not* note. ask-graham is a skill plus a one-line prompt nudge you can
+turn off.
 
 ```
 /plugin marketplace add thewolff/jo-wolff-plugins
 /plugin install output-types@jo-wolff-plugins
-/plugin install communication-rules@jo-wolff-plugins
+/plugin install i-have-audhd@jo-wolff-plugins
 /plugin install paired-coding@jo-wolff-plugins
 /plugin install ask-graham@jo-wolff-plugins
 ```
@@ -31,15 +32,15 @@ On OMP, from a shell:
 ```
 omp plugin marketplace add thewolff/jo-wolff-plugins
 omp plugin install output-types@jo-wolff-plugins
-omp plugin install communication-rules@jo-wolff-plugins
+omp plugin install i-have-audhd@jo-wolff-plugins
 omp plugin install paired-coding@jo-wolff-plugins
 omp plugin install ask-graham@jo-wolff-plugins
 ```
 
 Inside a running OMP session the commands are `/marketplace add` and `/marketplace install`, with
-the same arguments. `/plugin install` inside OMP installs nothing. On OMP the first two plugins
-deliver their skill only; their hooks do not run there. paired-coding installs its gate as an
-OMP extension, and ask-graham its prompt nudge (see each section).
+the same arguments. `/plugin install` inside OMP installs nothing. On OMP output-types delivers its
+skill only; its hooks do not run there. i-have-audhd and paired-coding install OMP extensions
+that run their hooks, and ask-graham installs its prompt nudge (see each section).
 
 ## output-types
 
@@ -121,92 +122,67 @@ and say so in your own instructions if you want more than the core in force from
 If you want the injection off without uninstalling the plugin, set `OUTPUT_TYPES_INJECT=off` in the
 environment; the hook then emits nothing and the skill still loads on demand.
 
-## communication-rules
+## i-have-audhd
 
-A plugin that shapes a message around what it needs from its reader: anything requiring a
-decision goes above anything merely informative, one closing ask goes last, and items stay with
-the thing they are about instead of being batched into a questions section and a findings
-section.
+How to write to someone who is ADHD and autistic. The two halves pull opposite ways — ADHD wants
+short and new, autism wants complete and exact — and the rules resolve that by ordering, never by
+cutting content: what the reader must know goes first, what they must choose goes last, and every
+reference survives without scrolling.
 
-The problem it addresses: a report is organised for the record, and a message is organised for
-the one person who has to act on it. Agents write the first when they mean the second, so the
-decision ends up on line 80 under three headings of context that the reader never reaches.
+Renamed from `communication-rules` in 1.0.0. Before uninstalling a configured old plugin,
+follow the package README's [upgrade recipe](plugins/i-have-audhd/README.md#upgrading-from-communication-rules):
+the opt-in tool preserves your private profile and disabled state without loader aliases.
+Old logs stay archived; resume markers are not carried forward.
 
 ### Install
 
 ```
 /plugin marketplace add thewolff/jo-wolff-plugins
-/plugin install communication-rules@jo-wolff-plugins
+/plugin install i-have-audhd@jo-wolff-plugins
 ```
 
 #### Install on OMP
 
 ```
 omp plugin marketplace add thewolff/jo-wolff-plugins
-omp plugin install communication-rules@jo-wolff-plugins
+omp plugin install i-have-audhd@jo-wolff-plugins
 ```
 
 Inside a running OMP session, use `/marketplace add thewolff/jo-wolff-plugins` and then
-`/marketplace install communication-rules@jo-wolff-plugins`. `/plugin install` inside OMP installs
+`/marketplace install i-have-audhd@jo-wolff-plugins`. `/plugin install` inside OMP installs
 nothing: it prints the installed-plugin list and returns.
 
-**On OMP only the skill loads.** Tested on OMP 18.4.4: OMP does not run a plugin's
-`hooks/hooks.json`, so neither the session-start hook nor the `Stop` hook fires, and the rules
-and your profile are never injected. The skill is listed and loads on demand. The plugin also
-carries an OMP adapter for the `Stop` hook, `omp/communication-rules-omp.ts`; installing the
-plugin does not register it, and its `omp/REGISTRATION.md` marks it unregistered.
+OMP does not run a plugin's `hooks/hooks.json`. The install registers the plugin's OMP extension,
+`omp/i-have-audhd-omp.ts`, which runs the same two hooks for the main session: the session-start
+injection, and the Stop check. Subagent sessions get neither; OMP has no blocking equivalent of
+Claude Code's `SubagentStop`. `omp/REGISTRATION.md` carries the manual fallback and an isolated
+live probe.
 
 ### What you get
 
-- **Eight rules** covering the shape of a message to a person, delivered before the first turn
-  on Claude Code (on OMP, through the skill only; see *Install on OMP*).
-- **An enforceability verdict for every one of them** — mechanically checkable, model-graded, or
-  unenforceable by construction — because a rule nothing can ever check should be written down as
-  a principle rather than bolded beside one a machine refuses on. Four of the eight say *never*.
-- **One shipped check**, `checks/needs-you-first.mjs`: if a needs-you section exists, is it
-  before the body? It flags misordering and never absence, it is log-only, and it is wired to no
-  hook event. It ships with the false-positive cases as tests — `node --test
-  plugins/communication-rules/checks/*.test.mjs`.
-- **An operator profile** you write on your own machine, so the rules can name a real addressee
-  and adapt to how that person actually reads.
+- **The skill**: eleven rules, each with its reasons and sources in `references/`.
+- **A session-start injection** of the skill's first-turn core — the message skeleton, the
+  options rule, reference survival, commands, and three machinery anchors — plus every rule
+  heading, read out of `skills/i-have-audhd/SKILL.md` between its markers so there is one copy.
+- **A Stop hook** that checks every finished message with nine checks (four deterministic, five
+  judge-gated) and names the skill rule behind each finding.
+- **An optional operator profile** you write on your own machine, so the rules can name a real
+  addressee and adapt to how that person reads. The repository ships only a generic example
+  (`example.i-have-audhd.json`). **Keep your profile out of version control if it describes a
+  real person.**
 
-### It ships with no reader traits, deliberately
+### What this does, and what it does not do: it warns, it does not block
 
-The reader-specific half is the useful half and it is not in this repository. A trait sentence is
-information about a real person; it is attributable to whoever owns the repository it sits in; and
-a pushed commit survives in forks and caches after any later deletion, so genericising the wording
-does not anonymise the author. So this package carries the mechanism and a generic example that
-describes nobody (`example.communication-rules.json`).
+Every check warns by default: findings land in `~/.claude/.i-have-audhd-state/warnings.log` and
+the turn ends normally. A 2026-09-21 corpus adjudication found no check whose false-positive rate
+supports blocking by default, so block is a deliberate profile setting, per check or global; on
+OMP it also needs `enforcement.armOmp: true`. The five judge-gated checks stay inactive until you
+configure a judge command, and each fired trigger is logged to `skipped.log`.
 
-Point it at your own file:
-
-```
-export COMMUNICATION_RULES_PROFILE=~/.claude/communication-rules.json
-```
-
-That path is also the default. If no profile exists, the session-start hook emits the default
-rules plus one line saying no profile is configured — a hook that silently does half its job
-reads exactly like one that works. **Keep your profile out of version control if it describes a
-real person.**
-
-### What this does, and what it does not do: it delivers, it does not enforce
-
-**The session-start hook** emits the eight rules, plus your profile's reader and traits verbatim,
-before the first tool call. It reads that text out of `skills/communication-rules/SKILL.md`
-between the markers, so there is one copy and it cannot drift from the skill.
-
-**The skill** carries the enforceability table, the profile schema, and the shipped check's
-contract, and loads on demand.
-
-**The one check is registered nowhere.** It is a function and a small CLI. It cannot block a turn,
-cannot rewrite one, and exits 0 whether it flags or not. That is a decision rather than an
-omission: a structural check whose false-positive rate is unmeasured on *your* corpus must not be
-able to stop anything, because the cheapest way to satisfy a guard that fires on correct output is
-to stop writing the thing it misreads. Calibrate it against a few hundred of your own messages —
-and hand-adjudicate thirty flags — before you wire it to anything.
-
-If you want the injection off without uninstalling, set `COMMUNICATION_RULES_INJECT=off`; the
-hook then emits nothing and the skill still loads on demand.
+`touch ~/.claude/.i-have-audhd-off` disables the Stop hook within one turn.
+`I_HAVE_AUDHD_INJECT=off` turns the injection off; the skill still loads on demand. The package
+README and `skills/i-have-audhd/reference.md` carry the schema, every check's contract, and the
+measured rates.
 
 ## paired-coding
 

@@ -164,6 +164,9 @@ The session that dispatched a subagent owns the other half of this contract:
   a receipt is authoritative and gets acted on without re-reading the file. A statement without one
   is verified before anything depends on it. **A subagent report with no receipts anywhere is a
   hypothesis, not a source of truth** — send it back or check it directly.
+- **Scope what you ask a subagent to read.** Ask for the specific sections, symbols, or fields
+  needed, and request full file contents only when a targeted excerpt will not do. Scoped input →
+  leaner output → no re-read required.
 
 ### A brief's premises are yours the moment you write them down
 
