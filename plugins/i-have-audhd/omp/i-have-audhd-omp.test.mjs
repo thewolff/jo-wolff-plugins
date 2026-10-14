@@ -6,7 +6,8 @@
 // spawn (node:child_process, the same code the omp host runs): a stand-in core under a temp
 // plugin root reproduces junk stdout and a hang, and the integration tests spawn this
 // checkout's real hooks under a temp HOME. The host-lifecycle tests drive the registered
-// handlers in OMP's event order and assert what the session and the core end up with.
+// handlers in OMP's event order and assert what the session and the core end up with. One
+// lifecycle test runs a real hung judge under the production budgets, so it takes ~20s.
 //
 // Importing the .ts subject directly is itself a test: node v24.13 strips the erasable types
 // and loads the module without Bun.
@@ -453,4 +454,34 @@ test("lifecycle, armed: this plugin's own block is tracked across a provider-id 
   );
   assert.equal(revision, undefined, "the revision after this plugin's block only warns");
   assert.match(readLog(stateDir, "warnings.log"), /rule=needs-you-first/);
+});
+
+test("lifecycle: a hung judge at the production budgets — the stop settles itself before the adapter's kill, keeps its deterministic warning, and reaps the judge", async () => {
+  const pidDir = mkstate();
+  // Every judge job records the pid of a sleep that outlives it, behind a pipe stage that holds
+  // the judge's stdout: the shape of a wrapper whose model call hangs.
+  const judgeCommand = `sh -c 'echo $$ >> "$0"; exec sleep 45' '${join(pidDir, "judges.pid")}' | cat`;
+  const { fire, home, stateDir } = hostSession({ judgeCommand });
+  const stop = event({ session_file: join(home, "absent.jsonl"), last_assistant_message: { content: misordered } });
+
+  const started = Date.now();
+  const out = await fire("session_stop", stop, managedCtx(home, "mgr-hung-judge"));
+  const elapsed = Date.now() - started;
+  const pids = lines(readLog(pidDir, "judges.pid")).map(Number);
+  const gone = await Promise.all(pids.map(isGone));
+  for (const pid of pids) {
+    try {
+      process.kill(pid, "SIGKILL"); // a regression must fail this test, not leave a live sleep
+    } catch {
+      // already gone: the expected case
+    }
+  }
+
+  assert.ok(elapsed < 25_000, `the stop took ${elapsed}ms; the adapter's kill or the host's cutoff decided it`);
+  assert.equal(out, undefined, "no profile mode: the deterministic finding warns");
+  assert.equal(readLog(stateDir, "errors.log"), "", "the core settled itself; the adapter did not fail open");
+  assert.match(readLog(stateDir, "judge-failures.log"), /error=judge-timeout/);
+  assert.match(readLog(stateDir, "warnings.log"), /rule=needs-you-first/, "the deterministic warning survived the hung judge");
+  assert.ok(pids.length > 0, "a judge job ran");
+  assert.ok(gone.every(Boolean), `judge descendants ${pids.join(", ")} outlived the stop`);
 });

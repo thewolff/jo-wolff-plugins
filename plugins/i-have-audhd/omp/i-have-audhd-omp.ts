@@ -70,22 +70,21 @@
 // undefined and leaves one `omp-adapter fail-open: …` line in errors.log. That line is the
 // tally: `grep -c 'omp-adapter fail-open' errors.log`.
 //
-// TIMEOUT: 32s for the stop CLI, owned by spawnHook, which SIGKILLs the CLI's whole process
-// group when it fires. The inject CLI reads two files and judges nothing; it gets 10s. The
-// stop arithmetic, from the core: one stop runs its judge calls in PARALLEL
-// (i-have-audhd-stop.mjs, Promise.all over askJudge), each capped at
-// DEFAULT_TIMEOUT_MS = 30_000 (judge/ask.mjs:49), which SIGKILLs the judge's /bin/sh. Nothing
-// the core reads changes that cap: askJudge takes timeoutMs only as a test option the hook
-// never passes, and the profile has no timeout field. Worst case for a judge that dies with
-// its /bin/sh = 30_000ms + spawn/startup/checks, measured 30_056ms end to end
-// (judgeCommand `sleep 45`); the same overhead without a judge measured 38-60ms. 32s clears
-// that by ~2s, so the adapter never kills a run the core would finish. Two limits it does
-// not fix: (1) a judge whose grandchild survives that SIGKILL (`sleep 45 | cat` measured
-// 45_055ms) holds the core open with no cap of its own; the group kill here is what bounds
-// it, at 32s; (2) OMP abandons any session_stop handler at a fixed 30s
-// (EXTENSION_HANDLER_TIMEOUT_MS, pi-coding-agent extensibility/extensions/runner.ts), so a
-// stop whose judge runs to its 30s cap loses its verdict to the host whatever this value
-// is. Only a core judge-budget knob closes (2); none exists, and this adapter adds none.
+// TIMEOUT: three budgets, nested so each settles inside the next.
+//   - OMP abandons a session_stop handler at 30s (EXTENSION_HANDLER_TIMEOUT_MS,
+//     pi-coding-agent extensibility/extensions/runner.ts) and drops its result.
+//   - This adapter gives the stop CLI 25s, owned by spawnHook, which SIGKILLs the CLI's whole
+//     process group when it fires: a backstop for a core that is stuck, and it still leaves
+//     the fail-open line room to land before the host gives up.
+//   - The core runs its judge calls in parallel (i-have-audhd-stop.mjs, Promise.all over
+//     askJudge). Under the I_HAVE_AUDHD_HARNESS=omp tag this adapter puts on the child, each
+//     judge gets 20s (judge/ask.mjs, THE TIMEOUT), then its process group is reaped. A hung
+//     judge therefore ends as one judge-failures.log line, and the core still emits its
+//     deterministic findings and exits, about 20s after the stop began: inside the adapter's
+//     25s, so the verdict or warning is the core's own, not a kill.
+//   Untagged Claude Code runs keep the judge's 30s. No profile field or env var changes any
+//   of these values.
+// The inject CLI reads two files and judges nothing; it gets 10s.
 //
 // SYNTAX: erasable-types TypeScript only, so node v24.13 strips the types and imports this
 // module without Bun. The spawn is node:child_process, which Bun implements, so the default
@@ -102,7 +101,7 @@ import { fileURLToPath } from "node:url";
 // The plugin root is this module's parent directory (omp/..), so the adapter finds its core
 // wherever the plugin is checked out. I_HAVE_AUDHD_PLUGIN_ROOT still overrides it.
 const DEFAULT_PLUGIN_ROOT = fileURLToPath(new URL("..", import.meta.url));
-const CLI_TIMEOUT_MS = 32_000;
+const CLI_TIMEOUT_MS = 25_000;
 const INJECT_TIMEOUT_MS = 10_000;
 const CONTEXT_MESSAGE_TYPE = "i-have-audhd-session-start";
 
@@ -213,9 +212,10 @@ function appendLog(dir: string, file: string, text: string): void {
 // The spawn, one shape for both hooks: sh -lc, node, payload on stdin, stdout parsed as JSON.
 // A non-zero exit or unparseable stdout REJECTS instead of dissolving into undefined, because
 // this adapter logs every fail-open rather than silently passing. The timeout lives here,
-// next to the child it has to kill. detached puts sh/node and every judge the core spawns in
-// one fresh process group, so one negative-pid SIGKILL reaps them all without touching the
-// host's own group. The harness tag rides both children; only the stop core reads it.
+// next to the child it has to kill. detached puts sh and node in one fresh process group, so
+// one negative-pid SIGKILL reaps them without touching the host's own group; each judge the
+// core spawns leads a group of its own, which the core reaps itself (judge/ask.mjs, CLEANUP).
+// The harness tag rides both children; only the stop core reads it.
 function spawnHook(hook: string, payload: string, cwd: string, timeoutMs: number): Promise<CliOutput | undefined> {
   const root = process.env.I_HAVE_AUDHD_PLUGIN_ROOT ?? DEFAULT_PLUGIN_ROOT;
   const { promise, resolve, reject } = Promise.withResolvers<CliOutput | undefined>();

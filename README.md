@@ -123,9 +123,10 @@ short and new, autism wants complete and exact — and the rules resolve that by
 cutting content: what the reader must know goes first, what they must choose goes last, and every
 reference survives without scrolling.
 
-Renamed from `communication-rules` in 1.0.0. Uninstall that plugin before installing this one;
-its profile, state and kill-switch paths are not carried over (the package README's "Changes"
-lists the new ones).
+Renamed from `communication-rules` in 1.0.0. Before uninstalling a configured old plugin,
+follow the package README's [upgrade recipe](plugins/i-have-audhd/README.md#upgrading-from-communication-rules):
+the opt-in tool preserves your private profile and disabled state without loader aliases.
+Old logs stay archived; resume markers are not carried forward.
 
 ### Install
 

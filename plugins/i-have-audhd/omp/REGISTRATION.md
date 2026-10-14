@@ -19,6 +19,11 @@ That one module does two jobs for the main session (see its header for the event
 - **Stop.** On `session_stop` it spawns `hooks/i-have-audhd-stop.mjs` with
   `I_HAVE_AUDHD_HARNESS=omp` and returns the core's verdict. Every rule warns by default, and
   the core caps any block to warn on OMP unless the profile sets `enforcement.armOmp: true`.
+- **Inside OMP's 30s handler budget.** OMP drops a `session_stop` handler's result after
+  30s. Under the `omp` tag each judge call gets 20s (Claude Code keeps 30s), and the adapter
+  kills a core still running at 25s and logs one `omp-adapter fail-open` line. A hung judge
+  therefore costs a `judge-timeout` line in `judge-failures.log` per judge call; the stop
+  still settles with the core's deterministic findings. Neither value is configurable.
 - **One session id.** Both hooks and the adapter's own-block record use the session
   manager's id (`ctx.sessionManager.getSessionId()`), not the provider id in the
   `session_stop` payload. A fresh-session or context reset rotates the provider id; the
@@ -134,6 +139,16 @@ deterministic rather than dependent on what the model writes:
   `context` handler again finds the custom message, and with no `judgeCommand` configured the
   Stop leaves one `rule=restate-resumed-thread` line in `skipped.log` and no `resume-*` file
   in the state dir: the injector saw a resume and the Stop consumed its marker.
+- **A hung judge settles inside the host's budget.** A third run writes the probe profile
+  `$PROBE_HOME/.claude/i-have-audhd.json` as
+  `{"enforcement": {"judgeCommand": "sh -c 'exec sleep 45' | cat"}}` and reuses the
+  replaced Stop text from the second check (two paragraphs of prose before `## Needs you`,
+  so the deterministic check and the conclusion-first trigger both fire). It passes when the
+  turn settles within 25s of the final message, `warnings.log` gains one
+  `rule=needs-you-first` line, `judge-failures.log` gains a `error=judge-timeout` line,
+  `errors.log` gains no `omp-adapter fail-open` line, the omp log for the run (the logs dir,
+  `omp.<day>.<pid>.log`) carries no `Extension handler timed out` warning for
+  `session_stop`, and `pgrep -f 'sleep 45'` prints nothing once the turn has settled.
 
 Any small model with a credential works; `omp models find <name> --no-extensions --json`
 confirms the selector before the run. Delete the scratch `HOME` when the probe ends: it holds
