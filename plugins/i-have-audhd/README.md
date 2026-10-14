@@ -120,6 +120,55 @@ The full schema, precedence, every check's contract, and the judge machinery are
 `skills/i-have-audhd/reference.md`. **Keep your profile out of version control if it
 describes a real person.**
 
+## Upgrading from communication-rules
+
+1.0.0 reads only its own names; it never looks at the `communication-rules` profile, kill
+switch, state directory or environment variables. If you configured `communication-rules`,
+carry your settings over once, **before** you uninstall it, from the plugin's directory (a
+checkout's `plugins/i-have-audhd`, or wherever your host installed it):
+
+```
+node tools/upgrade-from-communication-rules.mjs           # preview: writes nothing
+node tools/upgrade-from-communication-rules.mjs --apply   # carry over
+node tools/upgrade-from-communication-rules.mjs --undo    # remove what --apply made
+```
+
+Run it in the environment your host gives the hooks: it reads the old profile from
+`$COMMUNICATION_RULES_PROFILE` (else `~/.claude/communication-rules.json`) and writes to the
+path the new loader resolves (`$I_HAVE_AUDHD_PROFILE`, else `~/.claude/i-have-audhd.json`).
+Set `I_HAVE_AUDHD_PROFILE` for the run to choose another target.
+
+| Old | `--apply` does |
+|---|---|
+| `~/.claude/.communication-rules-off` | copied to `~/.claude/.i-have-audhd-off` first, so a disabled Stop hook stays disabled |
+| the profile (`reader`, `traits`, `enforcement`) | copied byte-for-byte to the new path at mode 0600; the copy's file mode, bytes, and the enforcement the new loader derives from it are checked before it is put in place |
+| each file it creates | gets a 0600 receipt beside it (`.i-have-audhd-off.upgrade-receipt`, `.i-have-audhd.json.upgrade-receipt`) recording its path, device, inode, change time, mode, size and SHA-256, never its contents |
+| `~/.claude/.communication-rules-state/` | left where it is as an archive; its logs stay readable there and its resume markers are not carried |
+| `COMMUNICATION_RULES_*` variables | named, with the `I_HAVE_AUDHD_*` replacement; the tool cannot change your shell's or host's environment, so edit wherever they are set and relaunch the host |
+
+The cases:
+
+- **Old file missing:** nothing to carry for that item; an existing new file is left as it is.
+- **Target already exists:** identical bytes count as done, with no receipt, so `--undo` keeps
+  it; different bytes are refused and never overwritten (exit 1). Compare the two by hand.
+- **New name resolves to the old file** (for example `I_HAVE_AUDHD_PROFILE` pointing at it):
+  nothing is copied, and `--undo` keeps it.
+- **Profile does not parse as a JSON object:** refused; fix it and rerun.
+- **Target's directory missing:** refused; the tool creates no directories.
+- **Old variables set:** `COMMUNICATION_RULES_PROFILE`, `_INJECT` and `_ENFORCE` become the
+  same value under `I_HAVE_AUDHD_`. `COMMUNICATION_RULES_PLUGIN_ROOT` points at the retired
+  plugin: unset it, or point `I_HAVE_AUDHD_PLUGIN_ROOT` at this plugin. Unset
+  `COMMUNICATION_RULES_HARNESS`; the OMP adapter sets its own tag.
+
+The originals are never modified, moved or deleted, and nothing is migrated automatically.
+The output names paths, file modes, rule ids and each rule's effective mode on Claude Code and
+OMP; it never prints the profile's contents, a parse error (which can quote it), the judge
+command, or an environment value. `--undo` removes a new-name file only when its receipt
+exists and the file is still the one `--apply` created (same inode, change time, mode, size
+and SHA-256), then the receipt, profile first. A file `--apply` did not create, an edited
+file and a replaced one are kept.
+Exit 0 means every item is done or had nothing to do, 1 means one was refused or failed.
+
 ## Changes
 
 ### 1.0.0
@@ -129,10 +178,13 @@ describes a real person.**
   `~/.claude/.i-have-audhd-off`, and the environment variables `I_HAVE_AUDHD_PROFILE`,
   `I_HAVE_AUDHD_INJECT`, `I_HAVE_AUDHD_ENFORCE`, `I_HAVE_AUDHD_HARNESS`,
   `I_HAVE_AUDHD_PLUGIN_ROOT`. Existing logs and resume markers in the old state dir are not
-  migrated.
+  migrated. `tools/upgrade-from-communication-rules.mjs` carries an existing profile and
+  kill switch over on request (see "Upgrading from communication-rules").
 - The skill is now the AuDHD rules (eleven rules, with rationale, comparison and sources
   references). The session-start injection carries its first-turn core and every rule
   heading, introduced by a hook-owned line that names no one.
+- The Needs-you section and closing ask are conditional on a real need or decision.
+  Informational replies need neither; the structural checks enforce order, not ceremony.
 - New deterministic check, `plural-back-reference`: the closing ask leaning on "those",
   "these", "both", "them", "the two" or "either one" with no referent in its own sentence.
   Warn by default.
@@ -141,11 +193,14 @@ describes a real person.**
   injection as well as the Stop check. The injection survives OMP's prompt-preparation
   retries and is sent once per crossing; the resume marker and the loop guard follow the
   session manager's id rather than the rotating provider id.
+- OMP judged stops use a 20-second judge deadline inside the adapter's 25-second budget,
+  below the host's 30-second handler deadline. Claude Code keeps the 30-second judge deadline.
+  Timed-out judge process groups are killed and pipe handles released.
 
 ## Tests
 
 ```
-node --test plugins/i-have-audhd/checks/*.test.mjs plugins/i-have-audhd/triggers/*.test.mjs plugins/i-have-audhd/judge/*.test.mjs plugins/i-have-audhd/hooks/*.test.mjs plugins/i-have-audhd/omp/*.test.mjs
+node --test plugins/i-have-audhd/checks/*.test.mjs plugins/i-have-audhd/triggers/*.test.mjs plugins/i-have-audhd/judge/*.test.mjs plugins/i-have-audhd/hooks/*.test.mjs plugins/i-have-audhd/omp/*.test.mjs plugins/i-have-audhd/tools/*.test.mjs
 ```
 
 Most tests prove what does not flag: a structural check earns its place by what it leaves

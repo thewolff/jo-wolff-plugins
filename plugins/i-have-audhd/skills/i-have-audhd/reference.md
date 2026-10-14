@@ -236,15 +236,22 @@ command. **A vocabulary check, labeled as one** — hence warn by default.
   puts noise in front of the JSON). The LAST JSON object on stdout is the verdict; a
   `{"type":"result","result":"…"}` envelope is unwrapped one level. The verdict must be
   strictly `{"violation": <boolean>, "reason": <string>}`.
-- **Failures** — timeout (30s default), non-zero exit, unparseable output — return
+- **Failures** — timeout, non-zero exit, unparseable output — return
   `{violation: false, error: …}` plus a `judge-failures.log` line. Fail-open, fail-loud-
   in-log. Failures are never cached.
+- **Timeout** — 30s on Claude Code; 20s when the stop core runs under the OMP adapter's
+  `I_HAVE_AUDHD_HARNESS=omp` tag, because OMP drops a `session_stop` handler's result at 30s
+  and the adapter kills the core at 25s. Nothing in the profile changes either value.
+- **Cleanup** — the judge runs in a process group of its own; when it answers, fails, or
+  times out, the whole group is killed and its pipes are released: a pipeline stage or a
+  child still in the group does not outlive the stop, and a process that left the group
+  cannot hold the hook open.
 - **Cache** — `sha256(rule + contextText)` → `state/cache/<hash>.json`, written only on a
   successful verdict. Questions are static per rule; all variable data (marked sections,
   todo lists) rides in `contextText`, so the key covers everything the judge sees.
-- **Suggested command** (probed live 2026-09-21, stdin form): `codex exec --skip-git-repo-check -`.
-  `claude -p` was probed the same day and failed auth (expired OAuth), so it is not
-  suggested.
+- **Example command** (stdin form): `codex exec --skip-git-repo-check -`. Any command that
+  prints the verdict object on stdout and exits 0 inside the timeout works; run the one you
+  configure once by hand, with a short prompt on stdin, before relying on it.
 
 ## Operator profile schema
 

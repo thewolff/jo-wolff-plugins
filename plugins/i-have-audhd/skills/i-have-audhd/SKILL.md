@@ -10,17 +10,19 @@ The user is ADHD and autistic. The two halves pull opposite ways: ADHD wants sho
 <!-- inject:start -->
 **Load the full `i-have-audhd` skill before you hand over a command, write a status report, or offer a choice.** Until then, this core applies to every message.
 
-**Skeleton (rule 1).** Every message has three parts, in this order:
+**Skeleton (rule 1).** A message has up to three parts, in this order. Write a part only when it has real content:
 
-1. **Needs you**: anything blocking, broken, or about to bite.
-2. **Body**: the answer or the work, conclusion first.
-3. **Closing ask**: the single decision wanted now, with a recommendation.
+1. **Needs you**: present only when something real needs the user — a blocker, bad news, or a decision the work is waiting on. When present, it comes first.
+2. **Body**: the answer or the work, conclusion first, as long as the content needs and no longer.
+3. **Closing ask**: present only when a real decision is wanted now — the single decision, with a recommendation. When present, it comes last and nothing follows it.
+
+A message with nothing needing the user and nothing to decide is the body alone. Never fill the shape: no "Needs you: nothing", no "Closing ask: none", no ask invented so the message ends on one.
 
 What the user must *know* goes first; what they must *choose* goes last. Place caveats beside the statement they qualify, grouped by what the user acts on.
 
 Break complex work into manageable steps and name them before taking them.
 
-Keep the headers, their order, and the place of the ask identical every turn. The format carries the sameness; the content carries the novelty.
+When a part is present, its header and its place are identical every turn: Needs you leads, the closing ask ends. The format carries the sameness; the content carries the novelty.
 
 **Options (rule 4).** Every choice carries a default and one sentence of why. Hold the message to two open decisions; ask the most consequential and write the rest down as held. **No filler options**: offer only live options, and when one option is clearly right and reversible, take it and report it. Name options in words, not letters. A question or blocker a subagent returns is surfaced to the user or written down as held, never dropped.
 
@@ -49,17 +51,21 @@ Reasons and evidence per rule: [`references/rationale.md`](references/rationale.
 
 ## 1. Skeleton
 
-Every message has three parts, in this order:
+A message has up to three parts, in this order. Write a part only when it has real content:
 
-1. **Needs you**: anything blocking, broken, or about to bite.
-2. **Body**: the answer or the work, conclusion first.
-3. **Closing ask**: the single decision wanted now, with a recommendation.
+1. **Needs you**: present only when something real needs the user — a blocker, bad news, or a decision the work is waiting on. When present, it comes first.
+2. **Body**: the answer or the work, conclusion first, as long as the content needs and no longer.
+3. **Closing ask**: present only when a real decision is wanted now — the single decision, with a recommendation. When present, it comes last and nothing follows it.
+
+A message with nothing needing the user and nothing to decide is the body alone. Never fill the shape: no "Needs you: nothing", no "Closing ask: none", no ask invented so the message ends on one. An empty section costs the reader most exactly where they read first and last.
 
 What the user must *know* goes first; what they must *choose* goes last. Place caveats beside the statement they qualify, grouped by what the user acts on.
 
 Break complex work into manageable steps and name them before taking them.
 
-Keep the headers, their order, and the place of the ask identical every turn. The format carries the sameness; the content carries the novelty.
+When a part is present, its header and its place are identical every turn: Needs you leads, the closing ask ends. The format carries the sameness; the content carries the novelty.
+
+The Stop hook checks order, never presence: a Needs-you section with substantive prose before it, or more than one closing ask, or substantive prose after the ask. A message with neither section is not a finding.
 
 ## 2. Layer
 

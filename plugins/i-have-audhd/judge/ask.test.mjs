@@ -3,12 +3,14 @@
 // Every judge here is a FAKE: a printf or a tiny node script standing in for the real judge
 // command. The point is to prove the DISPATCH — stdin delivery, placeholder escaping,
 // last-JSON parsing, envelope unwrapping, caching, timeout, failure logging — without paying
-// a model bill or depending on any CLI being logged in.
+// a model bill or depending on any CLI being logged in. The harness-budget test waits on a
+// real 21s judge, because the budget is only proven by a judge that actually outlasts it.
 //
 // Run: node --test 'plugins/i-have-audhd/judge/*.test.mjs'
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { spawn } from "node:child_process";
 import { existsSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -138,6 +140,106 @@ test("a timeout kills the judge, fails open, and logs it", async () => {
   assert.equal(r.violation, false);
   assert.equal(r.error, "judge-timeout");
   assert.match(readLog(state), /rule=conclusion-first error=judge-timeout/);
+});
+
+// true once kill(pid, 0) reports ESRCH; polls up to 2s so the kernel can reap the zombie.
+const isGone = async (pid) => {
+  for (let i = 0; i < 40; i++) {
+    try {
+      process.kill(pid, 0);
+    } catch (err) {
+      if (err.code === "ESRCH") return true;
+      throw err;
+    }
+    await new Promise((r) => setTimeout(r, 50));
+  }
+  return false;
+};
+
+// A regression must fail its test, not leave a live process behind the run.
+const killQuietly = (pids) => {
+  for (const pid of pids) {
+    try {
+      process.kill(pid, "SIGKILL");
+    } catch {
+      // already gone: the expected case
+    }
+  }
+};
+
+const readPid = (path) => Number(readFileSync(path, "utf8").trim());
+
+test("a timeout reaps the judge's whole process group: a pipeline stage and a backgrounded child both die", async () => {
+  const state = mkstate();
+  const bg = join(state, "bg.pid");
+  const stage = join(state, "stage.pid");
+  // `sleep &` holds the judge's stdout; the exec'd sleep is the first stage of a pipeline.
+  const judgeCommand = `sleep 30 & echo $! > '${bg}'; sh -c 'echo $$ > "$0"; exec sleep 30' '${stage}' | cat`;
+  const r = await askJudge("conclusion-first", "q", "msg", { judgeCommand }, { stateDir: state, timeoutMs: 750 });
+  assert.equal(r.error, "judge-timeout");
+  const pids = [readPid(bg), readPid(stage)];
+  const gone = await Promise.all(pids.map(isGone));
+  killQuietly(pids);
+  assert.deepEqual(gone, [true, true], `descendants ${pids.join(", ")} outlived the timeout`);
+});
+
+// askJudge in its own node process under `env`: the stop core's shape, a process that must exit
+// once its judges settle. Resolves with the result and the wall time until that process exited.
+const ASK = new URL("./ask.mjs", import.meta.url).href;
+const askInChild = (env, judgeCommand, extraOptions = "") =>
+  new Promise((resolve, reject) => {
+    const state = mkstate();
+    const script =
+      `import { askJudge } from ${JSON.stringify(ASK)};\n` +
+      `const r = await askJudge("conclusion-first", "q", "msg", { judgeCommand: ${JSON.stringify(judgeCommand)} },` +
+      ` { stateDir: ${JSON.stringify(state)}${extraOptions} });\n` +
+      `process.stdout.write(JSON.stringify(r));`;
+    const started = Date.now();
+    const child = spawn(process.execPath, ["--input-type=module", "-e", script], { env, stdio: ["ignore", "pipe", "inherit"] });
+    let out = "";
+    child.stdout.on("data", (d) => (out += d));
+    child.on("error", reject);
+    child.on("close", () => resolve({ result: JSON.parse(out), exitMs: Date.now() - started, state }));
+  });
+
+const untaggedEnv = () => {
+  const env = { ...process.env };
+  delete env.I_HAVE_AUDHD_HARNESS;
+  return env;
+};
+
+test("a descendant that leaves the judge's group cannot hold the caller open after a timeout", async () => {
+  const state = mkstate();
+  const escapedPid = join(state, "escaped.pid");
+  const escape = join(state, "escape.mjs");
+  // A new session of its own (detached), holding the judge's stdout, outliving the script.
+  writeFileSync(
+    escape,
+    `import { spawn } from "node:child_process";\n` +
+      `import { writeFileSync } from "node:fs";\n` +
+      `const c = spawn("sleep", ["30"], { detached: true, stdio: ["ignore", "inherit", "ignore"] });\n` +
+      `writeFileSync(${JSON.stringify(escapedPid)}, String(c.pid));\n` +
+      `c.unref();\n`,
+  );
+  const judgeCommand = `'${process.execPath}' '${escape}'; sleep 30`;
+  const { result, exitMs } = await askInChild(untaggedEnv(), judgeCommand, ", timeoutMs: 1_000");
+  const pid = existsSync(escapedPid) ? readPid(escapedPid) : undefined;
+  if (pid) killQuietly([pid]);
+  assert.ok(pid, "the escaping descendant started");
+  assert.equal(result.error, "judge-timeout");
+  assert.ok(exitMs < 10_000, `the caller exited ${exitMs}ms after start; the escaped sleep held it open`);
+});
+
+test("the harness tag sets the budget: a 21s judge times out under omp and answers untagged", async () => {
+  const slowJudge = `sleep 21; printf '{"violation": true, "reason": "slow but sure"}'`;
+  const [omp, untagged] = await Promise.all([
+    askInChild({ ...untaggedEnv(), I_HAVE_AUDHD_HARNESS: "omp" }, slowJudge),
+    askInChild(untaggedEnv(), slowJudge),
+  ]);
+  assert.equal(omp.result.error, "judge-timeout", "the omp budget cut the judge off");
+  assert.ok(omp.exitMs < 21_000, `the omp caller exited at ${omp.exitMs}ms, after the judge would have answered`);
+  assert.match(readLog(omp.state), /rule=conclusion-first error=judge-timeout/);
+  assert.deepEqual(untagged.result, { violation: true, reason: "slow but sure", cached: false }, "Claude Code's budget still waits for it");
 });
 
 test("a non-zero exit fails open and logs the exit code", async () => {

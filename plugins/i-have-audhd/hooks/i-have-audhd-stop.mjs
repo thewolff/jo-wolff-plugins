@@ -311,8 +311,8 @@ async function main() {
 
   // Judge-gated rules: deterministic trigger first; the judge runs only where a trigger fired
   // AND a judge command is configured. A skipped judge rule leaves a line in skipped.log —
-  // inspectable, never silently dead. Judge jobs run in parallel: the host gives a Stop hook
-  // ~60s and one slow verdict must not serialize into a timeout for the fifth.
+  // inspectable, never silently dead. Judge jobs run in parallel so slow verdicts share
+  // the harness-specific deadline rather than adding their waits together.
   const judgeJobs = [];
 
   // restate-resumed-thread — restate the resumed thread. The injector left a one-shot marker at session start
