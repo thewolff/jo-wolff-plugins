@@ -54,7 +54,8 @@ the nudge.
 
 ## Using it
 
-Ask "should we build X?" or "is it worth building?", or type `/ask-graham <the thing to build>`.
+Ask "should we build X?" or "is it worth building?", or type `/ask-graham <the thing to build>`
+on Claude Code or `/skill:ask-graham <the thing to build>` on OMP.
 
 The skill does not run on a ticket or issue, a bug fix, a task inside an already-decided
 project, or a request to continue existing work.
@@ -65,7 +66,7 @@ Two levels:
 
 | Level | What runs it |
 |---|---|
-| `ask` (default) | `/ask-graham`, or an explicit "should we build this?" |
+| `ask` (default) | `/ask-graham` (`/skill:ask-graham` on OMP), or an explicit "should we build this?" |
 | `every-idea` | the above, plus a one-line nudge added to every message you send |
 
 The level comes from the first of these that exists:
@@ -80,7 +81,8 @@ Each file holds one line, `intensity=ask` or `intensity=every-idea`. Blank lines
 starting with `#` are ignored. A file that exists but names no valid level counts as `ask` and
 stops the search there, so a typo in a file meant to turn the level down cannot turn it up.
 
-To show or change it from a session:
+To show or change it from a session (on OMP, write `/skill:ask-graham` in place of
+`/ask-graham`):
 
 ```
 /ask-graham intensity                    # show the level and which file set it
@@ -88,10 +90,15 @@ To show or change it from a session:
 /ask-graham intensity ask --here         # write .ask-graham at this git repository's root
 ```
 
-That runs `skills/ask-graham/scripts/intensity.mjs`, which you can also call directly with the
-same arguments, plus `--cwd <dir>` to resolve from another directory. `--here` fails outside a
-git repository. The `.ask-graham` it writes is untracked; add it to `.git/info/exclude` if you
-do not want to commit it.
+That runs the script beside the skill, which you can also call directly with the same
+arguments, plus `--cwd <dir>` to resolve from another directory:
+
+```
+node <plugin dir>/skills/ask-graham/scripts/intensity.mjs [every-idea|ask] [--here] [--cwd <dir>]
+```
+
+`--here` fails outside a git repository. The `.ask-graham` it writes is untracked; add it to
+`.git/info/exclude` if you do not want to commit it.
 
 ## The nudge
 
@@ -110,11 +117,12 @@ message is a new idea, so a ticket can still draw a check if the agent misreads 
 - **OMP**: the extension reads the level from the session's working directory on each `input`
   event and queues the line for the next turn (`deliverAs: "nextTurn"`, not displayed). It never
   changes your message, and it skips input that another extension injected. If the setting
-  cannot be read, it adds nothing.
+  cannot be read, it falls back to `ask` silently: unlike Claude Code, nothing tells you.
 
-**To turn the nudge off**, set the level back to `ask`: `/ask-graham intensity ask` for your
-user level, or `--here` for one repository. Check which file wins with `/ask-graham intensity`,
-since a `.ask-graham` above you overrides the user file.
+**To turn the nudge off**, set the level back to `ask`: `/ask-graham intensity ask` (or
+`/skill:ask-graham intensity ask` on OMP) for your user level, or add `--here` for one
+repository. Check which file wins with `/ask-graham intensity`, since a `.ask-graham` above you
+overrides the user file.
 
 ## Your own open-work sources
 
@@ -129,15 +137,27 @@ one bullet per source with the read-only command or path:
 Without it the skill checks the repo, its issue tracker, and any backlog file the project's
 `AGENTS.md` or `CLAUDE.md` names. Keep it out of version control: it describes your machine.
 
-## Uninstall
+## Update and uninstall
+
+Claude Code:
 
 ```
+claude plugin update ask-graham@jo-wolff-plugins
 claude plugin uninstall ask-graham@jo-wolff-plugins
+```
+
+Claude Code needs a restart to apply an update.
+
+OMP:
+
+```
+omp plugin upgrade ask-graham@jo-wolff-plugins
 omp plugin uninstall ask-graham@jo-wolff-plugins
 ```
 
-Uninstalling leaves any `.ask-graham` and `~/.config/ask-graham/` files in place; delete them
-by hand if you want them gone.
+Uninstalling removes the plugin, not your settings. `~/.config/ask-graham/config` (or its
+`XDG_CONFIG_HOME` equivalent), `sources.md` beside it, and every `.ask-graham` file stay where
+they are and apply again if you reinstall. Delete them by hand if you want them gone.
 
 ## Tests
 

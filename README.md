@@ -292,8 +292,9 @@ The package README is [`plugins/ask-graham/README.md`](plugins/ask-graham/README
 /plugin install ask-graham@jo-wolff-plugins
 ```
 
-Then ask "should we build X?", or type `/ask-graham <the thing to build>`. To have it run on
-every new idea as well, see *When it runs* below.
+Then ask "should we build X?", or type `/ask-graham <the thing to build>` on Claude Code or
+`/skill:ask-graham <the thing to build>` on OMP. To have it run on every new idea as well, see
+*When it runs* below.
 
 #### Install on OMP
 
@@ -354,7 +355,7 @@ The level comes from the first of these that exists:
 
 Each file holds one line, `intensity=ask` or `intensity=every-idea`. A file that names neither
 counts as `ask`, so a typo in a file meant to turn the level down cannot turn it up. To change
-it from a session:
+it from a session (on OMP, write `/skill:ask-graham` in place of `/ask-graham`):
 
 ```
 /ask-graham intensity                    # show the level and which file set it
@@ -362,9 +363,11 @@ it from a session:
 /ask-graham intensity ask --here         # override it for this repository
 ```
 
+Without a session, run the script directly with the same arguments:
+`node <plugin dir>/skills/ask-graham/scripts/intensity.mjs [every-idea|ask] [--here]`.
+
 A `.ask-graham` written with `--here` sits untracked in the repository's root. Add it to
-`.git/info/exclude` if you do not want to commit it. The tests run with
-`node --test` from inside `plugins/ask-graham/`.
+`.git/info/exclude` if you do not want to commit it.
 
 ### Where Jo overrides Graham
 
@@ -387,6 +390,11 @@ read-only command or path to check:
 The file is optional; without it the skill checks the repo, its issue tracker, and any backlog
 file the project's `AGENTS.md` or `CLAUDE.md` names. Keep it out of version control: it
 describes your machine. Every source in it is read-only to the skill.
+
+### Developing ask-graham
+
+The tests run with `node --test` from inside `plugins/ask-graham/`. Uninstall, update, and the
+rest of the details are in the package README.
 
 ## License
 
