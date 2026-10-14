@@ -61,6 +61,11 @@ what you could not verify and keep going.
    runtime limit, or framework convention behaves is a CITE-or-test statement. Without a URL fetched
    or a command run this session it is a GUESS, however elementary it feels. This is the rule that
    slips through most, because such statements read as vocabulary rather than as assertions.
+   - **Proper nouns are not vocabulary either.** A name, product, project, show, or reference a
+     person drops into a sentence is an assertion about what that thing *is*, and an unfamiliar one
+     is a GUESS until they say otherwise. Resolve it by asking, not by searching for it — the search
+     assumes the category you already guessed. Treating "who is this?" as a lookup instead of a
+     question is how an agent ends up drafting a memo for a cable call-in show.
 5. **Cheap to check beats correctly labeled.** Before marking something GUESS, ask whether one grep,
    one query, or one fetch would settle it in under a minute. If so, run it. But **a check that
    cannot disconfirm is not a check** — say what a null result would rule out before choosing the
