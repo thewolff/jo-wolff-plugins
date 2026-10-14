@@ -11,12 +11,12 @@ place.
 - **[paired-coding](#paired-coding)** — pair with the agent one change set at a time, behind a
   gate that refuses writes you have not agreed to.
 - **[ask-graham](#ask-graham)** — answer "should we build X?" with one engineer's stated
-  judgment and a single verdict.
+  judgment and a single verdict, when you ask or on every new idea.
 
 The first two deliver text. Neither reads what the agent sends back; see each section's
 *delivers, does not enforce* note. paired-coding is the one that enforces, at the tool boundary,
 within the limits in its *what this enforces, and what it does not* note. ask-graham is a skill
-and nothing else.
+plus a one-line prompt nudge you can turn off.
 
 ```
 /plugin marketplace add thewolff/jo-wolff-plugins
@@ -39,7 +39,7 @@ omp plugin install ask-graham@jo-wolff-plugins
 Inside a running OMP session the commands are `/marketplace add` and `/marketplace install`, with
 the same arguments. `/plugin install` inside OMP installs nothing. On OMP the first two plugins
 deliver their skill only; their hooks do not run there. paired-coding installs its gate as an
-OMP extension, and ask-graham is a skill on both hosts (see each section).
+OMP extension, and ask-graham its prompt nudge (see each section).
 
 ## output-types
 
@@ -314,7 +314,8 @@ the plugin, verbatim, typos included.
 /plugin install ask-graham@jo-wolff-plugins
 ```
 
-Then ask "should we build X?", or type `/ask-graham <the thing to build>`.
+Then ask "should we build X?", or type `/ask-graham <the thing to build>`. To have it run on
+every new idea as well, see *When it runs* below.
 
 #### Install on OMP
 
@@ -327,9 +328,10 @@ Inside a running OMP session, use `/marketplace add thewolff/jo-wolff-plugins` a
 `/marketplace install ask-graham@jo-wolff-plugins`. `/plugin install` inside OMP installs
 nothing: it prints the installed-plugin list and returns.
 
-**The plugin is a skill and nothing else**, so it is the same on both hosts: no hooks, no MCP
-server, no extension. Tested on OMP 18.8.6, `omp plugin install` puts the skill in OMP's plugin
-cache, and the skill loads on demand like any other.
+Tested on OMP 18.8.6, the install lists the skill and registers the prompt nudge as an OMP
+extension (`omp/ask-graham-omp.ts`, declared in the plugin's `package.json`): with the level at
+`every-idea`, the nudge reached the model request ahead of the message, and with a repo file at
+`ask` it did not. A Claude Code install alone does not give OMP the nudge; install on OMP too.
 
 ### What you get
 
@@ -346,6 +348,45 @@ cache, and the skill loads on demand like any other.
 - **Every rule tagged with its source**: *Graham #N* for his words, *Jo* for the author's
   overrides, *Skill* for mechanics the skill adds. The skill never presents its own mechanics as
   Graham's view.
+- **A level you set**, `ask` or `every-idea`, for how eagerly it runs (next section).
+
+### When it runs
+
+Two levels:
+
+- **`ask`**, the default. The skill runs on `/ask-graham` or an explicit "should we build
+  this?" / "is it worth building?". Its description is written so nothing else matches.
+- **`every-idea`**. It also runs whenever you propose a new project, product, feature or tool
+  that does not exist yet. A hook adds one short line to each of your messages telling the agent
+  to run the check if the message is a new idea and to ignore the line otherwise. On Claude Code
+  that is a `UserPromptSubmit` hook; on OMP an extension on the `input` event. At `ask` neither
+  adds anything.
+
+At both levels it does not run on a ticket or issue, a bug fix, a task inside an
+already-decided project, or a request to continue existing work. Deciding which messages are
+new ideas is left to the agent: the hook does not classify anything, so a ticket can still
+draw a check if the agent misreads it.
+
+The level comes from the first of these that exists:
+
+1. the nearest `.ask-graham` in the working directory or any directory above it, so one file
+   at a workspace root covers every repository and worktree under it;
+2. `${XDG_CONFIG_HOME:-$HOME/.config}/ask-graham/config`;
+3. the default, `ask`.
+
+Each file holds one line, `intensity=ask` or `intensity=every-idea`. A file that names neither
+counts as `ask`, so a typo in a file meant to turn the level down cannot turn it up. To change
+it from a session:
+
+```
+/ask-graham intensity                    # show the level and which file set it
+/ask-graham intensity every-idea         # set your level
+/ask-graham intensity ask --here         # override it for this repository
+```
+
+A `.ask-graham` written with `--here` sits untracked in the repository's root. Add it to
+`.git/info/exclude` if you do not want to commit it. The tests run with
+`node --test` from inside `plugins/ask-graham/`.
 
 ### Where Jo overrides Graham
 

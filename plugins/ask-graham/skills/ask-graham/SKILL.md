@@ -1,7 +1,7 @@
 ---
 name: ask-graham
-description: Answers "should we build X?" with Graham's stated judgment (his gate questions, the 2-minute rule, fewer lines wins) and a verdict of do it now, backlog, backlog prioritize now, or don't build. Use when the user asks should we build, is it worth building, or "can we build X" while planning, or types /ask-graham.
-argument-hint: "[the thing to build]"
+description: Answers an explicit "should we build X?" with Graham's stated judgment (his gate questions, the 2-minute rule, fewer lines wins) and a verdict of do it now, backlog, backlog prioritize now, or don't build. Use only when the user asks outright whether something is worth building ("should we build this?", "is it worth building?"), when an ask-graham nudge says a message proposes a new idea, or on /ask-graham. Not for tickets, bug fixes, tasks inside an already-decided project, or continuing existing work.
+argument-hint: "[the thing to build] | intensity [every-idea|ask] [--here]"
 license: MIT
 ---
 
@@ -14,6 +14,32 @@ Every rule carries its source, and the sources stay separate:
 - **Graham #N**: his words. Quote them; never extend them into beliefs he did not state.
 - **Jo**: a rule or override from Jo (the author). Where Jo and Graham disagree, Jo's rule is the one this skill follows.
 - **Skill**: a mechanic this skill adds where Graham said nothing (how to search, which files to read, how to map answers to a verdict). Never present one of these as Graham's view.
+
+## When it runs: intensity
+
+Two levels. **ask** is the default: the skill runs on `/ask-graham` or an explicit "should we build this?" / "is it worth building?". **every-idea** also runs it whenever the user proposes a new project, product, feature, or tool that does not exist yet; a hook adds a one-line nudge to each message, and the agent decides whether the message is a new idea. (Skill)
+
+At both levels it never runs on a ticket or issue, a bug fix, a task inside an already-decided project, or a request to continue existing work. A nudge on such a message is ignored without comment.
+
+The level comes from the first of these that exists:
+
+1. the nearest `.ask-graham` in the working directory or any directory above it (a per-repo override; one at a workspace root covers every repository and worktree under it);
+2. `${XDG_CONFIG_HOME:-$HOME/.config}/ask-graham/config` (the user's level);
+3. the default, `ask`.
+
+Either file holds one line, `intensity=ask` or `intensity=every-idea`. A file that exists but names neither counts as `ask`.
+
+### `/ask-graham intensity`
+
+When the argument starts with `intensity`, change or show the level and do not run the check. Run the script beside this file, from the user's working directory:
+
+```sh
+node <this skill's directory>/scripts/intensity.mjs                         # show the level and where it came from
+node <this skill's directory>/scripts/intensity.mjs every-idea|ask          # set the user level
+node <this skill's directory>/scripts/intensity.mjs every-idea|ask --here   # set the override at this git repository's root
+```
+
+Print its output to the user as it is. If the script cannot be run, write the file yourself in the format above and say which file you wrote. A `.ask-graham` file is in the repo's working tree: tell the user it is untracked, and that adding `.ask-graham` to `.git/info/exclude` keeps it out of commits if they do not want to share it.
 
 ## Standing rules
 
