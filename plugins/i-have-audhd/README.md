@@ -41,6 +41,51 @@ install registers `omp/i-have-audhd-omp.ts` (declared in `package.json` under
 `omp.extensions`), which runs the same two hooks for the main session. The manual-symlink
 fallback and an isolated live probe are in `omp/REGISTRATION.md`.
 
+**OMP installs are per profile.** `omp plugin install` puts the plugin under the active
+profile's directory (the profile named by `OMP_PROFILE`; unset means the default profile).
+Running the install from a plain shell reaches only the default profile. Run it once per
+profile, with `OMP_PROFILE` set to that profile, for every profile that should have it.
+
+**Settings and state are shared, not per profile.** The profile file
+(`~/.claude/i-have-audhd.json`, or `$I_HAVE_AUDHD_PROFILE`), the state directory
+(`~/.claude/.i-have-audhd-state/`) and the kill switch (`~/.claude/.i-have-audhd-off`) are
+resolved from your home directory only (`lib/config.mjs`, `defaultProfilePath`;
+`lib/state.mjs`, `stateDir` and `killSwitchPath`). Every harness and every OMP profile reads
+the same files. For example, `enforcement.armOmp: true` arms blocking in every OMP profile at
+once, and the kill switch turns the Stop hook off everywhere.
+
+### Update
+
+```
+claude plugin update i-have-audhd@jo-wolff-plugins
+omp plugin upgrade i-have-audhd        # once per OMP profile
+```
+
+### Uninstall
+
+```
+claude plugin uninstall i-have-audhd@jo-wolff-plugins
+omp plugin uninstall i-have-audhd      # once per OMP profile
+```
+
+Uninstalling removes the plugin, not your files. `~/.claude/i-have-audhd.json`,
+`~/.claude/.i-have-audhd-state/` (logs and resume markers) and `~/.claude/.i-have-audhd-off`
+stay behind; delete them by hand if you want them gone. Because they are shared, keep them
+while any harness or OMP profile still has the plugin installed.
+
+## Check it's working
+
+1. Confirm the install: `claude plugin list` or `omp plugin list` (in the profile you use)
+   shows `i-have-audhd`.
+2. Finish one turn in a new session, then look in `~/.claude/.i-have-audhd-state/`. A new
+   line in `warnings.log` (a check fired) or `skipped.log` (a judge-gated trigger fired with
+   no `judgeCommand`) proves the Stop hook ran. A clean message can leave no line in either,
+   so try a long reply if nothing appears.
+3. On OMP, count adapter failures:
+   `grep -c 'omp-adapter fail-open' ~/.claude/.i-have-audhd-state/errors.log`. Every adapter
+   failure leaves one such line (`omp/i-have-audhd-omp.ts`, the fail-open contract comment);
+   a count that grows each turn means the adapter is installed but failing.
+
 ## What happens at session start
 
 `hooks/i-have-audhd-inject.mjs` returns `hookSpecificOutput.additionalContext`: one line
@@ -67,17 +112,17 @@ of nothing. To turn the injection off without uninstalling: `I_HAVE_AUDHD_INJECT
 
 `hooks/i-have-audhd-stop.mjs` reads the final assistant message and runs:
 
-| Check | Skill rule | Instrument | Default |
-|---|---|---|---|
-| Needs you first | 1, Skeleton | deterministic | warn |
-| One closing ask, last | 1, Skeleton | deterministic | warn |
-| Do not batch by label | 1, Skeleton | trigger + judge | warn |
-| Conclusion first | 1, Skeleton | trigger + judge | warn |
-| Plural back-reference in the closing ask | 6, References survive without scrolling | deterministic | warn |
-| Restate a resumed thread | 8, Resume by restating content | injector marker + judge | warn |
-| Name the artifact | 11, Machinery anchors | deterministic | warn |
-| Report what you did not do | 11, Machinery anchors | todo trigger + judge | warn |
-| Bad news in the first sentence | 11, Machinery anchors | lexicon gate + judge | warn |
+| Check | Rule id (for `enforcement.rules`) | Skill rule | Instrument | Default |
+|---|---|---|---|---|
+| Needs you first | `needs-you-first` | 1, Skeleton | deterministic | warn |
+| One closing ask, last | `closing-ask-last` | 1, Skeleton | deterministic | warn |
+| Do not batch by label | `do-not-batch-by-label` | 1, Skeleton | trigger + judge | warn |
+| Conclusion first | `conclusion-first` | 1, Skeleton | trigger + judge | warn |
+| Plural back-reference in the closing ask | `plural-back-reference` | 6, References survive without scrolling | deterministic | warn |
+| Restate a resumed thread | `restate-resumed-thread` | 8, Resume by restating content | injector marker + judge | warn |
+| Name the artifact | `name-the-artifact` | 11, Machinery anchors | deterministic | warn |
+| Report what you did not do | `report-what-you-did-not-do` | 11, Machinery anchors | todo trigger + judge | warn |
+| Bad news in the first sentence | `bad-news-first` | 11, Machinery anchors | lexicon gate + judge | warn |
 
 Every finding names its skill rule. At the default, findings land in
 `~/.claude/.i-have-audhd-state/warnings.log` and nothing blocks. The default is measured:
@@ -113,6 +158,17 @@ generic starting point. Every field is optional:
     "rules": { "name-the-artifact": "block" },
     "armOmp": false
   }
+}
+```
+
+The example `judgeCommand`, `codex exec --skip-git-repo-check -`, assumes the Codex CLI is
+installed and signed in; it is an example, not a requirement. To run without a judge, leave
+`judgeCommand` out (or set it to `null`). The four deterministic checks still run; the five
+judge-gated checks stay inactive and each fired trigger is logged to `skipped.log`:
+
+```json
+{
+  "enforcement": { "mode": "warn" }
 }
 ```
 
