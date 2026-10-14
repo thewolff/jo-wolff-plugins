@@ -1,7 +1,8 @@
 # jo-wolff-plugins
 
-Three plugins about working with an agent: what its output is made of, what shape that output
-arrives in, and when it may write code at all.
+Four plugins about working with an agent: what its output is made of, what shape that output
+arrives in, when it may write code at all, and whether the thing is worth building in the first
+place.
 
 - **[output-types](#output-types)** — label every statement and attach the receipt that earns
   the label.
@@ -9,17 +10,21 @@ arrives in, and when it may write code at all.
   research behind each rule and a Stop hook that warns when a message buries what they need.
 - **[paired-coding](#paired-coding)** — pair with the agent one change set at a time, behind a
   gate that refuses writes you have not agreed to.
+- **[ask-graham](#ask-graham)** — answer "should we build X?" with one engineer's stated
+  judgment and a single verdict, when you ask or on every new idea.
 
 output-types delivers text and does not read what the agent sends back; see its *delivers, does
 not enforce* note. i-have-audhd delivers its rules and checks every finished message, warning by
 default. paired-coding enforces at the tool boundary, within the limits in its *what this
-enforces, and what it does not* note.
+enforces, and what it does not* note. ask-graham is a skill plus a one-line prompt nudge you can
+turn off.
 
 ```
 /plugin marketplace add thewolff/jo-wolff-plugins
 /plugin install output-types@jo-wolff-plugins
 /plugin install i-have-audhd@jo-wolff-plugins
 /plugin install paired-coding@jo-wolff-plugins
+/plugin install ask-graham@jo-wolff-plugins
 ```
 
 On OMP, from a shell:
@@ -29,12 +34,13 @@ omp plugin marketplace add thewolff/jo-wolff-plugins
 omp plugin install output-types@jo-wolff-plugins
 omp plugin install i-have-audhd@jo-wolff-plugins
 omp plugin install paired-coding@jo-wolff-plugins
+omp plugin install ask-graham@jo-wolff-plugins
 ```
 
 Inside a running OMP session the commands are `/marketplace add` and `/marketplace install`, with
 the same arguments. `/plugin install` inside OMP installs nothing. On OMP output-types delivers its
 skill only; its hooks do not run there. i-have-audhd and paired-coding install OMP extensions
-that run their hooks (see each section).
+that run their hooks, and ask-graham installs its prompt nudge (see each section).
 
 ## output-types
 
@@ -262,6 +268,123 @@ are not blocked, so a run can ask a process outside the sandbox to write for it.
 only if it writes inside the worktree.
 
 The plugin's own README carries the full list, with the evidence behind each line.
+
+## ask-graham
+
+A skill that answers "should we build X?" the way Graham, a frontend engineer, says he decides:
+five gate questions, a short list of red flags, the 2-minute rule from GTD, and fewer lines wins.
+It ends in exactly one verdict: **do it now**, **backlog**, **backlog, prioritize now**, or
+**don't build**, with a breakdown scaled to the size of the work.
+
+The problem it addresses: an agent asked "can we build X?" hears "build X". It does not stop to
+ask why, whether something already does it, or who will maintain it, so the backlog fills with
+things that were cheap to start and expensive to keep.
+
+Graham agreed to be named and quoted: "100%. Nothing would make me happier." His answers are in
+the plugin, verbatim, typos included.
+
+### Install
+
+```
+/plugin marketplace add thewolff/jo-wolff-plugins
+/plugin install ask-graham@jo-wolff-plugins
+```
+
+Then ask "should we build X?", or type `/ask-graham <the thing to build>`. To have it run on
+every new idea as well, see *When it runs* below.
+
+#### Install on OMP
+
+```
+omp plugin marketplace add thewolff/jo-wolff-plugins
+omp plugin install ask-graham@jo-wolff-plugins
+```
+
+Inside a running OMP session, use `/marketplace add thewolff/jo-wolff-plugins` and then
+`/marketplace install ask-graham@jo-wolff-plugins`. `/plugin install` inside OMP installs
+nothing: it prints the installed-plugin list and returns.
+
+Tested on OMP 18.8.6, the install lists the skill and registers the prompt nudge as an OMP
+extension (`omp/ask-graham-omp.ts`, declared in the plugin's `package.json`): with the level at
+`every-idea`, the nudge reached the model request ahead of the message, and with a repo file at
+`ask` it did not. A Claude Code install alone does not give OMP the nudge; install on OMP too.
+
+### What you get
+
+- **Graham's five gate questions**, answered from evidence (the repo, its issue tracker, its
+  backlog files) rather than put back to you. You are asked only what no tool can settle: who
+  will own it, or which reason matters to you.
+- **A search for what already exists** before anything else, delegated to a subagent when it
+  spans repos.
+- **Graham's red flags** for technical asks: an enum invented for a platform you do not control,
+  a JSON round-trip, JSON built by hand, and a homegrown type system where an established one
+  exists.
+- **One verdict**, then a breakdown only as deep as the work needs: High Level Design, epics,
+  stories, tasks of hours to a few days, each with acceptance criteria and no prescribed code.
+- **Every rule tagged with its source**: *Graham #N* for his words, *Jo* for the author's
+  overrides, *Skill* for mechanics the skill adds. The skill never presents its own mechanics as
+  Graham's view.
+- **A level you set**, `ask` or `every-idea`, for how eagerly it runs (next section).
+
+### When it runs
+
+Two levels:
+
+- **`ask`**, the default. The skill runs on `/ask-graham` or an explicit "should we build
+  this?" / "is it worth building?". Its description is written so nothing else matches.
+- **`every-idea`**. It also runs whenever you propose a new project, product, feature or tool
+  that does not exist yet. A hook adds one short line to each of your messages telling the agent
+  to run the check if the message is a new idea and to ignore the line otherwise. On Claude Code
+  that is a `UserPromptSubmit` hook; on OMP an extension on the `input` event. At `ask` neither
+  adds anything.
+
+At both levels it does not run on a ticket or issue, a bug fix, a task inside an
+already-decided project, or a request to continue existing work. Deciding which messages are
+new ideas is left to the agent: the hook does not classify anything, so a ticket can still
+draw a check if the agent misreads it.
+
+The level comes from the first of these that exists:
+
+1. the nearest `.ask-graham` in the working directory or any directory above it, so one file
+   at a workspace root covers every repository and worktree under it;
+2. `${XDG_CONFIG_HOME:-$HOME/.config}/ask-graham/config`;
+3. the default, `ask`.
+
+Each file holds one line, `intensity=ask` or `intensity=every-idea`. A file that names neither
+counts as `ask`, so a typo in a file meant to turn the level down cannot turn it up. To change
+it from a session:
+
+```
+/ask-graham intensity                    # show the level and which file set it
+/ask-graham intensity every-idea         # set your level
+/ask-graham intensity ask --here         # override it for this repository
+```
+
+A `.ask-graham` written with `--here` sits untracked in the repository's root. Add it to
+`.git/info/exclude` if you do not want to commit it. The tests run with
+`node --test` from inside `plugins/ask-graham/`.
+
+### Where Jo overrides Graham
+
+Graham listed type systems as something he would kill or defer. The skill does not follow him
+there: using types is never counted against an ask. Building your own type system when an
+established one exists is a red flag, and that flag is Jo's, not Graham's.
+
+### Your own open-work sources
+
+Open work does not all live in the repo. List the other places on your machine in
+`${XDG_CONFIG_HOME:-$HOME/.config}/ask-graham/sources.md`, one bullet per source with the
+read-only command or path to check:
+
+```markdown
+- **Prior sessions:** `my-history-tool search --limit 5 -- "<the ask>"`
+- **Open work items:** `sqlite3 -readonly ~/work/tracker.db "SELECT id, title FROM items WHERE status='open';"`
+- **Decisions waiting on me:** `~/notes/HELD.md`
+```
+
+The file is optional; without it the skill checks the repo, its issue tracker, and any backlog
+file the project's `AGENTS.md` or `CLAUDE.md` names. Keep it out of version control: it
+describes your machine. Every source in it is read-only to the skill.
 
 ## License
 

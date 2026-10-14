@@ -1,7 +1,7 @@
 {
   "name": "jo-wolff-plugins",
   "owner": { "name": "Jo Wolff" },
-  "description": "What an agent's output is made of, what shape it arrives in, and when an agent may write code: published for anyone to install.",
+  "description": "What an agent's output is made of, what shape it arrives in, when an agent may write code, and whether a thing is worth building at all: published for anyone to install.",
   "plugins": [
     {
       "name": "output-types",
@@ -18,6 +18,11 @@
       "name": "paired-coding",
       "source": "./plugins/paired-coding",
       "description": "Pair with an agent one change set at a time: it proposes a card naming the decision inside the change, you agree in conversation, and a gate at the tool boundary refuses every write outside the agreed change set. Gate on Claude Code and OMP, on macOS and Linux."
+    },
+    {
+      "name": "ask-graham",
+      "source": "./plugins/ask-graham",
+      "description": "Answer \"should we build X?\" with Graham's stated judgment — his gate questions, the 2-minute rule, fewer lines wins — and one verdict: do it now, backlog, backlog and prioritize now, or don't build."
     }
   ]
 }
