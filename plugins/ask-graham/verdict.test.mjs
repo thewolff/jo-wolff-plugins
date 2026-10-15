@@ -80,6 +80,22 @@ for (const [name, h] of Object.entries(HARNESSES)) {
     }
   });
 
+  test(`${name}: waiting for the comparables answer passes without a verdict`, () => {
+    const { t, opener } = turn(`${ANSWER}\n\nDo you want me to research and see if something comparable exists?`);
+    assert.deepEqual(checkStop({ entries: t.entries }), { pass: "comparables-question", opener });
+  });
+
+  test(`${name}: mentioning the comparables question does not excuse a missing verdict`, () => {
+    for (const reply of [
+      'The question was "Do you want me to research and see if something comparable exists?"',
+      "> Do you want me to research and see if something comparable exists?",
+      "Do you want me to research and see if something comparable exists?\nThe user said no; here is the result.",
+    ]) {
+      const { t } = turn(reply);
+      assert.ok(checkStop({ entries: t.entries }).block, reply);
+    }
+  });
+
   test(`${name}: a skill read and no verdict blocks, naming the four verdicts and the Verdict line`, () => {
     const { t, opener } = turn(ANSWER);
     const r = checkStop({ entries: t.entries });

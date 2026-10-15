@@ -49,7 +49,7 @@ Print its output to the user as it is. If the script cannot be run, write the fi
 
 - **Delegate the search.** When the "does something else already exist?" search spans more than one repo, or needs more than three searches, hand it to a subagent (or a background read) and keep working on the other gate questions while it runs. (Skill)
 - **Using types is never a cost.** Using a type system, types, or typed code is never counted against an ask, flagged, or weighed as complexity. Graham listed "type systems" as something he would kill or defer (Graham #3); Jo disagrees and overrides it: "this skill should NOT be questioning use of a type system". (Jo)
-- **Answer from evidence, not by asking.** The gate questions are the agent's to answer from the repo, the open-work sources in step 2, and the conversation. Put a question to the user only for what no tool can settle: who will own it, or which why matters to them. (Skill)
+- **Answer from evidence, not by asking.** The gate questions are the agent's to answer from the repo, the open-work sources in step 2, and the conversation. Always ask the comparables question in step 2 (Jo), as an explicit exception. Otherwise put a question to the user only for what no tool can settle: who will own it, or which why matters to them. (Skill)
 - **Recommend, then stop arguing.** Once the user has decided ("build it", "park it"), record the decision and do what they said. (Skill)
 
 ## Steps
@@ -62,7 +62,15 @@ Done when: one sentence a stranger could act on.
 
 ### 2. Search for what already exists
 
-Graham's third gate question is "Something else already exists?" (Graham #1). How to answer it is the skill's own (Skill). Check every source below that applies, and record each one as *found*, *nothing found*, or *unreachable*:
+Graham's third gate question is "Something else already exists?" (Graham #1). How to answer it is the skill's own (Skill).
+
+Every run, before any internet search, ask exactly: "Do you want me to research and see if something comparable exists?" Ask at either intensity, on `/ask-graham`, an explicit should-we-build question, or an every-idea nudge. This always-asked question is Jo's rule, not Graham's. Settings invocations still only change or show settings. (Jo)
+
+- **No:** check the local sources below only; do not search the web. Read locally available issue or work records; mark remote-only sources *unreachable* for this run. (Jo)
+- **Yes:** also search the internet for comparable open-source and commercial software: libraries, CLIs, apps, AI skills, plugins, MCP servers, and SaaS where relevant. Before evaluating candidates, read [`references/comparables-criteria.md`](references/comparables-criteria.md). Apply its gates first, rank survivors without a weighted total, and show options with pros, cons, and the measured stats, each dated and sourced. Stars, repo age, forks, and followers are context only, never scored. This method is the skill's, based on the sources in that reference. (Skill)
+- **No answer yet:** ask, then carry on with the local search and other gate questions. Leave web research pending until the user says yes; silence is not consent. If the turn must end while waiting, put the exact question alone on the final line, without quotes or a verdict. The Stop check allows that waiting reply on both harnesses. Resume step 2 when the answer arrives. (Skill)
+
+For the local search, check every source below that applies, and record each one as *found*, *nothing found*, or *unreachable*:
 
 - **The current repo or workspace.** Grep for the feature's nouns and verbs, its likely command or file names, and the existing words and commands nearby. Read any hit you would cite.
 - **Prior sessions**, if the agent has a way to search them. Has someone asked for this, half-built it, or researched it already?
@@ -75,7 +83,7 @@ Graham's third gate question is "Something else already exists?" (Graham #1). Ho
   For each, narrow to the ask's key nouns rather than reading everything.
 - **For an established external tool or library** that does the job (a schema validator, a scheduler, a vendor API's own enum), one check of what the repo already depends on (`package.json`, lockfile) before anything is built by hand.
 
-Done when: every applicable source has one of the three marks, and every *found* names the file, command, issue, work item, or session that overlaps, plus how much it covers (all of the ask, part of it, or a neighbour that would collide with it).
+Done when: the user has answered the comparables question, any approved web research is complete (or marked *unreachable* with its missing evidence), every applicable source has one of the three marks, and every *found* names the file, command, issue, work item, or session that overlaps, plus how much it covers (all of the ask, part of it, or a neighbour that would collide with it).
 
 ### 3. Answer the gate questions
 
@@ -83,7 +91,7 @@ Graham's questions before a yes, in his order (Graham #1):
 
 1. **Why?** A valid why is more than "Its cool". In Graham's words: "personal productivity is fine, profitability is fine. 'Rising Tide' is great." (Graham #2) Name which one applies, with the evidence. If the only why is novelty, that is the no.
 2. **How long lived?** A one-off, something that runs for weeks, or something permanent. Longer-lived means more maintenance to price in.
-3. **Something else already exists?** The step 2 result, in one line.
+3. **Something else already exists?** The local search and Comparables result from step 2, in one line. If research was declined or unreachable, state that limit rather than claiming nothing exists.
 4. **In scope?** Is this the asker's to build, in this repo and this workstream, or does it belong to another repo, team, or owner?
 5. **Who owns it when it's done, or how will it be maintained?** Graham splits this "depending on if corp. or personal work" (Graham #1). Name the owner: the asker personally, a team, an agent, or a scheduled job. "Nobody" is an answer, and it counts against the ask.
 
@@ -146,6 +154,16 @@ The same shape every time. Conclusion first; the reader can stop after the verdi
 - Already exists: <step 2 result, naming the overlap>
 - In scope: <answer>
 - Owner / maintenance: <answer>
+
+**Comparables** (Skill criteria; research choice: Jo)
+<"not researched (user said no)"; or the options table below, using the default columns in references/comparables-criteria.md. If approved research is unreachable, say so and name the missing evidence.>
+
+| Name and link / version or plan | Gate result + confidence | Measured stats (date, source, window) | Pros | Cons |
+|---|---|---|---|---|
+| <survivors, in rank order; keep unknowns visible> | <pass / unknown> | <kind-specific evidence> | <fit> | <limits> |
+| build our own | <same essential requirements, or unknown> | <estimated effort and upkeep, with basis; unknown where unmeasured> | <control / fit> | <cost / maintenance> |
+
+<Disqualified options below the table, each linked with its failed gate and evidence. Say when none meets the requirements. Include the build our own row even when research was declined; it is a local estimate, not a researched alternative.>
 
 **Red flags:** <the flags that fired, each with its source; or "none fired"; or "not a technical ask">
 

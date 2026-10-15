@@ -15,6 +15,10 @@ verdict:
 The breakdown that follows is scaled to the size of the work: none, one task, or High Level
 Design → Epics → Stories → Tasks with acceptance criteria.
 
+Every check asks "Do you want me to research and see if something comparable exists?"
+No keeps the search local; yes adds open-source and commercial options, screened by gates
+then ranked with pros, cons, and dated, sourced stats; stars, age, forks, and followers stay context only.
+
 ## Who Graham is
 
 Graham is a frontend engineer and a friend of Jo Wolff, who wrote the skill. Jo asked him seven
@@ -149,6 +153,10 @@ words alone in a sentence do not count, and neither does any other word after th
 verdicts this skill used before 0.3.0 included. If the line is missing, the stop is blocked once,
 with a reason that names the four verdicts and asks the agent for the line, so the answer gets
 its verdict in the same turn.
+
+A waiting reply may instead end with the exact comparables question alone on its final line,
+without quotes. Both hosts let that stop pass without recording a block; mentioning or quoting
+the question in a completed report does not exempt that report from its verdict.
 
 **To turn the Stop check off**, without uninstalling: `/ask-graham stop-check off` (or
 `/skill:ask-graham stop-check off` on OMP) writes `stop-check=off` to your user file; add

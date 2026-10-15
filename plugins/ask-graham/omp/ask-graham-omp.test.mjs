@@ -201,3 +201,13 @@ test("session_stop fails open on a missing, unreadable or absent session file", 
   }
   assert.equal(f.handlers.session_stop(undefined, f.ctx), undefined);
 });
+
+test("session_stop passes the comparables question from the event or transcript without consuming the block", (t) => {
+  const question = "Do you want me to research and see if something comparable exists?";
+  const f = stopFixture(t);
+  assert.equal(f.stop(said(question)), undefined);
+  f.s.say(question);
+  f.save();
+  assert.equal(f.stop({ last_assistant_message: undefined }), undefined);
+  assert.deepEqual(f.stop(said(ANSWER)), BLOCK);
+});

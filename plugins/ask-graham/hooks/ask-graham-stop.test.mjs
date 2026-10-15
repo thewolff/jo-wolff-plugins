@@ -159,3 +159,14 @@ test("end to end: with a relative XDG_STATE_HOME the record goes under HOME", (t
   assert.equal(JSON.parse(r.stdout).decision, "block");
   assert.ok(existsSync(join(f.base, ".local", "state", "ask-graham", "blocked", SESSION)));
 });
+
+test("end to end: waiting for comparables passes without consuming the turn's block", (t) => {
+  const f = fixture(t, "Do you want me to research and see if something comparable exists?");
+  const r = f.run(f.payload());
+  assert.equal(r.status, 0);
+  assert.equal(r.stdout, "");
+  assert.equal(existsSync(f.record), false);
+  f.cc.say("Finished the check without a verdict.");
+  f.save();
+  assert.deepEqual(JSON.parse(f.run(f.payload()).stdout), { decision: "block", reason: BLOCK_REASON });
+});
