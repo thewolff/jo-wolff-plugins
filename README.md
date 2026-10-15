@@ -1,8 +1,8 @@
 # jo-wolff-plugins
 
-Four plugins about working with an agent: what its output is made of, what shape that output
-arrives in, when it may write code at all, and whether the thing is worth building in the first
-place.
+Five plugins about working with an agent: what its output is made of, what shape that output
+arrives in, when it may write code at all, whether the thing is worth building in the first
+place, and going through your reminders with it.
 
 - **[output-types](#output-types)** — label every statement and attach the receipt that earns
   the label.
@@ -12,6 +12,8 @@ place.
   gate that refuses writes you have not agreed to.
 - **[ask-graham](#ask-graham)** — answer "should we build X?" with one engineer's stated
   judgment and a single verdict, when you ask or on every new idea.
+- **[reminders-review](#reminders-review)** — go through your open Apple Reminders one at a
+  time: the agent answers, confirms before acting, and closes each one only when you say yes.
 
 output-types delivers text and does not read what the agent sends back; see its *delivers, does
 not enforce* note. i-have-audhd delivers its rules and checks every finished message, warning by
@@ -19,6 +21,7 @@ default. paired-coding enforces at the tool boundary, within the limits in its *
 enforces, and what it does not* note. ask-graham is a skill, a one-line prompt nudge you can
 turn off, and a Stop check that blocks once per turn when an answer that read the skill has no
 verdict line, which `/ask-graham stop-check off` turns off.
+reminders-review is a skill only.
 
 ```
 /plugin marketplace add thewolff/jo-wolff-plugins
@@ -26,6 +29,7 @@ verdict line, which `/ask-graham stop-check off` turns off.
 /plugin install i-have-audhd@jo-wolff-plugins
 /plugin install paired-coding@jo-wolff-plugins
 /plugin install ask-graham@jo-wolff-plugins
+/plugin install reminders-review@jo-wolff-plugins
 ```
 
 On OMP, from a shell:
@@ -36,6 +40,7 @@ omp plugin install output-types@jo-wolff-plugins
 omp plugin install i-have-audhd@jo-wolff-plugins
 omp plugin install paired-coding@jo-wolff-plugins
 omp plugin install ask-graham@jo-wolff-plugins
+omp plugin install reminders-review@jo-wolff-plugins
 ```
 
 Inside a running OMP session the commands are `/marketplace add` and `/marketplace install`, with
@@ -438,6 +443,19 @@ describes your machine. Every source in it is read-only to the skill.
 
 The tests run with `node --test` from inside `plugins/ask-graham/`. Uninstall, update, and the
 rest of the details are in the package README.
+
+## reminders-review
+
+Go through the open reminders on your chosen Apple Reminders lists with the agent, one at a time.
+A question gets a ready answer. An instruction gets the agent's reading of it and its plan, and
+nothing happens until you say yes to both. A note gets a suggested next step. Anything unclear
+gets a question. Before moving on, the agent asks "Can I close this one?" and marks the reminder
+complete only on a yes. It never deletes reminders.
+
+Needs macOS and [remindctl](https://github.com/openclaw/remindctl)
+(`brew install steipete/tap/remindctl`). Run `/reminders-review` with list names, or save
+defaults with `/reminders-review lists <name> ...`. Details are in
+`plugins/reminders-review/README.md`.
 
 ## License
 
