@@ -58,8 +58,16 @@ once, and the kill switch turns the Stop hook off everywhere.
 
 ```
 claude plugin update i-have-audhd@jo-wolff-plugins
-omp plugin upgrade i-have-audhd        # once per OMP profile
+omp plugin marketplace update jo-wolff-plugins   # once per OMP profile
+omp plugin upgrade i-have-audhd                  # once per OMP profile
 ```
+
+Refresh the marketplace before upgrading: `omp plugin upgrade` installs the version in OMP's
+cached copy of the marketplace, so without the refresh it reinstalls the version you already
+have. Then relaunch your OMP sessions. Updating Claude Code alone leaves OMP on its older copy,
+because OMP's own install wins over Claude Code's for the same plugin;
+`node scripts/check-omp-install.mjs` from a checkout of this repository reports any plugin whose
+two installs differ.
 
 ### Uninstall
 

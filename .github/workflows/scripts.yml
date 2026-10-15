@@ -1,0 +1,34 @@
+name: scripts
+
+on:
+  push:
+    paths:
+      - "scripts/**"
+      - ".github/workflows/scripts.yml"
+  pull_request:
+    paths:
+      - "scripts/**"
+      - ".github/workflows/scripts.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: node --test (${{ matrix.runner }})
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [ubuntu-24.04, macos-latest]
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 5
+    defaults:
+      run:
+        working-directory: scripts
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+      - name: Tests
+        run: node --test
