@@ -49,8 +49,8 @@ omp plugin install ask-graham@jo-wolff-plugins
 
 On Claude Code the nudge runs from `hooks/hooks.json`. OMP does not run `hooks.json`; the
 install registers `omp/ask-graham-omp.ts` (declared in `package.json` under `omp.extensions`),
-which does the same job on OMP's `input` event. A Claude Code install alone does not give OMP
-the nudge.
+which does the same job on OMP's `before_agent_start` event. A Claude Code install alone does
+not give OMP the nudge.
 
 ## Using it
 
@@ -114,10 +114,11 @@ message is a new idea, so a ticket can still draw a check if the agent misreads 
 - **Claude Code**: a `UserPromptSubmit` hook (`hooks/ask-graham-hook.mjs`) reads the level from
   the prompt's working directory and returns the line as `additionalContext`. It always exits 0.
   If the setting cannot be read, it adds one line saying so and treats the level as `ask`.
-- **OMP**: the extension reads the level from the session's working directory on each `input`
-  event and queues the line for the next turn (`deliverAs: "nextTurn"`, not displayed). It never
-  changes your message, and it skips input that another extension injected. If the setting
-  cannot be read, it falls back to `ask` silently: unlike Claude Code, nothing tells you.
+- **OMP**: the extension reads the level from the session's working directory each time a turn
+  starts (OMP's `before_agent_start` event: once per message you send while the agent is idle,
+  and once per batch of messages you typed while it was working) and adds the line to that
+  turn's request as a hidden message. It never changes your message. If the setting cannot be
+  read, it falls back to `ask` silently: unlike Claude Code, nothing tells you.
 
 **To turn the nudge off**, set the level back to `ask`: `/ask-graham intensity ask` (or
 `/skill:ask-graham intensity ask` on OMP) for your user level, or add `--here` for one

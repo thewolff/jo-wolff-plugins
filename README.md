@@ -338,7 +338,7 @@ Two levels:
 - **`every-idea`**. It also runs whenever you propose a new project, product, feature or tool
   that does not exist yet. A hook adds one short line to each of your messages telling the agent
   to run the check if the message is a new idea and to ignore the line otherwise. On Claude Code
-  that is a `UserPromptSubmit` hook; on OMP an extension on the `input` event. At `ask` neither
+  that is a `UserPromptSubmit` hook; on OMP an extension on the `before_agent_start` event. At `ask` neither
   adds anything.
 
 At both levels it does not run on a ticket or issue, a bug fix, a task inside an

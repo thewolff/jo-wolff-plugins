@@ -227,6 +227,13 @@ Exit 0 means every item is done or had nothing to do, 1 means one was refused or
 
 ## Changes
 
+### 1.0.1
+
+- `report-what-you-did-not-do` now fires in OMP. It read only Claude Code's `TodoWrite`
+  shape and never saw OMP's `todo` tool; it now reads the list from OMP's todo tool result
+  (the state after each op), counts `blocked` and `abandoned` tasks as unfinished, and
+  shows the judge each item's status and phase.
+
 ### 1.0.0
 
 - Renamed from `communication-rules` 0.2.x. No aliases: the profile is now

@@ -203,11 +203,17 @@ command. **A vocabulary check, labeled as one** — hence warn by default.
   minParagraphs})` → `{applicable, proseChars, paragraphs}`. Defaults 400 / 2. Paragraphs
   are prose runs broken by blanks, headings, or fences.
 - **`triggers/todo-unfinished.mjs`** — `lastIncompleteTodos(jsonl)` → `{applicable,
-  incomplete, total}`. Scans backwards for the last tool call whose name mentions `todo`
-  (TodoWrite / todo), extracts items defensively (`content|subject|text|title`,
-  case-insensitive statuses; `completed`/`done` are complete), and **skips on any parse
+  incomplete, total}`. Scans backwards; the first todo-bearing entry decides. Claude Code:
+  a `tool_use` whose name mentions `todo` (TodoWrite / todo), items from `input.todos`.
+  OMP: the `todo` call carries only an op, so the trigger reads its `toolResult`
+  (`toolName` todo), whose `details.phases[].tasks[]` is the full list after the op; a todo
+  call met before its result (result missing) and a result without readable
+  `details.phases` are misses. Items are read defensively (`content|subject|text|title`,
+  case-insensitive statuses); `completed`/`done` are complete, everything else is
+  unfinished, including OMP's `blocked` and `abandoned` (dropped). It **skips on any parse
   miss** — a false "unfinished item" would be a false accusation in a block reason.
-  `todoJudgeContext(text, todos)` appends the marked unfinished list.
+  `todoJudgeContext(text, todos)` appends the unfinished list, each item with its exact
+  status and, for OMP, its phase (`- [abandoned] (Ship) Open PR`).
 - **`triggers/bad-news-lexicon.mjs`** — `badNewsGate(text, {lexicon, minProseChars})` →
   `{applicable, proseChars, hits}`. Lexicon `[failed, failure, error, broke, broken,
   blocker, regression, cannot, can't, rejected, lost, missed, wrong]`, matched at word
