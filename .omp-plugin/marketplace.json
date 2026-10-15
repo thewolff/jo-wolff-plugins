@@ -1,7 +1,7 @@
 {
   "name": "jo-wolff-plugins",
   "owner": { "name": "Jo Wolff" },
-  "description": "What an agent's output is made of, what shape it arrives in, and when an agent may write code: published for anyone to install.",
+  "description": "What an agent's output is made of, what shape it arrives in, when an agent may write code, and whether a thing is worth building at all: published for anyone to install.",
   "plugins": [
     {
       "name": "output-types",
