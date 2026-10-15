@@ -17,12 +17,12 @@ different instrument with a different error profile, not a non-enforcement.
 | `needs-you-first` | 1, Skeleton | Deterministic — `checkNeedsYouFirst` | A needs-you marker exists and substantive prose precedes it | warn |
 | `closing-ask-last` | 1, Skeleton | Deterministic — `checkClosingAskLast` | A closing-ask marker exists; more than one, or substantive prose follows the ask section | warn |
 | `do-not-batch-by-label` | 1, Skeleton (caveats beside what they qualify) | Judge-in-hook — `findTrailingBatchSection` | A trailing labeled section (Uncertainties, Open questions, Questions, Caveats, Notes — configurable) with substance | warn |
-| `conclusion-first` | 1, Skeleton (body, conclusion first) | Judge-in-hook — `conclusionFirstApplicable` | ≥ 400 substantive chars and ≥ 2 substantive paragraphs | warn |
+| `conclusion-first` | 1, Skeleton (body, conclusion first) | Judge-in-hook — `conclusionFirstApplicable` | Per labeled section (the whole message when it has no block labels): ≥ 400 substantive chars; the judge reads the section's opening 20 words | warn |
 | `plural-back-reference` | 6, References survive without scrolling | Deterministic — `checkPluralBackReference` | A closing-ask marker exists and its ask uses *those, these, both, them, the two, either one* with no referent in the same sentence | warn |
 | `restate-resumed-thread` | 8, Resume by restating content | Injector marker + judge | Session source was resume/compact; first substantive message after it | warn |
 | `name-the-artifact` | 11, Machinery anchors | Deterministic — `checkNamesArtifact` | Report-shaped (≥ 400 chars + a report verb) and no artifact token anywhere | warn |
 | `report-what-you-did-not-do` | 11, Machinery anchors | Todo trigger + judge | The transcript's last todo write has items not completed | warn |
-| `bad-news-first` | 11, Machinery anchors | Lexicon gate + judge | ≥ 200 chars and a negative-lexicon word in substantive lines | warn |
+| `bad-news-first` | 11, Machinery anchors | Lexicon gate + judge | Per labeled section (the whole message when it has no block labels): ≥ 200 chars and a negative-lexicon word in substantive lines; the judge reads the section's opening 20 words | warn |
 
 Every warning and block reason names its skill rule, for example
 `Needs you first (i-have-audhd rule 1, Skeleton) — …`, so a finding points at text the
@@ -133,7 +133,9 @@ All four: plain-object results, never throw, options as a second argument, `mark
 supplied by the caller REPLACE the default, and a stdin-or-file CLI that prints one JSON
 object and exits 0. Line semantics are shared (`checks/lines.mjs`): headings are
 navigation; fences, HTML-comment envelopes, blockquotes, and blank/structural lines carry
-nothing; markers are line-anchored and matched after stripping hashes, bullets, emphasis,
+nothing (a comment opened mid-line runs to its `-->`, the text before the `<!--` still
+counting; a fence marker inside a comment is comment text; a `<!--` in inline code is text);
+markers are line-anchored and matched after stripping hashes, bullets, emphasis,
 and a trailing colon — so `## Needs you`, `**Needs you**`, and `Needs you:` are one marker,
 while `Needs you: two things` (content on the marker's own line) is not one.
 
@@ -199,9 +201,30 @@ command. **A vocabulary check, labeled as one** — hence warn by default.
   must be the last heading in the text; bold pseudo-headings (`**Notes**`) count; the
   section must contain prose. `batchJudgeContext(text, section)` marks the section for the
   judge.
-- **`triggers/conclusion-first.mjs`** — `conclusionFirstApplicable(text, {minProseChars,
-  minParagraphs})` → `{applicable, proseChars, paragraphs}`. Defaults 400 / 2. Paragraphs
-  are prose runs broken by blanks, headings, or fences.
+- **`checks/sections.mjs`** — the units `conclusion-first` and `bad-news-first` judge.
+  `splitLabeledSections(text)` → `[{label, line, text}]`. A label line is a prose line
+  (never fenced, commented or quoted) that is exactly one bold label from `PMDW`, `CLAIM`,
+  `CITE`, `GUESS`, `ACTION`, `QUESTION`, optionally with a basis inside the bold
+  (`**GUESS(inference)**`) and a trailing colon; an inline or bulleted bold label is not.
+  No label line → one unit, the whole text, judged as before 1.1.0. Otherwise the text before
+  the first label is a preamble unit and each label line opens a unit running to the next;
+  the label line is dropped from the unit, and a heading, blank or rule run directly above a
+  label belongs to the section that label opens. `openingWords(text, 20)` is a unit's
+  opening window: the first 20 words of its heading and prose lines (markup stripped,
+  crossing line and sentence breaks). The label set and the window size are constants, not
+  profile settings.
+- **Per-section judging** — the Stop hook runs each gate on each unit and sends one judge
+  job per qualifying unit, its `contextText` the unit's text only. The question carries the
+  unit's window (`The reader's first 20 words here are: "…"`) and, for a unit of a labeled
+  message, one framing sentence naming the section (`**CLAIM**, line 12`) and telling the
+  judge to judge it alone; both sit outside the judged message. Each rule yields one finding
+  naming every violating section in line order (`**CLAIM** at line 12 — judge: …`); an
+  unlabeled message keeps the whole-message wording. A judge error on one section fails open
+  for that section only.
+- **`triggers/conclusion-first.mjs`** — `conclusionFirstApplicable(text, {minProseChars})`
+  → `{applicable, proseChars}`. Default 400, per unit. The two-paragraph minimum it carried
+  until 1.1.0 is gone: with "at the start" meaning the first 20 words, a single 400-char
+  paragraph can bury its point at word 40.
 - **`triggers/todo-unfinished.mjs`** — `lastIncompleteTodos(jsonl)` → `{applicable,
   incomplete, total}`. Scans backwards; the first todo snapshot decides. Claude Code:
   a `tool_use` whose name mentions `todo` (TodoWrite / todo), items from `input.todos`.
@@ -220,7 +243,7 @@ command. **A vocabulary check, labeled as one** — hence warn by default.
   accusation in a block reason. `todoJudgeContext(text, todos)` appends the unfinished list,
   each item with its exact status and, for OMP, its phase (`- [abandoned] (Ship) Open PR`).
 - **`triggers/bad-news-lexicon.mjs`** — `badNewsGate(text, {lexicon, minProseChars})` →
-  `{applicable, proseChars, hits}`. Lexicon `[failed, failure, error, broke, broken,
+  `{applicable, proseChars, hits}`, per unit. Lexicon `[failed, failure, error, broke, broken,
   blocker, regression, cannot, can't, rejected, lost, missed, wrong]`, matched at word
   start (so "errors" matches, "terror" does not) over SUBSTANTIVE lines only. Deliberately
   over-inclusive: "fixed the error" trips the gate and is exactly the message the judge
@@ -257,9 +280,10 @@ command. **A vocabulary check, labeled as one** — hence warn by default.
   times out, the whole group is killed and its pipes are released: a pipeline stage or a
   child still in the group does not outlive the stop, and a process that left the group
   cannot hold the hook open.
-- **Cache** — `sha256(rule + contextText)` → `state/cache/<hash>.json`, written only on a
-  successful verdict. Questions are static per rule; all variable data (marked sections,
-  todo lists) rides in `contextText`, so the key covers everything the judge sees.
+- **Cache** — `sha256(prompt)` → `state/cache/<hash>.json`, written only on a successful
+  verdict. The key is the whole prompt (rule, question, message), because the
+  `conclusion-first` and `bad-news-first` questions vary per unit (window and section
+  framing). Same prompt, same verdict, one bill; cache files from before 1.1.0 stop matching.
 - **Example command** (stdin form): `codex exec --skip-git-repo-check -`. Any command that
   prints the verdict object on stdout and exits 0 inside the timeout works; run the one you
   configure once by hand, with a short prompt on stdin, before relying on it.
