@@ -200,7 +200,13 @@ test("Claude Code: a /ask-graham slash command opens the turn; its isMeta skill 
   t.say(ANSWER);
   const turn = currentTurn(t.entries);
   assert.equal(turn.id, opener);
-  assert.deepEqual(skillUse(turn), { read: true, args: "should we build a cache" });
+  assert.deepEqual(skillUse(turn), { read: true, intensityOnly: false });
+
+  // the args are the slash command's: intensity args make the turn intensity-only
+  const u = claudeCode();
+  u.slash("ask-graham", "intensity every-idea");
+  u.say("Intensity is every-idea.");
+  assert.deepEqual(skillUse(currentTurn(u.entries)), { read: true, intensityOnly: true });
 });
 
 test("Claude Code: a Skill call with intensity args passes", () => {
@@ -209,6 +215,40 @@ test("Claude Code: a Skill call with intensity args passes", () => {
   t.skill("ask-graham:ask-graham", "intensity");
   t.say("Intensity is ask.");
   assert.equal(checkStop({ entries: t.entries }).pass, "intensity");
+});
+
+test("Claude Code: /ask-graham intensity then an ordinary or arg-less Skill call blocks", () => {
+  for (const args of ["should we build a cache", undefined]) {
+    const t = claudeCode();
+    const opener = t.slash("ask-graham", "intensity");
+    t.skill("ask-graham:ask-graham", args);
+    t.say(ANSWER);
+    assert.deepEqual(checkStop({ entries: t.entries }), { block: BLOCK_REASON, opener }, String(args));
+  }
+});
+
+test("Claude Code: an ordinary /ask-graham then a Skill call with intensity args blocks", () => {
+  const t = claudeCode();
+  const opener = t.slash("ask-graham", "should we build a cache");
+  t.skill("ask-graham:ask-graham", "intensity");
+  t.say(ANSWER);
+  assert.deepEqual(checkStop({ entries: t.entries }), { block: BLOCK_REASON, opener });
+});
+
+test("Claude Code: /ask-graham intensity then a Read of SKILL.md blocks", () => {
+  const t = claudeCode();
+  const opener = t.slash("ask-graham", "intensity");
+  t.read("/plugins/ask-graham/skills/ask-graham/SKILL.md");
+  t.say(ANSWER);
+  assert.deepEqual(checkStop({ entries: t.entries }), { block: BLOCK_REASON, opener });
+});
+
+test("Claude Code: /ask-graham intensity then a Skill call with intensity args still passes", () => {
+  const t = claudeCode();
+  const opener = t.slash("ask-graham", "intensity");
+  t.skill("ask-graham:ask-graham", "intensity every-idea");
+  t.say("Intensity is every-idea.");
+  assert.deepEqual(checkStop({ entries: t.entries }), { pass: "intensity", opener });
 });
 
 test("Claude Code: a Read of SKILL.md counts, a look-alike path does not", () => {
@@ -269,7 +309,42 @@ test("OMP: a namespaced skill prompt counts; its args come from details or the U
   const u = omp();
   const id = u.skillPrompt("ask-graham", "intensity every-idea");
   delete u.entries.find((e) => e.id === id).details.args;
-  assert.deepEqual(skillUse(currentTurn(u.entries)), { read: true, args: "intensity every-idea" });
+  assert.deepEqual(skillUse(currentTurn(u.entries)), { read: true, intensityOnly: true });
+});
+
+test("OMP: /skill:ask-graham intensity then a read of the skill file blocks", () => {
+  for (const path of ["skill://ask-graham", "/Users/me/.omp/skills/ask-graham/SKILL.md"]) {
+    const t = omp();
+    const opener = t.skillPrompt("ask-graham", "intensity");
+    t.read(path);
+    t.say(ANSWER);
+    assert.deepEqual(checkStop({ entries: t.entries }), { block: BLOCK_REASON, opener }, path);
+  }
+});
+
+// A typed /skill: opens its own turn on OMP, so currentTurn never holds two invocations; the
+// every-use rule is checked on the invocations' entries directly.
+test("OMP: skillUse is intensity-only only when every invocation is an intensity one", () => {
+  for (const [first, second, intensityOnly] of [
+    ["intensity", "should we build a cache", false],
+    ["should we build a cache", "intensity", false],
+    ["intensity", "", false],
+    ["intensity", "intensity every-idea", true],
+  ]) {
+    const t = omp();
+    t.skillPrompt("ask-graham", first);
+    t.skillPrompt("ask-graham", second);
+    assert.deepEqual(skillUse({ entries: t.entries }), { read: true, intensityOnly }, `${first} / ${second}`);
+  }
+});
+
+test("OMP: an ordinary /skill:ask-graham after an intensity one is checked in its own turn", () => {
+  const t = omp();
+  t.skillPrompt("ask-graham", "intensity");
+  t.say("Intensity is ask.");
+  const opener = t.skillPrompt("ask-graham", "should we build a cache");
+  t.say(ANSWER);
+  assert.deepEqual(checkStop({ entries: t.entries }), { block: BLOCK_REASON, opener });
 });
 
 test("OMP: read paths that count and ones that do not", () => {

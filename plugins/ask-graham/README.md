@@ -151,8 +151,10 @@ What counts as reading the skill:
   `/ask-graham/SKILL.md`.
 
 A skill body pasted into an ordinary message does not count. `/ask-graham intensity` (or
-`/skill:ask-graham intensity`) gives no verdict and is not checked; an ordinary check that runs
-the intensity script along the way still is.
+`/skill:ask-graham intensity`) gives no verdict, so an intensity-only turn, one whose every use
+of the skill is an intensity invocation, is not checked. A turn that also invokes the skill
+without intensity args or reads the skill file is checked, and so is an ordinary check that
+runs the intensity script along the way.
 
 Only the current turn is read: the transcript is walked back from its latest entry to the
 message you sent, so a skill read in an earlier turn, or on a branch you rewound away from, does
