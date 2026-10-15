@@ -42,6 +42,19 @@ the same arguments. `/plugin install` inside OMP installs nothing. On OMP output
 skill only; its hooks do not run there. i-have-audhd and paired-coding install OMP extensions
 that run their hooks, and ask-graham installs its prompt nudge (see each section).
 
+To update, update each harness separately. On OMP, refresh the marketplace first, because
+`omp plugin upgrade` installs the version in OMP's cached copy of it:
+
+```
+claude plugin update <plugin>@jo-wolff-plugins
+omp plugin marketplace update jo-wolff-plugins
+omp plugin upgrade <plugin>@jo-wolff-plugins
+```
+
+Then relaunch OMP sessions. OMP's own install wins over Claude Code's for the same plugin, so
+updating Claude Code alone leaves OMP on the older copy. `node scripts/check-omp-install.mjs`
+compares the two installs and prints the commands for any plugin that differs (exit 1).
+
 ## output-types
 
 A plugin that makes an agent label every statement it returns — CLAIM, CITE, GUESS, ACTION,

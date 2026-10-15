@@ -152,9 +152,19 @@ Claude Code needs a restart to apply an update.
 OMP:
 
 ```
+omp plugin marketplace update jo-wolff-plugins
 omp plugin upgrade ask-graham@jo-wolff-plugins
 omp plugin uninstall ask-graham@jo-wolff-plugins
 ```
+
+Refresh the marketplace before upgrading: `omp plugin upgrade` installs the version in OMP's
+cached copy of the marketplace, so without the refresh it reinstalls the version you already
+have. Then relaunch your OMP sessions; a running session keeps the extension it loaded at start.
+
+Updating one harness does not update the other. OMP reads Claude Code's plugin list, but its own
+install wins for the same plugin, so after `claude plugin update` alone OMP keeps running its
+older copy. `node scripts/check-omp-install.mjs` from a checkout of this repository compares the
+two and prints the commands for any plugin that differs.
 
 Uninstalling removes the plugin, not your settings. `~/.config/ask-graham/config` (or its
 `XDG_CONFIG_HOME` equivalent), `sources.md` beside it, and every `.ask-graham` file stay where
