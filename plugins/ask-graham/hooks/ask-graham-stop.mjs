@@ -15,6 +15,9 @@
 // hook's continuation, so a stop that follows another hook's block is still checked. If the
 // record cannot be written, the stop passes rather than block with no way to stop blocking.
 //
+// OFF SWITCH. stop-check=off in the nearest .ask-graham or the user config (intensity.mjs, resolved
+// from the payload's cwd, else the process's) skips the check before the transcript is read.
+//
 // MAIN SESSION ONLY. Subagents end on SubagentStop, which this hook is not registered for.
 //
 // FAIL OPEN. Every path exits 0. Any error (bad stdin, missing or unreadable transcript,
@@ -28,6 +31,7 @@ import { homedir } from "node:os";
 import { dirname, isAbsolute, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { checkStop, parseJsonl } from "../skills/ask-graham/scripts/verdict.mjs";
+import { stopCheckEnabled } from "../skills/ask-graham/scripts/intensity.mjs";
 
 /** The directory holding one once-per-turn record per session. */
 export function blockedDir(env = process.env, home = homedir()) {
@@ -45,6 +49,10 @@ export function handle(input, opts = {}) {
   const transcript = input?.transcript_path;
   if (typeof sessionId !== "string" || !SAFE_ID.test(sessionId)) return null;
   if (typeof transcript !== "string" || transcript === "") return null;
+  const env = opts.env ?? process.env;
+  const home = opts.home ?? homedir();
+  const cwd = typeof input?.cwd === "string" && input.cwd !== "" ? input.cwd : process.cwd();
+  if (!stopCheckEnabled({ cwd, env, home })) return null;
 
   let raw;
   try {
@@ -53,7 +61,7 @@ export function handle(input, opts = {}) {
     return null; // missing or unreadable transcript: fail open
   }
 
-  const record = join(blockedDir(opts.env ?? process.env, opts.home ?? homedir()), sessionId);
+  const record = join(blockedDir(env, home), sessionId);
   let blockedOpener = null;
   try {
     blockedOpener = readFileSync(record, "utf8").trim() || null;

@@ -103,6 +103,26 @@ test("session_stop blocks a turn that read the skill without a verdict", (t) => 
   assert.deepEqual(f.stop(), BLOCK);
 });
 
+test("session_stop with stop-check=off in the user file passes and records no block; on blocks", (t) => {
+  const f = stopFixture(t);
+  const userFile = join(f.xdg, "ask-graham", "config");
+  writeFileSync(userFile, "intensity=every-idea\nstop-check=off\n");
+  assert.equal(f.stop(), undefined);
+  assert.equal(f.stop(), undefined);
+  // Nothing was recorded while off, so turning it back on blocks this same turn.
+  writeFileSync(userFile, "stop-check=on\n");
+  assert.deepEqual(f.stop(), BLOCK);
+});
+
+test("session_stop with stop-check=off in a .ask-graham above the cwd wins over the user file", (t) => {
+  const f = stopFixture(t);
+  writeFileSync(join(f.xdg, "ask-graham", "config"), "stop-check=on\n");
+  writeFileSync(join(f.repo, ".ask-graham"), "intensity=ask\nstop-check=off\n");
+  assert.equal(f.stop(), undefined);
+  writeFileSync(join(f.repo, ".ask-graham"), "intensity=ask\n");
+  assert.deepEqual(f.stop(), BLOCK);
+});
+
 test("session_stop passes each verdict, as text blocks or a string", (t) => {
   const f = stopFixture(t);
   for (const v of ["do it now", "start now", "later", "don't build", "don’t build"]) {

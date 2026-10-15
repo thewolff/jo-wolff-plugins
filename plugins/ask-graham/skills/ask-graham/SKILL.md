@@ -1,7 +1,7 @@
 ---
 name: ask-graham
 description: Answers an explicit "should we build X?" with Graham's stated judgment (his gate questions, the 2-minute rule, fewer lines wins) and a verdict of do it now, start now, later, or don't build. Use only when the user asks outright whether something is worth building ("should we build this?", "is it worth building?"), when an ask-graham nudge says a message proposes a new idea, or on /ask-graham. Not for tickets, bug fixes, tasks inside an already-decided project, or continuing existing work.
-argument-hint: "[the thing to build] | intensity [every-idea|ask] [--here]"
+argument-hint: "[the thing to build] | intensity [every-idea|ask] [--here] | stop-check [on|off] [--here]"
 license: MIT
 ---
 
@@ -27,19 +27,23 @@ The level comes from the first of these that exists:
 2. `${XDG_CONFIG_HOME:-$HOME/.config}/ask-graham/config` (the user's level);
 3. the default, `ask`.
 
-Either file holds one line, `intensity=ask` or `intensity=every-idea`. A file that exists but names neither counts as `ask`.
+Either file holds `intensity=ask` or `intensity=every-idea`, and optionally `stop-check=on` or `stop-check=off` on its own line. Each setting is resolved separately in the order above: a file without a line for one setting falls through to the next file for it. A file that exists but names neither setting counts as `ask` and `on`.
 
-### `/ask-graham intensity`
+`stop-check=off` turns off the Stop check (a turn that read this skill and ended without a `**Verdict:**` line is blocked once); the default is `on`. (Skill)
 
-When the argument starts with `intensity`, change or show the level and do not run the check. Run the script beside this file, from the user's working directory:
+### `/ask-graham intensity` and `/ask-graham stop-check`
+
+When the argument starts with `intensity` or `stop-check`, change or show the settings and do not run the check. Run the script beside this file, from the user's working directory:
 
 ```sh
-node <this skill's directory>/scripts/intensity.mjs                         # show the level and where it came from
-node <this skill's directory>/scripts/intensity.mjs every-idea|ask          # set the user level
-node <this skill's directory>/scripts/intensity.mjs every-idea|ask --here   # set the override at this git repository's root
+node <this skill's directory>/scripts/intensity.mjs                              # show both settings and where each came from
+node <this skill's directory>/scripts/intensity.mjs every-idea|ask               # set the user level
+node <this skill's directory>/scripts/intensity.mjs every-idea|ask --here        # set the level override at this git repository's root
+node <this skill's directory>/scripts/intensity.mjs stop-check on|off            # turn the Stop check on or off for the user
+node <this skill's directory>/scripts/intensity.mjs stop-check on|off --here     # the same, for this git repository only
 ```
 
-Print its output to the user as it is. If the script cannot be run, write the file yourself in the format above and say which file you wrote. A `.ask-graham` file is in the repo's working tree: tell the user it is untracked, and that adding `.ask-graham` to `.git/info/exclude` keeps it out of commits if they do not want to share it.
+Print its output to the user as it is. If the script cannot be run, write the file yourself in the format above, keeping any line for the other setting, and say which file you wrote. A `.ask-graham` file is in the repo's working tree: tell the user it is untracked, and that adding `.ask-graham` to `.git/info/exclude` keeps it out of commits if they do not want to share it.
 
 ## Standing rules
 

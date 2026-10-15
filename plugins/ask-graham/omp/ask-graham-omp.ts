@@ -23,6 +23,9 @@
 // hook). The turn is read from event.session_file; the final text is event.last_assistant_message.
 // OMP fires session_stop only for the main session, never for a subagent.
 //
+// OFF SWITCH: stop-check=off in the nearest .ask-graham or the user config (intensity.mjs,
+// resolved from ctx.cwd) skips the check before the session file is read.
+//
 // ONCE PER TURN, keyed on the turn opener: `blockedOpener` maps the session manager's id (the
 // payload's session_id only when that is unreadable, since the payload carries the provider id,
 // which a context reset rotates) to the opener id of the turn this handler last blocked. A stop in
@@ -40,7 +43,7 @@
 // unit tests without Bun. `pi` is typed structurally; there are no imports from the host.
 
 import { readFileSync } from "node:fs";
-import { NUDGE, resolveIntensity } from "../skills/ask-graham/scripts/intensity.mjs";
+import { NUDGE, resolveIntensity, stopCheckEnabled } from "../skills/ask-graham/scripts/intensity.mjs";
 import { checkStop, parseJsonl } from "../skills/ask-graham/scripts/verdict.mjs";
 
 export type OmpContext = {
@@ -100,8 +103,9 @@ function assistantText(message: unknown): string | undefined {
 	return text || undefined;
 }
 
-function sessionStop(event: StopEvent, ctx: OmpContext): StopResult | undefined {
+function sessionStop(event: StopEvent, ctx: OmpContext, settings: { env: AdapterDeps["env"]; home?: string }): StopResult | undefined {
 	try {
+		if (!stopCheckEnabled({ cwd: ctx.cwd, env: settings.env, home: settings.home })) return undefined;
 		const file = event?.session_file;
 		if (typeof file !== "string" || file === "") return undefined;
 		const key = sessionKey(event, ctx);
@@ -130,5 +134,5 @@ export default function askGrahamOmp(pi: PiLike, deps: AdapterDeps = {}): void {
 		if (level !== "every-idea") return undefined;
 		return { message: { customType: "ask-graham", content: NUDGE, display: false } };
 	});
-	pi.on("session_stop", (event, ctx) => sessionStop(event, ctx));
+	pi.on("session_stop", (event, ctx) => sessionStop(event, ctx, { env, home: deps.home }));
 }

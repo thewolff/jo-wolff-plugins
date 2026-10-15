@@ -7,7 +7,8 @@
 //
 // THE CHECK. A main-session turn that read the ask-graham skill must end in a line
 // `**Verdict:** <one of VERDICTS>`. A turn that did not read the skill, or whose only uses of it
-// were `/ask-graham intensity` invocations, is not checked. The check blocks at most once per
+// were settings invocations (`/ask-graham intensity`, `/ask-graham stop-check`), is not checked.
+// The adapters skip the check entirely when the stop-check setting is off. The check blocks at most once per
 // turn: the caller keeps the opener id of the turn it last blocked and passes it back as
 // `blockedOpener`.
 //
@@ -153,27 +154,28 @@ function userLine(text) {
   return lines.length ? lines[lines.length - 1].slice("User: ".length) : null;
 }
 
-// Invocation args that ask for the intensity subcommand: `intensity`, optionally followed by more.
-const isIntensity = (args) => typeof args === "string" && /^intensity(?:\s|$)/i.test(args.trim());
+// Invocation args that ask for a settings subcommand: `intensity` or `stop-check`, optionally
+// followed by more.
+const isSettings = (args) => typeof args === "string" && /^(?:intensity|stop-check)(?:\s|$)/i.test(args.trim());
 
 /**
- * Whether a turn read the ask-graham skill, and whether every such use was an intensity
+ * Whether a turn read the ask-graham skill, and whether every such use was a settings
  * invocation. Reading counts as: a Claude Code Skill tool call or `/ask-graham` slash command, an
  * OMP user-invoked `/skill:ask-graham`, or a file read (Claude Code Read, OMP read) of the skill.
- * A skill body pasted into an ordinary prompt does not count. Returns `{ read, intensityOnly }`;
- * intensityOnly is true iff read is, and every use was an invocation whose args start with
- * `intensity`. A file read, or an invocation with no args or other args, makes it false.
+ * A skill body pasted into an ordinary prompt does not count. Returns `{ read, settingsOnly }`;
+ * settingsOnly is true iff read is, and every use was an invocation whose args start with
+ * `intensity` or `stop-check`. A file read, or an invocation with no args or other args, makes it false.
  */
 export function skillUse(turn) {
   let read = false;
-  let intensityOnly = true;
+  let settingsOnly = true;
   const invoked = (a) => {
     read = true;
-    if (!isIntensity(a)) intensityOnly = false;
+    if (!isSettings(a)) settingsOnly = false;
   };
   const fileRead = () => {
     read = true;
-    intensityOnly = false;
+    settingsOnly = false;
   };
   for (const e of turn?.entries ?? []) {
     if (e.type === "user" && isOpener(e)) {
@@ -197,7 +199,7 @@ export function skillUse(turn) {
       }
     }
   }
-  return { read, intensityOnly: read && intensityOnly };
+  return { read, settingsOnly: read && settingsOnly };
 }
 
 /**
@@ -234,7 +236,7 @@ export const BLOCK_REASON =
  *
  * Returns `{ block: <reason>, opener }` when the stop must be blocked, which the caller records
  * as its new blockedOpener, or `{ pass: <why>, opener }` otherwise, `why` being one of
- * "no-turn", "no-skill-read", "intensity" (every skill use was an intensity invocation),
+ * "no-turn", "no-skill-read", "settings" (every skill use was a settings invocation),
  * "verdict", "already-blocked". `opener` is the turn opener's id, or null with "no-turn".
  */
 export function checkStop({ entries, text, blockedOpener = null } = {}) {
@@ -243,7 +245,7 @@ export function checkStop({ entries, text, blockedOpener = null } = {}) {
   const opener = turn.id;
   const use = skillUse(turn);
   if (!use.read) return { pass: "no-skill-read", opener };
-  if (use.intensityOnly) return { pass: "intensity", opener };
+  if (use.settingsOnly) return { pass: "settings", opener };
   const finalText = typeof text === "string" && text.trim() ? text : lastAssistantText(turn);
   if (findVerdict(finalText)) return { pass: "verdict", opener };
   if (blockedOpener !== null && blockedOpener === opener) return { pass: "already-blocked", opener };

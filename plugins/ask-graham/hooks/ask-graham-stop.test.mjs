@@ -12,12 +12,15 @@ import { claudeCode } from "../fixtures/transcripts.mjs";
 const HOOK = join(dirname(fileURLToPath(import.meta.url)), "ask-graham-stop.mjs");
 const SESSION = "0b0e6a1c-5d2f-4c1e-9a77-3f0e2c1d9b10";
 
-// A temp HOME and XDG_STATE_HOME, and a transcript of one ask-graham turn ending in `reply`.
+// A temp HOME, XDG_STATE_HOME and XDG_CONFIG_HOME, a working directory with no .ask-graham above it
+// (the temp dir), and a transcript of one ask-graham turn ending in `reply`.
 function fixture(t, reply = "Searched the repo; nothing like it exists.") {
   const base = realpathSync(mkdtempSync(join(tmpdir(), "ask-graham-stop-")));
   t.after(() => rmSync(base, { recursive: true, force: true }));
   const state = join(base, "state");
-  const env = { XDG_STATE_HOME: state };
+  const config = join(base, "config");
+  const env = { XDG_STATE_HOME: state, XDG_CONFIG_HOME: config };
+  const setUser = (text) => { mkdirSync(join(config, "ask-graham"), { recursive: true }); writeFileSync(join(config, "ask-graham", "config"), text); };
   const cc = claudeCode();
   const opener = cc.prompt("should we build a cache?");
   cc.skill("ask-graham:ask-graham", "should we build a cache");
@@ -25,16 +28,41 @@ function fixture(t, reply = "Searched the repo; nothing like it exists.") {
   const transcript = join(base, "transcript.jsonl");
   const save = () => writeFileSync(transcript, cc.jsonl());
   save();
-  const payload = (extra = {}) => ({ hook_event_name: "Stop", session_id: SESSION, transcript_path: transcript, stop_hook_active: false, ...extra });
+  const payload = (extra = {}) => ({ hook_event_name: "Stop", session_id: SESSION, transcript_path: transcript, cwd: base, stop_hook_active: false, ...extra });
   const record = join(state, "ask-graham", "blocked", SESSION);
   const run = (input, envOverride = {}) =>
     spawnSync(process.execPath, [HOOK], {
       input: typeof input === "string" ? input : JSON.stringify(input),
-      env: { ...process.env, HOME: base, XDG_STATE_HOME: state, ...envOverride },
+      env: { ...process.env, HOME: base, XDG_STATE_HOME: state, XDG_CONFIG_HOME: config, ...envOverride },
       encoding: "utf8",
     });
-  return { base, state, env, cc, opener, transcript, save, payload, record, run };
+  return { base, state, env, cc, opener, transcript, save, payload, record, run, setUser };
 }
+
+test("stop-check=off in the user file: no block, no record; on or absent blocks", (t) => {
+  const f = fixture(t);
+  f.setUser("intensity=ask\n");
+  assert.equal(f.run(f.payload()).stdout !== "", true);
+  rmSync(f.record);
+  f.setUser("stop-check=off\n");
+  const off = f.run(f.payload());
+  assert.equal(off.status, 0);
+  assert.equal(off.stdout, "");
+  assert.equal(existsSync(f.record), false);
+  f.setUser("stop-check=on\n");
+  assert.deepEqual(JSON.parse(f.run(f.payload()).stdout), { decision: "block", reason: BLOCK_REASON });
+});
+
+test("stop-check=off in a .ask-graham above the payload's cwd wins over the user file", (t) => {
+  const f = fixture(t);
+  f.setUser("stop-check=on\n");
+  const repo = join(f.base, "repo");
+  const sub = join(repo, "src");
+  mkdirSync(sub, { recursive: true });
+  writeFileSync(join(repo, ".ask-graham"), "stop-check=off\n");
+  assert.equal(handle(f.payload({ cwd: sub }), { env: f.env, home: f.base }), null);
+  assert.equal(handle(f.payload(), { env: f.env, home: f.base })?.decision, "block");
+});
 
 test("end to end: a turn that read the skill with no verdict is blocked once, and the block is recorded", (t) => {
   const f = fixture(t);

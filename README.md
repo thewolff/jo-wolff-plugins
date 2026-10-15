@@ -18,7 +18,7 @@ not enforce* note. i-have-audhd delivers its rules and checks every finished mes
 default. paired-coding enforces at the tool boundary, within the limits in its *what this
 enforces, and what it does not* note. ask-graham is a skill, a one-line prompt nudge you can
 turn off, and a Stop check that blocks once per turn when an answer that read the skill has no
-verdict line.
+verdict line, which `/ask-graham stop-check off` turns off.
 
 ```
 /plugin marketplace add thewolff/jo-wolff-plugins
@@ -392,18 +392,22 @@ The level comes from the first of these that exists:
 2. `${XDG_CONFIG_HOME:-$HOME/.config}/ask-graham/config`;
 3. the default, `ask`.
 
-Each file holds one line, `intensity=ask` or `intensity=every-idea`. A file that names neither
-counts as `ask`, so a typo in a file meant to turn the level down cannot turn it up. To change
-it from a session (on OMP, write `/skill:ask-graham` in place of `/ask-graham`):
+Each file holds `intensity=ask` or `intensity=every-idea`. A file that names neither counts as
+`ask`, so a typo in a file meant to turn the level down cannot turn it up. The same files take a
+second line, `stop-check=off`, to turn off the Stop check that blocks once when an answer that
+read the skill has no `**Verdict:**` line (default `on`). To change either from a session (on
+OMP, write `/skill:ask-graham` in place of `/ask-graham`):
 
 ```
-/ask-graham intensity                    # show the level and which file set it
+/ask-graham intensity                    # show both settings and which file set each
 /ask-graham intensity every-idea         # set your level
 /ask-graham intensity ask --here         # override it for this repository
+/ask-graham stop-check off               # turn the Stop check off for you
+/ask-graham stop-check off --here        # turn it off for this repository only
 ```
 
 Without a session, run the script directly with the same arguments:
-`node <plugin dir>/skills/ask-graham/scripts/intensity.mjs [every-idea|ask] [--here]`.
+`node <plugin dir>/skills/ask-graham/scripts/intensity.mjs [every-idea|ask | stop-check on|off] [--here]`.
 
 A `.ask-graham` written with `--here` sits untracked in the repository's root. Add it to
 `.git/info/exclude` if you do not want to commit it.
