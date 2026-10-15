@@ -354,6 +354,27 @@ test("integration: I_HAVE_AUDHD_INJECT=off delivers nothing and logs nothing", a
   assert.equal(readLog(stateDir, "errors.log"), "");
 });
 
+test("integration: with no judge chosen, the first main session shows the setup notice once as a UI warning", async () => {
+  const { run } = realInject();
+  const notices = [];
+  const ctx = startCtx({ hasUI: true, ui: { notify: (message, type) => notices.push({ message, type }) } });
+  const context = await run("startup", ctx);
+  assert.equal(notices.length, 1);
+  assert.equal(notices[0].type, "warning");
+  assert.match(notices[0].message, /no judge is configured, so 5 of its 9 checks are off/);
+  assert.ok(notices[0].message.includes(join(PLUGIN_ROOT, "tools", "setup.mjs")));
+  assert.ok(context.includes(notices[0].message), "the agent gets the same text");
+  await run("startup", ctx);
+  assert.equal(notices.length, 1, "shown once");
+});
+
+test("integration: a subagent session never shows the setup notice", async () => {
+  const { run } = realInject();
+  const notices = [];
+  await run("startup", startCtx({ agent: { kind: "sub" }, hasUI: true, ui: { notify: (m) => notices.push(m) } }));
+  assert.deepEqual(notices, []);
+});
+
 // ─── host lifecycle: what the session and the core end up with ─────────────────────────
 
 // One OMP session: the adapter's registered handlers, fired in the host's event order, with

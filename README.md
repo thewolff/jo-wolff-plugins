@@ -149,21 +149,46 @@ Old logs stay archived; resume markers are not carried forward.
 
 ### Install
 
-```
-/plugin marketplace add thewolff/jo-wolff-plugins
-/plugin install i-have-audhd@jo-wolff-plugins
-```
+It needs `node` on your `PATH`: Claude Code runs its hooks as `node <hook>.mjs`, and OMP runs
+them through a login shell (`sh -lc`), so on OMP `node` has to be on a login shell's `PATH`.
+Three steps:
 
-#### Install on OMP
+1. **Add the marketplace and install.** Claude Code:
 
-```
-omp plugin marketplace add thewolff/jo-wolff-plugins
-omp plugin install i-have-audhd@jo-wolff-plugins
-```
+   ```
+   /plugin marketplace add thewolff/jo-wolff-plugins
+   /plugin install i-have-audhd@jo-wolff-plugins
+   ```
 
-Inside a running OMP session, use `/marketplace add thewolff/jo-wolff-plugins` and then
-`/marketplace install i-have-audhd@jo-wolff-plugins`. `/plugin install` inside OMP installs
-nothing: it prints the installed-plugin list and returns.
+   OMP, from a shell (inside a running OMP session the commands are `/marketplace add` and
+   `/marketplace install` with the same arguments; `/plugin install` inside OMP installs
+   nothing):
+
+   ```
+   omp plugin marketplace add thewolff/jo-wolff-plugins
+   omp plugin install i-have-audhd@jo-wolff-plugins
+   ```
+
+2. **Choose a judge.** Five of the nine Stop-hook checks (`do-not-batch-by-label`,
+   `conclusion-first`, `restate-resumed-thread`, `report-what-you-did-not-do`,
+   `bad-news-first`) need a model to read the message, and they stay off until you pick one. In a
+   terminal, run the setup tool from the marketplace copy you just added:
+
+   ```
+   node ~/.claude/plugins/marketplaces/jo-wolff-plugins/plugins/i-have-audhd/tools/setup.mjs
+   ```
+
+   On OMP the same file is at
+   `~/.omp/plugins/cache/marketplaces/jo-wolff-plugins/plugins/i-have-audhd/tools/setup.mjs`.
+   Either copy configures both hosts: they read one profile, `~/.claude/i-have-audhd.json`.
+   The tool checks `node`, lists the judges (the Claude Code CLI, the Codex CLI, OMP, a command
+   you type, or none), makes one test call to the judge you pick, shows the JSON it will write,
+   and writes `enforcement.judgeCommand` only after you type `yes`. Choosing none writes
+   `"judgeCommand": null` and leaves those five checks off. Run it again any time to change the
+   choice.
+
+3. **Start a new session.** If you skipped step 2, the first session shows a one-time notice
+   naming the five checks that are off and the exact setup command.
 
 OMP does not run a plugin's `hooks/hooks.json`. The install registers the plugin's OMP extension,
 `omp/i-have-audhd-omp.ts`, which runs the same two hooks for the main session: the session-start
@@ -190,7 +215,7 @@ Every check warns by default: findings land in `~/.claude/.i-have-audhd-state/wa
 the turn ends normally. A 2026-09-21 corpus adjudication found no check whose false-positive rate
 supports blocking by default, so block is a deliberate profile setting, per check or global; on
 OMP it also needs `enforcement.armOmp: true`. The five judge-gated checks stay inactive until you
-configure a judge command, and each fired trigger is logged to `skipped.log`.
+choose a judge (install step 2), and each fired trigger is logged to `skipped.log`.
 
 `touch ~/.claude/.i-have-audhd-off` disables the Stop hook within one turn.
 `I_HAVE_AUDHD_INJECT=off` turns the injection off; the skill still loads on demand. The package

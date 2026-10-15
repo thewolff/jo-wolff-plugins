@@ -23,19 +23,51 @@ Renamed from `communication-rules` in 1.0.0 (see "Changes").
 
 ## Install
 
-Claude Code:
+It needs `node` on your `PATH`: Claude Code runs the hooks as `node <hook>.mjs`, and OMP runs
+them through a login shell (`sh -lc`), so on OMP `node` has to be on a login shell's `PATH`.
 
-```
-/plugin marketplace add thewolff/jo-wolff-plugins
-/plugin install i-have-audhd@jo-wolff-plugins
-```
+1. **Install.** Claude Code:
 
-OMP:
+   ```
+   /plugin marketplace add thewolff/jo-wolff-plugins
+   /plugin install i-have-audhd@jo-wolff-plugins
+   ```
 
-```
-omp plugin marketplace add thewolff/jo-wolff-plugins
-omp plugin install i-have-audhd@jo-wolff-plugins
-```
+   OMP:
+
+   ```
+   omp plugin marketplace add thewolff/jo-wolff-plugins
+   omp plugin install i-have-audhd@jo-wolff-plugins
+   ```
+
+2. **Choose a judge.** Five of the nine checks (`do-not-batch-by-label`, `conclusion-first`,
+   `restate-resumed-thread`, `report-what-you-did-not-do`, `bad-news-first`) need a model to
+   read the message, and stay off until you choose one. Run the setup tool in a terminal:
+
+   ```
+   node ~/.claude/plugins/marketplaces/jo-wolff-plugins/plugins/i-have-audhd/tools/setup.mjs
+   ```
+
+   The OMP copy is
+   `~/.omp/plugins/cache/marketplaces/jo-wolff-plugins/plugins/i-have-audhd/tools/setup.mjs`;
+   either one configures both hosts, because both read the same profile (below). The tool:
+   - checks that `node` is on `PATH`, and on a login shell's `PATH`;
+   - lists the judges and requires a pick: the Claude Code CLI on Haiku, the Codex CLI, OMP
+     with a model you name, a command you type, or none;
+   - makes one test call to that judge through the Stop hook's own dispatch
+     (`judge/ask.mjs`) and reports a failure, a wrong answer, or a judge slower than OMP's 20s
+     judge budget;
+   - prints the profile path and the full JSON it will write, and writes only after you type
+     `yes`. Every other profile field is kept.
+
+   Choosing none writes `"judgeCommand": null`: the five checks stay off and nothing nags you.
+   Re-running is safe; the same choice again writes nothing. For a scripted install:
+   `node <that path> --judge claude|codex|omp|custom|none [--command <cmd>] [--model <name>] --yes`
+   (`--yes` still refuses a judge whose test call failed).
+
+3. **Start a new session.** If you skipped step 2, the first session start shows a one-time
+   notice (on Claude Code a hook message, on OMP a UI warning) naming the five checks that are
+   off and the exact command to run.
 
 On Claude Code both hooks run from `hooks/hooks.json`. OMP does not run `hooks.json`; the
 install registers `omp/i-have-audhd-omp.ts` (declared in `package.json` under
@@ -175,14 +207,28 @@ generic starting point. Every field is optional:
 }
 ```
 
-The example `judgeCommand`, `codex exec --skip-git-repo-check -`, assumes the Codex CLI is
-installed and signed in; it is an example, not a requirement. To run without a judge, leave
-`judgeCommand` out (or set it to `null`). The four deterministic checks still run; the five
-judge-gated checks stay inactive and each fired trigger is logged to `skipped.log`:
+`tools/setup.mjs` (install step 2) writes `judgeCommand` for you after testing it. You can also
+write it by hand. The example `judgeCommand`, `codex exec --skip-git-repo-check -`, assumes the
+Codex CLI is installed and signed in; it is an example, not a requirement.
+
+**The judge contract** (`judge/ask.mjs`): `judgeCommand` is run by `/bin/sh -c`. If it contains
+`{prompt}`, every occurrence is replaced by the shell-escaped prompt; otherwise the prompt is
+piped to its stdin. It has to exit 0 within 30s (20s under OMP) and print, on stdout, a JSON
+object `{"violation": <boolean>, "reason": "<string>"}`. Banner lines before it are fine; the
+last such object wins, and one `{"result": "<json string>"}` envelope (what
+`claude -p --output-format json` prints) is unwrapped. Anything else is a judge failure: the
+check passes and `judge-failures.log` gets a line. A judge that is itself a Claude Code or OMP
+session should run with `I_HAVE_AUDHD_ENFORCE=off I_HAVE_AUDHD_INJECT=off` in front, so this
+plugin's hooks do not run inside the judge's own session; the setup tool's choices do.
+
+To run without a judge, set `judgeCommand` to `null` (the setup tool's "none"). Left out
+entirely, it means the same to the Stop hook, but the session-start notice treats it as "not
+chosen yet". The four deterministic checks still run; the five judge-gated checks stay
+inactive and each fired trigger is logged to `skipped.log`:
 
 ```json
 {
-  "enforcement": { "mode": "warn" }
+  "enforcement": { "mode": "warn", "judgeCommand": null }
 }
 ```
 
@@ -240,6 +286,17 @@ file and a replaced one are kept.
 Exit 0 means every item is done or had nothing to do, 1 means one was refused or failed.
 
 ## Changes
+
+### 1.3.0
+
+- `tools/setup.mjs`, an install step that makes you choose a judge: it checks `node`, lists the
+  Claude Code CLI, the Codex CLI, OMP, a custom command, or none, test-calls the choice through
+  the Stop hook's own dispatch, previews the profile, and writes
+  `enforcement.judgeCommand` only after a `yes`. See Install, step 2.
+- A one-time session-start notice when no judge has been chosen (`judgeCommand` absent): it
+  names the five checks that are off and the setup command. Claude Code shows it as the hook's
+  `systemMessage`; the OMP adapter shows it as a UI warning. Choosing none (`null`) or any
+  judge stops it; a marker in the state directory keeps it from repeating.
 
 ### 1.2.0
 
