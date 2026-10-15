@@ -203,11 +203,22 @@ command. **A vocabulary check, labeled as one** — hence warn by default.
   minParagraphs})` → `{applicable, proseChars, paragraphs}`. Defaults 400 / 2. Paragraphs
   are prose runs broken by blanks, headings, or fences.
 - **`triggers/todo-unfinished.mjs`** — `lastIncompleteTodos(jsonl)` → `{applicable,
-  incomplete, total}`. Scans backwards for the last tool call whose name mentions `todo`
-  (TodoWrite / todo), extracts items defensively (`content|subject|text|title`,
-  case-insensitive statuses; `completed`/`done` are complete), and **skips on any parse
-  miss** — a false "unfinished item" would be a false accusation in a block reason.
-  `todoJudgeContext(text, todos)` appends the marked unfinished list.
+  incomplete, total}`. Scans backwards; the first todo snapshot decides. Claude Code:
+  a `tool_use` whose name mentions `todo` (TodoWrite / todo), items from `input.todos`.
+  OMP: the state is read exactly the way OMP rehydrates it (`canonicalTodoPhases`). A
+  snapshot is a `custom` `user_todo_edit` entry (written by the eval bridge, `/todo` and the
+  HUD editor) or a `toolResult` with `toolName` exactly `todo` that is not `isError` and whose
+  `details.op` is not `view`; each carries the full list as `phases[].tasks[]`. Error and
+  view results, and entries without a `phases` array, are passed over as OMP passes over them,
+  and their calls do not end the scan; a todo call met before its own result (result
+  missing) is a miss. A snapshot that fails OMP's `isTodoPhase` shape (string phase `name`,
+  `tasks` array, string task `content`, status one of `pending`, `in_progress`, `completed`,
+  `abandoned`, `blocked`) is unreadable, never an `[unknown]` item. Claude items are read
+  defensively (`content|subject|text|title`, case-insensitive statuses); `completed`/`done`
+  are complete, everything else is unfinished, including OMP's `blocked` and `abandoned`
+  (dropped). It **skips on any parse miss** — a false "unfinished item" would be a false
+  accusation in a block reason. `todoJudgeContext(text, todos)` appends the unfinished list,
+  each item with its exact status and, for OMP, its phase (`- [abandoned] (Ship) Open PR`).
 - **`triggers/bad-news-lexicon.mjs`** — `badNewsGate(text, {lexicon, minProseChars})` →
   `{applicable, proseChars, hits}`. Lexicon `[failed, failure, error, broke, broken,
   blocker, regression, cannot, can't, rejected, lost, missed, wrong]`, matched at word

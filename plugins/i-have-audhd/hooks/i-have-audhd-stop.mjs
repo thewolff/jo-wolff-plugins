@@ -351,8 +351,9 @@ async function main() {
   }
 
   // report-what-you-did-not-do — report what you did not do. Needs the transcript: the trigger reads the session's
-  // LAST todo write. OMP payloads that carry only last_assistant_message have no todo data,
-  // and the boundary is documented: with no tracked plan the violation is silence.
+  // LAST todo list (Claude Code's TodoWrite call, or OMP's todo tool result; the OMP adapter passes
+  // its session file as transcript_path). A payload with no transcript has no todo data, and the
+  // boundary is documented: with no tracked plan the violation is silence.
   if (effectiveMode(config, "report-what-you-did-not-do") !== "off" && typeof payload.transcript_path === "string") {
     let transcriptRaw = "";
     try {

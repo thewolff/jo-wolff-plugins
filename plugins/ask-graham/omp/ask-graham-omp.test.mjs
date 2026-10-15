@@ -6,7 +6,9 @@ import { join } from "node:path";
 import askGrahamOmp from "./ask-graham-omp.ts";
 import { NUDGE } from "../skills/ask-graham/scripts/intensity.mjs";
 
-function fixture(t) {
+const EXPECTED = { message: { customType: "ask-graham", content: NUDGE, display: false } };
+
+function fixture(t, env) {
   const base = realpathSync(mkdtempSync(join(tmpdir(), "ask-graham-omp-")));
   t.after(() => rmSync(base, { recursive: true, force: true }));
   const xdg = join(base, "xdg");
@@ -14,49 +16,48 @@ function fixture(t) {
   mkdirSync(join(xdg, "ask-graham"), { recursive: true });
   mkdirSync(join(repo, ".git"), { recursive: true });
   const handlers = {};
-  const sent = [];
-  const pi = {
-    on: (event, h) => { handlers[event] = h; },
-    sendMessage: (message, options) => sent.push({ message, options }),
-  };
-  askGrahamOmp(pi, { env: { XDG_CONFIG_HOME: xdg }, home: base });
-  const input = (source = "interactive") => handlers.input({ text: "what if we built a thing", source }, { cwd: repo });
-  return { xdg, repo, sent, input, handlers };
+  const pi = { on: (event, h) => { handlers[event] = h; } };
+  askGrahamOmp(pi, { env: env ?? { XDG_CONFIG_HOME: xdg }, home: base });
+  const start = () =>
+    handlers.before_agent_start(
+      { type: "before_agent_start", prompt: "what if we built a thing", systemPrompt: [] },
+      { cwd: repo },
+    );
+  return { xdg, repo, start, handlers };
 }
 
-test("registers only an input handler", (t) => {
+test("registers only a before_agent_start handler", (t) => {
   const f = fixture(t);
-  assert.deepEqual(Object.keys(f.handlers), ["input"]);
+  assert.deepEqual(Object.keys(f.handlers), ["before_agent_start"]);
 });
 
-test("at ask nothing is sent", (t) => {
+test("at ask the turn gets no message", (t) => {
   const f = fixture(t);
-  assert.equal(f.input(), undefined);
-  assert.deepEqual(f.sent, []);
+  assert.equal(f.start(), undefined);
 });
 
-test("at every-idea the nudge goes to the turn as hidden context, input untouched", (t) => {
+test("at every-idea the turn gets the nudge as one hidden message, the same on a re-run", (t) => {
   const f = fixture(t);
   writeFileSync(join(f.xdg, "ask-graham", "config"), "intensity=every-idea\n");
-  assert.equal(f.input("interactive"), undefined);
-  assert.equal(f.input("rpc"), undefined);
-  assert.deepEqual(f.sent, [
-    { message: { customType: "ask-graham", content: NUDGE, display: false }, options: { deliverAs: "nextTurn" } },
-    { message: { customType: "ask-graham", content: NUDGE, display: false }, options: { deliverAs: "nextTurn" } },
-  ]);
-});
-
-test("text another extension injected gets no nudge", (t) => {
-  const f = fixture(t);
-  writeFileSync(join(f.xdg, "ask-graham", "config"), "intensity=every-idea\n");
-  f.input("extension");
-  assert.deepEqual(f.sent, []);
+  const first = f.start();
+  assert.deepEqual(first, EXPECTED);
+  // OMP may run the chain more than once for one submission; each run must give the same message.
+  assert.deepEqual(f.start(), first);
 });
 
 test("a repo file at ask wins over a user file at every-idea", (t) => {
   const f = fixture(t);
   writeFileSync(join(f.xdg, "ask-graham", "config"), "intensity=every-idea\n");
   writeFileSync(join(f.repo, ".ask-graham"), "intensity=ask\n");
-  f.input();
-  assert.deepEqual(f.sent, []);
+  assert.equal(f.start(), undefined);
+});
+
+test("a setting that cannot be resolved fails open with no message", (t) => {
+  const env = {
+    get XDG_CONFIG_HOME() {
+      throw new Error("environment unreadable");
+    },
+  };
+  const f = fixture(t, env);
+  assert.equal(f.start(), undefined);
 });

@@ -21,6 +21,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { OMP_TODO_CALL, OMP_TODO_RESULT } from "../triggers/fixtures/omp-todo-fragment.mjs";
 
 const HOOK = fileURLToPath(new URL("./i-have-audhd-stop.mjs", import.meta.url));
 
@@ -532,6 +533,46 @@ test("unfinished todos at the last write dispatch report-what-you-did-not-do and
   const out = parseOut(r.stdout);
   assert.equal(out.decision, "block");
   assert.ok(blockedRules(home, "t1").includes("report-what-you-did-not-do"));
+});
+
+test("a real OMP todo call + result in the session file dispatches report-what-you-did-not-do and blocks", () => {
+  const home = mkhome();
+  // A judge that records the prompt it was given, so the test sees what the trigger handed it.
+  const prompts = join(home, "judge-prompts.log");
+  writeFileSync(
+    fakeJudgePath(home),
+    `import { appendFileSync } from "node:fs";\n` +
+      `let s = "";\nprocess.stdin.setEncoding("utf8");\nprocess.stdin.on("data", (d) => (s += d));\n` +
+      `process.stdin.on("end", () => {\n  appendFileSync(${JSON.stringify(prompts)}, s + "\\n");\n` +
+      `  process.stdout.write(JSON.stringify({ violation: true, reason: "the open items go unreported" }));\n});\n`,
+  );
+  writeFileSync(
+    join(home, ".claude", "i-have-audhd.json"),
+    // armOmp: under the omp tag an unarmed profile caps every block to a warn (harness cap).
+    JSON.stringify({ enforcement: { mode: "block", armOmp: true, judgeCommand: `node ${fakeJudgePath(home)}` } }),
+  );
+  const finalText = body(6);
+  const tp = join(home, "session.jsonl");
+  writeFileSync(
+    tp,
+    [
+      OMP_TODO_CALL,
+      OMP_TODO_RESULT,
+      JSON.stringify({ type: "message", message: { role: "assistant", content: [{ type: "text", text: finalText }] } }),
+    ].join("\n") + "\n",
+  );
+  // The OMP adapter's payload: transcript_path is the session file, the text rides along.
+  const r = runHook(
+    { session_id: "t1omp", transcript_path: tp, stop_hook_active: false, last_assistant_message: finalText },
+    home,
+    { I_HAVE_AUDHD_HARNESS: "omp" },
+  );
+  const out = parseOut(r.stdout);
+  assert.equal(out.decision, "block");
+  assert.ok(blockedRules(home, "t1omp").includes("report-what-you-did-not-do"));
+  const seen = readFileSync(prompts, "utf8");
+  assert.ok(seen.includes("- [in_progress] (Persistence) Persist context-only unfinished work"));
+  assert.ok(seen.includes("- [pending] (Wrap-up) Run and verify wrap-up artifact"));
 });
 
 test("no todo data (OMP last_assistant_message shape) is not applicable and not a skip", () => {
