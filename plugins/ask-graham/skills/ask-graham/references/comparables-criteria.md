@@ -2,6 +2,17 @@
 
 This is the skill's method (Skill), not Graham's judgment. Use it only after the user says yes to internet research in step 2. The gates and ranking order are decision rules derived from the sources below, not a universal quality score.
 
+## Contents
+
+- [Collect evidence](#collect-evidence)
+- [Gates first](#gates-first)
+- [Rank survivors](#rank-survivors)
+- [Context only](#context-only)
+- [Exact measuring commands](#exact-measuring-commands)
+- [Red flags](#red-flags)
+- [Default options tables](#default-options-tables)
+- [Sources](#sources)
+
 ## Collect evidence
 
 1. State the essential workflow, runtime, budget, data needs, owner, and required support. Use the conversation and local evidence; mark missing constraints as assumptions.
@@ -20,6 +31,8 @@ Mark each applicable gate **pass**, **fail**, or **unknown**, with evidence. Rej
 | AI extension overlay (either kind) | Necessary, disclosed permissions and side effects bounded to the task; inspectable pinned code/installer/hooks and remote endpoint; acceptable data destinations and credential handling; no credential theft, concealed execution/persistence, secret exfiltration, authority overrides, or required disabling of protections. [5] |
 
 For the AI overlay, inspect the full selected skill, referenced prompts/scripts, manifests, install hooks, MCP launch configuration, tool schemas, remote downloads, persistence, and update paths. Map reads/writes, shell access, filesystem scope, network destinations, token scopes/audiences, account/tenant, storage, and retention. Check what the host enforces, not just what a description promises. For MCP, examine consent, auth audience validation, token handling, and client/protocol compatibility against [5]. Record digest/commit, endpoint, inspected schema, and review/scan date; recheck changes, including remote schema changes. Propose synthetic-data trials with restricted filesystem/network access and no production secrets; observe writes and egress.
+
+Few stars, recent creation, a solo maintainer, no Scorecard, historical fixed vulnerabilities, a private vendor, quote-based pricing, and shell/network capabilities alone do not disqualify. Name actual failed requirements; unexplored evidence stays unknown.
 
 ## Rank survivors
 
@@ -76,11 +89,7 @@ For downloads, align daily windows across registries before comparing; npm last-
 
 ## Red flags
 
-- Open source: impersonation/malware, missing required license rights, unsupported required runtime, essential workflow failure, applicable severe unmitigated vulnerability, demonstrated absence of required support.
-- Commercial: incompatible terms/data use, unaffordable essential tier, unrecoverable essential data, unmet mandatory budget/SLA/security/support requirement, shutdown without a workable exit.
-- AI extensions: credential theft, unexplained secret access/egress, concealed execution or persistence, authority-override instructions, disabled protections, or permissions/remote updates that cannot be constrained to the authorized task.
-
-Few stars, recent creation, a solo maintainer, no Scorecard, historical fixed vulnerabilities, a private vendor, quote-based pricing, and shell/network capabilities alone do not disqualify. Name actual failed requirements; unexplored evidence stays unknown.
+A red flag is an evidenced failed gate from “Gates first”; name the failed requirement and evidence.
 
 ## Default options tables
 
@@ -92,7 +101,7 @@ Combine related fields into readable cells; put supporting detail in a following
 | Commercial | Candidate/plan + official link; fit/key limitation; gate result + confidence; monthly cost + workload/billing assumptions; export/exit limits; SLA coverage separately from incident-history window; security/data evidence + unknowns; API/support limits; vendor continuity; pros; cons. |
 | AI overlay | Add permissions/hooks, data destinations, pinned artifact/remote endpoint, schema/review/scan date, unresolved injection/exfiltration findings. |
 
-List survivors in rank order with a recommendation; explicitly say when none meets the requirements. Put unknown-gate candidates and disqualified options below, with missing evidence or rejection reason. Always include a **build our own** row evaluated against the same requirements, with effort/upkeep estimates marked as estimates and their basis, never invented stats. The step 3 Already exists answer uses this result and the local search.
+List survivors in rank order with a recommendation; explicitly say when none meets the requirements. Put unknown-gate candidates and disqualified options below, with missing evidence or rejection reason. Include a **build our own** row as a baseline in approved comparisons, evaluated against the same requirements, with effort/upkeep estimates marked as estimates and their basis, never invented stats. The step 3 Already exists answer uses this result and the local search.
 
 ## Sources
 

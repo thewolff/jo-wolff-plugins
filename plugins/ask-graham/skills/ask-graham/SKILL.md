@@ -68,7 +68,7 @@ Every run, before any internet search, ask exactly: "Do you want me to research 
 
 - **No:** check the local sources below only; do not search the web. Read locally available issue or work records; mark remote-only sources *unreachable* for this run. (Jo)
 - **Yes:** also search the internet for comparable open-source and commercial software: libraries, CLIs, apps, AI skills, plugins, MCP servers, and SaaS where relevant. Before evaluating candidates, read [`references/comparables-criteria.md`](references/comparables-criteria.md). Apply its gates first, rank survivors without a weighted total, and show options with pros, cons, and the measured stats, each dated and sourced. Stars, repo age, forks, and followers are context only, never scored. This method is the skill's, based on the sources in that reference. (Skill)
-- **No answer yet:** ask, then carry on with the local search and other gate questions. Leave web research pending until the user says yes; silence is not consent. If the turn must end while waiting, put the exact question alone on the final line, without quotes or a verdict. The Stop check allows that waiting reply on both harnesses. Resume step 2 when the answer arrives. (Skill)
+- **No answer yet:** ask, then carry on with the local search and other gate questions. Leave web research pending until the user says yes; silence is not consent. If the turn must end while waiting, put the exact question alone on the final line, without quotes or a verdict. The Stop check allows that waiting reply on both harnesses. When the answer arrives, reload this skill through the host’s Skill or Read tool, then resume step 2 for the same ask. (Skill)
 
 For the local search, check every source below that applies, and record each one as *found*, *nothing found*, or *unreachable*:
 
@@ -141,7 +141,7 @@ Done when: every task has acceptance criteria a reviewer could check, and no tas
 
 ## Output
 
-The same shape every time. Conclusion first; the reader can stop after the verdict line and still act.
+While the comparables answer is pending, report local findings if useful and end with the exact question from step 2; omit the verdict and closing ask. After the user answers, use the completed-check template below.
 
 ```
 **Verdict:** <one of the four verdicts: do it now, start now, later, don't build>. <one-line why>
@@ -156,14 +156,14 @@ The same shape every time. Conclusion first; the reader can stop after the verdi
 - Owner / maintenance: <answer>
 
 **Comparables** (Skill criteria; research choice: Jo)
-<"not researched (user said no)"; or the options table below, using the default columns in references/comparables-criteria.md. If approved research is unreachable, say so and name the missing evidence.>
+<If research was declined, write "not researched (user said no)" and omit the options table. Keep local build sizing in the verdict and breakdown. Otherwise use the options table below, using the default columns in references/comparables-criteria.md. If approved research is unreachable, say so and name the missing evidence.>
 
 | Name and link / version or plan | Gate result + confidence | Measured stats (date, source, window) | Pros | Cons |
 |---|---|---|---|---|
-| <survivors, in rank order; keep unknowns visible> | <pass / unknown> | <kind-specific evidence> | <fit> | <limits> |
+| <Confirmed survivors only, in rank order> | <pass + confidence> | <kind-specific evidence> | <fit> | <limits> |
 | build our own | <same essential requirements, or unknown> | <estimated effort and upkeep, with basis; unknown where unmeasured> | <control / fit> | <cost / maintenance> |
 
-<Disqualified options below the table, each linked with its failed gate and evidence. Say when none meets the requirements. Include the build our own row even when research was declined; it is a local estimate, not a researched alternative.>
+<List unknown-gate candidates separately with their missing essential evidence; list disqualified candidates separately with their failed gate and evidence. Say when none meets the requirements. Include the build our own row as a baseline in approved comparisons.>
 
 **Red flags:** <the flags that fired, each with its source; or "none fired"; or "not a technical ask">
 

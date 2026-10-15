@@ -4,6 +4,7 @@
 // on its own (a personal skill install) where ../../../fixtures does not exist.
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import { BLOCK_REASON, VERDICTS, checkStop, currentTurn, findVerdict, lastAssistantText, parseJsonl, skillUse } from "./skills/ask-graham/scripts/verdict.mjs";
 import { claudeCode, omp, SKILL_BODY } from "./fixtures/transcripts.mjs";
 
@@ -83,6 +84,26 @@ for (const [name, h] of Object.entries(HARNESSES)) {
   test(`${name}: waiting for the comparables answer passes without a verdict`, () => {
     const { t, opener } = turn(`${ANSWER}\n\nDo you want me to research and see if something comparable exists?`);
     assert.deepEqual(checkStop({ entries: t.entries }), { pass: "comparables-question", opener });
+  });
+
+  test(`${name}: the comparables answer turn reloads the skill and requires a verdict`, () => {
+    for (const answer of ["yes", "no"]) {
+      const { t, opener } = turn(`${ANSWER}\n\nDo you want me to research and see if something comparable exists?`);
+      assert.deepEqual(checkStop({ entries: t.entries }), { pass: "comparables-question", opener });
+
+      const resumed = t.prompt(answer);
+      // The skill's resume instruction is the bridge to the existing per-turn checker.
+      // Check that instruction too: a fixture reload alone would pass before the fix.
+      h.read(t);
+      assert.equal(skillUse(currentTurn(t.entries)).read, true);
+      t.say("Here is the result for the same ask.");
+      assert.deepEqual(checkStop({ entries: t.entries }), { block: BLOCK_REASON, opener: resumed });
+      t.say("**Verdict:** later. Nothing gets worse while it waits.");
+      assert.deepEqual(checkStop({ entries: t.entries }), { pass: "verdict", opener: resumed });
+    }
+
+    const skill = readFileSync(new URL("./skills/ask-graham/SKILL.md", import.meta.url), "utf8");
+    assert.match(skill, /When the answer arrives, reload this skill through the host’s Skill or Read tool, then resume step 2 for the same ask\./);
   });
 
   test(`${name}: mentioning the comparables question does not excuse a missing verdict`, () => {
