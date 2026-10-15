@@ -16,8 +16,9 @@ place.
 output-types delivers text and does not read what the agent sends back; see its *delivers, does
 not enforce* note. i-have-audhd delivers its rules and checks every finished message, warning by
 default. paired-coding enforces at the tool boundary, within the limits in its *what this
-enforces, and what it does not* note. ask-graham is a skill plus a one-line prompt nudge you can
-turn off.
+enforces, and what it does not* note. ask-graham is a skill, a one-line prompt nudge you can
+turn off, and a Stop check that blocks once per turn when an answer that read the skill has no
+verdict line.
 
 ```
 /plugin marketplace add thewolff/jo-wolff-plugins
@@ -286,8 +287,8 @@ The plugin's own README carries the full list, with the evidence behind each lin
 
 A skill that answers "should we build X?" the way Graham, a frontend engineer, says he decides:
 five gate questions, a short list of red flags, the 2-minute rule from GTD, and fewer lines wins.
-It ends in exactly one verdict: **do it now**, **backlog**, **backlog, prioritize now**, or
-**don't build**, with a breakdown scaled to the size of the work.
+It ends in exactly one verdict: **do it now**, **start now**, **later**, or **don't build**,
+with a breakdown scaled to the size of the work.
 
 The problem it addresses: an agent asked "can we build X?" hears "build X". It does not stop to
 ask why, whether something already does it, or who will maintain it, so the backlog fills with
