@@ -61,10 +61,49 @@ export function isFence(line) {
   return /^\s*(```|~~~)/.test(line);
 }
 
+// The line with every inline code span blanked out, so a `<!--` inside one is never markup. A
+// span opens with a run of N backticks and closes at the next run of exactly N (CommonMark);
+// a run with no matching closer is literal text and stays.
+function maskCodeSpans(line) {
+  let out = "";
+  let i = 0;
+  while (i < line.length) {
+    if (line[i] !== "`") {
+      out += line[i++];
+      continue;
+    }
+    let j = i;
+    while (line[j] === "`") j++;
+    const run = j - i;
+    let close = -1;
+    for (let k = j; k < line.length; ) {
+      if (line[k] !== "`") {
+        k++;
+        continue;
+      }
+      let m = k;
+      while (line[m] === "`") m++;
+      if (m - k === run) {
+        close = m;
+        break;
+      }
+      k = m;
+    }
+    if (close === -1) {
+      out += line.slice(i, j);
+      i = j;
+    } else {
+      out += " ".repeat(close - i);
+      i = close;
+    }
+  }
+  return out;
+}
+
 // Where an HTML comment that this line leaves open starts, or -1: the last `<!--` outside an
 // inline code span with no `-->` after it.
 function commentOpenAt(line) {
-  const masked = line.replace(/`[^`]*`/g, (span) => " ".repeat(span.length));
+  const masked = maskCodeSpans(line);
   const at = masked.lastIndexOf("<!--");
   if (at === -1 || masked.indexOf("-->", at + 4) !== -1) return -1;
   return at;

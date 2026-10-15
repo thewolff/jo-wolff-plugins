@@ -96,10 +96,16 @@ test("a fence delimiter inside a comment does not toggle fence state or hide a l
   assert.deepEqual(units[units.length - 1], { label: "ACTION", line: 4, text: "Ran the smoke test." });
 });
 
-test("a `<!--` inside an inline code span opens no comment", () => {
-  const units = splitLabeledSections("Write `<!--` to start one.\n**CLAIM**\nBody.");
-  assert.equal(units.length, 2);
-  assert.equal(units[1].label, "CLAIM");
+test("a `<!--` inside an inline code span opens no comment, whatever the span's backtick count", () => {
+  for (const text of [
+    "Write `<!--` to start one.\n**CLAIM**\nBody.",
+    "Write ``<!--`` to start one.\n**CLAIM**\nBody.",
+    "Write ``a ` <!-- b`` to start one.\n**CLAIM**\nBody.",
+  ]) {
+    const units = splitLabeledSections(text);
+    assert.equal(units.length, 2, text);
+    assert.equal(units[1].label, "CLAIM", text);
+  }
 });
 
 test("a heading directly above a label lands in the section that label opens", () => {
