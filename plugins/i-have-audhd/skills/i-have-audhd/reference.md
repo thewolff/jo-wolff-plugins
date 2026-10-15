@@ -59,6 +59,28 @@ instrument is live, not parked. The adjudications, with per-flag pointers, are k
 private file on the measuring machine (mode 0700) and are not published, because they
 contain real message bodies.
 
+**Second corpus — 2026-10-14, the 1.1.0 checks.** 469 final assistant messages (410 OMP seat,
+59 Claude Code), 2026-10-07 → 10-15, every rule at warn, the 1.1.0 Stop CLI unchanged, judge
+`anthropic/claude-haiku-5-5` (881 calls, $0.19 total, $0.0004 per message, p50 2.2s, p95
+4.3s, 0 failures). Every flag got three independent votes: `claude-opus-5-5`, `codex exec`
+(gpt-6-astra) and `gpt-5.6-sol`; the FP rate below is the majority of three. The bar for
+block was FP ≤ 10% on ≥ 15 flags.
+
+| Check | Gate fired | Flags | FP, majority of 3 | Verdict |
+|---|---|---|---|---|
+| needs-you-first | 62 | 12 | 4 (33%) | warn |
+| closing-ask-last | 39 | 6 | 3 (50%) | warn |
+| plural-back-reference | 39 | 5 | 2 (40%) | warn |
+| name-the-artifact | 271 | 2 | 0 (n=2) | warn; too few flags |
+| do-not-batch-by-label | 0 | 0 | unexercised | warn |
+| conclusion-first | 329 | 13 | 3 (23%) | warn |
+| bad-news-first | 186 | 19 | 2 (11%) | warn; just over the bar, and opus-5-5 alone called 37% FP |
+| report-what-you-did-not-do | 45 | 39 | 1 (3%) | warn: the 39 flags come from two sessions (32 and 7) re-checking the same unfinished todo lists, so they are two observations, not 39; opus-5-5 alone called 21% FP, mostly "the todo list is stale and the message implies each status" |
+| restate-resumed-thread | 15 | 0 | — | warn |
+
+No check earned block on independent evidence. The measurement scripts, corpus and votes
+stay on the measuring machine for the same reason as the first corpus.
+
 ## The session-start injection
 
 `hooks/i-have-audhd-inject.mjs`. stdin: the SessionStart payload (`session_id`, `source`,
@@ -117,9 +139,18 @@ Order of operations, each early return silent:
    extension's continuation, so the adapter sends `true` only when the host flag is set and
    its previous result for the session was a block.
 9. One block-mode finding emits the block and records the hash; warn findings, capped ones
-   included, → `warnings.log` with their real rule id. Reasons name the check and its skill
-   rule, say what to move or add, and ask for corrected lines only — never a resend of the
-   whole message.
+   included, → `warnings.log` with their real rule id, and replace the session's
+   `pending-warn-<session>.json` (a stop with none removes it). Reasons name the check and its
+   skill rule and say what to move or add. A block also asks for corrected lines only — never
+   a resend of the whole message; a warn does not, because its message has already gone out.
+10. **Warn delivery, next turn.** `lib/pending.mjs` turns the warn findings into a short
+   notice for the agent ("warning only; it was sent unchanged; apply each fix from your next
+   message on", one capped line per finding) and a one-line summary for the person. Claude
+   Code: `hooks/i-have-audhd-prompt.mjs` on `UserPromptSubmit` consumes the file and returns
+   the notice as `additionalContext` and the summary as `systemMessage`. OMP: the adapter
+   spawns the same CLI right after the stop and queues the notice with `sendMessage`
+   (`deliverAs: "nextTurn"`, no `triggerTurn`), which OMP adds to the next prompt; the
+   summary is a UI warning notice. Consumption deletes the file, so a notice arrives once.
 
 Fail-open everywhere with `errors.log` as the single failure channel.
 
@@ -340,7 +371,8 @@ All under `~/.claude/.i-have-audhd-state/`:
 
 | File | What it holds |
 |---|---|
-| `warnings.log` | Warn-mode findings, one line each, rule named |
+| `warnings.log` | Warn-mode findings, one line each, rule named — the record |
+| `pending-warn-<session>.json` | The latest checked stop's warn findings, waiting for the next turn — the delivery; deleted when consumed |
 | `skipped.log` | Judge-rule triggers that fired with no judge command — a skipped check must be inspectable |
 | `judge-failures.log` | Judge dispatch failures (timeout, exit, unparseable), rule and error named |
 | `errors.log` | Every fail-open path: payload parse, config parse, hook exceptions, OMP adapter fail-opens |
