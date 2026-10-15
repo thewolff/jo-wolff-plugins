@@ -5,10 +5,14 @@ on:
     paths:
       - "plugins/ask-graham/**"
       - ".github/workflows/ask-graham.yml"
+      - ".claude-plugin/marketplace.json"
+      - ".omp-plugin/marketplace.json"
   pull_request:
     paths:
       - "plugins/ask-graham/**"
       - ".github/workflows/ask-graham.yml"
+      - ".claude-plugin/marketplace.json"
+      - ".omp-plugin/marketplace.json"
 
 permissions:
   contents: read
