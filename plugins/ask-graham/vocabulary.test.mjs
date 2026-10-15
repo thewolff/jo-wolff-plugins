@@ -22,7 +22,7 @@ test("the Output template's Verdict line names exactly VERDICTS", () => {
   assert.deepEqual(line[1].split(", "), [...VERDICTS]);
 });
 
-test("no 'backlog' in the skill, README, manifests or scripts", () => {
+test("no 'backlog' in the skill, README, manifests, marketplace entries or scripts", () => {
   const scripts = readdirSync(new URL("./skills/ask-graham/scripts/", import.meta.url)).map(
     (f) => `./skills/ask-graham/scripts/${f}`,
   );
@@ -35,6 +35,17 @@ test("no 'backlog' in the skill, README, manifests or scripts", () => {
     ...scripts,
   ];
   for (const f of files) assert.doesNotMatch(read(f), /backlog/i, f);
+
+  // The repository's two marketplace files list this plugin too; their entry is what a person
+  // reads before installing. It names the four verdicts, and a version, if listed, is the plugin's.
+  const { version } = JSON.parse(read("./.claude-plugin/plugin.json"));
+  for (const f of ["../../.claude-plugin/marketplace.json", "../../.omp-plugin/marketplace.json"]) {
+    const entry = JSON.parse(read(f)).plugins.find((p) => p.name === "ask-graham");
+    assert.ok(entry, `${f}: no ask-graham entry`);
+    assert.doesNotMatch(JSON.stringify(entry), /backlog/i, f);
+    for (const v of VERDICTS) assert.ok(entry.description.includes(v), `${f}: description lacks "${v}"`);
+    if ("version" in entry) assert.equal(entry.version, version, f);
+  }
 });
 
 test("Graham's verbatim 'back log' stays in his answers and the skill's quote", () => {
