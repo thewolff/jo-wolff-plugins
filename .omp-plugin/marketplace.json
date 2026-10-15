@@ -23,6 +23,11 @@
       "name": "ask-graham",
       "source": "./plugins/ask-graham",
       "description": "Answer \"should we build X?\" with Graham's stated judgment — his gate questions, the 2-minute rule, fewer lines wins — and one verdict: do it now, start now, later, or don't build."
+    },
+    {
+      "name": "reminders-review",
+      "source": "./plugins/reminders-review",
+      "description": "Go through your open Apple Reminders one at a time with an agent: it answers the questions, confirms before acting on the instructions, asks when unclear, and closes each one only when you say yes. macOS, via remindctl."
     }
   ]
 }

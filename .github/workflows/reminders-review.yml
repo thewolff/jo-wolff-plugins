@@ -1,0 +1,30 @@
+name: reminders-review
+
+on:
+  push:
+    paths:
+      - "plugins/reminders-review/**"
+      - ".github/workflows/reminders-review.yml"
+  pull_request:
+    paths:
+      - "plugins/reminders-review/**"
+      - ".github/workflows/reminders-review.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: node --test
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    defaults:
+      run:
+        working-directory: plugins/reminders-review
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+      - name: Tests
+        run: node --test
