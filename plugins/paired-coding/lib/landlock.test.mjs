@@ -530,10 +530,17 @@ describe("live Landlock: pair_run", () => {
     assert.deepEqual(diffSnapshots(before, snapshotTree(f.root, [".git"])), [{ path: "docs", change: "modified" }]);
   });
 
-  /** A loop that appends to lib/bg-<name>.txt from a new session, outside the run's group. */
-  const escapee = (name) => `setsid sh -c 'while :; do echo t >> lib/bg-${name}.txt; sleep 0.05; done' </dev/null >/dev/null 2>&1 &`;
+  /**
+   * A loop that appends to lib/bg-<name>.txt from a new session, outside the run's group. The run
+   * then waits, up to 5 s, for the writer's first line: a loaded runner can take longer than the
+   * run's own sleep to start the new session, and a run that ends first leaves no file to check.
+   */
+  const escapee = (name) =>
+    `setsid sh -c 'while :; do echo t >> lib/bg-${name}.txt; sleep 0.05; done' </dev/null >/dev/null 2>&1 & ` +
+    `i=0; while [ ! -s lib/bg-${name}.txt ] && [ $i -lt 500 ]; do sleep 0.01; i=$((i + 1)); done;`;
   const stopsGrowing = async (f, name) => {
-    const size = () => statSync(join(f.root, "lib", `bg-${name}.txt`)).size;
+    const file = join(f.root, "lib", `bg-${name}.txt`);
+    const size = () => (existsSync(file) ? statSync(file).size : 0);
     const a = size();
     await new Promise((resolve) => setTimeout(resolve, 400));
     return { a, b: size() };
