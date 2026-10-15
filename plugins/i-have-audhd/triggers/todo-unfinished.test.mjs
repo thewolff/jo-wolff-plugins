@@ -9,6 +9,12 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { lastIncompleteTodos, todoJudgeContext } from "./todo-unfinished.mjs";
 import { OMP_TODO_CALL, OMP_TODO_RESULT } from "./fixtures/omp-todo-fragment.mjs";
+import {
+  OMP_TODO_VIEW_RESULT,
+  OMP_USER_TODO_EDIT_FIRST,
+  OMP_USER_TODO_EDIT_SECOND,
+  OMP_USER_TODO_EDIT_LAST,
+} from "./fixtures/omp-todo-edit-sequence.mjs";
 
 const todoWrite = (todos) =>
   JSON.stringify({
@@ -229,10 +235,138 @@ test("an OMP todo call whose result is missing is a miss, not a guess from its a
   assert.equal(r.applicable, false);
 });
 
-test("an OMP todo result without readable details.phases is a miss, not a fall-through", () => {
-  for (const details of [undefined, {}, { phases: "nope" }, { phases: [{ name: "Build" }] }]) {
-    const r = lastIncompleteTodos([realFragment, ompCall("view"), ompResult(details)].join("\n"));
-    assert.equal(r.applicable, false, `details=${JSON.stringify(details)}`);
+test("an OMP todo result without a details.phases array is not a snapshot: the scan goes on, as OMP's does", () => {
+  // OMP's canonicalTodoPhases returns undefined for these, so its state is the earlier snapshot's.
+  for (const details of [undefined, {}, { op: "done" }, { op: "done", phases: "nope" }]) {
+    const r = lastIncompleteTodos([realFragment, ompCall("done"), ompResult(details)].join("\n"));
+    assert.equal(r.applicable, true, `details=${JSON.stringify(details)}`);
+    assert.equal(r.total, 5, `details=${JSON.stringify(details)}`);
+  }
+  const nothingEarlier = lastIncompleteTodos([ompCall("done"), ompResult({ op: "done" })].join("\n"));
+  assert.equal(nothingEarlier.applicable, false);
+});
+
+// ─── OMP canonical state: user_todo_edit snapshots, skipped error/view results, OMP's shape ──
+
+const userTodoEdit = (phases) => JSON.stringify({ type: "custom", customType: "user_todo_edit", data: { phases } });
+
+const ompErrorResult = (details, id = "call_x") =>
+  JSON.stringify({
+    type: "message",
+    message: { role: "toolResult", toolCallId: id, toolName: "todo", content: [{ type: "text", text: "Error" }], details, isError: true },
+  });
+
+const allCompleted = [
+  { name: "Build", tasks: [{ content: "write it", status: "completed" }] },
+  { name: "Ship", tasks: [{ content: "open the PR", status: "completed" }] },
+];
+const stillOpen = [
+  { name: "Build", tasks: [{ content: "write it", status: "completed" }] },
+  { name: "Ship", tasks: [{ content: "open the PR", status: "in_progress" }] },
+];
+
+test("the real eval-bridge sequence: user_todo_edit snapshots completing every item after a view result are not applicable", () => {
+  const jsonl = [
+    OMP_TODO_VIEW_RESULT,
+    OMP_USER_TODO_EDIT_FIRST,
+    OMP_USER_TODO_EDIT_SECOND,
+    OMP_USER_TODO_EDIT_LAST,
+    ompText("## Result\n\nThe swap audit is written; every tracked item is done."),
+  ].join("\n");
+  const r = lastIncompleteTodos(jsonl);
+  assert.equal(r.applicable, false);
+  assert.equal(r.total, 5, "the last user_todo_edit decides, with all 5 items read");
+  assert.deepEqual(r.incomplete, []);
+});
+
+test("the real view result alone is not a snapshot, and the first real user_todo_edit is one", () => {
+  assert.equal(lastIncompleteTodos(OMP_TODO_VIEW_RESULT).applicable, false, "a view result never decides");
+  const r = lastIncompleteTodos([OMP_TODO_VIEW_RESULT, OMP_USER_TODO_EDIT_FIRST, ompText("bye")].join("\n"));
+  assert.equal(r.applicable, true);
+  assert.deepEqual(
+    r.incomplete.map((it) => [it.status, it.phase, it.content]),
+    [
+      ["in_progress", "Comparison", "Compare each item to bundled OMP features"],
+      ["pending", "Comparison", "Classify swapability for every inventoried item"],
+      ["pending", "Comparison", "Respect Playwright Memory lease and install constraints"],
+      ["pending", "Deliverable", "Write swap audit and safest migration order"],
+    ],
+  );
+});
+
+test("a user_todo_edit with open items after an all-completed todo result is applicable", () => {
+  const jsonl = [ompCall("done"), ompResult({ op: "done", phases: allCompleted }), userTodoEdit(stillOpen), ompText("done")].join("\n");
+  const r = lastIncompleteTodos(jsonl);
+  assert.equal(r.applicable, true);
+  assert.deepEqual(r.incomplete, [{ content: "open the PR", status: "in_progress", phase: "Ship" }]);
+});
+
+test("an error todo result after a snapshot is skipped, its call does not end the scan, and the earlier snapshot decides", () => {
+  const errAfterOpen = lastIncompleteTodos(
+    [realFragment, ompCall("done", "call_err"), ompErrorResult({ op: "done", phases: allCompleted }, "call_err"), ompText("bye")].join("\n"),
+  );
+  assert.equal(errAfterOpen.applicable, true, "an error result claiming all completed does not clear the earlier open list");
+  assert.equal(errAfterOpen.total, 5);
+  const errAfterDone = lastIncompleteTodos(
+    [userTodoEdit(allCompleted), ompCall("append", "call_err"), ompErrorResult({ op: "append", phases: stillOpen }, "call_err")].join("\n"),
+  );
+  assert.equal(errAfterDone.applicable, false, "an error result carrying open items does not fire");
+});
+
+test("a view todo result after a snapshot is skipped, its call does not end the scan, and the earlier snapshot decides", () => {
+  const viewAfterOpen = lastIncompleteTodos(
+    [realFragment, ompCall("view", "call_view"), ompResult({ op: "view", phases: allCompleted }, "call_view")].join("\n"),
+  );
+  assert.equal(viewAfterOpen.applicable, true);
+  assert.equal(viewAfterOpen.total, 5);
+  const viewAfterDone = lastIncompleteTodos(
+    [userTodoEdit(allCompleted), ompCall("view", "call_view"), ompResult({ op: "view", phases: stillOpen }, "call_view")].join("\n"),
+  );
+  assert.equal(viewAfterDone.applicable, false);
+});
+
+test("a skipped result only covers its own call: a later todo call without a result still ends the scan", () => {
+  const r = lastIncompleteTodos(
+    [realFragment, ompCall("view", "call_view"), ompResult({ op: "view", phases: stillOpen }, "call_view"), ompCall("done", "call_torn")].join("\n"),
+  );
+  assert.equal(r.applicable, false);
+});
+
+test("only a toolResult named exactly `todo` is an OMP snapshot", () => {
+  const named = (toolName) =>
+    JSON.stringify({ type: "message", message: { role: "toolResult", toolCallId: "y", toolName, details: { op: "init", phases: stillOpen }, isError: false } });
+  for (const toolName of ["Todo", "TodoWrite", "todo_list"]) {
+    const r = lastIncompleteTodos([userTodoEdit(allCompleted), named(toolName)].join("\n"));
+    assert.equal(r.applicable, false, `toolName=${toolName}`);
+  }
+});
+
+test("a user_todo_edit without a phases array is not a snapshot: the scan goes on, as OMP's does", () => {
+  for (const data of [undefined, {}, { phases: "nope" }]) {
+    const entry = JSON.stringify({ type: "custom", customType: "user_todo_edit", data });
+    const r = lastIncompleteTodos([realFragment, entry].join("\n"));
+    assert.equal(r.applicable, true, `data=${JSON.stringify(data)}`);
+  }
+});
+
+test("a snapshot failing OMP's isTodoPhase shape is unreadable and not applicable, never an [unknown] item", () => {
+  const malformed = {
+    "missing status": [{ name: "Ship", tasks: [{ content: "open the PR" }] }],
+    "unknown status": [{ name: "Ship", tasks: [{ content: "open the PR", status: "todo" }] }],
+    "uppercase status": [{ name: "Ship", tasks: [{ content: "open the PR", status: "PENDING" }] }],
+    "non-string content": [{ name: "Ship", tasks: [{ content: 42, status: "pending" }] }],
+    "missing content": [{ name: "Ship", tasks: [{ subject: "open the PR", status: "pending" }] }],
+    "task not a record": [{ name: "Ship", tasks: ["open the PR"] }],
+    "phase without tasks": [{ name: "Build" }],
+    "non-string phase name": [{ name: 7, tasks: [{ content: "open the PR", status: "pending" }] }],
+    "one bad phase among good": [...stillOpen, { name: "Wrap-up", tasks: [{ content: "x", status: "later" }] }],
+  };
+  for (const [label, phases] of Object.entries(malformed)) {
+    // Each source is placed after an earlier open list so a fall-through would fire.
+    const viaResult = lastIncompleteTodos([realFragment, ompCall("done"), ompResult({ op: "done", phases })].join("\n"));
+    assert.equal(viaResult.applicable, false, `todo result: ${label}`);
+    const viaEdit = lastIncompleteTodos([realFragment, userTodoEdit(phases)].join("\n"));
+    assert.equal(viaEdit.applicable, false, `user_todo_edit: ${label}`);
   }
 });
 
