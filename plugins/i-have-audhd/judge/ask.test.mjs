@@ -112,7 +112,7 @@ test("a judge printing banner then verdict parses (the codex shape)", async () =
 
 // ─── the cache ───────────────────────────────────────────────────────────────
 
-test("an identical rule+context hits the cache; the judge runs once", async () => {
+test("an identical prompt hits the cache; the judge runs once", async () => {
   const state = mkstate();
   const counter = join(state, "count");
   const fakeJudge =
@@ -129,6 +129,23 @@ test("an identical rule+context hits the cache; the judge runs once", async () =
   // A different context is a different bill.
   const third = await askJudge("conclusion-first", "q", "different message text", cfg, { stateDir: state });
   assert.equal(third.cached, false);
+  assert.equal(readFileSync(counter, "utf8"), "2");
+});
+
+test("the cache key covers the question: same rule and text, two questions, two judge runs", async () => {
+  const state = mkstate();
+  const counter = join(state, "count");
+  const fakeJudge =
+    `node -e 'const fs=require("fs");const n=(fs.existsSync("${counter}")?+fs.readFileSync("${counter}","utf8"):0)+1;` +
+    `fs.writeFileSync("${counter}",String(n));` +
+    `process.stdout.write(JSON.stringify({violation:n===1,reason:"run "+n}))'`;
+  const cfg = { judgeCommand: fakeJudge };
+  const first = await askJudge("conclusion-first", "q, framed as section CLAIM", "same section text", cfg, { stateDir: state });
+  const second = await askJudge("conclusion-first", "q, unframed", "same section text", cfg, { stateDir: state });
+  assert.equal(first.cached, false);
+  assert.equal(second.cached, false);
+  assert.equal(first.violation, true);
+  assert.equal(second.violation, false, "the second question got its own verdict, not the first one's");
   assert.equal(readFileSync(counter, "utf8"), "2");
 });
 

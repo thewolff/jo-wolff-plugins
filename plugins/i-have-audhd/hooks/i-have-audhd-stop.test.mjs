@@ -10,7 +10,9 @@
 // assertion wherever the message is fine.
 //
 // Which rule fired is asserted by rule id — warnings.log's `rule=` field and the `rules` the
-// loop guard records in last-blocked-<session>.json — never by the wording of a reason.
+// loop guard records in last-blocked-<session>.json — never by the wording of a reason. The one
+// exception is the per-section tests at the end: which sections a finding names (`**GUESS** at
+// line 7`) is the contract under test there, so that token is asserted.
 //
 // Run: node --test 'plugins/i-have-audhd/hooks/*.test.mjs'
 
@@ -22,6 +24,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { OMP_TODO_CALL, OMP_TODO_RESULT } from "../triggers/fixtures/omp-todo-fragment.mjs";
+import { conclusionFirstApplicable } from "../triggers/conclusion-first.mjs";
+import { badNewsGate } from "../triggers/bad-news-lexicon.mjs";
 
 const HOOK = fileURLToPath(new URL("./i-have-audhd-stop.mjs", import.meta.url));
 
@@ -445,9 +449,17 @@ test("conclusion-first dispatches on two paragraphs and blocks on a violating ve
   assert.ok(blockedRules(home, "k1").includes("conclusion-first"));
 });
 
-test("a single-paragraph message never reaches the judge — no skip, no bill", () => {
+test("a single long paragraph reaches the conclusion-first judge: its point can sit past word 20", () => {
   const home = mkhome();
   const r = runHook({ session_id: "k2", last_assistant_message: body(10) }, home);
+  assert.equal(r.status, 0);
+  assert.equal(r.stdout, "");
+  assert.match(readLog(home, "skipped.log"), /rule=conclusion-first reason=no-judge-command/);
+});
+
+test("a message under the 400-char floor never reaches the conclusion-first judge — no skip, no bill", () => {
+  const home = mkhome();
+  const r = runHook({ session_id: "k3", last_assistant_message: body(4) }, home);
   assert.equal(r.status, 0);
   assert.equal(r.stdout, "");
   assert.equal(readLog(home, "skipped.log"), ""); // trigger never fired: not a skip
@@ -466,13 +478,14 @@ test("a resume marker dispatches restate-resumed-thread, and the marker is consu
   mkdirSync(join(home, ".claude", ".i-have-audhd-state"), { recursive: true });
   writeFileSync(marker, "2026-09-21T00:00:00.000Z\n");
 
-  const first = runHook({ session_id: "r6a", last_assistant_message: body(6) }, home);
+  // body(5): under conclusion-first's 400-char floor, so restate-resumed-thread is the only judge rule in play.
+  const first = runHook({ session_id: "r6a", last_assistant_message: body(5) }, home);
   const out = parseOut(first.stdout);
   assert.equal(out.decision, "block");
   assert.ok(blockedRules(home, "r6a").includes("restate-resumed-thread"));
   assert.ok(!existsSync(marker), "marker consumed by the first stop");
 
-  const second = runHook({ session_id: "r6a", last_assistant_message: body(6) + " More." }, home);
+  const second = runHook({ session_id: "r6a", last_assistant_message: body(5) + " More." }, home);
   assert.equal(second.status, 0);
   assert.equal(second.stdout, ""); // one-shot: the second message is not re-judged for restate-resumed-thread
 });
@@ -491,7 +504,7 @@ test("a consumed marker with no judge command lands in skipped.log", () => {
 
 test("no marker means no restate-resumed-thread job at all", () => {
   const home = mkhome();
-  const r = runHook({ session_id: "r6c", last_assistant_message: body(6) }, home);
+  const r = runHook({ session_id: "r6c", last_assistant_message: body(5) }, home); // under conclusion-first's floor
   assert.equal(r.status, 0);
   assert.equal(r.stdout, "");
   assert.equal(readLog(home, "skipped.log"), "");
@@ -577,7 +590,7 @@ test("a real OMP todo call + result in the session file dispatches report-what-y
 
 test("no todo data (OMP last_assistant_message shape) is not applicable and not a skip", () => {
   const home = mkhome();
-  const r = runHook({ session_id: "t2", last_assistant_message: body(6) }, home);
+  const r = runHook({ session_id: "t2", last_assistant_message: body(5) }, home); // under conclusion-first's floor
   assert.equal(r.status, 0);
   assert.equal(r.stdout, "");
   assert.equal(readLog(home, "skipped.log"), ""); // nothing fired: the boundary is silence
@@ -696,4 +709,190 @@ test("untagged (Claude Code): a malformed armOmp changes nothing — same stdout
   assert.equal(parseOut(b.stdout).decision, "block", "the Claude path still blocks");
   assert.equal(b.stdout, a.stdout);
   assert.equal(readLog(malformed, "errors.log"), "", "the field is never read without the omp tag");
+});
+
+// ─── conclusion-first and bad-news-first per labeled section ─────────────────
+
+// A content-sensitive fake judge: it records every prompt it is given (rule, question, and the
+// judged message between <<<MSG and MSG) to judged.jsonl, exits 2 when the judged message holds
+// FAIL_MARK, and answers violation=true only when it holds VIOLATE_MARK. So one hook run can get
+// opposite verdicts per section, and the test can read exactly what each judge call saw.
+const VIOLATE_MARK = "zq-violate-mark";
+const FAIL_MARK = "zq-error-mark";
+const markerJudgePath = (home) => join(home, "marker-judge.mjs");
+const judgedLogPath = (home) => join(home, "judged.jsonl");
+const writeMarkerJudge = (home) =>
+  writeFileSync(
+    markerJudgePath(home),
+    [
+      'import { appendFileSync, readFileSync } from "node:fs";',
+      'const prompt = readFileSync(0, "utf8");',
+      'const rule = (/^Rule: (.*)$/m.exec(prompt) ?? [])[1] ?? "";',
+      'const question = (/^Question: (.*)$/m.exec(prompt) ?? [])[1] ?? "";',
+      'const open = prompt.indexOf("<<<MSG\\n") + "<<<MSG\\n".length;',
+      'const message = prompt.slice(open, prompt.lastIndexOf("\\nMSG"));',
+      `appendFileSync(${JSON.stringify(judgedLogPath(home))}, JSON.stringify({ rule, question, message }) + "\\n");`,
+      `if (message.includes(${JSON.stringify(FAIL_MARK)})) process.exit(2);`,
+      `const violation = message.includes(${JSON.stringify(VIOLATE_MARK)});`,
+      'process.stdout.write(JSON.stringify({ violation, reason: violation ? "marked section" : "clean section" }));',
+      "",
+    ].join("\n"),
+  );
+
+// Every prompt the marker judge saw for `rule`, in the order they were recorded.
+const judged = (home, rule) =>
+  (existsSync(judgedLogPath(home)) ? readFileSync(judgedLogPath(home), "utf8") : "")
+    .split("\n")
+    .filter(Boolean)
+    .map((line) => JSON.parse(line))
+    .filter((j) => j.rule === rule);
+
+// Marker judge configured; `mode: "block"` unless `extra` says otherwise.
+const markerProfile = (home, extra = {}) => {
+  writeMarkerJudge(home);
+  blockProfile(home, { judgeCommand: `node ${markerJudgePath(home)}`, ...extra });
+};
+
+const section = (label, prose) => `**${label}**\n${prose}`;
+const labeledMessage = (...sections) => sections.join("\n\n");
+const lineOf = (msg, labelLine) => msg.split("\n").indexOf(labelLine) + 1;
+
+// The conclusion-first finding in a block reason (one finding per rule, findings joined by blank lines).
+const conclusionFinding = (reason) => reason.split("\n\n").filter((f) => f.startsWith("Conclusion first ("));
+
+test("sections each under the floor dispatch no conclusion-first job, even when the whole message passes", () => {
+  const home = mkhome();
+  markerProfile(home);
+  const msg = labeledMessage(section("CLAIM", body(4)), section("GUESS", body(4)), section("ACTION", body(4)));
+  assert.equal(conclusionFirstApplicable(msg).applicable, true, "precondition: the whole text passes the gate");
+  const r = runHook({ session_id: "s1", last_assistant_message: msg }, home);
+  assert.equal(r.status, 0);
+  assert.equal(r.stdout, "");
+  assert.deepEqual(judged(home, "conclusion-first"), []);
+  assert.equal(readLog(home, "warnings.log"), "");
+});
+
+test("one long section among short ones: one conclusion-first job, judging that section's prose alone", () => {
+  const home = mkhome();
+  markerProfile(home);
+  const msg = labeledMessage(section("CLAIM", body(2)), section("GUESS", body(7)), section("ACTION", body(2)));
+  runHook({ session_id: "s2", last_assistant_message: msg }, home);
+  const jobs = judged(home, "conclusion-first");
+  assert.equal(jobs.length, 1);
+  assert.equal(jobs[0].message, body(7), "the judged message is the section's prose: no label line, no other section");
+});
+
+test("opposite verdicts per section: the finding names only the violating section's label and line", () => {
+  const home = mkhome();
+  markerProfile(home);
+  const msg = labeledMessage(section("CLAIM", body(7)), section("GUESS", `${body(7)}${VIOLATE_MARK}`));
+  const r = runHook({ session_id: "s3", last_assistant_message: msg }, home);
+  const out = parseOut(r.stdout);
+  assert.equal(out.decision, "block");
+  assert.equal(judged(home, "conclusion-first").length, 2);
+  const [finding, ...more] = conclusionFinding(out.reason);
+  assert.equal(more.length, 0, "one finding per rule");
+  assert.ok(finding.includes(`**GUESS** at line ${lineOf(msg, "**GUESS**")}`), finding);
+  assert.ok(!finding.includes("**CLAIM**"), finding);
+});
+
+test("two violating sections: one finding naming both labels and lines, in line order", () => {
+  const home = mkhome();
+  markerProfile(home);
+  const msg = labeledMessage(
+    section("CLAIM", `${body(7)}${VIOLATE_MARK}`),
+    section("ACTION", body(2)),
+    section("GUESS(inference)", `${body(7)}${VIOLATE_MARK}`),
+  );
+  const r = runHook({ session_id: "s4", last_assistant_message: msg }, home);
+  const out = parseOut(r.stdout);
+  const [finding, ...more] = conclusionFinding(out.reason);
+  assert.equal(more.length, 0, "one finding per rule");
+  const claim = finding.indexOf(`**CLAIM** at line ${lineOf(msg, "**CLAIM**")}`);
+  const guess = finding.indexOf(`**GUESS(inference)** at line ${lineOf(msg, "**GUESS(inference)**")}`);
+  assert.ok(claim > -1 && guess > -1, finding);
+  assert.ok(claim < guess, "sections are named in line order");
+  assert.ok(!finding.includes("**ACTION**"), finding);
+  assert.deepEqual(blockedRules(home, "s4"), ["conclusion-first"]);
+});
+
+test("a judge error on one section fails open for that section only: the other's violation still counts", () => {
+  const msg = labeledMessage(section("CLAIM", `${body(7)}${FAIL_MARK}`), section("GUESS", `${body(7)}${VIOLATE_MARK}`));
+  const guessName = `**GUESS** at line ${lineOf(msg, "**GUESS**")}`;
+
+  // block mode
+  const blocking = mkhome();
+  markerProfile(blocking);
+  const r = runHook({ session_id: "s5", last_assistant_message: msg }, blocking);
+  const out = parseOut(r.stdout);
+  assert.equal(out.decision, "block");
+  assert.ok(blockedRules(blocking, "s5").includes("conclusion-first"));
+  assert.ok(conclusionFinding(out.reason)[0].includes(guessName));
+  assert.match(readLog(blocking, "judge-failures.log"), /rule=conclusion-first error=judge-exit-2/);
+
+  // warn mode
+  const warning = mkhome();
+  markerProfile(warning, { mode: "warn" });
+  const w = runHook({ session_id: "s6", last_assistant_message: msg }, warning);
+  assert.equal(w.stdout, "");
+  const warned = logLines(warning, "warnings.log").filter((l) => l.includes(" rule=conclusion-first "));
+  assert.equal(warned.length, 1);
+  assert.ok(warned[0].includes(guessName), warned[0]);
+  assert.match(readLog(warning, "judge-failures.log"), /rule=conclusion-first error=judge-exit-2/);
+});
+
+test("bad news leading a later section is judged in that section alone; a short section with a lexicon word dispatches nothing", () => {
+  const home = mkhome();
+  markerProfile(home);
+  const news = `The migration failed last night and the index is missing three rows. ${body(3)}`;
+  const msg = labeledMessage(section("CLAIM", body(4)), section("GUESS", news));
+  runHook({ session_id: "s7", last_assistant_message: msg }, home);
+  const jobs = judged(home, "bad-news-first");
+  assert.equal(jobs.length, 1);
+  assert.equal(jobs[0].message, news);
+
+  const quiet = mkhome();
+  markerProfile(quiet);
+  const short = labeledMessage(section("CLAIM", body(4)), section("ACTION", "The deploy failed."));
+  assert.equal(badNewsGate(short).applicable, true, "precondition: the whole text passes the gate");
+  runHook({ session_id: "s8", last_assistant_message: short }, quiet);
+  assert.deepEqual(judged(quiet, "bad-news-first"), []);
+});
+
+test("omp tag, unarmed: a per-section block is capped to warn", () => {
+  const home = mkhome();
+  markerProfile(home);
+  const msg = labeledMessage(section("CLAIM", body(7)), section("GUESS", `${body(7)}${VIOLATE_MARK}`));
+  const r = runHook({ session_id: "s9", last_assistant_message: msg }, home, OMP);
+  assert.equal(r.stdout, "");
+  assert.match(readLog(home, "warnings.log"), /rule=conclusion-first .*\*\*GUESS\*\* at line/);
+});
+
+test("an unlabeled message keeps one whole-message job, with its opening window and no section framing", () => {
+  const home = mkhome();
+  markerProfile(home);
+  runHook({ session_id: "s10", last_assistant_message: twoParagraphReport }, home);
+  const jobs = judged(home, "conclusion-first");
+  assert.equal(jobs.length, 1);
+  assert.equal(jobs[0].message, twoParagraphReport);
+  assert.ok(!jobs[0].question.includes("labeled section"), jobs[0].question);
+  assert.ok(jobs[0].question.includes(`The reader's first 20 words here are: "${body(3).split(" ").slice(0, 20).join(" ")}".`));
+});
+
+test("the judge is shown the section's first 20 words: bad news at words 25-30 of a long first sentence is outside them", () => {
+  const home = mkhome();
+  markerProfile(home);
+  const sentence =
+    "After the long weekend of careful planning and three rounds of review with the platform team and " +
+    "the database owners we finally tried it and the migration failed on step four, leaving the index short.";
+  const msg = labeledMessage(section("CLAIM", body(4)), section("GUESS", `${sentence} ${body(3)}`));
+  runHook({ session_id: "s11", last_assistant_message: msg }, home);
+  const [job, ...more] = judged(home, "bad-news-first");
+  assert.equal(more.length, 0);
+  const window =
+    "After the long weekend of careful planning and three rounds of review with the platform team and the database owners";
+  assert.ok(job.question.includes(`The reader's first 20 words here are: "${window}".`), job.question);
+  assert.ok(!window.includes("failed"));
+  assert.ok(job.question.includes(`one labeled section (**GUESS**, line ${lineOf(msg, "**GUESS**")})`), job.question);
+  assert.ok(!job.message.includes("**GUESS**"), "the framing rides in the question, not the judged message");
 });

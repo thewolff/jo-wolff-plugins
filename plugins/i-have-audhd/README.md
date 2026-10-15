@@ -122,7 +122,7 @@ of nothing. To turn the injection off without uninstalling: `I_HAVE_AUDHD_INJECT
 | Restate a resumed thread | `restate-resumed-thread` | 8, Resume by restating content | injector marker + judge | warn |
 | Name the artifact | `name-the-artifact` | 11, Machinery anchors | deterministic | warn |
 | Report what you did not do | `report-what-you-did-not-do` | 11, Machinery anchors | todo trigger + judge | warn |
-| Bad news in the first sentence | `bad-news-first` | 11, Machinery anchors | lexicon gate + judge | warn |
+| Bad news in the opening 20 words | `bad-news-first` | 11, Machinery anchors | lexicon gate + judge | warn |
 
 Every finding names its skill rule. At the default, findings land in
 `~/.claude/.i-have-audhd-state/warnings.log` and nothing blocks. The default is measured:
@@ -226,6 +226,23 @@ file and a replaced one are kept.
 Exit 0 means every item is done or had nothing to do, 1 means one was refused or failed.
 
 ## Changes
+
+### 1.1.0
+
+- `conclusion-first` and `bad-news-first` judge each block-labeled section (each bold
+  `PMDW`, `CLAIM`, `CITE`, `GUESS`, `ACTION` or `QUESTION` block) as its own message, the way
+  the reader reads it. A message with no block labels is still judged whole. A section's
+  heading belongs to it, the label line itself is never judged, and labels inside code
+  fences, quotes and comments do not split anything. Each section gets its own gate (400
+  characters for `conclusion-first`, 200 plus a lexicon word for `bad-news-first`) and its own
+  judge call, and one finding per rule names every section that buries its point or its bad
+  news, by label and line.
+- "At the start" now means the first 20 words, counted by the hook and shown to the judge,
+  not the first sentence: bad news at the end of a long first sentence is buried.
+  `conclusion-first` no longer needs two paragraphs to fire, because one long paragraph can
+  carry its point at word 40.
+- The judge verdict cache keys on the whole prompt, question included. Cached verdicts from
+  1.0.x are not reused; each message is judged once more.
 
 ### 1.0.1
 
