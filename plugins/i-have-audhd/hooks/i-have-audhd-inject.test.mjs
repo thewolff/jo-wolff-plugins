@@ -9,7 +9,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -33,6 +33,11 @@ function runInject(payload, home) {
 }
 
 const markerPath = (home, sid) => join(home, ".claude", ".i-have-audhd-state", `resume-${sid}`);
+// Resume markers only: the state dir may also hold the one-time no-judge notice marker.
+const resumeMarkers = (home) => {
+  const state = join(home, ".claude", ".i-have-audhd-state");
+  return existsSync(state) ? readdirSync(state).filter((f) => f.startsWith("resume-")) : [];
+};
 
 // ─── emission regression ─────────────────────────────────────────────────────
 
@@ -87,7 +92,7 @@ test("source=clear with a compact reason writes the marker; plain clear does not
 test("no session_id means no marker — there is nothing to key it to", () => {
   const home = mkhome();
   runInject({ source: "resume" }, home);
-  assert.ok(!existsSync(join(home, ".claude", ".i-have-audhd-state")));
+  assert.deepEqual(resumeMarkers(home), []);
 });
 
 test("unparseable stdin is fail-open: emit, exit 0, no marker", () => {
@@ -100,5 +105,43 @@ test("unparseable stdin is fail-open: emit, exit 0, no marker", () => {
   });
   assert.equal(r.status, 0);
   assert.match(r.stdout, /additionalContext/);
-  assert.ok(!existsSync(join(home, ".claude", ".i-have-audhd-state")));
+  assert.deepEqual(resumeMarkers(home), []);
+});
+
+// ─── the one-time no-judge notice ────────────────────────────────────────────────────────────
+
+const noticeMarker = (home) => join(home, ".claude", ".i-have-audhd-state", "judge-notice-shown");
+const writeProfile = (home, obj) => writeFileSync(join(home, ".claude", "i-have-audhd.json"), JSON.stringify(obj));
+
+test("a fresh install with no profile shows the no-judge notice once, naming the checks and the setup command", () => {
+  const home = mkhome();
+  const first = JSON.parse(runInject({ session_id: "s1", source: "startup" }, home).stdout);
+  assert.match(first.systemMessage, /no judge is configured, so 5 of its 9 checks are off/);
+  for (const rule of ["do-not-batch-by-label", "conclusion-first", "restate-resumed-thread", "report-what-you-did-not-do", "bad-news-first"]) {
+    assert.ok(first.systemMessage.includes(rule), rule);
+  }
+  assert.ok(first.systemMessage.includes(`node ${join(INJECTOR, "..", "..", "tools", "setup.mjs")}`));
+  assert.ok(first.hookSpecificOutput.additionalContext.includes(first.systemMessage));
+  assert.ok(existsSync(noticeMarker(home)));
+
+  const second = JSON.parse(runInject({ session_id: "s2", source: "startup" }, home).stdout);
+  assert.equal(second.systemMessage, undefined);
+  assert.ok(!second.hookSpecificOutput.additionalContext.includes("no judge is configured"));
+});
+
+test("a profile without enforcement.judgeCommand still counts as no choice", () => {
+  const home = mkhome();
+  writeProfile(home, { reader: "R", enforcement: { mode: "warn" } });
+  const out = JSON.parse(runInject({ session_id: "s1", source: "startup" }, home).stdout);
+  assert.match(out.systemMessage, /no judge is configured/);
+});
+
+test("judgeCommand null (chose none) and a set judge both suppress the notice", () => {
+  for (const judgeCommand of [null, "codex exec --skip-git-repo-check -"]) {
+    const home = mkhome();
+    writeProfile(home, { enforcement: { judgeCommand } });
+    const out = JSON.parse(runInject({ session_id: "s1", source: "startup" }, home).stdout);
+    assert.equal(out.systemMessage, undefined, String(judgeCommand));
+    assert.ok(!existsSync(noticeMarker(home)));
+  }
 });

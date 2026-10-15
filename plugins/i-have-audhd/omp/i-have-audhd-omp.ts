@@ -390,7 +390,9 @@ export function buildStartPayload(source: StartSource, ctx: Ctx): string {
 
 // One session-start crossing: spawn the inject hook and return its additionalContext, or
 // undefined when it emitted none (I_HAVE_AUDHD_INJECT=off) or failed (one errors.log line).
-// Subagent sessions are skipped before any spawn: no context, no resume marker.
+// A systemMessage from the hook (the one-time no-judge notice) is shown to the person as a UI
+// notice, the way Claude Code shows it; with no UI the same text still rides in the context.
+// Subagent sessions are skipped before any spawn: no context, no resume marker, no notice.
 export async function sessionStartHandler(
   source: StartSource,
   ctx: Ctx,
@@ -405,6 +407,9 @@ export async function sessionStartHandler(
     const hso = out.hookSpecificOutput;
     const context = hso && typeof hso === "object" && "additionalContext" in hso ? hso.additionalContext : undefined;
     if (typeof context !== "string") throw new Error("omp-adapter: inject CLI output carries no additionalContext");
+    if (ctx.hasUI && typeof out.systemMessage === "string" && out.systemMessage) {
+      ctx.ui?.notify?.(out.systemMessage, "warning");
+    }
     return context || undefined;
   } catch (err) {
     const detail = err instanceof Error ? err.message : String(err);
