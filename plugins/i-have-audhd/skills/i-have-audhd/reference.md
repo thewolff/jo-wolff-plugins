@@ -133,7 +133,9 @@ All four: plain-object results, never throw, options as a second argument, `mark
 supplied by the caller REPLACE the default, and a stdin-or-file CLI that prints one JSON
 object and exits 0. Line semantics are shared (`checks/lines.mjs`): headings are
 navigation; fences, HTML-comment envelopes, blockquotes, and blank/structural lines carry
-nothing; markers are line-anchored and matched after stripping hashes, bullets, emphasis,
+nothing (a comment opened mid-line runs to its `-->`, the text before the `<!--` still
+counting; a fence marker inside a comment is comment text; a `<!--` in inline code is text);
+markers are line-anchored and matched after stripping hashes, bullets, emphasis,
 and a trailing colon — so `## Needs you`, `**Needs you**`, and `Needs you:` are one marker,
 while `Needs you: two things` (content on the marker's own line) is not one.
 

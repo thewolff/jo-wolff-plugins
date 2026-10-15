@@ -625,6 +625,8 @@ test("bad news below the fold dispatches bad-news-first and blocks on a violatin
   const out = parseOut(r.stdout);
   assert.equal(out.decision, "block");
   assert.ok(blockedRules(home, "b1").includes("bad-news-first"));
+  assert.match(out.reason, /bad news into the opening 20 words/);
+  assert.doesNotMatch(out.reason, /first (substantive )?sentence/);
 });
 
 test("a clean message with no lexicon word never dispatches bad-news-first", () => {

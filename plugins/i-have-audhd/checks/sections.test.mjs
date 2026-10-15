@@ -84,6 +84,24 @@ test("a label inside a fence, a blockquote, or an HTML comment does not open a s
   }
 });
 
+test("a comment opened mid-line hides a label below it; the text before `<!--` stays prose", () => {
+  const text = "Intro <!-- hidden\n**CLAIM**\n-->";
+  assert.deepEqual(splitLabeledSections(text), [{ label: null, line: 1, text }]);
+  assert.equal(openingWords(text), "Intro");
+});
+
+test("a fence delimiter inside a comment does not toggle fence state or hide a later label", () => {
+  const text = "<!-- sample\n```\n-->\n**ACTION**\nRan the smoke test.";
+  const units = splitLabeledSections(text);
+  assert.deepEqual(units[units.length - 1], { label: "ACTION", line: 4, text: "Ran the smoke test." });
+});
+
+test("a `<!--` inside an inline code span opens no comment", () => {
+  const units = splitLabeledSections("Write `<!--` to start one.\n**CLAIM**\nBody.");
+  assert.equal(units.length, 2);
+  assert.equal(units[1].label, "CLAIM");
+});
+
 test("a heading directly above a label lands in the section that label opens", () => {
   const text = "**CLAIM**\nThe deploy went out.\n\n## Errors\n\n**ACTION**\nThe migration failed.";
   const units = splitLabeledSections(text);

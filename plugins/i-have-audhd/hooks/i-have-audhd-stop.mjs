@@ -293,8 +293,8 @@ function judgeReason(hits) {
       );
     case "conclusion-first":
       return (
-        `${cite("Conclusion first", job.rule)} — the first substantive sentence is judged setup while the verdict arrives ` +
-        `later (judge: ${verdict.reason}). Move the decision to the first sentence and let the rest earn ` +
+        `${cite("Conclusion first", job.rule)} — the opening ${OPENING_WORDS} words are judged setup while the verdict arrives ` +
+        `later (judge: ${verdict.reason}). Move the decision into the opening ${OPENING_WORDS} words and let the rest earn ` +
         `it. Paste the corrected opening lines only; never resend the whole message.`
       );
     case "restate-resumed-thread":
@@ -312,9 +312,9 @@ function judgeReason(hits) {
       );
     case "bad-news-first":
       return (
-        `${cite("Bad news first", job.rule)} — the message is judged to carry bad news that the first substantive ` +
-        `sentence neither states nor points to (judge: ${verdict.reason}). Move the bad news to the ` +
-        `first sentence; the explanation goes second. Paste the corrected opening lines only; never ` +
+        `${cite("Bad news first", job.rule)} — the message is judged to carry bad news that its opening ` +
+        `${OPENING_WORDS} words neither state nor point to (judge: ${verdict.reason}). Move the bad news into the ` +
+        `opening ${OPENING_WORDS} words; the explanation goes second. Paste the corrected opening lines only; never ` +
         `resend the whole message.`
       );
     default:

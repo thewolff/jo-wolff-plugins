@@ -241,6 +241,11 @@ Exit 0 means every item is done or had nothing to do, 1 means one was refused or
   not the first sentence: bad news at the end of a long first sentence is buried.
   `conclusion-first` no longer needs two paragraphs to fire, because one long paragraph can
   carry its point at word 40.
+- An HTML comment opened mid-line (`Intro <!-- note`) now runs to its `-->` like one opened
+  at the start of a line, the text before the `<!--` still counting, and a fence marker inside
+  a comment no longer opens a code block. A comment can no longer invent or hide a section.
+- The skill's "Bad news first" and the hook's fix guidance now name the opening 20 words
+  rather than the first sentence, for unlabeled messages as for labeled sections.
 - The judge verdict cache keys on the whole prompt, question included. Cached verdicts from
   1.0.x are not reused; each message is judged once more.
 
