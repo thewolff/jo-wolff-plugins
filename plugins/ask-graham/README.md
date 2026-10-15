@@ -77,17 +77,23 @@ The level comes from the first of these that exists:
    is an absolute path);
 3. the default, `ask`.
 
-Each file holds one line, `intensity=ask` or `intensity=every-idea`. Blank lines and lines
-starting with `#` are ignored. A file that exists but names no valid level counts as `ask` and
-stops the search there, so a typo in a file meant to turn the level down cannot turn it up.
+Each file holds `intensity=ask` or `intensity=every-idea`, and may also hold
+`stop-check=on` or `stop-check=off` (see [The Stop check](#the-stop-check)), one setting per
+line. Blank lines, lines starting with `#`, and other lines are ignored. Each setting is
+resolved on its own: a file with a line for only one of them falls through to the next file for
+the other. A file with a line for a setting but an unknown value counts as that setting's
+default (`ask`, `on`) and stops the search there, so a typo in a file meant to turn the level
+down cannot turn it up. A file with a line for neither counts as `ask` and `on`.
 
 To show or change it from a session (on OMP, write `/skill:ask-graham` in place of
 `/ask-graham`):
 
 ```
-/ask-graham intensity                    # show the level and which file set it
+/ask-graham intensity                    # show both settings and which file set each
 /ask-graham intensity every-idea         # write the user file
 /ask-graham intensity ask --here         # write .ask-graham at this git repository's root
+/ask-graham stop-check off               # turn the Stop check off in the user file
+/ask-graham stop-check off --here        # turn it off for this git repository only
 ```
 
 That runs the script beside the skill, which you can also call directly with the same
@@ -95,7 +101,10 @@ arguments, plus `--cwd <dir>` to resolve from another directory:
 
 ```
 node <plugin dir>/skills/ask-graham/scripts/intensity.mjs [every-idea|ask] [--here] [--cwd <dir>]
+node <plugin dir>/skills/ask-graham/scripts/intensity.mjs stop-check [on|off] [--here] [--cwd <dir>]
 ```
+
+Writing one setting keeps the file's line for the other.
 
 `--here` fails outside a git repository. The `.ask-graham` it writes is untracked; add it to
 `.git/info/exclude` if you do not want to commit it.
@@ -141,6 +150,12 @@ verdicts this skill used before 0.3.0 included. If the line is missing, the stop
 with a reason that names the four verdicts and asks the agent for the line, so the answer gets
 its verdict in the same turn.
 
+**To turn the Stop check off**, without uninstalling: `/ask-graham stop-check off` (or
+`/skill:ask-graham stop-check off` on OMP) writes `stop-check=off` to your user file; add
+`--here` for one repository, or put the line in a `.ask-graham` yourself. Both hosts read it at
+every stop, so it applies from the next stop without a restart. `/ask-graham stop-check on` turns
+it back on. Check which file wins with `/ask-graham intensity`.
+
 What counts as reading the skill:
 
 - on Claude Code, the agent calling the `Skill` tool for `ask-graham` (or `<plugin>:ask-graham`),
@@ -150,11 +165,11 @@ What counts as reading the skill:
   agent's `read` of `skill://ask-graham`, `skill://<namespace>/ask-graham`, or a file ending
   `/ask-graham/SKILL.md`.
 
-A skill body pasted into an ordinary message does not count. `/ask-graham intensity` (or
-`/skill:ask-graham intensity`) gives no verdict, so an intensity-only turn, one whose every use
-of the skill is an intensity invocation, is not checked. A turn that also invokes the skill
-without intensity args or reads the skill file is checked, and so is an ordinary check that
-runs the intensity script along the way.
+A skill body pasted into an ordinary message does not count. `/ask-graham intensity` and
+`/ask-graham stop-check` (or their `/skill:ask-graham` forms) give no verdict, so a settings-only
+turn, one whose every use of the skill is a settings invocation, is not checked. A turn that
+also invokes the skill with other args (or none) or reads the skill file is checked, and so is
+an ordinary check that runs the settings script along the way.
 
 Only the current turn is read: the transcript is walked back from its latest entry to the
 message you sent, so a skill read in an earlier turn, or on a branch you rewound away from, does

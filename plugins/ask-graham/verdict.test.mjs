@@ -100,13 +100,13 @@ for (const [name, h] of Object.entries(HARNESSES)) {
     assert.equal(checkStop({ entries: t.entries }).pass, "no-skill-read");
   });
 
-  test(`${name}: an intensity invocation passes`, () => {
-    for (const args of ["intensity", "intensity every-idea", "intensity ask --here"]) {
+  test(`${name}: a settings invocation (intensity or stop-check) passes`, () => {
+    for (const args of ["intensity", "intensity every-idea", "intensity ask --here", "stop-check", "stop-check off", "stop-check on --here"]) {
       const t = h.make();
       h.invoke(t, args);
       t.bash("node /plugins/ask-graham/skills/ask-graham/scripts/intensity.mjs");
       t.say("Intensity is ask (default).");
-      assert.equal(checkStop({ entries: t.entries }).pass, "intensity", args);
+      assert.equal(checkStop({ entries: t.entries }).pass, "settings", args);
     }
   });
 
@@ -200,13 +200,13 @@ test("Claude Code: a /ask-graham slash command opens the turn; its isMeta skill 
   t.say(ANSWER);
   const turn = currentTurn(t.entries);
   assert.equal(turn.id, opener);
-  assert.deepEqual(skillUse(turn), { read: true, intensityOnly: false });
+  assert.deepEqual(skillUse(turn), { read: true, settingsOnly: false });
 
   // the args are the slash command's: intensity args make the turn intensity-only
   const u = claudeCode();
   u.slash("ask-graham", "intensity every-idea");
   u.say("Intensity is every-idea.");
-  assert.deepEqual(skillUse(currentTurn(u.entries)), { read: true, intensityOnly: true });
+  assert.deepEqual(skillUse(currentTurn(u.entries)), { read: true, settingsOnly: true });
 });
 
 test("Claude Code: a Skill call with intensity args passes", () => {
@@ -214,7 +214,7 @@ test("Claude Code: a Skill call with intensity args passes", () => {
   t.prompt("/ask-graham intensity, please");
   t.skill("ask-graham:ask-graham", "intensity");
   t.say("Intensity is ask.");
-  assert.equal(checkStop({ entries: t.entries }).pass, "intensity");
+  assert.equal(checkStop({ entries: t.entries }).pass, "settings");
 });
 
 test("Claude Code: /ask-graham intensity then an ordinary or arg-less Skill call blocks", () => {
@@ -248,7 +248,7 @@ test("Claude Code: /ask-graham intensity then a Skill call with intensity args s
   const opener = t.slash("ask-graham", "intensity");
   t.skill("ask-graham:ask-graham", "intensity every-idea");
   t.say("Intensity is every-idea.");
-  assert.deepEqual(checkStop({ entries: t.entries }), { pass: "intensity", opener });
+  assert.deepEqual(checkStop({ entries: t.entries }), { pass: "settings", opener });
 });
 
 test("Claude Code: a Read of SKILL.md counts, a look-alike path does not", () => {
@@ -304,12 +304,12 @@ test("OMP: a namespaced skill prompt counts; its args come from details or the U
   const t = omp();
   t.skillPrompt("ns/ask-graham", "intensity");
   t.say("Intensity is ask.");
-  assert.equal(checkStop({ entries: t.entries }).pass, "intensity");
+  assert.equal(checkStop({ entries: t.entries }).pass, "settings");
 
   const u = omp();
   const id = u.skillPrompt("ask-graham", "intensity every-idea");
   delete u.entries.find((e) => e.id === id).details.args;
-  assert.deepEqual(skillUse(currentTurn(u.entries)), { read: true, intensityOnly: true });
+  assert.deepEqual(skillUse(currentTurn(u.entries)), { read: true, settingsOnly: true });
 });
 
 test("OMP: /skill:ask-graham intensity then a read of the skill file blocks", () => {
@@ -325,7 +325,7 @@ test("OMP: /skill:ask-graham intensity then a read of the skill file blocks", ()
 // A typed /skill: opens its own turn on OMP, so currentTurn never holds two invocations; the
 // every-use rule is checked on the invocations' entries directly.
 test("OMP: skillUse is intensity-only only when every invocation is an intensity one", () => {
-  for (const [first, second, intensityOnly] of [
+  for (const [first, second, settingsOnly] of [
     ["intensity", "should we build a cache", false],
     ["should we build a cache", "intensity", false],
     ["intensity", "", false],
@@ -334,7 +334,7 @@ test("OMP: skillUse is intensity-only only when every invocation is an intensity
     const t = omp();
     t.skillPrompt("ask-graham", first);
     t.skillPrompt("ask-graham", second);
-    assert.deepEqual(skillUse({ entries: t.entries }), { read: true, intensityOnly }, `${first} / ${second}`);
+    assert.deepEqual(skillUse({ entries: t.entries }), { read: true, settingsOnly }, `${first} / ${second}`);
   }
 });
 

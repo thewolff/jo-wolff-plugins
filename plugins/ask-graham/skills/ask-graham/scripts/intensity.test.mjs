@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
-import { DEFAULT_LEVEL, REPO_FILE, describe, main, parseIntensity, resolveIntensity, userConfigPath, writeIntensity } from "./intensity.mjs";
+import { DEFAULT_LEVEL, REPO_FILE, describe, describeStopCheck, main, parseIntensity, parseSetting, resolveIntensity, resolveSetting, stopCheckEnabled, userConfigPath, writeIntensity, writeSetting } from "./intensity.mjs";
 
 const CLI = fileURLToPath(new URL("./intensity.mjs", import.meta.url));
 
@@ -135,17 +135,126 @@ test("writeIntensity writes the user file, or the repo file with here", (t) => {
   assert.throws(() => writeIntensity("ask", { here: true, cwd: f.home, env: f.env, home: f.home }), /needs a git repository/);
 });
 
-test("main prints the level, and with a value writes first", (t) => {
+test("main prints both settings, and with a value writes first", (t) => {
   const f = fixture(t);
   const lines = [];
   const out = (l) => lines.push(l);
   main(["--cwd", f.sub], { env: f.env, home: f.home, out });
-  assert.deepEqual(lines, ["ask-graham intensity: ask (from the default; no repo or user file sets it)"]);
+  assert.deepEqual(lines, [
+    "ask-graham intensity: ask (from the default; no repo or user file sets it)",
+    "ask-graham stop-check: on (from the default; no repo or user file sets it)",
+  ]);
   lines.length = 0;
   main(["every-idea", "--cwd", f.sub], { env: f.env, home: f.home, out });
   assert.equal(lines[0], `wrote intensity=every-idea to ${f.userFile}`);
   assert.equal(lines[1], `ask-graham intensity: every-idea (from user file ${f.userFile})`);
   assert.throws(() => main(["--here"], { env: f.env, home: f.home, out }), /usage/);
+});
+
+// --- stop-check -----------------------------------------------------------------------------------
+
+const stopCheck = (f, cwd = f.sub) => resolveSetting("stop-check", { cwd, env: f.env, home: f.home });
+
+test("stop-check: no files means on, from the default", (t) => {
+  const f = fixture(t);
+  assert.deepEqual(stopCheck(f), { key: "stop-check", value: "on", source: "default", path: null, invalid: false });
+  assert.equal(stopCheckEnabled({ cwd: f.sub, env: f.env, home: f.home }), true);
+});
+
+test("stop-check: the user file turns it off; a repo file wins over the user file both ways", (t) => {
+  const f = fixture(t);
+  f.setUser("stop-check=off\n");
+  assert.deepEqual(stopCheck(f), { key: "stop-check", value: "off", source: "user", path: f.userFile, invalid: false });
+  assert.equal(stopCheckEnabled({ cwd: f.sub, env: f.env, home: f.home }), false);
+  f.setRepo("stop-check=on\n");
+  assert.equal(stopCheck(f).value, "on");
+  assert.equal(stopCheck(f).source, "repo");
+  f.setUser("stop-check=on\n");
+  f.setRepo("stop-check = off\n");
+  assert.equal(stopCheck(f).value, "off");
+  assert.equal(stopCheckEnabled({ cwd: f.sub, env: f.env, home: f.home }), false);
+});
+
+test("each key resolves on its own: a file setting only the other key falls through for this one", (t) => {
+  const f = fixture(t);
+  f.setUser("intensity=every-idea\nstop-check=off\n");
+  f.setRepo("intensity=ask\n");
+  assert.equal(resolveIntensity({ cwd: f.sub, env: f.env, home: f.home }).level, "ask");
+  assert.deepEqual(stopCheck(f), { key: "stop-check", value: "off", source: "user", path: f.userFile, invalid: false });
+  f.setRepo("stop-check=on\n");
+  const r = resolveIntensity({ cwd: f.sub, env: f.env, home: f.home });
+  assert.equal(r.level, "every-idea");
+  assert.equal(r.source, "user");
+  assert.equal(stopCheck(f).value, "on");
+});
+
+test("stop-check: an unknown value counts as on and does not fall through", (t) => {
+  const f = fixture(t);
+  f.setUser("stop-check=off\n");
+  f.setRepo("stop-check=of\n");
+  const r = stopCheck(f);
+  assert.equal(r.value, "on");
+  assert.equal(r.source, "repo");
+  assert.equal(r.invalid, true);
+  assert.match(describeStopCheck(r), /names no valid stop-check value, so it counts as on/);
+});
+
+test("a file naming neither key decides both, as today: blank, comments and garbage", (t) => {
+  const f = fixture(t);
+  f.setUser("intensity=every-idea\nstop-check=off\n");
+  for (const text of ["", "# just a comment\n\n", "garbage\n", "stop-check=of f\n"]) {
+    f.setRepo(text);
+    const i = resolveIntensity({ cwd: f.sub, env: f.env, home: f.home });
+    assert.deepEqual([i.level, i.source, i.invalid], ["ask", "repo", true], JSON.stringify(text));
+    const s = stopCheck(f);
+    assert.deepEqual([s.value, s.source, s.invalid], ["on", "repo", true], JSON.stringify(text));
+  }
+});
+
+test("parseSetting: value, null for an unknown value, undefined for no line", () => {
+  assert.equal(parseSetting("# c\nstop-check = off\n", "stop-check"), "off");
+  assert.equal(parseSetting("stop-check=OFF\n", "stop-check"), null);
+  assert.equal(parseSetting("intensity=ask\n", "stop-check"), undefined);
+  assert.equal(parseSetting("stop-check=off\n", "intensity"), undefined);
+  assert.equal(parseIntensity("stop-check=off\n"), null);
+  assert.throws(() => parseSetting("", "loudness"), /unknown setting/);
+});
+
+test("writeSetting replaces its own line and keeps the other key", (t) => {
+  const f = fixture(t);
+  writeIntensity("every-idea", { cwd: f.sub, env: f.env, home: f.home });
+  writeSetting("stop-check", "off", { cwd: f.sub, env: f.env, home: f.home });
+  writeSetting("stop-check", "on", { cwd: f.sub, env: f.env, home: f.home });
+  writeSetting("stop-check", "off", { cwd: f.sub, env: f.env, home: f.home });
+  const text = readFileSync(f.userFile, "utf8");
+  assert.equal(text.match(/^stop-check=/gm).length, 1);
+  assert.match(text, /^intensity=every-idea$/m);
+  assert.match(text, /^stop-check=off$/m);
+  f.setRepo("# mine\nintensity=ask\n");
+  assert.equal(writeSetting("stop-check", "off", { here: true, cwd: f.sub, env: f.env, home: f.home }), join(f.repo, REPO_FILE));
+  assert.equal(readFileSync(join(f.repo, REPO_FILE), "utf8"), "# mine\nintensity=ask\nstop-check=off\n");
+  assert.throws(() => writeSetting("stop-check", "maybe", { env: f.env, home: f.home }), /unknown stop-check "maybe"; use on or off/);
+});
+
+test("main stop-check: off writes the user file, --here the repo file, bare prints", (t) => {
+  const f = fixture(t);
+  const lines = [];
+  const out = (l) => lines.push(l);
+  main(["stop-check", "off", "--cwd", f.sub], { env: f.env, home: f.home, out });
+  assert.deepEqual(lines, [
+    `wrote stop-check=off to ${f.userFile}`,
+    "ask-graham intensity: ask (from the default; no repo or user file sets it)",
+    `ask-graham stop-check: off (from user file ${f.userFile})`,
+  ]);
+  lines.length = 0;
+  main(["stop-check", "on", "--here", "--cwd", f.sub], { env: f.env, home: f.home, out });
+  assert.equal(lines[0], `wrote stop-check=on to ${join(f.repo, REPO_FILE)}`);
+  assert.equal(lines[2], `ask-graham stop-check: on (from repo file ${join(f.repo, REPO_FILE)})`);
+  lines.length = 0;
+  main(["stop-check", "--cwd", f.sub], { env: f.env, home: f.home, out });
+  assert.equal(lines.length, 2);
+  assert.throws(() => main(["stop-check", "--here", "--cwd", f.sub], { env: f.env, home: f.home, out }), /usage/);
+  assert.throws(() => main(["stop-check", "off", "extra"], { env: f.env, home: f.home, out }), /usage/);
 });
 
 test("the CLI exits 1 with a message on a bad level", (t) => {
