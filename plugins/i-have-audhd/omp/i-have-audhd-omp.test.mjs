@@ -485,3 +485,86 @@ test("lifecycle: a hung judge at the production budgets — the stop settles its
   assert.ok(pids.length > 0, "a judge job ran");
   assert.ok(gone.every(Boolean), `judge descendants ${pids.join(", ")} outlived the stop`);
 });
+
+// ─── warnings: a warn finding reaches the agent's next turn ────────────────────────────
+// The core leaves its warn findings pending (lib/pending.mjs); after each stop the adapter
+// spawns the prompt CLI to consume them and hands them to the host's sendMessage with
+// deliverAs "nextTurn" — the queue OMP prepends to the next prompt.
+
+test("a warning the core left pending is delivered after the stop, whether or not the stop blocks", async () => {
+  const dir = mkstate();
+  const delivered = [];
+  const deps = {
+    stateDir: dir,
+    runCli: async () => blockVerdict,
+    takeWarning: async (sid) => ({ notice: `notice for ${sid}`, summary: "s" }),
+    deliver: (w) => delivered.push(w),
+  };
+  const out = await sessionStopHandler(event({ session_id: "warn-1" }), ctx, deps);
+  assert.equal(out?.decision, "block");
+  assert.deepEqual(delivered, [{ notice: "notice for warn-1", summary: "s" }]);
+  const quiet = await sessionStopHandler(event({ session_id: "warn-2" }), ctx, { ...deps, runCli: async () => undefined });
+  assert.equal(quiet, undefined);
+  assert.equal(delivered.length, 2);
+  assert.equal(readLog(dir, "errors.log"), "");
+});
+
+test("a failing delivery fails open: the verdict stands, one errors.log line names the delivery", async () => {
+  const dir = mkstate();
+  const out = await sessionStopHandler(event(), ctx, {
+    stateDir: dir,
+    runCli: async () => blockVerdict,
+    takeWarning: async () => ({ notice: "n", summary: "s" }),
+    deliver: () => {
+      throw new Error("host refused");
+    },
+  });
+  assert.equal(out?.decision, "block");
+  assert.match(readLog(dir, "errors.log"), /warning delivery\): host refused/);
+});
+
+test("a host with no sendMessage gets no delivery attempt and no error", async () => {
+  const dir = mkstate();
+  let taken = 0;
+  await sessionStopHandler(event(), ctx, { stateDir: dir, runCli: async () => undefined, takeWarning: async () => (taken++, undefined) });
+  assert.equal(taken, 0, "the pending file is left for the next checked stop to replace");
+  assert.equal(readLog(dir, "errors.log"), "");
+});
+
+test("lifecycle: a real warn finding reaches sendMessage as a nextTurn message, once, and the person gets a notice", async () => {
+  const handlers = {};
+  const sent = [];
+  const notices = [];
+  iHaveAudhdOmp({ on: (name, handler) => (handlers[name] = handler), sendMessage: (m, o) => sent.push({ m, o }) });
+  const home = mkdtempSync(join(tmpdir(), "omp-adapter-warn-home-"));
+  mkdirSync(join(home, ".claude"));
+  const stateDir = join(home, ".claude", ".i-have-audhd-state");
+  const hostCtx = {
+    ...managedCtx(home, "mgr-warn"),
+    hasUI: true,
+    ui: { notify: (msg, type) => notices.push({ msg, type }) },
+  };
+  const fire = (stop) =>
+    withEnv(
+      { HOME: home, I_HAVE_AUDHD_PLUGIN_ROOT: PLUGIN_ROOT, I_HAVE_AUDHD_PROFILE: undefined, I_HAVE_AUDHD_ENFORCE: undefined, I_HAVE_AUDHD_HARNESS: undefined },
+      () => handlers.session_stop(stop, hostCtx),
+    );
+  const out = await fire(event({ session_file: join(home, "absent.jsonl"), last_assistant_message: { content: misordered } }));
+  assert.equal(out, undefined, "no profile: the measured defaults warn");
+  assert.equal(sent.length, 1);
+  assert.equal(sent[0].o.deliverAs, "nextTurn");
+  assert.equal(sent[0].o.triggerTurn, undefined, "the warning waits for the next prompt; it starts no turn");
+  assert.equal(sent[0].m.customType, "i-have-audhd-warning");
+  assert.match(sent[0].m.content, /^i-have-audhd check of your last message \(warning only/);
+  assert.match(sent[0].m.content, /Move what needs the reader above the body\./);
+  assert.doesNotMatch(sent[0].m.content, /Paste the corrected/);
+  assert.equal(notices.length, 1);
+  assert.equal(notices[0].type, "warning");
+  assert.match(notices[0].msg, /needs-you-first/);
+  assert.equal(readLog(stateDir, "errors.log"), "");
+  assert.ok(!existsSync(join(stateDir, "pending-warn-mgr-warn.json")), "consumed on delivery");
+
+  const clean = `## Needs you\n\nApprove the deploy before Friday.\n\n${body(6)}`;
+  await fire(event({ session_file: join(home, "absent.jsonl"), last_assistant_message: { content: clean } }));
+  assert.equal(sent.length, 1, "a clean stop sends nothing");
+});
