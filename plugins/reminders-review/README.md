@@ -16,6 +16,22 @@ Before moving on, it asks "Can I close this one?" Yes marks the reminder complet
 - macOS.
 - [remindctl](https://github.com/openclaw/remindctl): `brew install steipete/tap/remindctl`. The first run asks for Reminders access for your terminal app; `remindctl status` should then say `Full access`.
 
+## Install
+
+Claude Code:
+
+```
+/plugin marketplace add thewolff/jo-wolff-plugins
+/plugin install reminders-review@jo-wolff-plugins
+```
+
+OMP:
+
+```
+omp plugin marketplace add thewolff/jo-wolff-plugins
+omp plugin install reminders-review@jo-wolff-plugins
+```
+
 ## Use
 
 ```
