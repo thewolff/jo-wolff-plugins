@@ -6,8 +6,8 @@
 // once-per-turn record.
 //
 // THE CHECK. A main-session turn that read the ask-graham skill must end in a line
-// `**Verdict:** <one of VERDICTS>`. A turn that did not read the skill, or whose only uses of it
-// were settings invocations (`/ask-graham intensity`, `/ask-graham stop-check`), is not checked.
+// `**Verdict:** <one of VERDICTS>`, unless it ends by asking the comparables question and waiting.
+// A turn that did not read the skill, or whose only uses of it were settings invocations (`/ask-graham intensity`, `/ask-graham stop-check`), is not checked.
 // The adapters skip the check entirely when the stop-check setting is off. The check blocks at most once per
 // turn: the caller keeps the opener id of the turn it last blocked and passes it back as
 // `blockedOpener`.
@@ -237,7 +237,7 @@ export const BLOCK_REASON =
  * Returns `{ block: <reason>, opener }` when the stop must be blocked, which the caller records
  * as its new blockedOpener, or `{ pass: <why>, opener }` otherwise, `why` being one of
  * "no-turn", "no-skill-read", "settings" (every skill use was a settings invocation),
- * "verdict", "already-blocked". `opener` is the turn opener's id, or null with "no-turn".
+ * "verdict", "comparables-question", "already-blocked". `opener` is the turn opener's id, or null with "no-turn".
  */
 export function checkStop({ entries, text, blockedOpener = null } = {}) {
   const turn = currentTurn(entries);
@@ -248,6 +248,12 @@ export function checkStop({ entries, text, blockedOpener = null } = {}) {
   if (use.settingsOnly) return { pass: "settings", opener };
   const finalText = typeof text === "string" && text.trim() ? text : lastAssistantText(turn);
   if (findVerdict(finalText)) return { pass: "verdict", opener };
+  // Only the exact question on the final line signals a wait, not a quotation or a report
+  // mentioning it. Use the same final text as the verdict check in both harnesses.
+  if (typeof finalText === "string" &&
+      /(?:^|\n)[ \t]*Do you want me to research and see if something comparable exists\?[ \t]*$/.test(finalText.trimEnd())) {
+    return { pass: "comparables-question", opener };
+  }
   if (blockedOpener !== null && blockedOpener === opener) return { pass: "already-blocked", opener };
   return { block: BLOCK_REASON, opener };
 }

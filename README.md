@@ -315,6 +315,10 @@ five gate questions, a short list of red flags, the 2-minute rule from GTD, and 
 It ends in exactly one verdict: **do it now**, **start now**, **later**, or **don't build**,
 with a breakdown scaled to the size of the work.
 
+Every check asks "Do you want me to research and see if something comparable exists?"
+No keeps the search local; yes adds open-source and commercial options, screened by gates
+then ranked with pros, cons, and dated, sourced stats; stars, age, forks, and followers stay context only.
+
 The problem it addresses: an agent asked "can we build X?" hears "build X". It does not stop to
 ask why, whether something already does it, or who will maintain it, so the backlog fills with
 things that were cheap to start and expensive to keep.
@@ -354,8 +358,8 @@ extension (`omp/ask-graham-omp.ts`, declared in the plugin's `package.json`): wi
 ### What you get
 
 - **Graham's five gate questions**, answered from evidence (the repo, its issue tracker, its
-  backlog files) rather than put back to you. You are asked only what no tool can settle: who
-  will own it, or which reason matters to you.
+  backlog files) rather than put back to you. Apart from the comparables question, you are asked only what
+  no tool can settle: who will own it, or which reason matters to you.
 - **A search for what already exists** before anything else, delegated to a subagent when it
   spans repos.
 - **Graham's red flags** for technical asks: an enum invented for a platform you do not control,
@@ -395,7 +399,8 @@ The level comes from the first of these that exists:
 Each file holds `intensity=ask` or `intensity=every-idea`. A file that names neither counts as
 `ask`, so a typo in a file meant to turn the level down cannot turn it up. The same files take a
 second line, `stop-check=off`, to turn off the Stop check that blocks once when an answer that
-read the skill has no `**Verdict:**` line (default `on`). To change either from a session (on
+read the skill has no `**Verdict:**` line (default `on`). A reply ending with the exact
+comparables question alone on its final line may wait for an answer without a verdict. To change either from a session (on
 OMP, write `/skill:ask-graham` in place of `/ask-graham`):
 
 ```
