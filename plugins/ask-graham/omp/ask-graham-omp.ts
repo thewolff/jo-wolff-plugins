@@ -2,10 +2,11 @@
 //
 // OMP does not run a plugin's hooks/hooks.json, so the Claude Code UserPromptSubmit hook never
 // fires there. This extension does the same job on OMP's `before_agent_start` event, which fires
-// once per direct prompt and once per dequeued batch of user messages (steers and follow-ups
-// typed mid-turn are folded into one batch: agent-session.ts #prepareQueuedUserMessages ->
-// #prepareAgentStart -> emitBeforeAgentStart, OMP 18.8.6). It resolves the level from the
-// session's working directory (skills/ask-graham/scripts/intensity.mjs) and, only at every-idea,
+// once per direct prompt and once per dequeued batch of user messages (a steer typed mid-turn
+// is its own batch by default; with steeringMode "all" the queued steers form one batch:
+// agent-session.ts #prepareQueuedUserMessages -> #prepareAgentStart -> emitBeforeAgentStart,
+// OMP 18.8.6). It resolves the level from the session's working directory
+// (skills/ask-graham/scripts/intensity.mjs) and, only at every-idea,
 // returns NUDGE as a hidden custom message (display false) that OMP puts in the same request as
 // the user's message. It never revises the message.
 //
