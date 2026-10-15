@@ -1,6 +1,6 @@
 ---
 name: ask-graham
-description: Answers an explicit "should we build X?" with Graham's stated judgment (his gate questions, the 2-minute rule, fewer lines wins) and a verdict of do it now, backlog, backlog prioritize now, or don't build. Use only when the user asks outright whether something is worth building ("should we build this?", "is it worth building?"), when an ask-graham nudge says a message proposes a new idea, or on /ask-graham. Not for tickets, bug fixes, tasks inside an already-decided project, or continuing existing work.
+description: Answers an explicit "should we build X?" with Graham's stated judgment (his gate questions, the 2-minute rule, fewer lines wins) and a verdict of do it now, start now, later, or don't build. Use only when the user asks outright whether something is worth building ("should we build this?", "is it worth building?"), when an ask-graham nudge says a message proposes a new idea, or on /ask-graham. Not for tickets, bug fixes, tasks inside an already-decided project, or continuing existing work.
 argument-hint: "[the thing to build] | intensity [every-idea|ask] [--here]"
 license: MIT
 ---
@@ -65,7 +65,7 @@ Graham's third gate question is "Something else already exists?" (Graham #1). Ho
 - **Skills and tools already installed.** The session's own skill list, the user's skills directory (`~/.claude/skills/` on Claude Code), the repo's `skills/` directory if it has one.
 - **Where open work lives**, read-only and nothing else:
   - the repo's issue tracker (for a GitHub repo, `gh issue list --search "<noun>"` and `gh pr list --search "<noun>"`);
-  - any backlog, roadmap, TODO, or task file the project's `AGENTS.md` or `CLAUDE.md` names;
+  - any to-do, roadmap or task file the project's `AGENTS.md` or `CLAUDE.md` names;
   - the user's own sources file, if it exists: `${XDG_CONFIG_HOME:-$HOME/.config}/ask-graham/sources.md`. It lists extra places to check, in the user's words: a work database and the read-only query that lists open items, a held-decisions file, a planning folder. Read it, then check each source it lists the way it says to. A missing file is not an error; record the source as *not configured* and move on.
 
   For each, narrow to the ask's key nouns rather than reading everything.
@@ -106,9 +106,9 @@ Size first, with Graham's 2-minute rule from GTD: "if we can do it in under 2 mi
 
 | Verdict | When | Source |
 |---|---|---|
-| **do it now (under 2 min)** | It takes under two minutes and the gate questions pass. | Graham #4 |
-| **backlog** | Bigger than two minutes, the gate questions pass, and nothing gets worse while it waits. | Graham #4 |
-| **backlog, prioritize now** | Bigger than two minutes, the gate questions pass, and waiting has a named cost: something is blocked, something piles up, or a deadline exists. | Graham #4 for the option; the cost-of-waiting test is the skill's (Skill) |
+| **do it now** | It takes under two minutes and the gate questions pass. | Graham #4 |
+| **start now** | Bigger than two minutes, the gate questions pass, and waiting has a named cost: something is blocked, something piles up, or a deadline exists. | Graham #4 for the option; the cost-of-waiting test is the skill's (Skill) |
+| **later** | Bigger than two minutes, the gate questions pass, and nothing gets worse while it waits. | Graham #4 |
 | **don't build** | The why is only "it's cool", something existing already covers it, it is out of scope, or nobody would own it. | Mapping is the skill's (Skill), from Graham #1 and #2 |
 
 When two designs, or two asks, both pass: "fewer lines of code? less complexity means less to maintain. Future functionality is often YAGNI" (Graham #5). Pick the smaller one and name what it leaves out. Type annotations never count as lines or complexity here (Jo).
@@ -120,8 +120,8 @@ Done when: exactly one verdict, with a one-line why that names the gate answer o
 "Case by case. The bigger the task the larger breakdown." (Graham #6)
 
 - **do it now / don't build**: no breakdown.
-- **backlog, small** (a single task of hours to a couple of days): one task with acceptance criteria.
-- **backlog, bigger**: break it down fractally, "onion skin": **High Level Design (HLD) → Epics → Stories → Tasks | Acceptance criteria**. "Tasks should be measured in hours or a few days at the most." (Graham #6) Go only as deep as the size needs.
+- **start now or later, small** (a single task of hours to a couple of days): one task with acceptance criteria.
+- **start now or later, bigger**: break it down fractally, "onion skin": **High Level Design (HLD) → Epics → Stories → Tasks | Acceptance criteria**. "Tasks should be measured in hours or a few days at the most." (Graham #6) Go only as deep as the size needs.
 
 Every work item states the requirement and how to tell it is met. Never write untested implementation into a work item as a requirement: "implementation is for the dev." (Graham #6) Naming the existing file or command that the work touches is context, which is fine; prescribing the code is not.
 
@@ -132,7 +132,7 @@ Done when: every task has acceptance criteria a reviewer could check, and no tas
 The same shape every time. Conclusion first; the reader can stop after the verdict line and still act.
 
 ```
-**Verdict:** <one of the four verdicts>. <one-line why>
+**Verdict:** <one of the four verdicts: do it now, start now, later, don't build>. <one-line why>
 
 **Needs you:** <only what no tool could answer: owner, which why matters, a collision to rule on. Omit the line when there is nothing.>
 
@@ -150,7 +150,7 @@ The same shape every time. Conclusion first; the reader can stop after the verdi
 **Closing ask:** <one decision, restating its full subject, with a recommendation>
 ```
 
-The closing ask names the thing in full ("Put the CSV export for the billing page in the backlog and start it next, or park it?"), never a back-reference like "do you want that?".
+The closing ask names the thing in full ("Start the CSV export for the billing page now, or leave it for later?"), never a back-reference like "do you want that?".
 
 ## The sources file
 

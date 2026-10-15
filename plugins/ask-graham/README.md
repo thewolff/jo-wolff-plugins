@@ -8,8 +8,8 @@ answers five gate questions, checks a few red flags for technical asks, and ends
 verdict:
 
 - **do it now** (under two minutes),
-- **backlog**,
-- **backlog, prioritize now** (waiting has a named cost),
+- **start now** (bigger, and waiting has a named cost),
+- **later** (bigger, and nothing gets worse while it waits),
 - **don't build**.
 
 The breakdown that follows is scaled to the size of the work: none, one task, or High Level
@@ -135,8 +135,9 @@ one bullet per source with the read-only command or path:
 - **Decisions waiting on me:** `~/notes/HELD.md`
 ```
 
-Without it the skill checks the repo, its issue tracker, and any backlog file the project's
-`AGENTS.md` or `CLAUDE.md` names. Keep it out of version control: it describes your machine.
+Without it the skill checks the repo, its issue tracker, and any to-do, roadmap or task file the
+project's `AGENTS.md` or `CLAUDE.md` names. Keep it out of version control: it describes your
+machine.
 
 ## Update and uninstall
 
