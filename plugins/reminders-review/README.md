@@ -16,6 +16,10 @@ Before moving on, it asks "Can I close this one?" Yes marks the reminder complet
 - macOS.
 - [remindctl](https://github.com/openclaw/remindctl): `brew install steipete/tap/remindctl`. The first run asks for Reminders access for your terminal app; `remindctl status` should then say `Full access`.
 
+## Limitation: the Reminders.app link field
+
+The agent sees a reminder's title, notes, URL, due date, and priority. A link added in Reminders.app's own link field does not reach it. remindctl reads reminders through Apple's public EventKit, and EventKit does not expose that field ([rem architecture notes](https://rem.sidv.dev/docs/architecture/): "EventKit's EKReminder does not expose flagged state, the real URL field, or hashtags visible in Reminders.app"; [remindctl issue #46](https://github.com/openclaw/remindctl/issues/46)). So when a reminder has no notes and no URL, the agent says so and asks you to paste the link if there is one, instead of guessing from the title. Putting the link in the notes works too.
+
 ## Install
 
 Claude Code:
