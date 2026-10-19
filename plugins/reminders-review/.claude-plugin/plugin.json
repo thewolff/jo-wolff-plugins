@@ -1,7 +1,7 @@
 {
   "name": "reminders-review",
   "description": "Go through your open Apple Reminders one at a time with an agent: it answers the questions, confirms before acting on the instructions, asks when unclear, and closes each one only when you say yes. macOS, via remindctl.",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "author": { "name": "Jo Wolff" },
   "license": "MIT",
   "repository": "https://github.com/thewolff/jo-wolff-plugins",

@@ -15,10 +15,15 @@ Before moving on, it asks "Can I close this one?" Yes marks the reminder complet
 
 - macOS.
 - [remindctl](https://github.com/openclaw/remindctl): `brew install steipete/tap/remindctl`. The first run asks for Reminders access for your terminal app; `remindctl status` should then say `Full access`.
+- Optional: [rem](https://github.com/BRO3886/rem), to read links typed into Reminders.app's own link field: `brew tap BRO3886/tap && brew trust --formula bro3886/tap/rem-cli && brew install bro3886/tap/rem-cli`. Homebrew refuses an untrusted tap, so the trust step is needed. The skill only ever runs `rem show`.
 
-## Limitation: the Reminders.app link field
+## The Reminders.app link field
 
-The agent sees a reminder's title, notes, URL, due date, and priority. A link added in Reminders.app's own link field does not reach it. remindctl reads reminders through Apple's public EventKit, and EventKit does not expose that field ([rem architecture notes](https://rem.sidv.dev/docs/architecture/): "EventKit's EKReminder does not expose flagged state, the real URL field, or hashtags visible in Reminders.app"; [remindctl issue #46](https://github.com/openclaw/remindctl/issues/46)). So when a reminder has no notes and no URL, the agent says so and asks you to paste the link if there is one, instead of guessing from the title. Putting the link in the notes works too.
+remindctl reads reminders through Apple's public EventKit, and EventKit does not expose the link field you see in Reminders.app ([rem architecture notes](https://rem.sidv.dev/docs/architecture/): "EventKit's EKReminder does not expose flagged state, the real URL field, or hashtags visible in Reminders.app"; [remindctl issue #46](https://github.com/openclaw/remindctl/issues/46)). remindctl still returns notes and EventKit's URL when they are set.
+
+rem reads the link field through Apple's private ReminderKit framework, so with rem installed the agent sees that link too. Because it is a private API, a macOS update can break it without any error: rem may just start returning no link. rem's link can also come from EventKit's URL or a URL in the notes, so it shows the reminder has a link, not where it was typed.
+
+Without rem, or when rem finds no link, a reminder with no notes and no URL gets one line from the agent saying a link may not have reached it, and a request to paste the link if there is one, instead of a guess from the title. Putting the link in the notes works too.
 
 ## Install
 
