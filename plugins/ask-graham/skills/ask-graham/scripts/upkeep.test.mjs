@@ -35,10 +35,50 @@ test("six calendar months is inclusive; newer releases are the control and month
   assert.match(monthEndOlder, /Last release is at least six calendar months old/);
 });
 
+for (const { release, before, at, after } of [
+  { release: "2026-04-20", before: "2026-10-19", at: "2026-10-20", after: "2026-10-21" },
+  { release: "2026-08-31", before: "2027-02-27", at: "2027-02-28", after: "2027-03-01" },
+  { release: "2027-08-31", before: "2028-02-28", at: "2028-02-29", after: "2028-03-01" },
+  { release: "2028-02-29", before: "2028-08-28", at: "2028-08-29", after: "2028-08-30" },
+]) {
+  for (const [boundary, asOf, shouldWarn] of [
+    ["before", before, false],
+    ["at", at, true],
+    ["after", after, true],
+  ]) {
+    test(`release ${release} ${boundary} its clamped six-month anniversary ${at} as of ${asOf}`, () => {
+      const report = renderUpkeep(evidence({
+        asOf,
+        window: `${release} through ${asOf}`,
+        lastCommit: { date: asOf, receipt: "recent commit receipt" },
+        lastRelease: { date: release, receipt: "release receipt" },
+      }));
+      if (shouldWarn) assert.match(report, /Last release is at least six calendar months old/);
+      else assert.doesNotMatch(report, /Last release is at least six calendar months old/);
+    });
+  }
+}
+
 test("a recent commit does not clear the stale release warning", () => {
   const report = renderUpkeep(evidence({ lastCommit: { date: "2026-10-19", receipt: "commit receipt" }, lastRelease: { date: "2026-04-20", receipt: "release receipt" } }));
   assert.match(report, /Last release is at least six calendar months old/);
 });
+
+for (const opened of [12, null]) {
+  test(`issue qualification stays alongside the summary with ${opened === null ? "unknown" : "known"} counts`, () => {
+    const reason = "Opened/closed counts are sampled, not complete window totals";
+    const report = renderUpkeep(evidence({ issues: {
+      ...evidence().issues,
+      opened,
+      receipt: "https://example.test/issues — observed measurements",
+      reason,
+    } }));
+    const issueLine = report.split("\n").find((line) => line.startsWith("- Issues:"));
+    assert.ok(issueLine.includes(`; reason: ${reason}; median first human response: 8 hours`));
+    assert.ok(issueLine.includes(opened === null ? "opened: unknown" : "opened: 12 —"));
+    assert.match(issueLine, /closed: 10 —.*sampleSize: 12 —.*unanswered: 0 —/);
+  });
+}
 
 test("solo, zero, and unknown maintainer evidence are meaningfully warned", () => {
   const solo = renderUpkeep(evidence({ maintainers: { count: 1, receipt: "one human" } }));

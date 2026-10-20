@@ -9,9 +9,9 @@ function validDate(value) {
   return Number.isFinite(date.getTime()) && date.toISOString().slice(0, 10) === value;
 }
 
-function subtractMonthsClamped(value, months) {
+function addMonthsClamped(value, months) {
   const [year, month, day] = value.split("-").map(Number);
-  const targetMonth = month - 1 - months;
+  const targetMonth = month - 1 + months;
   const targetYear = year + Math.floor(targetMonth / 12);
   const normalizedMonth = ((targetMonth % 12) + 12) % 12;
   const lastDay = new Date(Date.UTC(targetYear, normalizedMonth + 1, 0)).getUTCDate();
@@ -72,8 +72,8 @@ export function renderUpkeep(input) {
   const commit = evidenceDate(input.lastCommit, "Last commit", asOfMs, warnings);
   const release = evidenceDate(input.lastRelease, "Last release", asOfMs, warnings);
   if (input.lastRelease?.date && validDate(input.lastRelease.date) && hasReceipt(input.lastRelease.receipt)) {
-    const releasedAt = Date.UTC(...input.lastRelease.date.split("-").map(Number).map((part, index) => index === 1 ? part - 1 : part));
-    if (releasedAt <= asOfMs && releasedAt <= subtractMonthsClamped(asOf, SIX_MONTHS)) {
+    const releaseAnniversary = addMonthsClamped(input.lastRelease.date, SIX_MONTHS);
+    if (asOfMs >= releaseAnniversary) {
       warnings.push(`Last release is at least six calendar months old (${input.lastRelease.date}). Risk: users may be relying on an unmaintained release stream. Exit: verify an active alternative or plan migration away.`);
     }
   }
@@ -111,7 +111,7 @@ export function renderUpkeep(input) {
   }).join("\n") : "- unknown (not collected)";
   if (!compatibility) warnings.push("No runtime compatibility evidence was collected. Risk: required runtime fit is unknown. Exit: verify each essential runtime separately.");
   const warningText = warnings.length ? `**Upkeep warning:**\n${warnings.map((warning) => `- ${warning} Exit path: ${exitPath}`).join("\n")}` : "- None identified from the supplied evidence.";
-  return `**Upkeep — ${candidate}:**\n\n- As of: ${asOf}\n- Activity window: ${window}\n- Last commit: ${commit}\n- Last release: ${release}\n- Issues: ${issueSummary}; median first human response: ${response}\n- Active human maintainers: ${maintainerText}\n- Runtime compatibility:\n${compatibilityLines}\n\nWarnings / exit paths:\n${warningText}\n`;
+  return `**Upkeep — ${candidate}:**\n\n- As of: ${asOf}\n- Activity window: ${window}\n- Last commit: ${commit}\n- Last release: ${release}\n- Issues: ${issueSummary}${issues?.reason ? `; reason: ${issues.reason}` : ""}; median first human response: ${response}\n- Active human maintainers: ${maintainerText}\n- Runtime compatibility:\n${compatibilityLines}\n\nWarnings / exit paths:\n${warningText}\n`;
 }
 
 export function main(argv = process.argv.slice(2)) {
