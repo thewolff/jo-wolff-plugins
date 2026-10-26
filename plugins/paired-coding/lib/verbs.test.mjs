@@ -1091,6 +1091,27 @@ test("card numbering continues after a typed stop and a later pair_start in the 
   assert.equal(await openChangeSet(f), "card-2", "pair_start after the stop numbers on from the same journal");
 });
 
+test("a card without proposedCode reads as before; with it, the planned code follows the JSON in a fence it cannot close", { skip: !hasSandbox }, async () => {
+  const f = fixture();
+  assert.equal((await executeVerb("pair_start", {}, f.ctx)).ok, true);
+  const plain = await executeVerb("pair_propose", { boundary: ["src/a.txt"], decision: "d", currentCode: "alpha" }, f.ctx);
+  assert.equal(plain.ok, true, plain.text);
+  assert.equal("proposedCode" in plain.result.card, false);
+  assert.equal(plain.text, `Card card-1 recorded. Show it to your partner and wait for their reply.\n${JSON.stringify(plain.result.card, null, 2)}`);
+
+  const proposedCode = "-alpha\n+omega\n```js\nconst x = 1;\n```\n";
+  const p = await executeVerb("pair_propose", { boundary: ["src/a.txt"], decision: "d", currentCode: "alpha", proposedCode }, f.ctx);
+  assert.equal(p.ok, true, p.text);
+  assert.equal(p.result.card.proposedCode, proposedCode);
+  const { proposedCode: _lifted, ...rest } = p.result.card;
+  assert.equal(
+    p.text,
+    `Card card-2 recorded. Show it to your partner and wait for their reply.\n${JSON.stringify(rest, null, 2)}\nPlanned code (proposedCode), to show on the card:\n\`\`\`\`\n${proposedCode}\`\`\`\``,
+    "the fence is one backtick longer than the longest run inside the code",
+  );
+  assert.equal(journal(f).filter((e) => e.type === "card")[1].card.proposedCode, proposedCode, "the journaled card keeps the planned code");
+});
+
 test(`the walk reads at most ${ROADMAP_WALK_LIMIT} journals, newest first`, { skip: !hasSandbox }, async () => {
   const f = fixture();
   await roadmapLeftOpen(f);
