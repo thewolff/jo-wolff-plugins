@@ -21,6 +21,7 @@ import { randomUUID } from "node:crypto";
 import { CARRIED_PHRASE, PAIR_TOOLS } from "../core/gate.mjs";
 import { sandboxProblem } from "../lib/host-io.mjs";
 import pairedCodingOmp, { TREE_NOTICE, stopNotice } from "./paired-coding-omp.ts";
+import { TOOLS as MCP_TOOLS } from "../server/pair-server.mjs";
 
 const HAS_SANDBOX = sandboxProblem() === null;
 const sandboxOnly = HAS_SANDBOX ? test : test.skip;
@@ -31,12 +32,13 @@ const sandboxOnly = HAS_SANDBOX ? test : test.skip;
 const FIXTURES = realpathSync(mkdtempSync(join(homedir(), ".pc-omp-")));
 after(() => rmSync(FIXTURES, { recursive: true, force: true }));
 
-// A schema builder with the chain the adapter uses; the host's real one is checked live.
+// A schema builder with the chain the adapter uses; the host's real one is checked live. An
+// object keeps its shape, so a test can read the fields a tool declares.
 const node = () => {
   const n = { describe: () => n, optional: () => n };
   return n;
 };
-const zod = { object: () => node(), string: node, enum: () => node(), number: node, boolean: node, array: () => node() };
+const zod = { object: (shape) => Object.assign(node(), { shape }), string: node, enum: () => node(), number: node, boolean: node, array: () => node() };
 
 function setup({ otherTools = [], env = {} } = {}) {
   const repo = mkdtempSync(join(FIXTURES, "repo-"));
@@ -350,6 +352,25 @@ test("every pair_* verb of the core is registered as an OMP tool", () => {
   const s = setup();
   assert.deepEqual([...s.tools.keys()].sort(), [...PAIR_TOOLS].sort());
   for (const t of s.tools.values()) assert.equal(t.loadMode, "essential", `${t.name} must be visible without discovery`);
+});
+
+test("pair_propose declares the same card fields on OMP as on the MCP server, proposedCode among them", () => {
+  const s = setup();
+  const omp = Object.keys(s.tools.get("pair_propose").parameters.shape).sort();
+  const mcp = Object.keys(MCP_TOOLS.find((t) => t.name === "pair_propose").inputSchema.properties).sort();
+  assert.deepEqual(omp, mcp);
+  assert.ok(omp.includes("proposedCode"));
+});
+
+sandboxOnly("pair_propose through the adapter journals proposedCode and shows it as a code block", async () => {
+  const s = setup();
+  assert.equal((await s.call("pair_start")).ok, true);
+  const proposedCode = "export const greet = (name) => `hi ${name}`;";
+  const r = await s.call("pair_propose", { boundary: ["a.txt"], decision: "d", proposedCode });
+  assert.equal(r.ok, true, r.text);
+  assert.equal(r.details.card.proposedCode, proposedCode);
+  assert.ok(r.text.endsWith(`\`\`\`\n${proposedCode}\n\`\`\``), r.text);
+  assert.equal(s.journal().find((e) => e.type === "card").card.proposedCode, proposedCode);
 });
 
 const blocked = async (s, toolName = "write") => (await s.emit("tool_call", { toolName, input: {} }))?.block === true;

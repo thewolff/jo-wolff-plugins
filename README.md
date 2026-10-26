@@ -232,8 +232,8 @@ measured rates.
 
 A plugin for pairing with an agent on code, one change set at a time. The agent drives and you
 navigate. Before each change set it shows you a **card** naming the decision inside the change,
-the code it touches, the effect it will have and the exact files it will write. It writes only
-after the two of you agree on that card, then shows you the real diff.
+the code it touches, the code it plans to write, the effect it will have and the exact files it
+will write. It writes only after the two of you agree on that card, then shows you the real diff.
 
 The problem it addresses: agent code arrives faster than a person can recognise the decisions
 inside it, so a wrong direction is found after a whole feature exists. Pairing moves the
