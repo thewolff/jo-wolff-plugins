@@ -68,6 +68,17 @@ test("a notice is delivered once: the second prompt hears nothing", () => {
   assert.equal(existsSync(pendingFile(home, "s2")), false);
 });
 
+test("judge unavailable reaches the agent every turn but the person only through the stop's once-per-key alert", () => {
+  const home = mkhome({ enforcement: { judgeCommand: "echo 'judge-cli: not logged in' >&2; exit 4" } });
+  const batchy =
+    `${body(6)}\n\n## Questions\n\nIs the cache warm before the second run?\n` +
+    "What happens to the timeout when the judge is slow?\nShould the skip be logged?";
+  stop(home, "s2u", batchy);
+  const out = JSON.parse(prompt(home, "s2u").stdout);
+  assert.match(out.hookSpecificOutput.additionalContext, /Judge unavailable/);
+  assert.equal("systemMessage" in out, false, "no per-turn line for the person about a dead judge");
+});
+
 test("a clean stop clears an older notice, so the next turn hears about the latest message only", () => {
   const home = mkhome();
   stop(home, "s3", misordered);
