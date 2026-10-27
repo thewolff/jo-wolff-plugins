@@ -155,8 +155,8 @@ Old logs stay archived; resume markers are not carried forward.
 
 ### Install
 
-It needs `node` on your `PATH`: Claude Code runs its hooks as `node <hook>.mjs`, and OMP runs
-them through a login shell (`sh -lc`), so on OMP `node` has to be on a login shell's `PATH`.
+It needs `node`: Claude Code runs its hooks as `node <hook>.mjs` from your `PATH`, and the OMP
+adapter runs them under node resolved to an absolute path (`I_HAVE_AUDHD_NODE` pins one).
 Three steps:
 
 1. **Add the marketplace and install.** Claude Code:

@@ -420,16 +420,105 @@ test("a judge rule in warn mode warns instead of blocking", () => {
   assert.match(readLog(home, "warnings.log"), /rule=do-not-batch-by-label/);
 });
 
-test("a failing judge fails open: no block, judge-failures.log carries it", () => {
-  const home = mkhome();
+// ─── a judge that cannot answer: "judge unavailable", never a pass ───────────────────────
+
+// A judge that fails with a reason on stderr, the shape of a logged-out judge CLI.
+const failingJudge = (home, extra = {}) =>
   writeFileSync(
     join(home, ".claude", "i-have-audhd.json"),
-    JSON.stringify({ enforcement: { judgeCommand: "printf 'vibes only'" } }),
+    JSON.stringify({
+      enforcement: { judgeCommand: "echo 'judge-cli: not logged in' >&2; exit 4", ...extra },
+    }),
   );
+
+// The rule's warnings.log lines that report the judge as unavailable.
+const unavailableLines = (home, rule) =>
+  logLines(home, "warnings.log").filter((l) => l.includes(` rule=${rule} `) && /judge unavailable/i.test(l));
+
+const alertsPath = (home) => join(home, ".claude", ".i-have-audhd-state", "alerts.json");
+
+test("a failing judge is reported as judge unavailable, never as a pass: a warn finding, stderr in the log, one loud line", () => {
+  const home = mkhome();
+  failingJudge(home);
   const r = runHook({ session_id: "j5", last_assistant_message: batchyMessage }, home);
   assert.equal(r.status, 0);
-  assert.equal(r.stdout, "");
-  assert.match(readLog(home, "judge-failures.log"), /rule=do-not-batch-by-label error=judge-unparseable/);
+  assert.match(readLog(home, "judge-failures.log"), /rule=do-not-batch-by-label error=judge-exit-4 stderr=.*not logged in/);
+  assert.equal(unavailableLines(home, "do-not-batch-by-label").length, 1, "the unchecked rule is a finding, not silence");
+  const pending = JSON.parse(readFileSync(join(home, ".claude", ".i-have-audhd-state", "pending-warn-j5.json"), "utf8"));
+  assert.match(pending.notice, /judge unavailable/i, "the agent is told the rule was not checked");
+  const out = parseOut(r.stdout);
+  assert.equal(out.decision, undefined, "warn by default: no block");
+  assert.match(out.systemMessage, /judge unavailable/i, "the person is told, loudly");
+  assert.match(out.systemMessage, /do-not-batch-by-label/);
+  assert.match(out.systemMessage, /judge-exit-4/);
+  assert.match(out.systemMessage, /setup\.mjs/, "the next step is named");
+});
+
+test("judge unavailable is loud once per key: a second failure within the hour logs and warns, but says nothing to the person", () => {
+  const home = mkhome();
+  failingJudge(home);
+  const first = runHook({ session_id: "j5b", last_assistant_message: batchyMessage }, home);
+  assert.match(parseOut(first.stdout).systemMessage, /judge unavailable/i);
+  const second = runHook({ session_id: "j5b", last_assistant_message: `${batchyMessage}\nIs the cache cold?` }, home);
+  assert.equal(second.status, 0);
+  assert.equal(second.stdout, "", "same key inside the hour: no second systemMessage");
+  assert.equal(unavailableLines(home, "do-not-batch-by-label").length, 2, "every failure is still a finding");
+  assert.equal(logLines(home, "judge-failures.log").filter((l) => l.includes("rule=do-not-batch-by-label")).length, 2);
+});
+
+test("judge unavailable re-alerts once the hour is up, naming when it started", () => {
+  const home = mkhome();
+  failingJudge(home);
+  runHook({ session_id: "j5c", last_assistant_message: batchyMessage }, home);
+  const alerts = JSON.parse(readFileSync(alertsPath(home), "utf8"));
+  const keys = Object.keys(alerts);
+  assert.ok(keys.length > 0, "the alert is recorded");
+  const twoHoursAgo = new Date(Date.now() - 2 * 3_600_000).toISOString();
+  for (const k of keys) alerts[k] = { first: twoHoursAgo, last: twoHoursAgo };
+  writeFileSync(alertsPath(home), JSON.stringify(alerts));
+  const again = runHook({ session_id: "j5c", last_assistant_message: `${batchyMessage}\nIs the cache cold?` }, home);
+  const msg = parseOut(again.stdout).systemMessage;
+  assert.match(msg, /judge unavailable/i);
+  assert.ok(msg.includes(`still failing since ${twoHoursAgo}`), msg);
+});
+
+test("a judge that answers again clears the alert, so the next failure is loud at once", () => {
+  const home = mkhome();
+  failingJudge(home);
+  assert.match(parseOut(runHook({ session_id: "j5d", last_assistant_message: batchyMessage }, home).stdout).systemMessage, /judge unavailable/i);
+  writeFakeJudge(home, false, "legitimate terminal summary");
+  writeFileSync(
+    join(home, ".claude", "i-have-audhd.json"),
+    JSON.stringify({ enforcement: { judgeCommand: `node ${fakeJudgePath(home)}` } }),
+  );
+  const healthy = runHook({ session_id: "j5d", last_assistant_message: `${batchyMessage}\nIs it warm now?` }, home);
+  assert.equal(healthy.stdout, "");
+  failingJudge(home);
+  const broken = runHook({ session_id: "j5d", last_assistant_message: `${batchyMessage}\nAnd now?` }, home);
+  assert.match(parseOut(broken.stdout).systemMessage, /judge unavailable/i, "a re-break after recovery alerts at once");
+});
+
+test("judge unavailable follows the rule's mode: block mode blocks, naming the unchecked rule", () => {
+  const home = mkhome();
+  failingJudge(home, { rules: { "do-not-batch-by-label": "block" } });
+  const r = runHook({ session_id: "j5e", last_assistant_message: batchyMessage }, home);
+  const out = parseOut(r.stdout);
+  assert.equal(out.decision, "block");
+  assert.match(out.reason, /judge unavailable/i);
+  assert.ok(blockedRules(home, "j5e").includes("do-not-batch-by-label"));
+});
+
+test("judge unavailable blocks at most once per continuation chain: a revision after a block only warns", () => {
+  const home = mkhome();
+  failingJudge(home, { rules: { "do-not-batch-by-label": "block" } });
+  runHook({ session_id: "j5f", last_assistant_message: batchyMessage }, home);
+  const revised = runHook(
+    { session_id: "j5f", stop_hook_active: true, last_assistant_message: `${batchyMessage}\nRevised.` },
+    home,
+  );
+  assert.equal(revised.status, 0);
+  assert.notEqual(revised.stdout.trim() && JSON.parse(revised.stdout).decision, "block", "nothing in the message can fix a dead judge");
+  assert.equal(unavailableLines(home, "do-not-batch-by-label").length, 1, "the revision's unchecked rule still warns");
 });
 
 // ─── conclusion-first through the hook ─────────────────────────────────────────────────────
@@ -818,9 +907,10 @@ test("two violating sections: one finding naming both labels and lines, in line 
   assert.deepEqual(blockedRules(home, "s4"), ["conclusion-first"]);
 });
 
-test("a judge error on one section fails open for that section only: the other's violation still counts", () => {
+test("a judge error on one section reports that section as judge unavailable: the other's violation still counts", () => {
   const msg = labeledMessage(section("CLAIM", `${body(7)}${FAIL_MARK}`), section("GUESS", `${body(7)}${VIOLATE_MARK}`));
   const guessName = `**GUESS** at line ${lineOf(msg, "**GUESS**")}`;
+  const claimName = `**CLAIM** at line ${lineOf(msg, "**CLAIM**")}`;
 
   // block mode
   const blocking = mkhome();
@@ -830,16 +920,23 @@ test("a judge error on one section fails open for that section only: the other's
   assert.equal(out.decision, "block");
   assert.ok(blockedRules(blocking, "s5").includes("conclusion-first"));
   assert.ok(conclusionFinding(out.reason)[0].includes(guessName));
+  assert.ok(!conclusionFinding(out.reason)[0].includes(claimName), "the violation names only the judged section");
+  const unavailable = out.reason.split("\n\n").filter((f) => f.startsWith("Judge unavailable (conclusion-first)"));
+  assert.equal(unavailable.length, 1);
+  assert.ok(unavailable[0].includes(claimName), "the unjudged section is named as unchecked, not passed");
   assert.match(readLog(blocking, "judge-failures.log"), /rule=conclusion-first error=judge-exit-2/);
 
   // warn mode
   const warning = mkhome();
   markerProfile(warning, { mode: "warn" });
   const w = runHook({ session_id: "s6", last_assistant_message: msg }, warning);
-  assert.equal(w.stdout, "");
+  const wout = parseOut(w.stdout);
+  assert.equal(wout.decision, undefined, "warn mode: no block");
+  assert.match(wout.systemMessage, /judge unavailable/i);
   const warned = logLines(warning, "warnings.log").filter((l) => l.includes(" rule=conclusion-first "));
-  assert.equal(warned.length, 1);
-  assert.ok(warned[0].includes(guessName), warned[0]);
+  assert.equal(warned.length, 2, "one violation finding, one judge-unavailable finding");
+  assert.ok(warned.some((l) => l.includes(guessName) && !/judge unavailable/i.test(l)), warned.join("\n"));
+  assert.ok(warned.some((l) => l.includes(claimName) && /judge unavailable/i.test(l)), warned.join("\n"));
   assert.match(readLog(warning, "judge-failures.log"), /rule=conclusion-first error=judge-exit-2/);
 });
 

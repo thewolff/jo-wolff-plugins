@@ -21,12 +21,16 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 
+import * as adapter from "./i-have-audhd-omp.ts";
 import iHaveAudhdOmp, {
   assistantText,
   sessionStartHandler,
   sessionStopHandler,
   startSource,
 } from "./i-have-audhd-omp.ts";
+
+// Read off the namespace, so a build without them fails these tests one by one, not at import.
+const { createAlarm, resolveNode } = adapter;
 
 const mkstate = () => mkdtempSync(join(tmpdir(), "omp-adapter-state-"));
 
@@ -142,11 +146,11 @@ test("the record is per session: a block in one session does not mark another", 
 
 // ─── failure paths: one errors.log line + undefined ────────────────────────────────────
 
-const assertFailOpen = (dir, out, fragment) => {
+const assertFailOpen = (dir, out, fragment, hook = "i-have-audhd-stop.mjs") => {
   assert.equal(out, undefined, "every failure path returns undefined");
   const errors = readLog(dir, "errors.log");
   assert.equal(lines(errors).length, 1, "exactly one errors.log line");
-  assert.match(errors, /omp-adapter fail-open: /);
+  assert.ok(errors.includes(`omp-adapter fail-open (${hook}): `), `the line names the hook: expected "${hook}" in ${errors}`);
   assert.ok(errors.includes(fragment), `the error detail rides the line: expected "${fragment}"`);
 };
 
@@ -319,7 +323,7 @@ test("startSource: a loaded session holding messages is a resume; an empty one i
 test("an inject CLI printing no additionalContext fails open with one errors.log line", async () => {
   const dir = mkstate();
   const out = await sessionStartHandler("startup", startCtx(), { stateDir: dir, runCli: async () => ({ decision: "block" }) });
-  assertFailOpen(dir, out, "no additionalContext");
+  assertFailOpen(dir, out, "no additionalContext", "i-have-audhd-inject.mjs");
 });
 
 // The inject hook's state dir under a temp HOME; run() is one session-start crossing through
@@ -541,7 +545,7 @@ test("a failing delivery fails open: the verdict stands, one errors.log line nam
     },
   });
   assert.equal(out?.decision, "block");
-  assert.match(readLog(dir, "errors.log"), /warning delivery\): host refused/);
+  assert.match(readLog(dir, "errors.log"), /omp-adapter fail-open \(i-have-audhd-prompt\.mjs, warning delivery\): host refused/);
 });
 
 test("a host with no sendMessage gets no delivery attempt and no error", async () => {
@@ -588,4 +592,197 @@ test("lifecycle: a real warn finding reaches sendMessage as a nextTurn message, 
   const clean = `## Needs you\n\nApprove the deploy before Friday.\n\n${body(6)}`;
   await fire(event({ session_file: join(home, "absent.jsonl"), last_assistant_message: { content: clean } }));
   assert.equal(sent.length, 1, "a clean stop sends nothing");
+});
+
+// ─── loud to operators: a named log line, one notify per error key, hourly re-alert ─────
+// Graceful to the user (the handler still returns undefined, the session goes on) and loud to
+// the operator: every failure is an errors.log line naming the hook, and the person at the UI
+// hears about each failure kind once, then again only after an hour or after it healed.
+
+// An executable standing in for node; `script` is its sh body.
+const fakeNode = (script) => {
+  const dir = mkdtempSync(join(tmpdir(), "omp-adapter-node-"));
+  const path = join(dir, "node");
+  writeFileSync(path, `#!/bin/sh\n${script}\n`, { mode: 0o755 });
+  return path;
+};
+
+// A host context with a UI that records every notify.
+const uiCtx = (notes, over = {}) => ({
+  cwd: tmpdir(),
+  hasUI: true,
+  ui: { notify: (msg, type) => notes.push({ msg, type }) },
+  ...over,
+});
+
+// A clock the test moves by hand.
+const clock = (start = Date.parse("2026-10-27T08:00:00.000Z")) => {
+  let t = start;
+  return { now: () => t, advance: (ms) => (t += ms) };
+};
+const HOUR = 3_600_000;
+
+// One stop through the real spawn with `node` as the node binary, under a temp HOME.
+const stopWithNode = (node, ctxArg, deps) =>
+  withEnv(
+    {
+      HOME: mkdtempSync(join(tmpdir(), "omp-adapter-node-home-")),
+      I_HAVE_AUDHD_NODE: node,
+      I_HAVE_AUDHD_PLUGIN_ROOT: PLUGIN_ROOT,
+      I_HAVE_AUDHD_PROFILE: undefined,
+    },
+    () => sessionStopHandler(event(), ctxArg, { timeoutMs: 10_000, ...deps }),
+  );
+
+const EXIT_127 = `echo "sh: node: command not found" >&2\nexit 127`;
+
+test("node exits 127 → one errors.log line naming the Stop hook with node's stderr, and exactly one notify", async () => {
+  const dir = mkstate();
+  const notes = [];
+  const out = await stopWithNode(fakeNode(EXIT_127), uiCtx(notes), { stateDir: dir, alarm: createAlarm?.({ now: clock().now }) });
+  assert.equal(out, undefined, "graceful to the user: the session goes on, unchecked");
+  const errs = lines(readLog(dir, "errors.log"));
+  assert.equal(errs.length, 1);
+  assert.match(errs[0], /omp-adapter fail-open \(i-have-audhd-stop\.mjs\): .*exited 127/);
+  assert.match(errs[0], /stderr: sh: node: command not found/, "stderr is kept, not discarded");
+  assert.equal(notes.length, 1, "loud to the operator, once");
+  assert.equal(notes[0].type, "error");
+  assert.match(notes[0].msg, /i-have-audhd-stop\.mjs/, "names what broke");
+  assert.match(notes[0].msg, /exited 127/, "carries the evidence");
+  assert.ok(notes[0].msg.includes(join(dir, "errors.log")), "names where the log is");
+});
+
+test("no usable node → one errors.log line naming the hook and the missing node, and exactly one notify", async () => {
+  const dir = mkstate();
+  const notes = [];
+  const missing = join(mkdtempSync(join(tmpdir(), "omp-adapter-nonode-")), "node");
+  const out = await stopWithNode(missing, uiCtx(notes), { stateDir: dir, alarm: createAlarm?.({ now: clock().now }) });
+  assert.equal(out, undefined);
+  const errs = lines(readLog(dir, "errors.log"));
+  assert.equal(errs.length, 1);
+  assert.match(errs[0], /omp-adapter fail-open \(i-have-audhd-stop\.mjs\): /);
+  assert.ok(errs[0].includes(missing), "names the node path that was not usable");
+  assert.match(errs[0], /I_HAVE_AUDHD_NODE/, "names the setting that fixes it");
+  assert.equal(notes.length, 1);
+  assert.match(notes[0].msg, /I_HAVE_AUDHD_NODE/, "the notify carries the next step");
+});
+
+test("the same failure again within the hour is logged every time but notified once; after the hour, once more with since-when", async () => {
+  const dir = mkstate();
+  const notes = [];
+  const c = clock();
+  const alarm = createAlarm?.({ now: c.now });
+  const node = fakeNode(EXIT_127);
+  for (let i = 0; i < 3; i++) {
+    await stopWithNode(node, uiCtx(notes), { stateDir: dir, alarm });
+    c.advance(10 * 60_000);
+  }
+  assert.equal(lines(readLog(dir, "errors.log")).length, 3, "every failure is a log line");
+  assert.equal(notes.length, 1, "same key inside the hour: no second notify");
+  c.advance(HOUR);
+  await stopWithNode(node, uiCtx(notes), { stateDir: dir, alarm });
+  assert.equal(notes.length, 2, "the hourly re-alert");
+  assert.match(notes[1].msg, /still failing since 2026-10-27T08:00:00\.000Z/);
+});
+
+test("a different failure kind is a different key and notifies at once; a success heals a key so its next failure notifies", async () => {
+  const dir = mkstate();
+  const notes = [];
+  const alarm = createAlarm?.({ now: clock().now });
+  const crash = async () => {
+    throw new Error("spawn EACCES");
+  };
+  await sessionStopHandler(event(), uiCtx(notes), { stateDir: dir, alarm, runCli: crash });
+  await sessionStartHandler("startup", uiCtx(notes), { stateDir: dir, alarm, runCli: crash });
+  assert.equal(notes.length, 2, "stop and inject are separate keys");
+  assert.match(notes[1].msg, /i-have-audhd-inject\.mjs/);
+  await sessionStopHandler(event(), uiCtx(notes), { stateDir: dir, alarm, runCli: async () => undefined });
+  await sessionStopHandler(event(), uiCtx(notes), { stateDir: dir, alarm, runCli: crash });
+  assert.equal(notes.length, 3, "the stop healed, so its next failure is news");
+});
+
+test("with no UI attached nothing is notified, and the key stays unspent for the next session that has one", async () => {
+  const dir = mkstate();
+  const notes = [];
+  const alarm = createAlarm?.({ now: clock().now });
+  const crash = async () => {
+    throw new Error("spawn EACCES");
+  };
+  await sessionStopHandler(event(), { ...uiCtx(notes), hasUI: false }, { stateDir: dir, alarm, runCli: crash });
+  assert.equal(notes.length, 0);
+  assert.equal(lines(readLog(dir, "errors.log")).length, 1, "still logged");
+  await sessionStopHandler(event(), uiCtx(notes), { stateDir: dir, alarm, runCli: crash });
+  assert.equal(notes.length, 1);
+});
+
+test("a systemMessage from the stop core (judge unavailable) reaches the person as a UI warning", async () => {
+  const notes = [];
+  const text = "i-have-audhd: judge unavailable (judge-exit-4); conclusion-first was not checked.";
+  const out = await sessionStopHandler(event(), uiCtx(notes), {
+    stateDir: mkstate(),
+    alarm: createAlarm?.({ now: clock().now }),
+    runCli: async () => ({ systemMessage: text }),
+  });
+  assert.equal(out, undefined, "a systemMessage alone is no block");
+  assert.deepEqual(notes, [{ msg: text, type: "warning" }]);
+});
+
+test("integration: a failing judge through the real core is one 'judge unavailable' notice, not a pass, and not repeated on the next stop", async () => {
+  const home = mkdtempSync(join(tmpdir(), "omp-adapter-judge-home-"));
+  mkdirSync(join(home, ".claude"));
+  writeFileSync(
+    join(home, ".claude", "i-have-audhd.json"),
+    JSON.stringify({ enforcement: { judgeCommand: "echo 'judge-cli: not logged in' >&2; exit 4" } }),
+  );
+  const stateDir = join(home, ".claude", ".i-have-audhd-state");
+  const notes = [];
+  const hostCtx = { ...managedCtx(home, "mgr-judge"), ...uiCtx(notes), cwd: home };
+  const report = `${body(7)}\n\n${body(7)}`; // conclusion-first dispatches a judge job
+  const stop = (text) =>
+    withEnv(
+      { HOME: home, I_HAVE_AUDHD_PLUGIN_ROOT: PLUGIN_ROOT, I_HAVE_AUDHD_PROFILE: undefined, I_HAVE_AUDHD_ENFORCE: undefined, I_HAVE_AUDHD_HARNESS: undefined },
+      () => sessionStopHandler(event({ last_assistant_message: { content: text } }), hostCtx, { alarm: createAlarm?.({ now: clock().now }) }),
+    );
+  await stop(report);
+  const loud = notes.filter((n) => /judge unavailable/i.test(n.msg));
+  assert.equal(loud.length, 1, notes.map((n) => n.msg).join("\n"));
+  assert.match(loud[0].msg, /conclusion-first/);
+  assert.match(readLog(stateDir, "warnings.log"), /rule=conclusion-first .*judge unavailable/i, "recorded as unchecked, not passed");
+  await stop(`${report}\n\nOne more sentence.`);
+  assert.equal(notes.filter((n) => /judge unavailable/i.test(n.msg)).length, 1, "once per key: the second stop says nothing new");
+  assert.equal(readLog(stateDir, "errors.log"), "");
+});
+
+// ─── which node: an absolute path, never a login shell's PATH ────────────────────────────
+
+test("resolveNode: under node, the running binary is the node the hooks get", () => {
+  const r = resolveNode({ env: { PATH: "" }, execPath: "/runtime/node", underBun: false, home: "/h", isExecutable: () => false });
+  assert.deepEqual(r, { path: "/runtime/node" });
+});
+
+test("resolveNode: under bun, PATH first, then the fixed fallbacks", () => {
+  const onPath = new Set(["/p/node", "/h/.local/bin/node"]);
+  const pick = (PATH, exec) =>
+    resolveNode({ env: { PATH }, execPath: "/b/bun", underBun: true, home: "/h", isExecutable: (p) => exec.has(p) });
+  assert.deepEqual(pick("/q:/p", onPath), { path: "/p/node" });
+  assert.deepEqual(pick("/opt/homebrew/bin:/usr/bin:/bin", new Set(["/h/.local/bin/node"])), { path: "/h/.local/bin/node" });
+});
+
+test("resolveNode: nothing usable is a loud error naming where it looked and the setting that fixes it", () => {
+  const r = resolveNode({ env: { PATH: "/usr/bin:/bin" }, execPath: "/b/bun", underBun: true, home: "/h", isExecutable: () => false });
+  assert.equal(r.path, undefined);
+  assert.match(r.error, /\/h\/\.local\/bin\/node/);
+  assert.match(r.error, /I_HAVE_AUDHD_NODE/);
+});
+
+test("resolveNode: an explicit I_HAVE_AUDHD_NODE that is not executable is an error, never a silent fallback", () => {
+  const r = resolveNode({
+    env: { PATH: "/p", I_HAVE_AUDHD_NODE: "/nope/node" },
+    execPath: "/runtime/node",
+    underBun: false,
+    home: "/h",
+    isExecutable: (p) => p === "/p/node",
+  });
+  assert.equal(r.path, undefined);
+  assert.match(r.error, /\/nope\/node/);
 });

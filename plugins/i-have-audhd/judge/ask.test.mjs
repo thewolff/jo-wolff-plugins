@@ -151,10 +151,29 @@ test("the cache key covers the question: same rule and text, two questions, two 
 
 // ─── failure is open and loud ────────────────────────────────────────────────
 
+// A failed judge is "unavailable": it carries no verdict, so no caller can read it as a pass.
+const assertUnavailable = (r) => {
+  assert.equal(r.unavailable, true, "a failed judge is reported as unavailable");
+  assert.equal("violation" in r, false, "a failed judge carries no verdict, never violation:false (a pass)");
+};
+
+test("a failing judge's stderr is kept, bounded, in judge-failures.log", async () => {
+  const state = mkstate();
+  const noise = "x".repeat(5000);
+  const cfg = { judgeCommand: `printf '%s' '${noise}' >&2; echo 'codex: not logged in, run codex login' >&2; exit 1` };
+  const r = await askJudge("conclusion-first", "q", "msg", cfg, { stateDir: state });
+  assertUnavailable(r);
+  assert.equal(r.error, "judge-exit-1");
+  const line = readLog(state).trim();
+  assert.match(line, /rule=conclusion-first error=judge-exit-1 stderr=/);
+  assert.match(line, /not logged in, run codex login/, "the tail of stderr, where the reason is, survives");
+  assert.ok(line.length < 1000, `the stderr kept is bounded (line is ${line.length} chars)`);
+});
+
 test("a timeout kills the judge, fails open, and logs it", async () => {
   const state = mkstate();
   const r = await askJudge("conclusion-first", "q", "msg", { judgeCommand: "sleep 5" }, { stateDir: state, timeoutMs: 250 });
-  assert.equal(r.violation, false);
+  assertUnavailable(r);
   assert.equal(r.error, "judge-timeout");
   assert.match(readLog(state), /rule=conclusion-first error=judge-timeout/);
 });
@@ -262,7 +281,7 @@ test("the harness tag sets the budget: a 21s judge times out under omp and answe
 test("a non-zero exit fails open and logs the exit code", async () => {
   const state = mkstate();
   const r = await askJudge("bad-news-first", "q", "msg", { judgeCommand: "exit 7" }, { stateDir: state });
-  assert.equal(r.violation, false);
+  assertUnavailable(r);
   assert.equal(r.error, "judge-exit-7");
   assert.match(readLog(state), /rule=bad-news-first error=judge-exit-7/);
 });
@@ -271,7 +290,7 @@ test("unparseable output fails open and logs it — and is not cached", async ()
   const state = mkstate();
   const cfg = { judgeCommand: `printf 'I have no thoughts, only vibes.'` };
   const r = await askJudge("restate-resumed-thread", "q", "msg", cfg, { stateDir: state });
-  assert.equal(r.violation, false);
+  assertUnavailable(r);
   assert.equal(r.error, "judge-unparseable");
   assert.match(readLog(state), /judge-unparseable/);
   const cacheDir = join(state, "cache");
@@ -281,13 +300,13 @@ test("unparseable output fails open and logs it — and is not cached", async ()
 test("a missing judgeCommand is reported, not guessed at", async () => {
   const state = mkstate();
   const r = await askJudge("conclusion-first", "q", "msg", { judgeCommand: null }, { stateDir: state });
-  assert.deepEqual(r, { violation: false, error: "no-judge-command" });
+  assert.deepEqual(r, { unavailable: true, error: "no-judge-command" });
 });
 
 test("askJudge never throws, even on a broken command string", async () => {
   const state = mkstate();
   const r = await askJudge("x", "q", "m", { judgeCommand: "definitely-not-a-binary-xyz --flag" }, { stateDir: state });
-  assert.equal(r.violation, false);
+  assertUnavailable(r);
   assert.ok(r.error, "an error is named");
   assert.match(readLog(state), /rule=x error=/);
 });
