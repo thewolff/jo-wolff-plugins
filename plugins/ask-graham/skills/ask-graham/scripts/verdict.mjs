@@ -7,8 +7,8 @@
 //
 // THE CHECK. A main-session turn that read the ask-graham skill must end in a line
 // `**Verdict:** <one of VERDICTS>`, unless it ends by asking the comparables question and waiting,
-// or it is a structure check: a reply with a line starting `**Structure check:**` and text after it
-// (SKILL.md "When it runs"), which reports findings and gives no verdict.
+// or it is a structure check: a turn that declared one (skillUse) and whose reply opens with a
+// `**Structure check:**` line (SKILL.md "When it runs"), which reports findings and gives no verdict.
 // A turn that did not read the skill, or whose only uses of it were settings invocations (`/ask-graham intensity`, `/ask-graham stop-check`), is not checked.
 // The adapters skip the check entirely when the stop-check setting is off. The check blocks at most once per
 // turn: the caller keeps the opener id of the turn it last blocked and passes it back as
@@ -150,6 +150,14 @@ function isSkillPath(path) {
   return /^skill:\/\/(?:[^/]+\/)?ask-graham(?:\/SKILL\.md)?$/.test(p) || /(?:^|\/)ask-graham\/SKILL\.md$/.test(p);
 }
 
+// A read of the structure-check marker beside SKILL.md: `skill://[<ns>/]ask-graham/structure-check.md`
+// or any path ending `/ask-graham/structure-check.md`. Reading it declares a structure check.
+function isStructurePath(path) {
+  if (typeof path !== "string") return false;
+  const p = path.replace(/:[^/]*$/, "");
+  return /^skill:\/\/(?:[^/]+\/)?ask-graham\/structure-check\.md$/.test(p) || /(?:^|\/)ask-graham\/structure-check\.md$/.test(p);
+}
+
 // The `User: <args>` line OMP's user-invocation template ends a skill prompt with.
 function userLine(text) {
   const lines = text.split(/\r?\n/).filter((l) => l.startsWith("User: "));
@@ -159,25 +167,41 @@ function userLine(text) {
 // Invocation args that ask for a settings subcommand: `intensity` or `stop-check`, optionally
 // followed by more.
 const isSettings = (args) => typeof args === "string" && /^(?:intensity|stop-check)(?:\s|$)/i.test(args.trim());
+// Invocation args that declare a structure check: `structure-check`, optionally followed by more.
+const isStructure = (args) => typeof args === "string" && /^structure-check(?:\s|$)/i.test(args.trim());
 
 /**
- * Whether a turn read the ask-graham skill, and whether every such use was a settings
- * invocation. Reading counts as: a Claude Code Skill tool call or `/ask-graham` slash command, an
- * OMP user-invoked `/skill:ask-graham`, or a file read (Claude Code Read, OMP read) of the skill.
- * A skill body pasted into an ordinary prompt does not count. Returns `{ read, settingsOnly }`;
- * settingsOnly is true iff read is, and every use was an invocation whose args start with
- * `intensity` or `stop-check`. A file read, or an invocation with no args or other args, makes it false.
+ * Whether a turn read the ask-graham skill, whether every such use was a settings invocation, and
+ * whether it declared a structure check. Reading counts as: a Claude Code Skill tool call or
+ * `/ask-graham` slash command, an OMP user-invoked `/skill:ask-graham`, or a file read (Claude Code
+ * Read, OMP read) of the skill or its structure-check marker. A skill body pasted into an ordinary
+ * prompt does not count. Returns `{ read, settingsOnly, structureCheck }`; settingsOnly is true iff
+ * read is, and every use was an invocation whose args start with `intensity` or `stop-check`. A
+ * file read, or an invocation with no args or other args, makes it false. structureCheck is true
+ * iff the turn declared one (invocation args starting `structure-check`, or a read of
+ * structure-check.md) and made no ordinary invocation (no args, or args other than settings or
+ * `structure-check`). Reads of SKILL.md neither declare nor cancel it.
  */
 export function skillUse(turn) {
   let read = false;
   let settingsOnly = true;
+  let declared = false;
+  let ordinary = false;
   const invoked = (a) => {
     read = true;
-    if (!isSettings(a)) settingsOnly = false;
+    if (isSettings(a)) return;
+    settingsOnly = false;
+    if (isStructure(a)) declared = true;
+    else ordinary = true;
   };
-  const fileRead = () => {
+  const fileRead = (structure) => {
     read = true;
     settingsOnly = false;
+    if (structure) declared = true;
+  };
+  const pathRead = (path) => {
+    if (isSkillPath(path)) fileRead(false);
+    else if (isStructurePath(path)) fileRead(true);
   };
   for (const e of turn?.entries ?? []) {
     if (e.type === "user" && isOpener(e)) {
@@ -196,12 +220,12 @@ export function skillUse(turn) {
       for (const b of content) {
         if (!isObject(b)) continue;
         if (b.type === "tool_use" && b.name === "Skill" && isSkillName(b.input?.skill)) invoked(b.input?.args);
-        else if (b.type === "tool_use" && b.name === "Read" && isSkillPath(b.input?.file_path)) fileRead();
-        else if (b.type === "toolCall" && b.name === "read" && isSkillPath(b.arguments?.path)) fileRead();
+        else if (b.type === "tool_use" && b.name === "Read") pathRead(b.input?.file_path);
+        else if (b.type === "toolCall" && b.name === "read") pathRead(b.arguments?.path);
       }
     }
   }
-  return { read, settingsOnly: read && settingsOnly };
+  return { read, settingsOnly: read && settingsOnly, structureCheck: declared && !ordinary };
 }
 
 /**
@@ -251,7 +275,9 @@ export function checkStop({ entries, text, blockedOpener = null } = {}) {
   if (use.settingsOnly) return { pass: "settings", opener };
   const finalText = typeof text === "string" && text.trim() ? text : lastAssistantText(turn);
   if (findVerdict(finalText)) return { pass: "verdict", opener };
-  if (typeof finalText === "string" && /^[ \t]*\*\*Structure check:\*\*[ \t]*\S/m.test(finalText)) {
+  // A structure check needs no verdict, but only in a turn that declared one (skillUse), and only
+  // when the reply opens with the label: a label later in an ordinary answer does not count.
+  if (use.structureCheck && typeof finalText === "string" && /^\*\*Structure check:\*\*[ \t]*\S/.test(finalText.trimStart())) {
     return { pass: "structure-check", opener };
   }
   // Only the exact question on the final line signals a wait, not a quotation or a report

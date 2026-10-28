@@ -123,7 +123,9 @@ At `every-idea`, each message you send gets this line attached as hidden context
 
 > ask-graham (intensity every-idea): If this message proposes a new idea that doesn't exist yet
 > (not a ticket, bug, or task in an existing project), run the ask-graham check before planning
-> or building. Otherwise ignore this.
+> or building. If it is a task in an existing project that creates a new table, top-level module,
+> or service, run the ask-graham structure check (findings only, no verdict) before writing it.
+> Otherwise ignore this.
 
 At `ask` nothing is added. The hook does not classify messages; the agent decides whether a
 message is a new idea, so a ticket can still draw a check if the agent misreads it.
@@ -162,9 +164,14 @@ A waiting reply may instead end with the exact comparables question alone on its
 without quotes. Both hosts let that stop pass without recording a block; mentioning or quoting
 the question in a completed report does not exempt that report from its verdict.
 
-A structure check gives no verdict. Its reply has a line starting `**Structure check:**` (bold,
-at the start of the line, with text after it), and both hosts let that stop pass without
-recording a block. The label quoted, unbolded, mid-sentence, or with nothing after it does not count.
+A structure check gives no verdict, and the turn has to declare it: the skill loaded with the
+args `structure-check <the new structure>` (`/ask-graham structure-check …`, a Claude Code `Skill`
+call, or `/skill:ask-graham structure-check …` on OMP), or a read of
+`skills/ask-graham/structure-check.md` (`skill://ask-graham/structure-check.md` on OMP). In such a
+turn, with no other ask-graham invocation, a reply that opens with `**Structure check:**` and
+text after it passes on both hosts without recording a block. An ordinary run still needs its
+verdict even if it prints that label, and the label anywhere but the reply's first line, quoted,
+fenced, unbolded, or with nothing after it, does not count.
 
 **To turn the Stop check off**, without uninstalling: `/ask-graham stop-check off` (or
 `/skill:ask-graham stop-check off` on OMP) writes `stop-check=off` to your user file; add
@@ -180,6 +187,10 @@ What counts as reading the skill:
 - on OMP, you typing `/skill:ask-graham` at the start of a message or anywhere in it, or the
   agent's `read` of `skill://ask-graham`, `skill://<namespace>/ask-graham`, or a file ending
   `/ask-graham/SKILL.md`.
+
+On either host a read of the structure-check marker (a path ending
+`/ask-graham/structure-check.md`, or `skill://[<namespace>/]ask-graham/structure-check.md`) also
+counts, and declares a structure check.
 
 A skill body pasted into an ordinary message does not count. `/ask-graham intensity` and
 `/ask-graham stop-check` (or their `/skill:ask-graham` forms) give no verdict, so a settings-only
@@ -297,8 +308,9 @@ macOS with Node 24 (`.github/workflows/ask-graham.yml`).
 
 Adds the structure check: before a task inside a decided project writes a new table, top-level
 module, or service, the skill searches what else hangs off the same parent and flags a second
-pattern where the repo already has one, with no verdict. The Stop check accepts a
-`**Structure check:**` line in place of a verdict line.
+pattern where the repo already has one, with no verdict. A turn that declares a structure check
+(args `structure-check`, or a read of `structure-check.md`) may end with a `**Structure check:**`
+first line instead of a verdict line. The every-idea nudge names the structure check.
 
 ### 2026-10-20 — 0.6.0
 

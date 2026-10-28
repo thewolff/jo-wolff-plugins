@@ -1,7 +1,7 @@
 ---
 name: ask-graham
 description: Answers an explicit "should we build X?" with Graham's stated judgment (his gate questions, the 2-minute rule, fewer lines wins) and a verdict of do it now, start now, later, or don't build. Use only when the user asks outright whether something is worth building ("should we build this?", "is it worth building?"), when an ask-graham nudge says a message proposes a new idea, or on /ask-graham. Not for tickets, bug fixes, tasks inside an already-decided project, or continuing existing work, except a structure check (findings only, no verdict) before such a task writes a new table, top-level module, or service.
-argument-hint: "[the thing to build] | intensity [every-idea|ask] [--here] | stop-check [on|off] [--here]"
+argument-hint: "[the thing to build] | structure-check [the new structure] | intensity [every-idea|ask] [--here] | stop-check [on|off] [--here]"
 license: MIT
 ---
 
@@ -21,7 +21,7 @@ Two levels. **ask** is the default: the skill runs on `/ask-graham` or an explic
 
 At both levels it never runs on a ticket or issue, a bug fix, a task inside an already-decided project, or a request to continue existing work. A nudge on such a message is ignored without comment.
 
-One exception, the **structure check**: when a task inside an already-decided project is about to create a new table, a new top-level module, or a new service, run step 2 (with its parent search) and step 4 only, before the structure is written. The output is the step-2 findings and any fired flags, under a first line `**Structure check:** <the new structure>`, with no verdict, gate questions, breakdown or closing ask. The Stop check accepts that line in place of a verdict. A task inside a decided project that creates none of these three still gets no ask-graham output. (Skill)
+One exception, the **structure check**: when a task inside an already-decided project is about to create a new table, a new top-level module, or a new service, run step 2 (with its parent search) and step 4 only, before the structure is written. Declare it first: load this skill with the args `structure-check <the new structure>`, or read [`structure-check.md`](structure-check.md) beside this file, again when resuming after the comparables answer. The output is the step-2 findings and any fired flags, under a first line `**Structure check:** <the new structure>`, with no verdict, gate questions, breakdown or closing ask. The Stop check accepts that first line in place of a verdict only in a turn that declared a structure check and made no other ask-graham invocation; an ordinary run still needs its verdict. A task inside a decided project that creates none of these three still gets no ask-graham output. (Skill)
 
 The level comes from the first of these that exists:
 
