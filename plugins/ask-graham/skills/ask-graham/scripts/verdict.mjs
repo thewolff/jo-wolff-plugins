@@ -7,8 +7,9 @@
 //
 // THE CHECK. A main-session turn that read the ask-graham skill must end in a line
 // `**Verdict:** <one of VERDICTS>`, unless it ends by asking the comparables question and waiting,
-// or it is a structure check: an ask whose first use of the skill declared one (skillUse over
-// askTurns) and whose reply opens with a `**Structure check:**` line (SKILL.md "When it runs").
+// or it is a structure check: a turn whose first use of the skill declared one (skillUse) and whose
+// reply opens with `**Structure check:**` and then a `**Found:**` or `**No similar:**` line
+// (SKILL.md "When it runs").
 // A turn that did not read the skill, or whose only uses of it were settings invocations (`/ask-graham intensity`, `/ask-graham stop-check`), is not checked.
 // The adapters skip the check entirely when the stop-check setting is off. The check blocks at most once per
 // turn: the caller keeps the opener id of the turn it last blocked and passes it back as
@@ -112,12 +113,6 @@ const responseId = (e) => (e.type === "assistant" && typeof e.message?.id === "s
  * opener, the turn is the whole chain and its id is the chain's root. Null when no entry has an id.
  */
 export function currentTurn(entries) {
-  const ix = indexEntries(entries);
-  return ix && turnEndingAt(entries, ix.byId, ix.leaf);
-}
-
-// Entries by id, and the leaf (the last non-sidechain entry with an id). Null when there is none.
-function indexEntries(entries) {
   if (!Array.isArray(entries)) return null;
   const byId = new Map();
   let leaf = null;
@@ -128,12 +123,7 @@ function indexEntries(entries) {
     byId.set(id, e);
     if (!e.isSidechain) leaf = e;
   }
-  return leaf ? { byId, leaf } : null;
-}
-
-// The turn whose last chain entry is `leaf`, as currentTurn describes it, plus `start` (its opener,
-// or the chain's root when there is none) for walking back to the turn before it.
-function turnEndingAt(entries, byId, leaf) {
+  if (!leaf) return null;
   const chain = new Set();
   let opener = null;
   let root = leaf;
@@ -147,44 +137,7 @@ function turnEndingAt(entries, byId, leaf) {
   }
   const responses = new Set([...chain].map(responseId).filter(Boolean));
   const inTurn = (e) => chain.has(e) || (responses.has(responseId(e)) && !e.isSidechain);
-  const start = opener ?? root;
-  return { id: idOf(start), start, entries: entries.filter((e) => isObject(e) && inTurn(e)) };
-}
-
-/**
- * The turns of the ask the active turn belongs to, oldest first: the active turn, preceded by each
- * earlier turn on its parent chain that ended waiting on the comparables question (SKILL.md step 2)
- * and was answered by a plain yes or no (isComparablesAnswer), back to the first that was not. Any
- * other prompt after the question (a new topic, a slash command) starts a new ask. Empty when the
- * transcript has no turn.
- */
-export function askTurns(entries) {
-  const ix = indexEntries(entries);
-  if (!ix) return [];
-  const turns = [turnEndingAt(entries, ix.byId, ix.leaf)];
-  const seen = new Set([turns[0].start]);
-  for (let p = ix.byId.get(parentOf(turns[0].start)); p && !seen.has(p); ) {
-    if (!isComparablesAnswer(turns[0].start)) break;
-    const prev = turnEndingAt(entries, ix.byId, p);
-    if (seen.has(prev.start) || !waitsOnComparables(lastAssistantText(prev))) break;
-    seen.add(prev.start);
-    turns.unshift(prev);
-    p = ix.byId.get(parentOf(prev.start));
-  }
-  return turns;
-}
-
-// Only the exact question on the final line signals a wait, not a quotation or a report mentioning it.
-const waitsOnComparables = (text) =>
-  typeof text === "string" &&
-  /(?:^|\n)[ \t]*Do you want me to research and see if something comparable exists\?[ \t]*$/.test(text.trimEnd());
-
-// A turn opener that answers the comparables question and nothing else: a prompt (not a slash
-// command or skill prompt) that is a plain yes or no, optionally with please/thanks and punctuation.
-function isComparablesAnswer(opener) {
-  const plain = (opener.type === "user" || opener.type === "message") && !isUserSkillPrompt(opener);
-  const text = plain ? contentText(opener.message?.content).trim() : "";
-  return /^(?:yes|y|yeah|yep|sure|ok|okay|no|n|nope)(?:[,.!]*\s*(?:please|thanks|thank you))?[.!]*$/i.test(text);
+  return { id: idOf(opener ?? root), entries: entries.filter((e) => isObject(e) && inTurn(e)) };
 }
 
 // `ask-graham` or `<plugin>:ask-graham` (Claude Code), `ask-graham` or `<ns>/ask-graham` (OMP).
@@ -219,18 +172,18 @@ const isSettings = (args) => typeof args === "string" && /^(?:intensity|stop-che
 const isStructure = (args) => typeof args === "string" && /^structure-check(?:\s|$)/i.test(args.trim());
 
 /**
- * Whether a turn (or an ask's turns, concatenated oldest first) read the ask-graham skill, whether
- * every such use was a settings invocation, and whether it is a structure check. Reading counts as:
- * a Claude Code Skill tool call or `/ask-graham` slash command, an OMP user-invoked
- * `/skill:ask-graham`, or a file read (Claude Code Read, OMP read) of the skill or its
- * structure-check marker. A skill body pasted into an ordinary prompt does not count. Returns
- * `{ read, settingsOnly, structureCheck }`; settingsOnly is true iff read is, and every use was an
- * invocation whose args start with `intensity` or `stop-check`. A file read, or an invocation with
- * no args or other args, makes it false. structureCheck is true iff the first use that is not a
- * settings invocation declared one (invocation args starting `structure-check`, or a read of
- * structure-check.md) and no use was an ordinary invocation (no args, or args other than settings
- * or `structure-check`). A first use that reads SKILL.md or invokes the skill otherwise makes it a
- * full check, and a later marker read cannot change that.
+ * Whether a turn read the ask-graham skill, whether every such use was a settings invocation, and
+ * whether it is a structure check. Reading counts as: a Claude Code Skill tool call or
+ * `/ask-graham` slash command, an OMP user-invoked `/skill:ask-graham`, or a file read (Claude Code
+ * Read, OMP read) of the skill or its structure-check marker. A skill body pasted into an ordinary
+ * prompt does not count. Returns `{ read, settingsOnly, structureCheck }`; settingsOnly is true iff
+ * read is, and every use was an invocation whose args start with `intensity` or `stop-check`. A
+ * file read, or an invocation with no args or other args, makes it false. structureCheck is true
+ * iff the turn's first use that is not a settings invocation declared one (invocation args
+ * starting `structure-check`, or a read of structure-check.md) and no use was an ordinary
+ * invocation (no args, or args other than settings or `structure-check`). A first use that reads
+ * SKILL.md or invokes the skill otherwise makes it a full check, and a later marker read cannot
+ * change that.
  */
 export function skillUse(turn) {
   let read = false;
@@ -305,6 +258,17 @@ export const BLOCK_REASON =
   `\`**Verdict:** <verdict>\` naming exactly one of: ${VERDICTS.join(", ")} (SKILL.md step 5). ` +
   "Reply with the verdict line and anything it changes only; do not resend the whole answer.";
 
+/** The reason a structure check's block gives: its two opening lines (SKILL.md "When it runs"). */
+export const STRUCTURE_BLOCK_REASON =
+  "ask-graham: this turn is a structure check, but the reply does not open with its two lines. Start it with " +
+  "`**Structure check:** <the new structure>`, then on the next line either `**Found:** <each match, with a file:line " +
+  "receipt and how it overlaps>` or `**No similar:** <the parent, and what was searched>`. " +
+  "Reply with those lines and anything they change only; do not resend the whole answer.";
+
+// A structure check's reply: `**Structure check:** <text>` as its first line, then, as the next
+// non-blank line, `**Found:** <text>` or `**No similar:** <text>`.
+const STRUCTURE_REPLY = /^\*\*Structure check:\*\*[ \t]*\S[^\n]*\n(?:[ \t]*\n)*\*\*(?:Found|No similar):\*\*[ \t]*\S/;
+
 /**
  * The Stop check for one stop. `entries` is the parsed transcript, `text` the final assistant
  * text (when absent, the last assistant text on the turn), `blockedOpener` the turn opener id
@@ -314,7 +278,7 @@ export const BLOCK_REASON =
  * as its new blockedOpener, or `{ pass: <why>, opener }` otherwise, `why` being one of
  * "no-turn", "no-skill-read", "settings" (every skill use was a settings invocation),
  * "verdict", "structure-check", "comparables-question", "already-blocked". `opener` is the turn
- * opener's id, or null with "no-turn".
+ * opener's id, or null with "no-turn". A structure check's block gives STRUCTURE_BLOCK_REASON.
  */
 export function checkStop({ entries, text, blockedOpener = null } = {}) {
   const turn = currentTurn(entries);
@@ -325,15 +289,18 @@ export function checkStop({ entries, text, blockedOpener = null } = {}) {
   if (use.settingsOnly) return { pass: "settings", opener };
   const finalText = typeof text === "string" && text.trim() ? text : lastAssistantText(turn);
   if (findVerdict(finalText)) return { pass: "verdict", opener };
-  // A structure check needs no verdict, but only when the ask's first use of the skill declared
-  // one (skillUse over askTurns, so a comparables continuation keeps the ask's mode), and only when
-  // the reply opens with the label: a label later in an ordinary answer does not count.
-  if (typeof finalText === "string" && /^\*\*Structure check:\*\*[ \t]*\S/.test(finalText.trimStart()) &&
-      skillUse({ entries: askTurns(entries).flatMap((t) => t.entries) }).structureCheck) {
+  // A structure check needs no verdict, but only when the turn's first use of the skill declared
+  // one (skillUse), and only when the reply opens with the label and its outcome line: a label
+  // later in an ordinary answer, or one with no Found / No similar line under it, does not count.
+  if (use.structureCheck && typeof finalText === "string" && STRUCTURE_REPLY.test(finalText.trimStart().replace(/\r\n/g, "\n"))) {
     return { pass: "structure-check", opener };
   }
-  // Use the same final text as the verdict check in both harnesses.
-  if (waitsOnComparables(finalText)) return { pass: "comparables-question", opener };
+  // Only the exact question on the final line signals a wait, not a quotation or a report
+  // mentioning it. Use the same final text as the verdict check in both harnesses.
+  if (typeof finalText === "string" &&
+      /(?:^|\n)[ \t]*Do you want me to research and see if something comparable exists\?[ \t]*$/.test(finalText.trimEnd())) {
+    return { pass: "comparables-question", opener };
+  }
   if (blockedOpener !== null && blockedOpener === opener) return { pass: "already-blocked", opener };
-  return { block: BLOCK_REASON, opener };
+  return { block: use.structureCheck ? STRUCTURE_BLOCK_REASON : BLOCK_REASON, opener };
 }

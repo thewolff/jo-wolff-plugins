@@ -59,6 +59,6 @@ test("garbage on stdin still exits 0", (t) => {
 
 test("the nudge names new ideas, the structure check for new structures in a project, and silence otherwise", () => {
   assert.match(NUDGE, /If this message proposes a new idea that doesn't exist yet \(not a ticket, bug, or task in an existing project\), run the ask-graham check/);
-  assert.match(NUDGE, /If it is a task in an existing project that creates a new table, top-level module, or service, run the ask-graham structure check \(findings only, no verdict\) before writing it\./);
+  assert.match(NUDGE, /If it is a task in an existing project that creates a new table, a new column on an existing table, a new top-level module, or a new service, run the ask-graham structure check \(findings only, no verdict\) before writing it\./);
   assert.match(NUDGE, /Otherwise ignore this\.$/);
 });
