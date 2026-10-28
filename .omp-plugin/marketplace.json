@@ -6,7 +6,7 @@
     {
       "name": "output-types",
       "source": "./plugins/output-types",
-      "description": "Type and receipt every statement an agent returns, so a reader can tell what was checked from what was assumed."
+      "description": "Label every assertion of fact as CLAIM, CITE or GUESS, with the receipt that earns it, so a reader can tell what was checked from what was assumed."
     },
     {
       "name": "i-have-audhd",

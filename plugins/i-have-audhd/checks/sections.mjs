@@ -2,13 +2,18 @@
 // unit's opening window.
 //
 // WHY A MESSAGE IS SPLIT
-//   A message written under the output-types contract is a run of block-labeled sections
-//   (**PMDW**, **CLAIM**, **CITE**, **GUESS**, **ACTION**, **QUESTION**), and the reader reads
-//   each labeled section as its own message: the first words under each label are where that
-//   section's point or bad news has to be. Judging the whole message as one unit acquits a
-//   section that buries its verdict whenever some other section opens well, and convicts on
-//   bad news that does lead its own section but not the message. So those two judgments run
-//   per section.
+//   A message written under the output-types contract carries block-labeled sections for its
+//   assertions of fact (**CLAIM**, **CITE**, **GUESS**), with plain prose around them, and the
+//   reader reads each labeled section as its own message: the first words under each label are
+//   where that section's point or bad news has to be. Judging the whole message as one unit
+//   acquits a section that buries its verdict whenever some other section opens well, and
+//   convicts on bad news that does lead its own section but not the message. So those two
+//   judgments run per section. Plain prose needs no marker: a message with no label at all is
+//   judged whole, and prose before the first label is its own preamble unit.
+//
+//   Until 1.5.0 the set also held PMDW, ACTION and QUESTION. The output-types contract retired
+//   those (0.2.0): only facts are labeled now, so a line reading `**ACTION**` is ordinary prose
+//   and opens nothing.
 //
 // WHAT A LABEL LINE IS
 //   A prose line (checks/lines.mjs classifyLines: fences, HTML comments and blockquotes are
@@ -24,7 +29,7 @@
 //   judged exactly as before. Label lines present → the text before the first label is a
 //   preamble unit (label null, dropped when it holds nothing), and each label line opens a unit
 //   that runs to the next label line. The label line itself is dropped from the unit's text:
-//   "PMDW" is never a section's opening word. A run of heading, blank and rule lines directly
+//   "CLAIM" is never a section's opening word. A run of heading, blank and rule lines directly
 //   above a label line belongs to the section that label opens, so a `## Errors` header above a
 //   section never feeds the previous section's gates; any other heading stays where it falls.
 //
@@ -40,7 +45,7 @@
 
 import { classifyLines } from "./lines.mjs";
 
-export const SECTION_LABELS = ["PMDW", "CLAIM", "CITE", "GUESS", "ACTION", "QUESTION"];
+export const SECTION_LABELS = ["CLAIM", "CITE", "GUESS"];
 
 // The opening window's size, in words. A module constant, not a profile setting.
 export const OPENING_WORDS = 20;
