@@ -11,7 +11,7 @@
 //
 // Which rule fired is asserted by rule id — warnings.log's `rule=` field and the `rules` the
 // loop guard records in last-blocked-<session>.json — never by the wording of a reason. The one
-// exception is the per-section tests at the end: which sections a finding names (`**GUESS** at
+// exception is the per-section tests at the end: which sections a finding names (`**CITE** at
 // line 7`) is the contract under test there, so that token is asserted.
 //
 // Run: node --test 'plugins/i-have-audhd/hooks/*.test.mjs'
@@ -854,7 +854,7 @@ const conclusionFinding = (reason) => reason.split("\n\n").filter((f) => f.start
 test("sections each under the floor dispatch no conclusion-first job, even when the whole message passes", () => {
   const home = mkhome();
   markerProfile(home);
-  const msg = labeledMessage(section("CLAIM", body(4)), section("GUESS", body(4)), section("CITE", body(4)));
+  const msg = labeledMessage(section("CLAIM", body(4)), section("CITE", body(4)), section("CLAIM", body(4)));
   assert.equal(conclusionFirstApplicable(msg).applicable, true, "precondition: the whole text passes the gate");
   const r = runHook({ session_id: "s1", last_assistant_message: msg }, home);
   assert.equal(r.status, 0);
@@ -866,7 +866,7 @@ test("sections each under the floor dispatch no conclusion-first job, even when 
 test("one long section among short ones: one conclusion-first job, judging that section's prose alone", () => {
   const home = mkhome();
   markerProfile(home);
-  const msg = labeledMessage(section("CLAIM", body(2)), section("GUESS", body(7)), section("CITE", body(2)));
+  const msg = labeledMessage(section("CLAIM", body(2)), section("CITE", body(7)), section("CLAIM", body(2)));
   runHook({ session_id: "s2", last_assistant_message: msg }, home);
   const jobs = judged(home, "conclusion-first");
   assert.equal(jobs.length, 1);
@@ -876,14 +876,14 @@ test("one long section among short ones: one conclusion-first job, judging that 
 test("opposite verdicts per section: the finding names only the violating section's label and line", () => {
   const home = mkhome();
   markerProfile(home);
-  const msg = labeledMessage(section("CLAIM", body(7)), section("GUESS", `${body(7)}${VIOLATE_MARK}`));
+  const msg = labeledMessage(section("CLAIM", body(7)), section("CITE", `${body(7)}${VIOLATE_MARK}`));
   const r = runHook({ session_id: "s3", last_assistant_message: msg }, home);
   const out = parseOut(r.stdout);
   assert.equal(out.decision, "block");
   assert.equal(judged(home, "conclusion-first").length, 2);
   const [finding, ...more] = conclusionFinding(out.reason);
   assert.equal(more.length, 0, "one finding per rule");
-  assert.ok(finding.includes(`**GUESS** at line ${lineOf(msg, "**GUESS**")}`), finding);
+  assert.ok(finding.includes(`**CITE** at line ${lineOf(msg, "**CITE**")}`), finding);
   assert.ok(!finding.includes("**CLAIM**"), finding);
 });
 
@@ -893,23 +893,23 @@ test("two violating sections: one finding naming both labels and lines, in line 
   const msg = labeledMessage(
     section("CLAIM", `${body(7)}${VIOLATE_MARK}`),
     section("CITE", body(2)),
-    section("GUESS(inference)", `${body(7)}${VIOLATE_MARK}`),
+    section("CITE(vendor docs)", `${body(7)}${VIOLATE_MARK}`),
   );
   const r = runHook({ session_id: "s4", last_assistant_message: msg }, home);
   const out = parseOut(r.stdout);
   const [finding, ...more] = conclusionFinding(out.reason);
   assert.equal(more.length, 0, "one finding per rule");
   const claim = finding.indexOf(`**CLAIM** at line ${lineOf(msg, "**CLAIM**")}`);
-  const guess = finding.indexOf(`**GUESS(inference)** at line ${lineOf(msg, "**GUESS(inference)**")}`);
-  assert.ok(claim > -1 && guess > -1, finding);
-  assert.ok(claim < guess, "sections are named in line order");
+  const cite = finding.indexOf(`**CITE(vendor docs)** at line ${lineOf(msg, "**CITE(vendor docs)**")}`);
+  assert.ok(claim > -1 && cite > -1, finding);
+  assert.ok(claim < cite, "sections are named in line order");
   assert.ok(!finding.includes("**CITE**"), finding);
   assert.deepEqual(blockedRules(home, "s4"), ["conclusion-first"]);
 });
 
 test("a judge error on one section reports that section as judge unavailable: the other's violation still counts", () => {
-  const msg = labeledMessage(section("CLAIM", `${body(7)}${FAIL_MARK}`), section("GUESS", `${body(7)}${VIOLATE_MARK}`));
-  const guessName = `**GUESS** at line ${lineOf(msg, "**GUESS**")}`;
+  const msg = labeledMessage(section("CLAIM", `${body(7)}${FAIL_MARK}`), section("CITE", `${body(7)}${VIOLATE_MARK}`));
+  const citeName = `**CITE** at line ${lineOf(msg, "**CITE**")}`;
   const claimName = `**CLAIM** at line ${lineOf(msg, "**CLAIM**")}`;
 
   // block mode
@@ -919,7 +919,7 @@ test("a judge error on one section reports that section as judge unavailable: th
   const out = parseOut(r.stdout);
   assert.equal(out.decision, "block");
   assert.ok(blockedRules(blocking, "s5").includes("conclusion-first"));
-  assert.ok(conclusionFinding(out.reason)[0].includes(guessName));
+  assert.ok(conclusionFinding(out.reason)[0].includes(citeName));
   assert.ok(!conclusionFinding(out.reason)[0].includes(claimName), "the violation names only the judged section");
   const unavailable = out.reason.split("\n\n").filter((f) => f.startsWith("Judge unavailable (conclusion-first)"));
   assert.equal(unavailable.length, 1);
@@ -935,7 +935,7 @@ test("a judge error on one section reports that section as judge unavailable: th
   assert.match(wout.systemMessage, /judge unavailable/i);
   const warned = logLines(warning, "warnings.log").filter((l) => l.includes(" rule=conclusion-first "));
   assert.equal(warned.length, 2, "one violation finding, one judge-unavailable finding");
-  assert.ok(warned.some((l) => l.includes(guessName) && !/judge unavailable/i.test(l)), warned.join("\n"));
+  assert.ok(warned.some((l) => l.includes(citeName) && !/judge unavailable/i.test(l)), warned.join("\n"));
   assert.ok(warned.some((l) => l.includes(claimName) && /judge unavailable/i.test(l)), warned.join("\n"));
   assert.match(readLog(warning, "judge-failures.log"), /rule=conclusion-first error=judge-exit-2/);
 });
@@ -944,7 +944,7 @@ test("bad news leading a later section is judged in that section alone; a short 
   const home = mkhome();
   markerProfile(home);
   const news = `The migration failed last night and the index is missing three rows. ${body(3)}`;
-  const msg = labeledMessage(section("CLAIM", body(4)), section("GUESS", news));
+  const msg = labeledMessage(section("CLAIM", body(4)), section("CITE", news));
   runHook({ session_id: "s7", last_assistant_message: msg }, home);
   const jobs = judged(home, "bad-news-first");
   assert.equal(jobs.length, 1);
@@ -961,10 +961,10 @@ test("bad news leading a later section is judged in that section alone; a short 
 test("omp tag, unarmed: a per-section block is capped to warn", () => {
   const home = mkhome();
   markerProfile(home);
-  const msg = labeledMessage(section("CLAIM", body(7)), section("GUESS", `${body(7)}${VIOLATE_MARK}`));
+  const msg = labeledMessage(section("CLAIM", body(7)), section("CITE", `${body(7)}${VIOLATE_MARK}`));
   const r = runHook({ session_id: "s9", last_assistant_message: msg }, home, OMP);
   assert.equal(r.stdout, "");
-  assert.match(readLog(home, "warnings.log"), /rule=conclusion-first .*\*\*GUESS\*\* at line/);
+  assert.match(readLog(home, "warnings.log"), /rule=conclusion-first .*\*\*CITE\*\* at line/);
 });
 
 test("an unlabeled message keeps one whole-message job, with its opening window and no section framing", () => {
@@ -984,7 +984,7 @@ test("the judge is shown the section's first 20 words: bad news at words 25-30 o
   const sentence =
     "After the long weekend of careful planning and three rounds of review with the platform team and " +
     "the database owners we finally tried it and the migration failed on step four, leaving the index short.";
-  const msg = labeledMessage(section("CLAIM", body(4)), section("GUESS", `${sentence} ${body(3)}`));
+  const msg = labeledMessage(section("CLAIM", body(4)), section("CITE", `${sentence} ${body(3)}`));
   runHook({ session_id: "s11", last_assistant_message: msg }, home);
   const [job, ...more] = judged(home, "bad-news-first");
   assert.equal(more.length, 0);
@@ -992,6 +992,6 @@ test("the judge is shown the section's first 20 words: bad news at words 25-30 o
     "After the long weekend of careful planning and three rounds of review with the platform team and the database owners";
   assert.ok(job.question.includes(`The reader's first 20 words here are: "${window}".`), job.question);
   assert.ok(!window.includes("failed"));
-  assert.ok(job.question.includes(`one labeled section (**GUESS**, line ${lineOf(msg, "**GUESS**")})`), job.question);
-  assert.ok(!job.message.includes("**GUESS**"), "the framing rides in the question, not the judged message");
+  assert.ok(job.question.includes(`one labeled section (**CITE**, line ${lineOf(msg, "**CITE**")})`), job.question);
+  assert.ok(!job.message.includes("**CITE**"), "the framing rides in the question, not the judged message");
 });

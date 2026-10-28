@@ -3,7 +3,7 @@
 //
 // WHY A MESSAGE IS SPLIT
 //   A message written under the output-types contract carries block-labeled sections for its
-//   assertions of fact (**CLAIM**, **CITE**, **GUESS**), with plain prose around them, and the
+//   receipted facts (**CLAIM**, **CITE**), with plain unlabeled prose around them, and the
 //   reader reads each labeled section as its own message: the first words under each label are
 //   where that section's point or bad news has to be. Judging the whole message as one unit
 //   acquits a section that buries its verdict whenever some other section opens well, and
@@ -11,15 +11,15 @@
 //   judgments run per section. Plain prose needs no marker: a message with no label at all is
 //   judged whole, and prose before the first label is its own preamble unit.
 //
-//   Until 1.5.0 the set also held PMDW, ACTION and QUESTION. The output-types contract retired
-//   those (0.2.0): only facts are labeled now, so a line reading `**ACTION**` is ordinary prose
-//   and opens nothing.
+//   Until 1.5.0 the set also held PMDW, GUESS, ACTION and QUESTION. The output-types contract
+//   retired those (0.2.0): only receipted facts are labeled now, so a line reading `**GUESS**`
+//   or `**ACTION**` is ordinary prose and opens nothing.
 //
 // WHAT A LABEL LINE IS
 //   A prose line (checks/lines.mjs classifyLines: fences, HTML comments and blockquotes are
-//   never prose) whose trimmed text is exactly one bold label — optionally with a basis in
-//   parentheses inside the bold (**GUESS(inference)**) and a trailing colon (**CLAIM**:).
-//   A label mid-sentence or in a bullet (`- **GUESS** the cache…`) is inline, not a section
+//   never prose) whose trimmed text is exactly one bold label — optionally with a parenthetical
+//   inside the bold (**CITE(vendor docs)**) and a trailing colon (**CLAIM**:).
+//   A label mid-sentence or in a bullet (`- **CLAIM** the cache…`) is inline, not a section
 //   opener: the output-types contract's "block-leading label" rule. The label set is a module
 //   constant, not a profile setting; an operator with other block labels gets whole-message
 //   judging.
@@ -45,12 +45,12 @@
 
 import { classifyLines } from "./lines.mjs";
 
-export const SECTION_LABELS = ["CLAIM", "CITE", "GUESS"];
+export const SECTION_LABELS = ["CLAIM", "CITE"];
 
 // The opening window's size, in words. A module constant, not a profile setting.
 export const OPENING_WORDS = 20;
 
-// `**LABEL**`, `**LABEL(basis)**`, a trailing colon inside or after the bold.
+// `**LABEL**`, `**LABEL(note)**`, a trailing colon inside or after the bold.
 const LABEL_LINE = new RegExp(
   `^\\*\\*((?:${SECTION_LABELS.join("|")})(?:\\s*\\([^()*]*\\))?)(?::\\*\\*|\\*\\*:?)$`,
 );
@@ -77,7 +77,7 @@ function joinUnit(entries) {
 }
 
 // splitLabeledSections(text) → [{ label, line, text }]
-//   label: the label as written inside the bold ("CLAIM", "GUESS(inference)"), null for the
+//   label: the label as written inside the bold ("CLAIM", "CITE(vendor docs)"), null for the
 //   whole unlabeled message or the preamble. line: the 1-indexed label line (1 for a null-label
 //   unit). Never throws.
 export function splitLabeledSections(text) {
