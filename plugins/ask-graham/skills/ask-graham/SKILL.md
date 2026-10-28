@@ -1,6 +1,6 @@
 ---
 name: ask-graham
-description: Answers an explicit "should we build X?" with Graham's stated judgment (his gate questions, the 2-minute rule, fewer lines wins) and a verdict of do it now, start now, later, or don't build. Use only when the user asks outright whether something is worth building ("should we build this?", "is it worth building?"), when an ask-graham nudge says a message proposes a new idea, or on /ask-graham. Not for tickets, bug fixes, tasks inside an already-decided project, or continuing existing work.
+description: Answers an explicit "should we build X?" with Graham's stated judgment (his gate questions, the 2-minute rule, fewer lines wins) and a verdict of do it now, start now, later, or don't build. Use only when the user asks outright whether something is worth building ("should we build this?", "is it worth building?"), when an ask-graham nudge says a message proposes a new idea, or on /ask-graham. Not for tickets, bug fixes, tasks inside an already-decided project, or continuing existing work, except a structure check (findings only, no verdict) before such a task writes a new table, top-level module, or service.
 argument-hint: "[the thing to build] | intensity [every-idea|ask] [--here] | stop-check [on|off] [--here]"
 license: MIT
 ---
@@ -20,6 +20,8 @@ Every rule carries its source, and the sources stay separate:
 Two levels. **ask** is the default: the skill runs on `/ask-graham` or an explicit "should we build this?" / "is it worth building?". **every-idea** also runs it whenever the user proposes a new project, product, feature, or tool that does not exist yet; a hook adds a one-line nudge to each message, and the agent decides whether the message is a new idea. (Skill)
 
 At both levels it never runs on a ticket or issue, a bug fix, a task inside an already-decided project, or a request to continue existing work. A nudge on such a message is ignored without comment.
+
+One exception, the **structure check**: when a task inside an already-decided project is about to create a new table, a new top-level module, or a new service, run step 2 (with its parent search) and step 4 only, before the structure is written. The output is the step-2 findings and any fired flags, under a first line `**Structure check:** <the new structure>`, with no verdict, gate questions, breakdown or closing ask. The Stop check accepts that line in place of a verdict. A task inside a decided project that creates none of these three still gets no ask-graham output. (Skill)
 
 The level comes from the first of these that exists:
 
@@ -73,6 +75,7 @@ Every run, before any internet search, ask exactly: "Do you want me to research 
 For the local search, check every source below that applies, and record each one as *found*, *nothing found*, or *unreachable*:
 
 - **The current repo or workspace.** Grep for the feature's nouns and verbs, its likely command or file names, and the existing words and commands nearby. Read any hit you would cite.
+- **What hangs off the same parent** (technical asks). Name the parent the new thing attaches to, then list its siblings, because a name grep misses a sibling that shares no keyword (a chart pick and `featured_quote_id`). For a table or column: every foreign key and id-array column (`UUID[]`, `int[]`) referencing that parent, and the id-list and single-pick id columns on the parent itself, from `information_schema` or `pg_constraint` (read-only) when a database is reachable and from a grep of the migrations directory either way. For code: what else is registered beside it (the same router, plugin registry, workflow suite, or parent directory) and what else imports the same parent. Name each sibling and the pattern it uses. (Skill)
 - **Prior sessions**, if the agent has a way to search them. Has someone asked for this, half-built it, or researched it already?
 - **Skills and tools already installed.** The session's own skill list, the user's skills directory (`~/.claude/skills/` on Claude Code), the repo's `skills/` directory if it has one.
 - **Where open work lives**, read-only and nothing else:
@@ -110,6 +113,8 @@ Using types, adding types, or typing an untyped module never fires a flag (Jo, s
 
 Skill addition: also flag a collision step 2 found, such as a new command word that is already taken with a different meaning. (Skill)
 
+Skill addition: **a second pattern where one exists.** When the parent search in step 2 finds an existing way to attach or store the same kind of thing, the design uses that pattern or says in one line why it cannot. It fires on a new table, a new join table, or a new side store where the parent already carries a column or list for that role. This is the skill's rule, prompted by the 2026-10-28 review of a chart-pick table that belonged as a `story_revisions` column. (Skill)
+
 Done when: each flag is marked *fires* (with the line of the design that trips it) or *clear*.
 
 ### 5. Pick the verdict
@@ -141,7 +146,7 @@ Done when: every task has acceptance criteria a reviewer could check, and no tas
 
 ## Output
 
-While the comparables answer is pending, report local findings if useful and end with the exact question from step 2; omit the verdict and closing ask. After the user answers, use the completed-check template below.
+While the comparables answer is pending, report local findings if useful and end with the exact question from step 2; omit the verdict and closing ask. After the user answers, use the completed-check template below. A structure check uses the shape in "When it runs" instead: its `**Structure check:**` line, the step-2 findings, and the red flags. (Skill)
 
 ```
 **Verdict:** <one of the four verdicts: do it now, start now, later, don't build>. <one-line why>

@@ -117,6 +117,23 @@ for (const [name, h] of Object.entries(HARNESSES)) {
     }
   });
 
+  test(`${name}: a structure check passes without a verdict`, () => {
+    const { t, opener } = turn("**Structure check:** dataviz_chart_decisions table\n\nParent search: found story_revisions.featured_quote_id.\n\n**Red flags:** a second pattern where one exists fires.");
+    assert.deepEqual(checkStop({ entries: t.entries }), { pass: "structure-check", opener });
+  });
+
+  test(`${name}: an empty, quoted or unbolded structure check label still needs a verdict`, () => {
+    for (const reply of [
+      "**Structure check:**",
+      "> **Structure check:** a new table",
+      "This was not a **Structure check:** run.",
+      "Structure check: a new table",
+    ]) {
+      const { t, opener } = turn(reply);
+      assert.deepEqual(checkStop({ entries: t.entries }), { block: BLOCK_REASON, opener }, reply);
+    }
+  });
+
   test(`${name}: a skill read and no verdict blocks, naming the four verdicts and the Verdict line`, () => {
     const { t, opener } = turn(ANSWER);
     const r = checkStop({ entries: t.entries });
@@ -413,4 +430,13 @@ test("OMP: a skill body pasted into a prompt, or injected by the agent, is not a
   u.agentSkillPrompt("ask-graham");
   u.say(ANSWER);
   assert.deepEqual(checkStop({ entries: u.entries }), { pass: "no-skill-read", opener });
+});
+
+test("SKILL.md states the structure check's trigger, its no-verdict output, and the Stop check contract", () => {
+  const skill = readFileSync(new URL("./skills/ask-graham/SKILL.md", import.meta.url), "utf8");
+  assert.match(skill, /a new table, a new top-level module, or a new service, run step 2 \(with its parent search\) and step 4 only/);
+  assert.match(skill, /under a first line `\*\*Structure check:\*\* <the new structure>`, with no verdict/);
+  assert.match(skill, /The Stop check accepts that line in place of a verdict\./);
+  assert.match(skill, /A task inside a decided project that creates none of these three still gets no ask-graham output\. \(Skill\)/);
+  assert.match(skill, /\*\*a second pattern where one exists\.\*\*[^\n]*\(Skill\)/);
 });
