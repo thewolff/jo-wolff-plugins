@@ -169,8 +169,10 @@ skill loaded with the args `structure-check <the new structure>` (`/ask-graham s
 a Claude Code `Skill` call, or `/skill:ask-graham structure-check …` on OMP), or a read of
 `skills/ask-graham/structure-check.md` (`skill://ask-graham/structure-check.md` on OMP) before
 SKILL.md. An ask is its active turn plus the earlier turns that ended waiting on the comparables
-question. If the ask's first use was anything else (a read of SKILL.md, or an invocation with
-other args or none), it is a full check for good: a later marker read, in that turn or after the
+question and were answered by a plain yes or no (optionally with "please" or "thanks"); any other
+prompt after the question, such as a new topic, starts a new ask. If the ask's first use was
+anything else (a read of SKILL.md, or an invocation with other args or none), it is a full check
+for good: a later marker read, in that turn or after the
 comparables answer, does not change it. In a structure check with no invocation that had other
 args, a reply that opens with `**Structure check:**` and text after it passes on both hosts
 without recording a block. A full check still needs its verdict even if it prints that label,

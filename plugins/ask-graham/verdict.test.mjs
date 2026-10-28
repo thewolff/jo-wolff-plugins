@@ -194,15 +194,46 @@ for (const [name, h] of Object.entries(HARNESSES)) {
   });
 
   test(`${name}: a structure check's comparables continuation stays one after reloading SKILL.md`, () => {
+    for (const answer of ["no", "Yes", "yes please", "No, thanks.", "ok!"]) {
+      const t = h.make();
+      t.prompt("add the chart table from the approved plan");
+      readMarker(t);
+      readSkill(t);
+      t.say(WAIT);
+      const resumed = t.prompt(answer);
+      readSkill(t);
+      t.say(STRUCTURE_REPLY);
+      assert.equal(askTurns(t.entries).length, 2, answer);
+      assert.deepEqual(checkStop({ entries: t.entries }), { pass: "structure-check", opener: resumed }, answer);
+    }
+  });
+
+  test(`${name}: a new topic after a structure check's comparables question is a new full check`, () => {
+    for (const prompt of ["Forget the chart task. Should we build a new cache service instead?", "no, should we build a cache instead?"]) {
+      const t = h.make();
+      t.prompt("add the chart table from the approved plan");
+      readMarker(t);
+      readSkill(t);
+      t.say(WAIT);
+      const next = t.prompt(prompt);
+      readSkill(t);
+      t.say(STRUCTURE_REPLY);
+      assert.equal(askTurns(t.entries).length, 1, prompt);
+      assert.deepEqual(checkStop({ entries: t.entries }), { block: BLOCK_REASON, opener: next }, prompt);
+    }
+  });
+
+  test(`${name}: a new structure task after a full check's comparables question is its own structure check`, () => {
     const t = h.make();
-    t.prompt("add the chart table from the approved plan");
-    readMarker(t);
+    t.prompt("should we build a cache?");
     readSkill(t);
     t.say(WAIT);
-    const resumed = t.prompt("no");
+    const next = t.prompt("Forget the cache. Add the chart table from the approved plan.");
+    readMarker(t);
     readSkill(t);
     t.say(STRUCTURE_REPLY);
-    assert.deepEqual(checkStop({ entries: t.entries }), { pass: "structure-check", opener: resumed });
+    assert.equal(askTurns(t.entries).length, 1);
+    assert.deepEqual(checkStop({ entries: t.entries }), { pass: "structure-check", opener: next });
   });
 
   test(`${name}: a turn after a verdict starts a new ask`, () => {
@@ -538,6 +569,7 @@ test("SKILL.md states the structure check's trigger, its no-verdict output, and 
   assert.match(skill, /under a first line `\*\*Structure check:\*\* <the new structure>`, with no verdict/);
   assert.match(skill, /The ask's first use of this skill declares it: loading this skill with the args `structure-check <the new structure>`, or reading \[`structure-check\.md`\]\(structure-check\.md\) before this file\./);
   assert.match(skill, /An ask whose first use was anything else \(reading this file, or invoking the skill with other args or none\) is a full check, and stays one through its comparables continuation\./);
+  assert.match(skill, /The continuation is only a plain yes or no to the comparables question; any other prompt starts a new ask\./);
   assert.match(skill, /The Stop check accepts that first line in place of a verdict only in a structure check, and only when no ask-graham invocation in the ask had other args; a full check still needs its verdict\./);
   assert.match(skill, /A task inside a decided project that creates none of these three still gets no ask-graham output\. \(Skill\)/);
   assert.match(skill, /\*\*a second pattern where one exists\.\*\*[^\n]*\(Skill\)/);
