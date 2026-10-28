@@ -13,8 +13,8 @@ const HOOK = join(dirname(fileURLToPath(import.meta.url)), "ask-graham-stop.mjs"
 const SESSION = "0b0e6a1c-5d2f-4c1e-9a77-3f0e2c1d9b10";
 
 // A temp HOME, XDG_STATE_HOME and XDG_CONFIG_HOME, a working directory with no .ask-graham above it
-// (the temp dir), and a transcript of one ask-graham turn ending in `reply`.
-function fixture(t, reply = "Searched the repo; nothing like it exists.") {
+// (the temp dir), and a transcript of one ask-graham turn, loaded with `args`, ending in `reply`.
+function fixture(t, reply = "Searched the repo; nothing like it exists.", args = "should we build a cache") {
   const base = realpathSync(mkdtempSync(join(tmpdir(), "ask-graham-stop-")));
   t.after(() => rmSync(base, { recursive: true, force: true }));
   const state = join(base, "state");
@@ -23,7 +23,7 @@ function fixture(t, reply = "Searched the repo; nothing like it exists.") {
   const setUser = (text) => { mkdirSync(join(config, "ask-graham"), { recursive: true }); writeFileSync(join(config, "ask-graham", "config"), text); };
   const cc = claudeCode();
   const opener = cc.prompt("should we build a cache?");
-  cc.skill("ask-graham:ask-graham", "should we build a cache");
+  cc.skill("ask-graham:ask-graham", args);
   cc.say(reply);
   const transcript = join(base, "transcript.jsonl");
   const save = () => writeFileSync(transcript, cc.jsonl());
@@ -171,8 +171,10 @@ test("end to end: waiting for comparables passes without consuming the turn's bl
   assert.deepEqual(JSON.parse(f.run(f.payload()).stdout), { decision: "block", reason: BLOCK_REASON });
 });
 
-test("end to end: a structure check passes with no verdict and no record; without its line it blocks", (t) => {
-  const f = fixture(t, "**Structure check:** a new dataviz_chart_decisions table\n\n**Red flags:** a second pattern where one exists fires.");
+const STRUCTURE_REPLY = "**Structure check:** a new dataviz_chart_decisions table\n\n**Red flags:** a second pattern where one exists fires.";
+
+test("end to end: a declared structure check passes with no verdict and no record; without its line it blocks", (t) => {
+  const f = fixture(t, STRUCTURE_REPLY, "structure-check a new dataviz_chart_decisions table");
   const r = f.run(f.payload());
   assert.equal(r.status, 0);
   assert.equal(r.stdout, "");
@@ -180,4 +182,10 @@ test("end to end: a structure check passes with no verdict and no record; withou
   f.cc.say("Parent search found story_revisions.featured_quote_id.");
   f.save();
   assert.deepEqual(JSON.parse(f.run(f.payload()).stdout), { decision: "block", reason: BLOCK_REASON });
+});
+
+test("end to end: an ordinary run that prints a structure check line is blocked", (t) => {
+  const f = fixture(t, STRUCTURE_REPLY);
+  assert.deepEqual(JSON.parse(f.run(f.payload()).stdout), { decision: "block", reason: BLOCK_REASON });
+  assert.equal(existsSync(f.record), true);
 });

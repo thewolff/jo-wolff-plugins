@@ -117,20 +117,69 @@ for (const [name, h] of Object.entries(HARNESSES)) {
     }
   });
 
-  test(`${name}: a structure check passes without a verdict`, () => {
-    const { t, opener } = turn("**Structure check:** dataviz_chart_decisions table\n\nParent search: found story_revisions.featured_quote_id.\n\n**Red flags:** a second pattern where one exists fires.");
-    assert.deepEqual(checkStop({ entries: t.entries }), { pass: "structure-check", opener });
+  // Every way a turn declares a structure check on this host (SKILL.md "When it runs").
+  const DECLARE = {
+    "Claude Code": {
+      "Skill args": (t) => t.skill("ask-graham:ask-graham", "structure-check a new chart table"),
+      "slash args": (t) => t.slash("ask-graham:ask-graham", "structure-check a new chart table"),
+      "marker Read": (t) => { t.read("/p/ask-graham/structure-check.md"); t.read("/p/ask-graham/SKILL.md"); },
+    },
+    OMP: {
+      "skill prompt args": (t) => t.skillPrompt("ask-graham", "structure-check a new chart table"),
+      "marker read": (t) => { t.read("skill://ask-graham/structure-check.md"); t.read("skill://ask-graham"); },
+    },
+  }[name];
+  const STRUCTURE_REPLY = "**Structure check:** dataviz_chart_decisions table\n\nParent search: found story_revisions.featured_quote_id.\n\n**Red flags:** a second pattern where one exists fires.";
+  // A user-typed declaration (slash or skill prompt) opens its own turn, so the opener is read back.
+  const structureTurn = (declare, reply) => {
+    const t = h.make();
+    t.prompt("add the chart table from the approved plan");
+    declare(t);
+    t.say(reply);
+    return { t, opener: currentTurn(t.entries).id };
+  };
+
+  test(`${name}: a declared structure check passes without a verdict`, () => {
+    for (const [how, declare] of Object.entries(DECLARE)) {
+      const { t, opener } = structureTurn(declare, STRUCTURE_REPLY);
+      assert.equal(skillUse(currentTurn(t.entries)).structureCheck, true, how);
+      assert.deepEqual(checkStop({ entries: t.entries }), { pass: "structure-check", opener }, how);
+    }
   });
 
-  test(`${name}: an empty, quoted or unbolded structure check label still needs a verdict`, () => {
+  test(`${name}: an ordinary run that prints a structure check line still needs its verdict`, () => {
+    for (const reply of [STRUCTURE_REPLY, "**Structure check:** cache"]) {
+      const { t, opener } = turn(reply);
+      assert.equal(skillUse(currentTurn(t.entries)).structureCheck, false);
+      assert.deepEqual(checkStop({ entries: t.entries }), { block: BLOCK_REASON, opener }, reply);
+    }
+  });
+
+  test(`${name}: a declared structure check plus an ordinary invocation in the same turn is an ordinary run`, () => {
+    // The ordinary invocation first (a user-typed one opens the turn), then a marker read declares.
+    const marker = name === "OMP" ? (u) => u.read("skill://ask-graham/structure-check.md") : (u) => u.read("/p/ask-graham/structure-check.md");
+    const ordinary = name === "OMP" ? [(u) => h.invoke(u, "should we build a cache")] : [h.read, (u) => h.invoke(u, "should we build a cache")];
+    for (const first of ordinary) {
+      const { t, opener } = structureTurn((u) => { first(u); marker(u); }, STRUCTURE_REPLY);
+      assert.equal(skillUse(currentTurn(t.entries)).structureCheck, false);
+      assert.deepEqual(checkStop({ entries: t.entries }), { block: BLOCK_REASON, opener });
+    }
+  });
+
+  test(`${name}: in a declared structure check, the label must open the reply, bold, with text after it`, () => {
     for (const reply of [
       "**Structure check:**",
       "> **Structure check:** a new table",
       "This was not a **Structure check:** run.",
       "Structure check: a new table",
+      "Normal check result.\n\n**Structure check:** cache\nNo verdict.",
+      "Example output:\n```text\n**Structure check:** new table\n```\nNo verdict.",
+      "```text\n**Structure check:** new table\n```",
     ]) {
-      const { t, opener } = turn(reply);
-      assert.deepEqual(checkStop({ entries: t.entries }), { block: BLOCK_REASON, opener }, reply);
+      for (const [how, declare] of Object.entries(DECLARE)) {
+        const { t, opener } = structureTurn(declare, reply);
+        assert.deepEqual(checkStop({ entries: t.entries }), { block: BLOCK_REASON, opener }, `${how}: ${reply}`);
+      }
     }
   });
 
@@ -254,13 +303,13 @@ test("Claude Code: a /ask-graham slash command opens the turn; its isMeta skill 
   t.say(ANSWER);
   const turn = currentTurn(t.entries);
   assert.equal(turn.id, opener);
-  assert.deepEqual(skillUse(turn), { read: true, settingsOnly: false });
+  assert.deepEqual(skillUse(turn), { read: true, settingsOnly: false, structureCheck: false });
 
   // the args are the slash command's: intensity args make the turn intensity-only
   const u = claudeCode();
   u.slash("ask-graham", "intensity every-idea");
   u.say("Intensity is every-idea.");
-  assert.deepEqual(skillUse(currentTurn(u.entries)), { read: true, settingsOnly: true });
+  assert.deepEqual(skillUse(currentTurn(u.entries)), { read: true, settingsOnly: true, structureCheck: false });
 });
 
 test("Claude Code: a Skill call with intensity args passes", () => {
@@ -363,7 +412,7 @@ test("OMP: a namespaced skill prompt counts; its args come from details or the U
   const u = omp();
   const id = u.skillPrompt("ask-graham", "intensity every-idea");
   delete u.entries.find((e) => e.id === id).details.args;
-  assert.deepEqual(skillUse(currentTurn(u.entries)), { read: true, settingsOnly: true });
+  assert.deepEqual(skillUse(currentTurn(u.entries)), { read: true, settingsOnly: true, structureCheck: false });
 });
 
 test("OMP: /skill:ask-graham intensity then a read of the skill file blocks", () => {
@@ -388,7 +437,7 @@ test("OMP: skillUse is intensity-only only when every invocation is an intensity
     const t = omp();
     t.skillPrompt("ask-graham", first);
     t.skillPrompt("ask-graham", second);
-    assert.deepEqual(skillUse({ entries: t.entries }), { read: true, settingsOnly }, `${first} / ${second}`);
+    assert.deepEqual(skillUse({ entries: t.entries }), { read: true, settingsOnly, structureCheck: false }, `${first} / ${second}`);
   }
 });
 
@@ -436,7 +485,8 @@ test("SKILL.md states the structure check's trigger, its no-verdict output, and 
   const skill = readFileSync(new URL("./skills/ask-graham/SKILL.md", import.meta.url), "utf8");
   assert.match(skill, /a new table, a new top-level module, or a new service, run step 2 \(with its parent search\) and step 4 only/);
   assert.match(skill, /under a first line `\*\*Structure check:\*\* <the new structure>`, with no verdict/);
-  assert.match(skill, /The Stop check accepts that line in place of a verdict\./);
+  assert.match(skill, /Declare it first: load this skill with the args `structure-check <the new structure>`, or read \[`structure-check\.md`\]\(structure-check\.md\)/);
+  assert.match(skill, /The Stop check accepts that first line in place of a verdict only in a turn that declared a structure check and made no other ask-graham invocation; an ordinary run still needs its verdict\./);
   assert.match(skill, /A task inside a decided project that creates none of these three still gets no ask-graham output\. \(Skill\)/);
   assert.match(skill, /\*\*a second pattern where one exists\.\*\*[^\n]*\(Skill\)/);
 });
