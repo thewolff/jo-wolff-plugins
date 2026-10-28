@@ -4,8 +4,8 @@ Five plugins about working with an agent: what its output is made of, what shape
 arrives in, when it may write code at all, whether the thing is worth building in the first
 place, and going through your reminders with it.
 
-- **[output-types](#output-types)** — label every assertion of fact and attach the receipt that
-  earns the label.
+- **[output-types](#output-types)** — label receipted facts, and only those, with the receipt
+  that earns the label.
 - **[i-have-audhd](#i-have-audhd)** — how to write to someone who is ADHD and autistic, with the
   research behind each rule and a Stop hook that warns when a message buries what they need.
 - **[paired-coding](#paired-coding)** — pair with the agent one change set at a time, behind a
@@ -63,15 +63,15 @@ compares the two installs and prints the commands for any plugin that differs (e
 
 ## output-types
 
-A plugin that makes an agent label every assertion of fact it returns — CLAIM, CITE, GUESS — and
-attach the receipt that earns the label, so a reader can tell what was checked from what was
-assumed. Only facts get labels; framing, questions, recommendations and reports of what the agent
-did stay plain prose.
+A plugin that makes an agent label the receipted facts it returns — CLAIM for what it checked this
+session, CITE for what an outside source says — and attach the receipt that earns the label.
+Everything else stays plain prose, and unlabeled means not backed by a receipt, so a reader can
+tell what was checked from what was assumed.
 
 The problem it addresses: an agent's report is one stream of confident prose. A fact read out of a
 file, a fact half-remembered from training, and a number nobody re-derived all read the same.
-Labeling them separates them, because each has a different receipt and a different cost when it
-is wrong.
+Labeling only the receipted ones separates them: the reader trusts a label and weighs the rest
+themselves.
 
 ### Install
 
@@ -98,10 +98,8 @@ it. Name the skill in your instructions if you want it from the first turn.
 
 ### What you get
 
-- **Three labels**, each with the receipt that earns it, and the rule that a receipt rather than
+- **Two labels**, each with the receipt that earns it, and the rule that a receipt rather than
   confidence sets the label.
-- **Graded guesses** — inference, pattern, recall — so a guess from something read this session is
-  not filed beside one from memory.
 - **Seven rules** that catch the most: third-party semantics are never vocabulary; a receipt
   licenses only what it literally shows; a figure reused in a new context is a new claim.
 - **What unlabeled prose still owes**: actions state their command, result and undo; a decision
@@ -112,10 +110,11 @@ it. Name the skill in your instructions if you want it from the first turn.
   of the contract file so there is only ever one copy of that text. Claude Code only; see *Install
   on OMP*.
 
-Changes in 0.2.0: only assertions of fact are labeled. The PMDW, ACTION and QUESTION labels, the
-`<!-- output-types … -->` envelope and the numbered degradation tiers are gone; actions, questions
-and degraded coverage are stated in plain prose. The whole contract now lives in
-`skills/output-types/reference.md`, which the skill points at and the hook injects from.
+Changes in 0.2.0: only receipted facts are labeled, as CLAIM or CITE. The GUESS, PMDW, ACTION and
+QUESTION labels, the `<!-- output-types … -->` envelope and the numbered degradation tiers are
+gone; unreceipted statements, actions, questions and degraded coverage are plain prose. The whole
+contract now lives in `skills/output-types/reference.md`, which the skill points at and the hook
+injects from.
 
 ### What this does, and what it does not do: it delivers, it does not enforce
 

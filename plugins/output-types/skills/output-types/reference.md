@@ -1,13 +1,11 @@
-# Output types: claim, cite, guess
+# Output types: claim and cite
 
-Label assertions of fact, and only those. A fact you checked carries **CLAIM** and its
-receipt; a fact from an outside source carries **CITE**; anything you did not verify
-carries **GUESS**. Without the GUESS label an unverified statement reads exactly like a
-verified one, and the reader acts on it. That is the whole point of the scheme.
-
-Everything else stays plain prose: framing, acknowledgements, transitions, offers to
-proceed, recommendations, questions, and reports of what you did. Labeling those buries the
-three labels that matter under ones that don't.
+Label receipted facts, and only those. A fact you checked carries **CLAIM** and its
+receipt; a fact from an outside source carries **CITE** and its source. Everything else is
+plain, unlabeled prose, and **unlabeled means not backed by a receipt**: inferences,
+recollections, framing, recommendations, questions, and reports of what you did. The reader
+trusts a label and weighs everything else themselves, so a label on an unreceipted
+sentence is the one failure that costs them.
 
 This file is the single source of truth for the contract. The `output-types` skill points
 here, and the plugin's session-start hook injects the span between the `inject:start` and
@@ -15,13 +13,13 @@ here, and the plugin's session-start hook injects the span between the `inject:s
 receives. If a rule changes, it changes here.
 
 <!-- inject:start -->
-Output types: label assertions of fact, and only those. A fact you checked carries **CLAIM**
-and its receipt; a fact from an outside source carries **CITE**; anything you did not verify
-carries **GUESS**. Everything else (framing, acknowledgements, questions, recommendations,
-reports of what you did) stays plain prose with no label.
+Output types: label receipted facts, and only those. A fact you checked carries **CLAIM**
+and its receipt; a fact from an outside source carries **CITE** and its source. Everything
+else is plain, unlabeled prose, and **unlabeled means not backed by a receipt**: inferences,
+recollections, framing, recommendations, questions, and reports of what you did.
 
 **The label is set by whether a receipt is attached, not by how confident you feel.** A
-statement of fact with no receipt is a GUESS, however certain it sounds.
+statement with no receipt stays unlabeled, however certain it sounds.
 
 - **CLAIM**: a fact from first-party evidence inspected this session. Receipt: an absolute
   file-and-line or stable artifact anchor, or the exact command or tool call plus its
@@ -29,10 +27,6 @@ statement of fact with no receipt is a GUESS, however certain it sounds.
 - **CITE**: a fact from an external source, including how any third-party system behaves.
   Receipt: the URL actually fetched this session plus the passage that says it, or a live
   test run this session.
-- **GUESS**: inference, pattern-match, recollection. No receipt, but it is marked, with a
-  basis: `GUESS(inference)` from something read or run this session, `GUESS(pattern)` from a
-  convention not verified at this site, `GUESS(recall)` from memory. A `recall` guess is
-  never load-bearing.
 
 A label that leads a block sits alone on its own line in markdown bold (`**CLAIM**`), with
 the statement on the next line; a label inside a sentence stays inline. Never use ANSI
@@ -40,16 +34,15 @@ escape codes; they render as literal garbage. Actions are reported in plain pros
 command, its result, and how to undo it.
 <!-- inject:end -->
 
-## The three labels
+## The two labels
 
 **The label is set by whether a receipt is attached, not by how confident you feel.** A
-statement of fact with no receipt is a GUESS, however certain it sounds.
+statement with no receipt stays unlabeled, however certain it sounds.
 
 | Label     | What it is | Required receipt |
 | --------- | ---------- | ---------------- |
 | **CLAIM** | A fact established from first-party evidence inspected this session: a local artifact, observed system state, a current work record, or an attributed statement. | Something that makes the evidence inspectable: an absolute file-and-line or stable artifact anchor; the exact command, query, or tool call plus its relevant output; a live observation with its tool record; or an upstream receipt preserved without broadening the conclusion. |
 | **CITE**  | A fact from an external source, **including how any third-party system behaves**. | The URL actually fetched this session plus the passage that says it, or a live test run this session. |
-| **GUESS** | Inference, pattern-match, recollection, "usually". | None, but it is marked, with a basis (below). |
 
 **CLAIM is defined by provenance, not by subject.** An attributed statement proves that the
 person or record said it, not every implication of it. A live test proves what the test
@@ -59,17 +52,11 @@ What counts as a receipt: vendor docs freshly fetched, a live test actually run,
 actually read, a published changelog. Filenames, route paths, table and column names,
 env-var names, prior-session memory, and training-data instinct are **not** receipts.
 
-### Guess basis
+### Unreceipted statements
 
-Every GUESS names where the belief came from, in parentheses:
-
-- `GUESS(inference)`: derived from something read or run this session, just not the exact
-  thing asserted.
-- `GUESS(pattern)`: a convention of this codebase or framework, not verified at this site.
-- `GUESS(recall)`: training-data memory or prior-session recollection.
-
-A `recall` guess is never load-bearing. If a diff, a plan step, or a recommended fix depends
-on one, resolve it or raise it as a blocker at the top of the report.
+Write them as plain prose, and let the wording carry the hedge where it matters ("probably",
+"did not read the call site"). When a diff, a plan step, or a recommended fix rests on
+something you only remember, say so at the top of the report as a blocker.
 
 ## Receipts
 
@@ -100,47 +87,45 @@ Self-check: would this citation still find its target if fifty lines were insert
 
 ## Rules
 
-1. **No receipt, no claim.** Downgrade to GUESS. "I could not verify X" is a successful
-   report.
-2. **A GUESS stays a GUESS** across the subagent-to-parent boundary, through summaries, and
-   into later turns. The label and its basis travel with the statement.
+1. **No receipt, no label.** "I could not verify X" is a successful report.
+2. **Restating never adds a label.** An unreceipted statement stays unlabeled across the
+   subagent-to-parent boundary, through summaries, and into later turns. A parent labels it
+   CLAIM only after checking it.
 3. **Third-party semantics are never vocabulary.** How an external system behaves (a
    database return code, an SQL operator, a vendor default, a runtime limit, a framework
    convention) is a CITE-or-test statement. Without a fetched URL or a command run this
-   session it is a GUESS, however elementary it feels. *"Everyone knows `-2` means the key
-   is missing"* is the shape of this failure: it reads as vocabulary, slips past the
+   session it stays unlabeled, however elementary it feels. *"Everyone knows `-2` means the
+   key is missing"* is the shape of this failure: it reads as vocabulary, slips past the
    self-check, and lands in a plan as fact. Proper nouns are the same: an unfamiliar name,
-   product, or reference is a GUESS until the person who used it says what it is.
-4. **Cheap to check beats correctly labeled.** Before writing GUESS on a statement another
-   decision depends on, ask whether a tool in hand settles it in under a minute (one query,
-   one curl, one grep, one read). If so, run it. Passing remarks stay GUESS-and-move-on;
+   product, or reference is unverified until the person who used it says what it is.
+4. **Cheap to check beats leaving it unlabeled.** Before leaving a statement another
+   decision depends on unreceipted, ask whether a tool in hand settles it in under a minute
+   (one query, one curl, one grep, one read). If so, run it. Passing remarks stay unlabeled;
    the test is "would being wrong here change what happens next?" A check that cannot
    disconfirm is not a check: state what a null result would rule out before running it.
-5. **Mind-reading is a GUESS.** An inference about what a person meant, wanted, or intended
-   is an assertion about another mind. *"I think what you're getting at is X"* gets the
-   GUESS label and says what evidence it rests on. Hedging words ("my read", "probably")
-   are not a substitute for the label.
+5. **Mind-reading is never a CLAIM.** An inference about what a person meant, wanted, or
+   intended stays unlabeled and says what evidence it rests on.
 6. **A receipt licenses only what it literally shows.** Where a sentence reaches past its
-   receipt, the reaching part is a GUESS, *even with a real receipt right beside it*. The
-   common shape is a category jump: a code receipt proves what the code **does**, never
-   whether that behaviour is **wanted**. *"These lines guard against a null timeline"* is a
-   CLAIM; *"so nothing breaks"* is a GUESS about intent wearing the first one's receipt.
-   The lesson from the case behind this rule: true receipts, a wrong conclusion, a passing
-   test that encoded the error, several reviews that cleared it, and a feature silently lost,
-   because each review checked that a receipt was present and none checked that it covered
-   the conclusion.
+   receipt, the reaching part is unreceipted, *even with a real receipt right beside it*:
+   keep it out of the labeled block. The common shape is a category jump: a code receipt
+   proves what the code **does**, never whether that behaviour is **wanted**. *"These lines
+   guard against a null timeline"* is a CLAIM; *"so nothing breaks"* is an unreceipted guess
+   about intent wearing the first one's receipt. The lesson from the case behind this rule:
+   true receipts, a wrong conclusion, a passing test that encoded the error, several reviews
+   that cleared it, and a feature silently lost, because each review checked that a receipt
+   was present and none checked that it covered the conclusion.
 7. **A figure reused in a new context is a new claim.** Same number, new audience,
    comparison, or decision: the sentence needs its own receipt. This failure feels like
    recall, so it never triggers a check. Mechanical form: about to state a figure you did
    not produce with a tool call **in this turn**? Say where it came from or re-derive it.
    For a subagent, every figure in the delegation prompt is inherited: say "the brief's
-   figure, not mine" and mark it GUESS unless you reproduced it. The lesson from the cases
-   behind this rule: a measurement restated an hour later reads as a summary, so nobody
-   asks whether it answers the new question, and it often does not.
+   figure, not mine" and leave it unlabeled unless you reproduced it. The lesson from the
+   cases behind this rule: a measurement restated an hour later reads as a summary, so
+   nobody asks whether it answers the new question, and it often does not.
 
 ## What stays unlabeled, and what it still owes
 
-Labels are for facts. These obligations hold in plain prose:
+Labels are for receipted facts. These obligations hold in plain prose:
 
 - **Actions** state the command, its result (exit code or outcome), and how to reverse it,
   inline. Failed and skipped steps are reported too.
@@ -160,15 +145,14 @@ on the next line. A label inside a sentence or bullet stays inline and bold.
 > **CLAIM**
 > citation records are written in `<repo-root>/src/server/routes/citations.ts:88` via `saveCitation`.
 >
-> **GUESS(pattern)**
-> the client probably calls this through `ApiClient.post`; did not read the call site.
+> The client probably calls this through `ApiClient.post`; I did not read the call site.
 >
 > Ran `npm run lint` → exit 0. Nothing to undo.
 
 Markdown bold is the only styling. ANSI escape sequences render as literal garbage.
 
-A table whose rows are assertions gets a leading `Type` column (CLAIM, CITE, or
-GUESS(basis)) and a `Receipt` column. Layout tables (a glossary, a port list, a file
+A table whose rows are assertions gets a `Type` column (CLAIM, CITE, or blank for
+unreceipted) and a `Receipt` column. Layout tables (a glossary, a port list, a file
 inventory) carry no Type column.
 
 ## Degraded reports
@@ -176,7 +160,7 @@ inventory) carry no Type column.
 A report that could not meet the contract says so at the top, in prose:
 
 - **Degraded verification**: receipts were unobtainable (no network, blocked tool, service
-  down). The report is GUESS-heavy and names what would have been checked and what
+  down). Most of the report is unlabeled, and it names what would have been checked and what
   prevented it.
 - **Degraded coverage**: only part of the ask was reachable. State what was covered and what
   was never opened, so the covered part does not imply completeness.
@@ -184,9 +168,9 @@ A report that could not meet the contract says so at the top, in prose:
   report is worse than an error, because the parent treats subagent output as
   authoritative.
 
-**Parent-side:** a substantial subagent report of findings with no CLAIM, CITE, or GUESS
-labels at all is unverified; do not act on it, re-delegate or verify directly. Carry any
-degradation forward when relaying, and keep inherited GUESSes as GUESSes.
+**Parent-side:** a substantial subagent report of findings with no CLAIM or CITE labels at
+all is unverified; do not act on it, re-delegate or verify directly. Carry any degradation
+forward when relaying, and relay unlabeled statements unlabeled.
 
 ## Commands handed over for a person to run
 
@@ -222,15 +206,15 @@ command, what it does, and its undo, and it survives being read alone hours late
 
 - **Searching and reading**: nearly all CLAIM with receipts. An empty search is reported as
   empty, not reasoned about.
-- **Research**: CITE-heavy; unfetchable sources become explicit GUESSes.
+- **Research**: CITE-heavy; an unfetchable source is said to be unfetched, unlabeled.
 - **Implementation and debugging**: mostly action reports (command, result, undo), with
   CLAIMs for what tests and reads showed.
-- **Planning and narrative**: mostly GUESS, and say so; a plan is a proposal.
-- **Review and audit**: every finding is a CLAIM with a receipt, or a GUESS ranked below
-  those that have one.
+- **Planning and narrative**: mostly unlabeled; a plan is a proposal.
+- **Review and audit**: every finding is a CLAIM with a receipt, or an unlabeled concern
+  ranked below those that have one.
 
 ## Propagating this contract
 
 Subagents do not see this file unless told to. A delegation prompt to a substantial agent
-names the `output-types` skill or restates the three labels, the receipt rule, and rules 3,
-6 and 7 in substance, on the first dispatch and every follow-up.
+names the `output-types` skill or restates the two labels, the receipt rule, and rules 3, 6
+and 7 in substance, on the first dispatch and every follow-up.

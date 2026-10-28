@@ -6,7 +6,7 @@
     {
       "name": "output-types",
       "source": "./plugins/output-types",
-      "description": "Label every assertion of fact as CLAIM, CITE or GUESS, with the receipt that earns it, so a reader can tell what was checked from what was assumed."
+      "description": "Label receipted facts as CLAIM or CITE, with the receipt that earns the label, and leave the rest unlabeled, so a reader can tell what was checked from what was assumed."
     },
     {
       "name": "i-have-audhd",

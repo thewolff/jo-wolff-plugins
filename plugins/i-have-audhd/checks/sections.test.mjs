@@ -16,7 +16,7 @@ const words = (prefix, n) => Array.from({ length: n }, (_, i) => `${prefix}${i +
 // ─── splitLabeledSections: no labels ─────────────────────────────────────────
 
 test("no label line: one unit, the whole text unchanged", () => {
-  const text = "## Report\n\nThe deploy went out.\n\n- **GUESS** the cache is warm.\n";
+  const text = "## Report\n\nThe deploy went out.\n\n- **CLAIM** the cache is warm.\n";
   assert.deepEqual(splitLabeledSections(text), [{ label: null, line: 1, text }]);
 });
 
@@ -32,9 +32,9 @@ const report = [
   "**CLAIM**", // 3
   "The deploy went out at noon.", // 4
   "", // 5
-  "**GUESS(inference)**", // 6
-  "The cache is probably warm.", // 7
-  "Second line of the guess.", // 8
+  "**CITE(vendor docs)**", // 6
+  "The TTL defaults to 60s.", // 7
+  "Second line of the cite.", // 8
   "", // 9
   "**CITE**:", // 10
   "The vendor docs say the TTL is 60s.", // 11
@@ -44,13 +44,13 @@ test("a preamble and three labeled sections split at the label lines, with their
   assert.deepEqual(splitLabeledSections(report), [
     { label: null, line: 1, text: "Status of the deploy, in three parts." },
     { label: "CLAIM", line: 3, text: "The deploy went out at noon." },
-    { label: "GUESS(inference)", line: 6, text: "The cache is probably warm.\nSecond line of the guess." },
+    { label: "CITE(vendor docs)", line: 6, text: "The TTL defaults to 60s.\nSecond line of the cite." },
     { label: "CITE", line: 10, text: "The vendor docs say the TTL is 60s." },
   ]);
 });
 
-test("a basis inside the bold and a trailing colon open sections; every label opens one", () => {
-  for (const label of ["CLAIM", "CITE", "GUESS"]) {
+test("a parenthetical inside the bold and a trailing colon open sections; every label opens one", () => {
+  for (const label of ["CLAIM", "CITE"]) {
     for (const form of [`**${label}**`, `**${label}**:`, `**${label}(inference)**`, `**${label}:**`]) {
       const units = splitLabeledSections(`Intro.\n${form}\nBody.`);
       assert.equal(units.length, 2, form);
@@ -60,8 +60,8 @@ test("a basis inside the bold and a trailing colon open sections; every label op
   }
 });
 
-test("retired labels (PMDW, ACTION, QUESTION) are plain prose and open no section", () => {
-  for (const label of ["PMDW", "ACTION", "QUESTION"]) {
+test("retired labels (PMDW, GUESS, ACTION, QUESTION) are plain prose and open no section", () => {
+  for (const label of ["PMDW", "GUESS", "ACTION", "QUESTION", "GUESS(inference)"]) {
     const text = `Intro.\n**${label}**\nBody.`;
     assert.deepEqual(splitLabeledSections(text), [{ label: null, line: 1, text }], label);
   }
@@ -77,12 +77,12 @@ test("unmarked prose around fact labels needs no marker: it is the preamble or p
 
 test("the label line is not in the unit text", () => {
   for (const unit of splitLabeledSections(report)) {
-    assert.doesNotMatch(unit.text, /\*\*(CLAIM|GUESS|CITE)/);
+    assert.doesNotMatch(unit.text, /\*\*(CLAIM|CITE)/);
   }
 });
 
 test("an inline or bulleted bold label does not open a section", () => {
-  for (const line of ["- **GUESS** the cache is warm.", "**GUESS** the cache is warm.", "The **CLAIM** is inline.", "**claim**", "**NOTE**"]) {
+  for (const line of ["- **CLAIM** the cache is warm.", "**CLAIM** the cache is warm.", "The **CLAIM** is inline.", "**claim**", "**NOTE**"]) {
     const text = `Intro.\n${line}\nBody.`;
     assert.deepEqual(splitLabeledSections(text), [{ label: null, line: 1, text }], line);
   }
@@ -124,19 +124,19 @@ test("a `<!--` inside an inline code span opens no comment, whatever the span's 
 });
 
 test("a heading directly above a label lands in the section that label opens", () => {
-  const text = "**CLAIM**\nThe deploy went out.\n\n## Errors\n\n**GUESS**\nThe migration probably failed.";
+  const text = "**CLAIM**\nThe deploy went out.\n\n## Errors\n\n**CITE**\nThe vendor status page reports an outage.";
   const units = splitLabeledSections(text);
   assert.deepEqual(units, [
     { label: "CLAIM", line: 1, text: "The deploy went out." },
-    { label: "GUESS", line: 6, text: "## Errors\n\nThe migration probably failed." },
+    { label: "CITE", line: 6, text: "## Errors\n\nThe vendor status page reports an outage." },
   ]);
 });
 
 test("a heading with prose under it stays in the unit it falls in", () => {
-  const text = "**CLAIM**\nThe deploy went out.\n\n## Errors\n\nNone today.\n\n**GUESS**\nThe cache is warm.";
-  const [claim, guess] = splitLabeledSections(text);
+  const text = "**CLAIM**\nThe deploy went out.\n\n## Errors\n\nNone today.\n\n**CITE**\nThe docs say so.";
+  const [claim, cite] = splitLabeledSections(text);
   assert.equal(claim.text, "The deploy went out.\n\n## Errors\n\nNone today.");
-  assert.equal(guess.text, "The cache is warm.");
+  assert.equal(cite.text, "The docs say so.");
 });
 
 test("a heading-only preamble moves into the first section and no empty preamble is left", () => {
