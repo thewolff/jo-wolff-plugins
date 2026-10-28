@@ -62,7 +62,11 @@ Ask "should we build X?" or "is it worth building?", or type `/ask-graham <the t
 on Claude Code or `/skill:ask-graham <the thing to build>` on OMP.
 
 The skill does not run on a ticket or issue, a bug fix, a task inside an already-decided
-project, or a request to continue existing work.
+project, or a request to continue existing work. One exception: before a task inside a decided
+project writes a new table, a new top-level module, or a new service, the skill runs a
+**structure check**: the search for what already exists (including what else hangs off the same
+parent table or module) and the red flags, reported under a `**Structure check:**` line, with no
+verdict. A task that creates none of the three gets no output.
 
 ## Intensity
 
@@ -157,6 +161,10 @@ its verdict in the same turn.
 A waiting reply may instead end with the exact comparables question alone on its final line,
 without quotes. Both hosts let that stop pass without recording a block; mentioning or quoting
 the question in a completed report does not exempt that report from its verdict.
+
+A structure check gives no verdict. Its reply has a line starting `**Structure check:**` (bold,
+at the start of the line, with text after it), and both hosts let that stop pass without
+recording a block. The label quoted, unbolded, mid-sentence, or with nothing after it does not count.
 
 **To turn the Stop check off**, without uninstalling: `/ask-graham stop-check off` (or
 `/skill:ask-graham stop-check off` on OMP) writes `stop-check=off` to your user file; add
@@ -284,6 +292,13 @@ hosts' hooks/extensions, and manifest version parity. CI runs the same command o
 macOS with Node 24 (`.github/workflows/ask-graham.yml`).
 
 ## Release notes
+
+### 2026-10-28 — 0.7.0
+
+Adds the structure check: before a task inside a decided project writes a new table, top-level
+module, or service, the skill searches what else hangs off the same parent and flags a second
+pattern where the repo already has one, with no verdict. The Stop check accepts a
+`**Structure check:**` line in place of a verdict line.
 
 ### 2026-10-20 — 0.6.0
 

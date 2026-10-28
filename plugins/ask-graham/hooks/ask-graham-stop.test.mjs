@@ -170,3 +170,14 @@ test("end to end: waiting for comparables passes without consuming the turn's bl
   f.save();
   assert.deepEqual(JSON.parse(f.run(f.payload()).stdout), { decision: "block", reason: BLOCK_REASON });
 });
+
+test("end to end: a structure check passes with no verdict and no record; without its line it blocks", (t) => {
+  const f = fixture(t, "**Structure check:** a new dataviz_chart_decisions table\n\n**Red flags:** a second pattern where one exists fires.");
+  const r = f.run(f.payload());
+  assert.equal(r.status, 0);
+  assert.equal(r.stdout, "");
+  assert.equal(existsSync(f.record), false);
+  f.cc.say("Parent search found story_revisions.featured_quote_id.");
+  f.save();
+  assert.deepEqual(JSON.parse(f.run(f.payload()).stdout), { decision: "block", reason: BLOCK_REASON });
+});
