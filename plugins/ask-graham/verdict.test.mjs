@@ -5,7 +5,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
-import { BLOCK_REASON, VERDICTS, checkStop, currentTurn, findVerdict, lastAssistantText, parseJsonl, skillUse } from "./skills/ask-graham/scripts/verdict.mjs";
+import { BLOCK_REASON, VERDICTS, askTurns, checkStop, currentTurn, findVerdict, lastAssistantText, parseJsonl, skillUse } from "./skills/ask-graham/scripts/verdict.mjs";
 import { claudeCode, omp, SKILL_BODY } from "./fixtures/transcripts.mjs";
 
 // --- findVerdict ------------------------------------------------------------------------------
@@ -164,6 +164,57 @@ for (const [name, h] of Object.entries(HARNESSES)) {
       assert.equal(skillUse(currentTurn(t.entries)).structureCheck, false);
       assert.deepEqual(checkStop({ entries: t.entries }), { block: BLOCK_REASON, opener });
     }
+  });
+
+  const readSkill = name === "OMP" ? (u) => u.read("skill://ask-graham") : (u) => u.read("/p/ask-graham/SKILL.md");
+  const readMarker = name === "OMP" ? (u) => u.read("skill://ask-graham/structure-check.md") : (u) => u.read("/p/ask-graham/structure-check.md");
+  const WAIT = "Searched locally.\n\nDo you want me to research and see if something comparable exists?";
+
+  test(`${name}: a full check loaded by reading SKILL.md cannot become a structure check by reading the marker`, () => {
+    const t = h.make();
+    const opener = t.prompt("should we build a cache?");
+    readSkill(t);
+    readMarker(t);
+    t.say(STRUCTURE_REPLY);
+    assert.deepEqual(checkStop({ entries: t.entries }), { block: BLOCK_REASON, opener });
+  });
+
+  test(`${name}: a full check's comparables continuation cannot become a structure check`, () => {
+    const t = h.make();
+    const first = t.prompt("should we build a cache?");
+    readSkill(t);
+    t.say(WAIT);
+    assert.deepEqual(checkStop({ entries: t.entries }), { pass: "comparables-question", opener: first });
+    const resumed = t.prompt("no");
+    readMarker(t);
+    readSkill(t);
+    t.say(STRUCTURE_REPLY);
+    assert.equal(askTurns(t.entries).length, 2);
+    assert.deepEqual(checkStop({ entries: t.entries }), { block: BLOCK_REASON, opener: resumed });
+  });
+
+  test(`${name}: a structure check's comparables continuation stays one after reloading SKILL.md`, () => {
+    const t = h.make();
+    t.prompt("add the chart table from the approved plan");
+    readMarker(t);
+    readSkill(t);
+    t.say(WAIT);
+    const resumed = t.prompt("no");
+    readSkill(t);
+    t.say(STRUCTURE_REPLY);
+    assert.deepEqual(checkStop({ entries: t.entries }), { pass: "structure-check", opener: resumed });
+  });
+
+  test(`${name}: a turn after a verdict starts a new ask`, () => {
+    const t = h.make();
+    t.prompt("add the chart table from the approved plan");
+    readMarker(t);
+    t.say("**Verdict:** later");
+    const next = t.prompt("now the cache");
+    readSkill(t);
+    t.say(STRUCTURE_REPLY);
+    assert.equal(askTurns(t.entries).length, 1);
+    assert.deepEqual(checkStop({ entries: t.entries }), { block: BLOCK_REASON, opener: next });
   });
 
   test(`${name}: in a declared structure check, the label must open the reply, bold, with text after it`, () => {
@@ -485,8 +536,9 @@ test("SKILL.md states the structure check's trigger, its no-verdict output, and 
   const skill = readFileSync(new URL("./skills/ask-graham/SKILL.md", import.meta.url), "utf8");
   assert.match(skill, /a new table, a new top-level module, or a new service, run step 2 \(with its parent search\) and step 4 only/);
   assert.match(skill, /under a first line `\*\*Structure check:\*\* <the new structure>`, with no verdict/);
-  assert.match(skill, /Declare it first: load this skill with the args `structure-check <the new structure>`, or read \[`structure-check\.md`\]\(structure-check\.md\)/);
-  assert.match(skill, /The Stop check accepts that first line in place of a verdict only in a turn that declared a structure check and made no other ask-graham invocation; an ordinary run still needs its verdict\./);
+  assert.match(skill, /The ask's first use of this skill declares it: loading this skill with the args `structure-check <the new structure>`, or reading \[`structure-check\.md`\]\(structure-check\.md\) before this file\./);
+  assert.match(skill, /An ask whose first use was anything else \(reading this file, or invoking the skill with other args or none\) is a full check, and stays one through its comparables continuation\./);
+  assert.match(skill, /The Stop check accepts that first line in place of a verdict only in a structure check, and only when no ask-graham invocation in the ask had other args; a full check still needs its verdict\./);
   assert.match(skill, /A task inside a decided project that creates none of these three still gets no ask-graham output\. \(Skill\)/);
   assert.match(skill, /\*\*a second pattern where one exists\.\*\*[^\n]*\(Skill\)/);
 });
