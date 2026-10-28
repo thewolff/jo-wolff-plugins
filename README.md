@@ -4,8 +4,8 @@ Five plugins about working with an agent: what its output is made of, what shape
 arrives in, when it may write code at all, whether the thing is worth building in the first
 place, and going through your reminders with it.
 
-- **[output-types](#output-types)** — label every statement and attach the receipt that earns
-  the label.
+- **[output-types](#output-types)** — label every assertion of fact and attach the receipt that
+  earns the label.
 - **[i-have-audhd](#i-have-audhd)** — how to write to someone who is ADHD and autistic, with the
   research behind each rule and a Stop hook that warns when a message buries what they need.
 - **[paired-coding](#paired-coding)** — pair with the agent one change set at a time, behind a
@@ -63,14 +63,15 @@ compares the two installs and prints the commands for any plugin that differs (e
 
 ## output-types
 
-A plugin that makes an agent label every statement it returns — CLAIM, CITE, GUESS, ACTION,
-QUESTION — and attach the receipt that earns the label, so a reader can tell what was checked from
-what was assumed.
+A plugin that makes an agent label every assertion of fact it returns — CLAIM, CITE, GUESS — and
+attach the receipt that earns the label, so a reader can tell what was checked from what was
+assumed. Only facts get labels; framing, questions, recommendations and reports of what the agent
+did stay plain prose.
 
 The problem it addresses: an agent's report is one stream of confident prose. A fact read out of a
-file, a fact half-remembered from training, a number nobody re-derived, and a change that actually
-happened all read the same. Typing them separates them, because each type has a different receipt
-and a different cost when it is wrong.
+file, a fact half-remembered from training, and a number nobody re-derived all read the same.
+Labeling them separates them, because each has a different receipt and a different cost when it
+is wrong.
 
 ### Install
 
@@ -97,19 +98,24 @@ it. Name the skill in your instructions if you want it from the first turn.
 
 ### What you get
 
-- **Six labels**, each with the receipt that earns it, and the rule that a receipt rather than
-  confidence sets the type.
+- **Three labels**, each with the receipt that earns it, and the rule that a receipt rather than
+  confidence sets the label.
 - **Graded guesses** — inference, pattern, recall — so a guess from something read this session is
   not filed beside one from memory.
-- **Eight rules** that catch the most: third-party semantics are never vocabulary; a receipt
+- **Seven rules** that catch the most: third-party semantics are never vocabulary; a receipt
   licenses only what it literally shows; a figure reused in a new context is a new claim.
-- **Four degradation tiers**, so an agent that could not meet the contract says so instead of
-  emitting something that reads as though it did.
-- A **reference file** with the report skeleton, a worked example, the parent-side handling rules,
-  and the rules for handing a command to a person to run.
+- **What unlabeled prose still owes**: actions state their command, result and undo; a decision
+  for the reader goes last and restates its subject; a report that could not meet the contract
+  says so at the top.
+- The rules for **handing a command to a person to run**.
 - A **session-start hook** that emits the operative core before the first tool call, reading it out
-  of the skill file so there is only ever one copy of that text. Claude Code only; see *Install
+  of the contract file so there is only ever one copy of that text. Claude Code only; see *Install
   on OMP*.
+
+Changes in 0.2.0: only assertions of fact are labeled. The PMDW, ACTION and QUESTION labels, the
+`<!-- output-types … -->` envelope and the numbered degradation tiers are gone; actions, questions
+and degraded coverage are stated in plain prose. The whole contract now lives in
+`skills/output-types/reference.md`, which the skill points at and the hook injects from.
 
 ### What this does, and what it does not do: it delivers, it does not enforce
 
@@ -119,19 +125,19 @@ Two pieces, and it is worth knowing which does what before you install.
 contract that governs every assertion cannot be delivered by a mechanism that fires in response to
 an assertion, and the first assertion of a session is usually in the first turn. So the hook emits
 the operative core at session start, and it is in force from turn one. It reads that text out of
-`skills/output-types/SKILL.md`, between the markers, rather than carrying its own copy. There is one
-copy of the core and it cannot drift from the skill.
+`skills/output-types/reference.md`, between the markers, rather than carrying its own copy. There
+is one copy of the core and it cannot drift from the contract.
 
-**The skill carries the fuller contract and loads on demand**, matched against its description: the
-eight rules, the degradation tiers, the report skeleton, the worked example. Once it loads, its text
+**The skill points at the full contract and loads on demand**, matched against its description:
+receipts, the seven rules, rendering, degraded reports, handed-over commands. Once read, the text
 stays in context for the rest of the session.
 
 **Nothing here enforces anything, and that is the part to be clear about.** Both pieces deliver
 text. Neither one reads what the agent sends back. On the machine this was extracted from there is
 also a conformance guard that inspects a returned report and tells the parent what it actually got
-— unlabelled prose, a claim with no receipt, a missing envelope. **That guard is not in this
-package and is not being extracted.** So do not read an installed copy of this plugin as a
-guarantee: a report that comes back with every sentence bare will come back exactly that way, and
+— unlabelled facts, a claim with no receipt. **That guard is not in this package and is not being
+extracted.** So do not read an installed copy of this plugin as a guarantee: a report that comes
+back with every fact bare will come back exactly that way, and
 nothing here will catch it. What you get is a contract the model has read, not a contract the
 model has been held to.
 

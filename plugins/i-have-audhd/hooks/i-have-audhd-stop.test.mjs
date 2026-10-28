@@ -854,7 +854,7 @@ const conclusionFinding = (reason) => reason.split("\n\n").filter((f) => f.start
 test("sections each under the floor dispatch no conclusion-first job, even when the whole message passes", () => {
   const home = mkhome();
   markerProfile(home);
-  const msg = labeledMessage(section("CLAIM", body(4)), section("GUESS", body(4)), section("ACTION", body(4)));
+  const msg = labeledMessage(section("CLAIM", body(4)), section("GUESS", body(4)), section("CITE", body(4)));
   assert.equal(conclusionFirstApplicable(msg).applicable, true, "precondition: the whole text passes the gate");
   const r = runHook({ session_id: "s1", last_assistant_message: msg }, home);
   assert.equal(r.status, 0);
@@ -866,7 +866,7 @@ test("sections each under the floor dispatch no conclusion-first job, even when 
 test("one long section among short ones: one conclusion-first job, judging that section's prose alone", () => {
   const home = mkhome();
   markerProfile(home);
-  const msg = labeledMessage(section("CLAIM", body(2)), section("GUESS", body(7)), section("ACTION", body(2)));
+  const msg = labeledMessage(section("CLAIM", body(2)), section("GUESS", body(7)), section("CITE", body(2)));
   runHook({ session_id: "s2", last_assistant_message: msg }, home);
   const jobs = judged(home, "conclusion-first");
   assert.equal(jobs.length, 1);
@@ -892,7 +892,7 @@ test("two violating sections: one finding naming both labels and lines, in line 
   markerProfile(home);
   const msg = labeledMessage(
     section("CLAIM", `${body(7)}${VIOLATE_MARK}`),
-    section("ACTION", body(2)),
+    section("CITE", body(2)),
     section("GUESS(inference)", `${body(7)}${VIOLATE_MARK}`),
   );
   const r = runHook({ session_id: "s4", last_assistant_message: msg }, home);
@@ -903,7 +903,7 @@ test("two violating sections: one finding naming both labels and lines, in line 
   const guess = finding.indexOf(`**GUESS(inference)** at line ${lineOf(msg, "**GUESS(inference)**")}`);
   assert.ok(claim > -1 && guess > -1, finding);
   assert.ok(claim < guess, "sections are named in line order");
-  assert.ok(!finding.includes("**ACTION**"), finding);
+  assert.ok(!finding.includes("**CITE**"), finding);
   assert.deepEqual(blockedRules(home, "s4"), ["conclusion-first"]);
 });
 
@@ -952,7 +952,7 @@ test("bad news leading a later section is judged in that section alone; a short 
 
   const quiet = mkhome();
   markerProfile(quiet);
-  const short = labeledMessage(section("CLAIM", body(4)), section("ACTION", "The deploy failed."));
+  const short = labeledMessage(section("CLAIM", body(4)), section("CITE", "The deploy failed."));
   assert.equal(badNewsGate(short).applicable, true, "precondition: the whole text passes the gate");
   runHook({ session_id: "s8", last_assistant_message: short }, quiet);
   assert.deepEqual(judged(quiet, "bad-news-first"), []);

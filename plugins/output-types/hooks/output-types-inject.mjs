@@ -5,16 +5,17 @@
 //   The contract governs every assertion, and a skill fires in response to one — which is one
 //   beat too late. A skill's text does stay in context for the rest of a session once it loads,
 //   so the gap is not leakage; it is the window before the load, and the first assertion of a
-//   session is usually in the first turn. This hook closes that window. The skill carries the
-//   fuller contract for when it fires; this carries the part that must be in force before the
-//   first tool call.
+//   session is usually in the first turn. This hook closes that window. The skill points at
+//   the full contract for when it fires; this carries the part that must be in force before
+//   the first tool call.
 //
-// WHY IT READS THE SKILL INSTEAD OF CARRYING TEXT
+// WHY IT READS THE CONTRACT INSTEAD OF CARRYING TEXT
 //   Two copies of one contract drift, and nothing detects it. So the injected text lives inside
-//   skills/output-types/SKILL.md between `<!-- inject:start -->` and `<!-- inject:end -->`, and
-//   this file emits exactly that span. Editing the skill IS editing what sessions receive. The
-//   only text this hook owns is the single pointer line appended at the end, which cannot live
-//   in the span because it reads differently inside the skill than it does injected.
+//   skills/output-types/reference.md (the whole contract, stated once) between
+//   `<!-- inject:start -->` and `<!-- inject:end -->`, and this file emits exactly that span.
+//   Editing the contract IS editing what sessions receive. The only text this hook owns is the
+//   single pointer line appended at the end, which cannot live in the span because it reads
+//   differently inside the contract than it does injected.
 //
 // NO SCOPE GATE, DELIBERATELY
 //   A plugin somebody chose to install is the opt-in. A gate here would reproduce the defect
@@ -34,16 +35,17 @@ import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 
 // Resolved from this file, never from a working directory or an assumed layout.
-const SKILL_PATH = fileURLToPath(new URL("../skills/output-types/SKILL.md", import.meta.url));
+const CONTRACT_PATH = fileURLToPath(new URL("../skills/output-types/reference.md", import.meta.url));
 
-// Line-anchored: the skill's own prose names the markers, and must not match.
+// Line-anchored: the contract's own prose names the markers, and must not match.
 const START = "\n<!-- inject:start -->\n";
 const END = "\n<!-- inject:end -->";
 
 // The only text this file owns.
 const POINTER =
-  "\nThe rest of the contract — the eight rules, the tiers, the report skeleton and the worked " +
-  "example — is in the `output-types` skill. Load it before writing anything someone will act on.";
+  "\nThe rest of the contract (receipts, the seven rules, what unlabeled prose still owes, degraded " +
+  "reports, commands handed to a person) is in the `output-types` skill. Load it before writing " +
+  "anything someone will act on.";
 
 function emit(text) {
   process.stdout.write(
@@ -63,11 +65,11 @@ try {
 
   if (String(process.env.OUTPUT_TYPES_INJECT || "").toLowerCase() === "off") process.exit(0);
 
-  const md = readFileSync(SKILL_PATH, "utf8");
+  const md = readFileSync(CONTRACT_PATH, "utf8");
   const start = md.indexOf(START);
   const end = start === -1 ? -1 : md.indexOf(END, start + START.length);
   if (start === -1 || end === -1) {
-    emit("The output-types core could not load: its markers are missing from the skill file.");
+    emit("The output-types core could not load: its markers are missing from the contract file.");
   }
   emit(md.slice(start + START.length, end).trim() + POINTER);
 } catch {
