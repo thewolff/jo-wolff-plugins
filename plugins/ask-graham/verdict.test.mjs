@@ -167,6 +167,35 @@ for (const [name, h] of Object.entries(HARNESSES)) {
     assert.ok(STRUCTURE_BLOCK_REASON.includes("**Found:**") && STRUCTURE_BLOCK_REASON.includes("**No similar:**"));
   });
 
+  test(`${name}: a declared structure check cannot finish with a full check's verdict or comparables question`, () => {
+    const QUESTION = "Do you want me to research and see if something comparable exists?";
+    for (const reply of [
+      "**Verdict:** do it now",
+      QUESTION,
+      `Searched locally.\n\n${QUESTION}`,
+      "**Structure check:** a new table\n**Found:**\n\n**Verdict:** do it now",
+      `**Structure check:** a new table\n**No similar:**\n\n${QUESTION}`,
+      "**Structure check:** a new table\n\n**Verdict:** later",
+    ]) {
+      for (const [how, declare] of Object.entries(DECLARE)) {
+        const { t, opener } = structureTurn(declare, reply);
+        assert.deepEqual(checkStop({ entries: t.entries }), { block: STRUCTURE_BLOCK_REASON, opener }, `${how}: ${reply}`);
+        // The once-per-turn escape still holds: a second stop in the same turn passes.
+        assert.deepEqual(checkStop({ entries: t.entries, blockedOpener: opener }), { pass: "already-blocked", opener }, `${how}: ${reply}`);
+      }
+    }
+  });
+
+  test(`${name}: a full check still finishes with its verdict or the comparables question`, () => {
+    for (const [reply, pass] of [
+      ["**Verdict:** do it now", "verdict"],
+      ["Searched locally.\n\nDo you want me to research and see if something comparable exists?", "comparables-question"],
+    ]) {
+      const { t, opener } = turn(reply);
+      assert.deepEqual(checkStop({ entries: t.entries }), { pass, opener }, reply);
+    }
+  });
+
   test(`${name}: an ordinary run that prints a structure check reply still needs its verdict`, () => {
     for (const reply of [FOUND_REPLY, NONE_REPLY, "**Structure check:** cache"]) {
       const { t, opener } = turn(reply);
@@ -527,6 +556,7 @@ test("SKILL.md states the structure check's trigger, its no-verdict output, and 
   assert.match(skill, /- Next line, when something matched: `\*\*Found:\*\*`/);
   assert.match(skill, /- Next line, when nothing matched: `\*\*No similar:\*\*` saying there are no similar tables, columns, modules or services/);
   assert.match(skill, /The Stop check accepts those two opening lines in place of a verdict only in a structure check, and only when no ask-graham invocation in the turn had other args; a full check still needs its verdict\./);
+  assert.match(skill, /In a structure check only those two lines count: a `\*\*Verdict:\*\*` line or the comparables question does not stand in for them\./);
   assert.match(skill, /A structure check does not ask it \(see "When it runs"\)\. \(Skill\)/);
   assert.match(skill, /A task inside a decided project that creates none of these four still gets no ask-graham output\. \(Skill\)/);
   assert.match(skill, /\*\*a second pattern where one exists\.\*\*[^\n]*\(Skill\)/);

@@ -288,19 +288,27 @@ export function checkStop({ entries, text, blockedOpener = null } = {}) {
   if (!use.read) return { pass: "no-skill-read", opener };
   if (use.settingsOnly) return { pass: "settings", opener };
   const finalText = typeof text === "string" && text.trim() ? text : lastAssistantText(turn);
-  if (findVerdict(finalText)) return { pass: "verdict", opener };
-  // A structure check needs no verdict, but only when the turn's first use of the skill declared
-  // one (skillUse), and only when the reply opens with the label and its outcome line: a label
-  // later in an ordinary answer, or one with no Found / No similar line under it, does not count.
-  if (use.structureCheck && typeof finalText === "string" && STRUCTURE_REPLY.test(finalText.trimStart().replace(/\r\n/g, "\n"))) {
-    return { pass: "structure-check", opener };
-  }
-  // Only the exact question on the final line signals a wait, not a quotation or a report
-  // mentioning it. Use the same final text as the verdict check in both harnesses.
-  if (typeof finalText === "string" &&
-      /(?:^|\n)[ \t]*Do you want me to research and see if something comparable exists\?[ \t]*$/.test(finalText.trimEnd())) {
-    return { pass: "comparables-question", opener };
-  }
+  const done = use.structureCheck ? structureDone(finalText) : fullDone(finalText);
+  if (done) return { pass: done, opener };
   if (blockedOpener !== null && blockedOpener === opener) return { pass: "already-blocked", opener };
   return { block: use.structureCheck ? STRUCTURE_BLOCK_REASON : BLOCK_REASON, opener };
+}
+
+// A structure check is done only by its own shape: the reply opens with the label and its outcome
+// line. A verdict or the comparables question does not stand in for it (SKILL.md "When it runs").
+function structureDone(finalText) {
+  return typeof finalText === "string" && STRUCTURE_REPLY.test(finalText.trimStart().replace(/\r\n/g, "\n"))
+    ? "structure-check"
+    : null;
+}
+
+// A full check is done by a verdict line, or by waiting on the comparables question: only the exact
+// question on the final line signals a wait, not a quotation or a report mentioning it.
+function fullDone(finalText) {
+  if (findVerdict(finalText)) return "verdict";
+  if (typeof finalText === "string" &&
+      /(?:^|\n)[ \t]*Do you want me to research and see if something comparable exists\?[ \t]*$/.test(finalText.trimEnd())) {
+    return "comparables-question";
+  }
+  return null;
 }
