@@ -6,7 +6,7 @@ import { dirname, join } from "node:path";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { blockedDir, handle } from "./ask-graham-stop.mjs";
-import { BLOCK_REASON } from "../skills/ask-graham/scripts/verdict.mjs";
+import { BLOCK_REASON, STRUCTURE_BLOCK_REASON } from "../skills/ask-graham/scripts/verdict.mjs";
 import { claudeCode } from "../fixtures/transcripts.mjs";
 
 const HOOK = join(dirname(fileURLToPath(import.meta.url)), "ask-graham-stop.mjs");
@@ -171,21 +171,27 @@ test("end to end: waiting for comparables passes without consuming the turn's bl
   assert.deepEqual(JSON.parse(f.run(f.payload()).stdout), { decision: "block", reason: BLOCK_REASON });
 });
 
-const STRUCTURE_REPLY = "**Structure check:** a new dataviz_chart_decisions table\n\n**Red flags:** a second pattern where one exists fires.";
+const FOUND_REPLY = "**Structure check:** a new dataviz_chart_decisions table\n**Found:** story_revisions.featured_quote_id holds the same kind of pick.\n\n**Red flags:** a second pattern where one exists fires.";
+const NONE_REPLY = "**Structure check:** a new audit_events table\n**No similar:** no similar tables or columns: searched migrations/ for tables and columns on stories.";
 
-test("end to end: a declared structure check passes with no verdict and no record; without its line it blocks", (t) => {
-  const f = fixture(t, STRUCTURE_REPLY, "structure-check a new dataviz_chart_decisions table");
-  const r = f.run(f.payload());
-  assert.equal(r.status, 0);
-  assert.equal(r.stdout, "");
-  assert.equal(existsSync(f.record), false);
-  f.cc.say("Parent search found story_revisions.featured_quote_id.");
-  f.save();
-  assert.deepEqual(JSON.parse(f.run(f.payload()).stdout), { decision: "block", reason: BLOCK_REASON });
+test("end to end: a declared structure check that reports matches or no matches passes with no verdict and no record", (t) => {
+  for (const reply of [FOUND_REPLY, NONE_REPLY]) {
+    const f = fixture(t, reply, "structure-check a new table");
+    const r = f.run(f.payload());
+    assert.equal(r.status, 0, reply);
+    assert.equal(r.stdout, "", reply);
+    assert.equal(existsSync(f.record), false, reply);
+  }
 });
 
-test("end to end: an ordinary run that prints a structure check line is blocked", (t) => {
-  const f = fixture(t, STRUCTURE_REPLY);
+test("end to end: a declared structure check that reports no outcome is blocked with the structure reason", (t) => {
+  const f = fixture(t, "**Structure check:** a new dataviz_chart_decisions table\n\n**Red flags:** none fired.", "structure-check a new table");
+  assert.deepEqual(JSON.parse(f.run(f.payload()).stdout), { decision: "block", reason: STRUCTURE_BLOCK_REASON });
+  assert.equal(existsSync(f.record), true);
+});
+
+test("end to end: an ordinary run that prints a structure check reply is blocked", (t) => {
+  const f = fixture(t, FOUND_REPLY);
   assert.deepEqual(JSON.parse(f.run(f.payload()).stdout), { decision: "block", reason: BLOCK_REASON });
   assert.equal(existsSync(f.record), true);
 });
