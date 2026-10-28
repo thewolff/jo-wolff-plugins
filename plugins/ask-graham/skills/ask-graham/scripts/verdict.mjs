@@ -153,8 +153,10 @@ function turnEndingAt(entries, byId, leaf) {
 
 /**
  * The turns of the ask the active turn belongs to, oldest first: the active turn, preceded by each
- * earlier turn on its parent chain that ended waiting on the comparables question (SKILL.md step 2),
- * back to the first that did not. Empty when the transcript has no turn.
+ * earlier turn on its parent chain that ended waiting on the comparables question (SKILL.md step 2)
+ * and was answered by a plain yes or no (isComparablesAnswer), back to the first that was not. Any
+ * other prompt after the question (a new topic, a slash command) starts a new ask. Empty when the
+ * transcript has no turn.
  */
 export function askTurns(entries) {
   const ix = indexEntries(entries);
@@ -162,6 +164,7 @@ export function askTurns(entries) {
   const turns = [turnEndingAt(entries, ix.byId, ix.leaf)];
   const seen = new Set([turns[0].start]);
   for (let p = ix.byId.get(parentOf(turns[0].start)); p && !seen.has(p); ) {
+    if (!isComparablesAnswer(turns[0].start)) break;
     const prev = turnEndingAt(entries, ix.byId, p);
     if (seen.has(prev.start) || !waitsOnComparables(lastAssistantText(prev))) break;
     seen.add(prev.start);
@@ -175,6 +178,14 @@ export function askTurns(entries) {
 const waitsOnComparables = (text) =>
   typeof text === "string" &&
   /(?:^|\n)[ \t]*Do you want me to research and see if something comparable exists\?[ \t]*$/.test(text.trimEnd());
+
+// A turn opener that answers the comparables question and nothing else: a prompt (not a slash
+// command or skill prompt) that is a plain yes or no, optionally with please/thanks and punctuation.
+function isComparablesAnswer(opener) {
+  const plain = (opener.type === "user" || opener.type === "message") && !isUserSkillPrompt(opener);
+  const text = plain ? contentText(opener.message?.content).trim() : "";
+  return /^(?:yes|y|yeah|yep|sure|ok|okay|no|n|nope)(?:[,.!]*\s*(?:please|thanks|thank you))?[.!]*$/i.test(text);
+}
 
 // `ask-graham` or `<plugin>:ask-graham` (Claude Code), `ask-graham` or `<ns>/ask-graham` (OMP).
 const isSkillName = (name) => typeof name === "string" && /^(?:[^\s:/]+[:/])?ask-graham$/.test(name);
