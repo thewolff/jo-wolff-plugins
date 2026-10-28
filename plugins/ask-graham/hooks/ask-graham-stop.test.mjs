@@ -190,6 +190,13 @@ test("end to end: a declared structure check that reports no outcome is blocked 
   assert.equal(existsSync(f.record), true);
 });
 
+test("end to end: a declared structure check that ends on a verdict or the comparables question is blocked with the structure reason", (t) => {
+  for (const reply of ["**Verdict:** do it now", "Searched.\n\nDo you want me to research and see if something comparable exists?"]) {
+    const f = fixture(t, reply, "structure-check a new table");
+    assert.deepEqual(JSON.parse(f.run(f.payload()).stdout), { decision: "block", reason: STRUCTURE_BLOCK_REASON }, reply);
+  }
+});
+
 test("end to end: an ordinary run that prints a structure check reply is blocked", (t) => {
   const f = fixture(t, FOUND_REPLY);
   assert.deepEqual(JSON.parse(f.run(f.payload()).stdout), { decision: "block", reason: BLOCK_REASON });

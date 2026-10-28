@@ -183,9 +183,11 @@ block when it opens with these two lines:
 
 or, when the search matched nothing, `**No similar:** <the parent, and what was searched>` as the
 second line. Without one of the two outcome lines the stop is blocked once, with a reason that
-names both. A full check still needs its verdict even if it prints these lines, and the label
-anywhere but the reply's first line, quoted, fenced, unbolded, or with nothing after it, does
-not count.
+names both; in a structure check a verdict line or the comparables question does not stand in
+for them. A full check still needs its verdict (or the waiting comparables question) even if it
+prints these lines, and the label anywhere but the reply's first line, quoted, fenced, unbolded,
+or with nothing after it, does not count. The check reads the shape, not the content: any text
+after `**Found:**` or `**No similar:**`, even a single period, satisfies it.
 
 **To turn the Stop check off**, without uninstalling: `/ask-graham stop-check off` (or
 `/skill:ask-graham stop-check off` on OMP) writes `stop-check=off` to your user file; add

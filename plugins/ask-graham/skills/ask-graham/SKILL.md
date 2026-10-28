@@ -28,7 +28,7 @@ One exception, the **structure check**: when a task inside an already-decided pr
 - Next line, when nothing matched: `**No similar:**` saying there are no similar tables, columns, modules or services, naming the parent and what was searched (for example "no similar tables or columns: searched migrations/ for tables and columns on story_revisions"). An empty search is never silent.
 - Then the step-4 red flags.
 
-The Stop check accepts those two opening lines in place of a verdict only in a structure check, and only when no ask-graham invocation in the turn had other args; a full check still needs its verdict. A task inside a decided project that creates none of these four still gets no ask-graham output. (Skill)
+The Stop check accepts those two opening lines in place of a verdict only in a structure check, and only when no ask-graham invocation in the turn had other args; a full check still needs its verdict. In a structure check only those two lines count: a `**Verdict:**` line or the comparables question does not stand in for them. A task inside a decided project that creates none of these four still gets no ask-graham output. (Skill)
 
 The level comes from the first of these that exists:
 
