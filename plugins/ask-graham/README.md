@@ -164,14 +164,18 @@ A waiting reply may instead end with the exact comparables question alone on its
 without quotes. Both hosts let that stop pass without recording a block; mentioning or quoting
 the question in a completed report does not exempt that report from its verdict.
 
-A structure check gives no verdict, and the turn has to declare it: the skill loaded with the
-args `structure-check <the new structure>` (`/ask-graham structure-check …`, a Claude Code `Skill`
-call, or `/skill:ask-graham structure-check …` on OMP), or a read of
-`skills/ask-graham/structure-check.md` (`skill://ask-graham/structure-check.md` on OMP). In such a
-turn, with no other ask-graham invocation, a reply that opens with `**Structure check:**` and
-text after it passes on both hosts without recording a block. An ordinary run still needs its
-verdict even if it prints that label, and the label anywhere but the reply's first line, quoted,
-fenced, unbolded, or with nothing after it, does not count.
+A structure check gives no verdict, and the ask's first use of the skill has to declare it: the
+skill loaded with the args `structure-check <the new structure>` (`/ask-graham structure-check …`,
+a Claude Code `Skill` call, or `/skill:ask-graham structure-check …` on OMP), or a read of
+`skills/ask-graham/structure-check.md` (`skill://ask-graham/structure-check.md` on OMP) before
+SKILL.md. An ask is its active turn plus the earlier turns that ended waiting on the comparables
+question. If the ask's first use was anything else (a read of SKILL.md, or an invocation with
+other args or none), it is a full check for good: a later marker read, in that turn or after the
+comparables answer, does not change it. In a structure check with no invocation that had other
+args, a reply that opens with `**Structure check:**` and text after it passes on both hosts
+without recording a block. A full check still needs its verdict even if it prints that label,
+and the label anywhere but the reply's first line, quoted, fenced, unbolded, or with nothing
+after it, does not count.
 
 **To turn the Stop check off**, without uninstalling: `/ask-graham stop-check off` (or
 `/skill:ask-graham stop-check off` on OMP) writes `stop-check=off` to your user file; add
@@ -308,9 +312,10 @@ macOS with Node 24 (`.github/workflows/ask-graham.yml`).
 
 Adds the structure check: before a task inside a decided project writes a new table, top-level
 module, or service, the skill searches what else hangs off the same parent and flags a second
-pattern where the repo already has one, with no verdict. A turn that declares a structure check
-(args `structure-check`, or a read of `structure-check.md`) may end with a `**Structure check:**`
-first line instead of a verdict line. The every-idea nudge names the structure check.
+pattern where the repo already has one, with no verdict. An ask whose first use of the skill
+declares a structure check (args `structure-check`, or a read of `structure-check.md` before
+SKILL.md) may end with a `**Structure check:**` first line instead of a verdict line; a full
+check cannot switch to one later. The every-idea nudge names the structure check.
 
 ### 2026-10-20 — 0.6.0
 
