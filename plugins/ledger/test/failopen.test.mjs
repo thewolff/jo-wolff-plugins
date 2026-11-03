@@ -18,7 +18,7 @@ function payloads(box) {
   return {
     "session-start": { ...base, hook_event_name: "SessionStart", source: "startup" },
     "session-end": { ...base, hook_event_name: "SessionEnd", reason: "other" },
-    "pre-tool-use": { ...base, hook_event_name: "PreToolUse", tool_name: "Bash", tool_input: { command: "git push origin main" } },
+    "pre-tool-use": { ...base, hook_event_name: "PreToolUse", tool_name: "AskUserQuestion", tool_input: { questions: [] } },
     stop: { ...base, hook_event_name: "Stop", prompt_id: "p", stop_hook_active: false, last_assistant_message: LONG_Q },
     "user-prompt": { ...base, hook_event_name: "UserPromptSubmit", prompt: "approve q-nope" },
   };
@@ -42,7 +42,7 @@ test("row: DB file missing → every hook creates dirs + DB, migrates, and proce
   const p = payloads(box);
   const s = hook(box, "session-start", p["session-start"], { env });
   assert.ok(existsSync(env.LEDGER_DB));
-  assert.ok(s.json.hookSpecificOutput.additionalContext.includes("No open workload"));
+  assert.match(s.json.hookSpecificOutput.additionalContext, /^ledger: questions to the human/);
   const pre = hook(box, "pre-tool-use", p["pre-tool-use"], { env });
   assert.equal(pre.json.hookSpecificOutput.permissionDecision, "deny", "the gate works on a fresh db");
   assert.equal(hook(box, "stop", p.stop, { env }).json.decision, "block");
@@ -57,19 +57,20 @@ test("row: DB locked → CLI-side proven in db.test; every hook allows with one 
   holder.exec("BEGIN IMMEDIATE");
   try {
     const p = payloads(box);
-    // Reads are not blocked by a writer in WAL mode, so SessionStart still injects (with the busy note) and PreToolUse still enforces.
+    // Reads are not blocked by a writer in WAL mode, so SessionStart still injects (with the busy note). The gate
+    // would deny and tell the agent to `ask`, which cannot write right now, so it passes with the busy line instead.
     const s = hook(box, "session-start", p["session-start"]);
     assert.match(s.json.systemMessage, /^ledger: database busy at .*; this session was not recorded/);
-    assert.match(s.json.hookSpecificOutput.additionalContext, /No open workload/);
-    assert.equal(hook(box, "pre-tool-use", p["pre-tool-use"]).json.hookSpecificOutput.permissionDecision, "deny", "the gate reads only");
+    assert.match(s.json.hookSpecificOutput.additionalContext, /^ledger: questions to the human/);
+    assertAllow("pre-tool-use", hook(box, "pre-tool-use", p["pre-tool-use"]), { expectSystemMessage: /^ledger: database busy at .*; the ledger gate is not enforced for this call$/ });
     assertAllow("stop", hook(box, "stop", p.stop), { expectSystemMessage: /database busy at .*; the ledger stop check did not run$/ });
     // Every command line runs in a write transaction, so a held lock means "not applied", never a silent skip.
     const b2 = sandbox();
     const holder2 = openDb(b2);
-    const wl = /wl-[a-z0-9]+/.exec(hookCli(b2, ["open", "lock me"]))[0];
+    const q = /q-[a-z0-9]+/.exec(hookCli(b2, ["ask", "Lock me?", "--name", "lock", "--options", "approve,deny"]))[0];
     holder2.exec("BEGIN IMMEDIATE");
     try {
-      const up2 = hook(b2, "user-prompt", { ...p["user-prompt"], cwd: b2.work, prompt: `close ${wl} done` });
+      const up2 = hook(b2, "user-prompt", { ...p["user-prompt"], cwd: b2.work, prompt: `approve ${q}` });
       assert.match(up2.json.systemMessage, /^ledger: database busy at .*; the lines marked not applied were not applied\n/);
       assert.match(up2.json.hookSpecificOutput.additionalContext, /1: not applied \(database busy\)/);
       assert.equal(up2.json.decision, undefined);
@@ -102,7 +103,7 @@ test("row: DB corrupt → every hook moves it aside, names the move, and does it
       assert.match(r.json.systemMessage, /^ledger: moved corrupt database aside to .*\.corrupt-/, name);
       if (name === "pre-tool-use") assert.equal(r.json.hookSpecificOutput.permissionDecision, "deny");
       if (name === "stop") assert.equal(r.json.decision, "block");
-      if (name === "session-start") assert.match(r.json.hookSpecificOutput.additionalContext, /No open workload/);
+      if (name === "session-start") assert.match(r.json.hookSpecificOutput.additionalContext, /^ledger: questions to the human/);
       if (name === "user-prompt") assert.match(r.json.hookSpecificOutput.additionalContext, /refused no such question/);
     }
   }
@@ -122,10 +123,10 @@ test("row: config unparsable / wrong type → every hook runs on defaults and na
       if (name === "pre-tool-use") assert.equal(r.json.hookSpecificOutput.permissionDecision, "deny", "defaults still enforce the gate");
     }
     const wrong = sandbox();
-    wrong.writeConfig({ hooks: { stop: "yes" }, forcing: { denyPush: 1 } });
+    wrong.writeConfig({ hooks: { stop: "yes" }, forcing: { denyAskWithoutRow: 1 } });
     const w = hook(wrong, name, payloads(wrong)[name]);
     assert.equal(w.code, 0);
-    if (name !== "session-end") assert.match(w.json.systemMessage, /must be boolean; using default/, `${name}: ${w.out}`);
+    if (name !== "session-end") assert.match(w.json.systemMessage, /must be boolean; ignoring it/, `${name}: ${w.out}`);
   }
 });
 
@@ -180,6 +181,69 @@ test("row: switch off in config → every hook exits 0 before the db is touched"
     const box = sandbox();
     box.writeConfig({ hooks: { [keys[name]]: false } });
     const r = hook(box, name, payloads(box)[name]);
+    assert.equal(r.code, 0);
+    assert.equal(r.out, "", `${name}: ${r.out}`);
+    assert.ok(!existsSync(box.dbPath), `${name} opened the db`);
+  }
+});
+
+test("row: DB file read-only → reads still work, writes fail open: SessionStart injects with a read-only line, PreToolUse enforces, Stop allows, prompt lines are `not applied`, SessionEnd logs", { skip: process.getuid?.() === 0 ? "root ignores modes" : false }, () => {
+  const box = sandbox();
+  const q = /q-[a-z0-9]+/.exec(hookCli(box, ["ask", "Read only?", "--name", "ro", "--options", "approve,deny"]))[0];
+  chmodSync(box.dbPath, 0o444);
+  try {
+    const p = payloads(box);
+    const s = hook(box, "session-start", p["session-start"]);
+    assert.match(s.json.systemMessage, /^ledger: database read-only at .*; this session was not recorded/);
+    assert.ok(s.json.hookSpecificOutput.additionalContext.includes(q), "the open question is still injected");
+    assertAllow("pre-tool-use", hook(box, "pre-tool-use", p["pre-tool-use"]), { expectSystemMessage: null });
+    // With no open question in scope the gate would deny; `ask` cannot write to this file, so it passes and says why.
+    assertAllow("pre-tool-use", hook(box, "pre-tool-use", { ...p["pre-tool-use"], cwd: box.sibling }), { expectSystemMessage: /^ledger: database read-only at .*; the ledger gate is not enforced for this call$/ });
+    // Turning the hooks off never needs the database.
+    const off = cli(box, ["disable"], { cwd: box.sibling });
+    assert.equal(off.code, 0, off.err);
+    assert.match(off.out, /^disabled the ledger hooks for /);
+    assertAllow("stop", hook(box, "stop", { ...p.stop, last_assistant_message: LONG_Q }), { expectSystemMessage: /database read-only at .*; the ledger stop check did not run$/ });
+    const up = hook(box, "user-prompt", { ...p["user-prompt"], prompt: `approve ${q}` });
+    assert.match(up.json.systemMessage, /^ledger: database read-only at .*; the lines marked not applied were not applied\n/);
+    assert.match(up.json.hookSpecificOutput.additionalContext, /1: not applied \(database read-only\)/);
+    assert.equal(up.json.decision, undefined);
+    assertAllow("session-end", hook(box, "session-end", p["session-end"]), { expectSystemMessage: null });
+    assert.match(readFileSync(box.errorsLog, "utf8"), /SessionEnd ledger: database read-only at /);
+  } finally {
+    chmodSync(box.dbPath, 0o644);
+  }
+  const db = openDb(box);
+  assert.equal(db.prepare("SELECT state FROM cc_questions WHERE id = ?").get(q).state, "open");
+  db.close();
+});
+
+test("row: database unavailable → `enable`, `disable` and `help` still work (exit 0), other verbs exit 2", { skip: process.getuid?.() === 0 ? "root ignores modes" : false }, () => {
+  const box = sandbox();
+  const dir = join(box.root, "ro");
+  mkdirSync(dir);
+  chmodSync(dir, 0o500);
+  try {
+    const env = { LEDGER_DB: join(dir, "sub", "ledger.db") };
+    const on = cli(box, ["enable"], { env });
+    assert.equal(on.code, 0, on.err);
+    assert.match(on.out, /^enabled the ledger hooks for /);
+    assert.equal(cli(box, ["help"], { env }).code, 0);
+    const other = cli(box, ["pending"], { env });
+    assert.equal(other.code, 2);
+    assert.match(other.err, /^ledger: database unavailable at /);
+    const off = cli(box, ["disable"], { env });
+    assert.equal(off.code, 0, off.err);
+    assert.deepEqual(JSON.parse(readFileSync(join(box.work, ".ledger.json"), "utf8")), { enabled: false });
+  } finally {
+    chmodSync(dir, 0o700);
+  }
+});
+
+test("row: project not enabled → every hook exits 0 with no output and no db, whatever the payload", () => {
+  for (const name of HOOK_NAMES) {
+    const box = sandbox();
+    const r = hook(box, name, payloads(box)[name], { env: { LEDGER_ENABLED: "" } });
     assert.equal(r.code, 0);
     assert.equal(r.out, "", `${name}: ${r.out}`);
     assert.ok(!existsSync(box.dbPath), `${name} opened the db`);

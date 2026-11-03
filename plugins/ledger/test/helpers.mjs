@@ -31,6 +31,8 @@ export function sandbox() {
     LEDGER_BUSY_TIMEOUT_MS: "50",
     TZ: "UTC",
     TMPDIR: join(root, "tmp"),
+    // The hooks are opt-in per project; the suite turns them on by env and enabled.test.mjs clears this.
+    LEDGER_ENABLED: "1",
   };
   const box = {
     root,
@@ -85,11 +87,11 @@ export function hook(box, name, payload, { env = {}, cwd = box.work } = {}) {
 }
 
 /** Apply lines in-process against the sandbox store and return the batch; the store is closed after. */
-export function apply(box, lines, { cwd = box.work, via = "cli", by = null, sessionId = null, now = Date.now() } = {}) {
-  const store = openStore({ env: box.env, now });
+export function apply(box, lines, { cwd = box.work, via = "cli", by = null, sessionId = null, now = Date.now(), onlyPromptApplicable = false } = {}) {
+  const store = openStore({ env: box.env, now, cwd });
   try {
     const ctx = makeCtx({ store, cwd, via, by, sessionId, now });
-    return runBatch(Array.isArray(lines) ? lines : [lines], { db: store.db, ctx });
+    return runBatch(Array.isArray(lines) ? lines : [lines], { db: store.db, ctx, onlyPromptApplicable });
   } finally {
     store.db.close();
   }
@@ -97,7 +99,7 @@ export function apply(box, lines, { cwd = box.work, via = "cli", by = null, sess
 
 /** Open the store for direct reads in a test; caller closes. */
 export function openDb(box) {
-  return openStore({ env: box.env }).db;
+  return openStore({ env: box.env, cwd: box.work }).db;
 }
 
 /** First result's id from an apply() call, or throws with the message. */
@@ -107,13 +109,7 @@ export function idOf(batch, n = 0) {
   return r.id;
 }
 
-/** Shorthand: open a workload in the sandbox work folder, return its wl- id. */
-export function openWorkload(box, title = "test workload", opts = {}) {
-  return idOf(apply(box, [{ tokens: ["open", title], text: `open "${title}"` }], opts));
-}
-
-/** Shorthand: ask a question on the open workload, return its q- id. */
-/** Asks a question; the default body carries the name so two asks on one workload never dedupe into one row. */
+/** Asks a question in the work folder; the default body carries the name so two asks never dedupe into one row. */
 export function askQuestion(box, { name = "which", body = `Which way (${name})?`, options = "a,b", extra = [], ...opts } = {}) {
   return idOf(apply(box, [{ tokens: ["ask", body, "--name", name, "--options", options, ...extra], text: `ask "${body}"` }], opts));
 }

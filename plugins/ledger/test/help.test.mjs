@@ -10,7 +10,7 @@ test("§7 row 9 (#179): help prints every verb the parser knows, with who says i
   const text = renderHelp();
   for (const v of VERB_SET) assert.ok(text.includes(`  ${v}`), v);
   for (const v of VERBS) assert.ok(text.includes(`[${v.who}] ${v.help}`), v.verb);
-  assert.match(text, /ids: wl- workload, q- question, an- answer, de- decision, ce- ceiling/);
+  assert.match(text, /ids: q- question, an- answer, nt- note/);
   assert.match(text, /batch: with no verb and stdin piped, one command per line/);
 });
 

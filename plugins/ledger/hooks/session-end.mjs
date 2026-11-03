@@ -1,34 +1,28 @@
 #!/usr/bin/env node
-// session-end.mjs — SessionEnd: park this session's open workloads so nothing is left open
-// silently. Input read: session_id, cwd, reason (hooks reference § SessionEnd input).
-//
-// One transaction: every `open` workload whose session_id is this session, or whose cwd governs
-// the hook cwd and that no session has claimed, becomes `parked` with status_reason
-// "session ended (<reason>)", status_by "hook:SessionEnd", plus one `park` decision row each.
-// Never closes: a close needs a reason from a person or the agent. The next SessionStart
-// offers `ledger open wl-…`.
+// session-end.mjs — SessionEnd: record that the session ended. Input read: session_id, reason
+// (hooks reference § SessionEnd input). One UPDATE on the sessions row; nothing else changes,
+// because nothing in the ledger is "in flight" per session: open questions stay open until
+// answered or withdrawn.
 //
 // Budget: SessionEnd hooks share a 1.5-second budget that a plugin cannot raise, so this does
-// the least possible: no injection text, no config beyond the switch and the path. The Stop
-// hook stamps last_seen_at every turn, so `stale` stays right even when this is cut off.
-//
-// SessionEnd discards JSON output, so failures go to errors.log only. Exit 0 always.
+// the least possible. SessionEnd discards JSON output, so failures go to errors.log only.
+// Exit 0 always.
 
-import { loadConfig } from "../lib/config.mjs";
 import { StoreError, transaction } from "../lib/db.mjs";
 import { runHook, logError, invokedDirectly } from "../lib/failopen.mjs";
-import { isWithin } from "../lib/commands.mjs";
-import { newId } from "../lib/ids.mjs";
-import { openStore, resolveCwd } from "../lib/store.mjs";
+import { openStore, hookConfig } from "../lib/store.mjs";
 import { nowIso } from "../lib/time.mjs";
 
 export function handle(input, { env = process.env, now = Date.now() } = {}) {
-  const cfg = loadConfig({ env });
-  if (!cfg.config.hooks.sessionEnd) return null;
+  const ready = hookConfig(env, input, "sessionEnd");
+  if (!ready) return null;
+  const { cfg, cwd } = ready;
   for (const n of cfg.notices) logError("SessionEnd", n, env);
+  const sessionId = typeof input.session_id === "string" && input.session_id ? input.session_id : null;
+  if (!sessionId) return null;
   let store;
   try {
-    store = openStore({ env, now });
+    store = openStore({ env, now, cwd, cfg });
   } catch (err) {
     if (err instanceof StoreError) {
       logError("SessionEnd", err.message, env);
@@ -38,25 +32,18 @@ export function handle(input, { env = process.env, now = Date.now() } = {}) {
   }
   try {
     for (const n of store.notices) logError("SessionEnd", n, env);
-    const cwd = resolveCwd(env, input.cwd);
-    const sessionId = typeof input.session_id === "string" && input.session_id ? input.session_id : null;
     const reason = typeof input.reason === "string" && input.reason ? input.reason : "other";
     const iso = nowIso(now);
-    const parked = transaction(store.db, () => {
-      const db = store.db;
-      const rows = db
-        .prepare("SELECT id, cwd, session_id FROM workloads WHERE status = 'open'")
-        .all()
-        .filter((w) => (sessionId && w.session_id === sessionId) || (!w.session_id && isWithin(cwd, w.cwd)));
-      const why = `session ended (${reason})`;
-      for (const w of rows) {
-        db.prepare("UPDATE workloads SET status = 'parked', status_reason = ?, status_by = 'hook:SessionEnd', last_seen_at = ? WHERE id = ?").run(why, iso, w.id);
-        db.prepare("INSERT INTO decisions (id, workload_id, kind, body, made_by, made_at) VALUES (?,?,?,?,?,?)").run(newId("de", now), w.id, "park", why, "hook:SessionEnd", iso);
-      }
-      if (sessionId) db.prepare("UPDATE sessions SET ended_at = ?, end_reason = ? WHERE id = ?").run(iso, reason, sessionId);
-      return rows.map((w) => w.id);
-    }, store.dbPath);
-    return { parked };
+    transaction(
+      store.db,
+      () => {
+        store.db
+          .prepare("INSERT INTO cc_sessions (id, cwd, started_at, ended_at, end_reason) VALUES (?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET ended_at = excluded.ended_at, end_reason = excluded.end_reason")
+          .run(sessionId, cwd, iso, iso, reason);
+      },
+      store.dbPath,
+    );
+    return { ended: sessionId };
   } finally {
     store.db.close();
   }

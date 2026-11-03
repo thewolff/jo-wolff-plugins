@@ -1,7 +1,7 @@
 {
   "name": "ledger",
-  "description": "A durable, id'd record of a thread's work in SQLite: workloads opened and closed with a reason, questions to the human with one-word answers, approvals, decisions, cost ceilings. A CLI the agent runs, batch pastes applied line by line, and hooks that deny pushes, PR creation and out-of-folder writes until a workload is open, refuse a turn that asks a question with no row, and park open work at session end. Every hook fails open.",
-  "version": "0.1.0",
+  "description": "A durable, id'd record of the questions an agent asks the human (one-word answers, optional ceiling) and the notes it records when it decides without asking, in one SQLite file. A CLI the agent runs, batch pastes applied line by line, and opt-in per-folder hooks that inject the open items at session start, deny AskUserQuestion until the question has a row, refuse once a turn that asks with no row, and apply answers typed into a prompt. Every hook fails open.",
+  "version": "0.2.0",
   "author": { "name": "Jo Wolff" },
   "license": "MIT",
   "repository": "https://github.com/thewolff/jo-wolff-plugins",
