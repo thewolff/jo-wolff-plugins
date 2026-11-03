@@ -68,6 +68,8 @@ digraph when_to_use {
 
 ## The Process
 
+<!-- owned: agent-system 2.0 (M6), ported by hand onto superpowers v7.0.2 in the as2-skills plugin (2026-11-03) — the graph's final review names the reviewer prompt and the single fix wave, and ends at "Close the slice" instead of upstream's `superpowers:finishing-a-development-branch` hand-off (references/final-review.md carries the text). -->
+
 ```dot
 digraph process {
     rankdir=TB;
@@ -86,7 +88,8 @@ digraph process {
 
     "Setup: worktree, ledger check, read plan, pre-flight review" [shape=box];
     "More tasks remain?" [shape=diamond];
-    "Final review and finish: read references/final-review.md" [shape=box];
+    "Final review (references/final-review.md): dispatch final code reviewer (./code-reviewer-prompt.md)" [shape=box];
+    "Final findings? ONE fix dispatch, one scoped re-review, adjudicate residuals" [shape=box];
     "Final review clean: delete this plan's workspace" [shape=box];
     "Close the slice: PR open, rulings listed, merge is a reserved request (git-workflow-and-versioning)" [shape=box style=filled fillcolor=lightgreen];
 
@@ -102,9 +105,10 @@ digraph process {
     "Fix loop: read references/fix-loop.md before every round" -> "Append completion to ledger, mark todo complete" [label="addressed, or parked at the cap"];
     "Append completion to ledger, mark todo complete" -> "More tasks remain?";
     "More tasks remain?" -> "Dispatch implementer subagent (./implementer-prompt.md)" [label="yes"];
-    "More tasks remain?" -> "Final review and finish: read references/final-review.md" [label="no"];
-    "Final review and finish: read references/final-review.md" -> "Final review clean: delete this plan's workspace";
-    "Final review clean: delete this plan's workspace" -> "Use superpowers:finishing-a-development-branch";
+    "More tasks remain?" -> "Final review (references/final-review.md): dispatch final code reviewer (./code-reviewer-prompt.md)" [label="no"];
+    "Final review (references/final-review.md): dispatch final code reviewer (./code-reviewer-prompt.md)" -> "Final findings? ONE fix dispatch, one scoped re-review, adjudicate residuals";
+    "Final findings? ONE fix dispatch, one scoped re-review, adjudicate residuals" -> "Final review clean: delete this plan's workspace";
+    "Final review clean: delete this plan's workspace" -> "Close the slice: PR open, rulings listed, merge is a reserved request (git-workflow-and-versioning)";
 }
 ```
 

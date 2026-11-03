@@ -300,7 +300,7 @@ When the final review is clean and its fixes are committed, delete this
 plan's workspace directory — the git history is the record now. Sibling
 directories belong to other plans; leave them alone.
 
-Close the slice per `git-workflow-and-versioning` (`../SKILL.md` § Finish): push the feature branch, open the PR with the "Rulings I made" list in its body, record the artifact in the ledger. Merge is not this skill's action.
+Close the slice per `git-workflow-and-versioning` (`final-review.md` § Finish): push the feature branch, open the PR with the "Rulings I made" list in its body, record the artifact in the ledger. Merge is not this skill's action.
 
 ## Common Rationalizations
 

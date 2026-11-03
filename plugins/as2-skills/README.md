@@ -66,10 +66,11 @@ Every edit made after a copy is marked in the file with a `<!-- owned: … -->` 
 `grep -rn 'owned:' skills/` lists the delta from upstream. Those comments name the pin of the
 first copy; `VENDOR.md` names the current one.
 
-**Known gap after the 2026-11-03 re-pin:** superpowers v7 moved `execute-plan`'s final review and
-finish into `references/final-review.md`, so agent-system 2.0's edits there did not carry over. That
-file now hands off to `superpowers:finishing-a-development-branch`, which this plugin does not ship.
-`VENDOR.md` lists each dropped edit.
+**execute-plan after the 2026-11-03 re-pin:** superpowers v7 moved the final review and finish
+into `references/final-review.md`, so agent-system 2.0's edits there did not merge. They were
+ported onto the v7 text by hand: the final reviewer uses `code-reviewer-prompt.md` with the
+`code-review-and-quality` rubric, and the slice closes by pushing the branch and opening the PR
+with "Rulings I made", never merging. `VENDOR.md` lists each hunk and the one line not carried.
 
 ## Licence
 
