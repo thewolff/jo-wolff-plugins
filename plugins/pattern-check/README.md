@@ -2,7 +2,7 @@
 
 Before an agent does big work in a repository, it has to look for the repository's existing way of
 doing each thing it is about to add, decide reuse, replace, or new-with-reason for each, and write
-that down. Two hooks hold the work until it has.
+that down. Two hooks hold the work until it has, on Claude Code and on OMP.
 
 The problem it answers: a design review that asks "where did this introduce a new pattern when an
 existing one served?" keeps coming back with a long list. Agents start writing before they have
@@ -43,6 +43,33 @@ From a shell: `claude plugin marketplace add thewolff/jo-wolff-plugins` then
 
 Node 18 or later is needed on `PATH`; the hooks and the script are plain Node ESM with no
 dependencies.
+
+OMP, from a shell:
+
+```
+omp plugin marketplace add thewolff/jo-wolff-plugins
+omp plugin install pattern-check@jo-wolff-plugins
+```
+
+Inside a running OMP session use `/marketplace add` and `/marketplace install` with the same
+arguments.
+
+### On OMP
+
+OMP does not run `hooks/hooks.json`. The install registers `omp/pattern-check-omp.ts` instead,
+which feeds OMP's events to the same two hook functions:
+
+- `tool_call` for `edit` (including a hashline patch naming several files), `write` and `bash`
+  goes to the PreToolUse hook; a deny becomes a blocked tool call with the same text.
+- `session_stop` goes to the Stop hook; a refusal continues the turn with the same text, once per
+  turn.
+
+The session key is OMP's session id, so the counter, the receipt and the refusal record are the
+files a Claude Code hook would use for that id, and the config and off switches are the same
+files. The adapter fails open: a throw inside it lets the call or the stop through and shows one
+warning. Tools that write without naming the file in their input (`ast_edit`, `eval`) are not
+counted; the commit and PR blocks remain the backstop. Loading routes, the event table and the
+reversal are in [`omp/REGISTRATION.md`](omp/REGISTRATION.md).
 
 ## Using it
 
@@ -172,9 +199,21 @@ the deny text names the command with `--session`; the receipt lifts the deny; co
 held once the threshold was reached; fail-open on a corrupt state file, a corrupt config, an
 unwritable state directory and garbage stdin; the off switches; the missing-`session_id`
 degradation; the Stop refusal with and without a receipt, its loop guard and `stop_hook_active`;
-the CLI's session resolution, `record` from stdin and flags, and its refusals; the manifests.
+the CLI's session resolution, `record` from stdin and flags, and its refusals; the manifests; and
+the OMP adapter (`omp/pattern-check-omp.test.mjs`, a fake `pi` and `ctx`): edit, write and bash
+mapped onto the hooks, one counter shared with a Claude Code hook call for the same session id,
+multi-file hashline edits, URL-scheme paths ignored, the refusal once per turn, the per-cwd
+fallback warning, fail-open on a throw, and registering once. The adapter test imports the `.ts`
+file through Node's built-in type stripping; CI runs the suite on Node 24.
 
 ## Changelog
+
+### 0.2.0
+
+OMP adapter (`omp/pattern-check-omp.ts`, declared in `package.json` under `omp.extensions`, with
+`.omp-plugin/plugin.json`): the PreToolUse counter on OMP's `tool_call` and the Stop refusal on
+`session_stop`, through the hooks' own `handle` functions and state. `omp/REGISTRATION.md` covers
+loading and reversal.
 
 ### 0.1.0
 
