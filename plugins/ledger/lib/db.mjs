@@ -8,7 +8,7 @@
 //      notice so the caller can show it;
 //   4. a locked database (SQLITE_BUSY 5, after busy_timeout) is retried once, then thrown as a
 //      StoreError with kind `busy`, so every caller can say "nothing applied" in one line;
-//   5. migrations run inside one transaction, from PRAGMA user_version up to the latest.
+//   5. migrations run inside one transaction, from the cc_meta schema_version up to the latest.
 //
 // Every table is prefixed `cc_` and the schema version lives in `cc_meta`, not in
 // PRAGMA user_version, so the store can live inside another tool's SQLite file: the plugin
