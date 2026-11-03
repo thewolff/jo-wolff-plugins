@@ -28,6 +28,11 @@
       "name": "reminders-review",
       "source": "./plugins/reminders-review",
       "description": "Go through your open Apple Reminders one at a time with an agent: it answers the questions, confirms before acting on the instructions, asks when unclear, and closes each one only when you say yes. macOS, via remindctl."
+    },
+    {
+      "name": "pattern-check",
+      "source": "./plugins/pattern-check",
+      "description": "Before big work in a repo, make the agent find the existing pattern that does each new piece's job and record reuse, replace, or new with a reason. Hooks hold Edit, Write, commits and PRs after N distinct files, and refuse a plan-proposing reply, until the receipt exists."
     }
   ]
 }
