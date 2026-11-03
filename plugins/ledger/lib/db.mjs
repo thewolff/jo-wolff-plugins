@@ -10,8 +10,11 @@
 //      StoreError with kind `busy`, so every caller can say "nothing applied" in one line;
 //   5. migrations run inside one transaction, from PRAGMA user_version up to the latest.
 //
-// The schema version is PRAGMA user_version. MIGRATIONS is ordered; migration N brings a
-// database at user_version N-1 to N. Never edit a shipped migration: append one.
+// Every table is prefixed `cc_` and the schema version lives in `cc_meta`, not in
+// PRAGMA user_version, so the store can live inside another tool's SQLite file: the plugin
+// creates and touches only its own tables and never reads, alters or depends on the foreign
+// ones. MIGRATIONS is ordered; migration N brings a store at version N-1 to N. Never edit a
+// shipped migration: append one.
 //
 // node:sqlite is experimental on Node 22 and 24 and prints an ExperimentalWarning on first
 // load. The CLI's stdout is read by an agent and a hook's stderr is shown to the person, so the
@@ -35,9 +38,9 @@ export const SQLITE_CORRUPT = 11;
 export const SQLITE_NOTADB = 26;
 
 export class StoreError extends Error {
-  /** @param {"busy"|"open"|"migrate"} kind */
+  /** @param {"busy"|"open"|"migrate"|"readonly"} kind */
   constructor(kind, path, cause) {
-    super(`ledger: database ${kind === "busy" ? "busy" : "unavailable"} at ${path}${cause ? `: ${cause.message}` : ""}`);
+    super(`ledger: database ${kind === "busy" ? "busy" : kind === "readonly" ? "read-only" : "unavailable"} at ${path}${cause ? `: ${cause.message}` : ""}`);
     this.name = "StoreError";
     this.kind = kind;
     this.path = path;
@@ -45,77 +48,58 @@ export class StoreError extends Error {
   }
 }
 
+/** The tables this plugin owns, in creation order. Anything else in the file is foreign. */
+export const OWN_TABLES = Object.freeze(["cc_meta", "cc_questions", "cc_answers", "cc_notes", "cc_sessions"]);
+
 export const MIGRATIONS = [
-  // 1: the initial schema.
+  // 1: the initial schema. Rows bind to a folder (`cwd`), never to a "workload" row: the folder
+  // is the project, and the project's own tools say what is in flight.
   (db) => {
     db.exec(`
-      CREATE TABLE workloads (
-        id            TEXT PRIMARY KEY CHECK (id GLOB 'wl-?*'),
-        title         TEXT NOT NULL CHECK (length(trim(title)) > 0),
-        cwd           TEXT NOT NULL,
-        stakes        TEXT NOT NULL DEFAULT 'normal' CHECK (stakes IN ('throwaway','normal','production')),
-        status        TEXT NOT NULL DEFAULT 'open' CHECK (status IN ('open','parked','halted','closed')),
-        status_reason TEXT,
-        status_by     TEXT,
-        opened_at     TEXT NOT NULL,
-        last_seen_at  TEXT NOT NULL,
-        closed_at     TEXT,
-        session_id    TEXT,
-        CHECK ((status = 'closed') = (closed_at IS NOT NULL)),
-        CHECK (status = 'open' OR status_reason IS NOT NULL)
-      );
-      CREATE INDEX workloads_cwd_status ON workloads (cwd, status);
-
-      CREATE TABLE questions (
+      CREATE TABLE cc_questions (
         id               TEXT PRIMARY KEY CHECK (id GLOB 'q-?*'),
-        workload_id      TEXT NOT NULL REFERENCES workloads(id),
+        cwd              TEXT NOT NULL,
         kind             TEXT NOT NULL DEFAULT 'question' CHECK (kind IN ('question','approval','plan')),
         name             TEXT NOT NULL,
         body             TEXT NOT NULL CHECK (length(trim(body)) > 0),
+        about            TEXT,
         options          TEXT NOT NULL CHECK (json_valid(options) AND json_array_length(options) >= 2),
         allows           TEXT,
         default_opt      TEXT NOT NULL,
+        ceiling_usd      REAL CHECK (ceiling_usd IS NULL OR ceiling_usd > 0),
         deadline         TEXT,
         deadline_span_ms INTEGER,
         state            TEXT NOT NULL DEFAULT 'open' CHECK (state IN ('open','answered','withdrawn')),
         asked_by         TEXT NOT NULL,
         asked_at         TEXT NOT NULL,
         resolved_at      TEXT,
+        session_id       TEXT,
         CHECK ((state = 'open') = (resolved_at IS NULL))
       );
-      CREATE INDEX questions_workload_state ON questions (workload_id, state);
+      CREATE INDEX cc_questions_cwd_state ON cc_questions (cwd, state);
 
-      CREATE TABLE answers (
+      CREATE TABLE cc_answers (
         id          TEXT PRIMARY KEY CHECK (id GLOB 'an-?*'),
-        question_id TEXT NOT NULL UNIQUE REFERENCES questions(id),
+        question_id TEXT NOT NULL UNIQUE REFERENCES cc_questions(id),
         word        TEXT NOT NULL,
         answered_by TEXT NOT NULL,
         answered_at TEXT NOT NULL,
         via         TEXT NOT NULL CHECK (via IN ('cli','prompt-hook'))
       );
 
-      CREATE TABLE decisions (
-        id          TEXT PRIMARY KEY CHECK (id GLOB 'de-?*'),
-        workload_id TEXT NOT NULL REFERENCES workloads(id),
-        kind        TEXT NOT NULL CHECK (kind IN ('decide','halt','park','close','extend','ceiling','reopen')),
+      CREATE TABLE cc_notes (
+        id          TEXT PRIMARY KEY CHECK (id GLOB 'nt-?*'),
+        cwd         TEXT NOT NULL,
+        kind        TEXT NOT NULL CHECK (kind IN ('note','withdraw','extend')),
         body        TEXT NOT NULL,
+        question_id TEXT REFERENCES cc_questions(id),
         made_by     TEXT NOT NULL,
-        made_at     TEXT NOT NULL
+        made_at     TEXT NOT NULL,
+        session_id  TEXT
       );
-      CREATE INDEX decisions_workload_at ON decisions (workload_id, made_at);
+      CREATE INDEX cc_notes_cwd_at ON cc_notes (cwd, made_at);
 
-      CREATE TABLE ceilings (
-        id          TEXT PRIMARY KEY CHECK (id GLOB 'ce-?*'),
-        workload_id TEXT NOT NULL REFERENCES workloads(id),
-        usd         REAL NOT NULL CHECK (usd > 0),
-        hours       REAL CHECK (hours IS NULL OR hours > 0),
-        block_usd   REAL NOT NULL,
-        block_hours REAL,
-        set_by      TEXT NOT NULL,
-        set_at      TEXT NOT NULL
-      );
-
-      CREATE TABLE sessions (
+      CREATE TABLE cc_sessions (
         id                TEXT PRIMARY KEY,
         cwd               TEXT NOT NULL,
         started_at        TEXT NOT NULL,
@@ -142,6 +126,10 @@ function isCorrupt(err) {
   );
 }
 
+function isReadOnly(err) {
+  return err?.errcode === 8 || /readonly|read-only|SQLITE_READONLY/i.test(String(err?.message));
+}
+
 function safeStamp(now) {
   return new Date(now).toISOString().replace(/:/g, "-");
 }
@@ -151,8 +139,9 @@ export const BUSY_TIMEOUT_MS = 2000;
 function openOnce(path, busyTimeoutMs) {
   const db = new DatabaseSync(path);
   try {
-    db.exec("PRAGMA journal_mode = WAL");
+    // busy_timeout first: switching to WAL takes a lock, and two first opens at once must wait, not fail.
     db.exec(`PRAGMA busy_timeout = ${Math.max(0, Math.floor(busyTimeoutMs))}`);
+    db.exec("PRAGMA journal_mode = WAL");
     db.exec("PRAGMA foreign_keys = ON");
   } catch (err) {
     try {
@@ -165,15 +154,39 @@ function openOnce(path, busyTimeoutMs) {
   return db;
 }
 
-/** Bring `db` from its user_version to SCHEMA_VERSION inside one transaction. */
+/** The store's schema version from cc_meta; 0 when the plugin's tables are not there yet. */
+export function storeVersion(db) {
+  const meta = db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'cc_meta'").get();
+  if (!meta) return 0;
+  const row = db.prepare("SELECT value FROM cc_meta WHERE key = 'schema_version'").get();
+  return Number(row?.value ?? 0);
+}
+
+/** Table names in the file that are not the plugin's own (another tool's schema). */
+export function foreignTables(db) {
+  return db
+    .prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%' ORDER BY name")
+    .all()
+    .map((r) => r.name)
+    .filter((n) => !OWN_TABLES.includes(n));
+}
+
+/** Bring the plugin's tables from their cc_meta version to SCHEMA_VERSION inside one transaction. */
 export function migrate(db) {
-  const row = db.prepare("PRAGMA user_version").get();
-  const from = Number(row.user_version ?? 0);
-  if (from >= SCHEMA_VERSION) return from;
+  // Read once without a lock so an up-to-date store (the common case, and the only one a
+  // read-only file allows) never takes a write lock; re-read under the lock before migrating,
+  // so two processes opening a fresh file at once cannot both run the same migration.
+  if (storeVersion(db) >= SCHEMA_VERSION) return SCHEMA_VERSION;
   db.exec("BEGIN IMMEDIATE");
   try {
+    const from = storeVersion(db);
+    if (from >= SCHEMA_VERSION) {
+      db.exec("COMMIT");
+      return from;
+    }
+    db.exec("CREATE TABLE IF NOT EXISTS cc_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)");
     for (let v = from; v < SCHEMA_VERSION; v++) MIGRATIONS[v](db);
-    db.exec(`PRAGMA user_version = ${SCHEMA_VERSION}`);
+    db.prepare("INSERT INTO cc_meta (key, value) VALUES ('schema_version', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value").run(String(SCHEMA_VERSION));
     db.exec("COMMIT");
   } catch (err) {
     try {
@@ -188,7 +201,8 @@ export function migrate(db) {
 
 /**
  * Open (creating if needed) and migrate the store at `path`.
- * @returns {{ db: import("node:sqlite").DatabaseSync, notices: string[], path: string }}
+ * @returns {{ db: import("node:sqlite").DatabaseSync, notices: string[], path: string, shared: boolean }}
+ *   `shared` is true when the file carries tables that are not the plugin's own.
  * @throws {StoreError} when the store cannot be opened: `busy` after one retry, or `open` for
  *   anything else (an unwritable directory, for example). Nothing is written in that case.
  */
@@ -221,11 +235,13 @@ export function open(path, { now = Date.now(), busyTimeoutMs = BUSY_TIMEOUT_MS }
         attempt++;
         continue;
       }
-      throw new StoreError(isBusy(err) ? "busy" : "open", path, err);
+      throw new StoreError(isBusy(err) ? "busy" : isReadOnly(err) ? "readonly" : "open", path, err);
     }
   }
 
+  let shared = false;
   try {
+    shared = foreignTables(db).length > 0;
     migrate(db);
   } catch (err) {
     try {
@@ -233,6 +249,7 @@ export function open(path, { now = Date.now(), busyTimeoutMs = BUSY_TIMEOUT_MS }
     } catch {
       /* ignore */
     }
+    if (isReadOnly(err)) throw new StoreError("readonly", path, err);
     if (isCorrupt(err)) {
       // Corruption surfaced by the first real statement rather than the pragmas.
       const aside = `${path}.corrupt-${safeStamp(now)}`;
@@ -243,12 +260,29 @@ export function open(path, { now = Date.now(), busyTimeoutMs = BUSY_TIMEOUT_MS }
       }
       notices.push(`ledger: moved corrupt database aside to ${aside}`);
       const fresh = open(path, { now, busyTimeoutMs });
-      return { db: fresh.db, notices: [...notices, ...fresh.notices], path };
+      return { db: fresh.db, notices: [...notices, ...fresh.notices], path, shared: fresh.shared };
     }
     throw new StoreError(isBusy(err) ? "busy" : "migrate", path, err);
   }
-  return { db, notices, path };
+  return { db, notices, path, shared };
 }
+
+/**
+ * Prove the store can take a write right now, without leaving one behind: take the write lock,
+ * dirty one page of cc_meta, roll back. Throws StoreError `busy` or `readonly` like a real write
+ * would; the gate uses it before a deny whose remedy is a write.
+ */
+export function assertWritable(db, path = "") {
+  transaction(
+    db,
+    () => {
+      db.prepare("UPDATE cc_meta SET value = value WHERE key = 'schema_version'").run();
+      throw ROLLBACK;
+    },
+    path,
+  );
+}
+const ROLLBACK = Symbol("rollback");
 
 /**
  * Run `fn` inside BEGIN IMMEDIATE … COMMIT; roll back and rethrow on error. A `busy` failure to
@@ -264,7 +298,9 @@ export function transaction(db, fn, path = "") {
         attempt++;
         continue;
       }
-      throw isBusy(err) ? new StoreError("busy", path, err) : err;
+      if (isBusy(err)) throw new StoreError("busy", path, err);
+      if (isReadOnly(err)) throw new StoreError("readonly", path, err);
+      throw err;
     }
     try {
       const out = fn();
@@ -276,6 +312,8 @@ export function transaction(db, fn, path = "") {
       } catch {
         /* nothing to roll back */
       }
+      if (err === ROLLBACK) return undefined;
+      if (isReadOnly(err)) throw new StoreError("readonly", path, err);
       throw err;
     }
   }

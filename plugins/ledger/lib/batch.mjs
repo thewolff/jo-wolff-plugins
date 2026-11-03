@@ -11,7 +11,8 @@
 //   <n>: not a command[; closest: <word>]
 //   <n>: skipped (blank)
 //   <n>: not applied (database busy)   this line and every later one, when a write lock outlasted
-//                                      busy_timeout; `batch.busy` carries the StoreError
+//                                      busy_timeout or the file is read-only; `batch.busy` carries
+//                                      the StoreError (kind busy or readonly)
 // then a trailer: `applied <a>, refused <r>, not commands <p>`.
 //
 // Exit code (the CLI's): 0 when every non-blank line applied; 1 when any was refused or prose;
@@ -40,7 +41,7 @@ export function runBatch(lines, { db, ctx, onlyPromptApplicable = false }) {
     const tokens = typeof entry === "string" ? null : entry.tokens;
     const parsed = parseLine(text, lookup, tokens);
     if (busy && parsed.kind !== "blank") {
-      results.push({ line: n, text: parsed.text ?? text, status: "not applied", id: null, message: "not applied (database busy)" });
+      results.push({ line: n, text: parsed.text ?? text, status: "not applied", id: null, message: `not applied (database ${busyWord(busy)})` });
       return;
     }
     if (parsed.kind === "blank") {
@@ -70,7 +71,7 @@ export function runBatch(lines, { db, ctx, onlyPromptApplicable = false }) {
     } catch (err) {
       if (err instanceof StoreError) {
         busy = err;
-        results.push({ line: n, text: parsed.text, status: "not applied", id: null, message: "not applied (database busy)" });
+        results.push({ line: n, text: parsed.text, status: "not applied", id: null, message: `not applied (database ${busyWord(busy)})` });
         return;
       }
       r = { status: "refused", id: null, message: `error: ${err.message}` };
@@ -80,6 +81,11 @@ export function runBatch(lines, { db, ctx, onlyPromptApplicable = false }) {
     results.push({ line: n, text: parsed.text, status: r.status === "refused" ? "refused" : "ok", id: r.id, message: r.message });
   });
   return { results, applied, refused: refusedCount, prose: proseCount, blank, busy };
+}
+
+/** `busy` or `read-only`, for the per-line message. */
+export function busyWord(err) {
+  return err?.kind === "readonly" ? "read-only" : "busy";
 }
 
 /** The exit code the batch rule gives: 0 all applied, 1 any refused or prose, 2 the store went busy. */

@@ -14,9 +14,9 @@ place, going through your reminders with it, and keeping a record of what it did
   judgment and a single verdict, when you ask or on every new idea.
 - **[reminders-review](#reminders-review)** — go through your open Apple Reminders one at a
   time: the agent answers, confirms before acting, and closes each one only when you say yes.
-- **[ledger](#ledger)** — a durable, id'd record of a thread's work in one SQLite file, with
-  hooks that deny pushes and out-of-folder writes until a workload is open and send back a
-  reply that asks without a question row.
+- **[ledger](#ledger)** — a durable, id'd record of the questions an agent asks you and the
+  choices it makes without asking, in one SQLite file; opt-in per folder, with hooks that keep
+  every question on a row you can answer by typing its id back.
 
 output-types delivers text and does not read what the agent sends back; see its *delivers, does
 not enforce* note. i-have-audhd delivers its rules and checks every finished message, warning by
@@ -473,13 +473,16 @@ defaults with `/reminders-review lists <name> ...`. Details are in
 
 ## ledger
 
-A durable, id'd record of a thread's work in one SQLite file on your machine: workloads the agent
-opens and closes with a reason, questions it asks you with one-word answers, decisions it made
-without asking, and ceilings you set. Every row has an id you can type back (`approve q-…`),
-and a hook applies such lines before the agent reads the prompt. Other hooks inject the open
-items at session start, deny `git push`, `gh pr create` and writes outside the folder while no
-workload is open, send back once a reply that asks a question with no row or calls open work
-done, and park open work at session end. Every hook fails open.
+A durable, id'd record of the questions an agent asks you (one-word answers, an optional spend
+ceiling) and the notes it records when it decides without asking, in one SQLite file on your
+machine. Every row has an id you can type back (`approve q-…`), and a hook applies such lines
+before the agent reads the prompt. Other hooks inject the open questions and recent notes at
+session start, deny the AskUserQuestion tool until the question has a row, and send back once a
+reply that asks a question without naming its row. Every hook fails open.
+
+The hooks are off until you run `ledger enable` in a folder, which writes `.ledger.json` there;
+the file is found from any subfolder. The plugin's tables are all prefixed `cc_`, so the database
+can be a SQLite file another tool already uses.
 
 Needs Node 22.13 or later (`node:sqlite`). Claude Code only; no OMP adapter. One allow rule
 keeps the agent's ledger commands from prompting for permission; the plugin prints it at

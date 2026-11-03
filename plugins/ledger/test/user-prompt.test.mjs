@@ -12,7 +12,6 @@ function nothing(r) {
 }
 
 test("step 9: `approve q-…\\nwithdraw q-…` → both applied, additionalContext is the batch block, no decision field", () => {
-  cli(box, ["open", "prompt"]);
   const q1 = /q-[a-z0-9]+/.exec(cli(box, ["ask", "One?", "--name", "one", "--options", "approve,deny"]).out)[0];
   const q2 = /q-[a-z0-9]+/.exec(cli(box, ["ask", "Two?", "--name", "two", "--options", "approve,deny"]).out)[0];
   const r = hook(box, "user-prompt", prompt(`approve ${q1}\nwithdraw ${q2}`));
@@ -25,22 +24,23 @@ test("step 9: `approve q-…\\nwithdraw q-…` → both applied, additionalConte
   assert.match(ctx, new RegExp(`\n1: ok an-[a-z0-9]+ approve → ${q1} \\(one\\)\n2: ok an-[a-z0-9]+ withdrew ${q2} \\(two\\)\napplied 2, refused 0, not commands 0$`));
   assert.match(r.json.systemMessage, /applied 2, refused 0/);
   const db = openDb(box);
-  assert.deepEqual(db.prepare("SELECT answered_by, via FROM answers WHERE question_id = ?").get(q1).via, "prompt-hook");
-  assert.equal(db.prepare("SELECT state FROM questions WHERE id = ?").get(q2).state, "withdrawn");
+  assert.deepEqual(db.prepare("SELECT answered_by, via FROM cc_answers WHERE question_id = ?").get(q1).via, "prompt-hook");
+  assert.equal(db.prepare("SELECT state FROM cc_questions WHERE id = ?").get(q2).state, "withdrawn");
   db.close();
 });
 
 test("step 9: a prose line anywhere → nothing; a free-text verb → nothing; config off → nothing", () => {
-  cli(box, ["open", "prompt 2"]);
   const q = /q-[a-z0-9]+/.exec(cli(box, ["ask", "Three?", "--name", "three", "--options", "approve,deny"]).out)[0];
   nothing(hook(box, "user-prompt", prompt(`can you approve ${q} for me?`)));
-  nothing(hook(box, "user-prompt", prompt("open a thing")));
-  nothing(hook(box, "user-prompt", prompt('open "a thing"')));
+  nothing(hook(box, "user-prompt", prompt("note a thing")));
+  nothing(hook(box, "user-prompt", prompt('note "a thing"')));
+  nothing(hook(box, "user-prompt", prompt('ask "A thing?" --name thing --options a,b')));
   nothing(hook(box, "user-prompt", prompt(`approve ${q}\nand then carry on with the refactor`)));
   nothing(hook(box, "user-prompt", prompt("")));
   nothing(hook(box, "user-prompt", prompt("fix the login bug")));
   const db = openDb(box);
-  assert.equal(count(db, "answers", "question_id = ?", q), 0);
+  assert.equal(count(db, "cc_answers", "question_id = ?", q), 0);
+  assert.equal(count(db, "cc_notes", "kind = 'note'"), 0);
   db.close();
   const b = sandbox();
   b.writeConfig({ hooks: { userPromptCommands: false } });
@@ -56,7 +56,6 @@ test("step 9: a refused line is reported, not swallowed, and the prompt is never
 
 test("step 9: ordinals, pending, and pasted_content markers; comments and blank lines are ignored", () => {
   const b = sandbox();
-  cli(b, ["open", "paste"]);
   const q = /q-[a-z0-9]+/.exec(cli(b, ["ask", "Four?", "--name", "four", "--options", "approve,deny"]).out)[0];
   const r = hook(b, "user-prompt", { ...prompt(`<pasted_content lines="3">\n\n# from pending\n1 deny\npending\n</pasted_content>`), cwd: b.work });
   assert.ok(r.json, r.out);
@@ -72,13 +71,16 @@ test("looksLikeLedgerLine and ledgerLines", () => {
   assert.equal(looksLikeLedgerLine("approve q-"), true);
   assert.equal(looksLikeLedgerLine("1 approve"), true);
   assert.equal(looksLikeLedgerLine("pending"), true);
-  assert.equal(looksLikeLedgerLine("stale 3"), true);
+  assert.equal(looksLikeLedgerLine("log 3"), true);
+  assert.equal(looksLikeLedgerLine("log three"), false);
+  assert.equal(looksLikeLedgerLine("enable"), false);
+  assert.equal(looksLikeLedgerLine("config"), false);
   assert.equal(looksLikeLedgerLine("help me"), false);
   assert.equal(looksLikeLedgerLine("please fix it"), false);
   assert.equal(looksLikeLedgerLine(""), null);
   assert.equal(looksLikeLedgerLine("# comment"), null);
   assert.equal(looksLikeLedgerLine(`please look at q-abc and ${"word ".repeat(12)}`), false);
-  assert.deepEqual(ledgerLines("approve q-abc\n\nclose wl-x done"), ["approve q-abc", "", "close wl-x done"]);
+  assert.deepEqual(ledgerLines("approve q-abc\n\nextend q-x 2h"), ["approve q-abc", "", "extend q-x 2h"]);
   assert.equal(ledgerLines("approve q-abc\nthanks"), null);
   assert.equal(ledgerLines("\n\n"), null);
 });

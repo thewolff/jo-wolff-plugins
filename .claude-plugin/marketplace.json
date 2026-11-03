@@ -37,7 +37,7 @@
     {
       "name": "ledger",
       "source": "./plugins/ledger",
-      "description": "A durable, id'd record of a thread's work in one SQLite file: workloads, questions with one-word answers, decisions and ceilings. Hooks inject the open items at session start, deny pushes, PR creation and writes outside the folder while no workload is open, refuse a reply that asks without a question row or calls open work done, and apply `approve q-…` lines typed into a prompt."
+      "description": "A durable, id'd record of the questions an agent asks you and the choices it makes without asking, in one SQLite file. Opt in per folder with `ledger enable`; then hooks inject the open questions and recent notes at session start, deny AskUserQuestion until the question has a row, send back once a reply that asks without naming its row, and apply `approve q-…` lines typed into a prompt. Every hook fails open."
     }
   ]
 }

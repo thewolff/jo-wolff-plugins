@@ -31,9 +31,9 @@ function allOutputs(box) {
 }
 
 test("no hook output, on any path, contains a permissionDecision of `ask` or any field that opens a dialog", () => {
-  for (const [withWorkload] of [[false], [true]]) {
+  for (const withQuestion of [false, true]) {
     const box = sandbox();
-    if (withWorkload) cli(box, ["open", "np"]);
+    if (withQuestion) cli(box, ["ask", "Np?", "--name", "np", "--options", "a,b"]);
     for (const [name, p, r] of allOutputs(box)) {
       assert.equal(r.code, 0, `${name}: ${r.err}`);
       const j = r.json ?? {};
@@ -75,9 +75,8 @@ test("every agent-side write goes through the one CLI path; hooks.json names onl
 
 test("questions reach the human only through a q- row: hooks never insert questions", () => {
   const box = sandbox();
-  cli(box, ["open", "no questions from hooks"]);
   for (const [, , r] of allOutputs(box)) assert.equal(r.code, 0);
   const d = openDb(box);
-  assert.equal(count(d, "questions"), 0);
+  assert.equal(count(d, "cc_questions"), 0);
   d.close();
 });

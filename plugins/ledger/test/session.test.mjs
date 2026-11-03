@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { existsSync, readFileSync } from "node:fs";
-import { sandbox, hook, cli, openDb, count, apply, row } from "./helpers.mjs";
+import { sandbox, hook, cli, openDb, apply, row } from "./helpers.mjs";
 import { buildInjection, CAP, allowRule, invocation, shellPath, cliPath } from "../lib/inject.mjs";
 import { loadConfig } from "../lib/config.mjs";
 
@@ -9,62 +9,68 @@ const box = sandbox();
 const start = (extra = {}) => ({ session_id: "s-start", cwd: box.work, hook_event_name: "SessionStart", source: "startup", ...extra });
 const end = (extra = {}) => ({ session_id: "s-start", cwd: box.work, hook_event_name: "SessionEnd", reason: "other", ...extra });
 
-test("step 6: an empty db → only the gate line and the verb summary, with the exact invocation and the allow rule", () => {
+test("an empty db → only the verb summary, with the exact invocation and the allow rule; the session row is written", () => {
   const r = hook(box, "session-start", start());
   assert.equal(r.code, 0, r.err);
   const text = r.json.hookSpecificOutput.additionalContext;
   assert.equal(r.json.hookSpecificOutput.hookEventName, "SessionStart");
-  assert.match(text, /^No open workload for this folder: pushes, PR creation and writes outside it are denied until/);
+  assert.match(text, /^ledger: questions to the human and decisions made without asking are recorded with the `ledger` CLI/);
   assert.ok(text.includes(`Always run it exactly as \`${invocation()} <verb> …\``), text);
   assert.ok(text.includes(allowRule()), text);
   assert.ok(!text.includes("open questions"));
-  assert.ok(!text.includes("decisions:"));
+  assert.ok(!text.includes("entries for"));
   const db = openDb(box);
-  assert.equal(db.prepare("SELECT cwd FROM sessions WHERE id = 's-start'").get().cwd, box.work);
+  assert.equal(db.prepare("SELECT cwd FROM cc_sessions WHERE id = 's-start'").get().cwd, box.work);
   db.close();
 });
 
-test("step 6: with one open workload, one open question and two decisions → sections in § 4.1 order; compact drops decisions and the verb list", () => {
-  const wl = /wl-[a-z0-9]+/.exec(cli(box, ["open", "injected"]).out)[0];
+test("with one open question and two notes → questions, then the last entries, then the verbs; compact drops the entries and the verb list", () => {
   const q = /q-[a-z0-9]+/.exec(cli(box, ["ask", "Which?", "--name", "which", "--options", "a,b"]).out)[0];
-  cli(box, ["decide", "first decision"]);
-  cli(box, ["decide", "second decision"]);
+  cli(box, ["note", "first note"]);
+  cli(box, ["note", "second note"]);
   const r = hook(box, "session-start", start());
   const text = r.json.hookSpecificOutput.additionalContext;
   const i = (s) => text.indexOf(s);
   assert.ok(i("ledger: open questions for") >= 0, text);
   assert.ok(i(`a ${q}  # which · Which?`) > 0);
-  assert.ok(i("ledger: open workloads for") > i("ledger: open questions for"));
-  assert.ok(i(`${wl} injected · normal · opened`) > 0);
-  assert.ok(i("ledger: last 2 decisions:") > i("ledger: open workloads for"), text);
-  assert.ok(i("second decision") < i("first decision"));
-  assert.ok(i("Verbs:") > i("decisions:"));
-  assert.equal(i("No open workload"), -1);
+  assert.ok(i("ledger: last 3 entries for") > i("ledger: open questions for"), text);
+  assert.ok(i("second note") < i("first note"));
+  assert.ok(i("first note") < i(`agent asked: which`));
+  assert.ok(i("Verbs:") > i("entries for"));
   const compact = hook(box, "session-start", start({ source: "compact" })).json.hookSpecificOutput.additionalContext;
-  assert.ok(compact.includes(q) && compact.includes(wl));
-  assert.equal(compact.indexOf("decisions:"), -1);
+  assert.ok(compact.includes(q));
+  assert.equal(compact.indexOf("entries for"), -1);
   assert.equal(compact.indexOf("Verbs:"), -1);
   assert.ok(compact.includes(invocation()), compact);
 });
 
-test("step 6: 200 decisions seeded → injection under the cap, questions intact, decisions truncated first", () => {
+test("200 notes seeded with inject.notes 200 → injection under the cap, questions intact, entries truncated first", () => {
   const b = sandbox();
-  cli(b, ["open", "many"]);
   const q = /q-[a-z0-9]+/.exec(cli(b, ["ask", "Still here?", "--name", "here", "--options", "yes,no"]).out)[0];
-  b.writeConfig({ inject: { decisions: 200 } });
-  apply(b, Array.from({ length: 200 }, (_, i) => ({ tokens: ["decide", `decision number ${i} ${"x".repeat(80)}`], text: "" })));
+  b.writeConfig({ inject: { notes: 200 } });
+  apply(b, Array.from({ length: 200 }, (_, i) => ({ tokens: ["note", `note number ${i} ${"x".repeat(80)}`], text: "" })));
   const db = openDb(b);
-  const { text, sections } = buildInjection(db, b.work, loadConfig({ env: b.env }).config);
+  const { text, sections } = buildInjection(db, b.work, loadConfig({ env: b.env, cwd: b.work }).config);
   db.close();
   assert.ok(text.length <= CAP, String(text.length));
   assert.ok(text.includes(q));
-  assert.deepEqual(sections, ["questions", "workloads", "decisions", "summary"]);
+  assert.deepEqual(sections, ["questions", "notes", "summary"]);
   assert.match(text, /… \(truncated\)/);
 });
 
-test("step 6: SessionEnd parks the session's open workload with the reason and a park decision; never closes", () => {
+test("inject.notes 0 → no entries section even with notes recorded", () => {
   const b = sandbox();
-  const wl = /wl-[a-z0-9]+/.exec(cli(b, ["open", "to park"]).out)[0];
+  cli(b, ["note", "quiet"]);
+  b.writeConfig({ inject: { notes: 0 } });
+  const db = openDb(b);
+  const { sections } = buildInjection(db, b.work, loadConfig({ env: b.env, cwd: b.work }).config);
+  db.close();
+  assert.deepEqual(sections, ["summary"]);
+});
+
+test("SessionEnd stamps ended_at and the reason on the session row, prints nothing, and is quick; nothing else changes", () => {
+  const b = sandbox();
+  const q = /q-[a-z0-9]+/.exec(cli(b, ["ask", "Open at end?", "--name", "end", "--options", "a,b"]).out)[0];
   hook(b, "session-start", { ...start(), cwd: b.work, session_id: "s-end" });
   const t0 = performance.now();
   const r = hook(b, "session-end", { ...end(), cwd: b.work, session_id: "s-end" });
@@ -73,27 +79,16 @@ test("step 6: SessionEnd parks the session's open workload with the reason and a
   assert.equal(r.out, "");
   assert.ok(ms < 500, `SessionEnd took ${ms.toFixed(0)} ms`);
   const db = openDb(b);
-  const w = row(db, "SELECT status, status_reason, status_by FROM workloads WHERE id = ?", wl);
-  assert.deepEqual(w, { status: "parked", status_reason: "session ended (other)", status_by: "hook:SessionEnd" });
-  assert.equal(count(db, "decisions", "workload_id = ? AND kind = 'park' AND made_by = 'hook:SessionEnd'", wl), 1);
-  assert.deepEqual(row(db, "SELECT end_reason FROM sessions WHERE id = 's-end'"), { end_reason: "other" });
+  const s = row(db, "SELECT cwd, end_reason, ended_at FROM cc_sessions WHERE id = 's-end'");
+  assert.equal(s.cwd, b.work);
+  assert.equal(s.end_reason, "other");
+  assert.ok(Date.parse(s.ended_at) > Date.now() - 60_000);
+  assert.equal(db.prepare("SELECT state FROM cc_questions WHERE id = ?").get(q).state, "open", "questions are left as they are");
   db.close();
-  const again = hook(b, "session-start", { ...start(), cwd: b.work, session_id: "s-next" }).json.hookSpecificOutput.additionalContext;
-  assert.ok(again.includes(`${wl} to park · parked (session ended (other)) · resume: ledger open ${wl}`), again);
-  assert.match(again, /No open workload for this folder.*\(or `node \S*scripts\/ledger\.mjs open wl-[a-z0-9]+` to resume\)/);
-});
-
-test("step 6: SessionEnd `clear` and `resume` park too; a workload another session owns is left alone", () => {
-  const b = sandbox();
-  const mine = /wl-[a-z0-9]+/.exec(cli(b, ["open", "mine"]).out)[0];
-  const theirs = /wl-[a-z0-9]+/.exec(cli(b, ["open", "theirs"], { cwd: b.sibling }).out)[0];
-  const db = openDb(b);
-  db.prepare("UPDATE workloads SET session_id = 'someone-else' WHERE id = ?").run(theirs);
-  db.close();
-  hook(b, "session-end", { ...end(), cwd: b.work, session_id: "s-clear", reason: "clear" });
+  const clear = hook(b, "session-end", { ...end(), cwd: b.work, session_id: "s-unseen", reason: "clear" });
+  assert.equal(clear.out, "");
   const db2 = openDb(b);
-  assert.equal(db2.prepare("SELECT status_reason FROM workloads WHERE id = ?").get(mine).status_reason, "session ended (clear)");
-  assert.equal(db2.prepare("SELECT status FROM workloads WHERE id = ?").get(theirs).status, "open");
+  assert.equal(db2.prepare("SELECT end_reason FROM cc_sessions WHERE id = 's-unseen'").get().end_reason, "clear", "a session the start hook never saw still gets a row");
   db2.close();
 });
 
@@ -119,7 +114,7 @@ test("hooks.sessionStart false and hooks.sessionEnd false → nothing happens, n
 });
 
 test("allowRule: a marketplace cache path gets a version wildcard; any other path is exact; spaces are quoted", () => {
-  assert.equal(allowRule("/h/.claude/plugins/cache/jo-wolff-plugins/ledger/0.1.0/scripts/ledger.mjs"), "Bash(node /h/.claude/plugins/cache/jo-wolff-plugins/ledger/*/scripts/ledger.mjs *)");
+  assert.equal(allowRule("/h/.claude/plugins/cache/jo-wolff-plugins/ledger/0.2.0/scripts/ledger.mjs"), "Bash(node /h/.claude/plugins/cache/jo-wolff-plugins/ledger/*/scripts/ledger.mjs *)");
   assert.equal(allowRule("/src/jo-wolff-plugins/plugins/ledger/scripts/ledger.mjs"), "Bash(node /src/jo-wolff-plugins/plugins/ledger/scripts/ledger.mjs *)");
   assert.equal(allowRule("/My Dir/plugins/ledger/scripts/ledger.mjs"), 'Bash(node "/My Dir/plugins/ledger/scripts/ledger.mjs" *)');
   assert.equal(shellPath("/plain/path"), "/plain/path");

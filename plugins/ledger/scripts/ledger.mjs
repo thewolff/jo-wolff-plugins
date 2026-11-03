@@ -2,9 +2,9 @@
 // ledger.mjs — the CLI. `node scripts/ledger.mjs <verb> [args]`, or with no verb and stdin piped,
 // one command per line (batch mode).
 //
-//   node ledger.mjs open "fix the login bug"          → ok wl-… opened "fix the login bug" …
+//   node ledger.mjs ask "Ship it?" --name ship --options approve,deny   → ok q-… asked …
 //   node ledger.mjs approve q-mvr3k2p9a1xq            → ok an-… approve → q-… (name)
-//   printf 'approve q-…\nclose wl-… done\n' | node ledger.mjs
+//   printf 'approve q-…\nwithdraw q-…\n' | node ledger.mjs
 //                                                     → 1: ok …  2: ok …  applied 2, refused 0, not commands 0
 //   node ledger.mjs --json …                          → the same results as a JSON array
 //   node ledger.mjs --by <name> …                     → record <name> as the actor
@@ -20,8 +20,8 @@ import { readFileSync, realpathSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { StoreError } from "../lib/db.mjs";
 import { openStore, makeCtx, resolveCwd } from "../lib/store.mjs";
-import { runBatch, formatBatch, batchJson, exitCodeFor } from "../lib/batch.mjs";
-import { renderHelp } from "../lib/commands.mjs";
+import { runBatch, formatBatch, batchJson, exitCodeFor, busyWord } from "../lib/batch.mjs";
+import { renderHelp, setEnabled } from "../lib/commands.mjs";
 
 /** Pull the CLI's own flags out of argv; everything else is the command. */
 export function splitCliFlags(argv) {
@@ -61,12 +61,24 @@ export function main(argv = process.argv.slice(2), { env = process.env, stdin = 
     return 0;
   }
 
+  // `enable` and `disable` only write .ledger.json; they must work when the database cannot be
+  // opened, since turning the hooks off is the way out of a broken store. Same for `help`.
+  if (cli.rest.length && ["enable", "disable", "help"].includes(cli.rest[0].toLowerCase()) && cli.rest.length === 1) {
+    if (cli.rest[0].toLowerCase() === "help") {
+      out(renderHelp() + "\n");
+      return 0;
+    }
+    const r = setEnabled(cwd, cli.rest[0].toLowerCase() === "enable");
+    out(`${r.status === "ok" ? r.message : `refused ${r.message}`}\n`);
+    return r.status === "ok" ? 0 : 1;
+  }
+
   let store;
   try {
-    store = openStore({ env });
+    store = openStore({ env, cwd });
   } catch (e) {
     if (e instanceof StoreError) {
-      err(`${e.kind === "busy" ? `ledger: database busy at ${e.path}; nothing applied` : e.message}\n`);
+      err(`${e.kind === "busy" || e.kind === "readonly" ? `ledger: database ${busyWord(e)} at ${e.path}; nothing applied` : e.message}\n`);
       return 2;
     }
     throw e;
@@ -81,7 +93,7 @@ export function main(argv = process.argv.slice(2), { env = process.env, stdin = 
     if (!(batch.busy && batch.applied === 0)) out((cli.json ? JSON.stringify(batchJson(batch), null, 2) : formatBatch(batch, { numbered })) + "\n");
     if (batch.busy) {
       const skipped = batch.results.filter((r) => r.status === "not applied").map((r) => r.line);
-      err(`ledger: database busy at ${batch.busy.path}; ${batch.applied === 0 ? "nothing applied" : `lines ${skipped.join(", ")} not applied`}\n`);
+      err(`ledger: database ${busyWord(batch.busy)} at ${batch.busy.path}; ${batch.applied === 0 ? "nothing applied" : `lines ${skipped.join(", ")} not applied`}\n`);
     }
     return exitCodeFor(batch);
   } finally {

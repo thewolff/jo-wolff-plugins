@@ -3,15 +3,13 @@
 // A line is a command only when the WHOLE line matches one of these shapes (leading and
 // trailing whitespace trimmed, a trailing ` # comment` dropped):
 //
-//   <verb>                              help, pending, stale [N], config
-//   <verb> <id>                         withdraw q-…, halt wl-…, extend wl-…, extend q-…, open wl-…
-//   <verb> <id> <free text>             close wl-… <reason>, park wl-… <reason>
-//   <verb> <one token> [flags]          open <title>, ask <body> --options …, decide <text>
-//                                        (free text with spaces is quoted: open "fix the login")
+//   <verb>                              help, pending, log [N], config, enable, disable
+//   <verb> <q-id>                       withdraw q-…, extend q-…
+//   <verb> <one token> [flags]          ask <body> --options …, note <text>
+//                                        (free text with spaces is quoted: ask "ship it?")
 //   <word> <q-id>                       an answer: approve q-…, yes q-…, green q-…
 //   answer <q-id> <word>                the same answer, spelled out
 //   <number> <word>                     an ordinal into the `pending` list: 1 approve
-//   ceiling <usd> [<hours>] <wl-id>     hours and id in either order; $60 and 8h are accepted
 //   <word>                              a bare option word, when exactly one open question offers it
 //
 // Resolution of `<word> <q-id>` is OPTION FIRST: if the question offers the word, it is the
@@ -24,37 +22,34 @@
 // edit distance 2 of a verb or of an open question's option word. Prose is never written anywhere.
 //
 // `lookup` is how the parser sees the store without owning it:
-//   lookup.question(id)        → { id, options: string[], state, workloadStatus } or null
+//   lookup.question(id)        → { id, options: string[], state } or null
 //   lookup.offering(word)      → q-ids of open questions in scope that offer `word`
 //   lookup.optionWords()       → every option word of every open question in scope
-//   lookup.exists(id)          → whether a wl-/q-/an-/de-/ce- id is a row
+//   lookup.exists(id)          → whether a q-/an-/nt- id is a row
 
 import { isId, isCutShort, prefixOf } from "./ids.mjs";
 
 /** Every verb, who usually says it, and the one-line help entry. Order = `help` order. */
 export const VERBS = Object.freeze([
-  { verb: "open", who: "agent", usage: 'open "<title>" [--stakes throwaway|normal|production] | open <wl-id>', help: "open a workload bound to this folder (prints wl-…); `open wl-…` resumes a parked or halted one" },
-  { verb: "close", who: "either", usage: "close <wl-id> <reason>", help: "close a workload; the reason is required, nothing else is; open questions on it are withdrawn" },
-  { verb: "park", who: "either", usage: "park <wl-id> <reason>", help: "set a workload aside; the gate treats it as closed until `open wl-…`" },
-  { verb: "ask", who: "agent", usage: 'ask "<body>" --name <short> --options a,b[,c] [--default a] [--deadline 2h|<ISO>] [--kind question|approval|plan] [--allows "a: …; b: …"] [--wl <id>]', help: "ask the human a question on the open workload (prints q-…); repeating an open one returns its id" },
+  { verb: "ask", who: "agent", usage: 'ask "<body>" --name <short> --options a,b[,c] [--default a] [--deadline 2h|<ISO>] [--kind question|approval|plan] [--allows "a: …; b: …"] [--ceiling <usd>] [--about "<what it concerns>"]', help: "ask the human a question (prints q-… and the line to answer with); repeating an open one returns its id" },
   { verb: "answer", who: "human", usage: "answer <q-id> <word>   (or just: <word> <q-id>)", help: "record a one-word answer; the word must be one of the question's options, or `withdraw`" },
   { verb: "approve", who: "human", usage: "approve <q-id>", help: "the answer `approve`, when the question offers it" },
   { verb: "deny", who: "human", usage: "deny <q-id>", help: "the answer `deny`, when the question offers it" },
-  { verb: "withdraw", who: "either", usage: "withdraw <q-id> | withdraw <wl-id>", help: "take a question back, or close a workload with reason `withdrawn` (refused while it has open questions)" },
-  { verb: "halt", who: "human", usage: "halt <wl-id>", help: "stop a workload; the gate denies until `open wl-…`" },
-  { verb: "ceiling", who: "human", usage: "ceiling <usd> [<hours>] <wl-id>", help: "set the workload's ceiling; the first one sets the size of an `extend` block" },
-  { verb: "extend", who: "human", usage: "extend <wl-id> | extend <q-id>", help: "workload: ceiling + one block; question: deadline + its original span (or the answer `extend` when offered)" },
-  { verb: "decide", who: "agent", usage: 'decide "<text>" [--wl <id>]', help: "record a decision made without asking (prints de-…)" },
+  { verb: "withdraw", who: "either", usage: "withdraw <q-id>", help: "take a question back; nothing was decided" },
+  { verb: "extend", who: "human", usage: "extend <q-id>", help: "move the question's deadline by its original span (or the answer `extend`, when offered)" },
+  { verb: "note", who: "agent", usage: 'note "<text>"', help: "record a decision or assumption made without asking (prints nt-…)" },
   { verb: "pending", who: "either", usage: "pending", help: "the paste-ready block: one `<default> <q-id>  # …` line per open question" },
-  { verb: "stale", who: "either", usage: "stale [N]", help: "open or parked workloads untouched for N days (default from config), with the line that clears each" },
+  { verb: "log", who: "either", usage: "log [N]", help: "the last N notes, questions and answers for this folder across sessions (default 20)" },
+  { verb: "enable", who: "human", usage: "enable", help: "turn the hooks on for this folder: writes `\"enabled\": true` to .ledger.json here" },
+  { verb: "disable", who: "human", usage: "disable", help: "turn the hooks off for this folder: sets `\"enabled\": false` in .ledger.json here (never deletes it)" },
   { verb: "config", who: "either", usage: "config", help: "the effective settings and where each came from" },
   { verb: "help", who: "either", usage: "help", help: "this table, the id grammar and the batch rule" },
 ]);
 
 export const VERB_SET = new Set(VERBS.map((v) => v.verb));
 
-/** Verbs whose argument is free text (a title, a body, a decision); never applied from a prompt. */
-export const FREE_TEXT_VERBS = new Set(["open", "ask", "decide"]);
+/** Verbs whose argument is free text (a body, a note); never applied from a prompt. */
+export const FREE_TEXT_VERBS = new Set(["ask", "note"]);
 
 const WHO = Object.fromEntries(VERBS.map((v) => [v.verb, v.who]));
 export const whoSays = (verb) => WHO[verb] ?? "either";
@@ -107,7 +102,8 @@ export function stripComment(text) {
   for (let i = 0; i < t.length; i++) {
     const c = t[i];
     if (quote) {
-      if (c === quote) quote = null;
+      if (c === "\\" && t[i + 1] === quote) i++;
+      else if (c === quote) quote = null;
     } else if (c === '"' || c === "'") {
       quote = c;
     } else if (c === "#" && i > 0 && /\s/.test(t[i - 1])) {
@@ -194,39 +190,6 @@ const prose = (text, closest, hint) => ({ kind: "prose", text, closest: closest 
 const refused = (text, reason) => ({ kind: "refused", text, reason });
 const command = (text, fields) => ({ kind: "command", text, ...fields });
 
-const moneyRe = /^\$?(\d+(?:\.\d+)?)$/;
-const hoursRe = /^(\d+(?:\.\d+)?)h$/i;
-const plainNumRe = /^\d+(?:\.\d+)?$/;
-
-function parseCeiling(text, rest) {
-  let usd = null;
-  let hours = null;
-  let id = null;
-  for (const t of rest) {
-    if (isId(t)) {
-      if (prefixOf(t) !== "wl") return refused(text, `ceiling takes a workload id, not ${t}`);
-      if (id) return refused(text, "ceiling takes one workload id");
-      id = t;
-    } else if (hoursRe.test(t)) {
-      if (hours !== null) return refused(text, "ceiling takes one hours value");
-      hours = Number(hoursRe.exec(t)[1]);
-    } else if (moneyRe.test(t)) {
-      const n = Number(moneyRe.exec(t)[1]);
-      if (usd === null) usd = n;
-      else if (hours === null && plainNumRe.test(t)) hours = n;
-      else return refused(text, "ceiling takes one usd and at most one hours value");
-    } else if (isCutShort(t)) {
-      return refused(text, `id cut short: ${t}`);
-    } else {
-      return prose(text, null, "usage: ceiling <usd> [<hours>] <wl-id>");
-    }
-  }
-  if (!id) return refused(text, "ceiling needs a workload id (wl-…)");
-  if (usd === null || !(usd > 0)) return refused(text, "ceiling needs a usd amount above 0");
-  if (hours !== null && !(hours > 0)) return refused(text, "ceiling hours must be above 0");
-  return command(text, { verb: "ceiling", id, usd, hours });
-}
-
 /**
  * Parse one line. `tokens` may be passed directly (argv mode) so shell quoting is honoured; the
  * `text` is then only used for echoing.
@@ -249,22 +212,25 @@ export function parseLine(text, lookup = NULL_LOOKUP, tokens = null) {
   const [t0raw, ...rest] = tokens;
   const t0 = t0raw.toLowerCase();
   const isVerb = VERB_SET.has(t0);
+  // argv carries no quote marks, so the body of a free-text verb (`ledger note 'q-1'`) is taken
+  // as quoted: it is text, never an id to dispatch on or a cut-short id to refuse (codex review).
+  if (fromArgv && FREE_TEXT_VERBS.has(t0) && rest.length) quoted = new Set([1]);
 
   // <number> <word>: an ordinal into the pending list.
   if (/^\d+$/.test(t0) && rest.length === 1 && !isId(rest[0])) {
     return command(shown, { verb: "answer", ordinal: Number(t0), word: rest[0].toLowerCase() });
   }
 
-  // A cut-short id (`approve q-`, `close wl- reason`) is refused, never prose, when it sits where
+  // A cut-short id (`approve q-`, `extend q- more`) is refused, never prose, when it sits where
   // an id would: unquoted, on a line that starts with a verb or is a two-token `<word> <id>`.
-  // Quoted text (`decide "q-"`) and longer prose (`please explain q-`) are left alone.
+  // Quoted text (`note "q-"`) and longer prose (`please explain q-`) are left alone.
   if (isVerb || tokens.length === 2) {
     const cut = tokens.find((t, i) => !quoted.has(i) && isCutShort(t));
     if (cut) return refused(shown, `id cut short: ${cut} (an id looks like ${cut}mvr3k2p9a1xq)`);
   }
 
-  // <word> <q-id> or <word> <wl-id>: option first, then verb table.
-  if (rest.length === 1 && isId(rest[0])) {
+  // <word> <q-id> (or any other id): option first, then verb table. A quoted id is text.
+  if (rest.length === 1 && isId(rest[0]) && !quoted.has(1)) {
     const id = rest[0];
     const prefix = prefixOf(id);
     if (prefix === "q") {
@@ -273,8 +239,7 @@ export function parseLine(text, lookup = NULL_LOOKUP, tokens = null) {
       if (t0 === "withdraw") return command(shown, { verb: "withdraw", id });
       if (t0 === "extend") return command(shown, { verb: "extend", id });
       if (t0 === "answer") return refused(shown, `answer needs a word: answer ${id} <word>`);
-      if (["halt", "close", "park", "ceiling", "open"].includes(t0)) return refused(shown, `${t0} takes a workload id (wl-…), not ${id}`);
-      if (["pending", "stale", "help", "config", "ask", "decide"].includes(t0)) return refused(shown, `${t0} does not take an id`);
+      if (["pending", "log", "help", "config", "enable", "disable", "ask", "note"].includes(t0)) return refused(shown, `${t0} does not take an id`);
       if (!q) {
         if (isVerb) return refused(shown, `no such question ${id}`);
         // A non-verb word on an unknown question: a typo of a verb reads as prose (#313), else refused.
@@ -289,30 +254,7 @@ export function parseLine(text, lookup = NULL_LOOKUP, tokens = null) {
       }
       return refused(shown, `${t0} is not an option of ${id}; options: ${optionList(q.options)}`);
     }
-    if (prefix === "wl") {
-      switch (t0) {
-        case "open":
-          return command(shown, { verb: "open", id });
-        case "halt":
-          return command(shown, { verb: "halt", id });
-        case "extend":
-          return command(shown, { verb: "extend", id });
-        case "withdraw":
-          return command(shown, { verb: "withdraw", id });
-        case "close":
-        case "park":
-          return refused(shown, `${t0} needs a reason: ${t0} ${id} <reason>`);
-        case "approve":
-        case "deny":
-          return refused(shown, `${t0} takes a question id (q-…), not ${id}`);
-        case "ceiling":
-          return refused(shown, "ceiling needs an amount: ceiling <usd> [<hours>] " + id);
-        default:
-          if (isVerb) return refused(shown, `${t0} does not take a workload id`);
-          return refused(shown, `${t0} is not a command on a workload; options: open, close <reason>, park <reason>, halt, withdraw, extend, ceiling <usd>`);
-      }
-    }
-    if (isVerb) return refused(shown, `${t0} does not take ${prefix}- ids`);
+    if (isVerb) return refused(shown, `${t0} takes a question id (q-…), not ${id}`);
     return refused(shown, `${id} is a ${prefix}- row; nothing to do with it`);
   }
 
@@ -327,33 +269,22 @@ export function parseLine(text, lookup = NULL_LOOKUP, tokens = null) {
     return rest.length === 0 ? refused(shown, "answer needs a question id and a word: answer <q-id> <word>") : prose(shown, null, "usage: answer <q-id> <word>");
   }
 
-  // <verb> <id> <free text>: close, park
-  if ((t0 === "close" || t0 === "park") && rest.length >= 2 && isId(rest[0])) {
-    if (prefixOf(rest[0]) !== "wl") return refused(shown, `${t0} takes a workload id (wl-…), not ${rest[0]}`);
-    return command(shown, { verb: t0, id: rest[0], reason: rest.slice(1).join(" ") });
-  }
-
-  if (t0 === "ceiling") {
-    if (!rest.length) return refused(shown, "ceiling needs an amount and a workload id: ceiling <usd> [<hours>] <wl-id>");
-    return parseCeiling(shown, rest);
-  }
-
   // No-argument verbs.
-  if (["pending", "help", "config"].includes(t0)) {
+  if (["pending", "help", "config", "enable", "disable"].includes(t0)) {
     if (rest.length) return prose(shown, null, `usage: ${t0}`);
     return command(shown, { verb: t0 });
   }
-  if (t0 === "stale") {
-    if (!rest.length) return command(shown, { verb: "stale", days: null });
-    if (rest.length === 1 && /^\d+$/.test(rest[0])) return command(shown, { verb: "stale", days: Number(rest[0]) });
-    return prose(shown, null, "usage: stale [N]");
+  if (t0 === "log") {
+    if (!rest.length) return command(shown, { verb: "log", count: null });
+    if (rest.length === 1 && /^\d+$/.test(rest[0])) return command(shown, { verb: "log", count: Number(rest[0]) });
+    return prose(shown, null, "usage: log [N]");
   }
 
-  // Free-text verbs: open "<title>", ask "<body>" --flags, decide "<text>".
+  // Free-text verbs: ask "<body>" --flags, note "<text>".
   if (FREE_TEXT_VERBS.has(t0)) {
     const { flags, positional } = splitFlags(rest);
     if (positional.length === 0) {
-      return refused(shown, t0 === "open" ? 'open needs a title: open "<title>"' : t0 === "ask" ? 'ask needs a body: ask "<question>" --name <short> --options a,b' : 'decide needs text: decide "<what was decided>"');
+      return refused(shown, t0 === "ask" ? 'ask needs a body: ask "<question>" --name <short> --options a,b' : 'note needs text: note "<what was decided or assumed>"');
     }
     if (positional.length > 1) {
       // Several unquoted words: a sentence that starts with a verb, not a command (#197).
@@ -365,7 +296,7 @@ export function parseLine(text, lookup = NULL_LOOKUP, tokens = null) {
   // Verbs that reached here have the wrong shape.
   if (isVerb) {
     if (rest.length === 0) {
-      const needs = { withdraw: "withdraw <q-id> | withdraw <wl-id>", halt: "halt <wl-id>", extend: "extend <wl-id> | extend <q-id>", close: "close <wl-id> <reason>", park: "park <wl-id> <reason>", approve: "approve <q-id>", deny: "deny <q-id>" };
+      const needs = { withdraw: "withdraw <q-id>", extend: "extend <q-id>", approve: "approve <q-id>", deny: "deny <q-id>" };
       // approve/deny alone fall through to bare-word resolution below when a question offers them.
       if (t0 !== "approve" && t0 !== "deny") return refused(shown, `${t0} needs an id: ${needs[t0]}`);
     } else {
@@ -390,7 +321,7 @@ export function parseLine(text, lookup = NULL_LOOKUP, tokens = null) {
 export function promptApplicable(parsed) {
   if (parsed.kind !== "command") return false;
   if (FREE_TEXT_VERBS.has(parsed.verb)) return false;
-  if (parsed.verb === "config") return false;
-  if (["pending", "stale", "help"].includes(parsed.verb)) return true;
+  if (["config", "enable", "disable"].includes(parsed.verb)) return false;
+  if (["pending", "log", "help"].includes(parsed.verb)) return true;
   return Boolean(parsed.id) || parsed.ordinal !== undefined;
 }
