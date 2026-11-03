@@ -1,0 +1,30 @@
+{
+	"url": "http://127.0.0.1:47505/cloak",
+	"finalUrl": "http://127.0.0.1:47505/cloak",
+	"navigations": [
+		{
+			"url": "http://127.0.0.1:47505/cloak",
+			"reason": null
+		}
+	],
+	"requests": [
+		{
+			"url": "http://127.0.0.1:47505/cloak",
+			"type": "Document",
+			"status": 200,
+			"failed": null
+		},
+		{
+			"url": "http://127.0.0.1:47505/favicon.ico",
+			"type": "Other",
+			"status": 404,
+			"failed": null
+		}
+	],
+	"proxy": {
+		"transactions": 11,
+		"refused": 0
+	},
+	"error": null,
+	"recordedWith": "Chrome/154.0.8037.98"
+}

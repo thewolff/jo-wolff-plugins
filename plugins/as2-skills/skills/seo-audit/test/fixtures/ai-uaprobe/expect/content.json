@@ -1,0 +1,11 @@
+[
+	{"rule":"PX-001","path":"/","locator":"url:/","kind":"finding","severity":"medium","layer":"headers"},
+	{"rule":"PX-001","path":"/cloak","locator":"url:/cloak","kind":"finding","severity":"medium","layer":"headers"},
+	{"rule":"PX-001","path":"/sneaky","locator":"url:/sneaky","kind":"finding","severity":"medium","layer":"headers"},
+	{"rule":"SITE-001","path":"/","locator":"html:head","kind":"finding","severity":"medium","layer":"raw-html"},
+	{"rule":"SITE-005","path":"/","locator":"html:head","kind":"finding","severity":"low","layer":"structured-data"},
+	{"rule":"DNF-04","path":"/","locator":"html:head","kind":"dnf-note","severity":null,"layer":"raw-html"},
+	{"rule":"DNF-05","path":"/","locator":"html:html","kind":"dnf-note","severity":null,"layer":"raw-html"},
+	{"rule":"DNF-06","path":"/","locator":"html:head","kind":"dnf-note","severity":null,"layer":"raw-html"},
+	{"rule":"DNF-12","path":"/","locator":"html:body","kind":"dnf-note","severity":null,"layer":"raw-html"}
+]

@@ -33,6 +33,11 @@
       "name": "pattern-check",
       "source": "./plugins/pattern-check",
       "description": "Before big work in a repo, make the agent find the existing pattern that does each new piece's job and record reuse, replace, or new with a reason. Hooks hold Edit, Write, commits and PRs after N distinct files, and refuse a plan-proposing reply, until the receipt exists."
+    },
+    {
+      "name": "as2-skills",
+      "source": "./plugins/as2-skills",
+      "description": "The 22 engineering skills of agent-system 2.0: spec and plan, plan execution, TDD, debugging, code review, git workflow, security, research, cross-model review and more. Vendored from addyosmani/agent-skills, pbakaus/impeccable, blader/humanizer and obra/superpowers at pinned releases, with frontmatter claude.ai accepts."
     }
   ]
 }

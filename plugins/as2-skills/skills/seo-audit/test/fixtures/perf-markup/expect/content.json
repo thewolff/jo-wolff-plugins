@@ -1,0 +1,12 @@
+[
+	{"rule":"PX-001","path":"/","locator":"url:/","kind":"finding","severity":"medium","layer":"headers"},
+	{"rule":"PX-001","path":"/js-img","locator":"url:/js-img","kind":"finding","severity":"medium","layer":"headers"},
+	{"rule":"DNF-01","path":"/","locator":"html:head > title","kind":"dnf-note","severity":null,"layer":"raw-html"},
+	{"rule":"DNF-01","path":"/js-img","locator":"html:head > title","kind":"dnf-note","severity":null,"layer":"raw-html"},
+	{"rule":"DNF-02","path":"/","locator":"html:meta[name=description]","kind":"dnf-note","severity":null,"layer":"raw-html"},
+	{"rule":"DNF-02","path":"/js-img","locator":"html:meta[name=description]","kind":"dnf-note","severity":null,"layer":"raw-html"},
+	{"rule":"DNF-04","path":"/","locator":"html:head","kind":"dnf-note","severity":null,"layer":"raw-html"},
+	{"rule":"DNF-05","path":"/","locator":"html:html","kind":"dnf-note","severity":null,"layer":"raw-html"},
+	{"rule":"DNF-06","path":"/","locator":"html:head","kind":"dnf-note","severity":null,"layer":"raw-html"},
+	{"rule":"DNF-12","path":"/","locator":"html:body","kind":"dnf-note","severity":null,"layer":"raw-html"}
+]

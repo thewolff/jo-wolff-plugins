@@ -1,0 +1,15 @@
+{
+	"port": 47601,
+	"audit": {
+		"urls": [
+			"http://127.0.0.1:47601/",
+			"http://127.0.0.1:47601/mid",
+			"http://127.0.0.1:47601/poor",
+			"http://127.0.0.1:47601/good-limit",
+			"http://127.0.0.1:47601/poor-limit",
+			"http://127.0.0.1:47601/origin-only",
+			"http://127.0.0.1:47601/no-data"
+		],
+		"noRender": true
+	}
+}

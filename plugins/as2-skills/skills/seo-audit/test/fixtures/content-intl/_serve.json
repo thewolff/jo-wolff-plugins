@@ -1,0 +1,34 @@
+{
+	"port": 47302,
+	"audit": {
+		"urls": [
+			"http://127.0.0.1:47302/",
+			"http://127.0.0.1:47302/en",
+			"http://127.0.0.1:47302/de",
+			"http://127.0.0.1:47302/fr",
+			"http://127.0.0.1:47302/codes",
+			"http://127.0.0.1:47302/body-hreflang",
+			"http://127.0.0.1:47302/after-invalid",
+			"http://127.0.0.1:47302/hdr"
+		],
+		"noRender": true
+	},
+	"paths": {
+		"/hdr": {
+			"status": 200,
+			"headers": {
+				"content-type": "text/html; charset=utf-8",
+				"link": "<http://127.0.0.1:47302/hdr-de>; rel=\"alternate\"; hreflang=\"de\", <http://127.0.0.1:47302/hdr-fr>; rel=\"alternate\"; hreflang=\"fr\""
+			},
+			"file": "hdr.html"
+		},
+		"/en": {
+			"status": 200,
+			"headers": {
+				"content-type": "text/html; charset=utf-8",
+				"link": "<http://127.0.0.1:47302/en>; rel=\"alternate\"; hreflang=\"en\", <http://127.0.0.1:47302/de>; rel=\"alternate\"; hreflang=\"de\""
+			},
+			"file": "en.html"
+		}
+	}
+}

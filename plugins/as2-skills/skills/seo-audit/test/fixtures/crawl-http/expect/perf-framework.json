@@ -1,0 +1,12 @@
+[
+	{"rule":"CWV-010","path":"/chain-0","locator":"crux","kind":"observation","severity":null,"layer":"field"},
+	{"rule":"CWV-010","path":"/js-redirect","locator":"crux","kind":"observation","severity":null,"layer":"field"},
+	{"rule":"CWV-010","path":"/missing","locator":"crux","kind":"observation","severity":null,"layer":"field"},
+	{"rule":"CWV-010","path":"/refresh","locator":"crux","kind":"observation","severity":null,"layer":"field"},
+	{"rule":"CWV-010","path":"/soft-404","locator":"crux","kind":"observation","severity":null,"layer":"field"},
+	{"rule":"CWV-010","path":"/temp","locator":"crux","kind":"observation","severity":null,"layer":"field"},
+	{"rule":"CWV-010","path":"/two-hop","locator":"crux","kind":"observation","severity":null,"layer":"field"},
+	{"rule":"DNF-18","path":"/chain-0","locator":"hop:1","kind":"dnf-note","severity":null,"layer":"headers"},
+	{"rule":"DNF-18","path":"/temp","locator":"hop:1","kind":"dnf-note","severity":null,"layer":"headers"},
+	{"rule":"DNF-18","path":"/two-hop","locator":"hop:1","kind":"dnf-note","severity":null,"layer":"headers"}
+]

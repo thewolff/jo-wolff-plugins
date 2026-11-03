@@ -1,0 +1,16 @@
+[
+	{"rule":"TTL-002","path":"/vague","locator":"html:head > title","kind":"finding","severity":"low"},
+	{"rule":"TTL-003","path":"/stuffed","locator":"html:head > title","kind":"finding","severity":"medium"},
+	{"rule":"SNP-003","path":"/stuffed","locator":"html:meta[name=description]","kind":"finding","severity":"low"},
+	{"rule":"LNK-004","path":"/stuffed","locator":"html:a:nth(1)","kind":"finding","severity":"low"},
+	{"rule":"LNK-005","path":"/stuffed","locator":"html:a:nth(2)","kind":"finding","severity":"low"},
+	{"rule":"IMG-002b","path":"/stuffed","locator":"html:img:nth(1)","kind":"finding","severity":"medium"},
+	{"rule":"HDG-001","path":"/no-headings","locator":"html:body","kind":"finding","severity":"low"},
+	{"rule":"TTL-002","path":"/good","silent":true},
+	{"rule":"TTL-003","path":"/good","silent":true},
+	{"rule":"SNP-003","path":"/good","silent":true},
+	{"rule":"LNK-004","path":"/good","silent":true},
+	{"rule":"LNK-005","path":"/good","silent":true},
+	{"rule":"IMG-002b","path":"/good","silent":true},
+	{"rule":"HDG-001","path":"/titled-no-headings","silent":true}
+]

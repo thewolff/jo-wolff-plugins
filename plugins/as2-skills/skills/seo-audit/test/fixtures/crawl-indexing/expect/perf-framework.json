@@ -1,0 +1,9 @@
+[
+	{"rule":"CWV-010","path":"/embedded","locator":"crux","kind":"observation","severity":null,"layer":"field"},
+	{"rule":"CWV-010","path":"/expired","locator":"crux","kind":"observation","severity":null,"layer":"field"},
+	{"rule":"CWV-010","path":"/noindex-header","locator":"crux","kind":"observation","severity":null,"layer":"field"},
+	{"rule":"CWV-010","path":"/noindex-meta","locator":"crux","kind":"observation","severity":null,"layer":"field"},
+	{"rule":"CWV-010","path":"/nosnippet-js","locator":"crux","kind":"observation","severity":null,"layer":"field"},
+	{"rule":"CWV-010","path":"/nosnippet-p","locator":"crux","kind":"observation","severity":null,"layer":"field"},
+	{"rule":"CWV-010","path":"/snippets","locator":"crux","kind":"observation","severity":null,"layer":"field"}
+]

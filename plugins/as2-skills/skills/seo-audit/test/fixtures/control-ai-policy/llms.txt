@@ -1,0 +1,14 @@
+# Fernhill Garden Nursery
+
+> Perennials, fruit trees and hedging grown on a family nursery, with planting guides for each season.
+
+Plants are grown outdoors, so stock changes with the weather.
+
+## Guides
+
+- [Planting bare-root hedging](https://127.0.0.1:47501/guides/hedging): when and how to plant in winter
+- [Choosing a fruit tree](https://127.0.0.1:47501/guides/fruit-trees)
+
+## Optional
+
+- [Opening hours](https://127.0.0.1:47501/hours)

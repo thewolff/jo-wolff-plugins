@@ -1,0 +1,4 @@
+[
+	{"rule":"RBT-012","path":"/start","locator":"robots.txt:line:2","kind":"finding","severity":"critical","layer":"robots"},
+	{"rule":"DNF-11","path":"/sitemap.xml","locator":"doc","kind":"dnf-note","severity":null,"layer":"sitemap"}
+]

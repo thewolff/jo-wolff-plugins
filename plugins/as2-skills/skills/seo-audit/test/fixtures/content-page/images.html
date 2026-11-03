@@ -1,0 +1,19 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Photos of the bakery</title>
+<meta name="description" content="Photos of the ovens, the bread and the harbour.">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+</head>
+<body>
+<h1>Photos</h1>
+<img src="/loaf.png" width="40" height="40">
+<img srcset="/rye-1x.png 1x, /rye-2x.png 2x" alt="Rye loaves on a rack" width="40" height="40">
+<picture><source srcset="/buns.webp" type="image/webp"><img alt="Cardamom buns" width="40" height="40"></picture>
+<img src="/harbour.tiff" alt="The harbour at dawn" width="40" height="40">
+<img src="/private-img/oven.png" alt="The wood-fired oven" width="40" height="40">
+<div id="late"></div>
+<script>document.getElementById("late").innerHTML = '<img src="/late.png" width="40" height="40">';</script>
+</body>
+</html>

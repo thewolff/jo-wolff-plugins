@@ -1,0 +1,6 @@
+[
+	{"rule":"RBT-005","path":"/robots.txt","locator":"doc","kind":"finding","severity":"high","layer":"robots"},
+	{"rule":"RBT-006","path":"/robots.txt","locator":"doc","kind":"finding","severity":"medium","layer":"robots"},
+	{"rule":"RBT-006","path":"/robots.txt","locator":"header:content-type","kind":"finding","severity":"medium","layer":"headers"},
+	{"rule":"DNF-11","path":"/sitemap.xml","locator":"doc","kind":"dnf-note","severity":null,"layer":"sitemap"}
+]

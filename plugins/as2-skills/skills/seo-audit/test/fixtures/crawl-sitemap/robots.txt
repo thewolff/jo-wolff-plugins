@@ -1,0 +1,12 @@
+User-agent: Googlebot
+Disallow: /robots-blocked
+
+User-agent: *
+Allow: /
+
+Sitemap: http://127.0.0.1:47208/sitemap.xml
+Sitemap: http://127.0.0.1:47208/big.xml
+Sitemap: http://127.0.0.1:47208/big-index.xml
+Sitemap: http://127.0.0.1:47208/broken.xml
+Sitemap: http://127.0.0.1:47208/urls.txt
+Sitemap: http://127.0.0.1:47208/index.xml

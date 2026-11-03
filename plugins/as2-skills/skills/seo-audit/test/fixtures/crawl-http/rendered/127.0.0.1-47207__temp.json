@@ -1,0 +1,36 @@
+{
+	"url": "http://127.0.0.1:47207/temp",
+	"finalUrl": "http://127.0.0.1:47207/temp-target",
+	"navigations": [
+		{
+			"url": "http://127.0.0.1:47207/temp-target",
+			"reason": null
+		}
+	],
+	"requests": [
+		{
+			"url": "http://127.0.0.1:47207/temp",
+			"type": "Document",
+			"status": null,
+			"failed": null
+		},
+		{
+			"url": "http://127.0.0.1:47207/temp-target",
+			"type": "Document",
+			"status": 200,
+			"failed": null
+		},
+		{
+			"url": "http://127.0.0.1:47207/favicon.ico",
+			"type": "Other",
+			"status": 404,
+			"failed": null
+		}
+	],
+	"proxy": {
+		"transactions": 14,
+		"refused": 0
+	},
+	"error": null,
+	"recordedWith": "Chrome/154.0.8037.98"
+}

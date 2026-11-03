@@ -1,0 +1,9 @@
+[
+	{"rule":"SPM-002","path":"/hidden","locator":"html:div#crawler-text","kind":"finding","severity":"medium"},
+	{"rule":"SPM-002","path":"/hidden","locator":"html:p#white-text","kind":"finding","severity":"medium"},
+	{"rule":"SPM-003","path":"/stuffed","locator":"html:body","kind":"finding","severity":"medium"},
+	{"rule":"SPM-007","path":"/sponsored","locator":"html:a#paid-link","kind":"finding","severity":"medium"},
+	{"rule":"BNG-022","path":"/prompt","locator":"html:p#ai-note","kind":"finding","severity":"high"},
+	{"rule":"BNG-023","path":"/buried","locator":"html:body","kind":"finding","severity":"low"},
+	{"rule":"AI-037","path":"/gallery","locator":"html:body","kind":"finding","severity":"medium"}
+]

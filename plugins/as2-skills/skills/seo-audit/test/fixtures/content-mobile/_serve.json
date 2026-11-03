@@ -1,0 +1,79 @@
+{
+	"port": 47304,
+	"audit": {
+		"urls": [
+			"http://127.0.0.1:47304/m-noindex",
+			"http://127.0.0.1:47304/m-title",
+			"http://127.0.0.1:47304/m-headings",
+			"http://127.0.0.1:47304/m-status",
+			"http://127.0.0.1:47304/m-same"
+		],
+		"noRender": true
+	},
+	"paths": {
+		"/m-noindex": {
+			"status": 200,
+			"headers": {
+				"content-type": "text/html; charset=utf-8"
+			},
+			"file": "m-noindex-desktop.html",
+			"ua": {
+				"android": {
+					"status": 200,
+					"headers": {
+						"content-type": "text/html; charset=utf-8"
+					},
+					"file": "m-noindex-mobile.html"
+				}
+			}
+		},
+		"/m-title": {
+			"status": 200,
+			"headers": {
+				"content-type": "text/html; charset=utf-8"
+			},
+			"file": "m-title-desktop.html",
+			"ua": {
+				"android": {
+					"status": 200,
+					"headers": {
+						"content-type": "text/html; charset=utf-8"
+					},
+					"file": "m-title-mobile.html"
+				}
+			}
+		},
+		"/m-headings": {
+			"status": 200,
+			"headers": {
+				"content-type": "text/html; charset=utf-8"
+			},
+			"file": "m-headings-desktop.html",
+			"ua": {
+				"android": {
+					"status": 200,
+					"headers": {
+						"content-type": "text/html; charset=utf-8"
+					},
+					"file": "m-headings-mobile.html"
+				}
+			}
+		},
+		"/m-status": {
+			"status": 200,
+			"headers": {
+				"content-type": "text/html; charset=utf-8"
+			},
+			"file": "m-status.html",
+			"ua": {
+				"android": {
+					"status": 404,
+					"headers": {
+						"content-type": "text/plain; charset=utf-8"
+					},
+					"body": "not found"
+				}
+			}
+		}
+	}
+}

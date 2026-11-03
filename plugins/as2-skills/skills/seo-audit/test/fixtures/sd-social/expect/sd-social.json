@@ -1,0 +1,15 @@
+[
+	{"rule":"AI-076","path":"/late","locator":"html:meta[property=og:title]","kind":"finding","severity":"low","layer":"raw-html"},
+	{"rule":"OG-01","path":"/missing","locator":"html:meta[property=og:image]","kind":"finding","severity":"low","layer":"raw-html"},
+	{"rule":"OG-01","path":"/missing","locator":"html:meta[property=og:type]","kind":"finding","severity":"low","layer":"raw-html"},
+	{"rule":"OG-01","path":"/missing","locator":"html:meta[property=og:url]","kind":"finding","severity":"low","layer":"raw-html"},
+	{"rule":"OG-02","path":"/mismatch","locator":"html:meta[property=og:url]","kind":"finding","severity":"low","layer":"raw-html"},
+	{"rule":"OG-03","path":"/mismatch","locator":"html:meta[property=og:type]","kind":"finding","severity":"low","layer":"raw-html"},
+	{"rule":"OG-04","path":"/mismatch","locator":"html:meta[property=og:image]","kind":"finding","severity":"low","layer":"raw-html"},
+	{"rule":"OG-08","path":"/mismatch","locator":"html:meta[property=og:title]","kind":"observation","severity":null,"layer":"raw-html"},
+	{"rule":"TW-01","path":"/mismatch","locator":"html:meta[name=twitter:card]","kind":"finding","severity":"low","layer":"raw-html"},
+	{"rule":"TW-02","path":"/large-card","locator":"html:meta[name=twitter:card]","kind":"finding","severity":"low","layer":"raw-html"},
+	{"rule":"TW-04","path":"/mismatch","locator":"html:meta[name=twitter:description]","kind":"finding","severity":"low","layer":"raw-html"},
+	{"rule":"TW-04b","path":"/mismatch","locator":"html:meta[name=twitter:title]","kind":"finding","severity":"low","layer":"raw-html"},
+	{"rule":"TW-06","path":"/mismatch","locator":"html:meta[name=twitter:image:alt]","kind":"finding","severity":"low","layer":"raw-html"}
+]

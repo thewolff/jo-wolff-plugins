@@ -1,0 +1,20 @@
+[
+	{"rule":"IDX-001","path":"/js-noindex","locator":"html:meta[name=robots]","kind":"finding","severity":"critical","layer":"raw-html"},
+	{"rule":"DNF-10","path":"/","locator":"html:head","kind":"dnf-note","severity":null,"layer":"raw-html"},
+	{"rule":"DNF-10","path":"/dup-a","locator":"html:head","kind":"dnf-note","severity":null,"layer":"raw-html"},
+	{"rule":"DNF-10","path":"/dup-b","locator":"html:head","kind":"dnf-note","severity":null,"layer":"raw-html"},
+	{"rule":"DNF-10","path":"/good","locator":"html:head","kind":"dnf-note","severity":null,"layer":"raw-html"},
+	{"rule":"DNF-10","path":"/images","locator":"html:head","kind":"dnf-note","severity":null,"layer":"raw-html"},
+	{"rule":"DNF-10","path":"/js-noindex","locator":"html:head","kind":"dnf-note","severity":null,"layer":"raw-html"},
+	{"rule":"DNF-10","path":"/links","locator":"html:head","kind":"dnf-note","severity":null,"layer":"raw-html"},
+	{"rule":"DNF-10","path":"/narrow-viewport","locator":"html:head","kind":"dnf-note","severity":null,"layer":"raw-html"},
+	{"rule":"DNF-10","path":"/no-headings","locator":"html:head","kind":"dnf-note","severity":null,"layer":"raw-html"},
+	{"rule":"DNF-10","path":"/no-title","locator":"html:head","kind":"dnf-note","severity":null,"layer":"raw-html"},
+	{"rule":"DNF-10","path":"/no-viewport","locator":"html:head","kind":"dnf-note","severity":null,"layer":"raw-html"},
+	{"rule":"DNF-10","path":"/nofollow","locator":"html:head","kind":"dnf-note","severity":null,"layer":"raw-html"},
+	{"rule":"DNF-10","path":"/stuffed","locator":"html:head","kind":"dnf-note","severity":null,"layer":"raw-html"},
+	{"rule":"DNF-10","path":"/titled-no-headings","locator":"html:head","kind":"dnf-note","severity":null,"layer":"raw-html"},
+	{"rule":"DNF-10","path":"/two-titles","locator":"html:head","kind":"dnf-note","severity":null,"layer":"raw-html"},
+	{"rule":"DNF-10","path":"/vague","locator":"html:head","kind":"dnf-note","severity":null,"layer":"raw-html"},
+	{"rule":"DNF-11","path":"/sitemap.xml","locator":"doc","kind":"dnf-note","severity":null,"layer":"sitemap"}
+]

@@ -1,0 +1,10 @@
+[
+	{"rule":"DNF-10","path":"/buried","locator":"html:head","kind":"dnf-note","severity":null,"layer":"raw-html"},
+	{"rule":"DNF-10","path":"/gallery","locator":"html:head","kind":"dnf-note","severity":null,"layer":"raw-html"},
+	{"rule":"DNF-10","path":"/hidden","locator":"html:head","kind":"dnf-note","severity":null,"layer":"raw-html"},
+	{"rule":"DNF-10","path":"/prompt","locator":"html:head","kind":"dnf-note","severity":null,"layer":"raw-html"},
+	{"rule":"DNF-10","path":"/sponsored","locator":"html:head","kind":"dnf-note","severity":null,"layer":"raw-html"},
+	{"rule":"DNF-10","path":"/stuffed","locator":"html:head","kind":"dnf-note","severity":null,"layer":"raw-html"},
+	{"rule":"DNF-11","path":"/sitemap.xml","locator":"doc","kind":"dnf-note","severity":null,"layer":"sitemap"},
+	{"rule":"DNF-16","path":"/robots.txt","locator":"doc","kind":"dnf-note","severity":null,"layer":"robots"}
+]

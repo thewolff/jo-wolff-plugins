@@ -1,0 +1,7 @@
+{
+	"port": 47210,
+	"audit": {
+		"urls": ["http://127.0.0.1:47210/hidden"],
+		"intent": { "noindex": ["http://127.0.0.1:47210/hidden"] }
+	}
+}

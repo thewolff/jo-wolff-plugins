@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<sitemapindex xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
+	<sitemap>
+		<loc>http://127.0.0.1:47208/child.xml</loc>
+		<lastmod>last Tuesday</lastmod>
+	</sitemap>
+	<sitemap>
+		<loc>http://example.org/child.xml</loc>
+	</sitemap>
+</sitemapindex>

@@ -1,0 +1,7 @@
+User-agent: Googlebot-Image
+Disallow: /assets/
+
+User-agent: *
+Allow: /
+
+Sitemap: http://127.0.0.1:47302/sitemap.xml

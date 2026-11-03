@@ -1,0 +1,6 @@
+Northline Ferries timetable notes for language models.
+
+## Routes
+
+- [Island crossing](http://127.0.0.1:47503/routes): sailings every two hours
+- Winter timetable, see the harbour office

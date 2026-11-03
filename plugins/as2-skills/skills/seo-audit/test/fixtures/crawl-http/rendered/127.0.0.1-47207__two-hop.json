@@ -1,0 +1,42 @@
+{
+	"url": "http://127.0.0.1:47207/two-hop",
+	"finalUrl": "http://127.0.0.1:47207/two-hop-end",
+	"navigations": [
+		{
+			"url": "http://127.0.0.1:47207/two-hop-end",
+			"reason": null
+		}
+	],
+	"requests": [
+		{
+			"url": "http://127.0.0.1:47207/two-hop",
+			"type": "Document",
+			"status": null,
+			"failed": null
+		},
+		{
+			"url": "http://127.0.0.1:47207/two-hop-1",
+			"type": "Document",
+			"status": null,
+			"failed": null
+		},
+		{
+			"url": "http://127.0.0.1:47207/two-hop-end",
+			"type": "Document",
+			"status": 200,
+			"failed": null
+		},
+		{
+			"url": "http://127.0.0.1:47207/favicon.ico",
+			"type": "Other",
+			"status": 404,
+			"failed": null
+		}
+	],
+	"proxy": {
+		"transactions": 15,
+		"refused": 0
+	},
+	"error": null,
+	"recordedWith": "Chrome/154.0.8037.98"
+}

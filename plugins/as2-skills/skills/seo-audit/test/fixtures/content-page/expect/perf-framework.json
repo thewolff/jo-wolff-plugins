@@ -1,0 +1,18 @@
+[
+	{"rule":"CWV-010","path":"/","locator":"crux","kind":"observation","severity":null,"layer":"field"},
+	{"rule":"CWV-010","path":"/dup-a","locator":"crux","kind":"observation","severity":null,"layer":"field"},
+	{"rule":"CWV-010","path":"/dup-b","locator":"crux","kind":"observation","severity":null,"layer":"field"},
+	{"rule":"CWV-010","path":"/good","locator":"crux","kind":"observation","severity":null,"layer":"field"},
+	{"rule":"CWV-010","path":"/images","locator":"crux","kind":"observation","severity":null,"layer":"field"},
+	{"rule":"CWV-010","path":"/js-noindex","locator":"crux","kind":"observation","severity":null,"layer":"field"},
+	{"rule":"CWV-010","path":"/links","locator":"crux","kind":"observation","severity":null,"layer":"field"},
+	{"rule":"CWV-010","path":"/narrow-viewport","locator":"crux","kind":"observation","severity":null,"layer":"field"},
+	{"rule":"CWV-010","path":"/no-headings","locator":"crux","kind":"observation","severity":null,"layer":"field"},
+	{"rule":"CWV-010","path":"/no-title","locator":"crux","kind":"observation","severity":null,"layer":"field"},
+	{"rule":"CWV-010","path":"/no-viewport","locator":"crux","kind":"observation","severity":null,"layer":"field"},
+	{"rule":"CWV-010","path":"/nofollow","locator":"crux","kind":"observation","severity":null,"layer":"field"},
+	{"rule":"CWV-010","path":"/stuffed","locator":"crux","kind":"observation","severity":null,"layer":"field"},
+	{"rule":"CWV-010","path":"/titled-no-headings","locator":"crux","kind":"observation","severity":null,"layer":"field"},
+	{"rule":"CWV-010","path":"/two-titles","locator":"crux","kind":"observation","severity":null,"layer":"field"},
+	{"rule":"CWV-010","path":"/vague","locator":"crux","kind":"observation","severity":null,"layer":"field"}
+]

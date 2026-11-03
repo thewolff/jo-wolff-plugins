@@ -1,0 +1,7 @@
+[
+	{"rule":"DNF-07","path":"/","locator":"html:meta[name=robots]","kind":"dnf-note","severity":null,"layer":"raw-html"},
+	{"rule":"DNF-10","path":"/","locator":"html:head","kind":"dnf-note","severity":null,"layer":"raw-html"},
+	{"rule":"DNF-11","path":"/sitemap.xml","locator":"doc","kind":"dnf-note","severity":null,"layer":"sitemap"},
+	{"rule":"DNF-16","path":"/robots.txt","locator":"doc","kind":"dnf-note","severity":null,"layer":"robots"},
+	{"rule":"DNF-25","path":"/","locator":"html:span:nth(1)","kind":"dnf-note","severity":null,"layer":"raw-html"}
+]

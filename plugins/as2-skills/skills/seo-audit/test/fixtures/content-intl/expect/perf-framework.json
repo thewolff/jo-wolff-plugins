@@ -1,0 +1,10 @@
+[
+	{"rule":"CWV-010","path":"/","locator":"crux","kind":"observation","severity":null,"layer":"field"},
+	{"rule":"CWV-010","path":"/after-invalid","locator":"crux","kind":"observation","severity":null,"layer":"field"},
+	{"rule":"CWV-010","path":"/body-hreflang","locator":"crux","kind":"observation","severity":null,"layer":"field"},
+	{"rule":"CWV-010","path":"/codes","locator":"crux","kind":"observation","severity":null,"layer":"field"},
+	{"rule":"CWV-010","path":"/de","locator":"crux","kind":"observation","severity":null,"layer":"field"},
+	{"rule":"CWV-010","path":"/en","locator":"crux","kind":"observation","severity":null,"layer":"field"},
+	{"rule":"CWV-010","path":"/fr","locator":"crux","kind":"observation","severity":null,"layer":"field"},
+	{"rule":"CWV-010","path":"/hdr","locator":"crux","kind":"observation","severity":null,"layer":"field"}
+]

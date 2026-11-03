@@ -1,0 +1,30 @@
+{
+	"port": 47207,
+	"audit": {
+		"urls": [
+			"http://127.0.0.1:47207/missing",
+			"http://127.0.0.1:47207/chain-0",
+			"http://127.0.0.1:47207/two-hop",
+			"http://127.0.0.1:47207/temp",
+			"http://127.0.0.1:47207/refresh",
+			"http://127.0.0.1:47207/js-redirect",
+			"http://127.0.0.1:47207/soft-404"
+		]
+	},
+	"paths": {
+		"/chain-0": { "status": 301, "headers": { "location": "/chain-1" } },
+		"/chain-1": { "status": 301, "headers": { "location": "/chain-2" } },
+		"/chain-2": { "status": 301, "headers": { "location": "/chain-3" } },
+		"/chain-3": { "status": 301, "headers": { "location": "/chain-4" } },
+		"/chain-4": { "status": 301, "headers": { "location": "/chain-5" } },
+		"/chain-5": { "status": 301, "headers": { "location": "/chain-6" } },
+		"/chain-6": { "status": 301, "headers": { "location": "/chain-7" } },
+		"/chain-7": { "status": 301, "headers": { "location": "/chain-8" } },
+		"/chain-8": { "status": 301, "headers": { "location": "/chain-9" } },
+		"/chain-9": { "status": 301, "headers": { "location": "/chain-10" } },
+		"/chain-10": { "status": 301, "headers": { "location": "/chain-end" } },
+		"/two-hop": { "status": 301, "headers": { "location": "/two-hop-1" } },
+		"/two-hop-1": { "status": 301, "headers": { "location": "/two-hop-end" } },
+		"/temp": { "status": 302, "headers": { "location": "/temp-target" } }
+	}
+}

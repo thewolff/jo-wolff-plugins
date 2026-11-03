@@ -1,0 +1,17 @@
+[
+	{"rule":"NF-01","path":"/syntax","locator":"doc","kind":"dnf-note","severity":null,"layer":"structured-data"},
+	{"rule":"NF-01","path":"/values","locator":"doc","kind":"dnf-note","severity":null,"layer":"structured-data"},
+	{"rule":"NF-07","path":"/values","locator":"doc","kind":"dnf-note","severity":null,"layer":"structured-data"},
+	{"rule":"NF-10","path":"/syntax","locator":"doc","kind":"dnf-note","severity":null,"layer":"structured-data"},
+	{"rule":"NF-10","path":"/values","locator":"doc","kind":"dnf-note","severity":null,"layer":"structured-data"},
+	{"rule":"SD-JLD-01","path":"/syntax","locator":"jsonld:nth(1)","kind":"finding","severity":"high","layer":"raw-html"},
+	{"rule":"SD-JLD-01","path":"/syntax","locator":"jsonld:nth(2)","kind":"finding","severity":"high","layer":"raw-html"},
+	{"rule":"SD-JLD-01","path":"/syntax","locator":"jsonld:nth(6)","kind":"finding","severity":"high","layer":"rendered"},
+	{"rule":"SD-JLD-02","path":"/syntax","locator":"jsonld:nth(2)","kind":"finding","severity":"low","layer":"raw-html"},
+	{"rule":"SD-JLD-03","path":"/syntax","locator":"jsonld:nth(3)$[\"@context\"]","kind":"finding","severity":"high","layer":"raw-html"},
+	{"rule":"SD-JLD-04","path":"/syntax","locator":"jsonld:nth(4)$","kind":"finding","severity":"high","layer":"structured-data"},
+	{"rule":"SD-JLD-04","path":"/syntax","locator":"jsonld:nth(5)$[\"@graph\"][0]","kind":"finding","severity":"high","layer":"structured-data"},
+	{"rule":"SD-JLD-06","path":"/values","locator":"jsonld:nth(1)$[\"aggregateRating\"][\"ratingValue\"]","kind":"finding","severity":"medium","layer":"structured-data"},
+	{"rule":"SD-JLD-06","path":"/values","locator":"jsonld:nth(1)$[\"offers\"][\"price\"]","kind":"finding","severity":"medium","layer":"structured-data"},
+	{"rule":"SD-JLD-07","path":"/syntax","locator":"doc","kind":"dnf-note","severity":null,"layer":"structured-data"}
+]

@@ -1,0 +1,4 @@
+[
+	{"rule":"SPM-003","path":"/stuffed","locator":"html:body","kind":"finding","severity":"medium"},
+	{"rule":"SPM-003","path":"/good","silent":true}
+]

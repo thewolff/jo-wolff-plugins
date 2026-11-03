@@ -1,0 +1,15 @@
+[
+	{"rule":"MOB-003","path":"/m-noindex","locator":"ua:googlebot-smartphone","kind":"finding","severity":"critical","layer":"ua-probe"},
+	{"rule":"MOB-008","path":"/m-status","locator":"ua:googlebot-smartphone","kind":"finding","severity":"high","layer":"ua-probe"},
+	{"rule":"MOB-004","path":"/m-title","locator":"ua:googlebot-smartphone","kind":"finding","severity":"medium","layer":"ua-probe"},
+	{"rule":"MOB-005","path":"/m-headings","locator":"ua:googlebot-smartphone","kind":"finding","severity":"medium","layer":"ua-probe"},
+	{"rule":"PX-001","path":"/m-headings","locator":"url:/m-headings","kind":"finding","severity":"medium","layer":"headers"},
+	{"rule":"PX-001","path":"/m-noindex","locator":"url:/m-noindex","kind":"finding","severity":"medium","layer":"headers"},
+	{"rule":"PX-001","path":"/m-same","locator":"url:/m-same","kind":"finding","severity":"medium","layer":"headers"},
+	{"rule":"PX-001","path":"/m-status","locator":"url:/m-status","kind":"finding","severity":"medium","layer":"headers"},
+	{"rule":"PX-001","path":"/m-title","locator":"url:/m-title","kind":"finding","severity":"medium","layer":"headers"},
+	{"rule":"DNF-04","path":"/m-noindex","locator":"html:head","kind":"dnf-note","severity":null,"layer":"raw-html"},
+	{"rule":"DNF-05","path":"/m-noindex","locator":"html:html","kind":"dnf-note","severity":null,"layer":"raw-html"},
+	{"rule":"DNF-06","path":"/m-noindex","locator":"html:head","kind":"dnf-note","severity":null,"layer":"raw-html"},
+	{"rule":"DNF-12","path":"/m-noindex","locator":"html:body","kind":"dnf-note","severity":null,"layer":"raw-html"}
+]

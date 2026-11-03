@@ -1,0 +1,31 @@
+<!DOCTYPE html>
+<html lang="en"><head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Northline Ferries: winter timetable</title><meta name="description" content="The Northline Ferries winter timetable for island crossings from November to March."><link rel="canonical" href="http://127.0.0.1:47503/csr-head"><meta name="robots" content="index, follow"></head>
+<body>
+<div id="app"><h1>Winter timetable</h1><p>From November to March the island crossing sails four times a day, leaving the north harbour at eight, eleven, two and five. Cars must check in thirty minutes before departure, foot passengers ten minutes before. Sailings may be cancelled in gales; the harbour office posts changes by seven each morning.</p></div>
+<script>
+document.title = "Northline Ferries: winter timetable";
+const head = document.head;
+const description = document.createElement("meta");
+description.name = "description";
+description.content = "The Northline Ferries winter timetable for island crossings from November to March.";
+head.appendChild(description);
+const canonical = document.createElement("link");
+canonical.rel = "canonical";
+canonical.href = "http://127.0.0.1:47503/csr-head";
+head.appendChild(canonical);
+const robots = document.createElement("meta");
+robots.name = "robots";
+robots.content = "index, follow";
+head.appendChild(robots);
+document.getElementById("app").innerHTML =
+	"<h1>Winter timetable</h1>" +
+	"<p>From November to March the island crossing sails four times a day, leaving the north harbour at eight, eleven, two and five. " +
+	"Cars must check in thirty minutes before departure, foot passengers ten minutes before. Sailings may be cancelled in gales; " +
+	"the harbour office posts changes by seven each morning.</p>";
+</script>
+
+
+</body></html>

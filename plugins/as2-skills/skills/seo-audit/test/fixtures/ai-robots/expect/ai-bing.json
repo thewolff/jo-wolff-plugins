@@ -1,0 +1,10 @@
+[
+	{"rule":"BNG-001","path":"/blocked","locator":"robots.txt:line:9","kind":"finding","severity":"critical","layer":"robots"},
+	{"rule":"AI-001","path":"/blocked","locator":"robots.txt:line:9","kind":"finding","severity":"high","layer":"robots"},
+	{"rule":"AI-010","path":"/blocked","locator":"robots.txt:line:9","kind":"finding","severity":"high","layer":"robots"},
+	{"rule":"AI-020","path":"/blocked","locator":"robots.txt:line:9","kind":"finding","severity":"high","layer":"robots"},
+	{"rule":"AI-060","path":"/blocked","locator":"robots.txt:line:12","kind":"finding","severity":"high","layer":"robots"},
+	{"rule":"AI-074","path":"/blocked","locator":"robots.txt:line:9","kind":"finding","severity":"high","layer":"robots"},
+	{"rule":"BNG-014","path":"/robots.txt","locator":"line:2","kind":"finding","severity":"medium","layer":"robots"},
+	{"rule":"AI-091","path":"/llms.txt","locator":"doc","kind":"observation","severity":null,"layer":"site"}
+]

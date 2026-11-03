@@ -1,0 +1,14 @@
+[
+	{"rule":"IDX-001","path":"/noindex-header","locator":"header:x-robots-tag","kind":"finding","severity":"critical","layer":"headers"},
+	{"rule":"IDX-001","path":"/noindex-meta","locator":"html:meta[name=robots]","kind":"finding","severity":"critical","layer":"raw-html"},
+	{"rule":"IDX-008","path":"/expired","locator":"html:meta[name=robots]","kind":"finding","severity":"high","layer":"raw-html"},
+	{"rule":"AI-033","path":"/nosnippet-p","locator":"html:p#aside","kind":"finding","severity":"medium","layer":"raw-html"},
+	{"rule":"IDX-009","path":"/nosnippet-js","locator":"html:div#promo","kind":"finding","severity":"low","layer":"rendered"},
+	{"rule":"IDX-014","path":"/embedded","locator":"html:meta[name=robots]","kind":"finding","severity":"low","layer":"raw-html"},
+	{"rule":"IDX-007","path":"/snippets","locator":"html:meta[name=robots]","kind":"observation","severity":null,"layer":"raw-html"},
+	{"rule":"IDX-011","path":"/snippets","locator":"html:meta[name=robots]","kind":"observation","severity":null,"layer":"raw-html"},
+	{"rule":"IDX-013","path":"/snippets","locator":"html:meta[name=robots]","kind":"observation","severity":null,"layer":"raw-html"},
+	{"rule":"DNF-11","path":"/sitemap.xml","locator":"doc","kind":"dnf-note","severity":null,"layer":"sitemap"},
+	{"rule":"DNF-25","path":"/nosnippet-js","locator":"html:div#promo","kind":"dnf-note","severity":null,"layer":"raw-html"},
+	{"rule":"DNF-25","path":"/nosnippet-p","locator":"html:p#aside","kind":"dnf-note","severity":null,"layer":"raw-html"}
+]

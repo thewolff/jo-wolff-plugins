@@ -1,0 +1,48 @@
+{
+	"url": "http://127.0.0.1:47504/gallery",
+	"finalUrl": "http://127.0.0.1:47504/gallery",
+	"navigations": [
+		{
+			"url": "http://127.0.0.1:47504/gallery",
+			"reason": null
+		}
+	],
+	"requests": [
+		{
+			"url": "http://127.0.0.1:47504/gallery",
+			"type": "Document",
+			"status": 200,
+			"failed": null
+		},
+		{
+			"url": "http://127.0.0.1:47504/guide-1.svg",
+			"type": "Image",
+			"status": 200,
+			"failed": null
+		},
+		{
+			"url": "http://127.0.0.1:47504/guide-2.svg",
+			"type": "Image",
+			"status": 200,
+			"failed": null
+		},
+		{
+			"url": "http://127.0.0.1:47504/guide-3.svg",
+			"type": "Image",
+			"status": 200,
+			"failed": null
+		},
+		{
+			"url": "http://127.0.0.1:47504/favicon.ico",
+			"type": "Other",
+			"status": 404,
+			"failed": null
+		}
+	],
+	"proxy": {
+		"transactions": 14,
+		"refused": 0
+	},
+	"error": null,
+	"recordedWith": "Chrome/154.0.8037.98"
+}

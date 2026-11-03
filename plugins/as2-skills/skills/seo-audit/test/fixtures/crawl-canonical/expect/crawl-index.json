@@ -1,0 +1,18 @@
+[
+	{"rule":"CAN-001","path":"/can-body","locator":"html:body link[rel=canonical]","kind":"finding","severity":"high","layer":"raw-html"},
+	{"rule":"CAN-004","path":"/can-final","locator":"html:link[rel=canonical]","kind":"finding","severity":"high","layer":"raw-html"},
+	{"rule":"CAN-007","path":"/can-js","locator":"html:link[rel=canonical]","kind":"finding","severity":"high","layer":"rendered"},
+	{"rule":"CAN-014","path":"/can-head-div","locator":"html:head > div","kind":"finding","severity":"high","layer":"raw-html"},
+	{"rule":"HEU-02","path":"/can-final","locator":"html:link[rel=canonical]","kind":"finding","severity":"high","layer":"raw-html"},
+	{"rule":"HEU-02","path":"/can-gone","locator":"html:link[rel=canonical]","kind":"finding","severity":"high","layer":"raw-html"},
+	{"rule":"CAN-005","path":"/can-header","locator":"header:link","kind":"finding","severity":"medium","layer":"headers"},
+	{"rule":"CAN-006","path":"/can-fragment","locator":"html:link[rel=canonical]","kind":"finding","severity":"medium","layer":"raw-html"},
+	{"rule":"CAN-011","path":"/can-host","locator":"html:a[href^=\"http://localhost:47206\"]","kind":"finding","severity":"medium","layer":"rendered"},
+	{"rule":"CAN-017","path":"/can-temp","locator":"hop:1","kind":"finding","severity":"medium","layer":"headers"},
+	{"rule":"HEU-04","path":"/can-two","locator":"html:link[rel=canonical]","kind":"finding","severity":"medium","layer":"raw-html"},
+	{"rule":"CAN-002","path":"/can-relative","locator":"html:link[rel=canonical]","kind":"finding","severity":"low","layer":"raw-html"},
+	{"rule":"CAN-008","path":"/can-attr","locator":"html:link[rel=canonical]","kind":"finding","severity":"low","layer":"raw-html"},
+	{"rule":"HEU-02b","path":"/can-header","locator":"header:link","kind":"observation","severity":null,"layer":"headers"},
+	{"rule":"DNF-11","path":"/sitemap.xml","locator":"doc","kind":"dnf-note","severity":null,"layer":"sitemap"},
+	{"rule":"DNF-11","path":"/sitemap.xml","locator":"doc","kind":"dnf-note","severity":null,"layer":"sitemap"}
+]

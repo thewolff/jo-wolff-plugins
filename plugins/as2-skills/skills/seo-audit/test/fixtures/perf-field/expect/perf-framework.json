@@ -1,0 +1,19 @@
+[
+	{"rule":"CWV-001b","path":"/poor","locator":"crux:url:largest_contentful_paint","kind":"finding","severity":"high","layer":"field","modes":["recorded"]},
+	{"rule":"CWV-002b","path":"/poor","locator":"crux:url:interaction_to_next_paint","kind":"finding","severity":"high","layer":"field","modes":["recorded"]},
+	{"rule":"CWV-003b","path":"/poor","locator":"crux:url:cumulative_layout_shift","kind":"finding","severity":"high","layer":"field","modes":["recorded"]},
+	{"rule":"CWV-001","path":"/mid","locator":"crux:url:largest_contentful_paint","kind":"finding","severity":"medium","layer":"field","modes":["recorded"]},
+	{"rule":"CWV-001","path":"/origin-only","locator":"crux:origin:largest_contentful_paint","kind":"finding","severity":"medium","layer":"field","modes":["recorded"]},
+	{"rule":"CWV-001","path":"/poor-limit","locator":"crux:url:largest_contentful_paint","kind":"finding","severity":"medium","layer":"field","modes":["recorded"]},
+	{"rule":"CWV-002","path":"/mid","locator":"crux:url:interaction_to_next_paint","kind":"finding","severity":"medium","layer":"field","modes":["recorded"]},
+	{"rule":"CWV-002","path":"/poor-limit","locator":"crux:url:interaction_to_next_paint","kind":"finding","severity":"medium","layer":"field","modes":["recorded"]},
+	{"rule":"CWV-003","path":"/mid","locator":"crux:url:cumulative_layout_shift","kind":"finding","severity":"medium","layer":"field","modes":["recorded"]},
+	{"rule":"CWV-003","path":"/poor-limit","locator":"crux:url:cumulative_layout_shift","kind":"finding","severity":"medium","layer":"field","modes":["recorded"]},
+	{"rule":"CWV-010","path":"/no-data","locator":"crux","kind":"observation","severity":null,"layer":"field"},
+	{"rule":"CWV-010","path":"/poor","locator":"crux","kind":"observation","severity":null,"layer":"field","modes":["live"]},
+	{"rule":"CWV-010","path":"/mid","locator":"crux","kind":"observation","severity":null,"layer":"field","modes":["live"]},
+	{"rule":"CWV-010","path":"/origin-only","locator":"crux","kind":"observation","severity":null,"layer":"field","modes":["live"]},
+	{"rule":"CWV-010","path":"/poor-limit","locator":"crux","kind":"observation","severity":null,"layer":"field","modes":["live"]},
+	{"rule":"CWV-010","path":"/","locator":"crux","kind":"observation","severity":null,"layer":"field","modes":["live"]},
+	{"rule":"CWV-010","path":"/good-limit","locator":"crux","kind":"observation","severity":null,"layer":"field","modes":["live"]}
+]

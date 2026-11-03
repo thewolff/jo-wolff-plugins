@@ -38,6 +38,11 @@
       "name": "ledger",
       "source": "./plugins/ledger",
       "description": "A durable, id'd record of a thread's work in one SQLite file: workloads, questions with one-word answers, decisions and ceilings. Hooks inject the open items at session start, deny pushes, PR creation and writes outside the folder while no workload is open, refuse a reply that asks without a question row or calls open work done, and apply `approve q-…` lines typed into a prompt."
+    },
+    {
+      "name": "as2-skills",
+      "source": "./plugins/as2-skills",
+      "description": "The 22 engineering skills of agent-system 2.0: spec and plan, plan execution, TDD, debugging, code review, git workflow, security, research, cross-model review and more. Vendored from addyosmani/agent-skills, pbakaus/impeccable, blader/humanizer and obra/superpowers at pinned releases, with frontmatter claude.ai accepts."
     }
   ]
 }

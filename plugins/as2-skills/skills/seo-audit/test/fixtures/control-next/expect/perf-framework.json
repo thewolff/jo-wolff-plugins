@@ -1,0 +1,7 @@
+[
+	{"rule":"CWV-010","path":"/","locator":"crux","kind":"observation","severity":null,"layer":"field"},
+	{"rule":"CWV-010","path":"/old","locator":"crux","kind":"observation","severity":null,"layer":"field"},
+	{"rule":"DNF-18","path":"/old","locator":"hop:1","kind":"dnf-note","severity":null,"layer":"headers"},
+	{"rule":"FW-DNF-11","path":"app/layout.tsx","locator":"line:21","kind":"dnf-note","severity":null,"layer":"source"},
+	{"rule":"FW-DNF-12","path":"app/old/page.tsx","locator":"line:5","kind":"dnf-note","severity":null,"layer":"source"}
+]

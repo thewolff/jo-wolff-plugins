@@ -1,0 +1,7 @@
+{
+	"port": 47202,
+	"audit": { "urls": ["http://127.0.0.1:47202/"] },
+	"paths": {
+		"/robots.txt": { "status": 503, "body": "Service Unavailable" }
+	}
+}

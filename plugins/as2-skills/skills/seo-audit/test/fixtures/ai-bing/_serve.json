@@ -1,0 +1,11 @@
+{
+	"port": 47503,
+	"audit": {
+		"urls": ["http://127.0.0.1:47503/", "http://127.0.0.1:47503/csr-head", "http://127.0.0.1:47503/xrt"],
+		"sample": 0
+	},
+	"paths": {
+		"/xrt": { "status": 200, "headers": { "x-robots-tag": "nocache", "content-type": "text/html; charset=utf-8" }, "file": "xrt.html" },
+		"/sitemap.xml": { "status": 200, "today": true, "file": "sitemap.xml" }
+	}
+}

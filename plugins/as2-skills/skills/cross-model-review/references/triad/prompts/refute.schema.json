@@ -1,0 +1,35 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "triad verify stage — one refutation verdict",
+  "description": "Structured output contract for a single refute agent judging a single finding. Mirrors the bar in refute.md — do not add fields here without updating that prompt to match.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["refuted", "ground", "basis"],
+  "properties": {
+    "refuted": {
+      "type": "boolean",
+      "description": "true kills the finding. Default to true when the defect could not be established — uncertainty is a refutation, not a survival."
+    },
+    "ground": {
+      "type": "string",
+      "description": "Which kill condition landed, or survived if none did.",
+      "enum": [
+        "code_does_not_say_that",
+        "trigger_cannot_happen",
+        "outcome_is_intended",
+        "already_handled",
+        "taste_not_defect",
+        "could_not_establish",
+        "survived"
+      ]
+    },
+    "basis": {
+      "type": "string",
+      "description": "The receipt: the file:line read, the guard found and where it is, or the decision-log entry cited. Required for every verdict including refusals — 'seems unlikely' is not a basis."
+    },
+    "repro": {
+      "type": "string",
+      "description": "Required when refuted is false: the concrete input or sequence, and the wrong outcome. If this sentence cannot be written, the verdict is refuted."
+    }
+  }
+}

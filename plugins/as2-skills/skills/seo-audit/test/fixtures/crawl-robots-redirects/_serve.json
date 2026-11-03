@@ -1,0 +1,12 @@
+{
+	"port": 47203,
+	"audit": { "urls": ["http://127.0.0.1:47203/"] },
+	"paths": {
+		"/robots.txt": { "status": 301, "headers": { "location": "/robots-1.txt" } },
+		"/robots-1.txt": { "status": 301, "headers": { "location": "/robots-2.txt" } },
+		"/robots-2.txt": { "status": 301, "headers": { "location": "/robots-3.txt" } },
+		"/robots-3.txt": { "status": 301, "headers": { "location": "/robots-4.txt" } },
+		"/robots-4.txt": { "status": 301, "headers": { "location": "/robots-5.txt" } },
+		"/robots-5.txt": { "status": 301, "headers": { "location": "/robots-final.txt" } }
+	}
+}

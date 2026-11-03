@@ -1,0 +1,10 @@
+[
+	{"rule":"HTTP-001","path":"/missing","locator":"doc","kind":"finding","severity":"critical","layer":"headers"},
+	{"rule":"HTTP-003","path":"/chain-0","locator":"doc","kind":"finding","severity":"critical","layer":"headers"},
+	{"rule":"HTTP-003b","path":"/two-hop","locator":"doc","kind":"finding","severity":"low","layer":"headers"},
+	{"rule":"HTTP-005","path":"/refresh","locator":"html:meta[http-equiv=refresh]","kind":"finding","severity":"low","layer":"raw-html"},
+	{"rule":"HTTP-006","path":"/js-redirect","locator":"url:/js-target","kind":"finding","severity":"low","layer":"rendered"},
+	{"rule":"HTTP-004","path":"/temp","locator":"hop:1","kind":"observation","severity":null,"layer":"headers"},
+	{"rule":"DNF-10","path":"/js-redirect","locator":"html:head","kind":"dnf-note","severity":null,"layer":"raw-html"},
+	{"rule":"DNF-11","path":"/sitemap.xml","locator":"doc","kind":"dnf-note","severity":null,"layer":"sitemap"}
+]

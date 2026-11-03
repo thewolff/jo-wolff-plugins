@@ -1,0 +1,8 @@
+[
+	{"rule":"INT-014","path":"/","locator":"html:link[hreflang=de]","kind":"finding","severity":"medium","layer":"raw-html"},
+	{"rule":"PX-002","path":"/down","locator":"hop:1","kind":"finding","severity":"medium","layer":"headers"},
+	{"rule":"PX-003","path":"/","locator":"url:http://127.0.0.1:47399/widget.js","kind":"finding","severity":"medium","layer":"rendered"},
+	{"rule":"DNF-04","path":"/","locator":"html:head","kind":"dnf-note","severity":null,"layer":"raw-html"},
+	{"rule":"DNF-06","path":"/","locator":"html:head","kind":"dnf-note","severity":null,"layer":"raw-html"},
+	{"rule":"DNF-12","path":"/","locator":"html:body","kind":"dnf-note","severity":null,"layer":"raw-html"}
+]

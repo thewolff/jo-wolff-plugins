@@ -1,0 +1,13 @@
+[
+	{"rule":"CAN-014","path":"/after-invalid","locator":"html:head > div","kind":"finding","severity":"high","layer":"raw-html"},
+	{"rule":"DNF-08","path":"/sitemap.xml","locator":"doc","kind":"dnf-note","severity":null,"layer":"sitemap"},
+	{"rule":"DNF-10","path":"/","locator":"html:head","kind":"dnf-note","severity":null,"layer":"raw-html"},
+	{"rule":"DNF-10","path":"/after-invalid","locator":"html:head","kind":"dnf-note","severity":null,"layer":"raw-html"},
+	{"rule":"DNF-10","path":"/body-hreflang","locator":"html:head","kind":"dnf-note","severity":null,"layer":"raw-html"},
+	{"rule":"DNF-10","path":"/codes","locator":"html:head","kind":"dnf-note","severity":null,"layer":"raw-html"},
+	{"rule":"DNF-10","path":"/de","locator":"html:head","kind":"dnf-note","severity":null,"layer":"raw-html"},
+	{"rule":"DNF-10","path":"/en","locator":"html:head","kind":"dnf-note","severity":null,"layer":"raw-html"},
+	{"rule":"DNF-10","path":"/fr","locator":"html:head","kind":"dnf-note","severity":null,"layer":"raw-html"},
+	{"rule":"DNF-10","path":"/hdr","locator":"html:head","kind":"dnf-note","severity":null,"layer":"raw-html"},
+	{"rule":"NF-BNG-1","path":"/sitemap.xml","locator":"doc","kind":"dnf-note","severity":null,"layer":"sitemap"}
+]

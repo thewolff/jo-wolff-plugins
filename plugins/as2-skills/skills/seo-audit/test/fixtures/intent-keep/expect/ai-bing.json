@@ -1,0 +1,6 @@
+[
+	{"rule":"AI-060","path":"/hidden","locator":"robots.txt:line:2","kind":"observation","severity":null,"layer":"robots"},
+	{"rule":"AI-090","path":"/llms.txt","locator":"doc","kind":"observation","severity":null,"layer":"site"},
+	{"rule":"NF-03","path":"/llms.txt","locator":"doc","kind":"dnf-note","severity":null,"layer":"site"},
+	{"rule":"NF-AI-1","path":"/llms.txt","locator":"doc","kind":"dnf-note","severity":null,"layer":"site"}
+]

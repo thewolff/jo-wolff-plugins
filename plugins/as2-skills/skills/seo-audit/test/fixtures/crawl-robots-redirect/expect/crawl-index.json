@@ -1,0 +1,6 @@
+[
+	{"rule":"IDX-001","path":"/blocked","locator":"html:meta[name=robots]","kind":"finding","severity":"critical","layer":"raw-html"},
+	{"rule":"RBT-012","path":"/start","locator":"robots.txt:line:2","kind":"finding","severity":"critical","layer":"robots"},
+	{"rule":"IDX-002","path":"/blocked","locator":"html:meta[name=robots]","kind":"finding","severity":"high","layer":"raw-html"},
+	{"rule":"DNF-11","path":"/sitemap.xml","locator":"doc","kind":"dnf-note","severity":null,"layer":"sitemap"}
+]

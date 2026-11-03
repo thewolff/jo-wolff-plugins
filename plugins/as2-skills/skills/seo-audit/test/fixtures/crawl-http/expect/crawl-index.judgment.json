@@ -1,0 +1,4 @@
+[
+	{"rule":"HTTP-002","path":"/soft-404","locator":"html:body","kind":"finding","severity":"high"},
+	{"rule":"HTTP-002","path":"/temp-target","silent":true}
+]
