@@ -33,6 +33,11 @@
       "name": "pattern-check",
       "source": "./plugins/pattern-check",
       "description": "Before big work in a repo, make the agent find the existing pattern that does each new piece's job and record reuse, replace, or new with a reason. Hooks hold Edit, Write, commits and PRs after N distinct files, and refuse a plan-proposing reply, until the receipt exists."
+    },
+    {
+      "name": "ledger",
+      "source": "./plugins/ledger",
+      "description": "A durable, id'd record of a thread's work in one SQLite file: workloads, questions with one-word answers, decisions and ceilings. Hooks inject the open items at session start, deny pushes, PR creation and writes outside the folder while no workload is open, refuse a reply that asks without a question row or calls open work done, and apply `approve q-…` lines typed into a prompt."
     }
   ]
 }

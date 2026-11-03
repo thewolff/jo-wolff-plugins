@@ -1,0 +1,9 @@
+{
+  "db": "~/.local/share/ledger/ledger.db",
+  "user": null,
+  "timezone": null,
+  "hooks": { "sessionStart": true, "preToolUse": true, "stop": true, "sessionEnd": true, "userPromptCommands": true },
+  "forcing": { "denyPush": true, "denyPrCreate": true, "denyWritesOutsideCwd": true, "denyAskWithoutRow": true, "stopAskRule": true, "stopDoneRule": true },
+  "inject": { "decisions": 5 },
+  "stale": { "days": 7 }
+}
