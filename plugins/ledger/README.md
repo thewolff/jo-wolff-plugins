@@ -5,9 +5,10 @@ asking, kept in one SQLite file on your machine. Every question gets a `q-` id w
 options; you answer by typing the word and the id back. Every unasked decision gets an `nt-`
 note. A CLI the agent runs, a batch mode that applies a pasted block line by line, and five
 hooks that make the record hard to skip: open questions and recent notes are injected at session
-start, the AskUserQuestion tool is denied until the question has a row, a reply that asks you
-something without naming its row is sent back once, and `approve q-…` lines you type into a
-prompt are applied before Claude reads them.
+start, the AskUserQuestion tool is denied until the question has a row, `git push` and
+`gh pr create` are denied until the session has a note saying why, a reply that asks you
+something without naming its row or states a decision without a note is sent back once, and
+`approve q-…` lines you type into a prompt are applied before Claude reads them.
 
 The hooks are off until you turn them on for a folder (`ledger enable`). Every hook fails open:
 the ledger never blocks a session because the ledger itself is broken.
@@ -70,7 +71,7 @@ The skill (`skills/ledger/SKILL.md`) tells the agent to:
   end its message with the `pending` line for that question (the q-id, the default, what each
   option allows). `--ceiling <usd>` and `--about "<text>"` attach a spend limit or the thing the
   question concerns, shown on the pending line;
-- `note "<text>"` for a choice it made without asking;
+- `note "<text>"` for a choice it made without asking, and before any `git push` or `gh pr create` (what is being pushed and why);
 - read `pending` and `log` when it resumes.
 
 You answer by typing the line back: `approve q-…`, `deny q-…`, `withdraw q-…`, or any option
@@ -135,11 +136,25 @@ outlasted the busy timeout (the lines not applied are named).
 Every hook reads config once and exits 0 without opening the database when the project is not
 enabled or its own switch is off. Every refusal names the exact command that lifts it.
 
+### What is forced
+
+Exactly four things, each with its off switch:
+
+1. **Session rows.** Every session the hooks run in has a `cc_sessions` row with its start, end and reason (`hooks.sessionStart`, `hooks.sessionEnd`).
+2. **Questions.** The agent cannot use `AskUserQuestion` without an open `q-` row, and cannot end a turn on a question that names no open row (`forcing.denyAskWithoutRow`, `forcing.stopAskRule`).
+3. **Push needs a note.** `git push` and `gh pr create` are denied until the session holds one `note` saying what is being pushed and why (`forcing.pushNeedsNote`).
+4. **Decision needs a note.** A reply that states a decision (`forcing.decisionPhrases`) is sent back once unless a `note` was recorded in that turn (`forcing.stopDecisionRule`).
+
+Nothing else is forced. The CLI tags its rows with the session through `LEDGER_SESSION_ID`,
+which the SessionStart hook exports into the session's shell environment (`CLAUDE_ENV_FILE`);
+a note made without it still counts for the session it was made in when it is in or around the
+session's folder and dated after the session started.
+
 | Event | Config key | What it does |
 |---|---|---|
 | SessionStart | `hooks.sessionStart` | Injects, in order and only when non-empty: open questions for the cwd (the `pending` block), the last `inject.notes` entries of `log`, and the exact invocation plus allow rule and a one-line verb summary. Capped at 9,000 characters; the log entries are cut first, never the questions. On `source: compact` the log section is dropped and the verb summary is one line. Records the session in `cc_sessions`. |
-| PreToolUse | `hooks.preToolUse` | Runs on `AskUserQuestion` only. Denies it while no question is open for the cwd (a question whose cwd equals the hook cwd or is an ancestor of it), with the reason `ledger: ask the question through the ledger first: \`… ask "<body>" --name <short> --options a,b --default a\`, then put the q-id in the question text.` Before denying it proves the store can take a write (the remedy is `ask`, which writes); if it cannot, the tool passes with a `systemMessage`. Every other tool is never seen by this hook. |
-| Stop | `hooks.stop` | Checks the final message once per turn (keyed on `prompt_id`; a second Stop in the same turn passes): after removing code blocks and inline code, a line ends with `?` and the message names no `q-` id that is an open question for the cwd → `{"decision":"block","reason":…}` telling the agent to `ask` and end with the `pending` line. Messages under 40 substantive characters are never checked. Config key for the rule: `forcing.stopAskRule`. |
+| PreToolUse | `hooks.preToolUse` | Runs on `AskUserQuestion` and `Bash` only. `AskUserQuestion` is denied while no question is open for the cwd (a question whose cwd equals the hook cwd or is an ancestor of it), with the reason `ledger: ask the question through the ledger first: \`… ask "<body>" --name <short> --options a,b --default a\`, then put the q-id in the question text.` A Bash command that runs `git push` or `gh pr create` (any simple command of a `&&`/`;`/`|`/newline chain; git's global options and a path on the binary are tolerated) is denied while the session has no `note`, with the reason `ledger: record what this push is before pushing: \`… note "<what this push is and why>"\` (one note in this session lifts the gate).` Before denying it proves the store can take a write (the remedy writes); if it cannot, the tool passes with a `systemMessage`. Other tools and other commands are never seen. |
+| Stop | `hooks.stop` | Checks the final message once per turn (keyed on `prompt_id`; a second Stop in the same turn passes). Ask rule (`forcing.stopAskRule`): after removing code blocks and inline code, a line ends with `?` and the message names no `q-` id that is an open question for the cwd → `{"decision":"block","reason":…}` telling the agent to `ask` and end with the `pending` line; messages under 40 substantive characters are not checked. Decision rule (`forcing.stopDecisionRule`): after also removing double-quoted spans, the message contains one of `forcing.decisionPhrases` as whole words and the session recorded no `note` during this turn → block telling the agent to `note`, then finish. The ask rule is checked first. Every Stop stamps `cc_sessions.last_stop_at`; "this turn" runs from the previous stamp (or the session start) to now. |
 | SessionEnd | `hooks.sessionEnd` | Stamps `ended_at` and the reason on the session row. Touches nothing else. Prints nothing; errors go to the log. |
 | UserPromptSubmit | `hooks.userPromptCommands` | When every non-blank line of the prompt is an id-bearing ledger line (`approve q-…`, `extend q-…`, an ordinal like `1 approve`) or `pending` / `log [N]` / `help`, applies them as a batch with `via = prompt-hook` and gives Claude the numbered results as `additionalContext` (you see the same block as a `systemMessage`). One prose line anywhere → nothing happens. Free-text verbs (`ask`, `note`) and `config` / `enable` / `disable` are never applied from a prompt. Never blocks the prompt. |
 
@@ -165,7 +180,14 @@ defaults verbatim.
 | `hooks.userPromptCommands` | `true` | applying ledger lines typed into a prompt |
 | `forcing.denyAskWithoutRow` | `true` | deny `AskUserQuestion` with no open question row |
 | `forcing.stopAskRule` | `true` | send back a reply that asks a question without a row |
+| `forcing.pushNeedsNote` | `true` | deny `git push` / `gh pr create` while the session has no note |
+| `forcing.stopDecisionRule` | `true` | send back a reply that states a decision with no note recorded this turn |
+| `forcing.decisionPhrases` | the nine phrases below | the phrases the decision rule looks for, whole words, any case |
 | `inject.notes` | `5` | how many recent `log` entries SessionStart injects |
+
+The default `forcing.decisionPhrases`: `I decided`, `decided to`, `assumption:`, `assuming`,
+`going with`, `instead of`, `chose`, `I'll go with`, `trade-off`. A project file can replace the
+list (`{"forcing": {"decisionPhrases": ["went with", "settled on"]}}`).
 
 `node <plugin dir>/scripts/ledger.mjs config` prints the effective values and the source of each.
 
@@ -178,8 +200,8 @@ appends one line to `${XDG_STATE_HOME:-~/.local/state}/ledger/errors.log` and te
 | Condition | CLI | SessionStart | PreToolUse | Stop | SessionEnd | UserPromptSubmit |
 |---|---|---|---|---|---|---|
 | database file missing | creates the directory and the schema, proceeds | same | same | same | same | same |
-| database locked (busy timeout, one retry) | exit 2, `ledger: database busy at <path>; nothing applied` (lines already applied are named) | injects what it can read; session not recorded, one `systemMessage` | passes with `systemMessage` where it would deny (the `ask` it would demand cannot write); an open question still passes silently | passes without checking, `systemMessage` | log only | lines report `not applied (database busy)`, one `systemMessage`, prompt proceeds |
-| database read-only (file mode, mounted read-only) | reads work; a write is exit 2, `ledger: database read-only at <path>; nothing applied`; `enable`, `disable` and `help` never touch the database | injects what it can read; session not recorded, one `systemMessage` | same as locked | passes without checking, `systemMessage` | log only | lines report `not applied (database read-only)`, one `systemMessage`, prompt proceeds |
+| database locked (busy timeout, one retry) | exit 2, `ledger: database busy at <path>; nothing applied` (lines already applied are named) | injects what it can read; session not recorded, one `systemMessage` | passes with `systemMessage` where it would deny (the `ask` or `note` it would demand cannot write); a tool it would pass anyway passes silently | passes without checking, `systemMessage` (the turn stamp is a write) | log only | lines report `not applied (database busy)`, one `systemMessage`, prompt proceeds |
+| database read-only (file mode, mounted read-only) | reads work; a write is exit 2, `ledger: database read-only at <path>; nothing applied`; `enable`, `disable` and `help` never touch the database | injects what it can read; session not recorded, one `systemMessage` | same as locked | same as locked | log only | lines report `not applied (database read-only)`, one `systemMessage`, prompt proceeds |
 | database corrupt | moves it to `<path>.corrupt-<stamp>`, creates a fresh one, says so, proceeds | same, in `systemMessage` | same | same | rename and log only | same |
 | config file unparsable or a key of the wrong type | next layer, one stderr line | next layer, `systemMessage` | next layer, `systemMessage` | next layer, `systemMessage` | next layer, log | next layer, `systemMessage` |
 | unknown config key | ignored | | | | | |
@@ -221,7 +243,9 @@ Node 24.
 
 ## Known gaps
 
-- The Stop rule looks only at the final message; a question asked and withdrawn mid-turn is not seen.
+- The Stop rules look only at the final message; a question asked and withdrawn mid-turn is not seen, and a decision stated in an earlier message of the same turn is not either.
+- The decision rule is a phrase list. A decision worded outside the list passes; a phrase used in a different sense ("instead of X, the test does Y") blocks once. Tune `forcing.decisionPhrases` per project.
+- The push gate reads the Bash command text. A push run from a script file or an alias is not seen; a `git push` inside a quoted string that never runs is.
 - A ceiling on a question is recorded and shown, never metered: nothing stops at the ceiling.
 - Enabling is per folder tree, not per repository: a `.ledger.json` in your home directory would enable every project under it.
 - Claude Code only. On OMP the skill installs but no hook runs.

@@ -13,6 +13,9 @@ import { StoreError, transaction } from "../lib/db.mjs";
 import { runHook, noticeField, invokedDirectly } from "../lib/failopen.mjs";
 import { buildInjection } from "../lib/inject.mjs";
 import { withStore, hookConfig } from "../lib/store.mjs";
+import { appendFileSync } from "node:fs";
+
+const SESSION_ID_OK = /^[A-Za-z0-9_.-]+$/;
 import { nowIso } from "../lib/time.mjs";
 
 export function handle(input, { env = process.env, now = Date.now() } = {}) {
@@ -37,6 +40,15 @@ export function handle(input, { env = process.env, now = Date.now() } = {}) {
       } catch (err) {
         if (!(err instanceof StoreError)) throw err;
         notices.push(`ledger: database ${err.kind === "readonly" ? "read-only" : "busy"} at ${err.path}; this session was not recorded`);
+      }
+    }
+    // Later Bash commands get LEDGER_SESSION_ID through CLAUDE_ENV_FILE (hooks reference
+    // § Persist environment variables), so the CLI can tag its rows with this session.
+    if (sessionId && SESSION_ID_OK.test(sessionId) && typeof env.CLAUDE_ENV_FILE === "string" && env.CLAUDE_ENV_FILE) {
+      try {
+        appendFileSync(env.CLAUDE_ENV_FILE, `export LEDGER_SESSION_ID=${sessionId}\n`);
+      } catch (err) {
+        notices.push(`ledger: could not write ${env.CLAUDE_ENV_FILE} (${err.message}); CLI rows in this session will not carry its id`);
       }
     }
     const { text } = buildInjection(store.db, cwd, store.config, { source: input.source, now });

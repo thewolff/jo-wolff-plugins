@@ -106,7 +106,8 @@ export const MIGRATIONS = [
         ended_at          TEXT,
         end_reason        TEXT,
         last_block_prompt TEXT,
-        last_block_rule   TEXT
+        last_block_rule   TEXT,
+        last_stop_at      TEXT
       );
     `);
   },

@@ -35,7 +35,13 @@ export const DEFAULTS = Object.freeze({
   user: null,
   timezone: null,
   hooks: Object.freeze({ sessionStart: true, preToolUse: true, stop: true, sessionEnd: true, userPromptCommands: true }),
-  forcing: Object.freeze({ denyAskWithoutRow: true, stopAskRule: true }),
+  forcing: Object.freeze({
+    denyAskWithoutRow: true,
+    stopAskRule: true,
+    pushNeedsNote: true,
+    stopDecisionRule: true,
+    decisionPhrases: Object.freeze(["I decided", "decided to", "assumption:", "assuming", "going with", "instead of", "chose", "I'll go with", "trade-off"]),
+  }),
   inject: Object.freeze({ notes: 5 }),
 });
 
@@ -46,7 +52,7 @@ const SHAPE = {
   user: "string|null",
   timezone: "string|null",
   hooks: { sessionStart: "boolean", preToolUse: "boolean", stop: "boolean", sessionEnd: "boolean", userPromptCommands: "boolean" },
-  forcing: { denyAskWithoutRow: "boolean", stopAskRule: "boolean" },
+  forcing: { denyAskWithoutRow: "boolean", stopAskRule: "boolean", pushNeedsNote: "boolean", stopDecisionRule: "boolean", decisionPhrases: "string[]" },
   inject: { notes: "integer" },
 };
 
@@ -117,6 +123,8 @@ function typeOk(expected, value) {
       return typeof value === "boolean";
     case "integer":
       return Number.isInteger(value) && value >= 0;
+    case "string[]":
+      return Array.isArray(value) && value.every((v) => typeof v === "string" && v.trim().length > 0);
     default:
       return false;
   }

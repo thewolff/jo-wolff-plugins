@@ -86,7 +86,9 @@ export function main(argv = process.argv.slice(2), { env = process.env, stdin = 
   for (const n of store.notices) err(`${n}\n`);
 
   try {
-    const ctx = makeCtx({ store, cwd, via: "cli", by: cli.by });
+    // LEDGER_SESSION_ID is exported by the SessionStart hook into the session's shell environment.
+    const sessionId = /^[A-Za-z0-9_.-]+$/.test(env.LEDGER_SESSION_ID ?? "") ? env.LEDGER_SESSION_ID : null;
+    const ctx = makeCtx({ store, cwd, via: "cli", by: cli.by, sessionId });
     const batch = runBatch(lines, { db: store.db, ctx });
     // Busy with nothing applied: one stderr line and nothing on stdout (the fail-open table's row).
     // Busy after some lines applied: the block names each line that was not applied, then the stderr line.
