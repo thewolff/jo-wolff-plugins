@@ -1,7 +1,7 @@
 {
   "name": "pattern-check",
   "description": "Before big work in a repository, make the agent find the existing pattern that does each new piece's job and record reuse, replace, or new-with-reason. Hooks hold writes, commits and PRs after N distinct files, and refuse a plan-proposing reply, until the receipt exists.",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "author": { "name": "Jo Wolff" },
   "license": "MIT",
   "repository": "https://github.com/thewolff/jo-wolff-plugins",
