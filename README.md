@@ -1,8 +1,8 @@
 # jo-wolff-plugins
 
-Five plugins about working with an agent: what its output is made of, what shape that output
+Plugins about working with an agent: what its output is made of, what shape that output
 arrives in, when it may write code at all, whether the thing is worth building in the first
-place, and going through your reminders with it.
+place, going through your reminders with it, and keeping a record of what it did and asked.
 
 - **[output-types](#output-types)** — label receipted facts, and only those, with the receipt
   that earns the label.
@@ -14,6 +14,9 @@ place, and going through your reminders with it.
   judgment and a single verdict, when you ask or on every new idea.
 - **[reminders-review](#reminders-review)** — go through your open Apple Reminders one at a
   time: the agent answers, confirms before acting, and closes each one only when you say yes.
+- **[ledger](#ledger)** — a durable, id'd record of a thread's work in one SQLite file, with
+  hooks that deny pushes and out-of-folder writes until a workload is open and send back a
+  reply that asks without a question row.
 
 output-types delivers text and does not read what the agent sends back; see its *delivers, does
 not enforce* note. i-have-audhd delivers its rules and checks every finished message, warning by
@@ -30,6 +33,7 @@ reminders-review is a skill only.
 /plugin install paired-coding@jo-wolff-plugins
 /plugin install ask-graham@jo-wolff-plugins
 /plugin install reminders-review@jo-wolff-plugins
+/plugin install ledger@jo-wolff-plugins
 ```
 
 On OMP, from a shell:
@@ -466,6 +470,32 @@ Needs macOS and [remindctl](https://github.com/openclaw/remindctl)
 (`brew install steipete/tap/remindctl`). Run `/reminders-review` with list names, or save
 defaults with `/reminders-review lists <name> ...`. Details are in
 `plugins/reminders-review/README.md`.
+
+## ledger
+
+A durable, id'd record of a thread's work in one SQLite file on your machine: workloads the agent
+opens and closes with a reason, questions it asks you with one-word answers, decisions it made
+without asking, and ceilings you set. Every row has an id you can type back (`approve q-…`),
+and a hook applies such lines before the agent reads the prompt. Other hooks inject the open
+items at session start, deny `git push`, `gh pr create` and writes outside the folder while no
+workload is open, send back once a reply that asks a question with no row or calls open work
+done, and park open work at session end. Every hook fails open.
+
+Needs Node 22.13 or later (`node:sqlite`). Claude Code only; no OMP adapter. One allow rule
+keeps the agent's ledger commands from prompting for permission; the plugin prints it at
+session start. Verbs, config keys, the fail-open table and the known gaps are in
+[`plugins/ledger/README.md`](plugins/ledger/README.md).
+
+### Install
+
+```
+/plugin marketplace add thewolff/jo-wolff-plugins
+/plugin install ledger@jo-wolff-plugins
+```
+
+### Developing ledger
+
+The tests run with `node --test` from inside `plugins/ledger/`.
 
 ## License
 
