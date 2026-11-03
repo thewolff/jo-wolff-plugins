@@ -96,17 +96,28 @@ export function forkParent(transcriptPath, { waitMs = 1000 } = {}) {
 }
 
 /**
+ * The one session entrypoint whose `sdk` prompts are trusted. Claude Desktop sends what its
+ * partner types in the app's composer through the SDK, so Claude Code marks those entries
+ * `promptSource: "sdk"`, `origin.kind: "human"` and `entrypoint: "claude-desktop"`. A programmatic
+ * `claude -p` or Agent SDK driver writes the same `sdk`/`human` pair but `entrypoint: "sdk-cli"`,
+ * so the entrypoint, read from the prompt's own entry, is what tells the two apart.
+ */
+const DESKTOP_ENTRYPOINT = "claude-desktop";
+
+/**
  * Where a submitted prompt came from, read from the transcript entry Claude Code writes for it.
  * UserPromptSubmit itself carries no source: it also fires for background-task notifications,
  * scheduled (cron) prompts, SDK/`-p` prompts, and messages absorbed into a running turn (those
  * reuse the running turn's prompt_id). Trusted only when exactly one `user` entry carries this
- * prompt_id, its text equals the prompt, and Claude Code marked it typed by a human. The entry
- * is written after UserPromptSubmit returns, so this runs from the next PreToolUse and waits
- * briefly for it. No such entry means untrusted, so a format change fails closed.
+ * prompt_id, its text equals the prompt, its `origin.kind` is `human`, and its `promptSource` is
+ * `typed`, or is `sdk` with that same entry's `entrypoint` `claude-desktop` (DESKTOP_ENTRYPOINT).
+ * The entry is written after UserPromptSubmit returns, so this runs from the next PreToolUse and
+ * waits briefly for it. No such entry, or a missing or other entrypoint on an `sdk` prompt,
+ * means untrusted, so a format change fails closed.
  * @param {string} transcriptPath
  * @param {string} promptId
  * @param {string} prompt
- * @returns {{ trusted: boolean, source: string, promptSource?: string, origin?: string }}
+ * @returns {{ trusted: boolean, source: string, promptSource?: string, origin?: string, entrypoint?: string }}
  */
 export function promptOrigin(transcriptPath, promptId, prompt, { waitMs = 2000 } = {}) {
   if (typeof transcriptPath !== "string" || typeof promptId !== "string" || promptId === "" || typeof prompt !== "string") {
@@ -130,8 +141,10 @@ export function promptOrigin(transcriptPath, promptId, prompt, { waitMs = 2000 }
       const entry = same[same.length - 1];
       const promptSource = typeof entry.promptSource === "string" ? entry.promptSource : "unknown";
       const origin = typeof entry.origin?.kind === "string" ? entry.origin.kind : "unknown";
-      const trusted = same.length === 1 && promptSource === "typed" && origin === "human";
-      return { trusted, source: trusted ? "interactive" : `claude:${promptSource}/${origin}`, promptSource, origin };
+      const entrypoint = typeof entry.entrypoint === "string" ? entry.entrypoint : "unknown";
+      const typed = promptSource === "typed" || (promptSource === "sdk" && entrypoint === DESKTOP_ENTRYPOINT);
+      const trusted = same.length === 1 && typed && origin === "human";
+      return { trusted, source: trusted ? "interactive" : `claude:${promptSource}/${origin}`, promptSource, origin, entrypoint };
     }
     // The running turn's own entry has different text: this message was absorbed mid-turn.
     if (otherText) return { trusted: false, source: "claude:mid-turn" };
@@ -210,7 +223,7 @@ export function resolvePending(dir, { waitMs = 2000 } = {}) {
         sessionDir: dir,
         text,
         source: o.source,
-        meta: { promptId: it?.promptId, promptSource: o.promptSource, origin: o.origin, submittedAt: it?.at },
+        meta: { promptId: it?.promptId, promptSource: o.promptSource, origin: o.origin, entrypoint: o.entrypoint, submittedAt: it?.at },
       });
       // A stop turn judged after pairing already ended (an earlier queued stop took it) gets no note.
       if (isStopPhrase(text) && r.active) notices.push(stopOutcome(r, dir));

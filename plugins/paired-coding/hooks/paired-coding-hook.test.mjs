@@ -48,13 +48,20 @@ async function call(f, tool, args, extra = {}) {
   return { ok: !r.isError, text: r.content[0].text };
 }
 
-/** As Claude Code does it: UserPromptSubmit runs first, the transcript entry is written after. */
-function typedPrompt(f, prompt, { promptSource = "typed", origin = { kind: "human" } } = {}) {
+/**
+ * As Claude Code does it: UserPromptSubmit runs first, the transcript entry is written after.
+ * `entrypoint` is left off the entry unless given, as the typed-prompt tests always did.
+ */
+function typedPrompt(f, prompt, { promptSource = "typed", origin = { kind: "human" }, entrypoint } = {}) {
   const id = `p-${++seq}`;
   const out = handle("user-prompt-submit", { ...f.common, prompt, prompt_id: id }, { env: f.env, waitMs: 100 });
-  appendFileSync(f.transcript, `${JSON.stringify({ type: "user", promptId: id, message: { role: "user", content: prompt }, promptSource, origin })}\n`);
+  appendFileSync(f.transcript, `${JSON.stringify({ type: "user", promptId: id, message: { role: "user", content: prompt }, promptSource, origin, entrypoint })}\n`);
   return out;
 }
+
+/** What Claude Desktop writes for a prompt its partner typed in the app, and what `claude -p` writes. */
+const DESKTOP = { promptSource: "sdk", origin: { kind: "human" }, entrypoint: "claude-desktop" };
+const SDK_CLI = { promptSource: "sdk", origin: { kind: "human" }, entrypoint: "sdk-cli" };
 
 test("before pair_start every event is a no-op and the state base is never created", () => {
   const f = fixture();
@@ -171,6 +178,39 @@ test("promptOrigin refuses a mid-turn message, a missing entry and a duplicated 
   assert.equal(promptOrigin(f.transcript, "nope", "x", { waitMs: 50 }).source, "claude:no-transcript-entry");
   appendFileSync(f.transcript, `${JSON.stringify({ type: "user", promptId: "turn", message: { content: "first" }, promptSource: "typed", origin: { kind: "human" } })}\n`);
   assert.equal(promptOrigin(f.transcript, "turn", "first").trusted, false);
+});
+
+/**
+ * Three real transcript entries (paths scrubbed, prompt text replaced with "agreed, go ahead"),
+ * one per line in fixtures/prompt-entries.jsonl: a prompt typed in the Claude Desktop app, a
+ * `claude -p` / Agent SDK prompt, and a prompt typed in the terminal CLI, from Claude Code
+ * 2.1.312 to 2.1.317.
+ */
+const REAL = readFileSync(join(dirname(fileURLToPath(import.meta.url)), "fixtures", "prompt-entries.jsonl"), "utf8").trim().split("\n").map((l) => JSON.parse(l));
+const realEntry = (entrypoint) => REAL.find((e) => e.entrypoint === entrypoint);
+
+test("promptOrigin on real entries: Desktop sdk/human and terminal typed are trusted; sdk-cli sdk/human and a missing entrypoint are refused", () => {
+  const f = fixture();
+  const judge = (entry) => {
+    appendFileSync(f.transcript, `${JSON.stringify(entry)}\n`);
+    const o = promptOrigin(f.transcript, entry.promptId, entry.message.content, { waitMs: 50 });
+    return [o.trusted, o.source, o.entrypoint];
+  };
+  const desktop = realEntry("claude-desktop");
+  assert.deepEqual([desktop.promptSource, desktop.origin.kind], ["sdk", "human"], "the fixture is the Desktop case");
+  assert.deepEqual(judge(desktop), [true, "interactive", "claude-desktop"]);
+  const sdkCli = realEntry("sdk-cli");
+  // The sdk-cli entry even claims clientPlatform desktop_app: only the entrypoint tells it apart.
+  assert.deepEqual([sdkCli.promptSource, sdkCli.origin.kind, sdkCli.clientPlatform], ["sdk", "human", "desktop_app"]);
+  assert.deepEqual(judge(sdkCli), [false, "claude:sdk/human", "sdk-cli"]);
+  assert.deepEqual(judge(realEntry("cli")), [true, "interactive", "cli"]);
+  const { entrypoint: _, ...noEntrypoint } = desktop;
+  assert.deepEqual(judge({ ...noEntrypoint, promptId: "no-entrypoint" }), [false, "claude:sdk/human", "unknown"]);
+  // Every other refusal still holds for a Desktop entry: not human, another entrypoint or source, a duplicate.
+  assert.deepEqual(judge({ ...desktop, promptId: "desktop-notification", origin: { kind: "task-notification" } }), [false, "claude:sdk/task-notification", "claude-desktop"]);
+  assert.deepEqual(judge({ ...desktop, promptId: "desktop-other", entrypoint: "claude-desktop-x" }), [false, "claude:sdk/human", "claude-desktop-x"]);
+  assert.deepEqual(judge({ ...desktop, promptId: "desktop-system", promptSource: "system" }), [false, "claude:system/human", "claude-desktop"]);
+  assert.equal(judge(desktop)[0], false, "a second entry with the same prompt id is refused");
 });
 
 /** A typed turn's transcript entry, as Claude Code writes it. */
@@ -301,6 +341,37 @@ test("a queued turn left unjudged is judged at the next UserPromptSubmit", { ski
   assert.match(ctxOf(typedPrompt(f, "next turn")), /pairing has ended/, "judged now, and reported on this turn");
   assert.equal(phaseOf(f, "s1"), "inactive");
   assert.equal(typedPrompt(f, "another"), null, "pairing already ended, so the turn is not queued");
+});
+
+test("in the Claude Desktop app a typed agreement opens the card and a typed pair stop ends pairing; the same words from claude -p do neither", { skip: !hasSandbox }, async () => {
+  const f = fixture();
+  await call(f, "pair_start", {});
+  assert.equal((await call(f, "pair_propose", { boundary: ["a.txt"] })).ok, true);
+  typedPrompt(f, "agreed, go ahead", SDK_CLI);
+  const refused = await call(f, "pair_begin", { cardId: "card-1", quote: "agreed, go ahead" });
+  assert.equal(refused.ok, false);
+  assert.match(refused.text, /has not typed a turn since the card was shown/);
+  typedPrompt(f, "agreed, go ahead", { ...DESKTOP, entrypoint: undefined });
+  assert.equal((await call(f, "pair_begin", { cardId: "card-1", quote: "agreed, go ahead" })).ok, false, "no entrypoint fails closed");
+  typedPrompt(f, "agreed, go ahead", DESKTOP);
+  const begun = await call(f, "pair_begin", { cardId: "card-1", quote: "agreed, go ahead" });
+  assert.equal(begun.ok, true, begun.text);
+  assert.equal((await call(f, "pair_done", { cardId: "card-1" })).ok, true);
+  typedPrompt(f, "pair stop", SDK_CLI);
+  assert.match(ctxOf(readCall(f)), /the "pair stop" turn was not accepted/);
+  assert.equal(phaseOf(f, "s1"), "closed");
+  typedPrompt(f, "pair stop", DESKTOP);
+  assert.match(ctxOf(readCall(f)), /pairing has ended: your partner typed pair stop and the gate wrote the pair-accepted receipt/);
+  assert.equal(phaseOf(f, "s1"), "inactive");
+  const journal = readFileSync(join(f.base, "s1", "journal.jsonl"), "utf8").trim().split("\n").map((l) => JSON.parse(l));
+  const inputs = journal.filter((e) => e.type === "input" || e.type === "untrusted-input").map((e) => [e.type, e.source ?? "interactive", e.entrypoint]);
+  assert.deepEqual(inputs, [
+    ["untrusted-input", "claude:sdk/human", "sdk-cli"],
+    ["untrusted-input", "claude:sdk/human", "unknown"],
+    ["input", "interactive", "claude-desktop"],
+    ["untrusted-input", "claude:sdk/human", "sdk-cli"],
+    ["input", "interactive", "claude-desktop"],
+  ]);
 });
 
 test("an injected 'pair stop' never ends pairing, and the agent is told it was not accepted; an older receipt is not this turn's", { skip: !hasSandbox }, async () => {

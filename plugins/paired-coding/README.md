@@ -362,16 +362,28 @@ checkpoints as well is caught only by the copy taken at stop.
 **What counts as typed.** On OMP, a turn is trusted when the `input` event carries
 `source: "interactive"`, which only the editor emits; text injected by an extension or sent over
 RPC is not. On Claude Code, the hook input carries no source, so the gate reads the transcript
-entry Claude Code writes for the prompt and trusts it only when its `promptSource` is `typed`,
-its `origin.kind` is `human`, and it is the only entry with that prompt id. Scheduled prompts,
-task notifications, `-p` and SDK prompts never count, and neither does anything you say through
-a slash command: its prompt carries no typed source, so agreement given that way is refused.
+entry Claude Code writes for the prompt and trusts it only when its `origin.kind` is `human`, it
+is the only entry with that prompt id, and its `promptSource` is `typed` (the terminal) or is
+`sdk` with `entrypoint` `claude-desktop` on that same entry (the Claude Desktop app, below).
+Scheduled prompts, task notifications, `-p` and other SDK prompts never count, and neither does
+anything you say through a slash command: its prompt carries no typed source, so agreement
+given that way is refused.
 Type it as a plain message. A message you type while a tool is running never counts either:
 Claude Code folds it into the running turn without an ordinary transcript entry, so retype it
 after the turn ends. If the agent quotes such a message to `pair_begin`, the refusal says so:
 "your partner's words arrived while a tool was running, so they don't count as agreement; ask
 them to say it again". Other untrusted text gets the ordinary quote refusal. The same rule
 decides whether a typed `pair stop` counts.
+
+**In the Claude Desktop app.** Desktop runs Claude Code through the SDK, so a prompt you type in
+the app is written with `promptSource` `sdk`, the same as a script calling `claude -p`. Both
+also carry `origin.kind` `human`, and a `-p` prompt can even carry `clientPlatform`
+`desktop_app`. What differs is the entry's `entrypoint`: `claude-desktop` for the app, `sdk-cli`
+for `claude -p` and Agent SDK drivers, `cli` for the terminal. So an `sdk` prompt counts only
+when its own transcript entry says `entrypoint` `claude-desktop`; `sdk-cli`, any other value, or
+no entrypoint at all is refused. This is the limit: the gate trusts what Claude Code records,
+and anything that drives the Desktop app itself, typing into its window or automating it, is
+recorded as a Desktop prompt and is trusted the same as you. Measured on Claude Code 2.1.317.
 
 **Trust waits briefly for the transcript.** Claude Code writes a prompt's transcript entry
 after the prompt is submitted, and usually after the next tool call has started: measured on
@@ -387,8 +399,8 @@ a slow write refuses agreement, it never grants it.
 typed prompts, queued prompts and accepted suggestions all as `user`, so it can serve only as a
 fast refusal for anything that is not `user`. It cannot replace the typed-prompt check.
 
-**Undocumented Claude Code fields, failing closed.** The transcript fields `promptSource` and
-`origin` are not documented by Claude Code, and neither is `_meta["claudecode/toolUseId"]`, the id
+**Undocumented Claude Code fields, failing closed.** The transcript fields `promptSource`,
+`origin` and `entrypoint` are not documented by Claude Code, and neither is `_meta["claudecode/toolUseId"]`, the id
 the MCP server uses to tie each `pair_*` call to the hook that checked it. If the transcript
 fields change, every turn reads as untrusted and no change set can open. If the id stops
 arriving, every `pair_*` call is refused. Neither change can open the gate. Measured on 2.1.287,
@@ -753,7 +765,7 @@ worktree, inside an excluded directory, or after the final snapshot is not detec
 
 ## Files
 
-Test files (`*.test.mjs`, beside each module) are left out.
+Test files (`*.test.mjs`, beside each module, and the transcript entries in `hooks/fixtures/`) are left out.
 
 The bundled MCP server is the Claude Code half of the `pair_*` tools. Claude Code runs it from
 `.mcp.json`, and each tool's checks run inside the server, on the arguments the call finally

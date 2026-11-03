@@ -1,6 +1,6 @@
 {
   "name": "paired-coding",
-  "version": "1.4.0",
+  "version": "1.4.1",
   "private": true,
   "omp": {
     "extensions": ["./omp/paired-coding-omp.ts"]
