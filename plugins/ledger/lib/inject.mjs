@@ -83,9 +83,12 @@ export function buildInjection(db, cwd, config, { source = "startup", now = Date
   return { text, sections };
 }
 
-function truncate(block, max) {
+/** `block` cut at a line break so that the result, marker included, is at most `max` characters. */
+export function truncate(block, max) {
   if (!block || block.length <= max) return block;
   if (max < 40) return "";
-  const cut = block.lastIndexOf("\n", max - 12);
-  return `${block.slice(0, cut > 0 ? cut : max - 12)}\n… (truncated)`;
+  const room = max - MARKER.length;
+  const cut = block.lastIndexOf("\n", room);
+  return `${block.slice(0, cut > 0 ? cut : room)}${MARKER}`;
 }
+const MARKER = "\n… (truncated)";

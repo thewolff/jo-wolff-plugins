@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { existsSync, readFileSync } from "node:fs";
 import { sandbox, hook, cli, openDb, apply, row } from "./helpers.mjs";
-import { buildInjection, CAP, allowRule, invocation, shellPath, cliPath } from "../lib/inject.mjs";
+import { buildInjection, CAP, allowRule, invocation, shellPath, cliPath, truncate } from "../lib/inject.mjs";
 import { loadConfig } from "../lib/config.mjs";
 
 const box = sandbox();
@@ -56,6 +56,17 @@ test("200 notes seeded with inject.notes 200 → injection under the cap, questi
   assert.ok(text.includes(q));
   assert.deepEqual(sections, ["questions", "notes", "summary"]);
   assert.match(text, /… \(truncated\)/);
+});
+
+test("truncate never exceeds its budget, marker included, whatever the line layout (the macOS CI case)", () => {
+  const block = Array.from({ length: 60 }, (_, i) => `line ${i} ${"y".repeat(i % 23)}`).join("\n");
+  for (let max = 40; max < block.length + 5; max++) {
+    const out = truncate(block, max);
+    assert.ok(out.length <= max, `max ${max} gave ${out.length}`);
+    if (out.length < block.length) assert.match(out, /\n… \(truncated\)$/);
+  }
+  assert.equal(truncate(block, 39), "");
+  assert.equal(truncate("", 100), "");
 });
 
 test("inject.notes 0 → no entries section even with notes recorded", () => {
