@@ -129,7 +129,7 @@ Every refusal names the exact command that lifts it.
 |---|---|---|
 | `forcing.denyPush` | a `git push` subcommand (the command is split on `&&`, `\|\|`, `;`, `\|`, newlines and `$( … )`; leading `VAR=value` and `git -C <dir>` are skipped) | `ledger: git push denied — no open workload for <cwd>. Run \`node …/ledger.mjs open "<what you are doing>"\` (or \`… open wl-…\` to resume), then retry.` |
 | `forcing.denyPrCreate` | a `gh pr create` subcommand | the same text for `gh pr create` |
-| `forcing.denyWritesOutsideCwd` | `file_path` (or `notebook_path`) resolves outside the hook cwd, symlinks resolved on both sides, a not-yet-existing path resolved through its nearest existing ancestor. Paths under the OS temp dir, `/tmp`, and the session's `scratchpad_dir` are exempt. | `ledger: write to <path> is outside <cwd> and no workload is open here. \`… open "<what you are doing>"\` lifts this.` |
+| `forcing.denyWritesOutsideCwd` | `file_path` (or `notebook_path`) resolves outside the hook cwd, symlinks resolved on both sides, a not-yet-existing path resolved through its nearest existing ancestor. Paths under the OS temp dir, `/tmp`, and the session's `scratchpad_dir` are exempt, unless the folder itself sits under that exempt dir (a checkout under `/tmp` keeps its siblings gated). | `ledger: write to <path> is outside <cwd> and no workload is open here. \`… open "<what you are doing>"\` lifts this.` |
 | `forcing.denyAskWithoutRow` | `AskUserQuestion` with no open `q-` row on the gate workload | `ledger: ask the question through the ledger first: \`… ask "<body>" --name <short> --options a,b --default a\`, then put the q-id in the question text.` |
 
 A halted workload is named in the reason: `halted by <de-…> (<reason>); \`… open wl-…\` lifts

@@ -133,12 +133,18 @@ function realish(p) {
 /**
  * True when a write to `filePath` lands outside `cwd` and outside the exempt scratch folders
  * (os.tmpdir(), /tmp, and the session's scratchpad directory; `tmpDirs` overrides the first two).
+ * An exempt folder that contains `cwd` itself is not exempt: when the project lives under /tmp
+ * (CI runners, throwaway checkouts), "anywhere in /tmp" would cover every sibling of the project.
  */
 export function writeIsOutside(filePath, cwd, { scratchpadDir = null, tmpDirs = [tmpdir(), "/tmp"] } = {}) {
   if (typeof filePath !== "string" || !filePath) return false;
   const target = realish(dirname(filePath));
-  if (isWithin(target, realish(cwd))) return false;
-  const exempt = [...tmpDirs, scratchpadDir].filter(Boolean).map(realish);
+  const root = realish(cwd);
+  if (isWithin(target, root)) return false;
+  const exempt = [...tmpDirs, scratchpadDir]
+    .filter(Boolean)
+    .map(realish)
+    .filter((e) => !isWithin(root, e));
   return !exempt.some((e) => isWithin(target, e));
 }
 

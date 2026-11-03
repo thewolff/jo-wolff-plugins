@@ -1,6 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { tmpdir } from "node:os";
+import { realpathSync } from "node:fs";
 import { join } from "node:path";
 import { sandbox, hook, cli, openDb, count } from "./helpers.mjs";
 import { subcommands, isPush, isPrCreate, writeIsOutside } from "../lib/gate.mjs";
@@ -52,7 +53,9 @@ test("step 7: Write to a sibling directory is denied; under cwd, under os.tmpdir
   allowed(hook(box, "pre-tool-use", write(join(box.work, "src", "a.ts"))));
   allowed(hook(box, "pre-tool-use", write(join(box.work, "a.ts"), "MultiEdit")));
   allowed(hook(box, "pre-tool-use", write(join(box.root, "tmp", "ledger-x", "a.txt"))));
-  allowed(hook(box, "pre-tool-use", write("/tmp/anything.txt")));
+  // /tmp is exempt unless the sandbox itself sits under it (Linux: os.tmpdir() is /tmp), when it covers every sibling and is not.
+  const underTmp = realpathSync(box.work).startsWith(`${realpathSync("/tmp")}/`);
+  (underTmp ? denied : allowed)(hook(box, "pre-tool-use", write("/tmp/anything.txt")), /outside/);
   allowed(hook(box, "pre-tool-use", { ...write(join(box.root, "scratch", "s.md")), scratchpad_dir: join(box.root, "scratch") }));
   allowed(hook(box, "pre-tool-use", { ...write(undefined), tool_input: {} }));
 });
@@ -115,6 +118,10 @@ test("writeIsOutside compares realpaths and the nearest existing ancestor", () =
   assert.equal(writeIsOutside(join(box.sibling, "f.txt"), box.work, { tmpDirs }), true);
   assert.equal(writeIsOutside(join(box.root, "f.txt"), box.work, { tmpDirs }), true);
   assert.equal(writeIsOutside(join(box.root, "tmp", "f.txt"), box.work, { tmpDirs }), false);
-  assert.equal(writeIsOutside(join(tmpdir(), "f.txt"), box.work), false);
+  // The sandbox itself lives under os.tmpdir(), so for this cwd the default temp exemption does not apply:
+  // an exempt folder that contains the cwd is not exempt (a project checked out under /tmp).
+  assert.equal(writeIsOutside(join(tmpdir(), "f.txt"), box.work), true);
+  assert.equal(writeIsOutside(join(box.root, "elsewhere", "f.txt"), box.work, { tmpDirs: [box.root] }), true);
+  assert.equal(writeIsOutside(join(box.root, "elsewhere", "f.txt"), box.work, { tmpDirs: [join(box.root, "elsewhere")] }), false);
   assert.equal(writeIsOutside("relative/f.txt", box.work, { tmpDirs }), writeIsOutside(join(process.cwd(), "relative", "f.txt"), box.work, { tmpDirs }));
 });
