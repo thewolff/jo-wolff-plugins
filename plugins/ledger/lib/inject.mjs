@@ -45,7 +45,7 @@ export function verbSummary() {
   return [
     `ledger: questions to the human and decisions made without asking are recorded with the \`ledger\` CLI. Always run it exactly as \`${invocation()} <verb> …\` (that literal path, no alias, no shell variable, no cd) so the one allow rule \`${allowRule()}\` matches and Claude Code never asks about it.`,
     "Verbs: ask \"<body>\" --name <short> --options a,b --default a · <word> <q-id> · approve/deny <q-id> · withdraw <q-id> · extend <q-id> · note \"<text>\" · pending · log [N] · help.",
-    "Ask through `ledger ask` and end the message with its `pending` line; record a choice made without asking with `note`. `ledger help` has the grammar.",
+    "Ask through `ledger ask` and end the message with its `pending` line; record a choice made without asking with `note`, in the same turn you state it. `git push` and `gh pr create` need one `note` in this session first. `ledger help` has the grammar.",
   ].join("\n");
 }
 

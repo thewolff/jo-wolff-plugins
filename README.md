@@ -477,8 +477,9 @@ A durable, id'd record of the questions an agent asks you (one-word answers, an 
 ceiling) and the notes it records when it decides without asking, in one SQLite file on your
 machine. Every row has an id you can type back (`approve q-…`), and a hook applies such lines
 before the agent reads the prompt. Other hooks inject the open questions and recent notes at
-session start, deny the AskUserQuestion tool until the question has a row, and send back once a
-reply that asks a question without naming its row. Every hook fails open.
+session start, deny the AskUserQuestion tool until the question has a row, deny `git push` and
+`gh pr create` until the session has a note saying why, and send back once a reply that asks a
+question without naming its row or states a decision without a note. Every hook fails open.
 
 The hooks are off until you run `ledger enable` in a folder, which writes `.ledger.json` there;
 the file is found from any subfolder. The plugin's tables are all prefixed `cc_`, so the database

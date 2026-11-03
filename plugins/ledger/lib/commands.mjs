@@ -45,6 +45,22 @@ export function openQuestions(db, cwd) {
   return rows.filter((q) => isWithin(cwd, q.cwd)).map(parseQuestion);
 }
 
+/**
+ * The `note` rows that belong to session `sessionId`, oldest first: rows tagged with it, plus
+ * untagged rows (a CLI run without LEDGER_SESSION_ID) in or around `cwd` made at or after the
+ * session row's started_at. `after` keeps only notes made after that ISO stamp (this turn).
+ * No session id → nothing can be attributed, so [].
+ */
+export function sessionNotes(db, { sessionId, cwd, after = null }) {
+  if (!sessionId) return [];
+  const session = db.prepare("SELECT started_at FROM cc_sessions WHERE id = ?").get(sessionId);
+  const since = session?.started_at ?? null;
+  const rows = db
+    .prepare("SELECT id, cwd, made_at, session_id FROM cc_notes WHERE kind = 'note' AND (session_id = ? OR (session_id IS NULL AND ? IS NOT NULL AND made_at >= ?)) ORDER BY made_at ASC, id ASC")
+    .all(sessionId, since, since ?? "");
+  return rows.filter((r) => (r.session_id === sessionId || isWithin(cwd, r.cwd) || isWithin(r.cwd, cwd)) && (!after || r.made_at > after));
+}
+
 function parseQuestion(q) {
   if (!q) return null;
   return { ...q, options: JSON.parse(q.options), allows: q.allows ? JSON.parse(q.allows) : null };

@@ -39,9 +39,17 @@ the human for permission. `… help` prints the whole grammar.
    Do not use the AskUserQuestion tool without an open `q-` row; the hook denies it and the
    human cannot find the question later.
 
-2. **When you decide something without asking: `note`.**
+2. **When you decide something without asking: `note`, in the same turn.**
    `… note "<what you chose and why, one line>"` prints an `nt-` id. The last few entries are
-   injected at the next session start, so a future thread knows what was settled.
+   injected at the next session start, so a future thread knows what was settled. The Stop hook
+   sends back, once, a reply that states a decision ("I decided", "going with", "instead of",
+   "assuming", "chose", "trade-off" and the rest of the configured list) when no note was
+   recorded during that turn: record the note first, then say it.
+
+3. **Before `git push` or `gh pr create`: one `note` in this session.**
+   The PreToolUse hook denies both until the session holds a note; make it say what is being
+   pushed and why (`… note "pushing the retry fix to open PR; CI must run it"`). One note per
+   session lifts the gate for the rest of the session.
 
 There is no "open" or "close": the folder you are in is the unit of work, and questions and
 notes bind to it (a question asked in the repo root is open for its subfolders too).
