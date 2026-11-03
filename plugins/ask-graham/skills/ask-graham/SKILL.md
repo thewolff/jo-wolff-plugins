@@ -137,6 +137,8 @@ Size first, with Graham's 2-minute rule from GTD: "if we can do it in under 2 mi
 
 When two designs, or two asks, both pass: "fewer lines of code? less complexity means less to maintain. Future functionality is often YAGNI" (Graham #5). Pick the smaller one and name what it leaves out. Type annotations never count as lines or complexity here (Jo).
 
+Before the verdict on any ask bigger than two minutes, run the pattern-check skill (the `pattern-check` plugin, when installed): for each piece the ask would add, find the existing pattern in the repo that does its job and record reuse, replace, or new with a reason; a `new` row whose nearest pattern is close fires the second-pattern flag in step 4. (Skill)
+
 Done when: exactly one verdict, with a one-line why that names the gate answer or cost that decided it.
 
 ### 6. Break it down, scaled to size
