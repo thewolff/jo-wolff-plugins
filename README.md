@@ -27,6 +27,7 @@ it, keeping a record of what it did and asked, and a vendored set of engineering
   state declaration, and a skill with its "When this can't run" section, scaffolded by
   `/plugin-kit:new-plugin`; `ledger gate check` passes on it, the `evals` row excepted, before
   the first rule is written, and that row fails naming the stubs until they are filled.
+  Changes in plugin-kit 0.3.0: `lib/judge.mjs`, the shared judge dispatch every judging plugin vendors byte for byte (a sameness test diffs the copies), configured once with `node lib/judge.mjs setup`; `--judge` on the scaffolder.
   Changes in plugin-kit 0.2.2: the scaffold writes a `CHANGELOG.md` (Keep a Changelog, with the
   0.1.0 entry) beside the README's `## Changes in 0.1.0`, and the `release-gate` checklist's
   version-match step wants the three things ledger 0.3.6's `docs` row wants: the CHANGELOG

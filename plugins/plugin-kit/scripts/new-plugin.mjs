@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // scripts/new-plugin.mjs — scaffold a plugin that meets the repository test bar on day one.
 //
-//   node scripts/new-plugin.mjs <name> --events PreToolUse,Stop[,…] [--description "…"] [--dest <plugins dir>]
+//   node scripts/new-plugin.mjs <name> --events PreToolUse,Stop[,…] [--description "…"] [--dest <plugins dir>] [--judge]
 //   (run it from inside the repository the plugin is for)
 //
 // Writes <dest>/<name>/ from templates/ (default dest: the `plugins/` of the git repository the
@@ -14,6 +14,8 @@
 //   package.json, README.md (with its `## Changes in 0.1.0`), CHANGELOG.md (Keep a Changelog, a 0.1.0 entry), HOW-IT-FAILS.md
 //   lib/hook-runner.mjs            a COPY of plugin-kit/lib/hook-runner.mjs (the plugin owns it)
 //   lib/live-run.mjs               a COPY of plugin-kit/lib/live-run.mjs (the scenario runner)
+//   lib/judge.mjs                  with --judge: a COPY of plugin-kit/lib/judge.mjs (the shared judge
+//                                  dispatch; the kit's test/judge.test.mjs diffs every shipped copy)
 //   hooks/hooks.json               one entry per event, `node "${CLAUDE_PLUGIN_ROOT}/hooks/<event>.mjs"`, timeout 5
 //   hooks/<event>.mjs              one handler per event, returning null (allow) until a rule is written
 //   skills/<name>/SKILL.md         with the "When this can't run" section, naming a scenario file
@@ -81,15 +83,16 @@ export function sampleInput(event) {
 
 export function parseArgs(argv, { cwd = process.cwd() } = {}) {
   const [name, ...rest] = argv;
-  const out = { name, events: [], description: "", dest: null };
+  const out = { name, events: [], description: "", dest: null, judge: false };
   for (let i = 0; i < rest.length; i++) {
     const t = rest[i];
     if (t === "--events" && rest[i + 1]) out.events = rest[++i].split(",").map((s) => s.trim()).filter(Boolean);
     else if (t === "--description" && rest[i + 1]) out.description = rest[++i];
     else if (t === "--dest" && rest[i + 1]) out.dest = rest[++i];
+    else if (t === "--judge") out.judge = true;
     else return { error: `unknown argument ${t}` };
   }
-  if (!name || name.startsWith("--")) return { error: "usage: new-plugin.mjs <name> --events A,B [--description …] [--dest <plugins dir>]" };
+  if (!name || name.startsWith("--")) return { error: "usage: new-plugin.mjs <name> --events A,B [--description …] [--dest <plugins dir>] [--judge]" };
   if (!NAME_RE.test(name)) return { error: `name must be lowercase kebab (a-z, 0-9, hyphens between words), not ${JSON.stringify(name)}` };
   if (!out.events.length) return { error: "--events names at least one hook event" };
   const unknown = out.events.filter((e) => !EVENTS[e]);
@@ -106,7 +109,7 @@ export function parseArgs(argv, { cwd = process.cwd() } = {}) {
 const fill = (text, vars) => text.replace(/\{\{(\w+)\}\}/g, (m, k) => (k in vars ? String(vars[k]) : m));
 
 /** Scaffold. Returns the written paths (relative to the plugin). Throws with the reason. */
-export function scaffold({ name, events, description, dest }) {
+export function scaffold({ name, events, description, dest, judge = false }) {
   const root = join(dest, name);
   if (existsSync(root)) throw new Error(`${root} exists; nothing was written`);
   const vars = { name, title: title(name), description: description.replace(/"/g, '\\"') };
@@ -129,6 +132,10 @@ export function scaffold({ name, events, description, dest }) {
   for (const lib of ["hook-runner.mjs", "live-run.mjs"]) {
     cpSync(join(KIT_ROOT, "lib", lib), join(root, "lib", lib));
     written.push(`lib/${lib}`);
+  }
+  if (judge) {
+    cpSync(join(KIT_ROOT, "lib", "judge.mjs"), join(root, "lib", "judge.mjs"));
+    written.push("lib/judge.mjs");
   }
   const hooks = {};
   for (const event of events) {
