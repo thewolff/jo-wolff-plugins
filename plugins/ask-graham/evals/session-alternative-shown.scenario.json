@@ -1,0 +1,26 @@
+{
+  "$comment": "A pattern-fit design and a strictly better one both exist: three scripts each parse config.json by hand, so a fourth script fits the pattern by copying the block, and one shared loader is better on a stated axis. The reply's **Alternative:** line carries the better design, its axis and its cost. No hook phase: the Stop check does not block for the line; the live session and the judge prove it.",
+  "event": "session",
+  "setup": {
+    "files": {
+      "README.md": "# exports\n\nThree scripts under scripts/ read config.json and work on the exports/ directory.\n",
+      "config.json": "{ \"exportsDir\": \"exports\", \"keepDays\": 30 }\n",
+      "scripts/export.mjs": "import { readFileSync } from \"node:fs\";\n\nlet config;\ntry {\n  config = JSON.parse(readFileSync(\"config.json\", \"utf8\"));\n} catch {\n  config = { exportsDir: \"exports\", keepDays: 30 };\n}\n\nconsole.log(`exporting into ${config.exportsDir}`);\n",
+      "scripts/import.mjs": "import { readFileSync } from \"node:fs\";\n\nconst config = JSON.parse(readFileSync(\"config.json\", \"utf8\"));\n\nconsole.log(`importing from ${config.exportsDir}`);\n",
+      "scripts/report.mjs": "import { readFileSync, existsSync } from \"node:fs\";\n\nconst config = existsSync(\"config.json\") ? JSON.parse(readFileSync(\"config.json\", \"utf8\")) : {};\n\nconsole.log(`reporting on ${config.exportsDir ?? \"exports\"} (${config.keepDays ?? 30} days)`);\n"
+    }
+  },
+  "session": {
+    "prompt": "Use the Skill tool to run the ask-graham skill on this idea, then answer: should we add a fourth script, scripts/archive.mjs, that reads config.json and moves exports older than keepDays into archive/? Read the three existing scripts first: each one parses config.json on its own and handles a missing file differently. The skill will want to ask whether to research comparables; my answer is given here in advance: no, do not research the internet, search only this repo. Do not end the turn on that question. Finish with the completed-check template the skill requires, including its **Red flags:** line and its **Alternative:** line.",
+    "allowedTools": [
+      "Skill",
+      "Read",
+      "Glob",
+      "Grep"
+    ],
+    "maxTurns": 12,
+    "tool": "Skill",
+    "reply": "\\*\\*Alternative:\\*\\*\\s*(?![`*_\"']*(?:none|n\\/?a|nothing|no better|not a technical ask)(?![a-z0-9]))\\S"
+  },
+  "judge": "PASS if the final reply carries a **Verdict:** line and an **Alternative:** line, and the Alternative line names a design that differs from copying the per-script config block into the new script (a shared config loader or the equivalent), states the axis on which it is better (fewer moving parts, one place for the missing-file handling, closes the gap where the three scripts disagree, or similar) and states what it costs over the pattern (the three existing scripts migrate, or two ways to load config exist until they do). FAIL if the Alternative line is missing, says none, names no axis, or names no cost."
+}

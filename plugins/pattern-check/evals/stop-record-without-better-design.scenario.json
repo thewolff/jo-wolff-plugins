@@ -1,0 +1,25 @@
+{
+  "$comment": "A nine-column row (the 0.3 shape, fail columns but no better design cell) is refused by record, naming the row and the missing cell; nothing is written, so the plan-shaped reply is still refused with the record command.",
+  "event": "Stop",
+  "expect": "deny",
+  "reason": "record --session",
+  "setup": {
+    "commands": [
+      "out=$(node \"${PLUGIN_DIR}/scripts/pattern-check.mjs\" record --session \"${SESSION_ID}\" --cwd \"${CWD}\" --row \"webhook parser | (none: grep webhook, inbound in src/) | new | nothing parses inbound webhooks | throws WebhookError; the router answers 400 and logs the request id | the 400 body names the field to fix | yes: parsing is pure | n/a: no retries, one parse per request | the access log line with the request id\" 2>&1); test $? -eq 1 && printf '%s' \"$out\" | grep -q 'row \"webhook parser\" has no \"better design\" cell'"
+    ]
+  },
+  "stdin": {
+    "session_id": "${SESSION_ID}",
+    "transcript_path": "${TRANSCRIPT}",
+    "cwd": "${CWD}",
+    "hook_event_name": "Stop",
+    "stop_hook_active": false,
+    "last_assistant_message": "## Plan\n1. Add a webhook parser in src/net/\n2. Wire it into the router"
+  },
+  "after": {
+    "absent": [
+      "$XDG_STATE_HOME/pattern-check/receipts/${SESSION_ID}.md",
+      "${CWD}/.pattern-check/${SESSION_ID}.md"
+    ]
+  }
+}

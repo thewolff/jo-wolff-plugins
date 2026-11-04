@@ -1,0 +1,27 @@
+{
+  "$comment": "Sibling of stop-plan-without-receipt: a ten-column row whose better design cell says none records, so the same plan-shaped reply passes and the receipt copy exists.",
+  "event": "Stop",
+  "expect": "silent",
+  "sibling": "stop-plan-without-receipt.scenario.json",
+  "setup": {
+    "commands": [
+      "node \"${PLUGIN_DIR}/scripts/pattern-check.mjs\" record --session \"${SESSION_ID}\" --cwd \"${CWD}\" --row \"webhook parser | (none: grep webhook, inbound in src/) | new | nothing parses inbound webhooks | none: weighed one inbound module for parse and verify, more than one route needs | throws WebhookError; the router answers 400 and logs the request id | the 400 body names the field to fix | yes: parsing is pure | n/a: no retries, one parse per request | the access log line with the request id\""
+    ]
+  },
+  "stdin": {
+    "session_id": "${SESSION_ID}",
+    "transcript_path": "${TRANSCRIPT}",
+    "cwd": "${CWD}",
+    "hook_event_name": "Stop",
+    "stop_hook_active": false,
+    "last_assistant_message": "## Plan\n1. Add a webhook parser in src/net/\n2. Wire it into the router"
+  },
+  "after": {
+    "exists": [
+      "$XDG_STATE_HOME/pattern-check/receipts/${SESSION_ID}.md"
+    ],
+    "commands": [
+      "grep -q '| none: weighed one inbound module for parse and verify, more than one route needs |' \"${XDG_STATE_HOME}/pattern-check/receipts/${SESSION_ID}.md\""
+    ]
+  }
+}
