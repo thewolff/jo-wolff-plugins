@@ -7,7 +7,8 @@
     "Stop": ["deny", "silent"]
   },
   "manual": [
-    "That Claude Code sends `token_count` and `compaction_target` on PreCompact with the meaning the calibration assumes (tokens in the window, the auto-compaction threshold): read one real `calibration.ndjson` line after a compaction and compare it with the session's /context figure.",
+    "That the context-pressure estimate (transcript bytes since the last compaction marker, divided by 4) is near the real context on Claude Code: when the warning fires, run /context in the same session and compare its token figure with the percentage the warning gave of `contextTokens`. Measured on the machine this was written on, transcript files ran about 8 to 9.5 bytes per context token, so expect the estimate to read high.",
+    "That Claude Code writes a `compact_boundary` line into the same transcript after a compaction, so the estimate restarts from it: compact a session, then check the transcript for the marker. No transcript on the machine this was written on had one.",
     "That the restored snapshot arrives in the model's context after a real auto-compaction: run a session past the threshold and ask it, after the compaction, what branch it was on."
   ]
 }

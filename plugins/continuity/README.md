@@ -9,10 +9,11 @@ Keep a long session's state across compaction. Four hooks and one skill:
   removes it, and on every start says when the save last succeeded on this machine, or that it
   never has. A save that silently stopped working is the failure this line exists to end.
 - **`hooks/user-prompt-submit.mjs`** (UserPromptSubmit) says the liveness line once when
-  SessionStart did not, and asks once for a handoff when the transcript is near the compaction
-  target.
-- **`hooks/stop.mjs`** (Stop) blocks one stop per session at the same threshold, so the model
-  has a turn to write the handoff while it still holds the context the handoff needs.
+  SessionStart did not, and asks once for a handoff when the session's estimated context is near
+  full. On Claude Code that estimate is the transcript's size, not a token count; see below.
+- **`hooks/stop.mjs`** (Stop) blocks one stop per session at the same threshold, unless this
+  session already wrote a handoff, so the model has a turn to write one while it still holds the
+  context the handoff needs.
 - **`skills/handoff/SKILL.md`** (`/continuity:handoff`) writes the judgment layer no hook can
   derive, what was in progress, the next move, what was ruled out, what is still uncertain, to
   `<repo>/.ai/handoffs/`, and says how to resume from one: restate its content before continuing.
@@ -49,9 +50,17 @@ tree was the bug the caps answer. A payload with no transcript and none of the h
 a reconstruction section instead (recent commits, unpushed commits) that says it is one.
 
 Each invocation also appends two heartbeat records (`started`, then `ok` or `failed:<code>`) to
-`heartbeat.ndjson`, and when the payload carries `token_count`, one `{bytes, tokens, target}`
-line to `calibration.ndjson`, the ratio the pressure check converts transcript size into tokens
-with. Both files are trimmed to 200 lines on write and kept by retention.
+`heartbeat.ndjson`. When the payload carries a real `token_count` (a host adapter that passes
+one; Claude Code's PreCompact payload does not), it also appends one `{bytes, tokens}` line to
+`calibration.ndjson`, which sharpens the pressure estimate below. Both files, and `errors.log`,
+are trimmed to their newest 200 lines on write by a rename-swap (the new content goes to a temp
+file that is renamed over the old), so a reader never sees a half-written file.
+
+Every git call the save makes (branch, status, the two handoff-root lookups, and the commit
+lists of a reconstruction) runs at once inside one 2-second budget; the root lookups are also
+capped at 500 ms each. A call still running when the budget ends is killed and its field is
+saved as `(unknown: timed out)`, and the snapshot is written anyway. A `git status` that failed
+or timed out renders as `(unknown: …)`, never as `(clean)`.
 
 Auto-compaction with no handoff written and no host-supplied judgment puts one `systemMessage`
 in front of the person: the judgment layer was not captured. PreCompact cannot inject context
@@ -68,33 +77,56 @@ characters is cut at that length, says so with the file's path, and is kept; one
 day is ignored and left for prune. A restore that refills the window the compaction just cleared
 is worse than none.
 
-On every SessionStart, `lib/liveness.mjs` reads the heartbeat and adds one of three texts:
+On every SessionStart, `lib/liveness.mjs` reads the heartbeat and adds one of four texts. The
+newest save's result decides which, not the newest success:
 
 - `continuity, pre-compaction save liveness: last successful save N minutes ago (<ISO>); the
-  snapshot path is alive.` — the healthy case, one line.
+  snapshot path is alive.`: the newest save succeeded. One line.
+- `**the last save failed** N minutes ago (<outcome>, <ISO>); the last success was M hours ago
+  (<ISO>).`: the save worked once and has broken since.
 - `**no pre-compaction save has ever been recorded on this machine.**` with the heartbeat path:
   the file is absent or empty, which is what a hook that never runs looks like from outside.
-- `**no pre-compaction save has ever succeeded on this machine.**` with the invocation count and
-  the last outcome (`failed:EACCES`, say): the hook runs and cannot write.
+- `**no pre-compaction save has ever succeeded on this machine.**` with the number of times the
+  hook was invoked (invocations, not heartbeat records) and the last outcome (`failed:EACCES`,
+  say): the hook runs and cannot write.
+
+After a compaction with no snapshot to restore, the start also says **this compaction's state
+was not restored** and what the heartbeat recorded for this session's save (`failed:EACCES`, a
+save that started and never finished, or none at all), so the model does not assume a restore it
+never got.
 
 The line is marked said in `sessions/<session_id>.json`, so the prompt hook does not repeat it.
 
 ### The context-pressure check (`hooks/user-prompt-submit.mjs`, `hooks/stop.mjs`)
 
-PreCompact is the only event that carries `token_count`, and it fires at the cliff. So
-`lib/pressure.mjs` estimates instead: `statSync(transcript_path).size` times the median
-tokens-per-byte ratio in `calibration.ndjson`, against the newest `compaction_target` recorded
-there. At or past `threshold` × target (default 0.65), the prompt hook adds, once per session:
+**On Claude Code this is a size estimate, not a token count.** Claude Code's PreCompact payload
+carries no `token_count` and no hook sees one before compaction, so `lib/pressure.mjs` measures
+the transcript file instead: its bytes since the last compaction marker (a line with
+`"subtype":"compact_boundary"`), or the whole file when it has none, divided by
+`BYTES_PER_TOKEN_ESTIMATE` (4). No transcript on the machine this was written on had such a
+marker, so expect the estimate to count the whole file, including what came before an earlier
+compaction. A transcript line is JSON around the text, so the estimate tends to read high: the
+warning comes early, not late. The answer is compared against `contextTokens` (default 200,000).
 
-> continuity: this session is roughly N% of the way to auto-compaction. Before it ends, run
-> `/continuity:handoff` to write the judgment layer to `.ai/handoffs/` in the repository …
-> If there is genuinely nothing in flight worth passing on … say so in one line and stop.
+An OMP or other host adapter that passes a real `token_count` at PreCompact gets the calibrated
+number instead: each such compaction records `{bytes, tokens}` in `calibration.ndjson`, and once
+any record exists the median tokens-per-byte ratio replaces the constant. The warning says which
+basis it used.
+
+At or past `threshold` × `contextTokens` (default 0.65 × 200,000), the prompt hook adds, once per
+session:
+
+> continuity: this session's context is roughly N% full (estimated from the transcript's size,
+> not counted). Before it ends, run `/continuity:handoff` to write the judgment layer to
+> `.ai/handoffs/` in the repository … If there is genuinely nothing in flight worth passing on …
+> say so in one line and stop.
 
 and the Stop hook returns `{ decision: "block", reason: <the same text> }` once per session, so
-the model gets one more turn to write the handoff. A stop with `stop_hook_active: true` is never
-blocked; the once-mark is written before the block is given, and a mark that cannot be written
-means no block, so the person can always end the session. A machine that has never compacted has
-no ratio and hears nothing: a fabricated estimate would produce warnings to learn to dismiss.
+the model gets one more turn to write the handoff. It does not block when an open handoff whose
+`session_id` is this session's is already in `.ai/handoffs/`: the turn it would ask for has
+happened. A stop with `stop_hook_active: true` is never blocked; the once-mark is written before
+the block is given, and a mark that cannot be written means no block, so the person can always
+end the session.
 
 ### The handoff skill (`skills/handoff/SKILL.md`)
 
@@ -114,18 +146,20 @@ name, before continuing: resuming a session is structurally a standup.
 `${XDG_CONFIG_HOME:-~/.config}/continuity/config.json`, read by every hook (`lib/config.mjs`):
 
 ```json
-{ "threshold": 0.65, "pressure": "on", "liveness": "on", "snapshot": "on" }
+{ "threshold": 0.65, "contextTokens": 200000, "pressure": "on", "liveness": "on", "snapshot": "on" }
 ```
 
 | Key | Default | Meaning |
 |---|---|---|
-| `threshold` | `0.65` (the newdle hook's) | the fraction of the compaction target at which the pressure check speaks; a number strictly between 0 and 1 |
+| `threshold` | `0.65` (the newdle hook's) | the fraction of `contextTokens` at which the pressure check speaks; a JSON number strictly between 0 and 1 (a string or an array is a problem, not a number) |
+| `contextTokens` | `200000` | the context size the estimate is compared against; a positive whole number |
 | `pressure` | `"on"` | `"off"` silences the prompt warning and the Stop block |
 | `liveness` | `"on"` | `"off"` silences the liveness line |
 | `snapshot` | `"on"` | `"off"` skips the PreCompact save (the heartbeat records `skipped:off`) and the restore |
 
 A missing file is the defaults. A file that does not parse, or a value of the wrong shape, is
-the defaults for that value, and the hook names the file and the problem once per session.
+the defaults for that value, and the hooks name the file and the problem once per session (one
+once-mark shared by every hook).
 
 ## State
 
@@ -135,8 +169,8 @@ Declared in `.claude-plugin/plugin.json`:
 |---|---|---|
 | `${XDG_STATE_HOME:-~/.local/state}/continuity/<session_id>.json` | the snapshot; consumed by the restore | `scripts/prune.mjs --days 30` |
 | `…/continuity/sessions/<session_id>.json` | the once-marks (`livenessSaid`, `promptWarned`, `stopBlocked`, `configNoted`) | same |
-| `…/continuity/heartbeat.ndjson`, `calibration.ndjson` | the save's liveness log; the tokens-per-byte observations | kept; trimmed to 200 lines on write |
-| `…/continuity/errors.log` | the hook runner's fault log | kept |
+| `…/continuity/heartbeat.ndjson`, `calibration.ndjson` | the save's liveness log; the tokens-per-byte observations (only from a host that passes `token_count`) | kept; trimmed to 200 lines on write |
+| `…/continuity/errors.log` | the hook runner's fault log | kept; the hooks' own lines trim it to 200 |
 | `${XDG_CONFIG_HOME:-~/.config}/continuity/config.json` | yours | never |
 | `<repo>/.ai/handoffs/*.md` | written by the skill, in the repository, gitignored | not by this plugin; the reader ignores files older than 7 days |
 
@@ -154,10 +188,10 @@ happens; a fault is one line in `${XDG_STATE_HOME:-~/.local/state}/continuity/er
 |---|---|---|
 | any hook | stdin not JSON, a throw, no answer in 4 s | runner logs one line, allows; never a block |
 | `hooks/pre-compact.mjs` | the snapshot cannot be written | heartbeat `failed:<code>`, a `systemMessage` naming the path; compaction proceeds |
-| `hooks/pre-compact.mjs` | git slow or absent, transcript unreadable | each git call has an 800 ms timeout; the file names each absent section |
+| `hooks/pre-compact.mjs` | git slow or absent, transcript unreadable | every git call shares one 2 s budget; a field git did not answer is `(unknown: timed out)` or `(unknown: … failed)`, and the snapshot is still written |
 | `hooks/session-start.mjs` | no snapshot, a stale one, one that does not parse | nothing restored; the liveness line alone |
 | `hooks/session-start.mjs` | heartbeat absent or never `ok` | the liveness line says so, in bold; never reads as healthy |
-| `hooks/user-prompt-submit.mjs`, `hooks/stop.mjs` | no calibration, no `transcript_path`, unmeasurable transcript | silent (cold start is not a warning) |
+| `hooks/user-prompt-submit.mjs`, `hooks/stop.mjs` | no `transcript_path`, unmeasurable transcript | silent; an estimate that reads high warns early, and the warning says it is an estimate |
 | `hooks/stop.mjs` | the once-mark cannot be written | no block |
 | `lib/config.mjs` | config missing, malformed, wrong-typed | defaults; the problem named once per session |
 | `skills/handoff` | `.ai/handoffs/` unwritable, no git, no command | the five sections go in the reply; the skill's "When this can't run" section |
@@ -170,6 +204,13 @@ outcomes and the twelve `evals/*.scenario.json` prove them: `evals/pre-compact-a
 is the save with its `systemMessage`, `evals/session-start-restore.scenario.json` the restore,
 `evals/stop-blocks-near-full.scenario.json` the block and `evals/stop-once-per-session.scenario.json`
 its once-rule (`bash e2e/live-run.sh --no-live` replays them offline). Run `node --test` from inside `plugins/continuity/`.
+
+### When this can't run
+
+- On a host other than Claude Code. Continuity is Claude Code only in 0.1.0: its hooks read
+  Claude Code's payloads and transcript. OMP seats keep newdle's save until an OMP adapter ships.
+- Without Node 22.13 or later on the hooks' PATH: no hook runs, and the liveness line never
+  appears, which is itself the sign.
 
 ## Ported from newdle 0.2.175
 
@@ -190,6 +231,20 @@ The strings `shipyard`, `linear`, `.projects`, `newdle-hooks`, `/Users/<name>/` 
 appear in nothing the plugin runs or loads; `test/port.test.mjs` scans every file except this
 one, `CHANGELOG.md` and itself.
 
-## Changes
+## Changes in 0.1.0
 
-See [CHANGELOG.md](CHANGELOG.md).
+First release, ported from newdle 0.2.175. What changed after the first review, before release:
+
+- The pressure warning and the Stop block work on Claude Code, which never sends a token count:
+  the estimate is the transcript's size / 4 against `contextTokens` (new, default 200,000), with
+  calibration used only when a host has sent a real `token_count`.
+- The Stop block does not fire when this session already wrote a handoff.
+- PreCompact's git calls share one 2 s budget; a field git did not answer is saved as unknown,
+  and an unanswered `git status` is never shown as a clean tree.
+- The liveness line reports the newest save's result, so a save that broke after one success
+  says so; a restore that found nothing says why.
+- `threshold` must be a JSON number; a config problem is named once per session.
+- `errors.log`, `heartbeat.ndjson` and `calibration.ndjson` are trimmed by a rename-swap.
+- `scripts/prune.mjs` runs from a path with a space or through a symlink.
+
+The full record is [CHANGELOG.md](CHANGELOG.md).
