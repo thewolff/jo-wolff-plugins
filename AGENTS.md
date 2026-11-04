@@ -16,7 +16,11 @@ Ledger 0.3.1 will enforce items 2, 4 and 6 mechanically in its push gate, as a `
 | Kind | What it must have | How it is tested |
 | :- | :- | :- |
 | Hooks (plugin and settings) | Runs through the shared fail-open runner: a fault becomes an allow and one logged line, never a deny or a block. | As a spawned process, with the fault inputs from item 2. |
-| Mods | Every handler is wrapped: an error is logged and passed on with `next(e)`, and the handler never throws past its wrapper. | Under the Claude Code mod test harness, with the same fault inputs as hooks. |
+| Mods | Every handler is wrapped: an error is logged and passed on with `next(e)`, and the handler never throws past its wrapper. | With `claude plugin test`, the [Claude Code mod test harness](https://code.claude.com/docs/en/plugins/mods/test.md) (automated tests that run without a session), with the same fault inputs as hooks. |
 | Skills | A required section, "When this can't be done". It has one line for each tool, file or command the skill names, saying what the agent does and what it tells the human when that thing is missing. | A check that the section exists and has one line for each tool, file or command the skill names. |
 | Agent definitions (`.md`) | A "How it fails" section, and the model declared in the frontmatter. | A check that the section and the model field exist. |
 | MCP and CLI adapters | A timeout; a path that records the tool as unavailable (missing binary, non-zero exit, timeout, empty reply) and never blocks on it. | Fixtures captured from real runs (item 4), including an unavailable fixture, with a test that the adapter maps it to unavailable. |
+
+For skills and agent files the push check is structural (the section exists), not behavioural; whether the failure lines are followed is judged later from the bounce ledger.
+
+A check whose waive rate exceeds about one third over a week is wrong, not the authors; the first bounce review decides which checks stay.
