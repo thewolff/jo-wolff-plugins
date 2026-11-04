@@ -166,8 +166,8 @@ session's folder and dated after the session started.
 | Event | Config key | What it does |
 |---|---|---|
 | SessionStart | `hooks.sessionStart` | Injects, in order and only when non-empty: *Waiting on you* (held questions for the cwd, its parents and the folders under it, oldest first, name and one-line body, a subfolder's naming the folder; kept on `source: compact`), open questions for the same scope (the `pending` block), the last `inject.notes` entries of `log`, the exact invocation plus allow rule and a one-line verb summary, when `inject.elsewhere` is on one line counting the open and held questions in other folders (a folder that is not the cwd, not a parent of it and not under it): `ledger: N question(s) waiting on you in M other folder(s); run \`… pending --all\` to see them.`, the cross-lab review findings line (see [Cross-lab review](#cross-lab-review)), and, last, the doctor line (see [Doctor and the bounce ledger](#doctor-and-the-bounce-ledger)). Capped at 9,000 characters; the log entries are cut first, never the held or open questions or the other-folders, review or doctor lines. On `source: compact` the log section is dropped and the verb summary is one line; the other-folders, review and doctor lines stay. Records the session in `cc_sessions`. |
-| PreToolUse | `hooks.preToolUse` | Runs on `AskUserQuestion` and `Bash` only. `AskUserQuestion` is denied while no question is open for the cwd (a question whose cwd equals the hook cwd or is an ancestor of it), with the reason `ledger: ask the question through the ledger first: \`… ask "<body>" --name <short> --options a,b --default a\`, then ask it; keep the q- id to yourself and record the reply with \`… answer <q-id> <option>\`.` A Bash command that runs `git push` or `gh pr create` (any simple command of a `&&`/`;`/`|`/newline chain; git's global options and a path on the binary are tolerated) is denied while the session has no `note` and no `outcome`, with the reason `ledger: record what this push is before pushing: \`… note "<what and why>"\` or \`… outcome <ref> "<what and why>"\` (one in this session lifts the gate).` Before denying it proves the store can take a write (the remedy writes); if it cannot, the tool passes with a `systemMessage`. Other tools and other commands are never seen. |
-| Stop | `hooks.stop` | Checks the final message once per turn (keyed on `prompt_id`; a second Stop in the same turn passes). Answer rule (`forcing.stopAskRule`): the Stop's `prompt_id` differs from the one stamped by the session's previous Stop (so you wrote since), and the session has open questions asked at or before that previous Stop → `{"decision":"block","reason":…}` listing them newest first and telling the agent to take the answer from your latest message and run `answer <q-id> <option>` (or `withdraw`); it clears once every such question is answered or withdrawn. Ask rule (same switch): after removing code blocks and inline code, a line ends with `?` and the session has no open question row → block telling the agent to `ask` first, then ask in plain words; messages under 40 substantive characters are not checked. Neither rule reads ids out of the reply. A session's questions are those tagged with its id, plus untagged ones asked in or around its folder after it started. Decision rule (`forcing.stopDecisionRule`): after also removing double-quoted spans, the message contains one of `forcing.decisionPhrases` as whole words and the session recorded no `note` during this turn → block telling the agent to `note`, then finish. Checked in the order answer, ask, decision. Every Stop stamps `cc_sessions.last_stop_at` and `last_stop_prompt`; "this turn" runs from the previous stamp (or the session start) to now. |
+| PreToolUse | `hooks.preToolUse` | Runs on `AskUserQuestion` and `Bash` only. `AskUserQuestion` is denied while no question is open for the cwd (a question whose cwd equals the hook cwd or is an ancestor of it), with the reason `ledger: ask the question through the ledger first: \`… ask "<body>" --name <short> --options a,b --default a\`, then ask it; keep the q- id to yourself and record the reply with \`… answer <q-id> <option>\`.` A Bash command that runs `git push` or `gh pr create` (any simple command of a `&&`/`;`/`|`/newline chain, read with shell quoting; git's global options and a path on the binary are tolerated) is denied while the session has no `note` and no `outcome`, with the reason `ledger: record what this push is before pushing: \`… note "<what and why>"\` or \`… outcome <ref> "<what and why>"\` (one in this session lifts the gate).` The same command is checked by the review gate (below) at the same time: when both stop it, one deny lists both as numbered items, so the agent meets every missing step at once. Before denying it proves the store can take a write (the remedy writes); if it cannot, the tool passes with a `systemMessage`. Other tools and other commands are never seen. |
+| Stop | `hooks.stop` | Checks the final message once per turn (keyed on `prompt_id`; a second Stop in the same turn passes). Answer rule (`forcing.stopAskRule`): the Stop's `prompt_id` differs from the one stamped by the session's previous Stop (so you wrote since), and the session has open questions asked at or before that previous Stop → `{"decision":"block","reason":…}` listing them newest first and telling the agent to take the answer from your latest message and run `answer <q-id> <option>` (or `withdraw`); it clears once every such question is answered or withdrawn. Ask rule (same switch): after removing code blocks, inline code and double-quoted spans, a sentence ends with `?` (a `?` at the end of a line or followed by a space, so "Should I …? I'd say yes." counts and a URL's `?query` does not) and the session has no open question row → block telling the agent to `ask` first, then ask in plain words; messages under 40 substantive characters are not checked. Neither rule reads ids out of the reply. A session's questions are those tagged with its id, plus untagged ones asked in or around its folder after it started. Decision rule (`forcing.stopDecisionRule`): after also removing double-quoted spans, the message contains one of `forcing.decisionPhrases` as whole words, the session recorded no `note` during this turn, and it asked no question during this turn (the stated default of a question just asked is not a decision) → block telling the agent to `note`, then finish. Checked in the order answer, ask, decision. Every Stop stamps `cc_sessions.last_stop_at` and `last_stop_prompt`; "this turn" runs from the previous stamp (or the session start) to now. |
 | SessionEnd | `hooks.sessionEnd` | In one transaction: stamps `ended_at` and the reason on the session row, and marks the session's open bounce rows `bypassed`. Waits at most 250 ms for a lock (SessionEnd hooks share a 1.5-second budget). Prints nothing; errors go to the log. |
 | UserPromptSubmit | `hooks.userPromptCommands` | Answers from elsewhere (`inject.answers`): when the session has an id and the database already exists, every prompt reads the questions this session asked that another session or an untagged CLI run answered or withdrew since the session's last prompt (`cc_sessions.last_prompt_seen_at`, else its start), gives Claude one line each as `additionalContext` (`ledger: answered since your last turn: <name> → <word> (via <via>)`, or `… <name> withdrawn (via <via>)`), and moves the mark to now. Answers the session recorded itself are not repeated. Nothing found → nothing injected. A prompt never creates the database; a store that cannot be opened or a mark that cannot be written is logged to `errors.log` only. Ledger lines: when every non-blank line of the prompt is an id-bearing ledger line (`approve q-…`, `extend q-…`, an ordinal like `1 approve`) or `pending` / `log [N]` / `help`, applies them as a batch with `via = prompt-hook` and gives Claude the numbered results as `additionalContext`, after any answers-from-elsewhere lines (you see the same block as a `systemMessage`). One prose line anywhere → no line is applied. Free-text verbs (`ask`, `note`) and `config` / `enable` / `disable` are never applied from a prompt. Never blocks the prompt. |
 
@@ -195,7 +195,7 @@ defaults verbatim.
 | `forcing.stopAskRule` | `true` | send back a reply that ends without recording an answer the human already gave, or that asks a question while the session has no open row |
 | `forcing.pushNeedsNote` | `true` | deny `git push` / `gh pr create` while the session has no note or outcome |
 | `forcing.stopDecisionRule` | `true` | send back a reply that states a decision with no note recorded this turn |
-| `forcing.decisionPhrases` | the nine phrases below | the phrases the decision rule looks for, whole words, any case |
+| `forcing.decisionPhrases` | the eight phrases below | the phrases the decision rule looks for, whole words, any case |
 | `inject.notes` | `5` | how many recent `log` entries SessionStart injects |
 | `inject.elsewhere` | `true` | whether SessionStart adds the one line counting open and held questions in other folders; `false` turns it off |
 | `inject.answers` | `true` | whether each prompt tells the session about answers to its questions recorded in other sessions since its last prompt; `false` turns it off |
@@ -208,7 +208,7 @@ defaults verbatim.
 | `review.judgeCommand` | `null` | the judge that checks "this finding is resolved" claims: a shell command that gets the prompt on stdin (or in place of a literal `{prompt}`) and prints `yes` or `no`. Unset falls back to `enforcement.judgeCommand` in the i-have-audhd profile (`~/.claude/i-have-audhd.json`), so one judge is configured once. User file only |
 
 The default `forcing.decisionPhrases`: `I decided`, `decided to`, `assumption:`, `assuming`,
-`going with`, `instead of`, `chose`, `I'll go with`, `trade-off`. A project file can replace the
+`going with`, `chose`, `I'll go with`, `trade-off`. A project file can replace the
 list (`{"forcing": {"decisionPhrases": ["went with", "settled on"]}}`).
 
 `node <plugin dir>/scripts/ledger.mjs config` prints the effective values and the source of each.
@@ -246,7 +246,7 @@ appends one line to `${XDG_STATE_HOME:-~/.local/state}/ledger/errors.log` and te
 | `schema` | `cc_meta` schema version equals this plugin's | | any other version |
 | `config` | names the layer that set `db` and the one that set `enabled` | `enabled` resolves `false`, or a config file did not parse | |
 | `hooks` | `hooks/hooks.json` lists SessionStart, UserPromptSubmit, PreToolUse, Stop and SessionEnd, and each script exists | | an event or a script is missing |
-| `errors` | no `errors.log` lines in the last 7 days | lines in the last 7 days: counted per hook, the last 5 printed | |
+| `errors` | no `errors.log` lines for this database in the last 7 days | lines for this database in the last 7 days: counted per hook, the last 5 printed | |
 | `bounces` | no open bounce rows older than 24 hours | open rows older than 24 hours, counted per rule | |
 | `review <lab>` | one per lab in `review.labs` (none when `review.mode` is `off`): the lab's binary is on `PATH` | the binary is missing | |
 
@@ -255,6 +255,11 @@ line does not run all of this on every start: it runs only the cheap checks (the
 opened, which the hook needs anyway; the schema version; the `errors.log` count for the last 7
 days) and adds one line, after everything else and never truncated, on `compact` too, when any
 of them finds an issue. A database that does not exist yet is not an issue.
+
+`errors.log` is one file per state folder, shared by every database a machine uses. Each line
+ends with ` [db <path>]`, the database the writing process had configured, and `doctor` and the
+SessionStart line count only the lines for the database they check. Lines for another database,
+and untagged lines from ledger 0.2.x, are named in the `errors` check's ok text as "not counted".
 
 The bounce ledger is `cc_bounces`: one row per Stop block and PreToolUse deny, with the rule,
 session, `prompt_id`, tool and time. A row starts open and is closed once:
@@ -273,7 +278,10 @@ the question mark or the decision phrase leaves its row open. An answer counts f
 `stopAnswerRule` when this session recorded it, or when the question belongs to the session the
 way the Stop rule decides it (tagged with the session, or untagged and asked in or around its
 folder since it started). At SessionEnd every row still open for the session becomes `bypassed`,
-in the same transaction as the end stamp. `cc_sessions.last_block_*` is unchanged.
+in the same transaction as the end stamp. `bypassed` is not final: `claude -p` and every resumed
+session fire SessionEnd at the end of each process under the same session id, so a remedy after a
+resume turns a `bypassed` row `satisfied`. A row stays `bypassed` only when its session id never
+comes back with the remedy. `cc_sessions.last_block_*` is unchanged.
 
 ## Cross-lab review
 
@@ -395,8 +403,8 @@ Node 24.
 ## Known gaps
 
 - The Stop rules look only at the final message; a question asked and withdrawn mid-turn is not seen, and a decision stated in an earlier message of the same turn is not either.
-- The decision rule is a phrase list. A decision worded outside the list passes; a phrase used in a different sense ("instead of X, the test does Y") blocks once. Tune `forcing.decisionPhrases` per project.
-- The push gate reads the Bash command text. A push run from a script file or an alias is not seen; a `git push` inside a quoted string that never runs is.
+- The decision rule is a phrase list. A decision worded outside the list passes; a phrase used in a different sense ("I chose not to look") blocks once. A reply that asks a question recorded this turn is not checked: its stated default ("if you don't answer, I'll go with alpha") is already the question's `--default`. `instead of` left the default list in 0.3.0, because it fired on descriptions of bugs ("`add` subtracts instead of adding"). Tune `forcing.decisionPhrases` per project.
+- The push gate reads the Bash command text with shell quoting. A push run from a script file or an alias is not seen.
 - A ceiling on a question is recorded and shown, never metered: nothing stops at the ceiling.
 - Disabling is per folder tree, not per repository: a `.ledger.json` with `"enabled": false` in your home directory would disable every project under it.
 - Claude Code only. On OMP the skill installs but no hook runs.

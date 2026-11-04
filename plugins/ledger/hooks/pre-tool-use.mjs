@@ -27,6 +27,10 @@
 // Any fault while deciding (git missing or past its deadline, a query that throws) allows the
 // call with one systemMessage line; a cwd outside any repository is not gated.
 //
+// A push is checked by the note gate and the review gate together: when both stop it, one deny
+// lists both as numbered items and writes both bounce rows, so the agent fixes everything after
+// one deny instead of meeting the second gate only after clearing the first.
+//
 // Fail open: switch off → nothing; store busy/unavailable → allow with one systemMessage line;
 // anything thrown → runHook's systemMessage. Never exit 2.
 
@@ -65,30 +69,33 @@ export function handle(input, { env = process.env, now = Date.now() } = {}) {
     if (!verdict) {
       const rule = gatedRule(input, store.config);
       if (rule) satisfyBounces(store, { sessionId, rules: [rule], now, env, hook: "PreToolUse" });
-      const review = reviewGate(input, { store, cwd, env });
-      if (review?.deny) {
-        // Same rule as the note gate below: deny only while `review` / `waive` can write.
-        assertWritable(store.db, store.dbPath);
-        recordBounce(store, { sessionId, rule: "reviewGate", promptId, tool: "Bash", now, env, hook: "PreToolUse" });
-        return {
-          ...noticeField(store.notices),
-          hookSpecificOutput: { hookEventName: "PreToolUse", permissionDecision: "deny", permissionDecisionReason: review.deny },
-        };
-      }
-      if (review) satisfyBounces(store, { sessionId, rules: ["reviewGate"], now, env, hook: "PreToolUse" });
-      const notices = review?.notice ? [...store.notices, review.notice] : store.notices;
-      return notices.length ? noticeField(notices) : null;
     }
-    // A deny tells the agent to run `ledger ask` or `ledger note`, which write. When the store cannot take a write
-    // (read-only file, a lock that outlasts busy_timeout) that advice is a dead end, so the gate
-    // passes instead; withStore turns the StoreError into the allow shape with one systemMessage.
-    assertWritable(store.db, store.dbPath);
-    recordBounce(store, { sessionId, rule: verdict.rule, promptId, tool: input.tool_name ?? null, now, env, hook: "PreToolUse" });
-    return {
-      ...noticeField(store.notices),
-      hookSpecificOutput: { hookEventName: "PreToolUse", permissionDecision: "deny", permissionDecisionReason: verdict.reason },
-    };
+    // A push is checked by both gates at once, so one deny names everything still missing.
+    const review = reviewGate(input, { store, cwd, env });
+    if (verdict || review?.deny) {
+      // A deny tells the agent to run `ask`, `note`, `review` or `waive`, which write. When the
+      // store cannot take a write (read-only file, a lock that outlasts busy_timeout) that advice
+      // is a dead end, so the gate passes instead; withStore turns the StoreError into the allow
+      // shape with one systemMessage.
+      assertWritable(store.db, store.dbPath);
+      if (verdict) recordBounce(store, { sessionId, rule: verdict.rule, promptId, tool: input.tool_name ?? null, now, env, hook: "PreToolUse" });
+      if (review?.deny) recordBounce(store, { sessionId, rule: "reviewGate", promptId, tool: "Bash", now, env, hook: "PreToolUse" });
+      return {
+        ...noticeField(store.notices),
+        hookSpecificOutput: { hookEventName: "PreToolUse", permissionDecision: "deny", permissionDecisionReason: denyReason(verdict?.reason, review?.deny) },
+      };
+    }
+    if (review) satisfyBounces(store, { sessionId, rules: ["reviewGate"], now, env, hook: "PreToolUse" });
+    const notices = review?.notice ? [...store.notices, review.notice] : store.notices;
+    return notices.length ? noticeField(notices) : null;
   });
+}
+
+/** One deny reason: either gate's own, or both as a numbered list under one `ledger:` line. */
+export function denyReason(noteReason, reviewReason) {
+  if (!noteReason || !reviewReason) return noteReason ?? reviewReason;
+  const body = (r) => r.replace(/^ledger: /, "");
+  return `ledger: this push needs two things first, and both are missing:\n1. ${body(noteReason)}\n2. ${body(reviewReason)}`;
 }
 
 if (invokedDirectly(import.meta.url)) {

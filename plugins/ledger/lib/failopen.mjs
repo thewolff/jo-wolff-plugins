@@ -16,15 +16,20 @@
 import { appendFileSync, mkdirSync, readFileSync, realpathSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { stateDir } from "./config.mjs";
+import { currentLogDb, stateDir } from "./config.mjs";
 import { nowIso } from "./time.mjs";
 
-/** Append one line to the errors log; never throws. */
+/**
+ * Append one line to the errors log; never throws. The line is
+ * `<iso> <hook> <message> [db <path>]`, the db being the one this process's config resolved
+ * (lib/config.mjs currentLogDb); the suffix is left out before any config was loaded.
+ */
 export function logError(hook, message, env = process.env) {
   try {
     const dir = stateDir(env);
     mkdirSync(dir, { recursive: true });
-    appendFileSync(join(dir, "errors.log"), `${nowIso()} ${hook} ${String(message).replace(/\s+/g, " ").trim()}\n`);
+    const db = currentLogDb();
+    appendFileSync(join(dir, "errors.log"), `${nowIso()} ${hook} ${String(message).replace(/\s+/g, " ").trim()}${db ? ` [db ${db}]` : ""}\n`);
   } catch {
     /* nowhere to log; the hook still fails open */
   }
@@ -36,10 +41,12 @@ export function errorsLogPath(env = process.env) {
 }
 
 /**
- * The errors log lines written at or after `since` (ms), oldest first: { at, hook, message }.
- * A missing or unreadable log is no lines; a line that does not start with an ISO stamp is skipped.
+ * The errors log lines written at or after `since` (ms), oldest first: { at, hook, db, message }
+ * (`db` null for an untagged line: one written before config loaded, or by ledger 0.2.x). With
+ * `db` given, only the lines tagged with that database. A missing or unreadable log is no lines;
+ * a line that does not start with an ISO stamp is skipped.
  */
-export function readErrors(env = process.env, { since = 0 } = {}) {
+export function readErrors(env = process.env, { since = 0, db = undefined } = {}) {
   let text = "";
   try {
     text = readFileSync(errorsLogPath(env), "utf8");
@@ -52,7 +59,10 @@ export function readErrors(env = process.env, { since = 0 } = {}) {
     if (!m) continue;
     const t = Date.parse(m[1]);
     if (!Number.isFinite(t) || t < since) continue;
-    out.push({ at: m[1], hook: m[2], message: m[3] });
+    const tag = /^(.*) \[db (.*)\]$/.exec(m[3]);
+    const entry = { at: m[1], hook: m[2], db: tag ? tag[2] : null, message: tag ? tag[1] : m[3] };
+    if (db !== undefined && entry.db !== db) continue;
+    out.push(entry);
   }
   return out;
 }

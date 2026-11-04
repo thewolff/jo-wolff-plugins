@@ -533,7 +533,12 @@ folder, and `pending` lists them the same way. Reviewers run without tools, from
 scratch folder, with an allowlisted environment. The gate checks the commit a command actually
 publishes (`git -C`, refspecs, `gh pr create --head`, the pull request `gh pr merge` names), and
 allows with a notice when it cannot tell. Opening a 0.2.3 database migrates it to schema
-version 6 by creating new tables; no existing table is touched.
+version 6 by creating new tables; no existing table is touched. A push missing both a note and a
+review is denied once, naming both. The Stop ask rule now catches a question mid-line ("Should
+I …? I'd say yes."); the decision rule stands down when the reply asks a question recorded that
+turn, and `instead of` left the default phrase list. A bounce marked `bypassed` at SessionEnd
+turns `satisfied` when the same session resumes and does the remedy. `errors.log` lines carry
+the database they were written against, and `doctor` counts only its own.
 
 Changes in 0.2.3: one database shared by every folder is now readable across folders.
 `ledger pending --all` lists every open and held question in the database, grouped under the

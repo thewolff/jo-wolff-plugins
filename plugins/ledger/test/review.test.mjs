@@ -531,3 +531,25 @@ test("S1: the push matcher reads shell quoting, comments and here-documents", as
   assert.deepEqual(pushOperations('git -C "my repo" -c user.name=x push origin "feat:main"', merge), [{ tool: "git", dirs: ["my repo"], unsupported: null, args: ["origin", "feat:main"] }]);
   assert.deepEqual(pushOperations('gh pr create --title "git push fix" --head feat', merge), [{ tool: "gh", sub: "create", args: ["--title", "git push fix", "--head", "feat"] }]);
 });
+
+test("live run finding 5: a push with no note and no review is denied once, naming both, and writes both bounce rows", () => {
+  const b = sandbox();
+  git(b, "init", "-q", "-b", "main");
+  commit(b, "a.txt", "one\n");
+  git(b, "checkout", "-q", "-b", "feat");
+  commit(b, "b.txt", "two\n");
+  b.writeConfig({ review: { mode: "gate" } });
+  const p = push(b);
+  assert.equal(decision(p), "deny");
+  const reason = p.json.hookSpecificOutput.permissionDecisionReason;
+  assert.match(reason, /^ledger: this push needs two things first, and both are missing:\n1\. record what this push is before pushing: .*\n2\. .*review/s);
+  const db = openDb(b);
+  try {
+    assert.deepEqual(db.prepare("SELECT rule FROM cc_bounces ORDER BY id").all().map((r) => r.rule), ["pushNeedsNote", "reviewGate"]);
+  } finally {
+    db.close();
+  }
+  // With the note recorded, the deny is the review gate's alone, unchanged in form.
+  cli(b, ["note", "pushing the change"], { env: { LEDGER_SESSION_ID: SID } });
+  assert.doesNotMatch(push(b).json.hookSpecificOutput.permissionDecisionReason, /two things/);
+});

@@ -2,8 +2,11 @@
 // later judge can see which rules fire, which the agent satisfies, which it walks past.
 //
 // Lifecycle of a row: inserted open (outcome NULL) when a hook bounces; set `satisfied` (with
-// satisfied_at) when the remedy the bounce asked for happens later in the same session; set
-// `bypassed` at SessionEnd if it is still open then.
+// satisfied_at) when the remedy the bounce asked for happens later in the same session id; set
+// `bypassed` at SessionEnd if it is still open then. `claude -p` and every resumed session end
+// each process with SessionEnd under the same session id, so a `bypassed` row is still matched:
+// a remedy after a resume turns it `satisfied`. `bypassed` is final only for a session id that
+// is never resumed.
 //
 // Matching "the remedy happened", per rule (the hook calls satisfyBounces with the check):
 //   stopAnswerRule     at a later Stop of the same session and prompt_id: an answer or withdraw
@@ -46,16 +49,17 @@ export function recordBounce(store, { sessionId = null, rule, promptId = null, t
 }
 
 /**
- * Mark the session's open rows of `rules` satisfied where `check(row)` is true. `promptId`, when
- * given, restricts to rows of that prompt. Reads first and writes only when a row qualifies, so
- * the common case takes no write lock. Never throws.
+ * Mark the session's open or `bypassed` rows of `rules` satisfied where `check(row)` is true
+ * (`bypassed` rows: ended by an earlier process of the same session id, before a resume).
+ * `promptId`, when given, restricts to rows of that prompt. Reads first and writes only when a
+ * row qualifies, so the common case takes no write lock. Never throws.
  */
 export function satisfyBounces(store, { sessionId, rules, promptId = null, check = () => true, now = Date.now(), env = process.env, hook }) {
   if (!sessionId) return 0;
   try {
     const marks = rules.map(() => "?").join(", ");
     const rows = store.db
-      .prepare(`SELECT id, rule, prompt_id, at FROM cc_bounces WHERE session_id = ? AND outcome IS NULL AND rule IN (${marks})${promptId ? " AND prompt_id = ?" : ""}`)
+      .prepare(`SELECT id, rule, prompt_id, at FROM cc_bounces WHERE session_id = ? AND (outcome IS NULL OR outcome = 'bypassed') AND rule IN (${marks})${promptId ? " AND prompt_id = ?" : ""}`)
       .all(sessionId, ...rules, ...(promptId ? [promptId] : []))
       .filter((r) => check(r));
     if (!rows.length) return 0;
@@ -63,7 +67,7 @@ export function satisfyBounces(store, { sessionId, rules, promptId = null, check
     transaction(
       store.db,
       () => {
-        const update = store.db.prepare("UPDATE cc_bounces SET outcome = 'satisfied', satisfied_at = ? WHERE id = ? AND outcome IS NULL");
+        const update = store.db.prepare("UPDATE cc_bounces SET outcome = 'satisfied', satisfied_at = ? WHERE id = ? AND (outcome IS NULL OR outcome = 'bypassed')");
         for (const r of rows) update.run(iso, r.id);
       },
       store.dbPath,
