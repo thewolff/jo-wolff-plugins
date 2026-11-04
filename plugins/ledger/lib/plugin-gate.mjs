@@ -562,7 +562,7 @@ export function checkRows(db, top, head, pluginName) {
 const short = (sha) => String(sha).slice(0, 8);
 
 /**
- * `ledger gate check [--plugins a,b] [--base <ref>]`: run the three checks on every plugin of
+ * `ledger gate check [--plugins a,b] [--base <ref>]`: run the five checks on every plugin of
  * HEAD's tree with a change in base..HEAD (or the named ones), each read out of the commit,
  * record the rows with the plugin tree they certify, print them. Exit 0 when every row passes
  * or is skipped, 1 when one fails, 2 when the commit holds no plugin. Uncommitted changes

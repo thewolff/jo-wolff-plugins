@@ -18,8 +18,9 @@ it, keeping a record of what it did and asked, and a vendored set of engineering
 - **[reminders-review](#reminders-review)** — go through your open Apple Reminders one at a
   time: the agent answers, confirms before acting, and closes each one only when you say yes.
 - **[ledger](#ledger)** — a durable, id'd record of the questions an agent asks you and the
-  choices it makes without asking, in one SQLite file; on by default and off per folder, with
-  hooks that keep every question and your plain-words answer to it on a row.
+  choices it makes without asking, in one SQLite file. It records every session everywhere until
+  you switch a folder off with `/ledger:disable`; hooks keep every question and your plain-words
+  answer on a row.
 - **[plugin-kit](plugins/plugin-kit/README.md)** — start a new plugin here that meets the test
   bar on day one: the fail-open hook runner, one handler per event, the five-fault contract test,
   the scenario runner and the canary live run, a scenario stub per event, the prune verb and
@@ -796,10 +797,9 @@ notes at session start, deny the AskUserQuestion tool until the question has a r
 back once a reply that ends without recording an answer you gave, asks with no row, or states a
 decision without a note. Every hook fails open.
 
-The hooks are on in every folder by default. Type `/ledger:disable` in a session to turn them off
-for that folder (it writes `.ledger.json` there, found from any subfolder); `/ledger:enable` turns
-them back on. The plugin's tables are all prefixed `cc_`, so the database can be a SQLite file
-another tool already uses.
+The hooks record every session until you switch a folder off with `/ledger:disable`
+(`/ledger:enable` turns it back on). The plugin's tables are all prefixed `cc_`, so the database
+can be a SQLite file another tool already uses.
 
 Changes in 0.3.5 (with plugin-kit 0.2.0): the gate grows from three rows to five. `evals`
 (behaviour is proved): `evals/manifest.json` declares, for every event `hooks.json` registers,

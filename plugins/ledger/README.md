@@ -25,10 +25,10 @@ Needs Node 22.13 or later (`node:sqlite`; see *Node and `node:sqlite`* below). Z
 database is created on first use at `~/.local/share/ledger/ledger.db`. Claude Code only in this
 version; there is no OMP adapter.
 
-## Turning it off, per project
+## Turning a folder off
 
-Installing the plugin turns the hooks on everywhere: every session records. To stop a folder
-from being recorded, type in a session there:
+Every session records once the plugin is installed. To stop one folder (and everything under it),
+type in a session there:
 
 ```
 /ledger:disable
@@ -747,6 +747,42 @@ node --test
 
 Tests use a sandboxed `HOME`, `XDG_*` and `LEDGER_*` so they never touch your ledger. The
 `LEDGER_CWD` and `LEDGER_BUSY_TIMEOUT_MS` environment variables exist for the tests.
+
+## Changes
+
+### 0.3.5
+
+- The plugin gate runs five checks, not three: `evals` (an `evals/manifest.json` declaring each
+  hook's outcomes, one scenario per event × outcome, and a recent canary pass for the committed
+  plugin tree) and `retention` (every path written outside the worktree declared in
+  `.claude-plugin/plugin.json` `state`, with a prune command for anything kept a number of days)
+  join the three from 0.3.3. See [The plugin gate](#the-plugin-gate).
+- A canary row keeps `tree_sha`, the committed plugin tree it certifies, and `writes`, the files
+  the live run left outside its work directory. After the live runs the canary runs every
+  declared `prune` once and records it as a `cc_canary_prunes` row; `--no-prune` skips that pass.
+  `canary status` prints the last run, the last pass and the last prune per plugin.
+- Every plugin in this repository has an `e2e/live-run.sh` that hands off to plugin-kit's
+  scenario runner `lib/live-run.mjs`; the ledger's own scenarios cover its five events.
+- Schema 8: two columns on `cc_canary_runs` (`tree_sha`, `writes`) and the `cc_canary_prunes`
+  table. A 0.3.3 or 0.3.4 ledger on a schema-8 file runs on the tables both know.
+
+### Earlier versions
+
+One line each, from the release commits; the full notes for 0.2.1 through 0.3.4 are the
+"Changes in" paragraphs in the repository root README's ledger section.
+
+- 0.3.4: patch release for the canary environment: the canary no longer hands `e2e/live-run.sh`
+  the caller's `LEDGER_*` keys.
+- 0.3.3: the plugin gate (three checks) and the feedback loop: `canary`, `report`, `digest`.
+- 0.3.2: the side pane for Claude Code Desktop.
+- 0.3.1: three fixes from the first live sessions on 0.3.0.
+- 0.3.0: `doctor`, and a bounce ledger for every Stop block and PreToolUse deny.
+- 0.2.3: `pending --all` and a SessionStart line for questions waiting in other folders.
+- 0.2.2: an outcome lifts the push gate the same as a note.
+- 0.2.1: hooks on by default with `/ledger:enable` and `/ledger:disable`; you never type a
+  question id; a corrupt database at a configured path is reported, never moved aside.
+- 0.2.0: opt-in per project, `cc_`-prefixed tables for a shared SQLite file.
+- 0.1.0: first release.
 
 ## License
 
