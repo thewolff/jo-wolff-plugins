@@ -241,6 +241,29 @@ for (const event of ["pre-tool-use", "user-prompt-submit"]) {
   });
 }
 
+for (const event of ["pre-tool-use", "user-prompt-submit"]) {
+  test(`a degraded read taken before a queued typed pair stop is warned and logged once by ${event}, the warning says pairing ended, and nothing is refused`, { skip: !hasSandbox }, async () => {
+    const real = readFileSync(join(dirname(fileURLToPath(import.meta.url)), "fixtures", "prompt-entries.jsonl"), "utf8").trim().split("\n").map((l) => JSON.parse(l)).find((e) => e.entrypoint === "cli");
+    const f = fixture();
+    await startPairing(f);
+    const p = payload("user-prompt-submit", f, { prompt: "pair stop" });
+    assertAllowed(runHook("user-prompt-submit", p, f.env), "queued stop");
+    appendFileSync(f.transcript, `${JSON.stringify({ ...real, promptId: p.prompt_id, message: { role: "user", content: "pair stop" } })}\n`);
+    writeFileSync(join(f.base, "s1", "state.json"), "{garbage");
+    const r = runHook(event, payload(event, f), f.env);
+    assertAllowed(r, event);
+    assert.equal(JSON.parse(readFileSync(join(f.base, "s1", "state.json"), "utf8")).phase, "inactive", "the queued stop ended pairing");
+    assert.match(r.json.hookSpecificOutput.additionalContext, /your partner typed pair stop/);
+    assert.match(r.json.systemMessage, /state file unreadable/);
+    assert.match(r.json.systemMessage, /typed pair stop ended pairing in this event\. Host tools are no longer refused\./);
+    assert.doesNotMatch(r.json.systemMessage, /treats pairing as on/);
+    assert.match(r.json.systemMessage, /Logged to /);
+    const lines = logLines(f.base);
+    assert.equal(lines.length, 1);
+    assert.match(lines[0], new RegExp(` ${event} session=s1: session state degraded \\(state file unreadable\\) in \\S+; pairing then ended by a typed stop$`));
+  });
+}
+
 test("while pairing, a session directory the gate cannot even look into is uncertain and fails closed", { skip: !hasSandbox }, async () => {
   const f = fixture();
   await startPairing(f);

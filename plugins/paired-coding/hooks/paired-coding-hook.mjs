@@ -287,7 +287,8 @@ export function handle(event, input, opts = {}) {
     const fault = v.degraded ?? early;
     // A state read as degraded (closed) is a fault too: warned and logged once, after the last
     // step that can throw, so the outer catch never logs it a second time.
-    const warned = (out) => (fault ? { ...(out ?? {}), systemMessage: degradedWarning(env, event, input, dir, fault) } : out);
+    // v.active false here means a queued typed stop, judged above, ended pairing: warn, never refuse.
+    const warned = (out) => (fault ? { ...(out ?? {}), systemMessage: degradedWarning(env, event, input, dir, fault, !v.active) } : out);
     if (!v.allow) return warned(deny([...notices.map((n) => n.replace(/^paired-coding: /, "")), v.reason ?? "refused while pairing"].join(" ")));
     if (PAIR_TOOLS.includes(name)) {
       writeBinding(stateBase(env), input.tool_use_id, {
@@ -338,7 +339,11 @@ export function handle(event, input, opts = {}) {
     const notices = [...takeNotices(dir), ...resolvePending(dir, { waitMs: opts.waitMs })];
     const { state, fault: late } = loadStateReport(dir);
     const fault = late ?? early;
-    if (state.phase === "inactive") return notices.length ? context("UserPromptSubmit", notices) : null;
+    if (state.phase === "inactive") {
+      // A queued typed stop, judged above, ended pairing; a fault read before it still surfaces.
+      const out = notices.length ? context("UserPromptSubmit", notices) : null;
+      return fault ? { ...(out ?? {}), systemMessage: degradedWarning(env, event, input, dir, fault, true) } : out;
+    }
     queueInput(dir, input);
     const note = isStopPhrase(input?.prompt)
       ? `paired-coding: this turn asks to end pairing. Whether your partner typed it is decided from Claude Code's transcript at your next tool call or when this turn ends, whichever comes first; it is not decided yet. If the stop is accepted, the gate writes the pair-accepted receipt to ${join(dir, RECEIPT_FILE)} and tells you so in a later note (with your next tool result, or at the start of the next turn); if it is refused, or the receipt cannot be written, a note says that instead. Until that note arrives, your closing summary says the receipt is not yet confirmed and where it will be if the stop is accepted; do not name an older receipt as this one. The receipt records which change sets your partner agreed to and pair_done closed, and it does not say the code works. You cannot end pairing yourself.`
@@ -397,9 +402,14 @@ function pairingOrUnknown(input, env) {
   return dir ? pairingOrUncertain(dir) : false;
 }
 
-/** One errors.log line and the warning for a session state the gate read as degraded (closed). */
-function degradedWarning(env, event, input, dir, reason) {
-  const logged = logFault(env, event, input, `session state degraded (${reason}) in ${dir}`);
+/**
+ * One errors.log line and the warning for a session state the gate read as degraded (closed).
+ * `ended`: pairing ended later in the same event (a queued typed stop), so the warning says host
+ * tools are no longer refused instead of that pairing is on.
+ */
+function degradedWarning(env, event, input, dir, reason, ended = false) {
+  const logged = logFault(env, event, input, `session state degraded (${reason}) in ${dir}${ended ? "; pairing then ended by a typed stop" : ""}`);
+  if (ended) return `paired-coding: the session state in ${dir} could not be read as saved (${reason}), so the gate treated pairing as on with the card closed until your partner's typed pair stop ended pairing in this event. Host tools are no longer refused. ${logged}`;
   return `paired-coding: the session state in ${dir} could not be read as saved (${reason}), so the gate treats pairing as on with the card closed. ${logged} Your partner ends pairing by typing pair stop.`;
 }
 
