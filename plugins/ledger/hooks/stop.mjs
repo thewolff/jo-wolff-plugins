@@ -3,8 +3,9 @@
 // replied to has no answer recorded, that asks the human a question while the session has no
 // open q- row, or that states a decision without recording a note this turn.
 //
-// Input read: last_assistant_message, prompt_id, stop_hook_active, session_id, cwd (hooks
-// reference § Stop input, § Common input fields).
+// Input read: last_assistant_message, prompt_id, stop_hook_active, session_id, cwd,
+// transcript_path (hooks reference § Stop input, § Common input fields); a bounce row keeps the
+// reply excerpt and the transcript path so it can be reproduced.
 //
 // Once per turn: a block records prompt_id in cc_sessions.last_block_prompt. A later Stop for
 // the same prompt_id passes without checking, so the agent is asked at most once per turn and a
@@ -39,7 +40,6 @@ import { withStore, hookConfig } from "../lib/store.mjs";
 import { nowIso } from "../lib/time.mjs";
 import { recordBounce, satisfyBounces, stopRemedyDone, STOP_RULES } from "../lib/bounces.mjs";
 
-export function handle(input, { env = process.env, now = Date.now() } = {}) {
 /**
  * Whether `text` repeats the body of an open or held question from another folder (whitespace
  * folded, case-insensitive): the reply is relaying that question to the human, not asking one.
@@ -53,6 +53,7 @@ function relaysElsewhere(db, cwd, text) {
   return false;
 }
 
+export function handle(input, { env = process.env, now = Date.now() } = {}) {
   const ready = hookConfig(env, input, "stop");
   if (!ready) return null;
   const { cfg, cwd } = ready;
@@ -90,13 +91,13 @@ function relaysElsewhere(db, cwd, text) {
     // turn" count. The ask rule stands down on any open question in scope for the folder (its
     // own, or one an earlier session left in this cwd or a parent): a leftover row is still a
     // question to the human, and a rule that ignored it sent every reply back with no way out.
-    const open = sessionId ? sessionQuestions(db, { sessionId, cwd }) : [];
     // It also stands down when the reply relays a question open in ANOTHER folder (its body
     // appears in the reply): SessionStart asks the model to tell the human about those, and
     // relaying one is not asking a new question (0.3.2, live session 708406d0).
+    const open = sessionId ? sessionQuestions(db, { sessionId, cwd }) : [];
     const inScope = openQuestions(db, cwd, { below: false });
-    const turnSince = session?.last_stop_at ?? session?.started_at ?? null;
     const relayed = inScope.length || open.length ? false : relaysElsewhere(db, cwd, input.last_assistant_message);
+    const turnSince = session?.last_stop_at ?? session?.started_at ?? null;
     const verdict = checkStop(input.last_assistant_message, {
       dueQuestions: newTurn ? sessionQuestions(db, { sessionId, cwd, askedBy: session.last_stop_at }) : [],
       sessionHasOpenQuestion: open.length > 0 || inScope.length > 0 || relayed,
@@ -109,7 +110,7 @@ function relaysElsewhere(db, cwd, text) {
     });
     stamp(verdict);
     if (!verdict) return pass();
-    recordBounce(store, { sessionId, rule: verdict.rule, promptId, now, env, hook: "Stop" });
+    recordBounce(store, { sessionId, rule: verdict.rule, promptId, text: input.last_assistant_message, transcriptPath: input.transcript_path, now, env, hook: "Stop" });
     return { ...noticeField(store.notices), decision: "block", reason: verdict.reason };
   });
 }
