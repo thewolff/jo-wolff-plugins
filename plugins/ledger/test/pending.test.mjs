@@ -24,7 +24,7 @@ test("§7 row 8 (#196): a plan question without --allows is refused; with it, pe
   assert.match(bad.message, /--kind plan needs --allows covering every option; missing: approve, revise, cancel/);
   const q = askQuestion(box, { body: "Plan A?", name: "plan", options: "approve,revise", extra: ["--kind", "plan", "--allows", "approve: build slices 1-3; revise: send a new plan"] });
   const text = apply(box, ["pending"]).results[0].message;
-  assert.ok(text.includes(`approve ${q}  # plan · Plan A?`), text);
+  assert.ok(text.includes(`${q}  # plan · Plan A? · options: approve, revise / withdraw`), text);
   assert.match(text, /\n {2}allows:\n {4}approve: build slices 1-3\n {4}revise: send a new plan/);
 });
 

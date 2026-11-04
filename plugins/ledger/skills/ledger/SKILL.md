@@ -23,9 +23,10 @@ the human for permission. `… help` prints the whole grammar.
 ## The two moments
 
 1. **When you need the human's decision: `ask`, then ask in plain words.**
-   `… ask "<the question, one line>" --name <short> --options a,b[,c] --default a` prints a `q-`
-   id. Options are the short answers you will map the human's reply onto; the default is what you
-   will do if they say nothing. Add `--ceiling <usd>` when the question is about spending and
+   `… ask "<the question, one line>" --name <short> --options a,b[,c] [--default a]` prints a
+   `q-` id. Options are the short answers you will map the human's reply onto; the default, when
+   you give one, is what you will do if they say nothing. Give no `--default` when you have no
+   preference: the ledger invents none, and the human's bare first-option reply is their choice. Add `--ceiling <usd>` when the question is about spending and
    `--about "<what it concerns>"` when the body alone would not place it. For a plan with several
    routes use `--kind plan --allows "a: what a lets you do; b: …"` so each option says what it
    permits. Then ask the human in ordinary words. Do not print the `q-` id, the `pending` line, or
@@ -103,7 +104,7 @@ human's too (`/ledger:enable`, `/ledger:disable`).
 ## Reading what you are given
 
 - `… pending` lists the open questions with their ids, for you; do not paste it to the human. `… pending --all` lists every open and held question in the database under its folder.
-- The session start lists the questions waiting in other folders in full (folder, then each question's `pending` line). They were asked elsewhere and are not this folder's work: do not take them up, but when the human's reply answers one, run `… answer <q-id> <option>` from here and tell them it is recorded. Never show the id.
+- The session start lists the questions waiting on the human in other folders in full (folder, then each question's `pending` line). They were asked by another window and are not this folder's work: do not take them up. If the human's prompt answers one, run `… answer <q-id> <option>` from here and say it is recorded. Otherwise, in your first reply, tell the human in one plain line per question that another window is waiting on them (the question's body, its options, its default when it has one); repeating that body does not trip the Stop ask rule. Never show the id.
 - A prompt that is just an option word ("local", "Remote.") comes with a line naming the open question that offers it and the `answer` command. If the human meant it as their reply, run that command and say it is recorded; if they meant something else, ignore the line. The hook records nothing on its own.
 - An answer may arrive mid-session: a prompt can carry `ledger: answered since your last turn: <name> → <word>`, recorded from another session. Act on it as the human's answer to that question.
 - When session start ends with `ledger: doctor reports N issue(s)`, run `… doctor` and tell the human, in plain words, which checks said `warn` or `fail`.

@@ -10,7 +10,7 @@ const injected = (box, extra, opts) => {
   return r.json.hookSpecificOutput.additionalContext;
 };
 const elsewhereLines = (text) => text.split("\n").filter((l) => l.includes("other folder"));
-const header = (n, m) => `ledger: ${n} question${n === 1 ? "" : "s"} waiting on you in ${m} other folder${m === 1 ? "" : "s"} (asked elsewhere, not for this folder's work; for you, not the human: when the human's reply answers one, run \`${invocation()} answer <q-id> <option>\` and tell them it is recorded; never show the id):`;
+const header = (n, m) => `ledger: ${n} question${n === 1 ? "" : "s"} waiting on the human in ${m} other folder${m === 1 ? "" : "s"} (asked by another window, not this folder's work). If the human's prompt answers one, run \`${invocation()} answer <q-id> <option>\` and say it is recorded. Otherwise, in your first reply, tell the human in one plain line per question that another window is waiting on them: the question's body, its options and its default when it has one. Never show the q- id:`;
 
 test("pending --all from either of two folders lists both questions under their folder headers; plain pending stays scoped", () => {
   const box = sandbox();
@@ -22,7 +22,7 @@ test("pending --all from either of two folders lists both questions under their 
     `held ${b}  # in sibling · Which way (in sibling)?`,
     "",
     box.work,
-    `a ${a}  # in work · Which way (in work)? · default a · also: b / withdraw`,
+    `${a}  # in work · Which way (in work)? · options: a, b / withdraw`,
   ].join("\n");
   for (const cwd of [box.work, box.sibling]) {
     const r = cli(box, ["pending", "--all"], { cwd });
@@ -55,7 +55,7 @@ test("SessionStart from folder A with one open question in unrelated folder B �
   const tail = text.split("\n").slice(-3);
   assert.equal(tail[0], header(1, 1));
   assert.equal(tail[1], box.sibling);
-  assert.equal(tail[2], `a ${b}  # over there · Which way (over there)? · default a · also: b / withdraw`);
+  assert.equal(tail[2], `${b}  # over there · Which way (over there)? · options: a, b / withdraw`);
   apply(box, [`answer ${b} a`], { cwd: box.sibling });
   assert.deepEqual(elsewhereLines(injected(box)), []);
 });
@@ -70,7 +70,7 @@ test("SessionStart counts open and held questions per folder, pluralised", () =>
   const text = injected(box);
   assert.deepEqual(elsewhereLines(text), [header(3, 2)]);
   // Folders in path order; open before held within a folder; each line is the `pending`/`held` line.
-  assert.match(text, new RegExp(`^${other}\\na \\S+  # three · .*\\n${box.sibling}\\na \\S+  # one · .*\\nheld ${held}  # two · Which way \\(two\\)\\? · default a · also: b / withdraw$`, "m"));
+  assert.match(text, new RegExp(`^${other}\\nq-\\S+  # three · .*\\n${box.sibling}\\nq-\\S+  # one · .*\\nheld ${held}  # two · Which way \\(two\\)\\? · options: a, b / withdraw$`, "m"));
 });
 
 test("a question in a parent or a subfolder of the session folder is in scope, not elsewhere", () => {
@@ -88,11 +88,11 @@ test("a session in a parent folder sees a subfolder's open and held questions at
   apply(box, [`hold ${held}`], { cwd: child });
   askQuestion(box, { name: "unrelated", cwd: box.sibling });
   const text = injected(box);
-  assert.match(text, new RegExp(`^1\\. \\S+ ${open}  # child open · .* · in ${child}$`, "m"));
+  assert.match(text, new RegExp(`^1\\. ${open}  # child open · .* · in ${child}$`, "m"));
   assert.match(text, new RegExp(`^- child held: .* \\(${held}, in ${child}\\)$`, "m"));
   assert.deepEqual(elsewhereLines(text), [header(1, 1)]);
   const pending = cli(box, ["pending"]).out;
-  assert.match(pending, new RegExp(`^1\\. \\S+ ${open}  # child open .* · in ${child}$`, "m"));
+  assert.match(pending, new RegExp(`^1\\. ${open}  # child open .* · in ${child}$`, "m"));
   assert.match(pending, new RegExp(`^held ${held}  # child held · .* · in ${child}$`, "m"));
   assert.ok(!pending.includes("unrelated"), pending);
   // From the subfolder itself, its own questions carry no folder suffix.
