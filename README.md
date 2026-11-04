@@ -412,7 +412,14 @@ reporting success), so no release lets go of another holder's lock. A lock is ta
 only when the pid its token names is not running and the lock is stale, by removing that
 one token by name; a lock whose holder is still running is never evicted on its age, and
 the wait fails naming the pid and the recovery command, `node <plugin>/bin/pair.mjs unlock
---stale <lock directory>`, which makes the same check. A session that paired keeps its
+--stale <lock directory>`, which makes the same check. That command acts only on
+paired-coding's own lock directories inside the state base (any other path, or a symlink
+out of it, exits 2 untouched); its refusal of a running pid explains pid reuse and never
+advises ending a process, and `--force` clears a reused pid's lock only when that pid's
+command line names neither `paired-coding` nor `pair-server`. A token naming the waiting
+process itself is reported as a non-reentrant lock attempt. A release failure the locked
+work's error cannot carry (a frozen error) goes to `errors.log`, and the work's error is
+thrown unchanged. A session that paired keeps its
 directory, journal and receipt included, and a directory that will not go is one warning
 and one `errors.log` line, never a failed end.
 

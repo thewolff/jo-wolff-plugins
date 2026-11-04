@@ -333,9 +333,10 @@ How it works:
   removes that one token by name, so a lock someone else took in the meantime is untouched.
   A lock whose holder is still running (or whose token names no pid) is never taken over:
   after 10 seconds the wait fails, naming the holder's pid and the recovery command,
-  `node <plugin>/bin/pair.mjs unlock --stale <lock directory>`. That command removes the lock
-  only when the holder's pid is not running; otherwise it names the pid and the command line
-  `ps` reports for it, and leaves the lock alone.
+  `node <plugin>/bin/pair.mjs unlock --stale <lock directory>` (prefixed with
+  `PAIRED_CODING_STATE_DIR=<base>` when that is set). A token naming the waiting process
+  itself is a nested lock attempt, which can never succeed: the lock is not reentrant, and
+  the error says so instead of naming a recovery command. See **Lock recovery** below.
 - When the Claude Code hook itself fails (a thrown error, an unwritable state directory, stdin
   that is empty or not a hook event object), it exits 0, appends one line to
   `$PAIRED_CODING_STATE_DIR/errors.log` (default `~/.local/state/paired-coding/errors.log`)
@@ -380,6 +381,43 @@ How it works:
   `/branch` back to an earlier message, or a typed `pair stop` and a later `pair_start` in the
   same session, numbering continues (`card-3` after `card-1` and `card-2`) instead of starting
   again at `card-1`.
+
+## Lock recovery
+
+`node <plugin>/bin/pair.mjs unlock --stale [--force] <lock directory>` clears a lock a
+crashed holder left behind. Run it with the same `PAIRED_CODING_STATE_DIR` the sessions use.
+
+- **What it acts on.** The lock path is resolved (its directory's real path, plus its own
+  name, which is never followed) and must be one of the locks paired-coding makes inside the
+  state base: `<session>/lock` (a session's lock), `<session>/pending/lock` (its queued-input
+  lock) or `carry/lock` (the `/clear` carry markers' lock). A path outside the state base, a
+  symlink that leads out of it, a lock that is itself a symlink or not a directory, or any
+  other name is refused with exit 2 and the rule it broke; nothing is touched. It removes
+  only the lock directory and the one token in it, never a parent directory.
+- **Without `--force`.** The lock is removed (exit 0) only when the pid its token names is not
+  running. A running pid is refused (exit 1), naming the pid and the command line `ps`
+  reports for it. A lock holding no token, or several, is refused too; remove it by hand
+  once you are sure no paired-coding process is running.
+- **Pid reuse.** A token names its holder only by pid, and the operating system hands a
+  finished process's pid to a new one. A crashed holder's lock can then read as held by an
+  unrelated running process, and neither a waiter nor `unlock --stale` will clear it on
+  their own. To recover: confirm no paired-coding holder or waiter is active (no
+  paired-coding session is open on the worktree, and `ps -p <pid> -o command=` shows an
+  unrelated program), then run `unlock --stale --force <lock directory>`. `--force` removes
+  the lock only when `ps` reads that pid's command line and it contains neither
+  `paired-coding` nor `pair-server`; it refuses when `ps` cannot read it, when it names
+  either, and when the pid is its own. The unrelated process is left running.
+- **What `--force` cannot see.** The OMP adapter runs inside OMP's own process, whose command
+  line need not contain either name, so `--force` cannot tell an OMP-held lock from a reused
+  pid. Confirm no OMP session is pairing on the worktree before forcing.
+- **A nested lock.** A refusal that says the holder "is this process: the lock is not
+  reentrant" means a paired-coding process asked for a lock it already holds. That is a bug
+  to report; no recovery command applies while that process runs.
+- **A release error that cannot be attached.** When the locked work throws and releasing the
+  lock then fails too, the work's error is thrown with the release's as `releaseError`. A
+  thrown value that cannot carry it (a frozen error, one whose `releaseError` is not
+  writable, or a non-object) is thrown unchanged, and the release failure is one line in
+  `errors.log` instead. Either way the lock is left held.
 
 ## Hosts
 

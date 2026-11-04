@@ -23,7 +23,7 @@ import {
   readlinkSync, realpathSync, renameSync, rmdirSync, rmSync, statSync, unlinkSync, writeFileSync, writeSync,
 } from "node:fs";
 import { homedir, tmpdir } from "node:os";
-import { basename, dirname, join } from "node:path";
+import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
   boundaryHashes, boundaryMatches, boundaryRoots, bwrapArgsFor, carveOutHazard, carveOutRoots, landlockRulesFor, pairRunProfile, pairWriteBwrap, pairWriteLandlock, pairWriteProfile,
@@ -422,12 +422,25 @@ export function lockHolder(lock) {
   return { tokens, pid, alive: pid === null ? null : pidAlive(pid), ageMs };
 }
 
+/** The recovery command for `lock`, carrying a configured state base so the command looks in the same one. */
+function recoveryCommand(lock, env, force = false) {
+  const set = env.PAIRED_CODING_STATE_DIR;
+  const base = set && set.startsWith("/") ? `PAIRED_CODING_STATE_DIR=${shQuote(set)} ` : "";
+  return `${base}node ${shQuote(PAIR_CLI)} unlock --stale ${force ? "--force " : ""}${shQuote(lock)}`;
+}
+
 /** What holds `lock`, in words, and the way to clear it: the tail of a lock refusal. */
-export function describeHolder(lock, holder) {
-  const who = holder.pid !== null
-    ? `it is held by pid ${holder.pid}, which ${holder.alive ? "is still running" : "is not running"}`
-    : `it holds ${holder.tokens.join(", ")}, which names no process`;
-  return `${who}. If no paired-coding process should be holding it, run: node ${shQuote(PAIR_CLI)} unlock --stale ${shQuote(lock)} (it removes the lock only when its holder is not running)`;
+export function describeHolder(lock, holder, env = process.env) {
+  if (holder.pid === null) {
+    return `it holds ${holder.tokens.join(", ")}, which names no process. If no paired-coding process should be holding it, run: ${recoveryCommand(lock, env)} (it removes the lock only when its holder is not running)`;
+  }
+  if (holder.alive && holder.pid === process.pid) {
+    return `it is held by pid ${holder.pid}, which is still running and is this process: the lock is not reentrant, so this process is waiting on a lock it already holds. That is a paired-coding bug; no recovery command applies while this process runs`;
+  }
+  if (holder.alive) {
+    return `it is held by pid ${holder.pid}, which is still running. Pids are reused, so that process may not be a paired-coding one. If no paired-coding process should be holding it, run: ${recoveryCommand(lock, env)} (it removes the lock only when its holder is not running). If that refuses, confirm no paired-coding holder or waiter is active (ps -p ${holder.pid} -o command=), then run: ${recoveryCommand(lock, env, true)} (it still refuses when that command line names paired-coding or pair-server)`;
+  }
+  return `it is held by pid ${holder.pid}, which is not running. If no paired-coding process should be holding it, run: ${recoveryCommand(lock, env)} (it removes the lock only when its holder is not running)`;
 }
 
 /**
@@ -521,7 +534,17 @@ export function withLock(dir, fn, { waitMs = 10000, staleMs = 15000 } = {}) {
     out = fn();
   } catch (err) {
     const failed = release();
-    if (failed && err !== null && typeof err === "object") err.releaseError = failed;
+    if (failed) {
+      // Best effort: a frozen error, or one whose releaseError cannot be written, is rethrown as
+      // it is, and the release failure goes to errors.log instead of replacing it.
+      let attached = false;
+      if (err !== null && (typeof err === "object" || typeof err === "function")) {
+        try { err.releaseError = failed; attached = err.releaseError === failed; } catch { /* not extensible, or not writable */ }
+      }
+      if (!attached) {
+        logFault(process.env, "lock-release", null, `the locked work threw (${reasonOf(err)}) and releasing the lock ${lock} then failed (${reasonOf(failed)}); the thrown value could not carry it as releaseError, and the lock is left held`, "lib/host-io.mjs withLock");
+      }
+    }
     throw err;
   }
   const failed = release();
@@ -529,33 +552,110 @@ export function withLock(dir, fn, { waitMs = 10000, staleMs = 15000 } = {}) {
   return out;
 }
 
+/** The pending-input directory inside a session directory (the Claude Code hook's queued turns and notices). */
+export const PENDING_DIR = "pending";
+
 /**
- * Remove the lock directory `lock` only when its holder is certain to be gone, the check
- * withLock makes before a takeover, without the age: the recovery for a lock whose holder
- * crashed, run by a person (bin/pair.mjs unlock --stale). The dead holder's token is unlinked
- * by name and then the directory removed, so a lock someone else made meanwhile is untouched.
- * @param {string} lock
- * @returns {{ removed: boolean, message: string }}
+ * Where unlock --stale will act: `lock` canonicalised (the realpath of its directory, plus its
+ * own name, not followed), and only when that is one of the locks paired-coding makes inside
+ * the state base: `<session>/lock` (a session's lock; the /clear carry markers' `carry/lock`
+ * has the same shape) or `<session>/pending/lock` (its queued-input lock). Anything else, a
+ * lock that is itself a symlink or not a directory included, is `{ error }` naming the rule.
+ * @returns {{ path: string, error?: undefined } | { error: string }}
  */
-export function unlockStale(lock) {
-  const holder = lockHolder(lock);
-  if (holder === null) {
-    try { rmdirSync(lock); } catch { /* not there, or filled meanwhile */ }
-    return { removed: true, message: `no lock at ${lock} is held: nothing to remove` };
+export function lockLocation(lock, env = process.env) {
+  const configured = stateBase(env);
+  let base;
+  try { base = realpathSync.native(configured); } catch (err) {
+    return { error: `the state base ${configured} cannot be resolved (${reasonOf(err)}), so no lock can be shown to be inside it` };
   }
-  if (holder.alive !== false) {
-    return { removed: false, message: `refused: the lock ${lock} ${holder.pid !== null ? `is held by pid ${holder.pid}, which is still running (${processCommand(holder.pid)}); end that process if it is not a paired-coding one, then run this again` : `holds ${holder.tokens.join(", ")}, which names no process; remove the directory by hand once you are sure no paired-coding process is running`}` };
+  const abs = resolve(lock);
+  let parent;
+  try { parent = realpathSync.native(dirname(abs)); } catch (err) {
+    return { error: `the directory of ${abs} cannot be resolved (${reasonOf(err)})` };
   }
-  try { unlinkSync(join(lock, holder.tokens[0])); } catch (err) { if (err?.code !== "ENOENT") throw err; }
-  try { rmdirSync(lock); } catch { /* someone else's lock is in its place now */ }
-  return { removed: true, message: `removed the lock ${lock}: its holder, pid ${holder.pid}, is not running` };
+  const path = join(parent, basename(abs));
+  const rel = relative(base, path);
+  const parts = rel === "" || isAbsolute(rel) ? [] : rel.split(sep);
+  const known = parts.at(-1) === LOCK && parts[0] !== ".." && sessionDir(base, parts[0]) !== null
+    && (parts.length === 2 || (parts.length === 3 && parts[1] === PENDING_DIR));
+  if (!known) {
+    return { error: `${path} is not a paired-coding lock: unlock --stale acts only on <session>/lock, <session>/pending/lock and carry/lock inside the state base ${base}` };
+  }
+  let st;
+  try { st = lstatSync(path); } catch (err) {
+    if (err?.code === "ENOENT") return { path };
+    return { error: `${path} cannot be looked at (${reasonOf(err)})` };
+  }
+  if (st.isSymbolicLink()) return { error: `${path} is a symlink, not a lock directory: unlock --stale never follows one` };
+  if (!st.isDirectory()) return { error: `${path} is not a directory, so it is not a lock` };
+  return { path };
 }
 
-/** The command line ps reports for `pid`, or a note that it could not be read. */
+/** The paired-coding names a holder's command line can carry; --force refuses any of them. */
+const PAIRED_PROCESS_NAMES = ["paired-coding", "pair-server"];
+
+/**
+ * Remove a paired-coding lock directory whose holder is certain to be gone, the check withLock
+ * makes before a takeover, without the age: the recovery for a lock whose holder crashed, run
+ * by a person (bin/pair.mjs unlock --stale). The target is checked first (lockLocation): a path
+ * that is not a known lock inside the state base is refused with `code: 2` and nothing is
+ * touched. The dead holder's token is unlinked by name and then the lock directory removed, so
+ * a lock someone else made meanwhile is untouched; no other file and no parent is removed.
+ *
+ * A running pid is refused (`code: 1`): pids are reused, so it may be an unrelated process.
+ * With `force`, the lock is removed anyway when ps reads that pid's command line and it names
+ * neither paired-coding nor pair-server; a command line ps cannot read, one that names either,
+ * and this process's own pid are still refused. `commandOf` reads a pid's command line (ps by
+ * default; null when it cannot be read).
+ * @param {string} lock
+ * @param {{ env?: Record<string, string | undefined>, force?: boolean, commandOf?: (pid: number) => string | null }} [opts]
+ * @returns {{ removed: boolean, code: 0 | 1 | 2, message: string }}
+ */
+export function unlockStale(lock, { env = process.env, force = false, commandOf = processCommand } = {}) {
+  const where = lockLocation(lock, env);
+  if (where.error) return { removed: false, code: 2, message: `refused: ${where.error}` };
+  const path = where.path;
+  const holder = lockHolder(path);
+  if (holder === null) {
+    try { rmdirSync(path); } catch { /* not there, or filled meanwhile */ }
+    return { removed: true, code: 0, message: `no lock at ${path} is held: nothing to remove` };
+  }
+  const drop = () => {
+    try { unlinkSync(join(path, holder.tokens[0])); } catch (err) { if (err?.code !== "ENOENT") throw err; }
+    try { rmdirSync(path); } catch { /* someone else's lock is in its place now */ }
+  };
+  if (holder.alive === false) {
+    drop();
+    return { removed: true, code: 0, message: `removed the lock ${path}: its holder, pid ${holder.pid}, is not running` };
+  }
+  if (holder.pid === null) {
+    return { removed: false, code: 1, message: `refused: the lock ${path} holds ${holder.tokens.join(", ")}, which names no process; remove the directory by hand once you are sure no paired-coding process is running` };
+  }
+  if (holder.pid === process.pid) {
+    return { removed: false, code: 1, message: `refused: the lock ${path} is held by pid ${holder.pid}, which is this process: the lock is not reentrant, and unlock --stale never removes its own process's lock` };
+  }
+  const command = commandOf(holder.pid);
+  const shown = command === null ? "ps could not read its command line" : `ps: ${command}`;
+  if (!force) {
+    return { removed: false, code: 1, message: `refused: the lock ${path} is held by pid ${holder.pid}, which is running (${shown}). Pids are reused, so that process may not be a paired-coding one. To recover by hand, confirm no paired-coding holder or waiter is active (ps -p ${holder.pid} -o command=, and no paired-coding session is open on this worktree), then run: ${recoveryCommand(path, env, true)} (it still refuses when that command line names paired-coding or pair-server). See "Lock recovery" in the paired-coding README` };
+  }
+  if (command === null) {
+    return { removed: false, code: 1, message: `refused: the lock ${path} is held by pid ${holder.pid}, which is running, and ps could not read its command line, so --force cannot show it is not a paired-coding process` };
+  }
+  const named = PAIRED_PROCESS_NAMES.find((n) => command.includes(n));
+  if (named) {
+    return { removed: false, code: 1, message: `refused: the lock ${path} is held by pid ${holder.pid}, whose command line names ${named} (ps: ${command}): it is a running paired-coding holder, and --force never removes its lock. Wait for it to finish, then run unlock --stale again` };
+  }
+  drop();
+  return { removed: true, code: 0, message: `removed the lock ${path}: pid ${holder.pid} is running but its command line (ps: ${command}) names no paired-coding process, so its token was left by a holder whose pid has been reused` };
+}
+
+/** The command line ps reports for `pid`, or null when it could not be read. */
 function processCommand(pid) {
   const ps = spawnSync("/bin/ps", ["-o", "command=", "-p", String(pid)], { encoding: "utf8" });
   const out = ps.status === 0 ? ps.stdout.trim() : "";
-  return out ? `ps: ${out}` : "ps could not read its command";
+  return out || null;
 }
 
 /**

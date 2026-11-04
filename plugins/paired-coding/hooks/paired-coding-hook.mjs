@@ -36,7 +36,7 @@ import { appendFileSync, closeSync, existsSync, fstatSync, openSync, readFileSyn
 import { dirname, join, relative } from "node:path";
 import { fileURLToPath } from "node:url";
 import { CARRIED_PHRASE, PAIR_TOOLS, isStopPhrase } from "../core/gate.mjs";
-import { activated, findRoot, loadState, loadStateReport, logFault as logFaultLine, reasonOf, stateBase, withLock } from "../lib/host-io.mjs";
+import { PENDING_DIR, activated, findRoot, loadState, loadStateReport, logFault as logFaultLine, reasonOf, stateBase, withLock } from "../lib/host-io.mjs";
 import { RECEIPT_FILE, carryInto, endSession, pairingCarry, pairingOrUncertain, recordTrustedInput, sessionDirFor, takeCarryMarker, verdict, writeCarryMarker } from "../lib/verbs.mjs";
 import { bareToolName, hostAllowFor, writeBinding } from "../server/binding.mjs";
 
@@ -168,12 +168,11 @@ function deny(reason) {
   };
 }
 
-const PENDING = "pending";
 const PENDING_FILE = "inputs.jsonl";
 
 /** UserPromptSubmit: queue the turn. Its provenance is not on disk yet. */
 export function queueInput(dir, input) {
-  const pdir = join(dir, PENDING);
+  const pdir = join(dir, PENDING_DIR);
   withLock(pdir, () => {
     const item = {
       promptId: typeof input.prompt_id === "string" ? input.prompt_id : "",
@@ -207,7 +206,7 @@ export function stopOutcome(r, dir) {
  * caller to surface on this event or stash for the next (stashNotices).
  */
 export function resolvePending(dir, { waitMs = 2000 } = {}) {
-  const pdir = join(dir, PENDING);
+  const pdir = join(dir, PENDING_DIR);
   const path = join(pdir, PENDING_FILE);
   const notices = [];
   withLock(pdir, () => {
@@ -243,7 +242,7 @@ const NOTICES_FILE = "notices.jsonl";
 /** Keep outcome notes an event cannot carry (Stop) for the next event that can. */
 function stashNotices(dir, notices) {
   if (notices.length === 0) return;
-  const pdir = join(dir, PENDING);
+  const pdir = join(dir, PENDING_DIR);
   withLock(pdir, () => {
     appendFileSync(join(pdir, NOTICES_FILE), `${notices.map((n) => JSON.stringify(n)).join("\n")}\n`, { mode: 0o600 });
   });
@@ -251,7 +250,7 @@ function stashNotices(dir, notices) {
 
 /** Take (read and delete) the stashed outcome notes. */
 function takeNotices(dir) {
-  const pdir = join(dir, PENDING);
+  const pdir = join(dir, PENDING_DIR);
   const path = join(pdir, NOTICES_FILE);
   return withLock(pdir, () => {
     let text;
