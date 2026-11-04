@@ -20,6 +20,10 @@ it, keeping a record of what it did and asked, and a vendored set of engineering
 - **[ledger](#ledger)** — a durable, id'd record of the questions an agent asks you and the
   choices it makes without asking, in one SQLite file; on by default and off per folder, with
   hooks that keep every question and your plain-words answer to it on a row.
+- **[plugin-kit](plugins/plugin-kit/README.md)** — start a new plugin here that meets the test
+  bar on day one: the fail-open hook runner, one handler per event, the five-fault contract test,
+  the canary live run, and a skill with its "When this can't run" section, scaffolded by
+  `/plugin-kit:new-plugin`; `ledger gate check` passes on it before the first rule is written.
 - **[as2-skills](plugins/as2-skills/README.md)** — the 22 engineering skills of agent-system 2.0,
   vendored from four upstream skill packs at pinned releases, with frontmatter claude.ai accepts.
   Install with `/plugin install as2-skills@jo-wolff-plugins`; skills only.
@@ -45,6 +49,7 @@ the receipt.
 /plugin install pattern-check@jo-wolff-plugins
 /plugin install ledger@jo-wolff-plugins
 /plugin install as2-skills@jo-wolff-plugins
+/plugin install plugin-kit@jo-wolff-plugins
 ```
 
 On OMP, from a shell:
