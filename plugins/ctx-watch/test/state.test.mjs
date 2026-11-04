@@ -7,7 +7,7 @@ import assert from "node:assert/strict";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { EMPTY, step, popupDelivered, readState, writeState, validateState, statePath, stateDir, timerOverdue, STRIKES_TO_DOWN, DEFAULT_INTERVAL_S, MAX_STRIKES } from "../lib/state.mjs";
+import { EMPTY, step, popupDelivered, popupSettled, readState, writeState, validateState, statePath, stateDir, timerOverdue, STRIKES_TO_DOWN, DEFAULT_INTERVAL_S, MAX_STRIKES, INTERVAL_BOUNDS, PENDING_STALE_MS } from "../lib/state.mjs";
 
 const T0 = 1_793_784_000_000;
 const pass = { ok: true, reason: null, healed: null };
@@ -78,6 +78,43 @@ test("a popup that could not be delivered does not use up the episode: the next 
   assert.equal(long.popupFailReason.length, 200, "the reason is bounded");
 });
 
+test("a popup still up after the grace is pending, not delivered: only a confirmed exit 0 (or an acknowledgement) latches; a late failure or a supervisor that never reports reopens the episode", () => {
+  const down = step(step(EMPTY, fail, T0).state, fail, T0 + 1);
+  const pending = popupDelivered(down.state, { started: true, pending: true, token: "t1", detail: "popup started (test)" }, T0 + 1);
+  assert.equal(pending.popupShown, false, "surviving the grace is not delivery");
+  assert.deepEqual(pending.popupPending, { token: "t1", since: T0 + 1 });
+  assert.equal(pending.lastPopupAt, null);
+  assert.equal(step(pending, fail, T0 + 2).popup, false, "no second dialog while the first may still be up");
+  assert.equal(step(pending, pass, T0 + 2).state.popupPending, null, "a pass re-arms and forgets it");
+
+  const outcome = (o) => ({ token: "t1", at: T0 + 5, bin: "/usr/bin/osascript", code: 0, signal: null, error: null, acknowledged: false, ...o });
+  assert.deepEqual(popupSettled(pending, null, T0 + 2), { state: pending, line: null }, "no outcome yet: still pending");
+  assert.deepEqual(popupSettled(pending, outcome({ token: "t0", code: 7 }), T0 + 2), { state: pending, line: null }, "another popup's outcome is not this one's");
+  assert.deepEqual(popupSettled(down.state, outcome({ code: 7 }), T0 + 2), { state: down.state, line: null }, "nothing pending: nothing to settle");
+
+  const late = popupSettled(pending, outcome({ code: 7 }), T0 + 6);
+  assert.equal(late.state.popupShown, false);
+  assert.equal(late.state.popupPending, null);
+  assert.equal(late.state.popupFailedAt, T0 + 5);
+  assert.equal(late.state.popupFailReason, "popup not delivered: /usr/bin/osascript ended with exit 7 after the grace");
+  assert.equal(late.line, "popup not delivered: /usr/bin/osascript ended with exit 7 after the grace; the popup is due again");
+  assert.equal(step(late.state, fail, T0 + 6).popup, true, "the episode's popup is open again");
+
+  const confirmed = popupSettled(pending, outcome({ code: 0 }), T0 + 6);
+  assert.deepEqual({ shown: confirmed.state.popupShown, pending: confirmed.state.popupPending, at: confirmed.state.lastPopupAt }, { shown: true, pending: null, at: T0 + 1 });
+  assert.equal(confirmed.line, "popup delivered: /usr/bin/osascript ended with exit 0");
+  assert.equal(step(confirmed.state, fail, T0 + 7).popup, false);
+  const acknowledged = popupSettled(pending, outcome({ code: 1, acknowledged: true }), T0 + 6);
+  assert.equal(acknowledged.state.popupShown, true, "a person dismissing the dialog (-128) is an acknowledgement");
+
+  assert.deepEqual(popupSettled(pending, null, T0 + 1 + PENDING_STALE_MS), { state: pending, line: null }, "at the bound: still waiting");
+  const lost = popupSettled(pending, null, T0 + 2 + PENDING_STALE_MS);
+  assert.equal(lost.state.popupShown, false);
+  assert.equal(lost.state.popupPending, null);
+  assert.match(lost.state.popupFailReason, /^popup not confirmed: no outcome from its supervisor within \d+ s$/);
+  assert.equal(step(lost.state, fail, T0 + 3 + PENDING_STALE_MS).popup, true);
+});
+
 test("a passing tick closes the episode and re-arms the popup; the next down pops again", () => {
   let s = popupDelivered(step(step(EMPTY, fail, T0).state, fail, T0 + 1).state, shown, T0 + 1);
   assert.equal(s.episode, "down");
@@ -123,11 +160,15 @@ test("validateState: known fields in shape pass (unknown dropped); each field ou
     [{ lastTickAt: 9e15 }, "lastTickAt is 9000000000000000, not epoch ms | null"],
     [{ intervalS: "300" }, 'intervalS is "300", not a whole number 30..604800 | null'],
     [{ intervalS: 10 }, "intervalS is 10, not a whole number 30..604800 | null"],
+    [{ intervalS: 604_801 }, "intervalS is 604801, not a whole number 30..604800 | null"],
+    [{ intervalS: INTERVAL_BOUNDS.min - 1 }, "intervalS is 29, not a whole number 30..604800 | null"],
     [{ downSince: {} }, "downSince is {}, not epoch ms | null"],
     [{ firstSeenAt: true }, "firstSeenAt is true, not epoch ms | null"],
     [{ lastPopupAt: [] }, "lastPopupAt is [], not epoch ms | null"],
     [{ popupFailedAt: "x" }, 'popupFailedAt is "x", not epoch ms | null'],
     [{ popupFailReason: 7 }, "popupFailReason is 7, not a string | null"],
+    [{ popupPending: { token: "", since: 1 } }, 'popupPending is {"token":"","since":1}, not { token, since } | null'],
+    [{ popupPending: { token: "t", since: -1 } }, 'popupPending is {"token":"t","since":-1}, not { token, since } | null'],
     [{ lastProbe: "fail" }, 'lastProbe is "fail", not { at, ok, reason, healed } | null'],
     [{ lastProbe: { at: "now", ok: true } }, 'lastProbe is {"at":"now","ok":true}, not { at, ok, reason, healed } | null'],
     [{ lastProbe: { at: 1, ok: "true" } }, 'lastProbe is {"at":1,"ok":"true"}, not { at, ok, reason, healed } | null'],

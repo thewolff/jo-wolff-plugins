@@ -29,7 +29,7 @@ whether ctx is running, or when a ctx search reports a stale or unavailable daem
    `launchctl bootstrap gui/<uid> <plist>` line to run from a GUI login Terminal. Never run
    `launchctl bootstrap` yourself; the timer belongs to their login session.
 5. `node "${CLAUDE_PLUGIN_ROOT}/scripts/ctx-watch.mjs" status` shows the last tick, the episode
-   (`up`, `strike`, `down`, with the last popup shown or not), the plist path, and whether
+   (`up`, `strike`, `down`, with the last popup shown, pending, or not shown), the plist path, and whether
    launchd has the job, for a report. `prune` (same script) rotates the logs under
    `${XDG_STATE_HOME:-~/.local/state}/ctx-watch` and removes rotated ones older than 30 days;
    the nightly canary runs it, so it is rarely needed by hand.
@@ -54,12 +54,14 @@ whether ctx is running, or when a ctx search reports a stale or unavailable daem
 - `install` printed `plutil not found` or `launchctl not found` / `launchctl could not run`: not
   macOS, or a sandbox refused them. The plist was still written; tell the person to run
   `install` again from a normal Terminal, or to lint and bootstrap the printed path by hand.
-- `install` exited 1 (`interval must be …`, `no executable \`ctx\` on PATH`, `--ctx … is not an
+- `install` exited 1 (`interval must be …` (30 to 604800 s), `no executable \`ctx\` on PATH`, `--ctx … is not an
   executable file`, `plutil -lint failed`): say the line; a lint failure is a bug in this
   plugin, so give the person the plist path to attach to an issue.
-- `tick` printed `popup not shown: …`: the dialog could not open (no GUI session, no
-  `osascript`); it is tried again on the next failing tick. Nothing to do unless it repeats
-  while the person is logged in, then tell them the reason.
+- `tick` printed `popup not shown: …` or `popup not delivered: …`: the dialog could not open
+  or failed after it started (no GUI session, no `osascript`); it is tried again on the next
+  failing tick. Nothing to do unless it repeats while the person is logged in, then tell them
+  the reason. `status` saying `popup up since …, not confirmed yet` is a dialog that may still
+  be on screen; it is not a failure.
 - `status` or `tick` printed `state not written to <path>`: the state directory is not
   writable. Tell the person the path; the probe and the line still work without it.
 - The command printed `ctx-watch SessionStart failed open: <why>`: the hook let the session

@@ -289,6 +289,7 @@ test("check with a deadline: the four spawns share one clock; each gets what is 
   const r = check({ run, exists: () => true, now, timeoutMs: 1_200, deadlineMs: 3_000 });
   assert.equal(r.ok, false);
   assert.equal(r.timedOut, true);
+  assert.equal(r.budgetExhausted, true);
   assert.deepEqual(calls.map((c) => c.argv), [STATUS_ARGV.join(" "), MODE_ARGV.join(" "), HEAL_ARGV.join(" ")], "no fourth spawn: nothing left on the clock");
   assert.deepEqual(calls.map((c) => c.timeoutMs), [1_200, 1_200, 1_000], "the third spawn gets what is left, not its own 1200");
   assert.equal(r.healed.attempted, true);
@@ -315,6 +316,48 @@ test("check with a deadline: the four spawns share one clock; each gets what is 
   const free = check({ run: (argv) => ((clock += 5_000), argv[1] === "daemon" ? good(NOT_RUNNING) : good(MODE)), exists: () => true, now, timeoutMs: 1_200 });
   assert.equal(free.timedOut, false);
   assert.match(free.reason, /^the ctx daemon is not running/);
+});
+
+test("check with an exhausted deadline never spawns: deadlineMs 0 skips the first probe and says the budget ran out; no spawn ever gets timeout 0", () => {
+  const calls = [];
+  const r = check({ run: (argv, _e, timeoutMs) => (calls.push(timeoutMs), good(HEALTHY)), exists: () => true, now: () => NOW, timeoutMs: 1_200, deadlineMs: 0 });
+  assert.deepEqual(calls, [], "nothing was spawned");
+  assert.equal(r.ok, false);
+  assert.equal(r.timedOut, true);
+  assert.equal(r.budgetExhausted, true);
+  assert.equal(r.first, null);
+  assert.equal(r.healed, null);
+  assert.equal(r.reason, "check timed out after 0 ms (no time left to probe ctx)");
+  assert.ok(needsYouLine(r).length <= LINE_MAX);
+
+  // The heal computes its budget once per spawn: the clock runs out between the mode read and
+  // the heal, so the heal is skipped rather than spawned with 0 (the re-probe case is above).
+  let clock = NOW;
+  const seen = [];
+  const run = (argv, _e, timeoutMs) => {
+    seen.push({ argv: argv.join(" "), timeoutMs });
+    clock += argv[3] === "auto" ? 1_000 : argv[1] === "index" ? 2_000 : 1_000;
+    if (argv[1] === "daemon") return good(NOT_RUNNING);
+    if (argv[3] === "auto") return good(HEALED);
+    return good(MODE);
+  };
+  const cut = check({ run, exists: () => true, now: () => clock, timeoutMs: 5_000, deadlineMs: 3_000 });
+  assert.deepEqual(seen.map((c) => c.argv), [STATUS_ARGV.join(" "), MODE_ARGV.join(" ")]);
+  assert.ok(seen.every((c) => c.timeoutMs > 0), JSON.stringify(seen));
+  assert.equal(cut.timedOut, true);
+  assert.equal(cut.budgetExhausted, true);
+  assert.equal(cut.healed.detail, "not attempted: the check's deadline passed");
+
+  const ok = check({ run: () => good(HEALTHY), now: () => NOW, deadlineMs: 3_000 });
+  assert.equal(ok.budgetExhausted, false);
+});
+
+test("runCtx with no time left does not spawn", () => {
+  const missing = join(FIX_DIR, "definitely-not-a-ctx-watch-executable");
+  for (const t of [0, -5]) {
+    const r = runCtx([missing, "daemon", "status"], {}, t);
+    assert.deepEqual(r, { code: null, stdout: "", stderr: "", error: `not run: no time left (timeout ${t} ms)` }, "an ENOENT here would mean it spawned");
+  }
 });
 
 test("needsYouLine: null when ok; `ctx-watch: <reason>; fix: `<command>`` at most 160 characters", () => {

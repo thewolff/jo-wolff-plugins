@@ -30,7 +30,7 @@
 import { spawnSync } from "node:child_process";
 import { accessSync, constants, mkdirSync, statSync, writeFileSync } from "node:fs";
 import { isAbsolute, join, resolve } from "node:path";
-import { stateDir as defaultStateDir } from "./state.mjs";
+import { stateDir as defaultStateDir, INTERVAL_BOUNDS } from "./state.mjs";
 
 export const LABEL = "com.jo-wolff-plugins.ctx-watch";
 export const DEFAULT_PATH = "/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin";
@@ -82,12 +82,16 @@ export function resolveCtx(path, { name = "ctx", exists = executable } = {}) {
   return null;
 }
 
-/** The plist text. Throws when a path is not absolute (the one thing launchd will not forgive). */
+/**
+ * The plist text. Throws when a path is not absolute (the one thing launchd will not forgive) or
+ * the interval is outside INTERVAL_BOUNDS (the range the state file can hold); install builds the
+ * text before it creates a directory or writes a file, so a refusal leaves nothing behind.
+ */
 export function plistText({ label = LABEL, node, cliPath, interval = 300, logDir, path = DEFAULT_PATH, stateDir, ctx }) {
   for (const [k, v] of Object.entries({ node, cliPath, logDir, stateDir, ctx })) {
     if (typeof v !== "string" || !isAbsolute(v)) throw new Error(`plist ${k} must be an absolute path, got ${JSON.stringify(v)}`);
   }
-  if (!Number.isInteger(interval) || interval < 30) throw new Error(`interval must be a whole number of seconds, 30 or more, got ${JSON.stringify(interval)}`);
+  if (!Number.isInteger(interval) || interval < INTERVAL_BOUNDS.min || interval > INTERVAL_BOUNDS.max) throw new Error(`interval must be a whole number of seconds, ${INTERVAL_BOUNDS.min}..${INTERVAL_BOUNDS.max}, got ${JSON.stringify(interval)}`);
   const args = [node, cliPath, "tick", "--state-dir", stateDir, "--ctx", ctx];
   return `<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">

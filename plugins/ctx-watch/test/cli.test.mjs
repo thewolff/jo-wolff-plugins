@@ -1,6 +1,7 @@
 // test/cli.test.mjs — main(argv, deps) for every verb, with the probes, popup, plutil and
 // launchctl injected: check prints the line or nothing (exit 0 always); tick drives the episode
-// through strike, down with one delivered popup, a popup that failed and is retried, and
+// through strike, down with one delivered popup, a popup that failed and is retried, a popup
+// that failed after the grace (a fake osascript under the real supervisor) and is reopened, and
 // recovery, and leaves the state file; install writes the plist (state directory and ctx
 // pinned) and records the interval; the timer's own arguments reach the same state file the
 // hook reads; status reads it all back; prune rotates and removes. Then the script as a
@@ -18,6 +19,7 @@ import { main, parseArgs, HELP, CLI_PATH } from "../scripts/ctx-watch.mjs";
 import { statePath, readState, writeState, EMPTY } from "../lib/state.mjs";
 import { LABEL } from "../lib/launchd.mjs";
 import { MAX_LOG_BYTES } from "../lib/retention.mjs";
+import { showPopup, readOutcome } from "../lib/popup.mjs";
 
 const FIX_DIR = join(dirname(fileURLToPath(import.meta.url)), "fixtures");
 const HEALTHY = readFileSync(join(FIX_DIR, "ctx-daemon-status.txt"), "utf8");
@@ -167,6 +169,46 @@ test("tick: a popup that could not be delivered is said, recorded, and tried aga
   }
 });
 
+test("tick: a popup alive at the grace that later exits 7 never latches; the next failing tick reads the supervisor's outcome, reopens the episode and pops again (fake osascript, never a dialog)", async () => {
+  const b = box();
+  try {
+    const file = statePath(b.env);
+    const dir = join(b.env.XDG_STATE_HOME, "ctx-watch");
+    mkdirSync(b.root, { recursive: true });
+    const fake = join(b.root, "osascript-7");
+    writeFileSync(fake, "#!/bin/sh\n/bin/sleep 1.5\nexit 7\n");
+    chmodSync(fake, 0o755);
+    const real = (o) => showPopup({ ...o, bin: fake, graceMs: 150 });
+    const deps = (at, popup) => ({ env: b.env, now: () => at, run: fakeCtx([NOT_RUNNING]).run, exists: () => true, popup });
+    await main(["tick"], deps(NOW, () => assert.fail("strike 1: no popup")));
+    const t2 = await main(["tick"], deps(NOW + 1, real));
+    assert.match(t2.text, /episode down, strikes 2\npopup started \(.*osascript-7 under supervisor pid \d+, gives up after 3600 s\); delivered once it exits 0$/);
+    let s = readState(file);
+    assert.equal(s.popupShown, false, "alive at the grace is not delivered");
+    assert.equal(s.popupPending.since, NOW + 1);
+    const token = s.popupPending.token;
+    const st = await main(["status"], { env: b.env, now: () => NOW + 2, check: () => ({ missing: true, code: null, output: "" }) });
+    assert.match(st.text, /\nepisode: down \(strikes 2, down since \d{4}-.*Z, popup up since \d{4}-.*Z, not confirmed yet\)\n/);
+    const blocked = await main(["tick"], deps(NOW + 2, () => assert.fail("no second dialog while the first may be up")));
+    assert.match(blocked.text, /episode down, strikes 3$/);
+
+    // The supervisor outlives this tick (detached) and records the late exit.
+    const end = Date.now() + 10_000;
+    while (readOutcome(join(dir, "popup.json"))?.token !== token && Date.now() < end) await new Promise((r) => setTimeout(r, 25));
+    assert.equal(readOutcome(join(dir, "popup.json"))?.code, 7);
+    assert.equal(readState(file).popupShown, false, "the outcome file is the supervisor's; state.json is only the tick's");
+
+    let asked = 0;
+    const t4 = await main(["tick"], deps(NOW + 3, async () => (asked++, { started: true, detail: "popup started (test)" })));
+    assert.equal(asked, 1, "the episode's popup reopened and was asked for again");
+    assert.match(t4.text, /^popup not delivered: .*osascript-7 ended with exit 7 after the grace; the popup is due again\n\d{4}-.*Z fail: .*episode down, strikes 4\npopup started \(test\)$/);
+    s = readState(file);
+    assert.deepEqual({ popupShown: s.popupShown, popupPending: s.popupPending, popupFailReason: s.popupFailReason }, { popupShown: true, popupPending: null, popupFailReason: null });
+  } finally {
+    b.release();
+  }
+});
+
 test("tick: a heal that brings the daemon back is a pass with the heal named, and no strike", async () => {
   const b = box();
   try {
@@ -260,6 +302,13 @@ test("install: a bad interval, a failed lint, or no ctx is exit 1 and no interva
     assert.equal(r.code, 1);
     assert.match(r.text, /^ctx-watch install: interval must be/);
     assert.equal(existsSync(statePath(b.env)), false);
+    const tooLong = await main(["install", "--interval", "604801"], { env: b.env, check: () => ({ missing: true, code: null, output: "" }), node: "/Users/example/bin/node", uid: 501, ctxExists });
+    assert.equal(tooLong.code, 1);
+    assert.match(tooLong.text, /^ctx-watch install: interval must be a whole number of seconds, 30\.\.604800, got 604801/);
+    assert.equal(existsSync(join(b.env.XDG_STATE_HOME, "ctx-watch")), false, "no plist, no state: refused before any artifact");
+    const noValue = await main(["install", "--interval"], { env: b.env });
+    assert.equal(noValue.code, 2);
+    assert.match(noValue.text, /^ctx-watch: --interval needs a value\n/);
     const noCtx = await main(["install"], { env: b.env, check: () => ({ missing: true, code: null, output: "" }), node: "/Users/example/bin/node", uid: 501, ctxExists: () => false });
     assert.equal(noCtx.code, 1);
     assert.match(noCtx.text, /^ctx-watch install: no executable `ctx` on PATH \(\/Users\/example\/.local\/bin:\/usr\/bin:\/bin\)/);
@@ -292,7 +341,7 @@ test("tick rotates a log over the bound before probing; prune rotates, removes r
     writeFileSync(join(dir, "launchd", `${LABEL}.err.log`), "e".repeat(MAX_LOG_BYTES + 5));
     const dry = await main(["prune", "--dry-run"], { env: b.env, now: () => NOW });
     assert.equal(dry.code, 0);
-    assert.match(dry.text, /^would rotate .*\.err\.log to .*\.err\.log\.1\npruned: 2 file\(s\), \d+ bytes freed \(dry run\); kept 0$/);
+    assert.match(dry.text, new RegExp(`^would rotate .*\\.err\\.log to .*\\.err\\.log\\.1\\npruned: 2 file\\(s\\), ${MAX_LOG_BYTES + 1 + 2} bytes freed \\(dry run\\); kept 1$`), "the same plan as the real prune below");
     assert.ok(existsSync(`${out}.1`), "a dry run removes nothing");
     assert.ok(existsSync(join(dir, "launchd", `${LABEL}.err.log`)) && !existsSync(join(dir, "launchd", `${LABEL}.err.log.1`)), "and rotates nothing");
     const p = await main(["prune"], { env: b.env, now: () => NOW });
@@ -308,6 +357,14 @@ test("tick rotates a log over the bound before probing; prune rotates, removes r
     const bad = await main(["prune", "--days", "x"], { env: b.env });
     assert.equal(bad.code, 2);
     assert.match(bad.text, /^ctx-watch: --days must be a whole number of days, got "x"\n/);
+    // A valueless --days is a usage error, not a one-day prune (Number(true) is 1).
+    const yesterday = new Date(NOW - 2 * 86_400_000);
+    utimesSync(join(dir, "launchd", `${LABEL}.err.log.1`), yesterday, yesterday);
+    const valueless = await main(["prune", "--days"], { env: b.env, now: () => NOW });
+    assert.equal(valueless.code, 2);
+    assert.match(valueless.text, /^ctx-watch: --days needs a value\n/);
+    assert.ok(existsSync(join(dir, "launchd", `${LABEL}.err.log.1`)), "nothing pruned");
+    assert.equal((await main(["prune", "--days", "--dry-run"], { env: b.env, now: () => NOW })).code, 2, "a flag where the value belongs is no value");
     const none = await main(["prune"], { env: { XDG_STATE_HOME: join(b.root, "nowhere") }, now: () => NOW });
     assert.equal(none.text, "pruned: 0 file(s), 0 bytes freed; kept 0", "no state directory is nothing to do");
   } finally {

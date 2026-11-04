@@ -3,11 +3,13 @@
 //
 //   check [--json]           one probe (heal and re-probe on failure); prints the needs-you line
 //                            or nothing; --json prints the whole result. Exit 0 always.
-//   tick                     the launchd timer's run: rotate the logs over their bound, probe,
+//   tick                     the launchd timer's run: rotate the logs over their bound, settle a
+//                            popup an earlier tick left pending (from <state>/popup.json), probe,
 //                            advance the episode state in <state>/state.json, show the popup on
-//                            the second failing tick in a row (once per episode, delivered;
-//                            a popup that could not be shown is tried again next failing tick;
-//                            re-armed by a passing tick). One summary line.
+//                            the second failing tick in a row (once per episode, once its
+//                            delivery is confirmed; a popup that could not be shown, or that
+//                            failed after the grace, is tried again next failing tick; re-armed
+//                            by a passing tick). One summary line.
 //   install [--interval 300] write <state>/launchd/com.jo-wolff-plugins.ctx-watch.plist, lint it,
 //                            print the `launchctl bootstrap` line. Never bootstraps. The plist
 //                            pins this script, the state directory and the ctx executable.
@@ -28,9 +30,9 @@ import { fileURLToPath } from "node:url";
 import { realpathSync } from "node:fs";
 import { resolve } from "node:path";
 import { check as runCheckOnce, needsYouLine, CTX } from "../lib/probe.mjs";
-import { readState, writeState, statePath, stateDir as defaultStateDir, step, popupDelivered, timerOverdue } from "../lib/state.mjs";
+import { readState, writeState, statePath, stateDir as defaultStateDir, step, popupDelivered, popupSettled, timerOverdue } from "../lib/state.mjs";
 import { install, uninstall, loaded, plistPath } from "../lib/launchd.mjs";
-import { showPopup } from "../lib/popup.mjs";
+import { showPopup, readOutcome, outcomePath } from "../lib/popup.mjs";
 import { rotateLogs, prune, DEFAULT_RETENTION_DAYS } from "../lib/retention.mjs";
 
 export const CLI_PATH = fileURLToPath(import.meta.url);
@@ -75,7 +77,10 @@ export async function main(argv, deps = {}) {
   } catch (err) {
     return { code: 2, text: `ctx-watch: ${err.message}\n${HELP}` };
   }
-  if (opts["state-dir"] === true || opts.ctx === true) return { code: 2, text: `ctx-watch: --${opts["state-dir"] === true ? "state-dir" : "ctx"} needs a value\n${HELP}` };
+  // An option that takes a value but got none parses as `true`, and Number(true) is 1: refuse it
+  // here, before `--days` becomes a one-day prune or `--interval` a one-second timer.
+  const valueless = ["state-dir", "ctx", "days", "interval"].find((k) => opts[k] === true);
+  if (valueless) return { code: 2, text: `ctx-watch: --${valueless} needs a value\n${HELP}` };
   const dir = opts["state-dir"] ? resolve(cwd, opts["state-dir"]) : defaultStateDir(env);
   const ctx = opts.ctx ? resolve(cwd, opts.ctx) : CTX;
   const file = statePath(env, dir);
@@ -93,10 +98,13 @@ export async function main(argv, deps = {}) {
       lines.push(...rot.problems);
       const result = runCheckOnce(probeDeps);
       const at = now();
-      let { state, popup: wantPopup } = step(readState(file), result, at);
+      const outcomeFile = outcomePath(dir);
+      const settled = popupSettled(readState(file), readOutcome(outcomeFile), at);
+      if (settled.line) lines.push(settled.line);
+      let { state, popup: wantPopup } = step(settled.state, result, at);
       lines.push(`${iso(at)} ${result.ok ? "pass" : "fail"}: ${result.ok ? result.summary : result.reason}${result.healed ? ` | heal: ${result.healed.detail}` : ""} | episode ${state.episode}, strikes ${state.strikes}`);
       if (wantPopup) {
-        const outcome = await popup({ text: `${needsYouLine(result)}\n\nThe daemon has failed ${state.strikes} checks in a row (since ${iso(state.downSince)}). Open a Terminal and run the fix; ctx-watch checks again in ${state.intervalS ?? 300} s.` });
+        const outcome = await popup({ text: `${needsYouLine(result)}\n\nThe daemon has failed ${state.strikes} checks in a row (since ${iso(state.downSince)}). Open a Terminal and run the fix; ctx-watch checks again in ${state.intervalS ?? 300} s.`, outcomeFile, token: `${at}-${process.pid}` });
         state = popupDelivered(state, outcome, at);
         lines.push(outcome.started ? outcome.detail : `${outcome.detail}; will try again on the next failing tick`);
       }
@@ -115,9 +123,15 @@ export async function main(argv, deps = {}) {
     case "uninstall":
       return uninstall({ env, uid, stateDir: dir });
     case "status": {
-      const state = readState(file);
+      const state = popupSettled(readState(file), readOutcome(outcomePath(dir)), now()).state;
       const t = timerOverdue(state, now());
-      const popupLine = state.popupShown ? `, popup shown ${iso(state.lastPopupAt)}` : state.popupFailedAt ? `, popup not shown ${iso(state.popupFailedAt)}: ${state.popupFailReason}` : "";
+      const popupLine = state.popupShown
+        ? `, popup shown ${iso(state.lastPopupAt)}`
+        : state.popupPending
+          ? `, popup up since ${iso(state.popupPending.since)}, not confirmed yet`
+          : state.popupFailedAt
+            ? `, popup not shown ${iso(state.popupFailedAt)}: ${state.popupFailReason}`
+            : "";
       const lines = [
         `state file: ${file}`,
         `ctx: ${ctx}`,

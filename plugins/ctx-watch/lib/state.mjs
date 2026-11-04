@@ -5,7 +5,10 @@
 //
 //   episode          "up" | "strike" | "down"
 //   strikes          failing ticks in a row (0 when up)
-//   popupShown       true once this episode's popup was delivered; re-armed by a passing tick
+//   popupShown       true once this episode's popup was delivered (osascript exited 0, or the
+//                    person dismissed it); re-armed by a passing tick
+//   popupPending     { token, since } while a popup that outlived the grace has not ended:
+//                    not delivered yet, and no second dialog is asked for meanwhile
 //   popupFailedAt    ms of the last popup that could not be delivered this episode, or null
 //   popupFailReason  why, or null
 //   downSince        ms of the tick that opened the episode's down, or null
@@ -19,9 +22,14 @@
 // step(state, result, now) → { state, popup }: a failing probe strikes once, then goes down on
 // the second failing tick in a row and asks for the popup, once per episode; a passing probe
 // closes the episode and re-arms. `popup: true` is a request: the tick shows the dialog and
-// then calls popupDelivered(state, outcome, now), which latches `popupShown` only on a delivery
-// that worked, so a popup that could not be shown (no osascript, no GUI session) is tried again
-// on the next failing tick. Never throws.
+// then calls popupDelivered(state, outcome, now), which latches `popupShown` only on a confirmed
+// delivery, records a popup still running after the grace as `popupPending`, and leaves the
+// latch open on a failure, so a popup that could not be shown is tried again on the next failing
+// tick. Each tick first calls popupSettled(state, readOutcome(<state>/popup.json), now): the
+// supervisor's outcome for the pending token latches a delivery or reopens the episode on a late
+// failure; a pending popup with no outcome after PENDING_STALE_MS reopens it too. state.json has
+// one writer per tick and popup.json one per supervisor, so neither overwrites the other. Never
+// throws.
 //
 // readState(path) is the file, validated field by field (the enums, booleans, bounded counters
 // and whole-epoch-ms stamps above; unknown fields dropped), or EMPTY when the file is missing,
@@ -32,15 +40,23 @@
 import { appendFileSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
+import { GIVE_UP_SECS, delivered, describeExit } from "./popup.mjs";
 
 export const PLUGIN = "ctx-watch";
 export const DEFAULT_INTERVAL_S = 300;
 export const STRIKES_TO_DOWN = 2;
 /** More failing ticks in a row than a year of 30 s ticks: anything beyond is not a count. */
 export const MAX_STRIKES = 1_100_000;
-export const MIN_INTERVAL_S = 30;
-export const MAX_INTERVAL_S = 86_400 * 7;
+/**
+ * The StartInterval range, in seconds: `install` refuses anything outside it before writing the
+ * plist, and readState treats a state file holding anything outside it as out of shape. One
+ * constant so the producer and the reader cannot disagree (a week is the most a dead-man's switch
+ * at twice the interval is still worth having).
+ */
+export const INTERVAL_BOUNDS = Object.freeze({ min: 30, max: 86_400 * 7 });
 const MAX_DATE_MS = 8.64e15;
+/** How long a pending popup may go without an outcome: its give-up plus ten minutes (a supervisor killed with its login session never writes one). */
+export const PENDING_STALE_MS = (GIVE_UP_SECS + 600) * 1000;
 
 /** `${XDG_STATE_HOME:-~/.local/state}/ctx-watch` (the hook runner's rule, repeated so the CLI shares it). */
 export function stateDir(env = process.env) {
@@ -58,6 +74,7 @@ export const EMPTY = Object.freeze({
   popupShown: false,
   popupFailedAt: null,
   popupFailReason: null,
+  popupPending: null,
   downSince: null,
   lastTickAt: null,
   intervalS: null,
@@ -71,6 +88,7 @@ const nullOr = (f) => (v) => v === null || f(v);
 const isBool = (v) => typeof v === "boolean";
 const isStr = (v) => typeof v === "string";
 const isProbe = (v) => v && typeof v === "object" && !Array.isArray(v) && validMs(v.at) && isBool(v.ok) && nullOr(isStr)(v.reason ?? null) && nullOr(isStr)(v.healed ?? null);
+const isPending = (v) => v && typeof v === "object" && !Array.isArray(v) && isStr(v.token) && v.token.length > 0 && v.token.length <= 100 && validMs(v.since);
 
 /** Each field's test and, for the message, its shape. */
 const SHAPE = Object.freeze({
@@ -79,9 +97,10 @@ const SHAPE = Object.freeze({
   popupShown: [isBool, "true | false"],
   popupFailedAt: [nullOr(validMs), "epoch ms | null"],
   popupFailReason: [nullOr(isStr), "a string | null"],
+  popupPending: [nullOr(isPending), "{ token, since } | null"],
   downSince: [nullOr(validMs), "epoch ms | null"],
   lastTickAt: [nullOr(validMs), "epoch ms | null"],
-  intervalS: [nullOr((v) => Number.isInteger(v) && v >= MIN_INTERVAL_S && v <= MAX_INTERVAL_S), `a whole number ${MIN_INTERVAL_S}..${MAX_INTERVAL_S} | null`],
+  intervalS: [nullOr((v) => Number.isInteger(v) && v >= INTERVAL_BOUNDS.min && v <= INTERVAL_BOUNDS.max), `a whole number ${INTERVAL_BOUNDS.min}..${INTERVAL_BOUNDS.max} | null`],
   lastProbe: [nullOr(isProbe), "{ at, ok, reason, healed } | null"],
   lastPopupAt: [nullOr(validMs), "epoch ms | null"],
   firstSeenAt: [nullOr(validMs), "epoch ms | null"],
@@ -98,7 +117,7 @@ export function validateState(j) {
     if (!(k in j)) continue;
     const v = j[k];
     if (!test(v)) return { problem: `${k} is ${JSON.stringify(v)?.slice(0, 80) ?? String(v)}, not ${shape}` };
-    state[k] = k === "lastProbe" && v ? { at: v.at, ok: v.ok, reason: v.reason ?? null, healed: v.healed ?? null } : v;
+    state[k] = k === "lastProbe" && v ? { at: v.at, ok: v.ok, reason: v.reason ?? null, healed: v.healed ?? null } : k === "popupPending" && v ? { token: v.token, since: v.since } : v;
   }
   return { state };
 }
@@ -163,24 +182,50 @@ export function writeState(path, state) {
 
 /**
  * One tick's transition. `result` is a `check()` result (`ok`, `reason`, `healed`); `now` ms.
- * `popup: true` asks the tick to show the dialog; see popupDelivered for the latch.
+ * `popup: true` asks the tick to show the dialog; see popupDelivered for the latch. A pending
+ * popup is not asked for again: the dialog may still be up.
  */
 export function step(state, result, now) {
   const base = { ...EMPTY, ...state, lastTickAt: now, lastProbe: { at: now, ok: result.ok, reason: result.reason ?? null, healed: result.healed?.detail ?? null } };
-  if (result.ok) return { state: { ...base, episode: "up", strikes: 0, popupShown: false, popupFailedAt: null, popupFailReason: null, downSince: null }, popup: false };
+  if (result.ok) return { state: { ...base, episode: "up", strikes: 0, popupShown: false, popupPending: null, popupFailedAt: null, popupFailReason: null, downSince: null }, popup: false };
   const strikes = Math.min((base.strikes ?? 0) + 1, MAX_STRIKES);
   if (strikes < STRIKES_TO_DOWN) return { state: { ...base, episode: "strike", strikes }, popup: false };
-  return { state: { ...base, episode: "down", strikes, downSince: base.downSince ?? now }, popup: !base.popupShown };
+  return { state: { ...base, episode: "down", strikes, downSince: base.downSince ?? now }, popup: !base.popupShown && !base.popupPending };
+}
+
+const reason = (s) => String(s).slice(0, 200);
+
+/**
+ * Record what showPopup resolved (`{ started, pending?, token?, detail }`): confirmed delivered
+ * → `popupShown` latched and `lastPopupAt` stamped; still running after the grace → pending
+ * under its token, latch open; not delivered → `popupFailedAt` and the reason, latch open so the
+ * next failing tick tries again.
+ */
+export function popupDelivered(state, outcome, now) {
+  if (outcome.started && outcome.pending) return { ...state, popupShown: false, popupPending: { token: outcome.token, since: now }, popupFailedAt: null, popupFailReason: null };
+  if (outcome.started) return { ...state, popupShown: true, popupPending: null, lastPopupAt: now, popupFailedAt: null, popupFailReason: null };
+  return { ...state, popupShown: false, popupPending: null, popupFailedAt: now, popupFailReason: reason(outcome.detail ?? "popup not shown") };
 }
 
 /**
- * Record a popup's outcome (`{ started, detail }` from showPopup): delivered → `popupShown`
- * latched and `lastPopupAt` stamped; not delivered → `popupFailedAt` and the reason, and the
- * latch stays open so the next failing tick tries again.
+ * Settle a pending popup from the supervisor's outcome (readOutcome; null when there is none).
+ * `{ state, line }`: `line` (for the tick's output) is null when nothing changed. The outcome
+ * for the pending token decides: delivered → latched, `lastPopupAt` the tick that showed it;
+ * anything else → pending cleared and the failure recorded, so the episode's popup is due again.
+ * No outcome for longer than PENDING_STALE_MS also reopens it. Another token's outcome is not
+ * this popup's and changes nothing.
  */
-export function popupDelivered(state, outcome, now) {
-  if (outcome.started) return { ...state, popupShown: true, lastPopupAt: now, popupFailedAt: null, popupFailReason: null };
-  return { ...state, popupShown: false, popupFailedAt: now, popupFailReason: String(outcome.detail ?? "popup not shown").slice(0, 200) };
+export function popupSettled(state, outcome, now, staleMs = PENDING_STALE_MS) {
+  const p = state.popupPending;
+  if (!p) return { state, line: null };
+  if (outcome && outcome.token === p.token) {
+    if (delivered(outcome)) return { state: { ...state, popupShown: true, popupPending: null, lastPopupAt: p.since, popupFailedAt: null, popupFailReason: null }, line: `popup delivered: ${describeExit(outcome)}${outcome.acknowledged ? " (dismissed)" : ""}` };
+    const why = `popup not delivered: ${describeExit(outcome)} after the grace`;
+    return { state: { ...state, popupShown: false, popupPending: null, popupFailedAt: outcome.at, popupFailReason: reason(why) }, line: `${why}; the popup is due again` };
+  }
+  if (now - p.since <= staleMs) return { state, line: null };
+  const why = `popup not confirmed: no outcome from its supervisor within ${Math.round(staleMs / 1000)} s`;
+  return { state: { ...state, popupShown: false, popupPending: null, popupFailedAt: now, popupFailReason: reason(why) }, line: `${why}; the popup is due again` };
 }
 
 /**

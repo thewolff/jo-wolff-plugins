@@ -34,10 +34,12 @@
 //
 // check({ run, env, now, exists, deadlineMs }) is probe, then heal on a failing probe, then probe
 // again; the result carries both probes and what the heal did. With `deadlineMs` the four spawns
-// (status, mode, mode auto, status) share one clock: each gets the smaller of `timeoutMs` and
-// what is left, a step with nothing left is skipped, and a failing result past the deadline says
-// `check timed out after <deadlineMs> ms (<what the last step said>)`. Without it each spawn gets
-// `timeoutMs` on its own (the CLI, where nothing waits on the answer).
+// (status, mode, mode auto, status) share one clock: each spawn's budget, the smaller of
+// `timeoutMs` and what is left, is computed once; a step whose budget is not positive is skipped
+// (never spawned with timeout 0, which spawnSync reads as "no limit") and the result says
+// `budgetExhausted: true`; a failing result past the deadline says `check timed out after
+// <deadlineMs> ms (<what the last step said>)`. Without it each spawn gets `timeoutMs` on its
+// own (the CLI, where nothing waits on the answer).
 
 import { spawnSync } from "node:child_process";
 import { existsSync } from "node:fs";
@@ -69,9 +71,11 @@ const withCtx = (argv, ctx) => [ctx, ...argv.slice(1)];
 /**
  * Run `argv` with `env` under `timeoutMs`. Never throws. `{ code, stdout, stderr, error }`:
  * `error` is set when the program could not start, timed out, or was killed. A timed-out child
- * gets SIGKILL, and so does everything left in its process group.
+ * gets SIGKILL, and so does everything left in its process group. A `timeoutMs` that is not
+ * positive spawns nothing (spawnSync reads 0 as "no limit"): `error` says no time was left.
  */
 export function runCtx(argv, env, timeoutMs = PROBE_TIMEOUT_MS) {
+  if (!(timeoutMs > 0)) return { code: null, stdout: "", stderr: "", error: `not run: no time left (timeout ${timeoutMs} ms)` };
   const r = spawnSync(argv[0], argv.slice(1), { env, encoding: "utf8", timeout: timeoutMs, killSignal: "SIGKILL", detached: true, stdio: ["ignore", "pipe", "pipe"] });
   let error;
   if (r.error?.code === "ENOENT") error = isAbsolute(argv[0]) ? `${argv[0]} does not exist (pinned at install; run install again)` : `${argv[0]} is not on PATH`;
@@ -158,17 +162,20 @@ export function probe({ run = runCtx, env = process.env, now = Date.now, timeout
  */
 export function heal({ run = runCtx, env = process.env, exists = existsSync, timeoutMs = PROBE_TIMEOUT_MS, ctx = CTX, remaining = () => Infinity } = {}) {
   const e = ctxEnv(env);
-  const bound = () => Math.min(timeoutMs, remaining());
-  if (bound() <= 0) return { attempted: false, ok: false, detail: "not attempted: the check's deadline passed" };
-  const mode = run(withCtx(MODE_ARGV, ctx), e, bound());
+  const passed = { attempted: false, ok: false, detail: "not attempted: the check's deadline passed", budgetExhausted: true };
+  // Each spawn's budget is computed once and the same value both guards and bounds it.
+  const modeBudget = Math.min(timeoutMs, remaining());
+  if (modeBudget <= 0) return passed;
+  const mode = run(withCtx(MODE_ARGV, ctx), e, modeBudget);
   if (mode.error) return { attempted: false, ok: false, detail: `not attempted: ctx could not run: ${mode.error}` };
   const mj = parseJson(mode.stdout);
   const current = field(field(mj, "indexing"), "mode");
   const configPath = field(mj, "config_path");
   if (current !== "auto") return { attempted: false, ok: false, detail: `not attempted: ctx indexing mode is ${JSON.stringify(current ?? null)}, not auto; ctx-watch does not change it` };
   if (typeof configPath !== "string" || !exists(configPath)) return { attempted: false, ok: false, detail: `not attempted: ${configPath ?? "ctx's config file"} does not exist (ctx is not set up here)` };
-  if (bound() <= 0) return { attempted: false, ok: false, detail: "not attempted: the check's deadline passed" };
-  const r = run(withCtx(HEAL_ARGV, ctx), e, bound());
+  const healBudget = Math.min(timeoutMs, remaining());
+  if (healBudget <= 0) return passed;
+  const r = run(withCtx(HEAL_ARGV, ctx), e, healBudget);
   if (r.error) return { attempted: true, ok: false, detail: `\`${HEAL_ARGV.join(" ")}\`: ${r.error}` };
   const j = parseJson(r.stdout);
   if (!j) return { attempted: true, ok: false, detail: `\`${HEAL_ARGV.join(" ")}\` (exit ${r.code ?? "none"}): ${firstLine(r)}` };
@@ -179,25 +186,32 @@ export function heal({ run = runCtx, env = process.env, exists = existsSync, tim
 
 /**
  * Probe; on failure heal and probe again. `{ ok, reason, fix, fields, at, first, healed,
- * timedOut }`: the top level is the last probe; `first` is the failing one when a heal was tried.
- * `deadlineMs` (optional) is the one clock the whole check runs on, measured from the first
- * probe's `now()`.
+ * timedOut, budgetExhausted }`: the top level is the last probe; `first` is the failing one when
+ * a heal was tried. `deadlineMs` (optional) is the one clock the whole check runs on, measured
+ * from the first `now()`. Each spawn's budget (the smaller of `timeoutMs` and what is left) is
+ * computed once; a budget that is not positive skips that spawn, never runs it with timeout 0,
+ * and the result says `budgetExhausted: true` (and, failing, `timedOut: true`).
  */
 export function check(deps = {}) {
   const { now = Date.now, timeoutMs = PROBE_TIMEOUT_MS, deadlineMs = null } = deps;
   const start = now();
   const remaining = () => (deadlineMs === null ? Infinity : start + deadlineMs - now());
-  const bound = () => Math.max(0, Math.min(timeoutMs, remaining()));
-  const done = (result) => {
-    if (result.ok || deadlineMs === null || remaining() > 0) return { timedOut: false, ...result };
-    return { ...result, timedOut: true, reason: `check timed out after ${deadlineMs} ms (${result.reason})` };
+  const budget = () => Math.min(timeoutMs, remaining());
+  const late = (result) => ({ ...result, timedOut: true, reason: `check timed out after ${deadlineMs} ms (${result.reason})` });
+  const done = (result, budgetExhausted = false) => {
+    if (result.ok) return { timedOut: false, ...result, budgetExhausted };
+    if (budgetExhausted || (deadlineMs !== null && remaining() <= 0)) return { ...late(result), budgetExhausted };
+    return { timedOut: false, ...result, budgetExhausted };
   };
-  const first = probe({ ...deps, timeoutMs: bound() });
-  if (first.ok) return { ...first, first: null, healed: null, timedOut: false };
+  const firstBudget = budget();
+  if (firstBudget <= 0) return done({ at: start, ok: false, reason: "no time left to probe ctx", fix: FIX, fields: {}, first: null, healed: null }, true);
+  const first = probe({ ...deps, timeoutMs: firstBudget });
+  if (first.ok) return { ...first, first: null, healed: null, timedOut: false, budgetExhausted: false };
   const healed = heal({ ...deps, remaining });
-  if (!healed.attempted) return done({ ...first, first: null, healed });
-  if (remaining() <= 0) return done({ ...first, first: null, healed: { ...healed, detail: `${healed.detail}; no time left to probe again` } });
-  const second = probe({ ...deps, timeoutMs: bound() });
+  if (!healed.attempted) return done({ ...first, first: null, healed }, healed.budgetExhausted === true);
+  const secondBudget = budget();
+  if (secondBudget <= 0) return done({ ...first, first: null, healed: { ...healed, detail: `${healed.detail}; no time left to probe again` } }, true);
+  const second = probe({ ...deps, timeoutMs: secondBudget });
   return done({ ...second, first, healed });
 }
 
