@@ -546,7 +546,7 @@ test("review budget: the round count, the round-3 cap and verification-only foll
     text.includes("From round 3 on, the review is blocking-only: Codex reports `blocking` findings and the status of prior findings, nothing else, and the review's header says `Mode: blocking-only (round <R>)`."),
     "the round cap",
   );
-  assert.ok(text.includes("A round count that cannot be read is round 1, and the header says so: `Round: 1 (round count unreadable: <reason>)`."), "unreadable round count");
+  assert.ok(text.includes("A round count that cannot be read is round 1, and the report says so on the line under its `## Round 1` heading: `Round count unreadable: <reason>`."), "unreadable round count");
   assert.ok(
     text.includes("From round 2 on, the review is verification-only: Codex marks each prior finding `closed`, `partial` or `open` and runs no new probe list, unless the invoking prompt carries a `new probes:` line quoting Jo's own words authorizing them."),
     "verification-only follow-ups",
@@ -570,6 +570,97 @@ test("review budget: the round count, the round-3 cap and verification-only foll
     "max_iterations: int = 3",
     "iterations 4 and 5 of both modules produced only one new fault each",
   ]) assert.ok(text.includes(quote), `quotes ${quote}`);
+});
+
+/** The report lines the brief's output shape asks Codex to write, rendered for one round. */
+function renderReport(doc, round, mode, unreadable) {
+  const brief = briefTemplate(doc);
+  assert.ok(brief, "a fenced `text` brief template");
+  const shape = /\n## Output shape\n[\s\S]*?\n\n([\s\S]*?)\n\n/.exec(brief);
+  assert.ok(shape, "the brief template has an output shape");
+  return shape[1]
+    .split("\n")
+    .filter((l) => !l.startsWith("Round count unreadable:") || unreadable)
+    .map((l) => l.replaceAll("<R>", String(round)).replaceAll("<mode>", mode).replaceAll("<reason>", unreadable ?? ""))
+    .join("\n");
+}
+
+/**
+ * The round reader as the agent's "Round:" input documents it: the heading pattern is the one in
+ * its `grep -E`, the step is "one more than" the prior round, and a prior file that cannot be
+ * read, has a `## Round` heading that is not a number, or has neither marker is round 1,
+ * unreadable. Throws when the document no longer states one of those parts.
+ */
+function roundReader(doc) {
+  const bullet = /\n- \*\*Round:\*\*([\s\S]*?)\n- \*\*/.exec(doc);
+  assert.ok(bullet, "an Inputs bullet for the round");
+  const rule = flatText(bullet[1]);
+  const step = /Otherwise it is (.+?) the prior review's last round/.exec(rule);
+  assert.equal(step?.[1], "one more than", "the round is one more than the prior review's last round");
+  const grep = /grep -E '([^']+)'/.exec(rule);
+  assert.ok(grep, "the heading pattern the reader greps for");
+  const heading = new RegExp(grep[1], "m");
+  return Object.assign((name, text) => {
+    if (text === null) return { round: 1, unreadable: "Read failed" };
+    const lines = text.split("\n");
+    if (lines.some((l) => l.startsWith("## Round") && !heading.test(l))) return { round: 1, unreadable: "a `## Round` heading is not a number" };
+    const ns = lines.filter((l) => heading.test(l)).map((l) => Number(/\d+/.exec(l)[0]));
+    const file = /-round(\d+)\.md$/.exec(name);
+    if (file) ns.push(Number(file[1]));
+    if (ns.length === 0) return { round: 1, unreadable: "no round heading or file name" };
+    return { round: Math.max(...ns) + 1 };
+  }, { rule });
+}
+
+/** Throws unless a report from the template, fed to the documented reader, counts on. */
+function checkRoundTrip(doc) {
+  const next = roundReader(doc);
+  const first = renderReport(doc, 1, "full");
+  assert.deepEqual(next("REVIEW-0.2.1-codex.md", first), { round: 2 }, `a first report reads as round 1, so the next is 2:\n${first}`);
+  assert.ok(next.rule.includes("A round count that cannot be read is round 1"), "unreadable is round 1");
+  assert.ok(next.rule.includes("it has neither a `## Round N` heading nor a `-round<N>` file name"), "no marker is unreadable");
+  const second = renderReport(doc, 2, "verification-only (round 2)");
+  assert.deepEqual(next("REVIEW-0.2.1-codex-round2.md", second), { round: 3 }, "a -round2 report with its heading gives 3");
+  assert.deepEqual(next("REVIEW-0.2.1-codex-round2.md", "Mode: full\n"), { round: 3 }, "the file name alone gives 3");
+  assert.equal(next("REVIEW-0.2.1-codex.md", null).round, 1, "an unreadable prior file is round 1");
+  assert.equal(next("REVIEW-0.2.1-codex.md", "## Round two\n").round, 1, "a heading that is not a number is round 1");
+  assert.equal(next("REVIEW-0.2.1-codex.md", "Round: 1\n").round, 1, "a report with no heading is round 1");
+  const reset = renderReport(doc, 1, "full", "no round heading or file name");
+  assert.match(reset, /^## Round 1\nRound count unreadable: no round heading or file name$/m, "the reset report states why, under its heading");
+  assert.deepEqual(next("REVIEW-0.2.1-codex.md", reset), { round: 2 }, "the reset report still counts as round 1");
+}
+
+/** Throws unless `fix-first` is tied to an in-scope blocking finding in the Verdicts section. */
+function checkFixFirstRule(doc) {
+  const rows = tableUnder(doc, "Verdicts");
+  assert.ok(rows, "a `## Verdicts` table");
+  const fixFirst = rows.find((r) => r[0] === "`fix-first`");
+  assert.ok(fixFirst, "a fix-first row");
+  assert.match(fixFirst[1], /^at least one in-scope finding is `blocking`$/, "fix-first's condition is an in-scope blocking finding");
+  const section = flatText(/\n## Verdicts\n([\s\S]*?)\n## /.exec(doc)[1]);
+  assert.ok(section.includes("`fix-first` is allowed only when at least one in-scope finding is `blocking`."), "the fix-first guard");
+}
+
+/** A copy of the document with one rule reversed; fails the test if the text to reverse is gone. */
+function reversed(doc, from, to) {
+  assert.ok(doc.includes(from), `the text to reverse is present: ${from}`);
+  return doc.replaceAll(from, to);
+}
+
+test("review budget: a report written from the template is read by the documented round reader as its own round", () => {
+  checkRoundTrip(REVIEWER());
+});
+
+test("review budget: the round-increment and fix-first rules hold, and reversing either fails its check", () => {
+  const doc = REVIEWER();
+  checkRoundTrip(doc);
+  checkFixFirstRule(doc);
+  assert.throws(() => checkRoundTrip(reversed(doc, "it is one more than the prior review's", "it is the same as the prior review's")), "a round that does not increment");
+  assert.throws(() => checkFixFirstRule(reversed(doc, "| `fix-first` | at least one in-scope finding is `blocking` |", "| `fix-first` | at least one in-scope finding is open |")), "fix-first on any open finding");
+  assert.throws(
+    () => checkFixFirstRule(reversed(doc, "`fix-first` is allowed only when at least one in-scope finding is `blocking`.", "`fix-first` is allowed even when no in-scope finding is `blocking`.")),
+    "fix-first allowed without a blocking finding",
+  );
 });
 
 test("review budget: the README has the 0.2.1 changes, a Review budget section and the three how-it-fails rows", () => {

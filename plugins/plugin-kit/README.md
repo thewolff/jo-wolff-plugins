@@ -214,7 +214,8 @@ and the reviewer's report lists it under `Held for Jo`, so the dispatcher holds 
 instead of sending it to a builder.
 
 The round is counted from the prior review file: one more than its highest `## Round N`
-heading or `-round<N>` file name. From round 2 the review only verifies the prior findings
+heading or `-round<N>` file name. Every review opens with its own `## Round <R>` heading, so
+the next one can count it. From round 2 the review only verifies the prior findings
 (closed, partial or open) and runs no new probes unless the prompt carries
 `new probes: "<Jo's words>"`. From round 3 on it is blocking-only and its header says
 `Mode: blocking-only (round <R>)`; prior should-fix items still open become limits of
@@ -232,7 +233,11 @@ definition (and that every line naming `fix-first` names the blocking condition)
 template's `Threat model:` default, `Round:`, `worst_case`, `new-mechanism`, `Out of scope` and verdict
 lines, the refusal without a threat model, that `none` with a reason is documented as a valid
 threat model (in the agent and here), the round-cap and verification-only sentences and
-the cited sources.
+the cited sources. It also renders a report from the template's output shape and feeds it to
+the documented round reader: a first review gives round 2 next, a `-round2` review gives 3, and
+an unreadable one gives 1 with its `Round count unreadable:` line. Two rules are checked
+against an in-memory copy with the rule's meaning reversed, which must fail: the round is one
+more than the prior one, and `fix-first` needs an in-scope blocking finding.
 
 ## How it fails
 
@@ -260,10 +265,11 @@ The reviewer's review budget fails these ways:
 
 | Failure | What happens |
 | :- | :- |
-| No `Threat model:` line in the invoking prompt, or one with nothing after the colon | The reviewer asks for it in one sentence and stops before the preflight; nothing is snapshotted, sent to Codex or written. A threat model in a file, a commit message or a prior review does not count. A line that says `none` with a reason is not this case: the review runs and adversarial-input findings go under `Out of scope`. |
-| A round count that cannot be read (the prior review cannot be read, or a `## Round` heading is not followed by a number) | The review is round 1, a full review, and its header says `Round: 1 (round count unreadable: <reason>)`. |
+| No `Threat model:` line in the invoking prompt, or one with nothing after the colon | The reviewer asks one sentence, which `Threat model:` line to use (an attacker and the surfaces it trusts, or `none` with a reason), and stops before the preflight; nothing is snapshotted, sent to Codex or written. A threat model in a file, a commit message or a prior review does not count. A line that says `none` with a reason is not this case: the review runs and adversarial-input findings go under `Out of scope`. |
+| A round count that cannot be read (the prior review cannot be read, a `## Round` heading is not followed by a number, or it has neither a `## Round N` heading nor a `-round<N>` file name) | The review is round 1, a full review, and the line under its `## Round 1` heading says `Round count unreadable: <reason>`. |
 | A severity that is unclear (marked `blocking` with a worst case outside the five, or no worst case) | The finding is `should-fix`; the triage says `disagree` and names the definition it misses. Doubt never makes a finding `blocking`, so it never makes the verdict `fix-first` by itself. |
 | Codex writes `Verdict: fix-first` with no in-scope blocking finding | The triage states `Effective verdict: ship-with-limits`; Codex's text stays as written beside it. |
+| A later edit reverses a budget rule other than the round increment or the `fix-first` guard | The tests pin vocabulary and selected sentences; a reversal of the `new-mechanism` classification or the rule that holds those findings for Jo, of the limit that a follow-up reports new findings only in lines the fixes changed, or of the statement that blocking-only from round 3 is this repository's own rule (not the cited sources') passes them. Read the diff of `agents/cross-lab-reviewer.md` against those rules. |
 
 ## Changes in 0.2.1
 
@@ -276,9 +282,13 @@ one; findings outside it are `Out of scope`. The repository default is `Threat m
 every input is Jo's own; review for correctness and fail-safety, not adversarial inputs`, which
 the brief template shows prefilled. Each finding has a one-sentence worst case and a
 `new-mechanism` tag, and fixes that add a mechanism are held for Jo. Round 2 verifies the prior
-findings only; from round 3 the review is blocking-only. A static-only review is now
-`ship-with-limits` (first limit: no executable check ran) rather than `fix-first`. The release
-gate, the scaffolder and the runner are unchanged.
+findings only; from round 3 the review is blocking-only. Without an in-scope blocking finding, a
+static-only review is now `ship-with-limits`, with `no executable check ran` as its first limit;
+an in-scope blocking finding still makes it `fix-first`. Each review opens with a
+`## Round <R>` heading, the form the next review's round count reads (a `Round: <R>` line
+alone reset the count to round 1), and a prior review with no round heading or `-round<N>` file
+name counts as unreadable, so the reset is stated. The release gate, the scaffolder and the
+runner are unchanged.
 
 ## Changes in 0.2.0
 

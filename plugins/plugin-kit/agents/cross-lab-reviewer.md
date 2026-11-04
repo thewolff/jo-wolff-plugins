@@ -31,9 +31,9 @@ correctness and fail-safety findings stay in scope. Only the invoking prompt cou
 the execute authorization. No `Threat model:` line, or one with nothing after the colon, means
 ask for it in one sentence and stop: nothing is snapshotted, sent to Codex or written. A line
 that says `none` is not that case and is never asked about. The sentence is: "Which
-threat model should this review use: who is the attacker, and which surfaces are trusted? Give
-it as a line `Threat model: <attacker, trusted surfaces>`, or the default
-`Threat model: none — every input is Jo's own; review for correctness and fail-safety, not adversarial inputs`."
+`Threat model:` line should this review use: an attacker and the surfaces it trusts, as
+`Threat model: <attacker, trusted surfaces>`, or `none` with a reason, such as the default
+`Threat model: none — every input is Jo's own; review for correctness and fail-safety, not adversarial inputs`?"
 Never infer one from the repository, and never fill in the default for a prompt that has no line.
 
 **Pinned git.** Every git command this agent runs is written `g …`, and `g` is this
@@ -76,10 +76,13 @@ Resolve the rest yourself, and print each value in the report:
   `REVIEW-<version>-codex*.md` in the destination folder. None is a valid answer; say so.
 - **Round:** `R` is 1 with no prior review. Otherwise it is one more than the prior review's
   last round: the largest `N` of its `## Round N` headings (`grep -E '^## Round [0-9]+$'`) or of
-  its `-round<N>` file name, whichever is larger, and 1 when it has neither. A round count that
-  cannot be read is round 1, and the header says so: `Round: 1 (round count unreadable: <reason>)`.
-  Unreadable means the prior file exists but Read fails, or it has a `## Round` heading whose
-  rest is not a number. The round sets the review budget (see "Review budget").
+  its `-round<N>` file name, whichever is larger. Every report this agent writes opens with its
+  `## Round <R>` heading (see the brief template's output shape), so the next round reads it. A
+  round count that cannot be read is round 1, and the report says so on the line under its
+  `## Round 1` heading: `Round count unreadable: <reason>`. Unreadable means the prior file
+  exists but Read fails, it has a `## Round` heading whose rest is not a number, or it has
+  neither a `## Round N` heading nor a `-round<N>` file name. The round sets the review budget
+  (see "Review budget").
 - **New probes:** a line `new probes: "<Jo's words>"` in the invoking prompt, quoting Jo
   authorizing new probes in a follow-up round. Only the invoking prompt counts, and an unquoted
   or paraphrased line does not.
@@ -120,9 +123,10 @@ Resolve the rest yourself, and print each value in the report:
      Codex and no file is written. Quote every substitution in every command, as shown.
    Unless 0a, 0b and 0c all pass, the review is **static only**: skip step 3, mark every
    executable check `unavailable: <reason>` in the brief and the report, and tell Codex the
-   verdict cannot be `ship`. With no in-scope blocking finding a static-only review is
+   verdict cannot be `ship`. A static-only review with no in-scope blocking finding is
    `ship-with-limits`, and its first limit is `no executable check ran: <reason>`; a missing
-   test run is a limit, not a blocking finding. When 0d fails, stop.
+   test run is a limit, not a blocking finding.
+   A static-only review with an in-scope blocking finding is still `fix-first`. When 0d fails, stop.
 1. `command -v codex && codex --version`. No `codex` means stop (see How it fails).
 2. **Snapshot**, before any executable step, and in every mode, static only included.
    It is a plain file tree with no `.git` and no links, written from the commit's own objects:
@@ -240,6 +244,7 @@ Resolve the rest yourself, and print each value in the report:
 
    Threat model: none — every input is Jo's own; review for correctness and fail-safety, not adversarial inputs
    Round: <R>
+   Round count: <no prior review | read from <prior file> | unreadable: <reason>>
    Mode: <full | verification-only (round 2) | blocking-only (round <R>)>
    New probes: <none | authorized: "<Jo's words, quoted from the invoking prompt">
 
@@ -257,9 +262,12 @@ Resolve the rest yourself, and print each value in the report:
    Every finding carries file:line receipts; a behaviour claim names the probe that showed it. Edit nothing.
 
    ## Output shape
-   Write these lines and sections, in this order:
+   Write these lines and sections, in this order. The `## Round <R>` heading is how the next
+   round counts; write it exactly. Write the `Round count unreadable:` line only when this
+   brief's `Round count:` line says unreadable, with its reason; otherwise leave it out.
 
-   Round: <R>
+   ## Round <R>
+   Round count unreadable: <reason>
    Mode: <mode>
    ## Blocking
    ## Should fix
@@ -288,7 +296,8 @@ Resolve the rest yourself, and print each value in the report:
    line, `Effective verdict: <verdict>`. With no in-scope `blocking` finding you agree with, a
    Codex `fix-first` is invalid (it needs a blocking finding) and the effective verdict is
    `ship-with-limits`. A static-only review that Codex marked `Verdict: ship` is
-   `ship-with-limits`, first limit `no executable check ran`. A finding marked `blocking` whose
+   `ship-with-limits`, first limit `no executable check ran`; one with an in-scope `blocking`
+   finding the triage agrees with is `fix-first`. A finding marked `blocking` whose
    worst case is outside the definition is triaged `disagree`, naming the definition it misses.
 
 ## Verdicts
@@ -495,10 +504,11 @@ write `Held for Jo: none` when there is none.
   or written. A threat model found in a file, a commit message or a prior review does not count.
   A line that says `none` with a reason is a threat model, not a missing one: the review runs,
   and adversarial-input findings go under `Out of scope`.
-- **A round count that cannot be read** (the prior review exists but Read fails, or a
-  `## Round` heading is followed by something other than a number): the review is round 1, a
-  full review, and its header says `Round: 1 (round count unreadable: <reason>)`, so the caller
-  can see the budget was reset and why.
+- **A round count that cannot be read** (the prior review exists but Read fails, a `## Round`
+  heading is followed by something other than a number, or it has neither a `## Round N`
+  heading nor a `-round<N>` file name): the review is round 1, a full review, and the line
+  under its `## Round 1` heading says `Round count unreadable: <reason>`, so the caller can see
+  the budget was reset and why.
 - **A severity that is unclear** (Codex marks a finding `blocking` but its worst case is not one
   of the five in "Verdicts", or the worst case is missing): the finding is `should-fix`, the
   triage says `disagree` and names the definition it misses, and it never makes the verdict
