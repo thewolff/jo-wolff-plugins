@@ -42,6 +42,9 @@ the root README's output-types section ("Changes in").
   `evals/stop-unreceipted-warns.scenario.json` (`systemMessage`) and its sibling
   `evals/stop-check-off.scenario.json` (`silent` under `OUTPUT_TYPES_CHECK=off`), so the gate's
   `evals` row covers the new hook.
+- `README.md` in the plugin: what it is, a link to the root README's output-types section for
+  the full documentation, and a `## Changes in 0.3.0` entry, so ledger's `gate check` `docs` row
+  finds the release written down in the plugin.
 
 ### Changed
 
