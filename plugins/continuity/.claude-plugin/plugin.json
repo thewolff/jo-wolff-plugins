@@ -1,0 +1,13 @@
+{
+  "name": "continuity",
+  "description": "Keep a long session's state across compaction: a PreCompact hook saves branch, diff, touched files and recent asks to a snapshot the post-compaction SessionStart restores; a liveness line says when the save last worked; a context-pressure check asks for a handoff once before the window fills; and a handoff skill writes the judgment layer no hook can derive.",
+  "version": "0.1.0",
+  "author": { "name": "Jo Wolff" },
+  "license": "MIT",
+  "repository": "https://github.com/thewolff/jo-wolff-plugins",
+  "keywords": ["agents", "hooks"],
+  "state": [
+    { "path": "$XDG_STATE_HOME/continuity", "retentionDays": 30, "prune": "node \"${CLAUDE_PLUGIN_ROOT}/scripts/prune.mjs\" --days 30" },
+    { "path": "$XDG_CONFIG_HOME/continuity/config.json", "kind": "file", "retentionDays": null, "prune": null }
+  ]
+}
