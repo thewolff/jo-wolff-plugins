@@ -16,6 +16,8 @@
 //   .daemon.jobs.semantic_index missing                   "… has no .daemon.jobs.semantic_index"
 //   .daemon.jobs.semantic_index.semantic_enabled === true and .status !== "ready", unless it is
 //   the throttled indexer resting (below)                 "the ctx semantic index is not ready (…)"
+//   the resting shape with .daemon.jobs.semantic_index.last_run_at_ms missing, invalid, over 2 h
+//   old, or over 60 s ahead of this clock                 "semantic index budget_exhausted: last run …"
 //
 // The semantic rows read the same `ctx daemon status` output as the rest (no second spawn: the
 // cheapest call that exposes semantic status is the one already made; `ctx semantic status
@@ -26,20 +28,33 @@
 // pass: nothing to watch.
 //
 // `budget_exhausted` is a pass when the job also says `runtime_active: true`, has no
-// `last_error`, and its `last_run_status` is `budget_exhausted` or `ready`. ctx's JSON contract
-// (embedded in the 2.3.0 binary) defines `budget_exhausted` as "daemon-owned bounded maintenance
-// left backlog while search served the latest committed generation", lists it apart from
-// `failed`, and reports a failed job as `status: "failed"` (`semantic_activation_failed`,
-// `daemon_config_reload_failed`) with `runtime_active: false` or a `last_error`. Sampled every
-// 8 s on 2026-11-04 13:22-13:43 the field cycled on its own, about 4 min `budget_exhausted` then
-// about 1 min `ready`, with nobody running `ctx semantic enable`; in all 92 `budget_exhausted`
-// samples `last_run_status` was also `budget_exhausted` (never `ready`), `runtime_active` was
-// true, `last_error` absent, and `indexed_chunks` absent in 84 (so neither of those two marks the
-// healthy shape). Each new Core generation un-pins the semantic projection and the built-in
-// throttle catches it up in budgeted runs; while it does, hybrid search falls back to lexical
-// (2026-11-04 03:00: `ctx search` said `semantic_status: unavailable`, the 03:00 fixture), and
-// `ctx semantic enable --wait` would only wait for the next ready window. Before 0.2.2 this rule
-// failed it and popped twice on 2026-11-04 (12:54 and 13:19).
+// `last_error`, its `last_run_status` is `budget_exhausted` or `ready`, and its own
+// `last_run_at_ms` is at most 2 h old (`STALE_MS`, the Core window) and at most 60 s ahead of
+// this clock. Three kinds of support, kept apart:
+//
+// Observed. Sampled every 8 s on 2026-11-04 13:22-13:43, the field cycled on its own, about
+// 4 min `budget_exhausted` then about 1 min `ready`, with nobody running `ctx semantic enable`;
+// in all 92 `budget_exhausted` samples `last_run_status` was also `budget_exhausted` (never
+// `ready`: accepting `ready` is derived, not sampled), `runtime_active` was true, `last_error`
+// absent, `indexed_chunks` absent in 84 (so neither of those two marks the healthy shape), and
+// the job's own `last_run_at_ms` was 0.3-22 s old. Before 0.2.2 this rule failed that state and
+// popped twice on 2026-11-04 (12:54 and 13:19).
+//
+// Inferred. ctx 2.3.0's embedded JSON contract defines `budget_exhausted` for search's
+// `freshness.status` ("daemon-owned bounded maintenance left backlog while search served the
+// latest committed generation", listed apart from `failed`). Its `daemon.jobs.semantic_index`
+// section gives no such definition; reading the semantic job's `budget_exhausted` the same way
+// is an analogy. The likely mechanism, also inferred: each new Core generation un-pins the
+// semantic projection and the built-in throttle catches it up in budgeted runs; meanwhile hybrid
+// search falls back to lexical (2026-11-04 03:00: `ctx search` said `semantic_status:
+// unavailable`, the 03:00 fixture), and `ctx semantic enable --wait` would only wait for the
+// next ready window.
+//
+// Not guaranteed. No upstream ctx text was found that makes the semantic job's
+// `budget_exhausted` safe. `runtime_active` means the query service is owned, not that
+// iterations are progressing, and Core refresh runs independently of the semantic job, so the
+// Core freshness row says nothing about it: hence the job's own `last_run_at_ms` bound, without
+// which a stalled indexer would pass on an old result for ever.
 //
 // `ctx` is the executable: the bare name by default (PATH lookup), or the absolute path the
 // launchd timer was installed with (`--ctx`), so a PATH edited after install cannot change which
@@ -150,18 +165,34 @@ export function parseJson(text) {
 
 const firstLine = (r) => (r.stderr || r.stdout || "").trim().split("\n")[0]?.slice(0, 120) || "(no output)";
 
+/** How far ahead of this clock a semantic_index stamp may sit while it still counts as resting. */
+export const SEMANTIC_SKEW_MS = 60 * 1000;
+
 /**
  * The throttled semantic indexer between budgeted runs: `status` and `last_run_status` from the
- * catch-up cycle, the query service owned, no error. See the header for the evidence.
+ * catch-up cycle, the query service owned, no error, and a last run inside the Core staleness
+ * window (`STALE_MS`, at most `SEMANTIC_SKEW_MS` ahead of `now`). See the header for the evidence.
+ * `{ resting, reason }`: `reason` is set when the shape is the resting one but its
+ * `last_run_at_ms` is missing, invalid, in the future, or stale, naming the age.
  */
-export function semanticResting(semantic) {
+export function semanticResting(semantic, now) {
   const lastError = field(semantic, "last_error");
-  return (
+  const shape =
     field(semantic, "status") === "budget_exhausted" &&
     field(semantic, "runtime_active") === true &&
     (lastError === undefined || lastError === null) &&
-    ["budget_exhausted", "ready"].includes(field(semantic, "last_run_status"))
-  );
+    ["budget_exhausted", "ready"].includes(field(semantic, "last_run_status"));
+  if (!shape) return { resting: false, reason: null };
+  const at = field(semantic, "last_run_at_ms");
+  const head = "semantic index budget_exhausted: last run";
+  const where = "semantic_index.last_run_at_ms";
+  const stale = (reason) => ({ resting: false, reason: `${head} ${reason}` });
+  if (at === undefined || at === null) return stale(`age unknown (no ${where})`);
+  if (!validMs(at)) return stale(`age unknown (${where} = ${JSON.stringify(at).slice(0, 24)})`);
+  const ago = now - at;
+  if (ago < -SEMANTIC_SKEW_MS) return stale(`${age(-ago)} in the future (${where}, over ${age(SEMANTIC_SKEW_MS)} skew)`);
+  if (ago > STALE_MS) return stale(`${age(ago)} ago (${where}, over ${age(STALE_MS)})`);
+  return { resting: true, reason: null };
 }
 
 /**
@@ -196,9 +227,11 @@ export function judge(r, now) {
   if (ago < -SKEW_MS) return fail(`core_refresh in the future (.daemon.jobs.core_refresh.last_run_at_ms = ${iso(fields.lastRunAtMs)}, ${age(-ago)} ahead of this clock; over ${age(SKEW_MS)} of skew)`, fields);
   if (ago > STALE_MS) return fail(`the ctx daemon runs but core_refresh last ran ${age(ago)} ago (.daemon.jobs.core_refresh.last_run_at_ms = ${iso(fields.lastRunAtMs)}; over ${age(STALE_MS)})`, fields);
   if (semantic === undefined || semantic === null) return fail(`\`${STATUS_ARGV.join(" ")}\` has no .daemon.jobs.semantic_index`, fields, SEMANTIC_STATUS, false);
-  const resting = semanticResting(semantic);
+  const rest = semanticResting(semantic, now);
+  const resting = rest.resting;
   const semanticNote = fields.semanticEnabled !== true ? "semantic search not enabled" : `semantic index ${fields.semanticStatus}${resting ? " (throttled catch-up, not a failure)" : ""}`;
   if (fields.semanticEnabled === true && fields.semanticStatus !== "ready" && !resting) {
+    if (rest.reason) return fail(rest.reason, fields, SEMANTIC_FIX, false);
     const reason = field(semantic, "reason");
     const lastRun = field(semantic, "last_run_status");
     const lastRunNote = fields.semanticStatus === "budget_exhausted" ? `, last run ${JSON.stringify(lastRun ?? null)}` : "";
