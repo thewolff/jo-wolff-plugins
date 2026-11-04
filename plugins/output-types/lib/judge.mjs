@@ -24,6 +24,9 @@
 //   the command: a plugin key silently overriding the shared file is the surprise to avoid.
 //   The timeout is pluginKey.timeoutMs, else the shared file's timeoutMs, else DEFAULT_TIMEOUT_MS,
 //   whichever source supplied the command.
+//   A shared file that exists but is malformed (unreadable, not JSON, not an object) ends the
+//   search there: steps 1 and 2 still win, but the legacy profile is not consulted in its place,
+//   so a typo never quietly swaps in an older command. `which` names the file and the parse error.
 //
 // OUTPUT PARSING
 //   STDOUT ONLY is captured: judge CLIs print banners and errors on stderr, and merging the streams
@@ -45,16 +48,20 @@
 // CLEANUP: the judge's /bin/sh is detached into a fresh process group. When the dispatch settles
 //   (exit, timeout, or spawn error) one negative-pid SIGKILL reaps whatever of that group is still
 //   alive and the pipes are released, so a pipeline stage or a wrapper's child cannot hold the
-//   caller's process open.
+//   caller's process open. Inside a plugin-kit hook-runner thread the group is also registered
+//   with the runner ({ kitReap } on spawn, { kitReaped } on settle), so a runner that gives up at
+//   its deadline and terminates the thread kills the group too instead of orphaning it.
 //
 // CLI
 //   node lib/judge.mjs setup [--command <cmd>] [--timeout-ms <n>] [--yes] [--force]
 //     asks for the command when --command is absent, makes one test call, shows the JSON it will
 //     write, and writes the shared file atomically (tmp + rename, mode 0600 for a new file, other
-//     keys kept) after a yes. A failed test call refuses to write unless --force. Exit 0 written;
-//     1 refused or the test failed; 2 usage.
+//     keys kept) after a yes. A failed test call refuses to write unless --force; so does an
+//     existing shared file that is malformed (its other keys cannot be kept, so --force replaces
+//     it whole). Exit 0 written; 1 refused or the test failed; 2 usage.
 //   node lib/judge.mjs which [--env-var <NAME>]
-//     prints command, timeoutMs and source as resolved here, or where it looked. Exit 0 found; 1 none.
+//     prints command, timeoutMs and source as resolved here, or where it looked, after a
+//     `malformed: <path>: <error>` line when the shared file is malformed. Exit 0 found; 1 none.
 
 import { spawn } from "node:child_process";
 import { chmodSync, mkdirSync, readFileSync, realpathSync, renameSync, statSync, writeFileSync } from "node:fs";
@@ -62,13 +69,25 @@ import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { createInterface } from "node:readline";
 import { fileURLToPath } from "node:url";
-import { isMainThread } from "node:worker_threads";
+import { isMainThread, parentPort, workerData } from "node:worker_threads";
 
 export const DEFAULT_TIMEOUT_MS = 30_000;
 /** The failure classes runJudge's json mode and dispatch() report in `error`. */
 export const ERRORS = Object.freeze(["timeout", "nonzero", "unparseable", "spawn-failed"]);
 const STDERR_KEPT = 4_000;
 const STDOUT_CAP = 2_000_000;
+// Inside a lib/hook-runner.mjs handler thread whose runner reaps registered groups (workerData.kitReap;
+// an older runner would take the message for the handler's answer): a message to its main thread.
+// Elsewhere a no-op.
+const toRunner = !isMainThread && parentPort && workerData?.kitHook === true && workerData?.kitReap === true
+  ? (msg) => {
+      try {
+        parentPort.postMessage(msg);
+      } catch {
+        // the runner is gone; nothing to tell
+      }
+    }
+  : () => {};
 
 const homeOf = (env, home) => home || env.HOME || homedir();
 
@@ -87,19 +106,42 @@ export function legacyProfilePath({ env = process.env, home } = {}) {
 
 /** The JSON object at `path`, or null when the file is absent, unreadable, not JSON, or not an object. */
 function readJsonObject(path) {
+  return readJsonFile(path).value;
+}
+
+/** { value, error }: value is the JSON object at `path`; both null when the file is absent; error says why when it exists but is unreadable, not JSON, or not an object. */
+function readJsonFile(path) {
+  let raw;
   try {
-    const parsed = JSON.parse(readFileSync(path, "utf8"));
-    return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed : null;
-  } catch {
-    return null;
+    raw = readFileSync(path, "utf8");
+  } catch (err) {
+    return { value: null, error: err.code === "ENOENT" || err.code === "ENOTDIR" ? null : err.code || err.message };
   }
+  try {
+    const parsed = JSON.parse(raw);
+    if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) return { value: parsed, error: null };
+    return { value: null, error: "not a JSON object" };
+  } catch (err) {
+    return { value: null, error: err.message };
+  }
+}
+
+/**
+ * The shared file as read: { path, config, malformed }. config is its object, or null; malformed
+ * is `<path>: <error>` when the file exists and cannot be used, else null.
+ */
+export function readSharedConfig({ env = process.env, home, xdgConfigHome } = {}) {
+  const path = sharedConfigPath({ env, home, xdgConfigHome });
+  const { value, error } = readJsonFile(path);
+  return { path, config: value, malformed: error ? `${path}: ${error}` : null };
 }
 
 const isCommand = (v) => typeof v === "string" && v.trim() !== "";
 const asTimeout = (v) => (Number.isFinite(Number(v)) && Number(v) > 0 ? Math.floor(Number(v)) : null);
 
 /**
- * The judge command for a plugin, or null when none is configured anywhere.
+ * The judge command for a plugin, or null when none is configured anywhere, or when steps 1 and 2
+ * supply none and the shared file is malformed (readSharedConfig says why).
  * @param {object} o
  * @param {{ envVar?: string, command?: string|null, timeoutMs?: number, source?: string }} [o.pluginKey]
  *   envVar: the plugin's override variable; command: the plugin's own configured command (already
@@ -109,12 +151,12 @@ const asTimeout = (v) => (Number.isFinite(Number(v)) && Number(v) > 0 ? Math.flo
  * @returns {{ command: string, timeoutMs: number, source: string } | null}
  */
 export function resolveJudgeCommand({ pluginKey = {}, env = process.env, home, xdgConfigHome } = {}) {
-  const sharedPath = sharedConfigPath({ env, home, xdgConfigHome });
-  const shared = readJsonObject(sharedPath);
+  const { path: sharedPath, config: shared, malformed } = readSharedConfig({ env, home, xdgConfigHome });
   const timeoutMs = asTimeout(pluginKey.timeoutMs) ?? asTimeout(shared?.timeoutMs) ?? DEFAULT_TIMEOUT_MS;
   const found = (command, source) => ({ command, timeoutMs, source });
   if (pluginKey.envVar && isCommand(env[pluginKey.envVar])) return found(env[pluginKey.envVar], `env ${pluginKey.envVar}`);
   if (isCommand(pluginKey.command)) return found(pluginKey.command, pluginKey.source || "plugin config");
+  if (malformed) return null;
   if (shared && isCommand(shared.command)) return found(shared.command, sharedPath);
   const legacyPath = legacyProfilePath({ env, home });
   const legacy = readJsonObject(legacyPath)?.enforcement?.judgeCommand;
@@ -225,6 +267,7 @@ export function dispatch(prompt, { command, timeoutMs = DEFAULT_TIMEOUT_MS, env 
     let stdout = "";
     let stderr = "";
     let settled = false;
+    if (child.pid) toRunner({ kitReap: child.pid });
     // Every exit path, once: stop the timer, reap the judge's process group, release the pipes.
     const settle = (result) => {
       if (settled) return;
@@ -235,6 +278,7 @@ export function dispatch(prompt, { command, timeoutMs = DEFAULT_TIMEOUT_MS, env 
       } catch {
         // ESRCH: nothing of the group is left, the usual case after a clean exit
       }
+      if (child.pid) toRunner({ kitReaped: child.pid });
       child.stdin.destroy();
       child.stdout.destroy();
       child.stderr.destroy();
@@ -288,11 +332,15 @@ export async function testCall(command, timeoutMs = DEFAULT_TIMEOUT_MS, env = pr
   return { ok: true, ms, answer };
 }
 
-/** Write { command, timeoutMs } into the shared file, keeping its other keys. Returns the path. Throws on I/O failure. */
-export function writeSharedConfig({ command, timeoutMs, env = process.env, home, xdgConfigHome }) {
-  const path = sharedConfigPath({ env, home, xdgConfigHome });
-  const current = readJsonObject(path) ?? {};
-  const next = { ...current, command, timeoutMs };
+/**
+ * Write { command, timeoutMs } into the shared file, keeping its other keys. Returns the path.
+ * Throws on I/O failure, and when the existing file is malformed unless `force` (then the file is
+ * replaced whole: there are no other keys to keep).
+ */
+export function writeSharedConfig({ command, timeoutMs, env = process.env, home, xdgConfigHome, force = false }) {
+  const { path, config, malformed } = readSharedConfig({ env, home, xdgConfigHome });
+  if (malformed && !force) throw new Error(`malformed: ${malformed}; not overwriting it without force`);
+  const next = { ...(config ?? {}), command, timeoutMs };
   mkdirSync(dirname(path), { recursive: true });
   let mode = 0o600;
   try {
@@ -364,18 +412,27 @@ export async function main(argv = process.argv.slice(2), io = {}) {
   }
   if (args.verb === "which") {
     const pluginKey = args.envVar ? { envVar: args.envVar } : {};
+    const { malformed } = readSharedConfig({ env });
+    if (malformed) write(`malformed: ${malformed}\n`);
     const r = resolveJudgeCommand({ pluginKey, env });
     if (!r) {
-      write(`no judge configured; looked in: ${lookedIn({ pluginKey, env }).join(", ")}\n`);
+      write(malformed ? `no judge resolved: the shared file is malformed, so the legacy profile was not consulted; fix it or run setup --force\n` : `no judge configured; looked in: ${lookedIn({ pluginKey, env }).join(", ")}\n`);
       return 1;
     }
     write(`command=${r.command}\ntimeoutMs=${r.timeoutMs}\nsource=${r.source}\n`);
     return 0;
   }
-  const path = sharedConfigPath({ env });
-  const current = readJsonObject(path);
+  const { path, config: current, malformed } = readSharedConfig({ env });
   write(`judge setup: the shared judge command, read by every plugin that judges.\nfile: ${path}\n`);
-  write(current && isCommand(current.command) ? `current: ${JSON.stringify(current.command)}\n` : "current: none\n");
+  if (malformed) {
+    write(`current: malformed: ${malformed}\n`);
+    if (!args.force) {
+      err("judge setup: not written; the shared file is not valid JSON and its other keys cannot be kept. Fix it by hand, or pass --force to replace it whole\n");
+      return 1;
+    }
+  } else {
+    write(current && isCommand(current.command) ? `current: ${JSON.stringify(current.command)}\n` : "current: none\n");
+  }
   const asker = makeAsker(io.stdin ?? process.stdin, write);
   try {
     let command = args.command;
@@ -408,7 +465,7 @@ export async function main(argv = process.argv.slice(2), io = {}) {
         return 1;
       }
     }
-    writeSharedConfig({ command, timeoutMs, env });
+    writeSharedConfig({ command, timeoutMs, env, force: args.force });
     write(`written: ${path}\n`);
     return 0;
   } finally {
