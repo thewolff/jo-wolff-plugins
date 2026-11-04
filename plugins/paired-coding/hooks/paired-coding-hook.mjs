@@ -27,9 +27,13 @@
 // Inert until pair_start: for a session with no activation marker every event exits 0 with no
 // output and touches no file, except that a call of this plugin's own pair_* tools is bound and
 // a cleared, resumed or forked session's start looks for the session it replaced.
+//
+// Faults (respond, faultReply): every event exits 0, appends one line to errors.log in the state
+// base and prints one warning line. PreToolUse fails closed while pairing and for pair_* tools,
+// and never blocks a session that is not pairing.
 
-import { appendFileSync, closeSync, fstatSync, openSync, readFileSync, readSync, realpathSync, rmSync } from "node:fs";
-import { join } from "node:path";
+import { appendFileSync, closeSync, fstatSync, mkdirSync, openSync, readFileSync, readSync, realpathSync, rmSync } from "node:fs";
+import { dirname, join, relative } from "node:path";
 import { fileURLToPath } from "node:url";
 import { CARRIED_PHRASE, PAIR_TOOLS, isStopPhrase } from "../core/gate.mjs";
 import { activated, findRoot, loadState, stateBase, withLock } from "../lib/host-io.mjs";
@@ -37,6 +41,7 @@ import { RECEIPT_FILE, carryInto, endSession, pairingCarry, recordTrustedInput, 
 import { bareToolName, hostAllowFor, writeBinding } from "../server/binding.mjs";
 
 const sleepSync = (ms) => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+const HERE = dirname(fileURLToPath(import.meta.url));
 
 /** SessionStart sources that replace an earlier session, and how the closed note names it. */
 const CARRY_START = new Map([
@@ -269,27 +274,22 @@ export function handle(event, input, opts = {}) {
   const dir = sessionDirFor(input?.session_id, env);
   if (event === "pre-tool-use") {
     const name = bareToolName(input);
-    if (!dir) return PAIR_TOOLS.includes(name) ? deny("the session id is unusable; pairing cannot bind this call") : null;
-    try {
-      // A stop judged here (or stashed by an earlier Stop event) is reported alongside this
-      // tool's result, or inside the refusal when pairing is still on.
-      const notices = activated(dir) ? [...takeNotices(dir), ...resolvePending(dir, { waitMs: opts.waitMs })] : [];
-      const v = verdict(name, { sessionDir: dir, allow: hostAllowFor(input) });
-      if (!v.allow) return deny([...notices.map((n) => n.replace(/^paired-coding: /, "")), v.reason ?? "refused while pairing"].join(" "));
-      if (PAIR_TOOLS.includes(name)) {
-        writeBinding(stateBase(env), input.tool_use_id, {
-          sessionId: input.session_id,
-          tool: name,
-          cwd: input.cwd,
-          transcriptPath: input.transcript_path,
-        });
-      }
-      return notices.length ? context("PreToolUse", notices) : null;
-    } catch (err) {
-      // Fail closed once activated; stay out of the way of a session that never paired.
-      if (activated(dir) || PAIR_TOOLS.includes(name)) return deny(`adapter error: ${err instanceof Error ? err.message : String(err)}`);
-      return null;
+    if (!dir) return PAIR_TOOLS.includes(name) ? deny(`${name} is refused: the session id is unusable, so pairing cannot bind this call; start a new Claude Code session and call ${name} again`) : null;
+    // A throw from here on reaches respond(), which fails closed while pairing and open otherwise.
+    // A stop judged here (or stashed by an earlier Stop event) is reported alongside this
+    // tool's result, or inside the refusal when pairing is still on.
+    const notices = activated(dir) ? [...takeNotices(dir), ...resolvePending(dir, { waitMs: opts.waitMs })] : [];
+    const v = verdict(name, { sessionDir: dir, allow: hostAllowFor(input) });
+    if (!v.allow) return deny([...notices.map((n) => n.replace(/^paired-coding: /, "")), v.reason ?? "refused while pairing"].join(" "));
+    if (PAIR_TOOLS.includes(name)) {
+      writeBinding(stateBase(env), input.tool_use_id, {
+        sessionId: input.session_id,
+        tool: name,
+        cwd: input.cwd,
+        transcriptPath: input.transcript_path,
+      });
     }
+    return notices.length ? context("PreToolUse", notices) : null;
   }
   if (event === "session-start") {
     // The session this one replaced was pairing: its end left a carry marker for this worktree
@@ -299,8 +299,7 @@ export function handle(event, input, opts = {}) {
     // never takes the marker, so quitting and starting a new conversation stays inert.
     const source = input?.source;
     if (!dir || !CARRY_START.has(source) || typeof input?.cwd !== "string") return null;
-    let root;
-    try { root = realpathSync.native(findRoot(input.cwd)); } catch { return null; }
+    const root = realpathSync.native(findRoot(input.cwd));
     let carry = takeCarryMarker(stateBase(env), root);
     let from = carry?.from ?? null;
     if (!carry && source === "fork") {
@@ -310,7 +309,15 @@ export function handle(event, input, opts = {}) {
     }
     if (!carry) return null;
     const r = carryInto({ sessionId: input.session_id, sessionDir: dir, root, exclusions: carry.exclusions ?? undefined, protect: carry.protect ?? [], from, reason: source });
-    if (!r.ok) return null;
+    if (!r.ok) {
+      // Refused because this session is already pairing: it is gated already, nothing to say.
+      if (activated(dir) && loadState(dir).phase !== "inactive") return null;
+      // The session this one replaced was pairing, and this one is not: say so, never silently.
+      const reason = `pairing was on ${CARRY_START.get(source)} but could not carry over (${r.reason ?? "no reason given"})`;
+      const logged = logFault(env, "session-start", input, reason);
+      const warning = `paired-coding: ${reason}, so host write, edit, shell and sub-agent tools are NOT refused in this session. ${logged}`;
+      return { systemMessage: warning, hookSpecificOutput: { hookEventName: "SessionStart", additionalContext: `${warning} Tell your partner this in one line before anything else; to pair again, they ask and you call pair_start.` } };
+    }
     const note = `paired-coding: pairing was on ${CARRY_START.get(source)}, so ${CARRIED_PHRASE}: this session has no card and no change set, and host write, edit, shell and sub-agent tools are refused. Tell your partner that pairing carried over closed, then wait for their answer. If they want to keep pairing, call pair_start and propose the next card; to end it, they type pair stop. Do not call pair_start before they answer.`;
     return { hookSpecificOutput: { hookEventName: "SessionStart", additionalContext: note } };
   }
@@ -350,20 +357,107 @@ export function handle(event, input, opts = {}) {
   return null;
 }
 
+/** One line, no newlines: the reason a fault is logged and shown under. */
+const reasonOf = (err) => (err instanceof Error ? err.message : String(err)).replace(/\s+/g, " ").trim() || "unknown error";
+
+/** The plugin file and line a fault was thrown from, read from its stack, or the hook file. */
+function whereOf(err) {
+  const plugin = join(HERE, "..");
+  const frames = err instanceof Error && typeof err.stack === "string" ? err.stack.split("\n") : [];
+  for (const line of frames) {
+    const m = /\((?:file:\/\/)?(\/[^)]+?):(\d+):\d+\)$/.exec(line) ?? /at (?:file:\/\/)?(\/\S+?):(\d+):\d+$/.exec(line);
+    if (m && m[1].startsWith(plugin)) return `${relative(plugin, m[1])}:${m[2]}`;
+  }
+  return "hooks/paired-coding-hook.mjs";
+}
+
+export const ERRORS_LOG = "errors.log";
+
+/**
+ * Append one line to `$PAIRED_CODING_STATE_DIR/errors.log` (the state base) naming the event, the
+ * session, the file and the reason. Returns the sentence that says where it went, or why it could
+ * not be written; logging never throws.
+ */
+export function logFault(env, event, input, reason, where = "hooks/paired-coding-hook.mjs") {
+  let path = "";
+  try {
+    const base = stateBase(env);
+    path = join(base, ERRORS_LOG);
+    const sid = typeof input?.session_id === "string" ? input.session_id : "-";
+    mkdirSync(base, { recursive: true, mode: 0o700 });
+    appendFileSync(path, `${new Date().toISOString()} ${where} ${event || "(no event)"} session=${sid}: ${reason}\n`, { mode: 0o600 });
+    return `Logged to ${path}.`;
+  } catch (err) {
+    return `It could not be logged to ${path || "errors.log"} (${reasonOf(err)}).`;
+  }
+}
+
+/** Whether a session is pairing, for a fault path: unknown reads as pairing, so the gate stays shut. */
+function pairingOrUnknown(input, env) {
+  try {
+    const dir = sessionDirFor(input?.session_id, env);
+    return dir ? activated(dir) : false;
+  } catch {
+    return true;
+  }
+}
+
+/**
+ * What the hook prints when `handle` throws: one errors.log line and one warning line
+ * (systemMessage) for every event. PreToolUse fails closed while the session is pairing, or for
+ * this plugin's own pair_* tools, and naming the tool and the way out; otherwise the tool call
+ * goes ahead. A session that never paired is never blocked by the gate's own fault.
+ */
+export function faultReply(event, input, env, err) {
+  const reason = reasonOf(err);
+  const where = whereOf(err);
+  const logged = logFault(env, event, input, reason, where);
+  const head = `paired-coding: the ${event || "(no event)"} hook failed at ${where}: ${reason}. ${logged}`;
+  if (event === "pre-tool-use") {
+    const name = bareToolName(input) || "(unnamed tool)";
+    if (PAIR_TOOLS.includes(name) || pairingOrUnknown(input, env)) {
+      return {
+        systemMessage: `${head} ${name} was refused because the gate fails closed while pairing.`,
+        ...deny(`${name} is refused: the gate's hook failed (${reason}) and fails closed while pairing. ${logged} Tell your partner; the way out is for them to type pair stop as a message of its own, and if the gate stays broken, to turn the plugin off with /plugin disable paired-coding.`),
+      };
+    }
+    return { systemMessage: `${head} ${name} went ahead: this session is not pairing, so the gate stays out of the way.` };
+  }
+  const what = {
+    "user-prompt-submit": "This turn was not queued for the typed-input check, so it cannot be quoted to pair_begin or end pairing.",
+    stop: "Queued turns were not judged; a typed pair stop in this turn takes effect at the next tool call or turn.",
+    "session-end": "The final snapshot, the reap of pair_run processes or the pair-accepted receipt may not have completed; the journal beside the session state says which.",
+    "session-start": "If this session replaced one that was pairing, pairing did not carry over and host tools are not refused.",
+  }[event] ?? "";
+  return { systemMessage: what ? `${head} ${what}` : head };
+}
+
+/** `handle`, with every fault turned into faultReply's answer. Never throws. */
+export function respond(event, input, opts = {}) {
+  const env = opts.env ?? process.env;
+  try {
+    return handle(event, input, opts);
+  } catch (err) {
+    return faultReply(event, input, env, err);
+  }
+}
+
 function main() {
   const event = process.argv[2] ?? "";
-  let input = {};
+  let raw = "";
+  let input;
   try {
-    input = JSON.parse(readFileSync(0, "utf8") || "{}");
-  } catch {
-    input = {};
-  }
-  let out;
-  try {
-    out = handle(event, input);
+    raw = readFileSync(0, "utf8");
+    input = JSON.parse(raw);
+    if (!input || typeof input !== "object" || Array.isArray(input)) throw new Error(`stdin is JSON but not an object (${raw.trim().slice(0, 40)})`);
   } catch (err) {
-    out = event === "pre-tool-use" ? deny(`adapter error: ${err instanceof Error ? err.message : String(err)}`) : null;
+    // No session can be told apart, so nothing is gated: the call goes ahead, loudly.
+    const reason = raw.trim() === "" ? "stdin was empty" : `stdin is not a hook event object: ${reasonOf(err)}`;
+    const logged = logFault(process.env, event, {}, reason);
+    process.stdout.write(JSON.stringify({ systemMessage: `paired-coding: the ${event || "(no event)"} hook could not read its input (${reason}), so it did nothing. ${logged}` }));
+    process.exit(0);
   }
+  const out = respond(event, input);
   if (out) process.stdout.write(JSON.stringify(out));
   process.exit(0);
 }

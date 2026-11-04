@@ -434,19 +434,32 @@ export function runPgids(dir, runIds) {
 
 // ─── process groups ─────────────────────────────────────────────────────────────────────
 
-/** Live (non-zombie) members of the given process groups, from ps. */
-function liveMembers(pgids) {
+/** Live (non-zombie) members of the given process groups, from `ps -A -o pid=,pgid=,stat=` output. */
+export function psMembers(stdout, pgids) {
   const want = new Set(pgids);
-  const ps = spawnSync("/bin/ps", ["-A", "-o", "pid=,pgid=,stat="], { encoding: "utf8" });
-  if (ps.status !== 0) throw new Error(`ps failed: ${ps.stderr || ps.status}`);
   const live = [];
-  for (const line of ps.stdout.split("\n")) {
+  for (const line of stdout.split("\n")) {
     const [pid, pgid, stat] = line.trim().split(/\s+/);
     if (!pid || !want.has(Number(pgid))) continue;
     if (stat && stat.startsWith("Z")) continue;
     live.push({ pid: Number(pid), pgid: Number(pgid) });
   }
   return live;
+}
+
+/** Why a `ps` spawnSync result is unusable, or null when it is usable. */
+export function psProblem(res) {
+  if (res.error) return `ps failed: ${res.error.code ?? res.error.message}`;
+  if (res.status !== 0) return `ps failed: ${String(res.stderr ?? "").trim() || `exit ${res.status}`}`;
+  return null;
+}
+
+/** Live (non-zombie) members of the given process groups, from ps. */
+function liveMembers(pgids) {
+  const ps = spawnSync("/bin/ps", ["-A", "-o", "pid=,pgid=,stat="], { encoding: "utf8" });
+  const problem = psProblem(ps);
+  if (problem) throw new Error(problem);
+  return psMembers(ps.stdout, pgids);
 }
 
 /**
