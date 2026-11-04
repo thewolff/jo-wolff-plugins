@@ -1,0 +1,14 @@
+{
+  "$comment": "The phrase trigger: no resume, but the final message says \"as discussed\" and this turn made no ctx history call: one warn line with this turn's prompt as the topic.",
+  "event": "Stop",
+  "expect": "systemMessage",
+  "reason": "ctx-watch: said \"as discussed\" without consulting history — `ctx search 'and the backoff for the retry'`",
+  "transcript": [
+    { "type": "user", "timestamp": "2026-11-04T10:00:00.000Z", "message": { "role": "user", "content": "what did we decide about retries" } },
+    { "type": "assistant", "timestamp": "2026-11-04T10:00:05.000Z", "message": { "role": "assistant", "content": [ { "type": "text", "text": "Three retries." } ] } },
+    { "type": "user", "timestamp": "2026-11-04T10:01:00.000Z", "message": { "role": "user", "content": "and the backoff for the retry queue" } },
+    { "type": "assistant", "timestamp": "2026-11-04T10:01:09.000Z", "message": { "role": "assistant", "content": [ { "type": "text", "text": "As discussed, exponential backoff with a 30 s cap." } ] } }
+  ],
+  "stdin": { "session_id": "${SESSION_ID}", "transcript_path": "${TRANSCRIPT}", "cwd": "${CWD}", "hook_event_name": "Stop", "stop_hook_active": false },
+  "after": { "exists": ["$XDG_STATE_HOME/ctx-watch/checks.log"] }
+}
