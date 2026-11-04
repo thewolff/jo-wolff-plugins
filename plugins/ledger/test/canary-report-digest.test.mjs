@@ -175,7 +175,7 @@ test("canary tree_sha and writes: a committed plugin tree is certified by its sh
   // `canary status`: the newest row per plugin with its tree or the lack of one, and the last pass.
   const status = cli(b, ["canary", "status"]);
   assert.equal(status.code, 0, status.err);
-  assert.match(status.out, new RegExp(`^alpha\\s+last pass\\s+#3 \\S+ tree ${tree.slice(0, 8)}; last pass #3 `, "m"));
+  assert.match(status.out, new RegExp(`^alpha\\s+last pass\\s+#3 \\S+ tree ${tree.slice(0, 8)}; no transcript from the script; last pass #3 `, "m"));
   assert.equal(cli(sandbox(), ["canary", "status"]).out.trim(), "no canary runs recorded");
 });
 
