@@ -57,6 +57,7 @@ measured is a throwaway data root (see README).
 | two ticks at once (a manual tick beside launchd's) both reach the popup | the first records its claim in `state.json` under `state.lock` before the dialog starts; the second, locked after it, sees the claim and asks for nothing; the first applies its result to the state as the second left it | `test/cli.test.mjs` (two `main()` calls, the first paused inside its popup) |
 | the popup's claim cannot be recorded (the directory turned read-only, the state write fails, another holder keeps `state.lock` past 2 s) | no dialog starts; the tick says `state not written to <state.json>: …` naming the lock or the write that failed, `; popup not started: …` when one was due; exit 0; every later tick the same until it can write | `test/cli.test.mjs`, `test/state.test.mjs` |
 | a writer died holding `state.lock` (its pid is gone, or the lock is older than 30 s) | the next writer takes it over (set aside, checked, removed); a fresh lock a live process holds is waited for | `test/state.test.mjs` |
+| the lock cannot be read, set aside or removed for a reason another attempt would repeat (EACCES, EROFS, ENOSPC, …), or it keeps changing under every attempt (another writer moves it each time) | a persistent error fails at once as `could not lock <state.lock>: <error>`; churn retries with a backoff of 5 ms doubling to 50 ms and stops at the same deadline as a busy lock (`still contended after <ms> ms`): the tick's 2 s, the hook's 200 ms. The tick says `state not written to <state.json>: …`, the hook its one stamp warning line | `test/state.test.mjs` (injected EACCES on the read and on the stale rename, ENOENT at every rename; both budgets, elapsed and attempts asserted) |
 | the supervisor dies without recording (killed with the login session), or the tick dies between its claim and the dialog | after the give-up plus 10 min the pending popup is `popup not confirmed: …` and the episode reopens | `test/state.test.mjs` |
 | the state file cannot be written by `tick` | said in the tick's output; exit 0; the temp file is removed | `test/cli.test.mjs`, `test/state.test.mjs` |
 | a state file with a field out of shape (`strikes: -100`, `popupShown: "yes"`, …) | treated as absent with one errors.log line; the next failing tick is strike 1 | `test/state.test.mjs` |
@@ -73,3 +74,9 @@ the supervisor surviving launchd's end of the tick job (it is spawned detached, 
 process group, as osascript was before); log rotation racing a tick that launchd is still
 writing when the rotation came from an earlier run (the renamed file keeps that tick's lines;
 the next run opens a fresh one).
+
+Known limits (documented, not fixed in 0.1.0):
+
+- Stale-lock recovery is age-based (30 s): a holder suspended longer than that can be displaced, and a third writer arriving during the move-aside window can lose a fresh lock. Worst case: one duplicate popup for the same outage.
+- A pending popup recorded by a pre-0.1.0 layout (`popup.json`) is not migrated; it expires and the episode reopens once.
+- Consumed popup outcome files are removed only by `ctx-watch prune`; ticks do not delete them.

@@ -45,7 +45,8 @@
 // `strikes: -100` or `popupShown: "yes"` would otherwise hold the popup off for the whole
 // outage, so it is treated as absent and named in one errors.log line beside it.
 
-import { appendFileSync, linkSync, mkdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
+import * as nodeFs from "node:fs";
+import { appendFileSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { randomUUID } from "node:crypto";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
@@ -97,24 +98,40 @@ export function running(pid) {
 }
 
 const sleep = (ms) => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+/** The pause between lock attempts doubles from the first to the cap (never past the deadline). */
+const BACKOFF_MS = Object.freeze({ first: 5, cap: 50 });
 
-/** One attempt: `{ held }` (our content), `{ busy }` (the holder's pid), `{ again }` (state changed under us), or `{ error }`. */
-function tryLock(path, staleMs) {
+/** ENOENT on the lock's read or rename: its holder released it or another writer moved it meanwhile. Any other code persists. */
+const vanished = (err) => err?.code === "ENOENT";
+
+/**
+ * One attempt: `{ held }` (our content), `{ busy }` (the holder's pid), `{ again }` (the lock
+ * changed under us), or `{ error }` (a filesystem error that another attempt would only repeat).
+ */
+function tryLock(path, staleMs, fs) {
   const mine = `${process.pid} ${randomUUID()}\n`;
+  const create = () => {
+    try {
+      fs.writeFileSync(path, mine, { flag: "wx" });
+      return { held: mine };
+    } catch (err) {
+      return err.code === "EEXIST" ? null : { error: err };
+    }
+  };
   try {
-    mkdirSync(dirname(path), { recursive: true });
-    writeFileSync(path, mine, { flag: "wx" });
-    return { held: mine };
+    fs.mkdirSync(dirname(path), { recursive: true });
   } catch (err) {
-    if (err.code !== "EEXIST") return { error: err };
+    return { error: err };
   }
+  const first = create();
+  if (first) return first;
   let text;
   let age;
   try {
-    text = readFileSync(path, "utf8");
-    age = Date.now() - statSync(path).mtimeMs;
-  } catch {
-    return { again: true }; // released between our create and our read
+    text = fs.readFileSync(path, "utf8");
+    age = Date.now() - fs.statSync(path).mtimeMs;
+  } catch (err) {
+    return vanished(err) ? { again: true } : { error: err };
   }
   const pid = /^(\d+) /.exec(text)?.[1];
   // An empty or half-written lock is a holder between creating it and writing its pid: busy while fresh.
@@ -123,52 +140,64 @@ function tryLock(path, staleMs) {
   // lock judged stale; a fresh lock some other process made meanwhile is put back.
   const aside = `${path}.${process.pid}.stale`;
   try {
-    renameSync(path, aside);
-  } catch {
-    return { again: true };
+    fs.renameSync(path, aside);
+  } catch (err) {
+    return vanished(err) ? { again: true } : { error: err };
   }
   let moved = null;
   try {
-    moved = readFileSync(aside, "utf8");
+    moved = fs.readFileSync(aside, "utf8");
   } catch {
     /* gone: nothing to put back */
   }
   if (moved !== null && moved !== text) {
     try {
-      linkSync(aside, path);
+      fs.linkSync(aside, path);
     } catch {
       /* a third writer already holds the name */
     }
   }
-  rmSync(aside, { force: true });
-  return { again: true };
+  try {
+    fs.rmSync(aside, { force: true });
+  } catch (err) {
+    return { error: err };
+  }
+  // Take the name now it is free, in this same attempt: a stale lock is taken over at once.
+  return create() ?? { again: true };
 }
 
 /**
- * Run `fn()` holding `<dir>/state.lock`; `{ ok: true, value }`, or `{ ok: false, error }` when the
- * lock cannot be made (`could not lock <path>: …`) or another live holder keeps it past `waitMs`
- * (`<path> is held by pid <n>`), and then `fn` never runs. The lock is released however `fn`
- * ends (a throw propagates). Synchronous: every holder keeps it for a few file operations.
+ * Run `fn()` holding `<dir>/state.lock`; `{ ok: true, value }`, or `{ ok: false, error }` and
+ * then `fn` never runs: `could not lock <path>: <error>` at once for a filesystem error another
+ * attempt would repeat (EACCES, EROFS, ENOSPC, …); `<path> is held by pid <n>` when a live holder
+ * keeps it past `waitMs`; `could not lock <path>: still contended after <waitMs> ms` when it kept
+ * changing under us that long. One attempt is always made; every later one is checked against the
+ * same monotonic deadline first, after a backoff of 5 ms doubling to 50 ms. The lock is released
+ * however `fn` ends (a throw propagates). Synchronous: every holder keeps it for a few file
+ * operations. `fs` is injectable for the fault tests.
  */
-export function withStateLock(dir, fn, { waitMs = LOCK_WAIT_MS, staleMs = LOCK_STALE_MS } = {}) {
+export function withStateLock(dir, fn, { waitMs = LOCK_WAIT_MS, staleMs = LOCK_STALE_MS, fs = nodeFs } = {}) {
   const path = lockPath(dir);
-  const until = Date.now() + waitMs;
+  const until = performance.now() + waitMs;
+  let pause = BACKOFF_MS.first;
   for (;;) {
-    const r = tryLock(path, staleMs);
+    const r = tryLock(path, staleMs, fs);
     if (r.error) return { ok: false, error: new Error(`could not lock ${path}: ${r.error.message}`, { cause: r.error }) };
     if (r.held) {
       try {
         return { ok: true, value: fn() };
       } finally {
         try {
-          if (readFileSync(path, "utf8") === r.held) rmSync(path, { force: true });
+          if (fs.readFileSync(path, "utf8") === r.held) fs.rmSync(path, { force: true });
         } catch {
           /* already gone */
         }
       }
     }
-    if (r.busy && Date.now() >= until) return { ok: false, error: new Error(`${path} is held by pid ${r.busy}`) };
-    if (r.busy) sleep(Math.min(25, Math.max(1, until - Date.now())));
+    const left = until - performance.now();
+    if (left <= 0) return { ok: false, error: new Error(r.busy ? `${path} is held by pid ${r.busy}` : `could not lock ${path}: still contended after ${waitMs} ms`) };
+    sleep(Math.min(pause, left));
+    pause = Math.min(pause * 2, BACKOFF_MS.cap);
   }
 }
 

@@ -194,6 +194,12 @@ it is guarded as described above; a repair that fails is reported with ctx's own
 probe after it decides. What this plugin cannot do: tell why launchd refused ctx's bootstrap on
 10-28 (the system log is sandboxed off), or restart a daemon in `manual` mode.
 
+Known limits, documented rather than fixed in 0.1.0:
+
+- Stale-lock recovery is age-based (30 s): a holder suspended longer than that can be displaced, and a third writer arriving during the move-aside window can lose a fresh lock. Worst case: one duplicate popup for the same outage.
+- A pending popup recorded by a pre-0.1.0 layout (`popup.json`) is not migrated; it expires and the episode reopens once.
+- Consumed popup outcome files are removed only by `ctx-watch prune`; ticks do not delete them.
+
 The full table is [HOW-IT-FAILS.md](HOW-IT-FAILS.md). `test/hook-contract.test.mjs` proves the
 five fault inputs; `test/session-start.test.mjs` the output contract above, the shared clock
 against a ctx that hangs, and the quoted timer line; `test/probe.test.mjs` the judgments
@@ -228,3 +234,9 @@ and a state directory that cannot be written starts none; the hook's first-seen 
 outcome has its own file (`popups/<token>.json`) instead of a shared `popup.json`, so an
 earlier episode's dialog ending late cannot erase the current one's delivery. `prune` removes
 outcome files past `--days`, never the pending one's.
+
+Changes before release, from the fourth review: every retry of the state lock is bounded by the
+same deadline (the tick's 2 s, the hook's 200 ms), with a backoff of 5 ms doubling to 50 ms
+instead of an immediate retry, and a filesystem error another attempt would repeat (EACCES,
+EROFS, ENOSPC) fails at once as `could not lock <path>: …` instead of spinning; the stale-lock,
+pre-0.1.0 popup and outcome-file limits above are documented.

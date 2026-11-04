@@ -62,8 +62,9 @@ whether ctx is running, or when a ctx search reports a stale or unavailable daem
   failing tick. Nothing to do unless it repeats while the person is logged in, then tell them
   the reason. `status` saying `popup up since …, not confirmed yet` is a dialog that may still
   be on screen; it is not a failure.
-- `status` or `tick` printed `state not written to <path>`: the state directory is not
-  writable, or (`… state.lock is held by pid <n>`) another tick was writing it. Tell the person
+- `status` or `tick` printed `state not written to <path>`: the state directory or its lock is
+  not writable (`could not lock …: EACCES`), or (`… state.lock is held by pid <n>`, or `still
+  contended after <ms> ms`) another tick was writing it. Tell the person
   the path; the probe and the line still work without it, but no popup starts until the state
   can be written.
 - The command printed `ctx-watch SessionStart failed open: <why>`: the hook let the session

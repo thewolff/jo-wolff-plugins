@@ -9,7 +9,9 @@ import { spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { EMPTY, step, popupDelivered, popupSettled, readState, writeState, validateState, statePath, stateDir, timerOverdue, withStateLock, lockPath, STRIKES_TO_DOWN, DEFAULT_INTERVAL_S, MAX_STRIKES, INTERVAL_BOUNDS, PENDING_STALE_MS, LOCK_STALE_MS } from "../lib/state.mjs";
+import * as realFs from "node:fs";
+import { EMPTY, step, popupDelivered, popupSettled, readState, writeState, validateState, statePath, stateDir, timerOverdue, withStateLock, lockPath, STRIKES_TO_DOWN, DEFAULT_INTERVAL_S, MAX_STRIKES, INTERVAL_BOUNDS, PENDING_STALE_MS, LOCK_STALE_MS, LOCK_WAIT_MS } from "../lib/state.mjs";
+import { HOOK_LOCK_WAIT_MS } from "../hooks/session-start.mjs";
 
 const T0 = 1_793_784_000_000;
 const pass = { ok: true, reason: null, healed: null };
@@ -308,3 +310,61 @@ test("withStateLock: runs fn holding <dir>/state.lock and removes it; a lock a r
     rmSync(dir, { recursive: true, force: true });
   }
 });
+
+// The real fs with the lock path's calls swapped for injected failures; `creates` counts acquisition attempts.
+function faultyFs(lock, { read, rename } = {}) {
+  const fs = { ...realFs, creates: 0 };
+  const fail = (code) => Object.assign(new Error(`${code}: injected`), { code });
+  fs.writeFileSync = (p, ...rest) => {
+    if (p === lock) fs.creates++;
+    return realFs.writeFileSync(p, ...rest);
+  };
+  fs.readFileSync = (p, ...rest) => {
+    if (p === lock && read) throw fail(read);
+    return realFs.readFileSync(p, ...rest);
+  };
+  fs.renameSync = (from, ...rest) => {
+    if (from === lock && rename) throw fail(rename);
+    return realFs.renameSync(from, ...rest);
+  };
+  return fs;
+}
+
+for (const [budget, waitMs] of [["hook", HOOK_LOCK_WAIT_MS], ["tick", LOCK_WAIT_MS]]) {
+  test(`withStateLock inside the ${budget}'s ${waitMs} ms: a persistent EACCES on the lock's read or its stale rename fails at once naming the lock; an ENOENT at every rename retries with backoff and gives up at the deadline`, () => {
+    assert.equal(HOOK_LOCK_WAIT_MS, 200);
+    assert.equal(LOCK_WAIT_MS, 2_000);
+    const dir = mkdtempSync(join(tmpdir(), "ctx-watch-lock-bound-"));
+    try {
+      const lock = lockPath(dir);
+      const dead = spawnSync(process.execPath, ["-e", ""]).pid;
+      const named = `^could not lock ${lock.replace(/[.*+?^${}()|[\]\\/]/g, "\\$&")}: `;
+      const cases = [
+        ["read EACCES", `${process.pid} live\n`, { read: "EACCES" }, new RegExp(`${named}EACCES`), true],
+        ["stale-rename EACCES", `${dead} crashed\n`, { rename: "EACCES" }, new RegExp(`${named}EACCES`), true],
+        ["rename ENOENT", `${dead} crashed\n`, { rename: "ENOENT" }, new RegExp(`${named}still contended after ${waitMs} ms$`), false],
+      ];
+      for (const [what, holder, faults, message, atOnce] of cases) {
+        writeFileSync(lock, holder);
+        const fs = faultyFs(lock, faults);
+        const t = performance.now();
+        const r = withStateLock(dir, () => assert.fail(`${what}: no lock, no run`), { waitMs, fs });
+        const elapsed = performance.now() - t;
+        assert.equal(r.ok, false, what);
+        assert.match(r.error.message, message, what);
+        assert.ok(elapsed < waitMs + 100, `${what}: returned in ${elapsed} ms`);
+        if (atOnce) {
+          assert.equal(fs.creates, 1, `${what}: a persistent error is not retried`);
+          assert.ok(elapsed < 50, `${what}: at once, not after the wait (${elapsed} ms)`);
+        } else {
+          // Backoff 5, 10, 20, 40, then 50 ms: at most waitMs / 50 + 5 attempts, and it used the wait.
+          assert.ok(fs.creates >= 2 && fs.creates <= waitMs / 50 + 5, `${what}: ${fs.creates} attempts`);
+          assert.ok(elapsed >= waitMs - 5, `${what}: waited ${elapsed} ms`);
+        }
+        rmSync(lock, { force: true });
+      }
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+}
