@@ -260,6 +260,25 @@ A live headless run (`claude -p --plugin-dir`) is not part of the suite; it cost
 
 ## Changelog
 
+### 0.3.2
+
+- The plugin meets ledger 0.3.5's five-row gate. `evals/manifest.json` declares what the three
+  hooks can return and eight `evals/<x>.scenario.json` prove them: under the threshold
+  (`pre-tool-use-under-threshold`), the third file held (`pre-tool-use-third-file-held`, which
+  also carries a `session` and a `judge` rubric the nightly canary runs under `claude -p` and
+  grades with `claude plugin eval`), the receipt lifting the hold (`pre-tool-use-receipt-lifts`),
+  a corrupt config warning and letting the call through (`pre-tool-use-corrupt-config-warns`);
+  a plan refused without a receipt (`stop-plan-without-receipt`), passed with one
+  (`stop-plan-with-receipt`), a report passing (`stop-report-passes`); SessionEnd cleaning its
+  files (`session-end-cleans-working-files`). `e2e/live-run.sh` hands off to plugin-kit's
+  `lib/live-run.mjs`.
+- `pattern-check prune [--days <n>]` (default 30) removes receipt copies, stop guards and session
+  files in the state directory older than that; `errors.log` and `current/` stay. It prints
+  `pruned: N file(s), B bytes freed`, names on stderr any file it could not remove and exits 1
+  then. `.claude-plugin/plugin.json` declares the state directory with that prune, the config
+  file and the repository's `.pattern-check/` kept by design.
+- The skill's "When this can't run" section names the scenarios.
+
 ### 0.3.1
 
 - SessionEnd hook (`hooks/pattern-check-session-end.mjs`): removes `sessions/<key>.json` and

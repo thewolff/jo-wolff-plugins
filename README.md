@@ -22,9 +22,12 @@ it, keeping a record of what it did and asked, and a vendored set of engineering
   hooks that keep every question and your plain-words answer to it on a row.
 - **[plugin-kit](plugins/plugin-kit/README.md)** — start a new plugin here that meets the test
   bar on day one: the fail-open hook runner, one handler per event, the five-fault contract test,
-  the canary live run, and a skill with its "When this can't run" section, scaffolded by
-  `/plugin-kit:new-plugin`; `ledger gate check` passes on it before the first rule is written.
-  Changes in plugin-kit 0.1.2: two agents, `cross-lab-reviewer` (a Codex review of the branch) and `release-gate` (the release checklist, report-only).
+  the scenario runner and the canary live run, a scenario stub per event, the prune verb and
+  state declaration, and a skill with its "When this can't run" section, scaffolded by
+  `/plugin-kit:new-plugin`; `ledger gate check` passes on it, the `evals` row excepted, before
+  the first rule is written, and that row fails naming the stubs until they are filled.
+  Changes in plugin-kit 0.2.0: the shared scenario runner `lib/live-run.mjs` and the evals, prune
+  and state scaffold templates. Changes in plugin-kit 0.1.2: two agents, `cross-lab-reviewer` (a Codex review of the branch) and `release-gate` (the release checklist, report-only).
 - **[as2-skills](plugins/as2-skills/README.md)** — the 22 engineering skills of agent-system 2.0,
   vendored from four upstream skill packs at pinned releases, with frontmatter claude.ai accepts.
   Install with `/plugin install as2-skills@jo-wolff-plugins`; skills only.
@@ -154,6 +157,14 @@ and the reason to `${XDG_STATE_HOME:-~/.local/state}/output-types/errors.log`, a
 warning reaches you as well as the model and says where the reason went. `OUTPUT_TYPES_INJECT=off`
 is read first, so it silences the hook even when the install is broken. The hook no longer waits
 on a stdin pipe its caller leaves open: it reads for at most one second, then injects.
+
+Changes in 0.2.2: the plugin meets ledger 0.3.5's five-row gate. `evals/manifest.json` declares
+what the session-start hook can return (the core as a `systemMessage`, or silence under
+`OUTPUT_TYPES_INJECT=off`), one `evals/<x>.scenario.json` proves each, and the core scenario
+carries a `session` and a `judge` rubric the nightly canary runs under `claude -p` and grades
+with `claude plugin eval`. `e2e/live-run.sh` hands off to plugin-kit's scenario runner.
+`.claude-plugin/plugin.json` declares the one state path (`$XDG_STATE_HOME/output-types`, 30
+days) and `scripts/prune.mjs` prunes it. The skill has a "When this can't run" section.
 
 ### What this does, and what it does not do: it delivers, it does not enforce
 
@@ -289,6 +300,18 @@ one warning line; the hook still exits 0 and blocks nothing. Every block reason 
 way out: `touch ~/.claude/.i-have-audhd-off`, or the check's `enforcement.rules` key set to
 `"warn"`.
 
+Changes in 1.5.2: the plugin meets ledger 0.3.5's five-row gate. `evals/manifest.json` declares
+what each of the three hooks can return and seven `evals/<x>.scenario.json` prove them
+(injection on and off, the pending-warning relay and the quiet prompt, the Stop hook's default
+warn, its plural block, and the judge-gated warning replayed from the captured real-judge
+output); `e2e/live-run.sh` hands off to plugin-kit's scenario runner. The three state paths are
+declared (`~/.claude/.i-have-audhd-state`, 30 days, pruned by `scripts/prune.mjs`; the profile
+and the off file kept by design) and the skill has a "When this can't run" section. Fix: the
+Stop hook and the four check scripts compared `import.meta.url` with `file://${process.argv[1]}`
+as strings, and node resolves the main module through symlinks, so reached through one (macOS's
+`/var/folders` tmpdir, where `ledger gate check` snapshots the plugin) the Stop hook never ran
+and exited 0 with nothing printed and nothing logged; the guards now compare real paths.
+
 ## paired-coding
 
 A plugin for pairing with an agent on code, one change set at a time. The agent drives and you
@@ -343,6 +366,18 @@ installing the plugin.
   ask a process outside the sandbox to write for it.
 - **A journal** of every card, quote, verdict, refusal and diff, kept outside the worktree.
 - **A stop only you can give:** pairing ends when you type `pair stop` as a message of its own.
+
+Changes in 1.4.3: the plugin meets ledger 0.3.5's five-row gate. `evals/manifest.json` declares
+what each of the five hooks can return and nine `evals/<x>.scenario.json` prove them (the
+write denied and the inert hook at PreToolUse, the pairing-on and stop-queued prompts, the
+fresh and carried-over session start, the session end leaving its carry, the Stop hook judging
+a queued turn; scenarios that need pairing on run `evals/pair-start.mjs`, the same `pair_start`
+verb the MCP server exposes), with the typed-agreement path and `pair stop` listed under
+`manual`; `e2e/live-run.sh` hands off to plugin-kit's scenario runner. Every refusal now ends
+with the standing way out: pairing ends when your partner types `pair stop` as a whole message.
+The journal directory (`~/.local/state/paired-coding`, 30 days, pruned by `scripts/prune.mjs`)
+and the per-run temp directories are declared as state, and the skill has a "When this can't
+run" section.
 
 ### What this enforces, and what it does not
 
@@ -518,6 +553,17 @@ verdict. An unreadable block record now lets the stop through. The Claude Code h
 fail silently: a fault still lets the prompt or stop through, and now lands in `errors.log` with
 the hook file and reason and shows one warning line.
 
+Changes in 0.7.2: the plugin meets ledger 0.3.5's five-row gate. `evals/manifest.json` declares
+what the two hooks can return and four `evals/<x>.scenario.json` prove them (the every-idea
+nudge and the quiet prompt at `ask`; the Stop check blocking a reply with no verdict, with a
+`session` and a `judge` rubric the nightly canary runs under `claude -p` and grades with
+`claude plugin eval`, and letting one with a verdict through); `e2e/live-run.sh` hands off to
+plugin-kit's scenario runner. The state directory (`$XDG_STATE_HOME/ask-graham`, 30 days) is
+declared and `scripts/prune.mjs` prunes it; the skill has a "When this can't run" section.
+Fix: `scripts/upkeep.mjs` compared `import.meta.url` with `file://${process.argv[1]}` as
+strings, and node resolves the main module through symlinks, so reached through one it did
+nothing and exited 0; the guard now compares real paths.
+
 Changes in 0.7.0: adds the structure check. Its reply opens with `**Structure check:**` and then a
 `**Found:**` or `**No similar:**` line, which the Stop check requires in place of a verdict line.
 The every-idea nudge names the structure check.
@@ -677,6 +723,17 @@ does it fail. Bash write forms are read through a shell lexer, fixing two real c
 redirect matcher miscounted. Hook faults are appended to `errors.log` as well as shown,
 `hooks.json` sets a 5 s timeout, and NotebookEdit is counted.
 
+Changes in 0.3.2: the plugin meets ledger 0.3.5's five-row gate. `evals/manifest.json` declares
+what the three hooks can return and eight `evals/<x>.scenario.json` prove them (under the
+threshold, the third file held, with a `session` and a `judge` rubric the nightly canary runs
+under `claude -p` and grades with `claude plugin eval`, the receipt lifting the hold, a corrupt
+config warning and letting the call through; a plan refused without a receipt, passed with one,
+a report passing; SessionEnd cleaning its files); `e2e/live-run.sh` hands off to plugin-kit's
+scenario runner. `pattern-check prune [--days 30]` removes receipt copies, stop guards and
+session files older than that (errors.log and `current/` stay) and prints the bytes freed; the
+state directory, the config file and the repository's `.pattern-check/` are declared as state.
+The skill's "When this can't run" section names the scenarios.
+
 Changes in 0.2.0: an OMP adapter (`omp/pattern-check-omp.ts`) runs the PreToolUse counter on
 OMP's `tool_call` and the Stop refusal on `session_stop`, through the hooks' own functions and
 state.
@@ -698,6 +755,13 @@ Needs macOS and [remindctl](https://github.com/openclaw/remindctl)
 it installed the agent also reads the link field you see in Reminders.app, which remindctl cannot
 see. Run `/reminders-review` with list names, or save defaults with
 `/reminders-review lists <name> ...`. Details are in `plugins/reminders-review/README.md`.
+
+Changes in 0.2.0: due and overdue reminders from the lists you watch (`watch` in the config file,
+or `REMINDERS_REVIEW_WATCH`) come up at session start and at most hourly after, on Claude Code and
+OMP. The skill has a "When this can't run" section (`remindctl` missing or not authorized, `rem`
+missing, a list name matching nothing, one `complete` failing, not macOS), and
+`.claude-plugin/plugin.json` declares the state directory and its prune command. ledger 0.3.5's
+five-row gate passes on it.
 
 Changes in 0.1.2: reads the Reminders.app link field with `rem show` when rem is installed, and
 gives its install line once when it is missing. remindctl stays the source for everything else,
@@ -737,6 +801,23 @@ for that folder (it writes `.ledger.json` there, found from any subfolder); `/le
 them back on. The plugin's tables are all prefixed `cc_`, so the database can be a SQLite file
 another tool already uses.
 
+Changes in 0.3.5 (with plugin-kit 0.2.0): the gate grows from three rows to five. `evals`
+(behaviour is proved): `evals/manifest.json` declares, for every event `hooks.json` registers,
+the outcomes the handler can return; one `evals/<x>.scenario.json` per event × outcome, with a
+real stdin fixture, not a stub, proves it; and the newest canary row for the committed plugin
+tree is a pass (or `unavailable` with its reason), at most 7 days old where a scenario is
+judge-backed. `retention` (state is declared and pruned): `.claude-plugin/plugin.json` declares
+every path the plugin writes outside the worktree, with a prune command for anything kept a
+number of days, and every write the canary observed sits under a declared path. The canary row
+keeps the committed tree it certifies (`tree_sha`) and the files the live run left outside its
+work directory (`writes`), runs every declared prune after the live runs and records each as a
+`cc_canary_prunes` row (`--no-prune` skips that), and `canary status` prints the last run, the
+last pass and the last prune per plugin; schema 8. Every plugin in this repository has an
+`e2e/live-run.sh` handing off to plugin-kit's scenario runner, and the ledger's own scenarios
+cover its five events. The hooks' direct-invocation guards compare real paths, the fix the
+i-have-audhd and ask-graham scripts needed: a hook reached through a symlink (macOS's
+`/var/folders` tmpdir, where `gate check` snapshots the plugin) otherwise never ran.
+
 Changes in 0.3.4 (with plugin-kit 0.1.1): two fixes to what 0.3.3 shipped. The canary no longer
 hands its `e2e/live-run.sh` the caller's `LEDGER_*` environment; a `LEDGER_DB` in the shell
 that ran `ledger canary run` outranked the script's throwaway config and pointed the seeded
@@ -747,7 +828,7 @@ instead of the directory above the kit (which, installed from the marketplace, w
 cache); a cwd in no repository is refused naming `--dest`.
 
 Changes in 0.3.3: the fault-tolerance gate and the feedback loop. `ledger gate check` runs the
-repository test bar's three checks on every plugin changed since the base of a repository of
+repository test bar's checks (three then; five since 0.3.5) on every plugin changed since the base of a repository of
 plugins (can't break the session: each hook on five fault inputs; failures visible: an
 `errors.log` line and a `systemMessage`, and an `<x>.unavailable.txt` fixture beside every
 `<x>.txt`; text says what to do: a "When this can't run" section in every skill and agent, a

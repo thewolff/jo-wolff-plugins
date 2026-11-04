@@ -53,7 +53,10 @@
 // in OUTCOMES, no stdin, or is still a stub → `fail` naming the file (the gate says the same
 // offline). `claude` missing → the hook phase still runs and prints; exit 75 with the reason
 // last. A live session whose result cannot be read → indeterminate. Any fail → exit 1.
-// Indeterminate alone never fails the run: with no fail and no live pass, exit 75.
+// Indeterminate alone never fails the run: with no fail and no live pass, exit 75. A judge
+// scenario left indeterminate (its session, or `claude plugin eval` that could not run, log in
+// or reach the API) makes the whole run unavailable whatever else passed: the gate's evals row
+// trusts a canary pass to mean every rubric was graded.
 
 import { spawnSync } from "node:child_process";
 import { chmodSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
@@ -702,6 +705,7 @@ export function run({ pluginDir, only = null, live = true, model = "haiku", env 
   const hasClaude = claudePresent ?? hasBinary("claude", env);
   let livePasses = 0;
   let indeterminate = 0;
+  const judgesLeft = [];
   if (live && hasClaude) {
     const c = contract({ pluginDir, pluginName, env, model, timeoutS });
     lines.push(`cli-contract: ${c.verdict} — ${c.why}`);
@@ -714,7 +718,10 @@ export function run({ pluginDir, only = null, live = true, model = "haiku", env 
       lines.push(`session ${s.name}: ${r.verdict} — ${r.why}`);
       if (r.verdict === "fail") failed++;
       else if (r.verdict === "pass") livePasses++;
-      else indeterminate++;
+      else {
+        indeterminate++;
+        if (s.judge) judgesLeft.push(`${s.name} (${r.why})`);
+      }
     }
   }
   for (const w of [...writes].sort()) lines.push(`wrote: ${w}`);
@@ -732,6 +739,10 @@ export function run({ pluginDir, only = null, live = true, model = "haiku", env 
   }
   if (!livePasses) {
     lines.push(`unavailable: every live session was indeterminate (${indeterminate}); ${hookPasses} hook scenario(s) passed offline`);
+    return { code: UNAVAILABLE_EXIT, lines };
+  }
+  if (judgesLeft.length) {
+    lines.push(`unavailable: ${judgesLeft.length} judge scenario(s) not graded: ${judgesLeft.join("; ")}; ${hookPasses} hook scenario(s) passed offline, ${livePasses} live pass(es)`);
     return { code: UNAVAILABLE_EXIT, lines };
   }
   lines.push(`pass: ${hookPasses} hook scenario(s), ${livePasses} live pass(es), ${indeterminate} indeterminate`);

@@ -88,6 +88,14 @@ The skills and edits written for agent-system 2.0 (`ctx`, `resolving-merge-confl
 `triad`, `quorum` and `panel` references, and every owned edit) are MIT, under the repository's
 `LICENSE`.
 
+## Changes
+
+- 0.1.1: every skill has a "How it fails" section (what the agent does when the tool it shells
+  out to is missing, returns nothing, or cannot be trusted), the repository test bar ledger 0.3.5's
+  `gate check` enforces, and `.claude-plugin/plugin.json` declares the one path a skill writes
+  outside the worktree (`$TMPDIR/seo-audit-*`, per run, kept 0 days). With no hooks the gate's
+  `evals` row is skipped.
+
 ## Refreshing a pin
 
 1. Clone the pack and check out the new tag. Note its commit and commit date.

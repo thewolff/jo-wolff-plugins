@@ -31,7 +31,7 @@
 // the one-sentence description, when the plugin is ready to publish.
 
 import { spawnSync } from "node:child_process";
-import { chmodSync, cpSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { chmodSync, cpSync, existsSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -149,7 +149,16 @@ export function scaffold({ name, events, description, dest }) {
   return { root, written };
 }
 
-if (process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1]) {
+// Real paths on both sides: node resolves the main module through symlinks (macOS's /var/folders
+// tmpdir, a linked checkout); a raw argv compare there is a silent no-op that writes nothing.
+const invoked = (() => {
+  try {
+    return Boolean(process.argv[1]) && realpathSync(process.argv[1]) === realpathSync(fileURLToPath(import.meta.url));
+  } catch {
+    return false;
+  }
+})();
+if (invoked) {
   const args = parseArgs(process.argv.slice(2));
   if (args.error) {
     process.stderr.write(`new-plugin: ${args.error}\n`);

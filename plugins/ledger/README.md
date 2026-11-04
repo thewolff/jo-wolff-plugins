@@ -112,10 +112,10 @@ node <plugin dir>/scripts/ledger.mjs help                # the verb table, id gr
 | `config` | either | the effective settings, where each came from, both config file paths, and whether the database file is the plugin's own or shared. |
 | `doctor` | either | is the ledger healthy: one `ok`, `warn` or `fail` line per check (see [Doctor and the bounce ledger](#doctor-and-the-bounce-ledger)). Exit 0 when nothing failed, 1 when anything did; warns do not change it. Never writes the database and never creates it. |
 | `bounces [--since <N>d\|<N>h]` | either | the hooks' bounces since then (default `7d`): per rule, how many fired, were satisfied, were bypassed and are still open; then the last 20 rows (`#id`, time, session short id, rule, tool, outcome), each followed by `text:` (what fired it, one line, cut to 160 characters) and `transcript:` (the session transcript's path) when the row has them. Covers every folder. |
-| `canary run` / `runs` / `grade` / `prune` / `install` | human | the nightly canary (see [The feedback loop](#the-feedback-loop-canary-report-digest)). Runs on its own line. |
+| `canary run` / `runs` / `status` / `grade` / `prune` / `install` | human | the nightly canary (see [The feedback loop](#the-feedback-loop-canary-report-digest)). Runs on its own line. |
 | `report [--since 7d] [--no-judge]` | either | the graded report of what the hooks did in the window. Runs on its own line. |
 | `digest [--dry-run] [--force]` / `digest install` | human | the weekly report posted as a comment on the digest issue, and its launchd job. Runs on its own line. |
-| `gate check [--plugins a,b] [--base <ref>]` | either | the plugin push gate's three checks on every plugin of this repository with a change since the base, recorded for HEAD (see [The plugin gate](#the-plugin-gate)). Runs on its own line. |
+| `gate check [--plugins a,b] [--base <ref>]` | either | the plugin push gate's five checks on every plugin of this repository with a change since the base, recorded for HEAD (see [The plugin gate](#the-plugin-gate)). Runs on its own line. |
 | `help` | either | the table above, the id grammar, the batch rule. |
 
 "Who" is advisory; the CLI does not refuse by caller. `--by <name>` overrides the recorded
@@ -424,8 +424,9 @@ the prompt as before, the review runs.
 
 A second gate on `git push` and `gh pr create`/`merge`, since 0.3.3, for a repository of
 Claude Code plugins: one holding `plugins/*/hooks/hooks.json` or a root
-`.claude-plugin/plugin.json`. It enforces the repository `AGENTS.md` test bar as three checks,
-the same three for every kind of agent-facing artifact, run by `ledger gate check` and recorded
+`.claude-plugin/plugin.json`. It enforces the repository `AGENTS.md` test bar as five checks
+(three since 0.3.3, `evals` and `retention` since 0.3.5), the same five for every kind of
+agent-facing artifact, run by `ledger gate check` and recorded
 as one `cc_gate_checks` row per (HEAD, plugin, check); a rerun replaces the rows. Only plugins
 with a file changed in base..HEAD are checked (base: the review's default base, or `--base`;
 `--plugins a,b` names them instead). The checks read the commit, never the checkout: each
@@ -441,6 +442,8 @@ since it is still pushed.
 | `survives` (can't break the session) | every hook command in `hooks/hooks.json` exits 0 within 5 s, with no `permissionDecision: deny`, `decision: block` or `continue: false`, on each of five fault inputs: empty stdin, malformed JSON, an unknown event, an unwritable state (the plugin's `XDG_STATE_HOME` and `XDG_DATA_HOME` directories read-only, with a writable `errors.log` in the first), and no config (an empty `HOME`, `XDG_CONFIG_HOME`) | the hook and the input (`PreToolUse hook on empty stdin: exit 1`). A plugin with no `hooks/hooks.json` is `skipped` |
 | `visible` (failures visible) | the malformed-JSON and unwritable-state inputs each left a line in `<XDG_STATE_HOME>/<plugin>/errors.log` and a `systemMessage` on stdout (SessionEnd has no reader, so its message is not required; a hook that printed nothing and logged nothing on the unwritable state never reached it and is not failed, the malformed-JSON input being the one every hook must answer); every `test/fixtures/<x>.txt` has an `<x>.unavailable.txt` sibling | the hook and input, or the fixture without its sibling |
 | `says` (text says what to do when it can't) | every `skills/*/SKILL.md` and `agents/*.md` has a heading matching `when this can't` (`it cannot`, a curly apostrophe count too); every deny or block reason literal in `hooks/*.mjs` and `lib/*.mjs` (a string or template right after `permissionDecisionReason:`, or after `reason:` with `deny`, `block` or `rule:` within the five lines up to it; comments are skipped) names a command in backticks | the file, or the file, line and literal |
+| `evals` (behaviour is proved) | `evals/manifest.json` declares, for every event `hooks.json` registers, the outcomes its handler can return (`deny`, `allow`, `ask`, `systemMessage`, `silent`); every declared event × outcome has one `evals/<x>.scenario.json` naming `event`, `expect` and a stdin fixture (`stdin` or `stdinFile`) and not marked `"stub": true`; a silent scenario of an event that can also fire names a `sibling` that does; a `judge` rubric has a `session` to grade. Then freshness: the newest `cc_canary_runs` row for the committed plugin tree (`tree_sha`) is a `pass`, or `unavailable` with its reason (no `claude` on the canary's PATH is the canary's finding, not the plugin's), and when any scenario is judge-backed that row is a `pass` at most 7 days old | the gap (`no scenario for Stop × deny`), the stub or malformed scenario file, or the canary: `no canary row for tree <sha>: run \`ledger canary run --plugins <p>\` on this commit`, a failed run with its note, or a judge-backed plugin whose newest row is not a pass. A plugin with no `hooks.json` and no `evals/` is `skipped` |
+| `retention` (state is declared and pruned) | `.claude-plugin/plugin.json` `state` is an array of `{ path, retentionDays, prune }` (`~`, `$HOME`, `$XDG_*`, `$TMPDIR`, `<worktree>` placeholders, `*` for one segment; `kind: "file"` for a single file; `retentionDays: null` is kept by design; a positive `retentionDays` needs a `prune` command); a plugin whose source (`hooks/`, `lib/`, `scripts/` and the rest; tests, fixtures, evals, e2e, templates and the kit's two copied runners excluded) writes or resolves paths outside the worktree declares `state`; every write the canary observed (`cc_canary_runs.writes`) sits under a declared path | the malformed entry, the write sites with no `state` (`hooks/stop.mjs:41, …`), or `the canary saw a write at $XDG_STATE_HOME/<p>/x under no declared state path` |
 
 The whole run is capped at 60 s; a check that does not start before the cap records `fail`
 with `timeout`. Exit 0 when every row passes or is skipped, 1 when one fails, 2 when the
@@ -506,7 +509,7 @@ on its own line (never inside a batch) because each spawns processes.
 
 ### `canary`
 
-`canary run [--repo <path>] [--plugins a,b] [--timeout <s>]` runs every plugin's
+`canary run [--repo <path>] [--plugins a,b] [--timeout <s>] [--no-prune]` runs every plugin's
 `e2e/live-run.sh` from its plugin directory (every directory under `<repo>/plugins/` that has
 `hooks/hooks.json` or `.claude-plugin/plugin.json`; `--repo` defaults to the checkout this
 plugin is loaded from) and inserts one `cc_canary_runs` row per plugin: `pass` (exit 0), `fail`
@@ -516,7 +519,18 @@ script, exit 75, or no `claude` on PATH). The script writes its own stream-json 
 written (`transcript_path`; NULL with `no transcript from the script` in the note when the
 script wrote none); the script's stdout and stderr go to `<time>.out.txt` beside it
 (`output_path`), and the row keeps their last 16 KiB as `summary` and a line diff against the
-plugin's last pass as `diff`. Exit 0 when nothing failed, 1 when something did, 2 when the store
+plugin's last pass as `diff`. Since 0.3.5 the row also keeps `tree_sha`, the committed plugin
+tree the run certifies (`git rev-parse HEAD:plugins/<p>`; NULL, printed `uncommitted tree`,
+when the plugin has uncommitted changes or the repository is none: the gate's `evals` row
+trusts only a row for the committed tree, so run the canary on the commit you push), and
+`writes`, the script's `wrote: <path>` lines (files the live run left outside its work
+directory, in placeholder form such as `$XDG_STATE_HOME/<p>/x`; the gate's `retention` row
+checks each against the plugin's declared `state`). After the live runs, every `prune` command
+the plugins declare in `.claude-plugin/plugin.json` `state[]` is run once, in the canary's own
+environment (the real state is what is pruned), and recorded as a `cc_canary_prunes` row with
+the bytes it reported freed (`… <n> bytes freed` on its last stdout line; NULL when it
+reported none); `--no-prune` skips that pass. A prune that fails is its own row and never fails
+the run. Exit 0 when nothing failed, 1 when something did, 2 when the store
 could not be written (the canary has no session to fail open into; both paths are named so
 nothing is lost).
 
@@ -527,16 +541,23 @@ and with every `LEDGER_*` key of the caller's environment removed, so a `LEDGER_
 that runs the canary cannot outrank the script's throwaway config and point its seeded question
 and headless session at the real store (the scripts `unset` the same keys themselves, for a run
 by hand); exit 0 pass, 75 unavailable
-with the reason on the last stdout line, anything else fail. The ledger's own script seeds a
-question in another folder, runs `claude -p` headless with the plugin loaded from the checkout
-and the installed one disabled, and checks that the first reply relays the question's body,
-that no `stopAskRule` bounce was recorded, that the session row exists and `doctor` exits 0.
-Other plugins in this repository have no script yet and report `unavailable: no
-e2e/live-run.sh`, which is the correct reading, not a failure.
+with the reason on the last stdout line, anything else fail. Since 0.3.5 every plugin in this
+repository has the script, and each one hands off to plugin-kit's `lib/live-run.mjs` (the
+scenario runner): the hook phase replays every `evals/*.scenario.json` against the checkout's
+hooks in a sandbox and needs no model; the live phase, when `claude` is on PATH, runs the
+pinned CLI-contract session and every scenario with a `session`, and a `judge` rubric is graded
+by `claude plugin eval`. The ledger's own scenarios cover its five events (the relayed
+question at SessionStart, the `ledger` line at UserPromptSubmit, the push and ask gates at
+PreToolUse, the Stop ask rule); the ledger pane has no live scenario and is listed under
+`manual` in `evals/manifest.json`.
 
-`canary runs [N] [--plugin <name>]` lists the last N rows. `canary grade <id> biting|silent|fine
+`canary runs [N] [--plugin <name>]` lists the last N rows. `canary status` prints, per plugin,
+the last run (its status, id, time, tree and note) and the last pass, then the last prune per
+declared path. `canary grade <id> biting|silent|fine
 ["<note>"]` records who read a run and what they made of it (`--by`, default `human`).
-`canary prune [--days 30]` removes transcript and output files older than that; rows stay for ever.
+`canary prune [--days 30]` removes transcript and output files older than that; rows stay for
+ever. It is the prune command the ledger's own `state` declaration names for
+`$XDG_STATE_HOME/ledger/canary`, so the nightly run prunes the ledger too.
 `canary install [--repo <path>] [--hour 3] [--minute 30]` (a relative `--repo` is resolved against the cwd first: launchd runs the job from `/`; a path with no `plugins/` directory is refused) writes
 `<state>/launchd/com.jo-wolff-plugins.ledger-canary.plist` (nightly, `canary run --repo …`,
 logs beside it), checks it with `plutil -lint`, asks `launchctl print` whether the job is
@@ -591,7 +612,7 @@ SELECT id, kind, body, made_by, made_at FROM cc_notes ORDER BY made_at DESC LIMI
 ```
 
 Tables: `cc_meta`, `cc_questions`, `cc_answers`, `cc_notes`, `cc_sessions`, `cc_bounces`,
-`cc_reviews`, `cc_judge_cache`, `cc_canary_runs`, `cc_gate_checks`. Timestamps are ISO
+`cc_reviews`, `cc_judge_cache`, `cc_canary_runs`, `cc_gate_checks`, `cc_canary_prunes`. Timestamps are ISO
 8601 UTC. `cc_questions.state` is `open`, `held`, `answered` or `withdrawn`; `cc_answers.via` is
 `cli`, `prompt-hook` or `freeform`; `cc_notes.kind` is `note`, `withdraw`, `extend` or `outcome`,
 and `cc_notes.ref` carries an outcome's PR, commit or path. Schema version 3 rebuilt
@@ -610,7 +631,13 @@ given; the `judge:` rows that lived in `cc_meta` move here with `passage` NULL a
 `pass`/`fail`/`unavailable`, exit code, duration, transcript and output paths, summary, diff against the last
 green run, grade `biting`/`silent`/`fine` and who graded it) and `cc_gate_checks` (one row per
 commit, plugin and check of the plugin push gate, `pass`/`fail`/`skipped` with a detail and
-the hash of the plugin tree it certifies).
+the hash of the plugin tree it certifies). Version 8 (0.3.5) adds two columns to
+`cc_canary_runs` (`tree_sha`, the committed plugin tree the run certifies, NULL for an
+uncommitted one; `writes`, a JSON array of the files the live run left outside its work
+directory, in placeholder form) and creates `cc_canary_prunes` (one row per declared
+`state[].prune` command the canary ran after the live runs: the path, the command, its status
+and exit code, and the bytes it reported freed). A 0.3.3 or 0.3.4 ledger on a schema-8 file
+runs on the tables both know, as described below for 0.3.1 on 7.
 
 ### An older ledger on a newer file
 

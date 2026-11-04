@@ -298,6 +298,29 @@ Exit 0 means every item is done or had nothing to do, 1 means one was refused or
 
 ## Changes
 
+### 1.5.2
+
+- The plugin meets ledger 0.3.5's five-row gate. `evals/manifest.json` declares what each of
+  the three hooks can return and seven `evals/<x>.scenario.json` prove them: injection on
+  (`session-start-inject`) and off (`session-start-off`), the pending-warning relay
+  (`prompt-delivers-warning`) and the quiet prompt (`prompt-nothing-pending`), the Stop hook's
+  default warn (`stop-warn-default`), its plural block (`stop-block-plural`), and the judge-gated
+  warning replayed from the captured real-judge output (`stop-judge-warns`). `e2e/live-run.sh`
+  hands off to plugin-kit's `lib/live-run.mjs`, which replays them nightly under `ledger canary
+  run`; a live `claude -p` session cannot be isolated from the real state directory on macOS
+  (the login lives in the keychain), so that is listed under `manual` in the manifest.
+- The three state paths are declared in `.claude-plugin/plugin.json`: `~/.claude/.i-have-audhd-state`
+  (30 days, pruned by `node scripts/prune.mjs --days 30`, which removes files older than that and
+  keeps `errors.log`), the profile and the off file kept by design. The skill has a "When this
+  can't run" section.
+- Fix: the Stop hook and the four check scripts compared `import.meta.url` with
+  `file://${process.argv[1]}` as strings. Node resolves the main module through symlinks, so a
+  hook reached through one (macOS's `/var/folders` tmpdir, where `ledger gate check` snapshots
+  the plugin) never ran `main()` and exited 0 with nothing printed and nothing logged: the
+  gate's visible row failed `Stop hook on malformed JSON: no errors.log line, no systemMessage`,
+  deterministic on that path. The guards now compare real paths, the form the other hooks
+  already used.
+
 ### 1.5.1
 
 - A hook's own fault is no longer silent. Empty or malformed stdin, a throw, an unparseable
