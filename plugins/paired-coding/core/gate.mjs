@@ -54,6 +54,7 @@
  * @property {string} [effect]
  * @property {string} [why]  learning mode: why this approach over the alternatives
  * @property {unknown[]} [sources]  learning mode: what `why` rests on (sourceProblem)
+ * @property {Array<{ design: string, chosen: boolean }>} [alternatives]  the designs weighed, exactly one chosen (alternativesProblem)
  * @property {string[]} [checks]
  * @property {string[]} [openPoints]
  * @property {Array<{path: string, change: string}>} [changedSinceReadBack]
@@ -101,6 +102,10 @@
  *   up or starts fresh, or a new roadmap supersedes it
  * @property {boolean} [learning]  learning mode (pair_learn): cards need `why` and `sources`, and
  *   pair_done needs `recall`. False at every pair_start and carry; absent reads as false
+ * @property {{ sessionId: string | null, writtenAt: string } | null} [findingsConsumed]
+ *   the ask-graham findings record a card of this pairing was already held to (pairPropose);
+ *   the same record holds no later card, a record with a later writtenAt does. Absent reads
+ *   as none; a fresh pair_start has none
  */
 /**
  * Paths outside the agreement that every pair_run may write, closed or open: the state of the
@@ -126,6 +131,13 @@
  * @property {() => Snapshot} [snapshot]
  * @property {(absPath: string) => string} [realpath]
  * @property {(runIds: string[]) => void} [reapRuns]
+ * @property {(root: string, sessionId: string | null) => { receiptDir: string | null, receiptPath: string | null, repoRoot: string, findings: Findings | null }} [cardContext]
+ *   what pair_propose's pattern-source and alternatives checks read: the pattern-check receipt directory and this session's receipt path, the worktree's repository root, and the session's ask-graham findings (null when missing or unreadable)
+ */
+/**
+ * ask-graham's findings for the session as the adapter's cardContext validated them: the file,
+ * the session it names, when it was written (ISO), and the designs it weighed.
+ * @typedef {{ path: string, sessionId: string, writtenAt: string, alternatives: Array<{ design: string, chosen: boolean }> }} Findings
  */
 /** @typedef {{ ok: boolean, reason?: string, state: State, journal: JournalEntry[], [key: string]: unknown }} Result */
 
@@ -277,6 +289,7 @@ function isValidState(s) {
   }
   if (s.roadmap !== undefined && s.roadmap !== null && roadmapProblem(s.roadmap) !== null) return false;
   if (s.learning !== undefined && typeof s.learning !== "boolean") return false;
+  if (s.findingsConsumed !== undefined && s.findingsConsumed !== null && !(isObj(s.findingsConsumed) && (s.findingsConsumed.sessionId === null || typeof s.findingsConsumed.sessionId === "string") && typeof s.findingsConsumed.writtenAt === "string")) return false;
   if (s.roadmapOffer !== undefined && s.roadmapOffer !== null && !isRoadmapOffer(s.roadmapOffer)) return false;
   if (s.phase === "open") {
     const c = s.changeSet;
@@ -1189,6 +1202,206 @@ export function sourceProblem(sources) {
   return null;
 }
 
+/**
+ * The shapes a card's `why` takes when it attributes the design to a codebase convention,
+ * matched case-insensitively at word boundaries: a verb of conformity before "pattern" or
+ * "convention" ("follows the existing pattern", "per the repo convention", "consistent with
+ * the established pattern"), "follows the <any one word> pattern" ("follows the auth
+ * pattern"), "the pattern in/from/used in/here", "the convention here", "how the codebase
+ * does", "as/like the rest of the codebase", and pattern-check's own word "pattern-fit". Bare
+ * words are not claims: "the pattern introduced", "the pattern input", "an anti-pattern used
+ * in", "the rest of the codebase" on its own, "no existing pattern" match nothing. A card
+ * whose `why` carries one needs a pattern source (patternSourceProblem), in learning mode or
+ * out of it.
+ */
+export const PATTERN_CLAIM_PATTERNS = Object.freeze([
+  /\b(?:follows?|following|matches|matching|mirrors?|mirroring|uses?|using|reuses?|reusing|keeps? to|sticks? to|per|same as|in line with|consistent with|established)\s+(?:the\s+|this\s+|our\s+|an?\s+(?=existing|established))?(?:existing\s+|established\s+|codebase(?:'s)?\s+|repo(?:'s)?\s+|project(?:'s)?\s+|same\s+|usual\s+|current\s+)?(?:pattern|convention)s?\b/i,
+  /\bfollow(?:s|ed|ing)?\s+(?:the|this|our|an?)\s+(?!anti-)[a-z][\w'-]*\s+(?:pattern|convention)s?\b/i,
+  /\bthe (?:pattern|convention)s? (?:in|from|here|elsewhere|throughout|across|used (?:in|by|throughout|across))\b/i,
+  /\bhow the (?:codebase|repo|project|rest of the codebase) does\b/i,
+  /\b(?:as|like|same as|consistent with|matches|matching|mirrors?|mirroring) (?:in |elsewhere in )?the rest of the (?:codebase|repo|project)\b/i,
+  /\bpattern-fit\b/i,
+]);
+
+/**
+ * Words that, anywhere before a match in the same clause (PATTERN_CLAIM_CLAUSE_BREAKS), turn
+ * the claim into its denial or into removal prose: "doesn't follow the pattern in", "no
+ * convention here", "not going to continue following the pattern in", "rather than the pattern
+ * in", "removes the pattern from". "not only" is not a denial. A denied claim needs no source.
+ */
+export const PATTERN_CLAIM_NEGATIONS = /\b(?:not(?!\s+only\b)|no|never|none|neither|nor|without|cannot|rather than|instead of|unlike|[a-z]+n't|stop(?:s|ped|ping)?|drop(?:s|ped|ping)?|remov(?:e|es|ed|ing)|avoid(?:s|ed|ing)?|replac(?:e|es|ed|ing))\b/i;
+
+/**
+ * Where a clause ends, so a denial in one clause leaves the next alone: `,;:()`, a `.!?`
+ * followed by space or the end (not the dot in `lib/a.ts`), and " but ", " and ", " so ",
+ * " because ".
+ */
+export const PATTERN_CLAIM_CLAUSE_BREAKS = /[,;:()]|[.!?](?=\s|$)|\s(?:but|and|so|because)\s/gi;
+
+/** The text of the clause holding `index`, from the clause's start up to `index`. */
+function clauseBefore(text, index) {
+  let start = 0;
+  for (const b of text.slice(0, index).matchAll(PATTERN_CLAIM_CLAUSE_BREAKS)) start = b.index + b[0].length;
+  return text.slice(start, index);
+}
+
+/**
+ * The first affirmative codebase-pattern claim in `why`, as written (whitespace collapsed,
+ * typographic apostrophes read as `'`), or null: the earliest PATTERN_CLAIM_PATTERNS match
+ * with no PATTERN_CLAIM_NEGATIONS word before it in its own clause. A denial in an earlier
+ * clause does not reach a later one ("not the old pattern, but it follows the auth pattern"
+ * is a claim).
+ */
+export function patternClaim(why) {
+  if (typeof why !== "string") return null;
+  const text = why.replace(/\s+/g, " ").replace(/[\u2018\u2019\u02bc]/g, "'");
+  let first = null;
+  for (const re of PATTERN_CLAIM_PATTERNS) {
+    for (const m of text.matchAll(new RegExp(re.source, "gi"))) {
+      if (PATTERN_CLAIM_NEGATIONS.test(clauseBefore(text, m.index))) continue;
+      if (first === null || m.index < first.index) first = { index: m.index, phrase: m[0] };
+      break;
+    }
+  }
+  return first ? first.phrase : null;
+}
+
+/**
+ * The absolute file paths of the distinct `file:line` string sources in `sources`, one per
+ * distinct location (path after `.`/`..` collapse, plus line or range): the same citation
+ * spelled twice counts once; two lines of one file count twice. Every other entry is skipped.
+ */
+function fileLineSources(sources) {
+  if (!Array.isArray(sources)) return [];
+  const seen = new Set();
+  const out = [];
+  for (const s of sources) {
+    if (typeof s !== "string" || !stringSourceOk(s)) continue;
+    const m = FILE_LINE_SOURCE.exec(s.trim());
+    if (!m) continue;
+    const file = resolvePath("/", m[1]);
+    const key = `${file}:${Number(m[2])}-${m[3] === undefined ? Number(m[2]) : Number(m[3])}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(file);
+  }
+  return out;
+}
+
+/**
+ * Why a card whose `why` claims a codebase pattern has no pattern source, or null. A pattern
+ * claim is backed by either one `file:line` source inside the pattern-check receipt directory
+ * (`<git root>/.pattern-check/`, the adapter's cardContext) or two or more `file:line` sources
+ * inside the worktree's repository. Paths are compared lexically; whether the files exist is not
+ * checked, as with every other source. A `why` without a claim needs nothing.
+ * @param {unknown} why
+ * @param {unknown} sources
+ * @param {{ receiptDir: string | null, receiptPath: string | null, repoRoot: string }} facts
+ * @returns {string | null}
+ */
+export function patternSourceProblem(why, sources, facts) {
+  const phrase = patternClaim(why);
+  if (!phrase) return null;
+  const files = fileLineSources(sources);
+  const inReceipts = facts.receiptDir ? files.filter((f) => within(facts.receiptDir, f)).length : 0;
+  if (inReceipts > 0) return null;
+  const inRepo = files.filter((f) => within(facts.repoRoot, f)).length;
+  if (inRepo >= 2) return null;
+  const receipt = facts.receiptDir
+    ? `one absolute file:line inside the pattern-check receipt directory ${facts.receiptDir}/ (this session's receipt would be ${facts.receiptPath}; found ${inReceipts})`
+    : "one absolute file:line inside the pattern-check receipt directory (none here: the worktree is in no git repository, so there is no <git root>/.pattern-check/; found 0)";
+  return `why claims a codebase pattern ("${phrase}"), and a pattern claim needs a pattern source: add to sources either ${receipt}, or two or more absolute file:line sources under ${facts.repoRoot}/ showing the pattern in the code (found ${inRepo})`;
+}
+
+/** The forms `alternatives` takes, as pair_propose's refusals name them. */
+export const ALTERNATIVES_FORM = 'alternatives is a list of { "design": "one design, in words", "chosen": true or false } objects with exactly one chosen: true';
+
+/** `text` with runs of whitespace collapsed to one space, trimmed, lower case: the containment check's form. */
+const normalized = (text) => text.replace(/\s+/g, " ").trim().toLowerCase();
+
+/**
+ * Why a card's `alternatives` are unusable, or null. When given they are a non-empty list of
+ * `{ design, chosen }` objects with exactly one chosen entry. When the card is held to the
+ * session's ask-graham findings (`findings`, the adapter's cardContext record after
+ * applicableFindings; null when the file is missing, unreadable, invalid, or already consumed
+ * by an earlier card), the card must give them, one entry must contain the findings' chosen
+ * design (whitespace collapsed, case ignored), and when the findings weighed a design they did
+ * not choose, at least one entry is not chosen either.
+ * @param {unknown} alternatives
+ * @param {Findings | null} findings
+ * @returns {string | null}
+ */
+export function alternativesProblem(alternatives, findings) {
+  if (alternatives !== undefined) {
+    if (!Array.isArray(alternatives) || alternatives.length === 0) return `alternatives is ${quoted(alternatives)}; ${ALTERNATIVES_FORM}`;
+    for (const [i, a] of alternatives.entries()) {
+      if (!isObj(a) || typeof a.design !== "string" || a.design.trim() === "" || CONTROL.test(a.design) || typeof a.chosen !== "boolean") return `alternatives[${i}] is ${quoted(a)}; ${ALTERNATIVES_FORM}`;
+    }
+    const chosen = alternatives.filter((a) => a.chosen).length;
+    if (chosen !== 1) return `alternatives has ${chosen} entries with chosen: true; ${ALTERNATIVES_FORM}`;
+  }
+  if (!findings) return null;
+  const where = `ask-graham's findings for this session are on disk (${findings.path})`;
+  const wanted = findings.alternatives.find((a) => a.chosen);
+  const weighedAny = findings.alternatives.some((a) => !a.chosen);
+  if (alternatives === undefined) {
+    const needs = [wanted ? `including the findings' chosen design ${quoted(wanted.design)}` : "", weighedAny ? "at least one entry with chosen: false" : ""].filter(Boolean);
+    return `${where}, so the card needs alternatives: ${ALTERNATIVES_FORM}${needs.length ? `, ${needs.join(" and ")}` : ""}`;
+  }
+  if (wanted && !alternatives.some((a) => normalized(a.design).includes(normalized(wanted.design)))) {
+    return `${where}, and no alternatives entry contains their chosen design ${quoted(wanted.design)}; add it (whitespace and case do not matter)`;
+  }
+  const weighed = findings.alternatives.find((a) => !a.chosen);
+  if (weighed && !alternatives.some((a) => !a.chosen)) {
+    return `${where}, and they weighed a design they did not choose (${quoted(weighed.design)}), so alternatives needs at least one entry with chosen: false`;
+  }
+  return null;
+}
+
+/** What pairPropose takes as given when the adapter supplies no cardContext: no receipt directory, no findings, the worktree as the repository. */
+const bareCardContext = (root) => ({ receiptDir: null, receiptPath: null, repoRoot: root, findings: null });
+
+/** A findings record the adapter's cardContext hands over, as the gate reads it: shape-checked, since it crossed the io boundary. */
+const isFindings = (f) => isObj(f) && typeof f.path === "string" && typeof f.writtenAt === "string" && Array.isArray(f.alternatives);
+
+/**
+ * The findings a card is held to, or null: a findings file applies to the first card proposed
+ * after it was written and to no later card, so a record the state already consumed
+ * (`findingsConsumed`, set when that card was recorded) is null here unless the file was
+ * written again later (a later `writtenAt` re-arms it). A record of the wrong shape is null.
+ * @param {unknown} findings  the adapter's cardContext findings
+ * @param {{ sessionId: string | null, writtenAt: string } | null | undefined} consumed  state.findingsConsumed
+ */
+export function applicableFindings(findings, consumed) {
+  if (!isFindings(findings)) return null;
+  if (!consumed) return findings;
+  const written = Date.parse(findings.writtenAt);
+  const used = Date.parse(consumed.writtenAt);
+  return Number.isFinite(written) && Number.isFinite(used) && written > used ? findings : null;
+}
+
+/** An ISO 8601 date-time as ask-graham writes `writtenAt` (the reader in lib/card-context.mjs uses this one). */
+export const ISO_DATE = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(?::\d{2}(?:\.\d+)?)?(?:Z|[+-]\d{2}:\d{2})$/;
+
+/**
+ * Why a persisted `findingsConsumed` marker cannot be trusted, or null when it is absent or
+ * sound: its `writtenAt` has to be an ISO 8601 date that parses and its `sessionId` has to be
+ * this session's. pairPropose ignores an untrusted marker (the findings read as not consumed)
+ * and journals one `findings-marker-ignored` line, so a bad marker never switches the
+ * findings check off.
+ * @param {unknown} consumed  state.findingsConsumed
+ * @param {string | null} sessionId  the state's session
+ */
+export function findingsMarkerProblem(consumed, sessionId) {
+  if (consumed === undefined || consumed === null) return null;
+  if (!isObj(consumed)) return `findingsConsumed is ${quoted(consumed)}, not an object`;
+  if (typeof consumed.writtenAt !== "string" || !ISO_DATE.test(consumed.writtenAt) || !Number.isFinite(Date.parse(consumed.writtenAt))) {
+    return `findingsConsumed.writtenAt is ${quoted(consumed.writtenAt)}, not an ISO 8601 date`;
+  }
+  if (consumed.sessionId !== sessionId) return `findingsConsumed names session ${quoted(consumed.sessionId)}, not this session (${quoted(sessionId)})`;
+  return null;
+}
+
 /** pair_propose's refusal, in learning mode, for a card with no `why`. */
 export const WHY_REASON = "learning mode is on: the card needs why, a non-empty string saying why this approach over the alternatives";
 /** pair_done's refusal, in learning mode, without a `recall` question. */
@@ -1201,9 +1414,15 @@ const isRecall = (x) => typeof x === "string" && x.trim() !== "" && !/[\r\n]/.te
  * card remembers the latest trusted-input sequence number, so only a turn typed after this
  * card can agree to it. Changes found between change sets ride on the card for the user. In
  * learning mode the card also needs `why` (a non-empty string) and `sources` (sourceProblem);
- * with learning off both are recorded when given and never checked.
+ * with learning off both are recorded when given and never checked for form. In every mode a
+ * `why` that claims a codebase pattern needs a pattern source (patternSourceProblem), and
+ * `alternatives` is checked when given and required when the session's ask-graham findings
+ * are on disk and no earlier card was held to them (applicableFindings, alternativesProblem);
+ * both read the adapter's io.cardContext(root, sessionId), `{ receiptDir, receiptPath,
+ * repoRoot, findings }`, and take a missing one as bareCardContext. A card held to the
+ * findings marks them consumed in the state when it is recorded, not when it is refused.
  * @param {State} state
- * @param {{ boundary: string[], whyNow?: string, decision?: string, currentCode?: string, proposedCode?: string, effect?: string, checks?: string[], openPoints?: string[], why?: string, sources?: unknown[] }} card
+ * @param {{ boundary: string[], whyNow?: string, decision?: string, currentCode?: string, proposedCode?: string, effect?: string, checks?: string[], openPoints?: string[], why?: string, sources?: unknown[], alternatives?: unknown }} card
  * @param {Io} io
  * @returns {Result & { card?: Card }}
  */
@@ -1224,11 +1443,27 @@ export function pairPropose(state, card, io) {
     const bad = sourceProblem(card.sources);
     if (bad) return refuse(state, "pair_propose", `learning mode is on: ${bad}`, io);
   }
+  const context = typeof io?.cardContext === "function" ? callIo(io, "cardContext", state.root, state.sessionId ?? null) : { value: bareCardContext(state.root) };
+  if (context.error) return refuse(state, "pair_propose", `could not read the card's context: ${context.error}`, io);
+  const facts = isObj(context.value) ? { ...bareCardContext(state.root), ...context.value } : bareCardContext(state.root);
+  const unsourced = patternSourceProblem(card.why, card.sources, facts);
+  if (unsourced) return refuse(state, "pair_propose", unsourced, io);
+  const markerProblem = findingsMarkerProblem(state.findingsConsumed, state.sessionId ?? null);
+  const markerFault = markerProblem ? [entry("findings-marker-ignored", io, { reason: `${markerProblem}; the findings read as not consumed` })] : [];
+  const fail = (reason) => {
+    const r = refuse(state, "pair_propose", reason, io);
+    return { ...r, journal: [...markerFault, ...r.journal] };
+  };
+  const findings = applicableFindings(facts.findings, markerProblem ? null : state.findingsConsumed);
+  const badAlternatives = alternativesProblem(card.alternatives, findings);
+  if (badAlternatives) return fail(badAlternatives);
   const hashed = callIo(io, "hashBoundary", [...card.boundary], state.root);
-  if (hashed.error) return refuse(state, "pair_propose", `could not hash the boundary: ${hashed.error}`, io);
-  if (!isSnapshot(hashed.value)) return refuse(state, "pair_propose", "hashBoundary returned malformed hashes", io);
+  if (hashed.error) return fail(`could not hash the boundary: ${hashed.error}`);
+  if (!isSnapshot(hashed.value)) return fail("hashBoundary returned malformed hashes");
   const next = clone(state);
   next.cardSeq += 1;
+  if (markerProblem) next.findingsConsumed = null;
+  if (findings) next.findingsConsumed = { sessionId: typeof findings.sessionId === "string" ? findings.sessionId : null, writtenAt: findings.writtenAt };
   /** @type {Card} */
   const recorded = {
     id: `card-${next.cardSeq}`,
@@ -1239,6 +1474,7 @@ export function pairPropose(state, card, io) {
     effect: card.effect,
     why: card.why,
     sources: card.sources,
+    alternatives: card.alternatives,
     boundary: [...card.boundary],
     checks: card.checks ? [...card.checks] : [],
     openPoints: card.openPoints ? [...card.openPoints] : [],
@@ -1250,7 +1486,7 @@ export function pairPropose(state, card, io) {
   next.card = JSON.parse(JSON.stringify(recorded));
   next.unreviewed = [];
   next.midTurn = [];
-  return { ok: true, state: next, card: next.card, journal: [entry("card", io, { card: next.card })] };
+  return { ok: true, state: next, card: next.card, journal: [...markerFault, entry("card", io, { card: next.card })] };
 }
 
 /**

@@ -75,6 +75,11 @@ export const TOOLS = [
             ],
           },
         },
+        alternatives: {
+          type: "array",
+          description: "The designs weighed, exactly one with chosen: true. Required when ask-graham's findings for this session are on disk; then one entry contains their chosen design and, when they weighed a design they did not choose, one entry has chosen: false.",
+          items: { type: "object", properties: { design: str("One design, in words."), chosen: { type: "boolean", description: "true for the design the card proposes." } }, required: ["design", "chosen"] },
+        },
       },
       required: ["boundary"],
     },
