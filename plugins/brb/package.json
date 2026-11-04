@@ -6,5 +6,8 @@
   "engines": { "node": ">=22.13" },
   "scripts": {
     "test": "node --test"
+  },
+  "omp": {
+    "extensions": ["./omp/brb-omp.ts"]
   }
 }
