@@ -4,6 +4,43 @@ All notable changes to plugin-kit are recorded here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Releases before 0.2.0 are described in
 the README's "Changes in" sections.
 
+## [0.3.0] - 2026-11-04
+
+### Added
+
+- `lib/judge.mjs`: the shared judge dispatch, vendored byte for byte by every plugin that
+  judges. One command through `/bin/sh` in its own process group, the prompt on stdin or in place
+  of `{prompt}`, stdout only, a hard timeout that reaps the group, never a throw. `json` mode
+  returns the last JSON object on stdout (a `claude -p --output-format json` envelope unwrapped)
+  or `{ error, detail, stderr }` with `error` one of `timeout`, `nonzero`, `unparseable`,
+  `spawn-failed`; `yesno` mode returns `yes`, `no`, or `unverified`.
+- `resolveJudgeCommand()`: the command resolved once for every plugin, first found wins, naming
+  its source: the plugin's env var → the plugin's own setting → `${XDG_CONFIG_HOME:-~/.config}/judge/config.json`
+  `{ "command", "timeoutMs" }` → i-have-audhd's `enforcement.judgeCommand` (legacy, read-only).
+  A shared file that exists but is malformed stops the search before the legacy profile
+  (`readSharedConfig()` reports it), so a typo never swaps in an older command silently.
+- `node lib/judge.mjs setup` (one test call, then the shared file written atomically after a
+  yes, other keys kept; `--command`, `--timeout-ms`, `--yes`, `--force`; a malformed shared file
+  is refused unless `--force`, which replaces it whole) and `node lib/judge.mjs which` (a
+  `malformed: <path>: <error>` line first when the shared file is malformed).
+- `test/judge.test.mjs`: the resolution order over a fake HOME and XDG_CONFIG_HOME, each failure
+  class from a tiny shell command, both parsers, the CLI as a spawned process, and the sameness
+  test: every `plugins/*/lib/judge.mjs` and `plugins/*/judge/judge.mjs` outside the allowlist
+  (`ledger/lib/judge.mjs`, until ledger's next release) is byte-identical to the kit's.
+- `new-plugin.mjs --judge`: the scaffold also gets `lib/judge.mjs`.
+
+### Changed
+
+- `lib/hook-runner.mjs`: the handler thread's env carries `HOOK_RUNNER_STARTED_AT_MS` and
+  `HOOK_RUNNER_DEADLINE_MS`, so a handler budgets from the runner's clock, not its own late
+  start; a process group the thread registers (`{ kitReap: <pgid> }`, which `lib/judge.mjs`
+  posts inside a runner that sets `workerData.kitReap`) is SIGKILLed when the runner exits, so a
+  judge still running at the deadline does not outlive the hook.
+
+### Unchanged
+
+The agents, and the rest of the scaffold.
+
 ## [0.2.2] - 2026-11-04
 
 ### Added
