@@ -405,12 +405,16 @@ has the full table and the Linux limits (a grant there needs an existing inode).
 1.4.3: on Claude Code, `SessionEnd` removes the state directory of a session that never
 called `pair_start` (it held only queued typed input and stashed notices), under the session
 lock and after a second look for the activation marker, so a `pair_start` landing as the
-session ends is kept, and the lock is released only by its holder (a token file of its own
-inside the lock, removed before the lock directory, which the kernel keeps while anything
-else is inside; a stale lock is claimed by rename before it is removed), so no release lets
-go of another holder's lock; a session that paired keeps its directory, journal and receipt
-included, and a directory that will not go is one warning and one `errors.log` line, never a
-failed end.
+session ends is kept, and the lock is released only by its holder (a token file named by
+the holder's pid inside the lock, removed before the lock directory, which the kernel keeps
+while anything else is inside; a release that cannot remove its token fails instead of
+reporting success), so no release lets go of another holder's lock. A lock is taken over
+only when the pid its token names is not running and the lock is stale, by removing that
+one token by name; a lock whose holder is still running is never evicted on its age, and
+the wait fails naming the pid and the recovery command, `node <plugin>/bin/pair.mjs unlock
+--stale <lock directory>`, which makes the same check. A session that paired keeps its
+directory, journal and receipt included, and a directory that will not go is one warning
+and one `errors.log` line, never a failed end.
 
 Changes in 1.4.2: a fault in any hook appends one line to `errors.log` in the plugin's state
 directory and shows one warning, and never blocks a session that is not pairing. While pairing,

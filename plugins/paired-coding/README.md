@@ -270,11 +270,14 @@ How it works:
   that cannot be looked at, a `.git` entry (nothing in a sibling's state is one, and git reads
   hooks and config from one outside the sandbox), or a mount point under the directory
   refuses the run by name until it is gone. The walk is iterative and budgeted (100000
-  entries, 64 directories deep, 5 seconds; `lib/landlock.mjs` `WALK_BUDGET`) and stops when
-  the run is aborted; a tree it could not finish refuses the run naming the limit, since a
-  tree not looked at is not granted. Each launch walks each tree once; under Landlock the
-  same answer makes the layout inexpressible (the run falls back as any inexpressible layout
-  does). `.pattern-check/` is a reserved name: this plugin does not
+  entries, 64 directories deep, 5 seconds; `lib/landlock.mjs` `WALK_BUDGET`), reads each
+  directory one entry at a time, and looks at the clock and at whether the run was aborted
+  after every entry, so a single wide directory cannot run past either; a tree it could not
+  finish refuses the run naming the limit, since a tree not looked at is not granted. A single
+  filesystem call that blocks is not interrupted; the limit is checked between calls. Each
+  launch walks each tree once, before a backend is chosen, and a tree that fails the walk
+  refuses the run on every backend, Landlock included: `pair_run` does not fall back to
+  bubblewrap for it. `.pattern-check/` is a reserved name: this plugin does not
   review what lands there. Snapshots leave `.pattern-check/` out (it is a default exclusion
   beside `.git`), so a receipt written there is never read as drift at `pair_done`; the
   post-run link check still walks it, so a link made there stops the session like one made
@@ -322,6 +325,17 @@ How it works:
   its holder's token, so the cleanup's release never lets go of a lock a waiter took in the
   directory it made afresh; a directory that will not go is one warning and one `errors.log`
   line, never a failed end.
+- Every session lock is a `lock` directory holding one token file named by its holder's pid
+  and a nonce, renamed into place whole, so no one sees a held lock without its token. A
+  release removes only its own token, then the directory, and a release that cannot remove
+  its token fails loudly and leaves the lock held. A waiter passes over a lock only when the
+  pid its token names is not running and the lock is more than 15 seconds old, and then
+  removes that one token by name, so a lock someone else took in the meantime is untouched.
+  A lock whose holder is still running (or whose token names no pid) is never taken over:
+  after 10 seconds the wait fails, naming the holder's pid and the recovery command,
+  `node <plugin>/bin/pair.mjs unlock --stale <lock directory>`. That command removes the lock
+  only when the holder's pid is not running; otherwise it names the pid and the command line
+  `ps` reports for it, and leaves the lock alone.
 - When the Claude Code hook itself fails (a thrown error, an unwritable state directory, stdin
   that is empty or not a hook event object), it exits 0, appends one line to
   `$PAIRED_CODING_STATE_DIR/errors.log` (default `~/.local/state/paired-coding/errors.log`)

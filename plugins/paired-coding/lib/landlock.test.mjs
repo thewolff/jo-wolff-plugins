@@ -10,11 +10,13 @@ import { test, describe } from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
+import fs from "node:fs";
 import { chmodSync, existsSync, linkSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, readlinkSync, realpathSync, statSync, symlinkSync, writeFileSync } from "node:fs";
+import { syncBuiltinESMExports } from "node:module";
 import { createServer } from "node:net";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
-import { diffSnapshots, landlockRulesFor, pairWriteLandlock } from "../core/gate.mjs";
+import { carveOutHazard, diffSnapshots, landlockRulesFor, pairWriteLandlock } from "../core/gate.mjs";
 import { bwrapProblem, seccompFilter } from "./bwrap.mjs";
 import { createOnHost, describeSandbox, pickLinuxBackend, runSandboxed, snapshotTree, writeSandboxed } from "./host-io.mjs";
 import { HELPER_ARCHES, LANDLOCK_DIR, WALK_BUDGET, landlockAbi, landlockIo, landlockProblem, parseMountinfo, probeLandlock } from "./landlock.mjs";
@@ -210,6 +212,44 @@ describe("the facts the builder takes", () => {
     // No budget at all: the whole tree, as before.
     assert.equal(landlockIo.walk(top).length, 6);
     assert.deepEqual(WALK_BUDGET, { entries: 100000, depth: 64, ms: 5000 });
+  });
+
+  test("walk checks the clock and the signal after every entry it looks at, so a flat directory cannot outrun the budget, and a refused hazard follows", () => {
+    const top = realpathSync(mkdtempSync(join(tmpdir(), "pc-walk-")));
+    for (const n of ["a", "b", "c"]) writeFileSync(join(top, n), "");
+    // A modelled clock: every lstat the walker makes costs 2000 ms. The walker imports lstatSync
+    // from node:fs, so the stand-in is published to it with syncBuiltinESMExports.
+    const realLstat = fs.lstatSync;
+    const realNow = Date.now;
+    let clock = realNow();
+    const slow = (onLstat) => {
+      fs.lstatSync = (...a) => { onLstat(); return realLstat(...a); };
+      syncBuiltinESMExports();
+    };
+    const restore = () => { fs.lstatSync = realLstat; syncBuiltinESMExports(); Date.now = realNow; };
+    try {
+      Date.now = () => clock;
+      slow(() => { clock += 2000; });
+      const flat = landlockIo.walk(top, { budget: WALK_BUDGET });
+      assert.equal(flat.at(-1).type, "unwalked", "three lstats at 2000 ms each pass the 5000 ms budget inside one directory");
+      assert.equal(flat.at(-1).reason, "looking at it took longer than 5000 ms");
+      assert.equal(flat.filter((e) => e.type === "file").length, 2, "the entry that ran over the budget is not reported as looked at");
+      // The same walk through carveOutHazard: a tree not looked at in time is not granted.
+      const state = { root: "/nonexistent/pc-root", stateDir: "/nonexistent/pc-state", protect: [], carveOuts: { files: [], dirs: [top] } };
+      const io = { ...landlockIo, mounts: () => [] };
+      assert.match(carveOutHazard(state, io, { budget: WALK_BUDGET }), /could not be looked at past .*: looking at it took longer than 5000 ms; so a grant on the directory might reach past the sibling's state$/);
+      // An abort that lands while the directory is being listed stops the walk at the next entry.
+      Date.now = realNow;
+      const ac = new AbortController();
+      slow(() => ac.abort());
+      const aborted = landlockIo.walk(top, { signal: ac.signal });
+      assert.equal(aborted.at(-1).type, "unwalked");
+      assert.equal(aborted.at(-1).reason, "the run was aborted");
+      assert.equal(aborted.filter((e) => e.type === "file").length, 0, "nothing after the abort is reported as looked at");
+    } finally {
+      restore();
+    }
+    assert.equal(landlockIo.walk(top, { budget: WALK_BUDGET }).length, 3, "with a real clock the same directory is within the budget");
   });
 
   test("walk is iterative: a tree deeper than the call stack is listed, and the depth budget refuses it", () => {

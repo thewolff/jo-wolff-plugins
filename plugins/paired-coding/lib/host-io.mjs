@@ -24,6 +24,7 @@ import {
 } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import {
   boundaryHashes, boundaryMatches, boundaryRoots, bwrapArgsFor, carveOutHazard, carveOutRoots, landlockRulesFor, pairRunProfile, pairWriteBwrap, pairWriteLandlock, pairWriteProfile,
   readState, serializeState, shQuote,
@@ -384,23 +385,73 @@ export function appendJournal(dir, entries) {
 
 const sleepSync = (ms) => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
 
+/** The recovery command a lock refusal names: lib/../bin/pair.mjs, by the path this file is at. */
+export const PAIR_CLI = join(dirname(fileURLToPath(import.meta.url)), "..", "bin", "pair.mjs");
+
+/** Whether `pid` is running: kill(pid, 0) succeeds, or is refused (EPERM, another user's); only ESRCH means gone. */
+export function pidAlive(pid) {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (err) {
+    return err?.code !== "ESRCH";
+  }
+}
+
 /**
- * Run `fn` holding the session's lock (a directory created with mkdir, which is atomic). The
- * holder then makes an empty file named by its own token (pid and a nonce) inside the lock,
- * exclusively, and releases by unlinking that one file and, only when that succeeded, rmdir(2)
- * on the lock, which the kernel refuses while anything is inside: a release never removes a
- * file that is not the releaser's, and never removes a directory except the one that held
- * its token, so nothing it does depends on what it read a moment earlier. The SessionEnd
- * cleanup removes a never-activated directory under its lock, lock included, and a waiter
- * then makes the directory and a lock of its own, which the cleanup's release leaves alone
- * (its token is not there, so it touches no directory). A lock older than `staleMs` is
- * taken over, its holder dead or stuck: the taker first renames the lock to a grave of its
- * own name, which claims that one directory whoever else is looking at it (a second taker's
- * rename fails with ENOENT; the old holder's release finds no token of its own at the lock
- * path and leaves the new lock alone), then removes the grave and tries mkdir again. A lock
- * directory that vanishes between mkdir and the token file (the cleanup, or a takeover of a
- * holder stuck for `staleMs` before it wrote its token) is made again. Synchronous so hooks
- * stay simple.
+ * Who holds the lock directory `lock`, from one look: null when there is no lock or it is
+ * empty (an empty lock holds nobody), else its entries, the pid its one token names (a token
+ * is `<pid>.<nonce>`; null when there is not exactly one, or it names no pid), whether that
+ * pid is running (null when there is no pid), and the lock's age in ms (null when it went).
+ * @param {string} lock
+ * @returns {{ tokens: string[], pid: number | null, alive: boolean | null, ageMs: number | null } | null}
+ */
+export function lockHolder(lock) {
+  let tokens;
+  try {
+    tokens = readdirSync(lock);
+  } catch (err) {
+    if (err?.code === "ENOENT") return null;
+    throw err;
+  }
+  if (tokens.length === 0) return null;
+  let ageMs = null;
+  try { ageMs = Date.now() - statSync(lock).mtimeMs; } catch { /* gone since the listing */ }
+  const m = tokens.length === 1 ? /^(\d+)\.[^.]+$/.exec(tokens[0]) : null;
+  const pid = m ? Number(m[1]) : null;
+  return { tokens, pid, alive: pid === null ? null : pidAlive(pid), ageMs };
+}
+
+/** What holds `lock`, in words, and the way to clear it: the tail of a lock refusal. */
+export function describeHolder(lock, holder) {
+  const who = holder.pid !== null
+    ? `it is held by pid ${holder.pid}, which ${holder.alive ? "is still running" : "is not running"}`
+    : `it holds ${holder.tokens.join(", ")}, which names no process`;
+  return `${who}. If no paired-coding process should be holding it, run: node ${shQuote(PAIR_CLI)} unlock --stale ${shQuote(lock)} (it removes the lock only when its holder is not running)`;
+}
+
+/**
+ * Run `fn` holding the lock `<dir>/lock`: a directory holding exactly one empty file named by
+ * its holder's token, `<pid>.<nonce>`. A contender stages that directory beside the lock
+ * (`lock.<token>`, its token inside) and renames it onto the lock path; rename(2) refuses
+ * onto a directory with anything in it, so the rename lands only while nobody holds the lock,
+ * and no holder's lock is ever seen without its token. Release unlinks the holder's own token,
+ * then rmdir(2)s the lock, which the kernel refuses once anything else is inside; a release
+ * never removes a file that is not the releaser's, nor a directory that did not hold its
+ * token. A token already gone is nothing to release (the SessionEnd cleanup removes a
+ * never-activated directory, lock included, under its lock, and a waiter then makes the
+ * directory and a lock of its own); any other unlink failure is thrown and the lock left as
+ * it is (when `fn` threw too, its error is thrown, carrying the release's as `releaseError`).
+ * An empty lock directory (a release that stopped between unlink and rmdir) holds nobody,
+ * and the next rename replaces it.
+ *
+ * A holder is passed over only when it is certain to be gone: the lock holds one token, the
+ * pid it names is not running (kill(pid, 0) fails with ESRCH), and the lock is older than
+ * `staleMs`. The taker unlinks that token by its name, which no other lock carries, so a lock
+ * someone else made since the look is untouched (the unlink fails with ENOENT), and renames
+ * again. A running pid, or a token naming none, is waited on; when the wait runs out, the
+ * error names the holder and the recovery command (bin/pair.mjs unlock --stale), which makes
+ * the same check. Synchronous so hooks stay simple.
  * @template T
  * @param {string} dir
  * @param {() => T} fn
@@ -410,37 +461,101 @@ export function withLock(dir, fn, { waitMs = 10000, staleMs = 15000 } = {}) {
   mkdirSync(dir, { recursive: true, mode: 0o700 });
   const lock = join(dir, LOCK);
   const token = `${process.pid}.${randomBytes(8).toString("hex")}`;
+  const staged = `${lock}.${token}`;
   const mine = join(lock, token);
   const end = Date.now() + waitMs;
+  let ready = false;
   for (;;) {
     try {
-      mkdirSync(lock);
-      writeFileSync(mine, "", { flag: "wx" });
+      if (!ready) {
+        mkdirSync(staged, { mode: 0o700 });
+        writeFileSync(join(staged, token), "", { flag: "wx" });
+        ready = true;
+      }
+      renameSync(staged, lock);
       break;
     } catch (err) {
-      // No directory to lock in (the cleanup removed it), or the lock made a moment ago was
-      // removed as empty by a release: make what is missing and try again.
-      if (err?.code === "ENOENT") { mkdirSync(dir, { recursive: true, mode: 0o700 }); continue; }
-      if (err?.code !== "EEXIST") throw err;
-      try {
-        if (Date.now() - statSync(lock).mtimeMs > staleMs) {
-          const grave = `${lock}.${token}.rm`;
-          renameSync(lock, grave);
-          rmSync(grave, { recursive: true, force: true });
-          continue;
-        }
-      } catch { continue; }
-      if (Date.now() > end) throw new Error(`timed out waiting for the session lock ${lock}`);
-      sleepSync(20);
+      // No directory to lock in (the cleanup removed it, staged lock and all): make it and stage again.
+      if (err?.code === "ENOENT") {
+        rmSync(staged, { recursive: true, force: true });
+        ready = false;
+        mkdirSync(dir, { recursive: true, mode: 0o700 });
+        continue;
+      }
+      if (err?.code !== "ENOTEMPTY" && err?.code !== "EEXIST") {
+        rmSync(staged, { recursive: true, force: true });
+        throw err;
+      }
     }
+    let holder;
+    try {
+      holder = lockHolder(lock);
+      if (holder && holder.alive === false && holder.ageMs !== null && holder.ageMs > staleMs) {
+        try { unlinkSync(join(lock, holder.tokens[0])); } catch (err) { if (err?.code !== "ENOENT") throw err; }
+        continue;
+      }
+    } catch (err) {
+      rmSync(staged, { recursive: true, force: true });
+      throw err;
+    }
+    if (Date.now() > end) {
+      rmSync(staged, { recursive: true, force: true });
+      throw new Error(`timed out waiting for the session lock ${lock}${holder ? `: ${describeHolder(lock, holder)}` : ""}`);
+    }
+    sleepSync(20);
   }
+  const release = () => {
+    try {
+      unlinkSync(mine);
+    } catch (err) {
+      // Gone with its directory: nothing here is this holder's. Anything else leaves the lock held.
+      if (err?.code === "ENOENT") return null;
+      return err;
+    }
+    // Refused when someone else's lock is in its place, or gone with the session: either way not this holder's.
+    try { rmdirSync(lock); } catch { /* an empty lock left behind holds nobody */ }
+    return null;
+  };
+  let out;
   try {
-    return fn();
-  } finally {
-    let released = false;
-    try { unlinkSync(mine); released = true; } catch { /* the lock went with its directory, or was taken over as stale: nothing here is this holder's */ }
-    if (released) { try { rmdirSync(lock); } catch { /* the directory went with the session, or is not empty */ } }
+    out = fn();
+  } catch (err) {
+    const failed = release();
+    if (failed && err !== null && typeof err === "object") err.releaseError = failed;
+    throw err;
   }
+  const failed = release();
+  if (failed) throw failed;
+  return out;
+}
+
+/**
+ * Remove the lock directory `lock` only when its holder is certain to be gone, the check
+ * withLock makes before a takeover, without the age: the recovery for a lock whose holder
+ * crashed, run by a person (bin/pair.mjs unlock --stale). The dead holder's token is unlinked
+ * by name and then the directory removed, so a lock someone else made meanwhile is untouched.
+ * @param {string} lock
+ * @returns {{ removed: boolean, message: string }}
+ */
+export function unlockStale(lock) {
+  const holder = lockHolder(lock);
+  if (holder === null) {
+    try { rmdirSync(lock); } catch { /* not there, or filled meanwhile */ }
+    return { removed: true, message: `no lock at ${lock} is held: nothing to remove` };
+  }
+  if (holder.alive !== false) {
+    return { removed: false, message: `refused: the lock ${lock} ${holder.pid !== null ? `is held by pid ${holder.pid}, which is still running (${processCommand(holder.pid)}); end that process if it is not a paired-coding one, then run this again` : `holds ${holder.tokens.join(", ")}, which names no process; remove the directory by hand once you are sure no paired-coding process is running`}` };
+  }
+  try { unlinkSync(join(lock, holder.tokens[0])); } catch (err) { if (err?.code !== "ENOENT") throw err; }
+  try { rmdirSync(lock); } catch { /* someone else's lock is in its place now */ }
+  return { removed: true, message: `removed the lock ${lock}: its holder, pid ${holder.pid}, is not running` };
+}
+
+/** The command line ps reports for `pid`, or a note that it could not be read. */
+function processCommand(pid) {
+  const ps = spawnSync("/bin/ps", ["-o", "command=", "-p", String(pid)], { encoding: "utf8" });
+  const out = ps.status === 0 ? ps.stdout.trim() : "";
+  return out ? `ps: ${out}` : "ps could not read its command";
 }
 
 /**

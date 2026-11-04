@@ -103,13 +103,17 @@ test("SessionEnd takes the session lock before removing, and keeps a directory a
   const dir = join(f.base, "s1");
   mkdirSync(join(dir, "pending"), { recursive: true });
   writeFileSync(join(dir, "state.json"), JSON.stringify({ phase: "inactive" }));
-  // Another process holds the lock pair_start holds while it activates: it writes the
-  // activation marker 150ms in, and lets go of the lock at 400ms. The hook's first look finds
-  // no marker; under the lock it looks again.
+  // Another process holds the lock pair_start holds while it activates (a lock directory
+  // holding a token named by its running pid, renamed into place as withLock does): it writes
+  // the activation marker 150ms in, and lets go of the lock at 400ms. The hook's first look
+  // finds no marker; under the lock it looks again.
   const holder = spawn(process.execPath, ["-e", `
     const fs = require("node:fs");
     const [dir] = process.argv.slice(1);
-    fs.mkdirSync(dir + "/lock");
+    const token = process.pid + ".holder";
+    fs.mkdirSync(dir + "/lock." + token);
+    fs.writeFileSync(dir + "/lock." + token + "/" + token, "");
+    fs.renameSync(dir + "/lock." + token, dir + "/lock");
     setTimeout(() => fs.writeFileSync(dir + "/activated", ""), 150);
     setTimeout(() => fs.rmSync(dir + "/lock", { recursive: true, force: true }), 400);
   `, dir], { stdio: "ignore" });
@@ -133,11 +137,12 @@ test("a lock waiter whose directory the SessionEnd cleanup removed under it make
   const dir = join(f.base, "s1");
   mkdirSync(dir, { recursive: true });
   writeFileSync(join(dir, "state.json"), JSON.stringify({ phase: "inactive" }));
-  // The waiter blocks on a lock this test holds; the test then does what the end does under
-  // the lock, removing the whole directory, lock included. The waiter's next mkdir of the
-  // lock fails with ENOENT (its parent is gone) and withLock makes the directory again
-  // rather than throwing.
+  // The waiter blocks on a lock this test holds (its token names this test's running pid);
+  // the test then does what the end does under the lock, removing the whole directory, lock
+  // included. The waiter's next rename of its staged lock fails with ENOENT (its parent is
+  // gone) and withLock makes the directory again rather than throwing.
   mkdirSync(join(dir, "lock"));
+  writeFileSync(join(dir, "lock", `${process.pid}.test`), "");
   const waiter = spawn(process.execPath, ["--input-type=module", "-e", `
     import { withLock } from ${JSON.stringify(join(dirname(HOOK), "..", "lib", "host-io.mjs"))};
     import { writeFileSync } from "node:fs";

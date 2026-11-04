@@ -5,7 +5,9 @@
 import { after, test } from "node:test";
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { chmodSync, existsSync, linkSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, statSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
+import fs, { chmodSync, existsSync, linkSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, statSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
+import { spawnSync } from "node:child_process";
+import { syncBuiltinESMExports } from "node:module";
 import { homedir, tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import {
@@ -390,7 +392,10 @@ test("a sibling plugin's installed CLI is refused from the host shell while pair
   assert.match(preload.text, /other\.db \(LEDGER_DB\)/);
 });
 
-test("the session lock is released only by its holder: a release never removes a lock another holder made, and a stale takeover claims the one directory it saw", () => {
+// A pid that is certainly not running: a child that has already exited and been reaped.
+const deadPid = () => spawnSync(process.execPath, ["-e", ""]).pid;
+
+test("the session lock is released only by its holder: a release never removes a lock another holder made, and a dead holder's stale lock is taken over by its token", () => {
   const dir = join(FIXTURES, `lock-${Date.now()}`);
   const lock = join(dir, "lock");
   // The race Codex modelled: between the holder's look at the lock and its removal, the lock
@@ -398,46 +403,153 @@ test("the session lock is released only by its holder: a release never removes a
   // is the only thing it would remove, and it is gone, so it touches no directory.
   withLock(dir, () => {
     const [mine] = readdirSync(lock);
+    assert.match(mine, new RegExp(`^${process.pid}\\.[0-9a-f]+$`), "the token names the holder's pid");
     rmSync(lock, { recursive: true, force: true });
     mkdirSync(lock);
-    writeFileSync(join(lock, "9999.other"), "", { flag: "wx" });
-    assert.notEqual(mine, "9999.other");
+    writeFileSync(join(lock, `${process.pid}.other`), "", { flag: "wx" });
   });
-  assert.deepEqual(readdirSync(lock), ["9999.other"], "the other holder's lock is untouched by the release");
+  assert.deepEqual(readdirSync(lock), [`${process.pid}.other`], "the other holder's lock is untouched by the release");
   rmSync(lock, { recursive: true, force: true });
-  // The same swap to a lock another holder has made but not yet put its token in (its mkdir
-  // succeeded a moment ago): empty, so rmdir would take it; the release does not try.
+  // The same swap to an empty lock directory: the release does not try to remove it.
   withLock(dir, () => {
     rmSync(lock, { recursive: true, force: true });
     mkdirSync(lock);
   });
   assert.equal(existsSync(lock), true, "an empty lock that is not this holder's is left to its maker");
-  assert.deepEqual(readdirSync(lock), []);
-  rmSync(lock, { recursive: true, force: true });
-  // A normal release leaves nothing: the token is unlinked and the lock directory removed.
-  withLock(dir, () => { assert.equal(readdirSync(lock).length, 1); });
+  // An empty lock directory holds nobody (a release stopped between unlink and rmdir): the next
+  // holder's rename replaces it, and no stage directory is left behind.
+  assert.equal(withLock(dir, () => { assert.equal(readdirSync(lock).length, 1); return "in"; }, { waitMs: 200 }), "in");
   assert.equal(existsSync(lock), false);
-  mkdirSync(lock);
-  writeFileSync(join(lock, "9999.other"), "", { flag: "wx" });
-  // The other holder's lock is now stale: a waiter takes it over by renaming it to a grave of its own name, then removes the grave.
+  assert.deepEqual(readdirSync(dir).filter((n) => n.startsWith("lock")), [], "nothing staged is left behind");
+  // A dead holder's lock older than staleMs is taken over: its one token is unlinked by name.
   const past = (Date.now() - 60000) / 1000;
-  utimesSync(lock, past, past);
-  const r = withLock(dir, () => { assert.equal(readdirSync(lock).length, 1); return "ran"; }, { waitMs: 2000, staleMs: 15000 });
-  assert.equal(r, "ran");
-  assert.equal(existsSync(lock), false);
-  assert.deepEqual(readdirSync(dir).filter((n) => n.startsWith("lock")), [], "no grave is left behind");
-  // A fresh lock from another holder is waited on, not taken, and the wait times out naming the lock.
   mkdirSync(lock);
-  writeFileSync(join(lock, "9999.fresh"), "", { flag: "wx" });
-  assert.throws(() => withLock(dir, () => "never", { waitMs: 200, staleMs: 60000 }), /timed out waiting for the session lock/);
-  assert.deepEqual(readdirSync(lock), ["9999.fresh"]);
+  writeFileSync(join(lock, `${deadPid()}.dead`), "", { flag: "wx" });
+  utimesSync(lock, past, past);
+  assert.equal(withLock(dir, () => { assert.equal(readdirSync(lock).length, 1); return "ran"; }, { waitMs: 2000, staleMs: 15000 }), "ran");
+  assert.equal(existsSync(lock), false);
+  assert.deepEqual(readdirSync(dir).filter((n) => n.startsWith("lock")), [], "nothing staged is left behind");
+  // A dead holder's lock that is not yet stale is waited on.
+  const dead = deadPid();
+  mkdirSync(lock);
+  writeFileSync(join(lock, `${dead}.fresh`), "", { flag: "wx" });
+  assert.throws(() => withLock(dir, () => "never", { waitMs: 200, staleMs: 60000 }), new RegExp(`timed out waiting for the session lock .*: it is held by pid ${dead}, which is not running`));
+  assert.deepEqual(readdirSync(lock), [`${dead}.fresh`]);
   rmSync(lock, { recursive: true, force: true });
-  // Two stale takeovers at once: the rename claims the directory for exactly one of them; the other's rename fails and it retries. Modelled by renaming out from under a taker.
-  mkdirSync(lock);
-  writeFileSync(join(lock, "9999.stale"), "", { flag: "wx" });
+});
+
+test("a stale lock whose holder is still running, or names no process, is never taken over: the wait fails closed naming the holder and the recovery command", () => {
+  const dir = join(FIXTURES, `lock-live-${Date.now()}`);
+  const lock = join(dir, "lock");
+  const past = (Date.now() - 60000) / 1000;
+  // The holder's pid is this test's own: running, so an old mtime is not enough.
+  mkdirSync(lock, { recursive: true });
+  writeFileSync(join(lock, `${process.pid}.stuck`), "", { flag: "wx" });
   utimesSync(lock, past, past);
-  assert.equal(withLock(dir, () => "took"), "took");
+  let ran = false;
+  assert.throws(
+    () => withLock(dir, () => { ran = true; }, { waitMs: 200, staleMs: 15000 }),
+    (err) => {
+      assert.match(err.message, new RegExp(`^timed out waiting for the session lock ${lock}: it is held by pid ${process.pid}, which is still running`));
+      assert.match(err.message, /bin\/pair\.mjs' unlock --stale '/);
+      return true;
+    },
+  );
+  assert.equal(ran, false);
+  assert.deepEqual(readdirSync(lock), [`${process.pid}.stuck`]);
+  rmSync(lock, { recursive: true, force: true });
+  // A token from an older layout (no pid) is not a holder anyone can check.
+  mkdirSync(lock);
+  writeFileSync(join(lock, "owner"), "", { flag: "wx" });
+  utimesSync(lock, past, past);
+  assert.throws(() => withLock(dir, () => { ran = true; }, { waitMs: 200, staleMs: 15000 }), /it holds owner, which names no process/);
+  assert.equal(ran, false);
+  rmSync(lock, { recursive: true, force: true });
+});
+
+test("a takeover acts only on the dead holder's own token: a contender that replaced the lock between the look and the takeover keeps it", () => {
+  const dir = join(FIXTURES, `lock-race-${Date.now()}`);
+  const lock = join(dir, "lock");
+  const past = (Date.now() - 60000) / 1000;
+  mkdirSync(lock, { recursive: true });
+  const deadToken = `${deadPid()}.dead`;
+  writeFileSync(join(lock, deadToken), "", { flag: "wx" });
+  utimesSync(lock, past, past);
+  // Contender A sees the stale lock and its dead holder. Right after A's stat of the lock, and
+  // before A acts, contender B takes the lock over the same way and stays inside: it unlinks
+  // the dead token, then renames its own staged lock, holding its own live token, into place.
+  // The stand-in statSync is published to host-io's named import with syncBuiltinESMExports.
+  const bToken = `${process.pid}.b`;
+  const realStat = fs.statSync;
+  let interleaved = false;
+  fs.statSync = (p, ...rest) => {
+    const st = realStat(p, ...rest);
+    if (!interleaved && p === lock) {
+      interleaved = true;
+      fs.unlinkSync(join(lock, deadToken));
+      const staged = `${lock}.${bToken}`;
+      fs.mkdirSync(staged);
+      fs.writeFileSync(join(staged, bToken), "", { flag: "wx" });
+      fs.renameSync(staged, lock);
+    }
+    return st;
+  };
+  syncBuiltinESMExports();
+  let entered = false;
+  try {
+    assert.throws(() => withLock(dir, () => { entered = true; }, { waitMs: 300, staleMs: 15000 }), new RegExp(`held by pid ${process.pid}, which is still running`));
+  } finally {
+    fs.statSync = realStat;
+    syncBuiltinESMExports();
+  }
+  assert.equal(interleaved, true, "the interleaving happened between A's look and A's act");
+  assert.equal(entered, false, "A did not enter while B holds the lock");
+  assert.deepEqual(readdirSync(lock), [bToken], "B's lock and token are untouched");
+  rmSync(lock, { recursive: true, force: true });
+});
+
+test("a release that cannot unlink its own token fails with that error and leaves the lock as it is; the critical section's own error comes first", { skip: process.getuid?.() === 0 ? "root ignores directory permissions" : false }, () => {
+  const dir = join(FIXTURES, `lock-eacces-${Date.now()}`);
+  const lock = join(dir, "lock");
+  try {
+    assert.throws(() => withLock(dir, () => { chmodSync(lock, 0o500); return "saved"; }), (err) => err.code === "EACCES");
+    assert.equal(readdirSync(lock).length, 1, "the token stays: the lock is not reported as released");
+    chmodSync(lock, 0o700);
+    rmSync(lock, { recursive: true, force: true });
+    const boom = new Error("the critical section failed");
+    assert.throws(() => withLock(dir, () => { chmodSync(lock, 0o500); throw boom; }), (err) => err === boom && err.releaseError?.code === "EACCES");
+    assert.equal(readdirSync(lock).length, 1);
+  } finally {
+    if (existsSync(lock)) chmodSync(lock, 0o700);
+    rmSync(lock, { recursive: true, force: true });
+  }
+});
+
+test("pair unlock --stale removes a lock only when its holder is not running, and otherwise names the holder", () => {
+  const dir = join(FIXTURES, `lock-unlock-${Date.now()}`);
+  const lock = join(dir, "lock");
+  const cli = join(PLUGIN_ROOT, "bin", "pair.mjs");
+  const run = (...args) => spawnSync(process.execPath, [cli, ...args], { encoding: "utf8" });
+  mkdirSync(lock, { recursive: true });
+  writeFileSync(join(lock, `${process.pid}.live`), "", { flag: "wx" });
+  const live = run("unlock", "--stale", lock);
+  assert.equal(live.status, 1, live.stderr);
+  assert.match(live.stderr, new RegExp(`held by pid ${process.pid}, which is still running`));
+  assert.deepEqual(readdirSync(lock), [`${process.pid}.live`], "a running holder's lock is untouched");
+  rmSync(lock, { recursive: true, force: true });
+  const dead = deadPid();
+  mkdirSync(lock);
+  writeFileSync(join(lock, `${dead}.gone`), "", { flag: "wx" });
+  const gone = run("unlock", "--stale", lock);
+  assert.equal(gone.status, 0, gone.stderr);
+  assert.match(gone.stdout, new RegExp(`removed the lock ${lock}: its holder, pid ${dead}, is not running`));
   assert.equal(existsSync(lock), false);
+  const none = run("unlock", "--stale", lock);
+  assert.equal(none.status, 0, none.stderr);
+  assert.match(none.stdout, /no lock at/);
+  const usage = run("unlock", lock);
+  assert.equal(usage.status, 2);
+  assert.match(usage.stderr, /usage: pair\.mjs unlock --stale <lock directory>/);
 });
 
 test("pair_run times out and kills its whole process group", { skip: !hasSandbox }, async () => {

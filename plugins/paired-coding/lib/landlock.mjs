@@ -18,7 +18,7 @@
 
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { lstatSync, readdirSync, readFileSync } from "node:fs";
+import { lstatSync, opendirSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -149,9 +149,12 @@ export const landlockIo = Object.freeze({
   // rather than skipped, so the builder treats it as holding something outside the boundary.
   // Nothing is skipped: a `.git` entry is descended into like any directory, since a grant on
   // the directory above it reaches everything in it. The walk is iterative (a tree deeper
-  // than the call stack cannot throw) and, given a budget, stops at the first limit it meets
-  // with one "unwalked" entry naming it, at the path it had reached; the signal aborts it the
-  // same way.
+  // than the call stack cannot throw) and reads each directory one entry at a time, so a wide
+  // directory is never listed whole before the entry budget is checked. Given a budget, it
+  // stops at the first limit it meets with one "unwalked" entry naming it, at the path it had
+  // reached; the clock and the signal are looked at before each directory and after every
+  // entry read and every lstat, so neither a flat directory nor the last one walked runs past
+  // them. A single filesystem call that blocks is not interrupted: the bound holds between calls.
   /**
    * @param {string} dir
    * @param {{ budget?: { entries: number, depth: number, ms: number }, signal?: AbortSignal }} [opts]
@@ -163,23 +166,37 @@ export const landlockIo = Object.freeze({
     /** @type {Array<{ dir: string, depth: number }>} */
     const stack = [{ dir, depth: 0 }];
     const stop = (path, reason) => { out.push({ path, type: "unwalked", nlink: 0, reason }); return out; };
+    const spent = (path) => {
+      if (opts.signal?.aborted) return stop(path, "the run was aborted");
+      if (budget && Date.now() - started > budget.ms) return stop(path, `looking at it took longer than ${budget.ms} ms`);
+      return null;
+    };
     while (stack.length) {
       const { dir: d, depth } = stack.pop();
-      if (opts.signal?.aborted) return stop(d, "the run was aborted");
-      if (budget && Date.now() - started > budget.ms) return stop(d, `looking at it took longer than ${budget.ms} ms`);
+      let done = spent(d);
+      if (done) return done;
       if (budget && depth >= budget.depth) return stop(d, `it is deeper than ${budget.depth} directories`);
-      let names;
-      try { names = readdirSync(d); } catch { out.push({ path: `${d}/`, type: "unreadable", nlink: 0 }); continue; }
+      let listing;
+      try { listing = opendirSync(d); } catch { out.push({ path: `${d}/`, type: "unreadable", nlink: 0 }); continue; }
       // Pushed in reverse so the entries come out in listing order, as the recursive walk gave them.
       const below = [];
-      for (const n of names) {
-        const abs = join(d, n);
-        if (budget && out.length >= budget.entries) return stop(abs, `it holds more than ${budget.entries} entries`);
-        let st;
-        try { st = lstatSync(abs); } catch { out.push({ path: abs, type: "unreadable", nlink: 0 }); continue; }
-        const type = typeOf(st);
-        out.push({ path: abs, type, nlink: st.nlink });
-        if (type === "dir") below.push({ dir: abs, depth: depth + 1 });
+      try {
+        for (;;) {
+          let ent;
+          try { ent = listing.readSync(); } catch { out.push({ path: `${d}/`, type: "unreadable", nlink: 0 }); break; }
+          if ((done = spent(d))) return done;
+          if (ent === null) break;
+          const abs = join(d, ent.name);
+          if (budget && out.length >= budget.entries) return stop(abs, `it holds more than ${budget.entries} entries`);
+          let st;
+          try { st = lstatSync(abs); } catch { out.push({ path: abs, type: "unreadable", nlink: 0 }); continue; }
+          if ((done = spent(abs))) return done;
+          const type = typeOf(st);
+          out.push({ path: abs, type, nlink: st.nlink });
+          if (type === "dir") below.push({ dir: abs, depth: depth + 1 });
+        }
+      } finally {
+        listing.closeSync();
       }
       for (let i = below.length - 1; i >= 0; i--) stack.push(below[i]);
     }
