@@ -60,18 +60,35 @@ Two agents load from `agents/` (by the plugin-agent convention; nothing register
 
 | Agent | When | What it does | Tools, model |
 |---|---|---|---|
-| `cross-lab-reviewer` | a plugin branch is built and its suites pass, before a PR | sends the range `<base>..HEAD` to OpenAI Codex with `codex exec --sandbox read-only` and the release review brief: security first (hook command parsing, fail-open paths), each prior finding marked closed, partial or open, the env-only failure set (tests that fail only under `env -i` with a fresh HOME), the `/Users/<name>` path scrub, and a `Verdict: ship` or `Verdict: fix-first` line; writes `~/agent-scratch/<repo>/<plugin>/REVIEW-<version>-codex.md` (a `-round<N>` suffix when one exists) with its triage of each finding | Read, Grep, Glob, Bash, Write; sonnet |
-| `release-gate` | before a version bump, PR or publish | runs the checklist and reports pass or fail per check with command and output: the path scrub, the version across `plugin.json`, `package.json`, the README "Changes in" headings and the marketplace entry, `node --test` normally and under a stripped environment, `ledger gate check` against a throwaway `LEDGER_DB`, and the README against the plugin's hooks, skills and agents; checks `node --version` against the CI pin first | Read, Grep, Glob, Bash; haiku |
+| `cross-lab-reviewer` | a plugin branch is built and its suites pass, before a PR | runs a trust preflight, reviews one snapshot of the head commit, and sends the range `<base>..<head sha>` to OpenAI Codex with `codex exec --sandbox read-only` and the release review brief: security first (hook command parsing, fail-open paths), each prior finding marked closed, partial or open, the env-only failure set (tests failing in the credential-free run, stated against the CI node pin), the `/Users/<name>` path scrub, and a `Verdict: ship` or `Verdict: fix-first` line; writes `~/agent-scratch/<repo>/<plugin>/REVIEW-<version>-codex.md` (a `-round<N>` suffix when one exists) with its triage of each finding | Read, Grep, Glob, Bash, Write; sonnet |
+| `release-gate` | before a version bump, PR or publish | runs a trust preflight and checks one snapshot of the head commit, reporting pass, fail or unavailable per check with command and output: the CI node pin from the workflow job that runs the plugin's tests, the path scrub, the version across `plugin.json`, `package.json`, the README "Changes in" headings and the marketplace entry, `node --test` and `ledger gate check` (throwaway `LEDGER_DB` and `LEDGER_CONFIG`) in a credential-free environment, and the README against the plugin's hooks, skills and agents | Read, Grep, Glob, Bash; haiku |
+
+Both agents run code from the checkout only after a trust preflight passes: `gh repo view` on
+the checkout's `origin` reports `ADMIN` or `MAINTAIN` for the current user, and every such
+command runs under `env -i` with a fresh `HOME` and `XDG_CONFIG_HOME` and a `PATH` of the node
+folder, `/usr/bin` and `/bin`, so no `GH_TOKEN`, API key or `SSH_AUTH_SOCK` reaches it. There is
+no second run in the caller's own environment. That containment strips credentials from the
+environment; it does not cut the network or hide files readable by path, which is why the
+permission check comes first. A failed preflight means static review only: every executable
+check is `unavailable`, the reviewer's verdict cannot be `ship` and the gate line is `fail`.
+Every check reads a `git worktree add --detach` snapshot of the captured head sha, named in the
+report; uncommitted changes are listed, never inspected. A CI pin that no single workflow job
+supplies is `unavailable` and fails the gate; plugin-kit itself has no workflow yet, so the gate
+fails on it until one exists. The reviewer refuses an output path whose `<repo>`, `<plugin>`
+or `<version>` is not `[A-Za-z0-9._-]+`, is `.` or holds `..`, or resolves outside `~/agent-scratch/`.
 
 Neither edits product source, pushes, merges or installs: the reviewer's Write is for its review
 file, and the gate has no Write at all. A plugin agent cannot block a single Bash command (plugin
 agents ignore `hooks` and `permissionMode`), so these limits are the agents' text plus their tool
 lists; a push block belongs in settings deny rules. The reviewer sends the diff and the source
 Codex reads to OpenAI on the account `codex` is logged in to. OMP loads both from the plugin but
-drops their `model:` lines. Each agent's "How it fails" section covers the unavailable paths: no
-`codex` on PATH stops the review with the handed-over command and never falls back to a
-Claude-only review; no `ledger` checkout or a sandbox refusal marks that check unavailable, never
-passed. `test/agents.test.mjs` checks each file's frontmatter, the contract and that section.
+drops their `model:` lines. Each agent's "How it fails" section covers the unavailable paths: a
+failed trust preflight runs nothing from the checkout; no `codex` on PATH stops the review
+before a brief exists, a `codex` failure after launch keeps the brief and hands over the retry
+line, and neither falls back to a Claude-only review; no `ledger` checkout, no CI pin or a
+sandbox refusal marks that check unavailable, never passed. `test/agents.test.mjs` checks each
+file's frontmatter, the contract, that section, and that no `/Users/<name>` other than exactly
+`example` appears.
 
 ## How it fails
 
@@ -88,8 +105,10 @@ pick it up: it has no plugin to test until it is scaffolded).
 ## Changes in 0.1.2
 
 Two agents, `cross-lab-reviewer` and `release-gate` (see "Agents"): the Codex review brief and
-the release checklist that were written by hand for each plugin release, as files. The
-scaffolder and the runner are unchanged.
+the release checklist that were written by hand for each plugin release, as files. Neither runs
+code from the checkout without a passing trust preflight (maintainer permission on `origin`,
+credential-free `env -i`), and both check one snapshot of the head sha. The scaffolder and the
+runner are unchanged.
 
 ## Changes in 0.1.1
 
