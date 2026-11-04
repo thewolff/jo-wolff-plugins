@@ -2,7 +2,8 @@
 // imports only ./data.mjs, so Node can load it): the timers it installs (a 1 s home probe, a 5 s
 // away query), and a home probe that throws (`$.fs.exists` rejecting, as the mods types allow for a
 // network location) caught inside the timer callback, clearing the badge and logged once per
-// distinct message. badge.test.tsx covers the same hooks under `claude plugin test`.
+// distinct message; the status line set whether the session has a surface (the terminal) or not
+// (Claude Desktop, which runs Claude Code headless). badge.test.tsx covers the same hooks under `claude plugin test`.
 
 import test from "node:test";
 import assert from "node:assert/strict";
@@ -35,7 +36,25 @@ function stub({ snapshot = HOME, exists = async () => false } = {}) {
   return s;
 }
 
-const start = (hooks, s) => hooks.get("session.start")(s.$, { surface: "desktop" }, async () => ({}));
+const start = (hooks, s, e = { surface: "terminal", isInteractive: true }) => hooks.get("session.start")(s.$, e, async () => ({}));
+// Claude Desktop runs Claude Code headless (`--input-format stream-json`): no surface, not interactive.
+const DESKTOP = { surface: null, isInteractive: false };
+
+for (const [where, e] of [["Desktop (surface null, not interactive)", DESKTOP], ["terminal", { surface: "terminal", isInteractive: true }]]) {
+  test(`${where}: session.start queries, sets the status line and installs both timers`, async () => {
+    const hooks = await load();
+    const s = stub({ snapshot: AWAY });
+    await start(hooks, s, e);
+    assert.equal(s.runs, 1);
+    assert.equal(s.statuses.length, 1);
+    assert.match(s.statuses[0], /^away 4[01]m · 12 held · say back$/);
+    assert.deepEqual([...s.timers.keys()].sort((a, b) => a - b), [1000, 5000]);
+    s.snapshot = HOME;
+    await hooks.get("prompt.submit")(s.$, { text: "back" }, async () => ({}));
+    await new Promise((r) => setImmediate(r));
+    assert.equal(s.statuses.at(-1), undefined);
+  });
+}
 
 test("timers: a home probe every 1000 ms and an away query every 5000 ms; the probe does nothing while away, the away query nothing while home", async () => {
   const hooks = await load();

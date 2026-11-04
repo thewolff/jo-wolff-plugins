@@ -53,7 +53,9 @@ function stubs(on, { snapshot = AWAY as unknown, exists = false, answer = "", pr
   return { processes, statuses, logs, probes, state, clock };
 }
 
-const start = ($) => $.session.start({ surface: "desktop", isInteractive: true, cwd: "/Users/example/code/this" });
+const start = ($) => $.session.start({ surface: "terminal", isInteractive: true, cwd: "/Users/example/code/this" });
+// Claude Desktop runs Claude Code headless (`--input-format stream-json`): no surface, not interactive.
+const startDesktop = ($) => $.session.start({ surface: null, isInteractive: false, cwd: "/Users/example/code/this" });
 const completeTurn = ($, over = {}) => $.turn.complete({ turnId: "t-1", answer: "done", durationMs: 10, isAborted: false, usage: null, ...over });
 
 test("session.start while away: the query runs with this session, and the status line reads the badge", async ($, on) => {
@@ -139,14 +141,27 @@ test("the poll: a query every 5 s while away; while home only an fs.exists probe
   expect(processes.length).toBe(6);
 });
 
-test("where nothing draws (surface null): no query, no probe, no status line, no timer", async ($, on) => {
-  const { processes, probes, statuses, clock } = stubs(on);
-  await $.session.start({ surface: null, isInteractive: false, cwd: "/Users/example/code/this" });
-  await clock.advance(3000);
-  await completeTurn($);
-  expect(processes.length).toBe(0);
-  expect(probes).toEqual([]);
-  expect(statuses).toEqual([]);
+test("Desktop (surface null, not interactive): the status line is set at start, the poll runs, and `back` clears it", async ($, on) => {
+  const { processes, statuses, state, clock } = stubs(on);
+  await startDesktop($);
+  expect(processes.length).toBe(1);
+  expect(statuses.length).toBe(1);
+  expect(statuses[0]).toMatch(BADGE);
+  await clock.advance(5000);
+  expect(processes.length).toBe(2);
+  state.snapshot = HOME;
+  await $.prompt.submit({ text: "back" });
+  await clock.settle();
+  expect(statuses.length).toBe(2);
+  expect(statuses[1]).toBe(undefined);
+});
+
+test("terminal (surface terminal): the status line is set at start", async ($, on) => {
+  const { processes, statuses } = stubs(on);
+  await start($);
+  expect(processes.length).toBe(1);
+  expect(statuses.length).toBe(1);
+  expect(statuses[0]).toMatch(BADGE);
 });
 
 test("fault: the query process is denied → no badge, one dim log line, the same error not logged twice", async ($, on) => {

@@ -9,7 +9,9 @@
 //     submitted (so `brb` and `back` show at once), at each main turn's start and end, and every
 //     5 s while away. Between those, while home, the only poll is `$.fs.exists` on away.json
 //     in this process once a second, which starts a query when the file appears;
-//   - where nothing draws (`claude -p`, no surface) nothing is shown: the hooks' own lines cover it.
+//   - it draws in the terminal and in Claude Desktop alike: Desktop runs Claude Code headless
+//     (`--input-format stream-json`, so `session.start` carries no surface) and renders the line
+//     from the `ui_status` message; where no host draws it, `$.ui.status` does nothing.
 //
 // How it fails: every hook catches its own error, logs one dim transcript line (`$.ui.log`) and
 // passes the event on with `next(e)`; a query or a home probe that fails clears the badge and logs
@@ -30,7 +32,6 @@ let snapshot = emptySnapshot();
 let shown = null;
 let lastError = null;
 let inFlight = false;
-let draws = false;
 let stateEnv = { xdgStateHome: undefined, home: undefined };
 
 function pathUnder(root, rel) {
@@ -106,13 +107,10 @@ async function probeTick($) {
 export function register(on) {
   on("session.start", async ($, e, next) => {
     try {
-      draws = (e.surface ?? null) !== null;
-      if (draws) {
-        stateEnv = { xdgStateHome: await $.env.get("XDG_STATE_HOME"), home: await $.env.get("HOME") };
-        $.clock.every(PROBE_MS, () => probeTick($));
-        $.clock.every(AWAY_POLL_MS, () => awayTick($));
-        await refresh($);
-      }
+      stateEnv = { xdgStateHome: await $.env.get("XDG_STATE_HOME"), home: await $.env.get("HOME") };
+      $.clock.every(PROBE_MS, () => probeTick($));
+      $.clock.every(AWAY_POLL_MS, () => awayTick($));
+      await refresh($);
     } catch (err) {
       await logFault($, "session.start", err);
     }
@@ -126,7 +124,7 @@ export function register(on) {
     // poll a `back` within AWAY_POLL_MS.
     const result = await next(e);
     try {
-      if (draws) refresh($);
+      refresh($);
     } catch (err) {
       await logFault($, "prompt.submit", err);
     }
@@ -135,7 +133,7 @@ export function register(on) {
 
   on("turn.start", async ($, e, next) => {
     try {
-      if (draws && e.agentId === undefined) refresh($);
+      if (e.agentId === undefined) refresh($);
     } catch (err) {
       await logFault($, "turn.start", err);
     }
@@ -144,7 +142,7 @@ export function register(on) {
 
   on("turn.complete", async ($, e, next) => {
     try {
-      if (draws && e.agentId === undefined) await refresh($);
+      if (e.agentId === undefined) await refresh($);
     } catch (err) {
       await logFault($, "turn.complete", err);
     }

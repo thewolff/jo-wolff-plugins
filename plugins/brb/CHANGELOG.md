@@ -3,6 +3,24 @@
 All notable changes to brb are recorded here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.3.1] - 2026-11-04
+
+The badge never showed in Claude Desktop (live report, 2026-11-04). Desktop runs Claude Code
+headless (`--input-format stream-json`), so `session.start` carries `surface: null`; 0.3.0 read
+that as "nothing draws" and never set the status line or started its timers. Desktop does draw
+the line: it renders the `ui_status` message that `$.ui.status` sends.
+
+### Fixed
+
+- `mods/badge/register.mjs`: no surface gate. Every session queries at start, installs the 1 s
+  home probe and the 5 s away poll, refreshes at each prompt and main turn, and sets the line
+  with `$.ui.status`. Where no host draws `ui_status` (`claude -p`, OMP) the call goes nowhere,
+  as before.
+- Tests: `mods/badge/tests/badge.test.tsx` and `mods/badge/tests/register.test.mjs` start the
+  session as Desktop does (`surface: null, isInteractive: false`) and as the terminal does
+  (`surface: "terminal"`) and assert the line is set in both; the "surface null → nothing" test
+  is gone. `badge.test.tsx` now runs under `claude plugin test`.
+
 ## [0.3.0] - 2026-11-04
 
 A badge while you type into a session you left. A person who comes back to a Desktop window
