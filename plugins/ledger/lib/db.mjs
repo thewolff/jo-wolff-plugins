@@ -242,7 +242,7 @@ export const MIGRATIONS = [
       CREATE INDEX cc_reviews_head ON cc_reviews (head_sha);
     `);
   },
-  // 7 (0.3.2): repro data and the feedback loop.
+  // 7 (0.3.3): repro data and the feedback loop.
   //   cc_bounces.text            what fired the rule: the reply excerpt (Stop) or the shell
   //                              command (PreToolUse), cut to BOUNCE_TEXT_MAX chars; NULL when the
   //                              hook had none.

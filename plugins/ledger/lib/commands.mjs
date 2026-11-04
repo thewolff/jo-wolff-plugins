@@ -454,7 +454,7 @@ function ask(db, parsed, by, iso, now, ctx) {
   if (options.some((o) => /\s/.test(o))) return refused("each option is one word");
   // An option named `withdraw` is allowed: the parser resolves options first, so `withdraw q-…` records it.
 
-  // No --default means no default (0.3.2): the row stores "" and the pending line names no
+  // No --default means no default (0.3.3): the row stores "" and the pending line names no
   // default word, so a bare first-option reply is read as the human's choice, not as "the
   // default again". An approval question still defaults to deny. Before, the first option was
   // silently made the default and echoed back as if the asker had chosen it.

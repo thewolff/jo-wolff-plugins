@@ -1,4 +1,4 @@
-// 0.3.2 repro data: a bounce row keeps what fired the rule (the reply excerpt or the shell command,
+// 0.3.3 repro data: a bounce row keeps what fired the rule (the reply excerpt or the shell command,
 // cut to 500 characters) and the transcript path the event named; the judge cache keeps the
 // passage and question it was given, readable with `review judge <key>`.
 

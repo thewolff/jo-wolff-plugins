@@ -47,7 +47,7 @@ export function bounceText(text) {
 /**
  * Insert one open bounce row; never throws. `text` is what fired the rule (the reply excerpt or
  * the shell command), `transcriptPath` the event's transcript_path; both are kept so the row can
- * be reproduced later (0.3.2), both optional.
+ * be reproduced later (0.3.3), both optional.
  */
 export function recordBounce(store, { sessionId = null, rule, promptId = null, tool = null, text = null, transcriptPath = null, now = Date.now(), env = process.env, hook }) {
   try {
@@ -163,7 +163,7 @@ export function renderBounces(db, { since = BOUNCES_DEFAULT_SINCE, now = Date.no
   out.push("", `last ${Math.min(BOUNCES_RECENT, rows.length)}:`);
   for (const r of rows.slice(0, BOUNCES_RECENT)) {
     out.push(`#${r.id} ${r.at}  ${(r.session_id ?? "-").slice(0, 8).padEnd(8)}  ${r.rule.padEnd(ruleWidth)}  ${(r.tool ?? "-").padEnd(15)}  ${r.outcome ?? "open"}`);
-    // 0.3.2: what fired it and where the transcript is, so the row can be reproduced.
+    // 0.3.3: what fired it and where the transcript is, so the row can be reproduced.
     if (r.text) out.push(`    text: ${oneLine(r.text, 160)}`);
     if (r.transcript_path) out.push(`    transcript: ${r.transcript_path}`);
   }

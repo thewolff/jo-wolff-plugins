@@ -4,7 +4,7 @@
 // session's bounce rows still open into `bypassed`, so both land or neither does. Open questions
 // stay open until answered or withdrawn.
 //
-// 0.3.2: after the stamp, the decision-log entry (lib/decision-log.mjs): one file under the
+// 0.3.3: after the stamp, the decision-log entry (lib/decision-log.mjs): one file under the
 // repository's `.ai/decision-log/` when the session recorded an answer or a note and
 // `decisionLog.enabled` is not false; its faults are errors.log lines, never a failed stamp.
 //

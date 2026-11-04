@@ -65,7 +65,7 @@ export async function overlayJudge(data, { config, env = process.env, judge = as
   for (const r of data.rules) {
     if (!r.fired) continue;
     if (!r.texts.length) {
-      r.judgeError = "no bounce texts kept (rows from before 0.3.2)";
+      r.judgeError = "no bounce texts kept (rows from before 0.3.3)";
       continue;
     }
     const a = await judge({ config, env, passage: judgePassage(r), question: JUDGE_QUESTION_RULE, words: [...GRADES] });

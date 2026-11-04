@@ -268,7 +268,7 @@ A live headless run (`claude -p --plugin-dir`) is not part of the suite; it cost
   cannot be removed is one warning line and one errors.log line; nothing is blocked. OMP has no
   session-end event wired in `omp/pattern-check-omp.ts`, so under OMP the files stay as before.
 - The skill has a "When this can't run" section (the repository test bar, checked by ledger
-  0.3.2's `gate check`): what the agent does when `record` refuses, cannot write the receipt,
+  0.3.3's `gate check`): what the agent does when `record` refuses, cannot write the receipt,
   records into a session the hooks do not know, when a hook failed open, or when the script is
   missing.
 

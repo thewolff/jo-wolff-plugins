@@ -429,7 +429,7 @@ export async function runReview({ db, dbPath, cwd, env = process.env, config, la
     };
   }
   // The newest pattern-check receipt in the repository, when one exists, goes in front of the
-  // diff so the labs can hold the "how it fails" rows against the code (0.3.2).
+  // diff so the labs can hold the "how it fails" rows against the code (0.3.3).
   const receipt = newestReceipt(top, env);
   const input = receiptSection(receipt.text) + diff;
   const results = await Promise.allSettled(

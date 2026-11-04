@@ -7,7 +7,7 @@ session (every hook exits 0 inside its budget on any input, never a deny or bloc
 fault), its failures are visible (an `errors.log` line and a `systemMessage`, and the unavailable
 path of every program it shells out to is tested against a real capture), and its text says what
 to do when it can't (every skill and agent has a "When this can't run" section; every deny text
-names a command). `ledger gate check` (the ledger plugin, 0.3.2) enforces the three before a
+names a command). `ledger gate check` (the ledger plugin, 0.3.3) enforces the three before a
 push. This plugin makes meeting them the default rather than a retrofit.
 
 ## Install
@@ -61,4 +61,4 @@ contract test, which has no plugin to test until it is scaffolded.
 
 ## Changes in 0.1.0
 
-First release, with ledger 0.3.2's plugin gate.
+First release, with ledger 0.3.3's plugin gate.

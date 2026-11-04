@@ -198,7 +198,7 @@ async function runReviewVerb({ store, cwd, env, sessionId, tokens, out }) {
     else if (parsed.action === "judge") {
       const row = cachedJudgement(store.db, parsed.key);
       r = row
-        ? { code: 0, text: `${row.key}\nanswer: ${row.answer}${row.at ? ` at ${row.at}` : ""}\nquestion: ${row.question ?? "(not kept: cached before 0.3.2)"}\npassage:\n${row.passage ?? "(not kept: cached before 0.3.2)"}` }
+        ? { code: 0, text: `${row.key}\nanswer: ${row.answer}${row.at ? ` at ${row.at}` : ""}\nquestion: ${row.question ?? "(not kept: cached before 0.3.3)"}\npassage:\n${row.passage ?? "(not kept: cached before 0.3.3)"}` }
         : { code: 1, text: `no cached judge answer for ${parsed.key}; keys are listed in \`${invocation()} report\`` };
     }
     else if (parsed.action === "addressed") r = await addressed({ ...common, reason: parsed.reason, config: store.config, env });

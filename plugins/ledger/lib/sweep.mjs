@@ -1,4 +1,4 @@
-// sweep.mjs — leftover questions (0.3.2). An open or held question whose session has ended is
+// sweep.mjs — leftover questions (0.3.3). An open or held question whose session has ended is
 // still a question nobody is going to answer from that session; `pending` keeps listing it, the
 // Stop rules keep standing down on it, and the ledger fills with rows that mean nothing.
 //
