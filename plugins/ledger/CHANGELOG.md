@@ -34,6 +34,12 @@ repository root README's ledger section.
   without `docs`), naming the missing check and `gate check` as the way out.
 - `ledger help` and the README say six checks.
 
+### Fixed
+
+- The canary prune test accepts either shell's wording for a missing binary (bash's
+  `No such file or directory`, dash's `1: … not found`), so the suite passes on Linux. Test
+  only; no behaviour change.
+
 ## [0.3.5] - 2026-11-04
 
 ### Added
