@@ -21,7 +21,8 @@ repository root README's ledger section.
   row is `skipped` while the version is unchanged or neither manifest has one, and fails with
   `manifest version missing at head` when the head dropped a version the base had; each
   failure names the file and the heading it wanted. The base manifest and the root README are
-  read out of the commits with `git show`, never the checkout.
+  read out of the commits with `git show`, never the checkout. A fence opens with ``` or ~~~
+  indented at most three spaces, and a root README bullet inside a fence does not count.
 - This file.
 
 ### Changed

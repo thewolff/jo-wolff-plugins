@@ -359,6 +359,8 @@ test("docs row: a changed version needs a CHANGELOG.md entry, a README release h
   // A fenced line that looks like a heading does not end a section.
   assert.equal(releaseEntry("## 0.3.0\n\n```\n# not a heading\n```\n", "0.3.0"), "ok");
   assert.equal(releaseEntry("## 0.3.0\n\n```\n## 0.2.0\n```\n## 0.2.0\n", "0.3.0"), "ok");
+  // Four or more spaces of indent is an indented code block, not a fence opener, so the heading after it counts.
+  assert.equal(releaseEntry("# x\n\n    ```\n## 0.3.6\n\nbody\n", "0.3.6"), "ok", "a four-space ``` does not open a fence");
   // Every documented heading shape passes, in either file; the root README names the version in the bullet.
   write(dir, "CHANGELOG.md", "# Changelog\n\n## [0.3.0] - 2026-11-04\n\n### Added\n\n- the thing\n");
   write(dir, "README.md", "# Good\n\n## Changes in 0.3.0\n\nThe thing.\n");
@@ -382,6 +384,7 @@ test("docs row: a changed version needs a CHANGELOG.md entry, a README release h
   assert.equal(rootReadmeNames("- **[good](#good)** 0.3.0-rc.1\n", "good", "0.3.0"), false, "a pre-release is not the version");
   assert.equal(rootReadmeNames("- **[good](#good)** v0.3.0\n", "good", "0.3.0"), false, "a v prefix is not the version");
   assert.equal(rootReadmeNames("## Layout\n- good/ the store\n\n## Plugins\n- **[good](y)** 0.3.0\n", "good", "0.3.0"), true, "every bullet starting with the name is read, not only the first");
+  assert.equal(rootReadmeNames("```\n- **[good](y)** 0.3.0\n```\n", "good", "0.3.0"), false, "a bullet inside a fenced code block does not count");
   // A version the base had and the head dropped fails.
   manifest(undefined);
   assert.deepEqual(run({ baseVersion: "0.0.1", rootReadme: rootBullet }), { status: "fail", detail: 'manifest version missing at head: the base has 0.0.1; put a "version" back in .claude-plugin/plugin.json' });

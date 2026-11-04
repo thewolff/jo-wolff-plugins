@@ -578,7 +578,7 @@ export function releaseHeading(version) {
 function linesWithFences(md) {
   let fence = null;
   return md.split("\n").map((text) => {
-    const m = /^[ \t]*(`{3,}|~{3,})/.exec(text);
+    const m = /^ {0,3}(`{3,}|~{3,})/.exec(text);
     if (fence === null && m) {
       fence = m[1];
       return { text, code: true };
@@ -625,12 +625,12 @@ export function releaseEntry(md, version) {
 export function rootReadmeNames(md, pluginName, version) {
   const name = escapeRe(pluginName);
   const token = versionToken(version);
-  const lines = md.split("\n");
+  const lines = linesWithFences(md);
   const bulletStart = new RegExp(`^[-*][ \\t]+(?:\\*\\*)?\\[?${name}(?![\\w-])`);
   for (let start = 0; start < lines.length; start++) {
-    if (!bulletStart.test(lines[start])) continue;
-    const bullet = [lines[start]];
-    for (let j = start + 1; j < lines.length && /^[ \t]+\S/.test(lines[j]); j++) bullet.push(lines[j]);
+    if (lines[start].code || !bulletStart.test(lines[start].text)) continue;
+    const bullet = [lines[start].text];
+    for (let j = start + 1; j < lines.length && !lines[j].code && /^[ \t]+\S/.test(lines[j].text); j++) bullet.push(lines[j].text);
     if (new RegExp(token).test(bullet.join("\n"))) return true;
   }
   if (new RegExp(`changes in[ \\t]+${name}[ \\t]+${token}`, "i").test(md)) return true;
