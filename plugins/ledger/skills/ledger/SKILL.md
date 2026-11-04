@@ -32,8 +32,11 @@ the human for permission. `… help` prints the whole grammar.
    any ledger syntax to the human; keep the id in your own context.
 
    **When the human replies, record the answer before anything else:**
-   `… answer <q-id> <option>`, with the option their words mean. If their reply sets the question
-   aside, `… withdraw <q-id>`. If it does not answer it at all, ask again in plain words.
+   `… answer <q-id> <option>`, with the option their words mean. When their reply is not one of
+   the options ("purple" to red or blue), record the human's reply as given:
+   `… answer <q-id> "<their reply>"` is stored as a free-form answer. Never withdraw a question
+   because the reply was not in the list. If their reply sets the question aside,
+   `… withdraw <q-id>`. If it does not answer it at all, ask again in plain words.
 
    The Stop hook sends back, once per turn, a reply that ends while a question asked before the
    human's latest message still has no answer, naming the ids to answer; and a reply that asks the

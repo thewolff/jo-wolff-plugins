@@ -5,8 +5,11 @@
 //   refused  not applied, `message` says why and what would be accepted
 //
 // Rules this file is the home of (see the README's bug → fix map):
-//   - an answer is recorded only when the word is one of the question's options (or `withdraw`);
-//     anything else is refused with the option list and nothing is written;
+//   - an answer is recorded as the option it names; `answer <q-id> <reply>` with a reply that is
+//     not an option records the reply as given (via `freeform`, at most FREEFORM_MAX characters),
+//     so a question is never withdrawn because the human's reply was not in the list. The short
+//     forms (`<word> <q-id>`, an ordinal, a bare word) and the prompt hook take options only, so
+//     a typo is refused with the option list and never becomes an answer;
 //   - a question is asked once: repeating an open or held one returns its id and writes nothing;
 //   - a held question (formed, deliberately deferred for the human) is unresolved like an open
 //     one; `reopen` puts it to the human (open, asked_at = now), `hold` defers an open one;
@@ -183,7 +186,7 @@ export function logEntries(db, cwd, count) {
          UNION ALL
          SELECT id, cwd, asked_at AS at, asked_by AS who, CASE state WHEN 'held' THEN 'held' ELSE 'ask' END AS kind, name || ' · ' || body AS body, NULL, NULL FROM cc_questions
          UNION ALL
-         SELECT a.id, q.cwd, a.answered_at AS at, a.answered_by AS who, 'answer' AS kind, a.word || ' → ' || q.id || ' (' || q.name || ')' AS body, q.id, NULL
+         SELECT a.id, q.cwd, a.answered_at AS at, a.answered_by AS who, CASE a.via WHEN 'freeform' THEN 'answer-freeform' ELSE 'answer' END AS kind, a.word || ' → ' || q.id || ' (' || q.name || ')' AS body, q.id, NULL
            FROM cc_answers a JOIN cc_questions q ON q.id = a.question_id
        ) ORDER BY at DESC, id DESC`,
     )
@@ -194,7 +197,7 @@ export function logEntries(db, cwd, count) {
 
 export function renderLog(rows, cwd, count, { now = Date.now() } = {}) {
   if (!rows.length) return `no notes, questions or answers for ${cwd}`;
-  const label = { note: "note", withdraw: "withdrew", extend: "extended", ask: "asked", held: "asked (held)", answer: "answered", outcome: "outcome" };
+  const label = { note: "note", withdraw: "withdrew", extend: "extended", ask: "asked", held: "asked (held)", answer: "answered", "answer-freeform": "answered (freeform)", outcome: "outcome" };
   const about = (r) => (r.kind === "outcome" && r.question_id ? ` (for ${r.question_id})` : "");
   return rows.map((r) => `${r.id} ${relative(r.at, now)} · ${r.who} ${label[r.kind] ?? r.kind}: ${r.body.replace(/\s+/g, " ")}${r.ref ? ` → ${r.ref}` : ""}${about(r)}`).join("\n");
 }
@@ -205,7 +208,7 @@ export function renderHelp() {
   lines.push(
     "",
     "ids: q- question, an- answer, nt- note; an id looks like q-mvr3k2p9a1xq.",
-    "answers: <word> <q-id>, where the word is one of the question's options (or withdraw); a word that is not an option is refused.",
+    "answers: <word> <q-id>, where the word is one of the question's options (or withdraw); a word that is not an option is refused. `answer <q-id> <reply>` records a reply that is not an option as given (free-form, up to 200 characters).",
     "batch: with no verb and stdin piped, one command per line; each line is applied on its own, in order, and reported on its own line.",
     "prose: a line that does not match a shape above is `not a command` and is never recorded.",
   );
@@ -360,6 +363,9 @@ function ask(db, parsed, by, iso, now, ctx) {
   return ok(id, `${id} asked for ${ctx.cwd}; ask the human in plain words without showing this id, then record their reply with \`answer ${id} <option>\`:\n${pendingLines(q, { now, timezone: ctx.config?.timezone ?? null }).join("\n")}`);
 }
 
+/** The longest free-form answer recorded, in characters. */
+export const FREEFORM_MAX = 200;
+
 function answer(db, parsed, by, via, iso, now, ctx) {
   let id = parsed.id;
   if (parsed.ordinal !== undefined) {
@@ -370,11 +376,18 @@ function answer(db, parsed, by, via, iso, now, ctx) {
   }
   const q = getQuestion(db, id);
   if (!q) return refused(`no such question ${id}`);
-  const word = String(parsed.word).toLowerCase();
+  let word = String(parsed.word).toLowerCase().trim();
+  let answerVia = via;
 
-  if (!q.options.includes(word)) {
+  const isOption = q.options.includes(word);
+  if (!isOption) {
     if (word === "withdraw") return withdrawQuestion(db, id, by, via, iso, now, ctx);
-    return refused(`${word} is not an option of ${id} (${q.name}); options: ${optionList(q.options)}. Nothing recorded.`);
+    // Free-form only from `answer <q-id> <reply>` outside the prompt hook (parsed.reply is set by that shape alone).
+    if (parsed.reply === undefined || via === "prompt-hook") return refused(`${word} is not an option of ${id} (${q.name}); options: ${optionList(q.options)}. Nothing recorded.`);
+    word = String(parsed.reply).trim().replace(/\s+/g, " ");
+    if (!word) return refused(`answer needs a reply: answer ${id} <reply>`);
+    if (word.length > FREEFORM_MAX) return refused(`a free-form answer is at most ${FREEFORM_MAX} characters; this one is ${word.length}. Nothing recorded.`);
+    answerVia = "freeform";
   }
   if (q.state !== "open" && q.state !== "held") {
     const a = db.prepare("SELECT id, word FROM cc_answers WHERE question_id = ?").get(id);
@@ -383,8 +396,9 @@ function answer(db, parsed, by, via, iso, now, ctx) {
     return refused(`${id} already answered ${a?.word} (${a?.id}); an answer is final`);
   }
   const an = freshId(db, "cc_answers", "an", now);
-  db.prepare("INSERT INTO cc_answers (id, question_id, word, answered_by, answered_at, via) VALUES (?,?,?,?,?,?)").run(an, id, word, by, iso, via);
+  db.prepare("INSERT INTO cc_answers (id, question_id, word, answered_by, answered_at, via) VALUES (?,?,?,?,?,?)").run(an, id, word, by, iso, answerVia);
   db.prepare("UPDATE cc_questions SET state = 'answered', resolved_at = ? WHERE id = ?").run(iso, id);
+  if (!isOption) return ok(an, `${an} ${word} → ${id} (${q.name}) · freeform: not one of ${q.options.join(", ")}`);
   const allows = q.allows && Object.hasOwn(q.allows, word) ? ` · allows: ${q.allows[word]}` : "";
   return ok(an, `${an} ${word} → ${id} (${q.name})${allows}`);
 }

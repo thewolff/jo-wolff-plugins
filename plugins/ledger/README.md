@@ -72,7 +72,8 @@ The skill (`skills/ledger/SKILL.md`) tells the agent to:
 - `ask "<body>" --name <short> --options a,b --default a` whenever it needs your decision, then
   ask you in plain words without showing the id. `--ceiling <usd>` and `--about "<text>"` attach
   a spend limit or the thing the question concerns;
-- `answer <q-id> <option>` as soon as you reply, with the option your words mean (or
+- `answer <q-id> <option>` as soon as you reply, with the option your words mean; when your reply
+  is none of the options, `answer <q-id> "<your reply>"` records it as you gave it (or
   `withdraw <q-id>` if you set the question aside);
 - `note "<text>"` for a choice it made without asking;
 - before any `git push` or `gh pr create`, a `note` or an `outcome <ref> "<text>"` saying what is being pushed and why;
@@ -95,7 +96,7 @@ node <plugin dir>/scripts/ledger.mjs help                # the verb table, id gr
 | Verb | Who | Effect |
 |---|---|---|
 | `ask "<body>" --name <short> --options a,b[,c] [--default a] [--deadline 2h\|<ISO>] [--kind question\|approval\|plan] [--allows "a: …; b: …"] [--ceiling <usd>] [--about "<text>"]` | agent | opens a question bound to the process cwd; prints `q-…` and its `pending` line, for the agent (the human is asked in plain words). Default is the first option. `--kind plan` needs `--allows` for every option. Repeating an open question (same body and options in the same folder) returns its id and writes nothing. |
-| `answer <q-id> <word>` or `<word> <q-id>` | agent, on the human's reply | records the answer. The word must be one of the question's options or `withdraw`; anything else is refused with the option list and nothing is written. Same word twice → `already answered`, exit 0; a different word → refused naming the existing answer. |
+| `answer <q-id> <reply>` or `<word> <q-id>` | agent, on the human's reply | records the answer. A reply that is one of the question's options is recorded as that option (`via` `cli`); `withdraw` withdraws. `answer <q-id> <reply>` with any other reply (several words allowed, trimmed, at most 200 characters) records it as given, a free-form answer: state `answered`, `via` `freeform`, shown in `log` as `answered (freeform): <reply>`. The short forms (`<word> <q-id>`, `<n> <word>`, a bare word) and lines typed into a prompt take options only: anything else is refused with the option list and nothing is written, so a typo never becomes an answer. Same reply twice → `already answered`, exit 0; a different one → refused naming the existing answer. |
 | `approve <q-id>` / `deny <q-id>` | human | the answers `approve` / `deny` when the question offers them. |
 | `<n> <word>` | human | the n-th line of `pending`, answered with that word. |
 | `withdraw <q-id>` | either | state `withdrawn`, with an `nt-` note saying so (when the question offers `withdraw` as an option, it is recorded as that answer instead). |
@@ -150,7 +151,7 @@ enabled or its own switch is off. Every refusal names the exact command that lif
 Exactly four things, each with its off switch:
 
 1. **Session rows.** Every session the hooks run in has a `cc_sessions` row with its start, end and reason (`hooks.sessionStart`, `hooks.sessionEnd`).
-2. **Questions and answers.** A question is `open` (put to you), `held` (formed and deferred for you, listed under *Waiting on you*, never chased by the Stop hook), `answered` or `withdrawn`. The agent cannot use `AskUserQuestion` without an open `q-` row, cannot end a turn on a question while the session has no open row, and cannot end the turn after your reply while a question asked before it has no answer recorded (`forcing.denyAskWithoutRow`, `forcing.stopAskRule`).
+2. **Questions and answers.** A question is `open` (put to you), `held` (formed and deferred for you, listed under *Waiting on you*, never chased by the Stop hook), `answered` or `withdrawn`. An answer is one of the options or, when your reply was none of them, your reply as given (`via = 'freeform'`); a question is not withdrawn because the reply was off the list. The agent cannot use `AskUserQuestion` without an open `q-` row, cannot end a turn on a question while the session has no open row, and cannot end the turn after your reply while a question asked before it has no answer recorded (`forcing.denyAskWithoutRow`, `forcing.stopAskRule`).
 3. **Push needs a note or an outcome.** `git push` and `gh pr create` are denied until the session holds one `note` or one `outcome` saying what is being pushed and why (`forcing.pushNeedsNote`).
 4. **Decision needs a note.** A reply that states a decision (`forcing.decisionPhrases`) is sent back once unless a `note` was recorded in that turn (`forcing.stopDecisionRule`); an `outcome` does not count. What the decision produced can follow as an `outcome` note with a `ref` (PR, commit, path); outcomes are never required.
 
@@ -231,9 +232,10 @@ SELECT id, kind, body, made_by, made_at FROM cc_notes ORDER BY made_at DESC LIMI
 ```
 
 Tables: `cc_meta`, `cc_questions`, `cc_answers`, `cc_notes`, `cc_sessions`. Timestamps are ISO
-8601 UTC. `cc_questions.state` is `open`, `held`, `answered` or `withdrawn`; `cc_notes.kind` is
-`note`, `withdraw`, `extend` or `outcome`, and `cc_notes.ref` carries an outcome's PR, commit or
-path. Schema version 3 rebuilt `cc_questions` and `cc_notes` in place to widen those CHECK
+8601 UTC. `cc_questions.state` is `open`, `held`, `answered` or `withdrawn`; `cc_answers.via` is
+`cli`, `prompt-hook` or `freeform`; `cc_notes.kind` is `note`, `withdraw`, `extend` or `outcome`,
+and `cc_notes.ref` carries an outcome's PR, commit or path. Schema version 3 rebuilt
+`cc_questions` and `cc_notes`, and version 4 rebuilt `cc_answers`, in place to widen those CHECK
 constraints (SQLite cannot alter one); no other table is touched.
 
 ### Sharing the file with another tool

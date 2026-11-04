@@ -492,7 +492,12 @@ another tool already uses.
 
 Changes in 0.2.2: an `outcome` lifts the push gate the same as a `note`, so one
 `ledger outcome <ref> "<what and why>"` per push is enough. The Stop hook's decision rule still
-wants a `note` in the turn that states the decision.
+wants a `note` in the turn that states the decision. A reply that is none of a question's options
+is recorded as given: `ledger answer <q-id> "<reply>"` stores it as a free-form answer (up to 200
+characters), and `log` shows it as `answered (freeform)`, so a question is no longer withdrawn
+because your reply was off the list. A prompt line such as `approve q-…` still applies exact
+options only, so a typo never becomes an answer. Opening a 0.2.1 database migrates it to schema
+version 4 in place, rebuilding `cc_answers` and keeping every row.
 
 Changes in 0.2.1: you never type a question id. The agent asks in plain words and records your
 reply with `ledger answer`; the Stop hook sends a turn back once when you replied and the answer

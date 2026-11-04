@@ -8,7 +8,8 @@
 //   <verb> <one token> [flags]          ask <body> --options …, note <text>
 //                                        (free text with spaces is quoted: ask "ship it?")
 //   <word> <q-id>                       an answer: approve q-…, yes q-…, green q-…
-//   answer <q-id> <word>                the same answer, spelled out
+//   answer <q-id> <reply…>              the same answer, spelled out; a reply that is not an
+//                                        option is recorded as given (a free-form answer)
 //   <number> <word>                     an ordinal into the `pending` list: 1 approve
 //   <word>                              a bare option word, when exactly one open question offers it
 //
@@ -32,7 +33,7 @@ import { isId, isCutShort, prefixOf } from "./ids.mjs";
 /** Every verb, who usually says it, and the one-line help entry. Order = `help` order. */
 export const VERBS = Object.freeze([
   { verb: "ask", who: "agent", usage: 'ask "<body>" --name <short> --options a,b[,c] [--default a] [--deadline 2h|<ISO>] [--kind question|approval|plan] [--allows "a: …; b: …"] [--ceiling <usd>] [--about "<what it concerns>"]', help: "ask the human a question (prints q-… and the line to answer with); repeating an open one returns its id" },
-  { verb: "answer", who: "human", usage: "answer <q-id> <word>   (or just: <word> <q-id>)", help: "record a one-word answer; the word must be one of the question's options, or `withdraw`" },
+  { verb: "answer", who: "human", usage: "answer <q-id> <reply>   (or just: <word> <q-id>)", help: "record the human's answer: an option word as that option, any other reply (up to 200 characters) as given, a free-form answer; `withdraw` withdraws. The short form and a prompt take options only" },
   { verb: "approve", who: "human", usage: "approve <q-id>", help: "the answer `approve`, when the question offers it" },
   { verb: "deny", who: "human", usage: "deny <q-id>", help: "the answer `deny`, when the question offers it" },
   { verb: "withdraw", who: "either", usage: "withdraw <q-id>", help: "take a question back; nothing was decided" },
@@ -263,15 +264,17 @@ export function parseLine(text, lookup = NULL_LOOKUP, tokens = null) {
     return refused(shown, `${id} is a ${prefix}- row; nothing to do with it`);
   }
 
-  // answer <q-id> <word>
+  // answer <q-id> <reply…>: `reply` is the text as given, for a free-form answer when it is not
+  // an option; `word` is its lowercased form for matching the options.
   if (t0 === "answer") {
-    if (rest.length === 2 && isId(rest[0]) && prefixOf(rest[0]) === "q") {
-      return command(shown, { verb: "answer", id: rest[0], word: rest[1].toLowerCase() });
+    if (rest.length >= 2 && isId(rest[0]) && prefixOf(rest[0]) === "q") {
+      const reply = rest.slice(1).join(" ");
+      return command(shown, { verb: "answer", id: rest[0], word: reply.toLowerCase(), reply });
     }
     if (rest.length === 2 && isId(rest[1]) && prefixOf(rest[1]) === "q") {
-      return command(shown, { verb: "answer", id: rest[1], word: rest[0].toLowerCase() });
+      return command(shown, { verb: "answer", id: rest[1], word: rest[0].toLowerCase(), reply: rest[0] });
     }
-    return rest.length === 0 ? refused(shown, "answer needs a question id and a word: answer <q-id> <word>") : prose(shown, null, "usage: answer <q-id> <word>");
+    return rest.length === 0 ? refused(shown, "answer needs a question id and a reply: answer <q-id> <reply>") : prose(shown, null, "usage: answer <q-id> <reply>");
   }
 
   // No-argument verbs.

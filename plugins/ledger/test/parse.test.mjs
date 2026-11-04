@@ -37,6 +37,7 @@ const TABLE = [
   ["APPROVE q-2", { kind: "command", verb: "answer", id: "q-2", word: "approve" }, "case-insensitive word"],
   ["answer q-2 deny", { kind: "command", verb: "answer", id: "q-2", word: "deny" }, "answer spelled out"],
   ["answer deny q-2", { kind: "command", verb: "answer", id: "q-2", word: "deny" }, "answer, word first"],
+  ["answer q-2 Purple haze", { kind: "command", verb: "answer", id: "q-2", word: "purple haze", reply: "Purple haze" }, "answer spelled out keeps a multi-word reply as given"],
   ["extend q-3", { kind: "command", verb: "answer", id: "q-3", word: "extend" }, "extend as an option wins over the verb"],
   ["extend q-2", { kind: "command", verb: "extend", id: "q-2" }, "extend as a verb on a question"],
   ['ask "Ship it?" --name ship --options approve,deny --ceiling $40', { kind: "command", verb: "ask", textArg: "Ship it?", flags: { name: "ship", options: "approve,deny", ceiling: "$40" } }, "ask with flags"],

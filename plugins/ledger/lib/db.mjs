@@ -176,6 +176,25 @@ export const MIGRATIONS = [
       CREATE INDEX cc_notes_cwd_at ON cc_notes (cwd, made_at);
     `);
   },
+  // 4: free-form answers. `answer <q-id> <reply>` with a reply that is not one of the options
+  // records it as given, with via `freeform`. The CHECK on `via` cannot be altered, so
+  // cc_answers is rebuilt the way migration 3 rebuilt its tables.
+  (db) => {
+    const aCols = "id, question_id, word, answered_by, answered_at, via";
+    db.exec(`
+      CREATE TABLE cc_answers_v4 (
+        id          TEXT PRIMARY KEY CHECK (id GLOB 'an-?*'),
+        question_id TEXT NOT NULL UNIQUE REFERENCES cc_questions(id),
+        word        TEXT NOT NULL,
+        answered_by TEXT NOT NULL,
+        answered_at TEXT NOT NULL,
+        via         TEXT NOT NULL CHECK (via IN ('cli','prompt-hook','freeform'))
+      );
+      INSERT INTO cc_answers_v4 (${aCols}) SELECT ${aCols} FROM cc_answers;
+      DROP TABLE cc_answers;
+      ALTER TABLE cc_answers_v4 RENAME TO cc_answers;
+    `);
+  },
 ];
 
 export const SCHEMA_VERSION = MIGRATIONS.length;
