@@ -87,7 +87,8 @@ consulting history`.
   the path; the probe and the line still work without it, but no popup starts until the state
   can be written.
 - `check` printed `ctx-watch: the ctx semantic index is not ready (…); fix: \`ctx semantic enable --wait\``
-  (`evals/session-start-semantic-not-ready.scenario.json` is that line at SessionStart):
+  (a `budget_exhausted` index whose last run was itself `budget_exhausted` or `ready` is the
+  throttled indexer resting between runs and is not reported; this line means something else):
   the daemon is up but hybrid search is lexical only. Hand the person the fix for their own
   Terminal (step 3); do not run it from here. `ctx semantic status --format json` shows the
   reason in detail if they ask.

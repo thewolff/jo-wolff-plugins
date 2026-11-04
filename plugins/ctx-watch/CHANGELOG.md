@@ -4,6 +4,32 @@ All notable changes to ctx-watch are recorded here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). The 0.1.0 release is described under
 *Changes in 0.1.0* in [README.md](README.md#changes-in-010).
 
+## [0.2.2] - 2026-11-04
+
+### Fixed
+
+- `.daemon.jobs.semantic_index.status = "budget_exhausted"` is a pass when the job also reads
+  `runtime_active: true`, no `last_error`, and `last_run_status` `budget_exhausted` or `ready`.
+  That is the built-in-throttled indexer between budgeted runs: ctx's JSON contract defines
+  `budget_exhausted` as bounded maintenance that left backlog while search served the latest
+  committed generation, and lists it apart from `failed`. Sampled every 8 s on 2026-11-04 from
+  13:22 to 13:43, it cycled on its own (about 4 min `budget_exhausted`, about 1 min `ready`), and
+  `last_run_status` read `budget_exhausted` in every one of the 92 `budget_exhausted` samples, so
+  a `ready` last run cannot be the healthy mark. 0.2.1 failed this state and showed two false
+  popups on 2026-11-04 (12:54 and 13:19 PST), each for an index back to `ready` within five
+  minutes with no one running `ctx semantic enable`.
+- A `budget_exhausted` without those marks still fails, and the reason names the last run:
+  `the ctx semantic index is not ready (.daemon.jobs.semantic_index.status = "budget_exhausted", last run "failed")`.
+
+### Changed
+
+- `test/fixtures/ctx-daemon-status-semantic-not-ready.txt` is renamed
+  `ctx-daemon-status-semantic-budget-exhausted-0300.txt` (it is the resting shape, now a pass);
+  `ctx-daemon-status-semantic-budget-exhausted.txt` is a new 13:39 capture.
+  `evals/session-start-semantic-not-ready.scenario.json` is now
+  `evals/session-start-semantic-budget-exhausted.scenario.json` and expects silence; the semantic
+  failure line is covered by `test/probe.test.mjs` and `test/cli.test.mjs`.
+
 ## [0.2.1] - 2026-11-04
 
 ### Changed

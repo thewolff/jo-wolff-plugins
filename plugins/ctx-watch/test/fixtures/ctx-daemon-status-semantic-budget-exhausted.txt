@@ -1,0 +1,1050 @@
+{
+  "daemon": {
+    "config_reload": {
+      "applied": {
+        "daemon_enabled": true,
+        "daemon_mode": "full",
+        "semantic_builtin_throttling_configured": true,
+        "semantic_builtin_throttling_effective": true,
+        "semantic_contract_fingerprint": "sha256:611f11c9b715543137d1b6be8d87497a2b6ef4945d425f3c0b973d2cb0c6036d",
+        "semantic_enabled": true,
+        "semantic_executor": "builtin"
+      },
+      "last_applied_at_ms": 1793828353264,
+      "last_attempt_at_ms": 1793828353264,
+      "out_of_sync": false,
+      "requested": {
+        "daemon_enabled": true,
+        "daemon_mode": "full",
+        "semantic_builtin_throttling_configured": true,
+        "semantic_builtin_throttling_effective": true,
+        "semantic_contract_fingerprint": "sha256:611f11c9b715543137d1b6be8d87497a2b6ef4945d425f3c0b973d2cb0c6036d",
+        "semantic_enabled": true,
+        "semantic_executor": "builtin"
+      },
+      "status": "applied"
+    },
+    "core_refresh_endpoint": {
+      "address": "/Users/example/.ctx/daemon/source-refresh.sock",
+      "available": true,
+      "identity_path": "/Users/example/.ctx/daemon/source-refresh-endpoint.json",
+      "owner_pid": 1706,
+      "transport": "unix"
+    },
+    "enabled": true,
+    "heartbeat_age_ms": 32792,
+    "heartbeat_at_ms": 1793828353264,
+    "heartbeat_stale": true,
+    "jobs": {
+      "core_refresh": {
+        "certified_source_bytes": 3045256777,
+        "certified_source_count": 3570,
+        "coalesced_requests": 0,
+        "daemon_mode": "full",
+        "enabled": true,
+        "generation_changed": true,
+        "kind": "core_refresh",
+        "last_run_at_ms": 1793828287154,
+        "mode": "background",
+        "owner": "daemon",
+        "previous_generation": "5f9bfd5236d66d2907d6972519b2c6d7d0e522ce11c2ffd9253083fb251a5086",
+        "progress": {
+          "completed_sources": 55,
+          "elapsed_millis": 59784,
+          "phase": "published",
+          "processed_bytes": 3041383339,
+          "processed_messages": 1,
+          "processed_sessions": 4,
+          "processed_tool_calls": 0,
+          "providers": [
+            "pi",
+            "codex",
+            "claude",
+            "cursor",
+            "copilot_cli",
+            "kimi_code_cli",
+            "openclaw"
+          ],
+          "total_sources": 55,
+          "total_sources_known": true,
+          "whole_run_stage": "complete"
+        },
+        "published_generation": "3140410f573a637bf4f5b6e5e0e13925b2991b161eac39717a3151f2dae6ed85",
+        "receipt": {
+          "catalog_route_bindings": {
+            "761b413f514eaab43df16fc7ef280f92c55d637f448f7c00bc2a756ef6715e36": "a650108d995d449adee064e3bba253b3aa0f5b0f414194c6405b060a9a672830"
+          },
+          "current": {
+            "current_certified_source_bytes": 3045256777,
+            "current_complete_records": 758608,
+            "current_ignored_records": 55627,
+            "current_indexed_documents": 702306,
+            "current_rejected_records": 675,
+            "current_retained_records": 702306,
+            "current_source_count": 3570,
+            "current_sources_with_rejections": 131,
+            "removed_source_count": 0
+          },
+          "generation_changed": true,
+          "outcome": "completed_with_rejections_and_source_failures",
+          "previous_generation": "5f9bfd5236d66d2907d6972519b2c6d7d0e522ce11c2ffd9253083fb251a5086",
+          "published_explicit_source_catalog": {
+            "entries": [
+              {
+                "catalog_lineage": "761b413f514eaab43df16fc7ef280f92c55d637f448f7c00bc2a756ef6715e36",
+                "enabled": true,
+                "path": "/Users/example/.agent-system-2/lanes/wl-mw1o33yeh8uthe/sessions",
+                "provider": "pi",
+                "source_format": "pi_session_jsonl"
+              }
+            ],
+            "integrity": {
+              "algorithm": "sha256",
+              "digest": "4bcd7985d02538de89301ad3cdd1fc12f36fde13f26933d740cf0cbb2617c982"
+            },
+            "revision": 1,
+            "schema_version": 1
+          },
+          "published_generation": "3140410f573a637bf4f5b6e5e0e13925b2991b161eac39717a3151f2dae6ed85",
+          "rejected_record_total": 675,
+          "rejection_diagnostics_omitted": 654,
+          "route_results": {
+            "1075f87d4cd2f0a37357ef21b25b44aa9807681c0ef28a1d12750979d3827c2a": [
+              "s",
+              false
+            ],
+            "1232240e39471f89c38ddaf1432cbb49c23115300a1f98eea394b09eb4e2c97e": [
+              "s",
+              false
+            ],
+            "1323b9199c906e84a47c5baf59c752b94d3e578b98b4558a2a92df22c021a090": [
+              "s",
+              false
+            ],
+            "137cef15c2ff7c2fdddaa53161c55df25a38fb2f34394d150acb8d58a69d957a": [
+              "s",
+              false
+            ],
+            "159ace576df047b17bc04627040c3cad85b81bd355f8d468fe3f727d65a0ee96": [
+              "s",
+              false
+            ],
+            "23f81c8c55fac9abee0106170a6a6866a819de7edc228a5cf7d538958637e642": [
+              "s",
+              false
+            ],
+            "2e5f5ba6bcef77474fec23a3193f6eb9fd98d4c4b721ef1fbc76d1c9ad1ac902": [
+              "s",
+              false
+            ],
+            "2ea73e0a9a20b110eacfea2ab6a6950e80ee2c0baff343cf3b6b99d38faac2ce": [
+              "s",
+              false
+            ],
+            "2eee1cdcb2f8720d9d164facfd2fb8e6c22c9d5917955caa37eb71f84462dd63": [
+              "s",
+              false
+            ],
+            "32398088ce8ce98264b3628175e292d52659b89522206ead3de82e77e4783617": [
+              "s",
+              false
+            ],
+            "3dceaf0dcc21fbb278808d7d4ff0c11ab989b197d4eaf97960636d4e160bbd38": [
+              "s",
+              false
+            ],
+            "3eef4ccc37296df7c7100745625156787a53b73e14cf634599d742c256be9500": [
+              "s",
+              false
+            ],
+            "479a18938afc04142c37b4f89ada1d016a032fdf3e094e815627400f7036c239": [
+              "s",
+              false
+            ],
+            "483a23329db17d80a3d76f736dfd4774b6201bb9e2eb25162872da42d38aa4f6": [
+              "s",
+              false
+            ],
+            "4cef88765578c12a3727119d772d0c7f711f8ae5d7473c2b91e7bcc116875a57": [
+              "s",
+              false
+            ],
+            "4cf18d424c2641da7d6e757090182eb7788dec4b2781dfe380cdc7324acc45b8": [
+              "s",
+              false
+            ],
+            "5291cab3d692cd49d0af06f2dde3bac31f623767c90628cf63b264874a92b523": [
+              "s",
+              false
+            ],
+            "5b183dda77dde109c9e7fad844a13ce612e6a1e0ad0cde95d4383912b34e1f9d": [
+              "s",
+              false
+            ],
+            "5da8aee19aa9334da2741335d6cb1e03c736e5c16a775eace3052074e974dafd": [
+              "s",
+              false
+            ],
+            "6f386d9799513523230efdd5dd55f8f333e8a9e8c3a34340638fad32f85d76ea": [
+              "s",
+              false
+            ],
+            "7ac74a11a7c6c60bae4b4fe3e1124c1481fae32a09f95ceec5bb4b071fd7400b": [
+              "s",
+              false
+            ],
+            "7ccb739b11cafe9e8fe5633bd1b9f35738b7886f5a20414f375a0149a297c60b": [
+              "s",
+              false
+            ],
+            "81695fbc3f3e505be1daf878c9749622317b62249eff1a259bea6bbd24450562": [
+              "s",
+              false
+            ],
+            "839d69b3fbe2181b5e982cd8b894e5c4a3d8d2a0c001bb98c406acfa528dfbf5": [
+              "s",
+              false
+            ],
+            "8e557ada77fc15405abc2308a40d073b22f796128182d0f19173a2306444fef6": [
+              "s",
+              false
+            ],
+            "9a85c59eab63e8d65ac70c7932531007d04c7a66eb5305569cb92a6019942919": [
+              "s",
+              false
+            ],
+            "9cb01a33a0a3739117924ea33679733123520d09451e1319edb230963e0e97ff": [
+              "s",
+              false
+            ],
+            "a5940e0622c6fc0793cc371eba6c4133a26dbd7b37952c311ac31475b4f2e8d2": [
+              "s",
+              false
+            ],
+            "a5c90bdaf727cd00444b89a8bf42b1b89c9e821263500e15e263cf2837fdba95": [
+              "s",
+              false
+            ],
+            "a7a2f9a4c804f5a63f8e7b9f134e007e3c635f0f1fc8392c33c9a6d1547376dd": [
+              "s",
+              false
+            ],
+            "ab05442441a1a9804624243b9646e67d06e36d4bc9fc7e829e1c8103fe036a70": [
+              "s",
+              false
+            ],
+            "ac56acdaf1f449c6139befb12f9b8ca504db1786d50cde229449391a78aa738d": [
+              "s",
+              true
+            ],
+            "bf58ee684bdc19dbd0d052a9d93f15c1aac1065dac9be31a6127f33ff57d8e81": [
+              "s",
+              false
+            ],
+            "c0f9b8d028ad1820bcd547d5109c9a52a77dae1bd77456dc74687dd99fc92216": [
+              "s",
+              false
+            ],
+            "c3109d8c4d0e46aa5a99e7f67448650dde9cba5eaca68a972604ad96736ee153": [
+              "s",
+              false
+            ],
+            "c497188ee4474d0c75ad15f95d0dee420f148a51e511bab06bb67f29ec4c8038": [
+              "s",
+              false
+            ],
+            "c635e6148bb3f3dede59fa1ef7671c23f40c8e46b8c0e18080e5abe46a8e9f6d": [
+              "s",
+              false
+            ],
+            "c6b64b52bac502a399a6cd4327776c9b0143b3d7bd5eaab35326a9fb834c00c4": [
+              "s",
+              false
+            ],
+            "cc6de2e5ed3cb7468faf5c7bbaf9178af6c83c3ec84b1b8c46114603dcc9910d": [
+              "s",
+              false,
+              29,
+              0,
+              [
+                [
+                  "ede31265edcab948b1c093ace924b8bfe0409f40970f5643b108e68cd5b2458b",
+                  "cursor",
+                  "r",
+                  false,
+                  "/Users/example/.cursor/projects/Users-example-code-shipyard/agent-transcripts/29ee5578-5e86-4fee-8305-7d8fcd355938/29ee5578-5e86-4fee-8305-7d8fcd355938.jsonl",
+                  "Cursor transcript copy diverges from another copy of the same session; ctx retained the deterministic copy with the most valid history and did not merge this alternative"
+                ],
+                [
+                  "e980f422e8d992f47a4015c36fcae7294680e0e3c90a3502be386d87444cf107",
+                  "cursor",
+                  "r",
+                  false,
+                  "/Users/example/.cursor/projects/Users-example-code-shipyard/agent-transcripts/b71dae21-47dd-457b-a1fa-fae2121fc69c/b71dae21-47dd-457b-a1fa-fae2121fc69c.jsonl",
+                  "Cursor transcript copy diverges from another copy of the same session; ctx retained the deterministic copy with the most valid history and did not merge this alternative"
+                ],
+                [
+                  "c4edab52d84b5d642588a1450718a1d3a4dc15970026adcf3417789676e93bc3",
+                  "cursor",
+                  "r",
+                  false,
+                  "/Users/example/.cursor/projects/Users-example-code-shipyard/agent-transcripts/c11d58ca-5660-4f7b-9300-ce25932f318a/c11d58ca-5660-4f7b-9300-ce25932f318a.jsonl",
+                  "Cursor transcript copy diverges from another copy of the same session; ctx retained the deterministic copy with the most valid history and did not merge this alternative"
+                ],
+                [
+                  "b52a847d6b1471f66bd5aaaecb4222bf9c8087be1169487c167c067cbcfdb77f",
+                  "cursor",
+                  "r",
+                  false,
+                  "/Users/example/.cursor/projects/empty-window/agent-transcripts/04f66cee-f8c3-49d7-8781-3d3faec5aec4/04f66cee-f8c3-49d7-8781-3d3faec5aec4.jsonl",
+                  "Cursor transcript copy diverges from another copy of the same session; ctx retained the deterministic copy with the most valid history and did not merge this alternative"
+                ],
+                [
+                  "2a833add6e836139803dc1a8217e413916077f6e267ace48c707ec6104160876",
+                  "cursor",
+                  "r",
+                  false,
+                  "/Users/example/.cursor/projects/empty-window/agent-transcripts/29f472fe-7714-460b-a96f-3908d6230dcd/29f472fe-7714-460b-a96f-3908d6230dcd.jsonl",
+                  "Cursor transcript copy diverges from another copy of the same session; ctx retained the deterministic copy with the most valid history and did not merge this alternative"
+                ],
+                [
+                  "4749d59c9dcd83e26d77a0cbcf24f2fcd8e2f066e2a2eedb27ca368b0c3fb8c3",
+                  "cursor",
+                  "r",
+                  false,
+                  "/Users/example/.cursor/projects/empty-window/agent-transcripts/2aae3655-0711-4b9e-9883-6ef701956ba6/2aae3655-0711-4b9e-9883-6ef701956ba6.jsonl",
+                  "Cursor transcript copy diverges from another copy of the same session; ctx retained the deterministic copy with the most valid history and did not merge this alternative"
+                ],
+                [
+                  "9fee5e4778e030c6e112bc3c9ace4aac2f1ca48f6f069add182bc84a5af30c6e",
+                  "cursor",
+                  "r",
+                  false,
+                  "/Users/example/.cursor/projects/empty-window/agent-transcripts/2b581fcf-4c49-4b4c-9c7b-4c2984977d37/2b581fcf-4c49-4b4c-9c7b-4c2984977d37.jsonl",
+                  "Cursor transcript copy diverges from another copy of the same session; ctx retained the deterministic copy with the most valid history and did not merge this alternative"
+                ],
+                [
+                  "cb39f45bf6ff41abc7d2eedb544b26dbad4179bb22f81b19d19d5e40324887f2",
+                  "cursor",
+                  "r",
+                  false,
+                  "/Users/example/.cursor/projects/empty-window/agent-transcripts/2b98832c-2208-4ab9-bc8a-46457848e327/2b98832c-2208-4ab9-bc8a-46457848e327.jsonl",
+                  "Cursor transcript copy diverges from another copy of the same session; ctx retained the deterministic copy with the most valid history and did not merge this alternative"
+                ],
+                [
+                  "4c873f35a1d66856851a6e75ec9bfa45722981796ab14493ec4080e85f6a2fcb",
+                  "cursor",
+                  "r",
+                  false,
+                  "/Users/example/.cursor/projects/empty-window/agent-transcripts/33c304cc-9c75-4d68-9b12-2dc9c6373bb6/33c304cc-9c75-4d68-9b12-2dc9c6373bb6.jsonl",
+                  "Cursor transcript copy diverges from another copy of the same session; ctx retained the deterministic copy with the most valid history and did not merge this alternative"
+                ],
+                [
+                  "9f3f568ac6a64b4f4e54cdb681fed365c254eec750b9b4b0da0a03a31d03d570",
+                  "cursor",
+                  "r",
+                  false,
+                  "/Users/example/.cursor/projects/empty-window/agent-transcripts/4853a220-2aff-4171-8ae1-45a3d8b26fc6/4853a220-2aff-4171-8ae1-45a3d8b26fc6.jsonl",
+                  "Cursor transcript copy diverges from another copy of the same session; ctx retained the deterministic copy with the most valid history and did not merge this alternative"
+                ],
+                [
+                  "816dfc21dfa4c674a107d0c6b7048d1bcd81ea8398ca3fda2b06f5fada5460cf",
+                  "cursor",
+                  "r",
+                  false,
+                  "/Users/example/.cursor/projects/empty-window/agent-transcripts/48d03335-fded-4933-b76c-89a1a6b0ca52/48d03335-fded-4933-b76c-89a1a6b0ca52.jsonl",
+                  "Cursor transcript copy diverges from another copy of the same session; ctx retained the deterministic copy with the most valid history and did not merge this alternative"
+                ],
+                [
+                  "da09c0315080bbc620b116df8d5f83a9f8c7e30f79b1cce645e9a1fa69c08621",
+                  "cursor",
+                  "r",
+                  false,
+                  "/Users/example/.cursor/projects/empty-window/agent-transcripts/58b707b4-5294-44e7-93b8-e265e2bd60dd/58b707b4-5294-44e7-93b8-e265e2bd60dd.jsonl",
+                  "Cursor transcript copy diverges from another copy of the same session; ctx retained the deterministic copy with the most valid history and did not merge this alternative"
+                ],
+                [
+                  "0ca34548800990055db0f6f37ae02f02291adb4810690786b458c6a8c085b6d6",
+                  "cursor",
+                  "r",
+                  false,
+                  "/Users/example/.cursor/projects/empty-window/agent-transcripts/7761e24c-cc79-4595-afd7-9b517ad93b36/7761e24c-cc79-4595-afd7-9b517ad93b36.jsonl",
+                  "Cursor transcript copy diverges from another copy of the same session; ctx retained the deterministic copy with the most valid history and did not merge this alternative"
+                ],
+                [
+                  "a89232d12b82b6911bad3fa07dae50c953dd9d6a434d746a8fef180f2e15de74",
+                  "cursor",
+                  "r",
+                  false,
+                  "/Users/example/.cursor/projects/empty-window/agent-transcripts/7a5a6275-f3de-4fcb-ad58-96e2f13a5e9e/7a5a6275-f3de-4fcb-ad58-96e2f13a5e9e.jsonl",
+                  "Cursor transcript copy diverges from another copy of the same session; ctx retained the deterministic copy with the most valid history and did not merge this alternative"
+                ],
+                [
+                  "37894faf315f3e85b4776a7510e8240da564194a76bd1ec990ca01c17ba5e8c7",
+                  "cursor",
+                  "r",
+                  false,
+                  "/Users/example/.cursor/projects/empty-window/agent-transcripts/84a74734-404e-4f19-9086-8ec3ac0b5c99/84a74734-404e-4f19-9086-8ec3ac0b5c99.jsonl",
+                  "Cursor transcript copy diverges from another copy of the same session; ctx retained the deterministic copy with the most valid history and did not merge this alternative"
+                ],
+                [
+                  "b976d77a28184a004fdeb19aab4ebc3cba1e420d901658968beae4c25032161b",
+                  "cursor",
+                  "r",
+                  false,
+                  "/Users/example/.cursor/projects/empty-window/agent-transcripts/8559b643-4bea-4de0-81fc-db8c9e2fa15e/8559b643-4bea-4de0-81fc-db8c9e2fa15e.jsonl",
+                  "Cursor transcript copy diverges from another copy of the same session; ctx retained the deterministic copy with the most valid history and did not merge this alternative"
+                ],
+                [
+                  "f3b5c09be5d340e2e3153cee2f1caaf13e1a170e9b2368eb26d35701a051019f",
+                  "cursor",
+                  "r",
+                  false,
+                  "/Users/example/.cursor/projects/empty-window/agent-transcripts/9060be7b-958d-40b7-a17e-962de6eb22de/9060be7b-958d-40b7-a17e-962de6eb22de.jsonl",
+                  "Cursor transcript copy diverges from another copy of the same session; ctx retained the deterministic copy with the most valid history and did not merge this alternative"
+                ],
+                [
+                  "7c58461e7ab7bb7deafd11c94ac80db7b10dbce383b6271febacfa0f0a1361c9",
+                  "cursor",
+                  "r",
+                  false,
+                  "/Users/example/.cursor/projects/empty-window/agent-transcripts/985077cc-e407-4897-b32d-503f9359eac9/985077cc-e407-4897-b32d-503f9359eac9.jsonl",
+                  "Cursor transcript copy diverges from another copy of the same session; ctx retained the deterministic copy with the most valid history and did not merge this alternative"
+                ],
+                [
+                  "9e247ac4832b41d295874967730c1421986834a4ee86002de60a431bde4cae94",
+                  "cursor",
+                  "r",
+                  false,
+                  "/Users/example/.cursor/projects/empty-window/agent-transcripts/a8eef488-4b69-464e-8038-d490c5abd86c/a8eef488-4b69-464e-8038-d490c5abd86c.jsonl",
+                  "Cursor transcript copy diverges from another copy of the same session; ctx retained the deterministic copy with the most valid history and did not merge this alternative"
+                ],
+                [
+                  "a94b78db2cc7c4bbf0319dac2e76d158a47d7e3e3e9a7ad516122aa2dee0d061",
+                  "cursor",
+                  "r",
+                  false,
+                  "/Users/example/.cursor/projects/empty-window/agent-transcripts/bc67bb62-0e83-4c90-a1fc-3cfba4a9403c/bc67bb62-0e83-4c90-a1fc-3cfba4a9403c.jsonl",
+                  "Cursor transcript copy diverges from another copy of the same session; ctx retained the deterministic copy with the most valid history and did not merge this alternative"
+                ],
+                [
+                  "251e611eec5e5fb8108a51ea7d2b57ae38905588a16e9c262dbebfebf11df151",
+                  "cursor",
+                  "r",
+                  false,
+                  "/Users/example/.cursor/projects/empty-window/agent-transcripts/c09b158a-64b1-4054-b2e1-29d086969218/c09b158a-64b1-4054-b2e1-29d086969218.jsonl",
+                  "Cursor transcript copy diverges from another copy of the same session; ctx retained the deterministic copy with the most valid history and did not merge this alternative"
+                ],
+                [
+                  "92a0d232ffd95d1e01f1e7180d552bd6dc5745daa5a9b0d618bb69d0746d24d4",
+                  "cursor",
+                  "r",
+                  false,
+                  "/Users/example/.cursor/projects/empty-window/agent-transcripts/cba9f5d2-b928-41e3-aa1c-e4c352f02a4c/cba9f5d2-b928-41e3-aa1c-e4c352f02a4c.jsonl",
+                  "Cursor transcript copy diverges from another copy of the same session; ctx retained the deterministic copy with the most valid history and did not merge this alternative"
+                ],
+                [
+                  "be2d3c84297fa3a498e14f761dd8b50895d3788393c37bff893f52ce9614bd93",
+                  "cursor",
+                  "r",
+                  false,
+                  "/Users/example/.cursor/projects/empty-window/agent-transcripts/da3cb222-bf62-49e0-b76d-3d1fd7e5ec16/da3cb222-bf62-49e0-b76d-3d1fd7e5ec16.jsonl",
+                  "Cursor transcript copy diverges from another copy of the same session; ctx retained the deterministic copy with the most valid history and did not merge this alternative"
+                ],
+                [
+                  "b584147ea7a899905a6be11d5294c9f7ba22c6796dd9cc64c869069dc294daee",
+                  "cursor",
+                  "r",
+                  false,
+                  "/Users/example/.cursor/projects/empty-window/agent-transcripts/daf0fcfc-bca4-4307-8eb9-4d495d8bbcac/daf0fcfc-bca4-4307-8eb9-4d495d8bbcac.jsonl",
+                  "Cursor transcript copy diverges from another copy of the same session; ctx retained the deterministic copy with the most valid history and did not merge this alternative"
+                ],
+                [
+                  "7aad4a9410bc8ac83ea18a8f480bc5ef4115c4508ac89d761e3aaad14c950c91",
+                  "cursor",
+                  "r",
+                  false,
+                  "/Users/example/.cursor/projects/empty-window/agent-transcripts/dc7f8c69-75a7-443d-b205-34493d8e22da/dc7f8c69-75a7-443d-b205-34493d8e22da.jsonl",
+                  "Cursor transcript copy diverges from another copy of the same session; ctx retained the deterministic copy with the most valid history and did not merge this alternative"
+                ],
+                [
+                  "fb6c949ef6136dac031aed6f1f93ff44d5194aa8f1f45b92a28608eb503c8616",
+                  "cursor",
+                  "r",
+                  false,
+                  "/Users/example/.cursor/projects/empty-window/agent-transcripts/e42f77f2-72dd-457f-87ef-9a4ab632ca1d/e42f77f2-72dd-457f-87ef-9a4ab632ca1d.jsonl",
+                  "Cursor transcript copy diverges from another copy of the same session; ctx retained the deterministic copy with the most valid history and did not merge this alternative"
+                ],
+                [
+                  "b5e95a1e86caee0d39e38747970bab7381383b7857a45f19e2ad9184ac75a4c3",
+                  "cursor",
+                  "r",
+                  false,
+                  "/Users/example/.cursor/projects/empty-window/agent-transcripts/e79e5264-170d-4f12-8214-d198967f10e1/e79e5264-170d-4f12-8214-d198967f10e1.jsonl",
+                  "Cursor transcript copy diverges from another copy of the same session; ctx retained the deterministic copy with the most valid history and did not merge this alternative"
+                ],
+                [
+                  "8df92caba447ddaae0bc061cff937d18022e1d213f94616171b9d8df0830d1cd",
+                  "cursor",
+                  "r",
+                  false,
+                  "/Users/example/.cursor/projects/empty-window/agent-transcripts/eb435566-a9ca-42d1-a0e0-ed8857908b29/eb435566-a9ca-42d1-a0e0-ed8857908b29.jsonl",
+                  "Cursor transcript copy diverges from another copy of the same session; ctx retained the deterministic copy with the most valid history and did not merge this alternative"
+                ],
+                [
+                  "6096af2912cf6da0d2a1752620b3318546cd995e77bfb649e3dd9dc98b31648a",
+                  "cursor",
+                  "r",
+                  false,
+                  "/Users/example/.cursor/projects/empty-window/agent-transcripts/fe383933-c852-4039-9b8e-a07fbe9e987f/fe383933-c852-4039-9b8e-a07fbe9e987f.jsonl",
+                  "Cursor transcript copy diverges from another copy of the same session; ctx retained the deterministic copy with the most valid history and did not merge this alternative"
+                ]
+              ],
+              0,
+              []
+            ],
+            "cd13b5e8e9d96d317530fb497ad4d2983f0ebdeb9c0fb1ef07e21083728ddd39": [
+              "s",
+              false
+            ],
+            "ce9ec7725a1a43063d680cd520793fac8937138d84debd76db447489cee03c39": [
+              "s",
+              false
+            ],
+            "d544618c9f38c90cd2f9c47f0c6a59c28cc14937d76440cac5a8c0f7007332b6": [
+              "s",
+              false
+            ],
+            "d6f5a314ad4744f7152f258cd264c706729dc9cbdca5f9875517072bcc15d669": [
+              "s",
+              false
+            ],
+            "d81b73c4985c02368ce9652682df1200a293f4c124ff94d1e57a079c9963364b": [
+              "s",
+              false,
+              0,
+              0,
+              [],
+              673,
+              [
+                [
+                  "0573f2dbf4d81ab09be7830348d5b8b406a837dfcbade96012cc3e7a6cf1f187",
+                  "codex",
+                  "/Users/example/.codex/sessions/2026/10/15/rollout-2026-10-15T00-07-13-01a13e62-eec2-7f03-b70c-a599d95052e0.jsonl.zst",
+                  23,
+                  "item_completed",
+                  "u",
+                  "Codex item_completed variant is not projected; response_item remains authoritative where available"
+                ],
+                [
+                  "0573f2dbf4d81ab09be7830348d5b8b406a837dfcbade96012cc3e7a6cf1f187",
+                  "codex",
+                  "/Users/example/.codex/sessions/2026/10/15/rollout-2026-10-15T00-07-13-01a13e62-eec2-7f03-b70c-a599d95052e0.jsonl.zst",
+                  28,
+                  "item_completed",
+                  "u",
+                  "Codex item_completed variant is not projected; response_item remains authoritative where available"
+                ],
+                [
+                  "0573f2dbf4d81ab09be7830348d5b8b406a837dfcbade96012cc3e7a6cf1f187",
+                  "codex",
+                  "/Users/example/.codex/sessions/2026/10/15/rollout-2026-10-15T00-07-13-01a13e62-eec2-7f03-b70c-a599d95052e0.jsonl.zst",
+                  33,
+                  "item_completed",
+                  "u",
+                  "Codex item_completed variant is not projected; response_item remains authoritative where available"
+                ],
+                [
+                  "0573f2dbf4d81ab09be7830348d5b8b406a837dfcbade96012cc3e7a6cf1f187",
+                  "codex",
+                  "/Users/example/.codex/sessions/2026/10/15/rollout-2026-10-15T00-07-13-01a13e62-eec2-7f03-b70c-a599d95052e0.jsonl.zst",
+                  38,
+                  "item_completed",
+                  "u",
+                  "Codex item_completed variant is not projected; response_item remains authoritative where available"
+                ],
+                [
+                  "0573f2dbf4d81ab09be7830348d5b8b406a837dfcbade96012cc3e7a6cf1f187",
+                  "codex",
+                  "/Users/example/.codex/sessions/2026/10/15/rollout-2026-10-15T00-07-13-01a13e62-eec2-7f03-b70c-a599d95052e0.jsonl.zst",
+                  43,
+                  "item_completed",
+                  "u",
+                  "Codex item_completed variant is not projected; response_item remains authoritative where available"
+                ],
+                [
+                  "0573f2dbf4d81ab09be7830348d5b8b406a837dfcbade96012cc3e7a6cf1f187",
+                  "codex",
+                  "/Users/example/.codex/sessions/2026/10/15/rollout-2026-10-15T00-07-13-01a13e62-eec2-7f03-b70c-a599d95052e0.jsonl.zst",
+                  48,
+                  "item_completed",
+                  "u",
+                  "Codex item_completed variant is not projected; response_item remains authoritative where available"
+                ],
+                [
+                  "0573f2dbf4d81ab09be7830348d5b8b406a837dfcbade96012cc3e7a6cf1f187",
+                  "codex",
+                  "/Users/example/.codex/sessions/2026/10/15/rollout-2026-10-15T00-07-13-01a13e62-eec2-7f03-b70c-a599d95052e0.jsonl.zst",
+                  57,
+                  "item_completed",
+                  "u",
+                  "Codex item_completed variant is not projected; response_item remains authoritative where available"
+                ],
+                [
+                  "0573f2dbf4d81ab09be7830348d5b8b406a837dfcbade96012cc3e7a6cf1f187",
+                  "codex",
+                  "/Users/example/.codex/sessions/2026/10/15/rollout-2026-10-15T00-07-13-01a13e62-eec2-7f03-b70c-a599d95052e0.jsonl.zst",
+                  63,
+                  "item_completed",
+                  "u",
+                  "Codex item_completed variant is not projected; response_item remains authoritative where available"
+                ],
+                [
+                  "0573f2dbf4d81ab09be7830348d5b8b406a837dfcbade96012cc3e7a6cf1f187",
+                  "codex",
+                  "/Users/example/.codex/sessions/2026/10/15/rollout-2026-10-15T00-07-13-01a13e62-eec2-7f03-b70c-a599d95052e0.jsonl.zst",
+                  69,
+                  "item_completed",
+                  "u",
+                  "Codex item_completed variant is not projected; response_item remains authoritative where available"
+                ],
+                [
+                  "0573f2dbf4d81ab09be7830348d5b8b406a837dfcbade96012cc3e7a6cf1f187",
+                  "codex",
+                  "/Users/example/.codex/sessions/2026/10/15/rollout-2026-10-15T00-07-13-01a13e62-eec2-7f03-b70c-a599d95052e0.jsonl.zst",
+                  76,
+                  "item_completed",
+                  "u",
+                  "Codex item_completed variant is not projected; response_item remains authoritative where available"
+                ],
+                [
+                  "0573f2dbf4d81ab09be7830348d5b8b406a837dfcbade96012cc3e7a6cf1f187",
+                  "codex",
+                  "/Users/example/.codex/sessions/2026/10/15/rollout-2026-10-15T00-07-13-01a13e62-eec2-7f03-b70c-a599d95052e0.jsonl.zst",
+                  83,
+                  "item_completed",
+                  "u",
+                  "Codex item_completed variant is not projected; response_item remains authoritative where available"
+                ],
+                [
+                  "0573f2dbf4d81ab09be7830348d5b8b406a837dfcbade96012cc3e7a6cf1f187",
+                  "codex",
+                  "/Users/example/.codex/sessions/2026/10/15/rollout-2026-10-15T00-07-13-01a13e62-eec2-7f03-b70c-a599d95052e0.jsonl.zst",
+                  88,
+                  "item_completed",
+                  "u",
+                  "Codex item_completed variant is not projected; response_item remains authoritative where available"
+                ],
+                [
+                  "0573f2dbf4d81ab09be7830348d5b8b406a837dfcbade96012cc3e7a6cf1f187",
+                  "codex",
+                  "/Users/example/.codex/sessions/2026/10/15/rollout-2026-10-15T00-07-13-01a13e62-eec2-7f03-b70c-a599d95052e0.jsonl.zst",
+                  94,
+                  "item_completed",
+                  "u",
+                  "Codex item_completed variant is not projected; response_item remains authoritative where available"
+                ],
+                [
+                  "0573f2dbf4d81ab09be7830348d5b8b406a837dfcbade96012cc3e7a6cf1f187",
+                  "codex",
+                  "/Users/example/.codex/sessions/2026/10/15/rollout-2026-10-15T00-07-13-01a13e62-eec2-7f03-b70c-a599d95052e0.jsonl.zst",
+                  100,
+                  "item_completed",
+                  "u",
+                  "Codex item_completed variant is not projected; response_item remains authoritative where available"
+                ],
+                [
+                  "0573f2dbf4d81ab09be7830348d5b8b406a837dfcbade96012cc3e7a6cf1f187",
+                  "codex",
+                  "/Users/example/.codex/sessions/2026/10/15/rollout-2026-10-15T00-07-13-01a13e62-eec2-7f03-b70c-a599d95052e0.jsonl.zst",
+                  107,
+                  "item_completed",
+                  "u",
+                  "Codex item_completed variant is not projected; response_item remains authoritative where available"
+                ],
+                [
+                  "0573f2dbf4d81ab09be7830348d5b8b406a837dfcbade96012cc3e7a6cf1f187",
+                  "codex",
+                  "/Users/example/.codex/sessions/2026/10/15/rollout-2026-10-15T00-07-13-01a13e62-eec2-7f03-b70c-a599d95052e0.jsonl.zst",
+                  114,
+                  "item_completed",
+                  "u",
+                  "Codex item_completed variant is not projected; response_item remains authoritative where available"
+                ],
+                [
+                  "0573f2dbf4d81ab09be7830348d5b8b406a837dfcbade96012cc3e7a6cf1f187",
+                  "codex",
+                  "/Users/example/.codex/sessions/2026/10/15/rollout-2026-10-15T00-07-13-01a13e62-eec2-7f03-b70c-a599d95052e0.jsonl.zst",
+                  121,
+                  "item_completed",
+                  "u",
+                  "Codex item_completed variant is not projected; response_item remains authoritative where available"
+                ],
+                [
+                  "075c2897e8728f92590f92fb29af273860fb728284c6e7582e1b64b4d9470da2",
+                  "codex",
+                  "/Users/example/.codex/sessions/2026/10/20/rollout-2026-10-20T22-46-17-01a15cfe-fd32-71c3-b6de-e5686424d138.jsonl.zst",
+                  83,
+                  "item_completed",
+                  "u",
+                  "Codex item_completed variant is not projected; response_item remains authoritative where available"
+                ],
+                [
+                  "075c2897e8728f92590f92fb29af273860fb728284c6e7582e1b64b4d9470da2",
+                  "codex",
+                  "/Users/example/.codex/sessions/2026/10/20/rollout-2026-10-20T22-46-17-01a15cfe-fd32-71c3-b6de-e5686424d138.jsonl.zst",
+                  102,
+                  "item_completed",
+                  "u",
+                  "Codex item_completed variant is not projected; response_item remains authoritative where available"
+                ],
+                [
+                  "075c2897e8728f92590f92fb29af273860fb728284c6e7582e1b64b4d9470da2",
+                  "codex",
+                  "/Users/example/.codex/sessions/2026/10/20/rollout-2026-10-20T22-46-17-01a15cfe-fd32-71c3-b6de-e5686424d138.jsonl.zst",
+                  107,
+                  "item_completed",
+                  "u",
+                  "Codex item_completed variant is not projected; response_item remains authoritative where available"
+                ],
+                [
+                  "075c2897e8728f92590f92fb29af273860fb728284c6e7582e1b64b4d9470da2",
+                  "codex",
+                  "/Users/example/.codex/sessions/2026/10/20/rollout-2026-10-20T22-46-17-01a15cfe-fd32-71c3-b6de-e5686424d138.jsonl.zst",
+                  114,
+                  "item_completed",
+                  "u",
+                  "Codex item_completed variant is not projected; response_item remains authoritative where available"
+                ]
+              ]
+            ],
+            "dfbd287326fdb231b6218ec75560202e36c85539034df82d1edbb7a9588d7adc": [
+              "s",
+              false
+            ],
+            "e1517f5db9e981d2ced26515324ac1b9b9abd22ebefcddc87fcdaf0d3c85ff51": [
+              "s",
+              false
+            ],
+            "e35b05911425f17e76dd4d7af26d30f734afd8ee2e4b0e225243496a8a80f5f5": [
+              "s",
+              true,
+              0,
+              0,
+              [],
+              2,
+              []
+            ],
+            "eb95f470ecfee840dbbb135d935d0acf9076f9f8f3f2b2a8a5af899a79154e02": [
+              "s",
+              false
+            ],
+            "f5296540e0721770d9ae7492bdf791d610cbf71724e203ac5429c12a98ee750f": [
+              "s",
+              false
+            ],
+            "f5aa74bdd274d54024cd26c8da4cfd18616773943858ef60cc5c618359a318a9": [
+              "s",
+              false
+            ],
+            "f5b0b3f396adf7163419ee8d1d1a24052bb5e43ecdb7bda73b7991aa9f656a49": [
+              "s",
+              false
+            ],
+            "fa7f4b5b6ea0d40cea40881737fd377e74b933758c751b0756b4b4c0c129de1b": [
+              "s",
+              false
+            ],
+            "fa82a85ff2b11f8cca06a55318373c351f293c3354223d7a8af77d250949eda6": [
+              "s",
+              false
+            ],
+            "fc51cd5f8ea936a32d11c504598f036702aeae5d629a8fd10b86f320453dcf2b": [
+              "s",
+              false
+            ],
+            "fdd05ae68c79f6756012f66fd9adda70b815786f5ccb59720d59fcd4e4b34d85": [
+              "s",
+              false
+            ]
+          },
+          "selected_route_total": 55,
+          "source_failure_total": 29,
+          "source_failures_omitted": 0,
+          "successful_route_total": 55
+        },
+        "request_id": "01a1a872-4218-7cc0-bbde-065e5b6f67a1",
+        "request_state": "published",
+        "scanned_routes": 55,
+        "source_count": 11,
+        "status": "completed",
+        "structured_outcome": {
+          "affected_routes": [
+            "cc6de2e5ed3cb7468faf5c7bbaf9178af6c83c3ec84b1b8c46114603dcc9910d",
+            "d81b73c4985c02368ce9652682df1200a293f4c124ff94d1e57a079c9963364b",
+            "e35b05911425f17e76dd4d7af26d30f734afd8ee2e4b0e225243496a8a80f5f5"
+          ],
+          "blocked_routes": [
+            "cc6de2e5ed3cb7468faf5c7bbaf9178af6c83c3ec84b1b8c46114603dcc9910d"
+          ],
+          "class": "completed_with_diagnostics",
+          "code": "completed_with_rejections_and_source_failures",
+          "physical_attempt_id": "01a1a872-4218-7cc0-bbde-065e5b6f67a1",
+          "published_generation": "3140410f573a637bf4f5b6e5e0e13925b2991b161eac39717a3151f2dae6ed85",
+          "retained_generation": "3140410f573a637bf4f5b6e5e0e13925b2991b161eac39717a3151f2dae6ed85",
+          "retryable": false,
+          "retryable_routes": []
+        },
+        "timings_us": {
+          "commit": 17297953,
+          "discovery": 15626,
+          "publication_probe": 17,
+          "scan_stage": 42465560
+        },
+        "trigger": "search",
+        "trigger_provenance": "manual",
+        "unsupported_routes": 0
+      },
+      "semantic_index": {
+        "config_reload_status": "applied",
+        "configuration_pending": false,
+        "daemon_configured": true,
+        "daemon_mode": "full",
+        "daemon_requested": true,
+        "embedding_runtime": {
+          "acquisition_source": "cache",
+          "backend": "coreml",
+          "backend_fingerprint": "sha256:2702c312636bc46966d38a9c56696ebdaf592b2ec2ed0eb3b7e462e5832e0229",
+          "canary": "passed",
+          "compute_class": "accelerator",
+          "compute_mode": "all",
+          "dimensions": 384,
+          "execution_provider": "CoreML",
+          "model_contract": "multilingual-e5",
+          "model_contract_version": 2,
+          "model_fingerprint": "sha256:611f11c9b715543137d1b6be8d87497a2b6ef4945d425f3c0b973d2cb0c6036d",
+          "model_id": "intfloat/multilingual-e5-small",
+          "model_key": "e5-small-v1:mean-pool:l2:query-passage",
+          "preference": "auto",
+          "runtime_artifact_identity": "coreml-native:0.2.0"
+        },
+        "enabled": true,
+        "last_run_at_ms": 1793828385484,
+        "last_run_status": "budget_exhausted",
+        "model_key": "e5-small-v1:mean-pool:l2:query-passage",
+        "runtime_active": true,
+        "semantic_configured": true,
+        "semantic_enabled": true,
+        "semantic_requested": true,
+        "status": "budget_exhausted"
+      }
+    },
+    "live_pid": 1706,
+    "lock_identity": {
+      "active": true,
+      "binary": "/Users/example/.local/bin/ctx",
+      "binary_metadata": {
+        "changed_nanoseconds": 873436886,
+        "changed_seconds": 1793036681,
+        "device": 16777231,
+        "inode": 310158165,
+        "len": 188128272,
+        "modified_at": {
+          "nanos_since_epoch": 120811628,
+          "secs_since_epoch": 1793036562
+        }
+      },
+      "binary_sha256": "58853117e62ac46378de5c67a3bec47b520ed8fbb809898c485ed4b50d4ca640",
+      "owner_id": "01a19ec5-f4fb-7251-89a8-6141e3ec0145",
+      "owner_image_matches": true,
+      "path": "/Users/example/.ctx/daemon/daemon.lock",
+      "pid": 1706,
+      "protocol": "advisory-v1"
+    },
+    "lock_path": "/Users/example/.ctx/daemon/daemon.lock",
+    "mode": "full",
+    "pid": 1706,
+    "recoverable": false,
+    "running": true,
+    "semantic_runtime_active": true,
+    "start_mode": "manual",
+    "started_at_ms": 1793665135867,
+    "status": "running",
+    "status_path": "/Users/example/.ctx/daemon/status.json",
+    "supervisor": {
+      "artifact_path": "/Users/example/Library/LaunchAgents/rs.ctx.daemon.plist",
+      "autostart_supported": true,
+      "environment_snapshot": {
+        "allowlist": [
+          "ALL_PROXY",
+          "APPDATA",
+          "ASTRBOT_ROOT",
+          "CLAUDE_CONFIG_DIR",
+          "CLINE_DATA_DIR",
+          "CLINE_DB_DATA_DIR",
+          "CLINE_DIR",
+          "CLINE_SANDBOX",
+          "CLINE_SANDBOX_DATA_DIR",
+          "CLINE_SESSION_DATA_DIR",
+          "CODEBUDDY_CONFIG_DIR",
+          "CODEX_HOME",
+          "CONTINUE_GLOBAL_DIR",
+          "COPILOT_HOME",
+          "CRUSH_GLOBAL_CONFIG",
+          "CRUSH_GLOBAL_DATA",
+          "CTX_ANALYTICS_ENABLED",
+          "CTX_DAEMON_ENABLED",
+          "CTX_DAEMON_MODE",
+          "CTX_DATA_ROOT",
+          "CTX_LOCAL_USAGE_ENABLED",
+          "CTX_SEARCH_SEMANTIC",
+          "CTX_SEMANTIC_EMBEDDING_TOKEN",
+          "CTX_SEMANTIC_EMBEDDING_TOKEN_ENDPOINT",
+          "CTX_UPGRADE_AUTO",
+          "CTX_UPGRADE_CHANNEL",
+          "CTX_UPGRADE_INTERVAL_SECONDS",
+          "CURL_CA_BUNDLE",
+          "CURSOR_DATA_DIR",
+          "DBUS_SESSION_BUS_ADDRESS",
+          "DSH_HOME",
+          "FILE_STORE",
+          "FILE_STORE_PATH",
+          "FLATPAK_XDG_DATA_HOME",
+          "FORGE_CONFIG",
+          "GEMINI_CLI_HOME",
+          "GOOSE_PATH_ROOT",
+          "GROK_HOME",
+          "HERMES_HOME",
+          "HOME",
+          "HOMEDRIVE",
+          "HOMEPATH",
+          "HTTPS_PROXY",
+          "HTTP_PROXY",
+          "JUNIE_HOME",
+          "KILO_DB",
+          "KIMI_CODE_HOME",
+          "KIRO_HOME",
+          "LANG",
+          "LC_ALL",
+          "LOCALAPPDATA",
+          "MIMOCODE_CONFIG_DIR",
+          "MIMOCODE_DB",
+          "MIMOCODE_HOME",
+          "MUX_ROOT",
+          "NODE_ENV",
+          "NO_PROXY",
+          "OH_PERSISTENCE_DIR",
+          "OPENCLAW_HOME",
+          "OPENCLAW_STATE_DIR",
+          "OPENCODE_DB",
+          "OPENHANDS_CONVERSATIONS_DIR",
+          "OPENHANDS_PERSISTENCE_DIR",
+          "OPENHANDS_USER_ID",
+          "PATH",
+          "PI_CODING_AGENT_DIR",
+          "PI_CODING_AGENT_SESSION_DIR",
+          "QODER_CONFIG_DIR",
+          "QWEN_CODE_SYSTEM_DEFAULTS_PATH",
+          "QWEN_CODE_SYSTEM_SETTINGS_PATH",
+          "QWEN_CODE_TRUSTED_FOLDERS_PATH",
+          "QWEN_HOME",
+          "QWEN_RUNTIME_DIR",
+          "REQUESTS_CA_BUNDLE",
+          "SHARED_EVENT_STORAGE_PROVIDER",
+          "SSL_CERT_DIR",
+          "SSL_CERT_FILE",
+          "SystemRoot",
+          "TEMP",
+          "TMP",
+          "TMPDIR",
+          "TZ",
+          "USERPROFILE",
+          "VIBE_HOME",
+          "VIBE_SESSION_LOGGING",
+          "VIBE_SESSION_LOGGING__SAVE_DIR",
+          "WINDIR",
+          "XDG_CONFIG_HOME",
+          "XDG_DATA_HOME",
+          "XDG_RUNTIME_DIR",
+          "XDG_STATE_HOME",
+          "ZED_STATELESS",
+          "all_proxy",
+          "http_proxy",
+          "https_proxy",
+          "no_proxy"
+        ],
+        "captured_at_ms": 1793462162956,
+        "captured_names": [
+          "CTX_DATA_ROOT",
+          "HOME",
+          "LANG",
+          "PATH",
+          "TMPDIR"
+        ],
+        "current_captured_names": [
+          "CTX_DATA_ROOT",
+          "HOME",
+          "LANG",
+          "PATH",
+          "TMPDIR"
+        ],
+        "current_observed_at_ms": 1793828385946,
+        "restart_required": false,
+        "schema_version": 1,
+        "values_exposed": false
+      },
+      "executable_path": "/Users/example/.local/bin/ctx",
+      "forced_termination_identity": {
+        "limitation": "this platform exposes no stable process handle used by ctx for signals; ctx minimizes but cannot eliminate the PID-reuse window by repeating owner-lock, executable, and PID identity checks immediately before each signal",
+        "strategy": "reverified_pid"
+      },
+      "kind": "launch_agent",
+      "live_owner_verified": true,
+      "owner_pid": 1706,
+      "registration_verified": true,
+      "restart_supported": true,
+      "revalidated": true,
+      "schema_version": 1,
+      "status": "installed"
+    },
+    "trigger_provenance": "manual",
+    "wakeup": {
+      "backend": "notify_recommended_with_metadata_poll",
+      "backend_errors": 0,
+      "catalog_routes": 55,
+      "coalesced_wakeups": 39477,
+      "daemon_owner": {
+        "owner_id": "01a19ec5-f4fb-7251-89a8-6141e3ec0145",
+        "pid": 1706,
+        "started_at_ms": 1793665135867
+      },
+      "forced_rearms": 1215,
+      "idle_strategy": "blocking",
+      "ignored_access_events": 0,
+      "ignored_access_time_events": 0,
+      "ignored_other_events": 245257,
+      "ingress_disconnects": 0,
+      "ingress_overflows": 8210,
+      "last_relevant_path": "/Users/example/.omp/agent/seat-sessions/plumb/2026-10-30T17-35-29-503Z_01a18de1-84df-7000-9fac-6af58e92d55c/CodexReadmeR1.jsonl",
+      "raw_events": 197096,
+      "reconciliations": 9452,
+      "registration_attempts": 23101,
+      "rescan_notifications": 108624,
+      "schema_version": 1,
+      "status": "active",
+      "wakeup": {
+        "blocking_waits": 9861,
+        "filesystem_signals": 39477,
+        "ipc_signals": 106994,
+        "no_work_cycles": 18382,
+        "scheduled_refresh_wakeups": 110,
+        "scheduled_retry_wakeups": 0,
+        "shutdown_signals": 0,
+        "timeout_wakeups": 560,
+        "work_cycles": 8154
+      },
+      "watched_roots": 19
+    }
+  },
+  "schema_version": 2
+}

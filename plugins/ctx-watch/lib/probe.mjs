@@ -14,20 +14,32 @@
 //   or more than 5 min ahead of this clock                "… has no / invalid … / core_refresh in the future …"
 //   .daemon.jobs.core_refresh.last_run_at_ms > 2 h old   "core_refresh last ran … ago (…)"
 //   .daemon.jobs.semantic_index missing                   "… has no .daemon.jobs.semantic_index"
-//   .daemon.jobs.semantic_index.semantic_enabled === true and .status !== "ready"
-//                                                        "the ctx semantic index is not ready (…)"
+//   .daemon.jobs.semantic_index.semantic_enabled === true and .status !== "ready", unless it is
+//   the throttled indexer resting (below)                 "the ctx semantic index is not ready (…)"
 //
 // The semantic rows read the same `ctx daemon status` output as the rest (no second spawn: the
 // cheapest call that exposes semantic status is the one already made; `ctx semantic status
 // --format json` took 2.8-9 s on 2026-11-04 and `ctx search --format json` 2.9 s, against 0.15 s).
-// Evidence that the field tracks search: on 2026-11-04 03:00 `ctx search` reported
-// `semantic_status: unavailable` while this field read `budget_exhausted`
-// (test/fixtures/ctx-daemon-status-semantic-not-ready.txt); at 13:00 search reported `ready`
-// and so did the field. ctx 2.3.0 has no rebuild verb (`ctx semantic --help`: enable, status,
-// disable), so a not-ready index is not repaired here: the line names `ctx semantic enable
-// --wait` ("Enable semantic search and start model indexing"; "--wait: Wait until semantic
-// search is ready for the current index"). Semantic search not opted in (`semantic_enabled`
-// false) is a pass: nothing to watch.
+// ctx 2.3.0 has no rebuild verb (`ctx semantic --help`: enable, status, disable), so a not-ready
+// index is not repaired here: the line names `ctx semantic enable --wait` ("Enable semantic
+// search and start model indexing"). Semantic search not opted in (`semantic_enabled` false) is a
+// pass: nothing to watch.
+//
+// `budget_exhausted` is a pass when the job also says `runtime_active: true`, has no
+// `last_error`, and its `last_run_status` is `budget_exhausted` or `ready`. ctx's JSON contract
+// (embedded in the 2.3.0 binary) defines `budget_exhausted` as "daemon-owned bounded maintenance
+// left backlog while search served the latest committed generation", lists it apart from
+// `failed`, and reports a failed job as `status: "failed"` (`semantic_activation_failed`,
+// `daemon_config_reload_failed`) with `runtime_active: false` or a `last_error`. Sampled every
+// 8 s on 2026-11-04 13:22-13:43 the field cycled on its own, about 4 min `budget_exhausted` then
+// about 1 min `ready`, with nobody running `ctx semantic enable`; in all 92 `budget_exhausted`
+// samples `last_run_status` was also `budget_exhausted` (never `ready`), `runtime_active` was
+// true, `last_error` absent, and `indexed_chunks` absent in 84 (so neither of those two marks the
+// healthy shape). Each new Core generation un-pins the semantic projection and the built-in
+// throttle catches it up in budgeted runs; while it does, hybrid search falls back to lexical
+// (2026-11-04 03:00: `ctx search` said `semantic_status: unavailable`, the 03:00 fixture), and
+// `ctx semantic enable --wait` would only wait for the next ready window. Before 0.2.2 this rule
+// failed it and popped twice on 2026-11-04 (12:54 and 13:19).
 //
 // `ctx` is the executable: the bare name by default (PATH lookup), or the absolute path the
 // launchd timer was installed with (`--ctx`), so a PATH edited after install cannot change which
@@ -139,6 +151,20 @@ export function parseJson(text) {
 const firstLine = (r) => (r.stderr || r.stdout || "").trim().split("\n")[0]?.slice(0, 120) || "(no output)";
 
 /**
+ * The throttled semantic indexer between budgeted runs: `status` and `last_run_status` from the
+ * catch-up cycle, the query service owned, no error. See the header for the evidence.
+ */
+export function semanticResting(semantic) {
+  const lastError = field(semantic, "last_error");
+  return (
+    field(semantic, "status") === "budget_exhausted" &&
+    field(semantic, "runtime_active") === true &&
+    (lastError === undefined || lastError === null) &&
+    ["budget_exhausted", "ready"].includes(field(semantic, "last_run_status"))
+  );
+}
+
+/**
  * Judge one `ctx daemon status --format json` run at `now` (ms). Returns `{ ok, reason, fix,
  * fields }`; `fields` holds what was read (`running`, `status`, `supervisor`, `lastRunAtMs`,
  * `pid`) so a report can show it.
@@ -170,10 +196,13 @@ export function judge(r, now) {
   if (ago < -SKEW_MS) return fail(`core_refresh in the future (.daemon.jobs.core_refresh.last_run_at_ms = ${iso(fields.lastRunAtMs)}, ${age(-ago)} ahead of this clock; over ${age(SKEW_MS)} of skew)`, fields);
   if (ago > STALE_MS) return fail(`the ctx daemon runs but core_refresh last ran ${age(ago)} ago (.daemon.jobs.core_refresh.last_run_at_ms = ${iso(fields.lastRunAtMs)}; over ${age(STALE_MS)})`, fields);
   if (semantic === undefined || semantic === null) return fail(`\`${STATUS_ARGV.join(" ")}\` has no .daemon.jobs.semantic_index`, fields, SEMANTIC_STATUS, false);
-  const semanticNote = fields.semanticEnabled !== true ? "semantic search not enabled" : `semantic index ${fields.semanticStatus}`;
-  if (fields.semanticEnabled === true && fields.semanticStatus !== "ready") {
+  const resting = semanticResting(semantic);
+  const semanticNote = fields.semanticEnabled !== true ? "semantic search not enabled" : `semantic index ${fields.semanticStatus}${resting ? " (throttled catch-up, not a failure)" : ""}`;
+  if (fields.semanticEnabled === true && fields.semanticStatus !== "ready" && !resting) {
     const reason = field(semantic, "reason");
-    return fail(`the ctx semantic index is not ready (.daemon.jobs.semantic_index.status = ${JSON.stringify(fields.semanticStatus)}${typeof reason === "string" ? `, reason = ${JSON.stringify(reason)}` : ""})`, fields, SEMANTIC_FIX, false);
+    const lastRun = field(semantic, "last_run_status");
+    const lastRunNote = fields.semanticStatus === "budget_exhausted" ? `, last run ${JSON.stringify(lastRun ?? null)}` : "";
+    return fail(`the ctx semantic index is not ready (.daemon.jobs.semantic_index.status = ${JSON.stringify(fields.semanticStatus)}${lastRunNote}${typeof reason === "string" ? `, reason = ${JSON.stringify(reason)}` : ""})`, fields, SEMANTIC_FIX, false);
   }
   return { ok: true, reason: null, fix: null, fields, healable: false, summary: `daemon running (pid ${fields.pid ?? "?"}), supervisor installed, core_refresh ${age(ago)} ago, ${semanticNote}` };
 }
