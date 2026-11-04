@@ -6,10 +6,11 @@
 // once-per-turn record.
 //
 // THE CHECK. A main-session turn that read the ask-graham skill must end in a line
-// `**Verdict:** <one of VERDICTS>`, unless it ends by asking the comparables question and waiting,
-// or it is a structure check: a turn whose first use of the skill declared one (skillUse) and whose
-// reply opens with `**Structure check:**` and then a `**Found:**` or `**No similar:**` line
-// (SKILL.md "When it runs").
+// `**Verdict:** <one of VERDICTS>`, unless it ends by asking the comparables question and waiting
+// with step 1 and step 3 above the question (a `**Ask:**` line and a `**Gate questions**` block
+// with its five bullets: waitingMissing), or it is a structure check: a turn whose first use of the
+// skill declared one (skillUse) and whose reply opens with `**Structure check:**` and then a
+// `**Found:**` or `**No similar:**` line (SKILL.md "When it runs").
 // A turn that did not read the skill, or whose only uses of it were settings invocations (`/ask-graham intensity`, `/ask-graham stop-check`), is not checked.
 // The adapters skip the check entirely when the stop-check setting is off. The check blocks at most once per
 // turn: the caller keeps the opener id of the turn it last blocked and passes it back as
@@ -288,7 +289,9 @@ const STRUCTURE_REPLY = /^\*\*Structure check:\*\*[ \t]*\S[^\n]*\n(?:[ \t]*\n)*\
  * as its new blockedOpener, or `{ pass: <why>, opener }` otherwise, `why` being one of
  * "no-turn", "no-skill-read", "settings" (every skill use was a settings invocation),
  * "verdict", "structure-check", "comparables-question", "already-blocked". `opener` is the turn
- * opener's id, or null with "no-turn". A structure check's block gives STRUCTURE_BLOCK_REASON.
+ * opener's id, or null with "no-turn". A structure check's block gives STRUCTURE_BLOCK_REASON; a
+ * reply ending on the comparables question without step 1 and step 3 above it gets
+ * waitingBlockReason, naming what it lacks.
  */
 export function checkStop({ entries, text, blockedOpener = null } = {}) {
   const turn = currentTurn(entries);
@@ -299,9 +302,10 @@ export function checkStop({ entries, text, blockedOpener = null } = {}) {
   if (use.settingsOnly) return { pass: "settings", opener };
   const finalText = typeof text === "string" && text.trim() ? text : lastAssistantText(turn);
   const done = use.structureCheck ? structureDone(finalText) : fullDone(finalText);
-  if (done) return { pass: done, opener };
+  if (typeof done === "string") return { pass: done, opener };
   if (blockedOpener !== null && blockedOpener === opener) return { pass: "already-blocked", opener };
-  return { block: use.structureCheck ? STRUCTURE_BLOCK_REASON : BLOCK_REASON, opener };
+  if (use.structureCheck) return { block: STRUCTURE_BLOCK_REASON, opener };
+  return { block: done ? waitingBlockReason(done.missing) : BLOCK_REASON, opener };
 }
 
 // A structure check is done only by its own shape: the reply opens with the label and its outcome
@@ -313,12 +317,60 @@ function structureDone(finalText) {
 }
 
 // A full check is done by a verdict line, or by waiting on the comparables question: only the exact
-// question on the final line signals a wait, not a quotation or a report mentioning it.
+// question on the final line signals a wait, not a quotation or a report mentioning it. A wait counts
+// only with steps 1 and 3 above it (waitingMissing); without them the result is `{ missing }`.
 function fullDone(finalText) {
   if (findVerdict(finalText)) return "verdict";
   if (typeof finalText === "string" &&
       /(?:^|\n)[ \t]*Do you want me to research and see if something comparable exists\?[ \t]*$/.test(finalText.trimEnd())) {
-    return "comparables-question";
+    const missing = waitingMissing(finalText);
+    return missing.length ? { missing } : "comparables-question";
   }
   return null;
+}
+
+/** The five gate-question bullets a waiting reply must carry, as SKILL.md's Output template labels them. */
+export const GATE_BULLETS = Object.freeze(["- Why:", "- How long lived:", "- Already exists:", "- In scope:", "- Owner"]);
+
+// Each bullet's label, after the list marker and any bold, matched case-insensitively and followed by
+// an answer. Owner takes any suffix before its colon (`Owner / maintenance:`, `Owner:`).
+const GATE_LABELS = [/^why\s*:/i, /^how long lived\s*:/i, /^already exists\s*:/i, /^in scope\s*:/i, /^owner\b[^:]*:/i];
+
+// Fenced code blocks (``` or ~~~, to a matching closer or the end) removed, so a label shown as an
+// example inside one never counts. Quoted lines need no stripping: every label below must start
+// its line, and a quoted line starts with `>`.
+const stripFences = (text) => text.replace(/^[ \t]*(`{3,}|~{3,})[^\n]*\n[\s\S]*?(?:^[ \t]*\1[ \t]*$|(?![\s\S]))/gm, "");
+
+/**
+ * What a waiting reply lacks of SKILL.md's waiting shape (Jo): a `**Ask:**` line with text (step 1),
+ * and a `**Gate questions**` line followed by the five answered bullets of GATE_BULLETS (step 3),
+ * outside fenced code. Returns the missing items in order: "**Ask:**", "**Gate questions**" (the
+ * heading is absent, so every bullet is), or one GATE_BULLETS entry per absent or empty bullet.
+ */
+export function waitingMissing(text) {
+  const lines = stripFences(text.replace(/\r\n/g, "\n")).split("\n");
+  const missing = [];
+  if (!lines.some((l) => /^[ \t]*\*\*Ask:\*\*[ \t]*\S/.test(l))) missing.push("**Ask:**");
+  const at = lines.findIndex((l) => /^[ \t]*\*\*Gate questions\*\*/.test(l));
+  if (at < 0) return [...missing, "**Gate questions**"];
+  // The bullets: list items after the heading, through blank and indented continuation lines, up to
+  // the first other line.
+  const answered = [];
+  for (const l of lines.slice(at + 1)) {
+    const item = /^[ \t]*[-*+][ \t]+(.*)$/.exec(l);
+    if (item) answered.push(item[1].replace(/\*\*|__/g, "").trim());
+    else if (l.trim() && !/^[ \t]/.test(l)) break;
+  }
+  GATE_LABELS.forEach((label, i) => {
+    const hit = answered.find((a) => label.test(a));
+    if (!hit || !/\S/.test(hit.replace(label, ""))) missing.push(GATE_BULLETS[i]);
+  });
+  return missing;
+}
+
+/** The reason a waiting reply's block gives: exactly what it lacks (waitingMissing), under 300 chars. */
+export function waitingBlockReason(missing) {
+  const named = missing.map((m) => (m === "**Gate questions**" ? "`**Gate questions**` line and its five bullets" : `\`${m}\``));
+  return `ask-graham: a reply waiting on the comparables question needs step 1 and step 3 above it. Missing: ${named.join(", ")}. ` +
+    "Add only those (SKILL.md Output); keep the question alone on the final line.";
 }

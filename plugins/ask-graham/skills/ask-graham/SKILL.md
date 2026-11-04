@@ -77,7 +77,7 @@ Every run, before any internet search, ask exactly: "Do you want me to research 
 
 - **No:** check the local sources below only; do not search the web. Read locally available issue or work records; mark remote-only sources *unreachable* for this run. For every recommended package or tool, still complete the upkeep receipt using local evidence and installed-runtime discovery; unavailable remote evidence is explicitly *unknown* because research was declined. Do not fetch around the user's no. Follow [`references/upkeep.md`](references/upkeep.md) in either research path. (Jo)
 - **Yes:** also search the internet for comparable open-source and commercial software: libraries, CLIs, apps, AI skills, plugins, MCP servers, and SaaS where relevant. Before evaluating candidates, read [`references/comparables-criteria.md`](references/comparables-criteria.md). Apply its gates first, rank survivors without a weighted total, and show options with pros, cons, measured stats, and an upkeep receipt for every recommended package/tool, each dated and sourced. Stars, repo age, forks, and followers are context only, never scored. This method is the skill's, based on the sources in that reference. (Skill)
-- **No answer yet:** ask, then carry on with the local search and other gate questions. Leave web research pending until the user says yes; silence is not consent. If the turn must end while waiting, put the exact question alone on the final line, without quotes or a verdict. The Stop check allows that waiting reply on both harnesses. When the answer arrives, reload this skill through the host’s Skill or Read tool, then resume step 2 for the same ask. (Skill)
+- **No answer yet:** ask, then carry on with the local search and other gate questions. Leave web research pending until the user says yes; silence is not consent. If the turn must end while waiting, end it with the waiting reply in "Output": a `**Ask:**` line with step 1's sentence and a `**Gate questions**` block with all five bullets answered from evidence (`Already exists:` may read "local search pending" or name what was found so far), then the exact question alone on the final line, without quotes or a verdict. You can't skip step 1 or step 3 by asking the question; the Stop check blocks a waiting reply missing the `**Ask:**` line, the `**Gate questions**` line, or any of its five bullets, on both harnesses. (Jo, 2026-11-04) When the answer arrives, reload this skill through the host’s Skill or Read tool, then resume step 2 for the same ask. (Skill)
 
 For the local search, check every source below that applies, and record each one as *found*, *nothing found*, or *unreachable*:
 
@@ -155,7 +155,22 @@ Done when: every task has acceptance criteria a reviewer could check, and no tas
 
 ## Output
 
-While the comparables answer is pending, report local findings if useful and end with the exact question from step 2; omit the verdict and closing ask. After the user answers, use the completed-check template below. A structure check uses the shape in "When it runs" instead: its `**Structure check:**` line, its `**Found:**` or `**No similar:**` line, and the red flags. (Skill)
+While the comparables answer is pending, use the waiting reply below: step 1's `**Ask:**` line, step 3's `**Gate questions**` block with all five bullets, any local findings worth reporting, and the exact question from step 2 alone on the final line. Omit the verdict and closing ask. Both labelled pieces are required, outside code fences and quotes; the Stop check names whichever is missing. (Jo, 2026-11-04: "you can't skip step 1")
+
+```
+**Ask:** <step 1's one sentence: what gets built, for whom, where it lives>
+
+**Gate questions** (Graham #1)
+- Why: <answer + evidence>
+- How long lived: <answer>
+- Already exists: <"local search pending", or what step 2 has found so far>
+- In scope: <answer>
+- Owner / maintenance: <answer>
+
+Do you want me to research and see if something comparable exists?
+```
+
+After the user answers, use the completed-check template below. A structure check uses the shape in "When it runs" instead: its `**Structure check:**` line, its `**Found:**` or `**No similar:**` line, and the red flags. (Skill)
 
 ```
 **Verdict:** <one of the four verdicts: do it now, start now, later, don't build>. <one-line why>

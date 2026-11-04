@@ -5,7 +5,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
-import { BLOCK_REASON, STRUCTURE_BLOCK_REASON, VERDICTS, checkStop, currentTurn, findVerdict, lastAssistantText, parseJsonl, skillUse } from "./skills/ask-graham/scripts/verdict.mjs";
+import { BLOCK_REASON, GATE_BULLETS, STRUCTURE_BLOCK_REASON, VERDICTS, checkStop, currentTurn, findVerdict, lastAssistantText, parseJsonl, skillUse, waitingBlockReason, waitingMissing } from "./skills/ask-graham/scripts/verdict.mjs";
 import { claudeCode, omp, SKILL_BODY } from "./fixtures/transcripts.mjs";
 
 // --- findVerdict ------------------------------------------------------------------------------
@@ -48,6 +48,13 @@ test("parseJsonl skips torn and non-object lines", () => {
 // --- the same scenarios on both transcript shapes --------------------------------------------
 
 const ANSWER = "Searched the repo; nothing like it exists.";
+const QUESTION = "Do you want me to research and see if something comparable exists?";
+// A waiting reply in SKILL.md's shape: step 1's Ask line and step 3's five gate bullets, then the question.
+const STEPS =
+  "**Ask:** a read-through cache for the feeds API, for its callers, in newdle-api.\n\n" +
+  "**Gate questions** (Graham #1)\n- Why: personal productivity.\n- How long lived: permanent.\n" +
+  "- Already exists: local search pending.\n- In scope: yes.\n- Owner / maintenance: Jo.";
+const WAITING = `${ANSWER}\n\n${STEPS}\n\n${QUESTION}`;
 
 const HARNESSES = {
   "Claude Code": {
@@ -81,14 +88,21 @@ for (const [name, h] of Object.entries(HARNESSES)) {
     }
   });
 
-  test(`${name}: waiting for the comparables answer passes without a verdict`, () => {
-    const { t, opener } = turn(`${ANSWER}\n\nDo you want me to research and see if something comparable exists?`);
+  test(`${name}: waiting for the comparables answer, with step 1 and step 3 above the question, passes without a verdict`, () => {
+    const { t, opener } = turn(WAITING);
     assert.deepEqual(checkStop({ entries: t.entries }), { pass: "comparables-question", opener });
+  });
+
+  test(`${name}: the comparables question without step 1 and step 3 is blocked once, naming what is missing`, () => {
+    const { t, opener } = turn(`${ANSWER}\n\n${QUESTION}`);
+    const reason = waitingBlockReason(["**Ask:**", "**Gate questions**"]);
+    assert.deepEqual(checkStop({ entries: t.entries }), { block: reason, opener });
+    assert.deepEqual(checkStop({ entries: t.entries, blockedOpener: opener }), { pass: "already-blocked", opener });
   });
 
   test(`${name}: the comparables answer turn reloads the skill and requires a verdict`, () => {
     for (const answer of ["yes", "no"]) {
-      const { t, opener } = turn(`${ANSWER}\n\nDo you want me to research and see if something comparable exists?`);
+      const { t, opener } = turn(WAITING);
       assert.deepEqual(checkStop({ entries: t.entries }), { pass: "comparables-question", opener });
 
       const resumed = t.prompt(answer);
@@ -189,7 +203,7 @@ for (const [name, h] of Object.entries(HARNESSES)) {
   test(`${name}: a full check still finishes with its verdict or the comparables question`, () => {
     for (const [reply, pass] of [
       ["**Verdict:** do it now", "verdict"],
-      ["Searched locally.\n\nDo you want me to research and see if something comparable exists?", "comparables-question"],
+      [`Searched locally.\n\n${STEPS}\n\n${QUESTION}`, "comparables-question"],
     ]) {
       const { t, opener } = turn(reply);
       assert.deepEqual(checkStop({ entries: t.entries }), { pass, opener }, reply);
@@ -580,4 +594,56 @@ test("SKILL.md states the structure check's trigger, its no-verdict output, and 
   assert.match(skill, /A structure check does not ask it \(see "When it runs"\)\. \(Skill\)/);
   assert.match(skill, /A task inside a decided project that creates none of these four still gets no ask-graham output\. \(Skill\)/);
   assert.match(skill, /\*\*a second pattern where one exists\.\*\*[^\n]*\(Skill\)/);
+});
+
+// --- waitingMissing: the waiting reply's step 1 and step 3 (SKILL.md step 2 "No answer yet", Jo) ----
+
+test("waitingMissing: the full shape lacks nothing, with either Owner label, any case, bold or other markers", () => {
+  assert.deepEqual(waitingMissing(WAITING), []);
+  assert.deepEqual(waitingMissing(WAITING.replace("- Owner / maintenance:", "- Owner:")), []);
+  assert.deepEqual(waitingMissing(WAITING.replace(/^- ([^:\n]+):/gm, (_, l) => `* **${l.toUpperCase()}:**`)), []);
+  assert.deepEqual(waitingMissing(WAITING.replace(/\n/g, "\r\n")), []);
+});
+
+test("waitingMissing: names each absent piece, in order", () => {
+  assert.deepEqual(waitingMissing(`${ANSWER}\n\n${QUESTION}`), ["**Ask:**", "**Gate questions**"]);
+  assert.deepEqual(waitingMissing(WAITING.replace(/^\*\*Ask:\*\*.*\n/m, "")), ["**Ask:**"]);
+  assert.deepEqual(waitingMissing(WAITING.replace(/^\*\*Ask:\*\*.*$/m, "**Ask:**")), ["**Ask:**"], "empty Ask");
+  for (const [i, b] of GATE_BULLETS.entries()) {
+    const without = WAITING.split("\n").filter((l) => !l.startsWith(b)).join("\n");
+    assert.deepEqual(waitingMissing(without), [b], b);
+    // A bullet with its label and no answer is missing too.
+    const empty = WAITING.split("\n").map((l) => (l.startsWith(b) ? l.replace(/:.*$/, ":") : l)).join("\n");
+    assert.deepEqual(waitingMissing(empty), [GATE_BULLETS[i]], `${b} empty`);
+  }
+});
+
+test("waitingMissing: bullets after the gate block ends, or outside it, do not count", () => {
+  const later = `**Ask:** a cache.\n\n**Gate questions**\n- Why: speed.\n\nNotes follow.\n- How long lived: permanent.\n- Already exists: none.\n- In scope: yes.\n- Owner: Jo.\n\n${QUESTION}`;
+  assert.deepEqual(waitingMissing(later), ["- How long lived:", "- Already exists:", "- In scope:", "- Owner"]);
+});
+
+test("waitingMissing: the shape inside a code fence or a quote does not count", () => {
+  for (const fence of ["```", "~~~", "````md"]) {
+    const close = fence.replace("md", "");
+    assert.deepEqual(waitingMissing(`${fence}\n${STEPS}\n${close}\n\n${QUESTION}`), ["**Ask:**", "**Gate questions**"], fence);
+  }
+  assert.deepEqual(waitingMissing(`\`\`\`\n${STEPS}\n\n${QUESTION}`), ["**Ask:**", "**Gate questions**"], "unclosed fence");
+  assert.deepEqual(waitingMissing(`${STEPS.replace(/^/gm, "> ")}\n\n${QUESTION}`), ["**Ask:**", "**Gate questions**"]);
+  // Text after a closed fence still counts.
+  assert.deepEqual(waitingMissing(`\`\`\`\n**Ask:** example\n\`\`\`\n\n${STEPS}\n\n${QUESTION}`), []);
+});
+
+test("waitingBlockReason: names every missing piece and stays under 300 characters", () => {
+  const worst = waitingBlockReason(["**Ask:**", ...GATE_BULLETS]);
+  assert.ok(worst.length < 300, `${worst.length}`);
+  for (const b of GATE_BULLETS) assert.ok(worst.includes(`\`${b}\``), b);
+  const bare = waitingBlockReason(["**Ask:**", "**Gate questions**"]);
+  assert.ok(bare.length < 300, `${bare.length}`);
+  assert.ok(bare.includes("`**Ask:**`") && bare.includes("`**Gate questions**`"));
+});
+
+test("GATE_BULLETS are the labels of SKILL.md's Output template", () => {
+  const skill = readFileSync(new URL("./skills/ask-graham/SKILL.md", import.meta.url), "utf8");
+  for (const b of GATE_BULLETS) assert.match(skill, new RegExp(`^${b.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}`, "m"), b);
 });

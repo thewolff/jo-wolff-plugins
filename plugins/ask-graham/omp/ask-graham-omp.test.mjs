@@ -202,12 +202,21 @@ test("session_stop fails open on a missing, unreadable or absent session file", 
   assert.equal(f.handlers.session_stop(undefined, f.ctx), undefined);
 });
 
-test("session_stop passes the comparables question from the event or transcript without consuming the block", (t) => {
-  const question = "Do you want me to research and see if something comparable exists?";
+test("session_stop passes a waiting reply (Ask, gate questions, then the comparables question) from the event or transcript without consuming the block", (t) => {
+  const question = "**Ask:** a cache for the feeds API.\n\n**Gate questions** (Graham #1)\n- Why: speed.\n- How long lived: permanent.\n" +
+    "- Already exists: local search pending.\n- In scope: yes.\n- Owner / maintenance: Jo.\n\nDo you want me to research and see if something comparable exists?";
   const f = stopFixture(t);
   assert.equal(f.stop(said(question)), undefined);
   f.s.say(question);
   f.save();
   assert.equal(f.stop({ last_assistant_message: undefined }), undefined);
   assert.deepEqual(f.stop(said(ANSWER)), BLOCK);
+});
+
+test("session_stop blocks the bare comparables question once, naming the missing Ask and Gate questions", (t) => {
+  const f = stopFixture(t);
+  const out = f.stop(said("Do you want me to research and see if something comparable exists?"));
+  assert.equal(out.decision, "block");
+  assert.match(out.reason, /`\*\*Ask:\*\*`.*`\*\*Gate questions\*\*`/);
+  assert.equal(f.stop(said("Do you want me to research and see if something comparable exists?")), undefined);
 });
