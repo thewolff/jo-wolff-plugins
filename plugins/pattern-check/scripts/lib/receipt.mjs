@@ -40,16 +40,29 @@ export const HEADER = `| ${[...BASE_COLUMNS, ...FAIL_COLUMNS].join(" | ")} |`;
 export const SEPARATOR = `|${"---|".repeat(BASE_COLUMNS.length + FAIL_COLUMNS.length)}`;
 
 const HEADER_CELL = /^new piece$/i;
-// `n/a`, `N/A`, `na`, `n.a.`, then the reason (if any) after a separator.
-const NA = /^n\/?\.?a\.?(?=$|[\s:(,;-])(.*)$/i;
+// `n/a`, `N/A`, `na`, `n.a.`, then the reason (if any) after a separator: blank, `:`, `(`, `,`,
+// `;`, `-`, `–` or `—`, spaced or not.
+const NA = /^n\/?\.?a\.?(?=$|[\s:(,;\-–—])(.*)$/i;
 const PLACEHOLDER = /^(?:tbd|tba|tbc|todo|fixme|unknown|n\/?\.?a\.?)$/i;
 const RESTART = /^(yes|no)\b(.*)$/i;
 
 /**
+ * The cell as the checks read it: Markdown emphasis and code markers removed everywhere
+ * (`*`, `` ` ``, `~`, and `_` at a word edge, so `snake_case` keeps its underscore), blanks
+ * collapsed. Only for classification; the receipt keeps the cell as written.
+ */
+function forCheck(value) {
+  return String(value ?? "")
+    .replace(/[*`~]+/g, "")
+    .replace(/(^|[^\p{L}\p{N}])_+|_+(?=$|[^\p{L}\p{N}])/gu, "$1")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+/**
  * Whether a reason says something: it holds a letter or digit, and is not a placeholder word once
- * the punctuation and Markdown around it are stripped (`TBD?`, `**TBD**`, `(todo)` are
- * placeholders). Only the ends are stripped, and only for this check; the cell is kept as
- * written. No minimum length: `pure` and `0` are reasons.
+ * the punctuation around it is stripped (`TBD?`, `(todo)` are placeholders). The argument is
+ * already through `forCheck`. No minimum length: `pure` and `0` are reasons.
  */
 function substantive(reason) {
   const r = String(reason ?? "").replace(/^[^\p{L}\p{N}]+|[^\p{L}\p{N}]+$/gu, "");
@@ -66,15 +79,20 @@ function splitRow(line) {
 
 const escapeCell = (c) => String(c).replace(/\|/g, "\\|");
 
-/** Why a fail cell is not acceptable, or null when it is. */
+/**
+ * Why a fail cell is not acceptable, or null when it is. The cell is normalized first
+ * (`forCheck`), then split into an n/a or yes/no prefix and its reason, then the reason is checked:
+ * `**n/a: TBD**`, `**n/a**: TBD`, `n/a—TBD` and `_n/a_ – tbd` are all n/a without a reason.
+ */
 export function failCellProblem(column, value) {
   const v = String(value ?? "").trim();
   if (v === "") return `"${column}" is empty`;
-  const na = v.match(NA);
+  const c = forCheck(v).replace(/^[^\p{L}\p{N}]+/u, ""); // `(n/a: TBD)` reads as `n/a: TBD)`
+  const na = c.match(NA);
   if (na) return substantive(na[1]) ? null : `"${column}" is n/a without a reason (write "n/a: <why>")`;
-  if (!substantive(v)) return `"${column}" is a placeholder (${v}), not an answer`;
+  if (!substantive(c)) return `"${column}" is a placeholder (${v}), not an answer`;
   if (column === "restart-safe") {
-    const m = v.match(RESTART);
+    const m = c.match(RESTART);
     if (!m) return `"restart-safe" must start with yes or no and say why, got "${v}"`;
     if (!substantive(m[2])) return `"restart-safe" says ${m[1].toLowerCase()} without a reason (write "${m[1].toLowerCase()}: <why>")`;
   }

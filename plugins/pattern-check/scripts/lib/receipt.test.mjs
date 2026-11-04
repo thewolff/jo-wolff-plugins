@@ -87,9 +87,11 @@ test("regression (codex review round 2, B1): placeholders decorated with punctua
   for (const v of ["yes: TBD?", "no: TODO!", "yes: **unknown**"]) {
     assert.match(failCellProblem("restart-safe", v) ?? "", /restart-safe" says (yes|no) without a reason/, v);
   }
-  for (const v of ["TBD?", "**TBD**", "**n/a**", "`unknown`", "TODO!"]) {
+  for (const v of ["TBD?", "**TBD**", "`unknown`", "TODO!"]) {
     assert.match(failCellProblem("fails how", v) ?? "", /placeholder/, v);
   }
+  // Since round 3 the cell is normalized before the n/a split, so a bolded bare n/a is named as such.
+  assert.match(failCellProblem("fails how", "**n/a**") ?? "", /n\/a without a reason/);
   // The complete row from the round-2 report.
   const r = parseTable("| x | a.ts:1 | reuse | same | n/a: TBD? | n/a: TODO! | yes: TBD? | n/a: **TBD** | n/a: unknown? |");
   assert.equal(r.ok, false);
@@ -100,6 +102,32 @@ test("regression (codex review round 2, B1): placeholders decorated with punctua
   }
   assert.equal(failCellProblem("restart-safe", "yes: pure!"), null);
   assert.equal(failCellProblem("restart-safe", "no: **writes twice**"), null);
+});
+
+test("regression (codex review round 3, B1): Markdown or dash decoration on the n/a prefix does not hide a placeholder reason", () => {
+  for (const v of ["**n/a: TBD**", "**n/a**: TBD", "n/a—TBD", "_n/a_ – tbd", "n/a–TBD", "n/a-TBD", "`n/a`: todo", "(n/a: TBD)", "~~n/a~~ — unknown"]) {
+    assert.match(failCellProblem("bounded", v) ?? "", /n\/a without a reason/, v);
+    // The full row, every fail cell except restart-safe holding the value: refused, nothing saved.
+    const r = parseTable(`| x | a.ts:1 | reuse | same | ${v} | ${v} | yes: pure | ${v} | ${v} |`);
+    assert.equal(r.ok, false, v);
+    assert.match(r.error, /row "x": "fails how" is n\/a without a reason/, v);
+  }
+  for (const v of ["**yes**: TBD", "**yes: TBD**", "_no_ – tbd"]) {
+    assert.match(failCellProblem("restart-safe", v) ?? "", /restart-safe" says (yes|no) without a reason/, v);
+  }
+});
+
+test("regression (codex review round 3): normalization keeps genuine answers and saves the cell as written", () => {
+  for (const v of ["**n/a: pure**", "**n/a**: pure", "n/a—pure function", "_n/a_ – no retries", "n/a: 0", "0", "none", "uses snake_case keys", "`retry()` gives up after 3", "**throws** ParseError"]) {
+    assert.equal(failCellProblem("bounded", v), null, v);
+  }
+  assert.equal(failCellProblem("restart-safe", "**yes**: pure"), null);
+  assert.match(failCellProblem("restart-safe", "**probably**") ?? "", /must start with yes or no/);
+  const r = parseTable("| x | a.ts:1 | reuse | same | **throws** ParseError | n/a—pure function | **yes**: pure | `retry()` gives up after 3 | none |");
+  assert.equal(r.ok, true, r.error);
+  assert.equal(r.rows[0].failsHow, "**throws** ParseError");
+  assert.equal(r.rows[0].nextStep, "n/a—pure function");
+  assert.equal(r.rows[0].bounded, "`retry()` gives up after 3");
 });
 
 test("a four-column row is refused by default (record) and read with requireFailColumns false (old receipts)", () => {
