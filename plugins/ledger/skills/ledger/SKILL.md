@@ -32,8 +32,11 @@ the human for permission. `… help` prints the whole grammar.
    any ledger syntax to the human; keep the id in your own context.
 
    **When the human replies, record the answer before anything else:**
-   `… answer <q-id> <option>`, with the option their words mean. If their reply sets the question
-   aside, `… withdraw <q-id>`. If it does not answer it at all, ask again in plain words.
+   `… answer <q-id> <option>`, with the option their words mean. When their reply is not one of
+   the options ("purple" to red or blue), record the human's reply as given:
+   `… answer <q-id> "<their reply>"` is stored as a free-form answer. Never withdraw a question
+   because the reply was not in the list. If their reply sets the question aside,
+   `… withdraw <q-id>`. If it does not answer it at all, ask again in plain words.
 
    The Stop hook sends back, once per turn, a reply that ends while a question asked before the
    human's latest message still has no answer, naming the ids to answer; and a reply that asks the
@@ -55,12 +58,13 @@ the human for permission. `… help` prints the whole grammar.
 
    When the decision or an answered question produces something concrete, record it:
    `… outcome <ref> [q-id] "<what it produced>"`, where `ref` is the PR URL, commit or path.
-   An outcome is a record, not a substitute for the `note`.
+   An outcome is a record, not a substitute for the `note` a stated decision needs.
 
-3. **Before `git push` or `gh pr create`: one `note` in this session.**
-   The PreToolUse hook denies both until the session holds a note; make it say what is being
-   pushed and why (`… note "pushing the retry fix to open PR; CI must run it"`). One note per
-   session lifts the gate for the rest of the session.
+3. **Before `git push` or `gh pr create`: one `note` or `outcome` in this session.**
+   The PreToolUse hook denies both until the session holds one; make it say what is being
+   pushed and why (`… note "pushing the retry fix to open PR; CI must run it"`, or
+   `… outcome <ref> "<what and why>"` once the ref exists). One per session lifts the gate for
+   the rest of the session.
 
 There is no "open" or "close": the folder you are in is the unit of work, and questions and
 notes bind to it (a question asked in the repo root is open for its subfolders too).

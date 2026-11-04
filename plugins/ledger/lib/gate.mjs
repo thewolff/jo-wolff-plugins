@@ -5,8 +5,9 @@
 //                      answer by typing. "In scope" means a question whose cwd equals the
 //                      hook's cwd or is an ancestor of it.
 //   pushNeedsNote      a Bash command that runs `git push` or `gh pr create` is denied while
-//                      the session has no `note` row: what is being pushed, and why, is on the
-//                      record before it leaves the machine. One note in the session lifts it.
+//                      the session has no `note` or `outcome` row: what is being pushed, and
+//                      why, is on the record before it leaves the machine. One in the session
+//                      lifts it.
 //
 // Nothing else is gated: what a project allows a tool to do otherwise is the project's own
 // business, not the ledger's.
@@ -30,10 +31,10 @@ export function evaluate(input, { db, config, cwd, cli = "ledger", sessionId = n
   if (input.tool_name === "Bash") {
     if (forcing.pushNeedsNote === false) return null;
     if (!isPushCommand(input.tool_input?.command)) return null;
-    if (sessionNotes(db, { sessionId, cwd }).length) return null;
+    if (sessionNotes(db, { sessionId, cwd, kinds: ["note", "outcome"] }).length) return null;
     return {
       rule: "pushNeedsNote",
-      reason: `ledger: record what this push is before pushing: \`${cli} note "<what this push is and why>"\` (one note in this session lifts the gate).`,
+      reason: `ledger: record what this push is before pushing: \`${cli} note "<what and why>"\` or \`${cli} outcome <ref> "<what and why>"\` (one in this session lifts the gate).`,
     };
   }
   return null;

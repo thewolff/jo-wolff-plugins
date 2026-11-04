@@ -37,8 +37,8 @@ test("migration 3: a store left at version 2 by 0.2.0 keeps every row, gains hel
 
   const r = open(p);
   const db = r.db;
-  assert.equal(SCHEMA_VERSION, 3);
-  assert.equal(storeVersion(db), 3);
+  assert.equal(SCHEMA_VERSION, 4);
+  assert.equal(storeVersion(db), 4);
   assert.equal(r.shared, true);
   assert.deepEqual(db.prepare("SELECT id, state, resolved_at FROM cc_questions ORDER BY id").all().map((x) => ({ ...x })), [
     { id: "q-a1", state: "answered", resolved_at: "2026-01-01T00:01:00.000Z" },
@@ -167,13 +167,16 @@ test("outcome: needs a ref, links an optional question, and log prints the ref; 
   const db = openDb(b);
   assert.throws(() => db.exec("INSERT INTO cc_notes (id, cwd, kind, body, made_by, made_at) VALUES ('nt-x1', '/w', 'outcome', 'no ref', 'a', 'x')"), /CHECK/);
   db.close();
-  // An outcome is not a note: the push gate still wants a `note` in the session.
-  const pre = hook(b, "pre-tool-use", { session_id: "s-o", cwd: b.work, hook_event_name: "PreToolUse", tool_name: "Bash", tool_input: { command: "git push" } });
-  assert.equal(pre.json?.hookSpecificOutput?.permissionDecision, "deny");
+  // The outcomes above are untagged and s-o has no session row, so the push gate still denies;
+  // one outcome recorded under s-o lifts it, the same as a `note` would (0.2.2).
+  const push = () => hook(b, "pre-tool-use", { session_id: "s-o", cwd: b.work, hook_event_name: "PreToolUse", tool_name: "Bash", tool_input: { command: "git push" } });
+  assert.equal(push().json?.hookSpecificOutput?.permissionDecision, "deny");
+  cli(b, ["outcome", "https://github.com/o/r/pull/46", "pushing the outcome fix"], { env: { LEDGER_SESSION_ID: "s-o" } });
+  assert.equal(push().out, "", "an outcome in the session lifts the push gate");
   // Typed into a prompt it is never applied: outcome is a free-text verb.
   const typed = hook(b, "user-prompt", { session_id: "s-o", cwd: b.work, prompt: `outcome x ${q} "y"` });
   assert.match(typed.json.hookSpecificOutput.additionalContext, /1: not applied from a prompt/);
   const after = openDb(b);
-  assert.equal(count(after, "cc_notes", "kind = 'outcome'"), 2);
+  assert.equal(count(after, "cc_notes", "kind = 'outcome'"), 3);
   after.close();
 });
