@@ -20,7 +20,9 @@
 //     "you can run `x`"). Every such span after the first imperative counts, not only the
 //     first. Spans separated only by whitespace are one command (`zsh /x.sh` `--flag` is
 //     `zsh /x.sh --flag`), and a span group that ends its line continues into a span group
-//     opening the next line. "I ran `x`" and "I'll run `x`" are not handed. In a table row,
+//     opening the next line, and on through every following line that is one span group
+//     (`zsh` / `~/x.sh` / `--force` on three lines is one command); prose on a line ends it.
+//     "I ran `x`" and "I'll run `x`" are not handed. In a table row,
 //     each cell is read on its own.
 //   Known binaries: name-the-artifact's command list plus a few that only a reader is handed.
 //
@@ -40,9 +42,11 @@
 //
 // WHAT PASSES
 //   A handed block or span holding exactly one command line of the shape
-//   `zsh|bash|sh <absolute or ~/ path>.sh` with no arguments, whose script (symlinks resolved)
-//   sits under one of the caller's `scriptRoots` (default `~/agent-scratch`) and not inside a
-//   git checkout (a `.git` file or directory in any parent, so worktrees count); or one
+//   `zsh|bash|sh <absolute or ~/ path>.sh` with no arguments, whose script (resolved as the
+//   kernel does: each existing component through realpath before a `..` is applied) sits under
+//   one of the caller's `scriptRoots` (default `~/agent-scratch`) and not inside a git checkout
+//   (a `.git` file or directory in any parent, so worktrees count); a path that will not
+//   resolve (a symlink loop) is a finding too. Or one
 //   matching a glob in the caller's `allow` list (the profile's handedCommand.allow). Comment
 //   lines (`# …`) and a leading `$ ` / `% ` prompt are ignored. Two commands in one block are a
 //   finding even when both are script lines: the reader is still handed a sequence.
@@ -57,7 +61,7 @@
 
 import { existsSync, realpathSync } from "node:fs";
 import { homedir } from "node:os";
-import { basename, dirname, join, resolve, sep } from "node:path";
+import { dirname, isAbsolute, join, normalize, sep } from "node:path";
 import { classifyLines } from "./lines.mjs";
 import { labelOf } from "./sections.mjs";
 import { COMMON_COMMANDS } from "./name-the-artifact.mjs";
@@ -156,28 +160,38 @@ function imperativeEnd(line) {
 
 // ─── where a script lives ────────────────────────────────────────────────────
 
+// `~` and `~/…` expanded by concatenation: `join` would collapse a `..` before the symlink
+// in front of it is resolved.
 function expandHome(p, home) {
   if (p === "~") return home;
-  return p.startsWith("~/") ? join(home, p.slice(2)) : p;
+  return p.startsWith("~/") ? `${home}/${p.slice(2)}` : p;
 }
 
-// The path with symlinks resolved: realpath when it exists, else the nearest existing
-// ancestor's realpath plus the rest, lexically.
-function realish(p) {
-  let head = resolve(p);
-  const tail = [];
-  while (!existsSync(head)) {
-    const up = dirname(head);
-    if (up === head) return resolve(p);
-    tail.unshift(basename(head));
-    head = up;
+// The path as the kernel resolves it: { path, error }. Each component is resolved physically
+// (realpath) before the next one is applied, so `jump/../x` with `jump` a symlink lands in the
+// link target's parent, as the shell's `zsh jump/../x` does. Once a component does not exist
+// (ENOENT, ENOTDIR) the rest is a missing suffix, appended lexically to its deepest existing
+// ancestor. Any other error (ELOOP from a symlink loop, EACCES) stops resolution: `error` is
+// its code and `path` the lexical spelling, which the caller must not trust.
+function physical(p) {
+  const full = isAbsolute(p) ? p : `${process.cwd()}/${p}`;
+  const parts = full.split("/");
+  let cur = realpathSync.native("/");
+  for (let k = 0; k < parts.length; k++) {
+    const part = parts[k];
+    if (part === "" || part === ".") continue;
+    if (part === "..") {
+      cur = dirname(cur);
+      continue;
+    }
+    try {
+      cur = realpathSync.native(join(cur, part));
+    } catch (err) {
+      if (err?.code === "ENOENT" || err?.code === "ENOTDIR") return { path: normalize(join(cur, ...parts.slice(k))), error: null };
+      return { path: normalize(full), error: err?.code ?? "EUNKNOWN" };
+    }
   }
-  try {
-    head = realpathSync(head);
-  } catch {
-    /* unreadable: keep it lexical */
-  }
-  return tail.length ? join(head, ...tail) : head;
+  return { path: cur, error: null };
 }
 
 // The git checkout holding this file, or null: the nearest parent with a `.git` file or
@@ -360,15 +374,18 @@ export function checkHandedCommand(text, options = {}) {
       : DEFAULT_SCRIPT_ROOTS;
   let roots = null; // resolved lazily: only a script line needs the filesystem
 
-  // null when the command passes, else { problem, checkout? | roots? }.
+  // null when the command passes, else { problem, checkout? | roots? | error? }.
   const problemOf = (cmd) => {
     if (allow.some((g) => globMatch(g, cmd))) return null;
     const m = SCRIPT_LINE.exec(cmd);
     if (!m) return { problem: "bare-command" };
-    const file = realish(expandHome(m[1].replace(/^["']|["']$/g, ""), home));
+    const { path: file, error } = physical(expandHome(m[1].replace(/^["']|["']$/g, ""), home));
+    // A path the kernel will not resolve (a symlink loop, a denied directory) cannot be
+    // shown to sit outside a checkout.
+    if (error) return { problem: "unresolvable-path", error };
     const checkout = checkoutOf(file);
     if (checkout) return { problem: "in-checkout", checkout };
-    roots ??= rootsShown.map((r) => realish(expandHome(r, home)));
+    roots ??= rootsShown.map((r) => physical(expandHome(r, home)).path);
     if (!roots.some((r) => isUnder(file, r))) return { problem: "outside-script-roots", roots: rootsShown };
     return null;
   };
@@ -377,7 +394,7 @@ export function checkHandedCommand(text, options = {}) {
     applicable: false,
     flagged: false,
     reason: "no-handed-command",
-    findings: [], // { line, command, where: "fence" | "inline" | "prompt", problem, checkout? | roots? }
+    findings: [], // { line, command, where: "fence" | "inline" | "prompt", problem, checkout? | roots? | error? }
   };
 
   // One handed block or span: [{ line, cmd }].
@@ -393,18 +410,25 @@ export function checkHandedCommand(text, options = {}) {
   };
 
   // The handed span groups of one line or cell: every group after the first imperative whose
-  // command starts with a known binary. `next` is the following entry, for a group that
-  // continues onto the next line.
-  const inline = (s, line, next) => {
+  // command starts with a known binary. `from` is the entry index of the line (null for a
+  // table cell): a group that ends its line continues into the group opening the next line,
+  // and on through every following line that is one span group continuing the same way, so
+  // `zsh` / `~/x.sh` / `--force` on three lines is one command.
+  const inline = (s, line, from) => {
     const after = imperativeEnd(s);
     if (after === -1) return;
     const groups = spanGroups(s).filter((g) => g.start >= after);
     for (let g = 0; g < groups.length; g++) {
       let cmd = groups[g].text;
-      if (g === groups.length - 1 && s.slice(groups[g].end).trim() === "" && next?.kind === "prose") {
-        const cont = plain(next.raw).trimStart();
-        const lead = cont.startsWith("`") ? spanGroups(cont)[0] : null;
-        if (lead && lead.start === 0) cmd += ` ${lead.text}`;
+      if (g === groups.length - 1 && from !== null) {
+        let rest = s.slice(groups[g].end);
+        for (let k = from + 1; rest.trim() === "" && entries[k]?.kind === "prose"; k++) {
+          const cont = plain(entries[k].raw).trimStart();
+          const lead = cont.startsWith("`") ? spanGroups(cont)[0] : null;
+          if (!lead || lead.start !== 0) break;
+          cmd += ` ${lead.text}`;
+          rest = cont.slice(lead.end);
+        }
       }
       cmd = commandOf(cmd);
       if (!KNOWN_BINARIES.has(firstWord(cmd))) continue;
@@ -487,7 +511,7 @@ export function checkHandedCommand(text, options = {}) {
       continue;
     }
 
-    inline(plain(e.raw), e.number, entries[i + 1]);
+    inline(plain(e.raw), e.number, i);
   }
 
   if (result.findings.length) {

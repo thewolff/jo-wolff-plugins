@@ -245,8 +245,9 @@ command. **A vocabulary check, labeled as one** — hence warn by default.
 `no-handed-command | script-line-only | bare-command | script-location` (`script-location`
 when every finding is about where a script lives). Each finding is `{line, command, where,
 problem}` with `where` ∈ `fence | inline | prompt` and `problem` ∈ `bare-command |
-in-checkout | outside-script-roots`; `in-checkout` adds `checkout` (the directory holding
-`.git`), `outside-script-roots` adds `roots` (as configured). Options: `allow`, glob patterns
+in-checkout | outside-script-roots | unresolvable-path`; `in-checkout` adds `checkout` (the
+directory holding `.git`), `outside-script-roots` adds `roots` (as configured),
+`unresolvable-path` adds `error` (the errno code, `ELOOP` for a symlink loop). Options: `allow`, glob patterns
 (`*` any run of characters, `?` one, everything else literal) matched against the whole
 command line by a bounded matcher (O(pattern × line), no regex backtracking);
 `scriptRoots`, default `["~/agent-scratch"]`; `home`, what `~/` expands to (default the
@@ -268,7 +269,9 @@ Handed means one of:
   merges, run`, `you can run`). Every such span after the line's first imperative counts,
   not only the first. Spans separated only by whitespace are one command (`` `gh` `pr
   list` `` is `gh pr list`), and a span group that ends its line continues into a span group
-  that opens the next line. `I ran` and `I'll run` are the agent's own runs, not handed. A
+  that opens the next line, and on through every following line that is one span group
+  continuing the same way (`zsh` / `~/x.sh` / `--force` on three lines is one command);
+  prose before or after a span on a line ends it. `I ran` and `I'll run` are the agent's own runs, not handed. A
   table row's cells are read one by one.
 
 Known binaries are `name-the-artifact`'s command list plus `rm, sudo, open, launchctl,
@@ -295,10 +298,15 @@ Evidence never counts:
 
 A handed block or span passes when it holds exactly one command line of the shape
 `zsh|bash|sh <absolute or ~/ path>.sh`, with no arguments and no shell operators, whose
-script — symlinks resolved (the nearest existing ancestor's real path when the file does not
-exist yet) — sits under one of `scriptRoots` and not inside a git checkout (a `.git` file or
+script sits under one of `scriptRoots` and not inside a git checkout (a `.git` file or
 directory in any parent, so worktrees count; a checkout listed as a root is still a
-checkout); or one matching an `allow` glob, wherever it points. A leading `$ `/`% ` prompt
+checkout); or one matching an `allow` glob, wherever it points. The script's path is
+resolved as the kernel resolves it: each existing component through its real path before
+the next is applied, so a `..` after a symlink climbs from the link's target
+(`~/agent-scratch/jump/../x.sh`, `jump` linking into a checkout, is in that checkout); a
+suffix that does not exist yet is kept lexically under its deepest existing ancestor; and a
+path that will not resolve for any other reason (a symlink loop, `ELOOP`; a denied
+directory) is the finding `unresolvable-path`. A leading `$ `/`% ` prompt
 and `# …` comment lines are ignored. Two commands in one block are a finding even when both
 are script lines. Every failing block or span is a finding; the warn or block reason names
 the first one's line and command — plus the checkout, or the roots and the profile field,
@@ -311,6 +319,13 @@ under a label or with a result attached (a receipt, an attached result, a retros
 list, a result table row) and warn everywhere else: any later code span starting with a
 known binary on an instruction line is handed, and a console block or prompt line under any
 imperative is handed.
+
+Known limits (measured by the round-2 review, not fixed):
+
+| Limit | Effect |
+|---|---|
+| A long literal after a `*` in an `allow` glob, against a near-miss command (`just *` + 2,048 × `a` + `z` against a 32,774-char line) | One check takes about 250 ms: the matcher is O(pattern × line), not a fixed bound |
+| `$ cmd` prompt lines inside a table cell, under an instruction above the table or in an adjacent cell | Not handed: table cells are read for inline code spans only, so the prompt line is never classified |
 
 ### link-the-reference
 

@@ -258,6 +258,44 @@ test("HC-01: scriptRoots replaces the default root", () => {
   assert.deepEqual(r.findings[0].roots, ["/Users/example/tmp"]);
 });
 
+// Round 2: `..` after a symlink is applied to the link's target, as the kernel does, not
+// collapsed against the link's own spelling.
+test("HC-01-R2: symlink then `..` into a .git-dir checkout is in the checkout, ~/ and absolute", () => {
+  const t = tree();
+  writeFileSync(join(t.root, "repo", "danger.sh"), "echo nope\n");
+  symlinkSync(join(t.root, "repo", "scripts"), join(t.scratch, "jump"));
+  for (const p of ["~/agent-scratch/jump/../danger.sh", `${t.scratch}/jump/../danger.sh`, "~/agent-scratch/jump/../later.sh"]) {
+    const r = checkHandedCommand(`Run \`zsh ${p}\`.`, { home: t.home });
+    assert.equal(r.reason, "script-location", p);
+    assert.equal(r.findings[0]?.problem, "in-checkout", p);
+    assert.equal(r.findings[0]?.checkout, join(t.root, "repo"), p);
+  }
+});
+
+test("HC-01-R2: symlink then `..` into a .git-file worktree is in the worktree", () => {
+  const t = tree();
+  writeFileSync(join(t.root, "wt", "danger.sh"), "echo nope\n");
+  symlinkSync(join(t.root, "wt", "scripts"), join(t.scratch, "wt-jump"));
+  const r = checkHandedCommand("Run `zsh ~/agent-scratch/wt-jump/../danger.sh`.", { home: t.home });
+  assert.equal(r.reason, "script-location");
+  assert.equal(r.findings[0].problem, "in-checkout");
+  assert.equal(r.findings[0].checkout, join(t.root, "wt"));
+});
+
+test("HC-01-R2: a symlink loop is flagged unresolvable, in under 50 ms", () => {
+  const t = tree();
+  symlinkSync(join(t.scratch, "loop.sh"), join(t.scratch, "loop.sh"));
+  symlinkSync(join(t.scratch, "loopdir"), join(t.scratch, "loopdir"));
+  for (const p of ["~/agent-scratch/loop.sh", "~/agent-scratch/loopdir/x.sh"]) {
+    const t0 = performance.now();
+    const r = checkHandedCommand(`Run \`zsh ${p}\`.`, { home: t.home });
+    const ms = performance.now() - t0;
+    assert.equal(r.reason, "script-location", p);
+    assert.deepEqual(r.findings[0], { line: 1, command: `zsh ${p}`, where: "inline", problem: "unresolvable-path", error: "ELOOP" });
+    assert.ok(ms < 50, `${p} took ${ms.toFixed(1)} ms`);
+  }
+});
+
 // ─── HC-02: every span, adjacent spans assembled ─────────────────────────────
 
 test("HC-02 split_inline_spans: adjacent spans are one command", () => {
@@ -287,6 +325,27 @@ test("HC-02 script_split_across_lines: a span group continues onto the next line
   assert.equal(r.flagged, true);
   assert.equal(r.findings[0].command, `${SCRIPT} --flag`);
   assert.equal(r.findings[0].line, 1);
+});
+
+test("HC-02-R2: a three-line span continuation is one command", () => {
+  const r = check("Run `zsh`\n`~/agent-scratch/a.sh`\n`--force`.");
+  assert.equal(r.reason, "bare-command");
+  assert.deepEqual(r.findings, [{ line: 1, command: "zsh ~/agent-scratch/a.sh --force", where: "inline", problem: "bare-command" }]);
+});
+
+test("HC-02-R2: a four-line continuation, with a shell operator, is one command", () => {
+  const r = check("Run `zsh`\n`~/agent-scratch/a.sh`\n`&&`\n`git push`");
+  assert.deepEqual(r.findings.map((f) => f.command), ["zsh ~/agent-scratch/a.sh && git push"]);
+});
+
+test("HC-02-R2: prose ends the continuation; a span after it is not part of the command", () => {
+  // The script line passes on its own; `--force` sits after prose on the third line.
+  const r = check("Run `zsh`\n`~/agent-scratch/a.sh`\nand later `--force`.");
+  assert.equal(r.flagged, false);
+  assert.equal(r.reason, "script-line-only");
+  // Prose after a span on the second line stops it too.
+  const r2 = check("Run `zsh`\n`~/agent-scratch/a.sh` in a terminal\n`--force`.");
+  assert.equal(r2.reason, "script-line-only");
 });
 
 // ─── HC-04: the glob matcher is bounded ──────────────────────────────────────

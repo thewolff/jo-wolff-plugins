@@ -429,6 +429,12 @@ Exit 0 means every item is done or had nothing to do, 1 means one was refused or
   attached (`→`, `exit 0` on the next line), a numbered *What I ran* list with results, a
   table row with a result column, a blockquote, or console output with no instruction above
   it. Warn by default, like every check.
+  A script's path is resolved as the kernel resolves it, one existing component at a time,
+  so a `..` after a symlink into a checkout is caught; a path that will not resolve (a
+  symlink loop) is a finding. Code spans split across any number of consecutive lines are
+  read as one command. Two known limits are listed in the reference, not fixed: a long
+  literal after `*` in an `allow` glob can take about 250 ms, and `$` prompt lines inside a
+  table cell are not read as handed.
 - New check `link-the-reference` (rule 11, Machinery anchors). A line that names `PR #N`,
   `issue N`, `pull request N` or a bare `#NN` with no `https://github.com/…/pull/N` or
   `/issues/N` URL for it on the same line warns, as does a file name (`.md`, `.sh`, `.mjs`,

@@ -291,7 +291,9 @@ function handedCommandFindings(text, config, switches) {
       ? `, a script inside the git checkout ${first.checkout}`
       : first.problem === "outside-script-roots"
         ? `, a script outside every scratch root (${first.roots.join(", ")}; the profile's handedCommand.scriptRoots)`
-        : "";
+        : first.problem === "unresolvable-path"
+          ? `, a script path that does not resolve (${first.error}), so nothing shows it sits outside every git checkout`
+          : "";
   return [
     {
       rule: "handed-command",

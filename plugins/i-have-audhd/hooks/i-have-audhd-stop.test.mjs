@@ -19,7 +19,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -1126,6 +1126,40 @@ test("HC-01: a script inside a git checkout warns, naming the checkout", () => {
   mkdirSync(join(home, "agent-scratch", "repo", ".git"), { recursive: true });
   runHook({ session_id: "hcr3", last_assistant_message: `${body(4)}\n\nRun \`zsh ~/agent-scratch/repo/x.sh\`.` }, home);
   assert.match(readLog(home, "warnings.log"), /a script inside the git checkout .*agent-scratch\/repo/);
+});
+
+// ─── handed-command: round-2 review regressions ──────────────────────────────
+
+test("HC-01-R2: a symlink then `..` into a checkout blocks, naming the checkout", () => {
+  const home = mkhome();
+  writeProfile(home, hcBlock);
+  mkdirSync(join(home, "repo", ".git"), { recursive: true });
+  mkdirSync(join(home, "repo", "scripts"), { recursive: true });
+  writeFileSync(join(home, "repo", "danger.sh"), "echo nope\n");
+  mkdirSync(join(home, "agent-scratch"), { recursive: true });
+  symlinkSync(join(home, "repo", "scripts"), join(home, "agent-scratch", "jump"));
+  const out = parseOut(runHook({ session_id: "hcq1", last_assistant_message: "Run `zsh ~/agent-scratch/jump/../danger.sh`." }, home).stdout);
+  assert.equal(out.decision, "block");
+  assert.match(out.reason, /a script inside the git checkout .*\/repo\b/);
+});
+
+test("HC-01-R2: a symlink loop blocks as a path that does not resolve", () => {
+  const home = mkhome();
+  writeProfile(home, hcBlock);
+  mkdirSync(join(home, "agent-scratch"), { recursive: true });
+  symlinkSync(join(home, "agent-scratch", "loop.sh"), join(home, "agent-scratch", "loop.sh"));
+  const out = parseOut(runHook({ session_id: "hcq2", last_assistant_message: "Run `zsh ~/agent-scratch/loop.sh`." }, home).stdout);
+  assert.equal(out.decision, "block");
+  assert.match(out.reason, /a script path that does not resolve \(ELOOP\)/);
+});
+
+test("HC-02-R2: a three-line span continuation blocks on the assembled command", () => {
+  const home = mkhome();
+  writeProfile(home, hcBlock);
+  mkdirSync(join(home, "agent-scratch"), { recursive: true });
+  const out = parseOut(runHook({ session_id: "hcq3", last_assistant_message: "Run `zsh`\n`~/agent-scratch/a.sh`\n`--force`." }, home).stdout);
+  assert.equal(out.decision, "block");
+  assert.match(out.reason, /line 1 hands the reader `zsh ~\/agent-scratch\/a\.sh --force`/);
 });
 
 test("a malformed handedCommand.scriptRoots is one errors.log line; ~/agent-scratch applies", () => {
