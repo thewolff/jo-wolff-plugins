@@ -401,8 +401,11 @@ cards, for one) can show it. When the turn's reply carries a `**Verdict:**` line
 a `**Structure check:**` line, the hook writes
 `${XDG_STATE_HOME:-$HOME/.local/state}/ask-graham/findings/<session id>.json` (`XDG_STATE_HOME`
 counts only when it is an absolute path), mode 0600, through a temp file and a rename, replacing
-the session's earlier file. It is written whether or not the Stop check runs or blocks
-(`stop-check off` does not stop it); a reply with neither line writes nothing. The shape:
+the session's earlier file. When the Stop payload carries `last_assistant_message` (Claude Code
+2.1.317's does), it is written whether or not the Stop check runs or blocks, and `stop-check off`
+does not stop it. Without that field the reply is read from the transcript, which `stop-check off`
+skips, so with the check off that stop writes nothing. A reply with neither line writes nothing
+and leaves the session's earlier file in place. The shape:
 
 ```json
 { "version": 1, "sessionId": "<id>", "writtenAt": "<ISO time>", "kind": "verdict" | "structure-check",
@@ -413,16 +416,33 @@ the session's earlier file. It is written whether or not the Stop check runs or 
   "found": ["<the **Found:** line's text, then each list item under it>"], "cwd": "<the payload's cwd>" }
 ```
 
-`alternatives` holds the pattern-fit design (`chosen: true`: the text after the verdict on the
-`**Verdict:**` line) and the `**Alternative:**` line's design (`chosen: false`) unless that line
-says `none`, `nothing`, `no better`, `n/a` or `not a technical ask`. A structure check has no
-verdict, so its list holds at most the unchosen alternative. A label counts at the start of a
-line (after an optional list marker or heading), bold, case-sensitive, outside code fences; the
-first such line is read, and `*`, `_`, backticks and quotes around a value are dropped. A missing
-line is `null` or an empty list. Other plugins may read the file and must not write it; ask-graham
-depends on no reader. The parser is `skills/ask-graham/scripts/findings.mjs`. The file is pruned
-with the rest of the state after 30 days (`scripts/prune.mjs`, declared in
-`.claude-plugin/plugin.json` `state`). OMP's handler does not write it.
+`alternatives` holds the chosen design (`chosen: true`) and the `**Alternative:**` line's design
+(`chosen: false`). The chosen design is the verdict line's one-line why: the text after the
+verdict words on the `**Verdict:**` line, verbatim apart from leading separators and marks that
+wrap both ends. It is a rationale sentence, not a design name, so a consumer compares by
+containment (does the card's text contain it), not by equality. A Verdict line whose verdict word
+is not one of the four adds no chosen entry. The unchosen entry is left out when the Alternative
+line is a none-form: it starts with `none`, `nothing`, `no better`, `no alternative`, `n/a`,
+`not applicable` or `not a technical ask`, ending at a colon, a space, punctuation or a closing
+mark (so `nothing-cache layer` and `None of the gaps apply; use Y` are designs). An unchosen
+design that opens with a code span loses that span's backticks. A structure check has no
+verdict, so its list holds at most the unchosen alternative.
+
+A label counts at the start of a line (after an optional list marker or heading), bold,
+case-sensitive, outside code fences (a fence closes at a fence of the same character at least as
+long as its opener); the first such line is read. The Verdict label also takes the forms the Stop
+check takes: when there is no bold Verdict line, the first line the check counts as a verdict
+(bold optional, any case, inside a fence if none is outside one) is read. `*`, `_`, backticks and
+quotes are dropped from a value only when the same mark wraps both ends. A missing line is `null`
+or an empty list.
+
+A file describes the reply that wrote it; a later turn without a Verdict or Structure check line
+leaves it as it was. Consumers apply a file to the first decision after `writtenAt`; the file is
+not retracted by later turns. Other plugins may read the file and
+must not write it; ask-graham depends on no reader. The parser is
+`skills/ask-graham/scripts/findings.mjs`. The file is pruned with the rest of the state after 30
+days (`scripts/prune.mjs`, declared in `.claude-plugin/plugin.json` `state`). OMP's handler does
+not write it.
 
 ## Faults
 
@@ -459,8 +479,9 @@ sources proof on both transcript shapes, with a fixture file of invented sources
 
 The Stop hook records each verdict or structure check in
 `ask-graham/findings/<session id>.json` under the state directory, for other plugins to read
-(see "Findings on disk"): the ask, the verdict, the pattern-fit design and the `**Alternative:**`
-design, and the `**Found:**` items. A failed write is one `errors.log` line and never blocks.
+(see "Findings on disk"): the ask, the verdict, the verdict line's why as the chosen design, the
+`**Alternative:**` design, and the `**Found:**` items. Consumers apply a file to the first
+decision after its `writtenAt`. A failed write is one `errors.log` line and never blocks.
 `scripts/prune.mjs` now resolves the state directory with the hooks' rule (a relative
 `XDG_STATE_HOME` is ignored) and prunes findings after 30 days with the rest. Tests:
 `hooks/findings.test.mjs`, on the captured Claude Code replies and the two alternative shapes.

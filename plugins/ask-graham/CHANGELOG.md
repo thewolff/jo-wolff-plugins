@@ -11,19 +11,31 @@ All notable changes to the ask-graham plugin are recorded here. The format follo
 The Claude Code Stop hook writes a findings file per session,
 `${XDG_STATE_HOME:-$HOME/.local/state}/ask-graham/findings/<session id>.json`, whenever the turn's
 reply carries a `**Verdict:**` or `**Structure check:**` line: `version`, `sessionId`,
-`writtenAt`, `kind`, `ask`, `verdict`, `alternative`, `alternatives` (the pattern-fit design from
-the verdict line, `chosen: true`, and the `**Alternative:**` design, `chosen: false`, unless the
-line is a none-form) and `found` (the `**Found:**` items), plus `cwd`. Written through a temp file
-and a rename, mode 0600, overwritten per session, whether or not the Stop check runs or blocks.
-Other plugins may read it (paired-coding 1.6.0's cards draw on it); ask-graham reads nothing back.
-The parser is `skills/ask-graham/scripts/findings.mjs`; README "Findings on disk" has the shape.
+`writtenAt`, `kind`, `ask`, `verdict`, `alternative`, `alternatives` (the chosen design,
+`chosen: true`, which is the verdict line's one-line why stored verbatim, so consumers compare by
+containment; and the `**Alternative:**` design, `chosen: false`, unless the line is a none-form)
+and `found` (the `**Found:**` items), plus `cwd`. Written through a temp file and a rename, mode
+0600, overwritten per session, whether or not the Stop check runs or blocks when the Stop payload
+carries `last_assistant_message`; without it, `stop-check off` skips the transcript and nothing is
+written. A later turn with neither line leaves the file in place: consumers apply a file to the
+first decision after `writtenAt`; the file is not retracted by later turns. Other plugins may read
+it (paired-coding 1.6.0's cards draw on it); ask-graham reads nothing back. The parser is
+`skills/ask-graham/scripts/findings.mjs`; README "Findings on disk" has the shape.
+
+The parser takes a Verdict line in every form the Stop check takes (bold optional, any case, and
+inside a fence when there is none outside one), so a reply that passes the check as a verdict
+always writes findings. A Verdict line whose verdict word is not one of the four adds no chosen
+design. None-forms add `not applicable` and `no alternative`, and no longer catch `None of …` or
+`nothing-…` designs. Wrapper marks are dropped only when the same mark closes the value, and an
+unchosen design that opens with a code span loses that span's backticks.
 
 ### Changed
 
 `scripts/prune.mjs` resolves the state directory with the hooks' rule (`XDG_STATE_HOME` counts
 only when absolute), so it prunes the directory the hooks write; findings files age out after 30
 days with the block records. The `state` declaration (`$XDG_STATE_HOME/ask-graham`, 30 days)
-already covers `findings/`.
+already covers `findings/`. `stripFences` (`verdict.mjs`) closes a fence at a fence of the same
+character at least as long as the opener (CommonMark 0.31.2), not only one of equal length.
 
 ### How it fails
 

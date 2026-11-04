@@ -827,10 +827,11 @@ extension (`omp/ask-graham-omp.ts`, declared in the plugin's `package.json`): wi
 
 Changes in 0.8.1: the Claude Code Stop hook records each reply that carries a `**Verdict:**` or
 `**Structure check:**` line in `${XDG_STATE_HOME:-$HOME/.local/state}/ask-graham/findings/<session id>.json`
-(the ask, the verdict, the pattern-fit design and the `**Alternative:**` design, the `**Found:**`
-items), one file per session, overwritten at each such stop and pruned after 30 days, so other
-plugins can read what the check decided. A write that fails is one `errors.log` line, never a
-blocked turn.
+(the ask, the verdict, the verdict line's one-line why as the chosen design and the
+`**Alternative:**` design, the `**Found:**` items), one file per session, overwritten at each such
+stop and pruned after 30 days, so other plugins can read what the check decided; consumers apply a
+file to the first decision after its `writtenAt`. A write that fails is one `errors.log` line,
+never a blocked turn.
 
 Changes in 0.8.0: the reply shows the better design beside the pattern-fit one. Step 4's
 second-pattern flag still makes the design use the repo's pattern or say why it cannot; when a

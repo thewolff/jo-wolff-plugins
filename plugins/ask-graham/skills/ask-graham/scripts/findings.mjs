@@ -7,10 +7,12 @@
 // LABELS. A label counts on a line that starts with it, optionally after a list marker or a
 // heading, written bold (`**Label:**`, `**Label**:`, or with `__`), case-sensitive. Text inside a
 // code fence does not count (a template quoted in a fence is not an answer). The first line with
-// a label is the one read. A value keeps its text; `*`, `_`, backticks and quotes wrapped around
-// it are dropped, as the 0.8.0 Verdict and Alternative patterns tolerate them.
+// a label is the one read. The Verdict label has one more form: when no bold Verdict line is found,
+// the first line the Stop check counts as a verdict (findVerdict: bold optional, any case, fences
+// not stripped) is read, so a reply that passes the check as a verdict always has findings. A value
+// keeps its text; `*`, `_`, backticks and quotes are dropped only when the same mark wraps both ends.
 
-import { stripFences, VERDICTS } from "./verdict.mjs";
+import { findVerdict, stripFences, VERDICTS } from "./verdict.mjs";
 
 export const FINDINGS_VERSION = 1;
 
@@ -26,16 +28,40 @@ export function labelValue(text, label) {
   return m ? m[1].trim() : null;
 }
 
-const WRAP = /^[*_`"'“”‘’]+|[*_`"'“”‘’]+$/g;
+// Each wrapper mark and the mark that closes it.
+const CLOSER = { "*": "*", _: "_", "`": "`", '"': '"', "'": "'", "“": "”", "‘": "’" };
 
-/** A value without the emphasis, backticks or quotes wrapped around it. */
-export const unwrap = (s) => s.replace(WRAP, "").trim();
+/** A value without the emphasis, backticks or quotes that wrap both of its ends. */
+export function unwrap(s) {
+  let v = s.trim();
+  while (v.length >= 2 && CLOSER[v[0]] && v.endsWith(CLOSER[v[0]])) v = v.slice(1, -1).trim();
+  return v;
+}
 
-// The forms an Alternative line takes when nothing beats the pattern (the 0.8.0 eval's list).
-const NONE_FORM = /^(?:none|nothing|no better|n\/?a|not a technical ask)(?![a-z0-9])/i;
+// The Alternative design, unwrapped, and when it opens with a code span, the span's backticks
+// dropped too ("`lib/config.mjs`: one place" → "lib/config.mjs: one place").
+const altDesign = (s) => unwrap(s).replace(/^(`+)([^`]+?)\1(?!`)/, "$2");
+
+// The forms an Alternative line takes when nothing beats the pattern (the 0.8.0 eval's list, plus
+// `not applicable` and `no alternative`). The phrase must end at a closing mark, a colon, a space or
+// punctuation (not a hyphen: `nothing-cache` is a design), and not go on with `of` (`None of the
+// gaps apply; use Y` is a design).
+const NONE_FORM = /^(?:none|nothing|no better|no alternative|n\/?a|not applicable|not a technical ask)[*_`"'”’]*(?!\s+of\b)(?=$|[:\s.,;!—–])/i;
 
 /** True when an Alternative value says nothing beats the pattern. */
-export const isNoneForm = (value) => NONE_FORM.test(unwrap(value));
+export const isNoneForm = (value) => NONE_FORM.test(value.trim().replace(/^[*_`"'“‘]+/, ""));
+
+// A Verdict label as the Stop check's VERDICT_LINE takes it: bold optional, any case.
+const LOOSE_VERDICT = /^[ \t]*(?:[-*+>][ \t]+|#{1,6}[ \t]+)?(?:\*\*|__)?Verdict(?::(?:\*\*|__)?|(?:\*\*|__)?:)[ \t]*(.*)$/i;
+
+/** The value of the first line findVerdict accepts, outside fences first, then anywhere; or null. */
+function looseVerdictValue(stripped, raw) {
+  for (const src of [stripped, raw]) {
+    const line = src.split("\n").find((l) => findVerdict(l));
+    if (line) return LOOSE_VERDICT.exec(line)[1].trim();
+  }
+  return null;
+}
 
 const VERDICT_HEAD = new RegExp(
   String.raw`^(?:\*\*|__|\*|_|\x60)?(` + VERDICTS.map((v) => escape(v).replace("'", "['’]")).join("|") + String.raw`)(?:\*\*|__|\*|_|\x60)?(?=$|\s|\p{P})`,
@@ -78,16 +104,18 @@ function foundItems(text) {
  */
 export function parseFindings(reply) {
   if (typeof reply !== "string") return null;
-  const text = stripFences(reply.replace(/\r\n/g, "\n"));
+  const raw = reply.replace(/\r\n/g, "\n");
+  const text = stripFences(raw);
   const structure = labelValue(text, "Structure check");
-  const verdictLine = labelValue(text, "Verdict");
+  const verdictLine = labelValue(text, "Verdict") ?? looseVerdictValue(text, raw);
   if (structure === null && verdictLine === null) return null;
   const kind = structure !== null ? "structure-check" : "verdict";
   const { verdict, why } = verdictLine === null ? { verdict: null, why: null } : splitVerdict(verdictLine);
   const alternative = labelValue(text, "Alternative") || null;
   const alternatives = [];
-  if (kind === "verdict" && why) alternatives.push({ design: why, chosen: true });
-  if (alternative && !isNoneForm(alternative)) alternatives.push({ design: unwrap(alternative), chosen: false });
+  // A Verdict line whose verdict word is not one of VERDICTS chose nothing.
+  if (kind === "verdict" && verdict !== null && why) alternatives.push({ design: why, chosen: true });
+  if (alternative && !isNoneForm(alternative)) alternatives.push({ design: altDesign(alternative), chosen: false });
   return {
     kind,
     ask: labelValue(text, "Ask") || null,

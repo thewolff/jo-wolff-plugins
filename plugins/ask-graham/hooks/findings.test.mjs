@@ -6,7 +6,8 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpath
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { parseFindings } from "../skills/ask-graham/scripts/findings.mjs";
+import { parseFindings, unwrap } from "../skills/ask-graham/scripts/findings.mjs";
+import { findVerdict, stripFences } from "../skills/ask-graham/scripts/verdict.mjs";
 import { findingsDir, handle, writeFindings } from "./ask-graham-stop.mjs";
 import { prune } from "../scripts/prune.mjs";
 import { claudeCode } from "../fixtures/transcripts.mjs";
@@ -81,13 +82,38 @@ test("a real verdict reply: kind, verdict, and the verdict's design as the chose
   assert.match(second.alternatives[0].design, /^A one-line `git weekly` alias/);
 });
 
-test("a reply with no label lines, a waiting reply, a fenced template and a lower-case label give nothing", () => {
+test("a reply with no label lines, a waiting reply and a fenced non-verdict give nothing", () => {
   assert.equal(parseFindings(realReply("no-verdict.Stop-1.payload.json")), null);
   assert.equal(parseFindings("**Ask:** a cache\n\n**Gate questions** (Graham #1)\n- Why: speed\n\nDo you want me to research and see if something comparable exists?"), null);
-  assert.equal(parseFindings("The template:\n```\n**Verdict:** do it now. x\n```\n"), null);
-  assert.equal(parseFindings("**verdict:** do it now. x"), null);
-  assert.equal(parseFindings("Verdict: do it now. x"), null);
+  assert.equal(parseFindings("The template:\n```\n**Verdict:** <one of the four verdicts>. x\n```\n"), null);
+  assert.equal(parseFindings("Verdict: maybe. x"), null);
   assert.equal(parseFindings(undefined), null);
+});
+
+test("every Verdict line the Stop check accepts gives findings, as findVerdict reads it", () => {
+  for (const [reply, verdict, design] of [
+    ["Verdict: do it now. plain", "do it now", "plain"],
+    ["**verdict:** do it now. lower", "do it now", "lower"],
+    ["Verdict: **do it now**. x", "do it now", "x"],
+    ["## Verdict: later. h", "later", "h"],
+    ["The template:\n```\n**Verdict:** do it now. x\n```\n", "do it now", "x"],
+  ]) {
+    assert.equal(findVerdict(reply), verdict, reply);
+    const f = parseFindings(reply);
+    assert.equal(f.kind, "verdict", reply);
+    assert.equal(f.verdict, verdict, reply);
+    assert.deepEqual(f.alternatives, [{ design, chosen: true }], reply);
+  }
+  // a real verdict outside a fence wins over a fenced example before it
+  assert.equal(parseFindings("```\nverdict: later. fenced\n```\nverdict: do it now. real").alternatives[0].design, "real");
+});
+
+test("a fence closed by a longer fence ends there (CommonMark)", () => {
+  const f = parseFindings("````\n**Verdict:** later. fenced\n`````\n**Verdict:** do it now. real");
+  assert.equal(f.verdict, "do it now");
+  assert.equal(f.alternatives[0].design, "real");
+  assert.equal(stripFences("~~~\nx\n~~~~\nkept"), "\nkept");
+  assert.equal(stripFences("````\nx\n```\nstill fenced"), "");
 });
 
 test("the alternative-shown shape: the pattern-fit design chosen, the better one beside it", () => {
@@ -96,18 +122,21 @@ test("the alternative-shown shape: the pattern-fit design chosen, the better one
   assert.match(f.alternative, /^`one shared loader/);
   assert.deepEqual(f.alternatives, [
     { design: "Add scripts/archive.mjs and parse config.json the way the three scripts do.", chosen: true },
-    { design: "one shared loader in lib/config.mjs`: one place for the missing-file handling; costs migrating the three scripts", chosen: false },
+    { design: "one shared loader in lib/config.mjs: one place for the missing-file handling; costs migrating the three scripts", chosen: false },
   ]);
 });
 
 test("the alternative-none shape: the line is kept, no unchosen design is added", () => {
-  for (const none of ["*none*: weighed x", "none: weighed x", "`n/a`", "nothing beats it", "No better design", "\"not a technical ask\""]) {
+  for (const none of ["*none*: weighed x", "none: weighed x", "`n/a`", "nothing beats it", "No better design", "\"not a technical ask\"",
+    "Not applicable", "No alternative: weighed X", "None.", "**nothing**"]) {
     const f = parseFindings(SHOWN.replace(/\*\*Alternative:\*\*.*$/m, `**Alternative:** ${none}`));
     assert.equal(f.alternative, none);
     assert.deepEqual(f.alternatives.map((a) => a.chosen), [true], none);
   }
   assert.equal(parseFindings(NONE).alternatives.length, 1);
-  assert.equal(parseFindings(SHOWN.replace(/\*\*Alternative:\*\*.*$/m, "**Alternative:** nonexistent cache layer, faster")).alternatives.length, 2);
+  for (const design of ["nonexistent cache layer, faster", "None of the pattern's gaps apply; use Y", "nothing-cache layer (axis: fewer parts)", "Nope, a queue"]) {
+    assert.equal(parseFindings(SHOWN.replace(/\*\*Alternative:\*\*.*$/m, `**Alternative:** ${design}`)).alternatives.length, 2, design);
+  }
 });
 
 test("a structure check: its found items, no verdict, the alternative unchosen", () => {
@@ -129,6 +158,15 @@ test("labels tolerate list markers, headings, colon outside the bold, emphasis a
   assert.equal(parseFindings("**Ask:** a cache for X\n\n**Verdict:** later").ask, "a cache for X");
   assert.deepEqual(parseFindings("**Verdict:** later").alternatives, []);
   assert.equal(parseFindings("**Verdict:** maybe. hmm").verdict, null);
+  assert.deepEqual(parseFindings("**Verdict:** build it now because reasons").alternatives, []);
+  assert.deepEqual(parseFindings("**Verdict:** maybe. hmm\n**Alternative:** a queue").alternatives, [{ design: "a queue", chosen: false }]);
+});
+
+test("unwrap drops a mark only when the same mark closes the value", () => {
+  assert.equal(unwrap("*a cache*"), "a cache");
+  assert.equal(unwrap("“a cache”"), "a cache");
+  assert.equal(unwrap("*a* cache"), "*a* cache");
+  assert.equal(unwrap("a cache `x`"), "a cache `x`");
 });
 
 test("the Stop hook writes the real verdict reply's findings, 0600, with the payload's session and cwd", (t) => {
@@ -167,13 +205,17 @@ test("without last_assistant_message the transcript's reply is recorded", (t) =>
   assert.equal(JSON.parse(readFileSync(join(e.dir, `${p.session_id}.json`), "utf8")).verdict, "do it now");
 });
 
-test("stop-check=off still records the findings", (t) => {
+test("stop-check=off records the payload's findings, and without last_assistant_message writes none", (t) => {
   const e = env(t);
   mkdirSync(join(e.base, "config", "ask-graham"), { recursive: true });
   writeFileSync(join(e.base, "config", "ask-graham", "config"), "stop-check=off\n");
   const p = payload("new-idea.Stop-1.payload.json");
   assert.equal(stop(e, p), null);
   assert.ok(existsSync(join(e.dir, `${p.session_id}.json`)));
+  const bare = { ...p, session_id: `${p.session_id}-bare`, transcript_path: join(DIR, "new-idea.transcript.jsonl") };
+  delete bare.last_assistant_message;
+  assert.equal(stop(e, bare), null);
+  assert.equal(existsSync(join(e.dir, `${bare.session_id}.json`)), false);
 });
 
 test("a findings write that fails is one errors.log line, never a block or a changed decision", (t) => {

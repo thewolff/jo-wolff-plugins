@@ -141,7 +141,7 @@ When two designs, or two asks, both pass: "fewer lines of code? less complexity 
 
 Before the verdict on any ask bigger than two minutes, run the pattern-check skill (the `pattern-check` plugin, when installed): for each piece the ask would add, find the existing pattern in the repo that does its job and record reuse, replace, or new with a reason; a `new` row whose nearest pattern is close fires the second-pattern flag in step 4, and the row's `better design` cell is what the `**Alternative:**` line carries. (Skill)
 
-Done when: exactly one verdict, with a one-line why that names the gate answer or cost that decided it.
+Done when: exactly one verdict, with a one-line why that names the gate answer or cost that decided it. On Claude Code that why is stored verbatim as the chosen design in the session's findings file (README "Findings on disk"), and consumers look for it word for word, so write it as one plain sentence.
 
 ### 6. Break it down, scaled to size
 

@@ -30,8 +30,10 @@
 // FINDINGS. A reply carrying a `**Verdict:**` or `**Structure check:**` line is also recorded, per
 // session, in ${XDG_STATE_HOME:-$HOME/.local/state}/ask-graham/findings/<session id>.json
 // (skills/ask-graham/scripts/findings.mjs parses it; README "Findings on disk" gives the shape), for
-// other plugins to read. It is written whether or not the check runs or blocks; a write that fails
-// is a fault like the others below and does not change what the check decides.
+// other plugins to read. When the payload carries last_assistant_message (Claude Code 2.1.317's
+// does), it is written whether or not the check runs or blocks. Without it the reply comes from the
+// transcript, which stop-check=off skips reading, so with the check off that stop writes nothing.
+// A write that fails is a fault like the others below and does not change what the check decides.
 //
 // FAIL OPEN, NOT SILENT. Every path exits 0 and a fault never blocks. A fault (empty or non-JSON
 // stdin, a payload without a usable session_id or transcript_path, a missing or unreadable
