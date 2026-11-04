@@ -32,6 +32,11 @@ it, keeping a record of what it did and asked, and a vendored set of engineering
 - **[as2-skills](plugins/as2-skills/README.md)** — the 22 engineering skills of agent-system 2.0,
   vendored from four upstream skill packs at pinned releases, with frontmatter claude.ai accepts.
   Install with `/plugin install as2-skills@jo-wolff-plugins`; skills only.
+  Changes in as2-skills 0.1.2: every skill has a "How it fails" section, and the manifest
+  declares the one path a skill writes outside the worktree (`$TMPDIR/seo-audit-*`), the bar
+  ledger 0.3.5's `gate check` enforces; see the plugin's
+  [release notes](plugins/as2-skills/README.md#changes-in-012). Changes in as2-skills 0.1.1:
+  the triad and quorum fan-out scripts ship their `lib/leg-runner.sh`.
 - **[ctx-watch](#ctx-watch)** — notice when the ctx daemon is dead, unsupervised,
   or stale, repair it with the one command ctx documents, and say so at SessionStart and in a
   macOS popup from a launchd timer; the SessionStart line also says when the timer itself has
