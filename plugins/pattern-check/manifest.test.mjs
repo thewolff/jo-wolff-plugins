@@ -27,7 +27,8 @@ test("every OMP extension path in package.json exists", () => {
 test("hooks.json names scripts that exist, through CLAUDE_PLUGIN_ROOT", () => {
   const hooks = read("./hooks/hooks.json").hooks;
   assert.deepEqual(Object.keys(hooks).sort(), ["PreToolUse", "Stop"]);
-  assert.equal(hooks.PreToolUse[0].matcher, "Edit|Write|MultiEdit|Bash");
+  assert.equal(hooks.PreToolUse[0].matcher, "Edit|Write|MultiEdit|NotebookEdit|Bash");
+  for (const group of [...hooks.PreToolUse, ...hooks.Stop]) for (const h of group.hooks) assert.ok(h.timeout <= 5, "hooks run inside the 5 s budget");
   for (const group of [...hooks.PreToolUse, ...hooks.Stop]) {
     for (const h of group.hooks) {
       const m = h.command.match(/^node "\$\{CLAUDE_PLUGIN_ROOT\}\/(.+)"$/);

@@ -16,16 +16,18 @@
 //
 // MAIN SESSION ONLY. Subagents end on SubagentStop, which this hook is not registered for.
 //
-// FAIL OPEN, NOT SILENT. Every path exits 0. The plugin's own faults (unreadable state, a config
-// that does not parse, a thrown error) let the stop through and print one
-// {"systemMessage": "pattern-check: ..."} line. A reply without last_assistant_message cannot
-// be classified and passes.
+// FAIL OPEN, NOT SILENT. Every path exits 0. The plugin's own faults (unwritable state, a config
+// that does not parse, empty or malformed stdin, a thrown error) let the stop through, print one
+// {"systemMessage": "pattern-check: ..."} line and append one line to <state dir>/errors.log
+// (scripts/lib/hookio.mjs). A reply without last_assistant_message cannot be classified and
+// passes.
 //
 // Contract: JSON on stdin (Stop payload). JSON on stdout, or nothing.
 
 import { readFileSync, realpathSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { recordCommand, resolveContext } from "../scripts/lib/context.mjs";
+import { runHook } from "../scripts/lib/hookio.mjs";
 import { proposesPlan } from "../scripts/lib/proposal.mjs";
 import { paths, sha256, writeAtomic } from "../scripts/lib/state.mjs";
 
@@ -33,7 +35,7 @@ export function refusalReason({ key, env, signal }) {
   const cmd = recordCommand(key, env);
   return [
     `pattern-check: this reply proposes a plan or design (${signal}), but no pattern-check receipt exists for this session.`,
-    "Before finishing, look for the existing patterns in this repository that do the job of each new piece the plan adds (load the pattern-check skill for the method), record the result, then finish the reply:",
+    "Before finishing, answer two questions for each new piece the plan adds: what exists already (the existing pattern in this repository that does its job), and how does it fail (what breaks and where the operator sees it, what the message says to do next, whether a rerun is safe, what bounds it, what evidence survives). Load the pattern-check skill for the method, record the result, then finish the reply:",
     `  ${cmd} < table.md`,
     `or, if the plan adds no new piece:  ${cmd} --no-new-pieces "<reason>"`,
   ].join("\n");
@@ -67,20 +69,7 @@ export function handle(input, opts = {}) {
   return { ...(warnings.length ? { systemMessage: `pattern-check: ${warnings.join("; ")}` } : {}), decision: "block", reason: refusalReason({ key, env, signal }) };
 }
 
-function main() {
-  let input = {};
-  try { input = JSON.parse(readFileSync(0, "utf8") || "{}"); } catch { input = {}; }
-  let out = null;
-  try {
-    out = handle(input);
-  } catch (e) {
-    out = { systemMessage: `pattern-check: the Stop hook failed (${e?.message ?? e}); the stop was allowed` };
-  }
-  if (out) process.stdout.write(JSON.stringify(out));
-  process.exit(0);
-}
-
 const invoked = (() => {
   try { return realpathSync(process.argv[1]) === realpathSync(fileURLToPath(import.meta.url)); } catch { return false; }
 })();
-if (invoked) main();
+if (invoked) runHook({ file: "pattern-check-stop.mjs", event: "Stop", allowed: "the stop was allowed", handle: (input) => handle(input) });

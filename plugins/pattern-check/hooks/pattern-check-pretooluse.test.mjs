@@ -3,9 +3,10 @@ import assert from "node:assert/strict";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { filePathsOf, handle } from "./pattern-check-pretooluse.mjs";
+import { REAL_ABSENT, REAL_PIN } from "../test-fixtures/real-commands.mjs";
 import { paths, stateDir } from "../scripts/lib/state.mjs";
 
 const HOOK = join(dirname(fileURLToPath(import.meta.url)), "pattern-check-pretooluse.mjs");
@@ -27,7 +28,7 @@ function fixture(t) {
   const edit = (name, extra = {}) => ({ hook_event_name: "PreToolUse", session_id: SESSION, cwd: repo, tool_name: "Edit", tool_input: { file_path: file(name), old_string: "a", new_string: "b" }, ...extra });
   const write = (name, extra = {}) => ({ hook_event_name: "PreToolUse", session_id: SESSION, cwd: repo, tool_name: "Write", tool_input: { file_path: file(name), content: "x" }, ...extra });
   const bash = (command, extra = {}) => ({ hook_event_name: "PreToolUse", session_id: SESSION, cwd: repo, tool_name: "Bash", tool_input: { command }, ...extra });
-  const run = (input) => spawnSync(process.execPath, [HOOK], { input: typeof input === "string" ? input : JSON.stringify(input), env: { ...process.env, HOME: base, ...env }, encoding: "utf8" });
+  const run = (input) => spawnSync(process.execPath, [HOOK], { input: typeof input === "string" ? input : JSON.stringify(input), env: { ...process.env, HOME: base, ...env }, encoding: "utf8", timeout: 5000 });
   const call = (input) => handle(input, { env, home: base });
   const decision = (out) => out?.hookSpecificOutput?.permissionDecision ?? null;
   const setUser = (text) => { mkdirSync(join(config, "pattern-check"), { recursive: true }); writeFileSync(join(config, "pattern-check", "config.json"), text); };
@@ -182,19 +183,85 @@ test("fail open on a corrupt config: the call is allowed under the default thres
   assert.match(out.systemMessage, /not valid JSON/);
 });
 
-test("fail open on garbage stdin and on a thrown error: exit 0, call allowed", (t) => {
+// Every spawned hook below runs under spawnSync's 5 s timeout: a hang is r.error (ETIMEDOUT), a
+// failure, never a skip.
+const exitedClean = (r) => { assert.equal(r.error, undefined, String(r.error)); assert.equal(r.status, 0, r.stderr); };
+const errorsLog = (f) => readFileSync(join(f.sd, "errors.log"), "utf8");
+
+test("process: empty stdin, malformed JSON and a non-object payload exit 0, allow, warn in one line, and log to errors.log", (t) => {
   const f = fixture(t);
-  const r = f.run("not json");
-  assert.equal(r.status, 0);
-  // An empty payload has no session_id and no tool: the only output is the degraded-key warning.
-  assert.equal(JSON.parse(r.stdout).hookSpecificOutput, undefined);
-  assert.match(JSON.parse(r.stdout).systemMessage, /no usable session_id/);
-  // An unwritable state directory: the pointer and the record fail, the call goes through with a warning.
+  for (const [input, re] of [["", /got empty stdin/], ["not json", /got stdin that is not JSON/], ["[]", /not a JSON object/]]) {
+    const r = f.run(input);
+    exitedClean(r);
+    const out = JSON.parse(r.stdout);
+    assert.equal(out.hookSpecificOutput, undefined);
+    assert.match(out.systemMessage, re);
+    assert.match(out.systemMessage, /this call was allowed$/);
+  }
+  const lines = errorsLog(f).trimEnd().split("\n");
+  assert.equal(lines.length, 3);
+  for (const l of lines) assert.match(l, /^\d{4}-\d\d-\d\dT\S+Z pattern-check-pretooluse\.mjs the PreToolUse hook got /);
+});
+
+test("process: an unwritable state directory allows every call, warns, and says errors.log could not be written", (t) => {
+  const f = fixture(t);
   writeFileSync(join(f.base, "state-file"), "");
-  const r2 = spawnSync(process.execPath, [HOOK], { input: JSON.stringify(f.edit("a.ts")), env: { ...process.env, HOME: f.base, ...f.env, XDG_STATE_HOME: join(f.base, "state-file") }, encoding: "utf8" });
-  assert.equal(r2.status, 0);
-  assert.match(JSON.parse(r2.stdout).systemMessage, /pattern-check: /);
-  assert.equal(JSON.parse(r2.stdout).hookSpecificOutput, undefined);
+  const env = { ...process.env, HOME: f.base, ...f.env, XDG_STATE_HOME: join(f.base, "state-file") };
+  for (const n of ["a.ts", "b.ts", "c.ts", "d.ts"]) {
+    const r = spawnSync(process.execPath, [HOOK], { input: JSON.stringify(f.edit(n)), env, encoding: "utf8", timeout: 5000 });
+    exitedClean(r);
+    const out = JSON.parse(r.stdout);
+    assert.equal(out.hookSpecificOutput, undefined, n); // never denies: nothing could be counted
+    assert.match(out.systemMessage, /could not write the state file .*this call was allowed and not counted/);
+    assert.match(out.systemMessage, /\(and errors\.log could not be written: /);
+  }
+});
+
+test("process: a missing config is the zero-config default, with no warning; an unparsable one warns and is logged", (t) => {
+  const f = fixture(t);
+  exitedClean(f.run(f.edit("a.ts")));
+  assert.equal(f.run(f.edit("a.ts")).stdout, "");
+  assert.equal(existsSync(join(f.sd, "errors.log")), false);
+  f.setUser("{ torn");
+  const r = f.run(f.edit("a.ts"));
+  exitedClean(r);
+  assert.match(JSON.parse(r.stdout).systemMessage, /user config .* is not valid JSON/);
+  assert.match(errorsLog(f), /pattern-check-pretooluse\.mjs user config .*config\.json is not valid JSON/);
+});
+
+test("process: a corrupt state file allows, warns, and is logged naming the file", (t) => {
+  const f = fixture(t);
+  f.run(f.edit("a.ts"));
+  writeFileSync(paths.session(f.sd, SESSION), "{ torn");
+  const r = f.run(f.edit("b.ts"));
+  exitedClean(r);
+  assert.match(JSON.parse(r.stdout).systemMessage, /state file .*\.json is not valid JSON/);
+  assert.match(errorsLog(f), new RegExp(`pattern-check-pretooluse\\.mjs state file .*${SESSION}\\.json is not valid JSON`));
+});
+
+test("process: stdin held open is abandoned at the deadline, inside the 5 s budget, and the call allowed", async (t) => {
+  const f = fixture(t);
+  const child = spawn(process.execPath, [HOOK], { env: { ...process.env, HOME: f.base, ...f.env }, stdio: ["pipe", "pipe", "pipe"] });
+  let stdout = "";
+  child.stdout.on("data", (c) => { stdout += c; });
+  child.stdin.write('{"tool_name":');
+  const started = Date.now();
+  const code = await new Promise((resolve, reject) => {
+    const killer = setTimeout(() => { child.kill("SIGKILL"); reject(new Error("hook hung past 5 s")); }, 5000);
+    child.on("exit", (c) => { clearTimeout(killer); resolve(c); });
+  });
+  child.stdin.destroy();
+  assert.equal(code, 0);
+  assert.ok(Date.now() - started < 5000);
+  assert.match(JSON.parse(stdout).systemMessage, /did not get a closed stdin within 2 s; this call was allowed/);
+});
+
+test("process: a well-formed payload under the threshold prints nothing and logs nothing", (t) => {
+  const f = fixture(t);
+  const r = f.run(f.edit("a.ts"));
+  exitedClean(r);
+  assert.equal(r.stdout, "");
+  assert.equal(existsSync(join(f.sd, "errors.log")), false);
 });
 
 test("hooks.preToolUse false switches the hook off", (t) => {
@@ -228,9 +295,32 @@ test("other tools pass through untouched", (t) => {
   assert.equal(f.call({ ...f.edit("a.ts"), tool_name: "Grep" }), null);
 });
 
-test("filePathsOf reads file_path and MultiEdit's edits[]", () => {
+test("filePathsOf reads file_path, notebook_path and MultiEdit's edits[]", () => {
   assert.deepEqual(filePathsOf({ file_path: "/a" }), ["/a"]);
+  assert.deepEqual(filePathsOf({ notebook_path: "/n.ipynb", new_source: "x" }), ["/n.ipynb"]);
   assert.deepEqual(filePathsOf({ edits: [{ file_path: "/a" }, { file_path: "/b" }, { nope: 1 }] }), ["/a", "/b"]);
   assert.deepEqual(filePathsOf({}), []);
   assert.deepEqual(filePathsOf(undefined), []);
+});
+
+test("the field names Claude Code sends: Write and Edit file_path, MultiEdit file_path with edits[] of strings, NotebookEdit notebook_path all count", (t) => {
+  const f = fixture(t);
+  f.setRepo(JSON.stringify({ threshold: 5 }));
+  assert.equal(f.call(f.write("w.ts")), null);
+  assert.equal(f.call(f.edit("e.ts")), null);
+  assert.equal(f.call({ ...f.edit("m.ts"), tool_name: "MultiEdit", tool_input: { file_path: f.file("m.ts"), edits: [{ old_string: "a", new_string: "b" }] } }), null);
+  assert.equal(f.call({ ...f.edit("n.ipynb"), tool_name: "NotebookEdit", tool_input: { notebook_path: f.file("n.ipynb"), new_source: "x", cell_id: "c1" } }), null);
+  assert.deepEqual(JSON.parse(readFileSync(paths.session(f.sd, SESSION), "utf8")).files, ["w.ts", "e.ts", "m.ts", "n.ipynb"].map(f.file));
+  assert.equal(f.decision(f.call(f.write("fifth.ts"))), "deny");
+});
+
+test("regression: the two real Bash commands that 0.2.0 counted as repository files count nothing", (t) => {
+  const f = fixture(t);
+  f.setRepo(JSON.stringify({ threshold: 2 }));
+  assert.equal(f.call(f.bash(REAL_ABSENT)), null);
+  assert.equal(f.call(f.bash(REAL_PIN)), null);
+  assert.equal(existsSync(paths.session(f.sd, SESSION)), false); // no file counted, so no record written
+  // and one real file still counts after them, then the 2nd is denied
+  assert.equal(f.call(f.edit("a.ts")), null);
+  assert.equal(f.decision(f.call(f.edit("b.ts"))), "deny");
 });

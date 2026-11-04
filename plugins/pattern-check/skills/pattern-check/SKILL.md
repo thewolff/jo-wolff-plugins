@@ -1,20 +1,20 @@
 ---
 name: pattern-check
-description: Before big work in a repository (a new feature, module, tool, or any change that will touch several files), find the existing pattern in the repo that already does the job of each new piece you plan to add, decide reuse, replace, or new-with-reason for each, and record the table with the pattern-check script. Use when starting a project or plan, when a pattern-check hook denies a write or refuses a reply, when ask-graham asks for it before a verdict, or on /pattern-check. The hooks hold Edit, Write, commits and PRs after the configured number of distinct files until the receipt exists.
+description: Before big work in a repository (a new feature, module, tool, or any change that will touch several files), find the existing pattern in the repo that already does the job of each new piece you plan to add, decide reuse, replace, or new-with-reason for each, state how each piece fails, and record the table with the pattern-check script. Use when starting a project or plan, when a pattern-check hook denies a write or refuses a reply, when ask-graham asks for it before a verdict, or on /pattern-check. The hooks hold Edit, Write, commits and PRs after the configured number of distinct files until the receipt exists.
 argument-hint: "[what you are about to build] | record | status"
 license: MIT
 ---
 
 # Pattern check
 
-Before an agent does big work in a repository, it looks for the repository's existing way of doing each thing it is about to add, and writes down what it found. Reviewers keep finding designs that introduced a second helper, store, loader, parser or hook where one already served; this check makes the agent earn the claim "nothing like it exists" piece by piece, before the writes start.
+Before an agent does big work in a repository, it answers two questions for each thing it is about to add: what exists already, and how does it fail. Reviewers keep finding designs that introduced a second helper, store, loader, parser or hook where one already served, and pieces whose failure nobody had thought about until it happened; this check makes the agent earn the claim "nothing like it exists" piece by piece, and state the failure before the writes start.
 
 The check cannot be skipped: two hooks hold the work until a receipt exists for the session.
 
-- **PreToolUse**: from the Nth distinct file an Edit, Write or MultiEdit call would touch (N is 3 by default), the call is denied, and so are `git commit`, `gh pr create` and the obvious shell writes (`>`, `>>`, `sed -i`, `tee`) into the repository. Under N files nothing fires.
+- **PreToolUse**: from the Nth distinct file an Edit, Write, MultiEdit or NotebookEdit call would touch (N is 3 by default), the call is denied, and so are `git commit`, `gh pr create` and the obvious shell writes (`>`, `>>`, `sed -i`, `tee`) into the repository. Under N files nothing fires.
 - **Stop**: a reply that proposes a plan or design is refused once, with the command to run.
 
-Both deny texts name the exact command. Both hooks fail open on the plugin's own faults (a corrupt state file, a bad config) with a one-line warning, never on the agent's omission.
+Both deny texts name the exact command. Both hooks fail open on the plugin's own faults (a corrupt state file, a bad config, malformed input) with a one-line warning and a line in the plugin's `errors.log`, never on the agent's omission.
 
 ## When to run it
 
@@ -56,34 +56,48 @@ Done when: each piece has either a `file:line` for the existing pattern that doe
 
 A second way to do something the repository already does is the finding this check exists for. When the table has a `new` row whose nearest pattern is close, the design uses the pattern or the reason says in one line why it cannot.
 
-### 5. Record the table
+### 5. Say how each piece fails
 
-Write the table, four columns, one row per piece, then pipe it to `record`:
+Five more cells per piece. Fill them by reading the piece's error paths, not by guessing: for a `reuse` or `replace` row, open the existing pattern and read what it throws, returns, logs and retries; for a `new` row, read the caller it plugs into (how does that caller handle a throw, a timeout, a bad return?) and the repository's existing logging and retry helpers, and write what the new piece will do in those terms. Cite `file:line` where the behaviour comes from.
+
+- **fails how**: what breaks, and what the operator sees: where it is logged or surfaced (a log file, a warning line, an HTTP status, a failed job row). "It throws" is half an answer; say who catches it and where it shows up.
+- **next step**: what the failure message tells the reader to do. If the message says nothing actionable, write that, and fix the message in the design.
+- **restart-safe**: `yes` or `no`, then why. Can it be rerun after a crash halfway through without double effects?
+- **bounded**: the retry or deadline bound (`3 attempts, 10 s total`), or `n/a: <why>` (`n/a: pure function, nothing to retry`).
+- **evidence kept**: what survives cleanup for the person debugging it: log lines, files, rows.
+
+`n/a` is fine only with its reason; a bare `n/a`, an empty cell, `-`, `?` or `TBD` is refused. If reading the error paths shows the piece has no answer for a column (nothing is logged, nothing bounds the retry), that is a design finding: change the design, then fill the cell with what it now does.
+
+Done when: every row has five filled fail cells that you could point at in code.
+
+### 6. Record the table
+
+Write the table, nine columns, one row per piece, then pipe it to `record`:
 
 ```sh
 cat <<'EOF' | node "${CLAUDE_PLUGIN_ROOT}/scripts/pattern-check.mjs" record
-| new piece | existing pattern (file:line) | reuse / replace / new | reason |
-|---|---|---|---|
-| retry helper | src/net/retry.ts:12 | reuse | same backoff, already exported |
-| webhook parser | (none: grep webhook, inbound, signature in src/; read src/net/) | new | only an outbound client exists, it parses nothing |
+| new piece | existing pattern (file:line) | reuse / replace / new | reason | fails how | next step | restart-safe | bounded | evidence kept |
+|---|---|---|---|---|---|---|---|---|
+| retry helper | src/net/retry.ts:12 | reuse | same backoff, already exported | throws RetryExhausted after the last attempt; the job runner logs it at src/jobs/run.ts:88 | the log line names the upstream to check | yes: each attempt is a GET | 5 attempts, 30 s total (src/net/retry.ts:14) | the job's row in jobs.failures |
+| webhook parser | (none: grep webhook, inbound, signature in src/; read src/net/) | new | only an outbound client exists, it parses nothing | throws WebhookError; the router answers 400 and logs the request id (src/router.ts:40) | the 400 body names the field to fix | yes: parsing is pure | n/a: no retries, one parse per request | the access log line with the request id |
 EOF
 ```
 
-Rows can also go on the command line, one `--row "piece | pattern | decision | reason"` each. When the work adds no new piece at all:
+Rows can also go on the command line, one `--row "piece | pattern | decision | reason | fails how | next step | restart-safe | bounded | evidence kept"` each. A literal pipe inside a cell is written `\|`. When the work adds no new piece at all:
 
 ```sh
 node "${CLAUDE_PLUGIN_ROOT}/scripts/pattern-check.mjs" record --no-new-pieces "<why: what the change is>"
 ```
 
-`record` refuses an empty table, a decision that is not `reuse`, `replace` or `new`, a `new` row without a reason, and a `reuse` or `replace` row without a `file:line`. Nothing is written on refusal; fix the row and run it again.
+`record` refuses an empty table, a decision that is not `reuse`, `replace` or `new`, a `new` row without a reason, a `reuse` or `replace` row without a `file:line`, and a row whose fail cells are missing, empty, placeholders, or `n/a` without a reason; the message names the row and the column. Nothing is written on refusal; fix the row and run it again.
 
 The receipt lands at `<repo>/.pattern-check/<session>.md` with a copy in the plugin's state directory. The repository copy is untracked: the script suggests adding `.pattern-check/` to `.gitignore` or `.git/info/exclude` and never edits either itself. From then on, writes, commits and PRs in this session go through.
 
 Done when: `record` printed `receipt recorded`.
 
-### 6. Report it
+### 7. Report it
 
-In the reply that carries the plan or design, include the table (or the `No new pieces` line) under a `**Pattern check:**` heading, so the reader sees what was searched without opening the receipt. Each `reuse` and `replace` names its `file:line`; each `new` names what was searched.
+In the reply that carries the plan or design, include the table (or the `No new pieces` line) under a `**Pattern check:**` heading, so the reader sees what was searched and how each piece fails without opening the receipt. Each `reuse` and `replace` names its `file:line`; each `new` names what was searched.
 
 ## Status
 

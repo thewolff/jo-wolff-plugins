@@ -2,9 +2,13 @@
 // pattern-check.mjs — the command an agent runs around the check.
 //
 //   pattern-check open "<what you are about to build>"   start the receipt: records the brief
-//   pattern-check record [< table.md] [--row "a | b | c | d"]... [--no-new-pieces "<reason>"]
-//                                                        write the receipt (repo copy + state copy)
+//   pattern-check record [< table.md] [--row "piece | pattern | decision | reason | fails how | next step | restart-safe | bounded | evidence kept"]...
+//                        [--no-new-pieces "<reason>"]           write the receipt (repo copy + state copy)
 //   pattern-check status                                 the session key, files counted, receipt path
+//
+// A row has nine cells: what exists already (piece, pattern, decision, reason) and how the piece
+// fails (fails how, next step, restart-safe, bounded, evidence kept). `record` refuses a row whose
+// fail cells are empty, or `n/a` without a reason; receipt.mjs has the rules.
 //
 // Options on every subcommand:
 //   --session <key>   the session to act on. Otherwise PATTERN_CHECK_SESSION, otherwise the key
@@ -32,7 +36,7 @@ import { isSafeKey, readCurrent, readSession, writeAtomic, writeSession } from "
 
 export const USAGE = `usage:
   pattern-check open "<what you are about to build>"
-  pattern-check record [< table.md] [--row "new piece | existing pattern (file:line) | reuse|replace|new | reason"]... [--no-new-pieces "<reason>"]
+  pattern-check record [< table.md] [--row "new piece | existing pattern (file:line) | reuse|replace|new | reason | fails how | next step | restart-safe (yes/no + why) | bounded | evidence kept"]... [--no-new-pieces "<reason>"]
   pattern-check status
 options: --session <key>   --cwd <dir>`;
 
@@ -132,7 +136,7 @@ export function run(argv, opts = {}) {
   // record
   let text = "";
   if (args.noNewPieces !== null) {
-    if (args.noNewPieces.trim() === "") return { code: 1, stdout: "", stderr: "--no-new-pieces needs a reason\n" };
+    if (args.noNewPieces.trim() === "") return { code: 1, stdout: "", stderr: "pattern-check: receipt not written: --no-new-pieces needs a reason\n" };
     text = `No new pieces: ${args.noNewPieces.trim()}\n`;
   }
   if (args.rows.length) text += `${args.rows.map((r) => (r.trim().startsWith("|") ? r : `| ${r} |`)).join("\n")}\n`;
