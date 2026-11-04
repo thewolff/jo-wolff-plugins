@@ -42,6 +42,9 @@ mkdir -p "$T/trial" "$T/other" "$T/cfg"
 cat > "$T/cfg/config.json" <<EOF
 { "db": "$T/ledger.sqlite", "enabled": true, "review": { "mode": "off" }, "sweep": { "autoWithdrawDays": 0 }, "digest": { "enabled": false } }
 EOF
+# Our own config, never the caller's store: a caller's LEDGER_DB outranks the config file, so it
+# is dropped first (the canary drops every LEDGER_* key too; this holds when run by hand).
+unset LEDGER_DB LEDGER_CONFIG LEDGER_ENABLED
 export LEDGER_CONFIG="$T/cfg/config.json"
 
 echo "ledger canary: plugin $PLUGIN_DIR"

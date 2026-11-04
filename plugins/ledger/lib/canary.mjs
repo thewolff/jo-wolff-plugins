@@ -122,6 +122,16 @@ export function lineDiff(before, after) {
   return cut(out.join("\n"));
 }
 
+/**
+ * The environment a live-run.sh gets: the caller's, minus every LEDGER_* key. The script builds
+ * its own throwaway config and db; a caller's LEDGER_DB (or LEDGER_CONFIG, LEDGER_ENABLED, …)
+ * would otherwise outrank what the script sets and point the seeded question and the headless
+ * session at the real store.
+ */
+export function childEnv(env) {
+  return Object.fromEntries(Object.entries(env).filter(([k]) => !k.startsWith("LEDGER_")));
+}
+
 function hasBinary(name, env) {
   const r = spawnSync("sh", ["-c", `command -v ${name}`], { env, encoding: "utf8" });
   return r.status === 0 && r.stdout.trim() !== "";
@@ -203,7 +213,7 @@ export async function runCanary({ db, dbPath, env = process.env, now = Date.now(
       } catch {
         /* the script's own mkdir, or the write below, reports it */
       }
-      const r = await run(script, { cwd: p.dir, env: { ...env, CANARY_PLUGIN: p.name, CANARY_TRANSCRIPT: file, CANARY_TIMEOUT_S: String(timeoutS) }, timeoutMs: timeoutS * 1000 });
+      const r = await run(script, { cwd: p.dir, env: { ...childEnv(env), CANARY_PLUGIN: p.name, CANARY_TRANSCRIPT: file, CANARY_TIMEOUT_S: String(timeoutS) }, timeoutMs: timeoutS * 1000 });
       row.duration_ms = r.durationMs;
       row.exit_code = r.code;
       const out = r.stdout + (r.stderr ? `\n[stderr]\n${r.stderr}` : "");
