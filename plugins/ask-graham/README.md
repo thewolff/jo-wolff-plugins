@@ -78,6 +78,16 @@ what it found, with the question alone on the last line.
 Do you want me to research and see if something comparable exists?
 ```
 
+The completed check shows the better design beside the pattern-fit one. When the search finds
+the repo's existing way of doing the thing, the design uses that pattern or says why it cannot;
+when a design beats the pattern-fit one on a stated axis (fewer moving parts, removes a known
+failure mode, closes a gap the pattern leaves, or is what the repo would adopt if starting
+today), the reply's `**Alternative:**` line, after `**Red flags:**`, names it with its axis and
+what it costs over the pattern (the callers that migrate, a second way to do the thing until the
+old one goes). When nothing beats the pattern the line says `none` and what was weighed. Fewer
+lines still picks the default; the alternative is shown either way. Jo's rule, 2026-11-04. The
+Stop check does not block a reply that lacks the line.
+
 The skill does not run on a ticket or issue, a bug fix, a task inside an already-decided
 project, or a request to continue existing work. One exception: before a task inside a decided
 project writes a new table, a new column on an existing table, a new top-level module, or a new
@@ -413,6 +423,22 @@ CI runs the same command on Ubuntu and macOS with Node 24 (`.github/workflows/as
 sources proof on both transcript shapes, with a fixture file of invented sources.
 
 ## Release notes
+
+### 2026-11-04 — 0.8.0
+
+The reply shows the better design beside the pattern-fit one (Jo, 2026-11-04: "ask-graham will
+share solutions based on whether or not it's a pattern in the code base. In those cases make sure
+it's capable and encouraged to show both the best solution based on existing patterns, and
+another solution which is better/optimal if one exists."). Step 4's second-pattern flag keeps
+its rule, the design uses the pattern or says why it cannot, and adds: when a design beats the
+pattern-fit one on a stated axis, show it beside the pattern-fit design with what it costs over
+the pattern. The completed-check template gains an `**Alternative:**` line after
+`**Red flags:**` (the better design, its axis and its cost, or `none` with what was weighed);
+step 5's fewer-lines rule still picks the default and never drops the alternative; the structure
+check carries the line when its second-pattern flag fires. With pattern-check 0.4.0 installed the
+line carries the receipt's `better design` cell. Two live scenarios prove the two shapes
+(`evals/session-alternative-shown.scenario.json`, `evals/session-alternative-none.scenario.json`);
+the Stop check is unchanged and does not block a reply without the line.
 
 ### 2026-11-04 — 0.7.3
 

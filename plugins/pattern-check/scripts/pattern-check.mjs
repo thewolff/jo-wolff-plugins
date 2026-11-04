@@ -2,13 +2,15 @@
 // pattern-check.mjs — the command an agent runs around the check.
 //
 //   pattern-check open "<what you are about to build>"   start the receipt: records the brief
-//   pattern-check record [< table.md] [--row "piece | pattern | decision | reason | fails how | next step | restart-safe | bounded | evidence kept"]...
+//   pattern-check record [< table.md] [--row "piece | pattern | decision | reason | better design | fails how | next step | restart-safe | bounded | evidence kept"]...
 //                        [--no-new-pieces "<reason>"]           write the receipt (repo copy + state copy)
 //   pattern-check status                                 the session key, files counted, receipt path
 //
-// A row has nine cells: what exists already (piece, pattern, decision, reason) and how the piece
+// A row has ten cells: what exists already (piece, pattern, decision, reason), what would beat
+// the pattern (better design: `none`, or the design with its axis and its cost) and how the piece
 // fails (fails how, next step, restart-safe, bounded, evidence kept). `record` refuses a row whose
-// fail cells are empty, or `n/a` without a reason; receipt.mjs has the rules.
+// better design cell is missing, empty or a placeholder, or whose fail cells are empty or `n/a`
+// without a reason; receipt.mjs has the rules.
 //
 // Options on every subcommand:
 //   --session <key>   the session to act on. Otherwise PATTERN_CHECK_SESSION, otherwise the key
@@ -36,7 +38,7 @@ import { isSafeKey, readCurrent, readSession, stateDir, writeAtomic, writeSessio
 
 export const USAGE = `usage:
   pattern-check open "<what you are about to build>"
-  pattern-check record [< table.md] [--row "new piece | existing pattern (file:line) | reuse|replace|new | reason | fails how | next step | restart-safe (yes/no + why) | bounded | evidence kept"]... [--no-new-pieces "<reason>"]
+  pattern-check record [< table.md] [--row "new piece | existing pattern (file:line) | reuse|replace|new | reason | better design (none, or the design + its axis + its cost) | fails how | next step | restart-safe (yes/no + why) | bounded | evidence kept"]... [--no-new-pieces "<reason>"]
   pattern-check status
   pattern-check prune [--days <n>]   remove receipt copies, stop guards and session files in the state directory older than n days (default 30); errors.log and current/ stay
 options: --session <key>   --cwd <dir>`;

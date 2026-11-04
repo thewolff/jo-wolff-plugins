@@ -1,33 +1,68 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { FAIL_COLUMNS, HEADER, failCellProblem, parseTable, render, SEPARATOR } from "./receipt.mjs";
+import { COLUMNS, DESIGN_COLUMN, FAIL_COLUMNS, HEADER, designCellProblem, failCellProblem, parseTable, render, SEPARATOR } from "./receipt.mjs";
 
 // The five fail cells of a well-formed row.
 const FAIL = "writes errors.log, systemMessage shown | rerun the hook | yes: idempotent on the same input | none: hooks never retry, 5 s timeout | errors.log line";
-const row = (base, fail = FAIL) => `| ${base} | ${fail} |`;
+const row = (base, fail = FAIL, design = "none") => `| ${base} | ${design} | ${fail} |`;
 
-test("the header has nine columns in the order the brief gives", () => {
-  assert.equal(HEADER, "| new piece | existing pattern (file:line) | reuse / replace / new | reason | fails how | next step | restart-safe | bounded | evidence kept |");
-  assert.equal(SEPARATOR, "|---|---|---|---|---|---|---|---|---|");
+test("the header has ten columns in the order the brief gives", () => {
+  assert.equal(HEADER, "| new piece | existing pattern (file:line) | reuse / replace / new | reason | better design | fails how | next step | restart-safe | bounded | evidence kept |");
+  assert.equal(SEPARATOR, "|---|---|---|---|---|---|---|---|---|---|");
+  assert.equal(DESIGN_COLUMN, "better design");
   assert.deepEqual(FAIL_COLUMNS, ["fails how", "next step", "restart-safe", "bounded", "evidence kept"]);
+  assert.equal(COLUMNS.length, 10);
 });
 
-test("a nine-column table with header and separator parses; the decision is lower-cased; fail cells are kept", () => {
-  const r = parseTable(`${HEADER}\n${SEPARATOR}\n${row("retry helper | src/net/retry.ts:12 | Reuse | same backoff")}\n${row("webhook parser | (none: grep webhook in src/) | new | nothing parses inbound webhooks", "throws ParseError, logged by the router at src/router.ts:40 | the 400 body names the bad field | yes: parsing is pure | n/a: no retries, one parse per request | the request id in the access log")}\n`);
+test("a ten-column table with header and separator parses; the decision is lower-cased; design and fail cells are kept", () => {
+  const r = parseTable(`${HEADER}\n${SEPARATOR}\n${row("retry helper | src/net/retry.ts:12 | Reuse | same backoff")}\n${row("webhook parser | (none: grep webhook in src/) | new | nothing parses inbound webhooks", "throws ParseError, logged by the router at src/router.ts:40 | the 400 body names the bad field | yes: parsing is pure | n/a: no retries, one parse per request | the request id in the access log", "one inbound module for parse and verify (fewer moving parts); costs: the outbound client's signer moves into it")}\n`);
   assert.equal(r.ok, true, r.error);
   assert.equal(r.noNewPieces, null);
   assert.deepEqual(r.rows[0], {
-    piece: "retry helper", pattern: "src/net/retry.ts:12", decision: "reuse", reason: "same backoff",
+    piece: "retry helper", pattern: "src/net/retry.ts:12", decision: "reuse", reason: "same backoff", betterDesign: "none",
     failsHow: "writes errors.log, systemMessage shown", nextStep: "rerun the hook", restartSafe: "yes: idempotent on the same input",
     bounded: "none: hooks never retry, 5 s timeout", evidenceKept: "errors.log line",
   });
+  assert.equal(r.rows[1].betterDesign, "one inbound module for parse and verify (fewer moving parts); costs: the outbound client's signer moves into it");
   assert.equal(r.rows[1].bounded, "n/a: no retries, one parse per request");
 });
 
 test("rows without leading and trailing pipes and without a header parse too", () => {
-  const r = parseTable(`config loader | src/config.ts:1 | replace | the new one takes env too | ${FAIL}`);
+  const r = parseTable(`config loader | src/config.ts:1 | replace | the new one takes env too | none: weighed a schema-checked loader, more than this repo needs | ${FAIL}`);
   assert.equal(r.ok, true, r.error);
   assert.equal(r.rows[0].decision, "replace");
+  assert.equal(r.rows[0].betterDesign, "none: weighed a schema-checked loader, more than this repo needs");
+});
+
+test("the better design cell: none or an answer is accepted; empty, placeholder or bare n/a is refused naming row and column", () => {
+  assert.equal(designCellProblem("none"), null);
+  assert.equal(designCellProblem("None"), null);
+  assert.equal(designCellProblem("none: weighed a side table, more moving parts"), null);
+  assert.equal(designCellProblem("a column on story_revisions (fewer moving parts); costs: the join table's two readers move"), null);
+  assert.match(designCellProblem(""), /"better design" is empty/);
+  assert.match(designCellProblem("   "), /"better design" is empty/);
+  for (const p of ["-", "—", "?", "TBD", "todo", "unknown", "…", "n/a", "N/A", "**tbd**", "(TBD?)"]) assert.match(designCellProblem(p), /"better design" is a placeholder/, p);
+  // In a row: the message names the row and the column, and nothing else is reported first.
+  const empty = parseTable(row("a | src/a.ts:1 | reuse | ok", FAIL, ""));
+  assert.equal(empty.ok, false);
+  assert.match(empty.error, /^row "a": "better design" is empty \(write "none", or the better design with its axis and its cost\): /);
+  const placeholder = parseTable(row("a | src/a.ts:1 | reuse | ok", FAIL, "TBD"));
+  assert.equal(placeholder.ok, false);
+  assert.match(placeholder.error, /^row "a": "better design" is a placeholder \(TBD\), not an answer/);
+  // The design cell is checked before the fail cells: a row with both wrong names the design cell.
+  const both = parseTable(row("a | src/a.ts:1 | reuse | ok", FAIL.replace(/^[^|]+/, ""), "?"));
+  assert.match(both.error, /"better design" is a placeholder/);
+});
+
+test("a nine-column row (0.3, no better design) is refused by record, naming the row and the missing cell", () => {
+  const r = parseTable(`| a | src/a.ts:1 | reuse | ok | ${FAIL} |`);
+  assert.equal(r.ok, false);
+  assert.match(r.error, /^row "a" has no "better design" cell; every piece needs it after the reason, before fails how \(write "none", or the better design with its axis and its cost\): /);
+  const lenient = parseTable(`| a | src/a.ts:1 | reuse | ok | ${FAIL} |`, { requireAllColumns: false });
+  assert.equal(lenient.ok, true, lenient.error);
+  assert.equal(lenient.rows[0].betterDesign, null);
+  assert.equal(lenient.rows[0].failsHow, "writes errors.log, systemMessage shown");
+  assert.equal(lenient.rows[0].evidenceKept, "errors.log line");
 });
 
 test("an empty fail cell is refused, naming the column", () => {
@@ -93,7 +128,7 @@ test("regression (codex review round 2, B1): placeholders decorated with punctua
   // Since round 3 the cell is normalized before the n/a split, so a bolded bare n/a is named as such.
   assert.match(failCellProblem("fails how", "**n/a**") ?? "", /n\/a without a reason/);
   // The complete row from the round-2 report.
-  const r = parseTable("| x | a.ts:1 | reuse | same | n/a: TBD? | n/a: TODO! | yes: TBD? | n/a: **TBD** | n/a: unknown? |");
+  const r = parseTable("| x | a.ts:1 | reuse | same | none | n/a: TBD? | n/a: TODO! | yes: TBD? | n/a: **TBD** | n/a: unknown? |");
   assert.equal(r.ok, false);
   assert.match(r.error, /row "x": "fails how" is n\/a without a reason/);
   // Short genuine answers, decorated or not, still pass: only the ends are stripped, only for the check.
@@ -108,7 +143,7 @@ test("regression (codex review round 3, B1): Markdown or dash decoration on the 
   for (const v of ["**n/a: TBD**", "**n/a**: TBD", "n/a—TBD", "_n/a_ – tbd", "n/a–TBD", "n/a-TBD", "`n/a`: todo", "(n/a: TBD)", "~~n/a~~ — unknown"]) {
     assert.match(failCellProblem("bounded", v) ?? "", /n\/a without a reason/, v);
     // The full row, every fail cell except restart-safe holding the value: refused, nothing saved.
-    const r = parseTable(`| x | a.ts:1 | reuse | same | ${v} | ${v} | yes: pure | ${v} | ${v} |`);
+    const r = parseTable(`| x | a.ts:1 | reuse | same | none | ${v} | ${v} | yes: pure | ${v} | ${v} |`);
     assert.equal(r.ok, false, v);
     assert.match(r.error, /row "x": "fails how" is n\/a without a reason/, v);
   }
@@ -123,8 +158,9 @@ test("regression (codex review round 3): normalization keeps genuine answers and
   }
   assert.equal(failCellProblem("restart-safe", "**yes**: pure"), null);
   assert.match(failCellProblem("restart-safe", "**probably**") ?? "", /must start with yes or no/);
-  const r = parseTable("| x | a.ts:1 | reuse | same | **throws** ParseError | n/a—pure function | **yes**: pure | `retry()` gives up after 3 | none |");
+  const r = parseTable("| x | a.ts:1 | reuse | same | **none** | **throws** ParseError | n/a—pure function | **yes**: pure | `retry()` gives up after 3 | none |");
   assert.equal(r.ok, true, r.error);
+  assert.equal(r.rows[0].betterDesign, "**none**");
   assert.equal(r.rows[0].failsHow, "**throws** ParseError");
   assert.equal(r.rows[0].nextStep, "n/a—pure function");
   assert.equal(r.rows[0].bounded, "`retry()` gives up after 3");
@@ -134,7 +170,7 @@ test("regression (codex review round 4, B1): double-underscore runs and wrapping
   // Placeholders: refused in a full row (every fail cell but restart-safe), nothing saved.
   for (const v of ["__n/a__—TODO", "__n/a__—`TODO!`", "__n/a__: tbd", "(__n/a__): **TBD**", "(n/a): TBD"]) {
     assert.match(failCellProblem("bounded", v) ?? "", /n\/a without a reason/, v);
-    const r = parseTable(`| x | a.ts:1 | reuse | same | ${v} | ${v} | yes: pure | ${v} | ${v} |`);
+    const r = parseTable(`| x | a.ts:1 | reuse | same | none | ${v} | ${v} | yes: pure | ${v} | ${v} |`);
     assert.equal(r.ok, false, v);
     assert.match(r.error, /row "x": "fails how" is n\/a without a reason/, v);
   }
@@ -142,30 +178,31 @@ test("regression (codex review round 4, B1): double-underscore runs and wrapping
   // Genuine answers: accepted in a full row and saved as written.
   for (const rs of ["(__no__) - writes twice", "(__yes__): pure"]) {
     assert.equal(failCellProblem("restart-safe", rs), null, rs);
-    const r = parseTable(`| x | a.ts:1 | reuse | same | throws | rerun | ${rs} | n/a: one call | the log |`);
+    const r = parseTable(`| x | a.ts:1 | reuse | same | none | throws | rerun | ${rs} | n/a: one call | the log |`);
     assert.equal(r.ok, true, r.error);
     assert.equal(r.rows[0].restartSafe, rs);
   }
   for (const v of ["uses snake_case keys", "calls __init__ then exits", "fails in __init__.py, logged", "(__n/a__) - no I/O", "__uses snake_case keys__"]) {
     assert.equal(failCellProblem("fails how", v), null, v);
   }
-  const r = parseTable("| x | a.ts:1 | reuse | same | fails in __init__.py, logged | rerun | yes: pure | n/a: one call | uses snake_case keys |");
+  const r = parseTable("| x | a.ts:1 | reuse | same | none | fails in __init__.py, logged | rerun | yes: pure | n/a: one call | uses snake_case keys |");
   assert.equal(r.ok, true, r.error);
   assert.equal(r.rows[0].failsHow, "fails in __init__.py, logged");
   assert.equal(r.rows[0].evidenceKept, "uses snake_case keys");
 });
 
-test("a four-column row is refused by default (record) and read with requireFailColumns false (old receipts)", () => {
+test("a four-column row is refused by default (record) and read with requireAllColumns false (old receipts)", () => {
   const old = "| retry helper | src/net/retry.ts:12 | reuse | same backoff |";
   const strict = parseTable(old);
   assert.equal(strict.ok, false);
-  assert.match(strict.error, /row "retry helper" has no fail columns.*fails how \| next step \| restart-safe \| bounded \| evidence kept/);
-  const lenient = parseTable(old, { requireFailColumns: false });
+  assert.match(strict.error, /row "retry helper" has no fail columns.*better design \| fails how \| next step \| restart-safe \| bounded \| evidence kept/);
+  const lenient = parseTable(old, { requireAllColumns: false });
   assert.equal(lenient.ok, true, lenient.error);
+  assert.equal(lenient.rows[0].betterDesign, null);
   assert.equal(lenient.rows[0].failsHow, null);
 });
 
-test("a 0.2.0 receipt file re-parses leniently, header and front matter skipped", () => {
+test("0.2.0 and 0.3.x receipt files re-parse leniently, header and front matter skipped", () => {
   const v020 = [
     "# pattern-check receipt", "", "session: k", "what: w", "opened: o", "recorded: r", "",
     "| new piece | existing pattern (file:line) | reuse / replace / new | reason |",
@@ -173,16 +210,31 @@ test("a 0.2.0 receipt file re-parses leniently, header and front matter skipped"
     "| a | b:1 | reuse | c |",
     "",
   ].join("\n");
-  const r = parseTable(v020, { requireFailColumns: false });
+  const r = parseTable(v020, { requireAllColumns: false });
   assert.equal(r.ok, true, r.error);
   assert.equal(r.rows.length, 1);
+  const v030 = [
+    "# pattern-check receipt", "", "session: k", "what: w", "opened: o", "recorded: r", "",
+    "| new piece | existing pattern (file:line) | reuse / replace / new | reason | fails how | next step | restart-safe | bounded | evidence kept |",
+    "|---|---|---|---|---|---|---|---|---|",
+    `| a | b:1 | reuse | c | ${FAIL} |`,
+    "",
+  ].join("\n");
+  const r3 = parseTable(v030, { requireAllColumns: false });
+  assert.equal(r3.ok, true, r3.error);
+  assert.equal(r3.rows.length, 1);
+  assert.equal(r3.rows[0].betterDesign, null);
+  assert.equal(r3.rows[0].restartSafe, "yes: idempotent on the same input");
+  // Lenient reading still checks what the old shape does carry.
+  assert.match(parseTable("| a | b:1 | reuse | c | TBD | rerun | yes: pure | n/a: x | log |", { requireAllColumns: false }).error, /"fails how" is a placeholder/);
 });
 
 test("a bad decision word, a 'new' row without a reason, a reuse row without a pattern, a wrong cell count: rejected", () => {
   assert.match(parseTable(row("a | b | maybe | c")).error, /decision must be one of reuse, replace, new/);
   assert.match(parseTable(row("a | | new | ")).error, /a "new" row needs a reason/);
   assert.match(parseTable(row("a | | reuse | fine")).error, /needs the existing pattern/);
-  assert.match(parseTable("| a | b | reuse |").error, /needs 9 cells/);
+  assert.match(parseTable("| a | b | reuse |").error, /needs 10 cells/);
+  assert.match(parseTable(`| a | b | reuse | c | none | ${FAIL} | extra |`).error, /needs 10 cells.*got 11/);
   assert.match(parseTable(row("| b | reuse | c")).error, /empty "new piece"/);
 });
 
@@ -202,19 +254,21 @@ test("'No new pieces' and rows together are rejected; a stray prose line is reje
 });
 
 test("a literal pipe is written \\| in a cell and survives render and re-parse", () => {
-  const r = parseTable(row("a | b:1 | reuse | c", "prints to stderr \\| tail shows it | rerun | yes: pure | n/a: no retry | stderr only"));
+  const r = parseTable(row("a | b:1 | reuse | c", "prints to stderr \\| tail shows it | rerun | yes: pure | n/a: no retry | stderr only", "one writer \\| one reader (fewer moving parts); costs: two callers move"));
   assert.equal(r.ok, true, r.error);
   assert.equal(r.rows[0].failsHow, "prints to stderr | tail shows it");
+  assert.equal(r.rows[0].betterDesign, "one writer | one reader (fewer moving parts); costs: two callers move");
   const again = parseTable(render({ key: "k", what: null, opened: null, recorded: "r", rows: r.rows, noNewPieces: null }));
   assert.equal(again.ok, true, again.error);
   assert.equal(again.rows[0].failsHow, "prints to stderr | tail shows it");
+  assert.equal(again.rows[0].betterDesign, "one writer | one reader (fewer moving parts); costs: two callers move");
 });
 
 test("a receipt file re-parses: its front matter lines are skipped", () => {
   const parsed = parseTable(row("a | b:1 | reuse | c")).rows;
   const text = render({ key: "k", what: "w", opened: "o", recorded: "r", rows: parsed, noNewPieces: null });
   assert.match(text, /^# pattern-check receipt\n\nsession: k\nwhat: w\nopened: o\nrecorded: r\n\n/);
-  assert.ok(text.includes(`${HEADER}\n${SEPARATOR}\n| a | b:1 | reuse | c | ${FAIL} |`), text);
+  assert.ok(text.includes(`${HEADER}\n${SEPARATOR}\n| a | b:1 | reuse | c | none | ${FAIL} |`), text);
   const r = parseTable(text);
   assert.equal(r.ok, true, r.error);
   assert.equal(r.rows.length, 1);
