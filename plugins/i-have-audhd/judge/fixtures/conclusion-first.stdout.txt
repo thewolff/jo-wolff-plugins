@@ -1,0 +1,1 @@
+{"violation": true, "reason": "The opening sentence is a long chain of process narration, and the conclusion (production deploy failed, rollback didn't run, site serving broken build) only appears after 'After all of that,' well past the first 20 words."}

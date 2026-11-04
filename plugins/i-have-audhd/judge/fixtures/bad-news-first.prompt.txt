@@ -1,0 +1,12 @@
+You are judging one message against one communication rule. Reply with ONE JSON object and nothing else, exactly this shape:
+{"violation": true, "reason": "one short sentence"}
+
+Rule: bad-news-first
+Question: Rule 'bad news first': when a message carries genuinely bad news — a failure, a blocker, a loss, a rejection — its opening 20 words state it or directly point to it. Not after the context that explains it; the explanation is welcome and goes second. A long first sentence that reaches the bad news only after word 20 buries it. Weigh this honestly: technical prose that merely CONTAINS the words error, failed, or broken while reporting success ('fixed the error', 'tests failed yesterday, now green') is NOT bad news — bad news is a present, unresolved cost to the reader. Answer violation=true only when the message contains genuinely bad news AND its opening 20 words neither state it nor direct the reader to it. When unsure, or when there is no genuinely bad news, answer violation=false. The reader's first 20 words here are: "I started by reading the deploy workflow end to end, then compared the staging and production configuration files line by".
+
+Message under judgment, verbatim, between the markers:
+<<<MSG
+I started by reading the deploy workflow end to end, then compared the staging and production configuration files line by line, then walked through the last three release tags to see how the cache keys were derived in each of them, and then read the runbook section on rollbacks.
+
+After all of that, the conclusion is that the production deploy failed last night and the rollback did not run, so the site is still serving the broken build. The fix is to rerun the rollback job by hand from the actions page.
+MSG

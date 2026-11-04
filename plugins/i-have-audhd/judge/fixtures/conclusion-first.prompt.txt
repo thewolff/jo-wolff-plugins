@@ -1,0 +1,12 @@
+You are judging one message against one communication rule. Reply with ONE JSON object and nothing else, exactly this shape:
+{"violation": true, "reason": "one short sentence"}
+
+Rule: conclusion-first
+Question: Rule 'conclusion first': state the conclusion before the evidence. The reader decides from a message's first 20 words, so its decision, verdict, or point must appear in those opening 20 words, or be directly pointed at by them, rather than arriving after setup or context that only later earns the answer. A long first sentence that reaches its point only after word 20 buries it. Weigh these COMPLIANT shapes honestly: a short answer whose opening words naturally orient the reader; opening words that ARE the summary even when they read as narrative; a bad-news message whose opening words name the bad news; a message whose substance genuinely is the setup (a question, an acknowledgement). Answer violation=true only when the message plainly buries a decision or verdict the reader needs past its opening 20 words. When unsure, answer violation=false. The reader's first 20 words here are: "I started by reading the deploy workflow end to end, then compared the staging and production configuration files line by".
+
+Message under judgment, verbatim, between the markers:
+<<<MSG
+I started by reading the deploy workflow end to end, then compared the staging and production configuration files line by line, then walked through the last three release tags to see how the cache keys were derived in each of them, and then read the runbook section on rollbacks.
+
+After all of that, the conclusion is that the production deploy failed last night and the rollback did not run, so the site is still serving the broken build. The fix is to rerun the rollback job by hand from the actions page.
+MSG

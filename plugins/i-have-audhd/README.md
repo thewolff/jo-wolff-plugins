@@ -189,8 +189,10 @@ also caps every block to warn unless the profile sets `enforcement.armOmp: true`
 
 **Kill switch:** `touch ~/.claude/.i-have-audhd-off` disables the Stop hook within one turn.
 `I_HAVE_AUDHD_ENFORCE=off` is a secondary switch that needs a host relaunch to change.
-Everything fails open: a broken hook exits 0 with one line in `errors.log`. A judge that cannot
-answer is never a pass: see the judge contract below.
+Everything fails open, and never silently: a hook fault (empty or malformed stdin, a throw, an
+unparseable profile, an unwritable state directory) exits 0, blocks nothing, writes one
+`<file> <reason>` line to `errors.log`, and shows one warning line naming the hook and the log.
+A judge that cannot answer is never a pass: see the judge contract below.
 
 ## Configuring a profile
 
@@ -296,6 +298,18 @@ Exit 0 means every item is done or had nothing to do, 1 means one was refused or
 
 ## Changes
 
+### 1.5.1
+
+- A hook's own fault is no longer silent. Empty or malformed stdin, a throw, an unparseable
+  profile, or a state file that cannot be written leaves one `<file> <reason>` line in
+  `errors.log` and one warning line in the hook's `systemMessage`; it still exits 0 and blocks
+  nothing. Before, these exited with no output, and a state directory that could not be written
+  lost even the `errors.log` line.
+- Tests to the repository bar: every hook as a process against each fault and a 5 s budget
+  (`hooks/fault-tolerance.test.mjs`), the verdict parser against a real judge's captured output
+  (`judge/real-judge-output.test.mjs`, captured by `judge/fixtures/capture-real-judge.mjs`), and
+  the main path end to end through setup and all three hooks (`e2e/main-path.test.mjs`).
+
 ### 1.5.0
 
 - Per-section judging splits only at the two labels the output-types contract still uses
@@ -399,12 +413,16 @@ Exit 0 means every item is done or had nothing to do, 1 means one was refused or
 ## Tests
 
 ```
-node --test plugins/i-have-audhd/checks/*.test.mjs plugins/i-have-audhd/triggers/*.test.mjs plugins/i-have-audhd/judge/*.test.mjs plugins/i-have-audhd/hooks/*.test.mjs plugins/i-have-audhd/omp/*.test.mjs plugins/i-have-audhd/tools/*.test.mjs
+node --test plugins/i-have-audhd/checks/*.test.mjs plugins/i-have-audhd/triggers/*.test.mjs plugins/i-have-audhd/judge/*.test.mjs plugins/i-have-audhd/hooks/*.test.mjs plugins/i-have-audhd/omp/*.test.mjs plugins/i-have-audhd/tools/*.test.mjs plugins/i-have-audhd/e2e/*.test.mjs
 ```
 
 Most tests prove what does not flag: a structural check earns its place by what it leaves
 alone. The hook and adapter suites run the real hooks as subprocesses against an isolated
-`$HOME`. The judge suite drives only fake judges.
+`$HOME`, each with a 5 s timeout. The judge suite drives fake judges, plus the stdout a real
+judge printed, saved under `judge/fixtures/`; re-capture it with
+`node plugins/i-have-audhd/judge/fixtures/capture-real-judge.mjs`, which reads the judge command
+from your profile and calls it. `e2e/main-path.test.mjs` runs the main path through the real
+processes in a temp home and git repo.
 
 ## License
 
