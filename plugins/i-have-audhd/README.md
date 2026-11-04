@@ -442,6 +442,7 @@ Exit 0 means every item is done or had nothing to do, 1 means one was refused or
   Receipts, fenced code, `→` evidence lines, blockquotes, headings and command lines never
   count. Two more kinds, "the report"-style phrases and branch names, are built and ship off:
   they measured 75 % and 50 % false positives. `linkTheReference.kinds` switches each kind.
+  Both new checks detect a direct run by comparing real paths, the 1.5.2 symlink-safe guard.
 - New profile field `inject`: `full` (default, unchanged behavior), `rules` (injection only,
   no Stop checks) or `none` (no injection, the checks still run), or an object
   `{"mode": …, "rules": {"<rule id>": false}}` that also switches single rules off. A rule
