@@ -543,7 +543,7 @@ on its own line (never inside a batch) because each spawns processes.
 
 ### `canary`
 
-`canary run [--repo <path>] [--plugins a,b] [--timeout <s>] [--no-prune]` runs every plugin's
+`canary run [--repo <path>] [--plugins a,b] [--timeout <s>] [--no-prune | --prunes-only]` runs every plugin's
 `e2e/live-run.sh` from its plugin directory (every directory under `<repo>/plugins/` that has
 `hooks/hooks.json` or `.claude-plugin/plugin.json`; `--repo` defaults to the checkout this
 plugin is loaded from) and inserts one `cc_canary_runs` row per plugin: `pass` (exit 0), `fail`
@@ -566,7 +566,17 @@ the bytes it reported freed (`… <n> bytes freed` on its last stdout line; NULL
 reported none); `--no-prune` skips that pass. A prune that fails is its own row and never fails
 the run. Exit 0 when nothing failed, 1 when something did, 2 when the store
 could not be written (the canary has no session to fail open into; both paths are named so
-nothing is lost).
+nothing is lost; since 0.3.9 the prunes still run before that exit, so a store that cannot be
+written never leaves state growing).
+
+`canary run --prunes-only [--repo <path>] [--plugins a,b]` (0.3.9) is the daily job: no live
+run, no `cc_canary_runs` row, every declared prune run before and independently of any database
+write (a `cc_canary_prunes` row per prune is still attempted; one that cannot be written is
+`not recorded: <reason>` on the line and changes nothing else). One line per prune,
+`prune <plugin>: <its last stdout line>` (`unavailable, …` or `fail, exit <n>: …` ahead of it
+when it was not a pass). Exit 0 when every prune ran (pass, or unavailable by its own exit 75),
+1 when any failed or could not be started, naming each on the last line. The launchd line for
+it is `canary install --prunes-only` below.
 
 The canary contract a plugin's `e2e/live-run.sh` follows (plugin-kit's `new-plugin` skill
 ships a template): run from the plugin directory with `CANARY_PLUGIN`, `CANARY_TRANSCRIPT` (the
@@ -589,14 +599,28 @@ PreToolUse, the Stop ask rule); the ledger pane has no live scenario and is list
 the last run (its status, id, time, tree and note) and the last pass, then the last prune per
 declared path. `canary grade <id> biting|silent|fine
 ["<note>"]` records who read a run and what they made of it (`--by`, default `human`).
-`canary prune [--days 30]` removes transcript and output files older than that; rows stay for
-ever. It is the prune command the ledger's own `state` declaration names for
-`$XDG_STATE_HOME/ledger/canary`, so the nightly run prunes the ledger too.
-`canary install [--repo <path>] [--hour 3] [--minute 30]` (a relative `--repo` is resolved against the cwd first: launchd runs the job from `/`; a path with no `plugins/` directory is refused) writes
+`canary prune [--days 30] [--dry-run]` removes transcript and output files older than that; rows
+stay for ever. It is the prune command the ledger's own `state` declaration names for
+`$XDG_STATE_HOME/ledger/canary`, so the nightly run prunes the ledger too, and since 0.3.9 it
+follows the plugin-kit prune contract: the last line is
+`pruned: <n> file(s), <bytes> bytes freed[ (dry run)]; kept <k>`, `--dry-run` counts and removes
+nothing, a file that cannot be removed is named on stderr and counted as kept, exit 0.
+`canary install [--repo <path>] [--hour 3] [--minute 30] [--prunes-only]` (a relative `--repo` is resolved against the cwd first: launchd runs the job from `/`; a path with no `plugins/` directory is refused) writes
 `<state>/launchd/com.jo-wolff-plugins.ledger-canary.plist` (nightly, `canary run --repo …`,
 logs beside it), checks it with `plutil -lint`, asks `launchctl print` whether the job is
 loaded, and prints the `launchctl bootstrap gui/<uid> <plist>` line for you to run. It never
-runs bootstrap itself.
+runs bootstrap itself. With `--prunes-only` (0.3.9) it writes
+`<state>/launchd/com.jo-wolff-plugins.ledger-prunes.plist` instead (daily at 10:00 by default,
+`canary run --prunes-only --repo …`) and leaves the nightly plist alone; the two jobs are
+independent, so the bootstrap for the daily prunes is:
+
+```
+node "$CLAUDE_PLUGIN_ROOT/scripts/ledger.mjs" canary install --prunes-only --repo <checkout>
+launchctl bootstrap gui/$(id -u) "${XDG_STATE_HOME:-$HOME/.local/state}/ledger/launchd/com.jo-wolff-plugins.ledger-prunes.plist"
+```
+
+The full nightly canary (`canary install`, 03:30) stays as it is; it prunes too, after the live
+runs.
 
 ### `report`
 
@@ -791,6 +815,20 @@ Tests use a sandboxed `HOME`, `XDG_*` and `LEDGER_*` so they never touch your le
 `LEDGER_CWD` and `LEDGER_BUSY_TIMEOUT_MS` environment variables exist for the tests.
 
 ## Changes
+
+### 0.3.9
+
+- `canary run --prunes-only`: the daily job. No live run, no `cc_canary_runs` row; every
+  declared prune runs before and independently of any database write, one line per prune
+  (`prune <plugin>: <its last stdout line>`), exit 0 when every prune ran, 1 naming a prune that
+  failed or could not start. A full `canary run` against a store that cannot be written now
+  runs the prunes before it exits 2. `canary install --prunes-only` writes the daily plist.
+- `canary prune` follows the plugin-kit prune contract: `--dry-run`, the last line
+  `pruned: <n> file(s), <bytes> bytes freed[ (dry run)]; kept <k>`, a file that cannot be
+  removed named on stderr and counted as kept.
+- The gate's `retention` row runs every declared prune command once with `--dry-run` (from the
+  plugin directory, `CLAUDE_PLUGIN_ROOT` set, 60 s) and fails naming one that exits non-zero,
+  cannot start, or ends with any line but the contract's.
 
 ### 0.3.8
 

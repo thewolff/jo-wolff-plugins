@@ -8,7 +8,7 @@ import { spawnSync } from "node:child_process";
 import { chmodSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { sandbox, cli, hook, openDb } from "./helpers.mjs";
-import { checkPlugin, docsCheck, evalsCheck, retentionCheck, fixturesWithoutUnavailable, hookCommands, reasonsWithoutCommand, releaseEntry, rootReadmeNames, treePlugins, treeSha, snapshotTree, textsWithoutWhenCant, changedPlugins, CHECKS, FAULT_INPUTS } from "../lib/plugin-gate.mjs";
+import { checkPlugin, docsCheck, dryRunPrune, evalsCheck, retentionCheck, fixturesWithoutUnavailable, hookCommands, reasonsWithoutCommand, releaseEntry, rootReadmeNames, treePlugins, treeSha, snapshotTree, textsWithoutWhenCant, changedPlugins, CHECKS, FAULT_INPUTS } from "../lib/plugin-gate.mjs";
 
 const SID = "s-gate";
 
@@ -223,7 +223,7 @@ test("checkPlugin: a plugin that meets the bar passes all six checks once a cana
   assert.equal(rows[0].detail, `1 hook(s) × ${FAULT_INPUTS.length} fault inputs`);
   assert.equal(rows[2].detail, "every skill and agent text has the section and names a scenario; every deny reason names a command");
   assert.equal(rows[3].detail, `2 scenario(s) cover 1 event(s); canary #${id} at ${withDb(b, (db) => db.prepare("SELECT at FROM cc_canary_runs WHERE id = ?").get(id).at)}: live pass`);
-  assert.equal(rows[4].detail, "2 state path(s) declared (0 with a prune, 2 kept by design); 3 write site(s) in source");
+  assert.equal(rows[4].detail, "2 state path(s) declared (0 with a prune, 2 kept by design); 0 prune command(s) ran dry; 3 write site(s) in source");
   assert.equal(rows[5].detail, "version 0.0.1 unchanged since the base");
   // Without the repository context the row cannot compare and says so.
   const cold = withDb(b, (db) => checkPlugin({ name: "good", dir: join(b.work, "plugins", "good"), prefix: "plugins/good/" }, { db, tree }));
@@ -303,12 +303,12 @@ test("evals row: a scenario missing for a declared outcome, a stub, a scenario f
   assert.equal(run({ tree, now: Date.parse("2026-01-05T00:00:00.000Z") }).status, "pass");
 });
 
-test("retention row: a write site with no `state`, an empty `state`, a retention with no prune, a malformed entry, and a canary-observed write under no declared path each fail; a declaration covering the writes passes", () => {
+test("retention row: a write site with no `state`, an empty `state`, a retention with no prune, a malformed entry, and a canary-observed write under no declared path each fail; a declaration covering the writes passes; every prune runs dry and must exit 0 with the contract line last", () => {
   const b = pluginRepo();
   const good = join(b.work, "plugins", "good");
   const manifest = (state) => write(good, ".claude-plugin/plugin.json", JSON.stringify({ name: "good", version: "0.0.1", ...(state === undefined ? {} : { state }) }));
-  const run = () => withDb(b, (db) => retentionCheck({ name: "good", dir: good }, { db }));
-  assert.deepEqual(run(), { status: "pass", detail: "2 state path(s) declared (0 with a prune, 2 kept by design); 3 write site(s) in source" });
+  const run = () => withDb(b, (db) => retentionCheck({ name: "good", dir: good }, { db, env: b.env }));
+  assert.deepEqual(run(), { status: "pass", detail: "2 state path(s) declared (0 with a prune, 2 kept by design); 0 prune command(s) ran dry; 3 write site(s) in source" });
   manifest(undefined);
   assert.deepEqual(run(), { status: "fail", detail: "no `state` field in .claude-plugin/plugin.json, yet 3 source site(s) write or resolve paths outside the worktree: hooks/good.mjs:4, hooks/good.mjs:5, hooks/good.mjs:12" });
   manifest([]);
@@ -317,13 +317,31 @@ test("retention row: a write site with no `state`, an empty `state`, a retention
   assert.deepEqual(run(), { status: "fail", detail: ".claude-plugin/plugin.json state[0] ($XDG_STATE_HOME/good): retentionDays 30 with no prune command" });
   manifest([{ path: "$XDG_STATE_HOME/good", retentionDays: "soon" }, { retentionDays: null }]);
   assert.deepEqual(run(), { status: "fail", detail: ".claude-plugin/plugin.json state[0] ($XDG_STATE_HOME/good): retentionDays must be a whole number of days or null (kept by design); .claude-plugin/plugin.json state[1] has no path" });
-  manifest([{ path: "$XDG_STATE_HOME/good", retentionDays: 30, prune: "node x prune --days 30" }, { path: "$XDG_DATA_HOME/good", retentionDays: null }]);
-  assert.deepEqual(run(), { status: "pass", detail: "2 state path(s) declared (1 with a prune, 1 kept by design); 3 write site(s) in source" });
+  // The prune runs dry, from the plugin directory with CLAUDE_PLUGIN_ROOT, and must end with the contract line.
+  const ok = 'sh "$CLAUDE_PLUGIN_ROOT/prune.sh" --days 30';
+  write(good, "prune.sh", '#!/bin/sh\ncase "$*" in *--dry-run*) ;; *) echo "not a dry run" >&2; exit 9;; esac\necho "pruned: 2 file(s), 100 bytes freed (dry run); kept 1"\n');
+  manifest([{ path: "$XDG_STATE_HOME/good", retentionDays: 30, prune: ok }, { path: "$XDG_DATA_HOME/good", retentionDays: null }]);
+  assert.deepEqual(run(), { status: "pass", detail: "2 state path(s) declared (1 with a prune, 1 kept by design); 1 prune command(s) ran dry; 3 write site(s) in source" });
+  write(good, "fail.sh", '#!/bin/sh\necho nope >&2\nexit 4\n');
+  manifest([{ path: "$XDG_STATE_HOME/good", retentionDays: 30, prune: 'sh "$CLAUDE_PLUGIN_ROOT/fail.sh"' }, { path: "$XDG_DATA_HOME/good", retentionDays: null }]);
+  assert.deepEqual(run(), { status: "fail", detail: 'prune `sh "$CLAUDE_PLUGIN_ROOT/fail.sh"` --dry-run exited 4: nope' });
+  write(good, "json.sh", '#!/bin/sh\necho \'{"removed":1}\'\n');
+  manifest([{ path: "$XDG_STATE_HOME/good", retentionDays: 30, prune: 'sh "$CLAUDE_PLUGIN_ROOT/json.sh"' }, { path: "$XDG_DATA_HOME/good", retentionDays: null }]);
+  assert.deepEqual(run(), { status: "fail", detail: 'prune `sh "$CLAUDE_PLUGIN_ROOT/json.sh"` --dry-run: last line is "{"removed":1}", not `pruned: <n> file(s), <bytes> bytes freed`' });
+  manifest([{ path: "$XDG_STATE_HOME/good", retentionDays: 30, prune: "/nonexistent/prune" }, { path: "$XDG_DATA_HOME/good", retentionDays: null }]);
+  assert.match(run().detail, /^prune `\/nonexistent\/prune` --dry-run exited 127: /);
+  assert.equal(run().status, "fail");
+  // One command declared for two paths runs once.
+  manifest([{ path: "$XDG_STATE_HOME/good", retentionDays: 30, prune: ok }, { path: "$XDG_STATE_HOME/good/sub", retentionDays: 7, prune: ok }, { path: "$XDG_DATA_HOME/good", retentionDays: null }]);
+  assert.deepEqual(run(), { status: "pass", detail: "3 state path(s) declared (2 with a prune, 1 kept by design); 1 prune command(s) ran dry; 3 write site(s) in source" });
   // The canary saw a write the declaration does not cover: the newest row with writes decides.
+  manifest([{ path: "$XDG_STATE_HOME/good", retentionDays: 30, prune: ok }, { path: "$XDG_DATA_HOME/good", retentionDays: null }]);
   seedCanaryPass(b, "good", goodTree(b), { writes: JSON.stringify(["$XDG_STATE_HOME/good/errors.log", "$XDG_CACHE_HOME/good/blob"]) });
   assert.deepEqual(run(), { status: "fail", detail: "the canary saw a write at $XDG_CACHE_HOME/good/blob under no declared state path (declared: $XDG_STATE_HOME/good, $XDG_DATA_HOME/good)" });
-  manifest([{ path: "$XDG_STATE_HOME/good", retentionDays: 30, prune: "node x prune --days 30" }, { path: "$XDG_DATA_HOME/good", retentionDays: null }, { path: "$XDG_CACHE_HOME/good", retentionDays: 0 }]);
-  assert.deepEqual(run(), { status: "pass", detail: "3 state path(s) declared (1 with a prune, 1 kept by design); 3 write site(s) in source" });
+  manifest([{ path: "$XDG_STATE_HOME/good", retentionDays: 30, prune: ok }, { path: "$XDG_DATA_HOME/good", retentionDays: null }, { path: "$XDG_CACHE_HOME/good", retentionDays: 0 }]);
+  assert.deepEqual(run(), { status: "pass", detail: "3 state path(s) declared (1 with a prune, 1 kept by design); 1 prune command(s) ran dry; 3 write site(s) in source" });
+  // dryRunPrune alone: a hung prune is named with its budget.
+  assert.equal(dryRunPrune(good, "sleep 5 #", { timeoutMs: 200 }), "prune `sleep 5 #` --dry-run: no exit within 200 ms");
 });
 
 test("docs row: a changed version needs a CHANGELOG.md entry, a README release heading and a root README mention, each failure naming the file and the heading; every documented heading shape passes; unchanged or absent versions are skipped; a root plugin is not asked for a root README", () => {
@@ -706,7 +724,7 @@ test("the ledger plugin itself passes its own gate: the five static rows on the 
     JSON.stringify(rows),
   );
   assert.match(rows[3].detail, new RegExp(`^\\d+ scenario\\(s\\) cover 5 event\\(s\\); canary #${id} at \\S+: live pass$`));
-  assert.match(rows[4].detail, /^6 state path\(s\) declared \(1 with a prune, 4 kept by design\); \d+ write site\(s\) in source$/);
+  assert.match(rows[4].detail, /^6 state path\(s\) declared \(1 with a prune, 4 kept by design\); 1 prune command\(s\) ran dry; \d+ write site\(s\) in source$/);
   const version = JSON.parse(readFileSync(join(dir, ".claude-plugin", "plugin.json"), "utf8")).version;
   assert.equal(rows[5].detail, `version ${version}, new since the base: CHANGELOG.md has its ${version} entry; README.md has its ${version} entry; the repository README names it`);
   // Without the canary row the same checkout fails evals alone, naming the command.

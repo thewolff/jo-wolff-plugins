@@ -5,6 +5,29 @@ All notable changes to ledger are recorded here. The format follows
 "Changes" section of the README (one line per version) and the "Changes in" paragraphs of the
 repository root README's ledger section.
 
+## 0.3.9 - 2026-11-04
+
+### Added
+
+- `canary run --prunes-only`, the daily job: no live run, no `cc_canary_runs` row, every
+  declared prune run before and independently of any database write (a `cc_canary_prunes` row
+  is still attempted; one that cannot be written is `not recorded: <reason>` on the line). One
+  line per prune, `prune <plugin>: <its last stdout line>`; exit 0 when every prune ran, 1
+  naming a prune that failed or could not start.
+- `canary install --prunes-only` writes `com.jo-wolff-plugins.ledger-prunes.plist` (daily at
+  10:00 by default) beside the nightly plist and prints its bootstrap line.
+- `canary prune --dry-run`.
+
+### Changed
+
+- `canary prune` prints the plugin-kit contract line last,
+  `pruned: <n> file(s), <bytes> bytes freed[ (dry run)]; kept <k>`; a file that cannot be
+  removed is named on stderr and counted as kept, exit 0.
+- A full `canary run` whose store cannot be written runs the declared prunes before it exits 2.
+- The gate's `retention` row runs every declared prune command once with `--dry-run` and fails
+  naming one that exits non-zero, cannot start, hangs past 60 s, or ends with any line but the
+  contract's.
+
 ## [0.3.8] - 2026-11-04
 
 ### Fixed

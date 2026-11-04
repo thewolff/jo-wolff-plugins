@@ -29,7 +29,7 @@ import { renderHelp, setEnabled } from "../lib/commands.mjs";
 import { renderDoctor, runDoctor } from "../lib/doctor.mjs";
 import { parseLine } from "../lib/parse.mjs";
 import { addressed, runReview, status as reviewStatus, waive } from "../lib/review.mjs";
-import { canaryStatus, gradeRun, install as canaryInstall, listRuns, parseCanaryArgs, prune as canaryPrune, renderRuns, runCanary } from "../lib/canary.mjs";
+import { canaryStatus, gradeRun, install as canaryInstall, listRuns, parseCanaryArgs, prune as canaryPrune, renderPruneResult, renderRuns, runCanary } from "../lib/canary.mjs";
 import { parseReportArgs, runReport } from "../lib/report.mjs";
 import { install as digestInstall, parseDigestArgs, runDigest } from "../lib/digest.mjs";
 import { gateCheck, parseGateArgs } from "../lib/plugin-gate.mjs";
@@ -157,14 +157,15 @@ async function runOwnLineVerb({ store, cwd, env, verb, tokens, by, out, err }) {
     } else if (verb === "canary") {
       const p = parseCanaryArgs(tokens);
       if (p.error) r = { code: 1, text: p.error };
-      else if (p.action === "run") r = await runCanary({ db: store.db, dbPath: store.dbPath, env, repo: p.repo, plugins: p.plugins, timeoutS: p.timeoutS, prunes: p.prunes });
+      else if (p.action === "run") r = await runCanary({ db: store.db, dbPath: store.dbPath, env, repo: p.repo, plugins: p.plugins, timeoutS: p.timeoutS, prunes: p.prunes, prunesOnly: p.prunesOnly });
       else if (p.action === "runs") r = { code: 0, text: renderRuns(listRuns(store.db, { limit: p.limit, plugin: p.plugin })) };
       else if (p.action === "status") r = { code: 0, text: canaryStatus(store.db) };
       else if (p.action === "grade") r = gradeRun({ db: store.db, dbPath: store.dbPath, id: p.id, grade: p.grade, note: p.note, by: by ?? "human" });
       else if (p.action === "prune") {
-        const { removed, kept, bytes } = canaryPrune({ env, days: p.days });
-        r = { code: 0, text: `canary prune: removed ${removed} file(s) older than ${p.days} day(s), kept ${kept}; rows untouched; ${bytes} bytes freed` };
-      } else r = canaryInstall({ env, cliPath: cliPath(), repo: p.repo, hour: p.hour, minute: p.minute });
+        const pr = canaryPrune({ env, days: p.days, dryRun: p.dryRun });
+        for (const problem of pr.problems) err(`canary prune: ${problem}\n`);
+        r = { code: 0, text: renderPruneResult(pr, { days: p.days, dryRun: p.dryRun, env }) };
+      } else r = canaryInstall({ env, cliPath: cliPath(), repo: p.repo, hour: p.hour, minute: p.minute, prunesOnly: p.prunesOnly });
     } else if (verb === "gate") {
       const p = parseGateArgs(tokens);
       if (p.error) r = { code: 1, text: p.error };

@@ -1,6 +1,6 @@
 // canary.mjs — `ledger canary`: run every plugin's live run headless, nightly, and keep the result.
 //
-//   canary run [--repo <path>] [--plugins a,b] [--timeout <s>]
+//   canary run [--repo <path>] [--plugins a,b] [--timeout <s>] [--no-prune | --prunes-only]
 //       For each plugin under <repo>/plugins/ (every directory with hooks/hooks.json or
 //       .claude-plugin/plugin.json), run `e2e/live-run.sh` from the plugin directory with the
 //       canary contract below, and insert one cc_canary_runs row: status pass (exit 0), fail
@@ -20,16 +20,27 @@
 //       as a cc_canary_prunes row with the bytes it reported freed (`… <n> bytes freed` on its
 //       last stdout line; NULL when it reported none). Exit 0 when every plugin passed or was
 //       unavailable, 1 when any failed, 2 when the store could not be written (the canary has no
-//       session to fail open into). A prune that fails is its own row and never fails the run.
+//       session to fail open into; the prunes still run before it exits, so a read-only store
+//       never skips them). A prune that fails is its own row and never fails the run.
+//   canary run --prunes-only [--repo <path>] [--plugins a,b]
+//       The daily job: no live runs, no cc_canary_runs row. Every declared prune runs, before
+//       and independently of any database write (a cc_canary_prunes row per prune is still
+//       attempted; one that cannot be written is `not recorded: …` on the line and changes
+//       nothing else). One line per prune, `prune <plugin>: <its last stdout line>`. Exit 0 when
+//       every prune ran (pass, or unavailable by its own exit 75), 1 when any failed or could
+//       not be started, naming it on the last line.
 //   canary grade <id> biting|silent|fine ["<note>"]
 //       Records who read the run and what they made of it.
-//   canary prune [--days 30]
-//       Removes transcript files older than that; rows stay. This is the ledger's own declared
-//       prune verb; the last line reports the bytes freed.
+//   canary prune [--days 30] [--dry-run]
+//       Removes transcript and output files older than that; rows stay. This is the ledger's
+//       own declared prune verb, under the plugin-kit contract: the last line is
+//       `pruned: <n> file(s), <bytes> bytes freed[ (dry run)]; kept <k>`, a file that cannot be
+//       removed is named on stderr and counted as kept, exit 0.
 //   canary status
 //       The last run per plugin, the last prune per declared path, and when each last passed.
-//   canary install [--repo <path>] [--hour 3] [--minute 30]
-//       Writes <state>/launchd/com.jo-wolff-plugins.ledger-canary.plist, checks it with
+//   canary install [--repo <path>] [--hour 3] [--minute 30] [--prunes-only]
+//       Writes <state>/launchd/com.jo-wolff-plugins.ledger-canary.plist (with --prunes-only:
+//       …ledger-prunes.plist, `canary run --prunes-only`, default 10:00), checks it with
 //       `plutil -lint` when plutil exists, prints the `launchctl bootstrap` line for the human to
 //       run, and reports whether launchd already has the job (`launchctl print`). Never runs
 //       bootstrap itself.
@@ -61,6 +72,7 @@ export const DEFAULT_TIMEOUT_S = 600;
 export const SUMMARY_MAX = 16 * 1024;
 export const PRUNE_DAYS = 30;
 export const LABEL = "com.jo-wolff-plugins.ledger-canary";
+export const PRUNES_LABEL = "com.jo-wolff-plugins.ledger-prunes";
 export const UNAVAILABLE_EXIT = 75;
 const GRADES = ["biting", "silent", "fine"];
 
@@ -241,6 +253,7 @@ export async function runPrunes({ db, dbPath, env = process.env, plugins, timeou
       if (r.spawnError) {
         row.status = "unavailable";
         row.note = `could not run: ${r.spawnError}`;
+        row.ran = false;
       } else if (r.timedOut) row.note = `timeout after ${timeoutS}s`;
       else if (r.code === 0) {
         row.status = "pass";
@@ -311,9 +324,11 @@ function lastPassSummary(db, plugin) {
 
 /**
  * Run the canary for `plugins` (default: every plugin in `repo`). Returns { code, text, rows }.
- * `run` is injectable for tests (same shape as runScript's result).
+ * `run` is injectable for tests (same shape as runScript's result). `prunesOnly` runs the
+ * declared prunes and nothing else (see the header): no live run, no cc_canary_runs row, exit 1
+ * only for a prune that failed or could not start.
  */
-export async function runCanary({ db, dbPath, env = process.env, now = Date.now(), repo, plugins = null, timeoutS = DEFAULT_TIMEOUT_S, run = runScript, claudePresent = null, prunes = true, runPrune = runShell }) {
+export async function runCanary({ db, dbPath, env = process.env, now = Date.now(), repo, plugins = null, timeoutS = DEFAULT_TIMEOUT_S, run = runScript, claudePresent = null, prunes = true, prunesOnly = false, runPrune = runShell }) {
   const root = repo ? resolve(repo) : defaultRepo();
   if (!root) return { code: 2, text: "canary: no repository: pass --repo <path to the plugins checkout>", rows: [] };
   let all;
@@ -324,9 +339,19 @@ export async function runCanary({ db, dbPath, env = process.env, now = Date.now(
   }
   const wanted = plugins ? all.filter((p) => plugins.includes(p.name)) : all;
   const missing = plugins ? plugins.filter((n) => !all.some((p) => p.name === n)) : [];
+  if (prunesOnly) {
+    const pruneRows = await runPrunes({ db, dbPath, env, plugins: wanted, run: runPrune });
+    const lines = pruneRows.map((r) => `prune ${r.plugin}: ${r.status === "pass" ? "" : `${r.status}, `}${r.note ?? "(no output)"}`);
+    for (const n of missing) lines.push(`prune ${n}: not a plugin under ${root}/plugins`);
+    const failed = pruneRows.filter((r) => r.status === "fail" || r.ran === false);
+    if (failed.length) lines.push(`canary: ${failed.length} prune(s) failed: ${failed.map((r) => `${r.plugin} (${r.path})`).join(", ")}`);
+    else lines.push(`canary: ${pruneRows.length} prune(s) ran${pruneRows.some((r) => r.status === "unavailable") ? ` (${pruneRows.filter((r) => r.status === "unavailable").length} unavailable)` : ""}`);
+    return { code: failed.length ? 1 : 0, text: lines.join("\n"), rows: [], prunes: pruneRows };
+  }
   const hasClaude = claudePresent ?? hasBinary("claude", env);
   const rows = [];
   const lines = [];
+  let unrecorded = null;
   for (const p of wanted) {
     const at = nowIso(Date.now());
     const script = join(p.dir, "e2e", "live-run.sh");
@@ -392,15 +417,18 @@ export async function runCanary({ db, dbPath, env = process.env, now = Date.now(
         dbPath,
       );
     } catch (err) {
-      return { code: 2, text: `${lines.join("\n")}${lines.length ? "\n" : ""}canary: could not record the ${p.name} run (${err.message}); its transcript is at ${row.transcript_path ?? "(none)"}, its output at ${row.output_path ?? "(not written)"}`, rows };
+      // The prunes still run: a store that cannot be written is no reason to leave state growing.
+      unrecorded = `canary: could not record the ${p.name} run (${err.message}); its transcript is at ${row.transcript_path ?? "(none)"}, its output at ${row.output_path ?? "(not written)"}`;
+      break;
     }
     rows.push(row);
     lines.push(renderRow(row));
   }
-  for (const n of missing) lines.push(`${n.padEnd(16)} unavailable  not a plugin under ${root}/plugins`);
-  if (!lines.length) lines.push(`canary: no plugins under ${root}/plugins`);
+  if (!unrecorded) for (const n of missing) lines.push(`${n.padEnd(16)} unavailable  not a plugin under ${root}/plugins`);
+  if (!lines.length && !unrecorded) lines.push(`canary: no plugins under ${root}/plugins`);
   const pruneRows = prunes ? await runPrunes({ db, dbPath, env, plugins: wanted, run: runPrune }) : [];
   for (const r of pruneRows) lines.push(renderPrune(r));
+  if (unrecorded) return { code: 2, text: [...lines, unrecorded].join("\n"), rows, prunes: pruneRows };
   return { code: rows.some((r) => r.status === "fail") ? 1 : 0, text: lines.join("\n"), rows, prunes: pruneRows };
 }
 
@@ -432,14 +460,16 @@ export function renderRuns(rows) {
   return rows.map((r) => `#${String(r.id).padEnd(5)} ${r.at}  ${renderRow({ ...r, id: null })}${r.grade ? `  graded ${r.grade} by ${r.graded_by}` : ""}`).join("\n");
 }
 
-/** Remove transcript files older than `days`; returns { removed, kept, bytes }. Rows are untouched. */
-export function prune({ env = process.env, now = Date.now(), days = PRUNE_DAYS } = {}) {
+/**
+ * Remove transcript and output files older than `days` (`dryRun`: count, remove nothing);
+ * `{ removed, kept, bytes, problems }`, a file that cannot be removed kept and named in
+ * `problems`. Rows are untouched.
+ */
+export function prune({ env = process.env, now = Date.now(), days = PRUNE_DAYS, dryRun = false } = {}) {
   const base = canaryDir(env);
   const cutoff = now - days * 24 * 3_600_000;
-  let removed = 0;
-  let kept = 0;
-  let bytes = 0;
-  if (!existsSync(base)) return { removed, kept, bytes };
+  const out = { removed: 0, kept: 0, bytes: 0, problems: [] };
+  if (!existsSync(base)) return out;
   for (const plugin of readdirSync(base, { withFileTypes: true }).filter((d) => d.isDirectory())) {
     const dir = join(base, plugin.name);
     for (const f of readdirSync(dir)) {
@@ -453,16 +483,22 @@ export function prune({ env = process.env, now = Date.now(), days = PRUNE_DAYS }
       if (!st.isFile()) continue;
       if (st.mtimeMs < cutoff) {
         try {
-          rmSync(file, { force: true });
-          removed++;
-          bytes += st.size;
-        } catch {
-          kept++;
+          if (!dryRun) rmSync(file, { force: true });
+          out.removed++;
+          out.bytes += st.size;
+        } catch (err) {
+          out.kept++;
+          out.problems.push(`could not remove ${file}: ${err.message}`);
         }
-      } else kept++;
+      } else out.kept++;
     }
   }
-  return { removed, kept, bytes };
+  return out;
+}
+
+/** The `canary prune` lines: the contract's `pruned:` line last. */
+export function renderPruneResult(r, { days, dryRun = false, env = process.env }) {
+  return `canary prune: files older than ${days} day(s) under ${canaryDir(env)}; rows untouched\npruned: ${r.removed} file(s), ${r.bytes} bytes freed${dryRun ? " (dry run)" : ""}; kept ${r.kept}`;
 }
 
 /** The plist text for a nightly `canary run` (and `canary prune`) at hour:minute, local time. */
@@ -502,10 +538,11 @@ ${args.map((a) => `    <string>${esc(a)}</string>`).join("\n")}
 
 /**
  * Write the plist, lint it, print the bootstrap line, report launchd's view. Never bootstraps.
- * `label`, `hour`, `minute` and the argument list are the knobs; `check` runs plutil/launchctl
+ * `label`, `hour`, `minute` and the argument list are the knobs; `prunesOnly` sets the three for
+ * the daily prunes job (PRUNES_LABEL, `--prunes-only`); `check` runs plutil/launchctl
  * (injectable for tests).
  */
-export function install({ env = process.env, cliPath, repo, cwd = process.cwd(), label = LABEL, hour = 3, minute = 30, extraArgs = [], uid = process.getuid?.() ?? 501, check = runCheck }) {
+export function install({ env = process.env, cliPath, repo, cwd = process.cwd(), prunesOnly = false, label = prunesOnly ? PRUNES_LABEL : LABEL, hour = 3, minute = 30, extraArgs = prunesOnly ? ["--prunes-only"] : [], uid = process.getuid?.() ?? 501, check = runCheck }) {
   // launchd runs the job from / with no cwd of ours: the plist must carry an absolute path.
   const root = repo ? resolve(cwd, repo) : defaultRepo();
   if (!root) return { code: 1, text: "canary install: no repository: pass --repo <path to the plugins checkout>" };
@@ -539,14 +576,15 @@ function runCheck(bin, args) {
 
 /** Parse `canary …` tokens into an action; usage on a bad shape. */
 export function parseCanaryArgs(tokens) {
-  const usage = 'usage: canary run [--repo <path>] [--plugins a,b] [--timeout <s>] [--no-prune] | canary runs [N] [--plugin <name>] | canary status | canary grade <id> biting|silent|fine ["<note>"] | canary prune [--days N] | canary install [--repo <path>] [--hour H] [--minute M]';
+  const usage = 'usage: canary run [--repo <path>] [--plugins a,b] [--timeout <s>] [--no-prune | --prunes-only] | canary runs [N] [--plugin <name>] | canary status | canary grade <id> biting|silent|fine ["<note>"] | canary prune [--days N] [--dry-run] | canary install [--repo <path>] [--hour H] [--minute M] [--prunes-only]';
+  const SWITCHES = new Set(["--no-prune", "--prunes-only", "--dry-run"]);
   const [action, ...rest] = tokens;
   const flags = (allowed) => {
     const out = {};
     const positional = [];
     for (let i = 0; i < rest.length; i++) {
       const a = rest[i];
-      if (a === "--no-prune") continue;
+      if (SWITCHES.has(a)) continue;
       if (!a.startsWith("--")) {
         positional.push(a);
         continue;
@@ -561,11 +599,13 @@ export function parseCanaryArgs(tokens) {
   };
   if (action === "run") {
     const noPrune = rest.includes("--no-prune");
+    const prunesOnly = rest.includes("--prunes-only");
+    if (noPrune && prunesOnly) return { error: usage };
     const f = flags(["--repo", "--plugins", "--timeout"]);
     if (!f || f.positional.length) return { error: usage };
     const timeoutS = f.timeout === undefined ? DEFAULT_TIMEOUT_S : Number(f.timeout);
     if (!Number.isInteger(timeoutS) || timeoutS <= 0) return { error: usage };
-    return { action, repo: f.repo ?? null, plugins: f.plugins ? f.plugins.split(",").map((s) => s.trim()).filter(Boolean) : null, timeoutS, prunes: !noPrune };
+    return { action, repo: f.repo ?? null, plugins: f.plugins ? f.plugins.split(",").map((s) => s.trim()).filter(Boolean) : null, timeoutS, prunes: !noPrune, prunesOnly };
   }
   if (action === "status") {
     if (rest.length) return { error: usage };
@@ -588,15 +628,16 @@ export function parseCanaryArgs(tokens) {
     if (!f || f.positional.length) return { error: usage };
     const days = f.days === undefined ? PRUNE_DAYS : Number(f.days);
     if (!Number.isInteger(days) || days < 0) return { error: usage };
-    return { action, days };
+    return { action, days, dryRun: rest.includes("--dry-run") };
   }
   if (action === "install") {
+    const prunesOnly = rest.includes("--prunes-only");
     const f = flags(["--repo", "--hour", "--minute"]);
     if (!f || f.positional.length) return { error: usage };
-    const hour = f.hour === undefined ? 3 : Number(f.hour);
-    const minute = f.minute === undefined ? 30 : Number(f.minute);
+    const hour = f.hour === undefined ? (prunesOnly ? 10 : 3) : Number(f.hour);
+    const minute = f.minute === undefined ? (prunesOnly ? 0 : 30) : Number(f.minute);
     if (!Number.isInteger(hour) || hour < 0 || hour > 23 || !Number.isInteger(minute) || minute < 0 || minute > 59) return { error: usage };
-    return { action, repo: f.repo ?? null, hour, minute };
+    return { action, repo: f.repo ?? null, hour, minute, prunesOnly };
   }
   return { error: usage };
 }
