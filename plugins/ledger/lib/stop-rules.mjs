@@ -39,7 +39,7 @@ export function stripQuoted(text) {
 }
 
 export function askReason(cli = "ledger") {
-  return `ledger: this turn asks the human a question but this session has no open question row. Run \`${cli} ask "<the question>" --name <short> --options <a,b> --default <a>\` first, then ask in plain words without showing the human the q- id; when they reply, record it with \`${cli} answer <q-id> <option>\`.`;
+  return `ledger: this turn asks the human a question but there is no open question row for this folder. Run \`${cli} ask "<the question>" --name <short> --options <a,b> --default <a>\` first, then ask in plain words without showing the human the q- id; when they reply, record it with \`${cli} answer <q-id> <option>\`.`;
 }
 
 /** @param questions open questions, newest first: { id, name, body } */
@@ -73,7 +73,7 @@ export function asksQuestion(text) {
 /**
  * @param message                   last_assistant_message
  * @param opts.dueQuestions         open questions of this session asked before the human's latest prompt, newest first
- * @param opts.sessionHasOpenQuestion whether this session has any open question row
+ * @param opts.sessionHasOpenQuestion whether a question is open for the folder (this session's, or one in scope for the cwd)
  * @param opts.turnQuestions        how many open questions this session asked during this turn
  * @param opts.turnNotes            how many `note` rows this session recorded during this turn
  * @param opts.forcing              { stopAskRule, stopDecisionRule, decisionPhrases }

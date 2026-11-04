@@ -443,11 +443,20 @@ function ask(db, parsed, by, iso, now, ctx) {
   }
 
   const optionsJson = JSON.stringify(options);
-  const repeat = db.prepare("SELECT id, state FROM cc_questions WHERE cwd = ? AND body = ? AND options = ? AND state IN ('open','held')").get(ctx.cwd, body, optionsJson);
+  const repeat = db.prepare("SELECT id, state, session_id FROM cc_questions WHERE cwd = ? AND body = ? AND options = ? AND state IN ('open','held')").get(ctx.cwd, body, optionsJson);
   if (repeat?.state === "held") return noop(repeat.id, `${repeat.id} already asked and held; run \`reopen ${repeat.id}\` when you put it to the human`);
   if (repeat) {
-    const q = getQuestion(db, repeat.id);
-    return noop(repeat.id, `${repeat.id} already asked and still open\n${pendingLines(q, { now, timezone: ctx.config?.timezone ?? null }).join("\n")}`);
+    const lines = (q) => pendingLines(q, { now, timezone: ctx.config?.timezone ?? null }).join("\n");
+    // An open row left by an earlier session (or an untagged CLI run) is adopted by the session
+    // asking now: it is put to the human again by this session, so the Stop rules treat it as this
+    // session's question. Without this, `ask` wrote nothing and the Stop ask rule sent every
+    // reply back ("no open question row") with no way out.
+    if (ctx.sessionId && repeat.session_id !== ctx.sessionId) {
+      db.prepare("UPDATE cc_questions SET session_id = ?, asked_at = ?, asked_by = ? WHERE id = ?").run(ctx.sessionId, iso, by, repeat.id);
+      const q = getQuestion(db, repeat.id);
+      return ok(repeat.id, `${repeat.id} already asked and still open${repeat.session_id ? " by an earlier session" : ""}; it is now this session's question. Ask the human in plain words without showing this id, then record their reply with \`answer ${repeat.id} <option>\`:\n${lines(q)}`);
+    }
+    return noop(repeat.id, `${repeat.id} already asked and still open\n${lines(getQuestion(db, repeat.id))}`);
   }
 
   const id = freshId(db, "cc_questions", "q", now);
