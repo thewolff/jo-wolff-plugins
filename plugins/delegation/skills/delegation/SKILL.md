@@ -72,6 +72,22 @@ Put that sentence in the brief; a subagent that was not told does not label.
 The whole template, with these sections and nothing else, is `templates/builder-brief.md` in
 this plugin.
 
+## When this can't run
+
+- The spawn was refused and the reason starts `Spawn refused:`: the plugin is working. The
+  reason carries the missing section in full; add it to the prompt and re-issue the same spawn.
+- The reason names a pattern-check receipt and a `node "<pattern-check>/scripts/pattern-check.mjs" open …` command: run that
+  command (it is pattern-check's own CLI), then re-issue. To run without the receipt instead,
+  set `requirePatternCheck: false` in `${XDG_CONFIG_HOME:-~/.config}/delegation/config.json`;
+  with pattern-check not installed the gate is skipped on its own.
+- A `delegation <hook> failed open: <why>` line appeared: the hook let a call through without
+  its check and wrote the line to `${XDG_STATE_HOME:-~/.local/state}/delegation/errors.log`.
+  Tell the person once; do not treat the allowed call as checked.
+- The template is missing (`templates/builder-brief.md` does not exist where
+  `CLAUDE_PLUGIN_ROOT` points): the sections above are the template; write them by hand.
+- The gates each have an offline scenario: `evals/spawn-gate-deny-no-how-it-fails.scenario.json`
+  is the refusal this section describes first.
+
 ## A worked example
 
 The template filled in for a real task: a builder adding one config field to a CLI.
@@ -122,19 +138,3 @@ warning about a missing line goes to the user, so you will not see it yourself.
 
 A message sent to a subagent that came back marked `this message was NOT delivered` was not
 read by anyone: spawn a new agent or fix the name; do not wait for a reply.
-
-## When this can't run
-
-- The spawn was refused and the reason starts `Spawn refused:`: the plugin is working. The
-  reason carries the missing section in full; add it to the prompt and re-issue the same spawn.
-- The reason names a pattern-check receipt and a `node "<pattern-check>/scripts/pattern-check.mjs" open …` command: run that
-  command (it is pattern-check's own CLI), then re-issue. To run without the receipt instead,
-  set `requirePatternCheck: false` in `${XDG_CONFIG_HOME:-~/.config}/delegation/config.json`;
-  with pattern-check not installed the gate is skipped on its own.
-- A `delegation <hook> failed open: <why>` line appeared: the hook let a call through without
-  its check and wrote the line to `${XDG_STATE_HOME:-~/.local/state}/delegation/errors.log`.
-  Tell the person once; do not treat the allowed call as checked.
-- The template is missing (`templates/builder-brief.md` does not exist where
-  `CLAUDE_PLUGIN_ROOT` points): the sections above are the template; write them by hand.
-- The gates each have an offline scenario: `evals/spawn-gate-deny-no-how-it-fails.scenario.json`
-  is the refusal this section describes first.

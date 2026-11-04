@@ -36,7 +36,7 @@ export function handle(input, { env = process.env } = {}) {
   if (!r || typeof r !== "object" || r.success !== false) return withFault(null, fault, HOOK);
   const message = typeof r.message === "string" && r.message.trim() ? r.message.trim() : "SendMessage returned success: false.";
   const to = typeof input?.tool_input?.to === "string" ? ` (to: ${input.tool_input.to})` : "";
-  return withFault({ decision: "block", reason: `${message}${to}\n${NOT_DELIVERED}` }, fault, HOOK);
+  return withFault({ decision: "block", reason: `${message}${to}\n${NOT_DELIVERED} (a new \`Agent\` call, or \`SendMessage\` to a name that is running)` }, fault, HOOK);
 }
 
 if (invokedDirectly(import.meta.url)) runHook(HOOK, import.meta.url, { plugin: "delegation" });

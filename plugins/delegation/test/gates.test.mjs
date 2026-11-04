@@ -225,7 +225,7 @@ test("send-message-check: success:false blocks with the tool's own message plus 
   const { env } = box(t);
   const r = runHook("send-message-check", sendPayload({ success: false, message: "No agent named 'Worker' is reachable.\nUse ListAgents to see the running agents." }), env);
   assert.equal(r.out.decision, "block");
-  assert.equal(r.out.reason, "No agent named 'Worker' is reachable.\nUse ListAgents to see the running agents. (to: Worker)\nthis message was NOT delivered; spawn a new agent or fix the name");
+  assert.equal(r.out.reason, "No agent named 'Worker' is reachable.\nUse ListAgents to see the running agents. (to: Worker)\nthis message was NOT delivered; spawn a new agent or fix the name (a new `Agent` call, or `SendMessage` to a name that is running)");
 });
 
 test("send-message-check: success:false with no message still blocks with a stand-in line", (t) => {
