@@ -12,7 +12,9 @@
 #
 # What this run proves, headless (`claude -p`), with the plugin loaded from THIS checkout and the
 # installed copy disabled:
-#   1. The plugin's hooks ran (a hook event naming one of them appears in the stream-json).
+#   1. The host ran SessionStart hooks (a `hook_response` for `SessionStart` is in the stream-json;
+#      Claude Code 2.1.318's hook events carry the event name and output, not the script path, so
+#      which plugin answered is proved by step 2, not here).
 #   2. The SessionStart handler itself ran, not just the runner: it stamps firstSeenAt in
 #      <state>/ctx-watch/state.json on its first run, and a plain run leaves no errors.log line.
 #      The probe's verdict is not asserted (the canary host may or may not have ctx up); the
@@ -62,12 +64,12 @@ if [ "$CODE" -ne 0 ]; then
   exit "$CODE"
 fi
 
-# 1. A hook of this plugin ran: a hook event names one of its hook scripts.
-if ! grep -q "$PLUGIN_DIR/hooks/" "$OUT"; then
-  echo "fail 1: no hook event names a script under $PLUGIN_DIR/hooks/ (hooks did not run, or --include-hook-events changed shape)"
+# 1. The host ran SessionStart hooks: a hook_response event for SessionStart is in the stream.
+if ! grep -q '"subtype":"hook_response".*"hook_event":"SessionStart"' "$OUT"; then
+  echo "fail 1: no hook_response event for SessionStart in the stream-json (hooks did not run, or --include-hook-events changed shape)"
   exit 1
 fi
-echo "step 1: a hook of $PLUGIN ran"
+echo "step 1: the host ran SessionStart hooks"
 # 2. The handler ran: the first-seen stamp is in the state file, and no errors.log line.
 if [ -s "$T/state/$PLUGIN/errors.log" ]; then
   echo "fail 2: errors.log is not empty after a plain run:"
