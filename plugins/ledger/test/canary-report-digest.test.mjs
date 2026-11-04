@@ -270,7 +270,8 @@ test("canary run --prunes-only: no live run and no cc_canary_runs row; every dec
   assert.equal(r.code, 1, r.text);
   assert.deepEqual(r.rows, [], "no live run");
   assert.ok(existsSync(mark));
-  assert.deepEqual(r.text.split("\n").map((l) => l.replace(/No such file or directory|not found/, "missing")), [
+  // dash (Linux /bin/sh) prefixes the script line ("/bin/sh: 1: …"); macOS sh does not.
+  assert.deepEqual(r.text.split("\n").map((l) => l.replace(/No such file or directory|not found/, "missing").replace(/\/bin\/sh: \d+: /, "/bin/sh: ")), [
     "prune alpha: pruned: 2 file(s), 1234 bytes freed; kept 1",
     "prune beta: unavailable, no store to prune",
     "prune delta: fail, exit 127: /bin/sh: /nonexistent/prune-binary: missing",
