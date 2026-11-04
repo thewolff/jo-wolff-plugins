@@ -29,10 +29,10 @@ function passed(r) {
 }
 
 test("step 8: a question while the session has no open row → block with the ask reason; the same prompt_id again → pass (guard)", () => {
-  blocked(hook(box, "stop", payload(LONG_Q)), /asks the human a question but this session has no open question row.*ledger\.mjs ask/);
+  blocked(hook(box, "stop", payload(LONG_Q)), /asks the human a question but there is no open question row for this folder.*ledger\.mjs ask/);
   passed(hook(box, "stop", payload(LONG_Q)));
   passed(hook(box, "stop", payload(LONG_Q, { stop_hook_active: true })));
-  blocked(hook(box, "stop", payload(LONG_Q, { prompt_id: "p-2" })), /this session has no open question row/);
+  blocked(hook(box, "stop", payload(LONG_Q, { prompt_id: "p-2" })), /no open question row for this folder/);
   const db = openDb(box);
   assert.deepEqual(row(db, "SELECT last_block_prompt, last_block_rule FROM cc_sessions WHERE id = 's-stop'"), { last_block_prompt: "p-2", last_block_rule: "stopAskRule" });
   db.close();
@@ -113,7 +113,7 @@ test("ask rule: a reply ending in `?` passes while the session has an open row a
   const q = askIn(b, "ab");
   passed(stopIn(b, "p-1", LONG_Q));
   cli(b, ["answer", q, "yes"], { env: sessionEnv });
-  blocked(stopIn(b, "p-2", LONG_Q), /this session has no open question row/);
+  blocked(stopIn(b, "p-2", LONG_Q), /no open question row for this folder/);
 });
 
 test("step 8: a `?` only inside a fenced block or inline code → pass; a 30-char message → pass", () => {
