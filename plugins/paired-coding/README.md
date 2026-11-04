@@ -227,9 +227,15 @@ in/from/here`, `the pattern used in`, `the convention here`, `how the codebase d
 `like the rest of the codebase`, and pattern-check's own word `pattern-fit`. Ordinary prose
 that merely contains those words is no claim: `the pattern introduced by the bug`, `the
 pattern input`, `the anti-pattern used in`, `isolates it from the rest of the codebase`, `no
-existing pattern handles this` match nothing, and a denial in the same clause (`not`, `no`,
-`never`, `without`, `rather than`, `doesn't`, `isn't`, …, within the four words before the
-match: `PATTERN_CLAIM_NEGATIONS`) turns a match off. When `why` carries a claim, the card's
+existing pattern handles this` match nothing. A denial or removal word anywhere before the
+match in its own clause (`not` but not `not only`, `no`, `never`, `without`, `rather than`,
+`doesn't`, `isn't`, `stop`, `drop`, `remove`, `avoid`, `replace`, …: `PATTERN_CLAIM_NEGATIONS`;
+typographic apostrophes read as `'`) turns a match off, so `doesn't follow the existing
+pattern` and `removes the pattern from the old parser` are not claims. A clause ends at
+`, ; : ( )`, a sentence-ending `. ! ?`, or ` but `, ` and `, ` so `, ` because `
+(`PATTERN_CLAIM_CLAUSE_BREAKS`), and a denial does not reach past it: `No migration needed,
+follows the existing pattern` and `not the old pattern, but it follows the auth pattern` are
+claims. When `why` carries a claim, the card's
 `sources` must include either one absolute `file:line` whose file is inside the receipt
 directory `<git root>/.pattern-check/` (pattern-check's receipt for this session is
 `<git root>/.pattern-check/<session id>.md`; any receipt in that directory counts), or two or
@@ -267,7 +273,11 @@ file; nothing is dropped silently). **The findings hold the first card proposed 
 were written, and no later card.** When that card is recorded, the pairing state remembers the
 record (`findingsConsumed: { sessionId, writtenAt }`), and the same file holds no later card of
 the pairing; a refused card consumes nothing, so the next attempt is still held. A findings
-file written again later (a later `writtenAt`) re-arms the check for the next card. The marker
+file written again later (a later `writtenAt`) re-arms the check for the next card. A marker
+the gate cannot trust (a `writtenAt` that is not an ISO 8601 date, or a `sessionId` that is
+not this session's) is ignored: the findings read as not consumed, the journal gets one
+`findings-marker-ignored` line naming why, and the next recorded card replaces or clears the
+marker. The marker
 lives in the pairing state, so a new `pair_start` in the same host session starts with it
 clear: the first card of a new pairing is held to findings still on disk. For the card that
 is held, `alternatives` is required, one entry must contain the findings' chosen design
@@ -290,7 +300,7 @@ never written. A missing file is silent.
 | Failure | What holds it | Proved by |
 |---|---|---|
 | A pattern is claimed with nothing behind it | The gate refuses the card: a claim in `why` needs a receipt `file:line` or two distinct `file:line` in the repository, in every mode. The refusal quotes the claim as written and names the receipt path pattern-check would write and both counts, so the fix is one `pattern-check record` or two real reads away | `evals/pre-tool-use-card-pattern-unsourced.scenario.json` (the refusal, through the real verbs in `evals/card-checks.mjs`) and `evals/pre-tool-use-card-pattern-receipt.scenario.json` (a receipt line goes through). The claim shapes, both counts and the distinct-location rule: `core/gate.test.mjs`, "a pattern claim needs a pattern source" |
-| An ordinary `why` is refused as a claim | The claim shapes are matched at word boundaries and need an affirmative verb or a fixed phrase, so "the pattern introduced by the bug", "the pattern input", "the anti-pattern used in", "from the rest of the codebase" and "no existing pattern handles this" are not claims, and a denial within four words in the same clause ("doesn't follow the pattern in", "not how the codebase does it", "rather than the pattern in") turns a match off | `core/gate.test.mjs`, "patternClaim: an affirmative claim of a codebase convention…" (eighteen ordinary sentences, none a claim); `lib/verbs.test.mjs`, "through the verbs: a pattern claim needs a receipt file:line…" (an ordinary `why` goes through) |
+| An ordinary `why` is refused as a claim | The claim shapes are matched at word boundaries and need an affirmative verb or a fixed phrase, so "the pattern introduced by the bug", "the pattern input", "the anti-pattern used in", "from the rest of the codebase" and "no existing pattern handles this" are not claims, and a denial or removal word anywhere earlier in the same clause ("doesn’t follow the pattern in", "not going to continue following the pattern in", "removes the pattern from", "rather than the pattern in") turns a match off. The other way round, a denial stops at the clause's end, so an affirmative claim in a later clause still needs its source | `core/gate.test.mjs`, "patternClaim: an affirmative claim of a codebase convention…" (the ordinary sentences, none a claim, Codex R2's included) and "Codex R2 cases through pair_propose, learning off and on…"; `lib/verbs.test.mjs`, "through the verbs: a pattern claim needs a receipt file:line…" (an ordinary `why` goes through) |
 | The claim is worded past the shapes | Only the shapes in `PATTERN_CLAIM_PATTERNS` are matched; "as elsewhere in src/" is not a claim to the gate. The list is one exported constant so it can grow, and the skill tells the agent to source a pattern claim however it is worded | No scenario: a hook cannot read intent. `core/gate.test.mjs`, "patternClaim: an affirmative claim of a codebase convention…" |
 | One read is cited twice to make two sources | The two-in-repository way counts distinct locations: the path after `.` and `..` collapse plus the line or range, so `src/a.ts:1` and `src/../src/a.ts:1` are one source; `src/a.ts:1` and `src/a.ts:2` are two | `core/gate.test.mjs`, "the two-in-repository way counts distinct locations…"; `lib/verbs.test.mjs`, "through the verbs: a pattern claim needs a receipt file:line…" |
 | A receipt-looking path is invented | The gate checks the path's place (inside `<git root>/.pattern-check/`), not that the file exists or says what the card claims, as with every `file:line` source in 1.5.0. A path that climbs out with `..` or names a sibling directory with the same prefix is not inside | `core/gate.test.mjs`, "the refusal names the phrase, the receipt path it looked for, and both counts". Existence is not checked: see *Not in 1.6.0* |
@@ -1087,7 +1097,7 @@ worktree, inside an excluded directory, or after the final snapshot is not detec
 
 - A pattern claim needs a pattern source, in every mode (see *A pattern claim needs a pattern
   source*): when `why` carries an affirmative claim of a codebase convention (the word-bounded
-  shapes in `PATTERN_CLAIM_PATTERNS`, a denial in the same clause turning a match off),
+  shapes in `PATTERN_CLAIM_PATTERNS`, a denial earlier in the same clause turning a match off),
   `sources` needs one absolute `file:line` inside `<git root>/.pattern-check/` or two at
   distinct locations inside the repository (one citation spelled twice is one source), else
   `pair_propose` refuses quoting the claim and naming the receipt path and both counts. New

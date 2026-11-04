@@ -1206,15 +1206,17 @@ export function sourceProblem(sources) {
  * The shapes a card's `why` takes when it attributes the design to a codebase convention,
  * matched case-insensitively at word boundaries: a verb of conformity before "pattern" or
  * "convention" ("follows the existing pattern", "per the repo convention", "consistent with
- * the established pattern"), "the pattern in/from/used in/here", "the convention here", "how
- * the codebase does", "as/like the rest of the codebase", and pattern-check's own word
- * "pattern-fit". Bare words are not claims: "the pattern introduced", "the pattern input",
- * "an anti-pattern used in", "the rest of the codebase" on its own, "no existing pattern"
- * match nothing. A card whose `why` carries one needs a pattern source (patternSourceProblem),
- * in learning mode or out of it.
+ * the established pattern"), "follows the <any one word> pattern" ("follows the auth
+ * pattern"), "the pattern in/from/used in/here", "the convention here", "how the codebase
+ * does", "as/like the rest of the codebase", and pattern-check's own word "pattern-fit". Bare
+ * words are not claims: "the pattern introduced", "the pattern input", "an anti-pattern used
+ * in", "the rest of the codebase" on its own, "no existing pattern" match nothing. A card
+ * whose `why` carries one needs a pattern source (patternSourceProblem), in learning mode or
+ * out of it.
  */
 export const PATTERN_CLAIM_PATTERNS = Object.freeze([
   /\b(?:follows?|following|matches|matching|mirrors?|mirroring|uses?|using|reuses?|reusing|keeps? to|sticks? to|per|same as|in line with|consistent with|established)\s+(?:the\s+|this\s+|our\s+|an?\s+(?=existing|established))?(?:existing\s+|established\s+|codebase(?:'s)?\s+|repo(?:'s)?\s+|project(?:'s)?\s+|same\s+|usual\s+|current\s+)?(?:pattern|convention)s?\b/i,
+  /\bfollow(?:s|ed|ing)?\s+(?:the|this|our|an?)\s+(?!anti-)[a-z][\w'-]*\s+(?:pattern|convention)s?\b/i,
   /\bthe (?:pattern|convention)s? (?:in|from|here|elsewhere|throughout|across|used (?:in|by|throughout|across))\b/i,
   /\bhow the (?:codebase|repo|project|rest of the codebase) does\b/i,
   /\b(?:as|like|same as|consistent with|matches|matching|mirrors?|mirroring) (?:in |elsewhere in )?the rest of the (?:codebase|repo|project)\b/i,
@@ -1222,32 +1224,41 @@ export const PATTERN_CLAIM_PATTERNS = Object.freeze([
 ]);
 
 /**
- * Words that, within the few words before a match in the same clause, turn the claim into its
- * denial: "doesn't follow the pattern in", "no convention here", "not how the codebase does
- * it", "rather than the pattern in". A denied claim needs no source.
+ * Words that, anywhere before a match in the same clause (PATTERN_CLAIM_CLAUSE_BREAKS), turn
+ * the claim into its denial or into removal prose: "doesn't follow the pattern in", "no
+ * convention here", "not going to continue following the pattern in", "rather than the pattern
+ * in", "removes the pattern from". "not only" is not a denial. A denied claim needs no source.
  */
-export const PATTERN_CLAIM_NEGATIONS = /\b(?:not|no|never|none|neither|nor|without|cannot|rather than|instead of|unlike|[a-z]+n't)\b/i;
-const NEGATION_WINDOW_WORDS = 4;
+export const PATTERN_CLAIM_NEGATIONS = /\b(?:not(?!\s+only\b)|no|never|none|neither|nor|without|cannot|rather than|instead of|unlike|[a-z]+n't|stop(?:s|ped|ping)?|drop(?:s|ped|ping)?|remov(?:e|es|ed|ing)|avoid(?:s|ed|ing)?|replac(?:e|es|ed|ing))\b/i;
 
-/** The clause-local words before `index` in `text`: the last NEGATION_WINDOW_WORDS words since the previous `.;:!?(`. */
-function wordsBefore(text, index) {
-  const clause = text.slice(0, index).split(/[.;:!?(]/).at(-1);
-  return clause.trim().split(/\s+/).slice(-NEGATION_WINDOW_WORDS).join(" ");
+/**
+ * Where a clause ends, so a denial in one clause leaves the next alone: `,;:()`, a `.!?`
+ * followed by space or the end (not the dot in `lib/a.ts`), and " but ", " and ", " so ",
+ * " because ".
+ */
+export const PATTERN_CLAIM_CLAUSE_BREAKS = /[,;:()]|[.!?](?=\s|$)|\s(?:but|and|so|because)\s/gi;
+
+/** The text of the clause holding `index`, from the clause's start up to `index`. */
+function clauseBefore(text, index) {
+  let start = 0;
+  for (const b of text.slice(0, index).matchAll(PATTERN_CLAIM_CLAUSE_BREAKS)) start = b.index + b[0].length;
+  return text.slice(start, index);
 }
 
 /**
- * The first affirmative codebase-pattern claim in `why`, as written (whitespace collapsed), or
- * null: the earliest PATTERN_CLAIM_PATTERNS match that PATTERN_CLAIM_NEGATIONS does not deny
- * in the words before it.
+ * The first affirmative codebase-pattern claim in `why`, as written (whitespace collapsed,
+ * typographic apostrophes read as `'`), or null: the earliest PATTERN_CLAIM_PATTERNS match
+ * with no PATTERN_CLAIM_NEGATIONS word before it in its own clause. A denial in an earlier
+ * clause does not reach a later one ("not the old pattern, but it follows the auth pattern"
+ * is a claim).
  */
 export function patternClaim(why) {
   if (typeof why !== "string") return null;
-  const text = why.replace(/\s+/g, " ");
+  const text = why.replace(/\s+/g, " ").replace(/[\u2018\u2019\u02bc]/g, "'");
   let first = null;
   for (const re of PATTERN_CLAIM_PATTERNS) {
-    const global = new RegExp(re.source, "gi");
-    for (const m of text.matchAll(global)) {
-      if (PATTERN_CLAIM_NEGATIONS.test(wordsBefore(text, m.index))) continue;
+    for (const m of text.matchAll(new RegExp(re.source, "gi"))) {
+      if (PATTERN_CLAIM_NEGATIONS.test(clauseBefore(text, m.index))) continue;
       if (first === null || m.index < first.index) first = { index: m.index, phrase: m[0] };
       break;
     }
@@ -1369,6 +1380,28 @@ export function applicableFindings(findings, consumed) {
   return Number.isFinite(written) && Number.isFinite(used) && written > used ? findings : null;
 }
 
+/** An ISO 8601 date-time as ask-graham writes `writtenAt` (the reader in lib/card-context.mjs uses this one). */
+export const ISO_DATE = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(?::\d{2}(?:\.\d+)?)?(?:Z|[+-]\d{2}:\d{2})$/;
+
+/**
+ * Why a persisted `findingsConsumed` marker cannot be trusted, or null when it is absent or
+ * sound: its `writtenAt` has to be an ISO 8601 date that parses and its `sessionId` has to be
+ * this session's. pairPropose ignores an untrusted marker (the findings read as not consumed)
+ * and journals one `findings-marker-ignored` line, so a bad marker never switches the
+ * findings check off.
+ * @param {unknown} consumed  state.findingsConsumed
+ * @param {string | null} sessionId  the state's session
+ */
+export function findingsMarkerProblem(consumed, sessionId) {
+  if (consumed === undefined || consumed === null) return null;
+  if (!isObj(consumed)) return `findingsConsumed is ${quoted(consumed)}, not an object`;
+  if (typeof consumed.writtenAt !== "string" || !ISO_DATE.test(consumed.writtenAt) || !Number.isFinite(Date.parse(consumed.writtenAt))) {
+    return `findingsConsumed.writtenAt is ${quoted(consumed.writtenAt)}, not an ISO 8601 date`;
+  }
+  if (consumed.sessionId !== sessionId) return `findingsConsumed names session ${quoted(consumed.sessionId)}, not this session (${quoted(sessionId)})`;
+  return null;
+}
+
 /** pair_propose's refusal, in learning mode, for a card with no `why`. */
 export const WHY_REASON = "learning mode is on: the card needs why, a non-empty string saying why this approach over the alternatives";
 /** pair_done's refusal, in learning mode, without a `recall` question. */
@@ -1415,14 +1448,21 @@ export function pairPropose(state, card, io) {
   const facts = isObj(context.value) ? { ...bareCardContext(state.root), ...context.value } : bareCardContext(state.root);
   const unsourced = patternSourceProblem(card.why, card.sources, facts);
   if (unsourced) return refuse(state, "pair_propose", unsourced, io);
-  const findings = applicableFindings(facts.findings, state.findingsConsumed);
+  const markerProblem = findingsMarkerProblem(state.findingsConsumed, state.sessionId ?? null);
+  const markerFault = markerProblem ? [entry("findings-marker-ignored", io, { reason: `${markerProblem}; the findings read as not consumed` })] : [];
+  const fail = (reason) => {
+    const r = refuse(state, "pair_propose", reason, io);
+    return { ...r, journal: [...markerFault, ...r.journal] };
+  };
+  const findings = applicableFindings(facts.findings, markerProblem ? null : state.findingsConsumed);
   const badAlternatives = alternativesProblem(card.alternatives, findings);
-  if (badAlternatives) return refuse(state, "pair_propose", badAlternatives, io);
+  if (badAlternatives) return fail(badAlternatives);
   const hashed = callIo(io, "hashBoundary", [...card.boundary], state.root);
-  if (hashed.error) return refuse(state, "pair_propose", `could not hash the boundary: ${hashed.error}`, io);
-  if (!isSnapshot(hashed.value)) return refuse(state, "pair_propose", "hashBoundary returned malformed hashes", io);
+  if (hashed.error) return fail(`could not hash the boundary: ${hashed.error}`);
+  if (!isSnapshot(hashed.value)) return fail("hashBoundary returned malformed hashes");
   const next = clone(state);
   next.cardSeq += 1;
+  if (markerProblem) next.findingsConsumed = null;
   if (findings) next.findingsConsumed = { sessionId: typeof findings.sessionId === "string" ? findings.sessionId : null, writtenAt: findings.writtenAt };
   /** @type {Card} */
   const recorded = {
@@ -1446,7 +1486,7 @@ export function pairPropose(state, card, io) {
   next.card = JSON.parse(JSON.stringify(recorded));
   next.unreviewed = [];
   next.midTurn = [];
-  return { ok: true, state: next, card: next.card, journal: [entry("card", io, { card: next.card })] };
+  return { ok: true, state: next, card: next.card, journal: [...markerFault, entry("card", io, { card: next.card })] };
 }
 
 /**

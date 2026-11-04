@@ -21,8 +21,12 @@ in the README's *Changes* section.
   worktree is in: the path after `.` and `..` collapse plus the line or range, so one citation
   spelled twice is one source. Ordinary prose is no claim (`the pattern introduced by the
   bug`, `the pattern input`, `the anti-pattern used in`, `no existing pattern handles this`),
-  and a denial within four words in the same clause (`not`, `no`, `never`, `without`, `rather
-  than`, `doesn't`, `isn't`, …: `PATTERN_CLAIM_NEGATIONS`) turns a match off. Otherwise
+  and a denial or removal word anywhere before the match in its own clause (`not` but not
+  `not only`, `no`, `never`, `without`, `rather than`, `doesn't`, `isn't`, `stop`, `drop`,
+  `remove`, …: `PATTERN_CLAIM_NEGATIONS`; typographic apostrophes read as `'`) turns a match
+  off. A clause ends at `, ; : ( )`, a sentence-ending `. ! ?`, or ` but `/` and `/` so `/
+  ` because ` (`PATTERN_CLAIM_CLAUSE_BREAKS`), so a claim after a denied clause still counts
+  (`No migration needed, follows the existing pattern`). Otherwise
   `pair_propose` refuses, quoting the claim as written and naming this session's receipt path
   (`<git root>/.pattern-check/<session id>.md`) and both counts. Paths are compared lexically;
   existence is not checked, as with every `file:line` source.
@@ -36,7 +40,9 @@ in the README's *Changes* section.
   a design they did not choose, at least one entry is not chosen. When that card is recorded
   the pairing state keeps `findingsConsumed: { sessionId, writtenAt }`, and the same findings
   hold no later card of the pairing; a refused card consumes nothing, and a findings file
-  written later (a later `writtenAt`) re-arms the check. The file counts only as this
+  written later (a later `writtenAt`) re-arms the check. A marker whose `writtenAt` is not an
+  ISO 8601 date or whose `sessionId` is not this session's is ignored (the findings read as
+  not consumed) with one `findings-marker-ignored` journal line. The file counts only as this
   session's findings: a regular file (`lstat`, no symlink) of at most 64 KiB
   (`FINDINGS_MAX_BYTES`, the read bounded at that size) holding a JSON object with
   `version: 1`, a `sessionId` equal to this session's, an ISO 8601 `writtenAt`, and
@@ -65,8 +71,9 @@ in the README's *Changes* section.
 ### Changed
 
 - Pairing state gains the optional `findingsConsumed` field (`null` or
-  `{ sessionId: string | null, writtenAt: string }`); a malformed one reads as a malformed
-  state, like any other field. A state without it reads as before.
+  `{ sessionId: string | null, writtenAt: string }`); one of the wrong shape reads as a
+  malformed state, like any other field, and a well-shaped one `pair_propose` cannot trust is
+  ignored, as above. A state without it reads as before.
 
 The checks read sibling plugins' files only. A card whose `why` makes no pattern claim, in a
 session with no findings file, runs exactly as in 1.5.0.

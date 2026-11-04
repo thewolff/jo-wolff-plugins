@@ -70,6 +70,7 @@ import {
   applicableFindings,
   patternClaim,
   patternSourceProblem,
+  findingsMarkerProblem,
 } from "./gate.mjs";
 
 const ROOT = "/work/repo";
@@ -2420,7 +2421,7 @@ describe("a pattern claim needs a pattern source", () => {
   const withContext = (host, over = {}) => ({ ...host.io, cardContext: () => ({ ...facts, ...over }) });
 
   test("patternClaim: an affirmative claim of a codebase convention, as written, at word boundaries, in any case", () => {
-    assert.equal(PATTERN_CLAIM_PATTERNS.length, 5);
+    assert.equal(PATTERN_CLAIM_PATTERNS.length, 6);
     const claims = [
       ["It follows the existing pattern in src/services.", "follows the existing pattern"],
       ["This matches the codebase pattern for repositories.", "matches the codebase pattern"],
@@ -2439,6 +2440,13 @@ describe("a pattern claim needs a pattern source", () => {
       ["IT FOLLOWS THE PATTERN IN SRC/.", "FOLLOWS THE PATTERN"],
       ["It follows\n  the   existing pattern.", "follows the existing pattern"],
       ["Faster than the old loop, and it follows an existing pattern.", "follows an existing pattern"],
+      // Codex R2: a denial in an earlier clause does not reach a later affirmative claim, and "not only" affirms.
+      ["No migration needed, follows the existing pattern.", "follows the existing pattern"],
+      ["It not only follows the existing pattern but also reduces allocations.", "follows the existing pattern"],
+      ["Not the old pattern, but it follows the auth pattern.", "follows the auth pattern"],
+      ["This drops the pattern in lib/old.mjs and follows the established pattern.", "follows the established pattern"],
+      ["We don't need a migration because it follows the pattern in src/a.ts.", "follows the pattern"],
+      ["It follows the pattern in lib/a.ts without changes.", "follows the pattern"],
     ];
     for (const [why, phrase] of claims) assert.equal(patternClaim(why), phrase, why);
     const ordinary = [
@@ -2460,12 +2468,43 @@ describe("a pattern claim needs a pattern source", () => {
       "Unlike the rest of the codebase, this module has no caller yet.",
       "The patterned background is decorative.",
       "Nothing in the codebase does this yet.",
+      // Codex R2: a denial anywhere earlier in the clause, a typographic apostrophe, and removal prose.
+      "We are not going to continue following the pattern in lib/a.ts.",
+      "It doesn\u2019t follow the existing pattern.",
+      "It doesn\u2018t follow the pattern in src/legacy.",
+      "This removes the pattern from the old parser.",
+      "This change drops the pattern used in the importer.",
+      "It removes the retry pattern in lib/net.mjs.",
+      "We stop following the convention here.",
+      "This avoids the pattern from lib/old.mjs.",
+      "It replaces the pattern in the old parser with one read.",
+      "Never mirrors the codebase pattern.",
     ];
     for (const why of ordinary) assert.equal(patternClaim(why), null, why);
     // The denial has to sit in the same clause: a claim after a negated clause still counts.
     assert.equal(patternClaim("This is not a refactor. It follows the pattern in src/a.ts."), "follows the pattern");
     assert.equal(patternClaim(undefined), null);
     assert.equal(patternClaim(7), null);
+  });
+
+  test("Codex R2 cases through pair_propose, learning off and on: denials and removal prose pass without a pattern source, affirmative claims after a denied clause are refused", () => {
+    const host = fakeHost();
+    const io = withContext(host);
+    const denials = [
+      "We are not going to continue following the pattern in lib/a.ts.",
+      "It doesn\u2019t follow the existing pattern.",
+      "This removes the pattern from the old parser.",
+    ];
+    const claims = [
+      "No migration needed, follows the existing pattern.",
+      "It not only follows the existing pattern but also reduces allocations.",
+      "Not the old pattern, but it follows the auth pattern.",
+    ];
+    for (const learning of [false, true]) {
+      const s = learning ? ok(pairLearn(started(host), { on: true }, host.io)) : started(host);
+      for (const why of denials) ok(pairPropose(s, card({ why, sources: ["from memory"] }), io));
+      for (const why of claims) refusedWith(pairPropose(s, card({ why, sources: ["from memory"] }), io), /why claims a codebase pattern/);
+    }
   });
 
   test("no claim: a why without a phrase needs no file:line, in any mode", () => {
@@ -2630,5 +2669,49 @@ describe("alternatives", () => {
     const bad = readState(JSON.stringify({ ...third, findingsConsumed: { writtenAt: 7 } }), { activated: true, root: ROOT, stateDir: STATE_DIR });
     assert.equal(bad.degraded, "state file malformed");
     assert.equal(readState(JSON.stringify({ ...third, findingsConsumed: null }), { activated: true }).findingsConsumed, null);
+  });
+
+  test("an untrusted findingsConsumed marker (not an ISO date, or another session's) is ignored with one journal fault: the findings still hold the card", () => {
+    const host = fakeHost();
+    const io = withFindings(host, FINDINGS);
+    const alternatives = [{ design: "a queue table with a worker", chosen: true }, { design: "a direct call", chosen: false }];
+    const base = started(host);
+    const faultsIn = (r) => r.journal.filter((e) => e.type === "findings-marker-ignored");
+    assert.equal(findingsMarkerProblem(null, "s1"), null);
+    assert.equal(findingsMarkerProblem(undefined, "s1"), null);
+    assert.equal(findingsMarkerProblem({ sessionId: "s1", writtenAt: FINDINGS.writtenAt }, "s1"), null);
+    const untrusted = [
+      [{ sessionId: "s1", writtenAt: "" }, /writtenAt is "", not an ISO 8601 date/],
+      [{ sessionId: "s1", writtenAt: "yesterday" }, /writtenAt is "yesterday", not an ISO 8601 date/],
+      [{ sessionId: "s1", writtenAt: "2026-13-45T99:99:00Z" }, /not an ISO 8601 date/],
+      [{ sessionId: "s2", writtenAt: FINDINGS.writtenAt }, /names session "s2", not this session \("s1"\)/],
+      [{ sessionId: null, writtenAt: FINDINGS.writtenAt }, /names session null, not this session \("s1"\)/],
+    ];
+    for (const [marker, problem] of untrusted) {
+      assert.match(findingsMarkerProblem(marker, "s1"), problem, JSON.stringify(marker));
+      // The state reads as written (shape-valid), so the gate is where the marker is judged.
+      const s = readState(JSON.stringify({ ...base, findingsConsumed: marker }), { activated: true, root: ROOT, stateDir: STATE_DIR });
+      assert.equal(s.degraded ?? null, null, JSON.stringify(marker));
+      const refused = pairPropose(s, card(), io);
+      refusedWith(refused, /so the card needs alternatives/);
+      assert.equal(faultsIn(refused).length, 1, JSON.stringify(refused.journal));
+      assert.match(faultsIn(refused)[0].reason, problem);
+      assert.match(faultsIn(refused)[0].reason, /the findings read as not consumed$/);
+      // A card that meets the findings consumes them, replacing the bad marker, with the same one fault line.
+      const accepted = pairPropose(s, card({ alternatives }), io);
+      ok(accepted);
+      assert.equal(faultsIn(accepted).length, 1);
+      assert.deepEqual(accepted.state.findingsConsumed, { sessionId: "s1", writtenAt: FINDINGS.writtenAt });
+      // With no findings on disk the bad marker is cleared, so the fault is written once, not on every card.
+      const cleared = pairPropose(s, card(), withFindings(host, null));
+      ok(cleared);
+      assert.equal(cleared.state.findingsConsumed, null);
+      assert.equal(faultsIn(pairPropose(cleared.state, card(), withFindings(host, null))).length, 0);
+    }
+    // A sound marker for this session still consumes, with no fault.
+    const sound = readState(JSON.stringify({ ...base, findingsConsumed: { sessionId: "s1", writtenAt: FINDINGS.writtenAt } }), { activated: true, root: ROOT, stateDir: STATE_DIR });
+    const r = pairPropose(sound, card(), io);
+    ok(r);
+    assert.equal(faultsIn(r).length, 0);
   });
 });

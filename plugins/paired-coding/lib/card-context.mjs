@@ -34,6 +34,7 @@ import { homedir } from "node:os";
 import { dirname, isAbsolute, join, resolve } from "node:path";
 import { PATTERN_CHECK_DIR } from "./sibling-state.mjs";
 import { logFault, reasonOf } from "./host-io.mjs";
+import { ISO_DATE } from "../core/gate.mjs";
 
 const PATTERN_CHECK_KEY = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
 const ASK_GRAHAM_ID = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
@@ -42,7 +43,6 @@ const THIS_FILE = "lib/card-context.mjs";
 export const FINDINGS_VERSIONS = Object.freeze([1]);
 /** The most a findings file may be, in bytes: a verdict record is a few hundred. */
 export const FINDINGS_MAX_BYTES = 64 * 1024;
-const ISO_DATE = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(?::\d{2}(?:\.\d+)?)?(?:Z|[+-]\d{2}:\d{2})$/;
 
 /** The nearest ancestor of `dir` (inclusive) holding `.git` (a directory, or a worktree's file), else null. */
 export function gitRoot(dir) {
