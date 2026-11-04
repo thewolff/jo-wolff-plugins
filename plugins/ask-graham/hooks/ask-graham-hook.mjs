@@ -12,6 +12,10 @@
 // column on an existing table, a new top-level module, or a new service gets the structure check
 // instead, and to ignore it otherwise.
 //
+// When the user's sources file exists (scripts/sources.mjs), one line per source it lists follows
+// the nudge: the source's label and its command or path, as written there. A missing or
+// unparseable sources file adds nothing and is not a fault.
+//
 // FAIL-OPEN, BUT NOT FAIL-SILENT. Every path exits 0, so a broken hook never blocks a prompt. A
 // fault (empty or non-JSON stdin, a config file that names no valid level, a throw) appends one
 // line to errors.log and adds one systemMessage line (hooks/fault.mjs), because a silent failure
@@ -23,6 +27,7 @@
 import { readFileSync, realpathSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { NUDGE, resolveIntensity } from "../skills/ask-graham/scripts/intensity.mjs";
+import { readSources, withSources } from "../skills/ask-graham/scripts/sources.mjs";
 import { errText, faults } from "./fault.mjs";
 
 const HOOK_FILE = "ask-graham-hook.mjs";
@@ -36,7 +41,7 @@ export function handle(input, opts = {}) {
   const cwd = typeof input?.cwd === "string" && input.cwd !== "" ? input.cwd : process.cwd();
   const r = resolveIntensity({ cwd, env: opts.env ?? process.env, home: opts.home });
   if (r.invalid) opts.fault?.(`config ${r.path} names no valid intensity (ask or every-idea), so it counts as ask`);
-  return r.level === "every-idea" ? context(NUDGE) : null;
+  return r.level === "every-idea" ? context(withSources(NUDGE, readSources({ env: opts.env ?? process.env, ...(opts.home ? { home: opts.home } : {}) }))) : null;
 }
 
 /** The whole hook for one stdin text: the JSON to print, or null. Never throws. */

@@ -11,6 +11,10 @@
 // with its five bullets: waitingMissing), or it is a structure check: a turn whose first use of the
 // skill declared one (skillUse) and whose reply opens with `**Structure check:**` and then a
 // `**Found:**` or `**No similar:**` line (SKILL.md "When it runs").
+// When the user has a sources file (scripts/sources.mjs), a full check's verdict or waiting reply
+// also needs its proof, in the turn since the skill load: a Read of the file, a run or read of each
+// source it lists, and a `**Local search:**` block marking every source (sourcesMissing). Without a
+// sources file nothing more is required.
 // A turn that did not read the skill, or whose only uses of it were settings invocations (`/ask-graham intensity`, `/ask-graham stop-check`), is not checked.
 // The adapters skip the check entirely when the stop-check setting is off. The check blocks at most once per
 // turn: the caller keeps the opener id of the turn it last blocked and passes it back as
@@ -197,13 +201,23 @@ const isStructure = (args) => typeof args === "string" && /^structure-check(?:\s
  * change that.
  */
 export function skillUse(turn) {
+  const { read, settingsOnly, structureCheck } = scanSkillUse(turn);
+  return { read, settingsOnly, structureCheck };
+}
+
+// skillUse plus `loadedAt`: the index in turn.entries of the first use that is not a settings
+// invocation (-1 when none), where the sources proof starts counting tool calls.
+function scanSkillUse(turn) {
   let read = false;
   let settingsOnly = true;
   let first = null; // "structure" or "full": the first use that is not a settings invocation
   let ordinary = false;
+  let loadedAt = -1;
+  let at = -1;
   const use = (kind) => {
     read = true;
     settingsOnly = false;
+    if (first === null) loadedAt = at;
     first ??= kind;
   };
   const invoked = (a) => {
@@ -218,6 +232,7 @@ export function skillUse(turn) {
     else if (isStructurePath(path)) use("structure");
   };
   for (const e of turn?.entries ?? []) {
+    at++;
     if (e.type === "user" && isOpener(e)) {
       const text = contentText(e.message?.content);
       const name = /<command-name>\/?([^<]*)<\/command-name>/.exec(text);
@@ -239,7 +254,26 @@ export function skillUse(turn) {
       }
     }
   }
-  return { read, settingsOnly: read && settingsOnly, structureCheck: first === "structure" && !ordinary };
+  return { read, settingsOnly: read && settingsOnly, structureCheck: first === "structure" && !ordinary, loadedAt };
+}
+
+/**
+ * Every tool call on a turn from entry index `from` on, either harness, as `{ name, input }`: a
+ * Claude Code `tool_use` block's input, an OMP `toolCall` block's arguments.
+ */
+export function toolCalls(turn, from = 0) {
+  const calls = [];
+  for (const e of (turn?.entries ?? []).slice(Math.max(0, from))) {
+    if (!(e.type === "assistant" || (e.type === "message" && e.message?.role === "assistant"))) continue;
+    const content = e.message?.content;
+    if (!Array.isArray(content)) continue;
+    for (const b of content) {
+      if (!isObject(b)) continue;
+      if (b.type === "tool_use" && isObject(b.input)) calls.push({ name: b.name, input: b.input });
+      else if (b.type === "toolCall" && isObject(b.arguments)) calls.push({ name: b.name, input: b.arguments });
+    }
+  }
+  return calls;
 }
 
 /**
@@ -283,7 +317,9 @@ const STRUCTURE_REPLY = /^\*\*Structure check:\*\*[ \t]*\S[^\n]*\n(?:[ \t]*\n)*\
 /**
  * The Stop check for one stop. `entries` is the parsed transcript, `text` the final assistant
  * text (when absent, the last assistant text on the turn), `blockedOpener` the turn opener id
- * this caller last blocked in this session (or null).
+ * this caller last blocked in this session (or null), `sources` the user's parsed sources file
+ * (scripts/sources.mjs readSources; null when there is none) and `home` the home directory `~`
+ * and `$HOME` in its paths and in tool calls expand to.
  *
  * Returns `{ block: <reason>, opener }` when the stop must be blocked, which the caller records
  * as its new blockedOpener, or `{ pass: <why>, opener }` otherwise, `why` being one of
@@ -291,19 +327,25 @@ const STRUCTURE_REPLY = /^\*\*Structure check:\*\*[ \t]*\S[^\n]*\n(?:[ \t]*\n)*\
  * "verdict", "structure-check", "comparables-question", "already-blocked". `opener` is the turn
  * opener's id, or null with "no-turn". A structure check's block gives STRUCTURE_BLOCK_REASON; a
  * reply ending on the comparables question without step 1 and step 3 above it gets
- * waitingBlockReason, naming what it lacks.
+ * waitingBlockReason, naming what it lacks. With a sources file, a full check whose reply has its
+ * verdict or its waiting shape also needs the sources proof (sourcesMissing); without it the
+ * block gives sourcesBlockReason. Without a sources file nothing more is required.
  */
-export function checkStop({ entries, text, blockedOpener = null } = {}) {
+export function checkStop({ entries, text, blockedOpener = null, sources = null, home = null } = {}) {
   const turn = currentTurn(entries);
   if (!turn) return { pass: "no-turn", opener: null };
   const opener = turn.id;
-  const use = skillUse(turn);
+  const use = scanSkillUse(turn);
   if (!use.read) return { pass: "no-skill-read", opener };
   if (use.settingsOnly) return { pass: "settings", opener };
   const finalText = typeof text === "string" && text.trim() ? text : lastAssistantText(turn);
   const done = use.structureCheck ? structureDone(finalText) : fullDone(finalText);
-  if (typeof done === "string") return { pass: done, opener };
+  const missing = typeof done === "string" && !use.structureCheck && sources?.bullets?.length
+    ? sourcesMissing({ calls: toolCalls(turn, use.loadedAt), reply: finalText ?? "", sources, home })
+    : [];
+  if (typeof done === "string" && !missing.length) return { pass: done, opener };
   if (blockedOpener !== null && blockedOpener === opener) return { pass: "already-blocked", opener };
+  if (missing.length) return { block: sourcesBlockReason(missing), opener };
   if (use.structureCheck) return { block: STRUCTURE_BLOCK_REASON, opener };
   return { block: done ? waitingBlockReason(done.missing) : BLOCK_REASON, opener };
 }
@@ -338,8 +380,8 @@ const GATE_LABELS = [/^why\s*:/i, /^how long lived\s*:/i, /^already exists\s*:/i
 
 // Fenced code blocks (``` or ~~~, to a matching closer or the end) removed, so a label shown as an
 // example inside one never counts. Quoted lines need no stripping: every label below must start
-// its line, and a quoted line starts with `>`.
-const stripFences = (text) => text.replace(/^[ \t]*(`{3,}|~{3,})[^\n]*\n[\s\S]*?(?:^[ \t]*\1[ \t]*$|(?![\s\S]))/gm, "");
+// its line, and a quoted line starts with `>`. scripts/sources.mjs uses it on the sources file too.
+export const stripFences = (text) => text.replace(/^[ \t]*(`{3,}|~{3,})[^\n]*\n[\s\S]*?(?:^[ \t]*\1[ \t]*$|(?![\s\S]))/gm, "");
 
 /**
  * What a waiting reply lacks of SKILL.md's waiting shape (Jo): a `**Ask:**` line with text (step 1),
@@ -373,4 +415,119 @@ export function waitingBlockReason(missing) {
   const named = missing.map((m) => (m === "**Gate questions**" ? "`**Gate questions**` line and its five bullets" : `\`${m}\``));
   return `ask-graham: a reply waiting on the comparables question needs step 1 and step 3 above it. Missing: ${named.join(", ")}. ` +
     "Add only those (SKILL.md Output); keep the question alone on the final line.";
+}
+
+// --- The sources proof: the user's sources file was read and each source it lists was checked ---
+//
+// Counted from the turn's skill load on (scanSkillUse loadedAt), main session only: a subagent's
+// tool calls are not in this transcript, so a search a subagent ran does not count until the parent
+// runs it or relays it. Only the call is read, never its result, so a command that exited non-zero
+// counts as run.
+
+// `~` and `$HOME` / `${HOME}` expanded to `home` when one is given, so `~/x` and `<home>/x` compare equal.
+function expandHome(s, home) {
+  if (typeof home !== "string" || !home) return s;
+  return s
+    .replace(/(^|[\s"'=:(])~(?=\/|\s|$)/g, (_, pre) => pre + home)
+    .replace(/\$\{HOME\}|\$HOME(?![A-Za-z0-9_])/g, () => home);
+}
+const squash = (s, home) => expandHome(s, home).replace(/\s+/g, " ");
+
+// Every string in a value, nested arrays and objects included.
+function stringsOf(v, out = []) {
+  if (typeof v === "string") out.push(v);
+  else if (Array.isArray(v)) for (const x of v) stringsOf(x, out);
+  else if (isObject(v)) for (const x of Object.values(v)) stringsOf(x, out);
+  return out;
+}
+
+// What a tool call runs: a shell command (Claude Code Bash, OMP bash and pair_run) or eval code.
+const runTexts = (call) => [call.input.command, call.input.code].filter((s) => typeof s === "string");
+
+// The file a Read (Claude Code) or read (OMP, its `:<lines>` selector dropped) opens, or null.
+function readPath(call) {
+  if (call.name === "Read" && typeof call.input.file_path === "string") return call.input.file_path;
+  if (call.name === "read" && typeof call.input.path === "string") return call.input.path.replace(/:[^/]*$/, "");
+  return null;
+}
+
+// A sources-file path as a pattern: home expanded, `*` matching any run of path characters.
+function pathPattern(path, home) {
+  return new RegExp(expandHome(path, home).replace(/[.+?^${}()|[\]\\]/g, "\\$&").replace(/\*/g, "[^\\s\"'`]*"));
+}
+
+const LOCAL_SEARCH = /^[ \t]*(?:[-*+][ \t]+)?(?:\*\*|__)?local search(?::(?:\*\*|__)?|(?:\*\*|__)?:)/i;
+
+/**
+ * The reply's `**Local search:**` block outside fenced code and quotes: the heading line's text after
+ * the label, then the list items and indented lines under it (blank lines skipped) up to the first
+ * other line. Null when the reply has no such heading. The label matches in any case, bold optional.
+ */
+export function localSearchBlock(text) {
+  if (typeof text !== "string") return null;
+  const lines = stripFences(text.replace(/\r\n/g, "\n")).split("\n");
+  const at = lines.findIndex((l) => LOCAL_SEARCH.test(l));
+  if (at < 0) return null;
+  const block = [lines[at].replace(LOCAL_SEARCH, "")];
+  for (const l of lines.slice(at + 1)) {
+    if (!l.trim() || /^[ \t]*>/.test(l)) continue;
+    if (/^[ \t]*[-*+][ \t]/.test(l) || /^[ \t]/.test(l)) block.push(l);
+    else break;
+  }
+  return block;
+}
+
+// Whether a block line names the label (any case, bold ignored) and marks it found, nothing found
+// or unreachable.
+const marks = (block, label) =>
+  block.some((l) => {
+    const plain = l.replace(/\*\*|__/g, "").toLowerCase();
+    return plain.includes(label.toLowerCase()) && /\b(?:found|unreachable)\b/.test(plain);
+  });
+
+/**
+ * What the turn lacks of the sources proof, in order, as `{ label, expected }`: a Read of the
+ * sources file; the reply's `**Local search:**` block; then per source, its run (a command source:
+ * a tool call whose command or code contains its prefix), its read (a path source: a tool call
+ * naming the path), or, once both of those hold or for a source with neither, its line in the
+ * block. Empty when nothing is missing.
+ */
+export function sourcesMissing({ calls = [], reply = "", sources, home = null } = {}) {
+  const missing = [];
+  if (!sources?.bullets?.length) return missing;
+  const sourcesFile = expandHome(sources.path, home);
+  if (!calls.some((c) => { const p = readPath(c); return p !== null && expandHome(p, home) === sourcesFile; })) {
+    missing.push({ label: "sources file", expected: `a Read of ${sources.path}` });
+  }
+  const block = localSearchBlock(reply);
+  if (!block) missing.push({ label: "**Local search:**", expected: "a block in the reply" });
+  for (const b of sources.bullets) {
+    if (b.kind === "command") {
+      const prefix = squash(b.prefix, home);
+      if (!calls.some((c) => runTexts(c).some((t) => squash(t, home).includes(prefix)))) {
+        missing.push({ label: b.label, expected: `a Bash or eval call running \`${b.prefix}\`` });
+        continue;
+      }
+    } else if (b.kind === "path") {
+      const pattern = pathPattern(b.value, home);
+      if (!calls.some((c) => stringsOf(c.input).some((s) => pattern.test(expandHome(s, home))))) {
+        missing.push({ label: b.label, expected: `a tool call naming ${b.value}` });
+        continue;
+      }
+    }
+    if (block && !marks(block, b.label)) missing.push({ label: b.label, expected: "a **Local search:** line marking it" });
+  }
+  return missing;
+}
+
+/** The reason a sources-proof block gives: the first missing source and what was expected, then a count of the rest; at most 300 chars. */
+export function sourcesBlockReason(missing) {
+  const rest = missing.length - 1;
+  const head = "ask-graham: sources file not fully checked. First missing: ";
+  const tail = (rest > 0 ? ` (+${rest} more).` : ".") +
+    " Run each read-only, then mark it under **Local search:** (found, nothing found, unreachable).";
+  let first = `${missing[0].label}: ${missing[0].expected}`;
+  const room = 300 - head.length - tail.length;
+  if (first.length > room) first = `${first.slice(0, room - 1)}…`;
+  return head + first + tail;
 }

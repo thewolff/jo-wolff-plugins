@@ -278,7 +278,41 @@ one bullet per source with the read-only command or path:
 
 Without it the skill checks the repo, its issue tracker, and any to-do, roadmap or task file the
 project's `AGENTS.md` or `CLAUDE.md` names. Keep it out of version control: it describes your
-machine.
+machine. The plugin ships no source of its own; it reads whatever this file says on the machine
+it runs on.
+
+**What is enforced.** With the file present, the every-idea nudge lists each source (its label and
+its command or path, as written), and the Stop check requires, in a full check's turn after the
+skill loads, verdict reply or waiting reply alike:
+
+- a Read of the sources file;
+- for a bullet with a backticked command, a Bash or eval tool call (OMP `bash`, `pair_run` or
+  `eval`) containing the command's first two words, three when the second is `node`, `bun`,
+  `python3`, `sh`, `zsh` or `npx`; words from a placeholder such as `<the ask>` on are not needed.
+  A command that fails still counts as run. A bullet with a command and a path counts as a command;
+- for a bullet with only a path (backticked or bare, `~` and `$HOME` expanded, `*` matching any
+  part), any tool call naming that path;
+- a `**Local search:**` block in the reply with one line per bullet: its label (any case, bold
+  optional) and *found*, *nothing found* or *unreachable*. A bullet with neither command nor path
+  is proved by this line alone. Inside a code fence or a quote it does not count.
+
+Anything missing blocks the stop once, with a reason under 300 characters naming the first missing
+source, what was expected, and how many more are missing. The Local search block is enforced only
+when a sources file exists: without one, nothing here is required and the Stop check behaves as
+before. A structure check needs none of it. Claude Code reads the tool calls from the transcript
+the Stop hook already parses; OMP reads them from the session file, which records every tool call
+with its arguments, so the check runs on both hosts.
+
+How it fails:
+
+| Situation | What happens |
+|---|---|
+| A bullet has no bold label, or the file has no labelled bullet | That bullet is ignored; a file with none counts as no file. No fault line. |
+| A command's prefix was never run in the turn | Blocked once, naming the source and the prefix expected. |
+| A path was never read or named by a tool call | Blocked once, naming the source and the path. |
+| The transcript is torn (a line half-written) | The torn line is skipped. If it held the proof, the stop is blocked once; the next stop in the turn passes. |
+| OMP cannot see tool calls | Not the case today: OMP writes each tool call to the session file, which the check reads. If a future OMP stopped writing them, every check with a sources file would block once per turn, then pass. |
+| A subagent ran the search | Blocked once, and the block is correct: the check sees only the main session's tool calls, so the parent runs each source itself. |
 
 ## Update and uninstall
 
@@ -364,6 +398,8 @@ end-to-end run goes through the settings CLI and both hooks over a temp repo and
 (`e2e.test.mjs`), and the Stop hook reads real Claude Code transcripts captured with
 `zsh fixtures/capture-claude-code.sh` (`fixtures/claude-code/`, `hooks/real-transcripts.test.mjs`).
 CI runs the same command on Ubuntu and macOS with Node 24 (`.github/workflows/ask-graham.yml`).
+`sources.test.mjs` covers the sources file: the parser, the nudge lines, and the Stop check's
+sources proof on both transcript shapes, with a fixture file of invented sources.
 
 ## Release notes
 
@@ -375,6 +411,15 @@ questions (step 3). A waiting reply now needs a `**Ask:**` line and a `**Gate qu
 with all five bullets above the question; the Stop check blocks it once otherwise, naming what is
 missing. Jo's rule (2026-11-04: "you can't skip step 1"). Verdict replies and the structure check
 are unchanged. The check is shared, so OMP's `session_stop` applies it too.
+
+The sources file is now enforced, not remembered. Asked "how are you going to enforce not ignoring
+the sources file" (Jo, 2026-11-04), the plugin now parses your
+`${XDG_CONFIG_HOME:-~/.config}/ask-graham/sources.md`: the every-idea nudge lists each source, and
+a full check with that file present must read it, run or read each source in the same turn, and
+report each one under `**Local search:**`, or the stop is blocked once naming the first one missed
+(see [Your own open-work sources](#your-own-open-work-sources)). Nothing about any particular
+machine ships: the plugin names no command or path of its own. Without a sources file nothing
+changes.
 
 ### 2026-11-03 — 0.7.1
 
