@@ -9,7 +9,9 @@ import { join } from "node:path";
 import { PLUGIN_DIR, sandbox } from "./helpers.mjs";
 import { BLOCK_MAX, ITEMS_MAX } from "../lib/due.mjs";
 
-const BIG = join(PLUGIN_DIR, "test", "fixtures", "big-answer-hook.mjs");
+// Outside test/ so node --test does not run it on its own; it answers only with the flag set.
+const BIG = join(PLUGIN_DIR, "test-fixtures", "big-answer-hook.mjs");
+const FIXTURE_ON = { REMINDERS_REVIEW_FIXTURE: "1" };
 const SESSION_START = join(PLUGIN_DIR, "hooks", "session-start.mjs");
 const PIPE_BUFFER = 65_536;
 
@@ -30,7 +32,7 @@ function reminders(n, titleLen, { minimal = false } = {}) {
 }
 
 test("runner: an answer larger than a pipe buffer reaches stdout whole", () => {
-  const box = sandbox();
+  const box = sandbox({ extra: FIXTURE_ON });
   try {
     for (const bytes of [100_000, 1_048_576]) {
       const r = spawnSync(process.execPath, [BIG], { env: box.env, input: JSON.stringify({ bytes }), maxBuffer: 8 * 1024 * 1024, timeout: 10_000 });
@@ -46,7 +48,7 @@ test("runner: an answer larger than a pipe buffer reaches stdout whole", () => {
 });
 
 test("runner: a host that never reads stdout → exit 0 at the deadline, one errors.log line, nothing more written", async () => {
-  const box = sandbox({ extra: { HOOK_DEADLINE_MS: "1500" } });
+  const box = sandbox({ extra: { ...FIXTURE_ON, HOOK_DEADLINE_MS: "1500" } });
   try {
     const started = Date.now();
     const child = spawn(process.execPath, [BIG], { env: box.env, stdio: ["pipe", "pipe", "ignore"] });

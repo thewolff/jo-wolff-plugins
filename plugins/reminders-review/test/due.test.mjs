@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import {
+  BLOCK_MAX,
   BLOCK_NOTE,
   buildBlock,
   checkDue,
@@ -76,6 +77,35 @@ test("titles are one line and cut at TITLE_MAX", () => {
   assert.ok(long.endsWith("…"));
 });
 
+test("a cut title never splits a character: emoji, flags and accents stay whole", () => {
+  const graphemes = (s) => [...new Intl.Segmenter().segment(s)].map((g) => g.segment);
+  for (const title of ["😀".repeat(101), "a" + "😀".repeat(150), "🇺🇸".repeat(60), "e\u0301".repeat(150), "👩‍👩‍👧".repeat(40)]) {
+    const cut = cleanTitle(title);
+    assert.ok(cut.isWellFormed(), `lone surrogate in ${JSON.stringify(cut)}`);
+    assert.ok(cut.length <= TITLE_MAX, `${cut.length} code units`);
+    assert.ok(cut.endsWith("…"));
+    const kept = graphemes(cut.slice(0, -1));
+    assert.ok(kept.length > 0);
+    assert.deepEqual(kept, graphemes(title).slice(0, kept.length), "the cut keeps whole leading characters");
+    assert.equal(JSON.parse(JSON.stringify(cut)), cut);
+  }
+  assert.equal(cleanTitle("😀".repeat(100)), "😀".repeat(100), "exactly TITLE_MAX code units is not cut");
+});
+
+test("buildBlock at exactly BLOCK_MAX bytes with an emoji title → no lone surrogate, JSON round trip clean", () => {
+  const items = Array.from({ length: 40 }, (_, i) => ({ title: i === 0 ? "😀".repeat(101) : i === 39 ? "é".repeat(191) + "a" : "é".repeat(92), dueDate: null }));
+  const hidden = Array.from({ length: 20 }, () => ({ title: "hidden", dueDate: null }));
+  const block = buildBlock([{ list: "A", items }, { list: "B", items: hidden }, { list: "C", items: hidden }]);
+  assert.ok(Buffer.byteLength(block) <= BLOCK_MAX, `block is ${Buffer.byteLength(block)} bytes`);
+  assert.ok(Buffer.byteLength(block) >= BLOCK_MAX - 4, `block is ${Buffer.byteLength(block)} bytes: the case no longer sits at the boundary`);
+  assert.ok(block.isWellFormed(), "lone surrogate in the block");
+  const round = JSON.parse(JSON.stringify({ additionalContext: block })).additionalContext;
+  assert.equal(round, block);
+  assert.ok(round.isWellFormed());
+  assert.equal(block.split("\n")[0].split("; ").length, 40);
+  assert.equal(block.split("\n").at(-2), "Due in 2 more watched lists: 40 reminders not shown");
+});
+
 test("watched lists: the env override wins, even empty; else config `watch`; unconfigured is none", () => {
   const box = sandbox({ withStub: false });
   try {
@@ -105,6 +135,16 @@ test("the fault line names the fix for each kind, on one line", () => {
   assert.match(two, /^reminders-review: due reminders not checked: list A, B \(x\); fix: /);
   assert.ok(!two.includes("\n"));
   assert.equal(faultLine({}), null);
+});
+
+test("the fault line's cuts keep emoji whole: a long why, and a line past LINE_MAX", () => {
+  const why = faultLine({ failures: [{ list: "P", kind: "exit", detail: "😀".repeat(80) }] });
+  assert.ok(why.isWellFormed(), why);
+  assert.match(why, /\(😀+…\)/u);
+  const lists = Array.from({ length: 60 }, (_, i) => ({ list: `🗂️${i}`, kind: "list", detail: "x" }));
+  const long = faultLine({ failures: lists });
+  assert.ok(long.isWellFormed(), long);
+  assert.ok(long.length <= 300 && long.endsWith("…"));
 });
 
 test("throttle: missing or an hour old checks; within the hour does not; a stamp from the future checks", () => {

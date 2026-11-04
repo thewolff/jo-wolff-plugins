@@ -150,7 +150,7 @@ export function runRemindctl(args, { env = process.env, timeoutMs = REMINDCTL_TI
     child.on("close", (code, signal) => {
       const stdout = Buffer.concat(chunks).toString("utf8");
       if (code === 0) return settle({ ok: true, stdout });
-      const said = stderr.replace(/\s+/g, " ").trim() || stdout.replace(/\s+/g, " ").trim().slice(0, 200);
+      const said = stderr.replace(/\s+/g, " ").trim() || prefix(stdout.replace(/\s+/g, " ").trim(), 200);
       const detail = `remindctl ${args.slice(0, 2).join(" ")} exited ${code ?? signal}${said ? `: ${said}` : ""}`;
       if (/list not found/i.test(said)) return settle({ ok: false, kind: "list", detail });
       if (/authori[sz]|access|denied|permission|privacy/i.test(said)) return settle({ ok: false, kind: "unauthorized", detail });
@@ -229,10 +229,28 @@ export function formatDue(item, { now = Date.now(), timeZone, formats = dateForm
   return sameDay ? time : `${date} ${time}`;
 }
 
+const graphemes = new Intl.Segmenter();
+
+/**
+ * The longest start of `text` within `max` UTF-16 units that ends between characters: an emoji,
+ * flag or accented letter is kept whole or dropped whole, never split into a lone surrogate.
+ */
+function prefix(text, max) {
+  if (text.length <= max) return text;
+  let end = 0;
+  for (const { index, segment } of graphemes.segment(text)) {
+    if (index + segment.length > max) break;
+    end = index + segment.length;
+  }
+  return text.slice(0, end);
+}
+
+/** `text`, or its start and `…` within `max` UTF-16 units when longer. */
+const cut = (text, max) => (text.length > max ? `${prefix(text, max - 1)}…` : text);
+
 /** A title as one line, cut at TITLE_MAX. */
 export function cleanTitle(title) {
-  const t = title.replace(/\s+/g, " ").trim();
-  return t.length > TITLE_MAX ? `${t.slice(0, TITLE_MAX - 1)}…` : t;
+  return cut(title.replace(/\s+/g, " ").trim(), TITLE_MAX);
 }
 
 const bytes = (s) => Buffer.byteLength(s);
@@ -306,10 +324,7 @@ const FIX = {
 };
 
 const DETAIL_MAX = 120;
-const short = (s) => {
-  const t = String(s).replace(/\s+/g, " ").trim();
-  return t.length > DETAIL_MAX ? `${t.slice(0, DETAIL_MAX - 1)}…` : t;
-};
+const short = (s) => cut(String(s).replace(/\s+/g, " ").trim(), DETAIL_MAX);
 
 /**
  * The one SessionStart line for `failures` (and a config `problem`):
@@ -327,7 +342,7 @@ export function faultLine({ failures = [], problem = null } = {}) {
   }
   if (!parts.length) return null;
   const line = `reminders-review: due reminders not checked: ${parts.join("; ")}`;
-  return line.length > LINE_MAX ? `${line.slice(0, LINE_MAX - 1)}…` : line;
+  return cut(line, LINE_MAX);
 }
 
 /** `<state>/sessions/<id>.json`, the id reduced to a safe file name. */
