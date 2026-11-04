@@ -10,6 +10,7 @@ import { paths, stateDir, writeCurrent } from "./lib/state.mjs";
 
 const CLI = join(dirname(fileURLToPath(import.meta.url)), "pattern-check.mjs");
 const SESSION = "0b0e6a1c-5d2f-4c1e-9a77-3f0e2c1d9b10";
+const FAIL = "throws, caller logs to stderr | rerun after fixing input | yes: pure | n/a: no retries | stderr line";
 
 function fixture(t) {
   const base = realpathSync(mkdtempSync(join(tmpdir(), "pattern-check-cli-")));
@@ -21,7 +22,7 @@ function fixture(t) {
   const env = { XDG_STATE_HOME: state, XDG_CONFIG_HOME: join(base, "config") };
   const sd = stateDir(env, base);
   const cli = (args, opts = {}) => run(args, { env, home: base, cwd: join(repo, "src"), stdin: null, ...opts });
-  const spawn = (args, input = null) => spawnSync(process.execPath, [CLI, ...args], { cwd: join(repo, "src"), input: input ?? "", env: { ...process.env, HOME: base, ...env }, encoding: "utf8" });
+  const spawn = (args, input = null) => spawnSync(process.execPath, [CLI, ...args], { cwd: join(repo, "src"), input: input ?? "", env: { ...process.env, HOME: base, ...env }, encoding: "utf8", timeout: 5000 });
   return { base, repo, env, sd, cli, spawn };
 }
 
@@ -71,14 +72,15 @@ test("the session key comes from --session, then PATTERN_CHECK_SESSION, then the
 test("record from stdin writes the repo receipt and the state copy, marks the session, and says the directory is untracked", (t) => {
   const f = fixture(t);
   f.cli(["open", "thing", "--session", SESSION]);
-  const table = "| retry helper | src/net/retry.ts:12 | reuse | same backoff |\n| webhook parser | (none: grep webhook in src/) | new | nothing parses inbound webhooks |\n";
+  const table = `| retry helper | src/net/retry.ts:12 | reuse | same backoff | ${FAIL} |\n| webhook parser | (none: grep webhook in src/) | new | nothing parses inbound webhooks | ${FAIL} |\n`;
   const r = f.cli(["record", "--session", SESSION], { stdin: table });
   assert.equal(r.code, 0, r.stderr);
   const receipt = join(f.repo, ".pattern-check", `${SESSION}.md`);
   assert.equal(existsSync(receipt), true);
   assert.equal(readFileSync(receipt, "utf8"), readFileSync(paths.receiptCopy(f.sd, SESSION), "utf8"));
   assert.match(readFileSync(receipt, "utf8"), /^what: thing$/m);
-  assert.match(readFileSync(receipt, "utf8"), /\| retry helper \| src\/net\/retry.ts:12 \| reuse \| same backoff \|/);
+  assert.match(readFileSync(receipt, "utf8"), /\| retry helper \| src\/net\/retry.ts:12 \| reuse \| same backoff \| throws, caller logs to stderr \| rerun after fixing input \| yes: pure \| n\/a: no retries \| stderr line \|/);
+  assert.ok(readFileSync(receipt, "utf8").includes("| new piece | existing pattern (file:line) | reuse / replace / new | reason | fails how | next step | restart-safe | bounded | evidence kept |"));
   assert.match(r.stdout, /2 rows: 1 reuse, 0 replace, 1 new/);
   assert.match(r.stdout, /\.pattern-check\/ is untracked; add "\.pattern-check\/" to \.gitignore or \.git\/info\/exclude/);
   assert.equal(JSON.parse(readFileSync(paths.session(f.sd, SESSION), "utf8")).receipt, receipt);
@@ -88,7 +90,7 @@ test("record from stdin writes the repo receipt and the state copy, marks the se
 test("record with --row and --no-new-pieces; the untracked note is dropped when the directory is excluded", (t) => {
   const f = fixture(t);
   writeFileSync(join(f.repo, ".git", "info", "exclude"), ".pattern-check/\n");
-  const r = f.cli(["record", "--session", SESSION, "--row", "a | src/a.ts:1 | reuse | fine"]);
+  const r = f.cli(["record", "--session", SESSION, "--row", `a | src/a.ts:1 | reuse | fine | ${FAIL}`]);
   assert.equal(r.code, 0, r.stderr);
   assert.doesNotMatch(r.stdout, /untracked/);
   const n = f.cli(["record", "--session", "other", "--no-new-pieces", "two copy edits"]);
@@ -100,21 +102,35 @@ test("record with an invalid table exits 1 and writes nothing", (t) => {
   const f = fixture(t);
   for (const [args, stdin, msg] of [
     [[], "", /the receipt is empty/],
-    [[], "| a | b | maybe | c |", /decision must be one of/],
-    [["--row", "a | | new |"], null, /needs a reason/],
+    [[], `| a | b | maybe | c | ${FAIL} |`, /decision must be one of/],
+    [["--row", `a | | new | | ${FAIL}`], null, /needs a reason/],
     [["--no-new-pieces", " "], null, /needs a reason/],
+    // the fail columns
+    [[], "| a | src/a.ts:1 | reuse | ok |", /row "a" has no fail columns; every piece needs fails how \| next step \| restart-safe \| bounded \| evidence kept/],
+    [["--row", "a | src/a.ts:1 | reuse | ok |  | rerun | yes: pure | n/a: none | log"], null, /row "a": "fails how" is empty/],
+    [["--row", "a | src/a.ts:1 | reuse | ok | throws | rerun | yes: pure | n/a | log"], null, /row "a": "bounded" is n\/a without a reason/],
+    [["--row", "a | src/a.ts:1 | reuse | ok | throws | rerun | maybe | n/a: x | log"], null, /"restart-safe" must start with yes or no/],
+    [["--row", "a | src/a.ts:1 | reuse | ok | throws | rerun | yes: pure | n/a: x | TBD"], null, /"evidence kept" is a placeholder/],
   ]) {
     const r = f.cli(["record", "--session", SESSION, ...args], { stdin });
     assert.equal(r.code, 1, JSON.stringify(args));
     assert.match(r.stderr, msg);
+    assert.match(r.stderr, /^pattern-check: receipt not written: /);
   }
   assert.equal(existsSync(join(f.repo, ".pattern-check")), false);
   assert.equal(existsSync(paths.receiptCopy(f.sd, SESSION)), false);
 });
 
+test("an old four-column receipt already on disk still counts: status finds it through receiptExists, the check both hooks use", (t) => {
+  const f = fixture(t);
+  mkdirSync(join(f.repo, ".pattern-check"), { recursive: true });
+  writeFileSync(join(f.repo, ".pattern-check", `${SESSION}.md`), "# pattern-check receipt\n\nsession: x\n\n| new piece | existing pattern (file:line) | reuse / replace / new | reason |\n|---|---|---|---|\n| a | b:1 | reuse | c |\n");
+  assert.match(f.cli(["status", "--session", SESSION]).stdout, /^receipt: .*\.pattern-check\/0b0e6a1c.*\.md$/m);
+});
+
 test("spawned: record reads stdin only when no --row or --no-new-pieces is given", (t) => {
   const f = fixture(t);
-  const viaStdin = f.spawn(["record", "--session", SESSION], "| a | src/a.ts:1 | reuse | ok |\n");
+  const viaStdin = f.spawn(["record", "--session", SESSION], `| a | src/a.ts:1 | reuse | ok | ${FAIL} |\n`);
   assert.equal(viaStdin.status, 0, viaStdin.stderr);
   const viaFlag = f.spawn(["record", "--session", "k2", "--no-new-pieces", "x"], "| this | stdin | is | ignored |");
   assert.equal(viaFlag.status, 0, viaFlag.stderr);

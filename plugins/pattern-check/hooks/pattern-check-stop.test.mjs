@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { spawnSync } from "node:child_process";
@@ -24,10 +24,10 @@ function fixture(t) {
   const env = { XDG_STATE_HOME: state, XDG_CONFIG_HOME: config, CLAUDE_PLUGIN_ROOT: dirname(dirname(HOOK)) };
   const sd = stateDir(env, base);
   const payload = (message = PLAN, extra = {}) => ({ hook_event_name: "Stop", session_id: SESSION, cwd: repo, stop_hook_active: false, last_assistant_message: message, ...extra });
-  const run = (input) => spawnSync(process.execPath, [HOOK], { input: typeof input === "string" ? input : JSON.stringify(input), env: { ...process.env, HOME: base, ...env }, encoding: "utf8" });
+  const run = (input) => spawnSync(process.execPath, [HOOK], { input: typeof input === "string" ? input : JSON.stringify(input), env: { ...process.env, HOME: base, ...env }, encoding: "utf8", timeout: 5000 });
   const call = (input) => handle(input, { env, home: base });
   const setUser = (text) => { mkdirSync(join(config, "pattern-check"), { recursive: true }); writeFileSync(join(config, "pattern-check", "config.json"), text); };
-  const record = () => spawnSync(process.execPath, [CLI, "record", "--session", SESSION, "--cwd", repo, "--no-new-pieces", "test"], { env: { ...process.env, HOME: base, ...env }, encoding: "utf8" });
+  const record = () => spawnSync(process.execPath, [CLI, "record", "--session", SESSION, "--cwd", repo, "--no-new-pieces", "test"], { env: { ...process.env, HOME: base, ...env }, encoding: "utf8", timeout: 5000 });
   return { base, state, repo, env, sd, payload, run, call, setUser, record };
 }
 
@@ -38,6 +38,9 @@ test("a reply that proposes a plan with no receipt is refused, and the reason na
   assert.match(out.reason, /^pattern-check: this reply proposes a plan or design \(heading: ## Plan\)/);
   assert.ok(out.reason.includes(`node "${CLI}" record --session ${SESSION} < table.md`), out.reason);
   assert.ok(out.reason.includes(`--no-new-pieces "<reason>"`), out.reason);
+  // Both questions, in so many words.
+  assert.ok(out.reason.includes("what exists already"), out.reason);
+  assert.ok(out.reason.includes("how does it fail"), out.reason);
 });
 
 test("end to end through stdin: exit 0 and the block JSON", (t) => {
@@ -110,4 +113,30 @@ test("a missing session_id degrades to a per-cwd key: still refused, with a warn
   assert.equal(after.decision, undefined);
   assert.match(after.systemMessage, /no usable session_id/);
   assert.equal(paths.stop(f.sd, key).endsWith(key), true);
+});
+
+test("process: empty stdin, malformed JSON and a non-object payload exit 0, let the stop through, warn, and log to errors.log", (t) => {
+  const f = fixture(t);
+  for (const [input, re] of [["", /got empty stdin/], ["{ torn", /got stdin that is not JSON/], ["42", /not a JSON object/]]) {
+    const r = f.run(input);
+    assert.equal(r.error, undefined, String(r.error));
+    assert.equal(r.status, 0);
+    const out = JSON.parse(r.stdout);
+    assert.equal(out.decision, undefined);
+    assert.match(out.systemMessage, re);
+    assert.match(out.systemMessage, /the stop was allowed$/);
+  }
+  const log = readFileSync(join(f.sd, "errors.log"), "utf8").trimEnd().split("\n");
+  assert.equal(log.length, 3);
+  for (const l of log) assert.match(l, /^\S+Z pattern-check-stop\.mjs the Stop hook got /);
+});
+
+test("process: a missing config refuses under the defaults with no warning; the refusal is not an error and is not logged", (t) => {
+  const f = fixture(t);
+  const r = f.run(f.payload());
+  assert.equal(r.error, undefined, String(r.error));
+  const out = JSON.parse(r.stdout);
+  assert.equal(out.decision, "block");
+  assert.equal(out.systemMessage, undefined);
+  assert.equal(existsSync(join(f.sd, "errors.log")), false);
 });

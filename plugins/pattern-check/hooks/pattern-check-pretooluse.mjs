@@ -1,12 +1,13 @@
 #!/usr/bin/env node
 // pattern-check-pretooluse.mjs — Claude Code PreToolUse: count the distinct files a session
-// touches through Edit, Write and MultiEdit (and the obvious shell writes), and from the Nth
-// distinct file on, deny those tools and the Bash commands that would commit or publish the work,
-// until the session has a pattern-check receipt.
+// touches through Edit, Write, MultiEdit and NotebookEdit (and the obvious shell writes), and from
+// the Nth distinct file on, deny those tools and the Bash commands that would commit or publish
+// the work, until the session has a pattern-check receipt.
 //
 // Claude Code sends every hook `session_id` and `cwd`, and PreToolUse adds `tool_name` and
 // `tool_input`; for Edit and Write, `tool_input.file_path` is absolute (hooks reference,
-// "Common input fields" and "PreToolUse input"). A deny is exit 0 plus
+// "Common input fields" and "PreToolUse input"). MultiEdit carries `file_path` (and, in older
+// payloads, `edits[].file_path`); NotebookEdit carries `notebook_path`. A deny is exit 0 plus
 // {"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny",
 // "permissionDecisionReason":...}} on stdout; the reason is shown to Claude.
 //
@@ -20,25 +21,29 @@
 // the Bash call that runs the CLI, so the pointer is at most one tool call old.
 //
 // FAIL OPEN, NOT SILENT. Every path exits 0. The plugin's own faults (a state file that does not
-// parse, a config that does not, a thrown error) allow the call and print one
-// {"systemMessage": "pattern-check: ..."} line, which Claude Code shows to the user. A missing
-// session_id degrades to a per-cwd key with the same kind of warning. The agent's omission (no
-// receipt) is the only thing that denies.
+// parse, a config that does not, an unwritable state directory, empty or malformed stdin, a
+// thrown error) allow the call, print one {"systemMessage": "pattern-check: ..."} line, which
+// Claude Code shows to the user, and append one line to <state dir>/errors.log
+// (scripts/lib/hookio.mjs). A missing session_id degrades to a per-cwd key with the same kind of
+// warning. The agent's omission (no receipt) is the only thing that denies.
 //
 // Contract: JSON on stdin (PreToolUse payload). JSON on stdout, or nothing.
 
-import { readFileSync, realpathSync } from "node:fs";
+import { realpathSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { recordCommand, resolveContext } from "../scripts/lib/context.mjs";
+import { runHook } from "../scripts/lib/hookio.mjs";
 import { matchDeny, writeTargets } from "../scripts/lib/matchers.mjs";
 import { normalizePath, readSession, writeCurrent, writeSession } from "../scripts/lib/state.mjs";
 
-export const FILE_TOOLS = new Set(["Edit", "Write", "MultiEdit"]);
+export const FILE_TOOLS = new Set(["Edit", "Write", "MultiEdit", "NotebookEdit"]);
 
-/** Every file path a file-tool call names, as given. MultiEdit may carry one file_path or an edits[] list. */
+/** Every file path a file-tool call names, as given: file_path, notebook_path, and MultiEdit's edits[].file_path. */
 export function filePathsOf(toolInput) {
   const out = [];
-  if (typeof toolInput?.file_path === "string" && toolInput.file_path !== "") out.push(toolInput.file_path);
+  for (const k of ["file_path", "notebook_path"]) {
+    if (typeof toolInput?.[k] === "string" && toolInput[k] !== "") out.push(toolInput[k]);
+  }
   if (Array.isArray(toolInput?.edits)) {
     for (const e of toolInput.edits) if (typeof e?.file_path === "string" && e.file_path !== "") out.push(e.file_path);
   }
@@ -55,7 +60,7 @@ export function denyReason({ count, threshold, key, env, blocked }) {
   const cmd = recordCommand(key, env);
   return [
     `pattern-check: this session has touched ${count} distinct file${count === 1 ? "" : "s"} and the threshold is ${threshold}, but no pattern-check receipt exists for it.`,
-    "Before more writes, look for the existing patterns in this repository that do the job of each new piece you plan to add (load the pattern-check skill for the method), then record the result:",
+    "Before more writes, answer two questions for each new piece you plan to add: what exists already (the existing pattern in this repository that does its job), and how does it fail (what breaks, what the operator sees, what to do next, whether a rerun is safe, what bounds it, what evidence survives). Load the pattern-check skill for the method, then record the result:",
     `  ${cmd} < table.md`,
     `or, if the work adds no new piece:  ${cmd} --no-new-pieces "<reason>"`,
     `Blocked call: ${blocked}.`,
@@ -135,20 +140,7 @@ export function handle(input, opts = {}) {
   return warn(warnings);
 }
 
-function main() {
-  let input = {};
-  try { input = JSON.parse(readFileSync(0, "utf8") || "{}"); } catch { input = {}; }
-  let out = null;
-  try {
-    out = handle(input);
-  } catch (e) {
-    out = { systemMessage: `pattern-check: the PreToolUse hook failed (${e?.message ?? e}); this call was allowed` };
-  }
-  if (out) process.stdout.write(JSON.stringify(out));
-  process.exit(0);
-}
-
 const invoked = (() => {
   try { return realpathSync(process.argv[1]) === realpathSync(fileURLToPath(import.meta.url)); } catch { return false; }
 })();
-if (invoked) main();
+if (invoked) runHook({ file: "pattern-check-pretooluse.mjs", event: "PreToolUse", allowed: "this call was allowed", handle: (input) => handle(input) });

@@ -2,12 +2,12 @@
   "hooks": {
     "PreToolUse": [
       {
-        "matcher": "Edit|Write|MultiEdit|Bash",
+        "matcher": "Edit|Write|MultiEdit|NotebookEdit|Bash",
         "hooks": [
           {
             "type": "command",
             "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/pattern-check-pretooluse.mjs\"",
-            "timeout": 10
+            "timeout": 5
           }
         ]
       }
@@ -18,7 +18,7 @@
           {
             "type": "command",
             "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/pattern-check-stop.mjs\"",
-            "timeout": 10
+            "timeout": 5
           }
         ]
       }
