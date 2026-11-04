@@ -150,10 +150,10 @@ test("migration 4: a store at version 3 keeps its answer rows and then accepts v
     { id: "an-1", question_id: "q-a1", word: "yes", via: "cli" },
     { id: "an-2", question_id: "q-b2", word: "no", via: "prompt-hook" },
   ]);
-  db.exec("INSERT INTO cc_answers VALUES ('an-3', 'q-c3', 'maybe', 'jo', 'x', 'freeform')");
-  assert.throws(() => db.exec("INSERT INTO cc_answers VALUES ('an-4', 'q-nope', 'yes', 'jo', 'x', 'cli')"), /FOREIGN KEY/);
+  db.exec("INSERT INTO cc_answers (id, question_id, word, answered_by, answered_at, via) VALUES ('an-3', 'q-c3', 'maybe', 'jo', 'x', 'freeform')");
+  assert.throws(() => db.exec("INSERT INTO cc_answers (id, question_id, word, answered_by, answered_at, via) VALUES ('an-4', 'q-nope', 'yes', 'jo', 'x', 'cli')"), /FOREIGN KEY/);
   db.exec(`INSERT INTO cc_questions (id, cwd, name, body, options, default_opt, asked_by, asked_at) VALUES ('q-d4', '/w', 'd', 'D?', '["yes","no"]', 'yes', 'agent', 'x')`);
-  assert.throws(() => db.exec("INSERT INTO cc_answers VALUES ('an-5', 'q-d4', 'no', 'jo', 'x', 'other')"), /CHECK/);
+  assert.throws(() => db.exec("INSERT INTO cc_answers (id, question_id, word, answered_by, answered_at, via) VALUES ('an-5', 'q-d4', 'no', 'jo', 'x', 'other')"), /CHECK/);
   assert.deepEqual(db.prepare("PRAGMA foreign_key_check").all(), []);
   db.close();
 });

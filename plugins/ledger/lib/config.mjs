@@ -43,7 +43,7 @@ export const DEFAULTS = Object.freeze({
     stopDecisionRule: true,
     decisionPhrases: Object.freeze(["I decided", "decided to", "assumption:", "assuming", "going with", "instead of", "chose", "I'll go with", "trade-off"]),
   }),
-  inject: Object.freeze({ notes: 5, elsewhere: true }),
+  inject: Object.freeze({ notes: 5, elsewhere: true, answers: true }),
 });
 
 // Type of each leaf, for the wrong-type notice. Nested objects list their leaves.
@@ -54,7 +54,7 @@ const SHAPE = {
   timezone: "string|null",
   hooks: { sessionStart: "boolean", preToolUse: "boolean", stop: "boolean", sessionEnd: "boolean", userPromptCommands: "boolean" },
   forcing: { denyAskWithoutRow: "boolean", stopAskRule: "boolean", pushNeedsNote: "boolean", stopDecisionRule: "boolean", decisionPhrases: "string[]" },
-  inject: { notes: "integer", elsewhere: "boolean" },
+  inject: { notes: "integer", elsewhere: "boolean", answers: "boolean" },
 };
 
 /** Every leaf key in dotted form, in SHAPE order. */

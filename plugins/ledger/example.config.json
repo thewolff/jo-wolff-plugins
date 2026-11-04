@@ -29,6 +29,7 @@
   },
   "inject": {
     "notes": 5,
-    "elsewhere": true
+    "elsewhere": true,
+    "answers": true
   }
 }

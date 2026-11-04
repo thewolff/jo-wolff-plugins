@@ -496,7 +496,11 @@ path of the folder it was asked in, oldest first within a folder. Session start 
 when questions are waiting on you outside the session's folder (not the folder, a parent or a
 subfolder of it): how many, in how many other folders, and the `pending --all` command to see
 them. The line is kept after a compaction; set `inject.elsewhere` to `false` to turn it off.
-`ledger pending` without `--all` is unchanged.
+`ledger pending` without `--all` is unchanged. An answer now reaches the session that asked
+while it is still open: when a question is answered or withdrawn from another session or folder,
+the asking session's next prompt carries one line saying so (`answered since your last turn:
+<name> → <word>`), once. Set `inject.answers` to `false` to turn it off. Opening a 0.2.2 database
+migrates it to schema version 5 in place by adding two columns; no table is rebuilt.
 
 Changes in 0.2.2: an `outcome` lifts the push gate the same as a `note`, so one
 `ledger outcome <ref> "<what and why>"` per push is enough. The Stop hook's decision rule still

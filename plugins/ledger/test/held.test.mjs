@@ -37,8 +37,8 @@ test("migration 3: a store left at version 2 by 0.2.0 keeps every row, gains hel
 
   const r = open(p);
   const db = r.db;
-  assert.equal(SCHEMA_VERSION, 4);
-  assert.equal(storeVersion(db), 4);
+  assert.equal(SCHEMA_VERSION, 5);
+  assert.equal(storeVersion(db), 5);
   assert.equal(r.shared, true);
   assert.deepEqual(db.prepare("SELECT id, state, resolved_at FROM cc_questions ORDER BY id").all().map((x) => ({ ...x })), [
     { id: "q-a1", state: "answered", resolved_at: "2026-01-01T00:01:00.000Z" },
@@ -52,7 +52,7 @@ test("migration 3: a store left at version 2 by 0.2.0 keeps every row, gains hel
   assert.ok(db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'index' AND name = 'cc_questions_cwd_state'").get());
   assert.ok(db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'index' AND name = 'cc_notes_cwd_at'").get());
   db.exec("UPDATE cc_questions SET state = 'held' WHERE id = 'q-b2'");
-  assert.throws(() => db.exec("INSERT INTO cc_answers VALUES ('an-2', 'q-nope', 'yes', 'jo', 'x', 'cli')"), /FOREIGN KEY/);
+  assert.throws(() => db.exec("INSERT INTO cc_answers (id, question_id, word, answered_by, answered_at, via) VALUES ('an-2', 'q-nope', 'yes', 'jo', 'x', 'cli')"), /FOREIGN KEY/);
   db.close();
 });
 

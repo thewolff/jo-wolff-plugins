@@ -102,6 +102,22 @@ export function sessionQuestions(db, { sessionId, cwd, askedBy = null }) {
 }
 
 /**
+ * Questions session `sessionId` asked that another session (or an untagged CLI run) answered or
+ * withdrew in the window (`since`, `until`], oldest first: { id, name, state, word, via }.
+ * Answers recorded by the session itself are left out: it already knows them.
+ */
+export function answersSince(db, { sessionId, since, until }) {
+  if (!sessionId || !since) return [];
+  return db
+    .prepare(
+      `SELECT q.id, q.name, q.state, a.word, a.via FROM cc_answers a JOIN cc_questions q ON q.id = a.question_id
+       WHERE q.session_id = ? AND a.answered_at > ? AND a.answered_at <= ? AND (a.session_id IS NULL OR a.session_id <> ?)
+       ORDER BY a.answered_at ASC, a.id ASC`,
+    )
+    .all(sessionId, since, until, sessionId);
+}
+
+/**
  * The note rows of the given `kinds` (default `note` only) that belong to session `sessionId`,
  * oldest first: rows tagged with it, plus untagged rows (a CLI run without LEDGER_SESSION_ID) in
  * or around `cwd` made at or after the session row's started_at. `after` keeps only rows made
@@ -441,7 +457,7 @@ function answer(db, parsed, by, via, iso, now, ctx) {
     return refused(`${id} already answered ${a?.word} (${a?.id}); an answer is final`);
   }
   const an = freshId(db, "cc_answers", "an", now);
-  db.prepare("INSERT INTO cc_answers (id, question_id, word, answered_by, answered_at, via) VALUES (?,?,?,?,?,?)").run(an, id, word, by, iso, answerVia);
+  db.prepare("INSERT INTO cc_answers (id, question_id, word, answered_by, answered_at, via, session_id) VALUES (?,?,?,?,?,?,?)").run(an, id, word, by, iso, answerVia, ctx.sessionId ?? null);
   db.prepare("UPDATE cc_questions SET state = 'answered', resolved_at = ? WHERE id = ?").run(iso, id);
   if (!isOption) return ok(an, `${an} ${word} → ${id} (${q.name}) · freeform: not one of ${q.options.join(", ")}`);
   const allows = q.allows && Object.hasOwn(q.allows, word) ? ` · allows: ${q.allows[word]}` : "";
@@ -460,7 +476,7 @@ function withdrawQuestion(db, id, by, via, iso, now, ctx) {
     return refused(`${id} already answered ${a.word} (${a.id}); an answered question cannot be withdrawn`);
   }
   const an = freshId(db, "cc_answers", "an", now);
-  db.prepare("INSERT INTO cc_answers (id, question_id, word, answered_by, answered_at, via) VALUES (?,?,?,?,?,?)").run(an, id, "withdraw", by, iso, via);
+  db.prepare("INSERT INTO cc_answers (id, question_id, word, answered_by, answered_at, via, session_id) VALUES (?,?,?,?,?,?,?)").run(an, id, "withdraw", by, iso, via, ctx.sessionId ?? null);
   db.prepare("UPDATE cc_questions SET state = 'withdrawn', resolved_at = ? WHERE id = ?").run(iso, id);
   addNote(db, q.cwd, "withdraw", `${id} (${q.name}) withdrawn`, id, by, iso, now, ctx.sessionId);
   return ok(an, `${an} withdrew ${id} (${q.name})`);

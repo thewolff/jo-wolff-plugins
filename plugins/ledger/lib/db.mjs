@@ -195,6 +195,14 @@ export const MIGRATIONS = [
       ALTER TABLE cc_answers_v4 RENAME TO cc_answers;
     `);
   },
+  // 5: answers reach the asking session mid-session. cc_sessions.last_prompt_seen_at is the
+  // UserPromptSubmit hook's mark: answers to the session's questions recorded after it are shown
+  // at the next prompt. cc_answers.session_id is the session that recorded the answer, so a
+  // session is not told about answers it recorded itself.
+  (db) => {
+    db.exec("ALTER TABLE cc_sessions ADD COLUMN last_prompt_seen_at TEXT");
+    db.exec("ALTER TABLE cc_answers ADD COLUMN session_id TEXT");
+  },
 ];
 
 export const SCHEMA_VERSION = MIGRATIONS.length;
