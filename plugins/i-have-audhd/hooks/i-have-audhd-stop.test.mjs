@@ -27,6 +27,7 @@ import { OMP_TODO_CALL, OMP_TODO_RESULT } from "../triggers/fixtures/omp-todo-fr
 import { conclusionFirstApplicable } from "../triggers/conclusion-first.mjs";
 import { badNewsGate } from "../triggers/bad-news-lexicon.mjs";
 import { RULE_IDS } from "../lib/rules.mjs";
+import { DEFAULT_TIMEOUT_MS } from "../judge/ask.mjs";
 
 const HOOK = fileURLToPath(new URL("./i-have-audhd-stop.mjs", import.meta.url));
 
@@ -404,7 +405,7 @@ test("a fired trigger with no judge command lands in skipped.log, named", () => 
   const r = runHook({ session_id: "j3", last_assistant_message: batchyMessage }, home);
   assert.equal(r.status, 0);
   assert.equal(r.stdout, "");
-  assert.match(readLog(home, "skipped.log"), /rule=do-not-batch-by-label reason=no-judge-command/);
+  assert.match(readLog(home, "skipped.log"), new RegExp(`rule=do-not-batch-by-label reason=no-judge-command profile=${join(home, ".claude", "i-have-audhd.json")} session=`));
 });
 
 test("a judge rule in warn mode warns instead of blocking", () => {
@@ -449,16 +450,53 @@ test("a failing judge is reported as judge unavailable, never as a pass: a warn 
   failingJudge(home);
   const r = runHook({ session_id: "j5", last_assistant_message: batchyMessage }, home);
   assert.equal(r.status, 0);
-  assert.match(readLog(home, "judge-failures.log"), /rule=do-not-batch-by-label error=judge-exit-4 stderr=.*not logged in/);
+  assert.match(readLog(home, "judge-failures.log"), /rule=do-not-batch-by-label error=judge-exit-4 cause=no-credential session=j5 harness=claude-code .* stderr=.*not logged in/);
   assert.equal(unavailableLines(home, "do-not-batch-by-label").length, 1, "the unchecked rule is a finding, not silence");
   const pending = JSON.parse(readFileSync(join(home, ".claude", ".i-have-audhd-state", "pending-warn-j5.json"), "utf8"));
   assert.match(pending.notice, /judge unavailable/i, "the agent is told the rule was not checked");
   const out = parseOut(r.stdout);
   assert.equal(out.decision, undefined, "warn by default: no block");
   assert.match(out.systemMessage, /judge unavailable/i, "the person is told, loudly");
-  assert.match(out.systemMessage, /do-not-batch-by-label/);
-  assert.match(out.systemMessage, /judge-exit-4/);
+  assert.match(out.systemMessage, /do-not-batch-by-label: no-credential — no credential for unknown in the judge's profile/, "cause and fix");
   assert.match(out.systemMessage, /setup\.mjs/, "the next step is named");
+  assert.equal(Object.keys(JSON.parse(readFileSync(alertsPath(home), "utf8")))[0], "judge-unavailable:do-not-batch-by-label:no-credential", "keyed by rule and cause");
+});
+
+test("the alert states each cause's own fix: the model for a revoked credential, the budget for a deadline", () => {
+  const revoked = mkhome();
+  writeProfile(revoked, {
+    enforcement: { judgeCommand: "echo 'model-judge: error: 401 {\"type\":\"error\",\"error\":{\"type\":\"authentication_error\",\"message\":\"OAuth access token has been revoked.\"}}' >&2; exit 1 # anthropic/claude-haiku-5-5" },
+  });
+  const r1 = parseOut(runHook({ session_id: "j5e", last_assistant_message: batchyMessage }, revoked).stdout);
+  assert.match(r1.systemMessage, /do-not-batch-by-label: credential-revoked — the credential for anthropic\/claude-haiku-5-5 was revoked; log the judge's CLI in again/);
+  assert.match(readLog(revoked, "judge-failures.log"), /cause=credential-revoked session=j5e harness=claude-code model=anthropic\/claude-haiku-5-5 elapsedMs=\d+ budgetMs=30000 section=whole cache=[0-9a-f]{64} prompt=\S+cache\/[0-9a-f]{64}\.prompt\.txt stderr=/);
+  const vibes = mkhome();
+  writeProfile(vibes, { enforcement: { judgeCommand: "echo 'I have no thoughts, only vibes.' # --model haiku" } });
+  const r2 = parseOut(runHook({ session_id: "j5f", last_assistant_message: batchyMessage }, vibes, { I_HAVE_AUDHD_HARNESS: "omp" }).stdout);
+  assert.match(r2.systemMessage, /do-not-batch-by-label: bad-json — the judge printed no \{"violation": …, "reason": …\} object; run the command by hand on the prompt file/);
+  assert.match(readLog(vibes, "judge-failures.log"), /error=judge-unparseable cause=bad-json session=j5f harness=omp model=haiku elapsedMs=\d+ budgetMs=20000 section=whole .* stdout="I have no thoughts, only vibes\."/);
+});
+
+test("a credential alert names the judge's profile when the judge's stderr carries one", () => {
+  const missing = mkhome();
+  writeProfile(missing, {
+    enforcement: { judgeCommand: "echo 'model-judge: no credential for anthropic/claude-haiku-5-5 in profile agent-system-2' >&2; exit 1 # anthropic/claude-haiku-5-5" },
+  });
+  const r1 = parseOut(runHook({ session_id: "j5p", last_assistant_message: batchyMessage }, missing).stdout);
+  assert.match(r1.systemMessage, /no-credential — no credential for anthropic\/claude-haiku-5-5 in the judge's profile agent-system-2;/);
+  const revoked = mkhome();
+  writeProfile(revoked, {
+    enforcement: { judgeCommand: "echo 'model-judge: error: 401 token has been revoked in profile work' >&2; exit 1 # anthropic/claude-haiku-5-5" },
+  });
+  const r2 = parseOut(runHook({ session_id: "j5q", last_assistant_message: batchyMessage }, revoked).stdout);
+  assert.match(r2.systemMessage, /credential-revoked — the credential for anthropic\/claude-haiku-5-5 was revoked in profile work;/);
+});
+
+test("hooks.json gives the Stop hook at least the judge budget plus 5 s, so Claude Code never cancels it mid-judge", () => {
+  const hooks = JSON.parse(readFileSync(fileURLToPath(new URL("./hooks.json", import.meta.url)), "utf8"));
+  const stop = hooks.hooks.Stop.flatMap((g) => g.hooks).find((h) => h.command.includes("i-have-audhd-stop.mjs"));
+  assert.equal(stop.timeout, 35);
+  assert.ok(stop.timeout >= DEFAULT_TIMEOUT_MS / 1000 + 5, `timeout ${stop.timeout} s against a ${DEFAULT_TIMEOUT_MS} ms judge budget`);
 });
 
 test("judge unavailable is loud once per key: a second failure within the hour logs and warns, but says nothing to the person", () => {
@@ -1366,4 +1404,182 @@ test("enforcement.mode off: no check or trigger runs at all", () => {
   writeProfile(home, { enforcement: { mode: "off" } });
   const calls = checkCalls({ session_id: "ex4", last_assistant_message: `${misordered}\n\n${handsAndRefs}` }, home);
   assert.deepEqual(calls, []);
+});
+
+// ─── links-resolve: a link the message hands the reader opens ────────────────
+// GitHub existence and kind come from the local cache file only; the detached helper is a real
+// child here, pointed at a fake `gh` on PATH so nothing reaches the network.
+
+const ghCacheFile = (home) => join(home, ".claude", ".i-have-audhd-state", "gh-cache.json");
+
+// A message over the floor with the given link lines and a clean closing ask.
+const withLinks = (...lines) => `${body(4)}\n\n${lines.join("\n")}\n\n## Closing ask\n\nApprove the deploy of the thing named above.`;
+
+test("links-resolve (default warn): a missing local path and a mismatched PR/issue word are one warn finding; an existing path is silent", () => {
+  const home = mkhome();
+  writeFileSync(join(home, "real.md"), "# real\n");
+  const r = runHook(
+    { session_id: "lr1", last_assistant_message: withLinks(`The notes are in \`${home}/real.md\`.`, `The notes are in \`${home}/nope.md\`.`, "PR https://github.com/o/r/issues/5 is open.") },
+    home,
+    { I_HAVE_AUDHD_NO_GH_FILL: "1" },
+  );
+  assert.equal(r.status, 0, r.stderr);
+  assert.equal(r.stdout, "", "warn by default: nothing on stdout");
+  const warn = logLines(home, "warnings.log").filter((l) => l.includes("rule=links-resolve"));
+  assert.equal(warn.length, 1);
+  assert.match(warn[0], /nope\.md.*no such file/);
+  assert.match(warn[0], /the sentence says PR but the URL is \/issues\//);
+  assert.ok(!warn[0].includes("real.md"));
+});
+
+test("links-resolve: a GitHub URL with no cache entry is unknown, never a finding", () => {
+  const home = mkhome();
+  const r = runHook({ session_id: "lr2", last_assistant_message: withLinks("Issue https://github.com/o/r/issues/77 tracks it.") }, home, { I_HAVE_AUDHD_NO_GH_FILL: "1" });
+  assert.equal(r.stdout, "");
+  assert.equal(readLog(home, "warnings.log"), "");
+});
+
+test("links-resolve: a slash command in a code span is not a missing file", () => {
+  const home = mkhome();
+  const r = runHook({ session_id: "lr2b", last_assistant_message: withLinks("You do not need to run `/mcp` again.") }, home, { I_HAVE_AUDHD_NO_GH_FILL: "1" });
+  assert.equal(r.status, 0, r.stderr);
+  assert.equal(r.stdout, "");
+  assert.equal(readLog(home, "warnings.log"), "");
+});
+
+test("links-resolve: a corrupt gh-cache.json is not read, and not reported, on a stop with no github.com link", () => {
+  const home = mkhome();
+  mkdirSync(join(home, ".claude", ".i-have-audhd-state"), { recursive: true });
+  writeFileSync(ghCacheFile(home), "{not json");
+  const quiet = runHook({ session_id: "lr2c", last_assistant_message: withLinks("Nothing on GitHub here.") }, home, { I_HAVE_AUDHD_NO_GH_FILL: "1" });
+  assert.equal(quiet.stdout, "");
+  assert.equal(readLog(home, "errors.log"), "");
+  const loud = runHook({ session_id: "lr2c", last_assistant_message: withLinks("Issue https://github.com/o/r/issues/3 is tracked.") }, home, { I_HAVE_AUDHD_NO_GH_FILL: "1" });
+  assert.match(parseOut(loud.stdout).systemMessage, /gh-cache at .* does not parse/);
+});
+
+test("links-resolve: a cached 404 and a cached wrong kind are findings; under block mode they block", () => {
+  const home = mkhome();
+  mkdirSync(join(home, ".claude", ".i-have-audhd-state"), { recursive: true });
+  const now = new Date().toISOString();
+  writeFileSync(ghCacheFile(home), JSON.stringify({ entries: { "o/r#1": { kind: "missing", title: "", at: now }, "o/r#2": { kind: "pr", title: "x", at: now } } }));
+  blockProfile(home);
+  const r = runHook(
+    { session_id: "lr3", last_assistant_message: withLinks("Tracked at https://github.com/o/r/issues/1 today.", "Tracked at https://github.com/o/r/issues/2 today.") },
+    home,
+    { I_HAVE_AUDHD_NO_GH_FILL: "1" },
+  );
+  const out = parseOut(r.stdout);
+  assert.equal(out.decision, "block");
+  assert.match(out.reason, /Links resolve \(i-have-audhd rule 11, Machinery anchors\)/);
+  assert.match(out.reason, /GitHub answered 404 for o\/r#1/);
+  assert.match(out.reason, /o\/r#2 is a pull request, the URL says \/issues\//);
+  assert.match(out.reason, /"links-resolve": "warn"/);
+  assert.deepEqual(blockedRules(home, "lr3"), ["links-resolve"]);
+});
+
+test("links-resolve: the detached helper fills the cache from gh for the unknown keys, and the next stop reads it", async () => {
+  const home = mkhome();
+  // A fake `gh` on PATH: issue 1 is a PR, issue 2 is a 404.
+  const bin = join(home, "bin");
+  mkdirSync(bin);
+  writeFileSync(
+    join(bin, "gh"),
+    `#!/bin/sh\ncase "$*" in *issues/1*) echo '{"number":1,"title":"Fix the race","pull_request":true}';; *) echo 'gh: Not Found (HTTP 404)' >&2; exit 1;; esac\n`,
+    { mode: 0o755 },
+  );
+  const msg = withLinks("Issue https://github.com/o/r/issues/1 and issue https://github.com/o/r/issues/2 are tracked.");
+  const env = { PATH: `${bin}:${process.env.PATH}` };
+  const first = runHook({ session_id: "lr4", last_assistant_message: msg }, home, env);
+  assert.equal(first.stdout, "", "first stop: both unknown, nothing said");
+  const cache = ghCacheFile(home);
+  for (let i = 0; i < 40 && !existsSync(cache); i++) await new Promise((res) => setTimeout(res, 100));
+  assert.ok(existsSync(cache), "the helper wrote the cache after the hook exited");
+  const entries = JSON.parse(readFileSync(cache, "utf8")).entries;
+  assert.equal(entries["o/r#1"].kind, "pr");
+  assert.equal(entries["o/r#2"].kind, "missing");
+  runHook({ session_id: "lr4", last_assistant_message: msg }, home, env);
+  const warn = logLines(home, "warnings.log").filter((l) => l.includes("rule=links-resolve"));
+  assert.equal(warn.length, 1);
+  assert.match(warn[0], /o\/r#1 is a pull request/);
+  assert.match(warn[0], /GitHub answered 404 for o\/r#2/);
+});
+
+test("links-resolve: gh missing from PATH leaves the cache unfilled with helper.error and one errors.log line; the hook itself stays silent", async () => {
+  const home = mkhome();
+  const msg = withLinks("Issue https://github.com/o/r/issues/9 is tracked.");
+  const r = runHook({ session_id: "lr5", last_assistant_message: msg }, home, { PATH: join(home, "empty-bin") });
+  assert.equal(r.status, 0);
+  assert.equal(r.stdout, "");
+  const cache = ghCacheFile(home);
+  for (let i = 0; i < 40 && !existsSync(cache); i++) await new Promise((res) => setTimeout(res, 100));
+  assert.ok(existsSync(cache));
+  const parsed = JSON.parse(readFileSync(cache, "utf8"));
+  assert.deepEqual(parsed.entries, {});
+  assert.equal(parsed.helper.error, "gh-not-found");
+  assert.match(readLog(home, "errors.log"), /gh-cache-fill.*gh-not-found/);
+});
+
+test("links-resolve: a 200-link message adds under 50 ms to the Stop hook", () => {
+  const home = mkhome();
+  const lines = [];
+  for (let i = 0; i < 100; i++) lines.push(`Line ${i}: the file is at \`/usr/bin\` in sentence ${i}.`);
+  for (let i = 0; i < 50; i++) lines.push(`Line ${i}: see \`${home}/missing-${i}.md\` for run ${i}.`);
+  for (let i = 0; i < 25; i++) lines.push(`Issue https://github.com/o/r/issues/${300 + i} tracks part ${i}.`);
+  for (let i = 0; i < 25; i++) lines.push(`PR https://github.com/o/r/pull/${60 + i} carries part ${i}.`);
+  const msg = withLinks(...lines);
+  const time = (env) => {
+    const t = [];
+    for (let i = 0; i < 5; i++) {
+      const t0 = performance.now();
+      runHook({ session_id: "lr6", last_assistant_message: msg }, home, env);
+      t.push(performance.now() - t0);
+    }
+    return t.sort((a, b) => a - b)[2];
+  };
+  writeProfile(home, { enforcement: { rules: { "links-resolve": "off" } } });
+  const off = time({ I_HAVE_AUDHD_NO_GH_FILL: "1" });
+  writeProfile(home, {});
+  const on = time({ I_HAVE_AUDHD_NO_GH_FILL: "1" });
+  assert.ok(on - off < 50, `links-resolve added ${(on - off).toFixed(0)} ms (off ${off.toFixed(0)}, on ${on.toFixed(0)})`);
+});
+
+// ─── links-judge: off until named; the prefilter keeps it to unmatched links ─
+
+test("links-judge is off by default and under a global mode; enforcement.rules names it on", () => {
+  const home = mkhome();
+  writeFileSync(join(home, "run.log"), "ok 1 - something\n");
+  const msg = withLinks(`The deploy checklist is at \`${home}/run.log\`.`);
+  writeFakeJudge(home, true, "a test log, not a checklist");
+  const judge = `node ${fakeJudgePath(home)}`;
+  for (const enforcement of [{ judgeCommand: judge }, { mode: "block", judgeCommand: judge }]) {
+    const h = mkhome();
+    writeFileSync(join(h, "run.log"), "ok 1 - something\n");
+    writeFakeJudge(h, true, "a test log, not a checklist");
+    writeProfile(h, { enforcement: { ...enforcement, judgeCommand: `node ${fakeJudgePath(h)}` } });
+    const r = runHook({ session_id: "lj0", last_assistant_message: withLinks(`The deploy checklist is at \`${h}/run.log\`.`) }, h, { I_HAVE_AUDHD_NO_GH_FILL: "1" });
+    assert.ok(!warnedRules(h).includes("links-judge"), JSON.stringify(enforcement));
+    assert.ok(!(r.stdout && r.stdout.includes("links-judge")), JSON.stringify(enforcement));
+  }
+  writeProfile(home, { enforcement: { judgeCommand: judge, rules: { "links-judge": "block" } } });
+  const r = runHook({ session_id: "lj1", last_assistant_message: msg }, home, { I_HAVE_AUDHD_NO_GH_FILL: "1" });
+  const out = parseOut(r.stdout);
+  assert.equal(out.decision, "block");
+  assert.match(out.reason, /Links judge \(i-have-audhd rule 11, Machinery anchors\)/);
+  assert.match(out.reason, /run\.log.*judge: a test log, not a checklist/);
+  assert.deepEqual(blockedRules(home, "lj1"), ["links-judge"]);
+});
+
+test("links-judge: a sentence that shares a word with the target never reaches the judge; an unresolved link never does either", () => {
+  const home = mkhome();
+  writeFileSync(join(home, "checklist.md"), "# Deploy checklist\n");
+  // The judge records every call; a violation verdict would be a finding, so a clean log is the proof.
+  const calls = join(home, "judge-calls.log");
+  writeFileSync(fakeJudgePath(home), `require("fs").appendFileSync(${JSON.stringify(calls)}, "call\\n"); process.stdout.write(JSON.stringify({ violation: true, reason: "x" }));\n`);
+  writeProfile(home, { enforcement: { judgeCommand: `node ${fakeJudgePath(home)}`, rules: { "links-judge": "warn" } } });
+  const msg = withLinks(`The deploy checklist is at \`${home}/checklist.md\`.`, `The deploy checklist is also at \`${home}/missing.md\`.`);
+  runHook({ session_id: "lj2", last_assistant_message: msg }, home, { I_HAVE_AUDHD_NO_GH_FILL: "1" });
+  assert.ok(!existsSync(calls), "no judge call");
+  assert.ok(!warnedRules(home).includes("links-judge"));
+  assert.ok(warnedRules(home).includes("links-resolve"), "the missing one is links-resolve's");
 });

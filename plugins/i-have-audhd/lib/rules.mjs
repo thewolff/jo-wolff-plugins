@@ -41,6 +41,8 @@ export const CHECKS = {
   "handed-command": "commands",
   "name-the-artifact": "machinery-anchors",
   "link-the-reference": "machinery-anchors",
+  "links-resolve": "machinery-anchors",
+  "links-judge": "machinery-anchors",
   "report-what-you-did-not-do": "machinery-anchors",
   "bad-news-first": "machinery-anchors",
 };

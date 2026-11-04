@@ -1,0 +1,1 @@
+captured 2026-11-04T14:02:45Z on darwin arm64 by capture-gh-api.sh: `gh api --cache 1h repos/cli/cli/issues/<n> --jq <JQ>` for a PR (1), an issue (14935), a 404 (999999999), and the no-auth run under env -i with an empty HOME; gh version: gh version 2.103.3 (2026-10-26)

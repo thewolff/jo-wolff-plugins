@@ -25,7 +25,8 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/i-have-audhd-stop.mjs\""
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/i-have-audhd-stop.mjs\"",
+            "timeout": 35
           }
         ]
       }

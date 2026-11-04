@@ -34,7 +34,9 @@ test("every core block in the injected span names a rule RULES knows", () => {
 });
 
 test("every check is bound to a rule id, and ruleRef cites number and heading", () => {
-  assert.equal(CHECK_IDS.length, 11);
+  assert.equal(CHECK_IDS.length, 13);
+  assert.equal(ruleRef("links-resolve"), "i-have-audhd rule 11, Machinery anchors");
+  assert.equal(ruleRef("links-judge"), "i-have-audhd rule 11, Machinery anchors");
   for (const [check, rule] of Object.entries(CHECKS)) assert.ok(RULE_IDS.includes(rule), check);
   assert.equal(ruleRef("link-the-reference"), "i-have-audhd rule 11, Machinery anchors");
   assert.equal(ruleRef("handed-command"), "i-have-audhd rule 10, Commands handed to the user");

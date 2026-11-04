@@ -16,7 +16,9 @@ import { fileURLToPath } from "node:url";
 import { CHECK_IDS } from "./rules.mjs";
 
 // The five Stop-hook checks that run only with a judge (skills/i-have-audhd/reference.md,
-// the check table's "judge" instruments). The other six are deterministic and always run.
+// the check table's "judge" instruments). Seven others are deterministic and always run;
+// links-judge also needs a judge but is off until the profile names it, so a missing judge
+// turns nothing off there and it is not counted here.
 export const JUDGE_RULES = [
   "do-not-batch-by-label",
   "conclusion-first",

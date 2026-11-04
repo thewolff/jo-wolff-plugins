@@ -4,6 +4,56 @@ All notable changes to i-have-audhd are recorded here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Entries before 1.5.2 live in the
 README's *Changes* section.
 
+## [1.6.1]
+
+- New check `links-resolve` (rule 11, Machinery anchors; warn by default). A local path in a
+  code span or markdown link (`/absolute`, `~/`, `file://` decoded first; line suffixes
+  stripped, comma lists such as `:18,22` included) has to exist; a sentence that says the
+  file is still to come or gone is skipped ("will be written", "I'll save", "Plan:", "Step
+  3", "didn't save"; `e.g.` and a version number do not end a sentence), as are commands,
+  placeholders, globs, fenced blocks, quoted evidence, and a missing slash command or HTTP
+  route (`/mcp`, `/health`, `/messages/:id`). A github.com URL has to be `/issues/N` or
+  `/pull/N`, and the PR or issue word nearest before it (six words, same clause) has to agree
+  with it. Whether the GitHub target exists and which kind it is comes only from a local
+  cache (`gh-cache.json` in the state directory, read only when the message names
+  github.com; a week for a hit, ten minutes for a 404): a link with no fresh entry is unknown
+  and never a finding. The hook hands unknown keys to a detached helper,
+  `scripts/gh-cache-fill.mjs` (lock, at most 20 `gh api --cache 10m` lookups inside 45 s,
+  atomic write), and exits without waiting; the next stop reads the answer. A cache that
+  never fills costs nothing but those two sub-checks. `agent://<id>` references are not
+  checked: neither host writes a registry to disk. Measured on a 200-link message: 37 ms
+  before, 42 ms after (45 ms with the helper spawn). Measured on the final messages of 100
+  real Claude Code sessions: 29 findings in 10 messages, 2 certainly wrong (paths on a
+  server, not this machine), 0 confirmed right, 27 naming files deleted since (64 findings,
+  37 certainly wrong, before the review fixes). The Stop hook entry in `hooks.json` now
+  declares its timeout (35 s: the 30 s judge budget plus the checks).
+- New judge check `links-judge` (rule 11), **off by default** and not armed by a global
+  `enforcement.mode`: only `enforcement.rules["links-judge"]` turns it on. It asks the judge
+  whether the thing behind a resolved link is what the sentence says it is, after a
+  word-overlap prefilter (the sentence's words against the target's name, first 1,500 bytes,
+  directory entries or cached GitHub title; one shared word skips the judge), at most five
+  judge jobs per stop. Only a regular file's first 1,500 bytes are read; a device or FIFO
+  (`/dev/zero`, a pipe) is skipped unopened.
+- Every judge failure line in `judge-failures.log` now carries `cause=` (one of
+  `credential-revoked`, `no-credential`, `rate-limited`, `judge-self-abort`,
+  `hook-deadline`, `bad-json`, `other`, classified from the error kind and the judge's
+  stderr), the session, harness, model (read off the judge command), elapsed and budget
+  milliseconds, the judged section (`<label>@<line>` or `whole`), the prompt's cache key and
+  the path of the prompt written on failure (`cache/<key>.prompt.txt`, replayable with
+  `<judgeCommand> < <file>`). A judge that printed no verdict keeps the last 300 characters
+  of its stdout on the line. The person-facing notice states the cause and its fix, once per
+  rule and cause, then hourly as before. Each cause is pinned by a test to a stderr string
+  from this machine's own failure log (`judge/fixtures/failure-corpus.mjs`); no failure was
+  reproduced live. `skipped.log` lines name the profile path the hook read.
+- The no-judge notice and the setup tool count thirteen checks, five of them judge-gated.
+- Review nits: markdown link text gives a GitHub link its PR or issue word only as `PR #N` /
+  `issue #N` with the URL's own number; an indented code block is not prose for
+  `links-resolve`; GitHub cache keys are lower-cased; the helper takes its lock with `wx` and
+  a second helper exits quietly while it is held; `quota` inside a path and a bare `aborted`
+  no longer pick a cause (`other` instead); a credential alert names the judge's profile
+  when the judge's stderr does; a test pins the Stop `timeout` (35 s) to the judge budget
+  plus 5 s.
+
 ## [1.6.0]
 
 - New check `handed-command` (rule 10, Commands handed to the user). A final message that

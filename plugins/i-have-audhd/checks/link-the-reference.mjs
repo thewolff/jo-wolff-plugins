@@ -125,9 +125,10 @@ function issueRef(line) {
 }
 
 // A code span or a line whose first word is a known command is a command, not a reference:
-// the file names inside it are its arguments (`bun file.js`, `zsh script.sh`).
+// the file names inside it are its arguments (`bun file.js`, `zsh script.sh`). links-resolve
+// uses the same definition for the paths inside a span.
 const COMMANDS = new Set([...KNOWN_BINARIES, "head", "tail", "wc", "diff", "less", "sort", "xargs", "env", "tee"]);
-const isCommand = (s) => COMMANDS.has(s.trim().replace(/^[$%❯]\s+/, "").split(/\s+/)[0].replace(/^["']/, ""));
+export const isCommand = (s) => COMMANDS.has(s.trim().replace(/^[$%❯]\s+/, "").split(/\s+/)[0].replace(/^["']/, ""));
 
 // A line that opens with its own bold CLAIM or CITE label (`- **CLAIM:** grep … returned
 // nothing`) is a receipt written inline; receiptLines covers the label-alone form.
