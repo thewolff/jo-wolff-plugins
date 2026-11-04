@@ -54,24 +54,49 @@ function hook(w, event, input) {
   return r.stdout ? JSON.parse(r.stdout) : null;
 }
 
+/** The bundled MCP server over stdio. Every request and the shutdown have a 5 s deadline; a hung child is killed. */
 function server(w) {
   const child = spawn(process.execPath, [SERVER], { env: w.env, stdio: ["pipe", "pipe", "inherit"] });
   const waiting = new Map();
+  let gone = null;
+  const exited = new Promise((resolve) => {
+    const end = (why) => {
+      if (gone) return;
+      gone = why;
+      for (const [, w8] of waiting) w8.fail(new Error(`server ${why} before replying`));
+      waiting.clear();
+      resolve();
+    };
+    child.on("exit", (code, signal) => end(`exited (${signal ?? code})`));
+    child.on("error", (err) => end(`failed to start (${err.code ?? err.message})`));
+  });
   createInterface({ input: child.stdout }).on("line", (line) => {
     const msg = JSON.parse(line);
-    waiting.get(msg.id)?.(msg);
+    waiting.get(msg.id)?.ok(msg);
     waiting.delete(msg.id);
   });
   let next = 0;
   const request = (method, params) => {
+    if (gone) return Promise.reject(new Error(`server ${gone}`));
     const id = ++next;
-    child.stdin.write(`${JSON.stringify({ jsonrpc: "2.0", id, method, params })}\n`);
     return new Promise((resolve, reject) => {
-      const t = setTimeout(() => reject(new Error(`${method} took over ${BUDGET_MS} ms`)), BUDGET_MS);
-      waiting.set(id, (m) => { clearTimeout(t); resolve(m); });
+      const t = setTimeout(() => { waiting.delete(id); reject(new Error(`${method} took over ${BUDGET_MS} ms`)); }, BUDGET_MS);
+      waiting.set(id, { ok: (m) => { clearTimeout(t); resolve(m); }, fail: (e) => { clearTimeout(t); reject(e); } });
+      child.stdin.write(`${JSON.stringify({ jsonrpc: "2.0", id, method, params })}\n`);
     });
   };
-  return { request, close: () => new Promise((r) => { child.on("exit", r); child.stdin.end(); }) };
+  const close = async () => {
+    if (!gone) child.stdin.end();
+    let t;
+    const late = await Promise.race([exited.then(() => false), new Promise((r) => { t = setTimeout(() => r(true), BUDGET_MS); })]);
+    clearTimeout(t);
+    if (late) {
+      child.kill("SIGKILL");
+      await exited;
+      throw new Error(`server did not exit within ${BUDGET_MS} ms of stdin closing; killed`);
+    }
+  };
+  return { request, close };
 }
 
 let seq = 0;

@@ -20,7 +20,7 @@ import {
   pairStart, recordInput, runEnd, runStart, sessionEnd, toolVerdict,
 } from "../core/gate.mjs";
 import {
-  activated, appendJournal, defaultTempPaths, findRoot, loadState, makeIo, markActivated, reapGroups, saveState,
+  activated, appendJournal, defaultTempPaths, findRoot, loadState, loadStateReport, makeIo, markActivated, reapGroups, saveState,
   closedRunProblem, describeSandbox, recordRun, runPgids, runSandboxed, sandboxBackend, sandboxJournal, sandboxProblem, sessionDir, stateBase, withLock, withSession, writeAtomic, writeSandboxed,
 } from "./host-io.mjs";
 
@@ -61,15 +61,16 @@ function ioFor(dir, state) {
  * The pre-call verdict for a host tool. Inert (allow, no file touched) unless activated.
  * @param {string} toolName  the bare tool name (an adapter maps its own pair_* tool names to bare ones)
  * @param {{ sessionDir: string, allow?: string[] }} ctx
- * @returns {{ allow: boolean, reason?: string, active: boolean }}
+ * @returns {{ allow: boolean, reason?: string, active: boolean, degraded?: string | null }}
+ *   `degraded`: why this read took the state as closed instead of as saved, for the adapter to report
  */
 export function verdict(toolName, ctx) {
   if (!ctx?.sessionDir || !activated(ctx.sessionDir)) return { allow: true, active: false };
-  const state = loadState(ctx.sessionDir);
+  const { state, fault } = loadStateReport(ctx.sessionDir);
   if (state.phase === "inactive") return { allow: true, active: false };
   const v = toolVerdict(state, { toolName }, { allow: ctx.allow ?? [] }, makeIo({}));
   appendJournal(ctx.sessionDir, v.journal);
-  return { allow: v.allow, reason: v.reason, active: true };
+  return { allow: v.allow, reason: v.reason, active: true, degraded: fault };
 }
 
 /**

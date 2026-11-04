@@ -36,7 +36,7 @@ import { appendFileSync, closeSync, fstatSync, mkdirSync, openSync, readFileSync
 import { dirname, join, relative } from "node:path";
 import { fileURLToPath } from "node:url";
 import { CARRIED_PHRASE, PAIR_TOOLS, isStopPhrase } from "../core/gate.mjs";
-import { activated, findRoot, loadState, stateBase, withLock } from "../lib/host-io.mjs";
+import { activated, findRoot, loadState, loadStateReport, stateBase, withLock } from "../lib/host-io.mjs";
 import { RECEIPT_FILE, carryInto, endSession, pairingCarry, recordTrustedInput, sessionDirFor, takeCarryMarker, verdict, writeCarryMarker } from "../lib/verbs.mjs";
 import { bareToolName, hostAllowFor, writeBinding } from "../server/binding.mjs";
 
@@ -280,7 +280,10 @@ export function handle(event, input, opts = {}) {
     // tool's result, or inside the refusal when pairing is still on.
     const notices = activated(dir) ? [...takeNotices(dir), ...resolvePending(dir, { waitMs: opts.waitMs })] : [];
     const v = verdict(name, { sessionDir: dir, allow: hostAllowFor(input) });
-    if (!v.allow) return deny([...notices.map((n) => n.replace(/^paired-coding: /, "")), v.reason ?? "refused while pairing"].join(" "));
+    // A state read as degraded (closed) is a fault too: warned and logged once, after the last
+    // step that can throw, so the outer catch never logs it a second time.
+    const warned = (out) => (v.degraded ? { ...(out ?? {}), systemMessage: degradedWarning(env, event, input, dir, v.degraded) } : out);
+    if (!v.allow) return warned(deny([...notices.map((n) => n.replace(/^paired-coding: /, "")), v.reason ?? "refused while pairing"].join(" ")));
     if (PAIR_TOOLS.includes(name)) {
       writeBinding(stateBase(env), input.tool_use_id, {
         sessionId: input.session_id,
@@ -289,7 +292,7 @@ export function handle(event, input, opts = {}) {
         transcriptPath: input.transcript_path,
       });
     }
-    return notices.length ? context("PreToolUse", notices) : null;
+    return warned(notices.length ? context("PreToolUse", notices) : null);
   }
   if (event === "session-start") {
     // The session this one replaced was pairing: its end left a carry marker for this worktree
@@ -326,7 +329,7 @@ export function handle(event, input, opts = {}) {
     // Turns still queued from earlier (a turn that ended with no tool call) are judged first,
     // and the outcome of any stop among them, or stashed by the Stop event, is reported here.
     const notices = [...takeNotices(dir), ...resolvePending(dir, { waitMs: opts.waitMs })];
-    const state = loadState(dir);
+    const { state, fault } = loadStateReport(dir);
     if (state.phase === "inactive") return notices.length ? context("UserPromptSubmit", notices) : null;
     queueInput(dir, input);
     const note = isStopPhrase(input?.prompt)
@@ -334,7 +337,8 @@ export function handle(event, input, opts = {}) {
       : state.carried
         ? `paired-coding: ${CARRIED_PHRASE} after a session change. If your partner has not answered yet, tell them pairing carried over closed and wait; call pair_start only once they say to keep pairing. Only your partner ends pairing, by typing pair stop as a whole message.`
         : "paired-coding: pairing is on. Only words from a turn your partner typed at the keyboard can be quoted to pair_begin; whether this turn counts is decided from Claude Code's transcript before your next tool call. Only your partner ends pairing, by typing pair stop as a whole message.";
-    return context("UserPromptSubmit", [...notices, note]);
+    const out = context("UserPromptSubmit", [...notices, note]);
+    return fault ? { ...out, systemMessage: degradedWarning(env, event, input, dir, fault) } : out;
   }
   if (event === "stop") {
     // The turn ended. A turn with no tool call never reached PreToolUse, so judge its queued
@@ -392,14 +396,25 @@ export function logFault(env, event, input, reason, where = "hooks/paired-coding
   }
 }
 
-/** Whether a session is pairing, for a fault path: unknown reads as pairing, so the gate stays shut. */
+/**
+ * Whether a session is pairing, for a fault path. False only for a confirmed never-paired
+ * session (no activation marker) or a confirmed ended one (the gate's own inactive state with an
+ * ended marker). Anything the gate cannot read is uncertain and reads as pairing, so it stays shut.
+ */
 function pairingOrUnknown(input, env) {
   try {
     const dir = sessionDirFor(input?.session_id, env);
-    return dir ? activated(dir) : false;
+    if (!dir || !activated(dir)) return false;
+    return loadState(dir).phase !== "inactive";
   } catch {
     return true;
   }
+}
+
+/** One errors.log line and the warning for a session state the gate read as degraded (closed). */
+function degradedWarning(env, event, input, dir, reason) {
+  const logged = logFault(env, event, input, `session state degraded (${reason}) in ${dir}`);
+  return `paired-coding: the session state in ${dir} could not be read as saved (${reason}), so the gate treats pairing as on with the card closed. ${logged} Your partner ends pairing by typing pair stop.`;
 }
 
 /**

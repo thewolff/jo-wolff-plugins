@@ -270,9 +270,19 @@ const MARKER = "activated";
  * True once pairing was activated for this session directory: the marker written with the first
  * successful pair_start. From then on a missing or broken state file reads as closed, never as
  * inactive. The directory alone does not count: a refused pair_start journals into it.
+ * Only a confirmed absence (ENOENT, or ENOTDIR under a path that is a file) reads as false. Any
+ * other error (EACCES on an ancestor, for one) means the gate cannot tell, and throws: callers
+ * treat that as a fault, and the hook fails closed on it.
  */
 export function activated(dir) {
-  return existsSync(join(dir, MARKER));
+  const path = join(dir, MARKER);
+  try {
+    statSync(path);
+    return true;
+  } catch (err) {
+    if (err?.code === "ENOENT" || err?.code === "ENOTDIR") return false;
+    throw new Error(`cannot tell whether pairing is on: ${path} is unreadable (${err?.code ?? err?.message ?? String(err)})`);
+  }
 }
 
 /**
@@ -298,6 +308,15 @@ function readMarker(dir) {
  * the root and state dir recorded at activation, so it still fences pair_run correctly.
  */
 export function loadState(dir, opts = {}) {
+  return loadStateReport(dir, opts).state;
+}
+
+/**
+ * loadState, plus `fault`: why this read degraded the state to closed (the file missing,
+ * unreadable, malformed, or inactive without the gate's end stamp), or null. A `degraded` field
+ * carried over from an earlier save is not a fault of this read.
+ */
+export function loadStateReport(dir, opts = {}) {
   let text = null;
   try {
     text = readFileSync(join(dir, STATE), "utf8");
@@ -306,7 +325,10 @@ export function loadState(dir, opts = {}) {
   }
   const isOn = activated(dir);
   const marker = isOn ? readMarker(dir) : {};
-  return readState(text, { activated: isOn, ended: marker.ended === true, root: marker.root ?? undefined, stateDir: marker.stateDir ?? undefined, ...opts });
+  const state = readState(text, { activated: isOn, ended: marker.ended === true, root: marker.root ?? undefined, stateDir: marker.stateDir ?? undefined, ...opts });
+  let saved = null;
+  try { saved = JSON.parse(text)?.degraded ?? null; } catch { saved = null; }
+  return { state, fault: state.degraded && state.degraded !== saved ? state.degraded : null };
 }
 
 /** Atomic write: temp file in the same directory, then rename. */
