@@ -1,7 +1,8 @@
 # How ctx-watch fails
 
-Every row is a case the tests exercise, or one named here as not exercised. The hook never
-blocks: its worst case is silence plus one errors.log line.
+Every row is a case the tests exercise, or one named here as not exercised. Neither hook blocks
+on its own fault: the worst case is silence plus one errors.log line. The one block the Stop
+hook returns is the consult-history verdict in `block` mode, and that mode is yours to set.
 
 ## The SessionStart hook (`hooks/session-start.mjs`, under `lib/hook-runner.mjs`)
 
@@ -15,6 +16,32 @@ blocks: its worst case is silence plus one errors.log line.
 | the state file is not JSON, not an object, or has a field out of shape | treated as never ticked; one errors.log line naming the file and the field; the next write replaces it | `test/state.test.mjs`, `test/session-start.test.mjs` |
 | the state directory cannot be written (first-seen stamp) | the probe line still comes; a second line `ctx-watch: state not written to <file>: …`; one errors.log line | `test/session-start.test.mjs` |
 | the timer line's path is long (an installed plugin's path) or has spaces | the line runs past 160 characters rather than cut the command; the path is shell-quoted | `test/session-start.test.mjs` |
+| `source` is `resume` or `compact` | `<state>/resume/<session_id>` is written holding the time, for the Stop hook; `startup` and `clear` write nothing | `test/consult-history.test.mjs`, `evals/session-start-healthy.scenario.json` |
+| the resume marker cannot be written (`resume` is a file, the directory is read-only) | one errors.log line naming the session; no message line; the Stop check has nothing to consume | `test/consult-history.test.mjs` |
+| `CTX_WATCH_CTX` set | that path is spawned instead of `ctx` from PATH (the evals' fake ctx) | `evals/session-start-*.scenario.json` |
+
+## The Stop hook: `consult-history` (`hooks/stop.mjs`, `lib/consult-history.mjs`, under `lib/hook-runner.mjs`)
+
+| Input or condition | What happens | Proof |
+|---|---|---|
+| stdin empty, not JSON, or not an object; the handler throws; no answer in 4 s | exit 0, never a block; one errors.log line (and a systemMessage naming the fault for the last two) | `test/hook-contract.test.mjs` |
+| `~/.claude/.ctx-watch-off` exists | nothing; the resume marker is still consumed | `test/consult-history.test.mjs` |
+| `~/.claude/ctx-watch.json` `checks.consult-history` is `off` | nothing; the marker is still consumed | `test/consult-history.test.mjs` |
+| the config file is not JSON, `checks` is not an object, or the mode is not `off`/`warn`/`block` | one errors.log line naming the file and the field; the check runs as `warn` | `test/consult-history.test.mjs` |
+| a resume marker for this `session_id` and no ctx history call since its time | `warn`: `{ systemMessage: "ctx-watch: resumed without consulting history — `ctx search '<six words>'`" }`, one `checks.log` line; `block`: `{ decision: "block", reason }` naming the command and the way out | `test/consult-history.test.mjs` (in-process and spawned), `evals/stop-resume-warn.scenario.json`, `evals/stop-resume-block.scenario.json` |
+| the same, but `stop_hook_active: true` in `block` mode | warns, never blocks twice | `test/consult-history.test.mjs` |
+| a ctx history call since the marker (`mcp__ctx__search`, `mcp__ctx__show_session`, `mcp__ctx__show_event`, the single-underscore shape, or `ctx search` / `ctx show session` / `ctx show event` through Bash) | nothing; the marker is consumed | `test/consult-history.test.mjs`, `evals/stop-resume-ctx-consulted.scenario.json` |
+| a ctx call before the marker's time, or in a `isSidechain: true` entry | does not count | `test/consult-history.test.mjs` |
+| no marker (a fresh session, or a second Stop after the resume) and no phrase | nothing, nothing written | `test/consult-history.test.mjs`, `evals/stop-fresh-start.scenario.json` |
+| the final message says "we spoke previously", "earlier you said", "as discussed" or "last time" and this turn made no ctx call | `said "as discussed" without consulting history — `ctx search '<this turn's prompt, six words>'`` in the same shapes as above | `test/consult-history.test.mjs`, `evals/stop-phrase-warn.scenario.json` |
+| both pending (a resume and a phrase) | one finding, the resume's | `test/consult-history.test.mjs` |
+| `last_assistant_message` in the payload (OMP seats, some hosts) | it is the final message; the transcript's last assistant text otherwise | `test/consult-history.test.mjs` |
+| no `transcript_path`, or a file that cannot be read | nothing to scan: no finding; one errors.log line when a marker was pending (that resume went unchecked) | `test/consult-history.test.mjs` |
+| a torn line, a non-object line, an entry without `timestamp` | skipped; skipped; inside every window | `test/consult-history.test.mjs` |
+| no `session_id` | no marker is read; the phrase trigger still runs | `test/consult-history.test.mjs` |
+| the marker cannot be removed | one errors.log line; the check still runs; the marker is read again on the next Stop | not exercised beyond the branch |
+| `checks.log` cannot be appended | one errors.log line; the message still goes out | not exercised beyond the branch |
+| an OMP session | the hook is not run (no adapter in 0.2.0; OMP does not read hooks.json) | by construction |
 
 ## The probe (`lib/probe.mjs`)
 
@@ -30,13 +57,18 @@ blocks: its worst case is silence plus one errors.log line.
 | … not whole epoch milliseconds a Date can hold (negative, fractional, a string, past 8.64e15) | fail naming the field and the value; never a throw | `test/probe.test.mjs` |
 | … more than 5 min ahead of this clock | fail: `core_refresh in the future (…)` | `test/probe.test.mjs` |
 | … over 2 h old | fail naming the age | `test/probe.test.mjs` (by moving `now`, and by editing the field) |
+| `.daemon.jobs.semantic_index` missing | fail naming the field; fix `ctx semantic status`; not healable (no `ctx index mode auto`) | `test/probe.test.mjs` |
+| `.daemon.jobs.semantic_index.semantic_enabled === true` and `.status !== "ready"` (`budget_exhausted`, `pending`, `failed`, missing, …) | fail naming the field and ctx's `reason` when it gives one; fix `ctx semantic enable --wait`; not healable: `check` runs no `ctx index mode` spawn and says why in `healed.detail` | `test/probe.test.mjs` (the 2026-11-04 03:00 capture), `evals/session-start-semantic-not-ready.scenario.json` |
+| `semantic_enabled` not `true` | pass, `semantic search not enabled` in the summary | `test/probe.test.mjs` |
+| the daemon down and the semantic index not ready | one line, the daemon's; the heal runs | `test/probe.test.mjs` |
 | repair: indexing mode not `auto`, or ctx's config file missing | `not attempted: …`; the first probe stands | `test/probe.test.mjs` |
 | repair: `ctx index mode auto` fails (CI, or anything else) | `attempted, ok: false` with ctx's line; the second probe decides | `test/probe.test.mjs` (captured CI refusal) |
 | a shared deadline: each spawn's budget (the smaller of its bound and what is left) is computed once; a budget that is not positive skips the spawn, never runs it with timeout 0 | `budgetExhausted: true`; a failing result past the deadline says `check timed out after N ms (…)` (`deadlineMs: 0` spawns nothing: `no time left to probe ctx`); `runCtx` itself refuses a non-positive timeout; a pass is a pass however slow | `test/probe.test.mjs` |
 
 Not exercised: the repair against a real managed ctx install (it would mean killing the running
 daemon). The claim that `ctx index mode auto` repairs supervision is ctx's storage doc; what was
-measured is a throwaway data root (see README).
+measured is a throwaway data root (see README). `ctx semantic enable --wait` is never run by
+this plugin; that it re-pins an already-enabled index was measured once on a throwaway root.
 
 ## The timer, the state and the popup (`lib/state.mjs`, `lib/launchd.mjs`, `lib/popup.mjs`, `lib/popup-supervisor.mjs`, `lib/retention.mjs`, `scripts/ctx-watch.mjs`)
 
@@ -62,7 +94,7 @@ measured is a throwaway data root (see README).
 | the state file cannot be written by `tick` | said in the tick's output; exit 0; the temp file is removed | `test/cli.test.mjs`, `test/state.test.mjs` |
 | a state file with a field out of shape (`strikes: -100`, `popupShown: "yes"`, …) | treated as absent with one errors.log line; the next failing tick is strike 1 | `test/state.test.mjs` |
 | a log over 256 KB | renamed to `<log>.1` at the start of a tick or a prune (launchd opens a fresh one next run) | `test/cli.test.mjs` |
-| `prune` | rotated logs and popup outcomes (`popups/<token>.json`) older than `--days` (30), and stray `state.json.<pid>.tmp` / `state.lock.<pid>.stale` / `popups/<token>.json.<pid>.tmp` removed; never a `.1` rotated by the same prune (even `--days 0`), the outcome of the popup `state.json` has pending, a temp file whose pid is running, `state.json`, `state.lock` or the plist; `--dry-run` removes nothing and reports the same plan as the real run | `test/retention.test.mjs`, `test/cli.test.mjs` |
+| `prune` | rotated logs (now four: `checks.log` too), popup outcomes (`popups/<token>.json`) and resume markers (`resume/<id>`) older than `--days` (30), and stray `state.json.<pid>.tmp` / `state.lock.<pid>.stale` / `popups/<token>.json.<pid>.tmp` removed; never a `.1` rotated by the same prune (even `--days 0`), the outcome of the popup `state.json` has pending, a temp file whose pid is running, `state.json`, `state.lock` or the plist; `--dry-run` removes nothing and reports the same plan as the real run | `test/retention.test.mjs`, `test/cli.test.mjs` |
 | the tick itself throws (a bug) | the stack goes to the launchd error log, exit 1; the next tick runs on schedule | not exercised beyond the catch in `scripts/ctx-watch.mjs` |
 | a plugin update moves the script the plist names | the timer's runs fail (launchd's log); the hook's dead-man's line says so within two intervals | the dead-man's rule in `test/session-start.test.mjs`; the launchd side not exercised |
 
@@ -75,8 +107,10 @@ process group, as osascript was before); log rotation racing a tick that launchd
 writing when the rotation came from an earlier run (the renamed file keeps that tick's lines;
 the next run opens a fresh one).
 
-Known limits (documented, not fixed in 0.1.0):
+Known limits (documented, not fixed):
 
 - Stale-lock recovery is age-based (30 s): a holder suspended longer than that can be displaced, and a third writer arriving during the move-aside window can lose a fresh lock. Worst case: one duplicate popup for the same outage.
 - A pending popup recorded by a pre-0.1.0 layout (`popup.json`) is not migrated; it expires and the episode reopens once.
 - Consumed popup outcome files are removed only by `ctx-watch prune`; ticks do not delete them.
+- The resume trigger keys on the marker's time against the transcript's `timestamp`s (an entry without one is inside the window). A clock that jumps back between SessionStart and Stop can hide a call or count an old one; the phrase trigger does not use time.
+- A ctx call made by a subagent (its own transcript, or `isSidechain: true` in the parent's) does not count for the parent: the parent did not read it.

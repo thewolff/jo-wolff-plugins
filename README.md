@@ -39,9 +39,17 @@ it, keeping a record of what it did and asked, and a vendored set of engineering
   [release notes](plugins/as2-skills/README.md#changes-in-012). Changes in as2-skills 0.1.1:
   the triad and quorum fan-out scripts ship their `lib/leg-runner.sh`.
 - **[ctx-watch](#ctx-watch)** — notice when the ctx daemon is dead, unsupervised,
-  or stale, repair it with the one command ctx documents, and say so at SessionStart and in a
-  macOS popup from a launchd timer; the SessionStart line also says when the timer itself has
-  stopped. macOS; Claude Code hooks, plus a CLI that works anywhere.
+  or stale, or its semantic index is not ready; repair what ctx documents a command for, and
+  say so at SessionStart and in a macOS popup from a launchd timer; the SessionStart line also
+  says when the timer itself has stopped. At Stop, the `consult-history` check says when a
+  resumed session never asked ctx what the thread was. macOS; Claude Code hooks, plus a CLI
+  that works anywhere.
+  Changes in ctx-watch 0.2.0: the semantic index (`.daemon.jobs.semantic_index` not `ready`
+  with semantic search enabled) is a failing probe naming `ctx semantic enable --wait`, in the
+  SessionStart line and the popup; the `consult-history` Stop check (a resume, a compaction,
+  or "as discussed" with no `ctx search` since; `~/.claude/ctx-watch.json`, default warn);
+  `evals/` and the plugin-kit scenario runner; see the plugin's
+  [release notes](plugins/ctx-watch/README.md#changes-in-020).
 
 output-types delivers text and does not read what the agent sends back; see its *delivers, does
 not enforce* note. i-have-audhd delivers its rules and checks every finished message, warning by
@@ -998,19 +1006,26 @@ The tests run with `node --test` from inside `plugins/ledger/`.
 ## ctx-watch
 
 Notice when the [ctx](https://github.com/ctxrs/ctx) daemon is dead, not supervised, or stale,
-and say so where you will see it. The probe is `ctx daemon status --format json` with `CI`
-removed from the environment, judged on `.daemon.running`, `.daemon.supervisor.status` and
-`.daemon.jobs.core_refresh.last_run_at_ms` (over 2 h is stale) and never on the exit code,
-which is 0 either way. A failing probe is repaired with `ctx index mode auto`, the command
+or its semantic index is not ready, and say so where you will see it. The probe is `ctx daemon
+status --format json` with `CI` removed from the environment, judged on `.daemon.running`,
+`.daemon.supervisor.status`, `.daemon.jobs.core_refresh.last_run_at_ms` (over 2 h is stale)
+and `.daemon.jobs.semantic_index.status` (not `ready` while semantic search is enabled; the
+fix line is `ctx semantic enable --wait`, since ctx 2.3.0 has no rebuild verb) and never on
+the exit code, which is 0 either way. A failing probe is repaired with `ctx index mode auto`, the command
 ctx's own docs give for "installs or repairs supervision and starts the persistent background
 daemon" (verified on a throwaway data root; a non-CI `ctx daemon status` does not restart
 anything), guarded so it never sets ctx up or flips a deliberate `manual` mode. Two surfaces:
 a SessionStart line, `ctx-watch: <reason>; fix: \`<command>\``, plus a dead-man's line when the
 timer itself has not run; and a launchd timer (`install` writes the plist and prints the one
 `launchctl bootstrap` line, never running it) whose `tick` strikes once, goes down on the
-second failing probe in a row, and shows one `osascript` dialog per episode. Built on
-plugin-kit 0.1.0; macOS; Node 22.13 or later. The reasons, the repair's guard, the episode
-rules and the failure table are in [`plugins/ctx-watch/README.md`](plugins/ctx-watch/README.md).
+second failing probe in a row, and shows one `osascript` dialog per episode. A third, at
+Stop: the `consult-history` check warns (or blocks, by `~/.claude/ctx-watch.json`) when a
+session resumed or compacted, or a reply says "we spoke previously", "earlier you said", "as
+discussed" or "last time", and no `ctx search`, `show session` or `show event` was called
+since; the line names `ctx search '<the prompt's first six words>'`. Claude Code only (no OMP
+adapter). Built on plugin-kit; macOS; Node 22.13 or later. The reasons, the repair's guard,
+the episode rules, the check and the failure table are in
+[`plugins/ctx-watch/README.md`](plugins/ctx-watch/README.md).
 
 ### Install
 
@@ -1024,8 +1039,9 @@ Then, once, from your own Terminal: `node <plugin dir>/scripts/ctx-watch.mjs ins
 
 ### Developing ctx-watch
 
-The tests run with `node --test` from inside `plugins/ctx-watch/`. The ctx captures in
-`test/fixtures/` are re-made by `test/fixtures/capture.sh`, by hand.
+The tests run with `node --test` from inside `plugins/ctx-watch/`; the hook scenarios with
+`bash e2e/live-run.sh --no-live`. The ctx captures in `test/fixtures/` are re-made by
+`test/fixtures/capture.sh`, by hand.
 
 ## License
 
