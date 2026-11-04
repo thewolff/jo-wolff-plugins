@@ -67,7 +67,7 @@ with code 2, and never insert a question of their own; `test/no-prompts.test.mjs
 
 ## What the agent does with it
 
-The skill (`skills/ledger/SKILL.md`) tells the agent to:
+The skill `record` (`skills/record/SKILL.md`, typed as `/ledger:record`) tells the agent to:
 
 - `ask "<body>" --name <short> --options a,b --default a` whenever it needs your decision, then
   ask you in plain words without showing the id. `--ceiling <usd>` and `--about "<text>"` attach
@@ -78,6 +78,13 @@ The skill (`skills/ledger/SKILL.md`) tells the agent to:
 - `note "<text>"` for a choice it made without asking;
 - before any `git push` or `gh pr create`, a `note` or an `outcome <ref> "<text>"` saying what is being pushed and why;
 - read `pending` and `log` when it resumes.
+- treat questions listed from other folders as information about another window, never as its
+  own *Needs you*.
+
+Slash commands: `/ledger:record` loads that skill, `/ledger:enable` and `/ledger:disable` set
+the folder's switch, `/ledger:review` runs a review, and `/ledger` (no suffix) opens the
+[ledger pane](#ledger-pane-desktop). Before 0.3.7 the skill shared the plugin's name, so a bare
+`/ledger` resolved to that skill and ran it instead of opening the pane.
 
 You answer the way you would answer anyone. If the agent ends a turn after your reply without
 recording the answer, the Stop hook sends it back once with the ids to record.
@@ -213,7 +220,7 @@ defaults verbatim.
 | `review.models` | `null` | a model per lab, e.g. `{"claude": "opus", "glm": "zai/glm-5.3-flash"}`; unset means the lab's CLI default (`glm`: `zai/glm-5.3`). User file only |
 | `review.profiles` | `null` | an `omp` profile per omp-backed lab, e.g. `{"glm": "work"}`; unset means no `--profile` (omp's base profile). Each value is a non-empty string; an empty one makes the loader reject the whole `review.profiles` value and say so. User file only |
 | `review.maxRounds` | `3` | how many review rounds (reviewed commits on the branch since the merge-base) `ledger review` runs before it stops and says to ask the human: waive, or continue with `--force-round`. User file only |
-| `review.judgeCommand` | `null` | the judge that checks "this finding is resolved" claims: a shell command that gets the prompt on stdin (or in place of a literal `{prompt}`) and prints `yes` or `no`. Unset falls back to `enforcement.judgeCommand` in the i-have-audhd profile (`~/.claude/i-have-audhd.json`), so one judge is configured once. User file only |
+| `review.judgeCommand` | `null` | the judge that checks "this finding is resolved" claims: a shell command that gets the prompt on stdin (or in place of a literal `{prompt}`) and prints `yes` or `no`. Unset falls back to `command` in the shared judge file (`${XDG_CONFIG_HOME:-~/.config}/judge/config.json`), then to `enforcement.judgeCommand` in the i-have-audhd profile (`~/.claude/i-have-audhd.json`), so one judge is configured once. User file only |
 
 The default `forcing.decisionPhrases`: `I decided`, `decided to`, `assumption:`, `assuming`,
 `going with`, `chose`, `I'll go with`, `trade-off`. A project file can replace the
@@ -230,7 +237,7 @@ appends one line to `${XDG_STATE_HOME:-~/.local/state}/ledger/errors.log` and te
 | Condition | CLI | SessionStart | PreToolUse | Stop | SessionEnd | UserPromptSubmit |
 |---|---|---|---|---|---|---|
 | database file missing | creates the directory and the schema, proceeds | same | same | same | same | same |
-| database locked (busy timeout, one retry) | exit 2, `ledger: database busy at <path>; nothing applied` (lines already applied are named) | injects what it can read; session not recorded, one `systemMessage` and one `errors.log` line (every hook's store failure logs since 0.3.3) | passes with `systemMessage` where it would deny (the `ask` or `note` it would demand cannot write); a tool it would pass anyway passes silently | passes without checking, `systemMessage` (the turn stamp is a write) | log only | lines report `not applied (database busy)`, one `systemMessage`, prompt proceeds |
+| database locked (busy timeout; opening retries up to 4 times with a short pause, at least once) | exit 2, `ledger: database busy at <path>; nothing applied` (lines already applied are named) | injects what it can read; session not recorded, one `systemMessage` and one `errors.log` line (every hook's store failure logs since 0.3.3) | passes with `systemMessage` where it would deny (the `ask` or `note` it would demand cannot write); a tool it would pass anyway passes silently | passes without checking, `systemMessage` (the turn stamp is a write) | log only | lines report `not applied (database busy)`, one `systemMessage`, prompt proceeds |
 | database read-only (file mode, mounted read-only) | reads work; a write is exit 2, `ledger: database read-only at <path>; nothing applied`; `enable`, `disable` and `help` never touch the database | injects what it can read; session not recorded, one `systemMessage` | same as locked | same as locked | log only | lines report `not applied (database read-only)`, one `systemMessage`, prompt proceeds |
 | database corrupt, default path (no `db` configured) | moves it to `<path>.corrupt-<stamp>`, creates a fresh one, says so, proceeds | same, in `systemMessage` | same | same | rename and log only | same |
 | database corrupt, configured path (`db` from env, project or user file) | exit 2, `ledger: database corrupt at <path>: <error>; nothing applied`; the file is not renamed, recreated or written | no injection, one `systemMessage` naming the path and the error | passes, `systemMessage` | passes without checking, `systemMessage` | log only | nothing applied, one `systemMessage`, prompt proceeds |
@@ -274,6 +281,10 @@ of them finds an issue. A database that does not exist yet is not an issue.
 ends with ` [db <path>]`, the database the writing process had configured, and `doctor` and the
 SessionStart line count only the lines for the database they check. Lines for another database,
 and untagged lines from ledger 0.2.x, are named in the `errors` check's ok text as "not counted".
+A `config <file>: … ignoring it` line is counted only while that notice still reproduces: doctor
+re-reads the named file (from its folder, so a project file is found too) and, when the file no
+longer produces the notice, drops the line and names it as `n stale config notice(s) ignored`.
+Such a line ages out of the 7-day window on its own; the file is never edited.
 
 The bounce ledger is `cc_bounces`: one row per Stop block and PreToolUse deny, with the rule,
 session, `prompt_id`, tool and time. A row starts open and is closed once:
@@ -394,8 +405,14 @@ yes or no." `no` keeps the finding open (`judge: "no"` in `findings_json`, the r
 not configured, cannot start, times out (60 seconds) or answers anything else gives
 `unverified`: the finding counts as resolved, fail open, and the gate's notice names it. Answers
 are cached in `cc_judge_cache` under `judge:<sha256>` with the passage they were given, so asking the same thing again costs nothing and a cached answer can be read back with `review judge <key>`. The
-judge command is `review.judgeCommand`, else the i-have-audhd plugin's
-`enforcement.judgeCommand`: one judge, configured once.
+judge command is `LEDGER_JUDGE_BIN`, else `review.judgeCommand`, else `command` in the shared
+judge file `${XDG_CONFIG_HOME:-~/.config}/judge/config.json` (written by `node lib/judge.mjs
+setup`), else the i-have-audhd plugin's `enforcement.judgeCommand`: one judge, configured once.
+Ledger's diff judge never runs shorter than 60 s; a longer shared `timeoutMs` is honoured (`setup`
+writes 30000 unless given `--timeout-ms`, and ledger keeps its 60 seconds over that). A command
+that prints a `claude -p --output-format json` envelope is read through it: the answer is its
+`result`. `lib/judge.mjs` is plugin-kit's shared dispatch, copied byte for byte; ledger's cache
+and verdicts live in `lib/ledger-judge.mjs`.
 
 | Verb | Effect |
 | :- | :- |
@@ -575,8 +592,8 @@ rules, the review gate, and any other rule name found in `cc_bounces`): fired, s
 bypassed, open, and a grade. The mechanical grade is always computed: `biting` when bypassed ≥ 3
 or more than half of what fired was bypassed (the rule sent back work that was then forced
 through); `silent` when sessions ran in the window and the rule never fired; `fine` otherwise.
-When a judge is configured (`review.judgeCommand`, `LEDGER_JUDGE_BIN`, or the i-have-audhd
-profile) it reads up to 20 bounce texts per rule that fired and answers `biting`, `silent` or
+When a judge is configured (`LEDGER_JUDGE_BIN`, `review.judgeCommand`, the shared judge file,
+or the i-have-audhd profile) it reads up to 20 bounce texts per rule that fired and answers `biting`, `silent` or
 `fine`; that answer is printed beside the mechanical one as `(judge: …)` and never stored. A
 judge that is missing, fails, answers none of the three words, or has no texts to read (rows
 from before 0.3.3) prints `(judge unavailable: <reason>)`; the mechanical grade stands. Then:
@@ -713,8 +730,16 @@ place it, a toast names `/ledger` instead.
 
 Where nothing can draw (`claude -p`, a pane that is not placed), the end of each turn adds one
 transcript block instead: one line per answer since your last turn, one line per question waiting
-elsewhere with its options, and the `/ledger answer` command that records. The pane never
-writes a row itself and never writes outside the ledger's own tables.
+elsewhere with its options, and the `/ledger answer` command that records. The block is that line
+alone; Claude's reply is not repeated in it. The pane never writes a row itself and never writes
+outside the ledger's own tables.
+
+Once per session the mod logs one dim transcript line, `ledger pane: surface=<app|none>
+placed=<true|false|null>`: the surface the app handed the mod at session start (`none` means it
+handed none, so nothing draws) and whether the pane is placed (`null`: the app cannot say). It is
+written at session start, or at the first fallback turn when session start faulted first. A
+session where the fallback block appears every turn and this line says `placed=false` or
+`surface=none` is one where the pane is not on screen.
 
 The fallback and the pane fail the same way as the hooks: a query that cannot open the database
 shows `ledger: database …` in the pane and one dim transcript line, a CLI refusal comes back as
@@ -753,6 +778,26 @@ Tests use a sandboxed `HOME`, `XDG_*` and `LEDGER_*` so they never touch your le
 `LEDGER_CWD` and `LEDGER_BUSY_TIMEOUT_MS` environment variables exist for the tests.
 
 ## Changes
+
+### 0.3.7
+
+- The skill is renamed from `ledger` to `record` (`skills/record/`, `/ledger:record`), so
+  `/ledger` reaches the pane mod's command instead of the skill. Its text adds that questions
+  from other folders never go under the agent's own *Needs you*.
+- The pane's end-of-turn fallback block no longer repeats Claude's whole reply above it (it was
+  joined onto the engine's `{ text: <answer> }`); it is the ledger line alone.
+- The pane logs one `ledger pane: surface=… placed=…` line per session (see
+  [Ledger pane](#ledger-pane-desktop)).
+- `doctor` re-reads the config file a `config …: … ignoring it` errors.log line names and drops the
+  line when the notice no longer reproduces, reporting `n stale config notice(s) ignored`;
+  SessionStart's doctor count drops it too.
+- `lib/judge.mjs` is plugin-kit's shared judge dispatch, byte for byte; ledger's cache, passage
+  and verdict logic lives in `lib/ledger-judge.mjs`. The judge command is `LEDGER_JUDGE_BIN`,
+  else `review.judgeCommand`, else the shared judge file
+  `${XDG_CONFIG_HOME:-~/.config}/judge/config.json` (new), else the i-have-audhd profile's
+  `enforcement.judgeCommand`. Verdicts and the cache are unchanged; `judge could not start:`
+  is now followed by the error code. Ledger's diff judge never runs shorter than 60 s; a longer
+  shared `timeoutMs` is honoured. A `claude -p --output-format json` envelope is read through.
 
 ### 0.3.6
 

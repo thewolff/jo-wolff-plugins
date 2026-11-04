@@ -5,8 +5,13 @@
 //   node scripts/prune.mjs [--days 30] [--dry-run]
 //
 // Removes every file under ${XDG_STATE_HOME:-~/.local/state}/ask-graham whose mtime is older than
-// --days, then every directory left empty. Prints `pruned: <n> file(s), <bytes> bytes freed` as the
-// last line (the canary records the bytes). errors.log is kept whatever its age: it is the record.
+// --days, then every directory left empty. That covers the once-per-turn block records
+// (blocked/<session id>) and the findings files (findings/<session id>.json, rewritten at each
+// stop that carries a verdict or structure check, so a session's file ages from its last such stop;
+// a findings/*.tmp left by an interrupted write ages the same way). Prints
+// `pruned: <n> file(s), <bytes> bytes freed` as the last line (the canary records the bytes).
+// errors.log is kept whatever its age: it is the record. The directory is the hooks' own
+// (hooks/fault.mjs stateDir: XDG_STATE_HOME counts only when it is an absolute path).
 //
 // How it fails: no state directory → `pruned: 0 file(s), 0 bytes freed`, exit 0. A file that
 // cannot be removed is counted as kept and named on stderr; exit stays 0 (a prune that cannot
@@ -15,10 +20,10 @@
 import { readdirSync, rmdirSync, rmSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
+import { stateDir as hookStateDir } from "../hooks/fault.mjs";
 
 export function stateDir(env = process.env) {
-  const xdg = env.XDG_STATE_HOME?.trim() ? env.XDG_STATE_HOME : join(env.HOME || homedir(), ".local", "state");
-  return join(xdg, "ask-graham");
+  return hookStateDir(env, env.HOME || homedir());
 }
 
 /** Remove files older than `days` under `dir`; `{ removed, bytes, kept }`. */

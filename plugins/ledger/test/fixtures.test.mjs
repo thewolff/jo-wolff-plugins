@@ -11,7 +11,8 @@ import { chmodSync, existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { ADAPTERS } from "../lib/review.mjs";
-import { ask, parseAnswer } from "../lib/judge.mjs";
+import { parseAnswer } from "../lib/judge.mjs";
+import { ask } from "../lib/ledger-judge.mjs";
 import { open } from "../lib/db.mjs";
 import { sandbox, cli, openDb } from "./helpers.mjs";
 

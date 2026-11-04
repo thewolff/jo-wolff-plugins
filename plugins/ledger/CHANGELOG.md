@@ -5,6 +5,65 @@ All notable changes to ledger are recorded here. The format follows
 "Changes" section of the README (one line per version) and the "Changes in" paragraphs of the
 repository root README's ledger section.
 
+## [0.3.7] - 2026-11-04
+
+### Added
+
+- The pane mod logs one dim transcript line per session,
+  `ledger pane: surface=<app|none> placed=<true|false|null>`: the surface Claude Code handed the
+  mod at `session.start` and whether the pane is placed. It is written at session start, or at
+  the first `turn.complete` fallback when session start faulted before it, and never per turn.
+  It tells a Desktop run whether the pane is unplaced or the app gave the mod no surface.
+
+### Fixed
+
+- `/ledger` opens the pane again. The skill was named `ledger`, so a bare `/ledger` resolved
+  to the skill's slash command and the mod's `ledger` command never ran. The skill is renamed
+  `record` (`skills/record/SKILL.md`, `/ledger:record`); the mod keeps `/ledger`.
+- The pane's `turn.complete` fallback no longer repeats Claude's whole reply. The engine's
+  default result for that event is `{ text: <the answer> }`, and the mod joined its own line
+  onto it, so every turn showed the reply a second time under the
+  `ledger+cc-plugin-agents-md:` label. The mod now returns its line alone.
+- `doctor` no longer counts a `config <file>: … ignoring it` errors.log line whose notice no
+  longer reproduces: it re-runs `loadConfig` from that file's folder and drops the line when the
+  notice is gone, reporting `n stale config notice(s) ignored` in the `errors` row instead.
+  SessionStart's doctor count uses the same filter. `loadConfig` takes `track: false` so that
+  re-read leaves the errors.log database tag alone.
+- The `record` skill says questions listed from other folders are informational: the agent
+  never puts them under its own *Needs you*, since they belong to another window.
+- Several processes opening the same fresh database at once (SessionStart hooks of windows
+  started together) no longer fail with `database busy`. Switching a new file to WAL is a step
+  SQLite refuses at once rather than waiting out `busy_timeout`, and `open` retried it once
+  with no pause, so a racer could lose twice in a row. `open` now retries a busy open up to 5
+  times in all with a jittered 25–200 ms pause while `busy_timeout` has not run out (one retry
+  always, as before), then throws `busy`. The race test runs eight processes instead of four.
+
+### Changed
+
+- `lib/judge.mjs` is now plugin-kit's shared judge dispatch, copied byte for byte (plugin-kit's
+  sameness test diffs it). Ledger's own judge logic (the `cc_judge_cache` cache, the passage
+  builder, `ask` for review's "is this finding resolved" and `askWord` for the report's grades)
+  moved to `lib/ledger-judge.mjs`, which calls the shared `resolveJudgeCommand`,
+  `readSharedConfig`, `dispatch`, `parseAnswer` and `topLevelJsonSpans`. Verdicts, cache keys,
+  prompts and the error wording `judge exited <n>` and `judge timed out after <n>s` are
+  unchanged. The text after `judge could not start:` is now the error code (`ENOENT`) where it
+  was the full message (`spawn /bin/sh ENOENT`).
+- The judge command is found in this order: env `LEDGER_JUDGE_BIN`, then `review.judgeCommand`
+  in the ledger user file (ledger's own settings first, as before), then `command` in the
+  shared judge file `${XDG_CONFIG_HOME:-~/.config}/judge/config.json` (new; written by
+  `node lib/judge.mjs setup`), then `enforcement.judgeCommand` in the i-have-audhd profile. A
+  shared file that exists but is malformed stops the search before the i-have-audhd profile;
+  `doctor` names the file and the parse error, and so does the `unverified` verdict's error
+  (`no judge configured (malformed <path>: <error>)`).
+- Ledger's diff judge never runs shorter than 60 s; a longer shared `timeoutMs` is honoured.
+  `judge setup` writes `timeoutMs: 30000` unless given `--timeout-ms`, and ledger keeps its
+  60 seconds over that, because a judge cut off early gives `unverified`, which fails open.
+- A judge command that prints a `claude -p --output-format json` envelope
+  (`{"type":"result","result":"…"}`) is read through it: the yes/no answer is taken from
+  `result`. Before, every such answer was `unverified`.
+- `doctor`'s judge row names the i-have-audhd source with a trailing ` (legacy)`, and its
+  warning lists all four places it looked.
+
 ## [0.3.6] - 2026-11-04
 
 ### Added

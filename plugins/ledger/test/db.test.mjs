@@ -92,11 +92,12 @@ test("shared file: another tool's tables and its user_version are left alone; on
   again.db.close();
 });
 
-test("four processes opening the same fresh file at once all succeed; the schema is created once", () => {
+test("eight processes opening the same fresh file at once all succeed; the schema is created once", () => {
   const p = join(box.root, "race", "ledger.db");
   const { spawn } = globalThis.process.getBuiltinModule("node:child_process");
   const script = `import { open, storeVersion } from ${JSON.stringify(new URL("../lib/db.mjs", import.meta.url).href)}; const r = open(${JSON.stringify(p)}); console.log(storeVersion(r.db)); r.db.close();`;
-  const runs = Array.from({ length: 4 }, () => spawn(process.execPath, ["--input-type=module", "-e", script], { stdio: ["ignore", "pipe", "pipe"] }));
+  // Eight, not four: the switch to WAL refuses at once rather than waiting, and four racers hit it too rarely to catch a regression.
+  const runs = Array.from({ length: 8 }, () => spawn(process.execPath, ["--input-type=module", "-e", script], { stdio: ["ignore", "pipe", "pipe"] }));
   return Promise.all(
     runs.map(
       (c) =>
