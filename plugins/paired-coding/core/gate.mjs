@@ -52,6 +52,8 @@
  * @property {string} [currentCode]
  * @property {string} [proposedCode]
  * @property {string} [effect]
+ * @property {string} [why]  learning mode: why this approach over the alternatives
+ * @property {unknown[]} [sources]  learning mode: what `why` rests on (sourceProblem)
  * @property {string[]} [checks]
  * @property {string[]} [openPoints]
  * @property {Array<{path: string, change: string}>} [changedSinceReadBack]
@@ -97,6 +99,8 @@
  * @property {{ from: string, roadmap: RoadmapItem[] } | null} [roadmapOffer]
  *   an earlier session's roadmap pair_start offered, until pair_note's earlierRoadmap picks it
  *   up or starts fresh, or a new roadmap supersedes it
+ * @property {boolean} [learning]  learning mode (pair_learn): cards need `why` and `sources`, and
+ *   pair_done needs `recall`. False at every pair_start and carry; absent reads as false
  */
 /**
  * Paths outside the agreement that every pair_run may write, closed or open: the state of the
@@ -135,6 +139,7 @@ export const PAIR_TOOLS = Object.freeze([
   "pair_write",
   "pair_edit",
   "pair_run",
+  "pair_learn",
 ]);
 
 /** What the user types, as a whole turn, to end pairing. */
@@ -271,6 +276,7 @@ function isValidState(s) {
     if (!isObj(s.carried) || typeof s.carried.reason !== "string" || s.phase !== "closed" || s.card !== null) return false;
   }
   if (s.roadmap !== undefined && s.roadmap !== null && roadmapProblem(s.roadmap) !== null) return false;
+  if (s.learning !== undefined && typeof s.learning !== "boolean") return false;
   if (s.roadmapOffer !== undefined && s.roadmapOffer !== null && !isRoadmapOffer(s.roadmapOffer)) return false;
   if (s.phase === "open") {
     const c = s.changeSet;
@@ -707,6 +713,7 @@ function closedState(sessionId, paths, baseline) {
     carried: null,
     roadmap: null,
     roadmapOffer: null,
+    learning: false,
   };
 }
 
@@ -1105,12 +1112,98 @@ export function pairNote(state, args, io) {
   return { ok: true, state: next, roadmapOpen: openRoadmapItems(roadmap), journal: [entry("note", io, { ...text, roadmap })] };
 }
 
+/** What the user types, inside their latest turn, before pair_learn may turn learning mode off. */
+export const LEARNING_OFF_PHRASE = "learning mode off";
+/** pair_learn's refusal of on: false without that phrase in the user's latest typed turn. */
+export const LEARNING_OFF_REASON = `only your partner turns learning mode off: their latest typed turn has to contain "${LEARNING_OFF_PHRASE}"`;
+
+/**
+ * pair_learn: turn learning mode on or off for this pairing session. Journaled as a `learning`
+ * entry, like a note. pair_start and a carry always start with it off, so it never leaks from one
+ * session into the next. While it is on, pair_propose needs `why` and `sources` (sourceProblem)
+ * and pair_done needs `recall`; while it is off neither verb checks them. Turning it on only
+ * adds checks, so the agent may do it on its own; turning it off removes them, so it is refused
+ * unless the latest trusted turn (the one pair_begin binds a quote to) contains
+ * LEARNING_OFF_PHRASE as whole words, in any case.
+ * @param {State} state
+ * @param {{ on?: unknown }} args
+ * @param {Io} [io]
+ * @returns {Result}
+ */
+export function pairLearn(state, args, io) {
+  if (state.phase === "inactive") return refuse(state, "pair_learn", "pairing is not active", io);
+  if (state.carried) return refuse(state, "pair_learn", CARRIED_REASON, io);
+  if (typeof args?.on !== "boolean") return refuse(state, "pair_learn", "on is not true or false", io);
+  const typed = typeof state.lastInput?.text === "string" ? state.lastInput.text.toLowerCase() : "";
+  if (!args.on && state.learning === true && !occursAtWordBoundaries(typed, LEARNING_OFF_PHRASE)) return refuse(state, "pair_learn", LEARNING_OFF_REASON, io);
+  const next = clone(state);
+  next.learning = args.on;
+  return { ok: true, state: next, journal: [entry("learning", io, { on: args.on, was: state.learning === true })] };
+}
+
+/** The forms a learning-mode source takes, as pair_propose's refusal names them. */
+export const SOURCE_FORMS = 'each source is a URL object { "url": "https://…", "passage": "the words you relied on" }, an absolute file:line or file:line-line path, or a string starting "from memory"';
+const FILE_LINE_SOURCE = /^(\/\S.*):(\d+)(?:-(\d+))?$/;
+const MEMORY_SOURCE = /^from memory\b/i;
+
+/** `x` as JSON, cut to a length a refusal can quote. */
+function quoted(x) {
+  const s = JSON.stringify(x) ?? String(x);
+  return s.length > 120 ? `${s.slice(0, 117)}...` : s;
+}
+
+/** A string source: "from memory…", or an absolute path naming a file, then a line >= 1 or an ascending range. Trimmed first. */
+function stringSourceOk(raw) {
+  if (CONTROL.test(raw)) return false;
+  const s = raw.trim();
+  if (MEMORY_SOURCE.test(s)) return true;
+  const m = FILE_LINE_SOURCE.exec(s);
+  if (!m || !/[^\s/]/.test(m[1])) return false;
+  const start = Number(m[2]);
+  const end = m[3] === undefined ? start : Number(m[3]);
+  return start >= 1 && end >= start;
+}
+
+/** A URL source: an http(s) URL that parses, with a host and no whitespace, and a non-empty passage; no control characters in either. */
+function urlSourceOk(s) {
+  if (!isObj(s) || typeof s.url !== "string" || typeof s.passage !== "string") return false;
+  if (CONTROL.test(s.url) || CONTROL.test(s.passage) || /\s/.test(s.url) || s.passage.trim() === "") return false;
+  let url;
+  try { url = new URL(s.url); } catch { return false; }
+  return (url.protocol === "http:" || url.protocol === "https:") && url.hostname !== "";
+}
+
+/**
+ * Why a learning-mode card's sources are unusable, or null. A non-empty list; each entry a URL
+ * object (urlSourceOk), an absolute `file:line` or `file:line-line` string, or a string starting
+ * "from memory" (stringSourceOk). Names the first bad entry by its index.
+ * @param {unknown} sources
+ * @returns {string | null}
+ */
+export function sourceProblem(sources) {
+  if (!Array.isArray(sources) || sources.length === 0) return `the card has no sources; ${SOURCE_FORMS}`;
+  for (const [i, s] of sources.entries()) {
+    if (typeof s === "string" ? stringSourceOk(s) : urlSourceOk(s)) continue;
+    return `sources[${i}] is ${quoted(s)}; ${SOURCE_FORMS}`;
+  }
+  return null;
+}
+
+/** pair_propose's refusal, in learning mode, for a card with no `why`. */
+export const WHY_REASON = "learning mode is on: the card needs why, a non-empty string saying why this approach over the alternatives";
+/** pair_done's refusal, in learning mode, without a `recall` question. */
+export const RECALL_REASON = 'learning mode is on: pair_done needs recall, one question (one line) your partner answers from memory about this change set; ask it in your closing message on a line starting "Recall:"';
+
+const isRecall = (x) => typeof x === "string" && x.trim() !== "" && !/[\r\n]/.test(x.trim());
+
 /**
  * pair_propose: record the next card. Its boundary is hashed now (io.hashBoundary), and the
  * card remembers the latest trusted-input sequence number, so only a turn typed after this
- * card can agree to it. Changes found between change sets ride on the card for the user.
+ * card can agree to it. Changes found between change sets ride on the card for the user. In
+ * learning mode the card also needs `why` (a non-empty string) and `sources` (sourceProblem);
+ * with learning off both are recorded when given and never checked.
  * @param {State} state
- * @param {{ boundary: string[], whyNow?: string, decision?: string, currentCode?: string, proposedCode?: string, effect?: string, checks?: string[], openPoints?: string[] }} card
+ * @param {{ boundary: string[], whyNow?: string, decision?: string, currentCode?: string, proposedCode?: string, effect?: string, checks?: string[], openPoints?: string[], why?: string, sources?: unknown[] }} card
  * @param {Io} io
  * @returns {Result & { card?: Card }}
  */
@@ -1126,6 +1219,11 @@ export function pairPropose(state, card, io) {
   if (problem) return refuse(state, "pair_propose", problem, io);
   if (card.openPoints !== undefined && !isStrArr(card.openPoints)) return refuse(state, "pair_propose", "openPoints is not a list of strings", io);
   if (card.checks !== undefined && !isStrArr(card.checks)) return refuse(state, "pair_propose", "checks is not a list of strings", io);
+  if (state.learning) {
+    if (typeof card.why !== "string" || card.why.trim() === "") return refuse(state, "pair_propose", WHY_REASON, io);
+    const bad = sourceProblem(card.sources);
+    if (bad) return refuse(state, "pair_propose", `learning mode is on: ${bad}`, io);
+  }
   const hashed = callIo(io, "hashBoundary", [...card.boundary], state.root);
   if (hashed.error) return refuse(state, "pair_propose", `could not hash the boundary: ${hashed.error}`, io);
   if (!isSnapshot(hashed.value)) return refuse(state, "pair_propose", "hashBoundary returned malformed hashes", io);
@@ -1139,6 +1237,8 @@ export function pairPropose(state, card, io) {
     currentCode: card.currentCode,
     proposedCode: card.proposedCode,
     effect: card.effect,
+    why: card.why,
+    sources: card.sources,
     boundary: [...card.boundary],
     checks: card.checks ? [...card.checks] : [],
     openPoints: card.openPoints ? [...card.openPoints] : [],
@@ -1208,9 +1308,10 @@ export function pairBegin(state, args, io) {
  * while the session is stopped (a run that made a link: runEnd), so no read-back is shown then.
  * Returns `changed` (inside the boundary, for the read-back diff) and `unapproved`. The `done`
  * journal entry records the boundary and what its paths held at this snapshot (boundaryHashes),
- * which the pair-accepted receipt copies at the stop (pairAcceptedReceipt).
+ * which the pair-accepted receipt copies at the stop (pairAcceptedReceipt). In learning mode it
+ * needs `recall`, one question on one line, which the `done` entry records (RECALL_REASON).
  * @param {State} state
- * @param {{ cardId: unknown }} args
+ * @param {{ cardId: unknown, recall?: unknown }} args
  * @param {Io} io
  * @returns {Result & { changed?: Array<{path: string, change: string}>, unapproved?: Array<{path: string, change: string}> }}
  */
@@ -1220,6 +1321,7 @@ export function pairDone(state, args, io) {
   if (args?.cardId !== cs.cardId) return refuse(state, "pair_done", "that card is not the open change set", io);
   if (state.halt) return refuse(state, "pair_done", `the session is stopped: ${state.halt.reason}; only your partner ends it, by typing pair stop`, io);
   if (state.running.some((r) => r.cardId === cs.cardId)) return refuse(state, "pair_done", "a pair_run under this change set is still running", io);
+  if (state.learning && !isRecall(args?.recall)) return refuse(state, "pair_done", RECALL_REASON, io);
   if (olderBaseline(state.baseline)) return refuse(state, "pair_done", OLDER_PLUGIN, io);
   if (cs.runs.length > 0) {
     const reaped = callIo(io, "reapRuns", [...cs.runs]);
@@ -1234,12 +1336,13 @@ export function pairDone(state, args, io) {
   next.phase = "closed";
   next.changeSet = null;
   next.baseline = snap.value;
-  const journal = [entry("done", io, { cardId: cs.cardId, boundary: [...cs.boundary], hashes: boundaryHashes(cs.boundary, snap.value), changed })];
+  const recall = isRecall(args?.recall) ? { recall: args.recall.trim() } : {};
+  const journal = [entry("done", io, { cardId: cs.cardId, boundary: [...cs.boundary], hashes: boundaryHashes(cs.boundary, snap.value), changed, ...recall })];
   if (unapproved.length) {
     next.halt = { reason: `unapproved write outside change set ${cs.cardId}: ${unapproved.map((d) => d.path).join(", ")}`, at: stamp(io) };
     journal.push(entry("unapproved-write", io, { cardId: cs.cardId, paths: unapproved }));
   }
-  return { ok: true, state: next, journal, changed, unapproved, halted: unapproved.length > 0, roadmapOpen: openRoadmapItems(state.roadmap) };
+  return { ok: true, state: next, journal, changed, unapproved, halted: unapproved.length > 0, roadmapOpen: openRoadmapItems(state.roadmap), ...recall };
 }
 
 // ─── tool verdicts ──────────────────────────────────────────────────────────────────────

@@ -1,0 +1,10 @@
+{
+  "$comment": "The block fires once: the same near-full input (a transcript whose last assistant reply recorded 160,000 tokens of usage, no calibration) a second time in the same session passes, so the person can always end the session. The once-mark proves the first stop was blocked.",
+  "event": "Stop",
+  "expect": "silent",
+  "sibling": "stop-blocks-near-full.scenario.json",
+  "transcript": [{ "type": "user", "message": { "role": "user", "content": "carry on with the port" } }, { "type": "assistant", "isSidechain": false, "message": { "role": "assistant", "content": [{ "type": "text", "text": "Done." }], "usage": { "input_tokens": 2, "cache_creation_input_tokens": 9998, "cache_read_input_tokens": 150000, "output_tokens": 5 } } }],
+  "before": [{ "stdin": { "hook_event_name": "Stop", "session_id": "${SESSION_ID}", "cwd": "${CWD}", "transcript_path": "${TRANSCRIPT}", "stop_hook_active": false, "last_assistant_message": "Done." } }],
+  "stdin": { "hook_event_name": "Stop", "session_id": "${SESSION_ID}", "cwd": "${CWD}", "transcript_path": "${TRANSCRIPT}", "stop_hook_active": false, "last_assistant_message": "Done." },
+  "after": { "commands": ["grep -q stopBlocked \"${XDG_STATE_HOME}/continuity/sessions/${SESSION_ID}.json\""] }
+}

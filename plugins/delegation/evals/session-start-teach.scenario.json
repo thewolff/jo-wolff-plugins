@@ -1,0 +1,13 @@
+{
+  "$comment": "A fresh session is handed the brief skeleton as additionalContext before its first spawn.",
+  "event": "SessionStart",
+  "expect": "systemMessage",
+  "reason": "# Delegation: how to brief a subagent",
+  "stdin": {
+    "session_id": "${SESSION_ID}",
+    "transcript_path": "${TRANSCRIPT}",
+    "cwd": "${CWD}",
+    "hook_event_name": "SessionStart",
+    "source": "startup"
+  }
+}

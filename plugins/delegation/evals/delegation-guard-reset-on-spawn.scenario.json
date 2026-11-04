@@ -1,0 +1,25 @@
+{
+  "$comment": "delegation-guard: a spawn that ran (PostToolUse on Agent) resets the direct-work streak, silently; a denied spawn never reaches PostToolUse.",
+  "event": "PostToolUse",
+  "expect": "silent",
+  "sibling": "send-message-check-deny-undelivered.scenario.json",
+  "stdin": {
+    "session_id": "${SESSION_ID}",
+    "transcript_path": "${TRANSCRIPT}",
+    "cwd": "${CWD}",
+    "hook_event_name": "PostToolUse",
+    "tool_name": "Agent",
+    "tool_input": {
+      "subagent_type": "builder",
+      "prompt": "x"
+    },
+    "tool_response": {
+      "status": "completed"
+    }
+  },
+  "after": {
+    "commands": [
+      "grep -q '\"reset\"' \"$XDG_STATE_HOME/delegation/guard/${SESSION_ID}.jsonl\""
+    ]
+  }
+}

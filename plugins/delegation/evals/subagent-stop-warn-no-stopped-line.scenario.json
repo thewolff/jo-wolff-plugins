@@ -1,0 +1,17 @@
+{
+  "$comment": "A builder-class report with no `Stopped because:` last line draws a systemMessage, shown to the user; never a block.",
+  "event": "SubagentStop",
+  "expect": "systemMessage",
+  "reason": "ended without a \"Stopped because:\" line",
+  "stdin": {
+    "session_id": "${SESSION_ID}",
+    "transcript_path": "${TRANSCRIPT}",
+    "cwd": "${CWD}",
+    "hook_event_name": "SubagentStop",
+    "stop_hook_active": false,
+    "agent_id": "a1",
+    "agent_type": "builder",
+    "agent_transcript_path": "${TRANSCRIPT}",
+    "last_assistant_message": "All done, tests green."
+  }
+}

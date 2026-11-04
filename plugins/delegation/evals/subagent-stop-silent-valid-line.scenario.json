@@ -1,0 +1,17 @@
+{
+  "$comment": "A builder-class report ending `Stopped because: bound hit (<detail>)` is valid.",
+  "event": "SubagentStop",
+  "expect": "silent",
+  "sibling": "subagent-stop-warn-no-stopped-line.scenario.json",
+  "stdin": {
+    "session_id": "${SESSION_ID}",
+    "transcript_path": "${TRANSCRIPT}",
+    "cwd": "${CWD}",
+    "hook_event_name": "SubagentStop",
+    "stop_hook_active": false,
+    "agent_id": "a1",
+    "agent_type": "builder",
+    "agent_transcript_path": "${TRANSCRIPT}",
+    "last_assistant_message": "Two of three checks pass.\n\nStopped because: bound hit (one retry on the lint step)"
+  }
+}

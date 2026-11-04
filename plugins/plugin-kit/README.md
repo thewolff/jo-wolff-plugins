@@ -2,17 +2,18 @@
 
 Start a new Claude Code plugin in this repository that meets the test bar on day one.
 
-The repository's `AGENTS.md` asks five things of every plugin, kind-agnostic: it can't break the
+The repository's `AGENTS.md` test bar, as `ledger gate check` enforces it, asks six things of every plugin, kind-agnostic: it can't break the
 session (every hook exits 0 inside its budget on any input, never a deny or block for its own
 fault), its failures are visible (an `errors.log` line and a `systemMessage`, and the unavailable
 path of every program it shells out to is tested against a real capture), its text says what
 to do when it can't (every skill and agent has a "When this can't run" section; every deny text
 names a command), its behaviour is proved (an `evals/manifest.json` declaring what each hook
 can return and one `evals/<x>.scenario.json` per event × outcome, replayed by the nightly
-canary), and its state is declared and pruned (`state` in `.claude-plugin/plugin.json`, with a
-prune command for anything kept for a number of days). `ledger gate check` (the ledger plugin,
-0.3.5) enforces the five before a push. This plugin makes meeting them the default rather than
-a retrofit.
+canary), its state is declared and pruned (`state` in `.claude-plugin/plugin.json`, with a
+prune command for anything kept for a number of days), and a release is written down (a
+version bump has a `CHANGELOG.md` entry, a README release heading and a mention in the
+repository README). `ledger gate check` (the ledger plugin, 0.3.6) enforces the six before a
+push. This plugin makes meeting them the default rather than a retrofit.
 
 ## Install
 
@@ -26,7 +27,7 @@ a retrofit.
 `/plugin-kit:new-plugin` (skill `new-plugin`) runs the scaffolder:
 
 ```
-node "${CLAUDE_PLUGIN_ROOT}/scripts/new-plugin.mjs" <name> --events PreToolUse,Stop --description "<one sentence>"
+node "${CLAUDE_PLUGIN_ROOT}/scripts/new-plugin.mjs" <name> --events PreToolUse,Stop --description "<one sentence>" [--judge]
 ```
 
 run from inside the repository the plugin is for, which writes `plugins/<name>/` under that
@@ -36,7 +37,8 @@ installed from are never where a plugin lands):
 
 | File | What it is |
 |---|---|
-| `lib/hook-runner.mjs` | a copy of this plugin's [`lib/hook-runner.mjs`](lib/hook-runner.mjs): `runHook(event, import.meta.url, { plugin, quiet })` reads stdin, parses it (empty is `{}`), runs the module's exported `handle(input, { env })` on a worker thread, prints its JSON, exits 0. Stdin not JSON, a thrown error, or no answer in 4 s (inside the host's 5 s budget, so the host never kills the hook and loses the message; the one timer lives on the main thread, which does nothing but wait, so it fires whatever the handler is doing: a stdin the host holds open, a promise that never settles, a synchronous loop that never yields; at the deadline the thread is terminated and an answer that would have come later is never printed as a late block) → one line in `${XDG_STATE_HOME:-~/.local/state}/<plugin>/errors.log` and `{ systemMessage: "<plugin> <event> failed open: <why>" }` (not on SessionEnd, whose output the host discards). A hook never exits 2. |
+| `lib/hook-runner.mjs` | a copy of this plugin's [`lib/hook-runner.mjs`](lib/hook-runner.mjs): `runHook(event, import.meta.url, { plugin, quiet })` reads stdin, parses it (empty is `{}`), runs the module's exported `handle(input, { env })` on a worker thread, prints its JSON, exits 0. Stdin not JSON, a thrown error, or no answer in 4 s (inside the host's 5 s budget, so the host never kills the hook and loses the message; the one timer lives on the main thread, which does nothing but wait, so it fires whatever the handler is doing: a stdin the host holds open, a promise that never settles, a synchronous loop that never yields; at the deadline the thread is terminated and an answer that would have come later is never printed as a late block) → one line in `${XDG_STATE_HOME:-~/.local/state}/<plugin>/errors.log` and `{ systemMessage: "<plugin> <event> failed open: <why>" }` (not on SessionEnd, whose output the host discards). The handler's `env` carries `HOOK_RUNNER_STARTED_AT_MS` (when the runner started, before stdin) and `HOOK_RUNNER_DEADLINE_MS`, so a handler that budgets its own work counts from the runner's clock; a process group the handler registers (`lib/judge.mjs` does, through `{ kitReap }` messages) is killed when the runner exits. A hook never exits 2. |
+| `lib/judge.mjs` | with `--judge`: a copy of this plugin's [`lib/judge.mjs`](lib/judge.mjs), the shared judge dispatch (see "Shared judge" below); the kit's `test/judge.test.mjs` diffs every shipped copy against the kit's |
 | `hooks/hooks.json` | one entry per event, `node "${CLAUDE_PLUGIN_ROOT}/hooks/<event>.mjs"`, timeout 5; tool events get a matcher |
 | `hooks/<event>.mjs` | one handler per event, `handle(input, { env })` returning null (allow) until the rule is written; the header comment says what the runner does and what the handler owes. The handler runs on a worker thread (that is what makes the deadline hold), so it returns a plain JSON-able object or null and nothing else: never `process.exit()` (the thread ending is "ended without an answer", a logged fault), never its own stdout writes (only what the runner prints is the answer), a subprocess gets its `cwd` passed explicitly from `input.cwd` (the thread's `process.cwd()` is the runner's), and a child's environment goes on the spawn's `env`, not `process.env` |
 | `test/hook-contract.test.mjs` | per hook: empty stdin, malformed JSON, an unknown event, an unwritable state directory, no config → exit 0 inside 5 s, no deny/block/`continue: false`; malformed JSON → one errors.log line and a systemMessage |
@@ -48,14 +50,17 @@ installed from are never where a plugin lands):
 | `scripts/prune.mjs` | the retention verb the `state` declaration names: `node scripts/prune.mjs [--days 30] [--dry-run]` removes files under `$XDG_STATE_HOME/<name>` older than that (errors.log kept) and prints `pruned: <n> file(s), <bytes> bytes freed` last; the canary records the bytes |
 | `skills/<name>/SKILL.md` | frontmatter, steps, and the "When this can't run" section with the two bullets every plugin shares, naming the first event's scenario |
 | `HOW-IT-FAILS.md` | the receipt: piece, fails how, visible where, the person does; rows for the scenarios, the live run and the prune verb |
-| `.claude-plugin/plugin.json`, `package.json`, `README.md` | manifests at 0.1.0, with a `state` declaration (`$XDG_STATE_HOME/<name>` kept 30 days and pruned by `scripts/prune.mjs`; `$XDG_CONFIG_HOME/<name>/config.json` kept by design), and a README with the install block and a "How it fails" paragraph |
+| `.claude-plugin/plugin.json`, `package.json`, `README.md`, `CHANGELOG.md` | manifests at 0.1.0, with a `state` declaration (`$XDG_STATE_HOME/<name>` kept 30 days and pruned by `scripts/prune.mjs`; `$XDG_CONFIG_HOME/<name>/config.json` kept by design), a README with the install block, a "How it fails" paragraph and a `## Changes in 0.1.0` section, and a Keep a Changelog `CHANGELOG.md` with the `## [0.1.0]` entry: the two release texts ledger's `gate check` `docs` row reads from the plugin |
 
-The scaffold passes its own `node --test` and four of the five `ledger gate check` rows as
-written (`survives`, `visible`, `says`, `retention`); the `evals` row fails naming every unfilled
+The scaffold passes its own `node --test` and five of the six `ledger gate check` rows as
+written (`survives`, `visible`, `says`, `retention`, and `docs` once the repository README's
+bullet for the plugin names 0.1.0); the `evals` row fails naming every unfilled
 stub, which is the shape it is meant to have until the author fills the scenarios. What is left
 is the author's: the rule in each hook, the skill's steps, the receipt's rows, the scenarios'
-real inputs and expectations, the fixtures for any program shelled out to. The marketplace
-entry is added by hand when the plugin is ready to publish.
+real inputs and expectations, the fixtures for any program shelled out to. The root README
+bullet for the plugin, naming 0.1.0, goes in by hand before the first `gate check`: the `docs`
+row fails a new plugin without it. The marketplace entry is added by hand when the plugin is
+ready to publish.
 
 The two runners are copied, not imported across plugins, on purpose: an installed plugin never
 depends on a sibling being installed, and a change to the kit's copy reaches a plugin only when
@@ -63,6 +68,55 @@ someone copies it again and runs that plugin's tests. The plugins in this reposi
 `lib/live-run.mjs` from `../plugin-kit/` (the template `e2e/live-run.sh` looks in the plugin's
 own `lib/` first, then there), so one runner serves them all and a scaffold outside the
 repository carries its own; they keep their own hook runners.
+
+## Shared judge
+
+`lib/judge.mjs` is the one judge dispatch for every plugin that asks a model to grade something
+(i-have-audhd's Stop checks, ledger's "is this finding resolved", output-types' receipts check).
+A plugin vendors a byte-identical copy (`--judge` on the scaffolder, or copy the file by hand);
+`test/judge.test.mjs` fails when any `plugins/*/lib/judge.mjs` or `plugins/*/judge/judge.mjs`
+differs from the kit's, outside an explicit allowlist of the plugins that have not switched yet.
+Only ledger's `lib/judge.mjs` is allowlisted, until ledger's next release; i-have-audhd's
+`judge/ask.mjs` has a different name and is not scanned at all until i-have-audhd ships
+`lib/judge.mjs`.
+
+**The command.** One string, run through `/bin/sh` as the leader of its own process group: with a
+literal `{prompt}` in it, every occurrence is replaced by the shell-escaped prompt; without one,
+the prompt is piped to stdin. `codex exec --skip-git-repo-check -` and
+`claude -p --output-format json` both work. Stdout only is read: the last JSON object on it in
+`json` mode (a `{"type":"result","result":"…"}` envelope is unwrapped), the first word of the last
+non-empty line in `yesno` mode.
+
+**Configure it once.** `node lib/judge.mjs setup` (from any plugin's copy, or the kit's) asks for
+the command, makes one test call, shows what it will write and, after a yes, writes
+`${XDG_CONFIG_HOME:-~/.config}/judge/config.json` as `{ "command", "timeoutMs" }`, atomically,
+other keys kept. A failed test call is refused unless `--force`; `--command <cmd>`, `--timeout-ms
+<n>` and `--yes` make it scriptable. An existing shared file that is not valid JSON (or not an
+object) is refused too, before the test call, because its other keys cannot be kept: fix it by
+hand, or `--force` replaces it whole. `node lib/judge.mjs which [--env-var <NAME>]` prints the
+command, timeout and source as a plugin would resolve them, after a
+`malformed: <path>: <error>` line when the shared file is malformed.
+
+**Resolution order**, `resolveJudgeCommand({ pluginKey: { envVar, command, timeoutMs, source }, env })`,
+first found wins, and the result names its `source` so a warning can say which one supplied the
+command: the plugin's env var (`LEDGER_JUDGE_BIN`, `OUTPUT_TYPES_JUDGE_BIN`: tests and one-off
+overrides) → the plugin's own setting, passed in by the caller → the shared file → i-have-audhd's
+`enforcement.judgeCommand` in `~/.claude/i-have-audhd.json` (`$I_HAVE_AUDHD_PROFILE`), read-only,
+for a profile written before the shared file existed. The timeout is the plugin's own, else the
+shared file's, else 30 s. Nothing configured anywhere is `null`, and a plugin treats that as "the
+judge is off". A shared file that exists but is malformed ends the search there: the env var and
+the plugin's own setting still win, but the legacy profile is not used in its place, so a typo
+never quietly swaps in an older command (`readSharedConfig()` returns `{ path, config, malformed }`
+for a caller that wants to say why).
+
+**It never throws.** `runJudge(prompt, { command, timeoutMs, mode })` returns, in `json` mode, the
+object or `{ error, detail, stderr }` with `error` one of `timeout`, `nonzero`, `unparseable`,
+`spawn-failed` (`isJudgeError()` tells the two apart); in `yesno` mode, `"yes"`, `"no"`, or
+`"unverified"` for every failure. A timeout kills the whole process group, so a pipeline stage or a
+wrapper's child cannot hold the hook open. Inside the kit's hook runner the group is also
+registered with the runner, so a runner that gives up at its deadline kills it as it exits.
+`dispatch()` underneath returns the raw `{ ok, stdout, stderr, code, error, detail }` for a caller
+that needs the reason with a yes/no.
 
 ## Agents
 
@@ -73,7 +127,7 @@ Two agents load from `agents/` (by the plugin-agent convention; nothing register
 | Agent | When | What it does | Tools, model |
 |---|---|---|---|
 | `cross-lab-reviewer` | a plugin branch is built and its suites pass, before a PR | needs a `Threat model:` line in the invoking prompt and asks for it otherwise; runs a preflight (execute authorization, permission, containment, output path), reviews one snapshot of the head commit written blob by blob with `git cat-file`, and sends the range `<base>..<head sha>` to OpenAI Codex with `codex exec --sandbox read-only` and the release review brief: security first inside the threat model (hook command parsing, fail-open paths), each prior finding marked closed, partial or open, the env-only failure set (tests failing in the credential-free run, stated as `exact` or `same major` to the CI node pin), the `/Users/<name>` path scrub, a `worst_case` and a `new-mechanism` line per finding, and a `Verdict: ship`, `ship-with-limits` or `fix-first` line under the review budget (see "Review budget"); writes `~/agent-scratch/<repo>/<plugin>/REVIEW-<version>-codex.md` (a `-round<N>` suffix when one exists) with its triage of each finding and the effective verdict | Read, Grep, Glob, Bash, Write; sonnet |
-| `release-gate` | before a version bump, PR or publish | runs a preflight (execute authorization, permission, containment) and checks one snapshot of the head commit written blob by blob with `git cat-file`, reporting pass, fail or unavailable per check with command and output: the CI node pin from the workflow job that runs the plugin's tests, the path scrub, the version across `plugin.json`, `package.json`, the README "Changes in" headings and the marketplace entry, `node --test` in a credential-free environment, and the README against the plugin's hooks, skills and agents. `ledger gate check` is reported `unavailable` and never run: it checks live `HEAD`, not the captured sha, so the gate line is `fail` until ledger takes a pinned sha | Read, Grep, Glob, Bash; haiku |
+| `release-gate` | before a version bump, PR or publish | runs a preflight (execute authorization, permission, containment) and checks one snapshot of the head commit written blob by blob with `git cat-file`, reporting pass, fail or unavailable per check with command and output: the CI node pin from the workflow job that runs the plugin's tests, the path scrub, the version across `plugin.json`, `package.json` and the marketplace entry plus the three release texts ledger's `gate check` `docs` row wants for it (a `CHANGELOG.md` entry, a README release heading, the root README naming the version), `node --test` in a credential-free environment, and the README against the plugin's hooks, skills and agents. `ledger gate check` is reported `unavailable` and never run: it checks live `HEAD`, not the captured sha, so the gate line is `fail` until ledger takes a pinned sha | Read, Grep, Glob, Bash; haiku |
 
 Both agents run code from the checkout (the suites) only when the prompt
 that invokes them carries `execute: <sha>` naming the full head sha, which the agent derives
@@ -247,7 +301,8 @@ nothing is ever overwritten or deleted. A template missing from the kit (a broke
 same: exit 1 naming the file. The hook runner's own failure modes are in the table above; its
 test (`test/hook-runner.test.mjs`) drives each one, including the deadline in a spawned process: a
 handler holding a timer that never answers, a stdin held open, a synchronous `Atomics.wait` of
-6 s under the default 4 s deadline (exit inside 4.5 s wall clock). The scenario runner: a
+6 s under the default 4 s deadline (exit inside 4.5 s wall clock), and a judge process group still
+running at the deadline (dead after the hook exits). The scenario runner: a
 scenario that does not parse, names an unregistered event or an undeclared outcome, has no
 stdin, or is still a stub is a `fail` naming the file (the gate says the same offline); `claude`
 missing → the hook phase still runs and prints, then exit 75 with `unavailable: claude not found
@@ -270,6 +325,44 @@ The reviewer's review budget fails these ways:
 | A severity that is unclear (marked `blocking` with a worst case outside the five, or no worst case) | The finding is `should-fix`; the triage says `disagree` and names the definition it misses. Doubt never makes a finding `blocking`, so it never makes the verdict `fix-first` by itself. |
 | Codex writes `Verdict: fix-first` with no in-scope blocking finding | The triage states `Effective verdict: ship-with-limits`; Codex's text stays as written beside it. |
 | A later edit reverses a budget rule other than the round increment or the `fix-first` guard | The tests pin vocabulary and selected sentences; a reversal of the `new-mechanism` classification or the rule that holds those findings for Jo, of the limit that a follow-up reports new findings only in lines the fixes changed, or of the statement that blocking-only from round 3 is this repository's own rule (not the cited sources') passes them. Read the diff of `agents/cross-lab-reviewer.md` against those rules. |
+
+## Changes in 0.3.0
+
+`lib/judge.mjs`, the shared judge dispatch (see "Shared judge"): i-have-audhd's `judge/ask.mjs`
+contract (one command through `/bin/sh` in its own process group, the prompt on stdin or in place
+of `{prompt}`, stdout only, a hard timeout that reaps the group, never a throw) with ledger's
+one-word yes/no answer folded in as a mode, the command resolved once for every plugin (env var →
+the plugin's own key → `${XDG_CONFIG_HOME:-~/.config}/judge/config.json` → i-have-audhd's profile,
+legacy; a malformed shared file stops the search before the legacy profile, `which` names it,
+and `setup` will not overwrite it without `--force`), and a `setup` and `which` CLI in the file
+itself so any plugin's copy can configure the judge with one test call. `test/judge.test.mjs`
+drives the resolution order, each failure class, both parsers and the CLI, and fails when any
+shipped copy under `plugins/*/lib/judge.mjs` or `plugins/*/judge/judge.mjs` differs from the
+kit's (ledger's `lib/judge.mjs` is allowlisted until its next release; i-have-audhd's
+`judge/ask.mjs` has a different name and is not scanned until i-have-audhd ships
+`lib/judge.mjs`). The scaffolder takes `--judge` to copy it into a new plugin. The hook runner
+tells the handler thread its start time and deadline (`HOOK_RUNNER_STARTED_AT_MS`,
+`HOOK_RUNNER_DEADLINE_MS`) and kills any process group the thread registered when it exits, so a
+judge still running at the deadline does not outlive the hook. The agents and the rest of the
+scaffold are unchanged.
+
+## Changes in 0.2.2
+
+The scaffold writes a `CHANGELOG.md` (Keep a Changelog, with the `## [0.1.0]` entry) beside
+the README's `## Changes in 0.1.0`, so a scaffolded plugin's first version is written down in the
+two places ledger 0.3.6's `gate check` `docs` row reads; the third, the repository README's
+bullet for the plugin, is the author's and goes in before the first `gate check`, since the row
+fails a new plugin without it (20 files, from 19). The marketplace entry stays for publish
+time. The `release-gate` agent's version-match step (check 4) now wants the same three things,
+read by the row's rule: a release heading for the version with text under it in
+`CHANGELOG.md` and in the README, where a release heading is a heading at any level whose text
+starts with `<version>`, `[<version>]`, `Changes in <version>` or `<date> — <version>` (so
+`## [<version>]`, `## <version>`, `## Changes in <version>`, `### <version>` and
+`### <date> — <version>` count in either file), and the root README naming the version in a
+`-` or `*` bullet starting with the plugin's name, on a `Changes in <name> <version>` line, or on
+a `Changes in <version>` line under `## <name>`. The checklist is stricter than the row in one
+place: it also fails a README heading for a version newer than `plugin.json`'s. The reviewer,
+the scaffolder's other files and the runner are unchanged.
 
 ## Changes in 0.2.1
 
