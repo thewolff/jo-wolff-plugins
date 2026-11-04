@@ -101,7 +101,9 @@ the same arguments. `/plugin install` inside OMP installs nothing. On OMP output
 skill only; its hooks do not run there. i-have-audhd and paired-coding install OMP extensions
 that run their hooks, and ask-graham installs its prompt nudge (see each section). plugin-kit
 is a skill and a script, so it works on both. ctx-watch's SessionStart line is Claude Code
-only; its skill, CLI and launchd timer work on both. ledger is Claude Code only.
+only; its skill, CLI and launchd timer work on both. ledger is Claude Code only. delegation and
+brb install OMP extensions that run the same gates and the same away digest; continuity is Claude
+Code only (OMP seats keep newdle's pre-compaction save until an OMP adapter ships).
 
 To update, update each harness separately. On OMP, refresh the marketplace first, because
 `omp plugin upgrade` installs the version in OMP's cached copy of it:
