@@ -241,20 +241,24 @@ test("review (l): --labs overrides review.labs for one run", () => {
   assert.deepEqual(reviews(b).map((x) => x.lab), ["kimi"]);
 });
 
-test("review: glm runs through omp with the agent-system-2 profile and zai/glm-5.3, both overridable", () => {
+// 0.3.1: no built-in profile. A user config with profiles: {glm: ""} is rejected by the config
+// loader (a non-empty string is required), and with a built-in default that rejection silently
+// ran every GLM review under --profile agent-system-2.
+test("review: glm runs through omp with no --profile and zai/glm-5.3; review.profiles.glm and review.models.glm override", () => {
   const b = repo({ labs: ["glm"] });
   const bin = stub(b, "omp", "PASS");
   review(b, [], { LEDGER_REVIEW_BIN_GLM: bin });
   let args = readFileSync(`${bin}.args`, "utf8").split("\n");
   assert.equal(args[0], "-p");
-  assert.deepEqual(args.slice(args.indexOf("--profile"), args.indexOf("--profile") + 2), ["--profile", "agent-system-2"]);
+  assert.ok(!args.includes("--profile"), `no --profile by default: ${args.join(" ")}`);
   assert.deepEqual(args.slice(args.indexOf("--model"), args.indexOf("--model") + 2), ["--model", "zai/glm-5.3"]);
   assert.ok(args.some((a) => /^@.*change\.diff$/.test(a)), "the diff goes in as an @file");
   assert.deepEqual(reviews(b).map((x) => [x.lab, x.verdict, x.model]), [["glm", "pass", "zai/glm-5.3"]]);
   b.writeConfig({ review: { mode: "gate", labs: ["glm"], models: { glm: "zai/glm-5.3-flash" }, profiles: { glm: "work" } } });
   review(b, [], { LEDGER_REVIEW_BIN_GLM: bin });
   args = readFileSync(`${bin}.args`, "utf8").split("\n");
-  assert.ok(args.includes("work") && args.includes("zai/glm-5.3-flash"), args.join(" "));
+  assert.deepEqual(args.slice(args.indexOf("--profile"), args.indexOf("--profile") + 2), ["--profile", "work"]);
+  assert.ok(args.includes("zai/glm-5.3-flash"), args.join(" "));
 });
 
 test("review: a project file's review key is ignored with a notice; the user file decides", () => {

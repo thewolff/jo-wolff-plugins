@@ -1,10 +1,10 @@
 // glm.mjs — Z.ai GLM, which has no CLI of its own, through `omp` (see omp.mjs). Defaults:
-// model `zai/glm-5.3`, profile `agent-system-2`; `review.models.glm` and `review.profiles.glm`
-// override them.
+// model `zai/glm-5.3`, no profile (omp's base profile: a `--profile` is passed only when
+// `review.profiles.glm` names one); `review.models.glm` overrides the model.
 
 import { ompAdapter } from "./omp.mjs";
 
-const adapter = ompAdapter({ lab: "glm", defaultModel: "zai/glm-5.3", defaultProfile: "agent-system-2" });
+const adapter = ompAdapter({ lab: "glm", defaultModel: "zai/glm-5.3", defaultProfile: null });
 
 export const lab = adapter.lab;
 export const defaultBin = adapter.defaultBin;
