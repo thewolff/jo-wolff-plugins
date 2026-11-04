@@ -43,6 +43,8 @@ const toolResult = (id, at) => ({ type: "user", timestamp: iso(at), message: { r
 const assistantText = (text, at, extra = {}) => ({ type: "assistant", timestamp: iso(at), message: { role: "assistant", content: [{ type: "text", text }] }, ...extra });
 const toolUse = (name, input, at, extra = {}) => ({ type: "assistant", timestamp: iso(at), message: { role: "assistant", content: [{ type: "tool_use", id: `t-${at}`, name, input }] }, ...extra });
 const ctxSearch = (at, extra = {}) => toolUse("mcp__ctx__search", { query: "the thing", limit: 5 }, at, extra);
+/** A subagent's task-notification as Claude Code writes it: a user entry stamped `origin.kind`. */
+const notification = (at) => user(`<task-notification>\n<task-id>a71465217d3795b11</task-id>\n<tool-use-id>toolu_01RJ</tool-use-id>\n<output-file>/private/tmp/claude-501/x/tasks/a71465217d3795b11.output</output-file>\n<status>completed</status>\n<summary>Agent "probe-sub" finished</summary>\n</task-notification>`, at, { origin: { kind: "task-notification" }, promptSource: "system" });
 
 /** A transcript: an earlier thread, then (after `resumedAt`) a resumed prompt and a reply. */
 function resumed({ resumedAt = T0 + 3_600_000, withCtx = false, reply = "Picking the migration back up: the next step is the index.", prompt = "ok continue the migration plan from before please" } = {}) {
@@ -156,6 +158,18 @@ test("what counts as a prompt: user text, not tool results, not isMeta, not a si
   assert.equal(isPrompt(assistantText("hi", T0)), false);
 });
 
+test("what counts as a prompt: injected entries are not (a task-notification, a peer's message, local command output), a typed prompt and a slash command are", () => {
+  assert.equal(isPrompt(notification(T0)), false);
+  assert.equal(isPrompt(user("<agent-message from=\"a6b4\">report</agent-message>", T0, { origin: { kind: "peer" } })), false);
+  assert.equal(isPrompt(user("Reply with exactly BYE.", T0, { origin: { kind: "coordinator" } })), false, "an injected kind without a tag");
+  assert.equal(isPrompt(user("<local-command-stdout>Login successful</local-command-stdout>", T0)), false, "no origin: a tag-led text is the harness's");
+  assert.equal(isPrompt(user("<task-notification>x</task-notification>", T0)), false, "a notification from before `origin`");
+  assert.equal(isPrompt(user("morning", T0, { origin: { kind: "human" } })), true);
+  assert.equal(isPrompt(user("\n\n<pasted_content id=\"4bdb\">x</pasted_content> read this", T0, { origin: { kind: "human" } })), true, "typed by the person, whatever it starts with");
+  assert.equal(isPrompt(user("<command-message>wrap-up</command-message>\n<command-name>/wrap-up</command-name>", T0)), true, "a slash command is the person's");
+  assert.equal(isPrompt(user("<command-name>/login</command-name>", T0)), true);
+});
+
 test("readTranscript skips torn lines and non-objects; finalText prefers the payload's last_assistant_message", () => {
   const b = box();
   try {
@@ -213,6 +227,16 @@ test("finding: the phrase trigger fires on the final message alone, scoped to th
   const withCall = [...entries.slice(0, -1), ctxSearch(turnAt + 500), toolResult("t2", turnAt + 600), assistantText("As discussed, exponential.", turnAt + 1000)];
   assert.equal(finding({ entries: withCall, resumedAt: null, text: "As discussed, exponential." }), null);
   assert.equal(finding({ entries, resumedAt: T0 + 5000, text: "As discussed, exponential." })?.trigger, "resume", "both pending: the resume trigger is reported first");
+});
+
+test("finding: a task-notification is not a prompt; the topic is the person's prompt before it, and a notification after a ctx call does not start a new turn", () => {
+  const resumedAt = T0 + 3_600_000;
+  const a = [user("start the migration plan", T0), assistantText("Started.", T0 + 1000), user("ok continue the migration plan from before please", resumedAt - 1000), notification(resumedAt + 1000), assistantText("Picking it back up.", resumedAt + 2000)];
+  assert.equal(finding({ entries: a, resumedAt, text: "Picking it back up." }).topic, "ok continue the migration plan from");
+  const b = [user("what did we decide about retries", T0), ctxSearch(T0 + 1000), toolResult(`t-${T0 + 1000}`, T0 + 2000), notification(T0 + 3000), assistantText("As discussed, three.", T0 + 4000)];
+  assert.equal(finding({ entries: b, resumedAt: null, text: "As discussed, three." }), null);
+  const c = [user("what did we decide about retries", T0), notification(T0 + 3000), assistantText("As discussed, three.", T0 + 4000)];
+  assert.equal(finding({ entries: c, resumedAt: null, text: "As discussed, three." })?.message, 'said "as discussed" without consulting history — `ctx search \'what did we decide about retries\'`', "no call: the finding names the person's prompt");
 });
 
 test("the Stop hook in-process: silent on a fresh start; warn on a resume without a ctx call (one systemMessage line, one checks.log line); silent when ctx was called; silent on the second Stop", () => {

@@ -165,8 +165,22 @@ const timeOf = (e) => {
   return Number.isFinite(t) ? t : null;
 };
 const skipped = (e) => e.isSidechain === true || e.isMeta === true;
-/** A user entry that is a prompt (text, not only tool results). */
-export const isPrompt = (e) => e.type === "user" && !skipped(e) && parts(e).some((p) => p.type === "text" && typeof p.text === "string" && p.text.trim()) && !parts(e).some((p) => p.type === "tool_result");
+/**
+ * A user entry that is a prompt: text, not only tool results, and typed by the person. Claude Code
+ * stamps `origin.kind` on what it injects (`task-notification`, `peer`, `coordinator`; a typed
+ * prompt is `human`). Older entries carry no `origin`, so text led by a tag is the harness's too,
+ * except a slash command (`<command-name>`, `<command-message>`, `<command-args>`).
+ */
+export function isPrompt(e) {
+  if (e.type !== "user" || skipped(e)) return false;
+  if (parts(e).some((p) => p.type === "tool_result")) return false;
+  const text = textOf(e).trim();
+  if (!text) return false;
+  const kind = e.origin && typeof e.origin === "object" ? e.origin.kind : undefined;
+  if (kind !== undefined) return kind === "human";
+  const tag = /^<([A-Za-z][\w-]*)/.exec(text);
+  return !tag || tag[1].startsWith("command-");
+}
 /** True when the entry holds a ctx history call (MCP tool or the CLI through Bash). */
 export function isCtxCall(e) {
   if (e.type !== "assistant" || skipped(e)) return false;

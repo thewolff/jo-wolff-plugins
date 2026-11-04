@@ -198,7 +198,11 @@ A ctx history call is a `tool_use` named `mcp__ctx__search`, `mcp__ctx__show_ses
 single-underscore `mcp__ctx_search` is matched too), or a `Bash` tool_use whose command runs
 `ctx search`, `ctx show session` or `ctx show event`. Entries with `isSidechain: true` (a
 subagent's) or `isMeta: true` (the host's injected prompts) are skipped; a torn line in a live
-transcript is skipped, not a fault.
+transcript is skipped, not a fault. A prompt is a user entry the person typed: an entry with an
+`origin.kind` other than `human` (Claude Code stamps `task-notification`, `peer` and
+`coordinator` on what it injects) is not one, and nor, on an entry with no `origin`, is text led
+by a tag (`<task-notification>`, `<local-command-stdout>`) other than a slash command's
+`<command-…>`. So a subagent finishing mid-turn neither starts a new turn nor becomes the topic.
 
 The message, one line: `` ctx-watch: resumed without consulting history — `ctx search '<topic>'` ``
 (or `` said "as discussed" without consulting history — … ``), where `<topic>` is the first six

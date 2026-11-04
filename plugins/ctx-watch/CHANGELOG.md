@@ -38,7 +38,10 @@ Both from [jo-issues #330](https://github.com/thewolff/jo-issues/issues/330).
   and this turn made no such call. One line:
   `` ctx-watch: resumed without consulting history — `ctx search '<first six words of the prompt>'` ``;
   a window with no prompt takes the last prompt before the marker, and a transcript with none
-  gets a bare `ctx search` and says so.
+  gets a bare `ctx search` and says so. A prompt is what the person typed: an entry whose
+  `origin.kind` is not `human` (a subagent's `<task-notification>`, a peer's message) and, with
+  no `origin`, text led by a tag other than a slash command's `<command-…>` are not prompts, so
+  a notification neither ends the turn (a ctx call before it still counts) nor becomes the topic.
   Switch: `~/.claude/ctx-watch.json` `{"checks": {"consult-history": "off" | "warn" | "block"}}`,
   default `warn` (a `systemMessage` and a `checks.log` line); `block` returns
   `{ decision: "block", reason }` naming the command and the way out, and warns instead when
