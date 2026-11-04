@@ -58,10 +58,24 @@ test("malformed JSON on stdin → the core", () => {
   assertCore(runHook(sandbox(), { input: "{not json" }));
 });
 
-test("stdin left open by the caller → the core inside the budget (was a hang before 0.2.1)", async () => {
+// The hook promises to stop reading after 1 s; 1.5 s leaves room for a slow scheduler while still
+// failing if the grace period grows, which the 5 s kill budget alone would not catch.
+const STDIN_DEADLINE_MS = 1500;
+
+test("stdin left open by the caller → the core within the 1 s grace (was a hang before 0.2.1)", async () => {
   const r = await runHookStdinOpen(sandbox());
   assert.equal(r.timedOut, false, "hook hung on an open stdin");
   assertCore(r);
+  assert.ok(r.ms < STDIN_DEADLINE_MS, `took ${r.ms} ms with stdin open`);
+});
+
+test("a partial payload, then stdin left open → the same core within the grace (the payload is unused)", async () => {
+  for (const source of ["startup", "resume"]) {
+    const r = await runHookStdinOpen(sandbox(), { initial: `{"session_id":"s1","source":"${source}"` });
+    assert.equal(r.timedOut, false);
+    assertCore(r);
+    assert.ok(r.ms < STDIN_DEADLINE_MS, `took ${r.ms} ms`);
+  }
 });
 
 test("unwritable state dir, healthy contract → the core, nothing logged", { skip: skipRoot }, () => {
@@ -75,16 +89,33 @@ test("unwritable state dir, healthy contract → the core, nothing logged", { sk
   }
 });
 
-test("config: OUTPUT_TYPES_INJECT=off → exit 0, no output", () => {
-  const box = sandbox();
-  const r = runHook(box, { env: { OUTPUT_TYPES_INJECT: "OFF" } });
-  assert.equal(r.status, 0);
-  assert.equal(r.stdout, "");
-  assert.equal(box.readErrors(), "");
+test("config: OUTPUT_TYPES_INJECT=off in any case → exit 0, no output", () => {
+  for (const value of ["off", "OFF", "Off"]) {
+    const box = sandbox();
+    const r = runHook(box, { env: { OUTPUT_TYPES_INJECT: value } });
+    assert.equal(r.status, 0, value);
+    assert.equal(r.stdout, "", value);
+    assert.equal(box.readErrors(), "");
+  }
 });
 
-test("config: a malformed OUTPUT_TYPES_INJECT value → treated as on; the core", () => {
-  assertCore(runHook(sandbox(), { env: { OUTPUT_TYPES_INJECT: "{\"off\":" } }));
+test("config: a malformed or near-miss OUTPUT_TYPES_INJECT value → treated as on; the core", () => {
+  for (const value of ['{"off":', " off", "off ", "0", "false", ""]) {
+    assertCore(runHook(sandbox(), { env: { OUTPUT_TYPES_INJECT: value } }));
+  }
+});
+
+test("config: off with the lib broken or missing → still no output, nothing logged", () => {
+  for (const breakLib of [(p) => writeFileSync(join(p, "lib", "core.mjs"), "throw new Error('boom');\n"), (p) => rmSync(join(p, "lib"), { recursive: true })]) {
+    const box = sandbox();
+    const plugin = box.copyPlugin();
+    breakLib(plugin);
+    const r = runHook(box, { pluginRoot: plugin, env: { OUTPUT_TYPES_INJECT: "off" } });
+    assert.equal(r.status, 0, r.stderr);
+    assert.equal(r.stdout, "");
+    assert.equal(r.stderr, "");
+    assert.equal(box.readErrors(), "");
+  }
 });
 
 test("contract file missing → exit 0, one warning, one errors.log line naming the file and the reason", () => {
@@ -162,3 +193,24 @@ test("lib export throws mid-run → exit 0, one warning, one errors.log line (th
   assertWarning(r, WARN_LOAD);
   oneErrorLine(box, "unexpected: extract exploded");
 });
+
+// A lib that imports cleanly but whose reporting exports are missing or throw: the reply must come
+// from the hook's independent fallback, never from the broken lib, and never be silent.
+const INCOMPLETE_LIBS = {
+  "exports nothing": "export {};\n",
+  "lacks failureReply and logError": 'export const WARN_LOAD = "w"; export const WARN_MARKERS = "m";\nexport const extractCore = () => null;\nexport const successReply = (t) => ({ t });\n',
+  "logError throws": 'export const WARN_LOAD = "w"; export const WARN_MARKERS = "m";\nexport const extractCore = () => null;\nexport const successReply = (t) => ({ t });\nexport const failureReply = () => ({});\nexport const logError = () => { throw new Error("logger exploded"); };\n',
+  "failureReply throws": 'export const WARN_LOAD = "w"; export const WARN_MARKERS = "m";\nexport const extractCore = () => null;\nexport const successReply = (t) => ({ t });\nexport const logError = () => null;\nexport const failureReply = () => { throw new Error("reply exploded"); };\n',
+};
+
+for (const [name, source] of Object.entries(INCOMPLETE_LIBS)) {
+  test(`lib imports but ${name} → exit 0, the fallback warning, one errors.log line`, () => {
+    const box = sandbox();
+    const plugin = box.copyPlugin();
+    writeFileSync(join(plugin, "lib", "core.mjs"), source);
+    const r = runHook(box, { pluginRoot: plugin });
+    assertWarning(r, WARN_LOAD);
+    assert.ok(r.json.systemMessage.includes(box.errorsLog), r.json.systemMessage);
+    oneErrorLine(box, "unexpected:");
+  });
+}

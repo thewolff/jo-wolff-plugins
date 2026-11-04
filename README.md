@@ -124,10 +124,11 @@ contract now lives in `skills/output-types/reference.md`, which the skill points
 injects from.
 
 Changes in 0.2.1: a hook fault (contract file missing, unreadable or without its markers, or the
-hook's own module failing to load) now appends one line naming the hook file and the reason to
-`${XDG_STATE_HOME:-~/.local/state}/output-types/errors.log`, and the one-line warning reaches you
-as well as the model and says where the reason went. The hook no longer waits on a stdin pipe
-its caller leaves open: it reads for at most one second, then injects.
+hook's own module failing to load or loading broken) now appends one line naming the hook file
+and the reason to `${XDG_STATE_HOME:-~/.local/state}/output-types/errors.log`, and the one-line
+warning reaches you as well as the model and says where the reason went. `OUTPUT_TYPES_INJECT=off`
+is read first, so it silences the hook even when the install is broken. The hook no longer waits
+on a stdin pipe its caller leaves open: it reads for at most one second, then injects.
 
 ### What this does, and what it does not do: it delivers, it does not enforce
 

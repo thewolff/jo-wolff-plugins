@@ -48,8 +48,9 @@ const STDIN_GRACE_MS = 1000;
 // Resolved from this file, never from a working directory or an assumed layout.
 const CONTRACT_PATH = fileURLToPath(new URL("../skills/output-types/reference.md", import.meta.url));
 
-// Used only when lib/core.mjs itself cannot load, so the lib's logger and replies are not there.
-// Same log path and line format as lib/core.mjs logError; kept to these few lines on purpose.
+// Used when lib/core.mjs cannot load, or loaded but broke (an export missing or throwing), so the
+// lib's logger and replies cannot be trusted. Same log path and line format as lib/core.mjs
+// logError; kept to these few lines on purpose.
 const WARN_NO_LIB = "The output-types core could not load this session.";
 function noLibReply(reason) {
   let logged = null;
@@ -88,19 +89,26 @@ function finish(reply) {
   process.stdout.write(JSON.stringify(reply), () => process.exit(0));
 }
 
+// The off-switch is read here, before the lib loads, so `off` means no output even on a broken install.
+function isOff() {
+  return String(process.env.OUTPUT_TYPES_INJECT || "").toLowerCase() === "off";
+}
+
+const oneLine = (err) => String(err?.message ?? err).replace(/\s+/g, " ").trim();
+
 async function main() {
   await drainStdin(STDIN_GRACE_MS);
+  if (isOff()) return finish(null);
   // Imported here, not at the top, so a broken or partial install still exits 0 and says so.
   let lib;
   try {
     lib = await import("../lib/core.mjs");
   } catch (err) {
-    return finish(noLibReply(`cannot load lib/core.mjs: ${String(err?.message ?? err).replace(/\s+/g, " ").trim()}`));
+    return finish(noLibReply(`cannot load lib/core.mjs: ${oneLine(err)}`));
   }
-  const { WARN_LOAD, WARN_MARKERS, extractCore, failureReply, isOff, logError, successReply } = lib;
-  const fail = (warning, reason) => finish(failureReply(warning, reason, logError(HOOK_FILE, reason)));
   try {
-    if (isOff(process.env)) return finish(null);
+    const { WARN_LOAD, WARN_MARKERS, extractCore, failureReply, logError, successReply } = lib;
+    const fail = (warning, reason) => finish(failureReply(warning, reason, logError(HOOK_FILE, reason)));
     let md;
     try {
       md = readFileSync(CONTRACT_PATH, "utf8");
@@ -111,9 +119,16 @@ async function main() {
     if (core === null) return fail(WARN_MARKERS, `inject markers missing from ${CONTRACT_PATH}`);
     finish(successReply(core));
   } catch (err) {
-    // Fail open, and say so — a silent failure reads exactly like success.
-    fail(WARN_LOAD, `unexpected: ${err?.message ?? err}`);
+    // Fail open, and say so — a silent failure reads exactly like success. The lib may be the
+    // thing that broke (an export missing or throwing), so report through the independent path.
+    finish(noLibReply(`unexpected: ${oneLine(err)}`));
   }
 }
 
-main().catch(() => process.exit(0));
+main().catch((err) => {
+  try {
+    finish(noLibReply(`unexpected: ${oneLine(err)}`));
+  } catch {
+    process.exit(0);
+  }
+});

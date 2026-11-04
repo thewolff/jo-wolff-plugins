@@ -13,7 +13,6 @@ import {
   errorsLogPath,
   extractCore,
   failureReply,
-  isOff,
   logError,
   stateDir,
   successReply,
@@ -21,18 +20,6 @@ import {
 import { CONTRACT_REL, PLUGIN_ROOT, sandbox, spanByLines } from "./helpers.mjs";
 
 const doc = (body) => `# Title\nprose naming \`<!-- inject:start -->\` inline${START}${body}${END}\n\ntail\n`;
-
-// ─── isOff ─────────────────────────────────────────────────────────────────────────────
-
-test("isOff: `off` in any case turns the injection off", () => {
-  for (const v of ["off", "OFF", "Off"]) assert.equal(isOff({ OUTPUT_TYPES_INJECT: v }), true, v);
-});
-
-test("isOff: unset, empty, or any other value leaves it on (malformed values do not silence it)", () => {
-  for (const v of [undefined, "", "on", "0", "false", " off", "off ", "{bad json"]) {
-    assert.equal(isOff(v === undefined ? {} : { OUTPUT_TYPES_INJECT: v }), false, String(v));
-  }
-});
 
 // ─── extractCore ───────────────────────────────────────────────────────────────────────
 

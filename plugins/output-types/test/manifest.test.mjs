@@ -16,12 +16,17 @@ test("plugin.json and package.json agree on name and version", () => {
   assert.equal(pkg.version, plugin.version);
 });
 
+// Spelling and quoting of the command are exercised by e2e.test.mjs, which runs it through sh -c;
+// this only checks that the one registered command names a hook file that exists.
 test("hooks.json registers exactly one SessionStart command, and it resolves to a hook script that exists", () => {
   const hooks = read("hooks", "hooks.json").hooks;
   assert.deepEqual(Object.keys(hooks), ["SessionStart"]);
-  const commands = hooks.SessionStart.flatMap((h) => h.hooks.map((x) => x.command));
-  assert.deepEqual(commands, ['node "${CLAUDE_PLUGIN_ROOT}/hooks/output-types-inject.mjs"']);
-  assert.ok(existsSync(join(PLUGIN_ROOT, "hooks", "output-types-inject.mjs")));
+  const entries = hooks.SessionStart.flatMap((h) => h.hooks);
+  assert.equal(entries.length, 1);
+  assert.equal(entries[0].type, "command");
+  const target = entries[0].command.match(/\$\{CLAUDE_PLUGIN_ROOT\}\/(\S+?\.mjs)/)?.[1];
+  assert.ok(target, `no plugin-relative .mjs in ${entries[0].command}`);
+  assert.ok(existsSync(join(PLUGIN_ROOT, target)), target);
 });
 
 test("every hooks/*.mjs is registered in hooks.json (no unregistered, untested hook)", () => {

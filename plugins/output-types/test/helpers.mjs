@@ -69,8 +69,8 @@ export function runHook(box, { input = sessionStartPayload(box), env = {}, plugi
   return { ...r, ms: Date.now() - started, json: parseJson(r.stdout) };
 }
 
-/** Run the hook with a stdin pipe that is never closed, under the 5-second budget. */
-export function runHookStdinOpen(box, { env = {}, pluginRoot = PLUGIN_ROOT } = {}) {
+/** Run the hook with a stdin pipe that is never closed (after an optional `initial` write), under the 5-second budget. */
+export function runHookStdinOpen(box, { env = {}, pluginRoot = PLUGIN_ROOT, initial = "" } = {}) {
   return new Promise((resolve) => {
     const started = Date.now();
     const child = spawn(process.execPath, [join(pluginRoot, HOOK_REL)], { cwd: box.work, env: { ...box.env, ...env }, stdio: ["pipe", "pipe", "pipe"] });
@@ -80,6 +80,7 @@ export function runHookStdinOpen(box, { env = {}, pluginRoot = PLUGIN_ROOT } = {
     child.stdout.on("data", (d) => (stdout += d));
     child.stderr.on("data", (d) => (stderr += d));
     child.stdin.on("error", () => {});
+    if (initial) child.stdin.write(initial);
     const timer = setTimeout(() => {
       timedOut = true;
       child.kill("SIGKILL");

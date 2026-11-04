@@ -21,11 +21,6 @@ export const POINTER =
 export const WARN_MARKERS = "The output-types core could not load: its markers are missing from the contract file.";
 export const WARN_LOAD = "The output-types core could not load this session.";
 
-/** True when OUTPUT_TYPES_INJECT is `off`, in any case. Any other value, or none, leaves it on. */
-export function isOff(env = process.env) {
-  return String(env.OUTPUT_TYPES_INJECT || "").toLowerCase() === "off";
-}
-
 /** The text between the line-anchored markers, trimmed, with the pointer appended; null when a marker is missing. */
 export function extractCore(md) {
   const text = String(md);
