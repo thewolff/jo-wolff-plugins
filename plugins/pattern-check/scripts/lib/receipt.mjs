@@ -40,21 +40,22 @@ export const HEADER = `| ${[...BASE_COLUMNS, ...FAIL_COLUMNS].join(" | ")} |`;
 export const SEPARATOR = `|${"---|".repeat(BASE_COLUMNS.length + FAIL_COLUMNS.length)}`;
 
 const HEADER_CELL = /^new piece$/i;
-// `n/a`, `N/A`, `na`, `n.a.`, then the reason (if any) after a separator: blank, `:`, `(`, `,`,
-// `;`, `-`, `–` or `—`, spaced or not.
-const NA = /^n\/?\.?a\.?(?=$|[\s:(,;\-–—])(.*)$/i;
+// `n/a`, `N/A`, `na`, `n.a.`, then the reason (if any) after a separator: blank, `:`, `(`, `)`,
+// `,`, `;`, `-`, `–` or `—`, spaced or not. `)` closes a wrapped prefix: `(n/a): why`.
+const NA = /^n\/?\.?a\.?(?=$|[\s:(),;\-–—])(.*)$/i;
 const PLACEHOLDER = /^(?:tbd|tba|tbc|todo|fixme|unknown|n\/?\.?a\.?)$/i;
 const RESTART = /^(yes|no)\b(.*)$/i;
 
 /**
  * The cell as the checks read it: Markdown emphasis and code markers removed everywhere
- * (`*`, `` ` ``, `~`, and `_` at a word edge, so `snake_case` keeps its underscore), blanks
- * collapsed. Only for classification; the receipt keeps the cell as written.
+ * (`*`, `` ` ``, `~`), and every run of `_` at a word edge removed whole (`__n/a__` reads as
+ * `n/a`; `snake_case` keeps its inner underscore), blanks collapsed. Only for classification;
+ * the receipt keeps the cell as written, so `__init__.py` reading as `init.py` here is harmless.
  */
 function forCheck(value) {
   return String(value ?? "")
     .replace(/[*`~]+/g, "")
-    .replace(/(^|[^\p{L}\p{N}])_+|_+(?=$|[^\p{L}\p{N}])/gu, "$1")
+    .replace(/(^|[^\p{L}\p{N}_])_+|_+(?=$|[^\p{L}\p{N}_])/gu, "$1")
     .replace(/\s+/g, " ")
     .trim();
 }
