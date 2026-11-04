@@ -32,7 +32,7 @@ where it and the docs disagree, the docs say to trust the copy Claude Code write
 | Spinner, messages, tool rows, question dialog | tree or changed `props` on `Spinner`, `UserMessage`, `AssistantMessage`, `ToolUse`, `ToolResult`, `ToolGroup`, `CommandOutput`, `AskUserQuestion` | Drawn | Drawn | Restyle, replace, or wrap `await next(e)` | Per render | reference.md render sites; interface.md "Change what Claude Code already draws" |
 | Terminal-only sites | `TurnDuration`, `InfoNotice`, `ToolProgress` | Drawn | None | Tree | Per render | reference.md render sites |
 | Prompt suggestion | `$.prompt.suggest(text)` | Dim placeholder in an empty prompt; Tab accepts | Same | Plain text | Until the person types | reference.md methods; CLI `ui_prompt_suggest` schema; ION 5 hits |
-| Permission notice | `$.ui.notice(toolUseId, text)` | Context text on an open permission request | Same | Text | While that request is open | reference.md methods |
+| Permission notice | `$.ui.notice(toolUseId, text)` | Context text on an open permission request | Not drawn as far as the build shows: no `ui_notice` handler (see below); never exercised live | Text | While that request is open | reference.md methods; ION 0 hits for `ui_notice` |
 | OS notification | `$.ui.notify(text, { title })` | The terminal's channel (`preferredNotifChannel`: iTerm2, kitty, ghostty, bell) | Resolves `{ isSent: false, reason: 'no-surface' }`; only the person's `Notification` settings hooks run | Text and title | One shot | api.md reason table ("the desktop app" under `no-surface`); CLI 398694 |
 | Turn-end line | `turn.complete` hook returns `{ text }` | A line under the answer | Rendering unverified | Text | Stays in the transcript | reference.md turns table; ledger `register.mjs:183-202` |
 | Sound, speech | `$.audio.play`, `$.audio.speak` | Plays | No surface gate found; untested | n/a | One shot | reference.md methods; CLI `command:"afplay"`, `command:"say"` |
@@ -114,6 +114,13 @@ messages the mod sends (brb `CHANGELOG.md` 0.3.1; brb `mods/badge/tests/badge.te
 `$.session.surfaces()` lists every surface the session draws on, `terminal` first, then the
 remote ones as they attach; empty in a plain `-p` run (d.ts 2392-2402). `$.session.surface()` is
 deprecated. A render hook reads `e.surface` per ask.
+
+`session.start` fires once per loaded mod and again after a reload, never after `/clear`,
+`/resume` or `/branch`. Those fire `session.end` (`e.reason` `clear` or `resume`; `/branch`
+reports `resume`) and then `classic.SessionStart` with `e.source` `clear`, `resume` or `fork`;
+`classic.SessionStart` also fires at startup and after compaction (reference.md "Session";
+interface.md "Keep a value in state"). A mod that starts its poll in `session.start` and stops
+it in `session.end` restarts it in a `classic.SessionStart` hook filtered to those three sources.
 
 ## 6. Official pages
 

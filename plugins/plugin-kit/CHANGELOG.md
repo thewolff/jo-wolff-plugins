@@ -23,7 +23,15 @@ how a mod looks in either host, so each plugin found these by shipping them.
 - `skills/new-mod/reference.md`: every surface, element and render site by host, the limits
   that shape a drawing, and the session payload per host, each row with its receipt.
 - `templates/mod/register.mjs`: a hooks module with the poll, the band, the fallback status
-  line and once-per-message fault logging. The scaffolder does not copy it.
+  line and once-per-message fault logging. One `begin()` runs from `session.start` and from
+  `classic.SessionStart` filtered to `clear`, `resume` and `fork`, so `/clear`, `/resume` and
+  `/branch` (which fire `session.end` but not `session.start`) restart the poll and drop the
+  last conversation's band; the skill's step 4 states the rule. `clip()` cuts at the last space
+  that fits and gives nothing for a width of 0 or less; the band stacks its button below about
+  12 columns of room; the dismiss button's label names its hotkey. The scaffolder does not copy it.
+- `test/mod-template.test.mjs`: drives the template with a fake `on` and `$` through start,
+  band, `session.end` and `classic.SessionStart` for each of the three sources and both host
+  payloads, and checks `clip()` and the button at narrow widths.
 
 ## [0.3.2] - 2026-11-04
 

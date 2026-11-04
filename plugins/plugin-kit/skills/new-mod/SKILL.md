@@ -18,13 +18,13 @@ or limit up in `${CLAUDE_SKILL_DIR}/reference.md`; start a hooks module from
 
    | The signal | Draw it with | Why |
    |---|---|---|
-   | Standing: the person must notice it before they type (away, questions held, a red build) | The band above the prompt: `on('ui.render', { component: 'AbovePrompt' }, …)` returning a `Box` with colour, a border, bold text, and a `Button` where pressing does something | The only site with colour and controls that both the terminal and Desktop draw (reference.md render sites; interface.md "Pick where to draw") |
+   | Standing: the person must notice it before they type (away, questions held, a red build) | The band above the prompt: `on('ui.render', { component: 'AbovePrompt' }, …)` returning a `Box` with colour, a border, bold text, and a `Button` where pressing does something | The shared, always-present site above the prompt that both the terminal and Desktop draw with colour and controls; a pane draws them too, but only once opened (reference.md render sites; interface.md "Pick where to draw") |
    | The moment something happens (a job finished, a message landed) | `$.ui.toast(text)`: plain text, 4 s unless `timeoutMs` says otherwise | Transient by design; Desktop cuts it at 240 characters, VS Code at 500 (api.md; reference.md limits; `reference.md` section 1) |
    | A one-liner where no band draws | `$.ui.status(text)` as a fallback only, until your `AbovePrompt` render hook has been called once this session; then `$.ui.status(undefined)` and keep it clear (brb 0.4.0's rule) | The terminal draws it with a warning sign and the plugin name, so it reads as a warning (issue #99647); Desktop draws a grey 32-character footnote in the footer, unreadable as a signal and a duplicate beside a band showing the same thing (`reference.md` section 1). A band that has been asked for once is the signal from then on |
    | Neutral live figures (counts, elapsed, context fill) | The band, or a tree on `{ component: 'SessionMode' }` | The status line's warning look is wrong for figures (#99647); Desktop cuts a `SessionMode` tree at about 28 characters (#100116) |
    | A note for the person that Claude need not read | `$.ui.log(text)` | A dim transcript row in the terminal; on Desktop one footnote line by the composer, gone after 10 s (api.md; `reference.md` section 1) |
    | Anything under `claude -p`, the Agent SDK, or a cloud session | Nothing draws: return `{ text }` from `turn.complete`, or answer the command with `{ text }` | overview.md "Where mods run" |
-   | Never | `PromptHint` on Desktop (never raised, #100116); `$.ui.notify` on Desktop (`no-surface`, api.md); a pane opened unasked (waits below 144 columns, interface.md) | |
+   | Never | `PromptHint` on Desktop (never raised, #100116); `$.ui.notify` on Desktop (`no-surface`, api.md); `$.ui.notice` as a Desktop signal (Desktop has no `ui_notice` handler; `reference.md` section 1); a pane opened unasked (waits below 144 columns, interface.md) | |
 
 2. **Write for both hosts.** Desktop is headless: it starts Claude Code with
    `--input-format stream-json`, so `session.start` arrives as `{ surface: null, isInteractive: false }`
@@ -54,12 +54,15 @@ or limit up in `${CLAUDE_SKILL_DIR}/reference.md`; start a hooks module from
      and toasts are plain text on Desktop and the person's terminal theme may drop the colour.
    - Any one-line surface reads at 40 characters or fewer, and the first 32 carry the point,
      since Desktop's footer cuts a status line there. Trim in this order: the note, then the
-     suffix, then the count; cut with `clip()` and a single `…`, never a mid-word break.
+     suffix, then the count; cut with `clip()` and a single `…` at the last space that fits
+     (only a first word longer than the room is cut inside the word); a width of 0 or less, or
+     no text, gives nothing. Below about 12 columns of room, stack the button under the text.
    - The manifest `name` is the label the person sees before a status line in both hosts
      (`displayName` is not drawn, #99647 comment). Choose it for reading: `brb`, not `brb-badge`.
    - One headline in bold colour, one sub-line muted (`dimColor`); nothing else on the band.
-   - A `Button` only where pressing does something typing cannot: a plain `Button` with a
-     `hotkey` and a `key`; name the key in the label so the terminal shows what to press.
+   - A `Button` only where pressing does something typing cannot: a `Button` with a `hotkey`
+     and a `key`. The terminal's bracketed button hides its hotkey, so name the key in the label
+     (`Dismiss (d)`) or set `plain: true` (interface.md "Keyboard focus and hotkeys").
 
 4. **Register in the engine's shape.** Export `register(on, options)`; `options` holds the
    manifest's `userConfig` values (reference.md "Files"). Follow the template:
@@ -69,6 +72,14 @@ or limit up in `${CLAUDE_SKILL_DIR}/reference.md`; start a hooks module from
      as cheap as `$.fs.exists`.
    - Cancel every timer and clear the status line in `session.end` (all `session.end` hooks
      share 1.5 s). Timers also stop on a hot reload, and `session.start` runs again then.
+   - `/clear`, `/resume` and `/branch` fire `session.end` but never `session.start`; they fire
+     `classic.SessionStart` with `source` `clear`, `resume` or `fork` (reference.md "Session";
+     interface.md "Keep a value in state"). Put the start work in one top-level function that
+     cancels any old timer, resets every module variable (the state, the last status text, the
+     band-asked flag) and starts the poll, and call it from `session.start` and from
+     `on('classic.SessionStart', { source: ['clear', 'resume', 'fork'] }, …)`. Without it the
+     poll stays cancelled and the last conversation's band stays up. The filter matters:
+     startup and compaction fire that event too, and neither resets the conversation.
    - Call `$.ui.invalidate('ui.render')` after every state change the band reads; the engine
      never redraws on its own for a variable.
    - An error in a timer callback goes to the debug log only (api.md). Route every fault through
