@@ -88,42 +88,57 @@ export function questionSentences(text) {
 
 /**
  * What makes a question one the human has to decide, tested on one question sentence, whole
- * words, any case. Three shapes count:
+ * words, any case. Four shapes count:
  *
- *   - a decision, permission or confirmation request: "should I", "shall we", "do you want",
- *     "want me to", "would you like", "is this right", "ok to", "go ahead", "proceed",
- *     "approve", or a short confirmation opener ("Ready to deploy?", "Okay to merge?");
- *   - an explicit choice: "whether", "do/would you prefer", or an option list, either set off
- *     by a comma or colon ("What should it be, alpha or beta?", "put it: plugins/a or
- *     plugins/b?") or the whole sentence ("Alpha or beta?");
- *   - a wh-question (what/where/when/who/which/how) that carries one of those: "How should we
- *     proceed?", "Which do you prefer?". Bare "which" and a loose "or" are not enough: "Which
- *     file contains the config?", "Are the logs compressed or uncompressed?", "What do you want
- *     to build or check first?" and "What are we working on?" ask for information.
+ *   - a permission or decision request on the agent: a modal on I/we ("should I", "shall we",
+ *     "can I push?", "may I", "could we"), "want me to", "do/would you want/like/prefer/mind",
+ *     "go ahead", "approve", "did you mean";
+ *   - a confirmation: "is this right", "does that look right", "is it safe to", "is this a good
+ *     time to", "ok to", or a short opener ("Ready to deploy?", "Okay to merge?");
+ *   - an explicit choice: "would you prefer", "which … should", or an option list: set off by
+ *     a comma or colon ("What should it be, alpha or beta?"), a whole sentence of options
+ *     ("Alpha or beta?"), or a choice whose subject is the thing being configured ("Should
+ *     the helper use local or remote storage?", "Use local or remote storage?": a sentence
+ *     opening with should/shall/use/do we/which and carrying "or");
+ *   - a wh-question (what/where/when/who/which/how) carrying a modal on I/we, "whether",
+ *     "prefer" or an option list: "How should we proceed?", "Which option should we use?".
  *
- * "Why" questions never count: "Why should I store this twice?" is rhetorical, not a request.
- * "Do we know …", "do we have …" and the like ask for information and are excluded from "do we".
- * This is a heuristic with a once-per-turn escape, not an authority: an information request
- * worded like a decision ("Should the parser be deciding this?") still bounces once.
+ * What does not count: a "why" question ("Why should I store this twice?" is rhetorical); a
+ * bare "which" or a loose "or" ("Which file holds the config?", "Are the logs compressed or
+ * uncompressed?", "What do you want to build or check first?"); "do we know/have/see …"; and
+ * "whether" or "proceed" embedded in a question about recorded facts ("Does the log say
+ * whether the build failed?", "Did the deployment proceed without errors?"): a sentence
+ * opening with does/did/is/are/was/were/has/have asks about a state unless it is a
+ * confirmation shape above. This is a heuristic with a once-per-turn escape, not an
+ * authority: an information request worded as a request ("Should the parser be deciding
+ * this?") still bounces once.
  */
-const DECISION_REQUEST =
-  /\b(?:whether|approve|proceed|go ahead|want me to|(?:shall|should|could|may|must|will) (?:i|we)|do (?:i|we) (?!(?:know|have|see|understand|get|already|still|even|really|actually)\b)\w+|(?:do|would) you (?:want|need|prefer|mean|agree|approve|like|rather|mind)|did you mean|yes or no|ok(?:ay)? (?:to|if|with|for)|(?:is|was) (?:this|that|it) (?:ok(?:ay)?|right|correct|fine|good|enough|what you)|(?:look|sound)s? (?:right|good|ok(?:ay)?|correct))\b/i;
+const MODAL_I_WE = /\b(?:shall|should|can|could|may|might|must|will|would) (?:i|we)\b(?! (?:know|have|see|understand|get|already|still|even|really|actually|expect|assume)\b)/i;
+const REQUEST =
+  /\b(?:want me to|go ahead|approve|did you mean|(?:do|would) you (?:want|need|prefer|mean|agree|approve|like|rather|mind)|do (?:i|we) (?!(?:know|have|see|understand|get|already|still|even|really|actually)\b)\w+|yes or no)\b/i;
+const CONFIRM =
+  /\b(?:ok(?:ay)? (?:to|if|with|for)|(?:is|was) (?:this|that|it) (?:ok(?:ay)?|right|correct|fine|good|enough|safe|what you|a good (?:time|idea|moment))|is it safe to|(?:does|do|did) (?:this|that|it|they|these|those) (?:look|sound|seem|feel) (?:right|good|ok(?:ay)?|correct|fine)|(?:look|sound)s? (?:right|good|ok(?:ay)?|correct) to you)\b/i;
 const CONFIRM_OPENER = /^[\s*_#>`-]*(?:ready|ok(?:ay)?|good|fine|happy|all set|safe|alright|agreed|shall we|go)\b/i;
+const PREFER_CHOICE = /\b(?:would you prefer|(?:do|would) you (?:prefer|rather)|which (?:one |option |way |of (?:these|those|them) )?(?:should|shall|do|would|will) (?:i|we|you))\b/i;
 const OPTION_LIST = /[,:]\s*[^,:?]{1,60}\bor\b[^,:?]{1,60}\?$/i;
-const WH_START = /^[\s*_#>`-]*(?:what|where|when|who|whom|whose|which|how)\b/i;
-const WHY_START = /^[\s*_#>`-]*(?:why|how come)\b/i;
 const LIST_ONLY = /^[\s*_#>`-]*[\w/.-]+(?:\s*,\s*[\w/.-]+)*\s+or\s+[\w/.-]+\?$/i;
+const SUBJECT_CHOICE = /^[\s*_#>`-]*(?:should|shall|use|do we|which)\b[^,:?]*\bor\b[^,:?]*\?$/i;
+const WH_START = /^[\s*_#>`-]*(?:what|where|when|who|whom|whose|which|how)\b/i;
+// A why-question, at the start or after a lead-in ("I wonder, why do you prefer …?").
+const WHY_START = /^[\s*_#>`-]*(?:why|how come)\b|[,:;]\s*(?:why|how come)\b/i;
+const STATE_START = /^[\s*_#>`-]*(?:does|did|is|are|was|were|has|have|had)\b/i;
 
 // In a wh-question "do you want" and "would you like" are open-ended ("What do you want to
-// work on?"); only a modal on I/we, "whether", "prefer", "want me to" or an option list decide.
-const WH_REQUEST = /\b(?:whether|want me to|(?:shall|should|could|may|must|will) (?:i|we)|(?:do|would) you prefer|would you rather)\b/i;
+// work on?"); only a modal on I/we, "whether", a preference or an option list decide.
+const WH_REQUEST = /\b(?:whether|want me to)\b/i;
 
-/** Whether one question sentence asks the human for a decision (see DECISION_REQUEST). */
+/** Whether one question sentence asks the human for a decision (see the shapes above). */
 export function isDecisionAsk(sentence) {
   if (WHY_START.test(sentence)) return false;
-  if (LIST_ONLY.test(sentence)) return true;
-  if (WH_START.test(sentence)) return WH_REQUEST.test(sentence) || OPTION_LIST.test(sentence);
-  return DECISION_REQUEST.test(sentence) || CONFIRM_OPENER.test(sentence) || OPTION_LIST.test(sentence);
+  if (LIST_ONLY.test(sentence) || SUBJECT_CHOICE.test(sentence)) return true;
+  if (WH_START.test(sentence)) return MODAL_I_WE.test(sentence) || WH_REQUEST.test(sentence) || PREFER_CHOICE.test(sentence) || OPTION_LIST.test(sentence);
+  if (STATE_START.test(sentence)) return CONFIRM.test(sentence) || PREFER_CHOICE.test(sentence) || OPTION_LIST.test(sentence);
+  return MODAL_I_WE.test(sentence) || REQUEST.test(sentence) || CONFIRM.test(sentence) || CONFIRM_OPENER.test(sentence) || PREFER_CHOICE.test(sentence) || OPTION_LIST.test(sentence);
 }
 
 /** Whether some question sentence in `text` asks the human for a decision. */
