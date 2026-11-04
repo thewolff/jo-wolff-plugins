@@ -8,6 +8,7 @@ This bar covers everything an agent loads or runs: plugins, settings hooks, mods
 4. **External output is tested against captured output.** A parser of another tool's output is tested against fixtures saved from real runs of that tool, never against hand-written samples. The capture script lives beside the tests, is run by hand, and stays out of `node --test`.
 5. **One live run before any pull request.** Run `claude -p --plugin-dir <plugin>` once in a throwaway repository and save the transcript as `~/agent-scratch/jo-wolff-plugins/<plugin>/live-<date>.md`.
 6. **Fault tolerance.** A hook's own fault never blocks the turn or the tool call. A hook denies only because a rule says so, never because of an error. Every denial is recorded (the ledger's bounce rows), and its message states a written way out.
+   Exception: a gate whose whole purpose is to refuse (paired-coding's write lock while a pairing session is open) may fail closed only while it is engaged; outside that state it never blocks, and the README states the exception.
 
 Ledger 0.3.1 will enforce items 2, 4 and 6 mechanically in its push gate, as a `hook-contract` check.
 
