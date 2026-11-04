@@ -394,6 +394,56 @@ machine, record the detection command and output, and compare the selected insta
 with support evidence. If a runtime cannot be detected or its version's support is unverified,
 report it as unknown rather than guessing.
 
+## Findings on disk
+
+The Claude Code Stop hook records what each check decided, so other plugins (paired-coding's
+cards, for one) can show it. When the turn's reply carries a `**Verdict:**` line (a full check) or
+a `**Structure check:**` line, the hook writes
+`${XDG_STATE_HOME:-$HOME/.local/state}/ask-graham/findings/<session id>.json` (`XDG_STATE_HOME`
+counts only when it is an absolute path), mode 0600, through a temp file and a rename, replacing
+the session's earlier file. When the Stop payload carries `last_assistant_message` (Claude Code
+2.1.317's does), it is written whether or not the Stop check runs or blocks, and `stop-check off`
+does not stop it. Without that field the reply is read from the transcript, which `stop-check off`
+skips, so with the check off that stop writes nothing. A reply with neither line writes nothing
+and leaves the session's earlier file in place. The shape:
+
+```json
+{ "version": 1, "sessionId": "<id>", "writtenAt": "<ISO time>", "kind": "verdict" | "structure-check",
+  "ask": "<the **Ask:** line's text> | null",
+  "verdict": "do it now | start now | later | don't build | null",
+  "alternative": "<the **Alternative:** line's text after the label> | null",
+  "alternatives": [ { "design": "<text>", "chosen": true | false } ],
+  "found": ["<the **Found:** line's text, then each list item under it>"], "cwd": "<the payload's cwd>" }
+```
+
+`alternatives` holds the chosen design (`chosen: true`) and the `**Alternative:**` line's design
+(`chosen: false`). The chosen design is the verdict line's one-line why: the text after the
+verdict words on the `**Verdict:**` line, verbatim apart from leading separators and marks that
+wrap both ends. It is a rationale sentence, not a design name, so a consumer compares by
+containment (does the card's text contain it), not by equality. A Verdict line whose verdict word
+is not one of the four adds no chosen entry. The unchosen entry is left out when the Alternative
+line is a none-form: it starts with `none`, `nothing`, `no better`, `no alternative`, `n/a`,
+`not applicable` or `not a technical ask`, ending at a colon, a space, punctuation or a closing
+mark (so `nothing-cache layer` and `None of the gaps apply; use Y` are designs). An unchosen
+design that opens with a code span loses that span's backticks. A structure check has no
+verdict, so its list holds at most the unchosen alternative.
+
+A label counts at the start of a line (after an optional list marker or heading), bold,
+case-sensitive, outside code fences (a fence closes at a fence of the same character at least as
+long as its opener); the first such line is read. The Verdict label also takes the forms the Stop
+check takes: when there is no bold Verdict line, the first line the check counts as a verdict
+(bold optional, any case, inside a fence if none is outside one) is read. `*`, `_`, backticks and
+quotes are dropped from a value only when the same mark wraps both ends. A missing line is `null`
+or an empty list.
+
+A file describes the reply that wrote it; a later turn without a Verdict or Structure check line
+leaves it as it was. Consumers apply a file to the first decision after `writtenAt`; the file is
+not retracted by later turns. Other plugins may read the file and
+must not write it; ask-graham depends on no reader. The parser is
+`skills/ask-graham/scripts/findings.mjs`. The file is pruned with the rest of the state after 30
+days (`scripts/prune.mjs`, declared in `.claude-plugin/plugin.json` `state`). OMP's handler does
+not write it.
+
 ## Faults
 
 A Claude Code hook's own fault never blocks a prompt or a stop. Each fault, from either hook,
@@ -404,7 +454,8 @@ it is an absolute path) and puts one line in the hook's `systemMessage`:
 are: stdin empty or not a JSON object; a config file (`.ask-graham` or the user file) that names
 no valid value for the setting the hook reads, which then counts as its default; for the Stop
 hook, a payload without a usable `session_id` or `transcript_path`, a transcript or block record
-that cannot be read, and a block record that cannot be written (the stop then passes); and any
+that cannot be read, a block record that cannot be written (the stop then passes), and a
+findings file that cannot be written (the check's decision is unchanged); and any
 throw. If `errors.log` itself cannot be written, the warning says so. A missing config file is not
 a fault. Delete the log whenever you like.
 
@@ -423,6 +474,17 @@ CI runs the same command on Ubuntu and macOS with Node 24 (`.github/workflows/as
 sources proof on both transcript shapes, with a fixture file of invented sources.
 
 ## Release notes
+
+### 2026-11-04 — 0.8.1
+
+The Stop hook records each verdict or structure check in
+`ask-graham/findings/<session id>.json` under the state directory, for other plugins to read
+(see "Findings on disk"): the ask, the verdict, the verdict line's why as the chosen design, the
+`**Alternative:**` design, and the `**Found:**` items. Consumers apply a file to the first
+decision after its `writtenAt`. A failed write is one `errors.log` line and never blocks.
+`scripts/prune.mjs` now resolves the state directory with the hooks' rule (a relative
+`XDG_STATE_HOME` is ignored) and prunes findings after 30 days with the rest. Tests:
+`hooks/findings.test.mjs`, on the captured Claude Code replies and the two alternative shapes.
 
 ### 2026-11-04 — 0.8.0
 
