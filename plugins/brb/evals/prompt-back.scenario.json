@@ -1,8 +1,8 @@
 {
   "event": "UserPromptSubmit",
-  "expect": "deny",
+  "expect": "systemMessage",
   "before": [{"event":"UserPromptSubmit","stdin":{"session_id":"${SESSION_ID}","transcript_path":"${TRANSCRIPT}","cwd":"${CWD}","hook_event_name":"UserPromptSubmit","prompt":"brb lunch"}}],
   "stdin": {"session_id":"${SESSION_ID}","transcript_path":"${TRANSCRIPT}","cwd":"${CWD}","hook_event_name":"UserPromptSubmit","prompt":"back"},
-  "reason": "brb digest — held since",
+  "reason": "Reply with the digest below verbatim as your whole message",
   "after": { "absent": ["$XDG_STATE_HOME/brb/${SESSION_ID}/away.json"] }
 }

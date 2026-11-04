@@ -1,6 +1,6 @@
 ---
 name: release-gate
-description: Mechanical release checklist for one plugin in this repository. Use proactively before any plugin version bump, PR or marketplace publish. Snapshots the head commit by writing each blob with git cat-file and checking its hash (no checkout, no hooks, no attribute or filter conversion; links and submodules refused), then runs the path scrub, the version match across plugin.json, package.json and the marketplace entry plus the three release texts ledger's `gate check` `docs` row wants (a CHANGELOG.md entry, a README release heading, the root README naming the version), README consistency against the plugin's hooks, skills and agents, and, only when the prompt says execute and the head sha, `node --test` in a credential-free environment on the CI node major. The ledger plugin gate is reported unavailable, because it checks live HEAD rather than the captured sha. Reports pass, fail or unavailable per check with the command and its output. Executes and reports only; never edits, never pushes, never installs.
+description: Mechanical release checklist for one plugin in this repository. Use proactively before any plugin version bump, PR or marketplace publish. Snapshots the head commit by writing each blob with git cat-file and checking its hash (no checkout, no hooks, no attribute or filter conversion; links and submodules refused), then runs the path scrub, the version match across plugin.json, package.json and the marketplace entry plus the three release texts ledger's `gate check` `docs` row wants (a CHANGELOG.md entry, a README release heading, the root README naming the plugin), README consistency against the plugin's hooks, skills and agents, and, only when the prompt says execute and the head sha, `node --test` in a credential-free environment on the CI node major. The ledger plugin gate is reported unavailable, because it checks live HEAD rather than the captured sha. Reports pass, fail or unavailable per check with the command and its output. Executes and reports only; never edits, never pushes, never installs.
 tools: Read, Grep, Glob, Bash
 model: haiku
 ---
@@ -167,14 +167,14 @@ output lines that decided it. Quote every substitution in every command.
      version with text under it. Report the newest release heading in the file. This checklist
      also fails a heading for a version newer than `plugin.json`'s, naming both; the row does
      not look for one, so `gate check` can pass where this check fails.
-   - **c. Root README mention.** The root `README.md` names the version for the plugin in one
-     of three places: any `-` or `*` bullet that starts with the plugin's name, bold and linked
-     or not (`- **[<name>](…)** …`, `* <name> …`), with its indented continuation lines (read
-     every such bullet, not only the first); a `Changes in <name> <version>` line anywhere; or a
-     `Changes in <version>` line inside the root README's `<name>` section (a heading of any
-     level whose whole text is the name). Another plugin's bullet or section naming the same
-     version does not count. The same whole-token rule applies (no `v` prefix, no pre-release
-     suffix).
+   - **c. Root README row.** The root `README.md` names the plugin, never its version (the
+     root README is an index; it changes only when a plugin is added, removed, or its purpose
+     changes), in one of three places: a table row whose first cell is the plugin's name
+     (`| <name> | …`, in a code span or not); any `-` or `*` bullet that starts with the name,
+     bold and linked or not (`- **[<name>](…)** …`, `* <name> …`); or a heading whose whole
+     text is the name. Another plugin's row, bullet or section does not count, nor does any of
+     the three inside a fenced code block. A plugin version in the root README (a `Changes in`
+     line, a version cell, a `since <ver>`) is a fail of this check: report the line.
 5. **Suites, contained.** Only when 0 passed and check 2 is `exact` or `same major`; otherwise
    `unavailable` with that reason, not run. From `"$snap/plugins/<name>"`: the containment
    prefix from check 0 and `node --test`. Record the `ℹ pass`, `ℹ fail` and `ℹ skipped` lines

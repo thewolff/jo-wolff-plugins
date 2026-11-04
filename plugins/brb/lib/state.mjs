@@ -3,6 +3,7 @@
 //   ${XDG_STATE_HOME:-~/.local/state}/brb/<session id>/away.json   the hold: since, note, counts
 //   ${XDG_STATE_HOME:-~/.local/state}/brb/<session id>/digest.md   held items, append-only while away
 //   ${XDG_STATE_HOME:-~/.local/state}/brb/<session id>/archive/<ts>.md   digests `back` released
+//   ${XDG_STATE_HOME:-~/.local/state}/brb/<session id>/away.lock   held while away.json is read-modified-written; holds `<pid> <token>`
 //   ${XDG_CONFIG_HOME:-~/.config}/brb/config.json                  optional: onFireCap, idleStops
 //
 // away.json is the one record that the session is away: present means away, absent means home.
@@ -11,7 +12,7 @@
 // turns a throw into one errors.log line and an allow. A missing or unparsable config file is
 // the defaults, and a missing or unparsable away.json is "home" (readAway returns null).
 
-import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync, appendFileSync } from "node:fs";
+import { closeSync, existsSync, mkdirSync, openSync, readFileSync, renameSync, rmSync, statSync, writeFileSync, writeSync, appendFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 
@@ -43,6 +44,90 @@ const awayPath = (sessionId, env) => join(sessionDir(sessionId, env), "away.json
 /** `<session dir>/digest.md`, the live digest. */
 export const digestPath = (sessionId, env = process.env) => join(sessionDir(sessionId, env), "digest.md");
 
+/** How long a writer waits for the session lock before giving up, and when a held lock is stale. */
+export const LOCK_WAIT_MS = 2_000;
+export const LOCK_STALE_MS = 60_000;
+const sleep = (ms) => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+
+/** The pid in a lock file's `<pid> <token>` content; null when the file has none (an empty or foreign lock). */
+function lockPid(content) {
+  const pid = Number.parseInt(String(content).split(/\s/)[0], 10);
+  return Number.isInteger(pid) && pid > 0 ? pid : null;
+}
+
+/** Whether a pid is a live process: `kill(pid, 0)`; ESRCH is dead, EPERM is alive (another user's). */
+function alive(pid) {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (err) {
+    return err?.code !== "ESRCH";
+  }
+}
+
+/**
+ * Run fn() holding `<session dir>/away.lock`, the one lock every away.json read-modify-write
+ * takes (the hold command; `brb`, `back` and the turn reset in the prompt hook; the Stop
+ * hook's read-merge-write; `pending`'s read), so a `back` cannot land between another writer's
+ * re-read and its write. The lock is an O_EXCL create holding `<pid> <token>`. A lock is taken
+ * over only when its holder is dead (the pid is gone, `kill(pid, 0)` → ESRCH; an empty or
+ * foreign lock has no pid and is never dead by this test) or when it is older than
+ * LOCK_STALE_MS (a holder that hung, or a pid that was reused); a live holder is waited on,
+ * and past LOCK_WAIT_MS this throws (`brb: the hold is locked (<path>, held by pid N); try
+ * again in a moment`), which the hook runner logs and the hold command reports. Takeover is a
+ * rename then a remove, so two waiters that both saw a dead holder cannot each remove the
+ * other's fresh lock: only one rename succeeds. Release removes the lock only while it still
+ * holds this call's token. fn re-reads away.json itself.
+ */
+export function withAwayLock(sessionId, env, fn) {
+  const dir = sessionDir(sessionId, env);
+  mkdirSync(dir, { recursive: true });
+  const lock = join(dir, "away.lock");
+  const token = `${process.pid} ${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`;
+  const deadline = Date.now() + LOCK_WAIT_MS;
+  let holder = null;
+  for (;;) {
+    try {
+      const fd = openSync(lock, "wx");
+      writeSync(fd, token);
+      closeSync(fd);
+      break;
+    } catch (err) {
+      if (err?.code !== "EEXIST") throw err;
+    }
+    let stale;
+    try {
+      holder = lockPid(readFileSync(lock, "utf8"));
+      stale = (holder !== null && !alive(holder)) || Date.now() - statSync(lock).mtimeMs > LOCK_STALE_MS;
+    } catch {
+      continue; // released between the create and the read
+    }
+    if (stale) {
+      const gone = `${lock}.${process.pid}.stale`;
+      try {
+        renameSync(lock, gone);
+      } catch {
+        continue; // another waiter took it over first; its fresh lock is next
+      }
+      rmSync(gone, { force: true });
+      continue;
+    }
+    if (Date.now() >= deadline) throw new Error(`brb: the hold is locked (${lock}${holder === null ? "" : `, held by pid ${holder}`}); try again in a moment`);
+    sleep(20);
+  }
+  try {
+    return fn();
+  } finally {
+    let mine = false;
+    try {
+      mine = readFileSync(lock, "utf8") === token;
+    } catch {
+      // already gone: taken over as stale, or the directory was removed
+    }
+    if (mine) rmSync(lock, { force: true });
+  }
+}
+
 /** The effective config: the file's integer fields over the defaults; a missing or bad file is the defaults. */
 export function loadConfig(env = process.env) {
   const out = { ...DEFAULT_CONFIG };
@@ -60,16 +145,27 @@ export function loadConfig(env = process.env) {
   return out;
 }
 
-/** A fresh away record: when the hold began, the note typed after `brb`, and zeroed counters. */
+/** A fresh away record: when the hold began, the note typed after `brb`, zeroed counters, no backstop yet this turn. */
 export function freshAway({ since = new Date().toISOString(), note = "" } = {}) {
-  return { since, note, held: 0, onFire: 0, toolLessStops: 0, nothingNewStops: 0, seen: [], lastStop: null };
+  return { since, note, held: 0, onFire: 0, toolLessStops: 0, nothingNewStops: 0, backstopped: false, seen: [], lastStop: null };
 }
 
 /** The session's away record, or null when home (no file, or a file that does not parse). */
 export function readAway(sessionId, env = process.env) {
+  let text;
+  try {
+    text = readFileSync(awayPath(sessionId, env), "utf8");
+  } catch {
+    return null;
+  }
+  return parseAway(text);
+}
+
+/** away.json's text → the typed away record, or null (home) when it does not parse or has no `since`. */
+export function parseAway(text) {
   let parsed;
   try {
-    parsed = JSON.parse(readFileSync(awayPath(sessionId, env), "utf8"));
+    parsed = JSON.parse(text);
   } catch {
     return null;
   }
@@ -82,6 +178,7 @@ export function readAway(sessionId, env = process.env) {
     onFire: n(parsed.onFire),
     toolLessStops: n(parsed.toolLessStops),
     nothingNewStops: n(parsed.nothingNewStops),
+    backstopped: parsed.backstopped === true,
     seen: Array.isArray(parsed.seen) ? parsed.seen.filter((s) => typeof s === "string") : [],
     lastStop: parsed.lastStop && typeof parsed.lastStop === "object" ? parsed.lastStop : null,
   };

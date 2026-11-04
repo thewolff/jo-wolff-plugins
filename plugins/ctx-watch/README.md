@@ -359,7 +359,11 @@ that cannot shadow `--ctx`. `e2e/live-run.sh` hands off to plugin-kit's scenario
 eight `evals/*.scenario.json` prove every event × outcome in `evals/manifest.json` offline (the
 SessionStart ones against `evals/fixtures/fake-ctx.sh`), and `session-start-healthy` adds a
 headless `claude -p` session when `claude` is on PATH. Run the tests with `node --test` from
-inside `plugins/ctx-watch/`; the scenarios with `bash e2e/live-run.sh --no-live`.
+inside `plugins/ctx-watch/`; the scenarios with `bash e2e/live-run.sh --no-live`. The ctx
+captures in `test/fixtures/` are re-made by hand with `bash test/fixtures/capture.sh` (needs ctx
+on PATH; it only reads the real install, works on a throwaway data root it prints, and is not
+part of `node --test`); `ctx-daemon-status-semantic-not-ready.txt` is a one-off capture it does
+not remake.
 
 ## Changes in 0.2.2
 

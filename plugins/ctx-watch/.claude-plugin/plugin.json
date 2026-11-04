@@ -1,6 +1,6 @@
 {
   "name": "ctx-watch",
-  "description": "Notices when the ctx daemon is dead, unsupervised, or stale, or its semantic index is not ready; self-heals where ctx allows; tells you at SessionStart and with a macOS popup from a launchd timer; and, on Stop, when a resumed session never consulted ctx history.",
+  "description": "Notice when the ctx daemon is dead, unsupervised or stale, or its semantic index is not ready; repair it, and say so at session start and in a macOS popup from a launchd timer.",
   "version": "0.2.2",
   "author": { "name": "Jo Wolff" },
   "license": "MIT",
