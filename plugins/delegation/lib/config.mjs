@@ -10,9 +10,12 @@
 //   builderClass         agent names whose spawns are builder-class (gate 4, gate 2, the stop
 //                        warning). Compared on the bare name: trimmed, lower-cased, any
 //                        `plugin:` or `dir/` prefix dropped.
+//   readOnlyAgents       agent names that never change code: exempt from gate 4, gate 2 and the
+//                        stop warning even when also in builderClass (gate 1 still applies).
 //   requireHowItFails    gate 1: a spawn needs a `## How it fails` heading.
 //   requireSpiralBound   gate 4: a builder-class spawn also needs `## Spiral bound`.
-//   requirePatternCheck  gate 2: a builder-class spawn needs this session's pattern-check receipt.
+//   requirePatternCheck  gate 2: a builder-class spawn needs this session's pattern-check receipt
+//                        (skipped, with a skipped.log line, when pattern-check is not installed).
 //   checks               the ported guards, each `off`, `warn` or `block`:
 //                          delegation-guard     warn (newdle's ask/deny is `block`)
 //                          worktree-spawn-guard warn (newdle's deny is `block`)
@@ -33,6 +36,7 @@ import { join } from "node:path";
 export const DEFAULTS = Object.freeze({
   off: false,
   builderClass: Object.freeze(["builder", "beefy-builder", "task", "sonic", "general-purpose"]),
+  readOnlyAgents: Object.freeze(["reviewer-codex", "reviewer", "auditor", "scout", "reader", "research", "beefy-research", "security-reviewer", "summarizer", "changelog", "checker"]),
   requireHowItFails: true,
   requireSpiralBound: true,
   requirePatternCheck: true,
@@ -83,9 +87,10 @@ export function loadConfig(env = process.env, home = homedir()) {
     if (typeof parsed[key] === "boolean") out[key] = parsed[key];
     else bad.push(`${key} must be true or false`);
   }
-  if (parsed.builderClass !== undefined) {
-    if (Array.isArray(parsed.builderClass) && parsed.builderClass.every((s) => typeof s === "string")) out.builderClass = parsed.builderClass.map((s) => s.trim().toLowerCase()).filter(Boolean);
-    else bad.push("builderClass must be an array of strings");
+  for (const key of ["builderClass", "readOnlyAgents"]) {
+    if (parsed[key] === undefined) continue;
+    if (Array.isArray(parsed[key]) && parsed[key].every((s) => typeof s === "string")) out[key] = parsed[key].map((s) => s.trim().toLowerCase()).filter(Boolean);
+    else bad.push(`${key} must be an array of strings`);
   }
   for (const key of ["readLineThreshold", "streakThreshold", "rulesBudget"]) {
     if (parsed[key] === undefined) continue;

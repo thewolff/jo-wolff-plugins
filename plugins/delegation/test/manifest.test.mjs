@@ -27,7 +27,7 @@ test("package.json, .claude-plugin/plugin.json and .omp-plugin/plugin.json agree
   for (const ext of pkg.omp.extensions) assert.ok(existsSync(join(PLUGIN_ROOT, ext)), ext);
 });
 
-test("hooks.json names hook files that exist, each under CLAUDE_PLUGIN_ROOT with a 4 s timeout", () => {
+test("hooks.json names hook files that exist, each under CLAUDE_PLUGIN_ROOT with a 5 s timeout (the runner's 4 s deadline answers first)", () => {
   const hooks = json("hooks/hooks.json").hooks;
   assert.deepEqual(Object.keys(hooks).sort(), ["PostToolUse", "PreToolUse", "SessionStart", "SubagentStop"]);
   for (const groups of Object.values(hooks)) {
@@ -36,7 +36,7 @@ test("hooks.json names hook files that exist, each under CLAUDE_PLUGIN_ROOT with
         const m = /^node "\$\{CLAUDE_PLUGIN_ROOT\}\/(hooks\/[a-z-]+\.mjs)"$/.exec(h.command);
         assert.ok(m, h.command);
         assert.ok(existsSync(join(PLUGIN_ROOT, m[1])), m[1]);
-        assert.equal(h.timeout, 4, h.command);
+        assert.equal(h.timeout, 5, h.command);
       }
     }
   }
@@ -69,7 +69,10 @@ test("the builder brief template carries the exact section texts the deny reason
   assert.ok(tpl.includes(`\n${HOW_IT_FAILS_SECTION}\n`), "How-it-fails section verbatim");
   assert.ok(tpl.includes(`\n${SPIRAL_BOUND_SECTION}\n`), "Spiral-bound section verbatim");
   assert.ok(tpl.includes(`\n${STOPPED_SECTION}\n`), "Report section verbatim");
-  assert.equal(stoppedBecause(tpl).valid, true);
+  for (const line of ["Stopped because: acceptance met", "Stopped because: bound hit", "Stopped because: told to stop"]) {
+    assert.ok(tpl.includes(`\n${line}\n`), line);
+    assert.equal(stoppedBecause(`Report.\n${line}`).valid, true, line);
+  }
   // A brief rebuilt from a refusal alone passes the gate: the deny text's sections satisfy the heading match.
   const rebuilt = `Do the thing.\n\n${headingReason([HOW_IT_FAILS, SPIRAL_BOUND], "builder").split("\n\n").slice(1).join("\n\n")}`;
   assert.ok(hasHeading(rebuilt, HOW_IT_FAILS) && hasHeading(rebuilt, SPIRAL_BOUND));

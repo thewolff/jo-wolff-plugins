@@ -4,9 +4,10 @@
 
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdirSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { box, gitRepo, runHook, setConfig } from "./helpers.mjs";
+import { lineCount } from "../hooks/delegation-guard.mjs";
 
 const pre = (tool_name, tool_input, { cwd, session_id = "s-ported", agent_type, agent_id } = {}) => ({ session_id, cwd, hook_event_name: "PreToolUse", tool_name, tool_input, ...(agent_type ? { agent_type } : {}), ...(agent_id ? { agent_id } : {}) });
 const context = (r) => r.out?.hookSpecificOutput?.additionalContext ?? null;
@@ -25,7 +26,7 @@ test("delegation-guard check 1: an oversized Read warns by default, blocks in bl
   const { env } = box(t);
   const p = bigFile(join(env.HOME, "w"));
   const r = runHook("delegation-guard", pre("Read", { file_path: p }, { cwd: env.HOME }), env);
-  assert.match(context(r), /`.*big\.ts` is 1200 lines, over the 1000-line threshold.*`reader` subagent/);
+  assert.match(context(r), /`.*big\.ts` is over the 1000-line threshold.*`reader` subagent/);
   assert.equal(deny(r), null);
   assert.equal(runHook("delegation-guard", pre("Read", { file_path: p, offset: 10, limit: 50 }, { cwd: env.HOME }), env).out, null, "a bounded slice");
   assert.equal(runHook("delegation-guard", pre("Read", { file_path: p }, { cwd: env.HOME, agent_type: "plugin:reader" }), env).out, null, "inside a reader");
@@ -36,6 +37,16 @@ test("delegation-guard check 1: an oversized Read warns by default, blocks in bl
   assert.equal(runHook("delegation-guard", pre("Read", { file_path: p }, { cwd: env.HOME }), env).out, null, "threshold raised");
   setConfig(env, { checks: { "delegation-guard": "off" } });
   assert.equal(runHook("delegation-guard", pre("Read", { file_path: p }, { cwd: env.HOME }), env).out, null, "off");
+});
+
+test("delegation-guard check 1: counting stops at the threshold plus one line, and a limit under the threshold is never counted", (t) => {
+  const { env } = box(t);
+  const p = bigFile(join(env.HOME, "w"), 5000);
+  assert.equal(lineCount(p), 5000);
+  assert.equal(lineCount(p, 1000), 1001);
+  assert.equal(lineCount(p, 10_000), 5000);
+  assert.equal(runHook("delegation-guard", pre("Read", { file_path: p, limit: 1000 }, { cwd: env.HOME }), env).out, null, "a limit at the threshold");
+  assert.match(context(runHook("delegation-guard", pre("Read", { file_path: p, limit: 4000 }, { cwd: env.HOME }), env)), /over the 1000-line threshold/, "a limit over the threshold");
 });
 
 test("delegation-guard check 2: the sixth distinct file warns once per streak; a spawn resets it; subagents are exempt", (t) => {
@@ -52,7 +63,11 @@ test("delegation-guard check 2: the sixth distinct file warns once per streak; a
   const sixth = runHook("delegation-guard", pre("Read", { file_path: files[5] }, { cwd: dir }), env);
   assert.match(context(sixth), /touched 6 distinct files directly this streak \(.*f0\.ts.*f5\.ts\).*`builder` subagent/);
   assert.equal(runHook("delegation-guard", pre("Read", { file_path: files[6] }, { cwd: dir }), env).out, null, "once per streak");
-  assert.equal(runHook("delegation-guard", pre("Agent", { prompt: "x" }, { cwd: dir }), env).out, null, "the spawn itself is silent");
+  const guardLog = () => readFileSync(join(env.XDG_STATE_HOME, "delegation", "guard", "s-ported.jsonl"), "utf8");
+  assert.equal(runHook("delegation-guard", pre("Agent", { prompt: "x" }, { cwd: dir }), env).out, null, "the PreToolUse spawn is silent");
+  assert.doesNotMatch(guardLog(), /"reset"/, "a PreToolUse spawn (which the spawn gate may deny) does not reset the streak");
+  assert.equal(runHook("delegation-guard", { ...pre("Agent", { prompt: "x" }, { cwd: dir }), hook_event_name: "PostToolUse", tool_response: {} }, env).out, null, "the PostToolUse spawn is silent");
+  assert.match(guardLog(), /"reset"/, "a spawn that ran resets the streak");
   for (let i = 0; i < 5; i++) assert.equal(runHook("delegation-guard", pre("Read", { file_path: files[i] }, { cwd: dir }), env).out, null, `after reset ${i}`);
   assert.match(context(runHook("delegation-guard", pre("Read", { file_path: files[7] }, { cwd: dir }), env)), /touched 6 distinct files/);
   const sub = box(t);

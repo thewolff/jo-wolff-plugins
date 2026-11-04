@@ -37,4 +37,4 @@ Stopped because: bound hit
 Stopped because: told to stop
 ```
 
-`acceptance met` means every acceptance check above passed once. `bound hit` means a retry, commit, time or tool bound stopped the work before acceptance; the report names which. `told to stop` means the parent sent a stop. Nothing else is a valid value, and a builder-class report without the line draws a warning in the parent's transcript.
+`acceptance met` means every acceptance check above passed once. `bound hit` means a retry, commit, time or tool bound stopped the work before acceptance; name which after it, as in `Stopped because: bound hit (commit budget)`. `told to stop` means the parent sent a stop. Nothing else is a valid value, and a builder-class report without the line draws a warning: shown to the user on Claude Code, added to the parent's context on OMP.

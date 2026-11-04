@@ -5,9 +5,14 @@
 // the same pure judges (lib/brief.mjs, lib/receipt.mjs) and the same config (lib/config.mjs).
 //
 // GATES 1, 4, 2 on `tool_call` for the `task` tool. OMP's spawn is one call carrying
-// `tasks[]`; each entry's `task` text is the brief and its `agent` the agent name (missing =
-// OMP's default `task`, which is in the default builder class). Every entry is judged; the
-// first failing one blocks the whole call with `{ block: true, reason }` naming the task index.
+// `tasks[]` and a shared `context`; OMP puts `context` in front of every task's prompt, so each
+// entry is judged on `context + "\n\n" + task`, and a section that lives in `context` counts for
+// every entry. The single-task form (a top-level `task` string, no `tasks`) is judged as one
+// entry. An entry's `agent` is the agent name (falling back to a top-level `agent`; missing =
+// OMP's default `task`, which is in the default builder class). A name in config
+// `readOnlyAgents` (reviewer-codex, scout, reader, …) is never builder-class: it needs
+// `## How it fails` only. Every entry is judged; the first failing one blocks the whole call
+// with `{ block: true, reason }` naming the task index.
 // The receipt (gate 2) is keyed on `ctx.sessionManager.getSessionId()` and `ctx.cwd`, the same
 // way pattern-check's OMP adapter keys its own receipt. The handler does no I/O beyond the
 // config read and two existsSync calls: an OMP tool_call handler that throws or exceeds its
@@ -42,9 +47,9 @@ export type ToolResultEvent = { toolName?: unknown; input?: unknown; details?: u
 export type BlockResult = { block: true; reason: string };
 export type ContextResult = { additionalContext: string };
 /** lib/receipt.mjs checkReceipt's answer. */
-export type ReceiptResult = { status: "present" | "missing" | "skipped"; why?: string; path?: string; key?: string; command?: string };
+export type ReceiptResult = { status: "present" | "missing" | "skipped"; why?: string; path?: string; key?: string; command?: string; config?: string };
 /** OMP's `task` tool input; every field unknown until checked with typeof. */
-export type TaskCallInput = { tasks?: unknown };
+export type TaskCallInput = { tasks?: unknown; task?: unknown; context?: unknown; agent?: unknown };
 export type TaskEntry = { task?: unknown; agent?: unknown };
 /** OMP's `task` tool result details (pi-tui TaskToolDetails); fields unknown until checked. */
 export type TaskResultDetails = { results?: unknown };
@@ -59,6 +64,7 @@ export type PiLike = {
   on(event: "tool_result", handler: Handler<ToolResultEvent, ContextResult>): void;
   on(event: "before_agent_start", handler: Handler<unknown, { message: TeachMessage }>): void;
   on(event: "context", handler: Handler<ContextEvent, undefined>): void;
+  on(event: "session_compact", handler: Handler<unknown, undefined>): void;
 };
 export type AdapterDeps = { env?: NodeJS.ProcessEnv; home?: string };
 export const TEACH_TYPE = "delegation";
@@ -73,23 +79,28 @@ export function judgeTaskCall(input: unknown, ctx: OmpContext, deps: AdapterDeps
   if (config.off) return undefined;
   // Host-supplied tool input: the shape is OMP's `task` schema, and every field read is re-checked with typeof.
   const call = (typeof input === "object" && input !== null ? input : EMPTY) as TaskCallInput;
-  if (!Array.isArray(call.tasks)) {
-    logSkipped(HOOK, "task call: tasks is not an array; spawn allowed unchecked", env, deps.home);
+  const single = !Array.isArray(call.tasks) && typeof call.task === "string";
+  if (!Array.isArray(call.tasks) && !single) {
+    logSkipped(HOOK, "task call: neither a tasks array nor a task string; spawn allowed unchecked", env, deps.home);
     return undefined;
   }
+  const entries: unknown[] = single ? [{ task: call.task, agent: call.agent }] : (call.tasks as unknown[]);
+  const context = typeof call.context === "string" ? call.context : "";
   let receipt: ReceiptResult | undefined;
-  for (let i = 0; i < call.tasks.length; i++) {
-    const raw: unknown = call.tasks[i];
+  for (let i = 0; i < entries.length; i++) {
+    const raw: unknown = entries[i];
+    const label = single ? "task" : `tasks[${i}]`;
     // One entry of OMP's `tasks[]`; both fields re-checked below.
     const t = (typeof raw === "object" && raw !== null ? raw : EMPTY) as TaskEntry;
     if (typeof t.task !== "string") {
-      logSkipped(HOOK, `task call: tasks[${i}].task is not a string; spawn allowed unchecked`, env, deps.home);
+      logSkipped(HOOK, `task call: ${label}.task is not a string; spawn allowed unchecked`, env, deps.home);
       continue;
     }
-    const agent = typeof t.agent === "string" ? t.agent : "task";
-    const builder = isBuilderClass(agent, config.builderClass);
-    const missing = missingHeadings(t.task, { builder, requireHowItFails: config.requireHowItFails, requireSpiralBound: config.requireSpiralBound });
-    if (missing.length) return { block: true, reason: `tasks[${i}]: ${headingReason(missing, agent, { builder })}` };
+    const agent = typeof t.agent === "string" ? t.agent : typeof call.agent === "string" ? call.agent : "task";
+    const builder = isBuilderClass(agent, config.builderClass, config.readOnlyAgents);
+    const prompt = context ? `${context}\n\n${t.task}` : t.task;
+    const missing = missingHeadings(prompt, { builder, requireHowItFails: config.requireHowItFails, requireSpiralBound: config.requireSpiralBound });
+    if (missing.length) return { block: true, reason: `${label}: ${headingReason(missing, agent, { builder })}` };
     if (builder && config.requirePatternCheck) {
       if (!receipt) {
         let id: unknown;
@@ -101,7 +112,7 @@ export function judgeTaskCall(input: unknown, ctx: OmpContext, deps: AdapterDeps
         receipt = checkReceipt({ sessionId: typeof id === "string" ? id : undefined, cwd: ctx?.cwd ?? process.cwd() }, env, deps.home);
       }
       if (receipt.status === "skipped") logSkipped(HOOK, `pattern-check receipt not checked: ${receipt.why}; spawn allowed`, env, deps.home);
-      else if (receipt.status === "missing") return { block: true, reason: `tasks[${i}]: ${receiptReason(agent, receipt)}` };
+      else if (receipt.status === "missing") return { block: true, reason: `${label}: ${receiptReason(agent, receipt)}` };
     }
   }
   return undefined;
@@ -118,7 +129,7 @@ export function judgeTaskResult(details: unknown, deps: AdapterDeps = {}): Conte
   for (const raw of d.results as unknown[]) {
     // One SingleResult; both fields re-checked below.
     const r = (typeof raw === "object" && raw !== null ? raw : EMPTY) as TaskSingleResult;
-    if (typeof r.agent !== "string" || !isBuilderClass(r.agent, config.builderClass)) continue;
+    if (typeof r.agent !== "string" || !isBuilderClass(r.agent, config.builderClass, config.readOnlyAgents)) continue;
     const verdict = stoppedBecause(typeof r.output === "string" ? r.output : "");
     if (!verdict.valid) warnings.push(stopWarning(r.agent, typeof r.id === "string" ? r.id : undefined, verdict));
   }
@@ -142,8 +153,11 @@ export default function delegationOmp(pi: PiLike, deps: AdapterDeps = {}): void 
   // messages (omp extensions.md, "Handlers must tolerate re-entry"), so the block is offered on
   // every before_agent_start until a `context` event shows a message of TEACH_TYPE in the
   // conversation: that is the proof it reached a provider request. A new session id (fresh
-  // session, switch) starts over. Subagent sessions (ctx.agent.kind "sub") are skipped: their
-  // parent's brief is what they read, and their own spawns are still gated.
+  // session, switch) starts over, and so does a `session_compact` of the main session (the
+  // Claude Code twin re-injects on SessionStart source "compact"; i-have-audhd's OMP adapter
+  // listens to the same event): the block is offered again until a context event shows it.
+  // Subagent sessions (ctx.agent.kind "sub") are skipped: their parent's brief is what they
+  // read, and their own spawns are still gated.
   let taughtSession: string | undefined;
   let taught = false;
   const sessionOf = (ctx: OmpContext): string => {
@@ -175,6 +189,10 @@ export default function delegationOmp(pi: PiLike, deps: AdapterDeps = {}): void 
     if (taught || !Array.isArray(messages)) return undefined;
     // Host-supplied message list; the one field read is re-checked below.
     taught = (messages as unknown[]).some((m) => typeof m === "object" && m !== null && (m as { customType?: unknown }).customType === TEACH_TYPE);
+    return undefined;
+  });
+  pi.on("session_compact", (_event, ctx) => {
+    if (ctx?.agent?.kind !== "sub") taught = false;
     return undefined;
   });
   pi.on("tool_call", (event, ctx) => {

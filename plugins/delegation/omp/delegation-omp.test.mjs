@@ -40,6 +40,22 @@ test("tool_call task: every entry is judged; the first failing one blocks with i
   assert.equal(pi.handlers.tool_call({ toolName: "bash", input: { command: "rm" } }, ctxFor(repo)), undefined, "other tools");
 });
 
+test("tool_call task: the shared context counts for every entry, the single-task form is judged, a parenthetical heading matches, and read-only agents need How-it-fails only", (t) => {
+  const { env } = box(t);
+  const repo = gitRepo(join(env.HOME, "repo"), env);
+  receipt(repo);
+  const deps = { env, home: env.HOME };
+  const plumbContext = "# Goal\nx\n\n## Spiral bound (builder)\n- one retry\n\n## How it fails (both tasks)\n- it breaks\n";
+  assert.equal(judgeTaskCall({ context: plumbContext, tasks: [{ task: "# Target\ndo it", agent: "builder" }] }, ctxFor(repo), deps), undefined, "sections in context");
+  assert.equal(judgeTaskCall({ context: "# Goal\nx", tasks: [{ task: GOOD_BRIEF, agent: "builder" }] }, ctxFor(repo), deps), undefined, "sections in the task");
+  assert.match(judgeTaskCall({ context: "# Goal\nx", tasks: [{ task: "do it", agent: "builder" }] }, ctxFor(repo), deps).reason, /^tasks\[0\]: Spawn refused/);
+  assert.equal(judgeTaskCall({ context: "# Goal\n\n## How it fails\n- x\n", tasks: [{ task: "review the diff", agent: "reviewer-codex" }] }, ctxFor(repo, "no-receipt-session"), deps), undefined, "read-only: no Spiral bound, no receipt");
+  assert.match(judgeTaskCall({ tasks: [{ task: "review the diff", agent: "reviewer-codex" }] }, ctxFor(repo), deps).reason, /^tasks\[0\]: Spawn refused: the prompt has no "## How it fails" heading\./);
+  assert.match(judgeTaskCall({ agent: "builder", task: "do it" }, ctxFor(repo), deps).reason, /^task: Spawn refused: the prompt has no "## How it fails" or "## Spiral bound" heading/, "single-task form");
+  assert.equal(judgeTaskCall({ agent: "builder", task: "do it", context: plumbContext }, ctxFor(repo), deps), undefined, "single-task form with context");
+  assert.equal(judgeTaskCall({ agent: "scout", tasks: [{ task: HOW_ONLY }] }, ctxFor(repo), deps), undefined, "a top-level agent applies to entries without one");
+});
+
 test("tool_call task: a missing agent is OMP's default `task`, which is builder-class; gate 2 keys on the session id", (t) => {
   const { env } = box(t);
   const repo = gitRepo(join(env.HOME, "repo"), env);
@@ -59,7 +75,7 @@ test("tool_call task: outside a git repository gate 2 is skipped with a skipped.
   assert.equal(judgeTaskCall({ tasks: [{ task: GOOD_BRIEF, agent: "builder" }] }, ctxFor(loose), deps), undefined);
   assert.match(skippedLog(env, env.HOME), /omp pattern-check receipt not checked: .*loose is in no git repository/);
   assert.equal(judgeTaskCall({ tasks: "nope" }, ctxFor(loose), deps), undefined);
-  assert.match(skippedLog(env), /omp task call: tasks is not an array/);
+  assert.match(skippedLog(env), /omp task call: neither a tasks array nor a task string/);
   assert.equal(judgeTaskCall({ tasks: [{ agent: "builder" }] }, ctxFor(loose), deps), undefined);
   assert.match(skippedLog(env), /omp task call: tasks\[0\]\.task is not a string/);
   assert.equal(judgeTaskCall({ tasks: [{ task: GOOD_BRIEF }] }, { sessionManager: { getSessionId: () => { throw new Error("x"); } }, cwd: loose }, deps), undefined, "a throwing session manager");
@@ -126,6 +142,12 @@ test("before_agent_start: the teaching block is offered until a context event sh
   assert.ok(pi.handlers.before_agent_start(undefined, ctx), "an unrelated context event does not count");
   pi.handlers.context({ messages: [{ role: "user", content: "hi" }, { customType: "delegation", content: "…" }] }, ctx);
   assert.equal(pi.handlers.before_agent_start(undefined, ctx), undefined, "carried: silent for the rest of the session");
+  pi.handlers.session_compact(undefined, { ...ctx, agent: { kind: "sub" } });
+  assert.equal(pi.handlers.before_agent_start(undefined, ctx), undefined, "a subagent's compaction changes nothing");
+  pi.handlers.session_compact(undefined, ctx);
+  assert.ok(pi.handlers.before_agent_start(undefined, ctx), "offered again after a compaction");
+  pi.handlers.context({ messages: [{ customType: "delegation", content: "…" }] }, ctx);
+  assert.equal(pi.handlers.before_agent_start(undefined, ctx), undefined, "carried again");
   assert.ok(pi.handlers.before_agent_start(undefined, ctxFor(env.HOME, "s2")), "a new session id starts over");
   assert.equal(pi.handlers.before_agent_start(undefined, { ...ctxFor(env.HOME, "s3"), agent: { kind: "sub" } }), undefined, "a subagent is skipped");
   setConfig(env, { off: true });

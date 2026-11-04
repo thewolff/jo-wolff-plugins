@@ -7,7 +7,8 @@ import assert from "node:assert/strict";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { box, errorsLog, gitRepo, runHook, setConfig, skippedLog, spawnPayload, GOOD_BRIEF, HOW_ONLY } from "./helpers.mjs";
-import { HOW_IT_FAILS_SECTION, SPIRAL_BOUND_SECTION, STOPPED_LINE, TEMPLATE } from "../lib/brief.mjs";
+import { HOW_IT_FAILS_SECTION, SPIRAL_BOUND_SECTION, STOPPED_LINE, TEMPLATE, stoppedBecause } from "../lib/brief.mjs";
+import { compareVersionsDesc } from "../lib/receipt.mjs";
 
 const deny = (r) => r.out?.hookSpecificOutput?.permissionDecision === "deny" ? r.out.hookSpecificOutput.permissionDecisionReason : null;
 
@@ -92,10 +93,23 @@ test("spawn-gate: a missing subagent_type is general-purpose, which is builder-c
 test("spawn-gate: headings match at any level, any case, with a trailing colon; prose mentions do not", (t) => {
   const { env } = box(t);
   const repo = repoWithReceipt(t, env);
-  const ok = ["### HOW IT FAILS\nx\n#### spiral bound:\ny", "# How it fails #\n\n# Spiral Bound\n", "   ## How it fails\n## Spiral bound\n"];
+  const ok = ["### HOW IT FAILS\nx\n#### spiral bound:\ny", "# How it fails #\n\n# Spiral Bound\n", "   ## How it fails\n## Spiral bound\n", "## How it fails (both tasks)\n## Spiral bound (builder)\n", "```\nx\n```\n## How it fails\n~~~\n## nope\n~~~\n## Spiral bound\n"];
   for (const prompt of ok) assert.equal(runHook("spawn-gate", spawnPayload({ cwd: repo, prompt }), env).out, null, prompt);
-  const bad = ["How it fails: it just does. Spiral bound: 3.", "**How it fails**\n**Spiral bound**", "```\n## How it fails\n## Spiral bound\n```\n".replace(/```\n## /g, "> ## ")];
+  const bad = ["How it fails: it just does. Spiral bound: 3.", "**How it fails**\n**Spiral bound**", "> ## How it fails\n> ## Spiral bound\n", "x\n```\n## How it fails\n## Spiral bound\n```\ny", "x\n````md\n## How it fails\n```\n## Spiral bound\n````\n", "## How it fails (a) (b)\n## Spiral bound extra\n"];
   for (const prompt of bad) assert.ok(deny(runHook("spawn-gate", spawnPayload({ cwd: repo, prompt }), env)), prompt);
+});
+
+test("spawn-gate: a read-only agent needs How-it-fails only, never Spiral bound or a receipt, even when also listed as builder-class", (t) => {
+  const { env } = box(t);
+  const repo = gitRepo(join(env.HOME, "repo"), env); // no receipt
+  for (const type of ["reviewer-codex", "auditor", "plugin:scout", "research"]) {
+    assert.equal(runHook("spawn-gate", spawnPayload({ cwd: repo, prompt: HOW_ONLY, subagent_type: type }), env).out, null, type);
+  }
+  assert.match(deny(runHook("spawn-gate", spawnPayload({ cwd: repo, prompt: "review it", subagent_type: "reviewer-codex" }), env)), /^Spawn refused: the prompt has no "## How it fails" heading\./);
+  setConfig(env, { builderClass: ["builder", "reviewer"], readOnlyAgents: ["reviewer"] });
+  assert.equal(runHook("spawn-gate", spawnPayload({ cwd: repo, prompt: HOW_ONLY, subagent_type: "reviewer" }), env).out, null, "read-only wins");
+  setConfig(env, { readOnlyAgents: [] });
+  assert.match(deny(runHook("spawn-gate", spawnPayload({ cwd: repo, prompt: HOW_ONLY, subagent_type: "builder" }), env)), /Spiral bound/);
 });
 
 test("spawn-gate: the Task tool name is gated the same as Agent; other tools are ignored", (t) => {
@@ -113,7 +127,29 @@ test("spawn-gate: gate 2 denies a builder-class spawn with no pattern-check rece
   assert.ok(reason, r.stdout);
   assert.ok(reason.includes(`${join(repo, ".pattern-check", "s-abc.md")}`), reason);
   assert.match(reason, /pattern-check\.mjs" open "<what you are about to build>" then node ".*pattern-check\.mjs" record --session s-abc/);
-  assert.match(reason, /Then re-issue this spawn/);
+  assert.match(reason, /Then re-issue this spawn\. To turn this gate off instead, set `"requirePatternCheck": false` in .*delegation\/config\.json\.$/);
+});
+
+test("spawn-gate: gate 2 is skipped with one skipped.log line when pattern-check is not installed; a receipt still counts", (t) => {
+  const { env, root } = box(t);
+  // CLAUDE_PLUGIN_ROOT names a plugin root with no pattern-check beside it and none in the cache above it.
+  const lone = join(root, "cache", "mkt", "delegation", "0.1.0");
+  mkdirSync(lone, { recursive: true });
+  const repo = gitRepo(join(env.HOME, "repo"), env);
+  const r = runHook("spawn-gate", spawnPayload({ cwd: repo }), env, { extraEnv: { CLAUDE_PLUGIN_ROOT: lone } });
+  assert.equal(r.out, null, r.stdout);
+  assert.match(skippedLog(env), /^\S+ spawn-gate pattern-check receipt not checked: pattern-check is not installed .*; spawn allowed\n$/);
+  // Installed in the cache beside it: the newest version by number is the one named.
+  for (const v of ["0.3.9", "0.3.10", "0.2.99"]) {
+    mkdirSync(join(root, "cache", "mkt", "pattern-check", v, "scripts"), { recursive: true });
+    writeFileSync(join(root, "cache", "mkt", "pattern-check", v, "scripts", "pattern-check.mjs"), "");
+  }
+  const d = runHook("spawn-gate", spawnPayload({ cwd: repo }), env, { extraEnv: { CLAUDE_PLUGIN_ROOT: lone } });
+  assert.match(deny(d), /pattern-check\/0\.3\.10\/scripts\/pattern-check\.mjs" open/);
+  assert.deepEqual(["0.3.9", "0.3.10", "0.10.0", "0.2.99"].sort(compareVersionsDesc), ["0.10.0", "0.3.10", "0.3.9", "0.2.99"]);
+  mkdirSync(join(repo, ".pattern-check"));
+  writeFileSync(join(repo, ".pattern-check", "s-test-1.md"), "# r\n");
+  assert.equal(runHook("spawn-gate", spawnPayload({ cwd: repo }), env, { extraEnv: { CLAUDE_PLUGIN_ROOT: join(root, "elsewhere", "x", "delegation") } }).out, null, "a receipt counts with no CLI found");
 });
 
 test("spawn-gate: gate 2 accepts pattern-check's state copy of the receipt", (t) => {
@@ -218,28 +254,35 @@ test("subagent-stop: a builder-class report without Stopped because gets a syste
   const r = runHook("subagent-stop", stopPayload("builder", "All done, tests green."), env);
   assert.equal(r.out.decision, undefined);
   assert.equal(r.out.continue, undefined);
-  assert.equal(r.out.systemMessage, `delegation: builder-class agent "builder" (a1) ended without a "Stopped because:" line. Treat the report as unfinished until you know which applies. The report's last line is exactly one of: \`Stopped because: acceptance met\` (every acceptance check passed once), \`Stopped because: bound hit\` (a retry, commit, time or tool bound stopped it; name which), \`Stopped because: told to stop\` (you sent a stop). Put this in the brief of the next builder-class spawn: "End your report with one line: ${STOPPED_LINE}." Full template: ${TEMPLATE} in the delegation plugin.`);
+  assert.equal(r.out.systemMessage, `delegation: builder-class agent "builder" (a1) ended without a "Stopped because:" line. Its report is unfinished until it says which applies. The report's last line is exactly one of: \`Stopped because: acceptance met\` (every acceptance check passed once), \`Stopped because: bound hit\` (a retry, commit, time or tool bound stopped it; name which after it), \`Stopped because: told to stop\` (the parent sent a stop). The next builder-class brief needs: "End your report with one line: ${STOPPED_LINE}." Full template: ${TEMPLATE} in the delegation plugin.`);
 });
 
-test("subagent-stop: a wrong value is named; a valid one in any case, bold or not, last line or not, passes", (t) => {
+test("subagent-stop: a wrong value is named; a valid one in any case, bold, backticked or with a detail passes only as the last non-empty line", (t) => {
   const { env } = box(t);
   const r = runHook("subagent-stop", stopPayload("beefy-builder", "Report.\nStopped because: I felt like it"), env);
   assert.match(r.out.systemMessage, /ended with "Stopped because: i felt like it", which is not one of the three values/);
-  for (const msg of ["x\nStopped because: acceptance met", "x\n**Stopped because:** Bound hit", "x\nStopped because: told to stop.\n", "The template says `Stopped because: x`.\n\nStopped because: acceptance met\n"]) {
+  for (const msg of ["x\nStopped because: acceptance met", "x\n**Stopped because:** Bound hit", "x\nStopped because: told to stop.\n", "The template says `Stopped because: x`.\n\nStopped because: acceptance met\n", "x\nStopped because: bound hit (retry on the lint step)", "x\n`Stopped because: acceptance met`\n\n", "x\nStopped because: bound hit: commit budget"]) {
     assert.equal(runHook("subagent-stop", stopPayload("builder", msg), env).out, null, msg);
   }
+  const trailing = runHook("subagent-stop", stopPayload("builder", "Stopped because: acceptance met\nsome trailing text"), env);
+  assert.match(trailing.out.systemMessage, /has "Stopped because: acceptance met" but not as its last line/);
+  assert.deepEqual(stoppedBecause("Stopped because: bound hitting"), { found: true, value: "bound hitting", valid: false, misplaced: false });
 });
 
-test("subagent-stop: non-builder agents, a missing agent_type, and off are silence; a missing message warns", (t) => {
+test("subagent-stop: non-builder and read-only agents, a missing or empty agent_type (Claude Code's internal agents), and off are silence; a missing message warns", (t) => {
   const { env } = box(t);
   assert.equal(runHook("subagent-stop", stopPayload("reader", "no line"), env).out, null);
   assert.equal(runHook("subagent-stop", stopPayload("newdle:scout", "no line"), env).out, null);
+  assert.equal(runHook("subagent-stop", stopPayload("", "no line"), env).out, null, "empty agent_type");
+  assert.equal(runHook("subagent-stop", stopPayload("  ", "no line"), env).out, null, "blank agent_type");
   const noType = stopPayload("builder", "no line");
   delete noType.agent_type;
   assert.equal(runHook("subagent-stop", noType, env).out, null);
   const noMsg = stopPayload("builder", undefined);
   assert.match(runHook("subagent-stop", noMsg, env).out.systemMessage, /ended without a "Stopped because:" line/);
   setConfig(env, { builderClass: ["reader"] });
+  assert.equal(runHook("subagent-stop", stopPayload("reader", "no line"), env).out, null, "reader stays read-only by default");
+  setConfig(env, { builderClass: ["reader"], readOnlyAgents: [] });
   assert.match(runHook("subagent-stop", stopPayload("reader", "no line"), env).out.systemMessage, /builder-class agent "reader"/);
   setConfig(env, { off: true });
   assert.equal(runHook("subagent-stop", stopPayload("builder", "no line"), env).out, null);

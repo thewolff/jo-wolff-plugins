@@ -5,10 +5,12 @@
 //
 // GATE 1  the prompt (`tool_input.prompt`) has no `## How it fails` heading → deny.
 // GATE 4  `tool_input.subagent_type` is builder-class (config `builderClass`; a missing type is
-//         `general-purpose`) and the prompt has no `## Spiral bound` heading → deny.
+//         `general-purpose`) and the prompt has no `## Spiral bound` heading → deny. A type in
+//         config `readOnlyAgents` (reviewer-codex, scout, reader, …) is never builder-class.
 // GATE 2  builder-class and this session has no pattern-check receipt
 //         (<git root of cwd>/.pattern-check/<session_id>.md, or pattern-check's state copy) → deny,
-//         naming the pattern-check command. Not in a git repository → allow, one skipped.log line.
+//         naming the pattern-check command and `requirePatternCheck: false` as the way out. Not in
+//         a git repository, or pattern-check not installed → allow, one skipped.log line.
 // The deny reason names the missing heading and the fix (lib/brief.mjs headingReason, at most
 // 300 characters) or the exact command (lib/receipt.mjs receiptReason), and points at
 // templates/builder-brief.md. It reaches the model as an `is_error` tool result prefixed
@@ -25,6 +27,7 @@
 //
 // How it fails: stdin not JSON, a thrown error, or no answer in 4 s → the runner logs it to
 // errors.log and allows. A malformed config → defaults plus a systemMessage naming the file.
+// The hooks.json timeout is 5 s, so the runner's 4 s deadline answers before the host kills it.
 
 import { runHook, invokedDirectly } from "../lib/hook-runner.mjs";
 import { loadConfig, logSkipped, withFault } from "../lib/config.mjs";
@@ -50,7 +53,7 @@ export function handle(input, { env = process.env } = {}) {
     return withFault(null, fault, HOOK);
   }
   const type = typeof ti.subagent_type === "string" ? ti.subagent_type : undefined;
-  const builder = isBuilderClass(type, config.builderClass);
+  const builder = isBuilderClass(type, config.builderClass, config.readOnlyAgents);
   const missing = missingHeadings(ti.prompt, { builder, requireHowItFails: config.requireHowItFails, requireSpiralBound: config.requireSpiralBound });
   if (missing.length) return withFault(deny(headingReason(missing, type, { builder })), fault, HOOK);
   if (builder && config.requirePatternCheck) {

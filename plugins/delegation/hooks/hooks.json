@@ -3,7 +3,7 @@
     "SessionStart": [
       {
         "hooks": [
-          { "type": "command", "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/session-start.mjs\"", "timeout": 4 }
+          { "type": "command", "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/session-start.mjs\"", "timeout": 5 }
         ]
       }
     ],
@@ -11,20 +11,20 @@
       {
         "matcher": "Agent|Task",
         "hooks": [
-          { "type": "command", "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/spawn-gate.mjs\"", "timeout": 4 },
-          { "type": "command", "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/worktree-spawn-guard.mjs\"", "timeout": 4 }
+          { "type": "command", "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/spawn-gate.mjs\"", "timeout": 5 },
+          { "type": "command", "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/worktree-spawn-guard.mjs\"", "timeout": 5 }
         ]
       },
       {
-        "matcher": "Read|Grep|Bash|Agent|Task",
+        "matcher": "Read|Grep|Bash",
         "hooks": [
-          { "type": "command", "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/delegation-guard.mjs\"", "timeout": 4 }
+          { "type": "command", "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/delegation-guard.mjs\"", "timeout": 5 }
         ]
       },
       {
         "matcher": "Read|Edit|Write|MultiEdit|NotebookEdit",
         "hooks": [
-          { "type": "command", "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/repo-rules-inject.mjs\"", "timeout": 4 }
+          { "type": "command", "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/repo-rules-inject.mjs\"", "timeout": 5 }
         ]
       }
     ],
@@ -32,14 +32,20 @@
       {
         "matcher": "SendMessage",
         "hooks": [
-          { "type": "command", "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/send-message-check.mjs\"", "timeout": 4 }
+          { "type": "command", "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/send-message-check.mjs\"", "timeout": 5 }
+        ]
+      },
+      {
+        "matcher": "Agent|Task",
+        "hooks": [
+          { "type": "command", "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/delegation-guard.mjs\"", "timeout": 5 }
         ]
       }
     ],
     "SubagentStop": [
       {
         "hooks": [
-          { "type": "command", "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/subagent-stop.mjs\"", "timeout": 4 }
+          { "type": "command", "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/subagent-stop.mjs\"", "timeout": 5 }
         ]
       }
     ]

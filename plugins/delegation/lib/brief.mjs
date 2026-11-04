@@ -3,18 +3,23 @@
 // (omp/delegation-omp.ts). No I/O, never throws on a string input.
 //
 // WHAT IS MATCHED, AND ONLY THIS: a literal Markdown heading line, any level 1 to 6, whose
-// text is `How it fails` or `Spiral bound` (case-insensitive; a trailing colon and closing
-// hashes are allowed; up to three leading spaces, like CommonMark). Nothing else in the
-// prompt is inspected: not whether the section has content, not fenced code, not prose that
-// mentions the words. A gate that reads prose is a gate that argues; this one reads a heading.
+// text is `How it fails` or `Spiral bound` (case-insensitive; a trailing parenthetical such as
+// `(builder)`, a trailing colon and closing hashes are allowed; up to three leading spaces, like
+// CommonMark). A heading inside a fenced code block (``` or ~~~) does not count. Nothing else in
+// the prompt is inspected: not whether the section has content, not prose that mentions the
+// words. A gate that reads prose is a gate that argues; this one reads a heading.
 //
 // BUILDER-CLASS: an agent name is compared bare: trimmed, lower-cased, any `plugin:` or
 // `dir/` prefix dropped, so `newdle:builder`, `agents/builder` and `Builder` all match
-// `builder`. A missing subagent_type is Claude Code's default agent, `general-purpose`.
+// `builder`. A name in the read-only list (config `readOnlyAgents`) is never builder-class,
+// whatever `builderClass` says. The spawn gate maps a missing subagent_type to Claude Code's
+// default agent, `general-purpose`; the stop warning does not (an empty agent_type there is one
+// of Claude Code's internal agents).
 //
-// STOPPED BECAUSE: a builder-class report ends with one line `Stopped because: <value>` where
-// value is one of STOPPED_VALUES. The check finds the LAST such line anywhere in the text
-// (the report may quote the template above it) and judges its value.
+// STOPPED BECAUSE: a builder-class report's last non-empty line is `Stopped because: <value>`,
+// where value starts with one of STOPPED_VALUES and may carry a detail after it
+// (`bound hit (two retries on the lint step)`). Backticks, bold or italics around the line are
+// ignored. A `Stopped because:` line that is not the last non-empty line does not count.
 
 export const HOW_IT_FAILS = "How it fails";
 export const SPIRAL_BOUND = "Spiral bound";
@@ -52,7 +57,7 @@ Stopped because: bound hit
 Stopped because: told to stop
 \`\`\`
 
-\`acceptance met\` means every acceptance check above passed once. \`bound hit\` means a retry, commit, time or tool bound stopped the work before acceptance; the report names which. \`told to stop\` means the parent sent a stop. Nothing else is a valid value, and a builder-class report without the line draws a warning in the parent's transcript.`;
+\`acceptance met\` means every acceptance check above passed once. \`bound hit\` means a retry, commit, time or tool bound stopped the work before acceptance; name which after it, as in \`Stopped because: bound hit (commit budget)\`. \`told to stop\` means the parent sent a stop. Nothing else is a valid value, and a builder-class report without the line draws a warning: shown to the user on Claude Code, added to the parent's context on OMP.`;
 
 /**
  * The block a fresh session is given before its first spawn (SessionStart on Claude Code,
@@ -79,16 +84,37 @@ Which agent: \`scout\` finds paths and lines; \`reader\` maps code you will not 
 }
 
 const escape = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-const headingRe = (title) => new RegExp(`^[ \\t]{0,3}#{1,6}[ \\t]+${escape(title)}[ \\t]*:?[ \\t]*#*[ \\t]*$`, "im");
+const headingRe = (title) => new RegExp(`^[ \\t]{0,3}#{1,6}[ \\t]+${escape(title)}(?:[ \\t]*\\([^()\\n]*\\))?[ \\t]*:?[ \\t]*#*[ \\t]*$`, "i");
 const HOW_RE = headingRe(HOW_IT_FAILS);
 const SPIRAL_RE = headingRe(SPIRAL_BOUND);
-const STOPPED_RE = /^[ \t]*(?:[*_]{1,2})?Stopped because:(?:[*_]{1,2})?[ \t]*(.*?)[ \t]*$/gim;
+const FENCE_RE = /^[ \t]{0,3}(`{3,}|~{3,})/;
+const STOPPED_RE = /^Stopped because:[*_]{0,2}[ \t]*(.*)$/i;
+const VALID_STOPPED_RE = new RegExp(`^(?:${STOPPED_VALUES.map(escape).join("|")})(?:$|[ \\t]*[(:;,\\u2014\\u2013-][\\s\\S]*$|[ \\t]+[\\s\\S]*$)`);
+
+/** The lines of `text` outside fenced code blocks (``` or ~~~, closed by the same character, at least as long). */
+function unfencedLines(text) {
+  const out = [];
+  let fence = null;
+  for (const line of text.split(/\r?\n/)) {
+    const m = FENCE_RE.exec(line);
+    if (fence) {
+      if (m && m[1][0] === fence[0] && m[1].length >= fence.length && line.trim() === m[1]) fence = null;
+      continue;
+    }
+    if (m) {
+      fence = m[1];
+      continue;
+    }
+    out.push(line);
+  }
+  return out;
+}
 
 /** True when `text` has a heading line titled `title`. A non-string is false. */
 export function hasHeading(text, title) {
   if (typeof text !== "string") return false;
   const re = title === HOW_IT_FAILS ? HOW_RE : title === SPIRAL_BOUND ? SPIRAL_RE : headingRe(title);
-  return re.test(text);
+  return unfencedLines(text).some((line) => re.test(line));
 }
 
 /** The bare agent name: trimmed, lower-cased, `plugin:`/`dir/` prefix dropped. */
@@ -96,10 +122,19 @@ export function agentKey(name) {
   return String(name ?? "").trim().toLowerCase().split(/[:/]/).at(-1) ?? "";
 }
 
-/** Is `name` in `builderClass` (bare names)? An empty or missing name is DEFAULT_AGENT. */
-export function isBuilderClass(name, builderClass) {
+/** Is bare `name` in `list` (bare names)? */
+export function inList(name, list) {
+  const key = agentKey(name);
+  return key !== "" && list.some((b) => agentKey(b) === key);
+}
+
+/**
+ * Is `name` builder-class: in `builderClass` and not in `readOnly`? An empty or missing name is
+ * DEFAULT_AGENT (the spawn gate's reading; the stop warning screens out an empty name first).
+ */
+export function isBuilderClass(name, builderClass, readOnly = []) {
   const key = agentKey(name) || DEFAULT_AGENT;
-  return builderClass.some((b) => agentKey(b) === key);
+  return inList(key, builderClass) && !inList(key, readOnly);
 }
 
 /**
@@ -138,17 +173,32 @@ export function headingReason(missing, subagentType, { builder = missing.include
 }
 
 /**
- * The last `Stopped because:` line of a report.
- * @returns {{ found: boolean, value: string|null, valid: boolean }}
+ * The `Stopped because:` verdict of a report: judged on its last non-empty line only.
+ * `found` is true when any line of the report is a `Stopped because:` line; `misplaced` when
+ * one is, but not the last non-empty line.
+ * @returns {{ found: boolean, value: string|null, valid: boolean, misplaced: boolean }}
  */
 export function stoppedBecause(text) {
-  if (typeof text !== "string") return { found: false, value: null, valid: false };
-  let last = null;
-  for (const m of text.matchAll(STOPPED_RE)) last = m[1];
-  if (last === null) return { found: false, value: null, valid: false };
-  const value = last.replace(/[*_`.]+$/g, "").replace(/^[*_`]+/g, "").trim().toLowerCase();
-  return { found: true, value, valid: STOPPED_VALUES.includes(value) };
+  const none = { found: false, value: null, valid: false, misplaced: false };
+  if (typeof text !== "string") return none;
+  const lines = text.split(/\r?\n/).map(stripWrap).filter((l) => l !== "");
+  if (!lines.length) return none;
+  const m = STOPPED_RE.exec(lines.at(-1));
+  if (m) {
+    const value = stoppedValue(m[1]);
+    return { found: true, value, valid: VALID_STOPPED_RE.test(value), misplaced: false };
+  }
+  const earlier = lines.findLast((l) => STOPPED_RE.test(l));
+  if (!earlier) return none;
+  return { found: true, value: stoppedValue(STOPPED_RE.exec(earlier)[1]), valid: false, misplaced: true };
 }
+
+/** A line with surrounding whitespace, and backticks and bold/italic markers at its start or a trailing backtick, removed. */
+function stripWrap(line) {
+  return line.trim().replace(/^[`*_]+/, "").replace(/`+$/, "").trim();
+}
+
+const stoppedValue = (raw) => raw.replace(/[*_`.]+$/g, "").replace(/^[*_`]+/g, "").trim().toLowerCase();
 
 /**
  * The warning for a builder-class report with no valid `Stopped because:` line. It says the
@@ -156,10 +206,12 @@ export function stoppedBecause(text) {
  */
 export function stopWarning(agentType, agentId, verdict) {
   const who = `builder-class agent "${shortType(agentType)}"${agentId ? ` (${agentId})` : ""}`;
-  const what = verdict.found
-    ? `ended with "Stopped because: ${verdict.value}", which is not one of the three values`
-    : `ended without a "Stopped because:" line`;
-  return `delegation: ${who} ${what}. Treat the report as unfinished until you know which applies. The report's last line is exactly one of: \`Stopped because: acceptance met\` (every acceptance check passed once), \`Stopped because: bound hit\` (a retry, commit, time or tool bound stopped it; name which), \`Stopped because: told to stop\` (you sent a stop). Put this in the brief of the next builder-class spawn: "End your report with one line: ${STOPPED_LINE}." Full template: ${TEMPLATE} in the delegation plugin.`;
+  const what = verdict.misplaced
+    ? `has "Stopped because: ${verdict.value}" but not as its last line`
+    : verdict.found
+      ? `ended with "Stopped because: ${verdict.value}", which is not one of the three values`
+      : `ended without a "Stopped because:" line`;
+  return `delegation: ${who} ${what}. Its report is unfinished until it says which applies. The report's last line is exactly one of: \`Stopped because: acceptance met\` (every acceptance check passed once), \`Stopped because: bound hit\` (a retry, commit, time or tool bound stopped it; name which after it), \`Stopped because: told to stop\` (the parent sent a stop). The next builder-class brief needs: "End your report with one line: ${STOPPED_LINE}." Full template: ${TEMPLATE} in the delegation plugin.`;
 }
 
 /** The sentence gate 3 appends to the host's own message. */

@@ -1,16 +1,20 @@
 #!/usr/bin/env node
-// hooks/delegation-guard.mjs — PreToolUse on `Read|Grep|Bash|Agent|Task`: the three
-// direct-work nudges, ported from newdle's hooks/delegation-guard.mjs (0.2.175). Runs under
-// lib/hook-runner.mjs: exit 0 always; a fault is one errors.log line and a systemMessage.
+// hooks/delegation-guard.mjs — PreToolUse on `Read|Grep|Bash` and PostToolUse on `Agent|Task`:
+// the three direct-work nudges, ported from newdle's hooks/delegation-guard.mjs (0.2.175). Runs
+// under lib/hook-runner.mjs: exit 0 always; a fault is one errors.log line and a systemMessage.
 //
 // THE CHECKS
 //   1. Read of a file over `readLineThreshold` lines (default 1000) with no bounding `limit`
 //      → the file belongs with a `reader` subagent. An offset/limit read is judged on what it
-//      would read. Inside a `reader` the nudge is circular and is skipped.
+//      would read; a `limit` at or under the threshold is never counted, and counting stops at
+//      the threshold plus one line, so a huge file costs no more than a small one. Inside a
+//      `reader` the nudge is circular and is skipped.
 //   2. The `streakThreshold`-th (default 6) distinct file or Grep path touched directly since
 //      the last subagent spawn → the work belongs with a `builder`. Once per streak; a spawn
-//      (`Agent`/`Task`) resets it. Main session only: a subagent has no spawn tool, so the
-//      instruction would be unfollowable there.
+//      resets it. The reset is on PostToolUse, which fires only for a spawn that ran: a spawn
+//      the spawn gate denied (the PreToolUse hooks run in parallel and cannot see each other's
+//      answer) does not reset the streak. Main session only: a subagent has no spawn tool, so
+//      the instruction would be unfollowable there.
 //   3. A whole-tree search: `find .`/`find /`, a recursive grep/rg with no path, a Grep with no
 //      `path` or one that is the cwd → it belongs with a `scout`. Inside a `scout` it is skipped.
 //
@@ -120,8 +124,12 @@ function sweepStale(env, random = Math.random) {
 
 // ---- check 1 ----
 
-/** Lines in a file read in 64 KiB chunks; null for a missing, unreadable or binary (NUL) file. */
-export function lineCount(filePath) {
+/**
+ * Lines in a file read in 64 KiB chunks; null for a missing, unreadable or binary (NUL) file.
+ * With `stopAfter`, counting stops at the end of the chunk where the count passes it (the
+ * answer is then stopAfter + 1); a NUL byte in that chunk still reads as binary.
+ */
+export function lineCount(filePath, stopAfter = Infinity) {
   let fd;
   try {
     fd = openSync(filePath, "r");
@@ -132,10 +140,12 @@ export function lineCount(filePath) {
     let bytesRead;
     while ((bytesRead = readSync(fd, buf, 0, buf.length, null)) > 0) {
       sawByte = true;
+      let over = false;
       for (let i = 0; i < bytesRead; i++) {
         if (buf[i] === 0) return null;
-        if (buf[i] === 10) n++;
+        if (buf[i] === 10 && !over && ++n > stopAfter) over = true;
       }
+      if (over) return n;
       endsWithNewline = buf[bytesRead - 1] === 10;
     }
     if (!sawByte) return 0;
@@ -230,7 +240,8 @@ export function handle(input, { env = process.env, random = Math.random } = {}) 
   sweepStale(env, random);
 
   if (SPAWN.has(lower)) {
-    appendEvent(env, key, { type: "reset" });
+    // PostToolUse only: a PreToolUse spawn may still be denied by the spawn gate.
+    if (input?.hook_event_name === "PostToolUse") appendEvent(env, key, { type: "reset" });
     return done(null);
   }
 
@@ -253,12 +264,13 @@ export function handle(input, { env = process.env, random = Math.random } = {}) 
     const hitsThreshold = state.touched.size + 1 >= config.streakThreshold;
     if (!inSubagent && !alreadyTouched) appendEvent(env, key, { type: "touch", path: filePath });
 
-    const n = lineCount(filePath);
     const limit = Number(ti.limit);
-    const effective = Number.isFinite(limit) && limit > 0 && n !== null ? Math.min(n, limit) : n;
+    const bounded = Number.isFinite(limit) && limit > 0;
+    const n = bounded && limit <= config.readLineThreshold ? null : lineCount(filePath, config.readLineThreshold);
+    const effective = bounded && n !== null ? Math.min(n, limit) : n;
     if (agentType !== "reader" && effective !== null && effective > config.readLineThreshold) {
       return done(speak(mode,
-        `delegation-guard: \`${rawPath}\` is ${n} lines, over the ${config.readLineThreshold}-line threshold. A file this size belongs with a \`reader\` subagent rather than in the parent context, unless this is a single-line lookup.`,
+        `delegation-guard: \`${rawPath}\` is over the ${config.readLineThreshold}-line threshold. A file this size belongs with a \`reader\` subagent rather than in the parent context, unless this is a single-line lookup.`,
         "Read a bounded slice instead (pass `offset` and `limit`; the threshold is judged on what you read), or spawn `reader` for the whole file; if neither is open to you, report which file you needed and why."));
     }
     if (!inSubagent && !alreadyTouched && hitsThreshold && !state.alreadyWarned) {
