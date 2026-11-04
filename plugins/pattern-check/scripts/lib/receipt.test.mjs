@@ -80,6 +80,28 @@ test("regression (codex review B1): restart-safe yes or no without a reason is r
   }
 });
 
+test("regression (codex review round 2, B1): placeholders decorated with punctuation or Markdown are still placeholders", () => {
+  for (const v of ["n/a: TBD?", "n/a: TODO!", "n/a: TBD!", "n/a: **TBD**", "n/a: unknown?", "n/a: `todo`", "n/a: _TBD_", "n/a: (TBD?)", "n/a: tbd.", "n/a: ???"]) {
+    assert.match(failCellProblem("bounded", v) ?? "", /n\/a without a reason/, v);
+  }
+  for (const v of ["yes: TBD?", "no: TODO!", "yes: **unknown**"]) {
+    assert.match(failCellProblem("restart-safe", v) ?? "", /restart-safe" says (yes|no) without a reason/, v);
+  }
+  for (const v of ["TBD?", "**TBD**", "**n/a**", "`unknown`", "TODO!"]) {
+    assert.match(failCellProblem("fails how", v) ?? "", /placeholder/, v);
+  }
+  // The complete row from the round-2 report.
+  const r = parseTable("| x | a.ts:1 | reuse | same | n/a: TBD? | n/a: TODO! | yes: TBD? | n/a: **TBD** | n/a: unknown? |");
+  assert.equal(r.ok, false);
+  assert.match(r.error, /row "x": "fails how" is n\/a without a reason/);
+  // Short genuine answers, decorated or not, still pass: only the ends are stripped, only for the check.
+  for (const v of ["n/a: pure", "n/a: **pure**", "throws!", "0", "none", "C++ exception, logged", "n/a: (no I/O)"]) {
+    assert.equal(failCellProblem("bounded", v), null, v);
+  }
+  assert.equal(failCellProblem("restart-safe", "yes: pure!"), null);
+  assert.equal(failCellProblem("restart-safe", "no: **writes twice**"), null);
+});
+
 test("a four-column row is refused by default (record) and read with requireFailColumns false (old receipts)", () => {
   const old = "| retry helper | src/net/retry.ts:12 | reuse | same backoff |";
   const strict = parseTable(old);

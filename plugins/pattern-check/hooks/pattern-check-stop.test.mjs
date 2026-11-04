@@ -123,7 +123,6 @@ test("process: empty stdin, malformed JSON and a non-object payload exit 0, let 
   for (const [input, re] of [["", /got empty stdin/], ["{ torn", /got stdin that is not JSON/], ["42", /not a JSON object/]]) {
     const r = f.run(input);
     assert.equal(r.error, undefined, String(r.error));
-    assert.equal(r.error, undefined, String(r.error));
     assert.equal(r.status, 0);
     const out = JSON.parse(r.stdout);
     assert.equal(out.decision, undefined);

@@ -86,6 +86,31 @@ test("regression (codex review S2): wrapper options and shell control words do n
   assert.deepEqual(writeTargets("sudo -u tee ls"), []);
 });
 
+test("regression (codex review round 2, R2): lookup-only wrapper modes run nothing, so their words are not targets", () => {
+  for (const cmd of ["command -v tee a.ts b.ts c.ts", 'command -V tee "$OUT"', "env --help tee a.ts", "sudo -l tee a.ts", "sudo -V tee a.ts", "nohup --version tee a.ts"]) {
+    assert.deepEqual(writeTargets(cmd), [], cmd);
+    assert.equal(hasUnreadableWriteTarget(cmd), false, cmd);
+    assert.equal(name(cmd), null, cmd);
+  }
+  // A real redirect on the same command still counts: the shell performs it.
+  assert.deepEqual(writeTargets("command -v tee > out.txt"), ["out.txt"]);
+  // `command` without a lookup flag runs its argument.
+  assert.deepEqual(writeTargets("command tee a.ts"), ["a.ts"]);
+});
+
+test("regression (codex review round 2, R3): a quoted or escaped control word is a command name, not the keyword", () => {
+  for (const cmd of ['"then" tee a.ts', "'do' tee a.ts", "\\then tee a.ts", '"!" tee a.ts']) {
+    assert.deepEqual(writeTargets(cmd), [], cmd);
+    assert.equal(name(cmd), null, cmd);
+  }
+  assert.deepEqual(writeTargets("then tee a.ts"), ["a.ts"]);
+});
+
+test("regression (codex review round 2, S2): time -p in front of a write form is skipped like a wrapper", () => {
+  assert.deepEqual(writeTargets("time -p tee a.ts"), ["a.ts"]);
+  assert.deepEqual(writeTargets("time sed -i 's/a/b/' a.ts"), ["a.ts"]);
+});
+
 test("a redirect whose target holds an expansion is a redirect with no known path", () => {
   assert.deepEqual(writeTargets('echo x > "$OUT"'), []);
   assert.deepEqual(writeTargets("echo x > $(mktemp)"), []);
