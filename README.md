@@ -83,9 +83,9 @@ it, keeping a record of what it did and asked, and a vendored set of engineering
   have stopped for waits in a digest, and only a broken main, data loss, a security finding,
   spend near a ceiling or a blocker on everything comes through at once; `back` prints the
   digest. Claude Code hooks, a Claude Code mod, plus an OMP extension. Changes in brb 0.3.0: an
-  away badge under the prompt on Claude Code Desktop and in the terminal, `⚠ brb: away since
-  10:42 AM (40m) · 12 held · say back`, so a person typing into a session they left sees the
-  hold before they send; removed at `back`. See the plugin's
+  away badge under the prompt on Claude Code Desktop and in the terminal, `⚠ brb: away 40m ·
+  lunch · 12 held · say back` (at most 40 characters), so a person typing into a session they
+  left sees the hold before they send; removed at `back`. See the plugin's
   [CHANGELOG](plugins/brb/CHANGELOG.md).
 
 output-types delivers text and, since 0.3.0, checks every finished message for a label without
@@ -1477,9 +1477,9 @@ The Stop hook copies each new Needs-you line into a digest, surfaces each on-fir
 holding it, and sends the agent back to work (Stop hook feedback on Claude Code, a block on
 OMP) until an `idle:` line, a tool-less continuation that brings nothing new, or two stops with
 no tool call between them. `pending` prints the digest; `back` prints it, archives it and ends
-the hold. While away, on Claude Code Desktop and in the terminal, a mod pins `⚠ brb: away since
-<clock> (<elapsed>) · N held · say back` under the prompt. The on-fire kinds mirror
-agent-system 2.0's surface. Built on plugin-kit 0.3.2; Node 22.13 or later; Claude Code hooks
+the hold. While away, on Claude Code Desktop and in the terminal, a mod pins `⚠ brb: away
+<elapsed> · [note ·] N held · say back` (at most 40 characters) under the prompt. The on-fire
+kinds mirror agent-system 2.0's surface. Built on plugin-kit 0.3.2; Node 22.13 or later; Claude Code hooks
 and a mod, plus an OMP extension that runs the same hooks. The exact instruction text, the three
 release rules, the config (`onFireCap`, `idleStops`) and the failure table are in
 [`plugins/brb/README.md`](plugins/brb/README.md).

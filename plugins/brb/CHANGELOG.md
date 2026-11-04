@@ -14,20 +14,28 @@ happens.
 
 - The away badge, a Claude Code mod (`hooks/hooks.json` `modules` → `mods/badge/register.mjs`;
   Claude Code 2.1.286 or later, where plugins can ship mods). While this session is away, brb's
-  status line under the prompt reads `⚠ brb: away since 10:42 AM (40m) · 12 held · say back`
-  (the `brb <note>` text between the time and the count, cut at 40 characters); home, the line
-  is removed. The data is this session's `away.json`, read out of process by
+  status line under the prompt reads `⚠ brb: away 40m · lunch · 12 held · say back`, never more
+  than 40 characters: when the line would pass 40 the `brb <note>` text is dropped whole, then
+  `· say back`, and a count too long even for that is cut with `…`; home, the line is removed.
+  The data is this session's `away.json`, read out of process by
   `node mods/badge/query.mjs --session <id>` (`mods/badge/query.mjs`, read-only; it prints
   `{ ok, away, since, note, held, onFire }` or `{ ok: false, error }` and always exits 0;
-  `away.json` is `lstat`ed first, so a directory, a link or a file over 64 KiB is a fault, never
-  a read). The badge refreshes at session start, after each prompt enters (so `brb` and `back`
-  show at once), at each main turn's start and end, and once a second while away; while home
-  the only poll is `$.fs.exists` on `away.json` inside Claude Code, which starts a query when
-  the file appears. `mods/badge/data.mjs` holds the pure parts (the snapshot read back, the
-  line, the clock and duration formats, the `away.json` path).
-- Tests: `mods/badge/tests/data.test.mjs` and `mods/badge/tests/query.test.mjs` under
-  `node --test` (home, away, the held count moving, another session's hold, the directory and
-  oversized faults, the formats); `mods/badge/tests/badge.test.tsx` for `claude plugin test`
+  `away.json` is opened once without following a link, the open descriptor must be a regular
+  file of at most 64 KiB, and at most 64 KiB + 1 byte is read from it, so a directory, a link
+  or a file over 64 KiB, even one swapped in or grown after the check, is a fault, never a
+  parse; `lib/state.mjs` `parseAway` is the parsing half of `readAway`, shared by both). The
+  badge refreshes at session start, after each prompt enters (so `brb` and `back` show at
+  once), at each main turn's start and end, and every 5 s while away; while home the only poll
+  is `$.fs.exists` on `away.json` inside Claude Code once a second, which starts a query when
+  the file appears. A probe that fails (the session id or `$.fs.exists` refused) is caught in
+  the timer, clears the badge and logs one `brb badge: probe: …` line per distinct error.
+  `mods/badge/data.mjs` holds the pure parts (the snapshot read back, the line, the duration
+  format, the `away.json` path).
+- Tests: `mods/badge/tests/data.test.mjs`, `mods/badge/tests/query.test.mjs` and
+  `mods/badge/tests/register.test.mjs` under `node --test` (home, away, the held count moving,
+  another session's hold, the directory, link and oversized faults, a file replaced or grown
+  after the check, the 40-character line for every note and count, the two timers, a refused
+  probe); `mods/badge/tests/badge.test.tsx` for `claude plugin test`
   (the status line set and cleared, the refresh points, the poll and the probe, the fault
   inputs), written in the style of the ledger pane's test and not run by this version's
   author. `evals/manifest.json` `manual` names the Desktop check.

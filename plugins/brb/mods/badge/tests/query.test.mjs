@@ -1,13 +1,15 @@
 // query.test.mjs — mods/badge/query.mjs, as the subprocess the mod runs and through its exports:
 // home → `{ ok: true, away: false }`; after `brb` → the hold's since, note and count; a hold
 // command bumps the count; another session's hold is not this session's; a missing --session,
-// an away.json that is a directory, and one over AWAY_MAX_BYTES are `{ ok: false, error }`;
-// every run exits 0, prints JSON and writes nothing. node --test.
+// an away.json that is a directory or a link, and one over AWAY_MAX_BYTES are `{ ok: false, error }`;
+// the bound holds on the descriptor read, so a file replaced or grown after the check is still
+// bounded; every run exits 0, prints JSON and writes nothing. node --test.
 
 import test from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, readdirSync, writeFileSync } from "node:fs";
+import fs, { existsSync, mkdirSync, readdirSync, renameSync, symlinkSync, writeFileSync } from "node:fs";
+import { syncBuiltinESMExports } from "node:module";
 import { join } from "node:path";
 
 import { main, parseArgs, snapshot } from "../query.mjs";
@@ -144,6 +146,82 @@ test("in process: snapshot and main agree with the subprocess, and main returns 
     let none = "";
     assert.equal(main([], { env: b.env, out: (s) => (none += s) }), 0);
     assert.deepEqual(JSON.parse(none), { ok: false, error: "query needs --session <id>" });
+  } finally {
+    b.release();
+  }
+});
+
+/** Run fn with node:fs `name` wrapped by `wrap(original)`, visible to query.mjs's named import; restored after. */
+function withFs(name, wrap, fn) {
+  const original = fs[name];
+  fs[name] = wrap(original);
+  syncBuiltinESMExports();
+  try {
+    return fn();
+  } finally {
+    fs[name] = original;
+    syncBuiltinESMExports();
+  }
+}
+
+const SINCE = "2026-11-04T18:42:00.000Z";
+
+test("the bound is on the descriptor read: an away.json atomically replaced by an oversized one after the open is not read", () => {
+  const b = box();
+  try {
+    const dir = b.stateDir("s1");
+    mkdirSync(dir, { recursive: true });
+    const path = join(dir, "away.json");
+    const swap = join(dir, "away.tmp");
+    writeFileSync(path, JSON.stringify({ since: SINCE, note: "small" }));
+    writeFileSync(swap, JSON.stringify({ since: SINCE, note: "x".repeat(AWAY_MAX_BYTES) }));
+    let swapped = false;
+    const result = withFs("openSync", (open) => (...args) => {
+      const fd = open(...args);
+      if (args[0] === path && !swapped) {
+        renameSync(swap, path); // the probe from the review: replace the checked file right after the check's syscall
+        swapped = true;
+      }
+      return fd;
+    }, () => snapshot("s1", { env: b.env }));
+    assert.equal(swapped, true);
+    assert.deepEqual(result, { ok: true, away: true, since: SINCE, note: "small", held: 0, onFire: 0 });
+  } finally {
+    b.release();
+  }
+});
+
+test("the read stops at AWAY_MAX_BYTES + 1: a file that grows past the limit after fstat is a fault, not a parse", () => {
+  const b = box();
+  try {
+    const dir = b.stateDir("s1");
+    mkdirSync(dir, { recursive: true });
+    const path = join(dir, "away.json");
+    writeFileSync(path, JSON.stringify({ since: SINCE, note: "small" }));
+    const result = withFs("fstatSync", (fstat) => (...args) => {
+      const st = fstat(...args);
+      fs.appendFileSync(path, " ".repeat(AWAY_MAX_BYTES));
+      return st;
+    }, () => snapshot("s1", { env: b.env }));
+    assert.equal(result.ok, false);
+    assert.match(result.error, new RegExp(`away\\.json is over the ${AWAY_MAX_BYTES} byte limit$`));
+  } finally {
+    b.release();
+  }
+});
+
+test("a link at away.json is not followed: it is `not a regular file`, even when it points at a valid record", () => {
+  const b = box();
+  try {
+    const dir = b.stateDir("s1");
+    mkdirSync(dir, { recursive: true });
+    const real = join(b.env.XDG_STATE_HOME, "elsewhere.json");
+    writeFileSync(real, JSON.stringify({ since: SINCE, note: "linked" }));
+    symlinkSync(real, join(dir, "away.json"));
+    const r = query(b, ["--session", "s1"]);
+    assert.equal(r.status, 0);
+    assert.equal(r.json.ok, false);
+    assert.match(r.json.error, /away\.json is not a regular file$/);
   } finally {
     b.release();
   }

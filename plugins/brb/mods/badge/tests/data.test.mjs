@@ -1,20 +1,19 @@
 // data.test.mjs — mods/badge/data.mjs: the snapshot read back from query.mjs, the badge line
-// (home → null; away → `away since <clock> (<elapsed>) · [note ·] N held · say back`), the clock
-// and duration formats, and the away.json path the mod probes, checked against lib/state.mjs.
-// node --test.
+// (home → null; away → `away <elapsed> · [note ·] N held · say back`, never over STATUS_MAX), the
+// duration format, and the away.json path the mod probes, checked against lib/state.mjs (the
+// parity test for the sessionKey/awayPath copy). node --test.
 
 import test from "node:test";
 import assert from "node:assert/strict";
 import { join } from "node:path";
 
-import { AWAY_MAX_BYTES, NOTE_CAP, awayPath, badgeText, clockTime, elapsed, emptySnapshot, queryArgv, readSnapshot, sessionKey as badgeKey } from "../data.mjs";
+import { AWAY_MAX_BYTES, STATUS_MAX, awayPath, badgeText, elapsed, emptySnapshot, queryArgv, readSnapshot, sessionKey as badgeKey } from "../data.mjs";
 import { sessionDir, sessionKey } from "../../../lib/state.mjs";
 import { awayFor } from "../../../lib/text.mjs";
 
-const SINCE = "2026-11-04T18:42:00.000Z"; // 10:42 AM in America/Los_Angeles (PST)
+const SINCE = "2026-11-04T18:42:00.000Z";
 const AWAY = { ok: true, away: true, since: SINCE, note: "", held: 12, onFire: 0 };
 const minutes = (n) => Date.parse(SINCE) + n * 60_000;
-const LA = { timeZone: "America/Los_Angeles" };
 
 test("readSnapshot: home, away and error shapes come back typed; junk is an error, never a throw", () => {
   assert.deepEqual(readSnapshot(JSON.stringify({ ok: true, away: false }) + "\n"), { ok: true, away: false });
@@ -30,22 +29,43 @@ test("readSnapshot: home, away and error shapes come back typed; junk is an erro
   assert.deepEqual(emptySnapshot(), { ok: true, away: false });
 });
 
-test("badgeText: away shows the clock, the elapsed time, the count and the word; home and a failed query show nothing", () => {
-  assert.equal(badgeText(AWAY, { now: minutes(40), ...LA }), "away since 10:42 AM (40m) · 12 held · say back");
-  assert.equal(badgeText({ ...AWAY, held: 1 }, { now: minutes(0), ...LA }), "away since 10:42 AM (0m) · 1 held · say back");
-  assert.equal(badgeText({ ...AWAY, held: 0 }, { now: minutes(125), ...LA }), "away since 10:42 AM (2h 5m) · 0 held · say back");
+test("badgeText: away shows the elapsed time, the count and the word; home and a failed query show nothing", () => {
+  assert.equal(badgeText(AWAY, { now: minutes(40) }), "away 40m · 12 held · say back");
+  assert.equal(badgeText({ ...AWAY, held: 1 }, { now: minutes(0) }), "away 0m · 1 held · say back");
+  assert.equal(badgeText({ ...AWAY, held: 0 }, { now: minutes(125) }), "away 2h 5m · 0 held · say back");
   assert.equal(badgeText({ ok: true, away: false }), null);
   assert.equal(badgeText(emptySnapshot()), null);
   assert.equal(badgeText({ ok: false, error: "boom" }), null);
 });
 
-test("badgeText: the note rides between the time and the count, whitespace collapsed, cut at NOTE_CAP with an ellipsis", () => {
-  assert.equal(badgeText({ ...AWAY, note: "lunch" }, { now: minutes(5), ...LA }), "away since 10:42 AM (5m) · lunch · 12 held · say back");
-  assert.equal(badgeText({ ...AWAY, note: "  two\n words  " }, { now: minutes(5), ...LA }), "away since 10:42 AM (5m) · two words · 12 held · say back");
-  const long = "x".repeat(NOTE_CAP + 10);
-  const text = badgeText({ ...AWAY, note: long }, { now: minutes(5), ...LA });
-  assert.equal(text, `away since 10:42 AM (5m) · ${"x".repeat(NOTE_CAP - 1)}… · 12 held · say back`);
-  assert.equal(badgeText({ ...AWAY, note: "x".repeat(NOTE_CAP) }, { now: minutes(5), ...LA }), `away since 10:42 AM (5m) · ${"x".repeat(NOTE_CAP)} · 12 held · say back`);
+test("badgeText: the note rides between the time and the count, whitespace collapsed, and is dropped whole when the line would pass STATUS_MAX", () => {
+  assert.equal(STATUS_MAX, 40);
+  const lunch = badgeText({ ...AWAY, note: "lunch" }, { now: minutes(40) });
+  assert.equal(lunch, "away 40m · lunch · 12 held · say back");
+  assert.ok(lunch.length <= STATUS_MAX, `${lunch.length}: ${lunch}`);
+  assert.equal(badgeText({ ...AWAY, note: "  two\n words  " }, { now: minutes(5) }), "away 5m · two words · 12 held · say back");
+  // A 200-character note does not fit: the line is the note-free one, under the cap.
+  const long = badgeText({ ...AWAY, note: "x".repeat(200) }, { now: minutes(40) });
+  assert.equal(long, "away 40m · 12 held · say back");
+  // The longest note that fits is kept; one character more and it is dropped.
+  const room = STATUS_MAX - "away 40m ·  · 12 held · say back".length;
+  assert.equal(badgeText({ ...AWAY, note: "n".repeat(room) }, { now: minutes(40) }).length, STATUS_MAX);
+  assert.equal(badgeText({ ...AWAY, note: "n".repeat(room + 1) }, { now: minutes(40) }), "away 40m · 12 held · say back");
+});
+
+test("badgeText: past the note, `say back` is dropped next, then the line is cut with an ellipsis; no input passes STATUS_MAX", () => {
+  assert.equal(badgeText({ ...AWAY, held: 123456789012, note: "lunch" }, { now: minutes(12 * 1440 + 180) }), "away 12d 3h · 123456789012 held");
+  const absurd = badgeText({ ...AWAY, held: Number.MAX_SAFE_INTEGER * 1000, note: "lunch" }, { now: minutes(99999 * 1440) });
+  assert.equal(absurd.length, STATUS_MAX);
+  assert.ok(absurd.endsWith("…"), absurd);
+  for (const held of [0, 9, 12, 999, 99999, 1e9, 1e15]) {
+    for (const m of [0, 59, 125, 1439, 1440 * 30, 1440 * 9999]) {
+      for (const note of ["", "lunch", "x".repeat(10), "x".repeat(200), " \t\n "]) {
+        const t = badgeText({ ...AWAY, held, note }, { now: minutes(m) });
+        assert.ok(t.length <= STATUS_MAX, `${t.length}: ${t}`);
+      }
+    }
+  }
 });
 
 test("elapsed: minutes under an hour, hours and minutes under a day, days and hours past it, as lib/text.mjs awayFor prints them; the future and junk are 0m", () => {
@@ -61,13 +81,6 @@ test("elapsed: minutes under an hour, hours and minutes under a day, days and ho
   for (const n of [0, 1, 59, 60, 65, 1439, 1440, 1650, 3000]) assert.equal(elapsed(SINCE, minutes(n)), awayFor(SINCE, new Date(minutes(n)).toISOString()), `${n} minutes`);
   assert.equal(elapsed(SINCE, minutes(-10)), "0m");
   assert.equal(elapsed("not a date", minutes(10)), "0m");
-});
-
-test("clockTime: hour and two-digit minute with AM/PM in the given zone; an unparsable since is shown as typed", () => {
-  assert.equal(clockTime(SINCE, "America/Los_Angeles"), "10:42 AM");
-  assert.equal(clockTime(SINCE, "UTC"), "6:42 PM");
-  assert.equal(clockTime("2026-11-04T00:05:00.000Z", "UTC"), "12:05 AM");
-  assert.equal(clockTime("yesterday-ish"), "yesterday-ish");
 });
 
 test("queryArgv names the script and the session; a missing id is an empty string, which query.mjs refuses", () => {

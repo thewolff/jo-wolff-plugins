@@ -1,6 +1,6 @@
 // data.mjs — the badge's pure functions: the snapshot query.mjs prints read back into one typed
-// shape, the one line the badge shows, the clock and duration formats in it, and the path of the
-// session's away.json (the mod's cheap "is the hold on" probe between queries).
+// shape, the one line the badge shows, the duration format in it, and the path of the session's
+// away.json (the mod's cheap "is the hold on" probe between queries).
 //
 // No imports: this file is loaded inside Claude Code by the hooks module (register.mjs), where
 // only relative imports and `claude-code` are allowed, and by `node --test` for its unit tests.
@@ -8,8 +8,8 @@
 /** The word that ends the hold; the badge names it. */
 export const BACK_WORD = "back";
 
-/** The most of the `brb <note>` text the badge repeats; the status line is cut at 200 characters by the app. */
-export const NOTE_CAP = 40;
+/** The longest the badge's text may be, whatever the note and the counts: 40 characters. */
+export const STATUS_MAX = 40;
 
 /** The most bytes query.mjs reads from away.json; a larger file is a fault, never a parse. */
 export const AWAY_MAX_BYTES = 65536;
@@ -46,13 +46,6 @@ export function readSnapshot(stdout) {
   return { ok: true, away: true, since: parsed.since, note: typeof parsed.note === "string" ? parsed.note : "", held: n(parsed.held), onFire: n(parsed.onFire) };
 }
 
-/** `10:42 AM` in the app's zone (or `timeZone`); the ISO text itself when it is not a date. */
-export function clockTime(iso, timeZone) {
-  const t = Date.parse(iso);
-  if (!Number.isFinite(t)) return String(iso);
-  return new Date(t).toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit", ...(timeZone ? { timeZone } : {}) });
-}
-
 /**
  * How long since `iso`, to the minute: `0m`, `40m`, `1h 5m`, `2d 3h`, the same arithmetic as
  * lib/text.mjs `awayFor` (the still-away line), repeated here because this file may import nothing;
@@ -67,18 +60,21 @@ export function elapsed(iso, now = Date.now()) {
 }
 
 /**
- * The badge's text, or null when there is nothing to show (home, or a query that failed). The app
- * draws it after `⚠ brb:`, so the line does not repeat the name:
- *   away since 10:42 AM (40m) · 12 held · say back
- *   away since 10:42 AM (40m) · lunch · 1 held · say back        (the note, cut at NOTE_CAP)
+ * The badge's text, at most STATUS_MAX characters, or null when there is nothing to show (home,
+ * or a query that failed). The app draws it after `⚠ brb:`, so the line does not repeat the name:
+ *   away 40m · lunch · 12 held · say back     (the `brb <note>` text, whitespace collapsed)
+ *   away 40m · 12 held · say back             (no note, or the note would pass STATUS_MAX: dropped whole)
+ *   away 12d 3h · 123456789012 held           (`say back` would pass STATUS_MAX: dropped next)
+ * A line still over STATUS_MAX (a count longer still) is cut to STATUS_MAX with an ellipsis.
  */
-export function badgeText(snapshot, { now = Date.now(), timeZone } = {}) {
+export function badgeText(snapshot, { now = Date.now() } = {}) {
   if (!snapshot.ok || !snapshot.away) return null;
-  const parts = [`away since ${clockTime(snapshot.since, timeZone)} (${elapsed(snapshot.since, now)})`];
+  const since = `away ${elapsed(snapshot.since, now)}`;
+  const held = `${snapshot.held} held`;
+  const say = `say ${BACK_WORD}`;
   const note = snapshot.note.replace(/\s+/g, " ").trim();
-  if (note) parts.push(note.length > NOTE_CAP ? `${note.slice(0, NOTE_CAP - 1)}…` : note);
-  parts.push(`${snapshot.held} held`, `say ${BACK_WORD}`);
-  return parts.join(" · ");
+  const fits = [note && [since, note, held, say].join(" · "), [since, held, say].join(" · "), [since, held].join(" · ")].find((t) => t && t.length <= STATUS_MAX);
+  return fits ?? `${[since, held].join(" · ").slice(0, STATUS_MAX - 1)}…`;
 }
 
 /** lib/state.mjs `sessionKey`, repeated here because this file may import nothing: the session id as a directory name. */

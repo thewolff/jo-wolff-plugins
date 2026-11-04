@@ -10,7 +10,7 @@ const SESSION = "s-this-window";
 const SINCE_MS = Date.now() - 40 * 60_000;
 const AWAY = { ok: true, away: true, since: new Date(SINCE_MS).toISOString(), note: "", held: 12, onFire: 0 };
 const HOME = { ok: true, away: false };
-const BADGE = /^away since \d{1,2}:\d{2} [AP]M \(4[01]m\) · 12 held · say back$/;
+const BADGE = /^away 4[01]m · 12 held · say back$/;
 const PROBE = `/tmp/state/brb/${SESSION}/away.json`;
 
 type Run = { argv: string[]; init: { cwd?: string; env?: Record<string, string>; timeoutMs?: number } };
@@ -21,7 +21,7 @@ function stubs(on, { snapshot = AWAY as unknown, exists = false, answer = "", pr
   const statuses: (string | undefined)[] = [];
   const logs: string[] = [];
   const probes: string[] = [];
-  const state = { snapshot, exists, stdout: null as null | string };
+  const state = { snapshot, exists, existsDeny: null as null | string, stdout: null as null | string };
   const clock = mock.clock(on);
   on("session.id", () => ({ value: SESSION }));
   on("session.start", () => ({ cwd: "/Users/example/code/this" }));
@@ -32,6 +32,7 @@ function stubs(on, { snapshot = AWAY as unknown, exists = false, answer = "", pr
   on("env.get", ($, e) => ({ value: e.name === "XDG_STATE_HOME" ? "/tmp/state" : e.name === "HOME" ? "/Users/example" : undefined }));
   on("fs.exists", ($, e) => {
     probes.push(e.path);
+    if (state.existsDeny) return { deny: state.existsDeny };
     return { value: state.exists };
   });
   on("ui.status", ($, e) => {
@@ -115,19 +116,23 @@ test("turn.start and turn.complete refresh for the main conversation only; the t
   expect(processes.length).toBe(3);
 });
 
-test("the poll: a query once a second while away; while home only an fs.exists probe on away.json, and a query when it appears", async ($, on) => {
+test("the poll: a query every 5 s while away; while home only an fs.exists probe on away.json once a second, and a query when it appears", async ($, on) => {
   const { processes, probes, state, clock } = stubs(on);
   await start($);
   expect(processes.length).toBe(1);
-  await clock.advance(3000);
+  await clock.advance(4000);
+  expect(processes.length).toBe(1);
+  await clock.advance(11000);
   expect(processes.length).toBe(4);
   expect(probes).toEqual([]);
   state.snapshot = HOME;
-  await clock.advance(1000);
+  await clock.advance(5000);
   expect(processes.length).toBe(5);
+  // At 20 s both timers fire; whether that probe ran depends on their order, so count from here.
+  const before = probes.length;
   await clock.advance(3000);
   expect(processes.length).toBe(5);
-  expect(probes).toEqual([PROBE, PROBE, PROBE]);
+  expect(probes.slice(before)).toEqual([PROBE, PROBE, PROBE]);
   state.exists = true;
   state.snapshot = AWAY;
   await clock.advance(1000);
@@ -163,4 +168,20 @@ test("fault: the query prints garbage while the badge shows → the badge is cle
   expect(statuses.length).toBe(2);
   expect(statuses[1]).toBe(undefined);
   expect(logs).toEqual(["brb badge: query: query printed no JSON"]);
+});
+
+test("fault: the home probe is refused → caught inside the timer, no badge, one `brb badge: probe:` line per distinct message", async ($, on) => {
+  const { statuses, logs, state, clock } = stubs(on, { snapshot: HOME });
+  await start($);
+  state.existsDeny = "network location refused";
+  await clock.advance(3000);
+  expect(statuses).toEqual([]);
+  expect(logs.filter((l) => l.startsWith("brb badge: probe:")).length).toBe(1);
+  expect(logs[0]).toMatch(/network location refused/);
+  state.existsDeny = null;
+  state.exists = true;
+  state.snapshot = AWAY;
+  await clock.advance(1000);
+  expect(statuses.length).toBe(1);
+  expect(statuses[0]).toMatch(BADGE);
 });

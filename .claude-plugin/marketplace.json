@@ -67,7 +67,7 @@
     {
       "name": "brb",
       "source": "./plugins/brb",
-      "description": "Type `brb` and walk away: the agent keeps working, every ask it would have stopped for is written into a digest with a hold command and never shown (a reply that still shows one is filed and sent back once), and only a broken main, data loss, a security finding, spend near a ceiling or a blocker on everything comes through at once (a systemMessage, an OSC 9 terminal notification, a macOS notification). While away, Claude Code Desktop and the terminal show `⚠ brb: away since 10:42 AM (40m) · 12 held · say back` under the prompt. `pending` prints the digest; `back` prints it, archives it and ends the hold. Claude Code hooks and a mod, plus an OMP extension that runs the same hooks."
+      "description": "Type `brb` and walk away: the agent keeps working, every ask it would have stopped for is written into a digest with a hold command and never shown (a reply that still shows one is filed and sent back once), and only a broken main, data loss, a security finding, spend near a ceiling or a blocker on everything comes through at once (a systemMessage, an OSC 9 terminal notification, a macOS notification). While away, Claude Code Desktop and the terminal show `⚠ brb: away 40m · lunch · 12 held · say back` under the prompt. `pending` prints the digest; `back` prints it, archives it and ends the hold. Claude Code hooks and a mod, plus an OMP extension that runs the same hooks."
     }
   ]
 }

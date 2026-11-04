@@ -2,19 +2,19 @@
 //
 // What it does:
 //   - while this session is away, the plugin's status line under the prompt (`$.ui.status`, drawn
-//     by the app as `⚠ brb: …`) reads `away since 10:42 AM (40m) · 12 held · say back`, so a person
-//     typing into a session they left sees the hold before they send; home, the line is removed;
+//     by the app as `⚠ brb: …`) reads `away 40m · 12 held · say back` (at most 40 characters), so a
+//     person typing into a session they left sees the hold before they send; home, it is removed;
 //   - the data is this session's away.json, read out of process by `node mods/badge/query.mjs
 //     --session <id>` (read-only); the badge refreshes at session start, after each prompt is
-//     submitted (so `brb` and `back` show at once), at each main turn's start and end, and once a
-//     second while away. Between those, while home, the only poll is `$.fs.exists` on away.json
-//     in this process, which starts a query when the file appears;
+//     submitted (so `brb` and `back` show at once), at each main turn's start and end, and every
+//     5 s while away. Between those, while home, the only poll is `$.fs.exists` on away.json
+//     in this process once a second, which starts a query when the file appears;
 //   - where nothing draws (`claude -p`, no surface) nothing is shown: the hooks' own lines cover it.
 //
 // How it fails: every hook catches its own error, logs one dim transcript line (`$.ui.log`) and
-// passes the event on with `next(e)`; a query that fails clears the badge and logs its error once
-// per distinct message. The query runs with a 5 s timeout and its faults come back as
-// `{ ok: false, error }`, never a throw past here.
+// passes the event on with `next(e)`; a query or a home probe that fails clears the badge and logs
+// its error once per distinct message. The query runs with a 5 s timeout and its faults come back
+// as `{ ok: false, error }`; the timers' callbacks catch everything; nothing throws past here.
 //
 // Rules this file keeps for `claude plugin validate`: every mods API call is spelled `$.ns.method`,
 // `$` is passed only to top-level functions of this file, imports are relative, no node builtins,
@@ -22,7 +22,8 @@
 
 import { awayPath, badgeText, emptySnapshot, queryArgv, readSnapshot } from "./data.mjs";
 
-const POLL_MS = 1000;
+const PROBE_MS = 1000;
+const AWAY_POLL_MS = 5000;
 const QUERY_TIMEOUT_MS = 5000;
 
 let snapshot = emptySnapshot();
@@ -49,8 +50,8 @@ async function logFault($, where, err) {
   }
 }
 
-/** Keep the snapshot, and set or clear the status line when its text changed; a new error is logged once. */
-function applySnapshot($, next) {
+/** Keep the snapshot, and set or clear the status line when its text changed; a new error is logged once, named by `where`. */
+function applySnapshot($, next, where = "query") {
   snapshot = next;
   const text = badgeText(snapshot);
   if (text !== shown) {
@@ -59,7 +60,7 @@ function applySnapshot($, next) {
   }
   if (!next.ok && next.error !== lastError) {
     lastError = next.error;
-    logFault($, "query", next.error);
+    logFault($, where, next.error);
   }
   if (next.ok) lastError = null;
 }
@@ -81,15 +82,25 @@ async function refresh($) {
   return snapshot;
 }
 
-/** The poll: a query while away (the duration and the count move); while home, one `$.fs.exists` and a query only when away.json appeared. */
-async function tick($) {
-  if (inFlight) return;
-  if (snapshot.ok && snapshot.away) {
-    await refresh($);
-    return;
+/** The away poll (every AWAY_POLL_MS): a query while away, so the duration and the count move. */
+async function awayTick($) {
+  if (inFlight || !(snapshot.ok && snapshot.away)) return;
+  await refresh($);
+}
+
+/**
+ * The home probe (every PROBE_MS): one `$.fs.exists` on away.json, and a query only when it
+ * appeared. A probe that throws (a session id or a path the host refuses) clears the badge and is
+ * logged once per distinct message, as a query fault is; it never rejects into the timer.
+ */
+async function probeTick($) {
+  if (inFlight || (snapshot.ok && snapshot.away)) return;
+  try {
+    const path = awayPath({ ...stateEnv, sessionId: await $.session.id() });
+    if (path && (await $.fs.exists(path))) await refresh($);
+  } catch (err) {
+    applySnapshot($, { ok: false, error: errorText(err) }, "probe");
   }
-  const path = awayPath({ ...stateEnv, sessionId: await $.session.id() });
-  if (path && (await $.fs.exists(path))) await refresh($);
 }
 
 export function register(on) {
@@ -98,7 +109,8 @@ export function register(on) {
       draws = (e.surface ?? null) !== null;
       if (draws) {
         stateEnv = { xdgStateHome: await $.env.get("XDG_STATE_HOME"), home: await $.env.get("HOME") };
-        $.clock.every(POLL_MS, () => tick($));
+        $.clock.every(PROBE_MS, () => probeTick($));
+        $.clock.every(AWAY_POLL_MS, () => awayTick($));
         await refresh($);
       }
     } catch (err) {
@@ -110,7 +122,8 @@ export function register(on) {
   on("prompt.submit", async ($, e, next) => {
     // After `next` the engine has handled the prompt, settings hooks included (as PreToolUse runs
     // inside a tool.call's `next`), so `brb` has written away.json and `back` has removed it; were
-    // a version to run them later, the poll's probe catches up within POLL_MS.
+    // a version to run them later, the home probe catches a `brb` within PROBE_MS and the away
+    // poll a `back` within AWAY_POLL_MS.
     const result = await next(e);
     try {
       if (draws) refresh($);
