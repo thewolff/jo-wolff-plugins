@@ -1,0 +1,8 @@
+{
+  "$comment": "`\"liveness\": \"off\"` in the config file and no snapshot to restore: nothing is injected.",
+  "event": "SessionStart",
+  "expect": "silent",
+  "sibling": "session-start-liveness-no-record.scenario.json",
+  "setup": { "files": { "$XDG_CONFIG_HOME/continuity/config.json": "{ \"liveness\": \"off\" }\n" } },
+  "stdin": { "hook_event_name": "SessionStart", "session_id": "${SESSION_ID}", "cwd": "${CWD}", "source": "startup" }
+}

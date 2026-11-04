@@ -60,6 +60,11 @@
       "description": "Teach the brief a subagent is handed, then gate on it: a spawn without a How-it-fails section is refused and the refusal carries the section to fill in; a builder-class spawn also needs a Spiral bound and this session's pattern-check receipt; an undeliverable message is marked NOT delivered; a builder report without its Stopped-because line draws a warning. With the eleven general agents and three direct-work guards ported from newdle. Claude Code hooks and an OMP extension."
     },
     {
+      "name": "continuity",
+      "source": "./plugins/continuity",
+      "description": "Keep a long session's state across compaction. A PreCompact hook saves branch, diff, touched files, recent asks and the repository's open handoffs to a snapshot the post-compaction SessionStart injects back; every session start says when that save last succeeded, so a dead save is never silent; a context-pressure check warns once, and blocks one stop, when the transcript nears the compaction target, naming `/continuity:handoff`; and the handoff skill writes the judgment layer (what was attempted, ruled out, still open) that no hook can derive. Every hook fails open."
+    },
+    {
       "name": "brb",
       "source": "./plugins/brb",
       "description": "Type `brb` and walk away: the agent keeps working, every ask it would have stopped for waits in a digest, and only a broken main, data loss, a security finding, spend near a ceiling or a blocker on everything comes through at once (a systemMessage, an OSC 9 terminal notification, a macOS notification). `pending` prints the digest; `back` prints it, archives it and ends the hold. Claude Code hooks plus an OMP extension that runs the same hooks."

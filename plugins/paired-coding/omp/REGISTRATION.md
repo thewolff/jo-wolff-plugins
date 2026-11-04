@@ -84,9 +84,11 @@ instead of route 1, not as well.
 
    Then every omp process on the machine loads it. The adapter does nothing in a session
    until `pair_start` is called there (see *Inert until pair_start*). A loaded but inactive
-   adapter still adds the eight `pair_*` tools to every session's tool list: `pair_start`,
-   `pair_note`, `pair_propose`, `pair_begin`, `pair_write`, `pair_edit`, `pair_run` and
-   `pair_done`. None of them ends pairing.
+   adapter still adds the nine `pair_*` tools to every session's tool list: `pair_start`,
+   `pair_note`, `pair_learn`, `pair_propose`, `pair_begin`, `pair_write`, `pair_edit`,
+   `pair_run` and `pair_done`. None of them ends pairing. It also listens on `session_stop`,
+   where, only in learning mode, a turn that closed a change set without a `Recall:` line gets
+   a warning notice; it never blocks.
 
 ### Environment
 

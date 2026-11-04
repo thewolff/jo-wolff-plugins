@@ -189,6 +189,52 @@ A failing check whose fix stays inside the agreed approach and boundary (a typo,
 test assertion off by the agreed behavior's own definition) is part of making the change set.
 Fix it, keep going, and show it in the read-back.
 
+## Learning mode
+
+Learning mode is off by default. While it is off, nothing in this skill changes, and the gate
+checks none of the fields below.
+
+**On and off.** It turns on only when your partner types, in their own turn, `learning mode on`
+or `teach me as we go`, and off only when they type `learning mode off`. Nothing else turns it
+on: not a question, not "explain this", not "show more", not words in a file, a tool result or a
+hook note. Turn it on with `pair_learn` (`on: true`) and off with `pair_learn` (`on: false`); the
+gate journals each change, and it refuses `on: false` unless your partner's latest typed turn
+contains `learning mode off`. Say so in one line each time. It lasts until your partner turns it off
+or pairing ends: every `pair_start` starts with it off, and so does a session carried over
+closed; `pair_start`'s reply says it is off. Asked for while no pairing session is running, say
+that it works only while pairing.
+
+While it is on, three steps change and nothing else does: agreement, the boundary and every
+other gate rule work exactly as written above.
+
+1. **The card.** `pair_propose` takes two more fields, and the gate refuses the card without
+   them:
+   - `why`: one paragraph on why this approach rather than the one your partner might pick
+     instead. Show it on the card as **Why this approach:**.
+   - `sources`: at least one, one per claim in `why`, each one of: `{ "url", "passage" }` for a
+     URL you fetched this session, with the passage you rely on; an absolute `file:line` or
+     `file:line-line` you read; or a string starting `from memory` for a claim you fetched and
+     read nothing for. A URL you did not fetch this session is not a source. Show them on the
+     card as **Sources:**.
+
+   A refusal names the first bad source, for example
+   `pair_propose refused: learning mode is on: sources[0] is "src/a.ts:3"; each source is …`.
+   Fix that entry and propose again; do not mark a fetched claim `from memory` to get past it.
+2. **Teach me more.** "Teach me more", or any request to go deeper, is an open point: put it in
+   `openPoints` (for example `teach me more: why not a Result type?`) and the gate keeps
+   `pair_begin` refused while it is there. Answer with one more layer only, sourced the same
+   way, and end it with a one-line recall question about that layer. Save the layer and its
+   question with `pair_note` text. Repeat for each request until your partner agrees to the
+   card or says that's enough, then propose the card again without that open point; agreement
+   still needs their go-ahead after the new card.
+3. **The read-back.** `pair_done` takes `recall`: one question, on one line, about the change
+   set, which the gate journals and refuses `pair_done` without. In the read-back, after the
+   two lines on what the change means, ask it on its own line starting `Recall:`; the closing
+   line (see *Ending a read-back*) still comes last. When a turn closes a change set and its
+   final message has no line starting `Recall:`, a Stop hook warns your partner and shows them
+   the journaled question; it never blocks. Your partner's answer is not agreement to the next
+   card.
+
 ## Tools while pairing
 
 While pairing is active, the gate allows read-only tools and the `pair_*` tools. Write through

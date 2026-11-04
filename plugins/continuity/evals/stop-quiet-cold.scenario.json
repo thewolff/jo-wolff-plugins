@@ -1,0 +1,8 @@
+{
+  "$comment": "A short transcript (one line, a few dozen bytes): the estimate is far under the threshold, so the Stop hook stays silent.",
+  "event": "Stop",
+  "expect": "silent",
+  "sibling": "stop-blocks-near-full.scenario.json",
+  "transcript": [{ "type": "user", "message": { "role": "user", "content": "carry on" } }],
+  "stdin": { "hook_event_name": "Stop", "session_id": "${SESSION_ID}", "cwd": "${CWD}", "transcript_path": "${TRANSCRIPT}", "stop_hook_active": false, "last_assistant_message": "Done." }
+}
