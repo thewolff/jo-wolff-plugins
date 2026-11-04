@@ -507,13 +507,14 @@ function unavailableFinding(rule, misses) {
 }
 
 // What the person does about each cause (judge/ask.mjs CAUSES). `model` is the judge
-// command's model, the thing a credential is for.
-function causeFix(cause, model, budgetMs) {
+// command's model, the thing a credential is for; `profile` the judge's own profile, when its
+// stderr named one (judgeProfileOf), so a credential alert says where the credential lives.
+function causeFix(cause, model, budgetMs, profile) {
   switch (cause) {
     case "credential-revoked":
-      return `the credential for ${model} was revoked; log the judge's CLI in again (its own login command), then \`${SETUP_COMMAND}\` re-tests it`;
+      return `the credential for ${model} was revoked${profile ? ` in profile ${profile}` : ""}; log the judge's CLI in again (its own login command), then \`${SETUP_COMMAND}\` re-tests it`;
     case "no-credential":
-      return `no credential for ${model} in the judge's profile; add one through the judge's CLI, or pick a judge that has one with \`${SETUP_COMMAND}\``;
+      return `no credential for ${model} in ${profile ? `the judge's profile ${profile}` : "the judge's profile"}; add one through the judge's CLI, or pick a judge that has one with \`${SETUP_COMMAND}\``;
     case "rate-limited":
       return `${model} is rate-limiting the judge; it heals by itself, or \`${SETUP_COMMAND} --judge omp --model <a quieter model>\` moves it`;
     case "judge-self-abort":
@@ -527,15 +528,19 @@ function causeFix(cause, model, budgetMs) {
   }
 }
 
+// The judge's profile named in its stderr ("no credential for x in profile agent-system-2"),
+// or null.
+const judgeProfileOf = (stderr) => /\bin profile ['"`]?([\w.@/-]*\w)/.exec(String(stderr ?? ""))?.[1] ?? null;
+
 // The person-facing systemMessage for the judge-unavailable alerts due now ({key, since} from
 // lib/alerts.mjs, key "judge-unavailable:<rule>:<cause>"); "" when none is due. `detail` maps a
-// key to the { model, budgetMs } its failure carried.
+// key to the { model, budgetMs, profile } its failure carried.
 function unavailableAlert(due, detail) {
   if (!due.length) return "";
   const parts = due.map(({ key, since }) => {
     const [, rule, cause] = key.split(":");
-    const d = detail.get(key) ?? { model: "unknown", budgetMs: 0 };
-    return `${rule}: ${cause} — ${causeFix(cause, d.model, d.budgetMs)}${since ? ` (still failing since ${since})` : ""}`;
+    const d = detail.get(key) ?? { model: "unknown", budgetMs: 0, profile: null };
+    return `${rule}: ${cause} — ${causeFix(cause, d.model, d.budgetMs, d.profile)}${since ? ` (still failing since ${since})` : ""}`;
   });
   return (
     `i-have-audhd: judge unavailable. ${parts.join(". ")}. Those rules were not checked, ` +
@@ -737,7 +742,7 @@ async function main() {
           const key = `judge-unavailable:${rule}:${m.verdict.cause ?? "other"}`;
           if (!detail.has(key)) {
             failing.push(key);
-            detail.set(key, { model: m.verdict.model ?? "unknown", budgetMs: m.verdict.budgetMs ?? 0 });
+            detail.set(key, { model: m.verdict.model ?? "unknown", budgetMs: m.verdict.budgetMs ?? 0, profile: judgeProfileOf(m.verdict.stderr) });
           }
         }
       }

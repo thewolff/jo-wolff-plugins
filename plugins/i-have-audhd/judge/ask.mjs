@@ -77,7 +77,7 @@ import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { sha256hex, appendLog, stateDir } from "../lib/state.mjs";
 
-const DEFAULT_TIMEOUT_MS = 30_000;
+export const DEFAULT_TIMEOUT_MS = 30_000; // hooks/hooks.json's Stop timeout sits 5 s above this (pinned in the stop hook's tests)
 const OMP_TIMEOUT_MS = 20_000; // see the header's THE TIMEOUT
 
 // Read at call time: the tag is the core's process env, set by the OMP adapter on its child.
@@ -221,15 +221,18 @@ export const CAUSES = ["credential-revoked", "no-credential", "rate-limited", "j
 
 // The cause of a failed dispatch, from its error kind and the judge's stderr. Order matters:
 // the hook's own deadline is hook-deadline whatever stderr says (the judge was slower than
-// the budget), unparseable stdout is bad-json, then the stderr patterns, then other.
+// the budget), unparseable stdout is bad-json, then the stderr patterns, then other. `quota`
+// counts only as a word of the error sentence, never as a path segment or file name
+// (`/tmp/quota/config.json`); an abort only in the client's own "Request was aborted" shape,
+// never a bare "aborted" ("parse aborted at byte 3").
 export function classify(error, stderr) {
   if (error === "judge-timeout") return "hook-deadline";
   if (error === "judge-unparseable") return "bad-json";
   const s = String(stderr ?? "");
   if (/\b401\b|revoked|invalid[_ ]?(?:api[_ ]?key|token)|token (?:is |has )?(?:expired|invalid)|authentication_error|unauthori[sz]ed/i.test(s)) return "credential-revoked";
   if (/no credential|not logged in|login required|not authenticated|no api key|missing (?:api )?key|\bgh auth login\b|\bcodex login\b|\bclaude login\b|please (?:log in|login|run .*login)/i.test(s)) return "no-credential";
-  if (/\b429\b|rate.?limit|too many requests|overloaded|quota|\b529\b/i.test(s)) return "rate-limited";
-  if (/request was aborted|\baborted\b|AbortError|ECONNRESET|socket hang up/i.test(s)) return "judge-self-abort";
+  if (/\b429\b|rate.?limit|too many requests|overloaded|(?<![/\\.])\b(?:insufficient_)?quota\b(?![/\\.]\w)|\b529\b/i.test(s)) return "rate-limited";
+  if (/request was aborted|AbortError|ECONNRESET|socket hang up/i.test(s)) return "judge-self-abort";
   return "other";
 }
 

@@ -404,13 +404,15 @@ disk and a local cache, so the Stop hook never waits on the network:
   Nor is a span that is a command (`rm /x`), a placeholder (`/path/to/<name>`, a glob,
   `$HOME/…`), a missing slash command or HTTP route (one segment with no dot, such as `/mcp`,
   `/wrap-up` or `/health`, or a `:param` segment such as `/messages/:id`), a relative path,
-  or anything inside a fenced block, a blockquote, a heading, or a line carrying `→` (quoted
-  evidence).
+  or anything inside a fenced block, an indented code block, a blockquote, a heading, or a
+  line carrying `→` (quoted evidence).
 - A **GitHub URL** has to have the shape of a page: `/issues/N` or `/pull/N`, never `/issue/N`
   or `/pulls/N`. When the PR or issue word nearest before the URL (at most six words back, in
   the same clause) calls it a PR and the URL says `/issues/`, or the reverse, that is a finding
   too; GitHub redirects either way, so the page opens, but the word is what misleads. ("Opened
-  PR `…/pull/79` for `…/issues/327`" is fine: each URL has its own word, or none.)
+  PR `…/pull/79` for `…/issues/327`" is fine: each URL has its own word, or none.) Markdown
+  link text counts only as `PR #N` or `issue #N` with the URL's own number:
+  `[PR #79](…/issues/79)` is a finding, `[the fix for the flaky-test issue](…/pull/80)` is not.
 - Whether the GitHub target **exists**, and whether it **is** an issue or a PR, comes only from
   `~/.claude/.i-have-audhd-state/gh-cache.json`, read only when the message names
   `github.com`. An entry inside its TTL (a week for a hit, ten minutes for a 404) gives a

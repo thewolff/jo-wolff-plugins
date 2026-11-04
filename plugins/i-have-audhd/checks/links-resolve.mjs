@@ -21,6 +21,10 @@
 //   gh-word       the word nearest before the URL (at most WORD_WINDOW tokens back, not past
 //                 an earlier URL) calls it a PR and the URL says `/issues/N`, or the reverse.
 //                 GitHub redirects either way, so the page opens; the word is what misleads.
+//                 A URL that is a markdown link target takes a word from its link text only
+//                 as `PR #N` / `issue #N` with N its own number (`[PR #79](…/issues/79)`);
+//                 other link text ("[the fix for the flaky-test issue](…/pull/80)") is not
+//                 read, and the words before the `[` are.
 //   gh-missing    the local cache (lib/gh-cache.mjs) says GitHub answered 404 for it, inside
 //                 the miss TTL.
 //   gh-kind       the cache says the target is a PR and the URL says `/issues/N`, or the
@@ -36,7 +40,8 @@
 //
 // WHAT NEVER COUNTS
 //   Lines that are not the author's prose (checks/lines.mjs: fenced blocks, HTML comments,
-//   blockquotes, headings, structural lines), and any line carrying `→` (evidence).
+//   blockquotes, headings, structural lines), indented code blocks (indentedCodeLines), and
+//   any line carrying `→` (evidence).
 //
 // ONE FINDING PER LINK, every link resolved is in `links` for the optional judge stage
 //   (the Stop hook's links-judge): { line, sentence, href, kind: "path"|"gh", title? }.
@@ -115,8 +120,18 @@ export function sentenceAround(line, at) {
 
 // The PR/issue word a GitHub URL at `at` is bound to: the nearest such word among the
 // WORD_WINDOW tokens before it, in the same clause — never reaching back past the sentence
-// start, a `,`/`;`/dash clause break, or an earlier URL. "pr", "issue", or null.
-export function wordBefore(line, at) {
+// start, a `,`/`;`/dash clause break, or an earlier URL. "pr", "issue", or null. When the URL
+// is a markdown link target, its link text binds only `PR #N` / `issue #N` with N `number`
+// (the URL's own); otherwise the window ends at the link's `[`.
+export function wordBefore(line, at, number) {
+  if (line.slice(Math.max(0, at - 2), at) === "](") {
+    const open = line.lastIndexOf("[", at - 2);
+    if (open !== -1) {
+      const bound = new RegExp(`\\b(PRs?|pull requests?|issues?) #${number}\\b`, "i").exec(line.slice(open + 1, at - 2));
+      if (bound) return /^issue/i.test(bound[1]) ? "issue" : "pr";
+      at = open;
+    }
+  }
   let from = 0;
   for (let i = at - 1; i > 0; i--) {
     if (endsSentence(line, i)) {
@@ -170,6 +185,34 @@ function localCandidates(line) {
   return out;
 }
 
+// Line numbers of indented code blocks: four spaces or a tab, opened only after a blank line
+// and never inside a list item (there the same indent continues the item's prose); a blank
+// line inside the block does not end it. Kept to this check: lines.mjs, the classification
+// every check shares, does not know indented code, and teaching it would move the 1.6.0
+// checks as well.
+function indentedCodeLines(entries) {
+  const out = new Set();
+  let prevBlank = true;
+  let inList = false;
+  let inCode = false;
+  for (const e of entries) {
+    if (e.raw.trim() === "") {
+      prevBlank = true;
+      continue;
+    }
+    const indented = /^(?: {4}|\t)/.test(e.raw);
+    if (indented && (inCode || (prevBlank && !inList))) {
+      inCode = true;
+      out.add(e.number);
+    } else {
+      inCode = false;
+      if (!indented) inList = /^\s{0,3}(?:[-*+]|\d+[.)])\s/.test(e.raw);
+    }
+    prevBlank = false;
+  }
+  return out;
+}
+
 export function checkLinksResolve(text, options = {}) {
   const home = options.home ?? homedir();
   const exists = options.exists ?? existsSync;
@@ -178,9 +221,10 @@ export function checkLinksResolve(text, options = {}) {
 
   const result = { applicable: false, flagged: false, reason: "no-prose", findings: [], lookups: [], links: [] };
   const entries = classifyLines(String(text ?? ""));
+  const codeLines = indentedCodeLines(entries);
   const seenLookups = new Set();
   for (const e of entries) {
-    if (e.kind !== "prose" || e.raw.includes("→")) continue;
+    if (e.kind !== "prose" || codeLines.has(e.number) || e.raw.includes("→")) continue;
     result.applicable = true;
     const line = e.raw;
 
@@ -208,7 +252,7 @@ export function checkLinksResolve(text, options = {}) {
           continue;
         }
         const urlKind = seg === "pull" ? "pr" : "issue";
-        const word = wordBefore(line, m.index);
+        const word = wordBefore(line, m.index, number);
         if (word && word !== urlKind) {
           result.findings.push({ line: e.number, where: `line ${e.number}`, kind: "gh-word", excerpt: url, word: word === "pr" ? "PR" : "issue", urlKind });
         }

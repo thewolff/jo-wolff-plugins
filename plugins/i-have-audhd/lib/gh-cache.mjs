@@ -86,8 +86,10 @@ export function lookupGh(cache, key, now = Date.now()) {
   return { kind: e.kind, title: e.title ?? "" };
 }
 
-// "owner/repo#n" for a GitHub issue or PR URL's parts.
-export const ghKey = (owner, repo, number) => `${owner}/${repo}#${number}`;
+// "owner/repo#n" for a GitHub issue or PR URL's parts, owner and repo lower-cased: GitHub
+// treats them case-insensitively, so `Thewolff/Jo-Wolff-Plugins` and `thewolff/jo-wolff-plugins`
+// are one entry, not two lookups.
+export const ghKey = (owner, repo, number) => `${owner}/${repo}`.toLowerCase() + `#${number}`;
 
 // The parts of a key, or null.
 export function parseGhKey(key) {

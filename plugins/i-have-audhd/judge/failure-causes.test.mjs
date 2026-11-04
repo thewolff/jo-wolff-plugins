@@ -145,6 +145,14 @@ test("classify: the order is deadline, bad-json, then the stderr patterns, then 
   assert.equal(classify("judge-unparseable", CORPUS["credential-revoked"].stderr), "bad-json");
 });
 
+test("classify: 'quota' inside a path and a bare 'aborted' are not causes; the error-sentence shapes still are", () => {
+  assert.equal(classify("judge-exit-1", "model-judge: error: ENOENT: no such file or directory, open '/tmp/quota/config.json'"), "other");
+  assert.equal(classify("judge-exit-1", "model-judge: error: invalid JSON, parse aborted at byte 3"), "other");
+  assert.equal(classify("judge-exit-1", "Error: You exceeded your current quota, please check your plan."), "rate-limited");
+  assert.equal(classify("judge-exit-1", '{"error":{"code":"insufficient_quota"}}'), "rate-limited");
+  assert.equal(classify("judge-exit-1", "model-judge: aborted: Request was aborted"), "judge-self-abort");
+});
+
 test("modelOf: --model, --model=, -m, a trailing provider/model token, else unknown", () => {
   assert.equal(modelOf("claude -p --output-format json --model haiku"), "haiku");
   assert.equal(modelOf("omp -p --no-session --model=anthropic/claude-haiku-5-5"), "anthropic/claude-haiku-5-5");

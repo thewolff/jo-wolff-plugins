@@ -388,11 +388,13 @@ check.
 |---|---|---|
 | a code span holding only `/abs…`, `~…` or `file://…`, or a markdown link with such a target; a `file://` URL decoded first (`%E2%80%93` → `–`), then a trailing `:N`, `:N-M`, `:N–M`, a comma list (`:18,22`, `:13-14,56-59`), `:N:C`, `#LN`, `#LN-LM` and punctuation stripped | `existsSync` after `~` and `file://` expansion | `missing-path`, unless the missing path is a slash command or an HTTP route (`ROUTE_RE`: one segment with no dot, `/mcp`, `/wrap-up`, `/health`; or a `:param` segment, `/messages/:id/delivered`) |
 | `https://github.com/<owner>/<repo>/<seg>/<n>` where `seg` is `issue`, `issues`, `pull` or `pulls` | the segment | `gh-shape` unless `issues` or `pull` |
-| the same, with the nearest `PR`/`pull request`/`issue` word among the `WORD_WINDOW` (6) tokens before the URL, in the same clause (not past the sentence start, a `,`/`;`/dash, or an earlier URL; markdown link text counts, so `[PR #79](…/issues/79)` is judged) | the word against the segment | `gh-word` when they disagree; no word near the URL, no finding |
+| the same, with the nearest `PR`/`pull request`/`issue` word among the `WORD_WINDOW` (6) tokens before the URL, in the same clause (not past the sentence start, a `,`/`;`/dash, or an earlier URL); for a markdown link target, its link text supplies a word only as `PR #N` / `issue #N` with N the URL's own number (`[PR #79](…/issues/79)` is judged; `[the fix for the flaky-test issue](…/pull/80)` is not), and the window otherwise ends at the `[` | the word against the segment | `gh-word` when they disagree; no word near the URL, no finding |
 | the same, with a cache entry inside its TTL (`HIT_TTL_MS` a week, `MISS_TTL_MS` ten minutes) | the entry's `kind` | `gh-missing` for `missing`; `gh-kind` when the kind and segment disagree; else a resolved link |
 | the same, with no fresh entry | nothing: unknown | none; the key goes to `lookups` |
 
-Never counts: every line `checks/lines.mjs` does not call prose, any line carrying `→`, a
+Never counts: every line `checks/lines.mjs` does not call prose, a line of an indented code
+block (four spaces or a tab after a blank line, outside a list item; `indentedCodeLines`,
+local to this check), any line carrying `→`, a
 span that is a command (`link-the-reference`'s `isCommand`), a placeholder (`<…>`, `…`, a
 glob character, `$VAR`, `/path/to/`, `/absolute/`), a relative path, a span holding more than
 the path, and a path whose sentence (its own words, not the path's) says the file is still
@@ -561,8 +563,10 @@ asking, for the failure line. Never throws.
   `judge-unparseable` → `bad-json`; then stderr: `401`, `revoked`, `invalid api key|token`,
   `authentication_error`, `unauthorized` → `credential-revoked`; `no credential`, `not logged
   in`, `login required`, `no api key`, `gh|codex|claude login` → `no-credential`; `429`,
-  `rate limit`, `too many requests`, `overloaded`, `quota`, `529` → `rate-limited`; `request
-  was aborted`, `aborted`, `AbortError`, `ECONNRESET`, `socket hang up` → `judge-self-abort`;
+  `rate limit`, `too many requests`, `overloaded`, `quota` as a word of the error sentence
+  (never a path segment such as `/tmp/quota/config.json`), `529` → `rate-limited`; `request
+  was aborted` (a bare `aborted`, as in "parse aborted at byte 3", is not), `AbortError`,
+  `ECONNRESET`, `socket hang up` → `judge-self-abort`;
   else `other`. `model` is read off the judge command (`modelOf`: `--model x`, `--model=x`,
   `-m x`, else the last `provider/model` token, else `unknown`); `session` and `section` come
   from the caller's `options.meta` (the Stop hook: its session id and `<label>@<line>` for a

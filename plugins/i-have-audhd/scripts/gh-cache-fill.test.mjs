@@ -115,6 +115,26 @@ test("fill: a held lock means another fill is running; nothing is looked up. A s
   assert.equal(r2.looked, 1);
 });
 
+test("fill: a second helper started while the first holds the lock exits quietly: no lookup, no log line, the lock untouched", () => {
+  const path = join(cacheDir(), "gh-cache.json");
+  const lock = ghCacheLockPath(path);
+  const errorsLog = join(tmpHome, ".claude", ".i-have-audhd-state", "errors.log");
+  const logBefore = existsSync(errorsLog) ? readFileSync(errorsLog, "utf8") : "";
+  let inner = null;
+  const r = fill(path, ["o/r#1"], {
+    runGh: () => {
+      assert.equal(readFileSync(lock, "utf8"), String(process.pid), "the first helper's lock is on disk");
+      inner = fill(path, ["o/r#2"], { runGh: () => assert.fail("the second helper looked something up") });
+      assert.equal(readFileSync(lock, "utf8"), String(process.pid), "the second helper left the lock alone");
+      return fixture("pr");
+    },
+  });
+  assert.equal(r.looked, 1);
+  assert.deepEqual(inner, { looked: 0, learned: {}, error: null });
+  assert.equal(existsSync(errorsLog) ? readFileSync(errorsLog, "utf8") : "", logBefore, "exits quietly");
+  assert.equal(existsSync(lock), false, "the first helper released its lock");
+});
+
 test("fill: at most FILL_MAX_KEYS keys per run and the budget stops a slow run", () => {
   const path = join(cacheDir(), "gh-cache.json");
   const keys = Array.from({ length: 30 }, (_, i) => `o/r#${i + 1}`);

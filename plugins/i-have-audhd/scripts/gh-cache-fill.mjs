@@ -10,7 +10,8 @@
 // and it is: the hook reads unknown for every key and says nothing about it.
 //
 // WHAT IT DOES
-//   Takes one lock (<cache>.lock, pid inside; a lock younger than LOCK_TTL_MS means another
+//   Takes one lock (<cache>.lock, pid inside, created with flag `wx` so two helpers spawned in
+//   the same instant cannot both take it; a lock younger than LOCK_TTL_MS means another
 //   fill is running and this one exits), looks up at most FILL_MAX_KEYS keys with
 //   `gh api --cache 10m repos/<owner>/<repo>/issues/<n>` (GitHub's issues endpoint answers for
 //   PRs too and marks them with `pull_request`), each under GH_TIMEOUT_MS and all inside
@@ -87,6 +88,24 @@ export function lockHeld(cachePath, now = Date.now()) {
   }
 }
 
+// Create the lock with flag `wx`: the create itself fails when the file exists, so check and
+// take are one step. A live lock (lockHeld) → false, and this helper exits quietly. A stale
+// one is removed and the create tried once more. Any error but EEXIST throws to the caller.
+function takeLock(cachePath, now) {
+  const lock = ghCacheLockPath(cachePath);
+  for (let attempt = 0; attempt < 2; attempt++) {
+    try {
+      writeFileSync(lock, String(process.pid), { flag: "wx" });
+      return true;
+    } catch (err) {
+      if (err.code !== "EEXIST") throw err;
+      if (lockHeld(cachePath, now)) return false;
+      rmSync(lock, { force: true });
+    }
+  }
+  return false;
+}
+
 // Merge `learned` ({key: entry}) and `helper` into the file; entries past HIT_TTL_MS are dropped.
 function writeMerged(cachePath, learned, helper, now) {
   const current = readGhCache(cachePath);
@@ -104,11 +123,10 @@ function writeMerged(cachePath, learned, helper, now) {
 // The fill. Returns { looked, learned, error } for tests; never throws past its own logging.
 export function fill(cachePath, keys, { runGh = defaultRunGh, now = Date.now, budgetMs = FILL_BUDGET_MS, maxKeys = FILL_MAX_KEYS } = {}) {
   const out = { looked: 0, learned: {}, error: null };
-  if (lockHeld(cachePath, now())) return out;
   const lock = ghCacheLockPath(cachePath);
   try {
     mkdirSync(dirname(cachePath), { recursive: true });
-    writeFileSync(lock, String(process.pid));
+    if (!takeLock(cachePath, now())) return out;
   } catch (err) {
     logFault(SELF, `could not take ${basename(lock)} (${err.message}); nothing looked up`);
     return out;

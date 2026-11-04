@@ -27,6 +27,7 @@ import { OMP_TODO_CALL, OMP_TODO_RESULT } from "../triggers/fixtures/omp-todo-fr
 import { conclusionFirstApplicable } from "../triggers/conclusion-first.mjs";
 import { badNewsGate } from "../triggers/bad-news-lexicon.mjs";
 import { RULE_IDS } from "../lib/rules.mjs";
+import { DEFAULT_TIMEOUT_MS } from "../judge/ask.mjs";
 
 const HOOK = fileURLToPath(new URL("./i-have-audhd-stop.mjs", import.meta.url));
 
@@ -474,6 +475,28 @@ test("the alert states each cause's own fix: the model for a revoked credential,
   const r2 = parseOut(runHook({ session_id: "j5f", last_assistant_message: batchyMessage }, vibes, { I_HAVE_AUDHD_HARNESS: "omp" }).stdout);
   assert.match(r2.systemMessage, /do-not-batch-by-label: bad-json — the judge printed no \{"violation": …, "reason": …\} object; run the command by hand on the prompt file/);
   assert.match(readLog(vibes, "judge-failures.log"), /error=judge-unparseable cause=bad-json session=j5f harness=omp model=haiku elapsedMs=\d+ budgetMs=20000 section=whole .* stdout="I have no thoughts, only vibes\."/);
+});
+
+test("a credential alert names the judge's profile when the judge's stderr carries one", () => {
+  const missing = mkhome();
+  writeProfile(missing, {
+    enforcement: { judgeCommand: "echo 'model-judge: no credential for anthropic/claude-haiku-5-5 in profile agent-system-2' >&2; exit 1 # anthropic/claude-haiku-5-5" },
+  });
+  const r1 = parseOut(runHook({ session_id: "j5p", last_assistant_message: batchyMessage }, missing).stdout);
+  assert.match(r1.systemMessage, /no-credential — no credential for anthropic\/claude-haiku-5-5 in the judge's profile agent-system-2;/);
+  const revoked = mkhome();
+  writeProfile(revoked, {
+    enforcement: { judgeCommand: "echo 'model-judge: error: 401 token has been revoked in profile work' >&2; exit 1 # anthropic/claude-haiku-5-5" },
+  });
+  const r2 = parseOut(runHook({ session_id: "j5q", last_assistant_message: batchyMessage }, revoked).stdout);
+  assert.match(r2.systemMessage, /credential-revoked — the credential for anthropic\/claude-haiku-5-5 was revoked in profile work;/);
+});
+
+test("hooks.json gives the Stop hook at least the judge budget plus 5 s, so Claude Code never cancels it mid-judge", () => {
+  const hooks = JSON.parse(readFileSync(fileURLToPath(new URL("./hooks.json", import.meta.url)), "utf8"));
+  const stop = hooks.hooks.Stop.flatMap((g) => g.hooks).find((h) => h.command.includes("i-have-audhd-stop.mjs"));
+  assert.equal(stop.timeout, 35);
+  assert.ok(stop.timeout >= DEFAULT_TIMEOUT_MS / 1000 + 5, `timeout ${stop.timeout} s against a ${DEFAULT_TIMEOUT_MS} ms judge budget`);
 });
 
 test("judge unavailable is loud once per key: a second failure within the hour logs and warns, but says nothing to the person", () => {

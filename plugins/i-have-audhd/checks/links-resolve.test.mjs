@@ -138,6 +138,27 @@ test("gh-word: the word binds to its nearest URL, not to the whole sentence", ()
   assert.equal(wordBefore("No word at all https://x", 15), null);
 });
 
+test("gh-word: link text binds only `PR #N` / `issue #N` with the URL's own number", () => {
+  assert.deepEqual(kinds("See [the fix for the flaky-test issue](https://github.com/o/r/pull/80)."), []);
+  assert.deepEqual(kinds("See [issue #12](https://github.com/o/r/pull/80)."), [], "another number is not this link's word");
+  assert.deepEqual(kinds("See [issue #80](https://github.com/o/r/pull/80)."), ["gh-word"]);
+  assert.deepEqual(kinds("See [PR #2](https://github.com/o/r/issues/2)."), ["gh-word"]);
+  assert.deepEqual(kinds("Opened PR [#2](https://github.com/o/r/issues/2) today."), ["gh-word"], "the words before the `[` still count");
+  assert.deepEqual(kinds("Opened PR [the login fix](https://github.com/o/r/pull/1) today."), []);
+});
+
+test("gh cache keys are lower-cased, so a URL's casing finds the cached entry", () => {
+  const r = run("Merged PR https://github.com/O/R/pull/1 today.");
+  assert.deepEqual(r.lookups, []);
+  assert.deepEqual(r.links.map((l) => l.key), ["o/r#1"]);
+});
+
+test("an indented code block is not prose; an indented list continuation still is", () => {
+  assert.deepEqual(kinds("Run:\n\n    cat `/never/here/a.md`\n\n    `/never/here/b.md`\n\nDone."), []);
+  assert.deepEqual(kinds("Paragraph text\n    `/never/here/a.md` continues it."), ["missing-path"], "no blank line: a lazy continuation");
+  assert.deepEqual(kinds("- First item\n\n    `/never/here/a.md` is in the item."), ["missing-path"]);
+});
+
 test("missing-path: commands, placeholders, globs and variables are not paths to check", () => {
   for (const line of [
     "Run `rm /never/here/x.md` to clean up.",

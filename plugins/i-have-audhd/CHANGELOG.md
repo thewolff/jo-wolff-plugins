@@ -46,6 +46,13 @@ README's *Changes* section.
   from this machine's own failure log (`judge/fixtures/failure-corpus.mjs`); no failure was
   reproduced live. `skipped.log` lines name the profile path the hook read.
 - The no-judge notice and the setup tool count thirteen checks, five of them judge-gated.
+- Review nits: markdown link text gives a GitHub link its PR or issue word only as `PR #N` /
+  `issue #N` with the URL's own number; an indented code block is not prose for
+  `links-resolve`; GitHub cache keys are lower-cased; the helper takes its lock with `wx` and
+  a second helper exits quietly while it is held; `quota` inside a path and a bare `aborted`
+  no longer pick a cause (`other` instead); a credential alert names the judge's profile
+  when the judge's stderr does; a test pins the Stop `timeout` (35 s) to the judge budget
+  plus 5 s.
 
 ## [1.6.0]
 

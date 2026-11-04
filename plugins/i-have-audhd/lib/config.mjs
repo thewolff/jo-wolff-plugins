@@ -14,12 +14,14 @@
 //     }
 //   }
 //
-// PRECEDENCE, from strongest to weakest:
+// PRECEDENCE, from strongest to weakest (effectiveMode below; README and reference.md agree):
 //   1. the kill-switch file (handled by the hook, before any of this is read)
 //   2. enforcement.rules[rule]                  — a per-rule mode
-//   3. enforcement.mode, WHEN THE OPERATOR SET IT — an explicit global override
-//   4. the measured default                      — warn, for every rule
-//   5. the harness cap, applied LAST to whatever 2-4 produced. It runs only when the hook's
+//   3. the rule switched off in `inject.rules`  — off (config.disabledRules, from the hook)
+//   4. a built-in off (links-judge)             — off: opt-in by name, never by a global mode
+//   5. enforcement.mode, WHEN THE OPERATOR SET IT — an explicit global override
+//   6. the built-in default                     — BUILT_IN_MODES, else warn (measured)
+//   7. the harness cap, applied LAST to whatever 2-6 produced. It runs only when the hook's
 //      env carries I_HAVE_AUDHD_HARNESS=omp (the OMP adapter sets it on its child;
 //      Claude Code never does, so Claude behavior is untouched). Under that tag:
 //        (a) enforcement.armOmp !== true      → every block becomes warn: OMP seats warn
@@ -135,7 +137,7 @@ export function effectiveMode(config, rule) {
   return BUILT_IN_MODES[rule] ?? "warn"; // the measured default; block arms by explicit config
 }
 
-// Precedence tier 5 (header). True when every block-mode finding of this stop must be
+// Precedence tier 7 (header). True when every block-mode finding of this stop must be
 // emitted as warn instead. False whenever the harness tag is not exactly "omp", so a hook
 // run by Claude Code is never affected.
 export function harnessCapsBlocks(config, harness, stopHookActive) {
