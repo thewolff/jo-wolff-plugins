@@ -217,7 +217,11 @@ test("spawnHook runs the real hooks: brb through the prompt hook, then the stop 
     assert.match(brb.reason, /^brb: holding needs-you items/);
     assert.ok(existsSync(join(b.stateDir, "omp-live", "away.json")));
     const start = await spawnHook("session-start.mjs", buildStartPayload(c), b.root, 5000, env);
-    assert.match(start.hookSpecificOutput.additionalContext, /^brb: Jo is away/);
+    assert.match(start.hookSpecificOutput.additionalContext, /^brb: still away since /);
+    // A second `brb` while away: no block; the adapter shows the systemMessage (inputWordHandler) and starts no turn.
+    const again = await spawnHook("user-prompt-submit.mjs", buildPromptPayload("brb", c), b.root, 5000, env);
+    assert.equal(again.decision, undefined);
+    assert.match(again.systemMessage, /^brb: still away since .*; 0 held\. Only `back` ends the hold/);
     const stop = await spawnHook("stop.mjs", buildStopPayload({ last_assistant_message: { content: [{ type: "text", text: "## Needs you\n- on fire: main is red\n- Pick a cache" }] } }, c), b.root, 5000, env);
     assert.equal(stop.decision, "block");
     assert.equal(stop.systemMessage, "brb on fire: main is red");

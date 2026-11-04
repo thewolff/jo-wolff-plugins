@@ -36,21 +36,62 @@ export function holdCommand(sessionId, script = HOLD_SCRIPT) {
   return `node "${script}" hold${id ? ` --session "${id.replace(/["\\$`]/g, "")}"` : ""} "<one item, readable on its own>"`;
 }
 
+/** `40m`, `1h 5m`, `2d 3h` between two ISO times; "" when either does not parse. A `since` in the future reads `0m`. */
+export function awayFor(since, now) {
+  const ms = Date.parse(now) - Date.parse(since);
+  if (!Number.isFinite(ms)) return "";
+  const m = Math.max(0, Math.floor(ms / 60000));
+  if (m < 60) return `${m}m`;
+  if (m < 1440) return `${Math.floor(m / 60)}h ${m % 60}m`;
+  return `${Math.floor(m / 1440)}d ${Math.floor((m % 1440) / 60)}h`;
+}
+
+/** `brb: still away since <since> (<duration>); N held`: the instruction's first line and a second `brb`'s. */
+export function stillAwayLine(away, now) {
+  const d = awayFor(away.since, now);
+  return `brb: still away since ${away.since}${d ? ` (${d})` : ""}; ${away.held} held`;
+}
+
+/** What a second `brb` while away says, to Jo and at the head of the agent's context. */
+export function alreadyAwayText(away, now) {
+  return `${stillAwayLine(away, now)}. Only \`back\` ends the hold; \`pending\` peeks. Your questions answered while away did not end it.`;
+}
+
+/** `brb: still away (<duration>, N held) — say \`back\` to read them`: the first line of every reply while away (rule 5). */
+export function replyFirstLine(away, now) {
+  const d = awayFor(away.since, now);
+  return `brb: still away (${d ? `${d}, ` : ""}${away.held} held) — say \`back\` to read them`;
+}
+
+/**
+ * Whether a reply starts with the still-away line: its first non-blank line, past any `>`, `*`,
+ * `_` or backtick, begins `brb: still away` (any case). The live values are not compared; they
+ * move during a turn.
+ */
+export function hasReplyFirstLine(message) {
+  const first = String(message ?? "").split("\n").find((l) => l.trim() !== "") ?? "";
+  return /^brb: still away\b/i.test(first.replace(/^[\s>*_`]+/, ""));
+}
+
 /**
  * The away instruction: the contract between brb and the agent. Reaches the agent as
  * UserPromptSubmit additionalContext on every prompt while away, as SessionStart additionalContext
  * on a resume while away, and on OMP as a hidden message before each turn. `command` is the hold
- * command for this session (holdCommand); rule 2 names it.
+ * command for this session (holdCommand); rule 2 names it. The first line says the hold is still
+ * on, so a turn spent answering a fire does not read as the end of it (rule 6).
  */
-export function awayInstruction(away, command = holdCommand("")) {
+export function awayInstruction(away, command = holdCommand(""), now = new Date().toISOString()) {
   const n = away.held;
   return [
-    `brb: Jo is away since ${away.since}${away.note ? ` (${away.note})` : ""}. Keep working; do not stop to wait for an answer.`,
+    stillAwayLine(away, now),
+    `Jo is away${away.note ? ` (${away.note})` : ""}. Keep working; do not stop to wait for an answer.`,
     "While away:",
     "1. Keep working on the next open item. Choose the safer reversible option yourself where a choice is small; where it is not, write the ask down (rule 2) and move to the next item.",
     `2. Every question, decision or approval you need from Jo is written, not shown: run ${command} once per item, then leave it out of your reply. While away a reply has no \`Needs you\` section, no question sentence and no closing ask; it says only what was done. The command prints \`held N\`; a held item is not lost, so do not restate it. A Stop hook moves any \`Needs you\` section or closing ask that still appears into the digest and sends the reply back once.`,
     "3. Start a line with `on fire:` only for one of these: a broken main branch, data loss, a security finding, spend near a ceiling, or a blocker on everything you could work on. Those lines reach Jo at once. Anything else waits in the digest.",
     "4. When nothing is runnable without Jo, end the message with a line `idle: <why>`. brb then lets the turn end; without that line a Stop hook sends you back to work.",
+    `5. Start every reply with this line, as its first line: ${replyFirstLine(away, now)}. A Stop hook sends a reply without it back once.`,
+    "6. A fire answered does not end the hold. When Jo replies to a fire or answers a question, answer that, then go back to body-only replies ending `idle: <why>` when nothing is runnable. Jo's reply is not `back`; only the prompt `back` on its own ends the hold.",
     `${n} item${n === 1 ? "" : "s"} held so far.`,
   ].join("\n");
 }
@@ -63,6 +104,11 @@ export function keepWorkingReason(held) {
 /** The Stop hook's backstop block while away: a reply still showed asks; they are in the digest now, reply again without them. */
 export function backstopReason(n) {
   return `brb: ${n} item${n === 1 ? "" : "s"} moved to the digest; do not restate them — reply with the body only and end with \`idle: <why>\`.`;
+}
+
+/** The Stop hook's backstop block when a reply did not start with the still-away line. */
+export function firstLineReason(line) {
+  return `brb: every reply while away starts with the line \`\`${line}\`\`; reply again with that line first.`;
 }
 
 /** The most a `back` or `pending` reason carries; past it the digest is cut and points at its file. */

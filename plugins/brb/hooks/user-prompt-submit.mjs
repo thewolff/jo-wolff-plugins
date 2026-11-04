@@ -5,14 +5,23 @@
 //
 // What it does: the whole prompt is one of three words, or it is not.
 //   `brb` (or `brb <note>`)  start the hold: write away.json, block the prompt (no turn) with the
-//                            confirmation as the reason and the prompt text suppressed.
+//                            confirmation as the reason and the prompt text suppressed. While
+//                            already away it is not blocked and changes nothing: the prompt
+//                            proceeds; Jo sees lib/text.mjs alreadyAwayText (`brb: still away
+//                            since <since> (<duration>); N held. Only `back` ends the hold; …`)
+//                            as a systemMessage, and the agent gets the same line over the away
+//                            instruction as additionalContext, so it returns to holding. (On OMP
+//                            the adapter handles `brb` itself: it shows that line, no turn.)
 //   `back`                   archive the digest to archive/<ts>.md, clear away.json, and print
 //                            `brb: hold cleared; digest archived to <path>.` as the block reason's
-//                            first line with the digest under it. No turn.
+//                            first line with the digest under it. No turn. The only way out.
 //   `pending`                print the digest the same way and change nothing.
 //   anything else, away      the prompt proceeds with the away instruction as additionalContext
 //                            (lib/text.mjs awayInstruction, rendered with this session's hold
-//                            command: the absolute path of scripts/brb.mjs and the session id).
+//                            command: the absolute path of scripts/brb.mjs and the session id;
+//                            its first line is `brb: still away since <since> (<duration>); N
+//                            held`). Jo typing is an exchange, typically an answer to an
+//                            `on fire:` line, not a return; away.json is not touched.
 //   anything else, home      null: nothing printed.
 // `back` or `pending` while home is null too: the word reaches the model as an ordinary reply
 // (an agent that asked "revert or go back?" gets its answer). A reason longer than 8000
@@ -28,9 +37,10 @@
 
 import { runHook, invokedDirectly } from "../lib/hook-runner.mjs";
 import { archiveDigest, clearAway, digestPath, freshAway, readAway, readDigest, renderDigest, writeAway } from "../lib/state.mjs";
-import { AWAY_NOTICE, awayInstruction, cappedReason, holdCommand, surfaceWord } from "../lib/text.mjs";
+import { AWAY_NOTICE, alreadyAwayText, awayInstruction, cappedReason, holdCommand, surfaceWord } from "../lib/text.mjs";
 
 const block = (reason) => ({ decision: "block", reason, hookSpecificOutput: { hookEventName: "UserPromptSubmit", suppressOriginalPrompt: true } });
+const context = (text) => ({ hookSpecificOutput: { hookEventName: "UserPromptSubmit", additionalContext: text } });
 
 /**
  * @param {object} input  the UserPromptSubmit payload; session_id and prompt are read
@@ -42,10 +52,13 @@ export function handle(input, { env = process.env, now = () => new Date().toISOS
   const away = readAway(sessionId, env);
   if (!word) {
     if (!away) return null;
-    return { hookSpecificOutput: { hookEventName: "UserPromptSubmit", additionalContext: awayInstruction(away, holdCommand(sessionId)) } };
+    return context(awayInstruction(away, holdCommand(sessionId), now()));
   }
   if (word.word === "brb") {
-    if (away) return block(`brb: already away since ${away.since}; ${away.held} held. Type \`back\` to read them or \`pending\` to peek.`);
+    if (away) {
+      const at = now();
+      return { systemMessage: alreadyAwayText(away, at), ...context(`${alreadyAwayText(away, at)}\n\n${awayInstruction(away, holdCommand(sessionId), at)}`) };
+    }
     writeAway(sessionId, freshAway({ since: now(), note: word.note }), env);
     return block(word.note ? `${AWAY_NOTICE} (note: ${word.note})` : AWAY_NOTICE);
   }

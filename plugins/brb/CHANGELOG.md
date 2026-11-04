@@ -26,6 +26,14 @@ hold exists to prevent.
   Once per turn: `away.json` `backstopped` is set by the block and cleared by the next stop that
   is not a continuation, so the reply after the block goes through the release rules; the
   backstop also yields once `idleStops` tool-less stops have passed.
+- The still-away line: while away every reply starts with `brb: still away (<duration>, N
+  held) — say \`back\` to read them` (away instruction rule 5, `lib/text.mjs`
+  `replyFirstLine`), and the backstop blocks a reply with text whose first line is not it,
+  once per turn under the same rule as the ask backstop, with `firstLineReason`; a reply that
+  misses the line and shows asks gets one block naming both.
+- A fire answered does not end the hold (rule 6): Jo's reply to a fire is not `back`; answer
+  it, then back to body-only replies and `idle:`. Why: an agent that answered a fire took Jo's
+  reply as the end of the hold and went back to chatting.
 - Scenarios: `stop-away-working` (the keep-working `additionalContext`), `stop-away-backstop-once`
   (the same message again on the continuation is silent), `stop-away-held-by-command` (an item
   held by the command is not filed twice by the stop); `test/hold.test.mjs`.
@@ -34,12 +42,19 @@ hold exists to prevent.
 
 - The away instruction's rule 2 (`lib/text.mjs` `awayInstruction`) names the hold command and
   says the reply has no `Needs you` section, no question sentence and no closing ask; rule 4 no
-  longer invites a closing ask after `idle:`. The `brb` skill says the same.
+  longer invites a closing ask after `idle:`. Its first line is now `brb: still away since
+  <since> (<duration>); N held` (`stillAwayLine`, `awayFor`), so every prompt while away says
+  the hold is still on; the note moves to line 2. The `brb` skill says the same.
+- A second `brb` while away is no longer blocked: it passes through with ``brb: still away since
+  <since> (<duration>); N held. Only `back` ends the hold; `pending` peeks. Your questions
+  answered while away did not end it.`` as a `systemMessage` and at the head of the agent's
+  context (`alreadyAwayText`), and changes nothing on disk; on OMP the adapter shows that line
+  and starts no turn.
 - A closing ask is held (`closing ask: <text>`), deduplicated and counted like a section line;
   before, it rode along only when the same message had a new Needs-you line and was not counted.
 - `stop-away-asks` and `stop-away-asks-omp` expect `deny` (the backstop); `stop-away-on-fire`
   raises its fire outside a `Needs you` section; `prompt-other-while-away` looks for the new
-  rule 2.
+  rule 2. Every away Stop scenario's message starts with the still-away line.
 - README: the contract in one paragraph up top, the hold command, the backstop, a "what you
   see" table. The marketplace description and the root README row say the same.
 

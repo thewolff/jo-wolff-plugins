@@ -42,7 +42,7 @@
     "cwd": "${CWD}",
     "hook_event_name": "Stop",
     "stop_hook_active": false,
-    "last_assistant_message": "Pushed.\n\non fire: main is red after my push"
+    "last_assistant_message": "brb: still away (0m, 0 held) — say `back` to read them\nPushed.\n\non fire: main is red after my push"
   },
   "reason": "brb on fire: main is red after my push",
   "after": {

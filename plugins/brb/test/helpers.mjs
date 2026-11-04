@@ -65,14 +65,25 @@ export function runHook(b, name, payload, { env = {} } = {}) {
   return { status: r.status, stdout: r.stdout, stderr: r.stderr, json };
 }
 
-export const stopInput = (b, over = {}) => ({
-  session_id: "s1",
-  transcript_path: b.transcript,
-  cwd: b.work,
-  hook_event_name: "Stop",
-  stop_hook_active: false,
-  last_assistant_message: "Done.",
-  ...over,
-});
+/** The still-away line an agent starts every reply with while away (lib/text.mjs replyFirstLine), as a test fixture. */
+export const FIRST_LINE = "brb: still away (0m, 0 held) — say `back` to read them";
+
+/**
+ * A Stop payload. The message gets FIRST_LINE as its first line, as a reply that follows the away
+ * instruction would; `firstLine: false` leaves the message as given.
+ */
+export const stopInput = (b, { firstLine = true, ...over } = {}) => {
+  const input = {
+    session_id: "s1",
+    transcript_path: b.transcript,
+    cwd: b.work,
+    hook_event_name: "Stop",
+    stop_hook_active: false,
+    last_assistant_message: "Done.",
+    ...over,
+  };
+  if (firstLine) input.last_assistant_message = `${FIRST_LINE}\n${input.last_assistant_message}`;
+  return input;
+};
 
 export const promptInput = (b, prompt, over = {}) => ({ session_id: "s1", cwd: b.work, hook_event_name: "UserPromptSubmit", prompt, ...over });
