@@ -611,16 +611,35 @@ export function releaseEntry(md, version) {
 }
 
 /**
- * Whether the repository README names `pluginName`: a table row whose first cell is the name
- * (`| name |`, in code or not), a `-` or `*` bullet starting with the name (bold and linked or
- * not), or a heading whose whole text is the name. The root README is an index: it is never
- * asked for a version.
+ * Whether the repository README names `pluginName`: a table row (up to three spaces of indent)
+ * whose whole first cell is the name once code spans, bold and a link around it are removed, a
+ * `-` or `*` bullet starting with the name (bold and linked or not), or a heading whose whole
+ * text is the name. The root README is an index: it is never asked for a version.
  */
 export function rootReadmeNames(md, pluginName) {
   const name = escapeRe(pluginName);
-  const rowOrBullet = new RegExp(`^(?:[-*][ \\t]+|\\|[ \\t]*)(?:\\*\\*)?\\[?\`?${name}\`?(?![\\w-])`);
-  if (linesWithFences(md).some((l) => !l.code && rowOrBullet.test(l.text))) return true;
+  const bullet = new RegExp(`^[-*][ \\t]+(?:\\*\\*)?\\[?\`?${name}\`?(?![\\w-])`);
+  const names = (text) => {
+    if (bullet.test(text)) return true;
+    const cell = /^ {0,3}\|([^|]*)(?:\||$)/.exec(text);
+    return cell !== null && cellLabel(cell[1]) === pluginName;
+  };
+  if (linesWithFences(md).some((l) => !l.code && names(l.text))) return true;
   return sectionUnder(md, new RegExp(`^#{1,6}[ \\t]+${name}[ \\t]*$`, "i")) !== null;
+}
+
+/** A table cell's text with the bold, link and code-span wrappers around it removed, in any nesting. */
+function cellLabel(cell) {
+  let label = cell.trim();
+  for (let prev = null; prev !== label; ) {
+    prev = label;
+    label = label
+      .replace(/^\*\*(.*)\*\*$/, "$1")
+      .replace(/^\[(.*)\]\([^)]*\)$/, "$1")
+      .replace(/^`(.*)`$/, "$1")
+      .trim();
+  }
+  return label;
 }
 
 /** The `version` string of `<dir>/.claude-plugin/plugin.json`; null when the file, or the field, is not there. */

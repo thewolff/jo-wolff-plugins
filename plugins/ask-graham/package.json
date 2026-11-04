@@ -1,6 +1,6 @@
 {
   "name": "ask-graham",
-  "description": "Answer \"should we build X?\" with Graham's stated judgment — his gate questions, the 2-minute rule, fewer lines wins — and one verdict: do it now, start now, later, or don't build.",
+  "description": "Decide whether a new idea is worth building, with one engineer's stated judgment and one verdict. Runs on /ask-graham or \"should we build X?\", and on every new idea if you opt in.",
   "version": "0.8.1",
   "private": true,
   "scripts": {

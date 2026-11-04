@@ -383,6 +383,15 @@ test("docs row: a changed version needs a CHANGELOG.md entry, a README release h
   assert.equal(rootReadmeNames("| good-two | x |\n- **[good-two](#good-two)** — x.\n\n## good-two\n", "good"), false, "another plugin whose name starts the same");
   assert.equal(rootReadmeNames("## Layout\n- the good store\n\n| Plugin |\n|---|\n| good |\n", "good"), true, "every line is read, not only the first candidate");
   assert.equal(rootReadmeNames("```\n| good | x |\n- **[good](y)** x\n## good\n```\n", "good"), false, "a row, bullet or heading inside a fenced code block does not count");
+  // The whole first cell is compared, not a prefix of it: a longer label is another item's row.
+  for (const row of ["| good archive | x |", "| good.foo | x |", "| good-foo | x |", "| **good** badge | x |", "| [good](y) extra | x |"]) {
+    assert.equal(rootReadmeNames(`${row}\n`, "good"), false, `a longer first cell: ${row}`);
+  }
+  assert.equal(rootReadmeNames("| **[`good`](plugins/good/README.md)** | x |\n", "good"), true, "bold, link and code wrappers are removed in any nesting");
+  // Up to three spaces of indent is still a table row; four is an indented code block.
+  assert.equal(rootReadmeNames("   | good | x |\n", "good"), true, "a row indented by three spaces");
+  assert.equal(rootReadmeNames("  | good | x |\n", "good"), true, "a row indented by two spaces");
+  assert.equal(rootReadmeNames("    | good | x |\n", "good"), false, "four spaces is code, not a row");
   // A version the base had and the head dropped fails.
   manifest(undefined);
   assert.deepEqual(run({ baseVersion: "0.0.1", rootReadme: rootBullet }), { status: "fail", detail: 'manifest version missing at head: the base has 0.0.1; put a "version" back in .claude-plugin/plugin.json' });
