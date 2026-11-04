@@ -235,7 +235,8 @@ Resolve the rest yourself, and print each value in the report:
      username is not exactly `example` is a `should-fix` finding, and the release gate's own
      path scrub fails on it whatever the verdict.
    - Version and README consistency for each changed plugin: `plugin.json`, `package.json`, the
-     plugin README's top "Changes in" heading, the root README paragraph, the marketplace entry.
+     plugin README's top "Changes in" heading, the CHANGELOG entry, the marketplace entry (the
+     root README names the plugin only, never a version).
 
    The brief template:
 

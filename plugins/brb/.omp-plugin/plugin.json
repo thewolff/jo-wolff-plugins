@@ -1,5 +1,6 @@
 {
   "name": "brb",
+  "description": "Type brb and walk away: the agent keeps working, every ask waits in a digest, only an on-fire finding comes through at once, and back prints the digest and ends the hold.",
   "version": "0.3.0",
   "mcpServers": {}
 }

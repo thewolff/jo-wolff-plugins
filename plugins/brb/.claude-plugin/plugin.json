@@ -1,6 +1,6 @@
 {
   "name": "brb",
-  "description": "Hold needs-you asks in a digest while you are away; on-fire items still come through.",
+  "description": "Type brb and walk away: the agent keeps working, every ask waits in a digest, only an on-fire finding comes through at once, and back prints the digest and ends the hold.",
   "version": "0.3.0",
   "author": { "name": "Jo Wolff" },
   "license": "MIT",

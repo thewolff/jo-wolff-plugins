@@ -1,7 +1,7 @@
 # Changelog
 
 All notable changes to i-have-audhd are recorded here. The format follows
-[Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Entries before 1.5.2 live in the
+[Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Entries before 1.5.1 live in the
 README's *Changes* section.
 
 ## [1.7.0]
@@ -123,4 +123,23 @@ Tickets: thewolff/jo-issues #327 (i-have-audhd) and #333 (shared judge).
 
 ## [1.5.2]
 
-- Meets ledger 0.3.5's five-row gate (evals manifest and seven scenarios, declared state paths with `scripts/prune.mjs`), and the Stop hook and check scripts compare real paths in their direct-invocation guards.
+- Meets ledger 0.3.5's five-row gate. `evals/manifest.json` declares what each of the three
+  hooks can return and seven `evals/<x>.scenario.json` prove them (injection on and off, the
+  pending-warning relay and the quiet prompt, the Stop hook's default warn, its plural block,
+  and the judge-gated warning replayed from the captured real-judge output);
+  `e2e/live-run.sh` hands off to plugin-kit's scenario runner. The three state paths are
+  declared (`~/.claude/.i-have-audhd-state`, 30 days, pruned by `scripts/prune.mjs`; the
+  profile and the off file kept by design) and the skill has a "When this can't run" section.
+- Fix: the Stop hook and the four check scripts compared `import.meta.url` with
+  `file://${process.argv[1]}` as strings, and node resolves the main module through symlinks,
+  so reached through one (macOS's `/var/folders` tmpdir, where `ledger gate check` snapshots
+  the plugin) the Stop hook never ran and exited 0 with nothing printed and nothing logged;
+  the guards now compare real paths.
+
+## [1.5.1]
+
+- A hook's own fault is no longer silent. Empty or malformed stdin, a throw, an unparseable
+  profile, or a state file that cannot be written leaves one line in `errors.log` and one
+  warning line; the hook still exits 0 and blocks nothing. Every block reason now ends with
+  the way out: `touch ~/.claude/.i-have-audhd-off`, or the check's `enforcement.rules` key set
+  to `"warn"`.
