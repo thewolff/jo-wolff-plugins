@@ -149,6 +149,41 @@ receipt** below).
 The skill holds the conversation; the gate below holds the writes. The contract is the two
 together: where the skill says what the agent should do, the gate decides what it can do.
 
+## Learning mode
+
+Off by default; while it is off, pairing is exactly as described above. Turn it on by typing
+`learning mode on` or `teach me as we go` during a pairing session, and off by typing
+`learning mode off`. It lasts until you turn it off or pairing ends, and a new pairing session
+starts with it off. The agent records each switch in the journal with `pair_note`.
+
+While it is on, three things change, all in the skill text; the gate, agreement and the
+boundary do not:
+
+- **The card's decision line** gains **Why this approach**, one paragraph, and **Sources**, one
+  per claim: a URL the agent fetched this session with the passage it relies on, an absolute
+  `file:line` it read, or the claim marked `from memory`. The text goes in the card's `decision`
+  field, so the journal keeps it.
+- **"Teach me more"** counts as an open point, so the card stays closed. Each answer adds one
+  sourced layer and ends with a one-line recall question; the agent saves both with
+  `pair_note`. It goes on until you agree to the card or say that's enough.
+- **The read-back** asks one recall question about the change, before its closing line.
+
+### How it fails
+
+| Failure | What holds it |
+|---|---|
+| The mode turns on by accident: a question, "explain this", or words in a file or tool result read as a request | Only the typed phrases `learning mode on` and `teach me as we go` turn it on, and only `learning mode off` turns it off. Every switch is said in one line and recorded with `pair_note`, so an accidental one shows in the conversation and the journal |
+| Sources are invented: a recalled URL, or a passage never read | A source is a URL fetched this session with its quoted passage, or an absolute `file:line` the agent read. When nothing was fetched or read for a claim, the `from memory` mark is mandatory. The skill states this rule; the gate does not check sources |
+| Teaching bloats the card past what you can review | One layer per answer: each "teach me more" adds one sourced layer and one recall question, and the planned code stays the thing you review |
+
+### Not in 1.5.0
+
+- A dedicated sources field on the card. Sources ride in the `decision` field; a field of its
+  own would change the card schema in the gate, both host adapters and the journal.
+- A "write this piece yourself" move, where the agent leaves a piece of the change for you to
+  write.
+- Spaced recall across sessions. Recall questions are asked and saved within the session only.
+
 ## The gate
 
 A skill can describe the conversation; only a gate at the tool boundary can hold the agent's
@@ -929,6 +964,16 @@ worktree, inside an excluded directory, or after the final snapshot is not detec
 
 ## Changes
 
+### 1.5.0
+
+- Learning mode (see *Learning mode*). Off by default; your partner turns it on by typing
+  `learning mode on` or `teach me as we go`, and off by typing `learning mode off`. While it is
+  on, the card's decision line gains **Why this approach** and **Sources** (a URL fetched this
+  session with its passage, an absolute `file:line`, or `from memory`), "teach me more" is an
+  open point that keeps the card closed and is answered one sourced layer at a time with a
+  recall question saved by `pair_note`, and the read-back asks one recall question. Skill text
+  only: no gate, tool or schema change.
+
 ### 1.4.4
 
 - The plugin meets ledger 0.3.5's five-row gate. `evals/manifest.json` declares what each of the
@@ -963,6 +1008,7 @@ carries. Only Claude Code uses it; OMP gets the same verbs as extension tools re
 - `package.json`: declares `omp/paired-coding-omp.ts` under `omp.extensions`, so `omp plugin install` registers the gate.
 - `.mcp.json`: registers the bundled MCP server `pair` with Claude Code.
 - `README.md`: this file.
+- `CHANGELOG.md`: the release history, from 1.5.0 on; earlier releases are under *Changes* above.
 - `skills/paired-coding/SKILL.md`: the skill the agent follows while pairing.
 - `core/gate.mjs`: the gate core: pairing state, verdicts, Seatbelt profiles, Landlock rulesets and bubblewrap options, with no host imports.
 - `lib/verbs.mjs`: the `pair_*` verbs and session lifecycle, shared by the MCP server, the hooks and the OMP adapter.

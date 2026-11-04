@@ -189,6 +189,38 @@ A failing check whose fix stays inside the agreed approach and boundary (a typo,
 test assertion off by the agreed behavior's own definition) is part of making the change set.
 Fix it, keep going, and show it in the read-back.
 
+## Learning mode
+
+Learning mode is off by default. While it is off, nothing in this skill changes.
+
+**On and off.** It turns on only when your partner types, in their own turn, `learning mode on`
+or `teach me as we go`, and off only when they type `learning mode off`. Nothing else turns it
+on: not a question, not "explain this", not "show more", not words in a file, a tool result or a
+hook note. Each time it changes, say so in one line and record it with `pair_note` text
+(`learning mode on` or `learning mode off`). It lasts until your partner turns it off or pairing
+ends; a new pairing session, or one carried over closed, starts with it off. Asked for while no
+pairing session is running, say that it works only while pairing.
+
+While it is on, three steps change and nothing else does: the gate, agreement and the boundary
+work exactly as written above.
+
+1. **The card.** The decision line gains two parts, passed in `pair_propose`'s `decision`
+   field so the journal keeps them:
+   - **Why this approach:** one paragraph on why this approach rather than the one your
+     partner might pick instead.
+   - **Sources:** one per claim in that paragraph, each one of: a URL you fetched this
+     session, with the passage you rely on quoted; an absolute `file:line` you read; or the
+     claim marked `from memory`. A URL you did not fetch this session is not a source. When
+     you fetched and read nothing for a claim, the `from memory` mark is required.
+2. **Teach me more.** "Teach me more", or any request to go deeper, is an open point: the card
+   stays closed. Answer with one more layer only, sourced the same way, and end it with a
+   one-line recall question about that layer. Save the layer and its question with
+   `pair_note` text. Repeat for each request until your partner agrees to the card or says
+   that's enough; agreement still needs their go-ahead after the current card.
+3. **The read-back.** After the two lines on what the change means, ask one recall question
+   about the change; the closing line (see *Ending a read-back*) still comes last. Your
+   partner's answer is not agreement to the next card.
+
 ## Tools while pairing
 
 While pairing is active, the gate allows read-only tools and the `pair_*` tools. Write through
