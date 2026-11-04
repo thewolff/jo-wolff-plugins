@@ -37,6 +37,7 @@
 
 import { spawnSync } from "node:child_process";
 import { resolve as resolvePath } from "node:path";
+import { fileURLToPath } from "node:url";
 import { transaction } from "./db.mjs";
 import { nowIso } from "./time.mjs";
 import { parseItems, severityCounts, which } from "./review/common.mjs";
@@ -112,23 +113,52 @@ function gitConfig(top, key, opts = {}) {
   }
 }
 
+const LS_REMOTE = fileURLToPath(new URL("./ls-remote.mjs", import.meta.url));
+
 /**
- * The sha `remote` has at exactly `ref` now: { sha } or { sha: null, why }. `git ls-remote`
- * with no terminal prompt, its stderr discarded (a credential helper or ssh child holding that
- * pipe open past the kill would otherwise hold the hook), and killed after GH_TIMEOUT_MS.
+ * The environment for a remote lookup from a hook: nothing may prompt. An empty GIT_ASKPASS is
+ * taken by git over `core.askPass` and SSH_ASKPASS and runs nothing, GIT_TERMINAL_PROMPT=0 then
+ * refuses the terminal; SSH_ASKPASS is dropped and SSH_ASKPASS_REQUIRE=never, and ssh runs with
+ * BatchMode=yes (no password, passphrase or host-key question) on top of the ssh command the
+ * repository already uses. lib/ls-remote.mjs adds `-c core.askPass= -c credential.helper=` so no
+ * credential helper (a keychain dialog) runs either.
+ */
+export function quietRemoteEnv(top, env = process.env) {
+  const out = { ...env, GIT_TERMINAL_PROMPT: "0", GIT_ASKPASS: "", SSH_ASKPASS_REQUIRE: "never" };
+  delete out.SSH_ASKPASS;
+  const configured = gitConfig(top, "core.sshCommand", { timeoutMs: HOOK_GIT_TIMEOUT_MS })[0];
+  const ssh = env.GIT_SSH_COMMAND || configured || (env.GIT_SSH ? `'${env.GIT_SSH.replace(/'/g, `'\\''`)}'` : "ssh");
+  out.GIT_SSH_COMMAND = `${ssh} -o BatchMode=yes`;
+  delete out.GIT_SSH;
+  return out;
+}
+
+/**
+ * The sha `remote` has at exactly `ref` now: { sha } or { sha: null, why }. `git ls-remote` runs
+ * through lib/ls-remote.mjs, which gives it a process group of its own and kills the whole group
+ * after GH_TIMEOUT_MS, so no transport helper outlives the hook; nothing can prompt
+ * (quietRemoteEnv). Where process groups do not exist only git is killed, and `why` says so.
  */
 function lsRemote(top, remote, ref, env = process.env) {
-  const r = spawnSync("git", ["ls-remote", "--", remote, ref], {
+  const r = spawnSync(process.execPath, [LS_REMOTE, remote, ref, String(GH_TIMEOUT_MS)], {
     cwd: top,
-    env: { ...env, GIT_TERMINAL_PROMPT: "0" },
+    env: quietRemoteEnv(top, env),
     encoding: "utf8",
     stdio: ["ignore", "pipe", "ignore"],
-    timeout: GH_TIMEOUT_MS,
+    timeout: GH_TIMEOUT_MS + 2_000,
     killSignal: "SIGKILL",
   });
-  if (r.error) return { sha: null, why: r.error.code === "ETIMEDOUT" ? `git ls-remote ${remote} timed out after ${GH_TIMEOUT_MS / 1000}s` : `git ls-remote ${remote} failed (${r.error.message})` };
-  if (r.status !== 0) return { sha: null, why: `git ls-remote ${remote} could not read it (exit ${r.status})` };
-  const line = String(r.stdout ?? "")
+  let res = null;
+  try {
+    res = JSON.parse(String(r.stdout ?? "").trim().split("\n").at(-1));
+  } catch {
+    /* reported below */
+  }
+  if (!res) return { sha: null, why: `git ls-remote ${remote} gave no answer (${r.error ? r.error.message : `exit ${r.status}`})` };
+  if (res.timedOut) return { sha: null, why: `git ls-remote ${remote} timed out after ${GH_TIMEOUT_MS / 1000}s${res.group ? "" : " (only git itself could be stopped; its transport helpers may still be running)"}` };
+  if (res.error) return { sha: null, why: `git ls-remote ${remote} failed (${res.error})` };
+  if (res.status !== 0) return { sha: null, why: `git ls-remote ${remote} could not read it (exit ${res.status})` };
+  const line = String(res.stdout ?? "")
     .split("\n")
     .map((l) => l.split("\t"))
     .find(([sha, name]) => name === ref && /^[0-9a-f]{40}$/i.test(sha));
