@@ -33,6 +33,7 @@ test("B: a question that offers no options and asks for no decision does not fir
     "The migration is written and the tests pass on the new column. Do you want me to run it against the dev database?",
     "I read the spec as asking for one package per plugin, not one shared package. Is that right?",
     "Two layouts are possible for the runner bundle. Which do you prefer?",
+    "The name is still open after the search. What should it be, alpha or beta?",
   ]) {
     assert.equal(checkStop(text, { forcing: DEFAULTS.forcing })?.rule, "stopAskRule", text);
   }
@@ -42,6 +43,8 @@ test("B: a question that offers no options and asks for no decision does not fir
     "Still here, and nothing's running. Whenever you're ready, tell me what you want to work on. What do you want to work on?",
     "Why does the hook bounce? Because the earlier session left a row; I adopted it and the Stop passes now.",
     "Where did the config go? The loader reads ~/.config/ledger/config.json first and the repo file second.",
+    // Live headless run of 0.3.1 (2026-11-03, session 69733bc7): the ask rule fired on this loose `or` inside a wh-question.
+    "I've recorded your answer: the trial will use a local database, not a remote one. That question came from the other trial folder, and it was the only one waiting.\n\nWhat do you want to build or check first with the trial on the local database?",
   ]) {
     assert.equal(checkStop(text, { forcing: DEFAULTS.forcing }), null, text);
   }
