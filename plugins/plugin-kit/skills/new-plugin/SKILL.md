@@ -17,11 +17,14 @@ check` passes on the scaffold as written.
    `PostToolUse`, `SubagentStop`, `PreCompact`, `Notification`, `PermissionRequest`), and one
    sentence for the person: what it does and the rule its hooks enforce. Ask when any of the three
    is open; do not invent an event list.
-2. Run the scaffolder from the repository root:
+2. Run the scaffolder from inside the repository the plugin is for (any directory in it):
    `node "${CLAUDE_PLUGIN_ROOT}/scripts/new-plugin.mjs" <name> --events <A,B> --description "<sentence>"`
-   It writes `plugins/<name>/` and prints the files. It refuses an existing directory, a name
-   that is not kebab, or an unknown event, with the reason on stderr; fix the argument and run it
-   again. Nothing is overwritten.
+   It writes `<that repository's toplevel>/plugins/<name>/` (the toplevel is
+   `git rev-parse --show-toplevel` of the cwd; never the kit's own checkout or the marketplace
+   cache it runs from) and prints the files. `--dest <plugins dir>` names another destination
+   directory; a cwd in no git repository is refused naming `--dest`. It also refuses an existing
+   directory, a name that is not kebab, or an unknown event, with the reason on stderr; fix the
+   argument and run it again. Nothing is overwritten.
 3. Write the rule. In each `hooks/<event>.mjs`, replace `return null` with the hook's logic; the
    header comment says what the runner does for you (exit 0 always, the errors.log line, the
    4 s deadline) and what the handler owes: a missing or unreadable input is "no rule applies",
@@ -50,9 +53,10 @@ plugin never depends on a sibling plugin being installed.
 ## When this can't run
 
 - The scaffolder printed `new-plugin: <reason>` and exit 1: nothing was written. The reason is
-  one of: the directory exists (pick another name, or move the old one aside yourself; the
-  script never deletes), the name is not kebab, an event is not in the list, no `--events`. Fix
-  the argument and run it again; do not create the files by hand from memory.
+  one of: the cwd is in no git repository (run it from inside the repository the plugin is for,
+  or pass `--dest <plugins dir>`), the directory exists (pick another name, or move the old one
+  aside yourself; the script never deletes), the name is not kebab, an event is not in the list,
+  no `--events`. Fix the argument and run it again; do not create the files by hand from memory.
 - The scaffolder is missing (`no such file … scripts/new-plugin.mjs`): plugin-kit is not
   installed where `CLAUDE_PLUGIN_ROOT` points. Tell the person; the templates are in
   `plugins/plugin-kit/templates/` in the repository and can be copied by hand with `{{name}}`

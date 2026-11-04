@@ -25,7 +25,10 @@ push. This plugin makes meeting them the default rather than a retrofit.
 node "${CLAUDE_PLUGIN_ROOT}/scripts/new-plugin.mjs" <name> --events PreToolUse,Stop --description "<one sentence>"
 ```
 
-which writes `plugins/<name>/`:
+run from inside the repository the plugin is for, which writes `plugins/<name>/` under that
+repository's git toplevel (`--dest <plugins dir>` names another destination; a cwd in no git
+repository is refused naming `--dest`, so the kit's own checkout and the marketplace cache it is
+installed from are never where a plugin lands):
 
 | File | What it is |
 |---|---|
