@@ -56,7 +56,7 @@ Print its output to the user as it is. If the script cannot be run, write the fi
 
 ## Standing rules
 
-- **Delegate the search.** When the "does something else already exist?" search spans more than one repo, or needs more than three searches, hand it to a subagent (or a background read) and keep working on the other gate questions while it runs. (Skill)
+- **Delegate the search.** When the "does something else already exist?" search spans more than one repo, or needs more than three searches, hand it to a subagent (or a background read) and keep working on the other gate questions while it runs. One exception: the sources file and each source it lists stay in the parent session (a background call the parent itself starts counts), because the Stop check reads only the parent's tool calls. Everything beyond them, the repo greps, sibling lists, prior sessions and comparables, may be delegated. (Skill)
 - **Using types is never a cost.** Using a type system, types, or typed code is never counted against an ask, flagged, or weighed as complexity. Graham listed "type systems" as something he would kill or defer (Graham #3); Jo disagrees and overrides it: "this skill should NOT be questioning use of a type system". (Jo)
 - **Answer from evidence, not by asking.** The gate questions are the agent's to answer from the repo, the open-work sources in step 2, and the conversation. Always ask the comparables question in step 2 (Jo), as an explicit exception. Otherwise put a question to the user only for what no tool can settle: who will own it, or which why matters to them. (Skill)
 - **Recommend, then stop arguing.** Once the user has decided ("build it", "park it"), record the decision and do what they said. (Skill)
@@ -173,7 +173,7 @@ While the comparables answer is pending, use the waiting reply below: step 1's `
 Do you want me to research and see if something comparable exists?
 ```
 
-With a sources file, both replies also carry the `**Local search:**` block: one line per source the file lists, its label (any case, bold optional) and one of *found*, *nothing found* or *unreachable*. Outside code fences and quotes only. Without a sources file the block is optional. (Jo, 2026-11-04)
+With a sources file, both replies also carry the `**Local search:**` block: one line per source the file lists, written `<label>: <result>`. The label is the source's whole label (any case, bold optional) and must equal it, so `Held decisions` does not stand in for `Decisions`; the result carries one of *found*, *nothing found* or *unreachable*. Outside code fences and quotes only. Without a sources file the block is optional. (Jo, 2026-11-04)
 
 After the user answers, use the completed-check template below. A structure check uses the shape in "When it runs" instead: its `**Structure check:**` line, its `**Found:**` or `**No similar:**` line, and the red flags. (Skill)
 
@@ -224,7 +224,7 @@ The closing ask names the thing in full ("Start the CSV export for the billing p
 - **Decisions waiting on me:** `~/notes/HELD.md`
 ```
 
-Every source it lists is read-only for this skill. If a listed command would write anything, skip it and record the source as *unreachable*.
+Every source it lists is read-only for this skill. If a listed command would write anything, skip it and record the source as *unreachable* with that reason (for example "unreachable: the listed command writes a file"). When the user declined research, a remote-only source is likewise *unreachable*, saying research was declined. A line like that is the proof for its source: the Stop check does not ask for a run. Any other *unreachable* needs the attempt first, with its error.
 
 How the Stop check reads each bullet: the bold label names the source. A bullet with a backticked command needs a Bash or eval call containing the command's first two words (three when the second is `node`, `bun`, `python3`, `sh`, `zsh` or `npx`); text from a placeholder such as `<the ask>` on is not required. A bullet with only a path (backticked or bare; `*` matches any part) needs a tool call naming that path. A bullet with both counts as a command. A bullet with neither needs its line in `**Local search:**`. A bullet with no bold label is ignored.
 

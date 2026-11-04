@@ -292,9 +292,17 @@ skill loads, verdict reply or waiting reply alike:
   A command that fails still counts as run. A bullet with a command and a path counts as a command;
 - for a bullet with only a path (backticked or bare, `~` and `$HOME` expanded, `*` matching any
   part), any tool call naming that path;
-- a `**Local search:**` block in the reply with one line per bullet: its label (any case, bold
-  optional) and *found*, *nothing found* or *unreachable*. A bullet with neither command nor path
-  is proved by this line alone. Inside a code fence or a quote it does not count.
+- a `**Local search:**` block in the reply with one line per bullet, written `<label>: <result>`.
+  The label before the colon must equal the bullet's whole label (any case, bold and a trailing
+  colon ignored), so `Held decisions` never proves `Decisions`; the result after it carries *found*,
+  *nothing found* or *unreachable*, and a status word inside the label does not count. A bullet
+  with neither command nor path is proved by this line alone. Inside a code fence or a quote it
+  does not count.
+
+One line proves a command or path bullet without a run: *unreachable* with a policy reason after
+it, saying the listed command writes, deletes or is destructive, or that research was declined
+(for a remote-only source after the user said no). Not running it is the skill's rule there. Any
+other *unreachable*, bare or with an error, still needs the attempted call.
 
 Anything missing blocks the stop once, with a reason under 300 characters naming the first missing
 source, what was expected, and how many more are missing. The Local search block is enforced only
@@ -312,7 +320,7 @@ How it fails:
 | A path was never read or named by a tool call | Blocked once, naming the source and the path. |
 | The transcript is torn (a line half-written) | The torn line is skipped. If it held the proof, the stop is blocked once; the next stop in the turn passes. |
 | OMP cannot see tool calls | Not the case today: OMP writes each tool call to the session file, which the check reads. If a future OMP stopped writing them, every check with a sources file would block once per turn, then pass. |
-| A subagent ran the search | Blocked once, and the block is correct: the check sees only the main session's tool calls, so the parent runs each source itself. |
+| A subagent ran the search | Blocked once, and the block is correct: the check sees only the main session's tool calls, so the parent runs each configured source itself (a background call the parent starts counts). Everything beyond the configured sources, such as repo greps and comparables, may still be delegated. |
 
 ## Update and uninstall
 
@@ -420,6 +428,14 @@ report each one under `**Local search:**`, or the stop is blocked once naming th
 (see [Your own open-work sources](#your-own-open-work-sources)). Nothing about any particular
 machine ships: the plugin names no command or path of its own. Without a sources file nothing
 changes.
+
+Fixes from review of the sources check. A source skipped because its listed command writes, or
+because research was declined for a remote-only source, is proved by its `**Local search:**` line
+marking it *unreachable* with that reason; before, the check demanded the very run the skill
+forbids. A result line now proves only the source whose whole label it carries:
+`Held decisions: nothing found` no longer satisfies a `Decisions` source, and a status word inside
+a label (`Found items`) is not read as the status. The standing "Delegate the search" rule now says
+the configured sources stay in the parent session while everything else may be delegated.
 
 ### 2026-11-04 — 0.7.2
 

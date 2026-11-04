@@ -13,8 +13,9 @@
 // `**Found:**` or `**No similar:**` line (SKILL.md "When it runs").
 // When the user has a sources file (scripts/sources.mjs), a full check's verdict or waiting reply
 // also needs its proof, in the turn since the skill load: a Read of the file, a run or read of each
-// source it lists, and a `**Local search:**` block marking every source (sourcesMissing). Without a
-// sources file nothing more is required.
+// source it lists, and a `**Local search:**` block marking every source (sourcesMissing). A source
+// marked unreachable for a policy reason (its command writes, or research was declined) needs no
+// run. Without a sources file nothing more is required.
 // A turn that did not read the skill, or whose only uses of it were settings invocations (`/ask-graham intensity`, `/ask-graham stop-check`), is not checked.
 // The adapters skip the check entirely when the stop-check setting is off. The check blocks at most once per
 // turn: the caller keeps the opener id of the turn it last blocked and passes it back as
@@ -477,20 +478,44 @@ export function localSearchBlock(text) {
   return block;
 }
 
-// Whether a block line names the label (any case, bold ignored) and marks it found, nothing found
-// or unreachable.
-const marks = (block, label) =>
-  block.some((l) => {
-    const plain = l.replace(/\*\*|__/g, "").toLowerCase();
-    return plain.includes(label.toLowerCase()) && /\b(?:found|unreachable)\b/.test(plain);
-  });
+// A label as compared: emphasis dropped, a trailing colon dropped, spaces collapsed, lowercased.
+const normLabel = (s) => s.replace(/\*\*|__/g, "").trim().replace(/:$/, "").replace(/\s+/g, " ").trim().toLowerCase();
+
+// The status words a result may carry, longest first so `nothing found` is not read as `found`.
+const STATUS = /\b(nothing found|found|unreachable)\b/;
+
+// A stated reason that makes not running a source the rule rather than a miss: the listed command
+// writes or deletes (SKILL.md "The sources file"), or the user declined research (step 2's "No").
+// An error such as "cannot write" is not a reason: the word must say the command itself writes.
+const POLICY_SKIP = /\b(?:writes|writing|would write|deletes|deleting|would delete|destructive|not read-only|declined|said no)\b/;
+
+/**
+ * The block's line for a source: each line is read as `<label>: <result>` (list marker and emphasis
+ * dropped), and the first line whose whole label equals the source's (normLabel on both) is
+ * returned as `{ status, reason }`: the first status word in the result and the result text after
+ * it. Null when no line carries that label with a status. A status word inside a label never counts.
+ */
+export function blockLine(block, label) {
+  const want = normLabel(label);
+  for (const raw of block) {
+    const line = raw.replace(/^[ \t]*[-*+][ \t]+/, "").replace(/\*\*|__/g, "").replace(/\s+/g, " ").trim().toLowerCase();
+    if (!line.startsWith(`${want}:`)) continue;
+    const m = STATUS.exec(line.slice(want.length + 1));
+    if (m) return { status: m[1], reason: line.slice(want.length + 1 + m.index + m[0].length) };
+  }
+  return null;
+}
+
+// Whether a source's line marks it unreachable for a stated policy reason (POLICY_SKIP after the word).
+const policySkipped = (line) => line?.status === "unreachable" && POLICY_SKIP.test(line.reason);
 
 /**
  * What the turn lacks of the sources proof, in order, as `{ label, expected }`: a Read of the
  * sources file; the reply's `**Local search:**` block; then per source, its run (a command source:
  * a tool call whose command or code contains its prefix), its read (a path source: a tool call
  * naming the path), or, once both of those hold or for a source with neither, its line in the
- * block. Empty when nothing is missing.
+ * block. A source whose line marks it unreachable because its command writes or deletes, or because
+ * research was declined, needs no run or read: not running it is the rule. Empty when nothing is missing.
  */
 export function sourcesMissing({ calls = [], reply = "", sources, home = null } = {}) {
   const missing = [];
@@ -502,6 +527,8 @@ export function sourcesMissing({ calls = [], reply = "", sources, home = null } 
   const block = localSearchBlock(reply);
   if (!block) missing.push({ label: "**Local search:**", expected: "a block in the reply" });
   for (const b of sources.bullets) {
+    const line = block ? blockLine(block, b.label) : null;
+    if (policySkipped(line)) continue;
     if (b.kind === "command") {
       const prefix = squash(b.prefix, home);
       if (!calls.some((c) => runTexts(c).some((t) => squash(t, home).includes(prefix)))) {
@@ -515,7 +542,7 @@ export function sourcesMissing({ calls = [], reply = "", sources, home = null } 
         continue;
       }
     }
-    if (block && !marks(block, b.label)) missing.push({ label: b.label, expected: "a **Local search:** line marking it" });
+    if (block && !line) missing.push({ label: b.label, expected: "a **Local search:** line marking it" });
   }
   return missing;
 }

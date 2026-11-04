@@ -1,0 +1,36 @@
+# Changelog
+
+All notable changes to the ask-graham plugin are recorded here. The format follows
+[Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Earlier releases are described under
+"Release notes" in [README.md](README.md#release-notes).
+
+## 0.7.3 - 2026-11-04
+
+### Changed
+
+Closes the loophole where a turn could end on the comparables question and skip the judgment:
+three runs in a row asked only that question, never naming the ask (step 1) or answering the gate
+questions (step 3). A waiting reply now needs a `**Ask:**` line and a `**Gate questions**` block
+with all five bullets above the question; the Stop check blocks it once otherwise, naming what is
+missing. Jo's rule (2026-11-04: "you can't skip step 1"). Verdict replies and the structure check
+are unchanged. The check is shared, so OMP's `session_stop` applies it too.
+
+The sources file is now enforced, not remembered. Asked "how are you going to enforce not ignoring
+the sources file" (Jo, 2026-11-04), the plugin now parses your
+`${XDG_CONFIG_HOME:-~/.config}/ask-graham/sources.md`: the every-idea nudge lists each source, and
+a full check with that file present must read it, run or read each source in the same turn, and
+report each one under `**Local search:**`, or the stop is blocked once naming the first one missed
+(see [Your own open-work sources](README.md#your-own-open-work-sources)). Nothing about any
+particular machine ships: the plugin names no command or path of its own. Without a sources file
+nothing changes.
+
+### Fixed
+
+Fixes from review of the sources check. A source skipped because its listed command writes, or
+because research was declined for a remote-only source, is proved by its `**Local search:**` line
+marking it *unreachable* with that reason; before, the check demanded the very run the skill
+forbids. A result line now proves only the source whose whole label it carries:
+`Held decisions: nothing found` no longer satisfies a `Decisions` source, and a status word inside
+a label (`Found items`) is not read as the status. The standing "Delegate the search" rule now says
+the configured sources stay in the parent session while everything else may be delegated.
+

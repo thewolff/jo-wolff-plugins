@@ -12,7 +12,7 @@
 //   path     no such span, but a path: a backticked span or bare word starting `/`, `~/`, `$HOME/`,
 //            `${HOME}/`, `./` or `../`. `*` in it matches any run of path characters. Proof is a tool
 //            call naming the path. A command and a path in one item: the command wins.
-//   none     neither. Proof is a `**Local search:**` line in the reply naming the label.
+//   none     neither. Proof is a `**Local search:**` line in the reply whose whole label is this one.
 // An item without a bold label cannot be required, so it is skipped and counted in `skipped`. Items
 // inside a fenced code block do not count.
 //

@@ -220,6 +220,31 @@ for (const [name, h] of Object.entries(HARNESS)) {
     const { opener, check } = turn(() => {}, "Searched; nothing found.");
     assert.deepEqual(check(), { block: BLOCK_REASON, opener });
   });
+
+  // Without a run of `todo-cli list`: every other source run or read.
+  const allButTickets = (t) => {
+    h.readFile(t, FILE);
+    h.named(t, "/tmp/fixture/HELD.md");
+    h.named(t, `${HOME}/fixture-notes/q3/PLAN.md`);
+  };
+  const ticketsLine = (result) => `${LOCAL.replace(/^- Old tickets:.*$/m, `- Old tickets: ${result}`)}\n\n${VERDICT}`;
+
+  test(`${name}: a source skipped because its command writes, or because research was declined, passes unrun`, () => {
+    for (const result of [
+      "unreachable (listed command writes a file; skipped as required)",
+      "**unreachable**: remote-only, research declined (user said no)",
+    ]) {
+      const { opener, check } = turn(allButTickets, ticketsLine(result));
+      assert.deepEqual(check(), { pass: "verdict", opener }, result);
+    }
+  });
+
+  test(`${name}: unreachable with no policy reason on a runnable source still needs the run`, () => {
+    for (const result of ["unreachable", "unreachable (cannot write lockfile)", "nothing found; the command writes nothing"]) {
+      assert.match(turn(allButTickets, ticketsLine(result)).check().block,
+        /First missing: Old tickets: a Bash or eval call running `todo-cli list`\./, result);
+    }
+  });
 }
 
 test("Claude Code: a command that exited non-zero counts as run", () => {
@@ -261,6 +286,22 @@ test("sourcesMissing: a fenced command in the reply is not a run; an unlabelled 
   const reply = "```sh\ntodo-cli list -- cache\n```\n" + LOCAL;
   assert.deepEqual(sourcesMissing({ calls: [{ name: "Read", input: { file_path: FILE } }], reply, sources: s, home: HOME }).map((m) => m.label),
     ["Old tickets", "Held decisions", "Planning notes"]);
+});
+
+test("sourcesMissing: a result line proves only the source whose whole label it carries", () => {
+  const s = sources("- **Decisions:** ask the owner\n- **Held decisions:** ask the owner");
+  const calls = [{ name: "Read", input: { file_path: FILE } }];
+  const missing = (reply) => sourcesMissing({ calls, reply, sources: s, home: HOME }).map((m) => m.label);
+  assert.deepEqual(missing("**Local search:**\n- Held decisions: nothing found"), ["Decisions"]);
+  assert.deepEqual(missing("**Local search:**\n- **Decisions:** found: D-4\n- held  Decisions: nothing found"), []);
+});
+
+test("sourcesMissing: a status word inside a label is not the status", () => {
+  const s = sources("- **Found items:** ask the owner\n- **Unreachable hosts:** ask ops");
+  const calls = [{ name: "Read", input: { file_path: FILE } }];
+  const missing = (reply) => sourcesMissing({ calls, reply, sources: s, home: HOME }).map((m) => m.label);
+  assert.deepEqual(missing("**Local search:**\n- Found items: checked\n- **Unreachable hosts:** looked"), ["Found items", "Unreachable hosts"]);
+  assert.deepEqual(missing("**Local search:**\n- Found items: nothing found\n- Unreachable hosts: unreachable (no VPN)"), []);
 });
 
 test("sourcesBlockReason: stays within 300 characters with a long label and command", () => {
