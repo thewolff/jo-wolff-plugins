@@ -233,6 +233,10 @@ for (const [name, h] of Object.entries(HARNESS)) {
     for (const result of [
       "unreachable (listed command writes a file; skipped as required)",
       "**unreachable**: remote-only, research declined (user said no)",
+      "unreachable: the command writes to the ledger",
+      "unreachable (would delete rows)",
+      "unreachable (would write to the db)",
+      "unreachable (research declined by Jo)",
     ]) {
       const { opener, check } = turn(allButTickets, ticketsLine(result));
       assert.deepEqual(check(), { pass: "verdict", opener }, result);
@@ -240,7 +244,13 @@ for (const [name, h] of Object.entries(HARNESS)) {
   });
 
   test(`${name}: unreachable with no policy reason on a runnable source still needs the run`, () => {
-    for (const result of ["unreachable", "unreachable (cannot write lockfile)", "nothing found; the command writes nothing"]) {
+    for (const result of [
+      "unreachable",
+      "unreachable (cannot write lockfile)",
+      "nothing found; the command writes nothing",
+      "unreachable (error writing lockfile)",
+      "unreachable (request declined: HTTP 403)",
+    ]) {
       assert.match(turn(allButTickets, ticketsLine(result)).check().block,
         /First missing: Old tickets: a Bash or eval call running `todo-cli list`\./, result);
     }
