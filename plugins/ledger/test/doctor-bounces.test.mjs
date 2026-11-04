@@ -181,6 +181,28 @@ test("(h2) errors.log lines for another database or from ledger 0.2.x are not co
   assert.match(doctor(b).out, /^warn errors: 1 errors\.log line\(s\) for this database/m);
 });
 
+test("(h3) a config notice in errors.log counts while it reproduces; once the file is fixed it is dropped as stale", () => {
+  // The live run: SessionEnd logged `review.profiles must be …; ignoring it`, then the human fixed config.json.
+  const b = sandbox();
+  openDb(b).close();
+  b.writeConfig({ review: { profiles: 5 } });
+  const { notices } = loadConfig({ env: b.env, cwd: b.work });
+  assert.equal(notices.length, 1, notices.join("\n"));
+  assert.match(notices[0], /review\.profiles must be .*; ignoring it$/);
+  logError("SessionEnd", notices[0], b.env);
+  logError("Stop", "boom here", b.env);
+  const live = doctor(b);
+  assert.match(live.out, /^warn errors: 2 errors\.log line\(s\) for this database in the last 7 days: SessionEnd 1, Stop 1 \([^)]*\)$/m);
+  b.writeConfig({ review: { labs: ["codex"] } });
+  const fixed = doctor(b);
+  assert.match(fixed.out, /^warn errors: 1 errors\.log line\(s\) for this database in the last 7 days: Stop 1 \(.*; 1 stale config notice\(s\) ignored\)$/m);
+  assert.ok(!fixed.out.includes("review.profiles"), fixed.out);
+  // With only the stale notice left, doctor is ok and SessionStart carries no doctor line.
+  writeFileSync(b.errorsLog, readFileSync(b.errorsLog, "utf8").split("\n").filter((l) => !l.includes("boom here")).join("\n"));
+  assert.match(doctor(b).out, /^ok {3}errors: no errors\.log lines for this database in the last 7 days \(.*; 1 stale config notice\(s\) ignored\)$/m);
+  assert.ok(!start(b, "s-h3").json.hookSpecificOutput.additionalContext.includes("doctor reports"));
+});
+
 test("(i) inject.doctor false: no doctor line", () => {
   const b = sandbox();
   openDb(b).close();

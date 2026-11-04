@@ -17,7 +17,7 @@
 // copy of its stdout. Saved per lab:
 //   fixtures/<lab>.txt              the CLI's raw stdout, when it ran
 //   fixtures/<lab>.unavailable.txt  the error the adapter threw, when it did not
-// The judge (LEDGER_JUDGE_BIN, else review.judgeCommand, else the i-have-audhd profile's
+// The judge (LEDGER_JUDGE_BIN, else review.judgeCommand, else the shared judge file, else the i-have-audhd profile's
 // enforcement.judgeCommand) is asked whether FIX resolves FINDING; its stdout is fixtures/judge.txt
 // (or judge.unavailable.txt). Stale files for a lab are removed first.
 
@@ -27,11 +27,10 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { spawnSync } from "node:child_process";
 import { ADAPTERS, REVIEW_TIMEOUT_MS } from "../lib/review.mjs";
-import { judgeCommand, passageFor } from "../lib/judge.mjs";
+import { ask, judgeCommand, passageFor } from "../lib/ledger-judge.mjs";
 
 const UNAVAILABLE_TIMEOUT_MS = 60_000;
 import { open } from "../lib/db.mjs";
-import { ask } from "../lib/judge.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const FIXTURES = join(HERE, "fixtures");

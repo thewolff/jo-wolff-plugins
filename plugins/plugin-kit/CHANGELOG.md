@@ -4,6 +4,14 @@ All notable changes to plugin-kit are recorded here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Releases before 0.2.0 are described in
 the README's "Changes in" sections.
 
+## [0.3.2] - 2026-11-04
+
+### Changed
+
+- `test/judge.test.mjs`: `NOT_YET_VENDORED` is empty. ledger 0.3.7 ships the kit's
+  `lib/judge.mjs` byte for byte, so its copy is diffed like every other. `lib/judge.mjs` is
+  unchanged. The README's "Shared judge" section says nothing is allowlisted.
+
 ## [0.3.1] - 2026-11-04
 
 ### Fixed

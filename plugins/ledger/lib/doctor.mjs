@@ -8,7 +8,9 @@
 //   config   which layer set `db` and `enabled`; warn when `enabled` resolves false or a config
 //            file did not parse
 //   hooks    hooks/hooks.json lists every event the plugin handles and each script exists
-//   errors   errors.log lines from the last 7 days, counted per hook; warn when any, last 5 shown
+//   errors   errors.log lines from the last 7 days, counted per hook; warn when any, last 5 shown.
+//            A `config <file>: … ignoring it` line whose notice no longer reproduces against the
+//            file as it is now is dropped and counted as a stale config notice instead
 //   stale    open or held questions whose session ended more than 24h ago; warn with the way out
 //   digest   the weekly digest: warn when overdue (>8 days), when the last post failed, or when off
 //   bounces  open bounce rows older than 24 hours (warn when any)
@@ -19,7 +21,7 @@
 // and the errors.log count. The db-open check is implied (the hook has the store open already).
 
 import { existsSync, readFileSync } from "node:fs";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { currentLogDb, loadConfig } from "./config.mjs";
 import { probe, SCHEMA_VERSION, storeVersion } from "./db.mjs";
@@ -44,24 +46,52 @@ function layerName(label, cfg) {
   return "default";
 }
 
+const CONFIG_NOTICE = /^ledger: config (.+?): .*; ignoring it(?: here)?$/;
+
+/**
+ * Whether errors.log line `message`, a config notice, still reproduces: loadConfig re-run from the
+ * named file's folder (which finds the user file and that folder's project file) emits it again.
+ * `cache` keeps one loadConfig per folder.
+ */
+function noticeReproduces(env, message, cache) {
+  const m = CONFIG_NOTICE.exec(message);
+  if (!m) return true;
+  const cwd = dirname(m[1]);
+  if (!cache.has(cwd)) {
+    let notices;
+    try {
+      notices = loadConfig({ env, cwd, track: false }).notices.map((n) => n.replace(/\s+/g, " ").trim());
+    } catch {
+      notices = null;
+    }
+    cache.set(cwd, notices);
+  }
+  const notices = cache.get(cwd);
+  return notices === null || notices.includes(message);
+}
+
 /**
  * errors.log lines of the last 7 days written against database `db`: { lines, byHook: [[hook, n], …],
- * others } (`others`: lines in the window for another database, or untagged).
+ * others, stale } (`others`: lines in the window for another database, or untagged; `stale`: config
+ * notices for this database that no longer reproduce, left out of `lines`).
  */
 export function recentErrors(env, now, db) {
   const all = readErrors(env, { since: now - ERRORS_WINDOW_MS });
-  const lines = all.filter((l) => l.db === db);
+  const cache = new Map();
+  const mine = all.filter((l) => l.db === db);
+  const lines = mine.filter((l) => noticeReproduces(env, l.message, cache));
   const counts = new Map();
   for (const l of lines) counts.set(l.hook, (counts.get(l.hook) ?? 0) + 1);
-  return { lines, byHook: [...counts.entries()].sort((a, b) => a[0].localeCompare(b[0])), others: all.length - lines.length };
+  return { lines, byHook: [...counts.entries()].sort((a, b) => a[0].localeCompare(b[0])), others: all.length - mine.length, stale: mine.length - lines.length };
 }
 
 function errorsCheck(env, now, db) {
-  const { lines, byHook, others } = recentErrors(env, now, db);
+  const { lines, byHook, others, stale } = recentErrors(env, now, db);
   const elsewhere = others ? `; ${others} other line(s) are for another database or an older ledger, not counted` : "";
-  if (!lines.length) return check("ok", "errors", `no errors.log lines for this database in the last 7 days (${errorsLogPath(env)}${elsewhere})`);
+  const dropped = stale ? `; ${stale} stale config notice(s) ignored` : "";
+  if (!lines.length) return check("ok", "errors", `no errors.log lines for this database in the last 7 days (${errorsLogPath(env)}${elsewhere}${dropped})`);
   const detail = lines.slice(-5).map((l) => `${l.at} ${l.hook} ${l.message}`);
-  return check("warn", "errors", `${lines.length} errors.log line(s) for this database in the last 7 days: ${byHook.map(([h, n]) => `${h} ${n}`).join(", ")} (${errorsLogPath(env)}${elsewhere})`, detail);
+  return check("warn", "errors", `${lines.length} errors.log line(s) for this database in the last 7 days: ${byHook.map(([h, n]) => `${h} ${n}`).join(", ")} (${errorsLogPath(env)}${elsewhere}${dropped})`, detail);
 }
 
 function hooksCheck(pluginRoot) {

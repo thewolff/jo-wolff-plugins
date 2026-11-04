@@ -12,7 +12,7 @@ can return and one `evals/<x>.scenario.json` per event × outcome, replayed by t
 canary), its state is declared and pruned (`state` in `.claude-plugin/plugin.json`, with a
 prune command for anything kept for a number of days), and a release is written down (a
 version bump has a `CHANGELOG.md` entry, a README release heading and a mention in the
-repository README). `ledger gate check` (the ledger plugin, 0.3.6) enforces the six before a
+repository README). `ledger gate check` (the ledger plugin, 0.3.7) enforces the six before a
 push. This plugin makes meeting them the default rather than a retrofit.
 
 ## Install
@@ -76,7 +76,7 @@ repository carries its own; they keep their own hook runners.
 A plugin vendors a byte-identical copy (`--judge` on the scaffolder, or copy the file by hand);
 `test/judge.test.mjs` fails when any `plugins/*/lib/judge.mjs` or `plugins/*/judge/judge.mjs`
 differs from the kit's, outside an explicit allowlist of the plugins that have not switched yet.
-Only ledger's `lib/judge.mjs` is allowlisted, until ledger's next release; i-have-audhd's
+Nothing is allowlisted since ledger 0.3.7 vendored the kit's copy; i-have-audhd's
 `judge/ask.mjs` has a different name and is not scanned at all until i-have-audhd ships
 `lib/judge.mjs`.
 
@@ -327,6 +327,12 @@ The reviewer's review budget fails these ways:
 | A severity that is unclear (marked `blocking` with a worst case outside the five, or no worst case) | The finding is `should-fix`; the triage says `disagree` and names the definition it misses. Doubt never makes a finding `blocking`, so it never makes the verdict `fix-first` by itself. |
 | Codex writes `Verdict: fix-first` with no in-scope blocking finding | The triage states `Effective verdict: ship-with-limits`; Codex's text stays as written beside it. |
 | A later edit reverses a budget rule other than the round increment or the `fix-first` guard | The tests pin vocabulary and selected sentences; a reversal of the `new-mechanism` classification or the rule that holds those findings for Jo, of the limit that a follow-up reports new findings only in lines the fixes changed, or of the statement that blocking-only from round 3 is this repository's own rule (not the cited sources') passes them. Read the diff of `agents/cross-lab-reviewer.md` against those rules. |
+
+## Changes in 0.3.2
+
+`test/judge.test.mjs`'s `NOT_YET_VENDORED` allowlist is empty: ledger 0.3.7 ships the kit's
+`lib/judge.mjs` byte for byte, so every `plugins/*/lib/judge.mjs` is now diffed against the
+kit's. `lib/judge.mjs` itself is unchanged.
 
 ## Changes in 0.3.1
 
