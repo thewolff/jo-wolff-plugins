@@ -27,6 +27,10 @@ it, keeping a record of what it did and asked, and a vendored set of engineering
   state declaration, and a skill with its "When this can't run" section, scaffolded by
   `/plugin-kit:new-plugin`; `ledger gate check` passes on it, the `evals` row excepted, before
   the first rule is written, and that row fails naming the stubs until they are filled.
+  Changes in plugin-kit 0.2.2: the scaffold writes a `CHANGELOG.md` (Keep a Changelog, with the
+  0.1.0 entry) beside the README's `## Changes in 0.1.0`, and the `release-gate` checklist's
+  version-match step wants the three things ledger 0.3.6's `docs` row wants: the CHANGELOG
+  entry, the README release heading and this README's mention.
   Changes in plugin-kit 0.2.1: the `cross-lab-reviewer` agent has a review budget: verdicts `ship`, `ship-with-limits` and `fix-first` (only on a blocking finding), a required `Threat model:` line, a one-sentence worst case per finding, and blocking-only reviews from round 3.
   Changes in plugin-kit 0.2.0: the shared scenario runner `lib/live-run.mjs` and the evals, prune
   and state scaffold templates. Changes in plugin-kit 0.1.2: two agents, `cross-lab-reviewer` (a Codex review of the branch) and `release-gate` (the release checklist, report-only).
@@ -823,6 +827,16 @@ The hooks record every session until you switch a folder off with `/ledger:disab
 (`/ledger:enable` turns it back on). The plugin's tables are all prefixed `cc_`, so the database
 can be a SQLite file another tool already uses.
 
+Changes in 0.3.6 (with plugin-kit 0.2.2): the gate grows from five rows to six. `docs` (a
+release is written down): when a plugin's `.claude-plugin/plugin.json` version differs from the
+base commit's, its `CHANGELOG.md` has an entry for the new version, its README has a release
+heading for it (`## Changes in <ver>`, `### <ver>` or `### <date> — <ver>`), and this README
+names the version for the plugin (in its bullet, on a `Changes in <plugin> <ver>` line, or on a
+`Changes in <ver>` line under the plugin's section). The row is skipped while the version is
+unchanged, each failure names the file and the heading it wanted, and the base manifest and
+this README are read out of the commits like every other input. `plugins/ledger/CHANGELOG.md`
+exists from this version on.
+
 Changes in 0.3.5 (with plugin-kit 0.2.0): the gate grows from three rows to five. `evals`
 (behaviour is proved): `evals/manifest.json` declares, for every event `hooks.json` registers,
 the outcomes the handler can return; one `evals/<x>.scenario.json` per event × outcome, with a
@@ -850,7 +864,7 @@ instead of the directory above the kit (which, installed from the marketplace, w
 cache); a cwd in no repository is refused naming `--dest`.
 
 Changes in 0.3.3: the fault-tolerance gate and the feedback loop. `ledger gate check` runs the
-repository test bar's checks (three then; five since 0.3.5) on every plugin changed since the base of a repository of
+repository test bar's checks (three then; five since 0.3.5; six since 0.3.6) on every plugin changed since the base of a repository of
 plugins (can't break the session: each hook on five fault inputs; failures visible: an
 `errors.log` line and a `systemMessage`, and an `<x>.unavailable.txt` fixture beside every
 `<x>.txt`; text says what to do: a "When this can't run" section in every skill and agent, a

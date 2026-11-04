@@ -1,14 +1,14 @@
-// plugin-gate.test.mjs — the three-check push gate (README "The plugin gate"): what counts as a
+// plugin-gate.test.mjs — the six-check push gate (README "The plugin gate"): what counts as a
 // repository of plugins, each check's pass and fail on a fixture plugin, the rows `gate check`
 // records and replaces, and the PreToolUse deny with its way out (`gate check` or `review waive`).
 
 import test from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { chmodSync, existsSync, mkdirSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { sandbox, cli, hook, openDb } from "./helpers.mjs";
-import { checkPlugin, evalsCheck, retentionCheck, fixturesWithoutUnavailable, hookCommands, reasonsWithoutCommand, treePlugins, treeSha, snapshotTree, textsWithoutWhenCant, changedPlugins, CHECKS, FAULT_INPUTS } from "../lib/plugin-gate.mjs";
+import { checkPlugin, docsCheck, evalsCheck, retentionCheck, fixturesWithoutUnavailable, hookCommands, reasonsWithoutCommand, releaseEntry, rootReadmeNames, treePlugins, treeSha, snapshotTree, textsWithoutWhenCant, changedPlugins, CHECKS, FAULT_INPUTS } from "../lib/plugin-gate.mjs";
 
 const SID = "s-gate";
 
@@ -210,25 +210,29 @@ function withDb(b, fn) {
   }
 }
 
-test("checkPlugin: a plugin that meets the bar passes all five checks once a canary pass certifies its committed tree", () => {
+test("checkPlugin: a plugin that meets the bar passes all six checks once a canary pass certifies its committed tree; docs is skipped while the version is unchanged", () => {
   const b = pluginRepo();
   const tree = goodTree(b);
   const id = seedCanaryPass(b, "good", tree, { writes: JSON.stringify(["$XDG_STATE_HOME/good/errors.log", "$XDG_DATA_HOME/good/store"]) });
-  const rows = withDb(b, (db) => checkPlugin({ name: "good", dir: join(b.work, "plugins", "good"), prefix: "plugins/good/" }, { db, tree }));
+  const rows = withDb(b, (db) => checkPlugin({ name: "good", dir: join(b.work, "plugins", "good"), prefix: "plugins/good/" }, { db, tree, docs: { baseVersion: "0.0.1", rootReadme: "the repository\n" } }));
   assert.deepEqual(
     rows.map((r) => [r.name, r.status]),
-    CHECKS.map((c) => [c, "pass"]),
+    CHECKS.map((c) => [c, c === "docs" ? "skipped" : "pass"]),
     JSON.stringify(rows),
   );
   assert.equal(rows[0].detail, `1 hook(s) × ${FAULT_INPUTS.length} fault inputs`);
   assert.equal(rows[2].detail, "every skill and agent text has the section and names a scenario; every deny reason names a command");
   assert.equal(rows[3].detail, `2 scenario(s) cover 1 event(s); canary #${id} at ${withDb(b, (db) => db.prepare("SELECT at FROM cc_canary_runs WHERE id = ?").get(id).at)}: live pass`);
   assert.equal(rows[4].detail, "2 state path(s) declared (0 with a prune, 2 kept by design); 3 write site(s) in source");
+  assert.equal(rows[5].detail, "version 0.0.1 unchanged since the base");
+  // Without the repository context the row cannot compare and says so.
+  const cold = withDb(b, (db) => checkPlugin({ name: "good", dir: join(b.work, "plugins", "good"), prefix: "plugins/good/" }, { db, tree }));
+  assert.deepEqual(cold[5], { name: "docs", status: "skipped", detail: "not given a base to compare the version with" });
 });
 
 test("checkPlugin: the failing plugin fails each check, naming the hook and input, the missing fixture, the SKILL.md, the reason literal and the missing manifest", () => {
   const b = pluginRepo();
-  const rows = checkPlugin({ name: "bad", dir: join(b.work, "plugins", "bad"), prefix: "plugins/bad/" });
+  const rows = checkPlugin({ name: "bad", dir: join(b.work, "plugins", "bad"), prefix: "plugins/bad/" }, { docs: { baseVersion: null, rootReadme: "" } });
   const by = Object.fromEntries(rows.map((r) => [r.name, r]));
   assert.equal(by.survives.status, "fail");
   assert.match(by.survives.detail, /PreToolUse hook on empty stdin: exit 1/);
@@ -242,11 +246,12 @@ test("checkPlugin: the failing plugin fails each check, naming the hook and inpu
   assert.equal(by.evals.detail, "evals/manifest.json missing; PreToolUse has no declared outcomes");
   assert.equal(by.retention.status, "pass", "a hook that writes nothing needs no state declaration");
   assert.equal(by.retention.detail, "no `state` field; no source site writes outside the worktree");
+  assert.deepEqual(by.docs, { name: "docs", status: "skipped", detail: "no `version` in .claude-plugin/plugin.json" }, "no manifest, no version to compare");
 });
 
-test("checkPlugin: no hooks.json → survives and evals are skipped, the other three still run", () => {
+test("checkPlugin: no hooks.json → survives and evals are skipped, the other four still run", () => {
   const b = pluginRepo();
-  const rows = checkPlugin({ name: "docs-only", dir: join(b.work, "plugins", "docs-only"), prefix: "plugins/docs-only/" });
+  const rows = checkPlugin({ name: "docs-only", dir: join(b.work, "plugins", "docs-only"), prefix: "plugins/docs-only/" }, { docs: { baseVersion: null, rootReadme: "" } });
   assert.deepEqual(
     rows.map((r) => [r.name, r.status]),
     [
@@ -255,10 +260,12 @@ test("checkPlugin: no hooks.json → survives and evals are skipped, the other t
       ["says", "pass"],
       ["evals", "skipped"],
       ["retention", "pass"],
+      ["docs", "skipped"],
     ],
   );
   assert.equal(rows[0].detail, "no hooks/hooks.json");
   assert.equal(rows[3].detail, "no hooks/hooks.json and no evals/");
+  assert.equal(rows[5].detail, "no `version` in .claude-plugin/plugin.json");
 });
 
 test("evals row: a scenario missing for a declared outcome, a stub, a scenario for an undeclared outcome, a judge needing a fresh pass, and no canary row each fail naming the gap; coverage plus a canary pass for the tree passes", () => {
@@ -317,6 +324,120 @@ test("retention row: a write site with no `state`, an empty `state`, a retention
   assert.deepEqual(run(), { status: "fail", detail: "the canary saw a write at $XDG_CACHE_HOME/good/blob under no declared state path (declared: $XDG_STATE_HOME/good, $XDG_DATA_HOME/good)" });
   manifest([{ path: "$XDG_STATE_HOME/good", retentionDays: 30, prune: "node x prune --days 30" }, { path: "$XDG_DATA_HOME/good", retentionDays: null }, { path: "$XDG_CACHE_HOME/good", retentionDays: 0 }]);
   assert.deepEqual(run(), { status: "pass", detail: "3 state path(s) declared (1 with a prune, 1 kept by design); 3 write site(s) in source" });
+});
+
+test("docs row: a changed version needs a CHANGELOG.md entry, a README release heading and a root README mention, each failure naming the file and the heading; every documented heading shape passes; unchanged or absent versions are skipped; a root plugin is not asked for a root README", () => {
+  const b = pluginRepo();
+  const dir = join(b.work, "plugins", "good");
+  const manifest = (version) => write(dir, ".claude-plugin/plugin.json", JSON.stringify({ name: "good", version, state: GOOD_STATE }));
+  const run = (docs) => docsCheck({ name: "good", dir, prefix: "plugins/good/" }, docs);
+  const ROOT = "- **[good](#good)** — does the thing.\n  Changes in good 0.2.0: more.\n- **[other](#other)** — 0.3.0 is other's.\n\n## good\n\nChanges in 0.1.0: first.\n";
+  // Skipped: the same version as the base, or no version at the base or the head.
+  assert.deepEqual(run({ baseVersion: "0.0.1", rootReadme: ROOT }), { status: "skipped", detail: "version 0.0.1 unchanged since the base" });
+  write(dir, ".claude-plugin/plugin.json", JSON.stringify({ name: "good" }));
+  assert.deepEqual(run({ baseVersion: null, rootReadme: ROOT }), { status: "skipped", detail: "no `version` in .claude-plugin/plugin.json" });
+  // Bumped with nothing written: three failures, each naming the file and the heading it wants.
+  manifest("0.3.0");
+  rmSync(join(dir, "README.md"), { force: true });
+  assert.deepEqual(run({ baseVersion: "0.0.1", rootReadme: ROOT }), {
+    status: "fail",
+    detail:
+      'version 0.0.1 → 0.3.0: CHANGELOG.md is missing: add it with a "## [0.3.0]" (or "## 0.3.0") entry; README.md is missing: add it with a "## Changes in 0.3.0" (or "### 0.3.0", "### <date> — 0.3.0") entry; the repository README.md does not name 0.3.0 for good: put it in the plugin\'s bullet, on a "Changes in good 0.3.0" line, or on a "Changes in 0.3.0" line under "## good" (written "0.3.0" as a whole token: "v0.3.0" or "0.3.0-rc.1" does not count)',
+  });
+  // Files present without the heading, or with an empty section under it.
+  write(dir, "CHANGELOG.md", "# Changelog\n\n## [0.2.0] - 2026-01-01\n\n- old\n");
+  write(dir, "README.md", "# Good\n\n## Changes in 0.3.0\n\n## Changes in 0.2.0\n\nold\n");
+  assert.deepEqual(run({ baseVersion: "0.0.1", rootReadme: null }), {
+    status: "fail",
+    detail: 'version 0.0.1 → 0.3.0: CHANGELOG.md has no "## [0.3.0]" (or "## 0.3.0") heading; README.md has nothing under its 0.3.0 heading; the repository README.md is not in the commit, so nothing names good 0.3.0',
+  });
+  // A longer version is not this one: 0.3.0 is not found in 10.3.0, 0.3.01 or 0.3.0.1.
+  write(dir, "CHANGELOG.md", "# Changelog\n\n## [10.3.0]\n\n- x\n\n## 0.3.01\n\n- y\n\n## 0.3.0.1\n\n- z\n");
+  assert.match(run({ baseVersion: "0.0.1", rootReadme: ROOT }).detail, /CHANGELOG\.md has no "## \[0\.3\.0\]"/);
+  // Nor a pre-release, an unbalanced bracket, or a heading inside a fenced code block.
+  for (const md of ["## 0.3.0-rc.1\n\n- x\n", "## [0.3.0\n\n- x\n", "## 0.3.0]\n\n- x\n", "# x\n\n```sh\n## 0.3.0\nls\n```\n", "# x\n\n~~~\n## 0.3.0\n~~~\n"]) assert.equal(releaseEntry(md, "0.3.0"), "missing", md);
+  // A fenced line that looks like a heading does not end a section.
+  assert.equal(releaseEntry("## 0.3.0\n\n```\n# not a heading\n```\n", "0.3.0"), "ok");
+  assert.equal(releaseEntry("## 0.3.0\n\n```\n## 0.2.0\n```\n## 0.2.0\n", "0.3.0"), "ok");
+  // Four or more spaces of indent is an indented code block, not a fence opener, so the heading after it counts.
+  assert.equal(releaseEntry("# x\n\n    ```\n## 0.3.6\n\nbody\n", "0.3.6"), "ok", "a four-space ``` does not open a fence");
+  // Every documented heading shape passes, in either file; the root README names the version in the bullet.
+  write(dir, "CHANGELOG.md", "# Changelog\n\n## [0.3.0] - 2026-11-04\n\n### Added\n\n- the thing\n");
+  write(dir, "README.md", "# Good\n\n## Changes in 0.3.0\n\nThe thing.\n");
+  const rootBullet = "- **[good](#good)** — does the thing. Changes in good 0.3.0: the thing.\n";
+  assert.deepEqual(run({ baseVersion: "0.0.1", rootReadme: rootBullet }), { status: "pass", detail: "version 0.0.1 → 0.3.0: CHANGELOG.md has its 0.3.0 entry; README.md has its 0.3.0 entry; the repository README names it" });
+  for (const heading of ["## 0.3.0", "### 0.3.0", "## [0.3.0]", "### 2026-11-04 — 0.3.0", "### 2026-11-04 - 0.3.0", "## Changes in 0.3.0"]) {
+    write(dir, "CHANGELOG.md", `# Changelog\n\n${heading}\n\n- the thing\n`);
+    write(dir, "README.md", `# Good\n\n## Changes\n\n${heading}\n\nThe thing.\n`);
+    assert.equal(run({ baseVersion: "0.0.1", rootReadme: rootBullet }).status, "pass", heading);
+  }
+  // A new plugin (no base manifest) is checked against its first version.
+  assert.equal(run({ baseVersion: null, rootReadme: rootBullet }).detail, "version 0.3.0, new since the base: CHANGELOG.md has its 0.3.0 entry; README.md has its 0.3.0 entry; the repository README names it");
+  // The root README: the version in the bullet's continuation lines, a "Changes in <plugin> <ver>" line anywhere, or a "Changes in <ver>" line under "## <plugin>"; another plugin's bullet or section does not count.
+  assert.equal(rootReadmeNames("- **[good](plugins/good/README.md)** — does\n  the thing (0.3.0).\n", "good", "0.3.0"), true);
+  assert.equal(rootReadmeNames("- **[good](#good)** — does the thing.\n\nChanges in good 0.3.0: the thing.\n", "good", "0.3.0"), true);
+  assert.equal(rootReadmeNames("- **[good](#good)** — does the thing.\n\n## good\n\nText.\n\nChanges in 0.3.0: the thing.\n\n### Install\n", "good", "0.3.0"), true);
+  assert.equal(rootReadmeNames("- **[good](#good)** — does the thing.\n- **[other](#other)** — 0.3.0.\n\n## other\n\nChanges in 0.3.0: other's.\n", "good", "0.3.0"), false);
+  assert.equal(rootReadmeNames("- **[good-two](#good-two)** — 0.3.0.\n", "good", "0.3.0"), false, "a bullet for another plugin whose name starts the same");
+  assert.equal(rootReadmeNames("- **[good](#good)** — needs ledger 0.3.0 or 10.3.0.\n", "good", "0.3.0"), true, "the version anywhere in the bullet counts");
+  assert.equal(rootReadmeNames("- **[good](#good)** — needs 10.3.0 or 0.3.01.\n", "good", "0.3.0"), false);
+  assert.equal(rootReadmeNames("- **[good](#good)** 0.3.0-rc.1\n", "good", "0.3.0"), false, "a pre-release is not the version");
+  assert.equal(rootReadmeNames("- **[good](#good)** v0.3.0\n", "good", "0.3.0"), false, "a v prefix is not the version");
+  assert.equal(rootReadmeNames("## Layout\n- good/ the store\n\n## Plugins\n- **[good](y)** 0.3.0\n", "good", "0.3.0"), true, "every bullet starting with the name is read, not only the first");
+  assert.equal(rootReadmeNames("```\n- **[good](y)** 0.3.0\n```\n", "good", "0.3.0"), false, "a bullet inside a fenced code block does not count");
+  // A version the base had and the head dropped fails.
+  manifest(undefined);
+  assert.deepEqual(run({ baseVersion: "0.0.1", rootReadme: rootBullet }), { status: "fail", detail: 'manifest version missing at head: the base has 0.0.1; put a "version" back in .claude-plugin/plugin.json' });
+  assert.deepEqual(run({ baseVersion: null, rootReadme: rootBullet }), { status: "skipped", detail: "no `version` in .claude-plugin/plugin.json" });
+  // releaseEntry: the section runs to the next heading of the same or a higher level.
+  assert.equal(releaseEntry("## [0.3.0]\n\n### Added\n\n- x\n\n## [0.2.0]\n", "0.3.0"), "ok");
+  assert.equal(releaseEntry("## [0.3.0]\n\n\n## [0.2.0]\n\n- old\n", "0.3.0"), "empty");
+  assert.equal(releaseEntry("## [0.2.0]\n\n- old\n", "0.3.0"), "missing");
+  // A root plugin's README is the repository's: the root README is not asked for.
+  const rootPlugin = sandbox();
+  write(rootPlugin.work, ".claude-plugin/plugin.json", JSON.stringify({ name: "solo", version: "1.0.0" }));
+  write(rootPlugin.work, "CHANGELOG.md", "## [1.0.0]\n\n- first\n");
+  write(rootPlugin.work, "README.md", "# Solo\n\n## Changes in 1.0.0\n\nFirst.\n");
+  assert.deepEqual(docsCheck({ name: "solo", dir: rootPlugin.work, prefix: "" }, { baseVersion: null, rootReadme: null }), { status: "pass", detail: "version 1.0.0, new since the base: CHANGELOG.md has its 1.0.0 entry; README.md has its 1.0.0 entry; a root plugin: README.md is the repository's" });
+});
+
+test("gate check: the docs row reads the base commit's manifest and the head commit's root README, not the checkout; a bump written down in the commit passes, one missing its entries fails naming them", () => {
+  const b = pluginRepo({ changeBad: false });
+  const good = join(b.work, "plugins", "good");
+  const tree0 = goodTree(b);
+  seedCanaryPass(b, "good", tree0);
+  // Bump the version in a commit with no entries: docs fails, naming all three.
+  write(good, ".claude-plugin/plugin.json", JSON.stringify({ name: "good", version: "0.0.2", state: GOOD_STATE }));
+  commitAll(b, "bump");
+  seedCanaryPass(b, "good", goodTree(b));
+  const r1 = cli(b, ["gate", "check", "--base", "main"], { env: { LEDGER_SESSION_ID: SID } });
+  assert.equal(r1.code, 1, r1.out + r1.err);
+  assert.match(r1.out, /good\s+docs\s+fail\s+version 0\.0\.1 → 0\.0\.2: CHANGELOG\.md is missing: add it with a "## \[0\.0\.2\]" \(or "## 0\.0\.2"\) entry; README\.md has no "## Changes in 0\.0\.2" \(or "### 0\.0\.2", "### <date> — 0\.0\.2"\) heading; the repository README\.md does not name 0\.0\.2 for good: put it in the plugin's bullet/);
+  // Written in the checkout only: the commit is what is checked, so the row still fails.
+  write(good, "CHANGELOG.md", "# Changelog\n\n## [0.0.2]\n\n- the thing\n");
+  write(good, "README.md", "# Good\n\n## Changes in 0.0.2\n\nThe thing.\n");
+  write(b.work, "README.md", "- **[good](#good)** — does the thing. Changes in good 0.0.2: the thing.\n");
+  const r2 = cli(b, ["gate", "check", "--base", "main"], { env: { LEDGER_SESSION_ID: SID } });
+  assert.match(r2.out, /good\s+docs\s+fail\s+version 0\.0\.1 → 0\.0\.2: CHANGELOG\.md is missing/);
+  assert.match(r2.out, /uncommitted changes under plugins\/good\/ were not checked/);
+  // Committed: the row passes, with and without --plugins (the base is found either way).
+  commitAll(b, "write it down");
+  seedCanaryPass(b, "good", goodTree(b));
+  for (const args of [["gate", "check", "--base", "main"], ["gate", "check", "--plugins", "good"]]) {
+    const r3 = cli(b, args, { env: { LEDGER_SESSION_ID: SID } });
+    assert.equal(r3.code, 0, r3.out + r3.err);
+    assert.match(r3.out, /good\s+docs\s+pass\s+version 0\.0\.1 → 0\.0\.2: CHANGELOG\.md has its 0\.0\.2 entry; README\.md has its 0\.0\.2 entry; the repository README names it/);
+  }
+  // Against a base that already has 0.0.2 the row is skipped.
+  const r4 = cli(b, ["gate", "check", "--base", "HEAD~1", "--plugins", "good"], { env: { LEDGER_SESSION_ID: SID } });
+  assert.match(r4.out, /good\s+docs\s+skipped\s+version 0\.0\.2 unchanged since the base/);
+  // A --base that names no commit is an exit 1 naming it, in both modes, before the plugin names are read.
+  for (const args of [["gate", "check", "--plugins", "good", "--base", "bogus"], ["gate", "check", "--plugins", "typo", "--base", "bogus"], ["gate", "check", "--base", "bogus"]]) {
+    const r5 = cli(b, args, { env: { LEDGER_SESSION_ID: SID } });
+    assert.equal(r5.code, 1, r5.out + r5.err);
+    assert.match(r5.out + r5.err, /gate check: --base bogus is not a commit/);
+    assert.doesNotMatch(r5.out + r5.err, /\bat \w+ \(/, "no stack trace");
+  }
 });
 
 test("checkPlugin: past the run cap every check records fail with timeout", () => {
@@ -386,11 +507,13 @@ test("gate check: records one row per changed plugin and check for HEAD, exits 1
   assert.deepEqual(
     rows.map((x) => [x.plugin, x.name, x.status]),
     [
+      ["bad", "docs", "skipped"],
       ["bad", "evals", "fail"],
       ["bad", "retention", "pass"],
       ["bad", "says", "fail"],
       ["bad", "survives", "fail"],
       ["bad", "visible", "fail"],
+      ["good", "docs", "skipped"],
       ["good", "evals", "pass"],
       ["good", "retention", "pass"],
       ["good", "says", "pass"],
@@ -414,7 +537,7 @@ test("gate check: records one row per changed plugin and check for HEAD, exits 1
   const r2b = cli(b, ["gate", "check", "--plugins", "bad"], { env: { LEDGER_SESSION_ID: SID } });
   assert.equal(r2b.code, 1);
   assert.doesNotMatch(r2b.out, /uncommitted changes/);
-  assert.equal(gateRows(b).length, 15);
+  assert.equal(gateRows(b).length, 18);
   const says = gateRows(b).find((x) => x.plugin === "bad" && x.name === "says" && x.head_sha === head2);
   assert.equal(says.detail, 'hooks/bad.mjs:6 "bad: no" names no command', "the SKILL.md and lib/rules.mjs findings are gone; the hook's own literal remains");
   assert.equal(cli(b, ["gate", "check", "--plugins", "nope"]).code, 1);
@@ -516,6 +639,17 @@ test("PreToolUse: the gate reads the pushed commit, not the checkout: a passed c
   const r2 = push(b);
   assert.equal(decision(r2), "deny");
   assert.match(reason(r2), /^ledger: plugin gate: good's rows for [0-9a-f]{8} certify tree 01234567, not its tree [0-9a-f]{8}; run `/);
+  // Rows recorded before a check existed (an older ledger, no docs row): the push names the missing row.
+  const db2 = openDb(b);
+  try {
+    db2.prepare("UPDATE cc_gate_checks SET tree_sha = (SELECT tree_sha FROM cc_gate_checks WHERE head_sha = ? AND plugin = 'good' AND name = 'survives') WHERE head_sha = ? AND plugin = 'good'").run(head, head);
+    db2.prepare("DELETE FROM cc_gate_checks WHERE head_sha = ? AND plugin = 'good' AND name = 'docs'").run(head);
+  } finally {
+    db2.close();
+  }
+  const r3 = push(b);
+  assert.equal(decision(r3), "deny");
+  assert.match(reason(r3), /^ledger: plugin gate: good's rows for [0-9a-f]{8} have no docs row \(recorded by an older ledger\); run `[^`]*gate check` again/);
 });
 
 test("PreToolUse: the three gates deny together as one numbered list; `review waive` lifts the plugin gate; advise mode turns the deny into a notice", () => {
@@ -555,7 +689,7 @@ test("PreToolUse: a push from a repository that holds no plugin never sees the p
   }
 });
 
-test("the ledger plugin itself passes its own gate: the four static rows on the checkout, and evals once a canary pass certifies its committed tree", () => {
+test("the ledger plugin itself passes its own gate: the five static rows on the checkout (docs against the repository README, as a first release), and evals once a canary pass certifies its committed tree", () => {
   const dir = join(import.meta.dirname, "..");
   const top = spawnSync("git", ["rev-parse", "--show-toplevel"], { cwd: dir, encoding: "utf8" }).stdout.trim();
   const tree = treeSha(top, "HEAD", "plugins/ledger/");
@@ -563,7 +697,9 @@ test("the ledger plugin itself passes its own gate: the four static rows on the 
   // The canary row the real `canary run` would record for this tree; the live run itself is
   // the canary's job (test/canary-report-digest.test.mjs), not this suite's.
   const id = seedCanaryPass(b, "ledger", tree);
-  const rows = withDb(b, (db) => checkPlugin({ name: "ledger", dir, prefix: "plugins/ledger/" }, { db, tree }));
+  // No base version: the row checks the checkout's own version is written down in all three places.
+  const docs = { baseVersion: null, rootReadme: readFileSync(join(top, "README.md"), "utf8") };
+  const rows = withDb(b, (db) => checkPlugin({ name: "ledger", dir, prefix: "plugins/ledger/" }, { db, tree, docs }));
   assert.deepEqual(
     rows.map((r) => [r.name, r.status]),
     CHECKS.map((c) => [c, "pass"]),
@@ -571,8 +707,10 @@ test("the ledger plugin itself passes its own gate: the four static rows on the 
   );
   assert.match(rows[3].detail, new RegExp(`^\\d+ scenario\\(s\\) cover 5 event\\(s\\); canary #${id} at \\S+: live pass$`));
   assert.match(rows[4].detail, /^6 state path\(s\) declared \(1 with a prune, 4 kept by design\); \d+ write site\(s\) in source$/);
+  const version = JSON.parse(readFileSync(join(dir, ".claude-plugin", "plugin.json"), "utf8")).version;
+  assert.equal(rows[5].detail, `version ${version}, new since the base: CHANGELOG.md has its ${version} entry; README.md has its ${version} entry; the repository README names it`);
   // Without the canary row the same checkout fails evals alone, naming the command.
-  const cold = withDb(sandbox(), (db) => checkPlugin({ name: "ledger", dir, prefix: "plugins/ledger/" }, { db, tree }));
+  const cold = withDb(sandbox(), (db) => checkPlugin({ name: "ledger", dir, prefix: "plugins/ledger/" }, { db, tree, docs }));
   assert.deepEqual(cold.map((r) => [r.name, r.status]), CHECKS.map((c) => [c, c === "evals" ? "fail" : "pass"]));
   assert.equal(cold[3].detail, `${rows[3].detail.match(/^\d+/)[0]} scenario(s) cover the manifest; no canary row for tree ${tree.slice(0, 8)}: run \`ledger canary run --plugins ledger\` on this commit`);
 });

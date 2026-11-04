@@ -663,10 +663,11 @@ test("review budget: the round-increment and fix-first rules hold, and reversing
   );
 });
 
-test("review budget: the README has the 0.2.1 changes, a Review budget section and the three how-it-fails rows", () => {
+test("review budget: the README has the 0.2.1 changes under the 0.2.2 ones, a Review budget section and the three how-it-fails rows", () => {
   const readme = readFileSync(join(KIT_ROOT, "README.md"), "utf8");
   assert.match(readme, /\n## Changes in 0\.2\.1\n/);
-  assert.ok(readme.indexOf("## Changes in 0.2.1") < readme.indexOf("## Changes in 0.1.2"), "0.2.1 is the top Changes heading");
+  assert.ok(readme.indexOf("## Changes in 0.2.2") < readme.indexOf("## Changes in 0.2.1"), "0.2.2 is the top Changes heading");
+  assert.ok(readme.indexOf("## Changes in 0.2.1") < readme.indexOf("## Changes in 0.1.2"), "0.2.1 comes before 0.1.2");
   const budget = /\n## Review budget\n([\s\S]*?)\n## /.exec(readme);
   assert.ok(budget, "a Review budget section");
   for (const word of ["`ship`", "`ship-with-limits`", "`fix-first`", "Threat model:", "round 3", "`new-mechanism: true`"]) assert.ok(budget[1].includes(word), `Review budget names ${word}`);
@@ -675,6 +676,6 @@ test("review budget: the README has the 0.2.1 changes, a Review budget section a
   assert.ok(fails.includes("A round count that cannot be read"), "how-it-fails: unreadable round count");
   assert.ok(fails.includes("A severity that is unclear"), "how-it-fails: ambiguous severity");
   for (const file of [".claude-plugin/plugin.json", "package.json"]) {
-    assert.equal(JSON.parse(readFileSync(join(KIT_ROOT, file), "utf8")).version, "0.2.1", `${file} version`);
+    assert.equal(JSON.parse(readFileSync(join(KIT_ROOT, file), "utf8")).version, "0.2.2", `${file} version`);
   }
 });
