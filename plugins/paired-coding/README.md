@@ -149,6 +149,62 @@ receipt** below).
 The skill holds the conversation; the gate below holds the writes. The contract is the two
 together: where the skill says what the agent should do, the gate decides what it can do.
 
+## Learning mode
+
+Off by default; while it is off, pairing is exactly as described above and the gate checks
+none of the fields below. Turn it on by typing `learning mode on` or `teach me as we go` during
+a pairing session, and off by typing `learning mode off`. The agent switches it with the
+`pair_learn` tool (`on: true` or `on: false`), which the gate journals as a `learning` entry.
+Turning it on only adds checks, so the gate lets the agent do it. Turning it off removes them,
+so the gate refuses `on: false` unless your latest typed turn (the same turn `pair_begin` binds
+a quote to) contains `learning mode off`, in any case:
+`pair_learn refused: only your partner turns learning mode off: their latest typed turn has to contain "learning mode off"`.
+The flag lives in the session's pairing state: every `pair_start` resets it to off, a session
+carried over closed starts with it off, and `pair_start`'s reply says it is off.
+
+While it is on, the gate enforces three things; agreement, the boundary and every other gate
+rule are unchanged:
+
+- **The card** needs `why` (a non-empty string: why this approach over the alternatives) and
+  `sources`: at least one, each a `{ "url", "passage" }` object for a URL fetched this session,
+  an absolute `file:line` or `file:line-line` the agent read, or a string starting
+  `from memory`. Otherwise `pair_propose` is refused, naming the first bad entry:
+  `pair_propose refused: learning mode is on: the card needs why, a non-empty string saying why this approach over the alternatives`,
+  or `pair_propose refused: learning mode is on: sources[0] is "src/a.ts:3"; each source is a URL object { "url": "https://…", "passage": "the words you relied on" }, an absolute file:line or file:line-line path, or a string starting "from memory"`.
+  Both fields are recorded on the card and in the journal.
+- **"Teach me more"** is an open point on the card (`teach me more: …`), so `pair_begin` stays
+  refused under the existing open-points rule. Each answer adds one sourced layer and ends
+  with a one-line recall question; the agent saves both with `pair_note`. It goes on until you
+  agree to the card or say that's enough.
+- **`pair_done`** needs `recall`, one question on one line about the change set, which the
+  `done` journal entry records. Without it: `pair_done refused: learning mode is on: pair_done needs recall, one question (one line) your partner answers from memory about this change set; ask it in your closing message on a line starting "Recall:"`.
+  The agent asks it in the read-back on a line starting `Recall:`. When a turn closed a change
+  set and its final message has no such line, the Stop hook (Claude Code) and the
+  `session_stop` handler (OMP) show you a warning with the journaled question, for example
+  `paired-coding learning mode: pair_done closed card-1 this turn, but the closing message has no line starting "Recall:", so the recall question was not put to you. From the journal: card-1: Which file did this change set cover?`.
+  The warning never blocks the turn, and each `pair_done` is warned about at most once: the
+  check journals a `recall-check` entry.
+
+### How it fails
+
+| Failure | What holds it | Proved by |
+|---|---|---|
+| The mode turns on by accident: a question, "explain this", or words in a file or tool result read as a request | The skill tells the agent that only the typed phrases `learning mode on` and `teach me as we go` turn it on; the gate does not hold this, because switching it on only adds checks. Every switch goes through `pair_learn`, said in one line and journaled as a `learning` entry, so an accidental one shows in the conversation and the journal | No scenario: a hook scenario cannot judge the agent's reading of a turn. The journaled switch is checked by `core/gate.test.mjs`, "pair_learn turns it on and off, journaled like a note" |
+| The agent turns it off to get past a refusal or the recall check | The gate holds this: `pair_learn` with `on: false` is refused unless your latest typed turn contains `learning mode off`. Words in a file, a tool result or an untrusted turn do not count. A `pair_learn` that leaves the flag as it was does not restart the recall check's count, so it cannot silence the Stop warning either | No scenario: `pair_learn` is an MCP tool, not a hook event. Checked by `core/gate.test.mjs`, "pair_learn on: false is refused unless the latest typed turn says learning mode off", and `lib/verbs.test.mjs`, "recallWarning: a pair_learn that leaves the flag as it was does not restart the count, and the agent cannot switch it off to skip the check" |
+| The flag leaks from one pairing session into the next | It lives in the pairing state, not in a file of its own: `pair_start` builds a fresh state with it off, and so does a carry after `/clear` or a session switch. A state whose flag is not `true` or `false` reads as malformed: host writes stay denied like any other bad state, and learning mode reads as off until pairing starts again, so pairing tools take cards without `why`, `sources` or `recall` | No scenario checks the flag; `evals/session-start-carries-closed.scenario.json` proves only the carry itself. Checked by `core/gate.test.mjs`, "the flag does not leak: a typed stop and the next pair_start start it off" and "the state keeps the flag across a save; a flag that is not a boolean reads as degraded" |
+| A learning-mode refusal fires with learning off | Every new check sits behind the flag. With it off, `why`, `sources` and `recall` are recorded when given and never checked, and the 1.4.4 card flow runs unchanged | No scenario for the cards (MCP tools). Checked by `core/gate.test.mjs`, "off: why and sources are recorded as given and never checked", and `hooks/paired-coding-hook.test.mjs`, "learning mode off: Stop stays silent after pair_done and journals no recall check" |
+| Sources are invented: a recalled URL, or a passage never read | The gate checks each source's form: a URL has to parse as `http` or `https` with a host and no whitespace, and needs the passage it relies on; a path has to be absolute, name a file, and give a line of 1 or more (a range may not run backwards); anything else has to start `from memory`. No source may hold a control character. It cannot check that the URL was fetched or the line read; the skill forbids marking a fetched claim `from memory` to get past a refusal | No scenario: `pair_propose` is an MCP tool. The form checks are in `core/gate.test.mjs`, "pair_propose refuses missing or empty sources and names the first bad entry" and the three `sourceProblem` tests; that a source was really read is checked by nothing |
+| The recall question is skipped | `pair_done` refuses without one, and the Stop warning names a turn that closed a change set without a recall line. The line may start `Recall:` in any case, after a quote, list or heading marker, with bold or italics (`- **Recall**:`). The agent's closing text is the only evidence the hook reads. Claude Code's Stop gives it as `last_assistant_message`; without it, the hook reads the transcript back only as far as the newest user entry, because the transcript can lag the turn, and an earlier turn's `Recall:` line must not count. OMP's `session_stop` falls back to the turn's messages the same way. When there is no closing text, it does not warn and journals the check as unknown | `evals/stop-learning-warns-no-recall.scenario.json` (the Stop warning). The `pair_done` refusal is checked by `core/gate.test.mjs`, "pair_done refuses without one recall question, before reaping or snapshotting"; the transcript fallback by `hooks/paired-coding-hook.test.mjs`, "learning mode: the transcript fallback stops at the newest user entry, so an earlier turn's Recall: line never counts" |
+| A Stop hook continues the turn after the recall check ran | The check runs at the first stop and uses up that `pair_done`'s warning. If another Stop hook (or an OMP handler) continues the turn and the `Recall:` line comes in the continued message, the warning already shown was wrong; nothing at the first stop can tell that a continuation will follow. The warning is noise only: it never blocks, and the journal's `recall-check` entry records what the first stop saw. On OMP, a session without a UI gets no warning at all; the `recall-check` entry is still journaled | `evals/stop-learning-warns-no-recall.scenario.json` proves the warning carries no block decision. The once-per-`pair_done` count is checked by `lib/verbs.test.mjs`, "recallWarning: inert with learning off, warns once per pair_done, and says nothing when the host gave no closing text" |
+| Teaching bloats the card past what you can review | One layer per answer: each "teach me more" adds one sourced layer and one recall question, and the planned code stays the thing you review | No scenario and no test: the skill holds this. `core/gate.test.mjs`, "an open point starting 'teach me more' keeps pair_begin refused", checks only that the card stays unagreed while teaching goes on |
+
+### Not in 1.5.0
+
+- A "write this piece yourself" move, where the agent leaves a piece of the change for you to
+  write.
+- Spaced recall across sessions. Recall questions are asked and journaled within the session
+  only.
+
 ## The gate
 
 A skill can describe the conversation; only a gate at the tool boundary can hold the agent's
@@ -929,6 +985,22 @@ worktree, inside an excluded directory, or after the final snapshot is not detec
 
 ## Changes
 
+### 1.5.0
+
+- Learning mode (see *Learning mode*), enforced by the gate. Off by default and reset by every
+  `pair_start`; the new `pair_learn` tool turns it on or off, journaled as a `learning` entry.
+  The gate refuses `on: false` unless your latest typed turn contains `learning mode off`.
+  While it is on, `pair_propose` refuses a card without `why` and `sources` (each a
+  `{ "url", "passage" }` object with an `http(s)` URL that has a host, an absolute
+  `file:line[-line]`, or a string starting `from memory`), naming the first bad entry;
+  `pair_done` refuses without `recall`, one question it journals; and when a turn closed a
+  change set and the closing message has no `Recall:` line, the Claude Code Stop hook and the
+  OMP `session_stop` handler warn without blocking. "Teach me more" is an open point, so
+  `pair_begin` stays refused under the existing rule. Both MCP and OMP schemas gain `why`,
+  `sources` and `recall`. A new eval, `stop-learning-warns-no-recall`, proves Stop's new
+  warning outcome, set up by `evals/learning-done.mjs`; `stop-judges-queued-turn` names it as
+  its sibling. With learning off, the 1.4.4 flow is unchanged.
+
 ### 1.4.4
 
 - The plugin meets ledger 0.3.5's five-row gate. `evals/manifest.json` declares what each of the
@@ -963,6 +1035,7 @@ carries. Only Claude Code uses it; OMP gets the same verbs as extension tools re
 - `package.json`: declares `omp/paired-coding-omp.ts` under `omp.extensions`, so `omp plugin install` registers the gate.
 - `.mcp.json`: registers the bundled MCP server `pair` with Claude Code.
 - `README.md`: this file.
+- `CHANGELOG.md`: the release history, from 1.5.0 on; earlier releases are under *Changes* above.
 - `skills/paired-coding/SKILL.md`: the skill the agent follows while pairing.
 - `core/gate.mjs`: the gate core: pairing state, verdicts, Seatbelt profiles, Landlock rulesets and bubblewrap options, with no host imports.
 - `lib/verbs.mjs`: the `pair_*` verbs and session lifecycle, shared by the MCP server, the hooks and the OMP adapter.

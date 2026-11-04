@@ -17,7 +17,7 @@ import { dirname, join } from "node:path";
 import { createHash, randomBytes } from "node:crypto";
 import { fileURLToPath } from "node:url";
 import {
-  boundaryMatches, carryClosed, checkWrite, fencedEnv, lastCardSeq, openRoadmapItems, pairAcceptedReceipt, pairBegin, pairDone, pairNote, pairPropose, roadmapRecord,
+  boundaryMatches, carryClosed, checkWrite, fencedEnv, lastCardSeq, openRoadmapItems, pairAcceptedReceipt, pairBegin, pairDone, pairLearn, pairNote, pairPropose, roadmapRecord,
   pairStart, recordInput, runEnd, runStart, sessionEnd, siblingRunProblem, toolVerdict,
 } from "../core/gate.mjs";
 import {
@@ -126,6 +126,86 @@ export function recordTrustedInput(ctx) {
   });
   if (r.stopped !== true) return { recorded: true, trusted: r.trusted === true, active: true };
   return { recorded: true, trusted: true, active: true, stopped: true, receipt, changedSinceReadBack: r.changedSinceReadBack ?? [], unapproved: r.unapproved ?? [] };
+}
+
+/**
+ * A closing-message line that asks the recall question: "Recall:" first, in any case, after an
+ * optional quote marker, list marker (`-`, `*`, `+`, `1.`, `1)`) or heading (`#`…`######`), with
+ * bold or italic allowed around the word (`**Recall:**`, `**Recall**:`).
+ */
+export const RECALL_LINE = /^[ \t>]*(?:[-*+][ \t]+|\d+[.)][ \t]+|#{1,6}[ \t]+)?(?:\*\*|__|\*|_)?Recall(?:\*\*|__|\*|_)?:/im;
+
+/**
+ * The closing message's text from a turn's messages, oldest first: the newest assistant
+ * message with text, read back only as far as the newest user message. Null when that user
+ * message comes first, so an earlier turn's text is never taken for this one's. `kind` reads an
+ * entry's role (a Claude Code transcript's `type`, an OMP message's `role`); `body` its message.
+ * @param {unknown} entries
+ * @param {(e: unknown) => unknown} kind
+ * @param {(e: unknown) => unknown} body
+ * @returns {string | null}
+ */
+export function closingTextOf(entries, kind, body) {
+  if (!Array.isArray(entries)) return null;
+  for (let i = entries.length - 1; i >= 0; i--) {
+    const k = kind(entries[i]);
+    if (k === "user") return null;
+    if (k !== "assistant") continue;
+    const text = messageText(body(entries[i]));
+    if (text !== null) return text;
+  }
+  return null;
+}
+
+/**
+ * A host message's text: a string as it is, or a message object's string content or text blocks
+ * joined by newlines. Null when there is no text to read.
+ * @param {unknown} message
+ * @returns {string | null}
+ */
+export function messageText(message) {
+  if (typeof message === "string") return message;
+  const content = message !== null && typeof message === "object" ? message.content : undefined;
+  if (typeof content === "string") return content;
+  if (!Array.isArray(content)) return null;
+  const parts = content.filter((p) => p?.type === "text" && typeof p.text === "string").map((p) => p.text);
+  return parts.length ? parts.join("\n") : null;
+}
+
+/**
+ * The learning-mode check at the end of a turn (Claude Code Stop, OMP session_stop). ADAPTER
+ * MACHINERY ONLY. Inert unless pairing is on with learning on. It looks for `done` entries since
+ * the last check, the last `learning` entry that changed the flag, or the last `start` (a
+ * pair_learn that leaves the flag as it was does not restart the count); when there are any it
+ * journals a `recall-check` entry and, if the closing message (`text`, null when the host gave
+ * none; a function is called only then, so a host that must read a transcript reads it only
+ * when it matters) has no RECALL_LINE, returns the warning for the user. It never blocks: the
+ * turn has ended either way.
+ * @param {{ sessionDir: string, text: string | null | (() => string | null) }} ctx
+ * @returns {string | null}
+ */
+export function recallWarning(ctx) {
+  if (!ctx?.sessionDir || !activated(ctx.sessionDir)) return null;
+  const dir = ctx.sessionDir;
+  return withLock(dir, () => {
+    const state = loadState(dir);
+    if (state.phase === "inactive" || state.learning !== true) return null;
+    const entries = readJournal(dir);
+    let from = 0;
+    for (let i = entries.length - 1; i >= 0; i--) {
+      const e = entries[i];
+      if (e?.type === "recall-check" || e?.type === "start" || (e?.type === "learning" && e.on !== e.was)) { from = i + 1; break; }
+    }
+    const done = entries.slice(from).filter((e) => e?.type === "done");
+    if (done.length === 0) return null;
+    const raw = typeof ctx.text === "function" ? ctx.text() : ctx.text;
+    const text = typeof raw === "string" ? raw : null;
+    const shown = text === null ? null : RECALL_LINE.test(text);
+    appendJournal(dir, [{ type: "recall-check", at: new Date().toISOString(), cardIds: done.map((e) => e.cardId), recallShown: shown }]);
+    if (shown !== false) return null;
+    const asked = done.map((e) => `${e.cardId}: ${typeof e.recall === "string" ? e.recall : "(no recall question recorded)"}`).join("; ");
+    return `paired-coding learning mode: pair_done closed ${done.map((e) => e.cardId).join(", ")} this turn, but the closing message has no line starting "Recall:", so the recall question was not put to you. From the journal: ${asked}`;
+  });
 }
 
 const sha256 = (text) => createHash("sha256").update(text).digest("hex");
@@ -342,6 +422,7 @@ export async function executeVerb(name, args, ctx) {
       case "pair_write": return writeVerb("pair_write", args, ctx);
       case "pair_edit": return writeVerb("pair_edit", args, ctx);
       case "pair_run": return await runVerb(args, ctx);
+      case "pair_learn": return simple(name, ctx, (s, io) => pairLearn(s, { on: args.on }, io), learnText);
       default: return fail(name, `unknown pairing verb ${name}`);
     }
   } catch (err) {
@@ -366,8 +447,15 @@ function simple(name, ctx, step, describe) {
 
 function cardArgs(a) {
   const pick = {};
-  for (const k of ["boundary", "whyNow", "decision", "currentCode", "proposedCode", "effect", "checks", "openPoints"]) if (a[k] !== undefined) pick[k] = a[k];
+  for (const k of ["boundary", "whyNow", "decision", "currentCode", "proposedCode", "effect", "checks", "openPoints", "why", "sources"]) if (a[k] !== undefined) pick[k] = a[k];
   return pick;
+}
+
+/** What pair_learn tells the agent, on and off. */
+function learnText(r) {
+  return r.state.learning
+    ? 'Learning mode is on. Every card now needs why (why this approach over the alternatives) and sources (each a { "url", "passage" } object, an absolute file:line or file:line-line path, or a string starting "from memory"); pair_done needs recall, one question about the change set, and your closing message asks it on a line starting "Recall:". pair_learn with on: false turns it off, and only after your partner types "learning mode off".'
+    : "Learning mode is off. Cards and pair_done take their usual fields.";
 }
 
 /**
@@ -502,6 +590,7 @@ function pairStartVerb(args, ctx) {
   if (!r.ok) return fail("pair_start", r.reason);
   const offer = r.state.roadmapOffer;
   const parts = [`Pairing started. Worktree ${r.state.root}. Host write, edit, shell and sub-agent tools are refused from now on; write with pair_write or pair_edit inside an agreed change set and run commands with pair_run. Snapshot exclusions: ${exclusions.join(", ")}. Your partner ends pairing by typing pair stop as a whole message.`, describeSandbox(backend)];
+  parts.push(`Learning mode is ${r.state.learning ? "on" : "off"}; every pair_start starts with it off. Turn it on with pair_learn (on: true) only when your partner asks to learn while pairing.`);
   if (offer) {
     parts.push(`An earlier session in this worktree left roadmap items open or not ready. Show them to your partner and ask whether to pick that roadmap up or start fresh; nothing reopens unless they agree. Record their answer with pair_note's earlierRoadmap field: "pick-up" carries the whole roadmap into this session, "start-fresh" sets it aside so it is not offered again.\n${roadmapLines(openRoadmapItems(offer.roadmap))}`);
   }
@@ -540,7 +629,7 @@ function pairDoneVerb(args, ctx) {
   const inactive = requireActive(ctx, "pair_done");
   if (inactive) return inactive;
   const dir = ctx.sessionDir;
-  const r = withSession(dir, {}, (s) => pairDone(s, { cardId: args.cardId }, ioFor(dir, s)));
+  const r = withSession(dir, {}, (s) => pairDone(s, { cardId: args.cardId, recall: args.recall }, ioFor(dir, s)));
   if (!r.ok) return fail("pair_done", r.reason);
   const diff = machineDiff(dir, r.state.root, String(args.cardId), r.changed ?? []);
   const parts = [`Change set ${args.cardId} closed.`];
@@ -548,7 +637,8 @@ function pairDoneVerb(args, ctx) {
   if (r.halted) parts.push(`STOPPED: unapproved write outside the boundary: ${r.unapproved.map((u) => `${u.change} ${u.path}`).join(", ")}. Show this to your partner; only your partner ends the session, by typing pair stop.`);
   const roadmapOpen = r.roadmapOpen ?? [];
   if (roadmapOpen.length) parts.push(`Roadmap items still open or not ready:\n${roadmapLines(roadmapOpen)}`);
-  return { ok: true, text: parts.join("\n\n"), result: { changed: r.changed, unapproved: r.unapproved, halted: r.halted, diff, roadmapOpen } };
+  if (r.recall) parts.push(`Recall question, journaled: ${r.recall}\nAsk it in your closing message on a line starting "Recall:", after the read-back.`);
+  return { ok: true, text: parts.join("\n\n"), result: { changed: r.changed, unapproved: r.unapproved, halted: r.halted, diff, roadmapOpen, ...(r.recall ? { recall: r.recall } : {}) } };
 }
 
 function machineDiff(dir, root, cardId, changed) {

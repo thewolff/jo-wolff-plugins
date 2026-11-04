@@ -1,0 +1,19 @@
+{
+  "$comment": "Learning mode on and a change set closed this turn with pair_done, and the closing message has no line starting \"Recall:\": Stop warns the user with the recall question pair_done journaled. It never blocks (no decision).",
+  "event": "Stop",
+  "expect": "systemMessage",
+  "reason": "no line starting \"Recall:\"",
+  "setup": {
+    "commands": [
+      "node \"${PLUGIN_DIR}/evals/learning-done.mjs\" \"${SESSION_ID}\""
+    ]
+  },
+  "stdin": {
+    "session_id": "${SESSION_ID}",
+    "transcript_path": "${TRANSCRIPT}",
+    "cwd": "${CWD}",
+    "hook_event_name": "Stop",
+    "stop_hook_active": false,
+    "last_assistant_message": "Change set card-1 is closed; the diff is above."
+  }
+}

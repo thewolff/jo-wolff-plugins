@@ -64,6 +64,17 @@ export const TOOLS = [
         effect: str("What behaves differently afterward."),
         checks: strs("The checks it will run."),
         openPoints: strs("Anything your partner must settle first. A card with open points cannot be agreed."),
+        why: str("Learning mode: why this approach over the alternatives. Required while learning mode is on."),
+        sources: {
+          type: "array",
+          description: "Learning mode: what why rests on, at least one. Required while learning mode is on.",
+          items: {
+            anyOf: [
+              { type: "string", description: 'An absolute file:line or file:line-line path, or a string starting "from memory".' },
+              { type: "object", properties: { url: str("An http(s) URL you fetched."), passage: str("The words at that URL you relied on.") }, required: ["url", "passage"] },
+            ],
+          },
+        },
       },
       required: ["boundary"],
     },
@@ -76,7 +87,14 @@ export const TOOLS = [
   {
     name: "pair_done",
     description: "Close the open change set. Kills anything left from its pair_run calls, snapshots the worktree and returns the machine-produced diff of the boundary since pair_begin for the read-back.",
-    inputSchema: { type: "object", properties: { cardId: str("The open change set's card id.") }, required: ["cardId"] },
+    inputSchema: {
+      type: "object",
+      properties: {
+        cardId: str("The open change set's card id."),
+        recall: str('Learning mode: one question, on one line, your partner answers from memory about this change set; ask it in your closing message on a line starting "Recall:". Required while learning mode is on.'),
+      },
+      required: ["cardId"],
+    },
   },
   {
     name: "pair_write",
@@ -101,6 +119,11 @@ export const TOOLS = [
     name: "pair_run",
     description: "Run a shell command in the worktree, in the foreground, under a macOS sandbox built from the pairing state: with no change set open it writes nowhere but temp; with one open only its boundary and temp are writable. Times out and kills the whole process group. In Claude Code the timeout stays under the host's automatic-backgrounding threshold (2 minutes unless CLAUDE_CODE_MCP_AUTO_BACKGROUND_MS says otherwise; 0 lifts the cap).",
     inputSchema: { type: "object", properties: { command: str("The /bin/sh command."), timeoutSeconds: { type: "number", description: "Default 600, at most 3600, and capped below Claude Code's automatic-backgrounding threshold." } }, required: ["command"] },
+  },
+  {
+    name: "pair_learn",
+    description: 'Turn learning mode on or off for this pairing session, when your partner asks. While it is on, pair_propose needs why and sources, and pair_done needs recall, one question your closing message asks on a line starting "Recall:". Every pair_start starts with it off.',
+    inputSchema: { type: "object", properties: { on: { type: "boolean", description: "true turns learning mode on, false turns it off." } }, required: ["on"] },
   },
 ].map((t) => ({ ...t, _meta: { "anthropic/alwaysLoad": true } }));
 
