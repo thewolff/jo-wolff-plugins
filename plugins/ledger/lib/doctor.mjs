@@ -120,7 +120,7 @@ export function runDoctor({ env = process.env, cwd = null, now = Date.now(), plu
     } catch (err) {
       checks.push(check("fail", "bounces", `could not read cc_bounces: ${err.message}`));
     }
-    // 0.3.2: questions nobody will answer from their session.
+    // 0.3.3: questions nobody will answer from their session.
     try {
       const s = p.query((db) => staleCheck(db, { now }));
       checks.push(check(s.status, "stale", s.detail, s.lines));
@@ -138,7 +138,7 @@ export function runDoctor({ env = process.env, cwd = null, now = Date.now(), plu
     checks.push(check("ok", "stale", "not checked (no current database yet)"));
     checks.push(check("ok", "digest", "not checked (no current database yet)"));
   }
-  // 0.3.2: the SessionEnd decision-log entry; off is a choice, not a fault.
+  // 0.3.3: the SessionEnd decision-log entry; off is a choice, not a fault.
   checks.push(check("ok", "decision log", cfg.config.decisionLog?.enabled === false ? "off (decisionLog.enabled is false)" : "on: SessionEnd writes an entry under the repository's .ai/decision-log/ when the session recorded an answer or a note"));
 
   if (extraChecks) checks.push(...extraChecks(cfg, env));

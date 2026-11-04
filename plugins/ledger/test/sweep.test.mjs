@@ -1,4 +1,4 @@
-// sweep.test.mjs — 0.3.2 leftover questions: doctor's `stale` check and the SessionStart
+// sweep.test.mjs — 0.3.3 leftover questions: doctor's `stale` check and the SessionStart
 // auto-withdraw. Ages are set by backdating rows in SQL; the clock is real.
 
 import test from "node:test";

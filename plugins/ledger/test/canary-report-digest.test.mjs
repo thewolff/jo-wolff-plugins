@@ -1,4 +1,4 @@
-// canary-report-digest.test.mjs — 0.3.2 feedback loop: the nightly canary, the graded report,
+// canary-report-digest.test.mjs — 0.3.3 feedback loop: the nightly canary, the graded report,
 // the weekly digest and its dead-man's switch. Process spawns are faked where a real one would
 // need `claude` or `gh`; the CLI is spawned for the process-level checks with scripts on PATH.
 
@@ -266,7 +266,7 @@ test("report: mechanical grades (biting on bypassed ≥3 or > half; silent when 
   assert.match(asked[1].passage, /--- bounce 1 \(satisfied, Bash, \S+\) ---\npush ok\n--- bounce 2 \(bypassed, Bash, \S+\) ---\npush 2/);
   assert.equal(rule("pushNeedsNote").judge, "fine");
   assert.equal(rule("stopAskRule").judgeError, "unparsed: judge answered none of biting|silent|fine");
-  assert.equal(rule("stopDecisionRule").judgeError, "no bounce texts kept (rows from before 0.3.2)");
+  assert.equal(rule("stopDecisionRule").judgeError, "no bounce texts kept (rows from before 0.3.3)");
   const text = render(data);
   assert.match(text, /^ledger report since \S+ \(7d\) · 1 session\(s\)$/m);
   assert.match(text, /^pushNeedsNote\s+4\s+1\s+3\s+0\s+biting \(judge: fine\)$/m);
@@ -311,7 +311,7 @@ test("digest: writes the attempt before posting, the post on success, the error 
   db.close();
   assert.equal(posts.length, 0);
   // Empty week posts.
-  const first = await withStore(b, (s) => runDigest({ db: s.db, dbPath: s.dbPath, config: s.config, env: b.env, now, post: ok, version: "0.3.2" }));
+  const first = await withStore(b, (s) => runDigest({ db: s.db, dbPath: s.dbPath, config: s.config, env: b.env, now, post: ok, version: "0.3.3" }));
   assert.equal(first.code, 0, first.text);
   assert.match(first.text, /^digest: posted to thewolff\/jo-issues#325 \(https:\/\/github.com\/.*#issuecomment-1\) at /);
   assert.equal(posts.length, 1);

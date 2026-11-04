@@ -397,7 +397,7 @@ test("judge: a cached answer does not run the judge again", async () => {
   const second = await ask({ db, config: {}, env, passage: "Finding:\nx\n\nChange (unified diff):\ny" });
   assert.deepEqual([first.cached, second.cached, second.verdict], [false, true, "yes"]);
   assert.equal(calls(yes), 2, "the second ask is answered from cc_judge_cache");
-  // 0.3.2: the cache keeps the passage and the question, not just the word.
+  // 0.3.3: the cache keeps the passage and the question, not just the word.
   const rows = db.prepare("SELECT key, question, passage, answer, at FROM cc_judge_cache ORDER BY at").all();
   assert.equal(rows.length, 2);
   assert.ok(rows.every((r) => r.answer === "yes" && r.question && r.passage && r.at), JSON.stringify(rows));

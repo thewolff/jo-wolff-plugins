@@ -2,11 +2,11 @@
 // session-start.mjs — SessionStart: record the session, inject the folder's open state.
 //
 // Input read: session_id, cwd, source (hooks reference § SessionStart input).
-// Side effect (0.3.2): open or held questions asked more than sweep.autoWithdrawDays (7) ago
+// Side effect (0.3.3): open or held questions asked more than sweep.autoWithdrawDays (7) ago
 // whose session has ended are withdrawn with a note, at most 20 per start (lib/sweep.mjs).
 // Output: hookSpecificOutput.additionalContext with, in order and only when non-empty: open
 // questions (the `pending` block), the last N notes/questions/answers, the verb summary. On
-// `source: compact` only the questions and a one-line summary. Last (0.3.2), the repository's
+// `source: compact` only the questions and a one-line summary. Last (0.3.3), the repository's
 // `.ai/decision-log/` entries where the newdle plugin's hook is not on to inject them
 // (lib/decision-log.mjs readDecisionLog; `decisionLog.enabled` false turns it off).
 //
@@ -42,7 +42,7 @@ export function handle(input, { env = process.env, now = Date.now() } = {}) {
             store.db
               .prepare("INSERT INTO cc_sessions (id, cwd, started_at) VALUES (?,?,?) ON CONFLICT(id) DO UPDATE SET cwd = excluded.cwd, ended_at = NULL, end_reason = NULL")
               .run(sessionId, cwd, nowIso(now));
-            // 0.3.2: questions asked more than sweep.autoWithdrawDays ago whose session has
+            // 0.3.3: questions asked more than sweep.autoWithdrawDays ago whose session has
             // ended are withdrawn with a note (at most 20 per start). The start context's
             // notes section shows the sweep's note when it concerns this folder.
             swept = autoWithdraw(store.db, { now, days: cfg.config.sweep?.autoWithdrawDays });
@@ -75,7 +75,7 @@ export function handle(input, { env = process.env, now = Date.now() } = {}) {
       /* advisory */
     }
     notices.push(...digest);
-    // 0.3.2: the repository's decision log, where the newdle plugin's own hook will not inject it.
+    // 0.3.3: the repository's decision log, where the newdle plugin's own hook will not inject it.
     let log = "";
     try {
       log = readDecisionLog(repoRoot(cwd).root, store.config);

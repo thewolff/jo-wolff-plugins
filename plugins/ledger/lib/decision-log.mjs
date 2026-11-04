@@ -1,4 +1,4 @@
-// decision-log.mjs — the SessionEnd decision-log entry (0.3.2). When the repository the session
+// decision-log.mjs — the SessionEnd decision-log entry (0.3.3). When the repository the session
 // ran in (its git toplevel, else the cwd) keeps `.ai/decision-log/`, and the session recorded at
 // least one answer or note, SessionEnd writes ONE entry there in the newdle `/wrap-up` format
 // (filename `<YYYY-MM-DD>--<HHMM>--<engineer>--<slug>.md`, frontmatter date / engineer / session /

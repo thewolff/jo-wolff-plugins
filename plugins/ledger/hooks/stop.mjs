@@ -93,7 +93,7 @@ export function handle(input, { env = process.env, now = Date.now() } = {}) {
     // question to the human, and a rule that ignored it sent every reply back with no way out.
     // It also stands down when the reply relays a question open in ANOTHER folder (its body
     // appears in the reply): SessionStart asks the model to tell the human about those, and
-    // relaying one is not asking a new question (0.3.2, live session 708406d0).
+    // relaying one is not asking a new question (0.3.3, live session 708406d0).
     const open = sessionId ? sessionQuestions(db, { sessionId, cwd }) : [];
     const inScope = openQuestions(db, cwd, { below: false });
     const relayed = inScope.length || open.length ? false : relaysElsewhere(db, cwd, input.last_assistant_message);

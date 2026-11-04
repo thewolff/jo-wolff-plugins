@@ -15,7 +15,7 @@
 // not start, exited non-zero, timed out, or answered something else). `unverified` is fail-open:
 // the caller treats the finding as resolved and shows the word so the human can see it.
 // `yes` and `no` are cached in cc_judge_cache under `judge:<sha256(passage + question)>` with the
-// passage and question they were given (0.3.2; before, cc_meta held the word only), so asking
+// passage and question they were given (0.3.3; before, cc_meta held the word only), so asking
 // the same thing again never runs the judge and a cached answer can be read back with
 // `ledger review judge <key>`; `unverified` is never cached.
 
