@@ -32,6 +32,9 @@
     "answers": true,
     "doctor": true
   },
+  "sweep": {
+    "autoWithdrawDays": 7
+  },
   "review": {
     "mode": "gate",
     "labs": [

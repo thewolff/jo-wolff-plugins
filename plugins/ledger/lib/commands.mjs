@@ -176,7 +176,7 @@ export function sessionNotes(db, { sessionId, cwd, after = null, kinds = ["note"
   return rows.filter((r) => (r.session_id === sessionId || isWithin(cwd, r.cwd) || isWithin(r.cwd, cwd)) && (!after || r.made_at > after));
 }
 
-function parseQuestion(q) {
+export function parseQuestion(q) {
   if (!q) return null;
   return { ...q, options: JSON.parse(q.options), allows: q.allows ? JSON.parse(q.allows) : null };
 }
@@ -209,7 +209,7 @@ export function createLookup(db, cwd) {
   };
 }
 
-function freshId(db, table, prefix, now) {
+export function freshId(db, table, prefix, now) {
   for (let i = 0; i < 2; i++) {
     const id = newId(prefix, now);
     if (!db.prepare(`SELECT 1 FROM ${table} WHERE id = ?`).get(id)) return id;
