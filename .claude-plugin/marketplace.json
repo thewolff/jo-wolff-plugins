@@ -43,6 +43,11 @@
       "name": "as2-skills",
       "source": "./plugins/as2-skills",
       "description": "The 22 engineering skills of agent-system 2.0: spec and plan, plan execution, TDD, debugging, code review, git workflow, security, research, cross-model review and more. Vendored from addyosmani/agent-skills, pbakaus/impeccable, blader/humanizer and obra/superpowers at pinned releases, with frontmatter claude.ai accepts."
+    },
+    {
+      "name": "plugin-kit",
+      "source": "./plugins/plugin-kit",
+      "description": "Start a new plugin that meets the repository test bar on day one: `/plugin-kit:new-plugin` scaffolds the fail-open hook runner, one handler per event, the five-fault hook-contract test, the canary live run, the fixtures rule, a skill with its \"When this can't run\" section, and the how-it-fails receipt, so `ledger gate check` passes before the first rule is written."
     }
   ]
 }

@@ -1,0 +1,9 @@
+{
+  "name": "{{name}}",
+  "description": "{{description}}",
+  "version": "0.1.0",
+  "author": { "name": "Jo Wolff" },
+  "license": "MIT",
+  "repository": "https://github.com/thewolff/jo-wolff-plugins",
+  "keywords": ["agents", "hooks"]
+}
