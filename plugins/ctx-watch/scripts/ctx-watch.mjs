@@ -41,9 +41,9 @@ import { rotateLogs, prune, DEFAULT_RETENTION_DAYS } from "../lib/retention.mjs"
 
 export const CLI_PATH = fileURLToPath(import.meta.url);
 
-export const HELP = `ctx-watch: notice when the ctx daemon is dead, unsupervised, or stale.
+export const HELP = `ctx-watch: notice when the ctx daemon is dead, unsupervised, or stale, or its semantic index is not ready.
 
-  check [--json]            probe once (heal with \`ctx index mode auto\`, then re-probe, on failure); print the needs-you line or nothing
+  check [--json]            probe once (heal with \`ctx index mode auto\`, then re-probe, on a daemon failure); print the needs-you line or nothing
   tick                      the launchd timer's run: probe, keep the episode state, popup on the second failing tick
   install [--interval 300]  write the launchd plist and print the bootstrap line (never bootstraps)
   uninstall                 print the bootout line
@@ -130,7 +130,7 @@ export async function main(argv, deps = {}) {
         return { code: 0, text: lines.join("\n") };
       }
       if (wantPopup) {
-        const outcome = await popup({ text: `${needsYouLine(result)}\n\nThe daemon has failed ${state.strikes} checks in a row (since ${iso(state.downSince)}). Open a Terminal and run the fix; ctx-watch checks again in ${state.intervalS ?? 300} s.`, outcomeFile: outcomePath(dir, token), token });
+        const outcome = await popup({ text: `${needsYouLine(result)}\n\nctx has failed ${state.strikes} checks in a row (since ${iso(state.downSince)}). Open a Terminal and run the fix; ctx-watch checks again in ${state.intervalS ?? 300} s.`, outcomeFile: outcomePath(dir, token), token });
         lines.push(outcome.started ? outcome.detail : `${outcome.detail}; will try again on the next failing tick`);
         // Apply the result to the state as it is now (another tick may have written since), and only while the claim is still this popup's.
         const done = withStateLock(

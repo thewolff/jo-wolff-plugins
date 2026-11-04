@@ -11,12 +11,13 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
-import { judge, probe, heal, check, runCtx, needsYouLine, ctxEnv, age, validMs, STALE_MS, SKEW_MS, STATUS_ARGV, MODE_ARGV, HEAL_ARGV, FIX, FIX_MISSING, LINE_MAX } from "../lib/probe.mjs";
+import { judge, probe, heal, check, runCtx, needsYouLine, ctxEnv, age, validMs, STALE_MS, SKEW_MS, STATUS_ARGV, MODE_ARGV, HEAL_ARGV, FIX, FIX_MISSING, SEMANTIC_FIX, SEMANTIC_STATUS, LINE_MAX } from "../lib/probe.mjs";
 
 const FIX_DIR = join(dirname(fileURLToPath(import.meta.url)), "fixtures");
 const fixture = (name) => readFileSync(join(FIX_DIR, name), "utf8");
 const HEALTHY = fixture("ctx-daemon-status.txt");
 const NOT_RUNNING = fixture("ctx-daemon-status-not-running.txt");
+const SEMANTIC_NOT_READY = fixture("ctx-daemon-status-semantic-not-ready.txt");
 const MODE = fixture("ctx-index-mode.txt");
 const HEALED = fixture("ctx-index-mode-auto.txt");
 const HEAL_SUPPRESSED = fixture("ctx-index-mode-auto.unavailable.txt");
@@ -51,8 +52,56 @@ test("healthy capture: ok, with the fields read", () => {
   const r = judge(good(HEALTHY), NOW);
   assert.equal(r.ok, true);
   assert.equal(r.reason, null);
-  assert.deepEqual(r.fields, { running: true, status: "running", pid: 1706, supervisor: "installed", lastRunAtMs: HEALTHY_LAST_RUN });
-  assert.match(r.summary, /^daemon running \(pid 1706\), supervisor installed, core_refresh 1m ago$/);
+  assert.deepEqual(r.fields, { running: true, status: "running", pid: 1706, supervisor: "installed", lastRunAtMs: HEALTHY_LAST_RUN, semanticEnabled: true, semanticStatus: "ready" });
+  assert.match(r.summary, /^daemon running \(pid 1706\), supervisor installed, core_refresh 1m ago, semantic index ready$/);
+});
+
+test("semantic index not ready (captured 2026-11-04 03:00 while ctx search reported semantic_status unavailable): fails naming the field, fix `ctx semantic enable --wait`, not healable", () => {
+  const lastRun = JSON.parse(SEMANTIC_NOT_READY).daemon.jobs.core_refresh.last_run_at_ms;
+  const r = judge(good(SEMANTIC_NOT_READY), lastRun + 60_000);
+  assert.equal(r.ok, false);
+  assert.equal(r.reason, 'the ctx semantic index is not ready (.daemon.jobs.semantic_index.status = "budget_exhausted")');
+  assert.equal(r.fix, SEMANTIC_FIX);
+  assert.equal(r.healable, false);
+  assert.deepEqual({ running: r.fields.running, supervisor: r.fields.supervisor, semanticEnabled: r.fields.semanticEnabled, semanticStatus: r.fields.semanticStatus }, { running: true, supervisor: "installed", semanticEnabled: true, semanticStatus: "budget_exhausted" });
+  const line = needsYouLine(r);
+  assert.equal(line, 'ctx-watch: the ctx semantic index is not ready (.daemon.jobs.semantic_index.status = "budget_exhausted"); fix: `ctx semantic enable --wait`');
+  assert.ok(line.length <= LINE_MAX);
+});
+
+test("semantic rows: a reason is quoted when ctx gives one; every status but ready fails; the daemon rows come first", () => {
+  const r = judge(good(mutated((j) => ((j.daemon.jobs.semantic_index.status = "pending"), (j.daemon.jobs.semantic_index.reason = "daemon_config_reload_pending")))), NOW);
+  assert.equal(r.reason, 'the ctx semantic index is not ready (.daemon.jobs.semantic_index.status = "pending", reason = "daemon_config_reload_pending")');
+  for (const status of ["failed", "unknown", "disabled", undefined]) {
+    const s = judge(good(mutated((j) => (status === undefined ? delete j.daemon.jobs.semantic_index.status : (j.daemon.jobs.semantic_index.status = status)))), NOW);
+    assert.equal(s.ok, false, `status ${status}`);
+    assert.equal(s.fix, SEMANTIC_FIX);
+  }
+  const down = judge(good(mutated((j) => ((j.daemon.running = false), (j.daemon.jobs.semantic_index.status = "failed")))), NOW);
+  assert.match(down.reason, /^the ctx daemon is not running/, "one line: the daemon's, not the semantic one");
+  assert.equal(down.healable, true);
+});
+
+test("semantic search not enabled is a pass (nothing to watch); the block missing is a failure naming it, fix `ctx semantic status`", () => {
+  const off = judge(good(mutated((j) => ((j.daemon.jobs.semantic_index.semantic_enabled = false), (j.daemon.jobs.semantic_index.status = "disabled")))), NOW);
+  assert.equal(off.ok, true);
+  assert.match(off.summary, /semantic search not enabled$/);
+  const missing = judge(good(mutated((j) => delete j.daemon.jobs.semantic_index)), NOW);
+  assert.equal(missing.ok, false);
+  assert.equal(missing.reason, "`ctx daemon status --format json` has no .daemon.jobs.semantic_index");
+  assert.equal(missing.fix, SEMANTIC_STATUS);
+  assert.equal(missing.healable, false);
+});
+
+test("check: a semantic failure runs no heal (no `ctx index mode` spawn) and says why", () => {
+  const seen = [];
+  const r = check({ run: (argv) => (seen.push(argv.slice(1).join(" ")), good(SEMANTIC_NOT_READY)), now: () => JSON.parse(SEMANTIC_NOT_READY).daemon.jobs.core_refresh.last_run_at_ms + 60_000, exists: () => true });
+  assert.equal(r.ok, false);
+  assert.deepEqual(seen, ["daemon status --format json"]);
+  assert.equal(r.healed.attempted, false);
+  assert.match(r.healed.detail, /^not attempted: the daemon is running; `ctx index mode auto` does not touch the semantic index$/);
+  assert.equal(r.first, null);
+  assert.equal(r.timedOut, false);
 });
 
 test("running=false capture (a killed daemon, status stale_lock): fails naming .daemon.running and .daemon.status", () => {

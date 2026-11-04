@@ -123,7 +123,7 @@ test("tick: strike, then down with one popup, stays down silently, recovers and 
     const t2 = await main(["tick"], deps([NOT_RUNNING], NOW + 300_000));
     assert.match(t2.text, /episode down, strikes 2\npopup started \(test\)$/);
     assert.equal(popups.length, 1);
-    assert.match(popups[0], /^ctx-watch: the ctx daemon is not running .*; fix: `ctx index mode auto`\n\nThe daemon has failed 2 checks in a row \(since \d{4}-.*Z\)\. Open a Terminal and run the fix; ctx-watch checks again in 300 s\.$/);
+    assert.match(popups[0], /^ctx-watch: the ctx daemon is not running .*; fix: `ctx index mode auto`\n\nctx has failed 2 checks in a row \(since \d{4}-.*Z\)\. Open a Terminal and run the fix; ctx-watch checks again in 300 s\.$/);
     assert.equal(readState(file).popupShown, true);
     assert.equal(readState(file).lastPopupAt, NOW + 300_000);
 
@@ -132,7 +132,7 @@ test("tick: strike, then down with one popup, stays down silently, recovers and 
     assert.equal(popups.length, 1, "one popup per episode");
 
     const t4 = await main(["tick"], deps([HEALTHY], NOW + 900_000));
-    assert.match(t4.text, /^\d{4}-.*Z pass: daemon running \(pid 1706\), supervisor installed, core_refresh \d+m ago \| episode up, strikes 0$/);
+    assert.match(t4.text, /^\d{4}-.*Z pass: daemon running \(pid 1706\), supervisor installed, core_refresh \d+m ago, semantic index ready \| episode up, strikes 0$/);
     const s = readState(file);
     assert.deepEqual({ episode: s.episode, strikes: s.strikes, popupShown: s.popupShown, lastTickAt: s.lastTickAt }, { episode: "up", strikes: 0, popupShown: false, lastTickAt: NOW + 900_000 });
 
