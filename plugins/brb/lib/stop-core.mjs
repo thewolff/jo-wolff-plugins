@@ -23,15 +23,20 @@
 //      `message` rows with role assistant); none → toolLessStops + 1, some → 0. With no readable
 //      transcript, a stop_hook_active stop counts as tool-less (nothing proves a tool ran), and
 //      a first stop counts as tool-less when its message equals the previous stop's.
-//   4. Let the turn end (no keep-working answer) when: an `idle:` line is among the message's
+//   4. Quiet continuations: a stop_hook_active stop that brought nothing new (no new held line,
+//      no new fire) → nothingNewStops + 1, whatever tools it ran; a stop that brought something
+//      new, or that is not a continuation, → 0.
+//   5. Let the turn end (no keep-working answer) when: an `idle:` line is among the message's
 //      last five non-blank lines; stop_hook_active is true, the message brought nothing new AND
 //      the stop was tool-less (the guard against a loop that will never resolve; a working
-//      agent with nothing new is sent back to work); or toolLessStops reached `idleStops`
-//      (default 2). Otherwise keep it working with keepWorkingReason(held): on Claude Code as
+//      agent with nothing new is sent back to work); toolLessStops reached `idleStops`
+//      (default 2); or nothingNewStops reached QUIET_CONTINUATIONS (3), the ceiling for an
+//      agent that calls a tool on every stop and never raises anything or writes `idle:`.
+//      Otherwise keep it working with keepWorkingReason(held): on Claude Code as
 //      `hookSpecificOutput.additionalContext` (Stop hook feedback, same loop protections as a
 //      block, not shown as a hook error); under BRB_HARNESS=omp as `decision: "block"`, the
 //      shape OMP's session_stop takes.
-//   5. Write: re-read away.json first; a hold that `back` ended while this stop ran is left
+//   6. Write: re-read away.json first; a hold that `back` ended while this stop ran is left
 //      ended (only the fire output returns). New held lines go to the digest, then away.json.
 //      A write that throws is one errors.log line and a systemMessage beside any fire; the stop
 //      then proceeds with no keep-working answer.
@@ -51,6 +56,8 @@ import { logError } from "./hook-runner.mjs";
 
 const SEEN_CAP = 500;
 const OSC_TEXT_CAP = 200;
+/** Continuations in a row with nothing new, tools or not, after which the agent is let go. */
+export const QUIET_CONTINUATIONS = 3;
 
 /** `{ count, lines }` of assistant tool calls (Claude Code `tool_use`, OMP `toolCall`) in the transcript from line `fromLine` on; null when unreadable. */
 export function countToolUses(transcriptPath, fromLine = 0) {
@@ -167,15 +174,19 @@ export function decideStop(input, { env = process.env, now = () => new Date().to
   away.toolLessStops = toolLess ? away.toolLessStops + 1 : 0;
   away.lastStop = { at, line, hash: messageHash, transcript: counted !== null, fires: fires.map((f) => f.key) };
 
-  // 4. Keep working or let the turn end.
+  // 4. Quiet continuations.
   const nothingNew = !newHeld.length && !newFire.length;
+  away.nothingNewStops = continuing && nothingNew ? away.nothingNewStops + 1 : 0;
+
+  // 5. Keep working or let the turn end.
   const held = `${away.held} held; type \`back\` to read them`;
   let release = null;
   if (parts.idle !== null) release = `brb: the agent is idle${parts.idle ? ` (${parts.idle})` : ""}; ${held}.`;
   else if (continuing && nothingNew && toolLess) release = "";
   else if (away.toolLessStops >= config.idleStops) release = `brb: ${away.toolLessStops} stops with no tool calls between them; letting the agent stop. ${held}.`;
+  else if (away.nothingNewStops >= QUIET_CONTINUATIONS) release = `brb: released the agent after ${away.nothingNewStops} continuations with nothing new; ${held}.`;
 
-  // 5. Write, unless `back` ended the hold meanwhile.
+  // 6. Write, unless `back` ended the hold meanwhile.
   try {
     const current = readAway(sessionId, env);
     if (!current || current.since !== away.since) return Object.keys(out).length ? out : null;

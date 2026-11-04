@@ -2,7 +2,8 @@
 // transcript: home passthrough; away + asks → digest grows + keep working (additionalContext on
 // Claude Code, decision block under BRB_HARNESS=omp); on fire → surfaced, not in the digest, cap
 // noted, re-notified on a later turn; idle line → no keep-working answer; stop_hook_active guard
-// (tool-less only); two tool-less stops → released (transcript counting in both transcript
+// (tool-less only); three quiet continuations → released, a new ask resets the count; two
+// tool-less stops → released (transcript counting in both transcript
 // shapes, and with no transcript); an unwritable state dir still surfaces the fire; a `back`
 // mid-stop is not undone; malformed input → exit 0, one errors.log line, no block. Plus the pure
 // helpers of lib/stop-core.mjs. node --test.
@@ -178,6 +179,57 @@ test("stop_hook_active guard: a tool-less continuation with nothing new is let t
     b.writeTranscript([row.user(), row.tool(), row.tool(), row.tool(), row.tool(), row.tool()]);
     const third = runHook(b, "stop", stopInput(b, { stop_hook_active: false, last_assistant_message: "Carried on; the flag is named and the tests pass." }));
     assert.ok(kept(third.json));
+  } finally {
+    b.release();
+  }
+});
+
+test("quiet-continuation ceiling: a tool on every stop, nothing new, no idle line → released on the 4th stop (both harnesses)", () => {
+  for (const env of [{}, { BRB_HARNESS: "omp" }]) {
+    const b = box();
+    try {
+      goAway(b);
+      const rows = [row.user()];
+      const verdicts = [];
+      for (let i = 0; i < 4; i++) {
+        rows.push(row.tool("Bash"));
+        b.writeTranscript(rows);
+        const r = runHook(b, "stop", stopInput(b, { stop_hook_active: i > 0, last_assistant_message: "All items are done. Checked git status; clean." }), { env });
+        assert.equal(r.status, 0);
+        verdicts.push(kept(r.json));
+        if (i === 3) assert.equal(r.json.systemMessage, "brb: released the agent after 3 continuations with nothing new; 0 held; type `back` to read them.");
+      }
+      assert.deepEqual(verdicts, [true, true, true, false], JSON.stringify(env));
+      assert.equal(awayRecord(b).nothingNewStops, 3);
+      assert.equal(awayRecord(b).toolLessStops, 0);
+    } finally {
+      b.release();
+    }
+  }
+});
+
+test("quiet-continuation ceiling: a continuation that adds a new ask resets the count", () => {
+  const b = box();
+  try {
+    goAway(b);
+    const rows = [row.user()];
+    const stop = (active, message) => {
+      rows.push(row.tool("Bash"));
+      b.writeTranscript(rows);
+      return runHook(b, "stop", stopInput(b, { stop_hook_active: active, last_assistant_message: message }));
+    };
+    const quiet = "Checked git status; clean.";
+    assert.ok(kept(stop(false, quiet).json));
+    assert.ok(kept(stop(true, quiet).json));
+    assert.ok(kept(stop(true, quiet).json));
+    assert.equal(awayRecord(b).nothingNewStops, 2);
+    assert.ok(kept(stop(true, "Found one.\n\n## Needs you\n- Approve the schema change").json));
+    assert.equal(awayRecord(b).nothingNewStops, 0, "new section content resets the count");
+    assert.ok(kept(stop(true, quiet).json));
+    assert.ok(kept(stop(true, quiet).json));
+    const third = stop(true, quiet);
+    assert.ok(!kept(third.json), third.stdout);
+    assert.equal(third.json.systemMessage, "brb: released the agent after 3 continuations with nothing new; 1 held; type `back` to read them.");
   } finally {
     b.release();
   }

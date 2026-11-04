@@ -41,8 +41,8 @@ The person reads the digest with `back` (which clears it) or `pending` (which do
   `brb: Jo is away since …`. If that line is missing, the hook is not running (hooks disabled,
   plugin not loaded): keep writing the section anyway; the person reads messages when they
   return. Nothing to undo. A turn that ends with no keep-working reply is not this signal: the
-  hook lets an `idle:` stop, a tool-less stop with nothing new, and the second tool-less stop
-  end silently or with a line for the person.
+  hook lets an `idle:` stop, a tool-less stop with nothing new, the second tool-less stop and
+  the third continuation in a row with nothing new end silently or with a line for the person.
 - The person is not away (no `brb` was typed): this skill does not apply; ask as usual.
 
 The scenario that proves the hook's first outcome is `evals/prompt-brb.scenario.json`.

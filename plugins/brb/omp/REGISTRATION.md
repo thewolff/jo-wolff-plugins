@@ -25,7 +25,8 @@ That one module does three jobs for the main session (see its header for the eve
   `systemMessage` (an on-fire line, an idle notice) goes to `ctx.ui.notify`. Under the `omp`
   tag the core leaves out the OSC 9 `terminalSequence`, since the adapter is the one that
   notifies. OMP has no continuation cap on explicit blocks; the loop ends by the core's own
-  rules (an `idle:` line, nothing new on a continuation, two tool-less stops).
+  rules (an `idle:` line, nothing new on a tool-less continuation, two tool-less stops, three
+  continuations in a row with nothing new).
 - **One session id.** Every spawn carries `ctx.sessionManager.getSessionId()`, the id that is
   stable across OMP's provider-id rotations, so the three hooks share one state directory.
 - **Fail open.** A spawn that fails, exits non-zero, prints junk or outruns its budget (5 s for

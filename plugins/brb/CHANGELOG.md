@@ -20,10 +20,13 @@ All notable changes to brb are recorded here. The format follows
   once and before any write (a `systemMessage`, an OSC 9 `terminalSequence`, a best-effort macOS
   notification) and kept out of the digest, then a keep-working answer (Stop hook
   `additionalContext` on Claude Code, `decision: "block"` on OMP), except on an `idle:` line, a
-  tool-less `stop_hook_active` continuation with nothing new, or `idleStops` (default 2) stops
-  with no tool call between them. Tool calls are counted in both Claude Code and OMP transcripts;
-  with no readable transcript every continuation counts as tool-less. An on-fire cap
-  (`onFireCap`, default 3) that notes when it is passed.
+  tool-less `stop_hook_active` continuation with nothing new, `idleStops` (default 2) stops
+  with no tool call between them, or three continuations in a row with nothing new whatever
+  tools they ran (`nothingNewStops`; a new ask or fire resets it), which bounds an agent that
+  calls a tool on every stop and never raises anything or writes `idle:`. Tool calls are
+  counted in both Claude Code and OMP transcripts; with no readable transcript every
+  continuation counts as tool-less, so a continuation with nothing new is released whatever
+  tools it ran. An on-fire cap (`onFireCap`, default 3) that notes when it is passed.
 - The OMP extension `omp/brb-omp.ts`: `input` handles the three words without a turn (the reason
   shown as a message when the agent is idle, as a notification while it works),
   `before_agent_start` carries the away instruction, `session_stop` runs the same stop hook

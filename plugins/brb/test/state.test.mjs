@@ -77,7 +77,7 @@ test("away.json that does not parse, or has no since, reads as home; bad counter
     writeFileSync(join(sessionDir("s1", b.env), "away.json"), JSON.stringify({ note: "x" }));
     assert.equal(readAway("s1", b.env), null);
     writeFileSync(join(sessionDir("s1", b.env), "away.json"), JSON.stringify({ since: "t", held: -1, onFire: "3", seen: "no", lastStop: 4 }));
-    assert.deepEqual(readAway("s1", b.env), { since: "t", note: "", held: 0, onFire: 0, toolLessStops: 0, seen: [], lastStop: null });
+    assert.deepEqual(readAway("s1", b.env), { since: "t", note: "", held: 0, onFire: 0, toolLessStops: 0, nothingNewStops: 0, seen: [], lastStop: null });
   } finally {
     b.release();
   }

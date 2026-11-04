@@ -89,14 +89,14 @@ On every finished message (`hooks/stop.mjs`, the rules in `lib/stop-core.mjs`):
 4. **Send the agent back to work** with the text
    `brb is holding your asks (N in the digest). Keep working on the next open item; if nothing is runnable end with a line \`idle: <why>\`.`
    On Claude Code it goes out as `hookSpecificOutput.additionalContext`; under the OMP adapter
-   as `decision: "block"` with that `reason`. The turn ends instead when one of three things is
+   as `decision: "block"` with that `reason`. The turn ends instead when one of four things is
    true:
    - an `idle:` line is among the message's last five non-blank lines (you see
      `brb: the agent is idle (<why>); N held; type \`back\` to read them.`);
    - `stop_hook_active` is true, the message brought no new Needs-you or on-fire line, **and**
      no tool was called since the previous stop (the guard against a loop that will never
      resolve; nothing is shown). An agent that called tools and has nothing new to ask is still
-     working, so it is sent back to work;
+     working, so it is sent back to work, up to the ceiling below;
    - `idleStops` stops in a row (default 2) came with no tool call between them. The count is
      the tool calls in `transcript_path` after the line recorded at the previous stop: Claude
      Code's `tool_use` blocks in `assistant` rows and OMP's `toolCall` blocks in `message` rows
@@ -104,7 +104,12 @@ On every finished message (`hooks/stop.mjs`, the rules in `lib/stop-core.mjs`):
      `--no-session`, or a missing file), every `stop_hook_active` stop counts as tool-less,
      because nothing proves a tool ran, and a first stop counts as tool-less when its message is
      byte-identical to the previous stop's. A tool call resets the count. You see
-     `brb: 2 stops with no tool calls between them; letting the agent stop. N held; …`.
+     `brb: 2 stops with no tool calls between them; letting the agent stop. N held; …`;
+   - three `stop_hook_active` continuations in a row brought nothing new, whatever tools they
+     ran (the ceiling for an agent that calls a tool on every stop and never raises anything or
+     writes `idle:`). A continuation with a new Needs-you or on-fire line, or a stop that is not
+     a continuation, resets the count (`nothingNewStops` in `away.json`). You see
+     `brb: released the agent after 3 continuations with nothing new; N held; …`.
 
 Not away: the hook prints nothing and the stop proceeds.
 
@@ -118,13 +123,13 @@ labels it `Stop hook feedback` and no hook error notification is shown". So a de
 keep-working answer does not show as a hook error, and a real `failed open` stays visible. OMP's
 `session_stop` takes `{ decision: "block", reason }`, so the adapter keeps that shape.
 
-**The guard, and the alternative not taken.** The guard above releases a continuation only
-when it is tool-less and brings nothing new. Its remaining unbounded case is an agent that calls
-trivial tools forever with no ask, no fire and no `idle:` line: Claude Code's cap resets on each
-tool call and OMP does not cap explicit blocks. The alternative is to also release after `K`
-continuations in a row with nothing new (a `nothingNewStops` counter beside `toolLessStops`,
-`K` = 3), which bounds that case and lets a working agent go after three quiet steps. 0.1.0
-ships the tool-less guard alone; the ceiling is a one-counter change if the loop shows up.
+**The guard and the ceiling.** The guard above releases a continuation only when it is
+tool-less and brings nothing new, so a working agent with nothing to ask is sent back to work.
+On its own that leaves one unbounded case: an agent that calls trivial tools forever with no
+ask, no fire and no `idle:` line, which Claude Code's cap does not end (it resets on each tool
+call) and OMP does not cap at all. The ceiling bounds it: three quiet continuations in a row
+end the turn. The price is that a working agent that raises nothing is let go after three
+quiet steps; any new ask or fire resets the count.
 
 ## State and config
 
@@ -154,14 +159,17 @@ ships the tool-less guard alone; the ceiling is a one-counter change if the loop
   Claude Code overrides the next block and ends the turn. The count of consecutive continuations
   resets each time Claude calls a tool. To raise the cap, set `CLAUDE_CODE_STOP_HOOK_BLOCK_CAP`."
   So a working agent is never cut off by the cap; eight continuations with no tool call in
-  between end the turn whatever brb says, and brb's own tool-less rule ends it after two. On OMP
+  between end the turn whatever brb says, brb's own tool-less rule ends it after two, and three
+  continuations with nothing new end it whatever tools ran. On OMP
   "explicit `{ decision: "block", reason }` refusals … remain blocking until the hook allows
   completion or the operator interrupts" (OMP's extensions doc), which is why the release rules
   exist and why an unreadable transcript counts every continuation as tool-less.
 - **An unreadable transcript** (no path, rotated, missing) counts every `stop_hook_active`
-  stop as tool-less, as above; `away.json` `lastStop.transcript` is `false`. A readable file in
-  a line shape that is neither Claude Code's nor OMP's counts zero tool calls, so the agent is
-  let go after `idleStops` stops.
+  stop as tool-less, as above; `away.json` `lastStop.transcript` is `false`. So without a
+  transcript, a continuation with nothing new is released by the guard whatever tools it ran:
+  the price of bounding the loop when nothing proves a tool ran. A readable file in a line shape
+  that is neither Claude Code's nor OMP's counts zero tool calls, so the agent is let go after
+  `idleStops` stops.
 - **An unwritable state directory** is one `errors.log` line (`Stop could not write state: …`)
   and a `systemMessage` (`brb Stop could not write its state (…); this message's asks are not
   held and the stop proceeds.`); an on-fire line in the same message still surfaces. The ask is
@@ -193,6 +201,6 @@ hooks as spawned processes with fixture stdin and fixture transcripts, the OMP a
 
 First release: the three words (`brb`, `back`, `pending`), the away instruction on every prompt
 and at SessionStart, the Stop hook that holds Needs-you lines, surfaces on-fire lines and sends
-the agent back to work (Stop hook feedback on Claude Code, a block on OMP) until an `idle:` line
-or two tool-less stops, the OMP adapter, the `brb` skill. No `/brb` slash command, no masking of
-the agent's messages, no model-run check.
+the agent back to work (Stop hook feedback on Claude Code, a block on OMP) until an `idle:` line,
+two tool-less stops or three continuations with nothing new, the OMP adapter, the `brb` skill.
+No `/brb` slash command, no masking of the agent's messages, no model-run check.
