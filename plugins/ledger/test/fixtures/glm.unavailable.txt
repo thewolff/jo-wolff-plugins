@@ -1,0 +1,1 @@
+omp exited 1: …<scratch>/home/.omp/agent/agent.db at #Zn (~/.bun/install/global/node_modules/@oh-my-pi/pi-coding-agent/dist/cli.js:30125:105) at async #sr (~/.bun/install/global/node_modules/@oh-my-pi/pi-coding-agent/dist/cli.js:30119:41306)

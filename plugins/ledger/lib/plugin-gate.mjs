@@ -1,0 +1,450 @@
+// plugin-gate.mjs — the three-check push gate for a repository of Claude Code plugins (the
+// repo-root AGENTS.md test bar, kind-agnostic). It applies when the pushed repository holds
+// `plugins/*/hooks/hooks.json` or a root `.claude-plugin/plugin.json`, and only to plugins with a
+// file changed between the push's base and its head. For each such plugin, `ledger gate check`
+// runs and records three checks as rows of cc_gate_checks (one per head, plugin and check name;
+// a rerun replaces them):
+//
+//   survives   can't break the session: every hook command in hooks.json is spawned once per
+//              fault input (empty stdin, malformed JSON, an unknown event, an unwritable state,
+//              no config) under an empty HOME and XDG dirs, 5 s each; a non-zero exit, a timeout,
+//              or a `deny` / `block` / `continue: false` in its output fails the check, naming
+//              the hook and the input.
+//   visible    failures are visible: the malformed-JSON and unwritable-state inputs leave at
+//              least one line in `<state>/<plugin>/errors.log` and a `systemMessage` on stdout
+//              (SessionEnd has no reader, so its message is not required; a hook that printed
+//              nothing and logged nothing on the unwritable state never reached it, which is
+//              not a failure: the malformed-JSON input is the one every hook must answer);
+//              every `test/fixtures/<x>.txt` has an `<x>.unavailable.txt` sibling (the adapter's
+//              unavailable path, captured).
+//   says       text says what to do when it can't: every `skills/*/SKILL.md` and `agents/*.md`
+//              has a heading matching "when this can't"; every deny or block reason literal in
+//              `hooks/*.mjs` and `lib/*.mjs` names a command in backticks.
+//
+// A plugin with no `hooks/hooks.json` is `skipped` (it has no hook to break the session with;
+// the other two checks still run). The whole run is capped at 60 s: a check that does not start
+// before the cap records `fail` with `timeout`. The PreToolUse deny is given only while the
+// store can be read; any fault there is an allow with a notice (the review gate's rule). A
+// `review waive "<why>"` row for the head lifts this gate as it lifts the review gate.
+
+import { spawnSync } from "node:child_process";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { nowIso } from "./time.mjs";
+import { git, gitHead, defaultBase, headState, currentBranch, NotARepository } from "./review.mjs";
+import { transaction } from "./db.mjs";
+
+export const CHECKS = Object.freeze(["survives", "visible", "says"]);
+export const HOOK_DEADLINE_MS = 5_000;
+export const RUN_CAP_MS = 60_000;
+/** The deny reason's and a row's detail are cut here. */
+export const DETAIL_MAX = 2_000;
+const SESSION_ID = "s-gate-check";
+
+/**
+ * The five fault inputs, kind-agnostic. `stdin` is the hook's stdin; `unwritable` makes the
+ * plugin's state and data directories read-only (with a writable errors.log already in the
+ * state one, so the line can still be written).
+ */
+export const FAULT_INPUTS = Object.freeze([
+  { name: "empty stdin", stdin: "", visible: false },
+  { name: "malformed JSON", stdin: "{not json", visible: true },
+  { name: "unknown event", event: "NoSuchEvent", visible: false },
+  { name: "unwritable state", unwritable: true, visible: true },
+  { name: "no config", visible: false },
+]);
+
+/** The plugins of `top`: `{ name, dir }` each, [] when `top` is not a repository of plugins. */
+export function repoPlugins(top) {
+  const out = [];
+  const pluginsDir = join(top, "plugins");
+  if (existsSync(pluginsDir)) {
+    for (const name of readdirSync(pluginsDir).sort()) {
+      const dir = join(pluginsDir, name);
+      if (existsSync(join(dir, "hooks", "hooks.json")) || existsSync(join(dir, ".claude-plugin", "plugin.json"))) out.push({ name, dir, prefix: `plugins/${name}/` });
+    }
+  }
+  if (!out.length && existsSync(join(top, ".claude-plugin", "plugin.json"))) {
+    let name = top.split("/").pop();
+    try {
+      name = JSON.parse(readFileSync(join(top, ".claude-plugin", "plugin.json"), "utf8")).name || name;
+    } catch {
+      /* the directory's name */
+    }
+    out.push({ name, dir: top, prefix: "" });
+  }
+  return out;
+}
+
+/** The plugins of `top` with a file changed in base..head (every plugin when base is null: the root commit). */
+export function changedPlugins(top, base, head, plugins = repoPlugins(top)) {
+  if (!plugins.length) return [];
+  if (!base) return plugins;
+  const files = git(top, ["diff", "--name-only", `${base}..${head}`]).split("\n").filter(Boolean);
+  return plugins.filter((p) => files.some((f) => f.startsWith(p.prefix)));
+}
+
+/** The hook commands of a plugin's hooks.json: `{ event, command, args }`; null when it has none. */
+export function hookCommands(pluginDir) {
+  const path = join(pluginDir, "hooks", "hooks.json");
+  if (!existsSync(path)) return null;
+  const json = JSON.parse(readFileSync(path, "utf8"));
+  const out = [];
+  for (const [event, groups] of Object.entries(json.hooks ?? {})) {
+    for (const group of groups ?? []) {
+      for (const h of group.hooks ?? []) {
+        if (h.type !== "command" || !h.command) continue;
+        const sub = (s) => String(s).replaceAll("${CLAUDE_PLUGIN_ROOT}", pluginDir);
+        out.push({ event, command: sub(h.command), args: (h.args ?? []).map(sub) });
+      }
+    }
+  }
+  return out;
+}
+
+/** A well-formed hook input for `event` that every hook kind finds its fields in. */
+function eventInput(event, cwd) {
+  return JSON.stringify({
+    session_id: SESSION_ID,
+    cwd,
+    hook_event_name: event,
+    prompt_id: "p-gate",
+    transcript_path: join(cwd, "no-such-transcript.jsonl"),
+    source: "startup",
+    reason: "exit",
+    prompt: "carry on",
+    stop_hook_active: false,
+    last_assistant_message: "Done.",
+    tool_name: "Bash",
+    tool_input: { command: "ls" },
+  });
+}
+
+/** One sandbox per spawn: an empty HOME and XDG dirs, read-only for the unwritable input. */
+function faultSandbox(pluginName, input) {
+  const root = mkdtempSync(join(tmpdir(), "ledger-gate-"));
+  const home = join(root, "home");
+  const state = join(root, "state");
+  const data = join(root, "data");
+  const config = join(root, "config");
+  for (const d of [home, state, data, config]) mkdirSync(d, { recursive: true });
+  const env = { PATH: process.env.PATH, HOME: home, XDG_STATE_HOME: state, XDG_DATA_HOME: data, XDG_CONFIG_HOME: config, XDG_CACHE_HOME: join(root, "cache"), TMPDIR: join(root, "tmp"), CLAUDE_PLUGIN_ROOT: "" };
+  mkdirSync(env.TMPDIR);
+  const errorsLog = join(state, pluginName, "errors.log");
+  mkdirSync(join(state, pluginName), { recursive: true });
+  writeFileSync(errorsLog, "");
+  if (input.unwritable) {
+    mkdirSync(join(data, pluginName), { recursive: true });
+    chmodSync(join(data, pluginName), 0o555);
+    chmodSync(join(state, pluginName), 0o555);
+  }
+  const release = () => {
+    try {
+      chmodSync(join(data, pluginName), 0o755);
+      chmodSync(join(state, pluginName), 0o755);
+    } catch {
+      /* not made read-only */
+    }
+    rmSync(root, { recursive: true, force: true });
+  };
+  return { root, env, errorsLog, release };
+}
+
+const cut = (s, max = DETAIL_MAX) => (s.length > max ? `${s.slice(0, max)}…` : s);
+
+/**
+ * Spawn one hook with one fault input. Returns `{ ok, why, visible }`: ok false with why when
+ * the session would break; visible true when errors.log gained a line and stdout carries a
+ * systemMessage.
+ */
+export function spawnHook(plugin, hook, input, { env: outer = process.env, cwd } = {}) {
+  const box = faultSandbox(plugin.name, input);
+  try {
+    const stdin = input.stdin ?? eventInput(input.event ?? hook.event, cwd ?? box.root);
+    const env = { ...box.env, PATH: outer.PATH ?? box.env.PATH, CLAUDE_PLUGIN_ROOT: plugin.dir };
+    const started = Date.now();
+    const r = hook.args.length
+      ? spawnSync(hook.command, hook.args, { cwd: cwd ?? box.root, env, input: stdin, encoding: "utf8", timeout: HOOK_DEADLINE_MS, killSignal: "SIGKILL" })
+      : spawnSync("/bin/sh", ["-c", hook.command], { cwd: cwd ?? box.root, env, input: stdin, encoding: "utf8", timeout: HOOK_DEADLINE_MS, killSignal: "SIGKILL" });
+    const ms = Date.now() - started;
+    const label = `${hook.event} hook on ${input.name}`;
+    if (r.error?.code === "ETIMEDOUT" || (r.signal === "SIGKILL" && ms >= HOOK_DEADLINE_MS)) return { ok: false, why: `${label}: no exit within ${HOOK_DEADLINE_MS / 1000}s` };
+    if (r.error) return { ok: false, why: `${label}: could not spawn (${r.error.message})` };
+    if (r.status !== 0) return { ok: false, why: `${label}: exit ${r.status ?? `signal ${r.signal}`}${r.stderr?.trim() ? ` (${cut(r.stderr.trim(), 200)})` : ""}` };
+    let json = null;
+    if (r.stdout.trim()) {
+      try {
+        json = JSON.parse(r.stdout);
+      } catch {
+        return { ok: false, why: `${label}: stdout is not JSON (${cut(r.stdout.trim(), 200)})` };
+      }
+      if (json?.hookSpecificOutput?.permissionDecision === "deny") return { ok: false, why: `${label}: denied` };
+      if (json?.decision === "block") return { ok: false, why: `${label}: blocked` };
+      if (json?.continue === false) return { ok: false, why: `${label}: stopped the session` };
+    }
+    let logged = 0;
+    try {
+      logged = readFileSync(box.errorsLog, "utf8").split("\n").filter(Boolean).length;
+    } catch {
+      /* removed by the hook: no line */
+    }
+    const hasMessage = typeof json?.systemMessage === "string" && json.systemMessage.trim() !== "";
+    const needsMessage = hook.event !== "SessionEnd";
+    const untouched = input.unwritable && !r.stdout.trim() && logged === 0;
+    return { ok: true, visible: untouched || (logged > 0 && (hasMessage || !needsMessage)), logged, hasMessage, needsMessage };
+  } finally {
+    box.release();
+  }
+}
+
+/** Check 1 and 2's hook half for one plugin; null when the plugin has no hooks.json (skipped). */
+function hookChecks(plugin, { env, deadline }) {
+  const hooks = hookCommands(plugin.dir);
+  if (hooks === null) return null;
+  const broke = [];
+  const invisible = [];
+  for (const hook of hooks) {
+    for (const input of FAULT_INPUTS) {
+      if (Date.now() > deadline) return { timeout: true };
+      const r = spawnHook(plugin, hook, input, { env });
+      if (!r.ok) broke.push(r.why);
+      else if (input.visible && !r.visible) {
+        const missing = [...(r.logged ? [] : ["no errors.log line"]), ...(r.hasMessage || !r.needsMessage ? [] : ["no systemMessage"])];
+        invisible.push(`${hook.event} hook on ${input.name}: ${missing.join(", ")}`);
+      }
+    }
+  }
+  return { hooks: hooks.length, broke, invisible };
+}
+
+/** Every `test/fixtures/<x>.txt` without an `<x>.unavailable.txt` sibling. */
+export function fixturesWithoutUnavailable(pluginDir) {
+  const dir = join(pluginDir, "test", "fixtures");
+  if (!existsSync(dir)) return [];
+  const names = readdirSync(dir);
+  return names.filter((n) => n.endsWith(".txt") && !n.endsWith(".unavailable.txt") && !names.includes(n.replace(/\.txt$/, ".unavailable.txt"))).sort();
+}
+
+const WHEN_CANT = /^#{1,6}\s.*when (?:this|it) can(?:'|’|no)?t\b/im;
+
+/** Every `skills/*\/SKILL.md` and `agents/*.md` (relative) without a "When this can't …" heading. */
+export function textsWithoutWhenCant(pluginDir) {
+  const out = [];
+  const skills = join(pluginDir, "skills");
+  if (existsSync(skills)) {
+    for (const name of readdirSync(skills).sort()) {
+      const path = join(skills, name, "SKILL.md");
+      if (existsSync(path) && !WHEN_CANT.test(readFileSync(path, "utf8"))) out.push(`skills/${name}/SKILL.md`);
+    }
+  }
+  const agents = join(pluginDir, "agents");
+  if (existsSync(agents)) {
+    for (const name of readdirSync(agents).sort()) {
+      if (name.endsWith(".md") && !WHEN_CANT.test(readFileSync(join(agents, name), "utf8"))) out.push(`agents/${name}`);
+    }
+  }
+  return out;
+}
+
+/**
+ * The reason literals of `source` that belong to a deny or block: a string or template literal
+ * right after `permissionDecisionReason:` or, when `deny`, `block` or `rule:` appears within the
+ * five lines up to it, `reason:`. Returns `{ line, text }` for each whose text has no backtick
+ * command.
+ */
+export function reasonsWithoutCommand(source) {
+  const lines = source.split("\n");
+  const out = [];
+  const re = /\b(permissionDecisionReason|reason)\s*:\s*(["'`])/g;
+  for (let i = 0; i < lines.length; i++) {
+    if (/^\s*(\/\/|\*|\/\*)/.test(lines[i])) continue;
+    re.lastIndex = 0;
+    let m;
+    while ((m = re.exec(lines[i]))) {
+      const key = m[1];
+      const quote = m[2];
+      const context = lines.slice(Math.max(0, i - 4), i + 1).join("\n");
+      if (key === "reason" && !/\b(deny|denied|block|blocked|rule)\b/.test(context)) continue;
+      // The literal's text, up to its unescaped closing quote (a template may span lines).
+      let text = "";
+      let j = i;
+      let k = m.index + m[0].length;
+      let closed = false;
+      while (j < lines.length && !closed) {
+        const s = lines[j];
+        for (; k < s.length; k++) {
+          if (s[k] === "\\") {
+            text += s[k] + (s[k + 1] ?? "");
+            k++;
+            continue;
+          }
+          if (s[k] === quote) {
+            closed = true;
+            break;
+          }
+          text += s[k];
+        }
+        if (!closed) {
+          text += "\n";
+          j++;
+          k = 0;
+        }
+      }
+      const command = quote === "`" ? /\\`[^`]*\S[^`]*\\`/.test(text) : /`[^`]*\S[^`]*`/.test(text);
+      if (!command) out.push({ line: i + 1, text: cut(text.replace(/\s+/g, " ").trim(), 80) });
+    }
+  }
+  return out;
+}
+
+/** `hooks/*.mjs` and `lib/*.mjs` (relative, with the line) whose deny or block reason names no command. */
+export function reasonsWithoutCommandIn(pluginDir) {
+  const out = [];
+  for (const sub of ["hooks", "lib"]) {
+    const dir = join(pluginDir, sub);
+    if (!existsSync(dir)) continue;
+    for (const name of readdirSync(dir).sort()) {
+      if (!name.endsWith(".mjs") || name.endsWith(".test.mjs")) continue;
+      for (const r of reasonsWithoutCommand(readFileSync(join(dir, name), "utf8"))) out.push(`${sub}/${name}:${r.line} "${r.text}"`);
+    }
+  }
+  return out;
+}
+
+/** The three checks for one plugin: `[{ name, status, detail }]`. */
+export function checkPlugin(plugin, { env = process.env, deadline = Date.now() + RUN_CAP_MS } = {}) {
+  const rows = [];
+  const timedOut = () => ({ status: "fail", detail: "timeout" });
+  // 1. survives
+  const hooks = hookChecks(plugin, { env, deadline });
+  if (hooks === null) {
+    rows.push({ name: "survives", status: "skipped", detail: "no hooks/hooks.json" });
+  } else if (hooks.timeout) {
+    rows.push({ name: "survives", ...timedOut() });
+  } else {
+    rows.push(hooks.broke.length ? { name: "survives", status: "fail", detail: cut(hooks.broke.join("; ")) } : { name: "survives", status: "pass", detail: `${hooks.hooks} hook(s) × ${FAULT_INPUTS.length} fault inputs` });
+  }
+  // 2. visible
+  if (Date.now() > deadline) rows.push({ name: "visible", ...timedOut() });
+  else {
+    const missing = fixturesWithoutUnavailable(plugin.dir).map((f) => `test/fixtures/${f} has no ${f.replace(/\.txt$/, ".unavailable.txt")}`);
+    const faults = hooks && !hooks.timeout ? hooks.invisible : [];
+    const all = [...faults, ...missing];
+    rows.push(all.length ? { name: "visible", status: "fail", detail: cut(all.join("; ")) } : { name: "visible", status: "pass", detail: hooks === null ? "no hooks; fixtures have unavailable siblings" : "faults logged with a systemMessage; fixtures have unavailable siblings" });
+  }
+  // 3. says
+  if (Date.now() > deadline) rows.push({ name: "says", ...timedOut() });
+  else {
+    const texts = textsWithoutWhenCant(plugin.dir).map((t) => `${t} has no "When this can't" heading`);
+    const reasons = reasonsWithoutCommandIn(plugin.dir).map((r) => `${r} names no command`);
+    const all = [...texts, ...reasons];
+    rows.push(all.length ? { name: "says", status: "fail", detail: cut(all.join("; ")) } : { name: "says", status: "pass", detail: "every skill and agent text has the section; every deny reason names a command" });
+  }
+  return rows;
+}
+
+/** Replace the rows of (top, head, plugin) with `rows`. */
+export function recordChecks(db, dbPath, top, head, pluginName, rows, now = Date.now()) {
+  const at = nowIso(now);
+  const put = db.prepare("INSERT OR REPLACE INTO cc_gate_checks (cwd, head_sha, plugin, name, status, detail, at) VALUES (?, ?, ?, ?, ?, ?, ?)");
+  transaction(
+    db,
+    () => {
+      for (const r of rows) put.run(top, head, pluginName, r.name, r.status, r.detail ?? null, at);
+    },
+    dbPath,
+  );
+}
+
+/** The rows of (top, head, plugin), in CHECKS order. */
+export function checkRows(db, top, head, pluginName) {
+  const rows = db.prepare("SELECT name, status, detail, at FROM cc_gate_checks WHERE cwd = ? AND head_sha = ? AND plugin = ?").all(top, head, pluginName);
+  return CHECKS.map((name) => rows.find((r) => r.name === name)).filter(Boolean);
+}
+
+const short = (sha) => String(sha).slice(0, 8);
+
+/**
+ * `ledger gate check [--plugins a,b] [--base <ref>]`: run the three checks on every plugin of
+ * the repository `cwd` is in with a change in base..HEAD (or the named ones), record the rows,
+ * print them. Exit 0 when every row passes or is skipped, 1 when one fails, 2 when the
+ * repository holds no plugin.
+ */
+export function gateCheck({ db, dbPath, cwd, env = process.env, plugins: only = null, base: baseRef = null, now = Date.now() }) {
+  let repo;
+  try {
+    repo = gitHead(cwd);
+  } catch (err) {
+    if (err instanceof NotARepository) return { code: 2, text: `gate check: ${err.message}` };
+    throw err;
+  }
+  const { top, head } = repo;
+  const all = repoPlugins(top);
+  if (!all.length) return { code: 2, text: `gate check: ${top} holds no plugin (no plugins/*/hooks/hooks.json, no .claude-plugin/plugin.json)` };
+  let chosen;
+  if (only) {
+    const unknown = only.filter((n) => !all.some((p) => p.name === n));
+    if (unknown.length) return { code: 1, text: `gate check: no plugin named ${unknown.join(", ")}; the repository has ${all.map((p) => p.name).join(", ")}` };
+    chosen = all.filter((p) => only.includes(p.name));
+  } else {
+    let base;
+    if (baseRef) base = git(top, ["rev-parse", "--verify", "-q", `${baseRef}^{commit}`]).trim();
+    else base = defaultBase(db, top, head, currentBranch(top));
+    chosen = changedPlugins(top, base, head, all);
+    if (!chosen.length) return { code: 0, text: `gate check: no plugin changed in ${base ? short(base) : "root"}..${short(head)}; nothing to check` };
+  }
+  const deadline = now + RUN_CAP_MS;
+  const lines = [`gate check ${short(head)}`];
+  let failed = 0;
+  for (const plugin of chosen) {
+    const rows = checkPlugin(plugin, { env, deadline });
+    recordChecks(db, dbPath, top, head, plugin.name, rows, now);
+    for (const r of rows) {
+      if (r.status === "fail") failed++;
+      lines.push(`  ${plugin.name.padEnd(16)} ${r.name.padEnd(9)} ${r.status.padEnd(7)} ${r.detail ?? ""}`);
+    }
+  }
+  lines.push(failed ? `${failed} check(s) failed; fix and rerun \`ledger gate check\`, or \`ledger review waive "<why>"\` to push anyway` : "every check passed");
+  return { code: failed ? 1 : 0, text: lines.join("\n") };
+}
+
+/** `gate check [--plugins a,b] [--base <ref>]` → { action, plugins, base } or { error }. */
+export function parseGateArgs(tokens) {
+  const [action, ...rest] = tokens;
+  if (action !== "check") return { error: "usage: gate check [--plugins a,b] [--base <ref>]" };
+  const out = { action, plugins: null, base: null };
+  for (let i = 0; i < rest.length; i++) {
+    const t = rest[i];
+    if (t === "--plugins" && rest[i + 1]) out.plugins = rest[++i].split(",").map((s) => s.trim()).filter(Boolean);
+    else if (t === "--base" && rest[i + 1]) out.base = rest[++i];
+    else return { error: `gate check: unknown argument ${t}` };
+  }
+  return out;
+}
+
+/**
+ * The gate's answer for the push targets `[{ top, sha }]` (the review gate's): null when no
+ * target is a repository of plugins, `{}` to allow, `{ deny }` with the reason. A waived head
+ * is allowed. Faults are the caller's (it allows with a notice).
+ */
+export function pluginGateDecision(db, targets, { cli = "ledger" } = {}) {
+  let applies = false;
+  for (const t of targets) {
+    if (!t.top) continue;
+    const all = repoPlugins(t.top);
+    if (!all.length) continue;
+    applies = true;
+    if (headState(db, t.top, t.sha).kind === "waived") continue;
+    const base = defaultBase(db, t.top, t.sha, currentBranch(t.top));
+    for (const plugin of changedPlugins(t.top, base, t.sha, all)) {
+      const rows = checkRows(db, t.top, t.sha, plugin.name);
+      const wayOut = `run \`${cli} gate check\`, fix, or \`${cli} review waive "<why>"\``;
+      if (!rows.length) return { deny: `ledger: plugin gate: ${plugin.name} has no check rows for ${short(t.sha)}; ${wayOut}` };
+      const failed = rows.find((r) => r.status === "fail");
+      if (failed) return { deny: `ledger: plugin gate: ${plugin.name} failed ${failed.name}: ${cut(failed.detail ?? "", 600)}; ${wayOut}` };
+    }
+  }
+  return applies ? {} : null;
+}
+

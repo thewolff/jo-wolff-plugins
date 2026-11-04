@@ -1,0 +1,1 @@
+codex exited 1: …ponses, cf-ray: a551ca05ad0e4d81-SEA, request id: req_d8893eafaab84523adda9097a0be1c16 ERROR: unexpected status 401 Unauthorized: Missing bearer or basic authentication in header, url: https://api.openai.com/v1/responses, cf-ray: a551ca05ad0e4d81-SEA, request id: req_d8893eafaab84523adda9097a0be1c16

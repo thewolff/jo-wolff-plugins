@@ -133,7 +133,7 @@ export function handle(input, { env = process.env, now = Date.now() } = {}) {
   const watch = Boolean(sessionId) && existsSync(cfg.config.db);
   const answers = watch && cfg.config.inject.answers !== false;
   if (!lines && !watch) return null;
-  const out = withStore({ env, now, notices: cfg.notices, cwd, cfg }, lines ? "the ledger lines in this prompt were not applied" : "answers recorded in other sessions were not checked", (store) => {
+  const out = withStore({ env, now, notices: cfg.notices, cwd, cfg, hook: "UserPromptSubmit" }, lines ? "the ledger lines in this prompt were not applied" : "answers recorded in other sessions were not checked", (store) => {
     const news = answers ? takeAnswers(store, sessionId, cwd, now, env) : [];
     const hints = watch && !lines ? bareOptionLines(store, input.prompt, cwd, sessionId, now, cfg) : [];
     const applied = lines ? applyLines(store, lines, cwd, sessionId, now) : null;

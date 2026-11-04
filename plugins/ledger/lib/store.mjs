@@ -6,6 +6,7 @@ import { resolve } from "node:path";
 import { describeConfig, loadConfig, userName } from "./config.mjs";
 import { open, StoreError, storeWord } from "./db.mjs";
 import { whoSays } from "./parse.mjs";
+import { logError } from "./failopen.mjs";
 
 /**
  * What every hook does first: bind the folder, load config for it, and decide whether to run at
@@ -85,23 +86,24 @@ export function makeCtx({ store, cwd, via = "cli", by = null, sessionId = null, 
 /**
  * Open the store, run `fn(store)`, close the store. A StoreError at open or inside `fn` (a lock
  * that outlasted busy_timeout, an unwritable directory) becomes a pass: the hook's "allow"
- * output with one systemMessage line saying what the ledger did not do. Nothing else is caught.
- * `cfg` is the config hookConfig already checked, so the file is read once and the enabled
- * decision cannot change between the check and the open.
+ * output with one systemMessage line saying what the ledger did not do, and one errors.log line
+ * under `hook` (the event's name) so the failure is visible after the session too. Nothing else
+ * is caught. `cfg` is the config hookConfig already checked, so the file is read once and the
+ * enabled decision cannot change between the check and the open.
  * @param whatWasSkipped  e.g. "no injection this session", "the ledger gate is not enforced for this call"
  */
-export function withStore({ env, now, notices = [], cwd = null, cfg = null }, whatWasSkipped, fn) {
+export function withStore({ env, now, notices = [], cwd = null, cfg = null, hook = "hook" }, whatWasSkipped, fn) {
   let store;
   try {
     store = openStore({ env, now, cwd, cfg });
   } catch (err) {
-    if (err instanceof StoreError) return storeFailure(err, notices, whatWasSkipped);
+    if (err instanceof StoreError) return storeFailure(err, notices, whatWasSkipped, hook, env);
     throw err;
   }
   try {
     return fn(store);
   } catch (err) {
-    if (err instanceof StoreError) return storeFailure(err, [...notices, ...store.notices], whatWasSkipped);
+    if (err instanceof StoreError) return storeFailure(err, [...notices, ...store.notices], whatWasSkipped, hook, env);
     throw err;
   } finally {
     try {
@@ -112,8 +114,9 @@ export function withStore({ env, now, notices = [], cwd = null, cfg = null }, wh
   }
 }
 
-function storeFailure(err, notices, whatWasSkipped) {
+function storeFailure(err, notices, whatWasSkipped, hook, env) {
   const why = err.kind === "corrupt" && err.cause ? `: ${err.cause.message}` : "";
   const line = `ledger: database ${storeWord(err.kind)} at ${err.path}${why}; ${whatWasSkipped}`;
+  logError(hook, line.replace(/^ledger: /, ""), env);
   return { systemMessage: [...notices, line].join("\n") };
 }

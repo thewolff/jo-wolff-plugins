@@ -22,6 +22,8 @@ import { tmpdir } from "node:os";
 import { delimiter, isAbsolute, join } from "node:path";
 
 export const SEVERITIES = Object.freeze(["blocking", "should", "nit"]);
+export const RECEIPT_HEADING = "Pattern-check receipt (what exists, how it fails)";
+export const RECEIPT_MAX = 32 * 1024;
 
 export const PROMPT = [
   "You are reviewing a code change. The unified diff follows.",
@@ -29,8 +31,17 @@ export const PROMPT = [
   "Do not run tools or change files; read the diff only.",
   "Reply with the findings as a numbered markdown list, one finding per item with the file and line, most serious first.",
   "Start every finding with its severity in square brackets: [blocking] must be fixed before merging, [should] ought to be fixed, [nit] optional polish.",
+  `A section headed "${RECEIPT_HEADING}" may precede the diff: the author's receipt of what exists and how it fails. Check every "how it fails" row against the diff: a failure path the receipt states and the code does not have, or a silent failure path in the code the receipt does not name, is a finding tagged [blocking] fault-tolerance: at the start.`,
   "If you find nothing worth fixing, reply with the single word PASS and nothing else.",
 ].join("\n");
+
+/** The receipt section that precedes the diff the labs read: '' when there is no receipt. */
+export function receiptSection(text) {
+  if (!text) return "";
+  let body = String(text);
+  if (Buffer.byteLength(body) > RECEIPT_MAX) body = `${Buffer.from(body).subarray(0, RECEIPT_MAX).toString()}\n…[receipt cut at 32 KiB]`;
+  return `## ${RECEIPT_HEADING}\n\n${body.trimEnd()}\n\n## Diff\n\n`;
+}
 
 /** The binary for `lab`: env LEDGER_REVIEW_BIN_<LAB> when set, else `fallback`. */
 export function binFor(lab, fallback, env = process.env) {
@@ -173,7 +184,10 @@ export function parseItems(text) {
   if (!items.length) items.push(String(text).trim());
   return items.map((raw) => {
     const tag = /^\s*\**\s*\[(blocking|should|nit)\]\s*\**\s*/i.exec(raw);
-    return tag ? { severity: tag[1].toLowerCase(), text: raw.slice(tag[0].length).trim() } : { severity: "should", text: raw.trim() };
+    if (!tag) return { severity: "should", text: raw.trim() };
+    const rest = raw.slice(tag[0].length).trim();
+    const kind = /^fault-tolerance:\s*/i.exec(rest);
+    return kind ? { severity: tag[1].toLowerCase(), kind: "fault-tolerance", text: rest.slice(kind[0].length).trim() } : { severity: tag[1].toLowerCase(), text: rest };
   });
 }
 

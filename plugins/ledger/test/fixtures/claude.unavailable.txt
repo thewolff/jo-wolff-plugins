@@ -1,0 +1,1 @@
+claude exited 1: Not logged in · Please run /login

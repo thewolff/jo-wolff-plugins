@@ -20,6 +20,7 @@
 //                      the gate allows (which means a note or outcome now exists).
 //   reviewGate         a later gated command in the same session that the review gate allows
 //                      (with or without a notice).
+//   pluginGate         a later push in the same session that the plugin gate allows.
 // The Stop rules are matched on the remedy, not by re-running the text check, so a reply that
 // merely drops the question mark or the decision phrase stays open (and ends `bypassed`).
 //

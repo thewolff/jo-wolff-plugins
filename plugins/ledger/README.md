@@ -115,6 +115,7 @@ node <plugin dir>/scripts/ledger.mjs help                # the verb table, id gr
 | `canary run` / `runs` / `grade` / `prune` / `install` | human | the nightly canary (see [The feedback loop](#the-feedback-loop-canary-report-digest)). Runs on its own line. |
 | `report [--since 7d] [--no-judge]` | either | the graded report of what the hooks did in the window. Runs on its own line. |
 | `digest [--dry-run] [--force]` / `digest install` | human | the weekly report posted as a comment on the digest issue, and its launchd job. Runs on its own line. |
+| `gate check [--plugins a,b] [--base <ref>]` | either | the plugin push gate's three checks on every plugin of this repository with a change since the base, recorded for HEAD (see [The plugin gate](#the-plugin-gate)). Runs on its own line. |
 | `help` | either | the table above, the id grammar, the batch rule. |
 
 "Who" is advisory; the CLI does not refuse by caller. `--by <name>` overrides the recorded
@@ -228,7 +229,7 @@ appends one line to `${XDG_STATE_HOME:-~/.local/state}/ledger/errors.log` and te
 | Condition | CLI | SessionStart | PreToolUse | Stop | SessionEnd | UserPromptSubmit |
 |---|---|---|---|---|---|---|
 | database file missing | creates the directory and the schema, proceeds | same | same | same | same | same |
-| database locked (busy timeout, one retry) | exit 2, `ledger: database busy at <path>; nothing applied` (lines already applied are named) | injects what it can read; session not recorded, one `systemMessage` | passes with `systemMessage` where it would deny (the `ask` or `note` it would demand cannot write); a tool it would pass anyway passes silently | passes without checking, `systemMessage` (the turn stamp is a write) | log only | lines report `not applied (database busy)`, one `systemMessage`, prompt proceeds |
+| database locked (busy timeout, one retry) | exit 2, `ledger: database busy at <path>; nothing applied` (lines already applied are named) | injects what it can read; session not recorded, one `systemMessage` and one `errors.log` line (every hook's store failure logs since 0.3.2) | passes with `systemMessage` where it would deny (the `ask` or `note` it would demand cannot write); a tool it would pass anyway passes silently | passes without checking, `systemMessage` (the turn stamp is a write) | log only | lines report `not applied (database busy)`, one `systemMessage`, prompt proceeds |
 | database read-only (file mode, mounted read-only) | reads work; a write is exit 2, `ledger: database read-only at <path>; nothing applied`; `enable`, `disable` and `help` never touch the database | injects what it can read; session not recorded, one `systemMessage` | same as locked | same as locked | log only | lines report `not applied (database read-only)`, one `systemMessage`, prompt proceeds |
 | database corrupt, default path (no `db` configured) | moves it to `<path>.corrupt-<stamp>`, creates a fresh one, says so, proceeds | same, in `systemMessage` | same | same | rename and log only | same |
 | database corrupt, configured path (`db` from env, project or user file) | exit 2, `ledger: database corrupt at <path>: <error>; nothing applied`; the file is not renamed, recreated or written | no injection, one `systemMessage` naming the path and the error | passes, `systemMessage` | passes without checking, `systemMessage` | log only | nothing applied, one `systemMessage`, prompt proceeds |
@@ -241,6 +242,8 @@ appends one line to `${XDG_STATE_HOME:-~/.local/state}/ledger/errors.log` and te
 | bounce row cannot be written | n/a | n/a | the deny or allow stands; one `errors.log` line | the block or pass stands; one `errors.log` line | the end stamp and the bypass update share one transaction, so neither lands; one `errors.log` line | n/a |
 | review lab unavailable (no binary, non-zero exit, timeout, empty reply) | `ledger review` records the lab `unavailable` with the error, exit 0 | n/a | the lab is left out of the verdict and named in a `systemMessage`; every lab unavailable allows the push with a `systemMessage` | n/a | n/a | n/a |
 | review gate cannot decide (git fails, a query throws) | n/a | the findings line is left out | allows the push with a `systemMessage`; one `errors.log` line | n/a | n/a | n/a |
+| plugin gate cannot decide (git fails, a query throws) | n/a | n/a | allows the push with a `systemMessage`; one `errors.log` line | n/a | n/a | n/a |
+| pattern-check receipt or its directory unreadable | `ledger review` runs on the diff alone; one `errors.log` line | n/a | n/a | n/a | n/a | n/a |
 
 ## Doctor and the bounce ledger
 
@@ -400,6 +403,49 @@ judge command is `review.judgeCommand`, else the i-have-audhd plugin's
 
 SessionStart adds `ledger: cross-lab review found N finding(s) on <sha>; run … review status`
 when HEAD has open blocking or should findings (not when `review.mode` is `off`).
+
+### The pattern-check receipt in the prompt
+
+Since 0.3.2 the labs read the author's [pattern-check](../pattern-check/README.md) receipt
+before the diff, when there is one: the newest `.md` by mtime in `<repo>/.pattern-check/`
+(`receiptDir` in `.pattern-check.json` overrides the directory) goes in under the heading
+`Pattern-check receipt (what exists, how it fails)`, then `## Diff`, then the diff. The
+prompt asks each lab to check every "how it fails" row against the diff and to tag a failure
+path the receipt states and the code lacks, or a silent failure path in the code the receipt
+does not name, `[blocking] fault-tolerance:`; the parsed item keeps `kind: "fault-tolerance"`.
+A receipt over 32 KiB is cut there with a marker. No directory, no `.md` in it: the prompt is
+the diff alone, as before. A receipt or directory that cannot be read: one `errors.log` line,
+the prompt as before, the review runs.
+
+## The plugin gate
+
+A second gate on `git push` and `gh pr create`/`merge`, since 0.3.2, for a repository of
+Claude Code plugins: one holding `plugins/*/hooks/hooks.json` or a root
+`.claude-plugin/plugin.json`. It enforces the repository `AGENTS.md` test bar as three checks,
+the same three for every kind of agent-facing artifact, run by `ledger gate check` and recorded
+as one `cc_gate_checks` row per (HEAD, plugin, check); a rerun replaces the rows. Only plugins
+with a file changed in base..HEAD are checked (base: the review's default base, or `--base`;
+`--plugins a,b` names them instead).
+
+| Check | Passes when | Fails naming |
+|---|---|---|
+| `survives` (can't break the session) | every hook command in `hooks/hooks.json` exits 0 within 5 s, with no `permissionDecision: deny`, `decision: block` or `continue: false`, on each of five fault inputs: empty stdin, malformed JSON, an unknown event, an unwritable state (the plugin's `XDG_STATE_HOME` and `XDG_DATA_HOME` directories read-only, with a writable `errors.log` in the first), and no config (an empty `HOME`, `XDG_CONFIG_HOME`) | the hook and the input (`PreToolUse hook on empty stdin: exit 1`). A plugin with no `hooks/hooks.json` is `skipped` |
+| `visible` (failures visible) | the malformed-JSON and unwritable-state inputs each left a line in `<XDG_STATE_HOME>/<plugin>/errors.log` and a `systemMessage` on stdout (SessionEnd has no reader, so its message is not required; a hook that printed nothing and logged nothing on the unwritable state never reached it and is not failed, the malformed-JSON input being the one every hook must answer); every `test/fixtures/<x>.txt` has an `<x>.unavailable.txt` sibling | the hook and input, or the fixture without its sibling |
+| `says` (text says what to do when it can't) | every `skills/*/SKILL.md` and `agents/*.md` has a heading matching `when this can't` (`it cannot`, a curly apostrophe count too); every deny or block reason literal in `hooks/*.mjs` and `lib/*.mjs` (a string or template right after `permissionDecisionReason:`, or after `reason:` with `deny`, `block` or `rule:` within the five lines up to it; comments are skipped) names a command in backticks | the file, or the file, line and literal |
+
+The whole run is capped at 60 s; a check that does not start before the cap records `fail`
+with `timeout`. Exit 0 when every row passes or is skipped, 1 when one fails, 2 when the
+repository holds no plugin.
+
+The PreToolUse deny, given with the note and review gates' as one numbered list when more than
+one applies, is `ledger: plugin gate: <plugin> has no check rows for <sha>; run \`… gate
+check\`, fix, or \`… review waive "<why>"\`` or `… failed <check>: <detail>; run …`. A
+`review waive` row for HEAD lifts this gate as it lifts the review gate; `review.mode`
+`advise` turns the deny into a notice and `off` turns the gate off. A repository that holds no
+plugin never sees it. The push's commits are resolved once for both gates, so a remote that hangs
+is waited on once. Any fault (git fails, a query throws) allows the push with a `systemMessage`
+and one `errors.log` line. Each deny writes a `pluginGate` bounce row; a later push the gate
+allows marks the session's open ones satisfied.
 
 ## The feedback loop: canary, report, digest
 

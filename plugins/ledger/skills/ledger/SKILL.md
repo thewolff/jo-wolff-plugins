@@ -114,3 +114,18 @@ human's too (`/ledger:enable`, `/ledger:disable`).
   options: …`) wrote nothing. A `not a command` line was prose and wrote nothing.
 - Everything the ledger prints is the human's record; never paraphrase an id, and never invent
   one.
+
+## When this can't run
+
+- A `refused …` line wrote nothing; the line says why (no such question, not an option, a verb
+  that needs its own line). Fix the line and run it again; do not guess at an id.
+- `ledger: database busy at <path>; nothing applied` or `… read-only …`: nothing was recorded.
+  Say so to the human in one line and ask nothing else through the ledger until
+  `node "${CLAUDE_PLUGIN_ROOT}/scripts/ledger.mjs" doctor` reports the database `ok`; the Stop
+  rules stand down on their own while the database is unavailable.
+- A hook's `systemMessage` that starts `ledger … failed open` or `ledger: database …`: the
+  hook let the call through without its check. Tell the human once; the line is also in
+  `~/.local/state/ledger/errors.log`, which `doctor` counts.
+- The CLI is missing (`node: … scripts/ledger.mjs: no such file`): the plugin is not installed
+  where `CLAUDE_PLUGIN_ROOT` points. Tell the human; do not ask questions through
+  `AskUserQuestion` instead, the gate is off and the question would go unrecorded.

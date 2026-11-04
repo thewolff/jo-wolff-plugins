@@ -54,6 +54,7 @@ export const VERBS = Object.freeze([
   { verb: "canary", who: "human", usage: 'canary run [--repo <path>] [--plugins a,b] [--timeout <s>] · canary runs [N] · canary grade <id> biting|silent|fine ["<note>"] · canary prune [--days N] · canary install', help: "the nightly canary: run every plugin's e2e/live-run.sh headless and record one cc_canary_runs row each (pass, fail, unavailable); `runs` lists them; `grade` records a reading of one; `prune` removes transcripts older than 30 days; `install` writes the launchd plist and prints the bootstrap line" },
   { verb: "report", who: "either", usage: "report [--since 7d]", help: "the feedback report: per rule, bounces in the window with a mechanical grade (biting, silent, fine) and the judge's when it answers; canary runs; waived reviews; judge answers" },
   { verb: "digest", who: "human", usage: "digest [--dry-run] [--force] · digest install", help: "post the weekly report as a comment on the digest issue (refuses a second post within 24h unless --force; --dry-run prints it and records nothing); `install` writes the Monday 09:00 launchd plist" },
+  { verb: "gate", who: "either", usage: "gate check [--plugins a,b] [--base <ref>]", help: "the plugin push gate's three checks (can't break the session; failures visible; text says what to do when it can't) on every plugin of this repository with a change since the base, recorded for HEAD; a failed or missing check denies the push until rerun or `review waive`" },
   { verb: "help", who: "either", usage: "help", help: "this table, the id grammar and the batch rule" },
 ]);
 
@@ -296,7 +297,7 @@ export function parseLine(text, lookup = NULL_LOOKUP, tokens = null) {
     if (spec !== null && /^\d+[dh]$/.test(spec)) return command(shown, { verb: "bounces", since: spec });
     return prose(shown, null, "usage: bounces [--since <N>d|<N>h]");
   }
-  if (t0 === "canary" || t0 === "report" || t0 === "digest") return command(shown, { verb: t0, args: rest });
+  if (t0 === "canary" || t0 === "report" || t0 === "digest" || t0 === "gate") return command(shown, { verb: t0, args: rest });
   if (t0 === "review") {
     const usage = 'usage: review [--base <ref>] [--labs a,b] [--force-round] | review status | review addressed "<why>" | review waive "<why>" | review judge <key>';
     if (rest[0] === "status") return rest.length === 1 ? command(shown, { verb: "review", action: "status" }) : prose(shown, null, usage);

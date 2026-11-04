@@ -57,7 +57,7 @@ export function handle(input, { env = process.env, now = Date.now() } = {}) {
   const ready = hookConfig(env, input, "stop");
   if (!ready) return null;
   const { cfg, cwd } = ready;
-  return withStore({ env, now, notices: cfg.notices, cwd, cfg }, "the ledger stop check did not run", (store) => {
+  return withStore({ env, now, notices: cfg.notices, cwd, cfg, hook: "Stop" }, "the ledger stop check did not run", (store) => {
     const db = store.db;
     const sessionId = typeof input.session_id === "string" && input.session_id ? input.session_id : null;
     const promptId = typeof input.prompt_id === "string" && input.prompt_id ? input.prompt_id : null;

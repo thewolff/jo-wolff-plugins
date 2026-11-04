@@ -28,11 +28,18 @@
 // Any fault while deciding (git missing or past its deadline, a query that throws) allows the
 // call with one systemMessage line; a cwd outside any repository is not gated.
 //
-// A push is checked by the note gate and the review gate together: when both stop it, one deny
-// lists both as numbered items and writes both bounce rows, so the agent fixes everything after
-// one deny instead of meeting the second gate only after clearing the first.
+// Plugin gate (lib/plugin-gate.mjs; same mode switch): for a published commit in a repository of
+// plugins, every plugin changed since the base needs cc_gate_checks rows for that commit with no
+// `fail`; none, or a failure, is a deny naming `gate check` and `review waive` as the ways out;
+// a waived commit passes. The commits are resolved once for both gates. Only a deny writes a
+// `pluginGate` bounce row; an allowed push marks the session's open ones satisfied.
 //
-// Fail open: switch off → nothing; store busy/unavailable → allow with one systemMessage line;
+// A push is checked by the note gate, the review gate and the plugin gate together: when more
+// than one stops it, one deny lists each as a numbered item and writes each bounce row, so the
+// agent fixes everything after one deny instead of meeting the next gate after clearing the first.
+//
+// Fail open: switch off → nothing; store busy/unavailable → allow with one systemMessage line
+// and one errors.log line;
 // anything thrown → runHook's systemMessage. Never exit 2.
 
 import { runHook, noticeField, invokedDirectly, logError } from "../lib/failopen.mjs";
@@ -41,21 +48,58 @@ import { invocation } from "../lib/inject.mjs";
 import { withStore, hookConfig } from "../lib/store.mjs";
 import { assertWritable } from "../lib/db.mjs";
 import { recordBounce, satisfyBounces } from "../lib/bounces.mjs";
-import { reviewDecision } from "../lib/review.mjs";
+import { reviewDecision, operationTargets, UnknownTarget } from "../lib/review.mjs";
+import { pluginGateDecision } from "../lib/plugin-gate.mjs";
 
 export const REVIEW_PR_SUBCOMMANDS = Object.freeze(["create", "merge"]);
 
-/** The review gate's answer for this input: null (not gated) | {} (silent allow) | { deny } | { notice }. */
-function reviewGate(input, { store, cwd, env }) {
+/**
+ * The push operations of this input and the commits they publish, resolved once for both the
+ * review gate and the plugin gate (a remote that hangs is waited on once): null when the input
+ * is no push or the review mode is off; { ops, targets } | { ops, unknown: <message> } (the
+ * command's refs cannot be named) | { ops, fault: <message> } (git failed; logged).
+ */
+function pushTargets(input, { store, cwd, env }) {
   const mode = store.config.review?.mode ?? "gate";
   if (mode === "off" || input.tool_name !== "Bash") return null;
   const ops = pushOperations(input.tool_input?.command, REVIEW_PR_SUBCOMMANDS);
   if (!ops.length) return null;
   try {
-    return reviewDecision(store.db, ops, cwd, mode, { cli: invocation(), env });
+    return { mode, ops, targets: ops.flatMap((op) => operationTargets(op, cwd, { env })) };
+  } catch (err) {
+    if (err instanceof UnknownTarget) return { mode, ops, unknown: err.message };
+    logError("PreToolUse", `review gate: ${err.message}`, env);
+    return { mode, ops, fault: err.message };
+  }
+}
+
+/** The review gate's answer for this input: null (not gated) | {} (silent allow) | { deny } | { notice }. */
+function reviewGate(push, { store, cwd, env }) {
+  if (!push) return null;
+  try {
+    if (push.fault) return { notice: `ledger: the review gate could not decide (${push.fault}); allowed` };
+    if (push.unknown) return { notice: `ledger: the review gate could not tell which commit this command publishes (${push.unknown}); allowed without a review check` };
+    return reviewDecision(store.db, push.ops, cwd, push.mode, { cli: invocation(), env, targets: push.targets });
   } catch (err) {
     logError("PreToolUse", `review gate: ${err.message}`, env);
     return { notice: `ledger: the review gate could not decide (${err.message}); allowed` };
+  }
+}
+
+/**
+ * The plugin gate's answer for this input: null (no push, mode off, or no repository of plugins
+ * among the targets) | {} (allow) | { deny } | { notice }. In `advise` mode a deny becomes a
+ * notice; a fault is allowed with a notice.
+ */
+function pluginGate(push, { store, env }) {
+  if (!push || push.unknown || push.fault) return null;
+  try {
+    const decision = pluginGateDecision(store.db, push.targets, { cli: invocation() });
+    if (decision?.deny && push.mode !== "gate") return { notice: decision.deny.replace(/^ledger: plugin gate: /, `ledger: plugin gate (${push.mode}): `) };
+    return decision;
+  } catch (err) {
+    logError("PreToolUse", `plugin gate: ${err.message}`, env);
+    return { notice: `ledger: the plugin gate could not decide (${err.message}); allowed` };
   }
 }
 
@@ -63,7 +107,7 @@ export function handle(input, { env = process.env, now = Date.now() } = {}) {
   const ready = hookConfig(env, input, "preToolUse");
   if (!ready) return null;
   const { cfg, cwd } = ready;
-  return withStore({ env, now, notices: cfg.notices, cwd, cfg }, "the ledger gate is not enforced for this call", (store) => {
+  return withStore({ env, now, notices: cfg.notices, cwd, cfg, hook: "PreToolUse" }, "the ledger gate is not enforced for this call", (store) => {
     const sessionId = typeof input.session_id === "string" && input.session_id ? input.session_id : null;
     const promptId = typeof input.prompt_id === "string" && input.prompt_id ? input.prompt_id : null;
     const verdict = evaluate(input, { db: store.db, config: store.config, cwd, cli: invocation(), sessionId });
@@ -71,9 +115,11 @@ export function handle(input, { env = process.env, now = Date.now() } = {}) {
       const rule = gatedRule(input, store.config);
       if (rule) satisfyBounces(store, { sessionId, rules: [rule], now, env, hook: "PreToolUse" });
     }
-    // A push is checked by both gates at once, so one deny names everything still missing.
-    const review = reviewGate(input, { store, cwd, env });
-    if (verdict || review?.deny) {
+    // A push is checked by every gate at once, so one deny names everything still missing.
+    const push = pushTargets(input, { store, cwd, env });
+    const review = reviewGate(push, { store, cwd, env });
+    const plugin = pluginGate(push, { store, env });
+    if (verdict || review?.deny || plugin?.deny) {
       // A deny tells the agent to run `ask`, `note`, `review` or `waive`, which write. When the
       // store cannot take a write (read-only file, a lock that outlasts busy_timeout) that advice
       // is a dead end, so the gate passes instead; withStore turns the StoreError into the allow
@@ -82,22 +128,26 @@ export function handle(input, { env = process.env, now = Date.now() } = {}) {
       const text = input.tool_name === "Bash" ? input.tool_input?.command : input.tool_name === "AskUserQuestion" ? JSON.stringify(input.tool_input ?? null) : null;
       if (verdict) recordBounce(store, { sessionId, rule: verdict.rule, promptId, tool: input.tool_name ?? null, text, transcriptPath: input.transcript_path, now, env, hook: "PreToolUse" });
       if (review?.deny) recordBounce(store, { sessionId, rule: "reviewGate", promptId, tool: "Bash", text, transcriptPath: input.transcript_path, now, env, hook: "PreToolUse" });
+      if (plugin?.deny) recordBounce(store, { sessionId, rule: "pluginGate", promptId, tool: "Bash", text, transcriptPath: input.transcript_path, now, env, hook: "PreToolUse" });
       return {
         ...noticeField(store.notices),
-        hookSpecificOutput: { hookEventName: "PreToolUse", permissionDecision: "deny", permissionDecisionReason: denyReason(verdict?.reason, review?.deny) },
+        hookSpecificOutput: { hookEventName: "PreToolUse", permissionDecision: "deny", permissionDecisionReason: denyReason(verdict?.reason, review?.deny, plugin?.deny) },
       };
     }
     if (review) satisfyBounces(store, { sessionId, rules: ["reviewGate"], now, env, hook: "PreToolUse" });
-    const notices = review?.notice ? [...store.notices, review.notice] : store.notices;
+    if (plugin) satisfyBounces(store, { sessionId, rules: ["pluginGate"], now, env, hook: "PreToolUse" });
+    const notices = [...store.notices, ...[review?.notice, plugin?.notice].filter(Boolean)];
     return notices.length ? noticeField(notices) : null;
   });
 }
 
-/** One deny reason: either gate's own, or both as a numbered list under one `ledger:` line. */
-export function denyReason(noteReason, reviewReason) {
-  if (!noteReason || !reviewReason) return noteReason ?? reviewReason;
+/** One deny reason: a single gate's own, or each gate's as a numbered list under one `ledger:` line. */
+export function denyReason(...reasons) {
+  const given = reasons.filter(Boolean);
+  if (given.length < 2) return given[0];
   const body = (r) => r.replace(/^ledger: /, "");
-  return `ledger: this push needs two things first, and both are missing:\n1. ${body(noteReason)}\n2. ${body(reviewReason)}`;
+  const count = given.length === 2 ? "two things first, and both are" : `${given.length} things first, and all are`;
+  return `ledger: this push needs ${count} missing:\n${given.map((r, i) => `${i + 1}. ${body(r)}`).join("\n")}`;
 }
 
 if (invokedDirectly(import.meta.url)) {

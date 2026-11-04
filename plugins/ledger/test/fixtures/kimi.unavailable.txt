@@ -1,1 +1,1 @@
-kimi exited 1: error: failed to run prompt: provider.api_error: 429 Your account org-<redacted> <ak-<redacted>> is suspended due to insufficient balance, please recharge your account or check your plan and billing details See log: ~/.kimi-code/logs/kimi-code.log
+kimi exited 1: error: failed to run prompt: No model configured. Run `kimi` and use /login to sign in, then retry; or set default_model in config.toml. See log: <scratch>/home/.kimi-code/logs/kimi-code.log
