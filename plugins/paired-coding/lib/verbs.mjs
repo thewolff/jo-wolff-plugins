@@ -74,6 +74,21 @@ export function verdict(toolName, ctx) {
 }
 
 /**
+ * Whether a session is pairing, for a fault path in either adapter. False only for a confirmed
+ * never-paired session (no activation marker) or a confirmed ended one (inactive state).
+ * Anything that cannot be read, the marker included, is uncertain and reads as pairing, so the
+ * gate stays shut. Never throws.
+ */
+export function pairingOrUncertain(sessionDir) {
+  try {
+    if (!activated(sessionDir)) return false;
+    return loadState(sessionDir).phase !== "inactive";
+  } catch {
+    return true;
+  }
+}
+
+/**
  * Record one human turn. Only `source: "interactive"` is trusted (the core decides), and a
  * trusted turn that is exactly the stop phrase ends pairing (`stopped`) and writes the
  * pair-accepted receipt (`receipt`, its path). Inert unless activated.

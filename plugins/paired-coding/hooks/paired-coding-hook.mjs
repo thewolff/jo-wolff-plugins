@@ -32,12 +32,12 @@
 // base and prints one warning line. PreToolUse fails closed while pairing and for pair_* tools,
 // and never blocks a session that is not pairing.
 
-import { appendFileSync, closeSync, fstatSync, mkdirSync, openSync, readFileSync, readSync, realpathSync, rmSync } from "node:fs";
+import { appendFileSync, closeSync, fstatSync, openSync, readFileSync, readSync, realpathSync, rmSync } from "node:fs";
 import { dirname, join, relative } from "node:path";
 import { fileURLToPath } from "node:url";
 import { CARRIED_PHRASE, PAIR_TOOLS, isStopPhrase } from "../core/gate.mjs";
-import { activated, findRoot, loadState, loadStateReport, stateBase, withLock } from "../lib/host-io.mjs";
-import { RECEIPT_FILE, carryInto, endSession, pairingCarry, recordTrustedInput, sessionDirFor, takeCarryMarker, verdict, writeCarryMarker } from "../lib/verbs.mjs";
+import { activated, findRoot, loadState, loadStateReport, logFault as logFaultLine, reasonOf, stateBase, withLock } from "../lib/host-io.mjs";
+import { RECEIPT_FILE, carryInto, endSession, pairingCarry, pairingOrUncertain, recordTrustedInput, sessionDirFor, takeCarryMarker, verdict, writeCarryMarker } from "../lib/verbs.mjs";
 import { bareToolName, hostAllowFor, writeBinding } from "../server/binding.mjs";
 
 const sleepSync = (ms) => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
@@ -361,8 +361,8 @@ export function handle(event, input, opts = {}) {
   return null;
 }
 
-/** One line, no newlines: the reason a fault is logged and shown under. */
-const reasonOf = (err) => (err instanceof Error ? err.message : String(err)).replace(/\s+/g, " ").trim() || "unknown error";
+/** The hook's own file, for errors.log lines that have no deeper frame. */
+const HOOK_FILE = "hooks/paired-coding-hook.mjs";
 
 /** The plugin file and line a fault was thrown from, read from its stack, or the hook file. */
 function whereOf(err) {
@@ -372,43 +372,21 @@ function whereOf(err) {
     const m = /\((?:file:\/\/)?(\/[^)]+?):(\d+):\d+\)$/.exec(line) ?? /at (?:file:\/\/)?(\/\S+?):(\d+):\d+$/.exec(line);
     if (m && m[1].startsWith(plugin)) return `${relative(plugin, m[1])}:${m[2]}`;
   }
-  return "hooks/paired-coding-hook.mjs";
+  return HOOK_FILE;
 }
 
-export const ERRORS_LOG = "errors.log";
+/** The shared logger, with the hook's file as the default place. */
+const logFault = (env, event, input, reason, where = HOOK_FILE) => logFaultLine(env, event, input, reason, where);
 
-/**
- * Append one line to `$PAIRED_CODING_STATE_DIR/errors.log` (the state base) naming the event, the
- * session, the file and the reason. Returns the sentence that says where it went, or why it could
- * not be written; logging never throws.
- */
-export function logFault(env, event, input, reason, where = "hooks/paired-coding-hook.mjs") {
-  let path = "";
-  try {
-    const base = stateBase(env);
-    path = join(base, ERRORS_LOG);
-    const sid = typeof input?.session_id === "string" ? input.session_id : "-";
-    mkdirSync(base, { recursive: true, mode: 0o700 });
-    appendFileSync(path, `${new Date().toISOString()} ${where} ${event || "(no event)"} session=${sid}: ${reason}\n`, { mode: 0o600 });
-    return `Logged to ${path}.`;
-  } catch (err) {
-    return `It could not be logged to ${path || "errors.log"} (${reasonOf(err)}).`;
-  }
-}
-
-/**
- * Whether a session is pairing, for a fault path. False only for a confirmed never-paired
- * session (no activation marker) or a confirmed ended one (the gate's own inactive state with an
- * ended marker). Anything the gate cannot read is uncertain and reads as pairing, so it stays shut.
- */
+/** Whether the session named by `input` is pairing, for a fault path; uncertain reads as pairing. */
 function pairingOrUnknown(input, env) {
+  let dir;
   try {
-    const dir = sessionDirFor(input?.session_id, env);
-    if (!dir || !activated(dir)) return false;
-    return loadState(dir).phase !== "inactive";
+    dir = sessionDirFor(input?.session_id, env);
   } catch {
     return true;
   }
+  return dir ? pairingOrUncertain(dir) : false;
 }
 
 /** One errors.log line and the warning for a session state the gate read as degraded (closed). */
