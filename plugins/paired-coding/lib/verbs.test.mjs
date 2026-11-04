@@ -7,7 +7,7 @@ import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { chmodSync, existsSync, linkSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, statSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import {
   CARRY_MAX_AGE_MS, PLUGIN_ROOT, RECEIPT_FILE, ROADMAP_WALK_LIMIT, VERSION, carryInto, clearInPlace, endSession, executeVerb, recordTrustedInput, takeCarryMarker, verdict, writeCarryMarker,
 } from "./verbs.mjs";
@@ -318,6 +318,31 @@ test("a link made under .pattern-check stops the session like one made in the bo
   assert.ok(r.text.includes(".pattern-check/ln"), r.text);
 });
 
+test("pair_run refuses to start while the receipt directory holds a file hard-linked elsewhere, on every backend, before any sandbox is built", { skip: !hasSandbox }, async () => {
+  const f = fixture();
+  mkdirSync(join(f.root, ".pattern-check"));
+  await openChangeSet(f, ["src/a.txt"]);
+  // A receipt that is another name for a product file: a grant on the directory would write the product.
+  linkSync(join(f.root, "src", "b.txt"), join(f.root, ".pattern-check", "b.md"));
+  const r = await executeVerb("pair_run", { command: "echo x > .pattern-check/b.md" }, f.ctx);
+  assert.equal(r.ok, false);
+  assert.match(r.text, /pair_run refused: .*\.pattern-check\/b\.md inside the carve-out .*\.pattern-check has 2 hard links/);
+  assert.equal(readFileSync(join(f.root, "src", "b.txt"), "utf8"), "bravo\n");
+  assert.equal(r.result.sandbox, undefined, "no sandbox was built");
+});
+
+test("pair_run runs again once the hard link in the receipt directory is gone", { skip: !hasSandbox }, async () => {
+  const f = fixture();
+  mkdirSync(join(f.root, ".pattern-check"));
+  await openChangeSet(f, ["src/a.txt"]);
+  linkSync(join(f.root, "src", "b.txt"), join(f.root, ".pattern-check", "b.md"));
+  assert.equal((await executeVerb("pair_run", { command: "true" }, f.ctx)).ok, false);
+  rmSync(join(f.root, ".pattern-check", "b.md"));
+  const ok = await executeVerb("pair_run", { command: "echo r > .pattern-check/r.md" }, f.ctx);
+  assert.equal(ok.ok, true, ok.text);
+  assert.equal(readFileSync(join(f.root, ".pattern-check", "r.md"), "utf8"), "r\n");
+});
+
 test("the host shell may run a sibling plugin's installed CLI with a demanded subcommand while pairing, and nothing else, and not under a node preload variable", { skip: !hasSandbox }, async () => {
   const f = fixture();
   await executeVerb("pair_start", {}, f.ctx);
@@ -328,9 +353,19 @@ test("the host shell may run a sibling plugin's installed CLI with a demanded su
     mkdirSync(join(p, ".."), { recursive: true });
     writeFileSync(p, "// cli\n");
   }
-  const v = (toolName, command, env = { HOME: home }) => verdict(toolName, { sessionDir: f.dir, command, home, env });
+  // The shell's environment names the ledger database and state directory pair_start granted
+  // (read from the process's own home); the verdict checks each call would write there.
+  const carve = JSON.parse(readFileSync(join(f.dir, "state.json"), "utf8")).carveOuts;
+  const granted = { HOME: home, LEDGER_DB: carve.files.find((p) => p.endsWith("ledger.db")), XDG_STATE_HOME: dirname(carve.dirs.find((p) => p.endsWith("/pattern-check") && !p.startsWith(f.root))) };
+  const v = (toolName, command, env = granted, cwd = f.root) => verdict(toolName, { sessionDir: f.dir, command, cwd, home, env });
   assert.equal(v("Bash", `node ${script} ask x`).allow, true);
   assert.equal(v("bash", `node ${check} record`).allow, true);
+  assert.equal(v("Bash", `node ${script} ask x`, granted, join(f.root, "src")).allow, true, "from a directory inside the worktree too");
+  const elsewhere = v("Bash", `node ${script} ask x`, { ...granted, LEDGER_DB: join(f.top, "other.db") });
+  assert.equal(elsewhere.allow, false);
+  assert.match(elsewhere.reason, /would open the database .*other\.db \(LEDGER_DB\), which is not sibling state pair_start granted/);
+  assert.match(v("Bash", `node ${script} ask x --cwd ${f.root}`).reason, /--cwd moves where the CLI reads its config/);
+  assert.match(v("Bash", `node ${script} ask x`, granted, null).reason, /working directory is unknown to the gate/);
   const disable = v("Bash", `node ${script} disable`);
   assert.equal(disable.allow, false);
   assert.match(disable.reason, /ledger\.mjs disable is refused/);

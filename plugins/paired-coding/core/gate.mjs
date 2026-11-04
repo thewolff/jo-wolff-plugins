@@ -1345,9 +1345,11 @@ const PLAIN_ABS_PATH = /^\/[A-Za-z0-9._/-]+$/;
  * @param {unknown} command
  * @param {unknown} home  the user's home directory, absolute
  * @param {(abs: string) => string} realpath  strict: throws when `abs` does not exist
- * @returns {{ allow: true } | { allow: false, cli: string, verb: string | null } | null}
+ * @returns {{ allow: true, cli: string, verb: string, args: string[] } | { allow: false, cli: string, verb: string | null, flag?: string } | null}
  *   null: not a sibling CLI call at all. `allow: false`: the sibling CLI with a subcommand its
- *   hooks never demand (`verb`), or with none.
+ *   hooks never demand (`verb`), with none, or with a flag that moves its paths (`flag`,
+ *   SIBLING_PATH_FLAGS). `allow: true`: the CLI, the subcommand and the words after it, for
+ *   toolVerdict to check where that call would write.
  */
 export function siblingCliCommand(command, home, realpath) {
   if (typeof command !== "string" || typeof home !== "string" || !isAbs(home) || home === "/" || typeof realpath !== "function") return null;
@@ -1370,17 +1372,130 @@ export function siblingCliCommand(command, home, realpath) {
     && within(realRoot, real) && real !== realRoot && real.slice(real.lastIndexOf("/") + 1) === name;
   if (!installed) return null;
   const verb = words.length > 2 ? words[2] : null;
-  return verb !== null && SIBLING_CLI_VERBS[name].includes(verb) ? { allow: true } : { allow: false, cli: name, verb };
+  if (verb === null || !SIBLING_CLI_VERBS[name].includes(verb)) return { allow: false, cli: name, verb };
+  const args = words.slice(3);
+  const flag = args.find((a) => SIBLING_PATH_FLAGS.some((f) => a === f || a.startsWith(`${f}=`)));
+  if (flag !== undefined) return { allow: false, cli: name, verb, flag };
+  return { allow: true, cli: name, verb, args };
 }
 
 /**
- * Environment variables through which node runs code before the script it was given: a
- * `--require`/`--import` in NODE_OPTIONS, a module search path in NODE_PATH, a REPL preload.
- * A sibling CLI run with one of them set would run that code with the host shell's rights,
- * so the allowance refuses while any is set. The gate cannot strip them: a pre-call verdict
- * is yes or no, and the host runs the shell with its own environment.
+ * Flags that move where a sibling CLI reads its configuration from or writes to. Both CLIs
+ * honour `--cwd` anywhere in their arguments (the ledger finds the nearest `.ledger.json`
+ * from it, pattern-check the nearest `.pattern-check.json` and the repository root), and a
+ * config file found that way can name any path, so no hook demands the flag and the gate
+ * refuses it; `--config` and `--db` are refused with it so a later version of either CLI
+ * cannot grow a path flag the gate lets through.
  */
-export const NODE_PRELOAD_VARS = Object.freeze(["NODE_OPTIONS", "NODE_PATH", "NODE_REPL_EXTERNAL_MODULE"]);
+const SIBLING_PATH_FLAGS = Object.freeze(["--cwd", "--config", "--db"]);
+
+/** A pattern-check session key: what its CLI accepts for `--session` (state.mjs isSafeKey). */
+const SAFE_SESSION_KEY = /^[A-Za-z0-9._-]{1,128}$/;
+
+/**
+ * The host's view of the files a sibling CLI reads to find where it writes.
+ * @typedef {object} SiblingFs
+ * @property {(abs: string) => string} readFile  the file's text; throws when it cannot be read
+ * @property {(abs: string) => boolean} isFile   a regular file is there (symlinks followed)
+ * @property {(abs: string) => boolean} exists   something is there (symlinks followed)
+ */
+
+function xdgDir(env, home, variable, fallback) {
+  const v = env[variable];
+  return typeof v === "string" && isAbs(v) ? v : `${home}/${fallback}`;
+}
+
+function expandHome(p, home) {
+  if (p === "~") return home;
+  if (p.startsWith("~/")) return `${home}/${p.slice(2)}`;
+  return p;
+}
+
+/** The nearest `<dir>/<name>` at or above `dir` that `found` accepts, or null. */
+function nearestUp(dir, name, found) {
+  for (let d = dir; ; d = d.slice(0, d.lastIndexOf("/")) || "/") {
+    const candidate = d === "/" ? `/${name}` : `${d}/${name}`;
+    if (found(candidate)) return candidate;
+    if (d === "/") return null;
+  }
+}
+
+/** The JSON object in the file at `path`, or null when it is anything but one. */
+function jsonObject(path, readFile) {
+  try {
+    const value = JSON.parse(readFile(path));
+    return value !== null && typeof value === "object" && !Array.isArray(value) ? value : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Where the ledger CLI would open its database, resolved as the ledger itself resolves it
+ * (plugins/ledger/lib/config.mjs loadConfig, lib/store.mjs resolveCwd): from `LEDGER_CWD` or
+ * the shell's working directory, `LEDGER_DB` wins, then the `db` of the nearest `.ledger.json`
+ * at or above that directory, then the `db` of the user file (`LEDGER_CONFIG` or
+ * `${XDG_CONFIG_HOME:-~/.config}/ledger/config.json`), then
+ * `${XDG_DATA_HOME:-~/.local/share}/ledger/ledger.db`; `~` expanded. The directory is
+ * resolved through `realpath` as the ledger does, kept as spelled when that fails.
+ * @param {{ cwd: string, env: Record<string, string | undefined>, home: string, fs: SiblingFs, realpath: (abs: string) => string }} host
+ * @returns {{ db: string, source: string, projectPath: string | null }}
+ */
+export function ledgerDestination({ cwd, env, home, fs, realpath }) {
+  let at = typeof env.LEDGER_CWD === "string" && env.LEDGER_CWD !== "" ? env.LEDGER_CWD : cwd;
+  if (!isAbs(at)) at = `${cwd}/${at}`;
+  try { at = realpath(at); } catch { /* the ledger keeps the path as spelled */ }
+  const projectPath = nearestUp(at, ".ledger.json", fs.isFile);
+  const userPath = typeof env.LEDGER_CONFIG === "string" && env.LEDGER_CONFIG !== "" ? env.LEDGER_CONFIG : `${xdgDir(env, home, "XDG_CONFIG_HOME", ".config")}/ledger/config.json`;
+  const project = projectPath ? jsonObject(projectPath, fs.readFile) : null;
+  const user = jsonObject(userPath, fs.readFile);
+  let db, source;
+  if (typeof env.LEDGER_DB === "string" && env.LEDGER_DB !== "") [db, source] = [env.LEDGER_DB, "LEDGER_DB"];
+  else if (typeof project?.db === "string" && project.db !== "") [db, source] = [project.db, projectPath];
+  else if (typeof user?.db === "string" && user.db !== "") [db, source] = [user.db, userPath];
+  else [db, source] = [`${xdgDir(env, home, "XDG_DATA_HOME", ".local/share")}/ledger/ledger.db`, "the ledger's default"];
+  return { db: expandHome(db, home), source, projectPath };
+}
+
+/**
+ * Where the pattern-check CLI would write, resolved as it resolves it
+ * (plugins/pattern-check/scripts/lib/config.mjs resolveConfig, lib/context.mjs, lib/state.mjs):
+ * the receipt goes under `<repository root>/<receiptDir>`, the root being the nearest
+ * directory at or above the shell's working directory with a `.git` entry (else that
+ * directory), and `receiptDir` the first valid one of the nearest `.pattern-check.json` at or
+ * above the working directory, the user file `${XDG_CONFIG_HOME:-~/.config}/pattern-check/
+ * config.json`, and `.pattern-check` (valid: a non-empty relative path with no `..` segment,
+ * trimmed). Its session file and receipt copy go under `${XDG_STATE_HOME:-~/.local/state}/
+ * pattern-check`.
+ * @param {{ cwd: string, env: Record<string, string | undefined>, home: string, fs: SiblingFs }} host
+ * @returns {{ receiptDir: string, receiptDirRaw: string, source: string, repoPath: string | null, stateDir: string }}
+ */
+export function patternCheckDestination({ cwd, env, home, fs }) {
+  const repoPath = nearestUp(cwd, ".pattern-check.json", fs.exists);
+  const userPath = `${xdgDir(env, home, "XDG_CONFIG_HOME", ".config")}/pattern-check/config.json`;
+  const valid = (r) => typeof r === "string" && r.trim() !== "" && !isAbs(r.trim()) && !r.split(/[\\/]/).includes("..");
+  let receiptDirRaw = ".pattern-check";
+  let source = "pattern-check's default";
+  for (const [path, label] of [[repoPath, repoPath], [userPath, userPath]]) {
+    const value = path ? jsonObject(path, fs.readFile)?.receiptDir : undefined;
+    if (valid(value)) { [receiptDirRaw, source] = [value.trim(), label]; break; }
+    // an invalid repo value is a fault for the CLI and falls through to the user file, as here
+  }
+  const root = nearestUp(cwd, ".git", fs.exists)?.slice(0, -"/.git".length) || cwd;
+  const segments = receiptDirRaw.split(/[\\/]/).filter((s) => s !== "" && s !== ".");
+  const receiptDir = segments.length ? `${root === "/" ? "" : root}/${segments.join("/")}` : root;
+  return { receiptDir, receiptDirRaw, source, repoPath, stateDir: `${xdgDir(env, home, "XDG_STATE_HOME", ".local/state")}/pattern-check` };
+}
+
+/**
+ * Environment variables through which node runs code before the script it was given (a
+ * `--require`/`--import` in NODE_OPTIONS, a module search path in NODE_PATH, a REPL preload)
+ * or writes files of its own wherever they point (a coverage directory, a redirected
+ * warnings file, a compile cache). A sibling CLI run with one of them set would do that with
+ * the host shell's rights, so the allowance refuses while any is set. The gate cannot strip
+ * them: a pre-call verdict is yes or no, and the host runs the shell with its own environment.
+ */
+export const NODE_PRELOAD_VARS = Object.freeze(["NODE_OPTIONS", "NODE_PATH", "NODE_REPL_EXTERNAL_MODULE", "NODE_V8_COVERAGE", "NODE_REDIRECT_WARNINGS", "NODE_COMPILE_CACHE"]);
 
 /**
  * The pre-call verdict for any host tool call. Inactive: allow everything. While pairing, an
@@ -1392,10 +1507,17 @@ export const NODE_PRELOAD_VARS = Object.freeze(["NODE_OPTIONS", "NODE_PATH", "NO
  * `opts.home` and `opts.realpath`), because the siblings' Stop hooks demand it and refusing
  * it deadlocked the reply; the journal records the command it let through. Even that is
  * refused while `opts.env` carries a node preload variable (NODE_PRELOAD_VARS), named in
- * the reason.
+ * the reason, and when the call would not write where pair_start granted the sibling's
+ * state: where it writes is resolved as the CLI resolves it, from the shell's working
+ * directory `call.cwd` with `opts.env`, `opts.home` and `opts.fs` (ledgerDestination,
+ * patternCheckDestination), and the ledger's database has to be one of the carve-out files,
+ * pattern-check's receipt directory has to be `<worktree>/.pattern-check` and its state
+ * directory a carve-out directory. A `.ledger.json` or `.pattern-check.json` found inside a
+ * carve-out directory is never honoured: pair_run may have written it, so the call is refused
+ * naming it. Without `call.cwd` or `opts.fs` no sibling call passes.
  * @param {State} state
- * @param {{ toolName: unknown, command?: unknown }} call
- * @param {{ allow?: string[], home?: string, realpath?: (abs: string) => string, env?: Record<string, string | undefined> }} [opts]
+ * @param {{ toolName: unknown, command?: unknown, cwd?: unknown }} call
+ * @param {{ allow?: string[], home?: string, realpath?: (abs: string) => string, env?: Record<string, string | undefined>, fs?: SiblingFs }} [opts]
  *   `realpath`: strict, throws when the path does not exist; without it no shell command passes.
  *   `env`: the environment the host's shell will run with (the hook's own); without it no
  *   shell command passes either
@@ -1418,11 +1540,14 @@ export function toolVerdict(state, call, opts = {}, io) {
       const env = opts.env && typeof opts.env === "object" ? opts.env : null;
       if (!env) return deny("the sibling CLI is refused while pairing: the environment the shell would run it with is unknown to the gate");
       const preload = NODE_PRELOAD_VARS.filter((v) => typeof env[v] === "string" && env[v] !== "");
-      if (preload.length) return deny(`the sibling CLI is refused while pairing: ${preload.join(" and ")} ${preload.length === 1 ? "is" : "are"} set, and node would run what ${preload.length === 1 ? "it names" : "they name"} before the script; unset ${preload.length === 1 ? "it" : "them"} for this session`);
+      if (preload.length) return deny(`the sibling CLI is refused while pairing: ${preload.join(" and ")} ${preload.length === 1 ? "is" : "are"} set, and node would run what ${preload.length === 1 ? "it names" : "they name"} before the script, or write where ${preload.length === 1 ? "it points" : "they point"}; unset ${preload.length === 1 ? "it" : "them"} for this session`);
+      const problem = siblingDestinationProblem(state, sibling, call.cwd, { env, home: opts.home, fs: opts.fs, realpath: opts.realpath });
+      if (problem) return deny(`${sibling.cli} ${sibling.verb} is refused while pairing: ${problem}`);
       return pass({ siblingCli: call.command });
     }
     if (sibling) {
       const allowed = SIBLING_CLI_VERBS[sibling.cli].join(", ");
+      if (sibling.flag) return deny(`${sibling.cli} ${sibling.verb} ${sibling.flag} is refused while pairing: ${sibling.flag.split("=")[0]} moves where the CLI reads its config from and writes to, and no hook demands it; run it from the worktree without it`);
       return deny(!sibling.verb
         ? `${sibling.cli} with no subcommand is refused while pairing; the shell may run it only as ${allowed}`
         : `${sibling.cli} ${sibling.verb} is refused while pairing: its hooks never demand it, and it may write outside the agreement; the shell may run it only as ${allowed}`);
@@ -1435,6 +1560,53 @@ export function toolVerdict(state, call, opts = {}, io) {
   if (DISPATCH_SET.has(name)) return deny(`${name} is refused: sub-agent dispatch is refused while pairing; do the recon in this session with read-only tools, or your partner ends pairing by typing pair stop`);
   return deny(`${name || "(unnamed tool)"} is not on the pairing allowlist; while pairing, write with pair_write or pair_edit and run commands with pair_run, or your partner ends pairing by typing pair stop`);
 }
+
+/**
+ * Why an allowed sibling CLI call would write somewhere pair_start did not grant, or null.
+ * The ledger's database (every ledger subcommand opens it) has to be one of the carve-out
+ * files; pattern-check's receipt directory (`record`) has to be at or under
+ * `<worktree>/.pattern-check`, its `--session` key one its CLI accepts, and its state
+ * directory (every subcommand) a carve-out directory. A config file found inside a carve-out
+ * directory is refused outright. Each refusal names the destination and what named it.
+ * @param {State} state
+ * @param {{ cli: string, verb: string, args: string[] }} sibling
+ * @param {unknown} cwd  the shell's working directory, absolute
+ * @param {{ env: Record<string, string | undefined>, home: unknown, fs: SiblingFs | undefined, realpath: ((abs: string) => string) | undefined }} host
+ * @returns {string | null}
+ */
+function siblingDestinationProblem(state, sibling, cwd, { env, home, fs, realpath }) {
+  if (typeof cwd !== "string" || !isAbs(cwd)) return "the shell's working directory is unknown to the gate, so where the CLI would write cannot be checked";
+  if (!fs || typeof fs.readFile !== "function" || typeof fs.isFile !== "function" || typeof fs.exists !== "function") return "the gate was given no way to read the CLI's config files, so where it would write cannot be checked";
+  const carve = usableCarveOuts(state);
+  const planted = (path, what) => (path && carve.dirs.some((d) => within(d, path))
+    ? `it would honour ${path}, ${what} inside a directory pair_run may write, so nothing it names is trusted; remove it`
+    : null);
+  if (sibling.cli === "ledger.mjs") {
+    const { db, source, projectPath } = ledgerDestination({ cwd, env, home, fs, realpath });
+    const p = planted(projectPath, "a .ledger.json");
+    if (p) return p;
+    if (!isAbs(db)) return `it would open the database ${db} (${source}), a relative path that resolves against the shell's working directory`;
+    if (!carve.files.includes(db)) {
+      const granted = carve.files.filter((f) => !f.endsWith("-wal") && !f.endsWith("-shm"));
+      return `it would open the database ${db} (${source}), which is not sibling state pair_start granted; the shell may open only ${granted.length ? granted.join(", ") : "no database at all (none was granted)"}`;
+    }
+    return null;
+  }
+  const { receiptDir, receiptDirRaw, source, repoPath, stateDir } = patternCheckDestination({ cwd, env, home, fs });
+  const p = planted(repoPath, "a .pattern-check.json");
+  if (p) return p;
+  const key = sibling.args[sibling.args.indexOf("--session") + 1];
+  if (sibling.args.includes("--session") && !SAFE_SESSION_KEY.test(key ?? "")) return `--session ${JSON.stringify(key ?? "")} is not a session key its CLI accepts (letters, digits, dots, dashes, underscores)`;
+  if (sibling.verb === "record") {
+    const want = `${state.root}/${PATTERN_CHECK_DIRNAME}`;
+    if (!carve.dirs.includes(want) || !within(want, receiptDir)) return `it would write its receipt under ${receiptDir} (receiptDir ${JSON.stringify(receiptDirRaw)} from ${source}), not under ${want}`;
+  }
+  if (!carve.dirs.includes(stateDir)) return `it would write its session file and receipt copy under ${stateDir}, which is not sibling state pair_start granted`;
+  return null;
+}
+
+/** The directory pattern-check writes its receipt in, worktree-relative (lib/sibling-state.mjs PATTERN_CHECK_DIR). */
+const PATTERN_CHECK_DIRNAME = ".pattern-check";
 
 /**
  * pair_write / pair_edit, checked INSIDE the tool's execute function against the final
@@ -1715,6 +1887,34 @@ export function usableCarveOuts(state) {
 }
 
 /**
+ * Why a grant on a carve-out directory would reach past the sibling's own state, or null. A
+ * directory grant reaches its whole tree, and no card agreed to what is in it, so the tree is
+ * looked at before every run: a file with more than one hard link (its other names may be
+ * product files, and a write through the grant lands on the one inode), an entry that cannot
+ * be looked at, or a mount point under the directory (a tree nobody looked at) each make the
+ * grant unsafe. Every backend asks: Landlock reports the layout inexpressible
+ * (landlockRulesFor), and pair_run refuses the run under Seatbelt and bubblewrap. Mount
+ * points are checked where they can be read; `io.mounts()` null is left to the Landlock
+ * builder, which counts unknown mounts as held.
+ * @param {State} state
+ * @param {LandlockIo} io
+ * @returns {string | null}
+ */
+export function carveOutHazard(state, io) {
+  const mounts = io.mounts();
+  for (const d of usableCarveOuts(state).dirs.map(bwrapPath)) {
+    if (io.lstat(d)?.type !== "dir") continue;
+    const mount = mounts?.find((m) => m !== d && within(d, m));
+    if (mount) return `the carve-out ${d} holds the mount point ${mount}, and a grant on the directory would reach through it`;
+    for (const e of io.walk(d)) {
+      if (e.type === "unreadable") return `${e.path} inside the carve-out ${d} cannot be looked at, so a grant on the directory might reach past the sibling's state`;
+      if (e.type === "file" && e.nlink > 1) return `${e.path} inside the carve-out ${d} has ${e.nlink} hard links, and a grant on the directory would write every one`;
+    }
+  }
+  return null;
+}
+
+/**
  * The carve-out directories inside the worktree, absolute: where a run may write in the
  * worktree in either phase, so pair_run's link check walks them as it walks boundaryRoots.
  * @param {State} state
@@ -1966,7 +2166,9 @@ export function landlockRulesFor(state, extraAllow, io) {
   // as every grant through a link is, since the rule would reach what the link points at. A
   // directory grant that would hold the worktree, the state directory, a protected path or a
   // `.git` entry is not expressible (usableCarveOuts drops the first three before this; the
-  // check stays so the plan can never grant one by another route).
+  // check stays so the plan can never grant one by another route), and neither is one whose
+  // tree holds a hard-linked file, an entry that cannot be looked at, or a mount point
+  // (carveOutHazard; mount points unknown count as held, as for the boundary below).
   const carve = usableCarveOuts(state);
   const carveFiles = [];
   const carveDirs = [];
@@ -1978,6 +2180,7 @@ export function landlockRulesFor(state, extraAllow, io) {
       if (st?.type === type) list.push(p);
     }
   }
+  const knownMounts = io.mounts();
   for (const d of carveDirs) {
     if (within(d, root)) return { notExpressible: `the carve-out ${d} holds the worktree, and Landlock cannot fence the worktree inside it` };
     const held = denied.find((x) => within(d, x));
@@ -1987,7 +2190,10 @@ export function landlockRulesFor(state, extraAllow, io) {
         if (e.path.split("/").at(-1).toLowerCase() === ".git") return { notExpressible: `the carve-out ${relativeTo(root, d)} holds ${relativeTo(root, e.path)}, and Landlock cannot fence it inside the grant` };
       }
     }
+    if (knownMounts === null) return { notExpressible: `mount points cannot be read, so a grant on the carve-out ${d} might reach through one` };
   }
+  const hazard = carveOutHazard(state, io);
+  if (hazard) return { notExpressible: hazard };
   const carveSet = new Set(carveDirs);
   const inDirs = (granted, f) => {
     for (let p = f.slice(0, f.lastIndexOf("/")); p; p = p.slice(0, p.lastIndexOf("/"))) if (granted.has(p)) return true;

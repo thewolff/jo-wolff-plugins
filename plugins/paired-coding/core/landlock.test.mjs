@@ -319,6 +319,31 @@ describe("landlockRulesFor grants the carve-outs (sibling-plugin state) in both 
     assert.match(opened.notExpressible, /\.pattern-check holds/);
   });
 
+  test("a hard-linked file, an unreadable entry or a mount point inside a carve-out directory makes the ruleset not expressible, in both phases", () => {
+    const closed = (io) => landlockRulesFor({ ...open([]), phase: "closed", changeSet: null, carveOuts }, [], io);
+    const opened = (io) => landlockRulesFor(open(["src/a.ts"], { carveOuts }), [], io);
+    // A receipt hard-linked to a product file: a write through the grant lands on the one inode.
+    const linked = fakeFs([...BASE_DIRS, ...HOME_DIRS, RECEIPTS], [...BASE_FILES, DB, [`${RECEIPTS}/s1.md`, 2]]);
+    assert.match(closed(linked).notExpressible, /\.pattern-check\/s1\.md inside the carve-out .*\.pattern-check has 2 hard links/);
+    assert.match(opened(linked).notExpressible, /has 2 hard links/);
+    // The same in a carve-out directory under the home.
+    const linkedHome = fakeFs([...BASE_DIRS, ...HOME_DIRS, RECEIPTS], [...BASE_FILES, DB, [`${STATE_LEDGER}/x`, 3]]);
+    assert.match(closed(linkedHome).notExpressible, /ledger\/x inside the carve-out .*state\/ledger has 3 hard links/);
+    // An entry nobody can look at.
+    const unreadable = fakeFs([...BASE_DIRS, ...HOME_DIRS, RECEIPTS, `${RECEIPTS}/locked`], [...BASE_FILES, DB], [], { unlisted: [`${RECEIPTS}/locked`] });
+    assert.match(closed(unreadable).notExpressible, /\.pattern-check\/locked\/ inside the carve-out .* cannot be looked at/);
+    // A mount point under the directory: a tree nobody looked at.
+    const mounted = fakeFs([...BASE_DIRS, ...HOME_DIRS, RECEIPTS, `${RECEIPTS}/mnt`], [...BASE_FILES, DB], [], { mounts: [`${RECEIPTS}/mnt`] });
+    assert.match(closed(mounted).notExpressible, /holds the mount point .*\.pattern-check\/mnt/);
+    // Mount points that cannot be read count as held.
+    const unknown = fakeFs([...BASE_DIRS, ...HOME_DIRS, RECEIPTS], [...BASE_FILES, DB], [], { mounts: null });
+    assert.match(closed(unknown).notExpressible, /mount points cannot be read/);
+    // A clean tree is granted, hard links on the files the grant does not reach (the database itself) aside.
+    const clean = fakeFs([...BASE_DIRS, ...HOME_DIRS, RECEIPTS], [...BASE_FILES, DB, `${RECEIPTS}/s1.md`, `${STATE_LEDGER}/x`]);
+    assert.equal(closed(clean).notExpressible, undefined);
+    assert.equal(opened(clean).notExpressible, undefined);
+  });
+
   test("a carve-out directory under a boundary grant is folded into it; pair_write's ruleset grants no carve-out", () => {
     const io = fakeFs([...BASE_DIRS, ...HOME_DIRS, `${ROOT}/lib`, `${ROOT}/lib/.pattern-check`], [...BASE_FILES, DB, `${ROOT}/lib/l.mjs`]);
     const inside = { files: [], dirs: [`${ROOT}/lib/.pattern-check`] };

@@ -197,13 +197,28 @@ How it works:
   the command (`$…`, `~`, `{…}`, `!`, a glob, backquotes, an environment assignment in front)
   are refused. Any other subcommand (`disable`, `init`, `config`, `canary`, `review`, …) is
   refused by name: no hook demands it, and it may write a product `.ledger.json` or reach
-  outside the agreement. So is a call with no subcommand. Only one simple command passes:
-  anything joined to it (`&&`, `;`, a pipe, a redirection, a subshell) is refused as before.
-  The arguments after the subcommand are the CLI's own and are not inspected. The journal's
-  verdict entry records the command it let through. The gate cannot change the environment
-  the host runs the shell with, so while the hook's own environment carries `NODE_OPTIONS`,
-  `NODE_PATH` or `NODE_REPL_EXTERNAL_MODULE` (each a way to run code before the script) even
-  this command is refused, naming the variable; unset it for the session.
+  outside the agreement. So is a call with no subcommand, and one carrying `--cwd`, `--config`
+  or `--db` anywhere in its arguments: `--cwd` moves where both CLIs look for their config
+  (the ledger's nearest `.ledger.json`, pattern-check's nearest `.pattern-check.json` and
+  repository root), and no hook demands it. Only one simple command passes: anything joined
+  to it (`&&`, `;`, a pipe, a redirection, a subshell) is refused as before. Before letting
+  the call through, the gate works out where it would write, the way the CLI itself does,
+  from the shell's working directory and the hook's own environment: the ledger's database
+  (`LEDGER_DB`, else the `db` of the nearest `.ledger.json` at or above the working
+  directory, else the user config's, else the ledger's default) has to be one of the
+  carve-out files; pattern-check's receipt directory (the `receiptDir` of the nearest
+  `.pattern-check.json`, else the user config's, else `.pattern-check`, under the nearest
+  `.git` root) has to sit under `<worktree>/.pattern-check` for `record`, its `--session`
+  key has to be one its CLI accepts, and its state directory has to be a carve-out
+  directory. A call that would write anywhere else is refused naming the destination and the
+  config that named it, before the CLI runs, and a `.ledger.json` or `.pattern-check.json`
+  found inside a carve-out directory is never honoured (a `pair_run` may have written it).
+  The remaining arguments are the CLI's own. The journal's verdict entry records the command
+  it let through. The gate cannot change the environment the host runs the shell with, so
+  while the hook's own environment carries `NODE_OPTIONS`, `NODE_PATH`,
+  `NODE_REPL_EXTERNAL_MODULE` (each a way to run code before the script), `NODE_V8_COVERAGE`,
+  `NODE_REDIRECT_WARNINGS` or `NODE_COMPILE_CACHE` (each a way to make node write wherever
+  it points) even this command is refused, naming the variable; unset it for the session.
 - On OMP, a tool device the agent calls as `write xd://<device>` reaches the gate as the host's
   `write` tool. The gate judges by tool name and does not read the path, so while pairing every
   `xd://` device is refused like any host write ("write is the host's own mutating tool"),
@@ -245,12 +260,17 @@ How it works:
   or above any of them (a carve-out above the state directory would hand the whole directory
   to a run), and a ledger database the config points inside the worktree is not carved out
   (a `.ledger.json` is repo content, and no repo content may widen the fence);
-  `.pattern-check` is kept only when it is not a symlink, and under Landlock a `.git` entry
-  inside it makes the layout inexpressible (the run falls back as any inexpressible layout
-  does). `.pattern-check/` is a reserved name: this plugin does not review what lands there.
-  Snapshots leave `.pattern-check/` out (it is a default exclusion beside `.git`), so a
-  receipt written there is never read as drift at `pair_done`; the post-run link check still
-  walks it, so a link made there stops the session like one made in the boundary. On macOS a
+  `.pattern-check` is kept only when it is not a symlink. A grant on a carve-out directory
+  reaches its whole tree, and no card agreed to what is in it, so before every `pair_run` the
+  tree is looked at on every backend: a file there with more than one hard link (another name
+  for a product file, say), an entry that cannot be looked at, or a mount point under the
+  directory refuses the run by name until it is gone; under Landlock a `.git` entry inside
+  `.pattern-check` additionally makes the layout inexpressible (the run falls back as any
+  inexpressible layout does). `.pattern-check/` is a reserved name: this plugin does not
+  review what lands there. Snapshots leave `.pattern-check/` out (it is a default exclusion
+  beside `.git`), so a receipt written there is never read as drift at `pair_done`; the
+  post-run link check still walks it, so a link made there stops the session like one made
+  in the boundary. On macOS a
   carve-out file may be created by a run (the sidecars when absent, `.pattern-check` itself);
   on Linux a grant needs an inode, so a carve-out that does not exist yet gets nothing: the
   ledger's `-wal` and `-shm` sidecars when they are absent (SQLite cannot open its write-ahead
@@ -290,8 +310,10 @@ How it works:
   paired: it is the evidence. A session that never called `pair_start` has nothing in it worth
   keeping (queued typed input, stashed notices), so `SessionEnd` removes it, under the same
   session lock `pair_start` holds while it activates, looking again for the activation marker
-  once it holds the lock, so a start that lands as the session ends is kept; a directory that
-  will not go is one warning and one `errors.log` line, never a failed end.
+  once it holds the lock, so a start that lands as the session ends is kept; the lock carries
+  its holder's token, so the cleanup's release never lets go of a lock a waiter took in the
+  directory it made afresh; a directory that will not go is one warning and one `errors.log`
+  line, never a failed end.
 - When the Claude Code hook itself fails (a thrown error, an unwritable state directory, stdin
   that is empty or not a hook event object), it exits 0, appends one line to
   `$PAIRED_CODING_STATE_DIR/errors.log` (default `~/.local/state/paired-coding/errors.log`)

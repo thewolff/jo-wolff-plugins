@@ -202,7 +202,11 @@ test("while pairing the hook lets Bash run a sibling plugin's CLI from the plugi
     mkdirSync(dirname(p), { recursive: true });
     writeFileSync(p, "// cli\n");
   }
-  const bash = (command) => handle("pre-tool-use", { ...f.common, tool_name: "Bash", tool_input: { command }, tool_use_id: tuid() }, { env: { ...f.env, HOME: home } });
+  // The shell's environment names the ledger database and the state directory pair_start granted
+  // (pair_start read them from the process's own home); the gate checks each call writes there.
+  const carve = JSON.parse(readFileSync(join(f.base, "s1", "state.json"), "utf8")).carveOuts;
+  const granted = { LEDGER_DB: carve.files.find((p) => p.endsWith("ledger.db")), XDG_STATE_HOME: dirname(carve.dirs.find((p) => p.endsWith("/pattern-check") && !p.startsWith(f.root))) };
+  const bash = (command, extra = {}) => handle("pre-tool-use", { ...f.common, tool_name: "Bash", tool_input: { command }, tool_use_id: tuid() }, { env: { ...f.env, ...granted, HOME: home, ...extra } });
   const ask = `node ${ledger} ask "did we?"`;
   const record = `node ${check} record --session s1`;
   assert.equal(bash(ask), null);
@@ -210,6 +214,18 @@ test("while pairing the hook lets Bash run a sibling plugin's CLI from the plugi
   const disable = bash(`node ${ledger} disable --cwd ${f.root}`);
   assert.equal(disable?.hookSpecificOutput?.permissionDecision, "deny");
   assert.match(disable.hookSpecificOutput.permissionDecisionReason, /ledger\.mjs disable is refused while pairing/);
+  const cwdFlag = bash(`node ${ledger} ask x --cwd ${f.root}`);
+  assert.match(cwdFlag.hookSpecificOutput.permissionDecisionReason, /ledger\.mjs ask --cwd is refused while pairing: --cwd moves/);
+  // A database the shell's environment points elsewhere, and a .pattern-check.json planted in the
+  // receipt directory, are refused before the CLI runs.
+  assert.match(bash(ask, { LEDGER_DB: join(f.top, "elsewhere.db") }).hookSpecificOutput.permissionDecisionReason, /would open the database .*elsewhere\.db \(LEDGER_DB\), which is not sibling state pair_start granted/);
+  mkdirSync(join(f.root, ".pattern-check"), { recursive: true });
+  writeFileSync(join(f.root, ".pattern-check", ".pattern-check.json"), JSON.stringify({ receiptDir: "." }));
+  const planted = handle("pre-tool-use", { ...f.common, cwd: join(f.root, ".pattern-check"), tool_name: "Bash", tool_input: { command: record }, tool_use_id: tuid() }, { env: { ...f.env, ...granted, HOME: home } });
+  assert.match(planted.hookSpecificOutput.permissionDecisionReason, /it would honour .*\.pattern-check\/\.pattern-check\.json, a \.pattern-check\.json inside a directory pair_run may write/);
+  writeFileSync(join(f.root, ".pattern-check.json"), JSON.stringify({ receiptDir: "docs" }));
+  assert.match(bash(record).hookSpecificOutput.permissionDecisionReason, /would write its receipt under .*\/repo\/docs \(receiptDir "docs" from .*\/repo\/\.pattern-check\.json\), not under .*\/repo\/\.pattern-check/);
+  rmSync(join(f.root, ".pattern-check.json"));
   for (const command of [
     `${ask} && rm -rf /`, "node /tmp/ledger.mjs ask x", `${ask}; echo pwned > notes.txt`, `node ${home}/.claude/plugins/cache/jo-wolff-plugins/x/evil.mjs ask x`,
     `node ${home}/.claude/plugins/cache/jo-wolff-plugins/{..,x}/{..,x}/{..,x}/{..,x}/ledger.mjs ask x`, `node $HOME/.claude/plugins/cache/jo-wolff-plugins/ledger/1.0.0/scripts/ledger.mjs ask x`,

@@ -379,23 +379,32 @@ or the nearest `.ledger.json` points it; `<worktree>/.pattern-check/`; and
 `~/.local/state/ledger/` and `~/.local/state/pattern-check/`. One list (`lib/sibling-state.mjs`)
 feeds the Seatbelt profile, the bubblewrap binds and the Landlock rules, so the three grant the
 same paths. A carve-out never reaches the worktree root, `.git`, the state directory or a
-protected path, is dropped when it sits above one of them, and snapshots leave
+protected path, is dropped when it sits above one of them, and before every run the tree
+under a carve-out directory is looked at on every backend (a hard-linked file, an entry that
+cannot be read, or a mount point there refuses the run by name); snapshots leave
 `.pattern-check/` out, so a receipt written there is not drift at `pair_done`. The host shell
 is also let through for exactly one shape of command: `node <script> <subcommand> …` where
 the script is `ledger.mjs` or `pattern-check.mjs`, spelled plainly, existing and resolving
 inside `~/.claude/plugins/cache/jo-wolff-plugins/` or `~/.claude/plugins/marketplaces/`, and
 the subcommand is one the sibling's hooks demand (`ask`, `answer`, `note`, `outcome`,
-`pending`, `doctor`; `open`, `record`, `status`); anything joined to it or rewritten by the
-shell (`&&`, `;`, a pipe, a redirection, a substitution, `~`, `{…}`), a node flag, and any
+`pending`, `doctor`; `open`, `record`, `status`); the gate then works out, the way the CLI
+does, where that call would write (the ledger's database from `LEDGER_DB`, the nearest
+`.ledger.json` or the user config; pattern-check's `receiptDir` under the nearest `.git`
+root) and refuses before the run anything that would land outside the carve-outs, naming the
+destination and the config that named it. Anything joined to the command or rewritten by the
+shell (`&&`, `;`, a pipe, a redirection, a substitution, `~`, `{…}`), a node flag, a `--cwd`,
+`--config` or `--db` argument, a config file planted inside a carve-out directory, and any
 other subcommand (`disable` writes a product `.ledger.json`) is refused, and so is the whole
-allowance while the hook's environment carries `NODE_OPTIONS`, `NODE_PATH` or
-`NODE_REPL_EXTERNAL_MODULE`. The plugin README's gate section has the full table and the
-Linux limits (a grant there needs an existing inode). Also in 1.4.3: on Claude Code,
-`SessionEnd` removes the state directory of a session that never called `pair_start` (it held
-only queued typed input and stashed notices), under the session lock and after a second look
-for the activation marker, so a `pair_start` landing as the session ends is kept; a session
-that paired keeps its directory, journal and receipt included, and a directory that will not
-go is one warning and one `errors.log` line, never a failed end.
+allowance while the hook's environment carries `NODE_OPTIONS`, `NODE_PATH`,
+`NODE_REPL_EXTERNAL_MODULE`, `NODE_V8_COVERAGE`, `NODE_REDIRECT_WARNINGS` or
+`NODE_COMPILE_CACHE`. The plugin README's gate section has the full table and the Linux
+limits (a grant there needs an existing inode). Also in 1.4.3: on Claude Code, `SessionEnd`
+removes the state directory of a session that never called `pair_start` (it held only queued
+typed input and stashed notices), under the session lock and after a second look for the
+activation marker, so a `pair_start` landing as the session ends is kept, and the lock now
+carries its holder's token so no release lets go of another holder's lock; a session that
+paired keeps its directory, journal and receipt included, and a directory that will not go
+is one warning and one `errors.log` line, never a failed end.
 
 Changes in 1.4.2: a fault in any hook appends one line to `errors.log` in the plugin's state
 directory and shows one warning, and never blocks a session that is not pairing. While pairing,

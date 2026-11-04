@@ -20,12 +20,12 @@ import { spawn, spawnSync } from "node:child_process";
 import { createHash, randomBytes } from "node:crypto";
 import {
   appendFileSync, closeSync, constants as fsc, existsSync, fstatSync, lstatSync, mkdirSync, openSync, readFileSync, readdirSync,
-  readlinkSync, realpathSync, renameSync, rmdirSync, rmSync, statSync, unlinkSync, writeSync,
+  readlinkSync, realpathSync, renameSync, rmdirSync, rmSync, statSync, unlinkSync, writeFileSync, writeSync,
 } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import {
-  boundaryHashes, boundaryMatches, boundaryRoots, bwrapArgsFor, carveOutRoots, landlockRulesFor, pairRunProfile, pairWriteBwrap, pairWriteLandlock, pairWriteProfile,
+  boundaryHashes, boundaryMatches, boundaryRoots, bwrapArgsFor, carveOutHazard, carveOutRoots, landlockRulesFor, pairRunProfile, pairWriteBwrap, pairWriteLandlock, pairWriteProfile,
   readState, serializeState, shQuote,
 } from "../core/gate.mjs";
 import { bwrapCommand, bwrapIo, bwrapProblem, bwrapProc } from "./bwrap.mjs";
@@ -386,7 +386,11 @@ const sleepSync = (ms) => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)),
 
 /**
  * Run `fn` holding the session's lock (a directory created with mkdir, which is atomic). A lock
- * older than `staleMs` is taken over: its holder died. Synchronous so hooks stay simple.
+ * older than `staleMs` is taken over: its holder died. The holder writes an owner token (pid
+ * and a nonce) into the lock and at the end removes the lock only while the token is still
+ * its own: the SessionEnd cleanup removes a never-activated directory under its lock, lock
+ * included, and a waiter then makes the directory and a lock of its own, which the cleanup's
+ * release must leave alone. Synchronous so hooks stay simple.
  * @template T
  * @param {string} dir
  * @param {() => T} fn
@@ -395,14 +399,16 @@ const sleepSync = (ms) => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)),
 export function withLock(dir, fn, { waitMs = 10000, staleMs = 15000 } = {}) {
   mkdirSync(dir, { recursive: true, mode: 0o700 });
   const lock = join(dir, LOCK);
+  const owner = join(lock, "owner");
+  const token = `${process.pid}:${randomBytes(8).toString("hex")}`;
   const end = Date.now() + waitMs;
   for (;;) {
     try {
       mkdirSync(lock);
+      writeFileSync(owner, token, { flag: "wx" });
       break;
     } catch (err) {
-      // The SessionEnd cleanup removes a never-activated directory under its lock, lock included;
-      // a waiter then finds no directory to lock in and makes it again.
+      // A waiter whose directory the cleanup removed finds no directory to lock in and makes it again.
       if (err?.code === "ENOENT") { mkdirSync(dir, { recursive: true, mode: 0o700 }); continue; }
       if (err?.code !== "EEXIST") throw err;
       try {
@@ -415,7 +421,9 @@ export function withLock(dir, fn, { waitMs = 10000, staleMs = 15000 } = {}) {
   try {
     return fn();
   } finally {
-    rmSync(lock, { recursive: true, force: true });
+    let held = null;
+    try { held = readFileSync(owner, "utf8"); } catch { /* the lock went with its directory, or was taken over as stale */ }
+    if (held === token) rmSync(lock, { recursive: true, force: true });
   }
 }
 
@@ -608,6 +616,10 @@ const noop = () => {};
  */
 function runCommand(state, command, cwd, override) {
   const argv = ["/bin/sh", "-c", command];
+  // A carve-out directory's tree is looked at before every run, on every backend: a grant on
+  // it reaches the whole tree, and nothing in it was agreed (core/gate.mjs carveOutHazard).
+  const hazard = carveOutHazard(state, landlockIo);
+  if (hazard) throw new Error(`pair_run refused: ${hazard}; remove it, or end pairing`);
   if (process.platform !== "linux") {
     return { file: SANDBOX_EXEC, args: ["-p", pairRunProfile(state), ...argv], fds: [], close: noop, backend: "seatbelt", writable: [...boundaryRoots(state), ...carveOutRoots(state)] };
   }
