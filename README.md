@@ -42,6 +42,14 @@ it, keeping a record of what it did and asked, and a vendored set of engineering
   or stale, repair it with the one command ctx documents, and say so at SessionStart and in a
   macOS popup from a launchd timer; the SessionStart line also says when the timer itself has
   stopped. macOS; Claude Code hooks, plus a CLI that works anywhere.
+- **[delegation](plugins/delegation/README.md)** — teach the agent the brief a subagent is
+  handed, then refuse a spawn whose brief does not say how the work fails or where it stops.
+  Claude Code hooks and an OMP extension.
+- **[continuity](plugins/continuity/README.md)** — keep a long session's state across
+  compaction, and say when the last save worked. Claude Code only.
+- **[brb](plugins/brb/README.md)** — type `brb` and walk away: the agent keeps working, its
+  questions wait in a digest, and only on-fire items come through until you type `back`.
+  Claude Code hooks and an OMP extension.
 
 output-types delivers text and does not read what the agent sends back; see its *delivers, does
 not enforce* note. i-have-audhd delivers its rules and checks every finished message, warning by
@@ -66,6 +74,9 @@ the receipt.
 /plugin install as2-skills@jo-wolff-plugins
 /plugin install plugin-kit@jo-wolff-plugins
 /plugin install ctx-watch@jo-wolff-plugins
+/plugin install delegation@jo-wolff-plugins
+/plugin install continuity@jo-wolff-plugins
+/plugin install brb@jo-wolff-plugins
 ```
 
 On OMP, from a shell:
@@ -81,6 +92,8 @@ omp plugin install pattern-check@jo-wolff-plugins
 omp plugin install as2-skills@jo-wolff-plugins
 omp plugin install plugin-kit@jo-wolff-plugins
 omp plugin install ctx-watch@jo-wolff-plugins
+omp plugin install delegation@jo-wolff-plugins
+omp plugin install brb@jo-wolff-plugins
 ```
 
 Inside a running OMP session the commands are `/marketplace add` and `/marketplace install`, with
