@@ -22,7 +22,11 @@
 //                            for the surfaces that render hook frames. Why both: the mobile
 //                            app renders no hook frame, so a blocked prompt showed Jo nothing;
 //                            an assistant message renders everywhere. The only way out.
-//   `pending`                print the digest as a block reason and change nothing.
+//   `pending`                print the digest as a block reason and change nothing. The record
+//                            and the digest are read under the session lock, so a digest a
+//                            writer is mid-way through (lines appended, count not yet written)
+//                            is not shown; a lock held past 2 s is a throw, logged, and the word
+//                            proceeds to the model.
 //   anything else, away      the prompt proceeds with the away instruction as additionalContext
 //                            (lib/text.mjs awayInstruction, rendered with this session's hold
 //                            command: the absolute path of scripts/brb.mjs and the session id;
@@ -44,9 +48,10 @@
 // How it fails: stdin not JSON, a thrown error, or no answer in 4 s → the runner logs it to
 // ${XDG_STATE_HOME:-~/.local/state}/brb/errors.log and the prompt proceeds. An away.json that
 // does not parse reads as home. Reasons name the way out in backticks (`back`, `brb`). Every
-// away.json write here (`brb`, `back`, the new-turn reset) runs under the session lock
-// (lib/state.mjs withAwayLock) after a re-read; a lock held past 2 s is a throw, logged, and
-// the prompt proceeds.
+// away.json write here (`brb`, `back`, the new-turn reset) and `pending`'s read run under the
+// session lock (lib/state.mjs withAwayLock) after a re-read; a lock held past 2 s (a live
+// holder; a dead holder's lock is taken over at once) is a throw, logged, and the prompt
+// proceeds.
 //
 // handle() runs on a worker thread: it returns a plain object or null, never exits or writes to
 // stdout itself.
@@ -74,9 +79,10 @@ export function handle(input, { env = process.env, now = () => new Date().toISOS
   const sessionId = typeof input?.session_id === "string" ? input.session_id : "";
   const word = surfaceWord(input?.prompt);
   if (word?.word === "pending") {
-    const away = readAway(sessionId, env);
+    if (!readAway(sessionId, env)) return null;
+    const { away, body } = withAwayLock(sessionId, env, () => ({ away: readAway(sessionId, env), body: readDigest(sessionId, env) }));
     if (!away) return null;
-    const [header, ...rest] = renderDigest(away, readDigest(sessionId, env)).split("\n");
+    const [header, ...rest] = renderDigest(away, body).split("\n");
     return block(cappedReason(header, rest.join("\n").replace(/^\n+/, ""), digestPath(sessionId, env)));
   }
   if (!readAway(sessionId, env) && word?.word !== "brb") return word?.word === "back" ? context(NOT_AWAY_TEXT) : null;

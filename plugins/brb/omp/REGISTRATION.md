@@ -18,8 +18,10 @@ That one module does three jobs for the main session (see its header for the eve
   while away is awaited (OMP awaits `input` handlers): the hook archives and clears the hold
   and answers the back instruction over the digest as `additionalContext`; the adapter stages
   that text, notifies the archive line (`brb: hold cleared; digest archived to <path>.`) and
-  returns `undefined`, so the word starts a turn whose reply is the digest. Any other text is
-  left to the host.
+  returns `undefined`, so the word starts a turn whose reply is the digest. Any other text
+  while away runs the prompt hook too, for its new-turn reset of `away.json` (output ignored),
+  and the handler's promise settles only after it, so the reset is on disk before the turn
+  starts; home, other text is left to the host at once.
 - **The away instruction.** On `before_agent_start` it spawns `hooks/session-start.mjs`; while
   the session is away the hook's `additionalContext` becomes a hidden custom message
   (`customType` `brb-away`) for that turn; the staged `back` text, when there is one, rides

@@ -6,8 +6,9 @@
 // (tool-less only); three quiet continuations → released, a new ask resets the count; two
 // tool-less stops → released (transcript counting in both transcript
 // shapes, and with no transcript); an unwritable state dir still surfaces the fire; a `back`
-// mid-stop is not undone; malformed input → exit 0, one errors.log line, no block. Plus the pure
-// helpers of lib/stop-core.mjs. node --test.
+// mid-stop is not undone; a hold filed while the stop computes (before its lock, and from a
+// second process holding the lock) is merged, not overwritten; malformed input → exit 0, one
+// errors.log line, no block. Plus the pure helpers of lib/stop-core.mjs. node --test.
 
 import test from "node:test";
 import assert from "node:assert/strict";
@@ -17,7 +18,8 @@ import { join } from "node:path";
 import { appleScript, countToolUses, decideStop, osc9 } from "../lib/stop-core.mjs";
 import { clearAway, freshAway, writeAway } from "../lib/state.mjs";
 import { backstopReason, firstLineReason, keepWorkingReason } from "../lib/text.mjs";
-import { box, promptInput, row, runHook, stopInput } from "./helpers.mjs";
+import { hold } from "../scripts/brb.mjs";
+import { box, exited, lockHolder, promptInput, row, runHook, stopInput } from "./helpers.mjs";
 
 const goAway = (b, note = "") => runHook(b, "user-prompt-submit", promptInput(b, note ? `brb ${note}` : "brb"));
 const awayRecord = (b) => JSON.parse(b.read(join(b.stateDir("s1"), "away.json")));
@@ -532,6 +534,71 @@ test("a back that lands while the stop runs is not undone: away.json stays gone,
     assert.ok(!existsSync(join(b.stateDir("s"), "away.json")));
     assert.ok(!existsSync(join(b.stateDir("s"), "digest.md")));
   } finally {
+    b.release();
+  }
+});
+
+test("a hold filed between the stop's first read and its lock is merged: two items, held 2, both seen keys, both in the digest", () => {
+  const b = box();
+  try {
+    goAway(b);
+    const now = () => {
+      assert.equal(hold("s1", "Pick Redis or in-process", { env: b.env }).status, "held");
+      return "2026-11-04T00:00:00.000Z";
+    };
+    const r = decideStop({ session_id: "s1", transcript_path: "", stop_hook_active: false, last_assistant_message: "## Needs you\n- Pick a cache" }, { env: b.env, now });
+    assert.equal(r.decision, "block");
+    const away = awayRecord(b);
+    assert.equal(away.held, 2);
+    assert.deepEqual(away.seen, ["pick redis or in-process", "pick a cache"]);
+    assert.match(digest(b), /- Pick Redis or in-process\n[\s\S]*- Pick a cache\n/);
+  } finally {
+    b.release();
+  }
+});
+
+test("a second process holding the lock while it files an item: the Stop hook waits for it, then merges (held 2, both seen keys, both in the digest)", async () => {
+  const b = box();
+  let holder = null;
+  try {
+    goAway(b);
+    holder = lockHolder(b, "s1", {
+      ms: 1_000,
+      code: `const a = state.readAway("s1", process.env); a.seen.push("pick redis or in-process"); a.held += 1; state.appendDigest("s1", { at: "2026-11-04T00:00:00.000Z", lines: ["Pick Redis or in-process"], closingAsk: null }, process.env); state.writeAway("s1", a, process.env)`,
+    });
+    const started = Date.now();
+    const r = runHook(b, "stop", stopInput(b, { last_assistant_message: "## Needs you\n- Pick a cache" }));
+    assert.ok(Date.now() - started >= 900, "waited for the holder");
+    assert.equal(r.status, 0);
+    assert.equal(r.json.decision, "block", r.stdout);
+    assert.equal(await exited(holder), 0);
+    const away = awayRecord(b);
+    assert.equal(away.held, 2);
+    assert.deepEqual(away.seen, ["pick redis or in-process", "pick a cache"]);
+    assert.match(digest(b), /- Pick Redis or in-process\n[\s\S]*- Pick a cache\n/);
+    assert.ok(!existsSync(b.errorsLog), "no fault logged");
+  } finally {
+    if (holder) await exited(holder);
+    b.release();
+  }
+});
+
+test("a lock held past the wait: the stop proceeds with no block, one errors.log line and a systemMessage; nothing held; a fire still shows", async () => {
+  const b = box();
+  let holder = null;
+  try {
+    goAway(b);
+    holder = lockHolder(b, "s1", { ms: 3_000 });
+    const r = runHook(b, "stop", stopInput(b, { last_assistant_message: "## Needs you\n- on fire: prod is down\n- Pick a cache" }));
+    assert.equal(r.status, 0);
+    assert.equal(r.json.decision, undefined, r.stdout);
+    assert.match(r.json.systemMessage, /^brb on fire: prod is down\nbrb Stop could not write its state \(brb: the hold is locked \(.*away\.lock, held by pid \d+\); try again in a moment\); this message's asks are not held and the stop proceeds\.$/);
+    assert.match(b.read(b.errorsLog), / Stop could not write state: brb: the hold is locked/);
+    assert.equal(await exited(holder), 0);
+    assert.equal(awayRecord(b).held, 0);
+    assert.equal(digest(b), "");
+  } finally {
+    if (holder) await exited(holder);
     b.release();
   }
 });

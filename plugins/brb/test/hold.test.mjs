@@ -4,20 +4,21 @@
 // the session from --session, BRB_SESSION_ID, CLAUDE_CODE_SESSION_ID or the one away session;
 // several away and no id → exit 1; no text or a bad verb → usage, exit 1; an item held here
 // is not held again by the Stop hook, and `pending` shows both sources; a `back` between hold's
-// read and its write leaves the hold ended and nothing appended (the session lock); a live lock
-// fails hold after the wait, a stale one is taken over. node --test.
+// read and its write leaves the hold ended and nothing appended (the session lock); a lock with
+// no pid fails hold after the wait and is taken over once stale; a live holder (a real second
+// process) is waited on and not stolen, a dead holder's lock is recovered at once. node --test.
 
 import test from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { chmodSync, existsSync, utimesSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, readFileSync, utimesSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
 import { hold, parseHoldArgs, resolveSession } from "../scripts/brb.mjs";
 import { handle } from "../hooks/user-prompt-submit.mjs";
 import { LOCK_STALE_MS, LOCK_WAIT_MS, freshAway, withAwayLock, writeAway } from "../lib/state.mjs";
 import { backstopReason } from "../lib/text.mjs";
-import { PLUGIN_ROOT, box, promptInput, row, runHook, stopInput } from "./helpers.mjs";
+import { PLUGIN_ROOT, box, exited, lockHolder, promptInput, row, runHook, stopInput } from "./helpers.mjs";
 
 const SCRIPT = join(PLUGIN_ROOT, "scripts", "brb.mjs");
 const run = (b, args, env = {}) => {
@@ -190,7 +191,7 @@ test("a `back` that lands between hold's read and its write: nothing is appended
   }
 });
 
-test("the session lock: a live lock makes hold wait and then fail (nothing held); a stale lock is taken over", () => {
+test("the session lock: a lock with no pid makes hold wait and then fail (nothing held); once stale it is taken over", () => {
   const b = box();
   try {
     runHook(b, "user-prompt-submit", promptInput(b, "brb"));
@@ -200,7 +201,7 @@ test("the session lock: a live lock makes hold wait and then fail (nothing held)
     const r = run(b, ["hold", "--session", "s1", "Pick a cache"]);
     assert.ok(Date.now() - started >= LOCK_WAIT_MS, "waited the bound");
     assert.equal(r.status, 1);
-    assert.match(r.stderr, /^brb hold: could not write the digest \(brb: the hold is locked \(.*away\.lock\)\); say it to Jo/);
+    assert.match(r.stderr, /^brb hold: could not write the digest \(brb: the hold is locked \(.*away\.lock\); try again in a moment\); say it to Jo/);
     assert.equal(awayRecord(b).held, 0);
     const old = new Date(Date.now() - LOCK_STALE_MS - 1_000);
     utimesSync(lock, old, old);
@@ -208,6 +209,37 @@ test("the session lock: a live lock makes hold wait and then fail (nothing held)
     assert.ok(!existsSync(lock));
     assert.equal(withAwayLock("s1", b.env, () => 7), 7);
   } finally {
+    b.release();
+  }
+});
+
+test("the session lock: a live holder sleeping 3 s is not stolen (hold waits 2 s and fails, naming the pid); a dead holder's lock is recovered at once", async () => {
+  const b = box();
+  let holder = null;
+  try {
+    runHook(b, "user-prompt-submit", promptInput(b, "brb"));
+    const lock = join(b.stateDir("s1"), "away.lock");
+    holder = lockHolder(b, "s1", { ms: 3_000 });
+    const started = Date.now();
+    const r = run(b, ["hold", "--session", "s1", "Pick a cache"]);
+    const waited = Date.now() - started;
+    assert.ok(waited >= LOCK_WAIT_MS && waited < 3_000, `waited the bound, not the holder: ${waited} ms`);
+    assert.equal(r.status, 1);
+    assert.match(r.stderr, new RegExp(`^brb hold: could not write the digest \\(brb: the hold is locked \\(.*away\\.lock, held by pid ${holder.pid}\\); try again in a moment\\); say it to Jo`));
+    assert.equal(readFileSync(lock, "utf8").split(" ")[0], String(holder.pid), "the live holder still owns the lock");
+    assert.equal(awayRecord(b).held, 0);
+    assert.equal(await exited(holder), 0);
+    assert.ok(!existsSync(lock), "the holder released its own lock");
+    // A dead holder: a lock naming a pid that exited is taken over without waiting.
+    const dead = spawnSync(process.execPath, ["-e", "0"]);
+    assert.equal(dead.status, 0);
+    writeFileSync(lock, `${dead.pid} gone`);
+    const t0 = Date.now();
+    assert.equal(run(b, ["hold", "--session", "s1", "Pick a cache"]).stdout, "held 1\n");
+    assert.ok(Date.now() - t0 < LOCK_WAIT_MS, "recovered at once, no wait");
+    assert.ok(!existsSync(lock));
+  } finally {
+    if (holder) await exited(holder);
     b.release();
   }
 });

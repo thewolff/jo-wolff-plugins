@@ -308,6 +308,16 @@ is the agent's reply, on every surface. `back` while not away passes through wit
 `brb: you were not away; nothing held` as context. On OMP the adapter awaits the hook on
 `back`, stages its context for `before_agent_start` and lets the word through.
 
+Four races closed after the second Codex review. The OMP adapter waits for the prompt hook's
+new-turn reset before an ordinary prompt proceeds (OMP awaits `input` handlers), so the reset
+cannot land after the new turn's Stop and wipe its once-per-turn flag. The session lock
+(`away.lock`) holds its holder's pid and is taken over only when that pid is dead or the lock
+is older than 60 s; a live slow holder is waited on for 2 s and then the caller fails closed
+(`hold` exits 1 with `try again in a moment`, the Stop hook takes its write-error path,
+`pending` logs and lets the word through). The Stop hook re-reads the record under the lock and
+merges, counts and writes there, so an item the hold command files while a stop is computing
+is kept, not overwritten. `pending` reads under the lock, so a digest mid-write is never shown.
+
 ## Changes in 0.1.1
 
 `lib/hook-runner.mjs` is plugin-kit 0.3.1's, byte for byte (was 0.2.1's). The handler thread's

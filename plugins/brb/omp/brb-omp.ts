@@ -21,10 +21,13 @@
 //                       the session is not away (no away.json) returns undefined, so the word
 //                       reaches the agent as an ordinary reply. Any other text returns
 //                       undefined; the away context reaches the agent through
-//                       before_agent_start, below. While away it also spawns the prompt hook
-//                       with the text in the background (newTurnHandler), output ignored: the
-//                       hook's new-turn reset clears the Stop backstop's per-turn state, as on
-//                       Claude Code.
+//                       before_agent_start, below. While away the handler first runs the
+//                       prompt hook with the text and waits for it (newTurnHandler; OMP awaits
+//                       input handlers, so the prompt is not dispatched before it returns),
+//                       output ignored: the hook's new-turn reset clears the Stop backstop's
+//                       per-turn state before the turn starts, as on Claude Code, so a Stop of
+//                       the new turn cannot run ahead of the reset and the reset cannot land
+//                       after that Stop and wipe its once-per-turn flag.
 //   before_agent_start  spawn hooks/session-start.mjs; when it returns additionalContext (the
 //                       session is away) hand it to the turn as a hidden custom message, with
 //                       the text `back` staged (above) under it when there is one. Home with
@@ -298,7 +301,7 @@ export async function inputWordHandler(text: string, ctx: Ctx, show: (reason: st
   }
 }
 
-/** Ordinary text while away: run the prompt hook for its new-turn reset of away.json; output ignored, a fault logged. Always resolves. */
+/** Ordinary text while away: run the prompt hook for its new-turn reset of away.json and wait for it; output ignored, a fault logged. Always resolves. */
 export async function newTurnHandler(text: string, ctx: Ctx, deps: Deps = {}): Promise<void> {
   const env = deps.env ?? process.env;
   const stateDir = deps.stateDir ?? defaultStateDir(env);
@@ -405,8 +408,8 @@ export default function brbOmp(pi: PiLike, deps: Deps = {}): void {
     const away = isAway(ctx, deps.stateDir ?? defaultStateDir(deps.env ?? process.env));
     stagedBack.delete(managerSessionId(ctx)); // a new submission supersedes any `back` text not yet delivered
     if (!word) {
-      // A human prompt while away is a new turn for the Stop backstop; the prompt proceeds.
-      if (away) void newTurnHandler(String(event?.text ?? ""), ctx, deps);
+      // A human prompt while away is a new turn for the Stop backstop: the reset runs to completion, then the prompt proceeds.
+      if (away) return newTurnHandler(String(event?.text ?? ""), ctx, deps).then(() => undefined);
       return undefined;
     }
     // `back` / `pending` while home is an ordinary reply for the agent, as on Claude Code.

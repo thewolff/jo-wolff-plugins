@@ -46,24 +46,65 @@ function box() {
   return { root, env, stateDir: join(root, "state", "brb"), release: () => rmSync(root, { recursive: true, force: true }) };
 }
 
-test("ordinary text while away: not handled, and the prompt hook runs in the background with the text (the new-turn reset); home → no spawn; a throw is logged", async () => {
+test("ordinary text while away: the prompt hook runs with the text and the handler's promise settles only after it (the new-turn reset lands before the turn); home → no spawn, undefined at once; a throw is logged", async () => {
   const b = box();
   try {
     const calls = [];
     const handlers = {};
-    brbOmp({ on: (name, h) => (handlers[name] = h) }, { runCli: async (hook, payload) => { calls.push({ hook, payload: JSON.parse(payload) }); return undefined; }, stateDir: b.stateDir, env: b.env });
-    assert.equal(handlers.input({ text: "use Redis" }, ctx()), undefined);
+    const { promise: gate, resolve: open } = Promise.withResolvers();
+    brbOmp({ on: (name, h) => (handlers[name] = h) }, { runCli: async (hook, payload) => { calls.push({ hook, payload: JSON.parse(payload) }); await gate; return undefined; }, stateDir: b.stateDir, env: b.env });
+    assert.equal(handlers.input({ text: "use Redis" }, ctx()), undefined, "home: nothing spawned, not a promise");
     await tick();
-    assert.deepEqual(calls, [], "home: nothing spawned");
+    assert.deepEqual(calls, []);
     markAway(b.stateDir);
-    assert.equal(handlers.input({ text: "use Redis" }, ctx()), undefined, "the prompt proceeds to the agent");
+    const p = handlers.input({ text: "use Redis" }, ctx());
+    assert.ok(p instanceof Promise, "away: awaited by the host");
+    let settled = false;
+    p.then(() => (settled = true));
     await tick();
     assert.equal(calls.length, 1);
     assert.equal(calls[0].hook, "user-prompt-submit.mjs");
     assert.equal(calls[0].payload.prompt, "use Redis");
     assert.equal(calls[0].payload.session_id, "omp-session-1");
+    assert.equal(settled, false, "the prompt does not proceed before the hook answers");
+    open();
+    assert.equal(await p, undefined, "the prompt proceeds to the agent");
     await newTurnHandler("x", ctx(), { runCli: async () => { throw new Error("boom"); }, stateDir: b.stateDir, env: b.env });
     assert.match(readFileSync(join(b.stateDir, "errors.log"), "utf8"), / omp-adapter user-prompt-submit\.mjs: boom\n$/);
+  } finally {
+    b.release();
+  }
+});
+
+test("the new-turn reset against the Stop backstop, both orderings, through the real hooks: a backstopped turn, then a prompt, then the next Stop backstops again; and a Stop of the new turn cannot run before the reset", async () => {
+  const b = box();
+  try {
+    const env = { ...b.env, BRB_HARNESS: "omp" };
+    const handlers = {};
+    brbOmp({ on: (name, h) => (handlers[name] = h) }, { stateDir: b.stateDir, env });
+    const c = ctx({ cwd: b.root });
+    const brb = handlers.input({ text: "brb" }, c);
+    assert.deepEqual(brb, { handled: true });
+    await new Promise((r) => setTimeout(r, 1_500)); // the brb hook spawn
+    assert.ok(existsSync(join(b.stateDir, "omp-session-1", "away.json")), "away");
+    const stop = (message) => handlers.session_stop({ last_assistant_message: message }, c);
+    const first = await stop("## Needs you\n- Pick a cache");
+    assert.equal(first.decision, "block", "the backstop, once per turn");
+    const again = await stop("## Needs you\n- Pick a cache");
+    assert.equal(again.decision, "block");
+    assert.match(again.reason, /^brb is holding your asks/, "the same turn again is not backstopped");
+    // Ordering 1 (the report's "Stop runs before the delayed reset"): the input handler is awaited, so by the time it resolves the reset is on disk; the next Stop backstops.
+    const p = handlers.input({ text: "use Redis" }, c);
+    assert.ok(p instanceof Promise);
+    assert.equal(await p, undefined);
+    assert.equal(JSON.parse(readFileSync(join(b.stateDir, "omp-session-1", "away.json"), "utf8")).backstopped, false, "the reset landed before the turn");
+    const next = await stop("## Needs you\n- Pick a queue");
+    assert.equal(next.decision, "block");
+    assert.match(next.reason, /^brb: 1 item moved to the digest/, "the new turn is backstopped");
+    // Ordering 2 (the report's "the delayed reset lands after the Stop and wipes its flag"): with the handler awaited there is no delayed reset; the flag set by that Stop stays set.
+    assert.equal(JSON.parse(readFileSync(join(b.stateDir, "omp-session-1", "away.json"), "utf8")).backstopped, true);
+    const restated = await stop("## Needs you\n- Pick a queue");
+    assert.match(restated.reason, /^brb is holding your asks/, "not backstopped twice");
   } finally {
     b.release();
   }
@@ -221,7 +262,7 @@ test("registration: back while away returns a promise that settles only after th
     assert.equal(stagedBack.size, 0, "session_stop clears it");
     // Staged again, then any new input clears it before the hook runs.
     stagedBack.set("omp-session-1", "stale");
-    assert.equal(handlers.input({ text: "fix the tests" }, c), undefined);
+    assert.equal(await handlers.input({ text: "fix the tests" }, c), undefined, "ordinary text while away: awaited reset, then through");
     assert.equal(stagedBack.size, 0, "a new submission clears it");
   } finally {
     stagedBack.clear();
