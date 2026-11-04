@@ -124,7 +124,7 @@ test("tick: strike, then down with one popup, stays down silently, recovers and 
     assert.match(t2.text, /episode down, strikes 2\npopup started \(test\)$/);
     assert.equal(popups.length, 1);
     assert.match(popups[0], /^ctx-watch: the ctx daemon is not running .*; fix: `ctx index mode auto`\n\nctx has failed 2 checks in a row \(since \d{4}-.*Z\)\. Open a Terminal and run the fix; ctx-watch checks again in 300 s\.$/);
-    assert.equal(readState(file).popupShown, true);
+    assert.deepEqual(readState(file).popupShown, { daemon: true, semantic: false });
     assert.equal(readState(file).lastPopupAt, NOW + 300_000);
 
     const t3 = await main(["tick"], deps([NOT_RUNNING], NOW + 600_000));
@@ -134,11 +134,37 @@ test("tick: strike, then down with one popup, stays down silently, recovers and 
     const t4 = await main(["tick"], deps([HEALTHY], NOW + 900_000));
     assert.match(t4.text, /^\d{4}-.*Z pass: daemon running \(pid 1706\), supervisor installed, core_refresh \d+m ago, semantic index ready \| episode up, strikes 0$/);
     const s = readState(file);
-    assert.deepEqual({ episode: s.episode, strikes: s.strikes, popupShown: s.popupShown, lastTickAt: s.lastTickAt }, { episode: "up", strikes: 0, popupShown: false, lastTickAt: NOW + 900_000 });
+    assert.deepEqual({ episode: s.episode, strikes: s.strikes, popupShown: s.popupShown, lastTickAt: s.lastTickAt }, { episode: "up", strikes: 0, popupShown: { daemon: false, semantic: false }, lastTickAt: NOW + 900_000 });
 
     await main(["tick"], deps([NOT_RUNNING], NOW + 1_200_000));
     await main(["tick"], deps([NOT_RUNNING], NOW + 1_500_000));
     assert.equal(popups.length, 2, "a new episode pops again");
+  } finally {
+    b.release();
+  }
+});
+
+test("tick: two semantic-not-ready ticks then daemon-not-running ticks ask for two popups, one per kind (the review's P4)", async () => {
+  const b = box();
+  try {
+    const fresh = (name) => readFileSync(join(FIX_DIR, name), "utf8").replace(/"last_run_at_ms": \d+/g, `"last_run_at_ms": ${NOW}`);
+    const SEMANTIC = fresh("ctx-daemon-status-semantic-not-ready.txt");
+    const DOWN = fresh("ctx-daemon-status-not-running.txt");
+    const popups = [];
+    const popup = async (o) => (popups.push(o.text.split("\n")[0]), { started: true, detail: "popup started (test)" });
+    const lines = [];
+    for (const [i, status] of [SEMANTIC, SEMANTIC, DOWN, DOWN, DOWN, DOWN].entries()) {
+      const r = await main(["tick"], { env: b.env, now: () => NOW + i * 1000, run: fakeCtx([status]).run, exists: () => true, popup });
+      lines.push(r.text.split("\n").map((l) => l.replace(/^.*\| episode/, "episode")).join(" / "));
+    }
+    assert.deepEqual(lines, ["episode strike, strikes 1", "episode down, strikes 2 / popup started (test)", "episode down, strikes 3", "episode down, strikes 4 / popup started (test)", "episode down, strikes 5", "episode down, strikes 6"]);
+    assert.equal(popups.length, 2);
+    assert.match(popups[0], /^ctx-watch: the ctx semantic index is not ready .*; fix: `ctx semantic enable --wait`$/);
+    assert.match(popups[1], /^ctx-watch: the ctx daemon is not running .*; fix: `ctx index mode auto`$/);
+    const s = readState(statePath(b.env));
+    assert.deepEqual({ episodeKind: s.episodeKind, popupShown: s.popupShown }, { episodeKind: "daemon", popupShown: { daemon: true, semantic: true } });
+    const st = await main(["status"], { env: b.env, now: () => NOW + 6000, check: () => ({ missing: true, code: null, output: "" }) });
+    assert.match(st.text, /\nepisode: down \[daemon\] \(strikes 6, down since \d{4}-.*Z, popup shown \d{4}-.*Z\)\n/);
   } finally {
     b.release();
   }
@@ -156,14 +182,14 @@ test("tick: a popup that could not be delivered is said, recorded, and tried aga
     const t2 = await main(["tick"], deps(NOW + 1));
     assert.match(t2.text, /episode down, strikes 2\npopup not shown: spawn \/usr\/bin\/osascript ENOENT; will try again on the next failing tick$/);
     let s = readState(file);
-    assert.deepEqual({ popupShown: s.popupShown, popupFailedAt: s.popupFailedAt, popupFailReason: s.popupFailReason, lastPopupAt: s.lastPopupAt }, { popupShown: false, popupFailedAt: NOW + 1, popupFailReason: "popup not shown: spawn /usr/bin/osascript ENOENT", lastPopupAt: null });
+    assert.deepEqual({ popupShown: s.popupShown.daemon, popupFailedAt: s.popupFailedAt, popupFailReason: s.popupFailReason, lastPopupAt: s.lastPopupAt }, { popupShown: false, popupFailedAt: NOW + 1, popupFailReason: "popup not shown: spawn /usr/bin/osascript ENOENT", lastPopupAt: null });
     const st = await main(["status"], { env: b.env, now: () => NOW + 2, check: () => ({ missing: true, code: null, output: "" }) });
-    assert.match(st.text, /\nepisode: down \(strikes 2, down since \d{4}-.*Z, popup not shown \d{4}-.*Z: popup not shown: spawn \/usr\/bin\/osascript ENOENT\)\n/);
+    assert.match(st.text, /\nepisode: down \[daemon\] \(strikes 2, down since \d{4}-.*Z, popup not shown \d{4}-.*Z: popup not shown: spawn \/usr\/bin\/osascript ENOENT\)\n/);
     const t3 = await main(["tick"], deps(NOW + 2));
     assert.equal(shown, 2, "tried again");
     assert.match(t3.text, /episode down, strikes 3\npopup started \(test\)$/);
     s = readState(file);
-    assert.deepEqual({ popupShown: s.popupShown, popupFailedAt: s.popupFailedAt, lastPopupAt: s.lastPopupAt }, { popupShown: true, popupFailedAt: null, lastPopupAt: NOW + 2 });
+    assert.deepEqual({ popupShown: s.popupShown.daemon, popupFailedAt: s.popupFailedAt, lastPopupAt: s.lastPopupAt }, { popupShown: true, popupFailedAt: null, lastPopupAt: NOW + 2 });
     await main(["tick"], deps(NOW + 3));
     assert.equal(shown, 2, "latched");
   } finally {
@@ -186,11 +212,11 @@ test("tick: a popup alive at the grace that later exits 7 never latches; the nex
     const t2 = await main(["tick"], deps(NOW + 1, real));
     assert.match(t2.text, /episode down, strikes 2\npopup started \(.*osascript-7 under supervisor pid \d+, gives up after 3600 s\); delivered once it exits 0$/);
     let s = readState(file);
-    assert.equal(s.popupShown, false, "alive at the grace is not delivered");
+    assert.equal(s.popupShown.daemon, false, "alive at the grace is not delivered");
     assert.equal(s.popupPending.since, NOW + 1);
     const token = s.popupPending.token;
     const st = await main(["status"], { env: b.env, now: () => NOW + 2, check: () => ({ missing: true, code: null, output: "" }) });
-    assert.match(st.text, /\nepisode: down \(strikes 2, down since \d{4}-.*Z, popup up since \d{4}-.*Z, not confirmed yet\)\n/);
+    assert.match(st.text, /\nepisode: down \[daemon\] \(strikes 2, down since \d{4}-.*Z, popup up since \d{4}-.*Z, not confirmed yet\)\n/);
     const blocked = await main(["tick"], deps(NOW + 2, () => assert.fail("no second dialog while the first may be up")));
     assert.match(blocked.text, /episode down, strikes 3$/);
 
@@ -199,14 +225,14 @@ test("tick: a popup alive at the grace that later exits 7 never latches; the nex
     while (readOutcome(outcomePath(dir, token))?.token !== token && Date.now() < end) await new Promise((r) => setTimeout(r, 25));
     assert.equal(readOutcome(outcomePath(dir, token))?.code, 7);
     assert.equal(existsSync(join(dir, "popup.json")), false, "outcomes are per token; there is no shared outcome file");
-    assert.equal(readState(file).popupShown, false, "the outcome file is the supervisor's; state.json is only the tick's");
+    assert.equal(readState(file).popupShown.daemon, false, "the outcome file is the supervisor's; state.json is only the tick's");
 
     let asked = 0;
     const t4 = await main(["tick"], deps(NOW + 3, async () => (asked++, { started: true, detail: "popup started (test)" })));
     assert.equal(asked, 1, "the episode's popup reopened and was asked for again");
     assert.match(t4.text, /^popup not delivered: .*osascript-7 ended with exit 7 after the grace; the popup is due again\n\d{4}-.*Z fail: .*episode down, strikes 4\npopup started \(test\)$/);
     s = readState(file);
-    assert.deepEqual({ popupShown: s.popupShown, popupPending: s.popupPending, popupFailReason: s.popupFailReason }, { popupShown: true, popupPending: null, popupFailReason: null });
+    assert.deepEqual({ popupShown: s.popupShown.daemon, popupPending: s.popupPending, popupFailReason: s.popupFailReason }, { popupShown: true, popupPending: null, popupFailReason: null });
   } finally {
     b.release();
   }
@@ -216,13 +242,13 @@ test("tick: two ticks racing at the popup boundary ask for one popup under one t
   const b = box();
   try {
     const file = statePath(b.env);
-    assert.equal(writeState(file, { ...EMPTY, episode: "strike", strikes: 1, lastTickAt: NOW - 1 }), true);
+    assert.equal(writeState(file, { ...EMPTY, episode: "strike", strikes: 1, episodeKind: "daemon", kindStrikes: 1, lastTickAt: NOW - 1 }), true);
     const requests = [];
     let open;
     const gate = new Promise((r) => (open = r));
     const popup = async (o) => {
       requests.push(o.token);
-      assert.deepEqual(readState(file).popupPending, { token: o.token, since: NOW }, "reserved on disk before the supervisor starts");
+      assert.deepEqual(readState(file).popupPending, { token: o.token, since: NOW, kind: "daemon" }, "reserved on disk before the supervisor starts");
       assert.equal(o.outcomeFile, outcomePath(join(b.env.XDG_STATE_HOME, "ctx-watch"), o.token), "the supervisor writes the token's own outcome file");
       await gate;
       return { started: true, pending: true, token: o.token, detail: "popup started (test)" };
@@ -237,7 +263,7 @@ test("tick: two ticks racing at the popup boundary ask for one popup under one t
     const t1 = await first;
     assert.match(t1.text, /episode down, strikes 2\npopup started \(test\)$/);
     const s = readState(file);
-    assert.deepEqual(s.popupPending, { token: requests[0], since: NOW }, "one token, the first tick's");
+    assert.deepEqual(s.popupPending, { token: requests[0], since: NOW, kind: "daemon" }, "one token, the first tick's");
     assert.equal(s.strikes, 3, "the first tick's result was applied to the state the second left, not over it");
     assert.equal(s.lastTickAt, NOW + 10);
   } finally {
@@ -250,7 +276,7 @@ test("tick: a popup claim that cannot be recorded starts no popup, and says whic
   try {
     const file = statePath(b.env);
     const dir = join(b.env.XDG_STATE_HOME, "ctx-watch");
-    const down = { ...EMPTY, episode: "strike", strikes: 1, lastTickAt: NOW - 1 };
+    const down = { ...EMPTY, episode: "strike", strikes: 1, episodeKind: "daemon", kindStrikes: 1, lastTickAt: NOW - 1 };
     const deps = (at, extra = {}) => ({ env: b.env, now: () => at, run: fakeCtx([NOT_RUNNING]).run, exists: () => true, popup: () => assert.fail("no popup without a recorded claim"), ...extra });
     const esc = (p) => p.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 
@@ -313,7 +339,7 @@ test("tick: the current popup's outcome survives an older episode's supervisor r
     const t = await tick(NOW + 6, [NOT_RUNNING]);
     assert.match(t.text, /^popup delivered: \/usr\/bin\/osascript ended with exit 0\n/);
     const s = readState(file);
-    assert.deepEqual({ popupShown: s.popupShown, popupPending: s.popupPending, lastPopupAt: s.lastPopupAt }, { popupShown: true, popupPending: null, lastPopupAt: NOW + 4 });
+    assert.deepEqual({ popupShown: s.popupShown.daemon, popupPending: s.popupPending, lastPopupAt: s.lastPopupAt }, { popupShown: true, popupPending: null, lastPopupAt: NOW + 4 });
     await tick(NOW + 7, [NOT_RUNNING]); // latched: no second dialog
   } finally {
     b.release();
@@ -395,7 +421,7 @@ test("install writes the plist, records the interval in the state file, and prin
 
     await main(["tick"], { env: b.env, now: () => NOW - 1_000_000, run: fakeCtx([NOT_RUNNING]).run, exists: () => true, popup: shownPopup });
     const st2 = await main(["status"], { env: b.env, now: () => NOW, check: () => ({ missing: false, code: 0, output: "state = waiting\nlast exit code = 0\n" }), uid: 501 });
-    assert.match(st2.text, /\nlast tick: \d{4}-.*Z \(overdue: more than 240 s ago\)\nlast probe: fail: the ctx daemon is not running .* at \d{4}-.*Z \| heal: `ctx index mode auto --format json`: .*\nepisode: strike \(strikes 1\)\n/);
+    assert.match(st2.text, /\nlast tick: \d{4}-.*Z \(overdue: more than 240 s ago\)\nlast probe: fail: the ctx daemon is not running .* at \d{4}-.*Z \| heal: `ctx index mode auto --format json`: .*\nepisode: strike \[daemon\] \(strikes 1\)\n/);
     assert.match(st2.text, new RegExp(`\\nlaunchd: launchd has ${LABEL} \\(state = waiting, last exit code = 0\\)$`));
 
     const un = await main(["uninstall"], { env: b.env, uid: 501 });

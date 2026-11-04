@@ -83,14 +83,14 @@ test("readMode: default warn; the config file's mode; the flag file wins; a bad 
   }
 });
 
-test("the marker: SessionStart leaves it on resume and compact, not on startup or clear; the Stop hook consumes it once", () => {
+test("the marker: SessionStart leaves it on resume, compact and fork, not on startup or clear; the Stop hook consumes it once", () => {
   const b = box();
   try {
     for (const source of ["startup", "clear"]) {
       sessionStart(startInput(source), { env: b.env, now: () => NOW, run: healthy });
       assert.equal(existsSync(resumeMarkerPath(b.dir, "s-1")), false, source);
     }
-    for (const source of ["resume", "compact"]) {
+    for (const source of ["resume", "compact", "fork"]) {
       sessionStart(startInput(source), { env: b.env, now: () => NOW, run: healthy });
       assert.equal(readFileSync(resumeMarkerPath(b.dir, "s-1"), "utf8"), iso(NOW) + "\n", source);
       const got = consumeResumeMarker(b.dir, "s-1");
@@ -101,6 +101,20 @@ test("the marker: SessionStart leaves it on resume and compact, not on startup o
     assert.equal(resumeMarkerPath(b.dir, "../x/../../etc"), join(b.dir, "resume", ".._x_.._.._etc"), "the id is a file name, never a path");
     assert.equal(markResumed(b.dir, "s-2", NOW), null);
     assert.deepEqual(consumeResumeMarker(b.dir, "s-2"), { at: NOW, error: null });
+  } finally {
+    b.release();
+  }
+});
+
+test("the marker holds the time the SessionStart hook started, before its probe: a prompt sent while the probe ran is inside the window", () => {
+  const b = box();
+  try {
+    let clock = NOW;
+    // Each ctx spawn takes 1.2 s of the hook's clock; the probe fails, so the heal runs too.
+    const slow = (argv) => ((clock += 1_200), { code: 0, stdout: argv[1] === "daemon" ? "{}" : MODE_OUT, stderr: "" });
+    sessionStart(startInput("resume"), { env: b.env, now: () => clock, run: slow, exists: () => true });
+    assert.ok(clock > NOW + 1_200, "the probe advanced the clock");
+    assert.deepEqual(consumeResumeMarker(b.dir, "s-1"), { at: NOW, error: null });
   } finally {
     b.release();
   }
@@ -179,6 +193,13 @@ test("finding: the resume trigger fires when nothing since the marker consulted 
   const untimed = resumed({ resumedAt }).map(({ timestamp, ...e }) => e);
   assert.equal(finding({ entries: untimed, resumedAt, text: "x" })?.trigger, "resume", "entries without timestamps are inside the window");
   assert.equal(finding({ entries: untimed.filter((e) => !isPrompt(e) || true).concat([ctxSearch(resumedAt)]).map(({ timestamp, ...e }) => e), resumedAt, text: "x" }), null);
+  // The resumed prompt landed before the marker (no prompt in the window): the last prompt before it is the topic, never a placeholder.
+  const early = [...resumed({ resumedAt }).slice(0, 4), user("continue the index migration", resumedAt - 1000), assistantText("Continuing.", resumedAt + 5000)];
+  const e = finding({ entries: early, resumedAt, text: "Continuing." });
+  assert.deepEqual({ topic: e.topic, command: e.command, message: e.message }, { topic: "continue the index migration", command: "ctx search 'continue the index migration'", message: "resumed without consulting history — `ctx search 'continue the index migration'`" });
+  // No prompt anywhere: a bare `ctx search`, and the sentence says why.
+  const none = finding({ entries: [assistantText("Resumed.", resumedAt + 1)], resumedAt, text: "Resumed." });
+  assert.deepEqual({ topic: none.topic, command: none.command, message: none.message }, { topic: null, command: "ctx search", message: "resumed without consulting history — `ctx search` (the transcript has no prompt to take a topic from: add one)" });
 });
 
 test("finding: the phrase trigger fires on the final message alone, scoped to this turn, with this turn's prompt; a ctx call in the turn silences it; a call in an earlier turn does not", () => {
@@ -187,8 +208,8 @@ test("finding: the phrase trigger fires on the final message alone, scoped to th
   const f = finding({ entries, resumedAt: null, text: "As discussed, exponential." });
   assert.equal(f.trigger, "phrase");
   assert.equal(f.message, 'said "as discussed" without consulting history — `ctx search \'and the backoff for the retry\'`');
-  for (const text of ["We spoke previously about this.", "Earlier you said no.", "Last time it broke.", "as   discussed\nabove"]) assert.equal(finding({ entries, resumedAt: null, text })?.trigger, "phrase", text);
-  for (const text of ["The last timestamp is wrong.", "This is discussed below.", "Previously we spoke.", ""]) assert.equal(finding({ entries, resumedAt: null, text }), null, JSON.stringify(text));
+  for (const text of ["We spoke previously about this.", "Earlier you said no.", "as   discussed\nabove"]) assert.equal(finding({ entries, resumedAt: null, text })?.trigger, "phrase", text);
+  for (const text of ["The last timestamp is wrong.", "The cron job ran fine; the last time it failed was 03:00.", "Last time it broke.", "This is discussed below.", "Previously we spoke.", ""]) assert.equal(finding({ entries, resumedAt: null, text }), null, JSON.stringify(text));
   const withCall = [...entries.slice(0, -1), ctxSearch(turnAt + 500), toolResult("t2", turnAt + 600), assistantText("As discussed, exponential.", turnAt + 1000)];
   assert.equal(finding({ entries: withCall, resumedAt: null, text: "As discussed, exponential." }), null);
   assert.equal(finding({ entries, resumedAt: T0 + 5000, text: "As discussed, exponential." })?.trigger, "resume", "both pending: the resume trigger is reported first");
@@ -235,6 +256,11 @@ test("the Stop hook in-process: block mode blocks with the command and the way o
     assert.equal(phrase.decision, "block");
     assert.match(phrase.reason, /^ctx-watch \(consult-history\): said "as discussed" without consulting history\. Run `ctx search 'the retry queue again'` /);
 
+    // A resume whose transcript holds no prompt: the reason names a bare `ctx search` and says the subject is missing.
+    sessionStart(startInput("resume"), { env: b.env, now: () => T0 + 3_600_000, run: healthy });
+    b.write([assistantText("Resumed.", T0 + 3_600_001)]);
+    assert.match(stop(stopInput(b), { env: b.env, now: () => NOW }).reason, /^ctx-watch \(consult-history\): resumed without consulting history\. Run `ctx search` with the thread's subject added \(the transcript has no prompt to take one from\) \(or the ctx MCP search\) /);
+
     writeFileSync(configPath(b.env), JSON.stringify({ checks: { "consult-history": "off" } }));
     sessionStart(startInput("resume"), { env: b.env, now: () => T0 + 3_600_000, run: healthy });
     b.write(resumed());
@@ -246,6 +272,9 @@ test("the Stop hook in-process: block mode blocks with the command and the way o
     sessionStart(startInput("resume"), { env: b.env, now: () => T0 + 3_600_000, run: healthy });
     assert.equal(stop(stopInput(b), { env: b.env, now: () => NOW }), null, "the flag file");
     assert.equal(existsSync(resumeMarkerPath(b.dir, "s-1")), false);
+    // The flag file is the Stop check's switch only: SessionStart still says a failing probe.
+    const broken = (argv) => ({ code: 0, stdout: argv[1] === "daemon" ? "{}" : MODE_OUT, stderr: "" });
+    assert.match(sessionStart(startInput("startup"), { env: b.env, now: () => NOW, run: broken, exists: () => false }).systemMessage, /^ctx-watch: `ctx daemon status --format json` has no \.daemon/);
     assert.equal(existsSync(join(b.dir, "errors.log")), false);
   } finally {
     b.release();

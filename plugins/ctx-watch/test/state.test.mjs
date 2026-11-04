@@ -48,9 +48,9 @@ test("one failing tick strikes; the second goes down and asks for the popup; del
   assert.equal(two.state.episode, "down");
   assert.equal(two.state.strikes, 2);
   assert.equal(two.state.downSince, T0 + 300_000);
-  assert.equal(two.state.popupShown, false, "step asks; delivery latches");
+  assert.equal(two.state.popupShown.daemon, false, "step asks; delivery latches");
   const delivered = popupDelivered(two.state, shown, T0 + 300_000);
-  assert.equal(delivered.popupShown, true);
+  assert.deepEqual(delivered.popupShown, { daemon: true, semantic: false });
   assert.equal(delivered.lastPopupAt, T0 + 300_000);
   assert.equal(delivered.popupFailedAt, null);
 
@@ -66,14 +66,14 @@ test("a popup that could not be delivered does not use up the episode: the next 
   const down = step(step(EMPTY, fail, T0).state, fail, T0 + 1);
   assert.equal(down.popup, true);
   const failed = popupDelivered(down.state, notShown, T0 + 1);
-  assert.equal(failed.popupShown, false);
+  assert.equal(failed.popupShown.daemon, false);
   assert.equal(failed.popupFailedAt, T0 + 1);
   assert.equal(failed.popupFailReason, notShown.detail);
   assert.equal(failed.lastPopupAt, null);
   const again = step(failed, fail, T0 + 2);
   assert.equal(again.popup, true, "asked again");
   const ok = popupDelivered(again.state, shown, T0 + 2);
-  assert.equal(ok.popupShown, true);
+  assert.equal(ok.popupShown.daemon, true);
   assert.equal(ok.lastPopupAt, T0 + 2);
   assert.equal(ok.popupFailedAt, null, "the failure is cleared by a delivery");
   assert.equal(ok.popupFailReason, null);
@@ -85,8 +85,8 @@ test("a popup that could not be delivered does not use up the episode: the next 
 test("a popup still up after the grace is pending, not delivered: only a confirmed exit 0 (or an acknowledgement) latches; a late failure or a supervisor that never reports reopens the episode", () => {
   const down = step(step(EMPTY, fail, T0).state, fail, T0 + 1);
   const pending = popupDelivered(down.state, { started: true, pending: true, token: "t1", detail: "popup started (test)" }, T0 + 1);
-  assert.equal(pending.popupShown, false, "surviving the grace is not delivery");
-  assert.deepEqual(pending.popupPending, { token: "t1", since: T0 + 1 });
+  assert.equal(pending.popupShown.daemon, false, "surviving the grace is not delivery");
+  assert.deepEqual(pending.popupPending, { token: "t1", since: T0 + 1, kind: "daemon" });
   assert.equal(pending.lastPopupAt, null);
   assert.equal(step(pending, fail, T0 + 2).popup, false, "no second dialog while the first may still be up");
   assert.equal(step(pending, pass, T0 + 2).state.popupPending, null, "a pass re-arms and forgets it");
@@ -97,7 +97,7 @@ test("a popup still up after the grace is pending, not delivered: only a confirm
   assert.deepEqual(popupSettled(down.state, outcome({ code: 7 }), T0 + 2), { state: down.state, line: null }, "nothing pending: nothing to settle");
 
   const late = popupSettled(pending, outcome({ code: 7 }), T0 + 6);
-  assert.equal(late.state.popupShown, false);
+  assert.equal(late.state.popupShown.daemon, false);
   assert.equal(late.state.popupPending, null);
   assert.equal(late.state.popupFailedAt, T0 + 5);
   assert.equal(late.state.popupFailReason, "popup not delivered: /usr/bin/osascript ended with exit 7 after the grace");
@@ -105,15 +105,15 @@ test("a popup still up after the grace is pending, not delivered: only a confirm
   assert.equal(step(late.state, fail, T0 + 6).popup, true, "the episode's popup is open again");
 
   const confirmed = popupSettled(pending, outcome({ code: 0 }), T0 + 6);
-  assert.deepEqual({ shown: confirmed.state.popupShown, pending: confirmed.state.popupPending, at: confirmed.state.lastPopupAt }, { shown: true, pending: null, at: T0 + 1 });
+  assert.deepEqual({ shown: confirmed.state.popupShown.daemon, pending: confirmed.state.popupPending, at: confirmed.state.lastPopupAt }, { shown: true, pending: null, at: T0 + 1 });
   assert.equal(confirmed.line, "popup delivered: /usr/bin/osascript ended with exit 0");
   assert.equal(step(confirmed.state, fail, T0 + 7).popup, false);
   const acknowledged = popupSettled(pending, outcome({ code: 1, acknowledged: true }), T0 + 6);
-  assert.equal(acknowledged.state.popupShown, true, "a person dismissing the dialog (-128) is an acknowledgement");
+  assert.equal(acknowledged.state.popupShown.daemon, true, "a person dismissing the dialog (-128) is an acknowledgement");
 
   assert.deepEqual(popupSettled(pending, null, T0 + 1 + PENDING_STALE_MS), { state: pending, line: null }, "at the bound: still waiting");
   const lost = popupSettled(pending, null, T0 + 2 + PENDING_STALE_MS);
-  assert.equal(lost.state.popupShown, false);
+  assert.equal(lost.state.popupShown.daemon, false);
   assert.equal(lost.state.popupPending, null);
   assert.match(lost.state.popupFailReason, /^popup not confirmed: no outcome from its supervisor within \d+ s$/);
   assert.equal(step(lost.state, fail, T0 + 3 + PENDING_STALE_MS).popup, true);
@@ -124,7 +124,7 @@ test("a passing tick closes the episode and re-arms the popup; the next down pop
   assert.equal(s.episode, "down");
   const up = step(s, pass, T0 + 2);
   assert.equal(up.popup, false);
-  assert.deepEqual({ episode: up.state.episode, strikes: up.state.strikes, popupShown: up.state.popupShown, downSince: up.state.downSince, popupFailedAt: up.state.popupFailedAt }, { episode: "up", strikes: 0, popupShown: false, downSince: null, popupFailedAt: null });
+  assert.deepEqual({ episode: up.state.episode, strikes: up.state.strikes, popupShown: up.state.popupShown, downSince: up.state.downSince, popupFailedAt: up.state.popupFailedAt }, { episode: "up", strikes: 0, popupShown: { daemon: false, semantic: false }, downSince: null, popupFailedAt: null });
   assert.equal(up.state.lastPopupAt, T0 + 1, "the history of the last popup is kept");
   s = step(up.state, fail, T0 + 3).state;
   assert.equal(s.episode, "strike");
@@ -146,19 +146,97 @@ test("step keeps the fields it does not own (intervalS, firstSeenAt) and caps st
   const s = step({ ...EMPTY, intervalS: 120, firstSeenAt: 5 }, pass, T0).state;
   assert.equal(s.intervalS, 120);
   assert.equal(s.firstSeenAt, 5);
-  assert.equal(step({ ...EMPTY, strikes: MAX_STRIKES, episode: "down", popupShown: true }, fail, T0).state.strikes, MAX_STRIKES);
+  assert.equal(step({ ...EMPTY, strikes: MAX_STRIKES, episode: "down", popupShown: { daemon: true, semantic: false } }, fail, T0).state.strikes, MAX_STRIKES);
+});
+
+const semantic = { ok: false, reason: 'the ctx semantic index is not ready (.daemon.jobs.semantic_index.status = "budget_exhausted")', healable: false, healed: { attempted: false, ok: false, detail: "not attempted: the daemon is running; `ctx index mode auto` does not touch the semantic index" } };
+
+/** Drive `results` through step from `state`, delivering every popup asked for; the kinds popped, in order. */
+function drive(results, state = EMPTY) {
+  const popped = [];
+  let s = state;
+  results.forEach((r, i) => {
+    const out = step(s, r, T0 + i);
+    s = out.state;
+    if (out.popup) {
+      popped.push(s.episodeKind);
+      s = popupDelivered(s, shown, T0 + i);
+    }
+  });
+  return { popped, state: s };
+}
+
+test("each failure kind has its own latch: a daemon death after a semantic popup raises its own popup (the review's P4 shape)", () => {
+  const { popped, state } = drive([semantic, semantic, fail, fail, fail, fail]);
+  assert.deepEqual(popped, ["semantic", "daemon"]);
+  assert.deepEqual({ episode: state.episode, strikes: state.strikes, episodeKind: state.episodeKind, kindStrikes: state.kindStrikes, popupShown: state.popupShown }, { episode: "down", strikes: 6, episodeKind: "daemon", kindStrikes: 4, popupShown: { daemon: true, semantic: true } });
+  // The daemon comes back while the semantic index is still not ready: no second semantic popup, and the daemon's latch re-arms.
+  const back = drive([semantic, semantic], state);
+  assert.deepEqual(back.popped, []);
+  assert.deepEqual(back.state.popupShown, { daemon: false, semantic: true });
+  assert.deepEqual(drive([fail, fail], back.state).popped, ["daemon"], "the next daemon death pops again");
+  assert.deepEqual(drive([fail, fail, semantic, semantic]).popped, ["daemon", "semantic"], "the reverse order pops both too");
+});
+
+test("a semantic status that flips ready once between not-ready runs pops once; the latch re-arms only after STRIKES_TO_DOWN passing ticks in a row", () => {
+  const flip = drive([semantic, semantic, pass, semantic, semantic, pass, semantic, semantic]);
+  assert.deepEqual(flip.popped, ["semantic"]);
+  assert.equal(flip.state.popupShown.semantic, true);
+  const rearmed = drive([pass, pass], flip.state);
+  assert.deepEqual({ popupShown: rearmed.state.popupShown, passStreak: rearmed.state.passStreak }, { popupShown: { daemon: false, semantic: false }, passStreak: STRIKES_TO_DOWN });
+  assert.deepEqual(drive([semantic, semantic], rearmed.state).popped, ["semantic"], "a real return to not ready after the streak pops again");
+  // A daemon popup re-arms on the first pass, as in 0.1.0.
+  assert.deepEqual(drive([fail, fail, pass, fail, fail]).popped, ["daemon", "daemon"]);
+});
+
+test("a pending popup blocks the other kind's until it settles, and is dropped when its own kind re-arms", () => {
+  const down = step(step(EMPTY, semantic, T0).state, semantic, T0 + 1);
+  assert.equal(down.popup, true);
+  const pending = popupDelivered({ ...down.state, popupPending: { token: "t1", since: T0 + 1, kind: "semantic" } }, { started: true, pending: true, token: "t1", detail: "popup started (test)" }, T0 + 1);
+  assert.deepEqual(pending.popupPending, { token: "t1", since: T0 + 1, kind: "semantic" });
+  const d2 = step(step(pending, fail, T0 + 2).state, fail, T0 + 3);
+  assert.equal(d2.popup, false, "no second dialog while the semantic one may still be up");
+  const settled = popupSettled(d2.state, { token: "t1", at: T0 + 4, bin: "/usr/bin/osascript", code: 0, signal: null, error: null, acknowledged: false }, T0 + 4);
+  assert.deepEqual(settled.state.popupShown, { daemon: false, semantic: true }, "the delivery latches the claim's kind");
+  assert.equal(step(settled.state, fail, T0 + 5).popup, true, "then the daemon's popup is asked for");
+  assert.deepEqual(step(pending, pass, T0 + 2).state.popupPending, pending.popupPending, "one ready tick does not end a semantic popup's claim");
+  assert.equal(step(step(pending, pass, T0 + 2).state, pass, T0 + 3).state.popupPending, null, "the streak does");
+});
+
+test("a state file from before 0.2.0 migrates on read: the one boolean latch is the daemon's, a pending popup with no kind is the daemon's, a strike or down is a daemon episode", () => {
+  const old = { episode: "down", strikes: 5, popupShown: true, popupPending: { token: "1793700000000-13", since: 5 }, downSince: 1 };
+  const { state } = validateState(old);
+  assert.deepEqual({ popupShown: state.popupShown, popupPending: state.popupPending, episodeKind: state.episodeKind, kindStrikes: state.kindStrikes, passStreak: state.passStreak }, { popupShown: { daemon: true, semantic: false }, popupPending: { token: "1793700000000-13", since: 5, kind: "daemon" }, episodeKind: "daemon", kindStrikes: 5, passStreak: 0 });
+  assert.deepEqual(validateState({ popupShown: false }).state.popupShown, { daemon: false, semantic: false });
+  assert.deepEqual(drive([fail], validateState({ episode: "strike", strikes: 1 }).state).popped, ["daemon"], "an old strike goes down and pops on the next daemon tick, as before");
+  assert.equal(validateState({ episode: "strike", strikes: 1, episodeKind: null }).state.episodeKind, null, "a 0.2.0 file is taken as written");
+  // Migrated: an old latch held by a semantic popup still lets a later daemon death pop once a semantic tick re-arms it.
+  assert.deepEqual(drive([semantic, fail, fail], { ...state, popupPending: null }).popped, ["daemon"]);
+  const dir = mkdtempSync(join(tmpdir(), "ctx-watch-state-"));
+  try {
+    const file = join(dir, "state.json");
+    writeFileSync(file, JSON.stringify(old));
+    assert.deepEqual(readState(file).popupShown, { daemon: true, semantic: false });
+    assert.equal(existsSync(join(dir, "errors.log")), false, "a migration is not an error");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 });
 
 test("validateState: known fields in shape pass (unknown dropped); each field out of shape is named", () => {
-  assert.deepEqual(validateState({ episode: "down", strikes: 4, extra: "dropped" }), { state: { ...EMPTY, episode: "down", strikes: 4 } });
+  assert.deepEqual(validateState({ episode: "down", strikes: 4, extra: "dropped" }), { state: { ...EMPTY, episode: "down", strikes: 4, episodeKind: "daemon", kindStrikes: 4 } });
   assert.deepEqual(validateState({}), { state: { ...EMPTY } });
   const bad = [
     [{ episode: "DOWN" }, 'episode is "DOWN", not "up" | "strike" | "down"'],
     [{ strikes: -100 }, "strikes is -100, not a whole number 0..1100000"],
     [{ strikes: 1.5 }, "strikes is 1.5, not a whole number 0..1100000"],
     [{ strikes: "3" }, 'strikes is "3", not a whole number 0..1100000'],
-    [{ popupShown: "yes" }, 'popupShown is "yes", not true | false'],
-    [{ popupShown: 1 }, "popupShown is 1, not true | false"],
+    [{ popupShown: "yes" }, 'popupShown is "yes", not { daemon, semantic } of true | false (or one true | false from before 0.2.0)'],
+    [{ popupShown: 1 }, "popupShown is 1, not { daemon, semantic } of true | false (or one true | false from before 0.2.0)"],
+    [{ popupShown: { daemon: true } }, 'popupShown is {"daemon":true}, not { daemon, semantic } of true | false (or one true | false from before 0.2.0)'],
+    [{ episodeKind: "both" }, 'episodeKind is "both", not "daemon" | "semantic" | null'],
+    [{ kindStrikes: -1 }, "kindStrikes is -1, not a whole number 0..1100000"],
+    [{ passStreak: 0.5 }, "passStreak is 0.5, not a whole number 0..1100000"],
     [{ lastTickAt: "soon" }, 'lastTickAt is "soon", not epoch ms | null'],
     [{ lastTickAt: -1 }, "lastTickAt is -1, not epoch ms | null"],
     [{ lastTickAt: 9e15 }, "lastTickAt is 9000000000000000, not epoch ms | null"],
@@ -171,9 +249,10 @@ test("validateState: known fields in shape pass (unknown dropped); each field ou
     [{ lastPopupAt: [] }, "lastPopupAt is [], not epoch ms | null"],
     [{ popupFailedAt: "x" }, 'popupFailedAt is "x", not epoch ms | null'],
     [{ popupFailReason: 7 }, "popupFailReason is 7, not a string | null"],
-    [{ popupPending: { token: "", since: 1 } }, 'popupPending is {"token":"","since":1}, not { token, since } | null'],
-    [{ popupPending: { token: "t", since: -1 } }, 'popupPending is {"token":"t","since":-1}, not { token, since } | null'],
-    [{ popupPending: { token: "../../etc/x", since: 1 } }, 'popupPending is {"token":"../../etc/x","since":1}, not { token, since } | null'],
+    [{ popupPending: { token: "", since: 1 } }, 'popupPending is {"token":"","since":1}, not { token, since, kind? } | null'],
+    [{ popupPending: { token: "t", since: -1 } }, 'popupPending is {"token":"t","since":-1}, not { token, since, kind? } | null'],
+    [{ popupPending: { token: "../../etc/x", since: 1 } }, 'popupPending is {"token":"../../etc/x","since":1}, not { token, since, kind? } | null'],
+    [{ popupPending: { token: "t", since: 1, kind: "other" } }, 'popupPending is {"token":"t","since":1,"kind":"other"}, not { token, since, kind? } | null'],
     [{ lastProbe: "fail" }, 'lastProbe is "fail", not { at, ok, reason, healed } | null'],
     [{ lastProbe: { at: "now", ok: true } }, 'lastProbe is {"at":"now","ok":true}, not { at, ok, reason, healed } | null'],
     [{ lastProbe: { at: 1, ok: "true" } }, 'lastProbe is {"at":1,"ok":"true"}, not { at, ok, reason, healed } | null'],
@@ -200,7 +279,7 @@ test("readState: missing → EMPTY silently; not JSON, non-object, or a field ou
     assert.deepEqual(readState(file), EMPTY);
     assert.match(lines()[1], / ignored: not an object; treated as absent$/);
     writeFileSync(file, '{"episode":"down","strikes":4}');
-    assert.deepEqual(readState(file), { ...EMPTY, episode: "down", strikes: 4 });
+    assert.deepEqual(readState(file), { ...EMPTY, episode: "down", strikes: 4, episodeKind: "daemon", kindStrikes: 4 }, "a file from before 0.2.0: a daemon episode");
     assert.equal(lines().length, 2, "a good file logs nothing");
     // The reviewer's poisoned object: the popup would be held off for the whole outage.
     writeFileSync(file, JSON.stringify({ ...EMPTY, strikes: -100, popupShown: true, lastTickAt: "soon", intervalS: "300" }));

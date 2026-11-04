@@ -9,10 +9,12 @@
 // twice its interval (or, never ticked, since this hook first ran), `ctx-watch: timer has not run
 // since <time>; run \`node <cli> install\` and the printed launchctl line` (as long as the
 // plugin's path makes it: a truncated path is not a command). Healthy and on time → nothing.
-// No deny, no block: this hook only talks. Last, when the payload's `source` is `resume` or
-// `compact`, it leaves <state>/resume/<session_id> holding the time, for the Stop hook's
-// consult-history check (lib/consult-history.mjs); a marker that cannot be written is one
-// errors.log line and nothing else (the check then has nothing to consume).
+// No deny, no block: this hook only talks. First of all, when the payload's `source` is `resume`,
+// `compact` or `fork`, it leaves <state>/resume/<session_id> holding the time the hook started
+// (before the probe, which can take up to 3 s: a prompt typed meanwhile is inside the window),
+// for the Stop hook's consult-history check (lib/consult-history.mjs); a marker that cannot be
+// written is one errors.log line and nothing else (the check then has nothing to consume). The
+// flag file ~/.claude/.ctx-watch-off does not reach this hook: it turns off the Stop check only.
 //
 // How it fails: stdin not JSON, a thrown error, or no answer in 4 s (handle() runs on a worker
 // thread; the runner's timer on the main thread fires whatever it is doing) → the runner logs it
@@ -63,9 +65,13 @@ export function stampLine(file, err) {
  */
 export function handle(input, { env = process.env, now = Date.now, run, exists, cliPath = CLI_PATH, timeoutMs = HOOK_SPAWN_MS, deadlineMs = HOOK_DEADLINE_MS } = {}) {
   const lines = [];
+  const file = statePath(env);
+  if (isResume(input.source) && typeof input.session_id === "string" && input.session_id.trim()) {
+    const err = markResumed(dirname(file), input.session_id.trim(), now());
+    if (err) logError("ctx-watch", "SessionStart", `resume marker for ${input.session_id.trim()} not written (${err.message}); consult-history will not check this resume`, env);
+  }
   const result = check({ env, now, run, exists, timeoutMs, deadlineMs, ctx: typeof env.CTX_WATCH_CTX === "string" && env.CTX_WATCH_CTX ? env.CTX_WATCH_CTX : CTX });
   if (!result.ok) lines.push(needsYouLine(result));
-  const file = statePath(env);
   const state = readState(file);
   const at = now();
   if (state.lastTickAt === null && state.firstSeenAt === null) {
@@ -85,10 +91,6 @@ export function handle(input, { env = process.env, now = Date.now, run, exists, 
   }
   const t = timerOverdue(state, at);
   if (t.overdue) lines.push(timerLine(t.since, cliPath));
-  if (isResume(input.source) && typeof input.session_id === "string" && input.session_id.trim()) {
-    const err = markResumed(dirname(file), input.session_id.trim(), at);
-    if (err) logError("ctx-watch", "SessionStart", `resume marker for ${input.session_id.trim()} not written (${err.message}); consult-history will not check this resume`, env);
-  }
   return lines.length ? { systemMessage: lines.join("\n") } : null;
 }
 

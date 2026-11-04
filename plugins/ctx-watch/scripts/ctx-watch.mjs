@@ -7,12 +7,15 @@
 //                            then, holding <state>/state.lock: settle a popup an earlier tick left
 //                            pending (from its token's <state>/popups/<token>.json), advance the
 //                            episode state in <state>/state.json, and on the second failing tick
-//                            in a row record the popup's claim (pending under a fresh token).
+//                            in a row of one failure kind (daemon or semantic) record that kind's
+//                            popup claim (pending under a fresh token).
 //                            Only once that claim is on disk does the dialog start; its result is
 //                            then applied, under the lock again, to the state as it is by then.
-//                            Once per episode, once its delivery is confirmed; a popup that could
-//                            not be shown, or that failed after the grace, is tried again next
-//                            failing tick; re-armed by a passing tick. A claim that cannot be
+//                            Once per kind per episode, once its delivery is confirmed; a popup
+//                            that could not be shown, or that failed after the grace, is tried
+//                            again next failing tick; re-armed as lib/state.mjs says (the daemon
+//                            latch by a tick with the daemon up, the semantic latch by two passing
+//                            ticks in a row). A claim that cannot be
 //                            recorded (no lock, a failed write) starts no popup. One summary line.
 //   install [--interval 300] write <state>/launchd/com.jo-wolff-plugins.ctx-watch.plist, lint it,
 //                            print the `launchctl bootstrap` line. Never bootstraps. The plist
@@ -112,7 +115,7 @@ export async function main(argv, deps = {}) {
           const prev = readState(file);
           const settled = popupSettled(prev, prev.popupPending ? readOutcome(outcomePath(dir, prev.popupPending.token)) : null, at);
           const { state, popup: wantPopup } = step(settled.state, result, at);
-          const next = wantPopup ? { ...state, popupPending: { token, since: at } } : state;
+          const next = wantPopup ? { ...state, popupPending: { token, since: at, kind: state.episodeKind } } : state;
           const written = writeState(file, next);
           return { settled, state: next, wantPopup, written, error: written ? null : writeState.lastError };
         },
@@ -163,7 +166,8 @@ export async function main(argv, deps = {}) {
       const read = readState(file);
       const state = popupSettled(read, read.popupPending ? readOutcome(outcomePath(dir, read.popupPending.token)) : null, now()).state;
       const t = timerOverdue(state, now());
-      const popupLine = state.popupShown
+      const kind = state.popupPending?.kind ?? state.episodeKind;
+      const popupLine = kind && state.popupShown[kind]
         ? `, popup shown ${iso(state.lastPopupAt)}`
         : state.popupPending
           ? `, popup up since ${iso(state.popupPending.since)}, not confirmed yet`
@@ -175,7 +179,7 @@ export async function main(argv, deps = {}) {
         `ctx: ${ctx}`,
         `last tick: ${iso(state.lastTickAt)}${t.overdue ? ` (overdue: more than ${2 * t.intervalS} s ago)` : ""}`,
         `last probe: ${state.lastProbe ? `${state.lastProbe.ok ? "pass" : `fail: ${state.lastProbe.reason}`} at ${iso(state.lastProbe.at)}${state.lastProbe.healed ? ` | heal: ${state.lastProbe.healed}` : ""}` : "never"}`,
-        `episode: ${state.episode} (strikes ${state.strikes}${state.downSince ? `, down since ${iso(state.downSince)}` : ""}${popupLine})`,
+        `episode: ${state.episode}${state.episodeKind ? ` [${state.episodeKind}]` : ""} (strikes ${state.strikes}${state.downSince ? `, down since ${iso(state.downSince)}` : ""}${popupLine})`,
         `plist: ${plistPath(env, undefined, dir)}${state.intervalS ? ` (every ${state.intervalS} s)` : " (not written by install yet)"}`,
         `launchd: ${loaded({ uid, check: checkBin }).detail}`,
       ];

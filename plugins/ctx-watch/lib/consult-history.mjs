@@ -3,13 +3,13 @@
 //
 // Two triggers, both a deterministic scan of the Claude Code transcript (no judge):
 //
-//   resume   the first Stop after a SessionStart whose `source` was `resume` or `compact` (the
-//            SessionStart hook leaves a marker, <state>/resume/<session id>, holding the time;
-//            this check consumes it whether or not it fires), when no entry since that time is a
-//            ctx history call;
-//   phrase   the final assistant message says "we spoke previously", "earlier you said", "as
-//            discussed" or "last time" (PHRASES, whole words, any case) and no entry of this
-//            turn (since the last user prompt) is a ctx history call.
+//   resume   the first Stop after a SessionStart whose `source` was `resume`, `compact` or
+//            `fork` (the SessionStart hook leaves a marker, <state>/resume/<session id>, holding
+//            the time the hook started; this check consumes it whether or not it fires), when no
+//            entry since that time is a ctx history call;
+//   phrase   the final assistant message says "we spoke previously", "earlier you said" or "as
+//            discussed" (PHRASES, whole words, any case) and no entry of this turn (since the
+//            last user prompt) is a ctx history call.
 //
 // A ctx history call is a tool_use whose name is the ctx MCP server's search, show_session or
 // show_event (Claude Code 2.1.300 and 2.1.317 transcripts under ~/.claude/projects write the
@@ -21,6 +21,8 @@
 // The message: `resumed without consulting history — \`ctx search '<topic>'\`` where <topic>
 // is the first six words of the first user prompt of the window scanned (the prompt that
 // resumed the thread; for the phrase trigger, this turn's prompt), single-quoted for the shell.
+// A window with no prompt takes the last prompt before it (what the thread was about); a
+// transcript with no prompt at all gets a bare `ctx search`, and the message says so.
 //
 // The switch: ~/.claude/ctx-watch.json `{"checks": {"consult-history": "off" | "warn" | "block"}}`,
 // default warn; the flag file ~/.claude/.ctx-watch-off (existence, checked per run) is off
@@ -47,7 +49,7 @@ import { join } from "node:path";
 export const CHECK = "consult-history";
 export const MODES = Object.freeze(["off", "warn", "block"]);
 export const DEFAULT_MODE = "warn";
-export const PHRASES = Object.freeze(["we spoke previously", "earlier you said", "as discussed", "last time"]);
+export const PHRASES = Object.freeze(["we spoke previously", "earlier you said", "as discussed"]);
 export const TOPIC_WORDS = 6;
 /** The ctx MCP tool names that consult history: `mcp__ctx__search` (what Claude Code writes) or `mcp__ctx_search`. */
 export const CTX_TOOL = /^mcp__ctx_{1,2}(?:search|show_session|show_event)$/;
@@ -58,7 +60,7 @@ const PHRASE_RE = new RegExp(`\\b(?:${PHRASES.map((p) => p.replace(/\s+/g, "\\s+
 const claudeDir = (env) => join(env.HOME || homedir(), ".claude");
 /** `~/.claude/ctx-watch.json`. */
 export const configPath = (env = process.env) => join(claudeDir(env), "ctx-watch.json");
-/** `~/.claude/.ctx-watch-off`: present means every check is off. */
+/** `~/.claude/.ctx-watch-off`: present means the consult-history Stop check is off. The SessionStart line and the launchd timer do not read it. */
 export const flagPath = (env = process.env) => join(claudeDir(env), ".ctx-watch-off");
 
 /**
@@ -92,10 +94,10 @@ export function readMode(env = process.env, { exists = existsSync, read = readFi
 }
 
 const safeId = (id) => String(id).replace(/[^A-Za-z0-9._-]/g, "_").slice(0, 120);
-/** `<state>/resume/<session id>`: the marker the SessionStart hook leaves on a resume or compact. */
+/** `<state>/resume/<session id>`: the marker the SessionStart hook leaves on a resume, compact or fork. */
 export const resumeMarkerPath = (dir, sessionId) => join(dir, "resume", safeId(sessionId));
-/** A SessionStart `source` that resumes a thread. */
-export const isResume = (source) => source === "resume" || source === "compact";
+/** A SessionStart `source` that picks a thread back up: a resume, a compaction, or a fork (a resumed thread under a new session id). */
+export const isResume = (source) => source === "resume" || source === "compact" || source === "fork";
 
 /** Leave the marker holding `at` (ms). Returns null, or the error. */
 export function markResumed(dir, sessionId, at) {
@@ -209,23 +211,25 @@ const since = (entries, sinceMs) => entries.filter((e) => sinceMs === null || ti
  * null; `text` the final message.
  */
 export function finding({ entries, resumedAt, text }) {
-  const say = (trigger, window) => {
-    const prompt = window.find(isPrompt);
-    const topic = topicOf(prompt ? textOf(prompt) : "") || "the thread you resumed";
+  const say = (trigger, window, before) => {
+    const prompt = window.find(isPrompt) ?? before.findLast(isPrompt);
+    const topic = topicOf(prompt ? textOf(prompt) : "");
     const head = trigger === "resume" ? "resumed without consulting history" : `said ${JSON.stringify(trigger)} without consulting history`;
-    const command = `ctx search ${shellQuote(topic)}`;
-    return { trigger: trigger === "resume" ? "resume" : "phrase", topic, head, command, message: `${head} — \`${command}\`` };
+    const command = topic ? `ctx search ${shellQuote(topic)}` : "ctx search";
+    const message = topic ? `${head} — \`${command}\`` : `${head} — \`${command}\` (the transcript has no prompt to take a topic from: add one)`;
+    return { trigger: trigger === "resume" ? "resume" : "phrase", topic: topic || null, head, command, message };
   };
   if (resumedAt !== null) {
     const window = since(entries, resumedAt);
-    if (!window.some(isCtxCall)) return say("resume", window);
+    const inside = new Set(window);
+    if (!window.some(isCtxCall)) return say("resume", window, entries.filter((e) => !inside.has(e)));
   }
   const m = PHRASE_RE.exec(text);
   if (m) {
     let start = entries.length;
     while (start > 0 && !isPrompt(entries[start - 1])) start--;
     const turn = entries.slice(Math.max(0, start - 1));
-    if (!turn.some(isCtxCall)) return say(m[0].toLowerCase().replace(/\s+/g, " "), turn);
+    if (!turn.some(isCtxCall)) return say(m[0].toLowerCase().replace(/\s+/g, " "), turn, entries.slice(0, Math.max(0, start - 1)));
   }
   return null;
 }

@@ -8,7 +8,7 @@
 //      `checks.consult-history: "off"` → nothing (the resume marker is still consumed, so a
 //      later `warn` does not fire for a resume that happened while it was off).
 //   2. The resume marker for this session_id (left by hooks/session-start.mjs on `source`
-//      resume or compact) is read and removed, whether or not the check fires.
+//      resume, compact or fork) is read and removed, whether or not the check fires.
 //   3. The transcript (`transcript_path`) is scanned: resume trigger (no ctx history call since
 //      the marker's time), then phrase trigger (the final message says "as discussed" or one of
 //      the other PHRASES and this turn made no ctx history call).
@@ -71,7 +71,7 @@ export function handle(input, { env = process.env, now = Date.now, dir = stateDi
   if (!blocked) return { systemMessage: `ctx-watch: ${f.message}` };
   return {
     decision: "block",
-    reason: `ctx-watch (${CHECK}): ${f.head}. Run \`${f.command}\` (or the ctx MCP search) and read what it finds before going on. ${wayOut()}`,
+    reason: `ctx-watch (${CHECK}): ${f.head}. Run \`${f.command}\`${f.topic ? "" : " with the thread's subject added (the transcript has no prompt to take one from)"} (or the ctx MCP search) and read what it finds before going on. ${wayOut()}`,
   };
 }
 
