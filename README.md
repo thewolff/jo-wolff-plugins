@@ -53,6 +53,14 @@ it, keeping a record of what it did and asked, and a vendored set of engineering
   or stale, repair it with the one command ctx documents, and say so at SessionStart and in a
   macOS popup from a launchd timer; the SessionStart line also says when the timer itself has
   stopped. macOS; Claude Code hooks, plus a CLI that works anywhere.
+- **[continuity](#continuity)** — keep a long session's state across compaction: a PreCompact
+  hook saves branch, diff, touched files, recent asks and the repository's open handoffs to a
+  snapshot the post-compaction SessionStart injects back; every start says when that save last
+  succeeded, so a dead save is never silent; a context-pressure check warns once and blocks one
+  stop near the compaction target, naming `/continuity:handoff`; and the handoff skill writes
+  the judgment layer no hook can derive. Claude Code hooks. Changes in continuity 0.1.0: first
+  release, ported from the newdle plugin 0.2.175 with every workspace path stripped; see the
+  plugin's [CHANGELOG](plugins/continuity/CHANGELOG.md).
 
 output-types delivers text and, since 0.3.0, checks every finished message for a label without
 a receipt, warning only; see its *delivers, and warns* note. i-have-audhd delivers its rules and checks every finished message, warning by
@@ -78,6 +86,7 @@ the receipt.
 /plugin install plugin-kit@jo-wolff-plugins
 /plugin install ctx-watch@jo-wolff-plugins
 /plugin install delegation@jo-wolff-plugins
+/plugin install continuity@jo-wolff-plugins
 ```
 
 On OMP, from a shell:
@@ -94,6 +103,7 @@ omp plugin install as2-skills@jo-wolff-plugins
 omp plugin install plugin-kit@jo-wolff-plugins
 omp plugin install ctx-watch@jo-wolff-plugins
 omp plugin install delegation@jo-wolff-plugins
+omp plugin install continuity@jo-wolff-plugins
 ```
 
 Inside a running OMP session the commands are `/marketplace add` and `/marketplace install`, with
@@ -103,6 +113,7 @@ that run their hooks, and ask-graham installs its prompt nudge (see each section
 is a skill and a script, so it works on both. ctx-watch's SessionStart line is Claude Code
 only; its skill, CLI and launchd timer work on both. ledger is Claude Code only. delegation's
 gates, teaching block and agents run on both; its three ported guards are Claude Code only.
+continuity's hooks are Claude Code only; its handoff skill works on both.
 
 To update, update each harness separately. On OMP, refresh the marketplace first, because
 `omp plugin upgrade` installs the version in OMP's cached copy of it:
@@ -1165,6 +1176,42 @@ and some `as2-skills` skills, both sibling plugins installed separately. Gate 2 
 
 The tests run with `node --test` from inside `plugins/delegation/`; every hook is spawned
 through the fail-open runner with its 4 s deadline in an empty HOME and XDG sandbox.
+
+## continuity
+
+Keep a long session's state across compaction. On PreCompact, `hooks/pre-compact.mjs` saves the
+session's deterministic state (branch, uncommitted paths, files touched, the last five asks, and
+the open handoffs under the repository's `.ai/handoffs/`) to
+`${XDG_STATE_HOME:-~/.local/state}/continuity/<session_id>.json`, every list capped and every
+cut announced in the file, and leaves a heartbeat record saying whether it worked. On the
+SessionStart that follows a compaction, `hooks/session-start.mjs` injects that snapshot back
+(this session's only, at most 20,000 characters) and removes it; on every start it adds one
+line, `continuity, pre-compaction save liveness: last successful save N minutes ago; the
+snapshot path is alive`, or a bold line saying the save has never been recorded or never
+succeeded on this machine, so a save that silently died is seen the next morning. The
+context-pressure check (`hooks/user-prompt-submit.mjs`, `hooks/stop.mjs`) estimates the
+session's size from the transcript and the ratio observed at earlier compactions, and at 0.65
+of the compaction target (configurable in `${XDG_CONFIG_HOME:-~/.config}/continuity/config.json`)
+warns once with the prompt and blocks one stop, both naming `/continuity:handoff`; a machine
+that has never compacted hears nothing. The handoff skill writes
+`<root>/.ai/handoffs/<date>--<time>--<author>--<lane>.md` with five sections (where I left off,
+next move, already ruled out, live uncertainty, working state) and the rule that a resuming
+session restates the content before continuing. Every hook fails open. Built on plugin-kit
+0.2.1; Node 22.13 or later. The config keys, the state table, the failure table and the
+"Ported from newdle 0.2.175" table are in
+[`plugins/continuity/README.md`](plugins/continuity/README.md).
+
+### Install
+
+```
+/plugin marketplace add thewolff/jo-wolff-plugins
+/plugin install continuity@jo-wolff-plugins
+```
+
+### Developing continuity
+
+The tests run with `node --test` from inside `plugins/continuity/`;
+`bash e2e/live-run.sh --no-live` replays the twelve scenarios offline.
 
 ## License
 

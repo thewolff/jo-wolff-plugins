@@ -1,0 +1,13 @@
+{
+  "$comment": "A manual /compact: the snapshot is saved and the heartbeat written, with nothing to tell the person (the handoff warning is for auto-compaction only).",
+  "event": "PreCompact",
+  "expect": "silent",
+  "sibling": "pre-compact-auto-no-handoff.scenario.json",
+  "transcript": [{ "type": "user", "message": { "role": "user", "content": "carry on" } }],
+  "stdin": { "hook_event_name": "PreCompact", "session_id": "${SESSION_ID}", "cwd": "${CWD}", "transcript_path": "${TRANSCRIPT}", "trigger": "manual", "custom_instructions": "" },
+  "after": {
+    "exists": ["$XDG_STATE_HOME/continuity/${SESSION_ID}.json", "$XDG_STATE_HOME/continuity/heartbeat.ndjson"],
+    "absent": ["$XDG_STATE_HOME/continuity/calibration.ndjson"],
+    "commands": ["grep -q '\"trigger\": \"manual\"' \"${XDG_STATE_HOME}/continuity/${SESSION_ID}.json\""]
+  }
+}
