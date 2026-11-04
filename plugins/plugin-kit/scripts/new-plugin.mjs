@@ -10,14 +10,19 @@
 // never the destination), with
 // {{name}}, {{title}}, {{description}}, and per hook {{event}}, {{file}}, {{quiet}} filled in:
 //
-//   .claude-plugin/plugin.json, package.json, README.md, HOW-IT-FAILS.md
+//   .claude-plugin/plugin.json     with a `state` declaration ($XDG_STATE_HOME/<name>, 30 days, scripts/prune.mjs)
+//   package.json, README.md, HOW-IT-FAILS.md
 //   lib/hook-runner.mjs            a COPY of plugin-kit/lib/hook-runner.mjs (the plugin owns it)
+//   lib/live-run.mjs               a COPY of plugin-kit/lib/live-run.mjs (the scenario runner)
 //   hooks/hooks.json               one entry per event, `node "${CLAUDE_PLUGIN_ROOT}/hooks/<event>.mjs"`, timeout 5
 //   hooks/<event>.mjs              one handler per event, returning null (allow) until a rule is written
-//   skills/<name>/SKILL.md         with the "When this can't run" section
+//   skills/<name>/SKILL.md         with the "When this can't run" section, naming a scenario file
+//   evals/manifest.json            each event → ["silent"] until the handler does more
+//   evals/<event>.scenario.json    one stub per event ("stub": true; `ledger gate check` fails until it is filled)
+//   scripts/prune.mjs              the retention verb the `state` declaration names
 //   test/hook-contract.test.mjs    the five fault inputs, per hook
 //   test/fixtures/README.md        the <x>.txt / <x>.unavailable.txt sibling rule
-//   e2e/live-run.sh                the canary contract (exit 0 pass, 75 unavailable, stdout kept)
+//   e2e/live-run.sh                the canary contract (exit 0 pass, 75 unavailable, stdout kept), handing off to lib/live-run.mjs
 //
 // Refuses: a name that is not lowercase kebab, an event not in the host's list, an existing
 // destination (nothing is overwritten; delete it yourself first), no events. Exit 1 with the
@@ -57,6 +62,19 @@ export function repoTop(cwd) {
   } catch {
     return null;
   }
+}
+
+/** A well-formed hook input for `event`, the shape the scenario stub starts from. */
+export function sampleInput(event) {
+  const base = { session_id: "${SESSION_ID}", transcript_path: "${TRANSCRIPT}", cwd: "${CWD}", hook_event_name: event };
+  if (event === "PreToolUse" || event === "PostToolUse" || event === "PermissionRequest") return { ...base, tool_name: "Write", tool_input: { file_path: "${CWD}/notes.txt", content: "hello" } };
+  if (event === "UserPromptSubmit") return { ...base, prompt: "hello" };
+  if (event === "Stop" || event === "SubagentStop") return { ...base, stop_hook_active: false };
+  if (event === "SessionStart") return { ...base, source: "startup" };
+  if (event === "SessionEnd") return { ...base, reason: "other" };
+  if (event === "PreCompact") return { ...base, trigger: "manual" };
+  if (event === "Notification") return { ...base, message: "hello" };
+  return base;
 }
 
 export function parseArgs(argv, { cwd = process.cwd() } = {}) {
@@ -99,13 +117,16 @@ export function scaffold({ name, events, description, dest }) {
     written.push(rel);
   };
   const tpl = (rel) => readFileSync(join(TEMPLATES, rel), "utf8");
+  vars.scenario = `evals/${kebab(events[0])}.scenario.json`;
   put(".claude-plugin/plugin.json", fill(tpl(".claude-plugin/plugin.json"), vars));
   put("package.json", fill(tpl("package.json"), vars));
   put("README.md", fill(tpl("README.md"), { ...vars, description }));
   put("HOW-IT-FAILS.md", fill(tpl("HOW-IT-FAILS.md"), vars));
   mkdirSync(join(root, "lib"), { recursive: true });
-  cpSync(join(KIT_ROOT, "lib", "hook-runner.mjs"), join(root, "lib", "hook-runner.mjs"));
-  written.push("lib/hook-runner.mjs");
+  for (const lib of ["hook-runner.mjs", "live-run.mjs"]) {
+    cpSync(join(KIT_ROOT, "lib", lib), join(root, "lib", lib));
+    written.push(`lib/${lib}`);
+  }
   const hooks = {};
   for (const event of events) {
     const file = `${kebab(event)}.mjs`;
@@ -117,6 +138,10 @@ export function scaffold({ name, events, description, dest }) {
   }
   put("hooks/hooks.json", `${JSON.stringify({ hooks }, null, 2)}\n`);
   put(`skills/${name}/SKILL.md`, fill(tpl("skills/SKILL.md"), { ...vars, description }));
+  const manifestEvents = Object.fromEntries(events.map((e) => [e, ["silent"]]));
+  put("evals/manifest.json", fill(tpl("evals/manifest.json"), { ...vars, events: JSON.stringify(manifestEvents) }));
+  for (const event of events) put(`evals/${kebab(event)}.scenario.json`, fill(tpl("evals/scenario.json"), { ...vars, event, stdin: JSON.stringify(sampleInput(event)) }));
+  put("scripts/prune.mjs", fill(tpl("scripts/prune.mjs"), vars), 0o755);
   // The template carries a .template suffix so the kit's own `node --test` does not run it.
   put("test/hook-contract.test.mjs", tpl("test/hook-contract.test.mjs.template"));
   put("test/fixtures/README.md", tpl("test/fixtures/README.md"));

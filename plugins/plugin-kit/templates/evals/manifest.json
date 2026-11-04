@@ -1,0 +1,5 @@
+{
+  "$comment": "Every hook event hooks/hooks.json registers, with the outcomes its handler can return (deny, allow, ask, systemMessage, silent). Each event × outcome needs one evals/<name>.scenario.json; `ledger gate check` fails naming the gap. A handler that does nothing yet declares silent only. `manual` lists what no scenario can prove and how a person checks it.",
+  "events": {{events}},
+  "manual": []
+}

@@ -25,3 +25,6 @@ person stopped by a hook, or an agent whose skill failed, reads one line and kno
   the person once; do not treat the allowed call as checked.
 - The script is missing (`no such file`): the plugin is not installed where `CLAUDE_PLUGIN_ROOT`
   points. Tell the person; do the step by hand if it can be done by hand, and say that you did.
+
+The scenario that proves the hook's first outcome is `{{scenario}}`; `ledger gate check` fails
+this section until it names one that exists.
