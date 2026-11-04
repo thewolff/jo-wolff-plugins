@@ -20,7 +20,7 @@
 // relative or not, else ~/.local/state.
 //
 // Both readers are bounded: a symlink or non-regular file is not read, away.json is read only up
-// to 64 KiB, and the transcript only in its last 4 MiB, scanned from the end.
+// to 64 KiB, and the transcript only in its last 4 MiB (plus one look-behind byte), scanned whole.
 
 import { closeSync, fstatSync, lstatSync, openSync, readSync } from "node:fs";
 import { homedir } from "node:os";
@@ -32,7 +32,8 @@ const TRANSCRIPT_TAIL_BYTES = 4 * 1024 * 1024;
 /**
  * The text of a regular file at `path`, or null (missing, a symlink, not a regular file, an
  * error). `tail` false: the whole file, null when it is larger than `max`. `tail` true: its last
- * `max` bytes, without the partial first line when the read starts mid-file.
+ * `max` bytes; when the read starts mid-file and the byte before it is not a newline, the first
+ * line is partial and is dropped.
  */
 function readBounded(path, max, tail) {
   let fd;
@@ -52,6 +53,10 @@ function readBounded(path, max, tail) {
     }
     const text = buf.toString("utf8", 0, got);
     if (start === 0) return text;
+    // One extra 1-byte read on the same fd: the byte just before the window. A newline there means
+    // the window starts on a line boundary and its first line is complete.
+    const before = Buffer.alloc(1);
+    if (readSync(fd, before, 0, 1, start - 1) === 1 && before[0] === 0x0a) return text;
     const nl = text.indexOf("\n");
     return nl < 0 ? "" : text.slice(nl + 1);
   } catch {
@@ -104,10 +109,12 @@ export function isHumanPrompt(entry) {
 
 /**
  * Whether the person typed a prompt after `sinceIso`, read from the last 4 MiB of the transcript
- * at `path`, newest entry first: true or false when the file holds `user` entries with
- * timestamps, null when it cannot tell (no path, an unreadable, symlinked or non-regular file, or
- * no timestamped `user` entry at all — another harness's format). Only true is evidence that the
- * person wrote; the Stop hook reads null as "no evidence", never as "yes".
+ * at `path`: true or false when the file holds `user` entries with timestamps, null when it
+ * cannot tell (no path, an unreadable, symlinked or non-regular file, or no timestamped `user`
+ * entry at all — another harness's format). The whole retained tail is scanned: an entry at or
+ * before `since` is skipped, never ends the scan, because entries are not guaranteed to be in
+ * timestamp order. Only true is evidence that the person wrote; the Stop hook reads null as "no
+ * evidence", never as "yes".
  */
 export function humanWroteSince(path, sinceIso) {
   const since = Date.parse(sinceIso);
@@ -128,10 +135,8 @@ export function humanWroteSince(path, sinceIso) {
     if (entry?.type !== "user") continue;
     const at = typeof entry.timestamp === "string" ? Date.parse(entry.timestamp) : NaN;
     if (!Number.isFinite(at)) continue;
-    // Entries are appended in time order: the first user entry at or before `since` ends the scan.
-    if (at <= since) return false;
-    if (isHumanPrompt(entry)) return true;
     sawUser = true;
+    if (at > since && isHumanPrompt(entry)) return true;
   }
   return sawUser ? false : null;
 }

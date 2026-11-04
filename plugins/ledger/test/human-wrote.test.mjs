@@ -124,7 +124,7 @@ test("no evidence is not a reply: a new prompt_id with no transcript, or one wit
   assert.equal(gone.out, "", "missing transcript file");
 });
 
-test("humanWroteSince reads only a regular file's last 4 MiB, newest first; a symlink is not read", () => {
+test("humanWroteSince reads only a regular file's last 4 MiB; a symlink is not read", () => {
   const b = sandbox();
   const since = "2026-01-01T00:00:00.000Z";
   const prompt = JSON.stringify(user("ship it", { origin: { kind: "human" }, timestamp: "2026-01-02T00:00:00.000Z" }));
@@ -141,6 +141,54 @@ test("humanWroteSince reads only a regular file's last 4 MiB, newest first; a sy
   symlinkSync(big, link);
   assert.equal(humanWroteSince(link, since), null, "a symlinked transcript is not read");
   assert.equal(humanWroteSince(b.root, since), null, "a directory is not read");
+});
+
+test("an older user entry appended after a newer human prompt does not hide it (Codex R2 reproduction)", () => {
+  const b = sandbox();
+  const p = join(b.root, "t.jsonl");
+  const since = "2026-01-02T00:00:00Z";
+  const human = JSON.stringify(user("ship it", { origin: { kind: "human" }, timestamp: "2026-01-03T00:00:00Z" }));
+  const older = JSON.stringify(user("<task-notification>old</task-notification>", { origin: { kind: "task-notification" }, timestamp: "2026-01-01T00:00:00Z" }));
+  writeFileSync(p, `${human}\n${older}\n`);
+  assert.equal(humanWroteSince(p, since), true, "newer human, then an older notification");
+  writeFileSync(p, `${older}\n${human}\n`);
+  assert.equal(humanWroteSince(p, since), true, "ordered");
+  writeFileSync(p, `${older}\n`);
+  assert.equal(humanWroteSince(p, since), false, "only an older entry: timestamped user entries, none newer");
+});
+
+test("Stop hook: an older user entry after the typed reply still lets the answer nag fire", () => {
+  const { q, stop, add } = setup();
+  add(user("yes ship it", { origin: { kind: "human" } }), notification(), user("<task-notification>old</task-notification>", { origin: { kind: "task-notification" }, timestamp: "2026-01-01T00:00:00.000Z" }));
+  const r = stop("p-2");
+  assert.equal(r.json?.decision, "block", r.out);
+  assert.ok(r.json.reason.includes(q));
+});
+
+test("a complete prompt starting exactly at the 4 MiB cut is read; one starting a byte earlier is a partial line", () => {
+  const b = sandbox();
+  const p = join(b.root, "cut.jsonl");
+  const since = "2026-01-01T00:00:00.000Z";
+  const cap = 4 * 1024 * 1024;
+  const line = (o) => `${JSON.stringify(o)}\n`;
+  const prompt = line(user("ship it", { origin: { kind: "human" }, timestamp: "2026-01-02T00:00:00.000Z" }));
+  const second = line(user("and the docs", { origin: { kind: "human" }, timestamp: "2026-01-03T00:00:00.000Z" }));
+  const prefix = line({ type: "assistant", message: { content: "prefix" } });
+  const fill = (bytes) => {
+    const shell = Buffer.byteLength(line({ type: "assistant", message: { content: "" } }));
+    return line({ type: "assistant", message: { content: "x".repeat(bytes - shell) } });
+  };
+  // Aligned: the prompt's first byte is the window's first byte; the byte before it is "\n".
+  writeFileSync(p, prefix + prompt + fill(cap - Buffer.byteLength(prompt)));
+  assert.equal(humanWroteSince(p, since), true, "a complete prompt exactly at the cut is kept");
+  // One byte inside the window's start: the prompt began a byte before the cut, so it is partial
+  // and dropped; a later complete prompt in the window is still found.
+  const tail = second + fill(cap - Buffer.byteLength(prompt) + 1 - Buffer.byteLength(second));
+  writeFileSync(p, prefix + prompt + tail);
+  assert.equal(Buffer.byteLength(prompt) - 1 + Buffer.byteLength(tail), cap, "fixture: the cut falls one byte into the prompt");
+  assert.equal(humanWroteSince(p, "2026-01-02T12:00:00.000Z"), true, "the next complete prompt is found");
+  writeFileSync(p, prefix + prompt + fill(cap - Buffer.byteLength(prompt) + 1));
+  assert.equal(humanWroteSince(p, since), null, "the partial prompt alone is not read");
 });
 
 test("brbAway uses brb's own validity rule, reads no symlink and no file over 64 KiB", () => {

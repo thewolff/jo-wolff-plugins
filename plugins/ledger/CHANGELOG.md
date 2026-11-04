@@ -19,7 +19,9 @@ repository root README's ledger section.
   `<local-command-stdout>`, `<local-command-caller>`, `Another Claude session sent a message:`,
   `Stop hook feedback:` or `[Subagent hand-back]`). Only that prompt is evidence: a missing,
   unreadable or symlinked transcript, or one with no timestamped `user` entry, sends no answer
-  nag. The hook reads at most the transcript's last 4 MiB, newest entry first.
+  nag. The hook reads at most the transcript's last 4 MiB and scans all of it: an entry older
+  than the question is skipped, never ends the scan, and a complete line that starts exactly at
+  the 4 MiB cut is kept (only a line cut in half is dropped).
 - While brb holds the session (`${XDG_STATE_HOME:-~/.local/state}/brb/<session_id>/away.json`
   is a regular file of at most 64 KiB holding an object with a string `since`, brb's own rule,
   at brb's own path for any non-blank `XDG_STATE_HOME`), the Stop hook no longer asks for an
