@@ -31,6 +31,12 @@ repository root README's ledger section.
   re-read leaves the errors.log database tag alone.
 - The `record` skill says questions listed from other folders are informational: the agent
   never puts them under its own *Needs you*, since they belong to another window.
+- Several processes opening the same fresh database at once (SessionStart hooks of windows
+  started together) no longer fail with `database busy`. Switching a new file to WAL is a step
+  SQLite refuses at once rather than waiting out `busy_timeout`, and `open` retried it once
+  with no pause, so a racer could lose twice in a row. `open` now retries a busy open up to 5
+  times in all with a jittered 25–200 ms pause while `busy_timeout` has not run out (one retry
+  always, as before), then throws `busy`. The race test runs eight processes instead of four.
 
 ### Changed
 
