@@ -325,8 +325,11 @@ it is now (`git ls-remote` of the branch's upstream, else `origin`'s `refs/heads
 checks that commit; a local remote-tracking ref is never used, because it may be stale. The
 lookup cannot prompt: an empty `GIT_ASKPASS` with `GIT_TERMINAL_PROMPT=0`, `-c core.askPass=`
 and `-c credential.helper=` (no askpass program, keychain or other credential helper runs),
-`SSH_ASKPASS` dropped with `SSH_ASKPASS_REQUIRE=never`, and ssh with `-o BatchMode=yes` added to
-the ssh command the repository already uses. It runs in a process group of its own, and after
+`SSH_ASKPASS` dropped with `SSH_ASKPASS_REQUIRE=never`, and `-o BatchMode=yes` put right after
+the executable of the ssh command the repository already uses (`GIT_SSH_COMMAND`, else
+`core.sshCommand`, else `GIT_SSH`, else `ssh`). ssh keeps the first value it gets for an option,
+so a `-o BatchMode=no` in that command loses. A wrapper script in place of ssh gets the `-o`
+first too; one that rejects it fails, and the call is allowed with a notice. The lookup runs in a process group of its own, and after
 5 seconds the whole group is killed, transport helpers included; where process groups do not
 exist only git is killed, and the notice says its helpers may still be running. `gh pr merge` checks the full sha given to `--match-head-commit`, else the head
 commit `gh pr view` reports for that pull request (5 seconds); in that case an allowed merge
