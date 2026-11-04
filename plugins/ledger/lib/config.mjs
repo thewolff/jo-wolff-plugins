@@ -44,6 +44,7 @@ export const DEFAULTS = Object.freeze({
     decisionPhrases: Object.freeze(["I decided", "decided to", "assumption:", "assuming", "going with", "chose", "I'll go with", "trade-off"]),
   }),
   inject: Object.freeze({ notes: 5, elsewhere: true, answers: true, doctor: true }),
+  sweep: Object.freeze({ autoWithdrawDays: 7 }),
   review: Object.freeze({ mode: "gate", labs: Object.freeze(["codex"]), models: null, profiles: null, maxRounds: 3, judgeCommand: null }),
 });
 
@@ -59,6 +60,7 @@ const SHAPE = {
   hooks: { sessionStart: "boolean", preToolUse: "boolean", stop: "boolean", sessionEnd: "boolean", userPromptCommands: "boolean" },
   forcing: { denyAskWithoutRow: "boolean", stopAskRule: "boolean", pushNeedsNote: "boolean", stopDecisionRule: "boolean", decisionPhrases: "string[]" },
   inject: { notes: "integer", elsewhere: "boolean", answers: "boolean", doctor: "boolean" },
+  sweep: { autoWithdrawDays: "integer" },
   review: { mode: "off|advise|gate", labs: "string[]", models: "{lab: string}|null", profiles: "{lab: string}|null", maxRounds: "positive integer", judgeCommand: "string|null" },
 };
 
