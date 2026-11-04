@@ -507,15 +507,19 @@ another tool already uses.
 
 Changes in 0.3.1: three fixes from the first live sessions on 0.3.0, each from a bounce that had
 no way out. An `ask` that repeats a question still open from an earlier session or an untagged
-CLI run in the same folder now adopts that row (its session id and asked-at move to the asking
-session) instead of writing nothing; before, the session had no row of its own and the Stop ask
-rule sent every reply back with "this session has no open question row". The ask rule itself now
-stands down on any question open for the folder (this session's, or one in the cwd or a parent
-of it), and it fires only on a question that asks for a decision: a choice with `or`, a "should
-I", a "do you want", a "which", a confirmation. A greeting or a request for information ("What
-are we working on?") needs no row. Session start now lists the questions waiting in other
-folders in full, folder by folder with each question's `pending` line (default, id, name, body,
-the other options), so a session can record the human's answer to one of them without a lookup;
+CLI run in the same folder (same text, same set of options in any order) now adopts that row
+(its session id and asked-at move to the asking session; its options and default stay) instead
+of writing nothing; before, the session had no row of its own and the Stop ask rule sent every
+reply back with "this session has no open question row". The ask rule itself now stands down on
+any question open for the folder (this session's, or one in the cwd or a parent of it), and it
+fires only on a question that asks for a decision: a request ("should I", "do you want", "ready
+to"), an explicit choice ("whether", "do you prefer", an option list after a comma or colon), or
+a wh-question carrying one ("How should we proceed?"). A greeting or a request for information
+("What are we working on?", "Which file holds the config?", "Are the logs compressed or
+uncompressed?") needs no row; a "why" question never does. Session start now lists the
+questions waiting in other folders in full, folder by folder with each question's `pending` line
+(default, id, name, body, the other options; a held one marked `held`), so a session can record
+the human's answer to one of them without a lookup;
 before, it only counted them. And a prompt that is just an option word of an open question
 ("local", "Remote.") gives Claude one line naming that question and the `answer` command, as a
 hint only: nothing is recorded until Claude runs it. One more, in the review gate: the `glm`
