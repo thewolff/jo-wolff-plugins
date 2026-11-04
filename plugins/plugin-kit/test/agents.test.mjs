@@ -15,6 +15,11 @@ const LEDGER_GATE = join(KIT_ROOT, "..", "ledger", "lib", "plugin-gate.mjs");
 const MODELS = new Set(["sonnet", "opus", "haiku", "inherit"]);
 const files = () => readdirSync(AGENTS).filter((n) => n.endsWith(".md")).sort();
 
+/** Every `/Users/<name>` in text whose whole name is not `example`, by the agents' own scrub class. */
+function personalPaths(text) {
+  return [...text.matchAll(/\/Users\/([A-Za-z0-9._-]+)/g)].map((m) => m[0]).filter((p) => p !== "/Users/example");
+}
+
 /** The frontmatter as { key: value }, or a string naming why it does not parse. */
 function frontmatter(text) {
   const m = /^---\n([\s\S]*?)\n---\n/.exec(text);
@@ -68,9 +73,19 @@ test("agents: each text has the CLAIM/CITE contract, a How-it-fails heading the 
     assert.match(text, /\*\*CLAIM\*\* needs an inspectable receipt/, `${file}: CLAIM contract`);
     assert.match(text, /\*\*CITE\*\* needs a URL fetched this session/, `${file}: CITE contract`);
     assert.match(text, /^## How it fails: when this can't run$/m, `${file}: How it fails`);
-    assert.doesNotMatch(text, /\/Users\/(?!example\b)[A-Za-z]/, `${file}: a personal path`);
+    assert.deepEqual(personalPaths(text), [], `${file}: a personal path`);
   }
   if (gate) assert.deepEqual(gate.textsWithoutWhenCant(KIT_ROOT), [], "the plugin gate's says check finds every text");
+});
+
+test("agents: the personal-path check takes the whole username, so only exactly `example` is exempt", () => {
+  // Built from parts so the repository's own scrub never matches the fixtures in this file.
+  const at = (name) => ["", "Users", name].join("/");
+  for (const name of ["123", "_person", "example-person", "example.old", "alice"]) {
+    assert.deepEqual(personalPaths(`see ${at(name)}/code`), [at(name)], `${name} is flagged`);
+  }
+  assert.deepEqual(personalPaths(`see ${at("example")}/code and \`${at("example")}\``), [], "example is exempt");
+  assert.deepEqual(personalPaths(`see ${at("<name>")}`), [], "a placeholder is not a username");
 });
 
 test("agents: the README's Agents section names every agent", () => {
