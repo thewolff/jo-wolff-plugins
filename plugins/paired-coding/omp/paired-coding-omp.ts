@@ -138,22 +138,23 @@ function warn(ctx: OmpContext, message: string): void {
 }
 
 /**
- * What tool_call answers when the gate itself throws (an activation marker that cannot be looked
- * up, a state directory it cannot read, a reset check that fails). One errors.log line and one
- * warning, as the Claude Code hook gives. While pairing, or when the gate cannot tell, the tool
- * is refused, naming it and the way out; a session confirmed not pairing goes ahead.
+ * What tool_call answers when the gate itself throws (a session id that cannot be read, an
+ * activation marker that cannot be looked up, a state directory it cannot read, a reset check
+ * that fails). One errors.log line and one warning, as the Claude Code hook gives. While
+ * pairing, or when the gate cannot tell (`dir` null: the session could not be resolved), the
+ * tool is refused, naming it and the way out; a session confirmed not pairing goes ahead.
  */
-export function toolCallFault(env: Record<string, string | undefined>, ctx: OmpContext, dir: string, toolName: string, err: unknown): { block: true; reason: string } | undefined {
+export function toolCallFault(env: Record<string, string | undefined>, ctx: OmpContext, dir: string | null, toolName: string, err: unknown): { block: true; reason: string } | undefined {
 	const reason = reasonOf(err);
 	let sessionId = "-";
 	try {
 		sessionId = ctx.sessionManager.getSessionId();
 	} catch {
-		// the id was readable a moment ago (dir came from it); "-" only marks the log line
+		// the id itself may be what failed; "-" only marks the log line
 	}
 	const logged = logFault(env, "tool_call", { session_id: sessionId }, reason, OMP_FILE);
 	const name = toolName || "(unnamed tool)";
-	if (PAIR_TOOLS.includes(name) || pairingOrUncertain(dir)) {
+	if (PAIR_TOOLS.includes(name) || dir === null || pairingOrUncertain(dir)) {
 		warn(ctx, `paired coding: the tool_call handler failed: ${reason}. ${logged} ${name} was refused because the gate fails closed while pairing.`);
 		return {
 			block: true,
@@ -363,9 +364,10 @@ export default function pairedCodingOmp(pi: PiLike, deps: AdapterDeps = {}): voi
 	};
 
 	pi.on("tool_call", (event, ctx) => {
-		const dir = dirOf(ctx, env);
-		if (!dir) return undefined; // no usable session id: nothing can have been activated under it
+		let dir: string | null = null;
 		try {
+			dir = dirOf(ctx, env);
+			if (!dir) return undefined; // no usable session id: nothing can have been activated under it
 			checkReset(ctx, dir);
 			const v = verdict(event.toolName, { sessionDir: dir });
 			if (v.degraded) {

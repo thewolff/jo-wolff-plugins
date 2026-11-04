@@ -250,6 +250,19 @@ describe("tool_call when the gate itself fails", () => {
     for (const w of warnings) assert.match(w.m, /state file unreadable.*Logged to /);
     assert.equal(errorLines(s).length, 2);
   });
+
+  test("a session id that cannot be read is uncertain: the tool is refused with the way out, warned and logged once, nothing thrown", async () => {
+    const s = setup();
+    s.ctx.sessionManager.getSessionId = () => { throw new Error("session id unavailable"); };
+    const r = await s.emit("tool_call", { toolName: "write", input: {} });
+    assert.equal(r?.block, true);
+    assert.match(r.reason, /^paired coding: write is refused: the gate failed \(session id unavailable\)/);
+    assert.match(r.reason, /type pair stop/);
+    assert.equal(s.notes.filter((n) => n.level === "warning").length, 1);
+    const lines = errorLines(s);
+    assert.equal(lines.length, 1);
+    assert.match(lines[0], /omp\/paired-coding-omp\.ts tool_call session=-: session id unavailable$/);
+  });
 });
 
 describe("trusted input comes only from the interactive input event", () => {

@@ -218,6 +218,29 @@ test("while pairing, a malformed state file reads as closed: Write is refused, R
   assert.deepEqual(lines.map((l) => / (pre-tool-use|user-prompt-submit) session=s1: session state degraded \(state file unreadable\)/.exec(l)?.[1]), ["pre-tool-use", "pre-tool-use", "user-prompt-submit"]);
 });
 
+for (const event of ["pre-tool-use", "user-prompt-submit"]) {
+  test(`while pairing, a degraded read is warned and logged once by ${event} even when a queued typed turn saves the state first`, { skip: !hasSandbox }, async () => {
+    const real = readFileSync(join(dirname(fileURLToPath(import.meta.url)), "fixtures", "prompt-entries.jsonl"), "utf8").trim().split("\n").map((l) => JSON.parse(l)).find((e) => e.entrypoint === "cli");
+    const f = fixture();
+    await startPairing(f);
+    // A typed ordinary turn, queued and in the transcript, waiting to be judged by the next event.
+    const p = payload("user-prompt-submit", f, { prompt: "keep going" });
+    assertAllowed(runHook("user-prompt-submit", p, f.env), "queued prompt");
+    appendFileSync(f.transcript, `${JSON.stringify({ ...real, promptId: p.prompt_id, message: { role: "user", content: "keep going" } })}\n`);
+    writeFileSync(join(f.base, "s1", "state.json"), "{garbage");
+    const r = runHook(event, payload(event, f), f.env);
+    assert.equal(r.status, 0);
+    if (event === "pre-tool-use") assert.equal(r.json.hookSpecificOutput.permissionDecision, "deny");
+    assert.match(r.json.systemMessage, /state file unreadable/);
+    assert.match(r.json.systemMessage, /Logged to /);
+    const journal = readFileSync(join(f.base, "s1", "journal.jsonl"), "utf8").split("\n").filter(Boolean).map((l) => JSON.parse(l));
+    assert.equal(journal.filter((e) => e.type === "input" && e.text === "keep going").length, 1, "the queued turn was judged in this event");
+    const lines = logLines(f.base);
+    assert.equal(lines.length, 1);
+    assert.match(lines[0], new RegExp(` ${event} session=s1: session state degraded \\(state file unreadable\\)`));
+  });
+}
+
 test("while pairing, a session directory the gate cannot even look into is uncertain and fails closed", { skip: !hasSandbox }, async () => {
   const f = fixture();
   await startPairing(f);
