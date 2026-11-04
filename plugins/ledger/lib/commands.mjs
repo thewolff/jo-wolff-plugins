@@ -229,9 +229,8 @@ function addNote(db, cwd, kind, body, questionId, by, iso, now, sessionId, ref =
  *   then `  about …`, `  allows:` lines for plan questions, `  ceiling $…`, and `  due …`.
  */
 export function pendingLines(q, { now = Date.now(), timezone = null } = {}) {
-  const others = q.options.filter((o) => o !== q.default_opt);
   const body = q.body.replace(/\s+/g, " ").trim();
-  const lines = [`${q.default_opt} ${q.id}  # ${q.name} · ${body} · default ${q.default_opt} · also: ${others.join(", ")} / withdraw`];
+  const lines = [pendingHead(q, body)];
   if (q.about) lines.push(`  about ${q.about}`);
   if (q.allows && Object.keys(q.allows).length) {
     lines.push("  allows:");
@@ -243,6 +242,22 @@ export function pendingLines(q, { now = Date.now(), timezone = null } = {}) {
     lines.push(`  due ${formatLocal(q.deadline, timezone)} (${past ? "overdue, " : ""}${relative(q.deadline, now)})`);
   }
   return lines;
+}
+
+/**
+ * The first `pending` line: `<default> <q-id>  # <name> · <body> · default <d> · also: <others> /
+ * withdraw` with a default, `<q-id>  # <name> · <body> · options: <a>, <b> / withdraw` without one
+ * (no word is invented: the human's bare first-option reply is their choice).
+ */
+function pendingHead(q, body) {
+  if (!q.default_opt) return `${q.id}  # ${q.name} · ${body} · options: ${q.options.join(", ")} / withdraw`;
+  const others = q.options.filter((o) => o !== q.default_opt);
+  return `${q.default_opt} ${q.id}  # ${q.name} · ${body} · default ${q.default_opt} · also: ${others.join(", ")} / withdraw`;
+}
+
+/** The pending head with `held` for the default word (or prefixed, when the question has no default). */
+export function heldHead(line, q) {
+  return q.default_opt ? `held ${line.slice(q.default_opt.length + 1)}` : `held ${line}`;
 }
 
 /** ` · in <folder>` for a question asked in a folder below `cwd`; "" otherwise. */
@@ -434,8 +449,12 @@ function ask(db, parsed, by, iso, now, ctx) {
   if (options.some((o) => /\s/.test(o))) return refused("each option is one word");
   // An option named `withdraw` is allowed: the parser resolves options first, so `withdraw q-…` records it.
 
-  const def = f.default !== undefined ? String(f.default).toLowerCase() : (KIND_DEFAULT_WORD[kind] ?? options[0]);
-  if (!options.includes(def)) return refused(`--default ${def} is not one of the options ${options.join(", ")}`);
+  // No --default means no default (0.3.2): the row stores "" and the pending line names no
+  // default word, so a bare first-option reply is read as the human's choice, not as "the
+  // default again". An approval question still defaults to deny. Before, the first option was
+  // silently made the default and echoed back as if the asker had chosen it.
+  const def = f.default !== undefined ? String(f.default).toLowerCase() : (KIND_DEFAULT_WORD[kind] ?? "");
+  if (def && !options.includes(def)) return refused(`--default ${def} is not one of the options ${options.join(", ")}`);
 
   let allows = null;
   if (f.allows !== undefined) {

@@ -32,7 +32,7 @@
 
 import { transaction } from "../lib/db.mjs";
 import { runHook, noticeField, invokedDirectly } from "../lib/failopen.mjs";
-import { openQuestions, sessionNotes, sessionQuestions } from "../lib/commands.mjs";
+import { elsewhereQuestions, openQuestions, sessionNotes, sessionQuestions } from "../lib/commands.mjs";
 import { checkStop } from "../lib/stop-rules.mjs";
 import { invocation } from "../lib/inject.mjs";
 import { withStore, hookConfig } from "../lib/store.mjs";
@@ -40,6 +40,19 @@ import { nowIso } from "../lib/time.mjs";
 import { recordBounce, satisfyBounces, stopRemedyDone, STOP_RULES } from "../lib/bounces.mjs";
 
 export function handle(input, { env = process.env, now = Date.now() } = {}) {
+/**
+ * Whether `text` repeats the body of an open or held question from another folder (whitespace
+ * folded, case-insensitive): the reply is relaying that question to the human, not asking one.
+ */
+function relaysElsewhere(db, cwd, text) {
+  const hay = String(text ?? "").replace(/\s+/g, " ").toLowerCase();
+  if (!hay) return false;
+  for (const questions of elsewhereQuestions(db, cwd).values()) {
+    for (const q of questions) if (hay.includes(q.body.replace(/\s+/g, " ").trim().toLowerCase())) return true;
+  }
+  return false;
+}
+
   const ready = hookConfig(env, input, "stop");
   if (!ready) return null;
   const { cfg, cwd } = ready;
@@ -78,11 +91,15 @@ export function handle(input, { env = process.env, now = Date.now() } = {}) {
     // own, or one an earlier session left in this cwd or a parent): a leftover row is still a
     // question to the human, and a rule that ignored it sent every reply back with no way out.
     const open = sessionId ? sessionQuestions(db, { sessionId, cwd }) : [];
+    // It also stands down when the reply relays a question open in ANOTHER folder (its body
+    // appears in the reply): SessionStart asks the model to tell the human about those, and
+    // relaying one is not asking a new question (0.3.2, live session 708406d0).
     const inScope = openQuestions(db, cwd, { below: false });
     const turnSince = session?.last_stop_at ?? session?.started_at ?? null;
+    const relayed = inScope.length || open.length ? false : relaysElsewhere(db, cwd, input.last_assistant_message);
     const verdict = checkStop(input.last_assistant_message, {
       dueQuestions: newTurn ? sessionQuestions(db, { sessionId, cwd, askedBy: session.last_stop_at }) : [],
-      sessionHasOpenQuestion: open.length > 0 || inScope.length > 0,
+      sessionHasOpenQuestion: open.length > 0 || inScope.length > 0 || relayed,
       // A question asked this turn: its stated default ("if you don't answer, I'll go with alpha")
       // is not a decision, so the decision rule stands down for this reply.
       turnQuestions: sessionId ? open.filter((q) => !turnSince || q.asked_at > turnSince).length : 0,

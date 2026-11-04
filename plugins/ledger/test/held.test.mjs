@@ -37,8 +37,8 @@ test("migration 3: a store left at version 2 by 0.2.0 keeps every row, gains hel
 
   const r = open(p);
   const db = r.db;
-  assert.equal(SCHEMA_VERSION, 6);
-  assert.equal(storeVersion(db), 6);
+  assert.equal(SCHEMA_VERSION, 7);
+  assert.equal(storeVersion(db), 7);
   assert.equal(r.shared, true);
   assert.deepEqual(db.prepare("SELECT id, state, resolved_at FROM cc_questions ORDER BY id").all().map((x) => ({ ...x })), [
     { id: "q-a1", state: "answered", resolved_at: "2026-01-01T00:01:00.000Z" },
@@ -107,7 +107,7 @@ test("pending lists held rows marked `held` after the open ones; log marks a hel
   const r = cli(b, ["pending"]);
   assert.equal(r.code, 0, r.err);
   const lines = r.out.trim().split("\n");
-  assert.match(lines[0], new RegExp(`^1\\. yes ${open1}`));
+  assert.match(lines[0], new RegExp(`^1\\. ${open1}  # now · .* · options: yes, no / withdraw$`), "no default word when none was given");
   assert.equal(lines.at(-1), `held ${h}  # deferred · Rename the bucket?`);
   assert.match(cli(b, ["log"]).out, new RegExp(`^${h} .* agent asked \\(held\\): deferred · Rename the bucket\\?$`, "m"));
   const onlyHeld = sandbox();

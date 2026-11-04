@@ -29,7 +29,7 @@ test("A: an open row left by an earlier (untagged) run is adopted by the session
   assert.equal(r.out.match(/q-[a-z0-9]+/)[0], left, "the existing id, not a new one");
   assert.match(r.out, /this session's question/);
   assert.match(r.out, new RegExp(`answer ${left} <option>`));
-  assert.match(r.out, new RegExp(`^separate ${left}  # runner home · .* · default separate · also: inside / withdraw$`, "m"));
+  assert.match(r.out, new RegExp(`^${left}  # runner home · .* · options: separate, inside / withdraw$`, "m"), "no default was given, so none is shown");
   const db = openDb(box);
   assert.equal(row(db, "SELECT session_id FROM cc_questions WHERE id = ?", left).session_id, "s-new");
   assert.equal(db.prepare("SELECT count(*) AS n FROM cc_questions").get().n, 1, "adopted, not duplicated");

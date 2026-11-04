@@ -54,7 +54,9 @@ test("ask validates: name, two options, default among options, kind, allows keys
   const db = openDb(box);
   const q = db.prepare("SELECT deadline, deadline_span_ms, default_opt FROM cc_questions WHERE id = ?").get(ok.id);
   assert.equal(q.deadline_span_ms, 2 * 3_600_000);
-  assert.equal(q.default_opt, "a");
+  assert.equal(q.default_opt, "", "no --default means no default (0.3.2): nothing is invented");
+  const withDefault = ask(["Q2?", "--name", "n2", "--options", "a,b", "--default", "b"]);
+  assert.equal(db.prepare("SELECT default_opt FROM cc_questions WHERE id = ?").get(withDefault.id).default_opt, "b");
   assert.ok(Date.parse(q.deadline) > Date.now() + 3_600_000);
   db.close();
 });

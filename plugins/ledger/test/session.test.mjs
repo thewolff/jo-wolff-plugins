@@ -32,7 +32,7 @@ test("with one open question and two notes → questions, then the last entries,
   const text = r.json.hookSpecificOutput.additionalContext;
   const i = (s) => text.indexOf(s);
   assert.ok(i("ledger: open questions for") >= 0, text);
-  assert.ok(i(`a ${q}  # which · Which?`) > 0);
+  assert.ok(i(`${q}  # which · Which? · options: a, b / withdraw`) > 0, text);
   assert.ok(i("ledger: last 3 entries for") > i("ledger: open questions for"), text);
   assert.ok(i("second note") < i("first note"));
   assert.ok(i("first note") < i(`agent asked: which`));

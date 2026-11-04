@@ -7,7 +7,7 @@
 // first, never the held or open questions, the other-folders block, review or doctor lines.
 
 import { fileURLToPath } from "node:url";
-import { elsewhereQuestions, heldQuestions, logEntries, openQuestions, pendingLines, renderLog, renderPending } from "./commands.mjs";
+import { elsewhereQuestions, heldHead, heldQuestions, logEntries, openQuestions, pendingLines, renderLog, renderPending } from "./commands.mjs";
 import { quickIssues } from "./doctor.mjs";
 import { findingsLine } from "./review.mjs";
 
@@ -133,7 +133,7 @@ export function elsewhereLine(db, cwd, { now = Date.now(), timezone = null } = {
   const all = [...groups.values()].flat();
   const plural = (n, word) => `${n} ${word}${n === 1 ? "" : "s"}`;
   const out = [
-    `ledger: ${plural(all.length, "question")} waiting on you in ${plural(groups.size, "other folder")} (asked elsewhere, not for this folder's work; for you, not the human: when the human's reply answers one, run \`${invocation()} answer <q-id> <option>\` and tell them it is recorded; never show the id):`,
+    `ledger: ${plural(all.length, "question")} waiting on the human in ${plural(groups.size, "other folder")} (asked by another window, not this folder's work). If the human's prompt answers one, run \`${invocation()} answer <q-id> <option>\` and say it is recorded. Otherwise, in your first reply, tell the human in one plain line per question that another window is waiting on them: the question's body, its options and its default when it has one. Never show the q- id:`,
   ];
   let shown = 0;
   for (const [folder, questions] of groups) {
@@ -142,7 +142,7 @@ export function elsewhereLine(db, cwd, { now = Date.now(), timezone = null } = {
     for (const q of questions) {
       if (shown >= ELSEWHERE_MAX) break;
       const lines = pendingLines(q, { now, timezone });
-      if (q.state === "held") lines[0] = `held ${lines[0].slice(q.default_opt.length + 1)}`;
+      if (q.state === "held") lines[0] = heldHead(lines[0], q);
       out.push(...lines);
       shown++;
     }
