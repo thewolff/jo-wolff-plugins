@@ -316,7 +316,7 @@ test("digest: writes the attempt before posting, the post on success, the error 
   assert.match(first.text, /^digest: posted to thewolff\/jo-issues#325 \(https:\/\/github.com\/.*#issuecomment-1\) at /);
   assert.equal(posts.length, 1);
   assert.equal(posts[0].issue, "thewolff/jo-issues#325");
-  assert.match(posts[0].text, /^## ledger weekly digest \(ledger 0\.3\.2\)\n\nweek of /);
+  assert.match(posts[0].text, /^## ledger weekly digest \(ledger 0\.3\.3\)\n\nweek of /);
   assert.match(posts[0].text, /```\nledger report since /);
   db = openDb(b);
   const metaOf = (k) => row(db, "SELECT value FROM cc_meta WHERE key = ?", k)?.value ?? null;

@@ -5,10 +5,10 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { chmodSync, mkdirSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { sandbox, cli, hook, openDb } from "./helpers.mjs";
-import { checkPlugin, fixturesWithoutUnavailable, hookCommands, reasonsWithoutCommand, repoPlugins, textsWithoutWhenCant, changedPlugins, CHECKS, FAULT_INPUTS } from "../lib/plugin-gate.mjs";
+import { checkPlugin, fixturesWithoutUnavailable, hookCommands, reasonsWithoutCommand, treePlugins, treeSha, snapshotTree, textsWithoutWhenCant, changedPlugins, CHECKS, FAULT_INPUTS } from "../lib/plugin-gate.mjs";
 
 const SID = "s-gate";
 
@@ -91,7 +91,7 @@ const reason = (r) => r.json?.hookSpecificOutput?.permissionDecisionReason ?? ""
 const gateRows = (b) => {
   const db = openDb(b);
   try {
-    return db.prepare("SELECT plugin, name, status, detail, head_sha FROM cc_gate_checks ORDER BY plugin, name").all().map((r) => ({ ...r }));
+    return db.prepare("SELECT plugin, name, status, detail, head_sha, tree_sha FROM cc_gate_checks ORDER BY plugin, name").all().map((r) => ({ ...r }));
   } finally {
     db.close();
   }
@@ -104,16 +104,45 @@ function passReview(b) {
   return cli(b, ["review", "--labs", "codex"], { env: { LEDGER_SESSION_ID: SID, LEDGER_REVIEW_BIN_CODEX: path } });
 }
 
-test("repoPlugins: plugins/* with hooks.json or plugin.json count, a root plugin.json counts alone, a plain repo holds none", () => {
+test("treePlugins: plugins/* with hooks.json or plugin.json in the commit count, a root plugin.json counts alone, a plain repo holds none; the checkout is not consulted", () => {
   const b = pluginRepo();
+  const head = git(b, "rev-parse", "HEAD");
   assert.deepEqual(
-    repoPlugins(b.work).map((p) => p.name),
+    treePlugins(b.work, head).map((p) => p.name),
     ["bad", "docs-only", "good"],
   );
+  // Committed discovery files removed from the checkout, an uncommitted plugin added to it: the commit's set stands.
+  rmSync(join(b.work, "plugins", "bad", "hooks", "hooks.json"));
+  write(join(b.work, "plugins", "extra"), "hooks/hooks.json", hooksJson("extra", "x.mjs"));
+  assert.deepEqual(treePlugins(b.work, head).map((p) => p.name), ["bad", "docs-only", "good"]);
   const single = sandbox();
+  git(single, "init", "-q");
   write(single.work, ".claude-plugin/plugin.json", '{"name":"solo"}');
-  assert.deepEqual(repoPlugins(single.work), [{ name: "solo", dir: single.work, prefix: "" }]);
-  assert.deepEqual(repoPlugins(sandbox().work), []);
+  const sha = commitAll(single, "solo");
+  assert.deepEqual(treePlugins(single.work, sha), [{ name: "solo", prefix: "" }]);
+  assert.equal(treeSha(single.work, sha, ""), git(single, "rev-parse", `${sha}^{tree}`));
+  const plain = sandbox();
+  git(plain, "init", "-q");
+  write(plain.work, "a.txt", "a");
+  assert.deepEqual(treePlugins(plain.work, commitAll(plain, "a")), []);
+});
+
+test("snapshotTree: the plugin's committed files land in a scratch directory with their modes; the checkout and the index stay as they were", () => {
+  const b = pluginRepo();
+  const head = git(b, "rev-parse", "HEAD");
+  write(join(b.work, "plugins", "good"), "skills/good/SKILL.md", "# Good (uncommitted)\n");
+  const snap = snapshotTree(b.work, head, "plugins/good/");
+  try {
+    assert.equal(snap.tree, git(b, "rev-parse", `${head}:plugins/good`));
+    assert.ok(existsSync(join(snap.dir, "hooks", "hooks.json")));
+    assert.match(spawnSync("cat", [join(snap.dir, "skills", "good", "SKILL.md")], { encoding: "utf8" }).stdout, /## When this can't run/, "the committed text, not the checkout's");
+    assert.ok(!existsSync(join(snap.dir, "plugins")), "the plugin's tree is the root of the snapshot");
+  } finally {
+    snap.release();
+  }
+  assert.ok(!existsSync(snap.dir));
+  assert.equal(git(b, "diff", "--cached", "--name-only"), "", "the repository's index is untouched");
+  assert.equal(git(b, "diff", "--name-only"), "plugins/good/skills/good/SKILL.md", "the checkout is untouched");
 });
 
 test("changedPlugins: only plugins with a file in base..head; every plugin when there is no base", () => {
@@ -236,13 +265,22 @@ test("gate check: records one row per changed plugin and check for HEAD, exits 1
     ],
   );
   assert.ok(rows.every((x) => x.head_sha === head));
-  // Fix the bad plugin's text and rerun for it alone: its rows are replaced, good's stay.
+  assert.ok(rows.filter((x) => x.plugin === "good").every((x) => x.tree_sha === git(b, "rev-parse", `${head}:plugins/good`)), "each row certifies the plugin's tree in HEAD");
+  // Fix the bad plugin's text without committing and rerun for it alone: the commit is what is
+  // checked, so the findings stand and the run says the repair was not checked.
   write(join(b.work, "plugins", "bad"), "skills/bad/SKILL.md", "# Bad\n\n## When this can't run\n\nSay so.\n");
   write(join(b.work, "plugins", "bad"), "lib/rules.mjs", 'export const deny = () => ({ permissionDecision: "deny", permissionDecisionReason: "bad: run `bad fix`" });\n');
   const r2 = cli(b, ["gate", "check", "--plugins", "bad"], { env: { LEDGER_SESSION_ID: SID } });
   assert.equal(r2.code, 1);
-  assert.equal(gateRows(b).length, 6);
-  const says = gateRows(b).find((x) => x.plugin === "bad" && x.name === "says");
+  assert.match(r2.out, /bad\s+\(uncommitted changes under plugins\/bad\/ were not checked; commit them and rerun\)/);
+  assert.match(gateRows(b).find((x) => x.plugin === "bad" && x.name === "says").detail, /skills\/bad\/SKILL\.md has no "When this can't" heading/);
+  // Committed, the repair counts: bad's rows move to the new commit, good's stay on the old one.
+  const head2 = commitAll(b, "repair bad");
+  const r2b = cli(b, ["gate", "check", "--plugins", "bad"], { env: { LEDGER_SESSION_ID: SID } });
+  assert.equal(r2b.code, 1);
+  assert.doesNotMatch(r2b.out, /uncommitted changes/);
+  assert.equal(gateRows(b).length, 9);
+  const says = gateRows(b).find((x) => x.plugin === "bad" && x.name === "says" && x.head_sha === head2);
   assert.equal(says.detail, 'hooks/bad.mjs:6 "bad: no" names no command', "the SKILL.md and lib/rules.mjs findings are gone; the hook's own literal remains");
   assert.equal(cli(b, ["gate", "check", "--plugins", "nope"]).code, 1);
   const plain = sandbox();
@@ -270,18 +308,26 @@ test("PreToolUse: a push from a repository of plugins is denied without check ro
   const r1 = push(b);
   assert.equal(decision(r1), "deny");
   assert.match(reason(r1), /^ledger: plugin gate: good has no check rows for [0-9a-f]{8}; run `[^`]*ledger\.mjs gate check`, fix, or `[^`]*ledger\.mjs review waive "<why>"`$/);
-  // Break good's text, record the failure: the deny names the check and its detail.
+  // Break good's text and commit it, record the failure: the deny names the check and its detail.
   write(join(b.work, "plugins", "good"), "skills/good/SKILL.md", "# Good\n");
+  commitAll(b, "break good");
+  passReview(b);
   assert.equal(cli(b, ["gate", "check"]).code, 1);
   const r2 = push(b);
   assert.equal(decision(r2), "deny");
   assert.match(reason(r2), /^ledger: plugin gate: good failed says: skills\/good\/SKILL\.md has no "When this can't" heading; run `/);
+  // Repaired in the checkout only: the committed text is what is pushed, so the deny stands.
   write(join(b.work, "plugins", "good"), "skills/good/SKILL.md", "# Good\n\n## When this can't run\n\nSay so.\n");
+  assert.equal(cli(b, ["gate", "check"]).code, 1);
+  assert.equal(decision(push(b)), "deny");
+  // Committed: the pass is for the repaired commit.
+  commitAll(b, "repair good");
+  passReview(b);
   assert.equal(cli(b, ["gate", "check"]).code, 0);
   const r3 = push(b);
   assert.equal(decision(r3), "allow", r3.out);
   assert.equal(r3.json?.systemMessage, undefined, r3.out);
-  // The bounce rows: two denies, then satisfied by the allow.
+  // The bounce rows: three denies, then satisfied by the allow.
   const db = openDb(b);
   try {
     assert.deepEqual(
@@ -289,11 +335,43 @@ test("PreToolUse: a push from a repository of plugins is denied without check ro
       [
         ["pluginGate", "satisfied"],
         ["pluginGate", "satisfied"],
+        ["pluginGate", "satisfied"],
       ],
     );
   } finally {
     db.close();
   }
+});
+
+test("PreToolUse: the gate reads the pushed commit, not the checkout: a passed commit stays passed after its checkout is broken; a plugin whose discovery file was removed from the checkout is still gated; a push of another commit needs rows for that commit; rows certifying another tree are no pass", () => {
+  const b = pluginRepo({ changeBad: false });
+  passReview(b);
+  assert.equal(cli(b, ["gate", "check"]).code, 0);
+  // Break the checkout after the pass: the push carries the committed, passing text.
+  write(join(b.work, "plugins", "good"), "skills/good/SKILL.md", "# Good\n");
+  rmSync(join(b.work, "plugins", "good", "hooks", "hooks.json"));
+  assert.equal(decision(push(b)), "allow");
+  // A new commit on top (even one that leaves the plugin as it was): rows are per commit.
+  git(b, "checkout", "-q", "--", "plugins/good");
+  write(b.work, "README.md", "the repository, again\n");
+  write(join(b.work, "plugins", "good"), "README.md", "changed again\n");
+  const head = commitAll(b, "again");
+  passReview(b);
+  const r = push(b);
+  assert.equal(decision(r), "deny");
+  assert.match(reason(r), /^ledger: plugin gate: good has no check rows for [0-9a-f]{8}; run `/);
+  assert.equal(cli(b, ["gate", "check"]).code, 0);
+  assert.equal(decision(push(b)), "allow");
+  // Rows for HEAD that certify another tree (a hand-edited row): no pass.
+  const db = openDb(b);
+  try {
+    db.prepare("UPDATE cc_gate_checks SET tree_sha = ? WHERE head_sha = ? AND plugin = 'good' AND name = 'says'").run("0123456789abcdef0123456789abcdef01234567", head);
+  } finally {
+    db.close();
+  }
+  const r2 = push(b);
+  assert.equal(decision(r2), "deny");
+  assert.match(reason(r2), /^ledger: plugin gate: good's rows for [0-9a-f]{8} certify tree 01234567, not its tree [0-9a-f]{8}; run `/);
 });
 
 test("PreToolUse: the three gates deny together as one numbered list; `review waive` lifts the plugin gate; advise mode turns the deny into a notice", () => {
