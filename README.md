@@ -103,6 +103,94 @@ Then relaunch OMP sessions. OMP's own install wins over Claude Code's for the sa
 updating Claude Code alone leaves OMP on the older copy. `node scripts/check-omp-install.mjs`
 compares the two installs and prints the commands for any plugin that differs (exit 1).
 
+## How the plugins fit together
+
+This section describes the tree at `7b6a156` (output-types 0.2.2, i-have-audhd 1.5.2,
+paired-coding 1.4.4, ask-graham 0.7.2, pattern-check 0.3.2, reminders-review 0.2.0, ledger
+0.3.5, plugin-kit 0.2.1, as2-skills 0.1.2, ctx-watch 0.1.0). Anything marked *in progress* is
+not in this tree; it names the pull request or `thewolff/jo-issues` ticket that carries it. A
+second pass follows once those land.
+
+### One session, start to end
+
+**SessionStart.** output-types injects the core of its contract, the CLAIM and CITE labels
+(`plugins/output-types/hooks/output-types-inject.mjs`). i-have-audhd injects the message
+skeleton and its rule headings (`plugins/i-have-audhd/hooks/i-have-audhd-inject.mjs`). ledger
+injects the questions waiting on you, its last notes, the decision-log block and, when the
+weekly digest is overdue, a line saying so (`plugins/ledger/hooks/session-start.mjs`). ctx-watch
+adds `ctx-watch: <reason>; fix: <command>` when the ctx daemon is dead, unsupervised or stale
+(`plugins/ctx-watch/hooks/session-start.mjs`). reminders-review injects overdue and today's
+reminders (`plugins/reminders-review/hooks/session-start.mjs`). A compaction liveness line
+belongs to the planned continuity plugin, *in progress* (jo-issues #329).
+
+**A prompt.** At level `every-idea`, ask-graham adds one line to each message telling the agent
+to run the check on a new idea, or the structure check on a new table, column, module or
+service (`plugins/ask-graham/hooks/ask-graham-hook.mjs`). i-have-audhd hands the agent the last
+message's warn findings once (`plugins/i-have-audhd/hooks/i-have-audhd-prompt.mjs`). ledger
+relays answers recorded in other sessions (`plugins/ledger/hooks/user-prompt.mjs`).
+
+**A tool call.** pattern-check counts the distinct files a session writes and, from the third
+(the default `threshold`), denies Edit, Write, MultiEdit, NotebookEdit, shell writes, `git
+commit` and `gh pr create` until `.pattern-check/<session>.md` exists
+(`plugins/pattern-check/hooks/pattern-check-pretooluse.mjs`). ledger denies `AskUserQuestion`
+until the question is on a ledger row, and `git push` / `gh pr create` until the session has a
+note or outcome (`plugins/ledger/hooks/pre-tool-use.mjs`); in a plugin repository the push also
+needs `ledger gate check` to pass (next table). paired-coding refuses writes you have not agreed
+to while pairing (`plugins/paired-coding/hooks/paired-coding-hook.mjs pre-tool-use`).
+
+**A spawn.** The delegation plugin's spawn gates are *in progress* (jo-issues #329): a brief
+must carry a How-it-fails section, a spiral bound, and the parent's pattern-check receipt. No
+hook in this tree inspects a spawn.
+
+**Stop.** i-have-audhd runs nine checks on the finished message, five of them through the
+judge, and warns by default (`plugins/i-have-audhd/hooks/i-have-audhd-stop.mjs`,
+`plugins/i-have-audhd/judge/ask.mjs`). ask-graham blocks once when a reply that read the skill
+has no verdict line (`plugins/ask-graham/hooks/ask-graham-stop.mjs`); enforcing the open-work
+sources file is *in progress* (PR #68). pattern-check refuses once a plan or design with no
+receipt (`plugins/pattern-check/hooks/pattern-check-stop.mjs`). ledger blocks a turn that asks
+for a decision outside the ledger, or that follows your reply while its questions are still
+open (`plugins/ledger/hooks/stop.mjs`). The output-types receipts check (a CLAIM with no
+`file:line` or command, a CITE with no URL) is *in progress* as output-types 0.3.0 (jo-issues
+#333); today output-types registers SessionStart only (`plugins/output-types/hooks/hooks.json`).
+
+**End.** ledger stamps the session and, when it recorded an answer or a note and the repository
+has `.ai/decision-log/`, writes one entry in the `/wrap-up` format unless a wrap-up already
+wrote one during the session (`plugins/ledger/hooks/session-end.mjs`,
+`plugins/ledger/lib/decision-log.mjs`). The `/wrap-up` skill itself is not in this repository.
+pattern-check removes the session's working files and keeps the receipt
+(`plugins/pattern-check/hooks/pattern-check-session-end.mjs`).
+
+### What shares what
+
+| Shared piece | Where it lives | Who reads it |
+|---|---|---|
+| The judge command | `enforcement.judgeCommand` in the i-have-audhd profile, run by `plugins/i-have-audhd/judge/ask.mjs` | i-have-audhd's five judge-gated checks; ledger's review judge falls back to it when `review.judgeCommand` is unset (`plugins/ledger/lib/judge.mjs`). One shared config file and a plugin-kit `lib/judge.mjs` that output-types 0.3.0 also reads: *in progress* (jo-issues #333) |
+| Receipt vocabulary, CLAIM and CITE | `plugins/output-types/skills/output-types/reference.md` | injected at SessionStart; the Stop check that reads it is *in progress* (jo-issues #333); delegation briefs carrying it are *in progress* (jo-issues #329); ledger `review` does not read the labels in this tree |
+| How-it-fails sections | every `plugins/as2-skills/skills/*/SKILL.md` (22 of 22) | the delegation spawn gate, *in progress* (jo-issues #329); ledger's `says` row checks the related "When this can't run" heading in every skill and agent |
+| The fail-open hook runner | `plugins/plugin-kit/lib/hook-runner.mjs`, copied into a new plugin by `/plugin-kit:new-plugin` (`plugins/ctx-watch/lib/hook-runner.mjs` is one copy) | every plugin scaffolded from the kit; a test that the copies stay byte-identical, and the same for the judge lib, is *in progress* (jo-issues #333) |
+| The scenario runner | `plugins/plugin-kit/lib/live-run.mjs` | every plugin's `e2e/live-run.sh` hands off to it |
+| The five gate rows | `ledger gate check` | every plugin changed on the branch must pass `survives`, `visible`, `says`, `evals` and `retention` before `git push` or `gh pr create` |
+| The nightly canary | `ledger canary run`, scheduled by `ledger canary install` (launchd) | runs every plugin's `e2e/live-run.sh`; the `evals` row trusts only a passing run for the committed plugin tree, and the `retention` row checks the run's observed writes against each plugin's declared `state` |
+
+### What runs where
+
+Claude Code runs each plugin's `hooks/hooks.json`. OMP does not: a plugin reaches OMP events
+only through an extension listed under `omp.extensions` in its `package.json`, and installs
+there through `.omp-plugin/plugin.json`.
+
+| Plugin | Claude Code hooks (`hooks/hooks.json`) | OMP (`.omp-plugin` + extension) |
+|---|---|---|
+| output-types | SessionStart | none; no `.omp-plugin`, the skill only (see *Install on OMP*) |
+| i-have-audhd | SessionStart, UserPromptSubmit, Stop | `omp/i-have-audhd-omp.ts`: `session_start`, `before_agent_start`, `session_stop` |
+| paired-coding | SessionStart, UserPromptSubmit, PreToolUse, Stop, SessionEnd | `omp/paired-coding-omp.ts`: `tool_call`, `input`, session lifecycle events |
+| ask-graham | UserPromptSubmit, Stop | `omp/ask-graham-omp.ts`: `before_agent_start`, `session_stop` |
+| pattern-check | PreToolUse, Stop, SessionEnd | `omp/pattern-check-omp.ts`: `tool_call`, `session_start`, `session_stop` |
+| reminders-review | SessionStart, UserPromptSubmit | `omp/reminders-review-omp.ts`: `session_start`, `before_agent_start` |
+| ledger | SessionStart, UserPromptSubmit, PreToolUse, Stop, SessionEnd | none; Claude Code only |
+| ctx-watch | SessionStart | none; the skill, CLI and launchd timer work on both |
+| as2-skills | none; skills only | `.omp-plugin/plugin.json`, skills only |
+| plugin-kit | none; skill, scripts and agents | none; works from a checkout on both |
+
 ## output-types
 
 A plugin that makes an agent label the receipted facts it returns — CLAIM for what it checked this
