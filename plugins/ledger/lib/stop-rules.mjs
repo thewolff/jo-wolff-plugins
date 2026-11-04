@@ -90,13 +90,15 @@ export function questionSentences(text) {
  * What makes a question one the human has to decide: it offers a choice (`or`) or asks for a
  * decision, permission or confirmation. Whole words, any case, tested on one question sentence.
  * A sentence that opens with what/where/when/who/why/how asks for information, not a decision
- * ("What are we working on?", "What do you want to work on?", "Why does the hook bounce?"),
- * unless it also offers a choice (WH_CHOICE: "Which", "A or B", "do you prefer").
+ * ("What are we working on?", "What do you want to build or check first?", "Why does the hook
+ * bounce?"), unless it offers a choice: "which", "whether", "prefer", or an option list set
+ * off by a comma ("What should it be, alpha or beta?"). A loose `or` inside a wh-question
+ * ("build or check") is not a choice: the live 0.3.1 run bounced on one.
  */
 export const DECISION_ASK =
   /\b(?:or|which|whether|prefer|approve|proceed|go ahead|want me to|(?:shall|should|can|could|may|must|do|will) (?:i|we)|do you (?:want|need|prefer|mean|agree|approve)|would you (?:like|prefer|rather|mind)|did you mean|yes or no|ok(?:ay)? (?:to|if|with|for)|(?:is|was) (?:this|that|it) (?:ok(?:ay)?|right|correct|fine|good|enough|what you)|(?:look|sound)s? (?:right|good|ok(?:ay)?|correct))\b/i;
 const WH_START = /^[\s*_#>`-]*(?:what|where|when|who|whom|whose|why|how)\b/i;
-const WH_CHOICE = /\b(?:or|which|whether|prefer)\b/i;
+const WH_CHOICE = /\b(?:which|whether|prefer)\b|,\s*[^,?]{1,60}\bor\b[^,?]{1,60}\?$/i;
 
 /** Whether one question sentence asks the human for a decision (see DECISION_ASK). */
 export function isDecisionAsk(sentence) {
