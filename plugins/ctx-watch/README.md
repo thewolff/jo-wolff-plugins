@@ -115,15 +115,21 @@ episode and re-arms it. So a blip between two ticks shows nothing, a real outage
 dialog within ten minutes, and a second outage shows a second one. The popup is one
 `/usr/bin/osascript -e 'display dialog …'`, giving up after an hour, run under a small detached
 supervisor (`lib/popup-supervisor.mjs`) so the ticks keep running while it is up. The
-supervisor is osascript's parent until it ends and then writes how it ended to
-`<state>/popup.json`. The episode's popup counts as delivered only on a confirmed exit 0 (OK
-clicked, or the give-up) or a person dismissing it; a popup still running a second after the
-tick started it is pending (no second dialog meanwhile, `status` says `not confirmed yet`), and
-the next tick settles it from `popup.json`. One that could not start, died at once, or failed
-later (no osascript, no GUI session) is `popup not shown: …` or `popup not delivered: …` in a
-tick's line, recorded in the state (`popupFailedAt`, the reason), and tried again on the next
-failing tick, so an outage that began while nobody was logged in still gets its dialog. A
-pending popup with no outcome after its give-up plus ten minutes is treated as not delivered.
+supervisor is osascript's parent until it ends and then writes how it ended to that popup's own
+file, `<state>/popups/<token>.json`. Before the dialog starts, the tick records its claim in
+`state.json` (pending, under that token) while holding `<state>/state.lock`, so a second tick
+running at the same moment sees the claim and asks for nothing; a claim that cannot be recorded
+(the directory is not writable, the write fails, another tick holds the lock for more than 2 s)
+starts no dialog and says so with the path. The episode's popup counts as delivered only on a
+confirmed exit 0 (OK clicked, or the give-up) or a person dismissing it; a popup still running a
+second after the tick started it is pending (no second dialog meanwhile, `status` says `not
+confirmed yet`), and the next tick settles it from its token's file, which no other popup's
+supervisor writes. One that could not start, died at once, or failed later (no osascript, no
+GUI session) is `popup not shown: …` or `popup not delivered: …` in a tick's line, recorded in
+the state (`popupFailedAt`, the reason), and tried again on the next failing tick, so an outage
+that began while nobody was logged in still gets its dialog. A pending popup with no outcome
+after its give-up plus ten minutes (a supervisor killed with the login session, or a tick that
+died between its claim and the dialog) is treated as not delivered.
 
 **The CLI** (`scripts/ctx-watch.mjs`):
 
@@ -143,14 +149,16 @@ Every verb takes `--state-dir <dir>` and `--ctx <executable>`; the plist passes 
 Everything the plugin writes is under `${XDG_STATE_HOME:-~/.local/state}/ctx-watch`, declared
 in `.claude-plugin/plugin.json` `state` with `prune` as its command (the nightly canary runs
 it): `state.json` (one small file, rewritten each tick; its temp file is removed if a write
-fails), `popup.json` (the popup supervisor's last outcome, one small file), `errors.log` (one
-line per hook fault or ignored state file), and `launchd/` with the plist and the two logs
-launchd appends to. Any of the three logs over 256 KB is renamed to `<log>.1` (replacing the
-last) at the start of a tick or a prune, so each is at most 256 KB plus one run's lines and the
-pair at most twice that; `prune` removes a `.1` older than 30 days and a `state.json.<pid>.tmp`
-or `popup.json.<pid>.tmp` a failed write left. It never removes a `.1` it rotated in the same
-run (a tick launchd started may still be writing to it, so even `--days 0` keeps it) or a temp
-file whose `<pid>` is still running. `state.json`, `popup.json` and the plist are never pruned.
+fails), `state.lock` (present only while a writer holds it), `popups/<token>.json` (one small
+outcome file per popup shown), `errors.log` (one line per hook fault or ignored state file), and
+`launchd/` with the plist and the two logs launchd appends to. Any of the three logs over 256 KB
+is renamed to `<log>.1` (replacing the last) at the start of a tick or a prune, so each is at
+most 256 KB plus one run's lines and the pair at most twice that; `prune` removes a `.1` and a
+popup outcome older than 30 days, and a `state.json.<pid>.tmp`, `state.lock.<pid>.stale` or
+`popups/<token>.json.<pid>.tmp` a failed write or a crashed lock takeover left. It never removes
+a `.1` it rotated in the same run (a tick launchd started may still be writing to it, so even
+`--days 0` keeps it), the outcome of the popup `state.json` has pending, however old, or a temp
+file whose `<pid>` is still running. `state.json`, `state.lock` and the plist are never pruned.
 
 A `state.json` whose fields are out of shape (an episode that is not `up`/`strike`/`down`, a
 negative or fractional strike count, a string where a timestamp belongs, an interval outside
@@ -212,3 +220,11 @@ of running ctx with no limit; `install` refuses an interval its own state file w
 before writing anything; `prune --days` with no value is a usage error instead of a one-day
 prune; and `prune` keeps the log it just rotated and a temp file still being written, with
 `--dry-run` now reporting the same plan the real run carries out.
+
+Changes before release, from the third review: a tick records its popup claim in `state.json`
+under a lock before the dialog starts, instead of after, so two ticks at once ask for one popup
+and a state directory that cannot be written starts none; the hook's first-seen stamp and
+`install`'s interval take the same lock, so neither can overwrite a claim; and each popup's
+outcome has its own file (`popups/<token>.json`) instead of a shared `popup.json`, so an
+earlier episode's dialog ending late cannot erase the current one's delivery. `prune` removes
+outcome files past `--days`, never the pending one's.

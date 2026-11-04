@@ -2,11 +2,13 @@
 // launchctl injected: check prints the line or nothing (exit 0 always); tick drives the episode
 // through strike, down with one delivered popup, a popup that failed and is retried, a popup
 // that failed after the grace (a fake osascript under the real supervisor) and is reopened, and
-// recovery, and leaves the state file; install writes the plist (state directory and ctx
-// pinned) and records the interval; the timer's own arguments reach the same state file the
-// hook reads; status reads it all back; prune rotates and removes. Then the script as a
-// process: help, an unknown verb, `check --json` against a fake ctx on PATH, and a PATH that
-// cannot shadow a pinned `--ctx`.
+// recovery, and leaves the state file; two ticks racing at the popup ask for one popup; a claim
+// that cannot be recorded (unwritable directory, failed write, a lock another holds) starts no
+// popup; an older episode's late outcome cannot undo the current popup's; install writes the
+// plist (state directory and ctx pinned) and records the interval; the timer's own arguments
+// reach the same state file the hook reads; status reads it all back; prune rotates and
+// removes. Then the script as a process: help, an unknown verb, `check --json` against a fake
+// ctx on PATH, and a PATH that cannot shadow a pinned `--ctx`.
 
 import test from "node:test";
 import assert from "node:assert/strict";
@@ -16,10 +18,10 @@ import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { main, parseArgs, HELP, CLI_PATH } from "../scripts/ctx-watch.mjs";
-import { statePath, readState, writeState, EMPTY } from "../lib/state.mjs";
+import { statePath, readState, writeState, lockPath, EMPTY } from "../lib/state.mjs";
 import { LABEL } from "../lib/launchd.mjs";
 import { MAX_LOG_BYTES } from "../lib/retention.mjs";
-import { showPopup, readOutcome } from "../lib/popup.mjs";
+import { showPopup, readOutcome, recordOutcome, outcomePath } from "../lib/popup.mjs";
 
 const FIX_DIR = join(dirname(fileURLToPath(import.meta.url)), "fixtures");
 const HEALTHY = readFileSync(join(FIX_DIR, "ctx-daemon-status.txt"), "utf8");
@@ -194,8 +196,9 @@ test("tick: a popup alive at the grace that later exits 7 never latches; the nex
 
     // The supervisor outlives this tick (detached) and records the late exit.
     const end = Date.now() + 10_000;
-    while (readOutcome(join(dir, "popup.json"))?.token !== token && Date.now() < end) await new Promise((r) => setTimeout(r, 25));
-    assert.equal(readOutcome(join(dir, "popup.json"))?.code, 7);
+    while (readOutcome(outcomePath(dir, token))?.token !== token && Date.now() < end) await new Promise((r) => setTimeout(r, 25));
+    assert.equal(readOutcome(outcomePath(dir, token))?.code, 7);
+    assert.equal(existsSync(join(dir, "popup.json")), false, "outcomes are per token; there is no shared outcome file");
     assert.equal(readState(file).popupShown, false, "the outcome file is the supervisor's; state.json is only the tick's");
 
     let asked = 0;
@@ -204,6 +207,114 @@ test("tick: a popup alive at the grace that later exits 7 never latches; the nex
     assert.match(t4.text, /^popup not delivered: .*osascript-7 ended with exit 7 after the grace; the popup is due again\n\d{4}-.*Z fail: .*episode down, strikes 4\npopup started \(test\)$/);
     s = readState(file);
     assert.deepEqual({ popupShown: s.popupShown, popupPending: s.popupPending, popupFailReason: s.popupFailReason }, { popupShown: true, popupPending: null, popupFailReason: null });
+  } finally {
+    b.release();
+  }
+});
+
+test("tick: two ticks racing at the popup boundary ask for one popup under one token; the claim is on disk before the popup starts, and the first tick's result does not undo the second's state", async () => {
+  const b = box();
+  try {
+    const file = statePath(b.env);
+    assert.equal(writeState(file, { ...EMPTY, episode: "strike", strikes: 1, lastTickAt: NOW - 1 }), true);
+    const requests = [];
+    let open;
+    const gate = new Promise((r) => (open = r));
+    const popup = async (o) => {
+      requests.push(o.token);
+      assert.deepEqual(readState(file).popupPending, { token: o.token, since: NOW }, "reserved on disk before the supervisor starts");
+      assert.equal(o.outcomeFile, outcomePath(join(b.env.XDG_STATE_HOME, "ctx-watch"), o.token), "the supervisor writes the token's own outcome file");
+      await gate;
+      return { started: true, pending: true, token: o.token, detail: "popup started (test)" };
+    };
+    const deps = (at) => ({ env: b.env, now: () => at, run: fakeCtx([NOT_RUNNING]).run, exists: () => true, popup });
+    const first = main(["tick"], deps(NOW));
+    assert.equal(requests.length, 1, "the first tick is paused inside its popup");
+    const second = await main(["tick"], deps(NOW + 10));
+    assert.equal(requests.length, 1, "the second tick saw the claim and asked for nothing");
+    assert.match(second.text, /episode down, strikes 3$/);
+    open();
+    const t1 = await first;
+    assert.match(t1.text, /episode down, strikes 2\npopup started \(test\)$/);
+    const s = readState(file);
+    assert.deepEqual(s.popupPending, { token: requests[0], since: NOW }, "one token, the first tick's");
+    assert.equal(s.strikes, 3, "the first tick's result was applied to the state the second left, not over it");
+    assert.equal(s.lastTickAt, NOW + 10);
+  } finally {
+    b.release();
+  }
+});
+
+test("tick: a popup claim that cannot be recorded starts no popup, and says which path (unwritable directory; a failed state write; a lock another tick holds)", async () => {
+  const b = box();
+  try {
+    const file = statePath(b.env);
+    const dir = join(b.env.XDG_STATE_HOME, "ctx-watch");
+    const down = { ...EMPTY, episode: "strike", strikes: 1, lastTickAt: NOW - 1 };
+    const deps = (at, extra = {}) => ({ env: b.env, now: () => at, run: fakeCtx([NOT_RUNNING]).run, exists: () => true, popup: () => assert.fail("no popup without a recorded claim"), ...extra });
+    const esc = (p) => p.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+
+    // The directory turns read-only: the lock (and the claim) cannot be written, on tick after tick.
+    assert.equal(writeState(file, down), true);
+    chmodSync(dir, 0o555);
+    try {
+      for (const at of [NOW, NOW + 1]) {
+        const r = await main(["tick"], deps(at));
+        assert.equal(r.code, 0);
+        assert.match(r.text, new RegExp(`\\nstate not written to ${esc(file)}: could not lock ${esc(lockPath(dir))}: EACCES`));
+      }
+    } finally {
+      chmodSync(dir, 0o755);
+    }
+    assert.deepEqual(readState(file), down, "nothing changed on disk");
+
+    // The lock is taken but the state write fails (the temp file's name is a directory): no popup either.
+    const tmp = `${file}.${process.pid}.tmp`;
+    mkdirSync(join(tmp, "blocker"), { recursive: true });
+    try {
+      const r = await main(["tick"], deps(NOW + 2));
+      assert.match(r.text, new RegExp(`episode down, strikes 2\\nstate not written to ${esc(file)}: .*; popup not started: its claim could not be recorded$`));
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+    assert.deepEqual(readState(file), down);
+    assert.equal(existsSync(lockPath(dir)), false, "the lock was released");
+
+    // Another tick holds the lock (a running pid, fresh): this tick waits, then skips with no popup.
+    writeFileSync(lockPath(dir), `${process.pid} another-tick\n`);
+    const busy = await main(["tick"], deps(NOW + 3, { lockWaitMs: 50 }));
+    assert.match(busy.text, new RegExp(`\\nstate not written to ${esc(file)}: ${esc(lockPath(dir))} is held by pid ${process.pid}$`));
+    assert.deepEqual(readState(file), down);
+    rmSync(lockPath(dir));
+  } finally {
+    b.release();
+  }
+});
+
+test("tick: the current popup's outcome survives an older episode's supervisor reporting after it, and latches", async () => {
+  const b = box();
+  try {
+    const file = statePath(b.env);
+    const dir = join(b.env.XDG_STATE_HOME, "ctx-watch");
+    const tokens = [];
+    const pending = async (o) => (tokens.push(o.token), { started: true, pending: true, token: o.token, detail: "popup started (test)" });
+    const tick = (at, statuses, popup = () => assert.fail("no popup")) => main(["tick"], { env: b.env, now: () => at, run: fakeCtx(statuses).run, exists: () => true, popup });
+    await tick(NOW, [NOT_RUNNING]);
+    await tick(NOW + 1, [NOT_RUNNING], pending); // episode 1: popup A, still up
+    await tick(NOW + 2, [HEALTHY]); // a pass closes episode 1; A's dialog may still be up
+    await tick(NOW + 3, [NOT_RUNNING]);
+    await tick(NOW + 4, [NOT_RUNNING], pending); // episode 2: popup B
+    const [a, bTok] = tokens;
+    assert.notEqual(a, bTok);
+    const outcome = (token, code) => ({ token, at: NOW + 5, bin: "/usr/bin/osascript", code, signal: null, error: null, acknowledged: false });
+    assert.equal(recordOutcome(outcomePath(dir, bTok), outcome(bTok, 0)), true, "B: OK clicked");
+    assert.equal(recordOutcome(outcomePath(dir, a), outcome(a, 7)), true, "then A's supervisor reports late");
+    assert.equal(readOutcome(outcomePath(dir, bTok)).code, 0, "B's outcome is intact");
+    const t = await tick(NOW + 6, [NOT_RUNNING]);
+    assert.match(t.text, /^popup delivered: \/usr\/bin\/osascript ended with exit 0\n/);
+    const s = readState(file);
+    assert.deepEqual({ popupShown: s.popupShown, popupPending: s.popupPending, lastPopupAt: s.lastPopupAt }, { popupShown: true, popupPending: null, lastPopupAt: NOW + 4 });
+    await tick(NOW + 7, [NOT_RUNNING]); // latched: no second dialog
   } finally {
     b.release();
   }

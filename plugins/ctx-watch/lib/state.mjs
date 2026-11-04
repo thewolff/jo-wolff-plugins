@@ -7,8 +7,9 @@
 //   strikes          failing ticks in a row (0 when up)
 //   popupShown       true once this episode's popup was delivered (osascript exited 0, or the
 //                    person dismissed it); re-armed by a passing tick
-//   popupPending     { token, since } while a popup that outlived the grace has not ended:
-//                    not delivered yet, and no second dialog is asked for meanwhile
+//   popupPending     { token, since } from the moment a tick claims the episode's popup (written
+//                    before the supervisor starts) until it is settled: not delivered yet, and no
+//                    second dialog is asked for meanwhile
 //   popupFailedAt    ms of the last popup that could not be delivered this episode, or null
 //   popupFailReason  why, or null
 //   downSince        ms of the tick that opened the episode's down, or null
@@ -21,15 +22,22 @@
 //
 // step(state, result, now) → { state, popup }: a failing probe strikes once, then goes down on
 // the second failing tick in a row and asks for the popup, once per episode; a passing probe
-// closes the episode and re-arms. `popup: true` is a request: the tick shows the dialog and
+// closes the episode and re-arms. `popup: true` is a request: the tick first records the claim
+// (`popupPending` under a fresh token) and only once that write has landed starts the dialog,
 // then calls popupDelivered(state, outcome, now), which latches `popupShown` only on a confirmed
-// delivery, records a popup still running after the grace as `popupPending`, and leaves the
-// latch open on a failure, so a popup that could not be shown is tried again on the next failing
-// tick. Each tick first calls popupSettled(state, readOutcome(<state>/popup.json), now): the
-// supervisor's outcome for the pending token latches a delivery or reopens the episode on a late
-// failure; a pending popup with no outcome after PENDING_STALE_MS reopens it too. state.json has
-// one writer per tick and popup.json one per supervisor, so neither overwrites the other. Never
-// throws.
+// delivery, keeps a popup still running after the grace pending, and releases the claim on a
+// failure, so a popup that could not be shown is tried again on the next failing tick. Each
+// tick first calls popupSettled(state, readOutcome(<state>/popups/<token>.json), now) for the
+// pending token: its supervisor's outcome latches a delivery or reopens the episode on a late
+// failure; a pending popup with no outcome after PENDING_STALE_MS reopens it too (also the
+// recovery for a tick that died between its claim and the dialog). Never throws.
+//
+// Every read-modify-write of state.json (the tick's claim and its result, `install`'s interval,
+// the hook's first-seen stamp) holds `<state>/state.lock` (withStateLock): a file created with
+// O_EXCL holding `<pid> <nonce>`, so two ticks cannot both read "no popup yet" and both claim
+// it. A lock whose pid is not running, or older than LOCK_STALE_MS, was left by a holder that
+// died and is taken over. Each supervisor writes only its own token's outcome file, so neither
+// file has two writers.
 //
 // readState(path) is the file, validated field by field (the enums, booleans, bounded counters
 // and whole-epoch-ms stamps above; unknown fields dropped), or EMPTY when the file is missing,
@@ -37,10 +45,11 @@
 // `strikes: -100` or `popupShown: "yes"` would otherwise hold the popup off for the whole
 // outage, so it is treated as absent and named in one errors.log line beside it.
 
-import { appendFileSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { appendFileSync, linkSync, mkdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { randomUUID } from "node:crypto";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
-import { GIVE_UP_SECS, delivered, describeExit } from "./popup.mjs";
+import { GIVE_UP_SECS, TOKEN, delivered, describeExit } from "./popup.mjs";
 
 export const PLUGIN = "ctx-watch";
 export const DEFAULT_INTERVAL_S = 300;
@@ -57,6 +66,10 @@ export const INTERVAL_BOUNDS = Object.freeze({ min: 30, max: 86_400 * 7 });
 const MAX_DATE_MS = 8.64e15;
 /** How long a pending popup may go without an outcome: its give-up plus ten minutes (a supervisor killed with its login session never writes one). */
 export const PENDING_STALE_MS = (GIVE_UP_SECS + 600) * 1000;
+/** A state lock older than this is a holder that hung or died (every holder keeps it for a few file operations). */
+export const LOCK_STALE_MS = 30_000;
+/** How long a writer waits for another's lock before it gives up and says so. */
+export const LOCK_WAIT_MS = 2_000;
 
 /** `${XDG_STATE_HOME:-~/.local/state}/ctx-watch` (the hook runner's rule, repeated so the CLI shares it). */
 export function stateDir(env = process.env) {
@@ -66,6 +79,97 @@ export function stateDir(env = process.env) {
 /** `<dir>/state.json`; `dir` defaults to stateDir(env) (the timer passes the directory it was installed with). */
 export function statePath(env = process.env, dir = stateDir(env)) {
   return join(dir, "state.json");
+}
+
+/** `<dir>/state.lock`: held by every read-modify-write of state.json. */
+export function lockPath(dir) {
+  return join(dir, "state.lock");
+}
+
+/** Whether `pid` names a running process (EPERM: running, someone else's). */
+export function running(pid) {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (err) {
+    return err.code === "EPERM";
+  }
+}
+
+const sleep = (ms) => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+
+/** One attempt: `{ held }` (our content), `{ busy }` (the holder's pid), `{ again }` (state changed under us), or `{ error }`. */
+function tryLock(path, staleMs) {
+  const mine = `${process.pid} ${randomUUID()}\n`;
+  try {
+    mkdirSync(dirname(path), { recursive: true });
+    writeFileSync(path, mine, { flag: "wx" });
+    return { held: mine };
+  } catch (err) {
+    if (err.code !== "EEXIST") return { error: err };
+  }
+  let text;
+  let age;
+  try {
+    text = readFileSync(path, "utf8");
+    age = Date.now() - statSync(path).mtimeMs;
+  } catch {
+    return { again: true }; // released between our create and our read
+  }
+  const pid = /^(\d+) /.exec(text)?.[1];
+  // An empty or half-written lock is a holder between creating it and writing its pid: busy while fresh.
+  if (age <= staleMs && (pid === undefined || running(Number(pid)))) return { busy: pid ?? "unknown" };
+  // Stale: set it aside under a name only this process uses, and drop it only if it is still the
+  // lock judged stale; a fresh lock some other process made meanwhile is put back.
+  const aside = `${path}.${process.pid}.stale`;
+  try {
+    renameSync(path, aside);
+  } catch {
+    return { again: true };
+  }
+  let moved = null;
+  try {
+    moved = readFileSync(aside, "utf8");
+  } catch {
+    /* gone: nothing to put back */
+  }
+  if (moved !== null && moved !== text) {
+    try {
+      linkSync(aside, path);
+    } catch {
+      /* a third writer already holds the name */
+    }
+  }
+  rmSync(aside, { force: true });
+  return { again: true };
+}
+
+/**
+ * Run `fn()` holding `<dir>/state.lock`; `{ ok: true, value }`, or `{ ok: false, error }` when the
+ * lock cannot be made (`could not lock <path>: …`) or another live holder keeps it past `waitMs`
+ * (`<path> is held by pid <n>`), and then `fn` never runs. The lock is released however `fn`
+ * ends (a throw propagates). Synchronous: every holder keeps it for a few file operations.
+ */
+export function withStateLock(dir, fn, { waitMs = LOCK_WAIT_MS, staleMs = LOCK_STALE_MS } = {}) {
+  const path = lockPath(dir);
+  const until = Date.now() + waitMs;
+  for (;;) {
+    const r = tryLock(path, staleMs);
+    if (r.error) return { ok: false, error: new Error(`could not lock ${path}: ${r.error.message}`, { cause: r.error }) };
+    if (r.held) {
+      try {
+        return { ok: true, value: fn() };
+      } finally {
+        try {
+          if (readFileSync(path, "utf8") === r.held) rmSync(path, { force: true });
+        } catch {
+          /* already gone */
+        }
+      }
+    }
+    if (r.busy && Date.now() >= until) return { ok: false, error: new Error(`${path} is held by pid ${r.busy}`) };
+    if (r.busy) sleep(Math.min(25, Math.max(1, until - Date.now())));
+  }
 }
 
 export const EMPTY = Object.freeze({
@@ -88,7 +192,7 @@ const nullOr = (f) => (v) => v === null || f(v);
 const isBool = (v) => typeof v === "boolean";
 const isStr = (v) => typeof v === "string";
 const isProbe = (v) => v && typeof v === "object" && !Array.isArray(v) && validMs(v.at) && isBool(v.ok) && nullOr(isStr)(v.reason ?? null) && nullOr(isStr)(v.healed ?? null);
-const isPending = (v) => v && typeof v === "object" && !Array.isArray(v) && isStr(v.token) && v.token.length > 0 && v.token.length <= 100 && validMs(v.since);
+const isPending = (v) => v && typeof v === "object" && !Array.isArray(v) && isStr(v.token) && TOKEN.test(v.token) && validMs(v.since);
 
 /** Each field's test and, for the message, its shape. */
 const SHAPE = Object.freeze({
@@ -182,8 +286,8 @@ export function writeState(path, state) {
 
 /**
  * One tick's transition. `result` is a `check()` result (`ok`, `reason`, `healed`); `now` ms.
- * `popup: true` asks the tick to show the dialog; see popupDelivered for the latch. A pending
- * popup is not asked for again: the dialog may still be up.
+ * `popup: true` asks the tick to claim and show the dialog; see popupDelivered for the latch. A
+ * pending popup is not asked for again: the dialog may still be up.
  */
 export function step(state, result, now) {
   const base = { ...EMPTY, ...state, lastTickAt: now, lastProbe: { at: now, ok: result.ok, reason: result.reason ?? null, healed: result.healed?.detail ?? null } };
@@ -196,10 +300,10 @@ export function step(state, result, now) {
 const reason = (s) => String(s).slice(0, 200);
 
 /**
- * Record what showPopup resolved (`{ started, pending?, token?, detail }`): confirmed delivered
- * → `popupShown` latched and `lastPopupAt` stamped; still running after the grace → pending
- * under its token, latch open; not delivered → `popupFailedAt` and the reason, latch open so the
- * next failing tick tries again.
+ * Record what showPopup resolved (`{ started, pending?, token?, detail }`) on the state that
+ * holds its claim: confirmed delivered → `popupShown` latched and `lastPopupAt` stamped; still
+ * running after the grace → pending under its token, latch open; not delivered → claim released,
+ * `popupFailedAt` and the reason, latch open so the next failing tick tries again.
  */
 export function popupDelivered(state, outcome, now) {
   if (outcome.started && outcome.pending) return { ...state, popupShown: false, popupPending: { token: outcome.token, since: now }, popupFailedAt: null, popupFailReason: null };
@@ -208,12 +312,12 @@ export function popupDelivered(state, outcome, now) {
 }
 
 /**
- * Settle a pending popup from the supervisor's outcome (readOutcome; null when there is none).
- * `{ state, line }`: `line` (for the tick's output) is null when nothing changed. The outcome
- * for the pending token decides: delivered → latched, `lastPopupAt` the tick that showed it;
- * anything else → pending cleared and the failure recorded, so the episode's popup is due again.
- * No outcome for longer than PENDING_STALE_MS also reopens it. Another token's outcome is not
- * this popup's and changes nothing.
+ * Settle a pending popup from its supervisor's outcome (readOutcome of the pending token's own
+ * file; null when there is none). `{ state, line }`: `line` (for the tick's output) is null when
+ * nothing changed. The outcome for the pending token decides: delivered → latched, `lastPopupAt`
+ * the tick that showed it; anything else → pending cleared and the failure recorded, so the
+ * episode's popup is due again. No outcome for longer than PENDING_STALE_MS also reopens it.
+ * Another token's outcome is not this popup's and changes nothing.
  */
 export function popupSettled(state, outcome, now, staleMs = PENDING_STALE_MS) {
   const p = state.popupPending;

@@ -1,9 +1,11 @@
 #!/usr/bin/env node
 // lib/popup-supervisor.mjs — `node popup-supervisor.mjs <outcomeFile> <token> <bin> [args…]`:
 // run `bin args` (osascript and its dialog) as this process's child, wait for it however long
-// the dialog stays up, then record how it ended in <outcomeFile> (lib/popup.mjs recordOutcome)
-// and exit with its status (0 for a delivery, else its code, else 1). showPopup starts this
-// detached, so it outlives the tick that asked for the dialog; the next tick reads the outcome.
+// the dialog stays up, then record how it ended in <outcomeFile>, which is its token's own file
+// (`<state>/popups/<token>.json`, lib/popup.mjs outcomePath and recordOutcome; no other
+// supervisor writes it), and exit with its status (0 for a delivery, else its code, else 1).
+// showPopup starts this detached, so it outlives the tick that asked for the dialog; the next
+// tick reads the outcome.
 // It prints nothing and never throws: a failure to record leaves the tick's pending popup to
 // expire (state.mjs PENDING_STALE_MS), which reopens the episode.
 

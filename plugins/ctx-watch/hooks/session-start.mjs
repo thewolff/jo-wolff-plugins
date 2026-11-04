@@ -28,7 +28,8 @@
 
 import { runHook, invokedDirectly, logError } from "../lib/hook-runner.mjs";
 import { check, needsYouLine, LINE_MAX } from "../lib/probe.mjs";
-import { readState, writeState, statePath, timerOverdue } from "../lib/state.mjs";
+import { readState, writeState, statePath, timerOverdue, withStateLock } from "../lib/state.mjs";
+import { dirname } from "node:path";
 import { shellQuote } from "../lib/launchd.mjs";
 import { CLI_PATH } from "../scripts/ctx-watch.mjs";
 
@@ -36,6 +37,8 @@ import { CLI_PATH } from "../scripts/ctx-watch.mjs";
 export const HOOK_SPAWN_MS = 1_200;
 /** The whole check's clock (probe, heal, re-probe): inside the runner's 4 s with room for the stamp. */
 export const HOOK_DEADLINE_MS = 3_000;
+/** How long the first-seen stamp waits for a tick holding the state lock (the runner's 4 s leaves room). */
+export const HOOK_LOCK_WAIT_MS = 200;
 
 /** The dead-man's line for a timer that is overdue since `since` (ms); the path is quoted for the shell, and not cut. */
 export function timerLine(since, cliPath = CLI_PATH) {
@@ -59,10 +62,20 @@ export function handle(input, { env = process.env, now = Date.now, run, exists, 
   const file = statePath(env);
   const state = readState(file);
   const at = now();
-  if (state.lastTickAt === null && state.firstSeenAt === null && !writeState(file, { ...state, firstSeenAt: at })) {
-    const line = stampLine(file, writeState.lastError);
-    logError("ctx-watch", "SessionStart", line.slice("ctx-watch: ".length), env);
-    lines.push(line);
+  if (state.lastTickAt === null && state.firstSeenAt === null) {
+    // Re-read under the lock (quietly: the read above already logged a bad file): a tick that
+    // landed meanwhile has stamped it, and its popup claim must not be overwritten.
+    const r = withStateLock(dirname(file), () => {
+      const cur = readState(file, { log: () => {} });
+      if (cur.lastTickAt !== null || cur.firstSeenAt !== null) return true;
+      return writeState(file, { ...cur, firstSeenAt: at }) || writeState.lastError;
+    }, { waitMs: HOOK_LOCK_WAIT_MS });
+    const err = !r.ok ? r.error : r.value === true ? null : r.value;
+    if (err) {
+      const line = stampLine(file, err);
+      logError("ctx-watch", "SessionStart", line.slice("ctx-watch: ".length), env);
+      lines.push(line);
+    }
   }
   const t = timerOverdue(state, at);
   if (t.overdue) lines.push(timerLine(t.since, cliPath));

@@ -3,13 +3,17 @@
 //
 //   check [--json]           one probe (heal and re-probe on failure); prints the needs-you line
 //                            or nothing; --json prints the whole result. Exit 0 always.
-//   tick                     the launchd timer's run: rotate the logs over their bound, settle a
-//                            popup an earlier tick left pending (from <state>/popup.json), probe,
-//                            advance the episode state in <state>/state.json, show the popup on
-//                            the second failing tick in a row (once per episode, once its
-//                            delivery is confirmed; a popup that could not be shown, or that
-//                            failed after the grace, is tried again next failing tick; re-armed
-//                            by a passing tick). One summary line.
+//   tick                     the launchd timer's run: rotate the logs over their bound, probe,
+//                            then, holding <state>/state.lock: settle a popup an earlier tick left
+//                            pending (from its token's <state>/popups/<token>.json), advance the
+//                            episode state in <state>/state.json, and on the second failing tick
+//                            in a row record the popup's claim (pending under a fresh token).
+//                            Only once that claim is on disk does the dialog start; its result is
+//                            then applied, under the lock again, to the state as it is by then.
+//                            Once per episode, once its delivery is confirmed; a popup that could
+//                            not be shown, or that failed after the grace, is tried again next
+//                            failing tick; re-armed by a passing tick. A claim that cannot be
+//                            recorded (no lock, a failed write) starts no popup. One summary line.
 //   install [--interval 300] write <state>/launchd/com.jo-wolff-plugins.ctx-watch.plist, lint it,
 //                            print the `launchctl bootstrap` line. Never bootstraps. The plist
 //                            pins this script, the state directory and the ctx executable.
@@ -30,7 +34,7 @@ import { fileURLToPath } from "node:url";
 import { realpathSync } from "node:fs";
 import { resolve } from "node:path";
 import { check as runCheckOnce, needsYouLine, CTX } from "../lib/probe.mjs";
-import { readState, writeState, statePath, stateDir as defaultStateDir, step, popupDelivered, popupSettled, timerOverdue } from "../lib/state.mjs";
+import { readState, writeState, statePath, stateDir as defaultStateDir, step, popupDelivered, popupSettled, timerOverdue, withStateLock, LOCK_WAIT_MS } from "../lib/state.mjs";
 import { install, uninstall, loaded, plistPath } from "../lib/launchd.mjs";
 import { showPopup, readOutcome, outcomePath } from "../lib/popup.mjs";
 import { rotateLogs, prune, DEFAULT_RETENTION_DAYS } from "../lib/retention.mjs";
@@ -69,7 +73,7 @@ export function parseArgs(argv) {
 }
 
 export async function main(argv, deps = {}) {
-  const { env = process.env, now = Date.now, run, exists, popup = showPopup, check: checkBin, node, uid, cwd = process.cwd(), cliPath = CLI_PATH, timeoutMs, ctxExists } = deps;
+  const { env = process.env, now = Date.now, run, exists, popup = showPopup, check: checkBin, node, uid, cwd = process.cwd(), cliPath = CLI_PATH, timeoutMs, ctxExists, lockWaitMs = LOCK_WAIT_MS } = deps;
   let verb;
   let opts;
   try {
@@ -98,32 +102,66 @@ export async function main(argv, deps = {}) {
       lines.push(...rot.problems);
       const result = runCheckOnce(probeDeps);
       const at = now();
-      const outcomeFile = outcomePath(dir);
-      const settled = popupSettled(readState(file), readOutcome(outcomeFile), at);
-      if (settled.line) lines.push(settled.line);
-      let { state, popup: wantPopup } = step(settled.state, result, at);
-      lines.push(`${iso(at)} ${result.ok ? "pass" : "fail"}: ${result.ok ? result.summary : result.reason}${result.healed ? ` | heal: ${result.healed.detail}` : ""} | episode ${state.episode}, strikes ${state.strikes}`);
-      if (wantPopup) {
-        const outcome = await popup({ text: `${needsYouLine(result)}\n\nThe daemon has failed ${state.strikes} checks in a row (since ${iso(state.downSince)}). Open a Terminal and run the fix; ctx-watch checks again in ${state.intervalS ?? 300} s.`, outcomeFile, token: `${at}-${process.pid}` });
-        state = popupDelivered(state, outcome, at);
-        lines.push(outcome.started ? outcome.detail : `${outcome.detail}; will try again on the next failing tick`);
+      const token = `${at}-${process.pid}`;
+      const probeLine = `${iso(at)} ${result.ok ? "pass" : "fail"}: ${result.ok ? result.summary : result.reason}${result.healed ? ` | heal: ${result.healed.detail}` : ""}`;
+      const notWritten = (err) => `state not written to ${file}: ${err?.message}`;
+      // Settle, step and claim in one locked read-modify-write: a second tick sees the claim.
+      const claim = withStateLock(
+        dir,
+        () => {
+          const prev = readState(file);
+          const settled = popupSettled(prev, prev.popupPending ? readOutcome(outcomePath(dir, prev.popupPending.token)) : null, at);
+          const { state, popup: wantPopup } = step(settled.state, result, at);
+          const next = wantPopup ? { ...state, popupPending: { token, since: at } } : state;
+          const written = writeState(file, next);
+          return { settled, state: next, wantPopup, written, error: written ? null : writeState.lastError };
+        },
+        { waitMs: lockWaitMs },
+      );
+      if (!claim.ok) {
+        lines.push(`${probeLine} | episode not updated`, notWritten(claim.error));
+        return { code: 0, text: lines.join("\n") };
       }
-      if (!writeState(file, state)) lines.push(`state not written to ${file}: ${writeState.lastError?.message}`);
+      const { settled, state, wantPopup, written, error } = claim.value;
+      if (settled.line) lines.push(settled.line);
+      lines.push(`${probeLine} | episode ${state.episode}, strikes ${state.strikes}`);
+      if (!written) {
+        lines.push(`${notWritten(error)}${wantPopup ? "; popup not started: its claim could not be recorded" : ""}`);
+        return { code: 0, text: lines.join("\n") };
+      }
+      if (wantPopup) {
+        const outcome = await popup({ text: `${needsYouLine(result)}\n\nThe daemon has failed ${state.strikes} checks in a row (since ${iso(state.downSince)}). Open a Terminal and run the fix; ctx-watch checks again in ${state.intervalS ?? 300} s.`, outcomeFile: outcomePath(dir, token), token });
+        lines.push(outcome.started ? outcome.detail : `${outcome.detail}; will try again on the next failing tick`);
+        // Apply the result to the state as it is now (another tick may have written since), and only while the claim is still this popup's.
+        const done = withStateLock(
+          dir,
+          () => {
+            const cur = readState(file);
+            if (cur.popupPending?.token !== token) return { ok: true, skipped: true };
+            return { ok: writeState(file, popupDelivered(cur, outcome, at)), error: writeState.lastError };
+          },
+          { waitMs: lockWaitMs },
+        );
+        const r = done.ok ? done.value : { ok: false, error: done.error };
+        if (!r.ok) lines.push(`${notWritten(r.error)}; the popup stays pending until its outcome file or the stale bound settles it`);
+      }
       return { code: 0, text: lines.join("\n") };
     }
     case "install": {
       const interval = opts.interval === undefined ? 300 : Number(opts.interval);
       const r = install({ env, interval, cliPath, node, uid, check: checkBin, cwd, stateDir: dir, ctx: opts.ctx, exists: ctxExists });
       if (r.code === 0) {
-        const state = readState(file);
-        if (!writeState(file, { ...state, intervalS: interval })) r.text += `\nstate not written to ${file}: ${writeState.lastError?.message} (the SessionStart hook will assume 300 s)`;
+        const rec = withStateLock(dir, () => writeState(file, { ...readState(file), intervalS: interval }) || writeState.lastError, { waitMs: lockWaitMs });
+        const err = !rec.ok ? rec.error : rec.value === true ? null : rec.value;
+        if (err) r.text += `\nstate not written to ${file}: ${err.message} (the SessionStart hook will assume 300 s)`;
       }
       return r;
     }
     case "uninstall":
       return uninstall({ env, uid, stateDir: dir });
     case "status": {
-      const state = popupSettled(readState(file), readOutcome(outcomePath(dir)), now()).state;
+      const read = readState(file);
+      const state = popupSettled(read, read.popupPending ? readOutcome(outcomePath(dir, read.popupPending.token)) : null, now()).state;
       const t = timerOverdue(state, now());
       const popupLine = state.popupShown
         ? `, popup shown ${iso(state.lastPopupAt)}`

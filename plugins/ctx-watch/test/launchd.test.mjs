@@ -8,11 +8,11 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
-import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { LABEL, DEFAULT_PATH, plistPath, plistText, install, uninstall, loaded, dedupePath, resolveCtx, shellQuote } from "../lib/launchd.mjs";
-import { dialogScript, showPopup, readOutcome, OSASCRIPT, GIVE_UP_SECS, GRACE_MS, SUPERVISOR } from "../lib/popup.mjs";
+import { dialogScript, showPopup, readOutcome, outcomePath, OSASCRIPT, GIVE_UP_SECS, GRACE_MS, SUPERVISOR } from "../lib/popup.mjs";
 import { INTERVAL_BOUNDS } from "../lib/state.mjs";
 
 const NODE = "/Users/example/.local/bin/node";
@@ -308,22 +308,29 @@ test("popup with real children (never osascript): a missing executable is `popup
   }
 });
 
-test("popup with a real supervisor: a child that outlives the grace and then exits 7 is recorded as a failure, and one that exits 0 as delivered (never osascript)", async () => {
+test("popup with a real supervisor: a child that outlives the grace and then exits 7 is recorded as a failure, and one that exits 0 as delivered, each in its token's own file (never osascript)", async () => {
   const dir = mkdtempSync(join(tmpdir(), "ctx-watch-popup-"));
   try {
-    const outcomeFile = join(dir, "popup.json");
-    const late = await showPopup({ text: "probe only; no dialog", bin: fakeOsascript(dir, 0.6, 7), graceMs: 150, outcomeFile, token: "late" });
+    const late = await showPopup({ text: "probe only; no dialog", bin: fakeOsascript(dir, 0.6, 7), graceMs: 150, outcomeFile: outcomePath(dir, "late"), token: "late" });
     assert.equal(late.started, true);
     assert.equal(late.pending, true, "alive at the grace: pending, not delivered");
-    const failed = await waitForOutcome(outcomeFile, "late");
+    const failed = await waitForOutcome(outcomePath(dir, "late"), "late");
     assert.deepEqual({ code: failed.code, signal: failed.signal, error: failed.error, acknowledged: failed.acknowledged, bin: failed.bin }, { code: 7, signal: null, error: null, acknowledged: false, bin: join(dir, "osascript-7") });
 
-    const ok = await showPopup({ text: "probe only; no dialog", bin: fakeOsascript(dir, 0.6, 0), graceMs: 150, outcomeFile, token: "ok" });
+    const ok = await showPopup({ text: "probe only; no dialog", bin: fakeOsascript(dir, 0.6, 0), graceMs: 150, outcomeFile: outcomePath(dir, "ok"), token: "ok" });
     assert.equal(ok.pending, true);
-    assert.equal((await waitForOutcome(outcomeFile, "ok")).code, 0);
+    assert.equal((await waitForOutcome(outcomePath(dir, "ok"), "ok")).code, 0);
+    assert.equal(readOutcome(outcomePath(dir, "late")).code, 7, "the later supervisor did not replace the earlier one's outcome");
+    assert.deepEqual(readdirSync(join(dir, "popups")).sort(), ["late.json", "ok.json"], "one file per token, no temp files left");
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
+});
+
+test("outcomePath: <dir>/popups/<token>.json for a token of letters, digits, - and _; anything else (a path, empty, over 100) is null, and reads as no outcome", () => {
+  assert.equal(outcomePath("/s", "1793784000000-123"), join("/s", "popups", "1793784000000-123.json"));
+  for (const bad of ["", "../x", "a/b", ".", "x".repeat(101), null, 7]) assert.equal(outcomePath("/s", bad), null, String(bad));
+  assert.equal(readOutcome(outcomePath("/s", "../x")), null);
 });
 
 test("readOutcome: the file, or null when missing, not JSON, or out of shape", () => {

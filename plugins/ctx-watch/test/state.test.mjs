@@ -1,13 +1,15 @@
 // test/state.test.mjs — the episode state machine (strike, down, popup once per episode once
 // delivered, re-arm), the file (atomic write with its temp file cleaned up; missing, invalid, or
-// out-of-shape → EMPTY with one errors.log line), and the dead-man's rule.
+// out-of-shape → EMPTY with one errors.log line), the state lock every read-modify-write of
+// state.json holds, and the dead-man's rule.
 
 import test from "node:test";
 import assert from "node:assert/strict";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { spawnSync } from "node:child_process";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { EMPTY, step, popupDelivered, popupSettled, readState, writeState, validateState, statePath, stateDir, timerOverdue, STRIKES_TO_DOWN, DEFAULT_INTERVAL_S, MAX_STRIKES, INTERVAL_BOUNDS, PENDING_STALE_MS } from "../lib/state.mjs";
+import { EMPTY, step, popupDelivered, popupSettled, readState, writeState, validateState, statePath, stateDir, timerOverdue, withStateLock, lockPath, STRIKES_TO_DOWN, DEFAULT_INTERVAL_S, MAX_STRIKES, INTERVAL_BOUNDS, PENDING_STALE_MS, LOCK_STALE_MS } from "../lib/state.mjs";
 
 const T0 = 1_793_784_000_000;
 const pass = { ok: true, reason: null, healed: null };
@@ -169,6 +171,7 @@ test("validateState: known fields in shape pass (unknown dropped); each field ou
     [{ popupFailReason: 7 }, "popupFailReason is 7, not a string | null"],
     [{ popupPending: { token: "", since: 1 } }, 'popupPending is {"token":"","since":1}, not { token, since } | null'],
     [{ popupPending: { token: "t", since: -1 } }, 'popupPending is {"token":"t","since":-1}, not { token, since } | null'],
+    [{ popupPending: { token: "../../etc/x", since: 1 } }, 'popupPending is {"token":"../../etc/x","since":1}, not { token, since } | null'],
     [{ lastProbe: "fail" }, 'lastProbe is "fail", not { at, ok, reason, healed } | null'],
     [{ lastProbe: { at: "now", ok: true } }, 'lastProbe is {"at":"now","ok":true}, not { at, ok, reason, healed } | null'],
     [{ lastProbe: { at: 1, ok: "true" } }, 'lastProbe is {"at":1,"ok":"true"}, not { at, ok, reason, healed } | null'],
@@ -252,4 +255,56 @@ test("timerOverdue: nothing known → not overdue; last tick older than 2× inte
   assert.equal(timerOverdue(custom, T0).overdue, true, "a 60 s interval is overdue after 120 s");
   const ticked = { ...EMPTY, lastTickAt: T0 - 1_000, firstSeenAt: T0 - 3_600_000 };
   assert.equal(timerOverdue(ticked, T0).overdue, false, "lastTickAt wins over firstSeenAt");
+});
+
+test("withStateLock: runs fn holding <dir>/state.lock and removes it; a lock a running process holds is busy; a dead holder's or an old one is taken over; an unwritable directory is an error naming the lock", () => {
+  const dir = mkdtempSync(join(tmpdir(), "ctx-watch-lock-"));
+  try {
+    const lock = lockPath(dir);
+    assert.equal(lock, join(dir, "state.lock"));
+    let inside;
+    const r = withStateLock(dir, () => ((inside = readFileSync(lock, "utf8")), 42));
+    assert.deepEqual(r, { ok: true, value: 42 });
+    assert.match(inside, new RegExp(`^${process.pid} `), "the lock names its holder's pid");
+    assert.equal(existsSync(lock), false, "released");
+
+    // Held by a running process (this one, under another nonce): busy until the wait runs out.
+    writeFileSync(lock, `${process.pid} someone-else\n`);
+    const t = Date.now();
+    const busy = withStateLock(dir, () => assert.fail("must not run while another holds the lock"), { waitMs: 120 });
+    assert.equal(busy.ok, false);
+    assert.ok(Date.now() - t >= 100, "it waited for the holder");
+    assert.equal(busy.error.message, `${lock} is held by pid ${process.pid}`);
+    assert.equal(readFileSync(lock, "utf8"), `${process.pid} someone-else\n`, "another's lock is left alone");
+
+    // A holder that exited without releasing: taken over at once.
+    const dead = spawnSync(process.execPath, ["-e", ""]).pid;
+    writeFileSync(lock, `${dead} crashed\n`);
+    assert.deepEqual(withStateLock(dir, () => "ran", { waitMs: 0 }), { ok: true, value: "ran" });
+    assert.equal(existsSync(lock), false);
+
+    // An empty lock is a holder between creating it and writing its pid: busy while fresh, taken over once old.
+    writeFileSync(lock, "");
+    assert.equal(withStateLock(dir, () => "no", { waitMs: 0 }).ok, false);
+    const old = new Date(Date.now() - LOCK_STALE_MS - 1_000);
+    utimesSync(lock, old, old);
+    assert.deepEqual(withStateLock(dir, () => "yes", { waitMs: 0 }), { ok: true, value: "yes" });
+    // A running pid that has held it past LOCK_STALE_MS (a reused pid, or a hung holder) is taken over too.
+    writeFileSync(lock, `${process.pid} hung\n`);
+    utimesSync(lock, old, old);
+    assert.deepEqual(withStateLock(dir, () => "taken", { waitMs: 0 }), { ok: true, value: "taken" });
+    assert.deepEqual(readdirSync(dir), [], "nothing left: no lock, no set-aside copy");
+
+    // fn throwing still releases.
+    assert.throws(() => withStateLock(dir, () => { throw new Error("boom"); }), /boom/);
+    assert.equal(existsSync(lock), false);
+
+    // A directory that cannot hold the lock (here: under a file) is an error naming it, and fn never runs.
+    writeFileSync(join(dir, "a-file"), "");
+    const blocked = withStateLock(join(dir, "a-file", "x"), () => assert.fail("no lock, no run"), { waitMs: 0 });
+    assert.equal(blocked.ok, false);
+    assert.match(blocked.error.message, /^could not lock .*a-file\/x\/state\.lock: /);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 });

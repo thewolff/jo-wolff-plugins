@@ -1,7 +1,8 @@
 // test/retention.test.mjs — prune() on a real temporary directory: a log rotated by this prune
 // is never removed by the same prune's age rule (not even with `days: 0`, when the tick that
-// launchd started may still be writing to it); a state or popup temp file whose writer is still
-// running is left alone; and a dry run plans exactly what the real run then does.
+// launchd started may still be writing to it); a state or popup-outcome temp file whose writer is
+// still running is left alone; popup outcomes (`popups/<token>.json`) past the age go, the
+// pending token's never; and a dry run plans exactly what the real run then does.
 
 import test from "node:test";
 import assert from "node:assert/strict";
@@ -10,6 +11,8 @@ import { existsSync, mkdirSync, mkdtempSync, rmSync, statSync, utimesSync, write
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { prune, logFiles, MAX_LOG_BYTES } from "../lib/retention.mjs";
+import { outcomePath } from "../lib/popup.mjs";
+import { EMPTY } from "../lib/state.mjs";
 
 const NOW = 1_793_784_000_000;
 const DAY = 86_400_000;
@@ -22,7 +25,7 @@ function setAge(p, ms) {
   utimesSync(p, t, t);
 }
 
-/** A state directory with an oversized current out log, an old `.1` it will replace, and two old temp files: one whose writer is this (live) process, one whose writer exited. */
+/** A state directory with an oversized current out log, an old `.1` it will replace, two old state temp files (one whose writer is this live process, one whose writer exited), an old outcome temp file of an exited supervisor, and three popup outcomes: an old one, a fresh one, and the pending token's, old. */
 function fixture() {
   const dir = mkdtempSync(join(tmpdir(), "ctx-watch-retention-"));
   const [errors, out] = logFiles(dir);
@@ -35,17 +38,23 @@ function fixture() {
   setAge(`${errors}.1`, 40 * DAY);
   const live = join(dir, `state.json.${process.pid}.tmp`);
   const dead = join(dir, `state.json.${deadPid()}.tmp`);
-  const popupDead = join(dir, `popup.json.${deadPid()}.tmp`);
-  for (const p of [live, dead, popupDead]) {
+  const oldOutcome = outcomePath(dir, "1793000000000-11");
+  const freshOutcome = outcomePath(dir, "1793783000000-12");
+  const currentOutcome = outcomePath(dir, "1793700000000-13");
+  const popupDead = `${outcomePath(dir, "1793700000000-14")}.${deadPid()}.tmp`;
+  mkdirSync(join(dir, "popups"));
+  for (const p of [live, dead, popupDead, oldOutcome, currentOutcome]) {
     writeFileSync(p, "{}");
     setAge(p, 40 * DAY);
   }
-  writeFileSync(join(dir, "state.json"), "{}");
+  writeFileSync(freshOutcome, "{}");
+  setAge(freshOutcome, DAY);
+  writeFileSync(join(dir, "state.json"), JSON.stringify({ ...EMPTY, episode: "down", strikes: 9, popupPending: { token: "1793700000000-13", since: NOW - 40 * DAY } }));
   setAge(join(dir, "state.json"), 40 * DAY);
-  return { dir, out, errors, live, dead, popupDead, release: () => rmSync(dir, { recursive: true, force: true }) };
+  return { dir, out, errors, live, dead, popupDead, oldOutcome, freshOutcome, currentOutcome, release: () => rmSync(dir, { recursive: true, force: true }) };
 }
 
-test("prune --days 0 keeps the log it just rotated, however old its mtime; removes everything else past the cutoff", () => {
+test("prune --days 0 keeps the log it just rotated, however old its mtime, and the pending popup's outcome; removes everything else past the cutoff", () => {
   const f = fixture();
   try {
     const r = prune(f.dir, { days: 0, now: NOW });
@@ -55,13 +64,29 @@ test("prune --days 0 keeps the log it just rotated, however old its mtime; remov
     assert.equal(existsSync(`${f.errors}.1`), false, "an older rotation is past a 0-day cutoff");
     assert.equal(existsSync(f.dead), false);
     assert.equal(existsSync(f.popupDead), false);
+    assert.equal(existsSync(f.oldOutcome), false);
+    assert.equal(existsSync(f.freshOutcome), false, "a day old is past a 0-day cutoff");
+    assert.ok(existsSync(f.currentOutcome), "the pending token's outcome is never pruned, however old");
     assert.ok(existsSync(f.live), "a temp file whose writer is running is left alone");
     assert.ok(existsSync(join(f.dir, "state.json")), "state.json is never pruned");
-    assert.deepEqual([...r.removedPaths].sort(), [`${f.errors}.1`, f.dead, f.popupDead].sort());
-    assert.equal(r.removed, 3);
-    assert.equal(r.bytes, 7 + 2 + 2);
-    assert.equal(r.kept, 2, "the just-rotated log and the live temp file");
+    assert.deepEqual([...r.removedPaths].sort(), [`${f.errors}.1`, f.dead, f.popupDead, f.oldOutcome, f.freshOutcome].sort());
+    assert.equal(r.removed, 5);
+    assert.equal(r.bytes, 7 + 2 + 2 + 2 + 2);
+    assert.equal(r.kept, 3, "the just-rotated log, the live temp file, the pending outcome");
     assert.deepEqual(r.problems, []);
+  } finally {
+    f.release();
+  }
+});
+
+test("prune at the default 30 days: an outcome younger than that stays; older ones go; the pending token's stays", () => {
+  const f = fixture();
+  try {
+    const r = prune(f.dir, { now: NOW });
+    assert.ok(existsSync(f.freshOutcome));
+    assert.equal(existsSync(f.oldOutcome), false);
+    assert.ok(existsSync(f.currentOutcome));
+    assert.ok(r.removedPaths.includes(f.oldOutcome));
   } finally {
     f.release();
   }
