@@ -1,0 +1,24 @@
+{
+  "$comment": "worktree-spawn-guard: a spawn asking for isolation worktree on a dirty tree is warned that the worktree will not carry the uncommitted work.",
+  "event": "PreToolUse",
+  "expect": "systemMessage",
+  "reason": "is dirty",
+  "setup": {
+    "files": {
+      "notes.txt": "uncommitted\n"
+    }
+  },
+  "stdin": {
+    "session_id": "${SESSION_ID}",
+    "transcript_path": "${TRANSCRIPT}",
+    "cwd": "${CWD}",
+    "hook_event_name": "PreToolUse",
+    "tool_name": "Agent",
+    "tool_input": {
+      "subagent_type": "scout",
+      "description": "find it",
+      "isolation": "worktree",
+      "prompt": "# Target\nFind where the retry loop lives.\n\n## How it fails\n- A wrong path shows up as a missing file in the report; one retry, then report it.\n"
+    }
+  }
+}
