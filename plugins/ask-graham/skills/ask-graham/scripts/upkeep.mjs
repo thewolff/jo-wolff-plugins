@@ -1,4 +1,5 @@
-import { readFileSync } from "node:fs";
+import { readFileSync, realpathSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 
 const SIX_MONTHS = 6;
 const DATE = /^\d{4}-\d{2}-\d{2}$/;
@@ -120,7 +121,11 @@ export function main(argv = process.argv.slice(2)) {
   process.stdout.write(renderUpkeep(input));
 }
 
-if (process.argv[1] && import.meta.url === new URL(`file://${process.argv[1]}`).href) {
+// Real paths on both sides: node resolves the main module through symlinks; a raw argv compare is a silent no-op there.
+const invoked = (() => {
+  try { return realpathSync(process.argv[1]) === realpathSync(fileURLToPath(import.meta.url)); } catch { return false; }
+})();
+if (invoked) {
   try { main(); }
   catch (error) { process.stderr.write(`${error.message}\n`); process.exitCode = 1; }
 }

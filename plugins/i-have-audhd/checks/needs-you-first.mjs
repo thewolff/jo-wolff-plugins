@@ -103,8 +103,13 @@ export function checkNeedsYouFirst(text, options = {}) {
 
 // Profile loading lives with the hook; the exported function takes plain options so it stays
 // testable with no filesystem at all; the CLI block below reads one.
-const invokedDirectly =
-  process.argv[1] && import.meta.url === new URL(`file://${process.argv[1]}`).href;
+// Real paths on both sides: node resolves the main module through symlinks; a raw argv compare is a silent no-op there.
+const invokedDirectly = await (async () => {
+  try {
+    const [{ realpathSync }, { fileURLToPath }] = await Promise.all([import("node:fs"), import("node:url")]);
+    return realpathSync(process.argv[1]) === realpathSync(fileURLToPath(import.meta.url));
+  } catch { return false; }
+})();
 
 if (invokedDirectly) {
   const { readFileSync } = await import("node:fs");
