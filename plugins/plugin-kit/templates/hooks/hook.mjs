@@ -12,6 +12,15 @@
 //
 // Deny or block text, when there is one, names the command that gets the person out of it,
 // in backticks: `{{name}}: <what stopped and why>; run \`<command>\` to <fix>`.
+//
+// handle() runs on a worker thread, which is what makes the deadline hold. So: return the
+// answer as a plain JSON-able object (the runner prints it; a value that cannot be cloned, a
+// function or a class instance, is a logged fault); never process.exit() or write to stdout
+// yourself (the worker's stdout is piped through the runner, but only what the runner prints
+// is the hook's answer, and an exit from the thread is "ended without an answer"); a
+// subprocess needs its cwd passed explicitly (the thread's process.cwd() is the runner's, not
+// something the host set for the hook: use input.cwd); and env is the runner's copy, so set
+// what a child needs on the spawn's env, not on process.env.
 
 import { runHook, invokedDirectly } from "../lib/hook-runner.mjs";
 
