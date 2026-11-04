@@ -53,6 +53,22 @@ export const DEFAULTS = Object.freeze({
 /** Keys only the user file (and the defaults) may set: a project file's value for them is ignored. */
 export const USER_ONLY_KEYS = Object.freeze(["review", "digest"]);
 
+const ISSUE_RE = /^([A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?)\/([A-Za-z0-9._-]+)#([1-9][0-9]*)$/;
+const ISSUE_URL_RE = /^https:\/\/github\.com\/([A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?)\/([A-Za-z0-9._-]+)\/issues\/([1-9][0-9]*)\/?$/;
+
+/**
+ * `owner/repo#number` or `https://github.com/owner/repo/issues/number` → `{ repo: "owner/repo",
+ * number, text: "owner/repo#number" }`; null for anything else. A bare number names no
+ * repository (gh would take one from its cwd or GH_REPO), so it is not a destination.
+ */
+export function parseIssue(value) {
+  const text = typeof value === "string" ? value.trim() : "";
+  const m = ISSUE_RE.exec(text) ?? ISSUE_URL_RE.exec(text);
+  if (!m) return null;
+  const repo = `${m[1]}/${m[2]}`;
+  return { repo, number: m[3], text: `${repo}#${m[3]}` };
+}
+
 // Type of each leaf, for the wrong-type notice. Nested objects list their leaves.
 const SHAPE = {
   enabled: "boolean",
@@ -63,7 +79,7 @@ const SHAPE = {
   forcing: { denyAskWithoutRow: "boolean", stopAskRule: "boolean", pushNeedsNote: "boolean", stopDecisionRule: "boolean", decisionPhrases: "string[]" },
   inject: { notes: "integer", elsewhere: "boolean", answers: "boolean", doctor: "boolean" },
   sweep: { autoWithdrawDays: "integer" },
-  digest: { enabled: "boolean", issue: "string" },
+  digest: { enabled: "boolean", issue: "owner/repo#number" },
   decisionLog: { enabled: "boolean" },
   review: { mode: "off|advise|gate", labs: "string[]", models: "{lab: string}|null", profiles: "{lab: string}|null", maxRounds: "positive integer", judgeCommand: "string|null" },
 };
@@ -141,6 +157,8 @@ function typeOk(expected, value) {
       return Array.isArray(value) && value.every((v) => typeof v === "string" && v.trim().length > 0);
     case "off|advise|gate":
       return ["off", "advise", "gate"].includes(value);
+    case "owner/repo#number":
+      return parseIssue(value) !== null;
     case "{lab: string}|null":
       return value === null || (typeof value === "object" && !Array.isArray(value) && Object.values(value).every((v) => typeof v === "string" && v.length > 0));
     default:
