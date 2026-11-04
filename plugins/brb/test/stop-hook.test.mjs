@@ -16,7 +16,7 @@ import { join } from "node:path";
 
 import { appleScript, countToolUses, decideStop, osc9 } from "../lib/stop-core.mjs";
 import { clearAway, freshAway, writeAway } from "../lib/state.mjs";
-import { backstopReason, keepWorkingReason } from "../lib/text.mjs";
+import { backstopReason, firstLineReason, keepWorkingReason } from "../lib/text.mjs";
 import { box, promptInput, row, runHook, stopInput } from "./helpers.mjs";
 
 const goAway = (b, note = "") => runHook(b, "user-prompt-submit", promptInput(b, note ? `brb ${note}` : "brb"));
@@ -38,6 +38,47 @@ test("home: passthrough, nothing printed, nothing written", () => {
     assert.equal(r.status, 0);
     assert.ok(r.stdout.trim() === "" || r.stdout.trim() === "{}", r.stdout);
     assert.ok(!existsSync(b.stateDir("s1")));
+  } finally {
+    b.release();
+  }
+});
+
+test("the still-away first line: missing → blocked once naming the line; present → no block; not away → no check", () => {
+  const b = box();
+  try {
+    b.writeTranscript([row.user(), row.tool()]);
+    const home = runHook(b, "stop", stopInput(b, { firstLine: false, last_assistant_message: "Wired the cache behind a flag." }));
+    assert.ok(home.stdout.trim() === "" || home.stdout.trim() === "{}", "not away: no first-line check");
+    goAway(b);
+    const line = "brb: still away (0m, 0 held) — say `back` to read them";
+    const missing = runHook(b, "stop", stopInput(b, { firstLine: false, last_assistant_message: "Wired the cache behind a flag." }));
+    assert.deepEqual(missing.json, { decision: "block", reason: firstLineReason(line) });
+    assert.match(missing.json.reason, /``brb: still away \(0m, 0 held\) — say `back` to read them``/);
+    // Once per turn: the continuation still without the line goes to the release rules (tools ran → keep working).
+    b.writeTranscript([row.user(), row.tool(), row.tool()]);
+    const again = runHook(b, "stop", stopInput(b, { firstLine: false, stop_hook_active: true, last_assistant_message: "Wired the cache behind a flag; tests green." }));
+    assert.deepEqual(again.json, keepWorking(0));
+    // A new turn with the line: no block.
+    b.writeTranscript([row.user(), row.tool(), row.tool(), row.tool()]);
+    const present = runHook(b, "stop", stopInput(b, { last_assistant_message: "Renamed the flag." }));
+    assert.deepEqual(present.json, keepWorking(0));
+    // A new turn that misses the line and shows asks: one block naming both.
+    b.writeTranscript([row.user(), row.tool(), row.tool(), row.tool(), row.tool()]);
+    const both = runHook(b, "stop", stopInput(b, { firstLine: false, last_assistant_message: "## Needs you\n- Pick a cache" }));
+    assert.equal(both.json.decision, "block");
+    assert.equal(both.json.reason, `${backstopReason(1)} ${firstLineReason("brb: still away (0m, 1 held) — say `back` to read them")}`);
+  } finally {
+    b.release();
+  }
+});
+
+test("the still-away first line: a message with no text is not checked", () => {
+  const b = box();
+  try {
+    goAway(b);
+    b.writeTranscript([row.user(), row.tool()]);
+    const r = runHook(b, "stop", stopInput(b, { firstLine: false, last_assistant_message: "  \n" }));
+    assert.deepEqual(r.json, keepWorking(0));
   } finally {
     b.release();
   }

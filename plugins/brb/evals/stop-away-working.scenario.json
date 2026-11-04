@@ -3,7 +3,7 @@
   "expect": "systemMessage",
   "before": [{"event":"UserPromptSubmit","stdin":{"session_id":"${SESSION_ID}","transcript_path":"${TRANSCRIPT}","cwd":"${CWD}","hook_event_name":"UserPromptSubmit","prompt":"brb lunch"}}],
   "transcript": [{"type":"user","message":{"role":"user","content":"go"}},{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","id":"t1","name":"Read","input":{}}]}}],
-  "stdin": {"session_id":"${SESSION_ID}","transcript_path":"${TRANSCRIPT}","cwd":"${CWD}","hook_event_name":"Stop","stop_hook_active":false,"last_assistant_message":"Wired the cache behind a flag; tests green."},
+  "stdin": {"session_id":"${SESSION_ID}","transcript_path":"${TRANSCRIPT}","cwd":"${CWD}","hook_event_name":"Stop","stop_hook_active":false,"last_assistant_message":"brb: still away (0m, 0 held) — say `back` to read them\nWired the cache behind a flag; tests green."},
   "reason": "brb is holding your asks (0 in the digest). Keep working on the next open item",
   "after": { "absent": ["$XDG_STATE_HOME/brb/${SESSION_ID}/digest.md"] }
 }

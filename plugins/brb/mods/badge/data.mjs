@@ -53,15 +53,17 @@ export function clockTime(iso, timeZone) {
   return new Date(t).toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit", ...(timeZone ? { timeZone } : {}) });
 }
 
-/** How long since `iso`, to the minute: `0m`, `40m`, `1h 5m`, `2h`, `1d 3h`; a future or unparsable `since` is `0m`. */
+/**
+ * How long since `iso`, to the minute: `0m`, `40m`, `1h 5m`, `2d 3h`, the same arithmetic as
+ * lib/text.mjs `awayFor` (the still-away line), repeated here because this file may import nothing;
+ * a future or unparsable `since` is `0m`.
+ */
 export function elapsed(iso, now = Date.now()) {
   const t = Date.parse(iso);
-  const minutes = Number.isFinite(t) ? Math.max(0, Math.floor((now - t) / 60_000)) : 0;
-  if (minutes < 60) return `${minutes}m`;
-  const hours = Math.floor(minutes / 60);
-  if (hours < 24) return minutes % 60 ? `${hours}h ${minutes % 60}m` : `${hours}h`;
-  const days = Math.floor(hours / 24);
-  return hours % 24 ? `${days}d ${hours % 24}h` : `${days}d`;
+  const m = Number.isFinite(t) ? Math.max(0, Math.floor((now - t) / 60_000)) : 0;
+  if (m < 60) return `${m}m`;
+  if (m < 1440) return `${Math.floor(m / 60)}h ${m % 60}m`;
+  return `${Math.floor(m / 1440)}d ${Math.floor((m % 1440) / 60)}h`;
 }
 
 /**

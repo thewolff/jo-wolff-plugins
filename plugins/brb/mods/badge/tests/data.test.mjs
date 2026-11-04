@@ -9,6 +9,7 @@ import { join } from "node:path";
 
 import { AWAY_MAX_BYTES, NOTE_CAP, awayPath, badgeText, clockTime, elapsed, emptySnapshot, queryArgv, readSnapshot, sessionKey as badgeKey } from "../data.mjs";
 import { sessionDir, sessionKey } from "../../../lib/state.mjs";
+import { awayFor } from "../../../lib/text.mjs";
 
 const SINCE = "2026-11-04T18:42:00.000Z"; // 10:42 AM in America/Los_Angeles (PST)
 const AWAY = { ok: true, away: true, since: SINCE, note: "", held: 12, onFire: 0 };
@@ -47,16 +48,17 @@ test("badgeText: the note rides between the time and the count, whitespace colla
   assert.equal(badgeText({ ...AWAY, note: "x".repeat(NOTE_CAP) }, { now: minutes(5), ...LA }), `away since 10:42 AM (5m) · ${"x".repeat(NOTE_CAP)} · 12 held · say back`);
 });
 
-test("elapsed: minutes under an hour, hours and minutes under a day, days and hours past it; the future and junk are 0m", () => {
+test("elapsed: minutes under an hour, hours and minutes under a day, days and hours past it, as lib/text.mjs awayFor prints them; the future and junk are 0m", () => {
   assert.equal(elapsed(SINCE, minutes(0)), "0m");
   assert.equal(elapsed(SINCE, minutes(0) + 59_000), "0m");
   assert.equal(elapsed(SINCE, minutes(1)), "1m");
   assert.equal(elapsed(SINCE, minutes(59)), "59m");
-  assert.equal(elapsed(SINCE, minutes(60)), "1h");
+  assert.equal(elapsed(SINCE, minutes(60)), "1h 0m");
   assert.equal(elapsed(SINCE, minutes(65)), "1h 5m");
   assert.equal(elapsed(SINCE, minutes(23 * 60 + 59)), "23h 59m");
-  assert.equal(elapsed(SINCE, minutes(24 * 60)), "1d");
+  assert.equal(elapsed(SINCE, minutes(24 * 60)), "1d 0h");
   assert.equal(elapsed(SINCE, minutes(27 * 60 + 30)), "1d 3h");
+  for (const n of [0, 1, 59, 60, 65, 1439, 1440, 1650, 3000]) assert.equal(elapsed(SINCE, minutes(n)), awayFor(SINCE, new Date(minutes(n)).toISOString()), `${n} minutes`);
   assert.equal(elapsed(SINCE, minutes(-10)), "0m");
   assert.equal(elapsed("not a date", minutes(10)), "0m");
 });

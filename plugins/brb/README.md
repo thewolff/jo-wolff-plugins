@@ -14,7 +14,8 @@ are the one thing that still reaches you at once.
 
 | | What the agent's reply shows | What you see |
 |---|---|---|
-| away | the body: what was done, ending `idle: <why>` when nothing is runnable; no `Needs you`, no question, no closing ask | the body; `brb on fire: …` for a fire; `brb: the agent is idle (<why>); N held` when it stops; on Claude Code Desktop and the terminal, `⚠ brb: away since 10:42 AM (40m) · N held · say back` under the prompt while you type |
+| away | first line `brb: still away (<duration>, N held) — say \`back\` to read them`, then the body: what was done, ending `idle: <why>` when nothing is runnable; no `Needs you`, no question, no closing ask | the still-away line at the top of every reply; `brb on fire: …` for a fire; `brb: the agent is idle (<why>); N held` when it stops; on Claude Code Desktop and the terminal, `⚠ brb: away since 10:42 AM (40m) · N held · say back` under the prompt while you type |
+| you answer a fire (or anything) while away | your answer handled, then the same shape as away | the hold continues; the away instruction is re-injected on every prompt, and only `back` ends the hold |
 | back | | `brb: hold cleared; digest archived to <path>.` then the digest: every item the command held and every one the backstop moved, each once; the badge goes |
 
 Built on plugin-kit 0.3.2. Claude Code hooks, a Claude Code mod for the badge, plus an OMP
@@ -46,7 +47,14 @@ An empty digest shows `(nothing held)`. A `back` or `pending` reason longer than
 characters is cut at a line and ends `… (N more lines; full digest: <path>)`; the archive keeps
 every line. `back` or `pending` while not away is passed to the agent as an ordinary prompt, so
 a one-word answer to an agent's question ("revert or go back?") is not swallowed. A second
-`brb` while away says when the hold began and how many items are held.
+`brb` while away changes nothing and is not blocked: you see ``brb: still away since <when>
+(<duration>); N held. Only `back` ends the hold; `pending` peeks. Your questions answered
+while away did not end it.``, and the agent gets the same line over the away instruction, so it
+goes back to holding. (On OMP the adapter shows that line and starts no turn.)
+
+Typing anything else while away, an answer to an `on fire:` line included, does not end the
+hold: `away.json` is left as it is and the instruction, whose first line says the hold is still
+on, rides along with your prompt.
 
 While away, every other prompt you type (or that a scheduled run types) proceeds, carrying the
 away instruction below as `additionalContext`; a resume, clear or compaction carries it again
@@ -56,16 +64,20 @@ them.`).
 ## The contract
 
 This is the away instruction, exactly as the agent reads it each turn while you are away
-(`lib/text.mjs` `awayInstruction`; the first and last lines carry the live values, and rule 2
-carries the hold command with the plugin's absolute path and this session's id filled in):
+(`lib/text.mjs` `awayInstruction`; the first line, rule 5 and the last line carry the live
+values, and rule 2 carries the hold command with the plugin's absolute path and this session's
+id filled in):
 
 ```
-brb: Jo is away since <since> (<note>). Keep working; do not stop to wait for an answer.
+brb: still away since <since> (<duration>); <N> held
+Jo is away (<note>). Keep working; do not stop to wait for an answer.
 While away:
 1. Keep working on the next open item. Choose the safer reversible option yourself where a choice is small; where it is not, write the ask down (rule 2) and move to the next item.
 2. Every question, decision or approval you need from Jo is written, not shown: run node "<plugin>/scripts/brb.mjs" hold --session "<session>" "<one item, readable on its own>" once per item, then leave it out of your reply. While away a reply has no `Needs you` section, no question sentence and no closing ask; it says only what was done. The command prints `held N`; a held item is not lost, so do not restate it. A Stop hook moves any `Needs you` section or closing ask that still appears into the digest and sends the reply back once.
 3. Start a line with `on fire:` only for one of these: a broken main branch, data loss, a security finding, spend near a ceiling, or a blocker on everything you could work on. Those lines reach Jo at once. Anything else waits in the digest.
 4. When nothing is runnable without Jo, end the message with a line `idle: <why>`. brb then lets the turn end; without that line a Stop hook sends you back to work.
+5. Start every reply with this line, as its first line: brb: still away (<duration>, <N> held) — say `back` to read them. A Stop hook sends a reply without it back once.
+6. A fire answered does not end the hold. When Jo replies to a fire or answers a question, answer that, then go back to body-only replies ending `idle: <why>` when nothing is runnable. Jo's reply is not `back`; only the prompt `back` on its own ends the hold.
 <N> items held so far.
 ```
 
@@ -129,8 +141,13 @@ On every finished message (`hooks/stop.mjs`, the rules in `lib/stop-core.mjs`):
    and the next stop that is not a continuation (`stop_hook_active` false and a different
    message) clears it, so the reply after the block, restated word for word or not, goes
    through the rules below and cannot loop here. The backstop also yields once `idleStops`
-   tool-less stops have passed (the hard stop below). A message with no ask shown, fires or
-   not, is never backstopped.
+   tool-less stops have passed (the hard stop below). The same block, under the same
+   once-per-turn rule, covers the still-away line: a message with any text whose first
+   non-blank line (past `>`, `*`, `_` or a backtick) does not start `brb: still away` is sent
+   back with: brb: every reply while away starts with the line ``brb: still away (<duration>, N held) — say `back` to read them``; reply again with that line first.
+   (`lib/text.mjs` `firstLineReason`); a message that misses the line and shows asks gets one
+   block whose reason carries both sentences. A message with no ask shown and the line first,
+   fires or not, is never backstopped.
 5. **Send the agent back to work** with the text
    `brb is holding your asks (N in the digest). Keep working on the next open item; if nothing is runnable end with a line \`idle: <why>\`.`
    On Claude Code it goes out as `hookSpecificOutput.additionalContext`; under the OMP adapter
@@ -322,6 +339,13 @@ blocked once (`brb: N item(s) moved to the digest; …`), once per turn, yieldin
 tool-less bound. A closing ask is held and counted like a section line. `pending` and `back`
 print the digest as before, from both sources, each item once. `away.json` carries
 `backstopped`. The adapter, the release rules and the on-fire path are unchanged.
+
+A fire answered does not end the hold. After a fire broke through and was answered, the agent
+read the answer as the end of the hold and went back to chatting, and a second `brb` was
+refused as already away. Now the instruction's first line says the hold is still on (with how
+long and how many held), rule 6 says Jo's reply is not `back`, every reply starts with a
+visible `brb: still away (…) — say \`back\` to read them` line that the backstop enforces once
+per turn, and a second `brb` passes through to re-arm the agent instead of being blocked.
 
 ## Changes in 0.1.1
 

@@ -7,7 +7,7 @@ import assert from "node:assert/strict";
 import { existsSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 
-import { AWAY_NOTICE, holdCommand } from "../lib/text.mjs";
+import { AWAY_NOTICE, awayFor, awayInstruction, hasReplyFirstLine, holdCommand, replyFirstLine } from "../lib/text.mjs";
 import { box, promptInput, runHook } from "./helpers.mjs";
 
 const blocked = (r) => {
@@ -33,17 +33,58 @@ test("bare brb: blocks the prompt with the confirmation and writes away.json", (
   }
 });
 
-test("brb <note>: the note rides the confirmation and the record; a second brb says already away", () => {
+test("brb <note>: the note rides the confirmation and the record; a second brb passes through saying the hold is still on", () => {
   const b = box();
   try {
     const r = runHook(b, "user-prompt-submit", promptInput(b, "brb  lunch, back at 2"));
     assert.equal(blocked(r), `${AWAY_NOTICE} (note: lunch, back at 2)`);
-    assert.equal(JSON.parse(b.read(join(b.stateDir("s1"), "away.json"))).note, "lunch, back at 2");
+    const awayPath = join(b.stateDir("s1"), "away.json");
+    assert.equal(JSON.parse(b.read(awayPath)).note, "lunch, back at 2");
+    const before = b.read(awayPath);
     const again = runHook(b, "user-prompt-submit", promptInput(b, "brb"));
-    assert.match(blocked(again), /^brb: already away since .*; 0 held\. Type `back`/);
+    assert.equal(again.status, 0);
+    assert.equal(again.json.decision, undefined, "not blocked: the agent is re-armed");
+    const line = /^brb: still away since \S+ \(0m\); 0 held\. Only `back` ends the hold; `pending` peeks\. Your questions answered while away did not end it\.$/;
+    assert.match(again.json.systemMessage, line);
+    const ctx = again.json.hookSpecificOutput.additionalContext;
+    assert.equal(again.json.hookSpecificOutput.hookEventName, "UserPromptSubmit");
+    assert.ok(ctx.startsWith(`${again.json.systemMessage}\n\nbrb: still away since `), ctx);
+    assert.equal(b.read(awayPath), before, "a second brb changes nothing");
   } finally {
     b.release();
   }
+});
+
+test("a fire answered does not end the hold: a normal prompt while away leaves away.json unchanged and re-arms the agent", () => {
+  const b = box();
+  try {
+    runHook(b, "user-prompt-submit", promptInput(b, "brb"));
+    const awayPath = join(b.stateDir("s1"), "away.json");
+    const before = b.read(awayPath);
+    const reply = runHook(b, "user-prompt-submit", promptInput(b, "revert the push, then carry on"));
+    assert.equal(reply.json.decision, undefined);
+    const ctx = reply.json.hookSpecificOutput.additionalContext;
+    assert.match(ctx.split("\n")[0], /^brb: still away since \S+ \(0m\); 0 held$/);
+    assert.match(ctx, /^6\. A fire answered does not end the hold\. .*Jo's reply is not `back`; only the prompt `back` on its own ends the hold\.$/m);
+    assert.equal(b.read(awayPath), before, "away.json untouched");
+  } finally {
+    b.release();
+  }
+});
+
+test("the instruction's live values: duration since `since`, the reply's first line with count, a note on line 2", () => {
+  const away = { since: "2026-11-04T10:00:00.000Z", note: "lunch", held: 2 };
+  const ctx = awayInstruction(away, holdCommand("s1"), "2026-11-04T11:05:00.000Z").split("\n");
+  assert.equal(ctx[0], "brb: still away since 2026-11-04T10:00:00.000Z (1h 5m); 2 held");
+  assert.equal(ctx[1], "Jo is away (lunch). Keep working; do not stop to wait for an answer.");
+  assert.equal(ctx[7], "5. Start every reply with this line, as its first line: brb: still away (1h 5m, 2 held) — say `back` to read them. A Stop hook sends a reply without it back once.");
+  assert.equal(replyFirstLine({ since: "bad", held: 0 }, "2026-11-04T11:05:00.000Z"), "brb: still away (0 held) — say `back` to read them");
+  assert.equal(awayFor("2026-11-04T10:00:00.000Z", "2026-11-04T10:40:30.000Z"), "40m");
+  assert.equal(awayFor("2026-11-04T10:00:00.000Z", "2026-11-06T13:00:00.000Z"), "2d 3h");
+  assert.equal(awayFor("2026-11-04T10:00:00.000Z", "2026-11-04T09:00:00.000Z"), "0m");
+  assert.equal(awayFor("x", "2026-11-04T09:00:00.000Z"), "");
+  for (const ok of ["brb: still away (5m, 0 held) — say `back` to read them\nDid it.", "\n> **brb: still away (5m, 0 held)**\nDid it.", "`brb: still away (1 held)`"]) assert.equal(hasReplyFirstLine(ok), true, ok);
+  for (const no of ["Did it.\nbrb: still away (5m, 0 held)", "", "brb: away"]) assert.equal(hasReplyFirstLine(no), false, no);
 });
 
 test("another prompt while away: proceeds with the away instruction as additionalContext; while home: nothing", () => {
@@ -58,7 +99,7 @@ test("another prompt while away: proceeds with the away instruction as additiona
     assert.equal(away.json.decision, undefined, "the prompt is not blocked");
     const ctx = away.json.hookSpecificOutput.additionalContext;
     assert.equal(away.json.hookSpecificOutput.hookEventName, "UserPromptSubmit");
-    assert.match(ctx, /^brb: Jo is away since /);
+    assert.match(ctx, /^brb: still away since /);
     assert.equal(ctx.includes(`run ${holdCommand("s1")} once per item`), true, ctx);
     assert.match(ctx, /scripts\/brb\.mjs" hold --session "s1" "<one item, readable on its own>"/);
     assert.match(ctx, /written, not shown/);
@@ -153,7 +194,7 @@ test("session-start: the instruction and a line for the person while away; nothi
     assert.equal(away.status, 0);
     assert.match(away.json.systemMessage, /^brb: away since .*; 0 held\. Type `back` to read them\.$/);
     assert.equal(away.json.hookSpecificOutput.hookEventName, "SessionStart");
-    assert.match(away.json.hookSpecificOutput.additionalContext, /^brb: Jo is away since /);
+    assert.match(away.json.hookSpecificOutput.additionalContext, /^brb: still away since /);
   } finally {
     b.release();
   }

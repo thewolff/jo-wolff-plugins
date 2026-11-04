@@ -8,7 +8,7 @@ description: What to do while the person is away under brb; the hold command, th
 The person typed `brb` and left. Nothing you ask them now will be answered until they type
 `back`, and nothing you show them now is read as written: a question on screen pulls them back
 to a screen they left. The brb plugin holds your asks for them in a digest and keeps you
-working; this skill is the three things it needs from you.
+working; this skill is what it needs from you.
 
 ## Steps
 
@@ -33,6 +33,11 @@ working; this skill is the three things it needs from you.
    hook answers `brb is holding your asks (N in the digest). Keep working …` and you are back
    at step 1; the hook also lets you stop after two stops in a row with no tool call between
    them.
+5. **Start every reply with the still-away line** the away instruction gives (rule 5),
+   ``brb: still away (<duration>, N held) — say `back` to read them``. A reply without it is
+   sent back once.
+6. **Answering a fire, or anything the person types, does not end the hold.** Answer it, then
+   go back to steps 1 to 5; only the prompt `back` on its own ends the hold.
 
 The person reads the digest with `back` (which clears it) or `pending` (which does not).
 
@@ -52,7 +57,7 @@ The person reads the digest with `back` (which clears it) or `pending` (which do
   grow was not held: run the command again, and if it fails again put the ask under
   `## Needs you` once, as above.
 - **No away instruction although the person typed `brb`.** Each prompt while away arrives with
-  `brb: Jo is away since …`. If that line is missing, the hook is not running (hooks disabled,
+  `brb: still away since …`. If that line is missing, the hook is not running (hooks disabled,
   plugin not loaded): ask in your reply; the person reads messages when they return. Nothing to
   undo. A turn that ends with no keep-working reply is not this signal: the hook lets an `idle:`
   stop, a tool-less stop with nothing new, the second tool-less stop and the third continuation

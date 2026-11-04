@@ -20,7 +20,11 @@
 //      cleared by the next stop that is not a continuation (stop_hook_active false and a
 //      different message), so the reply after the block, restated or not, goes through the
 //      release rules and cannot loop on the backstop; and the backstop yields once
-//      toolLessStops reaches `idleStops`, the hard stop below.
+//      toolLessStops reaches `idleStops`, the hard stop below. The same block, under the same
+//      once-per-turn rule, also fires when a message with any text does not start with the
+//      still-away line (`brb: still away (<duration>, N held) — say \`back\` to read them`,
+//      lib/text.mjs replyFirstLine, checked by hasReplyFirstLine); a message that misses the
+//      line and shows asks gets one block naming both.
 //   2. New on-fire lines are surfaced first, before anything is written, so an unwritable state
 //      directory cannot swallow them: a systemMessage (`brb on fire: <text>`), a
 //      terminalSequence (OSC 9 desktop notification; left out under BRB_HARNESS=omp, where the
@@ -62,7 +66,7 @@ import { readFileSync } from "node:fs";
 
 import { splitNeedsYou, normalizeLine, fireText } from "./sections.mjs";
 import { loadConfig, readAway, writeAway, appendDigest } from "./state.mjs";
-import { backstopReason, keepWorkingReason } from "./text.mjs";
+import { backstopReason, firstLineReason, hasReplyFirstLine, keepWorkingReason, replyFirstLine } from "./text.mjs";
 import { logError } from "./hook-runner.mjs";
 
 const SEEN_CAP = 500;
@@ -201,7 +205,8 @@ export function decideStop(input, { env = process.env, now = () => new Date().to
   const sameTurn = continuing || (prev !== null && prev.hash === messageHash);
   if (!sameTurn) away.backstopped = false;
   const shown = parts.held.length + (parts.closingAsk === null ? 0 : 1);
-  const backstop = shown > 0 && !away.backstopped && away.toolLessStops < config.idleStops;
+  const noFirstLine = message.trim() !== "" && !hasReplyFirstLine(message);
+  const backstop = (shown > 0 || noFirstLine) && !away.backstopped && away.toolLessStops < config.idleStops;
   if (backstop) away.backstopped = true;
   const held = `${away.held} held; type \`back\` to read them`;
   let release = null;
@@ -224,7 +229,7 @@ export function decideStop(input, { env = process.env, now = () => new Date().to
   }
   if (backstop) {
     out.decision = "block";
-    out.reason = backstopReason(shown);
+    out.reason = [shown > 0 ? backstopReason(shown) : "", noFirstLine ? firstLineReason(replyFirstLine(away, at)) : ""].filter(Boolean).join(" ");
   } else if (release === null) {
     const reason = keepWorkingReason(away.held);
     if (env.BRB_HARNESS === "omp") {
