@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
-import { blockedDir, handle } from "./ask-graham-stop.mjs";
+import { blockedDir, handle, run } from "./ask-graham-stop.mjs";
 import { BLOCK_REASON, STRUCTURE_BLOCK_REASON } from "../skills/ask-graham/scripts/verdict.mjs";
 import { claudeCode } from "../fixtures/transcripts.mjs";
 
@@ -166,15 +166,86 @@ test("end to end: with a relative XDG_STATE_HOME the record goes under HOME", (t
   assert.ok(existsSync(join(f.base, ".local", "state", "ask-graham", "blocked", SESSION)));
 });
 
-test("end to end: waiting for comparables passes without consuming the turn's block", (t) => {
-  const f = fixture(t, "Do you want me to research and see if something comparable exists?");
-  const r = f.run(f.payload());
-  assert.equal(r.status, 0);
-  assert.equal(r.stdout, "");
+const QUESTION = "Do you want me to research and see if something comparable exists?";
+const GATE = (bullets) => `**Gate questions** (Graham #1)\n${bullets.join("\n")}`;
+const BULLETS = [
+  "- Why: personal productivity; Jo asked for it twice this week.",
+  "- How long lived: permanent.",
+  "- Already exists: local search pending.",
+  "- In scope: yes, this repo.",
+  "- Owner / maintenance: Jo, personally.",
+];
+const WAITING = (bullets = BULLETS) =>
+  `**Ask:** a read-through cache for the feeds API, for its callers, in newdle-api.\n\n${GATE(bullets)}\n\n${QUESTION}`;
+
+test("end to end: the comparables question alone is blocked once, naming Ask and Gate questions", (t) => {
+  const f = fixture(t, `Searched the repo.\n\n${QUESTION}`);
+  const out = JSON.parse(f.run(f.payload()).stdout);
+  assert.equal(out.decision, "block");
+  assert.match(out.reason, /\*\*Ask:\*\*/);
+  assert.match(out.reason, /\*\*Gate questions\*\*/);
+  assert.ok(out.reason.length < 300, `${out.reason.length} chars`);
+  assert.equal(readFileSync(f.record, "utf8"), `${f.opener}\n`);
+  // Once per turn: the repair stop passes even if it is still bare.
+  assert.equal(f.run(f.payload()).stdout, "");
+});
+
+test("end to end: Ask, the five gate bullets, then the question passes without consuming the turn's block", (t) => {
+  const owner = BULLETS.map((b) => b.replace("- Owner / maintenance:", "- Owner:"));
+  const loose = BULLETS.map((b) => b.replace(/^- ([^:]+):/, (_, l) => `* **${l.toLowerCase()}:**`));
+  for (const reply of [WAITING(), WAITING(owner), WAITING(loose)]) {
+    const f = fixture(t, reply);
+    const r = f.run(f.payload());
+    assert.equal(r.status, 0);
+    assert.equal(r.stdout, "", reply);
+    assert.equal(existsSync(f.record), false);
+    f.cc.say("Finished the check without a verdict.");
+    f.save();
+    assert.deepEqual(JSON.parse(f.run(f.payload()).stdout), { decision: "block", reason: BLOCK_REASON });
+  }
+});
+
+test("end to end: a waiting reply missing one gate bullet is blocked, naming that bullet", (t) => {
+  for (const [label, missing] of [["- Owner", /- Owner/], ["- Why:", /- Why/], ["- In scope:", /- In scope/]]) {
+    const f = fixture(t, WAITING(BULLETS.filter((b) => !b.startsWith(label))));
+    const out = JSON.parse(f.run(f.payload()).stdout);
+    assert.equal(out.decision, "block", label);
+    assert.match(out.reason, missing, label);
+    assert.doesNotMatch(out.reason, /\*\*Ask:\*\*/, label);
+    assert.ok(out.reason.length < 300, `${out.reason.length} chars`);
+  }
+});
+
+test("end to end: Ask and Gate questions inside a code fence or a quote do not count", (t) => {
+  const body = `**Ask:** a cache.\n\n${GATE(BULLETS)}`;
+  for (const reply of ["```\n" + body + "\n```\n\n" + QUESTION, body.replace(/^/gm, "> ") + "\n\n" + QUESTION]) {
+    const f = fixture(t, reply);
+    const out = JSON.parse(f.run(f.payload()).stdout);
+    assert.equal(out.decision, "block", reply);
+    assert.match(out.reason, /\*\*Ask:\*\*/, reply);
+    assert.match(out.reason, /\*\*Gate questions\*\*/, reply);
+  }
+});
+
+test("a throw in the waiting-reply check lets the stop through, warned and logged (in process)", (t) => {
+  const f = fixture(t, WAITING());
+  const split = String.prototype.split;
+  // Throw only for the reply text the waiting check splits into lines.
+  String.prototype.split = function (...a) {
+    if (this.startsWith("**Ask:**")) throw new Error("gate boom");
+    return split.apply(this, a);
+  };
+  let out;
+  try {
+    out = run(JSON.stringify(f.payload()), { env: f.env, home: f.base });
+  } finally {
+    String.prototype.split = split;
+  }
+  assert.equal(out.decision, undefined);
+  assert.match(out.systemMessage, /the Stop check threw \(gate boom\), so the stop went through/);
+  const log = readFileSync(join(f.state, "ask-graham", "errors.log"), "utf8");
+  assert.match(log, / ask-graham-stop\.mjs the Stop check threw \(gate boom\)/);
   assert.equal(existsSync(f.record), false);
-  f.cc.say("Finished the check without a verdict.");
-  f.save();
-  assert.deepEqual(JSON.parse(f.run(f.payload()).stdout), { decision: "block", reason: BLOCK_REASON });
 });
 
 const FOUND_REPLY = "**Structure check:** a new dataviz_chart_decisions table\n**Found:** story_revisions.featured_quote_id holds the same kind of pick.\n\n**Red flags:** a second pattern where one exists fires.";

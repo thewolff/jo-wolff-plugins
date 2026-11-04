@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 // ask-graham-stop.mjs — Claude Code Stop: block, once, a turn that read the ask-graham skill
-// but ended without a verdict line, a structure check line, or the final comparables question while waiting.
+// but ended without a verdict line, a structure check line, or a waiting reply (its `**Ask:**` line
+// and five `**Gate questions**` bullets, then the comparables question alone on the final line).
 //
 // The check itself is checkStop in skills/ask-graham/scripts/verdict.mjs, shared with the OMP
 // session_stop handler. This file only does Claude Code's I/O: it reads the Stop payload

@@ -61,6 +61,23 @@ events. A Claude Code install alone gives OMP neither.
 Ask "should we build X?" or "is it worth building?", or type `/ask-graham <the thing to build>`
 on Claude Code or `/skill:ask-graham <the thing to build>` on OMP.
 
+If the agent has to stop and wait for your answer to the comparables question, its reply still
+carries the judgment so far: step 1's one-sentence ask and the five gate questions, answered from
+what it found, with the question alone on the last line.
+
+```
+**Ask:** <what gets built, for whom, where it lives>
+
+**Gate questions** (Graham #1)
+- Why: <answer + evidence>
+- How long lived: <answer>
+- Already exists: <"local search pending", or what it found so far>
+- In scope: <answer>
+- Owner / maintenance: <answer>
+
+Do you want me to research and see if something comparable exists?
+```
+
 The skill does not run on a ticket or issue, a bug fix, a task inside an already-decided
 project, or a request to continue existing work. One exception: before a task inside a decided
 project writes a new table, a new column on an existing table, a new top-level module, or a new
@@ -166,8 +183,15 @@ with a reason that names the four verdicts and asks the agent for the line, so t
 its verdict in the same turn.
 
 A waiting reply may instead end with the exact comparables question alone on its final line,
-without quotes. Both hosts let that stop pass without recording a block; mentioning or quoting
-the question in a completed report does not exempt that report from its verdict.
+without quotes, but only with step 1 and step 3 above it: a line starting `**Ask:**` with text
+after it, and a line starting `**Gate questions**` followed by the five bullets `- Why:`,
+`- How long lived:`, `- Already exists:`, `- In scope:` and `- Owner` (any suffix before the
+colon, such as `- Owner / maintenance:`), each with an answer. Labels match in any case, with
+or without bold, after any list marker; inside a code fence or a quote they do not count. A
+waiting reply with all of it passes on both hosts without recording a block. One missing any of
+it is blocked once, with a reason that names exactly what is missing (`**Ask:**`, the
+`**Gate questions**` line, or the bullet), so the agent can add it in one turn. Mentioning or
+quoting the question in a completed report does not exempt that report from its verdict.
 
 A structure check gives no verdict, and the turn's first use of the skill has to declare it: the
 skill loaded with the args `structure-check <the new structure>` (`/ask-graham structure-check …`,
@@ -342,6 +366,15 @@ end-to-end run goes through the settings CLI and both hooks over a temp repo and
 CI runs the same command on Ubuntu and macOS with Node 24 (`.github/workflows/ask-graham.yml`).
 
 ## Release notes
+
+### 2026-11-04 — 0.7.2
+
+Closes the loophole where a turn could end on the comparables question and skip the judgment:
+three runs in a row asked only that question, never naming the ask (step 1) or answering the gate
+questions (step 3). A waiting reply now needs a `**Ask:**` line and a `**Gate questions**` block
+with all five bullets above the question; the Stop check blocks it once otherwise, naming what is
+missing. Jo's rule (2026-11-04: "you can't skip step 1"). Verdict replies and the structure check
+are unchanged. The check is shared, so OMP's `session_stop` applies it too.
 
 ### 2026-11-03 — 0.7.1
 

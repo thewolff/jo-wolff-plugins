@@ -511,6 +511,10 @@ extension (`omp/ask-graham-omp.ts`, declared in the plugin's `package.json`): wi
   similar. It gives no verdict and does not ask the comparables question.
 - **A level you set**, `ask` or `every-idea`, for how eagerly it runs (next section).
 
+Changes in 0.7.2: a reply that waits on the comparables question must also carry step 1's
+`**Ask:**` line and step 3's five `**Gate questions**` bullets; the Stop check blocks it once
+otherwise, naming what is missing, so the question can no longer stand in for the judgment.
+
 Changes in 0.7.1: the Stop check reads the reply from the Stop payload's
 `last_assistant_message`, and no longer takes Claude Code's telemetry entries as the newest entry
 of the conversation, which had let a reply with no verdict through and blocked one that had a
@@ -551,7 +555,8 @@ Each file holds `intensity=ask` or `intensity=every-idea`. A file that names nei
 `ask`, so a typo in a file meant to turn the level down cannot turn it up. The same files take a
 second line, `stop-check=off`, to turn off the Stop check that blocks once when an answer that
 read the skill has no `**Verdict:**` line (default `on`). A reply ending with the exact
-comparables question alone on its final line may wait for an answer without a verdict. To change either from a session (on
+comparables question alone on its final line may wait for an answer without a verdict, when a
+`**Ask:**` line and the five `**Gate questions**` bullets come before it. To change either from a session (on
 OMP, write `/skill:ask-graham` in place of `/ask-graham`):
 
 ```
