@@ -1,6 +1,6 @@
 ---
 name: release-gate
-description: Mechanical release checklist for one plugin in this repository. Use proactively before any plugin version bump, PR or marketplace publish. Snapshots the head commit by writing each blob with git cat-file and checking its hash (no checkout, no hooks, no attribute or filter conversion; links and submodules refused), then runs the path scrub, the version match across plugin.json, package.json, the README "Changes in" headings and the marketplace entry, README consistency against the plugin's hooks, skills and agents, and, only when the prompt says execute and the head sha, `node --test` in a credential-free environment on the CI node major. The ledger plugin gate is reported unavailable, because it checks live HEAD rather than the captured sha. Reports pass, fail or unavailable per check with the command and its output. Executes and reports only; never edits, never pushes, never installs.
+description: Mechanical release checklist for one plugin in this repository. Use proactively before any plugin version bump, PR or marketplace publish. Snapshots the head commit by writing each blob with git cat-file and checking its hash (no checkout, no hooks, no attribute or filter conversion; links and submodules refused), then runs the path scrub, the version match across plugin.json, package.json and the marketplace entry plus the three release texts ledger's `gate check` `docs` row wants (a CHANGELOG.md entry, a README release heading, the root README naming the version), README consistency against the plugin's hooks, skills and agents, and, only when the prompt says execute and the head sha, `node --test` in a credential-free environment on the CI node major. The ledger plugin gate is reported unavailable, because it checks live HEAD rather than the captured sha. Reports pass, fail or unavailable per check with the command and its output. Executes and reports only; never edits, never pushes, never installs.
 tools: Read, Grep, Glob, Bash
 model: haiku
 ---
@@ -144,13 +144,28 @@ output lines that decided it. Quote every substitution in every command.
 4. **Version match.** Read and compare, in the snapshot:
    - `version` in `plugins/<name>/.claude-plugin/plugin.json`;
    - `version` in `plugins/<name>/package.json` (when the file exists);
-   - the first `## Changes in <version>` heading in `plugins/<name>/README.md`;
-   - the root `README.md`: a "Changes in <version>" line that names the plugin, or the plugin's
-     own section's newest "Changes in" line;
    - `.claude-plugin/marketplace.json`: an entry whose `name` is the plugin and whose `source` is
      `./plugins/<name>`. The marketplace carries no version field; check the entry exists and
      say that is all it checks.
-   Any version that differs from `plugin.json` fails, naming both values.
+   Any version that differs from `plugin.json` fails, naming both values. Then the three
+   things ledger's `gate check` `docs` row wants for that version (it reads the same commit;
+   this check reads the snapshot), each a fail naming the file and the heading it wanted:
+   - **a. CHANGELOG entry.** `plugins/<name>/CHANGELOG.md` exists and has a heading for the
+     version with at least one non-blank line under it, before the next heading of the same or
+     a higher level: `## [<version>]` (Keep a Changelog; a ` - <date>` suffix is fine) or
+     `## <version>`. The version is matched whole: `0.3.6` is not found in `10.3.6`, `0.3.60`
+     or `0.3.6.1`.
+   - **b. README release heading.** `plugins/<name>/README.md` has a release heading for the
+     version with at least one non-blank line under it: `## Changes in <version>`,
+     `### <version>` (under a `## Changes` heading), or `### <date> — <version>` (the date
+     `YYYY-MM-DD`, then an em dash, en dash or hyphen); the CHANGELOG shapes count too, at any
+     heading level. Report the newest such heading: a newer version heading than
+     `plugin.json`'s is a fail naming both.
+   - **c. Root README mention.** The root `README.md` names the version for the plugin in one
+     of three places: the plugin's own top-level bullet (the line starting
+     `- **[<name>]` and its indented continuation lines), a `Changes in <name> <version>` line
+     anywhere, or a `Changes in <version>` line inside the root README's `## <name>` section.
+     Another plugin's bullet or section naming the same version does not count.
 5. **Suites, contained.** Only when 0 passed and check 2 is `exact` or `same major`; otherwise
    `unavailable` with that reason, not run. From `"$snap/plugins/<name>"`: the containment
    prefix from check 0 and `node --test`. Record the `ℹ pass`, `ℹ fail` and `ℹ skipped` lines

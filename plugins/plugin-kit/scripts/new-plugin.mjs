@@ -11,7 +11,7 @@
 // {{name}}, {{title}}, {{description}}, and per hook {{event}}, {{file}}, {{quiet}} filled in:
 //
 //   .claude-plugin/plugin.json     with a `state` declaration ($XDG_STATE_HOME/<name>, 30 days, scripts/prune.mjs)
-//   package.json, README.md, HOW-IT-FAILS.md
+//   package.json, README.md (with its `## Changes in 0.1.0`), CHANGELOG.md (Keep a Changelog, a 0.1.0 entry), HOW-IT-FAILS.md
 //   lib/hook-runner.mjs            a COPY of plugin-kit/lib/hook-runner.mjs (the plugin owns it)
 //   lib/live-run.mjs               a COPY of plugin-kit/lib/live-run.mjs (the scenario runner)
 //   hooks/hooks.json               one entry per event, `node "${CLAUDE_PLUGIN_ROOT}/hooks/<event>.mjs"`, timeout 5
@@ -121,6 +121,7 @@ export function scaffold({ name, events, description, dest }) {
   put(".claude-plugin/plugin.json", fill(tpl(".claude-plugin/plugin.json"), vars));
   put("package.json", fill(tpl("package.json"), vars));
   put("README.md", fill(tpl("README.md"), { ...vars, description }));
+  put("CHANGELOG.md", fill(tpl("CHANGELOG.md"), { ...vars, description }));
   put("HOW-IT-FAILS.md", fill(tpl("HOW-IT-FAILS.md"), vars));
   mkdirSync(join(root, "lib"), { recursive: true });
   for (const lib of ["hook-runner.mjs", "live-run.mjs"]) {
