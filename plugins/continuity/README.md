@@ -6,8 +6,11 @@ Keep a long session's state across compaction. Four hooks and one skill:
   uncommitted paths, files touched, recent asks, the repository's open handoffs) to a snapshot
   under the plugin's state directory, and leaves a heartbeat record saying whether that worked.
 - **`hooks/session-start.mjs`** (SessionStart) injects that snapshot back after a compaction and
-  removes it, and on every start says when the save last succeeded on this machine, or that it
-  never has. A save that silently stopped working is the failure this line exists to end.
+  removes it, re-inlines the rules files (`CLAUDE.md`, `CLAUDE.local.md`, `AGENTS.md`) on the walk
+  from the cwd to the repository root that the host does not re-read on its own, lists the newest
+  entries of the repository's durable-notes directory, and on every start says when the save last
+  succeeded on this machine, or that it never has. A save that silently stopped working is the
+  failure this line exists to end.
 - **`hooks/user-prompt-submit.mjs`** (UserPromptSubmit) says the liveness line once when
   SessionStart did not, and asks once for a handoff when the session's context is near full. On
   Claude Code that is the token usage the last reply recorded in the transcript; see below.
@@ -80,6 +83,37 @@ thread is and what is pending on it before continuing, and unlinks it. A snapsho
 characters is cut at that length, says so with the file's path, and is kept; one older than a
 day is ignored and left for prune. A restore that refills the window the compaction just cleared
 is worse than none.
+
+After the same compaction, with or without a snapshot to restore, two more sections follow
+(`lib/repo-rules.mjs`); neither appears on a fresh start, a resume or a clear:
+
+**`## Repo rules re-inlined`.** The rules files that scope the payload's cwd, which the host
+loaded into the conversation as the session read into their directories and the compaction took
+with it. The walk collects, per directory from the cwd up to the walk root, `CLAUDE.md` (with
+`CLAUDE.local.md` after it) else `AGENTS.md`, and inlines them root first, nearest last, so the
+nearest file's rules are read last and win. The root is the git root (the nearest directory at or
+above the cwd holding a `.git` entry; a worktree's `.git` file counts), or the nearest directory
+above the git root holding a rules file (a workspace that keeps one rules file over several
+checkouts; searched up to, not including, the home directory and `/`), or, with no git root, the
+cwd alone. The cwd is resolved through its symlinks first; a rules file that is a symlink to a
+path outside that root is skipped and named; a file reached twice is inlined once. A level that
+is `CLAUDE_PROJECT_DIR` or above it (Claude Code sets it to the launch directory) is skipped and
+named as the host's: the host loaded it at launch and keeps it. Caps, in bytes: 8,000 per file
+and 9,000 for the section (the source hook's per-file cap, and the budget its live rules-injection
+sibling used for one chain), and never more than what the snapshot left of the 20,000-character
+restore guard, so the rules are what gives way when a snapshot is large. Within the cap the
+smallest files land whole and the largest are cut to one shared allowance, each cut ending in
+`(truncated at N bytes; the file is M bytes, read it for the rest)`; a file whose share would be
+under 200 bytes is skipped instead, and every skipped file is one `- skipped <path>: <why>` line.
+A walk that found nothing says so. `@path` imports are not expanded; the token stays as written.
+`"rules": "off"` in the config file drops the section.
+
+**`## Durable notes`.** The newest `notesCount` (default 5) regular files of `notesDir` (default
+`.ai/decision-log`, relative to the git root, or the cwd when there is none; an absolute path is
+taken as is) by modification time, one filename per line, dot-files and directories left out,
+with the line that the notes directory and the rules files are the source of truth and the
+restored snapshot is only the safety net. An absent directory is one line saying so;
+`"notesCount": 0` drops the section.
 
 On every SessionStart, `lib/liveness.mjs` reads the heartbeat and adds one of four texts. The
 newest save's result decides which, not the newest success:
@@ -156,7 +190,8 @@ name, before continuing: resuming a session is structurally a standup.
 `${XDG_CONFIG_HOME:-~/.config}/continuity/config.json`, read by every hook (`lib/config.mjs`):
 
 ```json
-{ "threshold": 0.65, "contextTokens": 200000, "pressure": "on", "liveness": "on", "snapshot": "on" }
+{ "threshold": 0.65, "contextTokens": 200000, "pressure": "on", "liveness": "on", "snapshot": "on",
+  "rules": "on", "notesDir": ".ai/decision-log", "notesCount": 5 }
 ```
 
 | Key | Default | Meaning |
@@ -165,7 +200,10 @@ name, before continuing: resuming a session is structurally a standup.
 | `contextTokens` | `200000` | the context size the estimate is compared against; a positive whole number |
 | `pressure` | `"on"` | `"off"` silences the prompt warning and the Stop block |
 | `liveness` | `"on"` | `"off"` silences the liveness line |
-| `snapshot` | `"on"` | `"off"` skips the PreCompact save (the heartbeat records `skipped:off`) and the restore |
+| `snapshot` | `"on"` | `"off"` skips the PreCompact save (the heartbeat records `skipped:off`) and the restore; the two sections below still follow a compaction |
+| `rules` | `"on"` | `"off"` drops the post-compaction `## Repo rules re-inlined` section |
+| `notesDir` | `".ai/decision-log"` | the durable-notes directory the post-compaction `## Durable notes` section lists; relative to the git root (the cwd when there is none) unless absolute; a non-empty string |
+| `notesCount` | `5` | how many of its newest entries to list; a whole number from 0 (the section is dropped) to 100 |
 
 A missing file is the defaults. A file that does not parse, or a value of the wrong shape, is
 the defaults for that value, and the hooks name the file and the problem once per session (one
@@ -199,7 +237,9 @@ happens; a fault is one line in `${XDG_STATE_HOME:-~/.local/state}/continuity/er
 | any hook | stdin not JSON, a throw, no answer in 4 s | runner logs one line, allows; never a block |
 | `hooks/pre-compact.mjs` | the snapshot cannot be written | heartbeat `failed:<code>`, a `systemMessage` naming the path; compaction proceeds |
 | `hooks/pre-compact.mjs` | git slow or absent, transcript unreadable | every git call shares one 2 s budget; a field git did not answer is `(unknown: timed out)` or `(unknown: … failed)`, and the snapshot is still written |
-| `hooks/session-start.mjs` | no snapshot, a stale one, one that does not parse | nothing restored; the liveness line alone |
+| `hooks/session-start.mjs` | no snapshot, a stale one, one that does not parse | nothing restored; the liveness line alone, and after a compaction the rules and notes sections |
+| `hooks/session-start.mjs` (the rules walk) | the cwd missing or not a directory; a rules file unreadable, empty, a symlink out of the tree, or reached twice; the rules larger than the cap or the snapshot leaving no room | the section still appears: one line saying nothing was walked, or one `- skipped <path>: <why>` line per file; a cut file ends `(truncated at N bytes …)`; never a silently shortened rule |
+| `hooks/session-start.mjs` (the notes probe) | `notesDir` absent, not a directory, or unreadable | one line saying so under `## Durable notes` |
 | `hooks/session-start.mjs` | heartbeat absent or never `ok` | the liveness line says so, in bold; never reads as healthy |
 | `hooks/user-prompt-submit.mjs`, `hooks/stop.mjs` | no `transcript_path`, unmeasurable transcript, no recorded usage | silent when there is nothing to measure; with no recorded usage, the bytes / 8 fallback, and the warning says `(estimate)` |
 | `hooks/stop.mjs` | the once-mark cannot be written | no block |
@@ -210,8 +250,10 @@ happens; a fault is one line in `${XDG_STATE_HOME:-~/.local/state}/continuity/er
 runs each hook as a child process on its parse / allow / warn / unparseable inputs and walks one
 session end to end; `test/lib.test.mjs` covers every lib module including its error paths;
 `test/port.test.mjs` pins the stripped strings below. `evals/manifest.json` declares each event's
-outcomes and the twelve `evals/*.scenario.json` prove them: `evals/pre-compact-auto-no-handoff.scenario.json`
+outcomes and the fourteen `evals/*.scenario.json` prove them: `evals/pre-compact-auto-no-handoff.scenario.json`
 is the save with its `systemMessage`, `evals/session-start-restore.scenario.json` the restore,
+`evals/session-start-restore-rules.scenario.json` the re-inlined rules,
+`evals/session-start-restore-notes.scenario.json` the durable-notes list,
 `evals/stop-blocks-near-full.scenario.json` the block and `evals/stop-once-per-session.scenario.json`
 its once-rule (`bash e2e/live-run.sh --no-live` replays them offline). Run `node --test` from inside `plugins/continuity/`.
 
@@ -230,7 +272,7 @@ the number is known.
 
 | Source | Destination | Stripped |
 |---|---|---|
-| `hooks/compact-continuity.mjs`, PreCompact half (`snapshot()`) | `hooks/pre-compact.mjs`, `lib/snapshot.mjs` `buildSnapshot()`/`capture()` | the header's canonical-home line `shipyard/.claude/hooks/compact-continuity.mjs` (line 2); the repository-scope gate `hooksEnabled()` from `lib/hook-scope.mjs`, which ran the hook only where a `newdle-hooks.json` declared it on (lines 28 and 119); the snapshot's home `<repo>/.ai/session-state--<session>.md` (`STATE_DIR = ".ai"`, line 129), now `${XDG_STATE_HOME:-~/.local/state}/continuity/<session>.json`, so the plugin writes nothing into the repository; the `### Newest decision-log entries` block of the reconstruction section, `ls -1t .ai/decision-log` (line 531); the `## Repo rules in play` section (`repoRulesSection`, lines 308 to 338), which re-inlined nested `AGENTS.md` files through `lib/repo-rules-walk.mjs` and paired with newdle's separate `repo-rules-inject` hook, not part of this plugin; the systemMessage's "or running /wrap-up at the end of one" (line 605), replaced by `/continuity:handoff`; the comment pointing at `newdle-hooks.judgment.ts:205` (line 443); the hand-rolled stdin/exit scaffolding, replaced by `lib/hook-runner.mjs` |
+| `hooks/compact-continuity.mjs`, PreCompact half (`snapshot()`) | `hooks/pre-compact.mjs`, `lib/snapshot.mjs` `buildSnapshot()`/`capture()` | the header's canonical-home line `shipyard/.claude/hooks/compact-continuity.mjs` (line 2); the repository-scope gate `hooksEnabled()` from `lib/hook-scope.mjs`, which ran the hook only where a `newdle-hooks.json` declared it on (lines 28 and 119); the snapshot's home `<repo>/.ai/session-state--<session>.md` (`STATE_DIR = ".ai"`, line 129), now `${XDG_STATE_HOME:-~/.local/state}/continuity/<session>.json`, so the plugin writes nothing into the repository; the `### Newest decision-log entries` block of the reconstruction section, `ls -1t .ai/decision-log` (line 531), until 0.2.0 brought it back as the `## Durable notes` section (`lib/repo-rules.mjs` `renderNotes()`: a configurable directory, no subprocess, listed after every compaction rather than only in a degraded capture); the `## Repo rules in play` section (`repoRulesSection`, lines 308 to 338), which re-inlined the rules chains of every repository touched this session through `lib/repo-rules-walk.mjs` and paired with newdle's separate `repo-rules-inject` hook, until 0.2.0 brought it back as `## Repo rules re-inlined` (`lib/repo-rules.mjs` `walkRules()`: one walk from the payload's cwd, not one per touched path; the same per-level rule and the same launch-directory skip; byte caps with the largest files cut first; no `@path` import expansion); the systemMessage's "or running /wrap-up at the end of one" (line 605), replaced by `/continuity:handoff`; the comment pointing at `newdle-hooks.judgment.ts:205` (line 443); the hand-rolled stdin/exit scaffolding, replaced by `lib/hook-runner.mjs` |
 | `hooks/compact-continuity.mjs`, SessionStart half (`restore()`) | `hooks/session-start.mjs`, `lib/snapshot.mjs` `restore()` | the scope gate as above; the read from `<repo>/.ai/`; the restore text's "restate before continuing" rule is kept |
 | `hooks/compaction-liveness.mjs`, `hooks/lib/compaction-liveness-report.mjs`, `hooks/lib/heartbeat.mjs` | `hooks/session-start.mjs`, `hooks/user-prompt-submit.mjs`, `lib/liveness.mjs`, `lib/heartbeat.mjs` | the scope gate (`compaction-liveness.mjs` lines 33 to 41, `ENG-1622`); the heartbeat home `~/.claude/newdle-compaction-heartbeat.ndjson` (`heartbeat.mjs` lines 45 to 46), now under the state directory; the "not declared" case of `renderLiveness()` (`compaction-liveness-report.mjs` lines 73 to 84), which said the repository had no `newdle-hooks.json`, a case this plugin has no equivalent of; the once-per-session flag file in `os.tmpdir()`, now `sessions/<session>.json` under the state directory; the sentence prefix "Newdle plugin," now "continuity," |
 | `hooks/context-pressure.mjs`, `hooks/lib/calibration.mjs` | `hooks/user-prompt-submit.mjs`, `hooks/stop.mjs`, `lib/pressure.mjs`, `lib/calibration.mjs`, `lib/session-flags.mjs` | the scope gate and `withMuteHint()` (lines 27 to 37); the env kill switch `NEWDLE_CONTEXT_PRESSURE=off` (line 39) and threshold override `NEWDLE_CONTEXT_THRESHOLD` (lines 47 to 50, default 0.65), now `pressure` and `threshold` in `config.json`, same default; the nudge flag `join(tmpdir(), "newdle-context-pressure-<key>.json")` (line 62), now the once-marks under the state directory; the calibration home `~/.claude/newdle-context-calibration.ndjson` (`calibration.mjs` lines 27 to 28); "run the `handoff` skill" in the block text (line 150), now `/continuity:handoff` |
@@ -240,6 +282,27 @@ the number is known.
 The strings `shipyard`, `linear`, `.projects`, `newdle-hooks`, `/Users/<name>/` and `ENG-<n>`
 appear in nothing the plugin runs or loads; `test/port.test.mjs` scans every file except this
 one, `CHANGELOG.md` and itself.
+
+## Changes in 0.2.0
+
+The two pieces the 0.1.0 port left out of `hooks/compact-continuity.mjs` are back, generic
+(`lib/repo-rules.mjs`), both only on the SessionStart that follows a compaction:
+
+- `## Repo rules re-inlined`: the `CLAUDE.md` (with `CLAUDE.local.md`) else `AGENTS.md` of every
+  directory from the payload's cwd to the walk root (the git root, the nearest rules-holding
+  directory above it below the home directory, or the cwd alone), root first, nearest last. A
+  level at or above `CLAUDE_PROJECT_DIR` is the host's and is named as skipped. 8,000 bytes per
+  file, 9,000 for the section, and never more than the 20,000-character restore guard has left
+  after the snapshot: the rules give way first. The largest files are cut to one shared allowance
+  with a `(truncated at N bytes …)` marker; every skipped file is one line with its reason; a
+  symlink out of the tree is never followed.
+- `## Durable notes`: the newest `notesCount` (default 5) files of `notesDir` (default
+  `.ai/decision-log` at the git root) by mtime, with the line that the notes and the rules files
+  are the source of truth and the snapshot is the safety net.
+- Config: `rules` (`"on"`/`"off"`), `notesDir` (a non-empty string), `notesCount` (0 to 100).
+- Tests for the walk, the caps and the probe in `test/lib.test.mjs`, the post-compaction block in
+  `test/hooks.test.mjs`, and two scenarios, `evals/session-start-restore-rules.scenario.json` and
+  `evals/session-start-restore-notes.scenario.json` (fourteen in all).
 
 ## Changes in 0.1.1
 

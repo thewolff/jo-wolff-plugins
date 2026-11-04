@@ -71,10 +71,13 @@ it, keeping a record of what it did and asked, and a vendored set of engineering
   snapshot the post-compaction SessionStart injects back; every start says when that save last
   succeeded, so a dead save is never silent; a context-pressure check warns once and blocks one
   stop near the compaction target, naming `/continuity:handoff`; and the handoff skill writes
-  the judgment layer no hook can derive. Claude Code hooks. Changes in continuity 0.1.1:
-  `lib/hook-runner.mjs` re-vendored from plugin-kit 0.3.1 (the handler's env carries the
-  runner's start and deadline; stdout drains before exit); hooks answer as before. See the plugin's
-  [CHANGELOG](plugins/continuity/CHANGELOG.md).
+  the judgment layer no hook can derive. Claude Code hooks. Changes in continuity 0.2.0: after a
+  compaction the restore block also re-inlines the rules files (`CLAUDE.md`, `CLAUDE.local.md`,
+  `AGENTS.md`) on the walk from the cwd to the repository root, root first, inside what the
+  restore guard has left (8,000 bytes per file, 9,000 for the section, every cut and skip
+  named), and lists the newest entries of the repository's durable-notes directory
+  (`notesDir`, default `.ai/decision-log`); config keys `rules`, `notesDir`, `notesCount`. See
+  the plugin's [CHANGELOG](plugins/continuity/CHANGELOG.md).
 - **[brb](#brb)** — type `brb` and walk away: the agent keeps working, every ask it would
   have stopped for waits in a digest, and only a broken main, data loss, a security finding,
   spend near a ceiling or a blocker on everything comes through at once; `back` prints the
@@ -223,7 +226,7 @@ receipt and removes its working files.
 | as2-skills | 0.1.2 | 22 vendored engineering skills, each with "How it fails" | its sections meet ledger's `says` row |
 | ctx-watch | 0.2.1 | ctx daemon and semantic-index health, repair, and the consult-history Stop check | vendors the hook runner and the scenario runner |
 | delegation | 0.1.1 | brief teaching, spawn gate, `SendMessage` check, SubagentStop warning, 11 agents, three guards | needs pattern-check's receipt for builder-class spawns; vendors the hook runner |
-| continuity | 0.1.1 | PreCompact snapshot, liveness line, context-pressure warning, `/continuity:handoff` | vendors the hook runner |
+| continuity | 0.2.0 | PreCompact snapshot, post-compaction restore with the rules files and durable notes re-inlined, liveness line, context-pressure warning, `/continuity:handoff` | vendors the hook runner |
 | brb | 0.1.1 | `brb` / `back` / `pending`, the away digest, keep-working, on-fire surfacing | vendors the hook runner |
 
 ### What they share
@@ -1356,9 +1359,15 @@ the open handoffs under the repository's `.ai/handoffs/`) to
 `${XDG_STATE_HOME:-~/.local/state}/continuity/<session_id>.json`, every list capped and every
 cut announced in the file, and leaves a heartbeat record saying whether it worked. On the
 SessionStart that follows a compaction, `hooks/session-start.mjs` injects that snapshot back
-(this session's only, at most 20,000 characters) and removes it; on every start it adds one
-line, `continuity, pre-compaction save liveness: last successful save N minutes ago; the
-snapshot path is alive`, or a bold line saying the save has never been recorded or never
+(this session's only, at most 20,000 characters) and removes it, then re-inlines the rules files
+(`CLAUDE.md` with `CLAUDE.local.md`, else `AGENTS.md`) of every directory from the cwd to the
+repository root that the host does not re-read on its own, root first, inside what the restore
+guard has left (8,000 bytes per file, 9,000 for the section, the largest files cut first with a
+marker, every skipped file named; a level the host loaded at launch is skipped), and lists the
+newest five entries of the repository's durable-notes directory (`notesDir`, default
+`.ai/decision-log`) as the source of truth the snapshot is only the safety net for; on every
+start it adds one line, `continuity, pre-compaction save liveness: last successful save N minutes
+ago; the snapshot path is alive`, or a bold line saying the save has never been recorded or never
 succeeded on this machine, so a save that silently died is seen the next morning. The
 context-pressure check (`hooks/user-prompt-submit.mjs`, `hooks/stop.mjs`) estimates the
 session's size from the transcript and the ratio observed at earlier compactions, and at 0.65
@@ -1368,7 +1377,7 @@ that has never compacted hears nothing. The handoff skill writes
 `<root>/.ai/handoffs/<date>--<time>--<author>--<lane>.md` with five sections (where I left off,
 next move, already ruled out, live uncertainty, working state) and the rule that a resuming
 session restates the content before continuing. Every hook fails open. Built on plugin-kit
-0.2.1; Node 22.13 or later. The config keys, the state table, the failure table and the
+0.3.1; Node 22.13 or later. The config keys, the state table, the failure table and the
 "Ported from newdle 0.2.175" table are in
 [`plugins/continuity/README.md`](plugins/continuity/README.md).
 
@@ -1382,7 +1391,7 @@ session restates the content before continuing. Every hook fails open. Built on 
 ### Developing continuity
 
 The tests run with `node --test` from inside `plugins/continuity/`;
-`bash e2e/live-run.sh --no-live` replays the twelve scenarios offline.
+`bash e2e/live-run.sh --no-live` replays the fourteen scenarios offline.
 
 ## brb
 

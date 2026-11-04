@@ -20,6 +20,7 @@ import { ERRORS_MAX_LINES, logError } from "../lib/errors.mjs";
 import { git } from "../lib/git.mjs";
 import { appendBounded } from "../lib/bounded-log.mjs";
 import { prune } from "../scripts/prune.mjs";
+import { NOTES_MAX_COUNT, RULES_FILE_MAX_BYTES, RULES_MIN_BYTES, RULES_TOTAL_MAX_BYTES, findGitRoot, fitRules, renderNotes, renderRules, truncateBytes, walkRules } from "../lib/repo-rules.mjs";
 
 const handoffText = (over = {}) => {
   const meta = { session_id: "s-test", lane: "port", author: "jo", branch: "main", created: "2026-11-04T12:00:00Z", status: "open", ...over };
@@ -74,11 +75,186 @@ test("config: absent is the defaults; malformed, wrong-typed and partial files e
       assert.equal(r.config.contextTokens, DEFAULTS.contextTokens, JSON.stringify(n));
       assert.match(r.problem, /contextTokens must be a positive whole number/, JSON.stringify(n));
     }
+    b.writeConfig({ rules: "off", notesDir: "docs/notes", notesCount: 0 });
+    assert.deepEqual(readConfig(b.env), { config: { ...DEFAULTS, rules: "off", notesDir: "docs/notes", notesCount: 0 }, path: configPath(b.env), problem: null });
+    for (const d of ["", "  ", 5, null, ["x"]]) {
+      r = readConfig((b.writeConfig({ notesDir: d }), b.env));
+      assert.equal(r.config.notesDir, DEFAULTS.notesDir, JSON.stringify(d));
+      assert.match(r.problem, /notesDir must be a non-empty string/, JSON.stringify(d));
+    }
+    for (const n of [-1, 1.5, "5", 101, null]) {
+      r = readConfig((b.writeConfig({ notesCount: n }), b.env));
+      assert.equal(r.config.notesCount, DEFAULTS.notesCount, JSON.stringify(n));
+      assert.match(r.problem, /notesCount must be a whole number from 0 to 100/, JSON.stringify(n));
+    }
+    assert.match(readConfig((b.writeConfig({ rules: 1 }), b.env)).problem, /rules must be "on" or "off", not 1/);
     chmodSync(configPath(b.env), 0o000);
     r = readConfig(b.env);
     assert.deepEqual(r.config, { ...DEFAULTS });
     if (process.getuid?.() !== 0) assert.match(r.problem, /could not be read/);
     chmodSync(configPath(b.env), 0o644);
+  } finally {
+    b.release();
+  }
+});
+
+test("repo rules: the walk collects every level cwd to root, CLAUDE.md beats AGENTS.md, the local file follows it, and the root is the git root, the workspace above it, or the cwd alone", () => {
+  const b = box();
+  try {
+    // b.work is the git root. A workspace above it holds one AGENTS.md; a directory between holds none.
+    const ws = join(b.root, "ws");
+    const repo = join(ws, "checkouts", "repo");
+    mkdirSync(join(repo, "pkg", "deep"), { recursive: true });
+    spawnSync("git", ["init", "-q", repo]);
+    writeFileSync(join(ws, "AGENTS.md"), "# workspace\n");
+    writeFileSync(join(repo, "CLAUDE.md"), "# repo claude\n");
+    writeFileSync(join(repo, "AGENTS.md"), "# repo agents (shadowed)\n");
+    writeFileSync(join(repo, "CLAUDE.local.md"), "# repo local\n");
+    writeFileSync(join(repo, "pkg", "AGENTS.md"), "# pkg agents\n");
+    writeFileSync(join(repo, "pkg", "deep", "CLAUDE.md"), "   \n");
+    // A rules file in the directory between the git root and the workspace must not exist for the
+    // workspace to be the one found; one above the workspace is never read: it is past the root.
+    writeFileSync(join(b.root, "AGENTS.md"), "# above the workspace: never read\n");
+    const w = walkRules(join(repo, "pkg", "deep"), b.env);
+    assert.equal(w.gitRoot, repo);
+    assert.equal(w.root, ws);
+    assert.equal(w.rootKind, "workspace");
+    assert.deepEqual(w.files.map((f) => f.path), [join(ws, "AGENTS.md"), join(repo, "CLAUDE.md"), join(repo, "CLAUDE.local.md"), join(repo, "pkg", "AGENTS.md")], "root first, CLAUDE.md then CLAUDE.local.md, AGENTS.md only where there is no CLAUDE.md");
+    assert.deepEqual(w.skipped, [{ path: join(repo, "pkg", "deep", "CLAUDE.md"), why: "empty" }]);
+    assert.equal(w.files[0].bytes, 12);
+    const text = renderRules(w);
+    assert.match(text, /^## Repo rules re-inlined\n/);
+    assert.match(text, /root first, nearest last/);
+    assert.ok(text.indexOf("# workspace") < text.indexOf("# repo claude") && text.indexOf("# repo claude") < text.indexOf("# repo local") && text.indexOf("# repo local") < text.indexOf("# pkg agents"));
+    assert.doesNotMatch(text, /shadowed|never read/);
+    assert.match(text, /- skipped `.*deep\/CLAUDE\.md`: empty\n/);
+
+    // The workspace search stops at HOME: a rules file in HOME is not a workspace, and the root
+    // is the git root.
+    const underHome = join(b.env.HOME, "code", "p");
+    mkdirSync(underHome, { recursive: true });
+    spawnSync("git", ["init", "-q", underHome]);
+    writeFileSync(join(b.env.HOME, "CLAUDE.md"), "# home\n");
+    writeFileSync(join(underHome, "AGENTS.md"), "# p\n");
+    const h = walkRules(underHome, b.env);
+    assert.deepEqual([h.root, h.rootKind, h.files.map((f) => f.path)], [underHome, "git", [join(underHome, "AGENTS.md")]]);
+
+    // No git root: the cwd alone, nothing above it.
+    const lone = join(b.root, "lone", "sub");
+    mkdirSync(lone, { recursive: true });
+    writeFileSync(join(b.root, "lone", "AGENTS.md"), "# lone parent\n");
+    writeFileSync(join(lone, "AGENTS.md"), "# lone sub\n");
+    const l = walkRules(lone, b.env);
+    assert.deepEqual([l.root, l.rootKind, l.gitRoot, l.files.map((f) => f.content)], [lone, "cwd", null, ["# lone sub\n"]]);
+    assert.match(renderRules(l), /the cwd itself, with no git root above it/);
+
+    // A level that is CLAUDE_PROJECT_DIR or above it is the host's: skipped and named.
+    const launched = walkRules(join(repo, "pkg", "deep"), { ...b.env, CLAUDE_PROJECT_DIR: repo });
+    assert.deepEqual(launched.files.map((f) => f.path), [join(repo, "pkg", "AGENTS.md")]);
+    assert.equal(launched.skipped.filter((s) => /loaded by the host at launch/.test(s.why)).length, 3);
+
+    // Nothing on the walk, a missing cwd, no cwd: each a section that says so.
+    const bare = join(b.root, "bare");
+    mkdirSync(bare);
+    assert.match(renderRules(walkRules(bare, b.env)), /\(no CLAUDE\.md, CLAUDE\.local\.md or AGENTS\.md on that walk\)/);
+    assert.match(renderRules(walkRules(join(b.root, "nope"), b.env)), /is not a directory that exists, so nothing was walked/);
+    assert.match(renderRules(walkRules(undefined, b.env)), /no working directory/);
+    assert.equal(findGitRoot(join(repo, "pkg", "deep")), repo);
+    assert.equal(findGitRoot(lone), null);
+  } finally {
+    b.release();
+  }
+});
+
+test("repo rules: a symlinked rules file is read only when its target is inside the walk root, and one file reached twice is inlined once", () => {
+  const b = box();
+  try {
+    const outside = join(b.root, "outside.md");
+    writeFileSync(outside, "# outside the tree\n");
+    mkdirSync(join(b.work, "a", "b"), { recursive: true });
+    writeFileSync(join(b.work, "CLAUDE.md"), "# root rules\n");
+    symlinkSync(outside, join(b.work, "a", "AGENTS.md"));
+    symlinkSync(join(b.work, "CLAUDE.md"), join(b.work, "a", "b", "CLAUDE.md"));
+    const w = walkRules(join(b.work, "a", "b"), b.env);
+    assert.deepEqual(w.files.map((f) => f.path), [join(b.work, "CLAUDE.md")]);
+    assert.deepEqual(w.skipped.map((s) => s.path), [join(b.work, "a", "AGENTS.md"), join(b.work, "a", "b", "CLAUDE.md")]);
+    assert.match(w.skipped[0].why, /a symlink to `.*outside\.md`, outside the walk root/);
+    assert.match(w.skipped[1].why, /the same file as `.*CLAUDE\.md`, already inlined/);
+    const text = renderRules(w);
+    assert.doesNotMatch(text, /outside the tree/);
+    assert.equal((text.match(/# root rules/g) || []).length, 1);
+    // A symlink inside the root is followed; a cwd reached through a symlink walks the real tree.
+    const link = join(b.root, "link-to-work");
+    symlinkSync(b.work, link);
+    assert.equal(walkRules(join(link, "a", "b"), b.env).root, b.work);
+    // A dangling symlink is named as unreadable, never thrown.
+    symlinkSync(join(b.root, "gone.md"), join(b.work, "a", "CLAUDE.md"));
+    assert.doesNotThrow(() => walkRules(join(b.work, "a"), b.env));
+  } finally {
+    b.release();
+  }
+});
+
+test("repo rules: caps in bytes, the largest files cut first with the marker, a share under the floor skipped and named, the budget the caller passes honoured", () => {
+  assert.equal(RULES_FILE_MAX_BYTES, 8000);
+  assert.equal(RULES_TOTAL_MAX_BYTES, 9000);
+  assert.equal(RULES_MIN_BYTES, 200);
+  const file = (path, bytes) => ({ path, bytes, content: "x".repeat(bytes) });
+  // Small files whole, the two largest cut to the same allowance that fills the total.
+  let r = fitRules([file("/r/a", 500), file("/r/b", 6000), file("/r/c", 7000)], RULES_TOTAL_MAX_BYTES);
+  assert.deepEqual(r.shown.map((f) => [f.path, f.shownBytes]), [["/r/a", 500], ["/r/b", 4250], ["/r/c", 4250]]);
+  assert.deepEqual(r.skipped, []);
+  // The per-file cap applies before the total: one 20,000-byte file shows 8,000.
+  r = fitRules([file("/r/big", 20000)], RULES_TOTAL_MAX_BYTES);
+  assert.deepEqual(r.shown.map((f) => f.shownBytes), [8000]);
+  // The caller's budget wins over the total cap, and a share under the floor is a skip with a reason.
+  r = fitRules([file("/r/a", 300), file("/r/b", 300)], 350);
+  assert.deepEqual(r.shown, []);
+  assert.equal(r.skipped.length, 2);
+  assert.match(r.skipped[0].why, /^no room: the rules on this walk total 600 bytes against a 350-byte section cap/);
+  r = fitRules([file("/r/a", 300)], 0);
+  assert.match(r.skipped[0].why, /^no room: the snapshot used the restore budget \(0 bytes left for rules\)/);
+  // A budget above the total cap is the total cap.
+  r = fitRules([file("/r/a", 9500)], 50000);
+  assert.deepEqual(r.shown.map((f) => f.shownBytes), [8000]);
+
+  // Bytes, not characters: a cut lands on a character boundary and the marker names bytes.
+  const euro = "€".repeat(100); // 300 bytes
+  assert.equal(Buffer.byteLength(truncateBytes(euro, 7)), 6);
+  assert.equal(truncateBytes(euro, 7), "€€");
+  const walk = { start: "/r/sub", root: "/r", rootKind: "git", gitRoot: "/r", files: [{ path: "/r/AGENTS.md", bytes: 300, content: euro }, { path: "/r/sub/AGENTS.md", bytes: 10, content: "0123456789" }], skipped: [], note: null };
+  const text = renderRules(walk, 250);
+  assert.match(text, /### `\/r\/AGENTS\.md` \(300 bytes\)\n\n€+\n\n\(truncated at 240 bytes; the file is 300 bytes, read it for the rest\)\n/);
+  assert.match(text, /### `\/r\/sub\/AGENTS\.md` \(10 bytes\)\n\n0123456789\n/);
+  assert.ok(Buffer.byteLength(text) < 250 + 500, "the section is the budget plus its own headings");
+  // Everything skipped is still a section naming every file.
+  const none = renderRules({ ...walk, skipped: [{ path: "/r/CLAUDE.local.md", why: "empty" }] }, 0);
+  assert.match(none, /- skipped `\/r\/CLAUDE\.local\.md`: empty\n- skipped `\/r\/AGENTS\.md`: no room/);
+  assert.doesNotMatch(none, /0123456789/);
+});
+
+test("durable notes: the newest N files by mtime, dot-files and directories left out, the count capped, a missing or empty directory said in one line", () => {
+  const b = box();
+  try {
+    const dir = join(b.work, ".ai", "decision-log");
+    assert.match(renderNotes(".ai/decision-log", b.work, 5), new RegExp(`^## Durable notes \\(\`${dir}\`\\)\n\n\\(no notes directory at \`${dir}\`\\)\n`));
+    mkdirSync(dir, { recursive: true });
+    assert.match(renderNotes(".ai/decision-log", b.work, 5), /\(the notes directory is empty\)/);
+    const t0 = Date.now() / 1000 - 1000;
+    for (const [i, name] of ["c.md", "a.md", "b.md", "d.md", "e.md", "f.md", ".hidden.md"].entries()) {
+      writeFileSync(join(dir, name), name);
+      utimesSync(join(dir, name), t0 + i * 10, t0 + i * 10);
+    }
+    mkdirSync(join(dir, "sub"));
+    utimesSync(join(dir, "sub"), t0 + 1000, t0 + 1000);
+    const text = renderNotes(".ai/decision-log", b.work, 5);
+    assert.match(text, /The newest 5 of 6 entries by modification time:\n\n- f\.md\n- e\.md\n- d\.md\n- b\.md\n- a\.md\n\n> The notes directory and the rules files are the source of truth; the restored snapshot is only the safety net\./);
+    assert.doesNotMatch(text, /c\.md|hidden|sub/);
+    assert.match(renderNotes(".ai/decision-log", b.work, 2), /The newest 2 of 6 entries by modification time:\n\n- f\.md\n- e\.md\n\n/);
+    assert.match(renderNotes(dir, "/elsewhere", 1000), /The newest 6 of 6 entries/, "an absolute dir ignores the base; the count is capped");
+    assert.equal(NOTES_MAX_COUNT, 100);
+    writeFileSync(join(b.work, "file"), "x");
+    assert.match(renderNotes("file", b.work, 5), /\(no notes directory at /, "a file where a directory should be");
   } finally {
     b.release();
   }
