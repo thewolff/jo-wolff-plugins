@@ -1,7 +1,7 @@
 // receipts.test.mjs — lib/receipts.mjs: which labels count (bold, at a line's start after any
-// list or quote marker, or followed by a colon or the line's end; never mid-sentence, never casual
-// prose, never inside a fence), where a statement ends, which receipt shapes satisfy each label,
-// the warning's cap, the config read, and the judge stage with a fake runner.
+// list or quote marker, or followed by a colon or the line's end; inline in a sentence unless only
+// mentioned; never casual prose, never inside a fence), where a statement ends, which receipt
+// shapes satisfy each label, the warning's cap, the config read, and the judge stage with a fake runner.
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
@@ -30,14 +30,14 @@ const labels = (md) => extractStatements(md).map((s) => [s.line, s.label, s.text
 
 // ─── labels ─────────────────────────────────────────────────────────────────────────────
 
-test("labels: bold CLAIM/CITE at a line's start (after list or quote markers) or followed by a colon or the line's end, with a qualifier or a colon; mid-sentence bold, casual prose, unbolded, other words, and fenced text never count", () => {
+test("labels: bold CLAIM/CITE at a line's start (after list or quote markers) or followed by a colon or the line's end, with a qualifier or a colon, or inline in a sentence; a mention, casual prose, unbolded, other words, and fenced text never count", () => {
   const md = [
     "# Report", // 1
     "", // 2
     "**CLAIM**", // 3
     "First, block-leading.", // 4
     "", // 5
-    "Inline **CLAIM** mid-sentence is a mention, not a label.", // 6
+    "The hook exits 0 (**CLAIM**) on every path.", // 6
     "- **CITE (partial)**: third, qualified.", // 7
     "- **CLAIM:** fourth, with a colon.", // 8
     "", // 9
@@ -63,12 +63,34 @@ test("labels: bold CLAIM/CITE at a line's start (after list or quote markers) or
   ].join("\n");
   assert.deepEqual(labels(md), [
     [3, "CLAIM", "First, block-leading."],
+    [6, "CLAIM", "The hook exits 0 (**CLAIM**) on every path."],
     [7, "CITE", "third, qualified."],
     [8, "CLAIM", "fourth, with a colon."],
     [18, "CITE", "fifth, after the fences."],
     [19, "CLAIM", "sixth, in a quote."],
     [21, "CLAIM", "seventh, a lead-in then a colon."],
   ]);
+});
+
+test("inline labels: the enclosing sentence and the next line are the statement; a label joined to another, quoted, or followed by a word about it is a mention", () => {
+  assert.deepEqual(labels("The hook never blocks (**CLAIM**)"), [[1, "CLAIM", "The hook never blocks (**CLAIM**)"]]);
+  assert.equal(missingReceipt(extractStatements("The hook never blocks (**CLAIM**)")[0]), NEEDS.CLAIM, "R2-1: an unreceipted inline label warns");
+  assert.deepEqual(labels("Under the contract, **CLAIM** and **CITE** are the only two labels."), []);
+  const receipted = extractStatements("`/abs/file.mjs:12` sets the flag (**CLAIM**).");
+  assert.deepEqual(receipted.map((s) => s.text), ["`/abs/file.mjs:12` sets the flag (**CLAIM**)."]);
+  assert.equal(missingReceipt(receipted[0]), null, "the receipt sits in the sentence");
+  assert.deepEqual(labels("Done. The hook never blocks (**CLAIM**), so the turn ends. Next sentence."), [[1, "CLAIM", "The hook never blocks (**CLAIM**), so the turn ends."]], "only the enclosing sentence");
+  assert.deepEqual(labels("- The hook never blocks, per the **CLAIM** above it."), [[1, "CLAIM", "The hook never blocks, per the **CLAIM** above it."]], "a list marker is not part of the sentence");
+  const nextLine = extractStatements("The flag is set (**CLAIM**).\nsee /abs/file.mjs:12\n\nnot part");
+  assert.deepEqual(nextLine.map((s) => s.text), ["The flag is set (**CLAIM**).\nsee /abs/file.mjs:12"]);
+  assert.equal(missingReceipt(nextLine[0]), null, "a receipt on the following line counts");
+  assert.deepEqual(labels("The flag is set (**CLAIM**).\n**CITE** b https://x.y"), [[1, "CLAIM", "The flag is set (**CLAIM**)."], [2, "CITE", "b https://x.y"]], "a following line with its own label is not taken");
+  assert.deepEqual(labels("A fact you checked carries **CLAIM** and its receipt."), [], "followed by and");
+  assert.deepEqual(labels("Label only facts. **CLAIM** needs an inspectable receipt."), [], "followed by needs");
+  assert.deepEqual(labels("The **CITE** label covers vendor behaviour."), [], "followed by label");
+  assert.deepEqual(labels("Write `**CLAIM**` before the receipt."), [], "in code");
+  assert.deepEqual(labels("Use **CLAIM**, **CITE**, or neither."), [], "a comma list");
+  assert.deepEqual(labels("Either **CLAIM**/**CITE** fits here."), [], "a slash pair");
 });
 
 test("statement end: the next label, a heading, a rule, an HTML comment, or a bold-only line; a following fence belongs to the statement; CRLF is fine", () => {

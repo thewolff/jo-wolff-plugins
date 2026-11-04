@@ -194,10 +194,13 @@ Every time the agent finishes a message, the hook reads it back (the payload's
 `last_assistant_message`, else the last assistant text in the transcript Claude Code names in the
 payload) and looks at each labelled statement. A label is `**CLAIM**` or `**CITE**` in markdown
 bold that starts a line (after any list or `>` quote marker), or that is followed by a colon or
-the end of its line; prose that mentions CLAIM casually is not a label, a bold label in the middle
-of a sentence ("**CLAIM** and **CITE** are the two labels") is a mention, not a label, and nothing
-inside a fenced code block is, at any indentation, so a quoted example never warns about itself.
-The statement is the text after the label up to the next label, a heading, a rule, a bold-only
+the end of its line; prose that mentions CLAIM casually is not a label, and nothing inside a
+fenced code block is, at any indentation, so a quoted example never warns about itself. A bold
+label inside a sentence ("The hook never blocks (**CLAIM**), …") is checked against that sentence
+and the line after it, unless it is only mentioned: joined to another label by and, or, a comma
+or a slash ("**CLAIM** and **CITE** are the two labels"), quoted or in code, or followed by a word
+about it such as label, means, is or needs. For a label that starts a line or takes a colon, the
+statement is the text after the label up to the next such label, a heading, a rule, a bold-only
 line, or a blank line, except that a fence after a blank line (a command and its output, the
 usual receipt) belongs to the statement, blank lines inside the fence included.
 
@@ -238,7 +241,8 @@ sentence says. A `fail`, or an answer that is neither pass nor fail (marked unve
 the same warning with the judge's reason when it gave one; a judge that times out, exits
 non-zero, prints no JSON, or cannot start is one line in
 `${XDG_STATE_HOME:-~/.local/state}/output-types/skipped.log` and the check goes on with the
-mechanical result. Every call is clamped to what is left of the hook's 55 s budget (the Stop
+mechanical result; so is a judge that is on with no command resolved, naming the malformed
+shared file or the places it looked. Every call is clamped to what is left of the hook's 55 s budget (the Stop
 entry in `hooks.json` has `timeout: 60`), counted from when the hook process started, before
 it read its input, so a hanging judge is killed by its own timer, never by the host. Should the
 hook's own deadline fire first anyway, the judge's process group is killed as the hook exits.

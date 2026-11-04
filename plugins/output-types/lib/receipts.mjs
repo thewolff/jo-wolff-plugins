@@ -4,17 +4,22 @@
 // appends and the config read, each a named function, so the hook test can drive every branch.
 //
 // WHAT COUNTS AS A LABEL
-//   `**CLAIM**` or `**CITE**` in markdown bold that starts a line (after any list marker or `>`
-//   quote marker: `- **CLAIM**`, `1. **CITE**`, `> **CLAIM**`), or that is followed by a colon or
+//   `**CLAIM**` or `**CITE**` in markdown bold. A block label starts a line (after any list marker
+//   or `>` quote marker: `- **CLAIM**`, `1. **CITE**`, `> **CLAIM**`), or is followed by a colon or
 //   the end of its line wherever it sits (`Result **CLAIM**: …`). A parenthesised qualifier or a
 //   trailing colon inside the bold is allowed (`**CLAIM (partial)**`, `**CITE:**`). A bold label
-//   in the middle of a sentence ("**CLAIM** and **CITE** are the two labels") is a mention, not a
-//   label; so is prose that mentions CLAIM unbolded, and so is anything inside a fenced code
-//   block: a fence (at any indentation) is masked before labels are looked for, so a quoted
-//   example of the contract never produces a warning about itself.
+//   inside a sentence is an inline label ("The hook never blocks (**CLAIM**), …"), unless it is
+//   only mentioned: joined to another label by and/or/a comma/a slash ("**CLAIM** and **CITE**
+//   are the two labels"), quoted or in code, or followed by a word about it (label, labels,
+//   means, is, are, and, or, needs, requires). Prose that mentions CLAIM unbolded is not a label,
+//   and neither is anything inside a fenced code block: a fence (at any indentation) is masked
+//   before labels are looked for, so a quoted example of the contract never warns about itself.
 //
 // WHAT THE STATEMENT IS
-//   The text after the label up to the next label, a heading, a horizontal rule, an HTML
+//   For an inline label: its enclosing sentence (from the previous `.`/`!`/`?` or the line's
+//   start to the next one or the line's end) plus the following line, unless that line is blank
+//   or holds a label of its own. For a block label: the text after the label up to the next
+//   block label, a heading, a horizontal rule, an HTML
 //   comment, a line that is only bold text (a section label), or a blank line, whichever comes
 //   first, except that a blank line followed by a fence does not end it (a fenced command and
 //   its output under the sentence is the receipt and belongs to the statement), and nothing
@@ -52,7 +57,7 @@ import { appendFileSync, mkdirSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { stateDir } from "./core.mjs";
-import { isJudgeError, resolveJudgeCommand, runJudge } from "./judge.mjs";
+import { isJudgeError, lookedIn, readSharedConfig, resolveJudgeCommand, runJudge } from "./judge.mjs";
 
 export const HOOK_FILE = "hooks/output-types-stop.mjs";
 export const JUDGE_ENV_VAR = "OUTPUT_TYPES_JUDGE_BIN";
@@ -91,12 +96,62 @@ export function maskFences(text) {
 
 const lineOf = (text, index) => text.slice(0, index).split("\n").length;
 
-/** A label match is a statement's label when it starts its line (after list or quote markers) or is followed by a colon or its line's end. */
-function isStatementLabel(masked, m) {
+/** A label match leads a block statement when it starts its line (after list or quote markers) or is followed by a colon or its line's end. */
+function isBlockLabel(masked, m) {
   const lineStart = masked.lastIndexOf("\n", m.index - 1) + 1;
   if (LINE_LEAD.test(masked.slice(lineStart, m.index))) return true;
   if (m[0].endsWith(":**")) return true;
   return /^[ \t]*(?::|\n|$)/.test(masked.slice(m.index + m[0].length));
+}
+
+/** The text between two labels that joins them into a list: `and`, `or`, a comma, a slash. */
+const JOINER = /^[ \t]*(?:,[ \t]*(?:and|or)?|and|or|\/)[ \t]*$/i;
+/** A word right after a label that makes the label the subject of the sentence, not its tag. */
+const MENTION_AFTER = /^[ \t]*(?:labels?|labelled|means|is|are|and|or|needs?|requires)\b/i;
+const QUOTE_BEFORE = /[`"'“‘]$/;
+const QUOTE_AFTER = /^[`"'”’]/;
+
+/**
+ * A label inside a sentence is a mention, not a statement's tag, when it is joined to a neighbouring
+ * label by and/or/comma/slash ("**CLAIM** and **CITE**"), quoted or in code, or followed by a word
+ * that talks about it (label, means, is, needs, …). `all` is every label match, in order.
+ */
+function isMention(masked, all, i) {
+  const m = all[i];
+  const end = m.index + m[0].length;
+  const prev = all[i - 1];
+  const next = all[i + 1];
+  if (prev && JOINER.test(masked.slice(prev.index + prev[0].length, m.index))) return true;
+  if (next && JOINER.test(masked.slice(end, next.index))) return true;
+  if (QUOTE_BEFORE.test(masked.slice(0, m.index)) || QUOTE_AFTER.test(masked.slice(end))) return true;
+  return MENTION_AFTER.test(masked.slice(end));
+}
+
+const LINE_MARKERS = /^[ \t]*(?:(?:[-*+]|\d+[.)])[ \t]+|>[ \t]*)*/;
+const HAS_LABEL = new RegExp(LABEL_RE.source);
+
+/**
+ * An inline label's statement: its enclosing sentence (from the previous `.`/`!`/`?` or the line's
+ * start to the next one or the line's end), plus the following line when it is not blank and holds
+ * no label of its own, so a receipt written under the sentence still counts.
+ */
+function inlineStatement(text, masked, m) {
+  const lineStart = masked.lastIndexOf("\n", m.index - 1) + 1;
+  const nl = masked.indexOf("\n", m.index);
+  const lineEnd = nl < 0 ? masked.length : nl;
+  let start = lineStart;
+  for (const e of masked.slice(lineStart, m.index).matchAll(/[.!?](?=\s)/g)) start = lineStart + e.index + 1;
+  const after = m.index + m[0].length;
+  const stop = masked.slice(after, lineEnd).search(/[.!?](?=\s|$)/);
+  const end = stop < 0 ? lineEnd : after + stop + 1;
+  let body = text.slice(start, end).replace(LINE_MARKERS, "").trim();
+  if (lineEnd < masked.length) {
+    const nextNl = masked.indexOf("\n", lineEnd + 1);
+    const nextEnd = nextNl < 0 ? masked.length : nextNl;
+    const following = masked.slice(lineEnd + 1, nextEnd);
+    if (following.trim() && !HAS_LABEL.test(following)) body += "\n" + text.slice(lineEnd + 1, nextEnd);
+  }
+  return body;
 }
 
 /** The first block end in masked[start, next) that is not inside a fence span, as an index; `next` when none. */
@@ -115,29 +170,36 @@ function blockEnd(masked, start, next, fences) {
 
 /**
  * Every labelled statement in `md`, in order: { label: "CLAIM"|"CITE", line, text }.
- * `text` is the statement with its receipt, as written (fences included).
+ * `text` is the statement with its receipt, as written (fences included). A block label's text
+ * follows it; an inline label's text is its enclosing sentence and the line after it.
  */
 export function extractStatements(md) {
   const text = String(md ?? "").replace(/\r\n/g, "\n");
   const masked = maskFences(text);
   const fences = [...text.matchAll(FENCE_RE)].map((f) => [f.index, f.index + f[0].length]);
-  const labels = [...masked.matchAll(LABEL_RE)].filter((m) => isStatementLabel(masked, m));
+  const all = [...masked.matchAll(LABEL_RE)];
+  const kinds = all.map((m, i) => (isBlockLabel(masked, m) ? "block" : isMention(masked, all, i) ? null : "inline"));
+  const blocks = all.filter((_, i) => kinds[i] === "block");
   const out = [];
-  for (let i = 0; i < labels.length; i++) {
-    const m = labels[i];
-    const start = m.index + m[0].length;
-    let next = i + 1 < labels.length ? labels[i + 1].index : text.length;
-    // An inline next label starts its own statement at its line: what precedes it on that line
-    // (a list marker, a lead-in) belongs to neither.
-    if (i + 1 < labels.length) {
-      const lineStart = text.lastIndexOf("\n", next - 1) + 1;
-      if (lineStart > start && masked.slice(lineStart, next).trim()) next = lineStart;
+  all.forEach((m, i) => {
+    if (!kinds[i]) return;
+    let body;
+    if (kinds[i] === "inline") body = inlineStatement(text, masked, m);
+    else {
+      const start = m.index + m[0].length;
+      const following = blocks[blocks.indexOf(m) + 1];
+      let next = following ? following.index : text.length;
+      // A next label after a lead-in starts its own statement at its line: what precedes it on
+      // that line (a list marker, a lead-in) belongs to neither.
+      if (following) {
+        const lineStart = text.lastIndexOf("\n", next - 1) + 1;
+        if (lineStart > start && masked.slice(lineStart, next).trim()) next = lineStart;
+      }
+      const end = blockEnd(masked, start, next, fences);
+      body = text.slice(start, end).replace(/^[ \t]*[:—–-]?[ \t]*/, "").trim();
     }
-    const end = blockEnd(masked, start, next, fences);
-    const body = text.slice(start, end).replace(/^[ \t]*[:—–-]?[ \t]*/, "").trim();
-    if (!body) continue;
-    out.push({ label: m[1], line: lineOf(text, m.index), text: body });
-  }
+    if (body) out.push({ label: m[1], line: lineOf(text, m.index), text: body });
+  });
   return out;
 }
 
@@ -267,18 +329,26 @@ export function logSkipped(text, env = process.env, now = new Date()) {
 
 // ─── the judge stage ────────────────────────────────────────────────────────────────────
 
+function pluginKey(env) {
+  const config = readConfig(env);
+  return {
+    envVar: JUDGE_ENV_VAR,
+    command: typeof config.judgeCommand === "string" ? config.judgeCommand : null,
+    timeoutMs: config.judgeTimeoutMs,
+    source: `judgeCommand in ${configPath(env)}`,
+  };
+}
+
 /** The judge command for this plugin, as lib/judge.mjs resolves it, or null. */
 export function judgeFor(env = process.env) {
-  const config = readConfig(env);
-  return resolveJudgeCommand({
-    pluginKey: {
-      envVar: JUDGE_ENV_VAR,
-      command: typeof config.judgeCommand === "string" ? config.judgeCommand : null,
-      timeoutMs: config.judgeTimeoutMs,
-      source: `judgeCommand in ${configPath(env)}`,
-    },
-    env,
-  });
+  return resolveJudgeCommand({ pluginKey: pluginKey(env), env });
+}
+
+/** Why judgeFor gave null, as one skipped.log line: the malformed shared file, or where it looked. */
+export function noJudgeReason(env = process.env) {
+  const { malformed } = readSharedConfig({ env });
+  if (malformed) return `judge not run: the shared judge file is malformed (${malformed}), so the legacy profile was not consulted`;
+  return `judge not run: judge is on but no command is configured; looked in: ${lookedIn({ pluginKey: pluginKey(env), env }).join(", ")}`;
 }
 
 export function judgePrompt(s) {
