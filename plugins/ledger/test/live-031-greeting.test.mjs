@@ -31,6 +31,14 @@ const CORPUS = [
   ["Why should I store this value twice?", false],
   ["Why does the hook bounce?", false],
   ["Where did the config go?", false],
+  // Codex round 2: information requests with an embedded decision word, and explanations.
+  ["Does the log say whether the build failed?", false],
+  ["Did the deployment proceed without errors?", false],
+  ["I wonder, why do you prefer this naming scheme?", false],
+  ["Do we have permission to deploy?", false],
+  ["Anything else?", false],
+  ["Why did the build fail?", false],
+  ["What does the log say?", false],
   // Decisions, permissions, confirmations and choices: a row is needed.
   ["Ready to deploy the reviewed change?", true],
   ["Would you like me to deploy the reviewed change?", true],
@@ -48,6 +56,23 @@ const CORPUS = [
   ["Okay to merge the branch now?", true],
   ["Do we keep the old name or drop it?", true],
   ["I looked at both layouts and either works. Should the runner be a separate package under plugins/, or live inside plugins/ledger?", true],
+  // Codex round 2: first-person permission, subject-based choices, confirmations.
+  ["Can I push the reviewed branch?", true],
+  ["Can we deploy this change?", true],
+  ["Should the helper use local or remote storage?", true],
+  ["Use local or remote storage?", true],
+  ["Is it safe to deploy?", true],
+  ["Want me to push?", true],
+  ["Shall I open the PR?", true],
+  ["Does that look right?", true],
+  ["Would you like me to open the PR?", true],
+  ["Should I open the PR?", true],
+  ["Is this a good time to proceed?", true],
+  ["Which option should we use?", true],
+  ["Which storage mode, local or remote?", true],
+  ["Would you prefer local or remote?", true],
+  ["Should the retry live in lib or bin?", true],
+  ["May I rename the heading to match?", true],
 ];
 
 test("B: decision corpus — information requests pass the ask rule; decisions, confirmations and choices fire it", () => {
