@@ -29,7 +29,9 @@ nothing changes.
 Fixes from review of the sources check. A source skipped because its listed command writes, or
 because research was declined for a remote-only source, is proved by its `**Local search:**` line
 marking it *unreachable* with that reason; before, the check demanded the very run the skill
-forbids. A result line now proves only the source whose whole label it carries:
+forbids. The reason has to be a stated policy reason, not a keyword: an error that contains one
+(`error writing lockfile`, `request declined: HTTP 403`) still needs the attempted call. A result
+line now proves only the source whose whole label it carries:
 `Held decisions: nothing found` no longer satisfies a `Decisions` source, and a status word inside
 a label (`Found items`) is not read as the status. The standing "Delegate the search" rule now says
 the configured sources stay in the parent session while everything else may be delegated.

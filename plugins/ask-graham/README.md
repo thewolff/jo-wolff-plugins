@@ -299,10 +299,13 @@ skill loads, verdict reply or waiting reply alike:
   with neither command nor path is proved by this line alone. Inside a code fence or a quote it
   does not count.
 
-One line proves a command or path bullet without a run: *unreachable* with a policy reason after
-it, saying the listed command writes, deletes or is destructive, or that research was declined
-(for a remote-only source after the user said no). Not running it is the skill's rule there. Any
-other *unreachable*, bare or with an error, still needs the attempted call.
+One line proves a command or path bullet without a run: *unreachable* with a stated policy reason,
+not a keyword. The reason says the listed command writes, deletes or is destructive
+(`unreachable: the command writes to the ledger`, `unreachable (would delete rows)`), or that
+research was declined (for a remote-only source after the user said no: `research declined`,
+`said no to research`). Not running it is the skill's rule there. Any other *unreachable*, bare or
+with an error, still needs the attempted call, even when the error contains such a word:
+`unreachable (error writing lockfile)` and `unreachable (request declined: HTTP 403)` are errors.
 
 Anything missing blocks the stop once, with a reason under 300 characters naming the first missing
 source, what was expected, and how many more are missing. The Local search block is enforced only

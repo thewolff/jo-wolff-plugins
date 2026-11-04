@@ -486,8 +486,20 @@ const STATUS = /\b(nothing found|found|unreachable)\b/;
 
 // A stated reason that makes not running a source the rule rather than a miss: the listed command
 // writes or deletes (SKILL.md "The sources file"), or the user declined research (step 2's "No").
-// An error such as "cannot write" is not a reason: the word must say the command itself writes.
-const POLICY_SKIP = /\b(?:writes|writing|would write|deletes|deleting|would delete|destructive|not read-only|declined|said no)\b/;
+// The reason is read clause by clause (split at brackets, commas, semicolons, colons and spaced
+// dashes). A write reason is a clause that opens, after an optional "skipped because", with the
+// command (or nothing) and then a write verb applied to it: "the command writes to the ledger",
+// "would delete rows", "destructive command". A research reason names research as declined. Words
+// inside an error never count: "error writing lockfile", "request declined: HTTP 403".
+const CLAUSE = /[(),;:[\]]|\s[-–—]\s/;
+const WRITE_REASON = new RegExp(
+  "^(?:(?:skipped|not run|unrun)\\s+)?(?:(?:because|since|as)\\s+)?" +
+  "(?:(?:the|this|its|that|listed|configured)\\s+)*(?:(?:command|cmd|cli|tool|script|query|source|it)\\s+)?" +
+  "(?:(?:writes|deletes|would (?:write|delete))\\b|(?:is\\s+)?(?:destructive|not read-only)(?:\\s+(?:command|cmd|cli|tool|script|query))?\\s*$)",
+);
+const RESEARCH_REASON = /\bresearch (?:was |is )?declined\b|\bdeclined research\b|\bsaid no to research\b/;
+const policyReason = (reason) => reason.split(CLAUSE).map((c) => c.trim())
+  .some((c) => WRITE_REASON.test(c) || RESEARCH_REASON.test(c));
 
 /**
  * The block's line for a source: each line is read as `<label>: <result>` (list marker and emphasis
@@ -506,8 +518,8 @@ export function blockLine(block, label) {
   return null;
 }
 
-// Whether a source's line marks it unreachable for a stated policy reason (POLICY_SKIP after the word).
-const policySkipped = (line) => line?.status === "unreachable" && POLICY_SKIP.test(line.reason);
+// Whether a source's line marks it unreachable for a stated policy reason (policyReason after the word).
+const policySkipped = (line) => line?.status === "unreachable" && policyReason(line.reason);
 
 /**
  * What the turn lacks of the sources proof, in order, as `{ label, expected }`: a Read of the
