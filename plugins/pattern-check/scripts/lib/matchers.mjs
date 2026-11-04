@@ -99,28 +99,31 @@ function skipDouble(s, i) {
 }
 
 /**
- * Reads one shell word at `i`: quotes removed, expansions kept raw and flagged `dynamic`. Stops
- * at a blank or an unquoted operator character. A `>` preceded by `=` or `-`, or followed by
- * `=`, is part of the word (`a->b`, `x=>y`, `pandas>=2.2.3`), as the brief for 0.3.0 asks.
+ * Reads one shell word at `i`: quotes removed, expansions kept raw and flagged `dynamic`, and
+ * `quoted` set when any part was quoted or backslash-escaped (a quoted `then` is a command name,
+ * not the keyword). Stops at a blank or an unquoted operator character. A `>` preceded by `=` or
+ * `-`, or followed by `=`, is part of the word (`a->b`, `x=>y`, `pandas>=2.2.3`), as the brief
+ * for 0.3.0 asks.
  */
 function readWord(s, i) {
   let text = "";
   let dynamic = false;
+  let quoted = false;
   const start = i;
   while (i < s.length) {
     const c = s[i];
     if (BLANK.has(c)) break;
     if (c === ">" && ((i > start && (s[i - 1] === "=" || s[i - 1] === "-")) || s[i + 1] === "=")) { text += c; i++; continue; }
     if (OPERATOR_CHARS.has(c)) break;
-    if (c === "\\") { if (s[i + 1] === "\n") { i += 2; continue; } text += s[i + 1] ?? ""; i += 2; continue; }
-    if (c === "'") { const e = s.indexOf("'", i + 1); const end = e < 0 ? s.length : e; text += s.slice(i + 1, end); i = end + 1; continue; }
-    if (c === '"') { const d = skipDouble(s, i); text += d.text; dynamic ||= d.dynamic; i = d.end; continue; }
+    if (c === "\\") { if (s[i + 1] === "\n") { i += 2; continue; } quoted = true; text += s[i + 1] ?? ""; i += 2; continue; }
+    if (c === "'") { quoted = true; const e = s.indexOf("'", i + 1); const end = e < 0 ? s.length : e; text += s.slice(i + 1, end); i = end + 1; continue; }
+    if (c === '"') { quoted = true; const d = skipDouble(s, i); text += d.text; dynamic ||= d.dynamic; i = d.end; continue; }
     if (c === "$") { const e = skipDollar(s, i); if (e > i + 1) dynamic = true; text += s.slice(i, e); i = e; continue; }
     if (c === "`") { const e = skipBacktick(s, i); dynamic = true; text += s.slice(i, e); i = e; continue; }
     text += c;
     i++;
   }
-  return { text, dynamic, end: i };
+  return { text, dynamic, quoted, end: i };
 }
 
 function skipBlanks(s, i) {
@@ -224,7 +227,7 @@ export function lex(s) {
     if (/^\d+$/.test(w.text) && (s[i] === ">" || s[i] === "<")) continue;
     if (w.text === "[[" && !w.dynamic) inTest = true;
     else if (w.text === "]]" && inTest) inTest = false;
-    cmd().push({ text: w.text, dynamic: w.dynamic });
+    cmd().push({ text: w.text, dynamic: w.dynamic, quoted: w.quoted });
   }
   return { commands: commands.filter((c) => c.length), redirects };
 }
@@ -237,21 +240,37 @@ const WRAPPER_VALUE_OPTIONS = Object.freeze({
   nice: new Set(["-n", "--adjustment"]),
   exec: new Set(["-a"]),
 });
+// Wrapper options that make the wrapper look up, list or print instead of running the rest:
+// `command -v tee a.ts` prints tee's path, `sudo -l tee` lists a permission, `env --help` prints
+// help. The words after them are not a command. (`sudo -e` edits files through sudoedit; that is
+// not one of the write forms this module reads.)
+const WRAPPER_NON_EXEC = Object.freeze({
+  command: new Set(["-v", "-V"]),
+  sudo: new Set(["-l", "--list", "-v", "--validate", "-V", "--version", "--help", "-K", "--remove-timestamp", "-e", "--edit"]),
+  env: new Set(["--help", "--version"]),
+  nice: new Set(["--help", "--version"]),
+  nohup: new Set(["--help", "--version"]),
+  time: new Set(["--help", "--version"]),
+});
 // Shell reserved words that can stand where a command name stands (`then tee x`, `! sed -i ...`).
-const CONTROL = new Set(["if", "then", "else", "elif", "do", "while", "until", "!", "{", "}", "time"]);
+// Only an unquoted, unescaped word is the keyword; `"then"` is a command name. `time` is handled
+// as a wrapper so its `-p` is skipped.
+const CONTROL = new Set(["if", "then", "else", "elif", "do", "while", "until", "!", "{", "}"]);
 
 // The words of a simple command from its command name on: assignments, control words, wrappers
-// and the wrappers' options skipped.
+// and the wrappers' options skipped. Empty when a wrapper option means nothing is run.
 function commandWords(words) {
   let k = 0;
   while (k < words.length) {
-    const w = words[k].text;
-    if (ASSIGNMENT.test(w) || CONTROL.has(w)) { k++; continue; }
+    const { text: w, quoted, dynamic } = words[k];
+    if (ASSIGNMENT.test(w) || (CONTROL.has(w) && !quoted && !dynamic)) { k++; continue; }
     if (WRAPPERS.has(w) || w === "nice") {
       const valued = WRAPPER_VALUE_OPTIONS[w] ?? new Set();
+      const nonExec = WRAPPER_NON_EXEC[w] ?? new Set();
       k++;
       while (k < words.length && words[k].text.startsWith("-")) {
         const o = words[k].text;
+        if (nonExec.has(o)) return [];
         k += o === "--" ? 1 : valued.has(o) ? 2 : 1;
         if (o === "--") break;
       }

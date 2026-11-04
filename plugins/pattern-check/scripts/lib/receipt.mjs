@@ -42,16 +42,18 @@ export const SEPARATOR = `|${"---|".repeat(BASE_COLUMNS.length + FAIL_COLUMNS.le
 const HEADER_CELL = /^new piece$/i;
 // `n/a`, `N/A`, `na`, `n.a.`, then the reason (if any) after a separator.
 const NA = /^n\/?\.?a\.?(?=$|[\s:(,;-])(.*)$/i;
-const PLACEHOLDER = /^(?:tbd|todo|unknown|n\/?\.?a\.?)$/i;
+const PLACEHOLDER = /^(?:tbd|tba|tbc|todo|fixme|unknown|n\/?\.?a\.?)$/i;
 const RESTART = /^(yes|no)\b(.*)$/i;
 
 /**
- * Whether a reason says something: not empty, not punctuation only, not a placeholder word.
- * No minimum length; `pure` is a reason.
+ * Whether a reason says something: it holds a letter or digit, and is not a placeholder word once
+ * the punctuation and Markdown around it are stripped (`TBD?`, `**TBD**`, `(todo)` are
+ * placeholders). Only the ends are stripped, and only for this check; the cell is kept as
+ * written. No minimum length: `pure` and `0` are reasons.
  */
 function substantive(reason) {
-  const r = String(reason ?? "").replace(/^[\s:,;()\-–—.]+|[\s()\-–—.,;:]+$/g, "");
-  return /[\p{L}\p{N}]/u.test(r) && !PLACEHOLDER.test(r);
+  const r = String(reason ?? "").replace(/^[^\p{L}\p{N}]+|[^\p{L}\p{N}]+$/gu, "");
+  return r !== "" && !PLACEHOLDER.test(r);
 }
 
 // Splits a row on unescaped pipes; `\|` becomes a literal pipe in the cell.
