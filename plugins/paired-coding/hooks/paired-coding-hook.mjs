@@ -32,7 +32,7 @@
 // base and prints one warning line. PreToolUse fails closed while pairing and for pair_* tools,
 // and never blocks a session that is not pairing.
 
-import { appendFileSync, closeSync, fstatSync, openSync, readFileSync, readSync, realpathSync, rmSync } from "node:fs";
+import { appendFileSync, closeSync, existsSync, fstatSync, openSync, readFileSync, readSync, realpathSync, rmSync } from "node:fs";
 import { dirname, join, relative } from "node:path";
 import { fileURLToPath } from "node:url";
 import { CARRIED_PHRASE, PAIR_TOOLS, isStopPhrase } from "../core/gate.mjs";
@@ -283,7 +283,7 @@ export function handle(event, input, opts = {}) {
     const on = activated(dir);
     const early = on ? loadStateReport(dir).fault : null;
     const notices = on ? [...takeNotices(dir), ...resolvePending(dir, { waitMs: opts.waitMs })] : [];
-    const v = verdict(name, { sessionDir: dir, allow: hostAllowFor(input), command: input?.tool_input?.command });
+    const v = verdict(name, { sessionDir: dir, allow: hostAllowFor(input), command: input?.tool_input?.command, home: env.HOME, env });
     const fault = v.degraded ?? early;
     // A state read as degraded (closed) is a fault too: warned and logged once, after the last
     // step that can throw, so the outer catch never logs it a second time.
@@ -333,11 +333,17 @@ export function handle(event, input, opts = {}) {
   if (!dir || !activated(dir)) {
     // A session that never activated pairing has nothing worth keeping in its directory (queued
     // typed input, stashed notices): at its end the directory goes. An activated session's
-    // directory stays, journal, receipt and runs being the evidence. Best effort: a directory
-    // that will not go is one warning and one errors.log line, never a failed end.
-    if (event === "session-end" && dir) {
+    // directory stays, journal, receipt and runs being the evidence. The decision is retaken
+    // under the session lock pair_start and carryInto hold while they write the activation
+    // marker, so a start that lands between the check above and the removal is kept, not
+    // deleted. A directory that is not there is left alone (the lock would create it). Best
+    // effort: a directory that will not go is one warning and one errors.log line, never a
+    // failed end.
+    if (event === "session-end" && dir && existsSync(dir)) {
       try {
-        rmSync(dir, { recursive: true, force: true });
+        withLock(dir, () => {
+          if (!activated(dir)) rmSync(dir, { recursive: true, force: true });
+        });
       } catch (err) {
         const reason = `could not remove the never-activated session directory ${dir} (${reasonOf(err)})`;
         return { systemMessage: `paired-coding: ${reason}. ${logFault(env, event, input, reason)}` };

@@ -66,9 +66,12 @@ function ioFor(dir, state) {
 /**
  * The pre-call verdict for a host tool. Inert (allow, no file touched) unless activated.
  * @param {string} toolName  the bare tool name (an adapter maps its own pair_* tool names to bare ones)
- * @param {{ sessionDir: string, allow?: string[], command?: unknown }} ctx
+ * @param {{ sessionDir: string, allow?: string[], command?: unknown, home?: string, env?: Record<string, string | undefined> }} ctx
  *   `command`: for the host's shell tool, the command it was asked to run; the one shape the
- *   gate lets through while pairing is a sibling plugin's CLI (gate.mjs siblingCliCommand)
+ *   gate lets through while pairing is a sibling plugin's CLI (gate.mjs siblingCliCommand),
+ *   installed under `home` (the process's home directory unless the adapter names one), and
+ *   only while `env` (the process's environment unless the adapter names one) carries no
+ *   node preload variable
  * @returns {{ allow: boolean, reason?: string, active: boolean, degraded?: string | null }}
  *   `degraded`: why this read took the state as closed instead of as saved, for the adapter to report
  */
@@ -76,7 +79,9 @@ export function verdict(toolName, ctx) {
   if (!ctx?.sessionDir || !activated(ctx.sessionDir)) return { allow: true, active: false };
   const { state, fault } = loadStateReport(ctx.sessionDir);
   if (state.phase === "inactive") return { allow: true, active: false };
-  const v = toolVerdict(state, { toolName, command: ctx.command }, { allow: ctx.allow ?? [], home: homedir() }, makeIo({}));
+  const home = typeof ctx.home === "string" && ctx.home ? ctx.home : homedir();
+  const env = ctx.env && typeof ctx.env === "object" ? ctx.env : process.env;
+  const v = toolVerdict(state, { toolName, command: ctx.command }, { allow: ctx.allow ?? [], home, realpath: (p) => realpathSync(p), env }, makeIo({}));
   appendJournal(ctx.sessionDir, v.journal);
   return { allow: v.allow, reason: v.reason, active: true, degraded: fault };
 }

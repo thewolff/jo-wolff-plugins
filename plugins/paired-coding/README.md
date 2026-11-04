@@ -185,14 +185,25 @@ How it works:
   accept only paths inside the open change set's boundary, and runs commands through
   `pair_run`.
 - One shell command is let through the refusal of the host's shell: a sibling plugin's CLI,
-  exactly `node <script> …` where `<script>` is an absolute path to `ledger.mjs` or
-  `pattern-check.mjs` under `~/.claude/plugins/cache/jo-wolff-plugins/` or
-  `~/.claude/plugins/marketplaces/`, with no `..` segment. The ledger and pattern-check plugins
-  end each reply with a Stop hook that demands that command, and with it refused the reply
-  could neither finish nor be let go. Only one simple command passes: anything joined to it
-  (`&&`, `;`, a pipe, a redirection, a subshell, `$…` or backquotes, a glob, an environment
-  assignment in front) is refused as before. The arguments after the script are the CLI's own
-  and are not inspected. The journal's verdict entry records the command it let through.
+  exactly `node <script> <subcommand> …` where `<script>` is an absolute path, plain characters
+  only, to `ledger.mjs` or `pattern-check.mjs` under `~/.claude/plugins/cache/jo-wolff-plugins/`
+  or `~/.claude/plugins/marketplaces/`, and `<subcommand>` is one the sibling's own hooks
+  demand: `ask`, `answer`, `note`, `outcome`, `pending` or `doctor` for the ledger, `open`,
+  `record` or `status` for pattern-check. The ledger and pattern-check plugins end each reply
+  with a Stop hook that demands such a command, and with it refused the reply could neither
+  finish nor be let go. The script has to exist and resolve (symlinks followed) to a file of
+  the same name still inside the install directory's own resolved path; `..` and `//` in the
+  spelling, a node flag before the script, and anything the shell would rewrite anywhere in
+  the command (`$…`, `~`, `{…}`, `!`, a glob, backquotes, an environment assignment in front)
+  are refused. Any other subcommand (`disable`, `init`, `config`, `canary`, `review`, …) is
+  refused by name: no hook demands it, and it may write a product `.ledger.json` or reach
+  outside the agreement. So is a call with no subcommand. Only one simple command passes:
+  anything joined to it (`&&`, `;`, a pipe, a redirection, a subshell) is refused as before.
+  The arguments after the subcommand are the CLI's own and are not inspected. The journal's
+  verdict entry records the command it let through. The gate cannot change the environment
+  the host runs the shell with, so while the hook's own environment carries `NODE_OPTIONS`,
+  `NODE_PATH` or `NODE_REPL_EXTERNAL_MODULE` (each a way to run code before the script) even
+  this command is refused, naming the variable; unset it for the session.
 - On OMP, a tool device the agent calls as `write xd://<device>` reaches the gate as the host's
   `write` tool. The gate judges by tool name and does not read the path, so while pairing every
   `xd://` device is refused like any host write ("write is the host's own mutating tool"),
@@ -230,18 +241,22 @@ How it works:
 
   `~` is the home directory at `pair_start`; a config file that is missing, unreadable, not
   JSON or has no string `db` adds nothing. A carve-out never reaches the worktree root, a
-  `.git` entry, the state directory or a protected path, and a ledger database the config
-  points inside the worktree is not carved out (a `.ledger.json` is repo content, and no repo
-  content may widen the fence); `.pattern-check` is kept only when it is not a symlink. Snapshots
-  leave `.pattern-check/` out (it is a default exclusion beside `.git`), so a receipt written
-  there is never read as drift at `pair_done`; the post-run link check still walks it, so a
-  link made there stops the session like one made in the boundary. On macOS a carve-out file
-  may be created by a run (the sidecars when absent, `.pattern-check` itself); on Linux a grant
-  needs an inode, so a carve-out that does not exist yet gets nothing: the ledger's `-wal` and
-  `-shm` sidecars when they are absent (SQLite cannot open its write-ahead log and the ledger
-  reports the database unwritable until a run outside pairing recreates them), and
-  `.pattern-check/` in a worktree where pattern-check has not run before. `pair_write` and
-  `pair_edit` grant no carve-out.
+  `.git` entry, the state directory or a protected path, and is dropped when it is at, under
+  or above any of them (a carve-out above the state directory would hand the whole directory
+  to a run), and a ledger database the config points inside the worktree is not carved out
+  (a `.ledger.json` is repo content, and no repo content may widen the fence);
+  `.pattern-check` is kept only when it is not a symlink, and under Landlock a `.git` entry
+  inside it makes the layout inexpressible (the run falls back as any inexpressible layout
+  does). `.pattern-check/` is a reserved name: this plugin does not review what lands there.
+  Snapshots leave `.pattern-check/` out (it is a default exclusion beside `.git`), so a
+  receipt written there is never read as drift at `pair_done`; the post-run link check still
+  walks it, so a link made there stops the session like one made in the boundary. On macOS a
+  carve-out file may be created by a run (the sidecars when absent, `.pattern-check` itself);
+  on Linux a grant needs an inode, so a carve-out that does not exist yet gets nothing: the
+  ledger's `-wal` and `-shm` sidecars when they are absent (SQLite cannot open its write-ahead
+  log and the ledger reports the database unwritable until a run outside pairing recreates
+  them), and `.pattern-check/` in a worktree where pattern-check has not run before.
+  `pair_write` and `pair_edit` grant no carve-out.
 - `pair_write` and `pair_edit` write inside the sandbox too, under the open profile without the
   temp directories. On macOS and under bubblewrap they write the new content to a fresh file
   beside the target and rename it over the target, keeping an existing file's permission bits.
@@ -273,7 +288,9 @@ How it works:
   outside the worktree, under `$PAIRED_CODING_STATE_DIR` (default
   `~/.local/state/paired-coding/<session-id>/`). That directory stays once the session has
   paired: it is the evidence. A session that never called `pair_start` has nothing in it worth
-  keeping (queued typed input, stashed notices), so `SessionEnd` removes it; a directory that
+  keeping (queued typed input, stashed notices), so `SessionEnd` removes it, under the same
+  session lock `pair_start` holds while it activates, looking again for the activation marker
+  once it holds the lock, so a start that lands as the session ends is kept; a directory that
   will not go is one warning and one `errors.log` line, never a failed end.
 - When the Claude Code hook itself fails (a thrown error, an unwritable state directory, stdin
   that is empty or not a hook event object), it exits 0, appends one line to

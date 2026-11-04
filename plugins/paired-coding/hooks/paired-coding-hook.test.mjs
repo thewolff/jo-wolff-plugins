@@ -98,6 +98,63 @@ test("SessionEnd removes the directory of a session that never activated pairing
   }
 });
 
+test("SessionEnd takes the session lock before removing, and keeps a directory activated while it waited", () => {
+  const f = fixture();
+  const dir = join(f.base, "s1");
+  mkdirSync(join(dir, "pending"), { recursive: true });
+  writeFileSync(join(dir, "state.json"), JSON.stringify({ phase: "inactive" }));
+  // Another process holds the lock pair_start holds while it activates: it writes the
+  // activation marker 150ms in, and lets go of the lock at 400ms. The hook's first look finds
+  // no marker; under the lock it looks again.
+  const holder = spawn(process.execPath, ["-e", `
+    const fs = require("node:fs");
+    const [dir] = process.argv.slice(1);
+    fs.mkdirSync(dir + "/lock");
+    setTimeout(() => fs.writeFileSync(dir + "/activated", ""), 150);
+    setTimeout(() => fs.rmSync(dir + "/lock", { recursive: true, force: true }), 400);
+  `, dir], { stdio: "ignore" });
+  const sleep = (ms) => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+  for (let i = 0; i < 200 && !existsSync(join(dir, "lock")); i++) sleep(10);
+  assert.equal(existsSync(join(dir, "lock")), true, "the holder took the lock");
+  const t0 = Date.now();
+  assert.equal(handle("session-end", { ...f.common }, { env: f.env }), null);
+  assert.ok(Date.now() - t0 >= 200, "the end waited for the lock");
+  assert.equal(existsSync(join(dir, "activated")), true, "the activated directory stays");
+  assert.equal(existsSync(join(dir, "state.json")), true);
+  assert.equal(existsSync(join(dir, "lock")), false, "the lock was released");
+  holder.kill();
+  // A directory that is not there is left alone: the lock would otherwise create it.
+  assert.equal(handle("session-end", { ...f.common, session_id: "s9" }, { env: f.env }), null);
+  assert.equal(existsSync(join(f.base, "s9")), false);
+});
+
+test("a lock waiter whose directory the SessionEnd cleanup removed under it makes the directory again and goes on", () => {
+  const f = fixture();
+  const dir = join(f.base, "s1");
+  mkdirSync(dir, { recursive: true });
+  writeFileSync(join(dir, "state.json"), JSON.stringify({ phase: "inactive" }));
+  // The waiter blocks on a lock this test holds; the test then does what the end does under
+  // the lock, removing the whole directory, lock included. The waiter's next mkdir of the
+  // lock fails with ENOENT (its parent is gone) and withLock makes the directory again
+  // rather than throwing.
+  mkdirSync(join(dir, "lock"));
+  const waiter = spawn(process.execPath, ["--input-type=module", "-e", `
+    import { withLock } from ${JSON.stringify(join(dirname(HOOK), "..", "lib", "host-io.mjs"))};
+    import { writeFileSync } from "node:fs";
+    const [dir] = process.argv.slice(1);
+    withLock(dir, () => { writeFileSync(dir + "/after", ""); });
+  `, dir], { stdio: "ignore" });
+  const sleep = (ms) => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+  sleep(300);
+  rmSync(dir, { recursive: true, force: true });
+  return new Promise((resolve) => waiter.on("exit", resolve)).then((code) => {
+    assert.equal(code, 0, "the waiter exited cleanly");
+    assert.equal(existsSync(join(dir, "after")), true, "the waiter ran under a fresh lock in a fresh directory");
+    assert.equal(existsSync(join(dir, "state.json")), false);
+    assert.equal(existsSync(join(dir, "lock")), false, "and released it");
+  });
+});
+
 test("the hook process prints nothing for an inactive session and exits 0", () => {
   const f = fixture();
   const r = spawnSync("node", [HOOK, "pre-tool-use"], { input: JSON.stringify({ ...f.common, tool_name: "Write", tool_use_id: tuid() }), env: { ...process.env, ...f.env }, encoding: "utf8" });
@@ -134,19 +191,40 @@ test("while pairing the hook denies host writers, shells, dispatch and unknown t
   }
 });
 
-test("while pairing the hook lets Bash run a sibling plugin's CLI from the plugin cache, and nothing joined to it", { skip: !hasSandbox }, async () => {
+test("while pairing the hook lets Bash run a sibling plugin's CLI from the plugin cache with a demanded subcommand, and nothing else, and not with a node preload variable set", { skip: !hasSandbox }, async () => {
   const f = fixture();
   await call(f, "pair_start", {});
-  const bash = (command) => handle("pre-tool-use", { ...f.common, tool_name: "Bash", tool_input: { command }, tool_use_id: tuid() }, { env: f.env });
-  const ledger = `node ${homedir()}/.claude/plugins/cache/jo-wolff-plugins/ledger/1.0.0/scripts/ledger.mjs ask "did we?"`;
-  const check = `node ${homedir()}/.claude/plugins/marketplaces/jo-wolff-plugins/plugins/pattern-check/scripts/pattern-check.mjs record --session s1`;
-  assert.equal(bash(ledger), null);
-  assert.equal(bash(check), null);
-  for (const command of [`${ledger} && rm -rf /`, "node /tmp/ledger.mjs ask x", `${ledger}; echo pwned > notes.txt`, `node ${homedir()}/.claude/plugins/cache/jo-wolff-plugins/x/evil.mjs`]) {
+  // A fake home with the two CLIs installed where Claude Code puts plugins; the hook takes HOME from its env.
+  const home = join(f.top, "home");
+  const ledger = join(home, ".claude", "plugins", "cache", "jo-wolff-plugins", "ledger", "1.0.0", "scripts", "ledger.mjs");
+  const check = join(home, ".claude", "plugins", "marketplaces", "jo-wolff-plugins", "plugins", "pattern-check", "scripts", "pattern-check.mjs");
+  for (const p of [ledger, check]) {
+    mkdirSync(dirname(p), { recursive: true });
+    writeFileSync(p, "// cli\n");
+  }
+  const bash = (command) => handle("pre-tool-use", { ...f.common, tool_name: "Bash", tool_input: { command }, tool_use_id: tuid() }, { env: { ...f.env, HOME: home } });
+  const ask = `node ${ledger} ask "did we?"`;
+  const record = `node ${check} record --session s1`;
+  assert.equal(bash(ask), null);
+  assert.equal(bash(record), null);
+  const disable = bash(`node ${ledger} disable --cwd ${f.root}`);
+  assert.equal(disable?.hookSpecificOutput?.permissionDecision, "deny");
+  assert.match(disable.hookSpecificOutput.permissionDecisionReason, /ledger\.mjs disable is refused while pairing/);
+  for (const command of [
+    `${ask} && rm -rf /`, "node /tmp/ledger.mjs ask x", `${ask}; echo pwned > notes.txt`, `node ${home}/.claude/plugins/cache/jo-wolff-plugins/x/evil.mjs ask x`,
+    `node ${home}/.claude/plugins/cache/jo-wolff-plugins/{..,x}/{..,x}/{..,x}/{..,x}/ledger.mjs ask x`, `node $HOME/.claude/plugins/cache/jo-wolff-plugins/ledger/1.0.0/scripts/ledger.mjs ask x`,
+    `node ${home}/.claude/plugins/cache/jo-wolff-plugins/ledger/9.9.9/scripts/ledger.mjs ask x`, `node --inspect ${ledger} ask x`, `node ${ledger}`,
+  ]) {
     assert.equal(bash(command)?.hookSpecificOutput?.permissionDecision, "deny", command);
   }
+  assert.equal(handle("pre-tool-use", { ...f.common, tool_name: "Bash", tool_input: { command: ask }, tool_use_id: tuid() }, { env: f.env })?.hookSpecificOutput?.permissionDecision, "deny", "the real home has no such install");
+  // The hook's own environment is the one the host's shell inherits: a node preload variable in it is refused by name.
+  const preload = handle("pre-tool-use", { ...f.common, tool_name: "Bash", tool_input: { command: ask }, tool_use_id: tuid() }, { env: { ...f.env, HOME: home, NODE_OPTIONS: "--require=/tmp/evil.js" } });
+  assert.equal(preload?.hookSpecificOutput?.permissionDecision, "deny");
+  assert.match(preload.hookSpecificOutput.permissionDecisionReason, /NODE_OPTIONS is set/);
+  assert.equal(bash(`NODE_OPTIONS=--require=/tmp/evil.js ${ask}`)?.hookSpecificOutput?.permissionDecision, "deny");
   const types = readFileSync(join(f.base, "s1", "journal.jsonl"), "utf8").trim().split("\n").map((l) => JSON.parse(l));
-  assert.deepEqual(types.filter((e) => e.siblingCli).map((e) => e.siblingCli), [ledger, check]);
+  assert.deepEqual(types.filter((e) => e.siblingCli).map((e) => e.siblingCli), [ask, record]);
 });
 
 test("while pairing, Skill loads only this plugin's own skill, in a started session and in one carried closed after /clear", { skip: !hasSandbox }, async () => {

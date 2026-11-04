@@ -401,6 +401,9 @@ export function withLock(dir, fn, { waitMs = 10000, staleMs = 15000 } = {}) {
       mkdirSync(lock);
       break;
     } catch (err) {
+      // The SessionEnd cleanup removes a never-activated directory under its lock, lock included;
+      // a waiter then finds no directory to lock in and makes it again.
+      if (err?.code === "ENOENT") { mkdirSync(dir, { recursive: true, mode: 0o700 }); continue; }
       if (err?.code !== "EEXIST") throw err;
       try {
         if (Date.now() - statSync(lock).mtimeMs > staleMs) { rmSync(lock, { recursive: true, force: true }); continue; }

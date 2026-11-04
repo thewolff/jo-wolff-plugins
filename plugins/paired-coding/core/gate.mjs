@@ -1245,18 +1245,28 @@ export function pairDone(state, args, io) {
 // ─── tool verdicts ──────────────────────────────────────────────────────────────────────
 
 /**
- * Shell metacharacters outside quotes that make a command more than one simple command, or
- * make its words depend on the shell's state: lists and pipes (`;`, `&`, `|`), redirections,
- * subshells, command substitution and expansion (`` ` ``, `$`), globs (`*`, `?`, `[`), a
- * newline, and a comment. A command with any of these is not a sibling CLI call.
+ * Shell characters that make a command more than one simple command, or make a word depend on
+ * the shell's state: lists and pipes (`;`, `&`, `|`), redirections, subshells, command
+ * substitution and expansion (`` ` ``, `$`), brace expansion (`{`, `}`), tilde expansion,
+ * history expansion (`!`), globs (`*`, `?`, `[`), a newline, and a comment. Outside single
+ * quotes any one of these refuses the command: brace and tilde expansion rewrite a path after
+ * this parser has read it, so a path that contains them is not the path bash would run.
  */
-const SHELL_META = /[;&|<>()`$*?[\n#]/;
+const SHELL_META = /[;&|<>()`$*?[\]{}~!\n#]/;
+
+/**
+ * What is refused inside double quotes: what bash still expands there (`$`, `` ` ``, `!`),
+ * plus braces and tilde so no path or argument spelling can differ from what this parser read,
+ * and a newline. Globs, pipes and the rest are literal inside double quotes and stay allowed:
+ * a ledger question is usually asked with a `?` in it.
+ */
+const DQUOTE_META = /[`$!{}~\n]/;
 
 /**
  * The words of a command that is one simple command, or null. Only quoting is honoured
- * (single, double, backslash); a word that needs the shell to expand anything is refused
- * (SHELL_META, `~`). Inside double quotes `$` and `` ` `` are still refused, and a backslash
- * escapes only what sh escapes there.
+ * (single, double, backslash). A word that needs the shell to expand anything is refused:
+ * SHELL_META anywhere outside quotes, DQUOTE_META inside double quotes, and a backslash
+ * escapes only what sh escapes inside double quotes. Single quotes are literal, as in sh.
  * @param {string} command
  * @returns {string[] | null}
  */
@@ -1269,13 +1279,16 @@ function simpleWords(command) {
     if (ch === "'") {
       const end = command.indexOf("'", i + 1);
       if (end < 0) return null;
+      word = word ?? ""; // an empty quoted word is a word: `node "" x` hands node "" as its script
       push(command.slice(i + 1, end));
       i = end;
     } else if (ch === '"') {
+      word = word ?? "";
       let j = i + 1;
       for (; j < command.length && command[j] !== '"'; j++) {
-        if (command[j] === "$" || command[j] === "`") return null;
-        if (command[j] === "\\" && j + 1 < command.length && '"\\'.includes(command[j + 1])) { push(command[j + 1]); j++; } else push(command[j]);
+        if (command[j] === "\\" && j + 1 < command.length && '"\\'.includes(command[j + 1])) { push(command[j + 1]); j++; continue; }
+        if (DQUOTE_META.test(command[j])) return null;
+        push(command[j]);
       }
       if (j >= command.length) return null;
       i = j;
@@ -1286,7 +1299,7 @@ function simpleWords(command) {
     } else if (ch === " " || ch === "\t") {
       if (word !== null) words.push(word);
       word = null;
-    } else if (SHELL_META.test(ch) || (ch === "~" && word === null)) {
+    } else if (SHELL_META.test(ch)) {
       return null;
     } else {
       push(ch);
@@ -1296,32 +1309,78 @@ function simpleWords(command) {
   return words;
 }
 
-/** The two sibling CLIs whose Stop hooks demand a run while pairing (lib/sibling-state.mjs). */
-const SIBLING_CLIS = Object.freeze(["pattern-check.mjs", "ledger.mjs"]);
+/**
+ * The two sibling CLIs whose hooks demand a run while pairing (lib/sibling-state.mjs), and for
+ * each the subcommands those hooks ask for: every one writes only the sibling's own state (the
+ * ledger's database and errors.log, pattern-check's receipt and session files). The ledger's
+ * hook texts (plugins/ledger/lib/inject.mjs, stop-rules.mjs, gate.mjs) ask for `ask`, `answer`,
+ * `note`, `outcome`, `pending` and `doctor`; its `enable`, `disable`, `init`, `config`, `canary`
+ * and `review` write a product `.ledger.json`, the plugin's own files, or reach GitHub, and no
+ * hook demands them while pairing. pattern-check's CLI has exactly `open`, `record` and
+ * `status`, all on its own state. A call with no subcommand is refused too: the ledger reads
+ * a batch from stdin then.
+ */
+const SIBLING_CLI_VERBS = Object.freeze({
+  "ledger.mjs": Object.freeze(["ask", "answer", "note", "outcome", "pending", "doctor"]),
+  "pattern-check.mjs": Object.freeze(["open", "record", "status"]),
+});
 
 /** Where an installed plugin's files live, under HOME: the two places Claude Code puts them. */
 const PLUGIN_INSTALL_DIRS = Object.freeze([".claude/plugins/cache/jo-wolff-plugins", ".claude/plugins/marketplaces"]);
 
+/** A script path as it may be spelled: absolute, plain characters only, so nothing the shell could rewrite. */
+const PLAIN_ABS_PATH = /^\/[A-Za-z0-9._/-]+$/;
+
 /**
- * Whether a host shell command is exactly a sibling plugin's CLI: one simple command whose
- * program is the word `node` and whose script is an absolute path to `pattern-check.mjs` or
- * `ledger.mjs` under one of Claude Code's plugin install directories in `home`, with no `..`
- * segment. The arguments after the script are the CLI's own and are not inspected. Anything
- * joined to it (`&&`, `;`, a pipe, a redirection, a substitution) is not that command, so a
- * run that would do more than the sibling's work is refused as before.
+ * Whether a host shell command is a sibling plugin's CLI, and whether that call is allowed.
+ * The shape: one simple command whose first word is `node`, whose second word is the script
+ * (no node flag before it), and whose script is a plain absolute path (PLAIN_ABS_PATH: no `..`
+ * segment, no `//`) to `pattern-check.mjs` or `ledger.mjs` under one of Claude Code's plugin
+ * install directories in `home`, and resolves (`realpath`, which throws when the path does not
+ * exist) to a file of the same name still under that directory's own resolved path. Anything
+ * joined to it (`&&`, `;`, a pipe, a redirection, a substitution, an expansion) is not that
+ * shape, so a run that would do more than the sibling's work is refused as before.
+ * Of that shape, only a subcommand in SIBLING_CLI_VERBS is allowed; the third word is the
+ * subcommand, and the arguments after it are the CLI's own and are not inspected.
  * @param {unknown} command
  * @param {unknown} home  the user's home directory, absolute
- * @returns {boolean}
+ * @param {(abs: string) => string} realpath  strict: throws when `abs` does not exist
+ * @returns {{ allow: true } | { allow: false, cli: string, verb: string | null } | null}
+ *   null: not a sibling CLI call at all. `allow: false`: the sibling CLI with a subcommand its
+ *   hooks never demand (`verb`), or with none.
  */
-export function siblingCliCommand(command, home) {
-  if (typeof command !== "string" || typeof home !== "string" || !isAbs(home) || home === "/") return false;
+export function siblingCliCommand(command, home, realpath) {
+  if (typeof command !== "string" || typeof home !== "string" || !isAbs(home) || home === "/" || typeof realpath !== "function") return null;
   const words = simpleWords(command);
-  if (!words || words.length < 2 || words[0] !== "node") return false;
+  if (!words || words.length < 2 || words[0] !== "node") return null;
   const script = words[1];
-  if (!isAbs(script) || script.split("/").some((seg) => seg === "..") || CONTROL.test(script)) return false;
-  if (!SIBLING_CLIS.some((cli) => script.endsWith(`/${cli}`))) return false;
-  return PLUGIN_INSTALL_DIRS.some((dir) => within(`${home}/${dir}`, script) && script !== `${home}/${dir}`);
+  if (!PLAIN_ABS_PATH.test(script) || script.includes("//") || script.split("/").some((seg) => seg === "..")) return null;
+  const name = script.slice(script.lastIndexOf("/") + 1);
+  if (!Object.hasOwn(SIBLING_CLI_VERBS, name)) return null;
+  const root = PLUGIN_INSTALL_DIRS.map((dir) => `${home}/${dir}`).find((dir) => within(dir, script) && script !== dir);
+  if (!root) return null;
+  let real, realRoot;
+  try {
+    real = realpath(script);
+    realRoot = realpath(root);
+  } catch {
+    return null;
+  }
+  const installed = typeof real === "string" && typeof realRoot === "string" && isAbs(real) && isAbs(realRoot)
+    && within(realRoot, real) && real !== realRoot && real.slice(real.lastIndexOf("/") + 1) === name;
+  if (!installed) return null;
+  const verb = words.length > 2 ? words[2] : null;
+  return verb !== null && SIBLING_CLI_VERBS[name].includes(verb) ? { allow: true } : { allow: false, cli: name, verb };
 }
+
+/**
+ * Environment variables through which node runs code before the script it was given: a
+ * `--require`/`--import` in NODE_OPTIONS, a module search path in NODE_PATH, a REPL preload.
+ * A sibling CLI run with one of them set would run that code with the host shell's rights,
+ * so the allowance refuses while any is set. The gate cannot strip them: a pre-call verdict
+ * is yes or no, and the host runs the shell with its own environment.
+ */
+export const NODE_PRELOAD_VARS = Object.freeze(["NODE_OPTIONS", "NODE_PATH", "NODE_REPL_EXTERNAL_MODULE"]);
 
 /**
  * The pre-call verdict for any host tool call. Inactive: allow everything. While pairing, an
@@ -1329,12 +1388,17 @@ export function siblingCliCommand(command, home) {
  * while open); the host's mutating tools, its code runners and sub-agent dispatch are refused;
  * anything unknown is refused. `opts.allow` adds host lifecycle tools by name, and can never
  * re-allow a mutating, dispatch or pair_* name. One shell command is allowed through the
- * refusal of the host's shell: a sibling plugin's CLI (siblingCliCommand, with `call.command`
- * and `opts.home`), because the siblings' Stop hooks demand it and refusing it deadlocked the
- * reply; the journal records the command it let through.
+ * refusal of the host's shell: a sibling plugin's CLI (siblingCliCommand, with `call.command`,
+ * `opts.home` and `opts.realpath`), because the siblings' Stop hooks demand it and refusing
+ * it deadlocked the reply; the journal records the command it let through. Even that is
+ * refused while `opts.env` carries a node preload variable (NODE_PRELOAD_VARS), named in
+ * the reason.
  * @param {State} state
  * @param {{ toolName: unknown, command?: unknown }} call
- * @param {{ allow?: string[], home?: string }} [opts]
+ * @param {{ allow?: string[], home?: string, realpath?: (abs: string) => string, env?: Record<string, string | undefined> }} [opts]
+ *   `realpath`: strict, throws when the path does not exist; without it no shell command passes.
+ *   `env`: the environment the host's shell will run with (the hook's own); without it no
+ *   shell command passes either
  * @param {Io} [io]
  * @returns {{ allow: boolean, reason?: string, journal: JournalEntry[] }}
  */
@@ -1348,7 +1412,22 @@ export function toolVerdict(state, call, opts = {}, io) {
     return pass();
   }
   if (READ_SET.has(name)) return pass();
-  if (SHELL_SET.has(name) && siblingCliCommand(call.command, opts.home)) return pass({ siblingCli: call.command });
+  if (SHELL_SET.has(name)) {
+    const sibling = siblingCliCommand(call.command, opts.home, opts.realpath);
+    if (sibling?.allow) {
+      const env = opts.env && typeof opts.env === "object" ? opts.env : null;
+      if (!env) return deny("the sibling CLI is refused while pairing: the environment the shell would run it with is unknown to the gate");
+      const preload = NODE_PRELOAD_VARS.filter((v) => typeof env[v] === "string" && env[v] !== "");
+      if (preload.length) return deny(`the sibling CLI is refused while pairing: ${preload.join(" and ")} ${preload.length === 1 ? "is" : "are"} set, and node would run what ${preload.length === 1 ? "it names" : "they name"} before the script; unset ${preload.length === 1 ? "it" : "them"} for this session`);
+      return pass({ siblingCli: call.command });
+    }
+    if (sibling) {
+      const allowed = SIBLING_CLI_VERBS[sibling.cli].join(", ");
+      return deny(!sibling.verb
+        ? `${sibling.cli} with no subcommand is refused while pairing; the shell may run it only as ${allowed}`
+        : `${sibling.cli} ${sibling.verb} is refused while pairing: its hooks never demand it, and it may write outside the agreement; the shell may run it only as ${allowed}`);
+    }
+  }
   const hostAllowed = !MUTATING_SET.has(name) && !DISPATCH_SET.has(name) && Array.isArray(opts.allow) && opts.allow.includes(name);
   if (hostAllowed) return pass();
   if (state.carried) return deny(`${name || "(unnamed tool)"} is refused: ${CARRIED_REASON}`);
@@ -1616,16 +1695,18 @@ export function boundaryRoots(state) {
 /**
  * The carve-outs a sandbox may grant, from the state's list (CarveOuts): never a path at or
  * above the worktree root (the grant would open the whole worktree), nothing at or under a
- * `.git` segment in the worktree, the state directory or a protected path. Every backend
- * reads this one function, so the three grant the same paths.
+ * `.git` segment in the worktree, and nothing at, under or above the state directory or a
+ * protected path (a grant above one would hold it: `~/.local/state/ledger` carved out with the
+ * state directory at `~/.local/state/ledger/paired/<session>` would open the state). Every
+ * backend reads this one function, so the three grant the same paths.
  * @param {State} state
  * @returns {{ files: string[], dirs: string[] }}
  */
 export function usableCarveOuts(state) {
   const root = state.root;
-  const denied = [state.stateDir, ...(state.protect ?? [])];
+  const denied = [state.stateDir, ...(state.protect ?? [])].filter(isAbs);
   const usable = (p) => {
-    if (!isAbs(p) || !isAbs(root) || within(p, root) || denied.some((d) => isAbs(d) && within(d, p))) return false;
+    if (!isAbs(p) || !isAbs(root) || within(p, root) || denied.some((d) => within(d, p) || within(p, d))) return false;
     const rel = relativeTo(root, p);
     return rel === null || !inGitDir(rel);
   };
@@ -1882,7 +1963,10 @@ export function landlockRulesFor(state, extraAllow, io) {
     rwTrees.push(t);
   }
   // Carve-outs: a rule needs an inode, so only what exists is granted; a symlink is refused
-  // as every grant through a link is, since the rule would reach what the link points at.
+  // as every grant through a link is, since the rule would reach what the link points at. A
+  // directory grant that would hold the worktree, the state directory, a protected path or a
+  // `.git` entry is not expressible (usableCarveOuts drops the first three before this; the
+  // check stays so the plan can never grant one by another route).
   const carve = usableCarveOuts(state);
   const carveFiles = [];
   const carveDirs = [];
@@ -1892,6 +1976,16 @@ export function landlockRulesFor(state, extraAllow, io) {
       const st = io.lstat(p);
       if (st?.type === "symlink") throw new Error(`${p} is a symlink; pair_run grants only paths that are what they name`);
       if (st?.type === type) list.push(p);
+    }
+  }
+  for (const d of carveDirs) {
+    if (within(d, root)) return { notExpressible: `the carve-out ${d} holds the worktree, and Landlock cannot fence the worktree inside it` };
+    const held = denied.find((x) => within(d, x));
+    if (held) return { notExpressible: `the carve-out ${d} holds ${held}, which Landlock cannot fence inside it` };
+    if (within(root, d)) {
+      for (const e of io.walk(d)) {
+        if (e.path.split("/").at(-1).toLowerCase() === ".git") return { notExpressible: `the carve-out ${relativeTo(root, d)} holds ${relativeTo(root, e.path)}, and Landlock cannot fence it inside the grant` };
+      }
     }
   }
   const carveSet = new Set(carveDirs);

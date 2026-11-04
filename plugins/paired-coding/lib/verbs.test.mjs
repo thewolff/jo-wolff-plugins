@@ -318,17 +318,36 @@ test("a link made under .pattern-check stops the session like one made in the bo
   assert.ok(r.text.includes(".pattern-check/ln"), r.text);
 });
 
-test("the host shell may run a sibling plugin's CLI while pairing, and nothing joined to it", { skip: !hasSandbox }, async () => {
+test("the host shell may run a sibling plugin's installed CLI with a demanded subcommand while pairing, and nothing else, and not under a node preload variable", { skip: !hasSandbox }, async () => {
   const f = fixture();
   await executeVerb("pair_start", {}, f.ctx);
-  const ledger = `node ${homedir()}/.claude/plugins/cache/jo-wolff-plugins/ledger/1.0.0/scripts/ledger.mjs ask x`;
-  const check = `node ${homedir()}/.claude/plugins/marketplaces/jo-wolff-plugins/plugins/pattern-check/scripts/pattern-check.mjs record`;
-  assert.equal(verdict("Bash", { sessionDir: f.dir, command: ledger }).allow, true);
-  assert.equal(verdict("bash", { sessionDir: f.dir, command: check }).allow, true);
-  assert.equal(verdict("Bash", { sessionDir: f.dir, command: `${ledger} && rm -rf /` }).allow, false);
-  assert.equal(verdict("Bash", { sessionDir: f.dir, command: "node /tmp/ledger.mjs" }).allow, false);
-  assert.equal(verdict("Bash", { sessionDir: f.dir }).allow, false);
-  assert.equal(verdict("Write", { sessionDir: f.dir, command: ledger }).allow, false);
+  const home = join(f.top, "home");
+  const script = join(home, ".claude", "plugins", "cache", "jo-wolff-plugins", "ledger", "1.0.0", "scripts", "ledger.mjs");
+  const check = join(home, ".claude", "plugins", "marketplaces", "jo-wolff-plugins", "plugins", "pattern-check", "scripts", "pattern-check.mjs");
+  for (const p of [script, check]) {
+    mkdirSync(join(p, ".."), { recursive: true });
+    writeFileSync(p, "// cli\n");
+  }
+  const v = (toolName, command, env = { HOME: home }) => verdict(toolName, { sessionDir: f.dir, command, home, env });
+  assert.equal(v("Bash", `node ${script} ask x`).allow, true);
+  assert.equal(v("bash", `node ${check} record`).allow, true);
+  const disable = v("Bash", `node ${script} disable`);
+  assert.equal(disable.allow, false);
+  assert.match(disable.reason, /ledger\.mjs disable is refused/);
+  assert.equal(v("Bash", `node ${script} ask x && rm -rf /`).allow, false);
+  assert.equal(v("Bash", "node /tmp/ledger.mjs ask x").allow, false);
+  assert.equal(v("Bash", `node ${home}/.claude/plugins/cache/jo-wolff-plugins/{..,x}/{..,x}/{..,x}/{..,x}/ledger.mjs ask x`).allow, false);
+  assert.equal(v("Bash", `node ${join(home, ".claude", "plugins", "cache", "jo-wolff-plugins", "ledger", "missing", "ledger.mjs")} ask x`).allow, false, "the script has to exist");
+  // A symlink inside the install that points outside it is refused by its real path.
+  symlinkSync(join(f.top, "ledger.db"), join(home, ".claude", "plugins", "cache", "jo-wolff-plugins", "ledger.mjs"));
+  writeFileSync(join(f.top, "ledger.db"), "x");
+  assert.equal(v("Bash", `node ${join(home, ".claude", "plugins", "cache", "jo-wolff-plugins", "ledger.mjs")} ask x`).allow, false);
+  assert.equal(v("Bash", undefined).allow, false);
+  assert.equal(v("Write", `node ${script} ask x`).allow, false);
+  const preload = v("Bash", `node ${script} ask x`, { HOME: home, NODE_PATH: "/tmp/evil" });
+  assert.equal(preload.allow, false);
+  assert.match(preload.reason, /NODE_PATH is set/);
+  assert.equal(verdict("Bash", { sessionDir: f.dir, command: `node ${script} ask x` }).allow, false, "the process's own home has no such install");
 });
 
 test("pair_run times out and kills its whole process group", { skip: !hasSandbox }, async () => {

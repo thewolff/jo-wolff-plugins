@@ -1794,6 +1794,17 @@ describe("carve-outs: the state carries them and the profile grants them in both
     assert.deepEqual(usableCarveOuts(s), { files: [LEDGER_DB, `${ROOT}/x.db`], dirs: [`${ROOT}/.pattern-check`] });
   });
 
+  test("a carve-out above the state directory or a protected path is dropped too: a grant above would hold it", () => {
+    const s = ok(pairStart(inactiveState(), {
+      root: ROOT, stateDir: "/home/example/.local/state/ledger/paired/s1", protect: ["/home/example/.local/state/pattern-check/plug"],
+      carveOuts: {
+        files: ["/home/example/.local/state/ledger/paired/s1", "/home/example/.local/state/x.db"],
+        dirs: ["/home/example/.local/state/ledger", "/home/example/.local/state/pattern-check", "/home/example/.local/state", "/home/example", "/", "/home/example/.local/state/other"],
+      },
+    }, fakeHost().io));
+    assert.deepEqual(usableCarveOuts(s), { files: ["/home/example/.local/state/x.db"], dirs: ["/home/example/.local/state/other"] });
+  });
+
   test("the closed profile allows the carve-outs after the worktree deny and before the .git and state denies", () => {
     const p = pairRunProfile(carvedState("closed"));
     const allow = `(allow file-write* (literal "${LEDGER_DB}") (literal "${LEDGER_DB}-wal") (literal "${LEDGER_DB}-shm") (subpath "${ROOT}/.pattern-check") (subpath "${HOME}/.local/state/ledger") (subpath "${HOME}/.local/state/pattern-check"))`;
@@ -1821,44 +1832,93 @@ describe("carve-outs: the state carries them and the profile grants them in both
 });
 
 describe("the sibling CLI allowance through the host shell", () => {
-  const CACHE = `${HOME}/.claude/plugins/cache/jo-wolff-plugins/ledger/1.2.0/scripts/ledger.mjs`;
-  const MARKET = `${HOME}/.claude/plugins/marketplaces/jo-wolff-plugins/plugins/pattern-check/scripts/pattern-check.mjs`;
+  const CACHE_ROOT = `${HOME}/.claude/plugins/cache/jo-wolff-plugins`;
+  const MARKET_ROOT = `${HOME}/.claude/plugins/marketplaces`;
+  const CACHE = `${CACHE_ROOT}/ledger/1.2.0/scripts/ledger.mjs`;
+  const MARKET = `${MARKET_ROOT}/jo-wolff-plugins/plugins/pattern-check/scripts/pattern-check.mjs`;
+  // A strict realpath over a fake install: the two roots and the two scripts exist, plus a
+  // symlink inside the cache that points outside it.
+  const ESCAPE = `${CACHE_ROOT}/ledger/escape/ledger.mjs`;
+  const realpath = (p) => {
+    const real = { [CACHE_ROOT]: CACHE_ROOT, [MARKET_ROOT]: MARKET_ROOT, [CACHE]: CACHE, [MARKET]: MARKET, [ESCAPE]: "/tmp/elsewhere/ledger.mjs", [`${CACHE_ROOT}/ledger/renamed.mjs`]: CACHE };
+    if (!(p in real)) throw Object.assign(new Error(`ENOENT ${p}`), { code: "ENOENT" });
+    return real[p];
+  };
+  const sibling = (cmd, home = HOME, rp = realpath) => siblingCliCommand(cmd, home, rp);
+  const ALLOWED = { allow: true };
 
-  test("exactly node <installed script> <args> passes, with quoted arguments", () => {
-    assert.equal(siblingCliCommand(`node ${CACHE} ask x`, HOME), true);
-    assert.equal(siblingCliCommand(`node ${MARKET} record --session abc`, HOME), true);
-    assert.equal(siblingCliCommand(`node ${CACHE} ask "what about it?" 'and this'`, HOME), true);
-    assert.equal(siblingCliCommand(`  node   ${CACHE}\tnote 'a; b && c'  `, HOME), true);
-    assert.equal(siblingCliCommand(`node ${CACHE}`, HOME), true);
+  test("exactly node <installed script> <allowed subcommand> <args> passes, with quoted arguments", () => {
+    assert.deepEqual(sibling(`node ${CACHE} ask x`), ALLOWED);
+    assert.deepEqual(sibling(`node ${MARKET} record --session abc`), ALLOWED);
+    assert.deepEqual(sibling(`node ${CACHE} ask "what about it?" 'and this'`), ALLOWED);
+    assert.deepEqual(sibling(`  node   ${CACHE}\tnote 'a; b && c {x,y} $HOME ~ !'  `), ALLOWED);
+    for (const verb of ["ask", "answer", "note", "outcome", "pending", "doctor"]) assert.deepEqual(sibling(`node ${CACHE} ${verb}`), ALLOWED, verb);
+    for (const verb of ["open", "record", "status"]) assert.deepEqual(sibling(`node ${MARKET} ${verb} x`), ALLOWED, verb);
   });
 
-  test("anything joined to it, or depending on the shell, is refused", () => {
+  test("brace expansion in the script path is refused: bash would rewrite it to a path outside the install", () => {
+    assert.equal(sibling(`node ${CACHE_ROOT}/{..,x}/{..,x}/{..,x}/{..,x}/ledger.mjs ask x`), null);
+    assert.equal(sibling(`node ${CACHE_ROOT}/ledger/{1.2.0,x}/scripts/ledger.mjs ask x`), null);
+    assert.equal(sibling(`node "${CACHE_ROOT}/{..,x}/ledger.mjs" ask x`), null);
+  });
+
+  test("a shell variable, tilde, history or substitution anywhere in a word is refused, in double quotes too", () => {
+    for (const cmd of [
+      `node $HOME/.claude/plugins/cache/jo-wolff-plugins/ledger/1.2.0/scripts/ledger.mjs ask x`, `node \${HOME}/.claude/plugins/cache/jo-wolff-plugins/ledger/1.2.0/scripts/ledger.mjs ask x`,
+      `node ~/.claude/plugins/cache/jo-wolff-plugins/ledger/1.2.0/scripts/ledger.mjs ask x`, `node ${CACHE_ROOT}/~x/ledger.mjs ask x`,
+      `node ${CACHE} ask "$HOME"`, `node ${CACHE} ask "\`id\`"`, `node ${CACHE} ask "!!"`, `node ${CACHE} ask !x`, `node ${CACHE} ask x~`, `node ${CACHE} ask "{a,b}"`,
+      `node ${CACHE} ask $(whoami)`, "node " + CACHE + " ask `id`", `node ${CACHE} ask *`, `node ${CACHE} ask x]`,
+    ]) assert.equal(sibling(cmd), null, cmd);
+  });
+
+  test("anything joined to it, or more than one simple command, is refused", () => {
     for (const cmd of [
       `node ${CACHE} ask x && rm -rf /`, `node ${CACHE} ask x; rm -rf /`, `node ${CACHE} ask x | sh`, `node ${CACHE} ask x > /etc/passwd`,
-      `node ${CACHE} ask x < /dev/null`, `true && node ${CACHE} ask x`, `node ${CACHE} ask $(whoami)`, "node " + CACHE + " ask `id`",
-      `node ${CACHE} ask "$HOME"`, `node ${CACHE} ask x\nrm -rf /`, `node ${CACHE} ask x # comment`, `node ${CACHE} ask *`, `(node ${CACHE} ask x)`,
-      `node ${CACHE} ask 'unterminated`, `node ${CACHE} ask x\\`, `X=1 node ${CACHE} ask x`, `node ~/.claude/plugins/cache/jo-wolff-plugins/ledger/scripts/ledger.mjs ask x`,
-    ]) assert.equal(siblingCliCommand(cmd, HOME), false, cmd);
+      `node ${CACHE} ask x < /dev/null`, `true && node ${CACHE} ask x`, `node ${CACHE} ask x\nrm -rf /`, `node ${CACHE} ask x # comment`, `(node ${CACHE} ask x)`,
+      `node ${CACHE} ask 'unterminated`, `node ${CACHE} ask x\\`, `X=1 node ${CACHE} ask x`,
+    ]) assert.equal(sibling(cmd), null, cmd);
   });
 
-  test("the script has to be a sibling CLI installed under the plugin directories, by its real path", () => {
+  test("the first word is node, the second is the script: a node flag, an empty word, another runtime or a bare script is refused", () => {
+    for (const cmd of [`node --inspect ${CACHE} ask x`, `node -e x ${CACHE}`, `node --import=/tmp/evil.mjs ${CACHE} ask x`, `node "" ${CACHE} ask x`, `node '' ${CACHE} ask x`, `/usr/bin/node ${CACHE} ask x`, `nodejs ${CACHE} ask x`, `bun ${CACHE} ask x`, `${CACHE} ask x`, "node", ""]) {
+      assert.equal(sibling(cmd), null, cmd);
+    }
+    assert.deepEqual(sibling(`node ${CACHE} "" ask x`), { allow: false, cli: "ledger.mjs", verb: "" }, "an empty subcommand is a subcommand no hook demands");
+    assert.deepEqual(sibling(`node ${CACHE} ask ""`), ALLOWED, "an empty argument after the subcommand is the CLI's own");
+  });
+
+  test("the script is a plain absolute path to an installed sibling CLI, by its real path", () => {
     for (const cmd of [
-      "node /tmp/ledger.mjs ask x", `node ${HOME}/ledger.mjs`, `node ${HOME}/.claude/plugins/cache/other/ledger.mjs`, `node ${HOME}/.claude/plugins/cache/jo-wolff-plugins/x/evil.mjs`,
-      `node ${HOME}/.claude/plugins/cache/jo-wolff-plugins/../../../tmp/ledger.mjs`, `node ${HOME}/.claude/plugins/cache/jo-wolff-plugins`, `node ${HOME}/.claude/plugins/cache/jo-wolff-plugins/ledger.mjs.bak`,
-      `node ${HOME}/.claude/plugins/cache/jo-wolff-plugins-evil/ledger.mjs`, `/usr/bin/node ${CACHE}`, `nodejs ${CACHE}`, `bun ${CACHE}`, `${CACHE} ask x`, "node", "",
-    ]) assert.equal(siblingCliCommand(cmd, HOME), false, cmd);
-    assert.equal(siblingCliCommand(`node ${CACHE} ask x`, "/"), false);
-    assert.equal(siblingCliCommand(`node ${CACHE} ask x`, undefined), false);
-    assert.equal(siblingCliCommand(`node ${CACHE} ask x`, "Users/example"), false);
-    assert.equal(siblingCliCommand(undefined, HOME), false);
+      "node /tmp/ledger.mjs ask x", `node ${HOME}/ledger.mjs ask x`, `node ${HOME}/.claude/plugins/cache/other/ledger.mjs ask x`, `node ${CACHE_ROOT}/x/evil.mjs ask x`,
+      `node ${CACHE_ROOT}/../../../tmp/ledger.mjs ask x`, `node ${CACHE_ROOT} ask x`, `node ${CACHE_ROOT}/ledger.mjs.bak ask x`, `node ${CACHE_ROOT}-evil/ledger.mjs ask x`,
+      `node ${CACHE_ROOT}//ledger/1.2.0/scripts/ledger.mjs ask x`, `node ${CACHE_ROOT}/ledger/1.2.0/scripts/%2e/ledger.mjs ask x`,
+      `node ${CACHE_ROOT}/ledger/9.9.9/scripts/ledger.mjs ask x`, `node ${ESCAPE} ask x`, `node ${CACHE_ROOT}/ledger/renamed.mjs ask x`,
+    ]) assert.equal(sibling(cmd), null, cmd);
+    assert.equal(sibling(`node ${CACHE} ask x`, "/"), null);
+    assert.equal(sibling(`node ${CACHE} ask x`, null), null);
+    assert.equal(sibling(`node ${CACHE} ask x`, "Users/example"), null);
+    assert.equal(sibling(`node ${CACHE} ask x`, HOME, null), null, "no realpath, no allowance");
+    assert.equal(sibling(`node ${CACHE} ask x`, HOME, () => { throw new Error("EACCES"); }), null);
+    assert.equal(sibling(`node ${CACHE} ask x`, HOME, () => "/tmp/x/ledger.mjs"), null, "realpath outside the install");
+    assert.equal(sibling(undefined), null);
   });
 
-  test("toolVerdict lets the shell run a sibling CLI while pairing, closed, open and carried, and journals the command", () => {
+  test("a sibling CLI with a subcommand its hooks never demand is refused by name, and so is one with none", () => {
+    for (const verb of ["disable", "enable", "init", "canary", "gate", "config", "review", "help", "--cwd", "ASK"]) {
+      assert.deepEqual(sibling(`node ${CACHE} ${verb} install --cwd /work/repo`), { allow: false, cli: "ledger.mjs", verb }, verb);
+    }
+    assert.deepEqual(sibling(`node ${CACHE} --cwd /tmp disable`), { allow: false, cli: "ledger.mjs", verb: "--cwd" });
+    assert.deepEqual(sibling(`node ${CACHE}`), { allow: false, cli: "ledger.mjs", verb: null });
+    assert.deepEqual(sibling(`node ${MARKET}`), { allow: false, cli: "pattern-check.mjs", verb: null });
+    assert.deepEqual(sibling(`node ${MARKET} ask x`), { allow: false, cli: "pattern-check.mjs", verb: "ask" });
+  });
+
+  test("toolVerdict lets the shell run an allowed sibling CLI call while pairing, closed, open and carried, and journals the command", () => {
     const host = fakeHost();
     const cmd = `node ${CACHE} ask x`;
     for (const s of [started(host), carvedState("open"), { ...started(host), carried: { from: "s0", reason: "clear", at: "t" } }]) {
       for (const toolName of ["bash", "Bash"]) {
-        const v = toolVerdict(s, { toolName, command: cmd }, { home: HOME }, host.io);
+        const v = toolVerdict(s, { toolName, command: cmd }, { home: HOME, realpath, env: { HOME, PATH: "/usr/bin" } }, host.io);
         assert.equal(v.allow, true, toolName);
         assert.equal(v.journal[0].type, "verdict");
         assert.equal(v.journal[0].siblingCli, cmd);
@@ -1866,18 +1926,49 @@ describe("the sibling CLI allowance through the host shell", () => {
     }
   });
 
-  test("toolVerdict still refuses the shell for everything else, and never for other tools", () => {
+  test("toolVerdict refuses a disallowed subcommand with its name in the reason, the shell for everything else, and never allows other tools", () => {
     const host = fakeHost();
     const s = started(host);
     const cmd = `node ${CACHE} ask x`;
+    const disable = toolVerdict(s, { toolName: "Bash", command: `node ${CACHE} disable --cwd /work/repo` }, { home: HOME, realpath, env: {} }, host.io);
+    assert.equal(disable.allow, false);
+    assert.match(disable.reason, /^ledger\.mjs disable is refused while pairing/);
+    assert.match(disable.reason, /ask, answer, note, outcome, pending, doctor/);
+    assert.equal(disable.journal[0].type, "refusal");
+    const bare = toolVerdict(s, { toolName: "Bash", command: `node ${MARKET}` }, { home: HOME, realpath, env: {} }, host.io);
+    assert.match(bare.reason, /^pattern-check\.mjs with no subcommand is refused/);
     for (const [toolName, command] of [
-      ["Bash", `${cmd} && rm -rf /`], ["bash", "node /tmp/ledger.mjs"], ["Bash", undefined], ["Bash", 42],
+      ["Bash", `${cmd} && rm -rf /`], ["bash", "node /tmp/ledger.mjs ask x"], ["Bash", `node ${CACHE_ROOT}/{..,x}/{..,x}/{..,x}/{..,x}/ledger.mjs ask x`], ["Bash", undefined], ["Bash", 42],
       ["write", cmd], ["Edit", cmd], ["eval", cmd], ["Task", cmd], ["unknown_tool", cmd],
     ]) {
-      const v = toolVerdict(s, { toolName, command }, { home: HOME }, host.io);
+      const v = toolVerdict(s, { toolName, command }, { home: HOME, realpath, env: {} }, host.io);
       assert.equal(v.allow, false, `${toolName}: ${command}`);
+      assert.doesNotMatch(v.reason, /subcommand/, "not a sibling CLI call, so the generic refusal");
     }
-    assert.equal(toolVerdict(s, { toolName: "Bash", command: cmd }, {}, host.io).allow, false, "no home, no allowance");
+    assert.equal(toolVerdict(s, { toolName: "Bash", command: cmd }, { realpath, env: {} }, host.io).allow, false, "no home, no allowance");
+    assert.equal(toolVerdict(s, { toolName: "Bash", command: cmd }, { home: HOME, env: {} }, host.io).allow, false, "no realpath, no allowance");
+  });
+
+  test("toolVerdict refuses an allowed sibling CLI call while a node preload variable is set, naming it, and without an env at all", () => {
+    const host = fakeHost();
+    const s = started(host);
+    const cmd = `node ${CACHE} ask x`;
+    for (const name of ["NODE_OPTIONS", "NODE_PATH", "NODE_REPL_EXTERNAL_MODULE"]) {
+      const v = toolVerdict(s, { toolName: "Bash", command: cmd }, { home: HOME, realpath, env: { HOME, [name]: "--require=/tmp/evil.js" } }, host.io);
+      assert.equal(v.allow, false, name);
+      assert.ok(v.reason.includes(`${name} is set`), v.reason);
+      assert.equal(v.journal[0].type, "refusal");
+    }
+    const two = toolVerdict(s, { toolName: "Bash", command: cmd }, { home: HOME, realpath, env: { NODE_OPTIONS: "--require=x", NODE_PATH: "/tmp" } }, host.io);
+    assert.ok(two.reason.includes("NODE_OPTIONS and NODE_PATH are set"), two.reason);
+    assert.equal(toolVerdict(s, { toolName: "Bash", command: cmd }, { home: HOME, realpath, env: { NODE_OPTIONS: "" } }, host.io).allow, true, "an empty variable carries nothing");
+    assert.equal(toolVerdict(s, { toolName: "Bash", command: cmd }, { home: HOME, realpath, env: { NODE_OPTIONS: undefined } }, host.io).allow, true);
+    const none = toolVerdict(s, { toolName: "Bash", command: cmd }, { home: HOME, realpath }, host.io);
+    assert.equal(none.allow, false, "no env, no allowance");
+    assert.match(none.reason, /environment .* is unknown to the gate/);
+    for (const command of [`NODE_OPTIONS=--require=/tmp/x.js node ${CACHE} ask x`, `env NODE_OPTIONS=--require=/tmp/x.js node ${CACHE} ask x`, `node --require /tmp/x.js ${CACHE} ask x`, `node --import=/tmp/x.mjs ${CACHE} ask x`]) {
+      assert.equal(toolVerdict(s, { toolName: "Bash", command }, { home: HOME, realpath, env: {} }, host.io).allow, false, command);
+    }
   });
 });
 

@@ -170,6 +170,14 @@ describe("bwrapArgsFor binds the carve-outs (sibling-plugin state) in both phase
     assert.deepEqual([...plan.writable].sort(), [DB, RECEIPTS].sort());
   });
 
+  test("a carve-out above the state directory or a protected path is never bound: the bind would hold it", () => {
+    const stateDir = `${STATE_LEDGER}/paired/s1`;
+    const io = fakeFs([...BASE_DIRS, ...HOME_DIRS, RECEIPTS, `${STATE_LEDGER}/paired`, stateDir, `${HOME}/.local/state/pattern-check`, `${HOME}/.local/state/pattern-check/plug`], [...BASE_FILES, DB, `${stateDir}/state.json`]);
+    const plan = bwrapArgsFor({ ...open([]), phase: "closed", changeSet: null, stateDir, protect: [`${HOME}/.local/state/pattern-check/plug`], carveOuts }, [], io, "fresh");
+    assert.deepEqual([...plan.writable].sort(), [DB, RECEIPTS].sort());
+    assert.equal(binds(plan.args, "--bind").includes(STATE_LEDGER), false);
+  });
+
   test("a .git entry under a carve-out bind is bound read-only over it; pair_write's plan binds no carve-out", () => {
     const io = fakeFs([...BASE_DIRS, ...HOME_DIRS, RECEIPTS, `${RECEIPTS}/.git`], [...BASE_FILES, DB]);
     const plan = bwrapArgsFor({ ...open([]), phase: "closed", changeSet: null, carveOuts }, [], io, "fresh");

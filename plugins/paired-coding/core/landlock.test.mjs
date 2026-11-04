@@ -302,6 +302,23 @@ describe("landlockRulesFor grants the carve-outs (sibling-plugin state) in both 
     assert.throws(() => landlockRulesFor({ ...open([]), phase: "closed", changeSet: null, carveOuts }, [], io), /symlink/);
   });
 
+  test("a carve-out above the state directory or a protected path is never granted: the grant would hold it", () => {
+    const stateDir = `${STATE_LEDGER}/paired/s1`;
+    const io = fakeFs([...BASE_DIRS, ...HOME_DIRS, RECEIPTS, `${STATE_LEDGER}/paired`, stateDir, `${HOME}/.local/state/pattern-check`, `${HOME}/.local/state/pattern-check/plug`], [...BASE_FILES, DB, `${stateDir}/state.json`]);
+    const rules = landlockRulesFor({ ...open([]), phase: "closed", changeSet: null, stateDir, protect: [`${HOME}/.local/state/pattern-check/plug`], carveOuts }, [], io);
+    assert.deepEqual(rules, { files: [...DEVICES, DB], dirs: [{ path: RECEIPTS, make_dir: true, remove: true }], rw_trees: [] });
+    const openRules = landlockRulesFor(open(["src/a.ts"], { stateDir, protect: [`${HOME}/.local/state/pattern-check/plug`], carveOuts }), [], io);
+    assert.deepEqual(openRules.dirs, [{ path: RECEIPTS, make_dir: true, remove: true }]);
+  });
+
+  test("a .git entry inside the receipt directory makes the ruleset not expressible, in both phases", () => {
+    const io = fakeFs([...BASE_DIRS, ...HOME_DIRS, RECEIPTS, `${RECEIPTS}/nested`, `${RECEIPTS}/nested/.git`], [...BASE_FILES, DB]);
+    const closed = landlockRulesFor({ ...open([]), phase: "closed", changeSet: null, carveOuts }, [], io);
+    assert.match(closed.notExpressible, /\.pattern-check holds \.pattern-check\/nested\/\.git/);
+    const opened = landlockRulesFor(open(["src/a.ts"], { carveOuts }), [], io);
+    assert.match(opened.notExpressible, /\.pattern-check holds/);
+  });
+
   test("a carve-out directory under a boundary grant is folded into it; pair_write's ruleset grants no carve-out", () => {
     const io = fakeFs([...BASE_DIRS, ...HOME_DIRS, `${ROOT}/lib`, `${ROOT}/lib/.pattern-check`], [...BASE_FILES, DB, `${ROOT}/lib/l.mjs`]);
     const inside = { files: [], dirs: [`${ROOT}/lib/.pattern-check`] };
