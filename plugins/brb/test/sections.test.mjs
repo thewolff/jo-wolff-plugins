@@ -5,13 +5,15 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { ON_FIRE, normalizeLine, splitNeedsYou } from "../lib/sections.mjs";
+import { ON_FIRE, fireText, normalizeLine, splitNeedsYou } from "../lib/sections.mjs";
 import { surfaceWord } from "../lib/text.mjs";
 
 const body = (heading) => `Did the work.\n\n${heading}\n- Pick Redis or in-process for the cache\n- Approve the schema change\n\n## Next\n- more work`;
 
-test("heading variants open the section: ##, ###, bold, bold with colon, plain with colon, any case", () => {
-  for (const h of ["## Needs you", "### Needs you", "**Needs you**", "**Needs you:**", "**Needs you**:", "Needs you:", "## NEEDS YOU", "# needs you"]) {
+test("heading variants open the section: ##, ###, bold, bold with colon, plain with colon, any case, counts, numbers, emoji", () => {
+  const forms = ["## Needs you", "### Needs you", "**Needs you**", "**Needs you:**", "**Needs you**:", "Needs you:", "## NEEDS YOU", "# needs you"];
+  forms.push("## Needs you (2)", "**Needs you** — 2 items", "1. **Needs you**", "### 🔴 Needs you", "🙋 **Needs you**", "## Needs you 2");
+  for (const h of forms) {
     const r = splitNeedsYou(body(h));
     assert.deepEqual(r.held, ["- Pick Redis or in-process for the cache", "- Approve the schema change"], h);
     assert.equal(r.section, "- Pick Redis or in-process for the cache\n- Approve the schema change", h);
@@ -58,11 +60,13 @@ test("closing ask: inline line, bold inline, or its own section; the section for
   assert.deepEqual(r.held, ["- a"], "the closing-ask section is not held");
 });
 
-test("idle line: only as the last non-blank line; the reason is captured; bare idle: is empty", () => {
+test("idle line: among the last five non-blank lines; the reason is captured; bare idle: is empty", () => {
   assert.equal(splitNeedsYou("Nothing left.\n\nidle: every item waits on the cache choice\n\n").idle, "every item waits on the cache choice");
   assert.equal(splitNeedsYou("**idle:** waiting").idle, "waiting");
   assert.equal(splitNeedsYou("idle:").idle, "");
-  assert.equal(splitNeedsYou("idle: early\nthen more work").idle, null);
+  assert.equal(splitNeedsYou("## Needs you\n- x\n\nidle: waiting on cache\n\nClosing ask: Redis or in-process?").idle, "waiting on cache", "a closing ask may follow");
+  assert.equal(splitNeedsYou("idle: early\n1\n2\n3\n4\n5").idle, null, "six lines from the end is too early");
+  assert.equal(splitNeedsYou("idle: early\n1\n2\n3\n4").idle, "early");
   const r = splitNeedsYou("## Needs you\n- a\nidle: nothing runnable");
   assert.equal(r.idle, "nothing runnable");
   assert.deepEqual(r.held, ["- a"], "the idle line is not an ask");
@@ -91,4 +95,35 @@ test("surfaceWord: brb with or without a note, back, pending, case-insensitive; 
   assert.equal(surfaceWord("I'll brb"), null);
   assert.equal(surfaceWord(""), null);
   assert.equal(surfaceWord(undefined), null);
+  assert.deepEqual(surfaceWord("Back."), { word: "back", note: "" });
+  assert.deepEqual(surfaceWord("back!"), { word: "back", note: "" });
+  assert.deepEqual(surfaceWord("pending?"), { word: "pending", note: "" });
+  assert.deepEqual(surfaceWord("brb, lunch"), { word: "brb", note: "lunch" });
+  assert.deepEqual(surfaceWord("brb: lunch"), { word: "brb", note: "lunch" });
+  assert.deepEqual(surfaceWord("brb."), { word: "brb", note: "" });
+  assert.equal(surfaceWord("back it out"), null);
+  assert.equal(surfaceWord("brbx"), null);
+  assert.equal(surfaceWord("backlog"), null);
+});
+
+test("on fire: none / nothing are statuses, not fires; emoji and quote prefixes are fires; the text drops the marker", () => {
+  assert.deepEqual(splitNeedsYou("Status.\n\nOn fire: none.\n\n## Needs you\n- Pick a cache").onFire, []);
+  assert.deepEqual(splitNeedsYou("- **On fire:** nothing right now").onFire, []);
+  assert.deepEqual(splitNeedsYou("on fire: n/a").onFire, []);
+  assert.deepEqual(splitNeedsYou("🔥 on fire: main red").onFire, ["🔥 on fire: main red"]);
+  assert.deepEqual(splitNeedsYou("> on fire: main red").onFire, ["> on fire: main red"]);
+  assert.deepEqual(splitNeedsYou("- 🔥 **on fire:** main red").onFire, ["- 🔥 **on fire:** main red"]);
+  assert.deepEqual(splitNeedsYou("on fire: nothing builds on main").onFire, ["on fire: nothing builds on main"], "a fire that starts with 'nothing' is still a fire");
+  assert.equal(fireText("- **on fire:** main is red"), "main is red");
+  assert.equal(fireText("🔥 on fire: main red"), "main red");
+  assert.equal(fireText("On fire: none."), null);
+  assert.equal(fireText("not a fire"), null);
+});
+
+test("held items: an indented continuation joins its item; a nothing line is not held", () => {
+  assert.deepEqual(splitNeedsYou("## Needs you\n- Pick a cache\n  because the deploy needs it\n- Approve the schema").held, ["- Pick a cache because the deploy needs it", "- Approve the schema"]);
+  assert.deepEqual(splitNeedsYou("## Needs you\n- Pick a cache\n  - a nested option").held, ["- Pick a cache", "- a nested option"], "a nested list item stays its own item");
+  assert.deepEqual(splitNeedsYou("## Needs you\nNothing right now.").held, []);
+  assert.deepEqual(splitNeedsYou("## Needs you\n- None.").held, []);
+  assert.deepEqual(splitNeedsYou("## Needs you\n- Nothing in the config is decided; pick one").held, ["- Nothing in the config is decided; pick one"]);
 });

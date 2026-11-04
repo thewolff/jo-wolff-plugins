@@ -7,7 +7,7 @@
 
 import test from "node:test";
 import assert from "node:assert/strict";
-import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -18,14 +18,20 @@ import brbOmp, {
   buildStartPayload,
   buildStopPayload,
   defaultStateDir,
+  displayChannel,
   inputWordHandler,
+  isAway,
   resolveNode,
   sessionStopHandler,
   spawnHook,
   surfaceWord,
 } from "./brb-omp.ts";
 
-const ctx = (over = {}) => ({ cwd: "/work", sessionManager: { getSessionId: () => "omp-session-1" }, hasUI: true, ui: { notify() {} }, ...over });
+const ctx = (over = {}) => ({ cwd: "/work", sessionManager: { getSessionId: () => "omp-session-1" }, hasUI: true, ui: { notify() {} }, isIdle: () => true, ...over });
+const markAway = (stateDir, key = "omp-session-1") => {
+  mkdirSync(join(stateDir, key), { recursive: true });
+  writeFileSync(join(stateDir, key, "away.json"), JSON.stringify({ since: "t0" }));
+};
 const tick = () => new Promise((r) => setTimeout(r, 0));
 
 function box() {
@@ -136,7 +142,7 @@ test("sessionStopHandler: returns the block verdict, notifies the systemMessage,
   }
 });
 
-test("registration: input handles a word synchronously and shows via sendMessage; other text is not handled; the three events are registered", async () => {
+test("registration: input handles a word synchronously and shows via sendMessage when idle; other text is not handled; the three events are registered", async () => {
   const b = box();
   try {
     const handlers = {};
@@ -150,6 +156,7 @@ test("registration: input handles a word synchronously and shows via sendMessage
     await tick();
     assert.deepEqual(sent, [{ customType: "brb-digest", content: "brb: holding", display: true }]);
     // Without sendMessage the notice goes to ctx.ui.notify.
+    markAway(b.stateDir);
     const notices = [];
     const handlers2 = {};
     brbOmp({ on: (name, h) => (handlers2[name] = h) }, { runCli: async () => ({ decision: "block", reason: "brb digest" }), stateDir: b.stateDir, env: b.env });
@@ -157,6 +164,44 @@ test("registration: input handles a word synchronously and shows via sendMessage
     await tick();
     await tick();
     assert.deepEqual(notices, [["brb digest", "info"]]);
+    // While the agent streams, the reason goes to notify, never sendMessage (which would steer into context).
+    sent.length = 0;
+    notices.length = 0;
+    handlers.input({ text: "back" }, ctx({ isIdle: () => false, ui: { notify: (t, type) => notices.push([t, type]) } }));
+    await tick();
+    await tick();
+    assert.deepEqual(sent, []);
+    assert.deepEqual(notices, [["brb: holding", "info"]]);
+  } finally {
+    b.release();
+  }
+});
+
+test("displayChannel: sendMessage only when the host has it and the agent is idle; notify otherwise", () => {
+  assert.equal(displayChannel(ctx({ isIdle: () => true }), true), "sendMessage");
+  assert.equal(displayChannel(ctx({ isIdle: () => false }), true), "notify");
+  assert.equal(displayChannel(ctx({ isIdle: undefined }), true), "notify", "no isIdle: assume streaming");
+  assert.equal(displayChannel(ctx({ isIdle: () => { throw new Error("x"); } }), true), "notify");
+  assert.equal(displayChannel(ctx({ isIdle: () => true }), false), "notify");
+});
+
+test("back and pending while home pass through to the agent; brb is always handled", () => {
+  const b = box();
+  try {
+    const handlers = {};
+    let ran = 0;
+    brbOmp({ on: (name, h) => (handlers[name] = h), sendMessage() {} }, { runCli: async () => { ran++; return undefined; }, stateDir: b.stateDir, env: b.env });
+    assert.equal(isAway(ctx(), b.stateDir), false);
+    assert.equal(handlers.input({ text: "back" }, ctx()), undefined);
+    assert.equal(handlers.input({ text: "Pending." }, ctx()), undefined);
+    assert.equal(ran, 0, "no hook spawned");
+    assert.deepEqual(handlers.input({ text: "brb" }, ctx()), { handled: true });
+    markAway(b.stateDir);
+    assert.equal(isAway(ctx(), b.stateDir), true);
+    assert.deepEqual(handlers.input({ text: "back!" }, ctx()), { handled: true });
+    assert.equal(isAway(ctx({ sessionManager: { getSessionId: () => "a/b" } }), b.stateDir), false, "the key maps / to _");
+    markAway(b.stateDir, "a_b");
+    assert.equal(isAway(ctx({ sessionManager: { getSessionId: () => "a/b" } }), b.stateDir), true);
   } finally {
     b.release();
   }
@@ -175,10 +220,10 @@ test("spawnHook runs the real hooks: brb through the prompt hook, then the stop 
     assert.match(start.hookSpecificOutput.additionalContext, /^brb: Jo is away/);
     const stop = await spawnHook("stop.mjs", buildStopPayload({ last_assistant_message: { content: [{ type: "text", text: "## Needs you\n- on fire: main is red\n- Pick a cache" }] } }, c), b.root, 5000, env);
     assert.equal(stop.decision, "block");
-    assert.equal(stop.systemMessage, "brb on fire: on fire: main is red");
+    assert.equal(stop.systemMessage, "brb on fire: main is red");
     assert.equal(stop.terminalSequence, undefined, "no OSC under BRB_HARNESS=omp");
     const back = await spawnHook("user-prompt-submit.mjs", buildPromptPayload("back", c), b.root, 5000, env);
-    assert.match(back.reason, /1 item\n\n## .*\n- Pick a cache\n\nbrb: hold cleared; digest archived/);
+    assert.match(back.reason, /^brb: hold cleared; digest archived to .*\n\nbrb digest — .*1 item\n\n## .*\n- Pick a cache$/);
     assert.equal(await spawnHook("stop.mjs", buildStopPayload({ last_assistant_message: "x" }, c), b.root, 5000, env), undefined, "home: a quiet exit");
     await assert.rejects(spawnHook("missing.mjs", "{}", b.root, 5000, env), /missing\.mjs exited 1/);
     await assert.rejects(spawnHook("stop.mjs", "{}", b.root, 5000, { ...env, BRB_NODE: join(b.root, "no-node") }), /BRB_NODE=.* is not an executable file/);

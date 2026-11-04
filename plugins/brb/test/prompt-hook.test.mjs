@@ -68,10 +68,14 @@ test("another prompt while away: proceeds with the away instruction as additiona
   }
 });
 
-test("back and pending while home: blocked, saying nothing is held", () => {
+test("back and pending while home: pass through (nothing printed), so the word reaches the model as a reply", () => {
   const b = box();
   try {
-    for (const w of ["back", "pending"]) assert.equal(blocked(runHook(b, "user-prompt-submit", promptInput(b, w))), "brb: not away; nothing is held. Type `brb` to start holding.");
+    for (const w of ["back", "pending", "Back."]) {
+      const r = runHook(b, "user-prompt-submit", promptInput(b, w));
+      assert.equal(r.status, 0);
+      assert.equal(r.stdout.trim(), "", `${w}: ${r.stdout}`);
+    }
     assert.ok(!existsSync(b.stateDir("s1")), "nothing written");
   } finally {
     b.release();
@@ -86,7 +90,7 @@ test("pending while away with an empty digest: says so and changes nothing; back
     assert.match(peek, /^brb digest — held since .*, 0 items\n\n\(nothing held\)$/);
     assert.ok(existsSync(join(b.stateDir("s1"), "away.json")), "pending leaves the hold");
     const back = blocked(runHook(b, "user-prompt-submit", promptInput(b, "back")));
-    assert.match(back, /\(nothing held\)\n\nbrb: hold cleared\.$/);
+    assert.match(back, /^brb: hold cleared\.\n\nbrb digest — held since .*\n\n\(nothing held\)$/);
     assert.ok(!existsSync(join(b.stateDir("s1"), "away.json")), "back clears the hold");
   } finally {
     b.release();
@@ -98,17 +102,37 @@ test("back with held items: prints the digest, archives it, clears the hold; pen
   try {
     runHook(b, "user-prompt-submit", promptInput(b, "brb"));
     const stop = runHook(b, "stop", { session_id: "s1", cwd: b.work, hook_event_name: "Stop", stop_hook_active: false, last_assistant_message: "## Needs you\n- Pick Redis or in-process\n\nClosing ask: which?" });
-    assert.equal(stop.json.decision, "block");
+    assert.equal(stop.json.hookSpecificOutput?.additionalContext !== undefined, true, stop.stdout);
     const peek = blocked(runHook(b, "user-prompt-submit", promptInput(b, "pending")));
     assert.match(peek, /1 item\n\n## .*\n- Pick Redis or in-process\nclosing ask: which\?$/);
     assert.ok(existsSync(join(b.stateDir("s1"), "digest.md")));
     const back = blocked(runHook(b, "user-prompt-submit", promptInput(b, "back")));
-    assert.match(back, /^brb digest — held since .*, 1 item\n\n## .*\n- Pick Redis or in-process\nclosing ask: which\?\n\nbrb: hold cleared; digest archived to .*archive\/.*\.md\.$/);
+    assert.match(back, /^brb: hold cleared; digest archived to .*archive\/.*\.md\.\n\nbrb digest — held since .*, 1 item\n\n## .*\n- Pick Redis or in-process\nclosing ask: which\?$/);
     assert.ok(!existsSync(join(b.stateDir("s1"), "digest.md")));
     assert.ok(!existsSync(join(b.stateDir("s1"), "away.json")));
     const archived = readdirSync(join(b.stateDir("s1"), "archive"));
     assert.equal(archived.length, 1);
     assert.match(b.read(join(b.stateDir("s1"), "archive", archived[0])), /- Pick Redis or in-process/);
+  } finally {
+    b.release();
+  }
+});
+
+test("a large digest: back's reason is capped at 8000 characters, the archive path first and again in the cut note", () => {
+  const b = box();
+  try {
+    runHook(b, "user-prompt-submit", promptInput(b, "brb"));
+    const asks = Array.from({ length: 300 }, (_, i) => `- Ask ${i}: should the ${"x".repeat(40)} migration use plan ${i}?`).join("\n");
+    runHook(b, "stop", { session_id: "s1", cwd: b.work, hook_event_name: "Stop", stop_hook_active: false, last_assistant_message: `## Needs you\n${asks}` });
+    const peek = blocked(runHook(b, "user-prompt-submit", promptInput(b, "pending")));
+    assert.ok(peek.length <= 8000, `pending length ${peek.length}`);
+    assert.match(peek, /\n… \(\d+ more lines; full digest: .*digest\.md\)$/);
+    const back = blocked(runHook(b, "user-prompt-submit", promptInput(b, "back")));
+    assert.ok(back.length <= 8000, `back length ${back.length}`);
+    const path = /^brb: hold cleared; digest archived to (.*archive\/.*\.md)\.\n/.exec(back)?.[1];
+    assert.ok(path, back.slice(0, 200));
+    assert.ok(back.endsWith(`more lines; full digest: ${path})`), back.slice(-200));
+    assert.match(b.read(path), /Ask 299:/, "the archive has every line");
   } finally {
     b.release();
   }

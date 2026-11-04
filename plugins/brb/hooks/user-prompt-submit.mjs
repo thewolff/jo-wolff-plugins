@@ -6,13 +6,16 @@
 // What it does: the whole prompt is one of three words, or it is not.
 //   `brb` (or `brb <note>`)  start the hold: write away.json, block the prompt (no turn) with the
 //                            confirmation as the reason and the prompt text suppressed.
-//   `back`                   print the digest as the block reason, archive it to archive/<ts>.md,
-//                            clear away.json. No turn.
+//   `back`                   archive the digest to archive/<ts>.md, clear away.json, and print
+//                            `brb: hold cleared; digest archived to <path>.` as the block reason's
+//                            first line with the digest under it. No turn.
 //   `pending`                print the digest the same way and change nothing.
 //   anything else, away      the prompt proceeds with the away instruction as additionalContext.
 //   anything else, home      null: nothing printed.
-// `back` or `pending` while home blocks too, saying nothing is held (so the word never reaches
-// the model as a prompt by accident).
+// `back` or `pending` while home is null too: the word reaches the model as an ordinary reply
+// (an agent that asked "revert or go back?" gets its answer). A reason longer than 8000
+// characters is cut at a line and ends `… (N more lines; full digest: <path>)` (lib/text.mjs
+// cappedReason); the archive path is on the first line either way.
 //
 // How it fails: stdin not JSON, a thrown error, or no answer in 4 s → the runner logs it to
 // ${XDG_STATE_HOME:-~/.local/state}/brb/errors.log and the prompt proceeds. An away.json that
@@ -22,8 +25,8 @@
 // stdout itself.
 
 import { runHook, invokedDirectly } from "../lib/hook-runner.mjs";
-import { archiveDigest, clearAway, freshAway, readAway, readDigest, renderDigest, writeAway } from "../lib/state.mjs";
-import { AWAY_NOTICE, awayInstruction, surfaceWord } from "../lib/text.mjs";
+import { archiveDigest, clearAway, digestPath, freshAway, readAway, readDigest, renderDigest, writeAway } from "../lib/state.mjs";
+import { AWAY_NOTICE, awayInstruction, cappedReason, surfaceWord } from "../lib/text.mjs";
 
 const block = (reason) => ({ decision: "block", reason, hookSpecificOutput: { hookEventName: "UserPromptSubmit", suppressOriginalPrompt: true } });
 
@@ -45,12 +48,13 @@ export function handle(input, { env = process.env, now = () => new Date().toISOS
     return block(word.note ? `${AWAY_NOTICE} (note: ${word.note})` : AWAY_NOTICE);
   }
   // back or pending
-  if (!away) return block("brb: not away; nothing is held. Type `brb` to start holding.");
-  const digest = renderDigest(away, readDigest(sessionId, env));
-  if (word.word === "pending") return block(digest);
+  if (!away) return null;
+  const [header, ...rest] = renderDigest(away, readDigest(sessionId, env)).split("\n");
+  if (word.word === "pending") return block(cappedReason(header, rest.join("\n").replace(/^\n+/, ""), digestPath(sessionId, env)));
   const archived = archiveDigest(sessionId, env, now());
   clearAway(sessionId, env);
-  return block(`${digest}\n\nbrb: hold cleared${archived ? `; digest archived to ${archived}` : ""}.`);
+  const digest = [header, ...rest].join("\n");
+  return block(cappedReason(`brb: hold cleared${archived ? `; digest archived to ${archived}` : ""}.`, digest, archived ?? digestPath(sessionId, env)));
 }
 
 if (invokedDirectly(import.meta.url)) runHook("UserPromptSubmit", import.meta.url, { plugin: "brb", quiet: false });

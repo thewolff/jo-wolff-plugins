@@ -40,7 +40,8 @@ export function sessionDir(sessionId, env = process.env) {
 }
 
 const awayPath = (sessionId, env) => join(sessionDir(sessionId, env), "away.json");
-const digestPath = (sessionId, env) => join(sessionDir(sessionId, env), "digest.md");
+/** `<session dir>/digest.md`, the live digest. */
+export const digestPath = (sessionId, env = process.env) => join(sessionDir(sessionId, env), "digest.md");
 
 /** The effective config: the file's integer fields over the defaults; a missing or bad file is the defaults. */
 export function loadConfig(env = process.env) {

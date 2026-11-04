@@ -5,10 +5,15 @@
 // EVENT MAPPING
 //   input               the whole typed text is `brb` (with an optional note), `back` or
 //                       `pending` → spawn hooks/user-prompt-submit.mjs with the text as the
-//                       prompt, show its block `reason` (the confirmation or the digest) through
-//                       pi.sendMessage({ display: true }) without triggerTurn, or ctx.ui.notify
-//                       when the host has no sendMessage, and return { handled: true } at once,
-//                       so no turn starts. Any other text returns undefined; the away context
+//                       prompt, show its block `reason` (the confirmation or the digest), and
+//                       return { handled: true } at once, so no turn starts. The reason is shown
+//                       through pi.sendMessage({ display: true }) without triggerTurn only when
+//                       ctx.isIdle() says the agent is idle; while it streams (or when the host
+//                       has no sendMessage or isIdle) it goes to ctx.ui.notify, because a custom
+//                       message sent mid-stream is steered into the agent's context
+//                       (displayChannel). `back` or `pending` while the session is not away
+//                       (no away.json) returns undefined, so the word reaches the agent as an
+//                       ordinary reply. Any other text returns undefined; the away context
 //                       reaches the agent through before_agent_start, below.
 //   before_agent_start  spawn hooks/session-start.mjs; when it returns additionalContext (the
 //                       session is away) hand it to the turn as a hidden custom message. Home →
@@ -32,7 +37,7 @@
 // (node 24 strips them without a build), so the test imports this file directly.
 
 import { spawn } from "node:child_process";
-import { accessSync, appendFileSync, constants, mkdirSync, statSync } from "node:fs";
+import { accessSync, appendFileSync, constants, existsSync, mkdirSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { delimiter, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -57,6 +62,7 @@ type Ctx = {
   sessionManager?: { getSessionId?: () => unknown };
   hasUI?: boolean;
   ui?: { notify?: (message: string, type?: "info" | "warning" | "error") => void };
+  isIdle?: () => boolean;
 };
 
 type InputEvent = { text?: unknown; source?: unknown };
@@ -78,14 +84,31 @@ export type Deps = {
 
 export type SurfaceWord = "brb" | "back" | "pending";
 
-/** The surface word the whole trimmed text is: brb (note allowed), back, pending; null otherwise. Mirrors lib/text.mjs. */
+/** The surface word the whole trimmed text is: brb (note allowed, `brb, lunch`), back, pending, trailing `.!?` allowed; null otherwise. Mirrors lib/text.mjs. */
 export function surfaceWord(text: unknown): SurfaceWord | null {
-  const m = /^(brb|back|pending)(?:\s+(.*))?$/is.exec(String(text ?? "").trim());
+  const m = /^(brb|back|pending)(?=$|[\s,:;.!?])[\s,:;.!?]*(.*)$/is.exec(String(text ?? "").trim());
   if (!m) return null;
   const word = m[1].toLowerCase();
   if (word === "brb") return "brb";
-  if (m[2]) return null;
+  if (m[2].trim()) return null;
   return word === "back" ? "back" : "pending";
+}
+
+/** Whether the session is away: `<stateDir>/<session key>/away.json` exists (the key as lib/state.mjs sessionKey makes it). */
+export function isAway(ctx: Ctx, stateDir: string): boolean {
+  const raw = managerSessionId(ctx).trim().replace(/[^A-Za-z0-9._-]/g, "_");
+  const key = raw && raw !== "." && raw !== ".." ? raw.slice(0, 120) : "no-session";
+  return existsSync(join(stateDir, key, "away.json"));
+}
+
+/** Where a reason for the person goes: sendMessage (display only) when the agent is idle, else ctx.ui.notify. */
+export function displayChannel(ctx: Ctx, hasSendMessage: boolean): "sendMessage" | "notify" {
+  if (!hasSendMessage) return "notify";
+  try {
+    return ctx.isIdle?.() === true ? "sendMessage" : "notify";
+  } catch {
+    return "notify";
+  }
 }
 
 /** The finished message's text: a string, or the text blocks joined. */
@@ -300,9 +323,9 @@ export async function sessionStopHandler(event: StopEvent, ctx: Ctx, deps: Deps 
 /** Registration entry point; package.json `omp.extensions` names this file. */
 export default function brbOmp(pi: PiLike, deps: Deps = {}): void {
   const show = (ctx: Ctx) => (text: string): void => {
-    if (typeof pi.sendMessage === "function") {
+    if (displayChannel(ctx, typeof pi.sendMessage === "function") === "sendMessage") {
       try {
-        pi.sendMessage({ customType: DIGEST_MESSAGE_TYPE, content: text, display: true });
+        pi.sendMessage?.({ customType: DIGEST_MESSAGE_TYPE, content: text, display: true });
         return;
       } catch {
         // fall through to the notice
@@ -313,6 +336,8 @@ export default function brbOmp(pi: PiLike, deps: Deps = {}): void {
   pi.on("input", (event, ctx) => {
     const word = surfaceWord(event?.text);
     if (!word) return undefined;
+    // `back` / `pending` while home is an ordinary reply for the agent, as on Claude Code.
+    if (word !== "brb" && !isAway(ctx, deps.stateDir ?? defaultStateDir(deps.env ?? process.env))) return undefined;
     // Decided synchronously so the host never dispatches the word as a prompt; the hook runs after.
     void inputWordHandler(String(event.text), ctx, show(ctx), deps);
     return { handled: true };
