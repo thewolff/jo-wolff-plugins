@@ -1,8 +1,8 @@
-// plugin-gate.mjs — the five-check push gate for a repository of Claude Code plugins (the
+// plugin-gate.mjs — the six-check push gate for a repository of Claude Code plugins (the
 // repo-root AGENTS.md test bar, kind-agnostic). It applies when the pushed commit holds
 // `plugins/*/hooks/hooks.json` or a root `.claude-plugin/plugin.json`, and only to plugins with a
 // file changed between the push's base and its head. For each such plugin, `ledger gate check`
-// runs and records five checks as rows of cc_gate_checks (one per commit, plugin and check
+// runs and records six checks as rows of cc_gate_checks (one per commit, plugin and check
 // name; a rerun replaces them). The checks read the commit, never the checkout: each plugin is
 // checked out of HEAD's tree into a temporary directory (`git read-tree` + `checkout-index`
 // against a scratch index), and the row keeps the hash of that plugin tree. An uncommitted
@@ -47,6 +47,15 @@
 //              appendFileSync in hooks/, lib/, scripts/ and the rest, tests excluded) with no
 //              `state` field fails naming the site; a write the canary observed
 //              (cc_canary_runs.writes) under no declared path fails naming it.
+//   docs       a release is written down: when the plugin's `.claude-plugin/plugin.json` version
+//              differs from the base commit's, `CHANGELOG.md` has a heading for the new version
+//              (`## [<ver>]` or `## <ver>`) with text under it, README.md has a release heading
+//              for it (`## Changes in <ver>`, `### <ver>`, `### <date> — <ver>`, or the
+//              CHANGELOG shapes) with text under it, and the repository root README names it
+//              (the version in the plugin's top-level bullet, a `Changes in <plugin> <ver>`
+//              line, or a `Changes in <ver>` line inside the root README's `## <plugin>`
+//              section). Skipped when the version did not change. The base manifest and the
+//              root README are read out of the commits (`git show`), never the checkout.
 //
 // A plugin with no `hooks/hooks.json` is `skipped` for survives and for evals (unless it has
 // scenarios; the other checks still run). The whole run is capped at 60 s: a check that does not start
@@ -63,7 +72,7 @@ import { git, gitHead, defaultBase, headState, currentBranch, NotARepository } f
 import { transaction } from "./db.mjs";
 import { canonicalPath, coverageProblems, loadManifest, loadScenarios, readState, registeredEvents, retentionProblems } from "./plugin-evals.mjs";
 
-export const CHECKS = Object.freeze(["survives", "visible", "says", "evals", "retention"]);
+export const CHECKS = Object.freeze(["survives", "visible", "says", "evals", "retention", "docs"]);
 export const OUTCOMES = Object.freeze(["deny", "allow", "ask", "systemMessage", "silent"]);
 export const JUDGE_FRESH_DAYS = 7;
 export const HOOK_DEADLINE_MS = 5_000;
@@ -451,8 +460,12 @@ export function reasonsWithoutCommandIn(pluginDir) {
   return out;
 }
 
-/** The five checks for one plugin: `[{ name, status, detail }]`. `db` and `tree` feed evals and retention. */
-export function checkPlugin(plugin, { env = process.env, deadline = Date.now() + RUN_CAP_MS, db = null, tree = null, now = Date.now() } = {}) {
+/**
+ * The six checks for one plugin: `[{ name, status, detail }]`. `db` and `tree` feed evals and
+ * retention; `docs` (`{ baseVersion, rootReadme }`, the base commit's manifest version and the
+ * head commit's root README text, null each when absent) feeds docs, which is skipped without it.
+ */
+export function checkPlugin(plugin, { env = process.env, deadline = Date.now() + RUN_CAP_MS, db = null, tree = null, now = Date.now(), docs = null } = {}) {
   const rows = [];
   const timedOut = () => ({ status: "fail", detail: "timeout" });
   // 1. survives
@@ -487,6 +500,10 @@ export function checkPlugin(plugin, { env = process.env, deadline = Date.now() +
   // 5. retention
   if (Date.now() > deadline) rows.push({ name: "retention", ...timedOut() });
   else rows.push({ name: "retention", ...retentionCheck(plugin, { db }) });
+  // 6. docs
+  if (Date.now() > deadline) rows.push({ name: "docs", ...timedOut() });
+  else if (!docs) rows.push({ name: "docs", status: "skipped", detail: "no base commit to compare the version with" });
+  else rows.push({ name: "docs", ...docsCheck(plugin, docs) });
   return rows;
 }
 
@@ -540,6 +557,126 @@ export function retentionCheck(plugin, { db = null } = {}) {
   return { status: "pass", detail: `${r.declared.length} state path(s) declared (${pruned} with a prune, ${kept} kept by design); ${r.sites.length} write site(s) in source` };
 }
 
+const escapeRe = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+/** `version` as a whole token: not the tail of `10.3.6` or `v0.3.6`, not the head of `0.3.60` or `0.3.6.1`. */
+const versionToken = (version) => `(?<![\\w.])${escapeRe(version)}(?!\\w|\\.\\d)`;
+
+/**
+ * A release heading for `version`, any level: `## [<ver>]` and `## <ver>` (Keep a Changelog
+ * and the "Changes" sections), `## Changes in <ver>`, and `### <date> — <ver>`.
+ */
+export function releaseHeading(version) {
+  return new RegExp(`^#{1,6}[ \\t]+(?:changes in[ \\t]+|\\d{4}-\\d{2}-\\d{2}[ \\t]*[—–-]+[ \\t]*)?\\[?${escapeRe(version)}\\]?(?!\\w|\\.\\d)`, "i");
+}
+
+/** The text under the first line matching `heading`, up to the next heading of the same or a higher level; null without the heading. */
+export function sectionUnder(md, heading) {
+  const lines = md.split("\n");
+  const i = lines.findIndex((l) => heading.test(l));
+  if (i < 0) return null;
+  const level = /^#+/.exec(lines[i])[0].length;
+  const body = [];
+  for (let j = i + 1; j < lines.length; j++) {
+    const m = /^(#{1,6})[ \t]/.exec(lines[j]);
+    if (m && m[1].length <= level) break;
+    body.push(lines[j]);
+  }
+  return body.join("\n");
+}
+
+/** `ok` when `md` has a release heading for `version` with text under it, `empty` with none, `missing` without the heading. */
+export function releaseEntry(md, version) {
+  const section = sectionUnder(md, releaseHeading(version));
+  if (section === null) return "missing";
+  return section.trim() ? "ok" : "empty";
+}
+
+/**
+ * Whether the repository README names `version` for `pluginName`: in the plugin's top-level
+ * bullet (`- **[<name>](…)** …` with its indented continuation lines), on a `Changes in <name>
+ * <ver>` line anywhere, or on a `Changes in <ver>` line under its `## <name>` heading.
+ */
+export function rootReadmeNames(md, pluginName, version) {
+  const name = escapeRe(pluginName);
+  const token = versionToken(version);
+  const lines = md.split("\n");
+  const start = lines.findIndex((l) => new RegExp(`^[-*][ \\t]+(?:\\*\\*)?\\[?${name}(?![\\w-])`).test(l));
+  if (start >= 0) {
+    const bullet = [lines[start]];
+    for (let j = start + 1; j < lines.length && /^[ \t]+\S/.test(lines[j]); j++) bullet.push(lines[j]);
+    if (new RegExp(token).test(bullet.join("\n"))) return true;
+  }
+  if (new RegExp(`changes in[ \\t]+${name}[ \\t]+${token}`, "i").test(md)) return true;
+  const section = sectionUnder(md, new RegExp(`^#{1,6}[ \\t]+${name}[ \\t]*$`, "i"));
+  return section !== null && new RegExp(`changes in[ \\t]+${token}`, "i").test(section);
+}
+
+/** The `version` string of `<dir>/.claude-plugin/plugin.json`; null when the file, or the field, is not there. */
+export function manifestVersion(dir) {
+  try {
+    const v = JSON.parse(readFileSync(join(dir, ".claude-plugin", "plugin.json"), "utf8")).version;
+    return typeof v === "string" && v.trim() ? v.trim() : null;
+  } catch {
+    return null;
+  }
+}
+
+/** The text of `path` in commit `sha`; null when that commit has no such file. */
+export function fileAt(top, sha, path) {
+  try {
+    return git(top, ["show", `${sha}:${path}`]);
+  } catch (err) {
+    if (err.gitStatus !== undefined) return null;
+    throw err;
+  }
+}
+
+/** The manifest version of the plugin at `prefix` in commit `sha`; null without one (or without a commit). */
+export function manifestVersionAt(top, sha, prefix) {
+  if (!sha) return null;
+  const text = fileAt(top, sha, `${prefix}.claude-plugin/plugin.json`);
+  if (text === null) return null;
+  try {
+    const v = JSON.parse(text).version;
+    return typeof v === "string" && v.trim() ? v.trim() : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Check 6: a version that differs from the base's is written down. `CHANGELOG.md` and README.md
+ * each have a release heading for it with text under it, and the repository README names it
+ * for the plugin (not asked of a root plugin, whose README is the repository's). Skipped when
+ * the version is unchanged or the manifest has none.
+ */
+export function docsCheck(plugin, { baseVersion = null, rootReadme = null } = {}) {
+  const version = manifestVersion(plugin.dir);
+  if (version === null) return { status: "skipped", detail: "no `version` in .claude-plugin/plugin.json" };
+  if (version === baseVersion) return { status: "skipped", detail: `version ${version} unchanged since the base` };
+  const bump = baseVersion === null ? `version ${version}, new since the base` : `version ${baseVersion} → ${version}`;
+  const problems = [];
+  const found = [];
+  for (const file of ["CHANGELOG.md", "README.md"]) {
+    const shapes = file === "CHANGELOG.md" ? `"## [${version}]" (or "## ${version}")` : `"## Changes in ${version}" (or "### ${version}", "### <date> — ${version}")`;
+    const path = join(plugin.dir, file);
+    if (!existsSync(path)) {
+      problems.push(`${file} is missing: add it with a ${shapes} entry`);
+      continue;
+    }
+    const entry = releaseEntry(readFileSync(path, "utf8"), version);
+    if (entry === "missing") problems.push(`${file} has no ${shapes} heading`);
+    else if (entry === "empty") problems.push(`${file} has nothing under its ${version} heading`);
+    else found.push(`${file} has its ${version} entry`);
+  }
+  if (plugin.prefix === "") found.push("a root plugin: README.md is the repository's");
+  else if (rootReadme === null) problems.push(`the repository README.md is not in the commit, so nothing names ${plugin.name} ${version}`);
+  else if (!rootReadmeNames(rootReadme, plugin.name, version)) problems.push(`the repository README.md does not name ${version} for ${plugin.name}: put it in the plugin's bullet, on a "Changes in ${plugin.name} ${version}" line, or on a "Changes in ${version}" line under "## ${plugin.name}"`);
+  else found.push("the repository README names it");
+  if (problems.length) return { status: "fail", detail: cut(`${bump}: ${problems.join("; ")}`) };
+  return { status: "pass", detail: `${bump}: ${found.join("; ")}` };
+}
+
 /** Replace the rows of (top, head, plugin) with `rows`, each certifying the plugin tree `tree`. */
 export function recordChecks(db, dbPath, top, head, pluginName, tree, rows, now = Date.now()) {
   const at = nowIso(now);
@@ -562,7 +699,7 @@ export function checkRows(db, top, head, pluginName) {
 const short = (sha) => String(sha).slice(0, 8);
 
 /**
- * `ledger gate check [--plugins a,b] [--base <ref>]`: run the five checks on every plugin of
+ * `ledger gate check [--plugins a,b] [--base <ref>]`: run the six checks on every plugin of
  * HEAD's tree with a change in base..HEAD (or the named ones), each read out of the commit,
  * record the rows with the plugin tree they certify, print them. Exit 0 when every row passes
  * or is skipped, 1 when one fails, 2 when the commit holds no plugin. Uncommitted changes
@@ -579,18 +716,18 @@ export function gateCheck({ db, dbPath, cwd, env = process.env, plugins: only = 
   const { top, head } = repo;
   const all = treePlugins(top, head);
   if (!all.length) return { code: 2, text: `gate check: ${short(head)} holds no plugin (no plugins/*/hooks/hooks.json, no .claude-plugin/plugin.json)` };
+  // The base is needed in both modes: it is the commit the docs row compares each version with.
+  const base = baseRef ? git(top, ["rev-parse", "--verify", "-q", `${baseRef}^{commit}`]).trim() : defaultBase(db, top, head, currentBranch(top));
   let chosen;
   if (only) {
     const unknown = only.filter((n) => !all.some((p) => p.name === n));
     if (unknown.length) return { code: 1, text: `gate check: no plugin named ${unknown.join(", ")}; the repository has ${all.map((p) => p.name).join(", ")}` };
     chosen = all.filter((p) => only.includes(p.name));
   } else {
-    let base;
-    if (baseRef) base = git(top, ["rev-parse", "--verify", "-q", `${baseRef}^{commit}`]).trim();
-    else base = defaultBase(db, top, head, currentBranch(top));
     chosen = changedPlugins(top, base, head, all);
     if (!chosen.length) return { code: 0, text: `gate check: no plugin changed in ${base ? short(base) : "root"}..${short(head)}; nothing to check` };
   }
+  const rootReadme = fileAt(top, head, "README.md");
   const deadline = now + RUN_CAP_MS;
   const lines = [`gate check ${short(head)}`];
   let failed = 0;
@@ -598,7 +735,7 @@ export function gateCheck({ db, dbPath, cwd, env = process.env, plugins: only = 
     const snap = snapshotTree(top, head, plugin.prefix);
     let rows;
     try {
-      rows = checkPlugin({ name: plugin.name, dir: snap.dir }, { env, deadline, db, tree: snap.tree, now });
+      rows = checkPlugin({ name: plugin.name, dir: snap.dir, prefix: plugin.prefix }, { env, deadline, db, tree: snap.tree, now, docs: { baseVersion: manifestVersionAt(top, base, plugin.prefix), rootReadme } });
     } finally {
       snap.release();
     }
