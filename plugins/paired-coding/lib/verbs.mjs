@@ -12,6 +12,7 @@
 
 import { spawnSync } from "node:child_process";
 import { copyFileSync, existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { createHash, randomBytes } from "node:crypto";
 import { fileURLToPath } from "node:url";
@@ -21,11 +22,16 @@ import {
 } from "../core/gate.mjs";
 import {
   activated, appendJournal, defaultTempPaths, findRoot, loadState, loadStateReport, makeIo, markActivated, reapGroups, saveState,
-  closedRunProblem, describeSandbox, recordRun, runPgids, runSandboxed, sandboxBackend, sandboxJournal, sandboxProblem, sessionDir, stateBase, withLock, withSession, writeAtomic, writeSandboxed,
+  closedRunProblem, describeSandbox, realpathLoose, recordRun, runPgids, runSandboxed, sandboxBackend, sandboxJournal, sandboxProblem, sessionDir, stateBase, withLock, withSession, writeAtomic, writeSandboxed,
 } from "./host-io.mjs";
+import { PATTERN_CHECK_DIR, siblingState } from "./sibling-state.mjs";
 
-/** Directories left out of every snapshot unless the user's own exclusions say otherwise. */
-export const DEFAULT_EXCLUSIONS = Object.freeze([".git"]);
+/**
+ * Directories left out of every snapshot, before the user's own exclusions: git's own, and
+ * the receipt directory pattern-check's Stop hook writes in the worktree (a carve-out every
+ * pair_run may write, sibling-state.mjs), so its writes never read as drift.
+ */
+export const DEFAULT_EXCLUSIONS = Object.freeze([".git", PATTERN_CHECK_DIR]);
 const DEFAULT_TIMEOUT_MS = 10 * 60 * 1000;
 const MAX_TIMEOUT_MS = 60 * 60 * 1000;
 /** How long a /clear carry marker stays usable. */
@@ -60,7 +66,9 @@ function ioFor(dir, state) {
 /**
  * The pre-call verdict for a host tool. Inert (allow, no file touched) unless activated.
  * @param {string} toolName  the bare tool name (an adapter maps its own pair_* tool names to bare ones)
- * @param {{ sessionDir: string, allow?: string[] }} ctx
+ * @param {{ sessionDir: string, allow?: string[], command?: unknown }} ctx
+ *   `command`: for the host's shell tool, the command it was asked to run; the one shape the
+ *   gate lets through while pairing is a sibling plugin's CLI (gate.mjs siblingCliCommand)
  * @returns {{ allow: boolean, reason?: string, active: boolean, degraded?: string | null }}
  *   `degraded`: why this read took the state as closed instead of as saved, for the adapter to report
  */
@@ -68,7 +76,7 @@ export function verdict(toolName, ctx) {
   if (!ctx?.sessionDir || !activated(ctx.sessionDir)) return { allow: true, active: false };
   const { state, fault } = loadStateReport(ctx.sessionDir);
   if (state.phase === "inactive") return { allow: true, active: false };
-  const v = toolVerdict(state, { toolName }, { allow: ctx.allow ?? [] }, makeIo({}));
+  const v = toolVerdict(state, { toolName, command: ctx.command }, { allow: ctx.allow ?? [], home: homedir() }, makeIo({}));
   appendJournal(ctx.sessionDir, v.journal);
   return { allow: v.allow, reason: v.reason, active: true, degraded: fault };
 }
@@ -236,11 +244,11 @@ export function carryInto(ctx) {
   const stateDir = realpathSync.native(dir);
   const base = dirname(stateDir);
   const protect = [...new Set([base, PLUGIN_ROOT, ...(ctx.protect ?? [])])];
-  const exclusions = Array.isArray(ctx.exclusions) ? ctx.exclusions : [...DEFAULT_EXCLUSIONS];
+  const exclusions = [...new Set([...DEFAULT_EXCLUSIONS, ...(Array.isArray(ctx.exclusions) ? ctx.exclusions : [])])];
   return withLock(dir, () => {
     const state = loadState(dir);
     const out = carryClosed(state, {
-      sessionId: ctx.sessionId, root: ctx.root, stateDir, tempPaths: defaultTempPaths(), protect, exclusions,
+      sessionId: ctx.sessionId, root: ctx.root, stateDir, tempPaths: defaultTempPaths(), protect, exclusions, carveOuts: carveOutsFor(ctx.root),
       from: ctx.from ?? null, reason: ctx.reason ?? "clear",
     }, makeIo({ realpath: realpathSync.native }));
     if (out.ok) {
@@ -428,6 +436,26 @@ export function roadmapOffer(base, root) {
   return null;
 }
 
+/**
+ * The sibling-plugin state this worktree's runs may write (sibling-state.mjs). A path outside
+ * the worktree is made canonical through its deepest existing ancestor, as Seatbelt matches
+ * resolved paths. Inside the worktree only `.pattern-check` itself is kept, as named, and
+ * dropped when what is there is a symlink: resolved, a `.pattern-check` link into `src` would
+ * make `src` a carve-out. A ledger database the config points into the worktree is not carved
+ * out: a `.ledger.json` is repo content, and no repo content may widen the fence.
+ * @param {string} root  canonical
+ * @returns {import("../core/gate.mjs").CarveOuts}
+ */
+function carveOutsFor(root) {
+  const carve = siblingState({ root });
+  const inTree = (p) => p === root || p.startsWith(`${root}/`);
+  const outside = (paths) => paths.filter((p) => !inTree(p)).map(realpathLoose).filter((p) => !inTree(p));
+  const receipts = join(root, PATTERN_CHECK_DIR);
+  let receiptsIsLink = false;
+  try { receiptsIsLink = lstatSync(receipts).isSymbolicLink(); } catch { /* absent: a run may create it */ }
+  return { files: outside(carve.files), dirs: [...outside(carve.dirs), ...(receiptsIsLink ? [] : [receipts])] };
+}
+
 function pairStartVerb(args, ctx) {
   const backend = sandboxBackend();
   if ("problem" in backend) return fail("pair_start", `${backend.problem}; the gate cannot fence pair_run here, so pairing stays conversation-only`);
@@ -445,7 +473,7 @@ function pairStartVerb(args, ctx) {
     const io = makeIo({ root, exclusions });
     const found = roadmapOffer(base, root);
     const roadmapOfferArg = found ? { from: found.fromSession, roadmap: found.roadmap } : undefined;
-    let out = pairStart(state, { sessionId: ctx.sessionId, root, stateDir, tempPaths: defaultTempPaths(), protect, exclusions, roadmapOffer: roadmapOfferArg, cardSeq: lastCardSeq(readJournal(dir)) }, io);
+    let out = pairStart(state, { sessionId: ctx.sessionId, root, stateDir, tempPaths: defaultTempPaths(), protect, exclusions, carveOuts: carveOutsFor(root), roadmapOffer: roadmapOfferArg, cardSeq: lastCardSeq(readJournal(dir)) }, io);
     // A temp layout no sandbox here can fence would refuse every pair_run; say so now.
     const unfenced = out.ok ? closedRunProblem(out.state, backend) : null;
     if (unfenced) out = { ok: false, reason: `${unfenced}; pairing is not started`, state, journal: [] };

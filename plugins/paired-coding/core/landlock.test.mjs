@@ -255,6 +255,63 @@ describe("landlockRulesFor", () => {
   });
 });
 
+describe("landlockRulesFor grants the carve-outs (sibling-plugin state) in both phases", () => {
+  const HOME = "/home/example";
+  const DB = `${HOME}/.agent-system-2/ledger.db`;
+  const RECEIPTS = `${ROOT}/.pattern-check`;
+  const STATE_LEDGER = `${HOME}/.local/state/ledger`;
+  const carveOuts = { files: [DB, `${DB}-wal`, `${DB}-shm`], dirs: [RECEIPTS, STATE_LEDGER, `${HOME}/.local/state/pattern-check`] };
+  const HOME_DIRS = ["/home", HOME, `${HOME}/.agent-system-2`, `${HOME}/.local`, `${HOME}/.local/state`, STATE_LEDGER];
+
+  test("closed: each existing carve-out file as a files entry, each existing directory as a dirs grant with make_dir and remove", () => {
+    const io = fakeFs([...BASE_DIRS, ...HOME_DIRS, RECEIPTS], [...BASE_FILES, DB, `${DB}-wal`]);
+    const rules = landlockRulesFor({ ...open([]), phase: "closed", changeSet: null, carveOuts }, [], io);
+    assert.deepEqual(rules, {
+      files: [...DEVICES, DB, `${DB}-wal`],
+      dirs: [{ path: STATE_LEDGER, make_dir: true, remove: true }, { path: RECEIPTS, make_dir: true, remove: true }],
+      rw_trees: [],
+    });
+  });
+
+  test("a carve-out that does not exist yet gets nothing: a rule needs an inode", () => {
+    const io = fakeFs([...BASE_DIRS, ...HOME_DIRS], [...BASE_FILES, DB]);
+    const rules = landlockRulesFor({ ...open([]), phase: "closed", changeSet: null, carveOuts }, [], io);
+    assert.deepEqual(rules, { files: [...DEVICES, DB], dirs: [{ path: STATE_LEDGER, make_dir: true, remove: true }], rw_trees: [] });
+  });
+
+  test("open with a one-file boundary: the boundary file, the carve-outs, and nothing else in the worktree", () => {
+    const io = fakeFs([...BASE_DIRS, ...HOME_DIRS, RECEIPTS], [...BASE_FILES, DB, `${RECEIPTS}/x.md`]);
+    const rules = landlockRulesFor(open(["src/a.ts"], { carveOuts }), [], io);
+    assert.deepEqual(rules, {
+      files: [...DEVICES, `${ROOT}/src/a.ts`, DB],
+      dirs: [{ path: STATE_LEDGER, make_dir: true, remove: true }, { path: RECEIPTS, make_dir: true, remove: true }],
+      rw_trees: [],
+    });
+    assert.equal(rules.files.includes(`${ROOT}/src/b.ts`), false);
+  });
+
+  test("a carve-out at the root, in .git, in the state directory or on a protected path is never granted", () => {
+    const io = fakeFs([...BASE_DIRS, ...HOME_DIRS, RECEIPTS, "/plug"], [...BASE_FILES, DB, "/state/s1/state.json", "/plug/x"]);
+    const bad = { files: [DB, `${ROOT}/.git/config`, "/state/s1/state.json", "/plug/x"], dirs: [RECEIPTS, ROOT, "/w", `${ROOT}/.git`, "/state/s1", "/plug"] };
+    const rules = landlockRulesFor({ ...open([]), phase: "closed", changeSet: null, protect: ["/plug"], carveOuts: bad }, [], io);
+    assert.deepEqual(rules, { files: [...DEVICES, DB], dirs: [{ path: RECEIPTS, make_dir: true, remove: true }], rw_trees: [] });
+  });
+
+  test("a receipt directory that is a symlink is refused, as every bind through a link is", () => {
+    const io = fakeFs([...BASE_DIRS, ...HOME_DIRS], [...BASE_FILES, DB], [RECEIPTS]);
+    assert.throws(() => landlockRulesFor({ ...open([]), phase: "closed", changeSet: null, carveOuts }, [], io), /symlink/);
+  });
+
+  test("a carve-out directory under a boundary grant is folded into it; pair_write's ruleset grants no carve-out", () => {
+    const io = fakeFs([...BASE_DIRS, ...HOME_DIRS, `${ROOT}/lib`, `${ROOT}/lib/.pattern-check`], [...BASE_FILES, DB, `${ROOT}/lib/l.mjs`]);
+    const inside = { files: [], dirs: [`${ROOT}/lib/.pattern-check`] };
+    const rules = landlockRulesFor(open(["lib/**"], { carveOuts: inside }), [], io);
+    assert.deepEqual(rules.dirs, [{ path: `${ROOT}/lib`, make_dir: true, remove: true }]);
+    const w = pairWriteLandlock(open(["src/a.ts"], { carveOuts }), `${ROOT}/src/a.ts`, fakeFs([...BASE_DIRS, ...HOME_DIRS, RECEIPTS], [...BASE_FILES, DB]));
+    assert.deepEqual(w, { files: [`${ROOT}/src/a.ts`], dirs: [], rw_trees: [], command: `/bin/cat > '${ROOT}/src/a.ts'` });
+  });
+});
+
 describe("pairWriteLandlock", () => {
   test("an existing target: a grant on that one file and a write in place", () => {
     const p = pairWriteLandlock(open(["src/a.ts"]), `${ROOT}/src/a.ts`, fakeFs(BASE_DIRS, BASE_FILES));

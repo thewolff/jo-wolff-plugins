@@ -184,6 +184,15 @@ How it works:
   every other skill is refused. The agent writes through `pair_write` and `pair_edit`, which
   accept only paths inside the open change set's boundary, and runs commands through
   `pair_run`.
+- One shell command is let through the refusal of the host's shell: a sibling plugin's CLI,
+  exactly `node <script> …` where `<script>` is an absolute path to `ledger.mjs` or
+  `pattern-check.mjs` under `~/.claude/plugins/cache/jo-wolff-plugins/` or
+  `~/.claude/plugins/marketplaces/`, with no `..` segment. The ledger and pattern-check plugins
+  end each reply with a Stop hook that demands that command, and with it refused the reply
+  could neither finish nor be let go. Only one simple command passes: anything joined to it
+  (`&&`, `;`, a pipe, a redirection, a subshell, `$…` or backquotes, a glob, an environment
+  assignment in front) is refused as before. The arguments after the script are the CLI's own
+  and are not inspected. The journal's verdict entry records the command it let through.
 - On OMP, a tool device the agent calls as `write xd://<device>` reaches the gate as the host's
   `write` tool. The gate judges by tool name and does not read the path, so while pairing every
   `xd://` device is refused like any host write ("write is the host's own mutating tool"),
@@ -197,14 +206,42 @@ How it works:
   where some of what follows differs (see **Linux: which sandbox** below). Every sandbox refuses
   any write, create, delete or rename beyond what follows; Landlock does not fence permission,
   owner, timestamp or extended-attribute changes (see **Linux: Landlock**). With no change set
-  open a command may write only temp directories and `/dev`. With one open it may also write
-  the boundary files. The state directory and the
+  open a command may write only temp directories, `/dev` and the sibling-plugin carve-outs
+  below. With one open it may also write the boundary files. The state directory and the
   plugin's own install root are never writable, and on macOS no command may create a hard link
   anywhere, even between two paths it could write (on Linux one made inside a writable
   directory stops the session; see below). Every sandbox also refuses connections to
   Unix-domain sockets, except the DNS resolver's on macOS, because a local daemon reached over
   a socket writes with its own rights. So the Docker CLI, `ssh-agent`, and a database on a
   local socket are out of reach from `pair_run`. TCP is not fenced: HTTPS and DNS lookups work.
+- The sibling-plugin carve-outs: the state the ledger and pattern-check CLIs write is writable
+  from `pair_run` in both phases, boundary or no boundary, under every sandbox. The list is
+  resolved on the host at `pair_start` (`lib/sibling-state.mjs`) and recorded in the state, and
+  each backend grants it from that one list, so the three cannot drift apart.
+
+  | Carve-out | What writes it | Granted as |
+  |---|---|---|
+  | `~/.agent-system-2/ledger.db`, `ledger.db-wal`, `ledger.db-shm` | the ledger's SQLite database (WAL mode) and its sidecars | the three files |
+  | `${XDG_DATA_HOME:-~/.local/share}/ledger/ledger.db` and sidecars | the ledger's shipped default location | the three files |
+  | the `db` of `$LEDGER_DB`, of `$LEDGER_CONFIG` or `${XDG_CONFIG_HOME:-~/.config}/ledger/config.json`, and of the nearest `.ledger.json` at or above the worktree, each with sidecars | the ledger, wherever its config points it | the three files |
+  | `<worktree>/.pattern-check/` | pattern-check's receipt (`<session>.md`, written through a `.tmp-…` file and renamed) | the directory tree |
+  | `${XDG_STATE_HOME:-~/.local/state}/ledger/` | the ledger's `errors.log` | the directory tree |
+  | `${XDG_STATE_HOME:-~/.local/state}/pattern-check/` | pattern-check's own state | the directory tree |
+
+  `~` is the home directory at `pair_start`; a config file that is missing, unreadable, not
+  JSON or has no string `db` adds nothing. A carve-out never reaches the worktree root, a
+  `.git` entry, the state directory or a protected path, and a ledger database the config
+  points inside the worktree is not carved out (a `.ledger.json` is repo content, and no repo
+  content may widen the fence); `.pattern-check` is kept only when it is not a symlink. Snapshots
+  leave `.pattern-check/` out (it is a default exclusion beside `.git`), so a receipt written
+  there is never read as drift at `pair_done`; the post-run link check still walks it, so a
+  link made there stops the session like one made in the boundary. On macOS a carve-out file
+  may be created by a run (the sidecars when absent, `.pattern-check` itself); on Linux a grant
+  needs an inode, so a carve-out that does not exist yet gets nothing: the ledger's `-wal` and
+  `-shm` sidecars when they are absent (SQLite cannot open its write-ahead log and the ledger
+  reports the database unwritable until a run outside pairing recreates them), and
+  `.pattern-check/` in a worktree where pattern-check has not run before. `pair_write` and
+  `pair_edit` grant no carve-out.
 - `pair_write` and `pair_edit` write inside the sandbox too, under the open profile without the
   temp directories. On macOS and under bubblewrap they write the new content to a fresh file
   beside the target and rename it over the target, keeping an existing file's permission bits.
@@ -514,8 +551,8 @@ run could write for a symlink or a hard link it made, and for a `.git` entry tha
 replaced. If it finds one, `pair_run` returns "STOPPED: pair_run made a link or a .git entry
 inside the paths it could write (…)", the journal records `link-made`, and `pair_done` refuses
 until you type `pair stop`. A link there would carry a later write, your editor's included, to
-wherever it points. Snapshot exclusions such as `node_modules` are not searched. This holds
-under every sandbox.
+wherever it points. Snapshot exclusions such as `node_modules` are not searched, except
+`.pattern-check/`, which a run may write and so is walked. This holds under every sandbox.
 
 **Linux: which sandbox.** The gate picks one when it first needs it in a process, and
 `pair_start` says which, in a line that starts "Sandbox:"; the journal's `start` entry records

@@ -141,6 +141,44 @@ describe("bwrapArgsFor", () => {
   });
 });
 
+describe("bwrapArgsFor binds the carve-outs (sibling-plugin state) in both phases", () => {
+  const HOME = "/home/example";
+  const DB = `${HOME}/.agent-system-2/ledger.db`;
+  const RECEIPTS = `${ROOT}/.pattern-check`;
+  const STATE_LEDGER = `${HOME}/.local/state/ledger`;
+  const carveOuts = { files: [DB, `${DB}-wal`, `${DB}-shm`], dirs: [RECEIPTS, STATE_LEDGER, `${HOME}/.local/state/pattern-check`] };
+  const HOME_DIRS = ["/home", HOME, `${HOME}/.agent-system-2`, `${HOME}/.local`, `${HOME}/.local/state`, STATE_LEDGER];
+
+  test("closed: each existing carve-out file and directory is a read-write bind; an absent one gets nothing", () => {
+    const io = fakeFs([...BASE_DIRS, ...HOME_DIRS, RECEIPTS], [...BASE_FILES, DB, `${DB}-wal`]);
+    const plan = bwrapArgsFor({ ...open([]), phase: "closed", changeSet: null, carveOuts }, [], io, "fresh");
+    assert.deepEqual([...plan.writable].sort(), [DB, `${DB}-wal`, RECEIPTS, STATE_LEDGER].sort());
+    assert.deepEqual(binds(plan.args, "--bind").sort(), [DB, `${DB}-wal`, RECEIPTS, STATE_LEDGER].sort());
+    assert.deepEqual(binds(plan.args, "--ro-bind").filter((p) => p !== "/"), []);
+  });
+
+  test("open with a one-file boundary: that file and the carve-outs, nothing else in the worktree", () => {
+    const io = fakeFs([...BASE_DIRS, ...HOME_DIRS, RECEIPTS], [...BASE_FILES, DB]);
+    const plan = bwrapArgsFor(open(["src/a.ts"], { carveOuts }), [], io, "fresh");
+    assert.deepEqual([...plan.writable].sort(), [DB, RECEIPTS, STATE_LEDGER, `${ROOT}/src/a.ts`].sort());
+  });
+
+  test("a carve-out at the root, in .git, in the state directory or on a protected path is never bound", () => {
+    const io = fakeFs([...BASE_DIRS, ...HOME_DIRS, RECEIPTS, "/plug"], [...BASE_FILES, DB, `${ROOT}/.git/config`, "/state/s1/state.json", "/plug/x"]);
+    const bad = { files: [DB, `${ROOT}/.git/config`, "/state/s1/state.json", "/plug/x"], dirs: [RECEIPTS, ROOT, "/w", `${ROOT}/.git`, "/state/s1", "/plug"] };
+    const plan = bwrapArgsFor({ ...open([]), phase: "closed", changeSet: null, protect: ["/plug"], carveOuts: bad }, [], io, "fresh");
+    assert.deepEqual([...plan.writable].sort(), [DB, RECEIPTS].sort());
+  });
+
+  test("a .git entry under a carve-out bind is bound read-only over it; pair_write's plan binds no carve-out", () => {
+    const io = fakeFs([...BASE_DIRS, ...HOME_DIRS, RECEIPTS, `${RECEIPTS}/.git`], [...BASE_FILES, DB]);
+    const plan = bwrapArgsFor({ ...open([]), phase: "closed", changeSet: null, carveOuts }, [], io, "fresh");
+    assert.deepEqual(plan.readOnly, [`${RECEIPTS}/.git`]);
+    const w = pairWriteBwrap(open(["src/a.ts"], { carveOuts }), `${ROOT}/src/.pair-write-${"ab".repeat(8)}.tmp`, io, "fresh");
+    assert.deepEqual(w.writable, [`${ROOT}/src`]);
+  });
+});
+
 describe("pairWriteBwrap", () => {
   const temp = `${ROOT}/src/.pair-write-${"ab".repeat(8)}.tmp`;
 

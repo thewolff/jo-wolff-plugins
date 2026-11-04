@@ -25,7 +25,7 @@ import {
 import { homedir, tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import {
-  boundaryHashes, boundaryMatches, boundaryRoots, bwrapArgsFor, landlockRulesFor, pairRunProfile, pairWriteBwrap, pairWriteLandlock, pairWriteProfile,
+  boundaryHashes, boundaryMatches, boundaryRoots, bwrapArgsFor, carveOutRoots, landlockRulesFor, pairRunProfile, pairWriteBwrap, pairWriteLandlock, pairWriteProfile,
   readState, serializeState, shQuote,
 } from "../core/gate.mjs";
 import { bwrapCommand, bwrapIo, bwrapProblem, bwrapProc } from "./bwrap.mjs";
@@ -606,7 +606,7 @@ const noop = () => {};
 function runCommand(state, command, cwd, override) {
   const argv = ["/bin/sh", "-c", command];
   if (process.platform !== "linux") {
-    return { file: SANDBOX_EXEC, args: ["-p", pairRunProfile(state), ...argv], fds: [], close: noop, backend: "seatbelt", writable: boundaryRoots(state) };
+    return { file: SANDBOX_EXEC, args: ["-p", pairRunProfile(state), ...argv], fds: [], close: noop, backend: "seatbelt", writable: [...boundaryRoots(state), ...carveOutRoots(state)] };
   }
   let fellBack;
   if (linuxBackend(override) === "landlock") {
@@ -931,7 +931,8 @@ export function runSandboxed(opts) {
 /**
  * The `.git` entries (any letter case) under `roots`, worktree-relative, each with its inode, so
  * a later newLinks can tell one that is new or replaced from one that only changed. `.git` is
- * not walked into, nor are `exclusions`, nor symlinked directories.
+ * not walked into, nor are `exclusions` (unless one is itself a root, as the pattern-check
+ * carve-out is: it is left out of snapshots, not of the link check), nor symlinked directories.
  * @param {string} root
  * @param {string[]} roots  absolute paths in the worktree
  * @param {string[]} [exclusions]
@@ -971,6 +972,7 @@ export function newLinks(root, roots, sinceMs, gitBefore, exclusions = []) {
 
 function walkRoots(root, roots, exclusions, visitFn) {
   const skip = new Set(exclusions.map((e) => e.replace(/\/+$/, "")));
+  const wanted = new Set(roots);
   const seen = new Set();
   const visit = (abs) => {
     if (seen.has(abs)) return;
@@ -980,7 +982,7 @@ function walkRoots(root, roots, exclusions, visitFn) {
     const rel = abs === root ? "." : abs.slice(root.length + 1);
     const isGit = basename(abs).toLowerCase() === ".git";
     visitFn(rel, st, isGit);
-    if (isGit || !st.isDirectory() || skip.has(rel)) return;
+    if (isGit || !st.isDirectory() || (skip.has(rel) && !wanted.has(abs))) return;
     let names;
     try { names = readdirSync(abs); } catch { return; }
     for (const n of names) visit(join(abs, n));

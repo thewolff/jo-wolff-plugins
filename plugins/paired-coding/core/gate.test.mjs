@@ -43,6 +43,7 @@ import {
   pairNote,
   pairPropose,
   pairRunProfile,
+  pairWriteProfile,
   pairStart,
   readState,
   recordInput,
@@ -52,7 +53,9 @@ import {
   runStart,
   serializeState,
   sessionEnd,
+  siblingCliCommand,
   toolVerdict,
+  usableCarveOuts,
   MID_TURN_REASON,
 } from "./gate.mjs";
 
@@ -1744,6 +1747,227 @@ describe("under .git only what a commit writes is writable, in any letter case, 
       assert.equal(existsSync(join(dirs.root, ".git", "hooks", "pre-commit")), false);
       assert.equal(existsSync(join(dirs.root, ".git", "commondir")), false);
       assert.equal(readFileSync(join(dirs.root, ".git", "config"), "utf8"), config);
+    } finally {
+      dirs.cleanup();
+    }
+  });
+});
+
+// ─── sibling-plugin state: the carve-outs and the sibling CLI allowance (1.4.3) ─────────
+
+const HOME = "/Users/example";
+const LEDGER_DB = `${HOME}/.agent-system-2/ledger.db`;
+const CARVE = Object.freeze({
+  files: [LEDGER_DB, `${LEDGER_DB}-wal`, `${LEDGER_DB}-shm`],
+  dirs: [`${ROOT}/.pattern-check`, `${HOME}/.local/state/ledger`, `${HOME}/.local/state/pattern-check`],
+});
+
+function carvedState(phase = "closed", carveOuts = CARVE, boundary = ["src/a.ts"]) {
+  const host = fakeHost();
+  let s = ok(pairStart(inactiveState(), { root: ROOT, stateDir: STATE_DIR, carveOuts }, host.io));
+  if (phase === "open") {
+    s = ok(pairPropose(s, card({ boundary }), host.io));
+    s = say(s, "go");
+    s = ok(pairBegin(s, { cardId: s.card.id, quote: "go" }, host.io));
+  }
+  return s;
+}
+
+describe("carve-outs: the state carries them and the profile grants them in both phases", () => {
+  test("pair_start keeps the list; a relative or malformed entry is refused", () => {
+    const s = carvedState();
+    assert.deepEqual(s.carveOuts, CARVE);
+    assert.deepEqual(readState(serializeState(s)).carveOuts, CARVE);
+    refusedWith(pairStart(inactiveState(), { root: ROOT, stateDir: STATE_DIR, carveOuts: { files: ["ledger.db"], dirs: [] } }, fakeHost().io), /carve-out/);
+    refusedWith(pairStart(inactiveState(), { root: ROOT, stateDir: STATE_DIR, carveOuts: { files: [] } }, fakeHost().io), /carve-out/);
+    assert.deepEqual(ok(pairStart(inactiveState(), { root: ROOT, stateDir: STATE_DIR }, fakeHost().io)).carveOuts, { files: [], dirs: [] });
+  });
+
+  test("usableCarveOuts never grants the worktree, anything above it, .git, the state directory or a protected path", () => {
+    const s = ok(pairStart(inactiveState(), {
+      root: ROOT, stateDir: STATE_DIR, protect: ["/plugins/paired-coding"],
+      carveOuts: {
+        files: [LEDGER_DB, `${ROOT}/x.db`, `${ROOT}/.git/config`, `${STATE_DIR}/state.json`, "/plugins/paired-coding/core/gate.mjs", LEDGER_DB],
+        dirs: [`${ROOT}/.pattern-check`, ROOT, "/work", "/", `${ROOT}/.git`, `${ROOT}/src/.git/hooks`, STATE_DIR, "/plugins/paired-coding"],
+      },
+    }, fakeHost().io));
+    assert.deepEqual(usableCarveOuts(s), { files: [LEDGER_DB, `${ROOT}/x.db`], dirs: [`${ROOT}/.pattern-check`] });
+  });
+
+  test("the closed profile allows the carve-outs after the worktree deny and before the .git and state denies", () => {
+    const p = pairRunProfile(carvedState("closed"));
+    const allow = `(allow file-write* (literal "${LEDGER_DB}") (literal "${LEDGER_DB}-wal") (literal "${LEDGER_DB}-shm") (subpath "${ROOT}/.pattern-check") (subpath "${HOME}/.local/state/ledger") (subpath "${HOME}/.local/state/pattern-check"))`;
+    const at = p.indexOf(allow);
+    assert.notEqual(at, -1, p);
+    assert.ok(at > p.indexOf(`(deny file-write* (subpath "${ROOT}"))`), "after the worktree deny");
+    assert.ok(at < p.indexOf(`(deny file-write* (subpath "${STATE_DIR}"))`), "before the state deny");
+    assert.ok(at < p.indexOf("(deny file-write* (regex"), "before the .git denies");
+  });
+
+  test("the open profile grants the carve-outs beside the boundary; pair_write's profile grants none", () => {
+    const s = carvedState("open");
+    assert.match(pairRunProfile(s), /\(subpath "\/work\/repo\/\.pattern-check"\)/);
+    assert.match(pairRunProfile(s), /\(allow file-write\* \(literal "\/work\/repo\/src\/a\.ts"\)\)/);
+    const w = pairWriteProfile(s, `${ROOT}/src/.pair-write-0123456789abcdef.tmp`);
+    assert.doesNotMatch(w, /pattern-check|ledger/);
+  });
+
+  test("a profile with no carve-outs is the 1.4.2 profile, byte for byte", () => {
+    const host = fakeHost();
+    const s = ok(pairStart(inactiveState(), { root: ROOT, stateDir: STATE_DIR }, host.io));
+    assert.equal(pairRunProfile(s), pairRunProfile({ ...s, carveOuts: undefined }));
+    assert.doesNotMatch(pairRunProfile(s), /\(allow file-write\* \)/);
+  });
+});
+
+describe("the sibling CLI allowance through the host shell", () => {
+  const CACHE = `${HOME}/.claude/plugins/cache/jo-wolff-plugins/ledger/1.2.0/scripts/ledger.mjs`;
+  const MARKET = `${HOME}/.claude/plugins/marketplaces/jo-wolff-plugins/plugins/pattern-check/scripts/pattern-check.mjs`;
+
+  test("exactly node <installed script> <args> passes, with quoted arguments", () => {
+    assert.equal(siblingCliCommand(`node ${CACHE} ask x`, HOME), true);
+    assert.equal(siblingCliCommand(`node ${MARKET} record --session abc`, HOME), true);
+    assert.equal(siblingCliCommand(`node ${CACHE} ask "what about it?" 'and this'`, HOME), true);
+    assert.equal(siblingCliCommand(`  node   ${CACHE}\tnote 'a; b && c'  `, HOME), true);
+    assert.equal(siblingCliCommand(`node ${CACHE}`, HOME), true);
+  });
+
+  test("anything joined to it, or depending on the shell, is refused", () => {
+    for (const cmd of [
+      `node ${CACHE} ask x && rm -rf /`, `node ${CACHE} ask x; rm -rf /`, `node ${CACHE} ask x | sh`, `node ${CACHE} ask x > /etc/passwd`,
+      `node ${CACHE} ask x < /dev/null`, `true && node ${CACHE} ask x`, `node ${CACHE} ask $(whoami)`, "node " + CACHE + " ask `id`",
+      `node ${CACHE} ask "$HOME"`, `node ${CACHE} ask x\nrm -rf /`, `node ${CACHE} ask x # comment`, `node ${CACHE} ask *`, `(node ${CACHE} ask x)`,
+      `node ${CACHE} ask 'unterminated`, `node ${CACHE} ask x\\`, `X=1 node ${CACHE} ask x`, `node ~/.claude/plugins/cache/jo-wolff-plugins/ledger/scripts/ledger.mjs ask x`,
+    ]) assert.equal(siblingCliCommand(cmd, HOME), false, cmd);
+  });
+
+  test("the script has to be a sibling CLI installed under the plugin directories, by its real path", () => {
+    for (const cmd of [
+      "node /tmp/ledger.mjs ask x", `node ${HOME}/ledger.mjs`, `node ${HOME}/.claude/plugins/cache/other/ledger.mjs`, `node ${HOME}/.claude/plugins/cache/jo-wolff-plugins/x/evil.mjs`,
+      `node ${HOME}/.claude/plugins/cache/jo-wolff-plugins/../../../tmp/ledger.mjs`, `node ${HOME}/.claude/plugins/cache/jo-wolff-plugins`, `node ${HOME}/.claude/plugins/cache/jo-wolff-plugins/ledger.mjs.bak`,
+      `node ${HOME}/.claude/plugins/cache/jo-wolff-plugins-evil/ledger.mjs`, `/usr/bin/node ${CACHE}`, `nodejs ${CACHE}`, `bun ${CACHE}`, `${CACHE} ask x`, "node", "",
+    ]) assert.equal(siblingCliCommand(cmd, HOME), false, cmd);
+    assert.equal(siblingCliCommand(`node ${CACHE} ask x`, "/"), false);
+    assert.equal(siblingCliCommand(`node ${CACHE} ask x`, undefined), false);
+    assert.equal(siblingCliCommand(`node ${CACHE} ask x`, "Users/example"), false);
+    assert.equal(siblingCliCommand(undefined, HOME), false);
+  });
+
+  test("toolVerdict lets the shell run a sibling CLI while pairing, closed, open and carried, and journals the command", () => {
+    const host = fakeHost();
+    const cmd = `node ${CACHE} ask x`;
+    for (const s of [started(host), carvedState("open"), { ...started(host), carried: { from: "s0", reason: "clear", at: "t" } }]) {
+      for (const toolName of ["bash", "Bash"]) {
+        const v = toolVerdict(s, { toolName, command: cmd }, { home: HOME }, host.io);
+        assert.equal(v.allow, true, toolName);
+        assert.equal(v.journal[0].type, "verdict");
+        assert.equal(v.journal[0].siblingCli, cmd);
+      }
+    }
+  });
+
+  test("toolVerdict still refuses the shell for everything else, and never for other tools", () => {
+    const host = fakeHost();
+    const s = started(host);
+    const cmd = `node ${CACHE} ask x`;
+    for (const [toolName, command] of [
+      ["Bash", `${cmd} && rm -rf /`], ["bash", "node /tmp/ledger.mjs"], ["Bash", undefined], ["Bash", 42],
+      ["write", cmd], ["Edit", cmd], ["eval", cmd], ["Task", cmd], ["unknown_tool", cmd],
+    ]) {
+      const v = toolVerdict(s, { toolName, command }, { home: HOME }, host.io);
+      assert.equal(v.allow, false, `${toolName}: ${command}`);
+    }
+    assert.equal(toolVerdict(s, { toolName: "Bash", command: cmd }, {}, host.io).allow, false, "no home, no allowance");
+  });
+});
+
+describe("carve-outs under Seatbelt: the kernel lets the sibling state through and nothing else", () => {
+  function carvedLive(dirs, phase, boundary) {
+    const home = join(dirs.base, "home");
+    const db = join(home, ".agent-system-2", "ledger.db");
+    mkdirSync(join(home, ".agent-system-2"), { recursive: true });
+    mkdirSync(join(home, ".local", "state"), { recursive: true });
+    writeFileSync(db, "db1");
+    const carveOuts = {
+      files: [db, `${db}-wal`, `${db}-shm`],
+      dirs: [join(dirs.root, ".pattern-check"), join(home, ".local", "state", "ledger"), join(home, ".local", "state", "pattern-check")],
+    };
+    const io = { snapshot: () => ({ ".": "dir:0755" }), hashBoundary: () => ({}) };
+    // No temp path: the temp parent holds the fake home, and the carve-outs must stand on their own.
+    let s = ok(pairStart(inactiveState(), { root: dirs.root, stateDir: dirs.stateDir, tempPaths: [], carveOuts }, io));
+    if (phase === "open") {
+      s = ok(pairPropose(s, card({ boundary }), io));
+      s = say(s, "go");
+      s = ok(pairBegin(s, { cardId: s.card.id, quote: "go" }, io));
+    }
+    return { s, home, db };
+  }
+
+  test("closed: the ledger database and its sidecars are writable, a sibling file in the worktree and in the home are not", { skip: liveSkip }, () => {
+    const dirs = liveDirs();
+    try {
+      const { s, home, db } = carvedLive(dirs, "closed");
+      const good = sandboxed(s, `echo db2 > ${db} && echo w > ${db}-wal && echo s > ${db}-shm && mkdir -p ${home}/.local/state/ledger && echo e > ${home}/.local/state/ledger/errors.log`, dirs.root);
+      assert.equal(good.status, 0, good.stderr);
+      assert.equal(readFileSync(db, "utf8"), "db2\n");
+      assert.equal(readFileSync(`${db}-wal`, "utf8"), "w\n");
+      assert.equal(readFileSync(join(home, ".local", "state", "ledger", "errors.log"), "utf8"), "e\n");
+      for (const command of [`echo x > ${join(home, ".agent-system-2", "other.db")}`, `echo x > ${join(home, "notes.txt")}`, "echo x > src/a.ts", "echo x > file", `mkdir ${home}/.local/state/other`]) {
+        const bad = sandboxed(s, command, dirs.root);
+        assert.notEqual(bad.status, 0, command);
+        assert.match(bad.stderr, /Operation not permitted/, command);
+      }
+      assert.equal(readFileSync(join(dirs.root, "src", "a.ts"), "utf8"), "a1");
+      assert.equal(existsSync(join(home, ".agent-system-2", "other.db")), false);
+    } finally {
+      dirs.cleanup();
+    }
+  });
+
+  test("closed: pattern-check's receipt directory is writable, created on demand, inside a worktree that is not", { skip: liveSkip }, () => {
+    const dirs = liveDirs();
+    try {
+      const { s } = carvedLive(dirs, "closed");
+      const r = sandboxed(s, "mkdir -p .pattern-check && echo r > .pattern-check/abc.md.tmp-1 && mv .pattern-check/abc.md.tmp-1 .pattern-check/abc.md && mkdir .pattern-check/sub && rm .pattern-check/abc.md", dirs.root);
+      assert.equal(r.status, 0, r.stderr);
+      assert.equal(existsSync(join(dirs.root, ".pattern-check", "sub")), true);
+      const bad = sandboxed(s, "echo x > .pattern-check-2 ; echo y > src/b.ts", dirs.root);
+      assert.notEqual(bad.status, 0);
+      assert.equal(existsSync(join(dirs.root, ".pattern-check-2")), false);
+      assert.equal(readFileSync(join(dirs.root, "src", "b.ts"), "utf8"), "b1");
+    } finally {
+      dirs.cleanup();
+    }
+  });
+
+  test("open with a one-file boundary: the receipt directory and the ledger are writable, a file outside the boundary is not", { skip: liveSkip }, () => {
+    const dirs = liveDirs();
+    try {
+      const { s, db } = carvedLive(dirs, "open", ["src/a.ts"]);
+      const good = sandboxed(s, `echo a2 > src/a.ts && mkdir -p .pattern-check && echo r > .pattern-check/x.md && echo db2 > ${db}`, dirs.root);
+      assert.equal(good.status, 0, good.stderr);
+      assert.equal(readFileSync(join(dirs.root, ".pattern-check", "x.md"), "utf8"), "r\n");
+      assert.equal(readFileSync(db, "utf8"), "db2\n");
+      const bad = sandboxed(s, "echo x > src/b.ts", dirs.root);
+      assert.notEqual(bad.status, 0);
+      assert.equal(readFileSync(join(dirs.root, "src", "b.ts"), "utf8"), "b1");
+    } finally {
+      dirs.cleanup();
+    }
+  });
+
+  test("a hard link cannot be made in the receipt directory, and a symlink there carries no write out", { skip: liveSkip }, () => {
+    const dirs = liveDirs();
+    try {
+      const { s } = carvedLive(dirs, "closed");
+      const link = sandboxed(s, "mkdir -p .pattern-check && ln src/a.ts .pattern-check/a", dirs.root);
+      assert.doesNotMatch(link.stderr, /sandbox_apply/, "the sandbox itself has to apply for this test to prove anything");
+      assert.notEqual(link.status, 0);
+      assert.equal(existsSync(join(dirs.root, ".pattern-check", "a")), false);
+      assert.equal(existsSync(join(dirs.root, ".pattern-check")), true, "mkdir went through; only the link was refused");
+      const sym = sandboxed(s, "ln -s ../src/b.ts .pattern-check/b && echo x > .pattern-check/b", dirs.root);
+      assert.notEqual(sym.status, 0);
+      assert.equal(readFileSync(join(dirs.root, "src", "b.ts"), "utf8"), "b1");
     } finally {
       dirs.cleanup();
     }

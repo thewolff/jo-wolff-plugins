@@ -219,6 +219,118 @@ test("pair_run is fenced by the phase: closed denies worktree writes, open allow
   assert.equal(done.result.halted, false);
 });
 
+// The sibling-plugin carve-outs (1.4.3). The ledger's database is pointed at the fixture with
+// LEDGER_DB (sibling-state.mjs reads it), so no test writes the real one. The file exists before
+// pair_start: Landlock and bubblewrap can grant only an inode that is there.
+function withLedgerDb(f, fn) {
+  const db = join(f.top, "ledger.db");
+  writeFileSync(db, "db1\n");
+  const before = process.env.LEDGER_DB;
+  process.env.LEDGER_DB = db;
+  return Promise.resolve().then(() => fn(db)).finally(() => {
+    if (before === undefined) delete process.env.LEDGER_DB;
+    else process.env.LEDGER_DB = before;
+  });
+}
+
+test("pair_start records the sibling-plugin carve-outs, canonical, with .pattern-check left out of every snapshot", { skip: !hasSandbox }, async () => {
+  const f = fixture();
+  await withLedgerDb(f, async (db) => {
+    assert.equal((await executeVerb("pair_start", {}, f.ctx)).ok, true);
+    const s = loadState(f.dir);
+    assert.deepEqual(s.exclusions, [".git", ".pattern-check"]);
+    assert.ok(s.carveOuts.files.includes(db), JSON.stringify(s.carveOuts));
+    assert.ok(s.carveOuts.files.includes(`${db}-wal`) && s.carveOuts.files.includes(`${db}-shm`));
+    assert.ok(s.carveOuts.files.includes(realpathLoose(join(homedir(), ".agent-system-2", "ledger.db"))));
+    assert.ok(s.carveOuts.dirs.includes(join(f.root, ".pattern-check")));
+    assert.ok(s.carveOuts.dirs.includes(realpathLoose(join(homedir(), ".local", "state", "ledger"))));
+    assert.ok(s.carveOuts.dirs.includes(realpathLoose(join(homedir(), ".local", "state", "pattern-check"))));
+    for (const p of [...s.carveOuts.files, ...s.carveOuts.dirs]) assert.ok(p.startsWith("/") && !p.includes("/../"), p);
+  });
+});
+
+test("a receipt written under .pattern-check while a change set is open is not drift at pair_done", { skip: !hasSandbox }, async () => {
+  const f = fixture();
+  const cardId = await openChangeSet(f, ["src/a.txt"]);
+  mkdirSync(join(f.root, ".pattern-check"));
+  writeFileSync(join(f.root, ".pattern-check", "sess-1.md"), "# receipt\n");
+  writeFileSync(join(f.root, "src", "a.txt"), "alpha, revised\n");
+  const done = await executeVerb("pair_done", { cardId }, f.ctx);
+  assert.equal(done.ok, true, done.text);
+  assert.equal(done.result.halted, false, done.text);
+  assert.deepEqual(done.result.unapproved, []);
+  assert.deepEqual(Object.keys(snapshotTree(f.root, loadState(f.dir).exclusions)).filter((k) => k.startsWith(".pattern-check")), []);
+});
+
+test("a .pattern-check that is a symlink is not carved out, so a run cannot write through it", { skip: !hasSandbox }, async () => {
+  const f = fixture();
+  symlinkSync("src", join(f.root, ".pattern-check"));
+  assert.equal((await executeVerb("pair_start", {}, f.ctx)).ok, true);
+  assert.deepEqual(loadState(f.dir).carveOuts.dirs.filter((d) => d.startsWith(f.root)), []);
+});
+
+test("pair_run with no change set open writes the ledger database and nothing beside it", { skip: !hasSandbox }, async () => {
+  const f = fixture();
+  await withLedgerDb(f, async (db) => {
+    assert.equal((await executeVerb("pair_start", {}, f.ctx)).ok, true);
+    const good = await executeVerb("pair_run", { command: `echo db2 > '${db}'` }, f.ctx);
+    assert.equal(good.ok, true, good.text);
+    assert.equal(readFileSync(db, "utf8"), "db2\n");
+    for (const cmd of [`echo x > '${f.top}/other.db'`, "echo x > src/a.txt", "echo x > sibling.txt"]) {
+      const r = await executeVerb("pair_run", { command: cmd }, f.ctx);
+      assert.equal(r.ok, false, cmd);
+    }
+    assert.equal(existsSync(join(f.top, "other.db")), false);
+    assert.equal(existsSync(join(f.root, "sibling.txt")), false);
+    assert.equal(readFileSync(join(f.root, "src/a.txt"), "utf8"), "alpha\n");
+  });
+});
+
+test("pair_run with a one-file boundary writes .pattern-check and the ledger, never a file outside the boundary", { skip: !hasSandbox }, async () => {
+  const f = fixture();
+  // The receipt directory exists before pair_start: on Linux a grant needs its inode (the README names this).
+  mkdirSync(join(f.root, ".pattern-check"));
+  await withLedgerDb(f, async (db) => {
+    const cardId = await openChangeSet(f, ["src/a.txt"]);
+    const good = await executeVerb("pair_run", { command: `echo r > .pattern-check/x.md.tmp-1 && mv .pattern-check/x.md.tmp-1 .pattern-check/x.md && echo db2 > '${db}' && echo new > src/a.txt` }, f.ctx);
+    assert.equal(good.ok, true, good.text);
+    assert.equal(readFileSync(join(f.root, ".pattern-check", "x.md"), "utf8"), "r\n");
+    assert.equal(readFileSync(db, "utf8"), "db2\n");
+    const bad = await executeVerb("pair_run", { command: "echo x > src/b.txt" }, f.ctx);
+    assert.equal(bad.ok, false, bad.text);
+    assert.equal(readFileSync(join(f.root, "src/b.txt"), "utf8"), "bravo\n");
+    const done = await executeVerb("pair_done", { cardId }, f.ctx);
+    assert.equal(done.ok, true, done.text);
+    assert.equal(done.result.halted, false, done.text);
+    assert.match(done.text, /-alpha\n\+new/);
+  });
+});
+
+test("a link made under .pattern-check stops the session like one made in the boundary", { skip: !hasSandbox || BACKEND === "seatbelt" }, async () => {
+  // Seatbelt refuses the link outright (gate.test.mjs); Landlock and bubblewrap cannot, so the link check has to see it.
+  const f = fixture();
+  mkdirSync(join(f.root, ".pattern-check"));
+  await openChangeSet(f, ["src/a.txt"]);
+  // A second hard link inside the carve-out: the one link both Linux backends let a run make there.
+  const r = await executeVerb("pair_run", { command: "echo x > .pattern-check/x && ln .pattern-check/x .pattern-check/ln" }, f.ctx);
+  assert.equal(r.ok, false);
+  assert.ok(r.text.includes("STOPPED: pair_run made a link"), r.text);
+  assert.ok(r.text.includes(".pattern-check/ln"), r.text);
+});
+
+test("the host shell may run a sibling plugin's CLI while pairing, and nothing joined to it", { skip: !hasSandbox }, async () => {
+  const f = fixture();
+  await executeVerb("pair_start", {}, f.ctx);
+  const ledger = `node ${homedir()}/.claude/plugins/cache/jo-wolff-plugins/ledger/1.0.0/scripts/ledger.mjs ask x`;
+  const check = `node ${homedir()}/.claude/plugins/marketplaces/jo-wolff-plugins/plugins/pattern-check/scripts/pattern-check.mjs record`;
+  assert.equal(verdict("Bash", { sessionDir: f.dir, command: ledger }).allow, true);
+  assert.equal(verdict("bash", { sessionDir: f.dir, command: check }).allow, true);
+  assert.equal(verdict("Bash", { sessionDir: f.dir, command: `${ledger} && rm -rf /` }).allow, false);
+  assert.equal(verdict("Bash", { sessionDir: f.dir, command: "node /tmp/ledger.mjs" }).allow, false);
+  assert.equal(verdict("Bash", { sessionDir: f.dir }).allow, false);
+  assert.equal(verdict("Write", { sessionDir: f.dir, command: ledger }).allow, false);
+});
+
 test("pair_run times out and kills its whole process group", { skip: !hasSandbox }, async () => {
   const f = fixture();
   await openChangeSet(f);

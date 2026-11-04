@@ -106,7 +106,7 @@ type ToolDefinition = {
 
 export type PiLike = {
 	zod: ZodLike;
-	on(event: "tool_call", handler: (event: { toolName: string }, ctx: OmpContext) => unknown): void;
+	on(event: "tool_call", handler: (event: { toolName: string; input?: Record<string, unknown> }, ctx: OmpContext) => unknown): void;
 	on(event: "input", handler: (event: { text: string; source: string }, ctx: OmpContext) => unknown): void;
 	on(event: "session_shutdown", handler: (event: unknown, ctx: OmpContext) => unknown): void;
 	on(event: "session_before_switch" | "session_before_branch", handler: (event: unknown, ctx: OmpContext) => unknown): void;
@@ -369,7 +369,7 @@ export default function pairedCodingOmp(pi: PiLike, deps: AdapterDeps = {}): voi
 			dir = dirOf(ctx, env);
 			if (!dir) return undefined; // no usable session id: nothing can have been activated under it
 			checkReset(ctx, dir);
-			const v = verdict(event.toolName, { sessionDir: dir });
+			const v = verdict(event.toolName, { sessionDir: dir, command: event.input?.command });
 			if (v.degraded) {
 				const logged = logFault(env, "tool_call", { session_id: ctx.sessionManager.getSessionId() }, `session state degraded (${v.degraded}) in ${dir}`, OMP_FILE);
 				warn(ctx, `paired coding: the session state in ${dir} could not be read as saved (${v.degraded}), so the gate treats pairing as on with the card closed. ${logged} Type pair stop to end pairing.`);

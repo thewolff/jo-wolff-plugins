@@ -108,6 +108,21 @@ test("while pairing the hook denies host writers, shells, dispatch and unknown t
   }
 });
 
+test("while pairing the hook lets Bash run a sibling plugin's CLI from the plugin cache, and nothing joined to it", { skip: !hasSandbox }, async () => {
+  const f = fixture();
+  await call(f, "pair_start", {});
+  const bash = (command) => handle("pre-tool-use", { ...f.common, tool_name: "Bash", tool_input: { command }, tool_use_id: tuid() }, { env: f.env });
+  const ledger = `node ${homedir()}/.claude/plugins/cache/jo-wolff-plugins/ledger/1.0.0/scripts/ledger.mjs ask "did we?"`;
+  const check = `node ${homedir()}/.claude/plugins/marketplaces/jo-wolff-plugins/plugins/pattern-check/scripts/pattern-check.mjs record --session s1`;
+  assert.equal(bash(ledger), null);
+  assert.equal(bash(check), null);
+  for (const command of [`${ledger} && rm -rf /`, "node /tmp/ledger.mjs ask x", `${ledger}; echo pwned > notes.txt`, `node ${homedir()}/.claude/plugins/cache/jo-wolff-plugins/x/evil.mjs`]) {
+    assert.equal(bash(command)?.hookSpecificOutput?.permissionDecision, "deny", command);
+  }
+  const types = readFileSync(join(f.base, "s1", "journal.jsonl"), "utf8").trim().split("\n").map((l) => JSON.parse(l));
+  assert.deepEqual(types.filter((e) => e.siblingCli).map((e) => e.siblingCli), [ledger, check]);
+});
+
 test("while pairing, Skill loads only this plugin's own skill, in a started session and in one carried closed after /clear", { skip: !hasSandbox }, async () => {
   const f = fixture();
   await call(f, "pair_start", {});

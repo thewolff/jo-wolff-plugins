@@ -328,10 +328,11 @@ installing the plugin.
 - **A gate at the tool boundary** on Claude Code (hooks plus a bundled MCP server) and on OMP
   (an extension). While pairing, the host's own write, edit, shell, eval and sub-agent tools are
   refused; the agent writes and runs commands only through the plugin's `pair_*` tools, and
-  its own writes land only in the agreed change set's files and temp directories. Every run
-  sits under a sandbox (Seatbelt on macOS, Landlock or bubblewrap on Linux) that fences the
-  files the run writes itself and its local Unix-socket connections, not the network, so a run
-  can still ask a process outside the sandbox to write for it.
+  its own writes land only in the agreed change set's files, temp directories and the state of
+  the ledger and pattern-check plugins (see **Changes in 1.4.3**). Every run sits under a
+  sandbox (Seatbelt on macOS, Landlock or bubblewrap on Linux) that fences the files the run
+  writes itself and its local Unix-socket connections, not the network, so a run can still
+  ask a process outside the sandbox to write for it.
 - **A journal** of every card, quote, verdict, refusal and diff, kept outside the worktree.
 - **A stop only you can give:** pairing ends when you type `pair stop` as a message of its own.
 
@@ -365,6 +366,26 @@ are not blocked, so a run can ask a process outside the sandbox to write for it.
 only if it writes inside the worktree.
 
 The plugin's own README carries the full list, with the evidence behind each line.
+
+Changes in 1.4.3: the ledger and pattern-check plugins keep working while pairing is on. Each
+ends a reply with a Stop hook that demands its CLI run (`ledger.mjs ask`, `pattern-check.mjs
+record`); with the host shell refused and `pair_run` fencing every write outside the agreement,
+those runs failed (`EPERM` on `<worktree>/.pattern-check/`, "database read-only" on the
+ledger's SQLite file) and the reply could neither finish nor be let go. Now `pair_run` may
+write that state in both phases, boundary or no boundary, under every sandbox: the ledger's
+database with its `-wal` and `-shm` sidecars at `~/.agent-system-2/ledger.db`, at the ledger's
+default `~/.local/share/ledger/ledger.db`, and wherever `LEDGER_DB`, the ledger's config file
+or the nearest `.ledger.json` points it; `<worktree>/.pattern-check/`; and
+`~/.local/state/ledger/` and `~/.local/state/pattern-check/`. One list (`lib/sibling-state.mjs`)
+feeds the Seatbelt profile, the bubblewrap binds and the Landlock rules, so the three grant the
+same paths. A carve-out never reaches the worktree root, `.git`, the state directory or a
+protected path, and snapshots leave `.pattern-check/` out, so a receipt written there is not
+drift at `pair_done`. The host shell is also let through for exactly one shape of command:
+`node <script> …` where the script is `ledger.mjs` or `pattern-check.mjs` under
+`~/.claude/plugins/cache/jo-wolff-plugins/` or `~/.claude/plugins/marketplaces/`; anything
+joined to it (`&&`, `;`, a pipe, a redirection, a substitution) is refused as before. The
+plugin README's gate section has the full table and the Linux limits (a grant there needs an
+existing inode).
 
 Changes in 1.4.2: a fault in any hook appends one line to `errors.log` in the plugin's state
 directory and shows one warning, and never blocks a session that is not pairing. While pairing,
