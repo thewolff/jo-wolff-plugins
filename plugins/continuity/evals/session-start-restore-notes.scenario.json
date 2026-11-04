@@ -1,0 +1,20 @@
+{
+  "$comment": "After a compaction (source compact) with no snapshot for this session: the block says the state was not restored, and still lists the newest entries of the durable-notes directory (`notesDir`, moved by the config file to `docs/log` here, `notesCount` 2) under `## Durable notes`, newest first by mtime and cut at the count, with the sentence that the notes and the rules files are the source of truth and the snapshot is the safety net.",
+  "event": "SessionStart",
+  "expect": "systemMessage",
+  "reason": "The newest 2 of 3 entries by modification time:\n\n- 2026-01-03--newest.md\n- 2026-01-02--newer.md\n\n> The notes directory and the rules files are the source of truth; the restored snapshot is only the safety net.",
+  "setup": {
+    "files": {
+      "${XDG_CONFIG_HOME}/continuity/config.json": "{ \"notesDir\": \"docs/log\", \"notesCount\": 2 }",
+      "docs/log/2026-01-01--older.md": "older\n",
+      "docs/log/2026-01-02--newer.md": "newer\n",
+      "docs/log/2026-01-03--newest.md": "newest\n"
+    },
+    "commands": [
+      "touch -t 202601010000 \"${CWD}/docs/log/2026-01-01--older.md\"",
+      "touch -t 202601020000 \"${CWD}/docs/log/2026-01-02--newer.md\"",
+      "touch -t 202601030000 \"${CWD}/docs/log/2026-01-03--newest.md\""
+    ]
+  },
+  "stdin": { "hook_event_name": "SessionStart", "session_id": "${SESSION_ID}", "cwd": "${CWD}", "source": "compact" }
+}

@@ -8,7 +8,7 @@ import { executeVerb, recordTrustedInput, sessionDirFor } from "../lib/verbs.mjs
 const sessionId = process.argv[2];
 const sessionDir = sessionDirFor(sessionId);
 if (!sessionDir) { console.error(`learning-done: unusable session id ${JSON.stringify(sessionId)}`); process.exit(1); }
-const ctx = { sessionId, sessionDir, root: process.cwd(), cwd: process.cwd() };
+const ctx = { sessionId, sessionDir, root: process.cwd(), cwd: process.cwd(), env: process.env };
 const step = async (name, args) => {
   const r = await executeVerb(name, args, ctx);
   if (!r.ok) { console.error(r.text); process.exit(1); }

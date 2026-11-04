@@ -276,10 +276,13 @@ export async function capture(input, { env = process.env, now = new Date(), gitB
 
 /**
  * The markdown to inject after a compaction for this session, or null when there is no fresh
- * snapshot of its own. A complete restore unlinks the file; an over-budget one shows the head,
- * says so, and keeps the file.
+ * snapshot of its own. The whole returned text (heading, notices, snapshot) is at most `max`
+ * characters (the caller passes what the rest of its block leaves of RESTORE_MAX_CHARS). A
+ * restore that fits whole unlinks the file; one that does not shows the head of the snapshot cut
+ * on a character boundary, says so with the number shown and the file's path inside the same
+ * cap, and keeps the file.
  */
-export function restore(input, { env = process.env, now = Date.now() } = {}) {
+export function restore(input, { env = process.env, now = Date.now(), max = RESTORE_MAX_CHARS } = {}) {
   const path = snapshotPath(input?.session_id, env);
   let st;
   try {
@@ -295,25 +298,40 @@ export function restore(input, { env = process.env, now = Date.now() } = {}) {
   } catch {
     return null;
   }
-  const retain = body.length > RESTORE_MAX_CHARS;
-  const hasHandoff = body.includes("## Agent-authored handoff");
-  const text =
+  const head =
     "## Restored session state (post-compaction)\n\n" +
     "Re-read the files listed below before continuing. The repository is canonical; this scratch state only says where you left off. " +
-    "Before continuing any thread from it, restate what the thread is and what is pending on it, in content, not by name.\n\n" +
-    (retain
-      ? `**TRUNCATED: this snapshot is ${body.length} characters and only the first ${RESTORE_MAX_CHARS} are shown.** A restore that refills the window the compaction just cleared is worse than no restore, so the rest is withheld. The complete file is kept at \`${path}\`; read it directly if a section is missing below, and do not assume what follows is the whole snapshot.\n\n`
-      : "") +
-    (hasHandoff
-      ? "This snapshot includes an agent-authored handoff section. That section carries the previous session's judgment and its labels; start from it. Everything outside it is mechanical fact.\n\n"
-      : "**No handoff was written before compaction.** What follows is mechanical only: branch, diff, files, prompts. Intent, ruled-out approaches and open questions were not captured. You are reconstructing, not resuming; say so rather than narrating inferred history as if you remembered it.\n\n") +
-    (retain ? body.slice(0, RESTORE_MAX_CHARS) : body);
-  if (!retain) {
+    "Before continuing any thread from it, restate what the thread is and what is pending on it, in content, not by name.\n\n";
+  const kind = body.includes("## Agent-authored handoff")
+    ? "This snapshot includes an agent-authored handoff section. That section carries the previous session's judgment and its labels; start from it. Everything outside it is mechanical fact.\n\n"
+    : "**No handoff was written before compaction.** What follows is mechanical only: branch, diff, files, prompts. Intent, ruled-out approaches and open questions were not captured. You are reconstructing, not resuming; say so rather than narrating inferred history as if you remembered it.\n\n";
+  const whole = head + kind + body;
+  if (whole.length <= max) {
     try {
       unlinkSync(path);
     } catch {
       /* fail-quiet: a snapshot that could not be unlinked ages out after a day */
     }
+    return whole;
   }
-  return text;
+  const notice = (shown) =>
+    `**TRUNCATED: this snapshot is ${body.length} characters and only the first ${shown} are shown.** A restore that refills the window the compaction just cleared is worse than no restore, so the rest is withheld. The complete file is kept at \`${path}\`; read it directly if a section is missing below, and do not assume what follows is the whole snapshot.\n\n`;
+  const frame = (shown) => head.length + notice(shown).length + kind.length;
+  // The notice states how much is shown, so its own length depends on that number: settle it,
+  // never rising, so it ends at a count whose notice and body together fit in `max`; then take
+  // back the character a shorter count may have freed.
+  let shown = body.length;
+  for (let prev = -1; shown !== prev; ) [prev, shown] = [shown, Math.max(0, Math.min(shown, max - frame(shown)))];
+  while (shown < body.length && shown + 1 + frame(shown + 1) <= max) shown += 1;
+  const cut = cutChars(body, shown);
+  // A frame alone over `max` (a cap smaller than the notices) is cut too: the cap holds whatever it is.
+  return cutChars(head + notice(cut.length) + kind + cut, max);
+}
+
+// The first `n` UTF-16 units of `s`, one fewer when the nth would split a surrogate pair, so the
+// cut never leaves half a character (which would encode as U+FFFD, not as valid UTF-8).
+function cutChars(s, n) {
+  if (s.length <= n) return s;
+  const c = s.charCodeAt(n - 1);
+  return s.slice(0, c >= 0xd800 && c <= 0xdbff ? n - 1 : n);
 }

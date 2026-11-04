@@ -295,6 +295,10 @@ const SPECS: Record<string, ToolSpec> = {
 					)
 					.describe("Learning mode: what why rests on, at least one. Required while learning mode is on.")
 					.optional(),
+				alternatives: z
+					.array(z.object({ design: STR(z, "One design, in words."), chosen: z.boolean().describe("true for the design the card proposes.") }))
+					.describe("The designs weighed, exactly one with chosen: true. Required when ask-graham's findings for this session are on disk; then one entry contains their chosen design and, when they weighed a design they did not choose, one entry has chosen: false.")
+					.optional(),
 			}),
 	},
 	pair_begin: {

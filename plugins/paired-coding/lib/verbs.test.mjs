@@ -39,7 +39,8 @@ function fixture() {
   writeFileSync(join(root, "notes.txt"), "user's own notes\n");
   const base = join(top, "state");
   const dir = join(base, "sess-1");
-  const ctx = { sessionId: "sess-1", sessionDir: dir, root };
+  // The adapter's env, as both hosts pass one; this process's, so pair_run runs as before.
+  const ctx = { sessionId: "sess-1", sessionDir: dir, root, env: { ...process.env } };
   return { top, root, base, dir, ctx };
 }
 
@@ -1327,7 +1328,7 @@ test("a session carried after a clear refuses host writes until pair_start, whic
   await executeVerb("pair_start", {}, f.ctx);
   const ended = endSession({ sessionDir: f.dir });
   assert.equal(ended.carry.root, f.root);
-  const next = { sessionId: "sess-2", sessionDir: join(f.base, "sess-2"), root: f.root };
+  const next = { sessionId: "sess-2", sessionDir: join(f.base, "sess-2"), root: f.root, env: f.ctx.env };
   assert.equal(carryInto({ ...next, exclusions: ended.carry.exclusions, protect: ended.carry.protect, from: "sess-1" }).ok, true);
   assert.equal(verdict("Write", { sessionDir: next.sessionDir }).allow, false);
   assert.equal((await executeVerb("pair_propose", { boundary: ["src/a.txt"] }, next)).ok, false);
@@ -1780,4 +1781,104 @@ test("RECALL_LINE and messageText", () => {
   assert.equal(messageText({ content: [{ type: "thinking", thinking: "t" }, { type: "text", text: "a" }, { type: "text", text: "b" }] }), "a\nb");
   assert.equal(messageText({ content: [{ type: "tool_use" }] }), null);
   assert.equal(messageText(undefined), null);
+});
+
+// ─── pattern claims and alternatives (1.6.0) ────────────────────────────────────────────
+
+const FINDINGS_RECORD = (sessionId, over = {}) => JSON.stringify({ version: 1, sessionId, writtenAt: "2026-11-04T10:00:00.000Z", kind: "verdict", alternatives: [{ design: "a queue table with a worker", chosen: true }, { design: "a direct call", chosen: false }], ...over });
+/** The fixture with the sibling state (ask-graham's findings, this plugin's errors.log) under the fixture, in the adapter's env. */
+const withSiblingState = (f) => ({ ...f, ctx: { ...f.ctx, env: { ...f.ctx.env, XDG_STATE_HOME: join(f.top, "xdg-state"), PAIRED_CODING_STATE_DIR: f.base } } });
+
+test("through the verbs: a pattern claim needs a receipt file:line or two distinct ones in the repository, the findings file requires alternatives of the first card only, and a broken findings file is one errors.log line", { skip: !hasSandbox }, async () => {
+  const f = withSiblingState(fixture());
+  const xdg = f.ctx.env.XDG_STATE_HOME;
+  assert.equal((await executeVerb("pair_start", {}, f.ctx)).ok, true);
+  const why = "it is the pattern used in the rest of the codebase";
+  const receiptDir = join(f.root, ".pattern-check");
+  const one = await executeVerb("pair_propose", { boundary: ["src/a.txt"], why, sources: [`${f.root}/src/a.txt:1`] }, f.ctx);
+  assert.equal(one.text, `pair_propose refused: why claims a codebase pattern ("the pattern used in"), and a pattern claim needs a pattern source: add to sources either one absolute file:line inside the pattern-check receipt directory ${receiptDir}/ (this session's receipt would be ${receiptDir}/sess-1.md; found 0), or two or more absolute file:line sources under ${f.root}/ showing the pattern in the code (found 1)`);
+  assert.equal(journal(f).at(-1).type, "refusal");
+  const twice = await executeVerb("pair_propose", { boundary: ["src/a.txt"], why, sources: [`${f.root}/src/a.txt:1`, `${f.root}/src/../src/a.txt:1`] }, f.ctx);
+  assert.match(twice.text, /\(found 1\)$/, "one citation spelled twice is one source");
+  const two = await executeVerb("pair_propose", { boundary: ["src/a.txt"], why, sources: [`${f.root}/src/a.txt:1`, `${f.root}/src/b.txt:1`] }, f.ctx);
+  assert.equal(two.ok, true, two.text);
+  assert.doesNotMatch(two.text, /Alternatives/);
+  const receipt = await executeVerb("pair_propose", { boundary: ["src/a.txt"], why, sources: [`${receiptDir}/sess-1.md:4`] }, f.ctx);
+  assert.equal(receipt.ok, true, receipt.text);
+  // An ordinary why with the old detector's bare substrings is no claim.
+  const ordinary = await executeVerb("pair_propose", { boundary: ["src/a.txt"], why: "This isolates the migration from the rest of the codebase; no existing pattern handles it, and it removes the pattern introduced by the bug." }, f.ctx);
+  assert.equal(ordinary.ok, true, ordinary.text);
+  // The findings file for this session: alternatives become required, and the card's text shows them with the chosen one marked.
+  const findings = join(xdg, "ask-graham", "findings", "sess-1.json");
+  mkdirSync(dirname(findings), { recursive: true });
+  writeFileSync(findings, FINDINGS_RECORD("sess-1"));
+  const missing = await executeVerb("pair_propose", { boundary: ["src/a.txt"] }, f.ctx);
+  assert.equal(missing.text, `pair_propose refused: ask-graham's findings for this session are on disk (${findings}), so the card needs alternatives: alternatives is a list of { "design": "one design, in words", "chosen": true or false } objects with exactly one chosen: true, including the findings' chosen design "a queue table with a worker" and at least one entry with chosen: false`);
+  const alternatives = [{ design: "A queue table with a worker (pattern-fit)", chosen: true }, { design: "a direct call", chosen: false }];
+  const carried = await executeVerb("pair_propose", { boundary: ["src/a.txt"], alternatives, proposedCode: "x = 1" }, f.ctx);
+  assert.equal(carried.ok, true, carried.text);
+  assert.deepEqual(carried.result.card.alternatives, alternatives);
+  assert.match(carried.text, /Planned code \(proposedCode\), to show on the card:\n```\nx = 1\n```\nAlternatives, to show on the card with the chosen one marked:\n {2}\[chosen\] A queue table with a worker \(pattern-fit\)\n {2}\[ {6}\] a direct call$/);
+  assert.doesNotMatch(carried.text.split("\nPlanned code")[0], /"alternatives"/, "lifted out of the JSON, like the planned code");
+  assert.deepEqual(journal(f).at(-1).card.alternatives, alternatives);
+  assert.deepEqual(loadState(f.dir).findingsConsumed, { sessionId: "sess-1", writtenAt: "2026-11-04T10:00:00.000Z" });
+  // The findings held that card only: the next card, with the same file on disk, needs no alternatives.
+  const second = await executeVerb("pair_propose", { boundary: ["src/a.txt"] }, f.ctx);
+  assert.equal(second.ok, true, second.text);
+  assert.doesNotMatch(second.text, /Alternatives/);
+  // Findings written later re-arm the check for the next card.
+  writeFileSync(findings, FINDINGS_RECORD("sess-1", { writtenAt: "2026-11-04T10:05:00.000Z", alternatives: [{ design: "one table per tenant", chosen: true }] }));
+  const rearmed = await executeVerb("pair_propose", { boundary: ["src/a.txt"] }, f.ctx);
+  assert.match(rearmed.text, /so the card needs alternatives: .*including the findings' chosen design "one table per tenant"$/);
+  const again = await executeVerb("pair_propose", { boundary: ["src/a.txt"], alternatives: [{ design: "one table per tenant", chosen: true }] }, f.ctx);
+  assert.equal(again.ok, true, again.text);
+  assert.deepEqual(loadState(f.dir).findingsConsumed, { sessionId: "sess-1", writtenAt: "2026-11-04T10:05:00.000Z" });
+  // A findings file that is not JSON, or names another session, reads as missing: the card goes through without alternatives, and errors.log says why.
+  writeFileSync(findings, "nope");
+  const broken = await executeVerb("pair_propose", { boundary: ["src/a.txt"] }, f.ctx);
+  assert.equal(broken.ok, true, broken.text);
+  writeFileSync(findings, FINDINGS_RECORD("sess-9", { writtenAt: "2026-11-04T10:09:00.000Z" }));
+  const foreign = await executeVerb("pair_propose", { boundary: ["src/a.txt"] }, f.ctx);
+  assert.equal(foreign.ok, true, foreign.text);
+  const log = readFileSync(join(f.base, "errors.log"), "utf8").trim().split("\n");
+  assert.equal(log.length, 2);
+  assert.match(log[0], /lib\/card-context\.mjs pair_propose session=sess-1: ask-graham findings .*sess-1\.json are not JSON/);
+  assert.match(log[1], /lib\/card-context\.mjs pair_propose session=sess-1: ask-graham findings .*sess-1\.json name session "sess-9", not this session \("sess-1"\)/);
+  assert.equal(existsSync(join(xdg, "ask-graham", "errors.log")), false);
+  assert.equal(existsSync(receiptDir), false, "the receipt directory is only read, never made");
+});
+
+test("through the verbs: the findings are looked up under the adapter's env, never this process's; a context without one refuses every card", { skip: !hasSandbox }, async () => {
+  const f = withSiblingState(fixture());
+  const processXdg = join(f.top, "process-xdg");
+  const saved = process.env.XDG_STATE_HOME;
+  process.env.XDG_STATE_HOME = processXdg;
+  try {
+    assert.equal((await executeVerb("pair_start", {}, f.ctx)).ok, true);
+    // Findings only where this process's env points: the adapter's env has none, so the card needs nothing.
+    mkdirSync(join(processXdg, "ask-graham", "findings"), { recursive: true });
+    writeFileSync(join(processXdg, "ask-graham", "findings", "sess-1.json"), FINDINGS_RECORD("sess-1"));
+    const free = await executeVerb("pair_propose", { boundary: ["src/a.txt"] }, f.ctx);
+    assert.equal(free.ok, true, free.text);
+    // Findings only where the adapter's env points: held, with this process's env still elsewhere.
+    const adapterFindings = join(f.ctx.env.XDG_STATE_HOME, "ask-graham", "findings", "sess-1.json");
+    mkdirSync(dirname(adapterFindings), { recursive: true });
+    writeFileSync(adapterFindings, FINDINGS_RECORD("sess-1"));
+    rmSync(processXdg, { recursive: true, force: true });
+    const held = await executeVerb("pair_propose", { boundary: ["src/a.txt"] }, f.ctx);
+    assert.match(held.text, new RegExp(`^pair_propose refused: ask-graham's findings for this session are on disk \\(${adapterFindings.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\)`));
+    // HOME from the adapter's env is the fall back when it names no XDG_STATE_HOME.
+    const home = join(f.top, "adapter-home");
+    mkdirSync(join(home, ".local", "state", "ask-graham", "findings"), { recursive: true });
+    writeFileSync(join(home, ".local", "state", "ask-graham", "findings", "sess-1.json"), FINDINGS_RECORD("sess-1"));
+    const { XDG_STATE_HOME: _dropped, ...noXdg } = f.ctx.env;
+    const viaHome = await executeVerb("pair_propose", { boundary: ["src/a.txt"] }, { ...f.ctx, env: { ...noXdg, HOME: home } });
+    assert.match(viaHome.text, /^pair_propose refused: ask-graham's findings for this session are on disk \(.*adapter-home\/\.local\/state\/ask-graham\/findings\/sess-1\.json\)/);
+    // No env at all is an adapter bug the gate names, not a silent read of this process's state.
+    const { env: _none, ...bare } = f.ctx;
+    const refused = await executeVerb("pair_propose", { boundary: ["src/a.txt"] }, bare);
+    assert.equal(refused.text, "pair_propose refused: could not read the card's context: cardContext failed: cardContext needs the adapter's env");
+  } finally {
+    if (saved === undefined) delete process.env.XDG_STATE_HOME; else process.env.XDG_STATE_HOME = saved;
+  }
 });
