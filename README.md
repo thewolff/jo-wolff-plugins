@@ -82,9 +82,10 @@ it, keeping a record of what it did and asked, and a vendored set of engineering
 - **[brb](#brb)** — type `brb` and walk away: the agent keeps working, every ask it would
   have stopped for waits in a digest, and only a broken main, data loss, a security finding,
   spend near a ceiling or a blocker on everything comes through at once; `back` prints the
-  digest. Claude Code hooks plus an OMP extension. Changes in brb 0.1.1: `lib/hook-runner.mjs`
-  re-vendored from plugin-kit 0.3.1 (the handler's env carries the runner's start and deadline; stdout drains before exit);
-  hooks answer as before.
+  digest. Claude Code hooks plus an OMP extension. Changes in brb 0.2.0: while away, asks are
+  written, not shown: the agent files each one with `scripts/brb.mjs hold` and its reply shows
+  no `Needs you` section, no question and no closing ask; a reply that still shows one is filed
+  and sent back once by the Stop hook. See the plugin's [CHANGELOG](plugins/brb/CHANGELOG.md).
 
 output-types delivers text and, since 0.3.0, checks every finished message for a label without
 a receipt, warning only; see its *delivers, and warns* note. i-have-audhd delivers its rules and checks every finished message, warning by
@@ -206,9 +207,11 @@ without a `ctx search`. Past the threshold, continuity blocks once so the agent 
 **Compaction.** continuity saves a snapshot of the session, git state included, before it
 (Claude Code only), and says so when auto-compaction fires with no handoff written.
 
-**Away.** Between `brb` and `back`, brb's Stop hook files `## Needs you` lines in a digest,
-surfaces `on fire:` lines at once, and sends the agent back to work until it writes `idle:`,
-stops twice with no tool call, or runs three continuations in a row that raise nothing new.
+**Away.** Between `brb` and `back`, the agent writes each ask into brb's digest with
+`scripts/brb.mjs hold` and shows none of it; brb's Stop hook files any `## Needs you` section
+or closing ask that still appears and sends the reply back once, surfaces `on fire:` lines at
+once, and sends the agent back to work until it writes `idle:`, stops twice with no tool call,
+or runs three continuations in a row that raise nothing new.
 
 **End.** ledger stamps the session and may write a decision-log entry; pattern-check keeps the
 receipt and removes its working files.
@@ -229,7 +232,7 @@ receipt and removes its working files.
 | ctx-watch | 0.2.1 | ctx daemon and semantic-index health, repair, and the consult-history Stop check | vendors the hook runner and the scenario runner |
 | delegation | 0.1.1 | brief teaching, spawn gate, `SendMessage` check, SubagentStop warning, 11 agents, three guards | needs pattern-check's receipt for builder-class spawns; vendors the hook runner |
 | continuity | 0.3.0 | PreCompact snapshot, post-compaction restore with the rules files and durable notes re-inlined, liveness line, context-pressure warning, `/continuity:handoff`; the save and restore also on OMP | vendors the hook runner |
-| brb | 0.1.1 | `brb` / `back` / `pending`, the away digest, keep-working, on-fire surfacing | vendors the hook runner |
+| brb | 0.2.0 | `brb` / `back` / `pending`, the hold command, the away digest, the backstop, keep-working, on-fire surfacing | vendors the hook runner |
 
 ### What they share
 
