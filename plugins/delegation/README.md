@@ -64,7 +64,7 @@ The text is `sessionBlock()` in `lib/brief.mjs`.
 
 | Gate | Fires on | Condition | Answer |
 |---|---|---|---|
-| 1 How it fails | PreToolUse `Agent`/`Task`; OMP `task` | `tool_input.prompt` (OMP: the shared `context` plus each `tasks[].task`, or the single `task`) has no heading line `## How it fails` | deny; reason names the heading, what the section holds, and `templates/builder-brief.md` |
+| 1 How it fails | PreToolUse `Agent`/`Task`; OMP `task` | `tool_input.prompt` (OMP: the shared `context` plus each `tasks[].task`, or the single `task`) has no heading line `## How it fails`. On OMP a `readOnlyAgents` entry is exempt | deny; reason names the heading, what the section holds, and `templates/builder-brief.md` |
 | 4 Spiral bound | same | `subagent_type` is builder-class and the prompt has no heading line `## Spiral bound` | deny; same shape |
 | 2 Receipt | same | builder-class, pattern-check installed, and no `<git root of cwd>/.pattern-check/<session_id>.md` (nor pattern-check's state copy) | deny; reason names the path, the exact `pattern-check.mjs open … then record --session <key>` command, and `requirePatternCheck: false` |
 | 3 Not delivered | PostToolUse `SendMessage`; OMP `write agent://…` | `tool_response.success === false` (OMP: `isError`) | `decision: "block"`, reason = the tool's own `message` + `this message was NOT delivered; spawn a new agent or fix the name` + the two tool calls that do it |
@@ -78,8 +78,9 @@ compared bare (`newdle:builder`, `agents/builder` and `Builder` all match `build
 `subagent_type` is Claude Code's default, `general-purpose`, which is in the default class. A
 name in `readOnlyAgents` (`reviewer-codex`, `reviewer`, `auditor`, `scout`, `reader`,
 `research`, `beefy-research`, `security-reviewer`, `summarizer`, `changelog`, `checker` by
-default) is never builder-class: it needs `## How it fails` only, never a Spiral bound or a
-receipt, and its report draws no stop warning.
+default) is never builder-class: it needs no Spiral bound and no receipt, and its report draws
+no stop warning. On Claude Code it still needs `## How it fails`; on OMP it is exempt from
+that too (see *On OMP*).
 
 The deny texts, exactly (`<type>` is the subagent type as given; `<section>` is the section
 from `templates/builder-brief.md`, verbatim, one per missing heading):
@@ -166,6 +167,12 @@ pattern-check's own OMP adapter keys it); the stop warning on the `task` result
 (`details.results[].output`, as additionalContext, so on OMP the parent model does see it); and
 gate 3's twin on a `write` to an `agent://` path. The ported hooks are Claude Code only.
 
+A `readOnlyAgents` entry (`reviewer-codex`, `scout`, `reader`, …) is exempt from every OMP gate,
+`## How it fails` included. Plumb's own How-it-fails gate on OMP exempts read-only agents
+outright, and two gates that disagree on one dispatch would refuse Plumb's read-only spawns.
+The other entries of the same `task` call are still judged. On Claude Code the spawn gate
+still asks a read-only agent for `## How it fails`.
+
 The limit on OMP: OMP already errors a `write agent://<id>` to a peer that is not running, so
 the twin only adds the instruction. A write to a parked peer is queued and the peer revived,
 and whether it acts on the message is not knowable from the tool result, so a message to a
@@ -189,6 +196,8 @@ before its live phase: the denies (`evals/spawn-gate-deny-no-how-it-fails.scenar
 | spawn-gate gate 2 | pattern-check is not installed | the spawn is allowed; one skipped.log line naming the reason | install pattern-check if the receipt is wanted |
 | send-message-check | the response has no `success` field (another host version) | nothing; the send's own result is the only signal | nothing |
 | subagent-stop | `last_assistant_message` is absent (older host, or the agent ended on a tool call) | the warning says the report ended without the line | read the report; the warning is advisory |
+| subagent-stop | auto mode: the subagent hands its report back through the `SubagentHandback` tool (Claude Code 2.1.271+), so `last_assistant_message` holds only its closing text; the SubagentStop input carries no field with the handed-back report | the warning can fire on a report that did end with the line | read the delivered report; the warning is advisory and nothing is blocked |
+| subagent-stop | the session itself runs as a builder-class agent (`--agent builder`, or the `agent` setting): Claude Code's internal agents (prompt suggestions, `/btw`) then report that name as `agent_type` | the warning fires when such an internal agent finishes | nothing; the warning is advisory |
 | the OMP adapter | a handler throws | returns undefined (OMP would otherwise turn a throw into a block of every `task` call) | nothing |
 | delegation-guard | the file is unreadable or binary; the state dir is unwritable | not counted, not flagged; the streak is lost, never the call | nothing |
 | worktree-spawn-guard | git is missing, fails, or exceeds 3 s | nothing | nothing |
@@ -247,3 +256,9 @@ delegation-guard's streak, and its line count stops at the threshold; the hooks.
 5 s against the runner's 4 s; OMP re-teaches after a compaction; every agent has a `## When this
 can't run` section; `evals/` scenarios cover every hook and outcome; `plugin.json` declares the
 state directory, pruned by `scripts/prune.mjs`.
+
+From the second review: on OMP a `readOnlyAgents` entry is exempt from every gate, `## How it
+fails` included, matching Plumb's gate; the canary's step 1 checks for a SessionStart
+`hook_response` (Claude Code 2.1.318 hook events carry no script path), so the canary can pass;
+the stop warning's auto-mode limit (`SubagentHandback`) and the `--agent` session limit are
+documented under *How it fails*.

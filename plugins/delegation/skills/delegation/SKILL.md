@@ -42,7 +42,7 @@ Headings are literal. The gate reads `## How it fails` and `## Spiral bound` as 
 count and a heading inside a fenced code block does not count. On OMP the shared `context` and
 each task are read together, so a section in `context` covers every task. A read-only agent
 (`reviewer-codex`, `scout`, `reader`, `research`, `auditor` and the rest of `readOnlyAgents`)
-needs `## How it fails` only.
+needs `## How it fails` only on Claude Code, and nothing on OMP.
 
 1. `# Target`: the repository, the branch or worktree, the files in play, and the non-goals
    (what the agent is not to touch, so "while I'm here" has an answer).

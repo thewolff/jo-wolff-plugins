@@ -14,9 +14,12 @@
 # checkout's hooks, run by plugin-kit's lib/live-run.mjs hook phase (a sandbox per scenario; no
 # model). Then headless (`claude -p`), with the plugin loaded from THIS checkout and the
 # installed copy disabled:
-#   1. The plugin's hooks ran (a hook event naming one of them appears in the stream-json).
-#   2. The SessionStart hook's teaching block reached the run: the stream-json carries the
-#      "# Delegation: how to brief a subagent" heading (the additionalContext the hook returns).
+#   1. The host ran SessionStart hooks: the step-1 grep is for a stream-json line carrying both
+#      `"subtype":"hook_response"` and `"hook_event":"SessionStart"` (copied from
+#      plugins/ctx-watch/e2e/live-run.sh). Claude Code 2.1.318's hook events carry the event name
+#      and output, not the script path, so which plugin answered is proved by step 2, not here.
+#   2. This plugin's SessionStart hook answered: the stream-json carries the
+#      "Delegation: how to brief a subagent" heading (the additionalContext the hook returns).
 #
 # How it fails: a hook scenario fails → exit 1 with the helper's lines. No helper found → the
 # hook phase is skipped with a line saying so. `claude` missing → 75. `claude` present but the
@@ -86,13 +89,13 @@ if [ "$CODE" -ne 0 ]; then
   exit "$CODE"
 fi
 
-# 1. A hook of this plugin ran: a hook event names one of its hook scripts.
-if ! grep -q "$PLUGIN_DIR/hooks/" "$OUT"; then
-  echo "fail 1: no hook event names a script under $PLUGIN_DIR/hooks/ (hooks did not run, or --include-hook-events changed shape)"
+# 1. The host ran SessionStart hooks: a hook_response event for SessionStart is in the stream.
+if ! grep -q '"subtype":"hook_response".*"hook_event":"SessionStart"' "$OUT"; then
+  echo "fail 1: no hook_response event for SessionStart in the stream-json (hooks did not run, or --include-hook-events changed shape)"
   exit 1
 fi
-echo "step 1: a hook of $PLUGIN ran"
-# 2. The teaching block was delivered at SessionStart.
+echo "step 1: the host ran SessionStart hooks"
+# 2. This plugin's SessionStart hook answered: its teaching block heading is in the stream.
 if ! grep -q "Delegation: how to brief a subagent" "$OUT"; then
   echo "fail 2: the SessionStart teaching block is not in the transcript"
   exit 1

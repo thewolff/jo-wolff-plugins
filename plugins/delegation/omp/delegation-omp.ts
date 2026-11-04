@@ -10,9 +10,12 @@
 // every entry. The single-task form (a top-level `task` string, no `tasks`) is judged as one
 // entry. An entry's `agent` is the agent name (falling back to a top-level `agent`; missing =
 // OMP's default `task`, which is in the default builder class). A name in config
-// `readOnlyAgents` (reviewer-codex, scout, reader, …) is never builder-class: it needs
-// `## How it fails` only. Every entry is judged; the first failing one blocks the whole call
-// with `{ block: true, reason }` naming the task index.
+// `readOnlyAgents` (reviewer-codex, scout, reader, …) is exempt from every gate, `## How it
+// fails` included, matching Plumb's own How-it-fails gate on OMP, which exempts read-only
+// agents outright; two gates disagreeing on one dispatch would refuse Plumb's read-only spawns.
+// (The Claude Code spawn gate still asks a read-only agent for `## How it fails`.) Every other
+// entry is judged; the first failing one blocks the whole call with `{ block: true, reason }`
+// naming the task index.
 // The receipt (gate 2) is keyed on `ctx.sessionManager.getSessionId()` and `ctx.cwd`, the same
 // way pattern-check's OMP adapter keys its own receipt. The handler does no I/O beyond the
 // config read and two existsSync calls: an OMP tool_call handler that throws or exceeds its
@@ -38,7 +41,7 @@
 // the unit tests without Bun. `pi` is typed structurally; there are no imports from the host.
 
 import { loadConfig, logSkipped } from "../lib/config.mjs";
-import { headingReason, isBuilderClass, missingHeadings, sessionBlock, stoppedBecause, stopWarning, NOT_DELIVERED } from "../lib/brief.mjs";
+import { headingReason, inList, isBuilderClass, missingHeadings, sessionBlock, stoppedBecause, stopWarning, NOT_DELIVERED } from "../lib/brief.mjs";
 import { checkReceipt, receiptReason } from "../lib/receipt.mjs";
 
 export type OmpContext = { cwd?: string; agent?: { kind?: unknown }; sessionManager?: { getSessionId?: () => unknown } } | undefined;
@@ -97,6 +100,7 @@ export function judgeTaskCall(input: unknown, ctx: OmpContext, deps: AdapterDeps
       continue;
     }
     const agent = typeof t.agent === "string" ? t.agent : typeof call.agent === "string" ? call.agent : "task";
+    if (inList(agent, config.readOnlyAgents)) continue;
     const builder = isBuilderClass(agent, config.builderClass, config.readOnlyAgents);
     const prompt = context ? `${context}\n\n${t.task}` : t.task;
     const missing = missingHeadings(prompt, { builder, requireHowItFails: config.requireHowItFails, requireSpiralBound: config.requireSpiralBound });

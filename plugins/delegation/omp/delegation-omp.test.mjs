@@ -35,12 +35,12 @@ test("tool_call task: every entry is judged; the first failing one blocks with i
   const bad = pi.handlers.tool_call({ toolName: "task", input: { tasks: [{ task: HOW_ONLY, agent: "reader" }, { task: HOW_ONLY, agent: "builder" }] } }, ctxFor(repo));
   assert.equal(bad.block, true);
   assert.match(bad.reason, /^tasks\[1\]: Spawn refused: builder-class "builder" needs a "## Spiral bound" heading too/);
-  const none = pi.handlers.tool_call({ toolName: "task", input: { tasks: [{ task: "do it", agent: "scout" }] } }, ctxFor(repo));
-  assert.match(none.reason, /^tasks\[0\]: Spawn refused: the prompt has no "## How it fails" heading/);
+  const none = pi.handlers.tool_call({ toolName: "task", input: { tasks: [{ task: "do it", agent: "debugger" }] } }, ctxFor(repo));
+  assert.match(none.reason, /^tasks\[0\]: Spawn refused: the prompt has no "## How it fails" heading/, "an agent in neither list still needs How it fails");
   assert.equal(pi.handlers.tool_call({ toolName: "bash", input: { command: "rm" } }, ctxFor(repo)), undefined, "other tools");
 });
 
-test("tool_call task: the shared context counts for every entry, the single-task form is judged, a parenthetical heading matches, and read-only agents need How-it-fails only", (t) => {
+test("tool_call task: the shared context counts for every entry, the single-task form is judged, a parenthetical heading matches, and read-only agents are exempt from every gate", (t) => {
   const { env } = box(t);
   const repo = gitRepo(join(env.HOME, "repo"), env);
   receipt(repo);
@@ -50,10 +50,12 @@ test("tool_call task: the shared context counts for every entry, the single-task
   assert.equal(judgeTaskCall({ context: "# Goal\nx", tasks: [{ task: GOOD_BRIEF, agent: "builder" }] }, ctxFor(repo), deps), undefined, "sections in the task");
   assert.match(judgeTaskCall({ context: "# Goal\nx", tasks: [{ task: "do it", agent: "builder" }] }, ctxFor(repo), deps).reason, /^tasks\[0\]: Spawn refused/);
   assert.equal(judgeTaskCall({ context: "# Goal\n\n## How it fails\n- x\n", tasks: [{ task: "review the diff", agent: "reviewer-codex" }] }, ctxFor(repo, "no-receipt-session"), deps), undefined, "read-only: no Spiral bound, no receipt");
-  assert.match(judgeTaskCall({ tasks: [{ task: "review the diff", agent: "reviewer-codex" }] }, ctxFor(repo), deps).reason, /^tasks\[0\]: Spawn refused: the prompt has no "## How it fails" heading\./);
+  assert.equal(judgeTaskCall({ context: "# Goal\nx", tasks: [{ task: "review the diff", agent: "reviewer-codex" }] }, ctxFor(repo, "no-receipt-session"), deps), undefined, "read-only: no How it fails either (Plumb's gate exempts it too)");
+  assert.match(judgeTaskCall({ tasks: [{ task: "review the diff", agent: "reviewer-codex" }, { task: "do it", agent: "builder" }] }, ctxFor(repo), deps).reason, /^tasks\[1\]: Spawn refused/, "a read-only entry does not exempt its siblings");
   assert.match(judgeTaskCall({ agent: "builder", task: "do it" }, ctxFor(repo), deps).reason, /^task: Spawn refused: the prompt has no "## How it fails" or "## Spiral bound" heading/, "single-task form");
   assert.equal(judgeTaskCall({ agent: "builder", task: "do it", context: plumbContext }, ctxFor(repo), deps), undefined, "single-task form with context");
-  assert.equal(judgeTaskCall({ agent: "scout", tasks: [{ task: HOW_ONLY }] }, ctxFor(repo), deps), undefined, "a top-level agent applies to entries without one");
+  assert.equal(judgeTaskCall({ agent: "scout", tasks: [{ task: "map it" }] }, ctxFor(repo), deps), undefined, "a top-level read-only agent applies to entries without one");
+  assert.match(judgeTaskCall({ agent: "builder", tasks: [{ task: HOW_ONLY }] }, ctxFor(repo), deps).reason, /^tasks\[0\]: Spawn refused: builder-class "builder" needs a "## Spiral bound" heading too/, "a top-level builder agent applies to entries without one");
 });
 
 test("tool_call task: a missing agent is OMP's default `task`, which is builder-class; gate 2 keys on the session id", (t) => {

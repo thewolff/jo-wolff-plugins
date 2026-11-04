@@ -60,3 +60,16 @@ First release: the delegation seam, on Claude Code and OMP. Teaching first, gate
   `tools:`.
 - `evals/manifest.json` and scenarios for every hook × outcome; `plugin.json` `state`;
   `scripts/prune.mjs`.
+
+### Before release, from the second review
+
+- OMP: a `readOnlyAgents` entry is exempt from every gate, `## How it fails` included, matching
+  Plumb's own How-it-fails gate; the other entries of the same `task` call are still judged.
+  Claude Code's spawn gate is unchanged.
+- `e2e/live-run.sh` step 1 checks for a SessionStart `hook_response` in the stream-json
+  (Claude Code 2.1.318 hook events carry no script path, so the old grep always failed the
+  canary); step 2 still proves this plugin's teaching block arrived.
+- Stop warning: the header comment says SubagentStop's `additionalContext` goes to the subagent,
+  not the parent; the README documents two limits: in auto mode a report handed back through
+  `SubagentHandback` is not in `last_assistant_message` and the SubagentStop input has no field
+  for it, and a session run as `--agent builder` sees the warning for internal agents.

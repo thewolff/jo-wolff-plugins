@@ -11,7 +11,8 @@
 //                        warning). Compared on the bare name: trimmed, lower-cased, any
 //                        `plugin:` or `dir/` prefix dropped.
 //   readOnlyAgents       agent names that never change code: exempt from gate 4, gate 2 and the
-//                        stop warning even when also in builderClass (gate 1 still applies).
+//                        stop warning even when also in builderClass (gate 1 still applies on
+//                        Claude Code; the OMP adapter exempts them from gate 1 too).
 //   requireHowItFails    gate 1: a spawn needs a `## How it fails` heading.
 //   requireSpiralBound   gate 4: a builder-class spawn also needs `## Spiral bound`.
 //   requirePatternCheck  gate 2: a builder-class spawn needs this session's pattern-check receipt

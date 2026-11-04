@@ -9,9 +9,11 @@
 // point, which is the spiral this plugin exists to stop.
 //
 // WHO SEES IT: a SubagentStop `systemMessage` is shown to the user, not to the parent model
-// (hooks docs: "Warning message shown to the user"; SubagentStop has no additionalContext). The
-// warning is therefore worded for the person reading the session. On OMP the adapter adds the
-// same text to the parent's context instead.
+// (hooks docs: "Warning message shown to the user"). SubagentStop's
+// `hookSpecificOutput.additionalContext` goes to the subagent, not the parent (it "keeps the
+// subagent running"), so it is no route to the parent either. The warning is therefore worded
+// for the person reading the session. On OMP the adapter adds the same text to the parent's
+// context instead.
 //
 // AN EMPTY `agent_type` is not builder-class here: Claude Code fires SubagentStop for its own
 // internal agents (prompt suggestions, /btw) with an empty agent_type (hooks docs). Only the
@@ -19,6 +21,12 @@
 //
 // A missing `last_assistant_message` (older host, or an agent that ended on a tool call) is
 // treated as "no line": the warning says the report ended without one.
+//
+// AUTO MODE: a subagent given the `SubagentHandback` tool (Claude Code 2.1.271+, auto mode)
+// delivers its report as that tool's `tool_input.message`; `last_assistant_message` then holds
+// only its closing text, and the SubagentStop input has no field carrying the handed-back
+// report (hooks docs, SubagentStop input). This hook judges `last_assistant_message` only, so
+// in auto mode it can warn about a report that did end with the line. Documented in the README.
 //
 // `agent_type` and `last_assistant_message` are documented SubagentStop fields (hooks docs,
 // fetched 2026-11-04). `off: true` in the config → null.
