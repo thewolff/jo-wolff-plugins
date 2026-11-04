@@ -144,11 +144,53 @@ test("tick: strike, then down with one popup, stays down silently, recovers and 
   }
 });
 
+test("tick: two resting budget_exhausted ticks (the 2026-11-04 13:39 capture) pass: no strike, no popup (the 0.2.2 false popups)", async () => {
+  const b = box();
+  try {
+    const RESTING = readFileSync(join(FIX_DIR, "ctx-daemon-status-semantic-budget-exhausted.txt"), "utf8").replace(/"last_run_at_ms": \d+/g, `"last_run_at_ms": ${NOW}`);
+    const popups = [];
+    const popup = async (o) => (popups.push(o.text), { started: true, detail: "popup started (test)" });
+    for (const i of [0, 1]) {
+      const r = await main(["tick"], { env: b.env, now: () => NOW + i * 1000, run: fakeCtx([RESTING]).run, exists: () => true, popup });
+      assert.match(r.text, /^.*pass: .*semantic index budget_exhausted \(throttled catch-up, not a failure\) \| episode up, strikes 0$/);
+    }
+    assert.deepEqual(popups, []);
+  } finally {
+    b.release();
+  }
+});
+
+test("tick: two resting budget_exhausted ticks whose semantic last run is 24 h old (Core fresh) strike, go down and pop once (Codex R1 B1)", async () => {
+  const b = box();
+  try {
+    const j = JSON.parse(readFileSync(join(FIX_DIR, "ctx-daemon-status-semantic-budget-exhausted.txt"), "utf8"));
+    j.daemon.jobs.core_refresh.last_run_at_ms = NOW - 60_000;
+    j.daemon.jobs.semantic_index.last_run_at_ms = NOW - 86_400_000;
+    const STALE_RESTING = JSON.stringify(j);
+    const popups = [];
+    const popup = async (o) => (popups.push(o.text.split("\n")[0]), { started: true, detail: "popup started (test)" });
+    const lines = [];
+    for (const i of [0, 1]) {
+      const r = await main(["tick"], { env: b.env, now: () => NOW + i * 300_000, run: fakeCtx([STALE_RESTING]).run, exists: () => true, popup });
+      lines.push(r.text.split("\n").map((l) => l.replace(/^.*\| episode/, "episode")).join(" / "));
+    }
+    assert.deepEqual(lines, ["episode strike, strikes 1", "episode down, strikes 2 / popup started (test)"]);
+    assert.equal(popups.length, 1);
+    assert.equal(popups[0], "ctx-watch: semantic index budget_exhausted: last run 24h 5m ago (semantic_index.last_run_at_ms, over 2h); fix: `ctx semantic enable --wait`");
+    assert.equal(readState(statePath(b.env)).episodeKind, "semantic");
+  } finally {
+    b.release();
+  }
+});
+
 test("tick: two semantic-not-ready ticks then daemon-not-running ticks ask for two popups, one per kind (the review's P4)", async () => {
   const b = box();
   try {
     const fresh = (name) => readFileSync(join(FIX_DIR, name), "utf8").replace(/"last_run_at_ms": \d+/g, `"last_run_at_ms": ${NOW}`);
-    const SEMANTIC = fresh("ctx-daemon-status-semantic-not-ready.txt");
+    // Not ready: the budget_exhausted capture with its last run changed to failed (one field).
+    const semanticJson = JSON.parse(fresh("ctx-daemon-status-semantic-budget-exhausted.txt"));
+    semanticJson.daemon.jobs.semantic_index.last_run_status = "failed";
+    const SEMANTIC = JSON.stringify(semanticJson);
     const DOWN = fresh("ctx-daemon-status-not-running.txt");
     const popups = [];
     const popup = async (o) => (popups.push(o.text.split("\n")[0]), { started: true, detail: "popup started (test)" });

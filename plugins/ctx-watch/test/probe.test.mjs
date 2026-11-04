@@ -11,13 +11,14 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
-import { judge, probe, heal, check, runCtx, needsYouLine, ctxEnv, age, validMs, STALE_MS, SKEW_MS, STATUS_ARGV, MODE_ARGV, HEAL_ARGV, FIX, FIX_MISSING, SEMANTIC_FIX, SEMANTIC_STATUS, LINE_MAX } from "../lib/probe.mjs";
+import { judge, probe, heal, check, runCtx, needsYouLine, ctxEnv, age, validMs, STALE_MS, SKEW_MS, SEMANTIC_SKEW_MS, STATUS_ARGV, MODE_ARGV, HEAL_ARGV, FIX, FIX_MISSING, SEMANTIC_FIX, SEMANTIC_STATUS, LINE_MAX } from "../lib/probe.mjs";
 
 const FIX_DIR = join(dirname(fileURLToPath(import.meta.url)), "fixtures");
 const fixture = (name) => readFileSync(join(FIX_DIR, name), "utf8");
 const HEALTHY = fixture("ctx-daemon-status.txt");
 const NOT_RUNNING = fixture("ctx-daemon-status-not-running.txt");
-const SEMANTIC_NOT_READY = fixture("ctx-daemon-status-semantic-not-ready.txt");
+const BUDGET_EXHAUSTED = fixture("ctx-daemon-status-semantic-budget-exhausted.txt");
+const BUDGET_EXHAUSTED_0300 = fixture("ctx-daemon-status-semantic-budget-exhausted-0300.txt");
 const MODE = fixture("ctx-index-mode.txt");
 const HEALED = fixture("ctx-index-mode-auto.txt");
 const HEAL_SUPPRESSED = fixture("ctx-index-mode-auto.unavailable.txt");
@@ -33,6 +34,20 @@ function mutated(edit) {
   const j = JSON.parse(HEALTHY);
   edit(j);
   return JSON.stringify(j);
+}
+/** A capture with its semantic_index block edited. */
+function semanticEdited(text, edit) {
+  const j = JSON.parse(text);
+  edit(j.daemon.jobs.semantic_index);
+  return JSON.stringify(j);
+}
+/**
+ * One minute after a capture's later stamp (core_refresh or semantic_index): a capture is taken
+ * after both, and the 03:00 capture's semantic stamp is 400 s after its core_refresh.
+ */
+function after(text) {
+  const jobs = JSON.parse(text).daemon.jobs;
+  return Math.max(jobs.core_refresh.last_run_at_ms, jobs.semantic_index?.last_run_at_ms ?? 0) + 60_000;
 }
 
 test("ctxEnv removes CI and nothing else", () => {
@@ -56,20 +71,83 @@ test("healthy capture: ok, with the fields read", () => {
   assert.match(r.summary, /^daemon running \(pid 1706\), supervisor installed, core_refresh 1m ago, semantic index ready$/);
 });
 
-test("semantic index not ready (captured 2026-11-04 03:00 while ctx search reported semantic_status unavailable): fails naming the field, fix `ctx semantic enable --wait`, not healable", () => {
-  const lastRun = JSON.parse(SEMANTIC_NOT_READY).daemon.jobs.core_refresh.last_run_at_ms;
-  const r = judge(good(SEMANTIC_NOT_READY), lastRun + 60_000);
-  assert.equal(r.ok, false);
-  assert.equal(r.reason, 'the ctx semantic index is not ready (.daemon.jobs.semantic_index.status = "budget_exhausted")');
-  assert.equal(r.fix, SEMANTIC_FIX);
-  assert.equal(r.healable, false);
-  assert.deepEqual({ running: r.fields.running, supervisor: r.fields.supervisor, semanticEnabled: r.fields.semanticEnabled, semanticStatus: r.fields.semanticStatus }, { running: true, supervisor: "installed", semanticEnabled: true, semanticStatus: "budget_exhausted" });
-  const line = needsYouLine(r);
-  assert.equal(line, 'ctx-watch: the ctx semantic index is not ready (.daemon.jobs.semantic_index.status = "budget_exhausted"); fix: `ctx semantic enable --wait`');
-  assert.ok(line.length <= LINE_MAX);
+test("budget_exhausted is the throttled indexer resting (captures 2026-11-04 13:39 and 03:00: last_run_status budget_exhausted, runtime_active true, no last_error): ok", () => {
+  for (const [name, text] of [["13:39", BUDGET_EXHAUSTED], ["03:00", BUDGET_EXHAUSTED_0300]]) {
+    const r = judge(good(text), after(text));
+    assert.equal(r.ok, true, name);
+    assert.equal(r.reason, null, name);
+    assert.deepEqual({ semanticEnabled: r.fields.semanticEnabled, semanticStatus: r.fields.semanticStatus }, { semanticEnabled: true, semanticStatus: "budget_exhausted" }, name);
+    assert.match(r.summary, /, semantic index budget_exhausted \(throttled catch-up, not a failure\)$/, name);
+  }
+  const lastRunReady = judge(good(semanticEdited(BUDGET_EXHAUSTED, (s) => (s.last_run_status = "ready"))), after(BUDGET_EXHAUSTED));
+  assert.equal(lastRunReady.ok, true, "budget_exhausted after a ready last run: ok");
 });
 
-test("semantic rows: a reason is quoted when ctx gives one; every status but ready fails; the daemon rows come first", () => {
+test("budget_exhausted without the resting marks fails naming the last run: a failed last run, runtime_active false, a last_error, no last_run_status", () => {
+  const failedRun = judge(good(semanticEdited(BUDGET_EXHAUSTED, (s) => (s.last_run_status = "failed"))), after(BUDGET_EXHAUSTED));
+  assert.equal(failedRun.ok, false);
+  assert.equal(failedRun.reason, 'the ctx semantic index is not ready (.daemon.jobs.semantic_index.status = "budget_exhausted", last run "failed")');
+  assert.equal(failedRun.fix, SEMANTIC_FIX);
+  assert.equal(failedRun.healable, false);
+  const line = needsYouLine(failedRun);
+  assert.equal(line, 'ctx-watch: the ctx semantic index is not ready (.daemon.jobs.semantic_index.status = "budget_exhausted", last run "failed"); fix: `ctx semantic enable --wait`');
+  assert.ok(line.length <= LINE_MAX);
+  for (const [what, edit] of [
+    ["runtime_active false", (s) => (s.runtime_active = false)],
+    ["a last_error", (s) => (s.last_error = "semantic indexing failed")],
+    ["no last_run_status", (s) => delete s.last_run_status],
+  ]) {
+    const r = judge(good(semanticEdited(BUDGET_EXHAUSTED, edit)), after(BUDGET_EXHAUSTED));
+    assert.equal(r.ok, false, what);
+    assert.equal(r.fix, SEMANTIC_FIX, what);
+  }
+});
+
+test("budget_exhausted resting needs a fresh semantic last run: stale 24 h, missing, non-numeric, future fail naming the age; Core stays fresh", () => {
+  const NOW_BE = after(BUDGET_EXHAUSTED);
+  /** The 13:39 capture with core_refresh one minute old and semantic_index.last_run_at_ms edited. */
+  const at = (edit) => {
+    const j = JSON.parse(BUDGET_EXHAUSTED);
+    j.daemon.jobs.core_refresh.last_run_at_ms = NOW_BE - 60_000;
+    edit(j.daemon.jobs.semantic_index);
+    return judge(good(JSON.stringify(j)), NOW_BE);
+  };
+  const cases = [
+    ["stale 24 h", (s) => (s.last_run_at_ms = NOW_BE - 86_400_000), "semantic index budget_exhausted: last run 24h ago (semantic_index.last_run_at_ms, over 2h)"],
+    ["missing", (s) => delete s.last_run_at_ms, "semantic index budget_exhausted: last run age unknown (no semantic_index.last_run_at_ms)"],
+    ["null", (s) => (s.last_run_at_ms = null), "semantic index budget_exhausted: last run age unknown (no semantic_index.last_run_at_ms)"],
+    ["non-numeric", (s) => (s.last_run_at_ms = "yesterday"), 'semantic index budget_exhausted: last run age unknown (semantic_index.last_run_at_ms = "yesterday")'],
+    ["fractional", (s) => (s.last_run_at_ms = NOW_BE - 0.5), `semantic index budget_exhausted: last run age unknown (semantic_index.last_run_at_ms = ${NOW_BE - 0.5})`],
+    ["future 1 day", (s) => (s.last_run_at_ms = NOW_BE + 86_400_000), "semantic index budget_exhausted: last run 24h in the future (semantic_index.last_run_at_ms, over 1m skew)"],
+  ];
+  for (const [what, edit, reason] of cases) {
+    const r = at(edit);
+    assert.equal(r.ok, false, what);
+    assert.equal(r.reason, reason, what);
+    assert.equal(r.fix, SEMANTIC_FIX, what);
+    assert.equal(r.healable, false, what);
+    const line = needsYouLine(r);
+    assert.ok(line.length <= LINE_MAX, `${what}: ${line.length}`);
+    assert.ok(line.endsWith("; fix: `ctx semantic enable --wait`"), what);
+    assert.ok(!line.includes("…"), `${what}: the line fits whole`);
+  }
+  assert.equal(at((s) => (s.last_run_at_ms = NOW_BE - 1_000)).ok, true, "a 1 s old semantic run rests");
+  assert.equal(at((s) => (s.last_run_at_ms = NOW_BE + SEMANTIC_SKEW_MS)).ok, true, "exactly 60 s ahead is inside the skew");
+});
+
+test("budget_exhausted resting boundary: a semantic last run STALE_MS - 1 s old passes, STALE_MS + 1 s fails; 60 s + 1 s ahead fails", () => {
+  const NOW_BE = after(BUDGET_EXHAUSTED);
+  const at = (lastRun) => judge(good(semanticEdited(BUDGET_EXHAUSTED, (s) => (s.last_run_at_ms = lastRun))), NOW_BE);
+  assert.equal(at(NOW_BE - (STALE_MS - 1_000)).ok, true, "window - 1 s");
+  const late = at(NOW_BE - (STALE_MS + 1_000));
+  assert.equal(late.ok, false, "window + 1 s");
+  assert.equal(late.reason, "semantic index budget_exhausted: last run 2h ago (semantic_index.last_run_at_ms, over 2h)");
+  const ahead = at(NOW_BE + SEMANTIC_SKEW_MS + 1_000);
+  assert.equal(ahead.ok, false, "skew + 1 s");
+  assert.match(ahead.reason, /^semantic index budget_exhausted: last run 1m in the future /);
+});
+
+test("semantic rows: a reason is quoted when ctx gives one; every status but ready and a resting budget_exhausted fails; the daemon rows come first", () => {
   const r = judge(good(mutated((j) => ((j.daemon.jobs.semantic_index.status = "pending"), (j.daemon.jobs.semantic_index.reason = "daemon_config_reload_pending")))), NOW);
   assert.equal(r.reason, 'the ctx semantic index is not ready (.daemon.jobs.semantic_index.status = "pending", reason = "daemon_config_reload_pending")');
   for (const status of ["failed", "unknown", "disabled", undefined]) {
@@ -95,7 +173,8 @@ test("semantic search not enabled is a pass (nothing to watch); the block missin
 
 test("check: a semantic failure runs no heal (no `ctx index mode` spawn) and says why", () => {
   const seen = [];
-  const r = check({ run: (argv) => (seen.push(argv.slice(1).join(" ")), good(SEMANTIC_NOT_READY)), now: () => JSON.parse(SEMANTIC_NOT_READY).daemon.jobs.core_refresh.last_run_at_ms + 60_000, exists: () => true });
+  const FAILED_RUN = semanticEdited(BUDGET_EXHAUSTED, (s) => (s.last_run_status = "failed"));
+  const r = check({ run: (argv) => (seen.push(argv.slice(1).join(" ")), good(FAILED_RUN)), now: () => after(BUDGET_EXHAUSTED), exists: () => true });
   assert.equal(r.ok, false);
   assert.deepEqual(seen, ["daemon status --format json"]);
   assert.equal(r.healed.attempted, false);

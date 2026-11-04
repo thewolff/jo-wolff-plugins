@@ -1,8 +1,8 @@
 {
-  "$comment": "Sibling of session-start-semantic-not-ready: the healthy capture (daemon running, supervisor installed, core_refresh fresh, semantic index ready) and a first-ever run of the timer stamp: nothing is said. A resume leaves the marker the Stop check reads.",
+  "$comment": "Sibling of session-start-daemon-down: the healthy capture (daemon running, supervisor installed, core_refresh fresh, semantic index ready) and a first-ever run of the timer stamp: nothing is said. A resume leaves the marker the Stop check reads.",
   "event": "SessionStart",
   "expect": "silent",
-  "sibling": "session-start-semantic-not-ready.scenario.json",
+  "sibling": "session-start-daemon-down.scenario.json",
   "setup": {
     "env": {
       "CTX_WATCH_CTX": "${PLUGIN_DIR}/evals/fixtures/fake-ctx.sh",

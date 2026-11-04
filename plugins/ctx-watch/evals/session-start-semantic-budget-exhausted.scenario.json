@@ -1,0 +1,28 @@
+{
+  "$comment": "ctx is up, supervised and fresh, and .daemon.jobs.semantic_index.status is budget_exhausted with last_run_status budget_exhausted, runtime_active true and no last_error (the 2026-11-04 13:39 capture): the throttled indexer resting between budgeted runs, which ctx-watch 0.2.1 popped as not ready. Nothing is said. The semantic failure line is covered by test/probe.test.mjs and test/cli.test.mjs.",
+  "event": "SessionStart",
+  "expect": "silent",
+  "sibling": "session-start-daemon-down.scenario.json",
+  "setup": {
+    "env": {
+      "CTX_WATCH_CTX": "${PLUGIN_DIR}/evals/fixtures/fake-ctx.sh",
+      "FAKE_CTX_FIXTURES": "${PLUGIN_DIR}/test/fixtures",
+      "FAKE_CTX_STATUS": "ctx-daemon-status-semantic-budget-exhausted.txt"
+    }
+  },
+  "stdin": {
+    "session_id": "${SESSION_ID}",
+    "cwd": "${CWD}",
+    "hook_event_name": "SessionStart",
+    "source": "startup"
+  },
+  "after": {
+    "exists": [
+      "$XDG_STATE_HOME/ctx-watch/state.json"
+    ],
+    "absent": [
+      "$XDG_STATE_HOME/ctx-watch/errors.log",
+      "$XDG_STATE_HOME/ctx-watch/resume/${SESSION_ID}"
+    ]
+  }
+}
