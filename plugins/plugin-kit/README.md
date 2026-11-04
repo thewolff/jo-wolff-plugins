@@ -83,6 +83,13 @@ or with a failed permission or containment check, the run is static only: every 
 check is `unavailable: no execute authorization for <sha>` (or the reason), the reviewer's
 verdict cannot be `ship` and the gate line is `fail`.
 
+Every git command either agent runs, `status` and `log` included, goes through one pinned `g`
+function: `env -i` keeps only `PATH`, so no inherited `GIT_*` setting, `GIT_DIR` or global or
+system config applies, and its command line turns off hooks, the pager, the `core.fsmonitor`
+helper and signature verification (`log.showSignature`, which runs `gpg.program`), whatever the
+repository's own `.git/config` names. A plain `git status` or `git log` runs those helpers
+before any execute authorization, so the agents never run `git` another way.
+
 Every check reads a snapshot of the captured head sha: `git ls-tree -r -z <sha>` lists every
 entry and `git cat-file blob` writes each one's committed bytes into a plain file tree with no
 `.git`, made without a checkout, so no checkout hook runs. Neither command reads attributes, so
@@ -90,17 +97,23 @@ no `filter` driver, `ident`, end-of-line or `export-*` conversion applies, whate
 committed `.gitattributes`, `$GIT_DIR/info/attributes` or `core.attributesFile` says, and even
 when one of them changes mid-run. Earlier drafts snapshotted with `git archive` behind an
 attribute check; `git archive` rereads those sources when it runs, so a change after the check
-could still start a driver, and there is no attribute check any more. Every git call in the
-block reads no global or system config, no inherited `GIT_CONFIG_*` setting, `GIT_DIR` or
-replacement object, runs with `core.hooksPath=/dev/null` and fetches no missing object. The
-block refuses a symlink, a submodule, a path with an empty, `.`, `..` or `.git` component, a
-path written twice, any git or write failure, and a run whose written files, tree entries and
-files on disk are not one count; a refused snapshot reviews nothing. What can still make the
-snapshot wrong is a wrong sha: it is exactly the commit `$head` names, so both agents report
-that sha. Uncommitted changes are listed, never inspected. The CI node pin comes from the one
-workflow job that runs the plugin's tests and is reported as `exact` or `same major`, never as
-a CI result; a different major, or no single job, is `unavailable` and fails the gate, as does
-a run that skips cases while the CI job sets `env:` variables this run lacks. plugin-kit itself
+could still start a driver, and there is no attribute check any more. `git cat-file` does not
+check a blob's hash, so one `git hash-object --no-filters` over every written file must give
+back each entry's blob id: a rewritten loose object, or an `objects/info/alternates` store that
+answers for an id with other bytes, is `refused: hash mismatch`, not snapshotted. Last, the
+sorted paths of the listing must equal, byte for byte, the sorted files on disk: a
+case-insensitive volume such as default APFS puts `Docs/a.txt` and `docs/b.txt` in one folder
+and cannot hold that commit, so it is `refused: name mismatch`. The block also refuses a
+symlink, a submodule, a path with an empty, `.`, `..` or `.git` component, and any git or write
+failure; a refused snapshot reviews nothing. On this repository (1222 files) the block took
+23 s in bash and zsh, against 18 s for the earlier block without the hash and name checks: one
+`cat-file` and one `mv` per blob, one `hash-object` for all of them. What can still make
+the snapshot wrong is a wrong sha: it is exactly the commit `$head` names, verified blob by
+blob, so both agents report that sha. Uncommitted changes are listed, never inspected. The CI
+node pin comes from the one workflow job that runs the plugin's tests and is reported as
+`exact` or `same major`, never as a CI result; a different major, or no single job, is
+`unavailable` and fails the gate, as does a run that skips cases while the CI job sets `env:`
+variables this run lacks. plugin-kit itself
 has no workflow yet, so the gate fails on it until one exists. The reviewer refuses an output
 path whose `<repo>`, `<plugin>` or `<version>` is not `[A-Za-z0-9._-]+`, is `.` or holds `..`,
 and checks that each existing folder of `~/agent-scratch/<repo>/<plugin>/` is a real directory
@@ -113,10 +126,13 @@ lists; a push block belongs in settings deny rules. The reviewer sends the diff 
 Codex reads to OpenAI on the account `codex` is logged in to. OMP loads both from the plugin but
 drops their `model:` lines. Each agent's "How it fails" section covers the unavailable paths: no
 matching `execute: <sha>` or a failed permission or containment check runs nothing from the
-checkout; a refused snapshot reviews nothing; no `codex` on PATH stops the review before a brief
-exists, a `codex` failure after launch keeps the brief and hands over the retry line, and
-neither falls back to a Claude-only review; no CI pin or a sandbox refusal marks that check
-unavailable, never passed, and the gate's ledger check is always unavailable.
+checkout; a refused snapshot reviews nothing, whether the refusal is a link, a git failure, a
+blob that does not hash to its id or a name the volume folds; a helper named in the
+repository's own config never runs, because every git call goes through `g`; no `codex` on PATH
+stops the review before a brief exists, a `codex` failure after launch keeps the brief and hands
+over the retry line, and neither falls back to a Claude-only review; no CI pin or a sandbox
+refusal marks that check unavailable, never passed, and the gate's ledger check is always
+unavailable.
 `test/agents.test.mjs` checks each file's frontmatter, the contract, that section, that no
 `/Users/<name>` other than exactly `example` appears, and that each agent carries the
 `execute: <sha>` authorization sentence and the `git cat-file` snapshot block and never
@@ -130,7 +146,16 @@ repository writes it. A fake `git` that points `core.attributesFile` at a filter
 `info/attributes` and configures the driver between the block's `ls-tree` and its first
 `cat-file` changes nothing either. A symlink, a submodule, a crafted `../` path and a `.GiT`
 entry are refused, and an `ls-tree` that dies, answers nothing or cuts an entry short, or a
-`cat-file` that fails, stops the block with a named reason.
+`cat-file` or `hash-object` that fails, stops the block with a named reason. An
+`objects/info/alternates` store that answers for a committed blob id with other bytes (so
+`git cat-file` hands those bytes back) is `refused: hash mismatch` with nothing placed, and on a
+case-insensitive volume a commit holding `Docs/a.txt` and `docs/b.txt`, or `README` and
+`readme`, is `refused: name mismatch` (on a case-sensitive one it snapshots exactly). Every
+inline `g` command in each agent (`status`, `log`, `diff`, `show`, `grep`, `rev-parse`,
+`remote`), run as written in both shells against a repository whose own config sets
+`core.fsmonitor` and `gpg.program` with `log.showSignature` to a marker helper, never runs it,
+nor does the snapshot block, while a plain `git status` and `git log` in that repository run
+both; and neither agent contains `git -C` outside that one `g`.
 
 ## How it fails
 
@@ -150,9 +175,12 @@ Two agents, `cross-lab-reviewer` and `release-gate` (see "Agents"): the Codex re
 the release checklist that were written by hand for each plugin release, as files. Neither runs
 code from the checkout unless the invoking prompt says `execute: <sha>` for the exact head sha,
 and then only in a credential-free `env -i`; both check one snapshot of the head sha, written
-blob by blob with `git cat-file`, so no hook, filter driver or attribute conversion runs, even
-when attributes or config change mid-run. The release gate reports `ledger gate check`
-unavailable rather than run it against live `HEAD`. The scaffolder and the runner are unchanged.
+blob by blob with `git cat-file` and checked blob by blob against its id, so no hook, filter
+driver or attribute conversion runs, even when attributes or config change mid-run, and a
+substituted object or a name the volume folds is refused. Every git call, `status` and `log`
+included, goes through one pinned function, so no fsmonitor, gpg or pager helper from the
+repository's config runs. The release gate reports `ledger gate check` unavailable rather than
+run it against live `HEAD`. The scaffolder and the runner are unchanged.
 
 ## Changes in 0.1.1
 
