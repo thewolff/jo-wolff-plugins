@@ -149,7 +149,8 @@ test("garbage on stdin exits 0 with no block, only the fault warning", (t) => {
   assert.equal(r.status, 0);
   const out = JSON.parse(r.stdout);
   assert.equal(out.decision, undefined);
-  assert.match(out.systemMessage, /^ask-graham ask-graham-stop\.mjs failed open \(the stop went through\): stdin is not a JSON object/);
+  assert.ok(out.systemMessage.includes("ask-graham-stop.mjs"), out.systemMessage);
+  assert.match(out.systemMessage, /stdin is not a JSON object/);
 });
 
 test("the record lives under XDG_STATE_HOME only when it is absolute", () => {

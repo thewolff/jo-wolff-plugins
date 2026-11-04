@@ -53,16 +53,24 @@ function exitedClean(r) {
   assert.equal(r.status, 0, r.stderr);
 }
 
-// One systemMessage line naming the hook file, and the matching errors.log line.
-function warnedAndLogged(f, r, hookFile, reason) {
-  const out = reply(r);
+// The warning contract: one systemMessage line that names the hook file, carries the reason, and
+// says whether the fault reached errors.log. The wording around those parts is free.
+function warning(out, hookFile, reason, { logged = true } = {}) {
   assert.equal(typeof out?.systemMessage, "string");
   assert.doesNotMatch(out.systemMessage, /\n/);
-  assert.match(out.systemMessage, new RegExp(`^ask-graham ${hookFile} failed open`));
+  assert.ok(out.systemMessage.includes(hookFile), out.systemMessage);
   assert.match(out.systemMessage, reason);
+  assert.match(out.systemMessage, logged ? /logged to / : /could not be logged to /);
+  if (logged) assert.doesNotMatch(out.systemMessage, /could not be logged/);
+}
+
+// The warning, and exactly one errors.log line: time, hook file, reason.
+function warnedAndLogged(f, r, hookFile, reason) {
+  const out = reply(r);
+  warning(out, hookFile, reason);
   const lines = f.logLines();
   assert.equal(lines.length, 1, lines.join("\n"));
-  assert.match(lines[0], new RegExp(`^\\d{4}-\\d\\d-\\d\\dT\\S+Z ${hookFile} `));
+  assert.match(lines[0], new RegExp(`^\\d{4}-\\d\\d-\\d\\dT\\S+Z ${hookFile.replace(".", "\\.")} `));
   assert.match(lines[0], reason);
   return out;
 }
@@ -129,15 +137,15 @@ test("prompt hook: an unwritable state dir still exits 0 and says the fault coul
   writeFileSync(join(f.base, "state-file"), "");
   const r = f.prompt("{not json", { XDG_STATE_HOME: join(f.base, "state-file") });
   exitedClean(r);
-  assert.match(reply(r).systemMessage, /could not be logged to/);
+  warning(reply(r), "ask-graham-hook.mjs", /stdin is not a JSON object/, { logged: false });
 });
 
 test("prompt hook: a throw inside the hook is allowed, warned and logged (in process)", (t) => {
   const f = fixture(t);
   const out = runPrompt(JSON.stringify(f.promptPayload), { env: f.env, home: f.base, handleFn: () => { throw new Error("boom"); } });
   assert.equal(out.hookSpecificOutput, undefined);
-  assert.match(out.systemMessage, /^ask-graham ask-graham-hook\.mjs failed open \(the prompt went through\): the intensity setting could not be read this turn \(boom\)/);
-  assert.match(f.logLines()[0], / ask-graham-hook\.mjs the intensity setting could not be read this turn \(boom\)/);
+  warning(out, "ask-graham-hook.mjs", /boom/);
+  assert.match(f.logLines()[0], / ask-graham-hook\.mjs .*boom/);
 });
 
 test("prompt hook: a deep working directory resolves inside the 5 s budget", (t) => {
@@ -212,7 +220,8 @@ test("stop hook: an unwritable state dir lets the stop through instead of blocki
   exitedClean(r);
   const out = reply(r);
   assert.equal(out.decision, undefined);
-  assert.match(out.systemMessage, /^ask-graham ask-graham-stop\.mjs failed open \(the stop went through\): block record .* could not be written \(ENOTDIR\), so the stop was not blocked \(could not be logged to /);
+  // the record path runs through a file, so the read already fails with ENOTDIR and the stop passes
+  warning(out, "ask-graham-stop.mjs", /block record .*ENOTDIR/, { logged: false });
 });
 
 test("stop hook: a read-only state dir: no block, and the fault is reported", { skip: process.getuid?.() === 0 && "root ignores modes" }, (t) => {
@@ -223,7 +232,26 @@ test("stop hook: a read-only state dir: no block, and the fault is reported", { 
   exitedClean(r);
   const out = reply(r);
   assert.equal(out.decision, undefined);
-  assert.match(out.systemMessage, /could not be written \(EACCES\)/);
+  // errors.log lives in the same read-only dir, so the warning says the fault could not be logged
+  warning(out, "ask-graham-stop.mjs", /block record .*EACCES/, { logged: false });
+});
+
+test("stop hook: an unreadable (0200) block record lets every stop through instead of blocking each one", { skip: process.getuid?.() === 0 && "root ignores modes" }, (t) => {
+  const f = fixture(t);
+  // First stop blocks and writes the record; then the record is made write-only.
+  const first = f.stop(f.stopPayload);
+  exitedClean(first);
+  assert.equal(reply(first).decision, "block");
+  const record = join(f.state, "ask-graham", "blocked", SESSION);
+  chmodSync(record, 0o200);
+  t.after(() => { try { chmodSync(record, 0o644); } catch { /* removed already */ } });
+  for (let i = 0; i < 3; i++) {
+    rmSync(f.errorsLog, { force: true });
+    const r = f.stop({ ...f.stopPayload, stop_hook_active: true });
+    exitedClean(r);
+    const out = warnedAndLogged(f, r, "ask-graham-stop.mjs", /block record .* could not be read \(EACCES\), so the stop was not blocked/);
+    assert.equal(out.decision, undefined, `stop ${i + 2} was blocked`);
+  }
 });
 
 test("stop hook: a malformed stop-check config counts as on, still blocks, and warns", (t) => {
@@ -234,8 +262,8 @@ test("stop hook: a malformed stop-check config counts as on, still blocks, and w
   const out = reply(r);
   assert.equal(out.decision, "block");
   assert.equal(out.reason, BLOCK_REASON);
-  assert.match(out.systemMessage, /failed open \(the check still ran\): config .* names no valid stop-check/);
-  assert.match(f.logLines()[0], / ask-graham-stop\.mjs config .*config names no valid stop-check/);
+  warning(out, "ask-graham-stop.mjs", /names no valid stop-check/);
+  assert.match(f.logLines()[0], / ask-graham-stop\.mjs .*names no valid stop-check/);
 });
 
 test("stop hook: a throw inside the hook lets the stop through, warned and logged (in process)", (t) => {
