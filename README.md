@@ -671,6 +671,33 @@ for that folder (it writes `.ledger.json` there, found from any subfolder); `/le
 them back on. The plugin's tables are all prefixed `cc_`, so the database can be a SQLite file
 another tool already uses.
 
+Changes in 0.3.3: the fault-tolerance gate and the feedback loop. `ledger gate check` runs the
+repository test bar's three checks on every plugin changed since the base of a repository of
+plugins (can't break the session: each hook on five fault inputs; failures visible: an
+`errors.log` line and a `systemMessage`, and an `<x>.unavailable.txt` fixture beside every
+`<x>.txt`; text says what to do: a "When this can't run" section in every skill and agent, a
+backtick command in every deny text), records the rows for the committed tree it checked, and
+the push gate denies a push or PR without rows or with a failed check, naming `gate check` and
+`review waive` as the ways out. The labs read the author's pattern-check receipt before the
+diff and tag a stated failure path the code lacks, or a silent one the receipt lacks,
+`[blocking] fault-tolerance:`. Three verbs tell whether the hooks are doing anything: `canary
+run` runs every plugin's `e2e/live-run.sh` under `claude -p` nightly (`canary install` writes
+the launchd plist and prints the bootstrap line); `report` grades a week of bounces per rule,
+with a cached judge overlay; `digest` posts the week's report as a comment on the configured
+`owner/repo#number` issue (`digest install` likewise), and session start says when it is
+overdue. Session end writes a decision-log entry in the `/wrap-up` shape under the
+repository's `.ai/decision-log/` when the session answered or noted anything, and session
+start injects the newest and the open or durable entries where the newdle plugin's hook will
+not. Session start withdraws questions asked more than `sweep.autoWithdrawDays` ago (7) whose
+session has ended, and `doctor` counts stale ones. Bounces keep the text that fired the rule
+and the transcript path; `bounces` shows them; `review judge <key>` shows a cached answer. A
+session-start question from another window is relayed to the human in one plain line (never
+its id), an `ask` with no `--default` invents none, and every hook's store failure now leaves
+an `errors.log` line beside its message. Schema 7 adds `cc_judge_cache`, `cc_canary_runs`,
+`cc_gate_checks` and two `cc_bounces` columns; the plugin README's "Inspecting the database"
+section says what an older ledger does with a schema-7 file. The new `plugin-kit` plugin
+scaffolds a plugin that passes the gate on day one.
+
 Changes in 0.3.2: a side pane for Claude Code Desktop. The ledger mod opens a pane listing the questions still open in other folders and the answers recorded since your last turn, and `/ledger answer <id> <reply>` (or the pane's own buttons and reply field) records through the ledger CLI without spending a model turn. Where no pane can draw (`claude -p`, narrow terminals, OMP) the same information lands as one block in the transcript. See the plugin README, "Ledger pane (Desktop)", for the two-window test.
 
 Changes in 0.3.1: three fixes from the first live sessions on 0.3.0, each from a bounce that had
