@@ -5,6 +5,26 @@ All notable changes to ledger are recorded here. The format follows
 "Changes" section of the README (one line per version) and the "Changes in" paragraphs of the
 repository root README's ledger section.
 
+## [0.3.7] - 2026-11-04
+
+### Changed
+
+- `lib/judge.mjs` is now plugin-kit's shared judge dispatch, copied byte for byte (plugin-kit's
+  sameness test diffs it). Ledger's own judge logic (the `cc_judge_cache` cache, the passage
+  builder, `ask` for review's "is this finding resolved" and `askWord` for the report's grades)
+  moved to `lib/ledger-judge.mjs`, which calls the shared `resolveJudgeCommand`, `dispatch` and
+  `parseAnswer`. Verdicts, cache keys, prompts and error wording (`judge exited <n>`,
+  `judge timed out after <n>s`, `judge could not start: …`) are unchanged.
+- The judge command is found in this order: env `LEDGER_JUDGE_BIN`, then `review.judgeCommand`
+  in the ledger user file (ledger's own settings first, as before), then `command` in the
+  shared judge file `${XDG_CONFIG_HOME:-~/.config}/judge/config.json` (new; written by
+  `node lib/judge.mjs setup`), then `enforcement.judgeCommand` in the i-have-audhd profile. A
+  shared file that exists but is malformed stops the search before the i-have-audhd profile;
+  `doctor` names the file and the parse error. The timeout is the shared file's `timeoutMs`
+  when it sets one, else 60 seconds as before.
+- `doctor`'s judge row names the i-have-audhd source with a trailing ` (legacy)`, and its
+  warning lists all four places it looked.
+
 ## [0.3.6] - 2026-11-04
 
 ### Added

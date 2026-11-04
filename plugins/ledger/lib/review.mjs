@@ -27,7 +27,7 @@
 // order they were first reviewed. `review` names the round it runs as; past `review.maxRounds`
 // it stops and says to ask the human (waive, or continue with `--force-round`).
 //
-// The judge (lib/judge.mjs) checks every "this finding is resolved" claim: an outstanding
+// The judge (lib/ledger-judge.mjs over the shared lib/judge.mjs) checks every "this finding is resolved" claim: an outstanding
 // blocking or should finding (see `outstanding`) that a lab's new reply drops or lists only as a
 // nit, and every outstanding finding on an earlier commit when the agent runs `review addressed
 // "<why>"`. Each is asked once, with the finding and the diff
@@ -43,7 +43,7 @@ import { transaction } from "./db.mjs";
 import { logError } from "./failopen.mjs";
 import { nowIso } from "./time.mjs";
 import { parseItems, receiptSection, severityCounts, which } from "./review/common.mjs";
-import { ask as askJudge, judgeCommand, passageFor } from "./judge.mjs";
+import { ask as askJudge, judgeCommand, passageFor } from "./ledger-judge.mjs";
 import * as codex from "./review/codex.mjs";
 import * as kimi from "./review/kimi.mjs";
 import * as claude from "./review/claude.mjs";
@@ -907,7 +907,7 @@ export function labChecks(cfg, env = process.env) {
   labs.push(
     judge.command
       ? { status: "ok", name: "judge", text: `from ${judge.source}`, detail: [] }
-      : { status: "warn", name: "judge", text: "no review.judgeCommand and no i-have-audhd enforcement.judgeCommand: addressed claims unverified", detail: [] },
+      : { status: "warn", name: "judge", text: `${judge.malformed ? `malformed shared judge file ${judge.malformed}; ` : ""}no LEDGER_JUDGE_BIN, review.judgeCommand, shared judge file command or i-have-audhd enforcement.judgeCommand: addressed claims unverified`, detail: [] },
   );
   return labs;
 }

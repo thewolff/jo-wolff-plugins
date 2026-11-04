@@ -213,7 +213,7 @@ defaults verbatim.
 | `review.models` | `null` | a model per lab, e.g. `{"claude": "opus", "glm": "zai/glm-5.3-flash"}`; unset means the lab's CLI default (`glm`: `zai/glm-5.3`). User file only |
 | `review.profiles` | `null` | an `omp` profile per omp-backed lab, e.g. `{"glm": "work"}`; unset means no `--profile` (omp's base profile). Each value is a non-empty string; an empty one makes the loader reject the whole `review.profiles` value and say so. User file only |
 | `review.maxRounds` | `3` | how many review rounds (reviewed commits on the branch since the merge-base) `ledger review` runs before it stops and says to ask the human: waive, or continue with `--force-round`. User file only |
-| `review.judgeCommand` | `null` | the judge that checks "this finding is resolved" claims: a shell command that gets the prompt on stdin (or in place of a literal `{prompt}`) and prints `yes` or `no`. Unset falls back to `enforcement.judgeCommand` in the i-have-audhd profile (`~/.claude/i-have-audhd.json`), so one judge is configured once. User file only |
+| `review.judgeCommand` | `null` | the judge that checks "this finding is resolved" claims: a shell command that gets the prompt on stdin (or in place of a literal `{prompt}`) and prints `yes` or `no`. Unset falls back to `command` in the shared judge file (`${XDG_CONFIG_HOME:-~/.config}/judge/config.json`), then to `enforcement.judgeCommand` in the i-have-audhd profile (`~/.claude/i-have-audhd.json`), so one judge is configured once. User file only |
 
 The default `forcing.decisionPhrases`: `I decided`, `decided to`, `assumption:`, `assuming`,
 `going with`, `chose`, `I'll go with`, `trade-off`. A project file can replace the
@@ -394,8 +394,11 @@ yes or no." `no` keeps the finding open (`judge: "no"` in `findings_json`, the r
 not configured, cannot start, times out (60 seconds) or answers anything else gives
 `unverified`: the finding counts as resolved, fail open, and the gate's notice names it. Answers
 are cached in `cc_judge_cache` under `judge:<sha256>` with the passage they were given, so asking the same thing again costs nothing and a cached answer can be read back with `review judge <key>`. The
-judge command is `review.judgeCommand`, else the i-have-audhd plugin's
-`enforcement.judgeCommand`: one judge, configured once.
+judge command is `LEDGER_JUDGE_BIN`, else `review.judgeCommand`, else `command` in the shared
+judge file `${XDG_CONFIG_HOME:-~/.config}/judge/config.json` (written by `node lib/judge.mjs
+setup`; its `timeoutMs`, when set, replaces the 60 seconds), else the i-have-audhd plugin's
+`enforcement.judgeCommand`: one judge, configured once. `lib/judge.mjs` is plugin-kit's shared
+dispatch, copied byte for byte; ledger's cache and verdicts live in `lib/ledger-judge.mjs`.
 
 | Verb | Effect |
 | :- | :- |
@@ -575,8 +578,8 @@ rules, the review gate, and any other rule name found in `cc_bounces`): fired, s
 bypassed, open, and a grade. The mechanical grade is always computed: `biting` when bypassed ≥ 3
 or more than half of what fired was bypassed (the rule sent back work that was then forced
 through); `silent` when sessions ran in the window and the rule never fired; `fine` otherwise.
-When a judge is configured (`review.judgeCommand`, `LEDGER_JUDGE_BIN`, or the i-have-audhd
-profile) it reads up to 20 bounce texts per rule that fired and answers `biting`, `silent` or
+When a judge is configured (`LEDGER_JUDGE_BIN`, `review.judgeCommand`, the shared judge file,
+or the i-have-audhd profile) it reads up to 20 bounce texts per rule that fired and answers `biting`, `silent` or
 `fine`; that answer is printed beside the mechanical one as `(judge: …)` and never stored. A
 judge that is missing, fails, answers none of the three words, or has no texts to read (rows
 from before 0.3.3) prints `(judge unavailable: <reason>)`; the mechanical grade stands. Then:
@@ -753,6 +756,15 @@ Tests use a sandboxed `HOME`, `XDG_*` and `LEDGER_*` so they never touch your le
 `LEDGER_CWD` and `LEDGER_BUSY_TIMEOUT_MS` environment variables exist for the tests.
 
 ## Changes
+
+### 0.3.7
+
+- `lib/judge.mjs` is plugin-kit's shared judge dispatch, byte for byte; ledger's cache, passage
+  and verdict logic lives in `lib/ledger-judge.mjs`. The judge command is `LEDGER_JUDGE_BIN`,
+  else `review.judgeCommand`, else the shared judge file
+  `${XDG_CONFIG_HOME:-~/.config}/judge/config.json` (new), else the i-have-audhd profile's
+  `enforcement.judgeCommand`. Verdicts, the cache and error wording are unchanged; the timeout
+  is the shared file's `timeoutMs` when set, else 60 seconds.
 
 ### 0.3.6
 

@@ -33,7 +33,7 @@ import { canaryStatus, gradeRun, install as canaryInstall, listRuns, parseCanary
 import { parseReportArgs, runReport } from "../lib/report.mjs";
 import { install as digestInstall, parseDigestArgs, runDigest } from "../lib/digest.mjs";
 import { gateCheck, parseGateArgs } from "../lib/plugin-gate.mjs";
-import { cachedJudgement } from "../lib/judge.mjs";
+import { cachedJudgement } from "../lib/ledger-judge.mjs";
 import { cliPath, invocation } from "../lib/inject.mjs";
 
 /** Pull the CLI's own flags out of argv; everything else is the command. */

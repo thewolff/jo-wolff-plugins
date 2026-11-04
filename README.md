@@ -27,6 +27,7 @@ it, keeping a record of what it did and asked, and a vendored set of engineering
   state declaration, and a skill with its "When this can't run" section, scaffolded by
   `/plugin-kit:new-plugin`; `ledger gate check` passes on it, the `evals` row excepted, before
   the first rule is written, and that row fails naming the stubs until they are filled.
+  Changes in plugin-kit 0.3.2: the judge sameness test allowlists nothing: ledger 0.3.7 ships the kit's `lib/judge.mjs` byte for byte.
   Changes in plugin-kit 0.3.1: the hook runner waits for stdout to drain before it exits (bounded by its deadline), so an answer larger than one 64 KiB pipe buffer is no longer cut short.
   Changes in plugin-kit 0.3.0: `lib/judge.mjs`, the shared judge dispatch every judging plugin vendors byte for byte (a sameness test diffs the copies), configured once with `node lib/judge.mjs setup`; `--judge` on the scaffolder.
   Changes in plugin-kit 0.2.2: the scaffold writes a `CHANGELOG.md` (Keep a Changelog, with the
@@ -218,8 +219,8 @@ receipt and removes its working files.
 | ask-graham | 0.7.3 | "should we build X?" with a verdict; a prompt nudge and a Stop check | reads your `sources.md`; nothing from another plugin |
 | pattern-check | 0.3.2 | holds big work until a reuse/replace/new receipt exists | its receipt file is what delegation's spawn gate requires |
 | reminders-review | 0.2.1 | Apple Reminders, one at a time | none |
-| ledger | 0.3.6 | questions and choices on rows; the push gate with six rows (`docs` new) | its `says` row checks the "When this can't" heading every skill and agent carries; its canary runs every plugin's `e2e/live-run.sh` |
-| plugin-kit | 0.3.1 | the scaffold (with `CHANGELOG.md` since 0.2.2), the hook runner, the shared judge lib, the scenario runner, two agents | gives `lib/hook-runner.mjs` and `lib/judge.mjs` to the plugins that vendor them, and `lib/live-run.mjs` to every `e2e/live-run.sh` |
+| ledger | 0.3.7 | questions and choices on rows; the push gate with six rows; the review judge from plugin-kit's shared `lib/judge.mjs` | its `says` row checks the "When this can't" heading every skill and agent carries; its canary runs every plugin's `e2e/live-run.sh` |
+| plugin-kit | 0.3.2 | the scaffold (with `CHANGELOG.md` since 0.2.2), the hook runner, the shared judge lib, the scenario runner, two agents | gives `lib/hook-runner.mjs` and `lib/judge.mjs` to the plugins that vendor them, and `lib/live-run.mjs` to every `e2e/live-run.sh` |
 | as2-skills | 0.1.2 | 22 vendored engineering skills, each with "How it fails" | its sections meet ledger's `says` row |
 | ctx-watch | 0.2.1 | ctx daemon and semantic-index health, repair, and the consult-history Stop check | vendors the hook runner and the scenario runner |
 | delegation | 0.1.1 | brief teaching, spawn gate, `SendMessage` check, SubagentStop warning, 11 agents, three guards | needs pattern-check's receipt for builder-class spawns; vendors the hook runner |
@@ -1086,6 +1087,12 @@ decision without a note. Every hook fails open.
 The hooks record every session until you switch a folder off with `/ledger:disable`
 (`/ledger:enable` turns it back on). The plugin's tables are all prefixed `cc_`, so the database
 can be a SQLite file another tool already uses.
+
+Changes in 0.3.7 (with plugin-kit 0.3.2): `lib/judge.mjs` is plugin-kit's shared judge dispatch,
+copied byte for byte, and ledger's cache and verdicts live in `lib/ledger-judge.mjs`. The review
+judge is `LEDGER_JUDGE_BIN`, else `review.judgeCommand`, else the shared judge file
+`${XDG_CONFIG_HOME:-~/.config}/judge/config.json` (new), else the i-have-audhd profile; verdicts,
+the cache and error wording are unchanged.
 
 Changes in 0.3.6 (with plugin-kit 0.2.2): the gate grows from five rows to six. `docs` (a
 release is written down): when a plugin's `.claude-plugin/plugin.json` version differs from the

@@ -4,7 +4,7 @@ import { spawn, spawnSync } from "node:child_process";
 import { chmodSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { sandbox, cli, hook, openDb } from "./helpers.mjs";
-import { ask } from "../lib/judge.mjs";
+import { ask, judgeCommand, JUDGE_TIMEOUT_MS } from "../lib/ledger-judge.mjs";
 
 const SID = "s-review";
 
@@ -414,7 +414,32 @@ test("judge: doctor warns when no judge is configured, and names the i-have-audh
   const profile = join(b.root, "audhd-profile.json");
   writeFileSync(profile, JSON.stringify({ enforcement: { judgeCommand: "echo yes" } }));
   const fallback = cli(b, ["doctor"], { env: { LEDGER_REVIEW_BIN_CODEX: process.execPath, I_HAVE_AUDHD_PROFILE: profile } });
-  assert.match(fallback.out, /^ok {3}judge: from enforcement\.judgeCommand in .*audhd-profile\.json$/m);
+  assert.match(fallback.out, /^ok {3}judge: from enforcement\.judgeCommand in .*audhd-profile\.json \(legacy\)$/m);
+});
+
+// 0.3.7: lib/judge.mjs is plugin-kit's shared copy. Ledger's own settings still come first, then
+// the shared file, then the i-have-audhd profile.
+test("judge: LEDGER_JUDGE_BIN, then review.judgeCommand, then the shared judge file, then the i-have-audhd profile", () => {
+  const b = sandbox();
+  const profile = join(b.root, "audhd-profile.json");
+  writeFileSync(profile, JSON.stringify({ enforcement: { judgeCommand: "legacy-judge" } }));
+  const env = { ...b.env, I_HAVE_AUDHD_PROFILE: profile };
+  assert.deepEqual(judgeCommand({}, env), { command: "legacy-judge", timeoutMs: JUDGE_TIMEOUT_MS, source: `enforcement.judgeCommand in ${profile} (legacy)`, malformed: null });
+  const shared = join(b.env.XDG_CONFIG_HOME, "judge", "config.json");
+  mkdirSync(join(b.env.XDG_CONFIG_HOME, "judge"), { recursive: true });
+  writeFileSync(shared, JSON.stringify({ command: "shared-judge" }));
+  assert.deepEqual(judgeCommand({}, env), { command: "shared-judge", timeoutMs: JUDGE_TIMEOUT_MS, source: shared, malformed: null });
+  writeFileSync(shared, JSON.stringify({ command: "shared-judge", timeoutMs: 5000 }));
+  assert.equal(judgeCommand({}, env).timeoutMs, 5000, "the shared file's timeoutMs wins over ledger's 60 s default");
+  const own = judgeCommand({ review: { judgeCommand: "own-judge" } }, env);
+  assert.deepEqual([own.command, own.source], ["own-judge", "review.judgeCommand"]);
+  const bin = judgeCommand({ review: { judgeCommand: "own-judge" } }, { ...env, LEDGER_JUDGE_BIN: "env-judge" });
+  assert.deepEqual([bin.command, bin.source], ["env-judge", "env LEDGER_JUDGE_BIN"]);
+  writeFileSync(shared, "{ not json");
+  const broken = judgeCommand({}, env);
+  assert.equal(broken.command, null, "a malformed shared file does not fall through to the legacy profile");
+  assert.match(broken.malformed, /judge\/config\.json/);
+  assert.equal(judgeCommand({ review: { judgeCommand: "own-judge" } }, env).command, "own-judge", "ledger's own setting still wins");
 });
 
 // Codex review round 1 of 0.3.0: one regression per finding fixed.
@@ -701,7 +726,7 @@ test("R2-S3: a branch reviewed from its root commit keeps counting from the root
 });
 
 test("R2-S5: the judge passage is capped whole, marks the cut, and names the whole input's digest", async () => {
-  const { passageFor, PASSAGE_CAP_BYTES } = await import("../lib/judge.mjs");
+  const { passageFor, PASSAGE_CAP_BYTES } = await import("../lib/ledger-judge.mjs");
   const long = "x".repeat(9000);
   const fixed = passageFor(long, `${"d".repeat(9000)}\n+FIXED`);
   const broken = passageFor(long, `${"d".repeat(9000)}\n+BROKEN`);

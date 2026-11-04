@@ -282,12 +282,12 @@ test("writeSharedConfig: creates the directory, keeps unrelated keys, replaces c
 
 // ─── sameness: every shipped copy is this file ──────────────────────────────────────────
 
-// Copies that are NOT yet this file: ledger keeps its own lib/judge.mjs until its next release
-// (jo-issues #333, "Sequencing"). i-have-audhd's judge/ask.mjs has a different name and is not
-// scanned at all until i-have-audhd ships lib/judge.mjs. Remove an entry here when that plugin
+// Copies that are NOT yet this file: none since ledger 0.3.7 (jo-issues #333). i-have-audhd's
+// judge/ask.mjs has a different name and is not scanned at all until i-have-audhd ships
+// lib/judge.mjs. Add an entry here only for a plugin mid-switch and remove it when that plugin
 // vendors the kit's copy; a listed file that no longer exists is a failure, so a stale entry is
 // noticed.
-const NOT_YET_VENDORED = ["ledger/lib/judge.mjs"];
+const NOT_YET_VENDORED = [];
 
 test("sameness: every plugins/*/lib/judge.mjs and plugins/*/judge/judge.mjs outside the allowlist is byte-identical to the kit's", () => {
   const canonical = readFileSync(LIB);
