@@ -544,6 +544,17 @@ choose a judge (install step 2), and each fired trigger is logged to `skipped.lo
 README and `skills/i-have-audhd/reference.md` carry the schema, every check's contract, and the
 measured rates.
 
+Changes in 1.7.0: the judge command is plugin-kit's shared judge. `lib/judge.mjs` is vendored
+byte for byte and resolves the command in the kit's order, the profile's
+`enforcement.judgeCommand` first, else `~/.config/judge/config.json`, so one
+`node lib/judge.mjs setup` configures this plugin with every other that judges; an existing
+profile with `judgeCommand` keeps working unchanged, and `null` there means no override.
+`judge/ask.mjs` keeps the prompt, the verdict shape, the cache, the harness budget and the
+`cause=` failure line; that line now carries the kit's error kinds, a `detail=` and the
+`source=` the command came from. `tools/setup.mjs` writes the override only, and the
+session-start notice names both files. Eval `stop-judge-shared-config` replays the real-judge
+capture with the command in the shared file.
+
 Changes in 1.6.1: `links-resolve` warns when a link in the message does not open: a local path
 in backticks that does not exist, a GitHub URL with no such page shape, a sentence that calls an
 issue a PR, or (from a local cache a detached helper fills, never a live call) a target GitHub
