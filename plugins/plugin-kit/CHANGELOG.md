@@ -11,16 +11,24 @@ the README's "Changes in" sections.
 - The scaffold writes `CHANGELOG.md` (Keep a Changelog, with the `## [0.1.0]` entry) beside the
   README's `## Changes in 0.1.0`, from `templates/CHANGELOG.md` (20 files, from 19). A
   scaffolded plugin's first version is written down in the two places ledger 0.3.6's
-  `gate check` `docs` row reads from the plugin; the repository README's bullet is the author's.
+  `gate check` `docs` row reads from the plugin; the repository README's bullet is the
+  author's, and goes in before the plugin's first `gate check`, since the row fails a new
+  plugin without it.
 
 ### Changed
 
 - The `release-gate` agent's version-match step (check 4) wants the three things the `docs` row
-  wants, with the exact headings it accepts: a `## [<version>]` or `## <version>` entry in
-  `CHANGELOG.md` with text under it; a `## Changes in <version>`, `### <version>` or
-  `### <date> — <version>` heading in the README with text under it; and the root README naming
-  the version in the plugin's bullet, on a `Changes in <name> <version>` line, or on a
-  `Changes in <version>` line under `## <name>`.
+  wants, read by the row's rule: a release heading for the version with text under it in
+  `CHANGELOG.md` and in the README, where a release heading is a heading at any level whose
+  text starts with `<version>`, `[<version>]`, `Changes in <version>` or
+  `<date> — <version>` (so `## [<version>]`, `## <version>`, `## Changes in <version>`,
+  `### <version>` and `### <date> — <version>` count in either file); and the root README
+  naming the version in a `-` or `*` bullet starting with the plugin's name, on a
+  `Changes in <name> <version>` line, or on a `Changes in <version>` line under `## <name>`.
+  The checklist is stricter than the row in one place: it also fails a README heading for a
+  version newer than `plugin.json`'s.
+- The new-plugin skill, the README and the scaffold's `next:` line put the root README bullet
+  (naming 0.1.0) before the first `gate check`, and keep the marketplace entry for publish time.
 
 ## [0.2.1] - 2026-11-04
 

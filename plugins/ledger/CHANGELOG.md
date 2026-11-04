@@ -10,20 +10,27 @@ repository root README's ledger section.
 ### Added
 
 - The plugin gate's sixth check, `docs` (a release is written down). When a plugin's
-  `.claude-plugin/plugin.json` version differs from the base commit's, its `CHANGELOG.md` has an
-  entry for the new version (`## [<ver>]` or `## <ver>`, with text under it), its `README.md` has
-  a release heading for it (`## Changes in <ver>`, `### <ver>` or `### <date> — <ver>`, with text
-  under it), and the repository root README names the version for the plugin (in its top-level
-  bullet, on a `Changes in <plugin> <ver>` line, or on a `Changes in <ver>` line under
-  `## <plugin>`). The row is `skipped` while the version is unchanged or the manifest has no
-  version; each failure names the file and the heading it wanted. The base manifest and the root
-  README are read out of the commits with `git show`, never the checkout.
+  `.claude-plugin/plugin.json` version differs from the base commit's, its `CHANGELOG.md` and
+  its `README.md` each have a release heading for the new version with text under it, and the
+  repository root README names the version for the plugin. A release heading is a heading at
+  any level whose text starts with `<ver>`, `[<ver>]`, `Changes in <ver>` or
+  `<YYYY-MM-DD> — <ver>`, in either file; the version is a whole token (no `v` prefix, no
+  pre-release suffix, brackets balanced), and a heading inside a fenced code block does not
+  count. The root README names it in any `-` or `*` bullet starting with the plugin's name, on
+  a `Changes in <plugin> <ver>` line, or on a `Changes in <ver>` line under `## <plugin>`. The
+  row is `skipped` while the version is unchanged or neither manifest has one, and fails with
+  `manifest version missing at head` when the head dropped a version the base had; each
+  failure names the file and the heading it wanted. The base manifest and the root README are
+  read out of the commits with `git show`, never the checkout.
 - This file.
 
 ### Changed
 
 - `gate check --plugins a,b` resolves the base commit too (the review's default base, or
-  `--base`), since the `docs` row compares against it.
+  `--base`), since the `docs` row compares against it. A `--base` that names no commit exits 1
+  with `gate check: --base <ref> is not a commit`, in both modes, instead of a stack trace.
+- The push gate denies rows that lack one of the six checks (rows recorded by an older ledger,
+  without `docs`), naming the missing check and `gate check` as the way out.
 - `ledger help` and the README say six checks.
 
 ## [0.3.5] - 2026-11-04

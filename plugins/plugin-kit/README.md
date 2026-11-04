@@ -56,8 +56,10 @@ written (`survives`, `visible`, `says`, `retention`, and `docs` once the reposit
 bullet for the plugin names 0.1.0); the `evals` row fails naming every unfilled
 stub, which is the shape it is meant to have until the author fills the scenarios. What is left
 is the author's: the rule in each hook, the skill's steps, the receipt's rows, the scenarios'
-real inputs and expectations, the fixtures for any program shelled out to. The marketplace
-entry and the root README bullet are added by hand when the plugin is ready to publish.
+real inputs and expectations, the fixtures for any program shelled out to. The root README
+bullet for the plugin, naming 0.1.0, goes in by hand before the first `gate check`: the `docs`
+row fails a new plugin without it. The marketplace entry is added by hand when the plugin is
+ready to publish.
 
 The two runners are copied, not imported across plugins, on purpose: an installed plugin never
 depends on a sibling being installed, and a change to the kit's copy reaches a plugin only when
@@ -278,13 +280,18 @@ The reviewer's review budget fails these ways:
 The scaffold writes a `CHANGELOG.md` (Keep a Changelog, with the `## [0.1.0]` entry) beside
 the README's `## Changes in 0.1.0`, so a scaffolded plugin's first version is written down in the
 two places ledger 0.3.6's `gate check` `docs` row reads; the third, the repository README's
-bullet for the plugin, is the author's, like the marketplace entry (20 files, from 19). The
-`release-gate` agent's version-match step (check 4) now wants the same three things, with the
-exact headings the row accepts: a `## [<version>]` or `## <version>` entry in `CHANGELOG.md`
-with text under it, a `## Changes in <version>`, `### <version>` or `### <date> — <version>`
-heading in the README with text under it, and the root README naming the version in the
-plugin's bullet, on a `Changes in <name> <version>` line, or on a `Changes in <version>` line
-under `## <name>`. The reviewer, the scaffolder's other files and the runner are unchanged.
+bullet for the plugin, is the author's and goes in before the first `gate check`, since the row
+fails a new plugin without it (20 files, from 19). The marketplace entry stays for publish
+time. The `release-gate` agent's version-match step (check 4) now wants the same three things,
+read by the row's rule: a release heading for the version with text under it in
+`CHANGELOG.md` and in the README, where a release heading is a heading at any level whose text
+starts with `<version>`, `[<version>]`, `Changes in <version>` or `<date> — <version>` (so
+`## [<version>]`, `## <version>`, `## Changes in <version>`, `### <version>` and
+`### <date> — <version>` count in either file), and the root README naming the version in a
+`-` or `*` bullet starting with the plugin's name, on a `Changes in <name> <version>` line, or on
+a `Changes in <version>` line under `## <name>`. The checklist is stricter than the row in one
+place: it also fails a README heading for a version newer than `plugin.json`'s. The reviewer,
+the scaffolder's other files and the runner are unchanged.
 
 ## Changes in 0.2.1
 

@@ -26,9 +26,11 @@
 //
 // Refuses: a name that is not lowercase kebab, an event not in the host's list, an existing
 // destination (nothing is overwritten; delete it yourself first), no events. Exit 1 with the
-// reason on stderr; exit 0 with the written paths on stdout. The marketplace entry
-// (.claude-plugin/marketplace.json at the repository root) is not written: add it by hand, with
-// the one-sentence description, when the plugin is ready to publish.
+// reason on stderr; exit 0 with the written paths on stdout. Two repository-root files are not
+// written: the root README bullet naming 0.1.0 (add it by hand before the first `ledger gate
+// check`; its docs row fails a new plugin without it), and the marketplace entry
+// (.claude-plugin/marketplace.json; add it by hand, with the one-sentence description, when the
+// plugin is ready to publish).
 
 import { spawnSync } from "node:child_process";
 import { chmodSync, cpSync, existsSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
@@ -167,7 +169,7 @@ if (invoked) {
   }
   try {
     const { root, written } = scaffold(args);
-    process.stdout.write(`${root}\n${written.map((w) => `  ${w}`).join("\n")}\nnext: write the rule in hooks/*.mjs, the steps in skills/${args.name}/SKILL.md, the rows in HOW-IT-FAILS.md; run \`node --test\` there; add the marketplace entry when it is ready to publish.\n`);
+    process.stdout.write(`${root}\n${written.map((w) => `  ${w}`).join("\n")}\nnext: write the rule in hooks/*.mjs, the steps in skills/${args.name}/SKILL.md, the rows in HOW-IT-FAILS.md; run \`node --test\` there; add a root README bullet naming ${args.name} 0.1.0 before the first \`ledger gate check\`; add the marketplace entry when it is ready to publish.\n`);
   } catch (err) {
     process.stderr.write(`new-plugin: ${err.message}\n`);
     process.exit(1);
