@@ -271,6 +271,9 @@ function commandWords(words) {
       while (k < words.length && words[k].text.startsWith("-")) {
         const o = words[k].text;
         if (nonExec.has(o)) return [];
+        // A short-option cluster (`command -pv`, `sudo -nl`) is non-executing when any of its
+        // letters is a non-executing short option.
+        if (/^-[A-Za-z]{2,}$/.test(o) && [...o.slice(1)].some((ch) => nonExec.has(`-${ch}`))) return [];
         k += o === "--" ? 1 : valued.has(o) ? 2 : 1;
         if (o === "--") break;
       }

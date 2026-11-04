@@ -98,6 +98,19 @@ test("regression (codex review round 2, R2): lookup-only wrapper modes run nothi
   assert.deepEqual(writeTargets("command tee a.ts"), ["a.ts"]);
 });
 
+test("regression (codex review round 3, R2): a lookup flag inside a short-option cluster is non-executing too", () => {
+  for (const cmd of ["command -pv tee a.ts b.ts c.ts", 'command -pV tee "$OUT"', "command -vp tee a.ts", "sudo -nl tee a.ts"]) {
+    assert.deepEqual(writeTargets(cmd), [], cmd);
+    assert.equal(hasUnreadableWriteTarget(cmd), false, cmd);
+    assert.equal(name(cmd), null, cmd);
+  }
+  // `command -p` alone runs its argument, and a real redirect after a cluster still counts.
+  assert.deepEqual(writeTargets("command -p tee a.ts"), ["a.ts"]);
+  assert.equal(name("command -p tee a.ts"), "tee");
+  assert.deepEqual(writeTargets("command -pv tee > out.txt"), ["out.txt"]);
+  assert.equal(name("command -pv tee > out.txt"), "redirect");
+});
+
 test("regression (codex review round 2, R3): a quoted or escaped control word is a command name, not the keyword", () => {
   for (const cmd of ['"then" tee a.ts', "'do' tee a.ts", "\\then tee a.ts", '"!" tee a.ts']) {
     assert.deepEqual(writeTargets(cmd), [], cmd);
