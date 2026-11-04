@@ -102,8 +102,8 @@ Not away: the hook prints nothing and the stop proceeds.
 ## When this can't run
 
 - **Hooks disabled or the plugin not loaded.** `brb` reaches the model as a prompt and nothing
-  is held. The tell: no confirmation line in reply to `brb`. Nothing to undo; the word is just a
-  word to the model.
+  is held. The tell: no confirmation line in reply to `brb` (the line
+  `evals/prompt-brb.scenario.json` proves). Nothing to undo; the word is just a word to the model.
 - **The desktop notification is untested here.** The `osascript` call is spawned detached and
   ignored; the tests run with `BRB_DESKTOP_NOTIFY=off` and the banner has not been watched for
   on a Mac during this version. `evals/manifest.json` lists it under `manual`. The
