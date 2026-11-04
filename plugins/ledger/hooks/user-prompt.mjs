@@ -15,6 +15,11 @@
 // (cc_sessions.last_prompt_seen_at, else its started_at), gives Claude one line each, and moves
 // the mark to now. A mark that cannot be written is logged and the lines are given anyway.
 //
+// Bare options: with a session id and an existing database, a prompt that is one option word of
+// an open or held question alone ("local", "Local.") gives Claude one line per such question
+// (this session's first, then this folder's, then the rest) naming the `answer` command to run
+// if the human meant it as their reply. Nothing is recorded: the line is a hint, Claude decides.
+//
 // Ledger lines engage only when EVERY non-blank line is a ledger line: a cheap shape check first
 // (an id, an ordinal, or pending/log/help), then the real parser; one prose line anywhere
 // (`can you approve q-… for me?`) and no line is applied. Free-text verbs (ask "…", note "…")
@@ -34,7 +39,7 @@ import { isId, isCutShort } from "../lib/ids.mjs";
 import { stripComment, tokenize } from "../lib/parse.mjs";
 import { withStore, makeCtx, hookConfig } from "../lib/store.mjs";
 import { runBatch, formatBatch, parseAll, busyWord } from "../lib/batch.mjs";
-import { answersSince } from "../lib/commands.mjs";
+import { answersSince, bareOptionMatches, pendingLines } from "../lib/commands.mjs";
 import { StoreError, transaction } from "../lib/db.mjs";
 import { nowIso } from "../lib/time.mjs";
 
@@ -94,6 +99,17 @@ function takeAnswers(store, sessionId, cwd, now, env) {
   return answerLines(rows);
 }
 
+/** One hint line per open question that offers the prompt as an option; [] otherwise. */
+function bareOptionLines(store, prompt, cwd, sessionId, now, cfg) {
+  const matches = bareOptionMatches(store.db, prompt, { cwd, sessionId });
+  if (!matches.length) return [];
+  const tz = cfg.config.timezone ?? null;
+  return matches.map(({ q, word }) => {
+    const where = q.cwd === cwd ? "" : ` (asked in ${q.cwd})`;
+    return `ledger: the prompt "${String(prompt).trim()}" is option ${word} of an open question${where}: ${pendingLines(q, { now, timezone: tz }).join(" ")}. If the human meant it as their reply, run \`ledger answer ${q.id} ${word}\` and tell them it is recorded; do not show the id. Nothing is recorded yet.`;
+  });
+}
+
 /** Apply the prompt's ledger lines; null when one of them is prose. */
 function applyLines(store, lines, cwd, sessionId, now) {
   if (parseAll(lines, store.db, cwd).some((p) => p.kind === "prose")) return null;
@@ -114,18 +130,20 @@ export function handle(input, { env = process.env, now = Date.now() } = {}) {
   const { cfg, cwd } = ready;
   const sessionId = typeof input.session_id === "string" && input.session_id ? input.session_id : null;
   const lines = ledgerLines(input.prompt);
-  const watch = Boolean(sessionId) && cfg.config.inject.answers !== false && existsSync(cfg.config.db);
+  const watch = Boolean(sessionId) && existsSync(cfg.config.db);
+  const answers = watch && cfg.config.inject.answers !== false;
   if (!lines && !watch) return null;
   const out = withStore({ env, now, notices: cfg.notices, cwd, cfg }, lines ? "the ledger lines in this prompt were not applied" : "answers recorded in other sessions were not checked", (store) => {
-    const news = watch ? takeAnswers(store, sessionId, cwd, now, env) : [];
+    const news = answers ? takeAnswers(store, sessionId, cwd, now, env) : [];
+    const hints = watch && !lines ? bareOptionLines(store, input.prompt, cwd, sessionId, now, cfg) : [];
     const applied = lines ? applyLines(store, lines, cwd, sessionId, now) : null;
-    if (!applied && !news.length) return null;
+    if (!applied && !news.length && !hints.length) return null;
     const system = applied ? applied.systemMessage : store.notices.join("\n");
     return {
       ...(system ? { systemMessage: system } : {}),
       hookSpecificOutput: {
         hookEventName: "UserPromptSubmit",
-        additionalContext: [news.join("\n"), applied?.context].filter(Boolean).join("\n\n"),
+        additionalContext: [news.join("\n"), hints.join("\n"), applied?.context].filter(Boolean).join("\n\n"),
       },
     };
   });
