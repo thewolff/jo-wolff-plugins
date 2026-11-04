@@ -145,7 +145,7 @@ compares the two installs and prints the commands for any plugin that differs (e
 
 ## How the plugins fit together
 
-This section describes the repository at `9c786ca`: pull requests #73 to #77 and #80 merged onto `6c68968`.
+This section describes the repository at `8a344fc`: pull requests #73 to #78 and #80 merged onto `6c68968`.
 The versions are in the table under *Who does what*; per-plugin detail is in each plugin's
 section or README.
 
@@ -153,7 +153,7 @@ section or README.
 
 **Session start.** output-types injects the CLAIM and CITE labels; i-have-audhd the message
 skeleton and its rule headings; ledger the questions waiting on you and its last notes; ctx-watch
-a line when the ctx daemon is dead, unsupervised or stale; reminders-review overdue and today's
+a line when the ctx daemon is dead, unsupervised or stale or its semantic index is not ready; reminders-review overdue and today's
 reminders. delegation injects a block under 25 lines with the brief skeleton inline, so the
 session knows the brief's shape before its first spawn. After a compaction, continuity restores
 this session's snapshot and leads with a liveness line on its newest save. While you are away,
@@ -187,7 +187,8 @@ warns by default. output-types warns on every CLAIM without a `file:line` or com
 CITE without a URL; its judge stage is off by default. ask-graham blocks once on a missing
 verdict or sources line; pattern-check once on a plan with no receipt; ledger on a decision
 asked outside the ledger. paired-coding warns in learning mode when a closed change set has no
-`Recall:` line. Past the threshold, continuity blocks once so the agent writes the handoff.
+`Recall:` line. ctx-watch warns when a resumed or compacted session reaches its first stop
+without a `ctx search`. Past the threshold, continuity blocks once so the agent writes the handoff.
 
 **Compaction.** continuity saves a snapshot of the session, git state included, before it
 (Claude Code only), and says so when auto-compaction fires with no handoff written.
@@ -212,7 +213,7 @@ receipt and removes its working files.
 | ledger | 0.3.6 | questions and choices on rows; the push gate with six rows (`docs` new) | its `says` row checks the "When this can't" heading every skill and agent carries; its canary runs every plugin's `e2e/live-run.sh` |
 | plugin-kit | 0.3.0 | the scaffold (with `CHANGELOG.md` since 0.2.2), the hook runner, the shared judge lib, the scenario runner, two agents | gives `lib/hook-runner.mjs` and `lib/judge.mjs` to the plugins that vendor them, and `lib/live-run.mjs` to every `e2e/live-run.sh` |
 | as2-skills | 0.1.2 | 22 vendored engineering skills, each with "How it fails" | its sections meet ledger's `says` row |
-| ctx-watch | 0.1.0 | ctx daemon health and repair | vendors the hook runner |
+| ctx-watch | 0.2.0 | ctx daemon and semantic-index health, repair, and the consult-history Stop check | vendors the hook runner and the scenario runner |
 | delegation | 0.1.0 | brief teaching, spawn gate, `SendMessage` check, SubagentStop warning, 11 agents, three guards | needs pattern-check's receipt for builder-class spawns; vendors the hook runner |
 | continuity | 0.1.0 | PreCompact snapshot, liveness line, context-pressure warning, `/continuity:handoff` | vendors the hook runner |
 | brb | 0.1.0 | `brb` / `back` / `pending`, the away digest, keep-working, on-fire surfacing | vendors the hook runner |
@@ -246,7 +247,7 @@ listed under `omp.extensions` in its `package.json`, installed through `.omp-plu
 | pattern-check | PreToolUse, Stop, SessionEnd | `omp/pattern-check-omp.ts`: `tool_call`, `session_start`, `session_stop` |
 | reminders-review | SessionStart, UserPromptSubmit | `omp/reminders-review-omp.ts`: `session_start`, `before_agent_start` |
 | ledger | SessionStart, UserPromptSubmit, PreToolUse, Stop, SessionEnd | none; Claude Code only |
-| ctx-watch | SessionStart | none; the skill, CLI and launchd timer work on both |
+| ctx-watch | SessionStart, Stop | none; the skill, CLI and launchd timer work on both; the Stop check is Claude Code only |
 | delegation | SessionStart, PreToolUse, PostToolUse, SubagentStop | `omp/delegation-omp.ts`: `before_agent_start`, `context`, `tool_call`, `tool_result`, `session_compact` |
 | continuity | SessionStart, UserPromptSubmit, PreCompact, Stop | none; Claude Code only |
 | brb | SessionStart, UserPromptSubmit, Stop | `omp/brb-omp.ts`: `input`, `before_agent_start`, `session_stop` |
