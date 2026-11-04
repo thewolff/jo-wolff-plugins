@@ -6,7 +6,7 @@ has, whether the thing is worth building in the first place, going through your 
 it, keeping a record of what it did and asked, and a vendored set of engineering skills.
 
 - **[output-types](#output-types)** — label receipted facts, and only those, with the receipt
-  that earns the label.
+  that earns the label; a Stop check warns when a label has no receipt.
 - **[i-have-audhd](#i-have-audhd)** — how to write to someone who is ADHD and autistic, with the
   research behind each rule and a Stop hook that warns when a message buries what they need.
 - **[paired-coding](#paired-coding)** — pair with the agent one change set at a time, behind a
@@ -27,6 +27,11 @@ it, keeping a record of what it did and asked, and a vendored set of engineering
   state declaration, and a skill with its "When this can't run" section, scaffolded by
   `/plugin-kit:new-plugin`; `ledger gate check` passes on it, the `evals` row excepted, before
   the first rule is written, and that row fails naming the stubs until they are filled.
+  Changes in plugin-kit 0.3.0: `lib/judge.mjs`, the shared judge dispatch every judging plugin vendors byte for byte (a sameness test diffs the copies), configured once with `node lib/judge.mjs setup`; `--judge` on the scaffolder.
+  Changes in plugin-kit 0.2.2: the scaffold writes a `CHANGELOG.md` (Keep a Changelog, with the
+  0.1.0 entry) beside the README's `## Changes in 0.1.0`, and the `release-gate` checklist's
+  version-match step wants the three things ledger 0.3.6's `docs` row wants: the CHANGELOG
+  entry, the README release heading and this README's mention.
   Changes in plugin-kit 0.2.1: the `cross-lab-reviewer` agent has a review budget: verdicts `ship`, `ship-with-limits` and `fix-first` (only on a blocking finding), a required `Threat model:` line, a one-sentence worst case per finding, and blocking-only reviews from round 3.
   Changes in plugin-kit 0.2.0: the shared scenario runner `lib/live-run.mjs` and the evals, prune
   and state scaffold templates. Changes in plugin-kit 0.1.2: two agents, `cross-lab-reviewer` (a Codex review of the branch) and `release-gate` (the release checklist, report-only).
@@ -38,6 +43,12 @@ it, keeping a record of what it did and asked, and a vendored set of engineering
   ledger 0.3.5's `gate check` enforces; see the plugin's
   [release notes](plugins/as2-skills/README.md#changes-in-012). Changes in as2-skills 0.1.1:
   the triad and quorum fan-out scripts ship their `lib/leg-runner.sh`.
+- **[delegation](#delegation)** — teach the agent the brief a subagent is handed (a SessionStart
+  block and a skill with a worked example), then gate on it: a spawn without `## How it fails` is
+  refused with the section to fill in, a builder-class spawn also needs `## Spiral bound` and a
+  pattern-check receipt, an undeliverable message is marked NOT delivered, and a builder report
+  without `Stopped because:` draws a warning. Plus the eleven general agents and three guards
+  ported from newdle. Changes in delegation 0.1.0: first release.
 - **[ctx-watch](#ctx-watch)** — notice when the ctx daemon is dead, unsupervised,
   or stale, or its semantic index is not ready; repair what ctx documents a command for, and
   say so at SessionStart and in a macOS popup from a launchd timer; the SessionStart line also
@@ -50,9 +61,21 @@ it, keeping a record of what it did and asked, and a vendored set of engineering
   or "as discussed" with no `ctx search` since; `~/.claude/ctx-watch.json`, default warn);
   `evals/` and the plugin-kit scenario runner; see the plugin's
   [release notes](plugins/ctx-watch/README.md#changes-in-020).
+- **[continuity](#continuity)** — keep a long session's state across compaction: a PreCompact
+  hook saves branch, diff, touched files, recent asks and the repository's open handoffs to a
+  snapshot the post-compaction SessionStart injects back; every start says when that save last
+  succeeded, so a dead save is never silent; a context-pressure check warns once and blocks one
+  stop near the compaction target, naming `/continuity:handoff`; and the handoff skill writes
+  the judgment layer no hook can derive. Claude Code hooks. Changes in continuity 0.1.0: first
+  release, ported from the newdle plugin 0.2.175 with every workspace path stripped; see the
+  plugin's [CHANGELOG](plugins/continuity/CHANGELOG.md).
+- **[brb](#brb)** — type `brb` and walk away: the agent keeps working, every ask it would
+  have stopped for waits in a digest, and only a broken main, data loss, a security finding,
+  spend near a ceiling or a blocker on everything comes through at once; `back` prints the
+  digest. Claude Code hooks plus an OMP extension. Changes in brb 0.1.0: first release.
 
-output-types delivers text and does not read what the agent sends back; see its *delivers, does
-not enforce* note. i-have-audhd delivers its rules and checks every finished message, warning by
+output-types delivers text and, since 0.3.0, checks every finished message for a label without
+a receipt, warning only; see its *delivers, and warns* note. i-have-audhd delivers its rules and checks every finished message, warning by
 default. paired-coding enforces at the tool boundary, within the limits in its *what this
 enforces, and what it does not* note. ask-graham is a skill, a one-line prompt nudge you can
 turn off, and a Stop check that blocks once per turn when an answer that read the skill has no
@@ -74,6 +97,9 @@ the receipt.
 /plugin install as2-skills@jo-wolff-plugins
 /plugin install plugin-kit@jo-wolff-plugins
 /plugin install ctx-watch@jo-wolff-plugins
+/plugin install delegation@jo-wolff-plugins
+/plugin install continuity@jo-wolff-plugins
+/plugin install brb@jo-wolff-plugins
 ```
 
 On OMP, from a shell:
@@ -89,6 +115,9 @@ omp plugin install pattern-check@jo-wolff-plugins
 omp plugin install as2-skills@jo-wolff-plugins
 omp plugin install plugin-kit@jo-wolff-plugins
 omp plugin install ctx-watch@jo-wolff-plugins
+omp plugin install delegation@jo-wolff-plugins
+omp plugin install continuity@jo-wolff-plugins
+omp plugin install brb@jo-wolff-plugins
 ```
 
 Inside a running OMP session the commands are `/marketplace add` and `/marketplace install`, with
@@ -96,7 +125,10 @@ the same arguments. `/plugin install` inside OMP installs nothing. On OMP output
 skill only; its hooks do not run there. i-have-audhd and paired-coding install OMP extensions
 that run their hooks, and ask-graham installs its prompt nudge (see each section). plugin-kit
 is a skill and a script, so it works on both. ctx-watch's SessionStart line is Claude Code
-only; its skill, CLI and launchd timer work on both. ledger is Claude Code only.
+only; its skill, CLI and launchd timer work on both. ledger is Claude Code only. delegation's
+gates, teaching block and agents run on both; its three ported guards are Claude Code only.
+continuity's hooks are Claude Code only; its handoff skill works on both.
+brb installs an OMP extension that runs its hooks.
 
 To update, update each harness separately. On OMP, refresh the marketplace first, because
 `omp plugin upgrade` installs the version in OMP's cached copy of it:
@@ -142,9 +174,10 @@ Inside a running OMP session, use `/marketplace add thewolff/jo-wolff-plugins` a
 nothing: it prints the installed-plugin list and returns.
 
 **On OMP only the skill loads.** Tested on OMP 18.4.4: OMP does not run a plugin's
-`hooks/hooks.json`, so the session-start hook never fires and the core is never injected. The
-skill is listed and loads on demand, so the contract is in force only once the model has read
-it. Name the skill in your instructions if you want it from the first turn.
+`hooks/hooks.json`, so the session-start hook never fires, the core is never injected, and the
+Stop check never runs. The skill is listed and loads on demand, so the contract is in force only
+once the model has read it. Name the skill in your instructions if you want it from the first
+turn.
 
 ### What you get
 
@@ -159,19 +192,19 @@ it. Name the skill in your instructions if you want it from the first turn.
 - A **session-start hook** that emits the operative core before the first tool call, reading it out
   of the contract file so there is only ever one copy of that text. Claude Code only; see *Install
   on OMP*.
+- A **Stop check** that reads the finished message and warns, in one line to you, about every
+  `**CLAIM**` or `**CITE**` that carries no receipt shape; optionally, a judge model asks whether
+  each receipt licenses its sentence. Warns, never blocks; off switch and the judge's switch below.
 
-Changes in 0.2.0: only receipted facts are labeled, as CLAIM or CITE. The GUESS, PMDW, ACTION and
-QUESTION labels, the `<!-- output-types … -->` envelope and the numbered degradation tiers are
-gone; unreceipted statements, actions, questions and degraded coverage are plain prose. The whole
-contract now lives in `skills/output-types/reference.md`, which the skill points at and the hook
-injects from.
-
-Changes in 0.2.1: a hook fault (contract file missing, unreadable or without its markers, or the
-hook's own module failing to load or loading broken) now appends one line naming the hook file
-and the reason to `${XDG_STATE_HOME:-~/.local/state}/output-types/errors.log`, and the one-line
-warning reaches you as well as the model and says where the reason went. `OUTPUT_TYPES_INJECT=off`
-is read first, so it silences the hook even when the install is broken. The hook no longer waits
-on a stdin pipe its caller leaves open: it reads for at most one second, then injects.
+Changes in 0.3.0: the Stop check (next section). Mechanical, every turn: each `**CLAIM**` without
+an absolute `file:line` or a command and its result, and each `**CITE**` without a URL or a test
+run with its command, is named by line in one `systemMessage`, the first five, then `+N more`.
+Never `decision: block`. A judge stage, off by default, runs when
+`${XDG_CONFIG_HOME:-~/.config}/output-types/config.json` has `"judge": true` and a judge command
+resolves. The judge dispatch is plugin-kit 0.3.0's `lib/judge.mjs`, vendored byte for byte, and
+the command is configured once for every plugin with `node lib/judge.mjs setup`. New files:
+`hooks/output-types-stop.mjs`, `lib/receipts.mjs`, `lib/judge.mjs`, `lib/hook-runner.mjs`.
+`OUTPUT_TYPES_CHECK=off` turns the check off.
 
 Changes in 0.2.2: the plugin meets ledger 0.3.5's five-row gate. `evals/manifest.json` declares
 what the session-start hook can return (the core as a `systemMessage`, or silence under
@@ -181,9 +214,81 @@ with `claude plugin eval`. `e2e/live-run.sh` hands off to plugin-kit's scenario 
 `.claude-plugin/plugin.json` declares the one state path (`$XDG_STATE_HOME/output-types`, 30
 days) and `scripts/prune.mjs` prunes it. The skill has a "When this can't run" section.
 
-### What this does, and what it does not do: it delivers, it does not enforce
+Changes in 0.2.1: a hook fault (contract file missing, unreadable or without its markers, or the
+hook's own module failing to load or loading broken) now appends one line naming the hook file
+and the reason to `${XDG_STATE_HOME:-~/.local/state}/output-types/errors.log`, and the one-line
+warning reaches you as well as the model and says where the reason went. `OUTPUT_TYPES_INJECT=off`
+is read first, so it silences the hook even when the install is broken. The hook no longer waits
+on a stdin pipe its caller leaves open: it reads for at most one second, then injects.
 
-Two pieces, and it is worth knowing which does what before you install.
+Changes in 0.2.0: only receipted facts are labeled, as CLAIM or CITE. The GUESS, PMDW, ACTION and
+QUESTION labels, the `<!-- output-types … -->` envelope and the numbered degradation tiers are
+gone; unreceipted statements, actions, questions and degraded coverage are plain prose. The whole
+contract now lives in `skills/output-types/reference.md`, which the skill points at and the hook
+injects from.
+
+### The Stop check
+
+Every time the agent finishes a message, the hook reads it back (the payload's
+`last_assistant_message`, else the last assistant text in the transcript Claude Code names in the
+payload) and looks at each labelled statement. A label is `**CLAIM**` or `**CITE**` in markdown
+bold that starts a line (after any list or `>` quote marker), or that is followed by a colon or
+the end of its line; prose that mentions CLAIM casually is not a label, and nothing inside a
+fenced code block is, at any indentation, so a quoted example never warns about itself. A bold
+label inside a sentence ("The hook never blocks (**CLAIM**), …") is checked against that sentence
+and the line after it, unless it is only mentioned: joined to another label by and, or, a comma
+or a slash ("**CLAIM** and **CITE** are the two labels"), quoted or in code, or followed by a word
+about it such as label, means, is or needs. For a label that starts a line or takes a colon, the
+statement is the text after the label up to the next such label, a heading, a rule, a bold-only
+line, or a blank line, except that a fence after a blank line (a command and its output, the
+usual receipt) belongs to the statement, blank lines inside the fence included.
+
+**The mechanical stage** is deterministic and runs every turn. A `**CLAIM**` needs an absolute
+`/`-rooted `file:line` (or `file:line-line`; a relative or `~/` path is not one), or a command and
+what it gave: a fence holding the command and what it printed (or a fenced command plus a result
+phrase such as `exit 0`), or a command with `→ output` after it on the same line or opening the
+next, where the command is a bare `$ cmd` at the line start or inline code that opens with `$ `
+or has a space in it (`` `npm test` → exit 0, 12 passing ``). A symbol in code is not a command:
+"`` `resolveJudgeCommand` returns null ``" and "`` `handle()` -> null ``" warn. A `**CITE**` needs
+an `http(s)://` URL, or the words test/tested/ran/run with a command in code. A statement with
+neither is named by line in one `systemMessage`, shown to you:
+
+```
+output-types: 2 labelled statements without a receipt that holds. Add the receipt or remove the label (unlabeled means unreceipted).
+  line 3 **CLAIM** "the handler returns early.": needs an absolute file:line, or the command and its result
+  line 5 **CITE** "the vendor caps it at 100.": needs the URL fetched, or the test run with its command
+```
+
+The first five are named, the rest counted (`+N more`). The shape is checked, not the content: a
+path that does not exist still passes here. The check never blocks: a `decision: "block"` on Stop
+re-prompts the model and contends with other Stop hooks, and the contract is yours to weigh.
+Nothing labelled, no transcript, or `OUTPUT_TYPES_CHECK=off` → no output at all. The mechanical
+path answers inside 4 s; past that the runner fails open with one line in `errors.log`.
+
+**The judge stage** is off by default: a model call per statement adds seconds to every Stop.
+Turn it on by writing `{ "judge": true }` to `${XDG_CONFIG_HOME:-~/.config}/output-types/config.json`,
+and configure the judge command once, for this and every other plugin that judges, with
+`node "<plugin dir>/lib/judge.mjs" setup` (it asks for the command, makes one test call, and
+writes `~/.config/judge/config.json`). The command is resolved in this order, and a skipped.log
+line names which source supplied it: `OUTPUT_TYPES_JUDGE_BIN` in the environment → `judgeCommand`
+(and `judgeTimeoutMs`) in the output-types config file → the shared judge file → i-have-audhd's
+`enforcement.judgeCommand` in `~/.claude/i-have-audhd.json`, read-only. A shared judge file that
+is not valid JSON stops the search there (the i-have-audhd profile is not used in its place);
+`node lib/judge.mjs which` names the file and the parse error. With the judge on, each
+statement that passed the mechanical stage is put to it once: does the receipt license what the
+sentence says. A `fail`, or an answer that is neither pass nor fail (marked unverified), joins
+the same warning with the judge's reason when it gave one; a judge that times out, exits
+non-zero, prints no JSON, or cannot start is one line in
+`${XDG_STATE_HOME:-~/.local/state}/output-types/skipped.log` and the check goes on with the
+mechanical result; so is a judge that is on with no command resolved, naming the malformed
+shared file or the places it looked. Every call is clamped to what is left of the hook's 55 s budget (the Stop
+entry in `hooks.json` has `timeout: 60`), counted from when the hook process started, before
+it read its input, so a hanging judge is killed by its own timer, never by the host. Should the
+hook's own deadline fire first anyway, the judge's process group is killed as the hook exits.
+
+### What this does, and what it does not do: it delivers, and it warns
+
+Three pieces, and it is worth knowing which does what before you install.
 
 **The session-start hook puts the core in front of the model before the first tool call.** A
 contract that governs every assertion cannot be delivered by a mechanism that fires in response to
@@ -196,14 +301,13 @@ is one copy of the core and it cannot drift from the contract.
 receipts, the seven rules, rendering, degraded reports, handed-over commands. Once read, the text
 stays in context for the rest of the session.
 
-**Nothing here enforces anything, and that is the part to be clear about.** Both pieces deliver
-text. Neither one reads what the agent sends back. On the machine this was extracted from there is
-also a conformance guard that inspects a returned report and tells the parent what it actually got
-— unlabelled facts, a claim with no receipt. **That guard is not in this package and is not being
-extracted.** So do not read an installed copy of this plugin as a guarantee: a report that comes
-back with every fact bare will come back exactly that way, and
-nothing here will catch it. What you get is a contract the model has read, not a contract the
-model has been held to.
+**The Stop check reads what the agent sends back, and warns.** It catches one failure: a label
+with no receipt shape, and with the judge on, a receipt that does not say what the sentence says.
+It does not catch the other one: a fact left bare, with no label at all, is exactly what the
+contract says an unreceipted statement should look like, and nothing here can tell a deliberate
+omission from a forgotten receipt. So do not read an installed copy as a guarantee: a report that
+comes back with every fact unlabeled comes back exactly that way. What you get is a contract the
+model has read, held to the half of it that is checkable.
 
 Two things help in practice. Name the skill in the delegation prompt for any agent you dispatch,
 and say so in your own instructions if you want more than the core in force from the start.
@@ -213,11 +317,16 @@ environment; the hook then emits nothing and the skill still loads on demand.
 
 If the core did not load, the session still starts and shows one line saying so. The reason is in
 `${XDG_STATE_HOME:-~/.local/state}/output-types/errors.log`, one line per failure, or in the warning
-itself when that log cannot be written.
+itself when that log cannot be written. The Stop check's own faults go to the same file, as
+`<iso> Stop <reason>`, with a `output-types Stop failed open: …` line to you; a judge it could not
+use goes to `skipped.log` beside it.
 
 ### Developing output-types
 
-The tests run with `node --test` from inside `plugins/output-types/`.
+The tests run with `node --test` from inside `plugins/output-types/`. `lib/judge.mjs` and
+`lib/hook-runner.mjs` are plugin-kit's, copied byte for byte; change them there and copy again
+(the kit's `test/judge.test.mjs` and this plugin's `test/manifest.test.mjs` both fail on drift).
+A full changelog is in [`plugins/output-types/CHANGELOG.md`](plugins/output-types/CHANGELOG.md).
 
 ## i-have-audhd
 
@@ -392,6 +501,17 @@ installing the plugin.
   ask a process outside the sandbox to write for it.
 - **A journal** of every card, quote, verdict, refusal and diff, kept outside the worktree.
 - **A stop only you can give:** pairing ends when you type `pair stop` as a message of its own.
+
+Changes in 1.5.0: learning mode, off by default. Type `learning mode on` or `teach me as we go`
+while pairing and each card's decision line adds **Why this approach** with **Sources** (a URL
+fetched this session with its passage, an absolute `file:line`, or a `from memory` mark); "teach
+me more" keeps the card closed and is answered one sourced layer at a time with a recall
+question, and each read-back asks one recall question. `learning mode off` turns it off. The
+gate enforces it: a new `pair_learn` tool switches it, and refuses to switch it off unless your
+latest typed turn says `learning mode off`; while it is on, `pair_propose` refuses a card without
+`why` and `sources`, `pair_done` refuses without `recall`, and the Stop hook (Claude Code) and
+`session_stop` handler (OMP) warn, never block, when a turn closed a change set without a
+`Recall:` line. With it off, the 1.4.4 flow is unchanged. See the plugin README, *Learning mode*.
 
 Changes in 1.4.4: the plugin meets ledger 0.3.5's five-row gate. `evals/manifest.json` declares
 what each of the five hooks can return and nine `evals/<x>.scenario.json` prove them (the
@@ -831,6 +951,16 @@ The hooks record every session until you switch a folder off with `/ledger:disab
 (`/ledger:enable` turns it back on). The plugin's tables are all prefixed `cc_`, so the database
 can be a SQLite file another tool already uses.
 
+Changes in 0.3.6 (with plugin-kit 0.2.2): the gate grows from five rows to six. `docs` (a
+release is written down): when a plugin's `.claude-plugin/plugin.json` version differs from the
+base commit's, its `CHANGELOG.md` has an entry for the new version, its README has a release
+heading for it (`## Changes in <ver>`, `### <ver>` or `### <date> — <ver>`), and this README
+names the version for the plugin (in its bullet, on a `Changes in <plugin> <ver>` line, or on a
+`Changes in <ver>` line under the plugin's section). The row is skipped while the version is
+unchanged, each failure names the file and the heading it wanted, and the base manifest and
+this README are read out of the commits like every other input. `plugins/ledger/CHANGELOG.md`
+exists from this version on.
+
 Changes in 0.3.5 (with plugin-kit 0.2.0): the gate grows from three rows to five. `evals`
 (behaviour is proved): `evals/manifest.json` declares, for every event `hooks.json` registers,
 the outcomes the handler can return; one `evals/<x>.scenario.json` per event × outcome, with a
@@ -858,7 +988,7 @@ instead of the directory above the kit (which, installed from the marketplace, w
 cache); a cwd in no repository is refused naming `--dest`.
 
 Changes in 0.3.3: the fault-tolerance gate and the feedback loop. `ledger gate check` runs the
-repository test bar's checks (three then; five since 0.3.5) on every plugin changed since the base of a repository of
+repository test bar's checks (three then; five since 0.3.5; six since 0.3.6) on every plugin changed since the base of a repository of
 plugins (can't break the session: each hook on five fault inputs; failures visible: an
 `errors.log` line and a `systemMessage`, and an `<x>.unavailable.txt` fixture beside every
 `<x>.txt`; text says what to do: a "When this can't run" section in every skill and agent, a
@@ -1043,6 +1173,113 @@ Then, once, from your own Terminal: `node <plugin dir>/scripts/ctx-watch.mjs ins
 The tests run with `node --test` from inside `plugins/ctx-watch/`; the hook scenarios with
 `bash e2e/live-run.sh --no-live`. The ctx captures in `test/fixtures/` are re-made by
 `test/fixtures/capture.sh`, by hand.
+
+## delegation
+
+Teach an agent the brief a subagent is handed, then gate on it. Every session gets a block
+under 25 lines at SessionStart with the brief's skeleton inline (`# Target` with non-goals,
+`# Change`, `# Acceptance`, `## How it fails`, `## Spiral bound`, the closing `Stopped
+because:` line), and the `delegation` skill carries the lesson with a worked example. A
+PreToolUse gate on `Agent`/`Task` refuses a spawn whose prompt has no `## How it fails`
+heading, and a builder-class spawn (`builder`, `beefy-builder`, `task`, `sonic`,
+`general-purpose`, or your `builderClass` list) without `## Spiral bound` or without this
+session's pattern-check receipt; the refusal carries the missing section verbatim, so the brief
+is repaired from the refusal alone. A PostToolUse check marks a `SendMessage` the host could not
+deliver as NOT delivered next to its result. A SubagentStop warning names the exact `Stopped
+because:` line a builder report ended without. On OMP the same gates run on the `task` tool and
+its results. Alongside: eleven agents (`auditor`, `builder`, `changelog`, `checker`, `debugger`,
+`planner`, `reader`, `research`, `scout`, `storyteller`, `summarizer`) and three guards
+(`delegation-guard`, `worktree-spawn-guard`, `repo-rules-inject`) ported from newdle 0.2.175 with
+their repository-specific lines removed; the per-file list is in the plugin README. Built on
+plugin-kit; Node 22.13 or later. The gate texts, the config and the failure table are in
+[`plugins/delegation/README.md`](plugins/delegation/README.md).
+
+### Install
+
+```
+/plugin marketplace add thewolff/jo-wolff-plugins
+/plugin install delegation@jo-wolff-plugins
+```
+
+On OMP: `omp plugin marketplace add thewolff/jo-wolff-plugins` then
+`omp plugin install delegation@jo-wolff-plugins`. The agents preload the `output-types` skill
+and some `as2-skills` skills, both sibling plugins installed separately. Gate 2 names the
+`pattern-check` plugin's command; without it installed the refusal says to install it, or set
+`requirePatternCheck: false` in `${XDG_CONFIG_HOME:-~/.config}/delegation/config.json`.
+
+### Developing delegation
+
+The tests run with `node --test` from inside `plugins/delegation/`; every hook is spawned
+through the fail-open runner with its 4 s deadline in an empty HOME and XDG sandbox.
+
+## continuity
+
+Keep a long session's state across compaction. On PreCompact, `hooks/pre-compact.mjs` saves the
+session's deterministic state (branch, uncommitted paths, files touched, the last five asks, and
+the open handoffs under the repository's `.ai/handoffs/`) to
+`${XDG_STATE_HOME:-~/.local/state}/continuity/<session_id>.json`, every list capped and every
+cut announced in the file, and leaves a heartbeat record saying whether it worked. On the
+SessionStart that follows a compaction, `hooks/session-start.mjs` injects that snapshot back
+(this session's only, at most 20,000 characters) and removes it; on every start it adds one
+line, `continuity, pre-compaction save liveness: last successful save N minutes ago; the
+snapshot path is alive`, or a bold line saying the save has never been recorded or never
+succeeded on this machine, so a save that silently died is seen the next morning. The
+context-pressure check (`hooks/user-prompt-submit.mjs`, `hooks/stop.mjs`) estimates the
+session's size from the transcript and the ratio observed at earlier compactions, and at 0.65
+of the compaction target (configurable in `${XDG_CONFIG_HOME:-~/.config}/continuity/config.json`)
+warns once with the prompt and blocks one stop, both naming `/continuity:handoff`; a machine
+that has never compacted hears nothing. The handoff skill writes
+`<root>/.ai/handoffs/<date>--<time>--<author>--<lane>.md` with five sections (where I left off,
+next move, already ruled out, live uncertainty, working state) and the rule that a resuming
+session restates the content before continuing. Every hook fails open. Built on plugin-kit
+0.2.1; Node 22.13 or later. The config keys, the state table, the failure table and the
+"Ported from newdle 0.2.175" table are in
+[`plugins/continuity/README.md`](plugins/continuity/README.md).
+
+### Install
+
+```
+/plugin marketplace add thewolff/jo-wolff-plugins
+/plugin install continuity@jo-wolff-plugins
+```
+
+### Developing continuity
+
+The tests run with `node --test` from inside `plugins/continuity/`;
+`bash e2e/live-run.sh --no-live` replays the twelve scenarios offline.
+
+## brb
+
+Type `brb` (a note may follow) as the whole prompt and walk away. The prompt is blocked before
+it reaches the model, a hold is written for the session, and from then on every prompt carries
+an away instruction: keep working, put every ask under `## Needs you`, start a line with
+`on fire:` only for a broken main branch, data loss, a security finding, spend near a ceiling
+or a blocker on everything, and end with an `idle: <why>` line when nothing is runnable.
+The Stop hook copies each new Needs-you line into a digest, surfaces each on-fire line at once
+(a `systemMessage`, an OSC 9 terminal notification, a best-effort macOS notification) without
+holding it, and sends the agent back to work (Stop hook feedback on Claude Code, a block on
+OMP) until an `idle:` line, a tool-less continuation that brings nothing new, or two stops with
+no tool call between them. `pending` prints the digest; `back` prints it, archives it and ends
+the hold. The on-fire kinds mirror
+agent-system 2.0's surface. Built on plugin-kit 0.2.1; Node 22.13 or later; Claude Code hooks
+plus an OMP extension that runs the same hooks. The exact instruction text, the three release
+rules, the config (`onFireCap`, `idleStops`) and the failure table are in
+[`plugins/brb/README.md`](plugins/brb/README.md).
+
+### Install
+
+```
+/plugin marketplace add thewolff/jo-wolff-plugins
+/plugin install brb@jo-wolff-plugins
+```
+
+On OMP: `omp plugin install brb@jo-wolff-plugins`;
+[`plugins/brb/omp/REGISTRATION.md`](plugins/brb/omp/REGISTRATION.md) has the fallbacks.
+
+### Developing brb
+
+The tests run with `node --test` from inside `plugins/brb/`; `bash e2e/live-run.sh --no-live`
+replays the scenarios offline.
 
 ## License
 

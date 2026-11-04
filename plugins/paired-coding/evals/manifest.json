@@ -10,6 +10,7 @@
       "silent"
     ],
     "Stop": [
+      "systemMessage",
       "silent"
     ],
     "SessionStart": [

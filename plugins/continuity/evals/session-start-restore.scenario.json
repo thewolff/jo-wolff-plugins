@@ -1,0 +1,13 @@
+{
+  "$comment": "After a compaction (source compact): the snapshot the PreCompact hook saved for this session is injected as additionalContext, with the branch and the recent ask, then removed; the liveness line reports the save that just succeeded.",
+  "event": "SessionStart",
+  "expect": "systemMessage",
+  "reason": "Restored session state",
+  "setup": { "commands": ["git -C \"${CWD}\" checkout -q -b feature/restore"] },
+  "transcript": [{ "type": "user", "message": { "role": "user", "content": "finish the restore path" } }],
+  "before": [
+    { "event": "PreCompact", "stdin": { "hook_event_name": "PreCompact", "session_id": "${SESSION_ID}", "cwd": "${CWD}", "transcript_path": "${TRANSCRIPT}", "trigger": "auto", "custom_instructions": "" } }
+  ],
+  "stdin": { "hook_event_name": "SessionStart", "session_id": "${SESSION_ID}", "cwd": "${CWD}", "source": "compact" },
+  "after": { "absent": ["$XDG_STATE_HOME/continuity/${SESSION_ID}.json"] }
+}

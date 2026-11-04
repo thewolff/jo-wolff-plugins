@@ -1,0 +1,44 @@
+{
+  "$comment": "Sibling of stop-unreceipted-warns: OUTPUT_TYPES_CHECK=off → the same unreceipted message gets nothing on stdout, nothing logged.",
+  "event": "Stop",
+  "expect": "silent",
+  "sibling": "stop-unreceipted-warns.scenario.json",
+  "setup": {
+    "env": {
+      "OUTPUT_TYPES_CHECK": "off"
+    }
+  },
+  "transcript": [
+    {
+      "type": "user",
+      "message": {
+        "role": "user",
+        "content": "does the handler return early?"
+      }
+    },
+    {
+      "type": "assistant",
+      "message": {
+        "role": "assistant",
+        "content": [
+          {
+            "type": "text",
+            "text": "**CLAIM**\nThe handler returns early."
+          }
+        ]
+      }
+    }
+  ],
+  "stdin": {
+    "session_id": "${SESSION_ID}",
+    "transcript_path": "${TRANSCRIPT}",
+    "cwd": "${CWD}",
+    "hook_event_name": "Stop",
+    "stop_hook_active": false
+  },
+  "after": {
+    "absent": [
+      "$XDG_STATE_HOME/output-types/errors.log"
+    ]
+  }
+}

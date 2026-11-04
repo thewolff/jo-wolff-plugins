@@ -25,6 +25,7 @@ test("scaffold: the files, with name, title, description, scenario and per-hook 
   assert.equal(root, join(d, "trial-gate"));
   assert.deepEqual(walk(root), [
     ".claude-plugin/plugin.json",
+    "CHANGELOG.md",
     "HOW-IT-FAILS.md",
     "README.md",
     "e2e/live-run.sh",
@@ -44,13 +45,17 @@ test("scaffold: the files, with name, title, description, scenario and per-hook 
     "test/fixtures/README.md",
     "test/hook-contract.test.mjs",
   ]);
-  assert.equal(written.length, 19);
+  assert.equal(written.length, 20);
   const read = (rel) => readFileSync(join(root, rel), "utf8");
   const manifest = JSON.parse(read(".claude-plugin/plugin.json"));
   assert.equal(manifest.name, "trial-gate");
   assert.equal(manifest.description, 'Keeps "trials" honest.');
   assert.equal(JSON.parse(read("package.json")).name, "trial-gate");
   assert.match(read("README.md"), /^# Trial Gate\n\nKeeps "trials" honest\.\n/);
+  assert.match(read("README.md"), /\n## Changes in 0\.1\.0\n\nFirst release\.\n/);
+  assert.match(read("CHANGELOG.md"), /^# Changelog\n\nAll notable changes to trial-gate are recorded here\./);
+  assert.match(read("CHANGELOG.md"), /\n## \[0\.1\.0\]\n\n### Added\n\n- First release: Keeps "trials" honest\.\n/, "the scaffold's CHANGELOG entry is the one ledger's docs row wants (a `## [<ver>]` heading with text under it)");
+  assert.equal(JSON.parse(read(".claude-plugin/plugin.json")).version, "0.1.0", "the version the two entries are for");
   const hooks = JSON.parse(read("hooks/hooks.json")).hooks;
   assert.deepEqual(Object.keys(hooks), ["PreToolUse", "Stop", "SessionEnd"]);
   assert.equal(hooks.PreToolUse[0].matcher, EVENTS.PreToolUse.matcher);
@@ -109,6 +114,7 @@ test("scaffold: the generated plugin's own node --test is green; ledger's gate p
       ["says", "pass"],
       ["evals", "fail"],
       ["retention", "pass"],
+      ["docs", "skipped"],
     ],
     JSON.stringify(rows),
   );
@@ -140,6 +146,21 @@ test("refusals: an existing directory, a bad name, an unknown event, no events; 
   assert.match(good.stdout, /^.*\/second\n  \.claude-plugin\/plugin\.json\n/);
   assert.match(good.stdout, /\nnext: write the rule in hooks\/\*\.mjs/);
   assert.deepEqual(readdirSync(d).sort(), ["second", "taken"]);
+});
+
+test("--judge: the scaffold also gets lib/judge.mjs, the kit's copy byte for byte; without the flag there is none", () => {
+  const d = dest();
+  assert.equal(parseArgs(["fine", "--events", "Stop", "--dest", d]).judge, false);
+  assert.equal(parseArgs(["fine", "--events", "Stop", "--dest", d, "--judge"]).judge, true);
+  const plain = scaffold({ name: "plain", events: ["Stop"], description: "x", dest: d });
+  assert.ok(!existsSync(join(plain.root, "lib", "judge.mjs")));
+  assert.ok(!plain.written.includes("lib/judge.mjs"));
+  const judged = scaffold({ name: "judged", events: ["Stop"], description: "x", dest: d, judge: true });
+  assert.ok(judged.written.includes("lib/judge.mjs"));
+  assert.ok(readFileSync(join(judged.root, "lib", "judge.mjs")).equals(readFileSync(join(KIT_ROOT, "lib", "judge.mjs"))));
+  const cli = spawnSync(process.execPath, [SCRIPT, "third", "--events", "Stop", "--dest", d, "--judge"], { encoding: "utf8" });
+  assert.equal(cli.status, 0, cli.stderr);
+  assert.match(cli.stdout, /\n  lib\/judge\.mjs\n/);
 });
 
 test("the default destination is the cwd's repository, not the kit's: a scaffold from inside another repository lands under that repository's plugins/; a cwd in no repository is refused naming --dest", () => {
@@ -205,11 +226,13 @@ test("end to end: a scaffold committed in a fresh repository fails the live run 
   };
   sh("git", ["init", "-q", "-b", "main"]);
   const { root: plugin } = scaffold({ name: "gated", events: ["Stop"], description: "A gated trial.", dest: join(repo, "plugins") });
+  // The repository README's bullet for the plugin, the third thing the gate's docs row wants for a new version.
+  writeFileSync(join(repo, "README.md"), "# plugins\n\n- **[gated](plugins/gated/README.md)** — a gated trial. Changes in gated 0.1.0: first release.\n");
   const commit = (m) => { sh("git", ["add", "-A"]); sh("git", ["commit", "-qm", m]); };
   commit("scaffold");
   const ledger = (...args) => spawnSync(process.execPath, [LEDGER_CLI, ...args], { cwd: repo, env, encoding: "utf8" });
   const live = (...args) => spawnSync("bash", [join(plugin, "e2e", "live-run.sh"), ...args], { cwd: plugin, env: { ...env, CANARY_PLUGIN: "gated", CANARY_TRANSCRIPT: join(root, "canary.jsonl"), CANARY_TIMEOUT_S: "60" }, encoding: "utf8" });
-  // 1. As scaffolded: the live run fails naming the stub; the gate's evals row fails on it, the other four pass.
+  // 1. As scaffolded: the live run fails naming the stub; the gate's evals row fails on it, the other five pass (docs: the first version is written down in the scaffold's CHANGELOG.md and README.md, and in the repository README).
   const stubRun = live();
   assert.equal(stubRun.status, 1, stubRun.stdout + stubRun.stderr);
   assert.match(stubRun.stdout, /^scenario stop: fail — is an unfilled stub/m, stubRun.stdout);
@@ -218,7 +241,8 @@ test("end to end: a scaffold committed in a fresh repository fails the live run 
   assert.equal(g1.status, 1, g1.stdout + g1.stderr);
   const rowsOf = (out) => Object.fromEntries([...out.matchAll(/^ {2}gated {12}(\w+) +(\w+) +(.*)$/gm)].map((m) => [m[1], { status: m[2], detail: m[3] }]));
   const r1 = rowsOf(g1.stdout);
-  assert.deepEqual(Object.fromEntries(Object.entries(r1).map(([k, v]) => [k, v.status])), { survives: "pass", visible: "pass", says: "pass", evals: "fail", retention: "pass" }, g1.stdout);
+  assert.deepEqual(Object.fromEntries(Object.entries(r1).map(([k, v]) => [k, v.status])), { survives: "pass", visible: "pass", says: "pass", evals: "fail", retention: "pass", docs: "pass" }, g1.stdout);
+  assert.equal(r1.docs.detail, "version 0.1.0, new since the base: CHANGELOG.md has its 0.1.0 entry; README.md has its 0.1.0 entry; the repository README names it", g1.stdout);
   assert.match(r1.evals.detail, /evals\/stop\.scenario\.json is an unfilled stub/, g1.stdout);
   // 2. Filled: "stub": true removed; the hook answers the sample input with silence, which is what the scenario expects.
   const file = join(plugin, "evals", "stop.scenario.json");
@@ -248,7 +272,8 @@ test("end to end: a scaffold committed in a fresh repository fails the live run 
   const g4 = ledger("gate", "check", "--plugins", "gated");
   assert.equal(g4.status, 0, g4.stdout + g4.stderr);
   const r4 = rowsOf(g4.stdout);
-  assert.deepEqual(Object.fromEntries(Object.entries(r4).map(([k, v]) => [k, v.status])), { survives: "pass", visible: "pass", says: "pass", evals: "pass", retention: "pass" }, g4.stdout);
+  assert.deepEqual(Object.fromEntries(Object.entries(r4).map(([k, v]) => [k, v.status])), { survives: "pass", visible: "pass", says: "pass", evals: "pass", retention: "pass", docs: "skipped" }, g4.stdout);
+  assert.equal(r4.docs.detail, "version 0.1.0 unchanged since the base", "the fill commit bumps nothing, so the docs row has nothing to ask");
   assert.match(r4.evals.detail, /^1 scenario\(s\) cover 1 event\(s\); canary #\d+ at .*: live unavailable \(claude not found on PATH\); hook scenarios passed offline$/, g4.stdout);
   assert.match(r4.retention.detail, /^2 state path\(s\) declared \(1 with a prune, 1 kept by design\)/, g4.stdout);
   assert.match(g4.stdout, /\nevery check passed\n$/);

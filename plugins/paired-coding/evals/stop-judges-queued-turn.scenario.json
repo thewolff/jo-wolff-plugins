@@ -2,6 +2,7 @@
   "$comment": "Pairing on: Stop prints nothing (it cannot reopen the turn) but judges the queued turn against the transcript and stashes the outcome for the next event; the journal records it.",
   "event": "Stop",
   "expect": "silent",
+  "sibling": "stop-learning-warns-no-recall.scenario.json",
   "setup": {
     "commands": [
       "node \"${PLUGIN_DIR}/evals/pair-start.mjs\" \"${SESSION_ID}\""

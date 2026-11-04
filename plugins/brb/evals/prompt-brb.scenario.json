@@ -1,0 +1,7 @@
+{
+  "event": "UserPromptSubmit",
+  "expect": "deny",
+  "stdin": {"session_id":"${SESSION_ID}","transcript_path":"${TRANSCRIPT}","cwd":"${CWD}","hook_event_name":"UserPromptSubmit","prompt":"brb"},
+  "reason": "brb: holding needs-you items until `back`",
+  "after": { "exists": ["$XDG_STATE_HOME/brb/${SESSION_ID}/away.json"] }
+}

@@ -1,0 +1,8 @@
+{
+  "$comment": "A fresh machine: no heartbeat file, so the liveness line says no save has ever been recorded and marks the session as told.",
+  "event": "SessionStart",
+  "expect": "systemMessage",
+  "reason": "no pre-compaction save has ever been recorded",
+  "stdin": { "hook_event_name": "SessionStart", "session_id": "${SESSION_ID}", "cwd": "${CWD}", "source": "startup" },
+  "after": { "commands": ["grep -q livenessSaid \"${XDG_STATE_HOME}/continuity/sessions/${SESSION_ID}.json\""] }
+}

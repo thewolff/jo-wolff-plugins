@@ -15,7 +15,10 @@
 //                       PreToolUse, else on the next UserPromptSubmit or PreToolUse.
 //   stop                record every queued turn. A typed "pair stop" in a turn that made no tool
 //                       call ends pairing here, before the next turn's first tool call. Either
-//                       way a typed stop writes the pair-accepted receipt beside the journal.
+//                       way a typed stop writes the pair-accepted receipt beside the journal. In
+//                       learning mode, a turn that closed a change set without a line starting
+//                       "Recall:" in its closing message gets a warning (systemMessage); it never
+//                       blocks.
 //   session-end         reap pair_run process groups, final snapshot, write the pair-accepted
 //                       receipt, go inactive. While pairing,
 //                       whatever the reason (/clear, /resume, /branch, quit), first leave a carry
@@ -37,7 +40,7 @@ import { dirname, join, relative } from "node:path";
 import { fileURLToPath } from "node:url";
 import { CARRIED_PHRASE, PAIR_TOOLS, isStopPhrase } from "../core/gate.mjs";
 import { PENDING_DIR, activated, findRoot, loadState, loadStateReport, logFault as logFaultLine, reasonOf, stateBase, withLock } from "../lib/host-io.mjs";
-import { RECEIPT_FILE, carryInto, endSession, pairingCarry, pairingOrUncertain, recordTrustedInput, sessionDirFor, takeCarryMarker, verdict, writeCarryMarker } from "../lib/verbs.mjs";
+import { RECEIPT_FILE, carryInto, closingTextOf, endSession, pairingCarry, pairingOrUncertain, recallWarning, recordTrustedInput, sessionDirFor, takeCarryMarker, verdict, writeCarryMarker } from "../lib/verbs.mjs";
 import { bareToolName, hostAllowFor, writeBinding } from "../server/binding.mjs";
 
 const sleepSync = (ms) => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
@@ -62,6 +65,21 @@ function readTail(path, bytes = 2 * 1024 * 1024) {
   } finally {
     closeSync(fd);
   }
+}
+
+/**
+ * The text of the turn's closing message: Stop's `last_assistant_message`, else the newest
+ * assistant transcript entry with text after the newest user entry (closingTextOf). The
+ * transcript can lag the turn, so a user entry reached first means this turn's text is not
+ * written yet: null, never an earlier turn's message. Null when neither can be read.
+ */
+function closingText(input) {
+  if (typeof input?.last_assistant_message === "string") return input.last_assistant_message;
+  if (typeof input?.transcript_path !== "string" || input.transcript_path === "") return null;
+  let lines;
+  try { lines = readTail(input.transcript_path).split("\n"); } catch { return null; }
+  const entries = lines.map((line) => { try { return JSON.parse(line); } catch { return null; } });
+  return closingTextOf(entries, (e) => e?.type, (e) => e?.message);
 }
 
 /** Read the head of a file (a forked transcript's copied entries come first). */
@@ -379,7 +397,17 @@ export function handle(event, input, opts = {}) {
     // carries no context to the agent without reopening the turn, so a stop's outcome is kept
     // for the next event that does (the next UserPromptSubmit or PreToolUse).
     stashNotices(dir, resolvePending(dir, { waitMs: opts.waitMs }));
-    return null;
+    // Learning mode: a change set closed this turn and the closing message asked no recall
+    // question. The user is warned; the turn is not reopened. Its own fault message: the queued
+    // turns above were judged already, so faultReply's Stop wording would be wrong here.
+    let warning;
+    try {
+      warning = recallWarning({ sessionDir: dir, text: () => closingText(input) });
+    } catch (err) {
+      const reason = `the learning-mode recall check failed: ${reasonOf(err)}`;
+      return { systemMessage: `paired-coding: ${reason}. ${logFault(env, event, input, reason)} Queued turns were judged; only the check for a "Recall:" line in the closing message was skipped.` };
+    }
+    return warning ? { systemMessage: warning } : null;
   }
   if (event === "session-end") {
     // The marker goes first: SessionEnd hooks share a short budget, and a cancelled hook must

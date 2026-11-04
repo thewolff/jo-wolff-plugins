@@ -38,7 +38,7 @@ const node = () => {
   const n = { describe: () => n, optional: () => n };
   return n;
 };
-const zod = { object: (shape) => Object.assign(node(), { shape }), string: node, enum: () => node(), number: node, boolean: node, array: () => node() };
+const zod = { object: (shape) => Object.assign(node(), { shape }), string: node, enum: () => node(), number: node, boolean: node, array: () => node(), union: () => node() };
 
 function setup({ otherTools = [], env = {} } = {}) {
   const repo = mkdtempSync(join(FIXTURES, "repo-"));
@@ -454,6 +454,57 @@ test("pair_propose declares the same card fields on OMP as on the MCP server, pr
   const mcp = Object.keys(MCP_TOOLS.find((t) => t.name === "pair_propose").inputSchema.properties).sort();
   assert.deepEqual(omp, mcp);
   assert.ok(omp.includes("proposedCode"));
+  assert.ok(omp.includes("why") && omp.includes("sources"));
+  for (const name of ["pair_done", "pair_learn"]) {
+    const keys = Object.keys(s.tools.get(name).parameters.shape).sort();
+    assert.deepEqual(keys, Object.keys(MCP_TOOLS.find((t) => t.name === name).inputSchema.properties).sort(), name);
+  }
+});
+
+sandboxOnly("learning mode on OMP: session_stop warns when pair_done closed a card and the final message has no Recall: line; never a block", async () => {
+  const s = setup();
+  assert.equal((await s.call("pair_start")).ok, true);
+  assert.equal((await s.call("pair_learn", { on: true })).ok, true);
+  assert.equal((await s.call("pair_propose", { boundary: ["a.txt"], why: "w", sources: ["from memory"] })).ok, true);
+  await s.type("yes, go ahead with that");
+  assert.equal((await s.call("pair_begin", { cardId: "card-1", quote: "go ahead" })).ok, true);
+  assert.equal((await s.call("pair_done", { cardId: "card-1", recall: "What changed?" })).ok, true);
+  const before = s.notes.length;
+  const r = await s.emit("session_stop", { last_assistant_message: { role: "assistant", content: [{ type: "text", text: "Closed card-1." }] } });
+  assert.equal(r, undefined, "never a block");
+  assert.equal(s.notes.length, before + 1);
+  assert.equal(s.notes.at(-1).level, "warning");
+  assert.match(s.notes.at(-1).m, /^paired-coding learning mode: pair_done closed card-1 this turn, but the closing message has no line starting "Recall:".*card-1: What changed\?$/);
+  assert.equal(await s.emit("session_stop", { last_assistant_message: { content: "x" } }), undefined);
+  assert.equal(s.notes.length, before + 1, "warned once");
+});
+
+sandboxOnly("learning mode on OMP: a Recall: line means no warning", async () => {
+  const s = setup();
+  assert.equal((await s.call("pair_start")).ok, true);
+  await s.call("pair_learn", { on: true });
+  await s.call("pair_propose", { boundary: ["a.txt"], why: "w", sources: ["from memory"] });
+  await s.type("yes, go ahead with that");
+  await s.call("pair_begin", { cardId: "card-1", quote: "go ahead" });
+  await s.call("pair_done", { cardId: "card-1", recall: "What changed?" });
+  const before = s.notes.length;
+  await s.emit("session_stop", { last_assistant_message: { content: [{ type: "text", text: "Recall: What changed?" }] } });
+  assert.equal(s.notes.length, before);
+});
+
+sandboxOnly("learning mode on OMP: without last_assistant_message, session_stop reads the turn's messages back to the newest user message", async () => {
+  const s = setup();
+  assert.equal((await s.call("pair_start")).ok, true);
+  await s.call("pair_learn", { on: true });
+  await s.call("pair_propose", { boundary: ["a.txt"], why: "w", sources: ["from memory"] });
+  await s.type("yes, go ahead with that");
+  await s.call("pair_begin", { cardId: "card-1", quote: "go ahead" });
+  await s.call("pair_done", { cardId: "card-1", recall: "What changed?" });
+  const before = s.notes.length;
+  const said = (text) => ({ role: "assistant", content: [{ type: "text", text }] });
+  await s.emit("session_stop", { messages: [said("Recall: an OLD question"), { role: "user", content: "go" }, said("Closed card-1."), { role: "toolResult", content: "ok" }] });
+  assert.equal(s.notes.length, before + 1, "this turn's message has no Recall: line; the earlier turn's does not count");
+  assert.match(s.notes.at(-1).m, /no line starting "Recall:"/);
 });
 
 sandboxOnly("pair_propose through the adapter journals proposedCode and shows it as a code block", async () => {

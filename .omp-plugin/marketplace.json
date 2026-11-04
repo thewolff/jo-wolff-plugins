@@ -38,6 +38,11 @@
       "name": "as2-skills",
       "source": "./plugins/as2-skills",
       "description": "The 22 engineering skills of agent-system 2.0: spec and plan, plan execution, TDD, debugging, code review, git workflow, security, research, cross-model review and more. Vendored from addyosmani/agent-skills, pbakaus/impeccable, blader/humanizer and obra/superpowers at pinned releases, with frontmatter claude.ai accepts."
+    },
+    {
+      "name": "delegation",
+      "source": "./plugins/delegation",
+      "description": "Teach the brief a subagent is handed, then gate on it: a spawn without a How-it-fails section is refused and the refusal carries the section to fill in; a builder-class spawn also needs a Spiral bound and this session's pattern-check receipt; an undeliverable message is marked NOT delivered; a builder report without its Stopped-because line draws a warning. With the eleven general agents and three direct-work guards ported from newdle. Claude Code hooks and an OMP extension."
     }
   ]
 }

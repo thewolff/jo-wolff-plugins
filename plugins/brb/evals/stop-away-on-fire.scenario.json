@@ -1,0 +1,9 @@
+{
+  "event": "Stop",
+  "expect": "systemMessage",
+  "before": [{"event":"UserPromptSubmit","stdin":{"session_id":"${SESSION_ID}","transcript_path":"${TRANSCRIPT}","cwd":"${CWD}","hook_event_name":"UserPromptSubmit","prompt":"brb lunch"}}],
+  "transcript": [{"type":"user","message":{"role":"user","content":"go"}},{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","id":"t1","name":"Bash","input":{}}]}}],
+  "stdin": {"session_id":"${SESSION_ID}","transcript_path":"${TRANSCRIPT}","cwd":"${CWD}","hook_event_name":"Stop","stop_hook_active":false,"last_assistant_message":"Pushed.\n\n## Needs you\n- on fire: main is red after my push"},
+  "reason": "brb on fire: main is red after my push",
+  "after": { "absent": ["$XDG_STATE_HOME/brb/${SESSION_ID}/digest.md"] }
+}

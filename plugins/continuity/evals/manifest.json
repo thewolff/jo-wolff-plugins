@@ -1,0 +1,14 @@
+{
+  "$comment": "Every hook event hooks/hooks.json registers, with the outcomes its handler can return. The Stop block is `deny` in the runner's vocabulary (decision: block). Each event × outcome has one evals/<name>.scenario.json; `ledger gate check` fails naming any gap. `manual` lists what no scenario can prove.",
+  "events": {
+    "PreCompact": ["systemMessage", "silent"],
+    "SessionStart": ["systemMessage", "silent"],
+    "UserPromptSubmit": ["systemMessage", "silent"],
+    "Stop": ["deny", "silent"]
+  },
+  "manual": [
+    "That the context-pressure measure (the token usage the last main-thread reply recorded in the transcript: input_tokens + cache_read_input_tokens + cache_creation_input_tokens) matches the real context on Claude Code: when the warning fires, run /context in the same session and compare its token figure with the percentage the warning gave of `contextTokens`. A warning that says `(estimate)` used the bytes / 8 fallback instead and can be off in either direction.",
+    "That Claude Code writes a `compact_boundary` line into the same transcript after a compaction, so the estimate restarts from it: compact a session, then check the transcript for the marker. No transcript on the machine this was written on had one.",
+    "That the restored snapshot arrives in the model's context after a real auto-compaction: run a session past the threshold and ask it, after the compaction, what branch it was on."
+  ]
+}

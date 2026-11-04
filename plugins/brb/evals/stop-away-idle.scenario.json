@@ -1,0 +1,8 @@
+{
+  "event": "Stop",
+  "expect": "systemMessage",
+  "before": [{"event":"UserPromptSubmit","stdin":{"session_id":"${SESSION_ID}","transcript_path":"${TRANSCRIPT}","cwd":"${CWD}","hook_event_name":"UserPromptSubmit","prompt":"brb lunch"}}],
+  "transcript": [{"type":"user","message":{"role":"user","content":"go"}},{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","id":"t1","name":"Read","input":{}}]}}],
+  "stdin": {"session_id":"${SESSION_ID}","transcript_path":"${TRANSCRIPT}","cwd":"${CWD}","hook_event_name":"Stop","stop_hook_active":false,"last_assistant_message":"Nothing left that I can run.\n\nidle: every open item waits on the cache choice"},
+  "reason": "brb: the agent is idle (every open item waits on the cache choice)"
+}

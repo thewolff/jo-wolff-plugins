@@ -1,0 +1,12 @@
+{
+  "$comment": "No calibration file and a transcript whose last assistant reply recorded usage of 2 input + 150,000 cache read + 9,998 cache creation = 160,000 tokens, 80% of the 200,000 default, past the 0.65 default threshold, and no handoff carries this session's id. The stop is blocked once (decision: block, `deny` in the runner's vocabulary) with the handoff request naming `/continuity:handoff`, and the once-mark is written.",
+  "event": "Stop",
+  "expect": "deny",
+  "reason": "/continuity:handoff",
+  "transcript": [{ "type": "user", "message": { "role": "user", "content": "carry on with the port" } }, { "type": "assistant", "isSidechain": false, "message": { "role": "assistant", "content": [{ "type": "text", "text": "Done." }], "usage": { "input_tokens": 2, "cache_creation_input_tokens": 9998, "cache_read_input_tokens": 150000, "output_tokens": 5 } } }],
+  "stdin": { "hook_event_name": "Stop", "session_id": "${SESSION_ID}", "cwd": "${CWD}", "transcript_path": "${TRANSCRIPT}", "stop_hook_active": false, "last_assistant_message": "Done." },
+  "after": {
+    "absent": ["$XDG_STATE_HOME/continuity/calibration.ndjson"],
+    "commands": ["grep -q stopBlocked \"${XDG_STATE_HOME}/continuity/sessions/${SESSION_ID}.json\""]
+  }
+}
