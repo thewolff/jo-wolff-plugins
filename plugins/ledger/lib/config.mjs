@@ -46,6 +46,7 @@ export const DEFAULTS = Object.freeze({
   inject: Object.freeze({ notes: 5, elsewhere: true, answers: true, doctor: true }),
   sweep: Object.freeze({ autoWithdrawDays: 7 }),
   digest: Object.freeze({ enabled: true, issue: "thewolff/jo-issues#325" }),
+  decisionLog: Object.freeze({ enabled: true }),
   review: Object.freeze({ mode: "gate", labs: Object.freeze(["codex"]), models: null, profiles: null, maxRounds: 3, judgeCommand: null }),
 });
 
@@ -63,6 +64,7 @@ const SHAPE = {
   inject: { notes: "integer", elsewhere: "boolean", answers: "boolean", doctor: "boolean" },
   sweep: { autoWithdrawDays: "integer" },
   digest: { enabled: "boolean", issue: "string" },
+  decisionLog: { enabled: "boolean" },
   review: { mode: "off|advise|gate", labs: "string[]", models: "{lab: string}|null", profiles: "{lab: string}|null", maxRounds: "positive integer", judgeCommand: "string|null" },
 };
 
