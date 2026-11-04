@@ -609,6 +609,28 @@ green run, grade `biting`/`silent`/`fine` and who graded it) and `cc_gate_checks
 commit, plugin and check of the plugin push gate, `pass`/`fail`/`skipped` with a detail and
 the hash of the plugin tree it certifies).
 
+### An older ledger on a newer file
+
+The schema only goes up: nothing in the plugin lowers `schema_version` or drops a table, and
+there is no downgrade command. A 0.3.1 ledger (schema 6) opened against a schema-7 file does
+not migrate (`migrate` returns when the file's version is at or past its own) and runs on the
+tables both know: notes, questions, answers, sessions, bounces and reviews written by either
+version are read by both. Measured with the 0.3.1 checkout against a file 0.3.3 had created:
+`note`, `pending` and the SessionStart hook ran and showed both versions' notes; its `doctor`
+reports `fail schema: version 7, this plugin expects 6` and nothing else, which is the only
+sign. What 0.3.1 loses: the judge answers, which migration 7 moves out of `cc_meta` into
+`cc_judge_cache`, so 0.3.1 asks the judge again and writes its answers back into `cc_meta`,
+where 0.3.3 does not look (they are not lost, only unused). What 0.3.1 does not see: the
+schema-7 tables and columns (`cc_judge_cache`, `cc_canary_runs`, `cc_gate_checks`, the bounce
+text and transcript path), which keep their rows untouched for the next 0.3.3 run.
+
+To go back to a pre-7 file, restore a backup taken before the upgrade (the file is one SQLite
+database; copy it with its WAL checkpointed, `sqlite3 <db> "PRAGMA wal_checkpoint(TRUNCATE)"`,
+or together with its `-wal` sibling; the plugin takes no backup itself) and accept the loss of
+every row written since: that is the whole rollback story, and it is the one for any single-file store.
+Do not edit `schema_version` by hand and do not delete a shared file (another tool's tables live
+in it).
+
 ### Sharing the file with another tool
 
 Every table the plugin owns is prefixed `cc_`, and its schema version is a row in `cc_meta`
