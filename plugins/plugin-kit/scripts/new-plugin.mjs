@@ -2,8 +2,12 @@
 // scripts/new-plugin.mjs — scaffold a plugin that meets the repository test bar on day one.
 //
 //   node scripts/new-plugin.mjs <name> --events PreToolUse,Stop[,…] [--description "…"] [--dest <plugins dir>]
+//   (run it from inside the repository the plugin is for)
 //
-// Writes <dest>/<name>/ (default dest: the `plugins/` next to this plugin) from templates/, with
+// Writes <dest>/<name>/ from templates/ (default dest: the `plugins/` of the git repository the
+// cwd is in, found with `git rev-parse --show-toplevel`; a cwd in no repository is refused
+// naming --dest: the kit's own checkout, or the marketplace cache it is installed from, is
+// never the destination), with
 // {{name}}, {{title}}, {{description}}, and per hook {{event}}, {{file}}, {{quiet}} filled in:
 //
 //   .claude-plugin/plugin.json, package.json, README.md, HOW-IT-FAILS.md
@@ -21,6 +25,7 @@
 // (.claude-plugin/marketplace.json at the repository root) is not written: add it by hand, with
 // the one-sentence description, when the plugin is ready to publish.
 
+import { spawnSync } from "node:child_process";
 import { chmodSync, cpSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -44,9 +49,19 @@ const NAME_RE = /^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$/;
 const kebab = (event) => event.replace(/([a-z0-9])([A-Z])/g, "$1-$2").toLowerCase();
 const title = (name) => name.split("-").map((w) => w[0].toUpperCase() + w.slice(1)).join(" ");
 
-export function parseArgs(argv) {
+/** The git toplevel `cwd` is in, or null (no repository, or git missing or slow). */
+export function repoTop(cwd) {
+  try {
+    const r = spawnSync("git", ["-C", cwd, "rev-parse", "--show-toplevel"], { encoding: "utf8", timeout: 5_000, killSignal: "SIGKILL" });
+    return !r.error && r.status === 0 && r.stdout.trim() ? r.stdout.trim() : null;
+  } catch {
+    return null;
+  }
+}
+
+export function parseArgs(argv, { cwd = process.cwd() } = {}) {
   const [name, ...rest] = argv;
-  const out = { name, events: [], description: "", dest: join(KIT_ROOT, "..") };
+  const out = { name, events: [], description: "", dest: null };
   for (let i = 0; i < rest.length; i++) {
     const t = rest[i];
     if (t === "--events" && rest[i + 1]) out.events = rest[++i].split(",").map((s) => s.trim()).filter(Boolean);
@@ -60,6 +75,11 @@ export function parseArgs(argv) {
   const unknown = out.events.filter((e) => !EVENTS[e]);
   if (unknown.length) return { error: `unknown event ${unknown.join(", ")}; the events are ${Object.keys(EVENTS).join(", ")}` };
   if (!out.description) out.description = `(one sentence: what ${name} does for the person, and the rule its hooks enforce)`;
+  if (!out.dest) {
+    const top = repoTop(cwd);
+    if (!top) return { error: `${cwd} is in no git repository; pass --dest <plugins dir> (the new plugin goes under the repository you are adding it to, never beside the kit)` };
+    out.dest = join(top, "plugins");
+  }
   return out;
 }
 

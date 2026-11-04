@@ -6,14 +6,14 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdtempSync, readdirSync, readFileSync, statSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { KIT_ROOT, EVENTS, parseArgs, scaffold } from "../scripts/new-plugin.mjs";
 
 const SCRIPT = join(KIT_ROOT, "scripts", "new-plugin.mjs");
 const LEDGER_GATE = join(KIT_ROOT, "..", "ledger", "lib", "plugin-gate.mjs");
-const dest = () => mkdtempSync(join(tmpdir(), "kit-scaffold-"));
+const dest = () => realpathSync(mkdtempSync(join(tmpdir(), "kit-scaffold-")));
 const walk = (dir, prefix = "") => readdirSync(dir).flatMap((n) => (statSync(join(dir, n)).isDirectory() ? walk(join(dir, n), `${prefix}${n}/`) : [`${prefix}${n}`])).sort();
 
 test("scaffold: the files, with name, title, description and per-hook event, file and quiet filled in; the runner is the kit's copy", () => {
@@ -105,6 +105,31 @@ test("refusals: an existing directory, a bad name, an unknown event, no events; 
   assert.match(good.stdout, /^.*\/second\n  \.claude-plugin\/plugin\.json\n/);
   assert.match(good.stdout, /\nnext: write the rule in hooks\/\*\.mjs/);
   assert.deepEqual(readdirSync(d).sort(), ["second", "taken"]);
+});
+
+test("the default destination is the cwd's repository, not the kit's: a scaffold from inside another repository lands under that repository's plugins/; a cwd in no repository is refused naming --dest", () => {
+  // A repository elsewhere, with the cwd in a subdirectory of it.
+  const repo = dest();
+  spawnSync("git", ["init", "-q", repo]);
+  mkdirSync(join(repo, "deep", "inside"), { recursive: true });
+  const r = spawnSync(process.execPath, [SCRIPT, "from-elsewhere", "--events", "Stop"], { cwd: join(repo, "deep", "inside"), encoding: "utf8" });
+  assert.equal(r.status, 0, r.stderr);
+  assert.ok(existsSync(join(repo, "plugins", "from-elsewhere", "hooks", "hooks.json")), "under the cwd's repository");
+  assert.ok(!existsSync(join(KIT_ROOT, "..", "from-elsewhere")), "not beside the kit");
+  assert.ok(r.stdout.startsWith(`${join(repo, "plugins", "from-elsewhere")}\n`), r.stdout);
+  assert.deepEqual(parseArgs(["x", "--events", "Stop"], { cwd: join(repo, "deep") }).dest, join(repo, "plugins"));
+  // No repository: refused, nothing written, the message names --dest.
+  const plain = dest();
+  const n = spawnSync(process.execPath, [SCRIPT, "nowhere", "--events", "Stop"], { cwd: plain, encoding: "utf8", env: { ...process.env, GIT_CEILING_DIRECTORIES: dirname(plain) } });
+  assert.equal(n.status, 1);
+  assert.match(n.stderr, /^new-plugin: .* is in no git repository; pass --dest <plugins dir>/);
+  assert.deepEqual(readdirSync(plain), []);
+  // --dest still wins over the cwd's repository.
+  const other = dest();
+  const d = spawnSync(process.execPath, [SCRIPT, "pointed", "--events", "Stop", "--dest", other], { cwd: join(repo, "deep"), encoding: "utf8" });
+  assert.equal(d.status, 0, d.stderr);
+  assert.ok(existsSync(join(other, "pointed", "hooks", "hooks.json")));
+  assert.ok(!existsSync(join(repo, "plugins", "pointed")));
 });
 
 test("manifests agree; every template placeholder is one the scaffolder fills", () => {
