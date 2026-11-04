@@ -765,7 +765,7 @@ reads with the same `elsewhereQuestions` and `answersSince` the settings hooks u
 session starts with something waiting, the pane opens by itself; on a screen too narrow to
 place it, a toast names `/ledger` instead.
 
-Where nothing can draw (`claude -p`, a pane that is not placed), the end of each turn adds one
+Where the pane is not placed (`claude -p`, a screen too narrow), the end of each turn adds one
 transcript block instead: one line per answer since your last turn, one line per question waiting
 elsewhere with its options, and the `/ledger answer` command that records. The block is that line
 alone; Claude's reply is not repeated in it. The pane never writes a row itself and never writes
@@ -773,10 +773,10 @@ outside the ledger's own tables.
 
 Once per session the mod logs one dim transcript line, `ledger pane: surface=<app|none>
 placed=<true|false|null>`: the surface the app handed the mod at session start (`none` means it
-handed none, so nothing draws) and whether the pane is placed (`null`: the app cannot say). It is
-written at session start, or at the first fallback turn when session start faulted first. A
-session where the fallback block appears every turn and this line says `placed=false` or
-`surface=none` is one where the pane is not on screen.
+handed none; Claude Desktop runs Code headless, so a Desktop session says `none` and still draws)
+and whether the pane is placed (`null`: the app cannot say). It is written at session start, or
+at the first fallback turn when session start faulted first. A session where the fallback block
+appears every turn and this line says `placed=false` is one where the pane is not on screen.
 
 The fallback and the pane fail the same way as the hooks: a query that cannot open the database
 shows `ledger: database …` in the pane and one dim transcript line, a CLI refusal comes back as
@@ -829,6 +829,14 @@ Tests use a sandboxed `HOME`, `XDG_*` and `LEDGER_*` so they never touch your le
 - The gate's `retention` row runs every declared prune command once with `--dry-run` (from the
   plugin directory, `CLAUDE_PLUGIN_ROOT` set, 60 s) and fails naming one that exits non-zero,
   cannot start, or ends with any line but the contract's.
+- The pane draws in Claude Desktop. Desktop runs Code headless, so `session.start` arrives with
+  `surface: null`; the mod gated its poll, its refresh and the pane on a non-null surface, so
+  nothing ever drew there. The gate is gone: the poll and the refresh always start and the pane
+  opens from the snapshot on every surface; where nothing is placed the end-of-turn fallback
+  block covers it as before. The placement line still says `surface=none` on Desktop.
+- The gate's `docs` row checks only that the root README names the plugin (`rootReadmeNames`),
+  never its version; the root README changes only when a plugin is added, removed or changes
+  purpose. Landed in #94 without a bump.
 
 ### 0.3.8
 

@@ -10,10 +10,13 @@
 //     and the pane redraws, all without a Claude turn;
 //   - `/ledger answer <q-id> <reply>` records the same way from the prompt; `/ledger close` closes;
 //   - the data refreshes at session start, at each main turn's start and end, and once a second
-//     while the pane is placed, each refresh one `node mods/pane/query.mjs` run out of process;
-//   - where nothing draws (`claude -p`, a pane that is not placed), `turn.complete` adds one
-//     transcript line naming what waits and the command that answers it; the line replaces the
-//     engine's default `{ text: <Claude's answer> }`, it never repeats the answer;
+//     while the pane is placed, each refresh one `node mods/pane/query.mjs` run out of process.
+//     None of it is gated on `session.start`'s `surface`: Claude Desktop runs Code headless, so
+//     the event arrives with `surface: null` and the app still places the pane; where truly
+//     nothing draws (`claude -p`) the pane is never placed and the fallback below covers it;
+//   - where the pane is not placed, `turn.complete` adds one transcript line naming what waits
+//     and the command that answers it; the line replaces the engine's default
+//     `{ text: <Claude's answer> }`, it never repeats the answer;
 //   - once per session, one dim line `ledger pane: surface=<surface|none> placed=<true|false|null>`
 //     says whether the app gave the mod a surface and placed the pane (at session start, or at the
 //     first fallback turn when session start faulted before it).
@@ -37,7 +40,6 @@ let selectedId = null;
 let notice = null;
 let lastError = null;
 let inFlight = false;
-let draws = false;
 let surface = null;
 let diagnosed = false;
 
@@ -151,18 +153,15 @@ export function register(on) {
     try {
       await $.command.register({ name: "ledger", description: "Ledger: questions waiting in other folders, answers since your last turn; answer <q-id> <reply> records without a turn", argumentHint: "[answer <q-id> <reply> | close]", immediate: true });
       surface = e.surface ?? null;
-      draws = surface !== null;
-      let placed = false;
-      if (draws) {
-        $.clock.every(POLL_MS, () => tick($));
-        await refresh($);
-        if (snapshot.ok && (snapshot.elsewhere.length || snapshot.answers.length)) {
-          const opened = await openPane($, false);
-          placed = opened.isPlaced;
-          if (opened.isPlaced === false) await $.ui.toast(`${headline(snapshot)} · /ledger opens the pane`);
-        } else {
-          placed = await paneIsPlaced($);
-        }
+      $.clock.every(POLL_MS, () => tick($));
+      await refresh($);
+      let placed;
+      if (snapshot.ok && (snapshot.elsewhere.length || snapshot.answers.length)) {
+        const opened = await openPane($, false);
+        placed = opened.isPlaced;
+        if (opened.isPlaced === false) await $.ui.toast(`${headline(snapshot)} · /ledger opens the pane`);
+      } else {
+        placed = await paneIsPlaced($);
       }
       await diagnose($, placed);
     } catch (err) {
@@ -173,7 +172,7 @@ export function register(on) {
 
   on("turn.start", async ($, e, next) => {
     try {
-      if (draws && e.agentId === undefined) refresh($);
+      if (e.agentId === undefined) refresh($);
     } catch (err) {
       await logFault($, "turn.start", err);
     }
@@ -185,7 +184,7 @@ export function register(on) {
     try {
       if (e.agentId === undefined) {
         await refresh($);
-        const placed = draws ? await paneIsPlaced($) : false;
+        const placed = await paneIsPlaced($);
         if (placed !== true) {
           line = fallbackLine(snapshot);
           await diagnose($, placed);
@@ -214,7 +213,6 @@ export function register(on) {
         return { text: `ledger ${result.status === "ok" ? "recorded" : result.status}: ${result.message}` };
       }
       await refresh($);
-      if (!draws) return { text: fallbackLine(snapshot) ?? headline(snapshot) };
       const opened = await openPane($, true);
       if (opened.isPlaced === false) return { text: fallbackLine(snapshot) ?? headline(snapshot) };
       return {};

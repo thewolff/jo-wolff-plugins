@@ -26,6 +26,21 @@ All notable changes to ledger are recorded here. The format follows
 - The gate's `retention` row runs every declared prune command once with `--dry-run` and fails
   naming one that exits non-zero, cannot start, hangs past 60 s, or ends with any line but the
   contract's.
+- The gate's `docs` row checks only that the root README names the plugin (`rootReadmeNames`),
+  never its version: the root README changes only when a plugin is added, removed or changes
+  purpose. Landed in #94 without a bump.
+
+### Fixed
+
+- The pane draws in Claude Desktop. Desktop runs Code headless, so `session.start` arrives with
+  `surface: null`, and `mods/pane/register.mjs` set `draws = surface !== null`, so the poll
+  timer, the refresh and the pane never started there. The gate is gone: the timer and the
+  refresh always start and the pane opens from the snapshot on every surface; where nothing is
+  placed (`claude -p`, a narrow screen) the end-of-turn fallback block covers it as before.
+  `mods/pane/tests/pane.test.tsx` starts the session with `surface: null, isInteractive: false`
+  and with `surface: "terminal"` and expects the query, the pane and the poll in both; the
+  "surface null → nothing" expectations are gone. The placement line still says `surface=none`
+  on Desktop.
 
 ## [0.3.8] - 2026-11-04
 
