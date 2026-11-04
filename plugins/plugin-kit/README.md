@@ -56,9 +56,9 @@ event, or no events, with the reason on stderr and exit 1; nothing is written on
 nothing is ever overwritten or deleted. A template missing from the kit (a broken install) is the
 same: exit 1 naming the file. The runner's own failure modes are in the table above; its test
 (`test/hook-runner.test.mjs`) drives each one, including the deadline in a spawned process: a
-promise that never settles, a stdin held open, a synchronous overrun. Run the kit's tests with
-`npm test` (`node --test "test/*.test.mjs"`): a bare `node --test` would also run the template
-contract test, which has no plugin to test until it is scaffolded.
+promise that never settles, a stdin held open, a synchronous overrun. The kit's tests are a bare
+`node --test` (the contract-test template carries a `.template` suffix so the runner does not
+pick it up: it has no plugin to test until it is scaffolded).
 
 ## Changes in 0.1.0
 
