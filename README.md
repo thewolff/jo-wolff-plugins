@@ -328,10 +328,11 @@ installing the plugin.
 - **A gate at the tool boundary** on Claude Code (hooks plus a bundled MCP server) and on OMP
   (an extension). While pairing, the host's own write, edit, shell, eval and sub-agent tools are
   refused; the agent writes and runs commands only through the plugin's `pair_*` tools, and
-  its own writes land only in the agreed change set's files and temp directories. Every run
-  sits under a sandbox (Seatbelt on macOS, Landlock or bubblewrap on Linux) that fences the
-  files the run writes itself and its local Unix-socket connections, not the network, so a run
-  can still ask a process outside the sandbox to write for it.
+  its own writes land only in the agreed change set's files, temp directories and the state of
+  the ledger and pattern-check plugins (see **Changes in 1.4.3**). Every run sits under a
+  sandbox (Seatbelt on macOS, Landlock or bubblewrap on Linux) that fences the files the run
+  writes itself and its local Unix-socket connections, not the network, so a run can still
+  ask a process outside the sandbox to write for it.
 - **A journal** of every card, quote, verdict, refusal and diff, kept outside the worktree.
 - **A stop only you can give:** pairing ends when you type `pair stop` as a message of its own.
 
@@ -365,6 +366,62 @@ are not blocked, so a run can ask a process outside the sandbox to write for it.
 only if it writes inside the worktree.
 
 The plugin's own README carries the full list, with the evidence behind each line.
+
+Changes in 1.4.3: the ledger and pattern-check plugins keep working while pairing is on. Each
+ends a reply with a Stop hook that demands its CLI run (`ledger.mjs ask`, `pattern-check.mjs
+record`); with the host shell refused and `pair_run` fencing every write outside the agreement,
+those runs failed (`EPERM` on `<worktree>/.pattern-check/`, "database read-only" on the
+ledger's SQLite file) and the reply could neither finish nor be let go. Now `pair_run` may
+write that state in both phases, boundary or no boundary, under every sandbox: the ledger's
+database with its `-wal` and `-shm` sidecars at `~/.agent-system-2/ledger.db`, at the ledger's
+default `~/.local/share/ledger/ledger.db`, and wherever `LEDGER_DB`, the ledger's config file
+or the nearest `.ledger.json` points it; `<worktree>/.pattern-check/`; and
+`~/.local/state/ledger/` and `~/.local/state/pattern-check/`. One list (`lib/sibling-state.mjs`)
+feeds the Seatbelt profile, the bubblewrap binds and the Landlock rules, so the three grant the
+same paths. A carve-out never reaches the worktree root, `.git`, the state directory or a
+protected path, is dropped when it sits above one of them, and before every run the tree
+under a carve-out directory is looked at on every backend, every entry of it, within a budget
+(a hard-linked file, an entry that cannot be read, a `.git` entry, a mount point there, or a
+tree too large to finish looking at refuses the run by name); snapshots leave
+`.pattern-check/` out, so a receipt written there is not drift at `pair_done`. While pairing,
+ledger and pattern-check calls go through `pair_run`: the host shell stays refused for every
+command (the host runs it outside the fence, with its own environment), and the refusal for
+a sibling call says to run the same command with `pair_run`, where the kernel decides where
+its writes land. Before launching one, `pair_run` refuses by name a call whose shape no hook
+demands (anything but `node <script> <subcommand> …` with the script `ledger.mjs` or
+`pattern-check.mjs`, spelled plainly, existing and resolving inside
+`~/.claude/plugins/cache/jo-wolff-plugins/` or `~/.claude/plugins/marketplaces/`, and a
+subcommand among `ask`, `answer`, `note`, `outcome`, `pending`, `doctor`; `open`, `record`,
+`status`; a `--cwd`, `--config` or `--db` argument; `disable`, which writes a product
+`.ledger.json`) and one that, worked out the way the CLI does from the worktree root and the
+environment the run gets, would write outside the carve-outs (the ledger's database from
+`LEDGER_DB`, the nearest `.ledger.json` or the user config; pattern-check's `receiptDir`
+under the nearest `.git` root; a config file planted inside a carve-out directory; a
+backslash in any path, which the CLIs keep as a filename character), naming the destination
+and the config that named it. The run's environment is the host's less `NODE_OPTIONS`,
+`NODE_PATH`, `NODE_REPL_EXTERNAL_MODULE`, `NODE_V8_COVERAGE`, `NODE_REDIRECT_WARNINGS` and
+`NODE_COMPILE_CACHE`, on every host, through one function. The plugin README's gate section
+has the full table and the Linux limits (a grant there needs an existing inode). Also in
+1.4.3: on Claude Code, `SessionEnd` removes the state directory of a session that never
+called `pair_start` (it held only queued typed input and stashed notices), under the session
+lock and after a second look for the activation marker, so a `pair_start` landing as the
+session ends is kept, and the lock is released only by its holder (a token file named by
+the holder's pid inside the lock, removed before the lock directory, which the kernel keeps
+while anything else is inside; a release that cannot remove its token fails instead of
+reporting success), so no release lets go of another holder's lock. A lock is taken over
+only when the pid its token names is not running and the lock is stale, by removing that
+one token by name; a lock whose holder is still running is never evicted on its age, and
+the wait fails naming the pid and the recovery command, `node <plugin>/bin/pair.mjs unlock
+--stale <lock directory>`, which makes the same check. That command acts only on
+paired-coding's own lock directories inside the state base (any other path, or a symlink
+out of it, exits 2 untouched); its refusal of a running pid explains pid reuse and never
+advises ending a process, and `--force` clears a reused pid's lock only when that pid's
+command line names neither `paired-coding` nor `pair-server`. A token naming the waiting
+process itself is reported as a non-reentrant lock attempt. A release failure the locked
+work's error cannot carry (a frozen error) goes to `errors.log`, and the work's error is
+thrown unchanged. A session that paired keeps its
+directory, journal and receipt included, and a directory that will not go is one warning
+and one `errors.log` line, never a failed end.
 
 Changes in 1.4.2: a fault in any hook appends one line to `errors.log` in the plugin's state
 directory and shows one warning, and never blocks a session that is not pairing. While pairing,

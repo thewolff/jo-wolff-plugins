@@ -9,7 +9,7 @@
 
 import { test, describe } from "node:test";
 import assert from "node:assert/strict";
-import { LANDLOCK_DEVICES, boundaryMatches, bwrapArgsFor, globToRegexSource, isGitControl, landlockRulesFor, pairWriteLandlock } from "./gate.mjs";
+import { LANDLOCK_DEVICES, boundaryMatches, bwrapArgsFor, carveOutHazard, globToRegexSource, isGitControl, landlockRulesFor, pairWriteLandlock } from "./gate.mjs";
 
 const ROOT = "/w/repo";
 
@@ -18,11 +18,13 @@ const inGit = (abs) => abs.split("/").some((seg) => seg.toLowerCase() === ".git"
 
 /**
  * A fake filesystem for the Landlock builders: `dirs` and `files` exist (a file may be
- * `[path, nlink]`), `links` are symlinks. walk lists everything under a directory and does not
- * descend into `.git` or a symlink, as landlockIo does. `extra.others` are FIFOs, sockets or
- * devices; `extra.unlisted` are directories that cannot be listed (walk gives one
- * "unreadable" entry for each, as landlockIo does, and nothing under it); `extra.mounts` is
- * what io.mounts returns.
+ * `[path, nlink]`), `links` are symlinks. walk lists everything under a directory, `.git`
+ * entries and what is under them included, and does not descend into a symlink, as
+ * landlockIo does. `extra.others` are FIFOs, sockets or devices; `extra.unlisted` are
+ * directories that cannot be listed (walk gives one "unreadable" entry for each, as
+ * landlockIo does, and nothing under it); `extra.mounts` is what io.mounts returns. With
+ * `opts.budget.entries`, walk stops at that many entries with one "unwalked" entry naming
+ * the limit, as landlockIo does; `opts.signal` aborted stops it before the first.
  * @param {{ others?: string[], unlisted?: string[], mounts?: string[] | null }} [extra]
  */
 function fakeFs(dirs, files = [], links = [], extra = {}) {
@@ -37,15 +39,17 @@ function fakeFs(dirs, files = [], links = [], extra = {}) {
   const unlisted = extra.unlisted ?? [];
   return {
     lstat: (abs) => entries.get(abs) ?? null,
-    walk(dir) {
+    walk(dir, opts = {}) {
+      if (opts.signal?.aborted) return [{ path: dir, type: "unwalked", nlink: 0, reason: "the run was aborted" }];
       if (unlisted.includes(dir)) return [{ path: `${dir}/`, type: "unreadable", nlink: 0 }];
       const hidden = (p) => unlisted.some((u) => p.startsWith(`${u}/`));
-      return [
-        ...[...entries.entries()]
-          .filter(([p]) => p.startsWith(`${dir}/`) && !hidden(p) && !p.slice(dir.length + 1).split("/").slice(0, -1).some((s) => s.toLowerCase() === ".git"))
-          .map(([path, st]) => ({ path, ...st })),
+      const all = [
+        ...[...entries.entries()].filter(([p]) => p.startsWith(`${dir}/`) && !hidden(p)).map(([path, st]) => ({ path, ...st })),
         ...unlisted.filter((u) => u.startsWith(`${dir}/`) && !hidden(u)).map((u) => ({ path: `${u}/`, type: "unreadable", nlink: 0 })),
       ];
+      const max = opts.budget?.entries;
+      if (max !== undefined && all.length > max) return [...all.slice(0, max), { path: all[max].path, type: "unwalked", nlink: 0, reason: `it holds more than ${max} entries` }];
+      return all;
     },
     mounts: () => (extra.mounts === undefined ? [] : extra.mounts),
     // the bwrapArgsFor half of the same filesystem, for the fallback case
@@ -252,6 +256,133 @@ describe("landlockRulesFor", () => {
     // lib holds nothing but the agreed file, and still gets no grant: only a glob opens a directory.
     assert.deepEqual(landlockRulesFor(open(["src/a.ts", "lib/only.mjs", "README.md"]), [], io),
       { files: [...DEVICES, `${ROOT}/README.md`, `${ROOT}/lib/only.mjs`, `${ROOT}/src/a.ts`], dirs: [], rw_trees: [] });
+  });
+});
+
+describe("landlockRulesFor grants the carve-outs (sibling-plugin state) in both phases", () => {
+  const HOME = "/home/example";
+  const DB = `${HOME}/.agent-system-2/ledger.db`;
+  const RECEIPTS = `${ROOT}/.pattern-check`;
+  const STATE_LEDGER = `${HOME}/.local/state/ledger`;
+  const carveOuts = { files: [DB, `${DB}-wal`, `${DB}-shm`], dirs: [RECEIPTS, STATE_LEDGER, `${HOME}/.local/state/pattern-check`] };
+  const HOME_DIRS = ["/home", HOME, `${HOME}/.agent-system-2`, `${HOME}/.local`, `${HOME}/.local/state`, STATE_LEDGER];
+
+  test("closed: each existing carve-out file as a files entry, each existing directory as a dirs grant with make_dir and remove", () => {
+    const io = fakeFs([...BASE_DIRS, ...HOME_DIRS, RECEIPTS], [...BASE_FILES, DB, `${DB}-wal`]);
+    const rules = landlockRulesFor({ ...open([]), phase: "closed", changeSet: null, carveOuts }, [], io);
+    assert.deepEqual(rules, {
+      files: [...DEVICES, DB, `${DB}-wal`],
+      dirs: [{ path: STATE_LEDGER, make_dir: true, remove: true }, { path: RECEIPTS, make_dir: true, remove: true }],
+      rw_trees: [],
+    });
+  });
+
+  test("a carve-out that does not exist yet gets nothing: a rule needs an inode", () => {
+    const io = fakeFs([...BASE_DIRS, ...HOME_DIRS], [...BASE_FILES, DB]);
+    const rules = landlockRulesFor({ ...open([]), phase: "closed", changeSet: null, carveOuts }, [], io);
+    assert.deepEqual(rules, { files: [...DEVICES, DB], dirs: [{ path: STATE_LEDGER, make_dir: true, remove: true }], rw_trees: [] });
+  });
+
+  test("open with a one-file boundary: the boundary file, the carve-outs, and nothing else in the worktree", () => {
+    const io = fakeFs([...BASE_DIRS, ...HOME_DIRS, RECEIPTS], [...BASE_FILES, DB, `${RECEIPTS}/x.md`]);
+    const rules = landlockRulesFor(open(["src/a.ts"], { carveOuts }), [], io);
+    assert.deepEqual(rules, {
+      files: [...DEVICES, `${ROOT}/src/a.ts`, DB],
+      dirs: [{ path: STATE_LEDGER, make_dir: true, remove: true }, { path: RECEIPTS, make_dir: true, remove: true }],
+      rw_trees: [],
+    });
+    assert.equal(rules.files.includes(`${ROOT}/src/b.ts`), false);
+  });
+
+  test("a carve-out at the root, in .git, in the state directory or on a protected path is never granted", () => {
+    const io = fakeFs([...BASE_DIRS, ...HOME_DIRS, RECEIPTS, "/plug"], [...BASE_FILES, DB, "/state/s1/state.json", "/plug/x"]);
+    const bad = { files: [DB, `${ROOT}/.git/config`, "/state/s1/state.json", "/plug/x"], dirs: [RECEIPTS, ROOT, "/w", `${ROOT}/.git`, "/state/s1", "/plug"] };
+    const rules = landlockRulesFor({ ...open([]), phase: "closed", changeSet: null, protect: ["/plug"], carveOuts: bad }, [], io);
+    assert.deepEqual(rules, { files: [...DEVICES, DB], dirs: [{ path: RECEIPTS, make_dir: true, remove: true }], rw_trees: [] });
+  });
+
+  test("a receipt directory that is a symlink is refused, as every bind through a link is", () => {
+    const io = fakeFs([...BASE_DIRS, ...HOME_DIRS], [...BASE_FILES, DB], [RECEIPTS]);
+    assert.throws(() => landlockRulesFor({ ...open([]), phase: "closed", changeSet: null, carveOuts }, [], io), /symlink/);
+  });
+
+  test("a carve-out above the state directory or a protected path is never granted: the grant would hold it", () => {
+    const stateDir = `${STATE_LEDGER}/paired/s1`;
+    const io = fakeFs([...BASE_DIRS, ...HOME_DIRS, RECEIPTS, `${STATE_LEDGER}/paired`, stateDir, `${HOME}/.local/state/pattern-check`, `${HOME}/.local/state/pattern-check/plug`], [...BASE_FILES, DB, `${stateDir}/state.json`]);
+    const rules = landlockRulesFor({ ...open([]), phase: "closed", changeSet: null, stateDir, protect: [`${HOME}/.local/state/pattern-check/plug`], carveOuts }, [], io);
+    assert.deepEqual(rules, { files: [...DEVICES, DB], dirs: [{ path: RECEIPTS, make_dir: true, remove: true }], rw_trees: [] });
+    const openRules = landlockRulesFor(open(["src/a.ts"], { stateDir, protect: [`${HOME}/.local/state/pattern-check/plug`], carveOuts }), [], io);
+    assert.deepEqual(openRules.dirs, [{ path: RECEIPTS, make_dir: true, remove: true }]);
+  });
+
+  test("a .git entry inside the receipt directory makes the ruleset not expressible, in both phases, and a hard link hidden under one is found: nothing under a carve-out is skipped", () => {
+    const io = fakeFs([...BASE_DIRS, ...HOME_DIRS, RECEIPTS, `${RECEIPTS}/nested`, `${RECEIPTS}/nested/.git`], [...BASE_FILES, DB]);
+    const closed = landlockRulesFor({ ...open([]), phase: "closed", changeSet: null, carveOuts }, [], io);
+    assert.match(closed.notExpressible, /\.pattern-check\/nested\/\.git inside the carve-out .*\.pattern-check is a \.git entry/);
+    const opened = landlockRulesFor(open(["src/a.ts"], { carveOuts }), [], io);
+    assert.match(opened.notExpressible, /is a \.git entry/);
+    // A `.git` file (a worktree's pointer), in any letter case, is the same entry.
+    const file = fakeFs([...BASE_DIRS, ...HOME_DIRS, RECEIPTS], [...BASE_FILES, DB, `${RECEIPTS}/.GIT`]);
+    assert.match(carveOutHazard({ ...open([]), phase: "closed", changeSet: null, carveOuts }, file), /\.pattern-check\/\.GIT inside the carve-out .* is a \.git entry/);
+    // The walker lists what is under a `.git` directory too: a hazard there is a hazard. The
+    // fake lists entries in insertion order, so the hard link comes before the `.git` entry here.
+    const under = fakeFs([...BASE_DIRS, ...HOME_DIRS, RECEIPTS, `${RECEIPTS}/x`], [...BASE_FILES, DB, [`${RECEIPTS}/x/.git/objects/pack`, 2]]);
+    assert.match(carveOutHazard({ ...open([]), phase: "closed", changeSet: null, carveOuts }, under), /\.git\/objects\/pack inside the carve-out .* has 2 hard links/);
+  });
+
+  test("a carve-out tree the walk could not finish, within its budget or before the run was aborted, refuses the grant naming the limit, and the answer is reused by landlockRulesFor", () => {
+    const s = { ...open([]), phase: "closed", changeSet: null, carveOuts };
+    const big = fakeFs([...BASE_DIRS, ...HOME_DIRS, RECEIPTS], [...BASE_FILES, DB, ...Array.from({ length: 5 }, (_, i) => `${RECEIPTS}/r${i}.md`)]);
+    assert.equal(carveOutHazard(s, big, { budget: { entries: 5, depth: 64, ms: 5000 } }), null, "exactly the budget is within it");
+    const over = carveOutHazard(s, big, { budget: { entries: 4, depth: 64, ms: 5000 } });
+    assert.match(over, /^the carve-out .*\.pattern-check could not be looked at past .*\.pattern-check\/r4\.md: it holds more than 4 entries; so a grant on the directory might reach past the sibling's state$/);
+    const ac = new AbortController();
+    ac.abort();
+    assert.match(carveOutHazard(s, big, { signal: ac.signal }), /could not be looked at past .*: the run was aborted/);
+    assert.equal(carveOutHazard(s, big, { signal: new AbortController().signal }), null);
+    // The builder takes the caller's answer as given, so one launch walks each tree once.
+    assert.deepEqual(landlockRulesFor(s, [], big, { hazard: "the carve-out /x could not be looked at past /x/y: it is deeper than 64 directories; so a grant on the directory might reach past the sibling's state" }), { notExpressible: "the carve-out /x could not be looked at past /x/y: it is deeper than 64 directories; so a grant on the directory might reach past the sibling's state" });
+    assert.equal(landlockRulesFor(s, [], big, { hazard: null }).notExpressible, undefined);
+    let walks = 0;
+    const counted = { ...big, walk: (...a) => { walks++; return big.walk(...a); } };
+    landlockRulesFor(s, [], counted, { hazard: null });
+    assert.equal(walks, 0, "a given answer means no walk in the builder");
+    landlockRulesFor(s, [], counted);
+    assert.equal(walks, carveOuts.dirs.filter((d) => counted.lstat(d)?.type === "dir").length, "no answer given: the builder walks each existing carve-out directory once");
+  });
+
+  test("a hard-linked file, an unreadable entry or a mount point inside a carve-out directory makes the ruleset not expressible, in both phases", () => {
+    const closed = (io) => landlockRulesFor({ ...open([]), phase: "closed", changeSet: null, carveOuts }, [], io);
+    const opened = (io) => landlockRulesFor(open(["src/a.ts"], { carveOuts }), [], io);
+    // A receipt hard-linked to a product file: a write through the grant lands on the one inode.
+    const linked = fakeFs([...BASE_DIRS, ...HOME_DIRS, RECEIPTS], [...BASE_FILES, DB, [`${RECEIPTS}/s1.md`, 2]]);
+    assert.match(closed(linked).notExpressible, /\.pattern-check\/s1\.md inside the carve-out .*\.pattern-check has 2 hard links/);
+    assert.match(opened(linked).notExpressible, /has 2 hard links/);
+    // The same in a carve-out directory under the home.
+    const linkedHome = fakeFs([...BASE_DIRS, ...HOME_DIRS, RECEIPTS], [...BASE_FILES, DB, [`${STATE_LEDGER}/x`, 3]]);
+    assert.match(closed(linkedHome).notExpressible, /ledger\/x inside the carve-out .*state\/ledger has 3 hard links/);
+    // An entry nobody can look at.
+    const unreadable = fakeFs([...BASE_DIRS, ...HOME_DIRS, RECEIPTS, `${RECEIPTS}/locked`], [...BASE_FILES, DB], [], { unlisted: [`${RECEIPTS}/locked`] });
+    assert.match(closed(unreadable).notExpressible, /\.pattern-check\/locked\/ inside the carve-out .* cannot be looked at/);
+    // A mount point under the directory: a tree nobody looked at.
+    const mounted = fakeFs([...BASE_DIRS, ...HOME_DIRS, RECEIPTS, `${RECEIPTS}/mnt`], [...BASE_FILES, DB], [], { mounts: [`${RECEIPTS}/mnt`] });
+    assert.match(closed(mounted).notExpressible, /holds the mount point .*\.pattern-check\/mnt/);
+    // Mount points that cannot be read count as held.
+    const unknown = fakeFs([...BASE_DIRS, ...HOME_DIRS, RECEIPTS], [...BASE_FILES, DB], [], { mounts: null });
+    assert.match(closed(unknown).notExpressible, /mount points cannot be read/);
+    // A clean tree is granted, hard links on the files the grant does not reach (the database itself) aside.
+    const clean = fakeFs([...BASE_DIRS, ...HOME_DIRS, RECEIPTS], [...BASE_FILES, DB, `${RECEIPTS}/s1.md`, `${STATE_LEDGER}/x`]);
+    assert.equal(closed(clean).notExpressible, undefined);
+    assert.equal(opened(clean).notExpressible, undefined);
+  });
+
+  test("a carve-out directory under a boundary grant is folded into it; pair_write's ruleset grants no carve-out", () => {
+    const io = fakeFs([...BASE_DIRS, ...HOME_DIRS, `${ROOT}/lib`, `${ROOT}/lib/.pattern-check`], [...BASE_FILES, DB, `${ROOT}/lib/l.mjs`]);
+    const inside = { files: [], dirs: [`${ROOT}/lib/.pattern-check`] };
+    const rules = landlockRulesFor(open(["lib/**"], { carveOuts: inside }), [], io);
+    assert.deepEqual(rules.dirs, [{ path: `${ROOT}/lib`, make_dir: true, remove: true }]);
+    const w = pairWriteLandlock(open(["src/a.ts"], { carveOuts }), `${ROOT}/src/a.ts`, fakeFs([...BASE_DIRS, ...HOME_DIRS, RECEIPTS], [...BASE_FILES, DB]));
+    assert.deepEqual(w, { files: [`${ROOT}/src/a.ts`], dirs: [], rw_trees: [], command: `/bin/cat > '${ROOT}/src/a.ts'` });
   });
 });
 

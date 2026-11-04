@@ -5,13 +5,15 @@
 import { after, test } from "node:test";
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { chmodSync, existsSync, linkSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, statSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
+import fs, { chmodSync, existsSync, linkSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, statSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
+import { spawn, spawnSync } from "node:child_process";
+import { syncBuiltinESMExports } from "node:module";
 import { homedir, tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import {
   CARRY_MAX_AGE_MS, PLUGIN_ROOT, RECEIPT_FILE, ROADMAP_WALK_LIMIT, VERSION, carryInto, clearInPlace, endSession, executeVerb, recordTrustedInput, takeCarryMarker, verdict, writeCarryMarker,
 } from "./verbs.mjs";
-import { PROC_LABELS, hashBoundary, loadState, realpathLoose, reapGroups, sandboxBackend, sandboxProblem, snapshotTree, writeSandboxed } from "./host-io.mjs";
+import { PROC_LABELS, describeHolder, hashBoundary, loadState, realpathLoose, reapGroups, sandboxBackend, sandboxProblem, snapshotTree, unlockStale, withLock, writeSandboxed } from "./host-io.mjs";
 import { pairRunProfile, pairWriteProfile } from "../core/gate.mjs";
 import { bwrapProblem, bwrapProc } from "./bwrap.mjs";
 
@@ -217,6 +219,563 @@ test("pair_run is fenced by the phase: closed denies worktree writes, open allow
   assert.equal(done.ok, true);
   assert.match(done.text, /-alpha\n\+new/);
   assert.equal(done.result.halted, false);
+});
+
+// The sibling-plugin carve-outs (1.4.3). The ledger's database is pointed at the fixture with
+// LEDGER_DB (sibling-state.mjs reads it), so no test writes the real one. The file exists before
+// pair_start: Landlock and bubblewrap can grant only an inode that is there.
+function withLedgerDb(f, fn) {
+  const db = join(f.top, "ledger.db");
+  writeFileSync(db, "db1\n");
+  const before = process.env.LEDGER_DB;
+  process.env.LEDGER_DB = db;
+  return Promise.resolve().then(() => fn(db)).finally(() => {
+    if (before === undefined) delete process.env.LEDGER_DB;
+    else process.env.LEDGER_DB = before;
+  });
+}
+
+test("pair_start records the sibling-plugin carve-outs, canonical, with .pattern-check left out of every snapshot", { skip: !hasSandbox }, async () => {
+  const f = fixture();
+  await withLedgerDb(f, async (db) => {
+    assert.equal((await executeVerb("pair_start", {}, f.ctx)).ok, true);
+    const s = loadState(f.dir);
+    assert.deepEqual(s.exclusions, [".git", ".pattern-check"]);
+    assert.ok(s.carveOuts.files.includes(db), JSON.stringify(s.carveOuts));
+    assert.ok(s.carveOuts.files.includes(`${db}-wal`) && s.carveOuts.files.includes(`${db}-shm`));
+    assert.ok(s.carveOuts.files.includes(realpathLoose(join(homedir(), ".agent-system-2", "ledger.db"))));
+    assert.ok(s.carveOuts.dirs.includes(join(f.root, ".pattern-check")));
+    assert.ok(s.carveOuts.dirs.includes(realpathLoose(join(homedir(), ".local", "state", "ledger"))));
+    assert.ok(s.carveOuts.dirs.includes(realpathLoose(join(homedir(), ".local", "state", "pattern-check"))));
+    for (const p of [...s.carveOuts.files, ...s.carveOuts.dirs]) assert.ok(p.startsWith("/") && !p.includes("/../"), p);
+  });
+});
+
+test("a receipt written under .pattern-check while a change set is open is not drift at pair_done", { skip: !hasSandbox }, async () => {
+  const f = fixture();
+  const cardId = await openChangeSet(f, ["src/a.txt"]);
+  mkdirSync(join(f.root, ".pattern-check"));
+  writeFileSync(join(f.root, ".pattern-check", "sess-1.md"), "# receipt\n");
+  writeFileSync(join(f.root, "src", "a.txt"), "alpha, revised\n");
+  const done = await executeVerb("pair_done", { cardId }, f.ctx);
+  assert.equal(done.ok, true, done.text);
+  assert.equal(done.result.halted, false, done.text);
+  assert.deepEqual(done.result.unapproved, []);
+  assert.deepEqual(Object.keys(snapshotTree(f.root, loadState(f.dir).exclusions)).filter((k) => k.startsWith(".pattern-check")), []);
+});
+
+test("a .pattern-check that is a symlink is not carved out, so a run cannot write through it", { skip: !hasSandbox }, async () => {
+  const f = fixture();
+  symlinkSync("src", join(f.root, ".pattern-check"));
+  assert.equal((await executeVerb("pair_start", {}, f.ctx)).ok, true);
+  assert.deepEqual(loadState(f.dir).carveOuts.dirs.filter((d) => d.startsWith(f.root)), []);
+});
+
+test("pair_run with no change set open writes the ledger database and nothing beside it", { skip: !hasSandbox }, async () => {
+  const f = fixture();
+  await withLedgerDb(f, async (db) => {
+    assert.equal((await executeVerb("pair_start", {}, f.ctx)).ok, true);
+    const good = await executeVerb("pair_run", { command: `echo db2 > '${db}'` }, f.ctx);
+    assert.equal(good.ok, true, good.text);
+    assert.equal(readFileSync(db, "utf8"), "db2\n");
+    for (const cmd of [`echo x > '${f.top}/other.db'`, "echo x > src/a.txt", "echo x > sibling.txt"]) {
+      const r = await executeVerb("pair_run", { command: cmd }, f.ctx);
+      assert.equal(r.ok, false, cmd);
+    }
+    assert.equal(existsSync(join(f.top, "other.db")), false);
+    assert.equal(existsSync(join(f.root, "sibling.txt")), false);
+    assert.equal(readFileSync(join(f.root, "src/a.txt"), "utf8"), "alpha\n");
+  });
+});
+
+test("pair_run with a one-file boundary writes .pattern-check and the ledger, never a file outside the boundary", { skip: !hasSandbox }, async () => {
+  const f = fixture();
+  // The receipt directory exists before pair_start: on Linux a grant needs its inode (the README names this).
+  mkdirSync(join(f.root, ".pattern-check"));
+  await withLedgerDb(f, async (db) => {
+    const cardId = await openChangeSet(f, ["src/a.txt"]);
+    const good = await executeVerb("pair_run", { command: `echo r > .pattern-check/x.md.tmp-1 && mv .pattern-check/x.md.tmp-1 .pattern-check/x.md && echo db2 > '${db}' && echo new > src/a.txt` }, f.ctx);
+    assert.equal(good.ok, true, good.text);
+    assert.equal(readFileSync(join(f.root, ".pattern-check", "x.md"), "utf8"), "r\n");
+    assert.equal(readFileSync(db, "utf8"), "db2\n");
+    const bad = await executeVerb("pair_run", { command: "echo x > src/b.txt" }, f.ctx);
+    assert.equal(bad.ok, false, bad.text);
+    assert.equal(readFileSync(join(f.root, "src/b.txt"), "utf8"), "bravo\n");
+    const done = await executeVerb("pair_done", { cardId }, f.ctx);
+    assert.equal(done.ok, true, done.text);
+    assert.equal(done.result.halted, false, done.text);
+    assert.match(done.text, /-alpha\n\+new/);
+  });
+});
+
+test("a link made under .pattern-check stops the session like one made in the boundary", { skip: !hasSandbox || BACKEND === "seatbelt" }, async () => {
+  // Seatbelt refuses the link outright (gate.test.mjs); Landlock and bubblewrap cannot, so the link check has to see it.
+  const f = fixture();
+  mkdirSync(join(f.root, ".pattern-check"));
+  await openChangeSet(f, ["src/a.txt"]);
+  // A second hard link inside the carve-out: the one link both Linux backends let a run make there.
+  const r = await executeVerb("pair_run", { command: "echo x > .pattern-check/x && ln .pattern-check/x .pattern-check/ln" }, f.ctx);
+  assert.equal(r.ok, false);
+  assert.ok(r.text.includes("STOPPED: pair_run made a link"), r.text);
+  assert.ok(r.text.includes(".pattern-check/ln"), r.text);
+});
+
+test("pair_run refuses to start while the receipt directory holds a file hard-linked elsewhere, on every backend, before any sandbox is built", { skip: !hasSandbox }, async () => {
+  const f = fixture();
+  mkdirSync(join(f.root, ".pattern-check"));
+  await openChangeSet(f, ["src/a.txt"]);
+  // A receipt that is another name for a product file: a grant on the directory would write the product.
+  linkSync(join(f.root, "src", "b.txt"), join(f.root, ".pattern-check", "b.md"));
+  const r = await executeVerb("pair_run", { command: "echo x > .pattern-check/b.md" }, f.ctx);
+  assert.equal(r.ok, false);
+  assert.match(r.text, /pair_run refused: .*\.pattern-check\/b\.md inside the carve-out .*\.pattern-check has 2 hard links/);
+  assert.equal(readFileSync(join(f.root, "src", "b.txt"), "utf8"), "bravo\n");
+  assert.equal(r.result.sandbox, undefined, "no sandbox was built");
+});
+
+test("pair_run runs again once the hard link in the receipt directory is gone", { skip: !hasSandbox }, async () => {
+  const f = fixture();
+  mkdirSync(join(f.root, ".pattern-check"));
+  await openChangeSet(f, ["src/a.txt"]);
+  linkSync(join(f.root, "src", "b.txt"), join(f.root, ".pattern-check", "b.md"));
+  assert.equal((await executeVerb("pair_run", { command: "true" }, f.ctx)).ok, false);
+  rmSync(join(f.root, ".pattern-check", "b.md"));
+  const ok = await executeVerb("pair_run", { command: "echo r > .pattern-check/r.md" }, f.ctx);
+  assert.equal(ok.ok, true, ok.text);
+  assert.equal(readFileSync(join(f.root, ".pattern-check", "r.md"), "utf8"), "r\n");
+});
+
+test("a sibling plugin's installed CLI is refused from the host shell while pairing and pointed at pair_run; pair_run refuses it before launch when its shape or destination is wrong", { skip: !hasSandbox }, async () => {
+  const f = fixture();
+  await executeVerb("pair_start", {}, f.ctx);
+  const home = join(f.top, "home");
+  const script = join(home, ".claude", "plugins", "cache", "jo-wolff-plugins", "ledger", "1.0.0", "scripts", "ledger.mjs");
+  const check = join(home, ".claude", "plugins", "marketplaces", "jo-wolff-plugins", "plugins", "pattern-check", "scripts", "pattern-check.mjs");
+  for (const p of [script, check]) {
+    mkdirSync(join(p, ".."), { recursive: true });
+    writeFileSync(p, "// cli\n");
+  }
+  // The host shell: every sibling call is refused, an allowed one with the pair_run pointer.
+  const v = (toolName, command) => verdict(toolName, { sessionDir: f.dir, command, home });
+  for (const [tool, command] of [["Bash", `node ${script} ask x`], ["bash", `node ${check} record`]]) {
+    const r = v(tool, command);
+    assert.equal(r.allow, false, command);
+    assert.match(r.reason, /is refused from the host's shell while pairing: .*run the same command with pair_run/);
+  }
+  assert.match(v("Bash", `node ${script} ask x --cwd ${f.root}`).reason, /--cwd moves where the CLI reads its config/);
+  assert.match(v("Bash", `node ${script} disable`).reason, /ledger\.mjs disable is refused/);
+  assert.doesNotMatch(v("Bash", `node ${script} ask x && rm -rf /`).reason, /pair_run, which fences/);
+  assert.doesNotMatch(v("Bash", "node /tmp/ledger.mjs ask x").reason, /pair_run, which fences/);
+  assert.equal(v("Write", `node ${script} ask x`).allow, false);
+  assert.doesNotMatch(verdict("Bash", { sessionDir: f.dir, command: `node ${script} ask x` }).reason, /pair_run, which fences/, "the process's own home has no such install");
+  // pair_run: the pre-check reads the environment the run would get (HOME names the install
+  // and the state directories pair_start granted from the process's home, so the run's HOME
+  // is the process's; LEDGER_DB names the granted database).
+  const carve = JSON.parse(readFileSync(join(f.dir, "state.json"), "utf8")).carveOuts;
+  const granted = { ...process.env, LEDGER_DB: carve.files.find((p) => p.endsWith("ledger.db")) };
+  const run = (command, env = granted) => executeVerb("pair_run", { command, timeoutSeconds: 5 }, { ...f.ctx, env });
+  // The fixture's install is under the fixture home, which the process's home is not: not a sibling call to pair_run, so nothing is said before the fence.
+  const notInstalled = await run(`node ${script} ask x`);
+  assert.doesNotMatch(notInstalled.text, /is refused while pairing/);
+  // The same script under the process's own install path cannot be planted by a test; the shape and destination refusals are checked through runStart in core/gate.test.mjs. What pair_run does with a recognised call whose destination is elsewhere:
+  const elsewhere = await run(`node ${script} ask x`, { ...granted, HOME: home, LEDGER_DB: join(f.top, "other.db") });
+  assert.equal(elsewhere.ok, false);
+  assert.match(elsewhere.text, /ledger\.mjs ask is refused while pairing: it would open the database .*other\.db \(LEDGER_DB\), which is not sibling state pair_start granted/);
+  assert.equal(elsewhere.result?.sandbox, undefined, "refused before any sandbox was built");
+  const disable = await run(`node ${script} disable`, { ...granted, HOME: home });
+  assert.match(disable.text, /ledger\.mjs disable is refused while pairing/);
+  const flag = await run(`node ${script} ask x --cwd ${f.root}`, { ...granted, HOME: home });
+  assert.match(flag.text, /--cwd moves where the CLI reads its config/);
+  // A preload variable is dropped by the fence, not refused: the pre-check sees the fenced environment.
+  const preload = await run(`node ${script} ask x`, { ...granted, HOME: home, NODE_PATH: "/tmp/evil", LEDGER_DB: join(f.top, "other.db") });
+  assert.doesNotMatch(preload.text, /NODE_PATH/);
+  assert.match(preload.text, /other\.db \(LEDGER_DB\)/);
+});
+
+// A pid that is certainly not running: a child that has already exited and been reaped.
+const deadPid = () => spawnSync(process.execPath, ["-e", ""]).pid;
+
+test("the session lock is released only by its holder: a release never removes a lock another holder made, and a dead holder's stale lock is taken over by its token", () => {
+  const dir = join(FIXTURES, `lock-${Date.now()}`);
+  const lock = join(dir, "lock");
+  // The race Codex modelled: between the holder's look at the lock and its removal, the lock
+  // is replaced by another holder's. Here the swap happens inside fn: the holder's own token
+  // is the only thing it would remove, and it is gone, so it touches no directory.
+  withLock(dir, () => {
+    const [mine] = readdirSync(lock);
+    assert.match(mine, new RegExp(`^${process.pid}\\.[0-9a-f]+$`), "the token names the holder's pid");
+    rmSync(lock, { recursive: true, force: true });
+    mkdirSync(lock);
+    writeFileSync(join(lock, `${process.pid}.other`), "", { flag: "wx" });
+  });
+  assert.deepEqual(readdirSync(lock), [`${process.pid}.other`], "the other holder's lock is untouched by the release");
+  rmSync(lock, { recursive: true, force: true });
+  // The same swap to an empty lock directory: the release does not try to remove it.
+  withLock(dir, () => {
+    rmSync(lock, { recursive: true, force: true });
+    mkdirSync(lock);
+  });
+  assert.equal(existsSync(lock), true, "an empty lock that is not this holder's is left to its maker");
+  // An empty lock directory holds nobody (a release stopped between unlink and rmdir): the next
+  // holder's rename replaces it, and no stage directory is left behind.
+  assert.equal(withLock(dir, () => { assert.equal(readdirSync(lock).length, 1); return "in"; }, { waitMs: 200 }), "in");
+  assert.equal(existsSync(lock), false);
+  assert.deepEqual(readdirSync(dir).filter((n) => n.startsWith("lock")), [], "nothing staged is left behind");
+  // A dead holder's lock older than staleMs is taken over: its one token is unlinked by name.
+  const past = (Date.now() - 60000) / 1000;
+  mkdirSync(lock);
+  writeFileSync(join(lock, `${deadPid()}.dead`), "", { flag: "wx" });
+  utimesSync(lock, past, past);
+  assert.equal(withLock(dir, () => { assert.equal(readdirSync(lock).length, 1); return "ran"; }, { waitMs: 2000, staleMs: 15000 }), "ran");
+  assert.equal(existsSync(lock), false);
+  assert.deepEqual(readdirSync(dir).filter((n) => n.startsWith("lock")), [], "nothing staged is left behind");
+  // A dead holder's lock that is not yet stale is waited on.
+  const dead = deadPid();
+  mkdirSync(lock);
+  writeFileSync(join(lock, `${dead}.fresh`), "", { flag: "wx" });
+  assert.throws(() => withLock(dir, () => "never", { waitMs: 200, staleMs: 60000 }), new RegExp(`timed out waiting for the session lock .*: it is held by pid ${dead}, which is not running`));
+  assert.deepEqual(readdirSync(lock), [`${dead}.fresh`]);
+  rmSync(lock, { recursive: true, force: true });
+});
+
+test("a stale lock whose holder is still running, or names no process, is never taken over: the wait fails closed naming the holder and the recovery command", () => {
+  const dir = join(FIXTURES, `lock-live-${Date.now()}`);
+  const lock = join(dir, "lock");
+  const past = (Date.now() - 60000) / 1000;
+  // The holder is another running process: an old mtime is not enough.
+  const other = liveChild(["/bin/sleep", "30"], "sleep");
+  try {
+    mkdirSync(lock, { recursive: true });
+    writeFileSync(join(lock, `${other.pid}.stuck`), "", { flag: "wx" });
+    utimesSync(lock, past, past);
+    let ran = false;
+    assert.throws(
+      () => withLock(dir, () => { ran = true; }, { waitMs: 200, staleMs: 15000 }),
+      (err) => {
+        assert.match(err.message, new RegExp(`^timed out waiting for the session lock ${lock}: it is held by pid ${other.pid}, which is still running`));
+        assert.match(err.message, /bin\/pair\.mjs' unlock --stale '/);
+        return true;
+      },
+    );
+    assert.equal(ran, false);
+    assert.deepEqual(readdirSync(lock), [`${other.pid}.stuck`]);
+  } finally {
+    other.kill("SIGKILL");
+    rmSync(lock, { recursive: true, force: true });
+  }
+  // The holder is the waiting process itself: a nested lock attempt, named as one.
+  mkdirSync(lock);
+  writeFileSync(join(lock, `${process.pid}.stuck`), "", { flag: "wx" });
+  utimesSync(lock, past, past);
+  let ran = false;
+  assert.throws(() => withLock(dir, () => { ran = true; }, { waitMs: 200, staleMs: 15000 }), new RegExp(`held by pid ${process.pid}, which is still running and is this process: the lock is not reentrant`));
+  assert.equal(ran, false);
+  assert.deepEqual(readdirSync(lock), [`${process.pid}.stuck`]);
+  rmSync(lock, { recursive: true, force: true });
+  // A token from an older layout (no pid) is not a holder anyone can check.
+  mkdirSync(lock);
+  writeFileSync(join(lock, "owner"), "", { flag: "wx" });
+  utimesSync(lock, past, past);
+  assert.throws(() => withLock(dir, () => { ran = true; }, { waitMs: 200, staleMs: 15000 }), /it holds owner, which names no process/);
+  assert.equal(ran, false);
+  rmSync(lock, { recursive: true, force: true });
+});
+
+test("a takeover acts only on the dead holder's own token: a contender that replaced the lock between the look and the takeover keeps it", () => {
+  const dir = join(FIXTURES, `lock-race-${Date.now()}`);
+  const lock = join(dir, "lock");
+  const past = (Date.now() - 60000) / 1000;
+  mkdirSync(lock, { recursive: true });
+  const deadToken = `${deadPid()}.dead`;
+  writeFileSync(join(lock, deadToken), "", { flag: "wx" });
+  utimesSync(lock, past, past);
+  // Contender A sees the stale lock and its dead holder. Right after A's stat of the lock, and
+  // before A acts, contender B takes the lock over the same way and stays inside: it unlinks
+  // the dead token, then renames its own staged lock, holding its own live token, into place.
+  // The stand-in statSync is published to host-io's named import with syncBuiltinESMExports.
+  const bToken = `${process.pid}.b`;
+  const realStat = fs.statSync;
+  let interleaved = false;
+  fs.statSync = (p, ...rest) => {
+    const st = realStat(p, ...rest);
+    if (!interleaved && p === lock) {
+      interleaved = true;
+      fs.unlinkSync(join(lock, deadToken));
+      const staged = `${lock}.${bToken}`;
+      fs.mkdirSync(staged);
+      fs.writeFileSync(join(staged, bToken), "", { flag: "wx" });
+      fs.renameSync(staged, lock);
+    }
+    return st;
+  };
+  syncBuiltinESMExports();
+  let entered = false;
+  try {
+    assert.throws(() => withLock(dir, () => { entered = true; }, { waitMs: 300, staleMs: 15000 }), new RegExp(`held by pid ${process.pid}, which is still running`));
+  } finally {
+    fs.statSync = realStat;
+    syncBuiltinESMExports();
+  }
+  assert.equal(interleaved, true, "the interleaving happened between A's look and A's act");
+  assert.equal(entered, false, "A did not enter while B holds the lock");
+  assert.deepEqual(readdirSync(lock), [bToken], "B's lock and token are untouched");
+  rmSync(lock, { recursive: true, force: true });
+});
+
+test("a release that cannot unlink its own token fails with that error and leaves the lock as it is; the critical section's own error comes first", { skip: process.getuid?.() === 0 ? "root ignores directory permissions" : false }, () => {
+  const dir = join(FIXTURES, `lock-eacces-${Date.now()}`);
+  const lock = join(dir, "lock");
+  try {
+    assert.throws(() => withLock(dir, () => { chmodSync(lock, 0o500); return "saved"; }), (err) => err.code === "EACCES");
+    assert.equal(readdirSync(lock).length, 1, "the token stays: the lock is not reported as released");
+    chmodSync(lock, 0o700);
+    rmSync(lock, { recursive: true, force: true });
+    const boom = new Error("the critical section failed");
+    assert.throws(() => withLock(dir, () => { chmodSync(lock, 0o500); throw boom; }), (err) => err === boom && err.releaseError?.code === "EACCES");
+    assert.equal(readdirSync(lock).length, 1);
+  } finally {
+    if (existsSync(lock)) chmodSync(lock, 0o700);
+    rmSync(lock, { recursive: true, force: true });
+  }
+});
+
+test("a critical-section error that cannot carry releaseError (frozen, or the property not writable) is rethrown as it is, and the release failure goes to errors.log", { skip: process.getuid?.() === 0 ? "root ignores directory permissions" : false }, () => {
+  const dir = join(FIXTURES, `lock-frozen-${Date.now()}`);
+  const lock = join(dir, "lock");
+  const state = mkdtempSync(join(FIXTURES, "state-frozen-"));
+  const log = join(state, "errors.log");
+  const before = process.env.PAIRED_CODING_STATE_DIR;
+  process.env.PAIRED_CODING_STATE_DIR = state;
+  const lines = () => (existsSync(log) ? readFileSync(log, "utf8").trim().split("\n").filter(Boolean) : []);
+  try {
+    const frozen = Object.freeze(new Error("frozen critical section"));
+    assert.throws(() => withLock(dir, () => { chmodSync(lock, 0o500); throw frozen; }), (err) => err === frozen && err.releaseError === undefined);
+    assert.equal(readdirSync(lock).length, 1, "the token stays: the lock is not reported as released");
+    assert.equal(lines().length, 1);
+    assert.match(lines()[0], /withLock .*frozen critical section.*EACCES/);
+    chmodSync(lock, 0o700);
+    rmSync(lock, { recursive: true, force: true });
+    const fixed = new Error("non-writable releaseError");
+    Object.defineProperty(fixed, "releaseError", { value: "already set", writable: false, configurable: false });
+    assert.throws(() => withLock(dir, () => { chmodSync(lock, 0o500); throw fixed; }), (err) => err === fixed && err.releaseError === "already set");
+    assert.equal(lines().length, 2);
+    assert.match(lines()[1], /non-writable releaseError.*EACCES/);
+    chmodSync(lock, 0o700);
+    rmSync(lock, { recursive: true, force: true });
+    // A thrown primitive cannot carry it either: the same value is rethrown, and logged.
+    assert.throws(() => withLock(dir, () => { chmodSync(lock, 0o500); throw "a bare string"; }), (err) => err === "a bare string");
+    assert.equal(lines().length, 3);
+  } finally {
+    if (before === undefined) delete process.env.PAIRED_CODING_STATE_DIR; else process.env.PAIRED_CODING_STATE_DIR = before;
+    if (existsSync(lock)) chmodSync(lock, 0o700);
+    rmSync(lock, { recursive: true, force: true });
+  }
+});
+
+const PAIR_CLI_PATH = join(PLUGIN_ROOT, "bin", "pair.mjs");
+const pairCli = (env, ...args) => spawnSync(process.execPath, [PAIR_CLI_PATH, ...args], { encoding: "utf8", env: { ...process.env, ...env } });
+const lockWith = (lock, token) => { mkdirSync(lock, { recursive: true }); writeFileSync(join(lock, token), "", { flag: "wx" }); };
+
+// ps can be refused outright (an agent's own sandbox): the CLI checks that need its output skip then.
+const PS = spawnSync("/bin/ps", ["-o", "command=", "-p", String(process.pid)], { encoding: "utf8" }).status === 0;
+
+/** A running child; where ps runs, once ps reports `marker` in its command line (past the fork-to-exec gap). */
+function liveChild(args, marker) {
+  const child = spawn(args[0], args.slice(1), { stdio: "ignore" });
+  const end = Date.now() + 5000;
+  while (PS) {
+    const ps = spawnSync("/bin/ps", ["-o", "command=", "-p", String(child.pid)], { encoding: "utf8" });
+    if ((ps.stdout ?? "").includes(marker)) break;
+    if (Date.now() > end) { child.kill("SIGKILL"); throw new Error(`child ${child.pid} never showed ${marker}`); }
+    spawnSync("/bin/sleep", ["0.05"]);
+  }
+  return child;
+}
+
+test("pair unlock --stale removes each kind of paired-coding lock (session, queued-input, carry marker) when its holder is not running, and otherwise names the holder", () => {
+  const base = mkdtempSync(join(FIXTURES, "state-unlock-"));
+  const env = { PAIRED_CODING_STATE_DIR: base };
+  for (const lock of [join(base, "sess-1", "lock"), join(base, "sess-1", "pending", "lock"), join(base, "carry", "lock")]) {
+    const dead = deadPid();
+    lockWith(lock, `${dead}.gone`);
+    const gone = pairCli(env, "unlock", "--stale", lock);
+    assert.equal(gone.status, 0, gone.stderr);
+    assert.match(gone.stdout, new RegExp(`removed the lock ${lock}: its holder, pid ${dead}, is not running`));
+    assert.equal(existsSync(lock), false);
+    assert.equal(existsSync(dirname(lock)), true, "the directory the lock was in stays");
+  }
+  // The state base named through a symlink, and a relative lock path, reach the same lock.
+  const alias = join(FIXTURES, `state-alias-${Date.now()}`);
+  symlinkSync(base, alias);
+  lockWith(join(base, "sess-2", "lock"), `${deadPid()}.gone`);
+  const viaAlias = spawnSync(process.execPath, [PAIR_CLI_PATH, "unlock", "--stale", join("sess-2", "lock")], { encoding: "utf8", cwd: base, env: { ...process.env, PAIRED_CODING_STATE_DIR: alias } });
+  assert.equal(viaAlias.status, 0, viaAlias.stderr);
+  assert.equal(existsSync(join(base, "sess-2", "lock")), false);
+  // A running holder's lock is refused, untouched, and the refusal never advises ending it.
+  const lock = join(base, "sess-1", "lock");
+  const child = liveChild(["/bin/sleep", "30"], "sleep");
+  try {
+    lockWith(lock, `${child.pid}.live`);
+    const live = pairCli(env, "unlock", "--stale", lock);
+    assert.equal(live.status, 1, live.stderr);
+    assert.match(live.stderr, new RegExp(`held by pid ${child.pid}, which is running \\(`));
+    if (PS) assert.match(live.stderr, /\(ps: .*sleep 30\)/);
+    assert.match(live.stderr, /pids are reused/i);
+    assert.match(live.stderr, new RegExp(`ps -p ${child.pid} -o command=`));
+    assert.match(live.stderr, /unlock --stale --force /);
+    assert.doesNotMatch(live.stderr, /\b(end|kill|terminate|stop)\b.*process/i);
+    assert.deepEqual(readdirSync(lock), [`${child.pid}.live`], "a running holder's lock is untouched");
+  } finally {
+    child.kill("SIGKILL");
+    rmSync(lock, { recursive: true, force: true });
+  }
+  const none = pairCli(env, "unlock", "--stale", lock);
+  assert.equal(none.status, 0, none.stderr);
+  assert.match(none.stdout, /no lock at/);
+  for (const args of [["unlock", lock], ["unlock", "--stale"], ["unlock", "--stale", lock, lock], ["unlock", "--stale", "--force", "--force", lock]]) {
+    const usage = pairCli(env, ...args);
+    assert.equal(usage.status, 2, args.join(" "));
+    assert.match(usage.stderr, /usage: pair\.mjs unlock --stale \[--force\] <lock directory>/);
+  }
+});
+
+test("pair unlock --stale refuses, exit 2, anything that is not a known lock inside the state base: an outside directory, a token-shaped data file, a symlink out, a lock that is a symlink", () => {
+  const base = mkdtempSync(join(FIXTURES, "state-refuse-"));
+  const env = { PAIRED_CODING_STATE_DIR: base };
+  const outside = mkdtempSync(join(FIXTURES, "product-"));
+  const refused = (lock, rule) => {
+    const r = pairCli(env, "unlock", "--stale", lock);
+    assert.equal(r.status, 2, `${lock}: ${r.stdout}${r.stderr}`);
+    assert.match(r.stderr, rule, lock);
+  };
+  const notALock = /is not a paired-coding lock: unlock --stale acts only on <session>\/lock, <session>\/pending\/lock and carry\/lock inside the state base/;
+  // Codex's counterexample: an empty directory, and one holding one token-shaped data file whose pid is gone.
+  mkdirSync(join(outside, "empty"));
+  refused(join(outside, "empty"), notALock);
+  const data = join(outside, "not-a-lock");
+  lockWith(data, `${deadPid()}.customer-data`);
+  refused(data, notALock);
+  lockWith(join(outside, "lock"), `${deadPid()}.gone`);
+  refused(join(outside, "lock"), notALock);
+  // Inside the base but not a lock location.
+  lockWith(join(base, "lock"), `${deadPid()}.gone`);
+  refused(join(base, "lock"), notALock);
+  lockWith(join(base, "sess-1", "other", "lock"), `${deadPid()}.gone`);
+  refused(join(base, "sess-1", "other", "lock"), notALock);
+  refused(join(base, "sess-1"), notALock);
+  refused(base, notALock);
+  // A session directory that is a symlink out of the base: its canonical lock is outside.
+  const away = join(outside, "away");
+  lockWith(join(away, "lock"), `${deadPid()}.gone`);
+  symlinkSync(away, join(base, "evil"));
+  refused(join(base, "evil", "lock"), notALock);
+  // The lock itself a symlink to a directory outside.
+  mkdirSync(join(base, "sess-3"));
+  symlinkSync(join(outside, "not-a-lock"), join(base, "sess-3", "lock"));
+  refused(join(base, "sess-3", "lock"), /is a symlink, not a lock directory/);
+  // A directory that cannot be resolved, and a state base that does not exist.
+  refused(join(outside, "missing", "lock"), /cannot be resolved/);
+  const noBase = pairCli({ PAIRED_CODING_STATE_DIR: join(outside, "no-state") }, "unlock", "--stale", join(outside, "no-state", "s", "lock"));
+  assert.equal(noBase.status, 2);
+  assert.match(noBase.stderr, /the state base .* cannot be resolved/);
+  // Nothing was touched.
+  assert.deepEqual(readdirSync(join(outside, "empty")), []);
+  assert.equal(readdirSync(data).length, 1);
+  assert.equal(readdirSync(join(outside, "lock")).length, 1);
+  assert.equal(readdirSync(join(away, "lock")).length, 1);
+  assert.equal(readdirSync(join(base, "lock")).length, 1);
+  assert.equal(readdirSync(join(base, "sess-1", "other", "lock")).length, 1);
+});
+
+test("pair unlock --stale --force clears a lock whose pid was reused by a process that is not paired-coding, and refuses a paired-coding one", { skip: PS ? false : "needs /bin/ps" }, () => {
+  const base = mkdtempSync(join(FIXTURES, "state-force-"));
+  const env = { PAIRED_CODING_STATE_DIR: base };
+  const lock = join(base, "sess-1", "lock");
+  const reused = liveChild(["/bin/sleep", "30"], "sleep");
+  try {
+    lockWith(lock, `${reused.pid}.old`);
+    const r = pairCli(env, "unlock", "--stale", "--force", lock);
+    assert.equal(r.status, 0, r.stderr);
+    assert.match(r.stdout, new RegExp(`removed the lock ${lock}: pid ${reused.pid} is running but its command line .*sleep 30.* names no paired-coding process`));
+    assert.equal(existsSync(lock), false);
+    assert.equal(existsSync(join(base, "sess-1")), true);
+  } finally {
+    reused.kill("SIGKILL");
+  }
+  for (const name of ["paired-coding", "pair-server"]) {
+    const holder = liveChild([process.execPath, "-e", "setTimeout(() => {}, 30000)", name], name);
+    try {
+      lockWith(lock, `${holder.pid}.held`);
+      const r = pairCli(env, "unlock", "--stale", "--force", lock);
+      assert.equal(r.status, 1, r.stderr);
+      assert.match(r.stderr, new RegExp(`pid ${holder.pid}, whose command line names ${name}`));
+      assert.doesNotMatch(r.stderr, /\b(end|kill|terminate|stop)\b.*process/i);
+      assert.deepEqual(readdirSync(lock), [`${holder.pid}.held`]);
+    } finally {
+      holder.kill("SIGKILL");
+      rmSync(lock, { recursive: true, force: true });
+    }
+  }
+});
+
+test("unlockStale --force decides on the holder's command line: no paired-coding name removes, a paired-coding name, an unreadable one or this process refuses", () => {
+  const base = mkdtempSync(join(FIXTURES, "state-force-unit-"));
+  const env = { PAIRED_CODING_STATE_DIR: base };
+  const lock = join(base, "sess-1", "pending", "lock");
+  const child = liveChild(["/bin/sleep", "30"], "sleep");
+  try {
+    const cases = [
+      { command: "/usr/bin/some-worker --serve", removed: true, message: new RegExp(`removed the lock ${lock}: pid ${child.pid} is running but its command line \\(ps: /usr/bin/some-worker --serve\\) names no paired-coding process`) },
+      { command: "node /x/plugins/paired-coding/hooks/paired-coding-hook.mjs", removed: false, message: /whose command line names paired-coding/ },
+      { command: "node /x/server/pair-server.mjs", removed: false, message: /whose command line names pair-server/ },
+      { command: null, removed: false, message: /ps could not read its command line, so --force cannot show it is not a paired-coding process/ },
+    ];
+    for (const c of cases) {
+      lockWith(lock, `${child.pid}.old`);
+      const asked = [];
+      const r = unlockStale(lock, { env, force: true, commandOf: (pid) => { asked.push(pid); return c.command; } });
+      assert.deepEqual(asked, [child.pid]);
+      assert.equal(r.removed, c.removed, r.message);
+      assert.equal(r.code, c.removed ? 0 : 1);
+      assert.match(r.message, c.message);
+      assert.doesNotMatch(r.message, /\b(end|kill|terminate|stop)\b.*process/i);
+      assert.equal(existsSync(lock), !c.removed);
+      assert.equal(existsSync(dirname(lock)), true, "never a parent");
+      rmSync(lock, { recursive: true, force: true });
+    }
+    // Without --force a running pid is refused whatever its command line.
+    lockWith(lock, `${child.pid}.old`);
+    const plain = unlockStale(lock, { env, commandOf: () => "/usr/bin/some-worker" });
+    assert.equal(plain.code, 1);
+    assert.match(plain.message, /Pids are reused/);
+    assert.deepEqual(readdirSync(lock), [`${child.pid}.old`]);
+    rmSync(lock, { recursive: true, force: true });
+  } finally {
+    child.kill("SIGKILL");
+  }
+  // The token names the process asking: never forced, and named as a self-deadlock.
+  lockWith(lock, `${process.pid}.self`);
+  const self = unlockStale(lock, { env, force: true, commandOf: () => "/usr/bin/unrelated" });
+  assert.equal(self.removed, false);
+  assert.equal(self.code, 1);
+  assert.match(self.message, /is this process: the lock is not reentrant/);
+  assert.deepEqual(readdirSync(lock), [`${process.pid}.self`]);
+  rmSync(lock, { recursive: true, force: true });
+});
+
+test("a lock refusal names a configured state base in its recovery command, and a token naming the waiting process as a non-reentrant self-deadlock", () => {
+  const lock = "/s/sess-1/lock";
+  const dead = describeHolder(lock, { tokens: ["1.x"], pid: 1, alive: false, ageMs: 0 }, { PAIRED_CODING_STATE_DIR: "/state root" });
+  assert.match(dead, /run: PAIRED_CODING_STATE_DIR='\/state root' node '.*bin\/pair\.mjs' unlock --stale '\/s\/sess-1\/lock'/);
+  assert.doesNotMatch(describeHolder(lock, { tokens: ["1.x"], pid: 1, alive: false, ageMs: 0 }, {}), /PAIRED_CODING_STATE_DIR=/);
+  const live = describeHolder(lock, { tokens: ["1.x"], pid: 1, alive: true, ageMs: 0 }, {});
+  assert.match(live, /pids are reused/i);
+  assert.match(live, /ps -p 1 -o command=/);
+  assert.match(live, /unlock --stale --force/);
+  assert.doesNotMatch(live, /\b(end|kill|terminate|stop)\b.*process/i);
+  const self = describeHolder(lock, { tokens: [`${process.pid}.x`], pid: process.pid, alive: true, ageMs: 0 }, {});
+  assert.match(self, /is this process: the lock is not reentrant/);
+  assert.doesNotMatch(self, /unlock --stale/);
 });
 
 test("pair_run times out and kills its whole process group", { skip: !hasSandbox }, async () => {

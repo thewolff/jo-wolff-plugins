@@ -12,20 +12,26 @@
 
 import { spawnSync } from "node:child_process";
 import { copyFileSync, existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { createHash, randomBytes } from "node:crypto";
 import { fileURLToPath } from "node:url";
 import {
-  boundaryMatches, carryClosed, checkWrite, lastCardSeq, openRoadmapItems, pairAcceptedReceipt, pairBegin, pairDone, pairNote, pairPropose, roadmapRecord,
-  pairStart, recordInput, runEnd, runStart, sessionEnd, toolVerdict,
+  boundaryMatches, carryClosed, checkWrite, fencedEnv, lastCardSeq, openRoadmapItems, pairAcceptedReceipt, pairBegin, pairDone, pairNote, pairPropose, roadmapRecord,
+  pairStart, recordInput, runEnd, runStart, sessionEnd, siblingRunProblem, toolVerdict,
 } from "../core/gate.mjs";
 import {
   activated, appendJournal, defaultTempPaths, findRoot, loadState, loadStateReport, makeIo, markActivated, reapGroups, saveState,
-  closedRunProblem, describeSandbox, recordRun, runPgids, runSandboxed, sandboxBackend, sandboxJournal, sandboxProblem, sessionDir, stateBase, withLock, withSession, writeAtomic, writeSandboxed,
+  closedRunProblem, describeSandbox, realpathLoose, recordRun, runPgids, runSandboxed, sandboxBackend, sandboxJournal, sandboxProblem, sessionDir, stateBase, withLock, withSession, writeAtomic, writeSandboxed,
 } from "./host-io.mjs";
+import { PATTERN_CHECK_DIR, siblingState } from "./sibling-state.mjs";
 
-/** Directories left out of every snapshot unless the user's own exclusions say otherwise. */
-export const DEFAULT_EXCLUSIONS = Object.freeze([".git"]);
+/**
+ * Directories left out of every snapshot, before the user's own exclusions: git's own, and
+ * the receipt directory pattern-check's Stop hook writes in the worktree (a carve-out every
+ * pair_run may write, sibling-state.mjs), so its writes never read as drift.
+ */
+export const DEFAULT_EXCLUSIONS = Object.freeze([".git", PATTERN_CHECK_DIR]);
 const DEFAULT_TIMEOUT_MS = 10 * 60 * 1000;
 const MAX_TIMEOUT_MS = 60 * 60 * 1000;
 /** How long a /clear carry marker stays usable. */
@@ -60,7 +66,11 @@ function ioFor(dir, state) {
 /**
  * The pre-call verdict for a host tool. Inert (allow, no file touched) unless activated.
  * @param {string} toolName  the bare tool name (an adapter maps its own pair_* tool names to bare ones)
- * @param {{ sessionDir: string, allow?: string[] }} ctx
+ * @param {{ sessionDir: string, allow?: string[], command?: unknown, home?: string }} ctx
+ *   `command`: for the host's shell tool, the command it was asked to run. The shell is
+ *   refused whatever it is; a sibling plugin's CLI call (gate.mjs siblingCliCommand,
+ *   installed under `home`, the process's home directory unless the adapter names one) is
+ *   refused with a reason that says to run it with pair_run instead
  * @returns {{ allow: boolean, reason?: string, active: boolean, degraded?: string | null }}
  *   `degraded`: why this read took the state as closed instead of as saved, for the adapter to report
  */
@@ -68,10 +78,18 @@ export function verdict(toolName, ctx) {
   if (!ctx?.sessionDir || !activated(ctx.sessionDir)) return { allow: true, active: false };
   const { state, fault } = loadStateReport(ctx.sessionDir);
   if (state.phase === "inactive") return { allow: true, active: false };
-  const v = toolVerdict(state, { toolName }, { allow: ctx.allow ?? [] }, makeIo({}));
+  const home = typeof ctx.home === "string" && ctx.home ? ctx.home : homedir();
+  const v = toolVerdict(state, { toolName, command: ctx.command }, { allow: ctx.allow ?? [], home, realpath: (p) => realpathSync(p) }, makeIo({}));
   appendJournal(ctx.sessionDir, v.journal);
   return { allow: v.allow, reason: v.reason, active: true, degraded: fault };
 }
+
+/** The host's view of the config files a sibling CLI reads to find where it writes (gate.mjs SiblingFs). */
+const siblingFs = Object.freeze({
+  readFile: (p) => readFileSync(p, "utf8"),
+  isFile: (p) => statSync(p, { throwIfNoEntry: false })?.isFile() ?? false,
+  exists: (p) => existsSync(p),
+});
 
 /**
  * Whether a session is pairing, for a fault path in either adapter. False only for a confirmed
@@ -236,11 +254,11 @@ export function carryInto(ctx) {
   const stateDir = realpathSync.native(dir);
   const base = dirname(stateDir);
   const protect = [...new Set([base, PLUGIN_ROOT, ...(ctx.protect ?? [])])];
-  const exclusions = Array.isArray(ctx.exclusions) ? ctx.exclusions : [...DEFAULT_EXCLUSIONS];
+  const exclusions = [...new Set([...DEFAULT_EXCLUSIONS, ...(Array.isArray(ctx.exclusions) ? ctx.exclusions : [])])];
   return withLock(dir, () => {
     const state = loadState(dir);
     const out = carryClosed(state, {
-      sessionId: ctx.sessionId, root: ctx.root, stateDir, tempPaths: defaultTempPaths(), protect, exclusions,
+      sessionId: ctx.sessionId, root: ctx.root, stateDir, tempPaths: defaultTempPaths(), protect, exclusions, carveOuts: carveOutsFor(ctx.root),
       from: ctx.from ?? null, reason: ctx.reason ?? "clear",
     }, makeIo({ realpath: realpathSync.native }));
     if (out.ok) {
@@ -305,9 +323,10 @@ export function takeCarryMarker(base, root, opts = {}) {
  * @param {string} name  pair_start | pair_note | pair_propose | pair_begin | pair_done | pair_write | pair_edit | pair_run
  * @param {Record<string, unknown>} args
  * @param {{ sessionId: string, sessionDir: string, root?: string, cwd?: string, signal?: AbortSignal,
- *   runId?: string, timeoutMs?: number, maxTimeoutMs?: number, protect?: string[] }} ctx
+ *   runId?: string, timeoutMs?: number, maxTimeoutMs?: number, protect?: string[], env?: Record<string, string | undefined> }} ctx
  *   `maxTimeoutMs` lets a host keep pair_run below its own limits (Claude Code moves a tool call
- *   that runs past a threshold to the background).
+ *   that runs past a threshold to the background). `env`: the environment of the process that
+ *   fences pair_run (this one's unless the adapter names one); the run gets fencedEnv of it.
  * @returns {Promise<{ ok: boolean, text: string, result?: object }>}
  */
 export async function executeVerb(name, args, ctx) {
@@ -428,6 +447,26 @@ export function roadmapOffer(base, root) {
   return null;
 }
 
+/**
+ * The sibling-plugin state this worktree's runs may write (sibling-state.mjs). A path outside
+ * the worktree is made canonical through its deepest existing ancestor, as Seatbelt matches
+ * resolved paths. Inside the worktree only `.pattern-check` itself is kept, as named, and
+ * dropped when what is there is a symlink: resolved, a `.pattern-check` link into `src` would
+ * make `src` a carve-out. A ledger database the config points into the worktree is not carved
+ * out: a `.ledger.json` is repo content, and no repo content may widen the fence.
+ * @param {string} root  canonical
+ * @returns {import("../core/gate.mjs").CarveOuts}
+ */
+function carveOutsFor(root) {
+  const carve = siblingState({ root });
+  const inTree = (p) => p === root || p.startsWith(`${root}/`);
+  const outside = (paths) => paths.filter((p) => !inTree(p)).map(realpathLoose).filter((p) => !inTree(p));
+  const receipts = join(root, PATTERN_CHECK_DIR);
+  let receiptsIsLink = false;
+  try { receiptsIsLink = lstatSync(receipts).isSymbolicLink(); } catch { /* absent: a run may create it */ }
+  return { files: outside(carve.files), dirs: [...outside(carve.dirs), ...(receiptsIsLink ? [] : [receipts])] };
+}
+
 function pairStartVerb(args, ctx) {
   const backend = sandboxBackend();
   if ("problem" in backend) return fail("pair_start", `${backend.problem}; the gate cannot fence pair_run here, so pairing stays conversation-only`);
@@ -445,7 +484,7 @@ function pairStartVerb(args, ctx) {
     const io = makeIo({ root, exclusions });
     const found = roadmapOffer(base, root);
     const roadmapOfferArg = found ? { from: found.fromSession, roadmap: found.roadmap } : undefined;
-    let out = pairStart(state, { sessionId: ctx.sessionId, root, stateDir, tempPaths: defaultTempPaths(), protect, exclusions, roadmapOffer: roadmapOfferArg, cardSeq: lastCardSeq(readJournal(dir)) }, io);
+    let out = pairStart(state, { sessionId: ctx.sessionId, root, stateDir, tempPaths: defaultTempPaths(), protect, exclusions, carveOuts: carveOutsFor(root), roadmapOffer: roadmapOfferArg, cardSeq: lastCardSeq(readJournal(dir)) }, io);
     // A temp layout no sandbox here can fence would refuse every pair_run; say so now.
     const unfenced = out.ok ? closedRunProblem(out.state, backend) : null;
     if (unfenced) out = { ok: false, reason: `${unfenced}; pairing is not started`, state, journal: [] };
@@ -580,7 +619,12 @@ async function runVerb(args, ctx) {
   const runId = ctx.runId ?? `run-${Date.now()}-${randomBytes(4).toString("hex")}`;
   const asked = Number(args.timeoutSeconds) > 0 ? Number(args.timeoutSeconds) * 1000 : ctx.timeoutMs ?? DEFAULT_TIMEOUT_MS;
   const timeoutMs = Math.min(asked, ctx.maxTimeoutMs ?? MAX_TIMEOUT_MS, MAX_TIMEOUT_MS);
-  const start = withSession(dir, {}, (s) => runStart(s, { runId, command: args.command }, ioFor(dir, s)));
+  // One environment for the run: what the command is spawned with, and what a sibling CLI
+  // call's destination is read from before launch (gate.mjs fencedEnv, siblingRunProblem).
+  // The home is the run's HOME, the one the CLI resolves `~` and its state directories from.
+  const env = fencedEnv(ctx.env && typeof ctx.env === "object" ? ctx.env : process.env);
+  const host = { home: env.HOME || homedir(), realpath: (p) => realpathSync(p), env, fs: siblingFs };
+  const start = withSession(dir, {}, (s) => runStart(s, { runId, command: args.command, host }, ioFor(dir, s)));
   if (!start.ok) return fail("pair_run", start.reason);
   // Anything the run makes from here on has a change time at or after state.json's, which
   // runStart just wrote: the link check's floor, on the filesystem's own clock.
@@ -589,6 +633,7 @@ async function runVerb(args, ctx) {
     state: start.state,
     command: args.command,
     cwd: start.state.root,
+    env,
     timeoutMs,
     signal: ctx.signal,
     onSpawn: (pgid) => recordRun(dir, runId, pgid),

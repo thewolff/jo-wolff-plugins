@@ -148,6 +148,7 @@ export async function callTool(params, opts = {}) {
     runId: toolUseId,
     protect,
     maxTimeoutMs: foregroundCapMs(env),
+    env,
   });
   return { content: [{ type: "text", text: r.text }], isError: !r.ok };
 }

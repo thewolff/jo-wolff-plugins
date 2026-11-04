@@ -32,11 +32,11 @@
 // base and prints one warning line. PreToolUse fails closed while pairing and for pair_* tools,
 // and never blocks a session that is not pairing.
 
-import { appendFileSync, closeSync, fstatSync, openSync, readFileSync, readSync, realpathSync, rmSync } from "node:fs";
+import { appendFileSync, closeSync, existsSync, fstatSync, openSync, readFileSync, readSync, realpathSync, rmSync } from "node:fs";
 import { dirname, join, relative } from "node:path";
 import { fileURLToPath } from "node:url";
 import { CARRIED_PHRASE, PAIR_TOOLS, isStopPhrase } from "../core/gate.mjs";
-import { activated, findRoot, loadState, loadStateReport, logFault as logFaultLine, reasonOf, stateBase, withLock } from "../lib/host-io.mjs";
+import { PENDING_DIR, activated, findRoot, loadState, loadStateReport, logFault as logFaultLine, reasonOf, stateBase, withLock } from "../lib/host-io.mjs";
 import { RECEIPT_FILE, carryInto, endSession, pairingCarry, pairingOrUncertain, recordTrustedInput, sessionDirFor, takeCarryMarker, verdict, writeCarryMarker } from "../lib/verbs.mjs";
 import { bareToolName, hostAllowFor, writeBinding } from "../server/binding.mjs";
 
@@ -168,12 +168,11 @@ function deny(reason) {
   };
 }
 
-const PENDING = "pending";
 const PENDING_FILE = "inputs.jsonl";
 
 /** UserPromptSubmit: queue the turn. Its provenance is not on disk yet. */
 export function queueInput(dir, input) {
-  const pdir = join(dir, PENDING);
+  const pdir = join(dir, PENDING_DIR);
   withLock(pdir, () => {
     const item = {
       promptId: typeof input.prompt_id === "string" ? input.prompt_id : "",
@@ -207,7 +206,7 @@ export function stopOutcome(r, dir) {
  * caller to surface on this event or stash for the next (stashNotices).
  */
 export function resolvePending(dir, { waitMs = 2000 } = {}) {
-  const pdir = join(dir, PENDING);
+  const pdir = join(dir, PENDING_DIR);
   const path = join(pdir, PENDING_FILE);
   const notices = [];
   withLock(pdir, () => {
@@ -243,7 +242,7 @@ const NOTICES_FILE = "notices.jsonl";
 /** Keep outcome notes an event cannot carry (Stop) for the next event that can. */
 function stashNotices(dir, notices) {
   if (notices.length === 0) return;
-  const pdir = join(dir, PENDING);
+  const pdir = join(dir, PENDING_DIR);
   withLock(pdir, () => {
     appendFileSync(join(pdir, NOTICES_FILE), `${notices.map((n) => JSON.stringify(n)).join("\n")}\n`, { mode: 0o600 });
   });
@@ -251,7 +250,7 @@ function stashNotices(dir, notices) {
 
 /** Take (read and delete) the stashed outcome notes. */
 function takeNotices(dir) {
-  const pdir = join(dir, PENDING);
+  const pdir = join(dir, PENDING_DIR);
   const path = join(pdir, NOTICES_FILE);
   return withLock(pdir, () => {
     let text;
@@ -283,7 +282,7 @@ export function handle(event, input, opts = {}) {
     const on = activated(dir);
     const early = on ? loadStateReport(dir).fault : null;
     const notices = on ? [...takeNotices(dir), ...resolvePending(dir, { waitMs: opts.waitMs })] : [];
-    const v = verdict(name, { sessionDir: dir, allow: hostAllowFor(input) });
+    const v = verdict(name, { sessionDir: dir, allow: hostAllowFor(input), command: input?.tool_input?.command, home: env.HOME });
     const fault = v.degraded ?? early;
     // A state read as degraded (closed) is a fault too: warned and logged once, after the last
     // step that can throw, so the outer catch never logs it a second time.
@@ -330,7 +329,27 @@ export function handle(event, input, opts = {}) {
     const note = `paired-coding: pairing was on ${CARRY_START.get(source)}, so ${CARRIED_PHRASE}: this session has no card and no change set, and host write, edit, shell and sub-agent tools are refused. Tell your partner that pairing carried over closed, then wait for their answer. If they want to keep pairing, call pair_start and propose the next card; to end it, they type pair stop. Do not call pair_start before they answer.`;
     return { hookSpecificOutput: { hookEventName: "SessionStart", additionalContext: note } };
   }
-  if (!dir || !activated(dir)) return null;
+  if (!dir || !activated(dir)) {
+    // A session that never activated pairing has nothing worth keeping in its directory (queued
+    // typed input, stashed notices): at its end the directory goes. An activated session's
+    // directory stays, journal, receipt and runs being the evidence. The decision is retaken
+    // under the session lock pair_start and carryInto hold while they write the activation
+    // marker, so a start that lands between the check above and the removal is kept, not
+    // deleted. A directory that is not there is left alone (the lock would create it). Best
+    // effort: a directory that will not go is one warning and one errors.log line, never a
+    // failed end.
+    if (event === "session-end" && dir && existsSync(dir)) {
+      try {
+        withLock(dir, () => {
+          if (!activated(dir)) rmSync(dir, { recursive: true, force: true });
+        });
+      } catch (err) {
+        const reason = `could not remove the never-activated session directory ${dir} (${reasonOf(err)})`;
+        return { systemMessage: `paired-coding: ${reason}. ${logFault(env, event, input, reason)}` };
+      }
+    }
+    return null;
+  }
   if (event === "user-prompt-submit") {
     // Turns still queued from earlier (a turn that ended with no tool call) are judged first,
     // and the outcome of any stop among them, or stashed by the Stop event, is reported here.

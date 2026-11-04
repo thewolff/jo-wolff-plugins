@@ -194,7 +194,13 @@ Fix it, keep going, and show it in the read-back.
 While pairing is active, the gate allows read-only tools and the `pair_*` tools. Write through
 `pair_write` and `pair_edit`, run every command through `pair_run`, and do recon yourself in
 this session. The host's own write, edit, shell, eval and sub-agent tools are refused, and so is
-any tool the gate does not know.
+any tool the gate does not know. While pairing, ledger and pattern-check calls go through
+`pair_run`: when a Stop hook from the ledger or pattern-check plugin asks for its CLI
+(`node …/ledger.mjs …`, `node …/pattern-check.mjs …`), run that one command with `pair_run`
+exactly as the hook gives it, on its own, with nothing joined to it, with or without a change
+set open. The host shell refuses it like any other command; `pair_run` fences it so it may
+write those plugins' own state and nothing else, and refuses it by name when its subcommand is
+not one a hook demands or when it would write anywhere else.
 
 When the `pair_*` tools are not installed, the contract holds as conversation. Run every phase
 as written and keep the roadmap in the conversation. Use the host's read-only tools for

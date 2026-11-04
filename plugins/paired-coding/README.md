@@ -184,6 +184,44 @@ How it works:
   every other skill is refused. The agent writes through `pair_write` and `pair_edit`, which
   accept only paths inside the open change set's boundary, and runs commands through
   `pair_run`.
+- While pairing, ledger and pattern-check calls go through `pair_run`. The host's shell is
+  refused whatever the command: the host runs it with its own rights and environment, outside
+  the fence, and nothing the gate can check before the call pins where the command would
+  write. The ledger and pattern-check plugins end each reply with a Stop hook that demands
+  such a call, so the refusal for one names the way through: the same command with
+  `pair_run`, with or without a change set open, where the sandbox lets it write the sibling
+  state `pair_start` granted (the carve-outs below) and nothing else, and the kernel, not a
+  path spelling, decides where the write lands (a receipt directory or database that is a
+  link to a product file resolves to the product file, outside every grant, and the write is
+  refused). `pair_run` also runs the command with a filtered copy of the host's environment
+  (`NODE_OPTIONS`, `NODE_PATH`, `NODE_REPL_EXTERNAL_MODULE`, each a way to run code before
+  the script, and `NODE_V8_COVERAGE`, `NODE_REDIRECT_WARNINGS`, `NODE_COMPILE_CACHE`, each a
+  way to make node write wherever it points, are dropped), from the worktree root. Before
+  launching a sibling call, `pair_run` refuses with a reason the agent can act on when the
+  call is not one the fence should see: it has to be exactly `node <script> <subcommand> …`
+  where `<script>` is an absolute path, plain characters only, to `ledger.mjs` or
+  `pattern-check.mjs` under `~/.claude/plugins/cache/jo-wolff-plugins/` or
+  `~/.claude/plugins/marketplaces/` (existing, and resolving, symlinks followed, to a file of
+  the same name still inside the install directory's own resolved path), and `<subcommand>`
+  one the sibling's own hooks demand: `ask`, `answer`, `note`, `outcome`, `pending` or
+  `doctor` for the ledger, `open`, `record` or `status` for pattern-check. Any other
+  subcommand (`disable`, `init`, `config`, `canary`, `review`, …) is refused by name, and so
+  is a call with no subcommand or one carrying `--cwd`, `--config` or `--db` anywhere in its
+  arguments (`--cwd` moves where both CLIs look for their config, and no hook demands it).
+  Then where it would write, worked out the way the CLI itself does from the worktree root
+  and the environment the run gets: the ledger's database (`LEDGER_DB`, else the `db` of the
+  nearest `.ledger.json` at or above the root, else the user config's, else the ledger's
+  default) has to be one of the carve-out files; pattern-check's receipt directory (the
+  `receiptDir` of the nearest `.pattern-check.json`, else the user config's, else
+  `.pattern-check`, under the nearest `.git` root) has to sit under `<worktree>/.pattern-check`
+  for `record`, its `--session` key has to be one its CLI accepts, and its state directory has
+  to be a carve-out directory; a `.ledger.json` or `.pattern-check.json` found inside a
+  carve-out directory is never honoured (a run may have written it); and a backslash anywhere
+  that names a path (`receiptDir`, the database, `LEDGER_CWD`, an argument) is refused naming
+  the character, since the CLIs keep it as a filename character and the gate cannot read the
+  destination their way. These refusals are the fast path with a clear reason; the fence is
+  the control, and a call they let through still writes only where the sandbox allows. The
+  journal's run-start entry records the command.
 - On OMP, a tool device the agent calls as `write xd://<device>` reaches the gate as the host's
   `write` tool. The gate judges by tool name and does not read the path, so while pairing every
   `xd://` device is refused like any host write ("write is the host's own mutating tool"),
@@ -197,14 +235,59 @@ How it works:
   where some of what follows differs (see **Linux: which sandbox** below). Every sandbox refuses
   any write, create, delete or rename beyond what follows; Landlock does not fence permission,
   owner, timestamp or extended-attribute changes (see **Linux: Landlock**). With no change set
-  open a command may write only temp directories and `/dev`. With one open it may also write
-  the boundary files. The state directory and the
+  open a command may write only temp directories, `/dev` and the sibling-plugin carve-outs
+  below. With one open it may also write the boundary files. The state directory and the
   plugin's own install root are never writable, and on macOS no command may create a hard link
   anywhere, even between two paths it could write (on Linux one made inside a writable
   directory stops the session; see below). Every sandbox also refuses connections to
   Unix-domain sockets, except the DNS resolver's on macOS, because a local daemon reached over
   a socket writes with its own rights. So the Docker CLI, `ssh-agent`, and a database on a
   local socket are out of reach from `pair_run`. TCP is not fenced: HTTPS and DNS lookups work.
+- The sibling-plugin carve-outs: the state the ledger and pattern-check CLIs write is writable
+  from `pair_run` in both phases, boundary or no boundary, under every sandbox. The list is
+  resolved on the host at `pair_start` (`lib/sibling-state.mjs`) and recorded in the state, and
+  each backend grants it from that one list, so the three cannot drift apart.
+
+  | Carve-out | What writes it | Granted as |
+  |---|---|---|
+  | `~/.agent-system-2/ledger.db`, `ledger.db-wal`, `ledger.db-shm` | the ledger's SQLite database (WAL mode) and its sidecars | the three files |
+  | `${XDG_DATA_HOME:-~/.local/share}/ledger/ledger.db` and sidecars | the ledger's shipped default location | the three files |
+  | the `db` of `$LEDGER_DB`, of `$LEDGER_CONFIG` or `${XDG_CONFIG_HOME:-~/.config}/ledger/config.json`, and of the nearest `.ledger.json` at or above the worktree, each with sidecars | the ledger, wherever its config points it | the three files |
+  | `<worktree>/.pattern-check/` | pattern-check's receipt (`<session>.md`, written through a `.tmp-…` file and renamed) | the directory tree |
+  | `${XDG_STATE_HOME:-~/.local/state}/ledger/` | the ledger's `errors.log` | the directory tree |
+  | `${XDG_STATE_HOME:-~/.local/state}/pattern-check/` | pattern-check's own state | the directory tree |
+
+  `~` is the home directory at `pair_start`; a config file that is missing, unreadable, not
+  JSON or has no string `db` adds nothing. A carve-out never reaches the worktree root, a
+  `.git` entry, the state directory or a protected path, and is dropped when it is at, under
+  or above any of them (a carve-out above the state directory would hand the whole directory
+  to a run), and a ledger database the config points inside the worktree is not carved out
+  (a `.ledger.json` is repo content, and no repo content may widen the fence);
+  `.pattern-check` is kept only when it is not a symlink. A grant on a carve-out directory
+  reaches its whole tree, and no card agreed to what is in it, so before every `pair_run` the
+  tree is looked at on every backend, every entry of it (`.git` directories are not skipped):
+  a file there with more than one hard link (another name for a product file, say), an entry
+  that cannot be looked at, a `.git` entry (nothing in a sibling's state is one, and git reads
+  hooks and config from one outside the sandbox), or a mount point under the directory
+  refuses the run by name until it is gone. The walk is iterative and budgeted (100000
+  entries, 64 directories deep, 5 seconds; `lib/landlock.mjs` `WALK_BUDGET`), reads each
+  directory one entry at a time, and looks at the clock and at whether the run was aborted
+  after every entry, so a single wide directory cannot run past either; a tree it could not
+  finish refuses the run naming the limit, since a tree not looked at is not granted. A single
+  filesystem call that blocks is not interrupted; the limit is checked between calls. Each
+  launch walks each tree once, before a backend is chosen, and a tree that fails the walk
+  refuses the run on every backend, Landlock included: `pair_run` does not fall back to
+  bubblewrap for it. `.pattern-check/` is a reserved name: this plugin does not
+  review what lands there. Snapshots leave `.pattern-check/` out (it is a default exclusion
+  beside `.git`), so a receipt written there is never read as drift at `pair_done`; the
+  post-run link check still walks it, so a link made there stops the session like one made
+  in the boundary. On macOS a
+  carve-out file may be created by a run (the sidecars when absent, `.pattern-check` itself);
+  on Linux a grant needs an inode, so a carve-out that does not exist yet gets nothing: the
+  ledger's `-wal` and `-shm` sidecars when they are absent (SQLite cannot open its write-ahead
+  log and the ledger reports the database unwritable until a run outside pairing recreates
+  them), and `.pattern-check/` in a worktree where pattern-check has not run before.
+  `pair_write` and `pair_edit` grant no carve-out.
 - `pair_write` and `pair_edit` write inside the sandbox too, under the open profile without the
   temp directories. On macOS and under bubblewrap they write the new content to a fresh file
   beside the target and rename it over the target, keeping an existing file's permission bits.
@@ -234,7 +317,26 @@ How it works:
 - `pair_done` returns the diff of the boundary, computed by the gate, and lists the roadmap cards
   still `open` or `not-ready`. Every card, quote, verdict, refusal and diff goes into a journal
   outside the worktree, under `$PAIRED_CODING_STATE_DIR` (default
-  `~/.local/state/paired-coding/<session-id>/`).
+  `~/.local/state/paired-coding/<session-id>/`). That directory stays once the session has
+  paired: it is the evidence. A session that never called `pair_start` has nothing in it worth
+  keeping (queued typed input, stashed notices), so `SessionEnd` removes it, under the same
+  session lock `pair_start` holds while it activates, looking again for the activation marker
+  once it holds the lock, so a start that lands as the session ends is kept; the lock carries
+  its holder's token, so the cleanup's release never lets go of a lock a waiter took in the
+  directory it made afresh; a directory that will not go is one warning and one `errors.log`
+  line, never a failed end.
+- Every session lock is a `lock` directory holding one token file named by its holder's pid
+  and a nonce, renamed into place whole, so no one sees a held lock without its token. A
+  release removes only its own token, then the directory, and a release that cannot remove
+  its token fails loudly and leaves the lock held. A waiter passes over a lock only when the
+  pid its token names is not running and the lock is more than 15 seconds old, and then
+  removes that one token by name, so a lock someone else took in the meantime is untouched.
+  A lock whose holder is still running (or whose token names no pid) is never taken over:
+  after 10 seconds the wait fails, naming the holder's pid and the recovery command,
+  `node <plugin>/bin/pair.mjs unlock --stale <lock directory>` (prefixed with
+  `PAIRED_CODING_STATE_DIR=<base>` when that is set). A token naming the waiting process
+  itself is a nested lock attempt, which can never succeed: the lock is not reentrant, and
+  the error says so instead of naming a recovery command. See **Lock recovery** below.
 - When the Claude Code hook itself fails (a thrown error, an unwritable state directory, stdin
   that is empty or not a hook event object), it exits 0, appends one line to
   `$PAIRED_CODING_STATE_DIR/errors.log` (default `~/.local/state/paired-coding/errors.log`)
@@ -279,6 +381,43 @@ How it works:
   `/branch` back to an earlier message, or a typed `pair stop` and a later `pair_start` in the
   same session, numbering continues (`card-3` after `card-1` and `card-2`) instead of starting
   again at `card-1`.
+
+## Lock recovery
+
+`node <plugin>/bin/pair.mjs unlock --stale [--force] <lock directory>` clears a lock a
+crashed holder left behind. Run it with the same `PAIRED_CODING_STATE_DIR` the sessions use.
+
+- **What it acts on.** The lock path is resolved (its directory's real path, plus its own
+  name, which is never followed) and must be one of the locks paired-coding makes inside the
+  state base: `<session>/lock` (a session's lock), `<session>/pending/lock` (its queued-input
+  lock) or `carry/lock` (the `/clear` carry markers' lock). A path outside the state base, a
+  symlink that leads out of it, a lock that is itself a symlink or not a directory, or any
+  other name is refused with exit 2 and the rule it broke; nothing is touched. It removes
+  only the lock directory and the one token in it, never a parent directory.
+- **Without `--force`.** The lock is removed (exit 0) only when the pid its token names is not
+  running. A running pid is refused (exit 1), naming the pid and the command line `ps`
+  reports for it. A lock holding no token, or several, is refused too; remove it by hand
+  once you are sure no paired-coding process is running.
+- **Pid reuse.** A token names its holder only by pid, and the operating system hands a
+  finished process's pid to a new one. A crashed holder's lock can then read as held by an
+  unrelated running process, and neither a waiter nor `unlock --stale` will clear it on
+  their own. To recover: confirm no paired-coding holder or waiter is active (no
+  paired-coding session is open on the worktree, and `ps -p <pid> -o command=` shows an
+  unrelated program), then run `unlock --stale --force <lock directory>`. `--force` removes
+  the lock only when `ps` reads that pid's command line and it contains neither
+  `paired-coding` nor `pair-server`; it refuses when `ps` cannot read it, when it names
+  either, and when the pid is its own. The unrelated process is left running.
+- **What `--force` cannot see.** The OMP adapter runs inside OMP's own process, whose command
+  line need not contain either name, so `--force` cannot tell an OMP-held lock from a reused
+  pid. Confirm no OMP session is pairing on the worktree before forcing.
+- **A nested lock.** A refusal that says the holder "is this process: the lock is not
+  reentrant" means a paired-coding process asked for a lock it already holds. That is a bug
+  to report; no recovery command applies while that process runs.
+- **A release error that cannot be attached.** When the locked work throws and releasing the
+  lock then fails too, the work's error is thrown with the release's as `releaseError`. A
+  thrown value that cannot carry it (a frozen error, one whose `releaseError` is not
+  writable, or a non-object) is thrown unchanged, and the release failure is one line in
+  `errors.log` instead. Either way the lock is left held.
 
 ## Hosts
 
@@ -514,8 +653,8 @@ run could write for a symlink or a hard link it made, and for a `.git` entry tha
 replaced. If it finds one, `pair_run` returns "STOPPED: pair_run made a link or a .git entry
 inside the paths it could write (…)", the journal records `link-made`, and `pair_done` refuses
 until you type `pair stop`. A link there would carry a later write, your editor's included, to
-wherever it points. Snapshot exclusions such as `node_modules` are not searched. This holds
-under every sandbox.
+wherever it points. Snapshot exclusions such as `node_modules` are not searched, except
+`.pattern-check/`, which a run may write and so is walked. This holds under every sandbox.
 
 **Linux: which sandbox.** The gate picks one when it first needs it in a process, and
 `pair_start` says which, in a line that starts "Sandbox:"; the journal's `start` entry records

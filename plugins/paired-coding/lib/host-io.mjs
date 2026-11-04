@@ -20,16 +20,17 @@ import { spawn, spawnSync } from "node:child_process";
 import { createHash, randomBytes } from "node:crypto";
 import {
   appendFileSync, closeSync, constants as fsc, existsSync, fstatSync, lstatSync, mkdirSync, openSync, readFileSync, readdirSync,
-  readlinkSync, realpathSync, renameSync, rmdirSync, rmSync, statSync, unlinkSync, writeSync,
+  readlinkSync, realpathSync, renameSync, rmdirSync, rmSync, statSync, unlinkSync, writeFileSync, writeSync,
 } from "node:fs";
 import { homedir, tmpdir } from "node:os";
-import { basename, dirname, join } from "node:path";
+import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
+import { fileURLToPath } from "node:url";
 import {
-  boundaryHashes, boundaryMatches, boundaryRoots, bwrapArgsFor, landlockRulesFor, pairRunProfile, pairWriteBwrap, pairWriteLandlock, pairWriteProfile,
+  boundaryHashes, boundaryMatches, boundaryRoots, bwrapArgsFor, carveOutHazard, carveOutRoots, landlockRulesFor, pairRunProfile, pairWriteBwrap, pairWriteLandlock, pairWriteProfile,
   readState, serializeState, shQuote,
 } from "../core/gate.mjs";
 import { bwrapCommand, bwrapIo, bwrapProblem, bwrapProc } from "./bwrap.mjs";
-import { landlockAbi, landlockCommand, landlockIo, landlockProblem } from "./landlock.mjs";
+import { WALK_BUDGET, landlockAbi, landlockCommand, landlockIo, landlockProblem } from "./landlock.mjs";
 
 // ─── paths ──────────────────────────────────────────────────────────────────────────────
 
@@ -207,7 +208,7 @@ export function sandboxProblem() {
  */
 export function closedRunProblem(state, backend) {
   if (!("name" in backend) || backend.name !== "landlock") return null;
-  const rules = landlockRulesFor(state, [], landlockIo);
+  const rules = landlockRulesFor(state, [], landlockIo, { hazard: carveOutHazard(state, landlockIo, { budget: WALK_BUDGET }) });
   if (!("notExpressible" in rules)) return null;
   const bw = bwrapProblem();
   return bw === null ? null : `Landlock cannot fence pair_run in this layout (${rules.notExpressible}), and bubblewrap is unavailable to fence it instead: ${bw}`;
@@ -384,9 +385,86 @@ export function appendJournal(dir, entries) {
 
 const sleepSync = (ms) => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
 
+/** The recovery command a lock refusal names: lib/../bin/pair.mjs, by the path this file is at. */
+export const PAIR_CLI = join(dirname(fileURLToPath(import.meta.url)), "..", "bin", "pair.mjs");
+
+/** Whether `pid` is running: kill(pid, 0) succeeds, or is refused (EPERM, another user's); only ESRCH means gone. */
+export function pidAlive(pid) {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (err) {
+    return err?.code !== "ESRCH";
+  }
+}
+
 /**
- * Run `fn` holding the session's lock (a directory created with mkdir, which is atomic). A lock
- * older than `staleMs` is taken over: its holder died. Synchronous so hooks stay simple.
+ * Who holds the lock directory `lock`, from one look: null when there is no lock or it is
+ * empty (an empty lock holds nobody), else its entries, the pid its one token names (a token
+ * is `<pid>.<nonce>`; null when there is not exactly one, or it names no pid), whether that
+ * pid is running (null when there is no pid), and the lock's age in ms (null when it went).
+ * @param {string} lock
+ * @returns {{ tokens: string[], pid: number | null, alive: boolean | null, ageMs: number | null } | null}
+ */
+export function lockHolder(lock) {
+  let tokens;
+  try {
+    tokens = readdirSync(lock);
+  } catch (err) {
+    if (err?.code === "ENOENT") return null;
+    throw err;
+  }
+  if (tokens.length === 0) return null;
+  let ageMs = null;
+  try { ageMs = Date.now() - statSync(lock).mtimeMs; } catch { /* gone since the listing */ }
+  const m = tokens.length === 1 ? /^(\d+)\.[^.]+$/.exec(tokens[0]) : null;
+  const pid = m ? Number(m[1]) : null;
+  return { tokens, pid, alive: pid === null ? null : pidAlive(pid), ageMs };
+}
+
+/** The recovery command for `lock`, carrying a configured state base so the command looks in the same one. */
+function recoveryCommand(lock, env, force = false) {
+  const set = env.PAIRED_CODING_STATE_DIR;
+  const base = set && set.startsWith("/") ? `PAIRED_CODING_STATE_DIR=${shQuote(set)} ` : "";
+  return `${base}node ${shQuote(PAIR_CLI)} unlock --stale ${force ? "--force " : ""}${shQuote(lock)}`;
+}
+
+/** What holds `lock`, in words, and the way to clear it: the tail of a lock refusal. */
+export function describeHolder(lock, holder, env = process.env) {
+  if (holder.pid === null) {
+    return `it holds ${holder.tokens.join(", ")}, which names no process. If no paired-coding process should be holding it, run: ${recoveryCommand(lock, env)} (it removes the lock only when its holder is not running)`;
+  }
+  if (holder.alive && holder.pid === process.pid) {
+    return `it is held by pid ${holder.pid}, which is still running and is this process: the lock is not reentrant, so this process is waiting on a lock it already holds. That is a paired-coding bug; no recovery command applies while this process runs`;
+  }
+  if (holder.alive) {
+    return `it is held by pid ${holder.pid}, which is still running. Pids are reused, so that process may not be a paired-coding one. If no paired-coding process should be holding it, run: ${recoveryCommand(lock, env)} (it removes the lock only when its holder is not running). If that refuses, confirm no paired-coding holder or waiter is active (ps -p ${holder.pid} -o command=), then run: ${recoveryCommand(lock, env, true)} (it still refuses when that command line names paired-coding or pair-server)`;
+  }
+  return `it is held by pid ${holder.pid}, which is not running. If no paired-coding process should be holding it, run: ${recoveryCommand(lock, env)} (it removes the lock only when its holder is not running)`;
+}
+
+/**
+ * Run `fn` holding the lock `<dir>/lock`: a directory holding exactly one empty file named by
+ * its holder's token, `<pid>.<nonce>`. A contender stages that directory beside the lock
+ * (`lock.<token>`, its token inside) and renames it onto the lock path; rename(2) refuses
+ * onto a directory with anything in it, so the rename lands only while nobody holds the lock,
+ * and no holder's lock is ever seen without its token. Release unlinks the holder's own token,
+ * then rmdir(2)s the lock, which the kernel refuses once anything else is inside; a release
+ * never removes a file that is not the releaser's, nor a directory that did not hold its
+ * token. A token already gone is nothing to release (the SessionEnd cleanup removes a
+ * never-activated directory, lock included, under its lock, and a waiter then makes the
+ * directory and a lock of its own); any other unlink failure is thrown and the lock left as
+ * it is (when `fn` threw too, its error is thrown, carrying the release's as `releaseError`).
+ * An empty lock directory (a release that stopped between unlink and rmdir) holds nobody,
+ * and the next rename replaces it.
+ *
+ * A holder is passed over only when it is certain to be gone: the lock holds one token, the
+ * pid it names is not running (kill(pid, 0) fails with ESRCH), and the lock is older than
+ * `staleMs`. The taker unlinks that token by its name, which no other lock carries, so a lock
+ * someone else made since the look is untouched (the unlink fails with ENOENT), and renames
+ * again. A running pid, or a token naming none, is waited on; when the wait runs out, the
+ * error names the holder and the recovery command (bin/pair.mjs unlock --stale), which makes
+ * the same check. Synchronous so hooks stay simple.
  * @template T
  * @param {string} dir
  * @param {() => T} fn
@@ -395,25 +473,189 @@ const sleepSync = (ms) => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)),
 export function withLock(dir, fn, { waitMs = 10000, staleMs = 15000 } = {}) {
   mkdirSync(dir, { recursive: true, mode: 0o700 });
   const lock = join(dir, LOCK);
+  const token = `${process.pid}.${randomBytes(8).toString("hex")}`;
+  const staged = `${lock}.${token}`;
+  const mine = join(lock, token);
   const end = Date.now() + waitMs;
+  let ready = false;
   for (;;) {
     try {
-      mkdirSync(lock);
+      if (!ready) {
+        mkdirSync(staged, { mode: 0o700 });
+        writeFileSync(join(staged, token), "", { flag: "wx" });
+        ready = true;
+      }
+      renameSync(staged, lock);
       break;
     } catch (err) {
-      if (err?.code !== "EEXIST") throw err;
-      try {
-        if (Date.now() - statSync(lock).mtimeMs > staleMs) { rmSync(lock, { recursive: true, force: true }); continue; }
-      } catch { continue; }
-      if (Date.now() > end) throw new Error(`timed out waiting for the session lock ${lock}`);
-      sleepSync(20);
+      // No directory to lock in (the cleanup removed it, staged lock and all): make it and stage again.
+      if (err?.code === "ENOENT") {
+        rmSync(staged, { recursive: true, force: true });
+        ready = false;
+        mkdirSync(dir, { recursive: true, mode: 0o700 });
+        continue;
+      }
+      if (err?.code !== "ENOTEMPTY" && err?.code !== "EEXIST") {
+        rmSync(staged, { recursive: true, force: true });
+        throw err;
+      }
     }
+    let holder;
+    try {
+      holder = lockHolder(lock);
+      if (holder && holder.alive === false && holder.ageMs !== null && holder.ageMs > staleMs) {
+        try { unlinkSync(join(lock, holder.tokens[0])); } catch (err) { if (err?.code !== "ENOENT") throw err; }
+        continue;
+      }
+    } catch (err) {
+      rmSync(staged, { recursive: true, force: true });
+      throw err;
+    }
+    if (Date.now() > end) {
+      rmSync(staged, { recursive: true, force: true });
+      throw new Error(`timed out waiting for the session lock ${lock}${holder ? `: ${describeHolder(lock, holder)}` : ""}`);
+    }
+    sleepSync(20);
   }
+  const release = () => {
+    try {
+      unlinkSync(mine);
+    } catch (err) {
+      // Gone with its directory: nothing here is this holder's. Anything else leaves the lock held.
+      if (err?.code === "ENOENT") return null;
+      return err;
+    }
+    // Refused when someone else's lock is in its place, or gone with the session: either way not this holder's.
+    try { rmdirSync(lock); } catch { /* an empty lock left behind holds nobody */ }
+    return null;
+  };
+  let out;
   try {
-    return fn();
-  } finally {
-    rmSync(lock, { recursive: true, force: true });
+    out = fn();
+  } catch (err) {
+    const failed = release();
+    if (failed) {
+      // Best effort: a frozen error, or one whose releaseError cannot be written, is rethrown as
+      // it is, and the release failure goes to errors.log instead of replacing it.
+      let attached = false;
+      if (err !== null && (typeof err === "object" || typeof err === "function")) {
+        try { err.releaseError = failed; attached = err.releaseError === failed; } catch { /* not extensible, or not writable */ }
+      }
+      if (!attached) {
+        logFault(process.env, "lock-release", null, `the locked work threw (${reasonOf(err)}) and releasing the lock ${lock} then failed (${reasonOf(failed)}); the thrown value could not carry it as releaseError, and the lock is left held`, "lib/host-io.mjs withLock");
+      }
+    }
+    throw err;
   }
+  const failed = release();
+  if (failed) throw failed;
+  return out;
+}
+
+/** The pending-input directory inside a session directory (the Claude Code hook's queued turns and notices). */
+export const PENDING_DIR = "pending";
+
+/**
+ * Where unlock --stale will act: `lock` canonicalised (the realpath of its directory, plus its
+ * own name, not followed), and only when that is one of the locks paired-coding makes inside
+ * the state base: `<session>/lock` (a session's lock; the /clear carry markers' `carry/lock`
+ * has the same shape) or `<session>/pending/lock` (its queued-input lock). Anything else, a
+ * lock that is itself a symlink or not a directory included, is `{ error }` naming the rule.
+ * @returns {{ path: string, error?: undefined } | { error: string }}
+ */
+export function lockLocation(lock, env = process.env) {
+  const configured = stateBase(env);
+  let base;
+  try { base = realpathSync.native(configured); } catch (err) {
+    return { error: `the state base ${configured} cannot be resolved (${reasonOf(err)}), so no lock can be shown to be inside it` };
+  }
+  const abs = resolve(lock);
+  let parent;
+  try { parent = realpathSync.native(dirname(abs)); } catch (err) {
+    return { error: `the directory of ${abs} cannot be resolved (${reasonOf(err)})` };
+  }
+  const path = join(parent, basename(abs));
+  const rel = relative(base, path);
+  const parts = rel === "" || isAbsolute(rel) ? [] : rel.split(sep);
+  const known = parts.at(-1) === LOCK && parts[0] !== ".." && sessionDir(base, parts[0]) !== null
+    && (parts.length === 2 || (parts.length === 3 && parts[1] === PENDING_DIR));
+  if (!known) {
+    return { error: `${path} is not a paired-coding lock: unlock --stale acts only on <session>/lock, <session>/pending/lock and carry/lock inside the state base ${base}` };
+  }
+  let st;
+  try { st = lstatSync(path); } catch (err) {
+    if (err?.code === "ENOENT") return { path };
+    return { error: `${path} cannot be looked at (${reasonOf(err)})` };
+  }
+  if (st.isSymbolicLink()) return { error: `${path} is a symlink, not a lock directory: unlock --stale never follows one` };
+  if (!st.isDirectory()) return { error: `${path} is not a directory, so it is not a lock` };
+  return { path };
+}
+
+/** The paired-coding names a holder's command line can carry; --force refuses any of them. */
+const PAIRED_PROCESS_NAMES = ["paired-coding", "pair-server"];
+
+/**
+ * Remove a paired-coding lock directory whose holder is certain to be gone, the check withLock
+ * makes before a takeover, without the age: the recovery for a lock whose holder crashed, run
+ * by a person (bin/pair.mjs unlock --stale). The target is checked first (lockLocation): a path
+ * that is not a known lock inside the state base is refused with `code: 2` and nothing is
+ * touched. The dead holder's token is unlinked by name and then the lock directory removed, so
+ * a lock someone else made meanwhile is untouched; no other file and no parent is removed.
+ *
+ * A running pid is refused (`code: 1`): pids are reused, so it may be an unrelated process.
+ * With `force`, the lock is removed anyway when ps reads that pid's command line and it names
+ * neither paired-coding nor pair-server; a command line ps cannot read, one that names either,
+ * and this process's own pid are still refused. `commandOf` reads a pid's command line (ps by
+ * default; null when it cannot be read).
+ * @param {string} lock
+ * @param {{ env?: Record<string, string | undefined>, force?: boolean, commandOf?: (pid: number) => string | null }} [opts]
+ * @returns {{ removed: boolean, code: 0 | 1 | 2, message: string }}
+ */
+export function unlockStale(lock, { env = process.env, force = false, commandOf = processCommand } = {}) {
+  const where = lockLocation(lock, env);
+  if (where.error) return { removed: false, code: 2, message: `refused: ${where.error}` };
+  const path = where.path;
+  const holder = lockHolder(path);
+  if (holder === null) {
+    try { rmdirSync(path); } catch { /* not there, or filled meanwhile */ }
+    return { removed: true, code: 0, message: `no lock at ${path} is held: nothing to remove` };
+  }
+  const drop = () => {
+    try { unlinkSync(join(path, holder.tokens[0])); } catch (err) { if (err?.code !== "ENOENT") throw err; }
+    try { rmdirSync(path); } catch { /* someone else's lock is in its place now */ }
+  };
+  if (holder.alive === false) {
+    drop();
+    return { removed: true, code: 0, message: `removed the lock ${path}: its holder, pid ${holder.pid}, is not running` };
+  }
+  if (holder.pid === null) {
+    return { removed: false, code: 1, message: `refused: the lock ${path} holds ${holder.tokens.join(", ")}, which names no process; remove the directory by hand once you are sure no paired-coding process is running` };
+  }
+  if (holder.pid === process.pid) {
+    return { removed: false, code: 1, message: `refused: the lock ${path} is held by pid ${holder.pid}, which is this process: the lock is not reentrant, and unlock --stale never removes its own process's lock` };
+  }
+  const command = commandOf(holder.pid);
+  const shown = command === null ? "ps could not read its command line" : `ps: ${command}`;
+  if (!force) {
+    return { removed: false, code: 1, message: `refused: the lock ${path} is held by pid ${holder.pid}, which is running (${shown}). Pids are reused, so that process may not be a paired-coding one. To recover by hand, confirm no paired-coding holder or waiter is active (ps -p ${holder.pid} -o command=, and no paired-coding session is open on this worktree), then run: ${recoveryCommand(path, env, true)} (it still refuses when that command line names paired-coding or pair-server). See "Lock recovery" in the paired-coding README` };
+  }
+  if (command === null) {
+    return { removed: false, code: 1, message: `refused: the lock ${path} is held by pid ${holder.pid}, which is running, and ps could not read its command line, so --force cannot show it is not a paired-coding process` };
+  }
+  const named = PAIRED_PROCESS_NAMES.find((n) => command.includes(n));
+  if (named) {
+    return { removed: false, code: 1, message: `refused: the lock ${path} is held by pid ${holder.pid}, whose command line names ${named} (ps: ${command}): it is a running paired-coding holder, and --force never removes its lock. Wait for it to finish, then run unlock --stale again` };
+  }
+  drop();
+  return { removed: true, code: 0, message: `removed the lock ${path}: pid ${holder.pid} is running but its command line (ps: ${command}) names no paired-coding process, so its token was left by a holder whose pid has been reused` };
+}
+
+/** The command line ps reports for `pid`, or null when it could not be read. */
+function processCommand(pid) {
+  const ps = spawnSync("/bin/ps", ["-o", "command=", "-p", String(pid)], { encoding: "utf8" });
+  const out = ps.status === 0 ? ps.stdout.trim() : "";
+  return out || null;
 }
 
 /**
@@ -601,16 +843,22 @@ const noop = () => {};
  * @param {string} command
  * @param {string} cwd
  * @param {"landlock" | "bwrap"} [override]
+ * @param {AbortSignal} [signal]  aborts the carve-out scan, which refuses the run
  * @returns {SandboxedCommand}
  */
-function runCommand(state, command, cwd, override) {
+function runCommand(state, command, cwd, override, signal) {
   const argv = ["/bin/sh", "-c", command];
+  // A carve-out directory's tree is looked at before every run, on every backend: a grant on
+  // it reaches the whole tree, and nothing in it was agreed (core/gate.mjs carveOutHazard).
+  // Once per launch, within WALK_BUDGET; the Landlock builder below reuses the answer.
+  const hazard = carveOutHazard(state, landlockIo, { budget: WALK_BUDGET, signal });
+  if (hazard) throw new Error(`pair_run refused: ${hazard}; remove it, or end pairing`);
   if (process.platform !== "linux") {
-    return { file: SANDBOX_EXEC, args: ["-p", pairRunProfile(state), ...argv], fds: [], close: noop, backend: "seatbelt", writable: boundaryRoots(state) };
+    return { file: SANDBOX_EXEC, args: ["-p", pairRunProfile(state), ...argv], fds: [], close: noop, backend: "seatbelt", writable: [...boundaryRoots(state), ...carveOutRoots(state)] };
   }
   let fellBack;
   if (linuxBackend(override) === "landlock") {
-    const rules = landlockRulesFor(state, [], landlockIo);
+    const rules = landlockRulesFor(state, [], landlockIo, { hazard });
     if (!("notExpressible" in rules)) {
       const { file, input } = landlockCommand(rules, command);
       const inTree = (p) => p === state.root || p.startsWith(`${state.root}/`);
@@ -839,7 +1087,7 @@ export function runSandboxed(opts) {
     let gitBefore = null;
     let ran = {};
     try {
-      const cmd = runCommand(opts.state, opts.command, opts.cwd, opts.backend);
+      const cmd = runCommand(opts.state, opts.command, opts.cwd, opts.backend, opts.signal);
       writable = cmd.writable;
       ran = { backend: cmd.backend, ...(cmd.fellBack ? { fellBack: cmd.fellBack } : {}), ...(cmd.uncreatable ? { uncreatable: cmd.uncreatable } : {}) };
       try {
@@ -931,7 +1179,8 @@ export function runSandboxed(opts) {
 /**
  * The `.git` entries (any letter case) under `roots`, worktree-relative, each with its inode, so
  * a later newLinks can tell one that is new or replaced from one that only changed. `.git` is
- * not walked into, nor are `exclusions`, nor symlinked directories.
+ * not walked into, nor are `exclusions` (unless one is itself a root, as the pattern-check
+ * carve-out is: it is left out of snapshots, not of the link check), nor symlinked directories.
  * @param {string} root
  * @param {string[]} roots  absolute paths in the worktree
  * @param {string[]} [exclusions]
@@ -971,6 +1220,7 @@ export function newLinks(root, roots, sinceMs, gitBefore, exclusions = []) {
 
 function walkRoots(root, roots, exclusions, visitFn) {
   const skip = new Set(exclusions.map((e) => e.replace(/\/+$/, "")));
+  const wanted = new Set(roots);
   const seen = new Set();
   const visit = (abs) => {
     if (seen.has(abs)) return;
@@ -980,7 +1230,7 @@ function walkRoots(root, roots, exclusions, visitFn) {
     const rel = abs === root ? "." : abs.slice(root.length + 1);
     const isGit = basename(abs).toLowerCase() === ".git";
     visitFn(rel, st, isGit);
-    if (isGit || !st.isDirectory() || skip.has(rel)) return;
+    if (isGit || !st.isDirectory() || (skip.has(rel) && !wanted.has(abs))) return;
     let names;
     try { names = readdirSync(abs); } catch { return; }
     for (const n of names) visit(join(abs, n));

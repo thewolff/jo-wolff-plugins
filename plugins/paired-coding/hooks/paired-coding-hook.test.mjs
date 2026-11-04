@@ -72,6 +72,94 @@ test("before pair_start every event is a no-op and the state base is never creat
   assert.equal(existsSync(f.base), false);
 });
 
+test("SessionEnd removes the directory of a session that never activated pairing; one that will not go is a warning and an errors.log line", () => {
+  const f = fixture();
+  const dir = join(f.base, "s1");
+  mkdirSync(join(dir, "pending"), { recursive: true });
+  writeFileSync(join(dir, "pending", "notices.jsonl"), "{}\n");
+  writeFileSync(join(dir, "state.json"), JSON.stringify({ phase: "inactive" }));
+  assert.equal(handle("session-end", { ...f.common }, { env: f.env }), null);
+  assert.equal(existsSync(dir), false);
+  assert.equal(existsSync(join(f.base, "errors.log")), false);
+  // Rerun: nothing there, nothing said.
+  assert.equal(handle("session-end", { ...f.common }, { env: f.env }), null);
+  if (process.getuid?.() !== 0) {
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(join(dir, "state.json"), "{}");
+    chmodSync(f.base, 0o500);
+    let out;
+    try {
+      out = handle("session-end", { ...f.common }, { env: f.env });
+    } finally {
+      chmodSync(f.base, 0o700);
+    }
+    assert.match(out.systemMessage, /^paired-coding: could not remove the never-activated session directory /);
+    assert.equal(existsSync(dir), true);
+  }
+});
+
+test("SessionEnd takes the session lock before removing, and keeps a directory activated while it waited", () => {
+  const f = fixture();
+  const dir = join(f.base, "s1");
+  mkdirSync(join(dir, "pending"), { recursive: true });
+  writeFileSync(join(dir, "state.json"), JSON.stringify({ phase: "inactive" }));
+  // Another process holds the lock pair_start holds while it activates (a lock directory
+  // holding a token named by its running pid, renamed into place as withLock does): it writes
+  // the activation marker 150ms in, and lets go of the lock at 400ms. The hook's first look
+  // finds no marker; under the lock it looks again.
+  const holder = spawn(process.execPath, ["-e", `
+    const fs = require("node:fs");
+    const [dir] = process.argv.slice(1);
+    const token = process.pid + ".holder";
+    fs.mkdirSync(dir + "/lock." + token);
+    fs.writeFileSync(dir + "/lock." + token + "/" + token, "");
+    fs.renameSync(dir + "/lock." + token, dir + "/lock");
+    setTimeout(() => fs.writeFileSync(dir + "/activated", ""), 150);
+    setTimeout(() => fs.rmSync(dir + "/lock", { recursive: true, force: true }), 400);
+  `, dir], { stdio: "ignore" });
+  const sleep = (ms) => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+  for (let i = 0; i < 200 && !existsSync(join(dir, "lock")); i++) sleep(10);
+  assert.equal(existsSync(join(dir, "lock")), true, "the holder took the lock");
+  const t0 = Date.now();
+  assert.equal(handle("session-end", { ...f.common }, { env: f.env }), null);
+  assert.ok(Date.now() - t0 >= 200, "the end waited for the lock");
+  assert.equal(existsSync(join(dir, "activated")), true, "the activated directory stays");
+  assert.equal(existsSync(join(dir, "state.json")), true);
+  assert.equal(existsSync(join(dir, "lock")), false, "the lock was released");
+  holder.kill();
+  // A directory that is not there is left alone: the lock would otherwise create it.
+  assert.equal(handle("session-end", { ...f.common, session_id: "s9" }, { env: f.env }), null);
+  assert.equal(existsSync(join(f.base, "s9")), false);
+});
+
+test("a lock waiter whose directory the SessionEnd cleanup removed under it makes the directory again and goes on", () => {
+  const f = fixture();
+  const dir = join(f.base, "s1");
+  mkdirSync(dir, { recursive: true });
+  writeFileSync(join(dir, "state.json"), JSON.stringify({ phase: "inactive" }));
+  // The waiter blocks on a lock this test holds (its token names this test's running pid);
+  // the test then does what the end does under the lock, removing the whole directory, lock
+  // included. The waiter's next rename of its staged lock fails with ENOENT (its parent is
+  // gone) and withLock makes the directory again rather than throwing.
+  mkdirSync(join(dir, "lock"));
+  writeFileSync(join(dir, "lock", `${process.pid}.test`), "");
+  const waiter = spawn(process.execPath, ["--input-type=module", "-e", `
+    import { withLock } from ${JSON.stringify(join(dirname(HOOK), "..", "lib", "host-io.mjs"))};
+    import { writeFileSync } from "node:fs";
+    const [dir] = process.argv.slice(1);
+    withLock(dir, () => { writeFileSync(dir + "/after", ""); });
+  `, dir], { stdio: "ignore" });
+  const sleep = (ms) => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+  sleep(300);
+  rmSync(dir, { recursive: true, force: true });
+  return new Promise((resolve) => waiter.on("exit", resolve)).then((code) => {
+    assert.equal(code, 0, "the waiter exited cleanly");
+    assert.equal(existsSync(join(dir, "after")), true, "the waiter ran under a fresh lock in a fresh directory");
+    assert.equal(existsSync(join(dir, "state.json")), false);
+    assert.equal(existsSync(join(dir, "lock")), false, "and released it");
+  });
+});
+
 test("the hook process prints nothing for an inactive session and exits 0", () => {
   const f = fixture();
   const r = spawnSync("node", [HOOK, "pre-tool-use"], { input: JSON.stringify({ ...f.common, tool_name: "Write", tool_use_id: tuid() }), env: { ...process.env, ...f.env }, encoding: "utf8" });
@@ -106,6 +194,58 @@ test("while pairing the hook denies host writers, shells, dispatch and unknown t
   for (const tool_name of ["Read", "Grep", "Glob", "ToolSearch", "TodoWrite"]) {
     assert.equal(handle("pre-tool-use", { ...f.common, tool_name, tool_input: {}, tool_use_id: tuid() }, { env: f.env }), null, tool_name);
   }
+});
+
+test("while pairing the hook refuses Bash for a sibling plugin's CLI like any other command, and the refusal for an installed one with a demanded subcommand says to use pair_run", { skip: !hasSandbox }, async () => {
+  const f = fixture();
+  await call(f, "pair_start", {});
+  // A fake home with the two CLIs installed where Claude Code puts plugins; the hook takes HOME from its env.
+  const home = join(f.top, "home");
+  const ledger = join(home, ".claude", "plugins", "cache", "jo-wolff-plugins", "ledger", "1.0.0", "scripts", "ledger.mjs");
+  const check = join(home, ".claude", "plugins", "marketplaces", "jo-wolff-plugins", "plugins", "pattern-check", "scripts", "pattern-check.mjs");
+  for (const p of [ledger, check]) {
+    mkdirSync(dirname(p), { recursive: true });
+    writeFileSync(p, "// cli\n");
+  }
+  const bash = (command, extra = {}) => handle("pre-tool-use", { ...f.common, tool_name: "Bash", tool_input: { command }, tool_use_id: tuid() }, { env: { ...f.env, HOME: home, ...extra } });
+  const ask = `node ${ledger} ask "did we?"`;
+  const record = `node ${check} record --session s1`;
+  // Claude Code runs Bash itself, outside the fence: the hook cannot route the call through
+  // pair_run's sandbox, so it refuses and says where the call may run.
+  for (const command of [ask, record]) {
+    const r = bash(command);
+    assert.equal(r?.hookSpecificOutput?.permissionDecision, "deny", command);
+    assert.match(r.hookSpecificOutput.permissionDecisionReason, /^paired-coding: (ledger|pattern-check)\.mjs \w+ is refused from the host's shell while pairing: .*run the same command with pair_run, which fences it/);
+  }
+  const disable = bash(`node ${ledger} disable --cwd ${f.root}`);
+  assert.equal(disable?.hookSpecificOutput?.permissionDecision, "deny");
+  assert.match(disable.hookSpecificOutput.permissionDecisionReason, /ledger\.mjs disable is refused while pairing/);
+  const cwdFlag = bash(`node ${ledger} ask x --cwd ${f.root}`);
+  assert.match(cwdFlag.hookSpecificOutput.permissionDecisionReason, /ledger\.mjs ask --cwd is refused while pairing: --cwd moves/);
+  // The shell's environment and working directory play no part: nothing it names is read, because nothing through Bash is allowed.
+  assert.match(bash(ask, { LEDGER_DB: join(f.top, "elsewhere.db"), NODE_OPTIONS: "--require=/tmp/evil.js" }).hookSpecificOutput.permissionDecisionReason, /run the same command with pair_run/);
+  for (const command of [
+    `${ask} && rm -rf /`, "node /tmp/ledger.mjs ask x", `${ask}; echo pwned > notes.txt`, `node ${home}/.claude/plugins/cache/jo-wolff-plugins/x/evil.mjs ask x`,
+    `node ${home}/.claude/plugins/cache/jo-wolff-plugins/{..,x}/{..,x}/{..,x}/{..,x}/ledger.mjs ask x`, `node $HOME/.claude/plugins/cache/jo-wolff-plugins/ledger/1.0.0/scripts/ledger.mjs ask x`,
+    `node ${home}/.claude/plugins/cache/jo-wolff-plugins/ledger/9.9.9/scripts/ledger.mjs ask x`, `node --inspect ${ledger} ask x`, `node ${ledger}`, `NODE_OPTIONS=--require=/tmp/evil.js ${ask}`,
+  ]) {
+    const r = bash(command);
+    assert.equal(r?.hookSpecificOutput?.permissionDecision, "deny", command);
+    assert.doesNotMatch(r.hookSpecificOutput.permissionDecisionReason, /run the same command with pair_run/, command);
+  }
+  assert.equal(handle("pre-tool-use", { ...f.common, tool_name: "Bash", tool_input: { command: ask }, tool_use_id: tuid() }, { env: f.env })?.hookSpecificOutput?.permissionDecision, "deny", "the real home has no such install");
+  const entries = readFileSync(join(f.base, "s1", "journal.jsonl"), "utf8").trim().split("\n").map((l) => JSON.parse(l));
+  assert.equal(entries.filter((e) => e.type === "verdict" && e.tool === "Bash").length, 0, "no Bash call was allowed");
+  assert.ok(entries.some((e) => e.type === "refusal" && e.tool === "Bash" && /pair_run/.test(e.reason)));
+  // pair_run through the MCP server reads the server's environment, the one the fence filters:
+  // the install under its HOME, the database its LEDGER_DB names. A preload variable in it is
+  // dropped by the fence, not refused by name.
+  const id = tuid();
+  assert.equal(handle("pre-tool-use", { ...f.common, ...own("pair_run"), tool_input: { command: ask }, tool_use_id: id }, { env: f.env }), null);
+  const r = await callTool({ name: "pair_run", arguments: { command: ask }, _meta: { "claudecode/toolUseId": id } }, { env: { ...f.env, HOME: home, LEDGER_DB: join(f.top, "elsewhere.db"), NODE_OPTIONS: "--require=/tmp/evil.js" } });
+  assert.equal(r.isError, true);
+  assert.match(r.content[0].text, /ledger\.mjs ask is refused while pairing: it would open the database .*elsewhere\.db \(LEDGER_DB\), which is not sibling state pair_start granted/);
+  assert.doesNotMatch(r.content[0].text, /NODE_OPTIONS/);
 });
 
 test("while pairing, Skill loads only this plugin's own skill, in a started session and in one carried closed after /clear", { skip: !hasSandbox }, async () => {
