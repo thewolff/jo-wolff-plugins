@@ -1,6 +1,7 @@
 // test/stop-hook.test.mjs — hooks/stop.mjs as a spawned process with fixture stdin and a fixture
-// transcript: home passthrough; away + asks → digest grows + keep working (additionalContext on
-// Claude Code, decision block under BRB_HARNESS=omp); on fire → surfaced, not in the digest, cap
+// transcript: home passthrough; away + asks → digest grows + the backstop block, once per turn,
+// then keep working (additionalContext on Claude Code, decision block under BRB_HARNESS=omp);
+// the backstop yields to the tool-less bound; on fire → surfaced, not in the digest, cap
 // noted, re-notified on a later turn; idle line → no keep-working answer; stop_hook_active guard
 // (tool-less only); three quiet continuations → released, a new ask resets the count; two
 // tool-less stops → released (transcript counting in both transcript
@@ -15,7 +16,7 @@ import { join } from "node:path";
 
 import { appleScript, countToolUses, decideStop, osc9 } from "../lib/stop-core.mjs";
 import { clearAway, freshAway, writeAway } from "../lib/state.mjs";
-import { keepWorkingReason } from "../lib/text.mjs";
+import { backstopReason, keepWorkingReason } from "../lib/text.mjs";
 import { box, promptInput, row, runHook, stopInput } from "./helpers.mjs";
 
 const goAway = (b, note = "") => runHook(b, "user-prompt-submit", promptInput(b, note ? `brb ${note}` : "brb"));
@@ -23,6 +24,8 @@ const awayRecord = (b) => JSON.parse(b.read(join(b.stateDir("s1"), "away.json"))
 const digest = (b) => (existsSync(join(b.stateDir("s1"), "digest.md")) ? b.read(join(b.stateDir("s1"), "digest.md")) : "");
 /** The Claude Code keep-working answer: Stop hook feedback, not a block. */
 const keepWorking = (held) => ({ hookSpecificOutput: { hookEventName: "Stop", additionalContext: keepWorkingReason(held) } });
+/** The backstop: asks were shown; a block on both harnesses. */
+const backstop = (shown) => ({ decision: "block", reason: backstopReason(shown) });
 const kept = (r) => r?.hookSpecificOutput?.additionalContext !== undefined || r?.decision === "block";
 
 const ASKS = "Wired the cache.\n\n## Needs you\n- Pick Redis or in-process for the cache\n- Approve the schema change\n\nClosing ask: Redis or in-process?";
@@ -40,49 +43,109 @@ test("home: passthrough, nothing printed, nothing written", () => {
   }
 });
 
-test("away + asks: the digest grows by the held lines with the closing ask, the agent is kept working, fires are absent", () => {
+test("away + asks: the digest grows by the held lines and the closing ask, the stop is blocked once (the backstop), a continuation with more asks is kept working, fires are absent", () => {
   const b = box();
   try {
     goAway(b);
     b.writeTranscript([row.user(), row.tool(), row.text()]);
     const r = runHook(b, "stop", stopInput(b, { last_assistant_message: ASKS }));
     assert.equal(r.status, 0);
-    assert.deepEqual(r.json, keepWorking(2));
+    assert.deepEqual(r.json, backstop(3), r.stdout);
     assert.match(digest(b), /^## \d{4}-.*\n- Pick Redis or in-process for the cache\n- Approve the schema change\nclosing ask: Redis or in-process\?\n\n$/);
-    assert.equal(awayRecord(b).held, 2);
-    // A later message with one new ask and one repeat: only the new one lands.
+    assert.equal(awayRecord(b).held, 3, "two lines and the closing ask");
+    assert.equal(awayRecord(b).backstopped, true);
+    // The reply after the block, with one new ask and one repeat: only the new one lands; no second block this turn.
     b.writeTranscript([row.user(), row.tool(), row.text(), row.tool(), row.text()]);
     const r2 = runHook(b, "stop", stopInput(b, { stop_hook_active: true, last_assistant_message: "## Needs you\n- Approve the schema change\n- Name the feature flag" }));
-    assert.deepEqual(r2.json, keepWorking(3));
+    assert.deepEqual(r2.json, keepWorking(4));
     assert.match(digest(b), /- Name the feature flag\n\n$/);
     assert.equal((digest(b).match(/Approve the schema change/g) ?? []).length, 1, "a restated ask is held once");
-    assert.equal(awayRecord(b).held, 3);
+    assert.equal(awayRecord(b).held, 4);
+    // A closing ask restated on its own is not held twice.
+    b.writeTranscript([row.user(), row.tool(), row.text(), row.tool(), row.text(), row.tool()]);
+    const r3 = runHook(b, "stop", stopInput(b, { stop_hook_active: true, last_assistant_message: "Carried on.\n\nClosing ask: Redis or in-process?" }));
+    assert.deepEqual(r3.json, keepWorking(4));
+    assert.equal((digest(b).match(/closing ask: Redis or in-process\?/g) ?? []).length, 1);
   } finally {
     b.release();
   }
 });
 
-test("under BRB_HARNESS=omp the keep-working answer is decision block (OMP's session_stop shape)", () => {
+test("the backstop: the same message again passes to the release rules (no loop); a new turn is backstopped again; a closing ask alone is enough", () => {
   const b = box();
   try {
     goAway(b);
     b.writeTranscript([row.user(), row.tool()]);
-    const r = runHook(b, "stop", stopInput(b, { last_assistant_message: ASKS }), { env: { BRB_HARNESS: "omp" } });
-    assert.deepEqual(r.json, { decision: "block", reason: keepWorkingReason(2) });
+    const first = runHook(b, "stop", stopInput(b, { last_assistant_message: ASKS }));
+    assert.deepEqual(first.json, backstop(3));
+    // Restated verbatim on the continuation, no tool since: the guard releases it silently.
+    const again = runHook(b, "stop", stopInput(b, { stop_hook_active: true, last_assistant_message: ASKS }));
+    assert.equal(again.status, 0);
+    assert.equal(again.stdout.trim(), "", again.stdout);
+    assert.equal(awayRecord(b).held, 3, "nothing new was held");
+    // Body only plus idle on the continuation: released with the count.
+    b.writeTranscript([row.user(), row.tool(), row.tool()]);
+    const r = runHook(b, "stop", stopInput(b, { stop_hook_active: true, last_assistant_message: "Wired the cache behind a flag.\n\nidle: the cache choice is held" }));
+    assert.equal(r.json.systemMessage, "brb: the agent is idle (the cache choice is held); 3 held; type `back` to read them.");
+    // A new turn (not a continuation, a different message) that shows a closing ask alone: blocked again, the ask held.
+    b.writeTranscript([row.user(), row.tool(), row.tool(), row.user(), row.tool()]);
+    const next = runHook(b, "stop", stopInput(b, { stop_hook_active: false, last_assistant_message: "Renamed the flag.\n\nClosing ask: keep the old flag name as an alias?" }));
+    assert.deepEqual(next.json, backstop(1));
+    assert.match(digest(b), /closing ask: keep the old flag name as an alias\?\n\n$/);
+    assert.equal(awayRecord(b).held, 4);
+    // idle plus a Needs-you section in one message: still blocked once; the asks are held.
+    b.writeTranscript([row.user(), row.tool(), row.tool(), row.user(), row.tool(), row.user(), row.tool()]);
+    const idleAsks = runHook(b, "stop", stopInput(b, { stop_hook_active: false, last_assistant_message: "## Needs you\n- Pick a cache\n\nidle: every open item waits on the cache choice" }));
+    assert.deepEqual(idleAsks.json, backstop(1));
+    assert.ok(digest(b).includes("- Pick a cache"));
+    assert.ok(existsSync(join(b.stateDir("s1"), "away.json")), "the hold stands");
   } finally {
     b.release();
   }
 });
 
-test("on fire: surfaces at once (systemMessage + OSC 9) without the marker twice, is not written to the digest, still keeps working", () => {
+test("the backstop yields to the tool-less bound: two stops in a row that show asks with no tool between them end the turn", () => {
+  const b = box();
+  try {
+    goAway(b);
+    const input = (msg) => stopInput(b, { transcript_path: join(b.root, "missing.jsonl"), stop_hook_active: true, last_assistant_message: msg });
+    assert.deepEqual(runHook(b, "stop", input("## Needs you\n- a")).json, backstop(1));
+    // The continuation shows a new ask: not blocked again (same turn), kept working; one tool-less stop.
+    assert.deepEqual(runHook(b, "stop", input("## Needs you\n- b")).json, keepWorking(2));
+    assert.equal(awayRecord(b).toolLessStops, 1);
+    const third = runHook(b, "stop", input("## Needs you\n- c"));
+    assert.ok(!kept(third.json), third.stdout);
+    assert.match(third.json.systemMessage, /^brb: 2 stops with no tool calls between them; letting the agent stop\. 3 held/);
+  } finally {
+    b.release();
+  }
+});
+
+test("under BRB_HARNESS=omp the keep-working answer is decision block (OMP's session_stop shape); the backstop is the same shape", () => {
+  const b = box();
+  try {
+    goAway(b);
+    b.writeTranscript([row.user(), row.tool()]);
+    const r = runHook(b, "stop", stopInput(b, { last_assistant_message: "Wired the cache behind a flag." }), { env: { BRB_HARNESS: "omp" } });
+    assert.deepEqual(r.json, { decision: "block", reason: keepWorkingReason(0) });
+    b.writeTranscript([row.user(), row.tool(), row.tool()]);
+    const shown = runHook(b, "stop", stopInput(b, { stop_hook_active: true, last_assistant_message: ASKS }), { env: { BRB_HARNESS: "omp" } });
+    assert.deepEqual(shown.json, backstop(3));
+  } finally {
+    b.release();
+  }
+});
+
+test("on fire: surfaces at once (systemMessage + OSC 9) without the marker twice, is not written to the digest; the shown ask beside it is backstopped", () => {
   const b = box();
   try {
     goAway(b);
     b.writeTranscript([row.user(), row.tool()]);
     const r = runHook(b, "stop", stopInput(b, { last_assistant_message: "Pushed.\n\n## Needs you\n- **on fire:** main is red after my push\n- Pick a cache" }));
     assert.equal(r.status, 0);
-    assert.deepEqual(r.json.hookSpecificOutput, keepWorking(1).hookSpecificOutput);
-    assert.equal(r.json.decision, undefined);
+    assert.equal(r.json.decision, "block");
+    assert.equal(r.json.reason, backstopReason(1));
+    assert.equal(r.json.hookSpecificOutput, undefined);
     assert.equal(r.json.systemMessage, "brb on fire: main is red after my push");
     assert.equal(r.json.terminalSequence, "\u001b]9;brb on fire: main is red after my push\u0007");
     assert.ok(!digest(b).includes("main is red"), "the fire is not in the digest");
@@ -92,6 +155,12 @@ test("on fire: surfaces at once (systemMessage + OSC 9) without the marker twice
     // The same fire restated on a tool-less continuation with nothing new: silent release (guard), no second alert.
     const again = runHook(b, "stop", stopInput(b, { stop_hook_active: true, last_assistant_message: "## Needs you\n- on fire: main is red after my push" }));
     assert.equal(again.stdout.trim(), "", again.stdout);
+    // A fire with no ask beside it: surfaced and kept working, no block.
+    b.writeTranscript([row.user(), row.tool(), row.user(), row.tool()]);
+    const alone = runHook(b, "stop", stopInput(b, { last_assistant_message: "on fire: spend at 95% of the ceiling" }));
+    assert.equal(alone.json.systemMessage, "brb on fire: spend at 95% of the ceiling");
+    assert.deepEqual(alone.json.hookSpecificOutput, keepWorking(1).hookSpecificOutput);
+    assert.equal(alone.json.decision, undefined);
   } finally {
     b.release();
   }
@@ -144,16 +213,23 @@ test("on-fire cap: past onFireCap the line still surfaces and the message says t
   }
 });
 
-test("idle line: the turn ends with a line for the person; asks in the same message are still held; a closing ask may follow it", () => {
+test("idle line: the turn ends with a line for the person when the message shows no ask; with an ask shown the backstop comes first and the idle reply after it is released", () => {
   const b = box();
   try {
     goAway(b, "lunch");
     b.writeTranscript([row.user(), row.tool()]);
-    const r = runHook(b, "stop", stopInput(b, { last_assistant_message: "## Needs you\n- Pick a cache\n\nidle: every open item waits on the cache choice\n\nClosing ask: Redis or in-process?" }));
-    assert.equal(r.status, 0);
-    assert.ok(!kept(r.json), r.stdout);
-    assert.equal(r.json.systemMessage, "brb: the agent is idle (every open item waits on the cache choice); 1 held; type `back` to read them.");
+    const plain = runHook(b, "stop", stopInput(b, { last_assistant_message: "Nothing left that I can run.\n\nidle: every open item waits on the cache choice" }));
+    assert.equal(plain.status, 0);
+    assert.ok(!kept(plain.json), plain.stdout);
+    assert.equal(plain.json.systemMessage, "brb: the agent is idle (every open item waits on the cache choice); 0 held; type `back` to read them.");
+    b.writeTranscript([row.user(), row.tool(), row.user(), row.tool()]);
+    const shown = runHook(b, "stop", stopInput(b, { last_assistant_message: "## Needs you\n- Pick a cache\n\nidle: every open item waits on the cache choice\n\nClosing ask: Redis or in-process?" }));
+    assert.deepEqual(shown.json, backstop(2));
     assert.ok(digest(b).includes("- Pick a cache"));
+    assert.ok(digest(b).includes("closing ask: Redis or in-process?"));
+    const after = runHook(b, "stop", stopInput(b, { stop_hook_active: true, last_assistant_message: "Nothing left that I can run.\n\nidle: every open item waits on the cache choice" }));
+    assert.ok(!kept(after.json), after.stdout);
+    assert.equal(after.json.systemMessage, "brb: the agent is idle (every open item waits on the cache choice); 2 held; type `back` to read them.");
     assert.ok(existsSync(join(b.stateDir("s1"), "away.json")), "idle does not end the hold");
   } finally {
     b.release();
@@ -170,7 +246,7 @@ test("stop_hook_active guard: a tool-less continuation with nothing new is let t
     // Tools ran since the last stop, nothing new: the agent is working, keep it working.
     b.writeTranscript([row.user(), row.tool(), row.tool(), row.tool(), row.tool()]);
     const working = runHook(b, "stop", stopInput(b, { stop_hook_active: true, last_assistant_message: "Finished item 2: migrated the config loader, tests green." }));
-    assert.deepEqual(working.json, keepWorking(2));
+    assert.deepEqual(working.json, keepWorking(3));
     // No tool since, nothing new, a continuation: release silently.
     const idle = runHook(b, "stop", stopInput(b, { stop_hook_active: true, last_assistant_message: "Carried on; the flag is named and the tests pass." }));
     assert.equal(idle.status, 0);

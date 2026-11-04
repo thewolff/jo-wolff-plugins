@@ -7,7 +7,7 @@ import assert from "node:assert/strict";
 import { existsSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 
-import { AWAY_NOTICE } from "../lib/text.mjs";
+import { AWAY_NOTICE, holdCommand } from "../lib/text.mjs";
 import { box, promptInput, runHook } from "./helpers.mjs";
 
 const blocked = (r) => {
@@ -59,7 +59,11 @@ test("another prompt while away: proceeds with the away instruction as additiona
     const ctx = away.json.hookSpecificOutput.additionalContext;
     assert.equal(away.json.hookSpecificOutput.hookEventName, "UserPromptSubmit");
     assert.match(ctx, /^brb: Jo is away since /);
-    assert.match(ctx, /`## Needs you`/);
+    assert.equal(ctx.includes(`run ${holdCommand("s1")} once per item`), true, ctx);
+    assert.match(ctx, /scripts\/brb\.mjs" hold --session "s1" "<one item, readable on its own>"/);
+    assert.match(ctx, /written, not shown/);
+    assert.match(ctx, /no `Needs you` section, no question sentence and no closing ask/);
+    assert.ok(!/`## Needs you`/.test(ctx), "the old heading instruction is gone");
     assert.match(ctx, /`on fire:`/);
     assert.match(ctx, /`idle: <why>`/);
     assert.match(ctx, /0 items held so far\.$/);
@@ -102,12 +106,12 @@ test("back with held items: prints the digest, archives it, clears the hold; pen
   try {
     runHook(b, "user-prompt-submit", promptInput(b, "brb"));
     const stop = runHook(b, "stop", { session_id: "s1", cwd: b.work, hook_event_name: "Stop", stop_hook_active: false, last_assistant_message: "## Needs you\n- Pick Redis or in-process\n\nClosing ask: which?" });
-    assert.equal(stop.json.hookSpecificOutput?.additionalContext !== undefined, true, stop.stdout);
+    assert.equal(stop.json.decision, "block", stop.stdout);
     const peek = blocked(runHook(b, "user-prompt-submit", promptInput(b, "pending")));
-    assert.match(peek, /1 item\n\n## .*\n- Pick Redis or in-process\nclosing ask: which\?$/);
+    assert.match(peek, /2 items\n\n## .*\n- Pick Redis or in-process\nclosing ask: which\?$/);
     assert.ok(existsSync(join(b.stateDir("s1"), "digest.md")));
     const back = blocked(runHook(b, "user-prompt-submit", promptInput(b, "back")));
-    assert.match(back, /^brb: hold cleared; digest archived to .*archive\/.*\.md\.\n\nbrb digest — held since .*, 1 item\n\n## .*\n- Pick Redis or in-process\nclosing ask: which\?$/);
+    assert.match(back, /^brb: hold cleared; digest archived to .*archive\/.*\.md\.\n\nbrb digest — held since .*, 2 items\n\n## .*\n- Pick Redis or in-process\nclosing ask: which\?$/);
     assert.ok(!existsSync(join(b.stateDir("s1"), "digest.md")));
     assert.ok(!existsSync(join(b.stateDir("s1"), "away.json")));
     const archived = readdirSync(join(b.stateDir("s1"), "archive"));

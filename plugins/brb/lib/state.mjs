@@ -60,9 +60,9 @@ export function loadConfig(env = process.env) {
   return out;
 }
 
-/** A fresh away record: when the hold began, the note typed after `brb`, and zeroed counters. */
+/** A fresh away record: when the hold began, the note typed after `brb`, zeroed counters, no backstop yet this turn. */
 export function freshAway({ since = new Date().toISOString(), note = "" } = {}) {
-  return { since, note, held: 0, onFire: 0, toolLessStops: 0, nothingNewStops: 0, seen: [], lastStop: null };
+  return { since, note, held: 0, onFire: 0, toolLessStops: 0, nothingNewStops: 0, backstopped: false, seen: [], lastStop: null };
 }
 
 /** The session's away record, or null when home (no file, or a file that does not parse). */
@@ -82,6 +82,7 @@ export function readAway(sessionId, env = process.env) {
     onFire: n(parsed.onFire),
     toolLessStops: n(parsed.toolLessStops),
     nothingNewStops: n(parsed.nothingNewStops),
+    backstopped: parsed.backstopped === true,
     seen: Array.isArray(parsed.seen) ? parsed.seen.filter((s) => typeof s === "string") : [],
     lastStop: parsed.lastStop && typeof parsed.lastStop === "object" ? parsed.lastStop : null,
   };

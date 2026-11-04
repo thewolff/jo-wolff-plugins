@@ -5,7 +5,19 @@ you waits in a digest; the five things that cannot wait (a broken main, data los
 finding, spend near a ceiling, a blocker on everything) still come through at once. Type `back`
 and read the digest.
 
-Built on plugin-kit 0.3.1. Claude Code hooks, plus an OMP extension that runs the same hooks.
+**While away, asks are written, not shown.** A question on screen pulls you back to a screen
+you left, so since 0.2.0 the agent files each ask with a command
+(`node "<plugin>/scripts/brb.mjs" hold --session "<id>" "<item>"`) and its reply says only what
+was done, ending `idle: <why>` when nothing is runnable. A reply that still shows a `Needs you`
+section or a closing ask is filed by the Stop hook and sent back once, body only. On-fire lines
+are the one thing that still reaches you at once.
+
+| | What the agent's reply shows | What you see |
+|---|---|---|
+| away | the body: what was done, ending `idle: <why>` when nothing is runnable; no `Needs you`, no question, no closing ask | the body; `brb on fire: …` for a fire; `brb: the agent is idle (<why>); N held` when it stops |
+| back | | `brb: hold cleared; digest archived to <path>.` then the digest: every item the command held and every one the backstop moved, each once |
+
+Built on plugin-kit 0.3.2. Claude Code hooks, plus an OMP extension that runs the same hooks.
 Node 22.13 or later. No other plugin is needed.
 
 ## Install
@@ -44,20 +56,42 @@ them.`).
 ## The contract
 
 This is the away instruction, exactly as the agent reads it each turn while you are away
-(`lib/text.mjs` `awayInstruction`; the first and last lines carry the live values):
+(`lib/text.mjs` `awayInstruction`; the first and last lines carry the live values, and rule 2
+carries the hold command with the plugin's absolute path and this session's id filled in):
 
 ```
 brb: Jo is away since <since> (<note>). Keep working; do not stop to wait for an answer.
 While away:
 1. Keep working on the next open item. Choose the safer reversible option yourself where a choice is small; where it is not, write the ask down (rule 2) and move to the next item.
-2. Put every question, decision or approval you need from Jo under a `## Needs you` heading (or a `**Needs you**` line), one item per line, each item readable on its own. brb holds those lines in a digest that Jo reads with `back`; a held item is not lost, so do not repeat it in later messages.
+2. Every question, decision or approval you need from Jo is written, not shown: run node "<plugin>/scripts/brb.mjs" hold --session "<session>" "<one item, readable on its own>" once per item, then leave it out of your reply. While away a reply has no `Needs you` section, no question sentence and no closing ask; it says only what was done. The command prints `held N`; a held item is not lost, so do not restate it. A Stop hook moves any `Needs you` section or closing ask that still appears into the digest and sends the reply back once.
 3. Start a line with `on fire:` only for one of these: a broken main branch, data loss, a security finding, spend near a ceiling, or a blocker on everything you could work on. Those lines reach Jo at once. Anything else waits in the digest.
-4. When nothing is runnable without Jo, end the message with a line `idle: <why>`; the closing ask may come after it. brb then lets the turn end; without that line a Stop hook sends you back to work.
+4. When nothing is runnable without Jo, end the message with a line `idle: <why>`. brb then lets the turn end; without that line a Stop hook sends you back to work.
 <N> items held so far.
 ```
 
 The on-fire kinds mirror agent-system 2.0's surface (`surface/src/batch.ts` `onFire`), so an
 agent that already writes for as2 writes the same thing here.
+
+## The hold command
+
+`node "<plugin>/scripts/brb.mjs" hold [--session <id>] "<one item, readable on its own>"`
+appends the item to the session's `digest.md` under a timestamp heading, bumps the held count
+in `away.json` and prints `held N`. Items are deduplicated by the Stop hook's own rule
+(`lib/sections.mjs` `normalizeLine`: list marker, bold, case and spacing dropped), so holding an
+item twice, or holding it and then restating it under `## Needs you`, lands it once and prints
+the unchanged count. Unquoted words join with one space; `--` ends the flags.
+
+The session is `--session` (the away instruction renders the command with it), else
+`BRB_SESSION_ID`, else `CLAUDE_CODE_SESSION_ID`, else the one session under the state directory
+that is away. Several away and none named → `several holds are away (…); pass --session <id>`
+on stderr, exit 1, nothing written. Not away → `not away; say it to Jo`, exit 0, nothing
+written: the agent asks in its reply as usual. No item text or an unknown verb → usage, exit 1.
+A state directory that cannot be written → the error on stderr, exit 1; the agent falls back
+to showing the ask once, and the backstop files it.
+
+The agent's shell has no `CLAUDE_PLUGIN_ROOT`, so the hooks render the command with the
+script's absolute path (`lib/text.mjs` `HOLD_SCRIPT`, from the plugin's own location) and the
+session id they were given.
 
 ## What the Stop hook does while you are away
 
@@ -72,7 +106,9 @@ On every finished message (`hooks/stop.mjs`, the rules in `lib/stop-core.mjs`):
    with `on fire:` anywhere in the message (bold, list markers, a `>` quote and a leading emoji
    allowed; `on fire: none`, `nothing` or `n/a` is a status, not a fire). A `Closing ask:` line or
    section, and an `idle: <why>` line among the last five non-blank lines. Needs-you lines
-   already held this hold are dropped, so an ask restated after a block lands once.
+   already held this hold (by the command or an earlier stop) are dropped, so an ask restated
+   after a block lands once; a closing ask is held as `closing ask: <text>` under the same rule
+   and counted.
 2. **Surface the fires first.** New on-fire lines are **not** written to the digest. They come
    back as a `systemMessage` (`brb on fire: <text>`, shown in the transcript), a
    `terminalSequence` carrying an OSC 9 notification (terminals that render it show a banner;
@@ -86,7 +122,16 @@ On every finished message (`hooks/stop.mjs`, the rules in `lib/stop-core.mjs`):
 3. **Hold the asks.** New Needs-you lines go to `digest.md` under a timestamp heading, with the
    closing ask when there is one. The count in `away.json` goes up. If `back` ended the hold
    while the hook ran, nothing is written and the hold stays ended.
-4. **Send the agent back to work** with the text
+4. **The backstop.** If the message showed an ask at all (a Needs-you item or a closing ask,
+   new or restated), the stop is blocked once, `decision: "block"` on both harnesses, with
+   `brb: N item(s) moved to the digest; do not restate them — reply with the body only and end with \`idle: <why>\`.`
+   (N is what the message showed). Once per turn: the block sets `backstopped` in `away.json`,
+   and the next stop that is not a continuation (`stop_hook_active` false and a different
+   message) clears it, so the reply after the block, restated word for word or not, goes
+   through the rules below and cannot loop here. The backstop also yields once `idleStops`
+   tool-less stops have passed (the hard stop below). A message with no ask shown, fires or
+   not, is never backstopped.
+5. **Send the agent back to work** with the text
    `brb is holding your asks (N in the digest). Keep working on the next open item; if nothing is runnable end with a line \`idle: <why>\`.`
    On Claude Code it goes out as `hookSpecificOutput.additionalContext`; under the OMP adapter
    as `decision: "block"` with that `reason`. The turn ends instead when one of four things is
@@ -113,15 +158,18 @@ On every finished message (`hooks/stop.mjs`, the rules in `lib/stop-core.mjs`):
 
 Not away: the hook prints nothing and the stop proceeds.
 
-**Why `additionalContext` on Claude Code.** The hooks reference, fetched 2026-11-04
-(https://code.claude.com/docs/en/hooks), Stop decision control: `additionalContext` is
-"Non-error feedback for Claude. The conversation continues so Claude can act on it, but unlike
-`decision: "block"` it is shown in the transcript as hook feedback rather than a hook error",
-and it "keeps the conversation going through the same loop protections as `decision: "block"`,
-namely the `stop_hook_active` input and the 8-consecutive-continuation cap, but the transcript
-labels it `Stop hook feedback` and no hook error notification is shown". So a designed
-keep-working answer does not show as a hook error, and a real `failed open` stays visible. OMP's
-`session_stop` takes `{ decision: "block", reason }`, so the adapter keeps that shape.
+**Why `additionalContext` for keep-working on Claude Code, and a block for the backstop.** The
+hooks reference, fetched 2026-11-04 (https://code.claude.com/docs/en/hooks), Stop decision
+control: `additionalContext` is "Non-error feedback for Claude. The conversation continues so
+Claude can act on it, but unlike `decision: "block"` it is shown in the transcript as hook
+feedback rather than a hook error", and it "keeps the conversation going through the same loop
+protections as `decision: "block"`, namely the `stop_hook_active` input and the
+8-consecutive-continuation cap, but the transcript labels it `Stop hook feedback` and no hook
+error notification is shown". So the routine keep-working answer does not show as a hook
+error, and a real `failed open` stays visible. The backstop is the one case where the reply
+itself was wrong (it showed an ask), so it is a `decision: "block"` with the reason, the shape
+both harnesses treat as "do not end here": the agent answers again with the body only. OMP's
+`session_stop` takes `{ decision: "block", reason }` for both.
 
 **The guard and the ceiling.** The guard above releases a continuation only when it is
 tool-less and brings nothing new, so a working agent with nothing to ask is sent back to work.
@@ -134,7 +182,8 @@ quiet steps; any new ask or fire resets the count.
 ## State and config
 
 - `${XDG_STATE_HOME:-~/.local/state}/brb/<session id>/` — `away.json` (since, note, counts, the
-  lines seen, the previous stop's transcript line and fires), `digest.md`, `archive/<when>.md`.
+  lines seen, whether this turn was backstopped, the previous stop's transcript line and
+  fires), `digest.md`, `archive/<when>.md`.
   Declared in `.claude-plugin/plugin.json` `state`; `node scripts/prune.mjs --days 30` removes
   files older than 30 days (`errors.log` kept), and the nightly canary runs it.
 - `${XDG_CONFIG_HOME:-~/.config}/brb/config.json`, optional:
@@ -142,13 +191,20 @@ quiet steps; any new ask or fire resets the count.
   is not a non-negative integer is ignored.
 - `BRB_DESKTOP_NOTIFY=off` turns off the macOS notification. `BRB_HARNESS=omp` is set by the OMP
   adapter, never by hand; under it the OSC 9 sequence is left out and the keep-working answer is
-  `decision: "block"`.
+  `decision: "block"`. `BRB_SESSION_ID` (then `CLAUDE_CODE_SESSION_ID`) names the session for
+  `scripts/brb.mjs hold` when `--session` is not passed.
 
 ## When this can't run
 
 - **Hooks disabled or the plugin not loaded.** `brb` reaches the model as a prompt and nothing
   is held. The tell: no confirmation line in reply to `brb` (the line
   `evals/prompt-brb.scenario.json` proves). Nothing to undo; the word is just a word to the model.
+- **The hold command cannot find its session.** With no `--session`, no `BRB_SESSION_ID` or
+  `CLAUDE_CODE_SESSION_ID`, and two or more sessions away on this machine, `hold` refuses
+  (`several holds are away (…); pass --session <id>`, exit 1) rather than file the ask under
+  the wrong hold. The rendered instruction always carries `--session`, so this takes an agent
+  that retyped the command without it; the skill tells it to show the ask once instead, and the
+  backstop files it.
 - **The desktop notification is untested here.** The `osascript` call is spawned detached and
   ignored; the tests run with `BRB_DESKTOP_NOTIFY=off` and the banner has not been watched for
   on a Mac during this version. `evals/manifest.json` lists it under `manual`. The
@@ -194,8 +250,21 @@ worktree and `scripts/prune.mjs` removes what is older than its retention.
 ## Developing
 
 `node --test` from `plugins/brb/` runs everything: the state round-trip, the splitter, the three
-hooks as spawned processes with fixture stdin and fixture transcripts, the OMP adapter's handlers.
-`bash e2e/live-run.sh --no-live` replays the eleven `evals/*.scenario.json` offline.
+hooks as spawned processes with fixture stdin and fixture transcripts, the hold command as a
+spawned process, the OMP adapter's handlers. `bash e2e/live-run.sh --no-live` replays the
+fourteen `evals/*.scenario.json` offline.
+
+## Changes in 0.2.0
+
+While away, asks are written, not shown. The Stop hook of 0.1.x filed a `## Needs you` section
+into the digest but could not take it off the screen, so the question was read, the person was
+pulled back and the hold did nothing. Now the away instruction names a hold command
+(`scripts/brb.mjs hold`) that writes each ask into the digest, and tells the agent to show no
+`Needs you` section, no question and no closing ask; a reply that still shows one is filed and
+blocked once (`brb: N item(s) moved to the digest; …`), once per turn, yielding to the
+tool-less bound. A closing ask is held and counted like a section line. `pending` and `back`
+print the digest as before, from both sources, each item once. `away.json` carries
+`backstopped`. The adapter, the release rules and the on-fire path are unchanged.
 
 ## Changes in 0.1.1
 

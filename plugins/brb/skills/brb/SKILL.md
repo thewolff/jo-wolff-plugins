@@ -1,48 +1,64 @@
 ---
 name: brb
-description: What to do while the person is away under brb; the Needs-you digest, the on-fire line, the idle line.
+description: What to do while the person is away under brb; the hold command, the on-fire line, the idle line.
 ---
 
 # brb
 
 The person typed `brb` and left. Nothing you ask them now will be answered until they type
-`back`. The brb plugin holds your asks for them and keeps you working; this skill is the three
-things it needs from you.
+`back`, and nothing you show them now is read as written: a question on screen pulls them back
+to a screen they left. The brb plugin holds your asks for them in a digest and keeps you
+working; this skill is the three things it needs from you.
 
 ## Steps
 
 1. **Keep working.** Take the next open item. Where a choice is small and one option is safer
    and reversible, take that option and say so in a line; where it is not, write the ask down
    (step 2) and move on. Do not stop to wait.
-2. **Write every ask under `## Needs you`** (a `**Needs you**` line also works), one item per
-   line, each readable on its own without the rest of the message. The Stop hook copies those
-   lines into the digest that `back` prints; a held item is not lost, so do not repeat it in
-   later messages. A `Closing ask:` line travels with them.
+2. **Write every ask with the hold command; show none of it.** The away instruction that
+   arrives with each prompt carries the command with this session's id filled in:
+   `node "<plugin>/scripts/brb.mjs" hold --session "<id>" "<one item, readable on its own>"`.
+   Run it once per question, decision or approval, each item readable on its own without the
+   rest of the message. It prints `held N`. Your reply then has no `Needs you` section, no
+   question sentence and no closing ask; it says only what was done. A held item is not lost,
+   so do not restate it later. If a `Needs you` section or a closing ask still appears in a
+   reply, the Stop hook files it into the digest and sends the reply back once with
+   `brb: N item(s) moved to the digest; do not restate them — reply with the body only and end
+   with idle:`; answer with the body only.
 3. **Start a line with `on fire:` only for** a broken main branch, data loss, a security
    finding, spend near a ceiling, or a blocker on everything you could work on. That line goes
    to the person at once, as a notification; everything else waits.
-4. **When nothing is runnable without the person, end with a line `idle: <why>`**; your closing
-   ask may come after it (the hook reads the last five non-blank lines). The Stop hook then lets
-   the turn end. Without it the hook answers
-   `brb is holding your asks (N in the digest). Keep working …` and you are back at step 1; the
-   hook also lets you stop after two stops in a row with no tool call between them.
+4. **When nothing is runnable without the person, end with a line `idle: <why>`** (the hook
+   reads the last five non-blank lines). The Stop hook then lets the turn end. Without it the
+   hook answers `brb is holding your asks (N in the digest). Keep working …` and you are back
+   at step 1; the hook also lets you stop after two stops in a row with no tool call between
+   them.
 
 The person reads the digest with `back` (which clears it) or `pending` (which does not).
 
 ## When this can't run
 
-- **The held count did not grow.** The keep-working reply (`brb is holding your asks (N in the
-  digest)`) and the last line of the away instruction (`N items held so far.`) both carry the
-  count. If you wrote a new ask and the next N you see is the same as before, the ask was not
-  held (the hook failed open, or could not write its state). Restate it under `## Needs you` in
-  your next message and say the hold missed it once; a missed ask is not marked seen, so the
-  restatement lands.
+- **`hold` prints `not away; say it to Jo`.** The session is not away (no `brb` was typed, or
+  `back` was): ask in your reply as usual. Nothing was written.
+- **`hold` exits 1.** The item text was empty, several sessions are away and none was named
+  (`several holds are away (…); pass --session <id>`: use the id from the away instruction), or
+  the state directory could not be written (`brb hold: could not write the digest (…)`). Put
+  the ask under `## Needs you` in your reply once; the Stop hook's backstop files it from there
+  and sends the reply back once.
+- **The held count did not grow.** `hold` prints `held N`; the keep-working reply and the last
+  line of the away instruction (`N items held so far.`) carry the same count. An item whose
+  text matches one already held (same words, any list marker, bold, case or spacing) is held
+  once and the count stays; that is the dedup rule, not a miss. A new item whose count did not
+  grow was not held: run the command again, and if it fails again put the ask under
+  `## Needs you` once, as above.
 - **No away instruction although the person typed `brb`.** Each prompt while away arrives with
   `brb: Jo is away since …`. If that line is missing, the hook is not running (hooks disabled,
-  plugin not loaded): keep writing the section anyway; the person reads messages when they
-  return. Nothing to undo. A turn that ends with no keep-working reply is not this signal: the
-  hook lets an `idle:` stop, a tool-less stop with nothing new, the second tool-less stop and
-  the third continuation in a row with nothing new end silently or with a line for the person.
+  plugin not loaded): ask in your reply; the person reads messages when they return. Nothing to
+  undo. A turn that ends with no keep-working reply is not this signal: the hook lets an `idle:`
+  stop, a tool-less stop with nothing new, the second tool-less stop and the third continuation
+  in a row with nothing new end silently or with a line for the person.
 - The person is not away (no `brb` was typed): this skill does not apply; ask as usual.
 
-The scenario that proves the hook's first outcome is `evals/prompt-brb.scenario.json`.
+The scenario that proves the hook's first outcome is `evals/prompt-brb.scenario.json`; the
+backstop is `evals/stop-away-asks.scenario.json` and the command
+`evals/stop-away-held-by-command.scenario.json`.

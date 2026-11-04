@@ -1,0 +1,12 @@
+{
+  "event": "Stop",
+  "expect": "deny",
+  "setup": {"commands": [
+    "printf '%s' '{\"session_id\":\"${SESSION_ID}\",\"cwd\":\"${CWD}\",\"hook_event_name\":\"UserPromptSubmit\",\"prompt\":\"brb lunch\"}' | node \"${PLUGIN_DIR}/hooks/user-prompt-submit.mjs\" >/dev/null",
+    "test \"$(node \"${PLUGIN_DIR}/scripts/brb.mjs\" hold --session \"${SESSION_ID}\" 'Pick Redis or in-process for the cache')\" = 'held 1'"
+  ]},
+  "transcript": [{"type":"user","message":{"role":"user","content":"go"}},{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","id":"t1","name":"Bash","input":{}}]}}],
+  "stdin": {"session_id":"${SESSION_ID}","transcript_path":"${TRANSCRIPT}","cwd":"${CWD}","hook_event_name":"Stop","stop_hook_active":false,"last_assistant_message":"Wired the cache.\n\n## Needs you\n- Pick Redis or in-process for the cache\n- Name the feature flag"},
+  "reason": "brb: 2 items moved to the digest; do not restate them",
+  "after": { "commands": ["test \"$(grep -c 'Pick Redis or in-process' \"$XDG_STATE_HOME/brb/${SESSION_ID}/digest.md\")\" = 1", "grep -q 'Name the feature flag' \"$XDG_STATE_HOME/brb/${SESSION_ID}/digest.md\""] }
+}

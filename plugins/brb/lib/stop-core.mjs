@@ -7,10 +7,20 @@
 // AWAY, in this order:
 //   1. Read the message (lib/sections.mjs): the Needs-you lines, the on-fire lines, the closing
 //      ask, an `idle:` line near the end. Held lines already seen this hold are dropped (the
-//      agent restates an ask after a block; the digest keeps one copy). On-fire lines are
-//      dropped only when the previous stop carried the same fire and this stop is its
-//      continuation (stop_hook_active): a restatement after a block. A fire that recurs on a
-//      later turn surfaces again.
+//      agent restates an ask after a block, or held it with `scripts/brb.mjs hold` first; the
+//      digest keeps one copy). A closing ask is held too, as `closing ask: <text>`, under the
+//      same rule. On-fire lines are dropped only when the previous stop carried the same fire
+//      and this stop is its continuation (stop_hook_active): a restatement after a block. A fire
+//      that recurs on a later turn surfaces again.
+//      The backstop (step 5): since 0.2.0 the contract is that asks are written with the hold
+//      command and never shown. A message that still shows one (a Needs-you item or a closing
+//      ask) is filed as above and then blocked once, `decision: "block"` on both harnesses, with
+//      `brb: N item(s) moved to the digest; do not restate them — reply with the body only and
+//      end with idle:`. Once per turn: `backstopped` in away.json is set by the block and
+//      cleared by the next stop that is not a continuation (stop_hook_active false and a
+//      different message), so the reply after the block, restated or not, goes through the
+//      release rules and cannot loop on the backstop; and the backstop yields once
+//      toolLessStops reaches `idleStops`, the hard stop below.
 //   2. New on-fire lines are surfaced first, before anything is written, so an unwritable state
 //      directory cannot swallow them: a systemMessage (`brb on fire: <text>`), a
 //      terminalSequence (OSC 9 desktop notification; left out under BRB_HARNESS=omp, where the
@@ -35,7 +45,8 @@
 //      Otherwise keep it working with keepWorkingReason(held): on Claude Code as
 //      `hookSpecificOutput.additionalContext` (Stop hook feedback, same loop protections as a
 //      block, not shown as a hook error); under BRB_HARNESS=omp as `decision: "block"`, the
-//      shape OMP's session_stop takes.
+//      shape OMP's session_stop takes. The backstop block comes before the keep-working answer
+//      and before the `idle:` and guard releases.
 //   6. Write: re-read away.json first; a hold that `back` ended while this stop ran is left
 //      ended (only the fire output returns). New held lines go to the digest, then away.json.
 //      A write that throws is one errors.log line and a systemMessage beside any fire; the stop
@@ -51,7 +62,7 @@ import { readFileSync } from "node:fs";
 
 import { splitNeedsYou, normalizeLine, fireText } from "./sections.mjs";
 import { loadConfig, readAway, writeAway, appendDigest } from "./state.mjs";
-import { keepWorkingReason } from "./text.mjs";
+import { backstopReason, keepWorkingReason } from "./text.mjs";
 import { logError } from "./hook-runner.mjs";
 
 const SEEN_CAP = 500;
@@ -129,8 +140,10 @@ export function decideStop(input, { env = process.env, now = () => new Date().to
   const parts = splitNeedsYou(message);
   const continuing = input?.stop_hook_active === true;
   const prev = away.lastStop;
+  const messageHash = hash(message);
 
-  // 1. What is new in this message.
+  // 1. What is new in this message. A closing ask is an ask too: held under `closing ask: …`,
+  //    deduplicated like the section's lines, counted.
   const fires = parts.onFire.map((line) => ({ line, key: normalizeLine(fireText(line) ?? line) }));
   const restated = new Set(continuing && Array.isArray(prev?.fires) ? prev.fires : []);
   const newFire = fires.filter((f) => !restated.has(f.key)).map((f) => f.line);
@@ -142,8 +155,11 @@ export function decideStop(input, { env = process.env, now = () => new Date().to
     seen.add(key);
     newHeld.push(line);
   }
+  const askKey = parts.closingAsk === null ? "" : normalizeLine(`closing ask: ${parts.closingAsk}`);
+  const newAsk = askKey !== "" && !seen.has(askKey);
+  if (newAsk) seen.add(askKey);
   away.seen = [...seen].slice(-SEEN_CAP);
-  away.held += newHeld.length;
+  away.held += newHeld.length + (newAsk ? 1 : 0);
 
   // 2. Fires, before any write.
   const out = {};
@@ -162,7 +178,6 @@ export function decideStop(input, { env = process.env, now = () => new Date().to
 
   // 3. Tool-less stops.
   const counted = countToolUses(input?.transcript_path, prev?.line ?? 0);
-  const messageHash = hash(message);
   let toolLess;
   let line = prev?.line ?? 0;
   if (counted) {
@@ -175,10 +190,19 @@ export function decideStop(input, { env = process.env, now = () => new Date().to
   away.lastStop = { at, line, hash: messageHash, transcript: counted !== null, fires: fires.map((f) => f.key) };
 
   // 4. Quiet continuations.
-  const nothingNew = !newHeld.length && !newFire.length;
+  const nothingNew = !newHeld.length && !newAsk && !newFire.length;
   away.nothingNewStops = continuing && nothingNew ? away.nothingNewStops + 1 : 0;
 
-  // 5. Keep working or let the turn end.
+  // 5. The backstop, or keep working, or let the turn end. The backstop: asks were shown (a
+  //    Needs-you item or a closing ask). Once per turn: a stop that continues a backstopped
+  //    turn (stop_hook_active, or the same message again) goes to the rules below, so an agent
+  //    that restates cannot loop on it; and it yields to the tool-less bound, the hard stop for
+  //    a harness with no continuation cap.
+  const sameTurn = continuing || (prev !== null && prev.hash === messageHash);
+  if (!sameTurn) away.backstopped = false;
+  const shown = parts.held.length + (parts.closingAsk === null ? 0 : 1);
+  const backstop = shown > 0 && !away.backstopped && away.toolLessStops < config.idleStops;
+  if (backstop) away.backstopped = true;
   const held = `${away.held} held; type \`back\` to read them`;
   let release = null;
   if (parts.idle !== null) release = `brb: the agent is idle${parts.idle ? ` (${parts.idle})` : ""}; ${held}.`;
@@ -190,7 +214,7 @@ export function decideStop(input, { env = process.env, now = () => new Date().to
   try {
     const current = readAway(sessionId, env);
     if (!current || current.since !== away.since) return Object.keys(out).length ? out : null;
-    if (newHeld.length) appendDigest(sessionId, { at, lines: newHeld, closingAsk: parts.closingAsk }, env);
+    if (newHeld.length || newAsk) appendDigest(sessionId, { at, lines: newHeld, closingAsk: newAsk ? parts.closingAsk : null }, env);
     writeAway(sessionId, away, env);
   } catch (err) {
     const why = err instanceof Error ? err.message : String(err);
@@ -198,7 +222,10 @@ export function decideStop(input, { env = process.env, now = () => new Date().to
     say(`brb Stop could not write its state (${why}); this message's asks are not held and the stop proceeds.`);
     return out;
   }
-  if (release === null) {
+  if (backstop) {
+    out.decision = "block";
+    out.reason = backstopReason(shown);
+  } else if (release === null) {
     const reason = keepWorkingReason(away.held);
     if (env.BRB_HARNESS === "omp") {
       out.decision = "block";

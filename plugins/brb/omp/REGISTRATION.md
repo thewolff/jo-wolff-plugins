@@ -21,8 +21,9 @@ That one module does three jobs for the main session (see its header for the eve
   (`customType` `brb-away`) for that turn. Home → nothing is added. Subagent sessions are
   skipped.
 - **Stop.** On `session_stop` it spawns `hooks/stop.mjs` with `BRB_HARNESS=omp` and returns
-  the core's verdict: `{ decision: "block", reason }` sends the agent back to work; a
-  `systemMessage` (an on-fire line, an idle notice) goes to `ctx.ui.notify`. Under the `omp`
+  the core's verdict: `{ decision: "block", reason }` sends the agent back to work (the
+  keep-working reason, or the backstop's `brb: N item(s) moved to the digest; …` when the reply
+  showed an ask); a `systemMessage` (an on-fire line, an idle notice) goes to `ctx.ui.notify`. Under the `omp`
   tag the core leaves out the OSC 9 `terminalSequence`, since the adapter is the one that
   notifies. OMP has no continuation cap on explicit blocks; the loop ends by the core's own
   rules (an `idle:` line, nothing new on a tool-less continuation, two tool-less stops, three

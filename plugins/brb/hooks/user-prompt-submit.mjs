@@ -10,7 +10,9 @@
 //                            `brb: hold cleared; digest archived to <path>.` as the block reason's
 //                            first line with the digest under it. No turn.
 //   `pending`                print the digest the same way and change nothing.
-//   anything else, away      the prompt proceeds with the away instruction as additionalContext.
+//   anything else, away      the prompt proceeds with the away instruction as additionalContext
+//                            (lib/text.mjs awayInstruction, rendered with this session's hold
+//                            command: the absolute path of scripts/brb.mjs and the session id).
 //   anything else, home      null: nothing printed.
 // `back` or `pending` while home is null too: the word reaches the model as an ordinary reply
 // (an agent that asked "revert or go back?" gets its answer). A reason longer than 8000
@@ -26,7 +28,7 @@
 
 import { runHook, invokedDirectly } from "../lib/hook-runner.mjs";
 import { archiveDigest, clearAway, digestPath, freshAway, readAway, readDigest, renderDigest, writeAway } from "../lib/state.mjs";
-import { AWAY_NOTICE, awayInstruction, cappedReason, surfaceWord } from "../lib/text.mjs";
+import { AWAY_NOTICE, awayInstruction, cappedReason, holdCommand, surfaceWord } from "../lib/text.mjs";
 
 const block = (reason) => ({ decision: "block", reason, hookSpecificOutput: { hookEventName: "UserPromptSubmit", suppressOriginalPrompt: true } });
 
@@ -40,7 +42,7 @@ export function handle(input, { env = process.env, now = () => new Date().toISOS
   const away = readAway(sessionId, env);
   if (!word) {
     if (!away) return null;
-    return { hookSpecificOutput: { hookEventName: "UserPromptSubmit", additionalContext: awayInstruction(away) } };
+    return { hookSpecificOutput: { hookEventName: "UserPromptSubmit", additionalContext: awayInstruction(away, holdCommand(sessionId)) } };
   }
   if (word.word === "brb") {
     if (away) return block(`brb: already away since ${away.since}; ${away.held} held. Type \`back\` to read them or \`pending\` to peek.`);

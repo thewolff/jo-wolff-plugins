@@ -3,6 +3,53 @@
 All notable changes to brb are recorded here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.2.0] - 2026-11-04
+
+While away, asks are written, not shown: a `## Needs you` section that the Stop hook filed
+still rendered on screen, so the person read it and came back, which is the one thing the
+hold exists to prevent.
+
+### Added
+
+- `scripts/brb.mjs hold [--session <id>] "<one item, readable on its own>"`: appends the item
+  to the session's digest, bumps the held count and prints `held N`. Deduplicated by the Stop
+  hook's own rule (`lib/sections.mjs` `normalizeLine` against `away.json` `seen`), so an item
+  held here and restated under `## Needs you` lands once. Not away → `not away; say it to Jo`,
+  exit 0, nothing written. The session is `--session`, else `BRB_SESSION_ID`, else
+  `CLAUDE_CODE_SESSION_ID`, else the one away session; several away and none named → exit 1
+  with the ids. The hooks render the command into the away instruction with the script's
+  absolute path and the session id (`lib/text.mjs` `holdCommand`, `HOLD_SCRIPT`).
+- The Stop hook's backstop (`lib/stop-core.mjs`): a message that still shows an ask (a
+  Needs-you item or a closing ask) is filed as before and then blocked once, `decision:
+  "block"` on both harnesses, with `brb: N item(s) moved to the digest; do not restate them —
+  reply with the body only and end with \`idle: <why>\`.` (`lib/text.mjs` `backstopReason`).
+  Once per turn: `away.json` `backstopped` is set by the block and cleared by the next stop that
+  is not a continuation, so the reply after the block goes through the release rules; the
+  backstop also yields once `idleStops` tool-less stops have passed.
+- Scenarios: `stop-away-working` (the keep-working `additionalContext`), `stop-away-backstop-once`
+  (the same message again on the continuation is silent), `stop-away-held-by-command` (an item
+  held by the command is not filed twice by the stop); `test/hold.test.mjs`.
+
+### Changed
+
+- The away instruction's rule 2 (`lib/text.mjs` `awayInstruction`) names the hold command and
+  says the reply has no `Needs you` section, no question sentence and no closing ask; rule 4 no
+  longer invites a closing ask after `idle:`. The `brb` skill says the same.
+- A closing ask is held (`closing ask: <text>`), deduplicated and counted like a section line;
+  before, it rode along only when the same message had a new Needs-you line and was not counted.
+- `stop-away-asks` and `stop-away-asks-omp` expect `deny` (the backstop); `stop-away-on-fire`
+  raises its fire outside a `Needs you` section; `prompt-other-while-away` looks for the new
+  rule 2.
+- README: the contract in one paragraph up top, the hold command, the backstop, a "what you
+  see" table. The marketplace description and the root README row say the same.
+
+### Unchanged
+
+- `pending` and `back` print the digest as before; its entries now come from both sources, each
+  once. The on-fire path, the release rules (`idle:`, the guard, `idleStops`, three quiet
+  continuations), the OMP adapter and `lib/hook-runner.mjs` (plugin-kit 0.3.2's, byte for byte;
+  the kit's 0.3.2 did not touch it).
+
 ## [0.1.1] - 2026-11-04
 
 ### Changed
