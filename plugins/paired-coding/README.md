@@ -271,7 +271,10 @@ How it works:
 - `pair_done` returns the diff of the boundary, computed by the gate, and lists the roadmap cards
   still `open` or `not-ready`. Every card, quote, verdict, refusal and diff goes into a journal
   outside the worktree, under `$PAIRED_CODING_STATE_DIR` (default
-  `~/.local/state/paired-coding/<session-id>/`).
+  `~/.local/state/paired-coding/<session-id>/`). That directory stays once the session has
+  paired: it is the evidence. A session that never called `pair_start` has nothing in it worth
+  keeping (queued typed input, stashed notices), so `SessionEnd` removes it; a directory that
+  will not go is one warning and one `errors.log` line, never a failed end.
 - When the Claude Code hook itself fails (a thrown error, an unwritable state directory, stdin
   that is empty or not a hook event object), it exits 0, appends one line to
   `$PAIRED_CODING_STATE_DIR/errors.log` (default `~/.local/state/paired-coding/errors.log`)

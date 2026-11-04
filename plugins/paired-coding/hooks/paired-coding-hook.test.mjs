@@ -72,6 +72,32 @@ test("before pair_start every event is a no-op and the state base is never creat
   assert.equal(existsSync(f.base), false);
 });
 
+test("SessionEnd removes the directory of a session that never activated pairing; one that will not go is a warning and an errors.log line", () => {
+  const f = fixture();
+  const dir = join(f.base, "s1");
+  mkdirSync(join(dir, "pending"), { recursive: true });
+  writeFileSync(join(dir, "pending", "notices.jsonl"), "{}\n");
+  writeFileSync(join(dir, "state.json"), JSON.stringify({ phase: "inactive" }));
+  assert.equal(handle("session-end", { ...f.common }, { env: f.env }), null);
+  assert.equal(existsSync(dir), false);
+  assert.equal(existsSync(join(f.base, "errors.log")), false);
+  // Rerun: nothing there, nothing said.
+  assert.equal(handle("session-end", { ...f.common }, { env: f.env }), null);
+  if (process.getuid?.() !== 0) {
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(join(dir, "state.json"), "{}");
+    chmodSync(f.base, 0o500);
+    let out;
+    try {
+      out = handle("session-end", { ...f.common }, { env: f.env });
+    } finally {
+      chmodSync(f.base, 0o700);
+    }
+    assert.match(out.systemMessage, /^paired-coding: could not remove the never-activated session directory /);
+    assert.equal(existsSync(dir), true);
+  }
+});
+
 test("the hook process prints nothing for an inactive session and exits 0", () => {
   const f = fixture();
   const r = spawnSync("node", [HOOK, "pre-tool-use"], { input: JSON.stringify({ ...f.common, tool_name: "Write", tool_use_id: tuid() }), env: { ...process.env, ...f.env }, encoding: "utf8" });

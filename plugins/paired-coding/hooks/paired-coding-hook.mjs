@@ -330,7 +330,21 @@ export function handle(event, input, opts = {}) {
     const note = `paired-coding: pairing was on ${CARRY_START.get(source)}, so ${CARRIED_PHRASE}: this session has no card and no change set, and host write, edit, shell and sub-agent tools are refused. Tell your partner that pairing carried over closed, then wait for their answer. If they want to keep pairing, call pair_start and propose the next card; to end it, they type pair stop. Do not call pair_start before they answer.`;
     return { hookSpecificOutput: { hookEventName: "SessionStart", additionalContext: note } };
   }
-  if (!dir || !activated(dir)) return null;
+  if (!dir || !activated(dir)) {
+    // A session that never activated pairing has nothing worth keeping in its directory (queued
+    // typed input, stashed notices): at its end the directory goes. An activated session's
+    // directory stays, journal, receipt and runs being the evidence. Best effort: a directory
+    // that will not go is one warning and one errors.log line, never a failed end.
+    if (event === "session-end" && dir) {
+      try {
+        rmSync(dir, { recursive: true, force: true });
+      } catch (err) {
+        const reason = `could not remove the never-activated session directory ${dir} (${reasonOf(err)})`;
+        return { systemMessage: `paired-coding: ${reason}. ${logFault(env, event, input, reason)}` };
+      }
+    }
+    return null;
+  }
   if (event === "user-prompt-submit") {
     // Turns still queued from earlier (a turn that ended with no tool call) are judged first,
     // and the outcome of any stop among them, or stashed by the Stop event, is reported here.
