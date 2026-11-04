@@ -52,6 +52,111 @@ on a sibling being installed, and a change to the kit's copy reaches a plugin on
 copies it again and runs that plugin's tests. The existing plugins (ledger, pattern-check,
 paired-coding, …) keep their own runners; this one is for new ones.
 
+## Agents
+
+Two agents load from `agents/` (by the plugin-agent convention; nothing registers them), as
+`plugin-kit:cross-lab-reviewer` and `plugin-kit:release-gate`. Name one in a prompt or
+@-mention it to run it for certain; otherwise Claude routes by the description.
+
+| Agent | When | What it does | Tools, model |
+|---|---|---|---|
+| `cross-lab-reviewer` | a plugin branch is built and its suites pass, before a PR | runs a preflight (execute authorization, permission, containment, output path), reviews one snapshot of the head commit written blob by blob with `git cat-file`, and sends the range `<base>..<head sha>` to OpenAI Codex with `codex exec --sandbox read-only` and the release review brief: security first (hook command parsing, fail-open paths), each prior finding marked closed, partial or open, the env-only failure set (tests failing in the credential-free run, stated as `exact` or `same major` to the CI node pin), the `/Users/<name>` path scrub, and a `Verdict: ship` or `Verdict: fix-first` line; writes `~/agent-scratch/<repo>/<plugin>/REVIEW-<version>-codex.md` (a `-round<N>` suffix when one exists) with its triage of each finding | Read, Grep, Glob, Bash, Write; sonnet |
+| `release-gate` | before a version bump, PR or publish | runs a preflight (execute authorization, permission, containment) and checks one snapshot of the head commit written blob by blob with `git cat-file`, reporting pass, fail or unavailable per check with command and output: the CI node pin from the workflow job that runs the plugin's tests, the path scrub, the version across `plugin.json`, `package.json`, the README "Changes in" headings and the marketplace entry, `node --test` in a credential-free environment, and the README against the plugin's hooks, skills and agents. `ledger gate check` is reported `unavailable` and never run: it checks live `HEAD`, not the captured sha, so the gate line is `fail` until ledger takes a pinned sha | Read, Grep, Glob, Bash; haiku |
+
+Both agents run code from the checkout (the suites) only when the prompt
+that invokes them carries `execute: <sha>` naming the full head sha, which the agent derives
+again with `git rev-parse HEAD` and refuses on any mismatch, for example:
+
+```
+Run plugin-kit:release-gate on this checkout, plugin plugin-kit, base origin/main.
+execute: <the full 40-character sha printed by git rev-parse HEAD>
+```
+
+The commands that run it then run under `env -i` with a fresh `HOME` and `XDG_CONFIG_HOME` and
+a `PATH` of the node folder, `/usr/bin` and `/bin`, so no `GH_TOKEN`, API key or
+`SSH_AUTH_SOCK` reaches them; there is no second run in the caller's own environment. That
+containment strips credentials but not network access, and a test can still read any file you
+can read by its path. So the authorization is your statement that this commit is yours to run
+on this machine; write permission on `origin` (checked with `gh repo view` as well) says who may
+push, not who wrote the commit, and never stands in for it. Without a matching authorization,
+or with a failed permission or containment check, the run is static only: every executable
+check is `unavailable: no execute authorization for <sha>` (or the reason), the reviewer's
+verdict cannot be `ship` and the gate line is `fail`.
+
+Every git command either agent runs, `status` and `log` included, goes through one pinned `g`
+function: `env -i` keeps only `PATH`, so no inherited `GIT_*` setting, `GIT_DIR` or global or
+system config applies, and its command line turns off hooks, the pager, the `core.fsmonitor`
+helper and signature verification (`log.showSignature`, which runs `gpg.program`), whatever the
+repository's own `.git/config` names. A plain `git status` or `git log` runs those helpers
+before any execute authorization, so the agents never run `git` another way.
+
+Every check reads a snapshot of the captured head sha: `git ls-tree -r -z <sha>` lists every
+entry and `git cat-file blob` writes each one's committed bytes into a plain file tree with no
+`.git`, made without a checkout, so no checkout hook runs. Neither command reads attributes, so
+no `filter` driver, `ident`, end-of-line or `export-*` conversion applies, whatever the
+committed `.gitattributes`, `$GIT_DIR/info/attributes` or `core.attributesFile` says, and even
+when one of them changes mid-run. Earlier drafts snapshotted with `git archive` behind an
+attribute check; `git archive` rereads those sources when it runs, so a change after the check
+could still start a driver, and there is no attribute check any more. `git cat-file` does not
+check a blob's hash, so one `git hash-object --no-filters` over every written file must give
+back each entry's blob id: a rewritten loose object, or an `objects/info/alternates` store that
+answers for an id with other bytes, is `refused: hash mismatch`, not snapshotted. Last, the
+sorted paths of the listing must equal, byte for byte, the sorted files on disk: a
+case-insensitive volume such as default APFS puts `Docs/a.txt` and `docs/b.txt` in one folder
+and cannot hold that commit, so it is `refused: name mismatch`. The block also refuses a
+symlink, a submodule, a path with an empty, `.`, `..` or `.git` component, and any git or write
+failure; a refused snapshot reviews nothing. On this repository (1222 files) the block took
+23 s in bash and zsh, against 18 s for the earlier block without the hash and name checks: one
+`cat-file` and one `mv` per blob, one `hash-object` for all of them. What can still make
+the snapshot wrong is a wrong sha: it is exactly the commit `$head` names, verified blob by
+blob, so both agents report that sha. Uncommitted changes are listed, never inspected. The CI
+node pin comes from the one workflow job that runs the plugin's tests and is reported as
+`exact` or `same major`, never as a CI result; a different major, or no single job, is
+`unavailable` and fails the gate, as does a run that skips cases while the CI job sets `env:`
+variables this run lacks. plugin-kit itself
+has no workflow yet, so the gate fails on it until one exists. The reviewer refuses an output
+path whose `<repo>`, `<plugin>` or `<version>` is not `[A-Za-z0-9._-]+`, is `.` or holds `..`,
+and checks that each existing folder of `~/agent-scratch/<repo>/<plugin>/` is a real directory
+(no symlink) resolving inside `~/agent-scratch/` before it creates any of them.
+
+Neither edits product source, pushes, merges or installs: the reviewer's Write is for its review
+file, and the gate has no Write at all. A plugin agent cannot block a single Bash command (plugin
+agents ignore `hooks` and `permissionMode`), so these limits are the agents' text plus their tool
+lists; a push block belongs in settings deny rules. The reviewer sends the diff and the source
+Codex reads to OpenAI on the account `codex` is logged in to. OMP loads both from the plugin but
+drops their `model:` lines. Each agent's "How it fails" section covers the unavailable paths: no
+matching `execute: <sha>` or a failed permission or containment check runs nothing from the
+checkout; a refused snapshot reviews nothing, whether the refusal is a link, a git failure, a
+blob that does not hash to its id or a name the volume folds; a helper named in the
+repository's own config never runs, because every git call goes through `g`; no `codex` on PATH
+stops the review before a brief exists, a `codex` failure after launch keeps the brief and hands
+over the retry line, and neither falls back to a Claude-only review; no CI pin or a sandbox
+refusal marks that check unavailable, never passed, and the gate's ledger check is always
+unavailable.
+`test/agents.test.mjs` checks each file's frontmatter, the contract, that section, that no
+`/Users/<name>` other than exactly `example` appears, and that each agent carries the
+`execute: <sha>` authorization sentence and the `git cat-file` snapshot block and never
+`git archive` or `git worktree add`. It also runs each agent's snapshot block, as written, in
+bash and zsh against throwaway repositories: a clean one and a hostile one (committed
+`filter=evil`, `ident`, `eol=crlf` and `export-subst`, a configured smudge driver,
+`$GIT_DIR/info/attributes`, a global config with its own `core.attributesFile`, and
+`GIT_CONFIG_PARAMETERS`) both give a snapshot whose names, bytes and executable bits equal the
+committed blobs, with the driver's marker file never written, while `git archive` in the same
+repository writes it. A fake `git` that points `core.attributesFile` at a filter, writes
+`info/attributes` and configures the driver between the block's `ls-tree` and its first
+`cat-file` changes nothing either. A symlink, a submodule, a crafted `../` path and a `.GiT`
+entry are refused, and an `ls-tree` that dies, answers nothing or cuts an entry short, or a
+`cat-file` or `hash-object` that fails, stops the block with a named reason. An
+`objects/info/alternates` store that answers for a committed blob id with other bytes (so
+`git cat-file` hands those bytes back) is `refused: hash mismatch` with nothing placed, and on a
+case-insensitive volume a commit holding `Docs/a.txt` and `docs/b.txt`, or `README` and
+`readme`, is `refused: name mismatch` (on a case-sensitive one it snapshots exactly). Every
+inline `g` command in each agent (`status`, `log`, `diff`, `show`, `grep`, `rev-parse`,
+`remote`), run as written in both shells against a repository whose own config sets
+`core.fsmonitor` and `gpg.program` with `log.showSignature` to a marker helper, never runs it,
+nor does the snapshot block, while a plain `git status` and `git log` in that repository run
+both; and neither agent contains `git -C` outside that one `g`.
+
 ## How it fails
 
 The scaffolder refuses an existing directory, a name that is not lowercase kebab, an unknown
@@ -63,6 +168,19 @@ handler holding a timer that never answers, a stdin held open, a synchronous `At
 6 s under the default 4 s deadline (exit inside 4.5 s wall clock). The kit's tests are a bare
 `node --test` (the contract-test template carries a `.template` suffix so the runner does not
 pick it up: it has no plugin to test until it is scaffolded).
+
+## Changes in 0.1.2
+
+Two agents, `cross-lab-reviewer` and `release-gate` (see "Agents"): the Codex review brief and
+the release checklist that were written by hand for each plugin release, as files. Neither runs
+code from the checkout unless the invoking prompt says `execute: <sha>` for the exact head sha,
+and then only in a credential-free `env -i`; both check one snapshot of the head sha, written
+blob by blob with `git cat-file` and checked blob by blob against its id, so no hook, filter
+driver or attribute conversion runs, even when attributes or config change mid-run, and a
+substituted object or a name the volume folds is refused. Every git call, `status` and `log`
+included, goes through one pinned function, so no fsmonitor, gpg or pager helper from the
+repository's config runs. The release gate reports `ledger gate check` unavailable rather than
+run it against live `HEAD`. The scaffolder and the runner are unchanged.
 
 ## Changes in 0.1.1
 
