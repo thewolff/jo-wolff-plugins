@@ -466,7 +466,14 @@ function ask(db, parsed, by, iso, now, ctx) {
   }
 
   const optionsJson = JSON.stringify(options);
-  const repeat = db.prepare("SELECT id, state, session_id FROM cc_questions WHERE cwd = ? AND body = ? AND options = ? AND state IN ('open','held')").get(ctx.cwd, body, optionsJson);
+  // Identity of a repeat: same folder, same text, same set of options in any order. The existing
+  // row's options, default and allows stay authoritative; the new invocation's flags are not
+  // written over them. A different set of options is a different question.
+  const sameSet = (a, b) => a.length === b.length && [...a].sort().every((o, i) => o === [...b].sort()[i]);
+  const repeat = db
+    .prepare("SELECT id, state, session_id, options FROM cc_questions WHERE cwd = ? AND body = ? AND state IN ('open','held') ORDER BY asked_at ASC, id ASC")
+    .all(ctx.cwd, body)
+    .find((r) => sameSet(JSON.parse(r.options), options));
   if (repeat?.state === "held") return noop(repeat.id, `${repeat.id} already asked and held; run \`reopen ${repeat.id}\` when you put it to the human`);
   if (repeat) {
     const lines = (q) => pendingLines(q, { now, timezone: ctx.config?.timezone ?? null }).join("\n");
