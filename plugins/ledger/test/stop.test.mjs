@@ -179,6 +179,14 @@ test("decision rule: a stated decision with no note this turn → block once, na
   passed(hook(b, "stop", p(DECISION, { prompt_id: "p-4" })));
 });
 
+test("decision rule: an outcome recorded this turn does not count as the note a stated decision needs", () => {
+  const b = sandbox();
+  const p = (message, extra = {}) => ({ ...payload(message, extra), cwd: b.work, session_id: "s-dec-o" });
+  hook(b, "session-start", { session_id: "s-dec-o", cwd: b.work, hook_event_name: "SessionStart", source: "startup" });
+  cli(b, ["outcome", "src/cache.ts", "kept the LRU cache"], { env: { LEDGER_SESSION_ID: "s-dec-o" } });
+  blocked(hook(b, "stop", p(DECISION)), /states a decision/);
+});
+
 test("decision rule: every default phrase fires, a phrase inside double quotes or code does not, the ask rule wins when both apply, the switch turns it off", () => {
   for (const phrase of PHRASES) {
     const v = checkStop(`Looking at the options, ${phrase} the smaller one for now.`, { forcing: DEFAULTS.forcing, turnNotes: 0 });

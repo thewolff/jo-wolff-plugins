@@ -60,7 +60,7 @@ test("push gate: `git push` and `gh pr create` are denied while the session has 
   for (const c of ["git push", "git push origin HEAD", "git -C . push --tags", "npm test && git push", "gh pr create --fill", "cd sub; gh pr create -t x"]) {
     const r = hook(b, "pre-tool-use", payload(c));
     assert.equal(r.json?.hookSpecificOutput?.permissionDecision, "deny", c);
-    assert.match(r.json.hookSpecificOutput.permissionDecisionReason, /^ledger: record what this push is before pushing: `node \S*scripts\/ledger\.mjs note "<what this push is and why>"` \(one note in this session lifts the gate\)\.$/);
+    assert.match(r.json.hookSpecificOutput.permissionDecisionReason, /^ledger: record what this push is before pushing: `node \S*scripts\/ledger\.mjs note "<what and why>"` or `node \S*scripts\/ledger\.mjs outcome <ref> "<what and why>"` \(one in this session lifts the gate\)\.$/);
   }
   const db = openDb(b);
   assert.equal(count(db, "cc_notes"), 0, "a deny writes nothing");

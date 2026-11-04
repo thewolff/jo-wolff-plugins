@@ -55,12 +55,13 @@ the human for permission. `… help` prints the whole grammar.
 
    When the decision or an answered question produces something concrete, record it:
    `… outcome <ref> [q-id] "<what it produced>"`, where `ref` is the PR URL, commit or path.
-   An outcome is a record, not a substitute for the `note`.
+   An outcome is a record, not a substitute for the `note` a stated decision needs.
 
-3. **Before `git push` or `gh pr create`: one `note` in this session.**
-   The PreToolUse hook denies both until the session holds a note; make it say what is being
-   pushed and why (`… note "pushing the retry fix to open PR; CI must run it"`). One note per
-   session lifts the gate for the rest of the session.
+3. **Before `git push` or `gh pr create`: one `note` or `outcome` in this session.**
+   The PreToolUse hook denies both until the session holds one; make it say what is being
+   pushed and why (`… note "pushing the retry fix to open PR; CI must run it"`, or
+   `… outcome <ref> "<what and why>"` once the ref exists). One per session lifts the gate for
+   the rest of the session.
 
 There is no "open" or "close": the folder you are in is the unit of work, and questions and
 notes bind to it (a question asked in the repo root is open for its subfolders too).

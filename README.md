@@ -481,14 +481,18 @@ ceiling) and the notes it records when it decides without asking, in one SQLite 
 machine. The agent asks in plain words and records your plain-words reply against the
 question's row itself; ids stay on the agent's side. Hooks inject the open questions and recent
 notes at session start, deny the AskUserQuestion tool until the question has a row, deny
-`git push` and `gh pr create` until the session has a note saying why, and send back once a
-reply that ends without recording an answer you gave, asks with no row, or states a decision
-without a note. Every hook fails open.
+`git push` and `gh pr create` until the session has a note or an outcome saying why, and send
+back once a reply that ends without recording an answer you gave, asks with no row, or states a
+decision without a note. Every hook fails open.
 
 The hooks are on in every folder by default. Type `/ledger:disable` in a session to turn them off
 for that folder (it writes `.ledger.json` there, found from any subfolder); `/ledger:enable` turns
 them back on. The plugin's tables are all prefixed `cc_`, so the database can be a SQLite file
 another tool already uses.
+
+Changes in 0.2.2: an `outcome` lifts the push gate the same as a `note`, so one
+`ledger outcome <ref> "<what and why>"` per push is enough. The Stop hook's decision rule still
+wants a `note` in the turn that states the decision.
 
 Changes in 0.2.1: you never type a question id. The agent asks in plain words and records your
 reply with `ledger answer`; the Stop hook sends a turn back once when you replied and the answer

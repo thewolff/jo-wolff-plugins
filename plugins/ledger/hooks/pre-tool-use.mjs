@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // pre-tool-use.mjs — PreToolUse: deny AskUserQuestion while no ledger question is open for
-// the folder, and deny a Bash `git push` / `gh pr create` while the session has no note.
+// the folder, and deny a Bash `git push` / `gh pr create` while the session has no note or outcome.
 //
 // Input read: tool_name, tool_input.command, session_id, cwd (hooks reference § PreToolUse
 // input, § Common input fields). hooks.json spawns this for AskUserQuestion and Bash only.
