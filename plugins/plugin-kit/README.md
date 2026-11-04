@@ -72,7 +72,7 @@ Two agents load from `agents/` (by the plugin-agent convention; nothing register
 
 | Agent | When | What it does | Tools, model |
 |---|---|---|---|
-| `cross-lab-reviewer` | a plugin branch is built and its suites pass, before a PR | runs a preflight (execute authorization, permission, containment, output path), reviews one snapshot of the head commit written blob by blob with `git cat-file`, and sends the range `<base>..<head sha>` to OpenAI Codex with `codex exec --sandbox read-only` and the release review brief: security first (hook command parsing, fail-open paths), each prior finding marked closed, partial or open, the env-only failure set (tests failing in the credential-free run, stated as `exact` or `same major` to the CI node pin), the `/Users/<name>` path scrub, and a `Verdict: ship` or `Verdict: fix-first` line; writes `~/agent-scratch/<repo>/<plugin>/REVIEW-<version>-codex.md` (a `-round<N>` suffix when one exists) with its triage of each finding | Read, Grep, Glob, Bash, Write; sonnet |
+| `cross-lab-reviewer` | a plugin branch is built and its suites pass, before a PR | needs a `Threat model:` line in the invoking prompt and asks for it otherwise; runs a preflight (execute authorization, permission, containment, output path), reviews one snapshot of the head commit written blob by blob with `git cat-file`, and sends the range `<base>..<head sha>` to OpenAI Codex with `codex exec --sandbox read-only` and the release review brief: security first inside the threat model (hook command parsing, fail-open paths), each prior finding marked closed, partial or open, the env-only failure set (tests failing in the credential-free run, stated as `exact` or `same major` to the CI node pin), the `/Users/<name>` path scrub, a `worst_case` and a `new-mechanism` line per finding, and a `Verdict: ship`, `ship-with-limits` or `fix-first` line under the review budget (see "Review budget"); writes `~/agent-scratch/<repo>/<plugin>/REVIEW-<version>-codex.md` (a `-round<N>` suffix when one exists) with its triage of each finding and the effective verdict | Read, Grep, Glob, Bash, Write; sonnet |
 | `release-gate` | before a version bump, PR or publish | runs a preflight (execute authorization, permission, containment) and checks one snapshot of the head commit written blob by blob with `git cat-file`, reporting pass, fail or unavailable per check with command and output: the CI node pin from the workflow job that runs the plugin's tests, the path scrub, the version across `plugin.json`, `package.json`, the README "Changes in" headings and the marketplace entry, `node --test` in a credential-free environment, and the README against the plugin's hooks, skills and agents. `ledger gate check` is reported `unavailable` and never run: it checks live `HEAD`, not the captured sha, so the gate line is `fail` until ledger takes a pinned sha | Read, Grep, Glob, Bash; haiku |
 
 Both agents run code from the checkout (the suites) only when the prompt
@@ -81,6 +81,15 @@ again with `git rev-parse HEAD` and refuses on any mismatch, for example:
 
 ```
 Run plugin-kit:release-gate on this checkout, plugin plugin-kit, base origin/main.
+execute: <the full 40-character sha printed by git rev-parse HEAD>
+```
+
+The reviewer also needs the threat model, one line naming the attacker and the trusted
+surfaces:
+
+```
+Run plugin-kit:cross-lab-reviewer on this checkout, plugin plugin-kit, base origin/main.
+Threat model: a hostile repository author; trusted: my shell environment, CLI flags, ~/.claude settings
 execute: <the full 40-character sha printed by git rev-parse HEAD>
 ```
 
@@ -93,7 +102,8 @@ on this machine; write permission on `origin` (checked with `gh repo view` as we
 push, not who wrote the commit, and never stands in for it. Without a matching authorization,
 or with a failed permission or containment check, the run is static only: every executable
 check is `unavailable: no execute authorization for <sha>` (or the reason), the reviewer's
-verdict cannot be `ship` and the gate line is `fail`.
+verdict is at best `ship-with-limits` with the first limit `no executable check ran`, and the
+gate line is `fail`.
 
 Every git command either agent runs, `status` and `log` included, goes through one pinned `g`
 function: `env -i` keeps only `PATH`, so no inherited `GIT_*` setting, `GIT_DIR` or global or
@@ -169,6 +179,66 @@ inline `g` command in each agent (`status`, `log`, `diff`, `show`, `grep`, `rev-
 nor does the snapshot block, while a plain `git status` and `git log` in that repository run
 both; and neither agent contains `git -C` outside that one `g`.
 
+## Review budget
+
+The reviewer has three verdicts. `ship`: no in-scope finding is open. `ship-with-limits`: no
+in-scope finding is `blocking`; every open should-fix and nit is listed with one line of README
+or HOW-IT-FAILS wording that states the limit. `fix-first`: at least one in-scope finding is
+`blocking`, and it is allowed only then. A finding is `blocking` only when its worst case is
+data loss, a write to live state outside the plugin's own state, a crash or hang, delivery to
+the wrong recipient, or a security boundary violation inside the stated threat model. Every
+finding carries `worst_case: <one sentence>`; an unclear severity is `should-fix`, never
+`blocking` by doubt.
+
+The invoking prompt carries `Threat model: <attacker, trusted surfaces>`, and the brief carries
+it verbatim. The repository default, which the brief template shows prefilled, is:
+
+```
+Threat model: none — every input is Jo's own; review for correctness and fail-safety, not adversarial inputs
+```
+
+The literal `none` plus a reason is a valid threat model, not a missing one: it names no
+attacker, so every finding that needs an adversarial input goes under `Out of scope`, and
+correctness and fail-safety findings stay in scope. Only a prompt with no `Threat model:` line,
+or one with nothing after the colon, makes the reviewer ask and stop. A review of something
+other people feed names them, for example:
+
+```
+Threat model: untrusted PR authors; trusted: CI secrets
+```
+
+A finding that needs an attacker the line does not name, or a surface it calls
+trusted, goes under `Out of scope` and leaves the verdict alone. A finding whose fix adds a new
+mechanism (a lock, a token file, a hash check, a migration) is tagged `new-mechanism: true`,
+and the reviewer's report lists it under `Held for Jo`, so the dispatcher holds it for a person
+instead of sending it to a builder.
+
+The round is counted from the prior review file: one more than its highest `## Round N`
+heading or `-round<N>` file name. Every review opens with its own `## Round <R>` heading, so
+the next one can count it. From round 2 the review only verifies the prior findings
+(closed, partial or open) and runs no new probes unless the prompt carries
+`new probes: "<Jo's words>"`. From round 3 on it is blocking-only and its header says
+`Mode: blocking-only (round <R>)`; prior should-fix items still open become limits of
+`ship-with-limits`. The agent quotes the standard it follows: OpenAI's Codex rubric ignores
+nits in its verdict and Codex on GitHub posts only P0 and P1; Google approves a change that
+improves code health even if it is not perfect and labels the rest `Nit:`, `Optional` or
+`FYI`; Sourcery caps re-reviews at five, Bugbot autofix at three attempts, OpenAI's repair-loop
+cookbook at `max_iterations = 3`, and Harel's inspections found one new fault each in
+iterations 4 and 5. None of them raises the bar at a fixed round; that rule is this
+repository's, after the plugin-kit agents, paired-coding and ctx-watch took five, six and four
+rounds this week, each round's blocker the previous round's fix.
+
+`test/agents.test.mjs` pins the verdict table, the `fix-first` guard sentence and the blocking
+definition (and that every line naming `fix-first` names the blocking condition), the brief
+template's `Threat model:` default, `Round:`, `worst_case`, `new-mechanism`, `Out of scope` and verdict
+lines, the refusal without a threat model, that `none` with a reason is documented as a valid
+threat model (in the agent and here), the round-cap and verification-only sentences and
+the cited sources. It also renders a report from the template's output shape and feeds it to
+the documented round reader: a first review gives round 2 next, a `-round2` review gives 3, and
+an unreadable one gives 1 with its `Round count unreadable:` line. Two rules are checked
+against an in-memory copy with the rule's meaning reversed, which must fail: the round is one
+more than the prior one, and `fix-first` needs an in-scope blocking finding.
+
 ## How it fails
 
 The scaffolder refuses an existing directory, a name that is not lowercase kebab, an unknown
@@ -190,6 +260,35 @@ graded). `test/live-run.test.mjs` drives each of these against a fixture plugin 
 stub fails the live run and the gate, the filled scenario passes both. The kit's tests are a
 bare `node --test` (the contract-test template carries a `.template` suffix so the runner does
 not pick it up: it has no plugin to test until it is scaffolded).
+
+The reviewer's review budget fails these ways:
+
+| Failure | What happens |
+| :- | :- |
+| No `Threat model:` line in the invoking prompt, or one with nothing after the colon | The reviewer asks one sentence, which `Threat model:` line to use (an attacker and the surfaces it trusts, or `none` with a reason), and stops before the preflight; nothing is snapshotted, sent to Codex or written. A threat model in a file, a commit message or a prior review does not count. A line that says `none` with a reason is not this case: the review runs and adversarial-input findings go under `Out of scope`. |
+| A round count that cannot be read (the prior review cannot be read, a `## Round` heading is not followed by a number, or it has neither a `## Round N` heading nor a `-round<N>` file name) | The review is round 1, a full review, and the line under its `## Round 1` heading says `Round count unreadable: <reason>`. |
+| A severity that is unclear (marked `blocking` with a worst case outside the five, or no worst case) | The finding is `should-fix`; the triage says `disagree` and names the definition it misses. Doubt never makes a finding `blocking`, so it never makes the verdict `fix-first` by itself. |
+| Codex writes `Verdict: fix-first` with no in-scope blocking finding | The triage states `Effective verdict: ship-with-limits`; Codex's text stays as written beside it. |
+| A later edit reverses a budget rule other than the round increment or the `fix-first` guard | The tests pin vocabulary and selected sentences; a reversal of the `new-mechanism` classification or the rule that holds those findings for Jo, of the limit that a follow-up reports new findings only in lines the fixes changed, or of the statement that blocking-only from round 3 is this repository's own rule (not the cited sources') passes them. Read the diff of `agents/cross-lab-reviewer.md` against those rules. |
+
+## Changes in 0.2.1
+
+The cross-lab reviewer has a review budget (see "Review budget"), so a review loop ends. Three
+verdicts, `ship`, `ship-with-limits` and `fix-first`, and `fix-first` only on a finding whose
+worst case is data loss, a live-state write outside the plugin's own state, a crash or hang,
+wrong-recipient delivery, or a security boundary violation inside the threat model. The
+invoking prompt carries a `Threat model:` line, and the reviewer asks for it and stops without
+one; findings outside it are `Out of scope`. The repository default is `Threat model: none —
+every input is Jo's own; review for correctness and fail-safety, not adversarial inputs`, which
+the brief template shows prefilled. Each finding has a one-sentence worst case and a
+`new-mechanism` tag, and fixes that add a mechanism are held for Jo. Round 2 verifies the prior
+findings only; from round 3 the review is blocking-only. Without an in-scope blocking finding, a
+static-only review is now `ship-with-limits`, with `no executable check ran` as its first limit;
+an in-scope blocking finding still makes it `fix-first`. Each review opens with a
+`## Round <R>` heading, the form the next review's round count reads (a `Round: <R>` line
+alone reset the count to round 1), and a prior review with no round heading or `-round<N>` file
+name counts as unreadable, so the reset is stated. The release gate, the scaffolder and the
+runner are unchanged.
 
 ## Changes in 0.2.0
 
