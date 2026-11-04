@@ -40,7 +40,9 @@ test("capCache: files past 7 days go whatever the count; past 2,000 files the ol
   assert.deepEqual(capCache(join(dir, "missing"), { now }), { removed: 0, bytes: 0, kept: 0 }, "no directory");
   fill(dir, 10, now);
   aged(join(dir, "00009.json"), MAX_AGE_DAYS + 1, now);
-  aged(join(dir, "00008.json"), MAX_AGE_DAYS, now);
+  // One second past the cutoff: a file at exactly `maxAgeDays` is kept (`mtimeMs >= cutoff`), and
+  // the stored mtime's float rounding would make an exact-boundary age flaky.
+  aged(join(dir, "00008.json"), MAX_AGE_DAYS + 1 / 86_400, now);
   assert.deepEqual(capCache(dir, { now, dryRun: true }), { removed: 2, bytes: 4, kept: 8 });
   assert.equal(readdirSync(dir).length, 10, "a dry run removes nothing");
   assert.deepEqual(capCache(dir, { now }), { removed: 2, bytes: 4, kept: 8 });
