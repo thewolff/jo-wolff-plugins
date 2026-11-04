@@ -149,7 +149,7 @@ test("step keeps the fields it does not own (intervalS, firstSeenAt) and caps st
   assert.equal(step({ ...EMPTY, strikes: MAX_STRIKES, episode: "down", popupShown: { daemon: true, semantic: false } }, fail, T0).state.strikes, MAX_STRIKES);
 });
 
-const semantic = { ok: false, reason: 'the ctx semantic index is not ready (.daemon.jobs.semantic_index.status = "budget_exhausted")', healable: false, healed: { attempted: false, ok: false, detail: "not attempted: the daemon is running; `ctx index mode auto` does not touch the semantic index" } };
+const semantic = { ok: false, reason: 'the ctx semantic index is not ready (.daemon.jobs.semantic_index.status = "budget_exhausted", last run "failed")', healable: false, healed: { attempted: false, ok: false, detail: "not attempted: the daemon is running; `ctx index mode auto` does not touch the semantic index" } };
 
 /** Drive `results` through step from `state`, delivering every popup asked for; the kinds popped, in order. */
 function drive(results, state = EMPTY) {

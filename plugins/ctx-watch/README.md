@@ -54,14 +54,15 @@ naming the field:
 | … more than 5 min ahead of this clock | `core_refresh in the future (…, 6m ahead of this clock; over 5m of skew)` |
 | … over 2 h old | `the ctx daemon runs but core_refresh last ran 3h ago (…)` |
 | `.daemon.jobs.semantic_index` missing | `` `ctx daemon status --format json` has no .daemon.jobs.semantic_index ``; fix `ctx semantic status` |
-| … `.semantic_enabled === true` and `.status !== "ready"` | `the ctx semantic index is not ready (.daemon.jobs.semantic_index.status = "budget_exhausted")`; fix `ctx semantic enable --wait` |
+| … `.semantic_enabled === true` and `.status !== "ready"`, except the resting `budget_exhausted` below | `the ctx semantic index is not ready (.daemon.jobs.semantic_index.status = "budget_exhausted", last run "failed")`; fix `ctx semantic enable --wait` |
+| … the resting `budget_exhausted` shape with `.last_run_at_ms` missing, invalid, over 2 h old, or over 60 s ahead of this clock | `semantic index budget_exhausted: last run 24h ago (semantic_index.last_run_at_ms, over 2h)`; fix `ctx semantic enable --wait` |
 
 **The semantic rows** (0.2.0) read the same `ctx daemon status` output: no second spawn. On
 2026-11-04 at 03:00 `ctx search --format json` reported `semantic_status: unavailable` and
 `semantic_fallback: flat-F32 projection is missing, stale, partial, or not pinned to Core
 generation …` while the daemon was healthy, and `ctx daemon status` read
 `.daemon.jobs.semantic_index.status = "budget_exhausted"` at the same time
-(`test/fixtures/ctx-daemon-status-semantic-not-ready.txt`); at 13:00 search reported `ready`
+(`test/fixtures/ctx-daemon-status-semantic-budget-exhausted-0300.txt`); at 13:00 search reported `ready`
 and so did the field. The cheapest call that exposes semantic status is the one already made:
 `ctx semantic status --format json` took 2.8 to 9 s and `ctx search --format json` 2.9 s,
 against 0.15 s for `daemon status`. ctx 2.3.0 has no rebuild verb (`ctx semantic --help`:
@@ -73,6 +74,35 @@ a second `enable` answered `status: "ready"`). `ctx index mode auto` is not trie
 rows: the daemon is up and the mode command would change nothing. Semantic search not enabled
 (`semantic_enabled: false`) is a pass with "semantic search not enabled" in the summary:
 nothing to watch. The daemon rows come first; a daemon that is down is one line, the daemon's.
+
+**`budget_exhausted` is a pass** (0.2.2) when the job also reads `runtime_active: true`, no
+`last_error`, `last_run_status` `budget_exhausted` or `ready`, and its own `last_run_at_ms` is at
+most 2 hours old (the Core staleness window) and at most 60 s ahead of this clock. The support for
+this rule is of three kinds, and only the first is measured:
+
+- **Observed.** Sampled every 8 s on 2026-11-04 13:22 to 13:43, the field cycled on its own,
+  about 4 minutes `budget_exhausted` and about 1 minute `ready`, with no one running
+  `ctx semantic enable`. In all 92 `budget_exhausted` samples `last_run_status` was
+  `budget_exhausted` too (never `ready`; accepting a `ready` last run is derived, not sampled),
+  `runtime_active` true, `last_error` absent, `indexed_chunks` absent in 84, and the job's own
+  `last_run_at_ms` 0.3 to 22 s old. 0.2.1 failed this state and popped twice that afternoon
+  (12:54 and 13:19) for an index that recovered within five minutes each time. Capture:
+  `test/fixtures/ctx-daemon-status-semantic-budget-exhausted.txt` (13:39).
+- **Inferred.** ctx 2.3.0's embedded JSON contract defines `budget_exhausted` for search's
+  `freshness.status` ("daemon-owned bounded maintenance left backlog while search served the
+  latest committed generation", listed apart from `failed`). Reading the semantic job's
+  `budget_exhausted` the same way is an analogy: the contract's `daemon.jobs.semantic_index`
+  section does not define it. On that reading, hybrid search answers lexically while the index
+  rests, and `ctx semantic enable --wait` would only wait for the next ready window.
+- **Not guaranteed.** No upstream ctx text was found that makes the semantic job's
+  `budget_exhausted` safe. `runtime_active` means the query service is owned, not that
+  iterations are progressing, and Core refresh runs independently, so a fresh `core_refresh`
+  says nothing about the semantic job. That is why its own `last_run_at_ms` is bounded: without
+  the bound a stalled indexer would pass on an old result indefinitely.
+
+A `budget_exhausted` without those marks (a failed last run, `runtime_active: false`, a
+`last_error`, no `last_run_status`) still fails, naming the last run; one with them but a
+missing, invalid, future, or stale `last_run_at_ms` fails naming the age.
 
 The supervisor check is the 10-28 failure (`install_failed`); the staleness check is a hung
 daemon, which launchd's `KeepAlive` cannot see. A status that contradicts `running` (missing,
@@ -293,7 +323,7 @@ semantic index (ctx 2.3.0 has no verb for it; the line names `ctx semantic enabl
 The Stop hook never blocks on its own fault (`evals/stop-fresh-start.scenario.json` is a Stop
 with nothing to say; `evals/stop-resume-warn.scenario.json`, `evals/stop-resume-block.scenario.json`,
 `evals/stop-resume-ctx-consulted.scenario.json` and `evals/stop-phrase-warn.scenario.json` the
-check's four answers; `evals/session-start-semantic-not-ready.scenario.json`,
+check's four answers; `evals/session-start-semantic-budget-exhausted.scenario.json`,
 `evals/session-start-daemon-down.scenario.json` and `evals/session-start-healthy.scenario.json`
 the SessionStart line's): no `transcript_path`, or a transcript it cannot read, is nothing to scan (one errors.log line when a resume marker was pending, since that
 resume went unchecked); a config file it cannot use is one errors.log line and `warn`; a
@@ -335,6 +365,19 @@ on PATH; it only reads the real install, works on a throwaway data root it print
 part of `node --test`); `ctx-daemon-status-semantic-not-ready.txt` is a one-off capture it does
 not remake.
 
+## Changes in 0.2.2
+
+A semantic index at `budget_exhausted` is a pass when the job also reads `runtime_active: true`,
+no `last_error`, `last_run_status` `budget_exhausted` or `ready`, and a `last_run_at_ms` at most
+2 hours old and at most 60 s ahead: the built-in-throttled indexer between budgeted runs (see
+*The semantic rows* above for what was observed, what is inferred, and what ctx does not
+guarantee). 0.2.1 failed it and popped twice on 2026-11-04 (12:54 and 13:19) for an index that
+came back to `ready` within five minutes each time. A `budget_exhausted` without those marks
+still fails, and its line now names the last run (`…status = "budget_exhausted", last run
+"failed"`) or its age (`semantic index budget_exhausted: last run 24h ago …`). The 03:00 capture is
+renamed `ctx-daemon-status-semantic-budget-exhausted-0300.txt`, a 13:39 capture is added, and
+the SessionStart scenario for it is now `session-start-semantic-budget-exhausted` (silent).
+
 ## Changes in 0.2.1
 
 `lib/hook-runner.mjs` is plugin-kit 0.3.1's, byte for byte (was 0.2.1's). The handler thread's
@@ -354,7 +397,8 @@ Two additions from [jo-issues #330](https://github.com/thewolff/jo-issues/issues
   shows up where the daemon rows do: one SessionStart line and, from the timer, one popup
   episode. `ctx index mode auto` is not tried for it. The healthy fixture is recaptured
   (2026-11-04 13:00, semantic `ready`); the 03:00 capture with `budget_exhausted` is
-  `test/fixtures/ctx-daemon-status-semantic-not-ready.txt`.
+  `test/fixtures/ctx-daemon-status-semantic-budget-exhausted-0300.txt` (named
+  `ctx-daemon-status-semantic-not-ready.txt` until 0.2.2, which passes it).
 - **The `consult-history` Stop check**: a resume, compaction or fork (SessionStart `source`),
   or a final message that says "we spoke previously", "earlier you said" or "as discussed",
   with no `ctx search` / `show session` / `show event` call since, is one line naming
