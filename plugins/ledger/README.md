@@ -240,7 +240,8 @@ appends one line to `${XDG_STATE_HOME:-~/.local/state}/ledger/errors.log` and te
 | hook times out | n/a | Claude Code cancels it; no injection | the tool proceeds | the stop proceeds | cut off | the prompt proceeds |
 | switch off in config | n/a | exit 0 before opening the database | same | same | same | same |
 | project disabled (`"enabled": false`) | the CLI works regardless | exit 0 before opening the database, nothing printed | same | same | same | same |
-| decision-log entry cannot be written (directory unwritable, git missing, a query throws) | n/a | n/a | n/a | n/a | the stamp stands; one `errors.log` line, no file | n/a |
+| decision-log entry cannot be written (directory unwritable, a query throws) | n/a | n/a | n/a | n/a | the stamp stands; one `errors.log` line, no file | n/a |
+| decision-log entry has nowhere to go (cwd in no git repository, git missing or slow) | n/a | n/a | n/a | n/a | the stamp stands; nothing written, nothing logged (not a fault) | n/a |
 | bounce row cannot be written | n/a | n/a | the deny or allow stands; one `errors.log` line | the block or pass stands; one `errors.log` line | the end stamp and the bypass update share one transaction, so neither lands; one `errors.log` line | n/a |
 | review lab unavailable (no binary, non-zero exit, timeout, empty reply) | `ledger review` records the lab `unavailable` with the error, exit 0 | n/a | the lab is left out of the verdict and named in a `systemMessage`; every lab unavailable allows the push with a `systemMessage` | n/a | n/a | n/a |
 | review gate cannot decide (git fails, a query throws) | n/a | the findings line is left out | allows the push with a `systemMessage`; one `errors.log` line | n/a | n/a | n/a |
@@ -464,8 +465,10 @@ allows marks the session's open ones satisfied.
 
 Since 0.3.3, SessionEnd leaves the record a manual `/wrap-up` (the newdle plugin's) would, in
 the same place and shape, when the session decided something through the ledger. It writes when
-all of these hold: the repository the session ran in (its git toplevel, else the cwd) has
-`.ai/decision-log/` (never created); the session recorded at least one answer (its own, or one
+all of these hold: the session's cwd is in a git repository git could name (one `git rev-parse`,
+one second; no repository, or git missing or slow, means no toplevel and nothing written, even
+with a `.ai/decision-log` beside the cwd) and its toplevel has `.ai/decision-log/` (never
+created); the session recorded at least one answer (its own, or one
 to a question it asked) or one note; `decisionLog.enabled` is not `false`; and no entry in the
 directory carries a time inside the session's start..end (its filename's `YYYY-MM-DD--HHMM`, else
 its mtime), which means a wrap-up already ran. Otherwise nothing is written.
@@ -487,8 +490,9 @@ never gets that plugin's SessionStart injection of the log. When `decisionLog.en
 `false` and the repository's toplevel has `.ai/decision-log/`, SessionStart appends one block
 after the ledger's own: the 5 newest entries (date, engineer, the title from the H1 or the
 filename, the first two body lines each), then every older entry whose frontmatter says
-`status: open` or `durable: true` (newest first, at most 10), the whole at most 3000 characters
-with an `N more not shown` line. It stands down where the newdle hook will inject: the nearest
+`status: open` or `durable: true` (newest first, as many as fit; there is no count cap below the
+budget), the whole at most 3000 characters including its `N more not shown` line, which counts
+every entry not shown. It stands down where the newdle hook will inject: the nearest
 `newdle-hooks.json` walking up from the toplevel (and from a linked worktree's main checkout)
 says `"hooks": "on"`, the plugin's own scope rule, copied, not called; an absent, malformed or
 `"off"` file is walked past or honoured as the plugin would. A newdle mute file is not read: a
