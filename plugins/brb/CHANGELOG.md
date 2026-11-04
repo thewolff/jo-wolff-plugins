@@ -32,6 +32,16 @@ a band above the prompt and keeps the list there after `back`.
 
 ### Changed
 
+- The band restarts with the conversation: `/clear`, `/resume` and `/branch` fire `session.end`
+  and then `classic.SessionStart` (source `clear`, `resume`, `fork`), never `session.start` again,
+  so the mod listens for both and starts over (one probe, one poll, the band from the new
+  conversation's state, the fallback line armed again); an answer from the last conversation that
+  lands after the restart is dropped.
+- The checklist puts rows still to act on first (in their own numbers), done rows after them while
+  there is room, then one `N done` line; `+N more` counts only rows still to act on, so an open row
+  and its Done button are never hidden behind done rows.
+- Every drawn line fits the band's width: a finite width is clamped at 0, the headline is capped
+  at 40 characters, and below 26 inner columns each button goes under its text.
 - `$.ui.status` is a fallback only: set where the band's render site is never asked to draw
   (from the first timer tick), cleared the first time the band draws.
 - The 5 s poll runs while away or while a checklist is up; the 1 s `$.fs.exists` probe only when

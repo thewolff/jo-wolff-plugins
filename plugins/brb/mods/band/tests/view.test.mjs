@@ -80,7 +80,7 @@ test("bandModel back: `BACK · N to act on` counts open rows; done rows stay, st
   const m = bandModel(back([{ text: "a", done: false }, { text: "b", done: true }, { text: "c", done: false }]));
   assert.equal(m.kind, "back");
   assert.equal(m.headline, "BACK · 2 to act on");
-  assert.deepEqual(m.rows.map((r) => [r.n, r.text, r.done]), [[1, "a", false], [2, "b", true], [3, "c", false]]);
+  assert.deepEqual(m.rows.map((r) => [r.n, r.text, r.done]), [[1, "a", false], [3, "c", false], [2, "b", true]], "open rows first, numbers kept");
   assert.equal(bandModel(back([{ text: "a", done: true }])), null);
   assert.equal(bandModel(back([])), null);
   assert.equal(bandModel({ ok: true, away: false, checklist: null }), null);
@@ -135,4 +135,83 @@ test("no emoji anywhere in a drawn band: every character is single-width", () =>
     const all = [...texts(tree), ...buttons(tree).map((b) => b.props.label)].join("");
     assert.doesNotMatch(all, /\p{Extended_Pictographic}/u, all);
   }
+});
+
+test("R1 S1: rows still to act on come first; 11 items with the first 10 done shows row 11 with a Done button and one `10 done` line; `+N more` counts only hidden open rows", () => {
+  const items = Array.from({ length: 11 }, (_, i) => ({ text: `item ${i + 1}`, done: i < 10 }));
+  const m = bandModel(back(items));
+  assert.equal(m.headline, "BACK · 1 to act on");
+  assert.deepEqual(m.rows.map((r) => [r.n, r.done]), [[11, false]]);
+  assert.equal(m.more, 0);
+  assert.equal(m.doneHidden, 10);
+  const calls = [];
+  const tree = bandTree(UI, m, { onDone: (i) => calls.push(i) });
+  const b = buttons(tree).find((x) => x.props.key === "done-11");
+  assert.equal(b.props.label, "Done");
+  b.props.onPress();
+  assert.deepEqual(calls, [10], "the original index");
+  assert.ok(texts(tree).includes("10 done"));
+  // 14 open after 2 done: 10 open rows, `+4 more` for the hidden open rows, `2 done` for the rest.
+  const many = Array.from({ length: 16 }, (_, i) => ({ text: `item ${i + 1}`, done: i < 2 }));
+  const mm = bandModel(back(many));
+  assert.deepEqual(mm.rows.map((r) => r.n), [3, 4, 5, 6, 7, 8, 9, 10, 11, 12]);
+  assert.equal(mm.more, 4);
+  assert.equal(mm.doneHidden, 2);
+});
+
+test("R1 S1: done rows fill the room left after the open rows, in their original numbering, with Undo", () => {
+  const m = bandModel(back([{ text: "a", done: true }, { text: "b", done: false }, { text: "c", done: true }, { text: "d", done: false }]));
+  assert.deepEqual(m.rows.map((r) => [r.n, r.done]), [[2, false], [4, false], [1, true], [3, true]]);
+  assert.equal(m.doneHidden, 0);
+  assert.equal(m.more, 0);
+  const labels = buttons(bandTree(UI, m)).map((b) => [b.props.key, b.props.label]);
+  assert.deepEqual(labels, [["clear", "Clear"], ["done-2", "Done"], ["done-4", "Done"], ["done-1", "Undo"], ["done-3", "Undo"]]);
+});
+
+test("R1 S1: a tight maxRows keeps every open row reachable before any done row; the lines never pass maxRows", () => {
+  const items = Array.from({ length: 8 }, (_, i) => ({ text: `item ${i + 1}`, done: i % 2 === 0 }));
+  for (const maxRows of [4, 5, 6, 7, 8, 9, 12]) {
+    const m = bandModel(back(items), { maxRows });
+    const lines = 2 + 1 + m.rows.length + (m.more > 0 ? 1 : 0) + (m.doneHidden > 0 ? 1 : 0);
+    // The floor is frame 2 + headline 1 + one open row + `+N more` + `N done` = 6; a taller band scrolls.
+    assert.ok(lines <= Math.max(maxRows, 6), `maxRows ${maxRows}: ${lines} lines`);
+    const shownOpen = m.rows.filter((r) => !r.done).length;
+    assert.equal(shownOpen + m.more, 4, `maxRows ${maxRows}: every open row is shown or counted`);
+    assert.equal(m.rows.filter((r) => r.done).length + m.doneHidden, 4, `maxRows ${maxRows}: every done row is shown or counted`);
+    if (m.rows.some((r) => r.done)) assert.equal(m.more, 0, "a done row is never shown while an open one is hidden");
+  }
+});
+
+test("R1 S2: clip clamps a finite budget at 0 (empty text) and keeps the whole text only for Infinity", () => {
+  assert.equal(clip("abcdefghijklmnop", -1), "");
+  assert.equal(clip("abcdefghijklmnop", 0), "");
+  assert.equal(clip("abcdefghijklmnop", 1), "…");
+  assert.equal(clip("abcdefghijklmnop", 2.9), "a…");
+  assert.equal(clip("abcdefghijklmnop", Infinity), "abcdefghijklmnop");
+});
+
+test("R1 S2: no drawn line is wider than the band at any width; a narrow band stacks each button under its text", () => {
+  const long = "x".repeat(100);
+  const snaps = [away({ items: [long, long], note: "lunch", onFire: 3 }), back([{ text: long, done: false }, { text: long, done: true }])];
+  for (const snap of snaps) {
+    for (const bodyColumns of [1, 4, 5, 8, 12, 13, 14, 15, 20, 25, 26, 30, 40, 80]) {
+      const m = bandModel(snap, { now: NOW, bodyColumns });
+      const inner = Math.max(0, bodyColumns - 4);
+      for (const t of texts(bandTree(UI, m))) assert.ok(t.length <= Math.max(inner, 0) || (t.length <= 4 && /^\d+\. ?$/.test(t)), `${snap.away ? "away" : "back"} ${bodyColumns}: ${JSON.stringify(t)} (${t.length})`);
+      if (inner < 26) assert.equal(m.compact, true, `${bodyColumns}: compact`);
+    }
+  }
+  const narrow = bandTree(UI, bandModel(back([{ text: long, done: false }]), { bodyColumns: 15 }));
+  const rowBox = nodes(narrow).find((n) => n.type === "Box" && (n.children ?? []).some((c) => c.type === "Button" && c.props.key === "done-1"));
+  assert.equal(rowBox.props.flexDirection, "column", "the Done button goes under the text");
+  const wide = bandTree(UI, bandModel(back([{ text: long, done: false }]), { bodyColumns: 80 }));
+  const wideBox = nodes(wide).find((n) => n.type === "Box" && (n.children ?? []).some((c) => c.type === "Button" && c.props.key === "done-1"));
+  assert.equal(wideBox.props.flexDirection, "row");
+});
+
+test("R1 N1: the whole headline is at most 40 characters, whatever the count or the duration", () => {
+  const h = awayHeadline(away({ since: "-271821-04-20T00:00:00.000Z", held: 1e20 }), NOW);
+  assert.ok(h.length <= HEADLINE_MAX, `${h.length}: ${h}`);
+  assert.ok(h.startsWith("AWAY "));
+  assert.ok(bandModel(back(Array.from({ length: 3 }, () => ({ text: "a", done: false }))), {}).headline.length <= HEADLINE_MAX);
 });

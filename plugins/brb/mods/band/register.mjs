@@ -19,10 +19,17 @@
 //     submitted (so `brb` and `back` show at once), at each main turn's start and end, after a
 //     button press, and every 5 s while away or while a checklist is up. Between those, while
 //     home with no checklist, the only poll is `$.fs.exists` on away.json once a second, which
-//     starts a query when the file appears. `session.end` cancels both timers;
+//     starts a query when the file appears. `session.end` cancels both timers and clears the band;
+//   - lifecycle: `session.start` fires once (and after a hot reload), never after /clear, /resume
+//     or /branch; those fire `session.end` and then `classic.SessionStart` with `source` `clear`,
+//     `resume` or `fork`. Both start hooks call begin(), which cancels the timers, resets every
+//     piece of session state (snapshot, band drawn, status line, suggestion), starts the timers
+//     exactly once, and bumps a generation counter, so a query answer that belongs to the last
+//     conversation is dropped. `startup` and `compact` are left alone: session.start covers
+//     startup, and compaction keeps the conversation;
 //   - `$.ui.status` is the fallback only: where the band's render site is never asked to draw
 //     (a host with no band), the one-line badge of 0.3.x is set under the prompt; the moment the
-//     band renders once, the line is cleared and stays clear.
+//     band renders once in a conversation, the line is cleared and stays clear.
 //
 // How it fails: every hook catches its own error, logs one dim transcript line (`$.ui.log`) and
 // passes the event on with `next(e)`; a query, an action or a home probe that fails clears the
@@ -51,6 +58,10 @@ let bandSeen = false;
 let ticked = false;
 let stateEnv = { xdgStateHome: undefined, home: undefined };
 let timers = [];
+let generation = 0;
+
+/** The sources of classic.SessionStart that begin a new conversation (the d.ts spelling: /branch reports `fork`). */
+const NEW_CONVERSATION = ["clear", "resume", "fork"];
 
 function pathUnder(root, rel) {
   return `${String(root).replace(/[\\/]+$/, "")}/${rel}`;
@@ -115,33 +126,35 @@ function applySnapshot($, next, where = "query") {
 /** Run query.mjs once and apply what it printed. Concurrent calls collapse into the one in flight. */
 async function refresh($) {
   if (inFlight) return snapshot;
+  const gen = generation;
   inFlight = true;
   try {
     const sessionId = await $.session.id();
     const script = pathUnder($.plugin.root, "mods/band/query.mjs");
     const run = await $.process.run(["node", ...queryArgv(script, sessionId)], { timeoutMs: SCRIPT_TIMEOUT_MS });
-    applySnapshot($, readSnapshot(run.stdout));
+    if (gen === generation) applySnapshot($, readSnapshot(run.stdout));
   } catch (err) {
-    applySnapshot($, { ok: false, error: errorText(err) });
+    if (gen === generation) applySnapshot($, { ok: false, error: errorText(err) });
   } finally {
-    inFlight = false;
+    if (gen === generation) inFlight = false;
   }
   return snapshot;
 }
 
 /** Run act.mjs with one verb, then refresh. A failed action is logged, and the band redrawn from the query either way. */
 async function act($, verb, index) {
+  const gen = generation;
   try {
     const sessionId = await $.session.id();
     const script = pathUnder($.plugin.root, "mods/band/act.mjs");
     const run = await $.process.run(["node", ...actArgv(script, sessionId, verb, index)], { timeoutMs: SCRIPT_TIMEOUT_MS });
     const result = readResult(run.stdout);
     if (!result.ok) throw new Error(result.error);
-    if (verb === "back") suggest($, "back");
+    if (verb === "back" && gen === generation) suggest($, "back");
   } catch (err) {
     await logFault($, verb, err);
   }
-  await refresh($);
+  if (gen === generation) await refresh($);
 }
 
 /** The poll (every POLL_MS): a query while away or while a checklist is up, so the duration and the count move. */
@@ -159,22 +172,65 @@ async function pollTick($) {
 async function probeTick($) {
   ticked = true;
   if (inFlight || (snapshot.ok && (snapshot.away || snapshot.checklist))) return;
+  const gen = generation;
   try {
     const path = awayPath({ ...stateEnv, sessionId: await $.session.id() });
-    if (path && (await $.fs.exists(path))) await refresh($);
+    if (path && (await $.fs.exists(path)) && gen === generation) await refresh($);
   } catch (err) {
-    applySnapshot($, { ok: false, error: errorText(err) }, "probe");
+    if (gen === generation) applySnapshot($, { ok: false, error: errorText(err) }, "probe");
   }
+}
+
+/** Cancel the timers and clear what this conversation drew: the band, the status line, the suggestion. Answers in flight are dropped. */
+function stop($) {
+  for (const t of timers) {
+    try {
+      t?.cancel?.();
+    } catch {
+      // already gone
+    }
+  }
+  timers = [];
+  generation++;
+  inFlight = false;
+  snapshot = emptySnapshot();
+  suggested = null;
+  lastError = null;
+  applyStatus($, undefined);
+  const key = JSON.stringify(bandModel(snapshot));
+  if (key !== viewKey) {
+    viewKey = key;
+    $.ui.invalidate("ui.render");
+  }
+}
+
+/** Start (or restart) one conversation: drop the last one's timers and state, then poll again, once. */
+async function begin($) {
+  stop($);
+  bandSeen = false;
+  ticked = false;
+  stateEnv = { xdgStateHome: await $.env.get("XDG_STATE_HOME"), home: await $.env.get("HOME") };
+  timers = [$.clock.every(PROBE_MS, () => probeTick($)), $.clock.every(POLL_MS, () => pollTick($))];
+  await refresh($);
 }
 
 export function register(on, options) {
   on("session.start", async ($, e, next) => {
     try {
-      stateEnv = { xdgStateHome: await $.env.get("XDG_STATE_HOME"), home: await $.env.get("HOME") };
-      timers = [$.clock.every(PROBE_MS, () => probeTick($)), $.clock.every(POLL_MS, () => pollTick($))];
-      await refresh($);
+      await begin($);
     } catch (err) {
       await logFault($, "session.start", err);
+    }
+    return next(e);
+  });
+
+  // /clear, /resume and /branch. The filter is the engine's; the check inside keeps a host that
+  // ignores filters from re-initialising at startup or compaction.
+  on("classic.SessionStart", { source: NEW_CONVERSATION }, async ($, e, next) => {
+    try {
+      if (NEW_CONVERSATION.includes(e?.source)) await begin($);
+    } catch (err) {
+      await logFault($, "classic.SessionStart", err);
     }
     return next(e);
   });
@@ -241,8 +297,7 @@ export function register(on, options) {
 
   on("session.end", async ($, e, next) => {
     try {
-      for (const t of timers) t?.cancel?.();
-      timers = [];
+      stop($);
     } catch (err) {
       await logFault($, "session.end", err);
     }

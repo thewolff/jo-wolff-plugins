@@ -26,11 +26,18 @@ const CHECKLIST = { ok: true, away: false, checklist: { at: SINCE, since: SINCE,
 
 /** An in-memory `$`: `timers` by interval, `runs` each query, `acts` each action, and what the mod set. */
 function stub({ snapshot = HOME, exists = async () => false } = {}) {
-  const s = { timers: new Map(), cancelled: [], runs: 0, acts: [], statuses: [], logs: [], suggestions: [], invalidations: 0, snapshot, exists };
+  const s = { timers: new Map(), live: new Set(), cancelled: [], runs: 0, acts: [], statuses: [], logs: [], suggestions: [], invalidations: 0, snapshot, exists, sessionId: "s1", hold: null };
   s.$ = {
     env: { get: async (name) => (name === "XDG_STATE_HOME" ? "/tmp/state" : name === "HOME" ? "/Users/example" : undefined) },
-    clock: { every: (ms, fn) => (s.timers.set(ms, fn), { cancel: () => s.cancelled.push(ms) }) },
-    session: { id: async () => "s1" },
+    clock: {
+      every: (ms, fn) => {
+        const handle = { ms, cancel: () => (s.live.delete(handle), s.cancelled.push(ms)) };
+        s.timers.set(ms, fn);
+        s.live.add(handle);
+        return handle;
+      },
+    },
+    session: { id: async () => s.sessionId },
     plugin: { root: "/p" },
     process: {
       run: async (argv) => {
@@ -39,7 +46,9 @@ function stub({ snapshot = HOME, exists = async () => false } = {}) {
           return { exitCode: 0, stdout: '{"ok":true}\n', stderr: "" };
         }
         s.runs++;
-        return { exitCode: 0, stdout: JSON.stringify(s.snapshot) + "\n", stderr: "" };
+        const answer = JSON.stringify(s.snapshot) + "\n";
+        if (s.hold) await s.hold;
+        return { exitCode: 0, stdout: answer, stderr: "" };
       },
     },
     prompt: { suggest: async ({ text }) => (s.suggestions.push(text), { isShown: true }) },
@@ -201,4 +210,75 @@ test("a failed action is logged and the band redrawn from the query", async () =
   await buttons(tree)[0].props.onPress();
   assert.deepEqual(s.logs, ["brb band: back: locked"]);
   assert.equal(s.runs, 2);
+});
+
+const CLASSIC = (source) => ({ source, sessionId: "s2", hookEventName: "SessionStart" });
+const end = (hooks, s, reason) => hooks.get("session.end")(s.$, { reason, sessionId: s.sessionId }, async () => ({}));
+const classic = (hooks, s, source) => hooks.get("classic.SessionStart")(s.$, CLASSIC(source), async () => ({}));
+
+for (const [where, e] of [["Desktop (surface null, not interactive)", DESKTOP], ["terminal", TERMINAL]]) {
+  for (const source of ["clear", "resume", "fork"]) {
+    test(`R1 B1 ${where}, ${source}: session.end then classic.SessionStart restarts exactly one poll and probe, drops the last conversation's band, and re-arms the fallback`, async () => {
+      const hooks = await load();
+      const s = stub({ snapshot: CHECKLIST });
+      await start(hooks, s, e);
+      assert.match(texts(await render(hooks, s))[0], /^BACK/);
+      await end(hooks, s, source === "fork" ? "resume" : source);
+      assert.equal(s.live.size, 0, "session.end cancels both timers");
+      s.sessionId = "s2";
+      s.snapshot = HOME;
+      await classic(hooks, s, source);
+      assert.equal(s.live.size, 2, "exactly the probe and the poll again");
+      assert.equal(await hooks.get("ui.render")(s.$, BAND, async () => "gone"), "gone", "no stale band");
+      s.snapshot = AWAY;
+      s.exists = async () => true;
+      await s.timers.get(1000)();
+      assert.match(texts(await render(hooks, s))[0], /^AWAY /, "the new conversation draws");
+    });
+  }
+
+  test(`R1 B1 ${where}: after /clear the fallback line is armed again until this conversation's band draws`, async () => {
+    const hooks = await load();
+    const s = stub({ snapshot: AWAY });
+    await start(hooks, s, e);
+    await render(hooks, s);
+    await end(hooks, s, "clear");
+    s.sessionId = "s2";
+    await classic(hooks, s, "clear");
+    await s.timers.get(5000)();
+    assert.match(s.statuses.at(-1), /^away 4[01]m · 2 held · say back$/);
+    await render(hooks, s);
+    assert.equal(s.statuses.at(-1), undefined);
+  });
+}
+
+test("R1 B1: classic.SessionStart at startup or compact changes nothing (no second poll, the band stays)", async () => {
+  const hooks = await load();
+  const s = stub({ snapshot: AWAY });
+  await start(hooks, s);
+  const runs = s.runs;
+  await classic(hooks, s, "startup");
+  await classic(hooks, s, "compact");
+  assert.equal(s.live.size, 2);
+  assert.equal(s.runs, runs);
+  assert.match(texts(await render(hooks, s))[0], /^AWAY /);
+});
+
+test("R1 B1: a query answer from the last conversation that lands after the new one began is dropped", async () => {
+  const hooks = await load();
+  const s = stub({ snapshot: HOME });
+  await start(hooks, s);
+  let release;
+  s.hold = new Promise((r) => (release = r));
+  s.snapshot = CHECKLIST;
+  const late = s.timers.get(1000) && hooks.get("turn.complete")(s.$, { turnId: "t" }, async () => ({}));
+  await tick();
+  s.hold = null;
+  await end(hooks, s, "clear");
+  s.sessionId = "s2";
+  s.snapshot = HOME;
+  await classic(hooks, s, "clear");
+  release();
+  await late;
+  assert.equal(await hooks.get("ui.render")(s.$, BAND, async () => "gone"), "gone", "the old checklist did not come back");
 });

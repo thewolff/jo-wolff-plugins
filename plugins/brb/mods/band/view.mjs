@@ -24,10 +24,12 @@
 
 import { BACK_WORD, elapsed } from "./data.mjs";
 
-/** The most characters a headline may run before the note is dropped. */
+/** The most characters a whole headline may run; the note is dropped first, then the rest is cut. */
 export const HEADLINE_MAX = 40;
 /** The most item rows the band shows before `+N more`. */
 export const ROWS_MAX = 10;
+/** Below this many inner columns a button no longer shares a row with its text: it goes under it. */
+export const COMPACT_BELOW = 26;
 /** The rows the band's frame takes whatever it shows: the top and bottom border. */
 const FRAME_ROWS = 2;
 /** Cells a row loses to the frame and padding (border + paddingX on both sides). */
@@ -40,25 +42,36 @@ const HEAD_BUTTON_COLUMNS = 10;
 export const AWAY_COLORS = Object.freeze({ border: "#E0B23C", background: "#3A2D12", headline: "#E0B23C", body: "#F3E7C9", muted: "#CDBF9A" });
 export const BACK_COLORS = Object.freeze({ border: "#48798F", background: "#14222B", headline: "#9CC9DF", body: "#DCE6EA", muted: "#9FB4BE" });
 
-/** `text` cut to `width` cells with a trailing `…`; whitespace collapsed first. `width` under 2 gives `…`. */
+/**
+ * `text` cut to `width` cells with a trailing `…`; whitespace collapsed first. Infinity (no width
+ * known) keeps the whole text; a finite width is floored and clamped at 0, so a width of 0 or
+ * less is `""` and a width of 1 is `…`.
+ */
 export function clip(text, width) {
   const t = String(text ?? "").replace(/\s+/g, " ").trim();
-  if (!Number.isFinite(width) || width <= 0) return t;
-  if (t.length <= width) return t;
-  return width < 2 ? "…" : `${t.slice(0, width - 1)}…`;
+  if (width === Infinity) return t;
+  const room = Math.max(0, Math.floor(Number(width) || 0));
+  if (t.length <= room) return t;
+  if (room === 0) return "";
+  return room === 1 ? "…" : `${t.slice(0, room - 1)}…`;
 }
 
-/** `AWAY 40m · 3 held`, with ` · <note>` when the whole stays within HEADLINE_MAX. */
+/** `AWAY 40m · 3 held`, with ` · <note>` when the whole stays within HEADLINE_MAX; never over HEADLINE_MAX. */
 export function awayHeadline(snapshot, now) {
   const base = `AWAY ${elapsed(snapshot.since, now)} · ${snapshot.held} held`;
   const note = String(snapshot.note ?? "").replace(/\s+/g, " ").trim();
   const withNote = note ? `${base} · ${note}` : base;
-  return withNote.length <= HEADLINE_MAX ? withNote : base;
+  return clip(withNote.length <= HEADLINE_MAX ? withNote : base, HEADLINE_MAX);
 }
 
-/** `BACK · 2 to act on`. */
+/** `BACK · 2 to act on`, never over HEADLINE_MAX. */
 export function backHeadline(open) {
-  return `BACK · ${open} to act on`;
+  return clip(`BACK · ${open} to act on`, HEADLINE_MAX);
+}
+
+/** Item rows the site's `maxRows` leaves after the frame, the headline and the sub-line; Infinity when no `maxRows`. */
+function itemRoom(maxRows, hasSub) {
+  return Number.isFinite(maxRows) && maxRows > 0 ? maxRows - FRAME_ROWS - 1 - (hasSub ? 1 : 0) : Infinity;
 }
 
 /**
@@ -69,27 +82,49 @@ export function backHeadline(open) {
 export function rowBudget({ total, maxRows, hasSub }) {
   if (total <= 0) return 0;
   let budget = Math.min(ROWS_MAX, total);
-  if (Number.isFinite(maxRows) && maxRows > 0) {
-    const fixed = FRAME_ROWS + 1 + (hasSub ? 1 : 0);
-    let room = maxRows - fixed;
-    if (room < total) room -= 1; // the `+N more` row
-    budget = Math.min(budget, room);
-  }
+  let room = itemRoom(maxRows, hasSub);
+  if (room < total) room -= 1; // the `+N more` row
+  budget = Math.min(budget, room);
   return Math.max(1, budget);
+}
+
+/**
+ * Which checklist rows to show, rows still to act on first: as many open rows as fit (at most
+ * ROWS_MAX, a `+N more` line for the open rows that do not), then, only once every open row is
+ * shown, the done rows in the room left: all of them or, when they do not all fit, none and one
+ * `N done` line instead. Every row keeps its index in the whole list.
+ * Returns { open: [index], done: [index], more, doneHidden }.
+ */
+export function checklistWindow(items, { maxRows } = {}) {
+  const open = [];
+  const done = [];
+  items.forEach((item, i) => (item.done ? done : open).push(i));
+  const room = itemRoom(maxRows, false);
+  let shownOpen = Math.min(open.length, ROWS_MAX);
+  const lines = (n) => n + (open.length > n ? 1 : 0) + (done.length > 0 ? 1 : 0);
+  while (shownOpen > 1 && lines(shownOpen) > room) shownOpen--;
+  const left = Math.min(ROWS_MAX - shownOpen, room - shownOpen);
+  const doneFits = shownOpen === open.length && done.length > 0 && done.length <= left;
+  return { open: open.slice(0, shownOpen), done: doneFits ? done : [], more: open.length - shownOpen, doneHidden: doneFits ? 0 : done.length };
 }
 
 /**
  * The lines the band draws from a snapshot, or null when there is nothing to draw (home with no
  * checklist, every checklist row done, or a query that failed):
- *   { kind: "away", headline, sub, rows: [{ n, text, done: false }], more, backRequested }
- *   { kind: "back", headline, sub: null, rows: [{ n, text, done }], more }
+ *   { kind: "away", headline, sub, rows: [{ n, text, done: false }], more, moreText, doneHidden: 0, doneText: null, compact, backRequested }
+ *   { kind: "back", headline, sub: null, rows: [{ n, text, done }], more, moreText, doneHidden, doneText, compact }
  * `n` is the row's 1-based number in the whole list; `text` is already clipped to the width the
- * row has beside its button. `maxRows` and `bodyColumns` are the site's props (absent → ROWS_MAX
- * rows, no clipping to width).
+ * row has (beside its button, or the whole width when `compact` puts the buttons under the text).
+ * `more` counts the hidden rows still to act on (`moreText` its `+N more` line, or null),
+ * `doneHidden` the done rows summed in one line (`doneText`, `N done`, or null); both clipped.
+ * `maxRows` and `bodyColumns` are the site's props: absent, ROWS_MAX rows and no clipping to width.
  */
 export function bandModel(snapshot, { now = Date.now(), maxRows, bodyColumns } = {}) {
   if (!snapshot?.ok) return null;
-  const width = Number.isFinite(bodyColumns) && bodyColumns > 0 ? bodyColumns - FRAME_COLUMNS : Infinity;
+  const width = Number.isFinite(bodyColumns) ? Math.max(0, bodyColumns - FRAME_COLUMNS) : Infinity;
+  const compact = width < COMPACT_BELOW;
+  const beside = (cells) => (compact ? width : width - cells);
+  const rowText = (n, text, button) => clip(text, beside(button) - `${n}. `.length);
   if (snapshot.away) {
     const sub = snapshot.backRequested
       ? `Back pressed · the next prompt ends the hold (Tab takes "${BACK_WORD}")`
@@ -98,15 +133,26 @@ export function bandModel(snapshot, { now = Date.now(), maxRows, bodyColumns } =
         : null;
     const items = snapshot.items ?? [];
     const shown = rowBudget({ total: items.length, maxRows, hasSub: sub !== null });
-    const rows = items.slice(0, shown).map((text, i) => ({ n: i + 1, text: clip(text, width - `${i + 1}. `.length), done: false }));
-    return { kind: "away", headline: clip(awayHeadline(snapshot, now), width - HEAD_BUTTON_COLUMNS), sub: sub && clip(sub, width), rows, more: items.length - shown, backRequested: snapshot.backRequested === true };
+    const rows = items.slice(0, shown).map((text, i) => ({ n: i + 1, text: rowText(i + 1, text, 0), done: false }));
+    const more = items.length - shown;
+    return { kind: "away", headline: clip(awayHeadline(snapshot, now), beside(HEAD_BUTTON_COLUMNS)), sub: sub && clip(sub, width), rows, more, moreText: more > 0 ? clip(`+${more} more`, width) : null, doneHidden: 0, doneText: null, compact, backRequested: snapshot.backRequested === true };
   }
   const items = snapshot.checklist?.items ?? [];
   const open = items.filter((i) => !i.done).length;
   if (!items.length || open === 0) return null;
-  const shown = rowBudget({ total: items.length, maxRows, hasSub: false });
-  const rows = items.slice(0, shown).map((item, i) => ({ n: i + 1, text: clip(item.text, width - `${i + 1}. `.length - DONE_BUTTON_COLUMNS), done: item.done === true }));
-  return { kind: "back", headline: clip(backHeadline(open), width - HEAD_BUTTON_COLUMNS), sub: null, rows, more: items.length - shown };
+  const win = checklistWindow(items, { maxRows });
+  const rows = [...win.open, ...win.done].map((i) => ({ n: i + 1, text: rowText(i + 1, items[i].text, DONE_BUTTON_COLUMNS), done: items[i].done === true }));
+  return {
+    kind: "back",
+    headline: clip(backHeadline(open), beside(HEAD_BUTTON_COLUMNS)),
+    sub: null,
+    rows,
+    more: win.more,
+    moreText: win.more > 0 ? clip(`+${win.more} more`, width) : null,
+    doneHidden: win.doneHidden,
+    doneText: win.doneHidden > 0 ? clip(`${win.doneHidden} done`, width) : null,
+    compact,
+  };
 }
 
 /**
@@ -116,27 +162,30 @@ export function bandModel(snapshot, { now = Date.now(), maxRows, bodyColumns } =
  */
 export function bandTree({ Box, Text, Button }, model, { onBack, onClear, onDone, theirs = null } = {}) {
   const colors = model.kind === "away" ? AWAY_COLORS : BACK_COLORS;
+  const direction = model.compact ? "column" : "row";
   const headButton =
     model.kind === "away"
       ? Button({ key: "back", label: "Back", hotkey: "b", dimColor: model.backRequested, onPress: () => onBack?.() })
       : Button({ key: "clear", label: "Clear", hotkey: "c", onPress: () => onClear?.() });
   const head = Box({
-    flexDirection: "row",
+    flexDirection: direction,
     columnGap: 2,
     children: [Box({ flexGrow: 1, children: [Text({ bold: true, color: colors.headline, wrap: "truncate-end", children: [model.headline] })] }), headButton],
   });
   const sub = model.sub ? [Text({ color: colors.muted, wrap: "truncate-end", children: [model.sub] })] : [];
-  const rows = model.rows.map((row) => {
-    const line = Text({ color: colors.body, dimColor: row.done, strikethrough: row.done, wrap: "truncate-end", children: [`${row.n}. ${row.text}`] });
+  const row = (r) => {
+    const line = Text({ color: colors.body, dimColor: r.done, strikethrough: r.done, wrap: "truncate-end", children: [`${r.n}. ${r.text}`] });
     if (model.kind !== "back") return line;
-    const hotkey = row.n <= 9 ? String(row.n) : undefined;
+    const hotkey = r.n <= 9 ? String(r.n) : undefined;
     return Box({
-      flexDirection: "row",
+      flexDirection: direction,
       columnGap: 1,
-      children: [Box({ flexGrow: 1, children: [line] }), Button({ key: `done-${row.n}`, label: row.done ? "Undo" : "Done", ...(hotkey ? { hotkey } : {}), dimColor: row.done, onPress: () => onDone?.(row.n - 1) })],
+      children: [Box({ flexGrow: 1, children: [line] }), Button({ key: `done-${r.n}`, label: r.done ? "Undo" : "Done", ...(hotkey ? { hotkey } : {}), dimColor: r.done, onPress: () => onDone?.(r.n - 1) })],
     });
-  });
-  const more = model.more > 0 ? [Text({ color: colors.muted, children: [`+${model.more} more`] })] : [];
+  };
+  const muted = (text, dim = false) => Text({ color: colors.muted, dimColor: dim, wrap: "truncate-end", children: [text] });
+  const more = model.moreText ? [muted(model.moreText)] : [];
+  const doneLine = model.doneText ? [muted(model.doneText, true)] : [];
   const band = Box({
     key: "brb-band",
     flexDirection: "column",
@@ -144,7 +193,7 @@ export function bandTree({ Box, Text, Button }, model, { onBack, onClear, onDone
     borderColor: colors.border,
     backgroundColor: colors.background,
     paddingX: 1,
-    children: [head, ...sub, ...rows, ...more],
+    children: [head, ...sub, ...model.rows.filter((r) => !r.done).map(row), ...more, ...model.rows.filter((r) => r.done).map(row), ...doneLine],
   });
   return theirs ? Box({ flexDirection: "column", children: [band, theirs] }) : band;
 }

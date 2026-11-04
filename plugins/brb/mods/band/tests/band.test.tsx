@@ -43,9 +43,10 @@ function stubs(on, { snapshot = AWAY as Snapshot, exists = false } = {}) {
   const logs: string[] = [];
   const probes: string[] = [];
   const queries: string[][] = [];
-  const state: { snapshot: Snapshot; exists: boolean } = { snapshot, exists };
+  const state: { snapshot: Snapshot; exists: boolean; session: string } = { snapshot, exists, session: SESSION };
   const clock = mock.clock(on);
-  on("session.id", () => ({ value: SESSION }));
+  on("session.id", () => ({ value: state.session }));
+  on("classic.SessionStart", () => ({}));
   on("session.start", () => ({ cwd: "/Users/example/code/this" }));
   on("session.end", ($, e) => ({ sessionId: e.sessionId }));
   on("turn.start", ($, e) => ({ turnId: e.turnId }));
@@ -72,7 +73,7 @@ function stubs(on, { snapshot = AWAY as Snapshot, exists = false } = {}) {
   on("process.run", ($, e) => {
     const script = String(e.argv[1] ?? "");
     if (script.endsWith("mods/band/query.mjs")) {
-      queries.push(e.argv.slice(2));
+      queries.push(e.argv.slice(2).concat(state.session === SESSION ? [] : ["@" + state.session]));
       return { value: { exitCode: 0, stdout: JSON.stringify(state.snapshot) + "\n", stderr: "" } };
     }
     if (script.endsWith("mods/band/act.mjs")) {
@@ -245,5 +246,65 @@ test("a prompt is refreshed after it entered: `brb` brings the band at once; the
   await clock.settle();
   const ui = await $.ui.mount({ ...BAND, surface: "terminal" });
   expect(await ui.find({ type: "Text", text: HEADLINE })).toBeDefined();
+  await ui.unmount();
+});
+
+for (const [where, payload, surface] of SESSIONS) {
+  for (const source of ["clear", "resume", "fork"] as const) {
+    test(`R1 B1 ${where}, ${source}: after session.end and classic.SessionStart the last conversation's band is gone, one poll runs again, and the new conversation draws`, async ($, on) => {
+      const { queries, statuses, state, clock } = stubs(on, { snapshot: CHECKLIST });
+      await $.session.start(payload);
+      let ui = await $.ui.mount({ ...BAND, surface });
+      expect(await ui.find({ type: "Text", text: "BACK · 3 to act on" })).toBeDefined();
+      await ui.unmount();
+      await $.session.end({ reason: source === "fork" ? "resume" : source, sessionId: SESSION });
+      state.session = "s-next";
+      state.snapshot = HOME;
+      await $.classic.SessionStart({ source, sessionId: "s-next", hookEventName: "SessionStart" });
+      await clock.settle();
+      ui = await $.ui.mount({ ...BAND, surface });
+      expect(await ui.find({ type: "Text", text: /^BACK/ })).toBeUndefined();
+      expect(await ui.find({ type: "Text", text: THEIRS })).toBeDefined();
+      await ui.unmount();
+      const before = queries.length;
+      state.snapshot = AWAY;
+      state.exists = true;
+      await clock.advance(1000);
+      expect(queries.length).toBe(before + 1);
+      expect(queries.at(-1)).toEqual(["--session", "s-next", "@s-next"]);
+      await clock.advance(5000);
+      expect(queries.length).toBe(before + 2);
+      ui = await $.ui.mount({ ...BAND, surface });
+      expect(await ui.find({ type: "Text", text: HEADLINE })).toBeDefined();
+      await ui.unmount();
+      expect(statuses.at(-1)).toBe(undefined);
+    });
+  }
+}
+
+test("R1 B1: classic.SessionStart at startup and compact leaves the band and the poll as they were", async ($, on) => {
+  const { queries, clock } = stubs(on);
+  await $.session.start({ surface: "terminal", isInteractive: true, cwd: "/Users/example/code/this" });
+  await $.classic.SessionStart({ source: "startup", sessionId: SESSION, hookEventName: "SessionStart" });
+  await $.classic.SessionStart({ source: "compact", sessionId: SESSION, hookEventName: "SessionStart" });
+  expect(queries.length).toBe(1);
+  await clock.advance(5000);
+  expect(queries.length).toBe(2);
+  const ui = await $.ui.mount({ ...BAND, surface: "terminal" });
+  expect(await ui.find({ type: "Text", text: HEADLINE })).toBeDefined();
+  await ui.unmount();
+});
+
+test("R1 S1: 11 checklist rows with the first 10 done: row 11 shows with its Done button and `10 done` sums the rest", async ($, on) => {
+  const items = Array.from({ length: 11 }, (_, i) => ({ text: `item ${i + 1}`, done: i < 10 }));
+  const { acts, clock } = stubs(on, { snapshot: { ...CHECKLIST, checklist: { ...CHECKLIST.checklist, items } } });
+  await $.session.start({ surface: "terminal", isInteractive: true, cwd: "/Users/example/code/this" });
+  const ui = await $.ui.mount({ ...BAND, surface: "terminal" });
+  expect(await ui.find({ type: "Text", text: "11. item 11" })).toBeDefined();
+  expect((await ui.find({ key: "done-11" }))?.props.label).toBe("Done");
+  expect(await ui.find({ type: "Text", text: "10 done" })).toBeDefined();
+  await ui.press({ key: "done-11" });
+  await clock.settle();
+  expect(acts).toEqual([["done", "10"]]);
   await ui.unmount();
 });

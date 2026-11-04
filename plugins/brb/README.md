@@ -240,10 +240,16 @@ plugins can ship mods; `hooks/hooks.json` names the module, `mods/band/register.
 ╭──────────────────────────────────────────────────────────────────────╮
 │ BACK · 2 to act on                                         [ Clear ] │
 │ 1. Create the read-token secret on the org?                 [ Done ] │
-│ 2. Billing limit on the org: raise it?                      [ Undo ] │  ← struck, dim
 │ 3. Clear the review round                                   [ Done ] │
+│ 2. Billing limit on the org: raise it?                      [ Undo ] │  ← struck, dim
 ╰──────────────────────────────────────────────────────────────────────╯
 ```
+
+Rows still to act on come first, in their own numbers; done rows follow, struck, while there is
+room, and when there is not they fold into one `N done` line. `+N more` counts only the rows still
+to act on that did not fit, so a row you have not done is never hidden behind a done one. On a
+narrow band (under 26 columns inside the border) each button sits under its text instead of
+beside it, and no line runs wider than the band.
 
 Done strikes a row and keeps it (Undo puts it back); the choice is saved in `checklist.json`, so
 it survives a restart of the window. The band clears when every row is done, or on Clear. A hold
@@ -273,7 +279,12 @@ even one swapped in or grown after the check, is a fault, never a parse; an `awa
 session start, after each prompt enters (so `brb` and `back` show at once), at the start and end
 of each of your turns, after each button press, and every 5 s while away or while a checklist is
 up. While home with no checklist the only poll is `$.fs.exists` on `away.json` inside Claude
-Code, once a second, which starts a query when the file appears. `session.end` stops both timers.
+Code, once a second, which starts a query when the file appears. `session.end` stops both timers
+and clears the band. `/clear`, `/resume` and `/branch` end the conversation and start another in
+the same window: the mod's `session.start` does not fire again, so it also listens for
+`classic.SessionStart` with source `clear`, `resume` or `fork`, and starts over from there, with
+one probe and one poll, the new conversation's state, and any answer the last conversation still
+had in flight dropped.
 
 **Faults** go the way the hooks' do: a query, an action or a home probe that fails clears the
 band and writes one dim transcript line (`brb band: query: …`, `brb band: probe: …`,
