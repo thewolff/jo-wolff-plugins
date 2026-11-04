@@ -42,7 +42,7 @@ installed from are never where a plugin lands):
 | `test/hook-contract.test.mjs` | per hook: empty stdin, malformed JSON, an unknown event, an unwritable state directory, no config → exit 0 inside 5 s, no deny/block/`continue: false`; malformed JSON → one errors.log line and a systemMessage |
 | `test/fixtures/README.md` | the rule that every captured `<x>.txt` has an `<x>.unavailable.txt` sibling, and how to capture one |
 | `e2e/live-run.sh` | the nightly canary's live run, under the canary contract (exit 0 pass, exit 75 unavailable with the reason on the last line, stdout kept); hands off to `lib/live-run.mjs` |
-| `lib/live-run.mjs` | a copy of this plugin's [`lib/live-run.mjs`](lib/live-run.mjs), the scenario runner: replays every `evals/*.scenario.json` against the plugin's hooks in a sandbox (an empty HOME, XDG dirs and TMPDIR, a `git init`ed work directory; the caller's `LEDGER_*` and the plugin's own `<NAME>_*` env keys dropped), classifies the hooks' stdout as one outcome (`deny`, `ask`, `allow`, `systemMessage`, `silent`) and compares it with `expect`; then, when `claude` is on PATH, the pinned CLI-contract session and every scenario with a `session` under `claude -p` (`--setting-sources ""`, temp XDG dirs, `SHELL=/bin/sh`), and a `judge` rubric graded by `claude plugin eval`. Files the run left outside its work directory are printed as `wrote: <placeholder path>` for the gate's retention row. `--no-live` replays the hook phase only; `--only a,b` narrows the scenarios |
+| `lib/live-run.mjs` | a copy of this plugin's [`lib/live-run.mjs`](lib/live-run.mjs), the scenario runner: replays every `evals/*.scenario.json` against the plugin's hooks in a sandbox (an empty HOME, XDG dirs and TMPDIR, a `git init`ed work directory; the caller's `LEDGER_*` and the plugin's own `<NAME>_*` env keys dropped), classifies the hooks' stdout as one outcome (`deny`, `ask`, `allow`, `systemMessage`, `silent`) and compares it with `expect`; then, when `claude` is on PATH, the pinned CLI-contract session and every scenario with a `session` under `claude -p` (`--setting-sources ""`, temp XDG dirs, `SHELL=/bin/bash`), and a `judge` rubric graded by `claude plugin eval`. Files the run left outside its work directory are printed as `wrote: <placeholder path>` for the gate's retention row. `--no-live` replays the hook phase only; `--only a,b` narrows the scenarios |
 | `evals/manifest.json` | each registered event → `["silent"]` until the handler does more; `manual` for what no scenario can prove |
 | `evals/<event>.scenario.json` | one stub per event, `"stub": true` with the event's well-formed input as `stdin` and `expect: "silent"`; `ledger gate check` fails the `evals` row naming it until the stub is filled |
 | `scripts/prune.mjs` | the retention verb the `state` declaration names: `node scripts/prune.mjs [--days 30] [--dry-run]` removes files under `$XDG_STATE_HOME/<name>` older than that (errors.log kept) and prints `pruned: <n> file(s), <bytes> bytes freed` last; the canary records the bytes |
@@ -205,9 +205,11 @@ takes only a relative `--eval-dir` inside the plugin), runs the eval with `--no-
 and reads the verdict from the JSON, never the exit code (a case that fails to load exits 0),
 and removes the directory whatever happened; the operator-gated tools the scenario's
 `allowedTools` names (Bash, Write, Edit, WebFetch, `mcp__*`) are granted with `--allow-tools`.
-Live sessions run with `SHELL=/bin/sh` pinned: the CLI snapshots the user's shell at startup,
-and a zsh rc that writes under the sandbox's `XDG_CONFIG_HOME` (thefuck's settings, measured)
-read as the plugin's own write. A judge scenario the eval could not grade (no `claude`, not
+Live sessions run with `SHELL=/bin/bash` pinned: the CLI snapshots the user's shell at startup
+and sources its rc, and given `sh` it falls back to zsh (measured on 2.1.318: `$SHELL` inside
+the Bash tool was `/bin/zsh`, with `ZDOTDIR` unset and set alike), so a zsh rc that writes under
+the sandbox's `XDG_CONFIG_HOME` (thefuck's settings, measured) read as the plugin's own write;
+bash with no rc writes nothing. A judge scenario the eval could not grade (no `claude`, not
 logged in, an API error) leaves the run `unavailable` (exit 75), never a pass, even when the
 contract session passed. The scaffolder's CLI guard compares real paths on both sides
 (`realpathSync` of `argv[1]` and of the module), the fix ledger 0.3.5 and the other plugins

@@ -483,9 +483,11 @@ export function runSession({ pluginDir, pluginName, prompt, allowedTools = ["Rea
   }
   if (allowedTools.length) args.push("--allowedTools", ...allowedTools);
   args.push("--", prompt);
-  // SHELL pinned: the CLI snapshots $SHELL at startup, and the user's zsh rc writes under the
-  // sandbox's XDG_CONFIG_HOME (thefuck's settings.py, measured), which would read as the plugin's.
-  const childEnv = { ...scrubEnv(env, pluginName), ...box.env, HOME: home, SHELL: "/bin/sh", CLAUDE_CODE_ENTRYPOINT: "cli", ...extraEnv };
+  // SHELL pinned to bash: the CLI snapshots the shell at startup and sources its rc; given sh it
+  // falls back to zsh and the user's zsh rc, whose writes under the sandbox's XDG_CONFIG_HOME
+  // (thefuck's settings.py, measured on 2.1.318 with SHELL=/bin/sh and with ZDOTDIR unset and
+  // set) would read as the plugin's. bash with no rc writes nothing.
+  const childEnv = { ...scrubEnv(env, pluginName), ...box.env, HOME: home, SHELL: "/bin/bash", CLAUDE_CODE_ENTRYPOINT: "cli", ...extraEnv };
   if (env.CLAUDE_CONFIG_DIR) childEnv.CLAUDE_CONFIG_DIR = env.CLAUDE_CONFIG_DIR;
   delete childEnv.CLAUDE_PLUGIN_ROOT;
   delete childEnv.CLAUDE_PROJECT_DIR;
