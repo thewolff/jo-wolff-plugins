@@ -46,6 +46,24 @@ export function openQuestions(db, cwd) {
 }
 
 /**
+ * The open questions that belong to session `sessionId`, newest first: rows tagged with it, plus
+ * untagged rows (a CLI run without LEDGER_SESSION_ID) in or around `cwd` asked at or after the
+ * session row's started_at. `askedBy` keeps only questions asked at or before that ISO stamp.
+ * No session id → [].
+ */
+export function sessionQuestions(db, { sessionId, cwd, askedBy = null }) {
+  if (!sessionId) return [];
+  const session = db.prepare("SELECT started_at FROM cc_sessions WHERE id = ?").get(sessionId);
+  const since = session?.started_at ?? null;
+  const rows = db
+    .prepare("SELECT * FROM cc_questions WHERE state = 'open' AND (session_id = ? OR (session_id IS NULL AND ? IS NOT NULL AND asked_at >= ?)) ORDER BY asked_at DESC, id DESC")
+    .all(sessionId, since, since ?? "");
+  return rows
+    .filter((q) => (q.session_id === sessionId || isWithin(cwd, q.cwd) || isWithin(q.cwd, cwd)) && (!askedBy || q.asked_at <= askedBy))
+    .map(parseQuestion);
+}
+
+/**
  * The `note` rows that belong to session `sessionId`, oldest first: rows tagged with it, plus
  * untagged rows (a CLI run without LEDGER_SESSION_ID) in or around `cwd` made at or after the
  * session row's started_at. `after` keeps only notes made after that ISO stamp (this turn).
@@ -316,7 +334,7 @@ function ask(db, parsed, by, iso, now, ctx) {
      VALUES (?,?,?,?,?,?,?,?,?,?,?,?,'open',?,?,?)`,
   ).run(id, ctx.cwd, kind, name, body, about, optionsJson, allows ? JSON.stringify(allows) : null, def, ceiling, deadline, span, by, iso, ctx.sessionId ?? null);
   const q = getQuestion(db, id);
-  return ok(id, `${id} asked for ${ctx.cwd}; end your message with this line:\n${pendingLines(q, { now, timezone: ctx.config?.timezone ?? null }).join("\n")}`);
+  return ok(id, `${id} asked for ${ctx.cwd}; ask the human in plain words without showing this id, then record their reply with \`answer ${id} <option>\`:\n${pendingLines(q, { now, timezone: ctx.config?.timezone ?? null }).join("\n")}`);
 }
 
 function answer(db, parsed, by, via, iso, now, ctx) {

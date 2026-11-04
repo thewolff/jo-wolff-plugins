@@ -118,6 +118,12 @@ export const MIGRATIONS = [
       );
     `);
   },
+  // 2: the prompt_id of the session's last Stop. A Stop with a different prompt_id is a new turn,
+  // so the human has written since that last Stop; the Stop hook uses it to ask the agent to
+  // record the answer to a question asked before then.
+  (db) => {
+    db.exec("ALTER TABLE cc_sessions ADD COLUMN last_stop_prompt TEXT");
+  },
 ];
 
 export const SCHEMA_VERSION = MIGRATIONS.length;

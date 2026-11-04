@@ -44,8 +44,8 @@ export function allowRule(p = cliPath()) {
 export function verbSummary() {
   return [
     `ledger: questions to the human and decisions made without asking are recorded with the \`ledger\` CLI. Always run it exactly as \`${invocation()} <verb> …\` (that literal path, no alias, no shell variable, no cd) so the one allow rule \`${allowRule()}\` matches and Claude Code never asks about it.`,
-    "Verbs: ask \"<body>\" --name <short> --options a,b --default a · <word> <q-id> · approve/deny <q-id> · withdraw <q-id> · extend <q-id> · note \"<text>\" · pending · log [N] · help.",
-    "Ask through `ledger ask` and end the message with its `pending` line; record a choice made without asking with `note`, in the same turn you state it. `git push` and `gh pr create` need one `note` in this session first. `ledger help` has the grammar.",
+    "Verbs: ask \"<body>\" --name <short> --options a,b --default a · answer <q-id> <option> · withdraw <q-id> · extend <q-id> · note \"<text>\" · pending · log [N] · help.",
+    "To ask the human: run `ledger ask` first, then ask in plain words. Never show the human a q- id; ids are for you. When the human replies, run `ledger answer <q-id> <option>` with the option their words mean before anything else. Record a choice made without asking with `note`, in the same turn you state it. `git push` and `gh pr create` need one `note` in this session first. `ledger help` has the grammar.",
   ].join("\n");
 }
 
@@ -59,7 +59,7 @@ export function buildInjection(db, cwd, config, { source = "startup", now = Date
   const questions = openQuestions(db, cwd);
   let questionsText = "";
   if (questions.length) {
-    questionsText = `ledger: open questions for ${cwd} (answer with the line as shown, e.g. \`approve q-…\`):\n${renderPending(questions, cwd, { now, timezone: config.timezone ?? null })}`;
+    questionsText = `ledger: open questions for ${cwd} (for you, not the human: when the human answers one in their own words, record it with \`answer <q-id> <option>\`; never show them the id):\n${renderPending(questions, cwd, { now, timezone: config.timezone ?? null })}`;
     sections.push("questions");
   }
 

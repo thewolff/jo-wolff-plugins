@@ -1,19 +1,23 @@
-// stop-rules.mjs — the checks the Stop hook runs on `last_assistant_message`, pure.
+// stop-rules.mjs — the checks the Stop hook runs, pure. The hook reads the store and passes in
+// what each rule needs; nothing here reads a q- id out of the reply.
 //
+//   answer rule    (forcing.stopAskRule)       the session has open questions asked before the
+//                  human's latest prompt (`dueQuestions`) → block: the human has replied, so the
+//                  agent records the answer from that reply (`answer <q-id> <option>`) before it
+//                  finishes. The ids go to the agent only; the human never has to type one.
 //   ask rule       (forcing.stopAskRule)       after removing fenced code blocks and inline
-//                  code, some line ends with `?` AND the message names no q- id that is an open
-//                  question in scope → block: the agent asked the human something without a
-//                  ledger row. Messages under MIN_CHARS substantive characters are not checked.
+//                  code, some line ends with `?` AND the session has no open question row →
+//                  block: the agent asked the human something without a ledger row. Messages
+//                  under MIN_CHARS substantive characters are not checked.
 //   decision rule  (forcing.stopDecisionRule)  after removing code and double-quoted spans, the
 //                  message contains one of forcing.decisionPhrases (whole words, any case) AND
 //                  no `note` was recorded in this turn → block: a decision was stated but not
 //                  recorded. Quoted text is skipped so a reply that cites the human's words or
 //                  a file does not count. No length floor: "Chose A." is a decision too.
 //
-// The ask rule is checked first; one block per Stop.
+// Checked in that order; one block per Stop.
 
 export const MIN_CHARS = 40;
-const Q_ID_RE = /\bq-[a-z0-9]+\b/g;
 
 /** The message without fenced blocks and inline code. */
 export function stripCode(text) {
@@ -30,7 +34,14 @@ export function stripQuoted(text) {
 }
 
 export function askReason(cli = "ledger") {
-  return `ledger: this turn asks the human a question but names no open question row. Run \`${cli} ask "<the question>" --name <short> --options <a,b> --default <a>\` and end the message with the \`pending\` line for it (the q-id, the default, what each option allows).`;
+  return `ledger: this turn asks the human a question but this session has no open question row. Run \`${cli} ask "<the question>" --name <short> --options <a,b> --default <a>\` first, then ask in plain words without showing the human the q- id; when they reply, record it with \`${cli} answer <q-id> <option>\`.`;
+}
+
+/** @param questions open questions, newest first: { id, name, body } */
+export function answerReason(questions, cli = "ledger") {
+  const list = questions.map((q) => `${q.id} (${q.name}): ${q.body}`).join("\n");
+  const one = questions.length === 1;
+  return `ledger: the human has written since you asked ${one ? "this question" : "these questions"}, and ${one ? "it has" : "they have"} no answer recorded:\n${list}\nTake the answer from the human's latest message and run \`${cli} answer <q-id> <option>\` for ${one ? "it" : "each"} (or \`${cli} withdraw <q-id>\` if they set it aside), then finish. Do not show the q- id to the human.`;
 }
 
 export function decisionReason(phrase, cli = "ledger") {
@@ -50,20 +61,19 @@ export function decisionPhrase(text, phrases) {
 }
 
 /**
- * @param message               last_assistant_message
- * @param opts.openQuestionIds  ids of open questions in scope
- * @param opts.turnNotes        how many `note` rows this session recorded during this turn
- * @param opts.forcing          { stopAskRule, stopDecisionRule, decisionPhrases }
- * @returns {null | { rule: 'stopAskRule'|'stopDecisionRule', reason: string }}
+ * @param message                   last_assistant_message
+ * @param opts.dueQuestions         open questions of this session asked before the human's latest prompt, newest first
+ * @param opts.sessionHasOpenQuestion whether this session has any open question row
+ * @param opts.turnNotes            how many `note` rows this session recorded during this turn
+ * @param opts.forcing              { stopAskRule, stopDecisionRule, decisionPhrases }
+ * @returns {null | { rule: 'stopAnswerRule'|'stopAskRule'|'stopDecisionRule', reason: string }}
  */
-export function checkStop(message, { openQuestionIds = [], turnNotes = 0, forcing = {}, cli = "ledger" } = {}) {
+export function checkStop(message, { dueQuestions = [], sessionHasOpenQuestion = false, turnNotes = 0, forcing = {}, cli = "ledger" } = {}) {
+  if (forcing.stopAskRule !== false && dueQuestions.length) return { rule: "stopAnswerRule", reason: answerReason(dueQuestions, cli) };
   const text = stripCode(message);
-  if (forcing.stopAskRule !== false && text.replace(/\s+/g, "").length >= MIN_CHARS) {
+  if (forcing.stopAskRule !== false && !sessionHasOpenQuestion && text.replace(/\s+/g, "").length >= MIN_CHARS) {
     const lines = text.split("\n").map((l) => l.trim());
-    if (lines.some((l) => l.endsWith("?"))) {
-      const named = new Set(text.match(Q_ID_RE) ?? []);
-      if (!openQuestionIds.some((id) => named.has(id))) return { rule: "stopAskRule", reason: askReason(cli) };
-    }
+    if (lines.some((l) => l.endsWith("?"))) return { rule: "stopAskRule", reason: askReason(cli) };
   }
   if (forcing.stopDecisionRule !== false && turnNotes === 0) {
     const phrase = decisionPhrase(stripQuoted(text), forcing.decisionPhrases);

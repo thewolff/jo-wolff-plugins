@@ -1,14 +1,15 @@
 # ledger
 
 A durable, id'd record of the questions an agent asks you and the choices it makes without
-asking, kept in one SQLite file on your machine. Every question gets a `q-` id with one-word
-options; you answer by typing the word and the id back. Every unasked decision gets an `nt-`
-note. A CLI the agent runs, a batch mode that applies a pasted block line by line, and five
-hooks that make the record hard to skip: open questions and recent notes are injected at session
-start, the AskUserQuestion tool is denied until the question has a row, `git push` and
-`gh pr create` are denied until the session has a note saying why, a reply that asks you
-something without naming its row or states a decision without a note is sent back once, and
-`approve q-…` lines you type into a prompt are applied before Claude reads them.
+asking, kept in one SQLite file on your machine. The agent asks you in plain words and you
+answer in plain words; it records each question as a `q-` row and records your reply against
+it, and the ids stay on its side. Every unasked decision gets an `nt-` note. A CLI the agent
+runs, a batch mode that applies a pasted block line by line, and five hooks that make the record
+hard to skip: open questions and recent notes are injected at session start, the
+AskUserQuestion tool is denied until the question has a row, `git push` and `gh pr create` are
+denied until the session has a note saying why, and a reply is sent back once when it ends
+without recording an answer you already gave, asks you something with no row, or states a
+decision without a note.
 
 The hooks are on in every folder until you turn them off for one (`/ledger:disable`). Every hook fails open:
 the ledger never blocks a session because the ledger itself is broken.
@@ -68,16 +69,19 @@ with code 2, and never insert a question of their own; `test/no-prompts.test.mjs
 
 The skill (`skills/ledger/SKILL.md`) tells the agent to:
 
-- `ask "<body>" --name <short> --options a,b --default a` whenever it needs your decision, and
-  end its message with the `pending` line for that question (the q-id, the default, what each
-  option allows). `--ceiling <usd>` and `--about "<text>"` attach a spend limit or the thing the
-  question concerns, shown on the pending line;
+- `ask "<body>" --name <short> --options a,b --default a` whenever it needs your decision, then
+  ask you in plain words without showing the id. `--ceiling <usd>` and `--about "<text>"` attach
+  a spend limit or the thing the question concerns;
+- `answer <q-id> <option>` as soon as you reply, with the option your words mean (or
+  `withdraw <q-id>` if you set the question aside);
 - `note "<text>"` for a choice it made without asking, and before any `git push` or `gh pr create` (what is being pushed and why);
 - read `pending` and `log` when it resumes.
 
-You answer by typing the line back: `approve q-…`, `deny q-…`, `withdraw q-…`, or any option
-word the question offered. The UserPromptSubmit hook applies the line and shows the agent the
-result; you can also paste the whole `pending` block with your answers.
+You answer the way you would answer anyone. If the agent ends a turn after your reply without
+recording the answer, the Stop hook sends it back once with the ids to record.
+
+Advanced: typing `approve q-…` (or `deny`, `withdraw`, any option word, followed by the id) into
+a prompt records the answer directly through the UserPromptSubmit hook; you never need to.
 
 ## CLI
 
@@ -89,8 +93,8 @@ node <plugin dir>/scripts/ledger.mjs help                # the verb table, id gr
 
 | Verb | Who | Effect |
 |---|---|---|
-| `ask "<body>" --name <short> --options a,b[,c] [--default a] [--deadline 2h\|<ISO>] [--kind question\|approval\|plan] [--allows "a: …; b: …"] [--ceiling <usd>] [--about "<text>"]` | agent | opens a question bound to the process cwd; prints `q-…` and the line to answer with. Default is the first option. `--kind plan` needs `--allows` for every option. Repeating an open question (same body and options in the same folder) returns its id and writes nothing. |
-| `<word> <q-id>` or `answer <q-id> <word>` | human | records the answer. The word must be one of the question's options or `withdraw`; anything else is refused with the option list and nothing is written. Same word twice → `already answered`, exit 0; a different word → refused naming the existing answer. |
+| `ask "<body>" --name <short> --options a,b[,c] [--default a] [--deadline 2h\|<ISO>] [--kind question\|approval\|plan] [--allows "a: …; b: …"] [--ceiling <usd>] [--about "<text>"]` | agent | opens a question bound to the process cwd; prints `q-…` and its `pending` line, for the agent (the human is asked in plain words). Default is the first option. `--kind plan` needs `--allows` for every option. Repeating an open question (same body and options in the same folder) returns its id and writes nothing. |
+| `answer <q-id> <word>` or `<word> <q-id>` | agent, on the human's reply | records the answer. The word must be one of the question's options or `withdraw`; anything else is refused with the option list and nothing is written. Same word twice → `already answered`, exit 0; a different word → refused naming the existing answer. |
 | `approve <q-id>` / `deny <q-id>` | human | the answers `approve` / `deny` when the question offers them. |
 | `<n> <word>` | human | the n-th line of `pending`, answered with that word. |
 | `withdraw <q-id>` | either | state `withdrawn`, with an `nt-` note saying so (when the question offers `withdraw` as an option, it is recorded as that answer instead). |
@@ -142,7 +146,7 @@ enabled or its own switch is off. Every refusal names the exact command that lif
 Exactly four things, each with its off switch:
 
 1. **Session rows.** Every session the hooks run in has a `cc_sessions` row with its start, end and reason (`hooks.sessionStart`, `hooks.sessionEnd`).
-2. **Questions.** The agent cannot use `AskUserQuestion` without an open `q-` row, and cannot end a turn on a question that names no open row (`forcing.denyAskWithoutRow`, `forcing.stopAskRule`).
+2. **Questions and answers.** The agent cannot use `AskUserQuestion` without an open `q-` row, cannot end a turn on a question while the session has no open row, and cannot end the turn after your reply while a question asked before it has no answer recorded (`forcing.denyAskWithoutRow`, `forcing.stopAskRule`).
 3. **Push needs a note.** `git push` and `gh pr create` are denied until the session holds one `note` saying what is being pushed and why (`forcing.pushNeedsNote`).
 4. **Decision needs a note.** A reply that states a decision (`forcing.decisionPhrases`) is sent back once unless a `note` was recorded in that turn (`forcing.stopDecisionRule`).
 
@@ -154,8 +158,8 @@ session's folder and dated after the session started.
 | Event | Config key | What it does |
 |---|---|---|
 | SessionStart | `hooks.sessionStart` | Injects, in order and only when non-empty: open questions for the cwd (the `pending` block), the last `inject.notes` entries of `log`, and the exact invocation plus allow rule and a one-line verb summary. Capped at 9,000 characters; the log entries are cut first, never the questions. On `source: compact` the log section is dropped and the verb summary is one line. Records the session in `cc_sessions`. |
-| PreToolUse | `hooks.preToolUse` | Runs on `AskUserQuestion` and `Bash` only. `AskUserQuestion` is denied while no question is open for the cwd (a question whose cwd equals the hook cwd or is an ancestor of it), with the reason `ledger: ask the question through the ledger first: \`… ask "<body>" --name <short> --options a,b --default a\`, then put the q-id in the question text.` A Bash command that runs `git push` or `gh pr create` (any simple command of a `&&`/`;`/`|`/newline chain; git's global options and a path on the binary are tolerated) is denied while the session has no `note`, with the reason `ledger: record what this push is before pushing: \`… note "<what this push is and why>"\` (one note in this session lifts the gate).` Before denying it proves the store can take a write (the remedy writes); if it cannot, the tool passes with a `systemMessage`. Other tools and other commands are never seen. |
-| Stop | `hooks.stop` | Checks the final message once per turn (keyed on `prompt_id`; a second Stop in the same turn passes). Ask rule (`forcing.stopAskRule`): after removing code blocks and inline code, a line ends with `?` and the message names no `q-` id that is an open question for the cwd → `{"decision":"block","reason":…}` telling the agent to `ask` and end with the `pending` line; messages under 40 substantive characters are not checked. Decision rule (`forcing.stopDecisionRule`): after also removing double-quoted spans, the message contains one of `forcing.decisionPhrases` as whole words and the session recorded no `note` during this turn → block telling the agent to `note`, then finish. The ask rule is checked first. Every Stop stamps `cc_sessions.last_stop_at`; "this turn" runs from the previous stamp (or the session start) to now. |
+| PreToolUse | `hooks.preToolUse` | Runs on `AskUserQuestion` and `Bash` only. `AskUserQuestion` is denied while no question is open for the cwd (a question whose cwd equals the hook cwd or is an ancestor of it), with the reason `ledger: ask the question through the ledger first: \`… ask "<body>" --name <short> --options a,b --default a\`, then ask it; keep the q- id to yourself and record the reply with \`… answer <q-id> <option>\`.` A Bash command that runs `git push` or `gh pr create` (any simple command of a `&&`/`;`/`|`/newline chain; git's global options and a path on the binary are tolerated) is denied while the session has no `note`, with the reason `ledger: record what this push is before pushing: \`… note "<what this push is and why>"\` (one note in this session lifts the gate).` Before denying it proves the store can take a write (the remedy writes); if it cannot, the tool passes with a `systemMessage`. Other tools and other commands are never seen. |
+| Stop | `hooks.stop` | Checks the final message once per turn (keyed on `prompt_id`; a second Stop in the same turn passes). Answer rule (`forcing.stopAskRule`): the Stop's `prompt_id` differs from the one stamped by the session's previous Stop (so you wrote since), and the session has open questions asked at or before that previous Stop → `{"decision":"block","reason":…}` listing them newest first and telling the agent to take the answer from your latest message and run `answer <q-id> <option>` (or `withdraw`); it clears once every such question is answered or withdrawn. Ask rule (same switch): after removing code blocks and inline code, a line ends with `?` and the session has no open question row → block telling the agent to `ask` first, then ask in plain words; messages under 40 substantive characters are not checked. Neither rule reads ids out of the reply. A session's questions are those tagged with its id, plus untagged ones asked in or around its folder after it started. Decision rule (`forcing.stopDecisionRule`): after also removing double-quoted spans, the message contains one of `forcing.decisionPhrases` as whole words and the session recorded no `note` during this turn → block telling the agent to `note`, then finish. Checked in the order answer, ask, decision. Every Stop stamps `cc_sessions.last_stop_at` and `last_stop_prompt`; "this turn" runs from the previous stamp (or the session start) to now. |
 | SessionEnd | `hooks.sessionEnd` | Stamps `ended_at` and the reason on the session row. Touches nothing else. Prints nothing; errors go to the log. |
 | UserPromptSubmit | `hooks.userPromptCommands` | When every non-blank line of the prompt is an id-bearing ledger line (`approve q-…`, `extend q-…`, an ordinal like `1 approve`) or `pending` / `log [N]` / `help`, applies them as a batch with `via = prompt-hook` and gives Claude the numbered results as `additionalContext` (you see the same block as a `systemMessage`). One prose line anywhere → nothing happens. Free-text verbs (`ask`, `note`) and `config` / `enable` / `disable` are never applied from a prompt. Never blocks the prompt. |
 
@@ -180,7 +184,7 @@ defaults verbatim.
 | `hooks.sessionEnd` | `true` | stamping the session row at session end |
 | `hooks.userPromptCommands` | `true` | applying ledger lines typed into a prompt |
 | `forcing.denyAskWithoutRow` | `true` | deny `AskUserQuestion` with no open question row |
-| `forcing.stopAskRule` | `true` | send back a reply that asks a question without a row |
+| `forcing.stopAskRule` | `true` | send back a reply that ends without recording an answer the human already gave, or that asks a question while the session has no open row |
 | `forcing.pushNeedsNote` | `true` | deny `git push` / `gh pr create` while the session has no note |
 | `forcing.stopDecisionRule` | `true` | send back a reply that states a decision with no note recorded this turn |
 | `forcing.decisionPhrases` | the nine phrases below | the phrases the decision rule looks for, whole words, any case |

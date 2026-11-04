@@ -6,7 +6,7 @@ import { checkStop } from "../lib/stop-rules.mjs";
 const box = sandbox();
 const ask = (args) => apply(box, [{ tokens: ["ask", ...args], text: `ask ${args.join(" ")}` }]).results[0];
 
-test("§7 row 6 (P-11): the same ask twice → the same q- id, one row; a Stop message naming it passes", () => {
+test("§7 row 6 (P-11): the same ask twice → the same q- id, one row; a Stop while it is open passes", () => {
   const a = ask(["Which colour?", "--name", "colour", "--options", "green,red"]);
   const b = ask(["Which colour?", "--name", "colour", "--options", "green,red"]);
   assert.equal(a.status, "ok");
@@ -16,7 +16,7 @@ test("§7 row 6 (P-11): the same ask twice → the same q- id, one row; a Stop m
   const db = openDb(box);
   assert.equal(count(db, "cc_questions", "body = ?", "Which colour?"), 1);
   db.close();
-  const verdict = checkStop(`I need a call on the colour before continuing. Which colour should the button be?\n\ngreen ${a.id}  # colour · default green`, { openQuestionIds: [a.id], forcing: {} });
+  const verdict = checkStop(`I need a call on the colour before continuing. Which colour should the button be?\n\ngreen ${a.id}  # colour · default green`, { sessionHasOpenQuestion: true, forcing: {} });
   assert.equal(verdict, null);
 });
 

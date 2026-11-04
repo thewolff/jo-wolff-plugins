@@ -1,6 +1,6 @@
 ---
 name: ledger
-description: Keep a durable, id'd record of the questions this thread asks the human and the choices it makes without asking, with the ledger CLI, and read the open items it injects. Use whenever a session has the ledger plugin enabled for the folder and the agent is about to ask the human for a decision or make a choice without asking; also on `/ledger` and when the human types an id-bearing line such as `approve q-…`.
+description: Keep a durable, id'd record of the questions this thread asks the human and the choices it makes without asking, with the ledger CLI, and read the open items it injects. Use whenever a session has the ledger plugin enabled for the folder and the agent is about to ask the human for a decision, has just received the human's reply to one, or makes a choice without asking; also on `/ledger`.
 argument-hint: "[ask <body> | note <text> | pending | log | help]"
 license: MIT
 ---
@@ -8,7 +8,8 @@ license: MIT
 # ledger
 
 The ledger is one SQLite file on the human's machine that records what this thread asked and
-what it decided on its own, each row with an id the human can type back. You reach it through
+what it decided on its own, each row with an id. The ids are yours: the human never sees or
+types one. You reach it through
 one command, printed at session start as
 
 ```
@@ -21,23 +22,24 @@ the human for permission. `… help` prints the whole grammar.
 
 ## The two moments
 
-1. **When you need the human's decision: `ask`, then end your message with its `pending` line.**
+1. **When you need the human's decision: `ask`, then ask in plain words.**
    `… ask "<the question, one line>" --name <short> --options a,b[,c] --default a` prints a `q-`
-   id. Options are the one-word answers the human will type; the default is what you will do if
-   they say nothing. Add `--ceiling <usd>` when the question is about spending and
+   id. Options are the short answers you will map the human's reply onto; the default is what you
+   will do if they say nothing. Add `--ceiling <usd>` when the question is about spending and
    `--about "<what it concerns>"` when the body alone would not place it. For a plan with several
    routes use `--kind plan --allows "a: what a lets you do; b: …"` so each option says what it
-   permits. Put the question and its id in the message, and end the message with the line
-   `… pending` prints for it:
+   permits. Then ask the human in ordinary words. Do not print the `q-` id, the `pending` line, or
+   any ledger syntax to the human; keep the id in your own context.
 
-   ```
-   approve q-mvr3k2p9a1xq  # ship · Ship it? · default approve · also: deny / withdraw
-   ```
+   **When the human replies, record the answer before anything else:**
+   `… answer <q-id> <option>`, with the option their words mean. If their reply sets the question
+   aside, `… withdraw <q-id>`. If it does not answer it at all, ask again in plain words.
 
-   The Stop hook sends back, once, a message that asks a question without naming an open
-   `q-` id. Asking the same open question again returns the same id; do not re-ask in new words.
-   Do not use the AskUserQuestion tool without an open `q-` row; the hook denies it and the
-   human cannot find the question later.
+   The Stop hook sends back, once per turn, a reply that ends while a question asked before the
+   human's latest message still has no answer, naming the ids to answer; and a reply that asks the
+   human something while this session has no open question row. Asking the same open question
+   again returns the same id; do not re-ask in new words. Do not use the AskUserQuestion tool
+   without an open `q-` row; the hook denies it and the human cannot find the question later.
 
 2. **When you decide something without asking: `note`, in the same turn.**
    `… note "<what you chose and why, one line>"` prints an `nt-` id. The last few entries are
@@ -54,21 +56,18 @@ the human for permission. `… help` prints the whole grammar.
 There is no "open" or "close": the folder you are in is the unit of work, and questions and
 notes bind to it (a question asked in the repo root is open for its subfolders too).
 
-## The human's words
+## Lines the human types (optional shortcut)
 
-These are the human's verbs; run them only when the human typed the line or asked you to
-record it for them: `approve q-…`, `deny q-…`, any option word followed by the `q-` id,
-`withdraw q-…`, `extend q-…`, `enable`, `disable`.
-
-Lines the human types into a prompt that consist only of such id-bearing lines (or `pending`,
-`log`, `help`) are applied by a hook before you see the prompt, and the numbered results
-arrive as context. Treat `n: ok an-… approve → q-…` as the answer recorded and act on it; treat
-`n: refused …` as not recorded and say so. Applying the same line again is harmless: a repeated
-answer is `already answered`, not an error.
+A human who prefers can still type `approve q-…`, `deny q-…`, an option word followed by the id,
+`withdraw q-…` or `extend q-…` into a prompt. A hook applies such lines before you see the
+prompt, and the numbered results arrive as context: treat `n: ok an-… approve → q-…` as the
+answer recorded and act on it; treat `n: refused …` as not recorded and say so. Never ask the
+human to type one of these; they are a shortcut, not the flow. `enable` and `disable` are the
+human's too (`/ledger:enable`, `/ledger:disable`).
 
 ## Reading what you are given
 
-- `… pending` is the paste-ready block of open questions; copy its lines verbatim.
+- `… pending` lists the open questions with their ids, for you; do not paste it to the human.
 - `… log [N]` is the last N notes, questions and answers for this folder, newest first; read it
   when you resume so you do not re-decide what a note already settled.
 - A refused line (`refused no such question q-…`, `refused raise is not an option of q-…;
