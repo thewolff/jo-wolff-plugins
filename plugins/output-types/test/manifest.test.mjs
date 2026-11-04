@@ -16,17 +16,29 @@ test("plugin.json and package.json agree on name and version", () => {
   assert.equal(pkg.version, plugin.version);
 });
 
-// Spelling and quoting of the command are exercised by e2e.test.mjs, which runs it through sh -c;
-// this only checks that the one registered command names a hook file that exists.
-test("hooks.json registers exactly one SessionStart command, and it resolves to a hook script that exists", () => {
+// Spelling and quoting of the commands are exercised by e2e.test.mjs, which runs them through sh -c;
+// this only checks that each registered command names a hook file that exists.
+test("hooks.json registers one SessionStart command and one Stop command (timeout 60, room for the judge), each resolving to a hook script that exists", () => {
   const hooks = read("hooks", "hooks.json").hooks;
-  assert.deepEqual(Object.keys(hooks), ["SessionStart"]);
-  const entries = hooks.SessionStart.flatMap((h) => h.hooks);
-  assert.equal(entries.length, 1);
-  assert.equal(entries[0].type, "command");
-  const target = entries[0].command.match(/\$\{CLAUDE_PLUGIN_ROOT\}\/(\S+?\.mjs)/)?.[1];
-  assert.ok(target, `no plugin-relative .mjs in ${entries[0].command}`);
-  assert.ok(existsSync(join(PLUGIN_ROOT, target)), target);
+  assert.deepEqual(Object.keys(hooks), ["SessionStart", "Stop"]);
+  for (const event of ["SessionStart", "Stop"]) {
+    const entries = hooks[event].flatMap((h) => h.hooks);
+    assert.equal(entries.length, 1, event);
+    assert.equal(entries[0].type, "command");
+    const target = entries[0].command.match(/\$\{CLAUDE_PLUGIN_ROOT\}\/(\S+?\.mjs)/)?.[1];
+    assert.ok(target, `no plugin-relative .mjs in ${entries[0].command}`);
+    assert.ok(existsSync(join(PLUGIN_ROOT, target)), target);
+  }
+  assert.equal(hooks.Stop[0].hooks[0].command, 'node "${CLAUDE_PLUGIN_ROOT}/hooks/output-types-stop.mjs"');
+  assert.equal(hooks.Stop[0].hooks[0].timeout, 60);
+});
+
+test("the vendored lib/judge.mjs and lib/hook-runner.mjs are plugin-kit's, byte for byte (when the kit is checked out beside this plugin)", () => {
+  for (const rel of ["judge.mjs", "hook-runner.mjs"]) {
+    const kit = join(PLUGIN_ROOT, "..", "plugin-kit", "lib", rel);
+    if (!existsSync(kit)) continue;
+    assert.ok(readFileSync(kit).equals(readFileSync(join(PLUGIN_ROOT, "lib", rel))), `lib/${rel} differs from plugin-kit's: copy it again`);
+  }
 });
 
 test("every hooks/*.mjs is registered in hooks.json (no unregistered, untested hook)", () => {

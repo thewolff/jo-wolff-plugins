@@ -4,6 +4,10 @@
     "SessionStart": [
       "systemMessage",
       "silent"
+    ],
+    "Stop": [
+      "systemMessage",
+      "silent"
     ]
   },
   "unusedPayload": [
