@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 // ask-graham-stop.mjs — Claude Code Stop: block, once, a turn that read the ask-graham skill
-// but ended without a verdict line, a structure check line, or the final comparables question while waiting.
+// but ended without a verdict line, a structure check line, or a waiting reply (its `**Ask:**` line
+// and five `**Gate questions**` bullets, then the comparables question alone on the final line).
 //
 // The check itself is checkStop in skills/ask-graham/scripts/verdict.mjs, shared with the OMP
 // session_stop handler. This file only does Claude Code's I/O: it reads the Stop payload
@@ -22,6 +23,10 @@
 //
 // MAIN SESSION ONLY. Subagents end on SubagentStop, which this hook is not registered for.
 //
+// SOURCES. When the user's sources file exists (scripts/sources.mjs readSources), checkStop also
+// requires its proof from the transcript's tool calls: a Read of the file, a run or read of each
+// source, and the reply's `**Local search:**` block. A missing or unparseable file requires nothing.
+//
 // FAIL OPEN, NOT SILENT. Every path exits 0 and a fault never blocks. A fault (empty or non-JSON
 // stdin, a payload without a usable session_id or transcript_path, a missing or unreadable
 // transcript, an unreadable or unwritable record, a config file that names no valid stop-check
@@ -37,6 +42,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { checkStop, parseJsonl } from "../skills/ask-graham/scripts/verdict.mjs";
 import { resolveSetting } from "../skills/ask-graham/scripts/intensity.mjs";
+import { readSources } from "../skills/ask-graham/scripts/sources.mjs";
 import { errText, faults, stateDir } from "./fault.mjs";
 
 const HOOK_FILE = "ask-graham-stop.mjs";
@@ -95,7 +101,7 @@ export function handle(input, opts = {}) {
   }
 
   const reply = typeof input.last_assistant_message === "string" ? input.last_assistant_message : undefined;
-  const r = checkStop({ entries: parseJsonl(raw), text: reply, blockedOpener });
+  const r = checkStop({ entries: parseJsonl(raw), text: reply, blockedOpener, sources: readSources({ env, home }), home });
   if (!r.block) return null;
   try {
     mkdirSync(dirname(record), { recursive: true });

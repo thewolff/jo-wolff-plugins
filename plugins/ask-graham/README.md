@@ -61,6 +61,23 @@ events. A Claude Code install alone gives OMP neither.
 Ask "should we build X?" or "is it worth building?", or type `/ask-graham <the thing to build>`
 on Claude Code or `/skill:ask-graham <the thing to build>` on OMP.
 
+If the agent has to stop and wait for your answer to the comparables question, its reply still
+carries the judgment so far: step 1's one-sentence ask and the five gate questions, answered from
+what it found, with the question alone on the last line.
+
+```
+**Ask:** <what gets built, for whom, where it lives>
+
+**Gate questions** (Graham #1)
+- Why: <answer + evidence>
+- How long lived: <answer>
+- Already exists: <"local search pending", or what it found so far>
+- In scope: <answer>
+- Owner / maintenance: <answer>
+
+Do you want me to research and see if something comparable exists?
+```
+
 The skill does not run on a ticket or issue, a bug fix, a task inside an already-decided
 project, or a request to continue existing work. One exception: before a task inside a decided
 project writes a new table, a new column on an existing table, a new top-level module, or a new
@@ -166,8 +183,15 @@ with a reason that names the four verdicts and asks the agent for the line, so t
 its verdict in the same turn.
 
 A waiting reply may instead end with the exact comparables question alone on its final line,
-without quotes. Both hosts let that stop pass without recording a block; mentioning or quoting
-the question in a completed report does not exempt that report from its verdict.
+without quotes, but only with step 1 and step 3 above it: a line starting `**Ask:**` with text
+after it, and a line starting `**Gate questions**` followed by the five bullets `- Why:`,
+`- How long lived:`, `- Already exists:`, `- In scope:` and `- Owner` (any suffix before the
+colon, such as `- Owner / maintenance:`), each with an answer. Labels match in any case, with
+or without bold, after any list marker; inside a code fence or a quote they do not count. A
+waiting reply with all of it passes on both hosts without recording a block. One missing any of
+it is blocked once, with a reason that names exactly what is missing (`**Ask:**`, the
+`**Gate questions**` line, or the bullet), so the agent can add it in one turn. Mentioning or
+quoting the question in a completed report does not exempt that report from its verdict.
 
 A structure check gives no verdict, and the turn's first use of the skill has to declare it: the
 skill loaded with the args `structure-check <the new structure>` (`/ask-graham structure-check …`,
@@ -254,7 +278,52 @@ one bullet per source with the read-only command or path:
 
 Without it the skill checks the repo, its issue tracker, and any to-do, roadmap or task file the
 project's `AGENTS.md` or `CLAUDE.md` names. Keep it out of version control: it describes your
-machine.
+machine. The plugin ships no source of its own; it reads whatever this file says on the machine
+it runs on.
+
+**What is enforced.** With the file present, the every-idea nudge lists each source (its label and
+its command or path, as written), and the Stop check requires, in a full check's turn after the
+skill loads, verdict reply or waiting reply alike:
+
+- a Read of the sources file;
+- for a bullet with a backticked command, a Bash or eval tool call (OMP `bash`, `pair_run` or
+  `eval`) containing the command's first two words, three when the second is `node`, `bun`,
+  `python3`, `sh`, `zsh` or `npx`; words from a placeholder such as `<the ask>` on are not needed.
+  A command that fails still counts as run. A bullet with a command and a path counts as a command;
+- for a bullet with only a path (backticked or bare, `~` and `$HOME` expanded, `*` matching any
+  part), any tool call naming that path;
+- a `**Local search:**` block in the reply with one line per bullet, written `<label>: <result>`.
+  The label before the colon must equal the bullet's whole label (any case, bold and a trailing
+  colon ignored), so `Held decisions` never proves `Decisions`; the result after it carries *found*,
+  *nothing found* or *unreachable*, and a status word inside the label does not count. A bullet
+  with neither command nor path is proved by this line alone. Inside a code fence or a quote it
+  does not count.
+
+One line proves a command or path bullet without a run: *unreachable* with a stated policy reason,
+not a keyword. The reason says the listed command writes, deletes or is destructive
+(`unreachable: the command writes to the ledger`, `unreachable (would delete rows)`), or that
+research was declined (for a remote-only source after the user said no: `research declined`,
+`said no to research`). Not running it is the skill's rule there. Any other *unreachable*, bare or
+with an error, still needs the attempted call, even when the error contains such a word:
+`unreachable (error writing lockfile)` and `unreachable (request declined: HTTP 403)` are errors.
+
+Anything missing blocks the stop once, with a reason under 300 characters naming the first missing
+source, what was expected, and how many more are missing. The Local search block is enforced only
+when a sources file exists: without one, nothing here is required and the Stop check behaves as
+before. A structure check needs none of it. Claude Code reads the tool calls from the transcript
+the Stop hook already parses; OMP reads them from the session file, which records every tool call
+with its arguments, so the check runs on both hosts.
+
+How it fails:
+
+| Situation | What happens |
+|---|---|
+| A bullet has no bold label, or the file has no labelled bullet | That bullet is ignored; a file with none counts as no file. No fault line. |
+| A command's prefix was never run in the turn | Blocked once, naming the source and the prefix expected. |
+| A path was never read or named by a tool call | Blocked once, naming the source and the path. |
+| The transcript is torn (a line half-written) | The torn line is skipped. If it held the proof, the stop is blocked once; the next stop in the turn passes. |
+| OMP cannot see tool calls | Not the case today: OMP writes each tool call to the session file, which the check reads. If a future OMP stopped writing them, every check with a sources file would block once per turn, then pass. |
+| A subagent ran the search | Blocked once, and the block is correct: the check sees only the main session's tool calls, so the parent runs each configured source itself (a background call the parent starts counts). Everything beyond the configured sources, such as repo greps and comparables, may still be delegated. |
 
 ## Update and uninstall
 
@@ -340,8 +409,36 @@ end-to-end run goes through the settings CLI and both hooks over a temp repo and
 (`e2e.test.mjs`), and the Stop hook reads real Claude Code transcripts captured with
 `zsh fixtures/capture-claude-code.sh` (`fixtures/claude-code/`, `hooks/real-transcripts.test.mjs`).
 CI runs the same command on Ubuntu and macOS with Node 24 (`.github/workflows/ask-graham.yml`).
+`sources.test.mjs` covers the sources file: the parser, the nudge lines, and the Stop check's
+sources proof on both transcript shapes, with a fixture file of invented sources.
 
 ## Release notes
+
+### 2026-11-04 — 0.7.3
+
+Closes the loophole where a turn could end on the comparables question and skip the judgment:
+three runs in a row asked only that question, never naming the ask (step 1) or answering the gate
+questions (step 3). A waiting reply now needs a `**Ask:**` line and a `**Gate questions**` block
+with all five bullets above the question; the Stop check blocks it once otherwise, naming what is
+missing. Jo's rule (2026-11-04: "you can't skip step 1"). Verdict replies and the structure check
+are unchanged. The check is shared, so OMP's `session_stop` applies it too.
+
+The sources file is now enforced, not remembered. Asked "how are you going to enforce not ignoring
+the sources file" (Jo, 2026-11-04), the plugin now parses your
+`${XDG_CONFIG_HOME:-~/.config}/ask-graham/sources.md`: the every-idea nudge lists each source, and
+a full check with that file present must read it, run or read each source in the same turn, and
+report each one under `**Local search:**`, or the stop is blocked once naming the first one missed
+(see [Your own open-work sources](#your-own-open-work-sources)). Nothing about any particular
+machine ships: the plugin names no command or path of its own. Without a sources file nothing
+changes.
+
+Fixes from review of the sources check. A source skipped because its listed command writes, or
+because research was declined for a remote-only source, is proved by its `**Local search:**` line
+marking it *unreachable* with that reason; before, the check demanded the very run the skill
+forbids. A result line now proves only the source whose whole label it carries:
+`Held decisions: nothing found` no longer satisfies a `Decisions` source, and a status word inside
+a label (`Found items`) is not read as the status. The standing "Delegate the search" rule now says
+the configured sources stay in the parent session while everything else may be delegated.
 
 ### 2026-11-04 — 0.7.2
 

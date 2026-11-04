@@ -10,6 +10,8 @@
 // session's working directory (skills/ask-graham/scripts/intensity.mjs) and, only at every-idea,
 // returns NUDGE as a hidden custom message (display false) that OMP puts in the same request as
 // the user's message. It never revises the message.
+// When the user's sources file exists (skills/ask-graham/scripts/sources.mjs), one line per source
+// it lists follows NUDGE, as on Claude Code; a missing or unparseable file adds nothing.
 //
 // Returning the message, rather than queueing it with sendMessage, keeps one nudge per batch: a
 // queued "nextTurn" message parks while the agent streams and every mid-turn submission added
@@ -20,8 +22,14 @@
 // THE STOP CHECK, on `session_stop`: a turn that read the ask-graham skill and ended without a
 // `**Verdict:**` line naming one of the four verdicts is blocked once, with a reason asking for
 // that line (checkStop in skills/ask-graham/scripts/verdict.mjs, shared with the Claude Code Stop
-// hook). A reply ending with the exact comparables question may wait without a verdict, and a structure check (a line starting `**Structure check:**`) needs none. The turn is read from event.session_file; the final text is event.last_assistant_message.
+// hook). A reply ending with the exact comparables question may wait without a verdict when its `**Ask:**` line and five `**Gate questions**` bullets come first, and a structure check (a line starting `**Structure check:**`) needs none. The turn is read from event.session_file; the final text is event.last_assistant_message.
 // OMP fires session_stop only for the main session, never for a subagent.
+//
+// SOURCES: with a sources file, checkStop also requires its proof (a Read of the file, a run or read
+// of each source, a `**Local search:**` block). OMP writes every tool call to the session file as an
+// assistant `toolCall` block (name and arguments: bash/pair_run `command`, eval `code`, read `path`),
+// the same entries the skill-load check already reads, so the proof is read from
+// event.session_file and nothing extra is recorded.
 //
 // OFF SWITCH: stop-check=off in the nearest .ask-graham or the user config (intensity.mjs,
 // resolved from ctx.cwd) skips the check before the session file is read.
@@ -43,8 +51,10 @@
 // unit tests without Bun. `pi` is typed structurally; there are no imports from the host.
 
 import { readFileSync } from "node:fs";
+import { homedir } from "node:os";
 import { NUDGE, resolveIntensity, stopCheckEnabled } from "../skills/ask-graham/scripts/intensity.mjs";
 import { checkStop, parseJsonl } from "../skills/ask-graham/scripts/verdict.mjs";
+import { readSources, withSources } from "../skills/ask-graham/scripts/sources.mjs";
 
 export type OmpContext = {
 	cwd: string;
@@ -113,6 +123,8 @@ function sessionStop(event: StopEvent, ctx: OmpContext, settings: { env: Adapter
 			entries: parseJsonl(readFileSync(file, "utf8")),
 			text: assistantText(event.last_assistant_message),
 			blockedOpener: blockedOpener.get(key) ?? null,
+			sources: readSources({ env: settings.env, ...(settings.home ? { home: settings.home } : {}) }),
+			home: settings.home ?? homedir(),
 		});
 		if (!r.block) return undefined;
 		blockedOpener.set(key, r.opener);
@@ -132,7 +144,8 @@ export default function askGrahamOmp(pi: PiLike, deps: AdapterDeps = {}): void {
 			return undefined; // fail open: an unreadable setting behaves as ask
 		}
 		if (level !== "every-idea") return undefined;
-		return { message: { customType: "ask-graham", content: NUDGE, display: false } };
+		const sources = readSources({ env, ...(deps.home ? { home: deps.home } : {}) });
+		return { message: { customType: "ask-graham", content: withSources(NUDGE, sources), display: false } };
 	});
 	pi.on("session_stop", (event, ctx) => sessionStop(event, ctx, { env, home: deps.home }));
 }

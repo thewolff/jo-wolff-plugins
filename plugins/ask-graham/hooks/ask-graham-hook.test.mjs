@@ -39,6 +39,23 @@ test("at every-idea the hook adds the nudge as UserPromptSubmit context", (t) =>
   assert.deepEqual(JSON.parse(r.stdout), { hookSpecificOutput: { hookEventName: "UserPromptSubmit", additionalContext: NUDGE } });
 });
 
+test("at every-idea with a sources file, one line per source follows the nudge; missing or unparseable adds nothing and no warning", (t) => {
+  const f = fixture(t);
+  writeFileSync(join(f.xdg, "ask-graham", "config"), "intensity=every-idea\n");
+  const sourcesFile = join(f.xdg, "ask-graham", "sources.md");
+  writeFileSync(sourcesFile, '- **Old tickets:** `todo-cli list -- "<the ask>"`\n- **Held decisions:** /tmp/fixture/HELD.md\n- no label\n');
+  const r = f.run(PROMPT(f.repo));
+  assert.equal(r.status, 0);
+  assert.deepEqual(JSON.parse(r.stdout), {
+    hookSpecificOutput: {
+      hookEventName: "UserPromptSubmit",
+      additionalContext: `${NUDGE}\nask-graham source: **Old tickets:** \`todo-cli list -- "<the ask>"\`\nask-graham source: **Held decisions:** /tmp/fixture/HELD.md`,
+    },
+  });
+  writeFileSync(sourcesFile, "prose only, no list\n");
+  assert.deepEqual(JSON.parse(f.run(PROMPT(f.repo)).stdout), { hookSpecificOutput: { hookEventName: "UserPromptSubmit", additionalContext: NUDGE } });
+});
+
 test("a repo file at ask silences a user file at every-idea", (t) => {
   const f = fixture(t);
   writeFileSync(join(f.xdg, "ask-graham", "config"), "intensity=every-idea\n");

@@ -553,12 +553,9 @@ extension (`omp/ask-graham-omp.ts`, declared in the plugin's `package.json`): wi
   similar. It gives no verdict and does not ask the comparables question.
 - **A level you set**, `ask` or `every-idea`, for how eagerly it runs (next section).
 
-Changes in 0.7.1: the Stop check reads the reply from the Stop payload's
-`last_assistant_message`, and no longer takes Claude Code's telemetry entries as the newest entry
-of the conversation, which had let a reply with no verdict through and blocked one that had a
-verdict. An unreadable block record now lets the stop through. The Claude Code hooks no longer
-fail silently: a fault still lets the prompt or stop through, and now lands in `errors.log` with
-the hook file and reason and shows one warning line.
+Changes in 0.7.3: a reply that waits on the comparables question must also carry step 1's
+`**Ask:**` line and step 3's five `**Gate questions**` bullets; the Stop check blocks it once
+otherwise, naming what is missing, so the question can no longer stand in for the judgment.
 
 Changes in 0.7.2: the plugin meets ledger 0.3.5's five-row gate. `evals/manifest.json` declares
 what the two hooks can return and four `evals/<x>.scenario.json` prove them (the every-idea
@@ -570,6 +567,13 @@ declared and `scripts/prune.mjs` prunes it; the skill has a "When this can't run
 Fix: `scripts/upkeep.mjs` compared `import.meta.url` with `file://${process.argv[1]}` as
 strings, and node resolves the main module through symlinks, so reached through one it did
 nothing and exited 0; the guard now compares real paths.
+
+Changes in 0.7.1: the Stop check reads the reply from the Stop payload's
+`last_assistant_message`, and no longer takes Claude Code's telemetry entries as the newest entry
+of the conversation, which had let a reply with no verdict through and blocked one that had a
+verdict. An unreadable block record now lets the stop through. The Claude Code hooks no longer
+fail silently: a fault still lets the prompt or stop through, and now lands in `errors.log` with
+the hook file and reason and shows one warning line.
 
 Changes in 0.7.0: adds the structure check. Its reply opens with `**Structure check:**` and then a
 `**Found:**` or `**No similar:**` line, which the Stop check requires in place of a verdict line.
@@ -604,7 +608,8 @@ Each file holds `intensity=ask` or `intensity=every-idea`. A file that names nei
 `ask`, so a typo in a file meant to turn the level down cannot turn it up. The same files take a
 second line, `stop-check=off`, to turn off the Stop check that blocks once when an answer that
 read the skill has no `**Verdict:**` line (default `on`). A reply ending with the exact
-comparables question alone on its final line may wait for an answer without a verdict. To change either from a session (on
+comparables question alone on its final line may wait for an answer without a verdict, when a
+`**Ask:**` line and the five `**Gate questions**` bullets come before it. To change either from a session (on
 OMP, write `/skill:ask-graham` in place of `/ask-graham`):
 
 ```
