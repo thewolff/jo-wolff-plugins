@@ -94,7 +94,7 @@ export function leafKeys(shape = SHAPE, prefix = "") {
   return out;
 }
 
-function xdgDir(env, home, variable, fallback) {
+export function xdgDir(env, home, variable, fallback) {
   const v = env[variable];
   return v && isAbsolute(v) ? v : join(home, fallback);
 }

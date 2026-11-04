@@ -1,0 +1,250 @@
+// human-wrote.test.mjs — 0.3.8 (#340): only a prompt the person typed counts as "the human has
+// written since you asked"; while brb holds the session the Stop hook neither nags for an answer
+// nor tells the agent to ask the human; `hold <q-id>` never records an answer, even when the
+// question lists `hold` as an option. Shapes from a Desktop session: ask → a task-notification
+// `user` entry → an idle reply.
+
+import test from "node:test";
+import assert from "node:assert/strict";
+import { appendFileSync, mkdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
+import { sandbox, hook, cli, apply, askQuestion, openDb, row, count } from "./helpers.mjs";
+import { isHumanPrompt, humanWroteSince, brbAway, brbAwayPath } from "../lib/transcript.mjs";
+// The sibling plugin that owns away.json, imported only here to pin path and validity parity.
+import { readAway, sessionDir } from "../../brb/lib/state.mjs";
+
+const SID = "s-human";
+const env = { LEDGER_SESSION_ID: SID };
+const IDLE = "idle: waiting on the two Kitchen subagents; nothing for you right now.";
+const LONG_Q = "I looked through the code and found two viable designs for the cache. Should I use A or B?";
+
+const user = (content, extra = {}) => ({ type: "user", message: { role: "user", content }, timestamp: new Date(Date.now() + 5).toISOString(), ...extra });
+const notification = () =>
+  user("<task-notification>\n<task-id>ae22</task-id>\n<status>completed</status>\n<summary>Agent \"Wire Kitchen\" is waiting</summary>\n</task-notification>", { origin: { kind: "task-notification" } });
+const reminder = () => user("<system-reminder>\n<tools-used-before-summary>Monitor</tools-used-before-summary>\n</system-reminder>", { isMeta: true });
+
+function setup() {
+  const b = sandbox();
+  const transcript = join(b.root, "transcript.jsonl");
+  writeFileSync(transcript, `${JSON.stringify(user("set up the kitchen packages", { origin: { kind: "human" }, timestamp: "2026-01-01T00:00:00.000Z" }))}\n`);
+  hook(b, "session-start", { session_id: SID, cwd: b.work, hook_event_name: "SessionStart", source: "startup" });
+  const q = /q-[a-z0-9]+/.exec(cli(b, ["ask", "ship it or not?", "--name", "ship", "--options", "yes,no"], { env }).out)[0];
+  const stop = (prompt_id, message = IDLE, extra = {}) =>
+    hook(b, "stop", { session_id: SID, cwd: b.work, hook_event_name: "Stop", prompt_id, stop_hook_active: false, last_assistant_message: message, transcript_path: transcript }, extra);
+  assert.equal(stop("p-1", LONG_Q).out, "", "the asking turn ends clean");
+  const add = (...entries) => appendFileSync(transcript, entries.map((e) => `${JSON.stringify(e)}\n`).join(""));
+  return { b, q, stop, add, transcript };
+}
+
+test("a task-notification and a system-reminder after the ask start a new turn but are not the human: no answer nag", () => {
+  const { stop, add } = setup();
+  add(reminder(), notification());
+  assert.equal(stop("p-2").out, "");
+});
+
+test("a typed prompt after the ask is the human: the answer nag fires", () => {
+  const { q, stop, add } = setup();
+  add(notification(), user("yes ship it", { origin: { kind: "human" } }));
+  const r = stop("p-2");
+  assert.equal(r.json?.decision, "block", r.out);
+  assert.match(r.json.reason, /the human has written since you asked this question/);
+  assert.ok(r.json.reason.includes(q));
+});
+
+test("brb holds the session (away.json present): no answer nag even after a typed prompt, and nothing said", () => {
+  const { b, stop, add } = setup();
+  const dir = join(b.root, "state", "brb", SID);
+  mkdirSync(dir, { recursive: true });
+  writeFileSync(join(dir, "away.json"), JSON.stringify({ since: "2026-11-04T18:42:47.234Z", note: "", held: 2 }));
+  add(user("yes ship it", { origin: { kind: "human" } }));
+  assert.equal(stop("p-2").out, "");
+});
+
+test("brb holds the session: a reply asking a question with no row is told to `ask` then `hold`, never to ask the human", () => {
+  const b = sandbox();
+  const dir = join(b.root, "state", "brb", "s-away");
+  mkdirSync(dir, { recursive: true });
+  writeFileSync(join(dir, "away.json"), JSON.stringify({ since: "2026-11-04T18:42:47.234Z" }));
+  const r = hook(b, "stop", { session_id: "s-away", cwd: b.work, hook_event_name: "Stop", prompt_id: "p-1", stop_hook_active: false, last_assistant_message: LONG_Q });
+  assert.equal(r.json?.decision, "block", r.out);
+  assert.match(r.json.reason, /the human is away \(brb\).*ask ".*then `.*hold <q-id>`/s);
+  assert.doesNotMatch(r.json.reason, /plain words/);
+  // An unparsable away.json is "home": the usual reason.
+  writeFileSync(join(dir, "away.json"), "{not json");
+  const home = hook(b, "stop", { session_id: "s-away", cwd: b.work, hook_event_name: "Stop", prompt_id: "p-2", stop_hook_active: false, last_assistant_message: LONG_Q });
+  assert.match(home.json.reason, /ask in plain words/);
+});
+
+test("isHumanPrompt: a prompt led by a system-reminder block and then real text is the human; injected lines are not", () => {
+  assert.equal(isHumanPrompt(user("<system-reminder>\nToday is Tuesday.\n</system-reminder>\nship it")), true);
+  assert.equal(isHumanPrompt(user([{ type: "text", text: "<system-reminder>x</system-reminder>  ship it" }])), true);
+  assert.equal(isHumanPrompt(user("<system-reminder>x</system-reminder>")), false, "a reminder alone");
+  for (const t of [
+    "<task-notification><task-id>a</task-id></task-notification>",
+    '<agent-message from="peer">hi</agent-message>',
+    "<local-command-stdout>ok</local-command-stdout>",
+    "<local-command-caller>x</local-command-caller>",
+    "Another Claude session sent a message:\nhello",
+    "Stop hook feedback:\nledger: …",
+    "[Subagent hand-back] The text below is the final report",
+  ]) {
+    assert.equal(isHumanPrompt(user(t)), false, t);
+  }
+  assert.equal(isHumanPrompt(user([{ type: "tool_result", tool_use_id: "t", content: "ok" }])), false, "tool results only");
+  assert.equal(isHumanPrompt(user("ship it", { origin: { kind: "peer" } })), false, "origin.kind wins");
+  assert.equal(isHumanPrompt(user("ship it", { isMeta: true })), false);
+  assert.equal(isHumanPrompt(user("ship it")), true);
+});
+
+test("humanWroteSince: null when it cannot tell (no file, no timestamped user entries)", () => {
+  const b = sandbox();
+  assert.equal(humanWroteSince(join(b.root, "nope.jsonl"), "2026-01-01T00:00:00.000Z"), null);
+  const p = join(b.root, "other.jsonl");
+  writeFileSync(p, `${JSON.stringify({ role: "user", content: "hi" })}\n`);
+  assert.equal(humanWroteSince(p, "2026-01-01T00:00:00.000Z"), null);
+});
+
+test("no evidence is not a reply: a new prompt_id with no transcript, or one with no human entry, never nags for an answer", () => {
+  const { b, transcript, stop } = setup();
+  // The reviewer's reproduction: the next Stop names no transcript at all.
+  const bare = hook(b, "stop", { session_id: SID, cwd: b.work, hook_event_name: "Stop", prompt_id: "p-2", stop_hook_active: false, last_assistant_message: IDLE });
+  assert.equal(bare.out, "", "no transcript_path");
+  // A transcript that holds no timestamped user entry (assistant only, malformed, untimestamped).
+  for (const [name, text] of [
+    ["empty", ""],
+    ["malformed", "{broken\n"],
+    ["assistant only", `${JSON.stringify({ type: "assistant", timestamp: new Date().toISOString() })}\n`],
+    ["untimestamped prompt", `${JSON.stringify({ type: "user", message: { content: "yes ship it" } })}\n`],
+  ]) {
+    writeFileSync(transcript, text);
+    assert.equal(stop(`p-${name}`).out, "", name);
+  }
+  // A transcript path that is missing.
+  const gone = hook(b, "stop", { session_id: SID, cwd: b.work, hook_event_name: "Stop", prompt_id: "p-gone", stop_hook_active: false, last_assistant_message: IDLE, transcript_path: join(b.root, "missing.jsonl") });
+  assert.equal(gone.out, "", "missing transcript file");
+});
+
+test("humanWroteSince reads only a regular file's last 4 MiB; a symlink is not read", () => {
+  const b = sandbox();
+  const since = "2026-01-01T00:00:00.000Z";
+  const prompt = JSON.stringify(user("ship it", { origin: { kind: "human" }, timestamp: "2026-01-02T00:00:00.000Z" }));
+  const old = JSON.stringify(user("earlier", { origin: { kind: "human" }, timestamp: "2025-12-31T00:00:00.000Z" }));
+  const pad = `${JSON.stringify({ type: "assistant", message: { content: "x".repeat(1000) } })}\n`.repeat(5 * 1024);
+  const big = join(b.root, "big.jsonl");
+  writeFileSync(big, `${old}\n${pad}${prompt}\n`);
+  assert.equal(humanWroteSince(big, since), true, "a prompt after 5 MiB of padding is in the tail");
+  writeFileSync(big, `${prompt}\n${pad}`);
+  assert.equal(humanWroteSince(big, since), null, "a prompt before the last 4 MiB is not read");
+  writeFileSync(big, `${old}\n${prompt}\n`);
+  assert.equal(humanWroteSince(big, since), true);
+  const link = join(b.root, "link.jsonl");
+  symlinkSync(big, link);
+  assert.equal(humanWroteSince(link, since), null, "a symlinked transcript is not read");
+  assert.equal(humanWroteSince(b.root, since), null, "a directory is not read");
+});
+
+test("an older user entry appended after a newer human prompt does not hide it (Codex R2 reproduction)", () => {
+  const b = sandbox();
+  const p = join(b.root, "t.jsonl");
+  const since = "2026-01-02T00:00:00Z";
+  const human = JSON.stringify(user("ship it", { origin: { kind: "human" }, timestamp: "2026-01-03T00:00:00Z" }));
+  const older = JSON.stringify(user("<task-notification>old</task-notification>", { origin: { kind: "task-notification" }, timestamp: "2026-01-01T00:00:00Z" }));
+  writeFileSync(p, `${human}\n${older}\n`);
+  assert.equal(humanWroteSince(p, since), true, "newer human, then an older notification");
+  writeFileSync(p, `${older}\n${human}\n`);
+  assert.equal(humanWroteSince(p, since), true, "ordered");
+  writeFileSync(p, `${older}\n`);
+  assert.equal(humanWroteSince(p, since), false, "only an older entry: timestamped user entries, none newer");
+});
+
+test("Stop hook: an older user entry after the typed reply still lets the answer nag fire", () => {
+  const { q, stop, add } = setup();
+  add(user("yes ship it", { origin: { kind: "human" } }), notification(), user("<task-notification>old</task-notification>", { origin: { kind: "task-notification" }, timestamp: "2026-01-01T00:00:00.000Z" }));
+  const r = stop("p-2");
+  assert.equal(r.json?.decision, "block", r.out);
+  assert.ok(r.json.reason.includes(q));
+});
+
+test("a complete prompt starting exactly at the 4 MiB cut is read; one starting a byte earlier is a partial line", () => {
+  const b = sandbox();
+  const p = join(b.root, "cut.jsonl");
+  const since = "2026-01-01T00:00:00.000Z";
+  const cap = 4 * 1024 * 1024;
+  const line = (o) => `${JSON.stringify(o)}\n`;
+  const prompt = line(user("ship it", { origin: { kind: "human" }, timestamp: "2026-01-02T00:00:00.000Z" }));
+  const second = line(user("and the docs", { origin: { kind: "human" }, timestamp: "2026-01-03T00:00:00.000Z" }));
+  const prefix = line({ type: "assistant", message: { content: "prefix" } });
+  const fill = (bytes) => {
+    const shell = Buffer.byteLength(line({ type: "assistant", message: { content: "" } }));
+    return line({ type: "assistant", message: { content: "x".repeat(bytes - shell) } });
+  };
+  // Aligned: the prompt's first byte is the window's first byte; the byte before it is "\n".
+  writeFileSync(p, prefix + prompt + fill(cap - Buffer.byteLength(prompt)));
+  assert.equal(humanWroteSince(p, since), true, "a complete prompt exactly at the cut is kept");
+  // One byte inside the window's start: the prompt began a byte before the cut, so it is partial
+  // and dropped; a later complete prompt in the window is still found.
+  const tail = second + fill(cap - Buffer.byteLength(prompt) + 1 - Buffer.byteLength(second));
+  writeFileSync(p, prefix + prompt + tail);
+  assert.equal(Buffer.byteLength(prompt) - 1 + Buffer.byteLength(tail), cap, "fixture: the cut falls one byte into the prompt");
+  assert.equal(humanWroteSince(p, "2026-01-02T12:00:00.000Z"), true, "the next complete prompt is found");
+  writeFileSync(p, prefix + prompt + fill(cap - Buffer.byteLength(prompt) + 1));
+  assert.equal(humanWroteSince(p, since), null, "the partial prompt alone is not read");
+});
+
+test("brbAway uses brb's own validity rule, reads no symlink and no file over 64 KiB", () => {
+  const b = sandbox();
+  const env = { HOME: join(b.root, "home"), XDG_STATE_HOME: join(b.root, "xdg-state") };
+  const dir = join(env.XDG_STATE_HOME, "brb", "s-valid");
+  mkdirSync(dir, { recursive: true });
+  const away = join(dir, "away.json");
+  for (const [text, want] of [
+    ["{}", false],
+    ["[]", false],
+    ['{"since":1}', false],
+    ["null", false],
+    ['{"since":"2026-11-04T18:42:47.234Z"}', true],
+  ]) {
+    writeFileSync(away, text);
+    assert.equal(brbAway("s-valid", env), want, text);
+    assert.equal(readAway("s-valid", env) !== null, want, `brb agrees on ${text}`);
+  }
+  writeFileSync(away, JSON.stringify({ since: "2026-11-04T18:42:47.234Z", note: "x".repeat(70 * 1024) }));
+  assert.equal(brbAway("s-valid", env), false, "over 64 KiB");
+  const target = join(b.root, "elsewhere.json");
+  writeFileSync(target, JSON.stringify({ since: "2026-11-04T18:42:47.234Z" }));
+  rmSync(away);
+  symlinkSync(target, away);
+  assert.equal(brbAway("s-valid", env), false, "a symlinked away.json");
+});
+
+test("brbAwayPath resolves XDG_STATE_HOME exactly as brb's state.mjs does, a relative value included", () => {
+  const home = "/tmp/ledger-xdg-parity-home";
+  for (const XDG_STATE_HOME of [undefined, "", "   ", "relative-state", "/abs/state"]) {
+    const env = { HOME: home, ...(XDG_STATE_HOME === undefined ? {} : { XDG_STATE_HOME }) };
+    for (const sid of ["review-session", "../foreign", " a/b "]) {
+      assert.equal(brbAwayPath(sid, env), join(sessionDir(sid, env), "away.json"), `${JSON.stringify(XDG_STATE_HOME)} ${sid}`);
+    }
+  }
+});
+
+test("`hold <q-id>` on a question whose options include `hold` holds it and records no answer; `answer <q-id> hold` still answers", () => {
+  const b = sandbox();
+  const q = askQuestion(b, { name: "secret", options: "yes,hold,no" });
+  const r = apply(b, [{ tokens: ["hold", q], text: `hold ${q}` }]).results[0];
+  assert.equal(r.status, "ok", r.message);
+  assert.match(r.message, /held: waiting on the human/);
+  let db = openDb(b);
+  assert.equal(row(db, "SELECT state FROM cc_questions WHERE id = ?", q).state, "held");
+  assert.equal(count(db, "cc_answers"), 0);
+  db.close();
+  const via = cli(b, ["hold", q]);
+  assert.equal(via.code, 0, via.out + via.err);
+  db = openDb(b);
+  assert.equal(count(db, "cc_answers"), 0, "the CLI path too");
+  db.close();
+  const a = cli(b, ["answer", q, "hold"]);
+  assert.equal(a.code, 0, a.out + a.err);
+  db = openDb(b);
+  assert.equal(row(db, "SELECT word FROM cc_answers WHERE question_id = ?", q).word, "hold");
+  db.close();
+});
