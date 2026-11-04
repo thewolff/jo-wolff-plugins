@@ -1,0 +1,34 @@
+{
+  "$comment": "Stop: a finished message with a bold **CLAIM** that carries no receipt shape is named by line in one systemMessage; never a block.",
+  "event": "Stop",
+  "expect": "systemMessage",
+  "reason": "without a receipt that holds",
+  "transcript": [
+    {
+      "type": "user",
+      "message": {
+        "role": "user",
+        "content": "does the handler return early?"
+      }
+    },
+    {
+      "type": "assistant",
+      "message": {
+        "role": "assistant",
+        "content": [
+          {
+            "type": "text",
+            "text": "**CLAIM**\nThe handler returns early."
+          }
+        ]
+      }
+    }
+  ],
+  "stdin": {
+    "session_id": "${SESSION_ID}",
+    "transcript_path": "${TRANSCRIPT}",
+    "cwd": "${CWD}",
+    "hook_event_name": "Stop",
+    "stop_hook_active": false
+  }
+}

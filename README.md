@@ -6,7 +6,7 @@ has, whether the thing is worth building in the first place, going through your 
 it, keeping a record of what it did and asked, and a vendored set of engineering skills.
 
 - **[output-types](#output-types)** — label receipted facts, and only those, with the receipt
-  that earns the label.
+  that earns the label; a Stop check warns when a label has no receipt.
 - **[i-have-audhd](#i-have-audhd)** — how to write to someone who is ADHD and autistic, with the
   research behind each rule and a Stop hook that warns when a message buries what they need.
 - **[paired-coding](#paired-coding)** — pair with the agent one change set at a time, behind a
@@ -44,8 +44,8 @@ it, keeping a record of what it did and asked, and a vendored set of engineering
   macOS popup from a launchd timer; the SessionStart line also says when the timer itself has
   stopped. macOS; Claude Code hooks, plus a CLI that works anywhere.
 
-output-types delivers text and does not read what the agent sends back; see its *delivers, does
-not enforce* note. i-have-audhd delivers its rules and checks every finished message, warning by
+output-types delivers text and, since 0.3.0, checks every finished message for a label without
+a receipt, warning only; see its *delivers, and warns* note. i-have-audhd delivers its rules and checks every finished message, warning by
 default. paired-coding enforces at the tool boundary, within the limits in its *what this
 enforces, and what it does not* note. ask-graham is a skill, a one-line prompt nudge you can
 turn off, and a Stop check that blocks once per turn when an answer that read the skill has no
@@ -135,9 +135,10 @@ Inside a running OMP session, use `/marketplace add thewolff/jo-wolff-plugins` a
 nothing: it prints the installed-plugin list and returns.
 
 **On OMP only the skill loads.** Tested on OMP 18.4.4: OMP does not run a plugin's
-`hooks/hooks.json`, so the session-start hook never fires and the core is never injected. The
-skill is listed and loads on demand, so the contract is in force only once the model has read
-it. Name the skill in your instructions if you want it from the first turn.
+`hooks/hooks.json`, so the session-start hook never fires, the core is never injected, and the
+Stop check never runs. The skill is listed and loads on demand, so the contract is in force only
+once the model has read it. Name the skill in your instructions if you want it from the first
+turn.
 
 ### What you get
 
@@ -152,6 +153,9 @@ it. Name the skill in your instructions if you want it from the first turn.
 - A **session-start hook** that emits the operative core before the first tool call, reading it out
   of the contract file so there is only ever one copy of that text. Claude Code only; see *Install
   on OMP*.
+- A **Stop check** that reads the finished message and warns, in one line to you, about every
+  `**CLAIM**` or `**CITE**` that carries no receipt shape; optionally, a judge model asks whether
+  each receipt licenses its sentence. Warns, never blocks; off switch and the judge's switch below.
 
 Changes in 0.2.0: only receipted facts are labeled, as CLAIM or CITE. The GUESS, PMDW, ACTION and
 QUESTION labels, the `<!-- output-types … -->` envelope and the numbered degradation tiers are
@@ -174,9 +178,63 @@ with `claude plugin eval`. `e2e/live-run.sh` hands off to plugin-kit's scenario 
 `.claude-plugin/plugin.json` declares the one state path (`$XDG_STATE_HOME/output-types`, 30
 days) and `scripts/prune.mjs` prunes it. The skill has a "When this can't run" section.
 
-### What this does, and what it does not do: it delivers, it does not enforce
+Changes in 0.3.0: the Stop check (next section). Mechanical, every turn: each `**CLAIM**` without
+an absolute `file:line` or a command and its result, and each `**CITE**` without a URL or a test
+run with its command, is named by line in one `systemMessage`, the first five, then `+N more`.
+Never `decision: block`. A judge stage, off by default, runs when
+`${XDG_CONFIG_HOME:-~/.config}/output-types/config.json` has `"judge": true` and a judge command
+resolves. The judge dispatch is plugin-kit 0.3.0's `lib/judge.mjs`, vendored byte for byte, and
+the command is configured once for every plugin with `node lib/judge.mjs setup`. New files:
+`hooks/output-types-stop.mjs`, `lib/receipts.mjs`, `lib/judge.mjs`, `lib/hook-runner.mjs`.
+`OUTPUT_TYPES_CHECK=off` turns the check off.
 
-Two pieces, and it is worth knowing which does what before you install.
+### The Stop check
+
+Every time the agent finishes a message, the hook reads it back (the last assistant text in the
+transcript Claude Code names in the payload) and looks at each labelled statement. A label is
+`**CLAIM**` or `**CITE**` in markdown bold, alone at the start of a line or inline in one; prose
+that mentions CLAIM casually is not a label, and nothing inside a fenced code block is, so a
+quoted example never warns about itself. The statement is the text after the label up to the next
+label, a heading, a rule, a bold-only line, or a blank line, except that a fence after a blank
+line (a command and its output, the usual receipt) belongs to the statement.
+
+**The mechanical stage** is deterministic and runs every turn. A `**CLAIM**` needs an absolute
+`/`-rooted `file:line` (or `file:line-line`), or a command in code (inline or fenced) with a
+result phrase (`→ exit 0`, `returned nothing`, `12 passing`) or a fence holding the command and
+what it printed. A `**CITE**` needs an `http(s)://` URL, or the words test/tested/ran/run with a
+command in code. A statement with neither is named by line in one `systemMessage`, shown to you:
+
+```
+output-types: 2 labelled statements without a receipt that holds. Add the receipt or remove the label (unlabeled means unreceipted).
+  line 3 **CLAIM** "the handler returns early.": needs an absolute file:line, or the command and its result
+  line 5 **CITE** "the vendor caps it at 100.": needs the URL fetched, or the test run with its command
+```
+
+The first five are named, the rest counted (`+N more`). The shape is checked, not the content: a
+path that does not exist still passes here. The check never blocks: a `decision: "block"` on Stop
+re-prompts the model and contends with other Stop hooks, and the contract is yours to weigh.
+Nothing labelled, no transcript, or `OUTPUT_TYPES_CHECK=off` → no output at all. The mechanical
+path answers inside 4 s; past that the runner fails open with one line in `errors.log`.
+
+**The judge stage** is off by default: a model call per statement adds seconds to every Stop.
+Turn it on by writing `{ "judge": true }` to `${XDG_CONFIG_HOME:-~/.config}/output-types/config.json`,
+and configure the judge command once, for this and every other plugin that judges, with
+`node "<plugin dir>/lib/judge.mjs" setup` (it asks for the command, makes one test call, and
+writes `~/.config/judge/config.json`). The command is resolved in this order, and a skipped.log
+line names which source supplied it: `OUTPUT_TYPES_JUDGE_BIN` in the environment → `judgeCommand`
+(and `judgeTimeoutMs`) in the output-types config file → the shared judge file → i-have-audhd's
+`enforcement.judgeCommand` in `~/.claude/i-have-audhd.json`, read-only. With the judge on, each
+statement that passed the mechanical stage is put to it once: does the receipt license what the
+sentence says. A `fail`, or an answer that is neither pass nor fail, joins the same warning with
+the judge's reason; a judge that times out, exits non-zero, prints no JSON, or cannot start is one
+line in `${XDG_STATE_HOME:-~/.local/state}/output-types/skipped.log` and the check goes on with
+the mechanical result. Every call is clamped to what is left of the hook's 55 s budget (the Stop
+entry in `hooks.json` has `timeout: 60`), so a hanging judge is killed by its own timer, never by
+the host.
+
+### What this does, and what it does not do: it delivers, and it warns
+
+Three pieces, and it is worth knowing which does what before you install.
 
 **The session-start hook puts the core in front of the model before the first tool call.** A
 contract that governs every assertion cannot be delivered by a mechanism that fires in response to
@@ -189,14 +247,13 @@ is one copy of the core and it cannot drift from the contract.
 receipts, the seven rules, rendering, degraded reports, handed-over commands. Once read, the text
 stays in context for the rest of the session.
 
-**Nothing here enforces anything, and that is the part to be clear about.** Both pieces deliver
-text. Neither one reads what the agent sends back. On the machine this was extracted from there is
-also a conformance guard that inspects a returned report and tells the parent what it actually got
-— unlabelled facts, a claim with no receipt. **That guard is not in this package and is not being
-extracted.** So do not read an installed copy of this plugin as a guarantee: a report that comes
-back with every fact bare will come back exactly that way, and
-nothing here will catch it. What you get is a contract the model has read, not a contract the
-model has been held to.
+**The Stop check reads what the agent sends back, and warns.** It catches one failure: a label
+with no receipt shape, and with the judge on, a receipt that does not say what the sentence says.
+It does not catch the other one: a fact left bare, with no label at all, is exactly what the
+contract says an unreceipted statement should look like, and nothing here can tell a deliberate
+omission from a forgotten receipt. So do not read an installed copy as a guarantee: a report that
+comes back with every fact unlabeled comes back exactly that way. What you get is a contract the
+model has read, held to the half of it that is checkable.
 
 Two things help in practice. Name the skill in the delegation prompt for any agent you dispatch,
 and say so in your own instructions if you want more than the core in force from the start.
@@ -206,11 +263,16 @@ environment; the hook then emits nothing and the skill still loads on demand.
 
 If the core did not load, the session still starts and shows one line saying so. The reason is in
 `${XDG_STATE_HOME:-~/.local/state}/output-types/errors.log`, one line per failure, or in the warning
-itself when that log cannot be written.
+itself when that log cannot be written. The Stop check's own faults go to the same file, as
+`<iso> Stop <reason>`, with a `output-types Stop failed open: …` line to you; a judge it could not
+use goes to `skipped.log` beside it.
 
 ### Developing output-types
 
-The tests run with `node --test` from inside `plugins/output-types/`.
+The tests run with `node --test` from inside `plugins/output-types/`. `lib/judge.mjs` and
+`lib/hook-runner.mjs` are plugin-kit's, copied byte for byte; change them there and copy again
+(the kit's `test/judge.test.mjs` and this plugin's `test/manifest.test.mjs` both fail on drift).
+A full changelog is in [`plugins/output-types/CHANGELOG.md`](plugins/output-types/CHANGELOG.md).
 
 ## i-have-audhd
 
