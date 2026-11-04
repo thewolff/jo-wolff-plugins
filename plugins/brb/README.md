@@ -197,6 +197,10 @@ worktree and `scripts/prune.mjs` removes what is older than its retention.
 hooks as spawned processes with fixture stdin and fixture transcripts, the OMP adapter's handlers.
 `bash e2e/live-run.sh --no-live` replays the eleven `evals/*.scenario.json` offline.
 
+## Changes in 0.1.2
+
+`scripts/prune.mjs` is plugin-kit 0.3.3's template, re-copied: after the age pass it rotates every log under the state directory past 256 KiB (errors.log included) to `<name>.1`, replacing the previous `.1` and counting its bytes as freed, so an appended log is bounded; `--dry-run` prints `would rotate …` per log. The `pruned:` line and the `state` declaration are unchanged.
+
 ## Changes in 0.1.1
 
 `lib/hook-runner.mjs` is plugin-kit 0.3.1's, byte for byte (was 0.2.1's). The handler thread's

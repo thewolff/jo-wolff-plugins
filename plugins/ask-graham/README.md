@@ -475,6 +475,10 @@ sources proof on both transcript shapes, with a fixture file of invented sources
 
 ## Release notes
 
+### 2026-11-04 — 0.8.2
+
+`scripts/prune.mjs` is plugin-kit 0.3.3's template, re-copied: after the age pass it rotates every log under the state directory past 256 KiB (errors.log included) to `<name>.1`, replacing the previous `.1` and counting its bytes as freed, so an appended log is bounded; `--dry-run` prints `would rotate …` per log. The `pruned:` line and the `state` declaration are unchanged.
+
 ### 2026-11-04 — 0.8.1
 
 The Stop hook records each verdict or structure check in

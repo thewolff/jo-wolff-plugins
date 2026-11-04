@@ -4,6 +4,12 @@ All notable changes to output-types are recorded here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Releases before 0.3.0 are described in
 the root README's output-types section ("Changes in").
 
+## 0.3.2 - 2026-11-04
+
+### Changed
+
+- `scripts/prune.mjs` is plugin-kit 0.3.3's template, re-copied: after the age pass it rotates every log under the state directory past 256 KiB (errors.log included) to `<name>.1`, replacing the previous `.1` and counting its bytes as freed, so an appended log is bounded; `--dry-run` prints `would rotate …` per log. The `pruned:` line and the `state` declaration are unchanged.
+
 ## [0.3.1] - 2026-11-04
 
 ### Fixed

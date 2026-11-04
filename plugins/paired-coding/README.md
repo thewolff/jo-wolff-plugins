@@ -1093,6 +1093,10 @@ worktree, inside an excluded directory, or after the final snapshot is not detec
 
 ## Changes
 
+### 1.6.1
+
+- `scripts/prune.mjs` is plugin-kit 0.3.3's template, re-copied: after the age pass it rotates every log under the state directory past 256 KiB (errors.log included) to `<name>.1`, replacing the previous `.1` and counting its bytes as freed, so an appended log is bounded; `--dry-run` prints `would rotate …` per log. The `pruned:` line and the `state` declaration are unchanged. Only `*.log` rotates here: its `.jsonl` files are state read back whole.
+
 ### 1.6.0
 
 - A pattern claim needs a pattern source, in every mode (see *A pattern claim needs a pattern
