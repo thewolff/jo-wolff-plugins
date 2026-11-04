@@ -82,15 +82,38 @@ export function unresolvedByFolder(db) {
 }
 
 /**
- * Open and held questions outside the scope of `cwd`: their folder is not `cwd`, not an ancestor
- * of it and not under it. Returns { count, folders } (folders = distinct cwds among them).
+ * Open and held questions outside the scope of `cwd` (their folder is not `cwd`, not an ancestor
+ * of it and not under it), grouped by folder in path order, oldest first within a folder, each
+ * parsed. Open ones come before held ones in a folder. An empty Map when there are none.
  */
-export function elsewhereCount(db, cwd) {
-  const rows = db
-    .prepare("SELECT cwd FROM cc_questions WHERE state IN ('open', 'held')")
-    .all()
-    .filter((q) => !isWithin(cwd, q.cwd) && !isWithin(q.cwd, cwd));
-  return { count: rows.length, folders: new Set(rows.map((q) => q.cwd)).size };
+export function elsewhereQuestions(db, cwd) {
+  const groups = new Map();
+  for (const [folder, questions] of unresolvedByFolder(db)) {
+    if (isWithin(cwd, folder) || isWithin(folder, cwd)) continue;
+    groups.set(folder, [...questions.filter((q) => q.state === "open"), ...questions.filter((q) => q.state === "held")]);
+  }
+  return groups;
+}
+
+/**
+ * The option word a bare prompt names: the prompt is one option alone, any case, with trailing
+ * `.`, `!` or `?` and surrounding whitespace ignored ("Local.", "local"); null otherwise.
+ */
+export function bareOption(prompt, options) {
+  const word = String(prompt ?? "").trim().replace(/[.!?]+$/, "").trim().toLowerCase();
+  return word && options.includes(word) ? word : null;
+}
+
+/**
+ * Open and held questions whose options include the bare option `prompt` names, this session's
+ * first (its own rows, then any in scope for `cwd`), then the rest; [] when the prompt is not a
+ * bare option or nothing offers it. Reads only: the hint is Claude's to act on.
+ */
+export function bareOptionMatches(db, prompt, { cwd, sessionId = null } = {}) {
+  const rows = db.prepare("SELECT * FROM cc_questions WHERE state IN ('open', 'held') ORDER BY asked_at ASC, id ASC").all().map(parseQuestion);
+  const matches = rows.map((q) => ({ q, word: bareOption(prompt, q.options) })).filter((m) => m.word);
+  const rank = ({ q }) => (sessionId && q.session_id === sessionId ? 0 : cwd && isWithin(cwd, q.cwd) ? 1 : 2);
+  return matches.sort((a, b) => rank(a) - rank(b));
 }
 
 /**

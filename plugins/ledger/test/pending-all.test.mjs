@@ -10,6 +10,7 @@ const injected = (box, extra, opts) => {
   return r.json.hookSpecificOutput.additionalContext;
 };
 const elsewhereLines = (text) => text.split("\n").filter((l) => l.includes("other folder"));
+const header = (n, m) => `ledger: ${n} question${n === 1 ? "" : "s"} waiting on you in ${m} other folder${m === 1 ? "" : "s"} (asked elsewhere, not for this folder's work; for you, not the human: when the human's reply answers one, run \`${invocation()} answer <q-id> <option>\` and tell them it is recorded; never show the id):`;
 
 test("pending --all from either of two folders lists both questions under their folder headers; plain pending stays scoped", () => {
   const box = sandbox();
@@ -49,9 +50,12 @@ test("SessionStart from folder A with one open question in unrelated folder B �
   const box = sandbox();
   const b = askQuestion(box, { name: "over there", cwd: box.sibling });
   const text = injected(box);
-  const want = `ledger: 1 question waiting on you in 1 other folder; run \`${invocation()} pending --all\` to see them.`;
-  assert.deepEqual(elsewhereLines(text), [want]);
-  assert.ok(text.endsWith(want), text);
+  assert.deepEqual(elsewhereLines(text), [header(1, 1)]);
+  // The block carries the folder and the question's full pending line (body, options, default, id): a session can record the reply without a lookup.
+  const tail = text.split("\n").slice(-3);
+  assert.equal(tail[0], header(1, 1));
+  assert.equal(tail[1], box.sibling);
+  assert.equal(tail[2], `a ${b}  # over there · Which way (over there)? · default a · also: b / withdraw`);
   apply(box, [`answer ${b} a`], { cwd: box.sibling });
   assert.deepEqual(elsewhereLines(injected(box)), []);
 });
@@ -63,7 +67,10 @@ test("SessionStart counts open and held questions per folder, pluralised", () =>
   const held = askQuestion(box, { name: "two", cwd: box.sibling });
   apply(box, [`hold ${held}`], { cwd: box.sibling });
   askQuestion(box, { name: "three", cwd: other });
-  assert.deepEqual(elsewhereLines(injected(box)), [`ledger: 3 questions waiting on you in 2 other folders; run \`${invocation()} pending --all\` to see them.`]);
+  const text = injected(box);
+  assert.deepEqual(elsewhereLines(text), [header(3, 2)]);
+  // Folders in path order; open before held within a folder; each line is the `pending`/`held` line.
+  assert.match(text, new RegExp(`^${other}\\na \\S+  # three · .*\\n${box.sibling}\\na \\S+  # one · .*\\nheld ${held}  # two · `, "m"));
 });
 
 test("a question in a parent or a subfolder of the session folder is in scope, not elsewhere", () => {
@@ -83,7 +90,7 @@ test("a session in a parent folder sees a subfolder's open and held questions at
   const text = injected(box);
   assert.match(text, new RegExp(`^1\\. \\S+ ${open}  # child open · .* · in ${child}$`, "m"));
   assert.match(text, new RegExp(`^- child held: .* \\(${held}, in ${child}\\)$`, "m"));
-  assert.deepEqual(elsewhereLines(text), [`ledger: 1 question waiting on you in 1 other folder; run \`${invocation()} pending --all\` to see them.`]);
+  assert.deepEqual(elsewhereLines(text), [header(1, 1)]);
   const pending = cli(box, ["pending"]).out;
   assert.match(pending, new RegExp(`^1\\. \\S+ ${open}  # child open .* · in ${child}$`, "m"));
   assert.match(pending, new RegExp(`^held ${held}  # child held · .* · in ${child}$`, "m"));

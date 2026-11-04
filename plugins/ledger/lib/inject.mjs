@@ -1,12 +1,13 @@
 // inject.mjs — the text SessionStart hands Claude: held questions (Waiting on you), open
-// questions, recent notes, the verb summary, one line counting the open and held questions in
-// other folders, one line when the cross-lab review found problems on HEAD, and, last, one
-// doctor line when the cheap health checks find issues. Sections appear in that order and only
-// when non-empty. Capped at CAP characters (the doc's limit is 10,000): notes are truncated
-// first, never the held or open questions, the other-folders, review or doctor lines.
+// questions, recent notes, the verb summary, the open and held questions in other folders
+// (each with its body, options and default, so the session can record the human's answer to
+// one without a lookup), one line when the cross-lab review found problems on HEAD, and, last,
+// one doctor line when the cheap health checks find issues. Sections appear in that order and
+// only when non-empty. Capped at CAP characters (the doc's limit is 10,000): notes are truncated
+// first, never the held or open questions, the other-folders block, review or doctor lines.
 
 import { fileURLToPath } from "node:url";
-import { elsewhereCount, heldQuestions, logEntries, openQuestions, renderLog, renderPending } from "./commands.mjs";
+import { elsewhereQuestions, heldLines, heldQuestions, logEntries, openQuestions, pendingLines, renderLog, renderPending } from "./commands.mjs";
 import { quickIssues } from "./doctor.mjs";
 import { findingsLine } from "./review.mjs";
 
@@ -88,7 +89,7 @@ export function buildInjection(db, cwd, config, { source = "startup", now = Date
   const summary = compact ? verbSummary().split("\n")[0] : verbSummary();
   if (summary) sections.push("summary");
 
-  const elsewhereText = config.inject?.elsewhere === false ? "" : elsewhereLine(db, cwd);
+  const elsewhereText = config.inject?.elsewhere === false ? "" : elsewhereLine(db, cwd, { now, timezone: config.timezone ?? null });
   if (elsewhereText) sections.push("elsewhere");
 
   let reviewText = "";
@@ -116,15 +117,36 @@ export function doctorLine(db, { env = process.env, now = Date.now() } = {}) {
   return `ledger: doctor reports ${n} issue(s); run \`${invocation()} doctor\``;
 }
 
+// How many other-folder questions the SessionStart block lists in full before pointing at `pending --all`.
+export const ELSEWHERE_MAX = 10;
+
 /**
- * One line when open or held questions exist outside the scope of `cwd` (not it, not an ancestor,
- * not under it); "" when there are none.
+ * The open and held questions outside the scope of `cwd` (not it, not an ancestor, not under
+ * it), grouped under their folder: one `pending` line per open question (body, options, default
+ * and the q- id, so the session can record the human's reply without a lookup) and one `held`
+ * line per held one; "" when there are none. Past ELSEWHERE_MAX questions the rest are counted
+ * and left to `pending --all`.
  */
-export function elsewhereLine(db, cwd) {
-  const { count, folders } = elsewhereCount(db, cwd);
-  if (!count) return "";
+export function elsewhereLine(db, cwd, { now = Date.now(), timezone = null } = {}) {
+  const groups = elsewhereQuestions(db, cwd);
+  if (!groups.size) return "";
+  const all = [...groups.values()].flat();
   const plural = (n, word) => `${n} ${word}${n === 1 ? "" : "s"}`;
-  return `ledger: ${plural(count, "question")} waiting on you in ${plural(folders, "other folder")}; run \`${invocation()} pending --all\` to see them.`;
+  const out = [
+    `ledger: ${plural(all.length, "question")} waiting on you in ${plural(groups.size, "other folder")} (asked elsewhere, not for this folder's work; for you, not the human: when the human's reply answers one, run \`${invocation()} answer <q-id> <option>\` and tell them it is recorded; never show the id):`,
+  ];
+  let shown = 0;
+  for (const [folder, questions] of groups) {
+    if (shown >= ELSEWHERE_MAX) break;
+    out.push(folder);
+    for (const q of questions) {
+      if (shown >= ELSEWHERE_MAX) break;
+      out.push(...(q.state === "held" ? heldLines([q]) : pendingLines(q, { now, timezone })));
+      shown++;
+    }
+  }
+  if (shown < all.length) out.push(`… and ${all.length - shown} more; run \`${invocation()} pending --all\` to see them all.`);
+  return out.join("\n");
 }
 
 /** `block` cut at a line break so that the result, marker included, is at most `max` characters. */
