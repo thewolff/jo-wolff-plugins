@@ -11,8 +11,8 @@
 //          file applies when it names a command, else the judge checks are off (skipped.log).
 //   set    any other value. No notice; lib/config.mjs decides whether the value is usable and
 //          logs to errors.log when it is not.
-//   unreadable  the profile exists but does not parse, or the key is absent and the shared
-//          file exists but is malformed: no notice, because the operator has clearly
+//   unreadable  the profile exists but does not parse, or the key is absent or null and the
+//          shared file exists but is malformed: no notice, because the operator has clearly
 //          configured something. The inject hook already says the profile did not parse; for
 //          the shared file it logs one fault naming the parse problem (sharedProblem below).
 
@@ -56,7 +56,9 @@ export function judgeChoiceState(path, env = process.env) {
   if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return "unreadable";
   const e = parsed.enforcement;
   if (!e || typeof e !== "object" || Array.isArray(e) || !("judgeCommand" in e)) return sharedState(env);
-  return e.judgeCommand === null ? "none" : "set";
+  if (e.judgeCommand !== null) return "set";
+  // null defers to the shared file, so its malformation is a fault; anything else is "none".
+  return sharedState(env) === "unreadable" ? "unreadable" : "none";
 }
 
 // The shared file's say when the profile has none: "shared", "unreadable", or "unset".

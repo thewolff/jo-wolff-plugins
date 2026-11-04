@@ -39,6 +39,7 @@ import { createInterface } from "node:readline";
 import { fileURLToPath } from "node:url";
 import { askJudge, judgeSources, resolveJudge } from "../judge/ask.mjs";
 import { defaultProfilePath } from "../lib/config.mjs";
+import { readSharedConfig } from "../lib/judge.mjs";
 import { JUDGE_RULES, TOTAL_CHECKS, SHARED_SETUP_COMMAND } from "../lib/judge-setup.mjs";
 
 // The judge's own session must not run this plugin's hooks on the judge's reply. Both Claude
@@ -272,10 +273,14 @@ async function run(args, { ask }) {
   console.log("\nStep 3 of 4: testing the judge with one call.");
   let failed = false;
   if (command === null) {
-    const sharedJudge = resolveJudge({ judgeCommand: null });
-    if (sharedJudge) {
-      console.log(`  No judge of its own, no test. The shared judge applies: ${JSON.stringify(sharedJudge.command)} from ${sharedJudge.source}.`);
+    // The shared file alone: resolveJudge would also read the profile as the kit's legacy
+    // fallback, and that is the override this choice is about to remove.
+    const { path: sharedPath, config: sharedConfig, malformed: sharedMalformed } = readSharedConfig();
+    const sharedCommand = !sharedMalformed && typeof sharedConfig?.command === "string" && sharedConfig.command.trim() ? sharedConfig.command : null;
+    if (sharedCommand) {
+      console.log(`  No judge of its own, no test. The shared judge applies: ${JSON.stringify(sharedCommand)} from ${sharedPath}.`);
     } else {
+      if (sharedMalformed) console.log(`  The shared judge file is malformed (${sharedMalformed}), so it supplies no judge until it is fixed.`);
       console.log(`  No judge, no test. ${JUDGE_RULES.join(", ")} stay off; each time one would have fired,`);
       console.log(`  skipped.log gets a line. Run this again any time to add a judge, or \`${SHARED_SETUP_COMMAND}\` for one every plugin shares.`);
     }

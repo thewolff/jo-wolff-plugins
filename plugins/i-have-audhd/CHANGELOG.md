@@ -16,10 +16,13 @@ README's *Changes* section.
   there means "no override" (the shared file applies), not "no judge". The shared file's
   `timeoutMs` is not used; the hook's own budget (30 s, 20 s under OMP) is unchanged.
 - `node lib/judge.mjs setup` writes the shared file (the kit's CLI, in the vendored copy;
-  `which` prints what resolves). `tools/setup.mjs` is this plugin's override only: it now
-  shows the shared file and the judge that resolves before asking, and "none" reads "none of
-  its own". The session-start notice names both files and both commands and shows only when
-  neither has a command; a malformed shared file is one fault line, not a notice.
+  its `which` is the kit's generic resolver, not this plugin's effective judge: it does not
+  read the override first and reports the shared or default timeout). `tools/setup.mjs` is
+  this plugin's override only: it now shows the shared file and the judge that resolves for
+  this plugin before asking, and "none" reads "none of its own" and previews the shared file
+  alone, never the override it is removing. The session-start notice names both files and
+  both commands and shows only when neither has a command; a malformed shared file is one
+  fault line, not a notice, whether the profile's key is absent or `null`.
 - `judge-failures.log` lines carry the kit's error kinds (`timeout`, `nonzero`,
   `unparseable`, `spawn-failed`; 1.6.1 wrote `judge-timeout`, `judge-exit-<n>`,
   `judge-unparseable`, `judge-spawn-<errno>`), plus `detail="exit 127"` and the `source=`

@@ -44,6 +44,24 @@ test("choosing none writes judgeCommand null, says which checks stay off, and ma
   assert.equal(statSync(profilePath(home)).mode & 0o777, 0o600);
 });
 
+test("switching an existing override to none previews the shared file alone, never the override being removed", () => {
+  const home = mkhome();
+  writeFileSync(profilePath(home), JSON.stringify({ enforcement: { judgeCommand: GOOD_JUDGE } }));
+  const r = runSetup(home, ["5", "yes"]);
+  assert.equal(r.status, 0, r.stdout);
+  assert.ok(!r.stdout.includes("The shared judge applies"), r.stdout);
+  assert.match(r.stdout, /No judge, no test\. do-not-batch-by-label/);
+  assert.equal(readProfile(home).enforcement.judgeCommand, null);
+
+  const shared = mkhome();
+  writeFileSync(profilePath(shared), JSON.stringify({ enforcement: { judgeCommand: GOOD_JUDGE } }));
+  mkdirSync(join(shared, ".config", "judge"), { recursive: true });
+  writeFileSync(join(shared, ".config", "judge", "config.json"), JSON.stringify({ command: "shared-judge-cmd" }));
+  const s = runSetup(shared, ["5", "yes"]);
+  assert.equal(s.status, 0, s.stdout);
+  assert.match(s.stdout, /The shared judge applies: "shared-judge-cmd" from .*judge\/config\.json\./);
+});
+
 test("a custom judge is tested, previewed, and written; every other profile field is kept", () => {
   const home = mkhome();
   writeFileSync(profilePath(home), JSON.stringify({ reader: "R", traits: ["t"], enforcement: { mode: "warn", rules: { "name-the-artifact": "block" } } }));

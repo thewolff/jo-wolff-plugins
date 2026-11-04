@@ -55,8 +55,13 @@ adapter runs them under node resolved to an absolute path (`I_HAVE_AUDHD_NODE` p
    either one, or any other plugin's copy, writes the same file. `setup` asks for the command
    (`--command <cmd>`, `--timeout-ms <n>` and `--yes` script it), makes one test call, shows
    the JSON it will write and writes it after a yes; a failed test call is refused unless
-   `--force`. `node <that path> which` prints the command, timeout and source as this plugin
-   resolves them. The full contract is in
+   `--force`. `node <that path> which` is the kit's generic resolver: it shows what the shared
+   file resolves to, not this plugin's effective judge, because it does not read this plugin's
+   `enforcement.judgeCommand` override first and it reports the shared or default timeout
+   instead of this plugin's harness budget (30s under Claude Code, 20s under OMP). For the
+   command this plugin actually uses, run its setup tool below and read the "Resolves now to"
+   line in step 1; it resolves the override first, then the shared file, and pressing Ctrl-D
+   at the choice prompt leaves without writing anything. The full contract is in
    [plugin-kit's README, "Shared judge"](../plugin-kit/README.md#shared-judge).
 
    To give this plugin a judge of its own that wins over the shared file, or to choose none

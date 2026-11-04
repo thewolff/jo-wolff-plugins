@@ -96,7 +96,7 @@ function judgeNoticeOnce() {
   const state = judgeChoiceState(profilePath());
   if (state === "unreadable") {
     const problem = sharedProblem();
-    if (problem) logFault(HOOK_FILE, `the shared judge file is malformed (${problem}); the judge checks stay off until it is fixed or the profile sets enforcement.judgeCommand`);
+    if (problem) logFault(HOOK_FILE, `the shared judge file is malformed (${problem}); the judge checks stay off until it is fixed or the profile's enforcement.judgeCommand names a command`);
     return "";
   }
   if (state !== "unset") return "";

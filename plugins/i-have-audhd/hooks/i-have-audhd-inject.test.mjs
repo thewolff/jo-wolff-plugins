@@ -171,6 +171,17 @@ test("judgeCommand null (chose none) and a set judge both suppress the notice", 
   }
 });
 
+test("judgeCommand null with a malformed shared judge file logs the shared-file fault and still shows no setup notice", () => {
+  const home = mkhome();
+  writeProfile(home, { enforcement: { judgeCommand: null } });
+  writeSharedJudge(home, "{ not json");
+  const r = JSON.parse(runInject({ session_id: "s1", source: "startup" }, home).stdout);
+  assert.ok(!r.systemMessage.includes("no judge is configured"), "null is a choice: no setup notice");
+  assert.match(r.systemMessage, /failed open .*the shared judge file is malformed \(.*judge\/config\.json: .*\); the judge checks stay off until it is fixed/);
+  assert.match(readFileSync(join(home, ".claude", ".i-have-audhd-state", "errors.log"), "utf8"), /the shared judge file is malformed/);
+  assert.ok(!existsSync(noticeMarker(home)));
+});
+
 // ─── the profile's inject switch ─────────────────────────────────────────────
 
 test("inject full (and absent) emits the core, the profile's reader, and the judge notice", () => {
