@@ -278,11 +278,16 @@ export function handle(event, input, opts = {}) {
     // A throw from here on reaches respond(), which fails closed while pairing and open otherwise.
     // A stop judged here (or stashed by an earlier Stop event) is reported alongside this
     // tool's result, or inside the refusal when pairing is still on.
-    const notices = activated(dir) ? [...takeNotices(dir), ...resolvePending(dir, { waitMs: opts.waitMs })] : [];
+    // The degraded-read fault is taken before queued turns are judged: judging one saves the
+    // state, and the saved (still closed) state no longer reads as a fault of this event.
+    const on = activated(dir);
+    const early = on ? loadStateReport(dir).fault : null;
+    const notices = on ? [...takeNotices(dir), ...resolvePending(dir, { waitMs: opts.waitMs })] : [];
     const v = verdict(name, { sessionDir: dir, allow: hostAllowFor(input) });
+    const fault = v.degraded ?? early;
     // A state read as degraded (closed) is a fault too: warned and logged once, after the last
     // step that can throw, so the outer catch never logs it a second time.
-    const warned = (out) => (v.degraded ? { ...(out ?? {}), systemMessage: degradedWarning(env, event, input, dir, v.degraded) } : out);
+    const warned = (out) => (fault ? { ...(out ?? {}), systemMessage: degradedWarning(env, event, input, dir, fault) } : out);
     if (!v.allow) return warned(deny([...notices.map((n) => n.replace(/^paired-coding: /, "")), v.reason ?? "refused while pairing"].join(" ")));
     if (PAIR_TOOLS.includes(name)) {
       writeBinding(stateBase(env), input.tool_use_id, {
@@ -328,8 +333,11 @@ export function handle(event, input, opts = {}) {
   if (event === "user-prompt-submit") {
     // Turns still queued from earlier (a turn that ended with no tool call) are judged first,
     // and the outcome of any stop among them, or stashed by the Stop event, is reported here.
+    // As in PreToolUse: the degraded-read fault is taken before queued turns are judged.
+    const early = loadStateReport(dir).fault;
     const notices = [...takeNotices(dir), ...resolvePending(dir, { waitMs: opts.waitMs })];
-    const { state, fault } = loadStateReport(dir);
+    const { state, fault: late } = loadStateReport(dir);
+    const fault = late ?? early;
     if (state.phase === "inactive") return notices.length ? context("UserPromptSubmit", notices) : null;
     queueInput(dir, input);
     const note = isStopPhrase(input?.prompt)

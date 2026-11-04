@@ -39,6 +39,10 @@ for (const name of captured) {
   });
 }
 
+test("ps fixtures are present: a successful capture, or the record of why ps could not run", () => {
+  assert.ok(captured.length > 0 || existsSync(unavailable), "lib/fixtures holds neither a ps capture nor ps.unavailable.txt; run capture-ps-fixture.mjs");
+});
+
 test("captured ps output is present for at least one platform", { skip: captured.length === 0 && "ps could not run where the fixtures were captured; see ps.unavailable.txt and run capture-ps-fixture.mjs outside the sandbox" }, () => {
   assert.ok(captured.length > 0);
 });
