@@ -64,13 +64,14 @@ Two agents load from `agents/` (by the plugin-agent convention; nothing register
 | `release-gate` | before a version bump, PR or publish | runs a trust preflight and checks one snapshot of the head commit, reporting pass, fail or unavailable per check with command and output: the CI node pin from the workflow job that runs the plugin's tests, the path scrub, the version across `plugin.json`, `package.json`, the README "Changes in" headings and the marketplace entry, `node --test` and `ledger gate check` (throwaway `LEDGER_DB` and `LEDGER_CONFIG`) in a credential-free environment, and the README against the plugin's hooks, skills and agents | Read, Grep, Glob, Bash; haiku |
 
 Both agents run code from the checkout only after a trust preflight passes: `gh repo view` on
-the checkout's `origin` reports `ADMIN` or `MAINTAIN` for the current user, and every such
-command runs under `env -i` with a fresh `HOME` and `XDG_CONFIG_HOME` and a `PATH` of the node
-folder, `/usr/bin` and `/bin`, so no `GH_TOKEN`, API key or `SSH_AUTH_SOCK` reaches it. There is
-no second run in the caller's own environment. That containment strips credentials from the
-environment; it does not cut the network or hide files readable by path, which is why the
-permission check comes first. A failed preflight means static review only: every executable
-check is `unavailable`, the reviewer's verdict cannot be `ship` and the gate line is `fail`.
+the checkout's `origin` reports `ADMIN`, `MAINTAIN` or `WRITE` for the current user (someone who
+can already push code CI runs), and every such command runs under `env -i` with a fresh `HOME`
+and `XDG_CONFIG_HOME` and a `PATH` of the node folder, `/usr/bin` and `/bin`, so no `GH_TOKEN`,
+API key or `SSH_AUTH_SOCK` reaches it. There is no second run in the caller's own environment.
+That containment strips credentials from the environment; it does not cut the network or hide
+files readable by path, which is why the permission check comes first. A failed preflight means
+static review only: every executable check is `unavailable`, the reviewer's verdict cannot be
+`ship` and the gate line is `fail`.
 Every check reads a `git worktree add --detach` snapshot of the captured head sha, named in the
 report; uncommitted changes are listed, never inspected. A CI pin that no single workflow job
 supplies is `unavailable` and fails the gate; plugin-kit itself has no workflow yet, so the gate
@@ -106,7 +107,7 @@ pick it up: it has no plugin to test until it is scaffolded).
 
 Two agents, `cross-lab-reviewer` and `release-gate` (see "Agents"): the Codex review brief and
 the release checklist that were written by hand for each plugin release, as files. Neither runs
-code from the checkout without a passing trust preflight (maintainer permission on `origin`,
+code from the checkout without a passing trust preflight (write permission or higher on `origin`,
 credential-free `env -i`), and both check one snapshot of the head sha. The scaffolder and the
 runner are unchanged.
 

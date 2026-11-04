@@ -26,7 +26,7 @@ output lines that decided it. Quote every substitution in every command.
 
 0. **Trust preflight.** Before any code from the checkout runs:
    - **a.** `gh repo view "$(git -C "<repo>" remote get-url origin)" --json viewerPermission,nameWithOwner`
-     passes only when `viewerPermission` is `ADMIN` or `MAINTAIN`. Any other value, no `origin`,
+     passes only when `viewerPermission` is `ADMIN`, `MAINTAIN` or `WRITE`. Any other value, no `origin`,
      `gh` missing or logged out, or a non-zero exit fails it.
    - **b. Containment.** Every command that runs repository code (checks 5 and 6) runs under
      `env -i HOME="$(mktemp -d)" XDG_CONFIG_HOME="$(mktemp -d)" PATH="$(dirname "$(command -v node)"):/usr/bin:/bin"`,
@@ -107,7 +107,7 @@ naming the failed and unavailable checks.
 
 ## How it fails: when this can't run
 
-- **Trust preflight fails** (`viewerPermission` not `ADMIN` or `MAINTAIN`, no `origin`, `gh`
+- **Trust preflight fails** (`viewerPermission` not `ADMIN`, `MAINTAIN` or `WRITE`, no `origin`, `gh`
   missing or logged out, or a variable leaking past `env -i`): checks 5 and 6 are
   `unavailable: trust preflight failed (<reason>)` and nothing from the checkout runs. The static
   checks still report; the gate line is `fail`.

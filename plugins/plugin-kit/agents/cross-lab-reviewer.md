@@ -46,7 +46,7 @@ Resolve the rest yourself, and print each value in the report:
    repository code.
    - **a. Who controls the checkout.**
      `gh repo view "$(git -C "<repo>" remote get-url origin)" --json viewerPermission,nameWithOwner`.
-     It passes only when `viewerPermission` is `ADMIN` or `MAINTAIN`. Any other permission, no
+     It passes only when `viewerPermission` is `ADMIN`, `MAINTAIN` or `WRITE`. Any other permission, no
      `origin`, `gh` missing, not logged in, or a non-zero exit fails it; report the command, its
      exit code and what it printed.
    - **b. Output path.** Each of `<repo>`, `<plugin>` and `<version>` must match
@@ -151,7 +151,7 @@ env-only set with its CI-pin note, and every step that did not run.
 
 ## How it fails: when this can't run
 
-- **Trust preflight fails** (`viewerPermission` not `ADMIN` or `MAINTAIN`, no `origin`, `gh`
+- **Trust preflight fails** (`viewerPermission` not `ADMIN`, `MAINTAIN` or `WRITE`, no `origin`, `gh`
   missing or logged out, or a variable leaking past `env -i`): no repository code runs. The
   review is static only, every executable check is `unavailable: <reason>` with the command and
   its output, and the verdict cannot be `ship`. Codex still reviews the source.
