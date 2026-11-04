@@ -48,8 +48,8 @@ test("scaffold: the files, with name, title, description and per-hook event, fil
   assert.equal(hooks.Stop[0].matcher, undefined);
   assert.equal(hooks.Stop[0].hooks[0].command, 'node "${CLAUDE_PLUGIN_ROOT}/hooks/stop.mjs"');
   assert.equal(hooks.Stop[0].hooks[0].timeout, 5);
-  assert.match(read("hooks/stop.mjs"), /runHook\("Stop", handle, \{ plugin: "trial-gate", quiet: false \}\)/);
-  assert.match(read("hooks/session-end.mjs"), /runHook\("SessionEnd", handle, \{ plugin: "trial-gate", quiet: true \}\)/);
+  assert.match(read("hooks/stop.mjs"), /runHook\("Stop", import.meta.url, \{ plugin: "trial-gate", quiet: false \}\)/);
+  assert.match(read("hooks/session-end.mjs"), /runHook\("SessionEnd", import.meta.url, \{ plugin: "trial-gate", quiet: true \}\)/);
   assert.match(read("hooks/pre-tool-use.mjs"), /^#!\/usr\/bin\/env node\n\/\/ hooks\/pre-tool-use\.mjs — the trial-gate plugin's PreToolUse hook/);
   assert.ok(statSync(join(root, "hooks/stop.mjs")).mode & 0o100, "handlers are executable");
   assert.ok(statSync(join(root, "e2e/live-run.sh")).mode & 0o100, "the live run is executable");

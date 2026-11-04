@@ -29,7 +29,7 @@ which writes `plugins/<name>/`:
 
 | File | What it is |
 |---|---|
-| `lib/hook-runner.mjs` | a copy of this plugin's [`lib/hook-runner.mjs`](lib/hook-runner.mjs): `runHook(event, handle, { plugin, quiet })` reads stdin, parses it (empty is `{}`), calls the handler, prints its JSON, exits 0. Stdin not JSON, a thrown error, or no answer in 4 s (inside the host's 5 s budget, so the host never kills the hook and loses the message; the one timer starts before stdin is read and is referenced, so a stdin the host holds open, a promise that never settles with nothing else alive, and a handler that blocks the loop past the deadline each end as this fail-open, and an answer that arrives after the deadline is dropped, never printed as a late block) → one line in `${XDG_STATE_HOME:-~/.local/state}/<plugin>/errors.log` and `{ systemMessage: "<plugin> <event> failed open: <why>" }` (not on SessionEnd, whose output the host discards). A hook never exits 2. |
+| `lib/hook-runner.mjs` | a copy of this plugin's [`lib/hook-runner.mjs`](lib/hook-runner.mjs): `runHook(event, import.meta.url, { plugin, quiet })` reads stdin, parses it (empty is `{}`), runs the module's exported `handle(input, { env })` on a worker thread, prints its JSON, exits 0. Stdin not JSON, a thrown error, or no answer in 4 s (inside the host's 5 s budget, so the host never kills the hook and loses the message; the one timer lives on the main thread, which does nothing but wait, so it fires whatever the handler is doing: a stdin the host holds open, a promise that never settles, a synchronous loop that never yields; at the deadline the thread is terminated and an answer that would have come later is never printed as a late block) → one line in `${XDG_STATE_HOME:-~/.local/state}/<plugin>/errors.log` and `{ systemMessage: "<plugin> <event> failed open: <why>" }` (not on SessionEnd, whose output the host discards). A hook never exits 2. |
 | `hooks/hooks.json` | one entry per event, `node "${CLAUDE_PLUGIN_ROOT}/hooks/<event>.mjs"`, timeout 5; tool events get a matcher |
 | `hooks/<event>.mjs` | one handler per event, `handle(input, { env })` returning null (allow) until the rule is written; the header comment says what the runner does and what the handler owes |
 | `test/hook-contract.test.mjs` | per hook: empty stdin, malformed JSON, an unknown event, an unwritable state directory, no config → exit 0 inside 5 s, no deny/block/`continue: false`; malformed JSON → one errors.log line and a systemMessage |
@@ -56,7 +56,8 @@ event, or no events, with the reason on stderr and exit 1; nothing is written on
 nothing is ever overwritten or deleted. A template missing from the kit (a broken install) is the
 same: exit 1 naming the file. The runner's own failure modes are in the table above; its test
 (`test/hook-runner.test.mjs`) drives each one, including the deadline in a spawned process: a
-promise that never settles, a stdin held open, a synchronous overrun. The kit's tests are a bare
+handler holding a timer that never answers, a stdin held open, a synchronous `Atomics.wait` of
+6 s under the default 4 s deadline (exit inside 4.5 s wall clock). The kit's tests are a bare
 `node --test` (the contract-test template carries a `.template` suffix so the runner does not
 pick it up: it has no plugin to test until it is scaffolded).
 

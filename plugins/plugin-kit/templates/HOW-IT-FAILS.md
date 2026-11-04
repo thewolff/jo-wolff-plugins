@@ -9,7 +9,7 @@ rows in parentheses that do not apply.
 
 | Piece | Fails how | Visible where | The person does |
 |---|---|---|---|
-| `hooks/<event>.mjs` (each hook) | stdin not JSON; the handler throws; no answer in 4 s (stdin held open, a promise that never settles, or a handler that blocks past the deadline: a late answer is dropped) | one line in `${XDG_STATE_HOME:-~/.local/state}/{{name}}/errors.log`; a `systemMessage` (`{{name}} <event> failed open: …`), except SessionEnd | nothing for one line; a repeating line is a bug: open an issue with the line |
+| `hooks/<event>.mjs` (each hook) | stdin not JSON; the handler throws; no answer in 4 s (stdin held open, a promise nothing settles, or a synchronous handler that never yields: `handle()` runs on a worker thread, the main thread's timer ends the run and a late answer is dropped) | one line in `${XDG_STATE_HOME:-~/.local/state}/{{name}}/errors.log`; a `systemMessage` (`{{name}} <event> failed open: …`), except SessionEnd | nothing for one line; a repeating line is a bug: open an issue with the line |
 | (a config file the plugin reads) | missing, unreadable, malformed | treated as defaults; a systemMessage names the file once per session | fix the file; the message names it |
 | (a program the plugin shells out to) | not installed; no credential; times out | `unavailable: <reason>` in the command's output; the deny or block it would have given is not given | install or log in as the reason says; the test fixture `<x>.unavailable.txt` is this output, captured |
 | `e2e/live-run.sh` (the canary) | `claude` missing or cannot log in | exit 75 with the reason on the last line; `ledger canary runs` shows `unavailable` | nothing; the canary tries again tomorrow |
