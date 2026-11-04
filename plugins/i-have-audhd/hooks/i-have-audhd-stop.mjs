@@ -59,6 +59,8 @@
 //      move or add, and NEVER demand a resend of the whole message — "paste the corrected
 //      opening lines only" style, terse. That paste instruction is block-only: a warn arrives
 //      after the message went out, so its notice asks for the fix going forward instead.
+//      Every block reason ENDS with the way out (wayOut below): the kill-switch file, and the
+//      profile key that makes each blocked rule warn only.
 //
 // FAIL-OPEN EVERYWHERE, NEVER FAIL-SILENT
 //   Any fault of this run — a throw, stdin that is empty or not a JSON object, an unparseable
@@ -126,6 +128,14 @@ const MASTER_FLOOR = 200;
 // The block-only half of a reason. A block holds the turn open, so it asks for the corrected
 // lines; a warn arrives after the message was sent (lib/pending.mjs), so it never carries this.
 const paste = (what) => `Paste the corrected ${what} only; never resend the whole message.`;
+
+// The way out of a block, last line of every block reason: the kill switch, and the profile key
+// that turns each blocked rule down to warn (lib/config.mjs reads enforcement.rules).
+const wayOut = (blocks) => {
+  const rules = [...new Set(blocks.map((b) => b.rule))];
+  const keys = rules.map((r) => `"${r}": "warn"`).join(", ");
+  return `Way out: \`touch ~/.claude/.i-have-audhd-off\` turns the check off; or set {"enforcement": {"rules": {${keys}}}} in ~/.claude/i-have-audhd.json to warn instead of block.`;
+};
 
 function readStdin() {
   try {
@@ -586,7 +596,7 @@ async function main() {
   if (blocks.length) {
     recordBlock(sessionId, textHash, blocks.map((b) => b.rule).join(","));
     out.decision = "block";
-    out.reason = blocks.map((b) => `${b.text} ${b.paste ?? ""}`.trim()).join("\n\n");
+    out.reason = [...blocks.map((b) => `${b.text} ${b.paste ?? ""}`.trim()), wayOut(blocks)].join("\n\n");
   }
   // The person hears about a dead judge here, once per key (lib/alerts.mjs); the agent hears
   // through the warn notice or the block reason above.

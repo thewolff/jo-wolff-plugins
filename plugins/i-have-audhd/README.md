@@ -305,6 +305,8 @@ Exit 0 means every item is done or had nothing to do, 1 means one was refused or
   `errors.log` and one warning line in the hook's `systemMessage`; it still exits 0 and blocks
   nothing. Before, these exited with no output, and a state directory that could not be written
   lost even the `errors.log` line.
+- Every block reason now ends with the way out: `touch ~/.claude/.i-have-audhd-off` turns the
+  check off, or the `enforcement.rules` key for each blocked rule set to `"warn"`.
 - Tests to the repository bar: every hook as a process against each fault and a 5 s budget
   (`hooks/fault-tolerance.test.mjs`), the verdict parser against a real judge's captured output
   (`judge/real-judge-output.test.mjs`, captured by `judge/fixtures/capture-real-judge.mjs`), and

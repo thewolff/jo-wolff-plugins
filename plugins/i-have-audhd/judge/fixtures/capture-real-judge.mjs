@@ -83,7 +83,9 @@ for (const name of readdirSync(raw).filter((f) => f.endsWith(".prompt.txt"))) {
   }
   console.log(`captured ${rule}`);
 }
+// The operator's home directory is written as <home>: the fixture is committed, the path is theirs.
 writeFileSync(
   join(HERE, "CAPTURED.txt"),
-  `captured ${new Date().toISOString()} by capture-real-judge.mjs\njudgeCommand: ${judgeCommand}\n`,
+  `captured ${new Date().toISOString()} by capture-real-judge.mjs\n` +
+    `judgeCommand: ${judgeCommand.split(realHome).join("<home>")}\n`,
 );

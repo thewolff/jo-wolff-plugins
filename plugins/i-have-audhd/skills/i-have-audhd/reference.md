@@ -26,7 +26,9 @@ different instrument with a different error profile, not a non-enforcement.
 
 Every warning and block reason names its skill rule, for example
 `Needs you first (i-have-audhd rule 1, Skeleton) — …`, so a finding points at text the
-model has, or can load.
+model has, or can load. Every block reason ends with one `Way out:` line: the kill-switch file
+`~/.claude/.i-have-audhd-off`, and the `enforcement.rules` profile key that sets each blocked
+rule to `"warn"`.
 
 **The one boundary that stays absolute:** *report what you did not do* is enforced exactly
 where a todo list exists. **With no tracked plan the violation is silence and no instrument

@@ -1,2 +1,2 @@
 captured 2026-11-04T02:52:41.835Z by capture-real-judge.mjs
-judgeCommand: MODEL_JUDGE_USAGE_LOG=/Users/jowolff/.claude/.i-have-audhd-state/judge-usage.jsonl /Users/jowolff/.bun/bin/bun /Users/jowolff/agent-scratch/jo-wolff-plugins/monitor/model-judge.ts anthropic/claude-haiku-5-5
+judgeCommand: MODEL_JUDGE_USAGE_LOG=<home>/.claude/.i-have-audhd-state/judge-usage.jsonl <home>/.bun/bin/bun <home>/agent-scratch/jo-wolff-plugins/monitor/model-judge.ts anthropic/claude-haiku-5-5

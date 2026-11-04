@@ -150,6 +150,19 @@ test("stop: unwritable state dir in block mode still blocks, and the lost loop-g
   assert.match(out.systemMessage, /^i-have-audhd hooks\/i-have-audhd-stop\.mjs failed open .*could not record loop-guard hash for u2/);
 });
 
+test("stop: every block reason ends with the way out: the kill-switch file and the profile key per blocked rule", () => {
+  const home = mkhome();
+  writeFileSync(join(home, ".claude", "i-have-audhd.json"), JSON.stringify({ enforcement: { mode: "block" } }));
+  const { out } = run(STOP, PAYLOADS.stop("w1", { last_assistant_message: vagueAsk }), home);
+  assert.equal(out.decision, "block");
+  const last = out.reason.split("\n\n").at(-1);
+  assert.equal(
+    last,
+    'Way out: `touch ~/.claude/.i-have-audhd-off` turns the check off; or set {"enforcement": {"rules": {"plural-back-reference": "warn"}}} in ~/.claude/i-have-audhd.json to warn instead of block.',
+  );
+  assert.equal(out.reason.split("\n\n").filter((p) => p.startsWith("Way out:")).length, 1, "once, not per finding");
+});
+
 test("prompt: unwritable state dir has nothing pending → exit 0, silent", () => {
   const home = mkhome();
   blockStateDir(home);
