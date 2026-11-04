@@ -40,7 +40,7 @@ installed from are never where a plugin lands):
 | `e2e/live-run.sh` | the nightly canary's live run, under the canary contract (exit 0 pass, exit 75 unavailable with the reason on the last line, stdout kept); proves the hooks ran under `claude -p`, with a slot for the plugin's own claim |
 | `skills/<name>/SKILL.md` | frontmatter, steps, and the "When this can't run" section with the two bullets every plugin shares |
 | `HOW-IT-FAILS.md` | the receipt: piece, fails how, visible where, the person does |
-| `.claude-plugin/plugin.json`, `package.json`, `README.md` | manifests at 0.1.0 and a README with the install block and a "How it fails" paragraph |
+| `.claude-plugin/plugin.json`, `package.json`, `README.md` | manifests at 0.1.1 and a README with the install block and a "How it fails" paragraph |
 
 The scaffold passes its own `node --test` and all three of `ledger gate check` as written; what
 is left is the author's: the rule in each hook, the skill's steps, the receipt's rows, the
@@ -63,6 +63,15 @@ handler holding a timer that never answers, a stdin held open, a synchronous `At
 6 s under the default 4 s deadline (exit inside 4.5 s wall clock). The kit's tests are a bare
 `node --test` (the contract-test template carries a `.template` suffix so the runner does not
 pick it up: it has no plugin to test until it is scaffolded).
+
+## Changes in 0.1.1
+
+The scaffold lands in the `plugins/` of the git repository the cwd is in (`git rev-parse
+--show-toplevel`), never beside the kit: from the marketplace install 0.1.0 wrote into the plugin
+cache, and from a checkout into whichever checkout held the kit. A cwd in no git repository is
+refused before anything is written, naming `--dest`. The template `e2e/live-run.sh` unsets
+`LEDGER_DB`, `LEDGER_CONFIG` and `LEDGER_ENABLED` before setting its own state directory, so a
+caller's store is never the one a canary run touches.
 
 ## Changes in 0.1.0
 

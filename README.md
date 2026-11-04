@@ -672,6 +672,15 @@ for that folder (it writes `.ledger.json` there, found from any subfolder); `/le
 them back on. The plugin's tables are all prefixed `cc_`, so the database can be a SQLite file
 another tool already uses.
 
+Changes in 0.3.4 (with plugin-kit 0.1.1): two fixes to what 0.3.3 shipped. The canary no longer
+hands its `e2e/live-run.sh` the caller's `LEDGER_*` environment; a `LEDGER_DB` in the shell
+that ran `ledger canary run` outranked the script's throwaway config and pointed the seeded
+question and the headless session at the real store (the scripts, ledger's and the kit's
+template, also `unset` those keys for a run by hand). plugin-kit's `new-plugin` scaffolds into
+the `plugins/` of the git repository the cwd is in, found with `git rev-parse --show-toplevel`,
+instead of the directory above the kit (which, installed from the marketplace, was the plugin
+cache); a cwd in no repository is refused naming `--dest`.
+
 Changes in 0.3.3: the fault-tolerance gate and the feedback loop. `ledger gate check` runs the
 repository test bar's three checks on every plugin changed since the base of a repository of
 plugins (can't break the session: each hook on five fault inputs; failures visible: an
