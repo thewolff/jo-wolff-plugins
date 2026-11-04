@@ -8,12 +8,17 @@ the root README's output-types section ("Changes in").
 
 ### Added
 
-- `hooks/output-types-stop.mjs`, a Stop hook: reads the finished message (the last assistant
-  text in the transcript, or `last_assistant_message` in the payload) and names, in one
+- `hooks/output-types-stop.mjs`, a Stop hook: reads the finished message (`last_assistant_message`
+  in the payload, else the last assistant text in the transcript) and names, in one
   `systemMessage`, every `**CLAIM**` without an absolute `file:line` or a command with its result
+  (a fence holding the command and its output, or a command, `$ cmd` or code with a space in it,
+  with `→ output` on its line or the next; inline code next to a word like "returns" is not one)
   and every `**CITE**` without a URL or a test run with its command; the first five by line,
-  then `+N more`. Never `decision: block`. Only markdown-bold labels at a line start or inline
-  count; nothing inside a fenced code block does. `OUTPUT_TYPES_CHECK=off` turns it off.
+  then `+N more`. Never `decision: block`. Only markdown-bold labels that start a line (after any
+  list or quote marker) or are followed by a colon or the line's end count; a bold label in the
+  middle of a sentence is a mention, and nothing inside a fenced code block, at any indentation,
+  counts. A blank line inside a fence does not end a statement. `OUTPUT_TYPES_CHECK=off` turns
+  it off.
 - A judge stage, off by default: with `"judge": true` in
   `${XDG_CONFIG_HOME:-~/.config}/output-types/config.json` and a judge command resolved
   (`OUTPUT_TYPES_JUDGE_BIN` → `judgeCommand` in that file → `~/.config/judge/config.json` →
@@ -21,7 +26,9 @@ the root README's output-types section ("Changes in").
   the receipt licenses the sentence; `fail` and unreadable verdicts join the warning; a dispatch
   error is one line in `${XDG_STATE_HOME:-~/.local/state}/output-types/skipped.log` naming the
   source, and the check continues. Calls are clamped to the hook's 55 s budget (`timeout: 60` in
-  `hooks.json`).
+  `hooks.json`), counted from the runner's start (`HOOK_RUNNER_STARTED_AT_MS`), so stdin that
+  arrives late shortens the judge's time, not the warning's; a judge still running when the
+  runner's deadline fires is killed with its process group as the hook exits.
 - `lib/receipts.mjs` (labels, statements, receipt shapes, the warning, the config, the judge
   stage), `lib/judge.mjs` and `lib/hook-runner.mjs` (plugin-kit 0.3.0's, vendored byte for byte).
 - Tests: `test/receipts.test.mjs`, `test/stop-hook.test.mjs` (the hook as a spawned process:

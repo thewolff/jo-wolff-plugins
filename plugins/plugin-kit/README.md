@@ -37,7 +37,7 @@ installed from are never where a plugin lands):
 
 | File | What it is |
 |---|---|
-| `lib/hook-runner.mjs` | a copy of this plugin's [`lib/hook-runner.mjs`](lib/hook-runner.mjs): `runHook(event, import.meta.url, { plugin, quiet })` reads stdin, parses it (empty is `{}`), runs the module's exported `handle(input, { env })` on a worker thread, prints its JSON, exits 0. Stdin not JSON, a thrown error, or no answer in 4 s (inside the host's 5 s budget, so the host never kills the hook and loses the message; the one timer lives on the main thread, which does nothing but wait, so it fires whatever the handler is doing: a stdin the host holds open, a promise that never settles, a synchronous loop that never yields; at the deadline the thread is terminated and an answer that would have come later is never printed as a late block) → one line in `${XDG_STATE_HOME:-~/.local/state}/<plugin>/errors.log` and `{ systemMessage: "<plugin> <event> failed open: <why>" }` (not on SessionEnd, whose output the host discards). A hook never exits 2. |
+| `lib/hook-runner.mjs` | a copy of this plugin's [`lib/hook-runner.mjs`](lib/hook-runner.mjs): `runHook(event, import.meta.url, { plugin, quiet })` reads stdin, parses it (empty is `{}`), runs the module's exported `handle(input, { env })` on a worker thread, prints its JSON, exits 0. Stdin not JSON, a thrown error, or no answer in 4 s (inside the host's 5 s budget, so the host never kills the hook and loses the message; the one timer lives on the main thread, which does nothing but wait, so it fires whatever the handler is doing: a stdin the host holds open, a promise that never settles, a synchronous loop that never yields; at the deadline the thread is terminated and an answer that would have come later is never printed as a late block) → one line in `${XDG_STATE_HOME:-~/.local/state}/<plugin>/errors.log` and `{ systemMessage: "<plugin> <event> failed open: <why>" }` (not on SessionEnd, whose output the host discards). The handler's `env` carries `HOOK_RUNNER_STARTED_AT_MS` (when the runner started, before stdin) and `HOOK_RUNNER_DEADLINE_MS`, so a handler that budgets its own work counts from the runner's clock; a process group the handler registers (`lib/judge.mjs` does, through `{ kitReap }` messages) is killed when the runner exits. A hook never exits 2. |
 | `lib/judge.mjs` | with `--judge`: a copy of this plugin's [`lib/judge.mjs`](lib/judge.mjs), the shared judge dispatch (see "Shared judge" below); the kit's `test/judge.test.mjs` diffs every shipped copy against the kit's |
 | `hooks/hooks.json` | one entry per event, `node "${CLAUDE_PLUGIN_ROOT}/hooks/<event>.mjs"`, timeout 5; tool events get a matcher |
 | `hooks/<event>.mjs` | one handler per event, `handle(input, { env })` returning null (allow) until the rule is written; the header comment says what the runner does and what the handler owes. The handler runs on a worker thread (that is what makes the deadline hold), so it returns a plain JSON-able object or null and nothing else: never `process.exit()` (the thread ending is "ended without an answer", a logged fault), never its own stdout writes (only what the runner prints is the answer), a subprocess gets its `cwd` passed explicitly from `input.cwd` (the thread's `process.cwd()` is the runner's), and a child's environment goes on the spawn's `env`, not `process.env` |
@@ -75,8 +75,10 @@ repository carries its own; they keep their own hook runners.
 (i-have-audhd's Stop checks, ledger's "is this finding resolved", output-types' receipts check).
 A plugin vendors a byte-identical copy (`--judge` on the scaffolder, or copy the file by hand);
 `test/judge.test.mjs` fails when any `plugins/*/lib/judge.mjs` or `plugins/*/judge/judge.mjs`
-differs from the kit's, outside an explicit allowlist of the plugins that have not switched yet
-(ledger's `lib/judge.mjs` and i-have-audhd's `judge/ask.mjs`, until their next releases).
+differs from the kit's, outside an explicit allowlist of the plugins that have not switched yet.
+Only ledger's `lib/judge.mjs` is allowlisted, until ledger's next release; i-have-audhd's
+`judge/ask.mjs` has a different name and is not scanned at all until i-have-audhd ships
+`lib/judge.mjs`.
 
 **The command.** One string, run through `/bin/sh` as the leader of its own process group: with a
 literal `{prompt}` in it, every occurrence is replaced by the shell-escaped prompt; without one,
@@ -89,8 +91,11 @@ non-empty line in `yesno` mode.
 the command, makes one test call, shows what it will write and, after a yes, writes
 `${XDG_CONFIG_HOME:-~/.config}/judge/config.json` as `{ "command", "timeoutMs" }`, atomically,
 other keys kept. A failed test call is refused unless `--force`; `--command <cmd>`, `--timeout-ms
-<n>` and `--yes` make it scriptable. `node lib/judge.mjs which [--env-var <NAME>]` prints the
-command, timeout and source as a plugin would resolve them.
+<n>` and `--yes` make it scriptable. An existing shared file that is not valid JSON (or not an
+object) is refused too, before the test call, because its other keys cannot be kept: fix it by
+hand, or `--force` replaces it whole. `node lib/judge.mjs which [--env-var <NAME>]` prints the
+command, timeout and source as a plugin would resolve them, after a
+`malformed: <path>: <error>` line when the shared file is malformed.
 
 **Resolution order**, `resolveJudgeCommand({ pluginKey: { envVar, command, timeoutMs, source }, env })`,
 first found wins, and the result names its `source` so a warning can say which one supplied the
@@ -99,14 +104,19 @@ overrides) → the plugin's own setting, passed in by the caller → the shared 
 `enforcement.judgeCommand` in `~/.claude/i-have-audhd.json` (`$I_HAVE_AUDHD_PROFILE`), read-only,
 for a profile written before the shared file existed. The timeout is the plugin's own, else the
 shared file's, else 30 s. Nothing configured anywhere is `null`, and a plugin treats that as "the
-judge is off".
+judge is off". A shared file that exists but is malformed ends the search there: the env var and
+the plugin's own setting still win, but the legacy profile is not used in its place, so a typo
+never quietly swaps in an older command (`readSharedConfig()` returns `{ path, config, malformed }`
+for a caller that wants to say why).
 
 **It never throws.** `runJudge(prompt, { command, timeoutMs, mode })` returns, in `json` mode, the
 object or `{ error, detail, stderr }` with `error` one of `timeout`, `nonzero`, `unparseable`,
 `spawn-failed` (`isJudgeError()` tells the two apart); in `yesno` mode, `"yes"`, `"no"`, or
 `"unverified"` for every failure. A timeout kills the whole process group, so a pipeline stage or a
-wrapper's child cannot hold the hook open. `dispatch()` underneath returns the raw
-`{ ok, stdout, stderr, code, error, detail }` for a caller that needs the reason with a yes/no.
+wrapper's child cannot hold the hook open. Inside the kit's hook runner the group is also
+registered with the runner, so a runner that gives up at its deadline kills it as it exits.
+`dispatch()` underneath returns the raw `{ ok, stdout, stderr, code, error, detail }` for a caller
+that needs the reason with a yes/no.
 
 ## Agents
 
@@ -291,7 +301,8 @@ nothing is ever overwritten or deleted. A template missing from the kit (a broke
 same: exit 1 naming the file. The hook runner's own failure modes are in the table above; its
 test (`test/hook-runner.test.mjs`) drives each one, including the deadline in a spawned process: a
 handler holding a timer that never answers, a stdin held open, a synchronous `Atomics.wait` of
-6 s under the default 4 s deadline (exit inside 4.5 s wall clock). The scenario runner: a
+6 s under the default 4 s deadline (exit inside 4.5 s wall clock), and a judge process group still
+running at the deadline (dead after the hook exits). The scenario runner: a
 scenario that does not parse, names an unregistered event or an undeclared outcome, has no
 stdin, or is still a stub is a `fail` naming the file (the gate says the same offline); `claude`
 missing → the hook phase still runs and prints, then exit 75 with `unavailable: claude not found
@@ -322,12 +333,18 @@ contract (one command through `/bin/sh` in its own process group, the prompt on 
 of `{prompt}`, stdout only, a hard timeout that reaps the group, never a throw) with ledger's
 one-word yes/no answer folded in as a mode, the command resolved once for every plugin (env var →
 the plugin's own key → `${XDG_CONFIG_HOME:-~/.config}/judge/config.json` → i-have-audhd's profile,
-legacy), and a `setup` and `which` CLI in the file itself so any plugin's copy can configure the
-judge with one test call. `test/judge.test.mjs` drives the resolution order, each failure class,
-both parsers and the CLI, and fails when any shipped copy under `plugins/*/lib/judge.mjs` or
-`plugins/*/judge/judge.mjs` differs from the kit's (ledger and i-have-audhd are allowlisted until
-their next releases). The scaffolder takes `--judge` to copy it into a new plugin. The runner,
-the agents and the rest of the scaffold are unchanged.
+legacy; a malformed shared file stops the search before the legacy profile, `which` names it,
+and `setup` will not overwrite it without `--force`), and a `setup` and `which` CLI in the file
+itself so any plugin's copy can configure the judge with one test call. `test/judge.test.mjs`
+drives the resolution order, each failure class, both parsers and the CLI, and fails when any
+shipped copy under `plugins/*/lib/judge.mjs` or `plugins/*/judge/judge.mjs` differs from the
+kit's (ledger's `lib/judge.mjs` is allowlisted until its next release; i-have-audhd's
+`judge/ask.mjs` has a different name and is not scanned until i-have-audhd ships
+`lib/judge.mjs`). The scaffolder takes `--judge` to copy it into a new plugin. The hook runner
+tells the handler thread its start time and deadline (`HOOK_RUNNER_STARTED_AT_MS`,
+`HOOK_RUNNER_DEADLINE_MS`) and kills any process group the thread registered when it exits, so a
+judge still running at the deadline does not outlive the hook. The agents and the rest of the
+scaffold are unchanged.
 
 ## Changes in 0.2.2
 
