@@ -6,7 +6,7 @@
     {
       "name": "output-types",
       "source": "./plugins/output-types",
-      "description": "Label receipted facts as CLAIM or CITE, with the receipt that earns the label, and leave the rest unlabeled, so a reader can tell what was checked from what was assumed."
+      "description": "Label only receipted facts, as CLAIM or CITE with the receipt that earns the label, and leave the rest unlabeled; a Stop check warns about any label that has no receipt."
     },
     {
       "name": "i-have-audhd",
@@ -17,57 +17,57 @@
     {
       "name": "paired-coding",
       "source": "./plugins/paired-coding",
-      "description": "Pair with an agent one change set at a time: it proposes a card naming the decision inside the change, you agree in conversation, and a gate at the tool boundary refuses every write outside the agreed change set. Gate on Claude Code and OMP, on macOS and Linux."
+      "description": "Pair with an agent one change set at a time: a card names the decision in each change, you agree in conversation, and a gate at the tool boundary refuses every write outside the agreed set."
     },
     {
       "name": "ask-graham",
       "source": "./plugins/ask-graham",
-      "description": "Answer \"should we build X?\" with Graham's stated judgment — his gate questions, the 2-minute rule, fewer lines wins — and one verdict: do it now, start now, later, or don't build."
+      "description": "Decide whether a new idea is worth building, with one engineer's stated judgment and one verdict. Runs on /ask-graham or \"should we build X?\", and on every new idea if you opt in."
     },
     {
       "name": "reminders-review",
       "source": "./plugins/reminders-review",
-      "description": "Go through your open Apple Reminders one at a time with an agent: it answers the questions, confirms before acting on the instructions, asks when unclear, and closes each one only when you say yes. Optionally raises what is due in the lists you watch at the start of every session and hourly after. macOS, via remindctl."
+      "description": "Go through your open Apple Reminders one at a time with an agent: it answers, confirms before acting, and closes a reminder only when you say yes. macOS, via remindctl."
     },
     {
       "name": "pattern-check",
       "source": "./plugins/pattern-check",
-      "description": "Before big work in a repo, make the agent find the existing pattern that does each new piece's job and record reuse, replace, or new with a reason. Hooks hold Edit, Write, commits and PRs after N distinct files, and refuse a plan-proposing reply, until the receipt exists."
+      "description": "Before big work in a repository, make the agent find the existing pattern for each new piece and record reuse, replace or new; hooks hold writes, commits and PRs until that receipt exists."
     },
     {
       "name": "ledger",
       "source": "./plugins/ledger",
-      "description": "A durable, id'd record of the questions an agent asks you and the choices it makes without asking, in one SQLite file. Hooks are on by default (turn a folder off with `/ledger:disable`); they inject the open questions and recent notes at session start, deny AskUserQuestion until the question has a row and `git push` until the session has a note or an outcome, and send back once a reply that ends without recording an answer the human gave in plain words, asks with no row, or decides without a note. Every hook fails open."
+      "description": "A durable record of the questions an agent asks you and the choices it makes without asking, in one SQLite file; hooks keep every question, answer and decision on a row and gate a push on it."
     },
     {
       "name": "as2-skills",
       "source": "./plugins/as2-skills",
-      "description": "The 22 engineering skills of agent-system 2.0: spec and plan, plan execution, TDD, debugging, code review, git workflow, security, research, cross-model review and more. Vendored from addyosmani/agent-skills, pbakaus/impeccable, blader/humanizer and obra/superpowers at pinned releases, with frontmatter claude.ai accepts."
+      "description": "The 22 engineering skills of agent-system 2.0, vendored from four upstream skill packs at pinned releases, with frontmatter claude.ai accepts. Skills only, no hooks."
     },
     {
       "name": "plugin-kit",
       "source": "./plugins/plugin-kit",
-      "description": "Start a new plugin that meets the repository test bar on day one: `/plugin-kit:new-plugin` scaffolds the fail-open hook runner, one handler per event, the five-fault hook-contract test, the canary live run, the fixtures rule, a skill with its \"When this can't run\" section, and the how-it-fails receipt, so `ledger gate check` passes before the first rule is written."
+      "description": "Start a new plugin that meets this repository's test bar on day one: ask the agent to create or scaffold one. Also keeps the shared libraries and release reviewers the other plugins vendor."
     },
     {
       "name": "ctx-watch",
       "source": "./plugins/ctx-watch",
-      "description": "Notice when the ctx daemon is dead, unsupervised, or stale (judged from `ctx daemon status --format json`, never its exit code), repair it with `ctx index mode auto`, and say so twice: a SessionStart line, and a macOS popup from a launchd timer that `install` writes and you bootstrap. The SessionStart line also says when the timer itself has stopped. macOS; Claude Code hooks."
+      "description": "Notice when the ctx daemon is dead, unsupervised or stale, or its semantic index is not ready; repair it, and say so at session start and in a macOS popup from a launchd timer."
     },
     {
       "name": "delegation",
       "source": "./plugins/delegation",
-      "description": "Teach the brief a subagent is handed, then gate on it: a spawn without a How-it-fails section is refused and the refusal carries the section to fill in; a builder-class spawn also needs a Spiral bound and this session's pattern-check receipt; an undeliverable message is marked NOT delivered; a builder report without its Stopped-because line draws a warning. With the eleven general agents and three direct-work guards ported from newdle. Claude Code hooks and an OMP extension."
+      "description": "Teach an agent the brief a subagent is handed, then gate on it: a spawn whose brief lacks a required section is refused with that section to fill in. Ships the general agents and guards."
     },
     {
       "name": "continuity",
       "source": "./plugins/continuity",
-      "description": "Keep a long session's state across compaction. A PreCompact hook saves branch, diff, touched files, recent asks and the repository's open handoffs to a snapshot the post-compaction SessionStart injects back, with the rules files on the cwd's walk re-inlined and the newest durable notes listed; every session start says when that save last succeeded, so a dead save is never silent; a context-pressure check warns once, and blocks one stop, when the transcript nears the compaction target, naming `/continuity:handoff`; and the handoff skill writes the judgment layer (what was attempted, ruled out, still open) that no hook can derive. Every hook fails open. Claude Code hooks plus an OMP extension that runs the same save and restore."
+      "description": "Keep a long session's state across compaction: a snapshot saved before it and restored after, a liveness line on every start, and a handoff skill for what no hook can derive."
     },
     {
       "name": "brb",
       "source": "./plugins/brb",
-      "description": "Type `brb` and walk away: the agent keeps working, every ask it would have stopped for is written into a digest with a hold command and never shown (a reply that still shows one is filed and sent back once), and only a broken main, data loss, a security finding, spend near a ceiling or a blocker on everything comes through at once (a systemMessage, an OSC 9 terminal notification, a macOS notification). While away, Claude Code Desktop and the terminal show `⚠ brb: away 40m · lunch · 12 held · say back` under the prompt. `pending` prints the digest; `back` prints it, archives it and ends the hold. Claude Code hooks and a mod, plus an OMP extension that runs the same hooks."
+      "description": "Type brb and walk away: the agent keeps working, every ask waits in a digest, only an on-fire finding comes through at once, and back prints the digest and ends the hold."
     }
   ]
 }
