@@ -1,4 +1,5 @@
 ---
+name: enable
 description: 'Turn the ledger hooks on for this folder: sets "enabled": true in .ledger.json here.'
 allowed-tools: Bash(node "${CLAUDE_PLUGIN_ROOT}/scripts/ledger.mjs" enable)
 ---

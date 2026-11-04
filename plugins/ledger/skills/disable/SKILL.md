@@ -1,4 +1,5 @@
 ---
+name: disable
 description: 'Turn the ledger hooks off for this folder: sets "enabled": false in .ledger.json here (never deletes it).'
 allowed-tools: Bash(node "${CLAUDE_PLUGIN_ROOT}/scripts/ledger.mjs" disable)
 ---

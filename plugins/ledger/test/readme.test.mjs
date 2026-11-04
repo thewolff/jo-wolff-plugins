@@ -32,9 +32,10 @@ test("the README fail-open table has a row per condition", () => {
 test("/ledger:enable and /ledger:disable run the CLI verb of the same name through the plugin root, and the README names both", () => {
   const readme = readFileSync(join(root, "README.md"), "utf8");
   for (const verb of ["enable", "disable"]) {
-    const text = readFileSync(join(root, "commands", `${verb}.md`), "utf8");
+    const text = readFileSync(join(root, "skills", verb, "SKILL.md"), "utf8");
     const front = /^---\n([\s\S]*?)\n---\n/.exec(text);
     assert.ok(front, `${verb}.md has frontmatter`);
+    assert.match(front[1], new RegExp(`^name: ${verb}$`, "m"));
     assert.match(front[1], /^description: '.+'$/m);
     assert.ok(front[1].includes(`allowed-tools: Bash(node "\${CLAUDE_PLUGIN_ROOT}/scripts/ledger.mjs" ${verb})`), front[1]);
     assert.ok(text.includes(`!\`node "\${CLAUDE_PLUGIN_ROOT}/scripts/ledger.mjs" ${verb}\``), verb);
