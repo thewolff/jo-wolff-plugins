@@ -1,9 +1,33 @@
 {
+  "enabled": false,
   "db": "~/.local/share/ledger/ledger.db",
   "user": null,
   "timezone": null,
-  "hooks": { "sessionStart": true, "preToolUse": true, "stop": true, "sessionEnd": true, "userPromptCommands": true },
-  "forcing": { "denyPush": true, "denyPrCreate": true, "denyWritesOutsideCwd": true, "denyAskWithoutRow": true, "stopAskRule": true, "stopDoneRule": true },
-  "inject": { "decisions": 5 },
-  "stale": { "days": 7 }
+  "hooks": {
+    "sessionStart": true,
+    "preToolUse": true,
+    "stop": true,
+    "sessionEnd": true,
+    "userPromptCommands": true
+  },
+  "forcing": {
+    "denyAskWithoutRow": true,
+    "stopAskRule": true,
+    "pushNeedsNote": true,
+    "stopDecisionRule": true,
+    "decisionPhrases": [
+      "I decided",
+      "decided to",
+      "assumption:",
+      "assuming",
+      "going with",
+      "instead of",
+      "chose",
+      "I'll go with",
+      "trade-off"
+    ]
+  },
+  "inject": {
+    "notes": 5
+  }
 }

@@ -7,6 +7,18 @@ import { describeConfig, loadConfig, userName } from "./config.mjs";
 import { open, StoreError } from "./db.mjs";
 import { whoSays } from "./parse.mjs";
 
+/**
+ * What every hook does first: bind the folder, load config for it, and decide whether to run at
+ * all. Returns null when the ledger is not enabled for the folder or the hook's own switch is
+ * off; the database is not opened in either case, so an ordinary session costs one stat walk.
+ */
+export function hookConfig(env, input, hookSwitch) {
+  const cwd = resolveCwd(env, input.cwd);
+  const cfg = loadConfig({ env, cwd });
+  if (!cfg.config.enabled || !cfg.config.hooks[hookSwitch]) return null;
+  return { cfg, cwd };
+}
+
 /** Resolve the folder a command binds to: LEDGER_CWD, else `given`, else the process cwd; realpath'd when it exists. */
 export function resolveCwd(env = process.env, given = null) {
   const raw = env.LEDGER_CWD || given || process.cwd();
@@ -23,8 +35,8 @@ export function resolveCwd(env = process.env, given = null) {
  * @returns {{ config, sources, path, notices: string[], db, dbPath, configText }}
  * @throws {StoreError} when the database cannot be opened.
  */
-export function openStore({ env = process.env, now = Date.now() } = {}) {
-  const cfg = loadConfig({ env });
+export function openStore({ env = process.env, now = Date.now(), cwd = null, cfg = null } = {}) {
+  cfg ??= loadConfig({ env, cwd });
   // LEDGER_BUSY_TIMEOUT_MS exists for the test suite, so a held lock fails in milliseconds, not seconds.
   const busy = Number(env.LEDGER_BUSY_TIMEOUT_MS);
   const store = open(cfg.config.db, { now, busyTimeoutMs: Number.isFinite(busy) && busy >= 0 ? busy : undefined });
@@ -32,10 +44,12 @@ export function openStore({ env = process.env, now = Date.now() } = {}) {
     config: cfg.config,
     sources: cfg.sources,
     path: cfg.path,
+    projectPath: cfg.projectPath,
     notices: [...cfg.notices, ...store.notices],
     db: store.db,
     dbPath: store.path,
-    configText: describeConfig(cfg),
+    shared: store.shared,
+    configText: describeConfig({ ...cfg, shared: store.shared }),
   };
 }
 
@@ -65,12 +79,14 @@ export function makeCtx({ store, cwd, via = "cli", by = null, sessionId = null, 
  * Open the store, run `fn(store)`, close the store. A StoreError at open or inside `fn` (a lock
  * that outlasted busy_timeout, an unwritable directory) becomes a pass: the hook's "allow"
  * output with one systemMessage line saying what the ledger did not do. Nothing else is caught.
+ * `cfg` is the config hookConfig already checked, so the file is read once and the enabled
+ * decision cannot change between the check and the open.
  * @param whatWasSkipped  e.g. "no injection this session", "the ledger gate is not enforced for this call"
  */
-export function withStore({ env, now, notices = [] }, whatWasSkipped, fn) {
+export function withStore({ env, now, notices = [], cwd = null, cfg = null }, whatWasSkipped, fn) {
   let store;
   try {
-    store = openStore({ env, now });
+    store = openStore({ env, now, cwd, cfg });
   } catch (err) {
     if (err instanceof StoreError) return storeFailure(err, notices, whatWasSkipped);
     throw err;
@@ -90,6 +106,6 @@ export function withStore({ env, now, notices = [] }, whatWasSkipped, fn) {
 }
 
 function storeFailure(err, notices, whatWasSkipped) {
-  const line = `ledger: database ${err.kind === "busy" ? "busy" : "unavailable"} at ${err.path}; ${whatWasSkipped}`;
+  const line = `ledger: database ${err.kind === "busy" ? "busy" : err.kind === "readonly" ? "read-only" : "unavailable"} at ${err.path}; ${whatWasSkipped}`;
   return { systemMessage: [...notices, line].join("\n") };
 }

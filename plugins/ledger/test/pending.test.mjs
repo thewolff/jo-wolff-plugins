@@ -1,12 +1,11 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { sandbox, apply, openWorkload, askQuestion, cli } from "./helpers.mjs";
+import { sandbox, apply, askQuestion, cli } from "./helpers.mjs";
 import { pendingLines, renderPending } from "../lib/commands.mjs";
 
 const box = sandbox();
 
 test("§7 row 8 (#29): the pending line carries name → body → default → also, in that order", () => {
-  openWorkload(box, "row 8");
   const q = askQuestion(box, { body: "Which colour for the button?", name: "colour", options: "green,red,blue", extra: ["--default", "red"] });
   const r = apply(box, ["pending"]).results[0];
   assert.equal(r.status, "ok");
@@ -20,7 +19,6 @@ test("§7 row 8 (#29): the pending line carries name → body → default → al
 });
 
 test("§7 row 8 (#196): a plan question without --allows is refused; with it, pending explains each option", () => {
-  openWorkload(box, "row 8b");
   const bad = apply(box, [{ tokens: ["ask", "Plan A?", "--name", "plan", "--kind", "plan"], text: "" }]).results[0];
   assert.equal(bad.status, "refused");
   assert.match(bad.message, /--kind plan needs --allows covering every option; missing: approve, revise, cancel/);
@@ -38,6 +36,8 @@ test("pending shows deadlines as local time plus relative, with `overdue` once p
     options: ["a", "b"],
     default_opt: "a",
     allows: null,
+    about: null,
+    ceiling_usd: null,
     deadline: "2026-11-03T12:00:00.000Z",
   };
   const before = pendingLines(q, { now: Date.parse("2026-11-03T10:00:00.000Z"), timezone: "UTC" });
@@ -46,10 +46,9 @@ test("pending shows deadlines as local time plus relative, with `overdue` once p
   assert.match(after[1], /\(overdue, 3h ago\)$/);
 });
 
-test("pending with nothing open says so and is scoped to the folder (ancestor workloads count, siblings do not)", () => {
+test("pending with nothing open says so and is scoped to the folder (ancestor questions count, siblings do not)", () => {
   const other = sandbox();
   assert.equal(renderPending([], other.work), `no open questions for ${other.work}`);
-  openWorkload(other, "root", { cwd: other.root });
   const q = askQuestion(other, { name: "root q" , cwd: other.root });
   const fromWork = cli(other, ["pending"], { cwd: other.work });
   assert.ok(fromWork.out.includes(q), fromWork.out);

@@ -1,7 +1,7 @@
 // time.mjs — ISO-8601 UTC timestamps, duration parsing, and display helpers.
 //
 // Storage is always UTC with milliseconds (`2026-11-03T22:30:00.000Z`). A time zone is used
-// only when rendering for a person (`pending`, `stale`, the SessionStart text); null means the
+// only when rendering for a person (`pending`, `log`, the SessionStart text); null means the
 // process's own zone.
 
 /** Now as the stored ISO form. */
@@ -69,7 +69,3 @@ export function formatLocal(iso, timezone = null) {
   }
 }
 
-/** Milliseconds in N days. */
-export function days(n) {
-  return n * UNIT_MS.d;
-}

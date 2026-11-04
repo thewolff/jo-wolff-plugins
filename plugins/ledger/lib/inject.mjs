@@ -1,11 +1,9 @@
-// inject.mjs — the text SessionStart hands Claude: open questions, open workloads, recent
-// decisions, the gate status, and the one-line verb summary. Sections appear in that order
-// and only when non-empty. Capped at CAP characters (the doc's limit is 10,000): decisions are
-// truncated first, then workloads, never the open questions.
+// inject.mjs — the text SessionStart hands Claude: open questions, recent notes, and the verb
+// summary. Sections appear in that order and only when non-empty. Capped at CAP characters (the
+// doc's limit is 10,000): notes are truncated first, never the open questions.
 
 import { fileURLToPath } from "node:url";
-import { gateState, isWithin, openQuestions, renderPending, workloadLine } from "./commands.mjs";
-import { relative } from "./time.mjs";
+import { logEntries, openQuestions, renderLog, renderPending } from "./commands.mjs";
 
 export const CAP = 9000;
 
@@ -45,9 +43,9 @@ export function allowRule(p = cliPath()) {
 
 export function verbSummary() {
   return [
-    `ledger: this folder's work is recorded with the \`ledger\` CLI. Always run it exactly as \`${invocation()} <verb> …\` (that literal path, no alias, no shell variable, no cd) so the one allow rule \`${allowRule()}\` matches and Claude Code never asks about it.`,
-    "Verbs: open \"<title>\" · close <wl-id> <reason> · park <wl-id> <reason> · ask \"<body>\" --name <short> --options a,b --default a · <word> <q-id> · approve/deny <q-id> · withdraw <id> · halt <wl-id> · ceiling <usd> [<h>h] <wl-id> · extend <id> · decide \"<text>\" · pending · stale [N] · help.",
-    "Open a workload before the first write, ask through `ledger ask` and end the message with its `pending` line, record choices with `decide`, and `close <reason>` or `park <reason>` before saying done. `ledger help` has the grammar.",
+    `ledger: questions to the human and decisions made without asking are recorded with the \`ledger\` CLI. Always run it exactly as \`${invocation()} <verb> …\` (that literal path, no alias, no shell variable, no cd) so the one allow rule \`${allowRule()}\` matches and Claude Code never asks about it.`,
+    "Verbs: ask \"<body>\" --name <short> --options a,b --default a · <word> <q-id> · approve/deny <q-id> · withdraw <q-id> · extend <q-id> · note \"<text>\" · pending · log [N] · help.",
+    "Ask through `ledger ask` and end the message with its `pending` line; record a choice made without asking with `note`, in the same turn you state it. `git push` and `gh pr create` need one `note` in this session first. `ledger help` has the grammar.",
   ].join("\n");
 }
 
@@ -56,7 +54,6 @@ export function verbSummary() {
  */
 export function buildInjection(db, cwd, config, { source = "startup", now = Date.now() } = {}) {
   const compact = source === "compact";
-  const state = gateState(db, cwd);
   const sections = [];
 
   const questions = openQuestions(db, cwd);
@@ -66,55 +63,32 @@ export function buildInjection(db, cwd, config, { source = "startup", now = Date
     sections.push("questions");
   }
 
-  let workloadsText = "";
-  const lines = [];
-  for (const w of state.openAll) lines.push(workloadLine(db, w, now));
-  for (const w of [...(state.halted ? [state.halted] : []), ...state.parked]) {
-    lines.push(`${w.id} ${w.title} · ${w.status} (${w.status_reason}) · resume: ledger open ${w.id}`);
-  }
-  if (lines.length) {
-    workloadsText = `ledger: open workloads for ${cwd}:\n${lines.join("\n")}`;
-    sections.push("workloads");
-  }
-
-  let decisionsText = "";
-  const n = Number(config.inject?.decisions ?? 5);
+  let notesText = "";
+  const n = Number(config.inject?.notes ?? 5);
   if (!compact && n > 0) {
-    const rows = db
-      .prepare(
-        `SELECT d.*, w.cwd AS wl_cwd FROM decisions d JOIN workloads w ON w.id = d.workload_id
-          ORDER BY d.made_at DESC, d.id DESC`,
-      )
-      .all()
-      .filter((d) => isWithin(cwd, d.wl_cwd))
-      .slice(0, n);
+    const rows = logEntries(db, cwd, n);
     if (rows.length) {
-      decisionsText = `ledger: last ${rows.length} decisions:\n${rows.map((d) => `${d.id} ${relative(d.made_at, now)} ${d.kind}: ${d.body.replace(/\s+/g, " ")}`).join("\n")}`;
-      sections.push("decisions");
+      notesText = `ledger: last ${rows.length} entries for ${cwd}:\n${renderLog(rows, cwd, n, { now })}`;
+      sections.push("notes");
     }
-  }
-
-  let gateText = "";
-  if (!state.open) {
-    const cli = invocation();
-    gateText = `No open workload for this folder: pushes, PR creation and writes outside it are denied until \`${cli} open "<title>"\`${state.halted ? ` (${state.halted.id} is halted; \`${cli} open ${state.halted.id}\` resumes it)` : state.parked.length ? ` (or \`${cli} open ${state.parked[0].id}\` to resume)` : ""}.`;
-    sections.push("gate");
   }
 
   const summary = compact ? verbSummary().split("\n")[0] : verbSummary();
   if (summary) sections.push("summary");
 
-  const assemble = (d, w) => [questionsText, w, d, gateText, summary].filter(Boolean).join("\n\n");
-  let text = assemble(decisionsText, workloadsText);
-  if (text.length > CAP) text = assemble(truncate(decisionsText, Math.max(0, CAP - (text.length - decisionsText.length))), workloadsText);
-  if (text.length > CAP) text = assemble("", truncate(workloadsText, Math.max(0, CAP - (text.length - workloadsText.length))));
-  if (text.length > CAP) text = assemble("", "");
+  const assemble = (notes) => [questionsText, notes, summary].filter(Boolean).join("\n\n");
+  let text = assemble(notesText);
+  if (text.length > CAP) text = assemble(truncate(notesText, Math.max(0, CAP - (text.length - notesText.length))));
+  if (text.length > CAP) text = assemble("");
   return { text, sections };
 }
 
-function truncate(block, max) {
+/** `block` cut at a line break so that the result, marker included, is at most `max` characters. */
+export function truncate(block, max) {
   if (!block || block.length <= max) return block;
   if (max < 40) return "";
-  const cut = block.lastIndexOf("\n", max - 12);
-  return `${block.slice(0, cut > 0 ? cut : max - 12)}\n… (truncated)`;
+  const room = max - MARKER.length;
+  const cut = block.lastIndexOf("\n", room);
+  return `${block.slice(0, cut > 0 ? cut : room)}${MARKER}`;
 }
+const MARKER = "\n… (truncated)";

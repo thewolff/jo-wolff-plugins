@@ -13,7 +13,7 @@ function leafKeys(obj, prefix = "") {
   );
 }
 
-test("step 10: example.config.json is DEFAULTS verbatim and the README config table lists exactly its keys", () => {
+test("example.config.json is DEFAULTS verbatim and the README config table lists exactly its keys", () => {
   const example = JSON.parse(readFileSync(join(root, "example.config.json"), "utf8"));
   assert.deepEqual(example, DEFAULTS);
   const readme = readFileSync(join(root, "README.md"), "utf8");
@@ -22,9 +22,9 @@ test("step 10: example.config.json is DEFAULTS verbatim and the README config ta
   assert.deepEqual(documented, leafKeys(example));
 });
 
-test("step 10: the README fail-open table has a row per condition in the plan", () => {
+test("the README fail-open table has a row per condition", () => {
   const readme = readFileSync(join(root, "README.md"), "utf8");
-  for (const row of ["database file missing", "database locked", "database corrupt", "config file unparsable", "unknown config key", "hook throws or stdin is not JSON", "hook times out", "switch off in config"]) {
+  for (const row of ["database file missing", "database locked", "database read-only", "database corrupt", "config file unparsable", "unknown config key", "hook throws or stdin is not JSON", "hook times out", "switch off in config", "project not enabled"]) {
     assert.ok(readme.includes(`| ${row}`), row);
   }
 });
