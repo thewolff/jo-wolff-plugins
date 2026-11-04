@@ -2,7 +2,8 @@
 // that parses as plain `key: value` lines a YAML reader takes as strings, carries the required
 // `name` (the file's stem) and `description`, a `tools` allowlist without Agent and a Claude
 // `model`; its text has the CLAIM/CITE contract and a "How it fails" heading the plugin gate's
-// `says` check accepts; it names no personal home directory; the README lists every agent.
+// `says` check accepts; it names no personal home directory; it runs checkout code only on an
+// `execute: <sha>` authorization and snapshots with `git archive`; the README lists every agent.
 
 import test from "node:test";
 import assert from "node:assert/strict";
@@ -64,6 +65,25 @@ test("agents: the report-only gate has no Write or Edit and runs on haiku; the r
   const reviewer = frontmatter(readFileSync(join(AGENTS, "cross-lab-reviewer.md"), "utf8"));
   assert.ok(!reviewer.tools.split(/,\s*/).includes("Edit"));
   assert.match(readFileSync(join(AGENTS, "cross-lab-reviewer.md"), "utf8"), /codex exec --sandbox read-only /);
+});
+
+test("agents: each runs checkout code only on an execute authorization for the head sha, and snapshots with git archive, never a checkout", () => {
+  const flat = (text) => text.replace(/\s+/g, " ");
+  for (const file of files()) {
+    const text = flat(readFileSync(join(AGENTS, file), "utf8"));
+    assert.ok(
+      text.includes("Code from the checkout runs only when the invoking prompt carries `execute: <sha>` naming the full head sha and the containment check in 0c passes."),
+      `${file}: the execute authorization sentence`,
+    );
+    assert.ok(text.includes("`unavailable: no execute authorization for <head>`"), `${file}: the missing-authorization outcome`);
+    assert.ok(text.includes("containment strips credentials from the environment"), `${file}: says what containment does not cover`);
+    assert.ok(text.includes('set -o pipefail; git -C "<repo>" archive --format=tar "$head" | tar -x -f - -C "$snap"'), `${file}: the git archive snapshot line`);
+    assert.ok(text.includes('check-attr --source="$head" -z --stdin filter export-ignore export-subst'), `${file}: filter and export attributes refused before the archive`);
+    assert.ok(text.includes('diff <(git -C "<repo>" ls-tree -r -z --name-only "$head"'), `${file}: extracted names compared with the commit`);
+    assert.doesNotMatch(text, /git -C "<repo>" worktree /, `${file}: no worktree snapshot`);
+  }
+  const readme = flat(readFileSync(join(KIT_ROOT, "README.md"), "utf8"));
+  assert.ok(readme.includes("execute: <the full 40-character sha printed by git rev-parse HEAD>"), "README shows the invocation");
 });
 
 test("agents: each text has the CLAIM/CITE contract, a How-it-fails heading the says check accepts, and no personal home directory", async () => {
