@@ -235,6 +235,22 @@ How it works:
   still `open` or `not-ready`. Every card, quote, verdict, refusal and diff goes into a journal
   outside the worktree, under `$PAIRED_CODING_STATE_DIR` (default
   `~/.local/state/paired-coding/<session-id>/`).
+- When the Claude Code hook itself fails (a thrown error, an unwritable state directory, stdin
+  that is empty or not a hook event object), it exits 0, appends one line to
+  `$PAIRED_CODING_STATE_DIR/errors.log` (default `~/.local/state/paired-coding/errors.log`)
+  naming the time, the plugin file and line, the event, the session and the reason, and shows
+  one warning line (`systemMessage`). If the log cannot be written, the warning says so and
+  why. For a session that is not pairing, the tool call, prompt or stop goes ahead. While
+  pairing, and for this plugin's own `pair_*` tools, a `PreToolUse` fault refuses the tool,
+  naming it and the way out: your partner types `pair stop`, and if the gate stays broken,
+  turns the plugin off with `/plugin disable paired-coding`. A fault in `UserPromptSubmit`,
+  `Stop`, `SessionStart` or `SessionEnd` never blocks anything; its warning says what did not
+  happen (the turn was not queued, queued turns were not judged, pairing did not carry over, or
+  the final snapshot and receipt may be incomplete). A session that should have carried over
+  closed after `/clear`, a resume or a fork but could not is told so, with the reason. Stdin
+  that cannot be read names no session, so nothing is gated for that one call. A hook that
+  times out or cannot start is outside this: Claude Code lets the tool call through and shows
+  its own hook-error notice.
 - Typing `pair stop` ends pairing in any phase: the gate reaps running commands, takes a final
   snapshot, journals any write it did not approve, journals the stop as `typed-stop`, writes
   the pair-accepted receipt (`pair-accepted.json`, beside the journal; see **Pair-accepted

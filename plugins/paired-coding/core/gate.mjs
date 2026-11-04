@@ -1249,8 +1249,8 @@ export function toolVerdict(state, call, opts = {}, io) {
   if (hostAllowed) return pass();
   if (state.carried) return deny(`${name || "(unnamed tool)"} is refused: ${CARRIED_REASON}`);
   if (MUTATING_SET.has(name)) return deny(`${name} is the host's own mutating tool; while pairing, write with pair_write or pair_edit and run commands with pair_run`);
-  if (DISPATCH_SET.has(name)) return deny("sub-agent dispatch is refused while pairing; do the recon in this session");
-  return deny(`${name || "(unnamed tool)"} is not on the pairing allowlist`);
+  if (DISPATCH_SET.has(name)) return deny(`${name} is refused: sub-agent dispatch is refused while pairing; do the recon in this session with read-only tools, or your partner ends pairing by typing pair stop`);
+  return deny(`${name || "(unnamed tool)"} is not on the pairing allowlist; while pairing, write with pair_write or pair_edit and run commands with pair_run, or your partner ends pairing by typing pair stop`);
 }
 
 /**
