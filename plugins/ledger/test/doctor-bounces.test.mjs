@@ -4,7 +4,8 @@ import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { MIGRATIONS, open, storeVersion } from "../lib/db.mjs";
-import { sandbox, cli, hook, openDb, row, count } from "./helpers.mjs";
+import { stopRemedyDone } from "../lib/bounces.mjs";
+import { sandbox, cli, hook, openDb, row, count, askQuestion } from "./helpers.mjs";
 
 const DECISION = "I decided to keep the cache in memory because the file is small enough.";
 
@@ -188,4 +189,51 @@ test("(j) a version 5 store migrates to 6 keeping its rows; the new tables are e
   assert.equal(count(db, "cc_reviews"), 0);
   assert.throws(() => db.exec("INSERT INTO cc_bounces (rule, at, outcome) VALUES ('x', 'y', 'maybe')"), /CHECK/);
   db.close();
+});
+
+test("(k) doctor through stdin stays read-only: a lone `doctor` line does not create the store; inside a batch it is refused", () => {
+  const b = sandbox();
+  const r = cli(b, [], { input: "doctor\n" });
+  assert.equal(r.code, 0, r.out + r.err);
+  assert.match(r.out, /^warn db: /m);
+  assert.ok(!existsSync(b.dbPath), "stdin doctor must not create the database");
+  const mixed = cli(b, [], { input: "note checking\ndoctor\n" });
+  assert.equal(mixed.code, 1);
+  assert.match(mixed.out, /2: refused doctor runs on its own line/);
+});
+
+test("(l) an untagged answer to an untagged session question satisfies the stopAnswerRule bounce", () => {
+  const b = sandbox();
+  start(b, "s-l");
+  const qid = askQuestion(b, { name: "untagged" });
+  const db = openDb(b);
+  try {
+    const at = new Date().toISOString();
+    db.prepare("INSERT INTO cc_bounces (session_id, rule, prompt_id, at) VALUES ('s-l', 'stopAnswerRule', 'p-1', ?)").run(at);
+    const bounce = row(db, "SELECT * FROM cc_bounces WHERE session_id = 's-l'");
+    assert.equal(stopRemedyDone(db, bounce, { sessionId: "s-l", cwd: b.work }), false, "nothing answered yet");
+    const answered = cli(b, ["answer", qid, "a"]);
+    assert.equal(answered.code, 0, answered.out + answered.err);
+    assert.equal(stopRemedyDone(db, bounce, { sessionId: "s-l", cwd: b.work }), true);
+    assert.equal(stopRemedyDone(db, bounce, { sessionId: "s-l", cwd: b.sibling }), false, "a question from an unrelated folder does not count");
+  } finally {
+    db.close();
+  }
+});
+
+test("(m) SessionEnd under a held lock changes nothing: the end stamp and the bypass land together or not at all", () => {
+  const b = sandbox();
+  start(b, "s-m");
+  stop(b, "s-m", "p-1", DECISION);
+  const db = openDb(b);
+  db.exec("BEGIN IMMEDIATE");
+  const r = hook(b, "session-end", { session_id: "s-m", cwd: b.work, hook_event_name: "SessionEnd", reason: "exit" });
+  db.exec("ROLLBACK");
+  assert.equal(r.code, 0);
+  assert.equal(r.out, "");
+  assert.equal(row(db, "SELECT ended_at FROM cc_sessions WHERE id = 's-m'").ended_at, null);
+  assert.deepEqual(bounces(b).map((x) => x.outcome), [null]);
+  db.close();
+  hook(b, "session-end", { session_id: "s-m", cwd: b.work, hook_event_name: "SessionEnd", reason: "exit" });
+  assert.deepEqual(bounces(b).map((x) => x.outcome), ["bypassed"]);
 });

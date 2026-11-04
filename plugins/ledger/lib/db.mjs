@@ -206,7 +206,8 @@ export const MIGRATIONS = [
   // 6: the bounce ledger and the cross-lab review record, both new tables (nothing rebuilt).
   // cc_bounces: one row per Stop block, PreToolUse deny or review-gate notice; closed as
   // `satisfied` when the remedy happens in the session, as `bypassed` at SessionEnd otherwise.
-  // cc_reviews: one row per `ledger review` run (and per waive / addressed), keyed by HEAD sha.
+  // cc_reviews: one row per `ledger review` run (and per waive / addressed), keyed by HEAD sha;
+  // `branch` and `base_ref` (a resolved sha) let a branch's rounds keep one base across reviews.
   (db) => {
     db.exec(`
       CREATE TABLE cc_bounces (
@@ -228,6 +229,7 @@ export const MIGRATIONS = [
         cwd        TEXT NOT NULL,
         head_sha   TEXT NOT NULL,
         base_ref   TEXT,
+        branch     TEXT,
         lab        TEXT NOT NULL,
         model      TEXT,
         verdict    TEXT NOT NULL CHECK (verdict IN ('pass','pass-with-nits','findings','addressed','unavailable','waived')),
@@ -237,6 +239,7 @@ export const MIGRATIONS = [
         at         TEXT NOT NULL
       );
       CREATE INDEX cc_reviews_cwd_head ON cc_reviews (cwd, head_sha, at);
+      CREATE INDEX cc_reviews_head ON cc_reviews (head_sha);
     `);
   },
 ];

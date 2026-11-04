@@ -9,3 +9,4 @@ const adapter = ompAdapter({ lab: "glm", defaultModel: "zai/glm-5.3", defaultPro
 export const lab = adapter.lab;
 export const defaultBin = adapter.defaultBin;
 export const run = adapter.run;
+export const envKeys = adapter.envKeys;

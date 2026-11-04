@@ -168,7 +168,7 @@ session's folder and dated after the session started.
 | SessionStart | `hooks.sessionStart` | Injects, in order and only when non-empty: *Waiting on you* (held questions for the cwd, its parents and the folders under it, oldest first, name and one-line body, a subfolder's naming the folder; kept on `source: compact`), open questions for the same scope (the `pending` block), the last `inject.notes` entries of `log`, the exact invocation plus allow rule and a one-line verb summary, when `inject.elsewhere` is on one line counting the open and held questions in other folders (a folder that is not the cwd, not a parent of it and not under it): `ledger: N question(s) waiting on you in M other folder(s); run \`… pending --all\` to see them.`, the cross-lab review findings line (see [Cross-lab review](#cross-lab-review)), and, last, the doctor line (see [Doctor and the bounce ledger](#doctor-and-the-bounce-ledger)). Capped at 9,000 characters; the log entries are cut first, never the held or open questions or the other-folders, review or doctor lines. On `source: compact` the log section is dropped and the verb summary is one line; the other-folders, review and doctor lines stay. Records the session in `cc_sessions`. |
 | PreToolUse | `hooks.preToolUse` | Runs on `AskUserQuestion` and `Bash` only. `AskUserQuestion` is denied while no question is open for the cwd (a question whose cwd equals the hook cwd or is an ancestor of it), with the reason `ledger: ask the question through the ledger first: \`… ask "<body>" --name <short> --options a,b --default a\`, then ask it; keep the q- id to yourself and record the reply with \`… answer <q-id> <option>\`.` A Bash command that runs `git push` or `gh pr create` (any simple command of a `&&`/`;`/`|`/newline chain; git's global options and a path on the binary are tolerated) is denied while the session has no `note` and no `outcome`, with the reason `ledger: record what this push is before pushing: \`… note "<what and why>"\` or \`… outcome <ref> "<what and why>"\` (one in this session lifts the gate).` Before denying it proves the store can take a write (the remedy writes); if it cannot, the tool passes with a `systemMessage`. Other tools and other commands are never seen. |
 | Stop | `hooks.stop` | Checks the final message once per turn (keyed on `prompt_id`; a second Stop in the same turn passes). Answer rule (`forcing.stopAskRule`): the Stop's `prompt_id` differs from the one stamped by the session's previous Stop (so you wrote since), and the session has open questions asked at or before that previous Stop → `{"decision":"block","reason":…}` listing them newest first and telling the agent to take the answer from your latest message and run `answer <q-id> <option>` (or `withdraw`); it clears once every such question is answered or withdrawn. Ask rule (same switch): after removing code blocks and inline code, a line ends with `?` and the session has no open question row → block telling the agent to `ask` first, then ask in plain words; messages under 40 substantive characters are not checked. Neither rule reads ids out of the reply. A session's questions are those tagged with its id, plus untagged ones asked in or around its folder after it started. Decision rule (`forcing.stopDecisionRule`): after also removing double-quoted spans, the message contains one of `forcing.decisionPhrases` as whole words and the session recorded no `note` during this turn → block telling the agent to `note`, then finish. Checked in the order answer, ask, decision. Every Stop stamps `cc_sessions.last_stop_at` and `last_stop_prompt`; "this turn" runs from the previous stamp (or the session start) to now. |
-| SessionEnd | `hooks.sessionEnd` | Stamps `ended_at` and the reason on the session row. Touches nothing else. Prints nothing; errors go to the log. |
+| SessionEnd | `hooks.sessionEnd` | In one transaction: stamps `ended_at` and the reason on the session row, and marks the session's open bounce rows `bypassed`. Waits at most 250 ms for a lock (SessionEnd hooks share a 1.5-second budget). Prints nothing; errors go to the log. |
 | UserPromptSubmit | `hooks.userPromptCommands` | Answers from elsewhere (`inject.answers`): when the session has an id and the database already exists, every prompt reads the questions this session asked that another session or an untagged CLI run answered or withdrew since the session's last prompt (`cc_sessions.last_prompt_seen_at`, else its start), gives Claude one line each as `additionalContext` (`ledger: answered since your last turn: <name> → <word> (via <via>)`, or `… <name> withdrawn (via <via>)`), and moves the mark to now. Answers the session recorded itself are not repeated. Nothing found → nothing injected. A prompt never creates the database; a store that cannot be opened or a mark that cannot be written is logged to `errors.log` only. Ledger lines: when every non-blank line of the prompt is an id-bearing ledger line (`approve q-…`, `extend q-…`, an ordinal like `1 approve`) or `pending` / `log [N]` / `help`, applies them as a batch with `via = prompt-hook` and gives Claude the numbered results as `additionalContext`, after any answers-from-elsewhere lines (you see the same block as a `systemMessage`). One prose line anywhere → no line is applied. Free-text verbs (`ask`, `note`) and `config` / `enable` / `disable` are never applied from a prompt. Never blocks the prompt. |
 
 ## Config
@@ -266,11 +266,14 @@ session, `prompt_id`, tool and time. A row starts open and is closed once:
 | `stopDecisionRule` | a later Stop of the same session and `prompt_id` finds a `note` the session recorded after the bounce |
 | `denyAskWithoutRow` | a later `AskUserQuestion` in the same session is allowed |
 | `pushNeedsNote` | a later `git push` / `gh pr create` in the same session is allowed |
-| `reviewGate` | a later `git push` / `gh pr create` / `gh pr merge` in the same session passes the review gate without a notice |
+| `reviewGate` | a later `git push` / `gh pr create` / `gh pr merge` in the same session that the review gate allows (with or without a notice). Only a deny writes a row |
 
 The Stop rules are matched on the remedy, not by re-reading the reply, so a reply that only drops
-the question mark or the decision phrase leaves its row open. At SessionEnd every row still open
-for the session becomes `bypassed`. `cc_sessions.last_block_*` is unchanged.
+the question mark or the decision phrase leaves its row open. An answer counts for
+`stopAnswerRule` when this session recorded it, or when the question belongs to the session the
+way the Stop rule decides it (tagged with the session, or untagged and asked in or around its
+folder since it started). At SessionEnd every row still open for the session becomes `bypassed`,
+in the same transaction as the end stamp. `cc_sessions.last_block_*` is unchanged.
 
 ## Cross-lab review
 
@@ -281,23 +284,45 @@ merge-base with `origin/main`, else with a local `main` or `master` HEAD has mov
 `[blocking]`, `[should]` or `[nit]` (untagged counts as `should`); the parsed list is kept in
 `findings_json`. A row's verdict is `pass` (no findings), `pass-with-nits` (nits only),
 `findings` (any blocking or should) or `unavailable` (the error). `--labs a,b` runs only those
-labs this once. Each lab has 240 seconds.
+labs this once. Each lab has 240 seconds; a timeout kills the CLI's whole process group. HEAD and
+the base are resolved to commits once, before the labs start, and the diff is taken between those
+two commits, so the rows name exactly the commit the labs read. Every row records that base and
+the branch name.
+
+A reviewer reads the diff it is handed and nothing else. Each CLI runs with its lab's own
+tool-free switch (below), from a fresh empty scratch folder (so no agent file, settings, hooks or
+instructions from the repository under review are found), with an environment built from an
+allowlist (process basics, locale, proxies, CA bundles, and the lab's own `*_API_KEY`-style
+variables) instead of the caller's, and `LEDGER_ENABLED=0` so the ledger's hooks stay out.
 
 | Lab | How it is run |
 | :- | :- |
 | `codex` | `codex exec --skip-git-repo-check --ephemeral -s read-only --color never -` with the prompt and diff on stdin; `-m` from `review.models.codex` |
-| `kimi` | `kimi -p "<prompt and diff>" --output-format text` (its CLI takes no stdin prompt, so a diff over 200 kB is recorded `unavailable`); `-m` from `review.models.kimi` |
-| `claude` | `claude -p "<prompt>" --no-session-persistence` with the diff on stdin; `--model` from `review.models.claude` |
+| `kimi` | `kimi -p "<prompt and diff>" --output-format stream-json --agent-file <scratch>/ledger-reviewer.md --skills-dir <empty>` (its CLI takes no stdin prompt, so a diff over 200 kB is recorded `unavailable`). The agent file sets `tools: []` and `subagents: []`; the reply is the last assistant message, and an assistant tool call makes the review `unavailable`. `-m` from `review.models.kimi` |
+| `claude` | `claude -p "<prompt>" --no-session-persistence --tools "" --strict-mcp-config --disable-slash-commands` with the diff on stdin; `--model` from `review.models.claude` |
 | `glm` | Z.ai GLM through `omp -p --no-session --no-tools --profile agent-system-2 --model zai/glm-5.3 @<diff file> "<prompt>"`; profile and model from `review.profiles.glm` and `review.models.glm` |
 
 `LEDGER_REVIEW_BIN_<LAB>` (e.g. `LEDGER_REVIEW_BIN_CODEX`) points a lab at another binary.
 
-The gate reads the rows for HEAD, strictest first: a `waived` row lets HEAD through; any lab
+The gate checks the commits the command publishes, not the hook's folder: `git push` in the
+repository its `-C` options select (HEAD when no refspec is given, else each refspec's source;
+a deletion publishes nothing); `gh pr create` the commit `--head` names, else HEAD; `gh pr merge`
+the full sha given to `--match-head-commit`, else the head commit `gh pr view` reports for that
+pull request (5 seconds). The command is read with shell quoting, so a quoted `git push` inside an
+argument is not a push. When the command does not say which commit (`--all`, `--mirror`, `--tags`,
+a pattern refspec, `--git-dir`, gh failing), the call is allowed with a notice saying so.
+
+For each commit the gate reads its rows, strictest first: a `waived` row lets it through; any lab
 whose latest row is `findings` (and not followed by `addressed`) denies, with the findings
 grouped by lab; no row at all denies; `pass-with-nits` allows with a notice listing the nits;
 labs that were `unavailable` are left out and named in a notice, and when every lab was
 unavailable the push is allowed with a notice. A new commit is a new HEAD, so a pass does not
-carry over.
+carry over. A deny is only given while the database can take the write that lifts it (`review`,
+`waive`); when it is locked, the push is allowed with a notice.
+
+The round count needs a stable base. It is the merge-base with `origin/main` (else a local
+`main` or `master`); on a branch with neither, the base the branch's first review recorded, while
+it is still an ancestor of HEAD; else HEAD's parent.
 
 **The loop.** After `findings`, the agent fixes the blocking and should findings, commits, and
 runs `ledger review` again on the new commit. Each reviewed commit on the branch (since the

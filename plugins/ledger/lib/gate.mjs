@@ -53,30 +53,153 @@ export function evaluate(input, { db, config, cwd, cli = "ledger", sessionId = n
 
 // Global git options that take a separate argument, so `git -C dir push` is still a push.
 const GIT_OPT_WITH_ARG = new Set(["-C", "-c", "--git-dir", "--work-tree", "--namespace", "--exec-path", "--super-prefix", "--config-env"]);
+// Words that run the rest of the command line as the command.
+const PREFIX_WORDS = new Set(["command", "env", "exec", "time", "nohup"]);
 
 /**
- * True when any simple command in `command` (split on newlines, `&&`, `||`, `;`, `|`) is
- * `git push …` or `gh pr <sub> …` for a `sub` in `ghPr` (default `create`), with a path or
- * `command`/`\` prefix on the binary and git's global options tolerated. A string that does
- * not look like either is not a push. The review gate passes `["create", "merge"]`.
+ * The simple commands in shell text, each as its list of words after quote removal. A lexer, not
+ * a shell: single and double quotes, backslash escapes and line continuations are honoured;
+ * `;` `&` `|` `(` `)` and newlines end a command; `# …` comments, redirections with their
+ * target, and here-document bodies (`<<WORD`, `<<-WORD`, quoted or not) are dropped. Command
+ * substitutions are not expanded: their text stays inside the word it appears in.
+ * @returns {string[][]}
  */
-export function isPushCommand(command, ghPr = ["create"]) {
-  if (typeof command !== "string" || !command.trim()) return false;
-  for (const segment of command.split(/\n|&&|\|\||;|\|/)) {
-    const tokens = segment.trim().split(/\s+/).filter(Boolean);
-    while (tokens.length && (/^[A-Za-z_][A-Za-z0-9_]*=/.test(tokens[0]) || tokens[0] === "command" || tokens[0] === "env")) tokens.shift();
+export function simpleCommands(text) {
+  const s = String(text ?? "");
+  const n = s.length;
+  const cmds = [];
+  const heredocs = [];
+  let words = [];
+  let word = null;
+  let dropNext = false;
+  let i = 0;
+  const endWord = () => {
+    if (word === null) return;
+    if (dropNext) dropNext = false;
+    else words.push(word);
+    word = null;
+  };
+  const endCmd = () => {
+    endWord();
+    if (words.length) cmds.push(words);
+    words = [];
+  };
+  while (i < n) {
+    const c = s[i];
+    if (c === "\n") {
+      endCmd();
+      i++;
+      while (heredocs.length) {
+        const { delim, strip } = heredocs.shift();
+        while (i < n) {
+          let j = s.indexOf("\n", i);
+          if (j < 0) j = n;
+          const line = strip ? s.slice(i, j).replace(/^\t+/, "") : s.slice(i, j);
+          i = j + 1;
+          if (line === delim) break;
+        }
+      }
+      continue;
+    }
+    if (c === " " || c === "\t" || c === "\r") {
+      endWord();
+      i++;
+    } else if (c === "#" && word === null) {
+      while (i < n && s[i] !== "\n") i++;
+    } else if (c === "\\") {
+      if (s[i + 1] !== "\n") word = (word ?? "") + (s[i + 1] ?? "");
+      i += 2;
+    } else if (c === "'") {
+      const j = s.indexOf("'", i + 1);
+      const end = j < 0 ? n : j;
+      word = (word ?? "") + s.slice(i + 1, end);
+      i = end + 1;
+    } else if (c === '"') {
+      let q = "";
+      i++;
+      while (i < n && s[i] !== '"') {
+        if (s[i] === "\\" && i + 1 < n && '"\\$`\n'.includes(s[i + 1])) {
+          if (s[i + 1] !== "\n") q += s[i + 1];
+          i += 2;
+        } else q += s[i++];
+      }
+      i++;
+      word = (word ?? "") + q;
+    } else if (c === "<" && s[i + 1] === "<" && s[i + 2] !== "<") {
+      endWord();
+      i += 2;
+      const strip = s[i] === "-";
+      if (strip) i++;
+      while (s[i] === " " || s[i] === "\t") i++;
+      let delim = "";
+      while (i < n && !/[\s;&|<>()]/.test(s[i])) {
+        if (s[i] === "'" || s[i] === '"') {
+          const j = s.indexOf(s[i], i + 1);
+          const end = j < 0 ? n : j;
+          delim += s.slice(i + 1, end);
+          i = end + 1;
+        } else if (s[i] === "\\") {
+          delim += s[i + 1] ?? "";
+          i += 2;
+        } else delim += s[i++];
+      }
+      if (delim) heredocs.push({ delim, strip });
+    } else if (c === "<" || c === ">") {
+      if (word !== null && /^\d+$/.test(word)) word = null; // the fd number of `2>…`
+      endWord();
+      i++;
+      while (s[i] === ">" || s[i] === "<" || s[i] === "&" || s[i] === "|") i++;
+      dropNext = true;
+    } else if (";&|()".includes(c)) {
+      endCmd();
+      i++;
+    } else {
+      word = (word ?? "") + c;
+      i++;
+    }
+  }
+  endCmd();
+  return cmds;
+}
+
+/**
+ * The publishing operations in `command`: one per simple command that is `git push …` or
+ * `gh pr <sub> …` for a `sub` in `ghPr` (default `create`). Leading `VAR=value` words and
+ * `command`/`env`/`exec`/`time`/`nohup` are skipped, a path on the binary is tolerated, and git's
+ * global options are read:
+ *   { tool: "git", dirs: [-C dirs in order], unsupported: "--git-dir"|"--work-tree"|null, args }
+ *   { tool: "gh", sub, args }
+ * `args` are the words after `push` / after `pr <sub>`.
+ */
+export function pushOperations(command, ghPr = ["create"]) {
+  const ops = [];
+  for (const words of simpleCommands(command)) {
+    const tokens = [...words];
+    while (tokens.length && (/^[A-Za-z_][A-Za-z0-9_]*=/.test(tokens[0]) || PREFIX_WORDS.has(tokens[0]))) tokens.shift();
     if (!tokens.length) continue;
-    const bin = tokens[0].replace(/^\\/, "").split("/").pop();
+    const bin = tokens[0].split("/").pop();
     if (bin === "gh") {
-      if (tokens[1] === "pr" && ghPr.includes(tokens[2])) return true;
+      if (tokens[1] === "pr" && ghPr.includes(tokens[2])) ops.push({ tool: "gh", sub: tokens[2], args: tokens.slice(3) });
       continue;
     }
     if (bin !== "git") continue;
+    const dirs = [];
+    let unsupported = null;
     let i = 1;
     while (i < tokens.length && tokens[i].startsWith("-")) {
-      i += GIT_OPT_WITH_ARG.has(tokens[i]) ? 2 : 1;
+      const t = tokens[i];
+      if (t === "-C") dirs.push(tokens[i + 1] ?? "");
+      if (t === "--git-dir" || t.startsWith("--git-dir=")) unsupported = "--git-dir";
+      if (t === "--work-tree" || t.startsWith("--work-tree=")) unsupported = "--work-tree";
+      i += GIT_OPT_WITH_ARG.has(t) ? 2 : 1;
     }
-    if (tokens[i] === "push") return true;
+    if (tokens[i] === "push") ops.push({ tool: "git", dirs, unsupported, args: tokens.slice(i + 1) });
   }
-  return false;
+  return ops;
+}
+
+/** True when `command` runs `git push` or `gh pr <sub>` for a `sub` in `ghPr` (see pushOperations). */
+export function isPushCommand(command, ghPr = ["create"]) {
+  if (typeof command !== "string" || !command.trim()) return false;
+  return pushOperations(command, ghPr).length > 0;
 }

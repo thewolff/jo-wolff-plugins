@@ -1,0 +1,1 @@
+kimi exited 1: error: failed to run prompt: provider.api_error: 429 Your account org-<redacted> <ak-<redacted>> is suspended due to insufficient balance, please recharge your account or check your plan and billing details See log: ~/.kimi-code/logs/kimi-code.log

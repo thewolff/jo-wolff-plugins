@@ -35,15 +35,16 @@ export function resolveCwd(env = process.env, given = null) {
  * @returns {{ config, sources, path, notices: string[], db, dbPath, configText }}
  * @throws {StoreError} when the database cannot be opened.
  */
-export function openStore({ env = process.env, now = Date.now(), cwd = null, cfg = null } = {}) {
+export function openStore({ env = process.env, now = Date.now(), cwd = null, cfg = null, busyTimeoutMs = null } = {}) {
   cfg ??= loadConfig({ env, cwd });
-  // LEDGER_BUSY_TIMEOUT_MS exists for the test suite, so a held lock fails in milliseconds, not seconds.
+  // LEDGER_BUSY_TIMEOUT_MS exists for the test suite, so a held lock fails in milliseconds, not
+  // seconds; `busyTimeoutMs` is a hook's own shorter budget (SessionEnd).
   const busy = Number(env.LEDGER_BUSY_TIMEOUT_MS);
   // Only the plugin's own default file is ever moved aside when corrupt. A configured `db` (env,
   // project or user file) may be another tool's database: it is reported, never renamed.
   const store = open(cfg.config.db, {
     now,
-    busyTimeoutMs: Number.isFinite(busy) && busy >= 0 ? busy : undefined,
+    busyTimeoutMs: Number.isFinite(busy) && busy >= 0 && env.LEDGER_BUSY_TIMEOUT_MS !== undefined && env.LEDGER_BUSY_TIMEOUT_MS !== "" ? busy : (busyTimeoutMs ?? undefined),
     healCorrupt: cfg.sources.db === "default",
   });
   return {

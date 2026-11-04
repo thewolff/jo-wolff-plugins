@@ -1,0 +1,1 @@
+1. [blocking] math.js:2 — `add(a, b)` now subtracts `b` from `a`, breaking its addition contract. For example, `add(2, 3)` returns `-1` instead of `5`. Restore `return a + b;`.
