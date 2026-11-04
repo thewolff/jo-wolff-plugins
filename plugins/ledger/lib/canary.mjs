@@ -238,7 +238,8 @@ export function bytesFreedFrom(stdout) {
 }
 
 /**
- * Run every declared prune of `plugins` once and record each as a cc_canary_prunes row.
+ * Run every declared prune of `plugins` once and record each as a cc_canary_prunes row (`db`
+ * null: a store that could not be opened, so nothing is recorded and the caller says so).
  * `run` is injectable (same shape as runScript's result, given a shell line). Never throws on a
  * failed prune: that is the row. Returns the rows.
  */
@@ -263,17 +264,19 @@ export async function runPrunes({ db, dbPath, env = process.env, plugins, timeou
         row.status = "unavailable";
         row.note = r.stdout.trim().split("\n").pop()?.slice(0, 300) || "exit 75";
       } else row.note = `exit ${r.code ?? r.signal}${(r.stderr || r.stdout).trim() ? `: ${(r.stderr || r.stdout).trim().split("\n").pop().slice(0, 300)}` : ""}`;
-      try {
-        transaction(
-          db,
-          () => {
-            const ins = db.prepare("INSERT INTO cc_canary_prunes (plugin, at, path, command, status, exit_code, bytes_freed, note) VALUES (?,?,?,?,?,?,?,?)").run(row.plugin, row.at, row.path, row.command, row.status, row.exit_code, row.bytes_freed, row.note);
-            row.id = Number(ins.lastInsertRowid);
-          },
-          dbPath,
-        );
-      } catch (err) {
-        row.note = `${row.note ? `${row.note}; ` : ""}not recorded: ${err.message}`;
+      if (db) {
+        try {
+          transaction(
+            db,
+            () => {
+              const ins = db.prepare("INSERT INTO cc_canary_prunes (plugin, at, path, command, status, exit_code, bytes_freed, note) VALUES (?,?,?,?,?,?,?,?)").run(row.plugin, row.at, row.path, row.command, row.status, row.exit_code, row.bytes_freed, row.note);
+              row.id = Number(ins.lastInsertRowid);
+            },
+            dbPath,
+          );
+        } catch (err) {
+          row.note = `${row.note ? `${row.note}; ` : ""}not recorded: ${err.message}`;
+        }
       }
       rows.push(row);
     }
@@ -574,17 +577,17 @@ function runCheck(bin, args) {
   return { missing: false, code: r.status, output: `${r.stdout ?? ""}${r.stderr ?? ""}` };
 }
 
-/** Parse `canary …` tokens into an action; usage on a bad shape. */
+/** Parse `canary …` tokens into an action; usage on a bad shape, including a switch the action does not take. */
 export function parseCanaryArgs(tokens) {
   const usage = 'usage: canary run [--repo <path>] [--plugins a,b] [--timeout <s>] [--no-prune | --prunes-only] | canary runs [N] [--plugin <name>] | canary status | canary grade <id> biting|silent|fine ["<note>"] | canary prune [--days N] [--dry-run] | canary install [--repo <path>] [--hour H] [--minute M] [--prunes-only]';
-  const SWITCHES = new Set(["--no-prune", "--prunes-only", "--dry-run"]);
   const [action, ...rest] = tokens;
-  const flags = (allowed) => {
+  // `switches` are the action's own valueless flags; any other `--x` takes a value and must be in `allowed`.
+  const flags = (allowed, switches = []) => {
     const out = {};
     const positional = [];
     for (let i = 0; i < rest.length; i++) {
       const a = rest[i];
-      if (SWITCHES.has(a)) continue;
+      if (switches.includes(a)) continue;
       if (!a.startsWith("--")) {
         positional.push(a);
         continue;
@@ -601,7 +604,7 @@ export function parseCanaryArgs(tokens) {
     const noPrune = rest.includes("--no-prune");
     const prunesOnly = rest.includes("--prunes-only");
     if (noPrune && prunesOnly) return { error: usage };
-    const f = flags(["--repo", "--plugins", "--timeout"]);
+    const f = flags(["--repo", "--plugins", "--timeout"], ["--no-prune", "--prunes-only"]);
     if (!f || f.positional.length) return { error: usage };
     const timeoutS = f.timeout === undefined ? DEFAULT_TIMEOUT_S : Number(f.timeout);
     if (!Number.isInteger(timeoutS) || timeoutS <= 0) return { error: usage };
@@ -624,7 +627,7 @@ export function parseCanaryArgs(tokens) {
     return { action, id, grade, note: note.length ? note.join(" ") : null };
   }
   if (action === "prune") {
-    const f = flags(["--days"]);
+    const f = flags(["--days"], ["--dry-run"]);
     if (!f || f.positional.length) return { error: usage };
     const days = f.days === undefined ? PRUNE_DAYS : Number(f.days);
     if (!Number.isInteger(days) || days < 0) return { error: usage };
@@ -632,7 +635,7 @@ export function parseCanaryArgs(tokens) {
   }
   if (action === "install") {
     const prunesOnly = rest.includes("--prunes-only");
-    const f = flags(["--repo", "--hour", "--minute"]);
+    const f = flags(["--repo", "--hour", "--minute"], ["--prunes-only"]);
     if (!f || f.positional.length) return { error: usage };
     const hour = f.hour === undefined ? (prunesOnly ? 10 : 3) : Number(f.hour);
     const minute = f.minute === undefined ? (prunesOnly ? 0 : 30) : Number(f.minute);

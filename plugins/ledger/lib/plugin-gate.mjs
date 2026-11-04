@@ -556,12 +556,22 @@ export const PRUNE_LINE = /^pruned: \d+ file\(s\), \d+ bytes freed\b/;
 
 /**
  * Run one declared prune command with `--dry-run`; null when it exits 0 with the contract line
- * last, else the problem. `env` is the gate's own (the plugin's real state is read, nothing is
- * removed); `timeoutMs` bounds it.
+ * last, else the problem. The prune runs in a throwaway HOME, XDG_{CONFIG,STATE,DATA,CACHE}_HOME
+ * and TMPDIR of its own (removed after), with only PATH kept from `env` (the faultSandbox
+ * convention), so no LEDGER_DB or other `*_STATE_DIR` / `*_DB` override reaches it: a prune that
+ * ignores --dry-run removes nothing real. `timeoutMs` bounds it.
  */
 export function dryRunPrune(pluginDir, command, { env = process.env, timeoutMs = 60_000 } = {}) {
   const line = `${command} --dry-run`;
-  const r = spawnSync("/bin/sh", ["-c", line], { cwd: pluginDir, env: { ...env, CLAUDE_PLUGIN_ROOT: pluginDir }, encoding: "utf8", timeout: timeoutMs });
+  const root = mkdtempSync(join(tmpdir(), "ledger-gate-prune-"));
+  const roots = { HOME: join(root, "home"), XDG_CONFIG_HOME: join(root, "config"), XDG_STATE_HOME: join(root, "state"), XDG_DATA_HOME: join(root, "data"), XDG_CACHE_HOME: join(root, "cache"), TMPDIR: join(root, "tmp") };
+  for (const d of Object.values(roots)) mkdirSync(d, { recursive: true });
+  let r;
+  try {
+    r = spawnSync("/bin/sh", ["-c", line], { cwd: pluginDir, env: { PATH: env.PATH ?? process.env.PATH, ...roots, CLAUDE_PLUGIN_ROOT: pluginDir }, encoding: "utf8", timeout: timeoutMs });
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
   const where = `prune \`${command}\` --dry-run`;
   if (r.error) return `${where}: ${r.error.code === "ETIMEDOUT" ? `no exit within ${timeoutMs} ms` : r.error.message}`;
   const last = (r.stdout ?? "").trim().split("\n").pop() ?? "";

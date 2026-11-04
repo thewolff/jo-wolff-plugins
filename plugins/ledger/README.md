@@ -572,11 +572,15 @@ written never leaves state growing).
 `canary run --prunes-only [--repo <path>] [--plugins a,b]` (0.3.9) is the daily job: no live
 run, no `cc_canary_runs` row, every declared prune run before and independently of any database
 write (a `cc_canary_prunes` row per prune is still attempted; one that cannot be written is
-`not recorded: <reason>` on the line and changes nothing else). One line per prune,
+`not recorded: <reason>` on the line and changes nothing else; a store that cannot be opened at
+all records no row, the prunes still run, and stderr ends `ledger: database <state> at <path>…;
+the prunes ran, their rows were not recorded`). One line per prune,
 `prune <plugin>: <its last stdout line>` (`unavailable, …` or `fail, exit <n>: …` ahead of it
 when it was not a pass). Exit 0 when every prune ran (pass, or unavailable by its own exit 75),
 1 when any failed or could not be started, naming each on the last line. The launchd line for
-it is `canary install --prunes-only` below.
+it is `canary install --prunes-only` below. Each `canary` action takes only its own switches:
+`canary run --dry-run` (or `canary install --dry-run`) is the usage line on stdout, exit 2,
+before the store is opened or anything runs; every `canary` usage error is exit 2.
 
 The canary contract a plugin's `e2e/live-run.sh` follows (plugin-kit's `new-plugin` skill
 ships a template): run from the plugin directory with `CANARY_PLUGIN`, `CANARY_TRANSCRIPT` (the
@@ -823,12 +827,19 @@ Tests use a sandboxed `HOME`, `XDG_*` and `LEDGER_*` so they never touch your le
   (`prune <plugin>: <its last stdout line>`), exit 0 when every prune ran, 1 naming a prune that
   failed or could not start. A full `canary run` against a store that cannot be written now
   runs the prunes before it exits 2. `canary install --prunes-only` writes the daily plist.
+- `canary run --prunes-only` is dispatched before the store is opened: a store that cannot be
+  opened records no prune row and the prunes run all the same (exit theirs, stderr names the
+  rows not recorded). Each `canary` action takes only its own switches; `canary run --dry-run`
+  is usage, exit 2, and runs nothing (every `canary` usage error is exit 2).
 - `canary prune` follows the plugin-kit prune contract: `--dry-run`, the last line
   `pruned: <n> file(s), <bytes> bytes freed[ (dry run)]; kept <k>`, a file that cannot be
   removed named on stderr and counted as kept.
 - The gate's `retention` row runs every declared prune command once with `--dry-run` (from the
   plugin directory, `CLAUDE_PLUGIN_ROOT` set, 60 s) and fails naming one that exits non-zero,
-  cannot start, or ends with any line but the contract's.
+  cannot start, or ends with any line but the contract's. Each prune runs in a throwaway HOME,
+  XDG config/state/data/cache roots and TMPDIR of its own, with only PATH kept from the gate's
+  environment (no `LEDGER_DB`, no `*_STATE_DIR` or `*_DB` override), so a prune that ignores
+  `--dry-run` removes nothing real.
 - The pane draws in Claude Desktop. Desktop runs Code headless, so `session.start` arrives with
   `surface: null`; the mod gated its poll, its refresh and the pane on a non-null surface, so
   nothing ever drew there. The gate is gone: the poll and the refresh always start and the pane

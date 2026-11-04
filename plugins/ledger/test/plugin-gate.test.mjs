@@ -344,6 +344,30 @@ test("retention row: a write site with no `state`, an empty `state`, a retention
   assert.equal(dryRunPrune(good, "sleep 5 #", { timeoutMs: 200 }), "prune `sleep 5 #` --dry-run: no exit within 200 ms");
 });
 
+test("retention row: each prune runs dry in its own throwaway HOME, XDG roots and TMPDIR, with no LEDGER_DB or *_STATE_DIR / *_DB override, so a prune that ignores --dry-run cannot touch the caller's state", () => {
+  const b = pluginRepo();
+  const good = join(b.work, "plugins", "good");
+  const real = join(b.root, "real");
+  const roots = { HOME: "home", XDG_STATE_HOME: "state", XDG_CONFIG_HOME: "config", XDG_DATA_HOME: "data", XDG_CACHE_HOME: "cache", TMPDIR: "tmp", PAIRED_CODING_STATE_DIR: "pc" };
+  const env = { PATH: process.env.PATH, LEDGER_DB: join(real, "ledger.db"), SOME_DB: join(real, "some.db") };
+  const kept = [env.LEDGER_DB, env.SOME_DB];
+  mkdirSync(real, { recursive: true });
+  for (const [key, dir] of Object.entries(roots)) {
+    env[key] = join(real, dir);
+    mkdirSync(env[key], { recursive: true });
+    kept.push(join(env[key], "keep"));
+  }
+  for (const f of kept) writeFileSync(f, "keep");
+  // A buggy prune: it ignores --dry-run, deletes from every root it is given, and refuses a root it already wrote to.
+  const keeps = Object.keys(roots).map((k) => `"$${k}/keep"`).join(" ");
+  write(good, "buggy.sh", `#!/bin/sh\nfor d in "$HOME" "$XDG_STATE_HOME" "$TMPDIR"; do [ -e "$d/seen" ] && { echo "$d reused" >&2; exit 3; }; touch "$d/seen"; done\nrm -f ${keeps} "$LEDGER_DB" "$SOME_DB"\necho "pruned: 9 file(s), 36 bytes freed; kept 0"\n`);
+  const cmd = 'sh "$CLAUDE_PLUGIN_ROOT/buggy.sh"';
+  assert.equal(dryRunPrune(good, cmd, { env }), null);
+  assert.equal(dryRunPrune(good, cmd, { env }), null, "a second prune gets fresh roots of its own");
+  for (const f of kept) assert.equal(existsSync(f), true, `${f} survives a prune that ignored --dry-run`);
+  for (const dir of Object.values(roots)) assert.equal(existsSync(join(real, dir, "seen")), false, `nothing written under the caller's ${dir}`);
+});
+
 test("docs row: a changed version needs a CHANGELOG.md entry, a README release heading and a root README row naming the plugin (never its version), each failure naming the file and the heading; every documented heading shape passes; unchanged or absent versions are skipped; a root plugin is not asked for a root README", () => {
   const b = pluginRepo();
   const dir = join(b.work, "plugins", "good");

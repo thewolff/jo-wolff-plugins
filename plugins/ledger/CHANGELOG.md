@@ -32,6 +32,17 @@ All notable changes to ledger are recorded here. The format follows
 
 ### Fixed
 
+- `canary run --prunes-only` no longer needs the store to open: it is dispatched before
+  `openStore`, a store that cannot be opened records no `cc_canary_prunes` row, every prune
+  still runs, the exit is the prunes', and stderr ends `…; the prunes ran, their rows were not
+  recorded`. Before, an unopenable store exited 2 with no prune run.
+- Each `canary` action accepts only its own switches: `canary run --dry-run` was accepted and
+  ran the real prunes; it is now the usage line, exit 2, with nothing opened or run. Every
+  `canary` usage error is exit 2 (was 1).
+- The gate's `retention` row runs each prune in a throwaway HOME, XDG config/state/data/cache
+  roots and TMPDIR of its own (removed after), keeping only PATH from the gate's environment: a
+  prune that ignores `--dry-run` could otherwise remove the caller's real state, `LEDGER_DB`
+  and any `*_STATE_DIR` / `*_DB` override included.
 - The pane draws in Claude Desktop. Desktop runs Code headless, so `session.start` arrives with
   `surface: null`, and `mods/pane/register.mjs` set `draws = surface !== null`, so the poll
   timer, the refresh and the pane never started there. The gate is gone: the timer and the
