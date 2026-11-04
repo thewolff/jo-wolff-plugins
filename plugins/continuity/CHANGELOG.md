@@ -28,7 +28,8 @@ both on the SessionStart that follows a compaction and never on a fresh start:
   named in the systemMessage. `@path` imports are not expanded.
 - `## Durable notes` in the restore block: the newest `notesCount` (default 5) regular files of
   `notesDir` (default `.ai/decision-log`, relative to the git root of the cwd resolved through
-  its symlinks, or that cwd when there is none) by modification time, one filename per line, with
+  its symlinks, or that cwd when there is none) by modification time, an equal time broken by
+  name descending (Linux file times are coarse, so a burst of writes shares one), one filename per line, with
   the line that the notes directory and the rules files are the source of truth and the restored
   snapshot is only the safety net. An absent directory is one line saying so. The whole section
   counts against the restore guard, fitted before the rules; short of room it lists fewer names,

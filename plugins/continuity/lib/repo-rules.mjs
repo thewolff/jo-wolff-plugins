@@ -282,7 +282,9 @@ export function notesRoot(cwd) {
 
 /**
  * The `## Durable notes` section: the newest `count` regular files of `dir` by modification
- * time (dot-files left out), one filename per line, with the sentence that the notes and the
+ * time, an equal time broken by name descending so a `YYYY-MM-DD--` prefix still puts the
+ * latest first (Linux file times are coarse, so files written in one burst share one), dot-files
+ * left out, one filename per line, with the sentence that the notes and the
  * rules files are the source of truth. `dir` is taken relative to `base` unless absolute; an
  * absent directory is one line saying so. The whole rendered string is at most `budgetBytes`
  * UTF-8 bytes: the list gives way first, then the section is "" (the caller names the omission).
@@ -313,7 +315,7 @@ export function renderNotes(dir, base, count, budgetBytes = Infinity) {
       /* gone between readdir and stat */
     }
   }
-  entries.sort((a, b) => b.mtimeMs - a.mtimeMs || (a.name < b.name ? -1 : 1));
+  entries.sort((a, b) => b.mtimeMs - a.mtimeMs || (a.name < b.name ? 1 : a.name > b.name ? -1 : 0));
   const truth = ["", "> The notes directory and the rules files are the source of truth; the restored snapshot is only the safety net. Read the newest note before continuing a thread it covers."];
   if (!entries.length) return finish([...heading, "(the notes directory is empty)", ...truth]);
   for (let k = Math.min(n, entries.length); k >= 1; k--) {

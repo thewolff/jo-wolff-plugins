@@ -297,6 +297,15 @@ test("durable notes: the newest N files by mtime, dot-files and directories left
     assert.equal(renderNotes(".ai/decision-log", b.work, 5, full), text);
     assert.match(renderNotes(".ai/decision-log", b.work, 5, full - 1), /The newest 4 of 6 entries by modification time:\n\n- f\.md\n- e\.md\n- d\.md\n- b\.md\n\n> /);
     assert.equal(renderNotes(".ai/decision-log", b.work, 5, 20), "");
+    // An equal modification time (Linux file times are coarse, so a burst of writes shares one) is
+    // broken by name descending, whatever order the files were created in or readdir returns them.
+    const tie = join(b.work, "tie");
+    mkdirSync(tie);
+    for (const name of ["2026-01-02--two.md", "2026-01-01--one.md", "2026-01-03--three.md"]) {
+      writeFileSync(join(tie, name), name);
+      utimesSync(join(tie, name), t0, t0);
+    }
+    assert.match(renderNotes("tie", b.work, 5), /The newest 3 of 3 entries by modification time:\n\n- 2026-01-03--three\.md\n- 2026-01-02--two\.md\n- 2026-01-01--one\.md\n\n> /);
     // notesRoot: the git root above the real cwd, so a cwd reached through a symlink into a nested
     // directory finds the repository's root, not the symlink's lexical parents.
     mkdirSync(join(b.work, "pkg", "deep"), { recursive: true });
