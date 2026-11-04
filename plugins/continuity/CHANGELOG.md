@@ -3,6 +3,53 @@
 All notable changes to continuity are recorded here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.3.0] - 2026-11-04
+
+### Added
+
+An OMP adapter, so the save and the restore run under OMP as well as Claude Code. Until now
+OMP seats kept newdle's pre-compaction save; this replaces it for them.
+
+- `omp/continuity-omp.ts`, loaded by OMP through `package.json` `omp.extensions` (with
+  `.omp-plugin/plugin.json`). It imports nothing from the hooks: it spawns the same two hook
+  files as stdin-JSON CLIs, so one implementation and one test suite serve both hosts and the
+  state (same directory, same snapshot file, same caps, same once-marks) is shared.
+  - `session_before_compact` → `hooks/pre-compact.mjs`, with a PreCompact payload built from the
+    event: `trigger` (`auto` while an `auto_compaction_start` is in flight, else `manual`),
+    `custom_instructions`, and the three host fields `lib/snapshot.mjs` reads from a
+    transcript-less host: `intents` (the user texts of the messages the compaction discards, the
+    last five, 500 characters each), `file_operations` (the host's read / written / edited paths
+    with counts, 6,000 characters), `token_count`. No `transcript_path`. The hook's
+    `systemMessage` goes to `ctx.ui.notify`. The handler never cancels a compaction.
+  - `session_compact` → `hooks/session-start.mjs` with `source: "compact"`; its
+    `additionalContext` (snapshot, rules section, durable notes, liveness line) reaches the agent
+    through `pi.sendMessage` as a hidden `continuity-restored` message.
+  - The spawn sets `CLAUDE_PROJECT_DIR` to the session's cwd, so the rules walk names every file
+    from the cwd to the repository root as kept by the host (OMP holds them in the system
+    prompt's `<repo-rules>` block across a compaction) instead of inlining a second copy.
+  - Budgets: 8 s per spawn against the runner's 4 s deadline and OMP's 30 s handler timeout; the
+    child's process group is killed when it passes. Fail open: every fault is one
+    `omp-adapter <hook>: …` line in `errors.log`.
+  - Node resolution as brb's adapter: `CONTINUITY_NODE`, else the host binary unless it is Bun,
+    else the first `node` on PATH or in the usual places.
+- `omp/continuity-omp.test.mjs`: the payload builder, the budgets pinned against
+  `lib/hook-runner.mjs` `DEADLINE_MS`, each handler's fail-open path with a fake runner, the four
+  registrations and the auto/manual bookkeeping, `spawnHook` on junk / non-zero / hang / echo
+  children, and one save-then-restore round trip through the real hooks.
+- `evals/pre-compact-omp-payload.scenario.json`: the save on the payload the adapter sends
+  (fifteen scenarios in all).
+- README "Under OMP": the event mapping, the budgets, and the table of what newdle's OMP save did
+  that this does (the unconditional save with the host fields, the in-session restore through
+  `sendMessage`, fail open) and does not (the one-time compaction cancel, the in-session
+  compaction contribution, the `~/.omp` archive copy, the "no record recovered" message, the
+  project-directory and seat gates).
+
+### Changed
+
+- `.claude-plugin/plugin.json`, `.omp-plugin/plugin.json`, `package.json`: 0.3.0; the
+  description names the OMP adapter.
+- Nothing in the hooks, the libs, the config keys or the state layout.
+
 ## [0.2.0] - 2026-11-04
 
 ### Added

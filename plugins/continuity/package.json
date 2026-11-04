@@ -1,10 +1,13 @@
 {
   "name": "continuity",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "private": true,
   "type": "module",
   "engines": { "node": ">=22.13" },
   "scripts": {
     "test": "node --test"
+  },
+  "omp": {
+    "extensions": ["./omp/continuity-omp.ts"]
   }
 }
