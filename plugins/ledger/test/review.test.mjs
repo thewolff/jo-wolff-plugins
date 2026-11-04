@@ -829,9 +829,29 @@ test("R4-B1: the quiet environment drops every prompt and keeps the repository's
   const { quietRemoteEnv } = await import("../lib/review.mjs");
   const b = repo();
   const env = quietRemoteEnv(b.work, { PATH: process.env.PATH, GIT_ASKPASS: "/x", SSH_ASKPASS: "/y", GIT_SSH_COMMAND: "ssh -i key" });
-  assert.deepEqual([env.GIT_ASKPASS, env.GIT_TERMINAL_PROMPT, env.SSH_ASKPASS, env.SSH_ASKPASS_REQUIRE, env.GIT_SSH_COMMAND], ["", "0", undefined, "never", "ssh -i key -o BatchMode=yes"]);
+  assert.deepEqual([env.GIT_ASKPASS, env.GIT_TERMINAL_PROMPT, env.SSH_ASKPASS, env.SSH_ASKPASS_REQUIRE, env.GIT_SSH_COMMAND], ["", "0", undefined, "never", "ssh -o BatchMode=yes -i key"]);
   git(b, "config", "core.sshCommand", "ssh -F cfg");
-  assert.equal(quietRemoteEnv(b.work, { PATH: process.env.PATH }).GIT_SSH_COMMAND, "ssh -F cfg -o BatchMode=yes");
+  assert.equal(quietRemoteEnv(b.work, { PATH: process.env.PATH }).GIT_SSH_COMMAND, "ssh -o BatchMode=yes -F cfg");
+});
+
+test("R5-S1: BatchMode=yes goes right after the ssh executable, so a BatchMode=no in the command does not win", async (t) => {
+  const { quietRemoteEnv } = await import("../lib/review.mjs");
+  const b = repo();
+  git(b, "config", "core.sshCommand", "ssh -o BatchMode=no");
+  const cmd = quietRemoteEnv(b.work, { PATH: process.env.PATH }).GIT_SSH_COMMAND;
+  assert.equal(cmd, "ssh -o BatchMode=yes -o BatchMode=no");
+  for (const [given, built] of [
+    ["'/opt/my ssh' -o BatchMode=no", "'/opt/my ssh' -o BatchMode=yes -o BatchMode=no"],
+    ['"/opt/my ssh" -p 22', '"/opt/my ssh" -o BatchMode=yes -p 22'],
+    ["/opt/my\\ ssh", "/opt/my\\ ssh -o BatchMode=yes"],
+    ["ssh-wrapper --flag", "ssh-wrapper -o BatchMode=yes --flag"],
+  ]) {
+    assert.equal(quietRemoteEnv(b.work, { PATH: process.env.PATH, GIT_SSH_COMMAND: given }).GIT_SSH_COMMAND, built, given);
+  }
+  // ssh itself: `-G` prints the options it would use, without connecting.
+  const r = spawnSync("sh", ["-c", `${cmd} -G example.invalid`], { encoding: "utf8" });
+  if (r.error || r.status !== 0) return t.skip(`ssh -G is not available here (${r.error?.message ?? `exit ${r.status}`})`);
+  assert.match(r.stdout, /^batchmode yes$/m);
 });
 
 test("R3-S1: a cd inside a subshell or command substitution does not move a later push", async () => {

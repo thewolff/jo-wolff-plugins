@@ -119,16 +119,19 @@ const LS_REMOTE = fileURLToPath(new URL("./ls-remote.mjs", import.meta.url));
  * The environment for a remote lookup from a hook: nothing may prompt. An empty GIT_ASKPASS is
  * taken by git over `core.askPass` and SSH_ASKPASS and runs nothing, GIT_TERMINAL_PROMPT=0 then
  * refuses the terminal; SSH_ASKPASS is dropped and SSH_ASKPASS_REQUIRE=never, and ssh runs with
- * BatchMode=yes (no password, passphrase or host-key question) on top of the ssh command the
- * repository already uses. lib/ls-remote.mjs adds `-c core.askPass= -c credential.helper=` so no
- * credential helper (a keychain dialog) runs either.
+ * BatchMode=yes (no password, passphrase or host-key question) on the ssh command the repository
+ * already uses. ssh keeps the first value it is given for an option, so `-o BatchMode=yes` goes
+ * right after the executable, ahead of the command's own options (a `-o BatchMode=no` there
+ * loses). lib/ls-remote.mjs adds `-c core.askPass= -c credential.helper=` so no credential
+ * helper (a keychain dialog) runs either.
  */
 export function quietRemoteEnv(top, env = process.env) {
   const out = { ...env, GIT_TERMINAL_PROMPT: "0", GIT_ASKPASS: "", SSH_ASKPASS_REQUIRE: "never" };
   delete out.SSH_ASKPASS;
   const configured = gitConfig(top, "core.sshCommand", { timeoutMs: HOOK_GIT_TIMEOUT_MS })[0];
   const ssh = env.GIT_SSH_COMMAND || configured || (env.GIT_SSH ? `'${env.GIT_SSH.replace(/'/g, `'\\''`)}'` : "ssh");
-  out.GIT_SSH_COMMAND = `${ssh} -o BatchMode=yes`;
+  const [, exe, rest] = /^\s*((?:'[^']*'|"(?:\\.|[^"\\])*"|\\.|[^\s'"\\])+)(.*)$/s.exec(ssh) ?? [null, ssh, ""];
+  out.GIT_SSH_COMMAND = `${exe} -o BatchMode=yes${rest}`;
   delete out.GIT_SSH;
   return out;
 }
