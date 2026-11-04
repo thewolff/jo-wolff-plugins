@@ -3,6 +3,64 @@
 All notable changes to continuity are recorded here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.2.0] - 2026-11-04
+
+### Added
+
+The two pieces the 0.1.0 port left out of the source hook, generic, in `lib/repo-rules.mjs`,
+both on the SessionStart that follows a compaction and never on a fresh start:
+
+- `## Repo rules re-inlined` in the restore block: per directory from the payload's cwd up to
+  the walk root, `CLAUDE.md` (with `CLAUDE.local.md` after it) else `AGENTS.md`, inlined root
+  first, nearest last. The root is the git root (the nearest `.git` entry at or above the cwd),
+  or the nearest directory above it holding a rules file (searched up to, not including, the home
+  directory and `/`), or the cwd alone when there is no git root. The cwd is resolved through its
+  symlinks first; a rules file that is a symlink to a path outside the root is skipped and named;
+  a file reached twice is inlined once; a level at or above `CLAUDE_PROJECT_DIR` is skipped and
+  named as the host's. Caps in bytes on the whole rendered section (headings, paths, markers and
+  skip lines included): 8,000 per file, 9,000 for the section, and never more than what the
+  snapshot and the notes list leave of the 20,000-character restore guard (the rules give way
+  first). The smallest files land whole and the largest are cut on a UTF-8 character boundary to
+  one shared allowance with a `(truncated at N bytes; the file is M bytes, read it for the rest)`
+  marker, N the bytes shown; a file whose share would be under 200 bytes is skipped; every
+  skipped file is one `- skipped <path>: <why>` line, as many as fit and then a count of the rest;
+  a walk that found nothing says so; a section with no room for its heading is left out and
+  named in the systemMessage. `@path` imports are not expanded.
+- `## Durable notes` in the restore block: the newest `notesCount` (default 5) regular files of
+  `notesDir` (default `.ai/decision-log`, relative to the git root of the cwd resolved through
+  its symlinks, or that cwd when there is none) by modification time, an equal time broken by
+  name descending (Linux file times are coarse, so a burst of writes shares one), one filename per line, with
+  the line that the notes directory and the rules files are the source of truth and the restored
+  snapshot is only the safety net. An absent directory is one line saying so. The whole section
+  counts against the restore guard, fitted before the rules; short of room it lists fewer names,
+  then none, then is left out and named in the systemMessage.
+- Config keys `rules` (`"on"` or `"off"`), `notesDir` (a non-empty string) and `notesCount` (a
+  whole number from 0, which drops the section, to 100); a wrong value is named once per session
+  like the others.
+- Tests: the walk (nested levels, `CLAUDE.md` over `AGENTS.md`, the local file's place, the
+  workspace root and the home-directory stop, the cwd-only root, the launch-directory skip,
+  symlink safety), the caps (bytes, largest cut first, the marker, the floor, the caller's
+  budget, the whole rendered section within the budget at every budget with long paths and many
+  skips), the probe (mtime order, the count, a missing or empty directory, the rendered budget,
+  the root of a symlinked nested cwd) in `test/lib.test.mjs`; the block's presence only after a
+  compaction, its order, the whole block within the guard, the 9,000-byte section, the left-out
+  sections, a symlinked nested cwd and each config switch in `test/hooks.test.mjs`; `evals/session-start-restore-rules.scenario.json`
+  and `evals/session-start-restore-notes.scenario.json` (fourteen scenarios in all).
+
+### Changed
+
+- `hooks/session-start.mjs` after a compaction with nothing to restore still gives the two
+  sections above, after the `not restored` line. `"snapshot": "off"` skips the save and the
+  restore as before and not the two sections; `"rules": "off"` and `"notesCount": 0` are theirs.
+- The 20,000-character restore guard covers the whole post-compaction context. The restore's
+  heading, handoff notice and `TRUNCATED` notice are now counted inside it, as are the liveness
+  line and a config-problem line, where 0.1.x capped the snapshot body alone and added the
+  framing on top, so a restore could exceed the guard. A snapshot that fits whole with its framing is
+  consumed as before; one that does not is cut on a character boundary (never half a surrogate
+  pair), says how many characters are shown, and is kept. Tests: a snapshot body one under, at,
+  one over and far over the guard, alone and with the rules, notes and liveness line wanting
+  room, and the exact fit, in `test/lib.test.mjs` and `test/hooks.test.mjs`.
+
 ## [0.1.1] - 2026-11-04
 
 ### Changed
