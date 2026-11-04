@@ -4,7 +4,7 @@
 import { realpathSync } from "node:fs";
 import { resolve } from "node:path";
 import { describeConfig, loadConfig, userName } from "./config.mjs";
-import { open, StoreError } from "./db.mjs";
+import { open, StoreError, storeWord } from "./db.mjs";
 import { whoSays } from "./parse.mjs";
 
 /**
@@ -39,7 +39,13 @@ export function openStore({ env = process.env, now = Date.now(), cwd = null, cfg
   cfg ??= loadConfig({ env, cwd });
   // LEDGER_BUSY_TIMEOUT_MS exists for the test suite, so a held lock fails in milliseconds, not seconds.
   const busy = Number(env.LEDGER_BUSY_TIMEOUT_MS);
-  const store = open(cfg.config.db, { now, busyTimeoutMs: Number.isFinite(busy) && busy >= 0 ? busy : undefined });
+  // Only the plugin's own default file is ever moved aside when corrupt. A configured `db` (env,
+  // project or user file) may be another tool's database: it is reported, never renamed.
+  const store = open(cfg.config.db, {
+    now,
+    busyTimeoutMs: Number.isFinite(busy) && busy >= 0 ? busy : undefined,
+    healCorrupt: cfg.sources.db === "default",
+  });
   return {
     config: cfg.config,
     sources: cfg.sources,
@@ -106,6 +112,7 @@ export function withStore({ env, now, notices = [], cwd = null, cfg = null }, wh
 }
 
 function storeFailure(err, notices, whatWasSkipped) {
-  const line = `ledger: database ${err.kind === "busy" ? "busy" : err.kind === "readonly" ? "read-only" : "unavailable"} at ${err.path}; ${whatWasSkipped}`;
+  const why = err.kind === "corrupt" && err.cause ? `: ${err.cause.message}` : "";
+  const line = `ledger: database ${storeWord(err.kind)} at ${err.path}${why}; ${whatWasSkipped}`;
   return { systemMessage: [...notices, line].join("\n") };
 }

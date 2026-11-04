@@ -1,7 +1,7 @@
 {
   "name": "ledger",
-  "description": "A durable, id'd record of the questions an agent asks the human (one-word answers, optional ceiling) and the notes it records when it decides without asking, in one SQLite file. A CLI the agent runs, batch pastes applied line by line, and opt-in per-folder hooks that inject the open items at session start, deny AskUserQuestion until the question has a row and git push until the session has a note, refuse once a turn that asks with no row or decides with no note, and apply answers typed into a prompt. Every hook fails open.",
-  "version": "0.2.0",
+  "description": "A durable, id'd record of the questions an agent asks the human (one-word answers, optional ceiling) and the notes it records when it decides without asking, in one SQLite file. A CLI the agent runs, batch pastes applied line by line, and hooks (on by default, off per folder with /ledger:disable) that inject the open items at session start, deny AskUserQuestion until the question has a row and git push until the session has a note, and refuse once a turn that leaves a plain-words answer unrecorded, asks with no row, or decides with no note. Every hook fails open.",
+  "version": "0.2.1",
   "author": { "name": "Jo Wolff" },
   "license": "MIT",
   "repository": "https://github.com/thewolff/jo-wolff-plugins",

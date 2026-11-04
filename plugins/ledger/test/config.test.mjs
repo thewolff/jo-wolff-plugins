@@ -7,11 +7,11 @@ import { sandbox, cli, PLUGIN_ROOT } from "./helpers.mjs";
 
 const box = sandbox();
 
-test("clean env + HOME in a temp dir → db under <HOME>/.local/share/ledger, every key source default, hooks off", () => {
+test("clean env + HOME in a temp dir → db under <HOME>/.local/share/ledger, every key source default, hooks on", () => {
   const env = { HOME: box.home };
   const r = loadConfig({ env, home: box.home, cwd: box.work });
   assert.equal(r.config.db, join(box.home, ".local", "share", "ledger", "ledger.db"));
-  assert.equal(r.config.enabled, false);
+  assert.equal(r.config.enabled, true);
   for (const k of leafKeys()) assert.equal(r.sources[k], "default", k);
   assert.deepEqual(r.notices, []);
   assert.equal(r.projectPath, null);

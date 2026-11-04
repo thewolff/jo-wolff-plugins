@@ -1,6 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { existsSync, readdirSync, writeFileSync, chmodSync, mkdirSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync, statSync, writeFileSync, chmodSync, mkdirSync } from "node:fs";
+import { createHash } from "node:crypto";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { open, migrate, transaction, storeVersion, foreignTables, StoreError, SCHEMA_VERSION, OWN_TABLES } from "../lib/db.mjs";
@@ -14,7 +15,7 @@ test("opening a path in a missing directory creates it; schema_version lives in 
   const r = open(p);
   assert.ok(existsSync(p));
   assert.equal(storeVersion(r.db), SCHEMA_VERSION);
-  assert.equal(SCHEMA_VERSION, 1);
+  assert.equal(SCHEMA_VERSION, 3);
   assert.equal(r.db.prepare("PRAGMA user_version").get().user_version, 0);
   assert.equal(r.shared, false);
   assert.deepEqual(r.notices, []);
@@ -24,12 +25,12 @@ test("opening a path in a missing directory creates it; schema_version lives in 
   r.db.close();
 });
 
-test("a junk file is moved to *.corrupt-<stamp>, a fresh db works, the notice names the move", () => {
+test("healCorrupt (the default path): a junk file is moved to *.corrupt-<stamp>, a fresh db works, the notice names the move", () => {
   const dir = join(box.root, "corrupt");
   mkdirSync(dir, { recursive: true });
   const p = join(dir, "ledger.db");
   writeFileSync(p, "x".repeat(4096));
-  const r = open(p, { now: Date.UTC(2026, 10, 3, 12, 0, 0) });
+  const r = open(p, { now: Date.UTC(2026, 10, 3, 12, 0, 0), healCorrupt: true });
   assert.equal(r.notices.length, 1);
   assert.match(r.notices[0], /^ledger: moved corrupt database aside to .*ledger\.db\.corrupt-2026-11-03T12-00-00\.000Z$/);
   const files = readdirSync(dir);
@@ -37,6 +38,30 @@ test("a junk file is moved to *.corrupt-<stamp>, a fresh db works, the notice na
   assert.equal(storeVersion(r.db), SCHEMA_VERSION);
   r.db.exec("INSERT INTO cc_notes (id, cwd, kind, body, made_by, made_at) VALUES ('nt-1','/x','note','t','me','2026-01-01T00:00:00.000Z')");
   r.db.close();
+});
+
+test("without healCorrupt (a configured path): a junk file throws StoreError corrupt and is left byte for byte, unrenamed, with no -wal or -shm", () => {
+  const dir = join(box.root, "configured-corrupt");
+  mkdirSync(dir, { recursive: true });
+  const p = join(dir, "ledger.db");
+  writeFileSync(p, "x".repeat(4096));
+  const hash = () => createHash("sha256").update(readFileSync(p)).digest("hex");
+  const before = hash();
+  const mtime = statSync(p).mtimeMs;
+  assert.throws(
+    () => open(p, { now: Date.UTC(2026, 10, 3, 12, 0, 0) }),
+    (err) => {
+      assert.ok(err instanceof StoreError);
+      assert.equal(err.kind, "corrupt");
+      assert.equal(err.path, p);
+      assert.ok(err.message.startsWith(`ledger: database corrupt at ${p}: `), err.message);
+      assert.match(err.message, /not a database/);
+      return true;
+    },
+  );
+  assert.equal(hash(), before);
+  assert.equal(statSync(p).mtimeMs, mtime);
+  assert.deepEqual(readdirSync(dir), ["ledger.db"]);
 });
 
 test("migrate is idempotent: a second open does not rerun migrations", () => {

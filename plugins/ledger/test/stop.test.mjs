@@ -28,22 +28,92 @@ function passed(r) {
   assert.equal(r.out, "", `expected no output, got ${r.out}`);
 }
 
-test("step 8: a question with no q-id → block with the ask reason; the same prompt_id again → pass (guard)", () => {
-  blocked(hook(box, "stop", payload(LONG_Q)), /asks the human a question but names no open question row.*ledger\.mjs ask/);
+test("step 8: a question while the session has no open row → block with the ask reason; the same prompt_id again → pass (guard)", () => {
+  blocked(hook(box, "stop", payload(LONG_Q)), /asks the human a question but this session has no open question row.*ledger\.mjs ask/);
   passed(hook(box, "stop", payload(LONG_Q)));
   passed(hook(box, "stop", payload(LONG_Q, { stop_hook_active: true })));
-  blocked(hook(box, "stop", payload(LONG_Q, { prompt_id: "p-2" })), /names no open question row/);
+  blocked(hook(box, "stop", payload(LONG_Q, { prompt_id: "p-2" })), /this session has no open question row/);
   const db = openDb(box);
   assert.deepEqual(row(db, "SELECT last_block_prompt, last_block_rule FROM cc_sessions WHERE id = 's-stop'"), { last_block_prompt: "p-2", last_block_rule: "stopAskRule" });
   db.close();
 });
 
-test("step 8: the same question naming an open q-id → pass; naming an answered one → block", () => {
+// The answer flow: the agent asks in plain words, the human replies in plain words, the agent
+// records the reply. No id crosses to the human, so nothing reads ids out of the reply.
+const SID = "s-ans";
+const sessionEnv = { LEDGER_SESSION_ID: SID };
+const stopIn = (b, prompt_id, message = "Working on it; the tests are running and I will report back shortly.") =>
+  hook(b, "stop", { ...payload(message), session_id: SID, cwd: b.work, prompt_id });
+const askIn = (b, name) => /q-[a-z0-9]+/.exec(cli(b, ["ask", `${name} or not?`, "--name", name, "--options", "yes,no"], { env: sessionEnv }).out)[0];
+const startSession = (b) => hook(b, "session-start", { session_id: SID, cwd: b.work, hook_event_name: "SessionStart", source: "startup" });
+
+test("answer rule: an open question, then a human prompt, then a Stop with no answer recorded → bounced once, naming the id and `answer`", () => {
   const b = sandbox();
-  const q = /q-[a-z0-9]+/.exec(cli(b, ["ask", "A or B?", "--name", "ab", "--options", "a,b"]).out)[0];
-  passed(hook(b, "stop", { ...payload(`${LONG_Q}\n\na ${q}  # ab · A or B? · default a · also: b / withdraw`), cwd: b.work }));
-  cli(b, ["a", q]);
-  blocked(hook(b, "stop", { ...payload(`${LONG_Q}\n\na ${q}`), cwd: b.work, prompt_id: "p-9" }), /names no open question row/);
+  startSession(b);
+  const q = askIn(b, "ship");
+  passed(stopIn(b, "p-1", LONG_Q));
+  const r = stopIn(b, "p-2");
+  blocked(r, /the human has written since you asked this question/);
+  assert.ok(r.json.reason.includes(`${q} (ship): ship or not?`), r.json.reason);
+  assert.match(r.json.reason, /Take the answer from the human's latest message and run `node .*ledger\.mjs answer <q-id> <option>`/);
+  assert.match(r.json.reason, /Do not show the q- id to the human/);
+  passed(stopIn(b, "p-2"));
+  const db = openDb(b);
+  assert.deepEqual(row(db, "SELECT last_block_prompt, last_block_rule, last_stop_prompt FROM cc_sessions WHERE id = ?", SID), { last_block_prompt: "p-2", last_block_rule: "stopAnswerRule", last_stop_prompt: "p-2" });
+  db.close();
+});
+
+test("answer rule: the same flow after `ledger answer <q-id> <option>` → the Stop passes", () => {
+  const b = sandbox();
+  startSession(b);
+  const q = askIn(b, "ship");
+  passed(stopIn(b, "p-1", LONG_Q));
+  const a = cli(b, ["answer", q, "yes"], { env: sessionEnv });
+  assert.equal(a.code, 0, a.out + a.err);
+  passed(stopIn(b, "p-2"));
+});
+
+test("answer rule: no human prompt since the question → the Stop passes (the agent is still waiting)", () => {
+  const b = sandbox();
+  startSession(b);
+  askIn(b, "ship");
+  passed(stopIn(b, "p-1", LONG_Q));
+  passed(stopIn(b, "p-1", LONG_Q), "a second Stop of the same turn is not a reply");
+  // A question asked during the new turn, after the previous Stop, is not due yet either.
+  const c = sandbox();
+  startSession(c);
+  passed(stopIn(c, "p-1"));
+  askIn(c, "later");
+  passed(stopIn(c, "p-2", LONG_Q));
+});
+
+test("answer rule: several open questions → listed newest first; the bounce clears once every one asked before the latest prompt is answered", () => {
+  const b = sandbox();
+  startSession(b);
+  const first = askIn(b, "first");
+  const second = askIn(b, "second");
+  passed(stopIn(b, "p-1", LONG_Q));
+  const third = askIn(b, "third");
+  const r = stopIn(b, "p-2");
+  blocked(r, /since you asked these questions, and they have no answer recorded/);
+  const ids = r.json.reason.match(/q-[a-z0-9]+(?= \()/g);
+  assert.deepEqual(ids, [second, first], "newest first; the one asked in this turn is not due");
+  cli(b, ["answer", second, "no"], { env: sessionEnv });
+  const again = stopIn(b, "p-3");
+  blocked(again, /since you asked these questions/);
+  assert.deepEqual(again.json.reason.match(/q-[a-z0-9]+(?= \()/g), [third, first]);
+  cli(b, ["answer", first, "yes"], { env: sessionEnv });
+  cli(b, ["withdraw", third], { env: sessionEnv });
+  passed(stopIn(b, "p-4"));
+});
+
+test("ask rule: a reply ending in `?` passes while the session has an open row and is sent back once that row is answered", () => {
+  const b = sandbox();
+  startSession(b);
+  const q = askIn(b, "ab");
+  passed(stopIn(b, "p-1", LONG_Q));
+  cli(b, ["answer", q, "yes"], { env: sessionEnv });
+  blocked(stopIn(b, "p-2", LONG_Q), /this session has no open question row/);
 });
 
 test("step 8: a `?` only inside a fenced block or inline code → pass; a 30-char message → pass", () => {
@@ -67,16 +137,19 @@ test("a 'done' line with no question in it passes: there is no done rule any mor
   passed(hook(b, "stop", { ...payload("All three slices landed and the tests are green, so this is done. Nothing else is pending on my side."), cwd: b.work }));
 });
 
-test("checkStop (pure): the floor, code stripping, the `?` line rule and the named-open-id escape", () => {
+test("checkStop (pure): the floor, code stripping, the `?` line rule, the open-row escape and the answer rule", () => {
   assert.equal(MIN_CHARS, 40);
   assert.equal(stripCode("a `b?` c ```\nd?\n``` e"), "a   c   e");
   assert.equal(checkStop("x".repeat(38) + "?", {}), null);
   assert.equal(checkStop("x".repeat(39) + "?", {})?.rule, "stopAskRule");
   assert.equal(checkStop(LONG_Q, {})?.rule, "stopAskRule");
-  assert.equal(checkStop(LONG_Q, { openQuestionIds: ["q-1"] })?.rule, "stopAskRule");
-  assert.equal(checkStop(`${LONG_Q} approve q-1`, { openQuestionIds: ["q-1"] }), null);
-  assert.equal(checkStop(`${LONG_Q}\napprove q-2`, { openQuestionIds: ["q-1"] })?.rule, "stopAskRule", "naming a question that is not open does not count");
+  assert.equal(checkStop(LONG_Q, { sessionHasOpenQuestion: true }), null);
+  const due = [{ id: "q-2", name: "b", body: "B?" }, { id: "q-1", name: "a", body: "A?" }];
+  const v = checkStop("Done.", { dueQuestions: due, sessionHasOpenQuestion: true });
+  assert.equal(v?.rule, "stopAnswerRule");
+  assert.ok(v.reason.indexOf("q-2 (b): B?") < v.reason.indexOf("q-1 (a): A?"), v.reason);
   assert.equal(checkStop(LONG_Q, { forcing: { stopAskRule: false } }), null);
+  assert.equal(checkStop("Done.", { dueQuestions: due, forcing: { stopAskRule: false } }), null);
   assert.match(checkStop(LONG_Q, { cli: "node /x/ledger.mjs" }).reason, /`node \/x\/ledger\.mjs ask /);
 });
 

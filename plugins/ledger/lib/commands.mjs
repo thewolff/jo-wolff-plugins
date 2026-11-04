@@ -7,7 +7,9 @@
 // Rules this file is the home of (see the README's bug → fix map):
 //   - an answer is recorded only when the word is one of the question's options (or `withdraw`);
 //     anything else is refused with the option list and nothing is written;
-//   - a question is asked once: repeating an open one returns its id and writes nothing;
+//   - a question is asked once: repeating an open or held one returns its id and writes nothing;
+//   - a held question (formed, deliberately deferred for the human) is unresolved like an open
+//     one; `reopen` puts it to the human (open, asked_at = now), `hold` defers an open one;
 //   - an answer is final: a second, different word is refused naming the first.
 //
 // Scope. A row is bound to the folder it was written in. "In scope for <cwd>" means the row's
@@ -39,10 +41,34 @@ export function isWithin(dir, root) {
   return dir.startsWith(r);
 }
 
+/** Held questions in scope for `cwd`, oldest first. */
+export function heldQuestions(db, cwd) {
+  const rows = db.prepare("SELECT * FROM cc_questions WHERE state = 'held' ORDER BY asked_at ASC, id ASC").all();
+  return rows.filter((q) => isWithin(cwd, q.cwd)).map(parseQuestion);
+}
+
 /** Open questions in scope for `cwd`, oldest first (the `pending` order). */
 export function openQuestions(db, cwd) {
   const rows = db.prepare("SELECT * FROM cc_questions WHERE state = 'open' ORDER BY asked_at ASC, id ASC").all();
   return rows.filter((q) => isWithin(cwd, q.cwd)).map(parseQuestion);
+}
+
+/**
+ * The open questions that belong to session `sessionId`, newest first: rows tagged with it, plus
+ * untagged rows (a CLI run without LEDGER_SESSION_ID) in or around `cwd` asked at or after the
+ * session row's started_at. `askedBy` keeps only questions asked at or before that ISO stamp.
+ * No session id → [].
+ */
+export function sessionQuestions(db, { sessionId, cwd, askedBy = null }) {
+  if (!sessionId) return [];
+  const session = db.prepare("SELECT started_at FROM cc_sessions WHERE id = ?").get(sessionId);
+  const since = session?.started_at ?? null;
+  const rows = db
+    .prepare("SELECT * FROM cc_questions WHERE state = 'open' AND (session_id = ? OR (session_id IS NULL AND ? IS NOT NULL AND asked_at >= ?)) ORDER BY asked_at DESC, id DESC")
+    .all(sessionId, since, since ?? "");
+  return rows
+    .filter((q) => (q.session_id === sessionId || isWithin(cwd, q.cwd) || isWithin(q.cwd, cwd)) && (!askedBy || q.asked_at <= askedBy))
+    .map(parseQuestion);
 }
 
 /**
@@ -102,9 +128,9 @@ function freshId(db, table, prefix, now) {
   throw new Error(`could not allocate a unique ${prefix}- id`);
 }
 
-function addNote(db, cwd, kind, body, questionId, by, iso, now, sessionId) {
+function addNote(db, cwd, kind, body, questionId, by, iso, now, sessionId, ref = null) {
   const id = freshId(db, "cc_notes", "nt", now);
-  db.prepare("INSERT INTO cc_notes (id, cwd, kind, body, question_id, made_by, made_at, session_id) VALUES (?,?,?,?,?,?,?,?)").run(id, cwd, kind, body, questionId, by, iso, sessionId ?? null);
+  db.prepare("INSERT INTO cc_notes (id, cwd, kind, body, question_id, made_by, made_at, session_id, ref) VALUES (?,?,?,?,?,?,?,?,?)").run(id, cwd, kind, body, questionId, by, iso, sessionId ?? null, ref);
   return id;
 }
 
@@ -130,14 +156,21 @@ export function pendingLines(q, { now = Date.now(), timezone = null } = {}) {
   return lines;
 }
 
-export function renderPending(questions, cwd, opts = {}) {
-  if (!questions.length) return `no open questions for ${cwd}`;
+/** One line per held question: `held <q-id>  # <name> · <body>`. */
+export function heldLines(held) {
+  return held.map((q) => `held ${q.id}  # ${q.name} · ${q.body.replace(/\s+/g, " ").trim()}`);
+}
+
+/** The open questions, numbered, then the held ones marked `held` (not numbered: not answerable by ordinal). */
+export function renderPending(questions, cwd, opts = {}, held = []) {
   const out = [];
+  if (!questions.length) out.push(`no open questions for ${cwd}`);
   questions.forEach((q, i) => {
     const lines = pendingLines(q, opts);
     out.push(`${i + 1}. ${lines[0]}`);
     out.push(...lines.slice(1));
   });
+  out.push(...heldLines(held));
   return out.join("\n");
 }
 
@@ -146,11 +179,11 @@ export function logEntries(db, cwd, count) {
   const rows = db
     .prepare(
       `SELECT * FROM (
-         SELECT id, cwd, made_at AS at, made_by AS who, kind, body, question_id FROM cc_notes
+         SELECT id, cwd, made_at AS at, made_by AS who, kind, body, question_id, ref FROM cc_notes
          UNION ALL
-         SELECT id, cwd, asked_at AS at, asked_by AS who, 'ask' AS kind, name || ' · ' || body AS body, NULL FROM cc_questions
+         SELECT id, cwd, asked_at AS at, asked_by AS who, CASE state WHEN 'held' THEN 'held' ELSE 'ask' END AS kind, name || ' · ' || body AS body, NULL, NULL FROM cc_questions
          UNION ALL
-         SELECT a.id, q.cwd, a.answered_at AS at, a.answered_by AS who, 'answer' AS kind, a.word || ' → ' || q.id || ' (' || q.name || ')' AS body, q.id
+         SELECT a.id, q.cwd, a.answered_at AS at, a.answered_by AS who, 'answer' AS kind, a.word || ' → ' || q.id || ' (' || q.name || ')' AS body, q.id, NULL
            FROM cc_answers a JOIN cc_questions q ON q.id = a.question_id
        ) ORDER BY at DESC, id DESC`,
     )
@@ -161,8 +194,9 @@ export function logEntries(db, cwd, count) {
 
 export function renderLog(rows, cwd, count, { now = Date.now() } = {}) {
   if (!rows.length) return `no notes, questions or answers for ${cwd}`;
-  const label = { note: "note", withdraw: "withdrew", extend: "extended", ask: "asked", answer: "answered" };
-  return rows.map((r) => `${r.id} ${relative(r.at, now)} · ${r.who} ${label[r.kind] ?? r.kind}: ${r.body.replace(/\s+/g, " ")}`).join("\n");
+  const label = { note: "note", withdraw: "withdrew", extend: "extended", ask: "asked", held: "asked (held)", answer: "answered", outcome: "outcome" };
+  const about = (r) => (r.kind === "outcome" && r.question_id ? ` (for ${r.question_id})` : "");
+  return rows.map((r) => `${r.id} ${relative(r.at, now)} · ${r.who} ${label[r.kind] ?? r.kind}: ${r.body.replace(/\s+/g, " ")}${r.ref ? ` → ${r.ref}` : ""}${about(r)}`).join("\n");
 }
 
 export function renderHelp() {
@@ -231,7 +265,7 @@ export function execute(db, parsed, ctx) {
     case "disable":
       return setEnabled(ctx.cwd, parsed.verb === "enable");
     case "pending":
-      return ok(null, renderPending(openQuestions(db, ctx.cwd), ctx.cwd, { now, timezone: tz }));
+      return ok(null, renderPending(openQuestions(db, ctx.cwd), ctx.cwd, { now, timezone: tz }, heldQuestions(db, ctx.cwd)));
     case "log": {
       const count = parsed.count ?? LOG_DEFAULT;
       return ok(null, renderLog(logEntries(db, ctx.cwd, count), ctx.cwd, count, { now }));
@@ -246,6 +280,12 @@ export function execute(db, parsed, ctx) {
       return run(() => extendQuestion(db, parsed.id, by, iso, now, ctx));
     case "note":
       return run(() => note(db, parsed, by, iso, now, ctx));
+    case "outcome":
+      return run(() => outcome(db, parsed, by, iso, now, ctx));
+    case "hold":
+      return run(() => setHeld(db, parsed.id, true, iso));
+    case "reopen":
+      return run(() => setHeld(db, parsed.id, false, iso));
     default:
       return refused(`unknown verb ${parsed.verb}`);
   }
@@ -304,7 +344,8 @@ function ask(db, parsed, by, iso, now, ctx) {
   }
 
   const optionsJson = JSON.stringify(options);
-  const repeat = db.prepare("SELECT id FROM cc_questions WHERE cwd = ? AND body = ? AND options = ? AND state = 'open'").get(ctx.cwd, body, optionsJson);
+  const repeat = db.prepare("SELECT id, state FROM cc_questions WHERE cwd = ? AND body = ? AND options = ? AND state IN ('open','held')").get(ctx.cwd, body, optionsJson);
+  if (repeat?.state === "held") return noop(repeat.id, `${repeat.id} already asked and held; run \`reopen ${repeat.id}\` when you put it to the human`);
   if (repeat) {
     const q = getQuestion(db, repeat.id);
     return noop(repeat.id, `${repeat.id} already asked and still open\n${pendingLines(q, { now, timezone: ctx.config?.timezone ?? null }).join("\n")}`);
@@ -316,7 +357,7 @@ function ask(db, parsed, by, iso, now, ctx) {
      VALUES (?,?,?,?,?,?,?,?,?,?,?,?,'open',?,?,?)`,
   ).run(id, ctx.cwd, kind, name, body, about, optionsJson, allows ? JSON.stringify(allows) : null, def, ceiling, deadline, span, by, iso, ctx.sessionId ?? null);
   const q = getQuestion(db, id);
-  return ok(id, `${id} asked for ${ctx.cwd}; end your message with this line:\n${pendingLines(q, { now, timezone: ctx.config?.timezone ?? null }).join("\n")}`);
+  return ok(id, `${id} asked for ${ctx.cwd}; ask the human in plain words without showing this id, then record their reply with \`answer ${id} <option>\`:\n${pendingLines(q, { now, timezone: ctx.config?.timezone ?? null }).join("\n")}`);
 }
 
 function answer(db, parsed, by, via, iso, now, ctx) {
@@ -335,7 +376,7 @@ function answer(db, parsed, by, via, iso, now, ctx) {
     if (word === "withdraw") return withdrawQuestion(db, id, by, via, iso, now, ctx);
     return refused(`${word} is not an option of ${id} (${q.name}); options: ${optionList(q.options)}. Nothing recorded.`);
   }
-  if (q.state !== "open") {
+  if (q.state !== "open" && q.state !== "held") {
     const a = db.prepare("SELECT id, word FROM cc_answers WHERE question_id = ?").get(id);
     if (q.state === "withdrawn") return refused(`${id} was withdrawn${a ? ` (${a.id})` : ""}; ask it again to answer it`);
     if (a && a.word === word) return noop(a.id, `already answered ${word} (${a.id})`);
@@ -369,7 +410,7 @@ function withdrawQuestion(db, id, by, via, iso, now, ctx) {
 function extendQuestion(db, id, by, iso, now, ctx) {
   const q = getQuestion(db, id);
   if (!q) return refused(`no such question ${id}`);
-  if (q.state !== "open") return refused(`${id} is ${q.state}; nothing to extend`);
+  if (q.state !== "open" && q.state !== "held") return refused(`${id} is ${q.state}; nothing to extend`);
   if (!q.deadline) return refused(`${id} has no deadline to extend (ask with --deadline 2h to set one)`);
   const span = q.deadline_span_ms ?? Date.parse(q.deadline) - Date.parse(q.asked_at);
   if (!(span > 0)) return refused(`${id} has no positive deadline span to extend by`);
@@ -377,6 +418,29 @@ function extendQuestion(db, id, by, iso, now, ctx) {
   db.prepare("UPDATE cc_questions SET deadline = ? WHERE id = ?").run(next, id);
   const nt = addNote(db, q.cwd, "extend", `${id} deadline moved to ${next}`, id, by, iso, now, ctx.sessionId);
   return ok(nt, `${nt} ${id} deadline now ${next} (${relative(next, now)})`);
+}
+
+/** `hold`: open → held. `reopen`: held → open with asked_at = now (it is being put to the human now). */
+function setHeld(db, id, hold, iso) {
+  const q = getQuestion(db, id);
+  if (!q) return refused(`no such question ${id}`);
+  const [from, to] = hold ? ["open", "held"] : ["held", "open"];
+  if (q.state === to) return noop(id, `${id} (${q.name}) already ${to}`);
+  if (q.state !== from) return refused(`${id} is ${q.state}; only a${from === "open" ? "n" : ""} ${from} question can be ${hold ? "held" : "reopened"}`);
+  if (hold) db.prepare("UPDATE cc_questions SET state = 'held' WHERE id = ?").run(id);
+  else db.prepare("UPDATE cc_questions SET state = 'open', asked_at = ? WHERE id = ?").run(iso, id);
+  return ok(id, hold ? `${id} (${q.name}) held: waiting on the human, not put to them yet` : `${id} (${q.name}) reopened; ask the human in plain words now`);
+}
+
+/** `outcome <ref> [q-id] "<body>"`: what a decision or an answered question produced. */
+function outcome(db, parsed, by, iso, now, ctx) {
+  const ref = String(parsed.ref ?? "").trim();
+  if (!ref || /\s/.test(ref)) return refused('outcome needs a ref (a PR URL, a commit, a path) with no spaces: outcome <ref> [q-id] "<what it produced>"');
+  const text = parsed.textArg.trim();
+  if (!text) return refused('outcome needs text: outcome <ref> [q-id] "<what it produced>"');
+  if (parsed.questionId && !getQuestion(db, parsed.questionId)) return refused(`no such question ${parsed.questionId}`);
+  const nt = addNote(db, ctx.cwd, "outcome", text, parsed.questionId ?? null, by, iso, now, ctx.sessionId, ref);
+  return ok(nt, `${nt} outcome for ${ctx.cwd}: ${text} → ${ref}${parsed.questionId ? ` (for ${parsed.questionId})` : ""}`);
 }
 
 function note(db, parsed, by, iso, now, ctx) {

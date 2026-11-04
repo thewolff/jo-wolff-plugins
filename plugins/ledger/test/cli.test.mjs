@@ -61,14 +61,31 @@ test("fail-open table (CLI): a config file that does not parse → one stderr li
   box.writeConfig({});
 });
 
-test("fail-open table (CLI): a corrupt db is moved aside with a stderr line, the command runs on a fresh one", () => {
+test("fail-open table (CLI): a corrupt db at the default path is moved aside with a stderr line, the command runs on a fresh one", () => {
   const b = sandbox();
-  const { writeFileSync } = globalThis.process.getBuiltinModule("node:fs");
-  writeFileSync(b.dbPath, "junk ".repeat(1000));
-  const r = cli(b, ["pending"]);
+  const { mkdirSync, writeFileSync } = globalThis.process.getBuiltinModule("node:fs");
+  const { join } = globalThis.process.getBuiltinModule("node:path");
+  mkdirSync(join(b.root, "data", "ledger"), { recursive: true });
+  writeFileSync(join(b.root, "data", "ledger", "ledger.db"), "junk ".repeat(1000));
+  const r = cli(b, ["pending"], { env: { LEDGER_DB: "", XDG_DATA_HOME: join(b.root, "data") } });
   assert.equal(r.code, 0, r.err);
   assert.match(r.err, /^ledger: moved corrupt database aside to .*\.corrupt-/);
   assert.match(r.out, /^no open questions/);
+});
+
+test("fail-open table (CLI): a corrupt db at a configured path → exit 2, one stderr line naming path and error, the file untouched", () => {
+  const b = sandbox();
+  const { readdirSync, readFileSync, writeFileSync } = globalThis.process.getBuiltinModule("node:fs");
+  const { createHash } = globalThis.process.getBuiltinModule("node:crypto");
+  writeFileSync(b.dbPath, "junk ".repeat(1000));
+  const hash = () => createHash("sha256").update(readFileSync(b.dbPath)).digest("hex");
+  const before = hash();
+  const r = cli(b, ["note", "would write"]);
+  assert.equal(r.code, 2, r.out + r.err);
+  assert.equal(r.out, "");
+  assert.equal(r.err, `ledger: database corrupt at ${b.dbPath}: file is not a database; nothing applied, the file was left as it is\n`);
+  assert.equal(hash(), before);
+  assert.deepEqual(readdirSync(b.root).filter((f) => f.startsWith("ledger.db")), ["ledger.db"]);
 });
 
 test("fail-open table (CLI): a busy db → exit 2 and `nothing applied`", () => {

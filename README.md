@@ -15,8 +15,8 @@ place, going through your reminders with it, and keeping a record of what it did
 - **[reminders-review](#reminders-review)** — go through your open Apple Reminders one at a
   time: the agent answers, confirms before acting, and closes each one only when you say yes.
 - **[ledger](#ledger)** — a durable, id'd record of the questions an agent asks you and the
-  choices it makes without asking, in one SQLite file; opt-in per folder, with hooks that keep
-  every question on a row you can answer by typing its id back.
+  choices it makes without asking, in one SQLite file; on by default and off per folder, with
+  hooks that keep every question and your plain-words answer to it on a row.
 - **[as2-skills](plugins/as2-skills/README.md)** — the 22 engineering skills of agent-system 2.0,
   vendored from four upstream skill packs at pinned releases, with frontmatter claude.ai accepts.
   Install with `/plugin install as2-skills@jo-wolff-plugins`; skills only.
@@ -478,15 +478,29 @@ defaults with `/reminders-review lists <name> ...`. Details are in
 
 A durable, id'd record of the questions an agent asks you (one-word answers, an optional spend
 ceiling) and the notes it records when it decides without asking, in one SQLite file on your
-machine. Every row has an id you can type back (`approve q-…`), and a hook applies such lines
-before the agent reads the prompt. Other hooks inject the open questions and recent notes at
-session start, deny the AskUserQuestion tool until the question has a row, deny `git push` and
-`gh pr create` until the session has a note saying why, and send back once a reply that asks a
-question without naming its row or states a decision without a note. Every hook fails open.
+machine. The agent asks in plain words and records your plain-words reply against the
+question's row itself; ids stay on the agent's side. Hooks inject the open questions and recent
+notes at session start, deny the AskUserQuestion tool until the question has a row, deny
+`git push` and `gh pr create` until the session has a note saying why, and send back once a
+reply that ends without recording an answer you gave, asks with no row, or states a decision
+without a note. Every hook fails open.
 
-The hooks are off until you run `ledger enable` in a folder, which writes `.ledger.json` there;
-the file is found from any subfolder. The plugin's tables are all prefixed `cc_`, so the database
-can be a SQLite file another tool already uses.
+The hooks are on in every folder by default. Type `/ledger:disable` in a session to turn them off
+for that folder (it writes `.ledger.json` there, found from any subfolder); `/ledger:enable` turns
+them back on. The plugin's tables are all prefixed `cc_`, so the database can be a SQLite file
+another tool already uses.
+
+Changes in 0.2.1: you never type a question id. The agent asks in plain words and records your
+reply with `ledger answer`; the Stop hook sends a turn back once when you replied and the answer
+is not recorded, and no longer requires a reply to name its row (`approve q-…` typed into a
+prompt still works as a shortcut). The hooks are on by default, with `/ledger:enable` and
+`/ledger:disable` to set a folder's switch. A question the agent forms but defers is `held`
+(`ledger hold`, `ledger reopen`), never dropped, and is listed as *Waiting on you* at session
+start; `ledger outcome <ref> [q-id] "<text>"` records what a decision produced (a PR, a commit, a
+path). Opening a 0.2.0 database migrates it to schema version 3 in place, keeping every row. A
+database at a configured `db` path that fails to open as SQLite (corrupt, or not a database) is
+reported and left exactly as it is; only the plugin's own default file is moved aside to
+`<path>.corrupt-<stamp>` and recreated.
 
 Needs Node 22.13 or later (`node:sqlite`). Claude Code only; no OMP adapter. One allow rule
 keeps the agent's ledger commands from prompting for permission; the plugin prints it at

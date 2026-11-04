@@ -78,7 +78,9 @@ export function main(argv = process.argv.slice(2), { env = process.env, stdin = 
     store = openStore({ env, cwd });
   } catch (e) {
     if (e instanceof StoreError) {
-      err(`${e.kind === "busy" || e.kind === "readonly" ? `ledger: database ${busyWord(e)} at ${e.path}; nothing applied` : e.message}\n`);
+      if (e.kind === "busy" || e.kind === "readonly") err(`ledger: database ${busyWord(e)} at ${e.path}; nothing applied\n`);
+      else if (e.kind === "corrupt") err(`${e.message}; nothing applied, the file was left as it is\n`);
+      else err(`${e.message}\n`);
       return 2;
     }
     throw e;

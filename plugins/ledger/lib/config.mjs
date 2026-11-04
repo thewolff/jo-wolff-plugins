@@ -12,9 +12,10 @@
 //      expanded at runtime from os.homedir(), and the data directory honours XDG_DATA_HOME when
 //      that is absolute.
 //
-// `enabled` is the switch for every hook and defaults to false: a project opts in with
-// `ledger enable` (writes `.ledger.json` next to it), a person opts in everywhere with
-// `"enabled": true` in the user file. The CLI works either way.
+// `enabled` is the switch for every hook and defaults to true: every session records unless a
+// project opts out with `ledger disable` (sets `"enabled": false` in `.ledger.json` next to it)
+// or a person opts out everywhere with `"enabled": false` in the user file. The CLI works either
+// way.
 //
 // This module never throws. A file that is missing is normal and silent. A file that exists but
 // does not parse, or a value of the wrong type, falls back to the default for that key AND
@@ -30,7 +31,7 @@ export const PROJECT_FILE = ".ledger.json";
 
 /** The shipped defaults; example.config.json is this object verbatim. */
 export const DEFAULTS = Object.freeze({
-  enabled: false,
+  enabled: true,
   db: "~/.local/share/ledger/ledger.db",
   user: null,
   timezone: null,

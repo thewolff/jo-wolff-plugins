@@ -37,7 +37,7 @@
     {
       "name": "ledger",
       "source": "./plugins/ledger",
-      "description": "A durable, id'd record of the questions an agent asks you and the choices it makes without asking, in one SQLite file. Opt in per folder with `ledger enable`; then hooks inject the open questions and recent notes at session start, deny AskUserQuestion until the question has a row and `git push` until the session has a note, send back once a reply that asks without naming its row or decides without a note, and apply `approve q-…` lines typed into a prompt. Every hook fails open."
+      "description": "A durable, id'd record of the questions an agent asks you and the choices it makes without asking, in one SQLite file. Hooks are on by default (turn a folder off with `/ledger:disable`); they inject the open questions and recent notes at session start, deny AskUserQuestion until the question has a row and `git push` until the session has a note, and send back once a reply that ends without recording an answer the human gave in plain words, asks with no row, or decides without a note. Every hook fails open."
     },
     {
       "name": "as2-skills",

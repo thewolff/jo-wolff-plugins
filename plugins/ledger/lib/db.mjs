@@ -3,9 +3,11 @@
 // open(path):
 //   1. create the parent directory;
 //   2. open with node:sqlite, WAL, busy_timeout 2000 ms, foreign keys on;
-//   3. a file that is not a database (SQLITE_NOTADB 26) or is corrupt (SQLITE_CORRUPT 11) is
-//      renamed `<path>.corrupt-<timestamp>` and a fresh one is created; the move is returned as a
-//      notice so the caller can show it;
+//   3. a file that is not a database (SQLITE_NOTADB 26) or is corrupt (SQLITE_CORRUPT 11) is,
+//      with `healCorrupt` (the caller sets it only for the plugin's own default path), renamed
+//      `<path>.corrupt-<timestamp>` and a fresh one is created, the move returned as a notice;
+//      without it (a configured path, which may be another tool's file) the file is left exactly
+//      as found and a StoreError with kind `corrupt` is thrown;
 //   4. a locked database (SQLITE_BUSY 5, after busy_timeout) is retried once, then thrown as a
 //      StoreError with kind `busy`, so every caller can say "nothing applied" in one line;
 //   5. migrations run inside one transaction, from the cc_meta schema_version up to the latest.
@@ -38,14 +40,19 @@ export const SQLITE_CORRUPT = 11;
 export const SQLITE_NOTADB = 26;
 
 export class StoreError extends Error {
-  /** @param {"busy"|"open"|"migrate"|"readonly"} kind */
+  /** @param {"busy"|"open"|"migrate"|"readonly"|"corrupt"} kind */
   constructor(kind, path, cause) {
-    super(`ledger: database ${kind === "busy" ? "busy" : kind === "readonly" ? "read-only" : "unavailable"} at ${path}${cause ? `: ${cause.message}` : ""}`);
+    super(`ledger: database ${storeWord(kind)} at ${path}${cause ? `: ${cause.message}` : ""}`);
     this.name = "StoreError";
     this.kind = kind;
     this.path = path;
     this.cause = cause;
   }
+}
+
+/** The word for a StoreError kind in a one-line notice: busy, read-only, corrupt, unavailable. */
+export function storeWord(kind) {
+  return kind === "busy" ? "busy" : kind === "readonly" ? "read-only" : kind === "corrupt" ? "corrupt" : "unavailable";
 }
 
 /** The tables this plugin owns, in creation order. Anything else in the file is foreign. */
@@ -109,6 +116,64 @@ export const MIGRATIONS = [
         last_block_rule   TEXT,
         last_stop_at      TEXT
       );
+    `);
+  },
+  // 2: the prompt_id of the session's last Stop. A Stop with a different prompt_id is a new turn,
+  // so the human has written since that last Stop; the Stop hook uses it to ask the agent to
+  // record the answer to a question asked before then.
+  (db) => {
+    db.exec("ALTER TABLE cc_sessions ADD COLUMN last_stop_prompt TEXT");
+  },
+  // 3: held questions and outcomes. A question can be `held`: formed and deliberately deferred
+  // for the human, unresolved like `open` (resolved_at stays NULL). A note can be an `outcome`
+  // carrying `ref` (a PR URL, a commit, a path), required for that kind. CHECK constraints cannot
+  // be altered in SQLite, so both tables are rebuilt (create, copy, drop, rename; migrate() turns
+  // foreign keys off around it and runs foreign_key_check before committing).
+  (db) => {
+    const qCols = "id, cwd, kind, name, body, about, options, allows, default_opt, ceiling_usd, deadline, deadline_span_ms, state, asked_by, asked_at, resolved_at, session_id";
+    db.exec(`
+      CREATE TABLE cc_questions_v3 (
+        id               TEXT PRIMARY KEY CHECK (id GLOB 'q-?*'),
+        cwd              TEXT NOT NULL,
+        kind             TEXT NOT NULL DEFAULT 'question' CHECK (kind IN ('question','approval','plan')),
+        name             TEXT NOT NULL,
+        body             TEXT NOT NULL CHECK (length(trim(body)) > 0),
+        about            TEXT,
+        options          TEXT NOT NULL CHECK (json_valid(options) AND json_array_length(options) >= 2),
+        allows           TEXT,
+        default_opt      TEXT NOT NULL,
+        ceiling_usd      REAL CHECK (ceiling_usd IS NULL OR ceiling_usd > 0),
+        deadline         TEXT,
+        deadline_span_ms INTEGER,
+        state            TEXT NOT NULL DEFAULT 'open' CHECK (state IN ('open','held','answered','withdrawn')),
+        asked_by         TEXT NOT NULL,
+        asked_at         TEXT NOT NULL,
+        resolved_at      TEXT,
+        session_id       TEXT,
+        CHECK ((state IN ('open','held')) = (resolved_at IS NULL))
+      );
+      INSERT INTO cc_questions_v3 (${qCols}) SELECT ${qCols} FROM cc_questions;
+      DROP TABLE cc_questions;
+      ALTER TABLE cc_questions_v3 RENAME TO cc_questions;
+      CREATE INDEX cc_questions_cwd_state ON cc_questions (cwd, state);
+
+      CREATE TABLE cc_notes_v3 (
+        id          TEXT PRIMARY KEY CHECK (id GLOB 'nt-?*'),
+        cwd         TEXT NOT NULL,
+        kind        TEXT NOT NULL CHECK (kind IN ('note','withdraw','extend','outcome')),
+        body        TEXT NOT NULL,
+        question_id TEXT REFERENCES cc_questions(id),
+        made_by     TEXT NOT NULL,
+        made_at     TEXT NOT NULL,
+        session_id  TEXT,
+        ref         TEXT CHECK (ref IS NULL OR length(trim(ref)) > 0),
+        CHECK (kind <> 'outcome' OR ref IS NOT NULL)
+      );
+      INSERT INTO cc_notes_v3 (id, cwd, kind, body, question_id, made_by, made_at, session_id)
+        SELECT id, cwd, kind, body, question_id, made_by, made_at, session_id FROM cc_notes;
+      DROP TABLE cc_notes;
+      ALTER TABLE cc_notes_v3 RENAME TO cc_notes;
+      CREATE INDEX cc_notes_cwd_at ON cc_notes (cwd, made_at);
     `);
   },
 ];
@@ -178,6 +243,17 @@ export function migrate(db) {
   // read-only file allows) never takes a write lock; re-read under the lock before migrating,
   // so two processes opening a fresh file at once cannot both run the same migration.
   if (storeVersion(db) >= SCHEMA_VERSION) return SCHEMA_VERSION;
+  // A migration that rebuilds a table drops a parent of foreign keys; SQLite's procedure is to
+  // turn enforcement off (only possible outside a transaction), migrate, check, turn it back on.
+  db.exec("PRAGMA foreign_keys = OFF");
+  try {
+    return migrateLocked(db);
+  } finally {
+    db.exec("PRAGMA foreign_keys = ON");
+  }
+}
+
+function migrateLocked(db) {
   db.exec("BEGIN IMMEDIATE");
   try {
     const from = storeVersion(db);
@@ -187,6 +263,9 @@ export function migrate(db) {
     }
     db.exec("CREATE TABLE IF NOT EXISTS cc_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)");
     for (let v = from; v < SCHEMA_VERSION; v++) MIGRATIONS[v](db);
+    // Only the plugin's own child tables: a foreign tool's tables in a shared file are not ours to judge.
+    const broken = ["cc_answers", "cc_notes"].flatMap((t) => db.prepare(`PRAGMA foreign_key_check(${t})`).all());
+    if (broken.length) throw new Error(`migration left ${broken.length} broken foreign key(s), first in ${broken[0].table}`);
     db.prepare("INSERT INTO cc_meta (key, value) VALUES ('schema_version', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value").run(String(SCHEMA_VERSION));
     db.exec("COMMIT");
   } catch (err) {
@@ -204,10 +283,13 @@ export function migrate(db) {
  * Open (creating if needed) and migrate the store at `path`.
  * @returns {{ db: import("node:sqlite").DatabaseSync, notices: string[], path: string, shared: boolean }}
  *   `shared` is true when the file carries tables that are not the plugin's own.
- * @throws {StoreError} when the store cannot be opened: `busy` after one retry, or `open` for
- *   anything else (an unwritable directory, for example). Nothing is written in that case.
+ * @param opts.healCorrupt  move a corrupt file aside and start fresh; only for the default path.
+ *   Off, a corrupt file is never renamed, recreated or written: `corrupt` is thrown instead.
+ * @throws {StoreError} when the store cannot be opened: `busy` after one retry, `corrupt` for a
+ *   corrupt file without healCorrupt, or `open` for anything else (an unwritable directory, for
+ *   example). Nothing is written in that case.
  */
-export function open(path, { now = Date.now(), busyTimeoutMs = BUSY_TIMEOUT_MS } = {}) {
+export function open(path, { now = Date.now(), busyTimeoutMs = BUSY_TIMEOUT_MS, healCorrupt = false } = {}) {
   const notices = [];
   try {
     mkdirSync(dirname(path), { recursive: true });
@@ -223,6 +305,7 @@ export function open(path, { now = Date.now(), busyTimeoutMs = BUSY_TIMEOUT_MS }
       break;
     } catch (err) {
       if (isCorrupt(err)) {
+        if (!healCorrupt) throw new StoreError("corrupt", path, err);
         const aside = `${path}.corrupt-${safeStamp(now)}`;
         try {
           renameSync(path, aside);
@@ -253,6 +336,7 @@ export function open(path, { now = Date.now(), busyTimeoutMs = BUSY_TIMEOUT_MS }
     if (isReadOnly(err)) throw new StoreError("readonly", path, err);
     if (isCorrupt(err)) {
       // Corruption surfaced by the first real statement rather than the pragmas.
+      if (!healCorrupt) throw new StoreError("corrupt", path, err);
       const aside = `${path}.corrupt-${safeStamp(now)}`;
       try {
         renameSync(path, aside);
@@ -260,7 +344,7 @@ export function open(path, { now = Date.now(), busyTimeoutMs = BUSY_TIMEOUT_MS }
         throw new StoreError("open", path, renameErr);
       }
       notices.push(`ledger: moved corrupt database aside to ${aside}`);
-      const fresh = open(path, { now, busyTimeoutMs });
+      const fresh = open(path, { now, busyTimeoutMs, healCorrupt });
       return { db: fresh.db, notices: [...notices, ...fresh.notices], path, shared: fresh.shared };
     }
     throw new StoreError(isBusy(err) ? "busy" : "migrate", path, err);

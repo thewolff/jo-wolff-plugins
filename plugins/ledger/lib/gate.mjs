@@ -24,7 +24,7 @@ export function evaluate(input, { db, config, cwd, cli = "ledger", sessionId = n
     if (openQuestions(db, cwd).length) return null;
     return {
       rule: "denyAskWithoutRow",
-      reason: `ledger: ask the question through the ledger first: \`${cli} ask "<body>" --name <short> --options a,b --default a\`, then put the q-id in the question text.`,
+      reason: `ledger: ask the question through the ledger first: \`${cli} ask "<body>" --name <short> --options a,b --default a\`, then ask it; keep the q- id to yourself and record the reply with \`${cli} answer <q-id> <option>\`.`,
     };
   }
   if (input.tool_name === "Bash") {

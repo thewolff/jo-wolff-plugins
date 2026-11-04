@@ -37,7 +37,10 @@ export const VERBS = Object.freeze([
   { verb: "deny", who: "human", usage: "deny <q-id>", help: "the answer `deny`, when the question offers it" },
   { verb: "withdraw", who: "either", usage: "withdraw <q-id>", help: "take a question back; nothing was decided" },
   { verb: "extend", who: "human", usage: "extend <q-id>", help: "move the question's deadline by its original span (or the answer `extend`, when offered)" },
+  { verb: "hold", who: "agent", usage: "hold <q-id>", help: "defer an open question for the human without putting it to them: held, still unresolved, listed under Waiting on you" },
+  { verb: "reopen", who: "agent", usage: "reopen <q-id>", help: "put a held question to the human: open again, asked now" },
   { verb: "note", who: "agent", usage: 'note "<text>"', help: "record a decision or assumption made without asking (prints nt-…)" },
+  { verb: "outcome", who: "agent", usage: 'outcome <ref> [q-id] "<text>"', help: "record what a decision or an answered question produced; ref is a PR URL, commit or path (prints nt-…)" },
   { verb: "pending", who: "either", usage: "pending", help: "the paste-ready block: one `<default> <q-id>  # …` line per open question" },
   { verb: "log", who: "either", usage: "log [N]", help: "the last N notes, questions and answers for this folder across sessions (default 20)" },
   { verb: "enable", who: "human", usage: "enable", help: "turn the hooks on for this folder: writes `\"enabled\": true` to .ledger.json here" },
@@ -49,7 +52,7 @@ export const VERBS = Object.freeze([
 export const VERB_SET = new Set(VERBS.map((v) => v.verb));
 
 /** Verbs whose argument is free text (a body, a note); never applied from a prompt. */
-export const FREE_TEXT_VERBS = new Set(["ask", "note"]);
+export const FREE_TEXT_VERBS = new Set(["ask", "note", "outcome"]);
 
 const WHO = Object.fromEntries(VERBS.map((v) => [v.verb, v.who]));
 export const whoSays = (verb) => WHO[verb] ?? "either";
@@ -238,6 +241,8 @@ export function parseLine(text, lookup = NULL_LOOKUP, tokens = null) {
       if (q && q.options.includes(t0)) return command(shown, { verb: "answer", id, word: t0 });
       if (t0 === "withdraw") return command(shown, { verb: "withdraw", id });
       if (t0 === "extend") return command(shown, { verb: "extend", id });
+      if (t0 === "hold" || t0 === "reopen") return command(shown, { verb: t0, id });
+      if (t0 === "outcome") return refused(shown, 'outcome needs a ref first: outcome <ref> [q-id] "<what it produced>"');
       if (t0 === "answer") return refused(shown, `answer needs a word: answer ${id} <word>`);
       if (["pending", "log", "help", "config", "enable", "disable", "ask", "note"].includes(t0)) return refused(shown, `${t0} does not take an id`);
       if (!q) {
@@ -280,6 +285,21 @@ export function parseLine(text, lookup = NULL_LOOKUP, tokens = null) {
     return prose(shown, null, "usage: log [N]");
   }
 
+  // outcome <ref> [q-id] "<text>"
+  if (t0 === "outcome") {
+    const [ref, ...after] = rest;
+    if (!ref) return refused(shown, 'outcome needs a ref and text: outcome <ref> [q-id] "<what it produced>"');
+    let questionId = null;
+    let body = after;
+    if (after.length && !quoted.has(2) && isId(after[0]) && prefixOf(after[0]) === "q") {
+      questionId = after[0];
+      body = after.slice(1);
+    }
+    if (body.length === 0) return refused(shown, 'outcome needs text: outcome <ref> [q-id] "<what it produced>"');
+    if (body.length > 1) return prose(shown, null, `outcome takes one quoted text: outcome ${ref}${questionId ? ` ${questionId}` : ""} "${body.join(" ")}"`);
+    return command(shown, { verb: "outcome", ref, questionId, textArg: body[0], flags: {} });
+  }
+
   // Free-text verbs: ask "<body>" --flags, note "<text>".
   if (FREE_TEXT_VERBS.has(t0)) {
     const { flags, positional } = splitFlags(rest);
@@ -296,7 +316,7 @@ export function parseLine(text, lookup = NULL_LOOKUP, tokens = null) {
   // Verbs that reached here have the wrong shape.
   if (isVerb) {
     if (rest.length === 0) {
-      const needs = { withdraw: "withdraw <q-id>", extend: "extend <q-id>", approve: "approve <q-id>", deny: "deny <q-id>" };
+      const needs = { withdraw: "withdraw <q-id>", extend: "extend <q-id>", approve: "approve <q-id>", deny: "deny <q-id>", hold: "hold <q-id>", reopen: "reopen <q-id>" };
       // approve/deny alone fall through to bare-word resolution below when a question offers them.
       if (t0 !== "approve" && t0 !== "deny") return refused(shown, `${t0} needs an id: ${needs[t0]}`);
     } else {
