@@ -3,6 +3,72 @@
 All notable changes to continuity are recorded here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.3.0] - 2026-11-04
+
+### Added
+
+An OMP adapter, so the save and the restore run under OMP as well as Claude Code. Until now
+OMP seats kept newdle's pre-compaction save; this replaces it for them.
+
+- `omp/continuity-omp.ts`, loaded by OMP through `package.json` `omp.extensions` (with
+  `.omp-plugin/plugin.json`). It imports nothing from the hooks: it spawns the same two hook
+  files as stdin-JSON CLIs, so one implementation and one test suite serve both hosts and the
+  state (same directory, same snapshot file, same caps, same once-marks) is shared.
+  - `session_before_compact` → `hooks/pre-compact.mjs`, with a PreCompact payload built from the
+    event: `trigger` (`auto` while an `auto_compaction_start` is in flight, else `manual`),
+    `custom_instructions`, and the three host fields `lib/snapshot.mjs` reads from a
+    transcript-less host: `intents` (the user texts of the messages the compaction discards, the
+    last five, 500 characters each), `file_operations` (the host's read / written / edited paths
+    with counts, 6,000 characters), `token_count`. No `transcript_path`. The hook's
+    `systemMessage` goes to `ctx.ui.notify`. The handler never cancels a compaction.
+  - `session_compact` → `hooks/session-start.mjs` with `source: "compact"`; its
+    `additionalContext` (snapshot, rules section, durable notes, liveness line) reaches the agent
+    through `pi.sendMessage` as a hidden `continuity-restored` message. Once per compaction
+    entry: a repeated `session_compact` for the entry a session last restored or is restoring
+    sends nothing; a new entry restores again. That memory is bounded: one entry id per session,
+    recorded only when a restore starts, dropped on `session_shutdown`, at most 64 sessions.
+  - A `session_compact` with no `session_before_compact` before it (OMP's manual handoff and
+    snapcompact frame rescue run no pre-event) is unpaired: the restore runs only when a snapshot
+    for the session is on disk, and otherwise nothing is sent, so a host-written handoff is never
+    followed by a "save failed, reconstruct" line for a save that never ran. A save whose
+    compaction was cancelled pairs with nothing: an aborted `auto_compaction_end` or pre-event
+    signal deletes its mark, and a mark pairs only with an entry committed on the branch leaf the
+    save ran on.
+  - The spawn sets `CLAUDE_PROJECT_DIR` to the session's cwd and `CONTINUITY_HOST_RULES` to
+    `CLAUDE.md,AGENTS.md`, the two names OMP's context-file providers load into the system prompt,
+    which a compaction keeps: the walk names those as kept by the host and inlines a
+    `CLAUDE.local.md` at the same levels, which OMP does not load.
+  - Budgets: 8 s per spawn against the runner's 4 s deadline and OMP's 30 s handler timeout; the
+    child's process group is killed when it passes. Fail open: every fault is one
+    `omp-adapter <hook>: …` line in `errors.log`.
+  - Node resolution as brb's adapter: `CONTINUITY_NODE`, else the host binary unless it is Bun,
+    else the first `node` on PATH or in the usual places.
+- `omp/continuity-omp.test.mjs`: the payload builder, the budgets pinned against
+  `lib/hook-runner.mjs` `DEADLINE_MS`, each handler's fail-open path with a fake runner, the five
+  registrations and the auto/manual bookkeeping, `spawnHook` on junk / non-zero / hang / echo
+  children, one save-then-restore round trip through the real hooks, the restore once per
+  compaction entry (sequential and concurrent repeats, a new entry, another session), the
+  unpaired `session_compact` cases, the bounded dedup memory (10,000 entries in one session, 100
+  sessions, `session_shutdown`), a cancelled save followed by a host-only handoff (auto abort,
+  aborted signal, cancelled `/compact`), and a launch directory holding `CLAUDE.md` and
+  `CLAUDE.local.md`.
+- `evals/pre-compact-omp-payload.scenario.json`: the save on the payload the adapter sends
+  (fifteen scenarios in all).
+- README "Under OMP": the event mapping, the rules names OMP loads, the once-per-entry restore,
+  the lifecycle exclusions (manual handoff, snapcompact rescue), the budgets, and the table of
+  what newdle's OMP save did that this does (the unconditional save with the host fields, the
+  in-session restore through `sendMessage`, fail open) and does not (the one-time compaction
+  cancel, the in-session compaction contribution, the `~/.omp` archive copy, the "no record
+  recovered" message, the project-directory and seat gates).
+
+### Changed
+
+- `.claude-plugin/plugin.json`, `.omp-plugin/plugin.json`, `package.json`: 0.3.0; the
+  description names the OMP adapter.
+- `lib/repo-rules.mjs`: `CONTINUITY_HOST_RULES` (comma-separated file names), when set, narrows
+  the launch-directory skip to those names. Unset, as on Claude Code, the walk is unchanged.
+- Nothing in the hooks, the config keys or the state layout.
+
 ## [0.2.0] - 2026-11-04
 
 ### Added

@@ -72,13 +72,13 @@ it, keeping a record of what it did and asked, and a vendored set of engineering
   snapshot the post-compaction SessionStart injects back; every start says when that save last
   succeeded, so a dead save is never silent; a context-pressure check warns once and blocks one
   stop near the compaction target, naming `/continuity:handoff`; and the handoff skill writes
-  the judgment layer no hook can derive. Claude Code hooks. Changes in continuity 0.2.0: after a
-  compaction the restore block also re-inlines the rules files (`CLAUDE.md`, `CLAUDE.local.md`,
-  `AGENTS.md`) on the walk from the cwd to the repository root, root first, inside what the
-  restore guard has left (8,000 bytes per file, 9,000 for the section, every cut and skip
-  named), and lists the newest entries of the repository's durable-notes directory
-  (`notesDir`, default `.ai/decision-log`); config keys `rules`, `notesDir`, `notesCount`. See
-  the plugin's [CHANGELOG](plugins/continuity/CHANGELOG.md).
+  the judgment layer no hook can derive. Claude Code hooks plus an OMP extension that runs the
+  same save and restore. Changes in continuity 0.3.0: `omp/continuity-omp.ts` runs
+  `hooks/pre-compact.mjs` on OMP's `session_before_compact` with the host's discarded asks,
+  file operations and token count on the payload, and `hooks/session-start.mjs` on
+  `session_compact`, handing the restore to the agent as a hidden message; same store, same
+  caps, same liveness line. It replaces newdle's pre-compaction save for OMP seats. See the
+  plugin's [CHANGELOG](plugins/continuity/CHANGELOG.md).
 - **[brb](#brb)** — type `brb` and walk away: the agent keeps working, every ask it would
   have stopped for waits in a digest, and only a broken main, data loss, a security finding,
   spend near a ceiling or a blocker on everything comes through at once; `back` prints the
@@ -140,7 +140,8 @@ that run their hooks, and ask-graham installs its prompt nudge (see each section
 is a skill and a script, so it works on both. ctx-watch's SessionStart line is Claude Code
 only; its skill, CLI and launchd timer work on both. ledger is Claude Code only. delegation's
 gates, teaching block and agents run on both; its three ported guards are Claude Code only.
-continuity's hooks are Claude Code only; its handoff skill works on both.
+continuity installs an OMP extension that runs its save and restore around compactions; its
+context-pressure check is Claude Code only and its handoff skill works on both.
 brb installs an OMP extension that runs its hooks.
 
 To update, update each harness separately. On OMP, refresh the marketplace first, because
@@ -225,12 +226,12 @@ receipt and removes its working files.
 | ask-graham | 0.8.1 | "should we build X?" with a verdict; a prompt nudge and a Stop check; each verdict or structure check recorded per session in `ask-graham/findings/<session id>.json` | reads your `sources.md`; nothing from another plugin; its `**Alternative:**` line carries pattern-check's `better design` cell when that plugin is installed; its findings file is for other plugins to read |
 | pattern-check | 0.4.0 | holds big work until a reuse/replace/new receipt exists, each row with its `better design` and how it fails | its receipt file is what delegation's spawn gate requires |
 | reminders-review | 0.2.1 | Apple Reminders, one at a time | none |
-| ledger | 0.3.7 | questions and choices on rows; the push gate with six rows; the review judge from plugin-kit's shared `lib/judge.mjs` | its `says` row checks the "When this can't" heading every skill and agent carries; its canary runs every plugin's `e2e/live-run.sh` |
+| ledger | 0.3.8 | questions and choices on rows; the push gate with six rows; the review judge from plugin-kit's shared `lib/judge.mjs` | its `says` row checks the "When this can't" heading every skill and agent carries; its canary runs every plugin's `e2e/live-run.sh` |
 | plugin-kit | 0.3.2 | the scaffold (with `CHANGELOG.md` since 0.2.2), the hook runner, the shared judge lib, the scenario runner, two agents | gives `lib/hook-runner.mjs` and `lib/judge.mjs` to the plugins that vendor them, and `lib/live-run.mjs` to every `e2e/live-run.sh` |
 | as2-skills | 0.1.2 | 22 vendored engineering skills, each with "How it fails" | its sections meet ledger's `says` row |
 | ctx-watch | 0.2.1 | ctx daemon and semantic-index health, repair, and the consult-history Stop check | vendors the hook runner and the scenario runner |
 | delegation | 0.1.1 | brief teaching, spawn gate, `SendMessage` check, SubagentStop warning, 11 agents, three guards | needs pattern-check's receipt for builder-class spawns; vendors the hook runner |
-| continuity | 0.2.0 | PreCompact snapshot, post-compaction restore with the rules files and durable notes re-inlined, liveness line, context-pressure warning, `/continuity:handoff` | vendors the hook runner |
+| continuity | 0.3.0 | PreCompact snapshot, post-compaction restore with the rules files and durable notes re-inlined, liveness line, context-pressure warning, `/continuity:handoff`; the save and restore also on OMP | vendors the hook runner |
 | brb | 0.2.0 | `brb` / `back` / `pending`, the hold command, the away digest, the backstop, keep-working, on-fire surfacing | vendors the hook runner |
 
 ### What they share
@@ -265,7 +266,7 @@ listed under `omp.extensions` in its `package.json`, installed through `.omp-plu
 | ledger | SessionStart, UserPromptSubmit, PreToolUse, Stop, SessionEnd | none; Claude Code only |
 | ctx-watch | SessionStart, Stop | none; the skill, CLI and launchd timer work on both; the Stop check is Claude Code only |
 | delegation | SessionStart, PreToolUse, PostToolUse, SubagentStop | `omp/delegation-omp.ts`: `before_agent_start`, `context`, `tool_call`, `tool_result`, `session_compact` |
-| continuity | SessionStart, UserPromptSubmit, PreCompact, Stop | none; Claude Code only |
+| continuity | SessionStart, UserPromptSubmit, PreCompact, Stop | `omp/continuity-omp.ts`: `auto_compaction_start`, `auto_compaction_end`, `session_before_compact`, `session_compact`; the context-pressure check is Claude Code only |
 | brb | SessionStart, UserPromptSubmit, Stop | `omp/brb-omp.ts`: `input`, `before_agent_start`, `session_stop` |
 | as2-skills | none; skills only | `.omp-plugin/plugin.json`, skills only |
 | plugin-kit | none; skill, scripts and agents | none; works from a checkout on both |
@@ -1149,6 +1150,13 @@ The hooks record every session until you switch a folder off with `/ledger:disab
 (`/ledger:enable` turns it back on). The plugin's tables are all prefixed `cc_`, so the database
 can be a SQLite file another tool already uses.
 
+Changes in 0.3.8: the Stop hook's "the human has written since you asked" check counts only a
+prompt the person typed, read from the transcript; a subagent's `<task-notification>`, a
+`<system-reminder>` or another injected line that starts a new turn no longer sends the agent
+back for an answer nobody gave. While brb holds the session the hook asks for no answer and
+sends a question with no row back with `ask` then `hold`. `hold <q-id>` never records an answer,
+even when `hold` is one of the question's options.
+
 Changes in 0.3.7 (with plugin-kit 0.3.2): `lib/judge.mjs` is plugin-kit's shared judge dispatch,
 copied byte for byte, and ledger's cache and verdicts live in `lib/ledger-judge.mjs`. The review
 judge is `LEDGER_JUDGE_BIN`, else `review.judgeCommand`, else the shared judge file
@@ -1447,9 +1455,13 @@ warns once with the prompt and blocks one stop, both naming `/continuity:handoff
 that has never compacted hears nothing. The handoff skill writes
 `<root>/.ai/handoffs/<date>--<time>--<author>--<lane>.md` with five sections (where I left off,
 next move, already ruled out, live uncertainty, working state) and the rule that a resuming
-session restates the content before continuing. Every hook fails open. Built on plugin-kit
-0.3.1; Node 22.13 or later. The config keys, the state table, the failure table and the
-"Ported from newdle 0.2.175" table are in
+session restates the content before continuing. Every hook fails open. On OMP,
+`omp/continuity-omp.ts` runs the save on `session_before_compact` (the host's discarded asks,
+file operations and token count on the payload, no transcript) and the restore on
+`session_compact`, handing the snapshot, the rules section and the liveness line to the agent as
+a hidden message; the context-pressure check does not run there. Built on plugin-kit
+0.3.1; Node 22.13 or later. The config keys, the state table, the failure table, the "Under OMP"
+section and the "Ported from newdle 0.2.175" table are in
 [`plugins/continuity/README.md`](plugins/continuity/README.md).
 
 ### Install
@@ -1459,10 +1471,12 @@ session restates the content before continuing. Every hook fails open. Built on 
 /plugin install continuity@jo-wolff-plugins
 ```
 
+On OMP: `omp plugin install continuity@jo-wolff-plugins`; the extension registers on load.
+
 ### Developing continuity
 
 The tests run with `node --test` from inside `plugins/continuity/`;
-`bash e2e/live-run.sh --no-live` replays the fourteen scenarios offline.
+`bash e2e/live-run.sh --no-live` replays the fifteen scenarios offline.
 
 ## brb
 

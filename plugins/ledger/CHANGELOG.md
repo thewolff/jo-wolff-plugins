@@ -5,6 +5,33 @@ All notable changes to ledger are recorded here. The format follows
 "Changes" section of the README (one line per version) and the "Changes in" paragraphs of the
 repository root README's ledger section.
 
+## [0.3.8] - 2026-11-04
+
+### Fixed
+
+- The Stop hook told the agent "the human has written since you asked these questions" when
+  the human had not: a subagent's `<task-notification>` or a `<system-reminder>` starts a new
+  turn with a new `prompt_id`, and a new `prompt_id` was all the check looked at, so the agent
+  invented a reply (jo-issues #340). The hook now reads the transcript and counts only a prompt
+  the person typed (`lib/transcript.mjs` `isHumanPrompt`: not tool results only, not `isMeta`,
+  `origin.kind` `human` when stamped, else text that after any leading `<system-reminder>`
+  blocks does not start with `<task-notification>`, `<system-reminder>`, `<agent-message`,
+  `<local-command-stdout>`, `<local-command-caller>`, `Another Claude session sent a message:`,
+  `Stop hook feedback:` or `[Subagent hand-back]`). Only that prompt is evidence: a missing,
+  unreadable or symlinked transcript, or one with no timestamped `user` entry, sends no answer
+  nag. The hook reads at most the transcript's last 4 MiB and scans all of it: an entry older
+  than the question is skipped, never ends the scan, and a complete line that starts exactly at
+  the 4 MiB cut is kept (only a line cut in half is dropped).
+- While brb holds the session (`${XDG_STATE_HOME:-~/.local/state}/brb/<session_id>/away.json`
+  is a regular file of at most 64 KiB holding an object with a string `since`, brb's own rule,
+  at brb's own path for any non-blank `XDG_STATE_HOME`), the Stop hook no longer asks for an
+  answer, and a reply that asks a question with no row is sent back with "record it with
+  `ask`, then `hold`" instead of "ask in plain words". Read-only; a symlink or any error reads
+  as not away.
+- `hold <q-id>` recorded the answer `hold` when the question listed `hold` as an option (the
+  option word was matched before the verb). `hold` and `reopen` now always change state and
+  never answer; `answer <q-id> hold` still answers with that option.
+
 ## [0.3.7] - 2026-11-04
 
 ### Added

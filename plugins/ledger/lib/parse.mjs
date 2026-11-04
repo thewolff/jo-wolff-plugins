@@ -14,11 +14,13 @@
 //   <number> <word>                     an ordinal into the `pending` list: 1 approve
 //   <word>                              a bare option word, when exactly one open question offers it
 //
-// Resolution of `<word> <q-id>` is OPTION FIRST: if the question offers the word, it is the
-// answer (so a question whose option is `withdraw` can be answered `withdraw q-…`); otherwise the
-// verb table decides (`withdraw q-…` withdraws, `extend q-…` moves the deadline); a word that is
-// neither is REFUSED with the option list and nothing is written. A verb with an id that does
-// not exist, or an id cut short (`approve q-`), is refused too, never prose.
+// Resolution of `<word> <q-id>` is OPTION FIRST, except the lifecycle verbs `hold` and `reopen`,
+// which always change the question's state and never answer it (`answer <q-id> hold` answers
+// with a `hold` option): if the question offers the word, it is the answer (so a question whose
+// option is `withdraw` can be answered `withdraw q-…`); otherwise the verb table decides
+// (`withdraw q-…` withdraws, `extend q-…` moves the deadline); a word that is neither is REFUSED
+// with the option list and nothing is written. A verb with an id that does not exist, or an id
+// cut short (`approve q-`), is refused too, never prose.
 //
 // Anything else is PROSE: `not a command`, with `closest: <word>` when the first token is within
 // edit distance 2 of a verb or of an open question's option word. Prose is never written anywhere.
@@ -246,11 +248,14 @@ export function parseLine(text, lookup = NULL_LOOKUP, tokens = null) {
     const id = rest[0];
     const prefix = prefixOf(id);
     if (prefix === "q") {
+      // `hold` and `reopen` change a question's state and never answer it, even when a question
+      // lists that word as an option (0.3.8, #340: `hold q-…` on a question with a `hold` option
+      // recorded the answer "hold"). `answer <q-id> hold` still answers with that option.
+      if (t0 === "hold" || t0 === "reopen") return command(shown, { verb: t0, id });
       const q = lookup.question(id);
       if (q && q.options.includes(t0)) return command(shown, { verb: "answer", id, word: t0 });
       if (t0 === "withdraw") return command(shown, { verb: "withdraw", id });
       if (t0 === "extend") return command(shown, { verb: "extend", id });
-      if (t0 === "hold" || t0 === "reopen") return command(shown, { verb: t0, id });
       if (t0 === "outcome") return refused(shown, 'outcome needs a ref first: outcome <ref> [q-id] "<what it produced>"');
       if (t0 === "answer") return refused(shown, `answer needs a word: answer ${id} <word>`);
       if (["pending", "log", "help", "config", "enable", "disable", "ask", "note", "doctor", "bounces"].includes(t0)) return refused(shown, `${t0} does not take an id`);
