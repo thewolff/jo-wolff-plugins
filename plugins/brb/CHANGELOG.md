@@ -94,12 +94,17 @@ hold exists to prevent.
 - README: the contract in one paragraph up top, the hold command, the backstop, a "what you
   see" table. The marketplace description and the root README row say the same.
 
+### Fixed
+
+- The backstop resets per human turn: every prompt while away except `pending` clears `backstopped` and `toolLessStops` in `away.json` (prompt hook `newTurn`; on OMP the adapter runs the prompt hook in the background for ordinary text), so a word-for-word repeat or a run of tool-less turns is backstopped again.
+- `hold`, `brb`, `back`, the new-turn reset and the Stop hook's write are serialized per session by `away.lock` (`lib/state.mjs` `withAwayLock`: O_EXCL create, 2 s wait, stale after 10 s) with a re-read inside it, so a `back` between hold's read and its write prints `not away; say it to Jo` and writes nothing instead of recreating the hold.
+
 ### Unchanged
 
 - `pending` and `back` print the digest as before; its entries now come from both sources, each
   once. The on-fire path, the release rules (`idle:`, the guard, `idleStops`, three quiet
-  continuations), the OMP adapter and `lib/hook-runner.mjs` (plugin-kit 0.3.2's, byte for byte;
-  the kit's 0.3.2 did not touch it).
+  continuations) and `lib/hook-runner.mjs` (plugin-kit 0.3.2's, byte for byte; the kit's 0.3.2
+  did not touch it).
 
 ## [0.1.1] - 2026-11-04
 

@@ -162,6 +162,50 @@ test("the backstop yields to the tool-less bound: two stops in a row that show a
   }
 });
 
+test("a human prompt is a new turn: the same ask-bearing reply word for word on the next turn is backstopped again, even with an idle line", () => {
+  const b = box();
+  try {
+    goAway(b);
+    const msg = "## Needs you\n- Pick Redis or in-process for the cache\n\nidle: the cache choice is held";
+    b.writeTranscript([row.user(), row.tool()]);
+    assert.deepEqual(runHook(b, "stop", stopInput(b, { last_assistant_message: msg })).json, backstop(1));
+    assert.equal(awayRecord(b).backstopped, true);
+    // `pending` is not a turn: the flag stands.
+    runHook(b, "user-prompt-submit", promptInput(b, "pending"));
+    assert.equal(awayRecord(b).backstopped, true);
+    // Jo answers; the prompt hook clears the per-turn state.
+    const prompt = runHook(b, "user-prompt-submit", promptInput(b, "Continue with the cache"));
+    assert.ok(prompt.json.hookSpecificOutput.additionalContext);
+    assert.equal(awayRecord(b).backstopped, false);
+    assert.equal(awayRecord(b).toolLessStops, 0);
+    b.writeTranscript([row.user(), row.tool(), row.user("Continue with the cache"), row.tool()]);
+    const again = runHook(b, "stop", stopInput(b, { last_assistant_message: msg }));
+    assert.deepEqual(again.json, backstop(1), again.stdout);
+    assert.equal(awayRecord(b).held, 1, "the restated ask is not held twice");
+  } finally {
+    b.release();
+  }
+});
+
+test("a human prompt is a new turn: successive tool-less turns that show asks are each backstopped, the tool-less count starting over per prompt", () => {
+  const b = box();
+  try {
+    goAway(b);
+    b.writeTranscript([row.user()]);
+    for (let n = 1; n <= 4; n++) {
+      if (n > 1) runHook(b, "user-prompt-submit", promptInput(b, `answer ${n}`));
+      const r = runHook(b, "stop", stopInput(b, { last_assistant_message: `Looked again.\n\n## Needs you\n- Decide item ${n}` }));
+      assert.deepEqual(r.json, backstop(1), `turn ${n}: ${r.stdout}`);
+      assert.equal(awayRecord(b).toolLessStops, n === 1 ? 0 : 1, `turn ${n}`);
+    }
+    // Within one turn the bound still holds: the continuation after the block, tool-less, is not blocked again.
+    const cont = runHook(b, "stop", stopInput(b, { stop_hook_active: true, last_assistant_message: "## Needs you\n- Decide item 5" }));
+    assert.ok(cont.json?.decision !== "block", cont.stdout);
+  } finally {
+    b.release();
+  }
+});
+
 test("under BRB_HARNESS=omp the keep-working answer is decision block (OMP's session_stop shape); the backstop is the same shape", () => {
   const b = box();
   try {

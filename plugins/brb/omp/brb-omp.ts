@@ -14,7 +14,10 @@
 //                       (displayChannel). `back` or `pending` while the session is not away
 //                       (no away.json) returns undefined, so the word reaches the agent as an
 //                       ordinary reply. Any other text returns undefined; the away context
-//                       reaches the agent through before_agent_start, below.
+//                       reaches the agent through before_agent_start, below. While away it
+//                       also spawns the prompt hook with the text in the background
+//                       (newTurnHandler), output ignored: the hook's new-turn reset clears the
+//                       Stop backstop's per-turn state, as on Claude Code.
 //   before_agent_start  spawn hooks/session-start.mjs; when it returns additionalContext (the
 //                       session is away) hand it to the turn as a hidden custom message. Home →
 //                       the hook prints nothing and nothing is added.
@@ -285,6 +288,18 @@ export async function inputWordHandler(text: string, ctx: Ctx, show: (reason: st
   }
 }
 
+/** Ordinary text while away: run the prompt hook for its new-turn reset of away.json; output ignored, a fault logged. Always resolves. */
+export async function newTurnHandler(text: string, ctx: Ctx, deps: Deps = {}): Promise<void> {
+  const env = deps.env ?? process.env;
+  const stateDir = deps.stateDir ?? defaultStateDir(env);
+  const run = deps.runCli ?? ((h, p, c, ms) => spawnHook(h, p, c, ms, env));
+  try {
+    await run(PROMPT_HOOK, buildPromptPayload(text, ctx), ctx.cwd, PROMPT_TIMEOUT_MS);
+  } catch (err) {
+    logError(stateDir, `${PROMPT_HOOK}: ${err instanceof Error ? err.message : String(err)}`);
+  }
+}
+
 /** before_agent_start: the away context as a hidden message, or undefined when home or on a fault. */
 export async function beforeAgentStartHandler(ctx: Ctx, deps: Deps = {}): Promise<{ message: { customType: string; content: string; display: false } } | undefined> {
   if (ctx.agent?.kind === "sub") return undefined;
@@ -335,9 +350,14 @@ export default function brbOmp(pi: PiLike, deps: Deps = {}): void {
   };
   pi.on("input", (event, ctx) => {
     const word = surfaceWord(event?.text);
-    if (!word) return undefined;
+    const away = isAway(ctx, deps.stateDir ?? defaultStateDir(deps.env ?? process.env));
+    if (!word) {
+      // A human prompt while away is a new turn for the Stop backstop; the prompt proceeds.
+      if (away) void newTurnHandler(String(event?.text ?? ""), ctx, deps);
+      return undefined;
+    }
     // `back` / `pending` while home is an ordinary reply for the agent, as on Claude Code.
-    if (word !== "brb" && !isAway(ctx, deps.stateDir ?? defaultStateDir(deps.env ?? process.env))) return undefined;
+    if (word !== "brb" && !away) return undefined;
     // Decided synchronously so the host never dispatches the word as a prompt; the hook runs after.
     void inputWordHandler(String(event.text), ctx, show(ctx), deps);
     return { handled: true };

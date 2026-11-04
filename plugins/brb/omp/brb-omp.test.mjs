@@ -2,7 +2,8 @@
 // (surfaceWord, assistantText, payload builders, resolveNode), the three handlers with a fake
 // runCli (what they show, what they return, fail-open on a throw with one errors.log line), the
 // registration shape (input returns { handled: true } synchronously for a word, undefined
-// otherwise), and one real spawn through spawnHook against the plugin's own hooks. The live OMP
+// otherwise; ordinary text while away runs the prompt hook in the background for its new-turn
+// reset), and one real spawn through spawnHook against the plugin's own hooks. The live OMP
 // path (an actual omp session delivering these events) is not run here.
 
 import test from "node:test";
@@ -20,6 +21,7 @@ import brbOmp, {
   defaultStateDir,
   displayChannel,
   inputWordHandler,
+  newTurnHandler,
   isAway,
   resolveNode,
   sessionStopHandler,
@@ -39,6 +41,29 @@ function box() {
   const env = { PATH: process.env.PATH, HOME: join(root, "home"), XDG_STATE_HOME: join(root, "state"), XDG_CONFIG_HOME: join(root, "config"), BRB_DESKTOP_NOTIFY: "off" };
   return { root, env, stateDir: join(root, "state", "brb"), release: () => rmSync(root, { recursive: true, force: true }) };
 }
+
+test("ordinary text while away: not handled, and the prompt hook runs in the background with the text (the new-turn reset); home → no spawn; a throw is logged", async () => {
+  const b = box();
+  try {
+    const calls = [];
+    const handlers = {};
+    brbOmp({ on: (name, h) => (handlers[name] = h) }, { runCli: async (hook, payload) => { calls.push({ hook, payload: JSON.parse(payload) }); return undefined; }, stateDir: b.stateDir, env: b.env });
+    assert.equal(handlers.input({ text: "use Redis" }, ctx()), undefined);
+    await tick();
+    assert.deepEqual(calls, [], "home: nothing spawned");
+    markAway(b.stateDir);
+    assert.equal(handlers.input({ text: "use Redis" }, ctx()), undefined, "the prompt proceeds to the agent");
+    await tick();
+    assert.equal(calls.length, 1);
+    assert.equal(calls[0].hook, "user-prompt-submit.mjs");
+    assert.equal(calls[0].payload.prompt, "use Redis");
+    assert.equal(calls[0].payload.session_id, "omp-session-1");
+    await newTurnHandler("x", ctx(), { runCli: async () => { throw new Error("boom"); }, stateDir: b.stateDir, env: b.env });
+    assert.match(readFileSync(join(b.stateDir, "errors.log"), "utf8"), / omp-adapter user-prompt-submit\.mjs: boom\n$/);
+  } finally {
+    b.release();
+  }
+});
 
 test("surfaceWord mirrors lib/text.mjs: brb with a note, back, pending; sentences are not words", () => {
   assert.equal(surfaceWord("brb"), "brb");

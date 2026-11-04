@@ -25,7 +25,7 @@ import { join } from "node:path";
 
 import { invokedDirectly } from "../lib/hook-runner.mjs";
 import { normalizeLine } from "../lib/sections.mjs";
-import { appendDigest, readAway, stateRoot, writeAway } from "../lib/state.mjs";
+import { appendDigest, readAway, stateRoot, withAwayLock, writeAway } from "../lib/state.mjs";
 
 const SEEN_CAP = 500;
 const USAGE = 'usage: brb.mjs hold [--session <id>] "<one item, readable on its own>"';
@@ -33,20 +33,28 @@ const USAGE = 'usage: brb.mjs hold [--session <id>] "<one item, readable on its 
 /**
  * Hold one item for the session. `{ status: "held", held, added }` with the count after (added
  * false when the item was already held), or `{ status: "home" }` when the session is not away.
+ * The write happens under the session lock (lib/state.mjs withAwayLock) after a re-read: a
+ * `back` that ended the hold, or a new `brb` that replaced it, after the first read is
+ * `{ status: "home" }` with nothing written, never an append to a returned hold.
  */
 export function hold(sessionId, text, { env = process.env, now = () => new Date().toISOString() } = {}) {
-  const away = readAway(sessionId, env);
-  if (!away) return { status: "home" };
+  const first = readAway(sessionId, env);
+  if (!first) return { status: "home" };
   const line = String(text ?? "").replace(/\s+/g, " ").trim();
   const key = normalizeLine(line);
   if (!key) throw new Error("the item is empty");
-  if (away.seen.includes(key)) return { status: "held", held: away.held, added: false };
+  if (first.seen.includes(key)) return { status: "held", held: first.held, added: false };
   const at = now();
-  appendDigest(sessionId, { at, lines: [line] }, env);
-  away.seen = [...away.seen, key].slice(-SEEN_CAP);
-  away.held += 1;
-  writeAway(sessionId, away, env);
-  return { status: "held", held: away.held, added: true };
+  return withAwayLock(sessionId, env, () => {
+    const away = readAway(sessionId, env);
+    if (!away || away.since !== first.since) return { status: "home" };
+    if (away.seen.includes(key)) return { status: "held", held: away.held, added: false };
+    appendDigest(sessionId, { at, lines: [line] }, env);
+    away.seen = [...away.seen, key].slice(-SEEN_CAP);
+    away.held += 1;
+    writeAway(sessionId, away, env);
+    return { status: "held", held: away.held, added: true };
+  });
 }
 
 /** The session ids under the state root that are away (have an away.json). */

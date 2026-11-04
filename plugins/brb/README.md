@@ -53,8 +53,9 @@ while away did not end it.``, and the agent gets the same line over the away ins
 goes back to holding. (On OMP the adapter shows that line and starts no turn.)
 
 Typing anything else while away, an answer to an `on fire:` line included, does not end the
-hold: `away.json` is left as it is and the instruction, whose first line says the hold is still
-on, rides along with your prompt.
+hold: the instruction, whose first line says the hold is still on, rides along with your
+prompt. It is a new turn, so the Stop hook's per-turn state in `away.json` (`backstopped`,
+`toolLessStops`) starts over; nothing else there changes.
 
 While away, every other prompt you type (or that a scheduled run types) proceeds, carrying the
 away instruction below as `additionalContext`; a resume, clear or compaction carries it again
@@ -139,8 +140,10 @@ On every finished message (`hooks/stop.mjs`, the rules in `lib/stop-core.mjs`):
    `brb: N item(s) moved to the digest; do not restate them — reply with the body only and end with \`idle: <why>\`.`
    (N is what the message showed). Once per turn: the block sets `backstopped` in `away.json`,
    and the next stop that is not a continuation (`stop_hook_active` false and a different
-   message) clears it, so the reply after the block, restated word for word or not, goes
-   through the rules below and cannot loop here. The backstop also yields once `idleStops`
+   message) clears it, as does every prompt you type while away (`pending` aside), which also
+   zeroes the tool-less count. So the reply after the block, restated word for word or not,
+   goes through the rules below and cannot loop here, and your next turn is backstopped again
+   even if its reply is the same. The backstop also yields once `idleStops`
    tool-less stops have passed (the hard stop below). The same block, under the same
    once-per-turn rule, covers the still-away line: a message with any text whose first
    non-blank line (past `>`, `*`, `_` or a backtick) does not start `brb: still away` is sent

@@ -18,9 +18,11 @@
 //      `brb: N item(s) moved to the digest; do not restate them — reply with the body only and
 //      end with idle:`. Once per turn: `backstopped` in away.json is set by the block and
 //      cleared by the next stop that is not a continuation (stop_hook_active false and a
-//      different message), so the reply after the block, restated or not, goes through the
-//      release rules and cannot loop on the backstop; and the backstop yields once
-//      toolLessStops reaches `idleStops`, the hard stop below. The same block, under the same
+//      different message) and by every human prompt while away (the prompt hook's newTurn,
+//      which also zeroes toolLessStops), so the reply after the block, restated or not, goes
+//      through the release rules and cannot loop on the backstop, while the next human turn is
+//      backstopped again even when its reply is word for word the last one; and the backstop
+//      yields once toolLessStops reaches `idleStops`, the hard stop below. The same block, under the same
 //      once-per-turn rule, also fires when a message with any text does not start with the
 //      still-away line (`brb: still away (<duration>, N held) — say \`back\` to read them`,
 //      lib/text.mjs replyFirstLine, checked by hasReplyFirstLine); a message that misses the
@@ -51,8 +53,9 @@
 //      block, not shown as a hook error); under BRB_HARNESS=omp as `decision: "block"`, the
 //      shape OMP's session_stop takes. The backstop block comes before the keep-working answer
 //      and before the `idle:` and guard releases.
-//   6. Write: re-read away.json first; a hold that `back` ended while this stop ran is left
-//      ended (only the fire output returns). New held lines go to the digest, then away.json.
+//   6. Write: re-read away.json under the session lock (lib/state.mjs withAwayLock) first; a
+//      hold that `back` ended while this stop ran is left ended (only the fire output returns).
+//      New held lines go to the digest, then away.json.
 //      A write that throws is one errors.log line and a systemMessage beside any fire; the stop
 //      then proceeds with no keep-working answer.
 //
@@ -65,7 +68,7 @@ import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 
 import { splitNeedsYou, normalizeLine, fireText } from "./sections.mjs";
-import { loadConfig, readAway, writeAway, appendDigest } from "./state.mjs";
+import { loadConfig, readAway, writeAway, appendDigest, withAwayLock } from "./state.mjs";
 import { backstopReason, firstLineReason, hasReplyFirstLine, keepWorkingReason, replyFirstLine } from "./text.mjs";
 import { logError } from "./hook-runner.mjs";
 
@@ -217,10 +220,14 @@ export function decideStop(input, { env = process.env, now = () => new Date().to
 
   // 6. Write, unless `back` ended the hold meanwhile.
   try {
-    const current = readAway(sessionId, env);
-    if (!current || current.since !== away.since) return Object.keys(out).length ? out : null;
-    if (newHeld.length || newAsk) appendDigest(sessionId, { at, lines: newHeld, closingAsk: newAsk ? parts.closingAsk : null }, env);
-    writeAway(sessionId, away, env);
+    const ended = withAwayLock(sessionId, env, () => {
+      const current = readAway(sessionId, env);
+      if (!current || current.since !== away.since) return true;
+      if (newHeld.length || newAsk) appendDigest(sessionId, { at, lines: newHeld, closingAsk: newAsk ? parts.closingAsk : null }, env);
+      writeAway(sessionId, away, env);
+      return false;
+    });
+    if (ended) return Object.keys(out).length ? out : null;
   } catch (err) {
     const why = err instanceof Error ? err.message : String(err);
     logError("brb", "Stop", `could not write state: ${why}`, env);
