@@ -24,12 +24,16 @@ OMP seats kept newdle's pre-compaction save; this replaces it for them.
   - `session_compact` → `hooks/session-start.mjs` with `source: "compact"`; its
     `additionalContext` (snapshot, rules section, durable notes, liveness line) reaches the agent
     through `pi.sendMessage` as a hidden `continuity-restored` message. Once per compaction
-    entry: a repeated `session_compact` for a (session id, `compactionEntry.id`) pair already
-    restored or restoring sends nothing; a new entry restores again.
+    entry: a repeated `session_compact` for the entry a session last restored or is restoring
+    sends nothing; a new entry restores again. That memory is bounded: one entry id per session,
+    recorded only when a restore starts, dropped on `session_shutdown`, at most 64 sessions.
   - A `session_compact` with no `session_before_compact` before it (OMP's manual handoff and
     snapcompact frame rescue run no pre-event) is unpaired: the restore runs only when a snapshot
     for the session is on disk, and otherwise nothing is sent, so a host-written handoff is never
-    followed by a "save failed, reconstruct" line for a save that never ran.
+    followed by a "save failed, reconstruct" line for a save that never ran. A save whose
+    compaction was cancelled pairs with nothing: an aborted `auto_compaction_end` or pre-event
+    signal deletes its mark, and a mark pairs only with an entry committed on the branch leaf the
+    save ran on.
   - The spawn sets `CLAUDE_PROJECT_DIR` to the session's cwd and `CONTINUITY_HOST_RULES` to
     `CLAUDE.md,AGENTS.md`, the two names OMP's context-file providers load into the system prompt,
     which a compaction keeps: the walk names those as kept by the host and inlines a
@@ -40,11 +44,13 @@ OMP seats kept newdle's pre-compaction save; this replaces it for them.
   - Node resolution as brb's adapter: `CONTINUITY_NODE`, else the host binary unless it is Bun,
     else the first `node` on PATH or in the usual places.
 - `omp/continuity-omp.test.mjs`: the payload builder, the budgets pinned against
-  `lib/hook-runner.mjs` `DEADLINE_MS`, each handler's fail-open path with a fake runner, the four
+  `lib/hook-runner.mjs` `DEADLINE_MS`, each handler's fail-open path with a fake runner, the five
   registrations and the auto/manual bookkeeping, `spawnHook` on junk / non-zero / hang / echo
   children, one save-then-restore round trip through the real hooks, the restore once per
   compaction entry (sequential and concurrent repeats, a new entry, another session), the
-  unpaired `session_compact` cases, and a launch directory holding `CLAUDE.md` and
+  unpaired `session_compact` cases, the bounded dedup memory (10,000 entries in one session, 100
+  sessions, `session_shutdown`), a cancelled save followed by a host-only handoff (auto abort,
+  aborted signal, cancelled `/compact`), and a launch directory holding `CLAUDE.md` and
   `CLAUDE.local.md`.
 - `evals/pre-compact-omp-payload.scenario.json`: the save on the payload the adapter sends
   (fifteen scenarios in all).

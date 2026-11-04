@@ -43,17 +43,25 @@
 // a session_compact for a pair whose restore is in flight or done sends nothing, so a repeated
 // notification never re-sends a retained (truncated) snapshot or follows a delivered restore
 // with "this compaction's state was not restored". A new entry id restores again. An event with
-// no entry id cannot be told apart from another and is restored as a new one.
+// no entry id cannot be told apart from another and is restored as a new one. The memory is
+// bounded: per session only the newest entry id a restore started for (a session has one live
+// compaction; the duplicate is a repeat of that id), recorded only when a restore actually
+// starts, dropped on session_shutdown, and at most MAX_TRACKED_SESSIONS sessions, oldest out.
 //
 // PAIRED SAVES. Not every session_compact follows a session_before_compact: OMP's manual handoff
 // and its snapcompact frame rescue commit a compaction entry without the pre-event
 // (session-maintenance.ts handoff(), the snapcompact rescue). The adapter remembers, per session,
-// that a save was attempted; a session_compact that consumes such a mark is paired and runs the
-// restore as on Claude Code, including the "not restored: the save failed" line. An unpaired one
-// runs the restore only when a snapshot file exists for the session (one an earlier restore kept,
-// or a save whose own restore did not run) and otherwise sends nothing: the host wrote its own
-// summary, and no save was attempted that could have failed. A pre-event another extension
-// cancelled leaves its mark for the next session_compact, which then restores that save's snapshot.
+// that a save ran to completion (succeeded or failed) and the branch leaf it ran on (the last of
+// the event's branchEntries). A session_compact whose entry's parentId is that leaf consumes the
+// mark and is paired: it runs the restore as on Claude Code, including the "not restored: the
+// save failed" line. An unpaired one runs the restore only when a snapshot file exists for the
+// session (one an earlier restore kept, or a save whose own restore did not run) and otherwise
+// sends nothing: the host wrote its own summary, and no save for this compaction could have
+// failed. A save whose compaction never committed leaves no mark: an aborted pre-event signal
+// or an aborted auto_compaction_end (another extension cancelled an auto compaction) deletes
+// it, and a manual compaction another extension cancelled (the host throws, no end event)
+// leaves a mark whose leaf no later compaction entry names as its parent once the branch moved
+// on, which the next session_compact discards. A mark or entry without the ids pairs as before.
 //
 // THE RULES WALK. OMP loads `CLAUDE.md` and `AGENTS.md`, by those exact names, on the walk up
 // from the session's cwd into the system prompt (its discovery providers claude-md.ts and
@@ -128,23 +136,50 @@ type Ctx = {
 export type BeforeCompactEvent = {
   preparation?: { messagesToSummarize?: unknown; turnPrefixMessages?: unknown; tokensBefore?: unknown; fileOps?: unknown };
   customInstructions?: unknown;
+  branchEntries?: unknown;
+  signal?: { aborted?: unknown };
 };
 
 export type Trigger = "auto" | "manual";
 
 /** The structural slice of OMP's extension API this adapter registers against. */
 export type PiLike = {
-  on(name: "auto_compaction_start" | "auto_compaction_end", handler: (event: unknown, ctx: Ctx) => unknown): void;
+  on(name: "auto_compaction_start" | "auto_compaction_end" | "session_shutdown", handler: (event: unknown, ctx: Ctx) => unknown): void;
   on(name: "session_before_compact", handler: (event: BeforeCompactEvent, ctx: Ctx) => unknown): void;
   on(name: "session_compact", handler: (event: unknown, ctx: Ctx) => unknown): void;
   sendMessage?: (message: { customType: string; content: string; display: boolean }) => void;
 };
 
+/** The sessions the adapter keeps per-session memory for at once; the oldest is dropped past this. */
+export const MAX_TRACKED_SESSIONS = 64;
+
+/** The adapter's per-session memory (PAIRED SAVES, ONCE PER COMPACTION ENTRY, above); each map holds at most MAX_TRACKED_SESSIONS keys. */
+export type AdapterState = {
+  /** Session id → the branch leaf id a completed save ran on (null when the event named none). */
+  savesAttempted: Map<string, string | null>;
+  /** Session id → the newest compaction entry id a restore started for. */
+  restoresStarted: Map<string, string>;
+};
+
+export const newAdapterState = (): AdapterState => ({ savesAttempted: new Map(), restoresStarted: new Map() });
+
 export type Deps = {
   runCli?: RunCli;
   stateDir?: string;
   env?: NodeJS.ProcessEnv;
+  /** The per-session memory; a fresh one per registration unless a test passes its own to inspect. */
+  state?: AdapterState;
 };
+
+/** Set `key` as the newest entry of `map`, dropping the oldest keys past MAX_TRACKED_SESSIONS. */
+function remember<V>(map: Map<string, V>, key: string, value: V): void {
+  map.delete(key);
+  map.set(key, value);
+  for (const oldest of map.keys()) {
+    if (map.size <= MAX_TRACKED_SESSIONS) break;
+    map.delete(oldest);
+  }
+}
 
 /** `${XDG_STATE_HOME:-~/.local/state}/continuity`, read at call time (lib/paths.mjs stateDir, same rule). */
 export function defaultStateDir(env: NodeJS.ProcessEnv = process.env): string {
@@ -389,24 +424,50 @@ export function compactionEntryId(event: unknown): string | undefined {
   return typeof id === "string" && id ? id : undefined;
 }
 
+/** `value[key]` when it is a non-empty string, else undefined. */
+function stringField(value: unknown, key: string): string | undefined {
+  if (!value || typeof value !== "object" || !(key in value)) return undefined;
+  const field: unknown = Reflect.get(value, key);
+  return typeof field === "string" && field ? field : undefined;
+}
+
+/** The parentId of a session_compact event's entry (the branch leaf it was committed on), or undefined. */
+export function compactionParentId(event: unknown): string | undefined {
+  const entry = event && typeof event === "object" && "compactionEntry" in event ? event.compactionEntry : undefined;
+  return stringField(entry, "parentId");
+}
+
+/** The id of the last of a session_before_compact event's branchEntries (the leaf the save ran on), or undefined. */
+export function branchLeafId(event: BeforeCompactEvent): string | undefined {
+  const entries = event?.branchEntries;
+  return Array.isArray(entries) ? stringField(entries[entries.length - 1], "id") : undefined;
+}
+
 /** Registration entry point; package.json `omp.extensions` names this file. */
 export default function continuityOmp(pi: PiLike, deps: Deps = {}): void {
   const env = deps.env ?? process.env;
+  const { savesAttempted, restoresStarted } = deps.state ?? newAdapterState();
   // Set by auto_compaction_start, cleared by auto_compaction_end: the compaction between them is the host's own.
   let autoInFlight = false;
-  // Session ids with a save attempted and not yet consumed by a session_compact (PAIRED SAVES, above).
-  const savesAttempted = new Set<string>();
-  // `<session id>\0<entry id>` of every restore started (ONCE PER COMPACTION ENTRY, above).
-  const restoresStarted = new Set<string>();
   pi.on("auto_compaction_start", () => {
     autoInFlight = true;
   });
-  pi.on("auto_compaction_end", () => {
+  pi.on("auto_compaction_end", (event, ctx) => {
     autoInFlight = false;
+    // Aborted: no entry was committed for the save that just ran, so it pairs with nothing.
+    if (event && typeof event === "object" && "aborted" in event && event.aborted === true) savesAttempted.delete(managerSessionId(ctx));
   });
-  pi.on("session_before_compact", (event, ctx) => {
-    savesAttempted.add(managerSessionId(ctx));
-    return beforeCompactHandler(event, ctx, autoInFlight ? "auto" : "manual", deps);
+  pi.on("session_shutdown", (_event, ctx) => {
+    const sessionId = managerSessionId(ctx);
+    savesAttempted.delete(sessionId);
+    restoresStarted.delete(sessionId);
+  });
+  pi.on("session_before_compact", async (event, ctx) => {
+    const sessionId = managerSessionId(ctx);
+    savesAttempted.delete(sessionId);
+    await beforeCompactHandler(event, ctx, autoInFlight ? "auto" : "manual", deps);
+    if (event?.signal?.aborted !== true) remember(savesAttempted, sessionId, branchLeafId(event) ?? null);
+    return undefined;
   });
   const send =
     typeof pi.sendMessage === "function"
@@ -417,13 +478,14 @@ export default function continuityOmp(pi: PiLike, deps: Deps = {}): void {
   pi.on("session_compact", async (event, ctx) => {
     const sessionId = managerSessionId(ctx);
     const entryId = compactionEntryId(event);
-    if (entryId !== undefined) {
-      const key = `${sessionId}\0${entryId}`;
-      if (restoresStarted.has(key)) return;
-      restoresStarted.add(key);
-    }
-    const paired = savesAttempted.delete(sessionId);
+    if (entryId !== undefined && restoresStarted.get(sessionId) === entryId) return;
+    // One live compaction per session: a mark this entry does not answer to is a cancelled attempt's, and goes.
+    const leaf = savesAttempted.get(sessionId);
+    const parentId = compactionParentId(event);
+    const paired = leaf !== undefined && (leaf === null || parentId === undefined || leaf === parentId);
+    savesAttempted.delete(sessionId);
     if (!paired && !existsSync(snapshotPath(sessionId, env))) return;
+    if (entryId !== undefined) remember(restoresStarted, sessionId, entryId);
     await sessionCompactHandler(ctx, send, deps);
   });
 }

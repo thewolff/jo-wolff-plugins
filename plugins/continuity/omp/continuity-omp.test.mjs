@@ -1,7 +1,7 @@
 // omp/continuity-omp.test.mjs — the OMP adapter: the payload it builds from OMP's
 // session_before_compact event (the three host fields buildSnapshot reads, no transcript_path),
 // the budgets against the hook runner's deadline and OMP's handler timeout, each handler's
-// fail-open paths with a fake runner, the four registrations and the auto/manual trigger
+// fail-open paths with a fake runner, the five registrations and the auto/manual trigger
 // bookkeeping, and one round trip through the real hooks: a save spawned from a fake OMP event
 // lands in the plugin's state dir and the restore spawned after it hands the snapshot, the rules
 // section and the liveness line to sendMessage.
@@ -17,6 +17,7 @@ import { MAX_SECTION_CHARS } from "../lib/snapshot.mjs";
 import { box } from "../test/helpers.mjs";
 import continuityOmp, {
   MAX_FILE_OPS_CHARS,
+  MAX_TRACKED_SESSIONS,
   OMP_HOST_RULES,
   MAX_INTENTS,
   MAX_INTENT_CHARS,
@@ -30,6 +31,7 @@ import continuityOmp, {
   buildPreCompactPayload,
   buildRestorePayload,
   compactionEntryId,
+  newAdapterState,
   defaultStateDir,
   fileOperationsFrom,
   intentsFrom,
@@ -195,7 +197,7 @@ test("sessionCompactHandler: the restore's additionalContext goes to send; a qui
   }
 });
 
-test("registration: four events; auto_compaction_start marks the next compaction auto and _end clears it; the restore is a hidden custom message", async () => {
+test("registration: five events; auto_compaction_start marks the next compaction auto and _end clears it; the restore is a hidden custom message", async () => {
   const b = box();
   try {
     const handlers = {};
@@ -209,7 +211,7 @@ test("registration: four events; auto_compaction_start marks the next compaction
       return { hookSpecificOutput: { hookEventName: "SessionStart", additionalContext: "restored" } };
     };
     continuityOmp({ on: (name, h) => (handlers[name] = h), sendMessage: (m) => sent.push(m) }, { runCli, stateDir: b.stateDir, env: b.env });
-    assert.deepEqual(Object.keys(handlers).sort(), ["auto_compaction_end", "auto_compaction_start", "session_before_compact", "session_compact"]);
+    assert.deepEqual(Object.keys(handlers).sort(), ["auto_compaction_end", "auto_compaction_start", "session_before_compact", "session_compact", "session_shutdown"]);
     assert.equal(await handlers.session_before_compact({ preparation: preparation() }, ctx()), undefined, "a /compact with no auto start in flight");
     handlers.auto_compaction_start({ reason: "threshold" }, ctx());
     assert.equal(await handlers.session_before_compact({ preparation: preparation() }, ctx()), undefined);
@@ -300,6 +302,86 @@ test("unpaired session_compact (manual handoff, snapcompact rescue): no save att
     // The pairing is consumed: a handoff right after sends nothing again.
     await handlers.session_compact({ compactionEntry: { id: "handoff-3" } }, ctx());
     assert.equal(restores.length, 2);
+  } finally {
+    b.release();
+  }
+});
+
+test("bounded memory: 10,000 distinct entries in one session keep one restore id; 100 sessions keep at most MAX_TRACKED_SESSIONS; session_shutdown drops the session", async () => {
+  const b = box();
+  try {
+    const handlers = {};
+    const state = newAdapterState();
+    let restores = 0;
+    const runCli = async (hook) => (hook === PRE_COMPACT_HOOK ? undefined : (restores++, undefined));
+    continuityOmp({ on: (name, h) => (handlers[name] = h), sendMessage: () => {} }, { runCli, stateDir: b.stateDir, env: b.env, state });
+    // A host-only event with nothing saved and no snapshot is ineligible and is not recorded.
+    await handlers.session_compact({ compactionEntry: { id: "skipped" } }, ctx());
+    assert.equal(state.restoresStarted.size, 0, "an ineligible event allocates nothing");
+    // A kept snapshot makes every unpaired event eligible, so each one starts a restore.
+    mkdirSync(b.stateDir, { recursive: true });
+    writeFileSync(join(b.stateDir, "seat-lintel-1789498192-31073.json"), "{}");
+    for (let i = 0; i < 10_000; i++) await handlers.session_compact({ compactionEntry: { id: `entry-${i}` } }, ctx());
+    assert.equal(restores, 10_000);
+    assert.equal(state.restoresStarted.size, 1);
+    assert.equal(state.restoresStarted.get("seat-lintel-1789498192-31073"), "entry-9999");
+    await handlers.session_compact({ compactionEntry: { id: "entry-9999" } }, ctx());
+    assert.equal(restores, 10_000, "the repeat of the live entry is still a duplicate");
+    for (let i = 0; i < 100; i++) {
+      const c = ctx({ sessionManager: { getSessionId: () => `session-${i}` } });
+      await handlers.session_before_compact({ preparation: preparation() }, c);
+      await handlers.session_compact({ compactionEntry: { id: "e" } }, c);
+      await handlers.session_before_compact({ preparation: preparation() }, c);
+    }
+    assert.equal(state.restoresStarted.size, MAX_TRACKED_SESSIONS);
+    assert.equal(state.savesAttempted.size, MAX_TRACKED_SESSIONS);
+    assert.equal(state.restoresStarted.has("session-0"), false, "the oldest session is dropped");
+    assert.equal(state.restoresStarted.get("session-99"), "e");
+    handlers.session_shutdown({ type: "session_shutdown" }, ctx({ sessionManager: { getSessionId: () => "session-99" } }));
+    assert.equal(state.restoresStarted.has("session-99"), false);
+    assert.equal(state.savesAttempted.has("session-99"), false);
+    assert.equal(state.restoresStarted.size, MAX_TRACKED_SESSIONS - 1);
+  } finally {
+    b.release();
+  }
+});
+
+test("a cancelled save leaves no mark: a later host-only compaction gets no 'not restored' line (real restore hook); a paired failed save still does", async () => {
+  const b = box();
+  try {
+    const handlers = {};
+    const sent = [];
+    const runCli = async (hook, payload, cwd, ms) => {
+      if (hook === PRE_COMPACT_HOOK) throw new Error("injected save failure");
+      return spawnHook(hook, payload, cwd, ms, b.env);
+    };
+    continuityOmp({ on: (name, h) => (handlers[name] = h), sendMessage: (m) => sent.push(m.content) }, { runCli, stateDir: b.stateDir, env: b.env });
+    const c = ctx({ cwd: b.work });
+    const leaf = (id) => ({ preparation: preparation(), branchEntries: [{ id: "root" }, { id }] });
+    // Codex R2 reproduction: failed save, a later extension vetoes the auto compaction (aborted end, no
+    // entry committed), then a host-only handoff commits.
+    handlers.auto_compaction_start({}, c);
+    await handlers.session_before_compact({ preparation: preparation() }, c);
+    handlers.auto_compaction_end({ aborted: true, result: undefined, willRetry: false }, c);
+    await handlers.session_compact({ compactionEntry: { id: "later-host-only-handoff" } }, c);
+    assert.deepEqual(sent, [], "the aborted auto attempt pairs with nothing");
+    // An aborted pre-event signal leaves no mark either.
+    await handlers.session_before_compact({ ...leaf("L0"), signal: { aborted: true } }, c);
+    await handlers.session_compact({ compactionEntry: { id: "handoff-0", parentId: "L0" } }, c);
+    assert.deepEqual(sent, [], "an aborted pre-event pairs with nothing");
+    // A manual compaction another extension cancelled (no end event): the branch moved on, and the
+    // handoff committed on the new leaf does not pair with the stale mark.
+    await handlers.session_before_compact(leaf("L1"), c);
+    await handlers.session_compact({ compactionEntry: { id: "handoff-1", parentId: "L2" } }, c);
+    assert.deepEqual(sent, [], "a stale mark from a cancelled manual attempt pairs with nothing");
+    // The stale mark is gone: the next host-only event is unpaired too.
+    await handlers.session_compact({ compactionEntry: { id: "handoff-2", parentId: "L3" } }, c);
+    assert.deepEqual(sent, []);
+    // A genuinely paired failed save still warns.
+    await handlers.session_before_compact(leaf("L4"), c);
+    await handlers.session_compact({ compactionEntry: { id: "auto-4", parentId: "L4" } }, c);
+    assert.equal(sent.length, 1);
+    assert.match(sent[0], /this compaction's state was not restored/);
   } finally {
     b.release();
   }

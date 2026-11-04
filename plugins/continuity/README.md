@@ -318,21 +318,26 @@ instead of spending the restore budget on a second copy, and inlines a `CLAUDE.l
 like any nested file. Without `CONTINUITY_HOST_RULES` (Claude Code, which loads the local file
 too) every rules file at those levels is named as kept, as before.
 
-The restore runs once per compaction entry: the extension remembers each
-(session id, `compactionEntry.id`) pair it has started a restore for, and a repeated
-`session_compact` for that pair sends nothing, so a kept (truncated) snapshot is not sent twice
-and a delivered restore is never followed by a "not restored" line. A new entry restores again.
+The restore runs once per compaction entry: the extension remembers, per session, the
+`compactionEntry.id` it last started a restore for, and a repeated `session_compact` for that
+entry sends nothing, so a kept (truncated) snapshot is not sent twice and a delivered restore is
+never followed by a "not restored" line. A new entry restores again. The memory is bounded: one
+entry id per session, recorded only when a restore starts, dropped on `session_shutdown`, and at
+most 64 sessions, the oldest dropped first.
 
 Lifecycle exclusions. Two OMP paths commit a compaction without `session_before_compact`, so no
 save runs for them: the manual handoff (`/handoff`, which writes the host's own handoff summary)
-and the snapcompact frame rescue. The extension notes per session that a save was attempted; a
-`session_compact` with no such note is unpaired, and for it the restore runs only when a snapshot
+and the snapcompact frame rescue. The extension notes per session that a save ran (succeeded or
+failed) and the branch leaf it ran on; a `session_compact` whose entry was committed on that leaf
+is paired, and any other is unpaired. For an unpaired one the restore runs only when a snapshot
 file for the session is already on disk (one a truncated restore kept, or one whose own restore
-never ran). With no snapshot it sends nothing: no save was attempted, so there is no failed save
-to report, and the host's summary stands. A paired `session_compact` behaves as on Claude Code,
-including the "this compaction's state was not restored" line when the save failed. A pre-event
-that another extension cancelled leaves its note for the next `session_compact`, which then
-restores that save's snapshot.
+never ran). With no snapshot it sends nothing: no save was attempted for this compaction, so
+there is no failed save to report, and the host's summary stands. A paired `session_compact`
+behaves as on Claude Code, including the "this compaction's state was not restored" line when
+the save failed. A save whose compaction another extension cancelled leaves no note: an aborted
+`auto_compaction_end` or an aborted pre-event signal deletes it, and a cancelled `/compact`'s note
+names a leaf the next compaction is not committed on once the session has moved on, so it is
+discarded unpaired.
 
 Budgets: OMP abandons an extension handler at 30 s. Each hook answers inside the runner's own 4 s
 deadline whatever its handler does; the extension gives each spawn 8 s (node start-up and the
@@ -402,7 +407,7 @@ one, `CHANGELOG.md` and itself.
   that spawns `hooks/pre-compact.mjs` on `session_before_compact` and `hooks/session-start.mjs` on
   `session_compact`; the "Under OMP" section above has the payload, the budgets and the table of
   what newdle's OMP save did that this does and does not.
-- `omp/continuity-omp.test.mjs` (seventeen tests, one a save-then-restore round trip through the
+- `omp/continuity-omp.test.mjs` (nineteen tests, one a save-then-restore round trip through the
   real hooks) and `evals/pre-compact-omp-payload.scenario.json` (fifteen scenarios in all).
 - The restore runs once per compaction entry, and only after a save was attempted or when a
   snapshot is on disk (the lifecycle exclusions above).
