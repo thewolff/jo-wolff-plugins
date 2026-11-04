@@ -433,6 +433,55 @@ experimental on Node 22 and 24; its warning is silenced around the plugin's own 
 nowhere else. API drift across Node majors is the plugin's main maintenance risk; CI runs on
 Node 24.
 
+## Ledger pane (Desktop)
+
+A side pane for Claude Code Desktop and the terminal (Claude Code 2.1.286 or later, where
+plugins can ship mods; `hooks/hooks.json` names the module, `mods/pane/register.mjs`). It shows,
+without a model turn:
+
+- **Waiting in other folders**: every open and held question asked in a folder that is not this
+  one, grouped by folder, with its body, its options (the default marked), its state and its age.
+- **Answered since your last turn**: the answers and withdrawals recorded on this session's
+  questions since its last prompt, the same lines the UserPromptSubmit hook will give Claude on
+  your next prompt, so you see them before Claude does.
+
+Answering costs no turn. A digit (1 to 9) selects a question; its option buttons record that
+option, and the Reply field records an option word or free text (Enter records). From the prompt,
+`/ledger answer <q-id> <reply>` does the same; the short form `/ledger <word> <q-id>` records
+that one word. Either way the answer goes through the ledger CLI as this session
+(`scripts/ledger.mjs --json answer <q-id> <reply>` with `LEDGER_SESSION_ID`), so the asking
+window's next prompt gets its `answered since your last turn` line, and the Stop hook there
+stops chasing the question. The pane redraws when the CLI returns. `/ledger` opens the pane,
+`/ledger close` closes it, Esc returns the keyboard to the prompt, Ctrl+X X closes.
+
+The data refreshes at session start, at the start and end of each of your turns, and once a
+second while the pane is on screen; each refresh is one `node mods/pane/query.mjs` run, which
+reads with the same `elsewhereQuestions` and `answersSince` the settings hooks use. When a
+session starts with something waiting, the pane opens by itself; on a screen too narrow to
+place it, a toast names `/ledger` instead.
+
+Where nothing can draw (`claude -p`, a pane that is not placed), the end of each turn adds one
+transcript block instead: one line per answer since your last turn, one line per question waiting
+elsewhere with its options, and the `/ledger answer` command that records. The pane never
+writes a row itself and never writes outside the ledger's own tables.
+
+The fallback and the pane fail the same way as the hooks: a query that cannot open the database
+shows `ledger: database …` in the pane and one dim transcript line, a CLI refusal comes back as
+text (`ledger refused: …`), and no error ever reaches Claude Code.
+
+### Two-window test
+
+1. Open two Desktop windows on two different folders, both with the plugin enabled.
+2. In window A ask something through the ledger (`… ask "Which colour?" --name colour --options green,red --default green`, or let the agent ask).
+3. In window B type `/ledger`. The pane lists `colour` under window A's folder with both options.
+4. Press `1`, then the `red` button, or type `/ledger answer <q-id> red`. The pane shows `recorded: … red → <q-id> (colour)` with no turn spent in either window.
+5. In window A send any prompt. Claude's context carries `ledger: answered since your last turn: colour → red (via cli)` and window A's pane shows the same line under *Answered since your last turn* before the prompt is sent.
+
+Tests: `node --test` covers the pane's data layer (`test/pane-data.test.mjs`, `test/pane-query.test.mjs`);
+`claude plugin test` from `plugins/ledger` runs the mod through Claude Code's test kit
+(`mods/pane/tests/pane.test.tsx`: the command, the drawing, the fallback, the poll, and the
+fault inputs).
+
 ## Known gaps
 
 - The Stop rules look only at the final message; a question asked and withdrawn mid-turn is not seen, and a decision stated in an earlier message of the same turn is not either.
