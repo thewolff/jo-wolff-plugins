@@ -4,6 +4,33 @@ All notable changes to the ask-graham plugin are recorded here. The format follo
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Earlier releases are described under
 "Release notes" in [README.md](README.md#release-notes).
 
+## 0.8.1 - 2026-11-04
+
+### Added
+
+The Claude Code Stop hook writes a findings file per session,
+`${XDG_STATE_HOME:-$HOME/.local/state}/ask-graham/findings/<session id>.json`, whenever the turn's
+reply carries a `**Verdict:**` or `**Structure check:**` line: `version`, `sessionId`,
+`writtenAt`, `kind`, `ask`, `verdict`, `alternative`, `alternatives` (the pattern-fit design from
+the verdict line, `chosen: true`, and the `**Alternative:**` design, `chosen: false`, unless the
+line is a none-form) and `found` (the `**Found:**` items), plus `cwd`. Written through a temp file
+and a rename, mode 0600, overwritten per session, whether or not the Stop check runs or blocks.
+Other plugins may read it (paired-coding 1.6.0's cards draw on it); ask-graham reads nothing back.
+The parser is `skills/ask-graham/scripts/findings.mjs`; README "Findings on disk" has the shape.
+
+### Changed
+
+`scripts/prune.mjs` resolves the state directory with the hooks' rule (`XDG_STATE_HOME` counts
+only when absolute), so it prunes the directory the hooks write; findings files age out after 30
+days with the block records. The `state` declaration (`$XDG_STATE_HOME/ask-graham`, 30 days)
+already covers `findings/`.
+
+### How it fails
+
+A findings write that fails (EACCES, ENOSPC, a file where the directory should be) is one
+`errors.log` line and the usual one-line `systemMessage`; the Stop check's decision is unchanged
+and the turn is never blocked for it. A reply with no label lines writes nothing and logs nothing.
+
 ## 0.8.0 - 2026-11-04
 
 ### Added

@@ -215,7 +215,7 @@ receipt and removes its working files.
 | output-types | 0.3.1 | the CLAIM/CITE contract at SessionStart; a Stop check that warns on a label without its receipt | vendors plugin-kit's `lib/judge.mjs` and `lib/hook-runner.mjs`; delegation's brief skeleton carries its CLAIM/CITE line |
 | i-have-audhd | 1.6.1 | the message skeleton and thirteen Stop checks (links-resolve and the opt-in links-judge since 1.6.1), warning by default | its `enforcement.judgeCommand` is the last fallback of plugin-kit's judge resolution and of ledger's review judge |
 | paired-coding | 1.5.0 | change sets behind a write gate; learning mode with `pair_learn`, `why` + `sources` on a card, `recall` on done | none |
-| ask-graham | 0.8.0 | "should we build X?" with a verdict; a prompt nudge and a Stop check | reads your `sources.md`; nothing from another plugin; its `**Alternative:**` line carries pattern-check's `better design` cell when that plugin is installed |
+| ask-graham | 0.8.1 | "should we build X?" with a verdict; a prompt nudge and a Stop check; each verdict or structure check recorded per session in `ask-graham/findings/<session id>.json` | reads your `sources.md`; nothing from another plugin; its `**Alternative:**` line carries pattern-check's `better design` cell when that plugin is installed; its findings file is for other plugins to read |
 | pattern-check | 0.4.0 | holds big work until a reuse/replace/new receipt exists, each row with its `better design` and how it fails | its receipt file is what delegation's spawn gate requires |
 | reminders-review | 0.2.1 | Apple Reminders, one at a time | none |
 | ledger | 0.3.6 | questions and choices on rows; the push gate with six rows (`docs` new) | its `says` row checks the "When this can't" heading every skill and agent carries; its canary runs every plugin's `e2e/live-run.sh` |
@@ -824,6 +824,13 @@ extension (`omp/ask-graham-omp.ts`, declared in the plugin's `package.json`): wi
   else hangs off the same parent and reports what it found, or plainly that it found nothing
   similar. It gives no verdict and does not ask the comparables question.
 - **A level you set**, `ask` or `every-idea`, for how eagerly it runs (next section).
+
+Changes in 0.8.1: the Claude Code Stop hook records each reply that carries a `**Verdict:**` or
+`**Structure check:**` line in `${XDG_STATE_HOME:-$HOME/.local/state}/ask-graham/findings/<session id>.json`
+(the ask, the verdict, the pattern-fit design and the `**Alternative:**` design, the `**Found:**`
+items), one file per session, overwritten at each such stop and pruned after 30 days, so other
+plugins can read what the check decided. A write that fails is one `errors.log` line, never a
+blocked turn.
 
 Changes in 0.8.0: the reply shows the better design beside the pattern-fit one. Step 4's
 second-pattern flag still makes the design use the repo's pattern or say why it cannot; when a
