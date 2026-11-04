@@ -111,3 +111,11 @@ output if it could repeat side effects.
   reviewed material is authorized. Do not paste secrets or large transcripts.
 - Use the existing `ctx integrations` lifecycle for the ctx skill and MCP.
   Do not remove or rewrite the user's Graf/Sift integrations implicitly.
+
+## How it fails
+
+- `ctx` is not installed or not on PATH: say so and continue without history; do not reconstruct prior sessions from memory.
+- `ctx status` reports no indexed history, or `ctx sources` lists none: history search and blame return nothing by design; run `ctx setup` only when the task warrants indexing, and say that first indexing takes time.
+- A search returns no hits: report "no prior session found for <query>", not "this was never done"; the index covers only the sources it lists.
+- Blame cannot attribute a line (uncommitted, squashed, or outside indexed history): report the attribution as unknown; a commit SHA is still a receipt, a session id is not unless `ctx` printed it.
+- The graph snapshot is stale (built before the current edits): a `graph callers` result describes the snapshot, not the working tree; say which.

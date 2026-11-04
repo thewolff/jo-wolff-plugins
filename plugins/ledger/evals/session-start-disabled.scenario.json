@@ -1,0 +1,18 @@
+{
+  "$comment": "Sibling of session-start-relay: a folder that opted out (`ledger disable` writes .ledger.json with enabled false) gets no injection at all.",
+  "event": "SessionStart",
+  "expect": "silent",
+  "sibling": "session-start-relay.scenario.json",
+  "stdin": {
+    "session_id": "${SESSION_ID}",
+    "transcript_path": "${TRANSCRIPT}",
+    "cwd": "${CWD}",
+    "hook_event_name": "SessionStart",
+    "source": "startup"
+  },
+  "setup": {
+    "files": {
+      ".ledger.json": "{ \"enabled\": false }\n"
+    }
+  }
+}

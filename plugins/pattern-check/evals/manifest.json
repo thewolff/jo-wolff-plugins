@@ -1,0 +1,18 @@
+{
+  "$comment": "Every event hooks/hooks.json registers and the outcomes its handler returns. Each event x outcome is proved by one *.scenario.json; `ledger gate check` fails naming the gap. systemMessage on PreToolUse and Stop is the fail-open warning (a corrupt config or state file): the call goes through and the person is told.",
+  "events": {
+    "PreToolUse": [
+      "deny",
+      "systemMessage",
+      "silent"
+    ],
+    "Stop": [
+      "deny",
+      "silent"
+    ],
+    "SessionEnd": [
+      "silent"
+    ]
+  },
+  "manual": []
+}

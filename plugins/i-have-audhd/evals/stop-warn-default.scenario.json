@@ -1,0 +1,68 @@
+{
+  "$comment": "Sibling of stop-block-plural: with no profile every rule warns, so the same reply passes and the findings wait in the state directory for the next prompt.",
+  "event": "Stop",
+  "expect": "silent",
+  "sibling": "stop-block-plural.scenario.json",
+  "transcript": [
+    {
+      "type": "user",
+      "message": {
+        "role": "user",
+        "content": "why is the site broken?"
+      }
+    },
+    {
+      "type": "assistant",
+      "message": {
+        "role": "assistant",
+        "content": [
+          {
+            "type": "tool_use",
+            "id": "t1",
+            "name": "Bash",
+            "input": {
+              "command": "gh run list"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "type": "user",
+      "message": {
+        "role": "user",
+        "content": [
+          {
+            "type": "tool_result",
+            "tool_use_id": "t1",
+            "content": "failure"
+          }
+        ]
+      }
+    },
+    {
+      "type": "assistant",
+      "message": {
+        "role": "assistant",
+        "content": [
+          {
+            "type": "text",
+            "text": "I started by reading the deploy workflow end to end, then compared the staging and production configuration files line by line, then walked through the last three release tags to see how the cache keys were derived in each of them, and then read the runbook section on rollbacks.\n\nAfter all of that, the conclusion is that the production deploy failed last night and the rollback did not run, so the site is still serving the broken build. The fix is to rerun the rollback job by hand from the actions page.\n\n## Closing ask\n\nShould I rerun those?"
+          }
+        ]
+      }
+    }
+  ],
+  "stdin": {
+    "session_id": "${SESSION_ID}",
+    "transcript_path": "${TRANSCRIPT}",
+    "cwd": "${CWD}",
+    "hook_event_name": "Stop",
+    "stop_hook_active": false
+  },
+  "after": {
+    "exists": [
+      "~/.claude/.i-have-audhd-state/warnings.log"
+    ]
+  }
+}

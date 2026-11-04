@@ -1,0 +1,18 @@
+{
+  "$comment": "Pairing on: every typed turn is queued and the agent is told the gate is on and how it ends.",
+  "event": "UserPromptSubmit",
+  "expect": "systemMessage",
+  "reason": "pairing is on",
+  "setup": {
+    "commands": [
+      "node \"${PLUGIN_DIR}/evals/pair-start.mjs\" \"${SESSION_ID}\""
+    ]
+  },
+  "stdin": {
+    "session_id": "${SESSION_ID}",
+    "transcript_path": "${TRANSCRIPT}",
+    "cwd": "${CWD}",
+    "hook_event_name": "UserPromptSubmit",
+    "prompt": "looks good, go ahead"
+  }
+}

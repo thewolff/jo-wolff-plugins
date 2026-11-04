@@ -237,3 +237,10 @@ After instrumenting a feature, confirm:
 
 <!-- owned: agent-system 2.0 (M6) — the link on the next line pointed at the pack-level references/ upstream; rewritten to this skill's own references/ so it resolves under skill:// (OMP rejects .. in skill paths) -->
 For the at-a-glance version of this list, including the pre-launch instrumentation gate, see `references/observability-checklist.md`.
+
+## How it fails
+
+- The logging, metrics or tracing backend is not reachable from this environment: the instrumentation is added, its wiring verified by reading the config, and the end-to-end check is reported as not run.
+- A log line would carry secrets, tokens or personal data: it is not added; the field is redacted or dropped and the choice is named in the PR.
+- No evidence can be gathered for a production issue (no logs retained, no trace id in the report): say that the instrumentation gap is the first finding and the fix comes after the gap is closed.
+- Alerts are added with thresholds nobody measured: they are labeled provisional with the number to revisit; an alert that pages on a guess is worse than none.

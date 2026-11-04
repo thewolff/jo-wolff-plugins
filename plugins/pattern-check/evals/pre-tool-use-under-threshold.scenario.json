@@ -1,0 +1,47 @@
+{
+  "$comment": "Sibling of pre-tool-use-third-file-held: the second distinct file is under the threshold and passes with nothing printed.",
+  "event": "PreToolUse",
+  "expect": "silent",
+  "sibling": "pre-tool-use-third-file-held.scenario.json",
+  "setup": {
+    "files": {
+      "src/a.ts": "a\n",
+      "src/b.ts": "a\n"
+    }
+  },
+  "before": [
+    {
+      "stdin": {
+        "session_id": "${SESSION_ID}",
+        "transcript_path": "${TRANSCRIPT}",
+        "cwd": "${CWD}",
+        "hook_event_name": "PreToolUse",
+        "tool_name": "Edit",
+        "tool_use_id": "toolu_a",
+        "tool_input": {
+          "file_path": "${CWD}/src/a.ts",
+          "old_string": "a",
+          "new_string": "b"
+        }
+      }
+    }
+  ],
+  "stdin": {
+    "session_id": "${SESSION_ID}",
+    "transcript_path": "${TRANSCRIPT}",
+    "cwd": "${CWD}",
+    "hook_event_name": "PreToolUse",
+    "tool_name": "Edit",
+    "tool_use_id": "toolu_b",
+    "tool_input": {
+      "file_path": "${CWD}/src/b.ts",
+      "old_string": "a",
+      "new_string": "b"
+    }
+  },
+  "after": {
+    "exists": [
+      "$XDG_STATE_HOME/pattern-check/sessions/${SESSION_ID}.json"
+    ]
+  }
+}

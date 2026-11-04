@@ -1,9 +1,17 @@
 {
   "name": "ledger",
   "description": "A durable, id'd record of the questions an agent asks the human (one-word answers, optional ceiling) and the notes it records when it decides without asking, in one SQLite file. A CLI the agent runs, batch pastes applied line by line, and hooks (on by default, off per folder with /ledger:disable) that inject the open items at session start, deny AskUserQuestion until the question has a row and git push until the session has a note or an outcome, and refuse once a turn that leaves a plain-words answer unrecorded, asks with no row, or decides with no note. Every hook fails open.",
-  "version": "0.3.4",
+  "version": "0.3.5",
   "author": { "name": "Jo Wolff" },
   "license": "MIT",
   "repository": "https://github.com/thewolff/jo-wolff-plugins",
-  "keywords": ["agents", "ledger", "sqlite", "hooks", "approvals", "decisions"]
+  "keywords": ["agents", "ledger", "sqlite", "hooks", "approvals", "decisions"],
+  "state": [
+    {"path": "$XDG_STATE_HOME/ledger/canary", "retentionDays": 30, "prune": "node \"${CLAUDE_PLUGIN_ROOT}/scripts/ledger.mjs\" canary prune --days 30"},
+    {"path": "$XDG_STATE_HOME/ledger/errors.log", "kind": "file", "retentionDays": null, "prune": null},
+    {"path": "$XDG_DATA_HOME/ledger/ledger.db", "kind": "file", "retentionDays": null, "prune": null},
+    {"path": "$XDG_CONFIG_HOME/ledger/config.json", "kind": "file", "retentionDays": null, "prune": null},
+    {"path": "<worktree>/.ai/decision-log", "retentionDays": null, "prune": null},
+    {"path": "$TMPDIR/ledger-*", "retentionDays": 0, "prune": null}
+  ]
 }

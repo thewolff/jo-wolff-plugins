@@ -397,3 +397,10 @@ Keep the details that carry the writer's voice unless they hurt the meaning:
 ## Source
 
 The patterns come from Wikipedia's ["Signs of AI writing"](https://en.wikipedia.org/wiki/Wikipedia:Signs_of_AI_writing), maintained by WikiProject AI Cleanup, and from reviews of AI-generated text on Wikipedia and elsewhere.
+
+## How it fails
+
+- The text is human-written and the ask is to leave it alone: the "When not to act" rule applies; say that no edit was made and why.
+- A rule here conflicts with the author's deliberate style (fragments, repetition for effect): the author wins; name the rule that was not applied.
+- A rewrite changes a fact, a number or a claim: that is a failure of the pass, not a style improvement; every edit preserves meaning, and a sentence whose meaning cannot be preserved is left and flagged.
+- Customer-facing or formal text: the repository's voice rules (if any) take precedence over this skill's defaults.

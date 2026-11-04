@@ -19,3 +19,5 @@ quote the reason instead. Do not run anything else.
   hand with `{"enabled": true}` in the folder.
 - The output says `database …`: `enable` never touches the database, so that line is a notice
   from the config layer; the switch still took effect if the `.ledger.json` path is printed.
+- The hooks coming back on is proved by `evals/session-start-relay.scenario.json` (SessionStart
+  injects the open items); its sibling `evals/session-start-disabled.scenario.json` is the off state.

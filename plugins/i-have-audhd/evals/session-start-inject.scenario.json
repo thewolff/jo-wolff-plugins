@@ -1,0 +1,13 @@
+{
+  "$comment": "SessionStart injects the rules as additionalContext (the judge notice rides along as systemMessage the first time).",
+  "event": "SessionStart",
+  "expect": "systemMessage",
+  "reason": "i-have-audhd rules",
+  "stdin": {
+    "session_id": "${SESSION_ID}",
+    "transcript_path": "${TRANSCRIPT}",
+    "cwd": "${CWD}",
+    "hook_event_name": "SessionStart",
+    "source": "startup"
+  }
+}

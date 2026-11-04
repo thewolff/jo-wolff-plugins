@@ -1,0 +1,12 @@
+{
+  "$comment": "SessionEnd closes the session row and prints nothing.",
+  "event": "SessionEnd",
+  "expect": "silent",
+  "stdin": {
+    "session_id": "${SESSION_ID}",
+    "transcript_path": "${TRANSCRIPT}",
+    "cwd": "${CWD}",
+    "hook_event_name": "SessionEnd",
+    "reason": "other"
+  }
+}

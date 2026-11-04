@@ -1,0 +1,28 @@
+{
+  "$comment": "Pairing on (pair_start ran), no agreed change set: a host Write is refused and the reason names the pair_* way through.",
+  "event": "PreToolUse",
+  "expect": "deny",
+  "reason": "paired-coding",
+  "setup": {
+    "commands": [
+      "node \"${PLUGIN_DIR}/evals/pair-start.mjs\" \"${SESSION_ID}\""
+    ]
+  },
+  "stdin": {
+    "session_id": "${SESSION_ID}",
+    "transcript_path": "${TRANSCRIPT}",
+    "cwd": "${CWD}",
+    "hook_event_name": "PreToolUse",
+    "tool_name": "Write",
+    "tool_use_id": "toolu_01",
+    "tool_input": {
+      "file_path": "${CWD}/a.txt",
+      "content": "x"
+    }
+  },
+  "after": {
+    "exists": [
+      "~/.local/state/paired-coding/${SESSION_ID}/activated"
+    ]
+  }
+}

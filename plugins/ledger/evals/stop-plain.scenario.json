@@ -1,0 +1,15 @@
+{
+  "$comment": "Sibling of stop-ask-rule: a reply that asks nothing passes.",
+  "event": "Stop",
+  "expect": "silent",
+  "sibling": "stop-ask-rule.scenario.json",
+  "stdin": {
+    "session_id": "${SESSION_ID}",
+    "transcript_path": "${TRANSCRIPT}",
+    "cwd": "${CWD}",
+    "hook_event_name": "Stop",
+    "stop_hook_active": false,
+    "prompt_id": "p-1",
+    "last_assistant_message": "Done: the cache is wired in-process, as the note says. Tests pass."
+  }
+}

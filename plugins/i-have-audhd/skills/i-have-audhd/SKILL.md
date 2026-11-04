@@ -138,3 +138,11 @@ Three rules the plugin's Stop hook checks, written here so each of its warnings 
 - **Bad news first.** Say the bad news in the first 20 words of the message (or labeled section) it belongs to. The explanation is still welcome; it goes second.
 
 Which rules the Stop hook checks, how, and at what default (warn): [`reference.md`](reference.md).
+
+## When this can't run
+
+- A rule needs a judge and none is configured (`enforcement.judgeCommand` in `~/.claude/i-have-audhd.json`): the five judge-gated rules are off and the SessionStart note says so once; the mechanical rules still run. `evals/stop-judge-warns.scenario.json` is a judge-gated rule with a replayed real-judge capture; without a judge the same reply is not checked.
+- The Stop hook warned (`i-have-audhd warned on the agent's last message`, delivered at the next prompt, `evals/prompt-delivers-warning.scenario.json`): the message that ended the last turn broke a rule; the warning names it. Fix the next message, do not re-send the last one.
+- The Stop hook blocked (`enforcement.mode: block`, `evals/stop-block-plural.scenario.json`): the turn cannot end with that message; rewrite the sentence the reason quotes. Blocking is per profile and off by default (`evals/stop-warn-default.scenario.json` is the default).
+- The rules were not injected at SessionStart (`I_HAVE_AUDHD_INJECT=off`, or the `~/.claude/.i-have-audhd-off` file for the Stop and prompt hooks): nothing here is enforced; the person turned it off. `evals/session-start-off.scenario.json` is that state.
+- A hook's `systemMessage` starting `i-have-audhd … failed open`: the hook did nothing; its line is in `~/.claude/.i-have-audhd-state/errors.log`. Tell the person once.

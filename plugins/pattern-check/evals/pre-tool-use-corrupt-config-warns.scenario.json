@@ -1,0 +1,26 @@
+{
+  "$comment": "Fail open: a user config that is not JSON is set aside, the first edit is allowed, and one systemMessage line says which file is broken.",
+  "event": "PreToolUse",
+  "expect": "systemMessage",
+  "reason": "not valid JSON",
+  "sibling": "pre-tool-use-under-threshold.scenario.json",
+  "setup": {
+    "files": {
+      "src/a.ts": "a\n",
+      "$XDG_CONFIG_HOME/pattern-check/config.json": "{not json"
+    }
+  },
+  "stdin": {
+    "session_id": "${SESSION_ID}",
+    "transcript_path": "${TRANSCRIPT}",
+    "cwd": "${CWD}",
+    "hook_event_name": "PreToolUse",
+    "tool_name": "Edit",
+    "tool_use_id": "toolu_a",
+    "tool_input": {
+      "file_path": "${CWD}/src/a.ts",
+      "old_string": "a",
+      "new_string": "b"
+    }
+  }
+}

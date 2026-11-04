@@ -427,3 +427,11 @@ After review is complete:
 - [ ] Dependency upgrades were reviewed against their changelog, isolated per package, and verified by a green suite with the lockfile diff reviewed
 
 **Presumptive blockers:** surface and propose the simpler design for each of these; escalate to Required only when the change actively makes structure worse: a refactor that relocates complexity instead of reducing it; a change that pushes a file past the size boundary with no decomposition; feature logic added to a shared module; a near-duplicate of an existing canonical helper; a silent fallback that hides an unclear invariant.
+
+## How it fails
+
+- The diff is larger than can be read with attention (hundreds of files, generated code mixed in): say which paths were read and which were skipped, and review the skipped ones separately or ask for a split; a review that skimmed is reported as a skim.
+- Tests cannot be run (missing toolchain, no network, an environment the suite needs): the "tests pass" axis is reported as not verified; the review stands on the other axes and says so.
+- The base branch or the PR cannot be fetched: review what is local and name the gap; never guess at what main looks like.
+- A finding is a matter of taste rather than a defect: label it as such or drop it; a review that cannot tell the two apart wastes the author's time.
+- Reviewer and author are the same model session: name that in the report and prefer the multi-model pattern for anything that matters.

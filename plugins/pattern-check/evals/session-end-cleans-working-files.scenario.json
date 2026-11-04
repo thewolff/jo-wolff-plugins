@@ -1,0 +1,46 @@
+{
+  "$comment": "SessionEnd removes the session's working files (sessions/<key>.json, stop/<key>) and keeps the receipt copy; nothing is printed.",
+  "event": "SessionEnd",
+  "expect": "silent",
+  "setup": {
+    "files": {
+      "src/a.ts": "a\n"
+    },
+    "commands": [
+      "node \"${PLUGIN_DIR}/scripts/pattern-check.mjs\" record --session \"${SESSION_ID}\" --cwd \"${CWD}\" --no-new-pieces \"scenario\""
+    ]
+  },
+  "before": [
+    {
+      "event": "PreToolUse",
+      "stdin": {
+        "session_id": "${SESSION_ID}",
+        "transcript_path": "${TRANSCRIPT}",
+        "cwd": "${CWD}",
+        "hook_event_name": "PreToolUse",
+        "tool_name": "Edit",
+        "tool_use_id": "toolu_a",
+        "tool_input": {
+          "file_path": "${CWD}/src/a.ts",
+          "old_string": "a",
+          "new_string": "b"
+        }
+      }
+    }
+  ],
+  "stdin": {
+    "session_id": "${SESSION_ID}",
+    "transcript_path": "${TRANSCRIPT}",
+    "cwd": "${CWD}",
+    "hook_event_name": "SessionEnd",
+    "reason": "exit"
+  },
+  "after": {
+    "absent": [
+      "$XDG_STATE_HOME/pattern-check/sessions/${SESSION_ID}.json"
+    ],
+    "exists": [
+      "$XDG_STATE_HOME/pattern-check/receipts/${SESSION_ID}.md"
+    ]
+  }
+}

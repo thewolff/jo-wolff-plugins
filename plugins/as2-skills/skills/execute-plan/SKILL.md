@@ -353,3 +353,12 @@ covers the whole-branch review, its single fix wave, and how you finish.
 | "Reviews slow the loop down" | The loop without reviews is just unverified churn. Reviews are the loop's brakes and steering. |
 | "Ledger bookkeeping is overhead" | The ledger is what survives compaction. Controllers without one have re-dispatched entire completed task sequences. |
 | "The implementer spawned its own reviewer — free extra assurance" | It's a duplicate seat reviewing the same diff; the task review is the gate. A worker-spawned reviewer is a defect to flag, not rigor. |
+
+## How it fails
+
+- `scripts/sdd-workspace` cannot run or prints no directory: stop before Task 1; the ledger has nowhere to live and progress would be unrecoverable after compaction.
+- The plan names a spec that cannot be read: every ruling is provisional and the ledger's first lines say so.
+- A task's implementer subagent fails, times out or returns no diff: the ledger records the attempt and its result; the task is retried once with the failure in the brief, then escalated as a blocker, never skipped to the next task.
+- A task review finds spec drift: the task is not marked done; the fix goes back to an implementer with the review attached.
+- Context was compacted mid-run: trust `<workspace>/progress.md` and `git log` over memory; `references/resuming.md` says where to pick up. Re-dispatching a completed task is the expensive failure this skill exists to prevent.
+- The task tool is unavailable: the fallback is inline execution, named as such in the ledger, with the same per-task review.

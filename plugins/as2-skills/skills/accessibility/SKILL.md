@@ -248,3 +248,10 @@ After writing the review file, tell the user:
 - Remind them they can reply with IDs to fix selectively
 
 **Do NOT start fixing anything until the user explicitly asks.**
+
+## How it fails
+
+- The audit tool, browser or axe run the workflow names is missing or refuses to start: say so in the first line of the report and list every check that needed it under "Not checked"; a severity list with no tool behind it is a guess, never a finding.
+- A page needs a login, a cookie or a feature flag the audit cannot supply: the unreached routes go under "Not checked" with the reason, not under "passes".
+- Nothing is flagged: that is not a clean bill. Say which checks ran, against which URLs, and that manual checks (focus order by hand, screen-reader pass) were not done unless they were.
+- A finding cannot be tied to a DOM node, a file or a line: report it as an observation with the receipt it does have; never invent a selector.

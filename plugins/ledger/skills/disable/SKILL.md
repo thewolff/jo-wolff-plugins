@@ -19,3 +19,6 @@ quote the reason instead. Do not run anything else.
   They can create it by hand with `{"enabled": false}` in the folder.
 - The output says `database …`: `disable` never touches the database, so that line is a notice
   from the config layer; the switch still took effect if the `.ledger.json` path is printed.
+- The hooks staying quiet in a disabled folder is proved by `evals/session-start-disabled.scenario.json`
+  (`.ledger.json` with `enabled: false`, SessionStart prints nothing); `ledger canary run --plugins ledger`
+  replays it.

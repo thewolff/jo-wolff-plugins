@@ -1,0 +1,15 @@
+{
+  "$comment": "A reply that asks the human for a decision, with no question open through the ledger, is blocked; the reason names `ledger ask`.",
+  "event": "Stop",
+  "expect": "deny",
+  "reason": "ask",
+  "stdin": {
+    "session_id": "${SESSION_ID}",
+    "transcript_path": "${TRANSCRIPT}",
+    "cwd": "${CWD}",
+    "hook_event_name": "Stop",
+    "stop_hook_active": false,
+    "prompt_id": "p-1",
+    "last_assistant_message": "I can wire the cache two ways: in-process or through Redis. Which one would you prefer me to build, in-process or Redis?"
+  }
+}

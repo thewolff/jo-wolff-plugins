@@ -202,3 +202,11 @@ The closing ask names the thing in full ("Start the CSV export for the billing p
 ```
 
 Every source it lists is read-only for this skill. If a listed command would write anything, skip it and record the source as *unreachable*.
+
+## When this can't run
+
+- The web search or a local source named in the sources file is unreachable (no network, a command that errors, a source that would write): the gate question stays unanswered and the verdict is given on what was read, with the unread source named as *unreachable*; never score an unmeasured comparable as a pass.
+- The ask is not a build decision (a ticket, a bug, continuing decided work): say that in one line and stop; the Stop check accepts no verdict only for a structure check or a waiting reply.
+- The Stop check blocked the turn (`ask-graham: … no verdict`): the reply ended without a `**Verdict:**` line after this skill was read. Give the verdict, or the exact open question alone on the last line; the block is once per turn and is proved by `evals/stop-no-verdict.scenario.json` (its sibling `evals/stop-with-verdict.scenario.json` passes).
+- The nudge fires on every message (`intensity=every-idea`) when it should not: `/ask-graham intensity ask` writes the setting; the nudge and the quiet state are `evals/prompt-nudge-every-idea.scenario.json` and `evals/prompt-quiet-at-ask.scenario.json`.
+- A hook's `systemMessage` starting `ask-graham … failed open`: the check did not run; its line is in `${XDG_STATE_HOME:-~/.local/state}/ask-graham/errors.log`. Tell the person once and give the verdict anyway.

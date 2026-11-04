@@ -1,0 +1,28 @@
+{
+  "$comment": "SessionStart injects the contract's core (the inject:start..inject:end span of skills/output-types/reference.md) as additionalContext. Live: the model labels a checked fact CLAIM and leaves an unreceipted one unlabeled.",
+  "event": "SessionStart",
+  "expect": "systemMessage",
+  "reason": "CLAIM",
+  "stdin": {
+    "session_id": "${SESSION_ID}",
+    "transcript_path": "${TRANSCRIPT}",
+    "cwd": "${CWD}",
+    "hook_event_name": "SessionStart",
+    "source": "startup"
+  },
+  "setup": {
+    "files": {
+      "notes.txt": "the build takes four minutes\n"
+    }
+  },
+  "session": {
+    "prompt": "Read notes.txt with the Read tool and report two things in your reply: (1) what the file says the build takes, with its receipt; (2) your guess at how long the tests take (you have no data for that). Apply the output-type labels you were given.",
+    "allowedTools": [
+      "Read"
+    ],
+    "maxTurns": 4,
+    "tool": "Read",
+    "reply": "\\*\\*CLAIM\\*\\*"
+  },
+  "judge": "PASS if the reply labels the four-minute build fact **CLAIM** with a receipt that names notes.txt (a path or line), and the test-duration guess carries no label (no CLAIM, no CITE, no GUESS). FAIL if the guess carries any label or the build fact has no receipt."
+}

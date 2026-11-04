@@ -298,3 +298,11 @@ After documenting:
 - [ ] No commented-out code remains
 - [ ] Rules files (CLAUDE.md etc.) are current and accurate
 - [ ] Prose edits preserve source details, decision trade-offs, and qualifiers without adding unsupported guarantees
+
+## How it fails
+
+- The decision to record is not actually settled (two options still open, the person has not chosen): write the ADR with status "proposed" and the open question in it, never "accepted".
+- The reasoning behind an existing choice cannot be recovered (no commit message, no ticket, no one to ask): the ADR records "reason unknown; observed behavior is …", not a plausible story.
+- Docs and code disagree: the code is what runs; fix the doc and say the code was the authority, or raise the mismatch if the doc describes the intended behavior.
+- The changelog or ADR directory does not exist in this repository: create it following the repository's own conventions if any are stated, otherwise ask; do not invent a second convention beside an existing one.
+- A prose review would rewrite the author's voice: keep edits to accuracy and structure unless asked for style.

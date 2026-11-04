@@ -252,3 +252,10 @@ After a database schema migration:
 - [ ] Old and new code are both valid against the schema at every deploy step
 - [ ] Each migration has a tested down path; backfills run in throttled batches
 - [ ] Destructive steps (drop/rename) ship in their own deploy after no code references the old shape
+
+## How it fails
+
+- Not every consumer of the old path can be found (external callers, a client with its own release cycle, data written by an older version): the removal is not safe yet; report the unknown consumers and keep the old path until they are known.
+- A migration step cannot be reversed (a dropped column, deleted data): say so in the plan before the step runs and get an explicit go-ahead; the expand/contract order exists so no step is irreversible until the last.
+- The deploy order across repositories matters and this skill cannot enforce it: name the order in the handoff as a numbered list; a correct diff shipped in the wrong order is still an outage.
+- A deprecation notice is written but nothing measures whether usage dropped: the contract step is blocked on that measurement; do not remove on a calendar date alone.

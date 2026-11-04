@@ -2,9 +2,14 @@
   "name": "i-have-audhd",
   "displayName": "I have AuDHD",
   "description": "Writing rules for an AuDHD (ADHD and autistic) reader, with the research behind each one, plus a Stop hook that warns when a message buries what the reader needs.",
-  "version": "1.5.1",
+  "version": "1.5.2",
   "author": { "name": "Jo Wolff" },
   "license": "MIT",
   "repository": "https://github.com/thewolff/jo-wolff-plugins",
-  "keywords": ["agents", "reporting", "communication", "handoff", "adhd", "autism", "audhd"]
+  "keywords": ["agents", "reporting", "communication", "handoff", "adhd", "autism", "audhd"],
+  "state": [
+    {"path": "~/.claude/.i-have-audhd-state", "retentionDays": 30, "prune": "node \"${CLAUDE_PLUGIN_ROOT}/scripts/prune.mjs\" --days 30"},
+    {"path": "~/.claude/i-have-audhd.json", "kind": "file", "retentionDays": null, "prune": null},
+    {"path": "~/.claude/.i-have-audhd-off", "kind": "file", "retentionDays": null, "prune": null}
+  ]
 }

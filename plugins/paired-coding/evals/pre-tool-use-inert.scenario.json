@@ -1,0 +1,23 @@
+{
+  "$comment": "Sibling of pre-tool-use-write-denied: a session that never ran pair_start is inert; the same Write passes with nothing printed and nothing written under the state base.",
+  "event": "PreToolUse",
+  "expect": "silent",
+  "sibling": "pre-tool-use-write-denied.scenario.json",
+  "stdin": {
+    "session_id": "${SESSION_ID}",
+    "transcript_path": "${TRANSCRIPT}",
+    "cwd": "${CWD}",
+    "hook_event_name": "PreToolUse",
+    "tool_name": "Write",
+    "tool_use_id": "toolu_01",
+    "tool_input": {
+      "file_path": "${CWD}/a.txt",
+      "content": "x"
+    }
+  },
+  "after": {
+    "absent": [
+      "~/.local/state/paired-coding/${SESSION_ID}"
+    ]
+  }
+}

@@ -5,5 +5,8 @@
   "author": { "name": "Jo Wolff" },
   "license": "SEE LICENSE IN README.md",
   "repository": "https://github.com/thewolff/jo-wolff-plugins",
-  "keywords": ["skills", "engineering", "tdd", "code-review", "debugging", "vendored"]
+  "keywords": ["skills", "engineering", "tdd", "code-review", "debugging", "vendored"],
+  "state": [
+    {"path": "$TMPDIR/seo-audit-*", "retentionDays": 0, "prune": null}
+  ]
 }

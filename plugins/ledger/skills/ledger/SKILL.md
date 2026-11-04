@@ -129,3 +129,8 @@ human's too (`/ledger:enable`, `/ledger:disable`).
 - The CLI is missing (`node: … scripts/ledger.mjs: no such file`): the plugin is not installed
   where `CLAUDE_PLUGIN_ROOT` points. Tell the human; do not ask questions through
   `AskUserQuestion` instead, the gate is off and the question would go unrecorded.
+- Each of these gates is proved by a scenario under `evals/`: `evals/pre-tool-use-ask-denied.scenario.json`
+  (AskUserQuestion with no row is refused), `evals/pre-tool-use-push-denied.scenario.json` (a push with
+  no note is refused), `evals/stop-ask-rule.scenario.json` (a turn that asks with no row is refused once),
+  `evals/session-start-relay.scenario.json` (the open items are injected). `ledger canary run --plugins ledger`
+  replays them nightly and `ledger gate check` fails without a fresh pass.

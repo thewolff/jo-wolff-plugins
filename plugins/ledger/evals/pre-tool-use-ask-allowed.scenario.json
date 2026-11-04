@@ -1,0 +1,34 @@
+{
+  "$comment": "Sibling of pre-tool-use-ask-denied: once a question is open for the folder, AskUserQuestion goes through (the hook prints nothing).",
+  "event": "PreToolUse",
+  "expect": "silent",
+  "sibling": "pre-tool-use-ask-denied.scenario.json",
+  "setup": {
+    "commands": [
+      "node \"${PLUGIN_DIR}/scripts/ledger.mjs\" ask \"Local or remote database?\" --name db-mode --options local,remote --cwd \"${CWD}\""
+    ]
+  },
+  "stdin": {
+    "session_id": "${SESSION_ID}",
+    "transcript_path": "${TRANSCRIPT}",
+    "cwd": "${CWD}",
+    "hook_event_name": "PreToolUse",
+    "tool_name": "AskUserQuestion",
+    "tool_input": {
+      "questions": [
+        {
+          "question": "Local or remote database?",
+          "header": "db",
+          "options": [
+            {
+              "label": "local"
+            },
+            {
+              "label": "remote"
+            }
+          ]
+        }
+      ]
+    }
+  }
+}

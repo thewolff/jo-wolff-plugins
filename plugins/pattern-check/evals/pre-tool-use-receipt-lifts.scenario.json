@@ -1,0 +1,66 @@
+{
+  "$comment": "Sibling of pre-tool-use-third-file-held: once the receipt is recorded for the session, the third file passes.",
+  "event": "PreToolUse",
+  "expect": "silent",
+  "sibling": "pre-tool-use-third-file-held.scenario.json",
+  "setup": {
+    "files": {
+      "src/a.ts": "a\n",
+      "src/b.ts": "a\n",
+      "src/c.ts": "a\n"
+    },
+    "commands": [
+      "node \"${PLUGIN_DIR}/scripts/pattern-check.mjs\" record --session \"${SESSION_ID}\" --cwd \"${CWD}\" --no-new-pieces \"scenario\""
+    ]
+  },
+  "before": [
+    {
+      "stdin": {
+        "session_id": "${SESSION_ID}",
+        "transcript_path": "${TRANSCRIPT}",
+        "cwd": "${CWD}",
+        "hook_event_name": "PreToolUse",
+        "tool_name": "Edit",
+        "tool_use_id": "toolu_a",
+        "tool_input": {
+          "file_path": "${CWD}/src/a.ts",
+          "old_string": "a",
+          "new_string": "b"
+        }
+      }
+    },
+    {
+      "stdin": {
+        "session_id": "${SESSION_ID}",
+        "transcript_path": "${TRANSCRIPT}",
+        "cwd": "${CWD}",
+        "hook_event_name": "PreToolUse",
+        "tool_name": "Edit",
+        "tool_use_id": "toolu_b",
+        "tool_input": {
+          "file_path": "${CWD}/src/b.ts",
+          "old_string": "a",
+          "new_string": "b"
+        }
+      }
+    }
+  ],
+  "stdin": {
+    "session_id": "${SESSION_ID}",
+    "transcript_path": "${TRANSCRIPT}",
+    "cwd": "${CWD}",
+    "hook_event_name": "PreToolUse",
+    "tool_name": "Edit",
+    "tool_use_id": "toolu_c",
+    "tool_input": {
+      "file_path": "${CWD}/src/c.ts",
+      "old_string": "a",
+      "new_string": "b"
+    }
+  },
+  "after": {
+    "exists": [
+      "$XDG_STATE_HOME/pattern-check/receipts/${SESSION_ID}.md"
+    ]
+  }
+}
