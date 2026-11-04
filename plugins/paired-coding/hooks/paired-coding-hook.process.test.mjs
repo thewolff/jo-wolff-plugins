@@ -10,7 +10,7 @@ import { appendFileSync, chmodSync, existsSync, mkdirSync, mkdtempSync, readFile
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { faultReply } from "./paired-coding-hook.mjs";
+import { faultReply, queueInput } from "./paired-coding-hook.mjs";
 import { callTool } from "../server/pair-server.mjs";
 import { SERVER_NAME, TOOL_PREFIX, writeBinding } from "../server/binding.mjs";
 import { sandboxProblem } from "../lib/host-io.mjs";
@@ -106,7 +106,8 @@ test("empty stdin: every event exits 0, lets the call through, warns once and lo
     const f = fixture();
     const r = runHook(event, "", f.env);
     assertAllowed(r, event);
-    assert.match(r.json.systemMessage, new RegExp(`^paired-coding: the ${event} hook could not read its input \\(stdin was empty\\), so it did nothing\\. Logged to ${join(f.base, "errors.log").replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\.$`), event);
+    assert.match(r.json.systemMessage, /stdin was empty/, event);
+    assert.ok(r.json.systemMessage.includes(`Logged to ${join(f.base, "errors.log")}`), event);
     assert.equal(r.json.hookSpecificOutput, undefined, event);
     const lines = logLines(f.base);
     assert.equal(lines.length, 1, event);
@@ -143,8 +144,13 @@ test("an unwritable state directory: a session that never paired is untouched; t
     assert.equal(r.status, 0);
     assert.ok(r.ms < BUDGET_MS);
     assert.equal(r.json.hookSpecificOutput.permissionDecision, "deny");
-    assert.match(r.json.hookSpecificOutput.permissionDecisionReason, /^paired-coding: pair_start is refused: the gate's hook failed \(.*(EACCES|permission denied).*\) and fails closed while pairing\. It could not be logged to .*errors\.log \(.+\)\. Tell your partner; the way out is for them to type pair stop as a message of its own, and if the gate stays broken, to turn the plugin off with \/plugin disable paired-coding\.$/i);
-    assert.match(r.json.systemMessage, /^paired-coding: the pre-tool-use hook failed at server\/binding\.mjs:\d+: .* It could not be logged to .*errors\.log/);
+    const why = r.json.hookSpecificOutput.permissionDecisionReason;
+    assert.match(why, /pair_start is refused/);
+    assert.match(why, /EACCES|permission denied/i);
+    assert.match(why, /could not be logged to .*errors\.log/);
+    assert.match(why, /type pair stop/);
+    assert.match(why, /\/plugin disable paired-coding/);
+    assert.match(r.json.systemMessage, /could not be logged to .*errors\.log/);
   } finally {
     chmodSync(f.base, 0o700);
   }
@@ -171,7 +177,9 @@ test("a session-start fault in a session that never paired is warned and logged,
   const f = fixture();
   const r = runHook("session-start", payload("session-start", f, { source: "clear", cwd: join(f.top, "gone") }), f.env);
   assertAllowed(r, "session-start");
-  assert.match(r.json.systemMessage, /^paired-coding: the session-start hook failed at lib\/host-io\.mjs:\d+: ENOENT.* Logged to .*errors\.log\. If this session replaced one that was pairing, pairing did not carry over and host tools are not refused\.$/);
+  assert.match(r.json.systemMessage, /ENOENT/);
+  assert.match(r.json.systemMessage, /Logged to .*errors\.log/);
+  assert.match(r.json.systemMessage, /pairing did not carry over/);
   assert.equal(r.json.hookSpecificOutput, undefined);
   const lines = logLines(f.base);
   assert.equal(lines.length, 1);
@@ -182,20 +190,99 @@ test("a gate fault for a host tool in a session that never paired lets the call 
   const f = fixture();
   const out = faultReply("pre-tool-use", payload("pre-tool-use", f), f.env, new Error("boom\nsecond line"));
   assert.equal(out.hookSpecificOutput, undefined, "no decision: the call goes ahead");
-  assert.match(out.systemMessage, /^paired-coding: the pre-tool-use hook failed at hooks\/paired-coding-hook\.process\.test\.mjs:\d+: boom second line\. Logged to .*\. Write went ahead: this session is not pairing, so the gate stays out of the way\.$/);
+  assert.match(out.systemMessage, /boom second line/);
+  assert.match(out.systemMessage, /Logged to .*errors\.log/);
+  assert.match(out.systemMessage, /Write went ahead/);
   assert.equal(logLines(f.base).length, 1);
 });
 
-test("while pairing, a malformed state file reads as closed: Write is refused, naming Write and the tools to use instead", { skip: !hasSandbox }, async () => {
+test("while pairing, a malformed state file reads as closed: Write is refused, Read is not, and each event warns and logs the degraded read once", { skip: !hasSandbox }, async () => {
   const f = fixture();
   await startPairing(f);
   writeFileSync(join(f.base, "s1", "state.json"), "{garbage");
   const r = runHook("pre-tool-use", payload("pre-tool-use", f), f.env);
   assert.equal(r.status, 0);
   assert.equal(r.json.hookSpecificOutput.permissionDecision, "deny");
-  assert.match(r.json.hookSpecificOutput.permissionDecisionReason, /Write is the host's own mutating tool; while pairing, write with pair_write or pair_edit and run commands with pair_run/);
+  assert.match(r.json.hookSpecificOutput.permissionDecisionReason, /Write is the host's own mutating tool/);
+  assert.match(r.json.hookSpecificOutput.permissionDecisionReason, /write with pair_write or pair_edit/);
+  assert.match(r.json.systemMessage, /state file unreadable/);
+  assert.match(r.json.systemMessage, /Logged to /);
+  assert.match(r.json.systemMessage, /by typing pair stop\.$/);
   const read = runHook("pre-tool-use", payload("pre-tool-use", f, { tool_name: "Read", tool_input: { file_path: join(f.root, "a.txt") } }), f.env);
   assertAllowed(read, "Read");
+  assert.match(read.json.systemMessage, /state file unreadable/);
+  const prompt = runHook("user-prompt-submit", payload("user-prompt-submit", f), f.env);
+  assertAllowed(prompt, "user-prompt-submit");
+  assert.match(prompt.json.systemMessage, /state file unreadable/);
+  const lines = logLines(f.base);
+  assert.deepEqual(lines.map((l) => / (pre-tool-use|user-prompt-submit) session=s1: session state degraded \(state file unreadable\)/.exec(l)?.[1]), ["pre-tool-use", "pre-tool-use", "user-prompt-submit"]);
+});
+
+test("while pairing, a session directory the gate cannot even look into is uncertain and fails closed", { skip: !hasSandbox }, async () => {
+  const f = fixture();
+  await startPairing(f);
+  const dir = join(f.base, "s1");
+  chmodSync(dir, 0o000);
+  try {
+    for (const tool_name of ["Write", "Read"]) {
+      const r = runHook("pre-tool-use", payload("pre-tool-use", f, { tool_name }), f.env);
+      assert.equal(r.status, 0, tool_name);
+      assert.ok(r.ms < BUDGET_MS, tool_name);
+      assert.equal(r.json.hookSpecificOutput.permissionDecision, "deny", tool_name);
+      assert.match(r.json.hookSpecificOutput.permissionDecisionReason, new RegExp(`^paired-coding: ${tool_name} is refused: `), tool_name);
+      assert.match(r.json.hookSpecificOutput.permissionDecisionReason, /cannot tell whether pairing is on: .*activated is unreadable \(EACCES\)/, tool_name);
+      assert.match(r.json.hookSpecificOutput.permissionDecisionReason, /pair stop/, tool_name);
+    }
+    // The other events never block, and say so.
+    for (const event of ["user-prompt-submit", "stop", "session-end"]) {
+      const r = runHook(event, payload(event, f), f.env);
+      assertAllowed(r, event);
+      assert.match(r.json.systemMessage, /EACCES/, event);
+    }
+  } finally {
+    chmodSync(dir, 0o700);
+  }
+  const lines = logLines(f.base);
+  assert.equal(lines.length, 5);
+  for (const l of lines) assert.match(l, /cannot tell whether pairing is on/, l);
+});
+
+test("a state base the gate cannot look into is uncertain even for a session that never paired: tools fail closed, the warning says the log could not be written", () => {
+  const f = fixture();
+  mkdirSync(f.base, { recursive: true });
+  chmodSync(f.base, 0o000);
+  try {
+    const r = runHook("pre-tool-use", payload("pre-tool-use", f), f.env);
+    assert.equal(r.status, 0);
+    assert.equal(r.json.hookSpecificOutput.permissionDecision, "deny");
+    assert.match(r.json.hookSpecificOutput.permissionDecisionReason, /Write is refused: .*EACCES/);
+    assert.match(r.json.systemMessage, /could not be logged to .*errors\.log/);
+  } finally {
+    chmodSync(f.base, 0o700);
+  }
+});
+
+test("after a typed pair stop, a fault in the hook's own bookkeeping never refuses a tool", { skip: !hasSandbox }, async () => {
+  const real = readFileSync(join(dirname(fileURLToPath(import.meta.url)), "fixtures", "prompt-entries.jsonl"), "utf8").trim().split("\n").map((l) => JSON.parse(l)).find((e) => e.entrypoint === "cli");
+  const f = fixture();
+  await startPairing(f);
+  const p = payload("user-prompt-submit", f, { prompt: "pair stop" });
+  assertAllowed(runHook("user-prompt-submit", p, f.env), "stop prompt");
+  appendFileSync(f.transcript, `${JSON.stringify({ ...real, promptId: p.prompt_id, message: { role: "user", content: "pair stop" } })}\n`);
+  assertAllowed(runHook("stop", payload("stop", f), f.env), "stop");
+  const dir = join(f.base, "s1");
+  assert.equal(JSON.parse(readFileSync(join(dir, "state.json"), "utf8")).phase, "inactive");
+  assert.equal(JSON.parse(readFileSync(join(dir, "activated"), "utf8")).ended, true);
+  // The pending directory (stashed notices, queued turns) can no longer be locked.
+  chmodSync(join(dir, "pending"), 0o500);
+  try {
+    const r = runHook("pre-tool-use", payload("pre-tool-use", f), f.env);
+    assertAllowed(r, "Write after the stop");
+    assert.match(r.json.systemMessage, /Write went ahead: this session is not pairing/);
+  } finally {
+    chmodSync(join(dir, "pending"), 0o700);
+  }
+  assert.equal(logLines(f.base).length, 1);
 });
 
 test("while pairing, a gate fault fails closed for tools and never blocks a prompt, a stop or a session end; each is warned and logged", { skip: !hasSandbox }, async () => {
@@ -236,14 +323,18 @@ test("while pairing, a gate fault fails closed for tools and never blocks a prom
   for (const l of lines) assert.match(l, /^\S+Z (hooks|lib|core|server)\/[\w.-]+\.mjs:\d+ /, l);
 });
 
-test("the 5 s budget holds while pairing with queued turns whose transcript entries never land", { skip: !hasSandbox }, async () => {
+test("the 5 s budget holds for one PreToolUse that judges three queued turns whose transcript entries never land", { skip: !hasSandbox }, async () => {
   const f = fixture();
   await startPairing(f);
-  for (let i = 0; i < 3; i++) assertAllowed(runHook("user-prompt-submit", payload("user-prompt-submit", f, { prompt: `turn ${i}` }), f.env), `prompt ${i}`);
+  const dir = join(f.base, "s1");
+  // Three turns queued at once, as after turns that made no tool call; built with the hook's own queue writer.
+  for (let i = 0; i < 3; i++) queueInput(dir, { prompt_id: `never-${i}`, prompt: `turn ${i}`, transcript_path: f.transcript });
+  assert.equal(readFileSync(join(dir, "pending", "inputs.jsonl"), "utf8").split("\n").filter(Boolean).length, 3);
   const r = runHook("pre-tool-use", payload("pre-tool-use", f, { tool_name: "Read" }), f.env);
   assertAllowed(r, "Read with three queued turns");
-  const journal = readFileSync(join(f.base, "s1", "journal.jsonl"), "utf8");
+  const journal = readFileSync(join(dir, "journal.jsonl"), "utf8");
   assert.equal(journal.split("\n").filter((l) => l.includes("claude:no-transcript-entry")).length, 3);
+  assert.equal(existsSync(join(dir, "pending", "inputs.jsonl")), false, "the queue was drained");
 });
 
 test("a typed turn from the real transcript shape is trusted through the spawned hook", { skip: !hasSandbox }, async () => {

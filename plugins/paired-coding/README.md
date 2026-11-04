@@ -251,6 +251,11 @@ How it works:
   that cannot be read names no session, so nothing is gated for that one call. A hook that
   times out or cannot start is outside this: Claude Code lets the tool call through and shows
   its own hook-error notice.
+  A state file that is missing, unreadable or malformed while pairing is still read as closed,
+  and gets one errors.log line and one warning per event. If the gate cannot even tell
+  whether pairing is on (the activation marker cannot be looked up, `EACCES` for one), that
+  counts as pairing, and tools are refused. A session whose pairing has ended, by a typed
+  `pair stop` or a session end, counts as not pairing.
 - Typing `pair stop` ends pairing in any phase: the gate reaps running commands, takes a final
   snapshot, journals any write it did not approve, journals the stop as `typed-stop`, writes
   the pair-accepted receipt (`pair-accepted.json`, beside the journal; see **Pair-accepted
