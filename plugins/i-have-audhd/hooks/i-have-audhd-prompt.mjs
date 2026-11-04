@@ -14,39 +14,60 @@
 // CONTRACT
 //   stdin:  the UserPromptSubmit payload; only session_id is read.
 //   stdout: {"systemMessage":"…","hookSpecificOutput":{"hookEventName":"UserPromptSubmit",
-//           "additionalContext":"…"}} when a notice was pending, and NOTHING otherwise.
-//   Exit 0 on every path; failures leave one errors.log line.
+//           "additionalContext":"…"}} when a notice was pending, {"systemMessage":"…"} alone when
+//           this run had a fault, and NOTHING otherwise.
+//   Exit 0 on every path; a fault (empty or malformed stdin, an unreadable notice, a throw)
+//   leaves one errors.log line and one warning line (lib/state.mjs, FAULTS), and blocks nothing.
 //
 // KILL SWITCH: the Stop core's flag file ($HOME/.claude/.i-have-audhd-off) silences this hook
 // too, per invocation. A pending notice is left in place and delivered once the switch is lifted.
 
 import { existsSync, readFileSync } from "node:fs";
-import { killSwitchPath, appendLog } from "../lib/state.mjs";
+import { killSwitchPath, logFault, faultWarning } from "../lib/state.mjs";
 import { takePending } from "../lib/pending.mjs";
 
+const HOOK_FILE = "hooks/i-have-audhd-prompt.mjs";
+
+// Returns the stdout object, {} for silence.
 function main() {
-  if (existsSync(killSwitchPath())) return;
+  if (existsSync(killSwitchPath())) return {};
+  let raw = "";
+  try {
+    raw = readFileSync(0, "utf8");
+  } catch {
+    /* no stdin reads as empty */
+  }
+  if (!raw.trim()) {
+    logFault(HOOK_FILE, "stdin was empty; no UserPromptSubmit payload, no notice delivered");
+    return {};
+  }
   let payload;
   try {
-    payload = JSON.parse(readFileSync(0, "utf8") || "{}");
+    payload = JSON.parse(raw);
   } catch (err) {
-    appendLog("errors.log", `prompt payload did not parse: ${err.message}`);
-    return;
+    logFault(HOOK_FILE, `prompt payload did not parse (${err.message}); no notice delivered`);
+    return {};
   }
-  const sessionId = typeof payload?.session_id === "string" && payload.session_id ? payload.session_id : "no-session";
+  if (!payload || typeof payload !== "object" || Array.isArray(payload)) {
+    logFault(HOOK_FILE, "prompt payload is not a JSON object; no notice delivered");
+    return {};
+  }
+  const sessionId = typeof payload.session_id === "string" && payload.session_id ? payload.session_id : "no-session";
   const pending = takePending(sessionId);
-  if (!pending) return;
-  process.stdout.write(
-    JSON.stringify({
-      // No line for the person when every finding is a judge-unavailable one (lib/pending.mjs).
-      ...(pending.summary ? { systemMessage: pending.summary } : {}),
-      hookSpecificOutput: { hookEventName: "UserPromptSubmit", additionalContext: pending.notice },
-    }),
-  );
+  if (!pending) return {};
+  return {
+    // No line for the person when every finding is a judge-unavailable one (lib/pending.mjs).
+    ...(pending.summary ? { systemMessage: pending.summary } : {}),
+    hookSpecificOutput: { hookEventName: "UserPromptSubmit", additionalContext: pending.notice },
+  };
 }
 
+let out = {};
 try {
-  main();
+  out = main();
 } catch (err) {
-  appendLog("errors.log", `prompt hook failed open: ${err?.stack || String(err)}`);
+  logFault(HOOK_FILE, `threw and failed open: ${err?.stack || String(err)}`);
 }
+const warning = faultWarning(HOOK_FILE);
+if (warning) out.systemMessage = out.systemMessage ? `${out.systemMessage}\n${warning}` : warning;
+if (Object.keys(out).length) process.stdout.write(JSON.stringify(out));

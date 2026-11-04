@@ -33,7 +33,7 @@ function run(cli, payload, home) {
     input: JSON.stringify(payload),
     encoding: "utf8",
     env: { ...process.env, HOME: home, I_HAVE_AUDHD_ENFORCE: "", I_HAVE_AUDHD_PROFILE: "", I_HAVE_AUDHD_HARNESS: "" },
-    timeout: 30_000,
+    timeout: 5_000,
   });
 }
 
@@ -123,19 +123,21 @@ test("the kill switch silences the prompt hook and keeps the notice for later", 
   assert.ok(existsSync(pendingFile(home, "s7")));
 });
 
-test("malformed stdin and an unreadable notice exit 0 silently, each with one errors.log line", () => {
+test("malformed stdin and an unreadable notice exit 0, each with one errors.log line and one warning line", () => {
   const home = mkhome();
-  const bad = spawnSync(process.execPath, [PROMPT], { input: "{nope", encoding: "utf8", env: { ...process.env, HOME: home } });
+  const bad = spawnSync(process.execPath, [PROMPT], { input: "{nope", encoding: "utf8", env: { ...process.env, HOME: home }, timeout: 5_000 });
   assert.equal(bad.status, 0);
-  assert.equal(bad.stdout, "");
+  assert.deepEqual(Object.keys(JSON.parse(bad.stdout)), ["systemMessage"]);
+  assert.match(JSON.parse(bad.stdout).systemMessage, /hooks\/i-have-audhd-prompt\.mjs prompt payload did not parse/);
   mkdirSync(join(home, ".claude", ".i-have-audhd-state"), { recursive: true });
   writeFileSync(pendingFile(home, "s8"), "not json");
   const p = prompt(home, "s8");
   assert.equal(p.status, 0);
-  assert.equal(p.stdout, "");
+  assert.deepEqual(Object.keys(JSON.parse(p.stdout)), ["systemMessage"]);
+  assert.match(JSON.parse(p.stdout).systemMessage, /lib\/pending\.mjs pending warning for s8 did not parse/);
   const errors = readFileSync(join(home, ".claude", ".i-have-audhd-state", "errors.log"), "utf8");
-  assert.match(errors, /prompt payload did not parse/);
-  assert.match(errors, /pending warning for s8 did not parse/);
+  assert.match(errors, /hooks\/i-have-audhd-prompt\.mjs prompt payload did not parse/);
+  assert.match(errors, /lib\/pending\.mjs pending warning for s8 did not parse/);
 });
 
 test("a long judge reason is capped in the notice; warnings.log keeps it whole", () => {

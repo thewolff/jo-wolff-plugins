@@ -19,7 +19,7 @@
 
 import { readFileSync, writeFileSync, renameSync, mkdirSync, existsSync } from "node:fs";
 import { dirname, join } from "node:path";
-import { stateDir, appendLog } from "./state.mjs";
+import { stateDir, logFault } from "./state.mjs";
 
 export const REALERT_MS = 3_600_000;
 
@@ -32,9 +32,9 @@ function load(path) {
   try {
     const parsed = JSON.parse(readFileSync(path, "utf8"));
     if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) return parsed;
-    appendLog("errors.log", `alerts: ${path} is not a JSON object; every alert counts as new`);
+    logFault("lib/alerts.mjs", `alerts: ${path} is not a JSON object; every alert counts as new`);
   } catch (err) {
-    appendLog("errors.log", `alerts: ${path} could not be read (${err.message}); every alert counts as new`);
+    logFault("lib/alerts.mjs", `alerts: ${path} could not be read (${err.message}); every alert counts as new`);
   }
   return {};
 }
@@ -46,7 +46,7 @@ function save(path, state) {
     writeFileSync(tmp, JSON.stringify(state));
     renameSync(tmp, path);
   } catch (err) {
-    appendLog("errors.log", `alerts: could not record alert state at ${path} (${err.message}); the next failure alerts again`);
+    logFault("lib/alerts.mjs", `alerts: could not record alert state at ${path} (${err.message}); the next failure alerts again`);
   }
 }
 

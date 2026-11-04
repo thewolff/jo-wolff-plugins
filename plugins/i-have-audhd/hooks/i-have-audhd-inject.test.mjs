@@ -28,7 +28,7 @@ function runInject(payload, home) {
     encoding: "utf8",
     env: { ...process.env, HOME: home, I_HAVE_AUDHD_INJECT: "", I_HAVE_AUDHD_PROFILE: "" },
     cwd: join(INJECTOR, ".."),
-    timeout: 30_000,
+    timeout: 5_000,
   });
 }
 
@@ -56,7 +56,7 @@ test("no stdin at all still emits and exits 0", () => {
     input: "",
     encoding: "utf8",
     env: { ...process.env, HOME: home, I_HAVE_AUDHD_INJECT: "", I_HAVE_AUDHD_PROFILE: "" },
-    timeout: 30_000,
+    timeout: 5_000,
   });
   assert.equal(r.status, 0);
   assert.match(r.stdout, /additionalContext/);
@@ -101,7 +101,7 @@ test("unparseable stdin is fail-open: emit, exit 0, no marker", () => {
     input: "not json",
     encoding: "utf8",
     env: { ...process.env, HOME: home, I_HAVE_AUDHD_INJECT: "", I_HAVE_AUDHD_PROFILE: "" },
-    timeout: 30_000,
+    timeout: 5_000,
   });
   assert.equal(r.status, 0);
   assert.match(r.stdout, /additionalContext/);

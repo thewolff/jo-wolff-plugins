@@ -24,7 +24,7 @@
 
 import { readFileSync, writeFileSync, rmSync, mkdirSync, existsSync } from "node:fs";
 import { dirname } from "node:path";
-import { pendingWarningPath, appendLog } from "./state.mjs";
+import { pendingWarningPath, logFault } from "./state.mjs";
 
 // One finding's text in the notice. Judge reasons can run long; the notice stays short.
 const FINDING_CAP = 600;
@@ -68,7 +68,7 @@ export function writePending(sessionId, findings) {
       }),
     );
   } catch (err) {
-    appendLog("errors.log", `could not write pending warning for ${sessionId}: ${err.message}`);
+    logFault("lib/pending.mjs", `could not write pending warning for ${sessionId}: ${err.message}`);
   }
 }
 
@@ -81,7 +81,7 @@ export function takePending(sessionId) {
     raw = readFileSync(path, "utf8");
     rmSync(path, { force: true });
   } catch (err) {
-    appendLog("errors.log", `could not consume pending warning for ${sessionId}: ${err.message}`);
+    logFault("lib/pending.mjs", `could not consume pending warning for ${sessionId}: ${err.message}`);
     return undefined;
   }
   try {
@@ -90,6 +90,6 @@ export function takePending(sessionId) {
   } catch {
     /* fall through to the log line */
   }
-  appendLog("errors.log", `pending warning for ${sessionId} did not parse; dropped`);
+  logFault("lib/pending.mjs", `pending warning for ${sessionId} did not parse; dropped`);
   return undefined;
 }

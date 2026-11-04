@@ -122,7 +122,7 @@ Order of operations, each early return silent:
 1. **Kill switch** — `~/.claude/.i-have-audhd-off`, `existsSync` per invocation
    (never a module-scope env read; env is frozen for the host process's lifetime).
    `I_HAVE_AUDHD_ENFORCE=off` is the secondary switch and costs a host relaunch.
-2. Payload parse — unparseable stdin → `errors.log`.
+2. Payload parse — empty stdin, unparseable stdin, or a non-object → a fault (below).
 3. Text extraction — `last_assistant_message` when a non-empty string, else the transcript
    JSONL scanned backwards for the last `type:"assistant"` entry with text content
    (tool-call-only entries are skipped).
@@ -152,7 +152,11 @@ Order of operations, each early return silent:
    (`deliverAs: "nextTurn"`, no `triggerTurn`), which OMP adds to the next prompt; the
    summary is a UI warning notice. Consumption deletes the file, so a notice arrives once.
 
-Fail-open everywhere with `errors.log` as the single failure channel.
+Fail-open everywhere, never fail-silent. A fault (empty or malformed stdin, a throw, an
+unparseable profile, a state file that cannot be read or written) leaves one `errors.log` line,
+`<time> <file> <reason>`, and the hook's reply carries one warning line in `systemMessage`
+naming the hook, the reasons and `errors.log`. A fault never blocks: the hook exits 0, and any
+finding it did reach is still emitted.
 
 On OMP the hook runs only for the main session: OMP's `session_stop` never fires for
 subagent sessions, and OMP has no blocking equivalent of Claude Code's `SubagentStop`. The
@@ -357,8 +361,7 @@ empty object is valid and yields the defaults.
   plugin's own block → warn). The same-text loop guard precedes all of it.
 
 A missing file or field is silent defaults. An unparseable file, or a value of the wrong
-shape, is defaults plus one `errors.log` line — a config failure reads exactly like a
-working config otherwise.
+shape, is defaults plus one `errors.log` line and the hook's warning line.
 
 **Check options are not profile fields.** `markers`, `minProseChars`, `graceChars`,
 `headings`, `lexicon`, `reportVerbs` are call-site arguments; the hook calls every check on
@@ -378,7 +381,7 @@ All under `~/.claude/.i-have-audhd-state/`:
 | `pending-warn-<session>.json` | The latest checked stop's warn findings, waiting for the next turn — the delivery; deleted when consumed |
 | `skipped.log` | Judge-rule triggers that fired with no judge command — a skipped check must be inspectable |
 | `judge-failures.log` | Judge dispatch failures (timeout, exit, unparseable), rule and error named |
-| `errors.log` | Every fail-open path: payload parse, config parse, hook exceptions, OMP adapter fail-opens |
+| `errors.log` | Every fault, one `<file> <reason>` line each: payload parse, config parse, unwritable state, hook exceptions, OMP adapter fail-opens |
 | `last-blocked-<session>.json` | The loop guard's recorded text hash and rules |
 | `resume-<session>` | The one-shot rule 8 marker (timestamped) |
 | `cache/<hash>.json` | Judge verdicts |

@@ -52,7 +52,7 @@
 import { readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { appendLog } from "./state.mjs";
+import { logFault } from "./state.mjs";
 
 const MODES = new Set(["block", "warn", "off"]);
 
@@ -82,11 +82,11 @@ export function loadEnforcement(harness, path = defaultProfilePath()) {
   try {
     parsed = JSON.parse(raw);
   } catch (err) {
-    appendLog("errors.log", `enforcement: profile at ${path} does not parse (${err.message}); defaults apply`);
+    logFault("lib/config.mjs", `enforcement: profile at ${path} does not parse (${err.message}); defaults apply`);
     return out;
   }
   if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
-    appendLog("errors.log", `enforcement: profile at ${path} is not a JSON object; defaults apply`);
+    logFault("lib/config.mjs", `enforcement: profile at ${path} is not a JSON object; defaults apply`);
     return out;
   }
 
@@ -95,25 +95,25 @@ export function loadEnforcement(harness, path = defaultProfilePath()) {
 
   if (e.mode !== undefined) {
     if (typeof e.mode === "string" && MODES.has(e.mode)) out.mode = e.mode;
-    else appendLog("errors.log", `enforcement: mode ${JSON.stringify(e.mode)} is not block|warn|off; ignored`);
+    else logFault("lib/config.mjs", `enforcement: mode ${JSON.stringify(e.mode)} is not block|warn|off; ignored`);
   }
   if (e.judgeCommand !== undefined && e.judgeCommand !== null) {
     if (typeof e.judgeCommand === "string" && e.judgeCommand.trim()) out.judgeCommand = e.judgeCommand;
-    else appendLog("errors.log", `enforcement: judgeCommand ${JSON.stringify(e.judgeCommand)} is not a command string; judge rules inactive`);
+    else logFault("lib/config.mjs", `enforcement: judgeCommand ${JSON.stringify(e.judgeCommand)} is not a command string; judge rules inactive`);
   }
   if (e.rules !== undefined && e.rules !== null) {
     if (typeof e.rules === "object" && !Array.isArray(e.rules)) {
       for (const [rule, mode] of Object.entries(e.rules)) {
         if (typeof mode === "string" && MODES.has(mode)) out.rules[rule] = mode;
-        else appendLog("errors.log", `enforcement: rules["${rule}"] ${JSON.stringify(mode)} is not block|warn|off; ignored`);
+        else logFault("lib/config.mjs", `enforcement: rules["${rule}"] ${JSON.stringify(mode)} is not block|warn|off; ignored`);
       }
     } else {
-      appendLog("errors.log", "enforcement: rules is not an object; ignored");
+      logFault("lib/config.mjs", "enforcement: rules is not an object; ignored");
     }
   }
   if (harness === "omp" && e.armOmp !== undefined) {
     if (typeof e.armOmp === "boolean") out.armOmp = e.armOmp;
-    else appendLog("errors.log", `enforcement: armOmp ${JSON.stringify(e.armOmp)} is not a boolean; treated as false`);
+    else logFault("lib/config.mjs", `enforcement: armOmp ${JSON.stringify(e.armOmp)} is not a boolean; treated as false`);
   }
   return out;
 }
