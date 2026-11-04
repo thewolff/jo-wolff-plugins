@@ -389,8 +389,12 @@ Changes in 1.5.0: learning mode, off by default. Type `learning mode on` or `tea
 while pairing and each card's decision line adds **Why this approach** with **Sources** (a URL
 fetched this session with its passage, an absolute `file:line`, or a `from memory` mark); "teach
 me more" keeps the card closed and is answered one sourced layer at a time with a recall
-question, and each read-back asks one recall question. `learning mode off` turns it off. Skill
-text only: the gate and the card schema are unchanged. See the plugin README, *Learning mode*.
+question, and each read-back asks one recall question. `learning mode off` turns it off. The
+gate enforces it: a new `pair_learn` tool switches it, and refuses to switch it off unless your
+latest typed turn says `learning mode off`; while it is on, `pair_propose` refuses a card without
+`why` and `sources`, `pair_done` refuses without `recall`, and the Stop hook (Claude Code) and
+`session_stop` handler (OMP) warn, never block, when a turn closed a change set without a
+`Recall:` line. With it off, the 1.4.4 flow is unchanged. See the plugin README, *Learning mode*.
 
 Changes in 1.4.4: the plugin meets ledger 0.3.5's five-row gate. `evals/manifest.json` declares
 what each of the five hooks can return and nine `evals/<x>.scenario.json` prove them (the
