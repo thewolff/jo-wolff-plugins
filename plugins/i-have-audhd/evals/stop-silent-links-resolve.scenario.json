@@ -1,0 +1,45 @@
+{
+  "$comment": "Sibling of stop-block-links-resolve: the same reply with the path pointing at a file that exists passes; an opened link is no finding.",
+  "event": "Stop",
+  "expect": "silent",
+  "sibling": "stop-block-links-resolve.scenario.json",
+  "setup": {
+    "files": {
+      "~/.claude/i-have-audhd.json": "{\"reader\": \"the engineer who owns this service\", \"traits\": [\"reads the first two lines of any message and skims the rest\"], \"enforcement\": {\"mode\": \"warn\", \"rules\": {\"links-resolve\": \"block\"}, \"judgeCommand\": null}}",
+      "~/links-eval/comparables.md": "# Link validation comparables\n\nTwenty-five sources.\n"
+    }
+  },
+  "transcript": [
+    {
+      "type": "user",
+      "message": {
+        "role": "user",
+        "content": "where did the comparables research land?"
+      }
+    },
+    {
+      "type": "assistant",
+      "message": {
+        "role": "assistant",
+        "content": [
+          {
+            "type": "text",
+            "text": "The comparables research is done and written up at `~/links-eval/comparables.md`: twenty-five sources, none of which checks whether a link's target is what the sentence says it is, which is the gap this plugin's links-resolve check fills on the cheap side and links-judge on the expensive side.\n\nThe measured cost on this machine is under ten milliseconds per stop for two hundred links, so the check is on by default.\n\n## Closing ask\n\nApprove turning links-judge on for your own profile."
+          }
+        ]
+      }
+    }
+  ],
+  "stdin": {
+    "session_id": "${SESSION_ID}",
+    "transcript_path": "${TRANSCRIPT}",
+    "cwd": "${CWD}",
+    "hook_event_name": "Stop",
+    "stop_hook_active": false
+  },
+  "after": {
+    "absent": [
+      "~/.claude/.i-have-audhd-state/warnings.log"
+    ]
+  }
+}

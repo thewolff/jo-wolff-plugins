@@ -116,7 +116,7 @@ const writeProfile = (home, obj) => writeFileSync(join(home, ".claude", "i-have-
 test("a fresh install with no profile shows the no-judge notice once, naming the checks and the setup command", () => {
   const home = mkhome();
   const first = JSON.parse(runInject({ session_id: "s1", source: "startup" }, home).stdout);
-  assert.match(first.systemMessage, /no judge is configured, so 5 of its 11 checks are off/);
+  assert.match(first.systemMessage, /no judge is configured, so 5 of its 13 checks are off/);
   for (const rule of ["do-not-batch-by-label", "conclusion-first", "restate-resumed-thread", "report-what-you-did-not-do", "bad-news-first"]) {
     assert.ok(first.systemMessage.includes(rule), rule);
   }

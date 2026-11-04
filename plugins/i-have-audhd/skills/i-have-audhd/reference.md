@@ -370,6 +370,111 @@ A kind over 30 % ships off. The `artifact` false positives are the phrase used g
 ("the review flow", "the plan is to", the reader's own spec under discussion), with nothing to
 link. `linkTheReference.kinds` turns either off kind on.
 
+### links-resolve
+
+`checkLinksResolve(text, options)` → `{applicable, flagged, reason, findings, lookups, links}`;
+`reason` ∈ `no-prose | all-resolve | unresolved-link`. One finding per link, `{line, where,
+kind, excerpt, …}`, in line order; `kind` ∈ `missing-path` (with `path`), `gh-shape` (with
+`segment`), `gh-word` (with `word`, `urlKind`), `gh-missing` (with `key`), `gh-kind` (with
+`key`, `urlKind`, `actualKind`). `lookups` is every GitHub key (`owner/repo#n`) with no fresh
+cache entry, once each; `links` every link that resolved, `{line, sentence, href, kind:
+"path"|"gh", path | key, ghKind, title}`, for the judge stage. Options (tests): `home`,
+`exists`, `ghCache` (a parsed cache, `lib/gh-cache.mjs` `readGhCache`), `now`. The hook
+passes the real cache, read only when the message contains `github.com` (a corrupt cache file
+is reported on the stops that could use it, not on every stop); no profile field shapes this
+check.
+
+| Candidate | Resolved by | Finding |
+|---|---|---|
+| a code span holding only `/abs…`, `~…` or `file://…`, or a markdown link with such a target; a `file://` URL decoded first (`%E2%80%93` → `–`), then a trailing `:N`, `:N-M`, `:N–M`, a comma list (`:18,22`, `:13-14,56-59`), `:N:C`, `#LN`, `#LN-LM` and punctuation stripped | `existsSync` after `~` and `file://` expansion | `missing-path`, unless the missing path is a slash command or an HTTP route (`ROUTE_RE`: one segment with no dot, `/mcp`, `/wrap-up`, `/health`; or a `:param` segment, `/messages/:id/delivered`) |
+| `https://github.com/<owner>/<repo>/<seg>/<n>` where `seg` is `issue`, `issues`, `pull` or `pulls` | the segment | `gh-shape` unless `issues` or `pull` |
+| the same, with the nearest `PR`/`pull request`/`issue` word among the `WORD_WINDOW` (6) tokens before the URL, in the same clause (not past the sentence start, a `,`/`;`/dash, or an earlier URL); for a markdown link target, its link text supplies a word only as `PR #N` / `issue #N` with N the URL's own number (`[PR #79](…/issues/79)` is judged; `[the fix for the flaky-test issue](…/pull/80)` is not), and the window otherwise ends at the `[` | the word against the segment | `gh-word` when they disagree; no word near the URL, no finding |
+| the same, with a cache entry inside its TTL (`HIT_TTL_MS` a week, `MISS_TTL_MS` ten minutes) | the entry's `kind` | `gh-missing` for `missing`; `gh-kind` when the kind and segment disagree; else a resolved link |
+| the same, with no fresh entry | nothing: unknown | none; the key goes to `lookups` |
+
+Never counts: every line `checks/lines.mjs` does not call prose, a line of an indented code
+block (four spaces or a tab after a blank line, outside a list item; `indentedCodeLines`,
+local to this check), any line carrying `→`, a
+span that is a command (`link-the-reference`'s `isCommand`), a placeholder (`<…>`, `…`, a
+glob character, `$VAR`, `/path/to/`, `/absolute/`), a relative path, a span holding more than
+the path, and a path whose sentence (its own words, not the path's) says the file is still
+to come or gone: `will|would|shall|should|going to|about to|planned|…|I'll|we'll|…` within 60
+characters of `be|write|written|create|produce|generate|save|land|exist|appear|live|…`; `to
+be written|produced|created|…`; `once|when it|that|the X lands|exists|merges|is written|…`;
+`not|never|no longer|isn't|doesn't [yet] exist|there|present|written|saved|…`;
+`didn't|did not|haven't|hasn't [yet] write|save|create|produce|generate` (any tense); `plan:`;
+`step N`; `yet to be`; `removed|deleted|dropped|moved|renamed|unlinked|pruned|cleaned
+up|gone|absent|missing`; `rm `. The sentence is the span from the previous `. `, `; `, `! ` or
+`? ` (or line start) to the next, where the dot of `e.g.`, `i.e.`, `vs.` or of a dotted
+version number (`1.6.`) does not end a sentence; a later sentence's tense does not cover an
+earlier path.
+
+**The GitHub cache**, `lib/gh-cache.mjs`: `<state dir>/gh-cache.json`, `{"entries": {"<owner>/<repo>#<n>":
+{"kind": "issue"|"pr"|"missing", "title", "at"}}, "helper": {"at", "error", "loggedAt"}}`. An
+unreadable or malformed file reads as empty (one `errors.log` line; a missing file is the
+normal first state and logs nothing). **The helper**, `scripts/gh-cache-fill.mjs <cache>
+<key>…`: spawned by the hook with `detached: true, stdio: "ignore"`, `unref()`, never
+awaited; takes `<cache>.lock` (a lock younger than `LOCK_TTL_MS`, two minutes, means another
+fill is running: exit, nothing done); looks up at most `FILL_MAX_KEYS` (20) keys with
+`gh api --cache 10m repos/<owner>/<repo>/issues/<n> --jq …` (the issues endpoint answers for
+PRs too, with `pull_request` set), each under 10 s and all inside `FILL_BUDGET_MS` (45 s);
+HTTP 404 → `missing`; `gh` not on PATH, not logged in, 401, 403/429 → no entry, the loop
+stops (the rest would fail the same way), `helper.error` is set and one `errors.log` line is
+written at once, then at most hourly for the same error; writes entries through a temp file
+and a rename, dropping entries past `HIT_TTL_MS`. `I_HAVE_AUDHD_NO_GH_FILL=1` in the hook's
+environment skips the spawn. The fixtures in `scripts/fixtures/` are real `gh` captures
+(`CAPTURED.txt` names the date and version; `capture-gh-api.sh` re-captures them).
+
+Not checked: `agent://<id>`. Neither Claude Code nor OMP writes a registry of agent ids
+anywhere on disk (`~/.omp` holds `agent/agent.db`, extensions and session files, none of
+them a roster; `~/.claude` holds projects and plugins), so an id cannot be resolved against
+anything and the sub-check is not built.
+
+Measured (2026-11-04, this machine, a 200-link message: 100 existing paths, 50 missing, 25
+issue URLs, 25 PR URLs, none cached): Stop hook wall time 37 ms median before, 42 ms after,
+45 ms with the helper spawn; the check alone under 10 ms (`checks/links-resolve.test.mjs`
+holds it under 50 ms).
+
+False positives on a corpus (2026-11-04): the final messages of the 100 most recent real
+Claude Code sessions (2026-10-05 to 2026-11-04, eval sandboxes excluded), checked against
+this machine's disk. Before the round-1 fixes: 64 findings in 31 messages, 37 certainly wrong
+in 25 messages (29 slash commands such as `/mcp` and `/health`, 1 route with a `:id`
+segment, 3 not-yet-written sentences, 2 comma line lists, 2 paths on another machine), 0
+confirmed right, 27 naming files deleted since. After: 29 findings in 10 messages, **2
+certainly wrong** in 2 messages (`/dev/net/tun` and `/usr/local/etc/as2/`, paths on a server,
+not this laptop), **0 plausibly or confirmably right**, 27 naming files deleted since the
+message was written (old worktrees, removed HTML pages, archived decision logs), which cannot
+be judged now. Most of those 27 name a file the message reports as just written or just read,
+so the check would likely have been silent on them at the time.
+
+Known limits:
+
+| Limit | Effect |
+|---|---|
+| A detached child's survival past the hook's exit is not proven under Claude Code's hook process lifetime | the cache may never fill; GitHub existence and kind stay unknown, and unknown is silent |
+| `gh api --cache` keeps 404s too | the helper asks with `--cache 10m`, matching the plugin's ten-minute miss TTL, so a PR named before it is opened reads as `missing` for at most about twenty minutes (gh's cached 404, then the plugin's entry) |
+| A path quoted from another machine (a server's `/dev/net/tun`, a spec's `/usr/local/etc/as2/`) | read as a local path and flagged when this machine lacks it; the 2 certain false positives left in the corpus are this kind |
+| A GitHub URL inside a markdown link's text, or any URL not on github.com | not checked at all: only github.com issue and pull URLs are read, and only their path |
+
+### links-judge
+
+`triggers/links-judge.mjs` — `linksJudgeJobs(links, {fs, maxJobs})` over `links-resolve`'s
+resolved links → judge jobs `{rule: "links-judge", question, contextText, link, line}`. Off
+until the profile names it (`lib/config.mjs` `BUILT_IN_MODES`): `enforcement.mode` does not
+arm it, only `enforcement.rules["links-judge"]`. The prefilter: `significantWords` (runs of
+three or more letters or digits, lowercased, minus English stopwords and link vocabulary:
+`file path link url report doc issue pull request pr github …`) of the sentence with its
+spans, links and URLs blanked, against the same of the target's descriptor — a file's basename
+(separators as spaces) plus its first 1,500 bytes when it holds no NUL (a regular file only;
+just those bytes are read, `openSync` + one `readSync`), a directory's name and first 40
+entries, a GitHub link's cached title. A device, FIFO or socket (`/dev/zero`, a pipe) is not
+a regular file and is never opened. One shared word, or a sentence with no significant
+words, or a target that cannot be read or is not a regular file or directory, skips the
+judge; otherwise one job, at
+most `MAX_JOBS` (5) per stop in line order. The question asks for `violation=true` only when
+the target is clearly not what the sentence names, `false` when unsure. The finding lists
+each hit's line, link and the judge's reason. Unmeasured.
+
 ## The triggers (deterministic halves of judge rules)
 
 - **`triggers/batch-heading.mjs`** — `findTrailingBatchSection(text, {headings})` →
@@ -438,7 +543,8 @@ link. `linkTheReference.kinds` turns either off kind on.
 ## The judge machinery
 
 `judge/ask.mjs` — `askJudge(rule, question, contextText, config, options?)`; options
-`{timeoutMs, stateDir}` exist for the test suite. Never throws.
+`{timeoutMs, stateDir}` exist for the test suite, `{meta: {session, section}}` is who is
+asking, for the failure line. Never throws.
 
 - **Command** from `enforcement.judgeCommand`: with a `{prompt}` placeholder, the prompt is
   shell-escaped into the command; without one, the prompt is piped to the command's stdin.
@@ -448,10 +554,30 @@ link. `linkTheReference.kinds` turns either off kind on.
   `{"type":"result","result":"…"}` envelope is unwrapped one level. The verdict must be
   strictly `{"violation": <boolean>, "reason": <string>}`.
 - **Failures** — timeout, non-zero exit, a judge that cannot start, unparseable output —
-  return `{unavailable: true, error: …}` with no verdict, plus a `judge-failures.log` line
-  carrying the tail of the judge's stderr. The Stop hook reports the rule as "Judge
-  unavailable" in the rule's own mode, never as a pass, and tells the person once per rule and
-  error, then hourly (`lib/alerts.mjs`). Failures are never cached.
+  return `{unavailable: true, error, cause, model, budgetMs, stderr?, stdout?}` with no
+  verdict, plus one `judge-failures.log` line: `<time> rule=<rule> error=<kind>
+  cause=<cause> session=<id> harness=<claude-code|omp> model=<model|unknown> elapsedMs=<n>
+  budgetMs=<n> section=<label@line|whole> cache=<sha256> prompt=<state/cache/<sha256>.prompt.txt>
+  [stderr="<last 400 chars>"] [stdout="<last 300 chars, bad-json only>"]`. `cause` (`CAUSES`,
+  `classify(error, stderr)`), in order: `judge-timeout` → `hook-deadline` whatever stderr says;
+  `judge-unparseable` → `bad-json`; then stderr: `401`, `revoked`, `invalid api key|token`,
+  `authentication_error`, `unauthorized` → `credential-revoked`; `no credential`, `not logged
+  in`, `login required`, `no api key`, `gh|codex|claude login` → `no-credential`; `429`,
+  `rate limit`, `too many requests`, `overloaded`, `quota` as a word of the error sentence
+  (never a path segment such as `/tmp/quota/config.json`), `529` → `rate-limited`; `request
+  was aborted` (a bare `aborted`, as in "parse aborted at byte 3", is not), `AbortError`,
+  `ECONNRESET`, `socket hang up` → `judge-self-abort`;
+  else `other`. `model` is read off the judge command (`modelOf`: `--model x`, `--model=x`,
+  `-m x`, else the last `provider/model` token, else `unknown`); `session` and `section` come
+  from the caller's `options.meta` (the Stop hook: its session id and `<label>@<line>` for a
+  labeled section, `whole` otherwise). The prompt is written on failure so the line's cache
+  key is replayable: `<judgeCommand> < <prompt path>`. Each cause is pinned by
+  `judge/failure-causes.test.mjs` to a stderr string from this machine's own log
+  (`judge/fixtures/failure-corpus.mjs`); none was reproduced live. The Stop hook reports the
+  rule as "Judge unavailable" in the rule's own mode, never as a pass, and tells the person
+  once per rule and cause with that cause's fix (`causeFix` in the hook), then hourly
+  (`lib/alerts.mjs`, keys `judge-unavailable:<rule>:<cause>`). Verdicts are never cached for
+  a failure; the prompt file falls under the state directory's 30-day prune.
 - **Timeout** — 30s on Claude Code; 20s when the stop core runs under the OMP adapter's
   `I_HAVE_AUDHD_HARNESS=omp` tag, because OMP drops a `session_stop` handler's result at 30s
   and the adapter kills the core at 25s. Nothing in the profile changes either value.
@@ -482,7 +608,7 @@ empty object is valid and yields the defaults.
   "enforcement": {
     "mode": "block",
     "judgeCommand": "codex exec --skip-git-repo-check -",
-    "rules": { "name-the-artifact": "warn", "bad-news-first": "warn" },
+    "rules": { "name-the-artifact": "warn", "bad-news-first": "warn", "links-judge": "warn" },
     "armOmp": false
   }
 }
@@ -516,7 +642,9 @@ empty object is valid and yields the defaults.
   checkout, is a finding. Not a non-empty array of absolute or `~/` paths → one `errors.log`
   line, and the default applies.
 - **`enforcement.mode`** — `block | warn | off`. Unset = each rule's built-in default (warn
-  for every rule — the measured default above); set = overrides built-ins both ways.
+  for every rule but `links-judge`, whose built-in is off); set = overrides built-ins both
+  ways, except that a rule whose built-in is off stays off: `links-judge` is armed only by
+  its own `enforcement.rules` entry.
 - **`enforcement.judgeCommand`** — see the judge section.
 - **`enforcement.rules`** — per-rule mode overrides, keyed by check id; beat the global
   mode and built-ins.
@@ -525,7 +653,8 @@ empty object is valid and yields the defaults.
   at warn. Under the tag a non-boolean is one `errors.log` line and reads as `false`;
   without the tag the field is never read, so a malformed value logs nothing.
 - Precedence: kill-switch file > `inject` mode > `rules[rule]` > the check's rule switched
-  off in `inject.rules` (→ `off`) > explicit `mode` > built-in default, then the OMP harness
+  off in `inject.rules` (→ `off`) > a built-in `off` (`links-judge`) > explicit `mode` >
+  built-in default, then the OMP harness
   cap last (OMP seats only: unarmed → warn; armed + a revision after this plugin's own block
   → warn). The same-text loop guard precedes all of it. The kill-switch file turns the Stop
   checks off under every `inject` value; it never touched the injection and still does not.

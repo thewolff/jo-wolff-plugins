@@ -11,7 +11,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { existsSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { askJudge, parseVerdict } from "./ask.mjs";
@@ -165,7 +165,7 @@ test("a failing judge's stderr is kept, bounded, in judge-failures.log", async (
   assertUnavailable(r);
   assert.equal(r.error, "judge-exit-1");
   const line = readLog(state).trim();
-  assert.match(line, /rule=conclusion-first error=judge-exit-1 stderr=/);
+  assert.match(line, /rule=conclusion-first error=judge-exit-1 cause=no-credential .* stderr=/);
   assert.match(line, /not logged in, run codex login/, "the tail of stderr, where the reason is, survives");
   assert.ok(line.length < 1000, `the stderr kept is bounded (line is ${line.length} chars)`);
 });
@@ -294,7 +294,8 @@ test("unparseable output fails open and logs it — and is not cached", async ()
   assert.equal(r.error, "judge-unparseable");
   assert.match(readLog(state), /judge-unparseable/);
   const cacheDir = join(state, "cache");
-  assert.ok(!existsSync(cacheDir) || readFileSync(cacheDir, "utf8") === "", "failures are never cached");
+  assert.ok(!existsSync(cacheDir) || !readdirSync(cacheDir).some((f) => f.endsWith(".json")), "failures are never cached as verdicts");
+  assert.match(readLog(state), /cause=bad-json .* stdout="I have no thoughts, only vibes\."/, "the stdout tail is on the line");
 });
 
 test("a missing judgeCommand is reported, not guessed at", async () => {

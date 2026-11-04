@@ -130,10 +130,10 @@ test("main path: setup → session start → stop warns → next prompt delivers
   writeTranscript(transcript, secondReply);
   const dead = json(spawn(STOP, JSON.stringify(stopPayload), env));
   assert.equal(dead.decision, undefined, "warn mode: a dead judge warns");
-  assert.match(dead.systemMessage, /^i-have-audhd: judge unavailable for .*conclusion-first \(judge-exit-127\)/);
+  assert.match(dead.systemMessage, /^i-have-audhd: judge unavailable\. conclusion-first: other — the judge exited without a known cause/);
   assert.match(dead.systemMessage, /which is not a pass/);
   // The shell's own words differ by OS (macOS sh: "No such file or directory"; dash: "not found").
-  assert.match(log("judge-failures.log"), /rule=conclusion-first error=judge-exit-127 stderr=".*no-such-judge.*(No such file|not found)/);
+  assert.match(log("judge-failures.log"), /rule=conclusion-first error=judge-exit-127 cause=other session=\S+ harness=claude-code model=unknown elapsedMs=\d+ budgetMs=30000 section=whole cache=[0-9a-f]{64} prompt=\S+ stderr=".*no-such-judge.*(No such file|not found)/);
   const told = json(spawn(PROMPT, promptPayload, env));
   assert.match(told.hookSpecificOutput.additionalContext, /Judge unavailable \(conclusion-first\)/);
   assert.match(told.hookSpecificOutput.additionalContext, /Plural back-reference/, "the deterministic check still ran");
