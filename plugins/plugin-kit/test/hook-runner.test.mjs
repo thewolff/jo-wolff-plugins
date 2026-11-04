@@ -1,7 +1,8 @@
 // hook-runner.test.mjs — the fail-open runner (README "What it does"): a handler's object is
 // printed and exit is 0; null prints nothing; empty stdin is `{}`; stdin not JSON, a thrown error,
 // a rejected promise and a handler past the deadline each exit 0 with one errors.log line and a
-// systemMessage (none on quiet); the log is under ${XDG_STATE_HOME}/<plugin>/.
+// systemMessage (none on quiet); an answer larger than a pipe buffer is drained before the exit,
+// bounded by the deadline; the log is under ${XDG_STATE_HOME}/<plugin>/.
 
 import test from "node:test";
 import assert from "node:assert/strict";
@@ -36,7 +37,7 @@ async function drive(b, body, stdin, opts = {}) {
   writeFileSync(path, stdin);
   let code = null;
   let out = "";
-  await runHook("Stop", handlerModule(b, body), { plugin: "trial", env: b.env, stdin: path, exit: (c) => (code = c), write: (s) => (out += s), ...opts });
+  await runHook("Stop", handlerModule(b, body), { plugin: "trial", env: b.env, stdin: path, exit: (c) => (code = c), write: (s, done) => ((out += s), done()), ...opts });
   return { code, out, json: out ? JSON.parse(out) : null };
 }
 
@@ -92,7 +93,7 @@ async function runHookTo(b, url, stdin, opts = {}) {
   writeFileSync(path, stdin);
   let code = null;
   let out = "";
-  await runHook("Stop", url, { plugin: "trial", env: b.env, stdin: path, exit: (c) => (code = c), write: (s) => (out += s), ...opts });
+  await runHook("Stop", url, { plugin: "trial", env: b.env, stdin: path, exit: (c) => (code = c), write: (s, done) => ((out += s), done()), ...opts });
   return { code, out, json: out ? JSON.parse(out) : null };
 }
 
@@ -211,6 +212,46 @@ test("spawned: the handler thread sees the runner's start and deadline in its en
   };
   for (let i = 0; i < 20 && alive(); i++) await new Promise((res) => setTimeout(res, 50));
   assert.equal(alive(), false, `judge pid ${pid} outlived the hook`);
+});
+
+test("spawned: an answer larger than a pipe buffer, read slowly by the host, reaches stdout whole before exit 0, inside the deadline", async () => {
+  const b = box();
+  const bytes = 300_000;
+  const started = Date.now();
+  const child = spawn(process.execPath, [hookScript(b, `() => ({ text: "x".repeat(${bytes}) })`, 2_000)], { env: { ...process.env, ...b.env }, stdio: ["pipe", "pipe", "pipe"] });
+  child.stdin.end("{}");
+  // A slow host: after every chunk it stops reading for 30 ms, so the pipe fills more than once.
+  const chunks = [];
+  child.stdout.on("data", (c) => {
+    chunks.push(c);
+    child.stdout.pause();
+    setTimeout(() => child.stdout.resume(), 30);
+  });
+  const code = await new Promise((resolve) => child.on("exit", resolve));
+  await new Promise((resolve) => (child.stdout.readableEnded ? resolve() : child.stdout.on("end", resolve)));
+  const ms = Date.now() - started;
+  const out = Buffer.concat(chunks);
+  assert.equal(code, 0);
+  assert.ok(out.length > 65_536, `stdout was ${out.length} bytes`);
+  assert.equal(JSON.parse(out.toString("utf8")).text.length, bytes, "nothing past the first pipe buffer was lost");
+  assert.ok(ms < 2_000, `${ms} ms: past the deadline`);
+  assert.deepEqual(b.log(), []);
+});
+
+test("spawned: a host that never reads stdout → exit 0 at the deadline, one errors.log line naming the undrained answer", async () => {
+  const b = box();
+  const started = Date.now();
+  const child = spawn(process.execPath, [hookScript(b, `() => ({ text: "x".repeat(${8 * 1024 * 1024}) })`, 1_500)], { env: { ...process.env, ...b.env }, stdio: ["pipe", "pipe", "ignore"] });
+  child.stdin.end("{}");
+  // stdout is never read: the pipe fills and stays full.
+  const code = await new Promise((resolve) => child.on("exit", resolve));
+  const ms = Date.now() - started;
+  child.stdout.destroy();
+  assert.equal(code, 0);
+  assert.ok(ms < 2_500, `exited after ${ms} ms`);
+  const lines = b.log();
+  assert.equal(lines.length, 1, lines.join("\n"));
+  assert.match(lines[0], /^\S+ PreToolUse stdout not drained within \d+ ms: the host is not reading it; the rest of a \d+-byte answer was dropped$/);
 });
 
 test("runHook without { plugin }, or with a function instead of the module URL, is a programming error, thrown at once", async () => {

@@ -4,6 +4,23 @@ All notable changes to plugin-kit are recorded here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Releases before 0.2.0 are described in
 the README's "Changes in" sections.
 
+## [0.3.1] - 2026-11-04
+
+### Fixed
+
+- `lib/hook-runner.mjs` waits for stdout to drain before it exits: an answer larger than one
+  pipe buffer (64 KiB) no longer reaches the host cut at 65,536 bytes when stdout is a pipe the
+  host has not read yet (asynchronous pipe writes, macOS). The wait is bounded by the same
+  deadline, at least 50 ms (`DRAIN_MIN_MS`) so the deadline's own message gets its write; a
+  host that never reads gets exit 0 at the deadline and one errors.log line, `stdout not
+  drained within <n> ms: the host is not reading it; the rest of a <n>-byte answer was
+  dropped`; EPIPE is a `stdout write failed` line and exit 0, never exit 1. The injectable
+  `write` option is now `write(text, done)`. Ported from reminders-review 0.2.0's copy; 0.3.0's
+  handler env and process-group reaping are unchanged.
+- `test/hook-runner.test.mjs`: a 300,000-byte answer through a host that pauses after every
+  chunk arrives whole with exit 0 inside the deadline; an 8 MiB answer to a host that never
+  reads exits 0 at the deadline with the one `stdout not drained` line.
+
 ## [0.3.0] - 2026-11-04
 
 ### Added

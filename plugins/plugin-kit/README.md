@@ -37,7 +37,7 @@ installed from are never where a plugin lands):
 
 | File | What it is |
 |---|---|
-| `lib/hook-runner.mjs` | a copy of this plugin's [`lib/hook-runner.mjs`](lib/hook-runner.mjs): `runHook(event, import.meta.url, { plugin, quiet })` reads stdin, parses it (empty is `{}`), runs the module's exported `handle(input, { env })` on a worker thread, prints its JSON, exits 0. Stdin not JSON, a thrown error, or no answer in 4 s (inside the host's 5 s budget, so the host never kills the hook and loses the message; the one timer lives on the main thread, which does nothing but wait, so it fires whatever the handler is doing: a stdin the host holds open, a promise that never settles, a synchronous loop that never yields; at the deadline the thread is terminated and an answer that would have come later is never printed as a late block) → one line in `${XDG_STATE_HOME:-~/.local/state}/<plugin>/errors.log` and `{ systemMessage: "<plugin> <event> failed open: <why>" }` (not on SessionEnd, whose output the host discards). The handler's `env` carries `HOOK_RUNNER_STARTED_AT_MS` (when the runner started, before stdin) and `HOOK_RUNNER_DEADLINE_MS`, so a handler that budgets its own work counts from the runner's clock; a process group the handler registers (`lib/judge.mjs` does, through `{ kitReap }` messages) is killed when the runner exits. A hook never exits 2. |
+| `lib/hook-runner.mjs` | a copy of this plugin's [`lib/hook-runner.mjs`](lib/hook-runner.mjs): `runHook(event, import.meta.url, { plugin, quiet })` reads stdin, parses it (empty is `{}`), runs the module's exported `handle(input, { env })` on a worker thread, prints its JSON, exits 0 once stdout has taken the whole answer (an answer past one 64 KiB pipe buffer is drained, not cut short; the wait ends at the same deadline, and an undrained answer is one errors.log line). Stdin not JSON, a thrown error, or no answer in 4 s (inside the host's 5 s budget, so the host never kills the hook and loses the message; the one timer lives on the main thread, which does nothing but wait, so it fires whatever the handler is doing: a stdin the host holds open, a promise that never settles, a synchronous loop that never yields; at the deadline the thread is terminated and an answer that would have come later is never printed as a late block) → one line in `${XDG_STATE_HOME:-~/.local/state}/<plugin>/errors.log` and `{ systemMessage: "<plugin> <event> failed open: <why>" }` (not on SessionEnd, whose output the host discards). The handler's `env` carries `HOOK_RUNNER_STARTED_AT_MS` (when the runner started, before stdin) and `HOOK_RUNNER_DEADLINE_MS`, so a handler that budgets its own work counts from the runner's clock; a process group the handler registers (`lib/judge.mjs` does, through `{ kitReap }` messages) is killed when the runner exits. A hook never exits 2. |
 | `lib/judge.mjs` | with `--judge`: a copy of this plugin's [`lib/judge.mjs`](lib/judge.mjs), the shared judge dispatch (see "Shared judge" below); the kit's `test/judge.test.mjs` diffs every shipped copy against the kit's |
 | `hooks/hooks.json` | one entry per event, `node "${CLAUDE_PLUGIN_ROOT}/hooks/<event>.mjs"`, timeout 5; tool events get a matcher |
 | `hooks/<event>.mjs` | one handler per event, `handle(input, { env })` returning null (allow) until the rule is written; the header comment says what the runner does and what the handler owes. The handler runs on a worker thread (that is what makes the deadline hold), so it returns a plain JSON-able object or null and nothing else: never `process.exit()` (the thread ending is "ended without an answer", a logged fault), never its own stdout writes (only what the runner prints is the answer), a subprocess gets its `cwd` passed explicitly from `input.cwd` (the thread's `process.cwd()` is the runner's), and a child's environment goes on the spawn's `env`, not `process.env` |
@@ -301,8 +301,10 @@ nothing is ever overwritten or deleted. A template missing from the kit (a broke
 same: exit 1 naming the file. The hook runner's own failure modes are in the table above; its
 test (`test/hook-runner.test.mjs`) drives each one, including the deadline in a spawned process: a
 handler holding a timer that never answers, a stdin held open, a synchronous `Atomics.wait` of
-6 s under the default 4 s deadline (exit inside 4.5 s wall clock), and a judge process group still
-running at the deadline (dead after the hook exits). The scenario runner: a
+6 s under the default 4 s deadline (exit inside 4.5 s wall clock), a judge process group still
+running at the deadline (dead after the hook exits), a 300,000-byte answer read by a host that
+pauses after every chunk (arrives whole, exit 0 inside the deadline), and an 8 MiB answer to a
+host that never reads (exit 0 at the deadline, one `stdout not drained` line). The scenario runner: a
 scenario that does not parse, names an unregistered event or an undeclared outcome, has no
 stdin, or is still a stub is a `fail` naming the file (the gate says the same offline); `claude`
 missing → the hook phase still runs and prints, then exit 75 with `unavailable: claude not found
@@ -325,6 +327,19 @@ The reviewer's review budget fails these ways:
 | A severity that is unclear (marked `blocking` with a worst case outside the five, or no worst case) | The finding is `should-fix`; the triage says `disagree` and names the definition it misses. Doubt never makes a finding `blocking`, so it never makes the verdict `fix-first` by itself. |
 | Codex writes `Verdict: fix-first` with no in-scope blocking finding | The triage states `Effective verdict: ship-with-limits`; Codex's text stays as written beside it. |
 | A later edit reverses a budget rule other than the round increment or the `fix-first` guard | The tests pin vocabulary and selected sentences; a reversal of the `new-mechanism` classification or the rule that holds those findings for Jo, of the limit that a follow-up reports new findings only in lines the fixes changed, or of the statement that blocking-only from round 3 is this repository's own rule (not the cited sources') passes them. Read the diff of `agents/cross-lab-reviewer.md` against those rules. |
+
+## Changes in 0.3.1
+
+The hook runner waits for stdout to drain before it exits. 0.3.0 wrote the answer and exited at
+once, so on macOS, where a pipe write is asynchronous, an answer larger than one pipe buffer
+(64 KiB) reached the host cut at 65,536 bytes: invalid JSON, and the hook's output lost. The
+answer is now written with a completion callback and the exit waits for it, bounded by the same
+deadline (at least 50 ms, so the deadline's own message gets its write); a host that never reads
+gets exit 0 at the deadline and one errors.log line, `stdout not drained within <n> ms: …`, and a
+host that closed the pipe (EPIPE) gets exit 0 and a `stdout write failed` line, never exit 1.
+The fix is reminders-review 0.2.0's, ported on top of 0.3.0's handler env and process-group
+reaping, which are unchanged. `test/hook-runner.test.mjs` adds both cases as spawned processes;
+the in-process tests' injected `write(text, done)` now calls `done`.
 
 ## Changes in 0.3.0
 
