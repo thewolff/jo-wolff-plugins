@@ -7,6 +7,31 @@ repository root README's ledger section.
 
 ## [0.3.7] - 2026-11-04
 
+### Added
+
+- The pane mod logs one dim transcript line per session,
+  `ledger pane: surface=<app|none> placed=<true|false|null>`: the surface Claude Code handed the
+  mod at `session.start` and whether the pane is placed. It is written at session start, or at
+  the first `turn.complete` fallback when session start faulted before it, and never per turn.
+  It tells a Desktop run whether the pane is unplaced or the app gave the mod no surface.
+
+### Fixed
+
+- `/ledger` opens the pane again. The skill was named `ledger`, so a bare `/ledger` resolved
+  to the skill's slash command and the mod's `ledger` command never ran. The skill is renamed
+  `record` (`skills/record/SKILL.md`, `/ledger:record`); the mod keeps `/ledger`.
+- The pane's `turn.complete` fallback no longer repeats Claude's whole reply. The engine's
+  default result for that event is `{ text: <the answer> }`, and the mod joined its own line
+  onto it, so every turn showed the reply a second time under the
+  `ledger+cc-plugin-agents-md:` label. The mod now returns its line alone.
+- `doctor` no longer counts a `config <file>: … ignoring it` errors.log line whose notice no
+  longer reproduces: it re-runs `loadConfig` from that file's folder and drops the line when the
+  notice is gone, reporting `n stale config notice(s) ignored` in the `errors` row instead.
+  SessionStart's doctor count uses the same filter. `loadConfig` takes `track: false` so that
+  re-read leaves the errors.log database tag alone.
+- The `record` skill says questions listed from other folders are informational: the agent
+  never puts them under its own *Needs you*, since they belong to another window.
+
 ### Changed
 
 - `lib/judge.mjs` is now plugin-kit's shared judge dispatch, copied byte for byte (plugin-kit's

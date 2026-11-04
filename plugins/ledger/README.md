@@ -67,7 +67,7 @@ with code 2, and never insert a question of their own; `test/no-prompts.test.mjs
 
 ## What the agent does with it
 
-The skill (`skills/ledger/SKILL.md`) tells the agent to:
+The skill `record` (`skills/record/SKILL.md`, typed as `/ledger:record`) tells the agent to:
 
 - `ask "<body>" --name <short> --options a,b --default a` whenever it needs your decision, then
   ask you in plain words without showing the id. `--ceiling <usd>` and `--about "<text>"` attach
@@ -78,6 +78,13 @@ The skill (`skills/ledger/SKILL.md`) tells the agent to:
 - `note "<text>"` for a choice it made without asking;
 - before any `git push` or `gh pr create`, a `note` or an `outcome <ref> "<text>"` saying what is being pushed and why;
 - read `pending` and `log` when it resumes.
+- treat questions listed from other folders as information about another window, never as its
+  own *Needs you*.
+
+Slash commands: `/ledger:record` loads that skill, `/ledger:enable` and `/ledger:disable` set
+the folder's switch, `/ledger:review` runs a review, and `/ledger` (no suffix) opens the
+[ledger pane](#ledger-pane-desktop). Before 0.3.7 the skill shared the plugin's name, so a bare
+`/ledger` resolved to that skill and ran it instead of opening the pane.
 
 You answer the way you would answer anyone. If the agent ends a turn after your reply without
 recording the answer, the Stop hook sends it back once with the ids to record.
@@ -274,6 +281,10 @@ of them finds an issue. A database that does not exist yet is not an issue.
 ends with ` [db <path>]`, the database the writing process had configured, and `doctor` and the
 SessionStart line count only the lines for the database they check. Lines for another database,
 and untagged lines from ledger 0.2.x, are named in the `errors` check's ok text as "not counted".
+A `config <file>: … ignoring it` line is counted only while that notice still reproduces: doctor
+re-reads the named file (from its folder, so a project file is found too) and, when the file no
+longer produces the notice, drops the line and names it as `n stale config notice(s) ignored`.
+Such a line ages out of the 7-day window on its own; the file is never edited.
 
 The bounce ledger is `cc_bounces`: one row per Stop block and PreToolUse deny, with the rule,
 session, `prompt_id`, tool and time. A row starts open and is closed once:
@@ -719,8 +730,16 @@ place it, a toast names `/ledger` instead.
 
 Where nothing can draw (`claude -p`, a pane that is not placed), the end of each turn adds one
 transcript block instead: one line per answer since your last turn, one line per question waiting
-elsewhere with its options, and the `/ledger answer` command that records. The pane never
-writes a row itself and never writes outside the ledger's own tables.
+elsewhere with its options, and the `/ledger answer` command that records. The block is that line
+alone; Claude's reply is not repeated in it. The pane never writes a row itself and never writes
+outside the ledger's own tables.
+
+Once per session the mod logs one dim transcript line, `ledger pane: surface=<app|none>
+placed=<true|false|null>`: the surface the app handed the mod at session start (`none` means it
+handed none, so nothing draws) and whether the pane is placed (`null`: the app cannot say). It is
+written at session start, or at the first fallback turn when session start faulted first. A
+session where the fallback block appears every turn and this line says `placed=false` or
+`surface=none` is one where the pane is not on screen.
 
 The fallback and the pane fail the same way as the hooks: a query that cannot open the database
 shows `ledger: database …` in the pane and one dim transcript line, a CLI refusal comes back as
@@ -762,6 +781,16 @@ Tests use a sandboxed `HOME`, `XDG_*` and `LEDGER_*` so they never touch your le
 
 ### 0.3.7
 
+- The skill is renamed from `ledger` to `record` (`skills/record/`, `/ledger:record`), so
+  `/ledger` reaches the pane mod's command instead of the skill. Its text adds that questions
+  from other folders never go under the agent's own *Needs you*.
+- The pane's end-of-turn fallback block no longer repeats Claude's whole reply above it (it was
+  joined onto the engine's `{ text: <answer> }`); it is the ledger line alone.
+- The pane logs one `ledger pane: surface=… placed=…` line per session (see
+  [Ledger pane](#ledger-pane-desktop)).
+- `doctor` re-reads the config file a `config …: … ignoring it` errors.log line names and drops the
+  line when the notice no longer reproduces, reporting `n stale config notice(s) ignored`;
+  SessionStart's doctor count drops it too.
 - `lib/judge.mjs` is plugin-kit's shared judge dispatch, byte for byte; ledger's cache, passage
   and verdict logic lives in `lib/ledger-judge.mjs`. The judge command is `LEDGER_JUDGE_BIN`,
   else `review.judgeCommand`, else the shared judge file

@@ -1094,7 +1094,11 @@ judge is `LEDGER_JUDGE_BIN`, else `review.judgeCommand`, else the shared judge f
 `${XDG_CONFIG_HOME:-~/.config}/judge/config.json` (new), else the i-have-audhd profile; verdicts
 and the cache are unchanged, and `judge could not start:` is now followed by the error code.
 Ledger's diff judge never runs shorter than 60 s; a longer shared `timeoutMs` is honoured. A
-judge printing a `claude -p --output-format json` envelope is read through it.
+judge printing a `claude -p --output-format json` envelope is read through it. Desktop fixes: the
+skill is renamed `record` (`/ledger:record`), so `/ledger` opens the pane instead of running the
+skill; the pane's end-of-turn line no longer repeats Claude's reply; the pane logs one
+`ledger pane: surface=… placed=…` line per session; `doctor` drops `config …: … ignoring it`
+errors.log lines whose notice no longer reproduces (`n stale config notice(s) ignored`).
 
 Changes in 0.3.6 (with plugin-kit 0.2.2): the gate grows from five rows to six. `docs` (a
 release is written down): when a plugin's `.claude-plugin/plugin.json` version differs from the
