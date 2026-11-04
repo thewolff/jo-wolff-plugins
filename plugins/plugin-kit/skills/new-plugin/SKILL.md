@@ -44,12 +44,13 @@ check` passes on the scaffold as written.
    replay those, and the gate refuses a `.txt` without its sibling.
 7. Give `e2e/live-run.sh` the plugin's own claim at step 2 (the one thing only a live model run
    can prove); the contract and the hook-ran check are already there.
-8. Add the plugin's bullet to the root README, naming its version (`- **[<name>](plugins/<name>/README.md)**
-   — <the one sentence> (0.1.0)`), before the first `gate check`: ledger's `docs` row fails a
-   new plugin without it. Then run `node --test` in the plugin, and `node "<ledger plugin>/scripts/ledger.mjs" gate check
+8. Add the plugin's row to the root README's plugin table (`| <name> | <the one sentence> | … |`;
+   the root README names the plugin, never its version, and changes only when a plugin is
+   added, removed, or its purpose changes), before the first `gate check`: ledger's `docs` row
+   fails a new plugin without it. Then run `node --test` in the plugin, and `node "<ledger plugin>/scripts/ledger.mjs" gate check
    --plugins <name>` from the repository; both green before the first push. Add the marketplace
-   entry (`.claude-plugin/marketplace.json` at the root: name, source, the one sentence) when it
-   is ready to publish.
+   entry (`.claude-plugin/marketplace.json` at the root: name, source, the same one sentence)
+   when it is ready to publish.
 
 The runner is copied, not shared: `plugins/<name>/lib/hook-runner.mjs` belongs to the new plugin.
 A later change to plugin-kit's copy reaches it only by copying again, on purpose; an installed

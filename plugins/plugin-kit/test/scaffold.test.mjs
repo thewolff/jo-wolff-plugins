@@ -226,8 +226,8 @@ test("end to end: a scaffold committed in a fresh repository fails the live run 
   };
   sh("git", ["init", "-q", "-b", "main"]);
   const { root: plugin } = scaffold({ name: "gated", events: ["Stop"], description: "A gated trial.", dest: join(repo, "plugins") });
-  // The repository README's bullet for the plugin, the third thing the gate's docs row wants for a new version.
-  writeFileSync(join(repo, "README.md"), "# plugins\n\n- **[gated](plugins/gated/README.md)** — a gated trial. Changes in gated 0.1.0: first release.\n");
+  // The repository README's row for the plugin, the third thing the gate's docs row wants for a new version (the name only, never the version).
+  writeFileSync(join(repo, "README.md"), "# plugins\n\n| Plugin | What it does |\n|---|---|\n| gated | a gated trial |\n");
   const commit = (m) => { sh("git", ["add", "-A"]); sh("git", ["commit", "-qm", m]); };
   commit("scaffold");
   const ledger = (...args) => spawnSync(process.execPath, [LEDGER_CLI, ...args], { cwd: repo, env, encoding: "utf8" });
