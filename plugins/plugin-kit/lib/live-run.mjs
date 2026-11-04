@@ -565,13 +565,17 @@ export function runSessionScenario(scenario, { pluginDir, pluginName, env, model
  */
 export function judgeScenario(scenario, { pluginDir, pluginName, env, timeoutS }) {
   const box = makeSandbox(pluginName, { env, pluginDir });
+  // `--eval-dir` must be a relative path inside the plugin (claude 2.1.318 refuses an absolute
+  // one), so the case is written under the plugin and removed in `finally`.
+  const casesRel = `live-run-cases-${process.pid}`;
+  const cases = join(pluginDir, casesRel);
   try {
-    const caseDir = join(box.root, "cases", scenario.name);
+    const caseDir = join(cases, scenario.name);
     mkdirSync(join(caseDir, "graders"), { recursive: true });
     writeFileSync(join(caseDir, "prompt.md"), `${scenario.session.prompt}\n`);
     writeFileSync(join(caseDir, "graders", "rubric.md"), `${scenario.judge}\n`);
     const out = join(box.root, "eval.json");
-    const r = spawnSync("claude", ["plugin", "eval", join(box.root, "cases"), "--plugin-dir", pluginDir, "--no-publish", "--trust-plugin", "--json", out], { cwd: box.work, env: { ...scrubEnv(env, pluginName), HOME: env.HOME ?? homedir() }, encoding: "utf8", timeout: timeoutS * 1000, killSignal: "SIGKILL" });
+    const r = spawnSync("claude", ["plugin", "eval", pluginDir, "--eval-dir", casesRel, "--no-publish", "--trust-plugin", "--json", out], { cwd: box.work, env: { ...scrubEnv(env, pluginName), HOME: env.HOME ?? homedir() }, encoding: "utf8", timeout: timeoutS * 1000, killSignal: "SIGKILL" });
     if (r.error) return { verdict: "indeterminate", why: `claude plugin eval could not run (${r.error.message})` };
     let json = null;
     try {
@@ -584,6 +588,7 @@ export function judgeScenario(scenario, { pluginDir, pluginName, env, timeoutS }
     if (r.status === 2 || unavailableRe.test(text) || /api[ _-]?error/i.test(text)) return { verdict: "indeterminate", why: `claude plugin eval exit ${r.status}: ${text.trim().split("\n").pop()?.slice(0, 200) ?? ""}` };
     return { verdict: "fail", why: `claude plugin eval exit ${r.status}: ${(r.stdout + r.stderr).trim().split("\n").slice(-3).join(" | ").slice(0, 300)}` };
   } finally {
+    rmSync(cases, { recursive: true, force: true });
     box.release();
   }
 }
