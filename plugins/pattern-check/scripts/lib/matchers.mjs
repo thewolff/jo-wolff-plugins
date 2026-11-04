@@ -270,12 +270,24 @@ function commandWords(words) {
       k++;
       while (k < words.length && words[k].text.startsWith("-")) {
         const o = words[k].text;
+        if (o === "--") { k++; break; }
         if (nonExec.has(o)) return [];
-        // A short-option cluster (`command -pv`, `sudo -nl`) is non-executing when any of its
-        // letters is a non-executing short option.
-        if (/^-[A-Za-z]{2,}$/.test(o) && [...o.slice(1)].some((ch) => nonExec.has(`-${ch}`))) return [];
-        k += o === "--" ? 1 : valued.has(o) ? 2 : 1;
-        if (o === "--") break;
+        if (valued.has(o)) { k += 2; continue; }
+        // A short-option cluster is read the way getopt reads it, letter by letter: a
+        // non-executing letter (`command -pv`, `sudo -nl`) means nothing runs; a value-taking
+        // letter ends the scan and takes the rest of the word (`sudo -ualice`, `-phello`) or,
+        // when it is the last letter (`sudo -nu alice`), the next word.
+        if (/^-[A-Za-z]{2,}/.test(o) && !o.startsWith("--")) {
+          let takesNext = false;
+          for (let p = 1; p < o.length; p++) {
+            const flag = `-${o[p]}`;
+            if (nonExec.has(flag)) return [];
+            if (valued.has(flag)) { takesNext = p === o.length - 1; break; }
+          }
+          k += takesNext ? 2 : 1;
+          continue;
+        }
+        k++;
       }
       continue;
     }

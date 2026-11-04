@@ -130,6 +130,31 @@ test("regression (codex review round 3): normalization keeps genuine answers and
   assert.equal(r.rows[0].bounded, "`retry()` gives up after 3");
 });
 
+test("regression (codex review round 4, B1): double-underscore runs and wrapping parens around the prefix are stripped whole", () => {
+  // Placeholders: refused in a full row (every fail cell but restart-safe), nothing saved.
+  for (const v of ["__n/a__—TODO", "__n/a__—`TODO!`", "__n/a__: tbd", "(__n/a__): **TBD**", "(n/a): TBD"]) {
+    assert.match(failCellProblem("bounded", v) ?? "", /n\/a without a reason/, v);
+    const r = parseTable(`| x | a.ts:1 | reuse | same | ${v} | ${v} | yes: pure | ${v} | ${v} |`);
+    assert.equal(r.ok, false, v);
+    assert.match(r.error, /row "x": "fails how" is n\/a without a reason/, v);
+  }
+  assert.match(failCellProblem("restart-safe", "(__no__)–~~unknown~~") ?? "", /says no without a reason/);
+  // Genuine answers: accepted in a full row and saved as written.
+  for (const rs of ["(__no__) - writes twice", "(__yes__): pure"]) {
+    assert.equal(failCellProblem("restart-safe", rs), null, rs);
+    const r = parseTable(`| x | a.ts:1 | reuse | same | throws | rerun | ${rs} | n/a: one call | the log |`);
+    assert.equal(r.ok, true, r.error);
+    assert.equal(r.rows[0].restartSafe, rs);
+  }
+  for (const v of ["uses snake_case keys", "calls __init__ then exits", "fails in __init__.py, logged", "(__n/a__) - no I/O", "__uses snake_case keys__"]) {
+    assert.equal(failCellProblem("fails how", v), null, v);
+  }
+  const r = parseTable("| x | a.ts:1 | reuse | same | fails in __init__.py, logged | rerun | yes: pure | n/a: one call | uses snake_case keys |");
+  assert.equal(r.ok, true, r.error);
+  assert.equal(r.rows[0].failsHow, "fails in __init__.py, logged");
+  assert.equal(r.rows[0].evidenceKept, "uses snake_case keys");
+});
+
 test("a four-column row is refused by default (record) and read with requireFailColumns false (old receipts)", () => {
   const old = "| retry helper | src/net/retry.ts:12 | reuse | same backoff |";
   const strict = parseTable(old);

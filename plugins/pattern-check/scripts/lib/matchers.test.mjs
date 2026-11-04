@@ -111,6 +111,20 @@ test("regression (codex review round 3, R2): a lookup flag inside a short-option
   assert.equal(name("command -pv tee > out.txt"), "redirect");
 });
 
+test("regression (codex review round 4, S1): an attached option value is not read as flags; a cluster ending in a valued option takes the next word", () => {
+  for (const cmd of ["sudo -ualice tee a.ts", "sudo -phello tee a.ts", "sudo -u alice tee a.ts", "sudo -nu alice tee a.ts", "sudo -nualice tee a.ts", "sudo --user=lee tee a.ts"]) {
+    assert.deepEqual(writeTargets(cmd), ["a.ts"], cmd);
+    assert.equal(name(cmd), "tee", cmd);
+  }
+  // Lookup letters before the valued option still mean nothing runs.
+  for (const cmd of ["sudo -lu alice tee a.ts", "sudo -nl tee a.ts", "command -Vp tee a.ts", "command -pvV tee a.ts"]) {
+    assert.deepEqual(writeTargets(cmd), [], cmd);
+    assert.equal(name(cmd), null, cmd);
+  }
+  assert.deepEqual(writeTargets("sudo -nE tee a.ts"), ["a.ts"]);
+  assert.deepEqual(writeTargets("sudo -nl tee > out.ts"), ["out.ts"]);
+});
+
 test("regression (codex review round 2, R3): a quoted or escaped control word is a command name, not the keyword", () => {
   for (const cmd of ['"then" tee a.ts', "'do' tee a.ts", "\\then tee a.ts", '"!" tee a.ts']) {
     assert.deepEqual(writeTargets(cmd), [], cmd);
