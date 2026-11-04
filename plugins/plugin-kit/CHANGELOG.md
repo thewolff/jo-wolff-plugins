@@ -4,6 +4,27 @@ All notable changes to plugin-kit are recorded here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Releases before 0.1.2 are described in
 the README's "Changes in" sections.
 
+## [0.4.0] - 2026-11-04
+
+The brb badge and the ledger pane drew nothing in Claude Desktop: both gated on the session's
+surface, and Desktop starts a session as `surface: null, isInteractive: false`. What Desktop
+did draw, the status line, is a 32-character grey footnote in the footer. No public guide shows
+how a mod looks in either host, so each plugin found these by shipping them.
+
+### Added
+
+- `skills/new-mod/SKILL.md`: pick the surface by the signal, write for both hosts without
+  gating on `e.surface`, make it readable (single-width symbols, colour never alone, the first
+  32 characters carry the point), register in the engine's validated shape, prove it with the
+  real terminal and Desktop `session.start` payloads, and ship it. The status line is a fallback
+  only until the `AbovePrompt` render hook has been called once in the session, then cleared
+  (brb 0.4.0's rule); a terminal user who collapses the band is not detectable, so anything
+  the person has to answer also raises a toast.
+- `skills/new-mod/reference.md`: every surface, element and render site by host, the limits
+  that shape a drawing, and the session payload per host, each row with its receipt.
+- `templates/mod/register.mjs`: a hooks module with the poll, the band, the fallback status
+  line and once-per-message fault logging. The scaffolder does not copy it.
+
 ## [0.3.2] - 2026-11-04
 
 ### Changed
