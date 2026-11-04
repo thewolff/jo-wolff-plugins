@@ -112,6 +112,9 @@ node <plugin dir>/scripts/ledger.mjs help                # the verb table, id gr
 | `config` | either | the effective settings, where each came from, both config file paths, and whether the database file is the plugin's own or shared. |
 | `doctor` | either | is the ledger healthy: one `ok`, `warn` or `fail` line per check (see [Doctor and the bounce ledger](#doctor-and-the-bounce-ledger)). Exit 0 when nothing failed, 1 when anything did; warns do not change it. Never writes the database and never creates it. |
 | `bounces [--since <N>d\|<N>h]` | either | the hooks' bounces since then (default `7d`): per rule, how many fired, were satisfied, were bypassed and are still open; then the last 20 rows (`#id`, time, session short id, rule, tool, outcome), each followed by `text:` (what fired it, one line, cut to 160 characters) and `transcript:` (the session transcript's path) when the row has them. Covers every folder. |
+| `canary run` / `runs` / `grade` / `prune` / `install` | human | the nightly canary (see [The feedback loop](#the-feedback-loop-canary-report-digest)). Runs on its own line. |
+| `report [--since 7d] [--no-judge]` | either | the graded report of what the hooks did in the window. Runs on its own line. |
+| `digest [--dry-run] [--force]` / `digest install` | human | the weekly report posted as a comment on the digest issue, and its launchd job. Runs on its own line. |
 | `help` | either | the table above, the id grammar, the batch rule. |
 
 "Who" is advisory; the CLI does not refuse by caller. `--by <name>` overrides the recorded
@@ -165,7 +168,7 @@ session's folder and dated after the session started.
 
 | Event | Config key | What it does |
 |---|---|---|
-| SessionStart | `hooks.sessionStart` | Injects, in order and only when non-empty: *Waiting on you* (held questions for the cwd, its parents and the folders under it, oldest first, name and one-line body, a subfolder's naming the folder; kept on `source: compact`), open questions for the same scope (the `pending` block), the last `inject.notes` entries of `log`, the exact invocation plus allow rule and a one-line verb summary, when `inject.elsewhere` is on a block for the open and held questions in other folders (a folder that is not the cwd, not a parent of it and not under it): one header line (`ledger: N question(s) waiting on the human in M other folder(s) (asked by another window, not this folder's work). If the human's prompt answers one, run \`… answer <q-id> <option>\` and say it is recorded. Otherwise, in your first reply, tell the human in one plain line per question that another window is waiting on them: the question's body, its options and its default when it has one. Never show the q- id:`), then each folder's path followed by one `pending` line per question (default, id, name, body, the other options), a held one's line opening with `held` in place of the default word, at most 10 questions in full and a count of the rest with the `pending --all` command, the cross-lab review findings line (see [Cross-lab review](#cross-lab-review)), and, last, the doctor line (see [Doctor and the bounce ledger](#doctor-and-the-bounce-ledger)). Capped at 9,000 characters; the log entries are cut first, never the held or open questions or the other-folders block, review or doctor lines. On `source: compact` the log section is dropped and the verb summary is one line; the other-folders block, review and doctor lines stay. Records the session in `cc_sessions`. Before injecting, the sweep: open and held questions asked more than `sweep.autoWithdrawDays` days ago whose session has ended are withdrawn with a note (at most 20 per start, listed in one `systemMessage` line). |
+| SessionStart | `hooks.sessionStart` | Injects, in order and only when non-empty: *Waiting on you* (held questions for the cwd, its parents and the folders under it, oldest first, name and one-line body, a subfolder's naming the folder; kept on `source: compact`), open questions for the same scope (the `pending` block), the last `inject.notes` entries of `log`, the exact invocation plus allow rule and a one-line verb summary, when `inject.elsewhere` is on a block for the open and held questions in other folders (a folder that is not the cwd, not a parent of it and not under it): one header line (`ledger: N question(s) waiting on the human in M other folder(s) (asked by another window, not this folder's work). If the human's prompt answers one, run \`… answer <q-id> <option>\` and say it is recorded. Otherwise, in your first reply, tell the human in one plain line per question that another window is waiting on them: the question's body, its options and its default when it has one. Never show the q- id:`), then each folder's path followed by one `pending` line per question (default, id, name, body, the other options), a held one's line opening with `held` in place of the default word, at most 10 questions in full and a count of the rest with the `pending --all` command, the cross-lab review findings line (see [Cross-lab review](#cross-lab-review)), and, last, the doctor line (see [Doctor and the bounce ledger](#doctor-and-the-bounce-ledger)). Capped at 9,000 characters; the log entries are cut first, never the held or open questions or the other-folders block, review or doctor lines. On `source: compact` the log section is dropped and the verb summary is one line; the other-folders block, review and doctor lines stay. Records the session in `cc_sessions`. Before injecting, the sweep: open and held questions asked more than `sweep.autoWithdrawDays` days ago whose session has ended are withdrawn with a note (at most 20 per start, listed in one `systemMessage` line). Adds the weekly digest's exception lines (overdue, or attempted and failed) when they apply. |
 | PreToolUse | `hooks.preToolUse` | Runs on `AskUserQuestion` and `Bash` only. `AskUserQuestion` is denied while no question is open for the cwd (a question whose cwd equals the hook cwd or is an ancestor of it), with the reason `ledger: ask the question through the ledger first: \`… ask "<body>" --name <short> --options a,b --default a\`, then ask it; keep the q- id to yourself and record the reply with \`… answer <q-id> <option>\`.` A Bash command that runs `git push` or `gh pr create` (any simple command of a `&&`/`;`/`|`/newline chain, read with shell quoting; git's global options and a path on the binary are tolerated) is denied while the session has no `note` and no `outcome`, with the reason `ledger: record what this push is before pushing: \`… note "<what and why>"\` or \`… outcome <ref> "<what and why>"\` (one in this session lifts the gate).` The same command is checked by the review gate (below) at the same time: when both stop it, one deny lists both as numbered items, so the agent meets every missing step at once. Before denying it proves the store can take a write (the remedy writes); if it cannot, the tool passes with a `systemMessage`. Other tools and other commands are never seen. |
 | Stop | `hooks.stop` | Checks the final message once per turn (keyed on `prompt_id`; a second Stop in the same turn passes). Answer rule (`forcing.stopAskRule`): the Stop's `prompt_id` differs from the one stamped by the session's previous Stop (so you wrote since), and the session has open questions asked at or before that previous Stop → `{"decision":"block","reason":…}` listing them newest first and telling the agent to take the answer from your latest message and run `answer <q-id> <option>` (or `withdraw`); it clears once every such question is answered or withdrawn. Ask rule (same switch): after removing code blocks, inline code and double-quoted spans, a sentence ends with `?` (a `?` at the end of a line or followed by a space, so "Should I …? I'd say yes." counts and a URL's `?query` does not) and that sentence asks for a decision: a permission or decision request on the agent (a modal on I/we: "should I", "shall we", "can I push?", "may I"; "want me to", "do you want", "would you like"), a confirmation ("is this right", "does that look right", "is it safe to", "ok to", "ready to"), an explicit choice ("would you prefer", "which option should we", an option list after a comma or colon, a sentence that is only options such as "Alpha or beta?", or a choice about the thing being configured: "Should the helper use local or remote storage?"), or a wh-question (what/where/when/who/which/how) carrying a modal on I/we, "whether", a preference or an option list ("How should we proceed?", "Which option should we use?"). A "why" question never counts, and neither do a bare "which", a loose "or", "do we know/have …", or "whether"/"proceed" inside a question about recorded facts: "Which file holds the config?", "Are the logs compressed or uncompressed?", "Does the log say whether the build failed?", "Did the deployment proceed without errors?" and "What are we working on?" are requests for information and need no row. It is a heuristic with a once-per-turn escape: an information request worded as a request ("Should the parser be deciding this?") bounces once and no question is open for the folder (this session's, or one open in the cwd or a parent of it, whoever asked it) and the reply does not repeat the body of a question open in another folder (relaying one of those to the human, as SessionStart asks, is not asking a new question) → block telling the agent to `ask` first, then ask in plain words; messages under 40 substantive characters are not checked. Neither rule reads ids out of the reply. A session's questions are those tagged with its id, plus untagged ones asked in or around its folder after it started. Decision rule (`forcing.stopDecisionRule`): after also removing double-quoted spans, the message contains one of `forcing.decisionPhrases` as whole words, the session recorded no `note` during this turn, and it asked no question during this turn (the stated default of a question just asked is not a decision) → block telling the agent to `note`, then finish. Checked in the order answer, ask, decision. Every Stop stamps `cc_sessions.last_stop_at` and `last_stop_prompt`; "this turn" runs from the previous stamp (or the session start) to now. |
 | SessionEnd | `hooks.sessionEnd` | In one transaction: stamps `ended_at` and the reason on the session row, and marks the session's open bounce rows `bypassed`. Waits at most 250 ms for a lock (SessionEnd hooks share a 1.5-second budget). Prints nothing; errors go to the log. |
@@ -201,6 +204,8 @@ defaults verbatim.
 | `inject.answers` | `true` | whether each prompt tells the session about answers to its questions recorded in other sessions since its last prompt; `false` turns it off |
 | `inject.doctor` | `true` | whether SessionStart adds, last, `ledger: doctor reports N issue(s); run … doctor` when the cheap doctor checks find something; `false` turns it off |
 | `sweep.autoWithdrawDays` | `7` | SessionStart withdraws open and held questions asked more than this many days ago whose session has ended (or that had no session) and whose deadline is not still ahead, at most 20 per start, each with a `withdraw` note naming the sweep and one `systemMessage` line listing the ids; `0` turns it off |
+| `digest.enabled` | `true` | the weekly digest and its SessionStart lines; `false` turns both off and `doctor` warns. User config only |
+| `digest.issue` | `thewolff/jo-issues#325` | the GitHub issue the digest is posted to as a comment (`owner/repo#number`). User config only |
 | `review.mode` | `"gate"` | the cross-lab review gate on `git push`, `gh pr create` and `gh pr merge`: `gate` denies a push whose HEAD has no review or has findings, `advise` allows it with a notice, `off` turns the review off. Read from the user file only; a project file's `review` is ignored with a notice |
 | `review.labs` | `["codex"]` | the labs `ledger review` runs, in parallel: any of `codex`, `kimi`, `claude`, `glm`. User file only |
 | `review.models` | `null` | a model per lab, e.g. `{"claude": "opus", "glm": "zai/glm-5.3-flash"}`; unset means the lab's CLI default (`glm`: `zai/glm-5.3`). User file only |
@@ -250,6 +255,7 @@ appends one line to `${XDG_STATE_HOME:-~/.local/state}/ledger/errors.log` and te
 | `errors` | no `errors.log` lines for this database in the last 7 days | lines for this database in the last 7 days: counted per hook, the last 5 printed | |
 | `bounces` | no open bounce rows older than 24 hours | open rows older than 24 hours, counted per rule | |
 | `stale` | no open or held question whose session ended more than 24 hours ago | such questions, listed with their id, state, name, when asked, when the session ended and the folder; the way out is `answer`, `withdraw`, or asking it again from a live session, which adopts it. A question with no session is never stale; a session that never ended (a crash) is reached by the 7-day sweep only | |
+| `digest` | last posted within 8 days (or first seen within 8 days when never posted) and no failed attempt since | overdue, or the last attempt failed (the SessionStart lines, same words), or `digest.enabled` is false | |
 | `review <lab>` | one per lab in `review.labs` (none when `review.mode` is `off`): the lab's binary is on `PATH` | the binary is missing | |
 
 Doctor opens the database read-only and never creates or migrates it. The SessionStart doctor
@@ -394,6 +400,80 @@ judge command is `review.judgeCommand`, else the i-have-audhd plugin's
 
 SessionStart adds `ledger: cross-lab review found N finding(s) on <sha>; run … review status`
 when HEAD has open blocking or should findings (not when `review.mode` is `off`).
+
+## The feedback loop: canary, report, digest
+
+Three verbs, added in 0.3.2, that tell whether the hooks are doing anything useful. Each runs
+on its own line (never inside a batch) because each spawns processes.
+
+### `canary`
+
+`canary run [--repo <path>] [--plugins a,b] [--timeout <s>]` runs every plugin's
+`e2e/live-run.sh` from its plugin directory (every directory under `<repo>/plugins/` that has
+`hooks/hooks.json` or `.claude-plugin/plugin.json`; `--repo` defaults to the checkout this
+plugin is loaded from) and inserts one `cc_canary_runs` row per plugin: `pass` (exit 0), `fail`
+(any other exit, or the deadline, default 600 s, the process group killed), `unavailable` (no
+script, exit 75, or no `claude` on PATH). The script's stdout and stderr are the transcript,
+written to `<state>/canary/<plugin>/<time>.jsonl`; the row keeps the last 16 KiB as `summary`
+and a line diff against the plugin's last pass as `diff`. Exit 0 when nothing failed, 1 when
+something did, 2 when the store could not be written (the canary has no session to fail open
+into; the transcript path is named so nothing is lost).
+
+The canary contract a plugin's `e2e/live-run.sh` follows (plugin-kit's `new-plugin` skill
+ships a template): run from the plugin directory with `CANARY_PLUGIN`, `CANARY_TRANSCRIPT` (a
+path the script may copy its transcript to) and `CANARY_TIMEOUT_S`; exit 0 pass, 75 unavailable
+with the reason on the last stdout line, anything else fail. The ledger's own script seeds a
+question in another folder, runs `claude -p` headless with the plugin loaded from the checkout
+and the installed one disabled, and checks that the first reply relays the question's body,
+that no `stopAskRule` bounce was recorded, that the session row exists and `doctor` exits 0.
+Other plugins in this repository have no script yet and report `unavailable: no
+e2e/live-run.sh`, which is the correct reading, not a failure.
+
+`canary runs [N] [--plugin <name>]` lists the last N rows. `canary grade <id> biting|silent|fine
+["<note>"]` records who read a run and what they made of it (`--by`, default `human`).
+`canary prune [--days 30]` removes transcript files older than that; rows stay for ever.
+`canary install [--repo] [--hour 3] [--minute 30]` writes
+`<state>/launchd/com.jo-wolff-plugins.ledger-canary.plist` (nightly, `canary run --repo …`,
+logs beside it), checks it with `plutil -lint`, asks `launchctl print` whether the job is
+loaded, and prints the `launchctl bootstrap gui/<uid> <plist>` line for you to run. It never
+runs bootstrap itself.
+
+### `report`
+
+`report [--since 7d] [--no-judge]` prints, per rule (the three Stop rules, the two PreToolUse
+rules, the review gate, and any other rule name found in `cc_bounces`): fired, satisfied,
+bypassed, open, and a grade. The mechanical grade is always computed: `biting` when bypassed ≥ 3
+or more than half of what fired was bypassed (the rule sent back work that was then forced
+through); `silent` when sessions ran in the window and the rule never fired; `fine` otherwise.
+When a judge is configured (`review.judgeCommand`, `LEDGER_JUDGE_BIN`, or the i-have-audhd
+profile) it reads up to 20 bounce texts per rule that fired and answers `biting`, `silent` or
+`fine`; that answer is printed beside the mechanical one as `(judge: …)` and never stored. A
+judge that is missing, fails, answers none of the three words, or has no texts to read (rows
+from before 0.3.2) prints `(judge unavailable: <reason>)`; the mechanical grade stands. Then:
+canary runs in the window per plugin (last status, counts, grades), reviews waived with their
+reasons, and the judge's cached yes/no answers. Read-only.
+
+### `digest`
+
+`digest [--dry-run] [--force]` builds the 7-day report, writes `cc_meta.digest_last_attempt`
+first, then posts it with `gh issue comment <number> --repo <owner/repo> --body-file -` (30 s
+deadline) to `digest.issue` (default `thewolff/jo-issues#325`). Success writes
+`digest_last_posted` and clears `digest_last_error`; failure writes `digest_last_error` with the
+reason (`gh not found on PATH`, `gh exited 1: …`, `gh timed out after 30s`), exits 1 and
+prints the body so nothing is lost. An empty week still posts (`0 bounces, 0 canary runs,
+nothing graded`): no comment means the job did not run. A second post within 24 h is refused
+unless `--force`. `--dry-run` prints the body and writes no key. The body is at most 60 KiB,
+cut with a marker. `digest install` writes
+`<state>/launchd/com.jo-wolff-plugins.ledger-digest.plist` (Monday 09:00 local) the same way
+`canary install` does.
+
+The dead-man's switch: SessionStart stamps `digest_first_seen` once, then adds
+`ledger: weekly digest overdue (last: <date>); run \`… digest\` or check launchd` when the
+last post (or, never posted, that first stamp) is more than 8 days old, and
+`ledger: weekly digest attempted <date>, post failed: <reason>` when the last attempt is newer
+than the last post and left an error. Both read the local database only, so they work offline.
+`doctor`'s `digest` check says the same, or `last posted <date>`. `digest.enabled: false`
+turns the post and both lines off, and `doctor` warns that it is off.
 
 ## Inspecting the database
 

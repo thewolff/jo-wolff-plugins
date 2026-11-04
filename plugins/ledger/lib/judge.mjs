@@ -56,8 +56,8 @@ export function judgeCommand(config, env = process.env) {
 
 const shellEscape = (text) => "'" + String(text).replace(/'/g, `'\\''`) + "'";
 
-/** The one-word answer: `yes`, `no`, or null when the last non-empty line starts with neither. */
-export function parseAnswer(stdout) {
+/** The one-word answer among `words` (default yes/no), or null when the last non-empty line starts with none. */
+export function parseAnswer(stdout, words = ["yes", "no"]) {
   const last = String(stdout ?? "")
     .split("\n")
     .map((l) => l.trim())
@@ -65,7 +65,22 @@ export function parseAnswer(stdout) {
     .at(-1);
   if (!last) return null;
   const word = /^[\s*_`"'>#-]*([a-z]+)/i.exec(last)?.[1]?.toLowerCase();
-  return word === "yes" || word === "no" ? word : null;
+  return words.includes(word) ? word : null;
+}
+
+/**
+ * One uncached judge call whose answer is one of `words` (the report's biting|silent|fine).
+ * Returns { answer, error }: answer null with the reason when no judge is configured, it fails,
+ * or it says none of the words. Nothing is written: a grade is recomputed each time.
+ */
+export async function askWord({ config, env = process.env, passage, question, words, timeoutMs = JUDGE_TIMEOUT_MS }) {
+  const { command } = judgeCommand(config, env);
+  if (!command) return { answer: null, error: "no judge configured" };
+  const prompt = `${passage}\n\nQuestion: ${question}\nReply with a single word: ${words.join(", ")}.`;
+  const r = await runJudge(command, prompt, timeoutMs, env);
+  if (!r.ok) return { answer: null, error: r.error };
+  const answer = parseAnswer(r.stdout, words);
+  return answer ? { answer, error: null } : { answer: null, error: `unparsed: judge answered none of ${words.join("|")}` };
 }
 
 function runJudge(command, prompt, timeoutMs, env) {

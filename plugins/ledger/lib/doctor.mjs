@@ -10,6 +10,7 @@
 //   hooks    hooks/hooks.json lists every event the plugin handles and each script exists
 //   errors   errors.log lines from the last 7 days, counted per hook; warn when any, last 5 shown
 //   stale    open or held questions whose session ended more than 24h ago; warn with the way out
+//   digest   the weekly digest: warn when overdue (>8 days), when the last post failed, or when off
 //   bounces  open bounce rows older than 24 hours (warn when any)
 //   review <lab>  one per lab in review.labs, unless review.mode is off: the lab's binary is on
 //            PATH (or LEDGER_REVIEW_BIN_<LAB>); warn when missing
@@ -26,6 +27,7 @@ import { errorsLogPath, readErrors } from "./failopen.mjs";
 import { nowIso } from "./time.mjs";
 import { labChecks } from "./review.mjs";
 import { staleCheck } from "./sweep.mjs";
+import { doctorCheck } from "./digest.mjs";
 
 export const PLUGIN_ROOT = fileURLToPath(new URL("..", import.meta.url));
 export const EXPECTED_EVENTS = Object.freeze(["SessionStart", "UserPromptSubmit", "PreToolUse", "Stop", "SessionEnd"]);
@@ -125,9 +127,16 @@ export function runDoctor({ env = process.env, cwd = null, now = Date.now(), plu
     } catch (err) {
       checks.push(check("fail", "stale", `could not read cc_questions: ${err.message}`));
     }
+    try {
+      const g = p.query((db) => doctorCheck(db, { config: cfg.config, now }));
+      checks.push(check(g.status, "digest", g.detail));
+    } catch (err) {
+      checks.push(check("fail", "digest", `could not read cc_meta: ${err.message}`));
+    }
   } else {
     checks.push(check("ok", "bounces", "not checked (no current database yet)"));
     checks.push(check("ok", "stale", "not checked (no current database yet)"));
+    checks.push(check("ok", "digest", "not checked (no current database yet)"));
   }
 
   if (extraChecks) checks.push(...extraChecks(cfg, env));

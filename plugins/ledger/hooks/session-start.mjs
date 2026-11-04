@@ -13,13 +13,14 @@
 
 import { StoreError, transaction } from "../lib/db.mjs";
 import { runHook, noticeField, invokedDirectly } from "../lib/failopen.mjs";
-import { buildInjection } from "../lib/inject.mjs";
+import { buildInjection, invocation } from "../lib/inject.mjs";
 import { withStore, hookConfig } from "../lib/store.mjs";
 import { appendFileSync } from "node:fs";
 
 const SESSION_ID_OK = /^[A-Za-z0-9_.-]+$/;
 import { nowIso } from "../lib/time.mjs";
 import { autoWithdraw } from "../lib/sweep.mjs";
+import { sessionStartLines, stampFirstSeen } from "../lib/digest.mjs";
 
 export function handle(input, { env = process.env, now = Date.now() } = {}) {
   const ready = hookConfig(env, input, "sessionStart");
@@ -42,6 +43,8 @@ export function handle(input, { env = process.env, now = Date.now() } = {}) {
             // ended are withdrawn with a note (at most 20 per start). The start context's
             // notes section shows the sweep's note when it concerns this folder.
             swept = autoWithdraw(store.db, { now, days: cfg.config.sweep?.autoWithdrawDays });
+            // The dead-man's switch needs a first date to count from when nothing was ever posted.
+            stampFirstSeen(store.db, now);
           },
           store.dbPath,
         );
@@ -61,6 +64,14 @@ export function handle(input, { env = process.env, now = Date.now() } = {}) {
       }
     }
     const { text } = buildInjection(store.db, cwd, store.config, { source: input.source, now, env });
+    // The weekly digest's exception lines (overdue, or attempted and failed) are for the human.
+    let digest = [];
+    try {
+      digest = sessionStartLines(store.db, { config: store.config, now, cli: invocation() });
+    } catch {
+      /* advisory */
+    }
+    notices.push(...digest);
     return {
       ...noticeField(notices),
       hookSpecificOutput: { hookEventName: "SessionStart", additionalContext: text },

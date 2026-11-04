@@ -45,11 +45,12 @@ export const DEFAULTS = Object.freeze({
   }),
   inject: Object.freeze({ notes: 5, elsewhere: true, answers: true, doctor: true }),
   sweep: Object.freeze({ autoWithdrawDays: 7 }),
+  digest: Object.freeze({ enabled: true, issue: "thewolff/jo-issues#325" }),
   review: Object.freeze({ mode: "gate", labs: Object.freeze(["codex"]), models: null, profiles: null, maxRounds: 3, judgeCommand: null }),
 });
 
 /** Keys only the user file (and the defaults) may set: a project file's value for them is ignored. */
-export const USER_ONLY_KEYS = Object.freeze(["review"]);
+export const USER_ONLY_KEYS = Object.freeze(["review", "digest"]);
 
 // Type of each leaf, for the wrong-type notice. Nested objects list their leaves.
 const SHAPE = {
@@ -61,6 +62,7 @@ const SHAPE = {
   forcing: { denyAskWithoutRow: "boolean", stopAskRule: "boolean", pushNeedsNote: "boolean", stopDecisionRule: "boolean", decisionPhrases: "string[]" },
   inject: { notes: "integer", elsewhere: "boolean", answers: "boolean", doctor: "boolean" },
   sweep: { autoWithdrawDays: "integer" },
+  digest: { enabled: "boolean", issue: "string" },
   review: { mode: "off|advise|gate", labs: "string[]", models: "{lab: string}|null", profiles: "{lab: string}|null", maxRounds: "positive integer", judgeCommand: "string|null" },
 };
 
