@@ -1,6 +1,7 @@
-// receipts.test.mjs — lib/receipts.mjs: which labels count (bold, block-leading or inline; never
-// casual prose, never inside a fence), where a statement ends, which receipt shapes satisfy each
-// label, the warning's cap, the config read, and the judge stage with a fake runner.
+// receipts.test.mjs — lib/receipts.mjs: which labels count (bold, at a line's start after any
+// list or quote marker, or followed by a colon or the line's end; never mid-sentence, never casual
+// prose, never inside a fence), where a statement ends, which receipt shapes satisfy each label,
+// the warning's cap, the config read, and the judge stage with a fake runner.
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
@@ -29,14 +30,14 @@ const labels = (md) => extractStatements(md).map((s) => [s.line, s.label, s.text
 
 // ─── labels ─────────────────────────────────────────────────────────────────────────────
 
-test("labels: bold CLAIM/CITE block-leading or inline, with a qualifier or a colon; casual prose, unbolded, other words, and fenced text never count", () => {
+test("labels: bold CLAIM/CITE at a line's start (after list or quote markers) or followed by a colon or the line's end, with a qualifier or a colon; mid-sentence bold, casual prose, unbolded, other words, and fenced text never count", () => {
   const md = [
     "# Report", // 1
     "", // 2
     "**CLAIM**", // 3
     "First, block-leading.", // 4
     "", // 5
-    "Inline **CLAIM** second statement here.", // 6
+    "Inline **CLAIM** mid-sentence is a mention, not a label.", // 6
     "- **CITE (partial)**: third, qualified.", // 7
     "- **CLAIM:** fourth, with a colon.", // 8
     "", // 9
@@ -49,13 +50,24 @@ test("labels: bold CLAIM/CITE block-leading or inline, with a qualifier or a col
     "**CITE** inside a tilde fence either", // 16
     "~~~", // 17
     "**CITE** fifth, after the fences.", // 18
+    "> **CLAIM** sixth, in a quote.", // 19
+    "", // 20
+    "Result **CLAIM**: seventh, a lead-in then a colon.", // 21
+    "", // 22
+    "Under the contract, **CLAIM** and **CITE** are the only two labels.", // 23
+    "", // 24
+    "- a list item", // 25
+    "  ```", // 26
+    "  **CLAIM** inside an indented fence", // 27
+    "  ```", // 28
   ].join("\n");
   assert.deepEqual(labels(md), [
     [3, "CLAIM", "First, block-leading."],
-    [6, "CLAIM", "second statement here."],
     [7, "CITE", "third, qualified."],
     [8, "CLAIM", "fourth, with a colon."],
     [18, "CITE", "fifth, after the fences."],
+    [19, "CLAIM", "sixth, in a quote."],
+    [21, "CLAIM", "seventh, a lead-in then a colon."],
   ]);
 });
 
@@ -66,10 +78,12 @@ test("statement end: the next label, a heading, a rule, an HTML comment, or a bo
   assert.deepEqual(labels("**CLAIM** a\n**Needs you**\nnot part"), [[1, "CLAIM", "a"]]);
   assert.deepEqual(labels("**CLAIM** a\n\nnot part, a new paragraph"), [[1, "CLAIM", "a"]]);
   assert.deepEqual(labels("**CLAIM** a\nreceipt on the next line /x/y.ts:1"), [[1, "CLAIM", "a\nreceipt on the next line /x/y.ts:1"]]);
-  assert.deepEqual(labels("1. lead-in **CLAIM** a\n2. lead-in **CITE** b"), [
+  assert.deepEqual(labels("1. **CLAIM** a\n2. lead-in **CITE**: b"), [
     [1, "CLAIM", "a"],
     [2, "CITE", "b"],
   ]);
+  assert.deepEqual(labels("**CLAIM** the build is clean:\n\n```\n$ npm run build\n\n> built in 2s\n```\n\nnot part"), [[1, "CLAIM", "the build is clean:\n\n```\n$ npm run build\n\n> built in 2s\n```"]], "a blank line inside a fence does not end the statement");
+  assert.deepEqual(labels("- **CLAIM** the suite:\n\n  ```\n  $ node --test\n\n  ℹ pass 12\n  ```"), [[1, "CLAIM", "the suite:\n\n  ```\n  $ node --test\n\n  ℹ pass 12\n  ```"]], "an indented fence under a list item belongs to the statement");
   assert.deepEqual(labels("**CLAIM** a\n\n```\ncmd\nout\n```\n"), [[1, "CLAIM", "a\n\n```\ncmd\nout\n```"]]);
   assert.deepEqual(labels("**CLAIM** a\r\n\r\n**CITE** b\r\n"), [
     [1, "CLAIM", "a"],
@@ -105,15 +119,23 @@ test("CLAIM: an absolute /-rooted file:line or range passes; a relative path, a 
   assert.equal(claim("nothing checked here"), NEEDS.CLAIM);
 });
 
-test("CLAIM: a command in code plus a result phrase passes; a command alone, or a result phrase alone, does not; a fence with the command and its output passes without words", () => {
-  assert.equal(claim("`npm test` → exit 0, 12 passing"), null);
-  assert.equal(claim("ran `node --test`: it printed 46 pass"), null);
-  assert.equal(claim("`git status --porcelain` returned nothing"), null);
-  assert.equal(claim("`npm test`"), NEEDS.CLAIM);
-  assert.equal(claim("the tests exit 0"), NEEDS.CLAIM);
+test("CLAIM: a fence with the command and its output, a fenced command plus a result phrase, or a command (`$ cmd`, or code with a space in it) with `→ output` on its line or the next passes; inline code next to a result word, or a symbol before an arrow, does not", () => {
   assert.equal(claim("ran it:\n```\nnode x.mjs\nhello\n```"), null);
   assert.equal(claim("ran it:\n```sh\nnode x.mjs\n```"), NEEDS.CLAIM, "a one-line fence is a command with no output and no result word");
   assert.equal(claim("ran it:\n```sh\nnode x.mjs\n```\nand it passed"), null);
+  assert.equal(claim("the build is clean:\n\n```\n$ npm run build\n\n> built in 2s\n```"), null, "probe case D: a blank line inside the fence");
+  assert.equal(claim("the suite:\n\n  ```\n  $ node --test\n  ℹ pass 12\n  ```"), null, "probe case I: an indented fence");
+  assert.equal(claim("`$ npm test` → exit 0, 12 passing"), null);
+  assert.equal(claim("$ git status --porcelain -> (nothing)"), null);
+  assert.equal(claim("clean tree:\n- `$ git status --porcelain`\n- → nothing printed"), null);
+  assert.equal(claim("`resolveJudgeCommand` returns null when nothing is configured."), NEEDS.CLAIM, "probe case G: a symbol in code is not a command");
+  assert.equal(claim("`handle()` -> nothing useful here."), NEEDS.CLAIM, "probe case L: an arrow after a symbol is not a result");
+  assert.equal(claim("`npm test` → exit 0, 12 passing"), null, "code with a space inside reads as a command");
+  assert.equal(claim("`handle()` and `x` -> null"), NEEDS.CLAIM, "the prose between two spans is not a span");
+  assert.equal(claim("ran `node --test`: it printed 46 pass"), NEEDS.CLAIM, "a result word is not an arrow");
+  assert.equal(claim("`$ npm test`"), NEEDS.CLAIM, "a command alone");
+  assert.equal(claim("`$ npm test`\nand then it was fine"), NEEDS.CLAIM, "the next line does not open with an arrow");
+  assert.equal(claim("the tests exit 0"), NEEDS.CLAIM);
 });
 
 test("CITE: a URL passes; test/tested/ran/run with a command in code passes; a bare assertion, or the words without a command, does not", () => {
@@ -204,7 +226,7 @@ test("judgeStage: pass is silent, fail and an unreadable verdict are findings, a
   const answers = [
     { verdict: "pass", reason: "fine" },
     { verdict: "FAIL", reason: "reaches  past\nthe receipt" },
-    { verdict: "maybe" },
+    { verdict: "maybe", reason: "cannot  tell\nfrom the receipt" },
     { error: "timeout", detail: "no exit within 10 ms", stderr: "slow\nthing" },
     { error: "nonzero", detail: "exit 2", stderr: "" },
     "not an object",
@@ -221,7 +243,7 @@ test("judgeStage: pass is silent, fail and an unreadable verdict are findings, a
     findings.map((f) => [f.statement.line, f.why]),
     [
       [2, "the judge says the receipt does not license it: reaches past the receipt"],
-      [3, "the judge's answer was neither pass nor fail (unverified)"],
+      [3, "the judge's answer was neither pass nor fail (unverified): cannot tell from the receipt"],
       [6, "the judge's answer was neither pass nor fail (unverified)"],
     ],
   );
