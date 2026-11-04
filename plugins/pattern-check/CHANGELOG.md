@@ -27,7 +27,8 @@ row and the missing cell; the plan stays held).
 ### Changed
 
 `record` refuses a row whose `better design` cell is missing (a nine-column 0.3 row), empty, a
-bare `none`, or a placeholder (`-`, `?`, `TBD`, a bare `n/a`, `none: TBD`, `n/a: TBD`, `N/A - TBD`,
+bare `none` (or `nothing`, `nothing better`, `no better`, `no better design`; each is accepted
+with what was weighed after it), or a placeholder (`-`, `?`, `TBD`, a bare `n/a`, `none: TBD`, `n/a: TBD`, `N/A - TBD`,
 `tbd later`, `see above`), naming the row and the column, before it checks the
 fail cells. Nothing is written on refusal. The skill's table, its `**Pattern check:**` reply
 guidance and its "When this can't run" section carry the column and name the two scenarios. The

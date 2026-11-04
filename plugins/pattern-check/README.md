@@ -112,7 +112,8 @@ node "<plugin root>/scripts/pattern-check.mjs" record --no-new-pieces "two copy 
 
 `record` refuses an empty table, a decision other than `reuse`, `replace` or `new`, a `new` row
 without a reason, a `reuse` or `replace` row without a `file:line`, a row whose `better design`
-cell is missing, empty, a bare `none` or a placeholder (`none: <what was weighed>` is an answer;
+cell is missing, empty, a bare `none` (or `nothing`, `nothing better`, `no better`, `no better
+design`) or a placeholder (`none: <what was weighed>` is an answer;
 `-`, `?`, `TBD`, a bare `n/a`, `none: TBD`, `n/a: TBD`, `tbd later` and `see above` are not), and
 a row whose fail columns are missing, empty, a placeholder (`-`, `?`, `TBD`,
 `todo`, `unknown`), or `n/a` without a reason; the message names the row and the column. Nothing
@@ -283,7 +284,8 @@ A live headless run (`claude -p --plugin-dir`) is not part of the suite; it cost
   which is better/optimal if one exists." ask-graham 0.8.0's `**Alternative:**` line carries the
   cell.
 - `record` refuses a row whose `better design` cell is missing (a nine-column 0.3 row), empty or
-  a placeholder (`-`, `?`, `TBD`, a bare `n/a`, a bare `none`, `none: TBD`, `n/a: TBD`, `tbd
+  a placeholder (`-`, `?`, `TBD`, a bare `n/a`, a bare `none`, `nothing`, `nothing better`, `no
+  better` or `no better design`, `none: TBD`, `n/a: TBD`, `tbd
   later`, `see above`), naming the row and the column, before it checks
   the fail cells. Nothing is written on refusal. Two scenarios prove it:
   `stop-record-better-design-none` (a row with `none: <what was weighed>` records and the plan passes) and

@@ -124,7 +124,7 @@ Skill addition: **a second pattern where one exists.** When the parent search in
 
 Pattern fit is the default, not the ceiling. When a design exists that is better than the pattern-fit one on a stated axis (fewer moving parts, removes a known failure mode, closes a gap the pattern leaves, or is what the repo would adopt if starting today), show it beside the pattern-fit design, with what it costs over the pattern: the callers that migrate, a second way to do the thing until the old one goes. It goes on the `**Alternative:**` line of the output, naming the design, its axis and its cost; when nothing beats the pattern the line says `none: <what was weighed>`, never a bare `none`. Jo's rule: "ask-graham will share solutions based on whether or not it's a pattern in the code base. In those cases make sure it's capable and encouraged to show both the best solution based on existing patterns, and another solution which is better/optimal if one exists." (Jo, 2026-11-04)
 
-Done when: each flag is marked *fires* (with the line of the design that trips it) or *clear*, and the `**Alternative:**` line names a better design with its axis and cost, or `none` with what was weighed.
+Done when: each flag is marked *fires* (with the line of the design that trips it) or *clear*, and the `**Alternative:**` line names a better design with its axis and cost, or `none` with what was weighed (in a structure check, only when the second-pattern flag fires).
 
 ### 5. Pick the verdict
 

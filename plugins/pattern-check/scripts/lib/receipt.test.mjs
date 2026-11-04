@@ -56,9 +56,13 @@ test("the better design cell: none with what was weighed, or an answer, is accep
 });
 
 test("regression (codex review 0.8.0, S2): a bare none is refused; none has to say what was weighed", () => {
-  for (const v of ["none", "None", "NONE", "**none**", "`none`", "_none_", "(none)", "none.", "none?", "none:", "none —"]) {
+  const bare = ["none", "None", "NONE", "**none**", "`none`", "_none_", "(none)", "none.", "none?", "none:", "none —",
+    "nothing", "Nothing.", "nothing better", "Nothing better:", "no better", "No better.", "no better design", "**No better design**"];
+  for (const v of bare) {
     assert.match(designCellProblem(v) ?? "", /"better design" says none without what was weighed \(write "none: <what was weighed>"/, v);
+    assert.equal(designCellProblem(`${v.replace(/[.:?]$/, "")}: weighed X`), null, `${v}: weighed X`);
   }
+  assert.equal(designCellProblem("Nothing-shaped loader (fewer moving parts); costs: two callers move"), null);
   const r = parseTable(row("a | src/a.ts:1 | reuse | ok", FAIL, "none"));
   assert.equal(r.ok, false);
   assert.match(r.error, /^row "a": "better design" says none without what was weighed/);

@@ -91,7 +91,7 @@ Rows can also go on the command line, one `--row "piece | pattern | decision | r
 node "${CLAUDE_PLUGIN_ROOT}/scripts/pattern-check.mjs" record --no-new-pieces "<why: what the change is>"
 ```
 
-`record` refuses an empty table, a decision that is not `reuse`, `replace` or `new`, a `new` row without a reason, a `reuse` or `replace` row without a `file:line`, a row whose `better design` cell is missing, empty, a bare `none`, or a placeholder (`none: <what was weighed>` is an answer; `-`, `?`, `TBD`, a bare `n/a`, `none: TBD`, `n/a: TBD`, `tbd later` and `see above` are not), and a row whose fail cells are missing, empty, placeholders, or `n/a` without a reason; the message names the row and the column. Nothing is written on refusal; fix the row and run it again.
+`record` refuses an empty table, a decision that is not `reuse`, `replace` or `new`, a `new` row without a reason, a `reuse` or `replace` row without a `file:line`, a row whose `better design` cell is missing, empty, a bare `none` (or `nothing`, `nothing better`, `no better`, `no better design`), or a placeholder (`none: <what was weighed>` is an answer; `-`, `?`, `TBD`, a bare `n/a`, `none: TBD`, `n/a: TBD`, `tbd later` and `see above` are not), and a row whose fail cells are missing, empty, placeholders, or `n/a` without a reason; the message names the row and the column. Nothing is written on refusal; fix the row and run it again.
 
 The receipt lands at `<repo>/.pattern-check/<session>.md` with a copy in the plugin's state directory. The repository copy is untracked: the script suggests adding `.pattern-check/` to `.gitignore` or `.git/info/exclude` and never edits either itself. From then on, writes, commits and PRs in this session go through.
 

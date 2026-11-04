@@ -20,7 +20,8 @@
 //
 // `reuse` and `replace` name the existing pattern; `new` needs a reason, because "nothing like it
 // exists" is the claim the whole check exists to make an agent earn. The better design cell is
-// `none: <what was weighed>` or the design; a bare `none`, a placeholder (`-`, `?`, `TBD`, a bare
+// `none: <what was weighed>` or the design; a bare `none` (or `nothing`, `nothing better`, `no
+// better`, `no better design`), a placeholder (`-`, `?`, `TBD`, a bare
 // `n/a`), a prefix with a placeholder after it (`none: TBD`, `n/a: TBD`) or a deferral (`tbd
 // later`, `see above`) is refused, because "is there a better way?" is the second question this
 // check asks on every row, and it is answered only by saying what was weighed. Every fail column
@@ -55,7 +56,10 @@ const HEADER_CELL = /^new piece$/i;
 const NA = /^n\/?\.?a\.?(?=$|[\s:(),;\-–—])(.*)$/i;
 const PLACEHOLDER = /^(?:tbd|tba|tbc|todo|fixme|unknown|n\/?\.?a\.?)$/i;
 const RESTART = /^(yes|no)\b(.*)$/i;
-const NONE = /^none\b(.*)$/i;
+// `none` and its spelled-out forms (`nothing`, `nothing better`, `no better`, `no better design`),
+// then the reason, if any, after a non-letter/digit: `No better loader: …` reads as a none-form
+// with a reason and is accepted; `Nothing-shaped …` keeps its rest as the reason.
+const NONE = /^(?:none|nothing(?: better)?|no better(?: design)?)(?![\p{L}\p{N}])(.*)$/iu;
 // A design cell that defers instead of answering: a placeholder word first (`tbd later`), or a
 // pointer elsewhere (`see above`, `same as above`, `ditto`).
 const DEFERRAL = /^(?:(?:tbd|tba|tbc|todo|fixme)(?=$|[\s:;,.!?)–—])|see (?:above|below)\b|(?:same )?as above\b|ditto\b)/i;
