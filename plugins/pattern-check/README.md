@@ -27,8 +27,12 @@ read what is already there. This plugin makes the reading mandatory and the resu
 - **Stop hook**: refuses, once, a reply that proposes a plan or design when the session has no
   receipt. The refusal asks both questions, what exists already and how does it fail, and names
   the command.
+- **SessionEnd hook**: removes the session's two working files from the state directory,
+  `sessions/<key>.json` (the files touched) and `stop/<key>` (the refusal record). The receipt
+  copy and `current/<repo>` stay: one is evidence, the other is overwritten by the next session.
+  Removing twice is a no-op; a session that never ends (a crash) keeps its files.
 
-Both hooks fail open on the plugin's own faults. Empty or malformed stdin, stdin not closed within
+All three hooks fail open on the plugin's own faults. Empty or malformed stdin, stdin not closed within
 2 s, a state file that does not parse, a config that does not, an unwritable state directory, a
 thrown error: the hook exits 0, the call goes through, a one-line warning is shown (Claude Code's
 `systemMessage`), and one line naming the hook file and the reason is appended to
@@ -255,6 +259,14 @@ Four layers, all in that one command; every spawned process has a 5 s timeout, s
 A live headless run (`claude -p --plugin-dir`) is not part of the suite; it costs a model call.
 
 ## Changelog
+
+### 0.3.1
+
+- SessionEnd hook (`hooks/pattern-check-session-end.mjs`): removes `sessions/<key>.json` and
+  `stop/<key>` when the session ends; the receipt copy and `current/<repo>` stay. Before, every
+  session left its files forever (6 under `sessions/` on one machine after a month). A file that
+  cannot be removed is one warning line and one errors.log line; nothing is blocked. OMP has no
+  session-end event wired in `omp/pattern-check-omp.ts`, so under OMP the files stay as before.
 
 ### 0.3.0
 
