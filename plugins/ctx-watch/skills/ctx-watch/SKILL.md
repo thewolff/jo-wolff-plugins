@@ -45,11 +45,13 @@ consulting history`.
 6. If a Stop printed `ctx-watch: resumed without consulting history — \`ctx search '<topic>'\``
    (or `said "as discussed" …`), the session picked a thread up without reading what ctx holds
    on it. Run that `ctx search` (or the ctx MCP `search`) now and read the hits before going on;
-   the topic is the first six words of the prompt and may want sharpening. In `block` mode the
+   the topic is the first six words of the prompt and may want sharpening (a bare `ctx search`
+   means the transcript held no prompt: add the thread's subject). In `block` mode the
    Stop was refused with the same command in the reason; running it clears the next Stop. The
    mode is `~/.claude/ctx-watch.json` `{"checks": {"consult-history": "off" | "warn" | "block"}}`
-   (default `warn`); `touch ~/.claude/.ctx-watch-off` turns the whole plugin off. Change neither
-   without the person's say-so.
+   (default `warn`); `touch ~/.claude/.ctx-watch-off` turns this Stop check off. The flag does
+   not reach the SessionStart line or the launchd timer's popup: those keep reporting the
+   daemon and the semantic index. Change neither without the person's say-so.
 
 ## When this can't run
 

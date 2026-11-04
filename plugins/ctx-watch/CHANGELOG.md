@@ -17,21 +17,33 @@ Both from [jo-issues #330](https://github.com/thewolff/jo-issues/issues/330).
   (ctx 2.3.0 has no rebuild verb; `enable` on an enabled index re-pins the projection). A
   missing block fails naming `ctx semantic status`. Semantic search not enabled is a pass. The
   failure takes the same two surfaces as the daemon rows: one SessionStart line, one popup
-  episode from the timer. `ctx index mode auto` is not tried for it (`healable: false`), and
-  `check` says so in `healed.detail`.
+  episode from the timer, under its own latch (below). `ctx index mode auto` is not tried for
+  it (`healable: false`), and `check` says so in `healed.detail`.
+- One popup latch per failure kind on the timer: `daemon` and `semantic`. A daemon death after
+  a semantic popup shows its own popup (on the second daemon tick in a row); the daemon latch
+  re-arms on any tick where the daemon is up, the semantic latch only after two passing ticks in
+  a row (`STRIKES_TO_DOWN`), so a semantic status that is `ready` for one tick between not-ready
+  runs shows one popup. `state.json` gains `episodeKind`, `kindStrikes` and `passStreak`;
+  `popupShown` becomes `{ daemon, semantic }`; a pending popup carries its `kind`. A file from
+  before 0.2.0 is migrated on read (the boolean latch, a kindless pending popup and a strike or
+  down are the daemon's). `status` shows the kind: `episode: down [daemon] (…)`.
 - The `consult-history` Stop check (`hooks/stop.mjs`, `lib/consult-history.mjs`), a
   deterministic transcript scan. Resume trigger: the first Stop after a SessionStart with
-  `source` `resume` or `compact` (the SessionStart hook leaves `<state>/resume/<session_id>`;
-  the Stop hook consumes it once) when no entry since is a ctx history call
+  `source` `resume`, `compact` or `fork` (the SessionStart hook leaves
+  `<state>/resume/<session_id>` holding the time it started, before its probe; the Stop hook
+  consumes it once) when no entry since is a ctx history call
   (`mcp__ctx__search`, `mcp__ctx__show_session`, `mcp__ctx__show_event`, the single-underscore
   shape, or `ctx search` / `ctx show session` / `ctx show event` through Bash). Phrase
-  trigger: the final message says "we spoke previously", "earlier you said", "as discussed"
-  or "last time" and this turn made no such call. One line:
-  `` ctx-watch: resumed without consulting history — `ctx search '<first six words of the prompt>'` ``.
+  trigger: the final message says "we spoke previously", "earlier you said" or "as discussed"
+  and this turn made no such call. One line:
+  `` ctx-watch: resumed without consulting history — `ctx search '<first six words of the prompt>'` ``;
+  a window with no prompt takes the last prompt before the marker, and a transcript with none
+  gets a bare `ctx search` and says so.
   Switch: `~/.claude/ctx-watch.json` `{"checks": {"consult-history": "off" | "warn" | "block"}}`,
   default `warn` (a `systemMessage` and a `checks.log` line); `block` returns
   `{ decision: "block", reason }` naming the command and the way out, and warns instead when
-  `stop_hook_active` is true; `~/.claude/.ctx-watch-off` is off. Claude Code only: OMP does
+  `stop_hook_active` is true; `~/.claude/.ctx-watch-off` turns this check off (the SessionStart
+  line and the timer do not read it). Claude Code only: OMP does
   not read `hooks/hooks.json` and this plugin ships no adapter (what one would need is in the
   README).
 - `evals/manifest.json` and eight scenarios (three SessionStart against

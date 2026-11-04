@@ -1018,11 +1018,12 @@ anything), guarded so it never sets ctx up or flips a deliberate `manual` mode. 
 a SessionStart line, `ctx-watch: <reason>; fix: \`<command>\``, plus a dead-man's line when the
 timer itself has not run; and a launchd timer (`install` writes the plist and prints the one
 `launchctl bootstrap` line, never running it) whose `tick` strikes once, goes down on the
-second failing probe in a row, and shows one `osascript` dialog per episode. A third, at
-Stop: the `consult-history` check warns (or blocks, by `~/.claude/ctx-watch.json`) when a
-session resumed or compacted, or a reply says "we spoke previously", "earlier you said", "as
-discussed" or "last time", and no `ctx search`, `show session` or `show event` was called
-since; the line names `ctx search '<the prompt's first six words>'`. Claude Code only (no OMP
+second failing probe in a row, and shows one `osascript` dialog per episode, with one latch
+per failure kind (daemon, semantic index) so a semantic popup cannot hold off a daemon
+outage's. A third, at Stop: the `consult-history` check warns (or blocks, by
+`~/.claude/ctx-watch.json`) when a session resumed, compacted or forked, or a reply says "we
+spoke previously", "earlier you said" or "as discussed", and no `ctx search`, `show session`
+or `show event` was called since; the line names `ctx search '<the prompt's first six words>'`. Claude Code only (no OMP
 adapter). Built on plugin-kit; macOS; Node 22.13 or later. The reasons, the repair's guard,
 the episode rules, the check and the failure table are in
 [`plugins/ctx-watch/README.md`](plugins/ctx-watch/README.md).

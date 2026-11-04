@@ -134,7 +134,17 @@ Each `tick` rotates any log over 256 KB (see Retention), probes (and repairs) as
 advances an episode in `<state>/state.json`: one failing tick is a strike, the second in a row
 is down and shows the popup, later failing ticks stay silent, and a passing tick closes the
 episode and re-arms it. So a blip between two ticks shows nothing, a real outage shows one
-dialog within ten minutes, and a second outage shows a second one. The popup is one
+dialog within ten minutes, and a second outage shows a second one. Each failure kind has its
+own popup latch: *daemon* (every row the repair is tried for: ctx missing or not answering, the
+daemon down, the supervisor missing, `core_refresh` stale) and *semantic* (the semantic-index
+rows, `healable: false`). A kind's popup comes after two failing ticks of
+that kind in a row, so a daemon death after a semantic popup still shows its own dialog. The
+daemon latch re-arms on any tick where the daemon is up (a pass, or a semantic failure). The
+semantic latch re-arms only after two passing ticks in a row, the same count as the strikes
+that open a down (`STRIKES_TO_DOWN`), so a semantic status that is `ready` for one tick between
+not-ready runs shows one dialog, not one per return. While any popup is pending, no second
+dialog of either kind starts; the other kind's comes on the first failing tick after it
+settles. The popup is one
 `/usr/bin/osascript -e 'display dialog …'`, giving up after an hour, run under a small detached
 supervisor (`lib/popup-supervisor.mjs`) so the ticks keep running while it is up. The
 supervisor is osascript's parent until it ends and then writes how it ended to that popup's own
@@ -172,13 +182,15 @@ heals a real daemon.
 **The `consult-history` Stop check** (0.2.0, `hooks/stop.mjs`, `lib/consult-history.mjs`). A
 deterministic scan of the Claude Code transcript; no judge. Two triggers:
 
-- *resume*: the first Stop after a SessionStart whose `source` was `resume` or `compact`, when
+- *resume*: the first Stop after a SessionStart whose `source` was `resume`, `compact` or
+  `fork` (a resumed thread under a new session id: `--fork-session`, `/fork`, `/branch`), when
   no entry since that SessionStart is a ctx history call. The SessionStart hook leaves
-  `<state>/resume/<session_id>` holding the time; the Stop hook reads and removes it whether or
-  not the check fires, so one resume is checked once.
-- *phrase*: the final assistant message says "we spoke previously", "earlier you said",
-  "as discussed" or "last time" (whole words, any case) and this turn (since the last user
-  prompt) made no ctx history call.
+  `<state>/resume/<session_id>` holding the time the hook started, written before its ctx probe
+  (up to 3 s) so a prompt typed meanwhile is inside the window; the Stop hook reads and removes
+  it whether or not the check fires, so one resume is checked once.
+- *phrase*: the final assistant message says "we spoke previously", "earlier you said" or
+  "as discussed" (whole words, any case) and this turn (since the last user prompt) made no ctx
+  history call.
 
 A ctx history call is a `tool_use` named `mcp__ctx__search`, `mcp__ctx__show_session` or
 `mcp__ctx__show_event` (the shape Claude Code 2.1.300 and 2.1.317 write under
@@ -191,7 +203,10 @@ transcript is skipped, not a fault.
 The message, one line: `` ctx-watch: resumed without consulting history — `ctx search '<topic>'` ``
 (or `` said "as discussed" without consulting history — … ``), where `<topic>` is the first six
 words of the prompt that resumed the thread (the phrase trigger: this turn's prompt), quoted for
-the shell. The switch is `~/.claude/ctx-watch.json`:
+the shell. When the window holds no prompt (a compaction mid-turn, or a prompt stamped before
+the marker), the topic is the last prompt before it. A transcript with no prompt at all gets a
+bare `` `ctx search` `` and the line says the transcript has no prompt to take a topic from;
+`block`'s reason asks for the thread's subject to be added. The switch is `~/.claude/ctx-watch.json`:
 
 ```json
 { "checks": { "consult-history": "off" | "warn" | "block" } }
@@ -201,7 +216,9 @@ Default `warn`: the line is a `systemMessage` (you see it; the turn is over) and
 `<state>/checks.log`. `block`: `{ "decision": "block", "reason": … }` naming the `ctx search`
 command and the way out, except on a Stop with `stop_hook_active: true` (the one after a block),
 which warns: never twice. `off`: nothing, and the resume marker is still consumed. The flag file
-`~/.claude/.ctx-watch-off` (existence) is `off` whatever the JSON says. A config file that is
+`~/.claude/.ctx-watch-off` (existence) is `off` whatever the JSON says. It turns off this Stop
+check only: the SessionStart line and the launchd timer do not read it, and the SessionStart hook
+still leaves the resume marker (the Stop hook consumes it silently). A config file that is
 not JSON, not an object, or names a mode that is not one of the three is one `errors.log` line
 and the default.
 
@@ -235,7 +252,9 @@ A `state.json` whose fields are out of shape (an episode that is not `up`/`strik
 negative or fractional strike count, a string where a timestamp belongs, an interval outside
 30 s to 7 days) is treated as absent, with one `errors.log` line naming the field, and the next
 tick rewrites it: a poisoned file cannot hold the popup off for an outage. Unknown fields are
-dropped on read.
+dropped on read. A file written before 0.2.0 is migrated on read, not rejected: its one boolean
+`popupShown` becomes the daemon latch, a pending popup with no `kind` is the daemon's, and a
+strike or down with no `episodeKind` is a daemon episode.
 
 ## How it fails
 
@@ -319,12 +338,17 @@ Two additions from [jo-issues #330](https://github.com/thewolff/jo-issues/issues
   episode. `ctx index mode auto` is not tried for it. The healthy fixture is recaptured
   (2026-11-04 13:00, semantic `ready`); the 03:00 capture with `budget_exhausted` is
   `test/fixtures/ctx-daemon-status-semantic-not-ready.txt`.
-- **The `consult-history` Stop check**: a resume or compaction (SessionStart `source`), or a
-  final message that says "we spoke previously", "earlier you said", "as discussed" or "last
-  time", with no `ctx search` / `show session` / `show event` call since, is one line naming
+- **The `consult-history` Stop check**: a resume, compaction or fork (SessionStart `source`),
+  or a final message that says "we spoke previously", "earlier you said" or "as discussed",
+  with no `ctx search` / `show session` / `show event` call since, is one line naming
   `` `ctx search '<first six words of the prompt>'` ``. `~/.claude/ctx-watch.json`
   `{"checks": {"consult-history": "off" | "warn" | "block"}}`, default `warn`;
-  `~/.claude/.ctx-watch-off` is off. Claude Code only; OMP is documented above.
+  `~/.claude/.ctx-watch-off` turns this check off (not the SessionStart line or the timer).
+  Claude Code only; OMP is documented above.
+- **One popup latch per failure kind** on the timer (daemon, semantic), so a semantic popup
+  cannot hold off a daemon outage's; the semantic latch re-arms after two passing ticks in a
+  row. `state.json` gains `episodeKind`, `kindStrikes` and `passStreak`; `popupShown` becomes
+  `{ daemon, semantic }`, and a pre-0.2.0 file is migrated on read.
 
 Also: `hooks/hooks.json` registers `Stop`; `evals/` (manifest, eight scenarios, the fake ctx)
 and `e2e/live-run.sh` now runs them through plugin-kit's runner instead of its own `claude -p`;
