@@ -27,6 +27,7 @@ it, keeping a record of what it did and asked, and a vendored set of engineering
   state declaration, and a skill with its "When this can't run" section, scaffolded by
   `/plugin-kit:new-plugin`; `ledger gate check` passes on it, the `evals` row excepted, before
   the first rule is written, and that row fails naming the stubs until they are filled.
+  Changes in plugin-kit 0.3.3: the template prune rotates every `*.log` / `*.jsonl` past 256 KiB to `<name>.1`, the prune contract is written down in the README, and a drift guard checks every plugin's copy; brb, delegation, output-types, ask-graham, continuity, paired-coding and i-have-audhd carry the re-copy.
   Changes in plugin-kit 0.3.2: the judge sameness test allowlists nothing: ledger 0.3.7 ships the kit's `lib/judge.mjs` byte for byte.
   Changes in plugin-kit 0.3.1: the hook runner waits for stdout to drain before it exits (bounded by its deadline), so an answer larger than one 64 KiB pipe buffer is no longer cut short.
   Changes in plugin-kit 0.3.0: `lib/judge.mjs`, the shared judge dispatch every judging plugin vendors byte for byte (a sameness test diffs the copies), configured once with `node lib/judge.mjs setup`; `--judge` on the scaffolder.
@@ -40,7 +41,9 @@ it, keeping a record of what it did and asked, and a vendored set of engineering
 - **[as2-skills](plugins/as2-skills/README.md)** — the 22 engineering skills of agent-system 2.0,
   vendored from four upstream skill packs at pinned releases, with frontmatter claude.ai accepts.
   Install with `/plugin install as2-skills@jo-wolff-plugins`; skills only.
-  Changes in as2-skills 0.1.2: every skill has a "How it fails" section, and the manifest
+  Changes in as2-skills 0.1.3: `scripts/prune.mjs` removes the `$TMPDIR/seo-audit-*`
+  directories a killed seo-audit run leaves (older than a day); the manifest declares it, so
+  ledger's canary runs it. Changes in as2-skills 0.1.2: every skill has a "How it fails" section, and the manifest
   declares the one path a skill writes outside the worktree (`$TMPDIR/seo-audit-*`), the bar
   ledger 0.3.5's `gate check` enforces; see the plugin's
   [release notes](plugins/as2-skills/README.md#changes-in-012). Changes in as2-skills 0.1.1:
@@ -50,7 +53,7 @@ it, keeping a record of what it did and asked, and a vendored set of engineering
   refused with the section to fill in, a builder-class spawn also needs `## Spiral bound` and a
   pattern-check receipt, an undeliverable message is marked NOT delivered, and a builder report
   without `Stopped because:` draws a warning. Plus the eleven general agents and three guards
-  ported from newdle. Changes in delegation 0.1.1: `lib/hook-runner.mjs` re-vendored from
+  ported from newdle. Changes in delegation 0.1.2: `scripts/prune.mjs` re-copied from plugin-kit 0.3.3, so logs past 256 KiB rotate to `<name>.1`. Changes in delegation 0.1.1: `lib/hook-runner.mjs` re-vendored from
   plugin-kit 0.3.1 (the handler's env carries the runner's start and deadline; stdout drains before exit); hooks answer as
   before.
 - **[ctx-watch](#ctx-watch)** — notice when the ctx daemon is dead, unsupervised,
@@ -73,7 +76,7 @@ it, keeping a record of what it did and asked, and a vendored set of engineering
   succeeded, so a dead save is never silent; a context-pressure check warns once and blocks one
   stop near the compaction target, naming `/continuity:handoff`; and the handoff skill writes
   the judgment layer no hook can derive. Claude Code hooks plus an OMP extension that runs the
-  same save and restore. Changes in continuity 0.3.0: `omp/continuity-omp.ts` runs
+  same save and restore. Changes in continuity 0.3.1: `scripts/prune.mjs` re-copied from plugin-kit 0.3.3, so logs past 256 KiB rotate to `<name>.1`. Changes in continuity 0.3.0: `omp/continuity-omp.ts` runs
   `hooks/pre-compact.mjs` on OMP's `session_before_compact` with the host's discarded asks,
   file operations and token count on the payload, and `hooks/session-start.mjs` on
   `session_compact`, handing the restore to the agent as a hidden message; same store, same
@@ -82,7 +85,7 @@ it, keeping a record of what it did and asked, and a vendored set of engineering
 - **[brb](#brb)** — type `brb` and walk away: the agent keeps working, every ask it would
   have stopped for waits in a digest, and only a broken main, data loss, a security finding,
   spend near a ceiling or a blocker on everything comes through at once; `back` prints the
-  digest. Claude Code hooks plus an OMP extension. Changes in brb 0.1.1: `lib/hook-runner.mjs`
+  digest. Claude Code hooks plus an OMP extension. Changes in brb 0.1.2: `scripts/prune.mjs` re-copied from plugin-kit 0.3.3, so logs past 256 KiB rotate to `<name>.1`. Changes in brb 0.1.1: `lib/hook-runner.mjs`
   re-vendored from plugin-kit 0.3.1 (the handler's env carries the runner's start and deadline; stdout drains before exit);
   hooks answer as before.
 
@@ -217,19 +220,19 @@ receipt and removes its working files.
 
 | Plugin | Version | What it does | Reads from / gives to another plugin |
 |---|---|---|---|
-| output-types | 0.3.1 | the CLAIM/CITE contract at SessionStart; a Stop check that warns on a label without its receipt | vendors plugin-kit's `lib/judge.mjs` and `lib/hook-runner.mjs`; delegation's brief skeleton carries its CLAIM/CITE line |
-| i-have-audhd | 1.7.0 | the message skeleton and thirteen Stop checks (links-resolve and the opt-in links-judge since 1.6.1), warning by default; its judge is the shared one since 1.7.0 | vendors plugin-kit's `lib/judge.mjs`; its `enforcement.judgeCommand` is an override of the shared judge file, and the last fallback of plugin-kit's judge resolution and of ledger's review judge |
-| paired-coding | 1.6.0 | change sets behind a write gate; learning mode with `pair_learn`, `why` + `sources` on a card, `recall` on done; a pattern claim needs a pattern source, `alternatives` drawn from ask-graham's findings | reads pattern-check's receipt and ask-graham's findings when present; no dependency |
-| ask-graham | 0.8.1 | "should we build X?" with a verdict; a prompt nudge and a Stop check; each verdict or structure check recorded per session in `ask-graham/findings/<session id>.json` | reads your `sources.md`; nothing from another plugin; its `**Alternative:**` line carries pattern-check's `better design` cell when that plugin is installed; its findings file is for other plugins to read |
-| pattern-check | 0.4.0 | holds big work until a reuse/replace/new receipt exists, each row with its `better design` and how it fails | its receipt file is what delegation's spawn gate requires |
-| reminders-review | 0.2.1 | Apple Reminders, one at a time | none |
-| ledger | 0.3.8 | questions and choices on rows; the push gate with six rows; the review judge from plugin-kit's shared `lib/judge.mjs` | its `says` row checks the "When this can't" heading every skill and agent carries; its canary runs every plugin's `e2e/live-run.sh` |
-| plugin-kit | 0.3.2 | the scaffold (with `CHANGELOG.md` since 0.2.2), the hook runner, the shared judge lib, the scenario runner, two agents | gives `lib/hook-runner.mjs` and `lib/judge.mjs` to the plugins that vendor them, and `lib/live-run.mjs` to every `e2e/live-run.sh` |
-| as2-skills | 0.1.2 | 22 vendored engineering skills, each with "How it fails" | its sections meet ledger's `says` row |
+| output-types | 0.3.2 | the CLAIM/CITE contract at SessionStart; a Stop check that warns on a label without its receipt | vendors plugin-kit's `lib/judge.mjs` and `lib/hook-runner.mjs`; delegation's brief skeleton carries its CLAIM/CITE line |
+| i-have-audhd | 1.7.1 | the message skeleton and thirteen Stop checks (links-resolve and the opt-in links-judge since 1.6.1), warning by default; its judge is the shared one since 1.7.0 | vendors plugin-kit's `lib/judge.mjs`; its `enforcement.judgeCommand` is an override of the shared judge file, and the last fallback of plugin-kit's judge resolution and of ledger's review judge |
+| paired-coding | 1.6.1 | change sets behind a write gate; learning mode with `pair_learn`, `why` + `sources` on a card, `recall` on done; a pattern claim needs a pattern source, `alternatives` drawn from ask-graham's findings | reads pattern-check's receipt and ask-graham's findings when present; no dependency |
+| ask-graham | 0.8.2 | "should we build X?" with a verdict; a prompt nudge and a Stop check; each verdict or structure check recorded per session in `ask-graham/findings/<session id>.json` | reads your `sources.md`; nothing from another plugin; its `**Alternative:**` line carries pattern-check's `better design` cell when that plugin is installed; its findings file is for other plugins to read |
+| pattern-check | 0.4.1 | holds big work until a reuse/replace/new receipt exists, each row with its `better design` and how it fails | its receipt file is what delegation's spawn gate requires |
+| reminders-review | 0.2.2 | Apple Reminders, one at a time | none |
+| ledger | 0.3.9 | questions and choices on rows; the push gate with six rows; the review judge from plugin-kit's shared `lib/judge.mjs` | its `says` row checks the "When this can't" heading every skill and agent carries; its canary runs every plugin's `e2e/live-run.sh` |
+| plugin-kit | 0.3.3 | the scaffold (with `CHANGELOG.md` since 0.2.2), the hook runner, the shared judge lib, the scenario runner, two agents | gives `lib/hook-runner.mjs` and `lib/judge.mjs` to the plugins that vendor them, and `lib/live-run.mjs` to every `e2e/live-run.sh` |
+| as2-skills | 0.1.3 | 22 vendored engineering skills, each with "How it fails" | its sections meet ledger's `says` row |
 | ctx-watch | 0.2.1 | ctx daemon and semantic-index health, repair, and the consult-history Stop check | vendors the hook runner and the scenario runner |
-| delegation | 0.1.1 | brief teaching, spawn gate, `SendMessage` check, SubagentStop warning, 11 agents, three guards | needs pattern-check's receipt for builder-class spawns; vendors the hook runner |
-| continuity | 0.3.0 | PreCompact snapshot, post-compaction restore with the rules files and durable notes re-inlined, liveness line, context-pressure warning, `/continuity:handoff`; the save and restore also on OMP | vendors the hook runner |
-| brb | 0.1.1 | `brb` / `back` / `pending`, the away digest, keep-working, on-fire surfacing | vendors the hook runner |
+| delegation | 0.1.2 | brief teaching, spawn gate, `SendMessage` check, SubagentStop warning, 11 agents, three guards | needs pattern-check's receipt for builder-class spawns; vendors the hook runner |
+| continuity | 0.3.1 | PreCompact snapshot, post-compaction restore with the rules files and durable notes re-inlined, liveness line, context-pressure warning, `/continuity:handoff`; the save and restore also on OMP | vendors the hook runner |
+| brb | 0.1.2 | `brb` / `back` / `pending`, the away digest, keep-working, on-fire surfacing | vendors the hook runner |
 
 ### What they share
 
@@ -320,6 +323,8 @@ turn.
 - A **Stop check** that reads the finished message and warns, in one line to you, about every
   `**CLAIM**` or `**CITE**` that carries no receipt shape; optionally, a judge model asks whether
   each receipt licenses its sentence. Warns, never blocks; off switch and the judge's switch below.
+
+Changes in output-types 0.3.2: `scripts/prune.mjs` re-copied from plugin-kit 0.3.3, so logs past 256 KiB rotate to `<name>.1`.
 
 Changes in 0.3.1: `lib/hook-runner.mjs` re-vendored from plugin-kit 0.3.1, so the Stop hook's
 answer drains before the hook exits (bounded by the hook's deadline: 4 s, or 55 s with the judge
@@ -549,6 +554,10 @@ choose a judge (install step 2), and each fired trigger is logged to `skipped.lo
 README and `skills/i-have-audhd/reference.md` carry the schema, every check's contract, and the
 measured rates.
 
+Changes in 1.7.1: the judge cache is capped at 2,000 files or 7 days, whichever bites first
+(enforced on about one write in 50 and by every prune), and `scripts/prune.mjs` is plugin-kit
+0.3.3's template with that cap added, so the logs rotate at 256 KiB.
+
 Changes in 1.7.0: the judge command is plugin-kit's shared judge. `lib/judge.mjs` is vendored
 byte for byte and resolves the command in the kit's order, the profile's
 `enforcement.judgeCommand` first, else `~/.config/judge/config.json`, so one
@@ -569,6 +578,8 @@ sentence says it is. Every judge failure line now names its cause (revoked crede
 credential, rate limit, judge self-abort, hook deadline, bad JSON, other), with session,
 harness, model, timing, section and a replayable prompt file; the notice states the cause and
 its fix.
+
+Changes in paired-coding 1.6.1: `scripts/prune.mjs` re-copied from plugin-kit 0.3.3, so logs past 256 KiB rotate to `<name>.1`.
 
 Changes in 1.6.0: two new checks. `handed-command` warns when a message hands you a shell command
 that is not one `zsh /absolute/path/script.sh` line with its script in a scratch directory
@@ -857,6 +868,8 @@ extension (`omp/ask-graham-omp.ts`, declared in the plugin's `package.json`): wi
   similar. It gives no verdict and does not ask the comparables question.
 - **A level you set**, `ask` or `every-idea`, for how eagerly it runs (next section).
 
+Changes in ask-graham 0.8.2: `scripts/prune.mjs` re-copied from plugin-kit 0.3.3, so logs past 256 KiB rotate to `<name>.1`.
+
 Changes in 0.8.1: the Claude Code Stop hook records each reply that carries a `**Verdict:**` or
 `**Structure check:**` line in `${XDG_STATE_HOME:-$HOME/.local/state}/ask-graham/findings/<session id>.json`
 (the ask, the verdict, the verdict line's one-line why as the chosen design and the
@@ -1059,6 +1072,9 @@ does it fail. Bash write forms are read through a shell lexer, fixing two real c
 redirect matcher miscounted. Hook faults are appended to `errors.log` as well as shown,
 `hooks.json` sets a 5 s timeout, and NotebookEdit is counted.
 
+Changes in 0.4.1: `prune --dry-run`; the `pruned:` line is the plugin-kit contract's and a file
+that cannot be removed is counted as kept and named on stderr with exit 0, not 1.
+
 Changes in 0.4.0: the receipt gains a `better design` column after `reason`: `none: <what was
 weighed>` (a bare `none` is refused), or the design that beats the pattern-fit one on a stated axis with what it costs
 over the pattern; pattern fit stays the default and the better design is shown beside it.
@@ -1099,6 +1115,9 @@ Needs macOS and [remindctl](https://github.com/openclaw/remindctl)
 it installed the agent also reads the link field you see in Reminders.app, which remindctl cannot
 see. Run `/reminders-review` with list names, or save defaults with
 `/reminders-review lists <name> ...`. Details are in `plugins/reminders-review/README.md`.
+
+Changes in 0.2.2: `prune` ends with the plugin-kit contract line (`pruned: <n> file(s), <bytes>
+bytes freed; kept <k>`) and exits 0 when a file cannot be removed, naming it on stderr.
 
 Changes in 0.2.1: `lib/hook-runner.mjs` re-vendored from plugin-kit 0.3.1, the kit's runner with
 this plugin's stdout drain; the due-reminders block is unchanged.
@@ -1146,6 +1165,13 @@ decision without a note. Every hook fails open.
 The hooks record every session until you switch a folder off with `/ledger:disable`
 (`/ledger:enable` turns it back on). The plugin's tables are all prefixed `cc_`, so the database
 can be a SQLite file another tool already uses.
+
+Changes in 0.3.9: `canary run --prunes-only` is the daily job: no live run, no run row, every
+declared prune run before and independently of any database write, one line per prune, exit 0
+when every prune ran and 1 naming one that failed. `canary install --prunes-only` writes its
+plist. `canary prune` takes `--dry-run` and ends with the plugin-kit contract line. The gate's
+`retention` row runs every declared prune once with `--dry-run` and fails naming one that exits
+non-zero or ends with any other line.
 
 Changes in 0.3.8: the Stop hook's "the human has written since you asked" check counts only a
 prompt the person typed, read from the transcript; a subagent's `<task-notification>`, a

@@ -57,11 +57,16 @@ test("the CLI's prune verb (the command plugin.json declares) and its dry run", 
     const cli = join(PLUGIN_DIR, "scripts", "reminders-review.mjs");
     const dry = spawnSync(process.execPath, [cli, "prune", "--days", "30", "--dry-run"], { env: box.env, encoding: "utf8" });
     assert.equal(dry.status, 0, dry.stderr);
-    assert.equal(JSON.parse(dry.stdout).removed, 3);
+    const [dryJson, dryLast, ...dryRest] = dry.stdout.trim().split("\n");
+    assert.deepEqual(dryRest, []);
+    assert.equal(JSON.parse(dryJson).removed, 3);
+    assert.match(dryLast, /^pruned: 3 file\(s\), \d+ bytes freed \(dry run\); kept \d+$/, "the plugin-kit contract line is last");
     assert.equal(existsSync(f.oldStamp), true);
     const real = spawnSync(process.execPath, [cli, "prune", "--days", "30"], { env: box.env, encoding: "utf8" });
     assert.equal(real.status, 0, real.stderr);
-    assert.equal(JSON.parse(real.stdout).dir, box.stateDir);
+    const [realJson, realLast] = real.stdout.trim().split("\n");
+    assert.equal(JSON.parse(realJson).dir, box.stateDir);
+    assert.match(realLast, /^pruned: 3 file\(s\), \d+ bytes freed; kept \d+$/);
     assert.equal(existsSync(f.oldStamp), false);
     assert.equal(spawnSync(process.execPath, [cli, "nope"], { env: box.env, encoding: "utf8" }).status, 2);
   } finally {

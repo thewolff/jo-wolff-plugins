@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, utimesSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { spawnSync } from "node:child_process";
@@ -29,7 +29,7 @@ function fixture(t) {
 }
 
 test("parseArgs: command, positional, flags; a flag without a value and an unknown flag throw", () => {
-  assert.deepEqual(parseArgs(["open", "a", "retry", "helper", "--session", "s", "--cwd", "/x"]), { command: "open", positional: ["a", "retry", "helper"], session: "s", cwd: "/x", rows: [], noNewPieces: null, days: null });
+  assert.deepEqual(parseArgs(["open", "a", "retry", "helper", "--session", "s", "--cwd", "/x"]), { command: "open", positional: ["a", "retry", "helper"], session: "s", cwd: "/x", rows: [], noNewPieces: null, days: null, dryRun: false });
   assert.equal(parseArgs(["prune", "--days", "7"]).days, 7);
   assert.throws(() => parseArgs(["prune", "--days", "week"]), /whole number of days/);
   assert.deepEqual(parseArgs(["record", "--row", "a | b | reuse | c", "--row", "d | e | new | f"]).rows, ["a | b | reuse | c", "d | e | new | f"]);
@@ -55,14 +55,40 @@ test("prune removes receipts, stop guards and session files older than --days (d
   const fresh = seed("receipts/b.md");
   const log = seed("errors.log", old);
   const current = seed("current/repo", old);
+  const dry = f.cli(["prune", "--dry-run"], { now });
+  assert.equal(dry.code, 0);
+  assert.equal(dry.stdout, "pruned: 3 file(s), 3 bytes freed (dry run); kept 1\n", "the plugin-kit contract line; a dry run counts the same");
+  for (const still of [oldReceipt, oldStop, oldSession]) assert.equal(existsSync(still), true, still);
   const r = f.cli(["prune"], { now });
   assert.equal(r.code, 0);
-  assert.match(r.stdout, /^pruned: 3 file\(s\), 3 bytes freed \(older than 30 days under /);
+  assert.equal(r.stdout, "pruned: 3 file(s), 3 bytes freed; kept 1\n");
   for (const gone of [oldReceipt, oldStop, oldSession]) assert.equal(existsSync(gone), false, gone);
   for (const kept of [fresh, log, current]) assert.equal(existsSync(kept), true, kept);
-  assert.match(f.cli(["prune", "--days", "1"], { now }).stdout, /^pruned: 0 file\(s\)/);
-  assert.match(f.cli(["prune", "--days", "0"], { now: now + 1000 }).stdout, /^pruned: 1 file\(s\), 1 bytes freed \(older than 0 days/);
+  assert.match(f.cli(["prune", "--days", "1"], { now }).stdout, /^pruned: 0 file\(s\), 0 bytes freed; kept 1$/m);
+  assert.match(f.cli(["prune", "--days", "0"], { now: now + 1000 }).stdout, /^pruned: 1 file\(s\), 1 bytes freed; kept 0$/m);
   assert.equal(f.cli(["prune"], { env: { ...f.env, XDG_STATE_HOME: join(f.base, "nowhere") } }).code, 0);
+  assert.equal(parseArgs(["prune", "--dry-run"]).dryRun, true);
+});
+
+test("prune: a file that cannot be removed is kept, named on stderr, and the exit code stays 0", { skip: process.getuid?.() === 0 ? "root ignores modes" : false }, (t) => {
+  const f = fixture(t);
+  const now = Date.now();
+  const old = new Date(now - 40 * 86_400_000);
+  const dir = join(f.sd, "receipts");
+  mkdirSync(dir, { recursive: true });
+  const stuck = join(dir, "stuck.md");
+  writeFileSync(stuck, "xx");
+  utimesSync(stuck, old, old);
+  chmodSync(dir, 0o555);
+  try {
+    const r = f.cli(["prune"], { now });
+    assert.equal(r.code, 0, "exit 0 whatever happened to the file");
+    assert.equal(r.stdout, "pruned: 0 file(s), 0 bytes freed; kept 1\n");
+    assert.match(r.stderr, new RegExp(`^pattern-check: could not remove:\\n  ${stuck.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}: `));
+    assert.equal(existsSync(stuck), true);
+  } finally {
+    chmodSync(dir, 0o755);
+  }
 });
 
 test("usage: no command, an unknown command, and open without a subject exit 2", (t) => {

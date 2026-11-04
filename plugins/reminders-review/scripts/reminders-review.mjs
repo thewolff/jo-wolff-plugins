@@ -1,7 +1,10 @@
 #!/usr/bin/env node
 // scripts/reminders-review.mjs — the plugin's CLI. One verb:
 //
-//   prune [--days N] [--dry-run]   rotate errors.log and remove session stamps and rotated logs
+//   prune [--days N] [--dry-run]   rotate errors.log and remove session stamps and rotated logs;
+//                                  prints a JSON line, then `pruned: <n> file(s), <bytes> bytes
+//                                  freed; kept <k>` last (the plugin-kit prune contract); a file
+//                                  that cannot be removed is named on stderr, exit stays 0
 //                                  older than N days (default 30) under
 //                                  ${XDG_STATE_HOME:-~/.local/state}/reminders-review
 //
@@ -33,8 +36,11 @@ export function main(argv, { env = process.env, write = (s) => process.stdout.wr
   }
   const dir = stateDir(env);
   const r = prune(dir, { days, dryRun });
+  // The JSON line for a reader; then the plugin-kit contract line last (the canary reads it).
   write(`${JSON.stringify({ dir, ...r })}\n`);
-  return r.problems.length ? 1 : 0;
+  for (const p of r.problems) writeErr(`prune: ${p}\n`);
+  write(`pruned: ${r.removed} file(s), ${r.bytes} bytes freed${dryRun ? " (dry run)" : ""}; kept ${r.kept}\n`);
+  return 0;
 }
 
 const direct = (() => {
