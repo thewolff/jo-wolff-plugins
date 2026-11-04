@@ -1,8 +1,8 @@
-// plugin-gate.mjs — the three-check push gate for a repository of Claude Code plugins (the
+// plugin-gate.mjs — the five-check push gate for a repository of Claude Code plugins (the
 // repo-root AGENTS.md test bar, kind-agnostic). It applies when the pushed commit holds
 // `plugins/*/hooks/hooks.json` or a root `.claude-plugin/plugin.json`, and only to plugins with a
 // file changed between the push's base and its head. For each such plugin, `ledger gate check`
-// runs and records three checks as rows of cc_gate_checks (one per commit, plugin and check
+// runs and records five checks as rows of cc_gate_checks (one per commit, plugin and check
 // name; a rerun replaces them). The checks read the commit, never the checkout: each plugin is
 // checked out of HEAD's tree into a temporary directory (`git read-tree` + `checkout-index`
 // against a scratch index), and the row keeps the hash of that plugin tree. An uncommitted
@@ -16,7 +16,9 @@
 //              or a `deny` / `block` / `continue: false` in its output fails the check, naming
 //              the hook and the input.
 //   visible    failures are visible: the malformed-JSON and unwritable-state inputs leave at
-//              least one line in `<state>/<plugin>/errors.log` and a `systemMessage` on stdout
+//              least one line in `<state>/<plugin>/errors.log` (or in `errors.log` under a path
+//              the plugin declares in its `state`, resolved into the sandbox) and a
+//              `systemMessage` on stdout
 //              (SessionEnd has no reader, so its message is not required; a hook that printed
 //              nothing and logged nothing on the unwritable state never reached it, which is
 //              not a failure: the malformed-JSON input is the one every hook must answer);
@@ -24,10 +26,30 @@
 //              unavailable path, captured).
 //   says       text says what to do when it can't: every `skills/*/SKILL.md` and `agents/*.md`
 //              has a heading matching "when this can't"; every deny or block reason literal in
-//              `hooks/*.mjs` and `lib/*.mjs` names a command in backticks.
+//              `hooks/*.mjs` and `lib/*.mjs` names a command in backticks; in a plugin with
+//              hooks (or scenarios), every "How it fails" / "When this can't" section of those
+//              texts, README.md and HOW-IT-FAILS.md names an `evals/<x>.scenario.json` that
+//              exists.
+//   evals      behaviour is proved: `evals/manifest.json` declares, for every event hooks.json
+//              registers, the outcomes its handler can return (deny, allow, ask, systemMessage,
+//              silent); every declared event × outcome has one `evals/<x>.scenario.json` naming
+//              `event`, `expect` and a stdin fixture (`stdin` or `stdinFile`), not a stub; a
+//              silent scenario of an event that can fire names a `sibling` that does; a
+//              `judge` needs a `session`. Freshness: the newest cc_canary_runs row for the
+//              committed plugin tree is a pass (an `unavailable` row passes with its reason: no
+//              `claude` is the canary's finding, not the plugin's), and when a scenario is
+//              judge-backed that pass is at most 7 days old. No row for the tree fails naming
+//              `ledger canary run`.
+//   retention  state is declared and pruned: `.claude-plugin/plugin.json` `state` is an array of
+//              `{ path, retentionDays, prune }` (`~`, `$HOME`, `$XDG_*`, `$TMPDIR`, `<worktree>`
+//              placeholders; retentionDays null = kept by design); a source site that writes
+//              outside the worktree (XDG_*, homedir, .local/, mkdtemp, writeFileSync,
+//              appendFileSync in hooks/, lib/, scripts/ and the rest, tests excluded) with no
+//              `state` field fails naming the site; a write the canary observed
+//              (cc_canary_runs.writes) under no declared path fails naming it.
 //
-// A plugin with no `hooks/hooks.json` is `skipped` (it has no hook to break the session with;
-// the other two checks still run). The whole run is capped at 60 s: a check that does not start
+// A plugin with no `hooks/hooks.json` is `skipped` for survives and for evals (unless it has
+// scenarios; the other checks still run). The whole run is capped at 60 s: a check that does not start
 // before the cap records `fail` with `timeout`. The PreToolUse deny is given only while the
 // store can be read; any fault there is an allow with a notice (the review gate's rule). A
 // `review waive "<why>"` row for the head lifts this gate as it lifts the review gate.
@@ -39,8 +61,11 @@ import { join } from "node:path";
 import { nowIso } from "./time.mjs";
 import { git, gitHead, defaultBase, headState, currentBranch, NotARepository } from "./review.mjs";
 import { transaction } from "./db.mjs";
+import { canonicalPath, coverageProblems, loadManifest, loadScenarios, readState, registeredEvents, retentionProblems } from "./plugin-evals.mjs";
 
-export const CHECKS = Object.freeze(["survives", "visible", "says"]);
+export const CHECKS = Object.freeze(["survives", "visible", "says", "evals", "retention"]);
+export const OUTCOMES = Object.freeze(["deny", "allow", "ask", "systemMessage", "silent"]);
+export const JUDGE_FRESH_DAYS = 7;
 export const HOOK_DEADLINE_MS = 5_000;
 export const RUN_CAP_MS = 60_000;
 /** The deny reason's and a row's detail are cut here. */
@@ -52,6 +77,9 @@ const SESSION_ID = "s-gate-check";
  * plugin's state and data directories read-only (with a writable errors.log already in the
  * state one, so the line can still be written).
  */
+/** A well-formed input with nothing wrong: what a hook prints on it is its baseline. */
+const HEALTHY_INPUT = Object.freeze({ name: "healthy", visible: false });
+
 export const FAULT_INPUTS = Object.freeze([
   { name: "empty stdin", stdin: "", visible: false },
   { name: "malformed JSON", stdin: "{not json", visible: true },
@@ -161,7 +189,7 @@ function eventInput(event, cwd) {
 }
 
 /** One sandbox per spawn: an empty HOME and XDG dirs, read-only for the unwritable input. */
-function faultSandbox(pluginName, input) {
+function faultSandbox(pluginName, input, stateDirs = []) {
   const root = mkdtempSync(join(tmpdir(), "ledger-gate-"));
   const home = join(root, "home");
   const state = join(root, "state");
@@ -170,24 +198,40 @@ function faultSandbox(pluginName, input) {
   for (const d of [home, state, data, config]) mkdirSync(d, { recursive: true });
   const env = { PATH: process.env.PATH, HOME: home, XDG_STATE_HOME: state, XDG_DATA_HOME: data, XDG_CONFIG_HOME: config, XDG_CACHE_HOME: join(root, "cache"), TMPDIR: join(root, "tmp"), CLAUDE_PLUGIN_ROOT: "" };
   mkdirSync(env.TMPDIR);
-  const errorsLog = join(state, pluginName, "errors.log");
-  mkdirSync(join(state, pluginName), { recursive: true });
-  writeFileSync(errorsLog, "");
+  // errors.log lives at <state>/<plugin>/ by the contract; a plugin that declares its state
+  // elsewhere (`state[].path` in plugin.json, under `~` or an XDG root) is read there too.
+  const dirs = [join(state, pluginName), ...stateDirs.map((p) => sandboxPath(p, env)).filter(Boolean)];
+  const logs = [];
+  for (const dir of dirs) {
+    mkdirSync(dir, { recursive: true });
+    const log = join(dir, "errors.log");
+    writeFileSync(log, "");
+    logs.push(log);
+  }
   if (input.unwritable) {
     mkdirSync(join(data, pluginName), { recursive: true });
     chmodSync(join(data, pluginName), 0o555);
-    chmodSync(join(state, pluginName), 0o555);
+    for (const dir of dirs) chmodSync(dir, 0o555);
   }
   const release = () => {
     try {
       chmodSync(join(data, pluginName), 0o755);
-      chmodSync(join(state, pluginName), 0o755);
+      for (const dir of dirs) chmodSync(dir, 0o755);
     } catch {
       /* not made read-only */
     }
     rmSync(root, { recursive: true, force: true });
   };
-  return { root, env, errorsLog, release };
+  return { root, env, errorsLog: logs[0], errorsLogs: logs, release };
+}
+
+/** A declared state path (`~/x`, `$XDG_STATE_HOME/x`) inside the sandbox; null when not under a sandbox root. */
+export function sandboxPath(declared, env) {
+  const c = canonicalPath(declared);
+  if (c.startsWith("~/")) return join(env.HOME, c.slice(2).replace(/\*/g, "_"));
+  if (c === "~") return env.HOME;
+  if (c.startsWith("$TMPDIR/")) return join(env.TMPDIR, c.slice(8).replace(/\*/g, "_"));
+  return null;
 }
 
 const cut = (s, max = DETAIL_MAX) => (s.length > max ? `${s.slice(0, max)}…` : s);
@@ -197,8 +241,8 @@ const cut = (s, max = DETAIL_MAX) => (s.length > max ? `${s.slice(0, max)}…` :
  * the session would break; visible true when errors.log gained a line and stdout carries a
  * systemMessage.
  */
-export function spawnHook(plugin, hook, input, { env: outer = process.env, cwd } = {}) {
-  const box = faultSandbox(plugin.name, input);
+export function spawnHook(plugin, hook, input, { env: outer = process.env, cwd, stateDirs = [], baselineStdout = null } = {}) {
+  const box = faultSandbox(plugin.name, input, stateDirs);
   try {
     const stdin = input.stdin ?? eventInput(input.event ?? hook.event, cwd ?? box.root);
     const env = { ...box.env, PATH: outer.PATH ?? box.env.PATH, CLAUDE_PLUGIN_ROOT: plugin.dir };
@@ -223,15 +267,19 @@ export function spawnHook(plugin, hook, input, { env: outer = process.env, cwd }
       if (json?.continue === false) return { ok: false, why: `${label}: stopped the session` };
     }
     let logged = 0;
-    try {
-      logged = readFileSync(box.errorsLog, "utf8").split("\n").filter(Boolean).length;
-    } catch {
-      /* removed by the hook: no line */
+    for (const log of box.errorsLogs) {
+      try {
+        logged += readFileSync(log, "utf8").split("\n").filter(Boolean).length;
+      } catch {
+        /* removed by the hook: no line */
+      }
     }
     const hasMessage = typeof json?.systemMessage === "string" && json.systemMessage.trim() !== "";
     const needsMessage = hook.event !== "SessionEnd";
-    const untouched = input.unwritable && !r.stdout.trim() && logged === 0;
-    return { ok: true, visible: untouched || (logged > 0 && (hasMessage || !needsMessage)), logged, hasMessage, needsMessage };
+    // Unwritable state touched nothing when the hook printed what it prints on a healthy run
+    // (its baseline, or nothing) and logged nothing: a hook that needs no state has no fault to show.
+    const untouched = input.unwritable && logged === 0 && (!r.stdout.trim() || (baselineStdout !== null && r.stdout === baselineStdout));
+    return { ok: true, visible: untouched || (logged > 0 && (hasMessage || !needsMessage)), logged, hasMessage, needsMessage, stdout: r.stdout };
   } finally {
     box.release();
   }
@@ -241,14 +289,20 @@ export function spawnHook(plugin, hook, input, { env: outer = process.env, cwd }
 function hookChecks(plugin, { env, deadline }) {
   const hooks = hookCommands(plugin.dir);
   if (hooks === null) return null;
+  // Declared directories only: a declared file (`kind: "file"`) or a glob is nowhere to put errors.log.
+  const stateDirs = readState(plugin.dir).declared.filter((d) => d.kind === "dir" && !d.path.includes("*")).map((d) => d.path);
+  const unusedPayload = loadManifest(plugin.dir).manifest?.unusedPayload ?? [];
   const broke = [];
   const invisible = [];
   for (const hook of hooks) {
+    // The healthy run's stdout is the baseline the unwritable-state run is compared with.
+    const healthy = spawnHook(plugin, hook, HEALTHY_INPUT, { env, stateDirs });
     for (const input of FAULT_INPUTS) {
       if (Date.now() > deadline) return { timeout: true };
-      const r = spawnHook(plugin, hook, input, { env });
+      const r = spawnHook(plugin, hook, input, { env, stateDirs, baselineStdout: healthy.ok ? healthy.stdout : null });
       if (!r.ok) broke.push(r.why);
-      else if (input.visible && !r.visible) {
+      // A hook whose manifest says it never reads its payload has no fault to see on malformed JSON.
+      else if (input.visible && !r.visible && !(input.name === "malformed JSON" && unusedPayload.includes(hook.event))) {
         const missing = [...(r.logged ? [] : ["no errors.log line"]), ...(r.hasMessage || !r.needsMessage ? [] : ["no systemMessage"])];
         invisible.push(`${hook.event} hook on ${input.name}: ${missing.join(", ")}`);
       }
@@ -265,7 +319,8 @@ export function fixturesWithoutUnavailable(pluginDir) {
   return names.filter((n) => n.endsWith(".txt") && !n.endsWith(".unavailable.txt") && !names.includes(n.replace(/\.txt$/, ".unavailable.txt"))).sort();
 }
 
-const WHEN_CANT = /^#{1,6}\s.*when (?:this|it) can(?:'|’|no)?t\b/im;
+const WHEN_CANT = /^#{1,6}\s.*(?:when (?:this|it) can(?:'|’|no)?t\b|how (?:this|it) fails\b)/im;
+const SCENARIO_REF = /evals\/[\w.-]+\.scenario\.json/g;
 
 /** Every `skills/*\/SKILL.md` and `agents/*.md` (relative) without a "When this can't …" heading. */
 export function textsWithoutWhenCant(pluginDir) {
@@ -282,6 +337,51 @@ export function textsWithoutWhenCant(pluginDir) {
     for (const name of readdirSync(agents).sort()) {
       if (name.endsWith(".md") && !WHEN_CANT.test(readFileSync(join(agents, name), "utf8"))) out.push(`agents/${name}`);
     }
+  }
+  return out;
+}
+
+/** The "How it fails" / "When this can't" section of a markdown text: from its heading to the next heading of the same or a higher level; null without one. */
+export function failureSection(md) {
+  const lines = md.split("\n");
+  const i = lines.findIndex((l) => WHEN_CANT.test(l));
+  if (i < 0) return null;
+  const level = lines[i].match(/^#+/)[0].length;
+  const out = [lines[i]];
+  for (let j = i + 1; j < lines.length; j++) {
+    const m = lines[j].match(/^(#{1,6})\s/);
+    if (m && m[1].length <= level) break;
+    out.push(lines[j]);
+  }
+  return out.join("\n");
+}
+
+/**
+ * In a plugin with hooks or scenarios: every `skills/*\/SKILL.md`, `agents/*.md`, README.md and
+ * HOW-IT-FAILS.md whose failure section names no `evals/<x>.scenario.json` that exists, or names
+ * one that does not. `[{ file, why }]`.
+ */
+export function sectionsWithoutScenario(pluginDir) {
+  const evals = join(pluginDir, "evals");
+  const hasScenarios = existsSync(evals) && readdirSync(evals).some((n) => n.endsWith(".scenario.json"));
+  if (!hasScenarios && !existsSync(join(pluginDir, "hooks", "hooks.json"))) return [];
+  const files = [];
+  const skills = join(pluginDir, "skills");
+  if (existsSync(skills)) for (const name of readdirSync(skills).sort()) if (existsSync(join(skills, name, "SKILL.md"))) files.push(`skills/${name}/SKILL.md`);
+  const agents = join(pluginDir, "agents");
+  if (existsSync(agents)) for (const name of readdirSync(agents).sort()) if (name.endsWith(".md")) files.push(`agents/${name}`);
+  for (const name of ["README.md", "HOW-IT-FAILS.md"]) if (existsSync(join(pluginDir, name))) files.push(name);
+  const out = [];
+  for (const file of files) {
+    const section = failureSection(readFileSync(join(pluginDir, file), "utf8"));
+    if (section === null) continue;
+    const refs = [...new Set(section.match(SCENARIO_REF) ?? [])];
+    if (!refs.length) {
+      out.push({ file, why: "its failure section names no evals/<x>.scenario.json" });
+      continue;
+    }
+    const missing = refs.filter((r) => !existsSync(join(pluginDir, r)));
+    if (missing.length) out.push({ file, why: `its failure section names ${missing.join(", ")}, which does not exist` });
   }
   return out;
 }
@@ -351,8 +451,8 @@ export function reasonsWithoutCommandIn(pluginDir) {
   return out;
 }
 
-/** The three checks for one plugin: `[{ name, status, detail }]`. */
-export function checkPlugin(plugin, { env = process.env, deadline = Date.now() + RUN_CAP_MS } = {}) {
+/** The five checks for one plugin: `[{ name, status, detail }]`. `db` and `tree` feed evals and retention. */
+export function checkPlugin(plugin, { env = process.env, deadline = Date.now() + RUN_CAP_MS, db = null, tree = null, now = Date.now() } = {}) {
   const rows = [];
   const timedOut = () => ({ status: "fail", detail: "timeout" });
   // 1. survives
@@ -375,12 +475,69 @@ export function checkPlugin(plugin, { env = process.env, deadline = Date.now() +
   // 3. says
   if (Date.now() > deadline) rows.push({ name: "says", ...timedOut() });
   else {
-    const texts = textsWithoutWhenCant(plugin.dir).map((t) => `${t} has no "When this can't" heading`);
+    const texts = textsWithoutWhenCant(plugin.dir).map((t) => `${t} has no "How it fails" or "When this can't" heading`);
     const reasons = reasonsWithoutCommandIn(plugin.dir).map((r) => `${r} names no command`);
-    const all = [...texts, ...reasons];
-    rows.push(all.length ? { name: "says", status: "fail", detail: cut(all.join("; ")) } : { name: "says", status: "pass", detail: "every skill and agent text has the section; every deny reason names a command" });
+    const refs = sectionsWithoutScenario(plugin.dir).map((r) => `${r.file}: ${r.why}`);
+    const all = [...texts, ...reasons, ...refs];
+    rows.push(all.length ? { name: "says", status: "fail", detail: cut(all.join("; ")) } : { name: "says", status: "pass", detail: "every skill and agent text has the section and names a scenario; every deny reason names a command" });
   }
+  // 4. evals
+  if (Date.now() > deadline) rows.push({ name: "evals", ...timedOut() });
+  else rows.push({ name: "evals", ...evalsCheck(plugin, { db, tree, now }) });
+  // 5. retention
+  if (Date.now() > deadline) rows.push({ name: "retention", ...timedOut() });
+  else rows.push({ name: "retention", ...retentionCheck(plugin, { db }) });
   return rows;
+}
+
+/** The newest canary row for (plugin, tree); null without one or without a db. */
+export function canaryRowFor(db, pluginName, tree) {
+  if (!db || !tree) return null;
+  return db.prepare("SELECT id, at, status, note, writes FROM cc_canary_runs WHERE plugin = ? AND tree_sha = ? ORDER BY at DESC, id DESC LIMIT 1").get(pluginName, tree) ?? null;
+}
+
+/** The writes the canary observed for a plugin, from its newest row that recorded any. */
+export function observedWrites(db, pluginName) {
+  if (!db) return [];
+  const row = db.prepare("SELECT writes FROM cc_canary_runs WHERE plugin = ? AND writes IS NOT NULL ORDER BY at DESC, id DESC LIMIT 1").get(pluginName);
+  if (!row) return [];
+  try {
+    const arr = JSON.parse(row.writes);
+    return Array.isArray(arr) ? arr.filter((w) => typeof w === "string") : [];
+  } catch {
+    return [];
+  }
+}
+
+/** Check 4: manifest coverage, scenario shape, and a fresh canary row for the committed tree. */
+export function evalsCheck(plugin, { db = null, tree = null, now = Date.now() } = {}) {
+  const events = registeredEvents(plugin.dir);
+  const { manifest, error } = loadManifest(plugin.dir);
+  const { scenarios, errors } = loadScenarios(plugin.dir, { manifest, events });
+  if (!events.length && !manifest && !scenarios.length) return { status: "skipped", detail: "no hooks/hooks.json and no evals/" };
+  const problems = [...(error ? [error] : []), ...coverageProblems({ manifest, scenarios, events }), ...errors];
+  if (problems.length) return { status: "fail", detail: cut(problems.join("; ")) };
+  const proved = scenarios.length;
+  const judged = scenarios.some((s) => s.judge !== undefined);
+  if (!tree) return { status: "fail", detail: `${proved} scenario(s) cover the manifest; no committed tree to look a canary row up for` };
+  const row = canaryRowFor(db, plugin.name, tree);
+  if (!row) return { status: "fail", detail: `${proved} scenario(s) cover the manifest; no canary row for tree ${short(tree)}: run \`ledger canary run --plugins ${plugin.name}\` on this commit` };
+  if (row.status === "fail") return { status: "fail", detail: `canary run #${row.id} at ${row.at} failed for tree ${short(tree)}${row.note ? ` (${cut(row.note, 300)})` : ""}` };
+  const ageDays = (now - Date.parse(row.at)) / 86_400_000;
+  if (judged && row.status !== "pass") return { status: "fail", detail: `a judge-backed scenario needs a passing canary run; #${row.id} at ${row.at} is ${row.status}${row.note ? ` (${cut(row.note, 300)})` : ""}` };
+  if (judged && ageDays > JUDGE_FRESH_DAYS) return { status: "fail", detail: `a judge-backed scenario needs a canary pass within ${JUDGE_FRESH_DAYS} days; #${row.id} is ${ageDays.toFixed(1)} days old: run \`ledger canary run --plugins ${plugin.name}\`` };
+  const live = row.status === "pass" ? "live pass" : `live unavailable (${cut(row.note ?? "no reason", 200)}); hook scenarios passed offline`;
+  return { status: "pass", detail: `${proved} scenario(s) cover ${events.length} event(s); canary #${row.id} at ${row.at}: ${live}` };
+}
+
+/** Check 5: the `state` declaration against the source's write sites and the canary's observed writes. */
+export function retentionCheck(plugin, { db = null } = {}) {
+  const r = retentionProblems(plugin.dir, { observedWrites: observedWrites(db, plugin.name) });
+  if (r.problems.length) return { status: "fail", detail: cut(r.problems.join("; ")) };
+  if (r.state === undefined) return { status: "pass", detail: "no `state` field; no source site writes outside the worktree" };
+  const kept = r.declared.filter((d) => d.retentionDays === null).length;
+  const pruned = r.declared.filter((d) => d.prune).length;
+  return { status: "pass", detail: `${r.declared.length} state path(s) declared (${pruned} with a prune, ${kept} kept by design); ${r.sites.length} write site(s) in source` };
 }
 
 /** Replace the rows of (top, head, plugin) with `rows`, each certifying the plugin tree `tree`. */
@@ -441,7 +598,7 @@ export function gateCheck({ db, dbPath, cwd, env = process.env, plugins: only = 
     const snap = snapshotTree(top, head, plugin.prefix);
     let rows;
     try {
-      rows = checkPlugin({ name: plugin.name, dir: snap.dir }, { env, deadline });
+      rows = checkPlugin({ name: plugin.name, dir: snap.dir }, { env, deadline, db, tree: snap.tree, now });
     } finally {
       snap.release();
     }

@@ -15,7 +15,7 @@ test("opening a path in a missing directory creates it; schema_version lives in 
   const r = open(p);
   assert.ok(existsSync(p));
   assert.equal(storeVersion(r.db), SCHEMA_VERSION);
-  assert.equal(SCHEMA_VERSION, 7);
+  assert.equal(SCHEMA_VERSION, 8);
   assert.equal(r.db.prepare("PRAGMA user_version").get().user_version, 0);
   assert.equal(r.shared, false);
   assert.deepEqual(r.notices, []);
