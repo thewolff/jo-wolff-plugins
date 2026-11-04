@@ -1,15 +1,19 @@
 // test/prompt-hook.test.mjs — hooks/user-prompt-submit.mjs as a spawned process with fixture
 // stdin: brb (bare and with a note), back (through, with the digest as additionalContext and a
-// systemMessage; any case), pending (under the session lock: a writer mid-way is waited for,
-// one held past the wait fails open), another prompt while away, another prompt while home,
-// and the session-start hook while away and home. node --test.
+// systemMessage; any case; checklist.json written from the held items for the band, none for an
+// empty hold), the band's Back marker (honoured on the next prompt whatever it says; a stale
+// one while home removed and ignored), pending (under the session lock: a writer mid-way is
+// waited for, one held past the wait fails open), another prompt while away, another prompt
+// while home, and the session-start hook while away and home. node --test.
 
 import test from "node:test";
 import assert from "node:assert/strict";
 import { existsSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 
+import { readChecklist, requestBack, writeChecklist } from "../lib/state.mjs";
 import { AWAY_NOTICE, NOT_AWAY_TEXT, awayFor, awayInstruction, hasReplyFirstLine, holdCommand, replyFirstLine } from "../lib/text.mjs";
+import { hold } from "../scripts/brb.mjs";
 import { box, exited, lockHolder, promptInput, runHook } from "./helpers.mjs";
 
 const blocked = (r) => {
@@ -263,6 +267,64 @@ test("a prompt with no session id still works, under the no-session key", () => 
     const r = runHook(b, "user-prompt-submit", { prompt: "brb" });
     assert.equal(blocked(r), AWAY_NOTICE);
     assert.ok(existsSync(join(b.stateDir("no-session"), "away.json")));
+  } finally {
+    b.release();
+  }
+});
+
+test("back writes checklist.json from the held items, none done, for the band; an empty hold writes none and removes a stale one", () => {
+  const b = box();
+  try {
+    runHook(b, "user-prompt-submit", promptInput(b, "brb lunch"));
+    hold("s1", "Pick Redis or in-process for the cache", { env: b.env });
+    hold("s1", "Approve the schema change", { env: b.env });
+    cameBack(runHook(b, "user-prompt-submit", promptInput(b, "back")));
+    const checklist = readChecklist("s1", b.env);
+    assert.equal(checklist.note, "lunch");
+    assert.deepEqual(checklist.items, [
+      { text: "Pick Redis or in-process for the cache", done: false },
+      { text: "Approve the schema change", done: false },
+    ]);
+
+    runHook(b, "user-prompt-submit", promptInput(b, "brb"));
+    cameBack(runHook(b, "user-prompt-submit", promptInput(b, "back")));
+    assert.equal(readChecklist("s1", b.env), null, "an empty hold leaves no checklist");
+  } finally {
+    b.release();
+  }
+});
+
+test("the band's Back marker: the next prompt, whatever it says, ends the hold as `back` does and goes through; the marker is gone", () => {
+  const b = box();
+  try {
+    runHook(b, "user-prompt-submit", promptInput(b, "brb"));
+    hold("s1", "Pick a cache", { env: b.env });
+    requestBack("s1", b.env);
+    const r = runHook(b, "user-prompt-submit", promptInput(b, "what did I miss"));
+    assert.match(cameBack(r), /^brb: hold cleared; digest archived to .*\.\n\nbrb digest — held since .*, 1 item\n\n## .*\n- Pick a cache$/);
+    assert.ok(!existsSync(join(b.stateDir("s1"), "away.json")));
+    assert.ok(!existsSync(join(b.stateDir("s1"), "back-requested")));
+    assert.deepEqual(readChecklist("s1", b.env).items, [{ text: "Pick a cache", done: false }]);
+  } finally {
+    b.release();
+  }
+});
+
+test("a stale Back marker while home is removed and ignored; holds while home never make a checklist; a checklist is left alone by later prompts", () => {
+  const b = box();
+  try {
+    requestBack("s1", b.env);
+    const r = runHook(b, "user-prompt-submit", promptInput(b, "hello"));
+    assert.equal(r.status, 0);
+    assert.ok(r.stdout.trim() === "" || r.stdout.trim() === "{}", r.stdout);
+    assert.ok(!existsSync(join(b.stateDir("s1"), "back-requested")));
+
+    hold("s1", "Pick a cache", { env: b.env });
+    assert.equal(readChecklist("s1", b.env), null);
+
+    writeChecklist("s1", { at: "", since: "", note: "", items: [{ text: "a", done: true }, { text: "b", done: false }] }, b.env);
+    runHook(b, "user-prompt-submit", promptInput(b, "next thing"));
+    assert.deepEqual(readChecklist("s1", b.env).items, [{ text: "a", done: true }, { text: "b", done: false }]);
   } finally {
     b.release();
   }

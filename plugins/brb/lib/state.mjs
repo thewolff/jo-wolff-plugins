@@ -3,6 +3,8 @@
 //   ${XDG_STATE_HOME:-~/.local/state}/brb/<session id>/away.json   the hold: since, note, counts
 //   ${XDG_STATE_HOME:-~/.local/state}/brb/<session id>/digest.md   held items, append-only while away
 //   ${XDG_STATE_HOME:-~/.local/state}/brb/<session id>/archive/<ts>.md   digests `back` released
+//   ${XDG_STATE_HOME:-~/.local/state}/brb/<session id>/checklist.json   the last digest as a checklist, written by `back`; rows are ticked by the band
+//   ${XDG_STATE_HOME:-~/.local/state}/brb/<session id>/back-requested   the band's Back button was pressed; the next hook event runs `back`
 //   ${XDG_STATE_HOME:-~/.local/state}/brb/<session id>/away.lock   held while away.json is read-modified-written; holds `<pid> <token>`
 //   ${XDG_CONFIG_HOME:-~/.config}/brb/config.json                  optional: onFireCap, idleStops
 //
@@ -234,4 +236,109 @@ export function renderDigest(away, body) {
   const n = away.held;
   const header = `brb digest — held since ${away.since}${away.note ? ` (${away.note})` : ""}, ${n} item${n === 1 ? "" : "s"}`;
   return body.trim() ? `${header}\n\n${body.trim()}` : `${header}\n\n(nothing held)`;
+}
+
+/** `<session dir>/checklist.json`, the after-back checklist. */
+export const checklistPath = (sessionId, env = process.env) => join(sessionDir(sessionId, env), "checklist.json");
+/** `<session dir>/back-requested`, the marker the band's Back button leaves. */
+export const backRequestPath = (sessionId, env = process.env) => join(sessionDir(sessionId, env), "back-requested");
+
+/** A digest entry's item line → its text: the list marker off, whitespace collapsed; null for a heading, a blank or anything else. */
+export function digestItem(line) {
+  const m = /^\s*(?:[-*+]|\d+[.)])\s+(.*\S)\s*$/.exec(line);
+  if (m) return m[1].replace(/\s+/g, " ");
+  const ask = /^\s*(closing ask:\s*.*\S)\s*$/.exec(line);
+  return ask ? ask[1].replace(/\s+/g, " ") : null;
+}
+
+/** The held items in a digest body, in order: every entry's item lines and `closing ask:` lines (appendDigest's shape); headings and blanks are not items. */
+export function digestItems(body) {
+  return String(body ?? "")
+    .split("\n")
+    .map(digestItem)
+    .filter((t) => t !== null);
+}
+
+/** A fresh checklist from a hold that just ended: when, the hold's since and note, one row per item, none done. */
+export function freshChecklist({ at = new Date().toISOString(), since = "", note = "", items = [] } = {}) {
+  return { at, since, note, items: items.map((text) => ({ text, done: false })) };
+}
+
+/** checklist.json's text → the typed checklist, or null when it does not parse or has no `items` list. */
+export function parseChecklist(text) {
+  let parsed;
+  try {
+    parsed = JSON.parse(text);
+  } catch {
+    return null;
+  }
+  if (!parsed || typeof parsed !== "object" || !Array.isArray(parsed.items)) return null;
+  const items = parsed.items.filter((i) => i && typeof i === "object" && typeof i.text === "string").map((i) => ({ text: i.text, done: i.done === true }));
+  return { at: typeof parsed.at === "string" ? parsed.at : "", since: typeof parsed.since === "string" ? parsed.since : "", note: typeof parsed.note === "string" ? parsed.note : "", items };
+}
+
+/** The session's checklist, or null when there is none (no file, or a file that does not parse). */
+export function readChecklist(sessionId, env = process.env) {
+  let text;
+  try {
+    text = readFileSync(checklistPath(sessionId, env), "utf8");
+  } catch {
+    return null;
+  }
+  return parseChecklist(text);
+}
+
+/** Write the checklist whole (temp file + rename). Creates the session directory. */
+export function writeChecklist(sessionId, checklist, env = process.env) {
+  const dir = sessionDir(sessionId, env);
+  mkdirSync(dir, { recursive: true });
+  const path = checklistPath(sessionId, env);
+  const tmp = `${path}.${process.pid}.tmp`;
+  writeFileSync(tmp, JSON.stringify(checklist));
+  renameSync(tmp, path);
+  return path;
+}
+
+/** Remove the checklist: the band clears. */
+export function clearChecklist(sessionId, env = process.env) {
+  rmSync(checklistPath(sessionId, env), { force: true });
+}
+
+/**
+ * Toggle row `index` of the checklist (0-based) and write it back; once every row is done the file
+ * is removed instead (the band clears). Returns the checklist written, or null when there was none,
+ * the index is off the list, or the file was removed.
+ */
+export function toggleChecklistItem(sessionId, index, env = process.env) {
+  const checklist = readChecklist(sessionId, env);
+  if (!checklist || !Number.isInteger(index) || index < 0 || index >= checklist.items.length) return null;
+  checklist.items[index].done = !checklist.items[index].done;
+  if (checklist.items.every((i) => i.done)) {
+    clearChecklist(sessionId, env);
+    return null;
+  }
+  writeChecklist(sessionId, checklist, env);
+  return checklist;
+}
+
+/** Leave the back-requested marker (the band's Back button). Creates the session directory. */
+export function requestBack(sessionId, env = process.env) {
+  const dir = sessionDir(sessionId, env);
+  mkdirSync(dir, { recursive: true });
+  const path = backRequestPath(sessionId, env);
+  writeFileSync(path, `${new Date().toISOString()}\n`);
+  return path;
+}
+
+/** Whether the back-requested marker is present. */
+export function backRequested(sessionId, env = process.env) {
+  return existsSync(backRequestPath(sessionId, env));
+}
+
+/** Remove the back-requested marker; true when there was one. */
+export function takeBackRequest(sessionId, env = process.env) {
+  const path = backRequestPath(sessionId, env);
+  if (!existsSync(path)) return false;
+  rmSync(path, { force: true });
+  return true;
 }
