@@ -19,6 +19,7 @@ different instrument with a different error profile, not a non-enforcement.
 | `do-not-batch-by-label` | 1, Skeleton (caveats beside what they qualify) | Judge-in-hook — `findTrailingBatchSection` | A trailing labeled section (Uncertainties, Open questions, Questions, Caveats, Notes — configurable) with substance | warn |
 | `conclusion-first` | 1, Skeleton (body, conclusion first) | Judge-in-hook — `conclusionFirstApplicable` | Per labeled section (the whole message when it has no block labels): ≥ 400 substantive chars; the judge reads the section's opening 20 words | warn |
 | `plural-back-reference` | 6, References survive without scrolling | Deterministic — `checkPluralBackReference` | A closing-ask marker exists and its ask uses *those, these, both, them, the two, either one* with no referent in the same sentence | warn |
+| `handed-command` | 10, Commands handed to the user | Deterministic — `checkHandedCommand` | The message hands the reader a shell command (a `bash`/`sh`/`zsh`/`shell` fence, or *run/paste/type/execute/enter* + a code span starting with a known binary) that is not one `zsh /abs/path/file.sh` line or a `handedCommand.allow` match; receipts are exempt | warn |
 | `restate-resumed-thread` | 8, Resume by restating content | Injector marker + judge | Session source was resume/compact; first substantive message after it | warn |
 | `name-the-artifact` | 11, Machinery anchors | Deterministic — `checkNamesArtifact` | Report-shaped (≥ 400 chars + a report verb) and no artifact token anywhere | warn |
 | `report-what-you-did-not-do` | 11, Machinery anchors | Todo trigger + judge | The transcript's last todo write has items not completed | warn |
@@ -95,7 +96,10 @@ installed these rules and that they apply to every message to that person; the s
 and every rule heading); the profile's `reader` and `traits`, when set; and one line
 pointing at this file and the kill switch. The span is read from the skill file each time,
 so there is one copy of the core and it cannot drift. `I_HAVE_AUDHD_INJECT=off` silences the
-emission (the resume marker below is still written).
+emission (the resume marker below is still written). So does the profile's `inject: "none"`
+(a checks-only install): no `additionalContext`, the resume marker still written, the
+one-time judge notice still shown as `systemMessage`. Under `inject: "rules"` the core is
+emitted and the judge notice is not, because the Stop hook checks nothing there.
 
 When `source` is `resume` or `compact` (or `clear` with a reason mentioning compact, an
 assumed shape), the injector writes the one-shot resume marker the Stop hook consumes for
@@ -123,7 +127,9 @@ Order of operations, each early return silent:
 
 1. **Kill switch** — `~/.claude/.i-have-audhd-off`, `existsSync` per invocation
    (never a module-scope env read; env is frozen for the host process's lifetime).
-   `I_HAVE_AUDHD_ENFORCE=off` is the secondary switch and costs a host relaunch.
+   `I_HAVE_AUDHD_ENFORCE=off` is the secondary switch and costs a host relaunch. Then the
+   profile's `inject`: `"rules"` means injection only, and the hook checks nothing. The flag
+   file is read first and wins over every `inject` value.
 2. Payload parse — empty stdin, unparseable stdin, or a non-object → a fault (below).
 3. Text extraction — `last_assistant_message` when a non-empty string, else the transcript
    JSONL scanned backwards for the last `type:"assistant"` entry with text content
@@ -166,7 +172,7 @@ plugin registers no `SubagentStop` hook on Claude Code either.
 
 ## The checks (deterministic)
 
-All four: plain-object results, never throw, options as a second argument, `markers`
+All five: plain-object results, never throw, options as a second argument, `markers`
 supplied by the caller REPLACE the default, and a stdin-or-file CLI that prints one JSON
 object and exits 0. Line semantics are shared (`checks/lines.mjs`): headings are
 navigation; fences, HTML-comment envelopes, blockquotes, and blank/structural lines carry
@@ -230,6 +236,42 @@ pushed]` (whole-word, case-insensitive). Applicable only when report-shaped. Sat
 any of: an absolute / home / relative path, a `file.ext:NN[:MM]` token, a fenced block, an
 inline code span, a URL, or a line whose first word (after an optional prompt) is a common
 command. **A vocabulary check, labeled as one** — hence warn by default.
+
+### handed-command
+
+`checkHandedCommand(text, options)` → `{applicable, flagged, reason, findings}`; `reason` ∈
+`no-handed-command | script-line-only | bare-command`; each finding is `{line, command,
+where}` with `where` ∈ `fence | inline`. Options: `allow`, glob patterns (`*` any run of
+characters, `?` one, everything else literal) matched against the whole command line; the
+hook passes the profile's `handedCommand.allow`. No length floor of its own: the Stop hook's
+200-char master floor gates it.
+
+Handed means one of:
+
+- a fenced block tagged `bash`, `sh`, `zsh` or `shell`;
+- an untagged fenced block whose first command starts with a known binary, under a paragraph
+  that tells the reader to *run, paste, type, execute* or *enter* it;
+- an inline code span starting with a known binary, on a line that tells the reader to run,
+  paste, type, execute or enter it at the start of a clause (`Run`, `then paste`, `Once it
+  merges, run`, `you can run`). `I ran` and `I'll run` are the agent's own runs, not handed.
+
+Known binaries are `name-the-artifact`'s command list plus `rm, sudo, open, launchctl,
+defaults, kill, pkill, ln, tar, unzip, export, source, omp, claude, codex, just, vercel, fly,
+op, security`.
+
+Evidence never counts: the paragraph and the one fenced block directly under a `**CLAIM**` or
+`**CITE**` label line (a receipt), any line or fenced block carrying `→` (the `command →
+result` form), blockquotes, HTML comments, and fences tagged anything else (`console`,
+`text`, a language).
+
+A handed block or span passes when it holds exactly one command line of the shape
+`zsh|bash|sh <absolute or ~/ path>.sh`, with no arguments and no shell operators, or one
+matching an `allow` glob. A leading `$ `/`% ` prompt and `# …` comment lines are ignored. Two
+commands in one block are a finding even when both are script lines. Every failing block or
+span is a finding; the warn or block reason names the first one's line and command, counts
+the rest, and carries rule 10's text: more than one command, or any interactive input, is a
+script file outside every git repository, and the reader types one byte-identical line.
+Warn by default and unmeasured.
 
 ## The triggers (deterministic halves of judge rules)
 
@@ -337,6 +379,8 @@ empty object is valid and yields the defaults.
 {
   "reader": "the person you are reporting to",
   "traits": ["reads the first two lines of any message and skims the rest"],
+  "inject": "full",
+  "handedCommand": { "allow": ["just deploy-*"] },
   "enforcement": {
     "mode": "block",
     "judgeCommand": "codex exec --skip-git-repo-check -",
@@ -349,6 +393,13 @@ empty object is valid and yields the defaults.
 - **`reader`** — short noun phrase, emitted verbatim at session start.
 - **`traits`** — plain sentences about how that person reads, emitted verbatim after the
   skill's core. The plugin ships none.
+- **`inject`** — `full | rules | none`, default `full`. What the plugin runs, independent
+  of the enforcement modes: `full` is the session-start injection and the Stop checks;
+  `rules` is the injection only, and the Stop hook checks nothing; `none` is no injection,
+  and the Stop checks still run. Read by both hooks (`lib/config.mjs` `loadSwitches`); any
+  other value is one `errors.log` line and reads as `full`.
+- **`handedCommand.allow`** — glob patterns the `handed-command` check accepts besides
+  `zsh /abs/path/file.sh`. Not an array of non-empty strings → one `errors.log` line, ignored.
 - **`enforcement.mode`** — `block | warn | off`. Unset = each rule's built-in default (warn
   for every rule — the measured default above); set = overrides built-ins both ways.
 - **`enforcement.judgeCommand`** — see the judge section.
@@ -358,9 +409,11 @@ empty object is valid and yields the defaults.
   (stop-hook step 8): `true` lets OMP seats block on a first stop; anything else keeps them
   at warn. Under the tag a non-boolean is one `errors.log` line and reads as `false`;
   without the tag the field is never read, so a malformed value logs nothing.
-- Precedence: kill-switch file > `rules[rule]` > explicit `mode` > built-in default, then
-  the OMP harness cap last (OMP seats only: unarmed → warn; armed + a revision after this
-  plugin's own block → warn). The same-text loop guard precedes all of it.
+- Precedence: kill-switch file > `inject` > `rules[rule]` > explicit `mode` > built-in
+  default, then the OMP harness cap last (OMP seats only: unarmed → warn; armed + a revision
+  after this plugin's own block → warn). The same-text loop guard precedes all of it. The
+  kill-switch file turns the Stop checks off under every `inject` value; it never touched the
+  injection and still does not.
 
 A missing file or field is silent defaults. An unparseable file, or a value of the wrong
 shape, is defaults plus one `errors.log` line and the hook's warning line.

@@ -15,7 +15,7 @@ import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 
 // The five Stop-hook checks that run only with a judge (skills/i-have-audhd/reference.md,
-// the check table's "judge" instruments). The other four are deterministic and always run.
+// the check table's "judge" instruments). The other five are deterministic and always run.
 export const JUDGE_RULES = [
   "do-not-batch-by-label",
   "conclusion-first",
@@ -23,7 +23,7 @@ export const JUDGE_RULES = [
   "report-what-you-did-not-do",
   "bad-news-first",
 ];
-export const TOTAL_CHECKS = 9;
+export const TOTAL_CHECKS = 10;
 
 export const SETUP_SCRIPT = fileURLToPath(new URL("../tools/setup.mjs", import.meta.url));
 

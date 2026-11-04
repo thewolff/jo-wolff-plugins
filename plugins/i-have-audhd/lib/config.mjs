@@ -132,3 +132,50 @@ export function harnessCapsBlocks(config, harness, stopHookActive) {
   if (config.armOmp !== true) return true; // (a) OMP unarmed
   return stopHookActive === true; // (b) armed, but this stop revises this plugin's own block
 }
+
+// ─── profile switches: `inject` and `handedCommand.allow` ─────────────────────
+//
+//   inject: "full" | "rules" | "none", default "full". What the plugin runs, independent of
+//   enforcement modes:
+//     full   the session-start injection AND the Stop checks (the behavior before 1.6.0)
+//     rules  the session-start injection only; the Stop hook checks nothing
+//     none   no session-start injection; the Stop checks still run (a checks-only plugin)
+//   The kill-switch file still wins over all three: with it present the Stop hook checks
+//   nothing whatever `inject` says. It never touched the injection and still does not.
+//
+//   handedCommand.allow: glob patterns (`*` any run of characters, `?` one, everything else
+//   literal) for handed-over command lines the handed-command check accepts on top of its
+//   built-in `zsh /abs/path/file.sh` shape. A pattern matches the whole line.
+//
+// Whole-file faults (unreadable is normal; unparseable or not an object) are NOT logged here:
+// each hook already reports them through its own profile reader, and one fault is one line.
+// A field of the wrong shape is logged here and reads as its default.
+
+const INJECT_VALUES = new Set(["full", "rules", "none"]);
+
+// Never throws. Returns { inject, handedCommandAllow }.
+export function loadSwitches(path = defaultProfilePath()) {
+  const out = { inject: "full", handedCommandAllow: [] };
+  let parsed;
+  try {
+    parsed = JSON.parse(readFileSync(path, "utf8"));
+  } catch {
+    return out;
+  }
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return out;
+
+  if (parsed.inject !== undefined) {
+    if (typeof parsed.inject === "string" && INJECT_VALUES.has(parsed.inject)) out.inject = parsed.inject;
+    else logFault("lib/config.mjs", `inject ${JSON.stringify(parsed.inject)} is not full|rules|none; full applies`);
+  }
+  const hc = parsed.handedCommand;
+  if (hc !== undefined && hc !== null) {
+    const allow = hc && typeof hc === "object" && !Array.isArray(hc) ? hc.allow : undefined;
+    if (Array.isArray(allow) && allow.every((p) => typeof p === "string" && p.trim())) {
+      out.handedCommandAllow = allow.map((p) => p.trim());
+    } else if (allow !== undefined || typeof hc !== "object" || Array.isArray(hc)) {
+      logFault("lib/config.mjs", "handedCommand.allow is not an array of non-empty strings; ignored");
+    }
+  }
+  return out;
+}

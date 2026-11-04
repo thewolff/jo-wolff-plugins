@@ -1002,3 +1002,104 @@ test("the judge is shown the section's first 20 words: bad news at words 25-30 o
   assert.ok(job.question.includes(`one labeled section (**CITE**, line ${lineOf(msg, "**CITE**")})`), job.question);
   assert.ok(!job.message.includes("**CITE**"), "the framing rides in the question, not the judged message");
 });
+
+// ─── handed-command (rule 10) through the hook, from transcript fixtures ─────
+
+const FIXTURES = fileURLToPath(new URL("./fixtures/", import.meta.url));
+const bareTranscript = join(FIXTURES, "handed-command-bare.jsonl");
+const scriptTranscript = join(FIXTURES, "handed-command-script.jsonl");
+const writeProfile = (home, profile) => writeFileSync(join(home, ".claude", "i-have-audhd.json"), JSON.stringify(profile));
+
+test("a transcript handing a bare `gh pr list` warns handed-command, naming rule 10 and the line", () => {
+  const home = mkhome();
+  const r = runHook({ session_id: "hc1", transcript_path: bareTranscript }, home);
+  assert.equal(r.status, 0);
+  assert.equal(r.stdout, "", "warn by default: nothing on stdout");
+  const warns = logLines(home, "warnings.log").filter((l) => l.includes("rule=handed-command"));
+  assert.equal(warns.length, 1);
+  assert.match(warns[0], /i-have-audhd rule 10, Commands handed to the user/);
+  assert.match(warns[0], /line 3 hands the reader `gh pr list`/);
+  assert.ok(existsSync(join(home, ".claude", ".i-have-audhd-state", "pending-warn-hc1.json")), "delivered next turn");
+});
+
+test("a transcript handing `zsh /Users/example/agent-scratch/…/x.sh` is silent", () => {
+  const home = mkhome();
+  const r = runHook({ session_id: "hc2", transcript_path: scriptTranscript }, home);
+  assert.equal(r.status, 0);
+  assert.equal(r.stdout, "");
+  assert.equal(readLog(home, "warnings.log"), "");
+  assert.equal(readLog(home, "errors.log"), "");
+});
+
+test("handed-command armed to block blocks, and the reason ends with the way out", () => {
+  const home = mkhome();
+  writeProfile(home, { enforcement: { rules: { "handed-command": "block" } } });
+  const out = parseOut(runHook({ session_id: "hc3", transcript_path: bareTranscript }, home).stdout);
+  assert.equal(out.decision, "block");
+  assert.deepEqual(blockedRules(home, "hc3"), ["handed-command"]);
+  assert.match(out.reason, /Way out: .*"handed-command": "warn"/);
+});
+
+test("handedCommand.allow globs let the operator's own line through", () => {
+  const home = mkhome();
+  writeProfile(home, { handedCommand: { allow: ["gh pr list"] } });
+  runHook({ session_id: "hc4", transcript_path: bareTranscript }, home);
+  assert.equal(readLog(home, "warnings.log"), "");
+});
+
+test("a malformed handedCommand.allow is one errors.log line; the built-in shape still applies", () => {
+  const home = mkhome();
+  writeProfile(home, { handedCommand: { allow: "gh *" } });
+  const r = runHook({ session_id: "hc5", transcript_path: bareTranscript }, home);
+  assert.match(parseOut(r.stdout).systemMessage, /failed open/);
+  assert.equal(logLines(home, "errors.log").length, 1);
+  assert.match(readLog(home, "errors.log"), /handedCommand\.allow is not an array/);
+  assert.match(readLog(home, "warnings.log"), /rule=handed-command/);
+});
+
+// ─── the profile's inject switch, Stop half ──────────────────────────────────
+
+test("inject full and absent: the Stop checks run", () => {
+  for (const profile of [{}, { inject: "full" }]) {
+    const home = mkhome();
+    writeProfile(home, profile);
+    runHook({ session_id: "inj1", last_assistant_message: misordered }, home);
+    assert.match(readLog(home, "warnings.log"), /rule=needs-you-first/, JSON.stringify(profile));
+  }
+});
+
+test("inject rules: injection only, so the Stop hook checks nothing, even armed to block", () => {
+  const home = mkhome();
+  writeProfile(home, { inject: "rules", enforcement: { mode: "block" } });
+  const r = runHook({ session_id: "inj2", last_assistant_message: misordered }, home);
+  assert.equal(r.status, 0);
+  assert.equal(r.stdout, "");
+  assert.ok(!existsSync(join(home, ".claude", ".i-have-audhd-state")), "nothing checked, nothing written");
+});
+
+test("inject none: no injection, and the Stop checks still run", () => {
+  const home = mkhome();
+  writeProfile(home, { inject: "none", enforcement: { rules: { "needs-you-first": "block" } } });
+  const out = parseOut(runHook({ session_id: "inj3", last_assistant_message: misordered }, home).stdout);
+  assert.equal(out.decision, "block");
+});
+
+test("the kill-switch file wins over every inject value", () => {
+  for (const inject of ["full", "rules", "none"]) {
+    const home = mkhome();
+    writeProfile(home, { inject, enforcement: { mode: "block" } });
+    writeFileSync(join(home, ".claude", ".i-have-audhd-off"), "");
+    const r = runHook({ session_id: "inj4", last_assistant_message: misordered }, home);
+    assert.equal(r.stdout, "", inject);
+    assert.ok(!existsSync(join(home, ".claude", ".i-have-audhd-state")), inject);
+  }
+});
+
+test("an inject value outside full|rules|none is one errors.log line and the checks run as under full", () => {
+  const home = mkhome();
+  writeProfile(home, { inject: "off" });
+  const r = runHook({ session_id: "inj5", last_assistant_message: misordered }, home);
+  assert.match(parseOut(r.stdout).systemMessage, /failed open/);
+  assert.match(readLog(home, "errors.log"), /inject "off" is not full\|rules\|none; full applies/);
+  assert.match(readLog(home, "warnings.log"), /rule=needs-you-first/);
+});

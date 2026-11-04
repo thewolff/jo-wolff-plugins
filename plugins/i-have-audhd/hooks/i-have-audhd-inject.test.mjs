@@ -116,7 +116,7 @@ const writeProfile = (home, obj) => writeFileSync(join(home, ".claude", "i-have-
 test("a fresh install with no profile shows the no-judge notice once, naming the checks and the setup command", () => {
   const home = mkhome();
   const first = JSON.parse(runInject({ session_id: "s1", source: "startup" }, home).stdout);
-  assert.match(first.systemMessage, /no judge is configured, so 5 of its 9 checks are off/);
+  assert.match(first.systemMessage, /no judge is configured, so 5 of its 10 checks are off/);
   for (const rule of ["do-not-batch-by-label", "conclusion-first", "restate-resumed-thread", "report-what-you-did-not-do", "bad-news-first"]) {
     assert.ok(first.systemMessage.includes(rule), rule);
   }
@@ -144,4 +144,48 @@ test("judgeCommand null (chose none) and a set judge both suppress the notice", 
     assert.equal(out.systemMessage, undefined, String(judgeCommand));
     assert.ok(!existsSync(noticeMarker(home)));
   }
+});
+
+// ─── the profile's inject switch ─────────────────────────────────────────────
+
+test("inject full (and absent) emits the core, the profile's reader, and the judge notice", () => {
+  for (const profile of [{ reader: "R" }, { reader: "R", inject: "full" }]) {
+    const home = mkhome();
+    writeProfile(home, profile);
+    const out = JSON.parse(runInject({ session_id: "s1", source: "startup" }, home).stdout);
+    assert.match(out.hookSpecificOutput.additionalContext, /installed the i-have-audhd rules/, JSON.stringify(profile));
+    assert.match(out.hookSpecificOutput.additionalContext, /written for R/);
+    assert.match(out.systemMessage, /no judge is configured/);
+  }
+});
+
+test("inject rules emits the core but no judge notice: the Stop hook checks nothing", () => {
+  const home = mkhome();
+  writeProfile(home, { inject: "rules" });
+  const out = JSON.parse(runInject({ session_id: "s1", source: "startup" }, home).stdout);
+  assert.match(out.hookSpecificOutput.additionalContext, /installed the i-have-audhd rules/);
+  assert.equal(out.systemMessage, undefined);
+  assert.ok(!existsSync(noticeMarker(home)));
+});
+
+test("inject none emits no additionalContext, still arms the resume marker and shows the judge notice", () => {
+  const home = mkhome();
+  writeProfile(home, { inject: "none" });
+  const out = JSON.parse(runInject({ session_id: "s1", source: "resume" }, home).stdout);
+  assert.equal(out.hookSpecificOutput, undefined);
+  assert.match(out.systemMessage, /no judge is configured/);
+  assert.ok(existsSync(markerPath(home, "s1")), "the Stop hook's checks still run, so rule 8 is still armed");
+  const quiet = runInject({ session_id: "s2", source: "startup" }, home);
+  assert.equal(quiet.stdout, "", "notice shown once; nothing else to say");
+});
+
+test("an inject value outside full|rules|none is one errors.log line and reads as full", () => {
+  const home = mkhome();
+  writeProfile(home, { inject: "some", enforcement: { judgeCommand: null } });
+  const out = JSON.parse(runInject({ session_id: "s1", source: "startup" }, home).stdout);
+  assert.match(out.hookSpecificOutput.additionalContext, /installed the i-have-audhd rules/);
+  assert.match(out.systemMessage, /failed open/);
+  const errors = readFileSync(join(home, ".claude", ".i-have-audhd-state", "errors.log"), "utf8").trim().split("\n");
+  assert.equal(errors.length, 1);
+  assert.match(errors[0], /lib\/config\.mjs inject "some" is not full\|rules\|none; full applies/);
 });

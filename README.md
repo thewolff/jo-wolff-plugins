@@ -244,7 +244,7 @@ Three steps:
    omp plugin install i-have-audhd@jo-wolff-plugins
    ```
 
-2. **Choose a judge.** Five of the nine Stop-hook checks (`do-not-batch-by-label`,
+2. **Choose a judge.** Five of the ten Stop-hook checks (`do-not-batch-by-label`,
    `conclusion-first`, `restate-resumed-thread`, `report-what-you-did-not-do`,
    `bad-news-first`) need a model to read the message, and they stay off until you pick one. In a
    terminal, run the setup tool from the marketplace copy you just added:
@@ -277,7 +277,7 @@ fallback and an isolated live probe.
 - **A session-start injection** of the skill's first-turn core — the message skeleton, the
   options rule, reference survival, commands, and three machinery anchors — plus every rule
   heading, read out of `skills/i-have-audhd/SKILL.md` between its markers so there is one copy.
-- **A Stop hook** that checks every finished message with nine checks (four deterministic, five
+- **A Stop hook** that checks every finished message with ten checks (five deterministic, five
   judge-gated) and names the skill rule behind each finding.
 - **A prompt hook** that delivers the last checked message's warn findings to the agent with
   your next prompt, once, as a short notice carrying the fix.
@@ -299,6 +299,12 @@ choose a judge (install step 2), and each fired trigger is logged to `skipped.lo
 `I_HAVE_AUDHD_INJECT=off` turns the injection off; the skill still loads on demand. The package
 README and `skills/i-have-audhd/reference.md` carry the schema, every check's contract, and the
 measured rates.
+
+Changes in 1.6.0: a new check, `handed-command`, warns when a message hands you a shell command
+that is not one `zsh /absolute/path/script.sh` line (rule 10); commands quoted as evidence do not
+count. A new profile field, `inject` (`full`, `rules` or `none`), switches the session-start rules
+and the Stop checks independently; the package README's *What you can turn on and off* has a
+checks-only and a rules-only profile. The kill-switch file still wins over every value.
 
 Changes in 1.5.1: a hook's own fault is no longer silent. Empty or malformed stdin, a throw, an
 unparseable profile, or a state file that cannot be written leaves one line in `errors.log` and

@@ -23,7 +23,9 @@
 //      of the host process that spawns hooks, so an env switch cannot be thrown without
 //      relaunching the host. The file works within one turn. Chosen silence: documented
 //      here, not announced to the model. $I_HAVE_AUDHD_ENFORCE=off is a secondary
-//      switch with exactly that frozen caveat — it costs a host relaunch to change.
+//      switch with exactly that frozen caveat — it costs a host relaunch to change. Then the
+//      profile's `inject` (lib/config.mjs loadSwitches): "rules" means injection only, so
+//      this hook checks nothing. The flag file is read first and wins over every value.
 //   2. Parse the payload. Empty stdin, unparseable stdin or a non-object → a fault, exit 0.
 //   3. Extract the final assistant text: last_assistant_message when it is a non-empty
 //      string, else the transcript JSONL scanned backwards for the last type:"assistant"
@@ -85,8 +87,9 @@ import { checkClosingAskLast } from "../checks/closing-ask-last.mjs";
 import { checkNeedsYouFirst } from "../checks/needs-you-first.mjs";
 import { checkNamesArtifact } from "../checks/name-the-artifact.mjs";
 import { checkPluralBackReference } from "../checks/plural-back-reference.mjs";
+import { checkHandedCommand } from "../checks/handed-command.mjs";
 import { splitLabeledSections, openingWords, OPENING_WORDS } from "../checks/sections.mjs";
-import { loadEnforcement, effectiveMode, harnessCapsBlocks } from "../lib/config.mjs";
+import { loadEnforcement, loadSwitches, effectiveMode, harnessCapsBlocks } from "../lib/config.mjs";
 import { stateDir, killSwitchPath, lastBlockedPath, resumeMarkerPath, sha256hex, appendLog, logFault, faultWarning } from "../lib/state.mjs";
 import { writePending } from "../lib/pending.mjs";
 import { dueAlerts, clearAlerts } from "../lib/alerts.mjs";
@@ -118,6 +121,7 @@ const RULE_REFS = {
   "name-the-artifact": "i-have-audhd rule 11, Machinery anchors",
   "report-what-you-did-not-do": "i-have-audhd rule 11, Machinery anchors",
   "bad-news-first": "i-have-audhd rule 11, Machinery anchors",
+  "handed-command": "i-have-audhd rule 10, Commands handed to the user",
 };
 
 // "<Check name> (<skill rule>)" — the head of every reason this hook emits.
@@ -184,7 +188,7 @@ export function extractText(payload) {
 }
 
 // The deterministic checks, wired one by one. Each returns findings for the emit stage.
-function runDeterministicChecks(text, config) {
+function runDeterministicChecks(text, config, switches) {
   const findings = [];
 
   // needs-you-first — needs you first. Calls the EXISTING check; not a fork, not a copy.
@@ -249,6 +253,26 @@ function runDeterministicChecks(text, config) {
           `${cite("Plural back-reference", "plural-back-reference")} — the closing ask (line ${r.markerLine}) uses ` +
           `${words} with no referent in the same sentence. Restore the nouns so the ask reads alone.`,
         paste: paste("ask"),
+      });
+    }
+  }
+
+  // handed-command — a command handed to the reader is one script line. The profile's
+  // handedCommand.allow globs extend the passing shape.
+  if (effectiveMode(config, "handed-command") !== "off") {
+    const r = checkHandedCommand(text, { allow: switches.handedCommandAllow });
+    if (r.flagged) {
+      const [first, ...more] = r.findings;
+      const others = more.length ? ` (and ${more.length} more: line${more.length > 1 ? "s" : ""} ${more.map((f) => f.line).join(", ")})` : "";
+      findings.push({
+        rule: "handed-command",
+        mode: effectiveMode(config, "handed-command"),
+        text:
+          `${cite("Handed command", "handed-command")} — line ${first.line} hands the reader \`${first.command}\`${others}. ` +
+          `Rule 10: more than one command, or any interactive input, is a script file in a scratch directory outside ` +
+          `every git repository; the reader types one line, \`zsh /path/to/script.sh\`, that stays byte-identical, and ` +
+          `fixes edit the file. Put the command in a script and hand that one line.`,
+        paste: paste("command line"),
       });
     }
   }
@@ -421,6 +445,9 @@ async function main() {
   // Secondary env switch. Caveat, documented: env is frozen per host process, so changing
   // this one means relaunching the host — the flag file above is the fast control.
   if (String(process.env.I_HAVE_AUDHD_ENFORCE || "").toLowerCase() === "off") return {};
+  // The profile's inject switch: "rules" is injection only, so no check runs here.
+  const switches = loadSwitches();
+  if (switches.inject === "rules") return {};
 
   // 2. Payload. The host always sends a JSON object, so anything else is a fault.
   if (!raw.trim()) {
@@ -463,7 +490,7 @@ async function main() {
   // 6–7. Checks per configured modes.
   const harness = process.env.I_HAVE_AUDHD_HARNESS;
   const config = loadEnforcement(harness);
-  const findings = [...runDeterministicChecks(text, config)];
+  const findings = [...runDeterministicChecks(text, config, switches)];
 
   // Judge-gated rules: deterministic trigger first; the judge runs only where a trigger fired
   // AND a judge command is configured. A skipped judge rule leaves a line in skipped.log —

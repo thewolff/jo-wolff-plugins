@@ -42,8 +42,9 @@ const FILE_LINE_TOKEN = /[A-Za-z0-9_][A-Za-z0-9_.@+-]*\.[A-Za-z0-9]{1,8}:\d+(?::
 const URL_TOKEN = /https?:\/\/[^\s)>`]+/;
 const INLINE_CODE = /`[^`\n]+`/;
 
-// First words of lines that read as commands, with or without a shell prompt prefix.
-const COMMON_COMMANDS = new Set([
+// First words of lines that read as commands, with or without a shell prompt prefix. Exported
+// for checks/handed-command.mjs, which extends it.
+export const COMMON_COMMANDS = new Set([
   "node", "npm", "npx", "yarn", "pnpm", "bun", "deno", "git", "gh", "curl", "wget",
   "docker", "podman", "psql", "mysql", "make", "cargo", "rustc", "go", "python",
   "python3", "pip", "pytest", "jq", "sed", "awk", "grep", "rg", "find", "ls", "cat",
