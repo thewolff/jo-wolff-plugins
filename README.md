@@ -505,6 +505,8 @@ for that folder (it writes `.ledger.json` there, found from any subfolder); `/le
 them back on. The plugin's tables are all prefixed `cc_`, so the database can be a SQLite file
 another tool already uses.
 
+Changes in 0.3.2: a side pane for Claude Code Desktop. The ledger mod opens a pane listing the questions still open in other folders and the answers recorded since your last turn, and `/ledger answer <id> <reply>` (or the pane's own buttons and reply field) records through the ledger CLI without spending a model turn. Where no pane can draw (`claude -p`, narrow terminals, OMP) the same information lands as one block in the transcript. See the plugin README, "Ledger pane (Desktop)", for the two-window test.
+
 Changes in 0.3.1: three fixes from the first live sessions on 0.3.0, each from a bounce that had
 no way out. An `ask` that repeats a question still open from an earlier session or an untagged
 CLI run in the same folder (same text, same set of options in any order) now adopts that row
