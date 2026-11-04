@@ -929,7 +929,7 @@ worktree, inside an excluded directory, or after the final snapshot is not detec
 
 ## Changes
 
-### 1.4.3
+### 1.4.4
 
 - The plugin meets ledger 0.3.5's five-row gate. `evals/manifest.json` declares what each of the
   five hooks can return and nine `evals/<x>.scenario.json` prove them: the write denied

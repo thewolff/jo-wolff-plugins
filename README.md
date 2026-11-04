@@ -368,7 +368,7 @@ installing the plugin.
 - **A journal** of every card, quote, verdict, refusal and diff, kept outside the worktree.
 - **A stop only you can give:** pairing ends when you type `pair stop` as a message of its own.
 
-Changes in 1.4.3: the plugin meets ledger 0.3.5's five-row gate. `evals/manifest.json` declares
+Changes in 1.4.4: the plugin meets ledger 0.3.5's five-row gate. `evals/manifest.json` declares
 what each of the five hooks can return and nine `evals/<x>.scenario.json` prove them (the
 write denied and the inert hook at PreToolUse, the pairing-on and stop-queued prompts, the
 fresh and carried-over session start, the session end leaving its carry, the Stop hook judging
