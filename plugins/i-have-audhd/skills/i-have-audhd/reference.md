@@ -16,7 +16,7 @@ different instrument with a different error profile, not a non-enforcement.
 |---|---|---|---|---|
 | `needs-you-first` | 1, Skeleton | Deterministic — `checkNeedsYouFirst` | A needs-you marker exists and substantive prose precedes it | warn |
 | `closing-ask-last` | 1, Skeleton | Deterministic — `checkClosingAskLast` | A closing-ask marker exists; more than one, or substantive prose follows the ask section | warn |
-| `do-not-batch-by-label` | 1, Skeleton (caveats beside what they qualify) | Judge-in-hook — `findTrailingBatchSection` | A trailing labeled section (Uncertainties, Open questions, Questions, Caveats, Notes — configurable) with substance | warn |
+| `do-not-batch-by-label` | 1, Skeleton (caveats beside what they qualify) | Judge-in-hook — `findTrailingBatchSection` | A trailing labeled section (Uncertainties, Open questions, Questions, Caveats, Notes — fixed; the hook calls it on these defaults) with substance | warn |
 | `conclusion-first` | 1, Skeleton (body, conclusion first) | Judge-in-hook — `conclusionFirstApplicable` | Per labeled section (the whole message when it has no block labels): ≥ 400 substantive chars; the judge reads the section's opening 20 words | warn |
 | `plural-back-reference` | 6, References survive without scrolling | Deterministic — `checkPluralBackReference` | A closing-ask marker exists and its ask uses *those, these, both, them, the two, either one* with no referent in the same sentence | warn |
 | `handed-command` | 10, Commands handed to the user | Deterministic — `checkHandedCommand` | The message hands the reader a shell command (a `bash`/`sh`/`zsh`/`shell` fence, *run/paste/type/execute/enter* + a code span starting with a known binary, or prompt lines under such an instruction) that is not one `zsh /abs/path/file.sh` line whose script sits under a `handedCommand.scriptRoots` root and outside every git checkout, or a `handedCommand.allow` match; receipts are exempt; runs at any length | warn |
@@ -555,3 +555,5 @@ All under `~/.claude/.i-have-audhd-state/`:
 | `last-blocked-<session>.json` | The loop guard's recorded text hash and rules |
 | `resume-<session>` | The one-shot rule 8 marker (timestamped) |
 | `cache/<hash>.json` | Judge verdicts |
+| `alerts.json` | When each failure alert was first raised and last told, per error key — the once-then-hourly cadence (`lib/alerts.mjs`) |
+| `judge-notice-shown` | Present once the session-start hook has shown its no-judge notice (timestamped); the notice is not shown again |

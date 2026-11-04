@@ -311,12 +311,6 @@ switched off leaves the injection, and the checks bound to it go quiet. The pack
 *What you can turn on and off* lists every switch with its default. The kill-switch file still
 wins over every value.
 
-Changes in 1.5.1: a hook's own fault is no longer silent. Empty or malformed stdin, a throw, an
-unparseable profile, or a state file that cannot be written leaves one line in `errors.log` and
-one warning line; the hook still exits 0 and blocks nothing. Every block reason now ends with the
-way out: `touch ~/.claude/.i-have-audhd-off`, or the check's `enforcement.rules` key set to
-`"warn"`.
-
 Changes in 1.5.2: the plugin meets ledger 0.3.5's five-row gate. `evals/manifest.json` declares
 what each of the three hooks can return and seven `evals/<x>.scenario.json` prove them
 (injection on and off, the pending-warning relay and the quiet prompt, the Stop hook's default
@@ -328,6 +322,12 @@ Stop hook and the four check scripts compared `import.meta.url` with `file://${p
 as strings, and node resolves the main module through symlinks, so reached through one (macOS's
 `/var/folders` tmpdir, where `ledger gate check` snapshots the plugin) the Stop hook never ran
 and exited 0 with nothing printed and nothing logged; the guards now compare real paths.
+
+Changes in 1.5.1: a hook's own fault is no longer silent. Empty or malformed stdin, a throw, an
+unparseable profile, or a state file that cannot be written leaves one line in `errors.log` and
+one warning line; the hook still exits 0 and blocks nothing. Every block reason now ends with the
+way out: `touch ~/.claude/.i-have-audhd-off`, or the check's `enforcement.rules` key set to
+`"warn"`.
 
 ## paired-coding
 
