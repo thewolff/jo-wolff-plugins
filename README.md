@@ -61,6 +61,10 @@ it, keeping a record of what it did and asked, and a vendored set of engineering
   the judgment layer no hook can derive. Claude Code hooks. Changes in continuity 0.1.0: first
   release, ported from the newdle plugin 0.2.175 with every workspace path stripped; see the
   plugin's [CHANGELOG](plugins/continuity/CHANGELOG.md).
+- **[brb](#brb)** — type `brb` and walk away: the agent keeps working, every ask it would
+  have stopped for waits in a digest, and only a broken main, data loss, a security finding,
+  spend near a ceiling or a blocker on everything comes through at once; `back` prints the
+  digest. Claude Code hooks plus an OMP extension. Changes in brb 0.1.0: first release.
 
 output-types delivers text and, since 0.3.0, checks every finished message for a label without
 a receipt, warning only; see its *delivers, and warns* note. i-have-audhd delivers its rules and checks every finished message, warning by
@@ -87,6 +91,7 @@ the receipt.
 /plugin install ctx-watch@jo-wolff-plugins
 /plugin install delegation@jo-wolff-plugins
 /plugin install continuity@jo-wolff-plugins
+/plugin install brb@jo-wolff-plugins
 ```
 
 On OMP, from a shell:
@@ -104,6 +109,7 @@ omp plugin install plugin-kit@jo-wolff-plugins
 omp plugin install ctx-watch@jo-wolff-plugins
 omp plugin install delegation@jo-wolff-plugins
 omp plugin install continuity@jo-wolff-plugins
+omp plugin install brb@jo-wolff-plugins
 ```
 
 Inside a running OMP session the commands are `/marketplace add` and `/marketplace install`, with
@@ -114,6 +120,7 @@ is a skill and a script, so it works on both. ctx-watch's SessionStart line is C
 only; its skill, CLI and launchd timer work on both. ledger is Claude Code only. delegation's
 gates, teaching block and agents run on both; its three ported guards are Claude Code only.
 continuity's hooks are Claude Code only; its handoff skill works on both.
+brb installs an OMP extension that runs its hooks.
 
 To update, update each harness separately. On OMP, refresh the marketplace first, because
 `omp plugin upgrade` installs the version in OMP's cached copy of it:
@@ -1223,6 +1230,39 @@ session restates the content before continuing. Every hook fails open. Built on 
 
 The tests run with `node --test` from inside `plugins/continuity/`;
 `bash e2e/live-run.sh --no-live` replays the twelve scenarios offline.
+
+## brb
+
+Type `brb` (a note may follow) as the whole prompt and walk away. The prompt is blocked before
+it reaches the model, a hold is written for the session, and from then on every prompt carries
+an away instruction: keep working, put every ask under `## Needs you`, start a line with
+`on fire:` only for a broken main branch, data loss, a security finding, spend near a ceiling
+or a blocker on everything, and end with an `idle: <why>` line when nothing is runnable.
+The Stop hook copies each new Needs-you line into a digest, surfaces each on-fire line at once
+(a `systemMessage`, an OSC 9 terminal notification, a best-effort macOS notification) without
+holding it, and sends the agent back to work (Stop hook feedback on Claude Code, a block on
+OMP) until an `idle:` line, a tool-less continuation that brings nothing new, or two stops with
+no tool call between them. `pending` prints the digest; `back` prints it, archives it and ends
+the hold. The on-fire kinds mirror
+agent-system 2.0's surface. Built on plugin-kit 0.2.1; Node 22.13 or later; Claude Code hooks
+plus an OMP extension that runs the same hooks. The exact instruction text, the three release
+rules, the config (`onFireCap`, `idleStops`) and the failure table are in
+[`plugins/brb/README.md`](plugins/brb/README.md).
+
+### Install
+
+```
+/plugin marketplace add thewolff/jo-wolff-plugins
+/plugin install brb@jo-wolff-plugins
+```
+
+On OMP: `omp plugin install brb@jo-wolff-plugins`;
+[`plugins/brb/omp/REGISTRATION.md`](plugins/brb/omp/REGISTRATION.md) has the fallbacks.
+
+### Developing brb
+
+The tests run with `node --test` from inside `plugins/brb/`; `bash e2e/live-run.sh --no-live`
+replays the scenarios offline.
 
 ## License
 
