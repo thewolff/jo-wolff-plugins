@@ -9,7 +9,7 @@
 
 import { test, describe } from "node:test";
 import assert from "node:assert/strict";
-import { LANDLOCK_DEVICES, boundaryMatches, bwrapArgsFor, globToRegexSource, isGitControl, landlockRulesFor, pairWriteLandlock } from "./gate.mjs";
+import { LANDLOCK_DEVICES, boundaryMatches, bwrapArgsFor, carveOutHazard, globToRegexSource, isGitControl, landlockRulesFor, pairWriteLandlock } from "./gate.mjs";
 
 const ROOT = "/w/repo";
 
@@ -18,11 +18,13 @@ const inGit = (abs) => abs.split("/").some((seg) => seg.toLowerCase() === ".git"
 
 /**
  * A fake filesystem for the Landlock builders: `dirs` and `files` exist (a file may be
- * `[path, nlink]`), `links` are symlinks. walk lists everything under a directory and does not
- * descend into `.git` or a symlink, as landlockIo does. `extra.others` are FIFOs, sockets or
- * devices; `extra.unlisted` are directories that cannot be listed (walk gives one
- * "unreadable" entry for each, as landlockIo does, and nothing under it); `extra.mounts` is
- * what io.mounts returns.
+ * `[path, nlink]`), `links` are symlinks. walk lists everything under a directory, `.git`
+ * entries and what is under them included, and does not descend into a symlink, as
+ * landlockIo does. `extra.others` are FIFOs, sockets or devices; `extra.unlisted` are
+ * directories that cannot be listed (walk gives one "unreadable" entry for each, as
+ * landlockIo does, and nothing under it); `extra.mounts` is what io.mounts returns. With
+ * `opts.budget.entries`, walk stops at that many entries with one "unwalked" entry naming
+ * the limit, as landlockIo does; `opts.signal` aborted stops it before the first.
  * @param {{ others?: string[], unlisted?: string[], mounts?: string[] | null }} [extra]
  */
 function fakeFs(dirs, files = [], links = [], extra = {}) {
@@ -37,15 +39,17 @@ function fakeFs(dirs, files = [], links = [], extra = {}) {
   const unlisted = extra.unlisted ?? [];
   return {
     lstat: (abs) => entries.get(abs) ?? null,
-    walk(dir) {
+    walk(dir, opts = {}) {
+      if (opts.signal?.aborted) return [{ path: dir, type: "unwalked", nlink: 0, reason: "the run was aborted" }];
       if (unlisted.includes(dir)) return [{ path: `${dir}/`, type: "unreadable", nlink: 0 }];
       const hidden = (p) => unlisted.some((u) => p.startsWith(`${u}/`));
-      return [
-        ...[...entries.entries()]
-          .filter(([p]) => p.startsWith(`${dir}/`) && !hidden(p) && !p.slice(dir.length + 1).split("/").slice(0, -1).some((s) => s.toLowerCase() === ".git"))
-          .map(([path, st]) => ({ path, ...st })),
+      const all = [
+        ...[...entries.entries()].filter(([p]) => p.startsWith(`${dir}/`) && !hidden(p)).map(([path, st]) => ({ path, ...st })),
         ...unlisted.filter((u) => u.startsWith(`${dir}/`) && !hidden(u)).map((u) => ({ path: `${u}/`, type: "unreadable", nlink: 0 })),
       ];
+      const max = opts.budget?.entries;
+      if (max !== undefined && all.length > max) return [...all.slice(0, max), { path: all[max].path, type: "unwalked", nlink: 0, reason: `it holds more than ${max} entries` }];
+      return all;
     },
     mounts: () => (extra.mounts === undefined ? [] : extra.mounts),
     // the bwrapArgsFor half of the same filesystem, for the fallback case
@@ -311,12 +315,40 @@ describe("landlockRulesFor grants the carve-outs (sibling-plugin state) in both 
     assert.deepEqual(openRules.dirs, [{ path: RECEIPTS, make_dir: true, remove: true }]);
   });
 
-  test("a .git entry inside the receipt directory makes the ruleset not expressible, in both phases", () => {
+  test("a .git entry inside the receipt directory makes the ruleset not expressible, in both phases, and a hard link hidden under one is found: nothing under a carve-out is skipped", () => {
     const io = fakeFs([...BASE_DIRS, ...HOME_DIRS, RECEIPTS, `${RECEIPTS}/nested`, `${RECEIPTS}/nested/.git`], [...BASE_FILES, DB]);
     const closed = landlockRulesFor({ ...open([]), phase: "closed", changeSet: null, carveOuts }, [], io);
-    assert.match(closed.notExpressible, /\.pattern-check holds \.pattern-check\/nested\/\.git/);
+    assert.match(closed.notExpressible, /\.pattern-check\/nested\/\.git inside the carve-out .*\.pattern-check is a \.git entry/);
     const opened = landlockRulesFor(open(["src/a.ts"], { carveOuts }), [], io);
-    assert.match(opened.notExpressible, /\.pattern-check holds/);
+    assert.match(opened.notExpressible, /is a \.git entry/);
+    // A `.git` file (a worktree's pointer), in any letter case, is the same entry.
+    const file = fakeFs([...BASE_DIRS, ...HOME_DIRS, RECEIPTS], [...BASE_FILES, DB, `${RECEIPTS}/.GIT`]);
+    assert.match(carveOutHazard({ ...open([]), phase: "closed", changeSet: null, carveOuts }, file), /\.pattern-check\/\.GIT inside the carve-out .* is a \.git entry/);
+    // The walker lists what is under a `.git` directory too: a hazard there is a hazard. The
+    // fake lists entries in insertion order, so the hard link comes before the `.git` entry here.
+    const under = fakeFs([...BASE_DIRS, ...HOME_DIRS, RECEIPTS, `${RECEIPTS}/x`], [...BASE_FILES, DB, [`${RECEIPTS}/x/.git/objects/pack`, 2]]);
+    assert.match(carveOutHazard({ ...open([]), phase: "closed", changeSet: null, carveOuts }, under), /\.git\/objects\/pack inside the carve-out .* has 2 hard links/);
+  });
+
+  test("a carve-out tree the walk could not finish, within its budget or before the run was aborted, refuses the grant naming the limit, and the answer is reused by landlockRulesFor", () => {
+    const s = { ...open([]), phase: "closed", changeSet: null, carveOuts };
+    const big = fakeFs([...BASE_DIRS, ...HOME_DIRS, RECEIPTS], [...BASE_FILES, DB, ...Array.from({ length: 5 }, (_, i) => `${RECEIPTS}/r${i}.md`)]);
+    assert.equal(carveOutHazard(s, big, { budget: { entries: 5, depth: 64, ms: 5000 } }), null, "exactly the budget is within it");
+    const over = carveOutHazard(s, big, { budget: { entries: 4, depth: 64, ms: 5000 } });
+    assert.match(over, /^the carve-out .*\.pattern-check could not be looked at past .*\.pattern-check\/r4\.md: it holds more than 4 entries; so a grant on the directory might reach past the sibling's state$/);
+    const ac = new AbortController();
+    ac.abort();
+    assert.match(carveOutHazard(s, big, { signal: ac.signal }), /could not be looked at past .*: the run was aborted/);
+    assert.equal(carveOutHazard(s, big, { signal: new AbortController().signal }), null);
+    // The builder takes the caller's answer as given, so one launch walks each tree once.
+    assert.deepEqual(landlockRulesFor(s, [], big, { hazard: "the carve-out /x could not be looked at past /x/y: it is deeper than 64 directories; so a grant on the directory might reach past the sibling's state" }), { notExpressible: "the carve-out /x could not be looked at past /x/y: it is deeper than 64 directories; so a grant on the directory might reach past the sibling's state" });
+    assert.equal(landlockRulesFor(s, [], big, { hazard: null }).notExpressible, undefined);
+    let walks = 0;
+    const counted = { ...big, walk: (...a) => { walks++; return big.walk(...a); } };
+    landlockRulesFor(s, [], counted, { hazard: null });
+    assert.equal(walks, 0, "a given answer means no walk in the builder");
+    landlockRulesFor(s, [], counted);
+    assert.equal(walks, carveOuts.dirs.filter((d) => counted.lstat(d)?.type === "dir").length, "no answer given: the builder walks each existing carve-out directory once");
   });
 
   test("a hard-linked file, an unreadable entry or a mount point inside a carve-out directory makes the ruleset not expressible, in both phases", () => {

@@ -184,41 +184,44 @@ How it works:
   every other skill is refused. The agent writes through `pair_write` and `pair_edit`, which
   accept only paths inside the open change set's boundary, and runs commands through
   `pair_run`.
-- One shell command is let through the refusal of the host's shell: a sibling plugin's CLI,
-  exactly `node <script> <subcommand> …` where `<script>` is an absolute path, plain characters
-  only, to `ledger.mjs` or `pattern-check.mjs` under `~/.claude/plugins/cache/jo-wolff-plugins/`
-  or `~/.claude/plugins/marketplaces/`, and `<subcommand>` is one the sibling's own hooks
-  demand: `ask`, `answer`, `note`, `outcome`, `pending` or `doctor` for the ledger, `open`,
-  `record` or `status` for pattern-check. The ledger and pattern-check plugins end each reply
-  with a Stop hook that demands such a command, and with it refused the reply could neither
-  finish nor be let go. The script has to exist and resolve (symlinks followed) to a file of
-  the same name still inside the install directory's own resolved path; `..` and `//` in the
-  spelling, a node flag before the script, and anything the shell would rewrite anywhere in
-  the command (`$…`, `~`, `{…}`, `!`, a glob, backquotes, an environment assignment in front)
-  are refused. Any other subcommand (`disable`, `init`, `config`, `canary`, `review`, …) is
-  refused by name: no hook demands it, and it may write a product `.ledger.json` or reach
-  outside the agreement. So is a call with no subcommand, and one carrying `--cwd`, `--config`
-  or `--db` anywhere in its arguments: `--cwd` moves where both CLIs look for their config
-  (the ledger's nearest `.ledger.json`, pattern-check's nearest `.pattern-check.json` and
-  repository root), and no hook demands it. Only one simple command passes: anything joined
-  to it (`&&`, `;`, a pipe, a redirection, a subshell) is refused as before. Before letting
-  the call through, the gate works out where it would write, the way the CLI itself does,
-  from the shell's working directory and the hook's own environment: the ledger's database
-  (`LEDGER_DB`, else the `db` of the nearest `.ledger.json` at or above the working
-  directory, else the user config's, else the ledger's default) has to be one of the
-  carve-out files; pattern-check's receipt directory (the `receiptDir` of the nearest
-  `.pattern-check.json`, else the user config's, else `.pattern-check`, under the nearest
-  `.git` root) has to sit under `<worktree>/.pattern-check` for `record`, its `--session`
-  key has to be one its CLI accepts, and its state directory has to be a carve-out
-  directory. A call that would write anywhere else is refused naming the destination and the
-  config that named it, before the CLI runs, and a `.ledger.json` or `.pattern-check.json`
-  found inside a carve-out directory is never honoured (a `pair_run` may have written it).
-  The remaining arguments are the CLI's own. The journal's verdict entry records the command
-  it let through. The gate cannot change the environment the host runs the shell with, so
-  while the hook's own environment carries `NODE_OPTIONS`, `NODE_PATH`,
-  `NODE_REPL_EXTERNAL_MODULE` (each a way to run code before the script), `NODE_V8_COVERAGE`,
-  `NODE_REDIRECT_WARNINGS` or `NODE_COMPILE_CACHE` (each a way to make node write wherever
-  it points) even this command is refused, naming the variable; unset it for the session.
+- While pairing, ledger and pattern-check calls go through `pair_run`. The host's shell is
+  refused whatever the command: the host runs it with its own rights and environment, outside
+  the fence, and nothing the gate can check before the call pins where the command would
+  write. The ledger and pattern-check plugins end each reply with a Stop hook that demands
+  such a call, so the refusal for one names the way through: the same command with
+  `pair_run`, with or without a change set open, where the sandbox lets it write the sibling
+  state `pair_start` granted (the carve-outs below) and nothing else, and the kernel, not a
+  path spelling, decides where the write lands (a receipt directory or database that is a
+  link to a product file resolves to the product file, outside every grant, and the write is
+  refused). `pair_run` also runs the command with a filtered copy of the host's environment
+  (`NODE_OPTIONS`, `NODE_PATH`, `NODE_REPL_EXTERNAL_MODULE`, each a way to run code before
+  the script, and `NODE_V8_COVERAGE`, `NODE_REDIRECT_WARNINGS`, `NODE_COMPILE_CACHE`, each a
+  way to make node write wherever it points, are dropped), from the worktree root. Before
+  launching a sibling call, `pair_run` refuses with a reason the agent can act on when the
+  call is not one the fence should see: it has to be exactly `node <script> <subcommand> …`
+  where `<script>` is an absolute path, plain characters only, to `ledger.mjs` or
+  `pattern-check.mjs` under `~/.claude/plugins/cache/jo-wolff-plugins/` or
+  `~/.claude/plugins/marketplaces/` (existing, and resolving, symlinks followed, to a file of
+  the same name still inside the install directory's own resolved path), and `<subcommand>`
+  one the sibling's own hooks demand: `ask`, `answer`, `note`, `outcome`, `pending` or
+  `doctor` for the ledger, `open`, `record` or `status` for pattern-check. Any other
+  subcommand (`disable`, `init`, `config`, `canary`, `review`, …) is refused by name, and so
+  is a call with no subcommand or one carrying `--cwd`, `--config` or `--db` anywhere in its
+  arguments (`--cwd` moves where both CLIs look for their config, and no hook demands it).
+  Then where it would write, worked out the way the CLI itself does from the worktree root
+  and the environment the run gets: the ledger's database (`LEDGER_DB`, else the `db` of the
+  nearest `.ledger.json` at or above the root, else the user config's, else the ledger's
+  default) has to be one of the carve-out files; pattern-check's receipt directory (the
+  `receiptDir` of the nearest `.pattern-check.json`, else the user config's, else
+  `.pattern-check`, under the nearest `.git` root) has to sit under `<worktree>/.pattern-check`
+  for `record`, its `--session` key has to be one its CLI accepts, and its state directory has
+  to be a carve-out directory; a `.ledger.json` or `.pattern-check.json` found inside a
+  carve-out directory is never honoured (a run may have written it); and a backslash anywhere
+  that names a path (`receiptDir`, the database, `LEDGER_CWD`, an argument) is refused naming
+  the character, since the CLIs keep it as a filename character and the gate cannot read the
+  destination their way. These refusals are the fast path with a clear reason; the fence is
+  the control, and a call they let through still writes only where the sandbox allows. The
+  journal's run-start entry records the command.
 - On OMP, a tool device the agent calls as `write xd://<device>` reaches the gate as the host's
   `write` tool. The gate judges by tool name and does not read the path, so while pairing every
   `xd://` device is refused like any host write ("write is the host's own mutating tool"),
@@ -262,11 +265,16 @@ How it works:
   (a `.ledger.json` is repo content, and no repo content may widen the fence);
   `.pattern-check` is kept only when it is not a symlink. A grant on a carve-out directory
   reaches its whole tree, and no card agreed to what is in it, so before every `pair_run` the
-  tree is looked at on every backend: a file there with more than one hard link (another name
-  for a product file, say), an entry that cannot be looked at, or a mount point under the
-  directory refuses the run by name until it is gone; under Landlock a `.git` entry inside
-  `.pattern-check` additionally makes the layout inexpressible (the run falls back as any
-  inexpressible layout does). `.pattern-check/` is a reserved name: this plugin does not
+  tree is looked at on every backend, every entry of it (`.git` directories are not skipped):
+  a file there with more than one hard link (another name for a product file, say), an entry
+  that cannot be looked at, a `.git` entry (nothing in a sibling's state is one, and git reads
+  hooks and config from one outside the sandbox), or a mount point under the directory
+  refuses the run by name until it is gone. The walk is iterative and budgeted (100000
+  entries, 64 directories deep, 5 seconds; `lib/landlock.mjs` `WALK_BUDGET`) and stops when
+  the run is aborted; a tree it could not finish refuses the run naming the limit, since a
+  tree not looked at is not granted. Each launch walks each tree once; under Landlock the
+  same answer makes the layout inexpressible (the run falls back as any inexpressible layout
+  does). `.pattern-check/` is a reserved name: this plugin does not
   review what lands there. Snapshots leave `.pattern-check/` out (it is a default exclusion
   beside `.git`), so a receipt written there is never read as drift at `pair_done`; the
   post-run link check still walks it, so a link made there stops the session like one made

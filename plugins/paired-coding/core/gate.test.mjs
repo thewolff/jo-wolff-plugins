@@ -17,7 +17,7 @@ import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { createServer } from "node:net";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -54,6 +54,8 @@ import {
   serializeState,
   sessionEnd,
   siblingCliCommand,
+  siblingRunProblem,
+  fencedEnv,
   toolVerdict,
   usableCarveOuts,
   MID_TURN_REASON,
@@ -1935,136 +1937,148 @@ describe("the sibling CLI allowance through the host shell", () => {
   };
   const REPO = { dirs: [`${ROOT}/.git`, `${ROOT}/src`, `${ROOT}/.pattern-check`] };
   const GRANTED_ENV = { HOME, LEDGER_DB };
-  const shell = (s, command, { cwd = ROOT, env = GRANTED_ENV, fs = fsOf(REPO), ...rest } = {}, host = fakeHost()) =>
-    toolVerdict(s, { toolName: "Bash", command, cwd }, { home: HOME, realpath, env, fs, ...rest }, host.io);
+  // pair_run's pre-check for a command, with the environment the run would get (fencedEnv).
+  const run = (s, command, { env = GRANTED_ENV, fs = fsOf(REPO), ...rest } = {}) =>
+    siblingRunProblem(s, command, { home: HOME, realpath, env: fencedEnv(env), fs, ...rest });
   const ASK = `node ${CACHE} ask x`;
   const RECORD = `node ${MARKET} record --session abc`;
 
-  test("toolVerdict lets the shell run an allowed sibling CLI call whose destination pair_start granted, closed, open and carried, and journals the command", () => {
+  test("toolVerdict refuses every sibling CLI call through the host's shell, allowed or not, and says to run it with pair_run", () => {
     for (const s of [carvedState("closed"), carvedState("open"), { ...carvedState("closed"), carried: { from: "s0", reason: "clear", at: "t" } }]) {
       for (const [toolName, command] of [["bash", ASK], ["Bash", ASK], ["Bash", RECORD], ["Bash", `node ${MARKET} open "a thing"`], ["Bash", `node ${MARKET} status`]]) {
-        const v = toolVerdict(s, { toolName, command, cwd: `${ROOT}/src` }, { home: HOME, realpath, env: GRANTED_ENV, fs: fsOf(REPO) }, fakeHost().io);
-        assert.equal(v.allow, true, `${toolName} ${command}: ${v.reason}`);
-        assert.equal(v.journal[0].type, "verdict");
-        assert.equal(v.journal[0].siblingCli, command);
+        const v = toolVerdict(s, { toolName, command }, { home: HOME, realpath }, fakeHost().io);
+        assert.equal(v.allow, false, `${toolName} ${command}`);
+        assert.match(v.reason, /^(ledger|pattern-check)\.mjs \w+ is refused from the host's shell while pairing: .*run the same command with pair_run/, v.reason);
+        assert.equal(v.journal[0].type, "refusal");
+        assert.equal(v.journal[0].tool, toolName);
       }
     }
-    // The ledger's database may come from the user file or the nearest .ledger.json too, as long as it names a granted file.
-    const user = { [`${HOME}/.config/ledger/config.json`]: JSON.stringify({ db: "~/.agent-system-2/ledger.db" }) };
-    assert.equal(shell(carvedState(), ASK, { env: { HOME }, fs: fsOf({ ...REPO, files: user }) }).allow, true);
-    const project = { [`${ROOT}/.ledger.json`]: JSON.stringify({ db: LEDGER_DB }) };
-    assert.equal(shell(carvedState(), ASK, { env: { HOME }, fs: fsOf({ ...REPO, files: project }) }).allow, true);
-    assert.equal(shell(carvedState(), ASK, { env: { HOME, XDG_CONFIG_HOME: "/xdg" }, fs: fsOf({ ...REPO, files: { "/xdg/ledger/config.json": JSON.stringify({ db: LEDGER_DB }) } }) }).allow, true);
-  });
-
-  test("ledger: a .ledger.json that names a database pair_start did not grant is refused naming both, and so are a relative one, the ungranted default and a config inside the carve-out", () => {
+    // The shape refusals still name their cause, so the agent does not retry them with pair_run.
     const s = carvedState();
-    const outside = shell(s, ASK, { env: { HOME }, fs: fsOf({ ...REPO, files: { [`${ROOT}/.ledger.json`]: JSON.stringify({ db: "/elsewhere/product.db" }) } }) });
-    assert.equal(outside.allow, false);
-    assert.match(outside.reason, /^ledger\.mjs ask is refused while pairing: it would open the database \/elsewhere\/product\.db \(\/work\/repo\/\.ledger\.json\), which is not sibling state pair_start granted; the shell may open only \/Users\/example\/\.agent-system-2\/ledger\.db$/);
-    assert.equal(outside.journal[0].type, "refusal");
-    const relative = shell(s, ASK, { env: { HOME }, fs: fsOf({ ...REPO, files: { [`${ROOT}/.ledger.json`]: JSON.stringify({ db: "x.db" }) } }) });
-    assert.match(relative.reason, /would open the database x\.db \(\/work\/repo\/\.ledger\.json\), a relative path/);
-    const fallback = shell(s, ASK, { env: { HOME } });
-    assert.match(fallback.reason, /would open the database \/Users\/example\/\.local\/share\/ledger\/ledger\.db \(the ledger's default\), which is not sibling state/);
-    // LEDGER_DB wins over every file, as it does for the ledger.
-    assert.equal(shell(s, ASK, { env: { HOME, LEDGER_DB: "/elsewhere/x.db" }, fs: fsOf({ ...REPO, files: { [`${ROOT}/.ledger.json`]: JSON.stringify({ db: LEDGER_DB }) } }) }).allow, false);
-    // A .ledger.json planted in the carve-out is never honoured, whether the shell sits there or LEDGER_CWD points there.
-    const plantedFs = fsOf({ ...REPO, files: { [`${ROOT}/.pattern-check/.ledger.json`]: JSON.stringify({ db: LEDGER_DB }) } });
-    for (const opts of [{ cwd: `${ROOT}/.pattern-check`, env: GRANTED_ENV, fs: plantedFs }, { env: { ...GRANTED_ENV, LEDGER_CWD: `${ROOT}/.pattern-check` }, fs: plantedFs }, { env: { ...GRANTED_ENV, LEDGER_CWD: ".pattern-check" }, fs: plantedFs }]) {
-      const planted = shell(s, ASK, opts);
-      assert.equal(planted.allow, false);
-      assert.match(planted.reason, /it would honour \/work\/repo\/\.pattern-check\/\.ledger\.json, a \.ledger\.json inside a directory pair_run may write/);
-    }
-    // A nearer .ledger.json below the worktree root wins for the ledger, so it is read from the shell's directory.
-    const nearer = shell(s, ASK, { cwd: `${ROOT}/src`, env: { HOME }, fs: fsOf({ ...REPO, files: { [`${ROOT}/src/.ledger.json`]: JSON.stringify({ db: "/elsewhere/p.db" }), [`${ROOT}/.ledger.json`]: JSON.stringify({ db: LEDGER_DB }) } }) });
-    assert.match(nearer.reason, /\/elsewhere\/p\.db \(\/work\/repo\/src\/\.ledger\.json\)/);
-    // A session with no carve-outs at all grants no database.
-    assert.match(shell(started(fakeHost()), ASK).reason, /the shell may open only no database at all/);
-  });
-
-  test("pattern-check: a receiptDir that leaves .pattern-check is refused before the write, naming the directory and the config, and so is a config inside the carve-out, an unsafe key or another repository", () => {
-    const s = carvedState();
-    const dot = shell(s, RECORD, { fs: fsOf({ ...REPO, files: { [`${ROOT}/.pattern-check.json`]: JSON.stringify({ receiptDir: "." }) } }) });
-    assert.equal(dot.allow, false);
-    assert.match(dot.reason, /^pattern-check\.mjs record is refused while pairing: it would write its receipt under \/work\/repo \(receiptDir "\." from \/work\/repo\/\.pattern-check\.json\), not under \/work\/repo\/\.pattern-check$/);
-    const src = shell(s, RECORD, { fs: fsOf({ ...REPO, files: { [`${ROOT}/.pattern-check.json`]: JSON.stringify({ receiptDir: "./src/" }) } }) });
-    assert.match(src.reason, /receipt under \/work\/repo\/src \(receiptDir "\.\/src\/"/);
-    const user = shell(s, RECORD, { fs: fsOf({ ...REPO, files: { [`${HOME}/.config/pattern-check/config.json`]: JSON.stringify({ receiptDir: "docs" }) } }) });
-    assert.match(user.reason, /receipt under \/work\/repo\/docs \(receiptDir "docs" from \/Users\/example\/\.config\/pattern-check\/config\.json\)/);
-    // A deeper receiptDir inside .pattern-check, and an invalid repo value falling through to the default, are fine.
-    assert.equal(shell(s, RECORD, { fs: fsOf({ ...REPO, files: { [`${ROOT}/.pattern-check.json`]: JSON.stringify({ receiptDir: ".pattern-check/receipts" }) } }) }).allow, true);
-    assert.equal(shell(s, RECORD, { fs: fsOf({ ...REPO, files: { [`${ROOT}/.pattern-check.json`]: JSON.stringify({ receiptDir: "../x" }) } }) }).allow, true);
-    assert.equal(shell(s, RECORD, { fs: fsOf({ ...REPO, files: { [`${ROOT}/.pattern-check.json`]: "not json" } }) }).allow, true);
-    // The chain Codex found: a config planted in the carve-out, with the shell sitting in it.
-    const planted = shell(s, RECORD, { cwd: `${ROOT}/.pattern-check`, fs: fsOf({ ...REPO, files: { [`${ROOT}/.pattern-check/.pattern-check.json`]: JSON.stringify({ receiptDir: "." }) } }) });
-    assert.equal(planted.allow, false);
-    assert.match(planted.reason, /it would honour \/work\/repo\/\.pattern-check\/\.pattern-check\.json, a \.pattern-check\.json inside a directory pair_run may write/);
-    // open and status never write the receipt, so a receiptDir elsewhere does not refuse them; a planted config still does.
-    assert.equal(shell(s, `node ${MARKET} status`, { fs: fsOf({ ...REPO, files: { [`${ROOT}/.pattern-check.json`]: JSON.stringify({ receiptDir: "." }) } }) }).allow, true);
-    assert.equal(shell(s, `node ${MARKET} status`, { cwd: `${ROOT}/.pattern-check`, fs: fsOf({ ...REPO, files: { [`${ROOT}/.pattern-check/.pattern-check.json`]: "{}" } }) }).allow, false);
-    for (const key of ["../../README", "a/b", "", "x y"]) {
-      const v = shell(s, `node ${MARKET} record --session "${key}"`);
-      assert.equal(v.allow, false, key);
-      assert.match(v.reason, /--session .* is not a session key its CLI accepts/);
-    }
-    assert.match(shell(s, `node ${MARKET} record --session`).reason, /--session "" is not a session key/);
-    // The shell sitting in another repository writes that repository's receipt directory.
-    const other = shell(s, RECORD, { cwd: "/other/repo/src", fs: fsOf({ dirs: ["/other/repo/.git", "/other/repo/src"] }) });
-    assert.match(other.reason, /receipt under \/other\/repo\/\.pattern-check \(receiptDir "\.pattern-check" from pattern-check's default\), not under \/work\/repo\/\.pattern-check/);
-    // A state directory pair_start did not grant refuses every subcommand.
-    const elsewhere = shell(s, `node ${MARKET} status`, { env: { ...GRANTED_ENV, XDG_STATE_HOME: "/xdg-state" } });
-    assert.match(elsewhere.reason, /would write its session file and receipt copy under \/xdg-state\/pattern-check, which is not sibling state pair_start granted/);
-    assert.match(shell(started(fakeHost()), RECORD).reason, /not under \/work\/repo\/\.pattern-check/);
-  });
-
-  test("toolVerdict refuses a path flag with its name, a disallowed subcommand with its name, the shell for everything else, and never allows other tools", () => {
-    const s = carvedState();
-    const cwdFlag = shell(s, `node ${CACHE} ask x --cwd /work/repo`);
-    assert.equal(cwdFlag.allow, false);
-    assert.match(cwdFlag.reason, /^ledger\.mjs ask --cwd is refused while pairing: --cwd moves where the CLI reads its config from/);
-    assert.match(shell(s, `node ${MARKET} record --session a --cwd=${ROOT}/.pattern-check`).reason, /^pattern-check\.mjs record --cwd=\/work\/repo\/\.pattern-check is refused while pairing: --cwd moves/);
-    const disable = shell(s, `node ${CACHE} disable --cwd /work/repo`);
-    assert.equal(disable.allow, false);
+    const shell = (command) => toolVerdict(s, { toolName: "Bash", command }, { home: HOME, realpath }, fakeHost().io);
+    assert.match(shell(`node ${CACHE} ask x --cwd /work/repo`).reason, /^ledger\.mjs ask --cwd is refused while pairing: --cwd moves where the CLI reads its config from/);
+    const disable = shell(`node ${CACHE} disable --cwd /work/repo`);
     assert.match(disable.reason, /^ledger\.mjs disable is refused while pairing/);
     assert.match(disable.reason, /ask, answer, note, outcome, pending, doctor/);
-    assert.equal(disable.journal[0].type, "refusal");
-    assert.match(shell(s, `node ${MARKET}`).reason, /^pattern-check\.mjs with no subcommand is refused/);
+    assert.match(shell(`node ${MARKET}`).reason, /^pattern-check\.mjs with no subcommand is refused/);
+    // Not a sibling call at all: the shell's generic refusal, with no mention of pair_run's sibling path.
     for (const [toolName, command] of [
       ["Bash", `${ASK} && rm -rf /`], ["bash", "node /tmp/ledger.mjs ask x"], ["Bash", `node ${CACHE_ROOT}/{..,x}/{..,x}/{..,x}/{..,x}/ledger.mjs ask x`], ["Bash", undefined], ["Bash", 42],
       ["write", ASK], ["Edit", ASK], ["eval", ASK], ["Task", ASK], ["unknown_tool", ASK],
     ]) {
-      const v = toolVerdict(s, { toolName, command, cwd: ROOT }, { home: HOME, realpath, env: GRANTED_ENV, fs: fsOf(REPO) }, fakeHost().io);
+      const v = toolVerdict(s, { toolName, command }, { home: HOME, realpath }, fakeHost().io);
       assert.equal(v.allow, false, `${toolName}: ${command}`);
-      assert.doesNotMatch(v.reason, /subcommand/, "not a sibling CLI call, so the generic refusal");
+      assert.doesNotMatch(v.reason ?? "", /subcommand|same command with pair_run/, `${toolName}: ${command}`);
     }
-    assert.equal(toolVerdict(s, { toolName: "Bash", command: ASK, cwd: ROOT }, { realpath, env: GRANTED_ENV, fs: fsOf(REPO) }, fakeHost().io).allow, false, "no home, no allowance");
-    assert.equal(toolVerdict(s, { toolName: "Bash", command: ASK, cwd: ROOT }, { home: HOME, env: GRANTED_ENV, fs: fsOf(REPO) }, fakeHost().io).allow, false, "no realpath, no allowance");
-    const noCwd = toolVerdict(s, { toolName: "Bash", command: ASK }, { home: HOME, realpath, env: GRANTED_ENV, fs: fsOf(REPO) }, fakeHost().io);
-    assert.match(noCwd.reason, /the shell's working directory is unknown to the gate/);
-    assert.match(toolVerdict(s, { toolName: "Bash", command: ASK, cwd: "relative" }, { home: HOME, realpath, env: GRANTED_ENV, fs: fsOf(REPO) }, fakeHost().io).reason, /working directory is unknown/);
-    const noFs = toolVerdict(s, { toolName: "Bash", command: ASK, cwd: ROOT }, { home: HOME, realpath, env: GRANTED_ENV }, fakeHost().io);
-    assert.match(noFs.reason, /no way to read the CLI's config files/);
+    assert.doesNotMatch(toolVerdict(s, { toolName: "Bash", command: ASK }, { realpath }, fakeHost().io).reason, /same command with pair_run/, "no home: not recognised as a sibling call");
+    assert.doesNotMatch(toolVerdict(s, { toolName: "Bash", command: ASK }, { home: HOME }, fakeHost().io).reason, /same command with pair_run/, "no realpath: not recognised as a sibling call");
   });
 
-  test("toolVerdict refuses an allowed sibling CLI call while a node preload or output variable is set, naming it, and without an env at all", () => {
+  test("siblingRunProblem lets an allowed sibling call through to the fence when its destination is what pair_start granted, closed, open and carried", () => {
+    for (const s of [carvedState("closed"), carvedState("open"), { ...carvedState("closed"), carried: { from: "s0", reason: "clear", at: "t" } }]) {
+      for (const command of [ASK, RECORD, `node ${MARKET} open "a thing"`, `node ${MARKET} status`]) assert.equal(run(s, command), null, command);
+    }
+    // Not a sibling call: nothing to say before the fence.
+    for (const command of [`${ASK} && rm -rf /`, "node /tmp/ledger.mjs ask x", "npm test", "", undefined, 42]) assert.equal(run(carvedState(), command), null, String(command));
+    // The ledger's database may come from the user file or the nearest .ledger.json too, as long as it names a granted file.
+    const user = { [`${HOME}/.config/ledger/config.json`]: JSON.stringify({ db: "~/.agent-system-2/ledger.db" }) };
+    assert.equal(run(carvedState(), ASK, { env: { HOME }, fs: fsOf({ ...REPO, files: user }) }), null);
+    const project = { [`${ROOT}/.ledger.json`]: JSON.stringify({ db: LEDGER_DB }) };
+    assert.equal(run(carvedState(), ASK, { env: { HOME }, fs: fsOf({ ...REPO, files: project }) }), null);
+    assert.equal(run(carvedState(), ASK, { env: { HOME, XDG_CONFIG_HOME: "/xdg" }, fs: fsOf({ ...REPO, files: { "/xdg/ledger/config.json": JSON.stringify({ db: LEDGER_DB }) } }) }), null);
+    // The pre-check reads the environment the run gets: a preload variable is dropped by fencedEnv before it, never refused by name.
+    assert.equal(run(carvedState(), ASK, { env: { ...GRANTED_ENV, NODE_OPTIONS: "--require=/tmp/evil.js", NODE_PATH: "/tmp" } }), null);
+    assert.deepEqual(Object.keys(fencedEnv({ ...GRANTED_ENV, NODE_OPTIONS: "--require=/tmp/evil.js", NODE_PATH: "/tmp", X: undefined, Y: 1 })), ["HOME", "LEDGER_DB"]);
+  });
+
+  test("ledger: a .ledger.json that names a database pair_start did not grant is refused naming both, and so are a relative one, the ungranted default and a config inside the carve-out", () => {
     const s = carvedState();
-    for (const name of ["NODE_OPTIONS", "NODE_PATH", "NODE_REPL_EXTERNAL_MODULE", "NODE_V8_COVERAGE", "NODE_REDIRECT_WARNINGS", "NODE_COMPILE_CACHE"]) {
-      const v = shell(s, ASK, { env: { ...GRANTED_ENV, [name]: "--require=/tmp/evil.js" } });
-      assert.equal(v.allow, false, name);
-      assert.ok(v.reason.includes(`${name} is set`), v.reason);
-      assert.equal(v.journal[0].type, "refusal");
+    const outside = run(s, ASK, { env: { HOME }, fs: fsOf({ ...REPO, files: { [`${ROOT}/.ledger.json`]: JSON.stringify({ db: "/elsewhere/product.db" }) } }) });
+    assert.match(outside, /^ledger\.mjs ask is refused while pairing: it would open the database \/elsewhere\/product\.db \(\/work\/repo\/\.ledger\.json\), which is not sibling state pair_start granted; it may open only \/Users\/example\/\.agent-system-2\/ledger\.db$/);
+    const relative = run(s, ASK, { env: { HOME }, fs: fsOf({ ...REPO, files: { [`${ROOT}/.ledger.json`]: JSON.stringify({ db: "x.db" }) } }) });
+    assert.match(relative, /would open the database x\.db \(\/work\/repo\/\.ledger\.json\), a relative path/);
+    const fallback = run(s, ASK, { env: { HOME } });
+    assert.match(fallback, /would open the database \/Users\/example\/\.local\/share\/ledger\/ledger\.db \(the ledger's default\), which is not sibling state/);
+    // LEDGER_DB wins over every file, as it does for the ledger.
+    assert.match(run(s, ASK, { env: { HOME, LEDGER_DB: "/elsewhere/x.db" }, fs: fsOf({ ...REPO, files: { [`${ROOT}/.ledger.json`]: JSON.stringify({ db: LEDGER_DB }) } }) }), /\/elsewhere\/x\.db \(LEDGER_DB\)/);
+    // A .ledger.json planted in the carve-out is never honoured: pair_run runs from the worktree root, so only LEDGER_CWD can point there.
+    const plantedFs = fsOf({ ...REPO, files: { [`${ROOT}/.pattern-check/.ledger.json`]: JSON.stringify({ db: LEDGER_DB }) } });
+    for (const env of [{ ...GRANTED_ENV, LEDGER_CWD: `${ROOT}/.pattern-check` }, { ...GRANTED_ENV, LEDGER_CWD: ".pattern-check" }]) {
+      assert.match(run(s, ASK, { env, fs: plantedFs }), /it would honour \/work\/repo\/\.pattern-check\/\.ledger\.json, a \.ledger\.json inside a directory pair_run may write/);
     }
-    const two = shell(s, ASK, { env: { ...GRANTED_ENV, NODE_OPTIONS: "--require=x", NODE_PATH: "/tmp" } });
-    assert.ok(two.reason.includes("NODE_OPTIONS and NODE_PATH are set"), two.reason);
-    assert.equal(shell(s, ASK, { env: { ...GRANTED_ENV, NODE_OPTIONS: "" } }).allow, true, "an empty variable carries nothing");
-    assert.equal(shell(s, ASK, { env: { ...GRANTED_ENV, NODE_OPTIONS: undefined } }).allow, true);
-    const none = toolVerdict(s, { toolName: "Bash", command: ASK, cwd: ROOT }, { home: HOME, realpath, fs: fsOf(REPO) }, fakeHost().io);
-    assert.equal(none.allow, false, "no env, no allowance");
-    assert.match(none.reason, /environment .* is unknown to the gate/);
-    for (const command of [`NODE_OPTIONS=--require=/tmp/x.js node ${CACHE} ask x`, `env NODE_OPTIONS=--require=/tmp/x.js node ${CACHE} ask x`, `node --require /tmp/x.js ${CACHE} ask x`, `node --import=/tmp/x.mjs ${CACHE} ask x`]) {
-      assert.equal(shell(s, command).allow, false, command);
+    // A session with no carve-outs at all grants no database.
+    assert.match(run(started(fakeHost()), ASK), /it may open only no database at all/);
+    // A worktree root the state lost: nothing can be resolved, so the call is refused rather than guessed.
+    assert.match(run({ ...s, root: null }, ASK), /the shell's working directory is unknown to the gate/);
+    assert.match(run(s, ASK, { fs: null }), /no way to read the CLI's config files/);
+  });
+
+  test("pattern-check: a receiptDir that leaves .pattern-check is refused before the write, naming the directory and the config, and so is a config inside the carve-out, an unsafe key or another repository", () => {
+    const s = carvedState();
+    const dot = run(s, RECORD, { fs: fsOf({ ...REPO, files: { [`${ROOT}/.pattern-check.json`]: JSON.stringify({ receiptDir: "." }) } }) });
+    assert.match(dot, /^pattern-check\.mjs record is refused while pairing: it would write its receipt under \/work\/repo \(receiptDir "\." from \/work\/repo\/\.pattern-check\.json\), not under \/work\/repo\/\.pattern-check$/);
+    const src = run(s, RECORD, { fs: fsOf({ ...REPO, files: { [`${ROOT}/.pattern-check.json`]: JSON.stringify({ receiptDir: "./src/" }) } }) });
+    assert.match(src, /receipt under \/work\/repo\/src \(receiptDir "\.\/src\/"/);
+    const user = run(s, RECORD, { fs: fsOf({ ...REPO, files: { [`${HOME}/.config/pattern-check/config.json`]: JSON.stringify({ receiptDir: "docs" }) } }) });
+    assert.match(user, /receipt under \/work\/repo\/docs \(receiptDir "docs" from \/Users\/example\/\.config\/pattern-check\/config\.json\)/);
+    // A deeper receiptDir inside .pattern-check, and an invalid repo value falling through to the default, are fine.
+    assert.equal(run(s, RECORD, { fs: fsOf({ ...REPO, files: { [`${ROOT}/.pattern-check.json`]: JSON.stringify({ receiptDir: ".pattern-check/receipts" }) } }) }), null);
+    assert.equal(run(s, RECORD, { fs: fsOf({ ...REPO, files: { [`${ROOT}/.pattern-check.json`]: JSON.stringify({ receiptDir: "../x" }) } }) }), null);
+    assert.equal(run(s, RECORD, { fs: fsOf({ ...REPO, files: { [`${ROOT}/.pattern-check.json`]: "not json" } }) }), null);
+    // `..` between slashes or backslashes is invalid to the CLI's own check, so it falls through to the default here as there.
+    assert.equal(run(s, RECORD, { fs: fsOf({ ...REPO, files: { [`${ROOT}/.pattern-check.json`]: JSON.stringify({ receiptDir: ".pattern-check/./../src" }) } }) }), null);
+    // open and status never write the receipt, so a receiptDir elsewhere does not refuse them.
+    assert.equal(run(s, `node ${MARKET} status`, { fs: fsOf({ ...REPO, files: { [`${ROOT}/.pattern-check.json`]: JSON.stringify({ receiptDir: "." }) } }) }), null);
+    for (const key of ["../../README", "a/b", "", "x y"]) {
+      const v = run(s, `node ${MARKET} record --session "${key}"`);
+      assert.match(v ?? "", /--session .* is not a session key its CLI accepts/, key);
     }
+    assert.match(run(s, `node ${MARKET} record --session`), /--session "" is not a session key/);
+    // A state directory pair_start did not grant refuses every subcommand.
+    const elsewhere = run(s, `node ${MARKET} status`, { env: { ...GRANTED_ENV, XDG_STATE_HOME: "/xdg-state" } });
+    assert.match(elsewhere, /would write its session file and receipt copy under \/xdg-state\/pattern-check, which is not sibling state pair_start granted/);
+    assert.match(run(started(fakeHost()), RECORD), /not under \/work\/repo\/\.pattern-check/);
+  });
+
+  test("a backslash anywhere that names a path is refused naming the character: the CLIs keep it as a filename character, so the gate cannot read the destination their way", () => {
+    const s = carvedState();
+    // Codex's differential: `.pattern-check\docs` is one directory named `.pattern-check\docs` to the CLI, beside .pattern-check, which a separator-reading gate would place inside it.
+    const escaped = run(s, RECORD, { fs: fsOf({ ...REPO, files: { [`${ROOT}/.pattern-check.json`]: JSON.stringify({ receiptDir: ".pattern-check\\docs" }) } }) });
+    assert.match(escaped, /^pattern-check\.mjs record is refused while pairing: receiptDir \(from \/work\/repo\/\.pattern-check\.json\) "\.pattern-check\\\\docs" contains a backslash, which the CLI keeps as a filename character/);
+    assert.equal(run(s, RECORD, { fs: fsOf({ ...REPO, files: { [`${ROOT}/.pattern-check.json`]: JSON.stringify({ receiptDir: ".pattern-check\\..\\src" }) } }) }), null, "a `..` between backslashes is invalid to the CLI, so the default applies");
+    assert.match(run(s, ASK, { env: { ...GRANTED_ENV, LEDGER_DB: `${HOME}/.agent-system-2\\ledger.db` } }), /^ledger\.mjs ask is refused while pairing: the database \(LEDGER_DB\) .* contains a backslash/);
+    assert.match(run(s, ASK, { env: { HOME }, fs: fsOf({ ...REPO, files: { [`${ROOT}/.ledger.json`]: JSON.stringify({ db: "/x\\y.db" }) } }) }), /the database \(\/work\/repo\/\.ledger\.json\) "\/x\\\\y\.db" contains a backslash/);
+    assert.match(run(s, ASK, { env: { ...GRANTED_ENV, LEDGER_CWD: ".pattern-check\\x" } }), /^ledger\.mjs ask is refused while pairing: LEDGER_CWD "\.pattern-check\\\\x" contains a backslash/);
+    assert.match(run({ ...s, root: "/work\\repo" }, ASK), /the working directory "\/work\\\\repo" contains a backslash/);
+    assert.match(run(s, `node ${MARKET} record --session 'a\\b'`), /the argument "a\\\\b" contains a backslash/);
+    assert.match(run(s, `node ${CACHE} ask 'C:\\temp'`), /^ledger\.mjs ask is refused while pairing: the argument "C:\\\\temp" contains a backslash/);
+    // The receiptDir value is checked for the subcommand that writes the receipt; status is governed by its state directory alone.
+    assert.equal(run(s, `node ${MARKET} status`, { fs: fsOf({ ...REPO, files: { [`${ROOT}/.pattern-check.json`]: JSON.stringify({ receiptDir: ".pattern-check\\docs" }) } }) }), null);
+  });
+
+  test("runStart with a host refuses a sibling call before any sandbox is built, and records nothing of a refused run", () => {
+    const s = carvedState("closed");
+    const host = { home: HOME, realpath, env: fencedEnv(GRANTED_ENV), fs: fsOf(REPO) };
+    const bad = runStart(s, { runId: "r1", command: `node ${CACHE} disable`, host }, fakeHost().io);
+    assert.equal(bad.ok, false);
+    assert.match(bad.reason, /^ledger\.mjs disable is refused while pairing/);
+    assert.equal(bad.profile, undefined);
+    assert.equal(bad.state.running.length, 0);
+    const slashed = runStart(s, { runId: "r1", command: RECORD, host: { ...host, fs: fsOf({ ...REPO, files: { [`${ROOT}/.pattern-check.json`]: JSON.stringify({ receiptDir: ".pattern-check\\docs" }) } }) } }, fakeHost().io);
+    assert.match(slashed.reason, /contains a backslash/);
+    const good = runStart(s, { runId: "r1", command: ASK, host }, fakeHost().io);
+    assert.equal(good.ok, true, good.reason);
+    // The profile a sibling call runs under is the state's own pair_run profile, the same for
+    // every command: the sibling state granted, the worktree and the home otherwise denied.
+    assert.equal(good.profile, pairRunProfile(s));
+    assert.equal(good.profile, runStart(s, { runId: "r9", command: "npm test" }, fakeHost().io).profile);
+    assert.match(good.profile, /\(allow file-write\* \(literal "\/Users\/example\/\.agent-system-2\/ledger\.db"\)/);
+    assert.match(good.profile, /\(subpath "\/work\/repo\/\.pattern-check"\)/);
+    assert.doesNotMatch(good.profile, /ledger\.mjs|ask x/, "the command plays no part in the profile");
+    assert.equal(good.journal[0].command, ASK);
+    assert.deepEqual(good.state.running, [{ runId: "r1", cardId: null }]);
+    // Without a host (a caller that did its own pre-check, or none), runStart admits the command and leaves it to the fence.
+    assert.equal(runStart(s, { runId: "r2", command: `node ${CACHE} disable` }, fakeHost().io).ok, true);
   });
 });
 
@@ -2157,6 +2171,40 @@ describe("carve-outs under Seatbelt: the kernel lets the sibling state through a
       assert.equal(readFileSync(join(dirs.root, "src", "b.ts"), "utf8"), "b1");
     } finally {
       dirs.cleanup();
+    }
+  });
+
+  test("the alias model: a sibling state directory that links to the product tree carries no write into it, in either phase (the fence, not a path spelling, decides)", { skip: liveSkip }, () => {
+    // Codex's round-3 model: ~/.local/state/pattern-check/receipts is a symlink to the
+    // worktree's src, so pattern-check's receipt copy would land on src/README.md. The
+    // sibling call runs under the fence now, where the kernel resolves the link and finds
+    // src outside every grant. The same for the ledger database linked to a product file.
+    for (const phase of ["closed", "open"]) {
+      const dirs = liveDirs();
+      try {
+        const { s, home, db } = carvedLive(dirs, phase, ["src/a.ts"]);
+        const stateDir = join(home, ".local", "state", "pattern-check");
+        mkdirSync(stateDir, { recursive: true });
+        symlinkSync(join(dirs.root, "src"), join(stateDir, "receipts"));
+        writeFileSync(join(dirs.root, "src", "README.md"), "product");
+        const copy = sandboxed(s, `echo r > ${stateDir}/receipts/README.md.tmp && mv ${stateDir}/receipts/README.md.tmp ${stateDir}/receipts/README.md`, dirs.root);
+        assert.doesNotMatch(copy.stderr, /sandbox_apply/, "the sandbox itself has to apply for this test to prove anything");
+        assert.notEqual(copy.status, 0, phase);
+        assert.equal(readFileSync(join(dirs.root, "src", "README.md"), "utf8"), "product", phase);
+        assert.equal(existsSync(join(dirs.root, "src", "README.md.tmp")), false, phase);
+        // A receipts directory that is real is written as before.
+        rmSync(join(stateDir, "receipts"));
+        const real = sandboxed(s, `mkdir ${stateDir}/receipts && echo r > ${stateDir}/receipts/README.md`, dirs.root);
+        assert.equal(real.status, 0, real.stderr);
+        // The ledger database replaced by a link to a product file: the write resolves to the product file, outside the grant.
+        rmSync(db);
+        symlinkSync(join(dirs.root, "src", "b.ts"), db);
+        const viaDb = sandboxed(s, `echo pwned > ${db}`, dirs.root);
+        assert.notEqual(viaDb.status, 0, phase);
+        assert.equal(readFileSync(join(dirs.root, "src", "b.ts"), "utf8"), "b1", phase);
+      } finally {
+        dirs.cleanup();
+      }
     }
   });
 });

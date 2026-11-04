@@ -283,7 +283,7 @@ export function handle(event, input, opts = {}) {
     const on = activated(dir);
     const early = on ? loadStateReport(dir).fault : null;
     const notices = on ? [...takeNotices(dir), ...resolvePending(dir, { waitMs: opts.waitMs })] : [];
-    const v = verdict(name, { sessionDir: dir, allow: hostAllowFor(input), command: input?.tool_input?.command, cwd: input?.cwd, home: env.HOME, env });
+    const v = verdict(name, { sessionDir: dir, allow: hostAllowFor(input), command: input?.tool_input?.command, home: env.HOME });
     const fault = v.degraded ?? early;
     // A state read as degraded (closed) is a fault too: warned and logged once, after the last
     // step that can throw, so the outer catch never logs it a second time.

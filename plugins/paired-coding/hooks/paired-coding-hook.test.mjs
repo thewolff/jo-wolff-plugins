@@ -191,7 +191,7 @@ test("while pairing the hook denies host writers, shells, dispatch and unknown t
   }
 });
 
-test("while pairing the hook lets Bash run a sibling plugin's CLI from the plugin cache with a demanded subcommand, and nothing else, and not with a node preload variable set", { skip: !hasSandbox }, async () => {
+test("while pairing the hook refuses Bash for a sibling plugin's CLI like any other command, and the refusal for an installed one with a demanded subcommand says to use pair_run", { skip: !hasSandbox }, async () => {
   const f = fixture();
   await call(f, "pair_start", {});
   // A fake home with the two CLIs installed where Claude Code puts plugins; the hook takes HOME from its env.
@@ -202,45 +202,45 @@ test("while pairing the hook lets Bash run a sibling plugin's CLI from the plugi
     mkdirSync(dirname(p), { recursive: true });
     writeFileSync(p, "// cli\n");
   }
-  // The shell's environment names the ledger database and the state directory pair_start granted
-  // (pair_start read them from the process's own home); the gate checks each call writes there.
-  const carve = JSON.parse(readFileSync(join(f.base, "s1", "state.json"), "utf8")).carveOuts;
-  const granted = { LEDGER_DB: carve.files.find((p) => p.endsWith("ledger.db")), XDG_STATE_HOME: dirname(carve.dirs.find((p) => p.endsWith("/pattern-check") && !p.startsWith(f.root))) };
-  const bash = (command, extra = {}) => handle("pre-tool-use", { ...f.common, tool_name: "Bash", tool_input: { command }, tool_use_id: tuid() }, { env: { ...f.env, ...granted, HOME: home, ...extra } });
+  const bash = (command, extra = {}) => handle("pre-tool-use", { ...f.common, tool_name: "Bash", tool_input: { command }, tool_use_id: tuid() }, { env: { ...f.env, HOME: home, ...extra } });
   const ask = `node ${ledger} ask "did we?"`;
   const record = `node ${check} record --session s1`;
-  assert.equal(bash(ask), null);
-  assert.equal(bash(record), null);
+  // Claude Code runs Bash itself, outside the fence: the hook cannot route the call through
+  // pair_run's sandbox, so it refuses and says where the call may run.
+  for (const command of [ask, record]) {
+    const r = bash(command);
+    assert.equal(r?.hookSpecificOutput?.permissionDecision, "deny", command);
+    assert.match(r.hookSpecificOutput.permissionDecisionReason, /^paired-coding: (ledger|pattern-check)\.mjs \w+ is refused from the host's shell while pairing: .*run the same command with pair_run, which fences it/);
+  }
   const disable = bash(`node ${ledger} disable --cwd ${f.root}`);
   assert.equal(disable?.hookSpecificOutput?.permissionDecision, "deny");
   assert.match(disable.hookSpecificOutput.permissionDecisionReason, /ledger\.mjs disable is refused while pairing/);
   const cwdFlag = bash(`node ${ledger} ask x --cwd ${f.root}`);
   assert.match(cwdFlag.hookSpecificOutput.permissionDecisionReason, /ledger\.mjs ask --cwd is refused while pairing: --cwd moves/);
-  // A database the shell's environment points elsewhere, and a .pattern-check.json planted in the
-  // receipt directory, are refused before the CLI runs.
-  assert.match(bash(ask, { LEDGER_DB: join(f.top, "elsewhere.db") }).hookSpecificOutput.permissionDecisionReason, /would open the database .*elsewhere\.db \(LEDGER_DB\), which is not sibling state pair_start granted/);
-  mkdirSync(join(f.root, ".pattern-check"), { recursive: true });
-  writeFileSync(join(f.root, ".pattern-check", ".pattern-check.json"), JSON.stringify({ receiptDir: "." }));
-  const planted = handle("pre-tool-use", { ...f.common, cwd: join(f.root, ".pattern-check"), tool_name: "Bash", tool_input: { command: record }, tool_use_id: tuid() }, { env: { ...f.env, ...granted, HOME: home } });
-  assert.match(planted.hookSpecificOutput.permissionDecisionReason, /it would honour .*\.pattern-check\/\.pattern-check\.json, a \.pattern-check\.json inside a directory pair_run may write/);
-  writeFileSync(join(f.root, ".pattern-check.json"), JSON.stringify({ receiptDir: "docs" }));
-  assert.match(bash(record).hookSpecificOutput.permissionDecisionReason, /would write its receipt under .*\/repo\/docs \(receiptDir "docs" from .*\/repo\/\.pattern-check\.json\), not under .*\/repo\/\.pattern-check/);
-  rmSync(join(f.root, ".pattern-check.json"));
+  // The shell's environment and working directory play no part: nothing it names is read, because nothing through Bash is allowed.
+  assert.match(bash(ask, { LEDGER_DB: join(f.top, "elsewhere.db"), NODE_OPTIONS: "--require=/tmp/evil.js" }).hookSpecificOutput.permissionDecisionReason, /run the same command with pair_run/);
   for (const command of [
     `${ask} && rm -rf /`, "node /tmp/ledger.mjs ask x", `${ask}; echo pwned > notes.txt`, `node ${home}/.claude/plugins/cache/jo-wolff-plugins/x/evil.mjs ask x`,
     `node ${home}/.claude/plugins/cache/jo-wolff-plugins/{..,x}/{..,x}/{..,x}/{..,x}/ledger.mjs ask x`, `node $HOME/.claude/plugins/cache/jo-wolff-plugins/ledger/1.0.0/scripts/ledger.mjs ask x`,
-    `node ${home}/.claude/plugins/cache/jo-wolff-plugins/ledger/9.9.9/scripts/ledger.mjs ask x`, `node --inspect ${ledger} ask x`, `node ${ledger}`,
+    `node ${home}/.claude/plugins/cache/jo-wolff-plugins/ledger/9.9.9/scripts/ledger.mjs ask x`, `node --inspect ${ledger} ask x`, `node ${ledger}`, `NODE_OPTIONS=--require=/tmp/evil.js ${ask}`,
   ]) {
-    assert.equal(bash(command)?.hookSpecificOutput?.permissionDecision, "deny", command);
+    const r = bash(command);
+    assert.equal(r?.hookSpecificOutput?.permissionDecision, "deny", command);
+    assert.doesNotMatch(r.hookSpecificOutput.permissionDecisionReason, /run the same command with pair_run/, command);
   }
   assert.equal(handle("pre-tool-use", { ...f.common, tool_name: "Bash", tool_input: { command: ask }, tool_use_id: tuid() }, { env: f.env })?.hookSpecificOutput?.permissionDecision, "deny", "the real home has no such install");
-  // The hook's own environment is the one the host's shell inherits: a node preload variable in it is refused by name.
-  const preload = handle("pre-tool-use", { ...f.common, tool_name: "Bash", tool_input: { command: ask }, tool_use_id: tuid() }, { env: { ...f.env, HOME: home, NODE_OPTIONS: "--require=/tmp/evil.js" } });
-  assert.equal(preload?.hookSpecificOutput?.permissionDecision, "deny");
-  assert.match(preload.hookSpecificOutput.permissionDecisionReason, /NODE_OPTIONS is set/);
-  assert.equal(bash(`NODE_OPTIONS=--require=/tmp/evil.js ${ask}`)?.hookSpecificOutput?.permissionDecision, "deny");
-  const types = readFileSync(join(f.base, "s1", "journal.jsonl"), "utf8").trim().split("\n").map((l) => JSON.parse(l));
-  assert.deepEqual(types.filter((e) => e.siblingCli).map((e) => e.siblingCli), [ask, record]);
+  const entries = readFileSync(join(f.base, "s1", "journal.jsonl"), "utf8").trim().split("\n").map((l) => JSON.parse(l));
+  assert.equal(entries.filter((e) => e.type === "verdict" && e.tool === "Bash").length, 0, "no Bash call was allowed");
+  assert.ok(entries.some((e) => e.type === "refusal" && e.tool === "Bash" && /pair_run/.test(e.reason)));
+  // pair_run through the MCP server reads the server's environment, the one the fence filters:
+  // the install under its HOME, the database its LEDGER_DB names. A preload variable in it is
+  // dropped by the fence, not refused by name.
+  const id = tuid();
+  assert.equal(handle("pre-tool-use", { ...f.common, ...own("pair_run"), tool_input: { command: ask }, tool_use_id: id }, { env: f.env }), null);
+  const r = await callTool({ name: "pair_run", arguments: { command: ask }, _meta: { "claudecode/toolUseId": id } }, { env: { ...f.env, HOME: home, LEDGER_DB: join(f.top, "elsewhere.db"), NODE_OPTIONS: "--require=/tmp/evil.js" } });
+  assert.equal(r.isError, true);
+  assert.match(r.content[0].text, /ledger\.mjs ask is refused while pairing: it would open the database .*elsewhere\.db \(LEDGER_DB\), which is not sibling state pair_start granted/);
+  assert.doesNotMatch(r.content[0].text, /NODE_OPTIONS/);
 });
 
 test("while pairing, Skill loads only this plugin's own skill, in a started session and in one carried closed after /clear", { skip: !hasSandbox }, async () => {

@@ -127,6 +127,14 @@ export function parseMountinfo(text) {
   return out;
 }
 
+/**
+ * What a budgeted walk may spend before it gives up (landlockIo.walk): entries listed,
+ * directory depth below the top, and wall time. The carve-out scan before every pair_run
+ * uses these (core/gate.mjs carveOutHazard), so a sibling-state tree that outgrew them
+ * refuses the run, naming the budget, instead of holding the host.
+ */
+export const WALK_BUDGET = Object.freeze({ entries: 100000, depth: 64, ms: 5000 });
+
 /** The filesystem facts core/gate.mjs's Landlock builders take. */
 export const landlockIo = Object.freeze({
   lstat(abs) {
@@ -139,21 +147,42 @@ export const landlockIo = Object.freeze({
   },
   // A directory that cannot be listed, or an entry that cannot be looked at, is reported
   // rather than skipped, so the builder treats it as holding something outside the boundary.
-  walk(dir) {
+  // Nothing is skipped: a `.git` entry is descended into like any directory, since a grant on
+  // the directory above it reaches everything in it. The walk is iterative (a tree deeper
+  // than the call stack cannot throw) and, given a budget, stops at the first limit it meets
+  // with one "unwalked" entry naming it, at the path it had reached; the signal aborts it the
+  // same way.
+  /**
+   * @param {string} dir
+   * @param {{ budget?: { entries: number, depth: number, ms: number }, signal?: AbortSignal }} [opts]
+   */
+  walk(dir, opts = {}) {
     const out = [];
-    const visit = (d) => {
+    const budget = opts.budget ?? null;
+    const started = Date.now();
+    /** @type {Array<{ dir: string, depth: number }>} */
+    const stack = [{ dir, depth: 0 }];
+    const stop = (path, reason) => { out.push({ path, type: "unwalked", nlink: 0, reason }); return out; };
+    while (stack.length) {
+      const { dir: d, depth } = stack.pop();
+      if (opts.signal?.aborted) return stop(d, "the run was aborted");
+      if (budget && Date.now() - started > budget.ms) return stop(d, `looking at it took longer than ${budget.ms} ms`);
+      if (budget && depth >= budget.depth) return stop(d, `it is deeper than ${budget.depth} directories`);
       let names;
-      try { names = readdirSync(d); } catch { out.push({ path: `${d}/`, type: "unreadable", nlink: 0 }); return; }
+      try { names = readdirSync(d); } catch { out.push({ path: `${d}/`, type: "unreadable", nlink: 0 }); continue; }
+      // Pushed in reverse so the entries come out in listing order, as the recursive walk gave them.
+      const below = [];
       for (const n of names) {
         const abs = join(d, n);
+        if (budget && out.length >= budget.entries) return stop(abs, `it holds more than ${budget.entries} entries`);
         let st;
         try { st = lstatSync(abs); } catch { out.push({ path: abs, type: "unreadable", nlink: 0 }); continue; }
         const type = typeOf(st);
         out.push({ path: abs, type, nlink: st.nlink });
-        if (type === "dir" && n.toLowerCase() !== ".git") visit(abs);
+        if (type === "dir") below.push({ dir: abs, depth: depth + 1 });
       }
-    };
-    visit(dir);
+      for (let i = below.length - 1; i >= 0; i--) stack.push(below[i]);
+    }
     return out;
   },
   mounts() {

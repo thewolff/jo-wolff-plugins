@@ -29,7 +29,7 @@ import {
   readState, serializeState, shQuote,
 } from "../core/gate.mjs";
 import { bwrapCommand, bwrapIo, bwrapProblem, bwrapProc } from "./bwrap.mjs";
-import { landlockAbi, landlockCommand, landlockIo, landlockProblem } from "./landlock.mjs";
+import { WALK_BUDGET, landlockAbi, landlockCommand, landlockIo, landlockProblem } from "./landlock.mjs";
 
 // ─── paths ──────────────────────────────────────────────────────────────────────────────
 
@@ -207,7 +207,7 @@ export function sandboxProblem() {
  */
 export function closedRunProblem(state, backend) {
   if (!("name" in backend) || backend.name !== "landlock") return null;
-  const rules = landlockRulesFor(state, [], landlockIo);
+  const rules = landlockRulesFor(state, [], landlockIo, { hazard: carveOutHazard(state, landlockIo, { budget: WALK_BUDGET }) });
   if (!("notExpressible" in rules)) return null;
   const bw = bwrapProblem();
   return bw === null ? null : `Landlock cannot fence pair_run in this layout (${rules.notExpressible}), and bubblewrap is unavailable to fence it instead: ${bw}`;
@@ -385,12 +385,22 @@ export function appendJournal(dir, entries) {
 const sleepSync = (ms) => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
 
 /**
- * Run `fn` holding the session's lock (a directory created with mkdir, which is atomic). A lock
- * older than `staleMs` is taken over: its holder died. The holder writes an owner token (pid
- * and a nonce) into the lock and at the end removes the lock only while the token is still
- * its own: the SessionEnd cleanup removes a never-activated directory under its lock, lock
- * included, and a waiter then makes the directory and a lock of its own, which the cleanup's
- * release must leave alone. Synchronous so hooks stay simple.
+ * Run `fn` holding the session's lock (a directory created with mkdir, which is atomic). The
+ * holder then makes an empty file named by its own token (pid and a nonce) inside the lock,
+ * exclusively, and releases by unlinking that one file and, only when that succeeded, rmdir(2)
+ * on the lock, which the kernel refuses while anything is inside: a release never removes a
+ * file that is not the releaser's, and never removes a directory except the one that held
+ * its token, so nothing it does depends on what it read a moment earlier. The SessionEnd
+ * cleanup removes a never-activated directory under its lock, lock included, and a waiter
+ * then makes the directory and a lock of its own, which the cleanup's release leaves alone
+ * (its token is not there, so it touches no directory). A lock older than `staleMs` is
+ * taken over, its holder dead or stuck: the taker first renames the lock to a grave of its
+ * own name, which claims that one directory whoever else is looking at it (a second taker's
+ * rename fails with ENOENT; the old holder's release finds no token of its own at the lock
+ * path and leaves the new lock alone), then removes the grave and tries mkdir again. A lock
+ * directory that vanishes between mkdir and the token file (the cleanup, or a takeover of a
+ * holder stuck for `staleMs` before it wrote its token) is made again. Synchronous so hooks
+ * stay simple.
  * @template T
  * @param {string} dir
  * @param {() => T} fn
@@ -399,20 +409,26 @@ const sleepSync = (ms) => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)),
 export function withLock(dir, fn, { waitMs = 10000, staleMs = 15000 } = {}) {
   mkdirSync(dir, { recursive: true, mode: 0o700 });
   const lock = join(dir, LOCK);
-  const owner = join(lock, "owner");
-  const token = `${process.pid}:${randomBytes(8).toString("hex")}`;
+  const token = `${process.pid}.${randomBytes(8).toString("hex")}`;
+  const mine = join(lock, token);
   const end = Date.now() + waitMs;
   for (;;) {
     try {
       mkdirSync(lock);
-      writeFileSync(owner, token, { flag: "wx" });
+      writeFileSync(mine, "", { flag: "wx" });
       break;
     } catch (err) {
-      // A waiter whose directory the cleanup removed finds no directory to lock in and makes it again.
+      // No directory to lock in (the cleanup removed it), or the lock made a moment ago was
+      // removed as empty by a release: make what is missing and try again.
       if (err?.code === "ENOENT") { mkdirSync(dir, { recursive: true, mode: 0o700 }); continue; }
       if (err?.code !== "EEXIST") throw err;
       try {
-        if (Date.now() - statSync(lock).mtimeMs > staleMs) { rmSync(lock, { recursive: true, force: true }); continue; }
+        if (Date.now() - statSync(lock).mtimeMs > staleMs) {
+          const grave = `${lock}.${token}.rm`;
+          renameSync(lock, grave);
+          rmSync(grave, { recursive: true, force: true });
+          continue;
+        }
       } catch { continue; }
       if (Date.now() > end) throw new Error(`timed out waiting for the session lock ${lock}`);
       sleepSync(20);
@@ -421,9 +437,9 @@ export function withLock(dir, fn, { waitMs = 10000, staleMs = 15000 } = {}) {
   try {
     return fn();
   } finally {
-    let held = null;
-    try { held = readFileSync(owner, "utf8"); } catch { /* the lock went with its directory, or was taken over as stale */ }
-    if (held === token) rmSync(lock, { recursive: true, force: true });
+    let released = false;
+    try { unlinkSync(mine); released = true; } catch { /* the lock went with its directory, or was taken over as stale: nothing here is this holder's */ }
+    if (released) { try { rmdirSync(lock); } catch { /* the directory went with the session, or is not empty */ } }
   }
 }
 
@@ -612,20 +628,22 @@ const noop = () => {};
  * @param {string} command
  * @param {string} cwd
  * @param {"landlock" | "bwrap"} [override]
+ * @param {AbortSignal} [signal]  aborts the carve-out scan, which refuses the run
  * @returns {SandboxedCommand}
  */
-function runCommand(state, command, cwd, override) {
+function runCommand(state, command, cwd, override, signal) {
   const argv = ["/bin/sh", "-c", command];
   // A carve-out directory's tree is looked at before every run, on every backend: a grant on
   // it reaches the whole tree, and nothing in it was agreed (core/gate.mjs carveOutHazard).
-  const hazard = carveOutHazard(state, landlockIo);
+  // Once per launch, within WALK_BUDGET; the Landlock builder below reuses the answer.
+  const hazard = carveOutHazard(state, landlockIo, { budget: WALK_BUDGET, signal });
   if (hazard) throw new Error(`pair_run refused: ${hazard}; remove it, or end pairing`);
   if (process.platform !== "linux") {
     return { file: SANDBOX_EXEC, args: ["-p", pairRunProfile(state), ...argv], fds: [], close: noop, backend: "seatbelt", writable: [...boundaryRoots(state), ...carveOutRoots(state)] };
   }
   let fellBack;
   if (linuxBackend(override) === "landlock") {
-    const rules = landlockRulesFor(state, [], landlockIo);
+    const rules = landlockRulesFor(state, [], landlockIo, { hazard });
     if (!("notExpressible" in rules)) {
       const { file, input } = landlockCommand(rules, command);
       const inTree = (p) => p === state.root || p.startsWith(`${state.root}/`);
@@ -854,7 +872,7 @@ export function runSandboxed(opts) {
     let gitBefore = null;
     let ran = {};
     try {
-      const cmd = runCommand(opts.state, opts.command, opts.cwd, opts.backend);
+      const cmd = runCommand(opts.state, opts.command, opts.cwd, opts.backend, opts.signal);
       writable = cmd.writable;
       ran = { backend: cmd.backend, ...(cmd.fellBack ? { fellBack: cmd.fellBack } : {}), ...(cmd.uncreatable ? { uncreatable: cmd.uncreatable } : {}) };
       try {

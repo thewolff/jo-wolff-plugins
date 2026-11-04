@@ -17,7 +17,7 @@ import { join } from "node:path";
 import { diffSnapshots, landlockRulesFor, pairWriteLandlock } from "../core/gate.mjs";
 import { bwrapProblem, seccompFilter } from "./bwrap.mjs";
 import { createOnHost, describeSandbox, pickLinuxBackend, runSandboxed, snapshotTree, writeSandboxed } from "./host-io.mjs";
-import { HELPER_ARCHES, LANDLOCK_DIR, landlockAbi, landlockIo, landlockProblem, parseMountinfo, probeLandlock } from "./landlock.mjs";
+import { HELPER_ARCHES, LANDLOCK_DIR, WALK_BUDGET, landlockAbi, landlockIo, landlockProblem, parseMountinfo, probeLandlock } from "./landlock.mjs";
 
 // ─── finding and checking the helper ────────────────────────────────────────────────────
 
@@ -161,6 +161,70 @@ describe("the facts the builder takes", () => {
     } finally {
       chmodSync(join(top, "locked"), 0o755);
     }
+  });
+
+  test("walk descends into a .git directory like any other, and lists the entries under it", () => {
+    const top = realpathSync(mkdtempSync(join(tmpdir(), "pc-walk-")));
+    mkdirSync(join(top, "x", ".git", "objects"), { recursive: true });
+    writeFileSync(join(top, "x", ".git", "objects", "pack"), "");
+    linkSync(join(top, "x", ".git", "objects", "pack"), join(top, "elsewhere"));
+    const got = landlockIo.walk(join(top, "x")).map(({ path, type, nlink }) => ({ path: path.slice(top.length + 1), type, nlink }));
+    assert.deepEqual(got, [
+      { path: "x/.git", type: "dir", nlink: got[0].nlink },
+      { path: "x/.git/objects", type: "dir", nlink: got[1].nlink },
+      { path: "x/.git/objects/pack", type: "file", nlink: 2 },
+    ]);
+  });
+
+  test("walk stops at the first limit of its budget with one unwalked entry naming it, and at the budget's edge it does not", () => {
+    const top = realpathSync(mkdtempSync(join(tmpdir(), "pc-walk-")));
+    // Six entries: three files at the top, a directory holding two more.
+    for (const n of ["a", "b", "c"]) writeFileSync(join(top, n), "");
+    mkdirSync(join(top, "d"));
+    for (const n of ["e", "f"]) writeFileSync(join(top, "d", n), "");
+    const budget = (over) => ({ entries: 100000, depth: 64, ms: 60000, ...over });
+    const names = (entries) => entries.map((e) => `${e.type}:${e.path.slice(top.length + 1)}${e.reason ? ` (${e.reason})` : ""}`);
+    assert.equal(landlockIo.walk(top, { budget: budget({ entries: 6 }) }).length, 6, "exactly as many entries as the budget is within it");
+    assert.equal(landlockIo.walk(top, { budget: budget({ entries: 6 }) }).some((e) => e.type === "unwalked"), false);
+    const five = landlockIo.walk(top, { budget: budget({ entries: 5 }) });
+    assert.equal(five.length, 6);
+    assert.deepEqual(five.at(-1), { path: five.at(-1).path, type: "unwalked", nlink: 0, reason: "it holds more than 5 entries" });
+    assert.equal(five.filter((e) => e.type !== "unwalked").length, 5, "nothing after the limit");
+    const zero = landlockIo.walk(top, { budget: budget({ entries: 0 }) });
+    assert.deepEqual(names(zero), [`unwalked:${zero[0].path.slice(top.length + 1)} (it holds more than 0 entries)`]);
+    // Depth: the top is depth 0; a budget of 1 lists the top's entries and stops at the directory below.
+    const shallow = landlockIo.walk(top, { budget: budget({ depth: 1 }) });
+    assert.deepEqual(names(shallow).at(-1), "unwalked:d (it is deeper than 1 directories)");
+    assert.equal(shallow.filter((e) => e.type === "file").length, 3);
+    assert.equal(landlockIo.walk(top, { budget: budget({ depth: 2 }) }).some((e) => e.type === "unwalked"), false, "depth 2 reaches the files under d");
+    assert.deepEqual(names(landlockIo.walk(top, { budget: budget({ depth: 0 }) })), ["unwalked: (it is deeper than 0 directories)"]);
+    // Time: a budget already spent stops at the top; a generous one does not.
+    const spent = landlockIo.walk(top, { budget: budget({ ms: -1 }) });
+    assert.deepEqual(names(spent), ["unwalked: (looking at it took longer than -1 ms)"]);
+    assert.equal(landlockIo.walk(top, { budget: budget({}) }).some((e) => e.type === "unwalked"), false);
+    // An aborted signal stops it at whatever directory it was about to list.
+    const ac = new AbortController();
+    ac.abort();
+    assert.deepEqual(names(landlockIo.walk(top, { signal: ac.signal })), ["unwalked: (the run was aborted)"]);
+    assert.equal(landlockIo.walk(top, { signal: new AbortController().signal }).length, 6);
+    // No budget at all: the whole tree, as before.
+    assert.equal(landlockIo.walk(top).length, 6);
+    assert.deepEqual(WALK_BUDGET, { entries: 100000, depth: 64, ms: 5000 });
+  });
+
+  test("walk is iterative: a tree deeper than the call stack is listed, and the depth budget refuses it", () => {
+    const top = realpathSync(mkdtempSync(join(tmpdir(), "pc-walk-")));
+    let dir = top;
+    const DEPTH = 300;
+    for (let i = 0; i < DEPTH; i++) { dir = join(dir, "d"); mkdirSync(dir); }
+    writeFileSync(join(dir, "leaf"), "");
+    const all = landlockIo.walk(top);
+    assert.equal(all.length, DEPTH + 1);
+    assert.equal(all.at(-1).type, "file");
+    const budgeted = landlockIo.walk(top, { budget: { entries: 100000, depth: 64, ms: 60000 } });
+    assert.equal(budgeted.at(-1).type, "unwalked");
+    assert.equal(budgeted.at(-1).reason, "it is deeper than 64 directories");
+    assert.equal(budgeted.length, 65, "64 directories listed, then the stop");
   });
 });
 

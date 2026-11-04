@@ -17,8 +17,8 @@ import { dirname, join } from "node:path";
 import { createHash, randomBytes } from "node:crypto";
 import { fileURLToPath } from "node:url";
 import {
-  boundaryMatches, carryClosed, checkWrite, lastCardSeq, openRoadmapItems, pairAcceptedReceipt, pairBegin, pairDone, pairNote, pairPropose, roadmapRecord,
-  pairStart, recordInput, runEnd, runStart, sessionEnd, toolVerdict,
+  boundaryMatches, carryClosed, checkWrite, fencedEnv, lastCardSeq, openRoadmapItems, pairAcceptedReceipt, pairBegin, pairDone, pairNote, pairPropose, roadmapRecord,
+  pairStart, recordInput, runEnd, runStart, sessionEnd, siblingRunProblem, toolVerdict,
 } from "../core/gate.mjs";
 import {
   activated, appendJournal, defaultTempPaths, findRoot, loadState, loadStateReport, makeIo, markActivated, reapGroups, saveState,
@@ -66,13 +66,11 @@ function ioFor(dir, state) {
 /**
  * The pre-call verdict for a host tool. Inert (allow, no file touched) unless activated.
  * @param {string} toolName  the bare tool name (an adapter maps its own pair_* tool names to bare ones)
- * @param {{ sessionDir: string, allow?: string[], command?: unknown, cwd?: unknown, home?: string, env?: Record<string, string | undefined> }} ctx
- *   `command`: for the host's shell tool, the command it was asked to run; the one shape the
- *   gate lets through while pairing is a sibling plugin's CLI (gate.mjs siblingCliCommand),
- *   installed under `home` (the process's home directory unless the adapter names one),
- *   only while `env` (the process's environment unless the adapter names one) carries no
- *   node preload variable, and only when, run from `cwd` (the shell's working directory as
- *   the adapter knows it), it would write where pair_start granted the sibling's state
+ * @param {{ sessionDir: string, allow?: string[], command?: unknown, home?: string }} ctx
+ *   `command`: for the host's shell tool, the command it was asked to run. The shell is
+ *   refused whatever it is; a sibling plugin's CLI call (gate.mjs siblingCliCommand,
+ *   installed under `home`, the process's home directory unless the adapter names one) is
+ *   refused with a reason that says to run it with pair_run instead
  * @returns {{ allow: boolean, reason?: string, active: boolean, degraded?: string | null }}
  *   `degraded`: why this read took the state as closed instead of as saved, for the adapter to report
  */
@@ -81,12 +79,17 @@ export function verdict(toolName, ctx) {
   const { state, fault } = loadStateReport(ctx.sessionDir);
   if (state.phase === "inactive") return { allow: true, active: false };
   const home = typeof ctx.home === "string" && ctx.home ? ctx.home : homedir();
-  const env = ctx.env && typeof ctx.env === "object" ? ctx.env : process.env;
-  const fs = { readFile: (p) => readFileSync(p, "utf8"), isFile: (p) => statSync(p, { throwIfNoEntry: false })?.isFile() ?? false, exists: (p) => existsSync(p) };
-  const v = toolVerdict(state, { toolName, command: ctx.command, cwd: ctx.cwd }, { allow: ctx.allow ?? [], home, realpath: (p) => realpathSync(p), env, fs }, makeIo({}));
+  const v = toolVerdict(state, { toolName, command: ctx.command }, { allow: ctx.allow ?? [], home, realpath: (p) => realpathSync(p) }, makeIo({}));
   appendJournal(ctx.sessionDir, v.journal);
   return { allow: v.allow, reason: v.reason, active: true, degraded: fault };
 }
+
+/** The host's view of the config files a sibling CLI reads to find where it writes (gate.mjs SiblingFs). */
+const siblingFs = Object.freeze({
+  readFile: (p) => readFileSync(p, "utf8"),
+  isFile: (p) => statSync(p, { throwIfNoEntry: false })?.isFile() ?? false,
+  exists: (p) => existsSync(p),
+});
 
 /**
  * Whether a session is pairing, for a fault path in either adapter. False only for a confirmed
@@ -320,9 +323,10 @@ export function takeCarryMarker(base, root, opts = {}) {
  * @param {string} name  pair_start | pair_note | pair_propose | pair_begin | pair_done | pair_write | pair_edit | pair_run
  * @param {Record<string, unknown>} args
  * @param {{ sessionId: string, sessionDir: string, root?: string, cwd?: string, signal?: AbortSignal,
- *   runId?: string, timeoutMs?: number, maxTimeoutMs?: number, protect?: string[] }} ctx
+ *   runId?: string, timeoutMs?: number, maxTimeoutMs?: number, protect?: string[], env?: Record<string, string | undefined> }} ctx
  *   `maxTimeoutMs` lets a host keep pair_run below its own limits (Claude Code moves a tool call
- *   that runs past a threshold to the background).
+ *   that runs past a threshold to the background). `env`: the environment of the process that
+ *   fences pair_run (this one's unless the adapter names one); the run gets fencedEnv of it.
  * @returns {Promise<{ ok: boolean, text: string, result?: object }>}
  */
 export async function executeVerb(name, args, ctx) {
@@ -615,7 +619,12 @@ async function runVerb(args, ctx) {
   const runId = ctx.runId ?? `run-${Date.now()}-${randomBytes(4).toString("hex")}`;
   const asked = Number(args.timeoutSeconds) > 0 ? Number(args.timeoutSeconds) * 1000 : ctx.timeoutMs ?? DEFAULT_TIMEOUT_MS;
   const timeoutMs = Math.min(asked, ctx.maxTimeoutMs ?? MAX_TIMEOUT_MS, MAX_TIMEOUT_MS);
-  const start = withSession(dir, {}, (s) => runStart(s, { runId, command: args.command }, ioFor(dir, s)));
+  // One environment for the run: what the command is spawned with, and what a sibling CLI
+  // call's destination is read from before launch (gate.mjs fencedEnv, siblingRunProblem).
+  // The home is the run's HOME, the one the CLI resolves `~` and its state directories from.
+  const env = fencedEnv(ctx.env && typeof ctx.env === "object" ? ctx.env : process.env);
+  const host = { home: env.HOME || homedir(), realpath: (p) => realpathSync(p), env, fs: siblingFs };
+  const start = withSession(dir, {}, (s) => runStart(s, { runId, command: args.command, host }, ioFor(dir, s)));
   if (!start.ok) return fail("pair_run", start.reason);
   // Anything the run makes from here on has a change time at or after state.json's, which
   // runStart just wrote: the link check's floor, on the filesystem's own clock.
@@ -624,6 +633,7 @@ async function runVerb(args, ctx) {
     state: start.state,
     command: args.command,
     cwd: start.state.root,
+    env,
     timeoutMs,
     signal: ctx.signal,
     onSpawn: (pgid) => recordRun(dir, runId, pgid),

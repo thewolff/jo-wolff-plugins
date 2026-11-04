@@ -18,7 +18,7 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
 
-import { CARRIED_PHRASE, PAIR_TOOLS } from "../core/gate.mjs";
+import { CARRIED_PHRASE, PAIR_TOOLS, fencedEnv } from "../core/gate.mjs";
 import { sandboxProblem } from "../lib/host-io.mjs";
 import pairedCodingOmp, { TREE_NOTICE, stopNotice } from "./paired-coding-omp.ts";
 import { TOOLS as MCP_TOOLS } from "../server/pair-server.mjs";
@@ -66,11 +66,14 @@ function setup({ otherTools = [], env = {} } = {}) {
     sessionManager: { getSessionId: () => current.id, getEntries: () => [...entries] },
     ui: { notify: (m, level) => notes.push({ m, level }) },
   };
-  pairedCodingOmp(pi, { env: { PAIRED_CODING_STATE_DIR: base, ...env } });
+  // The adapter's environment is the process's, as in production (pair_run's command is
+  // spawned with the fenced form of it), with the state base and the test's overrides on top.
+  const adapterEnv = { ...process.env, PAIRED_CODING_STATE_DIR: base, ...env };
+  pairedCodingOmp(pi, { env: adapterEnv });
   /** A fresh adapter instance on the same session, as an extension reload gives. */
   const reload = () => {
     for (const k of Object.keys(handlers)) delete handlers[k];
-    pairedCodingOmp(pi, { env: { PAIRED_CODING_STATE_DIR: base, ...env } });
+    pairedCodingOmp(pi, { env: adapterEnv });
   };
   let n = 0;
   const emit = async (event, payload) => {
@@ -668,5 +671,25 @@ describe("a leaf move in the same session (/tree, the interactive /branch) is ha
     assert.equal((await s.call("pair_start")).ok, true);
     const p = await s.call("pair_propose", { boundary: ["a.txt"] });
     assert.equal(p.details.card.id, "card-2");
+  });
+});
+
+describe("the environment a fenced run gets", () => {
+  test("pair_run hands the session layer the adapter's own environment, the object the fence filters with fencedEnv, and tool_call for Bash reads none of it", async () => {
+    const base = mkdtempSync(join(FIXTURES, "state-"));
+    const adapterEnv = { ...process.env, PAIRED_CODING_STATE_DIR: base, NODE_OPTIONS: "--require=/tmp/evil.js", LEDGER_DB: "/elsewhere/x.db", HOME: process.env.HOME };
+    const seen = [];
+    const handlers = {};
+    const tools = new Map();
+    const pi = { zod, on(event, h) { (handlers[event] ??= []).push(h); }, registerTool(t) { tools.set(t.name, t); }, getAllTools() { return [...tools.keys()].map((name) => ({ name })); }, sendMessage() {} };
+    const ctx = { cwd: FIXTURES, hasUI: true, sessionManager: { getSessionId: () => randomUUID(), getEntries: () => [] }, ui: { notify() {} } };
+    pairedCodingOmp(pi, { env: adapterEnv, execute: async (name, params, c) => { seen.push({ name, params, ctx: c }); return { ok: true, text: "ran", result: {} }; } });
+    await tools.get("pair_run").execute("call-1", { command: "true" }, undefined, undefined, ctx);
+    assert.equal(seen.length, 1);
+    assert.equal(seen[0].name, "pair_run");
+    assert.equal(seen[0].ctx.env, adapterEnv, "the same object, so fencedEnv in the session layer sees exactly what the adapter has");
+    assert.deepEqual(fencedEnv(seen[0].ctx.env), fencedEnv(adapterEnv));
+    assert.equal("NODE_OPTIONS" in fencedEnv(seen[0].ctx.env), false);
+    assert.equal(fencedEnv(seen[0].ctx.env).LEDGER_DB, "/elsewhere/x.db");
   });
 });

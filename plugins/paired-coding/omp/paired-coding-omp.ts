@@ -369,7 +369,7 @@ export default function pairedCodingOmp(pi: PiLike, deps: AdapterDeps = {}): voi
 			dir = dirOf(ctx, env);
 			if (!dir) return undefined; // no usable session id: nothing can have been activated under it
 			checkReset(ctx, dir);
-			const v = verdict(event.toolName, { sessionDir: dir, command: event.input?.command, cwd: ctx.cwd, home: env.HOME, env });
+			const v = verdict(event.toolName, { sessionDir: dir, command: event.input?.command, home: env.HOME });
 			if (v.degraded) {
 				const logged = logFault(env, "tool_call", { session_id: ctx.sessionManager.getSessionId() }, `session state degraded (${v.degraded}) in ${dir}`, OMP_FILE);
 				warn(ctx, `paired coding: the session state in ${dir} could not be read as saved (${v.degraded}), so the gate treats pairing as on with the card closed. ${logged} Type pair stop to end pairing.`);
@@ -459,7 +459,7 @@ export default function pairedCodingOmp(pi: PiLike, deps: AdapterDeps = {}): voi
 					const conflict = conflictingGate(pi, env);
 					if (conflict) return text(`pair_start refused: ${conflict}`, true);
 				}
-				const r = await run(name, params, { sessionId, sessionDir: dir, cwd: ctx.cwd, signal, runId: toolCallId });
+				const r = await run(name, params, { sessionId, sessionDir: dir, cwd: ctx.cwd, signal, runId: toolCallId, env });
 				const halted = name === "pair_done" && (r.result as { halted?: boolean } | undefined)?.halted === true;
 				if (ctx.hasUI && ctx.ui && (halted || (name === "pair_start" && r.ok))) {
 					ctx.ui.notify(halted ? `paired coding stopped the session: ${r.text}` : "paired coding is on for this session", halted ? "error" : "info");

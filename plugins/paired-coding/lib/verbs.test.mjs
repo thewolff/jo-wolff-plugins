@@ -11,7 +11,7 @@ import { dirname, join } from "node:path";
 import {
   CARRY_MAX_AGE_MS, PLUGIN_ROOT, RECEIPT_FILE, ROADMAP_WALK_LIMIT, VERSION, carryInto, clearInPlace, endSession, executeVerb, recordTrustedInput, takeCarryMarker, verdict, writeCarryMarker,
 } from "./verbs.mjs";
-import { PROC_LABELS, hashBoundary, loadState, realpathLoose, reapGroups, sandboxBackend, sandboxProblem, snapshotTree, writeSandboxed } from "./host-io.mjs";
+import { PROC_LABELS, hashBoundary, loadState, realpathLoose, reapGroups, sandboxBackend, sandboxProblem, snapshotTree, withLock, writeSandboxed } from "./host-io.mjs";
 import { pairRunProfile, pairWriteProfile } from "../core/gate.mjs";
 import { bwrapProblem, bwrapProc } from "./bwrap.mjs";
 
@@ -343,7 +343,7 @@ test("pair_run runs again once the hard link in the receipt directory is gone", 
   assert.equal(readFileSync(join(f.root, ".pattern-check", "r.md"), "utf8"), "r\n");
 });
 
-test("the host shell may run a sibling plugin's installed CLI with a demanded subcommand while pairing, and nothing else, and not under a node preload variable", { skip: !hasSandbox }, async () => {
+test("a sibling plugin's installed CLI is refused from the host shell while pairing and pointed at pair_run; pair_run refuses it before launch when its shape or destination is wrong", { skip: !hasSandbox }, async () => {
   const f = fixture();
   await executeVerb("pair_start", {}, f.ctx);
   const home = join(f.top, "home");
@@ -353,36 +353,91 @@ test("the host shell may run a sibling plugin's installed CLI with a demanded su
     mkdirSync(join(p, ".."), { recursive: true });
     writeFileSync(p, "// cli\n");
   }
-  // The shell's environment names the ledger database and state directory pair_start granted
-  // (read from the process's own home); the verdict checks each call would write there.
-  const carve = JSON.parse(readFileSync(join(f.dir, "state.json"), "utf8")).carveOuts;
-  const granted = { HOME: home, LEDGER_DB: carve.files.find((p) => p.endsWith("ledger.db")), XDG_STATE_HOME: dirname(carve.dirs.find((p) => p.endsWith("/pattern-check") && !p.startsWith(f.root))) };
-  const v = (toolName, command, env = granted, cwd = f.root) => verdict(toolName, { sessionDir: f.dir, command, cwd, home, env });
-  assert.equal(v("Bash", `node ${script} ask x`).allow, true);
-  assert.equal(v("bash", `node ${check} record`).allow, true);
-  assert.equal(v("Bash", `node ${script} ask x`, granted, join(f.root, "src")).allow, true, "from a directory inside the worktree too");
-  const elsewhere = v("Bash", `node ${script} ask x`, { ...granted, LEDGER_DB: join(f.top, "other.db") });
-  assert.equal(elsewhere.allow, false);
-  assert.match(elsewhere.reason, /would open the database .*other\.db \(LEDGER_DB\), which is not sibling state pair_start granted/);
+  // The host shell: every sibling call is refused, an allowed one with the pair_run pointer.
+  const v = (toolName, command) => verdict(toolName, { sessionDir: f.dir, command, home });
+  for (const [tool, command] of [["Bash", `node ${script} ask x`], ["bash", `node ${check} record`]]) {
+    const r = v(tool, command);
+    assert.equal(r.allow, false, command);
+    assert.match(r.reason, /is refused from the host's shell while pairing: .*run the same command with pair_run/);
+  }
   assert.match(v("Bash", `node ${script} ask x --cwd ${f.root}`).reason, /--cwd moves where the CLI reads its config/);
-  assert.match(v("Bash", `node ${script} ask x`, granted, null).reason, /working directory is unknown to the gate/);
-  const disable = v("Bash", `node ${script} disable`);
-  assert.equal(disable.allow, false);
-  assert.match(disable.reason, /ledger\.mjs disable is refused/);
-  assert.equal(v("Bash", `node ${script} ask x && rm -rf /`).allow, false);
-  assert.equal(v("Bash", "node /tmp/ledger.mjs ask x").allow, false);
-  assert.equal(v("Bash", `node ${home}/.claude/plugins/cache/jo-wolff-plugins/{..,x}/{..,x}/{..,x}/{..,x}/ledger.mjs ask x`).allow, false);
-  assert.equal(v("Bash", `node ${join(home, ".claude", "plugins", "cache", "jo-wolff-plugins", "ledger", "missing", "ledger.mjs")} ask x`).allow, false, "the script has to exist");
-  // A symlink inside the install that points outside it is refused by its real path.
-  symlinkSync(join(f.top, "ledger.db"), join(home, ".claude", "plugins", "cache", "jo-wolff-plugins", "ledger.mjs"));
-  writeFileSync(join(f.top, "ledger.db"), "x");
-  assert.equal(v("Bash", `node ${join(home, ".claude", "plugins", "cache", "jo-wolff-plugins", "ledger.mjs")} ask x`).allow, false);
-  assert.equal(v("Bash", undefined).allow, false);
+  assert.match(v("Bash", `node ${script} disable`).reason, /ledger\.mjs disable is refused/);
+  assert.doesNotMatch(v("Bash", `node ${script} ask x && rm -rf /`).reason, /pair_run, which fences/);
+  assert.doesNotMatch(v("Bash", "node /tmp/ledger.mjs ask x").reason, /pair_run, which fences/);
   assert.equal(v("Write", `node ${script} ask x`).allow, false);
-  const preload = v("Bash", `node ${script} ask x`, { HOME: home, NODE_PATH: "/tmp/evil" });
-  assert.equal(preload.allow, false);
-  assert.match(preload.reason, /NODE_PATH is set/);
-  assert.equal(verdict("Bash", { sessionDir: f.dir, command: `node ${script} ask x` }).allow, false, "the process's own home has no such install");
+  assert.doesNotMatch(verdict("Bash", { sessionDir: f.dir, command: `node ${script} ask x` }).reason, /pair_run, which fences/, "the process's own home has no such install");
+  // pair_run: the pre-check reads the environment the run would get (HOME names the install
+  // and the state directories pair_start granted from the process's home, so the run's HOME
+  // is the process's; LEDGER_DB names the granted database).
+  const carve = JSON.parse(readFileSync(join(f.dir, "state.json"), "utf8")).carveOuts;
+  const granted = { ...process.env, LEDGER_DB: carve.files.find((p) => p.endsWith("ledger.db")) };
+  const run = (command, env = granted) => executeVerb("pair_run", { command, timeoutSeconds: 5 }, { ...f.ctx, env });
+  // The fixture's install is under the fixture home, which the process's home is not: not a sibling call to pair_run, so nothing is said before the fence.
+  const notInstalled = await run(`node ${script} ask x`);
+  assert.doesNotMatch(notInstalled.text, /is refused while pairing/);
+  // The same script under the process's own install path cannot be planted by a test; the shape and destination refusals are checked through runStart in core/gate.test.mjs. What pair_run does with a recognised call whose destination is elsewhere:
+  const elsewhere = await run(`node ${script} ask x`, { ...granted, HOME: home, LEDGER_DB: join(f.top, "other.db") });
+  assert.equal(elsewhere.ok, false);
+  assert.match(elsewhere.text, /ledger\.mjs ask is refused while pairing: it would open the database .*other\.db \(LEDGER_DB\), which is not sibling state pair_start granted/);
+  assert.equal(elsewhere.result?.sandbox, undefined, "refused before any sandbox was built");
+  const disable = await run(`node ${script} disable`, { ...granted, HOME: home });
+  assert.match(disable.text, /ledger\.mjs disable is refused while pairing/);
+  const flag = await run(`node ${script} ask x --cwd ${f.root}`, { ...granted, HOME: home });
+  assert.match(flag.text, /--cwd moves where the CLI reads its config/);
+  // A preload variable is dropped by the fence, not refused: the pre-check sees the fenced environment.
+  const preload = await run(`node ${script} ask x`, { ...granted, HOME: home, NODE_PATH: "/tmp/evil", LEDGER_DB: join(f.top, "other.db") });
+  assert.doesNotMatch(preload.text, /NODE_PATH/);
+  assert.match(preload.text, /other\.db \(LEDGER_DB\)/);
+});
+
+test("the session lock is released only by its holder: a release never removes a lock another holder made, and a stale takeover claims the one directory it saw", () => {
+  const dir = join(FIXTURES, `lock-${Date.now()}`);
+  const lock = join(dir, "lock");
+  // The race Codex modelled: between the holder's look at the lock and its removal, the lock
+  // is replaced by another holder's. Here the swap happens inside fn: the holder's own token
+  // is the only thing it would remove, and it is gone, so it touches no directory.
+  withLock(dir, () => {
+    const [mine] = readdirSync(lock);
+    rmSync(lock, { recursive: true, force: true });
+    mkdirSync(lock);
+    writeFileSync(join(lock, "9999.other"), "", { flag: "wx" });
+    assert.notEqual(mine, "9999.other");
+  });
+  assert.deepEqual(readdirSync(lock), ["9999.other"], "the other holder's lock is untouched by the release");
+  rmSync(lock, { recursive: true, force: true });
+  // The same swap to a lock another holder has made but not yet put its token in (its mkdir
+  // succeeded a moment ago): empty, so rmdir would take it; the release does not try.
+  withLock(dir, () => {
+    rmSync(lock, { recursive: true, force: true });
+    mkdirSync(lock);
+  });
+  assert.equal(existsSync(lock), true, "an empty lock that is not this holder's is left to its maker");
+  assert.deepEqual(readdirSync(lock), []);
+  rmSync(lock, { recursive: true, force: true });
+  // A normal release leaves nothing: the token is unlinked and the lock directory removed.
+  withLock(dir, () => { assert.equal(readdirSync(lock).length, 1); });
+  assert.equal(existsSync(lock), false);
+  mkdirSync(lock);
+  writeFileSync(join(lock, "9999.other"), "", { flag: "wx" });
+  // The other holder's lock is now stale: a waiter takes it over by renaming it to a grave of its own name, then removes the grave.
+  const past = (Date.now() - 60000) / 1000;
+  utimesSync(lock, past, past);
+  const r = withLock(dir, () => { assert.equal(readdirSync(lock).length, 1); return "ran"; }, { waitMs: 2000, staleMs: 15000 });
+  assert.equal(r, "ran");
+  assert.equal(existsSync(lock), false);
+  assert.deepEqual(readdirSync(dir).filter((n) => n.startsWith("lock")), [], "no grave is left behind");
+  // A fresh lock from another holder is waited on, not taken, and the wait times out naming the lock.
+  mkdirSync(lock);
+  writeFileSync(join(lock, "9999.fresh"), "", { flag: "wx" });
+  assert.throws(() => withLock(dir, () => "never", { waitMs: 200, staleMs: 60000 }), /timed out waiting for the session lock/);
+  assert.deepEqual(readdirSync(lock), ["9999.fresh"]);
+  rmSync(lock, { recursive: true, force: true });
+  // Two stale takeovers at once: the rename claims the directory for exactly one of them; the other's rename fails and it retries. Modelled by renaming out from under a taker.
+  mkdirSync(lock);
+  writeFileSync(join(lock, "9999.stale"), "", { flag: "wx" });
+  utimesSync(lock, past, past);
+  assert.equal(withLock(dir, () => "took"), "took");
+  assert.equal(existsSync(lock), false);
 });
 
 test("pair_run times out and kills its whole process group", { skip: !hasSandbox }, async () => {
