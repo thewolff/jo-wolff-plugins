@@ -216,9 +216,9 @@ turn, one whose every use of the skill is a settings invocation, is not checked.
 also invokes the skill with other args (or none) or reads the skill file is checked, and so is
 an ordinary check that runs the settings script along the way.
 
-Only the current turn is read: from the last message you sent to the end of the transcript, so a
-skill read in an earlier turn does not count. A branch you rewound away from was written before
-the message that replaced it, so it does not count either.
+Only the current turn is read: the conversation chain from the newest entry back to the last
+message you sent, so a skill read in an earlier turn does not count, and neither does one on a
+branch you rewound away from, whether or not you sent a new message after rewinding.
 
 - **Once per turn.** After one block the next stop in the same turn passes, verdict or not, so a
   reply that still lacks the line cannot loop. A stop that follows another hook's or extension's
@@ -345,12 +345,13 @@ CI runs the same command on Ubuntu and macOS with Node 24 (`.github/workflows/as
 
 ### 2026-11-03 — 0.7.1
 
-The Stop check now reads the reply from the Stop payload's `last_assistant_message`, and reads
-the turn from the last message you sent forward instead of walking the parent chain back from
-the transcript's last entry. Captured runs of Claude Code 2.1.317 showed the Stop hooks running
-before the final reply was in the transcript, with an `api-request` entry (an `id`, no parent) as
-the last entry, so 0.7.0 let a reply with no verdict through, and in another run blocked a reply
-that ended in a verdict, which made the agent send its answer twice.
+The Stop check now reads the reply from the Stop payload's `last_assistant_message`, and no longer
+takes Claude Code's telemetry entries (an `id` and no parent field, such as `api-request`) as the
+newest entry of the conversation. Captured runs of Claude Code 2.1.317 showed the Stop hooks
+running before the final reply was in the transcript, with an `api-request` entry as the last
+entry, so 0.7.0 let a reply with no verdict through, and in another run blocked a reply that ended
+in a verdict, which made the agent send its answer twice. An unreadable block record now lets the
+stop through (logged and warned) instead of blocking every stop of the turn.
 
 The Claude Code hooks no longer fail silently. Bad stdin, an invalid config value, an unreadable
 transcript, an unwritable block record, or a throw still lets the prompt or stop through, and now

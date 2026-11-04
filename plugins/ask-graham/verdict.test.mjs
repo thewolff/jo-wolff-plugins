@@ -312,6 +312,26 @@ for (const [name, h] of Object.entries(HARNESSES)) {
     assert.deepEqual(checkStop({ entries: t.entries }), { pass: "no-skill-read", opener });
   });
 
+  test(`${name}: a skill read on an abandoned branch does not flag a resumed earlier branch with no new prompt`, () => {
+    const t = h.make();
+    const opener = t.prompt("hello");
+    const fork = t.say("Hi.");
+    t.prompt("should we build a cache?");
+    h.read(t);
+    t.say("No verdict here.");
+    t.at(fork); // the session resumes from before that prompt; the agent continues without a new prompt
+    t.say("Picking up where we were.");
+    assert.deepEqual(checkStop({ entries: t.entries }), { pass: "no-skill-read", opener });
+  });
+
+  test(`${name}: an entry with an id but no parent field (Claude Code api-request telemetry) is never the leaf`, () => {
+    const { t, opener } = turn("No verdict here.");
+    t.entries.push({ type: "api-request", sessionId: "s", id: "telemetry-1", timestamp: "2026-11-03T00:00:00.000Z" });
+    const r = checkStop({ entries: t.entries });
+    assert.equal(r.opener, opener);
+    assert.ok(r.block);
+  });
+
   test(`${name}: the second stop in a turn after its own block passes; the next turn is checked again`, () => {
     const { t, opener } = turn(ANSWER);
     const first = checkStop({ entries: t.entries });

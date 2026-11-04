@@ -85,7 +85,12 @@ export function handle(input, opts = {}) {
   try {
     blockedOpener = readFileSync(record, "utf8").trim() || null;
   } catch (e) {
-    if (e.code !== "ENOENT") fault(`block record ${record} could not be read (${e.code ?? errText(e)})`);
+    if (e.code !== "ENOENT") {
+      // an unreadable record cannot say whether this turn was already blocked; blocking anyway could
+      // block every stop of the turn, so pass instead
+      fault(`block record ${record} could not be read (${e.code ?? errText(e)}), so the stop was not blocked`);
+      return null;
+    }
     blockedOpener = null; // no block recorded for this session yet
   }
 
