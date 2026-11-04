@@ -17,26 +17,33 @@ both on the SessionStart that follows a compaction and never on a fresh start:
   directory and `/`), or the cwd alone when there is no git root. The cwd is resolved through its
   symlinks first; a rules file that is a symlink to a path outside the root is skipped and named;
   a file reached twice is inlined once; a level at or above `CLAUDE_PROJECT_DIR` is skipped and
-  named as the host's. Caps in bytes: 8,000 per file, 9,000 for the section, and never more than
-  what the snapshot left of the 20,000-character restore guard (the rules give way first). The
-  smallest files land whole and the largest are cut to one shared allowance with a
-  `(truncated at N bytes; the file is M bytes, read it for the rest)` marker; a file whose share
-  would be under 200 bytes is skipped; every skipped file is one `- skipped <path>: <why>` line;
-  a walk that found nothing says so. `@path` imports are not expanded.
+  named as the host's. Caps in bytes on the whole rendered section (headings, paths, markers and
+  skip lines included): 8,000 per file, 9,000 for the section, and never more than what the
+  snapshot and the notes list leave of the 20,000-character restore guard (the rules give way
+  first). The smallest files land whole and the largest are cut on a UTF-8 character boundary to
+  one shared allowance with a `(truncated at N bytes; the file is M bytes, read it for the rest)`
+  marker, N the bytes shown; a file whose share would be under 200 bytes is skipped; every
+  skipped file is one `- skipped <path>: <why>` line, as many as fit and then a count of the rest;
+  a walk that found nothing says so; a section with no room for its heading is left out and
+  named in the systemMessage. `@path` imports are not expanded.
 - `## Durable notes` in the restore block: the newest `notesCount` (default 5) regular files of
-  `notesDir` (default `.ai/decision-log`, relative to the git root, or the cwd when there is none)
-  by modification time, one filename per line, with the line that the notes directory and the
-  rules files are the source of truth and the restored snapshot is only the safety net. An absent
-  directory is one line saying so.
+  `notesDir` (default `.ai/decision-log`, relative to the git root of the cwd resolved through
+  its symlinks, or that cwd when there is none) by modification time, one filename per line, with
+  the line that the notes directory and the rules files are the source of truth and the restored
+  snapshot is only the safety net. An absent directory is one line saying so. The whole section
+  counts against the restore guard, fitted before the rules; short of room it lists fewer names,
+  then none, then is left out and named in the systemMessage.
 - Config keys `rules` (`"on"` or `"off"`), `notesDir` (a non-empty string) and `notesCount` (a
   whole number from 0, which drops the section, to 100); a wrong value is named once per session
   like the others.
 - Tests: the walk (nested levels, `CLAUDE.md` over `AGENTS.md`, the local file's place, the
   workspace root and the home-directory stop, the cwd-only root, the launch-directory skip,
   symlink safety), the caps (bytes, largest cut first, the marker, the floor, the caller's
-  budget), the probe (mtime order, the count, a missing or empty directory) in
-  `test/lib.test.mjs`; the block's presence only after a compaction, its order, the guard and
-  each config switch in `test/hooks.test.mjs`; `evals/session-start-restore-rules.scenario.json`
+  budget, the whole rendered section within the budget at every budget with long paths and many
+  skips), the probe (mtime order, the count, a missing or empty directory, the rendered budget,
+  the root of a symlinked nested cwd) in `test/lib.test.mjs`; the block's presence only after a
+  compaction, its order, the whole block within the guard, the 9,000-byte section, the left-out
+  sections, a symlinked nested cwd and each config switch in `test/hooks.test.mjs`; `evals/session-start-restore-rules.scenario.json`
   and `evals/session-start-restore-notes.scenario.json` (fourteen scenarios in all).
 
 ### Changed

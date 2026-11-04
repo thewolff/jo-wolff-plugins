@@ -99,21 +99,27 @@ cwd alone. The cwd is resolved through its symlinks first; a rules file that is 
 path outside that root is skipped and named; a file reached twice is inlined once. A level that
 is `CLAUDE_PROJECT_DIR` or above it (Claude Code sets it to the launch directory) is skipped and
 named as the host's: the host loaded it at launch and keeps it. Caps, in bytes: 8,000 per file
-and 9,000 for the section (the source hook's per-file cap, and the budget its live rules-injection
-sibling used for one chain), and never more than what the snapshot left of the 20,000-character
-restore guard, so the rules are what gives way when a snapshot is large. Within the cap the
-smallest files land whole and the largest are cut to one shared allowance, each cut ending in
-`(truncated at N bytes; the file is M bytes, read it for the rest)`; a file whose share would be
-under 200 bytes is skipped instead, and every skipped file is one `- skipped <path>: <why>` line.
-A walk that found nothing says so. `@path` imports are not expanded; the token stays as written.
+and 9,000 for the whole rendered section, headings, paths, markers and skip lines included (the
+source hook's per-file cap, and the budget its live rules-injection sibling used for one chain),
+and never more than what the snapshot (or the not-restored notice) and the notes list leave of
+the 20,000-character restore guard, so the rules are what gives way when a snapshot is large.
+Within the cap the smallest files land whole and the largest are cut on a UTF-8 character
+boundary to one shared allowance, each cut ending in `(truncated at N bytes; the file is M bytes,
+read it for the rest)` with N the bytes shown; a file whose share would be under 200 bytes is
+skipped instead, and every skipped file is one `- skipped <path>: <why>` line, as many as fit and
+then one line counting the rest. A walk that found nothing says so. A section with no room for
+even its heading is left out, and the systemMessage names it. `@path` imports are not expanded; the token stays as written.
 `"rules": "off"` in the config file drops the section.
 
 **`## Durable notes`.** The newest `notesCount` (default 5) regular files of `notesDir` (default
-`.ai/decision-log`, relative to the git root, or the cwd when there is none; an absolute path is
-taken as is) by modification time, one filename per line, dot-files and directories left out,
-with the line that the notes directory and the rules files are the source of truth and the
-restored snapshot is only the safety net. An absent directory is one line saying so;
-`"notesCount": 0` drops the section.
+`.ai/decision-log`, relative to the git root of the cwd resolved through its symlinks, as the
+rules walk resolves it, or that cwd when there is no git root; an absolute path is taken as is) by
+modification time, one filename per line, dot-files and directories left out, with the line that
+the notes directory and the rules files are the source of truth and the restored snapshot is only
+the safety net. An absent directory is one line saying so; `"notesCount": 0` drops the section.
+The whole section counts against the 20,000-character restore guard and is fitted before the
+rules: short of room it lists fewer names, then none, then is left out and named in the
+systemMessage.
 
 On every SessionStart, `lib/liveness.mjs` reads the heartbeat and adds one of four texts. The
 newest save's result decides which, not the newest success:

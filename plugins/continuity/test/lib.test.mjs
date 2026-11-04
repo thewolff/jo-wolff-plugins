@@ -20,7 +20,7 @@ import { ERRORS_MAX_LINES, logError } from "../lib/errors.mjs";
 import { git } from "../lib/git.mjs";
 import { appendBounded } from "../lib/bounded-log.mjs";
 import { prune } from "../scripts/prune.mjs";
-import { NOTES_MAX_COUNT, RULES_FILE_MAX_BYTES, RULES_MIN_BYTES, RULES_TOTAL_MAX_BYTES, findGitRoot, fitRules, renderNotes, renderRules, truncateBytes, walkRules } from "../lib/repo-rules.mjs";
+import { NOTES_MAX_COUNT, RULES_FILE_MAX_BYTES, RULES_MIN_BYTES, RULES_TOTAL_MAX_BYTES, findGitRoot, fitRules, notesRoot, renderNotes, renderRules, truncateBytes, walkRules } from "../lib/repo-rules.mjs";
 
 const handoffText = (over = {}) => {
   const meta = { session_id: "s-test", lane: "port", author: "jo", branch: "main", created: "2026-11-04T12:00:00Z", status: "open", ...over };
@@ -211,9 +211,9 @@ test("repo rules: caps in bytes, the largest files cut first with the marker, a 
   r = fitRules([file("/r/a", 300), file("/r/b", 300)], 350);
   assert.deepEqual(r.shown, []);
   assert.equal(r.skipped.length, 2);
-  assert.match(r.skipped[0].why, /^no room: the rules on this walk total 600 bytes against a 350-byte section cap/);
-  r = fitRules([file("/r/a", 300)], 0);
-  assert.match(r.skipped[0].why, /^no room: the snapshot used the restore budget \(0 bytes left for rules\)/);
+  assert.match(r.skipped[0].why, /^no room: the rules on this walk total 600 bytes against 350 bytes left for rules text, and this file's share would be under 200$/);
+  r = fitRules([file("/r/a", 300)], 0, RULES_FILE_MAX_BYTES, " (why)");
+  assert.equal(r.skipped[0].why, "no room: 0 bytes left for rules text (why)");
   // A budget above the total cap is the total cap.
   r = fitRules([file("/r/a", 9500)], 50000);
   assert.deepEqual(r.shown.map((f) => f.shownBytes), [8000]);
@@ -223,14 +223,47 @@ test("repo rules: caps in bytes, the largest files cut first with the marker, a 
   assert.equal(Buffer.byteLength(truncateBytes(euro, 7)), 6);
   assert.equal(truncateBytes(euro, 7), "€€");
   const walk = { start: "/r/sub", root: "/r", rootKind: "git", gitRoot: "/r", files: [{ path: "/r/AGENTS.md", bytes: 300, content: euro }, { path: "/r/sub/AGENTS.md", bytes: 10, content: "0123456789" }], skipped: [], note: null };
-  const text = renderRules(walk, 250);
-  assert.match(text, /### `\/r\/AGENTS\.md` \(300 bytes\)\n\n€+\n\n\(truncated at 240 bytes; the file is 300 bytes, read it for the rest\)\n/);
+  const head = renderRules({ ...walk, files: [] }).replace(/\n\n\(no CLAUDE[^\n]*\n$/, "\n");
+  // With room, both files whole. One byte less and the larger is cut on a character boundary, the
+  // marker naming the bytes actually shown.
+  let text = renderRules(walk, 1000);
+  assert.equal(text, `${head}\n### \`/r/AGENTS.md\` (300 bytes)\n\n${euro}\n\n### \`/r/sub/AGENTS.md\` (10 bytes)\n\n0123456789\n`);
+  const whole = Buffer.byteLength(text);
+  text = renderRules(walk, whole - 1);
+  assert.ok(Buffer.byteLength(text) <= whole - 1, `${Buffer.byteLength(text)} > ${whole - 1}`);
+  const cut = text.match(/### `\/r\/AGENTS\.md` \(300 bytes\)\n\n(€+)\n\n\(truncated at (\d+) bytes; the file is 300 bytes, read it for the rest\)\n/);
+  assert.ok(cut, text);
+  assert.equal(Buffer.byteLength(cut[1]), Number(cut[2]), "the marker names the bytes shown");
   assert.match(text, /### `\/r\/sub\/AGENTS\.md` \(10 bytes\)\n\n0123456789\n/);
-  assert.ok(Buffer.byteLength(text) < 250 + 500, "the section is the budget plus its own headings");
+
+  // The whole rendered section, headings, paths, markers and skip lines included, is at most the
+  // budget at every budget, and at most the 9,000-byte section cap whatever the caller passes.
+  const long = `/r/${"deep-directory-name/".repeat(12)}`;
+  const wide = {
+    ...walk,
+    start: `${long}x`,
+    files: Array.from({ length: 30 }, (_, i) => ({ path: `${long}${i}/AGENTS.md`, bytes: 2000 + i * 100, content: `€${"r".repeat(1997 + i * 100)}` })),
+    skipped: Array.from({ length: 40 }, (_, i) => ({ path: `${long}s${i}/CLAUDE.md`, why: "empty" })),
+  };
+  for (const w of [walk, wide]) {
+    for (let budget = 0; budget <= RULES_TOTAL_MAX_BYTES + 500; budget += 37) {
+      const out = renderRules(w, budget);
+      assert.ok(Buffer.byteLength(out) <= budget, `budget ${budget}: ${Buffer.byteLength(out)} bytes`);
+      assert.ok(!out.includes("\uFFFD"), "no broken character");
+    }
+    assert.ok(Buffer.byteLength(renderRules(w, 50000)) <= RULES_TOTAL_MAX_BYTES);
+  }
+  // The wide walk's skip lines alone overrun the full cap: as many as fit are listed, the rest counted.
+  text = renderRules(wide);
+  assert.ok(Buffer.byteLength(text) > RULES_TOTAL_MAX_BYTES - 400, `the cap is used: ${Buffer.byteLength(text)}`);
+  assert.match(text, /^- \d+ more rules files? not inlined and not listed: no room in the section\n$/m);
+  // A budget too small for the heading and the count line renders nothing; the caller names it.
+  assert.equal(renderRules(wide, 30), "");
   // Everything skipped is still a section naming every file.
-  const none = renderRules({ ...walk, skipped: [{ path: "/r/CLAUDE.local.md", why: "empty" }] }, 0);
-  assert.match(none, /- skipped `\/r\/CLAUDE\.local\.md`: empty\n- skipped `\/r\/AGENTS\.md`: no room/);
-  assert.doesNotMatch(none, /0123456789/);
+  const none = renderRules({ ...walk, skipped: [{ path: "/r/CLAUDE.local.md", why: "empty" }] }, 400);
+  assert.ok(Buffer.byteLength(none) <= 400);
+  assert.match(none, /- skipped `\/r\/CLAUDE\.local\.md`: empty\n- skipped `\/r\/AGENTS\.md`: no room: /);
+  assert.doesNotMatch(none, /€/);
 });
 
 test("durable notes: the newest N files by mtime, dot-files and directories left out, the count capped, a missing or empty directory said in one line", () => {
@@ -255,6 +288,22 @@ test("durable notes: the newest N files by mtime, dot-files and directories left
     assert.equal(NOTES_MAX_COUNT, 100);
     writeFileSync(join(b.work, "file"), "x");
     assert.match(renderNotes("file", b.work, 5), /\(no notes directory at /, "a file where a directory should be");
+    // The whole rendered section is at most the budget: the list gives way first, then the section.
+    const full = Buffer.byteLength(text);
+    for (let budget = 0; budget <= full; budget++) {
+      const out = renderNotes(".ai/decision-log", b.work, 5, budget);
+      assert.ok(Buffer.byteLength(out) <= budget, `budget ${budget}: ${Buffer.byteLength(out)}`);
+    }
+    assert.equal(renderNotes(".ai/decision-log", b.work, 5, full), text);
+    assert.match(renderNotes(".ai/decision-log", b.work, 5, full - 1), /The newest 4 of 6 entries by modification time:\n\n- f\.md\n- e\.md\n- d\.md\n- b\.md\n\n> /);
+    assert.equal(renderNotes(".ai/decision-log", b.work, 5, 20), "");
+    // notesRoot: the git root above the real cwd, so a cwd reached through a symlink into a nested
+    // directory finds the repository's root, not the symlink's lexical parents.
+    mkdirSync(join(b.work, "pkg", "deep"), { recursive: true });
+    const link = join(b.root, "link-to-deep");
+    symlinkSync(join(b.work, "pkg", "deep"), link);
+    assert.equal(notesRoot(link), b.work);
+    assert.equal(notesRoot(join(b.root, "no-such-dir")), join(b.root, "no-such-dir"));
   } finally {
     b.release();
   }

@@ -9,7 +9,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { chmodSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { box, input, spawnHook } from "./helpers.mjs";
 import { handle as preCompact } from "../hooks/pre-compact.mjs";
@@ -267,19 +267,43 @@ test("session-start: after a compaction the block carries the re-inlined rules a
     assert.match(ctx, /- skipped `.*\/CLAUDE\.md`: loaded by the host at launch/);
     assert.match(ctx, /# pkg rules/);
 
-    // The rules give way to the snapshot: a restore at the guard leaves no room, and every file is named.
-    writeFileSync(join(b.work, "CLAUDE.md"), `# root rules\n${"r".repeat(3000)}\n`);
+    // The whole restore block stays inside the guard. With liveness off the context is the block
+    // alone. A mid-size snapshot leaves room for the notes and part of the rules: the notes land
+    // whole, the large root file is cut, and the block is at most RESTORE_MAX_CHARS characters.
+    writeFileSync(join(b.work, "CLAUDE.md"), `# root rules\n${"r".repeat(6000)}\n`);
+    b.writeConfig({ liveness: "off" });
+    spawnHook(b, "pre-compact.mjs", input("PreCompact", b, { trigger: "auto", file_operations: "w".repeat(8000), agent_judgment: ["j".repeat(6000)] }));
+    ctx = compact();
+    assert.ok(ctx.length <= RESTORE_MAX_CHARS, `the block is within the guard: ${ctx.length}`);
+    assert.ok(ctx.length > RESTORE_MAX_CHARS - 400, `the rules used what the snapshot left: ${ctx.length}`);
+    assert.match(ctx, /^## Restored session state/);
+    assert.doesNotMatch(ctx, /\*\*TRUNCATED: this snapshot is/);
+    assert.match(ctx, /# root rules\nr+\n\n\(truncated at \d+ bytes; the file is 6014 bytes, read it for the rest\)/);
+    assert.match(ctx, /The newest 2 of 2 entries/);
+    assert.ok(ctx.endsWith("Read the newest note before continuing a thread it covers.\n"), "the notes close the block");
+
+    // A snapshot at the guard leaves no room: both sections are left out of the context and named
+    // in the systemMessage, and the block is the snapshot alone.
     mkdirSync(join(b.work, ".ai", "handoffs"), { recursive: true });
     writeFileSync(join(b.work, ".ai", "handoffs", "long.md"), `---\nsession_id: s-test\nlane: l\nstatus: open\n---\n## Where I left off\n${`${"h".repeat(100)}\n`.repeat(100)}`);
     spawnHook(b, "pre-compact.mjs", input("PreCompact", b, { trigger: "auto", file_operations: "w".repeat(9000), agent_judgment: ["j".repeat(9000)] }));
-    ctx = compact();
+    let r = spawnHook(b, "session-start.mjs", { hook_event_name: "SessionStart", session_id: "s-test", cwd: join(b.work, "pkg", "deep"), source: "compact" });
+    ctx = r.json.hookSpecificOutput.additionalContext;
     assert.match(ctx, /\*\*TRUNCATED: this snapshot is \d+ characters/);
-    assert.match(ctx, /- skipped `.*\/CLAUDE\.md`: no room: the snapshot used the restore budget/);
-    assert.match(ctx, /- skipped `.*\/pkg\/AGENTS\.md`: no room/);
-    assert.doesNotMatch(ctx, /rrrrrrrr/);
-    assert.ok(ctx.indexOf("## Durable notes") > 0, "the notes list is small and stays");
-    assert.ok(ctx.length < RESTORE_MAX_CHARS + 3000, `the whole block stays near the guard: ${ctx.length}`);
+    assert.doesNotMatch(ctx, /Repo rules re-inlined|Durable notes|rrrrrrrr/);
+    assert.equal(r.json.systemMessage, "continuity: the re-inlined repo rules and the durable notes list left out of the post-compaction restore: the block before them reached the 20,000-character restore guard; read the rules files and the notes directory directly.");
     rmSync(join(b.stateDir, "s-test.json"));
+    rmSync(join(b.work, ".ai", "handoffs"), { recursive: true });
+
+    // No snapshot and a walk past the section cap: the rules section is at most 9,000 bytes whole.
+    writeFileSync(join(b.work, "pkg", "AGENTS.md"), `# pkg rules\n${"p".repeat(7000)}\n`);
+    ctx = compact();
+    const rules = ctx.slice(ctx.indexOf("## Repo rules re-inlined"), ctx.indexOf("\n\n## Durable notes"));
+    assert.ok(rules.endsWith("\n"));
+    assert.ok(Buffer.byteLength(rules) <= 9000 && Buffer.byteLength(rules) > 8600, `the rules section: ${Buffer.byteLength(rules)} bytes`);
+    assert.ok(ctx.length <= RESTORE_MAX_CHARS);
+    writeFileSync(join(b.work, "pkg", "AGENTS.md"), "# pkg rules\n");
+    rmSync(join(b.env.XDG_CONFIG_HOME, "continuity", "config.json"));
 
     // Config: rules off drops the section; notesCount 0 drops the probe; notesDir moves it; an absent dir is one line.
     b.writeConfig({ rules: "off", notesDir: "docs/log" });
@@ -295,6 +319,20 @@ test("session-start: after a compaction the block carries the re-inlined rules a
     ctx = compact();
     assert.doesNotMatch(ctx, /not restored|Restored session state/);
     assert.match(ctx, /Repo rules re-inlined[\s\S]*The newest 1 of 2 entries/);
+
+    // A cwd reached through a symlink into a nested directory: the notes hang off the real git
+    // root, the same root the rules walk finds, with the rules on and with them off.
+    const link = join(b.root, "link-to-deep");
+    symlinkSync(join(b.work, "pkg", "deep"), link);
+    const viaLink = () => spawnHook(b, "session-start.mjs", { hook_event_name: "SessionStart", session_id: "s-test", cwd: link, source: "compact" }).json.hookSpecificOutput.additionalContext;
+    const notesHere = `## Durable notes (\`${join(b.work, ".ai", "decision-log")}\`)\n\nThe newest 2 of 2 entries`;
+    b.writeConfig({ snapshot: "off" });
+    ctx = viaLink();
+    assert.ok(ctx.includes(notesHere), ctx);
+    assert.match(ctx, /# root rules[\s\S]*# pkg rules/);
+    b.writeConfig({ snapshot: "off", rules: "off" });
+    ctx = viaLink();
+    assert.ok(ctx.includes(notesHere), ctx);
   } finally {
     b.release();
   }
