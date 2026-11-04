@@ -1,0 +1,11 @@
+[
+	{"rule":"AI-005","path":"/","locator":"ua-probe:oai-searchbot","kind":"observation","severity":null,"layer":"ua-probe"},
+	{"rule":"AI-013","path":"/","locator":"ua-probe:claude-searchbot","kind":"observation","severity":null,"layer":"ua-probe"},
+	{"rule":"AI-013","path":"/","locator":"ua-probe:claudebot","kind":"observation","severity":null,"layer":"ua-probe"},
+	{"rule":"AI-022","path":"/","locator":"ua-probe:perplexitybot","kind":"observation","severity":null,"layer":"ua-probe"},
+	{"rule":"AI-036","path":"/","locator":"ua-probe:googlebot-desktop","kind":"observation","severity":null,"layer":"ua-probe"},
+	{"rule":"AI-036","path":"/","locator":"ua-probe:googlebot-smartphone","kind":"observation","severity":null,"layer":"ua-probe"},
+	{"rule":"AI-090","path":"/llms.txt","locator":"doc","kind":"observation","severity":null,"layer":"site"},
+	{"rule":"NF-03","path":"/llms.txt","locator":"doc","kind":"dnf-note","severity":null,"layer":"site"},
+	{"rule":"NF-AI-1","path":"/llms.txt","locator":"doc","kind":"dnf-note","severity":null,"layer":"site"}
+]

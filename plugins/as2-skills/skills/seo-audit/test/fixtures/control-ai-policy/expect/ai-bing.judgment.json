@@ -1,0 +1,11 @@
+[
+	{"rule":"SPM-001","path":"/","silent":true},
+	{"rule":"SPM-002","path":"/","silent":true},
+	{"rule":"SPM-003","path":"/","silent":true},
+	{"rule":"SPM-004","path":"/","silent":true},
+	{"rule":"SPM-007","path":"/","silent":true},
+	{"rule":"AI-037","path":"/","silent":true},
+	{"rule":"BNG-021","path":"/","silent":true},
+	{"rule":"BNG-022","path":"/","silent":true},
+	{"rule":"BNG-023","path":"/","silent":true}
+]

@@ -1,0 +1,7 @@
+[
+	{"rule":"PX-001","path":"/moved","locator":"url:/moved","kind":"finding","severity":"medium","layer":"headers"},
+	{"rule":"DNF-04","path":"/moved","locator":"html:head","kind":"dnf-note","severity":null,"layer":"raw-html"},
+	{"rule":"DNF-05","path":"/moved","locator":"html:html","kind":"dnf-note","severity":null,"layer":"raw-html"},
+	{"rule":"DNF-06","path":"/moved","locator":"html:head","kind":"dnf-note","severity":null,"layer":"raw-html"},
+	{"rule":"DNF-12","path":"/moved","locator":"html:body","kind":"dnf-note","severity":null,"layer":"raw-html"}
+]

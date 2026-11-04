@@ -1,0 +1,9 @@
+[
+	{ "rule": "SD-GEN-02", "path": "/app", "locator": "jsonld:nth(1)$[\"offers\"][\"price\"]", "kind": "finding", "severity": "high" },
+	{ "rule": "SD-SW-07", "path": "/local", "locator": "jsonld:nth(1)$[\"aggregateRating\"]", "kind": "finding", "severity": "high" },
+	{ "rule": "SD-PRD-05", "path": "/list", "locator": "jsonld:nth(1)$", "kind": "finding", "severity": "high" },
+	{ "rule": "SD-PRD-05", "path": "/variants", "silent": true },
+	{ "rule": "SD-REV-03", "path": "/reviews", "locator": "jsonld:nth(1)$[\"review\"]", "kind": "finding", "severity": "high" },
+	{ "rule": "SD-VID-04", "path": "/video", "locator": "jsonld:nth(1)$", "kind": "finding", "severity": "high" },
+	{ "rule": "SD-VID-04", "path": "/watch", "silent": true }
+]

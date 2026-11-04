@@ -1,0 +1,6 @@
+[
+	{"rule":"NF-01","path":"/","locator":"doc","kind":"dnf-note","severity":null,"layer":"structured-data"},
+	{"rule":"NF-02","path":"/","locator":"jsonld:nth(1)$","kind":"dnf-note","severity":null,"layer":"structured-data"},
+	{"rule":"NF-07","path":"/","locator":"doc","kind":"dnf-note","severity":null,"layer":"structured-data"},
+	{"rule":"NF-10","path":"/","locator":"doc","kind":"dnf-note","severity":null,"layer":"structured-data"}
+]

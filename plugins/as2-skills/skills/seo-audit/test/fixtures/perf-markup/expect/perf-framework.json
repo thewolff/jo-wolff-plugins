@@ -1,0 +1,11 @@
+[
+	{"rule":"CWV-024","path":"/","locator":"html:script[src=\"/legacy.js\"]","kind":"finding","severity":"medium","layer":"raw-html"},
+	{"rule":"CWV-024","path":"/","locator":"html:script[src=\"/vendor/analytics.js\"]","kind":"finding","severity":"medium","layer":"raw-html"},
+	{"rule":"CWV-040","path":"/","locator":"html:img:nth(2)","kind":"finding","severity":"medium","layer":"raw-html"},
+	{"rule":"CWV-040","path":"/","locator":"html:img:nth(3)","kind":"finding","severity":"medium","layer":"raw-html"},
+	{"rule":"CWV-040","path":"/","locator":"html:video:nth(1)","kind":"finding","severity":"medium","layer":"raw-html"},
+	{"rule":"CWV-040","path":"/js-img","locator":"html:img:nth(2)","kind":"finding","severity":"medium","layer":"rendered"},
+	{"rule":"CWV-010","path":"/","locator":"crux","kind":"observation","severity":null,"layer":"field"},
+	{"rule":"CWV-010","path":"/js-img","locator":"crux","kind":"observation","severity":null,"layer":"field"},
+	{"rule":"LH-P06","path":"/","locator":"lhr:render-blocking-insight","kind":"finding","severity":"low","layer":"lab","modes":["live"]}
+]

@@ -1,0 +1,5 @@
+[
+	{"rule":"SMP-014","path":"/sitemap.xml","locator":"line:4","kind":"finding","severity":"high","layer":"sitemap"},
+	{"rule":"DNF-08","path":"/sitemap.xml","locator":"doc","kind":"dnf-note","severity":null,"layer":"sitemap"},
+	{"rule":"NF-BNG-1","path":"/sitemap.xml","locator":"doc","kind":"dnf-note","severity":null,"layer":"sitemap"}
+]

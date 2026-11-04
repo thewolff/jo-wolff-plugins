@@ -1,0 +1,18 @@
+{
+	"port": 47602,
+	"audit": {
+		"urls": [
+			"http://127.0.0.1:47602/"
+		]
+	},
+	"paths": {
+		"/saltmarsh-sans.woff2": {
+			"status": 200,
+			"headers": {
+				"content-type": "font/woff2"
+			},
+			"body": "# fixture web font stand-in: not a real font. It is padded to 12 MiB so that its transfer on loopback lasts past the 5 ms granularity of Lighthouse's font-display insight.\n",
+			"padTo": 12582912
+		}
+	}
+}

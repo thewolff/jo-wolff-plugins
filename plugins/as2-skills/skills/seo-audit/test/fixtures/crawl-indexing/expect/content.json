@@ -1,0 +1,13 @@
+[
+	{"rule":"PX-001","path":"/embedded","locator":"url:/embedded","kind":"finding","severity":"medium","layer":"headers"},
+	{"rule":"PX-001","path":"/expired","locator":"url:/expired","kind":"finding","severity":"medium","layer":"headers"},
+	{"rule":"PX-001","path":"/noindex-header","locator":"url:/noindex-header","kind":"finding","severity":"medium","layer":"headers"},
+	{"rule":"PX-001","path":"/noindex-meta","locator":"url:/noindex-meta","kind":"finding","severity":"medium","layer":"headers"},
+	{"rule":"PX-001","path":"/nosnippet-js","locator":"url:/nosnippet-js","kind":"finding","severity":"medium","layer":"headers"},
+	{"rule":"PX-001","path":"/nosnippet-p","locator":"url:/nosnippet-p","kind":"finding","severity":"medium","layer":"headers"},
+	{"rule":"PX-001","path":"/snippets","locator":"url:/snippets","kind":"finding","severity":"medium","layer":"headers"},
+	{"rule":"DNF-04","path":"/noindex-meta","locator":"html:head","kind":"dnf-note","severity":null,"layer":"raw-html"},
+	{"rule":"DNF-05","path":"/noindex-meta","locator":"html:html","kind":"dnf-note","severity":null,"layer":"raw-html"},
+	{"rule":"DNF-06","path":"/noindex-meta","locator":"html:head","kind":"dnf-note","severity":null,"layer":"raw-html"},
+	{"rule":"DNF-12","path":"/noindex-meta","locator":"html:body","kind":"dnf-note","severity":null,"layer":"raw-html"}
+]

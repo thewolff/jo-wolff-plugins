@@ -1,0 +1,9 @@
+{
+	"port": 47208,
+	"audit": { "urls": ["http://127.0.0.1:47208/"], "sample": 6 },
+	"paths": {
+		"/big.xml": { "generate": "urlset", "count": 50001 },
+		"/big-index.xml": { "generate": "sitemapindex", "count": 50001, "loc": "http://127.0.0.1:47208/child.xml" },
+		"/redirected": { "status": 301, "headers": { "location": "/" } }
+	}
+}

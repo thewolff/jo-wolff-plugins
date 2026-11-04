@@ -1,0 +1,10 @@
+[
+	{"rule":"NF-01","path":"/","locator":"doc","kind":"dnf-note","severity":null,"layer":"structured-data"},
+	{"rule":"NF-02","path":"/","locator":"jsonld:nth(1)$","kind":"dnf-note","severity":null,"layer":"structured-data"},
+	{"rule":"NF-02","path":"/","locator":"jsonld:nth(3)$","kind":"dnf-note","severity":null,"layer":"structured-data"},
+	{"rule":"NF-10","path":"/","locator":"doc","kind":"dnf-note","severity":null,"layer":"structured-data"},
+	{"rule":"SD-GEN-11","path":"/","locator":"url:/private/logo.svg","kind":"finding","severity":"medium","layer":"robots"},
+	{"rule":"SD-JLD-07","path":"/","locator":"doc","kind":"dnf-note","severity":null,"layer":"structured-data"},
+	{"rule":"SD-ORG-04","path":"/","locator":"jsonld:nth(2)$","kind":"finding","severity":"low","layer":"structured-data"},
+	{"rule":"SD-WEB-04","path":"/","locator":"jsonld:nth(3)$","kind":"finding","severity":"low","layer":"structured-data"}
+]

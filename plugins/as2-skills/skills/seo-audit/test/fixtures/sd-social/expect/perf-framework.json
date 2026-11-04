@@ -1,0 +1,6 @@
+[
+	{"rule":"CWV-010","path":"/large-card","locator":"crux","kind":"observation","severity":null,"layer":"field"},
+	{"rule":"CWV-010","path":"/late","locator":"crux","kind":"observation","severity":null,"layer":"field"},
+	{"rule":"CWV-010","path":"/mismatch","locator":"crux","kind":"observation","severity":null,"layer":"field"},
+	{"rule":"CWV-010","path":"/missing","locator":"crux","kind":"observation","severity":null,"layer":"field"}
+]

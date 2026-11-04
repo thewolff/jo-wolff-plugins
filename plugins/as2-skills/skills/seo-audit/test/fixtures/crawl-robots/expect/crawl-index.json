@@ -1,0 +1,8 @@
+[
+	{"rule":"RBT-012","path":"/blocked","locator":"robots.txt:line:4","kind":"finding","severity":"critical","layer":"robots"},
+	{"rule":"RBT-014","path":"/","locator":"url:/assets/blocked/style.css","kind":"finding","severity":"high","layer":"rendered"},
+	{"rule":"RBT-008","path":"/robots.txt","locator":"line:3","kind":"finding","severity":"medium","layer":"robots"},
+	{"rule":"RBT-009","path":"/robots.txt","locator":"line:1","kind":"finding","severity":"medium","layer":"robots"},
+	{"rule":"SMP-015","path":"/robots.txt","locator":"line:11","kind":"finding","severity":"medium","layer":"sitemap"},
+	{"rule":"RBT-011","path":"/robots.txt","locator":"line:10","kind":"finding","severity":"low","layer":"robots"}
+]

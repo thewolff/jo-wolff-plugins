@@ -1,0 +1,11 @@
+{
+	"port": 47212,
+	"audit": {
+		"urls": ["http://127.0.0.1:47212/start"],
+		"allowLocal": ["http://localhost:47212"]
+	},
+	"paths": {
+		"/start": { "status": 301, "headers": { "location": "http://localhost:47212/moved" } },
+		"http://localhost:47212/robots.txt": { "status": 200, "body": "User-agent: *\nDisallow: /moved\n" }
+	}
+}

@@ -1,0 +1,3 @@
+[
+	{"rule":"RBT-002","path":"/robots.txt","locator":"doc","kind":"finding","severity":"critical","layer":"robots"}
+]

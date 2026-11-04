@@ -1,0 +1,4 @@
+[
+	{"rule":"FW-VITE-07","path":"index.html","locator":"line:9","kind":"finding","severity":"high","layer":"source"},
+	{"rule":"CWV-010","path":"/","locator":"crux","kind":"observation","severity":null,"layer":"field"}
+]

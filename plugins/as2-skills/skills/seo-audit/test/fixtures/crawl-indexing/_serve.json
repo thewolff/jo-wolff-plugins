@@ -1,0 +1,17 @@
+{
+	"port": 47205,
+	"audit": {
+		"urls": [
+			"http://127.0.0.1:47205/noindex-meta",
+			"http://127.0.0.1:47205/noindex-header",
+			"http://127.0.0.1:47205/snippets",
+			"http://127.0.0.1:47205/expired",
+			"http://127.0.0.1:47205/embedded",
+			"http://127.0.0.1:47205/nosnippet-js",
+			"http://127.0.0.1:47205/nosnippet-p"
+		]
+	},
+	"paths": {
+		"/noindex-header": { "status": 200, "headers": { "x-robots-tag": "noindex", "content-type": "text/html; charset=utf-8" }, "file": "noindex-header.html" }
+	}
+}

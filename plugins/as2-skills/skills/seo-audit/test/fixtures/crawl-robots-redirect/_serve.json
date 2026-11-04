@@ -1,0 +1,7 @@
+{
+	"port": 47211,
+	"audit": { "urls": ["http://127.0.0.1:47211/start"] },
+	"paths": {
+		"/start": { "status": 301, "headers": { "location": "/blocked" } }
+	}
+}

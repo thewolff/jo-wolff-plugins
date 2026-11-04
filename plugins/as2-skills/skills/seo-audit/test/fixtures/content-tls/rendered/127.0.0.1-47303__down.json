@@ -1,0 +1,36 @@
+{
+	"url": "https://127.0.0.1:47303/down",
+	"finalUrl": "http://127.0.0.1:47399/down",
+	"navigations": [
+		{
+			"url": "http://127.0.0.1:47399/down",
+			"reason": null
+		}
+	],
+	"requests": [
+		{
+			"url": "https://127.0.0.1:47303/down",
+			"type": "Document",
+			"status": null,
+			"failed": null
+		},
+		{
+			"url": "http://127.0.0.1:47399/down",
+			"type": "Document",
+			"status": 403,
+			"failed": null
+		},
+		{
+			"url": "http://127.0.0.1:47399/favicon.ico",
+			"type": "Other",
+			"status": 403,
+			"failed": null
+		}
+	],
+	"proxy": {
+		"transactions": 14,
+		"refused": 2
+	},
+	"error": null,
+	"recordedWith": "Chrome/154.0.8037.98"
+}

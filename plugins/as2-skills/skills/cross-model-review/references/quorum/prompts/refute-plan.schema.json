@@ -1,0 +1,44 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "quorum cross-refutation — attacks on the other legs' plans",
+  "description": "Structured output contract for a refute leg. Mirrors the bar in refute-plan.md — do not add fields here without updating that prompt to match. Targets are anonymized as plan-1/plan-2; provider labels reattach only at synthesis.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["critiques"],
+  "properties": {
+    "critiques": {
+      "type": "array",
+      "description": "One entry per plan under attack.",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["target", "attacks"],
+        "properties": {
+          "target": {
+            "type": "string",
+            "description": "Which plan this critique addresses, by payload label.",
+            "enum": ["plan-1", "plan-2"]
+          },
+          "attacks": {
+            "type": "array",
+            "description": "Empty is a valid verdict — nothing genuinely wrong was found.",
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["type", "where", "what", "basis"],
+              "properties": {
+                "type": {
+                  "type": "string",
+                  "enum": ["false_assumption", "omission", "break_point"]
+                },
+                "where": { "type": "string", "description": "The step or claim in the plan under attack." },
+                "what": { "type": "string", "description": "The failure: what does not hold, is missing, or breaks when executed as written." },
+                "basis": { "type": "string", "description": "The receipt: the brief line, pack fact, or plan step it rests on. 'Seems thin' is not a basis." }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}

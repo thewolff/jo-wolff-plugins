@@ -1,0 +1,5 @@
+[
+	{"rule":"TTL-002","path":"/","silent":true},
+	{"rule":"TTL-003","path":"/","silent":true},
+	{"rule":"SNP-003","path":"/","silent":true}
+]

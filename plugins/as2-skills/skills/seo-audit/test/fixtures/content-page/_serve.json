@@ -1,0 +1,23 @@
+{
+	"port": 47301,
+	"audit": {
+		"urls": [
+			"http://127.0.0.1:47301/",
+			"http://127.0.0.1:47301/no-title",
+			"http://127.0.0.1:47301/two-titles",
+			"http://127.0.0.1:47301/dup-a",
+			"http://127.0.0.1:47301/dup-b",
+			"http://127.0.0.1:47301/no-viewport",
+			"http://127.0.0.1:47301/narrow-viewport",
+			"http://127.0.0.1:47301/links",
+			"http://127.0.0.1:47301/nofollow",
+			"http://127.0.0.1:47301/images",
+			"http://127.0.0.1:47301/js-noindex",
+			"http://127.0.0.1:47301/vague",
+			"http://127.0.0.1:47301/stuffed",
+			"http://127.0.0.1:47301/no-headings",
+			"http://127.0.0.1:47301/titled-no-headings",
+			"http://127.0.0.1:47301/good"
+		]
+	}
+}

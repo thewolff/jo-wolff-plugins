@@ -1,0 +1,9 @@
+[
+	{"rule":"CWV-024","path":"/","locator":"html:script[src=\"/tides.js\"]","kind":"finding","severity":"medium","layer":"raw-html"},
+	{"rule":"LH-P05","path":"/","locator":"lhr:lcp-discovery-insight","kind":"finding","severity":"medium","layer":"lab"},
+	{"rule":"LH-P01","path":"/","locator":"lhr:largest-contentful-paint","kind":"finding","severity":"low","layer":"lab","modes":["recorded"]},
+	{"rule":"LH-P02","path":"/","locator":"lhr:cumulative-layout-shift","kind":"finding","severity":"low","layer":"lab","modes":["recorded"]},
+	{"rule":"LH-P06","path":"/","locator":"lhr:render-blocking-insight","kind":"finding","severity":"low","layer":"lab"},
+	{"rule":"LH-P09","path":"/","locator":"lhr:font-display-insight","kind":"finding","severity":"low","layer":"lab"},
+	{"rule":"CWV-010","path":"/","locator":"crux","kind":"observation","severity":null,"layer":"field"}
+]

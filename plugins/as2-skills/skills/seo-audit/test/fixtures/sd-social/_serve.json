@@ -1,0 +1,12 @@
+{
+	"port": 47421,
+	"audit": {
+		"urls": [
+			"http://127.0.0.1:47421/missing",
+			"http://127.0.0.1:47421/mismatch",
+			"http://127.0.0.1:47421/large-card",
+			"http://127.0.0.1:47421/late"
+		],
+		"noRender": true
+	}
+}

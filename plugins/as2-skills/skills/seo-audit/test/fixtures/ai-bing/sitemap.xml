@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
+<url><loc>http://127.0.0.1:47503/</loc><lastmod>{{today}}</lastmod></url>
+<url><loc>http://127.0.0.1:47503/csr-head</loc><lastmod>{{today}}</lastmod></url>
+<url><loc>http://127.0.0.1:47503/xrt</loc><lastmod>{{today}}</lastmod></url>
+<url><loc>http://127.0.0.1:47503/routes</loc><lastmod>{{today}}</lastmod></url>
+<url><loc>http://127.0.0.1:47503/timetable</loc><lastmod>{{today}}</lastmod></url>
+</urlset>

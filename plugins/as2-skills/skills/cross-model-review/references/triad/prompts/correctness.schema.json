@@ -1,0 +1,33 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "triad leg B — correctness against intent",
+  "description": "Structured output contract for leg B (codex --output-schema). Mirrors the finding fields in correctness.md — do not add fields here without updating that prompt to match.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["status", "findings"],
+  "properties": {
+    "status": {
+      "type": "string",
+      "description": "no_ticket: ticket.md was NO_TICKET_PROVIDED, leg skipped. no_findings: reviewed, nothing to report. findings: one or more findings below.",
+      "enum": ["no_ticket", "no_findings", "findings"]
+    },
+    "findings": {
+      "type": "array",
+      "description": "Empty for no_ticket and no_findings. One entry per defect for findings, ordered by severity.",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["title", "severity", "where", "what", "trigger", "spec", "fix"],
+        "properties": {
+          "title": { "type": "string", "description": "Short title for the defect." },
+          "severity": { "type": "string", "enum": ["critical", "high", "medium", "low"] },
+          "where": { "type": "string", "description": "file:line from the patch." },
+          "what": { "type": "string", "description": "The defect." },
+          "trigger": { "type": "string", "description": "The concrete input or sequence that causes it, and the wrong outcome." },
+          "spec": { "type": "string", "description": "The ticket line it violates, or \"edge case — not in ticket\"." },
+          "fix": { "type": "string", "description": "Specific, minimal fix." }
+        }
+      }
+    }
+  }
+}

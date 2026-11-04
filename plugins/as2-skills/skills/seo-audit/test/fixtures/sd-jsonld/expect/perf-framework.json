@@ -1,0 +1,4 @@
+[
+	{"rule":"CWV-010","path":"/syntax","locator":"crux","kind":"observation","severity":null,"layer":"field"},
+	{"rule":"CWV-010","path":"/values","locator":"crux","kind":"observation","severity":null,"layer":"field"}
+]

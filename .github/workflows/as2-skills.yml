@@ -1,0 +1,31 @@
+name: as2-skills
+
+on:
+  push:
+    paths:
+      - "plugins/as2-skills/**"
+      - ".github/workflows/as2-skills.yml"
+  pull_request:
+    paths:
+      - "plugins/as2-skills/**"
+      - ".github/workflows/as2-skills.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: node --test
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    defaults:
+      run:
+        working-directory: plugins/as2-skills
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+      - name: Tests
+        # By name: the vendored skills carry Bun tests under skills/*/test/ that node cannot run.
+        run: node --test skills.test.mjs

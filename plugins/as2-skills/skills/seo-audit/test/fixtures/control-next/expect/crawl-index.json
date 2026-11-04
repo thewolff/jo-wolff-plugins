@@ -1,0 +1,7 @@
+[
+	{"rule":"HTTP-004","path":"/old","locator":"hop:1","kind":"observation","severity":null,"layer":"headers"},
+	{"rule":"DNF-10","path":"/","locator":"html:head","kind":"dnf-note","severity":null,"layer":"raw-html"},
+	{"rule":"DNF-10","path":"/new","locator":"html:head","kind":"dnf-note","severity":null,"layer":"raw-html"},
+	{"rule":"DNF-11","path":"/sitemap.xml","locator":"doc","kind":"dnf-note","severity":null,"layer":"sitemap"},
+	{"rule":"DNF-16","path":"/robots.txt","locator":"doc","kind":"dnf-note","severity":null,"layer":"robots"}
+]

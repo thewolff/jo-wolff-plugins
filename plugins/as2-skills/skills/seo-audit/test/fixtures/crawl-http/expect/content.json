@@ -1,0 +1,13 @@
+[
+	{"rule":"PX-001","path":"/chain-end","locator":"url:/chain-end","kind":"finding","severity":"medium","layer":"headers"},
+	{"rule":"PX-001","path":"/js-redirect","locator":"url:/js-redirect","kind":"finding","severity":"medium","layer":"headers"},
+	{"rule":"PX-001","path":"/missing","locator":"url:/missing","kind":"finding","severity":"medium","layer":"headers"},
+	{"rule":"PX-001","path":"/refresh","locator":"url:/refresh","kind":"finding","severity":"medium","layer":"headers"},
+	{"rule":"PX-001","path":"/soft-404","locator":"url:/soft-404","kind":"finding","severity":"medium","layer":"headers"},
+	{"rule":"PX-001","path":"/temp-target","locator":"url:/temp-target","kind":"finding","severity":"medium","layer":"headers"},
+	{"rule":"PX-001","path":"/two-hop-end","locator":"url:/two-hop-end","kind":"finding","severity":"medium","layer":"headers"},
+	{"rule":"DNF-04","path":"/chain-end","locator":"html:head","kind":"dnf-note","severity":null,"layer":"raw-html"},
+	{"rule":"DNF-05","path":"/chain-end","locator":"html:html","kind":"dnf-note","severity":null,"layer":"raw-html"},
+	{"rule":"DNF-06","path":"/chain-end","locator":"html:head","kind":"dnf-note","severity":null,"layer":"raw-html"},
+	{"rule":"DNF-12","path":"/chain-end","locator":"html:body","kind":"dnf-note","severity":null,"layer":"raw-html"}
+]

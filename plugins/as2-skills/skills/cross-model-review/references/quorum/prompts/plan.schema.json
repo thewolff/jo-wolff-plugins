@@ -1,0 +1,56 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "quorum leg output — one plan",
+  "description": "Structured output contract for a plan leg. Mirrors the fields in plan.md — do not add fields here without updating that prompt to match. All three legs share this shape; leg C emits it without schema enforcement and is parsed leniently.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["summary", "steps", "risks", "assumptions", "open_questions"],
+  "properties": {
+    "summary": {
+      "type": "string",
+      "description": "The approach in one short paragraph."
+    },
+    "steps": {
+      "type": "array",
+      "description": "Ordered by execution order.",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["title", "what", "where", "depends_on"],
+        "properties": {
+          "title": { "type": "string", "description": "Short title for the step." },
+          "what": { "type": "string", "description": "The change and how it is verified." },
+          "where": { "type": "string", "description": "Files, repos, or systems touched — from the grounding pack when one exists." },
+          "depends_on": {
+            "type": "array",
+            "description": "Titles of prior steps this one needs. Empty if none.",
+            "items": { "type": "string" }
+          }
+        }
+      }
+    },
+    "risks": {
+      "type": "array",
+      "description": "Ordered by severity.",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["risk", "mitigation"],
+        "properties": {
+          "risk": { "type": "string", "description": "What breaks, lands out of order, or is hard to reverse." },
+          "mitigation": { "type": "string", "description": "How the plan contains it." }
+        }
+      }
+    },
+    "assumptions": {
+      "type": "array",
+      "description": "Facts relied on that neither the brief nor the pack establishes, and ambiguities resolved by fiat.",
+      "items": { "type": "string" }
+    },
+    "open_questions": {
+      "type": "array",
+      "description": "What must be answered before or during implementation, and by whom or from where.",
+      "items": { "type": "string" }
+    }
+  }
+}

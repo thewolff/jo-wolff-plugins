@@ -1,0 +1,13 @@
+{
+	"port": 47504,
+	"audit": {
+		"urls": [
+			"http://127.0.0.1:47504/hidden",
+			"http://127.0.0.1:47504/stuffed",
+			"http://127.0.0.1:47504/sponsored",
+			"http://127.0.0.1:47504/prompt",
+			"http://127.0.0.1:47504/buried",
+			"http://127.0.0.1:47504/gallery"
+		]
+	}
+}

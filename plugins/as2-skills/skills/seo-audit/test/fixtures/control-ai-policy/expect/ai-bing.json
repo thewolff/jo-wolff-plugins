@@ -1,0 +1,15 @@
+[
+	{"rule":"AI-002","path":"/","locator":"robots.txt:line:11","kind":"observation","severity":null,"layer":"robots"},
+	{"rule":"AI-011","path":"/","locator":"robots.txt:line:14","kind":"observation","severity":null,"layer":"robots"},
+	{"rule":"AI-012","path":"/","locator":"robots.txt:line:17","kind":"observation","severity":null,"layer":"robots"},
+	{"rule":"AI-035","path":"/","locator":"robots.txt:line:20","kind":"observation","severity":null,"layer":"robots"},
+	{"rule":"AI-061","path":"/","locator":"robots.txt:line:23","kind":"observation","severity":null,"layer":"robots"},
+	{"rule":"AI-070","path":"/","locator":"robots.txt:line:26","kind":"observation","severity":null,"layer":"robots"},
+	{"rule":"AI-075","path":"/","locator":"robots.txt:line:29","kind":"observation","severity":null,"layer":"robots"},
+	{"rule":"AI-003","path":"/robots.txt","locator":"line:31","kind":"dnf-note","severity":null,"layer":"robots"},
+	{"rule":"AI-021","path":"/robots.txt","locator":"line:34","kind":"dnf-note","severity":null,"layer":"robots"},
+	{"rule":"DNF-15","path":"/robots.txt","locator":"line:2","kind":"dnf-note","severity":null,"layer":"robots"},
+	{"rule":"NF-AI-10","path":"/robots.txt","locator":"line:22","kind":"dnf-note","severity":null,"layer":"robots"},
+	{"rule":"NF-AI-2","path":"/robots.txt","locator":"line:19","kind":"dnf-note","severity":null,"layer":"robots"},
+	{"rule":"NF-BNG-4","path":"/robots.txt","locator":"line:6","kind":"dnf-note","severity":null,"layer":"robots"}
+]

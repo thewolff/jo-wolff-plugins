@@ -1,0 +1,17 @@
+{
+	"recorded": "lhr.json was recorded by `audit.ts --record-lhr` (Lighthouse 13.5.0, system Chrome without its sandbox, loopback only) against this fixture as served on 2026-10-12. Only the numeric values listed here were written over the recording afterwards (PLAN section 3); every other value is the real run's.",
+	"edits": [
+		{
+			"path": "audits.largest-contentful-paint.numericValue",
+			"recorded": 905.5678,
+			"planted": 3200,
+			"why": "LH-P01: a local mini-site cannot reproduce a slow lab LCP; the planted value is above the 2500 ms target"
+		},
+		{
+			"path": "audits.cumulative-layout-shift.numericValue",
+			"recorded": 0,
+			"planted": 0.18,
+			"why": "LH-P02: the page has no layout shift on load; the planted value is above the 0.1 target"
+		}
+	]
+}

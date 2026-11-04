@@ -1,0 +1,5 @@
+[
+	{ "rule": "SD-GEN-02", "path": "/", "silent": true },
+	{ "rule": "SD-SW-07", "path": "/", "silent": true },
+	{ "rule": "SD-REV-03", "path": "/", "silent": true }
+]

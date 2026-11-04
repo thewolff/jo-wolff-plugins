@@ -1,0 +1,15 @@
+[
+	{"rule":"FW-NEXT-02","path":"app/(site)/contact/page.tsx","locator":"line:6","kind":"finding","severity":"high","layer":"source"},
+	{"rule":"FW-NEXT-04","path":"app/(shop)/layout.tsx","locator":"line:5","kind":"finding","severity":"high","layer":"source"},
+	{"rule":"FW-NEXT-04","path":"app/(site)/layout.tsx","locator":"line:12","kind":"finding","severity":"high","layer":"source"},
+	{"rule":"FW-NEXT-04","path":"app/(site)/layout.tsx","locator":"line:13","kind":"finding","severity":"high","layer":"source"},
+	{"rule":"FW-NEXT-04","path":"app/(site)/layout.tsx","locator":"line:17","kind":"finding","severity":"high","layer":"source"},
+	{"rule":"FW-NEXT-01","path":"app/(shop)/shop/page.tsx","locator":"doc","kind":"finding","severity":"medium","layer":"source"},
+	{"rule":"FW-NEXT-01","path":"app/(shop)/shop/seeds/page.tsx","locator":"doc","kind":"finding","severity":"medium","layer":"source"},
+	{"rule":"FW-NEXT-01","path":"app/(site)/journal/[slug]/page.tsx","locator":"line:6","kind":"finding","severity":"medium","layer":"source"},
+	{"rule":"FW-NEXT-05","path":"app/(site)/about/page.tsx","locator":"line:5","kind":"finding","severity":"medium","layer":"source"},
+	{"rule":"FW-NEXT-05","path":"app/(site)/layout.tsx","locator":"line:8","kind":"finding","severity":"medium","layer":"source"},
+	{"rule":"FW-NEXT-23","path":"app/(site)/layout.tsx","locator":"line:19","kind":"finding","severity":"low","layer":"source"},
+	{"rule":"FW-NEXT-23","path":"app/(site)/layout.tsx","locator":"line:20","kind":"finding","severity":"low","layer":"source"},
+	{"rule":"CWV-010","path":"/","locator":"crux","kind":"observation","severity":null,"layer":"field"}
+]

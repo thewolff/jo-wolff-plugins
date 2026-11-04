@@ -1,0 +1,5 @@
+[
+	{"rule":"HEU-02b","path":"/alias","locator":"html:link[rel=canonical]","kind":"observation","severity":null,"layer":"raw-html"},
+	{"rule":"IDX-001","path":"/private","locator":"html:meta[name=robots]","kind":"observation","severity":null,"layer":"raw-html"},
+	{"rule":"DNF-11","path":"/sitemap.xml","locator":"doc","kind":"dnf-note","severity":null,"layer":"sitemap"}
+]

@@ -1,0 +1,30 @@
+{
+	"url": "http://127.0.0.1:47207/missing",
+	"finalUrl": "http://127.0.0.1:47207/missing",
+	"navigations": [
+		{
+			"url": "http://127.0.0.1:47207/missing",
+			"reason": null
+		}
+	],
+	"requests": [
+		{
+			"url": "http://127.0.0.1:47207/missing",
+			"type": "Document",
+			"status": 404,
+			"failed": null
+		},
+		{
+			"url": "http://127.0.0.1:47207/favicon.ico",
+			"type": "Other",
+			"status": 404,
+			"failed": null
+		}
+	],
+	"proxy": {
+		"transactions": 12,
+		"refused": 0
+	},
+	"error": null,
+	"recordedWith": "Chrome/154.0.8037.98"
+}

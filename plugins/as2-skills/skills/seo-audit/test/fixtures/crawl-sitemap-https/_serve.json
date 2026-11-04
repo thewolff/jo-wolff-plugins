@@ -1,0 +1,5 @@
+{
+	"port": 47209,
+	"tls": true,
+	"audit": { "urls": ["https://127.0.0.1:47209/"], "noRender": true, "sample": 1 }
+}

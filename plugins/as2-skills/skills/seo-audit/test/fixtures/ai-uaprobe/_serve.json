@@ -1,0 +1,31 @@
+{
+	"port": 47505,
+	"audit": {
+		"urls": ["http://127.0.0.1:47505/", "http://127.0.0.1:47505/cloak", "http://127.0.0.1:47505/sneaky"]
+	},
+	"paths": {
+		"/": {
+			"file": "index.html",
+			"ua": {
+				"OAI-SearchBot": { "status": 403, "body": "Forbidden" },
+				"Claude-SearchBot": { "file": "challenge.html" },
+				"ClaudeBot": { "status": 429, "body": "Too Many Requests" },
+				"PerplexityBot": { "status": 503, "body": "Service Unavailable" },
+				"Googlebot": { "status": 401, "body": "Unauthorized" }
+			}
+		},
+		"/cloak": {
+			"file": "cloak.html",
+			"ua": {
+				"Googlebot": { "file": "cloak-crawler.html" },
+				"bingbot": { "file": "cloak-crawler.html" }
+			}
+		},
+		"/sneaky": {
+			"file": "sneaky.html",
+			"ua": {
+				"Googlebot": { "status": 302, "headers": { "location": "/crawler-landing" }, "body": "" }
+			}
+		}
+	}
+}

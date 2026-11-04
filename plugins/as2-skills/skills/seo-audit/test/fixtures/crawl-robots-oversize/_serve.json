@@ -1,0 +1,12 @@
+{
+	"port": 47204,
+	"audit": { "urls": ["http://127.0.0.1:47204/"] },
+	"paths": {
+		"/robots.txt": {
+			"status": 200,
+			"headers": { "content-type": "text/html; charset=utf-8" },
+			"body": "<!doctype html>\n<html><body><pre>\nUser-agent: *\nAllow: /\n",
+			"padTo": 520000
+		}
+	}
+}

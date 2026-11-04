@@ -1,0 +1,3 @@
+[
+	{"rule":"HTTP-002","path":"/","silent":true}
+]

@@ -1,0 +1,18 @@
+{
+	"port": 47303,
+	"tls": true,
+	"audit": {
+		"urls": [
+			"https://127.0.0.1:47303/",
+			"https://127.0.0.1:47303/down"
+		]
+	},
+	"paths": {
+		"/down": {
+			"status": 301,
+			"headers": {
+				"location": "http://127.0.0.1:47399/down"
+			}
+		}
+	}
+}

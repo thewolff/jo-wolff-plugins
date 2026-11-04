@@ -17,6 +17,9 @@ place, going through your reminders with it, and keeping a record of what it did
 - **[ledger](#ledger)** — a durable, id'd record of the questions an agent asks you and the
   choices it makes without asking, in one SQLite file; opt-in per folder, with hooks that keep
   every question on a row you can answer by typing its id back.
+- **[as2-skills](plugins/as2-skills/README.md)** — the 22 engineering skills of agent-system 2.0,
+  vendored from four upstream skill packs at pinned releases, with frontmatter claude.ai accepts.
+  Install with `/plugin install as2-skills@jo-wolff-plugins`; skills only.
 
 output-types delivers text and does not read what the agent sends back; see its *delivers, does
 not enforce* note. i-have-audhd delivers its rules and checks every finished message, warning by

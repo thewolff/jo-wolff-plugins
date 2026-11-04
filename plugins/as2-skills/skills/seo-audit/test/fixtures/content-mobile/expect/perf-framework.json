@@ -1,0 +1,7 @@
+[
+	{"rule":"CWV-010","path":"/m-headings","locator":"crux","kind":"observation","severity":null,"layer":"field"},
+	{"rule":"CWV-010","path":"/m-noindex","locator":"crux","kind":"observation","severity":null,"layer":"field"},
+	{"rule":"CWV-010","path":"/m-same","locator":"crux","kind":"observation","severity":null,"layer":"field"},
+	{"rule":"CWV-010","path":"/m-status","locator":"crux","kind":"observation","severity":null,"layer":"field"},
+	{"rule":"CWV-010","path":"/m-title","locator":"crux","kind":"observation","severity":null,"layer":"field"}
+]

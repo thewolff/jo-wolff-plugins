@@ -1,0 +1,32 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "triad leg A — architecture and blast radius",
+  "description": "Structured output contract for leg A (claude --json-schema). Mirrors the finding fields in architecture.md — do not add fields here without updating that prompt to match. Leg A has no ticket, so there is no no_ticket status.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["status", "findings"],
+  "properties": {
+    "status": {
+      "type": "string",
+      "description": "no_findings: reviewed, nothing to report. findings: one or more findings below.",
+      "enum": ["no_findings", "findings"]
+    },
+    "findings": {
+      "type": "array",
+      "description": "Empty for no_findings. One entry per defect for findings, ordered by severity.",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["title", "severity", "where", "what", "evidence", "fix"],
+        "properties": {
+          "title": { "type": "string", "description": "Short title for the defect." },
+          "severity": { "type": "string", "enum": ["critical", "high", "medium", "low"] },
+          "where": { "type": "string", "description": "file:line, or the boundary/contract affected." },
+          "what": { "type": "string", "description": "The defect and the path traced to find it." },
+          "evidence": { "type": "string", "description": "The named consumer, decision-log entry, or arch doc checked." },
+          "fix": { "type": "string", "description": "Specific, minimal fix." }
+        }
+      }
+    }
+  }
+}

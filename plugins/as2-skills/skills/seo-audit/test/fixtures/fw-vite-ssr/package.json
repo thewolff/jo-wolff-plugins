@@ -1,0 +1,20 @@
+{
+	"name": "tidewater-ssr",
+	"private": true,
+	"type": "module",
+	"scripts": {
+		"dev": "node server.js",
+		"build": "npm run build:client && npm run build:server",
+		"build:client": "vite build --outDir dist/client",
+		"build:server": "vite build --ssr src/entry-server.tsx --outDir dist/server",
+		"preview": "cross-env NODE_ENV=production node server.js"
+	},
+	"dependencies": {
+		"react": "19.1.1",
+		"react-dom": "19.1.1"
+	},
+	"devDependencies": {
+		"@vitejs/plugin-react": "5.0.4",
+		"vite": "7.1.9"
+	}
+}

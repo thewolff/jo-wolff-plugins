@@ -1,0 +1,30 @@
+{
+	"port": 47206,
+	"audit": {
+		"urls": [
+			"http://127.0.0.1:47206/can-body",
+			"http://127.0.0.1:47206/can-relative",
+			"http://127.0.0.1:47206/can-redirect",
+			"http://127.0.0.1:47206/can-fragment",
+			"http://127.0.0.1:47206/can-header",
+			"http://127.0.0.1:47206/can-js",
+			"http://127.0.0.1:47206/can-attr",
+			"http://localhost:47206/can-host",
+			"http://localhost:47206/can-temp",
+			"http://127.0.0.1:47206/can-head-div",
+			"http://127.0.0.1:47206/can-gone",
+			"http://127.0.0.1:47206/can-two"
+		],
+		"allowLocal": ["http://localhost:47206"]
+	},
+	"paths": {
+		"/can-redirect": { "status": 301, "headers": { "location": "/can-final" } },
+		"http://localhost:47206/can-host": { "status": 301, "headers": { "location": "http://127.0.0.1:47206/can-host" } },
+		"http://localhost:47206/can-temp": { "status": 302, "headers": { "location": "http://127.0.0.1:47206/can-temp" } },
+		"/can-header": {
+			"status": 200,
+			"headers": { "link": "<http://127.0.0.1:47206/can-target>; rel=\"canonical\"", "content-type": "text/html; charset=utf-8" },
+			"file": "can-header.html"
+		}
+	}
+}

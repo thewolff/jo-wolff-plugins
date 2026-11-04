@@ -1,0 +1,30 @@
+{
+	"url": "http://127.0.0.1:47412/video",
+	"finalUrl": "http://127.0.0.1:47412/video",
+	"navigations": [
+		{
+			"url": "http://127.0.0.1:47412/video",
+			"reason": null
+		}
+	],
+	"requests": [
+		{
+			"url": "http://127.0.0.1:47412/video",
+			"type": "Document",
+			"status": 200,
+			"failed": null
+		},
+		{
+			"url": "http://127.0.0.1:47412/favicon.svg",
+			"type": "Other",
+			"status": 200,
+			"failed": null
+		}
+	],
+	"proxy": {
+		"transactions": 13,
+		"refused": 0
+	},
+	"error": null,
+	"recordedWith": "Chrome/154.0.8037.98"
+}

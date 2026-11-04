@@ -1,0 +1,6 @@
+[
+	{"rule":"SPM-001","path":"/cloak","locator":"ua-probe:googlebot-smartphone","kind":"finding","severity":"medium"},
+	{"rule":"BNG-021","path":"/cloak","locator":"ua-probe:bingbot","kind":"finding","severity":"medium"},
+	{"rule":"SPM-004","path":"/sneaky","locator":"ua-probe:googlebot-smartphone","kind":"finding","severity":"medium"},
+	{"rule":"SPM-004","path":"/sneaky","locator":"ua-probe:googlebot-desktop","kind":"finding","severity":"medium"}
+]

@@ -1,0 +1,7 @@
+{
+	"port": 47502,
+	"audit": { "urls": ["http://127.0.0.1:47502/blocked"] },
+	"paths": {
+		"/llms.txt": { "status": 503, "body": "Service Unavailable" }
+	}
+}

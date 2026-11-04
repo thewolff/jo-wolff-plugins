@@ -1,0 +1,96 @@
+{
+	"url": "http://127.0.0.1:47207/chain-0",
+	"finalUrl": "http://127.0.0.1:47207/chain-end",
+	"navigations": [
+		{
+			"url": "http://127.0.0.1:47207/chain-end",
+			"reason": null
+		}
+	],
+	"requests": [
+		{
+			"url": "http://127.0.0.1:47207/chain-0",
+			"type": "Document",
+			"status": null,
+			"failed": null
+		},
+		{
+			"url": "http://127.0.0.1:47207/chain-1",
+			"type": "Document",
+			"status": null,
+			"failed": null
+		},
+		{
+			"url": "http://127.0.0.1:47207/chain-2",
+			"type": "Document",
+			"status": null,
+			"failed": null
+		},
+		{
+			"url": "http://127.0.0.1:47207/chain-3",
+			"type": "Document",
+			"status": null,
+			"failed": null
+		},
+		{
+			"url": "http://127.0.0.1:47207/chain-4",
+			"type": "Document",
+			"status": null,
+			"failed": null
+		},
+		{
+			"url": "http://127.0.0.1:47207/chain-5",
+			"type": "Document",
+			"status": null,
+			"failed": null
+		},
+		{
+			"url": "http://127.0.0.1:47207/chain-6",
+			"type": "Document",
+			"status": null,
+			"failed": null
+		},
+		{
+			"url": "http://127.0.0.1:47207/chain-7",
+			"type": "Document",
+			"status": null,
+			"failed": null
+		},
+		{
+			"url": "http://127.0.0.1:47207/chain-8",
+			"type": "Document",
+			"status": null,
+			"failed": null
+		},
+		{
+			"url": "http://127.0.0.1:47207/chain-9",
+			"type": "Document",
+			"status": null,
+			"failed": null
+		},
+		{
+			"url": "http://127.0.0.1:47207/chain-10",
+			"type": "Document",
+			"status": null,
+			"failed": null
+		},
+		{
+			"url": "http://127.0.0.1:47207/chain-end",
+			"type": "Document",
+			"status": 200,
+			"failed": null
+		},
+		{
+			"url": "http://127.0.0.1:47207/favicon.ico",
+			"type": "Other",
+			"status": 404,
+			"failed": null
+		}
+	],
+	"proxy": {
+		"transactions": 23,
+		"refused": 0
+	},
+	"error": null,
+	"recordedWith": "Chrome/154.0.8037.98"
+}
