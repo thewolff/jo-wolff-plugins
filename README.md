@@ -385,7 +385,10 @@ drift at `pair_done`. The host shell is also let through for exactly one shape o
 `~/.claude/plugins/cache/jo-wolff-plugins/` or `~/.claude/plugins/marketplaces/`; anything
 joined to it (`&&`, `;`, a pipe, a redirection, a substitution) is refused as before. The
 plugin README's gate section has the full table and the Linux limits (a grant there needs an
-existing inode).
+existing inode). Also in 1.4.3: on Claude Code, `SessionEnd` removes the state directory of a
+session that never called `pair_start` (it held only queued typed input and stashed notices);
+a session that paired keeps its directory, journal and receipt included, and a directory that
+will not go is one warning and one `errors.log` line, never a failed end.
 
 Changes in 1.4.2: a fault in any hook appends one line to `errors.log` in the plugin's state
 directory and shows one warning, and never blocks a session that is not pairing. While pairing,
