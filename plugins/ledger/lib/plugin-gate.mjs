@@ -96,20 +96,24 @@ export function treeSha(top, sha, prefix) {
 export function snapshotTree(top, sha, prefix) {
   const tree = treeSha(top, sha, prefix);
   const root = mkdtempSync(join(tmpdir(), "ledger-gate-tree-"));
-  const dir = join(root, "tree");
-  mkdirSync(dir);
-  const env = { ...process.env, GIT_INDEX_FILE: join(root, "index") };
-  for (const args of [
-    ["read-tree", tree],
-    ["--work-tree", dir, "checkout-index", "-a", "-f"],
-  ]) {
-    const r = spawnSync("git", args, { cwd: top, env, encoding: "utf8", timeout: 60_000, killSignal: "SIGKILL" });
-    if (r.error || r.status !== 0) {
-      rmSync(root, { recursive: true, force: true });
-      throw new Error(`git ${args.join(" ")}: ${r.error?.message ?? (r.stderr || "").trim() ?? `exit ${r.status}`}`);
+  const release = () => rmSync(root, { recursive: true, force: true });
+  // Until the snapshot is handed over, any failure removes the root with it.
+  try {
+    const dir = join(root, "tree");
+    mkdirSync(dir);
+    const env = { ...process.env, GIT_INDEX_FILE: join(root, "index") };
+    for (const args of [
+      ["read-tree", tree],
+      ["--work-tree", dir, "checkout-index", "-a", "-f"],
+    ]) {
+      const r = spawnSync("git", args, { cwd: top, env, encoding: "utf8", timeout: 60_000, killSignal: "SIGKILL" });
+      if (r.error || r.status !== 0) throw new Error(`git ${args.join(" ")}: ${r.error?.message ?? (r.stderr || "").trim() ?? `exit ${r.status}`}`);
     }
+    return { dir, tree, release };
+  } catch (err) {
+    release();
+    throw err;
   }
-  return { dir, tree, release: () => rmSync(root, { recursive: true, force: true }) };
 }
 
 /** The plugins (of `treePlugins`) with a file changed in base..head (every plugin when base is null: the root commit). */

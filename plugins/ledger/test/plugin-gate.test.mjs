@@ -5,7 +5,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { chmodSync, existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { sandbox, cli, hook, openDb } from "./helpers.mjs";
 import { checkPlugin, fixturesWithoutUnavailable, hookCommands, reasonsWithoutCommand, treePlugins, treeSha, snapshotTree, textsWithoutWhenCant, changedPlugins, CHECKS, FAULT_INPUTS } from "../lib/plugin-gate.mjs";
@@ -141,6 +141,19 @@ test("snapshotTree: the plugin's committed files land in a scratch directory wit
     snap.release();
   }
   assert.ok(!existsSync(snap.dir));
+  // A failure after the scratch root is made (a prefix naming a file, so read-tree gets a blob)
+  // removes the root with it: nothing is left under the temporary directory.
+  const scratch = join(b.root, "scratch-tmp");
+  mkdirSync(scratch);
+  const savedTmp = process.env.TMPDIR;
+  process.env.TMPDIR = scratch;
+  try {
+    assert.throws(() => snapshotTree(b.work, head, "plugins/good/hooks/hooks.json"), /^Error: git read-tree /);
+  } finally {
+    if (savedTmp === undefined) delete process.env.TMPDIR;
+    else process.env.TMPDIR = savedTmp;
+  }
+  assert.deepEqual(readdirSync(scratch), [], "no ledger-gate-tree-* root left behind");
   assert.equal(git(b, "diff", "--cached", "--name-only"), "", "the repository's index is untouched");
   assert.equal(git(b, "diff", "--name-only"), "plugins/good/skills/good/SKILL.md", "the checkout is untouched");
 });

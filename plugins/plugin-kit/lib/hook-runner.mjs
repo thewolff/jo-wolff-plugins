@@ -2,20 +2,24 @@
 // plugin by the `new-plugin` skill (plugin-kit/lib/hook-runner.mjs → <plugin>/lib/hook-runner.mjs);
 // each plugin owns its copy, so a change here reaches a plugin only when someone copies it again.
 //
-// runHook(name, fn, { plugin, quiet, deadlineMs }) reads stdin, parses it as JSON (empty stdin is
-// `{}`), calls fn(input) and prints what fn returns: an object → JSON on stdout, null → nothing.
-// Then it exits 0. Whatever goes wrong, it still exits 0 with an "allow":
+// runHook(name, handlerUrl, { plugin, quiet, deadlineMs }) reads stdin, parses it as JSON (empty
+// stdin is `{}`), runs the hook module's exported `handle(input, { env })` in a worker thread and
+// prints what it returns: an object → JSON on stdout, null → nothing. Then it exits 0. Whatever
+// goes wrong, it still exits 0 with an "allow":
 //
 //   stdin is not JSON, or not an object   one errors.log line + { systemMessage } (unless quiet)
-//   fn throws or rejects                  one errors.log line + { systemMessage } (unless quiet)
+//   handle throws or rejects              one errors.log line + { systemMessage } (unless quiet)
 //   no answer at the deadline             one errors.log line + { systemMessage }, exit 0 at once
 //                                         (default 4 s: inside Claude Code's 5 s hook budget, so
 //                                         the host never kills the hook and loses the message)
 //
-// The deadline is one timer started before stdin is read, and it counts everything: a stdin the
-// host holds open, a handler promise that never settles (the timer is referenced, so it fires
-// with no other handle alive and exits the process itself), and a handler that blocks the loop
-// past the deadline (its answer arrives late and is dropped: fail open, never a late block).
+// The deadline is one referenced timer on the main thread, started before stdin is read, and the
+// handler runs on another thread (a `node:worker_threads` Worker whose script is this module), so
+// the timer fires whatever the handler is doing: a stdin the host holds open, a promise that never
+// settles, a synchronous loop that never yields. At the deadline the main thread writes the log
+// line, prints the message, terminates the worker and exits; an answer that would have come
+// later is dropped (fail open, never a late block). The main thread does nothing but wait, so
+// nothing of the plugin's can block it.
 //
 // errors.log is `${XDG_STATE_HOME:-~/.local/state}/<plugin>/errors.log`, one line per fault:
 // `<iso> <hook> <message>` (a thrown error's line carries two stack frames after ` | `; the
@@ -29,6 +33,7 @@ import { appendFileSync, createReadStream, mkdirSync, realpathSync } from "node:
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { Worker, isMainThread, parentPort, workerData } from "node:worker_threads";
 
 export const DEADLINE_MS = 4_000;
 const TIMED_OUT = Symbol("timed out");
@@ -71,22 +76,25 @@ function readStdin(stdin) {
 }
 
 /**
- * @param name   the hook's event name as it appears in messages (`PreToolUse`, …)
- * @param fn     (input, { env }) → object | null | Promise<object | null>
- * @param opts   { plugin: the plugin's name (required: names the state directory and the message),
- *                 quiet: true for events that discard JSON output (SessionEnd),
- *                 deadlineMs: when to give up, counted from here (default 4000) }
+ * @param name        the hook's event name as it appears in messages (`PreToolUse`, …)
+ * @param handlerUrl  the hook module's `import.meta.url`; it exports `handle(input, { env })` →
+ *                    object | null | Promise<object | null>, run on a worker thread
+ * @param opts        { plugin: the plugin's name (required: names the state directory and the message),
+ *                      quiet: true for events that discard JSON output (SessionEnd),
+ *                      deadlineMs: when to give up, counted from here (default 4000) }
  */
-export async function runHook(name, fn, { plugin, quiet = false, deadlineMs = DEADLINE_MS, env = process.env, stdin = 0, exit = (code) => process.exit(code), write = (s) => process.stdout.write(s) } = {}) {
+export async function runHook(name, handlerUrl, { plugin, quiet = false, deadlineMs = DEADLINE_MS, env = process.env, stdin = 0, exit = (code) => process.exit(code), write = (s) => process.stdout.write(s) } = {}) {
   if (!plugin) throw new TypeError("runHook needs { plugin }");
-  const started = Date.now();
+  if (typeof handlerUrl !== "string") throw new TypeError("runHook needs the hook module's import.meta.url (a string); it exports handle()");
   let done = false;
   let timer;
+  let worker = null;
   // The one exit: the first caller wins; a late timer or a late answer finds `done` set.
   const finish = (text) => {
     if (done) return;
     done = true;
     clearTimeout(timer);
+    worker?.terminate().catch(() => {});
     if (text) write(text);
     return exit(0);
   };
@@ -95,12 +103,11 @@ export async function runHook(name, fn, { plugin, quiet = false, deadlineMs = DE
     logError(plugin, name, why + detail, env);
     return finish(quiet ? "" : JSON.stringify({ systemMessage: `${plugin} ${name} failed open: ${why}` }));
   };
-  const noAnswer = `no answer within ${deadlineMs} ms`;
   const deadline = new Promise((resolve) => {
     // Referenced on purpose: with nothing else alive (a promise that never settles) this is
     // what ends the process.
     timer = setTimeout(() => {
-      failOpen(noAnswer);
+      failOpen(`no answer within ${deadlineMs} ms`);
       resolve(TIMED_OUT);
     }, deadlineMs);
   });
@@ -113,20 +120,50 @@ export async function runHook(name, fn, { plugin, quiet = false, deadlineMs = DE
   } catch (err) {
     return failOpen(`stdin not JSON: ${err.message}`);
   }
-  try {
-    const out = await Promise.race([Promise.resolve().then(() => fn(input, { env })), deadline]);
-    if (out === TIMED_OUT || done) return;
-    const elapsed = Date.now() - started;
-    if (elapsed > deadlineMs) return failOpen(`${noAnswer} (the answer came after ${elapsed} ms)`);
-    return finish(out && typeof out === "object" && Object.keys(out).length ? JSON.stringify(out) : "");
-  } catch (err) {
-    const message = err?.message ?? String(err);
-    return failOpen(message, err?.stack ? ` | ${err.stack.split("\n").slice(1, 3).join(" ")}` : "");
-  }
+  const answer = new Promise((resolve) => {
+    try {
+      // argv is emptied so the hook module, imported in the worker, sees it was not invoked
+      // directly and does not start a runner of its own.
+      worker = new Worker(new URL(import.meta.url), { workerData: { kitHook: true, module: handlerUrl, input }, env, argv: [], stdout: true, stderr: true });
+    } catch (err) {
+      return resolve({ error: { message: `could not start the handler thread: ${err.message}` } });
+    }
+    worker.on("message", resolve);
+    worker.on("error", (err) => resolve({ error: { message: err?.message ?? String(err), stack: err?.stack } }));
+    // After the answer's own event, so a message posted just before the thread ended wins.
+    worker.on("exit", (code) => setImmediate(() => resolve({ error: { message: `the handler thread ended (code ${code}) without an answer: handle() returned a promise nothing will settle` } })));
+  });
+  const result = await Promise.race([answer, deadline]);
+  if (result === TIMED_OUT || done) return;
+  if (result.error) return failOpen(result.error.message, result.error.stack ? ` | ${result.error.stack.split("\n").slice(1, 3).join(" ")}` : "");
+  const out = result.out;
+  return finish(out && typeof out === "object" && Object.keys(out).length ? JSON.stringify(out) : "");
 }
 
-/** True when the module at `importMetaUrl` is the script node was started with (not an import). */
+// The worker half: import the hook module, run its handle(), post the answer or the error.
+if (!isMainThread && workerData?.kitHook === true) {
+  const post = (msg) => parentPort.postMessage(msg);
+  import(workerData.module)
+    .then((m) => {
+      if (typeof m.handle !== "function") throw new Error(`${workerData.module} exports no handle()`);
+      return m.handle(workerData.input, { env: process.env });
+    })
+    .then((out) => {
+      try {
+        post({ out: out ?? null });
+      } catch (err) {
+        post({ error: { message: `the handler's answer cannot be sent to the main thread: ${err.message}` } });
+      }
+    })
+    .catch((err) => post({ error: { message: err?.message ?? String(err), stack: err?.stack } }));
+}
+
+/**
+ * True when the module at `importMetaUrl` is the script node was started with (not an import,
+ * and not the handler thread, where argv is empty).
+ */
 export function invokedDirectly(importMetaUrl) {
+  if (!isMainThread) return false;
   try {
     return realpathSync(process.argv[1]) === realpathSync(fileURLToPath(importMetaUrl));
   } catch {

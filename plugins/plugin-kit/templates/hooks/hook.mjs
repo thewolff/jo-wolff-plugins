@@ -4,8 +4,9 @@
 //
 // What it does: (write the rule here, one sentence, and its deny or block text if it has one).
 //
-// How it fails: stdin not JSON, a thrown error, or no answer in 4 s → the runner logs it to
-// ${XDG_STATE_HOME:-~/.local/state}/{{name}}/errors.log and allows. Anything this hook reads
+// How it fails: stdin not JSON, a thrown error, or no answer in 4 s (handle() runs on a worker
+// thread; the runner's timer on the main thread fires whatever it is doing) → the runner logs it
+// to ${XDG_STATE_HOME:-~/.local/state}/{{name}}/errors.log and allows. Anything this hook reads
 // (a config file, a state file) that is missing or unreadable → treat as "no rule applies" and
 // return null; say so in a systemMessage only when the person needs to know.
 //
@@ -24,4 +25,4 @@ export function handle(input, { env = process.env } = {}) {
   return null;
 }
 
-if (invokedDirectly(import.meta.url)) runHook("{{event}}", handle, { plugin: "{{name}}", quiet: {{quiet}} });
+if (invokedDirectly(import.meta.url)) runHook("{{event}}", import.meta.url, { plugin: "{{name}}", quiet: {{quiet}} });
