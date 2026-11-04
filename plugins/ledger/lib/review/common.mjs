@@ -1,15 +1,24 @@
-// common.mjs — what every review adapter shares: the prompt, the binary lookup, a child-process
-// runner with a hard timeout, and the reply parser.
+// common.mjs — what every review adapter shares: the prompt, the binary lookup, the reviewer's
+// environment and scratch folder, a child-process runner with a hard timeout, and the reply parser.
 //
 // Adapter shape (lib/review/<lab>.mjs):
 //   export const lab = "<lab>";  export const defaultBin = "<binary>";
-//   export async function run({ diff, cwd, timeoutMs, env, config }) → { verdict, findings, items, model }
+//   export const envKeys = [ … ];  (names or `PREFIX_*` patterns the lab's CLI needs, on top of BASE_ENV_KEYS)
+//   export async function run({ diff, timeoutMs, env, config }) → { verdict, findings, items, model }
 //   (verdict, findings and items as parseReply returns them)
 // and throws on any failure (missing binary, non-zero exit, timeout, empty reply); the caller
 // records a thrown error as an `unavailable` row.
+//
+// Containment: a reviewer reads the diff it is handed and nothing else. Every adapter runs its CLI
+// with the lab's own tool-free switch (see each adapter), in a fresh empty scratch folder (so no
+// repository-scoped agent, settings, hooks or instructions are discovered), with an environment
+// built from an allowlist (reviewerEnv) instead of the caller's, and LEDGER_ENABLED=0 so the
+// ledger's own hooks stay out of a nested session. The prompt's "do not run tools" line is not
+// relied on.
 
 import { spawn } from "node:child_process";
-import { accessSync, constants as fsConstants } from "node:fs";
+import { accessSync, constants as fsConstants, mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { delimiter, isAbsolute, join } from "node:path";
 
 export const SEVERITIES = Object.freeze(["blocking", "should", "nit"]);
@@ -26,6 +35,40 @@ export const PROMPT = [
 /** The binary for `lab`: env LEDGER_REVIEW_BIN_<LAB> when set, else `fallback`. */
 export function binFor(lab, fallback, env = process.env) {
   return env[`LEDGER_REVIEW_BIN_${lab.toUpperCase()}`] || fallback;
+}
+
+/** Variables every reviewer keeps: process basics, locale, XDG folders, proxies and CA bundles. */
+export const BASE_ENV_KEYS = Object.freeze([
+  "PATH", "HOME", "USER", "LOGNAME", "SHELL", "TMPDIR", "TERM", "TZ", "LANG", "LC_*",
+  "XDG_CONFIG_HOME", "XDG_DATA_HOME", "XDG_CACHE_HOME", "XDG_STATE_HOME", "XDG_RUNTIME_DIR",
+  "HTTP_PROXY", "HTTPS_PROXY", "NO_PROXY", "ALL_PROXY", "http_proxy", "https_proxy", "no_proxy", "all_proxy",
+  "NODE_EXTRA_CA_CERTS", "SSL_CERT_FILE", "SSL_CERT_DIR",
+]);
+
+/**
+ * The reviewer's environment: only the variables in BASE_ENV_KEYS and `keys` (exact names, or
+ * `PREFIX_*` for every name starting with PREFIX_), plus LEDGER_ENABLED=0.
+ */
+export function reviewerEnv(env, keys = []) {
+  const patterns = [...BASE_ENV_KEYS, ...keys];
+  const exact = new Set(patterns.filter((k) => !k.endsWith("*")));
+  const prefixes = patterns.filter((k) => k.endsWith("*")).map((k) => k.slice(0, -1));
+  const out = {};
+  for (const [k, v] of Object.entries(env ?? {})) {
+    if (v !== undefined && (exact.has(k) || prefixes.some((p) => k.startsWith(p)))) out[k] = v;
+  }
+  out.LEDGER_ENABLED = "0";
+  return out;
+}
+
+/** Run `fn(dir)` with a fresh empty folder, removed afterwards. */
+export async function withScratch(fn) {
+  const dir = mkdtempSync(join(tmpdir(), "ledger-review-"));
+  try {
+    return await fn(dir);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 }
 
 /** The absolute path `bin` resolves to on env.PATH (or itself when absolute and executable); null when absent. */
@@ -47,13 +90,14 @@ export function which(bin, env = process.env) {
 
 /**
  * Run `bin args` in `cwd`, writing `input` to stdin; resolve { stdout, stderr } on exit 0, reject
- * on a spawn error, a non-zero exit (with the stderr tail) or `timeoutMs` (the child is killed).
+ * on a spawn error, a non-zero exit (with the stderr tail) or `timeoutMs`. The child leads its own
+ * process group, and a timeout kills the whole group, so a CLI's own children do not outlive it.
  */
 export function runProcess(bin, args, { input = "", cwd, timeoutMs, env = process.env }) {
   return new Promise((resolve, reject) => {
     let child;
     try {
-      child = spawn(bin, args, { cwd, env, stdio: ["pipe", "pipe", "pipe"] });
+      child = spawn(bin, args, { cwd, env, stdio: ["pipe", "pipe", "pipe"], detached: process.platform !== "win32" });
     } catch (err) {
       reject(err);
       return;
@@ -67,13 +111,19 @@ export function runProcess(bin, args, { input = "", cwd, timeoutMs, env = proces
       clearTimeout(timer);
       fn();
     };
-    const timer = setTimeout(() => {
-      finish(() => reject(new Error(`timed out after ${Math.round(timeoutMs / 1000)}s`)));
+    const killGroup = () => {
       try {
-        child.kill("SIGKILL");
+        if (process.platform !== "win32" && child.pid) process.kill(-child.pid, "SIGKILL");
+        else child.kill("SIGKILL");
       } catch {
         /* already gone */
       }
+    };
+    const timer = setTimeout(() => {
+      killGroup();
+      child.stdout.destroy();
+      child.stderr.destroy();
+      finish(() => reject(new Error(`timed out after ${Math.round(timeoutMs / 1000)}s`)));
     }, timeoutMs);
     child.stdout.on("data", (d) => (stdout += d));
     child.stderr.on("data", (d) => (stderr += d));

@@ -529,7 +529,10 @@ a later round dropped it or the agent ran `review addressed "<why>"`; a `no` kee
 closed, and a judge that cannot answer counts the finding resolved and says so. The judge is
 `review.judgeCommand`, or the i-have-audhd plugin's `enforcement.judgeCommand`. Session start now also
 shows the open and held questions asked in folders under the session's folder, each naming its
-folder, and `pending` lists them the same way. Opening a 0.2.3 database migrates it to schema
+folder, and `pending` lists them the same way. Reviewers run without tools, from an empty
+scratch folder, with an allowlisted environment. The gate checks the commit a command actually
+publishes (`git -C`, refspecs, `gh pr create --head`, the pull request `gh pr merge` names), and
+allows with a notice when it cannot tell. Opening a 0.2.3 database migrates it to schema
 version 6 by creating new tables; no existing table is touched.
 
 Changes in 0.2.3: one database shared by every folder is now readable across folders.

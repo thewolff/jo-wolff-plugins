@@ -17,44 +17,41 @@
 // and never changes the decision.
 //
 // Review gate (`review.mode`, user file only): off → nothing; advise → allow, with a notice when
-// HEAD has no review or has findings; gate → deny those two. Every deny or allow-with-notice
-// writes a `reviewGate` bounce row; an allow without a notice marks the session's open
-// `reviewGate` rows satisfied. A cwd that is not a git repository is not gated. Any fault while
-// deciding (git missing, a query that throws) allows the call with one systemMessage line.
+// a published commit has no review or has findings; gate → deny those two. The gate checks the
+// commits the command itself publishes (lib/review.mjs operationTargets: the repository `git -C`
+// selects, each refspec's source, `gh pr create --head`, the head commit of the pull request
+// `gh pr merge` names), not the hook cwd's HEAD; when the command does not say, the call is
+// allowed with a notice. Only a deny writes a `reviewGate` bounce row; any allowed gated command
+// marks the session's open `reviewGate` rows satisfied. A deny is only given while the store can
+// take the write that lifts it (`review`, `waive`); otherwise the call is allowed with a notice.
+// Any fault while deciding (git missing or past its deadline, a query that throws) allows the
+// call with one systemMessage line; a cwd outside any repository is not gated.
 //
 // Fail open: switch off → nothing; store busy/unavailable → allow with one systemMessage line;
 // anything thrown → runHook's systemMessage. Never exit 2.
 
 import { runHook, noticeField, invokedDirectly, logError } from "../lib/failopen.mjs";
-import { evaluate, gatedRule, isPushCommand } from "../lib/gate.mjs";
+import { evaluate, gatedRule, pushOperations } from "../lib/gate.mjs";
 import { invocation } from "../lib/inject.mjs";
 import { withStore, hookConfig } from "../lib/store.mjs";
 import { assertWritable } from "../lib/db.mjs";
 import { recordBounce, satisfyBounces } from "../lib/bounces.mjs";
-import { gateDecision, gitHead, headState } from "../lib/review.mjs";
+import { reviewDecision } from "../lib/review.mjs";
 
 export const REVIEW_PR_SUBCOMMANDS = Object.freeze(["create", "merge"]);
 
-/** The review gate's answer for this input: null (not gated or silent allow) | { deny } | { notice }. */
-function reviewGate(input, { store, cwd, sessionId, promptId, now, env }) {
+/** The review gate's answer for this input: null (not gated) | {} (silent allow) | { deny } | { notice }. */
+function reviewGate(input, { store, cwd, env }) {
   const mode = store.config.review?.mode ?? "gate";
-  if (mode === "off" || input.tool_name !== "Bash" || !isPushCommand(input.tool_input?.command, REVIEW_PR_SUBCOMMANDS)) return null;
-  let decision;
+  if (mode === "off" || input.tool_name !== "Bash") return null;
+  const ops = pushOperations(input.tool_input?.command, REVIEW_PR_SUBCOMMANDS);
+  if (!ops.length) return null;
   try {
-    let repo;
-    try {
-      repo = gitHead(cwd);
-    } catch {
-      return null; // not a repository (or no commit yet): nothing to review
-    }
-    decision = gateDecision(headState(store.db, repo.top, repo.head), mode, invocation());
+    return reviewDecision(store.db, ops, cwd, mode, { cli: invocation(), env });
   } catch (err) {
     logError("PreToolUse", `review gate: ${err.message}`, env);
     return { notice: `ledger: the review gate could not decide (${err.message}); allowed` };
   }
-  if (decision.deny || decision.notice) recordBounce(store, { sessionId, rule: "reviewGate", promptId, tool: "Bash", now, env, hook: "PreToolUse" });
-  else satisfyBounces(store, { sessionId, rules: ["reviewGate"], now, env, hook: "PreToolUse" });
-  return decision.deny || decision.notice ? decision : null;
 }
 
 export function handle(input, { env = process.env, now = Date.now() } = {}) {
@@ -68,13 +65,17 @@ export function handle(input, { env = process.env, now = Date.now() } = {}) {
     if (!verdict) {
       const rule = gatedRule(input, store.config);
       if (rule) satisfyBounces(store, { sessionId, rules: [rule], now, env, hook: "PreToolUse" });
-      const review = reviewGate(input, { store, cwd, sessionId, promptId, now, env });
+      const review = reviewGate(input, { store, cwd, env });
       if (review?.deny) {
+        // Same rule as the note gate below: deny only while `review` / `waive` can write.
+        assertWritable(store.db, store.dbPath);
+        recordBounce(store, { sessionId, rule: "reviewGate", promptId, tool: "Bash", now, env, hook: "PreToolUse" });
         return {
           ...noticeField(store.notices),
           hookSpecificOutput: { hookEventName: "PreToolUse", permissionDecision: "deny", permissionDecisionReason: review.deny },
         };
       }
+      if (review) satisfyBounces(store, { sessionId, rules: ["reviewGate"], now, env, hook: "PreToolUse" });
       const notices = review?.notice ? [...store.notices, review.notice] : store.notices;
       return notices.length ? noticeField(notices) : null;
     }

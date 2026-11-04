@@ -29,7 +29,6 @@ import { VERBS, optionList } from "./parse.mjs";
 import { nowIso, parseDeadline, relative, formatLocal } from "./time.mjs";
 import { transaction } from "./db.mjs";
 import { renderBounces, BOUNCES_DEFAULT_SINCE } from "./bounces.mjs";
-import { renderDoctor, runDoctor } from "./doctor.mjs";
 
 const KINDS = ["question", "approval", "plan"];
 const KIND_DEFAULT_OPTIONS = { approval: ["approve", "deny"], plan: ["approve", "revise", "cancel"] };
@@ -95,21 +94,31 @@ export function elsewhereCount(db, cwd) {
 }
 
 /**
- * The open questions that belong to session `sessionId`, newest first: rows tagged with it, plus
- * untagged rows (a CLI run without LEDGER_SESSION_ID) in or around `cwd` asked at or after the
- * session row's started_at. `askedBy` keeps only questions asked at or before that ISO stamp.
- * No session id → [].
+ * Whether question row `q` belongs to session `sessionId`: tagged with it, or untagged (a CLI run
+ * without LEDGER_SESSION_ID) in or around `cwd` and asked at or after the session's `since`
+ * (its started_at). Shared by the Stop rules and the bounce ledger's remedy check.
+ */
+export function ownedBySession(q, { sessionId, cwd, since }) {
+  if (q.session_id === sessionId) return true;
+  return q.session_id == null && Boolean(since) && q.asked_at >= since && (isWithin(cwd, q.cwd) || isWithin(q.cwd, cwd));
+}
+
+/** The session row's started_at, or null. */
+export function sessionStart(db, sessionId) {
+  return sessionId ? (db.prepare("SELECT started_at FROM cc_sessions WHERE id = ?").get(sessionId)?.started_at ?? null) : null;
+}
+
+/**
+ * The open questions that belong to session `sessionId` (ownedBySession), newest first.
+ * `askedBy` keeps only questions asked at or before that ISO stamp. No session id → [].
  */
 export function sessionQuestions(db, { sessionId, cwd, askedBy = null }) {
   if (!sessionId) return [];
-  const session = db.prepare("SELECT started_at FROM cc_sessions WHERE id = ?").get(sessionId);
-  const since = session?.started_at ?? null;
+  const since = sessionStart(db, sessionId);
   const rows = db
     .prepare("SELECT * FROM cc_questions WHERE state = 'open' AND (session_id = ? OR (session_id IS NULL AND ? IS NOT NULL AND asked_at >= ?)) ORDER BY asked_at DESC, id DESC")
     .all(sessionId, since, since ?? "");
-  return rows
-    .filter((q) => (q.session_id === sessionId || isWithin(cwd, q.cwd) || isWithin(q.cwd, cwd)) && (!askedBy || q.asked_at <= askedBy))
-    .map(parseQuestion);
+  return rows.filter((q) => ownedBySession(q, { sessionId, cwd, since }) && (!askedBy || q.asked_at <= askedBy)).map(parseQuestion);
 }
 
 /**
@@ -353,11 +362,9 @@ export function execute(db, parsed, ctx) {
       return refused("review runs on its own line: `ledger review …`, not inside a batch");
     case "bounces":
       return ok(null, renderBounces(db, { since: parsed.since ?? BOUNCES_DEFAULT_SINCE, now }));
-    case "doctor": {
-      // The CLI runs `doctor` before opening the store; this path is a batch line.
-      const report = runDoctor({ env: process.env, cwd: ctx.cwd, now });
-      return report.fails ? refused(renderDoctor(report)) : ok(null, renderDoctor(report));
-    }
+    case "doctor":
+      // Doctor never writes; a batch has already opened (and maybe created or migrated) the store.
+      return refused("doctor runs on its own line: `ledger doctor`, not inside a batch");
     case "log": {
       const count = parsed.count ?? LOG_DEFAULT;
       return ok(null, renderLog(logEntries(db, ctx.cwd, count), ctx.cwd, count, { now }));

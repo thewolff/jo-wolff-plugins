@@ -81,8 +81,12 @@ export function main(argv = process.argv.slice(2), { env = process.env, stdin = 
     return r.status === "ok" ? 0 : 1;
   }
 
-  // `doctor` reads only: it must not create or migrate the store it is checking.
-  if (cli.rest.length === 1 && cli.rest[0].toLowerCase() === "doctor") {
+  // `doctor` reads only: it must not create or migrate the store it is checking. That holds for
+  // `ledger doctor` and for stdin carrying only a `doctor` line; inside a larger batch the line is
+  // refused (lib/commands.mjs), since the batch opens the store for writing first.
+  const onlyLine = numbered ? lines.filter((l) => l.trim()) : null;
+  const doctorOnly = numbered ? onlyLine.length === 1 && onlyLine[0].trim().toLowerCase() === "doctor" : cli.rest.length === 1 && cli.rest[0].toLowerCase() === "doctor";
+  if (doctorOnly) {
     const report = runDoctor({ env, cwd });
     out(renderDoctor(report) + "\n");
     return report.fails ? 1 : 0;

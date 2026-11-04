@@ -35,6 +35,7 @@
 // `unverified` (no judge, or it failed) resolves it fail-open and the gate's notice says so.
 
 import { spawnSync } from "node:child_process";
+import { resolve as resolvePath } from "node:path";
 import { transaction } from "./db.mjs";
 import { nowIso } from "./time.mjs";
 import { parseItems, severityCounts, which } from "./review/common.mjs";
@@ -48,50 +49,112 @@ export const ADAPTERS = Object.freeze({ codex, kimi, claude, glm });
 export const REVIEW_TIMEOUT_MS = 240_000;
 export const META_LAB = "ledger";
 export const DEFAULT_MAX_ROUNDS = 3;
+// Every git call has a deadline: the CLI's (a whole-branch diff can take a while) and the hook's,
+// well inside the PreToolUse hook's 10-second budget. `gh pr view` (one API call) gets its own.
+export const GIT_TIMEOUT_MS = 60_000;
+export const HOOK_GIT_TIMEOUT_MS = 3_000;
+export const GH_TIMEOUT_MS = 5_000;
+// The empty tree: the base of a diff of a branch's root commit.
+const EMPTY_TREE = "4b825dc642cb6eb9a060e54bf8d69288fbee4904";
 
-function git(cwd, args) {
-  const r = spawnSync("git", args, { cwd, encoding: "utf8", maxBuffer: 256 * 1024 * 1024 });
-  if (r.error) throw new Error(`git ${args[0]}: ${r.error.message}`);
-  if (r.status !== 0) throw new Error(`git ${args.join(" ")}: ${(r.stderr || "").trim() || `exit ${r.status}`}`);
+function git(cwd, args, { timeoutMs = GIT_TIMEOUT_MS } = {}) {
+  const r = spawnSync("git", args, { cwd, encoding: "utf8", maxBuffer: 256 * 1024 * 1024, timeout: timeoutMs, killSignal: "SIGKILL" });
+  if (r.error) throw new Error(`git ${args[0]}: ${r.error.code === "ETIMEDOUT" ? `timed out after ${Math.round(timeoutMs / 1000)}s` : r.error.message}`);
+  if (r.status !== 0) {
+    const err = new Error(`git ${args.join(" ")}: ${(r.stderr || "").trim() || `exit ${r.status}`}`);
+    err.gitStatus = r.status;
+    err.gitStderr = r.stderr ?? "";
+    throw err;
+  }
   return r.stdout;
 }
 
-/** { top, head } for the repository `cwd` is in; throws when it is not one or has no commit. */
-export function gitHead(cwd) {
-  return { top: git(cwd, ["rev-parse", "--show-toplevel"]).trim(), head: git(cwd, ["rev-parse", "HEAD"]).trim() };
+/** The error gitHead throws when `cwd` is not in a repository or the repository has no commit. */
+export class NotARepository extends Error {}
+
+/**
+ * { top, head } for the repository `cwd` is in (head: the full sha, read once). Throws
+ * NotARepository when `cwd` is not in one or it has no commit yet; any other failure (git missing,
+ * a timeout) throws a plain Error.
+ */
+export function gitHead(cwd, opts = {}) {
+  let top;
+  try {
+    top = git(cwd, ["rev-parse", "--show-toplevel"], opts).trim();
+  } catch (err) {
+    if (/not a git repository/i.test(err.gitStderr ?? "")) throw new NotARepository(`${cwd} is not in a git repository`);
+    throw err;
+  }
+  try {
+    return { top, head: git(top, ["rev-parse", "--verify", "-q", "HEAD^{commit}"], opts).trim() };
+  } catch (err) {
+    if (err.gitStatus === 1) throw new NotARepository(`${top} has no commit yet`);
+    throw err;
+  }
+}
+
+/** The checked-out branch's short name; null when HEAD is detached. */
+function currentBranch(top) {
+  try {
+    return git(top, ["symbolic-ref", "-q", "--short", "HEAD"]).trim() || null;
+  } catch {
+    return null;
+  }
+}
+
+/** The commit `ref` names in `top`, as a full sha; throws when it names none. */
+function commitOf(top, ref, opts = {}) {
+  try {
+    return git(top, ["rev-parse", "--verify", "-q", `${ref}^{commit}`], opts).trim();
+  } catch {
+    throw new Error(`${ref} does not name a commit in ${top}`);
+  }
 }
 
 /**
- * The default base: the merge-base of HEAD with origin/main, else with a local main or master
- * that HEAD has moved past, else HEAD~1.
+ * The base of `head`'s branch, as a sha (null: `head` is a root commit, diffed against the empty
+ * tree). The merge-base with origin/main, else with a local main or master, when it is not `head`
+ * itself; else the base the branch's first review recorded, while it is still an ancestor of
+ * `head`; else head's parent. Storing the resolved base in every row keeps the round count stable
+ * on a branch with no main to measure from.
  */
-export function defaultBase(cwd) {
-  let head = null;
-  try {
-    head = git(cwd, ["rev-parse", "HEAD"]).trim();
-  } catch {
-    return "HEAD~1";
-  }
+export function defaultBase(db, top, head, branch) {
   for (const ref of ["origin/main", "main", "master"]) {
     try {
-      const mb = git(cwd, ["merge-base", "HEAD", ref]).trim();
+      const mb = git(top, ["merge-base", head, ref]).trim();
       if (mb && mb !== head) return mb;
     } catch {
-      /* no such ref */
+      /* no such ref, or no common history */
     }
   }
-  return "HEAD~1";
+  if (branch) {
+    const first = db.prepare("SELECT base_ref FROM cc_reviews WHERE cwd = ? AND branch = ? AND lab <> ? AND base_ref IS NOT NULL ORDER BY at ASC, id ASC LIMIT 1").get(top, branch, META_LAB);
+    if (first) {
+      try {
+        git(top, ["merge-base", "--is-ancestor", first.base_ref, head]);
+        return first.base_ref;
+      } catch {
+        /* the branch was rewritten past its first base */
+      }
+    }
+  }
+  try {
+    return commitOf(top, `${head}~1`);
+  } catch {
+    return null;
+  }
 }
 
 function insertRow(db, dbPath, r) {
   transaction(
     db,
     () => {
-      db.prepare("INSERT INTO cc_reviews (session_id, cwd, head_sha, base_ref, lab, model, verdict, findings, findings_json, reason, at) VALUES (?,?,?,?,?,?,?,?,?,?,?)").run(
+      db.prepare("INSERT INTO cc_reviews (session_id, cwd, head_sha, base_ref, branch, lab, model, verdict, findings, findings_json, reason, at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)").run(
         r.sessionId ?? null,
         r.cwd,
         r.head,
         r.base ?? null,
+        r.branch ?? null,
         r.lab,
         r.model ?? null,
         r.verdict,
@@ -120,13 +183,14 @@ export function rowItems(row) {
 const countsText = (c) => `${c.blocking} blocking, ${c.should} should, ${c.nit} nit`;
 
 /**
- * The branch's review rounds: one per sha in `base..HEAD` that has a lab row (not waive or
- * addressed), ordered by its first review. @returns {Array<{ round, sha, rows }>}
+ * The branch's review rounds: one per sha in `base..head` (every ancestor of `head` when `base`
+ * is null) that has a lab row (not waive or addressed), ordered by its first review.
+ * @returns {Array<{ round, sha, rows }>}
  */
-export function branchRounds(db, top, base) {
+export function branchRounds(db, top, base, head) {
   let shas;
   try {
-    shas = new Set(git(top, ["rev-list", `${base}..HEAD`]).split("\n").filter(Boolean));
+    shas = new Set(git(top, ["rev-list", base ? `${base}..${head}` : head]).split("\n").filter(Boolean));
   } catch {
     shas = new Set();
   }
@@ -139,9 +203,8 @@ export function branchRounds(db, top, base) {
   return [...groups.entries()].map(([sha, rows], i) => ({ round: i + 1, sha, rows }));
 }
 
-/** The round `head` is (or would be) on this branch, and the rounds before it. */
-function roundOf(db, top, head, base) {
-  const rounds = branchRounds(db, top, base);
+/** The round `head` is (or would be) on this branch. */
+function roundOf(rounds, head) {
   const at = rounds.findIndex((r) => r.sha === head);
   return at >= 0 ? at + 1 : rounds.length + 1;
 }
@@ -211,22 +274,27 @@ const itemLine = (i) => `[${i.severity}] ${i.text.split("\n")[0]}`;
 
 /**
  * `ledger review [--base <ref>] [--labs a,b] [--force-round]`: every lab in parallel, one row
- * each for HEAD; refuses a round past review.maxRounds unless forced.
+ * each for HEAD; refuses a round past review.maxRounds unless forced. HEAD and the base are
+ * resolved to shas once, and the diff is taken between those shas, so the commit the rows name
+ * is the commit the labs read even if HEAD moves while they run.
  * @returns {Promise<{ code: number, text: string }>}
  */
 export async function runReview({ db, dbPath, cwd, env = process.env, config, labs = null, base = null, forceRound = false, sessionId = null, cli = "ledger", now = () => Date.now(), timeoutMs = REVIEW_TIMEOUT_MS }) {
-  let top, head, diff;
-  const baseRef = base ?? defaultBase(cwd);
+  let top, head, branch, baseSha, diff;
   try {
     ({ top, head } = gitHead(cwd));
-    diff = git(top, ["diff", `${baseRef}..HEAD`]);
+    branch = currentBranch(top);
+    baseSha = base ? commitOf(top, base) : defaultBase(db, top, head, branch);
+    diff = git(top, ["diff", baseSha ?? EMPTY_TREE, head]);
   } catch (err) {
     return { code: 1, text: `refused ${err.message}; nothing reviewed` };
   }
+  const range = `${baseSha ? short(baseSha) : "root"}..${short(head)}`;
   const list = labs ?? config.review?.labs ?? ["codex"];
   if (!list.length) return { code: 1, text: "refused review.labs is empty; nothing reviewed" };
   const max = config.review?.maxRounds ?? DEFAULT_MAX_ROUNDS;
-  const round = roundOf(db, top, head, baseRef);
+  const rounds = branchRounds(db, top, baseSha, head);
+  const round = roundOf(rounds, head);
   if (round > max && !forceRound) {
     return {
       code: 1,
@@ -235,14 +303,14 @@ export async function runReview({ db, dbPath, cwd, env = process.env, config, la
   }
   const results = await Promise.allSettled(
     list.map(async (lab) => {
-      if (!diff.trim()) return { verdict: "pass", findings: null, items: [], model: null, reason: `empty diff ${baseRef}..HEAD` };
+      if (!diff.trim()) return { verdict: "pass", findings: null, items: [], model: null, reason: `empty diff ${range}` };
       const adapter = ADAPTERS[lab];
       if (!adapter) throw new Error(`unknown lab ${lab}; supported: ${Object.keys(ADAPTERS).join(", ")}`);
-      return adapter.run({ diff, cwd: top, timeoutMs, env, config: config.review ?? {} });
+      return adapter.run({ diff, timeoutMs, env, config: config.review ?? {} });
     }),
   );
-  const previous = branchRounds(db, top, baseRef).filter((r) => r.sha !== head).at(-1) ?? null;
-  const out = [`review of ${short(head)} (${baseRef}..HEAD) in ${top}, round ${round} of ${max}${round > max ? " (forced)" : ""}:`];
+  const previous = rounds.filter((r) => r.sha !== head).at(-1) ?? null;
+  const out = [`review of ${short(head)} (${range}) in ${top}, round ${round} of ${max}${round > max ? " (forced)" : ""}:`];
   let anyFindings = false;
   for (let i = 0; i < list.length; i++) {
     const lab = list[i];
@@ -260,7 +328,7 @@ export async function runReview({ db, dbPath, cwd, env = process.env, config, la
         r = { ...r, items, findings, verdict: verdictOf(items) };
       }
     }
-    insertRow(db, dbPath, { sessionId, cwd: top, head, base: baseRef, lab, model: r.model, verdict: r.verdict, findings: r.findings, items: r.items, reason: r.reason ?? null, at: nowIso(now()) });
+    insertRow(db, dbPath, { sessionId, cwd: top, head, base: baseSha, branch, lab, model: r.model, verdict: r.verdict, findings: r.findings, items: r.items, reason: r.reason ?? null, at: nowIso(now()) });
     const model = r.model ? ` (${r.model})` : "";
     if (r.verdict === "findings") {
       anyFindings = true;
@@ -297,7 +365,7 @@ export function waive({ db, dbPath, cwd, reason, sessionId = null, now = Date.no
   } catch (err) {
     return { code: 1, text: `refused ${err.message}` };
   }
-  insertRow(db, dbPath, { sessionId, cwd: top, head, lab: META_LAB, verdict: "waived", reason: why, at: nowIso(now) });
+  insertRow(db, dbPath, { sessionId, cwd: top, head, branch: currentBranch(top), lab: META_LAB, verdict: "waived", reason: why, at: nowIso(now) });
   return { code: 0, text: `waived the review gate for ${short(head)}: ${why}` };
 }
 
@@ -336,6 +404,7 @@ export async function addressed({ db, dbPath, cwd, reason, config = {}, env = pr
         cwd: top,
         head,
         base: row.base_ref,
+        branch: currentBranch(top),
         lab: row.lab,
         model: row.model,
         verdict: "findings",
@@ -351,15 +420,20 @@ export async function addressed({ db, dbPath, cwd, reason, config = {}, env = pr
   const all = judgedByLab.flatMap(({ items }) => items);
   const unverified = all.filter((i) => i.judge === "unverified");
   const note = unverified.length ? `; ${unverified.length} unverified by the judge` : "";
-  insertRow(db, dbPath, { sessionId, cwd: top, head, lab: META_LAB, verdict: "addressed", items: all, reason: `${why} (findings on ${short(prior.head_sha)}${note})`, at });
+  insertRow(db, dbPath, { sessionId, cwd: top, head, branch: currentBranch(top), lab: META_LAB, verdict: "addressed", items: all, reason: `${why} (findings on ${short(prior.head_sha)}${note})`, at });
   const out = [`recorded ${short(head)} as addressing the findings on ${short(prior.head_sha)}: ${why}`];
   for (const i of all) out.push(`  judge ${i.judge}: ${itemLine(i)}`);
   return { code: 0, text: out.join("\n") };
 }
 
-/** The review state of `head` in repository `top` (see the table at the top of this file). */
+/**
+ * The review state of `head` in repository `top` (see the table at the top of this file); `top`
+ * null reads the rows for `head` from any repository folder (a pull request's head commit).
+ */
 export function headState(db, top, head) {
-  const rows = db.prepare("SELECT * FROM cc_reviews WHERE cwd = ? AND head_sha = ? ORDER BY at ASC, id ASC").all(top, head);
+  const rows = top
+    ? db.prepare("SELECT * FROM cc_reviews WHERE cwd = ? AND head_sha = ? ORDER BY at ASC, id ASC").all(top, head)
+    : db.prepare("SELECT * FROM cc_reviews WHERE head_sha = ? ORDER BY at ASC, id ASC").all(head);
   const waivedRow = rows.findLast((r) => r.verdict === "waived");
   const lastAddressed = rows.findLast((r) => r.verdict === "addressed");
   const latest = new Map();
@@ -421,7 +495,7 @@ export function status({ db, cwd, config, cli = "ledger" }) {
   const d = gateDecision(state, mode, cli);
   const verdict = d.deny ? "would deny a push" : d.notice ? "allows a push, with a notice" : "allows a push";
   const out = [`review of ${short(head)} in ${top}: ${state.kind}; review.mode ${mode} ${mode === "off" ? "(gate off)" : verdict}`];
-  const rounds = branchRounds(db, top, defaultBase(cwd));
+  const rounds = branchRounds(db, top, defaultBase(db, top, head, currentBranch(top)), head);
   if (rounds.length) {
     out.push(`rounds on this branch (review.maxRounds ${max}):`, "round  sha       lab      blocking  should  nit  verdict");
     for (const { round, sha, rows } of rounds) {
@@ -445,7 +519,7 @@ export function findingsLine(db, cwd, config, cli = "ledger") {
   if ((config.review?.mode ?? "gate") === "off") return "";
   let state;
   try {
-    const { top, head } = gitHead(cwd);
+    const { top, head } = gitHead(cwd, { timeoutMs: HOOK_GIT_TIMEOUT_MS });
     state = headState(db, top, head);
   } catch {
     return "";
@@ -456,6 +530,133 @@ export function findingsLine(db, cwd, config, cli = "ledger") {
     return s + c.blocking + c.should;
   }, 0);
   return `ledger: cross-lab review found ${n} finding(s) on ${short(state.head)}; run \`${cli} review status\``;
+}
+
+/** Thrown when the gate cannot tell from a command which commit it publishes. */
+export class UnknownTarget extends Error {}
+
+// Options that take a separate value, per command, so positional arguments can be told apart.
+const PUSH_OPTS_WITH_ARG = new Set(["--repo", "--receive-pack", "--exec", "-o", "--push-option"]);
+const GH_MERGE_OPTS_WITH_ARG = new Set(["-R", "--repo", "-b", "--body", "-F", "--body-file", "-t", "--subject", "-A", "--author-email", "--match-head-commit"]);
+
+/** The value of the first of `names` in `args` (`--x v` or `--x=v`); null when absent. */
+function optValue(args, names) {
+  for (let i = 0; i < args.length; i++) {
+    for (const name of names) {
+      if (args[i] === name) return args[i + 1] ?? null;
+      if (name.startsWith("--") && args[i].startsWith(`${name}=`)) return args[i].slice(name.length + 1);
+    }
+  }
+  return null;
+}
+
+/** The positional arguments in `args`, skipping options and the values of those in `withArg`. */
+function positionals(args, withArg) {
+  const out = [];
+  for (let i = 0; i < args.length; i++) {
+    if (args[i] === "--") return [...out, ...args.slice(i + 1)];
+    if (args[i].startsWith("-") && args[i] !== "-") {
+      if (withArg.has(args[i])) i++;
+      continue;
+    }
+    out.push(args[i]);
+  }
+  return out;
+}
+
+/**
+ * The commits one publishing operation (lib/gate.mjs pushOperations) would publish, each
+ * { top, sha }, `top` null when the commit is looked up by sha in any repository folder:
+ *   git push       in the repository its `-C` options select. No refspec → that HEAD; each
+ *                  refspec's source resolved there (`+` dropped, `HEAD` = HEAD); a deletion
+ *                  (`:dst`, `--delete`) publishes nothing.
+ *   gh pr create   `--head <branch>` (an `owner:` prefix dropped) resolved locally, else HEAD.
+ *   gh pr merge    `--match-head-commit <sha>` when it is a full sha, else the head commit
+ *                  `gh pr view [<selector>] [--repo …]` reports.
+ * [] when the operation runs outside a repository (git and gh refuse that themselves). Throws
+ * UnknownTarget when the command does not say (`--all`, `--mirror`, `--tags`, `--branches`,
+ * a pattern refspec, `--git-dir`/`--work-tree`, a ref that names no commit, gh failing).
+ */
+export function operationTargets(op, cwd, { env = process.env } = {}) {
+  const opts = { timeoutMs: HOOK_GIT_TIMEOUT_MS };
+  const local = (dir) => {
+    try {
+      return gitHead(dir, opts);
+    } catch (err) {
+      if (err instanceof NotARepository) return null;
+      throw err;
+    }
+  };
+  const resolveRef = (top, ref) => {
+    try {
+      return commitOf(top, ref, opts);
+    } catch (err) {
+      throw new UnknownTarget(err.message);
+    }
+  };
+  if (op.tool === "git") {
+    if (op.unsupported) throw new UnknownTarget(`git ${op.unsupported} is not followed`);
+    const repo = local(op.dirs.reduce((dir, d) => resolvePath(dir, d), cwd));
+    if (!repo) return [];
+    if (op.args.includes("--delete") || op.args.includes("-d")) return [];
+    const many = op.args.find((a) => ["--all", "--mirror", "--tags", "--branches"].includes(a));
+    if (many) throw new UnknownTarget(`git push ${many} publishes more than one ref`);
+    const refspecs = positionals(op.args, PUSH_OPTS_WITH_ARG).slice(1);
+    if (!refspecs.length) return [{ top: repo.top, sha: repo.head }];
+    const out = [];
+    for (const spec of refspecs) {
+      const src = spec.replace(/^\+/, "").split(":")[0];
+      if (!src) continue;
+      if (src.includes("*")) throw new UnknownTarget(`refspec ${spec} is a pattern`);
+      out.push({ top: repo.top, sha: src === "HEAD" ? repo.head : resolveRef(repo.top, src) });
+    }
+    return out;
+  }
+  if (op.sub === "create") {
+    const repo = local(cwd);
+    if (!repo) return [];
+    const head = optValue(op.args, ["-H", "--head"]);
+    return [{ top: repo.top, sha: head ? resolveRef(repo.top, head.split(":").pop()) : repo.head }];
+  }
+  const match = optValue(op.args, ["--match-head-commit"]);
+  if (match && /^[0-9a-f]{40}$/i.test(match)) return [{ top: null, sha: match.toLowerCase() }];
+  const repoOpt = optValue(op.args, ["-R", "--repo"]);
+  const [selector] = positionals(op.args, GH_MERGE_OPTS_WITH_ARG);
+  const args = ["pr", "view", ...(selector ? [selector] : []), ...(repoOpt ? ["--repo", repoOpt] : []), "--json", "headRefOid", "--jq", ".headRefOid"];
+  const r = spawnSync("gh", args, { cwd, env, encoding: "utf8", timeout: GH_TIMEOUT_MS, killSignal: "SIGKILL" });
+  const sha = String(r.stdout ?? "").trim();
+  if (r.error || r.status !== 0 || !/^[0-9a-f]{40}$/i.test(sha)) {
+    const why = r.error ? (r.error.code === "ETIMEDOUT" ? `timed out after ${GH_TIMEOUT_MS / 1000}s` : r.error.message) : String(r.stderr || "").trim().split("\n").at(-1) || `exit ${r.status}`;
+    throw new UnknownTarget(`gh pr view did not name the pull request's head commit (${why})`);
+  }
+  return [{ top: null, sha: sha.toLowerCase() }];
+}
+
+/**
+ * The review gate's answer for a set of publishing operations under `mode`: the strictest of
+ * gateDecision over every commit they publish ({ deny } before { notice } before {}), or, when a
+ * commit cannot be told from the command, an allow with a notice saying so.
+ */
+export function reviewDecision(db, ops, cwd, mode, { cli = "ledger", env = process.env } = {}) {
+  let targets;
+  try {
+    targets = ops.flatMap((op) => operationTargets(op, cwd, { env }));
+  } catch (err) {
+    if (err instanceof UnknownTarget) return { notice: `ledger: the review gate could not tell which commit this command publishes (${err.message}); allowed without a review check` };
+    throw err;
+  }
+  const seen = new Set();
+  const decisions = [];
+  for (const t of targets) {
+    const key = `${t.top ?? ""}\0${t.sha}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    decisions.push(gateDecision(headState(db, t.top, t.sha), mode, cli));
+  }
+  const deny = decisions.find((d) => d.deny);
+  if (deny) return deny;
+  const notices = decisions.filter((d) => d.notice).map((d) => d.notice);
+  return notices.length ? { notice: notices.join("\n") } : {};
 }
 
 /**

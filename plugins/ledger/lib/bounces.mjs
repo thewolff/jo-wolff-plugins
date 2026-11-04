@@ -1,5 +1,5 @@
-// bounces.mjs — the bounce ledger: one cc_bounces row per Stop block, PreToolUse deny or review
-// notice, so a later judge can see which rules fire, which the agent satisfies, which it walks past.
+// bounces.mjs — the bounce ledger: one cc_bounces row per Stop block or PreToolUse deny, so a
+// later judge can see which rules fire, which the agent satisfies, which it walks past.
 //
 // Lifecycle of a row: inserted open (outcome NULL) when a hook bounces; set `satisfied` (with
 // satisfied_at) when the remedy the bounce asked for happens later in the same session; set
@@ -16,7 +16,7 @@
 //   pushNeedsNote      a later push command (git push, gh pr create) in the same session that
 //                      the gate allows (which means a note or outcome now exists).
 //   reviewGate         a later gated command in the same session that the review gate allows
-//                      without a notice.
+//                      (with or without a notice).
 // The Stop rules are matched on the remedy, not by re-running the text check, so a reply that
 // merely drops the question mark or the decision phrase stays open (and ends `bypassed`).
 //
@@ -25,7 +25,7 @@
 
 import { transaction } from "./db.mjs";
 import { logError } from "./failopen.mjs";
-import { isWithin, sessionNotes } from "./commands.mjs";
+import { isWithin, ownedBySession, sessionNotes, sessionStart } from "./commands.mjs";
 import { nowIso } from "./time.mjs";
 
 export const STOP_RULES = Object.freeze(["stopAnswerRule", "stopAskRule", "stopDecisionRule"]);
@@ -75,30 +75,26 @@ export function satisfyBounces(store, { sessionId, rules, promptId = null, check
   }
 }
 
-/** SessionEnd: every row still open for the session becomes `bypassed`. Never throws. */
-export function bypassBounces(store, { sessionId, env = process.env }) {
-  if (!sessionId) return;
-  try {
-    transaction(
-      store.db,
-      () => {
-        store.db.prepare("UPDATE cc_bounces SET outcome = 'bypassed' WHERE session_id = ? AND outcome IS NULL").run(sessionId);
-      },
-      store.dbPath,
-    );
-  } catch (err) {
-    logError("SessionEnd", `bounces not marked bypassed: ${err.message}`, env);
-  }
+/**
+ * SessionEnd: every row still open for the session becomes `bypassed`. A bare statement: the
+ * SessionEnd hook runs it inside the same transaction that stamps the session ended, so the two
+ * land together or not at all.
+ */
+export function bypassOpenBounces(db, sessionId) {
+  if (!sessionId) return 0;
+  return Number(db.prepare("UPDATE cc_bounces SET outcome = 'bypassed' WHERE session_id = ? AND outcome IS NULL").run(sessionId).changes);
 }
 
 /** Whether the remedy for a Stop-rule bounce `row` has happened in session `sessionId` since the bounce. */
 export function stopRemedyDone(db, row, { sessionId, cwd }) {
   if (row.rule === "stopAnswerRule") {
-    return Boolean(
-      db
-        .prepare("SELECT 1 FROM cc_answers a JOIN cc_questions q ON q.id = a.question_id WHERE a.answered_at > ? AND (q.session_id = ? OR a.session_id = ?) LIMIT 1")
-        .get(row.at, sessionId, sessionId),
-    );
+    // An answer or withdraw after the bounce, recorded by this session, or for a question that
+    // belongs to it by the same rule the Stop check used (tagged, or untagged in or around cwd).
+    const since = sessionStart(db, sessionId);
+    return db
+      .prepare("SELECT q.session_id, q.cwd, q.asked_at, a.session_id AS answered_by FROM cc_answers a JOIN cc_questions q ON q.id = a.question_id WHERE a.answered_at > ?")
+      .all(row.at)
+      .some((r) => r.answered_by === sessionId || ownedBySession(r, { sessionId, cwd, since }));
   }
   if (row.rule === "stopAskRule") {
     return db

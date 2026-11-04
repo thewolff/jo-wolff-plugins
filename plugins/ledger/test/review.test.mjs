@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { chmodSync, readFileSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { sandbox, cli, hook, openDb } from "./helpers.mjs";
 
@@ -32,12 +32,32 @@ function repo(review = {}) {
   return b;
 }
 
-/** An executable stub that prints `reply` (and its argv to `<path>.args`), exiting `code`. */
+/** An executable stub that prints `reply` (and its argv to `<path>.args`, env to `<path>.env`, cwd to `<path>.pwd`), exiting `code`. */
 function stub(b, name, reply, code = 0) {
   const path = join(b.root, `stub-${name}`);
-  writeFileSync(path, `#!/bin/sh\nprintf '%s\\n' "$@" > "${path}.args"\ncat > /dev/null\ncat <<'EOF'\n${reply}\nEOF\nexit ${code}\n`);
+  writeFileSync(path, `#!/bin/sh\nprintf '%s\\n' "$@" > "${path}.args"\nenv > "${path}.env"\npwd -P > "${path}.pwd"\ncat > /dev/null\ncat <<'EOF'\n${reply}\nEOF\nexit ${code}\n`);
   chmodSync(path, 0o755);
   return path;
+}
+
+// The first line is verbatim from a live `kimi -p … --output-format stream-json` run (kimi 2.1.1);
+// the assistant line has the shape kimi's PromptJsonWriter writes: {"role":"assistant","content":…}.
+const KIMI_META = '{"role":"meta","type":"system.version","version":"2.1.1"}';
+/** A kimi stub replying in stream-json: the meta line, then `reply` as one assistant message (or a tool call first). */
+function kimi(b, reply, { toolCall = false } = {}) {
+  const lines = [KIMI_META];
+  if (toolCall) lines.push(JSON.stringify({ role: "assistant", tool_calls: [{ type: "function", id: "t1", function: { name: "Bash", arguments: '{"command":"id"}' } }] }), JSON.stringify({ role: "tool", tool_call_id: "t1", content: "uid=1" }));
+  lines.push(JSON.stringify({ role: "assistant", content: reply }));
+  return stub(b, "kimi", lines.join("\n"));
+}
+
+/** A folder holding a `gh` stub that prints `sha` for `gh pr view … --json headRefOid`; its argv goes to `<dir>/gh.args`. */
+function ghStub(b, sha) {
+  const dir = join(b.root, "ghbin");
+  mkdirSync(dir, { recursive: true });
+  writeFileSync(join(dir, "gh"), `#!/bin/sh\nprintf '%s\\n' "$@" > "${dir}/gh.args"\n${sha ? `echo ${sha}` : "echo 'no pull requests found' >&2; exit 1"}\n`);
+  chmodSync(join(dir, "gh"), 0o755);
+  return { PATH: `${dir}:${b.env.PATH}` };
 }
 
 /** A judge stub: prints `answer`, appends one line per call to `<path>.calls`, saves its stdin to `<path>.prompt`. */
@@ -104,7 +124,10 @@ test("review (b): findings → a findings row; the gate denies with them; Sessio
   const ctx = hook(b, "session-start", { session_id: SID, cwd: b.work, source: "startup" }).json.hookSpecificOutput.additionalContext;
   assert.match(ctx, /ledger: cross-lab review found 2 finding\(s\) on [0-9a-f]{8}; run `.*review status`/);
   assert.deepEqual(reviewBounces(b), [null]);
-  assert.equal(decision(push(b, "gh pr merge 12")), "deny", "gh pr merge is gated too");
+  // gh pr merge: the gate asks gh for the pull request's head commit and checks that commit.
+  const gh = ghStub(b, git(b, "rev-parse", "HEAD"));
+  assert.equal(decision(push(b, "gh pr merge 12 --rebase", gh)), "deny", "gh pr merge is gated too");
+  assert.match(readFileSync(join(b.root, "ghbin", "gh.args"), "utf8"), /^pr\nview\n12\n--json\nheadRefOid\n/);
 });
 
 test("review (c): addressed needs a reason and an earlier commit's findings; with both and the judge saying yes, the gate allows", () => {
@@ -190,16 +213,17 @@ test("review (i): the store unreachable → the push is allowed with a notice", 
 
 test("review (j): two labs, one pass one findings → deny naming the findings lab", () => {
   const b = repo({ labs: ["codex", "kimi"] });
-  const env = { LEDGER_REVIEW_BIN_CODEX: stub(b, "codex", "PASS"), LEDGER_REVIEW_BIN_KIMI: stub(b, "kimi", "1. kimi saw a race") };
+  const env = { LEDGER_REVIEW_BIN_CODEX: stub(b, "codex", "PASS"), LEDGER_REVIEW_BIN_KIMI: kimi(b, "1. kimi saw a race") };
   review(b, [], env);
   assert.deepEqual(reviews(b).map((x) => [x.lab, x.verdict]), [["codex", "pass"], ["kimi", "findings"]]);
   const reason = push(b).json.hookSpecificOutput.permissionDecisionReason;
   assert.match(reason, /kimi:\n1\. kimi saw a race/);
   assert.ok(!reason.includes("codex:"), reason);
-  // kimi takes the prompt as its -p argument, with text output.
+  // kimi takes the prompt as its -p argument, with stream-json output and the tool-free agent file.
   const args = readFileSync(`${env.LEDGER_REVIEW_BIN_KIMI}.args`, "utf8");
   assert.match(args, /^-p\n/);
-  assert.match(args, /--output-format\ntext/);
+  assert.match(args, /--output-format\nstream-json\n/);
+  assert.match(args, /--agent-file\n.*ledger-reviewer\.md\n--skills-dir\n/);
 });
 
 test("review (k): two labs, one unavailable one pass → allow, the notice names the unavailable lab", () => {
@@ -212,7 +236,7 @@ test("review (k): two labs, one unavailable one pass → allow, the notice names
 
 test("review (l): --labs overrides review.labs for one run", () => {
   const b = repo({ labs: ["codex", "kimi"] });
-  review(b, ["--labs", "kimi"], { LEDGER_REVIEW_BIN_KIMI: stub(b, "kimi", "PASS") });
+  review(b, ["--labs", "kimi"], { LEDGER_REVIEW_BIN_KIMI: kimi(b, "PASS") });
   assert.deepEqual(reviews(b).map((x) => x.lab), ["kimi"]);
 });
 
@@ -243,7 +267,7 @@ test("review: a project file's review key is ignored with a notice; the user fil
 test("review: status lists the rows for HEAD and the gate's state", () => {
   const b = repo({ labs: ["codex", "kimi"] });
   assert.match(review(b, ["status"]).out, /: none; review\.mode gate would deny a push/);
-  review(b, [], { LEDGER_REVIEW_BIN_CODEX: stub(b, "codex", "PASS"), LEDGER_REVIEW_BIN_KIMI: stub(b, "kimi", "1. x") });
+  review(b, [], { LEDGER_REVIEW_BIN_CODEX: stub(b, "codex", "PASS"), LEDGER_REVIEW_BIN_KIMI: kimi(b, "1. x") });
   const out = review(b, ["status"]).out;
   assert.match(out, /: findings; review\.mode gate would deny a push/);
   assert.match(out, /codex\s+pass/);
@@ -375,4 +399,135 @@ test("judge: doctor warns when no judge is configured, and names the i-have-audh
   writeFileSync(profile, JSON.stringify({ enforcement: { judgeCommand: "echo yes" } }));
   const fallback = cli(b, ["doctor"], { env: { LEDGER_REVIEW_BIN_CODEX: process.execPath, I_HAVE_AUDHD_PROFILE: profile } });
   assert.match(fallback.out, /^ok {3}judge: from enforcement\.judgeCommand in .*audhd-profile\.json$/m);
+});
+
+// Codex review round 1 of 0.3.0: one regression per finding fixed.
+
+test("B1: a review deny becomes an allow with a notice while the store cannot take a write", () => {
+  const b = repo();
+  review(b, [], { LEDGER_REVIEW_BIN_CODEX: stub(b, "codex", "1. [blocking] a.txt:1 bug") });
+  assert.equal(decision(push(b)), "deny");
+  const db = openDb(b);
+  db.exec("BEGIN IMMEDIATE");
+  const p = push(b);
+  db.exec("ROLLBACK");
+  db.close();
+  assert.equal(decision(p), "allow");
+  assert.match(p.json.systemMessage, /ledger/);
+  assert.deepEqual(reviewBounces(b), [null], "only the first, writable deny left a row");
+});
+
+test("B2: the gate checks the commit the command publishes: another repository, a refspec source, a PR head", () => {
+  const b = repo();
+  review(b, [], { LEDGER_REVIEW_BIN_CODEX: stub(b, "codex", "PASS") });
+  assert.equal(push(b).out, "", "HEAD is reviewed");
+  // Another repository through git -C (quoted, with a space): its HEAD has no review.
+  const other = join(b.sibling, "my repo");
+  mkdirSync(other);
+  const g = (...args) => assert.equal(spawnSync("git", args, { cwd: other, env: { ...b.env, GIT_AUTHOR_NAME: "t", GIT_AUTHOR_EMAIL: "t@t", GIT_COMMITTER_NAME: "t", GIT_COMMITTER_EMAIL: "t@t" } }).status, 0);
+  g("init", "-q");
+  writeFileSync(join(other, "x.txt"), "x\n");
+  g("add", "x.txt");
+  g("commit", "-qm", "x");
+  assert.equal(decision(push(b, `git -C "${other}" push origin HEAD`)), "deny");
+  // A refspec whose source is an unreviewed branch.
+  git(b, "checkout", "-q", "-b", "other");
+  commit(b, "o.txt", "o\n");
+  git(b, "checkout", "-q", "feat");
+  assert.equal(decision(push(b, "git push origin other:main")), "deny");
+  assert.equal(push(b, "git push origin +HEAD:main").out, "");
+  assert.equal(push(b, "git push origin --delete old").out, "", "a deletion publishes no commit");
+  // A command that does not say which commit: allowed, with a notice saying so.
+  let p = push(b, "git push --all origin");
+  assert.equal(decision(p), "allow");
+  assert.match(p.json.systemMessage, /could not tell which commit this command publishes \(git push --all publishes more than one ref\)/);
+  // gh pr merge: --match-head-commit names the commit outright (gh is not asked); gh failing → notice.
+  const head = git(b, "rev-parse", "HEAD");
+  const gh = ghStub(b, null);
+  assert.equal(push(b, `gh pr merge 5 --rebase --match-head-commit ${head}`, gh).out, "");
+  p = push(b, "gh pr merge 5 --rebase", gh);
+  assert.equal(decision(p), "allow");
+  assert.match(p.json.systemMessage, /gh pr view did not name the pull request's head commit \(no pull requests found\)/);
+});
+
+test("B3 and round base: rows record the base and the branch as resolved shas; a branch with no main keeps its first base", () => {
+  const b = sandbox();
+  git(b, "init", "-q", "-b", "work");
+  commit(b, "a.txt", "one\n");
+  commit(b, "b.txt", "two\n");
+  b.writeConfig({ review: { mode: "gate" } });
+  const bin = stub(b, "codex", "1. [should] b.txt:1 nit-picky");
+  assert.match(review(b, [], { LEDGER_REVIEW_BIN_CODEX: bin }).out, /round 1 of 3:/);
+  commit(b, "c.txt", "three\n");
+  assert.match(review(b, [], { LEDGER_REVIEW_BIN_CODEX: bin, LEDGER_JUDGE_BIN: judge(b, "yes") }).out, /round 2 of 3:/, "not round 1 again: the base is the first review's");
+  const db = openDb(b);
+  try {
+    const rows = db.prepare("SELECT base_ref, branch FROM cc_reviews ORDER BY id").all();
+    assert.equal(new Set(rows.map((r) => r.base_ref)).size, 1);
+    assert.match(rows[0].base_ref, /^[0-9a-f]{40}$/);
+    assert.deepEqual([...new Set(rows.map((r) => r.branch))], ["work"]);
+  } finally {
+    db.close();
+  }
+});
+
+test("B4: reviewers run tool-free, in an empty scratch folder, with an allowlisted environment", () => {
+  const b = repo({ labs: ["claude"] });
+  const bin = stub(b, "claude", "PASS");
+  review(b, [], { LEDGER_REVIEW_BIN_CLAUDE: bin, ANTHROPIC_API_KEY: "k-anthropic", SECRET_TOKEN: "do-not-pass", GH_TOKEN: "gh-secret" });
+  const args = readFileSync(`${bin}.args`, "utf8").split("\n");
+  assert.deepEqual(args.slice(args.indexOf("--tools"), args.indexOf("--tools") + 2), ["--tools", ""]);
+  assert.ok(args.includes("--strict-mcp-config") && args.includes("--disable-slash-commands"), args.join(" "));
+  const env = readFileSync(`${bin}.env`, "utf8");
+  assert.match(env, /^ANTHROPIC_API_KEY=k-anthropic$/m);
+  assert.match(env, /^LEDGER_ENABLED=0$/m);
+  assert.ok(!/SECRET_TOKEN|GH_TOKEN|LEDGER_DB/.test(env), env);
+  const pwd = readFileSync(`${bin}.pwd`, "utf8").trim();
+  assert.ok(!pwd.startsWith(b.work), `the reviewer ran in ${pwd}, inside the repository`);
+  assert.match(pwd, /ledger-review-/);
+});
+
+test("B5: kimi's stream-json reply is read from its final assistant message; a tool call makes the review unavailable", () => {
+  const b = repo({ labs: ["kimi"] });
+  review(b, [], { LEDGER_REVIEW_BIN_KIMI: kimi(b, "PASS") });
+  review(b, ["--force-round"], { LEDGER_REVIEW_BIN_KIMI: kimi(b, "PASS", { toolCall: true }) });
+  assert.deepEqual(reviews(b).map((x) => [x.lab, x.verdict]), [["kimi", "pass"], ["kimi", "unavailable"]]);
+  assert.match(reviews(b)[1].reason, /kimi tried to call a tool/);
+});
+
+test("S3: a review timeout kills the CLI's whole process group", async () => {
+  const { runProcess } = await import("../lib/review/common.mjs");
+  const b = sandbox();
+  const pidFile = join(b.root, "child.pid");
+  await assert.rejects(runProcess("/bin/sh", ["-c", `sleep 30 & echo $! > "${pidFile}"; wait`], { cwd: b.root, timeoutMs: 300, env: b.env }), /timed out/);
+  const pid = Number(readFileSync(pidFile, "utf8").trim());
+  await new Promise((r) => setTimeout(r, 100));
+  assert.throws(() => process.kill(pid, 0), { code: "ESRCH" }, "the grandchild sleep outlived the timeout");
+});
+
+test("note (i): only a deny writes a reviewGate bounce; an allow with a notice writes none and satisfies an open one", () => {
+  const b = repo({ mode: "advise" });
+  const p = push(b);
+  assert.equal(decision(p), "allow");
+  assert.match(p.json.systemMessage, /no cross-lab review/);
+  assert.deepEqual(reviewBounces(b), []);
+  b.writeConfig({ review: { mode: "gate" } });
+  assert.equal(decision(push(b)), "deny");
+  review(b, [], { LEDGER_REVIEW_BIN_CODEX: stub(b, "codex", "1. [nit] a.txt:1 spacing") });
+  assert.match(push(b).json.systemMessage, /nits, optional/);
+  assert.deepEqual(reviewBounces(b), ["satisfied"]);
+});
+
+test("S1: the push matcher reads shell quoting, comments and here-documents", async () => {
+  const { isPushCommand, pushOperations } = await import("../lib/gate.mjs");
+  const merge = ["create", "merge"];
+  assert.equal(isPushCommand('echo "git push origin main"', merge), false, "a quoted string is an argument, not a push");
+  assert.equal(isPushCommand("git commit -m 'then git push' && ls", merge), false);
+  assert.equal(isPushCommand("ls # git push later", merge), false, "a comment is not a command");
+  assert.equal(isPushCommand("cat <<EOF\ngit push origin main\nEOF\nls", merge), false, "a here-document body is not a command");
+  assert.equal(isPushCommand("cat <<'EOF' > notes.md\ngh pr merge 3\nEOF", merge), false);
+  assert.equal(isPushCommand("cd x && GIT_TRACE=1 git push", merge), true);
+  assert.equal(isPushCommand("cat <<EOF\nbody\nEOF\ngit push", merge), true, "a push after the here-document still counts");
+  assert.deepEqual(pushOperations('git -C "my repo" -c user.name=x push origin "feat:main"', merge), [{ tool: "git", dirs: ["my repo"], unsupported: null, args: ["origin", "feat:main"] }]);
+  assert.deepEqual(pushOperations('gh pr create --title "git push fix" --head feat', merge), [{ tool: "gh", sub: "create", args: ["--title", "git push fix", "--head", "feat"] }]);
 });
