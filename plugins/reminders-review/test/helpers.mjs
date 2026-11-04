@@ -6,6 +6,8 @@
 //   fail     exit 1 with a not-authorized line on stderr
 //   slow     sleep 10 (longer than the 2 s bound)
 //   badjson  print text that is not JSON
+//   delay    sleep STUB_DELAY seconds (default 0.5), then answer as usual
+//   flood    print 2 MiB of text (more than the 1 MiB stdout cap)
 
 import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -24,6 +26,8 @@ case "\${STUB_REMINDCTL:-}" in
   fail) echo "Reminders access denied. Grant access in System Settings, or run remindctl authorize." >&2; exit 1 ;;
   slow) exec sleep 10 ;;
   badjson) echo "this is not json"; exit 0 ;;
+  delay) sleep "\${STUB_DELAY:-0.5}" ;;
+  flood) yes xxxxxxxxxxxxxxx | head -c 2097152; exit 0 ;;
 esac
 case "$2" in
   overdue) f="\${STUB_OVERDUE:-$STUB_FIXTURES/remindctl-show-overdue.json}" ;;

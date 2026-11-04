@@ -77,3 +77,86 @@ test("unconfigured: nothing on any event", async () => {
     box.release();
   }
 });
+
+// Session isolation (Codex review RR-01): a pending block belongs to the session that produced it.
+const EMPTY = join(import.meta.dirname, "..", "test", "fixtures", "remindctl-show-empty.json");
+
+for (const [what, next] of [
+  ["empty", { STUB_OVERDUE: EMPTY, STUB_TODAY: EMPTY }],
+  ["failing", { STUB_REMINDCTL: "fail" }],
+  ["unconfigured", { REMINDERS_REVIEW_WATCH: "" }],
+]) {
+  test(`switching to a session whose check is ${what} drops the old session's undelivered block`, async () => {
+    const box = sandbox({ extra: { REMINDERS_REVIEW_WATCH: "Plumb" } });
+    try {
+      const env = { ...box.env };
+      const pi = fakePi();
+      remindersReviewOmp(pi, { env, now: () => NOW, timeZone: TZ });
+      const a = ctxFor("omp-A");
+      await pi.fire("session_start", {}, a);
+      assert.ok((await pi.fire("before_agent_start", {}, a)).message, "A has its block, never acknowledged");
+      Object.assign(env, next);
+      const b = ctxFor("omp-B");
+      await pi.fire("session_switch", {}, b);
+      assert.equal(await pi.fire("before_agent_start", {}, b), undefined, "B never sees A's block");
+    } finally {
+      box.release();
+    }
+  });
+}
+
+test("a new session id without a switch event never receives another session's block", async () => {
+  const box = sandbox({ extra: { REMINDERS_REVIEW_WATCH: "Plumb" } });
+  try {
+    const env = { ...box.env };
+    const pi = fakePi();
+    remindersReviewOmp(pi, { env, now: () => NOW, timeZone: TZ });
+    const a = ctxFor("omp-A");
+    await pi.fire("session_start", {}, a);
+    const first = await pi.fire("before_agent_start", {}, a);
+    Object.assign(env, { STUB_OVERDUE: EMPTY, STUB_TODAY: EMPTY });
+    assert.equal(await pi.fire("before_agent_start", {}, ctxFor("omp-C")), undefined);
+    assert.equal(await pi.fire("before_agent_start", {}, a), undefined, "dropped, not parked for A");
+    assert.ok(first.message);
+  } finally {
+    box.release();
+  }
+});
+
+test("a subagent never receives a pending block, whatever its session id", async () => {
+  const box = sandbox({ extra: { REMINDERS_REVIEW_WATCH: "Plumb" } });
+  try {
+    const pi = fakePi();
+    remindersReviewOmp(pi, { env: box.env, now: () => NOW, timeZone: TZ });
+    const main = ctxFor("omp-A");
+    await pi.fire("session_start", {}, main);
+    const delivered = await pi.fire("before_agent_start", {}, main);
+    assert.ok(delivered.message);
+    assert.equal(await pi.fire("before_agent_start", {}, ctxFor("omp-A", { agent: { kind: "sub" } })), undefined);
+    assert.equal(await pi.fire("before_agent_start", {}, ctxFor("omp-sub", { agent: { kind: "sub" } })), undefined);
+    const again = await pi.fire("before_agent_start", {}, main);
+    assert.equal(again.message.details.delivery, delivered.message.details.delivery, "the main session still has it");
+  } finally {
+    box.release();
+  }
+});
+
+test("a check still running when the session switches cannot land its block in the new session", async () => {
+  const box = sandbox({ extra: { REMINDERS_REVIEW_WATCH: "Plumb" } });
+  try {
+    const env = { ...box.env, STUB_REMINDCTL: "delay", STUB_DELAY: "0.6" };
+    const pi = fakePi();
+    remindersReviewOmp(pi, { env, now: () => NOW, timeZone: TZ });
+    const a = ctxFor("omp-A");
+    const slow = pi.fire("session_start", {}, a); // remindctl is already running, for A
+    delete env.STUB_REMINDCTL;
+    Object.assign(env, { STUB_OVERDUE: EMPTY, STUB_TODAY: EMPTY });
+    const b = ctxFor("omp-B");
+    await pi.fire("session_switch", {}, b);
+    await slow;
+    assert.equal(await pi.fire("before_agent_start", {}, b), undefined);
+    assert.deepEqual(a.notes, []);
+  } finally {
+    box.release();
+  }
+});

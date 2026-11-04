@@ -10,14 +10,18 @@
 //   before_agent_start              when nothing is waiting, the UserPromptSubmit check (at most
 //                                   once an hour per session, the same stamp file the hooks use)
 //
-// DELIVERY: a block waits as `pending` with a fresh delivery id and is returned from every
-// before_agent_start as a hidden custom message, because OMP may re-run that chain for one
-// submission and keeps only the accepted attempt's message. A `context` event whose messages
-// carry that delivery id clears it. Same scheme as plugins/i-have-audhd/omp/i-have-audhd-omp.ts
-// (DELIVERY in its header).
+// DELIVERY: a block waits as `pending`, tied to the session id it was checked for, with a fresh
+// delivery id, and is returned from every before_agent_start of that session as a hidden custom
+// message, because OMP may re-run that chain for one submission and keeps only the accepted
+// attempt's message. A `context` event whose messages carry that delivery id clears it. Same
+// scheme as plugins/i-have-audhd/omp/i-have-audhd-omp.ts (DELIVERY in its header).
 //
-// MAIN SESSION ONLY: subagent sessions (ctx.agent.kind "sub") are skipped; they write to the main
-// agent, not to the person who has to do the reminder.
+// ONE SESSION'S BLOCK STAYS IN THAT SESSION: session_start and session_switch drop whatever is
+// pending before checking the new session; a before_agent_start from another session id drops it
+// too; and a check still running when the session changes discards its result (`epoch`).
+//
+// MAIN SESSION ONLY: subagent sessions (ctx.agent.kind "sub") are skipped on every event,
+// delivery included; they write to the main agent, not to the person who has to do the reminder.
 //
 // FAIL OPEN: dueCheck logs remindctl and config faults to errors.log and never throws for them;
 // anything else thrown here is one `omp-adapter` errors.log line and no message. The remindctl
@@ -70,26 +74,44 @@ function sessionId(ctx: Ctx): string {
 
 export default function remindersReviewOmp(pi: PiLike, deps: AdapterDeps = {}): void {
 	const env = deps.env ?? process.env;
-	let pending: { content: string; delivery: string } | undefined;
+	let pending: { session: string; content: string; delivery: string } | undefined;
+	// Bumped at every session boundary: a check that started before one cannot land its result.
+	let epoch = 0;
+
+	const isSub = (ctx: Ctx): boolean => ctx?.agent?.kind === "sub";
 
 	const check = async (event: "SessionStart" | "UserPromptSubmit", ctx: Ctx): Promise<void> => {
-		if (ctx?.agent?.kind === "sub") return;
+		if (isSub(ctx)) return;
+		const session = sessionId(ctx);
+		const started = epoch;
 		try {
-			const out = (await dueCheck(event, { session_id: sessionId(ctx) }, { env, now: deps.now, timeZone: deps.timeZone })) as HookOut;
+			const out = (await dueCheck(event, { session_id: session }, { env, now: deps.now, timeZone: deps.timeZone })) as HookOut;
+			if (epoch !== started) return; // the session changed while remindctl ran
 			const content = out?.hookSpecificOutput?.additionalContext;
-			if (typeof content === "string" && content) pending = { content, delivery: randomUUID() };
+			if (typeof content === "string" && content) pending = { session, content, delivery: randomUUID() };
 			if (out?.systemMessage && ctx.hasUI) ctx.ui?.notify?.(out.systemMessage, "warning");
 		} catch (err) {
 			logError(PLUGIN, event, `omp-adapter: ${err instanceof Error ? err.message : String(err)}`, env);
 		}
 	};
 
-	pi.on("session_start", (_event, ctx) => check("SessionStart", ctx));
-	pi.on("session_switch", (_event, ctx) => check("SessionStart", ctx));
+	const boundary = (ctx: Ctx): Promise<void> | undefined => {
+		if (isSub(ctx)) return undefined;
+		epoch++;
+		pending = undefined;
+		return check("SessionStart", ctx);
+	};
+
+	pi.on("session_start", (_event, ctx) => boundary(ctx));
+	pi.on("session_switch", (_event, ctx) => boundary(ctx));
 	pi.on("before_agent_start", async (_event, ctx) => {
+		if (isSub(ctx)) return undefined;
+		const session = sessionId(ctx);
+		if (pending && pending.session !== session) pending = undefined;
 		if (!pending) await check("UserPromptSubmit", ctx);
-		if (!pending) return undefined;
-		return { message: { customType: MESSAGE_TYPE, content: pending.content, display: false, details: { delivery: pending.delivery } } };
+		const p = pending;
+		if (!p || p.session !== session) return undefined;
+		return { message: { customType: MESSAGE_TYPE, content: p.content, display: false, details: { delivery: p.delivery } } };
 	});
 	// Observes only: returns nothing, so the messages OMP sends are never rewritten.
 	pi.on("context", (event) => {
