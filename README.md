@@ -497,9 +497,10 @@ prompt still works as a shortcut). The hooks are on by default, with `/ledger:en
 `/ledger:disable` to set a folder's switch. A question the agent forms but defers is `held`
 (`ledger hold`, `ledger reopen`), never dropped, and is listed as *Waiting on you* at session
 start; `ledger outcome <ref> [q-id] "<text>"` records what a decision produced (a PR, a commit, a
-path). Opening a 0.2.0 database migrates it to schema version 3 in place, keeping every row. A database at a configured `db` path that fails to open as SQLite (corrupt, or
-not a database) is reported and left exactly as it is; only the plugin's own default file is
-moved aside to `<path>.corrupt-<stamp>` and recreated.
+path). Opening a 0.2.0 database migrates it to schema version 3 in place, keeping every row. A
+database at a configured `db` path that fails to open as SQLite (corrupt, or not a database) is
+reported and left exactly as it is; only the plugin's own default file is moved aside to
+`<path>.corrupt-<stamp>` and recreated.
 
 Needs Node 22.13 or later (`node:sqlite`). Claude Code only; no OMP adapter. One allow rule
 keeps the agent's ledger commands from prompting for permission; the plugin prints it at
