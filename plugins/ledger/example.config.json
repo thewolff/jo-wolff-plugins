@@ -35,6 +35,10 @@
   "sweep": {
     "autoWithdrawDays": 7
   },
+  "digest": {
+    "enabled": true,
+    "issue": "thewolff/jo-issues#325"
+  },
   "review": {
     "mode": "gate",
     "labs": [

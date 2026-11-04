@@ -398,6 +398,10 @@ export function execute(db, parsed, ctx) {
       return ok(null, renderPending(openQuestions(db, ctx.cwd), ctx.cwd, { now, timezone: tz }, heldQuestions(db, ctx.cwd)));
     case "review":
       return refused("review runs on its own line: `ledger review …`, not inside a batch");
+    case "canary":
+    case "report":
+    case "digest":
+      return refused(`${parsed.verb} runs on its own line: \`ledger ${parsed.verb} …\`, not inside a batch`);
     case "bounces":
       return ok(null, renderBounces(db, { since: parsed.since ?? BOUNCES_DEFAULT_SINCE, now }));
     case "doctor":

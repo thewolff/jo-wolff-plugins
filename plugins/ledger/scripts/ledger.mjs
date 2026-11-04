@@ -29,8 +29,11 @@ import { renderHelp, setEnabled } from "../lib/commands.mjs";
 import { renderDoctor, runDoctor } from "../lib/doctor.mjs";
 import { parseLine } from "../lib/parse.mjs";
 import { addressed, runReview, status as reviewStatus, waive } from "../lib/review.mjs";
+import { gradeRun, install as canaryInstall, listRuns, parseCanaryArgs, prune as canaryPrune, renderRuns, runCanary } from "../lib/canary.mjs";
+import { parseReportArgs, runReport } from "../lib/report.mjs";
+import { install as digestInstall, parseDigestArgs, runDigest } from "../lib/digest.mjs";
 import { cachedJudgement } from "../lib/judge.mjs";
-import { invocation } from "../lib/inject.mjs";
+import { cliPath, invocation } from "../lib/inject.mjs";
 
 /** Pull the CLI's own flags out of argv; everything else is the command. */
 export function splitCliFlags(argv) {
@@ -112,6 +115,8 @@ export function main(argv = process.argv.slice(2), { env = process.env, stdin = 
 
   // `review` runs alone (it waits on other labs' CLIs, so it is async and never part of a batch).
   if (cli.rest.length && cli.rest[0].toLowerCase() === "review") return runReviewVerb({ store, cwd, env, sessionId, tokens: cli.rest, out });
+  // `canary`, `report` and `digest` run alone too: they spawn processes and are async.
+  if (cli.rest.length && ["canary", "report", "digest"].includes(cli.rest[0].toLowerCase())) return runOwnLineVerb({ store, cwd, env, verb: cli.rest[0].toLowerCase(), tokens: cli.rest.slice(1), by: cli.by, out, err });
 
   try {
     const ctx = makeCtx({ store, cwd, via: "cli", by: cli.by, sessionId });
@@ -124,6 +129,48 @@ export function main(argv = process.argv.slice(2), { env = process.env, stdin = 
       err(`ledger: database ${busyWord(batch.busy)} at ${batch.busy.path}; ${batch.applied === 0 ? "nothing applied" : `lines ${skipped.join(", ")} not applied`}\n`);
     }
     return exitCodeFor(batch);
+  } finally {
+    try {
+      store.db.close();
+    } catch {
+      /* already closed */
+    }
+  }
+}
+
+function pluginVersion() {
+  try {
+    return JSON.parse(readFileSync(new URL("../.claude-plugin/plugin.json", import.meta.url), "utf8")).version ?? "";
+  } catch {
+    return "";
+  }
+}
+
+async function runOwnLineVerb({ store, cwd, env, verb, tokens, by, out, err }) {
+  try {
+    let r;
+    if (verb === "report") {
+      const p = parseReportArgs(tokens);
+      if (p.error) r = { code: 1, text: p.error };
+      else r = await runReport({ db: store.db, config: store.config, env, since: p.since, judge: p.judge });
+    } else if (verb === "canary") {
+      const p = parseCanaryArgs(tokens);
+      if (p.error) r = { code: 1, text: p.error };
+      else if (p.action === "run") r = await runCanary({ db: store.db, dbPath: store.dbPath, env, repo: p.repo, plugins: p.plugins, timeoutS: p.timeoutS });
+      else if (p.action === "runs") r = { code: 0, text: renderRuns(listRuns(store.db, { limit: p.limit, plugin: p.plugin })) };
+      else if (p.action === "grade") r = gradeRun({ db: store.db, dbPath: store.dbPath, id: p.id, grade: p.grade, note: p.note, by: by ?? "human" });
+      else if (p.action === "prune") {
+        const { removed, kept } = canaryPrune({ env, days: p.days });
+        r = { code: 0, text: `canary prune: removed ${removed} transcript file(s) older than ${p.days} day(s), kept ${kept}; rows untouched` };
+      } else r = canaryInstall({ env, cliPath: cliPath(), repo: p.repo, hour: p.hour, minute: p.minute });
+    } else {
+      const p = parseDigestArgs(tokens);
+      if (p.error) r = { code: 1, text: p.error };
+      else if (p.action === "install") r = digestInstall({ env, cliPath: cliPath(), config: store.config });
+      else r = await runDigest({ db: store.db, dbPath: store.dbPath, config: store.config, env, dryRun: p.dryRun, force: p.force, version: pluginVersion() });
+    }
+    out(`${r.text}\n`);
+    return r.code;
   } finally {
     try {
       store.db.close();

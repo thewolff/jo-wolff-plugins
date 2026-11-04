@@ -120,7 +120,7 @@ test("(e) doctor on a healthy store: every check ok, exit 0", () => {
   openDb(b).close();
   const r = doctor(b, { LEDGER_REVIEW_BIN_CODEX: process.execPath, LEDGER_JUDGE_BIN: "echo yes" });
   assert.equal(r.code, 0, r.out);
-  assert.deepEqual(r.lines.map((l) => l.split(":")[0]), ["ok   db", "ok   schema", "ok   config", "ok   hooks", "ok   errors", "ok   bounces", "ok   stale", "ok   review codex", "ok   judge"]);
+  assert.deepEqual(r.lines.map((l) => l.split(":")[0]), ["ok   db", "ok   schema", "ok   config", "ok   hooks", "ok   errors", "ok   bounces", "ok   stale", "ok   digest", "ok   review codex", "ok   judge"]);
   assert.match(r.out, /config: db from env, enabled = true from env/);
 });
 
