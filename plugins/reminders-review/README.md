@@ -100,6 +100,14 @@ A config file that does not parse gets the same treatment. Prompts after the ses
 
 The text of a reminder is treated as data, never as permission. A reminder that says "delete the old branch" gets a proposal and two questions, not an action. Closing uses `remindctl complete`; the skill has no delete path.
 
+## Changes in 0.2.1
+
+`lib/hook-runner.mjs` is plugin-kit 0.3.1's, byte for byte (was this plugin's own copy, which
+carried the stdout drain first): the drain is unchanged, and the handler thread's env now also
+carries `HOOK_RUNNER_STARTED_AT_MS` and `HOOK_RUNNER_DEADLINE_MS`, and a process group the thread
+registers with `{ kitReap: <pgid> }` is killed when the runner exits. reminders-review's hooks
+register none, so the due-reminders block is unchanged.
+
 ## Changes
 
 0.2.0 adds the due-reminders injection above. Before release, review fixes went into the same version. Answers larger than one pipe buffer (64 KiB) reached the host cut off, as invalid JSON, because the hook runner exited before stdout drained. It now waits for the write, but only until its 4-second deadline, and logs one errors.log line when the host is not reading. remindctl output is capped at 1 MiB per call, and the block at 40 reminders per list and 8 KiB in all. In OMP, a waiting block no longer crosses into another session or reaches a subagent. The comma rule for `REMINDERS_REVIEW_WATCH` is now documented. A long title, failure reason or failure line is now cut between characters, so an emoji is kept or dropped whole instead of leaving half of it in the block. The test suite no longer writes to the real errors.log: the runner's test hook moved out of `test/`, where `node --test` ran it with the real environment, and stays silent unless its tests switch it on.

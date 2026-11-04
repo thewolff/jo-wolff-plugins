@@ -237,6 +237,16 @@ general was kept.
 | `hooks/repo-rules-inject.mjs` + `lib/repo-rules-walk.mjs` + `lib/budget-fit.mjs` | `hooks/repo-rules-inject.mjs`, `lib/repo-rules.mjs` | the `tmpdir()/newdle-repo-rules-<id>.json` state file (now under the plugin's XDG state dir); the shipyard-specific comments; `budget-fit-cli.mjs` (a CLI no hook called) was not ported |
 | `agents/beefy-builder.md`, `agents/beefy-research.md` | not ported | both are shipyard-specific end to end (Newdle monorepo ownership, `.projects/` sync, Linear closing); `beefy-builder` stays in the default builder class so a repository that ships its own is gated |
 
+## Changes in 0.1.1
+
+`lib/hook-runner.mjs` is plugin-kit 0.3.1's, byte for byte (was 0.2.1's). The handler thread's
+env also carries `HOOK_RUNNER_STARTED_AT_MS` and `HOOK_RUNNER_DEADLINE_MS`, a process group
+the thread registers with `{ kitReap: <pgid> }` is killed when the runner exits, and the runner
+waits for stdout to drain before it exits (bounded by the same deadline), so an answer larger
+than one 64 KiB pipe buffer is no longer cut short. delegation's
+hooks register none, so every hook answers as before, under the same 4 s deadline (the
+hooks.json timeout stays 5 s).
+
 ## Changes in 0.1.0
 
 First release: the delegation skill and SessionStart block, spawn gates 1, 4 and 2, the

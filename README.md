@@ -27,6 +27,7 @@ it, keeping a record of what it did and asked, and a vendored set of engineering
   state declaration, and a skill with its "When this can't run" section, scaffolded by
   `/plugin-kit:new-plugin`; `ledger gate check` passes on it, the `evals` row excepted, before
   the first rule is written, and that row fails naming the stubs until they are filled.
+  Changes in plugin-kit 0.3.1: the hook runner waits for stdout to drain before it exits (bounded by its deadline), so an answer larger than one 64 KiB pipe buffer is no longer cut short.
   Changes in plugin-kit 0.3.0: `lib/judge.mjs`, the shared judge dispatch every judging plugin vendors byte for byte (a sameness test diffs the copies), configured once with `node lib/judge.mjs setup`; `--judge` on the scaffolder.
   Changes in plugin-kit 0.2.2: the scaffold writes a `CHANGELOG.md` (Keep a Changelog, with the
   0.1.0 entry) beside the README's `## Changes in 0.1.0`, and the `release-gate` checklist's
@@ -48,31 +49,38 @@ it, keeping a record of what it did and asked, and a vendored set of engineering
   refused with the section to fill in, a builder-class spawn also needs `## Spiral bound` and a
   pattern-check receipt, an undeliverable message is marked NOT delivered, and a builder report
   without `Stopped because:` draws a warning. Plus the eleven general agents and three guards
-  ported from newdle. Changes in delegation 0.1.0: first release.
+  ported from newdle. Changes in delegation 0.1.1: `lib/hook-runner.mjs` re-vendored from
+  plugin-kit 0.3.1 (the handler's env carries the runner's start and deadline; stdout drains before exit); hooks answer as
+  before.
 - **[ctx-watch](#ctx-watch)** — notice when the ctx daemon is dead, unsupervised,
   or stale, or its semantic index is not ready; repair what ctx documents a command for, and
   say so at SessionStart and in a macOS popup from a launchd timer; the SessionStart line also
   says when the timer itself has stopped. At Stop, the `consult-history` check says when a
   resumed session never asked ctx what the thread was. macOS; Claude Code hooks, plus a CLI
   that works anywhere.
-  Changes in ctx-watch 0.2.0: the semantic index (`.daemon.jobs.semantic_index` not `ready`
+  Changes in ctx-watch 0.2.1: `lib/hook-runner.mjs` re-vendored from plugin-kit 0.3.1 (the
+  handler's env carries the runner's start and deadline; stdout drains before exit); hooks answer as before. In 0.2.0: the
+  semantic index (`.daemon.jobs.semantic_index` not `ready`
   with semantic search enabled) is a failing probe naming `ctx semantic enable --wait`, in the
   SessionStart line and the popup; the `consult-history` Stop check (a resume, a compaction,
   or "as discussed" with no `ctx search` since; `~/.claude/ctx-watch.json`, default warn);
   `evals/` and the plugin-kit scenario runner; see the plugin's
-  [release notes](plugins/ctx-watch/README.md#changes-in-020).
+  [release notes](plugins/ctx-watch/README.md#changes-in-021).
 - **[continuity](#continuity)** — keep a long session's state across compaction: a PreCompact
   hook saves branch, diff, touched files, recent asks and the repository's open handoffs to a
   snapshot the post-compaction SessionStart injects back; every start says when that save last
   succeeded, so a dead save is never silent; a context-pressure check warns once and blocks one
   stop near the compaction target, naming `/continuity:handoff`; and the handoff skill writes
-  the judgment layer no hook can derive. Claude Code hooks. Changes in continuity 0.1.0: first
-  release, ported from the newdle plugin 0.2.175 with every workspace path stripped; see the
-  plugin's [CHANGELOG](plugins/continuity/CHANGELOG.md).
+  the judgment layer no hook can derive. Claude Code hooks. Changes in continuity 0.1.1:
+  `lib/hook-runner.mjs` re-vendored from plugin-kit 0.3.1 (the handler's env carries the
+  runner's start and deadline; stdout drains before exit); hooks answer as before. See the plugin's
+  [CHANGELOG](plugins/continuity/CHANGELOG.md).
 - **[brb](#brb)** — type `brb` and walk away: the agent keeps working, every ask it would
   have stopped for waits in a digest, and only a broken main, data loss, a security finding,
   spend near a ceiling or a blocker on everything comes through at once; `back` prints the
-  digest. Claude Code hooks plus an OMP extension. Changes in brb 0.1.0: first release.
+  digest. Claude Code hooks plus an OMP extension. Changes in brb 0.1.1: `lib/hook-runner.mjs`
+  re-vendored from plugin-kit 0.3.1 (the handler's env carries the runner's start and deadline; stdout drains before exit);
+  hooks answer as before.
 
 output-types delivers text and, since 0.3.0, checks every finished message for a label without
 a receipt, warning only; see its *delivers, and warns* note. i-have-audhd delivers its rules and checks every finished message, warning by
@@ -145,7 +153,7 @@ compares the two installs and prints the commands for any plugin that differs (e
 
 ## How the plugins fit together
 
-This section describes the repository at `8a344fc`: pull requests #73 to #78 and #80 merged onto `6c68968`.
+This section describes the repository after pull requests #73 to #81 merged onto `6c68968`, plus the plugin-kit 0.3.1 re-vendor.
 The versions are in the table under *Who does what*; per-plugin detail is in each plugin's
 section or README.
 
@@ -182,7 +190,7 @@ last two. The refusal carries the missing section as a fill-in template.
 with `Stopped because: acceptance met | bound hit | told to stop`. A failed `SendMessage` becomes
 a block saying the message was not delivered.
 
-**Stop.** i-have-audhd runs eleven checks on the finished message, five through the judge, and
+**Stop.** i-have-audhd runs thirteen checks on the finished message, five through the judge (six with links-judge on), and
 warns by default. output-types warns on every CLAIM without a `file:line` or command and every
 CITE without a URL; its judge stage is off by default. ask-graham blocks once on a missing
 verdict or sources line; pattern-check once on a plan with no receipt; ledger on a decision
@@ -204,19 +212,19 @@ receipt and removes its working files.
 
 | Plugin | Version | What it does | Reads from / gives to another plugin |
 |---|---|---|---|
-| output-types | 0.3.0 | the CLAIM/CITE contract at SessionStart; a Stop check that warns on a label without its receipt | vendors plugin-kit's `lib/judge.mjs` and `lib/hook-runner.mjs`; delegation's brief skeleton carries its CLAIM/CITE line |
-| i-have-audhd | 1.6.0 | the message skeleton and eleven Stop checks, warning by default | its `enforcement.judgeCommand` is the last fallback of plugin-kit's judge resolution and of ledger's review judge |
+| output-types | 0.3.1 | the CLAIM/CITE contract at SessionStart; a Stop check that warns on a label without its receipt | vendors plugin-kit's `lib/judge.mjs` and `lib/hook-runner.mjs`; delegation's brief skeleton carries its CLAIM/CITE line |
+| i-have-audhd | 1.6.1 | the message skeleton and thirteen Stop checks (links-resolve and the opt-in links-judge since 1.6.1), warning by default | its `enforcement.judgeCommand` is the last fallback of plugin-kit's judge resolution and of ledger's review judge |
 | paired-coding | 1.5.0 | change sets behind a write gate; learning mode with `pair_learn`, `why` + `sources` on a card, `recall` on done | none |
 | ask-graham | 0.7.3 | "should we build X?" with a verdict; a prompt nudge and a Stop check | reads your `sources.md`; nothing from another plugin |
 | pattern-check | 0.3.2 | holds big work until a reuse/replace/new receipt exists | its receipt file is what delegation's spawn gate requires |
-| reminders-review | 0.2.0 | Apple Reminders, one at a time | none |
+| reminders-review | 0.2.1 | Apple Reminders, one at a time | none |
 | ledger | 0.3.6 | questions and choices on rows; the push gate with six rows (`docs` new) | its `says` row checks the "When this can't" heading every skill and agent carries; its canary runs every plugin's `e2e/live-run.sh` |
-| plugin-kit | 0.3.0 | the scaffold (with `CHANGELOG.md` since 0.2.2), the hook runner, the shared judge lib, the scenario runner, two agents | gives `lib/hook-runner.mjs` and `lib/judge.mjs` to the plugins that vendor them, and `lib/live-run.mjs` to every `e2e/live-run.sh` |
+| plugin-kit | 0.3.1 | the scaffold (with `CHANGELOG.md` since 0.2.2), the hook runner, the shared judge lib, the scenario runner, two agents | gives `lib/hook-runner.mjs` and `lib/judge.mjs` to the plugins that vendor them, and `lib/live-run.mjs` to every `e2e/live-run.sh` |
 | as2-skills | 0.1.2 | 22 vendored engineering skills, each with "How it fails" | its sections meet ledger's `says` row |
-| ctx-watch | 0.2.0 | ctx daemon and semantic-index health, repair, and the consult-history Stop check | vendors the hook runner and the scenario runner |
-| delegation | 0.1.0 | brief teaching, spawn gate, `SendMessage` check, SubagentStop warning, 11 agents, three guards | needs pattern-check's receipt for builder-class spawns; vendors the hook runner |
-| continuity | 0.1.0 | PreCompact snapshot, liveness line, context-pressure warning, `/continuity:handoff` | vendors the hook runner |
-| brb | 0.1.0 | `brb` / `back` / `pending`, the away digest, keep-working, on-fire surfacing | vendors the hook runner |
+| ctx-watch | 0.2.1 | ctx daemon and semantic-index health, repair, and the consult-history Stop check | vendors the hook runner and the scenario runner |
+| delegation | 0.1.1 | brief teaching, spawn gate, `SendMessage` check, SubagentStop warning, 11 agents, three guards | needs pattern-check's receipt for builder-class spawns; vendors the hook runner |
+| continuity | 0.1.1 | PreCompact snapshot, liveness line, context-pressure warning, `/continuity:handoff` | vendors the hook runner |
+| brb | 0.1.1 | `brb` / `back` / `pending`, the away digest, keep-working, on-fire surfacing | vendors the hook runner |
 
 ### What they share
 
@@ -306,6 +314,10 @@ turn.
 - A **Stop check** that reads the finished message and warns, in one line to you, about every
   `**CLAIM**` or `**CITE**` that carries no receipt shape; optionally, a judge model asks whether
   each receipt licenses its sentence. Warns, never blocks; off switch and the judge's switch below.
+
+Changes in 0.3.1: `lib/hook-runner.mjs` re-vendored from plugin-kit 0.3.1, so the Stop hook's
+answer drains before the hook exits (bounded by the hook's deadline: 4 s, or 55 s with the judge
+on) instead of being cut at one 64 KiB pipe buffer; the check itself is unchanged.
 
 Changes in 0.3.0: the Stop check (next section). Mechanical, every turn: each `**CLAIM**` without
 an absolute `file:line` or a command and its result, and each `**CITE**` without a URL or a test
@@ -1028,6 +1040,9 @@ it installed the agent also reads the link field you see in Reminders.app, which
 see. Run `/reminders-review` with list names, or save defaults with
 `/reminders-review lists <name> ...`. Details are in `plugins/reminders-review/README.md`.
 
+Changes in 0.2.1: `lib/hook-runner.mjs` re-vendored from plugin-kit 0.3.1, the kit's runner with
+this plugin's stdout drain; the due-reminders block is unchanged.
+
 Changes in 0.2.0: due and overdue reminders from the lists you watch (`watch` in the config file,
 or `REMINDERS_REVIEW_WATCH`) come up at session start and at most hourly after, on Claude Code and
 OMP. The skill has a "When this can't run" section (`remindctl` missing or not authorized, `rem`
@@ -1382,7 +1397,7 @@ holding it, and sends the agent back to work (Stop hook feedback on Claude Code,
 OMP) until an `idle:` line, a tool-less continuation that brings nothing new, or two stops with
 no tool call between them. `pending` prints the digest; `back` prints it, archives it and ends
 the hold. The on-fire kinds mirror
-agent-system 2.0's surface. Built on plugin-kit 0.2.1; Node 22.13 or later; Claude Code hooks
+agent-system 2.0's surface. Built on plugin-kit 0.3.1; Node 22.13 or later; Claude Code hooks
 plus an OMP extension that runs the same hooks. The exact instruction text, the three release
 rules, the config (`onFireCap`, `idleStops`) and the failure table are in
 [`plugins/brb/README.md`](plugins/brb/README.md).

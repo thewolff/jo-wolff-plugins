@@ -293,13 +293,16 @@ test("judgeStage: pass is silent, fail and an unreadable verdict are findings, a
   assert.ok(existsSync(skippedLogPath(box.env)));
 });
 
-test("judgeStage with the real runner: a shell judge that answers fail, one that times out (killed inside the clamp)", async () => {
+test("judgeStage with the real runner: a shell judge that answers fail, one that times out (killed at its configured 400 ms per-call budget, which is below the hook deadline's remainder so the clamp never applies)", async () => {
   const box = sandbox();
   const started = Date.now();
   const findings = await judgeStage([st(1, "CLAIM", "a"), st(2, "CLAIM", "b")], { command: "echo '{\"verdict\":\"fail\",\"reason\":\"nope\"}'", timeoutMs: 5_000, source: "s" }, { env: box.env, budgetMs: 10_000 });
   assert.deepEqual(findings.map((f) => f.statement.line), [1, 2]);
-  const slow = await judgeStage([st(3, "CLAIM", "c")], { command: "sleep 30", timeoutMs: 30_000, source: "s" }, { env: box.env, budgetMs: 2_400, marginMs: 2_000 });
+  // The deadline clamp (budgetMs - elapsed - marginMs) depends on wall time, so a clamped call's
+  // timeout is not a fixed number. A per-call budget of 400 ms against ~8 s left pins it; the
+  // clamp itself is covered with the fake runner above.
+  const slow = await judgeStage([st(3, "CLAIM", "c")], { command: "sleep 30", timeoutMs: 400, source: "s" }, { env: box.env, budgetMs: 10_000 });
   assert.deepEqual(slow, []);
-  assert.ok(Date.now() - started < 3_000, "the call was clamped to the 400 ms left");
+  assert.ok(Date.now() - started < 3_000, "the sleeping judge was killed at its 400 ms budget");
   assert.match(readFileSync(skippedLogPath(box.env), "utf8"), /line 3 .* judge timeout: no exit within 400 ms/);
 });

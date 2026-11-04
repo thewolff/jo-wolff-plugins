@@ -4,6 +4,18 @@ All notable changes to output-types are recorded here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Releases before 0.3.0 are described in
 the root README's output-types section ("Changes in").
 
+## [0.3.1] - 2026-11-04
+
+### Fixed
+
+- `lib/hook-runner.mjs` is plugin-kit 0.3.1's, byte for byte (was 0.3.0's): the runner waits for
+  stdout to drain before it exits, bounded by the hook's deadline (4 s, or 55 s with the judge on),
+  so a Stop warning larger than one 64 KiB pipe buffer is no longer cut short; a host that never
+  reads gets exit 0 at the deadline and one `stdout not drained` line in errors.log. What the Stop
+  check says is unchanged.
+- `test/receipts.test.mjs`'s real-runner judge case gives the sleeping judge a 400 ms per-call
+  budget, so the logged timeout is the configured number, not one that drifts with elapsed time.
+
 ## [0.3.0] - 2026-11-04
 
 ### Added

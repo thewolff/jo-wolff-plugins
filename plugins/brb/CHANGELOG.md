@@ -3,6 +3,18 @@
 All notable changes to brb are recorded here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.1.1] - 2026-11-04
+
+### Changed
+
+- `lib/hook-runner.mjs` is plugin-kit 0.3.1's, byte for byte (was 0.2.1's): the handler thread's
+  env also carries `HOOK_RUNNER_STARTED_AT_MS` and `HOOK_RUNNER_DEADLINE_MS`, a process group
+  the thread registers with `{ kitReap: <pgid> }` is killed when the runner exits, and it now
+  waits for stdout to drain before it exits, bounded by the same deadline, so an
+  answer larger than one 64 KiB pipe buffer is no longer cut short (a host that never reads gets
+  exit 0 at the deadline and one `stdout not drained` errors.log line). brb's hooks
+  register none, so what they answer is unchanged; the 4 s deadline is unchanged.
+
 ## [0.1.0] - 2026-11-04
 
 ### Added

@@ -4,22 +4,29 @@
 //
 // runHook(name, handlerUrl, { plugin, quiet, deadlineMs }) reads stdin, parses it as JSON (empty
 // stdin is `{}`), runs the hook module's exported `handle(input, { env })` in a worker thread and
-// prints what it returns: an object → JSON on stdout, null → nothing. Then it exits 0. Whatever
-// goes wrong, it still exits 0 with an "allow":
+// prints what it returns: an object → JSON on stdout, null → nothing. It exits 0 once stdout has
+// taken the whole answer (an exit right after the write loses everything past one pipe buffer,
+// 64 KiB, when stdout is a pipe the host has not read yet). Whatever goes wrong, it still exits 0
+// with an "allow":
 //
 //   stdin is not JSON, or not an object   one errors.log line + { systemMessage } (unless quiet)
 //   handle throws or rejects              one errors.log line + { systemMessage } (unless quiet)
 //   no answer at the deadline             one errors.log line + { systemMessage }, exit 0 at once
 //                                         (default 4 s: inside Claude Code's 5 s hook budget, so
 //                                         the host never kills the hook and loses the message)
+//   stdout not drained by the deadline    one errors.log line, exit 0 at once; nothing more is
+//                                         written (bytes the pipe already took cannot be recalled,
+//                                         so a host that stops reading mid-answer sees a cut answer)
 //
 // The deadline is one referenced timer on the main thread, started before stdin is read, and the
 // handler runs on another thread (a `node:worker_threads` Worker whose script is this module), so
 // the timer fires whatever the handler is doing: a stdin the host holds open, a promise that never
 // settles, a synchronous loop that never yields. At the deadline the main thread writes the log
-// line, prints the message, terminates the worker and exits; an answer that would have come
-// later is dropped (fail open, never a late block). The main thread does nothing but wait, so
-// nothing of the plugin's can block it.
+// line, terminates the worker, prints the message (allowed DRAIN_MIN_MS to reach stdout) and
+// exits; an answer that would have come later is dropped (fail open, never a late block). An
+// answer that does come is written with a completion callback and the exit waits for it, but
+// only until the same deadline. The main thread does nothing but wait, so nothing of the
+// plugin's can block it.
 //
 // What the handler thread is told: its env carries HOOK_RUNNER_STARTED_AT_MS (the main thread's
 // Date.now() when runHook began, before stdin) and HOOK_RUNNER_DEADLINE_MS, so a handler that
@@ -28,8 +35,8 @@
 // true (a runner older than this never set it, so a handler checks it before posting), and the
 // thread posts { kitReap: <pgid> } when it starts one and { kitReaped: <pgid> } when it has reaped
 // it itself (lib/judge.mjs does both inside this runner's thread); every group still registered
-// when the runner exits, at the deadline or after an answer, gets one negative-pid SIGKILL, so
-// terminating the thread never leaves its children running.
+// when the runner takes an answer or gives up at the deadline (before it drains stdout) gets one
+// negative-pid SIGKILL, so terminating the thread never leaves its children running.
 //
 // errors.log is `${XDG_STATE_HOME:-~/.local/state}/<plugin>/errors.log`, one line per fault:
 // `<iso> <hook> <message>` (a thrown error's line carries two stack frames after ` | `; the
@@ -47,6 +54,15 @@ import { Worker, isMainThread, parentPort, workerData } from "node:worker_thread
 
 export const DEADLINE_MS = 4_000;
 const TIMED_OUT = Symbol("timed out");
+/** The least time the deadline's own message gets to reach stdout (ms). */
+const DRAIN_MIN_MS = 50;
+
+/** Write `text` to stdout and call `done(err?)` once it has all been handed to the OS. */
+function writeStdout(text, done) {
+  // A host that closed the pipe (EPIPE) reaches `done`, never an uncaught 'error' and exit 1.
+  process.stdout.once("error", done);
+  process.stdout.write(text, done);
+}
 
 /** `${XDG_STATE_HOME:-~/.local/state}/<plugin>`. */
 export function stateDir(plugin, env = process.env) {
@@ -93,16 +109,19 @@ function readStdin(stdin) {
  *                      quiet: true for events that discard JSON output (SessionEnd),
  *                      deadlineMs: when to give up, counted from here (default 4000) }
  */
-export async function runHook(name, handlerUrl, { plugin, quiet = false, deadlineMs = DEADLINE_MS, env = process.env, stdin = 0, exit = (code) => process.exit(code), write = (s) => process.stdout.write(s) } = {}) {
+export async function runHook(name, handlerUrl, { plugin, quiet = false, deadlineMs = DEADLINE_MS, env = process.env, stdin = 0, exit = (code) => process.exit(code), write = writeStdout } = {}) {
   const startedAt = Date.now();
   if (!plugin) throw new TypeError("runHook needs { plugin }");
   if (typeof handlerUrl !== "string") throw new TypeError("runHook needs the hook module's import.meta.url (a string); it exports handle()");
+  const deadlineAt = startedAt + deadlineMs;
   let done = false;
   let timer;
   let worker = null;
   // Process groups the handler thread started and has not reaped itself.
   const groups = new Set();
-  // The one exit: the first caller wins; a late timer or a late answer finds `done` set.
+  // The one exit: the first caller wins; a late timer or a late answer finds `done` set. The
+  // answer is written whole before the exit, bounded by what is left of the deadline (at least
+  // DRAIN_MIN_MS, so the deadline's own message gets its write); past that the write is abandoned.
   const finish = (text) => {
     if (done) return;
     done = true;
@@ -115,8 +134,23 @@ export async function runHook(name, handlerUrl, { plugin, quiet = false, deadlin
         // ESRCH: the group is already gone
       }
     }
-    if (text) write(text);
-    return exit(0);
+    if (!text) return exit(0);
+    let drain;
+    let ended = false;
+    const end = (fault) => {
+      if (ended) return;
+      ended = true;
+      clearTimeout(drain);
+      if (fault) logError(plugin, name, fault, env);
+      exit(0);
+    };
+    const drainMs = Math.max(deadlineAt - Date.now(), DRAIN_MIN_MS);
+    drain = setTimeout(() => end(`stdout not drained within ${drainMs} ms: the host is not reading it; the rest of a ${Buffer.byteLength(text)}-byte answer was dropped`), drainMs);
+    try {
+      write(text, (err) => end(err ? `stdout write failed: ${err.message}` : null));
+    } catch (err) {
+      end(`stdout write failed: ${err.message}`);
+    }
   };
   const failOpen = (why, detail = "") => {
     if (done) return;

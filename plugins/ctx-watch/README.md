@@ -331,6 +331,15 @@ SessionStart ones against `evals/fixtures/fake-ctx.sh`), and `session-start-heal
 headless `claude -p` session when `claude` is on PATH. Run the tests with `node --test` from
 inside `plugins/ctx-watch/`; the scenarios with `bash e2e/live-run.sh --no-live`.
 
+## Changes in 0.2.1
+
+`lib/hook-runner.mjs` is plugin-kit 0.3.1's, byte for byte (was 0.2.1's). The handler thread's
+env also carries `HOOK_RUNNER_STARTED_AT_MS` and `HOOK_RUNNER_DEADLINE_MS`, a process group
+the thread registers with `{ kitReap: <pgid> }` is killed when the runner exits, and the runner
+waits for stdout to drain before it exits (bounded by the same deadline), so an answer larger
+than one 64 KiB pipe buffer is no longer cut short. ctx-watch's
+hooks register none, so every hook answers as before, under the same 4 s deadline.
+
 ## Changes in 0.2.0
 
 Two additions from [jo-issues #330](https://github.com/thewolff/jo-issues/issues/330):
