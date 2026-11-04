@@ -1,7 +1,7 @@
 {
   "name": "brb",
   "description": "Hold needs-you asks in a digest while you are away; on-fire items still come through.",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "author": { "name": "Jo Wolff" },
   "license": "MIT",
   "repository": "https://github.com/thewolff/jo-wolff-plugins",

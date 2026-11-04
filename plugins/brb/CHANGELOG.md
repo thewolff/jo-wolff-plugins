@@ -3,6 +3,50 @@
 All notable changes to brb are recorded here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.3.0] - 2026-11-04
+
+A badge while you type into a session you left. A person who comes back to a Desktop window
+and starts typing had no sign that the hold was still on: the agent would carry on writing its
+asks into the digest while they expected to be asked. Now the hold is on screen where the typing
+happens.
+
+### Added
+
+- The away badge, a Claude Code mod (`hooks/hooks.json` `modules` → `mods/badge/register.mjs`;
+  Claude Code 2.1.286 or later, where plugins can ship mods). While this session is away, brb's
+  status line under the prompt reads `⚠ brb: away 40m · lunch · 12 held · say back`, never more
+  than 40 characters: when the line would pass 40 the `brb <note>` text is dropped whole, then
+  `· say back`, and a count too long even for that is cut with `…`; home, the line is removed.
+  The data is this session's `away.json`, read out of process by
+  `node mods/badge/query.mjs --session <id>` (`mods/badge/query.mjs`, read-only; it prints
+  `{ ok, away, since, note, held, onFire }` or `{ ok: false, error }` and always exits 0;
+  `away.json` is opened once without following a link, the open descriptor must be a regular
+  file of at most 64 KiB, and at most 64 KiB + 1 byte is read from it, so a directory, a link
+  or a file over 64 KiB, even one swapped in or grown after the check, is a fault, never a
+  parse; `lib/state.mjs` `parseAway` is the parsing half of `readAway`, shared by both). The
+  badge refreshes at session start, after each prompt enters (so `brb` and `back` show at
+  once), at each main turn's start and end, and every 5 s while away; while home the only poll
+  is `$.fs.exists` on `away.json` inside Claude Code once a second, which starts a query when
+  the file appears. A probe that fails (the session id or `$.fs.exists` refused) is caught in
+  the timer, clears the badge and logs one `brb badge: probe: …` line per distinct error.
+  `mods/badge/data.mjs` holds the pure parts (the snapshot read back, the line, the duration
+  format, the `away.json` path).
+- Tests: `mods/badge/tests/data.test.mjs`, `mods/badge/tests/query.test.mjs` and
+  `mods/badge/tests/register.test.mjs` under `node --test` (home, away, the held count moving,
+  another session's hold, the directory, link and oversized faults, a file replaced or grown
+  after the check, the 40-character line for every note and count, the two timers, a refused
+  probe); `mods/badge/tests/badge.test.tsx` for `claude plugin test`
+  (the status line set and cleared, the refresh points, the poll and the probe, the fault
+  inputs), written in the style of the ledger pane's test and not run by this version's
+  author. `evals/manifest.json` `manual` names the Desktop check.
+
+### Unchanged
+
+- The hooks, the OMP adapter, the hold command and the away instruction. The badge draws
+  wherever Claude Code hands the mod a surface (Desktop, the terminal, VS Code); where none is
+  (`claude -p`, OMP), nothing new shows; the hooks' own lines (`brb: away since …; N held` at
+  SessionStart, the confirmation at `brb`) cover it.
+
 ## [0.2.0] - 2026-11-04
 
 While away, asks are written, not shown: a `## Needs you` section that the Stop hook filed
