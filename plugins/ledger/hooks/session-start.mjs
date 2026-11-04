@@ -78,7 +78,7 @@ export function handle(input, { env = process.env, now = Date.now() } = {}) {
     // 0.3.3: the repository's decision log, where the newdle plugin's own hook will not inject it.
     let log = "";
     try {
-      log = readDecisionLog(repoRoot(cwd).root, store.config);
+      log = readDecisionLog(repoRoot(cwd).root ?? cwd, store.config);
     } catch (err) {
       logError("SessionStart", `decision log not read: ${err.message}`, env);
     }

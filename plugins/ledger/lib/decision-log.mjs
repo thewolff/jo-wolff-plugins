@@ -29,18 +29,20 @@ const GIT_TIMEOUT_MS = 1_000;
 
 /**
  * `{ root, branch }`: the git toplevel of `cwd` and the checked-out branch (null when detached,
- * or on main/master, which name no topic), else `{ root: cwd, branch: null }` when `cwd` is in no
- * repository, or git is missing or slow. One git call.
+ * or on main/master, which name no topic), else `{ root: null, branch: null }` when `cwd` is in
+ * no repository, or git is missing or slow: no toplevel is known, and the writer never guesses
+ * one. One git call.
  */
 export function repoRoot(cwd) {
   try {
     const r = spawnSync("git", ["-C", cwd, "rev-parse", "--show-toplevel", "--abbrev-ref", "HEAD"], { encoding: "utf8", timeout: GIT_TIMEOUT_MS, killSignal: "SIGKILL" });
-    if (r.status !== 0) return { root: cwd, branch: null };
+    if (r.error || r.status !== 0) return { root: null, branch: null };
     const [top = "", ref = ""] = r.stdout.split("\n").map((l) => l.trim());
+    if (!top) return { root: null, branch: null };
     const branch = ref && ref !== "HEAD" && ref !== "main" && ref !== "master" ? ref : null;
-    return { root: top || cwd, branch };
+    return { root: top, branch };
   } catch {
-    return { root: cwd, branch: null };
+    return { root: null, branch: null };
   }
 }
 
@@ -160,6 +162,9 @@ export function render({ answers, notes, withdrawn, open }, { sessionId, stamp, 
 export function writeDecisionLog({ db, sessionId, cwd, config, now = Date.now(), startedAt = null }) {
   if (config?.decisionLog?.enabled === false) return { skipped: "decisionLog.enabled is false" };
   const { root, branch } = repoRoot(cwd);
+  // Only a toplevel git named: a cwd whose repository is unknown (none, or git missing or slow)
+  // gets no entry, however likely a `.ai/decision-log` beside it looks.
+  if (!root) return { skipped: `${cwd} is in no git repository that could be read` };
   const dir = join(root, LOG_DIR);
   if (!existsSync(dir)) return { skipped: `no ${LOG_DIR} in ${root}` };
   const rows = gather(db, sessionId);
@@ -195,7 +200,6 @@ export function writeDecisionLog({ db, sessionId, cwd, config, now = Date.now(),
 // ---------------------------------------------------------------------------------------------
 
 export const READ_NEWEST = 5;
-export const READ_FLAGGED = 10;
 export const READ_BUDGET = 3_000;
 const NEWDLE_FILE = "newdle-hooks.json";
 const MAX_WALK = 64;
@@ -297,8 +301,9 @@ function entryLines(dir, name) {
 /**
  * The SessionStart block for `root`'s decision log: '' when there is nothing to inject
  * (no directory, no entry, `decisionLog.enabled` false, or the newdle hook will inject). The
- * newest READ_NEWEST entries, then every other entry `open` or `durable` (newest first, at
- * most READ_FLAGGED), the whole within READ_BUDGET characters with an "N more not shown" line.
+ * newest READ_NEWEST entries, then every other entry `open` or `durable` (newest first), as
+ * many as fit: the whole, with its "N more not shown" line counting every entry not shown, is
+ * at most READ_BUDGET characters. There is no count cap below the budget.
  */
 export function readDecisionLog(root, config) {
   if (config?.decisionLog?.enabled === false) return "";
@@ -319,7 +324,7 @@ export function readDecisionLog(root, config) {
     }
   }
   const newest = entries.slice(0, READ_NEWEST);
-  const flagged = entries.slice(READ_NEWEST).filter((e) => e.status === "open" || e.durable).slice(0, READ_FLAGGED);
+  const flagged = entries.slice(READ_NEWEST).filter((e) => e.status === "open" || e.durable);
   const chosen = [...newest, ...flagged];
   const header = `ledger: decision log (${LOG_DIR}, ${entries.length} entr${entries.length === 1 ? "y" : "ies"}; newest ${Math.min(READ_NEWEST, entries.length)}${flagged.length ? `, then ${flagged.length} open or durable` : ""}):`;
   const out = [header];
@@ -327,7 +332,8 @@ export function readDecisionLog(root, config) {
   let shown = 0;
   for (const e of chosen) {
     const block = e.lines.join("\n");
-    const more = chosen.length - shown - 1;
+    // The footer this block would leave: every entry not shown, chosen or not.
+    const more = entries.length - shown - 1;
     const tail = more ? `\n${more} more not shown` : "";
     if (used + 1 + block.length + tail.length > READ_BUDGET) break;
     out.push(block);

@@ -118,6 +118,20 @@ test("nothing is written: no answer and no note; enabled false; no .ai/decision-
   cli(noDir, ["note", "decided something"], session);
   end(noDir);
   assert.deepEqual(entries(noDir), []);
+  // Not a repository, even with a .ai/decision-log there: a directory only git names is written to.
+  const noRepo = sandbox();
+  mkdirSync(join(noRepo.work, LOG), { recursive: true });
+  hook(noRepo, "session-start", { session_id: SID, cwd: noRepo.work, hook_event_name: "SessionStart", source: "startup" });
+  cli(noRepo, ["note", "decided something"], session);
+  end(noRepo);
+  assert.deepEqual(entries(noRepo), []);
+  assert.deepEqual(errorLines(noRepo), [], "not a fault: nothing to log");
+  // Git unavailable inside a repository: no toplevel is known, so nothing is written.
+  const noGit = repo();
+  cli(noGit, ["note", "decided something"], session);
+  const r = hook(noGit, "session-end", { session_id: SID, cwd: noGit.work, hook_event_name: "SessionEnd", reason: "exit" }, { cwd: noGit.work, env: { PATH: join(noGit.root, "no-bin") } });
+  assert.equal(r.code, 0);
+  assert.deepEqual(entries(noGit), []);
   // A manual wrap-up already ran during the session.
   const wrapped = repo();
   cli(wrapped, ["note", "decided something"], session);
@@ -190,13 +204,34 @@ test("reader: the 5 newest entries, then older open or durable ones, each with i
   assert.ok(r.json.hookSpecificOutput.additionalContext.endsWith(text), r.out);
 });
 
-test("reader: the budget holds (≤ 3000 characters, 'N more not shown'); flagged entries cap at 10", () => {
+test("reader: the budget holds (≤ 3000 characters, 'N more not shown') at every boundary, counting the footer for the entries never chosen", () => {
   const b = sandbox();
   seed(join(b.work, LOG), 40, { flag: () => "open", lines: 6 });
   const text = readDecisionLog(b.work, {});
   assert.ok(text.length <= READ_BUDGET, `${text.length}`);
   assert.match(text, /\n\d+ more not shown$/);
-  assert.match(text.split("\n")[0], /newest 5, then 10 open or durable/);
+  assert.match(text.split("\n")[0], /newest 5, then 35 open or durable/);
+  // Six resolved entries (one never chosen); the fifth padded so the five newest just fit, or
+  // just do not: the footer for the sixth is part of the budget either way.
+  for (let pad = 0; pad < 120; pad += 3) {
+    const c = sandbox();
+    seed(join(c.work, LOG), 6, { lines: 2 });
+    const fifth = join(c.work, LOG, "2026-01-02--1200--jo-wolff--topic-2.md");
+    const base = 2_400 + pad;
+    writeFileSync(fifth, `---\ndate: 2026-01-02T12:00-08:00\nengineer: jo-wolff\nsession: s\nstatus: resolved\ndurable: false\n---\n\n## What changed\n\n${"x".repeat(base)}\n`);
+    const out = readDecisionLog(c.work, {});
+    assert.ok(out.length <= READ_BUDGET, `pad ${pad}: ${out.length} characters`);
+  }
+});
+
+test("reader: every open or durable entry that fits is shown; there is no count cap below the budget", () => {
+  const b = sandbox();
+  seed(join(b.work, LOG), 20, { flag: () => "open", lines: 1 });
+  const text = readDecisionLog(b.work, {});
+  assert.ok(text.length <= READ_BUDGET, `${text.length}`);
+  assert.equal(text.split("\n").filter((l) => l.startsWith("- ")).length, 20, text);
+  assert.doesNotMatch(text, /more not shown/);
+  assert.match(text.split("\n")[0], /newest 5, then 15 open or durable/);
 });
 
 test("reader: nothing when newdle's hooks are declared on at the root or above, when disabled, or with no directory or no entry", () => {
