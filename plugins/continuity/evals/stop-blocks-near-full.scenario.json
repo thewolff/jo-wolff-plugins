@@ -1,0 +1,12 @@
+{
+  "$comment": "The same calibrated machine and 4,000-byte transcript at Stop: the stop is blocked once (decision: block, `deny` in the runner's vocabulary) with the handoff request naming `/continuity:handoff`, and the once-mark is written.",
+  "event": "Stop",
+  "expect": "deny",
+  "reason": "/continuity:handoff",
+  "setup": {
+    "files": { "$XDG_STATE_HOME/continuity/calibration.ndjson": "{\"bytes\":4000,\"tokens\":160000,\"target\":200000}\n" },
+    "commands": ["yes '{\"type\":\"user\",\"message\":{\"role\":\"user\",\"content\":\"carry on with the port\"}}' | head -c 4000 > \"${TRANSCRIPT}\""]
+  },
+  "stdin": { "hook_event_name": "Stop", "session_id": "${SESSION_ID}", "cwd": "${CWD}", "transcript_path": "${TRANSCRIPT}", "stop_hook_active": false, "last_assistant_message": "Done." },
+  "after": { "commands": ["grep -q stopBlocked \"${XDG_STATE_HOME}/continuity/sessions/${SESSION_ID}.json\""] }
+}

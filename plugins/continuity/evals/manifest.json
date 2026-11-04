@@ -1,0 +1,13 @@
+{
+  "$comment": "Every hook event hooks/hooks.json registers, with the outcomes its handler can return. The Stop block is `deny` in the runner's vocabulary (decision: block). Each event × outcome has one evals/<name>.scenario.json; `ledger gate check` fails naming any gap. `manual` lists what no scenario can prove.",
+  "events": {
+    "PreCompact": ["systemMessage", "silent"],
+    "SessionStart": ["systemMessage", "silent"],
+    "UserPromptSubmit": ["systemMessage", "silent"],
+    "Stop": ["deny", "silent"]
+  },
+  "manual": [
+    "That Claude Code sends `token_count` and `compaction_target` on PreCompact with the meaning the calibration assumes (tokens in the window, the auto-compaction threshold): read one real `calibration.ndjson` line after a compaction and compare it with the session's /context figure.",
+    "That the restored snapshot arrives in the model's context after a real auto-compaction: run a session past the threshold and ask it, after the compaction, what branch it was on."
+  ]
+}

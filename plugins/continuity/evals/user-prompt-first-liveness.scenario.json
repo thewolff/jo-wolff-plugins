@@ -1,0 +1,8 @@
+{
+  "$comment": "A session whose SessionStart hook did not run (no livenessSaid mark): the first prompt carries the liveness line, once.",
+  "event": "UserPromptSubmit",
+  "expect": "systemMessage",
+  "reason": "pre-compaction save liveness",
+  "stdin": { "hook_event_name": "UserPromptSubmit", "session_id": "${SESSION_ID}", "cwd": "${CWD}", "prompt": "carry on" },
+  "after": { "commands": ["grep -q livenessSaid \"${XDG_STATE_HOME}/continuity/sessions/${SESSION_ID}.json\""] }
+}

@@ -1,0 +1,8 @@
+{
+  "$comment": "A machine that has never compacted (no calibration file): the Stop hook stays silent rather than guessing.",
+  "event": "Stop",
+  "expect": "silent",
+  "sibling": "stop-blocks-near-full.scenario.json",
+  "transcript": [{ "type": "user", "message": { "role": "user", "content": "carry on" } }],
+  "stdin": { "hook_event_name": "Stop", "session_id": "${SESSION_ID}", "cwd": "${CWD}", "transcript_path": "${TRANSCRIPT}", "stop_hook_active": false, "last_assistant_message": "Done." }
+}

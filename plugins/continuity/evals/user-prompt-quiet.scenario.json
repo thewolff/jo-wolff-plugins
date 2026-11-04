@@ -1,0 +1,8 @@
+{
+  "$comment": "The liveness line was already said at SessionStart and the machine has never compacted (no calibration): the prompt passes with nothing added.",
+  "event": "UserPromptSubmit",
+  "expect": "silent",
+  "sibling": "user-prompt-pressure-warns.scenario.json",
+  "before": [{ "event": "SessionStart", "stdin": { "hook_event_name": "SessionStart", "session_id": "${SESSION_ID}", "cwd": "${CWD}", "source": "startup" } }],
+  "stdin": { "hook_event_name": "UserPromptSubmit", "session_id": "${SESSION_ID}", "cwd": "${CWD}", "prompt": "carry on" }
+}
