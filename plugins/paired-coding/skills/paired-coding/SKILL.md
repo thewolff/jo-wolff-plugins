@@ -138,6 +138,22 @@ your partner says "show more", expand any field.
   a whole subtree, and the checks it will run.
 - **Open points:** anything you need your partner to settle. Agreement waits until every open
   point is settled.
+- **Why this approach** (`why`) and **Sources** (`sources`), required only in learning mode
+  (below), but a `why` that claims a codebase pattern, in any mode and however it is worded,
+  rests on a pattern source: an absolute `file:line` inside the repository's
+  `.pattern-check/` directory (pattern-check's receipt for this session), or two or more
+  absolute `file:line` in the repository where the pattern is. The gate refuses a card whose
+  `why` says `pattern used in`, `the rest of the codebase`, `convention here`, `how the
+  codebase does`, `existing pattern`, `follows the pattern` or `the pattern in` without one,
+  and its refusal names the receipt path it looked for and how many sources it found; add the
+  source it names, never reword the claim to get past it.
+- **Alternatives** (`alternatives`): the designs you weighed, each `{ "design", "chosen" }`
+  with exactly one `chosen: true`. Give it whenever you weighed more than one design. When
+  ask-graham ran this session (its findings file is on disk), the gate requires it: one entry
+  carries the findings' chosen design in its own words (quoted, not paraphrased) and, when
+  the findings named a better design than the pattern-fit one, one entry is not chosen. Show
+  them on the card as **Alternatives:**, one per line, with the chosen one marked, as the
+  gate's reply lists them.
 
 When the gate reports files changed since the last read-back, put that list at the top of the
 next card and ask your partner which changes are theirs. If they do not recognise a change,
@@ -210,12 +226,18 @@ other gate rule work exactly as written above.
 1. **The card.** `pair_propose` takes two more fields, and the gate refuses the card without
    them:
    - `why`: one paragraph on why this approach rather than the one your partner might pick
-     instead. Show it on the card as **Why this approach:**.
+     instead. Show it on the card as **Why this approach:**. "It's the pattern used in the
+     rest of the codebase" is a fine reason when it is true, and then it needs the pattern
+     source *The card* describes: a `file:line` in `.pattern-check/` or two in the code.
    - `sources`: at least one, one per claim in `why`, each one of: `{ "url", "passage" }` for a
      URL you fetched this session, with the passage you rely on; an absolute `file:line` or
      `file:line-line` you read; or a string starting `from memory` for a claim you fetched and
      read nothing for. A URL you did not fetch this session is not a source. Show them on the
      card as **Sources:**.
+
+   When the card has `alternatives`, show them under **Alternatives:** with the chosen one
+   marked, so your partner sees the pattern-fit pick and the better design side by side and
+   can ask why one was chosen.
 
    A refusal names the first bad source, for example
    `pair_propose refused: learning mode is on: sources[0] is "src/a.ts:3"; each source is …`.

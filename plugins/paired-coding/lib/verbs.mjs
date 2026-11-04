@@ -24,6 +24,7 @@ import {
   activated, appendJournal, defaultTempPaths, findRoot, loadState, loadStateReport, makeIo, markActivated, reapGroups, saveState,
   closedRunProblem, describeSandbox, realpathLoose, recordRun, runPgids, runSandboxed, sandboxBackend, sandboxJournal, sandboxProblem, sessionDir, stateBase, withLock, withSession, writeAtomic, writeSandboxed,
 } from "./host-io.mjs";
+import { cardContext } from "./card-context.mjs";
 import { PATTERN_CHECK_DIR, siblingState } from "./sibling-state.mjs";
 
 /**
@@ -416,7 +417,7 @@ export async function executeVerb(name, args, ctx) {
     switch (name) {
       case "pair_start": return pairStartVerb(args, ctx);
       case "pair_note": return simple(name, ctx, (s, io) => pairNote(s, { text: args.text, roadmap: args.roadmap, earlierRoadmap: args.earlierRoadmap }, io), noteText);
-      case "pair_propose": return simple(name, ctx, (s, io) => pairPropose(s, cardArgs(args), io), cardText);
+      case "pair_propose": return simple(name, ctx, (s, io) => pairPropose(s, cardArgs(args), { ...io, cardContext: (root, sid) => cardContext({ root, sessionId: ctx.sessionId ?? sid }) }), cardText);
       case "pair_begin": return pairBeginVerb(args, ctx);
       case "pair_done": return pairDoneVerb(args, ctx);
       case "pair_write": return writeVerb("pair_write", args, ctx);
@@ -447,27 +448,36 @@ function simple(name, ctx, step, describe) {
 
 function cardArgs(a) {
   const pick = {};
-  for (const k of ["boundary", "whyNow", "decision", "currentCode", "proposedCode", "effect", "checks", "openPoints", "why", "sources"]) if (a[k] !== undefined) pick[k] = a[k];
+  for (const k of ["boundary", "whyNow", "decision", "currentCode", "proposedCode", "effect", "checks", "openPoints", "why", "sources", "alternatives"]) if (a[k] !== undefined) pick[k] = a[k];
   return pick;
 }
 
 /** What pair_learn tells the agent, on and off. */
 function learnText(r) {
   return r.state.learning
-    ? 'Learning mode is on. Every card now needs why (why this approach over the alternatives) and sources (each a { "url", "passage" } object, an absolute file:line or file:line-line path, or a string starting "from memory"); pair_done needs recall, one question about the change set, and your closing message asks it on a line starting "Recall:". pair_learn with on: false turns it off, and only after your partner types "learning mode off".'
+    ? 'Learning mode is on. Every card now needs why (why this approach over the alternatives) and sources (each a { "url", "passage" } object, an absolute file:line or file:line-line path, or a string starting "from memory"); a why that claims a codebase pattern needs a pattern source (a file:line in the pattern-check receipt directory, or two or more file:line in the repository); pair_done needs recall, one question about the change set, and your closing message asks it on a line starting "Recall:". pair_learn with on: false turns it off, and only after your partner types "learning mode off".'
     : "Learning mode is off. Cards and pair_done take their usual fields.";
 }
 
 /**
  * The card as the agent gets it back. A non-empty proposedCode is lifted out of the JSON and
  * shown after it as a fenced block, so the planned code reads as code rather than as an
- * escaped string. A card without one reads exactly as it did before the field existed.
+ * escaped string. Alternatives, when the card has them, follow as a list with the chosen one
+ * marked, for the card to show side by side. A card without either reads exactly as it did
+ * before the fields existed.
  */
 function cardText(r) {
   const head = `Card ${r.card.id} recorded. Show it to your partner and wait for their reply.\n`;
-  const { proposedCode, ...rest } = r.card;
-  if (typeof proposedCode !== "string" || proposedCode === "") return `${head}${JSON.stringify(r.card, null, 2)}`;
-  return `${head}${JSON.stringify(rest, null, 2)}\nPlanned code (proposedCode), to show on the card:\n${fenced(proposedCode)}`;
+  const { proposedCode, alternatives, ...rest } = r.card;
+  const hasAlternatives = Array.isArray(alternatives) && alternatives.length > 0;
+  const tail = hasAlternatives
+    ? `\nAlternatives, to show on the card with the chosen one marked:\n${alternatives.map((a) => `  ${a.chosen ? "[chosen]" : "[      ]"} ${a.design}`).join("\n")}`
+    : "";
+  if (typeof proposedCode !== "string" || proposedCode === "") {
+    const { alternatives: _lifted, ...plain } = r.card;
+    return `${head}${JSON.stringify(hasAlternatives ? plain : r.card, null, 2)}${tail}`;
+  }
+  return `${head}${JSON.stringify(rest, null, 2)}\nPlanned code (proposedCode), to show on the card:\n${fenced(proposedCode)}${tail}`;
 }
 
 /** A code fence longer than any backtick run inside `text`, so the text cannot close it. */

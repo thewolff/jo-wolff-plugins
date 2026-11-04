@@ -5,6 +5,46 @@ All notable changes to paired-coding are recorded here. The format follows
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html). Releases before 1.5.0 are described
 in the README's *Changes* section.
 
+## [1.6.0] - 2026-11-04
+
+### Added
+
+- A pattern claim needs a pattern source, in learning mode or out of it. When a card's `why`
+  contains one of `PATTERN_CLAIM_PHRASES` (`core/gate.mjs`; case-insensitive: `pattern used
+  in`, `the rest of the codebase`, `convention here`, `how the codebase does`, `existing
+  pattern`, `follows the pattern`, `the pattern in`), `sources` must include one absolute
+  `file:line` inside the pattern-check receipt directory `<git root>/.pattern-check/`, or two
+  or more absolute `file:line` sources inside the repository the worktree is in. Otherwise
+  `pair_propose` refuses, naming the phrase, this session's receipt path
+  (`<git root>/.pattern-check/<session id>.md`) and both counts. Paths are compared lexically;
+  existence is not checked, as with every `file:line` source.
+- `alternatives`, an optional card field: `[{ "design", "chosen" }]` with exactly one
+  `chosen: true`, checked for form when given and recorded on the card and in the journal.
+  Required when ask-graham's findings file for this session exists
+  (`${XDG_STATE_HOME:-$HOME/.local/state}/ask-graham/findings/<session id>.json`): then one
+  entry must contain the findings' chosen design (whitespace collapsed, case ignored) and,
+  when the findings weighed a design they did not choose, at least one entry is not chosen.
+  A findings file that cannot be read, is not JSON or is not an object reads as missing, with
+  one `errors.log` line under this plugin's state base; ask-graham's files are never written.
+- The card's reply lists `alternatives` with the chosen one marked (`[chosen]`), after the
+  planned code, so the learner sees the pattern-fit pick and the better design side by side;
+  `pair_learn`'s reply names the pattern-source rule.
+- `lib/card-context.mjs`: the copied path rules (pattern-check's receipt, ask-graham's
+  findings; no plugin dependency) and the findings reader, handed to the gate as
+  `io.cardContext`. The gate's `patternClaim`, `patternSourceProblem` and
+  `alternativesProblem` are pure and exported.
+- MCP and OMP schemas: `alternatives` on `pair_propose`.
+- Evals: `pre-tool-use-card-pattern-unsourced`, `pre-tool-use-card-pattern-receipt`,
+  `pre-tool-use-card-alternatives-missing` and `pre-tool-use-card-alternatives-pass`, each set
+  up by `evals/card-checks.mjs` through the real verbs (the setup exits non-zero unless
+  `pair_propose` answered as the scenario says), with the findings file written under the
+  sandbox's `$XDG_STATE_HOME` and the receipt under the sandbox worktree.
+- README: *A pattern claim needs a pattern source* with its how-it-fails rows and *Not in
+  1.6.0*; skill: the two fields under *The card* and *Learning mode*.
+
+No new state is written: both checks read sibling plugins' files. A card without a pattern
+phrase in `why`, in a session with no findings file, runs exactly as in 1.5.0.
+
 ## [1.5.0] - 2026-11-04
 
 ### Added

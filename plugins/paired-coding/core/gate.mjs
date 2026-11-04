@@ -54,6 +54,7 @@
  * @property {string} [effect]
  * @property {string} [why]  learning mode: why this approach over the alternatives
  * @property {unknown[]} [sources]  learning mode: what `why` rests on (sourceProblem)
+ * @property {Array<{ design: string, chosen: boolean }>} [alternatives]  the designs weighed, exactly one chosen (alternativesProblem)
  * @property {string[]} [checks]
  * @property {string[]} [openPoints]
  * @property {Array<{path: string, change: string}>} [changedSinceReadBack]
@@ -126,6 +127,8 @@
  * @property {() => Snapshot} [snapshot]
  * @property {(absPath: string) => string} [realpath]
  * @property {(runIds: string[]) => void} [reapRuns]
+ * @property {(root: string, sessionId: string | null) => { receiptDir: string | null, receiptPath: string | null, repoRoot: string, findings: { path: string, alternatives: Array<{ design: string, chosen: boolean }> } | null }} [cardContext]
+ *   what pair_propose's pattern-source and alternatives checks read: the pattern-check receipt directory and this session's receipt path, the worktree's repository root, and the session's ask-graham findings (null when missing or unreadable)
  */
 /** @typedef {{ ok: boolean, reason?: string, state: State, journal: JournalEntry[], [key: string]: unknown }} Result */
 
@@ -1189,6 +1192,112 @@ export function sourceProblem(sources) {
   return null;
 }
 
+/**
+ * Phrases in a card's `why` that claim a codebase convention, matched case-insensitively
+ * anywhere in the text. A card whose `why` carries one needs a pattern source
+ * (patternSourceProblem), in learning mode or out of it.
+ */
+export const PATTERN_CLAIM_PHRASES = Object.freeze([
+  "pattern used in",
+  "the rest of the codebase",
+  "convention here",
+  "how the codebase does",
+  "existing pattern",
+  "follows the pattern",
+  "the pattern in",
+]);
+
+/** The first PATTERN_CLAIM_PHRASES entry `why` contains (case-insensitive), or null. */
+export function patternClaim(why) {
+  if (typeof why !== "string") return null;
+  const text = why.toLowerCase();
+  return PATTERN_CLAIM_PHRASES.find((p) => text.includes(p)) ?? null;
+}
+
+/** The absolute file paths of the `file:line` string sources in `sources`; every other entry is skipped. */
+function fileLineSources(sources) {
+  if (!Array.isArray(sources)) return [];
+  const out = [];
+  for (const s of sources) {
+    if (typeof s !== "string" || !stringSourceOk(s)) continue;
+    const m = FILE_LINE_SOURCE.exec(s.trim());
+    if (m) out.push(resolvePath("/", m[1]));
+  }
+  return out;
+}
+
+/**
+ * Why a card whose `why` claims a codebase pattern has no pattern source, or null. A pattern
+ * claim is backed by either one `file:line` source inside the pattern-check receipt directory
+ * (`<git root>/.pattern-check/`, the adapter's cardContext) or two or more `file:line` sources
+ * inside the worktree's repository. Paths are compared lexically; whether the files exist is not
+ * checked, as with every other source. A `why` without a claim needs nothing.
+ * @param {unknown} why
+ * @param {unknown} sources
+ * @param {{ receiptDir: string | null, receiptPath: string | null, repoRoot: string }} facts
+ * @returns {string | null}
+ */
+export function patternSourceProblem(why, sources, facts) {
+  const phrase = patternClaim(why);
+  if (!phrase) return null;
+  const files = fileLineSources(sources);
+  const inReceipts = facts.receiptDir ? files.filter((f) => within(facts.receiptDir, f)).length : 0;
+  if (inReceipts > 0) return null;
+  const inRepo = files.filter((f) => within(facts.repoRoot, f)).length;
+  if (inRepo >= 2) return null;
+  const receipt = facts.receiptDir
+    ? `one absolute file:line inside the pattern-check receipt directory ${facts.receiptDir}/ (this session's receipt would be ${facts.receiptPath}; found ${inReceipts})`
+    : "one absolute file:line inside the pattern-check receipt directory (none here: the worktree is in no git repository, so there is no <git root>/.pattern-check/; found 0)";
+  return `why claims a codebase pattern ("${phrase}"), and a pattern claim needs a pattern source: add to sources either ${receipt}, or two or more absolute file:line sources under ${facts.repoRoot}/ showing the pattern in the code (found ${inRepo})`;
+}
+
+/** The forms `alternatives` takes, as pair_propose's refusals name them. */
+export const ALTERNATIVES_FORM = 'alternatives is a list of { "design": "one design, in words", "chosen": true or false } objects with exactly one chosen: true';
+
+/** `text` with runs of whitespace collapsed to one space, trimmed, lower case: the containment check's form. */
+const normalized = (text) => text.replace(/\s+/g, " ").trim().toLowerCase();
+
+/**
+ * Why a card's `alternatives` are unusable, or null. When given they are a non-empty list of
+ * `{ design, chosen }` objects with exactly one chosen entry. When the session's ask-graham
+ * findings exist (`findings`, from the adapter's cardContext; null when the file is missing or
+ * unreadable), the card must give them, one entry must contain the findings' chosen design
+ * (whitespace collapsed, case ignored), and when the findings weighed a design they did not
+ * choose, at least one entry is not chosen either.
+ * @param {unknown} alternatives
+ * @param {{ path: string, alternatives: Array<{ design: string, chosen: boolean }> } | null} findings
+ * @returns {string | null}
+ */
+export function alternativesProblem(alternatives, findings) {
+  if (alternatives !== undefined) {
+    if (!Array.isArray(alternatives) || alternatives.length === 0) return `alternatives is ${quoted(alternatives)}; ${ALTERNATIVES_FORM}`;
+    for (const [i, a] of alternatives.entries()) {
+      if (!isObj(a) || typeof a.design !== "string" || a.design.trim() === "" || CONTROL.test(a.design) || typeof a.chosen !== "boolean") return `alternatives[${i}] is ${quoted(a)}; ${ALTERNATIVES_FORM}`;
+    }
+    const chosen = alternatives.filter((a) => a.chosen).length;
+    if (chosen !== 1) return `alternatives has ${chosen} entries with chosen: true; ${ALTERNATIVES_FORM}`;
+  }
+  if (!findings) return null;
+  const where = `ask-graham's findings for this session are on disk (${findings.path})`;
+  const wanted = findings.alternatives.find((a) => a.chosen);
+  const weighedAny = findings.alternatives.some((a) => !a.chosen);
+  if (alternatives === undefined) {
+    const needs = [wanted ? `including the findings' chosen design ${quoted(wanted.design)}` : "", weighedAny ? "at least one entry with chosen: false" : ""].filter(Boolean);
+    return `${where}, so the card needs alternatives: ${ALTERNATIVES_FORM}${needs.length ? `, ${needs.join(" and ")}` : ""}`;
+  }
+  if (wanted && !alternatives.some((a) => normalized(a.design).includes(normalized(wanted.design)))) {
+    return `${where}, and no alternatives entry contains their chosen design ${quoted(wanted.design)}; add it (whitespace and case do not matter)`;
+  }
+  const weighed = findings.alternatives.find((a) => !a.chosen);
+  if (weighed && !alternatives.some((a) => !a.chosen)) {
+    return `${where}, and they weighed a design they did not choose (${quoted(weighed.design)}), so alternatives needs at least one entry with chosen: false`;
+  }
+  return null;
+}
+
+/** What pairPropose takes as given when the adapter supplies no cardContext: no receipt directory, no findings, the worktree as the repository. */
+const bareCardContext = (root) => ({ receiptDir: null, receiptPath: null, repoRoot: root, findings: null });
+
 /** pair_propose's refusal, in learning mode, for a card with no `why`. */
 export const WHY_REASON = "learning mode is on: the card needs why, a non-empty string saying why this approach over the alternatives";
 /** pair_done's refusal, in learning mode, without a `recall` question. */
@@ -1201,9 +1310,13 @@ const isRecall = (x) => typeof x === "string" && x.trim() !== "" && !/[\r\n]/.te
  * card remembers the latest trusted-input sequence number, so only a turn typed after this
  * card can agree to it. Changes found between change sets ride on the card for the user. In
  * learning mode the card also needs `why` (a non-empty string) and `sources` (sourceProblem);
- * with learning off both are recorded when given and never checked.
+ * with learning off both are recorded when given and never checked for form. In every mode a
+ * `why` that claims a codebase pattern needs a pattern source (patternSourceProblem), and
+ * `alternatives` is checked when given and required when the session's ask-graham findings
+ * are on disk (alternativesProblem); both read the adapter's io.cardContext(root, sessionId),
+ * `{ receiptDir, receiptPath, repoRoot, findings }`, and take a missing one as bareCardContext.
  * @param {State} state
- * @param {{ boundary: string[], whyNow?: string, decision?: string, currentCode?: string, proposedCode?: string, effect?: string, checks?: string[], openPoints?: string[], why?: string, sources?: unknown[] }} card
+ * @param {{ boundary: string[], whyNow?: string, decision?: string, currentCode?: string, proposedCode?: string, effect?: string, checks?: string[], openPoints?: string[], why?: string, sources?: unknown[], alternatives?: unknown }} card
  * @param {Io} io
  * @returns {Result & { card?: Card }}
  */
@@ -1224,6 +1337,13 @@ export function pairPropose(state, card, io) {
     const bad = sourceProblem(card.sources);
     if (bad) return refuse(state, "pair_propose", `learning mode is on: ${bad}`, io);
   }
+  const context = typeof io?.cardContext === "function" ? callIo(io, "cardContext", state.root, state.sessionId ?? null) : { value: bareCardContext(state.root) };
+  if (context.error) return refuse(state, "pair_propose", `could not read the card's context: ${context.error}`, io);
+  const facts = isObj(context.value) ? { ...bareCardContext(state.root), ...context.value } : bareCardContext(state.root);
+  const unsourced = patternSourceProblem(card.why, card.sources, facts);
+  if (unsourced) return refuse(state, "pair_propose", unsourced, io);
+  const badAlternatives = alternativesProblem(card.alternatives, facts.findings);
+  if (badAlternatives) return refuse(state, "pair_propose", badAlternatives, io);
   const hashed = callIo(io, "hashBoundary", [...card.boundary], state.root);
   if (hashed.error) return refuse(state, "pair_propose", `could not hash the boundary: ${hashed.error}`, io);
   if (!isSnapshot(hashed.value)) return refuse(state, "pair_propose", "hashBoundary returned malformed hashes", io);
@@ -1239,6 +1359,7 @@ export function pairPropose(state, card, io) {
     effect: card.effect,
     why: card.why,
     sources: card.sources,
+    alternatives: card.alternatives,
     boundary: [...card.boundary],
     checks: card.checks ? [...card.checks] : [],
     openPoints: card.openPoints ? [...card.openPoints] : [],

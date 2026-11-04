@@ -64,6 +64,11 @@ import {
   RECALL_REASON,
   WHY_REASON,
   LEARNING_OFF_REASON,
+  ALTERNATIVES_FORM,
+  PATTERN_CLAIM_PHRASES,
+  alternativesProblem,
+  patternClaim,
+  patternSourceProblem,
 } from "./gate.mjs";
 
 const ROOT = "/work/repo";
@@ -2403,5 +2408,126 @@ describe("carve-outs under Seatbelt: the kernel lets the sibling state through a
         dirs.cleanup();
       }
     }
+  });
+});
+
+// ─── pattern claims and alternatives (1.6.0) ────────────────────────────────────────────
+
+describe("a pattern claim needs a pattern source", () => {
+  const RECEIPT_DIR = `${ROOT}/.pattern-check`;
+  const facts = { receiptDir: RECEIPT_DIR, receiptPath: `${RECEIPT_DIR}/s1.md`, repoRoot: ROOT, findings: null };
+  const withContext = (host, over = {}) => ({ ...host.io, cardContext: () => ({ ...facts, ...over }) });
+
+  test("patternClaim finds each documented phrase in any case, and nothing else", () => {
+    assert.equal(PATTERN_CLAIM_PHRASES.length, 7);
+    for (const p of PATTERN_CLAIM_PHRASES) {
+      assert.equal(patternClaim(`because it is ${p} already`), p);
+      assert.equal(patternClaim(`BECAUSE IT IS ${p.toUpperCase()} ALREADY`), p);
+    }
+    assert.equal(patternClaim("early return keeps callers simple"), null);
+    assert.equal(patternClaim("a pattern of use"), null);
+    assert.equal(patternClaim(undefined), null);
+    assert.equal(patternClaim(7), null);
+  });
+
+  test("no claim: a why without a phrase needs no file:line, in any mode", () => {
+    assert.equal(patternSourceProblem("keeps callers simple", ["from memory"], facts), null);
+    assert.equal(patternSourceProblem(undefined, undefined, facts), null);
+  });
+
+  test("a claim is backed by one file:line in the receipt directory, or two in the repository", () => {
+    const why = "it follows the pattern in the rest of the codebase";
+    assert.equal(patternSourceProblem(why, [`${RECEIPT_DIR}/s1.md:3`], facts), null);
+    assert.equal(patternSourceProblem(why, [`${RECEIPT_DIR}/other-session.md:3-9`, "from memory"], facts), null);
+    assert.equal(patternSourceProblem(why, [`${ROOT}/src/a.ts:1`, `${ROOT}/src/b.ts:2`], facts), null);
+    assert.equal(patternSourceProblem(why, [` ${ROOT}/src/a.ts:1 `, `${ROOT}/lib/../src/b.ts:2`, { url: "https://x.example/doc", passage: "p" }], facts), null);
+  });
+
+  test("the refusal names the phrase, the receipt path it looked for, and both counts", () => {
+    const why = "This is the convention here.";
+    const r = patternSourceProblem(why, [`${ROOT}/src/a.ts:1`, "/elsewhere/x.ts:4", "from memory", { url: "https://x.example/doc", passage: "p" }], facts);
+    assert.equal(r, `why claims a codebase pattern ("convention here"), and a pattern claim needs a pattern source: add to sources either one absolute file:line inside the pattern-check receipt directory ${RECEIPT_DIR}/ (this session's receipt would be ${RECEIPT_DIR}/s1.md; found 0), or two or more absolute file:line sources under ${ROOT}/ showing the pattern in the code (found 1)`);
+    assert.match(patternSourceProblem(why, undefined, facts), /found 0\), or .* \(found 0\)$/);
+    assert.match(patternSourceProblem(why, "not a list", facts), /found 0\)$/);
+    // Paths that only look like they are inside: a sibling directory with the receipt directory's name as a prefix
+    // (still in the repository, so it counts there), and a path climbing out of the repository (counts nowhere).
+    assert.match(patternSourceProblem(why, [`${RECEIPT_DIR}-other/s1.md:1`, `${ROOT}/src/../../x.ts:1`], facts), /found 0\), or .* \(found 1\)$/);
+    assert.match(patternSourceProblem(why, [`${ROOT}-other/x.ts:1`, `/work/x.ts:1`], facts), /found 0\), or .* \(found 0\)$/);
+    // Outside a git repository there is no receipt directory, and the worktree itself is the repository.
+    assert.match(patternSourceProblem(why, [`${ROOT}/src/a.ts:1`], { ...facts, receiptDir: null, receiptPath: null }), /directory \(none here: the worktree is in no git repository, so there is no <git root>\/\.pattern-check\/; found 0\), or two or more .* \(found 1\)$/);
+  });
+
+  test("pair_propose refuses the claim without a source in every mode, and records a sourced one; the adapter's context is read through io.cardContext", () => {
+    const host = fakeHost();
+    const why = "this is how the codebase does it";
+    const io = withContext(host);
+    let seen = null;
+    io.cardContext = (root, sessionId) => { seen = { root, sessionId }; return facts; };
+    const off = pairPropose(started(host), card({ why, sources: ["from memory"] }), io);
+    refusedWith(off, /why claims a codebase pattern \("how the codebase does"\)/);
+    assert.deepEqual(seen, { root: ROOT, sessionId: "s1" });
+    const on = pairPropose(ok(pairLearn(started(host), { on: true }, host.io)), card({ why, sources: ["from memory"] }), io);
+    refusedWith(on, /why claims a codebase pattern/);
+    const sourced = pairPropose(started(host), card({ why, sources: [`${RECEIPT_DIR}/s1.md:2`] }), io);
+    ok(sourced);
+    assert.deepEqual(sourced.card.sources, [`${RECEIPT_DIR}/s1.md:2`]);
+    // Learning mode's form check comes first: a malformed list is named before the pattern check.
+    const malformed = pairPropose(ok(pairLearn(started(host), { on: true }, host.io)), card({ why, sources: ["src/a.ts:1"] }), io);
+    refusedWith(malformed, /learning mode is on: sources\[0\]/);
+  });
+
+  test("without io.cardContext the worktree is the repository and there is no receipt directory; a cardContext that throws refuses", () => {
+    const host = fakeHost();
+    const why = "existing pattern";
+    refusedWith(pairPropose(started(host), card({ why, sources: [`${ROOT}/src/a.ts:1`] }), host.io), /none here: the worktree is in no git repository.*\(found 1\)$/);
+    ok(pairPropose(started(host), card({ why, sources: [`${ROOT}/src/a.ts:1`, `${ROOT}/src/b.ts:1`] }), host.io));
+    const throwing = { ...host.io, cardContext: () => { throw new Error("disk gone"); } };
+    refusedWith(pairPropose(started(host), card(), throwing), /could not read the card's context: cardContext failed: disk gone/);
+  });
+});
+
+describe("alternatives", () => {
+  const FINDINGS = { path: "/state/ask-graham/findings/s1.json", alternatives: [{ design: "a  queue table\nwith a worker", chosen: true }, { design: "a direct call", chosen: false }] };
+  const withFindings = (host, findings) => ({ ...host.io, cardContext: () => ({ receiptDir: null, receiptPath: null, repoRoot: ROOT, findings }) });
+
+  test("absent findings: alternatives is optional, and checked for form only when given", () => {
+    assert.equal(alternativesProblem(undefined, null), null);
+    assert.equal(alternativesProblem([{ design: "x", chosen: true }], null), null);
+    assert.equal(alternativesProblem([{ design: "x", chosen: true }, { design: "y", chosen: false }], null), null);
+    for (const bad of [[], "x", {}, 7]) assert.match(alternativesProblem(bad, null), /^alternatives is .*; alternatives is a list of \{ "design"/, JSON.stringify(bad));
+    for (const entry of [{ design: "x" }, { chosen: true }, { design: "", chosen: true }, { design: "x\u0007", chosen: true }, { design: "x", chosen: "yes" }, "x", null]) {
+      assert.match(alternativesProblem([{ design: "ok", chosen: true }, entry], null), /^alternatives\[1\] is /, JSON.stringify(entry));
+    }
+    assert.equal(alternativesProblem([{ design: "x", chosen: false }], null), `alternatives has 0 entries with chosen: true; ${ALTERNATIVES_FORM}`);
+    assert.equal(alternativesProblem([{ design: "x", chosen: true }, { design: "y", chosen: true }], null), `alternatives has 2 entries with chosen: true; ${ALTERNATIVES_FORM}`);
+  });
+
+  test("findings on disk: the card needs alternatives containing the chosen design, and a non-chosen entry when one was weighed", () => {
+    assert.equal(alternativesProblem(undefined, FINDINGS), `ask-graham's findings for this session are on disk (${FINDINGS.path}), so the card needs alternatives: ${ALTERNATIVES_FORM}, including the findings' chosen design "a  queue table\\nwith a worker" and at least one entry with chosen: false`);
+    assert.match(alternativesProblem([{ design: "a direct call", chosen: true }], FINDINGS), /no alternatives entry contains their chosen design "a  queue table\\nwith a worker"; add it/);
+    assert.match(alternativesProblem([{ design: "Use A Queue Table With A Worker (pattern-fit)", chosen: true }], FINDINGS), /weighed a design they did not choose \("a direct call"\), so alternatives needs at least one entry with chosen: false/);
+    assert.equal(alternativesProblem([{ design: "use a queue table with a worker", chosen: true }, { design: "call it directly", chosen: false }], FINDINGS), null);
+    // The chosen design may sit on a non-chosen entry: the card may prefer the better design.
+    assert.equal(alternativesProblem([{ design: "a direct call", chosen: true }, { design: "a queue table with a worker", chosen: false }], FINDINGS), null);
+    // Findings with nothing weighed: the field is still required, nothing more is checked.
+    const bare = { path: FINDINGS.path, alternatives: [] };
+    assert.match(alternativesProblem(undefined, bare), /so the card needs alternatives: alternatives is a list of .* chosen: true$/);
+    assert.equal(alternativesProblem([{ design: "anything", chosen: true }], bare), null);
+    const chosenOnly = { path: FINDINGS.path, alternatives: [{ design: "one way", chosen: true }] };
+    assert.equal(alternativesProblem([{ design: "one way", chosen: true }], chosenOnly), null);
+  });
+
+  test("pair_propose records alternatives, and refuses on the findings when the adapter supplies them", () => {
+    const host = fakeHost();
+    const alternatives = [{ design: "a queue table with a worker", chosen: true }, { design: "a direct call", chosen: false }];
+    const r = pairPropose(started(host), card({ alternatives }), withFindings(host, FINDINGS));
+    ok(r);
+    assert.deepEqual(r.card.alternatives, alternatives);
+    assert.deepEqual(r.journal[0].card.alternatives, alternatives);
+    refusedWith(pairPropose(started(host), card(), withFindings(host, FINDINGS)), /findings for this session are on disk .*, so the card needs alternatives/);
+    const none = pairPropose(started(host), card(), withFindings(host, null));
+    ok(none);
+    assert.equal(Object.hasOwn(none.card, "alternatives"), false);
+    refusedWith(pairPropose(started(host), card({ alternatives: [{ design: "x", chosen: false }] }), withFindings(host, null)), /alternatives has 0 entries with chosen: true/);
   });
 });

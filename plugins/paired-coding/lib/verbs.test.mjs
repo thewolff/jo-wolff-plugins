@@ -1781,3 +1781,50 @@ test("RECALL_LINE and messageText", () => {
   assert.equal(messageText({ content: [{ type: "tool_use" }] }), null);
   assert.equal(messageText(undefined), null);
 });
+
+// ─── pattern claims and alternatives (1.6.0) ────────────────────────────────────────────
+
+test("through the verbs: a pattern claim needs a receipt file:line or two in the repository, the findings file requires alternatives, and a broken findings file is one errors.log line", { skip: !hasSandbox }, async () => {
+  const f = fixture();
+  const xdg = join(f.top, "xdg-state");
+  const saved = { XDG_STATE_HOME: process.env.XDG_STATE_HOME, PAIRED_CODING_STATE_DIR: process.env.PAIRED_CODING_STATE_DIR };
+  process.env.XDG_STATE_HOME = xdg;
+  process.env.PAIRED_CODING_STATE_DIR = f.base;
+  try {
+    assert.equal((await executeVerb("pair_start", {}, f.ctx)).ok, true);
+    const why = "it is the pattern used in the rest of the codebase";
+    const receiptDir = join(f.root, ".pattern-check");
+    const one = await executeVerb("pair_propose", { boundary: ["src/a.txt"], why, sources: [`${f.root}/src/a.txt:1`] }, f.ctx);
+    assert.equal(one.text, `pair_propose refused: why claims a codebase pattern ("pattern used in"), and a pattern claim needs a pattern source: add to sources either one absolute file:line inside the pattern-check receipt directory ${receiptDir}/ (this session's receipt would be ${receiptDir}/sess-1.md; found 0), or two or more absolute file:line sources under ${f.root}/ showing the pattern in the code (found 1)`);
+    assert.equal(journal(f).at(-1).type, "refusal");
+    const two = await executeVerb("pair_propose", { boundary: ["src/a.txt"], why, sources: [`${f.root}/src/a.txt:1`, `${f.root}/src/b.txt:1`] }, f.ctx);
+    assert.equal(two.ok, true, two.text);
+    assert.doesNotMatch(two.text, /Alternatives/);
+    const receipt = await executeVerb("pair_propose", { boundary: ["src/a.txt"], why, sources: [`${receiptDir}/sess-1.md:4`] }, f.ctx);
+    assert.equal(receipt.ok, true, receipt.text);
+    // The findings file for this session: alternatives become required, and the card's text shows them with the chosen one marked.
+    const findings = join(xdg, "ask-graham", "findings", "sess-1.json");
+    mkdirSync(dirname(findings), { recursive: true });
+    writeFileSync(findings, JSON.stringify({ version: 1, sessionId: "sess-1", alternatives: [{ design: "a queue table with a worker", chosen: true }, { design: "a direct call", chosen: false }] }));
+    const missing = await executeVerb("pair_propose", { boundary: ["src/a.txt"] }, f.ctx);
+    assert.equal(missing.text, `pair_propose refused: ask-graham's findings for this session are on disk (${findings}), so the card needs alternatives: alternatives is a list of { "design": "one design, in words", "chosen": true or false } objects with exactly one chosen: true, including the findings' chosen design "a queue table with a worker" and at least one entry with chosen: false`);
+    const alternatives = [{ design: "A queue table with a worker (pattern-fit)", chosen: true }, { design: "a direct call", chosen: false }];
+    const carried = await executeVerb("pair_propose", { boundary: ["src/a.txt"], alternatives, proposedCode: "x = 1" }, f.ctx);
+    assert.equal(carried.ok, true, carried.text);
+    assert.deepEqual(carried.result.card.alternatives, alternatives);
+    assert.match(carried.text, /Planned code \(proposedCode\), to show on the card:\n```\nx = 1\n```\nAlternatives, to show on the card with the chosen one marked:\n {2}\[chosen\] A queue table with a worker \(pattern-fit\)\n {2}\[ {6}\] a direct call$/);
+    assert.doesNotMatch(carried.text.split("\nPlanned code")[0], /"alternatives"/, "lifted out of the JSON, like the planned code");
+    assert.deepEqual(journal(f).at(-1).card.alternatives, alternatives);
+    // A findings file that is not JSON reads as missing: the card goes through without alternatives, and errors.log says why.
+    writeFileSync(findings, "nope");
+    const broken = await executeVerb("pair_propose", { boundary: ["src/a.txt"] }, f.ctx);
+    assert.equal(broken.ok, true, broken.text);
+    const log = readFileSync(join(f.base, "errors.log"), "utf8").trim().split("\n");
+    assert.equal(log.length, 1);
+    assert.match(log[0], /lib\/card-context\.mjs pair_propose session=sess-1: ask-graham findings .*sess-1\.json are not JSON/);
+    assert.equal(existsSync(join(xdg, "ask-graham", "errors.log")), false);
+    assert.equal(existsSync(receiptDir), false, "the receipt directory is only read, never made");
+  } finally {
+    for (const [k, v] of Object.entries(saved)) { if (v === undefined) delete process.env[k]; else process.env[k] = v; }
+  }
+});

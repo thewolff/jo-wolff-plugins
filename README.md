@@ -214,7 +214,7 @@ receipt and removes its working files.
 |---|---|---|---|
 | output-types | 0.3.1 | the CLAIM/CITE contract at SessionStart; a Stop check that warns on a label without its receipt | vendors plugin-kit's `lib/judge.mjs` and `lib/hook-runner.mjs`; delegation's brief skeleton carries its CLAIM/CITE line |
 | i-have-audhd | 1.6.1 | the message skeleton and thirteen Stop checks (links-resolve and the opt-in links-judge since 1.6.1), warning by default | its `enforcement.judgeCommand` is the last fallback of plugin-kit's judge resolution and of ledger's review judge |
-| paired-coding | 1.5.0 | change sets behind a write gate; learning mode with `pair_learn`, `why` + `sources` on a card, `recall` on done | none |
+| paired-coding | 1.6.0 | change sets behind a write gate; learning mode with `pair_learn`, `why` + `sources` on a card, `recall` on done; a pattern claim needs a pattern source, `alternatives` drawn from ask-graham's findings | reads pattern-check's receipt and ask-graham's findings when present; no dependency |
 | ask-graham | 0.8.0 | "should we build X?" with a verdict; a prompt nudge and a Stop check | reads your `sources.md`; nothing from another plugin; its `**Alternative:**` line carries pattern-check's `better design` cell when that plugin is installed |
 | pattern-check | 0.4.0 | holds big work until a reuse/replace/new receipt exists, each row with its `better design` and how it fails | its receipt file is what delegation's spawn gate requires |
 | reminders-review | 0.2.1 | Apple Reminders, one at a time | none |
@@ -634,6 +634,19 @@ installing the plugin.
   ask a process outside the sandbox to write for it.
 - **A journal** of every card, quote, verdict, refusal and diff, kept outside the worktree.
 - **A stop only you can give:** pairing ends when you type `pair stop` as a message of its own.
+
+Changes in 1.6.0: the card's `why` and `sources` draw on what the session already found. A
+`why` that claims a codebase pattern (`pattern used in`, `the rest of the codebase`,
+`convention here`, `how the codebase does`, `existing pattern`, `follows the pattern`, `the
+pattern in`) needs a pattern source, in any mode: one absolute `file:line` inside
+`<git root>/.pattern-check/` (pattern-check's receipt) or two inside the repository, else
+`pair_propose` refuses naming the receipt path it looked for and both counts. A new optional
+card field `alternatives` (`[{ design, chosen }]`, exactly one chosen) is required when
+ask-graham's findings file for the session is on disk, and then has to carry the findings'
+chosen design and, when they weighed another, a non-chosen entry; the card lists them with the
+chosen one marked. Both checks read sibling plugins' files only, neither plugin has to be
+installed, and a missing file never refuses. See the plugin README, *A pattern claim needs a
+pattern source*.
 
 Changes in 1.5.0: learning mode, off by default. Type `learning mode on` or `teach me as we go`
 while pairing and each card's decision line adds **Why this approach** with **Sources** (a URL
