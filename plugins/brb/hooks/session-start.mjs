@@ -1,37 +1,33 @@
 #!/usr/bin/env node
-// hooks/session-start.mjs — the brb plugin's SessionStart hook. Runs under lib/hook-runner.mjs: exit 0
-// always; a fault is one errors.log line and a systemMessage, never a deny or block.
+// hooks/session-start.mjs — brb's SessionStart hook. Runs under lib/hook-runner.mjs: exit 0
+// always; a fault is one errors.log line and a systemMessage, never a block.
 //
-// What it does: (write the rule here, one sentence, and its deny or block text if it has one).
+// What it does: when the session's away.json exists (a resume, a clear or a compaction while
+// Jo is away), the away instruction goes to the agent as additionalContext and one line goes to
+// the person: `brb: away since <since>; N held`. Home → null, nothing printed.
 //
-// How it fails: stdin not JSON, a thrown error, or no answer in 4 s (handle() runs on a worker
-// thread; the runner's timer on the main thread fires whatever it is doing) → the runner logs it
-// to ${XDG_STATE_HOME:-~/.local/state}/brb/errors.log and allows. Anything this hook reads
-// (a config file, a state file) that is missing or unreadable → treat as "no rule applies" and
-// return null; say so in a systemMessage only when the person needs to know.
+// OMP calls this same file before each agent turn (omp/brb-omp.ts) and delivers the
+// additionalContext as a hidden message, so the instruction reaches the agent there too.
 //
-// Deny or block text, when there is one, names the command that gets the person out of it,
-// in backticks: `brb: <what stopped and why>; run \`<command>\` to <fix>`.
-//
-// handle() runs on a worker thread, which is what makes the deadline hold. So: return the
-// answer as a plain JSON-able object (the runner prints it; a value that cannot be cloned, a
-// function or a class instance, is a logged fault); never process.exit() or write to stdout
-// yourself (the worker's stdout is piped through the runner, but only what the runner prints
-// is the hook's answer, and an exit from the thread is "ended without an answer"); a
-// subprocess needs its cwd passed explicitly (the thread's process.cwd() is the runner's, not
-// something the host set for the hook: use input.cwd); and env is the runner's copy, so set
-// what a child needs on the spawn's env, not on process.env.
+// How it fails: stdin not JSON, a thrown error, or no answer in 4 s → the runner logs it to
+// ${XDG_STATE_HOME:-~/.local/state}/brb/errors.log and the session starts without the context.
 
 import { runHook, invokedDirectly } from "../lib/hook-runner.mjs";
+import { readAway } from "../lib/state.mjs";
+import { awayInstruction } from "../lib/text.mjs";
 
 /**
- * @param {object} input  the host's JSON for this event
- * @returns {object|null}  the hook's JSON output, or null for "nothing to say"
+ * @param {object} input  the SessionStart payload; session_id is read
+ * @returns {object|null}
  */
 export function handle(input, { env = process.env } = {}) {
-  void input;
-  void env;
-  return null;
+  const sessionId = typeof input?.session_id === "string" ? input.session_id : "";
+  const away = readAway(sessionId, env);
+  if (!away) return null;
+  return {
+    systemMessage: `brb: away since ${away.since}; ${away.held} held. Type \`back\` to read them.`,
+    hookSpecificOutput: { hookEventName: "SessionStart", additionalContext: awayInstruction(away) },
+  };
 }
 
 if (invokedDirectly(import.meta.url)) runHook("SessionStart", import.meta.url, { plugin: "brb", quiet: false });
