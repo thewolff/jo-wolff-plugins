@@ -97,7 +97,8 @@ export function scaffold({ name, events, description, dest }) {
   }
   put("hooks/hooks.json", `${JSON.stringify({ hooks }, null, 2)}\n`);
   put(`skills/${name}/SKILL.md`, fill(tpl("skills/SKILL.md"), { ...vars, description }));
-  put("test/hook-contract.test.mjs", tpl("test/hook-contract.test.mjs"));
+  // The template carries a .template suffix so the kit's own `node --test` does not run it.
+  put("test/hook-contract.test.mjs", tpl("test/hook-contract.test.mjs.template"));
   put("test/fixtures/README.md", tpl("test/fixtures/README.md"));
   put("e2e/live-run.sh", fill(tpl("e2e/live-run.sh"), vars), 0o755);
   return { root, written };
