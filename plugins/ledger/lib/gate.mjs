@@ -56,12 +56,68 @@ const GIT_OPT_WITH_ARG = new Set(["-C", "-c", "--git-dir", "--work-tree", "--nam
 // Words that run the rest of the command line as the command.
 const PREFIX_WORDS = new Set(["command", "env", "exec", "time", "nohup"]);
 
+/** The index of the `)` closing a `$(` whose body starts at `i`; quotes and nesting honoured. */
+function closeParen(s, i) {
+  let depth = 1;
+  while (i < s.length) {
+    const c = s[i];
+    if (c === "\\") i += 2;
+    else if (c === "'") i = (s.indexOf("'", i + 1) + 1 || s.length + 1);
+    else if (c === '"') {
+      i++;
+      while (i < s.length && s[i] !== '"') i += s[i] === "\\" ? 2 : 1;
+      i++;
+    } else {
+      if (c === "(") depth++;
+      else if (c === ")" && --depth === 0) return i;
+      i++;
+    }
+  }
+  return s.length;
+}
+
 /**
- * The simple commands in shell text, each as its list of words after quote removal. A lexer, not
- * a shell: single and double quotes, backslash escapes and line continuations are honoured;
- * `;` `&` `|` `(` `)` and newlines end a command; `# …` comments, redirections with their
- * target, and here-document bodies (`<<WORD`, `<<-WORD`, quoted or not) are dropped. Command
- * substitutions are not expanded: their text stays inside the word it appears in.
+ * The command substitutions in `s` starting at `i` (`$(…)` or a backtick): { body, end } with
+ * `end` the index after it, or null when `s[i]` starts none. `$((…))` is arithmetic, not a command.
+ */
+function substitution(s, i) {
+  if (s[i] === "$" && s[i + 1] === "(" && s[i + 2] !== "(") {
+    const close = closeParen(s, i + 2);
+    return { body: s.slice(i + 2, close), end: close + 1 };
+  }
+  if (s[i] === "`") {
+    let j = i + 1;
+    while (j < s.length && s[j] !== "`") j += s[j] === "\\" ? 2 : 1;
+    return { body: s.slice(i + 1, j).replace(/\\`/g, "`"), end: j + 1 };
+  }
+  return null;
+}
+
+/** The command substitutions in an unquoted here-document body (they run; the rest is text). */
+function bodySubstitutions(text) {
+  const out = [];
+  for (let i = 0; i < text.length; ) {
+    if (text[i] === "\\") {
+      i += 2;
+      continue;
+    }
+    const sub = substitution(text, i);
+    if (sub) {
+      out.push(sub.body);
+      i = sub.end;
+    } else i++;
+  }
+  return out;
+}
+
+/**
+ * The simple commands in shell text, each as its list of words after quote removal, in the order
+ * they run. A lexer, not a shell: single and double quotes, backslash escapes and line
+ * continuations are honoured; `;` `&` `|` `(` `)` and newlines end a command; `# …` comments
+ * and redirections with their target are dropped. Command substitutions (`$(…)` and backticks,
+ * unquoted, inside double quotes, or in an unquoted here-document body) are scanned as commands
+ * of their own, listed before the command they appear in; their text also stays in its word.
+ * Here-document bodies are otherwise text.
  * @returns {string[][]}
  */
 export function simpleCommands(text) {
@@ -69,6 +125,7 @@ export function simpleCommands(text) {
   const n = s.length;
   const cmds = [];
   const heredocs = [];
+  let nested = [];
   let words = [];
   let word = null;
   let dropNext = false;
@@ -81,6 +138,8 @@ export function simpleCommands(text) {
   };
   const endCmd = () => {
     endWord();
+    for (const body of nested) cmds.push(...simpleCommands(body));
+    nested = [];
     if (words.length) cmds.push(words);
     words = [];
   };
@@ -90,18 +149,26 @@ export function simpleCommands(text) {
       endCmd();
       i++;
       while (heredocs.length) {
-        const { delim, strip } = heredocs.shift();
+        const { delim, strip, quoted } = heredocs.shift();
+        const lines = [];
         while (i < n) {
           let j = s.indexOf("\n", i);
           if (j < 0) j = n;
           const line = strip ? s.slice(i, j).replace(/^\t+/, "") : s.slice(i, j);
           i = j + 1;
           if (line === delim) break;
+          lines.push(line);
         }
+        if (!quoted) for (const body of bodySubstitutions(lines.join("\n"))) cmds.push(...simpleCommands(body));
       }
       continue;
     }
-    if (c === " " || c === "\t" || c === "\r") {
+    const sub = substitution(s, i);
+    if (sub) {
+      nested.push(sub.body);
+      word = (word ?? "") + s.slice(i, sub.end);
+      i = sub.end;
+    } else if (c === " " || c === "\t" || c === "\r") {
       endWord();
       i++;
     } else if (c === "#" && word === null) {
@@ -118,7 +185,12 @@ export function simpleCommands(text) {
       let q = "";
       i++;
       while (i < n && s[i] !== '"') {
-        if (s[i] === "\\" && i + 1 < n && '"\\$`\n'.includes(s[i + 1])) {
+        const inner = substitution(s, i);
+        if (inner) {
+          nested.push(inner.body);
+          q += s.slice(i, inner.end);
+          i = inner.end;
+        } else if (s[i] === "\\" && i + 1 < n && '"\\$`\n'.includes(s[i + 1])) {
           if (s[i + 1] !== "\n") q += s[i + 1];
           i += 2;
         } else q += s[i++];
@@ -132,18 +204,21 @@ export function simpleCommands(text) {
       if (strip) i++;
       while (s[i] === " " || s[i] === "\t") i++;
       let delim = "";
+      let quoted = false;
       while (i < n && !/[\s;&|<>()]/.test(s[i])) {
         if (s[i] === "'" || s[i] === '"') {
+          quoted = true;
           const j = s.indexOf(s[i], i + 1);
           const end = j < 0 ? n : j;
           delim += s.slice(i + 1, end);
           i = end + 1;
         } else if (s[i] === "\\") {
+          quoted = true;
           delim += s[i + 1] ?? "";
           i += 2;
         } else delim += s[i++];
       }
-      if (delim) heredocs.push({ delim, strip });
+      if (delim) heredocs.push({ delim, strip, quoted });
     } else if (c === "<" || c === ">") {
       if (word !== null && /^\d+$/.test(word)) word = null; // the fd number of `2>…`
       endWord();
@@ -162,38 +237,55 @@ export function simpleCommands(text) {
   return cmds;
 }
 
+/** A directory word the gate cannot resolve statically: an expansion, `~`, or `-`. */
+const dynamicDir = (d) => !d || d === "-" || /[$`~*?]/.test(d);
+
 /**
  * The publishing operations in `command`: one per simple command that is `git push …` or
  * `gh pr <sub> …` for a `sub` in `ghPr` (default `create`). Leading `VAR=value` words and
  * `command`/`env`/`exec`/`time`/`nohup` are skipped, a path on the binary is tolerated, and git's
- * global options are read:
- *   { tool: "git", dirs: [-C dirs in order], unsupported: "--git-dir"|"--work-tree"|null, args }
- *   { tool: "gh", sub, args }
- * `args` are the words after `push` / after `pr <sub>`.
+ * global options are read. Every operation carries the `cd` directories run before it in the same
+ * command text (`cds`, in order), so a relative `-C` resolves where git would run:
+ *   { tool: "git", cds, dirs: [-C dirs in order], unsupported: <why>|null, args }
+ *   { tool: "gh", cds, unsupported: <why>|null, sub, args }
+ * `unsupported` names what the gate cannot follow (`--git-dir`, `--work-tree`, a `cd` or `-C`
+ * whose directory is an expansion, `~` or `-`). `args` are the words after `push` / `pr <sub>`.
  */
 export function pushOperations(command, ghPr = ["create"]) {
   const ops = [];
+  const cds = [];
+  let cdUnknown = null;
   for (const words of simpleCommands(command)) {
     const tokens = [...words];
     while (tokens.length && (/^[A-Za-z_][A-Za-z0-9_]*=/.test(tokens[0]) || PREFIX_WORDS.has(tokens[0]))) tokens.shift();
     if (!tokens.length) continue;
+    if (tokens[0] === "cd" || tokens[0] === "pushd") {
+      const dir = tokens.slice(1).find((t) => !t.startsWith("-") || t === "-");
+      if (dynamicDir(dir)) cdUnknown = `${tokens[0]} ${dir ?? "(home)"}`;
+      else cds.push(dir);
+      continue;
+    }
     const bin = tokens[0].split("/").pop();
     if (bin === "gh") {
-      if (tokens[1] === "pr" && ghPr.includes(tokens[2])) ops.push({ tool: "gh", sub: tokens[2], args: tokens.slice(3) });
+      if (tokens[1] === "pr" && ghPr.includes(tokens[2])) ops.push({ tool: "gh", cds: [...cds], unsupported: cdUnknown, sub: tokens[2], args: tokens.slice(3) });
       continue;
     }
     if (bin !== "git") continue;
     const dirs = [];
-    let unsupported = null;
+    let unsupported = cdUnknown;
     let i = 1;
     while (i < tokens.length && tokens[i].startsWith("-")) {
       const t = tokens[i];
-      if (t === "-C") dirs.push(tokens[i + 1] ?? "");
+      if (t === "-C") {
+        const d = tokens[i + 1] ?? "";
+        if (dynamicDir(d)) unsupported = `-C ${d}`;
+        dirs.push(d);
+      }
       if (t === "--git-dir" || t.startsWith("--git-dir=")) unsupported = "--git-dir";
       if (t === "--work-tree" || t.startsWith("--work-tree=")) unsupported = "--work-tree";
       i += GIT_OPT_WITH_ARG.has(t) ? 2 : 1;
     }
-    if (tokens[i] === "push") ops.push({ tool: "git", dirs, unsupported, args: tokens.slice(i + 1) });
+    if (tokens[i] === "push") ops.push({ tool: "git", cds: [...cds], dirs, unsupported, args: tokens.slice(i + 1) });
   }
   return ops;
 }

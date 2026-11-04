@@ -4,6 +4,7 @@ import { spawnSync } from "node:child_process";
 import { chmodSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { sandbox, cli, hook, openDb } from "./helpers.mjs";
+import { ask } from "../lib/judge.mjs";
 
 const SID = "s-review";
 
@@ -135,7 +136,7 @@ test("review (c): addressed needs a reason and an earlier commit's findings; wit
   const bare = review(b, ["addressed"]);
   assert.equal(bare.code, 1);
   assert.match(bare.out, /^refused review addressed needs the reason/);
-  assert.match(review(b, ["addressed", "fixed"]).out, /^refused no review findings on an earlier commit/);
+  assert.match(review(b, ["addressed", "fixed"]).out, /^refused no outstanding review findings on an earlier commit/);
   review(b, [], { LEDGER_REVIEW_BIN_CODEX: stub(b, "codex", "1. [blocking] c.txt:1 bug") });
   commit(b, "c.txt", "fix\n");
   const r = review(b, ["addressed", "the bug is fixed in c.txt"], { LEDGER_JUDGE_BIN: judge(b, "yes") });
@@ -227,7 +228,7 @@ test("review (j): two labs, one pass one findings → deny naming the findings l
 });
 
 test("review (k): two labs, one unavailable one pass → allow, the notice names the unavailable lab", () => {
-  const b = repo({ labs: ["codex", "claude"] });
+  const b = repo({ labs: ["codex", "claude"], maxRounds: 9 });
   review(b, [], { LEDGER_REVIEW_BIN_CODEX: stub(b, "codex", "PASS"), LEDGER_REVIEW_BIN_CLAUDE: stub(b, "claude", "nope", 1) });
   const p = push(b);
   assert.equal(decision(p), "allow");
@@ -376,17 +377,23 @@ test("judge: missing → unverified, counted as resolved, and the gate allows wi
   assert.match(p.json.systemMessage, /review addressed for [0-9a-f]{8}; 1 finding\(s\) counted as resolved but unverified by the judge: \[blocking\] a\.txt:1 wrong value/);
 });
 
-test("judge: a cached answer does not run the judge again", () => {
+test("judge: a cached answer does not run the judge again", async () => {
   const b = repo();
   review(b, [], { LEDGER_REVIEW_BIN_CODEX: stub(b, "codex", "1. [blocking] a.txt:1 wrong value") });
   commit(b, "a.txt", "fixed\n");
   const yes = judge(b, "yes");
   assert.equal(review(b, ["addressed", "fixed"], { LEDGER_JUDGE_BIN: yes }).code, 0);
   assert.equal(calls(yes), 1);
-  assert.equal(review(b, ["addressed", "fixed, again"], { LEDGER_JUDGE_BIN: yes }).code, 0);
-  assert.equal(calls(yes), 1, "the second claim is answered from cc_meta");
+  const again = review(b, ["addressed", "fixed, again"], { LEDGER_JUDGE_BIN: yes });
+  assert.match(again.out, /^refused no outstanding review findings/, "the first claim already covers those findings");
+  assert.equal(calls(yes), 1);
   const db = openDb(b);
-  assert.equal(db.prepare("SELECT count(*) AS n FROM cc_meta WHERE key LIKE 'judge:%'").get().n, 1);
+  const env = { ...b.env, LEDGER_JUDGE_BIN: yes };
+  const first = await ask({ db, config: {}, env, passage: "Finding:\nx\n\nChange (unified diff):\ny" });
+  const second = await ask({ db, config: {}, env, passage: "Finding:\nx\n\nChange (unified diff):\ny" });
+  assert.deepEqual([first.cached, second.cached, second.verdict], [false, true, "yes"]);
+  assert.equal(calls(yes), 2, "the second ask is answered from cc_meta");
+  assert.equal(db.prepare("SELECT count(*) AS n FROM cc_meta WHERE key LIKE 'judge:%'").get().n, 2);
   db.close();
 });
 
@@ -528,8 +535,8 @@ test("S1: the push matcher reads shell quoting, comments and here-documents", as
   assert.equal(isPushCommand("cat <<'EOF' > notes.md\ngh pr merge 3\nEOF", merge), false);
   assert.equal(isPushCommand("cd x && GIT_TRACE=1 git push", merge), true);
   assert.equal(isPushCommand("cat <<EOF\nbody\nEOF\ngit push", merge), true, "a push after the here-document still counts");
-  assert.deepEqual(pushOperations('git -C "my repo" -c user.name=x push origin "feat:main"', merge), [{ tool: "git", dirs: ["my repo"], unsupported: null, args: ["origin", "feat:main"] }]);
-  assert.deepEqual(pushOperations('gh pr create --title "git push fix" --head feat', merge), [{ tool: "gh", sub: "create", args: ["--title", "git push fix", "--head", "feat"] }]);
+  assert.deepEqual(pushOperations('git -C "my repo" -c user.name=x push origin "feat:main"', merge), [{ tool: "git", cds: [], dirs: ["my repo"], unsupported: null, args: ["origin", "feat:main"] }]);
+  assert.deepEqual(pushOperations('gh pr create --title "git push fix" --head feat', merge), [{ tool: "gh", sub: "create", cds: [], unsupported: null, args: ["--title", "git push fix", "--head", "feat"] }]);
 });
 
 test("live run finding 5: a push with no note and no review is denied once, naming both, and writes both bounce rows", () => {
@@ -552,4 +559,135 @@ test("live run finding 5: a push with no note and no review is denied once, nami
   // With the note recorded, the deny is the review gate's alone, unchanged in form.
   cli(b, ["note", "pushing the change"], { env: { LEDGER_SESSION_ID: SID } });
   assert.doesNotMatch(push(b).json.hookSpecificOutput.permissionDecisionReason, /two things/);
+});
+
+// Codex review round 2 of 0.3.0: one regression per finding fixed.
+
+test("R2-B1: a matching push, a configured push refspec and push.default matching are not taken for HEAD", () => {
+  const b = repo();
+  review(b, [], { LEDGER_REVIEW_BIN_CODEX: stub(b, "codex", "PASS") });
+  assert.equal(push(b, "git push origin").out, "", "push.default simple publishes HEAD, which is reviewed");
+  for (const cmd of ["git push origin :", "git push origin +:"]) {
+    const p = push(b, cmd);
+    assert.equal(decision(p), "allow");
+    assert.match(p.json.systemMessage, /could not tell which commit this command publishes \(refspec \+?: pushes every matching branch\)/);
+  }
+  git(b, "config", "remote.origin.push", "refs/heads/other:refs/heads/main");
+  assert.match(push(b, "git push origin").json.systemMessage, /remote\.origin\.push is configured/);
+  git(b, "config", "--unset", "remote.origin.push");
+  git(b, "config", "push.default", "matching");
+  assert.match(push(b, "git push").json.systemMessage, /push\.default is matching/);
+  git(b, "config", "push.default", "nothing");
+  assert.equal(push(b, "git push").out, "", "push.default nothing publishes nothing");
+});
+
+test("R2-B2: gh pr create --head checks the remote branch, not the local one; an unbound merge names the commit checked", () => {
+  const b = repo();
+  review(b, [], { LEDGER_REVIEW_BIN_CODEX: stub(b, "codex", "PASS") });
+  const reviewed = git(b, "rev-parse", "HEAD");
+  git(b, "checkout", "-q", "-b", "elsewhere");
+  const unreviewed = commit(b, "r.txt", "remote\n");
+  git(b, "checkout", "-q", "feat");
+  git(b, "update-ref", "refs/remotes/origin/feat", unreviewed);
+  assert.equal(decision(push(b, "gh pr create --head feat --title t")), "deny", "origin/feat is the pull request's head, and it is unreviewed");
+  git(b, "update-ref", "refs/remotes/origin/feat", reviewed);
+  assert.equal(push(b, "gh pr create --head feat --title t").out, "");
+  assert.match(push(b, "gh pr create --head someone:feat --title t").json.systemMessage, /names another owner's branch/);
+  assert.match(push(b, "gh pr create --head nowhere --title t").json.systemMessage, /no remote-tracking ref for it is here/);
+  const p = push(b, "gh pr merge 7 --rebase", ghStub(b, reviewed));
+  assert.equal(decision(p), "allow");
+  assert.match(p.json.systemMessage, new RegExp(`checked ${reviewed.slice(0, 8)}, the pull request's head as gh reports it now.*--match-head-commit ${reviewed}`));
+});
+
+test("R2-B3: a same-commit retry, a downgrade to nit and a skipped or unavailable lab do not clear a finding without the judge", () => {
+  const b = repo({ labs: ["codex", "claude"], maxRounds: 9 });
+  const find = "1. [blocking] a.txt:1 wrong value";
+  review(b, ["--labs", "codex"], { LEDGER_REVIEW_BIN_CODEX: stub(b, "codex", find) });
+  const no = judge(b, "no");
+  // The same commit again, now passing: the judge is asked, says no, and the finding stays.
+  let r = review(b, ["--labs", "codex"], { LEDGER_REVIEW_BIN_CODEX: stub(b, "codex", "PASS"), LEDGER_JUDGE_BIN: no });
+  assert.match(r.out, /^ {2}judge no: \[blocking\] a\.txt:1 wrong value \(round 1\)$/m);
+  assert.equal(decision(push(b)), "deny");
+  // Listed again only as a nit on a new commit: still a removal, so judged.
+  commit(b, "z.txt", "unrelated\n");
+  r = review(b, ["--labs", "codex"], { LEDGER_REVIEW_BIN_CODEX: stub(b, "codex", "1. [nit] a.txt:1 wrong value"), LEDGER_JUDGE_BIN: no });
+  assert.match(r.out, /^codex: findings/m);
+  assert.equal(decision(push(b)), "deny");
+  // codex not run this time: its findings are carried onto the new commit.
+  commit(b, "y.txt", "unrelated\n");
+  r = review(b, ["--labs", "claude"], { LEDGER_REVIEW_BIN_CLAUDE: stub(b, "claude", "PASS") });
+  assert.match(r.out, /^codex: findings: 1 blocking, 0 should, 0 nit · not run this time; its findings from round \d stay open$/m);
+  assert.equal(decision(push(b)), "deny");
+  // codex unavailable: the same.
+  commit(b, "x.txt", "unrelated\n");
+  r = review(b, ["--labs", "codex"], { LEDGER_REVIEW_BIN_CODEX: stub(b, "codex", "boom", 1) });
+  assert.match(r.out, /^codex: findings: 1 blocking, 0 should, 0 nit · unavailable \(.*\); its findings from round \d stay open$/m);
+  assert.equal(decision(push(b)), "deny");
+});
+
+test("R2-B4 and R2-S2: a finding a later review passed is not outstanding; addressed is refused while HEAD has findings", () => {
+  const b = repo();
+  review(b, [], { LEDGER_REVIEW_BIN_CODEX: stub(b, "codex", "1. [blocking] a.txt:1 wrong value") });
+  const yes = judge(b, "yes");
+  review(b, [], { LEDGER_REVIEW_BIN_CODEX: stub(b, "codex", "PASS"), LEDGER_JUDGE_BIN: yes });
+  assert.equal(calls(yes), 1);
+  commit(b, "z.txt", "unrelated\n");
+  const no = judge(b, "no");
+  const r = review(b, [], { LEDGER_REVIEW_BIN_CODEX: stub(b, "codex", "PASS"), LEDGER_JUDGE_BIN: no });
+  assert.match(r.out, /^codex: pass$/m, "the earlier pass superseded the old findings");
+  assert.equal(calls(no), 0);
+  assert.match(review(b, ["addressed", "old issue"], { LEDGER_JUDGE_BIN: no }).out, /^refused no outstanding review findings/);
+  commit(b, "y.txt", "unrelated\n");
+  review(b, [], { LEDGER_REVIEW_BIN_CODEX: stub(b, "codex", "1. [blocking] y.txt:1 new bug") });
+  const a = review(b, ["addressed", "fixed old issue"], { LEDGER_JUDGE_BIN: yes });
+  assert.equal(a.code, 1);
+  assert.match(a.out, /^refused [0-9a-f]{8} has review findings of its own/);
+  assert.equal(decision(push(b)), "deny");
+});
+
+test("R2-S1: pushes inside command substitutions count; cd and -C directories are followed", async () => {
+  const { pushOperations } = await import("../lib/gate.mjs");
+  const merge = ["create", "merge"];
+  assert.equal(pushOperations('echo "$(git push origin HEAD)"', merge).length, 1, "a substitution inside double quotes runs");
+  assert.equal(pushOperations("x=`git push origin HEAD`", merge).length, 1);
+  assert.equal(pushOperations("cat <<EOF\n$(git push origin HEAD)\nEOF", merge).length, 1, "an unquoted here-document expands substitutions");
+  assert.equal(pushOperations("cat <<'EOF'\n$(git push origin HEAD)\nEOF", merge).length, 0, "a quoted one does not");
+  assert.equal(pushOperations("echo '$(git push origin HEAD)'", merge).length, 0);
+  const [op] = pushOperations("cd /other && git -C nested push origin HEAD", merge);
+  assert.deepEqual([op.cds, op.dirs, op.unsupported], [["/other"], ["nested"], null]);
+  assert.ok(pushOperations("cd $REPO && git push", merge)[0].unsupported, "a computed directory is not resolved");
+  // End to end: a cd into another repository checks that repository's HEAD.
+  const b = repo();
+  review(b, [], { LEDGER_REVIEW_BIN_CODEX: stub(b, "codex", "PASS") });
+  const other = join(b.sibling, "other repo");
+  mkdirSync(other);
+  const g = (...args) => assert.equal(spawnSync("git", args, { cwd: other, env: { ...b.env, GIT_AUTHOR_NAME: "t", GIT_AUTHOR_EMAIL: "t@t", GIT_COMMITTER_NAME: "t", GIT_COMMITTER_EMAIL: "t@t" } }).status, 0);
+  g("init", "-q");
+  writeFileSync(join(other, "x.txt"), "x\n");
+  g("add", "x.txt");
+  g("commit", "-qm", "x");
+  assert.equal(decision(push(b, `cd "${other}" && git push origin HEAD`)), "deny");
+  assert.equal(push(b, `git -C "${other}" status && git push origin HEAD`).out, "", "git -C does not change the shell's folder");
+});
+
+test("R2-S3: a branch reviewed from its root commit keeps counting from the root", () => {
+  const b = sandbox();
+  git(b, "init", "-q", "-b", "work");
+  commit(b, "a.txt", "one\n");
+  b.writeConfig({ review: { mode: "gate" } });
+  const bin = stub(b, "codex", "PASS");
+  assert.match(review(b, [], { LEDGER_REVIEW_BIN_CODEX: bin }).out, /\(root\.\.[0-9a-f]{8}\) .*round 1 of 3:/);
+  commit(b, "b.txt", "two\n");
+  assert.match(review(b, [], { LEDGER_REVIEW_BIN_CODEX: bin }).out, /\(root\.\.[0-9a-f]{8}\) .*round 2 of 3:/);
+});
+
+test("R2-S5: the judge passage is capped whole, marks the cut, and names the whole input's digest", async () => {
+  const { passageFor, PASSAGE_CAP_BYTES } = await import("../lib/judge.mjs");
+  const long = "x".repeat(9000);
+  const fixed = passageFor(long, `${"d".repeat(9000)}\n+FIXED`);
+  const broken = passageFor(long, `${"d".repeat(9000)}\n+BROKEN`);
+  assert.ok(Buffer.byteLength(fixed) <= PASSAGE_CAP_BYTES, `${Buffer.byteLength(fixed)} bytes`);
+  assert.match(fixed, /\[cut: the finding and change are \d+ bytes; .* sha256 of the whole: [0-9a-f]{64}\]$/);
+  assert.notEqual(fixed, broken, "inputs that differ only past the cut are told apart");
+  assert.equal(passageFor("short", "diff"), "Finding:\nshort\n\nChange (unified diff):\ndiff");
 });

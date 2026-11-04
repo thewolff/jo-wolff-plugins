@@ -510,14 +510,19 @@ default, or `advise`, or `off`) is read from the user config file only. Findings
 severity (`blocking`, `should`, `nit`); nits alone let the push through with a notice. Each
 reviewed commit is a numbered round, and past `review.maxRounds` (default 3) the review stops
 and says to ask the human. A judge model checks every claim that a finding is resolved, whether
-a later round dropped it or the agent ran `review addressed "<why>"`; a `no` keeps the gate
-closed, and a judge that cannot answer counts the finding resolved and says so. The judge is
-`review.judgeCommand`, or the i-have-audhd plugin's `enforcement.judgeCommand`. Session start now also
+a later review dropped it, listed it again only as a nit, or the agent ran `review addressed
+"<why>"`; a `no` keeps the gate closed, and a judge that cannot answer counts the finding
+resolved and says so. A lab that is skipped or unavailable keeps its findings open on the new
+commit, and `review addressed` is refused while HEAD has findings of its own. The judge is
+`review.judgeCommand`, or the i-have-audhd plugin's `enforcement.judgeCommand`; its passage is
+capped at 8 kB and says when it was cut. Session start now also
 shows the open and held questions asked in folders under the session's folder, each naming its
 folder, and `pending` lists them the same way. Reviewers run without tools, from an empty
 scratch folder, with an allowlisted environment. The gate checks the commit a command actually
-publishes (`git -C`, refspecs, `gh pr create --head`, the pull request `gh pr merge` names), and
-allows with a notice when it cannot tell. Opening a 0.2.3 database migrates it to schema
+publishes (`cd` and `git -C` folders, refspecs, git's own choice when no refspec is given, the
+remote branch `gh pr create --head` names, the pull request `gh pr merge` names, pushes inside
+`$(…)`), and allows with a notice when it cannot tell; a merge not bound with
+`--match-head-commit` gets a notice naming the commit checked. Opening a 0.2.3 database migrates it to schema
 version 6 by creating new tables; no existing table is touched. A push missing both a note and a
 review is denied once, naming both. The Stop ask rule now catches a question mid-line ("Should
 I …? I'd say yes."); the decision rule stands down when the reply asks a question recorded that

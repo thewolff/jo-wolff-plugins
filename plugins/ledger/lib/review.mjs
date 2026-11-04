@@ -27,9 +27,10 @@
 // order they were first reviewed. `review` names the round it runs as; past `review.maxRounds`
 // it stops and says to ask the human (waive, or continue with `--force-round`).
 //
-// The judge (lib/judge.mjs) checks every "this finding is resolved" claim: a blocking or should
-// finding from the previous round that a lab no longer lists, and every open finding when the
-// agent runs `review addressed "<why>"`. Each is asked once, with the finding and the diff
+// The judge (lib/judge.mjs) checks every "this finding is resolved" claim: an outstanding
+// blocking or should finding (see `outstanding`) that a lab's new reply drops or lists only as a
+// nit, and every outstanding finding on an earlier commit when the agent runs `review addressed
+// "<why>"`. Each is asked once, with the finding and the diff
 // between the two shas for the files it names. `no` keeps it open (`judge: "no"` in
 // findings_json; the row stays or becomes `findings`, the gate stays closed); `yes` resolves it;
 // `unverified` (no judge, or it failed) resolves it fail-open and the gate's notice says so.
@@ -94,11 +95,20 @@ export function gitHead(cwd, opts = {}) {
 }
 
 /** The checked-out branch's short name; null when HEAD is detached. */
-function currentBranch(top) {
+function currentBranch(top, opts = {}) {
   try {
-    return git(top, ["symbolic-ref", "-q", "--short", "HEAD"]).trim() || null;
+    return git(top, ["symbolic-ref", "-q", "--short", "HEAD"], opts).trim() || null;
   } catch {
     return null;
+  }
+}
+
+/** Every value of git config `key` in `top` (`--get-all`); [] when unset. */
+function gitConfig(top, key, opts = {}) {
+  try {
+    return git(top, ["config", "--get-all", key], opts).split("\n").filter(Boolean);
+  } catch {
+    return [];
   }
 }
 
@@ -112,11 +122,11 @@ function commitOf(top, ref, opts = {}) {
 }
 
 /**
- * The base of `head`'s branch, as a sha (null: `head` is a root commit, diffed against the empty
- * tree). The merge-base with origin/main, else with a local main or master, when it is not `head`
- * itself; else the base the branch's first review recorded, while it is still an ancestor of
- * `head`; else head's parent. Storing the resolved base in every row keeps the round count stable
- * on a branch with no main to measure from.
+ * The base of `head`'s branch, as a sha (null: the branch starts at a root commit, diffed against
+ * the empty tree). The merge-base with origin/main, else with a local main or master, when it is
+ * not `head` itself; else the base the branch's first review recorded (ROOT_BASE for "from the
+ * root"), while it is still an ancestor of `head`; else head's parent. Storing the resolved base
+ * in every row keeps the round count stable on a branch with no main to measure from.
  */
 export function defaultBase(db, top, head, branch) {
   for (const ref of ["origin/main", "main", "master"]) {
@@ -129,6 +139,7 @@ export function defaultBase(db, top, head, branch) {
   }
   if (branch) {
     const first = db.prepare("SELECT base_ref FROM cc_reviews WHERE cwd = ? AND branch = ? AND lab <> ? AND base_ref IS NOT NULL ORDER BY at ASC, id ASC LIMIT 1").get(top, branch, META_LAB);
+    if (first?.base_ref === ROOT_BASE) return null;
     if (first) {
       try {
         git(top, ["merge-base", "--is-ancestor", first.base_ref, head]);
@@ -144,6 +155,10 @@ export function defaultBase(db, top, head, branch) {
     return null;
   }
 }
+
+// The base_ref stored for a review whose base is the root (diffed against the empty tree), so a
+// branch's later reviews keep counting from the root instead of from the root commit.
+export const ROOT_BASE = EMPTY_TREE;
 
 function insertRow(db, dbPath, r) {
   transaction(
@@ -225,18 +240,61 @@ export function namedFiles(text) {
 
 const words = (t) => new Set(String(t).toLowerCase().match(/[a-z0-9]+/g) ?? []);
 
-/** Whether `item` from an earlier round is still listed among `items` (same text, or same first file and most words shared). */
+/**
+ * Whether `item` from an earlier review is still listed as serious among `items` (same text, or
+ * same first file and most words shared). A finding relisted only as a nit counts as dropped: the
+ * downgrade goes to the judge like a removal.
+ */
 export function stillListed(item, items) {
   const norm = (t) => String(t).toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
   const file = namedFiles(item.text)[0] ?? null;
   const w = words(item.text);
-  return items.some((other) => {
+  return openSerious(items).some((other) => {
     if (norm(other.text) === norm(item.text)) return true;
     if (!file || namedFiles(other.text)[0] !== file) return false;
     const o = words(other.text);
     const shared = [...w].filter((x) => o.has(x)).length;
     return shared / Math.max(1, new Set([...w, ...o]).size) >= 0.5;
   });
+}
+
+/**
+ * Each lab's outstanding blocking and should findings on this branch: for every lab with a row in
+ * `rounds` (the current commit's earlier rows included), its latest row that is not
+ * `unavailable`; when that row has open serious items and no `addressed` row came after it on a
+ * commit that `head` contains, { lab, row, round, items }. A later pass supersedes earlier
+ * findings; a lab that was skipped or unavailable keeps its findings outstanding.
+ * @returns {Map<string, { lab, row, round, items }>}
+ */
+export function outstanding(db, top, rounds, head) {
+  const byLab = new Map();
+  for (const r of rounds) {
+    for (const row of r.rows) {
+      if (row.verdict === "unavailable") continue;
+      const prev = byLab.get(row.lab);
+      if (!prev || row.at > prev.row.at || (row.at === prev.row.at && row.id > prev.row.id)) byLab.set(row.lab, { lab: row.lab, row, round: r.round });
+    }
+  }
+  const contains = (sha) => {
+    if (sha === head) return true;
+    try {
+      git(top, ["merge-base", "--is-ancestor", sha, head]);
+      return true;
+    } catch {
+      return false;
+    }
+  };
+  const addressedAfter = (row) =>
+    db
+      .prepare("SELECT head_sha FROM cc_reviews WHERE cwd = ? AND lab = ? AND verdict = 'addressed' AND (at > ? OR (at = ? AND id > ?))")
+      .all(top, META_LAB, row.at, row.at, row.id)
+      .some((a) => contains(a.head_sha));
+  const out = new Map();
+  for (const [lab, entry] of byLab) {
+    const items = openSerious(itemsOf(entry.row));
+    if (items.length && !addressedAfter(entry.row)) out.set(lab, { ...entry, items });
+  }
+  return out;
 }
 
 /** Ask the judge about each item against the change `fromSha..toSha`; returns the items with `judge` (and `resolved` unless `no`). */
@@ -309,34 +367,53 @@ export async function runReview({ db, dbPath, cwd, env = process.env, config, la
       return adapter.run({ diff, timeoutMs, env, config: config.review ?? {} });
     }),
   );
-  const previous = rounds.filter((r) => r.sha !== head).at(-1) ?? null;
+  // Each lab's serious findings still open on this branch, this commit's earlier rows included:
+  // a finding the new reply drops or downgrades goes to the judge, and a lab that is unavailable
+  // or not run this time carries its findings onto this commit.
+  const owed = outstanding(db, top, rounds, head);
+  const carried = (entry, reason) => ({
+    verdict: "findings",
+    items: entry.items,
+    findings: entry.items.map((it, k) => `${k + 1}. ${itemLine(it)} (from round ${entry.round})`).join("\n"),
+    model: entry.row.model,
+    reason,
+  });
   const out = [`review of ${short(head)} (${range}) in ${top}, round ${round} of ${max}${round > max ? " (forced)" : ""}:`];
   let anyFindings = false;
+  const record = (lab, r, judged = [], fromRound = null) => {
+    insertRow(db, dbPath, { sessionId, cwd: top, head, base: baseSha ?? ROOT_BASE, branch, lab, model: r.model, verdict: r.verdict, findings: r.findings, items: r.items, reason: r.reason ?? null, at: nowIso(now()) });
+    const model = r.model ? ` (${r.model})` : "";
+    if (r.verdict === "findings") {
+      anyFindings = true;
+      out.push(`${lab}: findings${model}: ${countsText(severityCounts(r.items))}${r.carried ? ` · ${r.reason}` : ""}`, indent(r.findings));
+    } else if (r.verdict === "pass-with-nits") out.push(`${lab}: pass with nits${model}: ${countsText(severityCounts(r.items))}`, indent(r.findings));
+    else if (r.verdict === "unavailable") out.push(`${lab}: unavailable: ${r.reason}`);
+    else out.push(`${lab}: pass${model}${r.reason ? ` · ${r.reason}` : ""}`);
+    for (const it of judged) out.push(`  judge ${it.judge}: ${itemLine(it)} (round ${fromRound})`);
+  };
   for (let i = 0; i < list.length; i++) {
     const lab = list[i];
     const res = results[i];
     let r = res.status === "fulfilled" ? res.value : { verdict: "unavailable", reason: res.reason?.message ?? String(res.reason), model: null, findings: null, items: [] };
-    const judged = [];
-    if (r.verdict !== "unavailable" && previous) {
-      const before = previous.rows.findLast((x) => x.lab === lab && x.verdict === "findings");
-      const dropped = before ? openSerious(itemsOf(before)).filter((it) => !stillListed(it, r.items ?? [])) : [];
-      if (dropped.length) {
-        judged.push(...(await judgeItems({ db, dbPath, config, env, top, fromSha: previous.sha, toSha: head, items: dropped })));
-        const items = [...(r.items ?? []), ...judged];
-        const stillOpen = judged.filter((it) => it.judge === "no");
-        const findings = stillOpen.length ? [r.findings, ...stillOpen.map((it, k) => `${(r.items?.length ?? 0) + k + 1}. ${itemLine(it)} (from round ${previous.round}; the judge says it is not resolved)`)].filter(Boolean).join("\n") : r.findings;
-        r = { ...r, items, findings, verdict: verdictOf(items) };
-      }
+    const before = owed.get(lab);
+    if (r.verdict === "unavailable") {
+      record(lab, before ? { ...carried(before, `unavailable (${r.reason}); its findings from round ${before.round} stay open`), carried: true } : r);
+      continue;
     }
-    insertRow(db, dbPath, { sessionId, cwd: top, head, base: baseSha, branch, lab, model: r.model, verdict: r.verdict, findings: r.findings, items: r.items, reason: r.reason ?? null, at: nowIso(now()) });
-    const model = r.model ? ` (${r.model})` : "";
-    if (r.verdict === "findings") {
-      anyFindings = true;
-      out.push(`${lab}: findings${model}: ${countsText(severityCounts(r.items))}`, indent(r.findings));
-    } else if (r.verdict === "pass-with-nits") out.push(`${lab}: pass with nits${model}: ${countsText(severityCounts(r.items))}`, indent(r.findings));
-    else if (r.verdict === "unavailable") out.push(`${lab}: unavailable: ${r.reason}`);
-    else out.push(`${lab}: pass${model}${r.reason ? ` · ${r.reason}` : ""}`);
-    for (const it of judged) out.push(`  judge ${it.judge}: ${itemLine(it)} (round ${previous.round})`);
+    const judged = [];
+    const dropped = before ? before.items.filter((it) => !stillListed(it, r.items ?? [])) : [];
+    if (dropped.length) {
+      judged.push(...(await judgeItems({ db, dbPath, config, env, top, fromSha: before.row.head_sha, toSha: head, items: dropped })));
+      const items = [...(r.items ?? []), ...judged];
+      const stillOpen = judged.filter((it) => it.judge === "no");
+      const findings = stillOpen.length ? [r.findings, ...stillOpen.map((it, k) => `${(r.items?.length ?? 0) + k + 1}. ${itemLine(it)} (from round ${before.round}; the judge says it is not resolved)`)].filter(Boolean).join("\n") : r.findings;
+      r = { ...r, items, findings, verdict: verdictOf(items) };
+    }
+    record(lab, r, judged, before?.round);
+  }
+  for (const [lab, entry] of owed) {
+    if (list.includes(lab)) continue;
+    record(lab, { ...carried(entry, `not run this time; its findings from round ${entry.round} stay open`), carried: true });
   }
   if (anyFindings) {
     out.push(
@@ -370,33 +447,39 @@ export function waive({ db, dbPath, cwd, reason, sessionId = null, now = Date.no
 }
 
 /**
- * `review addressed "<why>"`: the manual override of a finding, for HEAD, only after a findings
- * row on an earlier commit here; the reason is required. The judge checks each open blocking or
- * should finding of that commit against the change since: any `no` records a findings row for
+ * `review addressed "<why>"`: the manual override of findings, for HEAD; the reason is required.
+ * The claim covers each lab's outstanding blocking and should findings on earlier commits of this
+ * branch (see `outstanding`), and is refused when there are none, or when HEAD has review
+ * findings of its own (those are fixed, committed and reviewed again, or waived). The judge
+ * checks each finding against the change since its commit: any `no` records a findings row for
  * HEAD naming it (the gate stays closed) and refuses; otherwise an addressed row is recorded,
  * carrying the judged findings, `unverified` ones named.
  */
 export async function addressed({ db, dbPath, cwd, reason, config = {}, env = process.env, sessionId = null, now = Date.now() }) {
   const why = String(reason ?? "").trim();
   if (!why) return { code: 1, text: 'refused review addressed needs the reason: review addressed "<why the findings no longer apply>"' };
-  let top, head;
+  let top, head, branch;
   try {
     ({ top, head } = gitHead(cwd));
+    branch = currentBranch(top);
   } catch (err) {
     return { code: 1, text: `refused ${err.message}` };
   }
-  const prior = db.prepare("SELECT head_sha FROM cc_reviews WHERE cwd = ? AND verdict = 'findings' AND head_sha <> ? ORDER BY at DESC, id DESC LIMIT 1").get(top, head);
-  if (!prior) return { code: 1, text: `refused no review findings on an earlier commit in ${top}; commit the fixes first, or waive with the human's reason` };
-  const labRows = headState(db, top, prior.head_sha).labRows.filter((r) => r.verdict === "findings");
-  const judgedByLab = [];
-  for (const row of labRows) {
-    const items = openSerious(itemsOf(row));
-    judgedByLab.push({ row, items: await judgeItems({ db, dbPath, config, env, top, fromSha: prior.head_sha, toSha: head, items }) });
+  if (headState(db, top, head).findings.length) {
+    return { code: 1, text: `refused ${short(head)} has review findings of its own; fix them, commit, and run \`review\` again, or waive with the human's reason` };
   }
+  const base = defaultBase(db, top, head, branch);
+  const owed = [...outstanding(db, top, branchRounds(db, top, base, head), head).values()].filter((e) => e.row.head_sha !== head);
+  if (!owed.length) return { code: 1, text: `refused no outstanding review findings on an earlier commit of this branch in ${top}; nothing to address` };
+  const judgedByLab = [];
+  for (const entry of owed) {
+    judgedByLab.push({ row: entry.row, items: await judgeItems({ db, dbPath, config, env, top, fromSha: entry.row.head_sha, toSha: head, items: entry.items }) });
+  }
+  const sources = [...new Set(owed.map((e) => short(e.row.head_sha)))].join(", ");
   const at = nowIso(now);
   const rejected = judgedByLab.filter(({ items }) => items.some((i) => i.judge === "no"));
   if (rejected.length) {
-    const out = [`refused the judge says these findings on ${short(prior.head_sha)} are not resolved by ${short(head)}; the gate stays closed:`];
+    const out = [`refused the judge says these findings on ${sources} are not resolved by ${short(head)}; the gate stays closed:`];
     for (const { row, items } of rejected) {
       const open = items.filter((i) => i.judge === "no");
       insertRow(db, dbPath, {
@@ -404,7 +487,7 @@ export async function addressed({ db, dbPath, cwd, reason, config = {}, env = pr
         cwd: top,
         head,
         base: row.base_ref,
-        branch: currentBranch(top),
+        branch,
         lab: row.lab,
         model: row.model,
         verdict: "findings",
@@ -420,8 +503,8 @@ export async function addressed({ db, dbPath, cwd, reason, config = {}, env = pr
   const all = judgedByLab.flatMap(({ items }) => items);
   const unverified = all.filter((i) => i.judge === "unverified");
   const note = unverified.length ? `; ${unverified.length} unverified by the judge` : "";
-  insertRow(db, dbPath, { sessionId, cwd: top, head, branch: currentBranch(top), lab: META_LAB, verdict: "addressed", items: all, reason: `${why} (findings on ${short(prior.head_sha)}${note})`, at });
-  const out = [`recorded ${short(head)} as addressing the findings on ${short(prior.head_sha)}: ${why}`];
+  insertRow(db, dbPath, { sessionId, cwd: top, head, branch, lab: META_LAB, verdict: "addressed", items: all, reason: `${why} (findings on ${sources}${note})`, at });
+  const out = [`recorded ${short(head)} as addressing the findings on ${sources}: ${why}`];
   for (const i of all) out.push(`  judge ${i.judge}: ${itemLine(i)}`);
   return { code: 0, text: out.join("\n") };
 }
@@ -566,16 +649,24 @@ function positionals(args, withArg) {
 
 /**
  * The commits one publishing operation (lib/gate.mjs pushOperations) would publish, each
- * { top, sha }, `top` null when the commit is looked up by sha in any repository folder:
- *   git push       in the repository its `-C` options select. No refspec → that HEAD; each
- *                  refspec's source resolved there (`+` dropped, `HEAD` = HEAD); a deletion
- *                  (`:dst`, `--delete`) publishes nothing.
- *   gh pr create   `--head <branch>` (an `owner:` prefix dropped) resolved locally, else HEAD.
+ * { top, sha, unbound? }, `top` null when the commit is looked up by sha in any repository folder.
+ * Every operation runs in the directory its `cd`s select, from the hook's cwd:
+ *   git push       in the repository its `-C` options select. A deletion (`:dst`, `--delete`)
+ *                  publishes nothing. Each refspec's source is resolved there (`+` dropped,
+ *                  `HEAD` = HEAD). With no refspec, git uses `remote.<remote>.push` when set
+ *                  and then `push.default`: HEAD, unless either says more (a configured push
+ *                  refspec, or `matching`).
+ *   gh pr create   no `--head`: HEAD (gh pushes the current branch). `--head <branch>`: gh does
+ *                  not push, so the pull request's head is the remote branch: its upstream,
+ *                  else `origin/<branch>`. `--head <owner>:<branch>` is another repository.
  *   gh pr merge    `--match-head-commit <sha>` when it is a full sha, else the head commit
- *                  `gh pr view [<selector>] [--repo …]` reports.
+ *                  `gh pr view [<selector>] [--repo …]` reports, marked `unbound`: the merge
+ *                  itself does not require that commit.
  * [] when the operation runs outside a repository (git and gh refuse that themselves). Throws
- * UnknownTarget when the command does not say (`--all`, `--mirror`, `--tags`, `--branches`,
- * a pattern refspec, `--git-dir`/`--work-tree`, a ref that names no commit, gh failing).
+ * UnknownTarget when the command does not say: `--all`, `--mirror`, `--tags`, `--branches`, a
+ * matching (`:`) or pattern refspec, a configured push refspec or `push.default matching`,
+ * `--git-dir`/`--work-tree`, a `cd` or `-C` the gate cannot resolve, another owner's branch, a
+ * ref that names no commit, gh failing.
  */
 export function operationTargets(op, cwd, { env = process.env } = {}) {
   const opts = { timeoutMs: HOOK_GIT_TIMEOUT_MS };
@@ -594,18 +685,30 @@ export function operationTargets(op, cwd, { env = process.env } = {}) {
       throw new UnknownTarget(err.message);
     }
   };
+  if (op.unsupported) throw new UnknownTarget(`${op.unsupported} is not followed`);
+  const here = (op.cds ?? []).reduce((dir, d) => resolvePath(dir, d), cwd);
   if (op.tool === "git") {
-    if (op.unsupported) throw new UnknownTarget(`git ${op.unsupported} is not followed`);
-    const repo = local(op.dirs.reduce((dir, d) => resolvePath(dir, d), cwd));
+    const repo = local(op.dirs.reduce((dir, d) => resolvePath(dir, d), here));
     if (!repo) return [];
     if (op.args.includes("--delete") || op.args.includes("-d")) return [];
     const many = op.args.find((a) => ["--all", "--mirror", "--tags", "--branches"].includes(a));
     if (many) throw new UnknownTarget(`git push ${many} publishes more than one ref`);
-    const refspecs = positionals(op.args, PUSH_OPTS_WITH_ARG).slice(1);
-    if (!refspecs.length) return [{ top: repo.top, sha: repo.head }];
+    const [remoteArg, ...refspecs] = positionals(op.args, PUSH_OPTS_WITH_ARG);
+    if (!refspecs.length) {
+      const branch = currentBranch(repo.top, opts);
+      const first = (key) => gitConfig(repo.top, key, opts)[0] ?? null;
+      const remote = remoteArg ?? ((branch && first(`branch.${branch}.pushRemote`)) || first("remote.pushDefault") || (branch && first(`branch.${branch}.remote`)) || "origin");
+      if (gitConfig(repo.top, `remote.${remote}.push`, opts).length) throw new UnknownTarget(`remote.${remote}.push is configured, so git push picks its own refs`);
+      const mode = first("push.default") ?? "simple";
+      if (mode === "matching") throw new UnknownTarget("push.default is matching, so git push publishes every matching branch");
+      if (mode === "nothing") return [];
+      return [{ top: repo.top, sha: repo.head }];
+    }
     const out = [];
     for (const spec of refspecs) {
-      const src = spec.replace(/^\+/, "").split(":")[0];
+      const bare = spec.replace(/^\+/, "");
+      if (bare === ":") throw new UnknownTarget(`refspec ${spec} pushes every matching branch`);
+      const src = bare.split(":")[0];
       if (!src) continue;
       if (src.includes("*")) throw new UnknownTarget(`refspec ${spec} is a pattern`);
       out.push({ top: repo.top, sha: src === "HEAD" ? repo.head : resolveRef(repo.top, src) });
@@ -613,29 +716,40 @@ export function operationTargets(op, cwd, { env = process.env } = {}) {
     return out;
   }
   if (op.sub === "create") {
-    const repo = local(cwd);
+    const repo = local(here);
     if (!repo) return [];
     const head = optValue(op.args, ["-H", "--head"]);
-    return [{ top: repo.top, sha: head ? resolveRef(repo.top, head.split(":").pop()) : repo.head }];
+    if (!head) return [{ top: repo.top, sha: repo.head }];
+    if (head.includes(":")) throw new UnknownTarget(`gh pr create --head ${head} names another owner's branch, which is not in this repository`);
+    for (const ref of [`${head}@{upstream}`, `refs/remotes/origin/${head}`]) {
+      try {
+        return [{ top: repo.top, sha: commitOf(repo.top, ref, opts) }];
+      } catch {
+        /* try the next */
+      }
+    }
+    throw new UnknownTarget(`gh pr create --head ${head} opens the pull request from the remote branch, and no remote-tracking ref for it is here`);
   }
   const match = optValue(op.args, ["--match-head-commit"]);
   if (match && /^[0-9a-f]{40}$/i.test(match)) return [{ top: null, sha: match.toLowerCase() }];
   const repoOpt = optValue(op.args, ["-R", "--repo"]);
   const [selector] = positionals(op.args, GH_MERGE_OPTS_WITH_ARG);
   const args = ["pr", "view", ...(selector ? [selector] : []), ...(repoOpt ? ["--repo", repoOpt] : []), "--json", "headRefOid", "--jq", ".headRefOid"];
-  const r = spawnSync("gh", args, { cwd, env, encoding: "utf8", timeout: GH_TIMEOUT_MS, killSignal: "SIGKILL" });
+  const r = spawnSync("gh", args, { cwd: here, env, encoding: "utf8", timeout: GH_TIMEOUT_MS, killSignal: "SIGKILL" });
   const sha = String(r.stdout ?? "").trim();
   if (r.error || r.status !== 0 || !/^[0-9a-f]{40}$/i.test(sha)) {
     const why = r.error ? (r.error.code === "ETIMEDOUT" ? `timed out after ${GH_TIMEOUT_MS / 1000}s` : r.error.message) : String(r.stderr || "").trim().split("\n").at(-1) || `exit ${r.status}`;
     throw new UnknownTarget(`gh pr view did not name the pull request's head commit (${why})`);
   }
-  return [{ top: null, sha: sha.toLowerCase() }];
+  return [{ top: null, sha: sha.toLowerCase(), unbound: true }];
 }
 
 /**
  * The review gate's answer for a set of publishing operations under `mode`: the strictest of
  * gateDecision over every commit they publish ({ deny } before { notice } before {}), or, when a
- * commit cannot be told from the command, an allow with a notice saying so.
+ * commit cannot be told from the command, an allow with a notice saying so. An allowed merge
+ * whose commit came from `gh pr view` adds a notice naming the commit checked and the flag that
+ * binds the merge to it.
  */
 export function reviewDecision(db, ops, cwd, mode, { cli = "ledger", env = process.env } = {}) {
   let targets;
@@ -656,6 +770,11 @@ export function reviewDecision(db, ops, cwd, mode, { cli = "ledger", env = proce
   const deny = decisions.find((d) => d.deny);
   if (deny) return deny;
   const notices = decisions.filter((d) => d.notice).map((d) => d.notice);
+  if (mode !== "off") {
+    for (const t of targets.filter((x) => x.unbound)) {
+      notices.push(`ledger: the review gate checked ${short(t.sha)}, the pull request's head as gh reports it now; the merge is not bound to it. Add \`--match-head-commit ${t.sha}\` so gh refuses the merge if the head moves first.`);
+    }
+  }
   return notices.length ? { notice: notices.join("\n") } : {};
 }
 

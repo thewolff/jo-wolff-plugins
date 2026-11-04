@@ -130,13 +130,20 @@ function remember(db, dbPath, key, value, env) {
   }
 }
 
-/** The passage for one finding: its text, then the diff, cut so the whole stays within PASSAGE_CAP_BYTES. */
+/**
+ * The passage for one finding: its text, then the diff. When the two together pass
+ * PASSAGE_CAP_BYTES, the passage is cut to fit and ends with a marker saying how much was left
+ * out and the sha256 of the whole input, so the judge knows the evidence is partial and two
+ * inputs that differ only past the cut are cached apart.
+ */
 export function passageFor(findingText, diff) {
-  const head = `Finding:\n${findingText}\n\nChange (unified diff):\n`;
-  const room = Math.max(0, PASSAGE_CAP_BYTES - Buffer.byteLength(head));
-  let body = String(diff ?? "") || "(no change to the files the finding names)";
-  if (Buffer.byteLength(body) > room) body = Buffer.from(body).subarray(0, room).toString("utf8").replace(/\uFFFD$/, "");
-  return head + body;
+  const full = `Finding:\n${String(findingText ?? "")}\n\nChange (unified diff):\n${String(diff ?? "") || "(no change to the files the finding names)"}`;
+  const size = Buffer.byteLength(full);
+  if (size <= PASSAGE_CAP_BYTES) return full;
+  const digest = createHash("sha256").update(full).digest("hex");
+  const marker = `\n[cut: the finding and change are ${size} bytes; only the first part fits the ${PASSAGE_CAP_BYTES}-byte limit, the rest is not shown; sha256 of the whole: ${digest}]`;
+  const room = Math.max(0, PASSAGE_CAP_BYTES - Buffer.byteLength(marker));
+  return Buffer.from(full).subarray(0, room).toString("utf8").replace(/\uFFFD+$/, "") + marker;
 }
 
 /**
