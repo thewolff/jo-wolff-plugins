@@ -781,7 +781,7 @@ worktree, inside an excluded directory, or after the final snapshot is not detec
 
 ## Files
 
-Test files (`*.test.mjs`, beside each module, and the transcript entries in `hooks/fixtures/`) are left out.
+Test files (`*.test.mjs`, beside each module, `e2e.test.mjs` at the plugin root, the transcript entries in `hooks/fixtures/` and the captured `ps` results in `lib/fixtures/`) are left out.
 
 The bundled MCP server is the Claude Code half of the `pair_*` tools. Claude Code runs it from
 `.mcp.json`, and each tool's checks run inside the server, on the arguments the call finally

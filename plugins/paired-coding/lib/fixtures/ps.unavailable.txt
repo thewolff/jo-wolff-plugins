@@ -1,0 +1,2 @@
+2026-11-04T02:55:12.277Z darwin spawnSync("/bin/ps", ["-A", "-o", "pid=,pgid=,stat="])
+{"status":null,"signal":null,"error":{"code":"EPERM","message":"spawnSync /bin/ps EPERM"},"stderr":null}
