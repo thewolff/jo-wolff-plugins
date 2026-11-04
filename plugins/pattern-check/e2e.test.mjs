@@ -79,21 +79,28 @@ test("e2e: files 1 and 2 allowed, the 3rd denied with the exact command; Stop re
   writeFileSync(e.file("table.md"), "| webhook parser | (none: grep webhook in src/) | new | nothing parses inbound webhooks |\n");
   const refusedRecord = e.sh(command);
   assert.equal(refusedRecord.status, 1);
-  assert.match(refusedRecord.stderr, /receipt not written: row "webhook parser" has no fail columns.*fails how \| next step \| restart-safe \| bounded \| evidence kept/);
+  assert.match(refusedRecord.stderr, /receipt not written: row "webhook parser" has no fail columns.*better design \| fails how \| next step \| restart-safe \| bounded \| evidence kept/);
+  assert.equal(existsSync(e.file(`.pattern-check/${SESSION}.md`)), false);
+
+  // A 0.3-shaped table, fail columns but no better design cell, is refused too, naming the cell.
+  writeFileSync(e.file("table.md"), "| webhook parser | (none: grep webhook in src/) | new | nothing parses inbound webhooks | throws WebhookError; the router logs it and answers 400 | the 400 body names the field to fix | yes: parsing is pure | n/a: no retries, one parse per request | the request id in the access log |\n");
+  const refusedDesign = e.sh(command);
+  assert.equal(refusedDesign.status, 1);
+  assert.match(refusedDesign.stderr, /receipt not written: row "webhook parser" has no "better design" cell; every piece needs it after the reason, before fails how \(write "none: <what was weighed>", or the better design with its axis and its cost\)/);
   assert.equal(existsSync(e.file(`.pattern-check/${SESSION}.md`)), false);
 
   // The full table records.
   writeFileSync(e.file("table.md"), [
-    "| new piece | existing pattern (file:line) | reuse / replace / new | reason | fails how | next step | restart-safe | bounded | evidence kept |",
-    "|---|---|---|---|---|---|---|---|---|",
-    "| webhook parser | (none: grep webhook, inbound in src/) | new | nothing parses inbound webhooks | throws WebhookError; the router logs it and answers 400 | the 400 body names the field to fix | yes: parsing is pure | n/a: no retries, one parse per request | the request id and error line in the access log |",
+    "| new piece | existing pattern (file:line) | reuse / replace / new | reason | better design | fails how | next step | restart-safe | bounded | evidence kept |",
+    "|---|---|---|---|---|---|---|---|---|---|",
+    "| webhook parser | (none: grep webhook, inbound in src/) | new | nothing parses inbound webhooks | none: weighed one inbound module holding parse and verify, more than one route needs | throws WebhookError; the router logs it and answers 400 | the 400 body names the field to fix | yes: parsing is pure | n/a: no retries, one parse per request | the request id and error line in the access log |",
     "",
   ].join("\n"));
   const recorded = e.sh(command);
   assert.equal(recorded.status, 0, recorded.stderr);
   assert.match(recorded.stdout, /receipt recorded for session 6f1d2c3b/);
   const receipt = readFileSync(e.file(`.pattern-check/${SESSION}.md`), "utf8");
-  assert.match(receipt, /\| webhook parser \| .* \| new \| .* \| throws WebhookError; .* \| yes: parsing is pure \| n\/a: no retries, one parse per request \|/);
+  assert.match(receipt, /\| webhook parser \| .* \| new \| .* \| none: weighed one inbound module .* \| throws WebhookError; .* \| yes: parsing is pure \| n\/a: no retries, one parse per request \|/);
   assert.equal(existsSync(join(e.base, "state", "pattern-check", "receipts", `${SESSION}.md`)), true);
 
   // After the receipt: the 3rd and a 4th file, a commit, and a new design reply all go through.

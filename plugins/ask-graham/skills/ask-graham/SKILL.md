@@ -26,7 +26,7 @@ One exception, the **structure check**: when a task inside an already-decided pr
 - First line `**Structure check:** <the new structure>`.
 - Next line, when something matched: `**Found:**` and the matches, plainly: each existing table, column, module or service with a file:line receipt and how it overlaps. If one is a second way to do something the repo already does, the second-pattern flag in step 4 fires.
 - Next line, when nothing matched: `**No similar:**` saying there are no similar tables, columns, modules or services, naming the parent and what was searched (for example "no similar tables or columns: searched migrations/ for tables and columns on story_revisions"). An empty search is never silent.
-- Then the step-4 red flags.
+- Then the step-4 red flags, and, only when the second-pattern flag fires, the `**Alternative:**` line.
 
 The Stop check accepts those two opening lines in place of a verdict only in a structure check, and only when no ask-graham invocation in the turn had other args; a full check still needs its verdict. In a structure check only those two lines count: a `**Verdict:**` line or the comparables question does not stand in for them. A task inside a decided project that creates none of these four still gets no ask-graham output. (Skill)
 
@@ -122,7 +122,9 @@ Skill addition: also flag a collision step 2 found, such as a new command word t
 
 Skill addition: **a second pattern where one exists.** When the parent search in step 2 finds an existing way to attach or store the same kind of thing, the design uses that pattern or says in one line why it cannot. It fires on a new table, a new join table, or a new side store where the parent already carries a column or list for that role. This is the skill's rule, prompted by the 2026-10-28 review of a chart-pick table that belonged as a `story_revisions` column. (Skill)
 
-Done when: each flag is marked *fires* (with the line of the design that trips it) or *clear*.
+Pattern fit is the default, not the ceiling. When a design exists that is better than the pattern-fit one on a stated axis (fewer moving parts, removes a known failure mode, closes a gap the pattern leaves, or is what the repo would adopt if starting today), show it beside the pattern-fit design, with what it costs over the pattern: the callers that migrate, a second way to do the thing until the old one goes. It goes on the `**Alternative:**` line of the output, naming the design, its axis and its cost; when nothing beats the pattern the line says `none: <what was weighed>`, never a bare `none`. Jo's rule: "ask-graham will share solutions based on whether or not it's a pattern in the code base. In those cases make sure it's capable and encouraged to show both the best solution based on existing patterns, and another solution which is better/optimal if one exists." (Jo, 2026-11-04)
+
+Done when: each flag is marked *fires* (with the line of the design that trips it) or *clear*, and the `**Alternative:**` line names a better design with its axis and cost, or `none` with what was weighed (in a structure check, only when the second-pattern flag fires).
 
 ### 5. Pick the verdict
 
@@ -135,11 +137,11 @@ Size first, with Graham's 2-minute rule from GTD: "if we can do it in under 2 mi
 | **later** | Bigger than two minutes, the gate questions pass, and nothing gets worse while it waits. | Graham #4 |
 | **don't build** | The why is only "it's cool", something existing already covers it, it is out of scope, or nobody would own it. | Mapping is the skill's (Skill), from Graham #1 and #2 |
 
-When two designs, or two asks, both pass: "fewer lines of code? less complexity means less to maintain. Future functionality is often YAGNI" (Graham #5). Pick the smaller one and name what it leaves out. Type annotations never count as lines or complexity here (Jo).
+When two designs, or two asks, both pass: "fewer lines of code? less complexity means less to maintain. Future functionality is often YAGNI" (Graham #5). Pick the smaller one and name what it leaves out. Type annotations never count as lines or complexity here (Jo). Between the pattern-fit design and step 4's alternative, fewer lines still picks the default; the alternative stays on its `**Alternative:**` line either way, never dropped for losing the pick. (Jo, 2026-11-04)
 
-Before the verdict on any ask bigger than two minutes, run the pattern-check skill (the `pattern-check` plugin, when installed): for each piece the ask would add, find the existing pattern in the repo that does its job and record reuse, replace, or new with a reason; a `new` row whose nearest pattern is close fires the second-pattern flag in step 4. (Skill)
+Before the verdict on any ask bigger than two minutes, run the pattern-check skill (the `pattern-check` plugin, when installed): for each piece the ask would add, find the existing pattern in the repo that does its job and record reuse, replace, or new with a reason; a `new` row whose nearest pattern is close fires the second-pattern flag in step 4, and the row's `better design` cell is what the `**Alternative:**` line carries. (Skill)
 
-Done when: exactly one verdict, with a one-line why that names the gate answer or cost that decided it.
+Done when: exactly one verdict, with a one-line why that names the gate answer or cost that decided it. On Claude Code that why is stored verbatim as the chosen design in the session's findings file (README "Findings on disk"), and consumers look for it word for word, so write it as one plain sentence.
 
 ### 6. Break it down, scaled to size
 
@@ -175,7 +177,7 @@ Do you want me to research and see if something comparable exists?
 
 With a sources file, both replies also carry the `**Local search:**` block: one line per source the file lists, written `<label>: <result>`. The label is the source's whole label (any case, bold optional) and must equal it, so `Held decisions` does not stand in for `Decisions`; the result carries one of *found*, *nothing found* or *unreachable*. Outside code fences and quotes only. Without a sources file the block is optional. (Jo, 2026-11-04)
 
-After the user answers, use the completed-check template below. A structure check uses the shape in "When it runs" instead: its `**Structure check:**` line, its `**Found:**` or `**No similar:**` line, and the red flags. (Skill)
+After the user answers, use the completed-check template below. A structure check uses the shape in "When it runs" instead: its `**Structure check:**` line, its `**Found:**` or `**No similar:**` line, the red flags, and the `**Alternative:**` line only when the second-pattern flag fires. (Skill)
 
 ```
 **Verdict:** <one of the four verdicts: do it now, start now, later, don't build>. <one-line why>
@@ -207,6 +209,8 @@ After the user answers, use the completed-check template below. A structure chec
 
 **Red flags:** <the flags that fired, each with its source; or "none fired"; or "not a technical ask">
 
+**Alternative:** <the better design, its axis, and its cost; or none: <what was weighed>; or "not a technical ask">
+
 **Breakdown:** <omitted for do it now / don't build; HLD → Epics → Stories → Tasks with acceptance criteria otherwise>
 
 **Closing ask:** <one decision, restating its full subject, with a recommendation>
@@ -235,3 +239,4 @@ How the Stop check reads each bullet: the bold label names the source. A bullet 
 - The Stop check blocked the turn (`ask-graham: … no verdict`): the reply ended without a `**Verdict:**` line after this skill was read. Give the verdict, or the exact open question alone on the last line; the block is once per turn and is proved by `evals/stop-no-verdict.scenario.json` (its sibling `evals/stop-with-verdict.scenario.json` passes).
 - The nudge fires on every message (`intensity=every-idea`) when it should not: `/ask-graham intensity ask` writes the setting; the nudge and the quiet state are `evals/prompt-nudge-every-idea.scenario.json` and `evals/prompt-quiet-at-ask.scenario.json`.
 - A hook's `systemMessage` starting `ask-graham … failed open`: the check did not run; its line is in `${XDG_STATE_HOME:-~/.local/state}/ask-graham/errors.log`. Tell the person once and give the verdict anyway.
+- The reply has no `**Alternative:**` line: the Stop check does not block for it; add the line, with `none: <what was weighed>` when nothing beats the pattern. The two shapes are `evals/session-alternative-shown.scenario.json` (a pattern-fit design and a better one, both on the line) and `evals/session-alternative-none.scenario.json` (nothing beats the pattern: `none` with what was weighed).

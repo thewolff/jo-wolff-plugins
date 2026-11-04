@@ -1,0 +1,27 @@
+{
+  "$comment": "Nothing beats the pattern: one shared loader in lib/config.mjs already serves every script, so a fourth script fits it by importing loadConfig. The reply's **Alternative:** line says none and what was weighed. No hook phase: the Stop check does not block for the line; the live session and the judge prove it.",
+  "event": "session",
+  "setup": {
+    "files": {
+      "README.md": "# exports\n\nScripts under scripts/ read their settings through lib/config.mjs (loadConfig) and work on the exports/ directory.\n",
+      "config.json": "{ \"exportsDir\": \"exports\", \"keepDays\": 30 }\n",
+      "lib/config.mjs": "import { readFileSync } from \"node:fs\";\n\nconst DEFAULTS = Object.freeze({ exportsDir: \"exports\", keepDays: 30 });\n\n/** config.json merged over the defaults; a missing or unreadable file is the defaults, and the reason is on stderr once. */\nexport function loadConfig(path = \"config.json\") {\n  try {\n    return { ...DEFAULTS, ...JSON.parse(readFileSync(path, \"utf8\")) };\n  } catch (err) {\n    process.stderr.write(`config: ${path} not read (${err.code ?? err.message}); using defaults\\n`);\n    return { ...DEFAULTS };\n  }\n}\n",
+      "scripts/export.mjs": "import { loadConfig } from \"../lib/config.mjs\";\n\nconst config = loadConfig();\nconsole.log(`exporting into ${config.exportsDir}`);\n",
+      "scripts/import.mjs": "import { loadConfig } from \"../lib/config.mjs\";\n\nconst config = loadConfig();\nconsole.log(`importing from ${config.exportsDir}`);\n",
+      "scripts/report.mjs": "import { loadConfig } from \"../lib/config.mjs\";\n\nconst config = loadConfig();\nconsole.log(`reporting on ${config.exportsDir} (${config.keepDays} days)`);\n"
+    }
+  },
+  "session": {
+    "prompt": "Use the Skill tool to run the ask-graham skill on this idea, then answer: should we add a fourth script, scripts/archive.mjs, that reads the settings and moves exports older than keepDays into archive/? Read lib/config.mjs and the three existing scripts first. The archive behaviour is decided (a separate script, one job per script); the only open design question is how archive.mjs reads its settings. The skill will want to ask whether to research comparables; my answer is given here in advance: no, do not research the internet, search only this repo. Do not end the turn on that question. Finish with the completed-check template the skill requires, including its **Red flags:** line and its **Alternative:** line.",
+    "allowedTools": [
+      "Skill",
+      "Read",
+      "Glob",
+      "Grep"
+    ],
+    "maxTurns": 12,
+    "tool": "Skill",
+    "reply": "\\*\\*Alternative:\\*\\*\\s*[`*_\"']*none(?![a-z0-9])"
+  },
+  "judge": "PASS if the final reply carries a **Verdict:** line and an **Alternative:** line that says none and names what was weighed (the new script imports loadConfig from lib/config.mjs, the pattern every script already uses, and nothing beats it). FAIL if the Alternative line is missing, or proposes a second way to load the settings as a better design."
+}
