@@ -215,8 +215,8 @@ receipt and removes its working files.
 | output-types | 0.3.1 | the CLAIM/CITE contract at SessionStart; a Stop check that warns on a label without its receipt | vendors plugin-kit's `lib/judge.mjs` and `lib/hook-runner.mjs`; delegation's brief skeleton carries its CLAIM/CITE line |
 | i-have-audhd | 1.7.0 | the message skeleton and thirteen Stop checks (links-resolve and the opt-in links-judge since 1.6.1), warning by default; its judge is the shared one since 1.7.0 | vendors plugin-kit's `lib/judge.mjs`; its `enforcement.judgeCommand` is an override of the shared judge file, and the last fallback of plugin-kit's judge resolution and of ledger's review judge |
 | paired-coding | 1.5.0 | change sets behind a write gate; learning mode with `pair_learn`, `why` + `sources` on a card, `recall` on done | none |
-| ask-graham | 0.7.3 | "should we build X?" with a verdict; a prompt nudge and a Stop check | reads your `sources.md`; nothing from another plugin |
-| pattern-check | 0.3.2 | holds big work until a reuse/replace/new receipt exists | its receipt file is what delegation's spawn gate requires |
+| ask-graham | 0.8.0 | "should we build X?" with a verdict; a prompt nudge and a Stop check | reads your `sources.md`; nothing from another plugin; its `**Alternative:**` line carries pattern-check's `better design` cell when that plugin is installed |
+| pattern-check | 0.4.0 | holds big work until a reuse/replace/new receipt exists, each row with its `better design` and how it fails | its receipt file is what delegation's spawn gate requires |
 | reminders-review | 0.2.1 | Apple Reminders, one at a time | none |
 | ledger | 0.3.6 | questions and choices on rows; the push gate with six rows (`docs` new) | its `says` row checks the "When this can't" heading every skill and agent carries; its canary runs every plugin's `e2e/live-run.sh` |
 | plugin-kit | 0.3.1 | the scaffold (with `CHANGELOG.md` since 0.2.2), the hook runner, the shared judge lib, the scenario runner, two agents | gives `lib/hook-runner.mjs` and `lib/judge.mjs` to the plugins that vendor them, and `lib/live-run.mjs` to every `e2e/live-run.sh` |
@@ -839,6 +839,15 @@ extension (`omp/ask-graham-omp.ts`, declared in the plugin's `package.json`): wi
   similar. It gives no verdict and does not ask the comparables question.
 - **A level you set**, `ask` or `every-idea`, for how eagerly it runs (next section).
 
+Changes in 0.8.0: the reply shows the better design beside the pattern-fit one. Step 4's
+second-pattern flag still makes the design use the repo's pattern or say why it cannot; when a
+design beats the pattern-fit one on a stated axis (fewer moving parts, removes a known failure
+mode, closes a gap the pattern leaves, or is what the repo would adopt if starting today) the
+reply shows it too, with what it costs over the pattern. The completed-check template gains an
+`**Alternative:**` line after `**Red flags:**` (the better design, its axis and its cost, or
+`none: <what was weighed>`); fewer lines still picks the default and never drops the
+alternative. Two live scenarios prove the two shapes; the Stop check is unchanged. (Jo, 2026-11-04)
+
 Changes in 0.7.3: a reply that waits on the comparables question must also carry step 1's
 `**Ask:**` line and step 3's five `**Gate questions**` bullets; the Stop check blocks it once
 otherwise, naming what is missing, so the question can no longer stand in for the judgment.
@@ -947,12 +956,15 @@ write that down. A PreToolUse hook holds the work until it has: from the Nth dis
 session writes (3 by default), it denies further writes, `git commit` and `gh pr create` until
 the session has a receipt.
 
-The receipt is a table with one row per new piece and nine columns. The first four answer "what
+The receipt is a table with one row per new piece and ten columns. The first four answer "what
 exists already": `new piece`, `existing pattern (file:line)`, `reuse / replace / new`, `reason`.
-The last five answer "how does it fail", before the piece is written: `fails how`, `next step`,
-`restart-safe`, `bounded`, `evidence kept`. The script refuses a row whose fail cells are empty,
-a placeholder (`-`, `?`, `TBD`, `todo`, `unknown`), or `n/a` without a reason, and names the row
-and column it refused.
+The fifth, `better design`, answers "what would beat the pattern": `none: <what was weighed>`, or the design that
+beats the pattern-fit one on a stated axis with what it costs over the pattern. The last five
+answer "how does it fail", before the piece is written: `fails how`, `next step`,
+`restart-safe`, `bounded`, `evidence kept`. The script refuses a row whose `better design` cell
+is missing, empty, a bare `none` or a placeholder, and a row whose fail cells are empty, a placeholder (`-`,
+`?`, `TBD`, `todo`, `unknown`), or `n/a` without a reason, and names the row and column it
+refused.
 
 The problem it addresses: a design review that asks "where did this introduce a new pattern when
 an existing one served?" keeps coming back with a long list. Agents start writing before they
@@ -983,7 +995,7 @@ Inside a running OMP session, use `/marketplace add thewolff/jo-wolff-plugins` a
 
 - **The skill**: the method. List every new piece, grep the repository for its nouns and verbs,
   read what sits beside it in the same router, registry or directory, and end each piece as
-  `reuse`, `replace` or `new` with a reason, plus the five fail columns.
+  `reuse`, `replace` or `new` with a reason, a `better design` cell, plus the five fail columns.
 - **The script** (`scripts/pattern-check.mjs`): `open`, `record` and `status`. The receipt is
   Markdown at `<repo>/.pattern-check/<session>.md`. When the work adds no new piece,
   `record --no-new-pieces "<why>"` writes a one-line receipt.
@@ -1020,6 +1032,14 @@ still count. The deny and Stop refusal texts ask both questions: what exists alr
 does it fail. Bash write forms are read through a shell lexer, fixing two real commands the
 redirect matcher miscounted. Hook faults are appended to `errors.log` as well as shown,
 `hooks.json` sets a 5 s timeout, and NotebookEdit is counted.
+
+Changes in 0.4.0: the receipt gains a `better design` column after `reason`: `none: <what was
+weighed>` (a bare `none` is refused), or the design that beats the pattern-fit one on a stated axis with what it costs
+over the pattern; pattern fit stays the default and the better design is shown beside it.
+`record` refuses a row whose cell is missing (a nine-column 0.3 row), empty or a placeholder,
+naming the row and column; receipts already on disk still lift the hold. ask-graham 0.8.0's
+`**Alternative:**` line carries the cell. Two scenarios prove the accept and the refusal.
+(Jo, 2026-11-04)
 
 Changes in 0.3.2: the plugin meets ledger 0.3.5's five-row gate. `evals/manifest.json` declares
 what the three hooks can return and eight `evals/<x>.scenario.json` prove them (under the
