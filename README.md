@@ -12,6 +12,8 @@ place, going through your reminders with it, and keeping a record of what it did
   gate that refuses writes you have not agreed to.
 - **[ask-graham](#ask-graham)** — answer "should we build X?" with one engineer's stated
   judgment and a single verdict, when you ask or on every new idea.
+- **[pattern-check](#pattern-check)** — before big work, the agent finds the existing pattern for
+  each new piece and records reuse, replace or new; hooks hold writes, commits and PRs until it has.
 - **[reminders-review](#reminders-review)** — go through your open Apple Reminders one at a
   time: the agent answers, confirms before acting, and closes each one only when you say yes.
 - **[ledger](#ledger)** — a durable, id'd record of the questions an agent asks you and the
@@ -27,7 +29,8 @@ default. paired-coding enforces at the tool boundary, within the limits in its *
 enforces, and what it does not* note. ask-graham is a skill, a one-line prompt nudge you can
 turn off, and a Stop check that blocks once per turn when an answer that read the skill has no
 verdict line, which `/ask-graham stop-check off` turns off.
-reminders-review is a skill only.
+reminders-review is a skill only. pattern-check enforces at the tool boundary: it holds writes,
+commits and PRs past a file threshold until a receipt exists, and does not judge the receipt.
 
 ```
 /plugin marketplace add thewolff/jo-wolff-plugins
@@ -36,6 +39,7 @@ reminders-review is a skill only.
 /plugin install paired-coding@jo-wolff-plugins
 /plugin install ask-graham@jo-wolff-plugins
 /plugin install reminders-review@jo-wolff-plugins
+/plugin install pattern-check@jo-wolff-plugins
 /plugin install ledger@jo-wolff-plugins
 ```
 
@@ -48,6 +52,7 @@ omp plugin install i-have-audhd@jo-wolff-plugins
 omp plugin install paired-coding@jo-wolff-plugins
 omp plugin install ask-graham@jo-wolff-plugins
 omp plugin install reminders-review@jo-wolff-plugins
+omp plugin install pattern-check@jo-wolff-plugins
 ```
 
 Inside a running OMP session the commands are `/marketplace add` and `/marketplace install`, with
@@ -475,6 +480,96 @@ describes your machine. Every source in it is read-only to the skill.
 
 The tests run with `node --test` from inside `plugins/ask-graham/`. Uninstall, update, and the
 rest of the details are in the package README.
+
+## pattern-check
+
+Before an agent does big work in a repository, it has to look for the repository's existing way
+of doing each thing it is about to add, decide reuse, replace, or new-with-reason for each, and
+write that down. A PreToolUse hook holds the work until it has: from the Nth distinct file a
+session writes (3 by default), it denies further writes, `git commit` and `gh pr create` until
+the session has a receipt.
+
+The receipt is a table with one row per new piece and nine columns. The first four answer "what
+exists already": `new piece`, `existing pattern (file:line)`, `reuse / replace / new`, `reason`.
+The last five answer "how does it fail", before the piece is written: `fails how`, `next step`,
+`restart-safe`, `bounded`, `evidence kept`. The script refuses a row whose fail cells are empty,
+a placeholder (`-`, `?`, `TBD`, `todo`, `unknown`), or `n/a` without a reason, and names the row
+and column it refused.
+
+The problem it addresses: a design review that asks "where did this introduce a new pattern when
+an existing one served?" keeps coming back with a long list. Agents start writing before they
+have read what is already there. This plugin makes the reading mandatory and the result
+inspectable. The package README is
+[`plugins/pattern-check/README.md`](plugins/pattern-check/README.md).
+
+### Install
+
+```
+/plugin marketplace add thewolff/jo-wolff-plugins
+/plugin install pattern-check@jo-wolff-plugins
+```
+
+Node 18 or later is needed on `PATH`.
+
+#### Install on OMP
+
+```
+omp plugin marketplace add thewolff/jo-wolff-plugins
+omp plugin install pattern-check@jo-wolff-plugins
+```
+
+Inside a running OMP session, use `/marketplace add thewolff/jo-wolff-plugins` and then
+`/marketplace install pattern-check@jo-wolff-plugins`.
+
+### What you get
+
+- **The skill**: the method. List every new piece, grep the repository for its nouns and verbs,
+  read what sits beside it in the same router, registry or directory, and end each piece as
+  `reuse`, `replace` or `new` with a reason, plus the five fail columns.
+- **The script** (`scripts/pattern-check.mjs`): `open`, `record` and `status`. The receipt is
+  Markdown at `<repo>/.pattern-check/<session>.md`. When the work adds no new piece,
+  `record --no-new-pieces "<why>"` writes a one-line receipt.
+- **A PreToolUse hook** that counts the distinct files a session touches through Edit, Write,
+  MultiEdit, NotebookEdit and the obvious shell writes, and from the Nth file on denies those
+  tools, `git commit`, `gh pr create`, redirects, `sed -i` and `tee` into the repository until
+  the receipt exists. The deny text names the exact command to run.
+- **A Stop hook** that refuses, once, a reply proposing a plan or design when the session has no
+  receipt.
+- **Configuration** in an optional user or repository JSON file: the threshold, extra commands
+  to deny, the receipt directory, and each hook on or off.
+
+### What this enforces, and what it does not
+
+**It gates writes in the session, not the truth of the receipt.** The hooks check only that a
+receipt exists for the session. They do not check that the pattern it names is the right one,
+and they do not check that a `--no-new-pieces` receipt is true: an agent that records "no new
+pieces" and then adds several is let through.
+
+**The shell matchers catch the obvious write forms only.** `cp`, `mv`, `python -c`, a script
+that writes from inside, and a write inside `eval` or `sh -c` are neither counted nor denied.
+`git commit` and `gh pr create` are the backstop once a session is held, but a session that
+writes everything through uncaught forms never reaches the threshold.
+
+**The Stop hook's plan test is a fixed list of signals** (plan or design headings, openers such
+as "Here's the plan"). A plan written without those shapes is not refused.
+
+Both hooks fail open on the plugin's own faults: the call goes through, one warning is shown,
+and the reason is appended to `errors.log` in the plugin's state directory.
+
+Changes in 0.3.0: the receipt gains the five fail columns, and `record` refuses a row whose fail
+cells are empty, placeholders, or `n/a` without a reason; four-column receipts already written
+still count. The deny and Stop refusal texts ask both questions: what exists already, and how
+does it fail. Bash write forms are read through a shell lexer, fixing two real commands the
+redirect matcher miscounted. Hook faults are appended to `errors.log` as well as shown,
+`hooks.json` sets a 5 s timeout, and NotebookEdit is counted.
+
+Changes in 0.2.0: an OMP adapter (`omp/pattern-check-omp.ts`) runs the PreToolUse counter on
+OMP's `tool_call` and the Stop refusal on `session_stop`, through the hooks' own functions and
+state.
+
+### Developing pattern-check
+
+The tests run with `node --test` from inside `plugins/pattern-check/`.
 
 ## reminders-review
 
