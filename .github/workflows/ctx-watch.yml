@@ -1,0 +1,30 @@
+name: ctx-watch
+
+on:
+  push:
+    paths:
+      - "plugins/ctx-watch/**"
+      - ".github/workflows/ctx-watch.yml"
+  pull_request:
+    paths:
+      - "plugins/ctx-watch/**"
+      - ".github/workflows/ctx-watch.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: node --test
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    defaults:
+      run:
+        working-directory: plugins/ctx-watch
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+      - name: Tests
+        run: node --test
