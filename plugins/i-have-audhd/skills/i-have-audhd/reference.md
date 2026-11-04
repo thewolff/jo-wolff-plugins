@@ -543,24 +543,36 @@ each hit's line, link and the judge's reason. Unmeasured.
 ## The judge machinery
 
 `judge/ask.mjs` — `askJudge(rule, question, contextText, config, options?)`; options
-`{timeoutMs, stateDir}` exist for the test suite, `{meta: {session, section}}` is who is
-asking, for the failure line. Never throws.
+`{timeoutMs, stateDir, env}` exist for the test suite, `{meta: {session, section}}` is who is
+asking, for the failure line. Never throws. Since 1.7.0 the resolution and the dispatch are
+plugin-kit's shared judge, `lib/judge.mjs`, vendored byte for byte (the kit's test diffs it);
+`ask.mjs` keeps the prompt, the verdict shape, the cache, the budget and the failure line.
 
-- **Command** from `enforcement.judgeCommand`: with a `{prompt}` placeholder, the prompt is
-  shell-escaped into the command; without one, the prompt is piped to the command's stdin.
-  `null`/absent = judge rules inactive (the hook logs fired triggers to `skipped.log`).
+- **Command** (`resolveJudge`, the kit's order): `enforcement.judgeCommand` in the profile,
+  else `command` in `${XDG_CONFIG_HOME:-~/.config}/judge/config.json` (the shared file,
+  written by `node lib/judge.mjs setup`). `null`/absent in the profile = no override. With a
+  `{prompt}` placeholder, the prompt is shell-escaped into the command; without one, the
+  prompt is piped to the command's stdin. The judge's environment carries
+  `I_HAVE_AUDHD_ENFORCE=off I_HAVE_AUDHD_INJECT=off`. No command anywhere, or a malformed
+  shared file, = judge rules inactive (the hook logs fired triggers to `skipped.log`:
+  `rule=<rule> reason=no-judge-command profile=<path> shared=<path> session=<id>
+  [malformed="<path>: <error>"]`). The budget is the harness's, never the shared file's
+  `timeoutMs`.
 - **Output**: STDOUT ONLY is parsed (judges print banners on stderr; merging the streams
   puts noise in front of the JSON; stderr's tail goes to the failure log). The LAST JSON object on stdout is the verdict; a
-  `{"type":"result","result":"…"}` envelope is unwrapped one level. The verdict must be
-  strictly `{"violation": <boolean>, "reason": <string>}`.
+  `{"type":"result","result":"…"}` envelope is unwrapped by the kit, a bare `{"result":"…"}`
+  by `ask.mjs`. The verdict must be strictly `{"violation": <boolean>, "reason": <string>}`.
 - **Failures** — timeout, non-zero exit, a judge that cannot start, unparseable output —
-  return `{unavailable: true, error, cause, model, budgetMs, stderr?, stdout?}` with no
-  verdict, plus one `judge-failures.log` line: `<time> rule=<rule> error=<kind>
+  return `{unavailable: true, error, detail, cause, model, budgetMs, source, stderr?, stdout?}`
+  with no verdict, plus one `judge-failures.log` line: `<time> rule=<rule> error=<kind>
   cause=<cause> session=<id> harness=<claude-code|omp> model=<model|unknown> elapsedMs=<n>
   budgetMs=<n> section=<label@line|whole> cache=<sha256> prompt=<state/cache/<sha256>.prompt.txt>
-  [stderr="<last 400 chars>"] [stdout="<last 300 chars, bad-json only>"]`. `cause` (`CAUSES`,
-  `classify(error, stderr)`), in order: `judge-timeout` → `hook-deadline` whatever stderr says;
-  `judge-unparseable` → `bad-json`; then stderr: `401`, `revoked`, `invalid api key|token`,
+  detail="<the kit's: exit 127, no exit within 30000 ms, an errno>" source="<profile key or shared path>"
+  [stderr="<last 300 chars>"] [stdout="<last 300 chars, bad-json only>"]`. `error` is one
+  of the kit's `ERRORS`: `timeout`, `nonzero`, `unparseable`, `spawn-failed` (1.6.1 wrote
+  `judge-timeout`, `judge-exit-<n>`, `judge-unparseable`, `judge-spawn-<errno>`). `cause`
+  (`CAUSES`, `classify(error, stderr)`), in order: `timeout` → `hook-deadline` whatever
+  stderr says; `unparseable` → `bad-json`; then stderr: `401`, `revoked`, `invalid api key|token`,
   `authentication_error`, `unauthorized` → `credential-revoked`; `no credential`, `not logged
   in`, `login required`, `no api key`, `gh|codex|claude login` → `no-credential`; `429`,
   `rate limit`, `too many requests`, `overloaded`, `quota` as a word of the error sentence
@@ -645,7 +657,7 @@ empty object is valid and yields the defaults.
   for every rule but `links-judge`, whose built-in is off); set = overrides built-ins both
   ways, except that a rule whose built-in is off stays off: `links-judge` is armed only by
   its own `enforcement.rules` entry.
-- **`enforcement.judgeCommand`** — see the judge section.
+- **`enforcement.judgeCommand`** — this plugin's override of the shared judge file; see the judge section.
 - **`enforcement.rules`** — per-rule mode overrides, keyed by check id; beat the global
   mode and built-ins.
 - **`enforcement.armOmp`** — boolean, default `false`. Read only under the OMP harness tag

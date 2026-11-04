@@ -50,7 +50,7 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { stateDir, resumeMarkerPath, judgeNoticeMarkerPath, logFault, faultWarning } from "../lib/state.mjs";
-import { judgeChoiceState, judgeNotice } from "../lib/judge-setup.mjs";
+import { judgeChoiceState, judgeNotice, sharedProblem } from "../lib/judge-setup.mjs";
 import { loadSwitches } from "../lib/config.mjs";
 import { compileCore } from "../lib/rules.mjs";
 
@@ -86,12 +86,20 @@ function emit(text, notice = "") {
   process.exit(0);
 }
 
-// The fallback for an install whose operator never ran tools/setup.mjs: when the profile has
-// made no judge choice (lib/judge-setup.mjs, THE THREE STATES), the first session start shows
-// one notice naming the checks that are off and the command that fixes it, then leaves a
-// marker so it never repeats. A marker that cannot be written costs a repeat, not a loss.
+// The fallback for an install whose operator never ran either setup: when neither the profile
+// nor the shared judge file has made a judge choice (lib/judge-setup.mjs, THE STATES), the
+// first session start shows one notice naming the checks that are off and the commands that
+// fix it, then leaves a marker so it never repeats. A marker that cannot be written costs a
+// repeat, not a loss. A shared file that exists but cannot be read is no notice (something was
+// configured) but one fault line, so a typo there does not read like a working judge.
 function judgeNoticeOnce() {
-  if (judgeChoiceState(profilePath()) !== "unset") return "";
+  const state = judgeChoiceState(profilePath());
+  if (state === "unreadable") {
+    const problem = sharedProblem();
+    if (problem) logFault(HOOK_FILE, `the shared judge file is malformed (${problem}); the judge checks stay off until it is fixed or the profile's enforcement.judgeCommand names a command`);
+    return "";
+  }
+  if (state !== "unset") return "";
   const marker = judgeNoticeMarkerPath();
   if (existsSync(marker)) return "";
   try {

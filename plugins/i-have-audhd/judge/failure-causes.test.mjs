@@ -2,9 +2,11 @@
 //
 // One test per `cause=` value, each driven by a stderr/stdout string that really appeared in
 // judge-failures.log on this machine (judge/fixtures/failure-corpus.mjs). The judge is a shell
-// snippet that replays that string, so the whole dispatch runs: the line's fields, the
-// replayable prompt file, the result the Stop hook reads. No real judge failure was reproduced
-// live for these; the fixtures are the evidence.
+// snippet that replays that string, so the whole dispatch (plugin-kit's, vendored as
+// ../lib/judge.mjs) runs: the line's fields, the replayable prompt file, the result the Stop
+// hook reads. Error kinds are the kit's ERRORS (timeout, nonzero, unparseable, spawn-failed);
+// the causes are this plugin's. No real judge failure was reproduced live for these; the
+// fixtures are the evidence.
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
@@ -30,7 +32,7 @@ const replay = (f) => {
 };
 
 const FIELDS =
-  /^\S+ rule=(\S+) error=(\S+) cause=(\S+) session=(\S+) harness=(\S+) model=(\S+) elapsedMs=(\d+) budgetMs=(\d+) section=(\S+) cache=([0-9a-f]{64}) prompt=(\S+)(?: stderr="(.*?)")?(?: stdout="(.*?)")?$/;
+  /^\S+ rule=(\S+) error=(\S+) cause=(\S+) session=(\S+) harness=(\S+) model=(\S+) elapsedMs=(\d+) budgetMs=(\d+) section=(\S+) cache=([0-9a-f]{64}) prompt=(\S+) detail="(.*?)" source="(.*?)"(?: stderr="(.*?)")?(?: stdout="(.*?)")?$/;
 
 async function fail(cause, fixture, extra = {}) {
   const state = mkstate();
@@ -39,6 +41,9 @@ async function fail(cause, fixture, extra = {}) {
     stateDir: state,
     timeoutMs: fixture.timeout ? 50 : 5000,
     meta: { session: "sess-1", section: "CLAIM@12" },
+    // A fresh HOME and a named profile path, so the line's source= is this test's and no
+    // shared file of this machine's is read.
+    env: { ...process.env, HOME: state, XDG_CONFIG_HOME: "", I_HAVE_AUDHD_HARNESS: "", I_HAVE_AUDHD_PROFILE: join(state, "profile.json") },
     ...extra,
   });
   const line = readLog(state).trim();
@@ -51,10 +56,10 @@ test("CAUSES is the closed list the alert and docs enumerate", () => {
   assert.deepEqual(CAUSES, ["credential-revoked", "no-credential", "rate-limited", "judge-self-abort", "hook-deadline", "bad-json", "other"]);
 });
 
-test("every failure line carries rule, error, cause, session, harness, model, elapsed, budget, section, cache key and the prompt path", async () => {
+test("every failure line carries rule, error, cause, session, harness, model, elapsed, budget, section, cache key, the prompt path, the kit's detail and the command's source", async () => {
   const { r, m, state } = await fail("credential-revoked", CORPUS["credential-revoked"]);
   assert.equal(m[1], "conclusion-first");
-  assert.equal(m[2], "judge-exit-1");
+  assert.equal(m[2], "nonzero");
   assert.equal(m[3], "credential-revoked");
   assert.equal(m[4], "sess-1");
   assert.equal(m[5], "claude-code");
@@ -66,7 +71,11 @@ test("every failure line carries rule, error, cause, session, harness, model, el
   assert.ok(existsSync(m[11]), "the prompt is written on failure, replayable");
   assert.match(readFileSync(m[11], "utf8"), /^You are judging one message[\s\S]*<<<MSG\nmsg\nMSG$/);
   assert.ok(!existsSync(join(state, "cache", `${m[10]}.json`)), "no verdict is cached");
+  assert.equal(m[12], "exit 1");
+  assert.equal(m[13], `enforcement.judgeCommand in ${join(state, "profile.json")}`);
   assert.equal(r.cause, "credential-revoked");
+  assert.equal(r.detail, "exit 1");
+  assert.equal(r.source, m[13]);
   assert.equal(r.model, "anthropic/claude-haiku-5-5");
   assert.equal(r.budgetMs, 5000);
 });
@@ -74,22 +83,23 @@ test("every failure line carries rule, error, cause, session, harness, model, el
 test("cause=credential-revoked: the corpus 401 'OAuth access token has been revoked'", async () => {
   const { m } = await fail("credential-revoked", CORPUS["credential-revoked"]);
   assert.equal(m[3], "credential-revoked");
-  assert.match(m[12], /OAuth access token has been revoked/);
+  assert.match(m[14], /OAuth access token has been revoked/);
 });
 
 test("cause=no-credential: the corpus 'no credential for … in profile agent-system-2', and a CLI's 'not logged in'", async () => {
   const { m } = await fail("no-credential", CORPUS["no-credential"]);
   assert.equal(m[3], "no-credential");
-  assert.match(m[12], /no credential for anthropic\/claude-haiku-5-5 in profile agent-system-2/);
+  assert.match(m[14], /no credential for anthropic\/claude-haiku-5-5 in profile agent-system-2/);
   const cli = await fail("no-credential", EXTRA["no-credential-cli"]);
   assert.equal(cli.m[3], "no-credential");
-  assert.equal(cli.m[2], "judge-exit-4");
+  assert.equal(cli.m[2], "nonzero");
+  assert.equal(cli.m[12], "exit 4");
 });
 
 test("cause=judge-self-abort: the corpus 'aborted: Request was aborted' on exit 1", async () => {
   const { m } = await fail("judge-self-abort", CORPUS["judge-self-abort"]);
   assert.equal(m[3], "judge-self-abort");
-  assert.equal(m[2], "judge-exit-1");
+  assert.equal(m[2], "nonzero");
 });
 
 test("cause=other: the corpus bare exit 1 with nothing on stderr", async () => {
@@ -100,22 +110,23 @@ test("cause=other: the corpus bare exit 1 with nothing on stderr", async () => {
 
 test("cause=hook-deadline: the hook's own timer, whatever stderr said", async () => {
   const { m, r } = await fail("hook-deadline", CORPUS["hook-deadline"]);
-  assert.equal(m[2], "judge-timeout");
+  assert.equal(m[2], "timeout");
   assert.equal(m[3], "hook-deadline");
   assert.equal(m[8], "50");
-  assert.equal(r.error, "judge-timeout");
-  assert.equal(classify("judge-timeout", "model-judge: aborted: Request was aborted"), "hook-deadline");
+  assert.equal(m[12], "no exit within 50 ms");
+  assert.equal(r.error, "timeout");
+  assert.equal(classify("timeout", "model-judge: aborted: Request was aborted"), "hook-deadline");
 });
 
 test("cause=bad-json: exit 0 with no verdict object keeps the last 300 chars of stdout", async () => {
   const { m, line } = await fail("bad-json", CORPUS["bad-json"]);
-  assert.equal(m[2], "judge-unparseable");
+  assert.equal(m[2], "unparseable");
   assert.equal(m[3], "bad-json");
-  assert.equal(m[13], "I have no thoughts, only vibes.");
+  assert.equal(m[15], "I have no thoughts, only vibes.");
   assert.ok(!line.includes("stderr="));
   const long = await fail("bad-json", { stdout: "x".repeat(1000) + "TAIL", exit: 0 });
-  assert.equal(long.m[13].length, 300);
-  assert.ok(long.m[13].endsWith("TAIL"));
+  assert.equal(long.m[15].length, 300);
+  assert.ok(long.m[15].endsWith("TAIL"));
 });
 
 test("cause=rate-limited: a 429 rate_limit_error", async () => {
@@ -135,22 +146,22 @@ test("harness=omp under the OMP tag", async () => {
 });
 
 test("classify: the order is deadline, bad-json, then the stderr patterns, then other", () => {
-  assert.equal(classify("judge-exit-1", CORPUS["credential-revoked"].stderr), "credential-revoked");
-  assert.equal(classify("judge-exit-1", CORPUS["no-credential"].stderr), "no-credential");
-  assert.equal(classify("judge-exit-1", EXTRA["rate-limited"].stderr), "rate-limited");
-  assert.equal(classify("judge-exit-1", CORPUS["judge-self-abort"].stderr), "judge-self-abort");
-  assert.equal(classify("judge-exit-1", ""), "other");
-  assert.equal(classify("judge-exit-127", "sh: no-such-judge: command not found"), "other");
-  assert.equal(classify("judge-spawn-ENOENT", ""), "other");
-  assert.equal(classify("judge-unparseable", CORPUS["credential-revoked"].stderr), "bad-json");
+  assert.equal(classify("nonzero", CORPUS["credential-revoked"].stderr), "credential-revoked");
+  assert.equal(classify("nonzero", CORPUS["no-credential"].stderr), "no-credential");
+  assert.equal(classify("nonzero", EXTRA["rate-limited"].stderr), "rate-limited");
+  assert.equal(classify("nonzero", CORPUS["judge-self-abort"].stderr), "judge-self-abort");
+  assert.equal(classify("nonzero", ""), "other");
+  assert.equal(classify("nonzero", "sh: no-such-judge: command not found"), "other");
+  assert.equal(classify("spawn-failed", ""), "other");
+  assert.equal(classify("unparseable", CORPUS["credential-revoked"].stderr), "bad-json");
 });
 
 test("classify: 'quota' inside a path and a bare 'aborted' are not causes; the error-sentence shapes still are", () => {
-  assert.equal(classify("judge-exit-1", "model-judge: error: ENOENT: no such file or directory, open '/tmp/quota/config.json'"), "other");
-  assert.equal(classify("judge-exit-1", "model-judge: error: invalid JSON, parse aborted at byte 3"), "other");
-  assert.equal(classify("judge-exit-1", "Error: You exceeded your current quota, please check your plan."), "rate-limited");
-  assert.equal(classify("judge-exit-1", '{"error":{"code":"insufficient_quota"}}'), "rate-limited");
-  assert.equal(classify("judge-exit-1", "model-judge: aborted: Request was aborted"), "judge-self-abort");
+  assert.equal(classify("nonzero", "model-judge: error: ENOENT: no such file or directory, open '/tmp/quota/config.json'"), "other");
+  assert.equal(classify("nonzero", "model-judge: error: invalid JSON, parse aborted at byte 3"), "other");
+  assert.equal(classify("nonzero", "Error: You exceeded your current quota, please check your plan."), "rate-limited");
+  assert.equal(classify("nonzero", '{"error":{"code":"insufficient_quota"}}'), "rate-limited");
+  assert.equal(classify("nonzero", "model-judge: aborted: Request was aborted"), "judge-self-abort");
 });
 
 test("modelOf: --model, --model=, -m, a trailing provider/model token, else unknown", () => {
