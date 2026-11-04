@@ -14,11 +14,11 @@ are the one thing that still reaches you at once.
 
 | | What the agent's reply shows | What you see |
 |---|---|---|
-| away | the body: what was done, ending `idle: <why>` when nothing is runnable; no `Needs you`, no question, no closing ask | the body; `brb on fire: …` for a fire; `brb: the agent is idle (<why>); N held` when it stops |
-| back | | `brb: hold cleared; digest archived to <path>.` then the digest: every item the command held and every one the backstop moved, each once |
+| away | the body: what was done, ending `idle: <why>` when nothing is runnable; no `Needs you`, no question, no closing ask | the body; `brb on fire: …` for a fire; `brb: the agent is idle (<why>); N held` when it stops; on Claude Code Desktop and the terminal, `⚠ brb: away since 10:42 AM (40m) · N held · say back` under the prompt while you type |
+| back | | `brb: hold cleared; digest archived to <path>.` then the digest: every item the command held and every one the backstop moved, each once; the badge goes |
 
-Built on plugin-kit 0.3.2. Claude Code hooks, plus an OMP extension that runs the same hooks.
-Node 22.13 or later. No other plugin is needed.
+Built on plugin-kit 0.3.2. Claude Code hooks, a Claude Code mod for the badge, plus an OMP
+extension that runs the same hooks. Node 22.13 or later. No other plugin is needed.
 
 ## Install
 
@@ -179,6 +179,44 @@ call) and OMP does not cap at all. The ceiling bounds it: three quiet continuati
 end the turn. The price is that a working agent that raises nothing is let go after three
 quiet steps; any new ask or fire resets the count.
 
+## Away badge (Desktop)
+
+A status line for Claude Code Desktop and the terminal (Claude Code 2.1.286 or later, where
+plugins can ship mods; `hooks/hooks.json` names the module, `mods/badge/register.mjs`). While
+this session is away, brb's line under the prompt reads
+
+```
+⚠ brb: away since 10:42 AM (40m) · 12 held · say back
+```
+
+so a person who comes back to a window they left and starts typing sees the hold before they
+send. The `⚠ brb:` is the app's own prefix for a plugin's status line; the rest is brb's: the
+clock time the hold began in your zone, how long ago to the minute (`40m`, `1h 5m`, `1d 3h`),
+the `brb <note>` text if there was one (cut at 40 characters), the held count and the word that
+ends it. Home, the line is removed. There is nothing to click; `back` as the whole prompt is
+the one action, the same as before.
+
+The data is this session's `away.json`, read out of process by `node mods/badge/query.mjs
+--session <id>` (read-only, `lstat` first: a directory, a link or a file over 64 KiB is a fault,
+never a read; an `away.json` that does not parse is home, the hooks' own reading). The badge
+refreshes at session start, after each prompt enters (so `brb` and `back` show at once), at the
+start and end of each of your turns, and once a second while away, so the count moves within a
+second of the agent's `hold`. While home the only poll is `$.fs.exists` on `away.json` inside
+Claude Code, which starts a query when the file appears. The mod never writes.
+
+Where nothing can draw (`claude -p`, OMP, a session with no surface) the mod shows nothing and
+the hooks' own lines cover it: the confirmation at `brb`, `brb: away since <when>; N held` at
+SessionStart. The badge fails the same way as the hooks: a query that fails clears the line and
+writes one dim transcript line (`brb badge: query: …`) per distinct error; a hook that throws
+logs one line and passes the event on; no error reaches Claude Code.
+
+Tests: `node --test` covers the data and query layers (`mods/badge/tests/data.test.mjs`,
+`mods/badge/tests/query.test.mjs`); `claude plugin test` from `plugins/brb` runs the mod
+through Claude Code's test kit (`mods/badge/tests/badge.test.tsx`: the line set and cleared,
+the refresh points, the poll and the probe, the fault inputs). The test-kit file was written for
+0.3.0 and not run by its author (the environment it was built in could not invoke `claude`);
+`evals/manifest.json` lists the Desktop check under `manual`.
+
 ## State and config
 
 - `${XDG_STATE_HOME:-~/.local/state}/brb/<session id>/` — `away.json` (since, note, counts, the
@@ -236,6 +274,16 @@ quiet steps; any new ask or fire resets the count.
   message. Which channel is picked is tested (`displayChannel`); the live path is not.
 - **The OMP adapter has not been run in a live omp session** for this version; its handlers
   are tested with a fake runner and one real spawn of the hooks (`omp/brb-omp.test.mjs`).
+- **The badge has not been watched on Desktop or in a terminal** for this version: its data and
+  query layers run under `node --test`; its hooks are written for `claude plugin test`
+  (`mods/badge/tests/badge.test.tsx`), which the author's environment could not run. The tell
+  that the mod loaded: `/plugin` shows `1 mod active · brb` (Claude Code 2.1.286 or later; an
+  older Claude Code ignores `modules` and the hooks still run). The tell that it did not draw:
+  no `⚠ brb:` line under the prompt after `brb` while the confirmation line did show.
+- **The badge lags the hook** by at most a second when a prompt's hooks run after the mod's own
+  `prompt.submit` has returned (the mod refreshes once after the prompt enters, then its poll
+  probes `away.json` once a second while home). A `brb` typed into a session where the mod is
+  not loaded shows no badge at all; the hooks hold as before.
 
 ## How it fails
 
@@ -251,8 +299,17 @@ worktree and `scripts/prune.mjs` removes what is older than its retention.
 
 `node --test` from `plugins/brb/` runs everything: the state round-trip, the splitter, the three
 hooks as spawned processes with fixture stdin and fixture transcripts, the hold command as a
-spawned process, the OMP adapter's handlers. `bash e2e/live-run.sh --no-live` replays the
-fourteen `evals/*.scenario.json` offline.
+spawned process, the OMP adapter's handlers, the badge's data and query layers. `bash
+e2e/live-run.sh --no-live` replays the fourteen `evals/*.scenario.json` offline. `claude plugin
+test` runs the badge mod itself (`mods/badge/tests/badge.test.tsx`).
+
+## Changes in 0.3.0
+
+The away badge: a Claude Code mod (`mods/badge/`) that pins `⚠ brb: away since <clock>
+(<elapsed>) · N held · say back` under the prompt while this session is away, on Desktop and in
+the terminal, and removes it at `back`. Read-only (`mods/badge/query.mjs` reads `away.json`);
+refreshed at session start, after each prompt, at each turn's start and end, and once a second
+while away. The hooks, the adapter, the hold command and the away instruction are unchanged.
 
 ## Changes in 0.2.0
 
