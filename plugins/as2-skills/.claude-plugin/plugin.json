@@ -1,12 +1,12 @@
 {
   "name": "as2-skills",
   "description": "The 22 engineering skills of agent-system 2.0, vendored from four upstream skill packs at pinned releases, with frontmatter claude.ai accepts. Skills only, no hooks.",
-  "version": "0.1.2",
+  "version": "0.1.3",
   "author": { "name": "Jo Wolff" },
   "license": "SEE LICENSE IN README.md",
   "repository": "https://github.com/thewolff/jo-wolff-plugins",
   "keywords": ["skills", "engineering", "tdd", "code-review", "debugging", "vendored"],
   "state": [
-    {"path": "$TMPDIR/seo-audit-*", "retentionDays": 0, "prune": null}
+    {"path": "$TMPDIR/seo-audit-*", "retentionDays": 1, "prune": "node \"${CLAUDE_PLUGIN_ROOT}/scripts/prune.mjs\" --days 1"}
   ]
 }

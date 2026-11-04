@@ -4,6 +4,18 @@ All notable changes to the pattern-check plugin are recorded here. The format fo
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Earlier releases are described under
 "Changelog" in [README.md](README.md#changelog).
 
+## 0.4.1 - 2026-11-04
+
+### Added
+
+- `prune --dry-run`: counts what would go, removes nothing.
+
+### Changed
+
+- `prune` prints the plugin-kit contract line, `pruned: N file(s), B bytes freed[ (dry run)];
+  kept K`, and exits 0 when a file cannot be removed (the file is counted as kept and named on
+  stderr) instead of 1: the canary reads a non-zero exit as a failed prune.
+
 ## 0.4.0 - 2026-11-04
 
 ### Added

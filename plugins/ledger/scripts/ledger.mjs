@@ -29,7 +29,7 @@ import { renderHelp, setEnabled } from "../lib/commands.mjs";
 import { renderDoctor, runDoctor } from "../lib/doctor.mjs";
 import { parseLine } from "../lib/parse.mjs";
 import { addressed, runReview, status as reviewStatus, waive } from "../lib/review.mjs";
-import { canaryStatus, gradeRun, install as canaryInstall, listRuns, parseCanaryArgs, prune as canaryPrune, renderRuns, runCanary } from "../lib/canary.mjs";
+import { canaryStatus, gradeRun, install as canaryInstall, listRuns, parseCanaryArgs, prune as canaryPrune, renderPruneResult, renderRuns, runCanary } from "../lib/canary.mjs";
 import { parseReportArgs, runReport } from "../lib/report.mjs";
 import { install as digestInstall, parseDigestArgs, runDigest } from "../lib/digest.mjs";
 import { gateCheck, parseGateArgs } from "../lib/plugin-gate.mjs";
@@ -97,6 +97,16 @@ export function main(argv = process.argv.slice(2), { env = process.env, stdin = 
     return report.fails ? 1 : 0;
   }
 
+  // `canary` is parsed before the store opens: a usage error (a switch its action does not take,
+  // `canary run --dry-run` among them) is exit 2 with nothing opened or run, and the daily
+  // `canary run --prunes-only` runs every prune whether or not the store can be opened.
+  const canary = cli.rest.length && cli.rest[0].toLowerCase() === "canary" ? parseCanaryArgs(cli.rest.slice(1)) : null;
+  if (canary?.error) {
+    out(`${canary.error}\n`);
+    return 2;
+  }
+  if (canary?.action === "run" && canary.prunesOnly) return runPrunesOnly({ env, cwd, canary, out, err });
+
   let store;
   try {
     store = openStore({ env, cwd });
@@ -117,7 +127,7 @@ export function main(argv = process.argv.slice(2), { env = process.env, stdin = 
   // `review` runs alone (it waits on other labs' CLIs, so it is async and never part of a batch).
   if (cli.rest.length && cli.rest[0].toLowerCase() === "review") return runReviewVerb({ store, cwd, env, sessionId, tokens: cli.rest, out });
   // `canary`, `report`, `digest` and `gate` run alone too: they spawn processes.
-  if (cli.rest.length && ["canary", "report", "digest", "gate"].includes(cli.rest[0].toLowerCase())) return runOwnLineVerb({ store, cwd, env, verb: cli.rest[0].toLowerCase(), tokens: cli.rest.slice(1), by: cli.by, out, err });
+  if (cli.rest.length && ["canary", "report", "digest", "gate"].includes(cli.rest[0].toLowerCase())) return runOwnLineVerb({ store, cwd, env, verb: cli.rest[0].toLowerCase(), tokens: cli.rest.slice(1), canary, by: cli.by, out, err });
 
   try {
     const ctx = makeCtx({ store, cwd, via: "cli", by: cli.by, sessionId });
@@ -147,7 +157,35 @@ function pluginVersion() {
   }
 }
 
-async function runOwnLineVerb({ store, cwd, env, verb, tokens, by, out, err }) {
+/**
+ * `canary run --prunes-only`: the store is opened for the prune rows only. One that cannot be
+ * opened changes nothing about the prunes (they run, the exit is theirs); stderr says the rows
+ * were not recorded.
+ */
+async function runPrunesOnly({ env, cwd, canary, out, err }) {
+  let store = null;
+  let unavailable = null;
+  try {
+    store = openStore({ env, cwd });
+    for (const n of store.notices) err(`${n}\n`);
+  } catch (e) {
+    unavailable = e instanceof StoreError ? e.message : `ledger: database could not be opened: ${e.message}`;
+  }
+  try {
+    const r = await runCanary({ db: store?.db ?? null, dbPath: store?.dbPath ?? null, env, repo: canary.repo, plugins: canary.plugins, timeoutS: canary.timeoutS, prunesOnly: true });
+    out(`${r.text}\n`);
+    if (unavailable) err(`${unavailable}; the prunes ran, their rows were not recorded\n`);
+    return r.code;
+  } finally {
+    try {
+      store?.db.close();
+    } catch {
+      /* already closed */
+    }
+  }
+}
+
+async function runOwnLineVerb({ store, cwd, env, verb, tokens, canary, by, out, err }) {
   try {
     let r;
     if (verb === "report") {
@@ -155,16 +193,16 @@ async function runOwnLineVerb({ store, cwd, env, verb, tokens, by, out, err }) {
       if (p.error) r = { code: 1, text: p.error };
       else r = await runReport({ db: store.db, config: store.config, env, since: p.since, judge: p.judge });
     } else if (verb === "canary") {
-      const p = parseCanaryArgs(tokens);
-      if (p.error) r = { code: 1, text: p.error };
-      else if (p.action === "run") r = await runCanary({ db: store.db, dbPath: store.dbPath, env, repo: p.repo, plugins: p.plugins, timeoutS: p.timeoutS, prunes: p.prunes });
+      const p = canary;
+      if (p.action === "run") r = await runCanary({ db: store.db, dbPath: store.dbPath, env, repo: p.repo, plugins: p.plugins, timeoutS: p.timeoutS, prunes: p.prunes, prunesOnly: p.prunesOnly });
       else if (p.action === "runs") r = { code: 0, text: renderRuns(listRuns(store.db, { limit: p.limit, plugin: p.plugin })) };
       else if (p.action === "status") r = { code: 0, text: canaryStatus(store.db) };
       else if (p.action === "grade") r = gradeRun({ db: store.db, dbPath: store.dbPath, id: p.id, grade: p.grade, note: p.note, by: by ?? "human" });
       else if (p.action === "prune") {
-        const { removed, kept, bytes } = canaryPrune({ env, days: p.days });
-        r = { code: 0, text: `canary prune: removed ${removed} file(s) older than ${p.days} day(s), kept ${kept}; rows untouched; ${bytes} bytes freed` };
-      } else r = canaryInstall({ env, cliPath: cliPath(), repo: p.repo, hour: p.hour, minute: p.minute });
+        const pr = canaryPrune({ env, days: p.days, dryRun: p.dryRun });
+        for (const problem of pr.problems) err(`canary prune: ${problem}\n`);
+        r = { code: 0, text: renderPruneResult(pr, { days: p.days, dryRun: p.dryRun, env }) };
+      } else r = canaryInstall({ env, cliPath: cliPath(), repo: p.repo, hour: p.hour, minute: p.minute, prunesOnly: p.prunesOnly });
     } else if (verb === "gate") {
       const p = parseGateArgs(tokens);
       if (p.error) r = { code: 1, text: p.error };

@@ -47,7 +47,7 @@ installed from are never where a plugin lands):
 | `lib/live-run.mjs` | a copy of this plugin's [`lib/live-run.mjs`](lib/live-run.mjs), the scenario runner: replays every `evals/*.scenario.json` against the plugin's hooks in a sandbox (an empty HOME, XDG dirs and TMPDIR, a `git init`ed work directory; the caller's `LEDGER_*` and the plugin's own `<NAME>_*` env keys dropped), classifies the hooks' stdout as one outcome (`deny`, `ask`, `allow`, `systemMessage`, `silent`) and compares it with `expect`; then, when `claude` is on PATH, the pinned CLI-contract session and every scenario with a `session` under `claude -p` (`--setting-sources ""`, temp XDG dirs, `SHELL=/bin/bash`), and a `judge` rubric graded by `claude plugin eval`. Files the run left outside its work directory are printed as `wrote: <placeholder path>` for the gate's retention row. `--no-live` replays the hook phase only; `--only a,b` narrows the scenarios |
 | `evals/manifest.json` | each registered event → `["silent"]` until the handler does more; `manual` for what no scenario can prove |
 | `evals/<event>.scenario.json` | one stub per event, `"stub": true` with the event's well-formed input as `stdin` and `expect: "silent"`; `ledger gate check` fails the `evals` row naming it until the stub is filled |
-| `scripts/prune.mjs` | the retention verb the `state` declaration names: `node scripts/prune.mjs [--days 30] [--dry-run]` removes files under `$XDG_STATE_HOME/<name>` older than that (errors.log kept) and prints `pruned: <n> file(s), <bytes> bytes freed` last; the canary records the bytes |
+| `scripts/prune.mjs` | the retention verb the `state` declaration names: `node scripts/prune.mjs [--days 30] [--dry-run]` removes files under `$XDG_STATE_HOME/<name>` older than that (errors.log kept), rotates every `*.log` / `*.jsonl` past 256 KiB to `<name>.1`, and prints `pruned: <n> file(s), <bytes> bytes freed` last; the canary records the bytes. The prune contract is below |
 | `skills/<name>/SKILL.md` | frontmatter, steps, and the "When this can't run" section with the two bullets every plugin shares, naming the first event's scenario |
 | `HOW-IT-FAILS.md` | the receipt: piece, fails how, visible where, the person does; rows for the scenarios, the live run and the prune verb |
 | `.claude-plugin/plugin.json`, `package.json`, `README.md`, `CHANGELOG.md` | manifests at 0.1.0, with a `state` declaration (`$XDG_STATE_HOME/<name>` kept 30 days and pruned by `scripts/prune.mjs`; `$XDG_CONFIG_HOME/<name>/config.json` kept by design), a README with the install block, a "How it fails" paragraph and a `## Changes in 0.1.0` section, and a Keep a Changelog `CHANGELOG.md` with the `## [0.1.0]` entry: the two release texts ledger's `gate check` `docs` row reads from the plugin |
@@ -329,6 +329,54 @@ The reviewer's review budget fails these ways:
 | A severity that is unclear (marked `blocking` with a worst case outside the five, or no worst case) | The finding is `should-fix`; the triage says `disagree` and names the definition it misses. Doubt never makes a finding `blocking`, so it never makes the verdict `fix-first` by itself. |
 | Codex writes `Verdict: fix-first` with no in-scope blocking finding | The triage states `Effective verdict: ship-with-limits`; Codex's text stays as written beside it. |
 | A later edit reverses a budget rule other than the round increment or the `fix-first` guard | The tests pin vocabulary and selected sentences; a reversal of the `new-mechanism` classification or the rule that holds those findings for Jo, of the limit that a follow-up reports new findings only in lines the fixes changed, or of the statement that blocking-only from round 3 is this repository's own rule (not the cited sources') passes them. Read the diff of `agents/cross-lab-reviewer.md` against those rules. |
+
+## The prune contract
+
+Every plugin that declares a `state[]` path with a retention declares a `prune` command for it,
+and ledger's canary runs each one (nightly after the live runs, and daily on its own as
+`canary run --prunes-only`). The command a plugin ships, the template's `scripts/prune.mjs` or
+its own, meets this:
+
+- `--dry-run` counts what would go and removes nothing, and its totals are the real run's on the
+  same files (a `.1` the age pass would remove is not counted again as replaced by a rotation);
+  `--days N` is the retention. Anything else on the line is usage on stderr, exit 1.
+- Only regular files count: a symlink (to a file or a directory) is never aged, rotated or
+  counted, so a linked `x.log` never replaces its `.1`.
+- The last stdout line is `pruned: <n> file(s), <bytes> bytes freed`, with ` (dry run)` after
+  it on a dry run and `; kept <k>` allowed after that; the canary reads the bytes from it, and
+  ledger's `gate check` `retention` row runs every declared command once with `--dry-run` and
+  fails naming one that exits non-zero, cannot start, or ends with any other line.
+- Exit 0 whatever happened to the files: a file that cannot be removed is counted as kept and
+  named on stderr. The canary reads a non-zero exit as a failed prune, and a stuck file is not
+  that. Exit 75 means the prune could not run at all (no store); the canary records it
+  `unavailable`.
+- `errors.log` is kept whatever its age (it is the record), and rotated like any other log.
+- Logs rotate rather than grow: a `*.log` or `*.jsonl` file past 256 KiB is renamed to
+  `<name>.1` (the previous `.1` replaced, its bytes counted as freed), so a writer that only
+  appends is bounded at 256 KiB plus one `.1`, and the `.1` ages out like any other file on a
+  later run. A `.1` never rotates again. A plugin whose `.jsonl` is state it reads back whole
+  (delegation's `guard/<session>.jsonl`, paired-coding's `journal.jsonl`) rotates `*.log` only
+  and says so at the top of its copy.
+- A plugin with its own cap on a directory (i-have-audhd's judge cache: 2,000 files or 7 days)
+  runs that cap inside the prune too, and counts its removals in the line.
+
+The template is the reference copy: `test/prune-template.test.mjs` drives it, imports every
+template-following `plugins/*/scripts/prune.mjs` to check the symlink skip and the dry-run
+totals, and its drift guard checks every copy for the contract line, the usage line and the
+rotation.
+
+## Changes in 0.3.3
+
+`templates/scripts/prune.mjs` rotates logs: every `*.log` / `*.jsonl` under the state
+directory past 256 KiB, errors.log included, is renamed to `<name>.1` (the previous `.1`
+replaced and counted as freed) after the age pass; `--dry-run` prints `would rotate …` for
+each. The contract line is unchanged. The contract itself is written down above, and
+`test/prune-template.test.mjs` drives the template and checks every plugin's copy for drift.
+brb, delegation, output-types, ask-graham, continuity, paired-coding and i-have-audhd carry the
+re-copied template (delegation and paired-coding rotate `*.log` only, their `.jsonl` being
+state).
+Symlinks are skipped (`lstat`, regular files only) and a dry run with an expired `.1` prints the
+real run's totals; every re-copied prune carries both.
 
 ## Changes in 0.3.2
 

@@ -543,7 +543,7 @@ on its own line (never inside a batch) because each spawns processes.
 
 ### `canary`
 
-`canary run [--repo <path>] [--plugins a,b] [--timeout <s>] [--no-prune]` runs every plugin's
+`canary run [--repo <path>] [--plugins a,b] [--timeout <s>] [--no-prune | --prunes-only]` runs every plugin's
 `e2e/live-run.sh` from its plugin directory (every directory under `<repo>/plugins/` that has
 `hooks/hooks.json` or `.claude-plugin/plugin.json`; `--repo` defaults to the checkout this
 plugin is loaded from) and inserts one `cc_canary_runs` row per plugin: `pass` (exit 0), `fail`
@@ -566,7 +566,21 @@ the bytes it reported freed (`… <n> bytes freed` on its last stdout line; NULL
 reported none); `--no-prune` skips that pass. A prune that fails is its own row and never fails
 the run. Exit 0 when nothing failed, 1 when something did, 2 when the store
 could not be written (the canary has no session to fail open into; both paths are named so
-nothing is lost).
+nothing is lost; since 0.3.9 the prunes still run before that exit, so a store that cannot be
+written never leaves state growing).
+
+`canary run --prunes-only [--repo <path>] [--plugins a,b]` (0.3.9) is the daily job: no live
+run, no `cc_canary_runs` row, every declared prune run before and independently of any database
+write (a `cc_canary_prunes` row per prune is still attempted; one that cannot be written is
+`not recorded: <reason>` on the line and changes nothing else; a store that cannot be opened at
+all records no row, the prunes still run, and stderr ends `ledger: database <state> at <path>…;
+the prunes ran, their rows were not recorded`). One line per prune,
+`prune <plugin>: <its last stdout line>` (`unavailable, …` or `fail, exit <n>: …` ahead of it
+when it was not a pass). Exit 0 when every prune ran (pass, or unavailable by its own exit 75),
+1 when any failed or could not be started, naming each on the last line. The launchd line for
+it is `canary install --prunes-only` below. Each `canary` action takes only its own switches:
+`canary run --dry-run` (or `canary install --dry-run`) is the usage line on stdout, exit 2,
+before the store is opened or anything runs; every `canary` usage error is exit 2.
 
 The canary contract a plugin's `e2e/live-run.sh` follows (plugin-kit's `new-plugin` skill
 ships a template): run from the plugin directory with `CANARY_PLUGIN`, `CANARY_TRANSCRIPT` (the
@@ -589,14 +603,28 @@ PreToolUse, the Stop ask rule); the ledger pane has no live scenario and is list
 the last run (its status, id, time, tree and note) and the last pass, then the last prune per
 declared path. `canary grade <id> biting|silent|fine
 ["<note>"]` records who read a run and what they made of it (`--by`, default `human`).
-`canary prune [--days 30]` removes transcript and output files older than that; rows stay for
-ever. It is the prune command the ledger's own `state` declaration names for
-`$XDG_STATE_HOME/ledger/canary`, so the nightly run prunes the ledger too.
-`canary install [--repo <path>] [--hour 3] [--minute 30]` (a relative `--repo` is resolved against the cwd first: launchd runs the job from `/`; a path with no `plugins/` directory is refused) writes
+`canary prune [--days 30] [--dry-run]` removes transcript and output files older than that; rows
+stay for ever. It is the prune command the ledger's own `state` declaration names for
+`$XDG_STATE_HOME/ledger/canary`, so the nightly run prunes the ledger too, and since 0.3.9 it
+follows the plugin-kit prune contract: the last line is
+`pruned: <n> file(s), <bytes> bytes freed[ (dry run)]; kept <k>`, `--dry-run` counts and removes
+nothing, a file that cannot be removed is named on stderr and counted as kept, exit 0.
+`canary install [--repo <path>] [--hour 3] [--minute 30] [--prunes-only]` (a relative `--repo` is resolved against the cwd first: launchd runs the job from `/`; a path with no `plugins/` directory is refused) writes
 `<state>/launchd/com.jo-wolff-plugins.ledger-canary.plist` (nightly, `canary run --repo …`,
 logs beside it), checks it with `plutil -lint`, asks `launchctl print` whether the job is
 loaded, and prints the `launchctl bootstrap gui/<uid> <plist>` line for you to run. It never
-runs bootstrap itself.
+runs bootstrap itself. With `--prunes-only` (0.3.9) it writes
+`<state>/launchd/com.jo-wolff-plugins.ledger-prunes.plist` instead (daily at 10:00 by default,
+`canary run --prunes-only --repo …`) and leaves the nightly plist alone; the two jobs are
+independent, so the bootstrap for the daily prunes is:
+
+```
+node "$CLAUDE_PLUGIN_ROOT/scripts/ledger.mjs" canary install --prunes-only --repo <checkout>
+launchctl bootstrap gui/$(id -u) "${XDG_STATE_HOME:-$HOME/.local/state}/ledger/launchd/com.jo-wolff-plugins.ledger-prunes.plist"
+```
+
+The full nightly canary (`canary install`, 03:30) stays as it is; it prunes too, after the live
+runs.
 
 ### `report`
 
@@ -741,7 +769,7 @@ reads with the same `elsewhereQuestions` and `answersSince` the settings hooks u
 session starts with something waiting, the pane opens by itself; on a screen too narrow to
 place it, a toast names `/ledger` instead.
 
-Where nothing can draw (`claude -p`, a pane that is not placed), the end of each turn adds one
+Where the pane is not placed (`claude -p`, a screen too narrow), the end of each turn adds one
 transcript block instead: one line per answer since your last turn, one line per question waiting
 elsewhere with its options, and the `/ledger answer` command that records. The block is that line
 alone; Claude's reply is not repeated in it. The pane never writes a row itself and never writes
@@ -749,10 +777,10 @@ outside the ledger's own tables.
 
 Once per session the mod logs one dim transcript line, `ledger pane: surface=<app|none>
 placed=<true|false|null>`: the surface the app handed the mod at session start (`none` means it
-handed none, so nothing draws) and whether the pane is placed (`null`: the app cannot say). It is
-written at session start, or at the first fallback turn when session start faulted first. A
-session where the fallback block appears every turn and this line says `placed=false` or
-`surface=none` is one where the pane is not on screen.
+handed none; Claude Desktop runs Code headless, so a Desktop session says `none` and still draws)
+and whether the pane is placed (`null`: the app cannot say). It is written at session start, or
+at the first fallback turn when session start faulted first. A session where the fallback block
+appears every turn and this line says `placed=false` is one where the pane is not on screen.
 
 The fallback and the pane fail the same way as the hooks: a query that cannot open the database
 shows `ledger: database …` in the pane and one dim transcript line, a CLI refusal comes back as
@@ -791,6 +819,35 @@ Tests use a sandboxed `HOME`, `XDG_*` and `LEDGER_*` so they never touch your le
 `LEDGER_CWD` and `LEDGER_BUSY_TIMEOUT_MS` environment variables exist for the tests.
 
 ## Changes
+
+### 0.3.9
+
+- `canary run --prunes-only`: the daily job. No live run, no `cc_canary_runs` row; every
+  declared prune runs before and independently of any database write, one line per prune
+  (`prune <plugin>: <its last stdout line>`), exit 0 when every prune ran, 1 naming a prune that
+  failed or could not start. A full `canary run` against a store that cannot be written now
+  runs the prunes before it exits 2. `canary install --prunes-only` writes the daily plist.
+- `canary run --prunes-only` is dispatched before the store is opened: a store that cannot be
+  opened records no prune row and the prunes run all the same (exit theirs, stderr names the
+  rows not recorded). Each `canary` action takes only its own switches; `canary run --dry-run`
+  is usage, exit 2, and runs nothing (every `canary` usage error is exit 2).
+- `canary prune` follows the plugin-kit prune contract: `--dry-run`, the last line
+  `pruned: <n> file(s), <bytes> bytes freed[ (dry run)]; kept <k>`, a file that cannot be
+  removed named on stderr and counted as kept.
+- The gate's `retention` row runs every declared prune command once with `--dry-run` (from the
+  plugin directory, `CLAUDE_PLUGIN_ROOT` set, 60 s) and fails naming one that exits non-zero,
+  cannot start, or ends with any line but the contract's. Each prune runs in a throwaway HOME,
+  XDG config/state/data/cache roots and TMPDIR of its own, with only PATH kept from the gate's
+  environment (no `LEDGER_DB`, no `*_STATE_DIR` or `*_DB` override), so a prune that ignores
+  `--dry-run` removes nothing real.
+- The pane draws in Claude Desktop. Desktop runs Code headless, so `session.start` arrives with
+  `surface: null`; the mod gated its poll, its refresh and the pane on a non-null surface, so
+  nothing ever drew there. The gate is gone: the poll and the refresh always start and the pane
+  opens from the snapshot on every surface; where nothing is placed the end-of-turn fallback
+  block covers it as before. The placement line still says `surface=none` on Desktop.
+- The gate's `docs` row checks only that the root README names the plugin (`rootReadmeNames`),
+  never its version; the root README changes only when a plugin is added, removed or changes
+  purpose. Landed in #94 without a bump.
 
 ### 0.3.8
 

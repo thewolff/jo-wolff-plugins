@@ -1,35 +1,55 @@
 #!/usr/bin/env node
 // scripts/prune.mjs — the ask-graham plugin's retention verb, declared in .claude-plugin/plugin.json
-// `state[].prune` and run nightly by `ledger canary run` after the live runs.
+// `state[].prune` and run by `ledger canary run` (nightly after the live runs, and daily on its
+// own as `canary run --prunes-only`).
 //
 //   node scripts/prune.mjs [--days 30] [--dry-run]
 //
 // Removes every file under ${XDG_STATE_HOME:-~/.local/state}/ask-graham whose mtime is older than
-// --days, then every directory left empty. That covers the once-per-turn block records
-// (blocked/<session id>) and the findings files (findings/<session id>.json, rewritten at each
-// stop that carries a verdict or structure check, so a session's file ages from its last such stop;
-// a findings/*.tmp left by an interrupted write ages the same way). Prints
-// `pruned: <n> file(s), <bytes> bytes freed` as the last line (the canary records the bytes).
-// errors.log is kept whatever its age: it is the record. The directory is the hooks' own
-// (hooks/fault.mjs stateDir: XDG_STATE_HOME counts only when it is an absolute path).
+// --days (the once-per-turn block records blocked/<session id>, the findings files
+// findings/<session id>.json, rewritten at each stop that carries a verdict or structure check, so
+// a session's file ages from its last such stop, and a findings/*.tmp left by an interrupted
+// write), then every directory left empty; then rotates every log (a `*.log` or `*.jsonl` file,
+// errors.log included) that has grown past 256 KiB by renaming it to `<name>.1` (the previous
+// `.1` is replaced, and its bytes count as freed), so a writer that only ever appends is bounded
+// at 256 KiB plus one `.1`, and the `.1` ages out like any other file on a later run. Prints
+// `rotated <path> to <path>.1` per rotation and `pruned: <n> file(s), <bytes> bytes freed` as the
+// last line (the canary records the bytes). errors.log is kept whatever its age: it is the record.
+// Only regular files count: a symlink is never aged, rotated or counted.
+//
+// The directory is the hooks' own (hooks/fault.mjs stateDir: XDG_STATE_HOME counts only when it is
+// an absolute path).
 //
 // How it fails: no state directory → `pruned: 0 file(s), 0 bytes freed`, exit 0. A file that
-// cannot be removed is counted as kept and named on stderr; exit stays 0 (a prune that cannot
-// finish must not read as a failed canary night). A bad --days → usage on stderr, exit 1.
+// cannot be removed or rotated is counted as kept and named on stderr; exit stays 0 (a prune that
+// cannot finish must not read as a failed canary night). A bad --days → usage on stderr, exit 1.
 
-import { readdirSync, rmdirSync, rmSync, statSync } from "node:fs";
+import { lstatSync, readdirSync, realpathSync, renameSync, rmdirSync, rmSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { stateDir as hookStateDir } from "../hooks/fault.mjs";
+
+/** A log rotates once it passes this many bytes. */
+export const MAX_LOG_BYTES = 256 * 1024;
+/** The files that rotate rather than grow: appended logs. A `.1` never rotates again. */
+export const ROTATED = /\.(log|jsonl)$/;
 
 export function stateDir(env = process.env) {
   return hookStateDir(env, env.HOME || homedir());
 }
 
-/** Remove files older than `days` under `dir`; `{ removed, bytes, kept }`. */
-export function prune(dir, { days = 30, now = Date.now(), dryRun = false } = {}) {
+/**
+ * Remove files older than `days` under `dir`, then rotate the logs past `maxBytes`;
+ * `{ removed, bytes, kept, rotated }` (`rotated` lists the logs renamed, or named on a dry run).
+ */
+export function prune(dir, { days = 30, now = Date.now(), dryRun = false, maxBytes = MAX_LOG_BYTES } = {}) {
   const cutoff = now - days * 24 * 3_600_000;
-  const out = { removed: 0, bytes: 0, kept: 0 };
+  const out = { removed: 0, bytes: 0, kept: 0, rotated: [] };
+  const logs = [];
+  // Files the age walk removed (or, on a dry run, would remove): a `.1` among them is not counted
+  // again as replaced by a rotation, so a dry run's totals equal the real run's.
+  const planned = new Set();
   const walk = (d) => {
     let names;
     try {
@@ -50,17 +70,21 @@ export function prune(dir, { days = 30, now = Date.now(), dryRun = false } = {})
       }
       let st;
       try {
-        st = statSync(p);
+        st = lstatSync(p);
       } catch {
         continue;
       }
+      // Only regular files: a symlink (to a file or a directory) is neither aged, rotated nor counted.
+      if (!st.isFile()) continue;
       if (e.name === "errors.log" || st.mtimeMs >= cutoff) {
         out.kept++;
+        if (ROTATED.test(e.name) && st.size > maxBytes) logs.push({ path: p, name: e.name, dir: d });
         continue;
       }
       try {
         if (!dryRun) rmSync(p, { force: true });
         out.removed++;
+        planned.add(p);
         out.bytes += st.size;
       } catch (err) {
         out.kept++;
@@ -69,10 +93,37 @@ export function prune(dir, { days = 30, now = Date.now(), dryRun = false } = {})
     }
   };
   walk(dir);
+  for (const log of logs) {
+    const old = `${log.path}.1`;
+    let replaced = 0;
+    try {
+      const prev = lstatSync(old);
+      if (prev.isFile() && !planned.has(old)) replaced = prev.size;
+    } catch {
+      /* no earlier rotation */
+    }
+    try {
+      if (!dryRun) renameSync(log.path, old);
+      out.rotated.push(log.path);
+      if (replaced) {
+        out.removed++;
+        out.bytes += replaced;
+      }
+    } catch (err) {
+      process.stderr.write(`prune: could not rotate ${log.path}: ${err.message}\n`);
+    }
+  }
   return out;
 }
 
-if (process.argv[1] && new URL(import.meta.url).pathname === process.argv[1]) {
+const direct = (() => {
+  try {
+    return realpathSync(process.argv[1]) === realpathSync(fileURLToPath(import.meta.url));
+  } catch {
+    return false;
+  }
+})();
+if (direct) {
   const argv = process.argv.slice(2);
   let days = 30;
   let dryRun = false;
@@ -89,5 +140,6 @@ if (process.argv[1] && new URL(import.meta.url).pathname === process.argv[1]) {
     process.exit(1);
   }
   const r = prune(stateDir(), { days, dryRun });
+  for (const p of r.rotated) process.stdout.write(`${dryRun ? "would rotate" : "rotated"} ${p} to ${p}.1\n`);
   process.stdout.write(`pruned: ${r.removed} file(s), ${r.bytes} bytes freed${dryRun ? " (dry run)" : ""}; kept ${r.kept}\n`);
 }

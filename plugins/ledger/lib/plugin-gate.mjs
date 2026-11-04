@@ -46,7 +46,11 @@
 //              outside the worktree (XDG_*, homedir, .local/, mkdtemp, writeFileSync,
 //              appendFileSync in hooks/, lib/, scripts/ and the rest, tests excluded) with no
 //              `state` field fails naming the site; a write the canary observed
-//              (cc_canary_runs.writes) under no declared path fails naming it.
+//              (cc_canary_runs.writes) under no declared path fails naming it. Then every
+//              declared prune command is run once with `--dry-run` appended (from the plugin
+//              directory, CLAUDE_PLUGIN_ROOT set, 60 s): it must exit 0 and end with the
+//              plugin-kit contract line, `pruned: <n> file(s), <bytes> bytes freed`; a prune
+//              that exits otherwise, prints another last line, or cannot start fails naming it.
 //   docs       a release is written down: when the plugin's `.claude-plugin/plugin.json` version
 //              differs from the base commit's, `CHANGELOG.md` has a heading for the new version
 //              (`## [<ver>]` or `## <ver>`) with text under it, README.md has a release heading
@@ -499,7 +503,7 @@ export function checkPlugin(plugin, { env = process.env, deadline = Date.now() +
   else rows.push({ name: "evals", ...evalsCheck(plugin, { db, tree, now }) });
   // 5. retention
   if (Date.now() > deadline) rows.push({ name: "retention", ...timedOut() });
-  else rows.push({ name: "retention", ...retentionCheck(plugin, { db }) });
+  else rows.push({ name: "retention", ...retentionCheck(plugin, { db, env }) });
   // 6. docs
   if (Date.now() > deadline) rows.push({ name: "docs", ...timedOut() });
   else if (!docs) rows.push({ name: "docs", status: "skipped", detail: "not given a base to compare the version with" });
@@ -547,14 +551,46 @@ export function evalsCheck(plugin, { db = null, tree = null, now = Date.now() } 
   return { status: "pass", detail: `${proved} scenario(s) cover ${events.length} event(s); canary #${row.id} at ${row.at}: ${live}` };
 }
 
-/** Check 5: the `state` declaration against the source's write sites and the canary's observed writes. */
-export function retentionCheck(plugin, { db = null } = {}) {
+/** The plugin-kit prune contract's last line (`(dry run)` and `; kept <k>` may follow). */
+export const PRUNE_LINE = /^pruned: \d+ file\(s\), \d+ bytes freed\b/;
+
+/**
+ * Run one declared prune command with `--dry-run`; null when it exits 0 with the contract line
+ * last, else the problem. The prune runs in a throwaway HOME, XDG_{CONFIG,STATE,DATA,CACHE}_HOME
+ * and TMPDIR of its own (removed after), with only PATH kept from `env` (the faultSandbox
+ * convention), so no LEDGER_DB or other `*_STATE_DIR` / `*_DB` override reaches it: a prune that
+ * ignores --dry-run removes nothing real. `timeoutMs` bounds it.
+ */
+export function dryRunPrune(pluginDir, command, { env = process.env, timeoutMs = 60_000 } = {}) {
+  const line = `${command} --dry-run`;
+  const root = mkdtempSync(join(tmpdir(), "ledger-gate-prune-"));
+  const roots = { HOME: join(root, "home"), XDG_CONFIG_HOME: join(root, "config"), XDG_STATE_HOME: join(root, "state"), XDG_DATA_HOME: join(root, "data"), XDG_CACHE_HOME: join(root, "cache"), TMPDIR: join(root, "tmp") };
+  for (const d of Object.values(roots)) mkdirSync(d, { recursive: true });
+  let r;
+  try {
+    r = spawnSync("/bin/sh", ["-c", line], { cwd: pluginDir, env: { PATH: env.PATH ?? process.env.PATH, ...roots, CLAUDE_PLUGIN_ROOT: pluginDir }, encoding: "utf8", timeout: timeoutMs });
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+  const where = `prune \`${command}\` --dry-run`;
+  if (r.error) return `${where}: ${r.error.code === "ETIMEDOUT" ? `no exit within ${timeoutMs} ms` : r.error.message}`;
+  const last = (r.stdout ?? "").trim().split("\n").pop() ?? "";
+  if (r.status !== 0) return `${where} exited ${r.status ?? r.signal}${(r.stderr || r.stdout).trim() ? `: ${(r.stderr || r.stdout).trim().split("\n").pop()}` : ""}`;
+  if (!PRUNE_LINE.test(last)) return `${where}: last line is "${last}", not \`pruned: <n> file(s), <bytes> bytes freed\``;
+  return null;
+}
+
+/** Check 5: the `state` declaration against the source's write sites and the canary's observed writes; every prune runs dry. */
+export function retentionCheck(plugin, { db = null, env = process.env, dryRun = dryRunPrune } = {}) {
   const r = retentionProblems(plugin.dir, { observedWrites: observedWrites(db, plugin.name) });
   if (r.problems.length) return { status: "fail", detail: cut(r.problems.join("; ")) };
   if (r.state === undefined) return { status: "pass", detail: "no `state` field; no source site writes outside the worktree" };
+  const commands = [...new Set(r.declared.filter((d) => d.prune).map((d) => d.prune))];
+  const problems = commands.map((c) => dryRun(plugin.dir, c, { env })).filter(Boolean);
+  if (problems.length) return { status: "fail", detail: cut(problems.join("; ")) };
   const kept = r.declared.filter((d) => d.retentionDays === null).length;
   const pruned = r.declared.filter((d) => d.prune).length;
-  return { status: "pass", detail: `${r.declared.length} state path(s) declared (${pruned} with a prune, ${kept} kept by design); ${r.sites.length} write site(s) in source` };
+  return { status: "pass", detail: `${r.declared.length} state path(s) declared (${pruned} with a prune, ${kept} kept by design); ${commands.length} prune command(s) ran dry; ${r.sites.length} write site(s) in source` };
 }
 
 const escapeRe = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");

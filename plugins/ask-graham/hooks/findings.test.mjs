@@ -275,7 +275,7 @@ test("prune removes findings older than 30 days and keeps fresh ones and errors.
   utimesSync(old, past, past);
   utimesSync(join(root, "errors.log"), past, past);
   const r = prune(root, { days: 30, now });
-  assert.deepEqual(r, { removed: 1, bytes: 3, kept: 2 });
+  assert.deepEqual(r, { removed: 1, bytes: 3, kept: 2, rotated: [] });
   assert.equal(existsSync(old), false);
   assert.ok(existsSync(fresh));
   assert.ok(existsSync(join(root, "errors.log")));
