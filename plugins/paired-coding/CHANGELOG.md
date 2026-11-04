@@ -39,5 +39,8 @@ in the README's *Changes* section.
   flag leaking across sessions, a refusal with learning off, invented sources, a skipped recall
   question, a continued Stop, card bloat) and what is not in 1.5.0 (a "write this piece
   yourself" move, spaced recall across sessions).
+- README (docs): each learning-mode how-it-fails row names what proves it, the
+  `evals/<x>.scenario.json` or, where no scenario can, the test by name, or says nothing does;
+  ledger's `says` row requires the section to name a scenario.
 
 With learning mode off, every new check is skipped and a session runs exactly as in 1.4.4.
