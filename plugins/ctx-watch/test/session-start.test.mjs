@@ -110,15 +110,25 @@ test("both lines when the daemon is down and the timer is overdue, probe first",
   }
 });
 
-test("an unwritable state directory does not stop the message", () => {
+test("an unwritable state directory: the probe line still comes, plus a stamp line and one errors.log line", () => {
   const b = box();
   try {
     const dir = join(b.env.XDG_STATE_HOME, "ctx-watch");
     mkdirSync(dir, { recursive: true });
+    writeFileSync(join(dir, "errors.log"), "");
     chmodSync(dir, 0o555);
     try {
       const out = handle(input, { env: b.env, now: () => NOW, run: runWith(NOT_RUNNING), exists: () => false });
-      assert.match(out.systemMessage, /^ctx-watch: the ctx daemon is not running/);
+      const lines = out.systemMessage.split("\n");
+      assert.equal(lines.length, 2);
+      assert.match(lines[0], /^ctx-watch: the ctx daemon is not running/);
+      assert.match(lines[1], new RegExp(`^ctx-watch: state not written to ${statePath(b.env)}: `));
+      assert.ok(lines[1].length <= LINE_MAX);
+      const log = readFileSync(join(dir, "errors.log"), "utf8").trim().split("\n");
+      assert.equal(log.length, 1);
+      assert.match(log[0], /^\d{4}-.*Z SessionStart state not written to /);
+      const healthy = handle(input, { env: b.env, now: () => NOW, run: runWith(HEALTHY) });
+      assert.match(healthy.systemMessage, /^ctx-watch: state not written to /, "a healthy daemon still gets the stamp line: the dead-man's switch is off without it");
     } finally {
       chmodSync(dir, 0o755);
     }

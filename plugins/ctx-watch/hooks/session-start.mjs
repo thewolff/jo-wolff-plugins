@@ -14,15 +14,16 @@
 // thread; the runner's timer on the main thread fires whatever it is doing) → the runner logs it
 // to ${XDG_STATE_HOME:-~/.local/state}/ctx-watch/errors.log and allows. Each ctx spawn here is
 // bounded at 1.2 s so three of them fit the 4 s; a slower ctx is the runner's fail-open line.
-// A state file that is missing or unreadable is "never ticked"; one that cannot be written
-// (the first-seen stamp) is ignored.
+// A state file that is missing or unreadable is "never ticked"; one that cannot be stamped
+// (first-seen) is one errors.log line and a third message line naming the path: without the
+// stamp the dead-man's switch cannot work, so the person needs to know.
 //
 // handle() runs on a worker thread, which is what makes the deadline hold. So: return the
 // answer as a plain JSON-able object; never process.exit() or write to stdout; a child's
 // environment goes on the spawn's env (the probe passes `env` with CI removed), not process.env.
 
-import { runHook, invokedDirectly } from "../lib/hook-runner.mjs";
-import { check, needsYouLine } from "../lib/probe.mjs";
+import { runHook, invokedDirectly, logError } from "../lib/hook-runner.mjs";
+import { check, needsYouLine, LINE_MAX } from "../lib/probe.mjs";
 import { readState, writeState, statePath, timerOverdue } from "../lib/state.mjs";
 import { CLI_PATH } from "../scripts/ctx-watch.mjs";
 
@@ -32,6 +33,11 @@ export const HOOK_SPAWN_MS = 1_200;
 /** The dead-man's line for a timer that is overdue since `since` (ms). */
 export function timerLine(since, cliPath = CLI_PATH) {
   return `ctx-watch: timer has not run since ${new Date(since).toISOString()}; run \`node ${cliPath} install\` and the printed launchctl line`;
+}
+
+/** The line for a state file the hook could not stamp: without it the dead-man's switch cannot work. */
+export function stampLine(file, err) {
+  return `ctx-watch: state not written to ${file}: ${err?.message ?? err}`.slice(0, LINE_MAX);
 }
 
 /**
@@ -46,7 +52,11 @@ export function handle(input, { env = process.env, now = Date.now, run, exists, 
   const file = statePath(env);
   const state = readState(file);
   const at = now();
-  if (state.lastTickAt === null && state.firstSeenAt === null) writeState(file, { ...state, firstSeenAt: at });
+  if (state.lastTickAt === null && state.firstSeenAt === null && !writeState(file, { ...state, firstSeenAt: at })) {
+    const line = stampLine(file, writeState.lastError);
+    logError("ctx-watch", "SessionStart", line.slice("ctx-watch: ".length), env);
+    lines.push(line);
+  }
   const t = timerOverdue(state, at);
   if (t.overdue) lines.push(timerLine(t.since, cliPath));
   return lines.length ? { systemMessage: lines.join("\n") } : null;
