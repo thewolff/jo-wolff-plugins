@@ -124,6 +124,58 @@ export const MIGRATIONS = [
   (db) => {
     db.exec("ALTER TABLE cc_sessions ADD COLUMN last_stop_prompt TEXT");
   },
+  // 3: held questions and outcomes. A question can be `held`: formed and deliberately deferred
+  // for the human, unresolved like `open` (resolved_at stays NULL). A note can be an `outcome`
+  // carrying `ref` (a PR URL, a commit, a path), required for that kind. CHECK constraints cannot
+  // be altered in SQLite, so both tables are rebuilt (create, copy, drop, rename; migrate() turns
+  // foreign keys off around it and runs foreign_key_check before committing).
+  (db) => {
+    const qCols = "id, cwd, kind, name, body, about, options, allows, default_opt, ceiling_usd, deadline, deadline_span_ms, state, asked_by, asked_at, resolved_at, session_id";
+    db.exec(`
+      CREATE TABLE cc_questions_v3 (
+        id               TEXT PRIMARY KEY CHECK (id GLOB 'q-?*'),
+        cwd              TEXT NOT NULL,
+        kind             TEXT NOT NULL DEFAULT 'question' CHECK (kind IN ('question','approval','plan')),
+        name             TEXT NOT NULL,
+        body             TEXT NOT NULL CHECK (length(trim(body)) > 0),
+        about            TEXT,
+        options          TEXT NOT NULL CHECK (json_valid(options) AND json_array_length(options) >= 2),
+        allows           TEXT,
+        default_opt      TEXT NOT NULL,
+        ceiling_usd      REAL CHECK (ceiling_usd IS NULL OR ceiling_usd > 0),
+        deadline         TEXT,
+        deadline_span_ms INTEGER,
+        state            TEXT NOT NULL DEFAULT 'open' CHECK (state IN ('open','held','answered','withdrawn')),
+        asked_by         TEXT NOT NULL,
+        asked_at         TEXT NOT NULL,
+        resolved_at      TEXT,
+        session_id       TEXT,
+        CHECK ((state IN ('open','held')) = (resolved_at IS NULL))
+      );
+      INSERT INTO cc_questions_v3 (${qCols}) SELECT ${qCols} FROM cc_questions;
+      DROP TABLE cc_questions;
+      ALTER TABLE cc_questions_v3 RENAME TO cc_questions;
+      CREATE INDEX cc_questions_cwd_state ON cc_questions (cwd, state);
+
+      CREATE TABLE cc_notes_v3 (
+        id          TEXT PRIMARY KEY CHECK (id GLOB 'nt-?*'),
+        cwd         TEXT NOT NULL,
+        kind        TEXT NOT NULL CHECK (kind IN ('note','withdraw','extend','outcome')),
+        body        TEXT NOT NULL,
+        question_id TEXT REFERENCES cc_questions(id),
+        made_by     TEXT NOT NULL,
+        made_at     TEXT NOT NULL,
+        session_id  TEXT,
+        ref         TEXT CHECK (ref IS NULL OR length(trim(ref)) > 0),
+        CHECK (kind <> 'outcome' OR ref IS NOT NULL)
+      );
+      INSERT INTO cc_notes_v3 (id, cwd, kind, body, question_id, made_by, made_at, session_id)
+        SELECT id, cwd, kind, body, question_id, made_by, made_at, session_id FROM cc_notes;
+      DROP TABLE cc_notes;
+      ALTER TABLE cc_notes_v3 RENAME TO cc_notes;
+      CREATE INDEX cc_notes_cwd_at ON cc_notes (cwd, made_at);
+    `);
+  },
 ];
 
 export const SCHEMA_VERSION = MIGRATIONS.length;
@@ -191,6 +243,17 @@ export function migrate(db) {
   // read-only file allows) never takes a write lock; re-read under the lock before migrating,
   // so two processes opening a fresh file at once cannot both run the same migration.
   if (storeVersion(db) >= SCHEMA_VERSION) return SCHEMA_VERSION;
+  // A migration that rebuilds a table drops a parent of foreign keys; SQLite's procedure is to
+  // turn enforcement off (only possible outside a transaction), migrate, check, turn it back on.
+  db.exec("PRAGMA foreign_keys = OFF");
+  try {
+    return migrateLocked(db);
+  } finally {
+    db.exec("PRAGMA foreign_keys = ON");
+  }
+}
+
+function migrateLocked(db) {
   db.exec("BEGIN IMMEDIATE");
   try {
     const from = storeVersion(db);
@@ -200,6 +263,9 @@ export function migrate(db) {
     }
     db.exec("CREATE TABLE IF NOT EXISTS cc_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)");
     for (let v = from; v < SCHEMA_VERSION; v++) MIGRATIONS[v](db);
+    // Only the plugin's own child tables: a foreign tool's tables in a shared file are not ours to judge.
+    const broken = ["cc_answers", "cc_notes"].flatMap((t) => db.prepare(`PRAGMA foreign_key_check(${t})`).all());
+    if (broken.length) throw new Error(`migration left ${broken.length} broken foreign key(s), first in ${broken[0].table}`);
     db.prepare("INSERT INTO cc_meta (key, value) VALUES ('schema_version', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value").run(String(SCHEMA_VERSION));
     db.exec("COMMIT");
   } catch (err) {

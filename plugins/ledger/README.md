@@ -99,7 +99,10 @@ node <plugin dir>/scripts/ledger.mjs help                # the verb table, id gr
 | `<n> <word>` | human | the n-th line of `pending`, answered with that word. |
 | `withdraw <q-id>` | either | state `withdrawn`, with an `nt-` note saying so (when the question offers `withdraw` as an option, it is recorded as that answer instead). |
 | `extend <q-id>` | human | the answer `extend` when offered, else the deadline moves by its original span. |
+| `hold <q-id>` | agent | an open question becomes `held`: formed and deliberately deferred for you, not put to you yet. Still unresolved (`resolved_at` stays empty); listed under *Waiting on you* at session start and as `held` in `pending`. Answering or withdrawing it still works. Asking the same question again returns its id and says to `reopen` it. |
+| `reopen <q-id>` | agent | a held question becomes open again, with `asked_at` set to now, because the agent is putting it to you now. |
 | `note "<text>"` | agent | a note row for the cwd; prints `nt-…`. |
+| `outcome <ref> [q-id] "<text>"` | agent | what a decision or an answered question produced: `ref` (required, no spaces) is a PR URL, a commit or a path, and the optional `q-id` links the question. A note row of kind `outcome`; `log` shows `→ <ref>`. Nothing is gated on it: it does not count as the `note` a push needs. |
 | `pending` | either | the paste-ready block, one `<default> <q-id>  # <name> · <body> · default <d> · also: <others> / withdraw` line per open question in the cwd or a parent of it, then `about …`, `ceiling $…`, `allows:` and `due …` lines when set. |
 | `log [N]` | either | the last N notes, questions and answers for the cwd (default 20), newest first, across sessions. |
 | `enable` / `disable` | human | writes `"enabled": true` / `false` to `.ledger.json` in the cwd, keeping any other keys in it. An unparsable existing file is refused, not overwritten. `/ledger:enable` and `/ledger:disable` run these in the session's folder. |
@@ -146,9 +149,9 @@ enabled or its own switch is off. Every refusal names the exact command that lif
 Exactly four things, each with its off switch:
 
 1. **Session rows.** Every session the hooks run in has a `cc_sessions` row with its start, end and reason (`hooks.sessionStart`, `hooks.sessionEnd`).
-2. **Questions and answers.** The agent cannot use `AskUserQuestion` without an open `q-` row, cannot end a turn on a question while the session has no open row, and cannot end the turn after your reply while a question asked before it has no answer recorded (`forcing.denyAskWithoutRow`, `forcing.stopAskRule`).
+2. **Questions and answers.** A question is `open` (put to you), `held` (formed and deferred for you, listed under *Waiting on you*, never chased by the Stop hook), `answered` or `withdrawn`. The agent cannot use `AskUserQuestion` without an open `q-` row, cannot end a turn on a question while the session has no open row, and cannot end the turn after your reply while a question asked before it has no answer recorded (`forcing.denyAskWithoutRow`, `forcing.stopAskRule`).
 3. **Push needs a note.** `git push` and `gh pr create` are denied until the session holds one `note` saying what is being pushed and why (`forcing.pushNeedsNote`).
-4. **Decision needs a note.** A reply that states a decision (`forcing.decisionPhrases`) is sent back once unless a `note` was recorded in that turn (`forcing.stopDecisionRule`).
+4. **Decision needs a note.** A reply that states a decision (`forcing.decisionPhrases`) is sent back once unless a `note` was recorded in that turn (`forcing.stopDecisionRule`). What the decision produced can follow as an `outcome` note with a `ref` (PR, commit, path); outcomes are recorded, never required.
 
 Nothing else is forced. The CLI tags its rows with the session through `LEDGER_SESSION_ID`,
 which the SessionStart hook exports into the session's shell environment (`CLAUDE_ENV_FILE`);
@@ -157,7 +160,7 @@ session's folder and dated after the session started.
 
 | Event | Config key | What it does |
 |---|---|---|
-| SessionStart | `hooks.sessionStart` | Injects, in order and only when non-empty: open questions for the cwd (the `pending` block), the last `inject.notes` entries of `log`, and the exact invocation plus allow rule and a one-line verb summary. Capped at 9,000 characters; the log entries are cut first, never the questions. On `source: compact` the log section is dropped and the verb summary is one line. Records the session in `cc_sessions`. |
+| SessionStart | `hooks.sessionStart` | Injects, in order and only when non-empty: *Waiting on you* (held questions for the cwd, oldest first, name and one-line body; kept on `source: compact`), open questions for the cwd (the `pending` block), the last `inject.notes` entries of `log`, and the exact invocation plus allow rule and a one-line verb summary. Capped at 9,000 characters; the log entries are cut first, never the held or open questions. On `source: compact` the log section is dropped and the verb summary is one line. Records the session in `cc_sessions`. |
 | PreToolUse | `hooks.preToolUse` | Runs on `AskUserQuestion` and `Bash` only. `AskUserQuestion` is denied while no question is open for the cwd (a question whose cwd equals the hook cwd or is an ancestor of it), with the reason `ledger: ask the question through the ledger first: \`… ask "<body>" --name <short> --options a,b --default a\`, then ask it; keep the q- id to yourself and record the reply with \`… answer <q-id> <option>\`.` A Bash command that runs `git push` or `gh pr create` (any simple command of a `&&`/`;`/`|`/newline chain; git's global options and a path on the binary are tolerated) is denied while the session has no `note`, with the reason `ledger: record what this push is before pushing: \`… note "<what this push is and why>"\` (one note in this session lifts the gate).` Before denying it proves the store can take a write (the remedy writes); if it cannot, the tool passes with a `systemMessage`. Other tools and other commands are never seen. |
 | Stop | `hooks.stop` | Checks the final message once per turn (keyed on `prompt_id`; a second Stop in the same turn passes). Answer rule (`forcing.stopAskRule`): the Stop's `prompt_id` differs from the one stamped by the session's previous Stop (so you wrote since), and the session has open questions asked at or before that previous Stop → `{"decision":"block","reason":…}` listing them newest first and telling the agent to take the answer from your latest message and run `answer <q-id> <option>` (or `withdraw`); it clears once every such question is answered or withdrawn. Ask rule (same switch): after removing code blocks and inline code, a line ends with `?` and the session has no open question row → block telling the agent to `ask` first, then ask in plain words; messages under 40 substantive characters are not checked. Neither rule reads ids out of the reply. A session's questions are those tagged with its id, plus untagged ones asked in or around its folder after it started. Decision rule (`forcing.stopDecisionRule`): after also removing double-quoted spans, the message contains one of `forcing.decisionPhrases` as whole words and the session recorded no `note` during this turn → block telling the agent to `note`, then finish. Checked in the order answer, ask, decision. Every Stop stamps `cc_sessions.last_stop_at` and `last_stop_prompt`; "this turn" runs from the previous stamp (or the session start) to now. |
 | SessionEnd | `hooks.sessionEnd` | Stamps `ended_at` and the reason on the session row. Touches nothing else. Prints nothing; errors go to the log. |
@@ -227,7 +230,10 @@ SELECT id, kind, body, made_by, made_at FROM cc_notes ORDER BY made_at DESC LIMI
 ```
 
 Tables: `cc_meta`, `cc_questions`, `cc_answers`, `cc_notes`, `cc_sessions`. Timestamps are ISO
-8601 UTC.
+8601 UTC. `cc_questions.state` is `open`, `held`, `answered` or `withdrawn`; `cc_notes.kind` is
+`note`, `withdraw`, `extend` or `outcome`, and `cc_notes.ref` carries an outcome's PR, commit or
+path. Schema version 3 rebuilt `cc_questions` and `cc_notes` in place to widen those CHECK
+constraints (SQLite cannot alter one); no other table is touched.
 
 ### Sharing the file with another tool
 

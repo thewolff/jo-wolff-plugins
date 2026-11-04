@@ -41,12 +41,21 @@ the human for permission. `… help` prints the whole grammar.
    again returns the same id; do not re-ask in new words. Do not use the AskUserQuestion tool
    without an open `q-` row; the hook denies it and the human cannot find the question later.
 
+   **A question you form but should not put to the human yet: `hold`, never drop it.**
+   `… ask …` it as usual, then `… hold <q-id>`. It stays unresolved, is listed under *Waiting on
+   you* at every session start, and the Stop hook does not chase it. When you do put it to the
+   human, `… reopen <q-id>` first, then ask in plain words.
+
 2. **When you decide something without asking: `note`, in the same turn.**
    `… note "<what you chose and why, one line>"` prints an `nt-` id. The last few entries are
    injected at the next session start, so a future thread knows what was settled. The Stop hook
    sends back, once, a reply that states a decision ("I decided", "going with", "instead of",
    "assuming", "chose", "trade-off" and the rest of the configured list) when no note was
    recorded during that turn: record the note first, then say it.
+
+   When the decision or an answered question produces something concrete, record it:
+   `… outcome <ref> [q-id] "<what it produced>"`, where `ref` is the PR URL, commit or path.
+   An outcome is a record, not a substitute for the `note`.
 
 3. **Before `git push` or `gh pr create`: one `note` in this session.**
    The PreToolUse hook denies both until the session holds a note; make it say what is being

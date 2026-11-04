@@ -494,7 +494,10 @@ Changes in 0.2.1: you never type a question id. The agent asks in plain words an
 reply with `ledger answer`; the Stop hook sends a turn back once when you replied and the answer
 is not recorded, and no longer requires a reply to name its row (`approve q-…` typed into a
 prompt still works as a shortcut). The hooks are on by default, with `/ledger:enable` and
-`/ledger:disable` to set a folder's switch. A database at a configured `db` path that fails to open as SQLite (corrupt, or
+`/ledger:disable` to set a folder's switch. A question the agent forms but defers is `held`
+(`ledger hold`, `ledger reopen`), never dropped, and is listed as *Waiting on you* at session
+start; `ledger outcome <ref> [q-id] "<text>"` records what a decision produced (a PR, a commit, a
+path). Opening a 0.2.0 database migrates it to schema version 3 in place, keeping every row. A database at a configured `db` path that fails to open as SQLite (corrupt, or
 not a database) is reported and left exactly as it is; only the plugin's own default file is
 moved aside to `<path>.corrupt-<stamp>` and recreated.
 

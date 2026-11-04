@@ -1,9 +1,10 @@
-// inject.mjs — the text SessionStart hands Claude: open questions, recent notes, and the verb
-// summary. Sections appear in that order and only when non-empty. Capped at CAP characters (the
-// doc's limit is 10,000): notes are truncated first, never the open questions.
+// inject.mjs — the text SessionStart hands Claude: held questions (Waiting on you), open
+// questions, recent notes, and the verb summary. Sections appear in that order and only when
+// non-empty. Capped at CAP characters (the doc's limit is 10,000): notes are truncated first,
+// never the held or open questions.
 
 import { fileURLToPath } from "node:url";
-import { logEntries, openQuestions, renderLog, renderPending } from "./commands.mjs";
+import { heldQuestions, logEntries, openQuestions, renderLog, renderPending } from "./commands.mjs";
 
 export const CAP = 9000;
 
@@ -44,7 +45,7 @@ export function allowRule(p = cliPath()) {
 export function verbSummary() {
   return [
     `ledger: questions to the human and decisions made without asking are recorded with the \`ledger\` CLI. Always run it exactly as \`${invocation()} <verb> …\` (that literal path, no alias, no shell variable, no cd) so the one allow rule \`${allowRule()}\` matches and Claude Code never asks about it.`,
-    "Verbs: ask \"<body>\" --name <short> --options a,b --default a · answer <q-id> <option> · withdraw <q-id> · extend <q-id> · note \"<text>\" · pending · log [N] · help.",
+    "Verbs: ask \"<body>\" --name <short> --options a,b --default a · answer <q-id> <option> · withdraw <q-id> · extend <q-id> · hold <q-id> · reopen <q-id> · note \"<text>\" · outcome <ref> [q-id] \"<text>\" · pending · log [N] · help.",
     "To ask the human: run `ledger ask` first, then ask in plain words. Never show the human a q- id; ids are for you. When the human replies, run `ledger answer <q-id> <option>` with the option their words mean before anything else. Record a choice made without asking with `note`, in the same turn you state it. `git push` and `gh pr create` need one `note` in this session first. `ledger help` has the grammar.",
   ].join("\n");
 }
@@ -55,6 +56,13 @@ export function verbSummary() {
 export function buildInjection(db, cwd, config, { source = "startup", now = Date.now() } = {}) {
   const compact = source === "compact";
   const sections = [];
+
+  const held = heldQuestions(db, cwd);
+  let waitingText = "";
+  if (held.length) {
+    waitingText = `ledger: Waiting on you (held questions for ${cwd}, oldest first; formed and deferred, not yet put to the human; when you ask one, run \`reopen <q-id>\` first):\n${held.map((q) => `- ${q.name}: ${q.body.replace(/\s+/g, " ").trim()} (${q.id})`).join("\n")}`;
+    sections.push("waiting");
+  }
 
   const questions = openQuestions(db, cwd);
   let questionsText = "";
@@ -76,7 +84,7 @@ export function buildInjection(db, cwd, config, { source = "startup", now = Date
   const summary = compact ? verbSummary().split("\n")[0] : verbSummary();
   if (summary) sections.push("summary");
 
-  const assemble = (notes) => [questionsText, notes, summary].filter(Boolean).join("\n\n");
+  const assemble = (notes) => [waitingText, questionsText, notes, summary].filter(Boolean).join("\n\n");
   let text = assemble(notesText);
   if (text.length > CAP) text = assemble(truncate(notesText, Math.max(0, CAP - (text.length - notesText.length))));
   if (text.length > CAP) text = assemble("");
