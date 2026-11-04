@@ -48,31 +48,38 @@ it, keeping a record of what it did and asked, and a vendored set of engineering
   refused with the section to fill in, a builder-class spawn also needs `## Spiral bound` and a
   pattern-check receipt, an undeliverable message is marked NOT delivered, and a builder report
   without `Stopped because:` draws a warning. Plus the eleven general agents and three guards
-  ported from newdle. Changes in delegation 0.1.0: first release.
+  ported from newdle. Changes in delegation 0.1.1: `lib/hook-runner.mjs` re-vendored from
+  plugin-kit 0.3.0 (the handler's env carries the runner's start and deadline); hooks answer as
+  before.
 - **[ctx-watch](#ctx-watch)** — notice when the ctx daemon is dead, unsupervised,
   or stale, or its semantic index is not ready; repair what ctx documents a command for, and
   say so at SessionStart and in a macOS popup from a launchd timer; the SessionStart line also
   says when the timer itself has stopped. At Stop, the `consult-history` check says when a
   resumed session never asked ctx what the thread was. macOS; Claude Code hooks, plus a CLI
   that works anywhere.
-  Changes in ctx-watch 0.2.0: the semantic index (`.daemon.jobs.semantic_index` not `ready`
+  Changes in ctx-watch 0.2.1: `lib/hook-runner.mjs` re-vendored from plugin-kit 0.3.0 (the
+  handler's env carries the runner's start and deadline); hooks answer as before. In 0.2.0: the
+  semantic index (`.daemon.jobs.semantic_index` not `ready`
   with semantic search enabled) is a failing probe naming `ctx semantic enable --wait`, in the
   SessionStart line and the popup; the `consult-history` Stop check (a resume, a compaction,
   or "as discussed" with no `ctx search` since; `~/.claude/ctx-watch.json`, default warn);
   `evals/` and the plugin-kit scenario runner; see the plugin's
-  [release notes](plugins/ctx-watch/README.md#changes-in-020).
+  [release notes](plugins/ctx-watch/README.md#changes-in-021).
 - **[continuity](#continuity)** — keep a long session's state across compaction: a PreCompact
   hook saves branch, diff, touched files, recent asks and the repository's open handoffs to a
   snapshot the post-compaction SessionStart injects back; every start says when that save last
   succeeded, so a dead save is never silent; a context-pressure check warns once and blocks one
   stop near the compaction target, naming `/continuity:handoff`; and the handoff skill writes
-  the judgment layer no hook can derive. Claude Code hooks. Changes in continuity 0.1.0: first
-  release, ported from the newdle plugin 0.2.175 with every workspace path stripped; see the
-  plugin's [CHANGELOG](plugins/continuity/CHANGELOG.md).
+  the judgment layer no hook can derive. Claude Code hooks. Changes in continuity 0.1.1:
+  `lib/hook-runner.mjs` re-vendored from plugin-kit 0.3.0 (the handler's env carries the
+  runner's start and deadline); hooks answer as before. See the plugin's
+  [CHANGELOG](plugins/continuity/CHANGELOG.md).
 - **[brb](#brb)** — type `brb` and walk away: the agent keeps working, every ask it would
   have stopped for waits in a digest, and only a broken main, data loss, a security finding,
   spend near a ceiling or a blocker on everything comes through at once; `back` prints the
-  digest. Claude Code hooks plus an OMP extension. Changes in brb 0.1.0: first release.
+  digest. Claude Code hooks plus an OMP extension. Changes in brb 0.1.1: `lib/hook-runner.mjs`
+  re-vendored from plugin-kit 0.3.0 (the handler's env carries the runner's start and deadline);
+  hooks answer as before.
 
 output-types delivers text and, since 0.3.0, checks every finished message for a label without
 a receipt, warning only; see its *delivers, and warns* note. i-have-audhd delivers its rules and checks every finished message, warning by

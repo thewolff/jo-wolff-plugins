@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.1.1
+
+- `lib/hook-runner.mjs` is plugin-kit 0.3.0's, byte for byte (was 0.2.1's): the handler thread's
+  env also carries `HOOK_RUNNER_STARTED_AT_MS` and `HOOK_RUNNER_DEADLINE_MS`, and a process group
+  the thread registers with `{ kitReap: <pgid> }` is killed when the runner exits. delegation's
+  hooks register none, so what they answer is unchanged; the 4 s deadline, and the hooks.json
+  timeout of 5 s against it, are unchanged.
+
 ## 0.1.0
 
 First release: the delegation seam, on Claude Code and OMP. Teaching first, gates as backstop.

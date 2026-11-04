@@ -48,7 +48,7 @@ test("hooks.json registers exactly the four hooks, each pointing at a file that 
 test("plugin.json declares the state directory and the prune command the gate reads", () => {
   const manifest = JSON.parse(readFileSync(join(PLUGIN_ROOT, ".claude-plugin", "plugin.json"), "utf8"));
   assert.equal(manifest.name, "continuity");
-  assert.equal(manifest.version, "0.1.0");
+  assert.equal(manifest.version, "0.1.1");
   const [dir, config] = manifest.state;
   assert.equal(dir.path, "$XDG_STATE_HOME/continuity");
   assert.equal(dir.retentionDays, 30);

@@ -4,6 +4,15 @@ All notable changes to ctx-watch are recorded here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). The 0.1.0 release is described under
 *Changes in 0.1.0* in [README.md](README.md#changes-in-010).
 
+## [0.2.1] - 2026-11-04
+
+### Changed
+
+- `lib/hook-runner.mjs` is plugin-kit 0.3.0's, byte for byte (was 0.2.1's): the handler thread's
+  env also carries `HOOK_RUNNER_STARTED_AT_MS` and `HOOK_RUNNER_DEADLINE_MS`, and a process group
+  the thread registers with `{ kitReap: <pgid> }` is killed when the runner exits. ctx-watch's
+  hooks register none, so what they answer is unchanged; the 4 s deadline is unchanged.
+
 ## [0.2.0] - 2026-11-04
 
 Both from [jo-issues #330](https://github.com/thewolff/jo-issues/issues/330).

@@ -1,7 +1,7 @@
 {
   "name": "delegation",
   "description": "Teach the brief a subagent is handed, then gate on it: a spawn without a How-it-fails section is refused (the refusal carries the section to fill in), a builder-class spawn also needs a Spiral bound and this session's pattern-check receipt, an undeliverable message is marked NOT delivered, and a builder report without its Stopped-because line draws a warning. With the eleven general agents and the three direct-work guards ported from newdle.",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "author": { "name": "Jo Wolff" },
   "license": "MIT",
   "repository": "https://github.com/thewolff/jo-wolff-plugins",
