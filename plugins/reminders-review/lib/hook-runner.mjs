@@ -28,6 +28,16 @@
 // only until the same deadline. The main thread does nothing but wait, so nothing of the
 // plugin's can block it.
 //
+// What the handler thread is told: its env carries HOOK_RUNNER_STARTED_AT_MS (the main thread's
+// Date.now() when runHook began, before stdin) and HOOK_RUNNER_DEADLINE_MS, so a handler that
+// budgets its own work (a judge call) counts from the runner's clock, not from its own late start.
+// A process group the handler spawns detached can be handed to the runner: workerData.kitReap is
+// true (a runner older than this never set it, so a handler checks it before posting), and the
+// thread posts { kitReap: <pgid> } when it starts one and { kitReaped: <pgid> } when it has reaped
+// it itself (lib/judge.mjs does both inside this runner's thread); every group still registered
+// when the runner exits, at the deadline or after an answer, gets one negative-pid SIGKILL, so
+// terminating the thread never leaves its children running.
+//
 // errors.log is `${XDG_STATE_HOME:-~/.local/state}/<plugin>/errors.log`, one line per fault:
 // `<iso> <hook> <message>` (a thrown error's line carries two stack frames after ` | `; the
 // systemMessage carries the message alone). `quiet` is for events whose JSON output the host discards
@@ -100,12 +110,15 @@ function readStdin(stdin) {
  *                      deadlineMs: when to give up, counted from here (default 4000) }
  */
 export async function runHook(name, handlerUrl, { plugin, quiet = false, deadlineMs = DEADLINE_MS, env = process.env, stdin = 0, exit = (code) => process.exit(code), write = writeStdout } = {}) {
+  const startedAt = Date.now();
   if (!plugin) throw new TypeError("runHook needs { plugin }");
   if (typeof handlerUrl !== "string") throw new TypeError("runHook needs the hook module's import.meta.url (a string); it exports handle()");
-  const deadlineAt = Date.now() + deadlineMs;
+  const deadlineAt = startedAt + deadlineMs;
   let done = false;
   let timer;
   let worker = null;
+  // Process groups the handler thread started and has not reaped itself.
+  const groups = new Set();
   // The one exit: the first caller wins; a late timer or a late answer finds `done` set. The
   // answer is written whole before the exit, bounded by what is left of the deadline (at least
   // DRAIN_MIN_MS, so the deadline's own message gets its write); past that the write is abandoned.
@@ -114,6 +127,13 @@ export async function runHook(name, handlerUrl, { plugin, quiet = false, deadlin
     done = true;
     clearTimeout(timer);
     worker?.terminate().catch(() => {});
+    for (const pgid of groups) {
+      try {
+        process.kill(-pgid, "SIGKILL");
+      } catch {
+        // ESRCH: the group is already gone
+      }
+    }
     if (!text) return exit(0);
     let drain;
     let ended = false;
@@ -158,11 +178,15 @@ export async function runHook(name, handlerUrl, { plugin, quiet = false, deadlin
     try {
       // argv is emptied so the hook module, imported in the worker, sees it was not invoked
       // directly and does not start a runner of its own.
-      worker = new Worker(new URL(import.meta.url), { workerData: { kitHook: true, module: handlerUrl, input }, env, argv: [], stdout: true, stderr: true });
+      worker = new Worker(new URL(import.meta.url), { workerData: { kitHook: true, kitReap: true, module: handlerUrl, input }, env: { ...env, HOOK_RUNNER_STARTED_AT_MS: String(startedAt), HOOK_RUNNER_DEADLINE_MS: String(deadlineMs) }, argv: [], stdout: true, stderr: true });
     } catch (err) {
       return resolve({ error: { message: `could not start the handler thread: ${err.message}` } });
     }
-    worker.on("message", resolve);
+    worker.on("message", (msg) => {
+      if (msg && typeof msg === "object" && Number.isInteger(msg.kitReap) && msg.kitReap > 0) return void groups.add(msg.kitReap);
+      if (msg && typeof msg === "object" && Number.isInteger(msg.kitReaped)) return void groups.delete(msg.kitReaped);
+      resolve(msg);
+    });
     worker.on("error", (err) => resolve({ error: { message: err?.message ?? String(err), stack: err?.stack } }));
     // After the answer's own event, so a message posted just before the thread ended wins.
     worker.on("exit", (code) => setImmediate(() => resolve({ error: { message: `the handler thread ended (code ${code}) without an answer: handle() returned a promise nothing will settle` } })));

@@ -50,7 +50,7 @@ it, keeping a record of what it did and asked, and a vendored set of engineering
   pattern-check receipt, an undeliverable message is marked NOT delivered, and a builder report
   without `Stopped because:` draws a warning. Plus the eleven general agents and three guards
   ported from newdle. Changes in delegation 0.1.1: `lib/hook-runner.mjs` re-vendored from
-  plugin-kit 0.3.0 (the handler's env carries the runner's start and deadline); hooks answer as
+  plugin-kit 0.3.1 (the handler's env carries the runner's start and deadline; stdout drains before exit); hooks answer as
   before.
 - **[ctx-watch](#ctx-watch)** — notice when the ctx daemon is dead, unsupervised,
   or stale, or its semantic index is not ready; repair what ctx documents a command for, and
@@ -58,8 +58,8 @@ it, keeping a record of what it did and asked, and a vendored set of engineering
   says when the timer itself has stopped. At Stop, the `consult-history` check says when a
   resumed session never asked ctx what the thread was. macOS; Claude Code hooks, plus a CLI
   that works anywhere.
-  Changes in ctx-watch 0.2.1: `lib/hook-runner.mjs` re-vendored from plugin-kit 0.3.0 (the
-  handler's env carries the runner's start and deadline); hooks answer as before. In 0.2.0: the
+  Changes in ctx-watch 0.2.1: `lib/hook-runner.mjs` re-vendored from plugin-kit 0.3.1 (the
+  handler's env carries the runner's start and deadline; stdout drains before exit); hooks answer as before. In 0.2.0: the
   semantic index (`.daemon.jobs.semantic_index` not `ready`
   with semantic search enabled) is a failing probe naming `ctx semantic enable --wait`, in the
   SessionStart line and the popup; the `consult-history` Stop check (a resume, a compaction,
@@ -72,14 +72,14 @@ it, keeping a record of what it did and asked, and a vendored set of engineering
   succeeded, so a dead save is never silent; a context-pressure check warns once and blocks one
   stop near the compaction target, naming `/continuity:handoff`; and the handoff skill writes
   the judgment layer no hook can derive. Claude Code hooks. Changes in continuity 0.1.1:
-  `lib/hook-runner.mjs` re-vendored from plugin-kit 0.3.0 (the handler's env carries the
-  runner's start and deadline); hooks answer as before. See the plugin's
+  `lib/hook-runner.mjs` re-vendored from plugin-kit 0.3.1 (the handler's env carries the
+  runner's start and deadline; stdout drains before exit); hooks answer as before. See the plugin's
   [CHANGELOG](plugins/continuity/CHANGELOG.md).
 - **[brb](#brb)** — type `brb` and walk away: the agent keeps working, every ask it would
   have stopped for waits in a digest, and only a broken main, data loss, a security finding,
   spend near a ceiling or a blocker on everything comes through at once; `back` prints the
   digest. Claude Code hooks plus an OMP extension. Changes in brb 0.1.1: `lib/hook-runner.mjs`
-  re-vendored from plugin-kit 0.3.0 (the handler's env carries the runner's start and deadline);
+  re-vendored from plugin-kit 0.3.1 (the handler's env carries the runner's start and deadline; stdout drains before exit);
   hooks answer as before.
 
 output-types delivers text and, since 0.3.0, checks every finished message for a label without
@@ -203,6 +203,10 @@ turn.
 - A **Stop check** that reads the finished message and warns, in one line to you, about every
   `**CLAIM**` or `**CITE**` that carries no receipt shape; optionally, a judge model asks whether
   each receipt licenses its sentence. Warns, never blocks; off switch and the judge's switch below.
+
+Changes in 0.3.1: `lib/hook-runner.mjs` re-vendored from plugin-kit 0.3.1, so the Stop hook's
+answer drains before the hook exits (bounded by the 4 s deadline) instead of being cut at one
+64 KiB pipe buffer; the check itself is unchanged.
 
 Changes in 0.3.0: the Stop check (next section). Mechanical, every turn: each `**CLAIM**` without
 an absolute `file:line` or a command and its result, and each `**CITE**` without a URL or a test
@@ -914,6 +918,9 @@ Needs macOS and [remindctl](https://github.com/openclaw/remindctl)
 it installed the agent also reads the link field you see in Reminders.app, which remindctl cannot
 see. Run `/reminders-review` with list names, or save defaults with
 `/reminders-review lists <name> ...`. Details are in `plugins/reminders-review/README.md`.
+
+Changes in 0.2.1: `lib/hook-runner.mjs` re-vendored from plugin-kit 0.3.1, the kit's runner with
+this plugin's stdout drain; the due-reminders block is unchanged.
 
 Changes in 0.2.0: due and overdue reminders from the lists you watch (`watch` in the config file,
 or `REMINDERS_REVIEW_WATCH`) come up at session start and at most hourly after, on Claude Code and

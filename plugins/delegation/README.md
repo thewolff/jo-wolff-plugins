@@ -239,9 +239,11 @@ general was kept.
 
 ## Changes in 0.1.1
 
-`lib/hook-runner.mjs` is plugin-kit 0.3.0's, byte for byte (was 0.2.1's). The handler thread's
-env also carries `HOOK_RUNNER_STARTED_AT_MS` and `HOOK_RUNNER_DEADLINE_MS`, and a process group
-the thread registers with `{ kitReap: <pgid> }` is killed when the runner exits. delegation's
+`lib/hook-runner.mjs` is plugin-kit 0.3.1's, byte for byte (was 0.2.1's). The handler thread's
+env also carries `HOOK_RUNNER_STARTED_AT_MS` and `HOOK_RUNNER_DEADLINE_MS`, a process group
+the thread registers with `{ kitReap: <pgid> }` is killed when the runner exits, and the runner
+waits for stdout to drain before it exits (bounded by the same deadline), so an answer larger
+than one 64 KiB pipe buffer is no longer cut short. delegation's
 hooks register none, so every hook answers as before, under the same 4 s deadline (the
 hooks.json timeout stays 5 s).
 

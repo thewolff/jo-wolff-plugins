@@ -20,7 +20,7 @@ Keep a long session's state across compaction. Four hooks and one skill:
 
 Ported from the newdle plugin 0.2.175 (its `compact-continuity`, `compaction-liveness` and
 `context-pressure` hooks and its `handoff` skill); the table of what was stripped is at the end.
-Built on plugin-kit 0.3.0; Node 22.13 or later; Claude Code hooks.
+Built on plugin-kit 0.3.1; Node 22.13 or later; Claude Code hooks.
 
 ## Install
 
@@ -243,9 +243,11 @@ one, `CHANGELOG.md` and itself.
 
 ## Changes in 0.1.1
 
-`lib/hook-runner.mjs` is plugin-kit 0.3.0's, byte for byte (was 0.2.1's). The handler thread's
-env also carries `HOOK_RUNNER_STARTED_AT_MS` and `HOOK_RUNNER_DEADLINE_MS`, and a process group
-the thread registers with `{ kitReap: <pgid> }` is killed when the runner exits. continuity's
+`lib/hook-runner.mjs` is plugin-kit 0.3.1's, byte for byte (was 0.2.1's). The handler thread's
+env also carries `HOOK_RUNNER_STARTED_AT_MS` and `HOOK_RUNNER_DEADLINE_MS`, a process group
+the thread registers with `{ kitReap: <pgid> }` is killed when the runner exits, and the runner
+waits for stdout to drain before it exits (bounded by the same deadline), so an answer larger
+than one 64 KiB pipe buffer is no longer cut short. continuity's
 hooks register none, so every hook answers as before, under the same 4 s deadline.
 
 ## Changes in 0.1.0

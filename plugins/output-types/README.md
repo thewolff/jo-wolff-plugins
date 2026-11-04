@@ -10,6 +10,13 @@ stage and off switches, developing the plugin) is the output-types section of th
 README: [output-types](../../README.md#output-types). Every release is in
 [CHANGELOG.md](CHANGELOG.md).
 
+## Changes in 0.3.1
+
+`lib/hook-runner.mjs` is plugin-kit 0.3.1's, byte for byte (was 0.3.0's): the runner waits for
+stdout to drain before it exits, bounded by the same 4 s deadline, so a Stop warning larger than
+one 64 KiB pipe buffer is no longer cut short; a host that never reads gets exit 0 at the deadline
+and one `stdout not drained` line in errors.log. What the Stop check says is unchanged.
+
 ## Changes in 0.3.0
 
 The Stop check. Mechanical, every turn: each `**CLAIM**` without an absolute `file:line` or a
