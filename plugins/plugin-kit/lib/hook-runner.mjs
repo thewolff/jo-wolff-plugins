@@ -8,9 +8,14 @@
 //
 //   stdin is not JSON, or not an object   one errors.log line + { systemMessage } (unless quiet)
 //   fn throws or rejects                  one errors.log line + { systemMessage } (unless quiet)
-//   fn has not returned at the deadline   one errors.log line + { systemMessage }, exit 0 at once
+//   no answer at the deadline             one errors.log line + { systemMessage }, exit 0 at once
 //                                         (default 4 s: inside Claude Code's 5 s hook budget, so
 //                                         the host never kills the hook and loses the message)
+//
+// The deadline is one timer started before stdin is read, and it counts everything: a stdin the
+// host holds open, a handler promise that never settles (the timer is referenced, so it fires
+// with no other handle alive and exits the process itself), and a handler that blocks the loop
+// past the deadline (its answer arrives late and is dropped: fail open, never a late block).
 //
 // errors.log is `${XDG_STATE_HOME:-~/.local/state}/<plugin>/errors.log`, one line per fault:
 // `<iso> <hook> <message>` (a thrown error's line carries two stack frames after ` | `; the
@@ -20,7 +25,7 @@
 // A hook never exits 2: on the events that can block, exit 2 blocks, and a hook that blocks
 // because of its own fault is the one failure a plugin promises never to have.
 
-import { appendFileSync, mkdirSync, readFileSync, realpathSync } from "node:fs";
+import { appendFileSync, createReadStream, mkdirSync, realpathSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -49,42 +54,75 @@ export function logError(plugin, hook, message, env = process.env) {
 }
 
 /**
+ * All of `stdin` (0 for the process's stdin, another fd, or a path) as text; never settles
+ * while the writer holds it open. Fd 0 goes through `process.stdin` (a libuv stream): an fs
+ * read of a pipe sits in the thread pool, and `process.exit` waits for it, so the deadline's
+ * exit would hang behind the very stdin it is giving up on.
+ */
+function readStdin(stdin) {
+  return new Promise((resolve, reject) => {
+    const stream = stdin === 0 ? process.stdin : typeof stdin === "number" ? createReadStream(null, { fd: stdin, autoClose: false }) : createReadStream(stdin);
+    let text = "";
+    stream.setEncoding("utf8");
+    stream.on("data", (chunk) => (text += chunk));
+    stream.on("end", () => resolve(text));
+    stream.on("error", reject);
+  });
+}
+
+/**
  * @param name   the hook's event name as it appears in messages (`PreToolUse`, …)
  * @param fn     (input, { env }) → object | null | Promise<object | null>
  * @param opts   { plugin: the plugin's name (required: names the state directory and the message),
  *                 quiet: true for events that discard JSON output (SessionEnd),
- *                 deadlineMs: when to give up on fn (default 4000) }
+ *                 deadlineMs: when to give up, counted from here (default 4000) }
  */
 export async function runHook(name, fn, { plugin, quiet = false, deadlineMs = DEADLINE_MS, env = process.env, stdin = 0, exit = (code) => process.exit(code), write = (s) => process.stdout.write(s) } = {}) {
   if (!plugin) throw new TypeError("runHook needs { plugin }");
-  const failOpen = (why, detail = "") => {
-    logError(plugin, name, why + detail, env);
-    if (!quiet) write(JSON.stringify({ systemMessage: `${plugin} ${name} failed open: ${why}` }));
+  const started = Date.now();
+  let done = false;
+  let timer;
+  // The one exit: the first caller wins; a late timer or a late answer finds `done` set.
+  const finish = (text) => {
+    if (done) return;
+    done = true;
+    clearTimeout(timer);
+    if (text) write(text);
     return exit(0);
   };
+  const failOpen = (why, detail = "") => {
+    if (done) return;
+    logError(plugin, name, why + detail, env);
+    return finish(quiet ? "" : JSON.stringify({ systemMessage: `${plugin} ${name} failed open: ${why}` }));
+  };
+  const noAnswer = `no answer within ${deadlineMs} ms`;
+  const deadline = new Promise((resolve) => {
+    // Referenced on purpose: with nothing else alive (a promise that never settles) this is
+    // what ends the process.
+    timer = setTimeout(() => {
+      failOpen(noAnswer);
+      resolve(TIMED_OUT);
+    }, deadlineMs);
+  });
   let input;
   try {
-    input = JSON.parse(readFileSync(stdin, "utf8") || "{}");
+    const raw = await Promise.race([readStdin(stdin), deadline]);
+    if (raw === TIMED_OUT || done) return;
+    input = JSON.parse(raw || "{}");
     if (!input || typeof input !== "object" || Array.isArray(input)) throw new Error("payload is not an object");
   } catch (err) {
     return failOpen(`stdin not JSON: ${err.message}`);
   }
-  let timer;
-  const deadline = new Promise((resolve) => {
-    timer = setTimeout(() => resolve(TIMED_OUT), deadlineMs);
-    timer.unref?.();
-  });
   try {
     const out = await Promise.race([Promise.resolve().then(() => fn(input, { env })), deadline]);
-    clearTimeout(timer);
-    if (out === TIMED_OUT) return failOpen(`no answer within ${deadlineMs} ms`);
-    if (out && typeof out === "object" && Object.keys(out).length) write(JSON.stringify(out));
+    if (out === TIMED_OUT || done) return;
+    const elapsed = Date.now() - started;
+    if (elapsed > deadlineMs) return failOpen(`${noAnswer} (the answer came after ${elapsed} ms)`);
+    return finish(out && typeof out === "object" && Object.keys(out).length ? JSON.stringify(out) : "");
   } catch (err) {
-    clearTimeout(timer);
     const message = err?.message ?? String(err);
     return failOpen(message, err?.stack ? ` | ${err.stack.split("\n").slice(1, 3).join(" ")}` : "");
   }
-  return exit(0);
 }
 
 /** True when the module at `importMetaUrl` is the script node was started with (not an import). */

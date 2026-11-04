@@ -5,9 +5,11 @@
 
 import test from "node:test";
 import assert from "node:assert/strict";
+import { spawn, spawnSync } from "node:child_process";
 import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { runHook, errorsLogPath, stateDir } from "../lib/hook-runner.mjs";
 
 function box() {
@@ -81,6 +83,61 @@ test("a handler past the deadline: exit 0 at the deadline with the line and the 
   assert.ok(ms < 1_000, `${ms} ms`);
   assert.equal(r.json.systemMessage, "trial Stop failed open: no answer within 100 ms");
   assert.match(b.log()[0], / Stop no answer within 100 ms$/);
+});
+
+const RUNNER = join(dirname(fileURLToPath(import.meta.url)), "..", "lib", "hook-runner.mjs");
+
+/** A hook script in the box that runs `body` (JS source for the handler) through the real runner with a 150 ms deadline. */
+function hookScript(b, body) {
+  const path = join(b.root, `hook-${Math.random().toString(36).slice(2)}.mjs`);
+  writeFileSync(path, `import { runHook } from ${JSON.stringify(RUNNER)};\nrunHook("PreToolUse", ${body}, { plugin: "trial", deadlineMs: 150 });\n`);
+  return path;
+}
+const parse = (out) => (out.trim() ? JSON.parse(out) : null);
+
+test("spawned: a handler promise that never settles, with no other handle alive, exits 0 at the deadline with the message (the timer is referenced)", () => {
+  const b = box();
+  const started = Date.now();
+  const r = spawnSync(process.execPath, [hookScript(b, "() => new Promise(() => {})")], { input: "{}", encoding: "utf8", env: { ...process.env, ...b.env }, timeout: 5_000 });
+  const ms = Date.now() - started;
+  assert.equal(r.status, 0, r.stderr);
+  assert.ok(ms < 3_000, `${ms} ms`);
+  assert.equal(parse(r.stdout)?.systemMessage, "trial PreToolUse failed open: no answer within 150 ms");
+  assert.match(b.log()[0], / PreToolUse no answer within 150 ms$/);
+});
+
+test("spawned: stdin the host holds open counts against the deadline: exit 0 with the message, never a hang", async () => {
+  const b = box();
+  const started = Date.now();
+  const child = spawn(process.execPath, [hookScript(b, "() => ({ decision: 'block', reason: 'never' })")], { env: { ...process.env, ...b.env }, stdio: ["pipe", "pipe", "pipe"] });
+  child.stdin.write("{}"); // never ended
+  let out = "";
+  child.stdout.on("data", (c) => (out += c));
+  const code = await new Promise((resolve) => child.on("exit", resolve));
+  const ms = Date.now() - started;
+  child.stdin.destroy();
+  assert.equal(code, 0);
+  assert.ok(ms < 3_000, `${ms} ms`);
+  assert.equal(parse(out)?.systemMessage, "trial PreToolUse failed open: no answer within 150 ms");
+});
+
+test("spawned: a handler that blocks the loop past the deadline: its late block is dropped, exit 0 with the message naming when the answer came", () => {
+  const b = box();
+  const body = "() => { const end = Date.now() + 400; while (Date.now() < end) {} return { decision: 'block', reason: 'late' }; }";
+  const r = spawnSync(process.execPath, [hookScript(b, body)], { input: "{}", encoding: "utf8", env: { ...process.env, ...b.env }, timeout: 5_000 });
+  assert.equal(r.status, 0, r.stderr);
+  const json = parse(r.stdout);
+  assert.equal(json?.decision, undefined, r.stdout);
+  assert.match(json?.systemMessage ?? "", /^trial PreToolUse failed open: no answer within 150 ms \(the answer came after \d+ ms\)$/);
+  assert.equal(b.log().length, 1, "one line, not one per path");
+});
+
+test("spawned: a handler that answers in time prints its answer and nothing else", () => {
+  const b = box();
+  const r = spawnSync(process.execPath, [hookScript(b, "(input) => ({ seen: input.hook_event_name })")], { input: '{"hook_event_name":"PreToolUse"}', encoding: "utf8", env: { ...process.env, ...b.env }, timeout: 5_000 });
+  assert.equal(r.status, 0, r.stderr);
+  assert.deepEqual(parse(r.stdout), { seen: "PreToolUse" });
+  assert.deepEqual(b.log(), []);
 });
 
 test("runHook without { plugin } is a programming error, thrown at once", async () => {
