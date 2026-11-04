@@ -14,12 +14,56 @@
 //     prompt can carry one), is non-empty and does not start with one of NOT_HUMAN.
 //
 // brbAway: brb (a sibling plugin) writes ${XDG_STATE_HOME:-~/.local/state}/brb/<session>/away.json
-// while the person is away and removes it on `back`. Present and parsable = away.
+// while the person is away and removes it on `back`. Away = that file is a regular file (not a
+// symlink) of at most 64 KiB holding an object with a string `since`: brb's own readAway rule
+// (plugins/brb/lib/state.mjs). The path follows brb's stateRoot too: any non-blank XDG_STATE_HOME,
+// relative or not, else ~/.local/state.
+//
+// Both readers are bounded: a symlink or non-regular file is not read, away.json is read only up
+// to 64 KiB, and the transcript only in its last 4 MiB, scanned from the end.
 
-import { readFileSync } from "node:fs";
+import { closeSync, fstatSync, lstatSync, openSync, readSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { xdgDir } from "./config.mjs";
+
+const AWAY_MAX_BYTES = 64 * 1024;
+const TRANSCRIPT_TAIL_BYTES = 4 * 1024 * 1024;
+
+/**
+ * The text of a regular file at `path`, or null (missing, a symlink, not a regular file, an
+ * error). `tail` false: the whole file, null when it is larger than `max`. `tail` true: its last
+ * `max` bytes, without the partial first line when the read starts mid-file.
+ */
+function readBounded(path, max, tail) {
+  let fd;
+  try {
+    if (!lstatSync(path).isFile()) return null;
+    fd = openSync(path, "r");
+    const st = fstatSync(fd);
+    if (!st.isFile() || (!tail && st.size > max)) return null;
+    const len = Math.min(st.size, max);
+    const start = st.size - len;
+    const buf = Buffer.alloc(len);
+    let got = 0;
+    while (got < len) {
+      const n = readSync(fd, buf, got, len - got, start + got);
+      if (!n) break;
+      got += n;
+    }
+    const text = buf.toString("utf8", 0, got);
+    if (start === 0) return text;
+    const nl = text.indexOf("\n");
+    return nl < 0 ? "" : text.slice(nl + 1);
+  } catch {
+    return null;
+  } finally {
+    if (fd !== undefined) {
+      try {
+        closeSync(fd);
+      } catch {}
+    }
+  }
+}
 
 export const NOT_HUMAN = [
   "<task-notification>",
@@ -59,21 +103,21 @@ export function isHumanPrompt(entry) {
 }
 
 /**
- * Whether the person typed a prompt after `sinceIso`, read from the transcript at `path`: true or
- * false when the file holds `user` entries with timestamps, null when it cannot tell (no path, an
- * unreadable file, or no timestamped `user` entry at all — another harness's format).
+ * Whether the person typed a prompt after `sinceIso`, read from the last 4 MiB of the transcript
+ * at `path`, newest entry first: true or false when the file holds `user` entries with
+ * timestamps, null when it cannot tell (no path, an unreadable, symlinked or non-regular file, or
+ * no timestamped `user` entry at all — another harness's format). Only true is evidence that the
+ * person wrote; the Stop hook reads null as "no evidence", never as "yes".
  */
 export function humanWroteSince(path, sinceIso) {
   const since = Date.parse(sinceIso);
   if (typeof path !== "string" || !path || !Number.isFinite(since)) return null;
-  let raw;
-  try {
-    raw = readFileSync(path, "utf8");
-  } catch {
-    return null;
-  }
+  const raw = readBounded(path, TRANSCRIPT_TAIL_BYTES, true);
+  if (raw === null) return null;
+  const lines = raw.split("\n");
   let sawUser = false;
-  for (const line of raw.split("\n")) {
+  for (let i = lines.length - 1; i >= 0; i--) {
+    const line = lines[i];
     if (!line.includes('"user"')) continue;
     let entry;
     try {
@@ -84,25 +128,30 @@ export function humanWroteSince(path, sinceIso) {
     if (entry?.type !== "user") continue;
     const at = typeof entry.timestamp === "string" ? Date.parse(entry.timestamp) : NaN;
     if (!Number.isFinite(at)) continue;
+    // Entries are appended in time order: the first user entry at or before `since` ends the scan.
+    if (at <= since) return false;
+    if (isHumanPrompt(entry)) return true;
     sawUser = true;
-    if (at > since && isHumanPrompt(entry)) return true;
   }
   return sawUser ? false : null;
 }
 
-/** brb's away.json path for a session (brb's own sessionKey rule: anything outside [A-Za-z0-9._-] is `_`). */
-export function brbAwayPath(sessionId, env = process.env, home = homedir()) {
+/** brb's away.json path for a session: brb's stateRoot and sessionKey rules (see the header). */
+export function brbAwayPath(sessionId, env = process.env, home = env.HOME || homedir()) {
   const s = typeof sessionId === "string" ? sessionId.trim().replace(/[^A-Za-z0-9._-]/g, "_") : "";
   const key = s && s !== "." && s !== ".." ? s.slice(0, 120) : "no-session";
-  return join(xdgDir(env, home, "XDG_STATE_HOME", join(".local", "state")), "brb", key, "away.json");
+  const root = env.XDG_STATE_HOME?.trim() ? env.XDG_STATE_HOME : join(home, ".local", "state");
+  return join(root, "brb", key, "away.json");
 }
 
-/** Whether brb holds this session (its away.json exists and parses). Any error → false. */
+/** Whether brb holds this session (see the header for what counts). Any error → false. */
 export function brbAway(sessionId, env = process.env) {
   if (typeof sessionId !== "string" || !sessionId) return false;
+  const raw = readBounded(brbAwayPath(sessionId, env), AWAY_MAX_BYTES, false);
+  if (raw === null) return false;
   try {
-    const v = JSON.parse(readFileSync(brbAwayPath(sessionId, env, env.HOME || homedir()), "utf8"));
-    return Boolean(v && typeof v === "object");
+    const v = JSON.parse(raw);
+    return Boolean(v && typeof v === "object" && typeof v.since === "string");
   } catch {
     return false;
   }

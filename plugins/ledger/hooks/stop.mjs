@@ -98,7 +98,9 @@ export function handle(input, { env = process.env, now = Date.now() } = {}) {
 
     const newTurn = Boolean(promptId && session?.last_stop_prompt && session.last_stop_prompt !== promptId && session.last_stop_at);
     const away = brbAway(sessionId, env);
-    const humanWrote = newTurn && !away && humanWroteSince(input.transcript_path, session.last_stop_at) !== false;
+    // Only a transcript that shows a typed prompt since the last Stop is evidence the human
+    // wrote; an unreadable or unrecognised transcript (null) is no evidence, so no answer nag.
+    const humanWrote = newTurn && !away && humanWroteSince(input.transcript_path, session.last_stop_at) === true;
     // The session's own open questions drive the answer rule and the decision rule's "asked this
     // turn" count. The ask rule stands down on any open question in scope for the folder (its
     // own, or one an earlier session left in this cwd or a parent): a leftover row is still a

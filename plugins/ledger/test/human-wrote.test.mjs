@@ -6,10 +6,12 @@
 
 import test from "node:test";
 import assert from "node:assert/strict";
-import { appendFileSync, mkdirSync, writeFileSync } from "node:fs";
+import { appendFileSync, mkdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { sandbox, hook, cli, apply, askQuestion, openDb, row, count } from "./helpers.mjs";
-import { isHumanPrompt, humanWroteSince } from "../lib/transcript.mjs";
+import { isHumanPrompt, humanWroteSince, brbAway, brbAwayPath } from "../lib/transcript.mjs";
+// The sibling plugin that owns away.json, imported only here to pin path and validity parity.
+import { readAway, sessionDir } from "../../brb/lib/state.mjs";
 
 const SID = "s-human";
 const env = { LEDGER_SESSION_ID: SID };
@@ -31,7 +33,7 @@ function setup() {
     hook(b, "stop", { session_id: SID, cwd: b.work, hook_event_name: "Stop", prompt_id, stop_hook_active: false, last_assistant_message: message, transcript_path: transcript }, extra);
   assert.equal(stop("p-1", LONG_Q).out, "", "the asking turn ends clean");
   const add = (...entries) => appendFileSync(transcript, entries.map((e) => `${JSON.stringify(e)}\n`).join(""));
-  return { b, q, stop, add };
+  return { b, q, stop, add, transcript };
 }
 
 test("a task-notification and a system-reminder after the ask start a new turn but are not the human: no answer nag", () => {
@@ -62,7 +64,7 @@ test("brb holds the session: a reply asking a question with no row is told to `a
   const b = sandbox();
   const dir = join(b.root, "state", "brb", "s-away");
   mkdirSync(dir, { recursive: true });
-  writeFileSync(join(dir, "away.json"), "{}");
+  writeFileSync(join(dir, "away.json"), JSON.stringify({ since: "2026-11-04T18:42:47.234Z" }));
   const r = hook(b, "stop", { session_id: "s-away", cwd: b.work, hook_event_name: "Stop", prompt_id: "p-1", stop_hook_active: false, last_assistant_message: LONG_Q });
   assert.equal(r.json?.decision, "block", r.out);
   assert.match(r.json.reason, /the human is away \(brb\).*ask ".*then `.*hold <q-id>`/s);
@@ -94,12 +96,87 @@ test("isHumanPrompt: a prompt led by a system-reminder block and then real text 
   assert.equal(isHumanPrompt(user("ship it")), true);
 });
 
-test("humanWroteSince: null when it cannot tell (no file, no timestamped user entries), so the prompt_id rule stands", () => {
+test("humanWroteSince: null when it cannot tell (no file, no timestamped user entries)", () => {
   const b = sandbox();
   assert.equal(humanWroteSince(join(b.root, "nope.jsonl"), "2026-01-01T00:00:00.000Z"), null);
   const p = join(b.root, "other.jsonl");
   writeFileSync(p, `${JSON.stringify({ role: "user", content: "hi" })}\n`);
   assert.equal(humanWroteSince(p, "2026-01-01T00:00:00.000Z"), null);
+});
+
+test("no evidence is not a reply: a new prompt_id with no transcript, or one with no human entry, never nags for an answer", () => {
+  const { b, transcript, stop } = setup();
+  // The reviewer's reproduction: the next Stop names no transcript at all.
+  const bare = hook(b, "stop", { session_id: SID, cwd: b.work, hook_event_name: "Stop", prompt_id: "p-2", stop_hook_active: false, last_assistant_message: IDLE });
+  assert.equal(bare.out, "", "no transcript_path");
+  // A transcript that holds no timestamped user entry (assistant only, malformed, untimestamped).
+  for (const [name, text] of [
+    ["empty", ""],
+    ["malformed", "{broken\n"],
+    ["assistant only", `${JSON.stringify({ type: "assistant", timestamp: new Date().toISOString() })}\n`],
+    ["untimestamped prompt", `${JSON.stringify({ type: "user", message: { content: "yes ship it" } })}\n`],
+  ]) {
+    writeFileSync(transcript, text);
+    assert.equal(stop(`p-${name}`).out, "", name);
+  }
+  // A transcript path that is missing.
+  const gone = hook(b, "stop", { session_id: SID, cwd: b.work, hook_event_name: "Stop", prompt_id: "p-gone", stop_hook_active: false, last_assistant_message: IDLE, transcript_path: join(b.root, "missing.jsonl") });
+  assert.equal(gone.out, "", "missing transcript file");
+});
+
+test("humanWroteSince reads only a regular file's last 4 MiB, newest first; a symlink is not read", () => {
+  const b = sandbox();
+  const since = "2026-01-01T00:00:00.000Z";
+  const prompt = JSON.stringify(user("ship it", { origin: { kind: "human" }, timestamp: "2026-01-02T00:00:00.000Z" }));
+  const old = JSON.stringify(user("earlier", { origin: { kind: "human" }, timestamp: "2025-12-31T00:00:00.000Z" }));
+  const pad = `${JSON.stringify({ type: "assistant", message: { content: "x".repeat(1000) } })}\n`.repeat(5 * 1024);
+  const big = join(b.root, "big.jsonl");
+  writeFileSync(big, `${old}\n${pad}${prompt}\n`);
+  assert.equal(humanWroteSince(big, since), true, "a prompt after 5 MiB of padding is in the tail");
+  writeFileSync(big, `${prompt}\n${pad}`);
+  assert.equal(humanWroteSince(big, since), null, "a prompt before the last 4 MiB is not read");
+  writeFileSync(big, `${old}\n${prompt}\n`);
+  assert.equal(humanWroteSince(big, since), true);
+  const link = join(b.root, "link.jsonl");
+  symlinkSync(big, link);
+  assert.equal(humanWroteSince(link, since), null, "a symlinked transcript is not read");
+  assert.equal(humanWroteSince(b.root, since), null, "a directory is not read");
+});
+
+test("brbAway uses brb's own validity rule, reads no symlink and no file over 64 KiB", () => {
+  const b = sandbox();
+  const env = { HOME: join(b.root, "home"), XDG_STATE_HOME: join(b.root, "xdg-state") };
+  const dir = join(env.XDG_STATE_HOME, "brb", "s-valid");
+  mkdirSync(dir, { recursive: true });
+  const away = join(dir, "away.json");
+  for (const [text, want] of [
+    ["{}", false],
+    ["[]", false],
+    ['{"since":1}', false],
+    ["null", false],
+    ['{"since":"2026-11-04T18:42:47.234Z"}', true],
+  ]) {
+    writeFileSync(away, text);
+    assert.equal(brbAway("s-valid", env), want, text);
+    assert.equal(readAway("s-valid", env) !== null, want, `brb agrees on ${text}`);
+  }
+  writeFileSync(away, JSON.stringify({ since: "2026-11-04T18:42:47.234Z", note: "x".repeat(70 * 1024) }));
+  assert.equal(brbAway("s-valid", env), false, "over 64 KiB");
+  const target = join(b.root, "elsewhere.json");
+  writeFileSync(target, JSON.stringify({ since: "2026-11-04T18:42:47.234Z" }));
+  rmSync(away);
+  symlinkSync(target, away);
+  assert.equal(brbAway("s-valid", env), false, "a symlinked away.json");
+});
+
+test("brbAwayPath resolves XDG_STATE_HOME exactly as brb's state.mjs does, a relative value included", () => {
+  const home = "/tmp/ledger-xdg-parity-home";
+  for (const XDG_STATE_HOME of [undefined, "", "   ", "relative-state", "/abs/state"]) {
+    const env = { HOME: home, ...(XDG_STATE_HOME === undefined ? {} : { XDG_STATE_HOME }) };
+    for (const sid of ["review-session", "../foreign", " a/b "]) {
+      assert.equal(brbAwayPath(sid, env), join(sessionDir(sid, env), "away.json"), `${JSON.stringify(XDG_STATE_HOME)} ${sid}`);
+    }
+  }
 });
 
 test("`hold <q-id>` on a question whose options include `hold` holds it and records no answer; `answer <q-id> hold` still answers", () => {

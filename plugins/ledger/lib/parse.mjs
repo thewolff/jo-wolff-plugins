@@ -14,11 +14,13 @@
 //   <number> <word>                     an ordinal into the `pending` list: 1 approve
 //   <word>                              a bare option word, when exactly one open question offers it
 //
-// Resolution of `<word> <q-id>` is OPTION FIRST: if the question offers the word, it is the
-// answer (so a question whose option is `withdraw` can be answered `withdraw q-…`); otherwise the
-// verb table decides (`withdraw q-…` withdraws, `extend q-…` moves the deadline); a word that is
-// neither is REFUSED with the option list and nothing is written. A verb with an id that does
-// not exist, or an id cut short (`approve q-`), is refused too, never prose.
+// Resolution of `<word> <q-id>` is OPTION FIRST, except the lifecycle verbs `hold` and `reopen`,
+// which always change the question's state and never answer it (`answer <q-id> hold` answers
+// with a `hold` option): if the question offers the word, it is the answer (so a question whose
+// option is `withdraw` can be answered `withdraw q-…`); otherwise the verb table decides
+// (`withdraw q-…` withdraws, `extend q-…` moves the deadline); a word that is neither is REFUSED
+// with the option list and nothing is written. A verb with an id that does not exist, or an id
+// cut short (`approve q-`), is refused too, never prose.
 //
 // Anything else is PROSE: `not a command`, with `closest: <word>` when the first token is within
 // edit distance 2 of a verb or of an open question's option word. Prose is never written anywhere.
