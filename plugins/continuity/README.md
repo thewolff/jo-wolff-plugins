@@ -1,6 +1,6 @@
 # Continuity
 
-Keep a long session's state across compaction. Four hooks and one skill:
+Keep a long session's state across compaction. Four hooks, one skill and an OMP extension:
 
 - **`hooks/pre-compact.mjs`** (PreCompact) saves the session's deterministic state (branch,
   uncommitted paths, files touched, recent asks, the repository's open handoffs) to a snapshot
@@ -20,16 +20,25 @@ Keep a long session's state across compaction. Four hooks and one skill:
 - **`skills/handoff/SKILL.md`** (`/continuity:handoff`) writes the judgment layer no hook can
   derive, what was in progress, the next move, what was ruled out, what is still uncertain, to
   `<repo>/.ai/handoffs/`, and says how to resume from one: restate its content before continuing.
+- **`omp/continuity-omp.ts`** runs the save and the restore under OMP, where plugin hooks do not
+  run: the same two hook files, spawned on OMP's own compaction events; see "Under OMP".
 
 Ported from the newdle plugin 0.2.175 (its `compact-continuity`, `compaction-liveness` and
 `context-pressure` hooks and its `handoff` skill); the table of what was stripped is at the end.
-Built on plugin-kit 0.3.1; Node 22.13 or later; Claude Code hooks.
+Built on plugin-kit 0.3.1; Node 22.13 or later; Claude Code hooks plus an OMP extension.
 
 ## Install
 
 ```
 /plugin marketplace add thewolff/jo-wolff-plugins
 /plugin install continuity@jo-wolff-plugins
+```
+
+On OMP:
+
+```
+omp marketplace add thewolff/jo-wolff-plugins
+omp plugin install continuity@jo-wolff-plugins
 ```
 
 Nothing to set up. The first session on a machine hears the liveness line say no save has ever
@@ -258,9 +267,12 @@ happens; a fault is one line in `${XDG_STATE_HOME:-~/.local/state}/continuity/er
 `test/hook-contract.test.mjs` proves the five fault inputs for every hook; `test/hooks.test.mjs`
 runs each hook as a child process on its parse / allow / warn / unparseable inputs and walks one
 session end to end; `test/lib.test.mjs` covers every lib module including its error paths;
-`test/port.test.mjs` pins the stripped strings below. `evals/manifest.json` declares each event's
-outcomes and the fourteen `evals/*.scenario.json` prove them: `evals/pre-compact-auto-no-handoff.scenario.json`
-is the save with its `systemMessage`, `evals/session-start-restore.scenario.json` the restore,
+`test/port.test.mjs` pins the stripped strings below; `omp/continuity-omp.test.mjs` covers the
+OMP adapter (its payload, its budgets, each fail-open path, and one save-then-restore round trip
+through the real hooks). `evals/manifest.json` declares each event's
+outcomes and the fifteen `evals/*.scenario.json` prove them: `evals/pre-compact-auto-no-handoff.scenario.json`
+is the save with its `systemMessage`, `evals/pre-compact-omp-payload.scenario.json` the same save
+on the payload the OMP adapter sends, `evals/session-start-restore.scenario.json` the restore,
 `evals/session-start-restore-rules.scenario.json` the re-inlined rules,
 `evals/session-start-restore-notes.scenario.json` the durable-notes list,
 `evals/stop-blocks-near-full.scenario.json` the block and `evals/stop-once-per-session.scenario.json`
@@ -268,10 +280,107 @@ its once-rule (`bash e2e/live-run.sh --no-live` replays them offline). Run `node
 
 ### When this can't run
 
-- On a host other than Claude Code. Continuity is Claude Code only in 0.1.0: its hooks read
-  Claude Code's payloads and transcript. OMP seats keep newdle's save until an OMP adapter ships.
+- On a host other than Claude Code or OMP: the hooks read Claude Code's payloads and the OMP
+  extension builds that payload from OMP's events; no third host is adapted.
+- On OMP, the context-pressure check (`hooks/user-prompt-submit.mjs`, `hooks/stop.mjs`) does not
+  run: it measures a Claude Code transcript, and OMP compacts on its own threshold without one.
 - Without Node 22.13 or later on the hooks' PATH: no hook runs, and the liveness line never
-  appears, which is itself the sign.
+  appears, which is itself the sign. Under OMP the extension looks for `node` on PATH when the
+  host is Bun; `CONTINUITY_NODE=/path/to/node` overrides.
+
+## Under OMP
+
+OMP does not run a plugin's `hooks/hooks.json`; it loads the extension modules a plugin's
+`package.json` names under `omp.extensions`. `omp/continuity-omp.ts` is that module. It imports
+nothing from the hooks: it spawns `hooks/pre-compact.mjs` and `hooks/session-start.mjs` as the
+same stdin-JSON CLIs Claude Code runs, so one implementation and one test suite serve both hosts,
+and the state they write (`${XDG_STATE_HOME:-~/.local/state}/continuity/`, the same snapshot file,
+heartbeat, once-marks and caps) is the same on both.
+
+The event mapping, from OMP's docs (`extensions.md`, "Session lifecycle"; `compaction.md`,
+"Extension and hook touchpoints"):
+
+| Claude Code | OMP | What the extension does |
+|---|---|---|
+| PreCompact | `session_before_compact` | spawns `hooks/pre-compact.mjs` with a PreCompact payload built from the event: `trigger` (`auto` while an `auto_compaction_start` is in flight, else `manual`, a `/compact`), `custom_instructions`, and the three host fields `lib/snapshot.mjs` takes from a transcript-less host: `intents` (the user texts of the messages the compaction is about to discard, the last five, 500 characters each), `file_operations` (the host's read / written / edited paths with counts, 6,000 characters), `token_count` (the host's token count before the compaction). No `transcript_path`: an OMP session file is not a Claude Code transcript. The hook's `systemMessage` (auto-compaction with no handoff written; a snapshot that could not be written) is shown with `ctx.ui.notify`. The handler never cancels a compaction and never replaces its summary. |
+| SessionStart (`source: "compact"`) | `session_compact` | spawns `hooks/session-start.mjs` with `source: "compact"`; its `additionalContext` (the restored snapshot, the `## Repo rules re-inlined` section, the `## Durable notes` list, the liveness line, the same text as on Claude Code) goes to the agent through `pi.sendMessage` as a hidden custom message (`continuity-restored`): steered into the running turn when the agent is streaming, appended to the context when it is idle. OMP compacts in session, so the moment to read the snapshot back is right after the compaction that wrote it. |
+
+The session id on both payloads is `ctx.sessionManager.getSessionId()`, stable across OMP's
+provider-id rotations, so the save and the restore share one snapshot path and one once-mark.
+
+OMP loads two rules filenames into the system prompt on the walk up from its cwd, `CLAUDE.md` and
+`AGENTS.md` (its `claude-md` and `agents-md` context-file providers, each asking for one exact
+name), and a compaction does not touch the system prompt (`context-files.md`). It does not load
+`CLAUDE.local.md`. So the spawn sets `CLAUDE_PROJECT_DIR` to the session's cwd and
+`CONTINUITY_HOST_RULES=CLAUDE.md,AGENTS.md`: at the launch directory and above, the rules
+section says `skipped <path>: loaded by the host at launch` for a `CLAUDE.md` or `AGENTS.md`
+instead of spending the restore budget on a second copy, and inlines a `CLAUDE.local.md` there
+like any nested file. Without `CONTINUITY_HOST_RULES` (Claude Code, which loads the local file
+too) every rules file at those levels is named as kept, as before.
+
+The restore runs once per compaction entry: the extension remembers, per session, the
+`compactionEntry.id` it last started a restore for, and a repeated `session_compact` for that
+entry sends nothing, so a kept (truncated) snapshot is not sent twice and a delivered restore is
+never followed by a "not restored" line. A new entry restores again. The memory is bounded: one
+entry id per session, recorded only when a restore starts, dropped on `session_shutdown`, and at
+most 64 sessions, the oldest dropped first.
+
+Lifecycle exclusions. Two OMP paths commit a compaction without `session_before_compact`, so no
+save runs for them: the manual handoff (`/handoff`, which writes the host's own handoff summary)
+and the snapcompact frame rescue. The extension notes per session that a save ran (succeeded or
+failed) and the branch leaf it ran on; a `session_compact` whose entry was committed on that leaf
+is paired, and any other is unpaired. For an unpaired one the restore runs only when a snapshot
+file for the session is already on disk (one a truncated restore kept, or one whose own restore
+never ran). With no snapshot it sends nothing: no save was attempted for this compaction, so
+there is no failed save to report, and the host's summary stands. A paired `session_compact`
+behaves as on Claude Code, including the "this compaction's state was not restored" line when
+the save failed. A save whose compaction another extension cancelled leaves no note: an aborted
+`auto_compaction_end` or an aborted pre-event signal deletes it, and a cancelled `/compact`'s note
+names a leaf the next compaction is not committed on once the session has moved on, so it is
+discarded unpaired.
+
+Budgets: OMP abandons an extension handler at 30 s. Each hook answers inside the runner's own 4 s
+deadline whatever its handler does; the extension gives each spawn 8 s (node start-up and the
+stdout drain on top), kills the child's process group when that passes, and the event proceeds.
+`omp/continuity-omp.test.mjs` pins both budgets against the runner's constant. While an extension
+registers `session_before_compact`, OMP runs every compaction blocking rather than speculatively in
+the background; the save needs the pre-event, and there is no other hook that fires before every
+compaction.
+
+Fail open, the same way as the hooks: a spawn that fails, exits non-zero, prints something other
+than JSON or outruns its budget is one `omp-adapter <hook>: …` line in the state directory's
+`errors.log`, and the compaction (or the turn) proceeds without it.
+
+### What newdle's save did on OMP that this now does, and what it does not
+
+This replaces the pre-compaction save that newdle's OMP extension (`~/.omp/agent/extensions/newdle-hooks.ts`,
+its `session_before_compact` and `session_compact` handlers) ran for OMP seats. Same:
+
+- The save on `session_before_compact`, unconditional, with the host's discarded asks, file
+  operations and token count on the payload (newdle's `intents`, `file_operations`, `token_count`,
+  the same three names, read by the same `buildSnapshot()` this plugin ported).
+- The restore on `session_compact`, handed to the agent through `pi.sendMessage` as a hidden
+  message, in session, right after the compaction.
+- Fail open: a throw in either handler never stops a compaction.
+
+Not carried over:
+
+- **The one-time cancel.** newdle cancelled the first threshold compaction of a seat with no fresh
+  handoff and injected a "write the handoff now" instruction; the next crossing compacted
+  unconditionally. This extension never returns `{ cancel: true }`: the person is told, through
+  the hook's `systemMessage`, that auto-compaction fired with no handoff written, and the
+  compaction runs.
+- **The in-session compaction contribution.** newdle appended its snapshot to the compaction entry
+  (`pi.appendEntry`, `preserveData`) as a second copy that survived inside the session file. The
+  snapshot here lives in the state directory only, where the restore reads it back.
+- **The archive copy.** newdle kept a per-seat copy under `~/.omp/agent/compaction-archive/`
+  that the restore could not consume. Nothing here writes under `~/.omp`.
+- **The "no continuity record was recovered" message.** newdle sent one when both its sources
+  were empty. Here the restore is never silent after a compaction: with no snapshot it says so
+  and gives the liveness line, the rules section and the notes list, the same as on Claude Code.
+- **The project-directory and seat gates.** newdle ran only where its manifest declared the hooks
+  on and read the seat name from the environment. This extension runs in every OMP session the
+  plugin is installed in.
 
 ## Ported from newdle 0.2.175
 
@@ -291,6 +400,21 @@ the number is known.
 The strings `shipyard`, `linear`, `.projects`, `newdle-hooks`, `/Users/<name>/` and `ENG-<n>`
 appear in nothing the plugin runs or loads; `test/port.test.mjs` scans every file except this
 one, `CHANGELOG.md` and itself.
+
+## Changes in 0.3.0
+
+- `omp/continuity-omp.ts`, an OMP extension (`package.json` `omp.extensions`, `.omp-plugin/plugin.json`)
+  that spawns `hooks/pre-compact.mjs` on `session_before_compact` and `hooks/session-start.mjs` on
+  `session_compact`; the "Under OMP" section above has the payload, the budgets and the table of
+  what newdle's OMP save did that this does and does not.
+- `omp/continuity-omp.test.mjs` (nineteen tests, one a save-then-restore round trip through the
+  real hooks) and `evals/pre-compact-omp-payload.scenario.json` (fifteen scenarios in all).
+- The restore runs once per compaction entry, and only after a save was attempted or when a
+  snapshot is on disk (the lifecycle exclusions above).
+- `lib/repo-rules.mjs` reads `CONTINUITY_HOST_RULES`: when set, the launch-directory skip covers
+  only those file names. The OMP extension sets it to `CLAUDE.md,AGENTS.md`, so `CLAUDE.local.md`
+  is inlined under OMP. Unset (Claude Code), nothing changes. No change to the hooks, the config
+  keys or the state layout.
 
 ## Changes in 0.2.0
 

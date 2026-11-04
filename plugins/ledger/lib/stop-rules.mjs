@@ -24,6 +24,10 @@
 //                  go with alpha"), which the question row already records. No length floor:
 //                  "Chose A." is a decision too.
 //
+// While brb holds the session (`away`): the answer rule does not run (the human is away by their
+// own word, so nothing they wrote is waiting), and the ask rule's reason says record the question
+// with `ask` then `hold` instead of asking the human in plain words.
+//
 // Checked in that order; one block per Stop.
 
 export const MIN_CHARS = 40;
@@ -44,6 +48,11 @@ export function stripQuoted(text) {
 
 export function askReason(cli = "ledger") {
   return `ledger: this turn asks the human a question but there is no open question row for this folder. Run \`${cli} ask "<the question>" --name <short> --options <a,b> --default <a>\` first, then ask in plain words without showing the human the q- id; when they reply, record it with \`${cli} answer <q-id> <option>\`.`;
+}
+
+/** The ask rule's reason while brb holds the session: the human is away, so the question is recorded and held, not put to them. */
+export function askAwayReason(cli = "ledger") {
+  return `ledger: this turn has a question for the human but there is no open question row for this folder, and the human is away (brb). Record it with \`${cli} ask "<the question>" --name <short> --options <a,b> --default <a>\`, then \`${cli} hold <q-id>\`, then finish.`;
 }
 
 /** @param questions open questions, newest first: { id, name, body } */
@@ -153,14 +162,15 @@ export function asksDecision(text) {
  * @param opts.turnQuestions        how many open questions this session asked during this turn
  * @param opts.turnNotes            how many `note` rows this session recorded during this turn
  * @param opts.forcing              { stopAskRule, stopDecisionRule, decisionPhrases }
+ * @param opts.away                 brb holds the session (the human is away by their own word): no answer rule, and the ask rule says record and hold
  * @returns {null | { rule: 'stopAnswerRule'|'stopAskRule'|'stopDecisionRule', reason: string }}
  */
-export function checkStop(message, { dueQuestions = [], sessionHasOpenQuestion = false, turnQuestions = 0, turnNotes = 0, forcing = {}, cli = "ledger" } = {}) {
-  if (forcing.stopAskRule !== false && dueQuestions.length) return { rule: "stopAnswerRule", reason: answerReason(dueQuestions, cli) };
+export function checkStop(message, { dueQuestions = [], sessionHasOpenQuestion = false, turnQuestions = 0, turnNotes = 0, forcing = {}, cli = "ledger", away = false } = {}) {
+  if (forcing.stopAskRule !== false && !away && dueQuestions.length) return { rule: "stopAnswerRule", reason: answerReason(dueQuestions, cli) };
   const text = stripCode(message);
   const prose = stripQuoted(text);
   if (forcing.stopAskRule !== false && !sessionHasOpenQuestion && text.replace(/\s+/g, "").length >= MIN_CHARS && asksQuestion(prose) && asksDecision(prose)) {
-    return { rule: "stopAskRule", reason: askReason(cli) };
+    return { rule: "stopAskRule", reason: away ? askAwayReason(cli) : askReason(cli) };
   }
   if (forcing.stopDecisionRule !== false && turnNotes === 0 && turnQuestions === 0) {
     const phrase = decisionPhrase(prose, forcing.decisionPhrases);

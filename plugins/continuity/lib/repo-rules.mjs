@@ -36,10 +36,13 @@
 // (two levels symlinked to one file) is skipped and named. A level that is an ancestor of, or
 // is, `CLAUDE_PROJECT_DIR` when the host set it is skipped and named: the host loaded that file
 // at launch and keeps it; re-inlining it would spend the budget on what is already in context.
+// `CONTINUITY_HOST_RULES`, when set (a comma-separated list of file names, which the OMP adapter
+// sets to the names OMP loads), narrows that skip to files with one of those names; any other
+// rules file at such a level (`CLAUDE.local.md` under OMP) is inlined like a nested one.
 
 import { existsSync, lstatSync, readFileSync, readdirSync, realpathSync, statSync } from "node:fs";
 import { homedir } from "node:os";
-import { dirname, isAbsolute, join, resolve } from "node:path";
+import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 
 export const RULES_FILE_MAX_BYTES = 8000;
 export const RULES_TOTAL_MAX_BYTES = 9000;
@@ -124,6 +127,7 @@ export function walkRules(cwd, env = process.env) {
   }
   out.root = root;
   const launch = typeof env.CLAUDE_PROJECT_DIR === "string" && env.CLAUDE_PROJECT_DIR.trim() ? canonical(env.CLAUDE_PROJECT_DIR) : null;
+  const hostNames = typeof env.CONTINUITY_HOST_RULES === "string" ? new Set(env.CONTINUITY_HOST_RULES.split(",").map((n) => n.trim()).filter(Boolean)) : null;
   const levels = [];
   for (let d = start, i = 0; i < MAX_WALK; i++) {
     levels.push(d);
@@ -133,7 +137,7 @@ export function walkRules(cwd, env = process.env) {
   const seen = new Map();
   for (const dir of levels.reverse()) {
     for (const path of rulesFilesIn(dir)) {
-      if (launch && within(dir, launch)) {
+      if (launch && within(dir, launch) && (!hostNames || hostNames.has(basename(path)))) {
         out.skipped.push({ path, why: "loaded by the host at launch (the directory is CLAUDE_PROJECT_DIR or above it) and kept across the compaction" });
         continue;
       }

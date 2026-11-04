@@ -1,5 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { appendFileSync } from "node:fs";
+import { join } from "node:path";
 import { sandbox, hook, cli, openDb, row } from "./helpers.mjs";
 import { checkStop, stripCode, stripQuoted, decisionPhrase, MIN_CHARS } from "../lib/stop-rules.mjs";
 import { DEFAULTS } from "../lib/config.mjs";
@@ -42,8 +44,13 @@ test("step 8: a question while the session has no open row → block with the as
 // records the reply. No id crosses to the human, so nothing reads ids out of the reply.
 const SID = "s-ans";
 const sessionEnv = { LEDGER_SESSION_ID: SID };
-const stopIn = (b, prompt_id, message = "Working on it; the tests are running and I will report back shortly.") =>
-  hook(b, "stop", { ...payload(message), session_id: SID, cwd: b.work, prompt_id });
+// Each Stop here follows a prompt the human typed: stopIn appends one to the session transcript
+// first, the evidence the answer rule needs (0.3.8: without a typed prompt it never nags).
+const stopIn = (b, prompt_id, message = "Working on it; the tests are running and I will report back shortly.") => {
+  const transcript_path = join(b.root, "transcript.jsonl");
+  appendFileSync(transcript_path, `${JSON.stringify({ type: "user", origin: { kind: "human" }, timestamp: new Date().toISOString(), message: { role: "user", content: `prompt ${prompt_id}` } })}\n`);
+  return hook(b, "stop", { ...payload(message), session_id: SID, cwd: b.work, prompt_id, transcript_path });
+};
 const askIn = (b, name) => /q-[a-z0-9]+/.exec(cli(b, ["ask", `${name} or not?`, "--name", name, "--options", "yes,no"], { env: sessionEnv }).out)[0];
 const startSession = (b) => hook(b, "session-start", { session_id: SID, cwd: b.work, hook_event_name: "SessionStart", source: "startup" });
 

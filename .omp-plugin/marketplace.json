@@ -43,6 +43,11 @@
       "name": "delegation",
       "source": "./plugins/delegation",
       "description": "Teach the brief a subagent is handed, then gate on it: a spawn without a How-it-fails section is refused and the refusal carries the section to fill in; a builder-class spawn also needs a Spiral bound and this session's pattern-check receipt; an undeliverable message is marked NOT delivered; a builder report without its Stopped-because line draws a warning. With the eleven general agents and three direct-work guards ported from newdle. Claude Code hooks and an OMP extension."
+    },
+    {
+      "name": "continuity",
+      "source": "./plugins/continuity",
+      "description": "Keep a long session's state across compaction. Before every compaction a save writes branch, diff, the host's file operations and the recent asks to a snapshot; right after, a restore injects it back with the durable notes listed and a liveness line saying when the save last worked. An OMP extension runs the plugin's own Claude Code hooks around session_before_compact and session_compact. Every hook fails open."
     }
   ]
 }

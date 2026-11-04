@@ -1,0 +1,29 @@
+{
+  "$comment": "The payload the OMP adapter (omp/continuity-omp.ts buildPreCompactPayload) sends from session_before_compact: no transcript_path, the host's `intents`, `file_operations` and `token_count` instead, trigger auto. The runner cannot drive the extension itself (it spawns hooks/hooks.json commands with stdin), so this proves the half it can: the save takes the host fields, names them as its capture source, writes the snapshot and the heartbeat, makes no calibration record (there is no transcript to measure against the token count), and tells the person the judgment layer was not captured.",
+  "event": "PreCompact",
+  "expect": "systemMessage",
+  "reason": "no handoff written",
+  "setup": { "commands": ["git -C \"${CWD}\" checkout -q -b feature/omp", "echo draft > \"${CWD}/notes.md\""] },
+  "stdin": {
+    "hook_event_name": "PreCompact",
+    "session_id": "${SESSION_ID}",
+    "cwd": "${CWD}",
+    "trigger": "auto",
+    "custom_instructions": "",
+    "intents": ["port the continuity hooks", "now the tests"],
+    "file_operations": "**read** (1)\n- ${CWD}/notes.md\n\n**written** (1)\n- ${CWD}/notes.md\n\n**edited** (0)",
+    "token_count": 181000
+  },
+  "after": {
+    "exists": ["$XDG_STATE_HOME/continuity/${SESSION_ID}.json", "$XDG_STATE_HOME/continuity/heartbeat.ndjson"],
+    "absent": ["$XDG_STATE_HOME/continuity/calibration.ndjson"],
+    "commands": [
+      "grep -q '\"branch\": \"feature/omp\"' \"${XDG_STATE_HOME}/continuity/${SESSION_ID}.json\"",
+      "grep -q 'host-supplied `intents`' \"${XDG_STATE_HOME}/continuity/${SESSION_ID}.json\"",
+      "grep -q 'now the tests' \"${XDG_STATE_HOME}/continuity/${SESSION_ID}.json\"",
+      "grep -q 'written\\*\\* (1)' \"${XDG_STATE_HOME}/continuity/${SESSION_ID}.json\"",
+      "grep -q '\"present\": false' \"${XDG_STATE_HOME}/continuity/${SESSION_ID}.json\"",
+      "grep -c '\"outcome\":\"ok\"' \"${XDG_STATE_HOME}/continuity/heartbeat.ndjson\" | grep -qx 1"
+    ]
+  }
+}
