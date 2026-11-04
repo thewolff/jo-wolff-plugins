@@ -175,7 +175,7 @@ function lastPassSummary(db, plugin) {
  * `run` is injectable for tests (same shape as runScript's result).
  */
 export async function runCanary({ db, dbPath, env = process.env, now = Date.now(), repo, plugins = null, timeoutS = DEFAULT_TIMEOUT_S, run = runScript, claudePresent = null }) {
-  const root = repo ?? defaultRepo();
+  const root = repo ? resolve(repo) : defaultRepo();
   if (!root) return { code: 2, text: "canary: no repository: pass --repo <path to the plugins checkout>", rows: [] };
   let all;
   try {
@@ -361,9 +361,11 @@ ${args.map((a) => `    <string>${esc(a)}</string>`).join("\n")}
  * `label`, `hour`, `minute` and the argument list are the knobs; `check` runs plutil/launchctl
  * (injectable for tests).
  */
-export function install({ env = process.env, cliPath, repo, label = LABEL, hour = 3, minute = 30, extraArgs = [], uid = process.getuid?.() ?? 501, check = runCheck }) {
-  const root = repo ?? defaultRepo();
+export function install({ env = process.env, cliPath, repo, cwd = process.cwd(), label = LABEL, hour = 3, minute = 30, extraArgs = [], uid = process.getuid?.() ?? 501, check = runCheck }) {
+  // launchd runs the job from / with no cwd of ours: the plist must carry an absolute path.
+  const root = repo ? resolve(cwd, repo) : defaultRepo();
   if (!root) return { code: 1, text: "canary install: no repository: pass --repo <path to the plugins checkout>" };
+  if (!existsSync(join(root, "plugins"))) return { code: 1, text: `canary install: ${root} has no plugins/ directory; pass --repo <path to the plugins checkout>` };
   const dir = join(stateDir(env), "launchd");
   const file = join(dir, `${label}.plist`);
   const text = plistText({ label, cliPath, repo: root, hour, minute, logDir: dir, extraArgs });

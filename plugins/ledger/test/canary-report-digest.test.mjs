@@ -12,6 +12,7 @@ import { runCanary, lineDiff, cut, listPlugins, prune, install as canaryInstall,
 import { gather, mechanicalGrade, overlayJudge, render, runReport, parseReportArgs, judgePassage } from "../lib/report.mjs";
 import { runDigest, sessionStartLines, body, KEYS, install as digestInstall, parseDigestArgs, doctorCheck } from "../lib/digest.mjs";
 import { recordBounce } from "../lib/bounces.mjs";
+import { parseIssue } from "../lib/config.mjs";
 import { nowIso } from "../lib/time.mjs";
 
 const D = 24 * 3_600_000;
@@ -191,6 +192,14 @@ test("canary install: writes the plist under <state>/launchd, lints it, prints t
   assert.match(r2.text, /launchd already has com.jo-wolff-plugins.ledger-canary; to pick up this plist: launchctl bootout/);
   // No plutil: said, not fatal. Lint failing: exit 1 with the output.
   assert.match(canaryInstall({ env: b.env, cliPath: "/x", repo: root, check: () => ({ missing: true }) }).text, /plutil not found/);
+  // A relative --repo is resolved against the cwd before it goes into the plist (launchd runs from /).
+  const rel = canaryInstall({ env: b.env, cliPath: "/x", repo: ".", cwd: root, uid: 501, check: () => ({ missing: false, code: 0, output: "" }) });
+  assert.equal(rel.code, 0, rel.text);
+  assert.match(readFileSync(file, "utf8"), new RegExp(`<string>--repo</string>\\s*<string>${root}</string>`));
+  assert.doesNotMatch(readFileSync(file, "utf8"), /<string>\.<\/string>/);
+  const nowhere = canaryInstall({ env: b.env, cliPath: "/x", repo: "nope", cwd: root, check: () => ({ missing: false, code: 0, output: "" }) });
+  assert.equal(nowhere.code, 1);
+  assert.match(nowhere.text, /has no plugins\/ directory; pass --repo/);
   const bad = canaryInstall({ env: b.env, cliPath: "/x", repo: root, check: (bin) => (bin === "plutil" ? { missing: false, code: 1, output: "bad plist" } : { missing: true }) });
   assert.equal(bad.code, 1);
   assert.match(bad.text, /plutil -lint failed: bad plist/);
@@ -326,7 +335,7 @@ test("digest: writes the attempt before posting, the post on success, the error 
   assert.equal(first.code, 0, first.text);
   assert.match(first.text, /^digest: posted to thewolff\/jo-issues#325 \(https:\/\/github.com\/.*#issuecomment-1\) at /);
   assert.equal(posts.length, 1);
-  assert.equal(posts[0].issue, "thewolff/jo-issues#325");
+  assert.deepEqual(posts[0].issue, { repo: "thewolff/jo-issues", number: "325", text: "thewolff/jo-issues#325" });
   assert.match(posts[0].text, /^## ledger weekly digest \(ledger 0\.3\.3\)\n\nweek of /);
   assert.match(posts[0].text, /```\nledger report since /);
   db = openDb(b);
@@ -367,6 +376,15 @@ test("digest: writes the attempt before posting, the post on success, the error 
   const off = await withStore(b, (s) => runDigest({ db: s.db, dbPath: s.dbPath, config: { ...s.config, digest: { enabled: false, issue: "x#1" } }, env: b.env, now, post: ok }));
   assert.equal(off.code, 1);
   assert.match(off.text, /digest.enabled is false/);
+  // A destination that names no repository (a bare number, a stray string): refused before the report, nothing posted.
+  for (const issue of ["325", "#325", "jo-issues#325", "thewolff/jo-issues", "https://github.com/thewolff/jo-issues/pull/325"]) {
+    const bare = await withStore(b, (s) => runDigest({ db: s.db, dbPath: s.dbPath, config: { ...s.config, digest: { enabled: true, issue } }, env: b.env, now: later + 9_000_000, force: true, post: ok }));
+    assert.equal(bare.code, 1, issue);
+    assert.match(bare.text, /^digest: digest\.issue is ".*", which names no repository; set it to owner\/repo#number/);
+  }
+  assert.equal(posts.length, 3, "no post for any of them");
+  assert.deepEqual(parseIssue("https://github.com/thewolff/jo-issues/issues/325/"), { repo: "thewolff/jo-issues", number: "325", text: "thewolff/jo-issues#325" });
+  assert.equal(parseIssue(325), null);
   assert.deepEqual(parseDigestArgs(["--dry-run", "--force"]), { action: "run", dryRun: true, force: true });
   assert.deepEqual(parseDigestArgs(["install"]), { action: "install" });
   assert.match(parseDigestArgs(["--bogus"]).error, /^usage: digest/);
@@ -436,10 +454,17 @@ test("digest install and the CLI: the Monday 09:00 plist, the bootstrap line; `d
   chmodSync(join(bin, "gh"), 0o755);
   mkdirSync(join(b.env.XDG_CONFIG_HOME, "ledger"), { recursive: true });
   writeFileSync(join(b.env.XDG_CONFIG_HOME, "ledger", "config.json"), JSON.stringify({ digest: { issue: "o/r#1" } }));
-  const posted = cli(b, ["digest"], { env: { PATH: `${bin}:${process.env.PATH}` } });
+  // GH_REPO set to another repository and a cwd in yet another: the configured one is the argument.
+  const posted = cli(b, ["digest"], { env: { PATH: `${bin}:${process.env.PATH}`, GH_REPO: "someone/else" }, cwd: b.root });
   assert.equal(posted.code, 0, posted.out + posted.err);
   assert.match(posted.out, /^digest: posted to o\/r#1 \(https:\/\/github.com\/o\/r\/issues\/1#issuecomment-9\) at /);
-  assert.equal(readFileSync(`${got}.args`, "utf8").trim(), "issue comment 1 --body-file - --repo o/r");
+  assert.equal(readFileSync(`${got}.args`, "utf8").trim(), "issue comment 1 --repo o/r --body-file -");
+  // A bare number in the user config is refused at load with a notice; the default stands.
+  writeFileSync(join(b.env.XDG_CONFIG_HOME, "ledger", "config.json"), JSON.stringify({ digest: { issue: "325" } }));
+  const bareCfg = cli(b, ["digest", "--dry-run"], { env: { PATH: `${bin}:${process.env.PATH}` } });
+  assert.match(bareCfg.out + bareCfg.err, /digest\.issue must be owner\/repo#number; ignoring it/);
+  assert.match(bareCfg.out, /would post to thewolff\/jo-issues#325/);
+  writeFileSync(join(b.env.XDG_CONFIG_HOME, "ledger", "config.json"), JSON.stringify({ digest: { issue: "o/r#1" } }));
   assert.match(readFileSync(got, "utf8"), /^## ledger weekly digest \(ledger 0\.3\.\d+\)\n/);
   // No gh at all.
   const b2 = sandbox();

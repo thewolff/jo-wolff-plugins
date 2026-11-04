@@ -206,7 +206,7 @@ defaults verbatim.
 | `inject.doctor` | `true` | whether SessionStart adds, last, `ledger: doctor reports N issue(s); run … doctor` when the cheap doctor checks find something; `false` turns it off |
 | `sweep.autoWithdrawDays` | `7` | SessionStart withdraws open and held questions asked more than this many days ago whose session has ended (or that had no session) and whose deadline is not still ahead, at most 20 per start, each with a `withdraw` note naming the sweep and one `systemMessage` line listing the ids; `0` turns it off |
 | `digest.enabled` | `true` | the weekly digest and its SessionStart lines; `false` turns both off and `doctor` warns. User config only |
-| `digest.issue` | `thewolff/jo-issues#325` | the GitHub issue the digest is posted to as a comment (`owner/repo#number`). User config only |
+| `digest.issue` | `thewolff/jo-issues#325` | the GitHub issue the digest is posted to as a comment: `owner/repo#number` or a `https://github.com/owner/repo/issues/number` URL. A value naming no repository (a bare `325`) is refused at load with a notice and the default stands: the repository is always passed to `gh` as `--repo`, so neither gh's cwd nor `GH_REPO` ever picks the destination. User config only |
 | `decisionLog.enabled` | `true` | whether SessionEnd writes a decision-log entry under the repository's `.ai/decision-log/` when the session recorded an answer or a note. `false` is the opt-out for people who keep no decision log; `doctor` then says `decision log: off` |
 | `review.mode` | `"gate"` | the cross-lab review gate on `git push`, `gh pr create` and `gh pr merge`: `gate` denies a push whose HEAD has no review or has findings, `advise` allows it with a notice, `off` turns the review off. Read from the user file only; a project file's `review` is ignored with a notice |
 | `review.labs` | `["codex"]` | the labs `ledger review` runs, in parallel: any of `codex`, `kimi`, `claude`, `glm`. User file only |
@@ -534,7 +534,7 @@ e2e/live-run.sh`, which is the correct reading, not a failure.
 `canary runs [N] [--plugin <name>]` lists the last N rows. `canary grade <id> biting|silent|fine
 ["<note>"]` records who read a run and what they made of it (`--by`, default `human`).
 `canary prune [--days 30]` removes transcript and output files older than that; rows stay for ever.
-`canary install [--repo] [--hour 3] [--minute 30]` writes
+`canary install [--repo <path>] [--hour 3] [--minute 30]` (a relative `--repo` is resolved against the cwd first: launchd runs the job from `/`; a path with no `plugins/` directory is refused) writes
 `<state>/launchd/com.jo-wolff-plugins.ledger-canary.plist` (nightly, `canary run --repo …`,
 logs beside it), checks it with `plutil -lint`, asks `launchctl print` whether the job is
 loaded, and prints the `launchctl bootstrap gui/<uid> <plist>` line for you to run. It never

@@ -24,7 +24,7 @@
 import { spawn, spawnSync } from "node:child_process";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { stateDir } from "./config.mjs";
+import { parseIssue, stateDir } from "./config.mjs";
 import { transaction } from "./db.mjs";
 import { runReport } from "./report.mjs";
 import { nowIso } from "./time.mjs";
@@ -35,6 +35,7 @@ export const REPOST_MIN_MS = 24 * 3_600_000;
 export const GH_TIMEOUT_MS = 30_000;
 export const BODY_MAX = 60 * 1024;
 export const DEFAULT_ISSUE = "thewolff/jo-issues#325";
+
 export const LABEL = "com.jo-wolff-plugins.ledger-digest";
 const DAY_MS = 24 * 3_600_000;
 
@@ -93,11 +94,14 @@ export function body(reportText, data, { now = Date.now(), version = "" } = {}) 
   return keep + marker;
 }
 
-/** `gh issue comment <issue> --body-file -` with a deadline; resolves { ok, error, url }. */
+/**
+ * `gh issue comment <number> --repo <owner/repo> --body-file -` with a deadline; resolves
+ * { ok, error, url }. `issue` is `parseIssue`'s; the repository is always given, so gh's cwd
+ * and GH_REPO never choose the destination.
+ */
 export function postComment(issue, text, { env = process.env, timeoutMs = GH_TIMEOUT_MS } = {}) {
   return new Promise((resolve) => {
-    const [repo, number] = issue.includes("#") ? issue.split("#") : [null, issue];
-    const args = ["issue", "comment", number, "--body-file", "-", ...(repo ? ["--repo", repo] : [])];
+    const args = ["issue", "comment", issue.number, "--repo", issue.repo, "--body-file", "-"];
     let child;
     try {
       child = spawn("gh", args, { env, stdio: ["pipe", "pipe", "pipe"] });
@@ -135,7 +139,9 @@ export function postComment(issue, text, { env = process.env, timeoutMs = GH_TIM
  */
 export async function runDigest({ db, dbPath, config, env = process.env, now = Date.now(), dryRun = false, force = false, post = postComment, version = "" }) {
   if (config?.digest?.enabled === false && !dryRun) return { code: 1, text: "digest.enabled is false in the user config; nothing posted (--dry-run still prints the body)" };
-  const issue = config?.digest?.issue || DEFAULT_ISSUE;
+  const target = parseIssue(config?.digest?.issue || DEFAULT_ISSUE);
+  if (!target) return { code: 1, text: `digest: digest.issue is "${config?.digest?.issue}", which names no repository; set it to owner/repo#number (or a github.com issue URL) in the user config; nothing posted` };
+  const issue = target.text;
   const report = await runReport({ db, config, env, now, since: "7d" });
   const text = body(report.text, report.data, { now, version });
   if (dryRun) return { code: 0, text: `digest --dry-run: would post to ${issue} (${Buffer.byteLength(text)} bytes); nothing recorded\n\n${text}` };
@@ -146,7 +152,7 @@ export async function runDigest({ db, dbPath, config, env = process.env, now = D
   } catch (err) {
     return { code: 2, text: `digest: could not record the attempt (${err.message}); nothing posted` };
   }
-  const r = await post(issue, text, { env });
+  const r = await post(target, text, { env });
   if (r.ok) {
     try {
       setMeta(db, dbPath, [[KEYS.posted, nowIso(now)], [KEYS.error, null]]);
@@ -225,7 +231,7 @@ export function install({ env = process.env, cliPath, config, label = LABEL, uid
   } catch (err) {
     return { code: 1, text: `digest install: could not write ${file} (${err.message})` };
   }
-  const lines = [`wrote ${file} (${label}, Monday 09:00 local, posts to ${config?.digest?.issue || DEFAULT_ISSUE})`];
+  const lines = [`wrote ${file} (${label}, Monday 09:00 local, posts to ${parseIssue(config?.digest?.issue || DEFAULT_ISSUE)?.text ?? `"${config?.digest?.issue}", which names no repository: the job will post nothing until digest.issue is owner/repo#number`})`];
   if (config?.digest?.enabled === false) lines.push("digest.enabled is false in the user config: the job will run and post nothing until that changes");
   const lint = check("plutil", ["-lint", file]);
   if (lint.missing) lines.push("plutil not found: the plist was not checked (not macOS?)");
