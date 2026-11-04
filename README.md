@@ -157,27 +157,6 @@ turn.
   `**CLAIM**` or `**CITE**` that carries no receipt shape; optionally, a judge model asks whether
   each receipt licenses its sentence. Warns, never blocks; off switch and the judge's switch below.
 
-Changes in 0.2.0: only receipted facts are labeled, as CLAIM or CITE. The GUESS, PMDW, ACTION and
-QUESTION labels, the `<!-- output-types … -->` envelope and the numbered degradation tiers are
-gone; unreceipted statements, actions, questions and degraded coverage are plain prose. The whole
-contract now lives in `skills/output-types/reference.md`, which the skill points at and the hook
-injects from.
-
-Changes in 0.2.1: a hook fault (contract file missing, unreadable or without its markers, or the
-hook's own module failing to load or loading broken) now appends one line naming the hook file
-and the reason to `${XDG_STATE_HOME:-~/.local/state}/output-types/errors.log`, and the one-line
-warning reaches you as well as the model and says where the reason went. `OUTPUT_TYPES_INJECT=off`
-is read first, so it silences the hook even when the install is broken. The hook no longer waits
-on a stdin pipe its caller leaves open: it reads for at most one second, then injects.
-
-Changes in 0.2.2: the plugin meets ledger 0.3.5's five-row gate. `evals/manifest.json` declares
-what the session-start hook can return (the core as a `systemMessage`, or silence under
-`OUTPUT_TYPES_INJECT=off`), one `evals/<x>.scenario.json` proves each, and the core scenario
-carries a `session` and a `judge` rubric the nightly canary runs under `claude -p` and grades
-with `claude plugin eval`. `e2e/live-run.sh` hands off to plugin-kit's scenario runner.
-`.claude-plugin/plugin.json` declares the one state path (`$XDG_STATE_HOME/output-types`, 30
-days) and `scripts/prune.mjs` prunes it. The skill has a "When this can't run" section.
-
 Changes in 0.3.0: the Stop check (next section). Mechanical, every turn: each `**CLAIM**` without
 an absolute `file:line` or a command and its result, and each `**CITE**` without a URL or a test
 run with its command, is named by line in one `systemMessage`, the first five, then `+N more`.
@@ -188,21 +167,49 @@ the command is configured once for every plugin with `node lib/judge.mjs setup`.
 `hooks/output-types-stop.mjs`, `lib/receipts.mjs`, `lib/judge.mjs`, `lib/hook-runner.mjs`.
 `OUTPUT_TYPES_CHECK=off` turns the check off.
 
+Changes in 0.2.2: the plugin meets ledger 0.3.5's five-row gate. `evals/manifest.json` declares
+what the session-start hook can return (the core as a `systemMessage`, or silence under
+`OUTPUT_TYPES_INJECT=off`), one `evals/<x>.scenario.json` proves each, and the core scenario
+carries a `session` and a `judge` rubric the nightly canary runs under `claude -p` and grades
+with `claude plugin eval`. `e2e/live-run.sh` hands off to plugin-kit's scenario runner.
+`.claude-plugin/plugin.json` declares the one state path (`$XDG_STATE_HOME/output-types`, 30
+days) and `scripts/prune.mjs` prunes it. The skill has a "When this can't run" section.
+
+Changes in 0.2.1: a hook fault (contract file missing, unreadable or without its markers, or the
+hook's own module failing to load or loading broken) now appends one line naming the hook file
+and the reason to `${XDG_STATE_HOME:-~/.local/state}/output-types/errors.log`, and the one-line
+warning reaches you as well as the model and says where the reason went. `OUTPUT_TYPES_INJECT=off`
+is read first, so it silences the hook even when the install is broken. The hook no longer waits
+on a stdin pipe its caller leaves open: it reads for at most one second, then injects.
+
+Changes in 0.2.0: only receipted facts are labeled, as CLAIM or CITE. The GUESS, PMDW, ACTION and
+QUESTION labels, the `<!-- output-types … -->` envelope and the numbered degradation tiers are
+gone; unreceipted statements, actions, questions and degraded coverage are plain prose. The whole
+contract now lives in `skills/output-types/reference.md`, which the skill points at and the hook
+injects from.
+
 ### The Stop check
 
-Every time the agent finishes a message, the hook reads it back (the last assistant text in the
-transcript Claude Code names in the payload) and looks at each labelled statement. A label is
-`**CLAIM**` or `**CITE**` in markdown bold, alone at the start of a line or inline in one; prose
-that mentions CLAIM casually is not a label, and nothing inside a fenced code block is, so a
-quoted example never warns about itself. The statement is the text after the label up to the next
-label, a heading, a rule, a bold-only line, or a blank line, except that a fence after a blank
-line (a command and its output, the usual receipt) belongs to the statement.
+Every time the agent finishes a message, the hook reads it back (the payload's
+`last_assistant_message`, else the last assistant text in the transcript Claude Code names in the
+payload) and looks at each labelled statement. A label is `**CLAIM**` or `**CITE**` in markdown
+bold that starts a line (after any list or `>` quote marker), or that is followed by a colon or
+the end of its line; prose that mentions CLAIM casually is not a label, a bold label in the middle
+of a sentence ("**CLAIM** and **CITE** are the two labels") is a mention, not a label, and nothing
+inside a fenced code block is, at any indentation, so a quoted example never warns about itself.
+The statement is the text after the label up to the next label, a heading, a rule, a bold-only
+line, or a blank line, except that a fence after a blank line (a command and its output, the
+usual receipt) belongs to the statement, blank lines inside the fence included.
 
 **The mechanical stage** is deterministic and runs every turn. A `**CLAIM**` needs an absolute
-`/`-rooted `file:line` (or `file:line-line`), or a command in code (inline or fenced) with a
-result phrase (`→ exit 0`, `returned nothing`, `12 passing`) or a fence holding the command and
-what it printed. A `**CITE**` needs an `http(s)://` URL, or the words test/tested/ran/run with a
-command in code. A statement with neither is named by line in one `systemMessage`, shown to you:
+`/`-rooted `file:line` (or `file:line-line`; a relative or `~/` path is not one), or a command and
+what it gave: a fence holding the command and what it printed (or a fenced command plus a result
+phrase such as `exit 0`), or a command with `→ output` after it on the same line or opening the
+next, where the command is a bare `$ cmd` at the line start or inline code that opens with `$ `
+or has a space in it (`` `npm test` → exit 0, 12 passing ``). A symbol in code is not a command:
+"`` `resolveJudgeCommand` returns null ``" and "`` `handle()` -> null ``" warn. A `**CITE**` needs
+an `http(s)://` URL, or the words test/tested/ran/run with a command in code. A statement with
+neither is named by line in one `systemMessage`, shown to you:
 
 ```
 output-types: 2 labelled statements without a receipt that holds. Add the receipt or remove the label (unlabeled means unreceipted).
@@ -223,14 +230,18 @@ and configure the judge command once, for this and every other plugin that judge
 writes `~/.config/judge/config.json`). The command is resolved in this order, and a skipped.log
 line names which source supplied it: `OUTPUT_TYPES_JUDGE_BIN` in the environment → `judgeCommand`
 (and `judgeTimeoutMs`) in the output-types config file → the shared judge file → i-have-audhd's
-`enforcement.judgeCommand` in `~/.claude/i-have-audhd.json`, read-only. With the judge on, each
+`enforcement.judgeCommand` in `~/.claude/i-have-audhd.json`, read-only. A shared judge file that
+is not valid JSON stops the search there (the i-have-audhd profile is not used in its place);
+`node lib/judge.mjs which` names the file and the parse error. With the judge on, each
 statement that passed the mechanical stage is put to it once: does the receipt license what the
-sentence says. A `fail`, or an answer that is neither pass nor fail, joins the same warning with
-the judge's reason; a judge that times out, exits non-zero, prints no JSON, or cannot start is one
-line in `${XDG_STATE_HOME:-~/.local/state}/output-types/skipped.log` and the check goes on with
-the mechanical result. Every call is clamped to what is left of the hook's 55 s budget (the Stop
-entry in `hooks.json` has `timeout: 60`), so a hanging judge is killed by its own timer, never by
-the host.
+sentence says. A `fail`, or an answer that is neither pass nor fail (marked unverified), joins
+the same warning with the judge's reason when it gave one; a judge that times out, exits
+non-zero, prints no JSON, or cannot start is one line in
+`${XDG_STATE_HOME:-~/.local/state}/output-types/skipped.log` and the check goes on with the
+mechanical result. Every call is clamped to what is left of the hook's 55 s budget (the Stop
+entry in `hooks.json` has `timeout: 60`), counted from when the hook process started, before
+it read its input, so a hanging judge is killed by its own timer, never by the host. Should the
+hook's own deadline fire first anyway, the judge's process group is killed as the hook exits.
 
 ### What this does, and what it does not do: it delivers, and it warns
 

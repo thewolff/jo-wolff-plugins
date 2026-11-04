@@ -17,17 +17,29 @@ the README's "Changes in" sections.
 - `resolveJudgeCommand()`: the command resolved once for every plugin, first found wins, naming
   its source: the plugin's env var → the plugin's own setting → `${XDG_CONFIG_HOME:-~/.config}/judge/config.json`
   `{ "command", "timeoutMs" }` → i-have-audhd's `enforcement.judgeCommand` (legacy, read-only).
+  A shared file that exists but is malformed stops the search before the legacy profile
+  (`readSharedConfig()` reports it), so a typo never swaps in an older command silently.
 - `node lib/judge.mjs setup` (one test call, then the shared file written atomically after a
-  yes; `--command`, `--timeout-ms`, `--yes`, `--force`) and `node lib/judge.mjs which`.
+  yes, other keys kept; `--command`, `--timeout-ms`, `--yes`, `--force`; a malformed shared file
+  is refused unless `--force`, which replaces it whole) and `node lib/judge.mjs which` (a
+  `malformed: <path>: <error>` line first when the shared file is malformed).
 - `test/judge.test.mjs`: the resolution order over a fake HOME and XDG_CONFIG_HOME, each failure
   class from a tiny shell command, both parsers, the CLI as a spawned process, and the sameness
   test: every `plugins/*/lib/judge.mjs` and `plugins/*/judge/judge.mjs` outside the allowlist
   (`ledger/lib/judge.mjs`, until ledger's next release) is byte-identical to the kit's.
 - `new-plugin.mjs --judge`: the scaffold also gets `lib/judge.mjs`.
 
+### Changed
+
+- `lib/hook-runner.mjs`: the handler thread's env carries `HOOK_RUNNER_STARTED_AT_MS` and
+  `HOOK_RUNNER_DEADLINE_MS`, so a handler budgets from the runner's clock, not its own late
+  start; a process group the thread registers (`{ kitReap: <pgid> }`, which `lib/judge.mjs`
+  posts inside a runner that sets `workerData.kitReap`) is SIGKILLed when the runner exits, so a
+  judge still running at the deadline does not outlive the hook.
+
 ### Unchanged
 
-The runner, the agents, and the rest of the scaffold.
+The agents, and the rest of the scaffold.
 
 ## [0.2.1] - 2026-11-04
 
