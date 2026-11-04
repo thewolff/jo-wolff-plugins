@@ -129,12 +129,15 @@ the threshold, continuity blocks once so the agent writes the handoff.
 **Compaction.** continuity saves a snapshot of the session, git state included, before it, and
 says so when auto-compaction fires with no handoff written.
 
-**Away.** Between `brb` and `back`, brb's Stop hook files `## Needs you` lines in a digest,
-surfaces `on fire:` lines at once, and sends the agent back to work until it writes `idle:`,
-stops twice with no tool call, or runs three continuations in a row that raise nothing new.
+**Away.** Between `brb` and `back`, the agent writes each ask into brb's digest with
+`scripts/brb.mjs hold` and shows none of it; brb's Stop hook files any `## Needs you` section
+or closing ask that still appears and sends the reply back once, surfaces `on fire:` lines at
+once, and sends the agent back to work until it writes `idle:`, stops twice with no tool call,
+or runs three continuations in a row that raise nothing new.
 
 **End.** ledger stamps the session and may write a decision-log entry; pattern-check keeps the
 receipt and removes its working files.
+
 
 ### What they share
 

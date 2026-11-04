@@ -3,7 +3,8 @@
 // always; a fault is one errors.log line and a systemMessage, never a block.
 //
 // What it does: when the session's away.json exists (a resume, a clear or a compaction while
-// Jo is away), the away instruction goes to the agent as additionalContext and one line goes to
+// Jo is away), the away instruction (rendered with this session's hold command) goes to the
+// agent as additionalContext and one line goes to
 // the person: `brb: away since <since>; N held`. Home → null, nothing printed.
 //
 // OMP calls this same file before each agent turn (omp/brb-omp.ts) and delivers the
@@ -14,7 +15,7 @@
 
 import { runHook, invokedDirectly } from "../lib/hook-runner.mjs";
 import { readAway } from "../lib/state.mjs";
-import { awayInstruction } from "../lib/text.mjs";
+import { awayInstruction, holdCommand } from "../lib/text.mjs";
 
 /**
  * @param {object} input  the SessionStart payload; session_id is read
@@ -26,7 +27,7 @@ export function handle(input, { env = process.env } = {}) {
   if (!away) return null;
   return {
     systemMessage: `brb: away since ${away.since}; ${away.held} held. Type \`back\` to read them.`,
-    hookSpecificOutput: { hookEventName: "SessionStart", additionalContext: awayInstruction(away) },
+    hookSpecificOutput: { hookEventName: "SessionStart", additionalContext: awayInstruction(away, holdCommand(sessionId)) },
   };
 }
 

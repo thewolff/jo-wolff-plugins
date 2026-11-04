@@ -1,8 +1,29 @@
 {
   "event": "UserPromptSubmit",
   "expect": "systemMessage",
-  "before": [{"event":"UserPromptSubmit","stdin":{"session_id":"${SESSION_ID}","transcript_path":"${TRANSCRIPT}","cwd":"${CWD}","hook_event_name":"UserPromptSubmit","prompt":"brb lunch"}}],
-  "stdin": {"session_id":"${SESSION_ID}","transcript_path":"${TRANSCRIPT}","cwd":"${CWD}","hook_event_name":"UserPromptSubmit","prompt":"carry on with the tests"},
-  "reason": "## Needs you",
-  "after": { "exists": ["$XDG_STATE_HOME/brb/${SESSION_ID}/away.json"] }
+  "before": [
+    {
+      "event": "UserPromptSubmit",
+      "stdin": {
+        "session_id": "${SESSION_ID}",
+        "transcript_path": "${TRANSCRIPT}",
+        "cwd": "${CWD}",
+        "hook_event_name": "UserPromptSubmit",
+        "prompt": "brb lunch"
+      }
+    }
+  ],
+  "stdin": {
+    "session_id": "${SESSION_ID}",
+    "transcript_path": "${TRANSCRIPT}",
+    "cwd": "${CWD}",
+    "hook_event_name": "UserPromptSubmit",
+    "prompt": "carry on with the tests"
+  },
+  "reason": "written, not shown: run node \"",
+  "after": {
+    "exists": [
+      "$XDG_STATE_HOME/brb/${SESSION_ID}/away.json"
+    ]
+  }
 }
