@@ -20,8 +20,9 @@
 //     "after": { "exists": ["$XDG_STATE_HOME/x"], "absent": ["$XDG_STATE_HOME/y"], "commands": ["sh line that must exit 0"] },
 //     "sibling": "other.scenario.json",   required on a silent scenario when the event can fire
 //     "session": { "prompt": "…", "allowedTools": ["Read"], "tool": "Write", "maxTurns": 6,
-//                  "denyReason": "substring", "stopContext": "substring", "reply": "regex" },
-//     "judge": "a rubric, graded by `claude plugin eval` over the session's prompt (read-only)",
+//                  "denyReason": "substring", "stopContext": "substring", "reply": "regex",
+//                  "after": { …the live session's own after block; default: the scenario's… } },
+//     "judge": "a rubric: after the session above passes, `claude plugin eval` runs the same prompt in its own workspace and grades it",
 //     "stub": true }                       the scaffold's marker; the gate fails until it is gone
 //
 // Strings in stdin, setup, before and after take ${CWD}, ${HOME}, ${PLUGIN_DIR}, ${TRANSCRIPT},
@@ -43,8 +44,10 @@
 // --session-id pinned so the on-disk transcript (<config dir>/projects/*/<id>.jsonl) can be
 // read: Stop-hook feedback lands there and nowhere in stream-json. The verdict reads result.terminal_reason, never the exit code: api_error and
 // max_turns are indeterminate. A model that never attempted `session.tool` is indeterminate,
-// never a fail. A judge scenario is graded by `claude plugin eval --no-publish --json` over a
-// case written from its prompt and rubric; an API error there is indeterminate.
+// never a fail. A judge scenario runs its `session` first, then is graded by `claude plugin eval
+// --no-publish --json` over a case.yaml + scaffold.sh written from the scenario inside the
+// plugin (`judgeCase`); the verdict reads the JSON, never the exit code (a case that fails to
+// load exits 0); an API error or missing binary there is indeterminate.
 //
 // How it fails: a scenario file that does not parse, names an unregistered event, an outcome not
 // in OUTCOMES, no stdin, or is still a stub → `fail` naming the file (the gate says the same
@@ -324,12 +327,13 @@ const setupPath = (key, box) => {
 /** `~/x`, `$XDG_STATE_HOME/x` and `${VAR}/x` resolved into the box. */
 const resolvePlaceholders = (p, box) => substitute(p.replace(/^~(?=\/|$)/, "${HOME}").replace(/^\$([A-Z_]+)(?=\/|$)/, "${$1}"), box.vars);
 
-/** Run a scenario's `after` block in the box; the first failure's reason, or null. */
-function afterProblems(scenario, box, extraEnv) {
-  for (const p of scenario.after?.exists ?? []) if (!existsSync(resolvePlaceholders(p, box))) return `after: ${p} does not exist`;
-  for (const p of scenario.after?.absent ?? []) if (existsSync(resolvePlaceholders(p, box))) return `after: ${p} still exists`;
+/** Run a scenario's `after` block in the box; the first failure's reason, or null. `vars` overrides the box's (the live session's id). */
+function afterProblems(scenario, box, extraEnv, vars = box.vars) {
+  const at = { ...box, vars };
+  for (const p of scenario.after?.exists ?? []) if (!existsSync(resolvePlaceholders(p, at))) return `after: ${p} does not exist`;
+  for (const p of scenario.after?.absent ?? []) if (existsSync(resolvePlaceholders(p, at))) return `after: ${p} still exists`;
   for (const line of scenario.after?.commands ?? []) {
-    const r = spawnSync("/bin/sh", ["-c", substitute(line, box.vars)], { cwd: box.work, env: { ...box.env, ...extraEnv }, encoding: "utf8", timeout: 30_000, killSignal: "SIGKILL" });
+    const r = spawnSync("/bin/sh", ["-c", substitute(line, vars)], { cwd: box.work, env: { ...box.env, ...extraEnv }, encoding: "utf8", timeout: 30_000, killSignal: "SIGKILL" });
     if (r.error || r.status !== 0) return `after: \`${line}\` ${r.error ? `could not run (${r.error.message})` : `exited ${r.status}${(r.stdout + r.stderr).trim() ? `: ${(r.stdout + r.stderr).trim().replace(/\s+/g, " ").slice(0, 300)}` : ""}`}`;
   }
   return null;
@@ -476,7 +480,9 @@ export function runSession({ pluginDir, pluginName, prompt, allowedTools = ["Rea
   }
   if (allowedTools.length) args.push("--allowedTools", ...allowedTools);
   args.push("--", prompt);
-  const childEnv = { ...scrubEnv(env, pluginName), ...box.env, HOME: home, CLAUDE_CODE_ENTRYPOINT: "cli", ...extraEnv };
+  // SHELL pinned: the CLI snapshots $SHELL at startup, and the user's zsh rc writes under the
+  // sandbox's XDG_CONFIG_HOME (thefuck's settings.py, measured), which would read as the plugin's.
+  const childEnv = { ...scrubEnv(env, pluginName), ...box.env, HOME: home, SHELL: "/bin/sh", CLAUDE_CODE_ENTRYPOINT: "cli", ...extraEnv };
   if (env.CLAUDE_CONFIG_DIR) childEnv.CLAUDE_CONFIG_DIR = env.CLAUDE_CONFIG_DIR;
   delete childEnv.CLAUDE_PLUGIN_ROOT;
   delete childEnv.CLAUDE_PROJECT_DIR;
@@ -551,7 +557,7 @@ export function runSessionScenario(scenario, { pluginDir, pluginName, env, model
       if (!ctx.includes(s.stopContext)) return { verdict: "fail", why: `no Stop additionalContext carried ${JSON.stringify(s.stopContext)}`, writes };
     }
     if (s.reply && !new RegExp(s.reply, "i").test(reply)) return { verdict: "fail", why: `the reply does not match /${s.reply}/i: ${reply.replace(/\s+/g, " ").slice(0, 200)}`, writes };
-    const after = afterProblems(scenario, box, extraEnv);
+    const after = afterProblems(s.after ? { after: s.after } : scenario, box, extraEnv, { ...box.vars, SESSION_ID: run.sessionId });
     if (after) return { verdict: "fail", why: after, writes };
     return { verdict: "pass", why: "the session completed with the expected outcome", writes };
   } finally {
@@ -559,34 +565,89 @@ export function runSessionScenario(scenario, { pluginDir, pluginName, env, model
   }
 }
 
+/** The eval's operator-gated tools: granted with --allow-tools when the scenario allows them. */
+const GATED_TOOLS = new Set(["Bash", "Write", "Edit", "WebFetch"]);
+
 /**
- * Grade a judge scenario with `claude plugin eval --no-publish --json` over a case written from
- * its prompt and rubric (read-only tools). `{ verdict, why }`; an API error is indeterminate.
+ * The eval case for a judge scenario: a `case.yaml` (JSON body; YAML 1.2 reads it) in the
+ * schema `claude plugin eval` 2.1.318 validates (schema_version, name, context.scaffold_script,
+ * execution.{prompt,max_turns,timeout_seconds,allowed_tools,env}, runs, graders[{type: llm,
+ * name, criteria}]), plus a `scaffold.sh` that recreates `setup.files` and `setup.commands` in
+ * the eval's own workspace (cwd `<eval>/home/cwd`, HOME `<eval>/home`, no XDG_* set). File
+ * contents are written verbatim through base64: placeholders inside them are not substituted.
  */
-export function judgeScenario(scenario, { pluginDir, pluginName, env, timeoutS }) {
+export function judgeCase(scenario, { timeoutS = 300 } = {}) {
+  const s = scenario.session;
+  const shellPath = (key) => `"${key.replace(/^~(?=\/|$)/, "$HOME").replace(/^\$(XDG_[A-Z]+_HOME)(?=\/|$)/, (_, k) => `\${${k}:-$HOME/${XDG[k]}}`).replace(/\$\{(CWD|HOME)\}/g, (_, k) => (k === "CWD" ? "$PWD" : "$HOME")).replace(/"/g, '\\"')}"`;
+  const lines = ["#!/bin/sh", "set -e"];
+  for (const [rel, text] of Object.entries(scenario.setup?.files ?? {})) {
+    const p = shellPath(rel);
+    lines.push(`mkdir -p "$(dirname ${p})"`, `printf '%s' '${Buffer.from(String(text)).toString("base64")}' | base64 -d > ${p}`);
+  }
+  for (const line of scenario.setup?.commands ?? []) lines.push(line);
+  const caseYaml = {
+    schema_version: "1.0",
+    name: scenario.name,
+    context: { scaffold_script: "scaffold.sh" },
+    execution: { prompt: s.prompt, max_turns: s.maxTurns ?? 6, timeout_seconds: Math.min(Math.max(1, Math.floor(timeoutS)), 3600), allowed_tools: s.allowedTools ?? ["Read"], env: scenario.setup?.env ?? {} },
+    runs: 1,
+    graders: [{ type: "llm", name: "rubric", criteria: scenario.judge }],
+  };
+  const allowTools = (s.allowedTools ?? []).filter((t) => GATED_TOOLS.has(t.replace(/\(.*$/, "")) || t.startsWith("mcp__"));
+  return { caseYaml, scaffold: `${lines.join("\n")}\n`, allowTools };
+}
+
+/** What the eval's JSON says about `name`: `{ verdict, why }`. Exit codes are not read: a case that fails to load still exits 0. */
+export function judgeVerdict(json, name, { stderr = "" } = {}) {
+  const last = (t) => t.trim().split("\n").filter(Boolean).pop()?.slice(0, 200) ?? "";
+  const c = json?.cases?.find((x) => x.name === name);
+  if (!c) return { verdict: "fail", why: `claude plugin eval loaded no case named ${name}: ${last(stderr) || "no JSON result"}` };
+  const run = Object.values(c.arms ?? {}).flat()[0];
+  if (!run) return { verdict: "indeterminate", why: "claude plugin eval recorded no run for the case" };
+  if (run.error) return { verdict: unavailableRe.test(run.error) || /api[ _-]?error/i.test(run.error) ? "indeterminate" : "fail", why: `claude plugin eval: ${String(run.error).replace(/\s+/g, " ").slice(0, 300)}` };
+  const g = run.graders?.[0];
+  const votes = g?.explanation ? ` (${g.explanation})` : "";
+  if (run.passed) return { verdict: "pass", why: `claude plugin eval: the rubric passed${votes}` };
+  return { verdict: "fail", why: `claude plugin eval: the rubric failed${votes}: ${String(g?.evidence ?? "").replace(/\s+/g, " ").slice(0, 300)}` };
+}
+
+/**
+ * A judge scenario: the deterministic session first (`runSessionScenario`), then the rubric,
+ * graded by `claude plugin eval` over a case written from the scenario (see `judgeCase`).
+ * `{ verdict, why, writes }`: a fail on either side fails; the judge's API error, missing
+ * binary or load failure is indeterminate, never a pass.
+ */
+export function judgeScenario(scenario, { pluginDir, pluginName, env, model, timeoutS, session = runSessionScenario }) {
+  const first = session(scenario, { pluginDir, pluginName, env, model, timeoutS });
+  if (first.verdict !== "pass") return { ...first, why: `session: ${first.why}` };
   const box = makeSandbox(pluginName, { env, pluginDir });
   // `--eval-dir` must be a relative path inside the plugin (claude 2.1.318 refuses an absolute
-  // one), so the case is written under the plugin and removed in `finally`.
+  // one), so the case is written under the plugin and removed in `finally`, whatever happens.
   const casesRel = `live-run-cases-${process.pid}`;
   const cases = join(pluginDir, casesRel);
   try {
+    const { caseYaml, scaffold, allowTools } = judgeCase(scenario, { timeoutS });
     const caseDir = join(cases, scenario.name);
-    mkdirSync(join(caseDir, "graders"), { recursive: true });
-    writeFileSync(join(caseDir, "prompt.md"), `${scenario.session.prompt}\n`);
-    writeFileSync(join(caseDir, "graders", "rubric.md"), `${scenario.judge}\n`);
+    mkdirSync(caseDir, { recursive: true });
+    writeFileSync(join(caseDir, "case.yaml"), `${JSON.stringify(caseYaml, null, 2)}\n`);
+    writeFileSync(join(caseDir, "scaffold.sh"), scaffold, { mode: 0o755 });
     const out = join(box.root, "eval.json");
-    const r = spawnSync("claude", ["plugin", "eval", pluginDir, "--eval-dir", casesRel, "--no-publish", "--trust-plugin", "--json", out], { cwd: box.work, env: { ...scrubEnv(env, pluginName), HOME: env.HOME ?? homedir() }, encoding: "utf8", timeout: timeoutS * 1000, killSignal: "SIGKILL" });
-    if (r.error) return { verdict: "indeterminate", why: `claude plugin eval could not run (${r.error.message})` };
+    const args = ["plugin", "eval", pluginDir, "--eval-dir", casesRel, "--no-publish", "--trust-plugin", "--scaffold", "--runs", "1", "--ablation", "none", "--output-dir", join(box.root, "eval-out"), "--report", join(box.root, "report.html"), "--json", out];
+    if (allowTools.length) args.push("--allow-tools", ...allowTools);
+    const r = spawnSync("claude", args, { cwd: box.work, env: { ...scrubEnv(env, pluginName), HOME: env.HOME ?? homedir() }, encoding: "utf8", timeout: timeoutS * 1000 + 30_000, killSignal: "SIGKILL", maxBuffer: 64 * 1024 * 1024 });
+    if (r.error) return { verdict: "indeterminate", why: `claude plugin eval could not run (${r.error.message})`, writes: first.writes };
     let json = null;
     try {
       json = JSON.parse(readFileSync(out, "utf8"));
     } catch {
-      /* no file: read the exit code */
+      /* no file: the stderr says why */
     }
-    if (r.status === 0) return { verdict: "pass", why: "claude plugin eval: the rubric passed" };
-    const text = `${r.stdout}\n${r.stderr}\n${json ? JSON.stringify(json) : ""}`;
-    if (r.status === 2 || unavailableRe.test(text) || /api[ _-]?error/i.test(text)) return { verdict: "indeterminate", why: `claude plugin eval exit ${r.status}: ${text.trim().split("\n").pop()?.slice(0, 200) ?? ""}` };
-    return { verdict: "fail", why: `claude plugin eval exit ${r.status}: ${(r.stdout + r.stderr).trim().split("\n").slice(-3).join(" | ").slice(0, 300)}` };
+    if (!json) {
+      const text = `${r.stdout}\n${r.stderr}`;
+      const why = `claude plugin eval exit ${r.status ?? r.signal} without a JSON result: ${text.trim().split("\n").filter(Boolean).pop()?.slice(0, 200) ?? ""}`;
+      return { verdict: unavailableRe.test(text) || /api[ _-]?error/i.test(text) ? "indeterminate" : "fail", why, writes: first.writes };
+    }
+    return { ...judgeVerdict(json, scenario.name, { stderr: r.stderr ?? "" }), writes: first.writes };
   } finally {
     rmSync(cases, { recursive: true, force: true });
     box.release();
@@ -648,7 +709,7 @@ export function run({ pluginDir, only = null, live = true, model = "haiku", env 
     else if (c.verdict === "pass") livePasses++;
     else indeterminate++;
     for (const s of chosen.filter((x) => x.session && !x.error)) {
-      const r = s.judge ? judge(s, { pluginDir, pluginName, env, timeoutS }) : session(s, { pluginDir, pluginName, env, model, timeoutS });
+      const r = s.judge ? judge(s, { pluginDir, pluginName, env, model, timeoutS, session }) : session(s, { pluginDir, pluginName, env, model, timeoutS });
       for (const w of r.writes ?? []) writes.add(w);
       lines.push(`session ${s.name}: ${r.verdict} — ${r.why}`);
       if (r.verdict === "fail") failed++;

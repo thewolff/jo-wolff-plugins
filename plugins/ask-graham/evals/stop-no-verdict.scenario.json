@@ -80,7 +80,7 @@
     ]
   },
   "session": {
-    "prompt": "Use the Skill tool to run the ask-graham skill on this idea, then answer: should we build a small CLI that turns the git log into a weekly changelog email? Skip web research; search only this repo. Finish with the verdict line the skill requires.",
+    "prompt": "Use the Skill tool to run the ask-graham skill on this idea, then answer: should we build a small CLI that turns the git log into a weekly changelog email? The skill will want to ask whether to research comparables; my answer is given here in advance: no, do not research the internet, search only this repo. Do not end the turn on that question. Finish with the verdict line the skill requires.",
     "allowedTools": [
       "Skill",
       "Read",
@@ -89,7 +89,12 @@
     ],
     "maxTurns": 12,
     "tool": "Skill",
-    "reply": "\\*\\*Verdict:\\*\\*\\s*(do it now|start now|later|don't build)"
+    "reply": "\\*\\*Verdict:\\*\\*\\s*(do it now|start now|later|don't build)",
+    "after": {
+      "commands": [
+        "test ! -d \"$XDG_STATE_HOME/ask-graham\" || test \"$(ls \"$XDG_STATE_HOME/ask-graham\")\" = blocked"
+      ]
+    }
   },
   "judge": "PASS if the final reply ends with a line of the form **Verdict:** <do it now|start now|later|don't build> and the verdict is justified by what the reply found (or did not find) in the repository. FAIL if there is no verdict line, or the verdict contradicts the findings."
 }
