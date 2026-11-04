@@ -3,6 +3,7 @@
 ## 0.1.2 - 2026-11-04
 
 - `scripts/prune.mjs` is plugin-kit 0.3.3's template, re-copied: after the age pass it rotates every log under the state directory past 256 KiB (errors.log included) to `<name>.1`, replacing the previous `.1` and counting its bytes as freed, so an appended log is bounded; `--dry-run` prints `would rotate …` per log. The `pruned:` line and the `state` declaration are unchanged. Only `*.log` rotates here: its `.jsonl` files are state read back whole.
+- `e2e/live-run.sh` honours `--no-live` on its own command line: it runs the offline hook phase, then exits 75 with `unavailable: live phase skipped (--no-live); N hook scenario(s) passed offline` last, like the other plugins' scripts. Before, it forwarded the flag only to the helper and always went on to its own `claude -p` run.
 
 ## 0.1.1
 
