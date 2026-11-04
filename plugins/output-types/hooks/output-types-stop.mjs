@@ -21,8 +21,11 @@
 // How it fails: stdin not JSON, a thrown error, or no answer at the deadline → the runner logs it
 // to ${XDG_STATE_HOME:-~/.local/state}/output-types/errors.log and allows. The deadline is the
 // runner's 4 s on the mechanical path; with the judge on it is JUDGE_DEADLINE_MS (55 s, inside the
-// 60 s hooks.json timeout), and every judge call is clamped to what is left of it, so a judge
-// that hangs is killed by its own timer before the runner's fires. A transcript that is missing,
+// 60 s hooks.json timeout), and every judge call is clamped to what is left of it, counted from
+// the runner's own start (HOOK_RUNNER_STARTED_AT_MS, set before stdin is read), so a stdin that
+// arrives late eats the judge's budget, not the warning's, and a judge that hangs is killed by its
+// own timer before the runner's fires. Should the runner's fire first anyway, it kills the judge's
+// process group as it exits (lib/judge.mjs registers it). A transcript that is missing,
 // unreadable, or has no assistant text is "nothing to check" and returns null.
 //
 // handle() runs on a worker thread: it returns a plain object or null, never writes stdout or
@@ -72,11 +75,18 @@ export function extractText(payload) {
 
 const isOff = (env) => String(env.OUTPUT_TYPES_CHECK || "").toLowerCase() === "off";
 
+/** The runner's start (HOOK_RUNNER_STARTED_AT_MS) when it is a time not in the future, else now. */
+function runnerStart(env) {
+  const now = Date.now();
+  const t = Number(env.HOOK_RUNNER_STARTED_AT_MS);
+  return Number.isFinite(t) && t > 0 && t <= now ? t : now;
+}
+
 /**
  * @param {object} input  the Stop payload
  * @returns {Promise<object|null>}  { systemMessage } naming the unreceipted statements, or null
  */
-export async function handle(input, { env = process.env, startedAt = Date.now(), budgetMs = null, run } = {}) {
+export async function handle(input, { env = process.env, startedAt = runnerStart(env), budgetMs = null, run } = {}) {
   if (isOff(env)) return null;
   const text = extractText(input);
   if (!text) return null;
@@ -91,8 +101,9 @@ export async function handle(input, { env = process.env, startedAt = Date.now(),
   }
   if (receipted.length && judgeEnabled(env)) {
     const judge = judgeFor(env);
+    // Under the runner the budget is the runner's own deadline (HOOK_RUNNER_DEADLINE_MS);
     // OUTPUT_TYPES_STOP_DEADLINE_MS is for tests: the runner's deadline and the judge budget follow it together.
-    const budget = budgetMs ?? (Number(env.OUTPUT_TYPES_STOP_DEADLINE_MS) || JUDGE_DEADLINE_MS);
+    const budget = budgetMs ?? (Number(env.HOOK_RUNNER_DEADLINE_MS) || Number(env.OUTPUT_TYPES_STOP_DEADLINE_MS) || JUDGE_DEADLINE_MS);
     if (judge) findings.push(...(await judgeStage(receipted, judge, { env, startedAt, budgetMs: budget, run })));
   }
   findings.sort((a, b) => a.statement.line - b.statement.line);

@@ -18,6 +18,7 @@ import {
   legacyProfilePath,
   lookedIn,
   parseAnswer,
+  readSharedConfig,
   resolveJudgeCommand,
   runJudge,
   sharedConfigPath,
@@ -76,11 +77,20 @@ test("resolution order: env var → plugin's own → shared file → legacy prof
   assert.equal(resolveJudgeCommand({ pluginKey: own, env: { ...b.env, TRIAL_JUDGE_BIN: "  " } }).command, "own-cmd", "a blank env var is unset");
 });
 
-test("resolution: a shared or legacy file that is absent, not JSON, not an object, or without a command string is skipped; home and xdgConfigHome overrides are honoured", () => {
+test("resolution: a shared or legacy file that is absent, not an object, or without a command string is skipped; a malformed shared file stops the search before the legacy profile; home and xdgConfigHome overrides are honoured", () => {
   const b = box();
   b.put(b.shared, "{not json");
+  b.put(b.legacy, { enforcement: { judgeCommand: "legacy-cmd" } });
+  assert.equal(resolveJudgeCommand({ env: b.env }), null, "a malformed shared file never falls back to the legacy profile");
+  assert.equal(resolveJudgeCommand({ pluginKey: { command: "own" }, env: b.env }).command, "own", "the plugin's own command still wins");
+  assert.equal(readSharedConfig({ env: b.env }).malformed?.startsWith(`${b.shared}: `), true);
+  b.put(b.shared, "[1]");
+  assert.equal(readSharedConfig({ env: b.env }).malformed, `${b.shared}: not a JSON object`);
+  assert.equal(resolveJudgeCommand({ env: b.env }), null);
+  b.put(b.shared, {});
   b.put(b.legacy, "[1]");
   assert.equal(resolveJudgeCommand({ env: b.env }), null);
+  assert.equal(readSharedConfig({ env: b.env }).malformed, null);
   b.put(b.shared, { command: 42 });
   b.put(b.legacy, { enforcement: { judgeCommand: "" } });
   assert.equal(resolveJudgeCommand({ env: b.env }), null);
@@ -234,6 +244,34 @@ test("which: prints command, timeoutMs and source; with nothing configured, wher
   assert.equal(viaEnv.stdout, `command=from-env\ntimeoutMs=${DEFAULT_TIMEOUT_MS}\nsource=env TRIAL_JUDGE_BIN\n`);
 });
 
+test("a malformed shared file: which names it and does not fall back to the legacy profile; setup refuses to overwrite it without --force and replaces it whole with --force", () => {
+  const b = box();
+  b.put(b.shared, '{ "command": "old", "note": "keep me", }');
+  b.put(b.legacy, { enforcement: { judgeCommand: "legacy-cmd" } });
+  const which = cli(b, ["which"]);
+  assert.equal(which.status, 1, which.stdout);
+  assert.match(which.stdout, new RegExp(`^malformed: ${b.shared.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}: .+\\n`));
+  assert.match(which.stdout, /no judge resolved: the shared file is malformed, so the legacy profile was not consulted/);
+  assert.ok(!which.stdout.includes("legacy-cmd"));
+  const viaEnv = spawnSync(process.execPath, [LIB, "which", "--env-var", "TRIAL_JUDGE_BIN"], { env: { ...b.env, TRIAL_JUDGE_BIN: "from-env" }, encoding: "utf8", timeout: 10_000 });
+  assert.equal(viaEnv.status, 0);
+  assert.match(viaEnv.stdout, /^malformed: .+\ncommand=from-env\n/, "an env override still wins, after the malformed line");
+
+  const before = readFileSync(b.shared, "utf8");
+  const refused = cli(b, ["setup", "--command", "echo '{\"ok\":true}'", "--yes"]);
+  assert.equal(refused.status, 1, refused.stdout + refused.stderr);
+  assert.match(refused.stdout, /current: malformed: /);
+  assert.match(refused.stderr, /not written; the shared file is not valid JSON .* pass --force to replace it whole/);
+  assert.ok(!refused.stdout.includes("testing:"), "refused before the test call");
+  assert.equal(readFileSync(b.shared, "utf8"), before, "the file is untouched");
+  assert.throws(() => writeSharedConfig({ command: "x", timeoutMs: 1, env: b.env }), /malformed: .* not overwriting it without force/);
+  assert.equal(readFileSync(b.shared, "utf8"), before);
+
+  const forced = cli(b, ["setup", "--command", "echo '{\"ok\":true}'", "--yes", "--force"]);
+  assert.equal(forced.status, 0, forced.stdout + forced.stderr);
+  assert.deepEqual(JSON.parse(readFileSync(b.shared, "utf8")), { command: "echo '{\"ok\":true}'", timeoutMs: DEFAULT_TIMEOUT_MS });
+});
+
 test("writeSharedConfig: creates the directory, keeps unrelated keys, replaces command and timeoutMs", () => {
   const b = box();
   const path = writeSharedConfig({ command: "a", timeoutMs: 10, env: b.env });
@@ -244,10 +282,11 @@ test("writeSharedConfig: creates the directory, keeps unrelated keys, replaces c
 
 // ─── sameness: every shipped copy is this file ──────────────────────────────────────────
 
-// Copies that are NOT yet this file: ledger keeps its own lib/judge.mjs and i-have-audhd its
-// judge/ask.mjs until their next releases (jo-issues #333, "Sequencing"). Remove an entry here
-// when that plugin vendors the kit's copy; a listed file that no longer exists is a failure, so a
-// stale entry is noticed.
+// Copies that are NOT yet this file: ledger keeps its own lib/judge.mjs until its next release
+// (jo-issues #333, "Sequencing"). i-have-audhd's judge/ask.mjs has a different name and is not
+// scanned at all until i-have-audhd ships lib/judge.mjs. Remove an entry here when that plugin
+// vendors the kit's copy; a listed file that no longer exists is a failure, so a stale entry is
+// noticed.
 const NOT_YET_VENDORED = ["ledger/lib/judge.mjs"];
 
 test("sameness: every plugins/*/lib/judge.mjs and plugins/*/judge/judge.mjs outside the allowlist is byte-identical to the kit's", () => {

@@ -285,6 +285,51 @@ test("judge dispatch errors: non-zero exit, no JSON, and a timeout each write on
   assert.equal(box.readErrors(), "");
 });
 
+test("judge on, stdin late and a judge that hangs: the judge budget counts from the runner's start, so the mechanical warning still arrives (not a failed-open line) and no judge process outlives the hook", async () => {
+  const box = sandbox();
+  const pidFile = join(box.root, "judge.pids");
+  const dir = configDir(box, { judge: true }, { command: `echo $$ >> ${JSON.stringify(pidFile)}; exec sleep 30` });
+  const payload = JSON.stringify({ hook_event_name: "Stop", last_assistant_message: "**CLAIM**\nThe hook exits 0 at /a/b/hook.mjs:12.\n\n**CLAIM**\nNo receipt here." });
+  const run = (delayMs) =>
+    new Promise((resolve) => {
+      const started = Date.now();
+      const child = spawn(process.execPath, [STOP_HOOK], { cwd: box.work, env: { ...box.env, XDG_CONFIG_HOME: dir, OUTPUT_TYPES_STOP_DEADLINE_MS: "4000" }, stdio: ["pipe", "pipe", "pipe"] });
+      let stdout = "";
+      child.stdout.on("data", (d) => (stdout += d));
+      child.stdin.on("error", () => {});
+      setTimeout(() => child.stdin.end(payload), delayMs);
+      const timer = setTimeout(() => child.kill("SIGKILL"), BUDGET_MS * 2);
+      child.on("close", (status) => {
+        clearTimeout(timer);
+        resolve({ status, ms: Date.now() - started, json: parseJson(stdout) });
+      });
+    });
+  const alive = (pid) => {
+    try {
+      process.kill(pid, 0);
+      return true;
+    } catch {
+      return false;
+    }
+  };
+  // 2.5 s late: no time left for the judge at all; 1 s late: the judge runs and its clamped timer kills it.
+  for (const delayMs of [2_500, 1_000]) {
+    const r = await run(delayMs);
+    assert.equal(r.status, 0);
+    assert.ok(r.ms < 4_000, `took ${r.ms} ms`);
+    assert.equal(r.json?.decision, undefined);
+    assert.match(r.json?.systemMessage ?? "", /^output-types: 1 labelled statement without a receipt[\s\S]*line 4 \*\*CLAIM\*\* "No receipt here\."/);
+  }
+  const pids = existsSync(pidFile) ? readFileSync(pidFile, "utf8").split("\n").filter(Boolean).map(Number) : [];
+  assert.equal(pids.length, 1, "the judge ran once, on the 1 s run");
+  for (let i = 0; i < 20 && pids.some(alive); i++) await new Promise((res) => setTimeout(res, 50));
+  assert.deepEqual(pids.filter(alive), [], "no judge process outlived the hook");
+  assert.equal(box.readErrors(), "");
+  const skipped = readFileSync(join(box.root, "state", "output-types", "skipped.log"), "utf8").split("\n").filter(Boolean);
+  assert.match(skipped[0], /judge skipped: no time left in the hook's budget/);
+  assert.match(skipped[1], /judge timeout: no exit within \d+ ms/);
+});
+
 test("handle() directly: the deadline constants, and a fake runner through the hook's own path", async () => {
   assert.equal(DEADLINE_MS, 4_000);
   assert.equal(JUDGE_DEADLINE_MS, 55_000);
