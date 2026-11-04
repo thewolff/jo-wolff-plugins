@@ -13,7 +13,7 @@
 
 import { after, test, describe } from "node:test";
 import assert from "node:assert/strict";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
@@ -171,6 +171,84 @@ describe("tool_call refusal while pairing", () => {
     }
     assert.match((await s.call("pair_write", { path: "a.txt", content: "x" })).blocked, /no change set is open/);
     assert.equal(existsSync(join(s.repo, "a.txt")), false);
+  });
+});
+
+describe("tool_call when the gate itself fails", () => {
+  const errorLines = (s) => (existsSync(join(s.base, "errors.log")) ? readFileSync(join(s.base, "errors.log"), "utf8").trim().split("\n") : []);
+
+  test("a pairing session whose activation marker cannot be looked up is uncertain: the tool is refused, naming it and the way out, warned and logged once", async () => {
+    const s = setup();
+    assert.equal((await s.call("pair_start")).ok, true);
+    chmodSync(s.dir, 0o000);
+    try {
+      for (const tool of ["write", "read"]) {
+        const r = await s.emit("tool_call", { toolName: tool, input: {} });
+        assert.equal(r?.block, true, tool);
+        assert.match(r.reason, new RegExp(`^paired coding: ${tool} is refused: `), tool);
+        assert.match(r.reason, /cannot tell whether pairing is on: .*EACCES/, tool);
+        assert.match(r.reason, /Logged to .*errors\.log/, tool);
+        assert.match(r.reason, /type pair stop/, tool);
+        assert.match(r.reason, /omp plugin uninstall paired-coding@jo-wolff-plugins/, tool);
+      }
+    } finally {
+      chmodSync(s.dir, 0o700);
+    }
+    const warnings = s.notes.filter((n) => n.level === "warning");
+    assert.equal(warnings.length, 2);
+    for (const w of warnings) assert.match(w.m, /was refused because the gate fails closed while pairing/);
+    const lines = errorLines(s);
+    assert.equal(lines.length, 2);
+    for (const l of lines) assert.match(l, new RegExp(`^\\S+Z omp/paired-coding-omp\\.ts tool_call session=${s.sessionId}: cannot tell whether pairing is on`));
+  });
+
+  test("a state base that cannot be looked into is uncertain even before pair_start: tools are refused", async () => {
+    const s = setup();
+    chmodSync(s.base, 0o000);
+    try {
+      const r = await s.emit("tool_call", { toolName: "write", input: {} });
+      assert.equal(r?.block, true);
+      assert.match(r.reason, /write is refused: .*EACCES/);
+      assert.match(r.reason, /could not be logged to .*errors\.log/);
+    } finally {
+      chmodSync(s.base, 0o700);
+    }
+    assert.equal(s.notes.filter((n) => n.level === "warning").length, 1);
+  });
+
+  test("a fault in a session that never paired lets the tool through, warned and logged once", async () => {
+    const s = setup();
+    s.ctx.sessionManager.getEntries = () => { throw new Error("entries unavailable"); };
+    assert.equal(await s.emit("tool_call", { toolName: "write", input: {} }), undefined);
+    const warnings = s.notes.filter((n) => n.level === "warning");
+    assert.equal(warnings.length, 1);
+    assert.match(warnings[0].m, /entries unavailable/);
+    assert.match(warnings[0].m, /write went ahead: this session is not pairing/);
+    const lines = errorLines(s);
+    assert.equal(lines.length, 1);
+    assert.match(lines[0], /omp\/paired-coding-omp\.ts tool_call session=\S+: entries unavailable$/);
+    assert.equal(existsSync(s.dir), false, "no session directory");
+  });
+
+  test("a fault after a typed pair stop lets the tool through", async () => {
+    const s = setup();
+    assert.equal((await s.call("pair_start")).ok, true);
+    await s.type("pair stop");
+    s.ctx.sessionManager.getEntries = () => { throw new Error("entries unavailable"); };
+    assert.equal(await s.emit("tool_call", { toolName: "write", input: {} }), undefined);
+    assert.match(s.notes.at(-1).m, /write went ahead/);
+  });
+
+  test("a malformed state file while pairing stays closed and is warned and logged", async () => {
+    const s = setup();
+    assert.equal((await s.call("pair_start")).ok, true);
+    writeFileSync(join(s.dir, "state.json"), "{garbage");
+    assert.equal((await s.emit("tool_call", { toolName: "write", input: {} }))?.block, true);
+    assert.equal(await s.emit("tool_call", { toolName: "read", input: {} }), undefined);
+    const warnings = s.notes.filter((n) => n.level === "warning");
+    assert.equal(warnings.length, 2);
+    for (const w of warnings) assert.match(w.m, /state file unreadable.*Logged to /);
+    assert.equal(errorLines(s).length, 2);
   });
 });
 

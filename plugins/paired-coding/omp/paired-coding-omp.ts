@@ -64,7 +64,8 @@
 // unit tests without Bun. `pi` is typed structurally; there are no imports from the host.
 
 import { CARRIED_PHRASE, EARLIER_ROADMAP_CHOICES, PAIR_TOOLS, ROADMAP_STATUSES } from "../core/gate.mjs";
-import { carryInto, clearInPlace, endSession, executeVerb, recordTrustedInput, sessionDirFor, verdict } from "../lib/verbs.mjs";
+import { logFault, reasonOf } from "../lib/host-io.mjs";
+import { carryInto, clearInPlace, endSession, executeVerb, pairingOrUncertain, recordTrustedInput, sessionDirFor, verdict } from "../lib/verbs.mjs";
 
 // ─── host shapes (structural; only what this adapter reads) ────────────────────────────
 
@@ -126,6 +127,41 @@ export function stopNotice(receipt: string | null | undefined): string {
 		? `The pair-accepted receipt is at ${receipt}; name that path in your closing summary. It records which change sets your partner agreed to and pair_done closed, and it does not say the code works.`
 		: "The pair-accepted receipt could not be written; say so in your closing summary.";
 	return `paired-coding: your partner typed pair stop, so pairing has ended in this session. The gate no longer refuses host tools. ${where} Pairing starts again only if your partner asks for it and you call pair_start.`;
+}
+
+/** This adapter's file, as errors.log names it. */
+const OMP_FILE = "omp/paired-coding-omp.ts";
+
+/** A warning shown to the user, when the session has a UI to show it in. */
+function warn(ctx: OmpContext, message: string): void {
+	if (ctx.hasUI && ctx.ui) ctx.ui.notify(message, "warning");
+}
+
+/**
+ * What tool_call answers when the gate itself throws (an activation marker that cannot be looked
+ * up, a state directory it cannot read, a reset check that fails). One errors.log line and one
+ * warning, as the Claude Code hook gives. While pairing, or when the gate cannot tell, the tool
+ * is refused, naming it and the way out; a session confirmed not pairing goes ahead.
+ */
+export function toolCallFault(env: Record<string, string | undefined>, ctx: OmpContext, dir: string, toolName: string, err: unknown): { block: true; reason: string } | undefined {
+	const reason = reasonOf(err);
+	let sessionId = "-";
+	try {
+		sessionId = ctx.sessionManager.getSessionId();
+	} catch {
+		// the id was readable a moment ago (dir came from it); "-" only marks the log line
+	}
+	const logged = logFault(env, "tool_call", { session_id: sessionId }, reason, OMP_FILE);
+	const name = toolName || "(unnamed tool)";
+	if (PAIR_TOOLS.includes(name) || pairingOrUncertain(dir)) {
+		warn(ctx, `paired coding: the tool_call handler failed: ${reason}. ${logged} ${name} was refused because the gate fails closed while pairing.`);
+		return {
+			block: true,
+			reason: `paired coding: ${name} is refused: the gate failed (${reason}) and fails closed while pairing. ${logged} Tell your partner; the way out is for them to type pair stop as a message of its own, and if the gate stays broken, to remove the extension with omp plugin uninstall paired-coding@jo-wolff-plugins.`,
+		};
+	}
+	warn(ctx, `paired coding: the tool_call handler failed: ${reason}. ${logged} ${name} went ahead: this session is not pairing, so the gate stays out of the way.`);
+	return undefined;
 }
 
 /**
@@ -329,9 +365,17 @@ export default function pairedCodingOmp(pi: PiLike, deps: AdapterDeps = {}): voi
 	pi.on("tool_call", (event, ctx) => {
 		const dir = dirOf(ctx, env);
 		if (!dir) return undefined; // no usable session id: nothing can have been activated under it
-		checkReset(ctx, dir);
-		const v = verdict(event.toolName, { sessionDir: dir });
-		return v.allow ? undefined : { block: true, reason: `paired coding: ${v.reason}` };
+		try {
+			checkReset(ctx, dir);
+			const v = verdict(event.toolName, { sessionDir: dir });
+			if (v.degraded) {
+				const logged = logFault(env, "tool_call", { session_id: ctx.sessionManager.getSessionId() }, `session state degraded (${v.degraded}) in ${dir}`, OMP_FILE);
+				warn(ctx, `paired coding: the session state in ${dir} could not be read as saved (${v.degraded}), so the gate treats pairing as on with the card closed. ${logged} Type pair stop to end pairing.`);
+			}
+			return v.allow ? undefined : { block: true, reason: `paired coding: ${v.reason}` };
+		} catch (err) {
+			return toolCallFault(env, ctx, dir, event.toolName, err);
+		}
 	});
 
 	pi.on("input", (event, ctx) => {

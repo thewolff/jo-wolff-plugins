@@ -43,6 +43,30 @@ export function stateBase(env = process.env) {
   return set && set.startsWith("/") ? set : join(homedir(), ".local", "state", "paired-coding");
 }
 
+/** One line, no newlines: the reason a fault is logged and shown under. */
+export const reasonOf = (err) => (err instanceof Error ? err.message : String(err)).replace(/\s+/g, " ").trim() || "unknown error";
+
+export const ERRORS_LOG = "errors.log";
+
+/**
+ * Append one line to `errors.log` in the state base naming the time, the plugin file (`where`),
+ * the event, the session and the reason. Shared by the Claude Code hook and the OMP adapter.
+ * Returns the sentence that says where it went, or why it could not be written; never throws.
+ */
+export function logFault(env, event, input, reason, where) {
+  let path = "";
+  try {
+    const base = stateBase(env);
+    path = join(base, ERRORS_LOG);
+    const sid = typeof input?.session_id === "string" ? input.session_id : "-";
+    mkdirSync(base, { recursive: true, mode: 0o700 });
+    appendFileSync(path, `${new Date().toISOString()} ${where} ${event || "(no event)"} session=${sid}: ${reason}\n`, { mode: 0o600 });
+    return `Logged to ${path}.`;
+  } catch (err) {
+    return `It could not be logged to ${path || ERRORS_LOG} (${reasonOf(err)}).`;
+  }
+}
+
 const SAFE_ID = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
 
 /** The session's own state directory, or null when the id is not a safe path segment. */

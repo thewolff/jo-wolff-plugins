@@ -256,6 +256,10 @@ How it works:
   whether pairing is on (the activation marker cannot be looked up, `EACCES` for one), that
   counts as pairing, and tools are refused. A session whose pairing has ended, by a typed
   `pair stop` or a session end, counts as not pairing.
+  The OMP adapter's `tool_call` handler does the same: one line in the same errors.log (named
+  `omp/paired-coding-omp.ts`), one warning notification where OMP has a UI, and a refusal
+  while pairing or uncertain whose way out is `pair stop`, or
+  `omp plugin uninstall paired-coding@jo-wolff-plugins` if the gate stays broken.
 - Typing `pair stop` ends pairing in any phase: the gate reaps running commands, takes a final
   snapshot, journals any write it did not approve, journals the stop as `typed-stop`, writes
   the pair-accepted receipt (`pair-accepted.json`, beside the journal; see **Pair-accepted
