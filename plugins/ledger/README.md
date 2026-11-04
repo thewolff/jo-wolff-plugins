@@ -232,7 +232,7 @@ appends one line to `${XDG_STATE_HOME:-~/.local/state}/ledger/errors.log` and te
 | hook times out | n/a | Claude Code cancels it; no injection | the tool proceeds | the stop proceeds | cut off | the prompt proceeds |
 | switch off in config | n/a | exit 0 before opening the database | same | same | same | same |
 | project disabled (`"enabled": false`) | the CLI works regardless | exit 0 before opening the database, nothing printed | same | same | same | same |
-| bounce row cannot be written | n/a | n/a | the deny or allow stands; one `errors.log` line | the block or pass stands; one `errors.log` line | the end stamp stands; one `errors.log` line | n/a |
+| bounce row cannot be written | n/a | n/a | the deny or allow stands; one `errors.log` line | the block or pass stands; one `errors.log` line | the end stamp and the bypass update share one transaction, so neither lands; one `errors.log` line | n/a |
 | review lab unavailable (no binary, non-zero exit, timeout, empty reply) | `ledger review` records the lab `unavailable` with the error, exit 0 | n/a | the lab is left out of the verdict and named in a `systemMessage`; every lab unavailable allows the push with a `systemMessage` | n/a | n/a | n/a |
 | review gate cannot decide (git fails, a query throws) | n/a | the findings line is left out | allows the push with a `systemMessage`; one `errors.log` line | n/a | n/a | n/a |
 
@@ -312,13 +312,23 @@ variables) instead of the caller's, and `LEDGER_ENABLED=0` so the ledger's hooks
 
 `LEDGER_REVIEW_BIN_<LAB>` (e.g. `LEDGER_REVIEW_BIN_CODEX`) points a lab at another binary.
 
-The gate checks the commits the command publishes, not the hook's folder: `git push` in the
-repository its `-C` options select (HEAD when no refspec is given, else each refspec's source;
-a deletion publishes nothing); `gh pr create` the commit `--head` names, else HEAD; `gh pr merge`
-the full sha given to `--match-head-commit`, else the head commit `gh pr view` reports for that
-pull request (5 seconds). The command is read with shell quoting, so a quoted `git push` inside an
-argument is not a push. When the command does not say which commit (`--all`, `--mirror`, `--tags`,
-a pattern refspec, `--git-dir`, gh failing), the call is allowed with a notice saying so.
+The gate checks the commits the command publishes, not the hook's folder. Each command runs in
+the folder its preceding `cd`/`pushd` select. `git push` checks the repository its `-C` options
+select, then each refspec's source; a deletion publishes nothing. With no refspec, git's own
+choice is followed: HEAD under `push.default` `simple`, `current` or `upstream`, nothing under
+`nothing`. `gh pr create` without `--head` checks HEAD (gh pushes the current branch). With
+`--head <branch>` gh does not push, so the gate checks the remote branch (its upstream, else
+`origin/<branch>`), not the local one. `gh pr merge` checks the full sha given to
+`--match-head-commit`, else the head commit `gh pr view` reports for that pull request
+(5 seconds); in that case an allowed merge carries a notice naming the commit checked and the
+`--match-head-commit <sha>` that binds the merge to it, because the head can move before the
+merge runs. The command is read with shell quoting, so a quoted `git push` inside an argument is
+not a push, while one inside `$(…)` or backticks (unquoted, in double quotes, or in an unquoted
+heredoc) is. When the command does not say which commit, the call is allowed with a notice
+saying so: `--all`, `--mirror`, `--tags`, `--branches`, a `:` or pattern refspec, a configured
+`remote.<name>.push`, `push.default matching`, `--git-dir`, a `cd` or `-C` whose folder is
+computed (`$`, `~`, a glob, `cd -`), `--head <owner>:<branch>`, a remote branch not fetched here,
+gh failing.
 
 For each commit the gate reads its rows, strictest first: a `waived` row lets it through; any lab
 whose latest row is `findings` (and not followed by `addressed`) denies, with the findings
@@ -330,7 +340,8 @@ carry over. A deny is only given while the database can take the write that lift
 
 The round count needs a stable base. It is the merge-base with `origin/main` (else a local
 `main` or `master`); on a branch with neither, the base the branch's first review recorded, while
-it is still an ancestor of HEAD; else HEAD's parent.
+it is still an ancestor of HEAD (a review from the root records the empty tree, so the root
+commit's review stays round 1); else HEAD's parent.
 
 **The loop.** After `findings`, the agent fixes the blocking and should findings, commits, and
 runs `ledger review` again on the new commit. Each reviewed commit on the branch (since the
@@ -338,22 +349,28 @@ base) is one round; the output names the round and `review.maxRounds` (default 3
 would go past the cap stops without running and says to ask the human: waive with their reason,
 or continue with `--force-round`.
 
-**The judge.** A finding counts as resolved only when a judge model agrees. Two claims are
-checked: a blocking or should finding from the previous round that a lab no longer lists, and
-every open finding when the agent runs `review addressed "<why>"`. For each, the judge gets the
-finding and the diff between the two commits for the files it names (at most 8 kB), and the
-question "Does this change resolve the finding? Answer yes or no." `no` keeps the finding open
-(`judge: "no"` in `findings_json`, the row stays `findings`, the gate stays closed, and the
-output names it); `yes` resolves it. A judge that is not configured, cannot start, times out
-(60 seconds) or answers anything else gives `unverified`: the finding counts as resolved, fail
-open, and the gate's notice names it. Answers are cached in `cc_meta` under `judge:<sha256>`, so
-asking the same thing again costs nothing. The judge command is `review.judgeCommand`, else the
-i-have-audhd plugin's `enforcement.judgeCommand`: one judge, configured once.
+**The judge.** A blocking or should finding counts as resolved only when a judge model agrees.
+Each lab's outstanding findings are its latest row that is not `unavailable`, on any reviewed
+commit of the branch, this one included. Three things go to the judge: an outstanding finding the
+lab's new reply no longer lists, one it lists again only as a nit, and every outstanding finding
+on an earlier commit when the agent runs `review addressed "<why>"`. A lab that is `unavailable`
+this time, or not in this run's labs, gets a `findings` row on the new commit carrying its
+outstanding findings, so skipping a lab does not clear them. For each finding the judge gets the
+finding and the diff between the two commits for the files it names, capped at 8 kB together;
+a longer passage is cut and ends with a line saying so and giving the sha256 of the whole, so the
+cache tells two long inputs apart. The question is "Does this change resolve the finding? Answer
+yes or no." `no` keeps the finding open (`judge: "no"` in `findings_json`, the row stays
+`findings`, the gate stays closed, and the output names it); `yes` resolves it. A judge that is
+not configured, cannot start, times out (60 seconds) or answers anything else gives
+`unverified`: the finding counts as resolved, fail open, and the gate's notice names it. Answers
+are cached in `cc_meta` under `judge:<sha256>`, so asking the same thing again costs nothing. The
+judge command is `review.judgeCommand`, else the i-have-audhd plugin's
+`enforcement.judgeCommand`: one judge, configured once.
 
 | Verb | Effect |
 | :- | :- |
 | `review status` | the gate's state for HEAD; the branch's rounds (round, sha, lab, counts by severity, verdict); then every row for HEAD |
-| `review addressed "<why>"` | the manual override of a finding: records that HEAD resolves the open findings of an earlier commit, each checked by the judge (refused without a reason, when there were no findings, or when the judge says `no`) |
+| `review addressed "<why>"` | the manual override of a finding: records that HEAD resolves the outstanding findings of earlier commits, each checked by the judge. Refused without a reason, when HEAD has findings of its own (fix, commit and review again, or waive), when there are no outstanding findings, or when the judge says `no` (which records a `findings` row for HEAD naming them) |
 | `review waive "<why>"` | lets HEAD through; the reason is required and recorded. This is the way out when the human is prototyping or needs the push anyway |
 
 SessionStart adds `ledger: cross-lab review found N finding(s) on <sha>; run … review status`
