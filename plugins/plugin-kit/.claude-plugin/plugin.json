@@ -1,6 +1,6 @@
 {
   "name": "plugin-kit",
-  "description": "Start a new Claude Code plugin that meets the repository test bar on day one: `/plugin-kit:new-plugin` scaffolds the fail-open hook runner, one handler per event, the five-fault hook-contract test, the canary live run, the fixtures rule, a skill with its \"When this can't run\" section, and the how-it-fails receipt, so `ledger gate check` passes before the first rule is written.",
+  "description": "Scaffold a new plugin that meets this repository's test bar on day one, and keep the hook runner, judge dispatch, scenario runner and release agents the other plugins vendor.",
   "version": "0.3.2",
   "author": { "name": "Jo Wolff" },
   "license": "MIT",

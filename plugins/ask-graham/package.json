@@ -1,5 +1,6 @@
 {
   "name": "ask-graham",
+  "description": "Answer \"should we build X?\" with Graham's stated judgment — his gate questions, the 2-minute rule, fewer lines wins — and one verdict: do it now, start now, later, or don't build.",
   "version": "0.8.1",
   "private": true,
   "scripts": {

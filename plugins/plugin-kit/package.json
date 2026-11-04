@@ -1,5 +1,6 @@
 {
   "name": "plugin-kit",
+  "description": "Scaffold a new plugin that meets this repository's test bar on day one, and keep the hook runner, judge dispatch, scenario runner and release agents the other plugins vendor.",
   "version": "0.3.2",
   "private": true,
   "type": "module",
