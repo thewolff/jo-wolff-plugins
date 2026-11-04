@@ -8,9 +8,10 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, statSync, utimesSync, writeFileSync } from "node:fs";
+import { existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, statSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { pathToFileURL } from "node:url";
 import { KIT_ROOT } from "../scripts/new-plugin.mjs";
 
 const TEMPLATE = readFileSync(join(KIT_ROOT, "templates", "scripts", "prune.mjs"), "utf8");
@@ -89,6 +90,73 @@ test("template prune: a *.log or *.jsonl past 256 KiB rotates to <name>.1 (error
   const later = run();
   assert.equal(later.stdout, `pruned: 1 file(s), ${big.length} bytes freed; kept 4\n`, "the three other logs and usage.json stay");
   assert.equal(existsSync(join(dir, "errors.log.1")), false);
+});
+
+/** A big log that is a symlink to an outside file, beside a real `.1`: the prune leaves both alone. */
+function symlinkFixture(dir) {
+  const outside = mkdtempSync(join(tmpdir(), "kit-prune-outside-"));
+  const target = join(outside, "target.log");
+  writeFileSync(target, "x".repeat(300 * 1024));
+  symlinkSync(target, join(dir, "x.log"));
+  writeFileSync(join(dir, "x.log.1"), "previous rotation");
+  return target;
+}
+
+function assertSymlinkUntouched(dir, target, label) {
+  assert.equal(lstatSync(join(dir, "x.log")).isSymbolicLink(), true, `${label}: the linked x.log is still a symlink`);
+  assert.equal(lstatSync(join(dir, "x.log.1")).isFile(), true, `${label}: x.log.1 is still a regular file`);
+  assert.equal(readFileSync(join(dir, "x.log.1"), "utf8"), "previous rotation", `${label}: the previous rotation is kept`);
+  assert.equal(statSync(target).size, 300 * 1024, `${label}: the link's target is untouched`);
+}
+
+/** A fresh big log beside a `.1` already past --days: the age walk removes the `.1`, the rotation must not count it again. */
+function expiredPredecessorFixture(dir) {
+  writeFileSync(join(dir, "x.log"), "x".repeat(300 * 1024));
+  writeFileSync(join(dir, "x.log.1"), "abc");
+  aged(join(dir, "x.log.1"), 31);
+}
+
+test("template prune: a symlinked x.log is skipped: not rotated, its regular x.log.1 kept, nothing counted", () => {
+  const linked = render();
+  const target = symlinkFixture(linked.dir);
+  const r = linked.run();
+  assert.equal(r.status, 0, r.stderr);
+  assert.equal(r.stdout, "pruned: 0 file(s), 0 bytes freed; kept 1\n", "the symlink is neither rotated nor counted");
+  assertSymlinkUntouched(linked.dir, target, "template");
+});
+
+test("template prune: a dry run with an already-expired x.log.1 prints the real run's totals (the .1 is not counted twice)", () => {
+  const { dir, run } = render();
+  expiredPredecessorFixture(dir);
+  const dry = run("--dry-run");
+  assert.equal(dry.status, 0, dry.stderr);
+  const real = run();
+  assert.equal(real.status, 0, real.stderr);
+  assert.equal(real.stdout.trim().split("\n").at(-1), "pruned: 1 file(s), 3 bytes freed; kept 1");
+  assert.equal(dry.stdout.replaceAll("would rotate", "rotated").replace(" (dry run)", ""), real.stdout, "a dry run's totals are the real run's");
+});
+
+test("every template-following plugins/*/scripts/prune.mjs skips symlinks and counts a dry run like the real run", async () => {
+  const plugins = join(KIT_ROOT, "..");
+  // as2-skills prunes `$TMPDIR/seo-audit-*` directories with its own walk, not the template's.
+  const copies = readdirSync(plugins).filter((n) => n !== "as2-skills" && existsSync(join(plugins, n, "scripts", "prune.mjs")));
+  assert.ok(copies.length >= 7, `expected the template-following plugins, saw ${copies.join(", ")}`);
+  const now = Date.now();
+  for (const name of copies) {
+    const { prune } = await import(pathToFileURL(join(plugins, name, "scripts", "prune.mjs")).href);
+    const linked = mkdtempSync(join(tmpdir(), `kit-prune-${name}-`));
+    const target = symlinkFixture(linked);
+    const r = prune(linked, { now });
+    assert.deepEqual([r.removed, r.bytes, r.rotated], [0, 0, []], `${name}: the symlink is neither rotated nor freed`);
+    assertSymlinkUntouched(linked, target, name);
+
+    const dir = mkdtempSync(join(tmpdir(), `kit-prune-${name}-`));
+    expiredPredecessorFixture(dir);
+    const dry = prune(dir, { now, dryRun: true });
+    const real = prune(dir, { now });
+    assert.deepEqual(dry, real, `${name}: a dry run's totals are the real run's`);
+    assert.deepEqual([real.removed, real.bytes], [1, 3], `${name}: only the expired .1 is freed`);
+  }
 });
 
 test("drift guard: every plugins/*/scripts/prune.mjs carries the contract line, the usage line and (for a state directory) the 256 KiB rotation", () => {

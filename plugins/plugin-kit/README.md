@@ -337,8 +337,11 @@ and ledger's canary runs each one (nightly after the live runs, and daily on its
 `canary run --prunes-only`). The command a plugin ships, the template's `scripts/prune.mjs` or
 its own, meets this:
 
-- `--dry-run` counts what would go and removes nothing; `--days N` is the retention. Anything
-  else on the line is usage on stderr, exit 1.
+- `--dry-run` counts what would go and removes nothing, and its totals are the real run's on the
+  same files (a `.1` the age pass would remove is not counted again as replaced by a rotation);
+  `--days N` is the retention. Anything else on the line is usage on stderr, exit 1.
+- Only regular files count: a symlink (to a file or a directory) is never aged, rotated or
+  counted, so a linked `x.log` never replaces its `.1`.
 - The last stdout line is `pruned: <n> file(s), <bytes> bytes freed`, with ` (dry run)` after
   it on a dry run and `; kept <k>` allowed after that; the canary reads the bytes from it, and
   ledger's `gate check` `retention` row runs every declared command once with `--dry-run` and
@@ -357,9 +360,10 @@ its own, meets this:
 - A plugin with its own cap on a directory (i-have-audhd's judge cache: 2,000 files or 7 days)
   runs that cap inside the prune too, and counts its removals in the line.
 
-The template is the reference copy: `test/prune-template.test.mjs` drives it, and its drift
-guard checks every `plugins/*/scripts/prune.mjs` in this repository for the contract line, the
-usage line and the rotation.
+The template is the reference copy: `test/prune-template.test.mjs` drives it, imports every
+template-following `plugins/*/scripts/prune.mjs` to check the symlink skip and the dry-run
+totals, and its drift guard checks every copy for the contract line, the usage line and the
+rotation.
 
 ## Changes in 0.3.3
 
@@ -371,6 +375,8 @@ each. The contract line is unchanged. The contract itself is written down above,
 brb, delegation, output-types, ask-graham, continuity, paired-coding and i-have-audhd carry the
 re-copied template (delegation and paired-coding rotate `*.log` only, their `.jsonl` being
 state).
+Symlinks are skipped (`lstat`, regular files only) and a dry run with an expired `.1` prints the
+real run's totals; every re-copied prune carries both.
 
 ## Changes in 0.3.2
 

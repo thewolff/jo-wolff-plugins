@@ -18,6 +18,9 @@ README's *Changes* section.
   (`warnings.log`, `skipped.log`, `judge-failures.log`, `judge-usage.jsonl`, `errors.log`) to
   `<name>.1`, replacing the previous `.1`; `--dry-run` prints `would rotate …` per log. The
   `pruned:` line and the `state` declaration are unchanged.
+- The re-copied prune skips symlinks (a linked `x.log` is never rotated over its `.1`) and a
+  dry run no longer counts an expired `.1` twice: its totals are the real run's (plugin-kit
+  0.3.3's fix).
 
 ## [1.7.0]
 

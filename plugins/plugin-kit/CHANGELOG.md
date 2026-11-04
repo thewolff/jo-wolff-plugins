@@ -19,6 +19,11 @@ the README's "Changes in" sections.
 - `templates/scripts/prune.mjs` rotates every `*.log` / `*.jsonl` past 256 KiB (errors.log
   included) to `<name>.1` after the age pass, replacing the previous `.1` and counting its bytes
   as freed; `--dry-run` prints `would rotate …` per log. The contract line is unchanged.
+- The template prune considers regular files only (`lstat`): a symlink, an `x.log` linked to a
+  file elsewhere included, is never aged, rotated or counted, so its earlier `.1` is not lost.
+  A `.1` the age pass removes (or would remove) is not counted again as replaced by its log's
+  rotation, so a `--dry-run` prints the real run's totals. Every template-following
+  `plugins/*/scripts/prune.mjs` carries both, pinned by `test/prune-template.test.mjs`.
 
 ## [0.3.2] - 2026-11-04
 

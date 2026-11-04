@@ -15,6 +15,7 @@
 // at 256 KiB plus one `.1`, and the `.1` ages out like any other file on a later run. Prints
 // `rotated <path> to <path>.1` per rotation and `pruned: <n> file(s), <bytes> bytes freed` as the
 // last line (the canary records the bytes). errors.log is kept whatever its age: it is the record.
+// Only regular files count: a symlink is never aged, rotated or counted.
 //
 // The directory is the hooks' own (hooks/fault.mjs stateDir: XDG_STATE_HOME counts only when it is
 // an absolute path).
@@ -23,7 +24,7 @@
 // cannot be removed or rotated is counted as kept and named on stderr; exit stays 0 (a prune that
 // cannot finish must not read as a failed canary night). A bad --days → usage on stderr, exit 1.
 
-import { readdirSync, realpathSync, renameSync, rmdirSync, rmSync, statSync } from "node:fs";
+import { lstatSync, readdirSync, realpathSync, renameSync, rmdirSync, rmSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -46,6 +47,9 @@ export function prune(dir, { days = 30, now = Date.now(), dryRun = false, maxByt
   const cutoff = now - days * 24 * 3_600_000;
   const out = { removed: 0, bytes: 0, kept: 0, rotated: [] };
   const logs = [];
+  // Files the age walk removed (or, on a dry run, would remove): a `.1` among them is not counted
+  // again as replaced by a rotation, so a dry run's totals equal the real run's.
+  const planned = new Set();
   const walk = (d) => {
     let names;
     try {
@@ -66,10 +70,12 @@ export function prune(dir, { days = 30, now = Date.now(), dryRun = false, maxByt
       }
       let st;
       try {
-        st = statSync(p);
+        st = lstatSync(p);
       } catch {
         continue;
       }
+      // Only regular files: a symlink (to a file or a directory) is neither aged, rotated nor counted.
+      if (!st.isFile()) continue;
       if (e.name === "errors.log" || st.mtimeMs >= cutoff) {
         out.kept++;
         if (ROTATED.test(e.name) && st.size > maxBytes) logs.push({ path: p, name: e.name, dir: d });
@@ -78,6 +84,7 @@ export function prune(dir, { days = 30, now = Date.now(), dryRun = false, maxByt
       try {
         if (!dryRun) rmSync(p, { force: true });
         out.removed++;
+        planned.add(p);
         out.bytes += st.size;
       } catch (err) {
         out.kept++;
@@ -90,7 +97,8 @@ export function prune(dir, { days = 30, now = Date.now(), dryRun = false, maxByt
     const old = `${log.path}.1`;
     let replaced = 0;
     try {
-      replaced = statSync(old).size;
+      const prev = lstatSync(old);
+      if (prev.isFile() && !planned.has(old)) replaced = prev.size;
     } catch {
       /* no earlier rotation */
     }
