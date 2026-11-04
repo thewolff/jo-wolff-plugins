@@ -7,14 +7,19 @@
 //   anywhere, with nothing but the local disk and a local cache:
 //
 //   missing-path  a local path in a code span or a markdown link — `/absolute`, `~/home`, or
-//                 `file://` — that does not exist. Line and column suffixes (`:41`, `:41-50`,
-//                 `#L12`) are stripped first. Never for a sentence that says the file is still
-//                 to come ("will be written", "to be produced", "once it lands") or gone
-//                 ("removed", "deleted", "no longer exists"), nor for a span that is a command
-//                 (`rm /x`), nor for a placeholder (`/path/to/<name>`, a glob, a `$VAR`).
+//                 `file://` — that does not exist. A `file://` URL is decoded first, then line
+//                 and column suffixes are stripped (`:41`, `:41-50`, `:307–321`, `:18,22`,
+//                 `:13-14,56-59`, `#L12`). Never for a sentence that says the file is still
+//                 to come ("will be written", "I'll save it to", "Step 3: … save them to",
+//                 "Plan:", "once it lands", "didn't save") or gone ("removed", "deleted", "no
+//                 longer exists"), nor for a span that is a command (`rm /x`), nor for a
+//                 placeholder (`/path/to/<name>`, a glob, a `$VAR`), nor for a missing path
+//                 that is a slash command or an HTTP route (ROUTE_RE: one segment with no dot,
+//                 `/mcp`, `/wrap-up`, `/health`; or a `:param` segment, `/messages/:id/x`).
 //   gh-shape      a github.com URL whose number segment is not `/issues/N` or `/pull/N`
 //                 (`/issue/N`, `/pulls/N`): GitHub has no such page.
-//   gh-word       the sentence calls it a PR and the URL says `/issues/N`, or the reverse.
+//   gh-word       the word nearest before the URL (at most WORD_WINDOW tokens back, not past
+//                 an earlier URL) calls it a PR and the URL says `/issues/N`, or the reverse.
 //                 GitHub redirects either way, so the page opens; the word is what misleads.
 //   gh-missing    the local cache (lib/gh-cache.mjs) says GitHub answered 404 for it, inside
 //                 the miss TTL.
@@ -55,36 +60,52 @@ const GH_URL_RE = /https?:\/\/(?:www\.)?github\.com\/([^/\s`'"<>)\]]+)\/([^/\s`'
 
 // A local-path candidate: absolute, home, or file URL, with nothing else in the span.
 const LOCAL_RE = /^(?:file:\/\/\S+|~(?:\/\S*)?|\/[^\s/]\S*)$/;
-// Trailing line/column anchors and punctuation a sentence leaves on a path.
-const SUFFIX_RE = /(?:[:#]L?\d+(?:[-–]L?\d+)?(?::\d+)?)?[.,;:)!?]*$/;
+// Trailing line/column anchors and punctuation a sentence leaves on a path: one range or a
+// comma list of them (`:41`, `:41-50`, `:307–321`, `:18,22`, `:13-14,56-59`, `#L12-L20`, `:7:3`).
+const SUFFIX_RE = /(?:[:#]L?\d+(?:[-–]L?\d+)?(?:,L?\d+(?:[-–]L?\d+)?)*(?::\d+)?)?[.,;:)!?]*$/;
+// A missing path that is a slash command or an HTTP route, not a file: one segment with no
+// dot (`/mcp`, `/wrap-up`, `/health`; a real one-segment path such as `/tmp` exists), or any
+// `:param` segment (`/:id`, `/messages/:id/delivered`).
+const ROUTE_RE = /^\/[^/.\s]+\/?$|\/:[A-Za-z_]/;
 // Placeholders: nothing on disk can be meant.
 const PLACEHOLDER_RE = /[<>…*?$|{}[\]]|\.\.\.|(?:^|\/)(?:path\/to|abs|absolute|some|your)\//;
 
 // The sentence says the file is still to come, or gone.
 const NOT_NOW_RE =
-  /\b(?:will|would|shall|should|going to|about to|planned|proposed|intend(?:s|ed)? to|expect(?:s|ed)? to)\b[^.;]{0,60}\b(?:be|write|writes|written|create|creates|created|produce|produces|produced|generate|generates|generated|save|saves|saved|land|lands|landed|exist|exists|appear|appears|live|go|put|placed|end up)\b|\bto be (?:written|produced|created|generated|saved|placed|added)\b|\bonce (?:it|that|this|they|the \w+) (?:lands?|exists?|merges?|is (?:written|created|produced|in)|are (?:written|created|produced|in))\b|\bwhen (?:it|that|this|they|the \w+) (?:lands?|exists?|merges?|is (?:written|created|produced)|are (?:written|created|produced))\b|\b(?:not|never|no longer|isn't|isn’t|doesn't|doesn’t|don't|don’t|wasn't|wasn’t) (?:yet )?(?:exist|exists|there|present|written|created|produced|found)\b|\bnot (?:yet|there|found)\b|\byet to (?:be|exist|land)\b|\b(?:removed|deleted|dropped|moved|renamed|unlinked|pruned|cleaned up|gone|absent|missing)\b|\brm(?: -\w+)? \b|\bwould(?: have)? (?:been|gone)\b/i;
+  /\b(?:will|would|shall|should|going to|about to|planned|proposed|intend(?:s|ed)? to|expect(?:s|ed)? to|(?:I|we|you|it|they|he|she)['’]ll)\b[^.;]{0,60}\b(?:be|write|writes|written|create|creates|created|produce|produces|produced|generate|generates|generated|save|saves|saved|land|lands|landed|exist|exists|appear|appears|live|go|put|placed|end up)\b|\bto be (?:written|produced|created|generated|saved|placed|added)\b|\bonce (?:it|that|this|they|the \w+) (?:lands?|exists?|merges?|is (?:written|created|produced|in)|are (?:written|created|produced|in))\b|\bwhen (?:it|that|this|they|the \w+) (?:lands?|exists?|merges?|is (?:written|created|produced)|are (?:written|created|produced))\b|\b(?:not|never|no longer|isn't|isn’t|doesn't|doesn’t|don't|don’t|wasn't|wasn’t) (?:yet )?(?:exist|exists|there|present|written|created|produced|saved|generated|found)\b|\b(?:didn't|didn’t|did not|haven't|haven’t|have not|hasn't|hasn’t|has not) (?:yet )?(?:write|wrote|written|save|saved|create|created|produce|produced|generate|generated)\b|\bplan:|\bstep \d+\b|\bnot (?:yet|there|found)\b|\byet to (?:be|exist|land)\b|\b(?:removed|deleted|dropped|moved|renamed|unlinked|pruned|cleaned up|gone|absent|missing)\b|\brm(?: -\w+)? \b|\bwould(?: have)? (?:been|gone)\b/i;
 
-const PR_WORD_RE = /\bPRs?\b|\bpull requests?\b/i;
-const ISSUE_WORD_RE = /\bissues?\b/i;
+const PR_WORD_RE = /^(?:PRs?|pull requests?)$/i;
+const ISSUE_WORD_RE = /^issues?$/i;
+// How far back from a GitHub URL its PR/issue word may sit, in whitespace tokens.
+export const WORD_WINDOW = 6;
 
 // The sentence's own words: code spans, link targets and URLs blanked, so a path or URL
 // cannot supply the word the sentence is judged by.
 export const proseOf = (sentence) =>
   sentence.replace(SPAN_RE, " ").replace(MD_LINK_RE, " ").replace(/https?:\/\/\S+/g, " ");
 
-// The sentence of `line` around index `at`: from the previous `. `/`; ` (or line start) to the
-// next `.`/`!`/`?` followed by whitespace or the end.
+// A `.`/`!`/`?`/`;` at `i` ends a sentence when whitespace (or the end) follows, except the
+// dot of `e.g.`, `i.e.`, `vs.` or of a dotted version number (`1.6.`, `v2.0.1.`).
+function endsSentence(line, i) {
+  if (!/[.!?;]/.test(line[i]) || !/\s/.test(line[i + 1] ?? " ")) return false;
+  if (line[i] !== ".") return true;
+  const before = line.slice(Math.max(0, i - 24), i);
+  return !/(?:^|[\s(])(?:e\.g|i\.e|vs)$/i.test(before) && !/(?:^|[\s(])v?\d+(?:\.\d+)+$/.test(before);
+}
+
+// The sentence of `line` around index `at`: from the previous sentence end (or line start) to
+// the next one (or the end).
 export function sentenceAround(line, at) {
   let start = 0;
   for (let i = at - 1; i > 0; i--) {
-    if (/[.!?;]/.test(line[i]) && /\s/.test(line[i + 1] ?? " ")) {
+    if (endsSentence(line, i)) {
       start = i + 1;
       break;
     }
   }
   let end = line.length;
   for (let i = at; i < line.length; i++) {
-    if (/[.!?;]/.test(line[i]) && /\s/.test(line[i + 1] ?? " ")) {
+    if (endsSentence(line, i)) {
       end = i + 1;
       break;
     }
@@ -92,17 +113,42 @@ export function sentenceAround(line, at) {
   return line.slice(start, end).trim();
 }
 
-// `~/x` → <home>/x; `file:///x` → /x; a bare `/x` as is. null when it cannot be a path.
+// The PR/issue word a GitHub URL at `at` is bound to: the nearest such word among the
+// WORD_WINDOW tokens before it, in the same clause — never reaching back past the sentence
+// start, a `,`/`;`/dash clause break, or an earlier URL. "pr", "issue", or null.
+export function wordBefore(line, at) {
+  let from = 0;
+  for (let i = at - 1; i > 0; i--) {
+    if (endsSentence(line, i)) {
+      from = i + 1;
+      break;
+    }
+  }
+  for (const m of line.slice(0, at).matchAll(/https?:\/\/\S+|[,;—–]/g)) from = Math.max(from, m.index + m[0].length);
+  const tokens = line.slice(from, at).replace(SPAN_RE, " ").split(/[^\p{L}\p{N}]+/u).filter(Boolean).slice(-WORD_WINDOW);
+  for (let i = tokens.length - 1; i >= 0; i--) {
+    if (PR_WORD_RE.test(tokens[i])) return "pr";
+    if (ISSUE_WORD_RE.test(tokens[i])) return "issue";
+    if (/^requests?$/i.test(tokens[i]) && /^pull$/i.test(tokens[i - 1] ?? "")) return "pr";
+  }
+  return null;
+}
+
+// `~/x` → <home>/x; `file:///x` → /x (decoded first, so `%E2%80%93` is an en dash before the
+// suffix is stripped); a bare `/x` as is. null when it cannot be a path.
 export function toLocalPath(candidate, home) {
-  let c = candidate.replace(SUFFIX_RE, "");
-  if (!c || PLACEHOLDER_RE.test(c)) return null;
+  let c = candidate;
+  if (PLACEHOLDER_RE.test(c.replace(SUFFIX_RE, ""))) return null;
   if (c.startsWith("file://")) {
     try {
       c = fileURLToPath(c);
     } catch {
       return null;
     }
-  } else if (c === "~") c = home;
+  }
+  c = c.replace(SUFFIX_RE, "");
+  if (!c || PLACEHOLDER_RE.test(c)) return null;
+  if (c === "~") c = home;
   else if (c.startsWith("~/")) c = home + c.slice(1);
   if (!c.startsWith("/")) return null;
   return c;
@@ -146,7 +192,9 @@ export function checkLinksResolve(text, options = {}) {
         const sentence = sentenceAround(line, c.index);
         if (NOT_NOW_RE.test(proseOf(sentence))) continue; // the path's own words (`gone.md`) do not exempt it
         if (exists(path)) result.links.push({ line: e.number, sentence, href: c.raw, path, kind: "path" });
-        else result.findings.push({ line: e.number, where: `line ${e.number}`, kind: "missing-path", excerpt: c.raw, path });
+        else if (!ROUTE_RE.test(path)) {
+          result.findings.push({ line: e.number, where: `line ${e.number}`, kind: "missing-path", excerpt: c.raw, path });
+        }
       }
     }
 
@@ -160,11 +208,9 @@ export function checkLinksResolve(text, options = {}) {
           continue;
         }
         const urlKind = seg === "pull" ? "pr" : "issue";
-        const words = proseOf(sentence);
-        const saysPr = PR_WORD_RE.test(words);
-        const saysIssue = ISSUE_WORD_RE.test(words);
-        if (saysPr !== saysIssue && (saysPr ? "pr" : "issue") !== urlKind) {
-          result.findings.push({ line: e.number, where: `line ${e.number}`, kind: "gh-word", excerpt: url, word: saysPr ? "PR" : "issue", urlKind });
+        const word = wordBefore(line, m.index);
+        if (word && word !== urlKind) {
+          result.findings.push({ line: e.number, where: `line ${e.number}`, kind: "gh-word", excerpt: url, word: word === "pr" ? "PR" : "issue", urlKind });
         }
         const key = ghKey(owner, repo, number);
         const known = cache ? lookupGh(cache, key, now) : null;
@@ -211,6 +257,6 @@ if (invokedDirectly) {
     process.stdout.write(JSON.stringify({ error: `could not read ${path || "stdin"}: ${err.message}` }) + "\n");
     process.exit(0);
   }
-  process.stdout.write(JSON.stringify(checkLinksResolve(text, { ghCache: readGhCache() }), null, 2) + "\n");
+  process.stdout.write(JSON.stringify(checkLinksResolve(text, { ghCache: text.includes("github.com") ? readGhCache() : null }), null, 2) + "\n");
   process.exit(0);
 }

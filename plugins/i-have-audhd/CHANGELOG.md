@@ -7,25 +7,33 @@ README's *Changes* section.
 ## [1.6.1]
 
 - New check `links-resolve` (rule 11, Machinery anchors; warn by default). A local path in a
-  code span or markdown link (`/absolute`, `~/`, `file://`, line suffixes stripped) has to
-  exist; a sentence that says the file is still to come or gone is skipped, as are commands,
-  placeholders, globs, fenced blocks and quoted evidence. A github.com URL has to be
-  `/issues/N` or `/pull/N`, and the sentence's word (PR or issue) has to agree with it.
-  Whether the GitHub target exists and which kind it is comes only from a local cache
-  (`gh-cache.json` in the state directory; a week for a hit, ten minutes for a 404): a link
-  with no fresh entry is unknown and never a finding. The hook hands unknown keys to a
-  detached helper, `scripts/gh-cache-fill.mjs` (lock, at most 20 `gh api --cache 1h` lookups
-  inside 45 s, atomic write), and exits without waiting; the next stop reads the answer. A
-  cache that never fills costs nothing but those two sub-checks. `agent://<id>` references
-  are not checked: neither host writes a registry to disk. Measured on a 200-link message:
-  37 ms before, 42 ms after (45 ms with the helper spawn). The Stop hook entry in
-  `hooks.json` now declares its timeout (35 s: the 30 s judge budget plus the checks).
+  code span or markdown link (`/absolute`, `~/`, `file://` decoded first; line suffixes
+  stripped, comma lists such as `:18,22` included) has to exist; a sentence that says the
+  file is still to come or gone is skipped ("will be written", "I'll save", "Plan:", "Step
+  3", "didn't save"; `e.g.` and a version number do not end a sentence), as are commands,
+  placeholders, globs, fenced blocks, quoted evidence, and a missing slash command or HTTP
+  route (`/mcp`, `/health`, `/messages/:id`). A github.com URL has to be `/issues/N` or
+  `/pull/N`, and the PR or issue word nearest before it (six words, same clause) has to agree
+  with it. Whether the GitHub target exists and which kind it is comes only from a local
+  cache (`gh-cache.json` in the state directory, read only when the message names
+  github.com; a week for a hit, ten minutes for a 404): a link with no fresh entry is unknown
+  and never a finding. The hook hands unknown keys to a detached helper,
+  `scripts/gh-cache-fill.mjs` (lock, at most 20 `gh api --cache 10m` lookups inside 45 s,
+  atomic write), and exits without waiting; the next stop reads the answer. A cache that
+  never fills costs nothing but those two sub-checks. `agent://<id>` references are not
+  checked: neither host writes a registry to disk. Measured on a 200-link message: 37 ms
+  before, 42 ms after (45 ms with the helper spawn). Measured on the final messages of 100
+  real Claude Code sessions: 29 findings in 10 messages, 2 certainly wrong (paths on a
+  server, not this machine), 0 confirmed right, 27 naming files deleted since (64 findings,
+  37 certainly wrong, before the review fixes). The Stop hook entry in `hooks.json` now
+  declares its timeout (35 s: the 30 s judge budget plus the checks).
 - New judge check `links-judge` (rule 11), **off by default** and not armed by a global
   `enforcement.mode`: only `enforcement.rules["links-judge"]` turns it on. It asks the judge
   whether the thing behind a resolved link is what the sentence says it is, after a
   word-overlap prefilter (the sentence's words against the target's name, first 1,500 bytes,
   directory entries or cached GitHub title; one shared word skips the judge), at most five
-  judge jobs per stop.
+  judge jobs per stop. Only a regular file's first 1,500 bytes are read; a device or FIFO
+  (`/dev/zero`, a pipe) is skipped unopened.
 - Every judge failure line in `judge-failures.log` now carries `cause=` (one of
   `credential-revoked`, `no-credential`, `rate-limited`, `judge-self-abort`,
   `hook-deadline`, `bad-json`, `other`, classified from the error kind and the judge's

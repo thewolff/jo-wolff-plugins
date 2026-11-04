@@ -9,7 +9,9 @@
 //
 //   For each resolved link the check hands over ({ sentence, path | title }) the target gets a
 //   descriptor: a local file's basename words plus its first HEAD_BYTES of text (when it is a
-//   readable text file; a directory is its name and its entries' names), a GitHub link its
+//   regular text file; only those bytes are read), a directory its name and its entries'
+//   names. A device, FIFO or socket is not a regular file and is skipped: never opened, so
+//   `/dev/zero` or a pipe cannot block the hook. A GitHub link gets its
 //   cached title. When the sentence's words (3+ letters, stopwords out) share at least one
 //   word with the descriptor the sentence plausibly describes the target and no judge runs.
 //   No shared word → one judge job for that link, at most MAX_JOBS per stop (first in line
@@ -22,7 +24,7 @@
 // Usage:
 //   import { linksJudgeJobs, linksJudgeQuestion } from "./links-judge.mjs";
 
-import { readFileSync, readdirSync, statSync } from "node:fs";
+import { openSync, readSync, closeSync, readdirSync, statSync } from "node:fs";
 import { basename } from "node:path";
 
 export const MAX_JOBS = 5;
@@ -56,8 +58,9 @@ export function significantWords(s) {
 }
 
 // What is behind a resolved link, for the prefilter and the judge: { label, text } or null
-// when nothing readable is there. `fs` is injectable for tests.
-export function describeTarget(link, fs = { readFileSync, readdirSync, statSync }) {
+// when nothing readable is there (gone, unreadable, or not a regular file or directory).
+// `fs` is injectable for tests.
+export function describeTarget(link, fs = { openSync, readSync, closeSync, readdirSync, statSync }) {
   if (link.kind === "gh") {
     return { label: `GitHub ${link.ghKind === "pr" ? "pull request" : "issue"} ${link.key}`, text: link.title ?? "" };
   }
@@ -67,10 +70,18 @@ export function describeTarget(link, fs = { readFileSync, readdirSync, statSync 
       const names = fs.readdirSync(link.path).slice(0, 40).join(" ");
       return { label: `directory ${basename(link.path)}`, text: `${basename(link.path)} ${names}` };
     }
-    const buf = fs.readFileSync(link.path);
-    const head = buf.subarray(0, HEAD_BYTES);
-    if (head.includes(0)) return { label: `binary file ${basename(link.path)}`, text: basename(link.path).replace(/[._-]+/g, " ") };
-    return { label: `file ${basename(link.path)}`, text: `${basename(link.path).replace(/[._-]+/g, " ")}\n${head.toString("utf8")}` };
+    if (!st.isFile()) return null;
+    const head = Buffer.alloc(HEAD_BYTES);
+    const fd = fs.openSync(link.path, "r");
+    let n;
+    try {
+      n = fs.readSync(fd, head, 0, HEAD_BYTES, 0);
+    } finally {
+      fs.closeSync(fd);
+    }
+    const got = head.subarray(0, n);
+    if (got.includes(0)) return { label: `binary file ${basename(link.path)}`, text: basename(link.path).replace(/[._-]+/g, " ") };
+    return { label: `file ${basename(link.path)}`, text: `${basename(link.path).replace(/[._-]+/g, " ")}\n${got.toString("utf8")}` };
   } catch {
     return null;
   }

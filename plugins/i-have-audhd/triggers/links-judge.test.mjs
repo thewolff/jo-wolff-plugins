@@ -2,10 +2,21 @@
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, mkdirSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, mkdirSync, writeFileSync } from "node:fs";
+import { spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { linksJudgeJobs, significantWords, describeTarget, MAX_JOBS } from "./links-judge.mjs";
+
+const JUDGE_URL = new URL("./links-judge.mjs", import.meta.url).href;
+// describeTarget in a child under a 2 s timer: a read that blocks the event loop cannot be
+// bounded by a timer in this process, so the timer is the child's kill deadline.
+const describeInChild = (path) =>
+  spawnSync(
+    process.execPath,
+    ["--input-type=module", "-e", `const { describeTarget } = await import(${JSON.stringify(JUDGE_URL)}); process.stdout.write(JSON.stringify(describeTarget({ kind: "path", path: ${JSON.stringify(path)} })));`],
+    { encoding: "utf8", timeout: 2000 },
+  );
 
 const dir = mkdtempSync(join(tmpdir(), "audhd-linksjudge-"));
 writeFileSync(join(dir, "comparables.md"), "# Link validation comparables\n\nlychee, markdown-link-check and friends.\n");
@@ -54,4 +65,38 @@ test("at most MAX_JOBS jobs per stop, first in line order", () => {
   const jobs = linksJudgeJobs(links);
   assert.equal(jobs.length, MAX_JOBS);
   assert.deepEqual(jobs.map((j) => j.line), [1, 2, 3, 4, 5]);
+});
+
+test("a device or FIFO is not a regular file: skipped without being opened, inside 2 s", (t) => {
+  if (existsSync("/dev/zero")) {
+    const r = describeInChild("/dev/zero");
+    assert.equal(r.error, undefined, `describeTarget on /dev/zero did not return inside 2 s (${r.error?.code})`);
+    assert.equal(r.status, 0, r.stderr);
+    assert.equal(r.stdout, "null");
+  } else t.diagnostic("no /dev/zero on this platform");
+  const fifo = join(dir, "pipe");
+  const mk = spawnSync("mkfifo", [fifo]);
+  if (mk.status === 0) {
+    const r = describeInChild(fifo);
+    assert.equal(r.error, undefined, `describeTarget on a FIFO did not return inside 2 s (${r.error?.code})`);
+    assert.equal(r.stdout, "null");
+  } else t.diagnostic("mkfifo unavailable");
+});
+
+test("a regular file is read only up to its head, however large it is", () => {
+  const asked = [];
+  const fakeFs = {
+    statSync: () => ({ isDirectory: () => false, isFile: () => true }),
+    openSync: () => 7,
+    readSync: (fd, buf, off, len) => {
+      asked.push(len);
+      return buf.write("huge log head", off);
+    },
+    closeSync: (fd) => asked.push(`close ${fd}`),
+    readdirSync: () => [],
+  };
+  const d = describeTarget({ kind: "path", path: "/x/huge.log" }, fakeFs);
+  assert.equal(d.label, "file huge.log");
+  assert.match(d.text, /huge log head$/);
+  assert.deepEqual(asked, [1500, "close 7"]);
 });

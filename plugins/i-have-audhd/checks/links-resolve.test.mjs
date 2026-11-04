@@ -9,7 +9,7 @@ import assert from "node:assert/strict";
 import { mkdtempSync, mkdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { checkLinksResolve, toLocalPath, sentenceAround } from "./links-resolve.mjs";
+import { checkLinksResolve, toLocalPath, sentenceAround, wordBefore } from "./links-resolve.mjs";
 import { HIT_TTL_MS, MISS_TTL_MS } from "../lib/gh-cache.mjs";
 
 const home = mkdtempSync(join(tmpdir(), "audhd-links-"));
@@ -69,6 +69,73 @@ test("missing-path: the sentence, not the line, decides: a later sentence's futu
   assert.deepEqual(kinds("The report is at `/never/here/report.md`. The next one will be written to `/never/here/next.md`."), ["missing-path"]);
   assert.equal(sentenceAround("A `/x` b. C `/y` d.", 12), "C `/y` d.");
   assert.equal(sentenceAround("A `/x` b. C `/y` d.", 2), "A `/x` b.");
+});
+
+test("missing-path: a missing slash command or HTTP route (one segment, no dot; or a :param segment) is not a file", () => {
+  for (const line of [
+    "Run `/mcp` to re-authenticate.",
+    "You do not need to run `/wrap-up` again.",
+    "The `/health` endpoint returns ok.",
+    "The route `/:id` takes the slug.",
+    "Type `/clear` and start over.",
+    "| POST | `/messages/:id/delivered` | Stamped update |",
+  ]) {
+    assert.deepEqual(kinds(line, { exists: () => false }), [], line);
+  }
+  // Two segments, or a dot, is still a path.
+  assert.deepEqual(kinds("See `/never/here` now.", { exists: () => false }), ["missing-path"]);
+  assert.deepEqual(kinds("See `/never.md` now.", { exists: () => false }), ["missing-path"]);
+  // A one-segment path that exists is a resolved link as before.
+  assert.deepEqual(run("See `/tmp` now.", { exists: () => true }).links.map((l) => l.path), ["/tmp"]);
+});
+
+test("missing-path: comma line lists, en-dash ranges and percent-encoded file:// suffixes are stripped", () => {
+  assert.equal(toLocalPath("/a/b.md:18,22", home), "/a/b.md");
+  assert.equal(toLocalPath("/a/b.md:13-14,56-59", home), "/a/b.md");
+  assert.equal(toLocalPath("/a/b.md:307–321", home), "/a/b.md");
+  assert.equal(toLocalPath("/a/b.md:12,40-41,90.", home), "/a/b.md");
+  assert.equal(toLocalPath("file:///a/b.md:307%E2%80%93321", home), "/a/b.md");
+  assert.equal(toLocalPath("file:///a/b.md:18,22", home), "/a/b.md");
+  assert.equal(toLocalPath("file:///a/my%20notes.md:4", home), "/a/my notes.md");
+  assert.deepEqual(kinds("See `~/repo/NOTES.md:18,22` and `~/repo/src/format.ts:13-14,56-59`."), []);
+  assert.deepEqual(kinds(`See [notes](file://${home}/repo/NOTES.md:307%E2%80%93321).`), []);
+});
+
+test("missing-path: I'll, we'll, didn't save, not written, Plan: and Step N say the file is not there yet", () => {
+  for (const line of [
+    "I'll write the report to `/never/here/report.md` when the run ends.",
+    "We’ll save it at `/never/here/out.json`.",
+    "If so, I'll save it to `~/never/recap.md`.",
+    "I didn't save `/never/here/recap.md` this time.",
+    "The recap is not written: `/never/here/recap.md`.",
+    "Plan: put the notes in `/never/here/notes.md` and link them.",
+    "Step 3, after it reports back: I save them to `/never/here/p.md`.",
+  ]) {
+    assert.deepEqual(kinds(line), [], line);
+  }
+});
+
+test("sentenceAround: e.g., i.e., vs. and a dotted version number do not end a sentence", () => {
+  assert.deepEqual(kinds("The helper will produce output, e.g. `/never/a.md` for the first run."), []);
+  assert.deepEqual(kinds("A later run will write it, i.e. `/never/a.md` once done."), []);
+  assert.equal(sentenceAround("Use x vs. `/y` here. Next.", 12), "Use x vs. `/y` here.");
+  assert.equal(sentenceAround("Shipped in 1.6.1. `/y` is it. Next.", 18), "Shipped in 1.6.1. `/y` is it.");
+  // A real sentence end still splits.
+  assert.equal(sentenceAround("Done. `/y` is it.", 6), "`/y` is it.");
+});
+
+test("gh-word: the word binds to its nearest URL, not to the whole sentence", () => {
+  assert.deepEqual(kinds("Opened PR https://github.com/o/r/pull/1 for https://github.com/o/r/issues/2 today."), []);
+  assert.deepEqual(kinds("Filed https://github.com/o/r/issues/2 to track the PR review."), []);
+  assert.deepEqual(kinds("Merged https://github.com/o/r/pull/1 with no issues."), []);
+  assert.deepEqual(kinds("PR #72 is https://github.com/o/r/issues/72 now."), ["gh-word"]);
+  assert.deepEqual(kinds("Issue #72 is https://github.com/o/r/pull/72 now."), ["gh-word"]);
+  assert.deepEqual(kinds("[PR #79](https://github.com/o/r/issues/79) is up."), ["gh-word"]);
+  // A clause break or more than WORD_WINDOW tokens cuts the binding.
+  assert.deepEqual(kinds("I opened the PR, then filed https://github.com/o/r/issues/2 today."), []);
+  assert.deepEqual(kinds("The PR is one of a b c d e f https://github.com/o/r/issues/2 today."), []);
+  assert.equal(wordBefore("The pull request https://x", 17), "pr");
+  assert.equal(wordBefore("No word at all https://x", 15), null);
 });
 
 test("missing-path: commands, placeholders, globs and variables are not paths to check", () => {

@@ -12,7 +12,7 @@
 // WHAT IT DOES
 //   Takes one lock (<cache>.lock, pid inside; a lock younger than LOCK_TTL_MS means another
 //   fill is running and this one exits), looks up at most FILL_MAX_KEYS keys with
-//   `gh api --cache 1h repos/<owner>/<repo>/issues/<n>` (GitHub's issues endpoint answers for
+//   `gh api --cache 10m repos/<owner>/<repo>/issues/<n>` (GitHub's issues endpoint answers for
 //   PRs too and marks them with `pull_request`), each under GH_TIMEOUT_MS and all inside
 //   FILL_BUDGET_MS, then merges what it learned into the file through a temp file and a rename.
 //   A 404 is recorded as `missing` (short TTL in the reader); any other failure — gh not on
@@ -67,7 +67,9 @@ export function lookupKey(key, runGh = defaultRunGh) {
 }
 
 function defaultRunGh({ owner, repo, number }) {
-  const r = spawnSync("gh", ["api", "--cache", "1h", `repos/${owner}/${repo}/issues/${number}`, "--jq", JQ], {
+  // gh's own cache keeps 404s too; 10m matches lib/gh-cache.mjs's MISS_TTL_MS, so a PR named
+  // before it is opened reads as missing for at most about twenty minutes, not gh's hour.
+  const r = spawnSync("gh", ["api", "--cache", "10m", `repos/${owner}/${repo}/issues/${number}`, "--jq", JQ], {
     encoding: "utf8",
     timeout: GH_TIMEOUT_MS,
     env: { ...process.env, GH_PROMPT_DISABLED: "1", GH_NO_UPDATE_NOTIFIER: "1" },

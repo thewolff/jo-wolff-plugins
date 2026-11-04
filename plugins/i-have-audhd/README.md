@@ -396,24 +396,32 @@ PR and issue numbers flagged 93 lines with 8 % false positives and file names 90
 disk and a local cache, so the Stop hook never waits on the network:
 
 - A **local path** in a code span or a markdown link (`/absolute`, `~/`, `file://`) has to
-  exist; `:41`, `:41-50` and `#L12` suffixes are stripped first. A sentence that says the
-  file is still to come ("will be written to", "to be produced at", "once it lands") or gone
-  ("removed", "no longer exists") is not checked, nor is a span that is a command (`rm /x`), a
-  placeholder (`/path/to/<name>`, a glob, `$HOME/…`), a relative path, or anything inside a
-  fenced block, a blockquote, a heading, or a line carrying `→` (quoted evidence).
+  exist. A `file://` URL is decoded first; then line suffixes are stripped: `:41`, `:41-50`,
+  `:307–321`, comma lists such as `:18,22` and `:13-14,56-59`, and `#L12`. A sentence that
+  says the file is still to come ("will be written to", "I'll save it to", "Plan:", "Step 3:
+  … save them to", "once it lands", "didn't save") or gone ("removed", "no longer exists") is
+  not checked; `e.g.`, `i.e.`, `vs.` and a version number like `1.6.` do not end the sentence.
+  Nor is a span that is a command (`rm /x`), a placeholder (`/path/to/<name>`, a glob,
+  `$HOME/…`), a missing slash command or HTTP route (one segment with no dot, such as `/mcp`,
+  `/wrap-up` or `/health`, or a `:param` segment such as `/messages/:id`), a relative path,
+  or anything inside a fenced block, a blockquote, a heading, or a line carrying `→` (quoted
+  evidence).
 - A **GitHub URL** has to have the shape of a page: `/issues/N` or `/pull/N`, never `/issue/N`
-  or `/pulls/N`. When the sentence calls it a PR and the URL says `/issues/`, or the reverse,
-  that is a finding too; GitHub redirects either way, so the page opens, but the word is what
-  misleads. (A sentence that uses both words is not judged.)
+  or `/pulls/N`. When the PR or issue word nearest before the URL (at most six words back, in
+  the same clause) calls it a PR and the URL says `/issues/`, or the reverse, that is a finding
+  too; GitHub redirects either way, so the page opens, but the word is what misleads. ("Opened
+  PR `…/pull/79` for `…/issues/327`" is fine: each URL has its own word, or none.)
 - Whether the GitHub target **exists**, and whether it **is** an issue or a PR, comes only from
-  `~/.claude/.i-have-audhd-state/gh-cache.json`. An entry inside its TTL (a week for a hit, ten
-  minutes for a 404, because `gh api --cache` keeps 404s and a PR named before it is opened
-  would otherwise read as dead for an hour) gives a verdict; anything else is **unknown, and
-  unknown is never a finding**. The hook hands every unknown key to a detached helper,
-  `scripts/gh-cache-fill.mjs`, and exits without waiting: the helper takes a lock, looks up at
-  most 20 keys with `gh api --cache 1h repos/<owner>/<repo>/issues/<n>` inside 45 s, and merges
-  what it learned through a temp file and a rename. The *next* stop that names the link reads
-  the answer. `I_HAVE_AUDHD_NO_GH_FILL=1` keeps the hook from spawning the helper at all.
+  `~/.claude/.i-have-audhd-state/gh-cache.json`, read only when the message names
+  `github.com`. An entry inside its TTL (a week for a hit, ten minutes for a 404) gives a
+  verdict; anything else is **unknown, and unknown is never a finding**. The hook hands every
+  unknown key to a detached helper, `scripts/gh-cache-fill.mjs`, and exits without waiting:
+  the helper takes a lock, looks up at most 20 keys with `gh api --cache 10m
+  repos/<owner>/<repo>/issues/<n>` inside 45 s, and merges what it learned through a temp file
+  and a rename. gh's own cache keeps 404s too, so asking with `--cache 10m` keeps a PR named
+  before it is opened from reading as dead for more than about twenty minutes (gh's cached
+  404, then the plugin's ten minutes). The *next* stop that names the link reads the answer.
+  `I_HAVE_AUDHD_NO_GH_FILL=1` keeps the hook from spawning the helper at all.
 - `agent://<id>` references are not checked: neither Claude Code nor OMP writes a registry of
   agent ids to disk (looked for 2026-11-04 under `~/.omp` and `~/.claude`), so there is nothing
   to resolve them against.
@@ -422,7 +430,11 @@ Each finding names the line, the link and what is wrong with it (`no such file: 
 `GitHub has no /pulls/ page`, `the sentence says PR but the URL is /issues/`, `GitHub answered
 404 for o/r#1`, `o/r#2 is a pull request, the URL says /issues/`); the first five are shown and
 the rest counted. Measured on a 200-link message, the check adds 5 ms to the Stop hook (37 ms
-before, 42 ms after; 45 ms with the helper spawn).
+before, 42 ms after; 45 ms with the helper spawn). On the final messages of 100 real Claude
+Code sessions (2026-10-05 to 2026-11-04) it gave 29 findings in 10 messages: 2 certainly wrong
+(paths that live on a server, not this machine), 27 naming files deleted since, none
+confirmed right; before the round-1 fixes it was 64 findings, 37 certainly wrong, in 31
+messages. The details are in `skills/i-have-audhd/reference.md` under links-resolve.
 
 `links-judge` is the question the disk cannot answer: is the thing behind the link what the
 sentence says it is? A sentence that calls a test log "the comparables report" resolves and is
@@ -430,8 +442,9 @@ still wrong. It is **off by default** and a global `enforcement.mode` does not t
 only `"enforcement": {"rules": {"links-judge": "warn"}}` does, because each unmatched link is
 one judge call. When on, every link `links-resolve` opened goes through a word-overlap
 prefilter: the sentence's words (three letters or more, common words and link vocabulary out)
-against the target's name and first 1,500 bytes (a GitHub link: its cached title; a directory:
-its entries). One shared word is enough to skip the judge; no shared word is one judge job,
+against the target's name and first 1,500 bytes (only a regular file is read, and only those
+bytes, so `/dev/zero` or a pipe is skipped; a GitHub link: its cached title; a directory: its
+entries). One shared word is enough to skip the judge; no shared word is one judge job,
 at most five per stop, in line order. The verdict reads like the other judge checks and
 names the line and the link.
 
@@ -499,25 +512,33 @@ Exit 0 means every item is done or had nothing to do, 1 means one was refused or
 ### 1.6.1
 
 - New check `links-resolve` (rule 11, Machinery anchors; warn by default). A local path in a
-  code span or markdown link (`/absolute`, `~/`, `file://`, line suffixes stripped) has to
-  exist; a sentence that says the file is still to come or gone is skipped, as are commands,
-  placeholders, globs, fenced blocks and quoted evidence. A github.com URL has to be
-  `/issues/N` or `/pull/N`, and the sentence's word (PR or issue) has to agree with it.
-  Whether the GitHub target exists and which kind it is comes only from a local cache
-  (`gh-cache.json` in the state directory; a week for a hit, ten minutes for a 404): a link
-  with no fresh entry is unknown and never a finding. The hook hands unknown keys to a
-  detached helper, `scripts/gh-cache-fill.mjs` (lock, at most 20 `gh api --cache 1h` lookups
-  inside 45 s, atomic write), and exits without waiting; the next stop reads the answer. A
-  cache that never fills costs nothing but those two sub-checks. `agent://<id>` references
-  are not checked: neither host writes a registry to disk. Measured on a 200-link message:
-  37 ms before, 42 ms after (45 ms with the helper spawn). The Stop hook entry in
-  `hooks.json` now declares its timeout (35 s: the 30 s judge budget plus the checks).
+  code span or markdown link (`/absolute`, `~/`, `file://` decoded first; line suffixes
+  stripped, comma lists such as `:18,22` included) has to exist; a sentence that says the
+  file is still to come or gone is skipped ("will be written", "I'll save", "Plan:", "Step
+  3", "didn't save"; `e.g.` and a version number do not end a sentence), as are commands,
+  placeholders, globs, fenced blocks, quoted evidence, and a missing slash command or HTTP
+  route (`/mcp`, `/health`, `/messages/:id`). A github.com URL has to be `/issues/N` or
+  `/pull/N`, and the PR or issue word nearest before it (six words, same clause) has to agree
+  with it. Whether the GitHub target exists and which kind it is comes only from a local
+  cache (`gh-cache.json` in the state directory, read only when the message names
+  github.com; a week for a hit, ten minutes for a 404): a link with no fresh entry is unknown
+  and never a finding. The hook hands unknown keys to a detached helper,
+  `scripts/gh-cache-fill.mjs` (lock, at most 20 `gh api --cache 10m` lookups inside 45 s,
+  atomic write), and exits without waiting; the next stop reads the answer. A cache that
+  never fills costs nothing but those two sub-checks. `agent://<id>` references are not
+  checked: neither host writes a registry to disk. Measured on a 200-link message: 37 ms
+  before, 42 ms after (45 ms with the helper spawn). Measured on the final messages of 100
+  real Claude Code sessions: 29 findings in 10 messages, 2 certainly wrong (paths on a
+  server, not this machine), 0 confirmed right, 27 naming files deleted since (64 findings,
+  37 certainly wrong, before the review fixes). The Stop hook entry in `hooks.json` now
+  declares its timeout (35 s: the 30 s judge budget plus the checks).
 - New judge check `links-judge` (rule 11), **off by default** and not armed by a global
   `enforcement.mode`: only `enforcement.rules["links-judge"]` turns it on. It asks the judge
   whether the thing behind a resolved link is what the sentence says it is, after a
   word-overlap prefilter (the sentence's words against the target's name, first 1,500 bytes,
   directory entries or cached GitHub title; one shared word skips the judge), at most five
-  judge jobs per stop.
+  judge jobs per stop. Only a regular file's first 1,500 bytes are read; a device or FIFO
+  (`/dev/zero`, a pipe) is skipped unopened.
 - Every judge failure line in `judge-failures.log` now carries `cause=` (one of
   `credential-revoked`, `no-credential`, `rate-limited`, `judge-self-abort`,
   `hook-deadline`, `bad-json`, `other`, classified from the error kind and the judge's

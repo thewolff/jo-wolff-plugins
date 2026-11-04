@@ -15,9 +15,11 @@
 //     "helper":  { "at": ISO, "error": "<why the last fill could not look anything up>" | null }
 //   }
 //   A hit (issue or pr) is trusted for HIT_TTL_MS; a miss (GitHub said 404) for MISS_TTL_MS
-//   only, because `gh api --cache` keeps 404s too and a PR referenced before it is opened
-//   would otherwise read as missing for an hour. Past its TTL an entry is unknown again and
-//   is looked up again.
+//   only, so a PR referenced before it is opened does not read as missing for long. gh's own
+//   `--cache` keeps 404s too, so the helper asks with `--cache 10m` to match: a 404 gh served
+//   from its cache is at most ten minutes old, and the plugin's entry lasts ten more, so the
+//   worst case is about twenty minutes. Past its TTL an entry is unknown again and is looked
+//   up again.
 //
 // FAILURE: an unreadable or malformed file reads as empty (every key unknown) and leaves one
 //   errors.log line; the hook never throws over it.

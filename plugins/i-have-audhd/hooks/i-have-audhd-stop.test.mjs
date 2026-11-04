@@ -1416,6 +1416,25 @@ test("links-resolve: a GitHub URL with no cache entry is unknown, never a findin
   assert.equal(readLog(home, "warnings.log"), "");
 });
 
+test("links-resolve: a slash command in a code span is not a missing file", () => {
+  const home = mkhome();
+  const r = runHook({ session_id: "lr2b", last_assistant_message: withLinks("You do not need to run `/mcp` again.") }, home, { I_HAVE_AUDHD_NO_GH_FILL: "1" });
+  assert.equal(r.status, 0, r.stderr);
+  assert.equal(r.stdout, "");
+  assert.equal(readLog(home, "warnings.log"), "");
+});
+
+test("links-resolve: a corrupt gh-cache.json is not read, and not reported, on a stop with no github.com link", () => {
+  const home = mkhome();
+  mkdirSync(join(home, ".claude", ".i-have-audhd-state"), { recursive: true });
+  writeFileSync(ghCacheFile(home), "{not json");
+  const quiet = runHook({ session_id: "lr2c", last_assistant_message: withLinks("Nothing on GitHub here.") }, home, { I_HAVE_AUDHD_NO_GH_FILL: "1" });
+  assert.equal(quiet.stdout, "");
+  assert.equal(readLog(home, "errors.log"), "");
+  const loud = runHook({ session_id: "lr2c", last_assistant_message: withLinks("Issue https://github.com/o/r/issues/3 is tracked.") }, home, { I_HAVE_AUDHD_NO_GH_FILL: "1" });
+  assert.match(parseOut(loud.stdout).systemMessage, /gh-cache at .* does not parse/);
+});
+
 test("links-resolve: a cached 404 and a cached wrong kind are findings; under block mode they block", () => {
   const home = mkhome();
   mkdirSync(join(home, ".claude", ".i-have-audhd-state"), { recursive: true });

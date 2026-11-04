@@ -297,7 +297,9 @@ const LINK_PROBLEM = {
 function linksResolveFindings(text, config) {
   const mode = effectiveMode(config, "links-resolve");
   if (mode === "off") return { findings: [], lookups: [], links: [] };
-  const r = checkLinksResolve(text, { ghCache: readGhCache() });
+  // The cache file is read only when a line names github.com: a corrupt cache costs a fault
+  // notice on the stops that could use it, not on every stop.
+  const r = checkLinksResolve(text, { ghCache: text.includes("github.com") ? readGhCache() : null });
   if (!r.flagged) return { findings: [], lookups: r.lookups, links: r.links };
   const shown = r.findings.slice(0, 5).map((f) => `${f.where} \`${f.excerpt}\` (${LINK_PROBLEM[f.kind](f)})`).join("; ");
   const more = r.findings.length > 5 ? `; and ${r.findings.length - 5} more` : "";

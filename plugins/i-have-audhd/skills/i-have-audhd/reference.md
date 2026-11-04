@@ -380,13 +380,15 @@ kind, excerpt, …}`, in line order; `kind` ∈ `missing-path` (with `path`), `g
 cache entry, once each; `links` every link that resolved, `{line, sentence, href, kind:
 "path"|"gh", path | key, ghKind, title}`, for the judge stage. Options (tests): `home`,
 `exists`, `ghCache` (a parsed cache, `lib/gh-cache.mjs` `readGhCache`), `now`. The hook
-passes the real cache and nothing else; no profile field shapes this check.
+passes the real cache, read only when the message contains `github.com` (a corrupt cache file
+is reported on the stops that could use it, not on every stop); no profile field shapes this
+check.
 
 | Candidate | Resolved by | Finding |
 |---|---|---|
-| a code span holding only `/abs…`, `~…` or `file://…`, or a markdown link with such a target; trailing `:N`, `:N-M`, `:N:C`, `#LN` and punctuation stripped | `existsSync` after `~` and `file://` expansion | `missing-path` |
+| a code span holding only `/abs…`, `~…` or `file://…`, or a markdown link with such a target; a `file://` URL decoded first (`%E2%80%93` → `–`), then a trailing `:N`, `:N-M`, `:N–M`, a comma list (`:18,22`, `:13-14,56-59`), `:N:C`, `#LN`, `#LN-LM` and punctuation stripped | `existsSync` after `~` and `file://` expansion | `missing-path`, unless the missing path is a slash command or an HTTP route (`ROUTE_RE`: one segment with no dot, `/mcp`, `/wrap-up`, `/health`; or a `:param` segment, `/messages/:id/delivered`) |
 | `https://github.com/<owner>/<repo>/<seg>/<n>` where `seg` is `issue`, `issues`, `pull` or `pulls` | the segment | `gh-shape` unless `issues` or `pull` |
-| the same, with the sentence's own words (spans, links and URLs blanked) saying `PR`/`pull request` xor `issue` | the word against the segment | `gh-word` when they disagree |
+| the same, with the nearest `PR`/`pull request`/`issue` word among the `WORD_WINDOW` (6) tokens before the URL, in the same clause (not past the sentence start, a `,`/`;`/dash, or an earlier URL; markdown link text counts, so `[PR #79](…/issues/79)` is judged) | the word against the segment | `gh-word` when they disagree; no word near the URL, no finding |
 | the same, with a cache entry inside its TTL (`HIT_TTL_MS` a week, `MISS_TTL_MS` ten minutes) | the entry's `kind` | `gh-missing` for `missing`; `gh-kind` when the kind and segment disagree; else a resolved link |
 | the same, with no fresh entry | nothing: unknown | none; the key goes to `lookups` |
 
@@ -394,13 +396,16 @@ Never counts: every line `checks/lines.mjs` does not call prose, any line carryi
 span that is a command (`link-the-reference`'s `isCommand`), a placeholder (`<…>`, `…`, a
 glob character, `$VAR`, `/path/to/`, `/absolute/`), a relative path, a span holding more than
 the path, and a path whose sentence (its own words, not the path's) says the file is still
-to come or gone: `will|would|shall|should|going to|about to|planned|…` within 60 characters
-of `be|write|written|create|produce|generate|save|land|exist|appear|live|…`; `to be
-written|produced|created|…`; `once|when it|that|the X lands|exists|merges|is written|…`;
-`not|never|no longer|isn't|doesn't [yet] exist|there|present|written|…`; `yet to be`;
-`removed|deleted|dropped|moved|renamed|unlinked|pruned|cleaned up|gone|absent|missing`;
-`rm `. The sentence is the span from the previous `. `, `; `, `! ` or `? ` (or line start)
-to the next; a later sentence's tense does not cover an earlier path.
+to come or gone: `will|would|shall|should|going to|about to|planned|…|I'll|we'll|…` within 60
+characters of `be|write|written|create|produce|generate|save|land|exist|appear|live|…`; `to
+be written|produced|created|…`; `once|when it|that|the X lands|exists|merges|is written|…`;
+`not|never|no longer|isn't|doesn't [yet] exist|there|present|written|saved|…`;
+`didn't|did not|haven't|hasn't [yet] write|save|create|produce|generate` (any tense); `plan:`;
+`step N`; `yet to be`; `removed|deleted|dropped|moved|renamed|unlinked|pruned|cleaned
+up|gone|absent|missing`; `rm `. The sentence is the span from the previous `. `, `; `, `! ` or
+`? ` (or line start) to the next, where the dot of `e.g.`, `i.e.`, `vs.` or of a dotted
+version number (`1.6.`) does not end a sentence; a later sentence's tense does not cover an
+earlier path.
 
 **The GitHub cache**, `lib/gh-cache.mjs`: `<state dir>/gh-cache.json`, `{"entries": {"<owner>/<repo>#<n>":
 {"kind": "issue"|"pr"|"missing", "title", "at"}}, "helper": {"at", "error", "loggedAt"}}`. An
@@ -409,7 +414,7 @@ normal first state and logs nothing). **The helper**, `scripts/gh-cache-fill.mjs
 <key>…`: spawned by the hook with `detached: true, stdio: "ignore"`, `unref()`, never
 awaited; takes `<cache>.lock` (a lock younger than `LOCK_TTL_MS`, two minutes, means another
 fill is running: exit, nothing done); looks up at most `FILL_MAX_KEYS` (20) keys with
-`gh api --cache 1h repos/<owner>/<repo>/issues/<n> --jq …` (the issues endpoint answers for
+`gh api --cache 10m repos/<owner>/<repo>/issues/<n> --jq …` (the issues endpoint answers for
 PRs too, with `pull_request` set), each under 10 s and all inside `FILL_BUDGET_MS` (45 s);
 HTTP 404 → `missing`; `gh` not on PATH, not logged in, 401, 403/429 → no entry, the loop
 stops (the rest would fail the same way), `helper.error` is set and one `errors.log` line is
@@ -426,15 +431,27 @@ anything and the sub-check is not built.
 Measured (2026-11-04, this machine, a 200-link message: 100 existing paths, 50 missing, 25
 issue URLs, 25 PR URLs, none cached): Stop hook wall time 37 ms median before, 42 ms after,
 45 ms with the helper spawn; the check alone under 10 ms (`checks/links-resolve.test.mjs`
-holds it under 50 ms). False-positive rate on a corpus: unmeasured.
+holds it under 50 ms).
+
+False positives on a corpus (2026-11-04): the final messages of the 100 most recent real
+Claude Code sessions (2026-10-05 to 2026-11-04, eval sandboxes excluded), checked against
+this machine's disk. Before the round-1 fixes: 64 findings in 31 messages, 37 certainly wrong
+in 25 messages (29 slash commands such as `/mcp` and `/health`, 1 route with a `:id`
+segment, 3 not-yet-written sentences, 2 comma line lists, 2 paths on another machine), 0
+confirmed right, 27 naming files deleted since. After: 29 findings in 10 messages, **2
+certainly wrong** in 2 messages (`/dev/net/tun` and `/usr/local/etc/as2/`, paths on a server,
+not this laptop), **0 plausibly or confirmably right**, 27 naming files deleted since the
+message was written (old worktrees, removed HTML pages, archived decision logs), which cannot
+be judged now. Most of those 27 name a file the message reports as just written or just read,
+so the check would likely have been silent on them at the time.
 
 Known limits:
 
 | Limit | Effect |
 |---|---|
 | A detached child's survival past the hook's exit is not proven under Claude Code's hook process lifetime | the cache may never fill; GitHub existence and kind stay unknown, and unknown is silent |
-| `gh api --cache` keeps 404s for an hour | a PR named before it is opened reads as `missing` until the plugin's ten-minute miss TTL expires AND gh's hour does; the helper does not bypass gh's cache |
-| The sentence splitter stops at `. `, so `e.g. ` and a version number followed by a space split a sentence | a tense exemption in the first half does not cover a path in the second |
+| `gh api --cache` keeps 404s too | the helper asks with `--cache 10m`, matching the plugin's ten-minute miss TTL, so a PR named before it is opened reads as `missing` for at most about twenty minutes (gh's cached 404, then the plugin's entry) |
+| A path quoted from another machine (a server's `/dev/net/tun`, a spec's `/usr/local/etc/as2/`) | read as a local path and flagged when this machine lacks it; the 2 certain false positives left in the corpus are this kind |
 | A GitHub URL inside a markdown link's text, or any URL not on github.com | not checked at all: only github.com issue and pull URLs are read, and only their path |
 
 ### links-judge
@@ -446,9 +463,12 @@ arm it, only `enforcement.rules["links-judge"]`. The prefilter: `significantWord
 three or more letters or digits, lowercased, minus English stopwords and link vocabulary:
 `file path link url report doc issue pull request pr github …`) of the sentence with its
 spans, links and URLs blanked, against the same of the target's descriptor — a file's basename
-(separators as spaces) plus its first 1,500 bytes when it holds no NUL, a directory's name and
-first 40 entries, a GitHub link's cached title. One shared word, or a sentence with no
-significant words, or a target that cannot be read, skips the judge; otherwise one job, at
+(separators as spaces) plus its first 1,500 bytes when it holds no NUL (a regular file only;
+just those bytes are read, `openSync` + one `readSync`), a directory's name and first 40
+entries, a GitHub link's cached title. A device, FIFO or socket (`/dev/zero`, a pipe) is not
+a regular file and is never opened. One shared word, or a sentence with no significant
+words, or a target that cannot be read or is not a regular file or directory, skips the
+judge; otherwise one job, at
 most `MAX_JOBS` (5) per stop in line order. The question asks for `violation=true` only when
 the target is clearly not what the sentence names, `false` when unsure. The finding lists
 each hit's line, link and the judge's reason. Unmeasured.
