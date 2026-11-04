@@ -163,7 +163,8 @@ function deny(reason) {
     hookSpecificOutput: {
       hookEventName: "PreToolUse",
       permissionDecision: "deny",
-      permissionDecisionReason: `paired-coding: ${reason}`,
+      // The standing way out closes every refusal: only the partner ends pairing.
+      permissionDecisionReason: `paired-coding: ${reason} Pairing ends when your partner types \`pair stop\` as a whole message.`,
     },
   };
 }

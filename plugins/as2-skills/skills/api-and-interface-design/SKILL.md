@@ -369,3 +369,10 @@ After designing an API:
 - [ ] A reused key with a different payload fails loudly rather than replaying the wrong response
 - [ ] The in-flight-duplicate response is a deliberate choice (409, wait, or 202) rather than whatever falls out
 - [ ] Key retention outlives the longest retry path, including dead-letter replay
+
+## How it fails
+
+- The consumers of an interface cannot be found (no call sites in the repo, a client in another repository, a mobile app with its own release cadence): say which consumers were not read; a contract change is unsafe until they are, and the compatibility window in that repository's rules decides, not this skill.
+- A design that follows every principle here but contradicts an existing convention in the codebase: the convention wins; name the conflict in the ADR or PR rather than introducing a second style.
+- Verification needs a running service or a generated client and neither is available: the checklist items that depend on it are reported as not run, not as passed.
+- Two readings of the brief give materially different shapes (one resource or two, sync or async): stop and ask with one recommended default; do not pick silently.

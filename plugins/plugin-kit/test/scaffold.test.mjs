@@ -1,22 +1,25 @@
 // scaffold.test.mjs — `new-plugin.mjs` (README "What it does"): the files it writes and what is
-// filled in; the scaffold's own `node --test` is green; ledger's plugin gate passes all three
-// checks on it as written; the refusals (existing directory, bad name, unknown event, no events)
-// write nothing; the runner it copies is this plugin's, byte for byte.
+// filled in; the scaffold's own `node --test` is green; ledger's five-row plugin gate on it as
+// written passes survives, visible, says and retention and fails evals naming the unfilled stubs
+// (the shape the scaffold is meant to have until its scenarios are real); the refusals (existing
+// directory, bad name, unknown event, no events) write nothing; the runner and the scenario
+// runner it copies are this plugin's, byte for byte; the CLI guard survives a symlinked path.
 
 import test from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, statSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { KIT_ROOT, EVENTS, parseArgs, scaffold } from "../scripts/new-plugin.mjs";
 
 const SCRIPT = join(KIT_ROOT, "scripts", "new-plugin.mjs");
 const LEDGER_GATE = join(KIT_ROOT, "..", "ledger", "lib", "plugin-gate.mjs");
+const LEDGER_CLI = join(KIT_ROOT, "..", "ledger", "scripts", "ledger.mjs");
 const dest = () => realpathSync(mkdtempSync(join(tmpdir(), "kit-scaffold-")));
 const walk = (dir, prefix = "") => readdirSync(dir).flatMap((n) => (statSync(join(dir, n)).isDirectory() ? walk(join(dir, n), `${prefix}${n}/`) : [`${prefix}${n}`])).sort();
 
-test("scaffold: the files, with name, title, description and per-hook event, file and quiet filled in; the runner is the kit's copy", () => {
+test("scaffold: the files, with name, title, description, scenario and per-hook event, file and quiet filled in; the runners are the kit's copies", () => {
   const d = dest();
   const { root, written } = scaffold({ name: "trial-gate", events: ["PreToolUse", "Stop", "SessionEnd"], description: 'Keeps "trials" honest.', dest: d });
   assert.equal(root, join(d, "trial-gate"));
@@ -25,17 +28,23 @@ test("scaffold: the files, with name, title, description and per-hook event, fil
     "HOW-IT-FAILS.md",
     "README.md",
     "e2e/live-run.sh",
+    "evals/manifest.json",
+    "evals/pre-tool-use.scenario.json",
+    "evals/session-end.scenario.json",
+    "evals/stop.scenario.json",
     "hooks/hooks.json",
     "hooks/pre-tool-use.mjs",
     "hooks/session-end.mjs",
     "hooks/stop.mjs",
     "lib/hook-runner.mjs",
+    "lib/live-run.mjs",
     "package.json",
+    "scripts/prune.mjs",
     "skills/trial-gate/SKILL.md",
     "test/fixtures/README.md",
     "test/hook-contract.test.mjs",
   ]);
-  assert.equal(written.length, 13);
+  assert.equal(written.length, 19);
   const read = (rel) => readFileSync(join(root, rel), "utf8");
   const manifest = JSON.parse(read(".claude-plugin/plugin.json"));
   assert.equal(manifest.name, "trial-gate");
@@ -54,6 +63,24 @@ test("scaffold: the files, with name, title, description and per-hook event, fil
   assert.ok(statSync(join(root, "hooks/stop.mjs")).mode & 0o100, "handlers are executable");
   assert.ok(statSync(join(root, "e2e/live-run.sh")).mode & 0o100, "the live run is executable");
   assert.equal(read("lib/hook-runner.mjs"), readFileSync(join(KIT_ROOT, "lib", "hook-runner.mjs"), "utf8"));
+  assert.equal(read("lib/live-run.mjs"), readFileSync(join(KIT_ROOT, "lib", "live-run.mjs"), "utf8"));
+  const manifestEvals = JSON.parse(read("evals/manifest.json"));
+  assert.deepEqual(manifestEvals.events, { PreToolUse: ["silent"], Stop: ["silent"], SessionEnd: ["silent"] });
+  assert.deepEqual(manifestEvals.manual, []);
+  const stub = JSON.parse(read("evals/stop.scenario.json"));
+  assert.equal(stub.stub, true);
+  assert.equal(stub.event, "Stop");
+  assert.equal(stub.expect, "silent");
+  assert.deepEqual(stub.stdin, { session_id: "${SESSION_ID}", transcript_path: "${TRANSCRIPT}", cwd: "${CWD}", hook_event_name: "Stop", stop_hook_active: false });
+  assert.equal(JSON.parse(read("evals/pre-tool-use.scenario.json")).stdin.tool_name, "Write");
+  assert.match(read("HOW-IT-FAILS.md"), /evals\/pre-tool-use\.scenario\.json/, "the first event's scenario is the one the table names");
+  assert.match(read("skills/trial-gate/SKILL.md"), /evals\/pre-tool-use\.scenario\.json/);
+  const state = manifest.state;
+  assert.equal(state[0].path, "$XDG_STATE_HOME/trial-gate");
+  assert.equal(state[0].retentionDays, 30);
+  assert.match(state[0].prune, /scripts\/prune\.mjs/);
+  assert.ok(statSync(join(root, "scripts/prune.mjs")).mode & 0o100, "the prune verb is executable");
+  assert.match(read("scripts/prune.mjs"), /\.local", "state"\)/);
   assert.match(read("skills/trial-gate/SKILL.md"), /^---\nname: trial-gate\ndescription: Keeps "trials" honest\.\n---\n\n# Trial Gate\n/);
   assert.match(read("skills/trial-gate/SKILL.md"), /\n## When this can't run\n/);
   assert.match(read("e2e/live-run.sh"), /PLUGIN="\$\{CANARY_PLUGIN:-trial-gate\}"/);
@@ -61,7 +88,7 @@ test("scaffold: the files, with name, title, description and per-hook event, fil
   for (const rel of walk(root)) assert.ok(!read(rel).includes("{{"), `${rel} has an unfilled placeholder`);
 });
 
-test("scaffold: the generated plugin's own node --test is green and ledger's plugin gate passes all three checks on it as written", async () => {
+test("scaffold: the generated plugin's own node --test is green; ledger's gate passes survives, visible, says and retention on it as written and fails evals naming every unfilled stub", async () => {
   const d = dest();
   const { root } = scaffold({ name: "trial-gate", events: ["PreToolUse", "Stop", "SessionStart", "SessionEnd", "UserPromptSubmit"], description: "A trial.", dest: d });
   // NODE_TEST_CONTEXT is what node's runner sets in its own children; without it the child would refuse to run files.
@@ -80,9 +107,17 @@ test("scaffold: the generated plugin's own node --test is green and ledger's plu
       ["survives", "pass"],
       ["visible", "pass"],
       ["says", "pass"],
+      ["evals", "fail"],
+      ["retention", "pass"],
     ],
     JSON.stringify(rows),
   );
+  const evals = rows[3].detail;
+  for (const [event, file] of [["PreToolUse", "pre-tool-use"], ["Stop", "stop"], ["SessionStart", "session-start"], ["SessionEnd", "session-end"], ["UserPromptSubmit", "user-prompt-submit"]]) {
+    assert.ok(evals.includes(`evals/${file}.scenario.json is an unfilled stub`), `${file}: ${evals}`);
+    assert.ok(evals.includes(`no scenario for ${event} × silent`), evals);
+  }
+  assert.match(rows[4].detail, /^2 state path\(s\) declared \(1 with a prune, 1 kept by design\)/, rows[4].detail);
 });
 
 test("refusals: an existing directory, a bad name, an unknown event, no events; nothing written; the CLI says why on stderr with exit 1", () => {
@@ -132,13 +167,100 @@ test("the default destination is the cwd's repository, not the kit's: a scaffold
   assert.ok(!existsSync(join(repo, "plugins", "pointed")));
 });
 
+test("the CLI guard compares real paths: the scaffolder reached through a symlink still scaffolds (a raw argv compare was a silent no-op there)", () => {
+  const d = dest();
+  const link = join(d, "linked-new-plugin.mjs");
+  symlinkSync(SCRIPT, link);
+  const r = spawnSync(process.execPath, [link, "via-link", "--events", "Stop", "--dest", d], { encoding: "utf8" });
+  assert.equal(r.status, 0, r.stderr);
+  assert.match(r.stdout, /^.*\/via-link\n/, r.stdout);
+  assert.ok(existsSync(join(d, "via-link", "hooks", "hooks.json")), "written through the symlink");
+});
+
+test("end to end: a scaffold committed in a fresh repository fails the live run and the gate's evals row on its stub; with the stub filled, the live run passes the hook phase, a canary row is recorded, and every gate row passes", () => {
+  if (!existsSync(LEDGER_CLI)) return;
+  const root = dest();
+  const repo = join(root, "repo");
+  mkdirSync(repo);
+  // A PATH with node, git and sh and no `claude`: the hook phase runs, the live phase is unavailable.
+  const bin = join(root, "bin");
+  mkdirSync(bin);
+  symlinkSync(process.execPath, join(bin, "node"));
+  const env = {
+    PATH: `${bin}:/usr/bin:/bin`,
+    HOME: join(root, "home"),
+    XDG_STATE_HOME: join(root, "state"),
+    XDG_CONFIG_HOME: join(root, "config"),
+    TMPDIR: join(root, "tmp"),
+    LEDGER_DB: join(root, "ledger.db"),
+    LEDGER_ENABLED: "1",
+    TZ: "UTC",
+    GIT_AUTHOR_NAME: "t", GIT_AUTHOR_EMAIL: "t@t", GIT_COMMITTER_NAME: "t", GIT_COMMITTER_EMAIL: "t@t",
+  };
+  for (const k of ["HOME", "XDG_STATE_HOME", "XDG_CONFIG_HOME", "TMPDIR"]) mkdirSync(env[k], { recursive: true });
+  const sh = (cmd, args, { cwd = repo, ok = true } = {}) => {
+    const r = spawnSync(cmd, args, { cwd, env, encoding: "utf8" });
+    if (ok) assert.equal(r.status, 0, `${cmd} ${args.join(" ")}: ${r.stdout}${r.stderr}`);
+    return r;
+  };
+  sh("git", ["init", "-q", "-b", "main"]);
+  const { root: plugin } = scaffold({ name: "gated", events: ["Stop"], description: "A gated trial.", dest: join(repo, "plugins") });
+  const commit = (m) => { sh("git", ["add", "-A"]); sh("git", ["commit", "-qm", m]); };
+  commit("scaffold");
+  const ledger = (...args) => spawnSync(process.execPath, [LEDGER_CLI, ...args], { cwd: repo, env, encoding: "utf8" });
+  const live = (...args) => spawnSync("bash", [join(plugin, "e2e", "live-run.sh"), ...args], { cwd: plugin, env: { ...env, CANARY_PLUGIN: "gated", CANARY_TRANSCRIPT: join(root, "canary.jsonl"), CANARY_TIMEOUT_S: "60" }, encoding: "utf8" });
+  // 1. As scaffolded: the live run fails naming the stub; the gate's evals row fails on it, the other four pass.
+  const stubRun = live();
+  assert.equal(stubRun.status, 1, stubRun.stdout + stubRun.stderr);
+  assert.match(stubRun.stdout, /^scenario stop: fail — is an unfilled stub/m, stubRun.stdout);
+  assert.match(stubRun.stdout, /^fail: 2 problem\(s\); 0 hook scenario\(s\) passed/m, stubRun.stdout);
+  const g1 = ledger("gate", "check", "--plugins", "gated");
+  assert.equal(g1.status, 1, g1.stdout + g1.stderr);
+  const rowsOf = (out) => Object.fromEntries([...out.matchAll(/^ {2}gated {12}(\w+) +(\w+) +(.*)$/gm)].map((m) => [m[1], { status: m[2], detail: m[3] }]));
+  const r1 = rowsOf(g1.stdout);
+  assert.deepEqual(Object.fromEntries(Object.entries(r1).map(([k, v]) => [k, v.status])), { survives: "pass", visible: "pass", says: "pass", evals: "fail", retention: "pass" }, g1.stdout);
+  assert.match(r1.evals.detail, /evals\/stop\.scenario\.json is an unfilled stub/, g1.stdout);
+  // 2. Filled: "stub": true removed; the hook answers the sample input with silence, which is what the scenario expects.
+  const file = join(plugin, "evals", "stop.scenario.json");
+  const scenario = JSON.parse(readFileSync(file, "utf8"));
+  delete scenario.stub;
+  delete scenario.$comment;
+  writeFileSync(file, `${JSON.stringify(scenario, null, 2)}\n`);
+  const filledRun = live();
+  assert.equal(filledRun.status, 75, filledRun.stdout + filledRun.stderr);
+  assert.match(filledRun.stdout, /^scenario stop: pass — Stop → silent$/m, filledRun.stdout);
+  assert.match(filledRun.stdout, /\nunavailable: claude not found on PATH; 1 hook scenario\(s\) passed offline\n$/, filledRun.stdout);
+  assert.ok(!filledRun.stdout.includes("wrote:"), `the scaffold's hook writes nothing outside the work directory: ${filledRun.stdout}`);
+  // Uncommitted, the gate still checks the committed stub; committed, evals wants a canary row for the new tree.
+  const g2 = ledger("gate", "check", "--plugins", "gated");
+  assert.equal(g2.status, 1);
+  assert.match(g2.stdout, /uncommitted changes under plugins\/gated\/ were not checked/, g2.stdout);
+  commit("fill the Stop scenario");
+  const g3 = ledger("gate", "check", "--plugins", "gated");
+  assert.equal(g3.status, 1, g3.stdout + g3.stderr);
+  const r3 = rowsOf(g3.stdout);
+  assert.equal(r3.evals.status, "fail");
+  assert.match(r3.evals.detail, /^1 scenario\(s\) cover the manifest; no canary row for tree [0-9a-f]{8}: run `ledger canary run --plugins gated` on this commit$/, g3.stdout);
+  // 3. The canary records a row for the committed tree (unavailable: no claude on this PATH, which is the canary's finding, not the plugin's); the gate passes every row.
+  const c = ledger("canary", "run", "--repo", repo, "--plugins", "gated");
+  assert.equal(c.status, 0, c.stdout + c.stderr);
+  assert.match(c.stdout, /^gated +unavailable .*claude not found on PATH/m, c.stdout);
+  const g4 = ledger("gate", "check", "--plugins", "gated");
+  assert.equal(g4.status, 0, g4.stdout + g4.stderr);
+  const r4 = rowsOf(g4.stdout);
+  assert.deepEqual(Object.fromEntries(Object.entries(r4).map(([k, v]) => [k, v.status])), { survives: "pass", visible: "pass", says: "pass", evals: "pass", retention: "pass" }, g4.stdout);
+  assert.match(r4.evals.detail, /^1 scenario\(s\) cover 1 event\(s\); canary #\d+ at .*: live unavailable \(claude not found on PATH\); hook scenarios passed offline$/, g4.stdout);
+  assert.match(r4.retention.detail, /^2 state path\(s\) declared \(1 with a prune, 1 kept by design\)/, g4.stdout);
+  assert.match(g4.stdout, /\nevery check passed\n$/);
+});
+
 test("manifests agree; every template placeholder is one the scaffolder fills", () => {
   const claude = JSON.parse(readFileSync(join(KIT_ROOT, ".claude-plugin", "plugin.json"), "utf8"));
   const pkg = JSON.parse(readFileSync(join(KIT_ROOT, "package.json"), "utf8"));
   assert.equal(claude.name, "plugin-kit");
   assert.equal(pkg.name, claude.name);
   assert.equal(pkg.version, claude.version);
-  const known = new Set(["name", "title", "description", "event", "file", "quiet"]);
+  const known = new Set(["name", "title", "description", "event", "file", "quiet", "scenario", "events", "stdin"]);
   for (const rel of walk(join(KIT_ROOT, "templates"))) {
     const text = readFileSync(join(KIT_ROOT, "templates", rel), "utf8");
     for (const m of text.matchAll(/\{\{(\w+)\}\}/g)) assert.ok(known.has(m[1]), `${rel}: {{${m[1]}}} is not filled by the scaffolder`);

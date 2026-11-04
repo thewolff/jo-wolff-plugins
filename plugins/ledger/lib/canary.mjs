@@ -9,13 +9,25 @@
 //       (<state>/canary/<plugin>/<iso>.jsonl), is kept as it wrote it (transcript_path; NULL
 //       with a note when the script wrote none); the script's stdout and stderr go to
 //       <iso>.out.txt beside it (output_path), and the row keeps their last 16 KiB as `summary`
-//       and a line diff against the last pass as `diff`. Exit 0 when every plugin passed or was
+//       and a line diff against the last pass as `diff`. The row also keeps `tree_sha`, the
+//       plugin tree the run certifies (`git rev-parse HEAD:plugins/<p>`; NULL when the plugin
+//       has uncommitted changes or the repo is none: the gate's `evals` row only trusts a row
+//       for the committed tree), and `writes`, the script's `wrote: <path>` lines (files the
+//       live run left outside its work directory, in placeholder form; the gate's `retention`
+//       row checks them against the plugin's declared `state`). After the live runs, every
+//       `prune` command the plugins declare in `.claude-plugin/plugin.json` `state[]` is run
+//       once, in the canary's own environment (the real state is what is pruned), and recorded
+//       as a cc_canary_prunes row with the bytes it reported freed (`… <n> bytes freed` on its
+//       last stdout line; NULL when it reported none). Exit 0 when every plugin passed or was
 //       unavailable, 1 when any failed, 2 when the store could not be written (the canary has no
-//       session to fail open into).
+//       session to fail open into). A prune that fails is its own row and never fails the run.
 //   canary grade <id> biting|silent|fine ["<note>"]
 //       Records who read the run and what they made of it.
 //   canary prune [--days 30]
-//       Removes transcript files older than that; rows stay.
+//       Removes transcript files older than that; rows stay. This is the ledger's own declared
+//       prune verb; the last line reports the bytes freed.
+//   canary status
+//       The last run per plugin, the last prune per declared path, and when each last passed.
 //   canary install [--repo <path>] [--hour 3] [--minute 30]
 //       Writes <state>/launchd/com.jo-wolff-plugins.ledger-canary.plist, checks it with
 //       `plutil -lint` when plutil exists, prints the `launchctl bootstrap` line for the human to
@@ -38,7 +50,7 @@
 // twice makes two rows, which is the record. Evidence kept: rows forever, files 30 days.
 
 import { spawn, spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { PLUGIN_ROOT } from "./doctor.mjs";
 import { stateDir } from "./config.mjs";
@@ -138,12 +150,14 @@ function hasBinary(name, env) {
 }
 
 /** Run one script with a deadline, capturing stdout and stderr; resolves always. */
-function runScript(script, { cwd, env, timeoutMs }) {
+function runScript(script, { cwd, env, timeoutMs, shell = false }) {
   return new Promise((resolve) => {
     const started = Date.now();
     let child;
     try {
-      child = spawn("bash", [script], { cwd, env, stdio: ["ignore", "pipe", "pipe"], detached: process.platform !== "win32" });
+      child = shell
+        ? spawn("/bin/sh", ["-c", script], { cwd, env, stdio: ["ignore", "pipe", "pipe"], detached: process.platform !== "win32" })
+        : spawn("bash", [script], { cwd, env, stdio: ["ignore", "pipe", "pipe"], detached: process.platform !== "win32" });
     } catch (err) {
       resolve({ code: null, signal: null, stdout: "", stderr: String(err.message), timedOut: false, durationMs: 0, spawnError: err.message });
       return;
@@ -174,6 +188,121 @@ function runScript(script, { cwd, env, timeoutMs }) {
   });
 }
 
+/** The committed tree of plugins/<name> in `repo`: null with uncommitted changes under it or outside a repository. */
+export function pluginTreeSha(repo, name) {
+  const run = (args) => spawnSync("git", args, { cwd: repo, encoding: "utf8", timeout: 10_000 });
+  const dirty = run(["status", "--porcelain", "--", `plugins/${name}`]);
+  if (dirty.error || dirty.status !== 0 || dirty.stdout.trim()) return null;
+  const sha = run(["rev-parse", "--verify", "-q", `HEAD:plugins/${name}`]);
+  return !sha.error && sha.status === 0 ? sha.stdout.trim() || null : null;
+}
+
+/** The `wrote: <path>` lines of a live run's stdout, deduplicated and sorted. */
+export function observedWrites(stdout) {
+  const out = new Set();
+  for (const line of String(stdout ?? "").split("\n")) {
+    const m = line.match(/^wrote:\s+(\S.*)$/);
+    if (m) out.add(m[1].trim());
+  }
+  return [...out].sort();
+}
+
+/** The declared `state[]` prune commands of a plugin: `[{ path, command }]`; [] without any. */
+export function declaredPrunes(pluginDir) {
+  try {
+    const json = JSON.parse(readFileSync(join(pluginDir, ".claude-plugin", "plugin.json"), "utf8"));
+    if (!Array.isArray(json.state)) return [];
+    return json.state.filter((e) => e && typeof e === "object" && typeof e.path === "string" && typeof e.prune === "string" && e.prune.trim()).map((e) => ({ path: e.path, command: e.prune.trim() }));
+  } catch {
+    return [];
+  }
+}
+
+/** The bytes a prune reported on its last stdout line (`… 1234 bytes freed`), or null. */
+export function bytesFreedFrom(stdout) {
+  const last = String(stdout ?? "").trim().split("\n").pop() ?? "";
+  const m = last.match(/(\d+)\s+bytes?\s+freed/i);
+  return m ? Number(m[1]) : null;
+}
+
+/**
+ * Run every declared prune of `plugins` once and record each as a cc_canary_prunes row.
+ * `run` is injectable (same shape as runScript's result, given a shell line). Never throws on a
+ * failed prune: that is the row. Returns the rows.
+ */
+export async function runPrunes({ db, dbPath, env = process.env, plugins, timeoutS = 120, run = runShell }) {
+  const rows = [];
+  for (const p of plugins) {
+    for (const { path, command } of declaredPrunes(p.dir)) {
+      const at = nowIso(Date.now());
+      const row = { plugin: p.name, at, path, command, status: "fail", exit_code: null, bytes_freed: null, note: null };
+      const r = await run(command, { cwd: p.dir, env: { ...env, CLAUDE_PLUGIN_ROOT: p.dir }, timeoutMs: timeoutS * 1000 });
+      row.exit_code = r.code;
+      if (r.spawnError) {
+        row.status = "unavailable";
+        row.note = `could not run: ${r.spawnError}`;
+      } else if (r.timedOut) row.note = `timeout after ${timeoutS}s`;
+      else if (r.code === 0) {
+        row.status = "pass";
+        row.bytes_freed = bytesFreedFrom(r.stdout);
+        row.note = r.stdout.trim().split("\n").pop()?.slice(0, 300) || null;
+      } else if (r.code === UNAVAILABLE_EXIT) {
+        row.status = "unavailable";
+        row.note = r.stdout.trim().split("\n").pop()?.slice(0, 300) || "exit 75";
+      } else row.note = `exit ${r.code ?? r.signal}${(r.stderr || r.stdout).trim() ? `: ${(r.stderr || r.stdout).trim().split("\n").pop().slice(0, 300)}` : ""}`;
+      try {
+        transaction(
+          db,
+          () => {
+            const ins = db.prepare("INSERT INTO cc_canary_prunes (plugin, at, path, command, status, exit_code, bytes_freed, note) VALUES (?,?,?,?,?,?,?,?)").run(row.plugin, row.at, row.path, row.command, row.status, row.exit_code, row.bytes_freed, row.note);
+            row.id = Number(ins.lastInsertRowid);
+          },
+          dbPath,
+        );
+      } catch (err) {
+        row.note = `${row.note ? `${row.note}; ` : ""}not recorded: ${err.message}`;
+      }
+      rows.push(row);
+    }
+  }
+  return rows;
+}
+
+function runShell(line, opts) {
+  return runScript(line, { ...opts, shell: true });
+}
+
+export function renderPrune(r) {
+  const freed = r.bytes_freed === null || r.bytes_freed === undefined ? "" : ` ${r.bytes_freed} bytes freed`;
+  return `${r.plugin.padEnd(16)} prune ${r.status.padEnd(11)}${freed}${r.id ? `  #${r.id}` : ""}  ${r.path}${r.note ? `; ${r.note}` : ""}`;
+}
+
+/** The last `limit` prune rows, newest first. */
+export function listPrunes(db, { limit = 20, plugin = null } = {}) {
+  const rows = plugin
+    ? db.prepare("SELECT * FROM cc_canary_prunes WHERE plugin = ? ORDER BY at DESC, id DESC LIMIT ?").all(plugin, limit)
+    : db.prepare("SELECT * FROM cc_canary_prunes ORDER BY at DESC, id DESC LIMIT ?").all(limit);
+  return rows.map((r) => ({ ...r }));
+}
+
+/** `canary status`: the last run per plugin, when it last passed, and the last prune per declared path. */
+export function canaryStatus(db) {
+  const runs = db.prepare("SELECT plugin, MAX(at) AS at FROM cc_canary_runs GROUP BY plugin ORDER BY plugin").all();
+  const lines = [];
+  if (!runs.length) lines.push("no canary runs recorded");
+  for (const { plugin } of runs) {
+    const last = db.prepare("SELECT id, at, status, note, tree_sha FROM cc_canary_runs WHERE plugin = ? ORDER BY at DESC, id DESC LIMIT 1").get(plugin);
+    const pass = db.prepare("SELECT id, at FROM cc_canary_runs WHERE plugin = ? AND status = 'pass' ORDER BY at DESC, id DESC LIMIT 1").get(plugin);
+    lines.push(`${plugin.padEnd(16)} last ${last.status.padEnd(11)} #${last.id} ${last.at}${last.tree_sha ? ` tree ${last.tree_sha.slice(0, 8)}` : " (uncommitted tree)"}${last.note ? `; ${last.note}` : ""}${pass ? `; last pass #${pass.id} ${pass.at}` : "; never passed"}`);
+  }
+  const prunes = db.prepare("SELECT plugin, path, MAX(at) AS at FROM cc_canary_prunes GROUP BY plugin, path ORDER BY plugin, path").all();
+  for (const { plugin, path } of prunes) {
+    const last = db.prepare("SELECT * FROM cc_canary_prunes WHERE plugin = ? AND path = ? ORDER BY at DESC, id DESC LIMIT 1").get(plugin, path);
+    lines.push(`${renderPrune({ ...last, id: null })} at ${last.at}`);
+  }
+  return lines.join("\n");
+}
+
 /** The last pass row's summary for a plugin, or null. */
 function lastPassSummary(db, plugin) {
   const r = db.prepare("SELECT summary FROM cc_canary_runs WHERE plugin = ? AND status = 'pass' ORDER BY at DESC, id DESC LIMIT 1").get(plugin);
@@ -184,7 +313,7 @@ function lastPassSummary(db, plugin) {
  * Run the canary for `plugins` (default: every plugin in `repo`). Returns { code, text, rows }.
  * `run` is injectable for tests (same shape as runScript's result).
  */
-export async function runCanary({ db, dbPath, env = process.env, now = Date.now(), repo, plugins = null, timeoutS = DEFAULT_TIMEOUT_S, run = runScript, claudePresent = null }) {
+export async function runCanary({ db, dbPath, env = process.env, now = Date.now(), repo, plugins = null, timeoutS = DEFAULT_TIMEOUT_S, run = runScript, claudePresent = null, prunes = true, runPrune = runShell }) {
   const root = repo ? resolve(repo) : defaultRepo();
   if (!root) return { code: 2, text: "canary: no repository: pass --repo <path to the plugins checkout>", rows: [] };
   let all;
@@ -201,7 +330,7 @@ export async function runCanary({ db, dbPath, env = process.env, now = Date.now(
   for (const p of wanted) {
     const at = nowIso(Date.now());
     const script = join(p.dir, "e2e", "live-run.sh");
-    const row = { plugin: p.name, at, status: "unavailable", exit_code: null, duration_ms: 0, transcript_path: null, output_path: null, summary: null, diff: null, note: null };
+    const row = { plugin: p.name, at, status: "unavailable", exit_code: null, duration_ms: 0, transcript_path: null, output_path: null, summary: null, diff: null, note: null, tree_sha: pluginTreeSha(root, p.name), writes: null };
     if (!existsSync(script)) row.note = "no e2e/live-run.sh";
     else if (!hasClaude) row.note = "claude not found on PATH";
     else {
@@ -216,6 +345,7 @@ export async function runCanary({ db, dbPath, env = process.env, now = Date.now(
       const r = await run(script, { cwd: p.dir, env: { ...childEnv(env), CANARY_PLUGIN: p.name, CANARY_TRANSCRIPT: file, CANARY_TIMEOUT_S: String(timeoutS) }, timeoutMs: timeoutS * 1000 });
       row.duration_ms = r.durationMs;
       row.exit_code = r.code;
+      row.writes = JSON.stringify(observedWrites(r.stdout));
       const out = r.stdout + (r.stderr ? `\n[stderr]\n${r.stderr}` : "");
       row.summary = cut(out);
       if (r.spawnError) {
@@ -255,8 +385,8 @@ export async function runCanary({ db, dbPath, env = process.env, now = Date.now(
         db,
         () => {
           const r = db
-            .prepare("INSERT INTO cc_canary_runs (plugin, at, status, exit_code, duration_ms, transcript_path, output_path, summary, diff, note) VALUES (?,?,?,?,?,?,?,?,?,?)")
-            .run(row.plugin, row.at, row.status, row.exit_code, row.duration_ms, row.transcript_path, row.output_path, row.summary, row.diff, row.note);
+            .prepare("INSERT INTO cc_canary_runs (plugin, at, status, exit_code, duration_ms, transcript_path, output_path, summary, diff, note, tree_sha, writes) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)")
+            .run(row.plugin, row.at, row.status, row.exit_code, row.duration_ms, row.transcript_path, row.output_path, row.summary, row.diff, row.note, row.tree_sha, row.writes);
           row.id = Number(r.lastInsertRowid);
         },
         dbPath,
@@ -269,12 +399,14 @@ export async function runCanary({ db, dbPath, env = process.env, now = Date.now(
   }
   for (const n of missing) lines.push(`${n.padEnd(16)} unavailable  not a plugin under ${root}/plugins`);
   if (!lines.length) lines.push(`canary: no plugins under ${root}/plugins`);
-  return { code: rows.some((r) => r.status === "fail") ? 1 : 0, text: lines.join("\n"), rows };
+  const pruneRows = prunes ? await runPrunes({ db, dbPath, env, plugins: wanted, run: runPrune }) : [];
+  for (const r of pruneRows) lines.push(renderPrune(r));
+  return { code: rows.some((r) => r.status === "fail") ? 1 : 0, text: lines.join("\n"), rows, prunes: pruneRows };
 }
 
 export function renderRow(r) {
   const secs = r.duration_ms ? ` ${(r.duration_ms / 1000).toFixed(1)}s` : "";
-  const extra = [r.note ? r.note : null, r.diff ? `diff vs last pass: ${r.diff.split("\n").filter((l) => /^[+-]/.test(l)).length} line(s)` : null, r.transcript_path ? `transcript ${r.transcript_path}` : null, r.output_path ? `output ${r.output_path}` : null].filter(Boolean);
+  const extra = [r.note ? r.note : null, r.tree_sha ? `tree ${r.tree_sha.slice(0, 8)}` : r.tree_sha === null && r.exit_code !== null ? "uncommitted tree" : null, r.diff ? `diff vs last pass: ${r.diff.split("\n").filter((l) => /^[+-]/.test(l)).length} line(s)` : null, r.transcript_path ? `transcript ${r.transcript_path}` : null, r.output_path ? `output ${r.output_path}` : null].filter(Boolean);
   return `${r.plugin.padEnd(16)} ${r.status.padEnd(11)}${secs}${r.id ? `  #${r.id}` : ""}${extra.length ? `  ${extra.join("; ")}` : ""}`;
 }
 
@@ -300,13 +432,14 @@ export function renderRuns(rows) {
   return rows.map((r) => `#${String(r.id).padEnd(5)} ${r.at}  ${renderRow({ ...r, id: null })}${r.grade ? `  graded ${r.grade} by ${r.graded_by}` : ""}`).join("\n");
 }
 
-/** Remove transcript files older than `days`; returns { removed, kept }. Rows are untouched. */
+/** Remove transcript files older than `days`; returns { removed, kept, bytes }. Rows are untouched. */
 export function prune({ env = process.env, now = Date.now(), days = PRUNE_DAYS } = {}) {
   const base = canaryDir(env);
   const cutoff = now - days * 24 * 3_600_000;
   let removed = 0;
   let kept = 0;
-  if (!existsSync(base)) return { removed, kept };
+  let bytes = 0;
+  if (!existsSync(base)) return { removed, kept, bytes };
   for (const plugin of readdirSync(base, { withFileTypes: true }).filter((d) => d.isDirectory())) {
     const dir = join(base, plugin.name);
     for (const f of readdirSync(dir)) {
@@ -322,13 +455,14 @@ export function prune({ env = process.env, now = Date.now(), days = PRUNE_DAYS }
         try {
           rmSync(file, { force: true });
           removed++;
+          bytes += st.size;
         } catch {
           kept++;
         }
       } else kept++;
     }
   }
-  return { removed, kept };
+  return { removed, kept, bytes };
 }
 
 /** The plist text for a nightly `canary run` (and `canary prune`) at hour:minute, local time. */
@@ -405,13 +539,14 @@ function runCheck(bin, args) {
 
 /** Parse `canary …` tokens into an action; usage on a bad shape. */
 export function parseCanaryArgs(tokens) {
-  const usage = 'usage: canary run [--repo <path>] [--plugins a,b] [--timeout <s>] | canary runs [N] [--plugin <name>] | canary grade <id> biting|silent|fine ["<note>"] | canary prune [--days N] | canary install [--repo <path>] [--hour H] [--minute M]';
+  const usage = 'usage: canary run [--repo <path>] [--plugins a,b] [--timeout <s>] [--no-prune] | canary runs [N] [--plugin <name>] | canary status | canary grade <id> biting|silent|fine ["<note>"] | canary prune [--days N] | canary install [--repo <path>] [--hour H] [--minute M]';
   const [action, ...rest] = tokens;
   const flags = (allowed) => {
     const out = {};
     const positional = [];
     for (let i = 0; i < rest.length; i++) {
       const a = rest[i];
+      if (a === "--no-prune") continue;
       if (!a.startsWith("--")) {
         positional.push(a);
         continue;
@@ -425,11 +560,16 @@ export function parseCanaryArgs(tokens) {
     return out;
   };
   if (action === "run") {
+    const noPrune = rest.includes("--no-prune");
     const f = flags(["--repo", "--plugins", "--timeout"]);
     if (!f || f.positional.length) return { error: usage };
     const timeoutS = f.timeout === undefined ? DEFAULT_TIMEOUT_S : Number(f.timeout);
     if (!Number.isInteger(timeoutS) || timeoutS <= 0) return { error: usage };
-    return { action, repo: f.repo ?? null, plugins: f.plugins ? f.plugins.split(",").map((s) => s.trim()).filter(Boolean) : null, timeoutS };
+    return { action, repo: f.repo ?? null, plugins: f.plugins ? f.plugins.split(",").map((s) => s.trim()).filter(Boolean) : null, timeoutS, prunes: !noPrune };
+  }
+  if (action === "status") {
+    if (rest.length) return { error: usage };
+    return { action };
   }
   if (action === "runs") {
     const f = flags(["--plugin"]);

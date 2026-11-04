@@ -1,0 +1,18 @@
+{
+  "$comment": "At intensity every-idea (the nearest .ask-graham), every prompt gets the nudge as additionalContext.",
+  "event": "UserPromptSubmit",
+  "expect": "systemMessage",
+  "reason": "ask-graham (intensity every-idea)",
+  "setup": {
+    "files": {
+      ".ask-graham": "intensity=every-idea\n"
+    }
+  },
+  "stdin": {
+    "session_id": "${SESSION_ID}",
+    "transcript_path": "${TRANSCRIPT}",
+    "cwd": "${CWD}",
+    "hook_event_name": "UserPromptSubmit",
+    "prompt": "what if we built a changelog emailer"
+  }
+}

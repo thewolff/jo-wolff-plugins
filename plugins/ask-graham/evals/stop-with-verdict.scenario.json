@@ -1,0 +1,77 @@
+{
+  "$comment": "Sibling of stop-no-verdict: the same turn ending with a verdict line passes.",
+  "event": "Stop",
+  "expect": "silent",
+  "sibling": "stop-no-verdict.scenario.json",
+  "transcript": [
+    {
+      "type": "user",
+      "uuid": "u-1",
+      "parentUuid": null,
+      "sessionId": "${SESSION_ID}",
+      "message": {
+        "role": "user",
+        "content": "what if we built a changelog emailer"
+      }
+    },
+    {
+      "type": "assistant",
+      "uuid": "a-1",
+      "parentUuid": "u-1",
+      "sessionId": "${SESSION_ID}",
+      "message": {
+        "role": "assistant",
+        "content": [
+          {
+            "type": "tool_use",
+            "id": "t-1",
+            "name": "Skill",
+            "input": {
+              "skill": "ask-graham:ask-graham",
+              "args": "a changelog emailer"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "type": "user",
+      "uuid": "u-2",
+      "parentUuid": "a-1",
+      "sessionId": "${SESSION_ID}",
+      "message": {
+        "role": "user",
+        "content": [
+          {
+            "type": "tool_result",
+            "tool_use_id": "t-1",
+            "content": "Launching skill: ask-graham:ask-graham"
+          }
+        ]
+      }
+    },
+    {
+      "type": "assistant",
+      "uuid": "a-2",
+      "parentUuid": "u-2",
+      "sessionId": "${SESSION_ID}",
+      "message": {
+        "role": "assistant",
+        "content": [
+          {
+            "type": "text",
+            "text": "Nothing like it exists.\n\n**Verdict:** later"
+          }
+        ]
+      }
+    }
+  ],
+  "stdin": {
+    "session_id": "${SESSION_ID}",
+    "transcript_path": "${TRANSCRIPT}",
+    "cwd": "${CWD}",
+    "hook_event_name": "Stop",
+    "stop_hook_active": false,
+    "last_assistant_message": "Nothing like it exists.\n\n**Verdict:** later"
+  }
+}

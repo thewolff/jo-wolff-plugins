@@ -217,3 +217,10 @@ After implementing security-relevant code:
 - [ ] LLM/model output validated and encoded before use (if AI features present)
 - [ ] Personal data is classified, minimized to a stated purpose, and has a retention limit
 - [ ] Deletion and export requests work end-to-end (including backups, caches, and analytics copies)
+
+## How it fails
+
+- The threat model cannot be completed (unknown trust boundary, a third-party system whose behavior is undocumented): the controls are applied at the most conservative tier and the unknown is listed first in the review; a boundary nobody could name is a finding.
+- A control cannot be verified by test here (needs a real identity provider, a production secret store): it is reported as implemented but unverified, with the manual check the person runs.
+- Fixing one finding would change behavior the product depends on (stricter validation rejects live traffic): the finding is raised with the trade-off, not fixed silently.
+- A dependency with a known vulnerability has no fixed version: say so, name the mitigation applied, and do not report the audit as clean.

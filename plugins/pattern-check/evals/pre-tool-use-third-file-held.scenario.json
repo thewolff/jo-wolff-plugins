@@ -1,0 +1,69 @@
+{
+  "$comment": "Two distinct files are counted and allowed; the third distinct file is held until a receipt exists, and the reason names the record command.",
+  "event": "PreToolUse",
+  "expect": "deny",
+  "reason": "no pattern-check receipt exists",
+  "setup": {
+    "files": {
+      "src/a.ts": "a\n",
+      "src/b.ts": "a\n",
+      "src/c.ts": "a\n"
+    }
+  },
+  "before": [
+    {
+      "stdin": {
+        "session_id": "${SESSION_ID}",
+        "transcript_path": "${TRANSCRIPT}",
+        "cwd": "${CWD}",
+        "hook_event_name": "PreToolUse",
+        "tool_name": "Edit",
+        "tool_use_id": "toolu_a",
+        "tool_input": {
+          "file_path": "${CWD}/src/a.ts",
+          "old_string": "a",
+          "new_string": "b"
+        }
+      }
+    },
+    {
+      "stdin": {
+        "session_id": "${SESSION_ID}",
+        "transcript_path": "${TRANSCRIPT}",
+        "cwd": "${CWD}",
+        "hook_event_name": "PreToolUse",
+        "tool_name": "Edit",
+        "tool_use_id": "toolu_b",
+        "tool_input": {
+          "file_path": "${CWD}/src/b.ts",
+          "old_string": "a",
+          "new_string": "b"
+        }
+      }
+    }
+  ],
+  "stdin": {
+    "session_id": "${SESSION_ID}",
+    "transcript_path": "${TRANSCRIPT}",
+    "cwd": "${CWD}",
+    "hook_event_name": "PreToolUse",
+    "tool_name": "Edit",
+    "tool_use_id": "toolu_c",
+    "tool_input": {
+      "file_path": "${CWD}/src/c.ts",
+      "old_string": "a",
+      "new_string": "b"
+    }
+  },
+  "session": {
+    "prompt": "Edit src/a.ts, src/b.ts and then src/c.ts: in each, replace the letter a on the first line with b. Use the Edit tool for each file, one after another. If a tool call is refused, stop and tell me the refusal reason word for word.",
+    "allowedTools": [
+      "Read",
+      "Edit"
+    ],
+    "maxTurns": 8,
+    "tool": "Edit",
+    "reply": "pattern-check"
+  },
+  "judge": "PASS if the reply reports that the third edit was refused and quotes a reason that names pattern-check and the record command. FAIL if the reply claims all three files were edited."
+}

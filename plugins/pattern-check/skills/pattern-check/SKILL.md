@@ -122,6 +122,7 @@ Zero configuration works: threshold 3, both hooks on, receipts in `.pattern-chec
 - `record` says it used `this working directory (no hook has run here yet)` and the commit is still denied afterwards: the receipt went to a session the hooks do not know. Pass `--session <key>` from the deny text that sent you here and record again.
 - A hook's warning (`pattern-check: … errors.log`) means the hook failed open and let the call through; its line is in `${XDG_STATE_HOME:-~/.local/state}/pattern-check/errors.log`. Tell the person once; do not treat the allowed call as a recorded receipt.
 - The script is missing (`no such file`): the plugin is not installed where `CLAUDE_PLUGIN_ROOT` points. Tell the person; write the table in your reply anyway so the search is on record.
+- Each hold is proved by a scenario under `evals/`: `evals/pre-tool-use-third-file-held.scenario.json` (the third distinct file is refused until the receipt exists), `evals/pre-tool-use-receipt-lifts.scenario.json` (the receipt lifts it), `evals/stop-plan-without-receipt.scenario.json` (a plan-shaped reply is refused). `ledger canary run --plugins pattern-check` replays them.
 
 ## What this check does not do
 

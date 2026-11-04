@@ -266,3 +266,10 @@ After any performance-related change:
 - [ ] Any new cache states what it keys on and how it goes stale
 - [ ] The measured user-facing metric has a synthetic budget or field monitor that can detect regression
 - [ ] Existing tests still pass (optimization didn't break behavior)
+
+## How it fails
+
+- No baseline measurement exists (no profile, no timing, no Core Web Vitals reading): the optimization is not started; the first deliverable is the measurement, and a change with no before/after number is reported as unverified.
+- The profiler, Lighthouse or load tool cannot run here (no browser, no production-like data, a sandbox without network): say which measurement was skipped and what stands in for it, if anything.
+- The improvement is within noise: report it as no measurable change; do not round a 2% delta into a win.
+- The fix trades correctness or readability for speed: name the trade and the number that justifies it; without the number the fix is not made.

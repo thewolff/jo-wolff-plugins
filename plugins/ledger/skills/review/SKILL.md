@@ -26,3 +26,5 @@ output starts with `refused`, quote the reason. Do not fix anything unless the p
   will not see it. Quote the line; `ledger doctor` says what is wrong with the database.
 - No output at all within a few minutes: the lab's CLI hung past its timeout and was killed; the
   row says `unavailable: timed out`. Run it again once; if it repeats, tell the person.
+- The push gate the review feeds is proved by `evals/pre-tool-use-push-denied.scenario.json` (a
+  `git push` with no note or outcome in the session is refused, and the reason names the command).

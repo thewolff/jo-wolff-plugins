@@ -343,6 +343,22 @@ CI runs the same command on Ubuntu and macOS with Node 24 (`.github/workflows/as
 
 ## Release notes
 
+### 2026-11-04 — 0.7.2
+
+The plugin meets ledger 0.3.5's five-row gate. `evals/manifest.json` declares what the two hooks
+can return and four `evals/<x>.scenario.json` prove them: the every-idea nudge
+(`prompt-nudge-every-idea`) and the quiet prompt at `ask` (`prompt-quiet-at-ask`); the Stop check
+blocking a reply with no verdict (`stop-no-verdict`, which also carries a `session` and a `judge`
+rubric the nightly canary runs under `claude -p` and grades with `claude plugin eval`) and letting
+one with a verdict through (`stop-with-verdict`). `e2e/live-run.sh` hands off to plugin-kit's
+`lib/live-run.mjs`. The state directory (`$XDG_STATE_HOME/ask-graham`, 30 days) is declared in
+`.claude-plugin/plugin.json` and `node scripts/prune.mjs --days 30` prunes it, keeping
+`errors.log`. The skill has a "When this can't run" section.
+
+Fix: `skills/ask-graham/scripts/upkeep.mjs` compared `import.meta.url` with
+`file://${process.argv[1]}` as strings. Node resolves the main module through symlinks, so run
+through one it did nothing and exited 0. The guard now compares real paths.
+
 ### 2026-11-03 — 0.7.1
 
 The Stop check now reads the reply from the Stop payload's `last_assistant_message`, and no longer

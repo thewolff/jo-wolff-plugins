@@ -1,0 +1,21 @@
+{
+  "$comment": "A `git push` from a session with no note or outcome is denied; the reason names `ledger note`.",
+  "event": "PreToolUse",
+  "expect": "deny",
+  "reason": "record what this push is before pushing",
+  "setup": {
+    "commands": [
+      "git -C \"${CWD}\" commit -q --allow-empty -m init"
+    ]
+  },
+  "stdin": {
+    "session_id": "${SESSION_ID}",
+    "transcript_path": "${TRANSCRIPT}",
+    "cwd": "${CWD}",
+    "hook_event_name": "PreToolUse",
+    "tool_name": "Bash",
+    "tool_input": {
+      "command": "git push origin main"
+    }
+  }
+}

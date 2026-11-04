@@ -1,0 +1,13 @@
+{
+  "$comment": "Sibling of user-prompt-ledger-line: a prose prompt is left alone.",
+  "event": "UserPromptSubmit",
+  "expect": "silent",
+  "sibling": "user-prompt-ledger-line.scenario.json",
+  "stdin": {
+    "session_id": "${SESSION_ID}",
+    "transcript_path": "${TRANSCRIPT}",
+    "cwd": "${CWD}",
+    "hook_event_name": "UserPromptSubmit",
+    "prompt": "can you tell me what the pending questions are?"
+  }
+}

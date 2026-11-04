@@ -37,8 +37,8 @@ test("migration 3: a store left at version 2 by 0.2.0 keeps every row, gains hel
 
   const r = open(p);
   const db = r.db;
-  assert.equal(SCHEMA_VERSION, 7);
-  assert.equal(storeVersion(db), 7);
+  assert.equal(SCHEMA_VERSION, 8);
+  assert.equal(storeVersion(db), 8);
   assert.equal(r.shared, true);
   assert.deepEqual(db.prepare("SELECT id, state, resolved_at FROM cc_questions ORDER BY id").all().map((x) => ({ ...x })), [
     { id: "q-a1", state: "answered", resolved_at: "2026-01-01T00:01:00.000Z" },

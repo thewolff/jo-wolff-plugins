@@ -1,0 +1,20 @@
+{
+  "$comment": "Every event hooks/hooks.json registers and the outcomes its handler returns. additionalContext counts as systemMessage. Each event x outcome is proved by one *.scenario.json; `ledger gate check` fails naming the gap.",
+  "events": {
+    "SessionStart": [
+      "systemMessage",
+      "silent"
+    ],
+    "UserPromptSubmit": [
+      "systemMessage",
+      "silent"
+    ],
+    "Stop": [
+      "deny",
+      "silent"
+    ]
+  },
+  "manual": [
+    "A live `claude -p` session cannot be isolated from the real ~/.claude/.i-have-audhd-state on macOS: the login lives in the keychain and needs the real HOME (measured 2026-11-04 on 2.1.318: a temp HOME ends every session in `Not logged in`). The judge-gated rules are proved here with the replayed real-judge captures under judge/fixtures (stop-judge-warns); checking them against a live judge is a manual run of e2e/main-path.test.mjs with a real judge command."
+  ]
+}

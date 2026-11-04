@@ -1,0 +1,23 @@
+{
+  "$comment": "Sibling of session-start-core: OUTPUT_TYPES_INJECT=off \u2192 nothing on stdout, nothing logged.",
+  "event": "SessionStart",
+  "expect": "silent",
+  "sibling": "session-start-core.scenario.json",
+  "setup": {
+    "env": {
+      "OUTPUT_TYPES_INJECT": "off"
+    }
+  },
+  "stdin": {
+    "session_id": "${SESSION_ID}",
+    "transcript_path": "${TRANSCRIPT}",
+    "cwd": "${CWD}",
+    "hook_event_name": "SessionStart",
+    "source": "startup"
+  },
+  "after": {
+    "absent": [
+      "$XDG_STATE_HOME/output-types/errors.log"
+    ]
+  }
+}

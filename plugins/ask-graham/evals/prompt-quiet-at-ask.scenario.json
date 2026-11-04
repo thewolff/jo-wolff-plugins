@@ -1,0 +1,13 @@
+{
+  "$comment": "Sibling of prompt-nudge-every-idea: at the default intensity (ask) the prompt hook prints nothing.",
+  "event": "UserPromptSubmit",
+  "expect": "silent",
+  "sibling": "prompt-nudge-every-idea.scenario.json",
+  "stdin": {
+    "session_id": "${SESSION_ID}",
+    "transcript_path": "${TRANSCRIPT}",
+    "cwd": "${CWD}",
+    "hook_event_name": "UserPromptSubmit",
+    "prompt": "what if we built a changelog emailer"
+  }
+}

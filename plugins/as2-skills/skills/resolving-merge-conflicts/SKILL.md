@@ -14,3 +14,10 @@ description: "Use when you need to resolve an in-progress git merge/rebase confl
 4. Discover the project's **automated checks** and run them, typically typecheck, then tests, then format. Fix anything the merge broke.
 
 5. **Finish the merge/rebase.** Stage everything and commit. If rebasing, continue the rebase process until all commits are rebased.
+
+## How it fails
+
+- The original intent of a conflicting change cannot be recovered (no PR, no ticket, a terse commit message): say which hunks were resolved on the code alone and what was assumed; do not invent behavior to bridge them.
+- Both sides are incompatible and the merge's stated goal does not decide between them: stop and ask with the two readings and a recommendation; `--abort` is still not the answer.
+- The project's checks cannot run after the resolution (missing toolchain, failing unrelated tests): finish the merge, report which checks did not run and which failures predate the merge.
+- A conflict is in a generated or vendored file: regenerate or re-vendor from the source of truth rather than hand-merging the output; if the source is unknown, say so.

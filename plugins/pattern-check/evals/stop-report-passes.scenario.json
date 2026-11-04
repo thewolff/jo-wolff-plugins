@@ -1,0 +1,14 @@
+{
+  "$comment": "Sibling of stop-plan-without-receipt: a reply that reports rather than proposes is never refused.",
+  "event": "Stop",
+  "expect": "silent",
+  "sibling": "stop-plan-without-receipt.scenario.json",
+  "stdin": {
+    "session_id": "${SESSION_ID}",
+    "transcript_path": "${TRANSCRIPT}",
+    "cwd": "${CWD}",
+    "hook_event_name": "Stop",
+    "stop_hook_active": false,
+    "last_assistant_message": "Done. Tests pass 12/12; the two files changed are listed below."
+  }
+}

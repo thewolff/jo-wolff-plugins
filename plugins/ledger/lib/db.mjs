@@ -56,7 +56,7 @@ export function storeWord(kind) {
 }
 
 /** The tables this plugin owns, in creation order. Anything else in the file is foreign. */
-export const OWN_TABLES = Object.freeze(["cc_meta", "cc_questions", "cc_answers", "cc_notes", "cc_sessions", "cc_bounces", "cc_reviews", "cc_judge_cache", "cc_canary_runs", "cc_gate_checks"]);
+export const OWN_TABLES = Object.freeze(["cc_meta", "cc_questions", "cc_answers", "cc_notes", "cc_sessions", "cc_bounces", "cc_reviews", "cc_judge_cache", "cc_canary_runs", "cc_gate_checks", "cc_canary_prunes"]);
 
 export const MIGRATIONS = [
   // 1: the initial schema. Rows bind to a folder (`cwd`), never to a "workload" row: the folder
@@ -301,6 +301,36 @@ export const MIGRATIONS = [
     const put = db.prepare("INSERT OR IGNORE INTO cc_judge_cache (key, answer) VALUES (?, ?)");
     for (const r of old) if (r.value === "yes" || r.value === "no") put.run(r.key, r.value);
     db.prepare("DELETE FROM cc_meta WHERE key LIKE 'judge:%'").run();
+  },
+  // 8 (0.3.5): the canary certifies a tree and observes writes; retention runs are recorded.
+  //   cc_canary_runs.tree_sha    the plugin tree (`git rev-parse HEAD:plugins/<p>`) the run
+  //                              certifies: NULL when the checkout had uncommitted changes under
+  //                              the plugin or is in no repository. The gate's `evals` row wants
+  //                              a pass row for the committed tree.
+  //   cc_canary_runs.writes      JSON array of the files the live run left outside the work
+  //                              directory, in placeholder form (`$XDG_STATE_HOME/<p>/x`), from
+  //                              the script's `wrote:` lines; the gate's `retention` row checks
+  //                              each against the plugin's declared `state`.
+  //   cc_canary_prunes           one row per declared `state[].prune` the canary ran after the
+  //                              live runs: the command, its exit, and the bytes it freed.
+  (db) => {
+    db.exec(`
+      ALTER TABLE cc_canary_runs ADD COLUMN tree_sha TEXT;
+      ALTER TABLE cc_canary_runs ADD COLUMN writes TEXT;
+
+      CREATE TABLE cc_canary_prunes (
+        id          INTEGER PRIMARY KEY,
+        plugin      TEXT NOT NULL,
+        at          TEXT NOT NULL,
+        path        TEXT NOT NULL,
+        command     TEXT NOT NULL,
+        status      TEXT NOT NULL CHECK (status IN ('pass','fail','unavailable')),
+        exit_code   INTEGER,
+        bytes_freed INTEGER,
+        note        TEXT
+      );
+      CREATE INDEX cc_canary_prunes_plugin_at ON cc_canary_prunes (plugin, at);
+    `);
   },
 ];
 

@@ -1,0 +1,18 @@
+{
+  "$comment": "A prompt made only of ledger lines (`pending`) is applied and the result handed back as systemMessage and additionalContext.",
+  "event": "UserPromptSubmit",
+  "expect": "systemMessage",
+  "reason": "ledger applied the lines in this prompt",
+  "setup": {
+    "commands": [
+      "node \"${PLUGIN_DIR}/scripts/ledger.mjs\" ask \"Local or remote database?\" --name db-mode --options local,remote --cwd \"${CWD}\""
+    ]
+  },
+  "stdin": {
+    "session_id": "${SESSION_ID}",
+    "transcript_path": "${TRANSCRIPT}",
+    "cwd": "${CWD}",
+    "hook_event_name": "UserPromptSubmit",
+    "prompt": "pending"
+  }
+}

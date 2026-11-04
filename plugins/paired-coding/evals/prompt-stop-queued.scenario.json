@@ -1,0 +1,19 @@
+{
+  "$comment": "Pairing on and the turn is the stop phrase: the hook says the stop is queued and where the receipt will land, without deciding it yet.",
+  "event": "UserPromptSubmit",
+  "expect": "systemMessage",
+  "reason": "asks to end pairing",
+  "sibling": "prompt-pairing-on.scenario.json",
+  "setup": {
+    "commands": [
+      "node \"${PLUGIN_DIR}/evals/pair-start.mjs\" \"${SESSION_ID}\""
+    ]
+  },
+  "stdin": {
+    "session_id": "${SESSION_ID}",
+    "transcript_path": "${TRANSCRIPT}",
+    "cwd": "${CWD}",
+    "hook_event_name": "UserPromptSubmit",
+    "prompt": "pair stop"
+  }
+}

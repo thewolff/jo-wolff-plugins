@@ -27,32 +27,36 @@
 //
 // Exit codes: 0 done; 1 the input was not a valid receipt (nothing written); 2 usage.
 
-import { existsSync, readFileSync, realpathSync } from "node:fs";
+import { existsSync, readFileSync, readdirSync, realpathSync, rmSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { recordCommand, resolveContext } from "./lib/context.mjs";
 import { parseTable, render } from "./lib/receipt.mjs";
-import { isSafeKey, readCurrent, readSession, writeAtomic, writeSession } from "./lib/state.mjs";
+import { isSafeKey, readCurrent, readSession, stateDir, writeAtomic, writeSession } from "./lib/state.mjs";
 
 export const USAGE = `usage:
   pattern-check open "<what you are about to build>"
   pattern-check record [< table.md] [--row "new piece | existing pattern (file:line) | reuse|replace|new | reason | fails how | next step | restart-safe (yes/no + why) | bounded | evidence kept"]... [--no-new-pieces "<reason>"]
   pattern-check status
+  pattern-check prune [--days <n>]   remove receipt copies, stop guards and session files in the state directory older than n days (default 30); errors.log and current/ stay
 options: --session <key>   --cwd <dir>`;
 
 /** Splits argv into { command, positional, flags }. Flags with values: --session, --cwd, --row (repeatable), --no-new-pieces. */
 export function parseArgs(argv) {
-  const out = { command: null, positional: [], session: null, cwd: null, rows: [], noNewPieces: null };
+  const out = { command: null, positional: [], session: null, cwd: null, rows: [], noNewPieces: null, days: null };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
-    if (a === "--session" || a === "--cwd" || a === "--row" || a === "--no-new-pieces") {
+    if (a === "--session" || a === "--cwd" || a === "--row" || a === "--no-new-pieces" || a === "--days") {
       const v = argv[i + 1];
       if (v === undefined) throw new Error(`${a} needs a value`);
       i++;
       if (a === "--session") out.session = v;
       else if (a === "--cwd") out.cwd = v;
       else if (a === "--row") out.rows.push(v);
-      else out.noNewPieces = v;
+      else if (a === "--days") {
+        if (!/^\d+$/.test(v)) throw new Error(`--days needs a whole number of days, got ${v}`);
+        out.days = Number(v);
+      } else out.noNewPieces = v;
     } else if (a.startsWith("--")) {
       throw new Error(`unknown option ${a}`);
     } else if (out.command === null) {
@@ -91,8 +95,9 @@ export function run(argv, opts = {}) {
   const home = opts.home;
   let args;
   try { args = parseArgs(argv); } catch (e) { return { code: 2, stdout: "", stderr: `${e.message}\n${USAGE}\n` }; }
-  if (!args.command || !["open", "record", "status"].includes(args.command)) return { code: 2, stdout: "", stderr: `${USAGE}\n` };
+  if (!args.command || !["open", "record", "status", "prune"].includes(args.command)) return { code: 2, stdout: "", stderr: `${USAGE}\n` };
   const cwd = args.cwd ?? opts.cwd ?? process.cwd();
+  if (args.command === "prune") return prune(stateDir(env, home), args.days ?? 30, opts.now ?? Date.now());
   let resolved;
   try { resolved = resolveSession({ session: args.session, cwd, env, home }); } catch (e) { return { code: 2, stdout: "", stderr: `${e.message}\n` }; }
   const { ctx, source } = resolved;
@@ -161,6 +166,41 @@ export function run(argv, opts = {}) {
     ...notes,
   ];
   return { code: 0, stdout: `${lines.join("\n")}\n`, stderr: "" };
+}
+
+/**
+ * Remove files under receipts/, stop/ and sessions/ in the state directory whose mtime is older
+ * than `days`. errors.log (the fault record) and current/ (the hook's per-repository pointer)
+ * stay. Prints one `pruned: N file(s), B bytes freed` line; a file that cannot be removed is
+ * named on stderr and the exit code is 1. A missing state directory prunes nothing.
+ */
+export function prune(base, days, now = Date.now()) {
+  const cutoff = now - days * 86_400_000;
+  let files = 0;
+  let bytes = 0;
+  const failed = [];
+  for (const sub of ["receipts", "stop", "sessions"]) {
+    const dir = join(base, sub);
+    let names;
+    try { names = readdirSync(dir); } catch { continue; }
+    for (const name of names) {
+      const file = join(dir, name);
+      try {
+        const st = statSync(file);
+        if (!st.isFile() || st.mtimeMs >= cutoff) continue;
+        rmSync(file);
+        files++;
+        bytes += st.size;
+      } catch (e) {
+        failed.push(`${file}: ${e?.message ?? e}`);
+      }
+    }
+  }
+  return {
+    code: failed.length ? 1 : 0,
+    stdout: `pruned: ${files} file(s), ${bytes} bytes freed (older than ${days} day${days === 1 ? "" : "s"} under ${base})\n`,
+    stderr: failed.length ? `pattern-check: could not remove:\n${failed.map((f) => `  ${f}`).join("\n")}\n` : "",
+  };
 }
 
 function summarize(rows) {

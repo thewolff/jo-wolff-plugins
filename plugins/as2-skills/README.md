@@ -119,6 +119,14 @@ the skills' shell scripts and fails when the sourced file is missing or sits out
 own skill directory. Run the test file by name: a bare `node --test` also picks up the Bun tests
 under `skills/*/test/`, which do not run under Node.
 
+## Changes in 0.1.2
+
+- Every skill has a "How it fails" section (what the agent does when the tool it shells
+  out to is missing, returns nothing, or cannot be trusted), the repository test bar ledger 0.3.5's
+  `gate check` enforces, and `.claude-plugin/plugin.json` declares the one path a skill writes
+  outside the worktree (`$TMPDIR/seo-audit-*`, per run, kept 0 days). With no hooks the gate's
+  `evals` row is skipped.
+
 ## Changes in 0.1.1
 
 - `cross-model-review`: the triad and quorum fan-out scripts no longer fail on first use. Both

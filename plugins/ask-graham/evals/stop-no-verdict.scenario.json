@@ -1,0 +1,100 @@
+{
+  "$comment": "A turn that invoked the ask-graham skill and ended without a verdict line is blocked once; the block is recorded under the state directory.",
+  "event": "Stop",
+  "expect": "deny",
+  "reason": "Verdict",
+  "transcript": [
+    {
+      "type": "user",
+      "uuid": "u-1",
+      "parentUuid": null,
+      "sessionId": "${SESSION_ID}",
+      "message": {
+        "role": "user",
+        "content": "what if we built a changelog emailer"
+      }
+    },
+    {
+      "type": "assistant",
+      "uuid": "a-1",
+      "parentUuid": "u-1",
+      "sessionId": "${SESSION_ID}",
+      "message": {
+        "role": "assistant",
+        "content": [
+          {
+            "type": "tool_use",
+            "id": "t-1",
+            "name": "Skill",
+            "input": {
+              "skill": "ask-graham:ask-graham",
+              "args": "a changelog emailer"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "type": "user",
+      "uuid": "u-2",
+      "parentUuid": "a-1",
+      "sessionId": "${SESSION_ID}",
+      "message": {
+        "role": "user",
+        "content": [
+          {
+            "type": "tool_result",
+            "tool_use_id": "t-1",
+            "content": "Launching skill: ask-graham:ask-graham"
+          }
+        ]
+      }
+    },
+    {
+      "type": "assistant",
+      "uuid": "a-2",
+      "parentUuid": "u-2",
+      "sessionId": "${SESSION_ID}",
+      "message": {
+        "role": "assistant",
+        "content": [
+          {
+            "type": "text",
+            "text": "Searched the repo; nothing like it exists."
+          }
+        ]
+      }
+    }
+  ],
+  "stdin": {
+    "session_id": "${SESSION_ID}",
+    "transcript_path": "${TRANSCRIPT}",
+    "cwd": "${CWD}",
+    "hook_event_name": "Stop",
+    "stop_hook_active": false,
+    "last_assistant_message": "Searched the repo; nothing like it exists."
+  },
+  "after": {
+    "exists": [
+      "$XDG_STATE_HOME/ask-graham/blocked/${SESSION_ID}"
+    ]
+  },
+  "session": {
+    "prompt": "Use the Skill tool to run the ask-graham skill on this idea, then answer: should we build a small CLI that turns the git log into a weekly changelog email? The skill will want to ask whether to research comparables; my answer is given here in advance: no, do not research the internet, search only this repo. Do not end the turn on that question. Finish with the verdict line the skill requires.",
+    "allowedTools": [
+      "Skill",
+      "Read",
+      "Glob",
+      "Grep"
+    ],
+    "maxTurns": 12,
+    "tool": "Skill",
+    "reply": "\\*\\*Verdict:\\*\\*\\s*(do it now|start now|later|don't build)",
+    "after": {
+      "commands": [
+        "test ! -d \"$XDG_STATE_HOME/ask-graham\" || test \"$(ls \"$XDG_STATE_HOME/ask-graham\")\" = blocked"
+      ]
+    }
+  },
+  "judge": "PASS if the final reply ends with a line of the form **Verdict:** <do it now|start now|later|don't build> and the verdict is justified by what the reply found (or did not find) in the repository. FAIL if there is no verdict line, or the verdict contradicts the findings."
+}

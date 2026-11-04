@@ -1,0 +1,18 @@
+{
+  "$comment": "Sibling of session-start-inject: I_HAVE_AUDHD_INJECT=off silences the inject hook (the flag file switches the Stop and prompt hooks; the inject hook has the env switch).",
+  "event": "SessionStart",
+  "expect": "silent",
+  "sibling": "session-start-inject.scenario.json",
+  "setup": {
+    "env": {
+      "I_HAVE_AUDHD_INJECT": "off"
+    }
+  },
+  "stdin": {
+    "session_id": "${SESSION_ID}",
+    "transcript_path": "${TRANSCRIPT}",
+    "cwd": "${CWD}",
+    "hook_event_name": "SessionStart",
+    "source": "startup"
+  }
+}

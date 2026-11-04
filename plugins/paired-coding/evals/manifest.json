@@ -1,0 +1,27 @@
+{
+  "$comment": "Every event hooks/hooks.json registers and the outcomes its handler returns. additionalContext counts as systemMessage. Each event x outcome is proved by one *.scenario.json; `ledger gate check` fails naming the gap. Scenarios that need pairing on run evals/pair-start.mjs in setup, which calls the same pair_start verb the MCP server exposes.",
+  "events": {
+    "PreToolUse": [
+      "deny",
+      "silent"
+    ],
+    "UserPromptSubmit": [
+      "systemMessage",
+      "silent"
+    ],
+    "Stop": [
+      "silent"
+    ],
+    "SessionStart": [
+      "systemMessage",
+      "silent"
+    ],
+    "SessionEnd": [
+      "silent"
+    ]
+  },
+  "manual": [
+    "The typed-agreement path (pair_propose, the partner's typed yes, pair_begin quoting it, pair_done's diff) runs through the MCP server, not a hook, and is covered by e2e.test.mjs; a hook scenario cannot stand in for a keyboard turn.",
+    "A live `claude -p` session cannot type at the keyboard, so `pair stop` as a trusted interactive turn is not provable here; the stop-queued scenario proves the hook queues and reports it, e2e.test.mjs proves the receipt."
+  ]
+}

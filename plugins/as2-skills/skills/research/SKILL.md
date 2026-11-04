@@ -228,3 +228,10 @@ Every research run ends in one Markdown file, not only in the reply:
 2. Write the findings to a single Markdown file. Each claim carries its source: the URL actually fetched (or the command run) and the passage or output that says it. Anything not verified is listed as such, not omitted.
 3. Save it where the repo already keeps such notes; match the existing convention (this repo: `research/<topic>.md`). If there is none, put it somewhere sensible and say where.
 4. Open with what needs a decision, then the findings, then coverage: what was retrieved, what was read, what failed, and whether that was sufficient.
+
+## How it fails
+
+- The primary source cannot be fetched (paywall, login, dead link, no network): the finding is recorded as unverified with the URL tried and what failed; a secondary source is labeled secondary, never promoted.
+- Sources disagree: both are cited and the disagreement is the finding; do not pick the convenient one.
+- The question cannot be answered from documentation at all (behavior only observable by running it): say so and either run the experiment with its command and output as the receipt, or report the gap.
+- The findings file cannot be written where the workflow names: write it beside the work and say where; a research result that lives only in chat is lost at the next compaction.

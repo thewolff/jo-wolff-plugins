@@ -124,3 +124,11 @@ These are estimates, not measured panels. They come from wl-mv5i3lulwwbbi8's dee
 - [ ] The report file exists at the location the base names and the reply points at it
 - [ ] Disagreements between legs are reported as disagreements, not resolved silently
 - [ ] From a lane: the mode ran as a panel, no `references/*/scripts` ran, and the slice closed on `panel.ts check <run>` exit 0
+
+## How it fails
+
+- A provider's CLI is missing, not logged in or rate-limited: that leg is reported as missing with the reason; the run continues with the legs that answered and the report says it is a two-leg (or one-leg) result. A second leg on the same provider is never substituted.
+- A leg times out or returns nothing: same as missing; its slot in the agreement table reads "no answer", never "no findings".
+- The legs disagree: that is the output, not an error; the synthesis records the disagreement and which leg said what.
+- The report file cannot be written at the location the base names (no `.tmp/`, read-only tree): the reply carries the needs-you section inline and names the write failure; the slice is not closed until a report exists somewhere named.
+- From an as2 lane the `references/*/scripts` fan-out must not run; if a panel run cannot start, the slice reports that and does not fall back to the scripts.

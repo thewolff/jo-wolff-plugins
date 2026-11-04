@@ -1,0 +1,14 @@
+{
+  "$comment": "A reply that proposes a plan (a Plan heading) with no receipt is refused; the reason names the record command with --session.",
+  "event": "Stop",
+  "expect": "deny",
+  "reason": "record --session",
+  "stdin": {
+    "session_id": "${SESSION_ID}",
+    "transcript_path": "${TRANSCRIPT}",
+    "cwd": "${CWD}",
+    "hook_event_name": "Stop",
+    "stop_hook_active": false,
+    "last_assistant_message": "## Plan\n1. Add a config loader in src/config/\n2. Add a retry helper\n3. Wire both into the router"
+  }
+}

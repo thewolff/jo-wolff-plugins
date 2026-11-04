@@ -1,0 +1,55 @@
+{
+  "$comment": "Pairing on: Stop prints nothing (it cannot reopen the turn) but judges the queued turn against the transcript and stashes the outcome for the next event; the journal records it.",
+  "event": "Stop",
+  "expect": "silent",
+  "setup": {
+    "commands": [
+      "node \"${PLUGIN_DIR}/evals/pair-start.mjs\" \"${SESSION_ID}\""
+    ]
+  },
+  "before": [
+    {
+      "event": "UserPromptSubmit",
+      "stdin": {
+        "session_id": "${SESSION_ID}",
+        "transcript_path": "${TRANSCRIPT}",
+        "cwd": "${CWD}",
+        "hook_event_name": "UserPromptSubmit",
+        "prompt": "looks good, go ahead"
+      }
+    }
+  ],
+  "transcript": [
+    {
+      "type": "user",
+      "message": {
+        "role": "user",
+        "content": "looks good, go ahead"
+      }
+    },
+    {
+      "type": "assistant",
+      "message": {
+        "role": "assistant",
+        "content": [
+          {
+            "type": "text",
+            "text": "Waiting on your agreement to card-1."
+          }
+        ]
+      }
+    }
+  ],
+  "stdin": {
+    "session_id": "${SESSION_ID}",
+    "transcript_path": "${TRANSCRIPT}",
+    "cwd": "${CWD}",
+    "hook_event_name": "Stop",
+    "stop_hook_active": false
+  },
+  "after": {
+    "exists": [
+      "~/.local/state/paired-coding/${SESSION_ID}/journal.jsonl"
+    ]
+  }
+}

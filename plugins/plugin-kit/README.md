@@ -2,13 +2,17 @@
 
 Start a new Claude Code plugin in this repository that meets the test bar on day one.
 
-The repository's `AGENTS.md` asks three things of every plugin, kind-agnostic: it can't break the
+The repository's `AGENTS.md` asks five things of every plugin, kind-agnostic: it can't break the
 session (every hook exits 0 inside its budget on any input, never a deny or block for its own
 fault), its failures are visible (an `errors.log` line and a `systemMessage`, and the unavailable
-path of every program it shells out to is tested against a real capture), and its text says what
+path of every program it shells out to is tested against a real capture), its text says what
 to do when it can't (every skill and agent has a "When this can't run" section; every deny text
-names a command). `ledger gate check` (the ledger plugin, 0.3.3) enforces the three before a
-push. This plugin makes meeting them the default rather than a retrofit.
+names a command), its behaviour is proved (an `evals/manifest.json` declaring what each hook
+can return and one `evals/<x>.scenario.json` per event × outcome, replayed by the nightly
+canary), and its state is declared and pruned (`state` in `.claude-plugin/plugin.json`, with a
+prune command for anything kept for a number of days). `ledger gate check` (the ledger plugin,
+0.3.5) enforces the five before a push. This plugin makes meeting them the default rather than
+a retrofit.
 
 ## Install
 
@@ -37,20 +41,28 @@ installed from are never where a plugin lands):
 | `hooks/<event>.mjs` | one handler per event, `handle(input, { env })` returning null (allow) until the rule is written; the header comment says what the runner does and what the handler owes. The handler runs on a worker thread (that is what makes the deadline hold), so it returns a plain JSON-able object or null and nothing else: never `process.exit()` (the thread ending is "ended without an answer", a logged fault), never its own stdout writes (only what the runner prints is the answer), a subprocess gets its `cwd` passed explicitly from `input.cwd` (the thread's `process.cwd()` is the runner's), and a child's environment goes on the spawn's `env`, not `process.env` |
 | `test/hook-contract.test.mjs` | per hook: empty stdin, malformed JSON, an unknown event, an unwritable state directory, no config → exit 0 inside 5 s, no deny/block/`continue: false`; malformed JSON → one errors.log line and a systemMessage |
 | `test/fixtures/README.md` | the rule that every captured `<x>.txt` has an `<x>.unavailable.txt` sibling, and how to capture one |
-| `e2e/live-run.sh` | the nightly canary's live run, under the canary contract (exit 0 pass, exit 75 unavailable with the reason on the last line, stdout kept); proves the hooks ran under `claude -p`, with a slot for the plugin's own claim |
-| `skills/<name>/SKILL.md` | frontmatter, steps, and the "When this can't run" section with the two bullets every plugin shares |
-| `HOW-IT-FAILS.md` | the receipt: piece, fails how, visible where, the person does |
-| `.claude-plugin/plugin.json`, `package.json`, `README.md` | manifests at 0.1.1 and a README with the install block and a "How it fails" paragraph |
+| `e2e/live-run.sh` | the nightly canary's live run, under the canary contract (exit 0 pass, exit 75 unavailable with the reason on the last line, stdout kept); hands off to `lib/live-run.mjs` |
+| `lib/live-run.mjs` | a copy of this plugin's [`lib/live-run.mjs`](lib/live-run.mjs), the scenario runner: replays every `evals/*.scenario.json` against the plugin's hooks in a sandbox (an empty HOME, XDG dirs and TMPDIR, a `git init`ed work directory; the caller's `LEDGER_*` and the plugin's own `<NAME>_*` env keys dropped), classifies the hooks' stdout as one outcome (`deny`, `ask`, `allow`, `systemMessage`, `silent`) and compares it with `expect`; then, when `claude` is on PATH, the pinned CLI-contract session and every scenario with a `session` under `claude -p` (`--setting-sources ""`, temp XDG dirs, `SHELL=/bin/bash`), and a `judge` rubric graded by `claude plugin eval`. Files the run left outside its work directory are printed as `wrote: <placeholder path>` for the gate's retention row. `--no-live` replays the hook phase only; `--only a,b` narrows the scenarios |
+| `evals/manifest.json` | each registered event → `["silent"]` until the handler does more; `manual` for what no scenario can prove |
+| `evals/<event>.scenario.json` | one stub per event, `"stub": true` with the event's well-formed input as `stdin` and `expect: "silent"`; `ledger gate check` fails the `evals` row naming it until the stub is filled |
+| `scripts/prune.mjs` | the retention verb the `state` declaration names: `node scripts/prune.mjs [--days 30] [--dry-run]` removes files under `$XDG_STATE_HOME/<name>` older than that (errors.log kept) and prints `pruned: <n> file(s), <bytes> bytes freed` last; the canary records the bytes |
+| `skills/<name>/SKILL.md` | frontmatter, steps, and the "When this can't run" section with the two bullets every plugin shares, naming the first event's scenario |
+| `HOW-IT-FAILS.md` | the receipt: piece, fails how, visible where, the person does; rows for the scenarios, the live run and the prune verb |
+| `.claude-plugin/plugin.json`, `package.json`, `README.md` | manifests at 0.1.0, with a `state` declaration (`$XDG_STATE_HOME/<name>` kept 30 days and pruned by `scripts/prune.mjs`; `$XDG_CONFIG_HOME/<name>/config.json` kept by design), and a README with the install block and a "How it fails" paragraph |
 
-The scaffold passes its own `node --test` and all three of `ledger gate check` as written; what
-is left is the author's: the rule in each hook, the skill's steps, the receipt's rows, the
-fixtures for any program shelled out to, the live run's own claim. The marketplace entry is added
-by hand when the plugin is ready to publish.
+The scaffold passes its own `node --test` and four of the five `ledger gate check` rows as
+written (`survives`, `visible`, `says`, `retention`); the `evals` row fails naming every unfilled
+stub, which is the shape it is meant to have until the author fills the scenarios. What is left
+is the author's: the rule in each hook, the skill's steps, the receipt's rows, the scenarios'
+real inputs and expectations, the fixtures for any program shelled out to. The marketplace
+entry is added by hand when the plugin is ready to publish.
 
-The runner is copied, not imported across plugins, on purpose: an installed plugin never depends
-on a sibling being installed, and a change to the kit's copy reaches a plugin only when someone
-copies it again and runs that plugin's tests. The existing plugins (ledger, pattern-check,
-paired-coding, …) keep their own runners; this one is for new ones.
+The two runners are copied, not imported across plugins, on purpose: an installed plugin never
+depends on a sibling being installed, and a change to the kit's copy reaches a plugin only when
+someone copies it again and runs that plugin's tests. The plugins in this repository resolve
+`lib/live-run.mjs` from `../plugin-kit/` (the template `e2e/live-run.sh` looks in the plugin's
+own `lib/` first, then there), so one runner serves them all and a scaffold outside the
+repository carries its own; they keep their own hook runners.
 
 ## Agents
 
@@ -162,12 +174,50 @@ both; and neither agent contains `git -C` outside that one `g`.
 The scaffolder refuses an existing directory, a name that is not lowercase kebab, an unknown
 event, or no events, with the reason on stderr and exit 1; nothing is written on refusal and
 nothing is ever overwritten or deleted. A template missing from the kit (a broken install) is the
-same: exit 1 naming the file. The runner's own failure modes are in the table above; its test
-(`test/hook-runner.test.mjs`) drives each one, including the deadline in a spawned process: a
+same: exit 1 naming the file. The hook runner's own failure modes are in the table above; its
+test (`test/hook-runner.test.mjs`) drives each one, including the deadline in a spawned process: a
 handler holding a timer that never answers, a stdin held open, a synchronous `Atomics.wait` of
-6 s under the default 4 s deadline (exit inside 4.5 s wall clock). The kit's tests are a bare
-`node --test` (the contract-test template carries a `.template` suffix so the runner does not
-pick it up: it has no plugin to test until it is scaffolded).
+6 s under the default 4 s deadline (exit inside 4.5 s wall clock). The scenario runner: a
+scenario that does not parse, names an unregistered event or an undeclared outcome, has no
+stdin, or is still a stub is a `fail` naming the file (the gate says the same offline); `claude`
+missing → the hook phase still runs and prints, then exit 75 with `unavailable: claude not found
+on PATH` last; a live session whose result cannot be read, a model that never tried the
+behaviour, or a `claude plugin eval` that could not run, log in or reach the API is
+indeterminate, never a pass, and a judge scenario left indeterminate makes the whole run exit
+75 whatever else passed (the gate's `evals` row trusts a canary pass to mean every rubric was
+graded). `test/live-run.test.mjs` drives each of these against a fixture plugin and a fake
+`claude`, and `test/scaffold.test.mjs` runs a scaffold end to end in a fresh repository: the
+stub fails the live run and the gate, the filled scenario passes both. The kit's tests are a
+bare `node --test` (the contract-test template carries a `.template` suffix so the runner does
+not pick it up: it has no plugin to test until it is scaffolded).
+
+## Changes in 0.2.0
+
+The scaffold meets the five-row gate ledger 0.3.5 runs, not the three-row one. New in the
+scaffold: `evals/manifest.json`, one `evals/<event>.scenario.json` stub per event,
+`scripts/prune.mjs` and a `state` declaration in `plugin.json`, and `lib/live-run.mjs`, the
+scenario runner `e2e/live-run.sh` now hands off to (19 files, from 13). The runner replays
+every scenario's hook phase in its own sandbox with no model, then under `claude -p` runs the
+pinned CLI-contract session and every scenario with a `session`. A `judge` rubric is graded by
+`claude plugin eval`: the runner writes a `case.yaml` (the 2.1.318 case schema, JSON body) and
+a `scaffold.sh` from the scenario's `setup` under `<plugin>/live-run-cases-<pid>/` (the CLI
+takes only a relative `--eval-dir` inside the plugin), runs the eval with `--no-publish --json`
+and reads the verdict from the JSON, never the exit code (a case that fails to load exits 0),
+and removes the directory whatever happened; the operator-gated tools the scenario's
+`allowedTools` names (Bash, Write, Edit, WebFetch, `mcp__*`) are granted with `--allow-tools`.
+Live sessions run with `SHELL=/bin/bash` pinned: the CLI snapshots the user's shell at startup
+and sources its rc, and given `sh` it falls back to zsh (measured on 2.1.318: `$SHELL` inside
+the Bash tool was `/bin/zsh`, with `ZDOTDIR` unset and set alike), so a zsh rc that writes under
+the sandbox's `XDG_CONFIG_HOME` (thefuck's settings, measured) read as the plugin's own write;
+bash with no rc writes nothing. A judge scenario the eval could not grade (no `claude`, not
+logged in, an API error) leaves the run `unavailable` (exit 75), never a pass, even when the
+contract session passed. The scaffolder's CLI guard compares real paths on both sides
+(`realpathSync` of `argv[1]` and of the module), the fix ledger 0.3.5 and the other plugins
+carry for their hooks: node resolves the main module through symlinks, so the earlier string
+compare made the scaffolder a silent no-op when reached through one (macOS's `/var/folders`
+tmpdir included), exiting 0 with nothing written. `test/live-run.test.mjs` is new; the scaffold
+test runs a scaffold end to end in a fresh repository through `ledger gate check` and `ledger
+canary run`.
 
 ## Changes in 0.1.2
 

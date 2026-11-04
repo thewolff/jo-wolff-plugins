@@ -927,6 +927,28 @@ content snapshots, at the next `pair_done`, which then stops the session: the fi
 not prevented. Snapshots cover the worktree only and leave out `.git`, so a write outside the
 worktree, inside an excluded directory, or after the final snapshot is not detected.
 
+## Changes
+
+### 1.4.4
+
+- The plugin meets ledger 0.3.5's five-row gate. `evals/manifest.json` declares what each of the
+  five hooks can return and nine `evals/<x>.scenario.json` prove them: the write denied
+  (`pre-tool-use-write-denied`) and the inert hook (`pre-tool-use-inert`) at PreToolUse, the
+  pairing-on (`prompt-pairing-on`), stop-queued (`prompt-stop-queued`) and inert
+  (`prompt-inert`) prompts, the fresh (`session-start-fresh`) and carried-over
+  (`session-start-carries-closed`) session start, the session end leaving its carry
+  (`session-end-leaves-carry`), the Stop hook judging a queued turn (`stop-judges-queued-turn`).
+  Scenarios that need pairing on run `evals/pair-start.mjs` in their setup, the same `pair_start`
+  verb the MCP server exposes. The typed-agreement path and `pair stop` as a keyboard turn cannot
+  be proved by a hook scenario and are listed under `manual`; `e2e.test.mjs` covers them.
+  `e2e/live-run.sh` hands off to plugin-kit's `lib/live-run.mjs`.
+- Every refusal now ends with the standing way out: "Pairing ends when your partner types
+  `pair stop` as a whole message."
+- The journal directory (`~/.local/state/paired-coding`, 30 days, pruned by
+  `node scripts/prune.mjs --days 30`) and the per-run temp directories (`$TMPDIR/paired-coding-*`)
+  are declared as state in `.claude-plugin/plugin.json`; the skill has a "When this can't run"
+  section.
+
 ## Files
 
 Test files (`*.test.mjs`, beside each module, `e2e.test.mjs` at the plugin root, the transcript entries in `hooks/fixtures/` and the captured `ps` results in `lib/fixtures/`) are left out.

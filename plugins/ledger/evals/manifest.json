@@ -1,0 +1,27 @@
+{
+  "$comment": "Every event hooks/hooks.json registers and the outcomes its handler returns. additionalContext counts as systemMessage (context the model sees). Each event x outcome is proved by one *.scenario.json; `ledger gate check` fails naming the gap.",
+  "events": {
+    "SessionStart": [
+      "systemMessage",
+      "silent"
+    ],
+    "UserPromptSubmit": [
+      "systemMessage",
+      "silent"
+    ],
+    "PreToolUse": [
+      "deny",
+      "silent"
+    ],
+    "Stop": [
+      "deny",
+      "silent"
+    ],
+    "SessionEnd": [
+      "silent"
+    ]
+  },
+  "manual": [
+    "The ledger pane (mods/pane) is Desktop-only and is covered by `claude plugin test` over mods/pane/tests/pane.test.tsx; it has no live scenario."
+  ]
+}

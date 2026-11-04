@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { spawnSync } from "node:child_process";
@@ -27,11 +27,40 @@ function fixture(t) {
 }
 
 test("parseArgs: command, positional, flags; a flag without a value and an unknown flag throw", () => {
-  assert.deepEqual(parseArgs(["open", "a", "retry", "helper", "--session", "s", "--cwd", "/x"]), { command: "open", positional: ["a", "retry", "helper"], session: "s", cwd: "/x", rows: [], noNewPieces: null });
+  assert.deepEqual(parseArgs(["open", "a", "retry", "helper", "--session", "s", "--cwd", "/x"]), { command: "open", positional: ["a", "retry", "helper"], session: "s", cwd: "/x", rows: [], noNewPieces: null, days: null });
+  assert.equal(parseArgs(["prune", "--days", "7"]).days, 7);
+  assert.throws(() => parseArgs(["prune", "--days", "week"]), /whole number of days/);
   assert.deepEqual(parseArgs(["record", "--row", "a | b | reuse | c", "--row", "d | e | new | f"]).rows, ["a | b | reuse | c", "d | e | new | f"]);
   assert.equal(parseArgs(["record", "--no-new-pieces", "copy edit"]).noNewPieces, "copy edit");
   assert.throws(() => parseArgs(["record", "--row"]), /needs a value/);
   assert.throws(() => parseArgs(["record", "--bogus"]), /unknown option/);
+});
+
+test("prune removes receipts, stop guards and session files older than --days (default 30); errors.log and current/ stay", (t) => {
+  const f = fixture(t);
+  const now = Date.now();
+  const old = new Date(now - 40 * 86_400_000);
+  const seed = (rel, mtime) => {
+    const file = join(f.sd, rel);
+    mkdirSync(dirname(file), { recursive: true });
+    writeFileSync(file, "x");
+    if (mtime) utimesSync(file, mtime, mtime);
+    return file;
+  };
+  const oldReceipt = seed("receipts/a.md", old);
+  const oldStop = seed("stop/s", old);
+  const oldSession = seed("sessions/s.json", old);
+  const fresh = seed("receipts/b.md");
+  const log = seed("errors.log", old);
+  const current = seed("current/repo", old);
+  const r = f.cli(["prune"], { now });
+  assert.equal(r.code, 0);
+  assert.match(r.stdout, /^pruned: 3 file\(s\), 3 bytes freed \(older than 30 days under /);
+  for (const gone of [oldReceipt, oldStop, oldSession]) assert.equal(existsSync(gone), false, gone);
+  for (const kept of [fresh, log, current]) assert.equal(existsSync(kept), true, kept);
+  assert.match(f.cli(["prune", "--days", "1"], { now }).stdout, /^pruned: 0 file\(s\)/);
+  assert.match(f.cli(["prune", "--days", "0"], { now: now + 1000 }).stdout, /^pruned: 1 file\(s\), 1 bytes freed \(older than 0 days/);
+  assert.equal(f.cli(["prune"], { env: { ...f.env, XDG_STATE_HOME: join(f.base, "nowhere") } }).code, 0);
 });
 
 test("usage: no command, an unknown command, and open without a subject exit 2", (t) => {

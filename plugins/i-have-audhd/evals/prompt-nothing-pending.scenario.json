@@ -1,0 +1,13 @@
+{
+  "$comment": "Sibling of prompt-delivers-warning: with nothing pending the prompt hook prints nothing.",
+  "event": "UserPromptSubmit",
+  "expect": "silent",
+  "sibling": "prompt-delivers-warning.scenario.json",
+  "stdin": {
+    "session_id": "${SESSION_ID}",
+    "transcript_path": "${TRANSCRIPT}",
+    "cwd": "${CWD}",
+    "hook_event_name": "UserPromptSubmit",
+    "prompt": "ok, go on"
+  }
+}

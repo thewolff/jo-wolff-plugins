@@ -1,0 +1,33 @@
+{
+  "$comment": "A question asked in ANOTHER folder is relayed at SessionStart (the hook's additionalContext carries its body). Live: the model's first reply repeats the body, no stopAskRule bounce is written, the session row exists and `doctor` exits 0.",
+  "event": "SessionStart",
+  "expect": "systemMessage",
+  "reason": "Local or remote database",
+  "setup": {
+    "commands": [
+      "mkdir -p \"${CWD}/../other\"",
+      "node \"${PLUGIN_DIR}/scripts/ledger.mjs\" ask \"Should the trial use a Local or remote database?\" --name db-mode --options local,remote --cwd \"${CWD}/../other\""
+    ]
+  },
+  "stdin": {
+    "session_id": "${SESSION_ID}",
+    "transcript_path": "${TRANSCRIPT}",
+    "cwd": "${CWD}",
+    "hook_event_name": "SessionStart",
+    "source": "startup"
+  },
+  "session": {
+    "prompt": "Hi. Just say hello and ask me what we are working on.",
+    "allowedTools": [
+      "Read"
+    ],
+    "maxTurns": 3,
+    "reply": "local or remote database"
+  },
+  "after": {
+    "commands": [
+      "! node \"${PLUGIN_DIR}/scripts/ledger.mjs\" bounces | grep -q stopAskRule",
+      "node \"${PLUGIN_DIR}/scripts/ledger.mjs\" doctor >/dev/null"
+    ]
+  }
+}

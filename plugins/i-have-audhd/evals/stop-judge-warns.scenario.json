@@ -1,0 +1,74 @@
+{
+  "$comment": "A judge-gated rule (conclusion-first) with a configured judge: the replayed real-judge capture flags the buried conclusion; warn mode leaves it pending, and the judge's reason is on record.",
+  "event": "Stop",
+  "expect": "silent",
+  "sibling": "stop-block-plural.scenario.json",
+  "setup": {
+    "files": {
+      "~/.claude/i-have-audhd.json": "{\"reader\": \"the engineer who owns this service\", \"traits\": [\"reads the first two lines of any message and skims the rest\"], \"enforcement\": {\"mode\": \"warn\", \"judgeCommand\": \"p=$(cat); case \\\"$p\\\" in *\\\"Rule: conclusion-first\\\"*) cat '${PLUGIN_DIR}/judge/fixtures/conclusion-first.stdout.txt';; *\\\"Rule: bad-news-first\\\"*) cat '${PLUGIN_DIR}/judge/fixtures/bad-news-first.stdout.txt';; *) echo '{\\\"violation\\\": false, \\\"reason\\\": \\\"no fixture for this rule\\\"}';; esac\"}}"
+    }
+  },
+  "transcript": [
+    {
+      "type": "user",
+      "message": {
+        "role": "user",
+        "content": "why is the site broken?"
+      }
+    },
+    {
+      "type": "assistant",
+      "message": {
+        "role": "assistant",
+        "content": [
+          {
+            "type": "tool_use",
+            "id": "t1",
+            "name": "Bash",
+            "input": {
+              "command": "gh run list"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "type": "user",
+      "message": {
+        "role": "user",
+        "content": [
+          {
+            "type": "tool_result",
+            "tool_use_id": "t1",
+            "content": "failure"
+          }
+        ]
+      }
+    },
+    {
+      "type": "assistant",
+      "message": {
+        "role": "assistant",
+        "content": [
+          {
+            "type": "text",
+            "text": "I started by reading the deploy workflow end to end, then compared the staging and production configuration files line by line, then walked through the last three release tags to see how the cache keys were derived in each of them, and then read the runbook section on rollbacks.\n\nAfter all of that, the conclusion is that the production deploy failed last night and the rollback did not run, so the site is still serving the broken build. The fix is to rerun the rollback job by hand from the actions page.\n\n## Closing ask\n\nShould I rerun those?"
+          }
+        ]
+      }
+    }
+  ],
+  "stdin": {
+    "session_id": "${SESSION_ID}",
+    "transcript_path": "${TRANSCRIPT}",
+    "cwd": "${CWD}",
+    "hook_event_name": "Stop",
+    "stop_hook_active": false
+  },
+  "after": {
+    "commands": [
+      "grep -q 'rule=conclusion-first' ~/.claude/.i-have-audhd-state/warnings.log",
+      "grep -q 'judge: The opening sentence' ~/.claude/.i-have-audhd-state/warnings.log"
+    ]
+  }
+}

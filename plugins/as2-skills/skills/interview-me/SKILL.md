@@ -235,3 +235,10 @@ After applying interview-me:
 - [ ] At the stop point, the agent could predict reactions to the next three questions it would ask
 - [ ] Upon receiving explicit confirmation, stopped the turn immediately without invoking tools or starting downstream work
 - [ ] Any handoff to a downstream skill (`idea-refine`, `spec-driven-development`) was framed in terms of the confirmed intent, not the original underspecified ask
+
+## How it fails
+
+- The person answers two questions at once or skips one: fold the answer in and re-ask only what is still open; never re-ask what was answered.
+- Confidence stalls below the bar after several rounds: stop interviewing, state the two readings that remain and recommend one; an interview that cannot converge is reported, not extended.
+- The ask is actually specified (the person gives the who and the why up front): skip the interview and say so; running it anyway is the rationalization this skill warns about.
+- The loaded constraints (repository rules, prior decisions) contradict what the person asks for: name the conflict as a question, not a correction.

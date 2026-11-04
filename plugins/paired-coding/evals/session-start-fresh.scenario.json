@@ -1,0 +1,13 @@
+{
+  "$comment": "Sibling of session-start-carries-closed: a fresh launch (source startup) never takes a carry marker and stays inert.",
+  "event": "SessionStart",
+  "expect": "silent",
+  "sibling": "session-start-carries-closed.scenario.json",
+  "stdin": {
+    "session_id": "${SESSION_ID}",
+    "transcript_path": "${TRANSCRIPT}",
+    "cwd": "${CWD}",
+    "hook_event_name": "SessionStart",
+    "source": "startup"
+  }
+}

@@ -1,0 +1,35 @@
+{
+  "$comment": "The replaced session was pairing and its SessionEnd left the carry marker for this worktree; a /clear start carries pairing over closed and says so.",
+  "event": "SessionStart",
+  "expect": "systemMessage",
+  "reason": "carried over closed",
+  "setup": {
+    "commands": [
+      "node \"${PLUGIN_DIR}/evals/pair-start.mjs\" \"${SESSION_ID}\""
+    ]
+  },
+  "before": [
+    {
+      "event": "SessionEnd",
+      "stdin": {
+        "session_id": "${SESSION_ID}",
+        "transcript_path": "${TRANSCRIPT}",
+        "cwd": "${CWD}",
+        "hook_event_name": "SessionEnd",
+        "reason": "clear"
+      }
+    }
+  ],
+  "stdin": {
+    "session_id": "${SESSION_ID}-next",
+    "transcript_path": "${TRANSCRIPT}",
+    "cwd": "${CWD}",
+    "hook_event_name": "SessionStart",
+    "source": "clear"
+  },
+  "after": {
+    "exists": [
+      "~/.local/state/paired-coding/${SESSION_ID}-next/activated"
+    ]
+  }
+}

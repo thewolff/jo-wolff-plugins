@@ -5,5 +5,9 @@
   "author": { "name": "Jo Wolff" },
   "license": "MIT",
   "repository": "https://github.com/thewolff/jo-wolff-plugins",
-  "keywords": ["agents", "hooks"]
+  "keywords": ["agents", "hooks"],
+  "state": [
+    { "path": "$XDG_STATE_HOME/{{name}}", "retentionDays": 30, "prune": "node \"${CLAUDE_PLUGIN_ROOT}/scripts/prune.mjs\" --days 30" },
+    { "path": "$XDG_CONFIG_HOME/{{name}}/config.json", "kind": "file", "retentionDays": null, "prune": null }
+  ]
 }

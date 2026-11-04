@@ -44,7 +44,8 @@ export function gather(db, { now = Date.now(), since = BOUNCES_DEFAULT_SINCE } =
     const counts = { fired: rows.length, satisfied: rows.filter((b) => b.outcome === "satisfied").length, bypassed: rows.filter((b) => b.outcome === "bypassed").length, open: rows.filter((b) => !b.outcome).length };
     return { rule, ...counts, mechanical: mechanicalGrade({ ...counts, sessions }), texts: rows.filter((b) => b.text).slice(0, JUDGE_TEXTS), judge: null, judgeError: null };
   });
-  const canary = db.prepare("SELECT id, plugin, at, status, exit_code, duration_ms, grade, graded_by, note, diff FROM cc_canary_runs WHERE at >= ? ORDER BY at DESC, id DESC").all(from).map((r) => ({ ...r }));
+  const canary = db.prepare("SELECT id, plugin, at, status, exit_code, duration_ms, grade, graded_by, note, diff, tree_sha FROM cc_canary_runs WHERE at >= ? ORDER BY at DESC, id DESC").all(from).map((r) => ({ ...r }));
+  const prunes = db.prepare("SELECT id, plugin, at, path, status, bytes_freed, note FROM cc_canary_prunes WHERE at >= ? ORDER BY at DESC, id DESC").all(from).map((r) => ({ ...r }));
   const waived = db.prepare("SELECT at, head_sha, branch, cwd, reason FROM cc_reviews WHERE verdict = 'waived' AND at >= ? ORDER BY at DESC").all(from).map((r) => ({ ...r }));
   let judgements = [];
   try {
@@ -52,7 +53,7 @@ export function gather(db, { now = Date.now(), since = BOUNCES_DEFAULT_SINCE } =
   } catch {
     judgements = [];
   }
-  return { from, since, span, sessions, rules, canary, waived, judgements };
+  return { from, since, span, sessions, rules, canary, prunes, waived, judgements };
 }
 
 /** The passage the judge reads for one rule: up to JUDGE_TEXTS bounce texts with their outcome. */
@@ -95,6 +96,12 @@ export function render(data) {
     const graded = runs.filter((x) => x.grade);
     lines.push(`  ${pad(plugin, 16)} last ${r.status} #${r.id} ${r.at}${r.note ? ` (${r.note})` : ""}${r.diff ? ", differs from the last pass" : ""} · ${runs.length} run(s)${graded.length ? `, graded: ${graded.map((x) => `#${x.id} ${x.grade}`).join(", ")}` : ""}`);
   }
+  const p = data.prunes ?? [];
+  const freed = p.reduce((s, r) => s + (r.bytes_freed ?? 0), 0);
+  lines.push(`retention: ${p.length} prune run(s), ${freed} bytes freed${p.some((r) => r.status === "fail") ? `, ${p.filter((r) => r.status === "fail").length} failed` : ""}`);
+  const byPath = new Map();
+  for (const r of p) if (!byPath.has(`${r.plugin} ${r.path}`)) byPath.set(`${r.plugin} ${r.path}`, r);
+  for (const [, r] of byPath) lines.push(`  ${pad(r.plugin, 16)} ${r.path} last ${r.status} #${r.id} ${r.at}${r.bytes_freed !== null ? ` ${r.bytes_freed} bytes freed` : ""}${r.status !== "pass" && r.note ? ` (${r.note})` : ""}`);
   lines.push("");
   lines.push(`reviews waived: ${data.waived.length}`);
   for (const w of data.waived) lines.push(`  ${w.at} ${w.head_sha.slice(0, 7)}${w.branch ? ` ${w.branch}` : ""} · ${w.reason ?? "(no reason)"} · ${w.cwd}`);

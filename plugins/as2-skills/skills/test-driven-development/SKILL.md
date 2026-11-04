@@ -399,3 +399,11 @@ After completing any implementation:
 - [ ] Coverage hasn't decreased (if tracked)
 
 **Note:** Run each test command after a change that could affect the result. After a clean run, don't repeat the same command unless the code has changed since — re-running on unchanged code adds no confidence.
+
+## How it fails
+
+- The stack's test runner cannot be discovered or cannot run (missing dependency, no network, an unfamiliar harness): say which, and do not write implementation first on the promise of tests later; the first deliverable is a runnable failing test or the reason there is none.
+- The failing test is red for the wrong reason (a typo, a missing import) rather than the missing behavior: fix the test until it fails on the behavior; a green reached from a broken red proves nothing.
+- A bug cannot be reproduced in a test (timing, environment, a third-party system): the fix ships with the reproduction attempt described and the test marked as not possible, not with a test that passes regardless.
+- The browser or DevTools path is needed and unavailable: those checks are listed as not run; a unit test is not substituted for an end-to-end claim.
+- A test is deleted or loosened to get to green: that is reported as a change in what the suite proves, in the PR, never silently.

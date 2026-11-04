@@ -1,0 +1,19 @@
+{
+  "$comment": "Sibling of stop-plan-without-receipt: with the receipt recorded, the same plan passes.",
+  "event": "Stop",
+  "expect": "silent",
+  "sibling": "stop-plan-without-receipt.scenario.json",
+  "setup": {
+    "commands": [
+      "node \"${PLUGIN_DIR}/scripts/pattern-check.mjs\" record --session \"${SESSION_ID}\" --cwd \"${CWD}\" --no-new-pieces \"scenario\""
+    ]
+  },
+  "stdin": {
+    "session_id": "${SESSION_ID}",
+    "transcript_path": "${TRANSCRIPT}",
+    "cwd": "${CWD}",
+    "hook_event_name": "Stop",
+    "stop_hook_active": false,
+    "last_assistant_message": "## Plan\n1. Add a config loader in src/config/\n2. Add a retry helper\n3. Wire both into the router"
+  }
+}

@@ -1,0 +1,34 @@
+{
+  "$comment": "AskUserQuestion with no open ledger question for the folder is denied; the reason names `ledger ask`.",
+  "event": "PreToolUse",
+  "expect": "deny",
+  "reason": "ask the question through the ledger first",
+  "stdin": {
+    "session_id": "${SESSION_ID}",
+    "transcript_path": "${TRANSCRIPT}",
+    "cwd": "${CWD}",
+    "hook_event_name": "PreToolUse",
+    "tool_name": "AskUserQuestion",
+    "tool_input": {
+      "questions": [
+        {
+          "question": "Local or remote database?",
+          "header": "db",
+          "options": [
+            {
+              "label": "local"
+            },
+            {
+              "label": "remote"
+            }
+          ]
+        }
+      ]
+    }
+  },
+  "after": {
+    "commands": [
+      "node \"${PLUGIN_DIR}/scripts/ledger.mjs\" bounces | grep -q denyAskWithoutRow"
+    ]
+  }
+}

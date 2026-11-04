@@ -355,3 +355,11 @@ For every release (anything with consumers):
 - [ ] The version bump matches the change: breaking → major, additive → minor, fix → patch
 - [ ] The release is tagged, and the version is derived from the tag, not hand-edited out of sync
 - [ ] The changelog has a curated, human-readable entry grouped by impact for this version
+
+## How it fails
+
+- A command would rewrite shared history or discard work (`push --force`, `reset --hard`, `clean -fdx`, deleting a branch): it is not run without the person's explicit go-ahead in this conversation; the undo path is named with the ask.
+- The working tree holds changes that are not yours (another agent, the person mid-edit): adapt to them; never stash, checkout or reset them away.
+- Pre-commit hooks or CI fail: the commit does not land with `--no-verify`; the failure is reported with its output.
+- The remote refuses a push (protected branch, missing permission, diverged history): report the refusal verbatim and stop; rebasing onto the remote is proposed, not done silently.
+- Version or changelog conventions in the repository differ from the ones here: the repository's win; name the difference once.

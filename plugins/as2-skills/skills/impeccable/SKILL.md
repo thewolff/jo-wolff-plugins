@@ -85,3 +85,11 @@ After init writes PRODUCT.md, resume without rerunning `impeccable context`; ini
 **Doctor:** `/impeccable doctor` reports and repairs drift between this project's Impeccable artifacts (PRODUCT.md, DESIGN.md and its sidecar, config, surface briefs, the hook) and what this version reads. Load [reference/doctor.md](reference/doctor.md) when the user invokes it, or when they ask what is out of date, stale, or needs refreshing. A `CONTEXT_STALE` directive in Setup's output is the cheap subset of the same report; act on it there per its own instructions rather than running doctor unasked.
 
 **Never repair drift as a side effect of a design task.** A `CONTEXT_STALE` finding is reported, not acted on, unless the user asks. The one exception is a finding marked `auto`, which the next write to that file performs anyway.
+
+## How it fails
+
+- The context launcher refuses or fails: send the one-line notice before the next tool call, then read PRODUCT.md and DESIGN.md directly; planning and editing continue, nothing is invented for missing context.
+- PRODUCT.md or DESIGN.md is missing: that alone is not greenfield; `new-work` decides whether to preserve, expand or replace, and the decision is written down before a UI edit.
+- The brief pins an aesthetic the saturated-pattern warning dislikes: the brief wins; say which warning was overridden.
+- `reference/craft-floor.md` was not read immediately before a UI edit: the edit does not ship until it is; the floor carries bans no detector catches.
+- A command names a target that does not exist in the repository: ask for the path; do not pick a similar-looking surface.

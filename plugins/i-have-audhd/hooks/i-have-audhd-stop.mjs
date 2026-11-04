@@ -78,7 +78,7 @@
 //   once after the rule was judged fine and then failed again (lib/alerts.mjs). The judge's
 //   stderr is in judge-failures.log (judge/ask.mjs).
 
-import { existsSync, readFileSync, writeFileSync, mkdirSync, rmSync } from "node:fs";
+import { existsSync, readFileSync, writeFileSync, mkdirSync, rmSync, realpathSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { checkClosingAskLast } from "../checks/closing-ask-last.mjs";
@@ -611,8 +611,11 @@ function emit(out) {
   if (Object.keys(out).length) process.stdout.write(JSON.stringify(out));
 }
 
-const invokedDirectly =
-  process.argv[1] && import.meta.url === new URL(`file://${process.argv[1]}`).href;
+// Real paths on both sides: node resolves the main module through symlinks (macOS's /var/folders
+// is one), and a string compare against the raw argv would make this hook a silent no-op there.
+const invokedDirectly = (() => {
+  try { return realpathSync(process.argv[1]) === realpathSync(fileURLToPath(import.meta.url)); } catch { return false; }
+})();
 
 if (invokedDirectly) {
   main().then(emit, (err) => {

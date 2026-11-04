@@ -260,3 +260,10 @@ Before proceeding to implementation, confirm:
 - [ ] The spec is saved to a file in the repository
 - [ ] If the request bundles several independently testable capabilities, a capability map (module ids, dependency direction, build order) was approved before any module spec was written
 - [ ] Every module spec traces to a module id in the approved map
+
+## How it fails
+
+- Requirements stay ambiguous after the questions in the gated workflow: the open questions go in the spec's "Open Questions" section with a recommended answer each, and the plan stops at the first task that depends on one; nothing is invented to get past the gate.
+- The person wants to skip the spec and start coding: say what the plan will lack (sizing, ordering, success criteria) and get the explicit skip; a spec written after the fact is labeled retrospective.
+- The task plan grows past what one person can review in a sitting: split it by milestone and say which milestone is in scope now.
+- The spec and the code drift during implementation: the spec is updated in the same change, or the drift is recorded as an open question; "Keeping the Spec Alive" is the rule, not a suggestion.

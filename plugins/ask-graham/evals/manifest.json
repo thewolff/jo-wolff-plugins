@@ -1,0 +1,14 @@
+{
+  "$comment": "Every event hooks/hooks.json registers and the outcomes its handler returns. additionalContext counts as systemMessage. Each event x outcome is proved by one *.scenario.json; `ledger gate check` fails naming the gap.",
+  "events": {
+    "UserPromptSubmit": [
+      "systemMessage",
+      "silent"
+    ],
+    "Stop": [
+      "deny",
+      "silent"
+    ]
+  },
+  "manual": []
+}
