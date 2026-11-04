@@ -230,8 +230,9 @@ export const MIGRATIONS = [
         base_ref   TEXT,
         lab        TEXT NOT NULL,
         model      TEXT,
-        verdict    TEXT NOT NULL CHECK (verdict IN ('pass','findings','addressed','unavailable','waived')),
+        verdict    TEXT NOT NULL CHECK (verdict IN ('pass','pass-with-nits','findings','addressed','unavailable','waived')),
         findings   TEXT,
+        findings_json TEXT CHECK (findings_json IS NULL OR json_valid(findings_json)),
         reason     TEXT,
         at         TEXT NOT NULL
       );

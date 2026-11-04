@@ -44,7 +44,7 @@ export const DEFAULTS = Object.freeze({
     decisionPhrases: Object.freeze(["I decided", "decided to", "assumption:", "assuming", "going with", "instead of", "chose", "I'll go with", "trade-off"]),
   }),
   inject: Object.freeze({ notes: 5, elsewhere: true, answers: true, doctor: true }),
-  review: Object.freeze({ mode: "gate", labs: Object.freeze(["codex"]), models: null, profiles: null }),
+  review: Object.freeze({ mode: "gate", labs: Object.freeze(["codex"]), models: null, profiles: null, maxRounds: 3, judgeCommand: null }),
 });
 
 /** Keys only the user file (and the defaults) may set: a project file's value for them is ignored. */
@@ -59,7 +59,7 @@ const SHAPE = {
   hooks: { sessionStart: "boolean", preToolUse: "boolean", stop: "boolean", sessionEnd: "boolean", userPromptCommands: "boolean" },
   forcing: { denyAskWithoutRow: "boolean", stopAskRule: "boolean", pushNeedsNote: "boolean", stopDecisionRule: "boolean", decisionPhrases: "string[]" },
   inject: { notes: "integer", elsewhere: "boolean", answers: "boolean", doctor: "boolean" },
-  review: { mode: "off|advise|gate", labs: "string[]", models: "{lab: string}|null", profiles: "{lab: string}|null" },
+  review: { mode: "off|advise|gate", labs: "string[]", models: "{lab: string}|null", profiles: "{lab: string}|null", maxRounds: "positive integer", judgeCommand: "string|null" },
 };
 
 /** Every leaf key in dotted form, in SHAPE order. */
@@ -129,6 +129,8 @@ function typeOk(expected, value) {
       return typeof value === "boolean";
     case "integer":
       return Number.isInteger(value) && value >= 0;
+    case "positive integer":
+      return Number.isInteger(value) && value >= 1;
     case "string[]":
       return Array.isArray(value) && value.every((v) => typeof v === "string" && v.trim().length > 0);
     case "off|advise|gate":

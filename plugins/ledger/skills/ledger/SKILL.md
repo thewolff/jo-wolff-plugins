@@ -68,11 +68,15 @@ the human for permission. `… help` prints the whole grammar.
 
 4. **Before `git push`, `gh pr create` or `gh pr merge`: `… review`, after the last commit.**
    It sends the branch's diff to other labs' models and records their verdicts for HEAD; the
-   PreToolUse hook denies the push while HEAD has no review or has findings. On findings, fix
-   them, commit, and run `… review` again (or `… review addressed` once the fixes are
-   committed). When the human says they are prototyping or need the push anyway, run
-   `… review waive "<their words>"` with their words as the reason. Never ask them to edit the
-   config to get past the gate.
+   PreToolUse hook denies the push while HEAD has no review or has blocking or should
+   findings (nits only are a pass, with a notice). On findings: fix them, commit, and run
+   `… review` again on the new commit; the output names the round. Repeat until it passes.
+   When the output says the round cap is reached, stop and ask the human: waive with their
+   reason, or continue with `--force-round`. A judge model checks every finding you claim is
+   resolved; to override a finding that does not apply, commit, then run
+   `… review addressed "<why>"`. When the human says they are prototyping or need the push
+   anyway, run `… review waive "<their words>"` with their words as the reason. Never ask them
+   to edit the config to get past the gate.
 
 There is no "open" or "close": the folder you are in is the unit of work, and questions and
 notes bind to it. A question is in scope in its own folder, in every folder below it, and in
