@@ -8,9 +8,13 @@
 //   ask rule       (forcing.stopAskRule)       after removing fenced code blocks, inline code
 //                  and double-quoted spans, some sentence ends with `?` (a `?` at the end of a
 //                  line or followed by a space: "Should I …? I'd say yes." counts; a URL's
-//                  `?query` does not) AND the session has no open question row → block: the
-//                  agent asked the human something without a ledger row. Messages under
-//                  MIN_CHARS substantive characters are not checked.
+//                  `?query` does not) AND that sentence asks for a decision (it offers a choice
+//                  with `or`, or asks "should I", "do you want", "which", "ok to", … — see
+//                  DECISION_ASK; a greeting or a rhetorical question, "What are we working
+//                  on?", offers no options and asks for no decision, so it needs no row) AND no
+//                  question is open for the folder (this session's, or one in the cwd or a
+//                  parent) → block: the agent asked the human something without a ledger row.
+//                  Messages under MIN_CHARS substantive characters are not checked.
 //   decision rule  (forcing.stopDecisionRule)  after removing code and double-quoted spans, the
 //                  message contains one of forcing.decisionPhrases (whole words, any case) AND
 //                  no `note` was recorded in this turn AND no question was asked in this turn →
@@ -71,6 +75,40 @@ export function asksQuestion(text) {
 }
 
 /**
+ * The sentences of `text` that end with `?` (a `?` at the end of a line or followed by
+ * whitespace), each trimmed. Sentences are cut at `.`, `!` or `?` followed by whitespace, and at
+ * line breaks.
+ */
+export function questionSentences(text) {
+  return String(text ?? "")
+    .split(/(?<=[.!?])\s+|\n+/)
+    .map((s) => s.trim())
+    .filter((s) => /\?$/.test(s));
+}
+
+/**
+ * What makes a question one the human has to decide: it offers a choice (`or`) or asks for a
+ * decision, permission or confirmation. Whole words, any case, tested on one question sentence.
+ * A sentence that opens with what/where/when/who/why/how asks for information, not a decision
+ * ("What are we working on?", "What do you want to work on?", "Why does the hook bounce?"),
+ * unless it also offers a choice (WH_CHOICE: "Which", "A or B", "do you prefer").
+ */
+export const DECISION_ASK =
+  /\b(?:or|which|whether|prefer|approve|proceed|go ahead|want me to|(?:shall|should|can|could|may|must|do|will) (?:i|we)|do you (?:want|need|prefer|mean|agree|approve)|would you (?:like|prefer|rather|mind)|did you mean|yes or no|ok(?:ay)? (?:to|if|with|for)|(?:is|was) (?:this|that|it) (?:ok(?:ay)?|right|correct|fine|good|enough|what you)|(?:look|sound)s? (?:right|good|ok(?:ay)?|correct))\b/i;
+const WH_START = /^[\s*_#>`-]*(?:what|where|when|who|whom|whose|why|how)\b/i;
+const WH_CHOICE = /\b(?:or|which|whether|prefer)\b/i;
+
+/** Whether one question sentence asks the human for a decision (see DECISION_ASK). */
+export function isDecisionAsk(sentence) {
+  return WH_START.test(sentence) ? WH_CHOICE.test(sentence) : DECISION_ASK.test(sentence);
+}
+
+/** Whether some question sentence in `text` asks the human for a decision. */
+export function asksDecision(text) {
+  return questionSentences(text).some(isDecisionAsk);
+}
+
+/**
  * @param message                   last_assistant_message
  * @param opts.dueQuestions         open questions of this session asked before the human's latest prompt, newest first
  * @param opts.sessionHasOpenQuestion whether a question is open for the folder (this session's, or one in scope for the cwd)
@@ -83,7 +121,7 @@ export function checkStop(message, { dueQuestions = [], sessionHasOpenQuestion =
   if (forcing.stopAskRule !== false && dueQuestions.length) return { rule: "stopAnswerRule", reason: answerReason(dueQuestions, cli) };
   const text = stripCode(message);
   const prose = stripQuoted(text);
-  if (forcing.stopAskRule !== false && !sessionHasOpenQuestion && text.replace(/\s+/g, "").length >= MIN_CHARS && asksQuestion(prose)) {
+  if (forcing.stopAskRule !== false && !sessionHasOpenQuestion && text.replace(/\s+/g, "").length >= MIN_CHARS && asksQuestion(prose) && asksDecision(prose)) {
     return { rule: "stopAskRule", reason: askReason(cli) };
   }
   if (forcing.stopDecisionRule !== false && turnNotes === 0 && turnQuestions === 0) {

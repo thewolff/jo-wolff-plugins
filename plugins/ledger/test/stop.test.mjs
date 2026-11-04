@@ -140,8 +140,8 @@ test("a 'done' line with no question in it passes: there is no done rule any mor
 test("checkStop (pure): the floor, code stripping, the `?` line rule, the open-row escape and the answer rule", () => {
   assert.equal(MIN_CHARS, 40);
   assert.equal(stripCode("a `b?` c ```\nd?\n``` e"), "a   c   e");
-  assert.equal(checkStop("x".repeat(38) + "?", {}), null);
-  assert.equal(checkStop("x".repeat(39) + "?", {})?.rule, "stopAskRule");
+  assert.equal(checkStop("x".repeat(25) + " Should I do A or B?", {}), null); // 39 substantive chars
+  assert.equal(checkStop("x".repeat(26) + " Should I do A or B?", {})?.rule, "stopAskRule"); // 40
   assert.equal(checkStop(LONG_Q, {})?.rule, "stopAskRule");
   assert.equal(checkStop(LONG_Q, { sessionHasOpenQuestion: true }), null);
   const due = [{ id: "q-2", name: "b", body: "B?" }, { id: "q-1", name: "a", body: "A?" }];
