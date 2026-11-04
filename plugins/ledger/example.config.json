@@ -39,6 +39,8 @@
       "codex"
     ],
     "models": null,
-    "profiles": null
+    "profiles": null,
+    "maxRounds": 3,
+    "judgeCommand": null
   }
 }

@@ -204,6 +204,8 @@ defaults verbatim.
 | `review.labs` | `["codex"]` | the labs `ledger review` runs, in parallel: any of `codex`, `kimi`, `claude`, `glm`. User file only |
 | `review.models` | `null` | a model per lab, e.g. `{"claude": "opus", "glm": "zai/glm-5.3-flash"}`; unset means the lab's CLI default (`glm`: `zai/glm-5.3`). User file only |
 | `review.profiles` | `null` | an `omp` profile per omp-backed lab, e.g. `{"glm": "work"}`; unset means `agent-system-2` for `glm`. User file only |
+| `review.maxRounds` | `3` | how many review rounds (reviewed commits on the branch since the merge-base) `ledger review` runs before it stops and says to ask the human: waive, or continue with `--force-round`. User file only |
+| `review.judgeCommand` | `null` | the judge that checks "this finding is resolved" claims: a shell command that gets the prompt on stdin (or in place of a literal `{prompt}`) and prints `yes` or `no`. Unset falls back to `enforcement.judgeCommand` in the i-have-audhd profile (`~/.claude/i-have-audhd.json`), so one judge is configured once. User file only |
 
 The default `forcing.decisionPhrases`: `I decided`, `decided to`, `assumption:`, `assuming`,
 `going with`, `instead of`, `chose`, `I'll go with`, `trade-off`. A project file can replace the
@@ -273,9 +275,12 @@ for the session becomes `bypassed`. `cc_sessions.last_block_*` is unchanged.
 ## Cross-lab review
 
 `ledger review` sends the branch's diff (`git diff <base>..HEAD`; the default base is the
-merge-base with `origin/main`, else `HEAD~1`; `--base <ref>` overrides it) to every lab in
-`review.labs` at once and records one `cc_reviews` row per lab for the HEAD commit: `pass`,
-`findings` (the lab's numbered list) or `unavailable` (the error). `--labs a,b` runs only those
+merge-base with `origin/main`, else with a local `main` or `master` HEAD has moved past, else
+`HEAD~1`; `--base <ref>` overrides it) to every lab in `review.labs` at once and records one
+`cc_reviews` row per lab for the HEAD commit. Each lab is asked to start every finding with
+`[blocking]`, `[should]` or `[nit]` (untagged counts as `should`); the parsed list is kept in
+`findings_json`. A row's verdict is `pass` (no findings), `pass-with-nits` (nits only),
+`findings` (any blocking or should) or `unavailable` (the error). `--labs a,b` runs only those
 labs this once. Each lab has 240 seconds.
 
 | Lab | How it is run |
@@ -289,18 +294,37 @@ labs this once. Each lab has 240 seconds.
 
 The gate reads the rows for HEAD, strictest first: a `waived` row lets HEAD through; any lab
 whose latest row is `findings` (and not followed by `addressed`) denies, with the findings
-grouped by lab; no row at all denies; labs that were `unavailable` are left out and named in a
-notice, and when every lab was unavailable the push is allowed with a notice. A new commit is a
-new HEAD, so a pass does not carry over.
+grouped by lab; no row at all denies; `pass-with-nits` allows with a notice listing the nits;
+labs that were `unavailable` are left out and named in a notice, and when every lab was
+unavailable the push is allowed with a notice. A new commit is a new HEAD, so a pass does not
+carry over.
+
+**The loop.** After `findings`, the agent fixes the blocking and should findings, commits, and
+runs `ledger review` again on the new commit. Each reviewed commit on the branch (since the
+base) is one round; the output names the round and `review.maxRounds` (default 3). A review that
+would go past the cap stops without running and says to ask the human: waive with their reason,
+or continue with `--force-round`.
+
+**The judge.** A finding counts as resolved only when a judge model agrees. Two claims are
+checked: a blocking or should finding from the previous round that a lab no longer lists, and
+every open finding when the agent runs `review addressed "<why>"`. For each, the judge gets the
+finding and the diff between the two commits for the files it names (at most 8 kB), and the
+question "Does this change resolve the finding? Answer yes or no." `no` keeps the finding open
+(`judge: "no"` in `findings_json`, the row stays `findings`, the gate stays closed, and the
+output names it); `yes` resolves it. A judge that is not configured, cannot start, times out
+(60 seconds) or answers anything else gives `unverified`: the finding counts as resolved, fail
+open, and the gate's notice names it. Answers are cached in `cc_meta` under `judge:<sha256>`, so
+asking the same thing again costs nothing. The judge command is `review.judgeCommand`, else the
+i-have-audhd plugin's `enforcement.judgeCommand`: one judge, configured once.
 
 | Verb | Effect |
 | :- | :- |
-| `review status` | the gate's state for HEAD and every row for it, per lab |
-| `review addressed` | records that HEAD fixes the findings on an earlier commit (refused when there were none) |
+| `review status` | the gate's state for HEAD; the branch's rounds (round, sha, lab, counts by severity, verdict); then every row for HEAD |
+| `review addressed "<why>"` | the manual override of a finding: records that HEAD resolves the open findings of an earlier commit, each checked by the judge (refused without a reason, when there were no findings, or when the judge says `no`) |
 | `review waive "<why>"` | lets HEAD through; the reason is required and recorded. This is the way out when the human is prototyping or needs the push anyway |
 
 SessionStart adds `ledger: cross-lab review found N finding(s) on <sha>; run … review status`
-when HEAD has open findings (not when `review.mode` is `off`).
+when HEAD has open blocking or should findings (not when `review.mode` is `off`).
 
 ## Inspecting the database
 

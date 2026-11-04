@@ -506,7 +506,13 @@ walked past can be found and retired. A cross-lab review gate now stands in fron
 verdict for the HEAD commit in a new `cc_reviews` table; the push is denied while HEAD has no
 review or has findings, a lab that cannot run is named and left out, and `ledger review waive
 "<reason>"` lets a commit through with the human's reason on record. `review.mode` (`gate` by
-default, or `advise`, or `off`) is read from the user config file only. Session start now also
+default, or `advise`, or `off`) is read from the user config file only. Findings carry a
+severity (`blocking`, `should`, `nit`); nits alone let the push through with a notice. Each
+reviewed commit is a numbered round, and past `review.maxRounds` (default 3) the review stops
+and says to ask the human. A judge model checks every claim that a finding is resolved, whether
+a later round dropped it or the agent ran `review addressed "<why>"`; a `no` keeps the gate
+closed, and a judge that cannot answer counts the finding resolved and says so. The judge is
+`review.judgeCommand`, or the i-have-audhd plugin's `enforcement.judgeCommand`. Session start now also
 shows the open and held questions asked in folders under the session's folder, each naming its
 folder, and `pending` lists them the same way. Opening a 0.2.3 database migrates it to schema
 version 6 by creating new tables; no existing table is touched.

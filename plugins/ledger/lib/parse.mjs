@@ -50,7 +50,7 @@ export const VERBS = Object.freeze([
   { verb: "config", who: "either", usage: "config", help: "the effective settings and where each came from" },
   { verb: "doctor", who: "either", usage: "doctor", help: "check the store, schema, config layers, hooks, errors.log and open bounces; each line ok, warn or fail; exit 1 on any fail; never writes" },
   { verb: "bounces", who: "either", usage: "bounces [--since <N>d|<N>h]", help: "the hooks' bounces since then (default 7d): per rule fired, satisfied, bypassed and open counts, then the last 20" },
-  { verb: "review", who: "agent", usage: 'review [--base <ref>] [--labs a,b] · review status · review addressed · review waive "<why>"', help: "cross-lab review of the branch's diff (default base: merge-base with origin/main, else HEAD~1), one row per lab for HEAD; `status` the rows for HEAD; `addressed` HEAD fixes an earlier commit's findings; `waive` lets HEAD through with the human's reason" },
+  { verb: "review", who: "agent", usage: 'review [--base <ref>] [--labs a,b] [--force-round] · review status · review addressed "<why>" · review waive "<why>"', help: "cross-lab review of the branch's diff (default base: merge-base with origin/main, else main or master, else HEAD~1), one row per lab for HEAD, numbered as a round of review.maxRounds; `status` the branch's rounds and HEAD's rows; `addressed` overrides an earlier commit's findings, each checked by the judge; `waive` lets HEAD through with the human's reason" },
   { verb: "help", who: "either", usage: "help", help: "this table, the id grammar and the batch rule" },
 ]);
 
@@ -294,12 +294,16 @@ export function parseLine(text, lookup = NULL_LOOKUP, tokens = null) {
     return prose(shown, null, "usage: bounces [--since <N>d|<N>h]");
   }
   if (t0 === "review") {
-    const usage = 'usage: review [--base <ref>] [--labs a,b] | review status | review addressed | review waive "<why>"';
-    if (rest[0] === "status" || rest[0] === "addressed") return rest.length === 1 ? command(shown, { verb: "review", action: rest[0] }) : prose(shown, null, usage);
-    if (rest[0] === "waive") return command(shown, { verb: "review", action: "waive", reason: rest.slice(1).join(" ").trim() });
-    const out = { verb: "review", action: "run", base: null, labs: null };
+    const usage = 'usage: review [--base <ref>] [--labs a,b] [--force-round] | review status | review addressed "<why>" | review waive "<why>"';
+    if (rest[0] === "status") return rest.length === 1 ? command(shown, { verb: "review", action: "status" }) : prose(shown, null, usage);
+    if (rest[0] === "addressed" || rest[0] === "waive") return command(shown, { verb: "review", action: rest[0], reason: rest.slice(1).join(" ").trim() });
+    const out = { verb: "review", action: "run", base: null, labs: null, forceRound: false };
     for (let i = 0; i < rest.length; i++) {
       const a = rest[i];
+      if (a === "--force-round") {
+        out.forceRound = true;
+        continue;
+      }
       const [flag, inline] = a.includes("=") ? [a.slice(0, a.indexOf("=")), a.slice(a.indexOf("=") + 1)] : [a, null];
       const value = inline ?? rest[++i];
       if (!value || !["--base", "--labs"].includes(flag)) return prose(shown, null, usage);

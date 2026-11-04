@@ -3,7 +3,8 @@
 //
 // Adapter shape (lib/review/<lab>.mjs):
 //   export const lab = "<lab>";  export const defaultBin = "<binary>";
-//   export async function run({ diff, cwd, timeoutMs, env, config }) → { verdict: "pass"|"findings", findings, model }
+//   export async function run({ diff, cwd, timeoutMs, env, config }) → { verdict, findings, items, model }
+//   (verdict, findings and items as parseReply returns them)
 // and throws on any failure (missing binary, non-zero exit, timeout, empty reply); the caller
 // records a thrown error as an `unavailable` row.
 
@@ -11,11 +12,14 @@ import { spawn } from "node:child_process";
 import { accessSync, constants as fsConstants } from "node:fs";
 import { delimiter, isAbsolute, join } from "node:path";
 
+export const SEVERITIES = Object.freeze(["blocking", "should", "nit"]);
+
 export const PROMPT = [
   "You are reviewing a code change. The unified diff follows.",
   "Review it for bugs, security problems and broken contracts (APIs, schemas, callers the diff does not update).",
   "Do not run tools or change files; read the diff only.",
   "Reply with the findings as a numbered markdown list, one finding per item with the file and line, most serious first.",
+  "Start every finding with its severity in square brackets: [blocking] must be fixed before merging, [should] ought to be fixed, [nit] optional polish.",
   "If you find nothing worth fixing, reply with the single word PASS and nothing else.",
 ].join("\n");
 
@@ -92,16 +96,40 @@ function tail(text) {
   return t.length > 300 ? `…${t.slice(-300)}` : t || "(no output)";
 }
 
-/** The reply as a verdict: the single word PASS → pass; any other non-empty text → findings. */
+/**
+ * The reply as a verdict. The single word PASS → pass, no items. Otherwise each numbered list
+ * item is one finding, its severity from a leading `[blocking]`, `[should]` or `[nit]` (any case,
+ * optionally bold), untagged → should; a reply with no numbered item is one untagged finding.
+ * Only nits → `pass-with-nits`; any blocking or should → `findings`.
+ * @returns {{ verdict: "pass"|"pass-with-nits"|"findings", findings: string|null, items: Array<{severity, text}> }}
+ */
 export function parseReply(text) {
   const t = String(text ?? "").trim();
   if (!t) throw new Error("empty reply");
-  if (/^\**\s*pass\s*\**\.?$/i.test(t)) return { verdict: "pass", findings: null };
-  return { verdict: "findings", findings: t };
+  if (/^\**\s*pass\s*\**\.?$/i.test(t)) return { verdict: "pass", findings: null, items: [] };
+  const items = parseItems(t);
+  const verdict = items.every((i) => i.severity === "nit") ? "pass-with-nits" : "findings";
+  return { verdict, findings: t, items };
 }
 
-/** How many findings a findings text holds: its numbered items, at least 1. */
-export function countFindings(text) {
-  const n = String(text ?? "").split("\n").filter((l) => /^\s*\d+[.)]\s/.test(l)).length;
-  return Math.max(1, n);
+/** The numbered items of `text` with their severity (see parseReply); continuation lines join their item. */
+export function parseItems(text) {
+  const items = [];
+  for (const line of String(text).split("\n")) {
+    const m = /^\s*\d+[.)]\s+(.*)$/.exec(line);
+    if (m) items.push(m[1]);
+    else if (items.length && line.trim()) items[items.length - 1] += `\n${line.trim()}`;
+  }
+  if (!items.length) items.push(String(text).trim());
+  return items.map((raw) => {
+    const tag = /^\s*\**\s*\[(blocking|should|nit)\]\s*\**\s*/i.exec(raw);
+    return tag ? { severity: tag[1].toLowerCase(), text: raw.slice(tag[0].length).trim() } : { severity: "should", text: raw.trim() };
+  });
+}
+
+/** { blocking, should, nit } counts for a list of items, leaving out items marked `resolved`. */
+export function severityCounts(items) {
+  const c = { blocking: 0, should: 0, nit: 0 };
+  for (const i of items ?? []) if (!i.resolved) c[i.severity] = (c[i.severity] ?? 0) + 1;
+  return c;
 }

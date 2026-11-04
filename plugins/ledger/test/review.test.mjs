@@ -20,11 +20,12 @@ function commit(b, name, text) {
   return git(b, "rev-parse", "HEAD");
 }
 
-/** A repo with two commits, the user file's review settings, and a note so the note gate passes. */
+/** A repo with a commit on main and one on branch `feat`, the user file's review settings, and a note so the note gate passes. */
 function repo(review = {}) {
   const b = sandbox();
   git(b, "init", "-q", "-b", "main");
   commit(b, "a.txt", "one\n");
+  git(b, "checkout", "-q", "-b", "feat");
   commit(b, "b.txt", "two\n");
   b.writeConfig({ review: { mode: "gate", ...review } });
   cli(b, ["note", "pushing the change"], { env: { LEDGER_SESSION_ID: SID } });
@@ -39,8 +40,23 @@ function stub(b, name, reply, code = 0) {
   return path;
 }
 
+/** A judge stub: prints `answer`, appends one line per call to `<path>.calls`, saves its stdin to `<path>.prompt`. */
+function judge(b, answer) {
+  const path = join(b.root, `judge-${answer}`);
+  writeFileSync(path, `#!/bin/sh\ncat > "${path}.prompt"\necho x >> "${path}.calls"\necho ${answer}\n`);
+  chmodSync(path, 0o755);
+  return path;
+}
+const calls = (path) => {
+  try {
+    return readFileSync(`${path}.calls`, "utf8").split("\n").filter(Boolean).length;
+  } catch {
+    return 0;
+  }
+};
+
 const review = (b, args = [], env = {}) => cli(b, ["review", ...args], { env: { LEDGER_SESSION_ID: SID, ...env } });
-const push = (b, command = "git push origin main", env = {}) =>
+const push = (b, command = "git push origin feat", env = {}) =>
   hook(b, "pre-tool-use", { session_id: SID, cwd: b.work, hook_event_name: "PreToolUse", tool_name: "Bash", tool_input: { command } }, { env });
 const decision = (r) => r.json?.hookSpecificOutput?.permissionDecision ?? "allow";
 const reviews = (b) => {
@@ -91,13 +107,17 @@ test("review (b): findings → a findings row; the gate denies with them; Sessio
   assert.equal(decision(push(b, "gh pr merge 12")), "deny", "gh pr merge is gated too");
 });
 
-test("review (c): addressed on a new commit after findings → allows; addressed with no earlier findings is refused", () => {
+test("review (c): addressed needs a reason and an earlier commit's findings; with both and the judge saying yes, the gate allows", () => {
   const b = repo();
-  assert.match(review(b, ["addressed"]).out, /^refused no review findings on an earlier commit/);
-  review(b, [], { LEDGER_REVIEW_BIN_CODEX: stub(b, "codex", "1. bug") });
+  const bare = review(b, ["addressed"]);
+  assert.equal(bare.code, 1);
+  assert.match(bare.out, /^refused review addressed needs the reason/);
+  assert.match(review(b, ["addressed", "fixed"]).out, /^refused no review findings on an earlier commit/);
+  review(b, [], { LEDGER_REVIEW_BIN_CODEX: stub(b, "codex", "1. [blocking] c.txt:1 bug") });
   commit(b, "c.txt", "fix\n");
-  const r = review(b, ["addressed"]);
+  const r = review(b, ["addressed", "the bug is fixed in c.txt"], { LEDGER_JUDGE_BIN: judge(b, "yes") });
   assert.equal(r.code, 0, r.out);
+  assert.match(r.out, /^ {2}judge yes: \[blocking\] c\.txt:1 bug$/m);
   assert.equal(push(b).out, "");
   assert.deepEqual(reviewBounces(b), [], "no bounce: the push was never denied");
 });
@@ -239,4 +259,120 @@ test("review: doctor warns per configured lab whose binary is missing, and not w
   assert.match(r.out, /^warn review glm: .*no-omp not found on PATH/m);
   b.writeConfig({ review: { mode: "off", labs: ["glm"] } });
   assert.ok(!cli(b, ["doctor"]).out.includes("review glm"));
+});
+
+test("severity parsing: tagged, untagged and mixed items; nits only is pass-with-nits", async () => {
+  const { parseReply } = await import("../lib/review/common.mjs");
+  const tagged = parseReply("1. [blocking] a.js:3 null deref\n2. **[nit]** b.js:9 name\n3. [Should] c.js:1 missing test\n   it would catch the regression");
+  assert.equal(tagged.verdict, "findings");
+  assert.deepEqual(tagged.items.map((i) => i.severity), ["blocking", "nit", "should"]);
+  assert.equal(tagged.items[2].text, "c.js:1 missing test\nit would catch the regression");
+  assert.deepEqual(parseReply("1. something off\n2. [nit] style").items.map((i) => i.severity), ["should", "nit"]);
+  assert.deepEqual(parseReply("just a paragraph of worry").items, [{ severity: "should", text: "just a paragraph of worry" }]);
+  assert.equal(parseReply("1. [nit] a\n2. [nit] b").verdict, "pass-with-nits");
+  assert.equal(parseReply("**PASS**").verdict, "pass");
+});
+
+test("review loop: pass-with-nits allows with a notice listing the nits", () => {
+  const b = repo();
+  review(b, [], { LEDGER_REVIEW_BIN_CODEX: stub(b, "codex", "1. [nit] a.txt:1 trailing space") });
+  assert.equal(reviews(b)[0].verdict, "pass-with-nits");
+  const p = push(b);
+  assert.equal(decision(p), "allow");
+  assert.match(p.json.systemMessage, /review passed for [0-9a-f]{8}; nits, optional:[\s\S]*\[nit\] a\.txt:1 trailing space/);
+});
+
+test("review loop: findings → fix → pass over two shas; status shows rounds 1 and 2", () => {
+  const b = repo();
+  const first = review(b, [], { LEDGER_REVIEW_BIN_CODEX: stub(b, "codex", "1. [blocking] a.txt:1 wrong value\n2. [nit] b.txt:1 style") });
+  assert.match(first.out, /round 1 of 3:/);
+  assert.match(first.out, /^codex: findings: 1 blocking, 0 should, 1 nit$/m);
+  assert.match(first.out, /^next: fix the blocking and should findings, commit, and run `.*review` again \(round 2 of 3\)\.$/m);
+  commit(b, "a.txt", "fixed\n");
+  const second = review(b, [], { LEDGER_REVIEW_BIN_CODEX: stub(b, "codex", "PASS"), LEDGER_JUDGE_BIN: judge(b, "yes") });
+  assert.match(second.out, /round 2 of 3:/);
+  assert.match(second.out, /^ {2}judge yes: \[blocking\] a\.txt:1 wrong value \(round 1\)$/m);
+  assert.equal(push(b).out, "");
+  const status = review(b, ["status"]).out;
+  assert.match(status, /^round  sha       lab      blocking  should  nit  verdict$/m);
+  assert.match(status, /^ {4}1  [0-9a-f]{8}  codex +1 +0 +1  findings$/m);
+  assert.match(status, /^ {4}2  [0-9a-f]{8}  codex +0 +0 +0  pass$/m);
+});
+
+test("review loop: at review.maxRounds the next round stops and says to ask the human; --force-round continues", () => {
+  const b = repo({ maxRounds: 1 });
+  const bin = stub(b, "codex", "1. [should] a.txt:1 x");
+  const one = review(b, [], { LEDGER_REVIEW_BIN_CODEX: bin });
+  assert.match(one.out, /^round 1 of 1 reached: ask the human whether to waive \(`.*review waive "<why>"`\) or continue with `.*review --force-round`\.$/m);
+  commit(b, "e.txt", "e\n");
+  const stopped = review(b, [], { LEDGER_REVIEW_BIN_CODEX: bin });
+  assert.equal(stopped.code, 1);
+  assert.match(stopped.out, /^stopped: this would be review round 2 for this branch, and review\.maxRounds is 1\. Ask the human/);
+  assert.equal(reviews(b).length, 1, "no row for the stopped round");
+  assert.match(review(b, ["--force-round"], { LEDGER_REVIEW_BIN_CODEX: bin }).out, /round 2 of 1 \(forced\):/);
+});
+
+test("judge: no on an addressed claim keeps the gate closed and names the finding", () => {
+  const b = repo();
+  review(b, [], { LEDGER_REVIEW_BIN_CODEX: stub(b, "codex", "1. [blocking] a.txt:1 wrong value") });
+  commit(b, "z.txt", "unrelated\n");
+  const no = judge(b, "no");
+  const r = review(b, ["addressed", "it is fine"], { LEDGER_JUDGE_BIN: no });
+  assert.equal(r.code, 1);
+  assert.match(r.out, /^refused the judge says these findings on [0-9a-f]{8} are not resolved by [0-9a-f]{8}; the gate stays closed:\ncodex: \[blocking\] a\.txt:1 wrong value\n$/);
+  assert.match(readFileSync(`${no}.prompt`, "utf8"), /Does this change resolve the finding\? Answer yes or no\./);
+  const p = push(b);
+  assert.equal(decision(p), "deny");
+  assert.match(p.json.hookSpecificOutput.permissionDecisionReason, /a\.txt:1 wrong value/);
+  const db = openDb(b);
+  const items = JSON.parse(db.prepare("SELECT findings_json FROM cc_reviews ORDER BY id DESC LIMIT 1").get().findings_json);
+  db.close();
+  assert.deepEqual(items, [{ severity: "blocking", text: "a.txt:1 wrong value", resolved: false, judge: "no" }]);
+});
+
+test("judge: no on a finding a later round dropped keeps it open in that round", () => {
+  const b = repo();
+  review(b, [], { LEDGER_REVIEW_BIN_CODEX: stub(b, "codex", "1. [should] a.txt:1 missing check") });
+  commit(b, "a.txt", "still wrong\n");
+  const r = review(b, [], { LEDGER_REVIEW_BIN_CODEX: stub(b, "codex", "PASS"), LEDGER_JUDGE_BIN: judge(b, "no") });
+  assert.match(r.out, /^codex: findings: 0 blocking, 1 should, 0 nit$/m);
+  assert.match(r.out, /\[should\] a\.txt:1 missing check \(from round 1; the judge says it is not resolved\)/);
+  assert.equal(decision(push(b)), "deny");
+});
+
+test("judge: missing → unverified, counted as resolved, and the gate allows with a notice saying so", () => {
+  const b = repo();
+  review(b, [], { LEDGER_REVIEW_BIN_CODEX: stub(b, "codex", "1. [blocking] a.txt:1 wrong value") });
+  commit(b, "a.txt", "fixed\n");
+  const r = review(b, ["addressed", "fixed it"], { LEDGER_JUDGE_BIN: join(b.root, "no-such-judge") });
+  assert.equal(r.code, 0, r.out);
+  assert.match(r.out, /^ {2}judge unverified: \[blocking\] a\.txt:1 wrong value$/m);
+  const p = push(b);
+  assert.equal(decision(p), "allow");
+  assert.match(p.json.systemMessage, /review addressed for [0-9a-f]{8}; 1 finding\(s\) counted as resolved but unverified by the judge: \[blocking\] a\.txt:1 wrong value/);
+});
+
+test("judge: a cached answer does not run the judge again", () => {
+  const b = repo();
+  review(b, [], { LEDGER_REVIEW_BIN_CODEX: stub(b, "codex", "1. [blocking] a.txt:1 wrong value") });
+  commit(b, "a.txt", "fixed\n");
+  const yes = judge(b, "yes");
+  assert.equal(review(b, ["addressed", "fixed"], { LEDGER_JUDGE_BIN: yes }).code, 0);
+  assert.equal(calls(yes), 1);
+  assert.equal(review(b, ["addressed", "fixed, again"], { LEDGER_JUDGE_BIN: yes }).code, 0);
+  assert.equal(calls(yes), 1, "the second claim is answered from cc_meta");
+  const db = openDb(b);
+  assert.equal(db.prepare("SELECT count(*) AS n FROM cc_meta WHERE key LIKE 'judge:%'").get().n, 1);
+  db.close();
+});
+
+test("judge: doctor warns when no judge is configured, and names the i-have-audhd fallback when it is used", () => {
+  const b = repo();
+  openDb(b).close();
+  const r = cli(b, ["doctor"], { env: { LEDGER_REVIEW_BIN_CODEX: process.execPath } });
+  assert.match(r.out, /^warn judge: .*addressed claims unverified$/m);
+  const profile = join(b.root, "audhd-profile.json");
+  writeFileSync(profile, JSON.stringify({ enforcement: { judgeCommand: "echo yes" } }));
+  const fallback = cli(b, ["doctor"], { env: { LEDGER_REVIEW_BIN_CODEX: process.execPath, I_HAVE_AUDHD_PROFILE: profile } });
+  assert.match(fallback.out, /^ok {3}judge: from enforcement\.judgeCommand in .*audhd-profile\.json$/m);
 });
