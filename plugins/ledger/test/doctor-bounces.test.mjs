@@ -103,7 +103,7 @@ test("(d) bounces counts per rule; --since 1h leaves out older rows", () => {
   assert.match(lines[2], /^pushNeedsNote\s+3\s+1\s+1\s+1$/);
   assert.match(lines[3], /^stopDecisionRule\s+1\s+1\s+0\s+0$/);
   assert.ok(!week.out.includes("stopAskRule"), "a row older than 7d is out");
-  assert.match(week.out, /last 4:\n\S+  sess-aaa  pushNeedsNote\s+Bash\s+satisfied\n/);
+  assert.match(week.out, /last 4:\n#\d+ \S+  sess-aaa  pushNeedsNote\s+Bash\s+satisfied\n/);
   const hour = cli(b, ["bounces", "--since", "1h"]).out;
   assert.match(hour, /^pushNeedsNote\s+2\s+1\s+0\s+1$/m);
   assert.ok(!hour.includes("stopDecisionRule"), hour);
@@ -139,7 +139,7 @@ test("(g) doctor on a store at an older schema version: fail, exit 1, and the st
   db.close();
   const r = doctor(b);
   assert.equal(r.code, 1, r.out);
-  assert.match(r.out, /^fail schema: version 5, this plugin expects 6$/m);
+  assert.match(r.out, /^fail schema: version 5, this plugin expects 7$/m);
   const raw = new DatabaseSync(b.dbPath);
   assert.equal(storeVersion(raw), 5, "doctor never writes");
   raw.close();
@@ -191,7 +191,7 @@ test("(i) inject.doctor false: no doctor line", () => {
   assert.ok(!ctx.includes("doctor reports"), ctx);
 });
 
-test("(j) a version 5 store migrates to 6 keeping its rows; the new tables are empty", () => {
+test("(j) a version 5 store migrates to 7 keeping its rows; the new tables are empty and the judge words move", () => {
   const b = sandbox();
   const p = join(b.root, "v5.db");
   const old = new DatabaseSync(p);
@@ -200,9 +200,17 @@ test("(j) a version 5 store migrates to 6 keeping its rows; the new tables are e
   old.exec("INSERT INTO cc_meta VALUES ('schema_version', '5')");
   old.exec("INSERT INTO cc_notes (id, cwd, kind, body, made_by, made_at) VALUES ('nt-1', '/w', 'note', 'kept', 'agent', '2026-01-01T00:00:00.000Z')");
   old.exec("INSERT INTO cc_sessions (id, cwd, started_at, last_block_rule) VALUES ('s-1', '/w', '2026-01-01T00:00:00.000Z', 'stopAskRule')");
+  old.exec("INSERT INTO cc_meta VALUES ('judge:abc', 'yes')");
+  old.exec("INSERT INTO cc_meta VALUES ('judge:def', 'maybe')");
   old.close();
   const { db } = open(p);
-  assert.equal(storeVersion(db), 6);
+  assert.equal(storeVersion(db), 7);
+  // 7: the judge's words moved to cc_judge_cache (a passage is "not kept" for them); a value that
+  // is not yes|no is dropped rather than failing the migration.
+  assert.deepEqual(db.prepare("SELECT key, answer, passage FROM cc_judge_cache ORDER BY key").all().map((r) => ({ ...r })), [{ key: "judge:abc", answer: "yes", passage: null }]);
+  assert.equal(count(db, "cc_meta", "key LIKE 'judge:%'"), 0);
+  assert.equal(count(db, "cc_canary_runs"), 0);
+  assert.equal(count(db, "cc_gate_checks"), 0);
   assert.deepEqual(row(db, "SELECT id, body FROM cc_notes"), { id: "nt-1", body: "kept" });
   assert.equal(row(db, "SELECT last_block_rule FROM cc_sessions").last_block_rule, "stopAskRule");
   assert.equal(count(db, "cc_bounces"), 0);

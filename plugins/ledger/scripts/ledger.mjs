@@ -29,6 +29,7 @@ import { renderHelp, setEnabled } from "../lib/commands.mjs";
 import { renderDoctor, runDoctor } from "../lib/doctor.mjs";
 import { parseLine } from "../lib/parse.mjs";
 import { addressed, runReview, status as reviewStatus, waive } from "../lib/review.mjs";
+import { cachedJudgement } from "../lib/judge.mjs";
 import { invocation } from "../lib/inject.mjs";
 
 /** Pull the CLI's own flags out of argv; everything else is the command. */
@@ -142,6 +143,12 @@ async function runReviewVerb({ store, cwd, env, sessionId, tokens, out }) {
     const common = { db: store.db, dbPath: store.dbPath, cwd, sessionId };
     let r;
     if (parsed.action === "status") r = reviewStatus({ db: store.db, cwd, config: store.config, cli: invocation() });
+    else if (parsed.action === "judge") {
+      const row = cachedJudgement(store.db, parsed.key);
+      r = row
+        ? { code: 0, text: `${row.key}\nanswer: ${row.answer}${row.at ? ` at ${row.at}` : ""}\nquestion: ${row.question ?? "(not kept: cached before 0.3.2)"}\npassage:\n${row.passage ?? "(not kept: cached before 0.3.2)"}` }
+        : { code: 1, text: `no cached judge answer for ${parsed.key}; keys are listed in \`${invocation()} report\`` };
+    }
     else if (parsed.action === "addressed") r = await addressed({ ...common, reason: parsed.reason, config: store.config, env });
     else if (parsed.action === "waive") r = waive({ ...common, reason: parsed.reason });
     else if ((store.config.review?.mode ?? "gate") === "off") r = { code: 0, text: "review.mode is off in the user config; nothing reviewed" };

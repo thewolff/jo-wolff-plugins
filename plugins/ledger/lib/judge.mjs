@@ -14,8 +14,10 @@
 // Verdicts: `yes` (resolved), `no` (not resolved), `unverified` (no judge configured, it could
 // not start, exited non-zero, timed out, or answered something else). `unverified` is fail-open:
 // the caller treats the finding as resolved and shows the word so the human can see it.
-// `yes` and `no` are cached in cc_meta under `judge:<sha256(passage + question)>`, so asking the
-// same thing again never runs the judge; `unverified` is never cached.
+// `yes` and `no` are cached in cc_judge_cache under `judge:<sha256(passage + question)>` with the
+// passage and question they were given (0.3.2; before, cc_meta held the word only), so asking
+// the same thing again never runs the judge and a cached answer can be read back with
+// `ledger review judge <key>`; `unverified` is never cached.
 
 import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
@@ -24,6 +26,7 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { transaction } from "./db.mjs";
 import { logError } from "./failopen.mjs";
+import { nowIso } from "./time.mjs";
 
 export const JUDGE_QUESTION = "Does this change resolve the finding? Answer yes or no.";
 export const JUDGE_TIMEOUT_MS = 60_000;
@@ -110,24 +113,37 @@ function runJudge(command, prompt, timeoutMs, env) {
 /** The cached answer for `key`, or null. */
 function cached(db, key) {
   try {
-    return db.prepare("SELECT value FROM cc_meta WHERE key = ?").get(key)?.value ?? null;
+    return db.prepare("SELECT answer FROM cc_judge_cache WHERE key = ?").get(key)?.answer ?? null;
   } catch {
     return null;
   }
 }
 
-function remember(db, dbPath, key, value, env) {
+function remember(db, dbPath, { key, question, passage, answer, now }, env) {
   try {
     transaction(
       db,
       () => {
-        db.prepare("INSERT INTO cc_meta (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value").run(key, value);
+        db.prepare(
+          "INSERT INTO cc_judge_cache (key, question, passage, answer, at) VALUES (?, ?, ?, ?, ?) ON CONFLICT(key) DO UPDATE SET answer = excluded.answer, passage = excluded.passage, question = excluded.question, at = excluded.at",
+        ).run(key, question, passage, answer, nowIso(now));
       },
       dbPath,
     );
   } catch (err) {
     logError("review", `judge answer not cached: ${err.message}`, env);
   }
+}
+
+/** The cached row for `key` (`judge:` prefix optional): { key, question, passage, answer, at } or null. */
+export function cachedJudgement(db, key) {
+  const k = String(key ?? "").startsWith("judge:") ? key : `judge:${key}`;
+  return db.prepare("SELECT key, question, passage, answer, at FROM cc_judge_cache WHERE key = ?").get(k) ?? null;
+}
+
+/** The cached judge rows at or after `since` (ms), newest first. */
+export function judgementsSince(db, since) {
+  return db.prepare("SELECT key, question, passage, answer, at FROM cc_judge_cache WHERE at >= ? ORDER BY at DESC").all(nowIso(since));
 }
 
 /**
@@ -150,7 +166,7 @@ export function passageFor(findingText, diff) {
  * Ask the judge about one passage. Never throws.
  * @returns {Promise<{ verdict: "yes"|"no"|"unverified", cached: boolean, error: string|null }>}
  */
-export async function ask({ db, dbPath, config, env = process.env, passage, question = JUDGE_QUESTION, timeoutMs = JUDGE_TIMEOUT_MS }) {
+export async function ask({ db, dbPath, config, env = process.env, passage, question = JUDGE_QUESTION, timeoutMs = JUDGE_TIMEOUT_MS, now = Date.now() }) {
   try {
     const key = `judge:${createHash("sha256").update(passage + question).digest("hex")}`;
     const hit = cached(db, key);
@@ -165,7 +181,7 @@ export async function ask({ db, dbPath, config, env = process.env, passage, ques
       logError("review", `judge unavailable: ${error}${r.stderr ? ` · ${r.stderr.replace(/\s+/g, " ").trim()}` : ""}`, env);
       return { verdict: "unverified", cached: false, error };
     }
-    remember(db, dbPath, key, answer, env);
+    remember(db, dbPath, { key, question, passage, answer, now }, env);
     return { verdict: answer, cached: false, error: null };
   } catch (err) {
     logError("review", `judge failed: ${err.message}`, env);

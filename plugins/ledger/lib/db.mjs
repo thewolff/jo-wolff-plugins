@@ -56,7 +56,7 @@ export function storeWord(kind) {
 }
 
 /** The tables this plugin owns, in creation order. Anything else in the file is foreign. */
-export const OWN_TABLES = Object.freeze(["cc_meta", "cc_questions", "cc_answers", "cc_notes", "cc_sessions", "cc_bounces", "cc_reviews"]);
+export const OWN_TABLES = Object.freeze(["cc_meta", "cc_questions", "cc_answers", "cc_notes", "cc_sessions", "cc_bounces", "cc_reviews", "cc_judge_cache", "cc_canary_runs", "cc_gate_checks"]);
 
 export const MIGRATIONS = [
   // 1: the initial schema. Rows bind to a folder (`cwd`), never to a "workload" row: the folder
@@ -241,6 +241,63 @@ export const MIGRATIONS = [
       CREATE INDEX cc_reviews_cwd_head ON cc_reviews (cwd, head_sha, at);
       CREATE INDEX cc_reviews_head ON cc_reviews (head_sha);
     `);
+  },
+  // 7 (0.3.2): repro data and the feedback loop.
+  //   cc_bounces.text            what fired the rule: the reply excerpt (Stop) or the shell
+  //                              command (PreToolUse), cut to BOUNCE_TEXT_MAX chars; NULL when the
+  //                              hook had none.
+  //   cc_bounces.transcript_path the session transcript the event named, so the row can be
+  //                              reproduced; NULL from the CLI or an older Claude Code.
+  //   cc_judge_cache             the judge's answers with the passage they were given (was
+  //                              `judge:<sha>` → yes|no in cc_meta with no passage). The old rows
+  //                              move here with passage NULL and leave cc_meta.
+  //   cc_canary_runs             one row per nightly canary run of one plugin's live-run.sh.
+  //   cc_gate_checks             one row per (HEAD, plugin, check) of the plugin push gate.
+  (db) => {
+    db.exec(`
+      ALTER TABLE cc_bounces ADD COLUMN text TEXT;
+      ALTER TABLE cc_bounces ADD COLUMN transcript_path TEXT;
+
+      CREATE TABLE cc_judge_cache (
+        key      TEXT PRIMARY KEY,
+        question TEXT,
+        passage  TEXT,
+        answer   TEXT NOT NULL CHECK (answer IN ('yes','no')),
+        at       TEXT
+      );
+
+      CREATE TABLE cc_canary_runs (
+        id              INTEGER PRIMARY KEY,
+        plugin          TEXT NOT NULL,
+        at              TEXT NOT NULL,
+        status          TEXT NOT NULL CHECK (status IN ('pass','fail','unavailable')),
+        exit_code       INTEGER,
+        duration_ms     INTEGER,
+        transcript_path TEXT,
+        summary         TEXT,
+        diff            TEXT,
+        grade           TEXT CHECK (grade IS NULL OR grade IN ('biting','silent','fine')),
+        graded_by       TEXT,
+        note            TEXT
+      );
+      CREATE INDEX cc_canary_runs_plugin_at ON cc_canary_runs (plugin, at);
+
+      CREATE TABLE cc_gate_checks (
+        id       INTEGER PRIMARY KEY,
+        cwd      TEXT NOT NULL,
+        head_sha TEXT NOT NULL,
+        plugin   TEXT NOT NULL,
+        name     TEXT NOT NULL,
+        status   TEXT NOT NULL CHECK (status IN ('pass','fail','skipped')),
+        detail   TEXT,
+        at       TEXT NOT NULL,
+        UNIQUE (cwd, head_sha, plugin, name)
+      );
+    `);
+    const old = db.prepare("SELECT key, value FROM cc_meta WHERE key LIKE 'judge:%'").all();
+    const put = db.prepare("INSERT OR IGNORE INTO cc_judge_cache (key, answer) VALUES (?, ?)");
+    for (const r of old) if (r.value === "yes" || r.value === "no") put.run(r.key, r.value);
+    db.prepare("DELETE FROM cc_meta WHERE key LIKE 'judge:%'").run();
   },
 ];
 

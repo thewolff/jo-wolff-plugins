@@ -4,8 +4,9 @@
 // and apply the cross-lab review gate (lib/review.mjs) to `git push` / `gh pr create` /
 // `gh pr merge` once the note gate lets the command through.
 //
-// Input read: tool_name, tool_input.command, session_id, cwd (hooks reference § PreToolUse
-// input, § Common input fields). hooks.json spawns this for AskUserQuestion and Bash only.
+// Input read: tool_name, tool_input.command, session_id, cwd, transcript_path (hooks reference
+// § PreToolUse input, § Common input fields); a deny's bounce row keeps the command (or the
+// AskUserQuestion input) and the transcript path so it can be reproduced. hooks.json spawns this for AskUserQuestion and Bash only.
 //
 // Output on deny: {"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":
 // "deny","permissionDecisionReason":"…"}}, exit 0. On pass: nothing. The reason names the
@@ -78,8 +79,9 @@ export function handle(input, { env = process.env, now = Date.now() } = {}) {
       // is a dead end, so the gate passes instead; withStore turns the StoreError into the allow
       // shape with one systemMessage.
       assertWritable(store.db, store.dbPath);
-      if (verdict) recordBounce(store, { sessionId, rule: verdict.rule, promptId, tool: input.tool_name ?? null, now, env, hook: "PreToolUse" });
-      if (review?.deny) recordBounce(store, { sessionId, rule: "reviewGate", promptId, tool: "Bash", now, env, hook: "PreToolUse" });
+      const text = input.tool_name === "Bash" ? input.tool_input?.command : input.tool_name === "AskUserQuestion" ? JSON.stringify(input.tool_input ?? null) : null;
+      if (verdict) recordBounce(store, { sessionId, rule: verdict.rule, promptId, tool: input.tool_name ?? null, text, transcriptPath: input.transcript_path, now, env, hook: "PreToolUse" });
+      if (review?.deny) recordBounce(store, { sessionId, rule: "reviewGate", promptId, tool: "Bash", text, transcriptPath: input.transcript_path, now, env, hook: "PreToolUse" });
       return {
         ...noticeField(store.notices),
         hookSpecificOutput: { hookEventName: "PreToolUse", permissionDecision: "deny", permissionDecisionReason: denyReason(verdict?.reason, review?.deny) },

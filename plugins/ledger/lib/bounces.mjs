@@ -33,13 +33,29 @@ import { nowIso } from "./time.mjs";
 
 export const STOP_RULES = Object.freeze(["stopAnswerRule", "stopAskRule", "stopDecisionRule"]);
 
-/** Insert one open bounce row; never throws. */
-export function recordBounce(store, { sessionId = null, rule, promptId = null, tool = null, now = Date.now(), env = process.env, hook }) {
+/** The most of the triggering text a bounce row keeps. */
+export const BOUNCE_TEXT_MAX = 500;
+
+/** `text` cut to BOUNCE_TEXT_MAX characters with a marker; null for nothing. */
+export function bounceText(text) {
+  const s = typeof text === "string" ? text.trim() : "";
+  if (!s) return null;
+  return s.length > BOUNCE_TEXT_MAX ? `${s.slice(0, BOUNCE_TEXT_MAX - 1)}…` : s;
+}
+
+/**
+ * Insert one open bounce row; never throws. `text` is what fired the rule (the reply excerpt or
+ * the shell command), `transcriptPath` the event's transcript_path; both are kept so the row can
+ * be reproduced later (0.3.2), both optional.
+ */
+export function recordBounce(store, { sessionId = null, rule, promptId = null, tool = null, text = null, transcriptPath = null, now = Date.now(), env = process.env, hook }) {
   try {
     transaction(
       store.db,
       () => {
-        store.db.prepare("INSERT INTO cc_bounces (session_id, rule, prompt_id, tool, at) VALUES (?,?,?,?,?)").run(sessionId, rule, promptId, tool, nowIso(now));
+        store.db
+          .prepare("INSERT INTO cc_bounces (session_id, rule, prompt_id, tool, at, text, transcript_path) VALUES (?,?,?,?,?,?,?)")
+          .run(sessionId, rule, promptId, tool, nowIso(now), bounceText(text), typeof transcriptPath === "string" && transcriptPath ? transcriptPath : null);
       },
       store.dbPath,
     );
@@ -145,7 +161,16 @@ export function renderBounces(db, { since = BOUNCES_DEFAULT_SINCE, now = Date.no
   }
   out.push("", `last ${Math.min(BOUNCES_RECENT, rows.length)}:`);
   for (const r of rows.slice(0, BOUNCES_RECENT)) {
-    out.push(`${r.at}  ${(r.session_id ?? "-").slice(0, 8).padEnd(8)}  ${r.rule.padEnd(ruleWidth)}  ${(r.tool ?? "-").padEnd(15)}  ${r.outcome ?? "open"}`);
+    out.push(`#${r.id} ${r.at}  ${(r.session_id ?? "-").slice(0, 8).padEnd(8)}  ${r.rule.padEnd(ruleWidth)}  ${(r.tool ?? "-").padEnd(15)}  ${r.outcome ?? "open"}`);
+    // 0.3.2: what fired it and where the transcript is, so the row can be reproduced.
+    if (r.text) out.push(`    text: ${oneLine(r.text, 160)}`);
+    if (r.transcript_path) out.push(`    transcript: ${r.transcript_path}`);
   }
   return out.join("\n");
+}
+
+/** `text` as one line of at most `max` characters. */
+export function oneLine(text, max) {
+  const s = String(text ?? "").replace(/\s+/g, " ").trim();
+  return s.length > max ? `${s.slice(0, max - 1)}…` : s;
 }
