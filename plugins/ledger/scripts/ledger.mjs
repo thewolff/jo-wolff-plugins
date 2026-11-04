@@ -32,6 +32,7 @@ import { addressed, runReview, status as reviewStatus, waive } from "../lib/revi
 import { gradeRun, install as canaryInstall, listRuns, parseCanaryArgs, prune as canaryPrune, renderRuns, runCanary } from "../lib/canary.mjs";
 import { parseReportArgs, runReport } from "../lib/report.mjs";
 import { install as digestInstall, parseDigestArgs, runDigest } from "../lib/digest.mjs";
+import { gateCheck, parseGateArgs } from "../lib/plugin-gate.mjs";
 import { cachedJudgement } from "../lib/judge.mjs";
 import { cliPath, invocation } from "../lib/inject.mjs";
 
@@ -115,8 +116,8 @@ export function main(argv = process.argv.slice(2), { env = process.env, stdin = 
 
   // `review` runs alone (it waits on other labs' CLIs, so it is async and never part of a batch).
   if (cli.rest.length && cli.rest[0].toLowerCase() === "review") return runReviewVerb({ store, cwd, env, sessionId, tokens: cli.rest, out });
-  // `canary`, `report` and `digest` run alone too: they spawn processes and are async.
-  if (cli.rest.length && ["canary", "report", "digest"].includes(cli.rest[0].toLowerCase())) return runOwnLineVerb({ store, cwd, env, verb: cli.rest[0].toLowerCase(), tokens: cli.rest.slice(1), by: cli.by, out, err });
+  // `canary`, `report`, `digest` and `gate` run alone too: they spawn processes.
+  if (cli.rest.length && ["canary", "report", "digest", "gate"].includes(cli.rest[0].toLowerCase())) return runOwnLineVerb({ store, cwd, env, verb: cli.rest[0].toLowerCase(), tokens: cli.rest.slice(1), by: cli.by, out, err });
 
   try {
     const ctx = makeCtx({ store, cwd, via: "cli", by: cli.by, sessionId });
@@ -163,6 +164,10 @@ async function runOwnLineVerb({ store, cwd, env, verb, tokens, by, out, err }) {
         const { removed, kept } = canaryPrune({ env, days: p.days });
         r = { code: 0, text: `canary prune: removed ${removed} transcript file(s) older than ${p.days} day(s), kept ${kept}; rows untouched` };
       } else r = canaryInstall({ env, cliPath: cliPath(), repo: p.repo, hour: p.hour, minute: p.minute });
+    } else if (verb === "gate") {
+      const p = parseGateArgs(tokens);
+      if (p.error) r = { code: 1, text: p.error };
+      else r = gateCheck({ db: store.db, dbPath: store.dbPath, cwd, env, plugins: p.plugins, base: p.base });
     } else {
       const p = parseDigestArgs(tokens);
       if (p.error) r = { code: 1, text: p.error };

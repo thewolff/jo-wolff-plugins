@@ -20,7 +20,7 @@ import { parseSpan, BOUNCES_DEFAULT_SINCE } from "./bounces.mjs";
 import { askWord, judgementsSince } from "./judge.mjs";
 import { nowIso } from "./time.mjs";
 
-export const RULES = Object.freeze(["stopAnswerRule", "stopAskRule", "stopDecisionRule", "denyAskWithoutRow", "pushNeedsNote", "reviewGate"]);
+export const RULES = Object.freeze(["stopAnswerRule", "stopAskRule", "stopDecisionRule", "denyAskWithoutRow", "pushNeedsNote", "reviewGate", "pluginGate"]);
 export const GRADES = Object.freeze(["biting", "silent", "fine"]);
 export const JUDGE_TEXTS = 20;
 export const JUDGE_QUESTION_RULE = "You are reading the bounces of one enforcement rule in a coding agent's hooks: each is a reply or command the rule sent back, with whether the agent then satisfied the rule or bypassed it. Is the rule biting (it sent back work that was right, so the agent had to bypass it), silent (the texts show it should have fired on more than it did), or fine?";

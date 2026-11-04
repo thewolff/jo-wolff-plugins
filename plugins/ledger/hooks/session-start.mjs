@@ -26,7 +26,7 @@ export function handle(input, { env = process.env, now = Date.now() } = {}) {
   const ready = hookConfig(env, input, "sessionStart");
   if (!ready) return null;
   const { cfg, cwd } = ready;
-  return withStore({ env, now, notices: cfg.notices, cwd, cfg }, "no injection this session", (store) => {
+  return withStore({ env, now, notices: cfg.notices, cwd, cfg, hook: "SessionStart" }, "no injection this session", (store) => {
     const sessionId = typeof input.session_id === "string" && input.session_id ? input.session_id : null;
     const notices = [...store.notices];
     let swept = [];

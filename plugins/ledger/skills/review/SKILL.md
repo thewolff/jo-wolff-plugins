@@ -13,3 +13,16 @@ human's own words as the reason.
 Report to the person, briefly: each lab's verdict as printed (`pass`, `findings`, `unavailable`
 with its reason), then the findings themselves, grouped by lab, as the output gives them. If the
 output starts with `refused`, quote the reason. Do not fix anything unless the person asks.
+
+## When this can't run
+
+- Every lab prints `unavailable: <reason>` (binary missing, no credential, a timeout): the rows
+  are recorded as unavailable and the push gate stays shut. Tell the person the reasons as
+  printed; `node "${CLAUDE_PLUGIN_ROOT}/scripts/ledger.mjs" doctor` names the binary each lab
+  needs. The person decides between fixing the lab and `review waive "<why>"`; never waive on
+  your own.
+- `refused … not in a git repository` or `… has no commit yet`: there is nothing to review; say so.
+- `ledger: database … ` on stderr: the review ran but its rows were not written, so the gate
+  will not see it. Quote the line; `ledger doctor` says what is wrong with the database.
+- No output at all within a few minutes: the lab's CLI hung past its timeout and was killed; the
+  row says `unavailable: timed out`. Run it again once; if it repeats, tell the person.

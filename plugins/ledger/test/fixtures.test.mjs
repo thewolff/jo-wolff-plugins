@@ -94,3 +94,25 @@ test("judge: the captured real answer parses, and ask() replaying it returns tha
     store.db.close();
   }
 });
+
+test("judge: the captured real failure (no credentials) is an unverified answer with the error, and nothing is cached", async () => {
+  const saved = fixture("judge.unavailable.txt");
+  assert.ok(saved !== null, "judge.unavailable.txt is captured by `capture-fixtures.mjs --unavailable`");
+  const b = sandbox();
+  const dbPath = join(b.root, "judge.db");
+  const store = open(dbPath);
+  try {
+    // The saved file is what the judge printed (after the first line, the adapter's own words); a
+    // stub replays it on stderr and exits 1, as the real one did.
+    const printed = saved.split("\n").slice(1).join("\n") || "no credential";
+    const script = join(b.root, "judge-fails");
+    writeFileSync(script, `#!/bin/sh\ncat > /dev/null\nprintf '%s\\n' ${JSON.stringify(printed)} >&2\nexit 1\n`);
+    chmodSync(script, 0o755);
+    const r = await ask({ db: store.db, dbPath, config: {}, env: { ...b.env, LEDGER_JUDGE_BIN: script }, passage: "finding and fix" });
+    assert.equal(r.verdict, "unverified");
+    assert.match(r.error, /exited 1/, "the failure is named");
+    assert.equal(store.db.prepare("SELECT count(*) AS n FROM cc_judge_cache").get().n, 0);
+  } finally {
+    store.db.close();
+  }
+});

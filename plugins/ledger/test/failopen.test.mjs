@@ -167,6 +167,10 @@ test("row: hook script throws → exit 0, `failed open: <msg>`, one errors.log l
     try {
       const r = hook(box, name, payloads(box)[name], { env: { LEDGER_DB: join(dir, "sub", "ledger.db") } });
       assertAllow(name, r, { expectSystemMessage: name === "session-end" ? null : /^ledger: database unavailable at / });
+      // The same failure is in errors.log, under the event's name (the plugin gate's "failures visible" check).
+      const log = readFileSync(box.errorsLog, "utf8").trim().split("\n");
+      assert.equal(log.length, 1, `${name}: ${log.join(" | ")}`);
+      assert.match(log[0], new RegExp(` ${eventName(name)} .*unavailable`), name);
     } finally {
       chmodSync(dir, 0o700);
     }

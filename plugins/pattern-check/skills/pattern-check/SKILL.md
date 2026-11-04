@@ -115,6 +115,14 @@ Hooks receive the session id; the Bash tool that runs this script does not. The 
 
 Zero configuration works: threshold 3, both hooks on, receipts in `.pattern-check/`. To change it, see the plugin README: `${XDG_CONFIG_HOME:-$HOME/.config}/pattern-check/config.json` for the user, `.pattern-check.json` at a repository root to override it there.
 
+## When this can't run
+
+- `record` printed `refused …`: nothing was written; the message names the row and the column. Fix the table and pipe it again.
+- `record` printed `pattern-check: …` naming a path it could not write (the receipt directory, the state directory): the receipt does not exist and the commit stays denied. Tell the person the line as printed; they can make the directory writable, or set `receiptDir` in `.pattern-check.json`.
+- `record` says it used `this working directory (no hook has run here yet)` and the commit is still denied afterwards: the receipt went to a session the hooks do not know. Pass `--session <key>` from the deny text that sent you here and record again.
+- A hook's warning (`pattern-check: … errors.log`) means the hook failed open and let the call through; its line is in `${XDG_STATE_HOME:-~/.local/state}/pattern-check/errors.log`. Tell the person once; do not treat the allowed call as a recorded receipt.
+- The script is missing (`no such file`): the plugin is not installed where `CLAUDE_PLUGIN_ROOT` points. Tell the person; write the table in your reply anyway so the search is on record.
+
 ## What this check does not do
 
 It does not judge "same job" for you; that is the reading in step 3. It does not catch every shell write: a `python -c` or `cp` that writes a file is neither counted nor denied, and the `git commit` and `gh pr create` denials are the backstop for those. It does not see a plan written without a plan-shaped heading, label, or opener; the PreToolUse counter catches that work when the writes start.

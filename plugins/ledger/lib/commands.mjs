@@ -401,6 +401,7 @@ export function execute(db, parsed, ctx) {
     case "canary":
     case "report":
     case "digest":
+    case "gate":
       return refused(`${parsed.verb} runs on its own line: \`ledger ${parsed.verb} …\`, not inside a batch`);
     case "bounces":
       return ok(null, renderBounces(db, { since: parsed.since ?? BOUNCES_DEFAULT_SINCE, now }));

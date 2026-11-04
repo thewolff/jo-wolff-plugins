@@ -36,11 +36,13 @@
 // `unverified` (no judge, or it failed) resolves it fail-open and the gate's notice says so.
 
 import { spawnSync } from "node:child_process";
-import { resolve as resolvePath } from "node:path";
+import { readFileSync, readdirSync, statSync } from "node:fs";
+import { join, resolve as resolvePath } from "node:path";
 import { fileURLToPath } from "node:url";
 import { transaction } from "./db.mjs";
+import { logError } from "./failopen.mjs";
 import { nowIso } from "./time.mjs";
-import { parseItems, severityCounts, which } from "./review/common.mjs";
+import { parseItems, receiptSection, severityCounts, which } from "./review/common.mjs";
 import { ask as askJudge, judgeCommand, passageFor } from "./judge.mjs";
 import * as codex from "./review/codex.mjs";
 import * as kimi from "./review/kimi.mjs";
@@ -59,7 +61,7 @@ export const GH_TIMEOUT_MS = 5_000;
 // The empty tree: the base of a diff of a branch's root commit.
 const EMPTY_TREE = "4b825dc642cb6eb9a060e54bf8d69288fbee4904";
 
-function git(cwd, args, { timeoutMs = GIT_TIMEOUT_MS } = {}) {
+export function git(cwd, args, { timeoutMs = GIT_TIMEOUT_MS } = {}) {
   const r = spawnSync("git", args, { cwd, encoding: "utf8", maxBuffer: 256 * 1024 * 1024, timeout: timeoutMs, killSignal: "SIGKILL" });
   if (r.error) throw new Error(`git ${args[0]}: ${r.error.code === "ETIMEDOUT" ? `timed out after ${Math.round(timeoutMs / 1000)}s` : r.error.message}`);
   if (r.status !== 0) {
@@ -96,7 +98,7 @@ export function gitHead(cwd, opts = {}) {
 }
 
 /** The checked-out branch's short name; null when HEAD is detached. */
-function currentBranch(top, opts = {}) {
+export function currentBranch(top, opts = {}) {
   try {
     return git(top, ["symbolic-ref", "-q", "--short", "HEAD"], opts).trim() || null;
   } catch {
@@ -426,12 +428,16 @@ export async function runReview({ db, dbPath, cwd, env = process.env, config, la
       text: `stopped: this would be review round ${round} for this branch, and review.maxRounds is ${max}. Ask the human: waive with their reason (\`${cli} review waive "<why>"\`), or continue with \`${cli} review --force-round\`.`,
     };
   }
+  // The newest pattern-check receipt in the repository, when one exists, goes in front of the
+  // diff so the labs can hold the "how it fails" rows against the code (0.3.2).
+  const receipt = newestReceipt(top, env);
+  const input = receiptSection(receipt.text) + diff;
   const results = await Promise.allSettled(
     list.map(async (lab) => {
       if (!diff.trim()) return { verdict: "pass", findings: null, items: [], model: null, reason: `empty diff ${range}` };
       const adapter = ADAPTERS[lab];
       if (!adapter) throw new Error(`unknown lab ${lab}; supported: ${Object.keys(ADAPTERS).join(", ")}`);
-      return adapter.run({ diff, timeoutMs, env, config: config.review ?? {} });
+      return adapter.run({ diff: input, timeoutMs, env, config: config.review ?? {} });
     }),
   );
   // Each lab's serious findings still open on this branch, this commit's earlier rows included:
@@ -631,6 +637,40 @@ export function gateDecision(state, mode, cli = "ledger") {
   return parts.length ? { notice: `ledger: review passed for ${sha}; ${parts.join("; ")}` } : {};
 }
 
+/**
+ * The newest `.md` by mtime under the repository's pattern-check receipt directory
+ * (`receiptDir` in `<top>/.pattern-check.json`, default `.pattern-check`): { text, path } or
+ * { text: null }. Unreadable → { text: null }, one errors.log line; the review runs without it.
+ */
+export function newestReceipt(top, env = process.env) {
+  let dir = ".pattern-check";
+  try {
+    const cfg = JSON.parse(readFileSync(join(top, ".pattern-check.json"), "utf8"));
+    if (typeof cfg?.receiptDir === "string" && cfg.receiptDir.trim()) dir = cfg.receiptDir.trim();
+  } catch {
+    /* no config, or unreadable: the default directory */
+  }
+  const full = join(top, dir);
+  let newest = null;
+  try {
+    for (const name of readdirSync(full)) {
+      if (!name.endsWith(".md")) continue;
+      const st = statSync(join(full, name));
+      if (st.isFile() && (!newest || st.mtimeMs > newest.mtimeMs)) newest = { path: join(full, name), mtimeMs: st.mtimeMs };
+    }
+  } catch (err) {
+    if (err.code !== "ENOENT") logError("review", `pattern-check receipt directory ${full} not readable: ${err.message}; reviewing without a receipt`, env);
+    return { text: null };
+  }
+  if (!newest) return { text: null };
+  try {
+    return { text: readFileSync(newest.path, "utf8"), path: newest.path };
+  } catch (err) {
+    logError("review", `pattern-check receipt ${newest.path} not readable: ${err.message}; reviewing without a receipt`, env);
+    return { text: null };
+  }
+}
+
 /** `review status`: the gate state for HEAD, the branch's rounds, then HEAD's own rows. */
 export function status({ db, cwd, config, cli = "ledger" }) {
   let top, head;
@@ -819,13 +859,14 @@ export function operationTargets(op, cwd, { env = process.env } = {}) {
  * whose commit came from `gh pr view` adds a notice naming the commit checked and the flag that
  * binds the merge to it.
  */
-export function reviewDecision(db, ops, cwd, mode, { cli = "ledger", env = process.env } = {}) {
-  let targets;
-  try {
-    targets = ops.flatMap((op) => operationTargets(op, cwd, { env }));
-  } catch (err) {
-    if (err instanceof UnknownTarget) return { notice: `ledger: the review gate could not tell which commit this command publishes (${err.message}); allowed without a review check` };
-    throw err;
+export function reviewDecision(db, ops, cwd, mode, { cli = "ledger", env = process.env, targets = null } = {}) {
+  if (!targets) {
+    try {
+      targets = ops.flatMap((op) => operationTargets(op, cwd, { env }));
+    } catch (err) {
+      if (err instanceof UnknownTarget) return { notice: `ledger: the review gate could not tell which commit this command publishes (${err.message}); allowed without a review check` };
+      throw err;
+    }
   }
   const seen = new Set();
   const decisions = [];
