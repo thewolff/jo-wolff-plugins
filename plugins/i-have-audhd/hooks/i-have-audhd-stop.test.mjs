@@ -66,7 +66,7 @@ function runHook(payload, home, extraEnv = {}) {
     input: typeof payload === "string" ? payload : JSON.stringify(payload),
     encoding: "utf8",
     env,
-    timeout: 30_000,
+    timeout: 5_000,
   });
 }
 
@@ -118,12 +118,16 @@ test("I_HAVE_AUDHD_ENFORCE=off is the secondary switch and stays silent", () => 
 
 // ─── fail-open ───────────────────────────────────────────────────────────────
 
-test("malformed stdin exits 0 with no stdout and one errors.log line", () => {
+test("malformed stdin exits 0, blocks nothing, and leaves one errors.log line and one warning line", () => {
   const home = mkhome();
   const r = runHook("this is not json", home);
   assert.equal(r.status, 0);
-  assert.equal(r.stdout, "");
+  const out = parseOut(r.stdout);
+  assert.equal(out.decision, undefined);
+  assert.match(out.systemMessage, /^i-have-audhd hooks\/i-have-audhd-stop\.mjs failed open .*did not parse/);
+  assert.ok(!out.systemMessage.includes("\n"), "one warning line");
   assert.equal(logLines(home, "errors.log").length, 1);
+  assert.match(readLog(home, "errors.log"), /hooks\/i-have-audhd-stop\.mjs stop payload did not parse/);
 });
 
 test("an empty payload is no text, no opinion", () => {
@@ -276,7 +280,9 @@ test("an unparseable profile means the measured defaults (warn) plus one errors.
   writeFileSync(join(home, ".claude", "i-have-audhd.json"), "{ not json");
   const r = runHook({ session_id: "b1", last_assistant_message: misordered }, home);
   assert.equal(r.status, 0);
-  assert.equal(r.stdout, ""); // defaults are warn since the corpus measurement
+  const out = parseOut(r.stdout); // defaults are warn since the corpus measurement: no block
+  assert.equal(out.decision, undefined);
+  assert.match(out.systemMessage, /lib\/config\.mjs enforcement: profile at .* does not parse/);
   assert.match(readLog(home, "warnings.log"), /rule=needs-you-first/);
   assert.equal(logLines(home, "errors.log").length, 1);
 });
@@ -785,7 +791,8 @@ test("armOmp of the wrong type is one errors.log line and reads as false", () =>
   const home = mkhome();
   blockProfile(home, { armOmp: "yes" });
   const r = runHook({ session_id: "o6", last_assistant_message: misordered }, home, OMP);
-  assert.equal(r.stdout, "", "a non-boolean does not arm OMP");
+  assert.equal(parseOut(r.stdout).decision, undefined, "a non-boolean does not arm OMP");
+  assert.match(parseOut(r.stdout).systemMessage, /lib\/config\.mjs enforcement: armOmp "yes" is not a boolean/);
   assert.equal(logLines(home, "errors.log").length, 1);
   assert.match(readLog(home, "warnings.log"), /rule=needs-you-first/);
 });

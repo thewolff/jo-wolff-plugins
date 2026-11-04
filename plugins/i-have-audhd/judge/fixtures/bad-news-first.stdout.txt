@@ -1,0 +1,1 @@
+{"violation": true, "reason": "The bad news (the production deploy failed, the rollback didn't run, and the site is serving a broken build) first appears in the second paragraph, after a long opening sentence that spends its first 20 words on process narration."}

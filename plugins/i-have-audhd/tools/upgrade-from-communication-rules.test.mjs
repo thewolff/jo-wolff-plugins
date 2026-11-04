@@ -49,7 +49,7 @@ function mkhome({ profile = PROFILE, killSwitch = true } = {}) {
 function run(home, args = [], extraEnv = {}) {
   const env = { ...process.env, HOME: home, USERPROFILE: home };
   for (const k of Object.keys(env)) if (/^(COMMUNICATION_RULES_|I_HAVE_AUDHD_)/.test(k)) delete env[k];
-  const r = spawnSync(process.execPath, [TOOL, ...args], { encoding: "utf8", env: { ...env, ...extraEnv }, timeout: 60_000 });
+  const r = spawnSync(process.execPath, [TOOL, ...args], { encoding: "utf8", env: { ...env, ...extraEnv }, timeout: 5_000 });
   for (const s of SENTINELS) {
     assert.ok(!r.stdout.includes(s) && !r.stderr.includes(s), `output leaked ${s}`);
   }

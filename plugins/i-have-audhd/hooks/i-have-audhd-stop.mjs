@@ -13,17 +13,18 @@
 //   stdin:  one Stop-payload JSON object — session_id, transcript_path, stop_hook_active
 //           (Claude Code shape); OMP seat payloads additionally carry last_assistant_message.
 //   stdout: one JSON object {"decision":"block","reason":"…"} when a block-mode rule fired,
-//           and NOTHING otherwise. Exit 0 on every path — a broken hook must not break a
-//           session, but it must not be invisible either (errors.log).
+//           plus "systemMessage" when the judge alert or a fault of this run is due; NOTHING
+//           otherwise. Exit 0 on every path — a broken hook must not break a session, but it
+//           must not be invisible either (errors.log plus one warning line, FAIL-OPEN below).
 //
-// ORDER OF OPERATIONS (each early return is exit 0, zero stdout)
+// ORDER OF OPERATIONS (each early return is exit 0, zero stdout unless it was a fault)
 //   1. Kill switch — the flag file $HOME/.claude/.i-have-audhd-off, checked with
 //      existsSync PER INVOCATION. Never a module-scope env read: env is frozen for the life
 //      of the host process that spawns hooks, so an env switch cannot be thrown without
 //      relaunching the host. The file works within one turn. Chosen silence: documented
 //      here, not announced to the model. $I_HAVE_AUDHD_ENFORCE=off is a secondary
 //      switch with exactly that frozen caveat — it costs a host relaunch to change.
-//   2. Parse the payload. Unparseable stdin → errors.log, exit 0.
+//   2. Parse the payload. Empty stdin, unparseable stdin or a non-object → a fault, exit 0.
 //   3. Extract the final assistant text: last_assistant_message when it is a non-empty
 //      string, else the transcript JSONL scanned backwards for the last type:"assistant"
 //      entry with text content (tool-call-only entries are skipped; the message is the text).
@@ -58,10 +59,14 @@
 //      move or add, and NEVER demand a resend of the whole message — "paste the corrected
 //      opening lines only" style, terse. That paste instruction is block-only: a warn arrives
 //      after the message went out, so its notice asks for the fix going forward instead.
+//      Every block reason ENDS with the way out (wayOut below): the kill-switch file, and the
+//      profile key that makes each blocked rule warn only.
 //
-// FAIL-OPEN EVERYWHERE
-//   Any thrown error → exit 0, nothing on stdout, one line in errors.log. Carried from the
-//   session-start hook's contract: fail-open, but not fail-silent.
+// FAIL-OPEN EVERYWHERE, NEVER FAIL-SILENT
+//   Any fault of this run — a throw, stdin that is empty or not a JSON object, an unparseable
+//   profile, a state file that cannot be written — leaves one errors.log line naming the file
+//   and the reason, and ONE warning line in systemMessage (lib/state.mjs, FAULTS). A fault never
+//   blocks: the hook exits 0, and whatever findings it did reach are still emitted.
 //
 // JUDGE UNAVAILABLE
 //   A judge that times out, exits non-zero, cannot start, or answers unparseably gave no
@@ -82,7 +87,7 @@ import { checkNamesArtifact } from "../checks/name-the-artifact.mjs";
 import { checkPluralBackReference } from "../checks/plural-back-reference.mjs";
 import { splitLabeledSections, openingWords, OPENING_WORDS } from "../checks/sections.mjs";
 import { loadEnforcement, effectiveMode, harnessCapsBlocks } from "../lib/config.mjs";
-import { stateDir, killSwitchPath, lastBlockedPath, resumeMarkerPath, sha256hex, appendLog } from "../lib/state.mjs";
+import { stateDir, killSwitchPath, lastBlockedPath, resumeMarkerPath, sha256hex, appendLog, logFault, faultWarning } from "../lib/state.mjs";
 import { writePending } from "../lib/pending.mjs";
 import { dueAlerts, clearAlerts } from "../lib/alerts.mjs";
 import { findTrailingBatchSection, batchByLabelQuestion, batchJudgeContext } from "../triggers/batch-heading.mjs";
@@ -123,6 +128,14 @@ const MASTER_FLOOR = 200;
 // The block-only half of a reason. A block holds the turn open, so it asks for the corrected
 // lines; a warn arrives after the message was sent (lib/pending.mjs), so it never carries this.
 const paste = (what) => `Paste the corrected ${what} only; never resend the whole message.`;
+
+// The way out of a block, last line of every block reason: the kill switch, and the profile key
+// that turns each blocked rule down to warn (lib/config.mjs reads enforcement.rules).
+const wayOut = (blocks) => {
+  const rules = [...new Set(blocks.map((b) => b.rule))];
+  const keys = rules.map((r) => `"${r}": "warn"`).join(", ");
+  return `Way out: \`touch ~/.claude/.i-have-audhd-off\` turns the check off; or set {"enforcement": {"rules": {${keys}}}} in ~/.claude/i-have-audhd.json to warn instead of block.`;
+};
 
 function readStdin() {
   try {
@@ -392,39 +405,51 @@ function recordBlock(sessionId, textHash, rules) {
     mkdirSync(stateDir(), { recursive: true });
     writeFileSync(lastBlockedPath(sessionId), JSON.stringify({ sha256: textHash, rules, at: new Date().toISOString() }));
   } catch (err) {
-    appendLog("errors.log", `could not record loop-guard hash for ${sessionId}: ${err.message}`);
+    logFault(HOOK_FILE, `could not record loop-guard hash for ${sessionId}: ${err.message}`);
   }
 }
 
+// This hook's name in errors.log lines and in its warning line.
+const HOOK_FILE = "hooks/i-have-audhd-stop.mjs";
+
+// Returns the stdout object, {} for silence.
 async function main() {
   const raw = readStdin();
 
   // 1. Kill switch — per invocation, from the file. Zero output is the documented behavior.
-  if (existsSync(killSwitchPath())) return;
+  if (existsSync(killSwitchPath())) return {};
   // Secondary env switch. Caveat, documented: env is frozen per host process, so changing
   // this one means relaunching the host — the flag file above is the fast control.
-  if (String(process.env.I_HAVE_AUDHD_ENFORCE || "").toLowerCase() === "off") return;
+  if (String(process.env.I_HAVE_AUDHD_ENFORCE || "").toLowerCase() === "off") return {};
 
-  // 2. Payload.
-  let payload = {};
+  // 2. Payload. The host always sends a JSON object, so anything else is a fault.
+  if (!raw.trim()) {
+    logFault(HOOK_FILE, "stdin was empty; no Stop payload, nothing checked");
+    return {};
+  }
+  let payload;
   try {
-    payload = JSON.parse(raw || "{}");
+    payload = JSON.parse(raw);
   } catch (err) {
-    appendLog("errors.log", `stop payload did not parse: ${err.message}`);
-    return;
+    logFault(HOOK_FILE, `stop payload did not parse (${err.message}); nothing checked`);
+    return {};
+  }
+  if (!payload || typeof payload !== "object" || Array.isArray(payload)) {
+    logFault(HOOK_FILE, "stop payload is not a JSON object; nothing checked");
+    return {};
   }
   const sessionId = typeof payload.session_id === "string" && payload.session_id ? payload.session_id : "no-session";
 
   // 3. Text.
   const text = extractText(payload);
-  if (!text.trim()) return;
+  if (!text.trim()) return {};
 
   // 4. Loop guard.
   const textHash = sha256hex(text);
   if (payload.stop_hook_active === true) {
     try {
       const prev = JSON.parse(readFileSync(lastBlockedPath(sessionId), "utf8"));
-      if (prev && prev.sha256 === textHash) return; // same message, second pass: let it through
+      if (prev && prev.sha256 === textHash) return {}; // same message, second pass: let it through
     } catch {
       /* no recorded hash = nothing to compare */
     }
@@ -433,7 +458,7 @@ async function main() {
   // 5. Master floor. proseChars comes from the needs-you-first check's own accounting — one shared
   // definition of "substantive", not a second one that can drift.
   const r1 = checkNeedsYouFirst(text);
-  if (r1.proseChars < MASTER_FLOOR) return;
+  if (r1.proseChars < MASTER_FLOOR) return {};
 
   // 6–7. Checks per configured modes.
   const harness = process.env.I_HAVE_AUDHD_HARNESS;
@@ -456,7 +481,7 @@ async function main() {
       rmSync(resumeMarkerPath(sessionId), { force: true });
       judgeJobs.push({ rule: "restate-resumed-thread", question: restateQuestion, contextText: text });
     } catch (err) {
-      appendLog("errors.log", `could not consume resume marker for ${sessionId}: ${err.message}`);
+      logFault(HOOK_FILE, `could not consume resume marker for ${sessionId}: ${err.message}`);
     }
   }
 
@@ -571,11 +596,18 @@ async function main() {
   if (blocks.length) {
     recordBlock(sessionId, textHash, blocks.map((b) => b.rule).join(","));
     out.decision = "block";
-    out.reason = blocks.map((b) => `${b.text} ${b.paste ?? ""}`.trim()).join("\n\n");
+    out.reason = [...blocks.map((b) => `${b.text} ${b.paste ?? ""}`.trim()), wayOut(blocks)].join("\n\n");
   }
   // The person hears about a dead judge here, once per key (lib/alerts.mjs); the agent hears
   // through the warn notice or the block reason above.
   if (judgeAlert) out.systemMessage = judgeAlert;
+  return out;
+}
+
+// The one write to stdout: main's object, plus the fault warning line when this run had a fault.
+function emit(out) {
+  const warning = faultWarning(HOOK_FILE);
+  if (warning) out.systemMessage = out.systemMessage ? `${out.systemMessage}\n${warning}` : warning;
   if (Object.keys(out).length) process.stdout.write(JSON.stringify(out));
 }
 
@@ -583,9 +615,9 @@ const invokedDirectly =
   process.argv[1] && import.meta.url === new URL(`file://${process.argv[1]}`).href;
 
 if (invokedDirectly) {
-  main().catch((err) => {
-    // Fail open, and say so in the one place failures go.
-    appendLog("errors.log", `stop hook failed open: ${err?.stack || String(err)}`);
-    process.exit(0);
+  main().then(emit, (err) => {
+    // Fail open, and say so: errors.log and the warning line. A throw blocks nothing.
+    logFault(HOOK_FILE, `threw and failed open: ${err?.stack || String(err)}`);
+    emit({});
   });
 }

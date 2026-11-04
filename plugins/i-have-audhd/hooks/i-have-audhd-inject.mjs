@@ -35,12 +35,14 @@
 // Contract: read JSON on stdin (SessionStart payload; `source` and `session_id` arm the resume
 // marker below). Emit hookSpecificOutput.additionalContext, exit 0. The OMP adapter
 // (omp/i-have-audhd-omp.ts) spawns this same file and forwards additionalContext.
+// A fault (empty or malformed stdin, an unparseable profile, a marker that cannot be written, a
+// throw) leaves one errors.log line and one warning line in systemMessage (lib/state.mjs, FAULTS).
 
 import { readFileSync, writeFileSync, mkdirSync, existsSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { stateDir, resumeMarkerPath, judgeNoticeMarkerPath, appendLog } from "../lib/state.mjs";
+import { stateDir, resumeMarkerPath, judgeNoticeMarkerPath, logFault, faultWarning } from "../lib/state.mjs";
 import { judgeChoiceState, judgeNotice } from "../lib/judge-setup.mjs";
 
 const SKILL_PATH = fileURLToPath(
@@ -60,14 +62,18 @@ const POINTER =
   "`i-have-audhd` skill's reference.md. The Stop hook warns by default; a flag file at " +
   "~/.claude/.i-have-audhd-off disables it within one turn.";
 
+const HOOK_FILE = "hooks/i-have-audhd-inject.mjs";
+
 // systemMessage is shown to the person (Claude Code); the OMP adapter shows it as a UI notice.
-function emit(text, systemMessage) {
-  process.stdout.write(
-    JSON.stringify({
-      ...(systemMessage ? { systemMessage } : {}),
-      hookSpecificOutput: { hookEventName: "SessionStart", additionalContext: text },
-    }),
-  );
+// It carries the one-time judge notice and this run's fault warning line, either or both. A null
+// `text` emits no additionalContext (I_HAVE_AUDHD_INJECT=off), and nothing at all without a warning.
+function emit(text, notice = "") {
+  const systemMessage = [notice, faultWarning(HOOK_FILE)].filter(Boolean).join("\n");
+  const out = {
+    ...(systemMessage ? { systemMessage } : {}),
+    ...(text === null ? {} : { hookSpecificOutput: { hookEventName: "SessionStart", additionalContext: text } }),
+  };
+  if (Object.keys(out).length) process.stdout.write(JSON.stringify(out));
   process.exit(0);
 }
 
@@ -83,7 +89,7 @@ function judgeNoticeOnce() {
     mkdirSync(stateDir(), { recursive: true });
     writeFileSync(marker, `${new Date().toISOString()}\n`);
   } catch (err) {
-    appendLog("errors.log", `could not write the judge-notice marker: ${err.message}`);
+    logFault(HOOK_FILE, `could not write the judge-notice marker: ${err.message}`);
   }
   return judgeNotice();
 }
@@ -108,9 +114,11 @@ function readProfile() {
   try {
     parsed = JSON.parse(raw);
   } catch (err) {
+    logFault(HOOK_FILE, `reader profile at ${path} did not parse (${err.message}); no traits applied`);
     return { text: "", note: `The reader profile at ${path} did not parse (${err.message}), so no traits were applied.` };
   }
   if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+    logFault(HOOK_FILE, `reader profile at ${path} is not a JSON object; no traits applied`);
     return { text: "", note: `The reader profile at ${path} is not a JSON object, so no traits were applied.` };
   }
 
@@ -142,13 +150,23 @@ function readProfile() {
 }
 
 // One-shot marker for the Stop hook: this session's next substantive message is the one the
-// restate-the-resumed-thread rule judges. Fail-open (errors.log), never session-visible.
+// restate-the-resumed-thread rule judges. A payload that is empty or not a JSON object is a fault
+// (the host always sends one): no marker, one errors.log line, one warning line.
 function writeResumeMarker(rawStdin) {
-  let payload = {};
+  if (!rawStdin.trim()) {
+    logFault(HOOK_FILE, "stdin was empty; no SessionStart payload, no resume marker");
+    return;
+  }
+  let payload;
   try {
-    payload = JSON.parse(rawStdin || "{}");
-  } catch {
-    return; // an unparseable payload is not this hook's failure; no marker, no judgment
+    payload = JSON.parse(rawStdin);
+  } catch (err) {
+    logFault(HOOK_FILE, `session-start payload did not parse (${err.message}); no resume marker`);
+    return;
+  }
+  if (!payload || typeof payload !== "object" || Array.isArray(payload)) {
+    logFault(HOOK_FILE, "session-start payload is not a JSON object; no resume marker");
+    return;
   }
   const source = typeof payload.source === "string" ? payload.source.toLowerCase() : "";
   const sessionId = typeof payload.session_id === "string" ? payload.session_id.trim() : "";
@@ -160,7 +178,7 @@ function writeResumeMarker(rawStdin) {
     mkdirSync(stateDir(), { recursive: true });
     writeFileSync(resumeMarkerPath(sessionId), `${new Date().toISOString()}\n`);
   } catch (err) {
-    appendLog("errors.log", `could not write resume marker for ${sessionId}: ${err.message}`);
+    logFault(HOOK_FILE, `could not write resume marker for ${sessionId}: ${err.message}`);
   }
 }
 try {
@@ -168,7 +186,7 @@ try {
   try {
     rawStdin = readFileSync(0, "utf8"); // the payload IS needed now — see writeResumeMarker
   } catch {
-    /* no stdin is fine */
+    /* no stdin reads as empty: writeResumeMarker logs it */
   }
 
   // Rule 8 trigger, session-start half: a resume or compact means the NEXT assistant message is
@@ -179,12 +197,13 @@ try {
   // hook simply has nothing to consume.
   writeResumeMarker(rawStdin);
 
-  if (String(process.env.I_HAVE_AUDHD_INJECT || "").toLowerCase() === "off") process.exit(0);
+  if (String(process.env.I_HAVE_AUDHD_INJECT || "").toLowerCase() === "off") emit(null);
 
   const md = readFileSync(SKILL_PATH, "utf8");
   const start = md.indexOf(START);
   const end = start === -1 ? -1 : md.indexOf(END, start + START.length);
   if (start === -1 || end === -1) {
+    logFault(HOOK_FILE, `inject markers missing from ${SKILL_PATH}; core not injected`);
     emit("The i-have-audhd core could not load: its markers are missing from the skill file.");
   }
 
@@ -192,9 +211,10 @@ try {
   const { text, note } = readProfile();
   const notice = judgeNoticeOnce();
   emit(INTRO + core + text + POINTER + (note ? `\n${note}` : "") + (notice ? `\n${notice}` : ""), notice);
-} catch {
+} catch (err) {
   // Fail open, and say so — a silent failure reads exactly like success.
   try {
+    logFault(HOOK_FILE, `threw and failed open: ${err?.stack || String(err)}`);
     emit("The i-have-audhd core could not load this session.");
   } catch {
     process.exit(0);

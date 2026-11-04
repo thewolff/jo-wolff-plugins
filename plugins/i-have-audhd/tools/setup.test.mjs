@@ -30,7 +30,7 @@ function runSetup(home, answers = [], args = []) {
     input: answers.map((a) => `${a}\n`).join(""),
     encoding: "utf8",
     env: { ...process.env, HOME: home, I_HAVE_AUDHD_PROFILE: "" },
-    timeout: 30_000,
+    timeout: 5_000,
   });
 }
 
