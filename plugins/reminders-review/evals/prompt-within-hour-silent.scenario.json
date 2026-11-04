@@ -1,0 +1,37 @@
+{
+  "$comment": "Sibling of prompt-due-fires: SessionStart checked moments ago (the `before` input stamps the session), so the prompt within the hour prints nothing although items are due.",
+  "event": "UserPromptSubmit",
+  "expect": "silent",
+  "sibling": "prompt-due-fires.scenario.json",
+  "setup": {
+    "env": {
+      "REMINDERS_REVIEW_REMINDCTL": "${HOME}/bin/remindctl",
+      "REMINDERS_REVIEW_WATCH": "Plumb"
+    },
+    "files": {
+      "~/bin/remindctl": "#!/bin/sh\n# fake remindctl for this scenario: show <overdue|today> --list <name> --json\ncase \"$2\" in\n  overdue) cat \"${PLUGIN_DIR}/test/fixtures/remindctl-show-overdue.json\" ;;\n  today) cat \"${PLUGIN_DIR}/test/fixtures/remindctl-show-today.json\" ;;\n  *) exit 2 ;;\nesac\n"
+    },
+    "commands": [
+      "chmod +x ${HOME}/bin/remindctl"
+    ]
+  },
+  "before": [
+    {
+      "event": "SessionStart",
+      "stdin": {
+        "session_id": "${SESSION_ID}",
+        "transcript_path": "${TRANSCRIPT}",
+        "cwd": "${CWD}",
+        "hook_event_name": "SessionStart",
+        "source": "startup"
+      }
+    }
+  ],
+  "stdin": {
+    "session_id": "${SESSION_ID}",
+    "transcript_path": "${TRANSCRIPT}",
+    "cwd": "${CWD}",
+    "hook_event_name": "UserPromptSubmit",
+    "prompt": "carry on"
+  }
+}

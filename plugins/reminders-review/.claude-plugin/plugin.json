@@ -1,9 +1,12 @@
 {
   "name": "reminders-review",
-  "description": "Go through your open Apple Reminders one at a time with an agent: it answers the questions, confirms before acting on the instructions, asks when unclear, and closes each one only when you say yes. macOS, via remindctl.",
-  "version": "0.1.2",
+  "description": "Go through your open Apple Reminders one at a time with an agent: it answers the questions, confirms before acting on the instructions, asks when unclear, and closes each one only when you say yes. Optionally raises what is due in the lists you watch at the start of every session and hourly after. macOS, via remindctl.",
+  "version": "0.2.0",
   "author": { "name": "Jo Wolff" },
   "license": "MIT",
   "repository": "https://github.com/thewolff/jo-wolff-plugins",
-  "keywords": ["reminders", "apple-reminders", "macos", "triage", "inbox"]
+  "keywords": ["reminders", "apple-reminders", "macos", "triage", "inbox", "hooks"],
+  "state": [
+    { "path": "$XDG_STATE_HOME/reminders-review", "retentionDays": 30, "prune": "node \"${CLAUDE_PLUGIN_ROOT}/scripts/reminders-review.mjs\" prune --days 30" }
+  ]
 }

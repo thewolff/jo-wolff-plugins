@@ -1,0 +1,41 @@
+[
+  {
+    "alarmDate" : "2026-11-04T18:00:00Z",
+    "creationDate" : "2026-11-04T09:12:13Z",
+    "dueDate" : "2026-11-04T18:00:00Z",
+    "dueDateIsAllDay" : false,
+    "id" : "682CA448-79C6-4BB9-A884-B29F70807BD7",
+    "isCompleted" : false,
+    "lastModifiedDate" : "2026-11-04T09:12:13Z",
+    "listID" : "BAC78B14-1AAD-462E-B50F-3F157587C6A9",
+    "listName" : "Plumb",
+    "priority" : "none",
+    "title" : "Test tonight's plugin ships — guide: \/Users\/example\/agent-scratch\/TESTING-GUIDE.md"
+  },
+  {
+    "alarmDate" : "2026-11-04T19:00:00Z",
+    "creationDate" : "2026-11-04T09:31:34Z",
+    "dueDate" : "2026-11-04T19:00:00Z",
+    "dueDateIsAllDay" : false,
+    "id" : "B3BA4664-666C-4D49-A93B-15BBFD8B897C",
+    "isCompleted" : false,
+    "lastModifiedDate" : "2026-11-04T09:31:34Z",
+    "listID" : "BAC78B14-1AAD-462E-B50F-3F157587C6A9",
+    "listName" : "Plumb",
+    "priority" : "none",
+    "title" : "Check the evals gate row; manifest + scenarios per plugin"
+  },
+  {
+    "alarmDate" : "2026-11-04T20:00:00Z",
+    "creationDate" : "2026-11-04T10:12:45Z",
+    "dueDate" : "2026-11-04T20:00:00Z",
+    "dueDateIsAllDay" : false,
+    "id" : "74CF2776-E8A9-4611-9B92-9A7B7DB0414A",
+    "isCompleted" : false,
+    "lastModifiedDate" : "2026-11-04T10:12:46Z",
+    "listID" : "BAC78B14-1AAD-462E-B50F-3F157587C6A9",
+    "listName" : "Plumb",
+    "priority" : "none",
+    "title" : "Build the handed-command check (after gate-rows merges)"
+  }
+]

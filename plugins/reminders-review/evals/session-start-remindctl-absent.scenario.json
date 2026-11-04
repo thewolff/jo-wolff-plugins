@@ -1,0 +1,24 @@
+{
+  "$comment": "remindctl is absent (REMINDERS_REVIEW_REMINDCTL names a path with nothing at it; the sandbox PATH is the caller's, which may hold a real remindctl). Fails open: no Due block, one errors.log line, and one systemMessage line naming the install command.",
+  "event": "SessionStart",
+  "expect": "systemMessage",
+  "reason": "fix: install it: `brew install steipete/tap/remindctl`",
+  "setup": {
+    "env": {
+      "REMINDERS_REVIEW_REMINDCTL": "${HOME}/no-such-dir/remindctl",
+      "REMINDERS_REVIEW_WATCH": "Plumb"
+    }
+  },
+  "stdin": {
+    "session_id": "${SESSION_ID}",
+    "transcript_path": "${TRANSCRIPT}",
+    "cwd": "${CWD}",
+    "hook_event_name": "SessionStart",
+    "source": "startup"
+  },
+  "after": {
+    "commands": [
+      "grep -q 'list Plumb: missing' \"${XDG_STATE_HOME}/reminders-review/errors.log\""
+    ]
+  }
+}

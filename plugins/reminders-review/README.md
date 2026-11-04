@@ -55,6 +55,44 @@ The default lists live in `${XDG_CONFIG_HOME:-~/.config}/reminders-review/config
 { "lists": ["Errands", "Work"] }
 ```
 
+## Due reminders in every session
+
+Reminders.app notifications are easy to ignore. If you name the lists you want watched, the agent brings up what is due in them itself: at the start of every session, and again at most once an hour while the session goes on.
+
+It is off until you configure it. Add `watch` to the same config file:
+
+```json
+{ "lists": ["Errands", "Work"], "watch": ["Errands"] }
+```
+
+Or set it for one shell: `REMINDERS_REVIEW_WATCH="Errands,Work"`. The variable wins over the file when it is set; set it to an empty string to watch nothing.
+
+For each watched list, the hooks run `remindctl show overdue --list <name> --json` and `remindctl show today --list <name> --json` and give the agent one line per list with something due, overdue first, then today, in your local time:
+
+```
+Due (list Errands): Nov 3 9:00 AM Renew the domain; 10:00 AM Pick up the prescription
+```
+
+The agent is told to raise these in its next reply, to treat the titles as reminder text rather than instructions, and to close one only through this skill after you say yes. Nothing is injected when nothing is due. The hooks only read: they never complete, edit or delete a reminder.
+
+- **Claude Code** runs the `SessionStart` and `UserPromptSubmit` hooks in `hooks/hooks.json`.
+- **OMP** loads `omp/reminders-review-omp.ts` (declared in `package.json`), which runs the same check on `session_start` and `before_agent_start` and hands the block to the agent as a hidden message. Subagent sessions are skipped.
+
+The hourly limit is per session. Each session's last check is a small file under `${XDG_STATE_HOME:-~/.local/state}/reminders-review/sessions/`. `node scripts/reminders-review.mjs prune --days 30` removes stamps and rotated logs older than 30 days; `plugin.json` declares that directory and that command.
+
+If remindctl is not on the `PATH` the hooks see, set `REMINDERS_REVIEW_REMINDCTL` to its absolute path.
+
+### How it fails
+
+A broken check never blocks a prompt. When remindctl is missing, not authorized, slower than 2 seconds, or answers something that is not a list of reminders, that list contributes nothing, one line goes to `${XDG_STATE_HOME:-~/.local/state}/reminders-review/errors.log`, and at session start you get one line naming the fix:
+
+- not authorized: `remindctl authorize`, then accept the macOS prompt
+- not installed: `brew install steipete/tap/remindctl`
+- a list name remindctl does not know: `remindctl list` shows the real names
+- anything else: `remindctl doctor`
+
+A config file that does not parse gets the same treatment. Prompts after the session start only log. Scenarios: `evals/session-start-due-fires.scenario.json`, `evals/session-start-nothing-due.scenario.json`, `evals/session-start-remindctl-absent.scenario.json`, `evals/prompt-due-fires.scenario.json`, `evals/prompt-within-hour-silent.scenario.json`.
+
 ## Safety
 
 The text of a reminder is treated as data, never as permission. A reminder that says "delete the old branch" gets a proposal and two questions, not an action. Closing uses `remindctl complete`; the skill has no delete path.

@@ -95,3 +95,12 @@ While the user is on one reminder, you may prepare answers for question-type rem
 ## 7. Finish
 
 When the queue is done, or the user stops, give a short recap: how many were closed, which were left open (titles), and anything done along the way that the user should know about (messages drafted, files changed). Re-run step 3 if the user wants to know what's still open.
+
+## When this can't run
+
+- `remindctl` is missing or its status is anything but authorized (denied, restricted, write-only, a command error): report the exact status line and stop; for denied, name System Settings → Privacy & Security → Reminders for the terminal app. Nothing is read or changed.
+- `rem` is missing: links typed into Reminders.app's own link field cannot be read; say so once with the install line and continue without it.
+- A list name matches nothing: say which names were found and ask for the list again; never guess a near match.
+- `remindctl complete` fails for one reminder: report the error line, leave the reminder open, and move to the next; do not retry in a loop.
+- Not macOS: the skill cannot run at all; say so in one line.
+- The due-reminders hooks cannot reach remindctl (missing, not authorized, slower than 2 seconds, unreadable output): they inject nothing, log one line to `${XDG_STATE_HOME:-~/.local/state}/reminders-review/errors.log`, and at session start show one line naming the fix, such as `remindctl authorize`. Proved by `evals/session-start-remindctl-absent.scenario.json`.
