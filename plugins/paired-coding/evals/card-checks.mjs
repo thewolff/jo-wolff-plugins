@@ -18,7 +18,7 @@ const [sessionId, which] = process.argv.slice(2);
 const sessionDir = sessionDirFor(sessionId);
 if (!sessionDir) { console.error(`card-checks: unusable session id ${JSON.stringify(sessionId)}`); process.exit(1); }
 const root = realpathSync(process.cwd());
-const ctx = { sessionId, sessionDir, root, cwd: root };
+const ctx = { sessionId, sessionDir, root, cwd: root, env: process.env };
 const fail = (msg) => { console.error(`card-checks ${which}: ${msg}`); process.exit(1); };
 const expectOk = (r) => { if (!r.ok) fail(`expected the card to be recorded, got: ${r.text}`); return r; };
 const expectRefused = (r, ...needles) => {
@@ -35,7 +35,7 @@ const card = (over) => executeVerb("pair_propose", { boundary: ["card-eval.txt"]
 
 switch (which) {
   case "pattern-unsourced":
-    expectRefused(await card({ why, sources: [`${root}/card-eval.txt:1`] }), 'why claims a codebase pattern ("pattern used in")', `${receiptDir}/ (this session's receipt would be ${receiptDir}/${sessionId}.md; found 0)`, `under ${root}/ showing the pattern in the code (found 1)`);
+    expectRefused(await card({ why, sources: [`${root}/card-eval.txt:1`] }), 'why claims a codebase pattern ("the pattern used in")', `${receiptDir}/ (this session's receipt would be ${receiptDir}/${sessionId}.md; found 0)`, `under ${root}/ showing the pattern in the code (found 1)`);
     break;
   case "pattern-receipt":
     expectOk(await card({ why, sources: [`${receiptDir}/${sessionId}.md:1`] }));

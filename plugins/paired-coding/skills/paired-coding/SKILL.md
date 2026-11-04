@@ -142,18 +142,22 @@ your partner says "show more", expand any field.
   (below), but a `why` that claims a codebase pattern, in any mode and however it is worded,
   rests on a pattern source: an absolute `file:line` inside the repository's
   `.pattern-check/` directory (pattern-check's receipt for this session), or two or more
-  absolute `file:line` in the repository where the pattern is. The gate refuses a card whose
-  `why` says `pattern used in`, `the rest of the codebase`, `convention here`, `how the
-  codebase does`, `existing pattern`, `follows the pattern` or `the pattern in` without one,
-  and its refusal names the receipt path it looked for and how many sources it found; add the
-  source it names, never reword the claim to get past it.
+  absolute `file:line` at distinct locations in the repository where the pattern is (one
+  citation twice is one source). The gate refuses a card whose `why` affirms a convention
+  (`follows the existing pattern`, `matches the codebase pattern`, `per the repo convention`,
+  `the pattern in`, `the pattern used in`, `the convention here`, `how the codebase does`,
+  `like the rest of the codebase`, `pattern-fit`, and the like) without one, and its refusal
+  quotes the claim and names the receipt path it looked for and how many sources it found;
+  add the source it names, never reword the claim to get past it.
 - **Alternatives** (`alternatives`): the designs you weighed, each `{ "design", "chosen" }`
   with exactly one `chosen: true`. Give it whenever you weighed more than one design. When
-  ask-graham ran this session (its findings file is on disk), the gate requires it: one entry
-  carries the findings' chosen design in its own words (quoted, not paraphrased) and, when
-  the findings named a better design than the pattern-fit one, one entry is not chosen. Show
-  them on the card as **Alternatives:**, one per line, with the chosen one marked, as the
-  gate's reply lists them.
+  ask-graham ran this session (its findings file is on disk), the gate requires it on the
+  first card you propose after the findings were written: one entry carries the findings'
+  chosen design in its own words (quoted, not paraphrased) and, when the findings named a
+  better design than the pattern-fit one, one entry is not chosen. Later cards are not held
+  to the same findings; a fresh ask-graham verdict holds the next card again. Show them on
+  the card as **Alternatives:**, one per line, with the chosen one marked, as the gate's
+  reply lists them.
 
 When the gate reports files changed since the last read-back, put that list at the top of the
 next card and ask your partner which changes are theirs. If they do not recognise a change,

@@ -15,16 +15,20 @@
 //     refusal so the agent knows which file to write.
 //   ask-graham (the findings file its Stop hook writes): the file is
 //     ${XDG_STATE_HOME:-$HOME/.local/state}/ask-graham/findings/<session id>.json (XDG_STATE_HOME
-//     counts only when it is an absolute path) with `alternatives: [{ design, chosen }]`, the
-//     pattern-fit design chosen and the better design, when there is one, not. A session id
-//     that is not a plain file name has no findings file, as ask-graham writes none.
+//     counts only when it is an absolute path; HOME is the adapter's, else the process's home)
+//     with `version: 1`, `sessionId`, `writtenAt` (ISO 8601) and `alternatives: [{ design,
+//     chosen }]`, the pattern-fit design chosen and the better design, when there is one, not.
+//     A session id that is not a plain file name has no findings file, as ask-graham writes none.
 //
-// HOW IT FAILS. A findings file that cannot be read, is not JSON, or is not an object reads as
-// missing, with one errors.log line (host-io.mjs logFault, under this plugin's own state base)
-// so the skipped check is not silent. Entries of `alternatives` that are not
-// `{ design: non-empty string, chosen: boolean }` are left out.
+// HOW IT FAILS. A findings file reads as missing, with one errors.log line (host-io.mjs logFault,
+// under this plugin's own state base) so the skipped check is not silent, when it is not a
+// regular file (a symlink, a directory, a FIFO), is over FINDINGS_MAX_BYTES, cannot be read, is
+// not a JSON object, or is not this session's findings: `version` not a known number, `sessionId`
+// not the session's own, `writtenAt` not an ISO date, or `alternatives` not a list of
+// `{ design: non-empty string, chosen: boolean }` (one bad entry fails the file; nothing is
+// dropped silently). A missing file is silent.
 
-import { existsSync, readFileSync } from "node:fs";
+import { closeSync, existsSync, lstatSync, openSync, readSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { homedir } from "node:os";
 import { dirname, isAbsolute, join, resolve } from "node:path";
@@ -34,6 +38,11 @@ import { logFault, reasonOf } from "./host-io.mjs";
 const PATTERN_CHECK_KEY = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
 const ASK_GRAHAM_ID = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
 const THIS_FILE = "lib/card-context.mjs";
+/** The findings versions this reader knows. */
+export const FINDINGS_VERSIONS = Object.freeze([1]);
+/** The most a findings file may be, in bytes: a verdict record is a few hundred. */
+export const FINDINGS_MAX_BYTES = 64 * 1024;
+const ISO_DATE = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(?::\d{2}(?:\.\d+)?)?(?:Z|[+-]\d{2}:\d{2})$/;
 
 /** The nearest ancestor of `dir` (inclusive) holding `.git` (a directory, or a worktree's file), else null. */
 export function gitRoot(dir) {
@@ -52,53 +61,102 @@ export function patternCheckKey(sessionId, cwd) {
   return `cwd-${createHash("sha256").update(resolve(cwd), "utf8").digest("hex").slice(0, 16)}`;
 }
 
-/** ask-graham's findings file for a session, or null when the id is not a plain file name. */
-export function findingsPath(sessionId, env = process.env, home = homedir()) {
+/**
+ * ask-graham's findings file for a session, or null when the id is not a plain file name. The
+ * state base is `env.XDG_STATE_HOME` when absolute, else `<home>/.local/state`.
+ * @param {unknown} sessionId
+ * @param {Record<string, string | undefined>} env
+ * @param {string} home
+ */
+export function findingsPath(sessionId, env, home) {
   if (typeof sessionId !== "string" || !ASK_GRAHAM_ID.test(sessionId)) return null;
   const xdg = env.XDG_STATE_HOME;
   const base = xdg && isAbsolute(xdg) ? xdg : join(home, ".local", "state");
   return join(base, "ask-graham", "findings", `${sessionId}.json`);
 }
 
-/**
- * The findings at `path` as the gate reads them, `{ path, alternatives }`, or null when the
- * file is missing. Unreadable or not a JSON object: null, and one `fault(reason)` call.
- */
-export function readFindings(path, { fault = () => {} } = {}) {
-  if (!path) return null;
-  let raw;
+/** The first FINDINGS_MAX_BYTES + 1 bytes of the regular file at `path` as UTF-8, or the typed failure. Throws only what open/read throw. */
+function readBounded(path) {
+  const st = lstatSync(path);
+  if (!st.isFile()) return { problem: st.isSymbolicLink() ? "is a symbolic link, not a regular file" : "is not a regular file" };
+  if (st.size > FINDINGS_MAX_BYTES) return { problem: `is ${st.size} bytes, over the ${FINDINGS_MAX_BYTES}-byte limit` };
+  const fd = openSync(path, "r");
   try {
-    raw = readFileSync(path, "utf8");
+    const buf = Buffer.alloc(FINDINGS_MAX_BYTES + 1);
+    let n = 0;
+    for (let got = 1; got > 0 && n < buf.length; n += got) got = readSync(fd, buf, n, buf.length - n, null);
+    if (n > FINDINGS_MAX_BYTES) return { problem: `is over the ${FINDINGS_MAX_BYTES}-byte limit` };
+    return { raw: buf.toString("utf8", 0, n) };
+  } finally {
+    closeSync(fd);
+  }
+}
+
+/** Why `json` is not this session's findings record, or null. */
+function findingsProblem(json, sessionId) {
+  if (!json || typeof json !== "object" || Array.isArray(json)) return "are not a JSON object";
+  if (!FINDINGS_VERSIONS.includes(json.version)) return `have version ${JSON.stringify(json.version) ?? String(json.version)}, not one this plugin reads (${FINDINGS_VERSIONS.join(", ")})`;
+  if (json.sessionId !== sessionId) return `name session ${JSON.stringify(json.sessionId) ?? String(json.sessionId)}, not this session (${JSON.stringify(sessionId)})`;
+  if (typeof json.writtenAt !== "string" || !ISO_DATE.test(json.writtenAt) || !Number.isFinite(Date.parse(json.writtenAt))) return `have no ISO 8601 writtenAt (${JSON.stringify(json.writtenAt) ?? String(json.writtenAt)})`;
+  if (!Array.isArray(json.alternatives)) return `have no alternatives list (${JSON.stringify(json.alternatives) ?? String(json.alternatives)})`;
+  for (const [i, a] of json.alternatives.entries()) {
+    if (!a || typeof a !== "object" || typeof a.design !== "string" || a.design.trim() === "" || typeof a.chosen !== "boolean") {
+      return `have alternatives[${i}] ${JSON.stringify(a) ?? String(a)}, not { design: non-empty string, chosen: boolean }`;
+    }
+  }
+  return null;
+}
+
+/**
+ * The findings at `path` as the gate reads them, `{ path, sessionId, writtenAt, alternatives }`,
+ * or null when the file is missing. Not a regular file, over FINDINGS_MAX_BYTES, unreadable,
+ * not JSON, or not this session's record (findingsProblem): null, and one `fault(reason)` call.
+ * @param {string | null} path
+ * @param {{ sessionId: string | null, fault?: (reason: string) => void }} opts
+ */
+export function readFindings(path, { sessionId, fault = () => {} }) {
+  if (!path) return null;
+  const skipped = "the card's alternatives were not checked against them";
+  let read;
+  try {
+    read = readBounded(path);
   } catch (err) {
     if (err?.code === "ENOENT" || err?.code === "ENOTDIR") return null;
-    fault(`ask-graham findings ${path} could not be read (${reasonOf(err)}); the card's alternatives were not checked against them`);
+    fault(`ask-graham findings ${path} could not be read (${reasonOf(err)}); ${skipped}`);
+    return null;
+  }
+  if (read.problem) {
+    fault(`ask-graham findings ${path} ${read.problem}; ${skipped}`);
     return null;
   }
   let json;
   try {
-    json = JSON.parse(raw);
+    json = JSON.parse(read.raw);
   } catch (err) {
-    fault(`ask-graham findings ${path} are not JSON (${reasonOf(err)}); the card's alternatives were not checked against them`);
+    fault(`ask-graham findings ${path} are not JSON (${reasonOf(err)}); ${skipped}`);
     return null;
   }
-  if (!json || typeof json !== "object" || Array.isArray(json)) {
-    fault(`ask-graham findings ${path} are not a JSON object; the card's alternatives were not checked against them`);
+  const problem = findingsProblem(json, sessionId);
+  if (problem) {
+    fault(`ask-graham findings ${path} ${problem}; ${skipped}`);
     return null;
   }
-  const alternatives = (Array.isArray(json.alternatives) ? json.alternatives : [])
-    .filter((a) => a && typeof a === "object" && typeof a.design === "string" && a.design.trim() !== "" && typeof a.chosen === "boolean")
-    .map((a) => ({ design: a.design, chosen: a.chosen }));
-  return { path, alternatives };
+  return { path, sessionId: json.sessionId, writtenAt: json.writtenAt, alternatives: json.alternatives.map((a) => ({ design: a.design, chosen: a.chosen })) };
 }
 
 /**
  * The gate's io.cardContext for one session: the pattern-check receipt directory and this
  * session's receipt path (null outside a git repository), the repository root the worktree is
- * in (the worktree itself outside one), and the session's ask-graham findings. Never throws on
- * a sibling's file: each fault is one errors.log line under this plugin's state base.
- * @param {{ root: string, sessionId: string | null, env?: Record<string, string | undefined>, home?: string, fault?: (reason: string) => void }} opts
+ * in (the worktree itself outside one), and the session's ask-graham findings. `env` is the
+ * adapter's environment, the one its pairing state lives under; there is no fall back to this
+ * process's, so a missing one is a thrown TypeError (the gate refuses the card and says so).
+ * The home is `env.HOME` when absolute, else the process's. Never throws on a sibling's file:
+ * each fault is one errors.log line under this plugin's state base.
+ * @param {{ root: string, sessionId: string | null, env: Record<string, string | undefined>, fault?: (reason: string) => void }} opts
  */
-export function cardContext({ root, sessionId, env = process.env, home = homedir(), fault }) {
+export function cardContext({ root, sessionId, env, fault }) {
+  if (!env || typeof env !== "object") throw new TypeError("cardContext needs the adapter's env");
+  const home = typeof env.HOME === "string" && isAbsolute(env.HOME) ? env.HOME : homedir();
   const log = fault ?? ((reason) => { logFault(env, "pair_propose", { session_id: sessionId ?? undefined }, reason, THIS_FILE); });
   const repo = gitRoot(root);
   const receiptDir = repo ? join(repo, PATTERN_CHECK_DIR) : null;
@@ -107,6 +165,6 @@ export function cardContext({ root, sessionId, env = process.env, home = homedir
     receiptDir,
     receiptPath,
     repoRoot: repo ?? resolve(root),
-    findings: readFindings(findingsPath(sessionId, env, home), { fault: log }),
+    findings: readFindings(findingsPath(sessionId, env, home), { sessionId, fault: log }),
   };
 }

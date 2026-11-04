@@ -65,8 +65,9 @@ import {
   WHY_REASON,
   LEARNING_OFF_REASON,
   ALTERNATIVES_FORM,
-  PATTERN_CLAIM_PHRASES,
+  PATTERN_CLAIM_PATTERNS,
   alternativesProblem,
+  applicableFindings,
   patternClaim,
   patternSourceProblem,
 } from "./gate.mjs";
@@ -2418,14 +2419,51 @@ describe("a pattern claim needs a pattern source", () => {
   const facts = { receiptDir: RECEIPT_DIR, receiptPath: `${RECEIPT_DIR}/s1.md`, repoRoot: ROOT, findings: null };
   const withContext = (host, over = {}) => ({ ...host.io, cardContext: () => ({ ...facts, ...over }) });
 
-  test("patternClaim finds each documented phrase in any case, and nothing else", () => {
-    assert.equal(PATTERN_CLAIM_PHRASES.length, 7);
-    for (const p of PATTERN_CLAIM_PHRASES) {
-      assert.equal(patternClaim(`because it is ${p} already`), p);
-      assert.equal(patternClaim(`BECAUSE IT IS ${p.toUpperCase()} ALREADY`), p);
-    }
-    assert.equal(patternClaim("early return keeps callers simple"), null);
-    assert.equal(patternClaim("a pattern of use"), null);
+  test("patternClaim: an affirmative claim of a codebase convention, as written, at word boundaries, in any case", () => {
+    assert.equal(PATTERN_CLAIM_PATTERNS.length, 5);
+    const claims = [
+      ["It follows the existing pattern in src/services.", "follows the existing pattern"],
+      ["This matches the codebase pattern for repositories.", "matches the codebase pattern"],
+      ["Per the repo convention, handlers return Result.", "Per the repo convention"],
+      ["It uses the same pattern as the other adapters.", "uses the same pattern"],
+      ["Same as the pattern in lib/verbs.mjs.", "Same as the pattern"],
+      ["It mirrors the pattern used in the other hooks.", "mirrors the pattern"],
+      ["Consistent with the established pattern.", "Consistent with the established pattern"],
+      ["This is the convention here.", "the convention here"],
+      ["It is how the codebase does error handling.", "how the codebase does"],
+      ["The pattern-fit design is a queue table.", "pattern-fit"],
+      ["it is the pattern used in the rest of the codebase", "the pattern used in"],
+      ["We keep the pattern from core/gate.mjs.", "the pattern from"],
+      ["This is the established pattern.", "established pattern"],
+      ["Done like the rest of the codebase.", "like the rest of the codebase"],
+      ["IT FOLLOWS THE PATTERN IN SRC/.", "FOLLOWS THE PATTERN"],
+      ["It follows\n  the   existing pattern.", "follows the existing pattern"],
+      ["Faster than the old loop, and it follows an existing pattern.", "follows an existing pattern"],
+    ];
+    for (const [why, phrase] of claims) assert.equal(patternClaim(why), phrase, why);
+    const ordinary = [
+      "This isolates the migration from the rest of the codebase.",
+      "No existing pattern handles this edge case.",
+      "This removes the pattern introduced by the bug.",
+      "Renaming the pattern input avoids shadowing.",
+      "This avoids the anti-pattern used in the old importer.",
+      "It doesn't follow the pattern in src/legacy; that code is being removed.",
+      "There is no convention here for retries.",
+      "This is not how the codebase does it today.",
+      "A pattern of use emerged in the logs.",
+      "Early return keeps callers simple.",
+      "The regex pattern in the validator is wrong.",
+      "Pattern matching on the tuple is clearer.",
+      "It isn't the convention here.",
+      "We will not use the existing pattern; it leaks handles.",
+      "Rather than the pattern in lib/old.mjs, this reads the file once.",
+      "Unlike the rest of the codebase, this module has no caller yet.",
+      "The patterned background is decorative.",
+      "Nothing in the codebase does this yet.",
+    ];
+    for (const why of ordinary) assert.equal(patternClaim(why), null, why);
+    // The denial has to sit in the same clause: a claim after a negated clause still counts.
+    assert.equal(patternClaim("This is not a refactor. It follows the pattern in src/a.ts."), "follows the pattern");
     assert.equal(patternClaim(undefined), null);
     assert.equal(patternClaim(7), null);
   });
@@ -2443,10 +2481,23 @@ describe("a pattern claim needs a pattern source", () => {
     assert.equal(patternSourceProblem(why, [` ${ROOT}/src/a.ts:1 `, `${ROOT}/lib/../src/b.ts:2`, { url: "https://x.example/doc", passage: "p" }], facts), null);
   });
 
+  test("the two-in-repository way counts distinct locations: one citation spelled twice is one source, two lines of one file are two", () => {
+    const why = "it follows the pattern in src/";
+    const once = /found 0\), or .* \(found 1\)$/;
+    assert.match(patternSourceProblem(why, [`${ROOT}/src/a.ts:1`, `${ROOT}/src/a.ts:1`], facts), once);
+    assert.match(patternSourceProblem(why, [`${ROOT}/src/a.ts:1`, `${ROOT}/src/../src/a.ts:1`], facts), once);
+    assert.match(patternSourceProblem(why, [`${ROOT}/src/a.ts:1`, `${ROOT}//src/./a.ts:1`, ` ${ROOT}/src/a.ts:1 `], facts), once);
+    assert.match(patternSourceProblem(why, [`${ROOT}/src/a.ts:1-3`, `${ROOT}/src/a.ts:1-3`], facts), once);
+    assert.equal(patternSourceProblem(why, [`${ROOT}/src/a.ts:1`, `${ROOT}/src/a.ts:2`], facts), null);
+    assert.equal(patternSourceProblem(why, [`${ROOT}/src/a.ts:1`, `${ROOT}/src/a.ts:1-3`], facts), null);
+    // The receipt way is one source, so a repeated receipt citation still passes.
+    assert.equal(patternSourceProblem(why, [`${RECEIPT_DIR}/s1.md:3`, `${RECEIPT_DIR}/s1.md:3`], facts), null);
+  });
+
   test("the refusal names the phrase, the receipt path it looked for, and both counts", () => {
     const why = "This is the convention here.";
     const r = patternSourceProblem(why, [`${ROOT}/src/a.ts:1`, "/elsewhere/x.ts:4", "from memory", { url: "https://x.example/doc", passage: "p" }], facts);
-    assert.equal(r, `why claims a codebase pattern ("convention here"), and a pattern claim needs a pattern source: add to sources either one absolute file:line inside the pattern-check receipt directory ${RECEIPT_DIR}/ (this session's receipt would be ${RECEIPT_DIR}/s1.md; found 0), or two or more absolute file:line sources under ${ROOT}/ showing the pattern in the code (found 1)`);
+    assert.equal(r, `why claims a codebase pattern ("the convention here"), and a pattern claim needs a pattern source: add to sources either one absolute file:line inside the pattern-check receipt directory ${RECEIPT_DIR}/ (this session's receipt would be ${RECEIPT_DIR}/s1.md; found 0), or two or more absolute file:line sources under ${ROOT}/ showing the pattern in the code (found 1)`);
     assert.match(patternSourceProblem(why, undefined, facts), /found 0\), or .* \(found 0\)$/);
     assert.match(patternSourceProblem(why, "not a list", facts), /found 0\)$/);
     // Paths that only look like they are inside: a sibling directory with the receipt directory's name as a prefix
@@ -2478,7 +2529,7 @@ describe("a pattern claim needs a pattern source", () => {
 
   test("without io.cardContext the worktree is the repository and there is no receipt directory; a cardContext that throws refuses", () => {
     const host = fakeHost();
-    const why = "existing pattern";
+    const why = "it follows the existing pattern";
     refusedWith(pairPropose(started(host), card({ why, sources: [`${ROOT}/src/a.ts:1`] }), host.io), /none here: the worktree is in no git repository.*\(found 1\)$/);
     ok(pairPropose(started(host), card({ why, sources: [`${ROOT}/src/a.ts:1`, `${ROOT}/src/b.ts:1`] }), host.io));
     const throwing = { ...host.io, cardContext: () => { throw new Error("disk gone"); } };
@@ -2487,8 +2538,9 @@ describe("a pattern claim needs a pattern source", () => {
 });
 
 describe("alternatives", () => {
-  const FINDINGS = { path: "/state/ask-graham/findings/s1.json", alternatives: [{ design: "a  queue table\nwith a worker", chosen: true }, { design: "a direct call", chosen: false }] };
+  const FINDINGS = { path: "/state/ask-graham/findings/s1.json", sessionId: "s1", writtenAt: "2026-11-04T10:00:00.000Z", alternatives: [{ design: "a  queue table\nwith a worker", chosen: true }, { design: "a direct call", chosen: false }] };
   const withFindings = (host, findings) => ({ ...host.io, cardContext: () => ({ receiptDir: null, receiptPath: null, repoRoot: ROOT, findings }) });
+  const say = (s, text) => ok(recordInput(s, { text, source: "interactive" }));
 
   test("absent findings: alternatives is optional, and checked for form only when given", () => {
     assert.equal(alternativesProblem(undefined, null), null);
@@ -2510,10 +2562,10 @@ describe("alternatives", () => {
     // The chosen design may sit on a non-chosen entry: the card may prefer the better design.
     assert.equal(alternativesProblem([{ design: "a direct call", chosen: true }, { design: "a queue table with a worker", chosen: false }], FINDINGS), null);
     // Findings with nothing weighed: the field is still required, nothing more is checked.
-    const bare = { path: FINDINGS.path, alternatives: [] };
+    const bare = { ...FINDINGS, alternatives: [] };
     assert.match(alternativesProblem(undefined, bare), /so the card needs alternatives: alternatives is a list of .* chosen: true$/);
     assert.equal(alternativesProblem([{ design: "anything", chosen: true }], bare), null);
-    const chosenOnly = { path: FINDINGS.path, alternatives: [{ design: "one way", chosen: true }] };
+    const chosenOnly = { ...FINDINGS, alternatives: [{ design: "one way", chosen: true }] };
     assert.equal(alternativesProblem([{ design: "one way", chosen: true }], chosenOnly), null);
   });
 
@@ -2529,5 +2581,54 @@ describe("alternatives", () => {
     ok(none);
     assert.equal(Object.hasOwn(none.card, "alternatives"), false);
     refusedWith(pairPropose(started(host), card({ alternatives: [{ design: "x", chosen: false }] }), withFindings(host, null)), /alternatives has 0 entries with chosen: true/);
+  });
+
+  test("applicableFindings: the findings hold the first card after they were written and no later card, until a later writtenAt re-arms them", () => {
+    assert.equal(applicableFindings(null, null), null);
+    assert.equal(applicableFindings(FINDINGS, null), FINDINGS);
+    assert.equal(applicableFindings(FINDINGS, undefined), FINDINGS);
+    const consumed = { sessionId: "s1", writtenAt: FINDINGS.writtenAt };
+    assert.equal(applicableFindings(FINDINGS, consumed), null);
+    assert.equal(applicableFindings({ ...FINDINGS, writtenAt: "2026-11-04T09:59:59.000Z" }, consumed), null, "an older record than the one consumed holds nothing");
+    const later = { ...FINDINGS, writtenAt: "2026-11-04T10:00:01.000Z" };
+    assert.equal(applicableFindings(later, consumed), later);
+    assert.equal(applicableFindings({ ...FINDINGS, writtenAt: "yesterday" }, consumed), null);
+    // Only a record of the gate's shape counts: an adapter handing over less holds no card.
+    for (const bad of [{ path: FINDINGS.path, alternatives: [] }, { ...FINDINGS, alternatives: "x" }, "x", 7]) assert.equal(applicableFindings(bad, null), null, JSON.stringify(bad));
+  });
+
+  test("pair_propose holds only the first card to the findings, records what it consumed, and a later findings file re-arms the check", () => {
+    const host = fakeHost();
+    const io = withFindings(host, FINDINGS);
+    const alternatives = [{ design: "a queue table with a worker", chosen: true }, { design: "a direct call", chosen: false }];
+    // Refused cards consume nothing: the next card is still held to the findings.
+    let s = started(host);
+    refusedWith(pairPropose(s, card(), io), /so the card needs alternatives/);
+    assert.equal(s.findingsConsumed, undefined);
+    const first = pairPropose(s, card({ alternatives }), io);
+    s = ok(first);
+    assert.deepEqual(s.findingsConsumed, { sessionId: "s1", writtenAt: FINDINGS.writtenAt });
+    assert.deepEqual(readState(serializeState(s), { activated: true }).findingsConsumed, { sessionId: "s1", writtenAt: FINDINGS.writtenAt });
+    // The second card of the pairing, with the same findings file on disk, needs no alternatives.
+    const second = pairPropose(s, card(), io);
+    ok(second);
+    assert.equal(Object.hasOwn(second.card, "alternatives"), false);
+    assert.deepEqual(second.state.findingsConsumed, s.findingsConsumed, "unchanged: nothing new was consumed");
+    // Through a whole change set, too.
+    s = say(s, "go ahead");
+    s = ok(pairBegin(s, { cardId: s.card.id, quote: "go ahead" }, host.io));
+    s = ok(pairDone(s, { cardId: s.card.id }, host.io));
+    ok(pairPropose(s, card(), io));
+    // A findings file written later re-arms the check for the next card, and that card consumes the new record.
+    const later = { ...FINDINGS, writtenAt: "2026-11-04T10:00:01.000Z", alternatives: [{ design: "one table per tenant", chosen: true }] };
+    const rearmed = withFindings(host, later);
+    refusedWith(pairPropose(s, card(), rearmed), /so the card needs alternatives.*including the findings' chosen design "one table per tenant"/);
+    const third = ok(pairPropose(s, card({ alternatives: [{ design: "one table per tenant", chosen: true }] }), rearmed));
+    assert.deepEqual(third.findingsConsumed, { sessionId: "s1", writtenAt: later.writtenAt });
+    ok(pairPropose(third, card(), rearmed));
+    // The marker is checked on read: a malformed one degrades the state like any other field.
+    const bad = readState(JSON.stringify({ ...third, findingsConsumed: { writtenAt: 7 } }), { activated: true, root: ROOT, stateDir: STATE_DIR });
+    assert.equal(bad.degraded, "state file malformed");
+    assert.equal(readState(JSON.stringify({ ...third, findingsConsumed: null }), { activated: true }).findingsConsumed, null);
   });
 });

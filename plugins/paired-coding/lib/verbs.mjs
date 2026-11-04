@@ -406,8 +406,10 @@ export function takeCarryMarker(base, root, opts = {}) {
  * @param {{ sessionId: string, sessionDir: string, root?: string, cwd?: string, signal?: AbortSignal,
  *   runId?: string, timeoutMs?: number, maxTimeoutMs?: number, protect?: string[], env?: Record<string, string | undefined> }} ctx
  *   `maxTimeoutMs` lets a host keep pair_run below its own limits (Claude Code moves a tool call
- *   that runs past a threshold to the background). `env`: the environment of the process that
- *   fences pair_run (this one's unless the adapter names one); the run gets fencedEnv of it.
+ *   that runs past a threshold to the background). `env`: the adapter's environment, the one
+ *   its pairing state lives under: pair_run fences it (the run gets fencedEnv of it, this
+ *   process's when the adapter names none), and pair_propose reads ask-graham's findings under
+ *   it (lib/card-context.mjs; no fall back: without one every card is refused, naming the gap).
  * @returns {Promise<{ ok: boolean, text: string, result?: object }>}
  */
 export async function executeVerb(name, args, ctx) {
@@ -417,7 +419,7 @@ export async function executeVerb(name, args, ctx) {
     switch (name) {
       case "pair_start": return pairStartVerb(args, ctx);
       case "pair_note": return simple(name, ctx, (s, io) => pairNote(s, { text: args.text, roadmap: args.roadmap, earlierRoadmap: args.earlierRoadmap }, io), noteText);
-      case "pair_propose": return simple(name, ctx, (s, io) => pairPropose(s, cardArgs(args), { ...io, cardContext: (root, sid) => cardContext({ root, sessionId: ctx.sessionId ?? sid }) }), cardText);
+      case "pair_propose": return simple(name, ctx, (s, io) => pairPropose(s, cardArgs(args), { ...io, cardContext: (root, sid) => cardContext({ root, sessionId: ctx.sessionId ?? sid, env: ctx.env }) }), cardText);
       case "pair_begin": return pairBeginVerb(args, ctx);
       case "pair_done": return pairDoneVerb(args, ctx);
       case "pair_write": return writeVerb("pair_write", args, ctx);

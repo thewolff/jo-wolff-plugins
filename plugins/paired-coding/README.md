@@ -194,7 +194,7 @@ rule are unchanged:
 | The mode turns on by accident: a question, "explain this", or words in a file or tool result read as a request | The skill tells the agent that only the typed phrases `learning mode on` and `teach me as we go` turn it on; the gate does not hold this, because switching it on only adds checks. Every switch goes through `pair_learn`, said in one line and journaled as a `learning` entry, so an accidental one shows in the conversation and the journal | No scenario: a hook scenario cannot judge the agent's reading of a turn. The journaled switch is checked by `core/gate.test.mjs`, "pair_learn turns it on and off, journaled like a note" |
 | The agent turns it off to get past a refusal or the recall check | The gate holds this: `pair_learn` with `on: false` is refused unless your latest typed turn contains `learning mode off`. Words in a file, a tool result or an untrusted turn do not count. A `pair_learn` that leaves the flag as it was does not restart the recall check's count, so it cannot silence the Stop warning either | No scenario: `pair_learn` is an MCP tool, not a hook event. Checked by `core/gate.test.mjs`, "pair_learn on: false is refused unless the latest typed turn says learning mode off", and `lib/verbs.test.mjs`, "recallWarning: a pair_learn that leaves the flag as it was does not restart the count, and the agent cannot switch it off to skip the check" |
 | The flag leaks from one pairing session into the next | It lives in the pairing state, not in a file of its own: `pair_start` builds a fresh state with it off, and so does a carry after `/clear` or a session switch. A state whose flag is not `true` or `false` reads as malformed: host writes stay denied like any other bad state, and learning mode reads as off until pairing starts again, so pairing tools take cards without `why`, `sources` or `recall` | No scenario checks the flag; `evals/session-start-carries-closed.scenario.json` proves only the carry itself. Checked by `core/gate.test.mjs`, "the flag does not leak: a typed stop and the next pair_start start it off" and "the state keeps the flag across a save; a flag that is not a boolean reads as degraded" |
-| A learning-mode refusal fires with learning off | Every learning-mode check sits behind the flag. With it off, `why`, `sources` and `recall` are recorded when given and never checked for form, and the 1.4.4 card flow runs unchanged. The 1.6.0 pattern-source and `alternatives` checks are not learning-mode checks: they fire in every mode, and only when `why` carries a pattern phrase, `alternatives` is given, or ask-graham's findings are on disk (see *A pattern claim needs a pattern source*) | No scenario for the cards (MCP tools). Checked by `core/gate.test.mjs`, "off: why and sources are recorded as given and never checked", and `hooks/paired-coding-hook.test.mjs`, "learning mode off: Stop stays silent after pair_done and journals no recall check" |
+| A learning-mode refusal fires with learning off | Every learning-mode check sits behind the flag. With it off, `why`, `sources` and `recall` are recorded when given and never checked for form, and the 1.4.4 card flow runs unchanged. The 1.6.0 pattern-source and `alternatives` checks are not learning-mode checks: they fire in every mode, and only when `why` carries a pattern claim, `alternatives` is given, or ask-graham's findings hold the card (see *A pattern claim needs a pattern source*) | No scenario for the cards (MCP tools). Checked by `core/gate.test.mjs`, "off: why and sources are recorded as given and never checked", and `hooks/paired-coding-hook.test.mjs`, "learning mode off: Stop stays silent after pair_done and journals no recall check" |
 | Sources are invented: a recalled URL, or a passage never read | The gate checks each source's form: a URL has to parse as `http` or `https` with a host and no whitespace, and needs the passage it relies on; a path has to be absolute, name a file, and give a line of 1 or more (a range may not run backwards); anything else has to start `from memory`. No source may hold a control character. It cannot check that the URL was fetched or the line read; the skill forbids marking a fetched claim `from memory` to get past a refusal | No scenario: `pair_propose` is an MCP tool. The form checks are in `core/gate.test.mjs`, "pair_propose refuses missing or empty sources and names the first bad entry" and the three `sourceProblem` tests; that a source was really read is checked by nothing |
 | The recall question is skipped | `pair_done` refuses without one, and the Stop warning names a turn that closed a change set without a recall line. The line may start `Recall:` in any case, after a quote, list or heading marker, with bold or italics (`- **Recall**:`). The agent's closing text is the only evidence the hook reads. Claude Code's Stop gives it as `last_assistant_message`; without it, the hook reads the transcript back only as far as the newest user entry, because the transcript can lag the turn, and an earlier turn's `Recall:` line must not count. OMP's `session_stop` falls back to the turn's messages the same way. When there is no closing text, it does not warn and journals the check as unknown | `evals/stop-learning-warns-no-recall.scenario.json` (the Stop warning). The `pair_done` refusal is checked by `core/gate.test.mjs`, "pair_done refuses without one recall question, before reaping or snapshotting"; the transcript fallback by `hooks/paired-coding-hook.test.mjs`, "learning mode: the transcript fallback stops at the newest user entry, so an earlier turn's Recall: line never counts" |
 | A Stop hook continues the turn after the recall check ran | The check runs at the first stop and uses up that `pair_done`'s warning. If another Stop hook (or an OMP handler) continues the turn and the `Recall:` line comes in the continued message, the warning already shown was wrong; nothing at the first stop can tell that a continuation will follow. The warning is noise only: it never blocks, and the journal's `recall-check` entry records what the first stop saw. On OMP, a session without a UI gets no warning at all; the `recall-check` entry is still journaled | `evals/stop-learning-warns-no-recall.scenario.json` proves the warning carries no block decision. The once-per-`pair_done` count is checked by `lib/verbs.test.mjs`, "recallWarning: inert with learning off, warns once per pair_done, and says nothing when the host gave no closing text" |
@@ -218,20 +218,31 @@ plugin has to be installed, and a file that is missing never refuses a card. The
 copied into `lib/card-context.mjs`, not imported: a Claude Code plugin cannot depend on another.
 
 **The pattern claim.** "It's the pattern used in the rest of the codebase" is a reasonable
-`why`, and an easy one to assert without looking. When `why` contains one of these phrases, in
-any case: `pattern used in`, `the rest of the codebase`, `convention here`, `how the codebase
-does`, `existing pattern`, `follows the pattern`, `the pattern in` (the list is
-`PATTERN_CLAIM_PHRASES` in `core/gate.mjs`), the card's `sources` must include either one
-absolute `file:line` whose file is inside the receipt directory `<git root>/.pattern-check/`
-(pattern-check's receipt for this session is `<git root>/.pattern-check/<session id>.md`; any
-receipt in that directory counts), or two or more absolute `file:line` sources inside the
-repository the worktree is in (the nearest ancestor holding `.git`; the worktree itself when
-there is none). Paths are compared lexically, after `..` collapses. Otherwise `pair_propose`
-refuses with the exact fix, the receipt path it looked for and both counts:
-`pair_propose refused: why claims a codebase pattern ("pattern used in"), and a pattern claim needs a pattern source: add to sources either one absolute file:line inside the pattern-check receipt directory /work/repo/.pattern-check/ (this session's receipt would be /work/repo/.pattern-check/<session id>.md; found 0), or two or more absolute file:line sources under /work/repo/ showing the pattern in the code (found 1)`.
+`why`, and an easy one to assert without looking. The gate reads `why` for an affirmative
+claim of a codebase convention, in any case and at word boundaries (`PATTERN_CLAIM_PATTERNS`
+in `core/gate.mjs`): a verb of conformity before "pattern" or "convention" (`follows the
+existing pattern`, `matches the codebase pattern`, `per the repo convention`, `uses the same
+pattern`, `consistent with the established pattern`, `mirrors the pattern`), `the pattern
+in/from/here`, `the pattern used in`, `the convention here`, `how the codebase does`, `as` or
+`like the rest of the codebase`, and pattern-check's own word `pattern-fit`. Ordinary prose
+that merely contains those words is no claim: `the pattern introduced by the bug`, `the
+pattern input`, `the anti-pattern used in`, `isolates it from the rest of the codebase`, `no
+existing pattern handles this` match nothing, and a denial in the same clause (`not`, `no`,
+`never`, `without`, `rather than`, `doesn't`, `isn't`, …, within the four words before the
+match: `PATTERN_CLAIM_NEGATIONS`) turns a match off. When `why` carries a claim, the card's
+`sources` must include either one absolute `file:line` whose file is inside the receipt
+directory `<git root>/.pattern-check/` (pattern-check's receipt for this session is
+`<git root>/.pattern-check/<session id>.md`; any receipt in that directory counts), or two or
+more absolute `file:line` sources at distinct locations inside the repository the worktree is
+in (the nearest ancestor holding `.git`; the worktree itself when there is none). Distinct
+means after `.` and `..` collapse and with the line or range: one citation spelled twice is
+one source, two lines of one file are two. Paths are compared lexically. Otherwise
+`pair_propose` refuses with the exact fix, the claim as written, the receipt path it looked
+for and both counts:
+`pair_propose refused: why claims a codebase pattern ("the pattern used in"), and a pattern claim needs a pattern source: add to sources either one absolute file:line inside the pattern-check receipt directory /work/repo/.pattern-check/ (this session's receipt would be /work/repo/.pattern-check/<session id>.md; found 0), or two or more absolute file:line sources under /work/repo/ showing the pattern in the code (found 1)`.
 In learning mode the form check on `sources` runs first, so a malformed list is named before
 the pattern check. With learning off, `why` and `sources` are still not required; the check
-fires only when a given `why` carries a phrase.
+fires only when a given `why` carries a claim.
 
 **`alternatives`.** An optional card field, `[{ "design", "chosen" }]`, with exactly one
 `chosen: true`; when given it is checked for that form and recorded on the card and in the
@@ -245,31 +256,52 @@ Alternatives, to show on the card with the chosen one marked:
 
 It becomes required when ask-graham's findings file for this session exists:
 `${XDG_STATE_HOME:-$HOME/.local/state}/ask-graham/findings/<session id>.json`, written by
-ask-graham's Stop hook when a turn ended with a verdict or a structure check. Then the card
-must carry `alternatives`, one entry must contain the findings' chosen design (whitespace
-collapsed, case ignored; it may sit on a non-chosen entry, when the card prefers the better
-design), and when the findings weighed a design they did not choose, at least one entry has
-`chosen: false`. The refusals:
+ask-graham's Stop hook when a turn ended with a verdict or a structure check. The lookup uses
+the environment the host adapter runs the verbs under (the one its pairing state lives under;
+`HOME` from it, else the process's home, when it names no `XDG_STATE_HOME`), never this
+process's as a fall back. The file counts only when it is this session's findings: a regular
+file (no symlink) of at most 64 KiB holding a JSON object with `version: 1`, a `sessionId`
+equal to this session's, a `writtenAt` that is an ISO 8601 date, and `alternatives` as a list
+of `{ "design": non-empty string, "chosen": true or false }` (one bad entry fails the whole
+file; nothing is dropped silently). **The findings hold the first card proposed after they
+were written, and no later card.** When that card is recorded, the pairing state remembers the
+record (`findingsConsumed: { sessionId, writtenAt }`), and the same file holds no later card of
+the pairing; a refused card consumes nothing, so the next attempt is still held. A findings
+file written again later (a later `writtenAt`) re-arms the check for the next card. The marker
+lives in the pairing state, so a new `pair_start` in the same host session starts with it
+clear: the first card of a new pairing is held to findings still on disk. For the card that
+is held, `alternatives` is required, one entry must contain the findings' chosen design
+(whitespace collapsed, case ignored; it may sit on a non-chosen entry, when the card prefers
+the better design), and when the findings weighed a design they did not choose, at least one
+entry has `chosen: false`. The refusals:
 `pair_propose refused: ask-graham's findings for this session are on disk (<path>), so the card needs alternatives: alternatives is a list of { "design": "one design, in words", "chosen": true or false } objects with exactly one chosen: true, including the findings' chosen design "a queue table with a worker" and at least one entry with chosen: false`,
 `pair_propose refused: ask-graham's findings for this session are on disk (<path>), and no alternatives entry contains their chosen design "a queue table with a worker"; add it (whitespace and case do not matter)`,
 `pair_propose refused: ask-graham's findings for this session are on disk (<path>), and they weighed a design they did not choose ("a direct call"), so alternatives needs at least one entry with chosen: false`,
 and, in any mode, `pair_propose refused: alternatives has 2 entries with chosen: true; alternatives is a list of …` or `pair_propose refused: alternatives[1] is {"design":"x"}; alternatives is a list of …`.
-A findings file that cannot be read, is not JSON or is not a JSON object reads as missing:
-the card goes through without `alternatives`, and one line goes to this plugin's own
-`errors.log` (under `~/.local/state/paired-coding/`, or `$PAIRED_CODING_STATE_DIR`) naming
-the file; ask-graham's state is never written.
+A findings file that is not a regular file, is over 64 KiB, cannot be read, is not JSON, or is
+not this session's record (wrong `version`, another `sessionId`, no ISO `writtenAt`, a bad
+`alternatives` entry) reads as missing: the card goes through without `alternatives`, and one
+line goes to this plugin's own `errors.log` (under `~/.local/state/paired-coding/`, or
+`$PAIRED_CODING_STATE_DIR`) naming the file and what was wrong with it; ask-graham's state is
+never written. A missing file is silent.
 
 ### How it fails
 
 | Failure | What holds it | Proved by |
 |---|---|---|
-| A pattern is claimed with nothing behind it | The gate refuses the card: a phrase in `why` needs a receipt `file:line` or two `file:line` in the repository, in every mode. The refusal names the receipt path pattern-check would write and both counts, so the fix is one `pattern-check record` or two real reads away | `evals/pre-tool-use-card-pattern-unsourced.scenario.json` (the refusal, through the real verbs in `evals/card-checks.mjs`) and `evals/pre-tool-use-card-pattern-receipt.scenario.json` (a receipt line goes through). The phrase list and both counts: `core/gate.test.mjs`, "a pattern claim needs a pattern source" |
-| The claim is worded past the phrase list | Only the seven phrases are matched; "as elsewhere in src/" is not a claim to the gate. The list is one exported constant so it can grow, and the skill tells the agent to source a pattern claim however it is worded | No scenario: a hook cannot read intent. `core/gate.test.mjs`, "patternClaim finds each documented phrase in any case, and nothing else" |
+| A pattern is claimed with nothing behind it | The gate refuses the card: a claim in `why` needs a receipt `file:line` or two distinct `file:line` in the repository, in every mode. The refusal quotes the claim as written and names the receipt path pattern-check would write and both counts, so the fix is one `pattern-check record` or two real reads away | `evals/pre-tool-use-card-pattern-unsourced.scenario.json` (the refusal, through the real verbs in `evals/card-checks.mjs`) and `evals/pre-tool-use-card-pattern-receipt.scenario.json` (a receipt line goes through). The claim shapes, both counts and the distinct-location rule: `core/gate.test.mjs`, "a pattern claim needs a pattern source" |
+| An ordinary `why` is refused as a claim | The claim shapes are matched at word boundaries and need an affirmative verb or a fixed phrase, so "the pattern introduced by the bug", "the pattern input", "the anti-pattern used in", "from the rest of the codebase" and "no existing pattern handles this" are not claims, and a denial within four words in the same clause ("doesn't follow the pattern in", "not how the codebase does it", "rather than the pattern in") turns a match off | `core/gate.test.mjs`, "patternClaim: an affirmative claim of a codebase convention…" (eighteen ordinary sentences, none a claim); `lib/verbs.test.mjs`, "through the verbs: a pattern claim needs a receipt file:line…" (an ordinary `why` goes through) |
+| The claim is worded past the shapes | Only the shapes in `PATTERN_CLAIM_PATTERNS` are matched; "as elsewhere in src/" is not a claim to the gate. The list is one exported constant so it can grow, and the skill tells the agent to source a pattern claim however it is worded | No scenario: a hook cannot read intent. `core/gate.test.mjs`, "patternClaim: an affirmative claim of a codebase convention…" |
+| One read is cited twice to make two sources | The two-in-repository way counts distinct locations: the path after `.` and `..` collapse plus the line or range, so `src/a.ts:1` and `src/../src/a.ts:1` are one source; `src/a.ts:1` and `src/a.ts:2` are two | `core/gate.test.mjs`, "the two-in-repository way counts distinct locations…"; `lib/verbs.test.mjs`, "through the verbs: a pattern claim needs a receipt file:line…" |
 | A receipt-looking path is invented | The gate checks the path's place (inside `<git root>/.pattern-check/`), not that the file exists or says what the card claims, as with every `file:line` source in 1.5.0. A path that climbs out with `..` or names a sibling directory with the same prefix is not inside | `core/gate.test.mjs`, "the refusal names the phrase, the receipt path it looked for, and both counts". Existence is not checked: see *Not in 1.6.0* |
 | A missing sibling file refuses a card | Neither file is required to exist. No receipt directory (no `.git` above the worktree) leaves the two-in-repository way open; no findings file leaves `alternatives` optional | `evals/pre-tool-use-write-denied.scenario.json` and every other card scenario run with no findings file and no receipt; `lib/card-context.test.mjs`, "readFindings: missing is null and silent…" |
 | ask-graham's findings cannot be read, or the file is not JSON | The file reads as missing and the card goes through; one line in this plugin's `errors.log` names the file, so the skipped check is not silent. ask-graham's own state is never written | `lib/verbs.test.mjs`, "through the verbs: a pattern claim needs a receipt file:line…" (the `nope` file); `lib/card-context.test.mjs`, "cardContext logs a findings fault…" |
+| The findings file is not a findings record, or not this session's | Every field the gate relies on is checked before the file counts: `version` is one this plugin reads (1), `sessionId` is this session's, `writtenAt` is an ISO 8601 date, `alternatives` is a list whose every entry is `{ design, chosen }`. Anything else reads as missing with one `errors.log` line saying which field, and nothing is dropped silently: a bad entry fails the file rather than vanishing from it | `lib/card-context.test.mjs`, "readFindings: a file that is not this session's findings reads as missing with one fault naming why…"; `lib/verbs.test.mjs`, "through the verbs: a pattern claim needs a receipt file:line…" (a file naming another session) |
+| The findings path is a symlink, a directory, a FIFO, or a huge file | Only a regular file (checked with `lstat`, so a symlink does not count) of at most 64 KiB is opened, and the read is bounded at that size, so a stray or hostile file in the findings directory cannot hang or bloat every proposal | `lib/card-context.test.mjs`, "readFindings: only a regular file of at most FINDINGS_MAX_BYTES is read…" |
+| The findings are looked up under the wrong state directory | The verbs hand the host adapter's environment to the lookup, the same environment the pairing state and `pair_run` use; there is no fall back to the process's own, and a verb context with no environment refuses every card naming the gap, rather than reading a state the adapter never named | `lib/verbs.test.mjs`, "through the verbs: the findings are looked up under the adapter's env, never this process's…" (the process and the adapter point at different directories; only the adapter's counts) |
 | The card's `alternatives` carry only the agent's own design | With findings on disk the card has to contain their chosen design and, when they weighed another, a non-chosen entry; the containment check collapses whitespace and ignores case, nothing more, so the design has to be quoted, not paraphrased | `evals/pre-tool-use-card-alternatives-missing.scenario.json`, `evals/pre-tool-use-card-alternatives-pass.scenario.json`; `core/gate.test.mjs`, "findings on disk: the card needs alternatives containing the chosen design…" |
-| The findings belong to another session, or ask-graham ran on OMP under a different session id | The file is keyed by the session id the host gave both plugins (Claude Code's `session_id`; OMP's session id), so another session's findings are never read. A session id that is not a plain file name has no findings file, as ask-graham writes none | `lib/card-context.test.mjs`, "findingsPath follows XDG_STATE_HOME…" and "cardContext: the receipt directory and this session's receipt…" (another session's id finds nothing) |
+| Every card of the pairing is held to one verdict | The findings hold the first card recorded after they were written and no later one: the state remembers the consumed record's `writtenAt`, a refusal consumes nothing, and a later `writtenAt` re-arms the check | `core/gate.test.mjs`, "pair_propose holds only the first card to the findings, records what it consumed, and a later findings file re-arms the check"; `lib/verbs.test.mjs`, "through the verbs: a pattern claim needs a receipt file:line…" (second card free, re-armed after a rewrite) |
+| The findings belong to another session, or ask-graham ran on OMP under a different session id | The file is keyed by the session id the host gave both plugins (Claude Code's `session_id`; OMP's session id), and its `sessionId` field has to match too, so another session's findings are never read, whether by file name or by content. A session id that is not a plain file name has no findings file, as ask-graham writes none | `lib/card-context.test.mjs`, "findingsPath follows XDG_STATE_HOME…", "cardContext: the receipt directory and this session's receipt…" (another session's id finds nothing) and "readFindings: a file that is not this session's findings…" (the same record read for another session) |
 
 ## The gate
 
@@ -1054,15 +1086,22 @@ worktree, inside an excluded directory, or after the final snapshot is not detec
 ### 1.6.0
 
 - A pattern claim needs a pattern source, in every mode (see *A pattern claim needs a pattern
-  source*): when `why` carries one of `PATTERN_CLAIM_PHRASES`, `sources` needs one absolute
-  `file:line` inside `<git root>/.pattern-check/` or two inside the repository, else
-  `pair_propose` refuses naming the receipt path and both counts. New optional card field
-  `alternatives` (`[{ design, chosen }]`, exactly one chosen), required when ask-graham's
-  findings file for this session is on disk, which then has to be reflected in it; the card
-  reply lists the alternatives with the chosen one marked. Both read sibling plugins' files
-  only; a missing file never refuses, an unreadable findings file is one `errors.log` line.
-  New `lib/card-context.mjs` holds the copied path rules. MCP and OMP schemas gain
-  `alternatives`. Four scenarios, set up by `evals/card-checks.mjs` through the real verbs.
+  source*): when `why` carries an affirmative claim of a codebase convention (the word-bounded
+  shapes in `PATTERN_CLAIM_PATTERNS`, a denial in the same clause turning a match off),
+  `sources` needs one absolute `file:line` inside `<git root>/.pattern-check/` or two at
+  distinct locations inside the repository (one citation spelled twice is one source), else
+  `pair_propose` refuses quoting the claim and naming the receipt path and both counts. New
+  optional card field `alternatives` (`[{ design, chosen }]`, exactly one chosen), required
+  for the first card proposed after ask-graham's findings file for this session was written
+  (the state records the consumed `writtenAt`; a later one re-arms it), which then has to be
+  reflected in it; the card reply lists the alternatives with the chosen one marked. The
+  findings file counts only as a regular file of at most 64 KiB holding this session's record
+  (`version: 1`, this `sessionId`, an ISO `writtenAt`, well-formed `alternatives`), looked up
+  under the host adapter's environment with no fall back to the process's. Both checks read
+  sibling plugins' files only; a missing file never refuses, a findings file that fails any
+  check is one `errors.log` line. New `lib/card-context.mjs` holds the copied path rules. MCP
+  and OMP schemas gain `alternatives`. Four scenarios, set up by `evals/card-checks.mjs`
+  through the real verbs.
 
 ### 1.5.0
 
