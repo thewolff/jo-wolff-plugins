@@ -10,7 +10,7 @@ test("regression: the two real commands 0.2.0 miscounted yield no bogus write ta
   assert.deepEqual(writeTargets(REAL_ABSENT), []);
   assert.equal(name(REAL_ABSENT), null);
   // The pin command does write one file, outside the repository; nothing from the heredoc body.
-  assert.deepEqual(writeTargets(REAL_PIN), ["/Users/jowolff/agent-scratch/shipyard/dataviz-data-cleaning-options-20261103.md"]);
+  assert.deepEqual(writeTargets(REAL_PIN), ["/Users/example/agent-scratch/shipyard/dataviz-data-cleaning-options-20261103.md"]);
   assert.equal(name(REAL_PIN), "redirect");
 });
 
