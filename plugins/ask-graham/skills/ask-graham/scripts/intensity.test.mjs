@@ -259,7 +259,7 @@ test("main stop-check: off writes the user file, --here the repo file, bare prin
 
 test("the CLI exits 1 with a message on a bad level", (t) => {
   const f = fixture(t);
-  const r = spawnSync(process.execPath, [CLI, "loud", "--cwd", f.sub], { env: { ...process.env, ...f.env, HOME: f.home }, encoding: "utf8" });
+  const r = spawnSync(process.execPath, [CLI, "loud", "--cwd", f.sub], { env: { ...process.env, ...f.env, HOME: f.home }, encoding: "utf8", timeout: 5000 });
   assert.equal(r.status, 1);
   assert.match(r.stderr, /ask-graham: unknown intensity "loud"/);
 });
