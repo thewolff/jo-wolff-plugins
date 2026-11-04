@@ -181,6 +181,38 @@ test("spawned: a handler that answers in time prints its answer and nothing else
   assert.deepEqual(b.log(), []);
 });
 
+test("spawned: the handler thread sees the runner's start and deadline in its env; a judge process group it started is killed when the runner gives up at its deadline", async () => {
+  const b = box();
+  const before = Date.now();
+  const seen = spawnSync(process.execPath, [hookScript(b, "(input, { env }) => ({ at: Number(env.HOOK_RUNNER_STARTED_AT_MS), deadline: env.HOOK_RUNNER_DEADLINE_MS })", 900)], { input: "{}", encoding: "utf8", env: { ...process.env, ...b.env }, timeout: 5_000 });
+  assert.equal(seen.status, 0, seen.stderr);
+  const { at, deadline } = parse(seen.stdout);
+  assert.ok(at >= before && at <= Date.now(), `${at}`);
+  assert.equal(deadline, "900");
+
+  const pidFile = join(b.root, "judge.pid");
+  const judgeUrl = pathToFileURL(join(dirname(RUNNER), "judge.mjs")).href;
+  const command = `echo $$ > ${JSON.stringify(pidFile)}; exec sleep 30`;
+  const body = `async () => { const { dispatch } = await import(${JSON.stringify(judgeUrl)}); await dispatch("p", { command: ${JSON.stringify(command)}, timeoutMs: 30_000 }); return { late: true }; }`;
+  const started = Date.now();
+  const r = spawnSync(process.execPath, [hookScript(b, body, 900)], { input: "{}", encoding: "utf8", env: { ...process.env, ...b.env }, timeout: 8_000 });
+  assert.equal(r.status, 0, r.stderr);
+  assert.ok(Date.now() - started < 3_000, "the deadline ended the run, not the judge");
+  assert.equal(parse(r.stdout)?.systemMessage, "trial PreToolUse failed open: no answer within 900 ms");
+  const pid = Number(readFileSync(pidFile, "utf8").trim());
+  assert.ok(pid > 0);
+  const alive = () => {
+    try {
+      process.kill(pid, 0);
+      return true;
+    } catch {
+      return false;
+    }
+  };
+  for (let i = 0; i < 20 && alive(); i++) await new Promise((res) => setTimeout(res, 50));
+  assert.equal(alive(), false, `judge pid ${pid} outlived the hook`);
+});
+
 test("runHook without { plugin }, or with a function instead of the module URL, is a programming error, thrown at once", async () => {
   await assert.rejects(runHook("Stop", "file:///x.mjs", {}), /needs \{ plugin \}/);
   await assert.rejects(runHook("Stop", () => null, { plugin: "trial" }), /needs the hook module's import.meta.url/);

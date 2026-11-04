@@ -19,6 +19,9 @@ check` passes on the scaffold as written.
    is open; do not invent an event list.
 2. Run the scaffolder from inside the repository the plugin is for (any directory in it):
    `node "${CLAUDE_PLUGIN_ROOT}/scripts/new-plugin.mjs" <name> --events <A,B> --description "<sentence>"`
+   (add `--judge` when a hook will ask a model to grade something: the plugin then also gets
+   `lib/judge.mjs`, the shared judge dispatch, and reads the judge command the person configured
+   once with `node lib/judge.mjs setup`)
    It writes `<that repository's toplevel>/plugins/<name>/` (the toplevel is
    `git rev-parse --show-toplevel` of the cwd; never the kit's own checkout or the marketplace
    cache it runs from) and prints the files. `--dest <plugins dir>` names another destination
@@ -41,14 +44,18 @@ check` passes on the scaffold as written.
    replay those, and the gate refuses a `.txt` without its sibling.
 7. Give `e2e/live-run.sh` the plugin's own claim at step 2 (the one thing only a live model run
    can prove); the contract and the hook-ran check are already there.
-8. Run `node --test` in the plugin, then `node "<ledger plugin>/scripts/ledger.mjs" gate check
+8. Add the plugin's bullet to the root README, naming its version (`- **[<name>](plugins/<name>/README.md)**
+   — <the one sentence> (0.1.0)`), before the first `gate check`: ledger's `docs` row fails a
+   new plugin without it. Then run `node --test` in the plugin, and `node "<ledger plugin>/scripts/ledger.mjs" gate check
    --plugins <name>` from the repository; both green before the first push. Add the marketplace
-   entry (`.claude-plugin/marketplace.json` at the root: name, source, the one sentence) and a
-   line in the root README when it is ready to publish.
+   entry (`.claude-plugin/marketplace.json` at the root: name, source, the one sentence) when it
+   is ready to publish.
 
 The runner is copied, not shared: `plugins/<name>/lib/hook-runner.mjs` belongs to the new plugin.
 A later change to plugin-kit's copy reaches it only by copying again, on purpose; an installed
-plugin never depends on a sibling plugin being installed.
+plugin never depends on a sibling plugin being installed. The same holds for `lib/judge.mjs`,
+with one difference: the kit's `test/judge.test.mjs` diffs every plugin's copy against the kit's,
+so a copy that drifts fails the kit's tests until it is copied again.
 
 ## When this can't run
 

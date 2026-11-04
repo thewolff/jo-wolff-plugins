@@ -195,13 +195,17 @@ test("canary prunes: every declared `state[].prune` runs after the live runs wit
   declare("gamma", [{ path: "$XDG_STATE_HOME/gamma", retentionDays: 3, prune: "/nonexistent/prune-binary --days 3" }]);
   const r = await withStore(b, (s) => runCanary({ db: s.db, dbPath: s.dbPath, env: b.env, repo: root, claudePresent: true }));
   assert.equal(r.code, 0, r.text);
+  // The missing-binary wording is the shell's: bash on macOS says `No such file or directory`,
+  // dash on Linux says `1: … not found`. Every other column is exact.
+  const gammaNote = /^exit 127: \/bin\/sh: (1: )?\/nonexistent\/prune-binary: (No such file or directory|not found)$/;
+  assert.match(r.prunes[3]?.note ?? "", gammaNote);
   assert.deepEqual(
-    r.prunes.map((p) => [p.plugin, p.path, p.status, p.exit_code, p.bytes_freed, p.note]),
+    r.prunes.map((p) => [p.plugin, p.path, p.status, p.exit_code, p.bytes_freed, p.plugin === "gamma" ? null : p.note]),
     [
       ["alpha", "$XDG_STATE_HOME/alpha/runs", "pass", 0, 1234, "pruned: 2 file(s), 1234 bytes freed"],
       ["alpha", "$XDG_CACHE_HOME/alpha", "fail", 4, null, "exit 4: nope"],
       ["beta", "$XDG_STATE_HOME/beta", "unavailable", 75, null, "no store to prune"],
-      ["gamma", "$XDG_STATE_HOME/gamma", "fail", 127, null, "exit 127: /bin/sh: /nonexistent/prune-binary: No such file or directory"],
+      ["gamma", "$XDG_STATE_HOME/gamma", "fail", 127, null, null],
     ],
   );
   assert.ok(r.prunes.every((p) => Number.isInteger(p.id)), "each prune is a row");

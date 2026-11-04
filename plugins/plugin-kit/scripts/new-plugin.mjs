@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // scripts/new-plugin.mjs — scaffold a plugin that meets the repository test bar on day one.
 //
-//   node scripts/new-plugin.mjs <name> --events PreToolUse,Stop[,…] [--description "…"] [--dest <plugins dir>]
+//   node scripts/new-plugin.mjs <name> --events PreToolUse,Stop[,…] [--description "…"] [--dest <plugins dir>] [--judge]
 //   (run it from inside the repository the plugin is for)
 //
 // Writes <dest>/<name>/ from templates/ (default dest: the `plugins/` of the git repository the
@@ -11,9 +11,11 @@
 // {{name}}, {{title}}, {{description}}, and per hook {{event}}, {{file}}, {{quiet}} filled in:
 //
 //   .claude-plugin/plugin.json     with a `state` declaration ($XDG_STATE_HOME/<name>, 30 days, scripts/prune.mjs)
-//   package.json, README.md, HOW-IT-FAILS.md
+//   package.json, README.md (with its `## Changes in 0.1.0`), CHANGELOG.md (Keep a Changelog, a 0.1.0 entry), HOW-IT-FAILS.md
 //   lib/hook-runner.mjs            a COPY of plugin-kit/lib/hook-runner.mjs (the plugin owns it)
 //   lib/live-run.mjs               a COPY of plugin-kit/lib/live-run.mjs (the scenario runner)
+//   lib/judge.mjs                  with --judge: a COPY of plugin-kit/lib/judge.mjs (the shared judge
+//                                  dispatch; the kit's test/judge.test.mjs diffs every shipped copy)
 //   hooks/hooks.json               one entry per event, `node "${CLAUDE_PLUGIN_ROOT}/hooks/<event>.mjs"`, timeout 5
 //   hooks/<event>.mjs              one handler per event, returning null (allow) until a rule is written
 //   skills/<name>/SKILL.md         with the "When this can't run" section, naming a scenario file
@@ -26,9 +28,11 @@
 //
 // Refuses: a name that is not lowercase kebab, an event not in the host's list, an existing
 // destination (nothing is overwritten; delete it yourself first), no events. Exit 1 with the
-// reason on stderr; exit 0 with the written paths on stdout. The marketplace entry
-// (.claude-plugin/marketplace.json at the repository root) is not written: add it by hand, with
-// the one-sentence description, when the plugin is ready to publish.
+// reason on stderr; exit 0 with the written paths on stdout. Two repository-root files are not
+// written: the root README bullet naming 0.1.0 (add it by hand before the first `ledger gate
+// check`; its docs row fails a new plugin without it), and the marketplace entry
+// (.claude-plugin/marketplace.json; add it by hand, with the one-sentence description, when the
+// plugin is ready to publish).
 
 import { spawnSync } from "node:child_process";
 import { chmodSync, cpSync, existsSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
@@ -79,15 +83,16 @@ export function sampleInput(event) {
 
 export function parseArgs(argv, { cwd = process.cwd() } = {}) {
   const [name, ...rest] = argv;
-  const out = { name, events: [], description: "", dest: null };
+  const out = { name, events: [], description: "", dest: null, judge: false };
   for (let i = 0; i < rest.length; i++) {
     const t = rest[i];
     if (t === "--events" && rest[i + 1]) out.events = rest[++i].split(",").map((s) => s.trim()).filter(Boolean);
     else if (t === "--description" && rest[i + 1]) out.description = rest[++i];
     else if (t === "--dest" && rest[i + 1]) out.dest = rest[++i];
+    else if (t === "--judge") out.judge = true;
     else return { error: `unknown argument ${t}` };
   }
-  if (!name || name.startsWith("--")) return { error: "usage: new-plugin.mjs <name> --events A,B [--description …] [--dest <plugins dir>]" };
+  if (!name || name.startsWith("--")) return { error: "usage: new-plugin.mjs <name> --events A,B [--description …] [--dest <plugins dir>] [--judge]" };
   if (!NAME_RE.test(name)) return { error: `name must be lowercase kebab (a-z, 0-9, hyphens between words), not ${JSON.stringify(name)}` };
   if (!out.events.length) return { error: "--events names at least one hook event" };
   const unknown = out.events.filter((e) => !EVENTS[e]);
@@ -104,7 +109,7 @@ export function parseArgs(argv, { cwd = process.cwd() } = {}) {
 const fill = (text, vars) => text.replace(/\{\{(\w+)\}\}/g, (m, k) => (k in vars ? String(vars[k]) : m));
 
 /** Scaffold. Returns the written paths (relative to the plugin). Throws with the reason. */
-export function scaffold({ name, events, description, dest }) {
+export function scaffold({ name, events, description, dest, judge = false }) {
   const root = join(dest, name);
   if (existsSync(root)) throw new Error(`${root} exists; nothing was written`);
   const vars = { name, title: title(name), description: description.replace(/"/g, '\\"') };
@@ -121,11 +126,16 @@ export function scaffold({ name, events, description, dest }) {
   put(".claude-plugin/plugin.json", fill(tpl(".claude-plugin/plugin.json"), vars));
   put("package.json", fill(tpl("package.json"), vars));
   put("README.md", fill(tpl("README.md"), { ...vars, description }));
+  put("CHANGELOG.md", fill(tpl("CHANGELOG.md"), { ...vars, description }));
   put("HOW-IT-FAILS.md", fill(tpl("HOW-IT-FAILS.md"), vars));
   mkdirSync(join(root, "lib"), { recursive: true });
   for (const lib of ["hook-runner.mjs", "live-run.mjs"]) {
     cpSync(join(KIT_ROOT, "lib", lib), join(root, "lib", lib));
     written.push(`lib/${lib}`);
+  }
+  if (judge) {
+    cpSync(join(KIT_ROOT, "lib", "judge.mjs"), join(root, "lib", "judge.mjs"));
+    written.push("lib/judge.mjs");
   }
   const hooks = {};
   for (const event of events) {
@@ -166,7 +176,7 @@ if (invoked) {
   }
   try {
     const { root, written } = scaffold(args);
-    process.stdout.write(`${root}\n${written.map((w) => `  ${w}`).join("\n")}\nnext: write the rule in hooks/*.mjs, the steps in skills/${args.name}/SKILL.md, the rows in HOW-IT-FAILS.md; run \`node --test\` there; add the marketplace entry when it is ready to publish.\n`);
+    process.stdout.write(`${root}\n${written.map((w) => `  ${w}`).join("\n")}\nnext: write the rule in hooks/*.mjs, the steps in skills/${args.name}/SKILL.md, the rows in HOW-IT-FAILS.md; run \`node --test\` there; add a root README bullet naming ${args.name} 0.1.0 before the first \`ledger gate check\`; add the marketplace entry when it is ready to publish.\n`);
   } catch (err) {
     process.stderr.write(`new-plugin: ${err.message}\n`);
     process.exit(1);

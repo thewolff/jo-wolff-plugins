@@ -1,0 +1,22 @@
+{
+  "$comment": "Gate 3: a SendMessage that returned success:false is marked NOT delivered next to the tool result.",
+  "event": "PostToolUse",
+  "expect": "deny",
+  "reason": "this message was NOT delivered",
+  "stdin": {
+    "session_id": "${SESSION_ID}",
+    "transcript_path": "${TRANSCRIPT}",
+    "cwd": "${CWD}",
+    "hook_event_name": "PostToolUse",
+    "tool_name": "SendMessage",
+    "tool_input": {
+      "to": "Worker",
+      "summary": "s",
+      "message": "m"
+    },
+    "tool_response": {
+      "success": false,
+      "message": "No agent named 'Worker' is reachable."
+    }
+  }
+}
