@@ -39,13 +39,31 @@
 //                           restore across, so the moment to read the snapshot back is right
 //                           after the compaction that wrote it.
 //
-// THE RULES WALK. OMP loads the rules files (`AGENTS.md`, `CLAUDE.md`) on the walk from the
-// session's cwd to the repository root into the system prompt's `<repo-rules>` block, which a
-// compaction does not touch (omp docs: context-files.md "How files are injected"). That is the
-// set hooks/session-start.mjs would re-inline from the same cwd, so the child's env carries
-// CLAUDE_PROJECT_DIR=<the session's cwd>, and the walk names each of those files as kept by the
-// host instead of spending the restore budget on a second copy; a payload cwd below the launch
-// directory would still get its nearer files inlined, as on Claude Code.
+// ONCE PER COMPACTION ENTRY. The restore is guarded by (session id, event.compactionEntry.id):
+// a session_compact for a pair whose restore is in flight or done sends nothing, so a repeated
+// notification never re-sends a retained (truncated) snapshot or follows a delivered restore
+// with "this compaction's state was not restored". A new entry id restores again. An event with
+// no entry id cannot be told apart from another and is restored as a new one.
+//
+// PAIRED SAVES. Not every session_compact follows a session_before_compact: OMP's manual handoff
+// and its snapcompact frame rescue commit a compaction entry without the pre-event
+// (session-maintenance.ts handoff(), the snapcompact rescue). The adapter remembers, per session,
+// that a save was attempted; a session_compact that consumes such a mark is paired and runs the
+// restore as on Claude Code, including the "not restored: the save failed" line. An unpaired one
+// runs the restore only when a snapshot file exists for the session (one an earlier restore kept,
+// or a save whose own restore did not run) and otherwise sends nothing: the host wrote its own
+// summary, and no save was attempted that could have failed. A pre-event another extension
+// cancelled leaves its mark for the next session_compact, which then restores that save's snapshot.
+//
+// THE RULES WALK. OMP loads `CLAUDE.md` and `AGENTS.md`, by those exact names, on the walk up
+// from the session's cwd into the system prompt (its discovery providers claude-md.ts and
+// agents-md.ts, each loadStandaloneContextFiles with one filename), which a compaction does not
+// touch (omp docs: context-files.md "How files are injected"). It loads no `CLAUDE.local.md`. So
+// the child's env carries CLAUDE_PROJECT_DIR=<the session's cwd> and
+// CONTINUITY_HOST_RULES=CLAUDE.md,AGENTS.md: the walk names those two as kept by the host at or
+// above the launch directory and inlines every other rules file there (`CLAUDE.local.md`) as it
+// inlines a nested one; a payload cwd below the launch directory still gets its nearer files
+// inlined, as on Claude Code.
 //
 // SESSION ID. Every spawn carries ctx.sessionManager.getSessionId(), the id that is stable across
 // OMP's provider-id rotations, so the save and the restore share one snapshot path and one
@@ -73,12 +91,16 @@
 // (node 24 strips them without a build), so the test imports this file directly.
 
 import { spawn } from "node:child_process";
-import { accessSync, appendFileSync, constants, mkdirSync, statSync } from "node:fs";
+import { accessSync, appendFileSync, constants, existsSync, mkdirSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { delimiter, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
+import { snapshotPath } from "../lib/paths.mjs";
+
 const DEFAULT_PLUGIN_ROOT = fileURLToPath(new URL("..", import.meta.url));
+/** The rules filenames OMP's context-file providers load at launch (discovery/claude-md.ts, agents-md.ts). */
+export const OMP_HOST_RULES = "CLAUDE.md,AGENTS.md";
 export const PRE_COMPACT_HOOK = "pre-compact.mjs";
 export const RESTORE_HOOK = "session-start.mjs";
 /** OMP's budget for one dispatched handler (pi-coding-agent extensibility/extensions/runner.ts EXTENSION_HANDLER_TIMEOUT_MS). */
@@ -263,7 +285,7 @@ export function spawnHook(hook: string, payload: string, cwd: string, timeoutMs:
   const child = spawn(node.path, [join(root, "hooks", hook)], {
     cwd,
     detached: true,
-    env: { ...env, PATH: [dirname(node.path), env.PATH].filter(Boolean).join(delimiter), CLAUDE_PROJECT_DIR: cwd },
+    env: { ...env, PATH: [dirname(node.path), env.PATH].filter(Boolean).join(delimiter), CLAUDE_PROJECT_DIR: cwd, CONTINUITY_HOST_RULES: OMP_HOST_RULES },
     stdio: ["pipe", "pipe", "pipe"],
   });
   let stdout = "";
@@ -360,22 +382,48 @@ export async function sessionCompactHandler(ctx: Ctx, send: ((content: string) =
   }
 }
 
+/** The compaction entry id of a session_compact event, or undefined when it carries none. */
+export function compactionEntryId(event: unknown): string | undefined {
+  const entry = (event as { compactionEntry?: { id?: unknown } } | null | undefined)?.compactionEntry;
+  const id = entry && typeof entry === "object" ? entry.id : undefined;
+  return typeof id === "string" && id ? id : undefined;
+}
+
 /** Registration entry point; package.json `omp.extensions` names this file. */
 export default function continuityOmp(pi: PiLike, deps: Deps = {}): void {
+  const env = deps.env ?? process.env;
   // Set by auto_compaction_start, cleared by auto_compaction_end: the compaction between them is the host's own.
   let autoInFlight = false;
+  // Session ids with a save attempted and not yet consumed by a session_compact (PAIRED SAVES, above).
+  const savesAttempted = new Set<string>();
+  // `<session id>\0<entry id>` of every restore started (ONCE PER COMPACTION ENTRY, above).
+  const restoresStarted = new Set<string>();
   pi.on("auto_compaction_start", () => {
     autoInFlight = true;
   });
   pi.on("auto_compaction_end", () => {
     autoInFlight = false;
   });
-  pi.on("session_before_compact", (event, ctx) => beforeCompactHandler(event, ctx, autoInFlight ? "auto" : "manual", deps));
+  pi.on("session_before_compact", (event, ctx) => {
+    savesAttempted.add(managerSessionId(ctx));
+    return beforeCompactHandler(event, ctx, autoInFlight ? "auto" : "manual", deps);
+  });
   const send =
     typeof pi.sendMessage === "function"
       ? (content: string): void => {
           pi.sendMessage!({ customType: RESTORE_MESSAGE_TYPE, content, display: false });
         }
       : undefined;
-  pi.on("session_compact", (_event, ctx) => sessionCompactHandler(ctx, send, deps));
+  pi.on("session_compact", async (event, ctx) => {
+    const sessionId = managerSessionId(ctx);
+    const entryId = compactionEntryId(event);
+    if (entryId !== undefined) {
+      const key = `${sessionId}\0${entryId}`;
+      if (restoresStarted.has(key)) return;
+      restoresStarted.add(key);
+    }
+    const paired = savesAttempted.delete(sessionId);
+    if (!paired && !existsSync(snapshotPath(sessionId, env))) return;
+    await sessionCompactHandler(ctx, send, deps);
+  });
 }

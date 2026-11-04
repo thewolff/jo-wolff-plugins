@@ -7,15 +7,17 @@
 // section and the liveness line to sendMessage.
 
 import assert from "node:assert/strict";
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { test } from "node:test";
 
 import { DEADLINE_MS } from "../lib/hook-runner.mjs";
+import { walkRules } from "../lib/repo-rules.mjs";
 import { MAX_SECTION_CHARS } from "../lib/snapshot.mjs";
 import { box } from "../test/helpers.mjs";
 import continuityOmp, {
   MAX_FILE_OPS_CHARS,
+  OMP_HOST_RULES,
   MAX_INTENTS,
   MAX_INTENT_CHARS,
   OMP_HANDLER_BUDGET_MS,
@@ -27,6 +29,7 @@ import continuityOmp, {
   beforeCompactHandler,
   buildPreCompactPayload,
   buildRestorePayload,
+  compactionEntryId,
   defaultStateDir,
   fileOperationsFrom,
   intentsFrom,
@@ -218,8 +221,110 @@ test("registration: four events; auto_compaction_start marks the next compaction
     // A host without sendMessage registers the same four events; the restore then logs instead of throwing.
     const handlers2 = {};
     continuityOmp({ on: (name, h) => (handlers2[name] = h) }, { runCli, stateDir: b.stateDir, env: b.env });
+    await handlers2.session_before_compact({ preparation: preparation() }, ctx());
     await handlers2.session_compact({}, ctx());
     assert.match(readFileSync(join(b.stateDir, "errors.log"), "utf8"), /the host has no sendMessage/);
+  } finally {
+    b.release();
+  }
+});
+
+test("compactionEntryId: the entry's string id, else undefined", () => {
+  assert.equal(compactionEntryId({ compactionEntry: { id: "e1" } }), "e1");
+  for (const e of [undefined, null, {}, { compactionEntry: null }, { compactionEntry: {} }, { compactionEntry: { id: 7 } }, { compactionEntry: { id: "" } }]) assert.equal(compactionEntryId(e), undefined);
+});
+
+test("once per compaction entry: a repeated session_compact for the same entry, sequential or concurrent, sends one restore; a new entry sends another", async () => {
+  const b = box();
+  try {
+    const handlers = {};
+    const sent = [];
+    const restores = [];
+    const runCli = async (hook) => {
+      if (hook === PRE_COMPACT_HOOK) return undefined;
+      restores.push(hook);
+      await new Promise((r) => setTimeout(r, 20));
+      return { hookSpecificOutput: { hookEventName: "SessionStart", additionalContext: `restore ${restores.length}` } };
+    };
+    continuityOmp({ on: (name, h) => (handlers[name] = h), sendMessage: (m) => sent.push(m.content) }, { runCli, stateDir: b.stateDir, env: b.env });
+    // A truncated restore keeps its snapshot on disk, so the unpaired guard alone would not stop a repeat.
+    mkdirSync(b.stateDir, { recursive: true });
+    writeFileSync(join(b.stateDir, "seat-lintel-1789498192-31073.json"), "{}");
+    await handlers.session_before_compact({ preparation: preparation() }, ctx());
+    const e1 = { type: "session_compact", compactionEntry: { id: "entry-1" }, fromExtension: false };
+    await Promise.all([handlers.session_compact(e1, ctx()), handlers.session_compact(e1, ctx())]);
+    await handlers.session_compact(e1, ctx());
+    assert.deepEqual(sent, ["restore 1"], "one message for entry-1 however often it is announced");
+    assert.equal(restores.length, 1, "the restore hook ran once for entry-1");
+    await handlers.session_before_compact({ preparation: preparation() }, ctx());
+    await handlers.session_compact({ ...e1, compactionEntry: { id: "entry-2" } }, ctx());
+    await handlers.session_compact({ ...e1, compactionEntry: { id: "entry-2" } }, ctx());
+    assert.deepEqual(sent, ["restore 1", "restore 2"], "a new entry restores once more");
+    // The same entry id in another session is another pair.
+    const other = ctx({ sessionManager: { getSessionId: () => "another-session" } });
+    await handlers.session_before_compact({ preparation: preparation() }, other);
+    await handlers.session_compact(e1, other);
+    assert.equal(sent.length, 3);
+  } finally {
+    b.release();
+  }
+});
+
+test("unpaired session_compact (manual handoff, snapcompact rescue): no save attempted and no snapshot sends nothing; a snapshot on disk is restored; a paired one restores even after a failed save", async () => {
+  const b = box();
+  try {
+    const handlers = {};
+    const sent = [];
+    const restores = [];
+    const runCli = async (hook) => {
+      if (hook === PRE_COMPACT_HOOK) throw new Error("exited 1");
+      restores.push(hook);
+      return { hookSpecificOutput: { hookEventName: "SessionStart", additionalContext: "continuity: **this compaction's state was not restored**" } };
+    };
+    continuityOmp({ on: (name, h) => (handlers[name] = h), sendMessage: (m) => sent.push(m.content) }, { runCli, stateDir: b.stateDir, env: b.env });
+    await handlers.session_compact({ compactionEntry: { id: "handoff-1" }, fromExtension: false }, ctx());
+    assert.deepEqual(restores, [], "no restore spawned for a host-only compaction with nothing saved");
+    assert.deepEqual(sent, []);
+    // A snapshot left on disk (an earlier restore kept it, or its restore never ran) is restored.
+    mkdirSync(b.stateDir, { recursive: true });
+    writeFileSync(join(b.stateDir, "seat-lintel-1789498192-31073.json"), "{}");
+    await handlers.session_compact({ compactionEntry: { id: "handoff-2" } }, ctx());
+    assert.equal(restores.length, 1);
+    assert.equal(sent.length, 1);
+    rmSync(join(b.stateDir, "seat-lintel-1789498192-31073.json"));
+    // A save attempted (and failed) pairs the next session_compact: its not-restored line is sent.
+    await handlers.session_before_compact({ preparation: preparation() }, ctx());
+    await handlers.session_compact({ compactionEntry: { id: "auto-1" } }, ctx());
+    assert.equal(restores.length, 2);
+    assert.match(sent[1], /was not restored/);
+    // The pairing is consumed: a handoff right after sends nothing again.
+    await handlers.session_compact({ compactionEntry: { id: "handoff-3" } }, ctx());
+    assert.equal(restores.length, 2);
+  } finally {
+    b.release();
+  }
+});
+
+test("rules walk under OMP: at the launch directory CLAUDE.md is named as host-loaded and CLAUDE.local.md, which OMP does not load, is inlined", async () => {
+  const b = box();
+  try {
+    writeFileSync(join(b.work, "CLAUDE.md"), "# Project rules\n\nShared rule body.\n");
+    writeFileSync(join(b.work, "CLAUDE.local.md"), "# Local rules\n\nLocal-only rule body 7f3a.\n");
+    const sent = [];
+    await sessionCompactHandler({ cwd: b.work, sessionManager: { getSessionId: () => "omp-local-rules" }, hasUI: false }, (t) => sent.push(t), { env: b.env, stateDir: b.stateDir });
+    assert.equal(sent.length, 1, existsSync(join(b.stateDir, "errors.log")) ? readFileSync(join(b.stateDir, "errors.log"), "utf8") : "");
+    const content = sent[0];
+    assert.ok(content.includes(`skipped \`${join(b.work, "CLAUDE.md")}\`: loaded by the host at launch`), content);
+    assert.doesNotMatch(content, /Shared rule body\./);
+    assert.match(content, /Local-only rule body 7f3a\./, "the local file's body is restored");
+    assert.ok(!content.includes(`skipped \`${join(b.work, "CLAUDE.local.md")}\``), "and it is not named as host-loaded");
+    // Claude Code sets no CONTINUITY_HOST_RULES and loads both at launch: both stay skipped there.
+    const cc = walkRules(b.work, { ...b.env, CLAUDE_PROJECT_DIR: b.work });
+    assert.deepEqual(cc.files, []);
+    assert.equal(cc.skipped.length, 2);
+    const omp = walkRules(b.work, { ...b.env, CLAUDE_PROJECT_DIR: b.work, CONTINUITY_HOST_RULES: OMP_HOST_RULES });
+    assert.deepEqual(omp.files.map((f) => f.path.split("/").pop()), ["CLAUDE.local.md"]);
+    assert.deepEqual(omp.skipped.map((s) => s.path.split("/").pop()), ["CLAUDE.md"]);
   } finally {
     b.release();
   }
@@ -279,7 +384,10 @@ test("round trip through the real hooks: the save from a fake OMP event lands in
     assert.ok(notices.some(([t]) => /auto-compaction fired with no handoff written/.test(t)), `the no-handoff systemMessage reached the UI: ${JSON.stringify(notices)}`);
     assert.equal(existsSync(join(b.stateDir, "errors.log")), false, "no adapter or hook fault logged");
     handlers.auto_compaction_end({ result: "success" }, c);
-    await handlers.session_compact({ compactionEntry: {} }, c);
+    const event = { type: "session_compact", compactionEntry: { id: "entry-1" }, fromExtension: false };
+    await handlers.session_compact(event, c);
+    // OMP announcing the same entry again must not add a "not restored" message after the restore.
+    await handlers.session_compact(event, c);
     assert.equal(sent.length, 1, `one restore message: ${JSON.stringify(sent)}`);
     assert.equal(sent[0].customType, RESTORE_MESSAGE_TYPE);
     assert.equal(sent[0].display, false);

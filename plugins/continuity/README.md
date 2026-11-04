@@ -308,11 +308,31 @@ The event mapping, from OMP's docs (`extensions.md`, "Session lifecycle"; `compa
 The session id on both payloads is `ctx.sessionManager.getSessionId()`, stable across OMP's
 provider-id rotations, so the save and the restore share one snapshot path and one once-mark.
 
-The rules section says `skipped <path>: loaded by the host at launch` for every file on the walk
-rather than inlining it: OMP keeps the rules files from the cwd to the repository root in the
-system prompt's `<repo-rules>` block, which a compaction does not touch (`context-files.md`), so
-the spawn sets `CLAUDE_PROJECT_DIR` to the session's cwd and the walk names them as kept instead
-of spending the restore budget on a second copy.
+OMP loads two rules filenames into the system prompt on the walk up from its cwd, `CLAUDE.md` and
+`AGENTS.md` (its `claude-md` and `agents-md` context-file providers, each asking for one exact
+name), and a compaction does not touch the system prompt (`context-files.md`). It does not load
+`CLAUDE.local.md`. So the spawn sets `CLAUDE_PROJECT_DIR` to the session's cwd and
+`CONTINUITY_HOST_RULES=CLAUDE.md,AGENTS.md`: at the launch directory and above, the rules
+section says `skipped <path>: loaded by the host at launch` for a `CLAUDE.md` or `AGENTS.md`
+instead of spending the restore budget on a second copy, and inlines a `CLAUDE.local.md` there
+like any nested file. Without `CONTINUITY_HOST_RULES` (Claude Code, which loads the local file
+too) every rules file at those levels is named as kept, as before.
+
+The restore runs once per compaction entry: the extension remembers each
+(session id, `compactionEntry.id`) pair it has started a restore for, and a repeated
+`session_compact` for that pair sends nothing, so a kept (truncated) snapshot is not sent twice
+and a delivered restore is never followed by a "not restored" line. A new entry restores again.
+
+Lifecycle exclusions. Two OMP paths commit a compaction without `session_before_compact`, so no
+save runs for them: the manual handoff (`/handoff`, which writes the host's own handoff summary)
+and the snapcompact frame rescue. The extension notes per session that a save was attempted; a
+`session_compact` with no such note is unpaired, and for it the restore runs only when a snapshot
+file for the session is already on disk (one a truncated restore kept, or one whose own restore
+never ran). With no snapshot it sends nothing: no save was attempted, so there is no failed save
+to report, and the host's summary stands. A paired `session_compact` behaves as on Claude Code,
+including the "this compaction's state was not restored" line when the save failed. A pre-event
+that another extension cancelled leaves its note for the next `session_compact`, which then
+restores that save's snapshot.
 
 Budgets: OMP abandons an extension handler at 30 s. Each hook answers inside the runner's own 4 s
 deadline whatever its handler does; the extension gives each spawn 8 s (node start-up and the
@@ -382,9 +402,14 @@ one, `CHANGELOG.md` and itself.
   that spawns `hooks/pre-compact.mjs` on `session_before_compact` and `hooks/session-start.mjs` on
   `session_compact`; the "Under OMP" section above has the payload, the budgets and the table of
   what newdle's OMP save did that this does and does not.
-- `omp/continuity-omp.test.mjs` (thirteen tests, one a save-then-restore round trip through the
+- `omp/continuity-omp.test.mjs` (seventeen tests, one a save-then-restore round trip through the
   real hooks) and `evals/pre-compact-omp-payload.scenario.json` (fifteen scenarios in all).
-- No change to the hooks, the libs, the config keys or the state layout.
+- The restore runs once per compaction entry, and only after a save was attempted or when a
+  snapshot is on disk (the lifecycle exclusions above).
+- `lib/repo-rules.mjs` reads `CONTINUITY_HOST_RULES`: when set, the launch-directory skip covers
+  only those file names. The OMP extension sets it to `CLAUDE.md,AGENTS.md`, so `CLAUDE.local.md`
+  is inlined under OMP. Unset (Claude Code), nothing changes. No change to the hooks, the config
+  keys or the state layout.
 
 ## Changes in 0.2.0
 
