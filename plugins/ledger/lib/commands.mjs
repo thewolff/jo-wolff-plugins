@@ -47,16 +47,25 @@ export function isWithin(dir, root) {
   return dir.startsWith(r);
 }
 
-/** Held questions in scope for `cwd`, oldest first. */
-export function heldQuestions(db, cwd) {
-  const rows = db.prepare("SELECT * FROM cc_questions WHERE state = 'held' ORDER BY asked_at ASC, id ASC").all();
-  return rows.filter((q) => isWithin(cwd, q.cwd)).map(parseQuestion);
+/** True when a question asked in `qcwd` is in scope for a session in `cwd`: the same folder, an ancestor, or a descendant. */
+export function inScope(cwd, qcwd) {
+  return isWithin(cwd, qcwd) || isWithin(qcwd, cwd);
 }
 
-/** Open questions in scope for `cwd`, oldest first (the `pending` order). */
-export function openQuestions(db, cwd) {
+/** Held questions in scope for `cwd` (its folder, ancestors and descendants), oldest first. */
+export function heldQuestions(db, cwd) {
+  const rows = db.prepare("SELECT * FROM cc_questions WHERE state = 'held' ORDER BY asked_at ASC, id ASC").all();
+  return rows.filter((q) => inScope(cwd, q.cwd)).map(parseQuestion);
+}
+
+/**
+ * Open questions in scope for `cwd`, oldest first (the `pending` order): its folder, ancestors
+ * and, unless `below` is false, descendants. The AskUserQuestion gate and the Stop rules pass
+ * `below: false`: a question asked in a subfolder does not cover a session in its parent.
+ */
+export function openQuestions(db, cwd, { below = true } = {}) {
   const rows = db.prepare("SELECT * FROM cc_questions WHERE state = 'open' ORDER BY asked_at ASC, id ASC").all();
-  return rows.filter((q) => isWithin(cwd, q.cwd)).map(parseQuestion);
+  return rows.filter((q) => (below ? inScope(cwd, q.cwd) : isWithin(cwd, q.cwd))).map(parseQuestion);
 }
 
 /**
@@ -204,21 +213,29 @@ export function pendingLines(q, { now = Date.now(), timezone = null } = {}) {
   return lines;
 }
 
-/** One line per held question: `held <q-id>  # <name> · <body>`. */
-export function heldLines(held) {
-  return held.map((q) => `held ${q.id}  # ${q.name} · ${q.body.replace(/\s+/g, " ").trim()}`);
+/** ` · in <folder>` for a question asked in a folder below `cwd`; "" otherwise. */
+function belowSuffix(q, cwd) {
+  return cwd && q.cwd !== cwd && isWithin(q.cwd, cwd) ? ` · in ${q.cwd}` : "";
 }
 
-/** The open questions, numbered, then the held ones marked `held` (not numbered: not answerable by ordinal). */
+/** One line per held question: `held <q-id>  # <name> · <body>`, plus ` · in <folder>` when it was asked below `cwd`. */
+export function heldLines(held, cwd = null) {
+  return held.map((q) => `held ${q.id}  # ${q.name} · ${q.body.replace(/\s+/g, " ").trim()}${belowSuffix(q, cwd)}`);
+}
+
+/**
+ * The open questions, numbered, then the held ones marked `held` (not numbered: not answerable by
+ * ordinal). A question asked in a folder below `cwd` ends its first line with ` · in <folder>`.
+ */
 export function renderPending(questions, cwd, opts = {}, held = []) {
   const out = [];
   if (!questions.length) out.push(`no open questions for ${cwd}`);
   questions.forEach((q, i) => {
     const lines = pendingLines(q, opts);
-    out.push(`${i + 1}. ${lines[0]}`);
+    out.push(`${i + 1}. ${lines[0]}${belowSuffix(q, cwd)}`);
     out.push(...lines.slice(1));
   });
-  out.push(...heldLines(held));
+  out.push(...heldLines(held, cwd));
   return out.join("\n");
 }
 
@@ -332,6 +349,8 @@ export function execute(db, parsed, ctx) {
     case "pending":
       if (parsed.all) return ok(null, renderPendingAll(unresolvedByFolder(db), { now, timezone: tz }));
       return ok(null, renderPending(openQuestions(db, ctx.cwd), ctx.cwd, { now, timezone: tz }, heldQuestions(db, ctx.cwd)));
+    case "review":
+      return refused("review runs on its own line: `ledger review …`, not inside a batch");
     case "bounces":
       return ok(null, renderBounces(db, { since: parsed.since ?? BOUNCES_DEFAULT_SINCE, now }));
     case "doctor": {

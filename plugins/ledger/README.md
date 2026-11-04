@@ -105,7 +105,7 @@ node <plugin dir>/scripts/ledger.mjs help                # the verb table, id gr
 | `reopen <q-id>` | agent | a held question becomes open again, with `asked_at` set to now, because the agent is putting it to you now. |
 | `note "<text>"` | agent | a note row for the cwd; prints `nt-…`. |
 | `outcome <ref> [q-id] "<text>"` | agent | what a decision or an answered question produced: `ref` (required, no spaces) is a PR URL, a commit or a path, and the optional `q-id` links the question. A note row of kind `outcome`; `log` shows `→ <ref>`. It lifts the push gate the same as a `note`; it does not count as the `note` a stated decision needs. |
-| `pending` | either | the paste-ready block, one `<default> <q-id>  # <name> · <body> · default <d> · also: <others> / withdraw` line per open question in the cwd or a parent of it, then `about …`, `ceiling $…`, `allows:` and `due …` lines when set, then one `held <q-id>  # <name> · <body>` line per held question. |
+| `pending` | either | the paste-ready block, one `<default> <q-id>  # <name> · <body> · default <d> · also: <others> / withdraw` line per open question in the cwd, a parent of it or a folder under it (a question from a folder under the cwd ends ` · in <folder>`), then `about …`, `ceiling $…`, `allows:` and `due …` lines when set, then one `held <q-id>  # <name> · <body>` line per held question in the same scope. |
 | `pending --all` | either | every open and held question in the database, whatever its folder: one group per folder headed by the folder's path (groups in path order), each group's open questions as `pending` lines (not numbered: `<n> <word>` answers only the cwd's own list), oldest first, then its held ones marked `held`. For a database shared by several folders. |
 | `log [N]` | either | the last N notes, questions and answers for the cwd (default 20), newest first, across sessions. |
 | `enable` / `disable` | human | writes `"enabled": true` / `false` to `.ledger.json` in the cwd, keeping any other keys in it. An unparsable existing file is refused, not overwritten. `/ledger:enable` and `/ledger:disable` run these in the session's folder. |
@@ -165,7 +165,7 @@ session's folder and dated after the session started.
 
 | Event | Config key | What it does |
 |---|---|---|
-| SessionStart | `hooks.sessionStart` | Injects, in order and only when non-empty: *Waiting on you* (held questions for the cwd, oldest first, name and one-line body; kept on `source: compact`), open questions for the cwd (the `pending` block), the last `inject.notes` entries of `log`, the exact invocation plus allow rule and a one-line verb summary, and, when `inject.elsewhere` is on, one line counting the open and held questions in other folders (a folder that is not the cwd, not a parent of it and not under it): `ledger: N question(s) waiting on you in M other folder(s); run \`… pending --all\` to see them.`, omitted when there are none. Capped at 9,000 characters; the log entries are cut first, never the held or open questions or the other-folders line. On `source: compact` the log section is dropped and the verb summary is one line; the other-folders line stays. Records the session in `cc_sessions`. |
+| SessionStart | `hooks.sessionStart` | Injects, in order and only when non-empty: *Waiting on you* (held questions for the cwd, its parents and the folders under it, oldest first, name and one-line body, a subfolder's naming the folder; kept on `source: compact`), open questions for the same scope (the `pending` block), the last `inject.notes` entries of `log`, the exact invocation plus allow rule and a one-line verb summary, when `inject.elsewhere` is on one line counting the open and held questions in other folders (a folder that is not the cwd, not a parent of it and not under it): `ledger: N question(s) waiting on you in M other folder(s); run \`… pending --all\` to see them.`, the cross-lab review findings line (see [Cross-lab review](#cross-lab-review)), and, last, the doctor line (see [Doctor and the bounce ledger](#doctor-and-the-bounce-ledger)). Capped at 9,000 characters; the log entries are cut first, never the held or open questions or the other-folders, review or doctor lines. On `source: compact` the log section is dropped and the verb summary is one line; the other-folders, review and doctor lines stay. Records the session in `cc_sessions`. |
 | PreToolUse | `hooks.preToolUse` | Runs on `AskUserQuestion` and `Bash` only. `AskUserQuestion` is denied while no question is open for the cwd (a question whose cwd equals the hook cwd or is an ancestor of it), with the reason `ledger: ask the question through the ledger first: \`… ask "<body>" --name <short> --options a,b --default a\`, then ask it; keep the q- id to yourself and record the reply with \`… answer <q-id> <option>\`.` A Bash command that runs `git push` or `gh pr create` (any simple command of a `&&`/`;`/`|`/newline chain; git's global options and a path on the binary are tolerated) is denied while the session has no `note` and no `outcome`, with the reason `ledger: record what this push is before pushing: \`… note "<what and why>"\` or \`… outcome <ref> "<what and why>"\` (one in this session lifts the gate).` Before denying it proves the store can take a write (the remedy writes); if it cannot, the tool passes with a `systemMessage`. Other tools and other commands are never seen. |
 | Stop | `hooks.stop` | Checks the final message once per turn (keyed on `prompt_id`; a second Stop in the same turn passes). Answer rule (`forcing.stopAskRule`): the Stop's `prompt_id` differs from the one stamped by the session's previous Stop (so you wrote since), and the session has open questions asked at or before that previous Stop → `{"decision":"block","reason":…}` listing them newest first and telling the agent to take the answer from your latest message and run `answer <q-id> <option>` (or `withdraw`); it clears once every such question is answered or withdrawn. Ask rule (same switch): after removing code blocks and inline code, a line ends with `?` and the session has no open question row → block telling the agent to `ask` first, then ask in plain words; messages under 40 substantive characters are not checked. Neither rule reads ids out of the reply. A session's questions are those tagged with its id, plus untagged ones asked in or around its folder after it started. Decision rule (`forcing.stopDecisionRule`): after also removing double-quoted spans, the message contains one of `forcing.decisionPhrases` as whole words and the session recorded no `note` during this turn → block telling the agent to `note`, then finish. Checked in the order answer, ask, decision. Every Stop stamps `cc_sessions.last_stop_at` and `last_stop_prompt`; "this turn" runs from the previous stamp (or the session start) to now. |
 | SessionEnd | `hooks.sessionEnd` | Stamps `ended_at` and the reason on the session row. Touches nothing else. Prints nothing; errors go to the log. |
@@ -200,6 +200,10 @@ defaults verbatim.
 | `inject.elsewhere` | `true` | whether SessionStart adds the one line counting open and held questions in other folders; `false` turns it off |
 | `inject.answers` | `true` | whether each prompt tells the session about answers to its questions recorded in other sessions since its last prompt; `false` turns it off |
 | `inject.doctor` | `true` | whether SessionStart adds, last, `ledger: doctor reports N issue(s); run … doctor` when the cheap doctor checks find something; `false` turns it off |
+| `review.mode` | `"gate"` | the cross-lab review gate on `git push`, `gh pr create` and `gh pr merge`: `gate` denies a push whose HEAD has no review or has findings, `advise` allows it with a notice, `off` turns the review off. Read from the user file only; a project file's `review` is ignored with a notice |
+| `review.labs` | `["codex"]` | the labs `ledger review` runs, in parallel: any of `codex`, `kimi`, `claude`, `glm`. User file only |
+| `review.models` | `null` | a model per lab, e.g. `{"claude": "opus", "glm": "zai/glm-5.3-flash"}`; unset means the lab's CLI default (`glm`: `zai/glm-5.3`). User file only |
+| `review.profiles` | `null` | an `omp` profile per omp-backed lab, e.g. `{"glm": "work"}`; unset means `agent-system-2` for `glm`. User file only |
 
 The default `forcing.decisionPhrases`: `I decided`, `decided to`, `assumption:`, `assuming`,
 `going with`, `instead of`, `chose`, `I'll go with`, `trade-off`. A project file can replace the
@@ -227,6 +231,8 @@ appends one line to `${XDG_STATE_HOME:-~/.local/state}/ledger/errors.log` and te
 | switch off in config | n/a | exit 0 before opening the database | same | same | same | same |
 | project disabled (`"enabled": false`) | the CLI works regardless | exit 0 before opening the database, nothing printed | same | same | same | same |
 | bounce row cannot be written | n/a | n/a | the deny or allow stands; one `errors.log` line | the block or pass stands; one `errors.log` line | the end stamp stands; one `errors.log` line | n/a |
+| review lab unavailable (no binary, non-zero exit, timeout, empty reply) | `ledger review` records the lab `unavailable` with the error, exit 0 | n/a | the lab is left out of the verdict and named in a `systemMessage`; every lab unavailable allows the push with a `systemMessage` | n/a | n/a | n/a |
+| review gate cannot decide (git fails, a query throws) | n/a | the findings line is left out | allows the push with a `systemMessage`; one `errors.log` line | n/a | n/a | n/a |
 
 ## Doctor and the bounce ledger
 
@@ -240,6 +246,7 @@ appends one line to `${XDG_STATE_HOME:-~/.local/state}/ledger/errors.log` and te
 | `hooks` | `hooks/hooks.json` lists SessionStart, UserPromptSubmit, PreToolUse, Stop and SessionEnd, and each script exists | | an event or a script is missing |
 | `errors` | no `errors.log` lines in the last 7 days | lines in the last 7 days: counted per hook, the last 5 printed | |
 | `bounces` | no open bounce rows older than 24 hours | open rows older than 24 hours, counted per rule | |
+| `review <lab>` | one per lab in `review.labs` (none when `review.mode` is `off`): the lab's binary is on `PATH` | the binary is missing | |
 
 Doctor opens the database read-only and never creates or migrates it. The SessionStart doctor
 line does not run all of this on every start: it runs only the cheap checks (the database
@@ -257,10 +264,43 @@ session, `prompt_id`, tool and time. A row starts open and is closed once:
 | `stopDecisionRule` | a later Stop of the same session and `prompt_id` finds a `note` the session recorded after the bounce |
 | `denyAskWithoutRow` | a later `AskUserQuestion` in the same session is allowed |
 | `pushNeedsNote` | a later `git push` / `gh pr create` in the same session is allowed |
+| `reviewGate` | a later `git push` / `gh pr create` / `gh pr merge` in the same session passes the review gate without a notice |
 
 The Stop rules are matched on the remedy, not by re-reading the reply, so a reply that only drops
 the question mark or the decision phrase leaves its row open. At SessionEnd every row still open
 for the session becomes `bypassed`. `cc_sessions.last_block_*` is unchanged.
+
+## Cross-lab review
+
+`ledger review` sends the branch's diff (`git diff <base>..HEAD`; the default base is the
+merge-base with `origin/main`, else `HEAD~1`; `--base <ref>` overrides it) to every lab in
+`review.labs` at once and records one `cc_reviews` row per lab for the HEAD commit: `pass`,
+`findings` (the lab's numbered list) or `unavailable` (the error). `--labs a,b` runs only those
+labs this once. Each lab has 240 seconds.
+
+| Lab | How it is run |
+| :- | :- |
+| `codex` | `codex exec --skip-git-repo-check --ephemeral -s read-only --color never -` with the prompt and diff on stdin; `-m` from `review.models.codex` |
+| `kimi` | `kimi -p "<prompt and diff>" --output-format text` (its CLI takes no stdin prompt, so a diff over 200 kB is recorded `unavailable`); `-m` from `review.models.kimi` |
+| `claude` | `claude -p "<prompt>" --no-session-persistence` with the diff on stdin; `--model` from `review.models.claude` |
+| `glm` | Z.ai GLM through `omp -p --no-session --no-tools --profile agent-system-2 --model zai/glm-5.3 @<diff file> "<prompt>"`; profile and model from `review.profiles.glm` and `review.models.glm` |
+
+`LEDGER_REVIEW_BIN_<LAB>` (e.g. `LEDGER_REVIEW_BIN_CODEX`) points a lab at another binary.
+
+The gate reads the rows for HEAD, strictest first: a `waived` row lets HEAD through; any lab
+whose latest row is `findings` (and not followed by `addressed`) denies, with the findings
+grouped by lab; no row at all denies; labs that were `unavailable` are left out and named in a
+notice, and when every lab was unavailable the push is allowed with a notice. A new commit is a
+new HEAD, so a pass does not carry over.
+
+| Verb | Effect |
+| :- | :- |
+| `review status` | the gate's state for HEAD and every row for it, per lab |
+| `review addressed` | records that HEAD fixes the findings on an earlier commit (refused when there were none) |
+| `review waive "<why>"` | lets HEAD through; the reason is required and recorded. This is the way out when the human is prototyping or needs the push anyway |
+
+SessionStart adds `ledger: cross-lab review found N finding(s) on <sha>; run … review status`
+when HEAD has open findings (not when `review.mode` is `off`).
 
 ## Inspecting the database
 

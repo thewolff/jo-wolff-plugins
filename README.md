@@ -515,8 +515,16 @@ version, recent `errors.log` lines) finds something; `inject.doctor: false` turn
 Every Stop block and PreToolUse deny now writes a row to a new `cc_bounces` table, marked
 `satisfied` when the remedy happens later in the session and `bypassed` at session end
 otherwise, and `ledger bounces [--since 7d]` counts them per rule, so the rules that only get
-walked past can be found and retired. Opening a 0.2.3 database migrates it to schema version 6
-by creating new tables; no existing table is touched.
+walked past can be found and retired. A cross-lab review gate now stands in front of `git push`,
+`gh pr create` and `gh pr merge`: `ledger review` sends the branch's diff to the labs in
+`review.labs` (`codex`, `kimi`, `claude`, and `glm` through `omp`) in parallel and records each
+verdict for the HEAD commit in a new `cc_reviews` table; the push is denied while HEAD has no
+review or has findings, a lab that cannot run is named and left out, and `ledger review waive
+"<reason>"` lets a commit through with the human's reason on record. `review.mode` (`gate` by
+default, or `advise`, or `off`) is read from the user config file only. Session start now also
+shows the open and held questions asked in folders under the session's folder, each naming its
+folder, and `pending` lists them the same way. Opening a 0.2.3 database migrates it to schema
+version 6 by creating new tables; no existing table is touched.
 
 Changes in 0.2.3: one database shared by every folder is now readable across folders.
 `ledger pending --all` lists every open and held question in the database, grouped under the

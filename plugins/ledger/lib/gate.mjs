@@ -33,7 +33,7 @@ export function evaluate(input, { db, config, cwd, cli = "ledger", sessionId = n
   const forcing = config.forcing ?? {};
   if (input.tool_name === "AskUserQuestion") {
     if (forcing.denyAskWithoutRow === false) return null;
-    if (openQuestions(db, cwd).length) return null;
+    if (openQuestions(db, cwd, { below: false }).length) return null;
     return {
       rule: "denyAskWithoutRow",
       reason: `ledger: ask the question through the ledger first: \`${cli} ask "<body>" --name <short> --options a,b --default a\`, then ask it; keep the q- id to yourself and record the reply with \`${cli} answer <q-id> <option>\`.`,
@@ -56,10 +56,11 @@ const GIT_OPT_WITH_ARG = new Set(["-C", "-c", "--git-dir", "--work-tree", "--nam
 
 /**
  * True when any simple command in `command` (split on newlines, `&&`, `||`, `;`, `|`) is
- * `git push …` or `gh pr create …`, with a path or `command`/`\` prefix on the binary and
- * git's global options tolerated. A string that does not look like either is not a push.
+ * `git push …` or `gh pr <sub> …` for a `sub` in `ghPr` (default `create`), with a path or
+ * `command`/`\` prefix on the binary and git's global options tolerated. A string that does
+ * not look like either is not a push. The review gate passes `["create", "merge"]`.
  */
-export function isPushCommand(command) {
+export function isPushCommand(command, ghPr = ["create"]) {
   if (typeof command !== "string" || !command.trim()) return false;
   for (const segment of command.split(/\n|&&|\|\||;|\|/)) {
     const tokens = segment.trim().split(/\s+/).filter(Boolean);
@@ -67,7 +68,7 @@ export function isPushCommand(command) {
     if (!tokens.length) continue;
     const bin = tokens[0].replace(/^\\/, "").split("/").pop();
     if (bin === "gh") {
-      if (tokens[1] === "pr" && tokens[2] === "create") return true;
+      if (tokens[1] === "pr" && ghPr.includes(tokens[2])) return true;
       continue;
     }
     if (bin !== "git") continue;

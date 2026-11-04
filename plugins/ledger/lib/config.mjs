@@ -44,7 +44,11 @@ export const DEFAULTS = Object.freeze({
     decisionPhrases: Object.freeze(["I decided", "decided to", "assumption:", "assuming", "going with", "instead of", "chose", "I'll go with", "trade-off"]),
   }),
   inject: Object.freeze({ notes: 5, elsewhere: true, answers: true, doctor: true }),
+  review: Object.freeze({ mode: "gate", labs: Object.freeze(["codex"]), models: null, profiles: null }),
 });
+
+/** Keys only the user file (and the defaults) may set: a project file's value for them is ignored. */
+export const USER_ONLY_KEYS = Object.freeze(["review"]);
 
 // Type of each leaf, for the wrong-type notice. Nested objects list their leaves.
 const SHAPE = {
@@ -55,6 +59,7 @@ const SHAPE = {
   hooks: { sessionStart: "boolean", preToolUse: "boolean", stop: "boolean", sessionEnd: "boolean", userPromptCommands: "boolean" },
   forcing: { denyAskWithoutRow: "boolean", stopAskRule: "boolean", pushNeedsNote: "boolean", stopDecisionRule: "boolean", decisionPhrases: "string[]" },
   inject: { notes: "integer", elsewhere: "boolean", answers: "boolean", doctor: "boolean" },
+  review: { mode: "off|advise|gate", labs: "string[]", models: "{lab: string}|null", profiles: "{lab: string}|null" },
 };
 
 /** Every leaf key in dotted form, in SHAPE order. */
@@ -126,6 +131,10 @@ function typeOk(expected, value) {
       return Number.isInteger(value) && value >= 0;
     case "string[]":
       return Array.isArray(value) && value.every((v) => typeof v === "string" && v.trim().length > 0);
+    case "off|advise|gate":
+      return ["off", "advise", "gate"].includes(value);
+    case "{lab: string}|null":
+      return value === null || (typeof value === "object" && !Array.isArray(value) && Object.values(value).every((v) => typeof v === "string" && v.length > 0));
     default:
       return false;
   }
@@ -157,6 +166,10 @@ export function readConfigFile(path, notices) {
 function applyFile(config, sources, notices, path, fileValue, label) {
   for (const [key, shape] of Object.entries(SHAPE)) {
     if (!(key in fileValue)) continue;
+    if (label === "project file" && USER_ONLY_KEYS.includes(key)) {
+      notices.push(`ledger: config ${path}: ${key} is read from the user file only; ignoring it here`);
+      continue;
+    }
     const given = fileValue[key];
     if (typeof shape === "object") {
       if (given === null || typeof given !== "object" || Array.isArray(given)) {

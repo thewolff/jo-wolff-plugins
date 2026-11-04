@@ -73,6 +73,25 @@ test("a question in a parent or a subfolder of the session folder is in scope, n
   assert.deepEqual(elsewhereLines(injected(box)), []);
 });
 
+test("a session in a parent folder sees a subfolder's open and held questions at SessionStart and in pending, each naming its folder", () => {
+  const box = sandbox();
+  const child = `${box.work}/projects-trial`;
+  const open = askQuestion(box, { name: "child open", cwd: child });
+  const held = askQuestion(box, { name: "child held", cwd: child });
+  apply(box, [`hold ${held}`], { cwd: child });
+  askQuestion(box, { name: "unrelated", cwd: box.sibling });
+  const text = injected(box);
+  assert.match(text, new RegExp(`^1\\. \\S+ ${open}  # child open · .* · in ${child}$`, "m"));
+  assert.match(text, new RegExp(`^- child held: .* \\(${held}, in ${child}\\)$`, "m"));
+  assert.deepEqual(elsewhereLines(text), [`ledger: 1 question waiting on you in 1 other folder; run \`${invocation()} pending --all\` to see them.`]);
+  const pending = cli(box, ["pending"]).out;
+  assert.match(pending, new RegExp(`^1\\. \\S+ ${open}  # child open .* · in ${child}$`, "m"));
+  assert.match(pending, new RegExp(`^held ${held}  # child held · .* · in ${child}$`, "m"));
+  assert.ok(!pending.includes("unrelated"), pending);
+  // From the subfolder itself, its own questions carry no folder suffix.
+  assert.ok(!cli(box, ["pending"], { env: { LEDGER_CWD: child } }).out.includes(" · in "));
+});
+
 test("inject.elsewhere false → no line; compact source still carries it", () => {
   const box = sandbox();
   askQuestion(box, { name: "over there", cwd: box.sibling });

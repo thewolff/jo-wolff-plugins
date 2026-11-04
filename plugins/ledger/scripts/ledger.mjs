@@ -27,6 +27,9 @@ import { openStore, makeCtx, resolveCwd } from "../lib/store.mjs";
 import { runBatch, formatBatch, batchJson, exitCodeFor, busyWord } from "../lib/batch.mjs";
 import { renderHelp, setEnabled } from "../lib/commands.mjs";
 import { renderDoctor, runDoctor } from "../lib/doctor.mjs";
+import { parseLine } from "../lib/parse.mjs";
+import { addressed, runReview, status as reviewStatus, waive } from "../lib/review.mjs";
+import { invocation } from "../lib/inject.mjs";
 
 /** Pull the CLI's own flags out of argv; everything else is the command. */
 export function splitCliFlags(argv) {
@@ -99,9 +102,13 @@ export function main(argv = process.argv.slice(2), { env = process.env, stdin = 
   }
   for (const n of store.notices) err(`${n}\n`);
 
+  // LEDGER_SESSION_ID is exported by the SessionStart hook into the session's shell environment.
+  const sessionId = /^[A-Za-z0-9_.-]+$/.test(env.LEDGER_SESSION_ID ?? "") ? env.LEDGER_SESSION_ID : null;
+
+  // `review` runs alone (it waits on other labs' CLIs, so it is async and never part of a batch).
+  if (cli.rest.length && cli.rest[0].toLowerCase() === "review") return runReviewVerb({ store, cwd, env, sessionId, tokens: cli.rest, out });
+
   try {
-    // LEDGER_SESSION_ID is exported by the SessionStart hook into the session's shell environment.
-    const sessionId = /^[A-Za-z0-9_.-]+$/.test(env.LEDGER_SESSION_ID ?? "") ? env.LEDGER_SESSION_ID : null;
     const ctx = makeCtx({ store, cwd, via: "cli", by: cli.by, sessionId });
     const batch = runBatch(lines, { db: store.db, ctx });
     // Busy with nothing applied: one stderr line and nothing on stdout (the fail-open table's row).
@@ -121,6 +128,31 @@ export function main(argv = process.argv.slice(2), { env = process.env, stdin = 
   }
 }
 
+async function runReviewVerb({ store, cwd, env, sessionId, tokens, out }) {
+  try {
+    const parsed = parseLine(tokens.join(" "), undefined, tokens);
+    if (parsed.kind !== "command") {
+      out(`${parsed.kind === "refused" ? `refused ${parsed.reason}` : parsed.hint}\n`);
+      return 1;
+    }
+    const common = { db: store.db, dbPath: store.dbPath, cwd, sessionId };
+    let r;
+    if (parsed.action === "status") r = reviewStatus({ db: store.db, cwd, config: store.config, cli: invocation() });
+    else if (parsed.action === "addressed") r = addressed(common);
+    else if (parsed.action === "waive") r = waive({ ...common, reason: parsed.reason });
+    else if ((store.config.review?.mode ?? "gate") === "off") r = { code: 0, text: "review.mode is off in the user config; nothing reviewed" };
+    else r = await runReview({ ...common, env, config: store.config, labs: parsed.labs, base: parsed.base });
+    out(`${r.text}\n`);
+    return r.code;
+  } finally {
+    try {
+      store.db.close();
+    } catch {
+      /* already closed */
+    }
+  }
+}
+
 const invoked = (() => {
   try {
     return realpathSync(process.argv[1]) === realpathSync(fileURLToPath(import.meta.url));
@@ -128,4 +160,4 @@ const invoked = (() => {
     return false;
   }
 })();
-if (invoked) process.exit(main());
+if (invoked) process.exit(await main());
