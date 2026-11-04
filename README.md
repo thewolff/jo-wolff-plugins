@@ -38,6 +38,12 @@ it, keeping a record of what it did and asked, and a vendored set of engineering
   ledger 0.3.5's `gate check` enforces; see the plugin's
   [release notes](plugins/as2-skills/README.md#changes-in-012). Changes in as2-skills 0.1.1:
   the triad and quorum fan-out scripts ship their `lib/leg-runner.sh`.
+- **[delegation](#delegation)** — teach the agent the brief a subagent is handed (a SessionStart
+  block and a skill with a worked example), then gate on it: a spawn without `## How it fails` is
+  refused with the section to fill in, a builder-class spawn also needs `## Spiral bound` and a
+  pattern-check receipt, an undeliverable message is marked NOT delivered, and a builder report
+  without `Stopped because:` draws a warning. Plus the eleven general agents and three guards
+  ported from newdle. Changes in delegation 0.1.0: first release.
 - **[ctx-watch](#ctx-watch)** — notice when the ctx daemon is dead, unsupervised,
   or stale, repair it with the one command ctx documents, and say so at SessionStart and in a
   macOS popup from a launchd timer; the SessionStart line also says when the timer itself has
@@ -66,6 +72,7 @@ the receipt.
 /plugin install as2-skills@jo-wolff-plugins
 /plugin install plugin-kit@jo-wolff-plugins
 /plugin install ctx-watch@jo-wolff-plugins
+/plugin install delegation@jo-wolff-plugins
 ```
 
 On OMP, from a shell:
@@ -81,6 +88,7 @@ omp plugin install pattern-check@jo-wolff-plugins
 omp plugin install as2-skills@jo-wolff-plugins
 omp plugin install plugin-kit@jo-wolff-plugins
 omp plugin install ctx-watch@jo-wolff-plugins
+omp plugin install delegation@jo-wolff-plugins
 ```
 
 Inside a running OMP session the commands are `/marketplace add` and `/marketplace install`, with
@@ -88,7 +96,8 @@ the same arguments. `/plugin install` inside OMP installs nothing. On OMP output
 skill only; its hooks do not run there. i-have-audhd and paired-coding install OMP extensions
 that run their hooks, and ask-graham installs its prompt nudge (see each section). plugin-kit
 is a skill and a script, so it works on both. ctx-watch's SessionStart line is Claude Code
-only; its skill, CLI and launchd timer work on both. ledger is Claude Code only.
+only; its skill, CLI and launchd timer work on both. ledger is Claude Code only. delegation's
+gates, teaching block and agents run on both; its three ported guards are Claude Code only.
 
 To update, update each harness separately. On OMP, refresh the marketplace first, because
 `omp plugin upgrade` installs the version in OMP's cached copy of it:
@@ -1026,6 +1035,44 @@ Then, once, from your own Terminal: `node <plugin dir>/scripts/ctx-watch.mjs ins
 
 The tests run with `node --test` from inside `plugins/ctx-watch/`. The ctx captures in
 `test/fixtures/` are re-made by `test/fixtures/capture.sh`, by hand.
+
+## delegation
+
+Teach an agent the brief a subagent is handed, then gate on it. Every session gets a block
+under 25 lines at SessionStart with the brief's skeleton inline (`# Target` with non-goals,
+`# Change`, `# Acceptance`, `## How it fails`, `## Spiral bound`, the closing `Stopped
+because:` line), and the `delegation` skill carries the lesson with a worked example. A
+PreToolUse gate on `Agent`/`Task` refuses a spawn whose prompt has no `## How it fails`
+heading, and a builder-class spawn (`builder`, `beefy-builder`, `task`, `sonic`,
+`general-purpose`, or your `builderClass` list) without `## Spiral bound` or without this
+session's pattern-check receipt; the refusal carries the missing section verbatim, so the brief
+is repaired from the refusal alone. A PostToolUse check marks a `SendMessage` the host could not
+deliver as NOT delivered next to its result. A SubagentStop warning names the exact `Stopped
+because:` line a builder report ended without. On OMP the same gates run on the `task` tool and
+its results. Alongside: eleven agents (`auditor`, `builder`, `changelog`, `checker`, `debugger`,
+`planner`, `reader`, `research`, `scout`, `storyteller`, `summarizer`) and three guards
+(`delegation-guard`, `worktree-spawn-guard`, `repo-rules-inject`) ported from newdle 0.2.175 with
+their repository-specific lines removed; the per-file list is in the plugin README. Built on
+plugin-kit; Node 22.13 or later. The gate texts, the config and the failure table are in
+[`plugins/delegation/README.md`](plugins/delegation/README.md).
+
+### Install
+
+```
+/plugin marketplace add thewolff/jo-wolff-plugins
+/plugin install delegation@jo-wolff-plugins
+```
+
+On OMP: `omp plugin marketplace add thewolff/jo-wolff-plugins` then
+`omp plugin install delegation@jo-wolff-plugins`. The agents preload the `output-types` skill
+and some `as2-skills` skills, both sibling plugins installed separately. Gate 2 names the
+`pattern-check` plugin's command; without it installed the refusal says to install it, or set
+`requirePatternCheck: false` in `${XDG_CONFIG_HOME:-~/.config}/delegation/config.json`.
+
+### Developing delegation
+
+The tests run with `node --test` from inside `plugins/delegation/`; every hook is spawned
+through the fail-open runner with its 4 s deadline in an empty HOME and XDG sandbox.
 
 ## License
 
