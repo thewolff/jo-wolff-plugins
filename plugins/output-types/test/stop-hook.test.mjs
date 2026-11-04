@@ -207,13 +207,36 @@ test("judge off by default: with no config, and with judge:false, the command is
   assert.equal(judge.calls(), "");
 });
 
-test("judge on, no command anywhere → the mechanical result only, nothing logged", () => {
+test("judge on, no command anywhere → the mechanical result only; nothing logged when nothing was receipted, one skipped.log line naming where it looked when something was", () => {
   const box = sandbox();
   const dir = configDir(box, { judge: true });
   const r = runStop(box, { input: stopPayload(box, transcript(box, UNRECEIPTED)), env: { XDG_CONFIG_HOME: dir } });
   assertAllows(r);
   assert.match(r.json.systemMessage, /^output-types: 2 labelled/);
-  assert.ok(!existsSync(join(box.root, "state", "output-types", "skipped.log")));
+  const skipped = join(box.root, "state", "output-types", "skipped.log");
+  assert.ok(!existsSync(skipped));
+  const receipted = runStop(box, { input: stopPayload(box, transcript(box, RECEIPTED)), env: { XDG_CONFIG_HOME: dir } });
+  assertAllows(receipted);
+  assert.equal(receipted.stdout, "");
+  const lines = readFileSync(skipped, "utf8").split("\n").filter(Boolean);
+  assert.equal(lines.length, 1);
+  assert.match(lines[0], /^\S+Z hooks\/output-types-stop\.mjs judge not run: judge is on but no command is configured; looked in: env OUTPUT_TYPES_JUDGE_BIN, judgeCommand in /);
+});
+
+test("judge on, shared judge file malformed (legacy profile present) → the judge does not run and one skipped.log line names the malformed file", () => {
+  const box = sandbox();
+  const dir = configDir(box, { judge: true });
+  mkdirSync(join(dir, "judge"), { recursive: true });
+  writeFileSync(join(dir, "judge", "config.json"), '{ "command": "old", }');
+  mkdirSync(join(box.home, ".claude"), { recursive: true });
+  writeFileSync(join(box.home, ".claude", "i-have-audhd.json"), JSON.stringify({ enforcement: { judgeCommand: "echo '{\"verdict\":\"fail\",\"reason\":\"legacy\"}'" } }));
+  const r = runStop(box, { input: stopPayload(box, transcript(box, RECEIPTED)), env: { XDG_CONFIG_HOME: dir } });
+  assertAllows(r);
+  assert.equal(r.stdout, "", "the legacy judge was not consulted");
+  const lines = readFileSync(join(box.root, "state", "output-types", "skipped.log"), "utf8").split("\n").filter(Boolean);
+  assert.equal(lines.length, 1);
+  assert.ok(lines[0].includes(`judge not run: the shared judge file is malformed (${join(dir, "judge", "config.json")}: `), lines[0]);
+  assert.equal(box.readErrors(), "");
 });
 
 test("judge on with the shared command: one call per receipted statement, a fail joins the warning after the mechanical lines in message order; unreceipted statements are not sent", () => {

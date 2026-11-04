@@ -16,7 +16,9 @@
 // judgeCommand in that file → ~/.config/judge/config.json → i-have-audhd's profile): one call per
 // statement that passed the mechanical stage, asking whether the receipt licenses the sentence.
 // A fail or an unreadable verdict joins the same warning; a dispatch error is one line in
-// ${XDG_STATE_HOME:-~/.local/state}/output-types/skipped.log and the check goes on.
+// ${XDG_STATE_HOME:-~/.local/state}/output-types/skipped.log and the check goes on. Judge on but
+// no command resolved (none configured, or the shared judge file malformed) is one skipped.log
+// line naming which.
 //
 // How it fails: stdin not JSON, a thrown error, or no answer at the deadline → the runner logs it
 // to ${XDG_STATE_HOME:-~/.local/state}/output-types/errors.log and allows. The deadline is the
@@ -33,7 +35,7 @@
 
 import { readFileSync } from "node:fs";
 import { DEADLINE_MS, invokedDirectly, runHook } from "../lib/hook-runner.mjs";
-import { extractStatements, judgeEnabled, judgeFor, judgeStage, missingReceipt, renderWarning } from "../lib/receipts.mjs";
+import { extractStatements, judgeEnabled, judgeFor, judgeStage, logSkipped, missingReceipt, noJudgeReason, renderWarning } from "../lib/receipts.mjs";
 
 export const JUDGE_DEADLINE_MS = 55_000;
 
@@ -105,6 +107,7 @@ export async function handle(input, { env = process.env, startedAt = runnerStart
     // OUTPUT_TYPES_STOP_DEADLINE_MS is for tests: the runner's deadline and the judge budget follow it together.
     const budget = budgetMs ?? (Number(env.HOOK_RUNNER_DEADLINE_MS) || Number(env.OUTPUT_TYPES_STOP_DEADLINE_MS) || JUDGE_DEADLINE_MS);
     if (judge) findings.push(...(await judgeStage(receipted, judge, { env, startedAt, budgetMs: budget, run })));
+    else logSkipped(noJudgeReason(env), env);
   }
   findings.sort((a, b) => a.statement.line - b.statement.line);
   const message = renderWarning(findings);
