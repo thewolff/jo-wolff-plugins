@@ -519,10 +519,14 @@ capped at 8 kB and says when it was cut. Session start now also
 shows the open and held questions asked in folders under the session's folder, each naming its
 folder, and `pending` lists them the same way. Reviewers run without tools, from an empty
 scratch folder, with an allowlisted environment. The gate checks the commit a command actually
-publishes (`cd` and `git -C` folders, refspecs, git's own choice when no refspec is given, the
-remote branch `gh pr create --head` names, the pull request `gh pr merge` names, pushes inside
-`$(…)`), and allows with a notice when it cannot tell; a merge not bound with
-`--match-head-commit` gets a notice naming the commit checked. Opening a 0.2.3 database migrates it to schema
+publishes (`cd` and `git -C` folders, each in its own shell scope, refspecs, git's own choice
+when no refspec is given, the branch `gh pr create --head` names as the remote has it now, read
+with a bounded `git ls-remote`, the pull request `gh pr merge` names, pushes inside `$(…)`), and
+allows with a notice when it cannot tell, including a `-c` or `GIT_CONFIG*` setting that steers
+the push and a remote that does not answer in 5 seconds; a merge not bound with
+`--match-head-commit` gets a notice naming the commit checked. `review --base` narrows only the
+diff the labs read, and a later review of an older commit clears nothing found on a newer one.
+Opening a 0.2.3 database migrates it to schema
 version 6 by creating new tables; no existing table is touched. A push missing both a note and a
 review is denied once, naming both. The Stop ask rule now catches a question mid-line ("Should
 I …? I'd say yes."); the decision rule stands down when the reply asks a question recorded that

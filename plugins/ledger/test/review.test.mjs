@@ -581,19 +581,29 @@ test("R2-B1: a matching push, a configured push refspec and push.default matchin
   assert.equal(push(b, "git push").out, "", "push.default nothing publishes nothing");
 });
 
-test("R2-B2: gh pr create --head checks the remote branch, not the local one; an unbound merge names the commit checked", () => {
+test("R2-B2 and R3-B4: gh pr create --head checks the branch on the remote as it is now, never a tracking ref; an unbound merge names the commit checked", () => {
   const b = repo();
   review(b, [], { LEDGER_REVIEW_BIN_CODEX: stub(b, "codex", "PASS") });
   const reviewed = git(b, "rev-parse", "HEAD");
   git(b, "checkout", "-q", "-b", "elsewhere");
   const unreviewed = commit(b, "r.txt", "remote\n");
   git(b, "checkout", "-q", "feat");
-  git(b, "update-ref", "refs/remotes/origin/feat", unreviewed);
-  assert.equal(decision(push(b, "gh pr create --head feat --title t")), "deny", "origin/feat is the pull request's head, and it is unreviewed");
+  const remote = join(b.sibling, "remote.git");
+  assert.equal(spawnSync("git", ["init", "-q", "--bare", remote]).status, 0);
+  git(b, "remote", "add", "origin", remote);
+  git(b, "push", "-q", "origin", "elsewhere:feat");
+  // The tracking ref says the reviewed commit; the remote has moved on to an unreviewed one.
   git(b, "update-ref", "refs/remotes/origin/feat", reviewed);
-  assert.equal(push(b, "gh pr create --head feat --title t").out, "");
+  assert.equal(decision(push(b, "gh pr create --head feat --title t")), "deny", "the remote's feat is the pull request's head, and it is unreviewed");
+  git(b, "push", "-qf", "origin", "feat:feat");
+  git(b, "update-ref", "refs/remotes/origin/feat", unreviewed);
+  assert.equal(push(b, "gh pr create --head feat --title t").out, "", "the remote's feat is reviewed, whatever the tracking ref says");
   assert.match(push(b, "gh pr create --head someone:feat --title t").json.systemMessage, /names another owner's branch/);
-  assert.match(push(b, "gh pr create --head nowhere --title t").json.systemMessage, /no remote-tracking ref for it is here/);
+  assert.match(push(b, "gh pr create --head nowhere --title t").json.systemMessage, /origin has no refs\/heads\/nowhere; a local remote-tracking ref may be stale, so it was not used/);
+  git(b, "remote", "set-url", "origin", join(b.sibling, "gone.git"));
+  const gone = push(b, "gh pr create --head feat --title t");
+  assert.equal(decision(gone), "allow");
+  assert.match(gone.json.systemMessage, /git ls-remote origin could not read it \(exit \d+\); a local remote-tracking ref may be stale/);
   const p = push(b, "gh pr merge 7 --rebase", ghStub(b, reviewed));
   assert.equal(decision(p), "allow");
   assert.match(p.json.systemMessage, new RegExp(`checked ${reviewed.slice(0, 8)}, the pull request's head as gh reports it now.*--match-head-commit ${reviewed}`));
@@ -690,4 +700,83 @@ test("R2-S5: the judge passage is capped whole, marks the cut, and names the who
   assert.match(fixed, /\[cut: the finding and change are \d+ bytes; .* sha256 of the whole: [0-9a-f]{64}\]$/);
   assert.notEqual(fixed, broken, "inputs that differ only past the cut are told apart");
   assert.equal(passageFor("short", "diff"), "Finding:\nshort\n\nChange (unified diff):\ndiff");
+});
+
+// Codex review round 3 of 0.3.0: one regression per finding fixed.
+
+test("R3-B1: --base changes only the diff the labs read; it cannot drop a finding without the judge", () => {
+  const b = repo();
+  review(b, [], { LEDGER_REVIEW_BIN_CODEX: stub(b, "codex", "1. [blocking] b.txt:1 wrong value") });
+  const no = judge(b, "no");
+  let r = review(b, ["--base", "HEAD"], { LEDGER_REVIEW_BIN_CODEX: stub(b, "codex", "PASS"), LEDGER_JUDGE_BIN: no });
+  assert.match(r.out, /^ {2}judge no: \[blocking\] b\.txt:1 wrong value \(round 1\)$/m, "an empty diff is not a pass over an open finding");
+  assert.equal(decision(push(b)), "deny");
+  commit(b, "z.txt", "unrelated\n");
+  r = review(b, ["--base", "HEAD~1"], { LEDGER_REVIEW_BIN_CODEX: stub(b, "codex", "PASS"), LEDGER_JUDGE_BIN: no });
+  assert.match(r.out, /round 2 of 3:/, "rounds count from the branch's base, not --base");
+  assert.match(r.out, /^ {2}judge no: \[blocking\] b\.txt:1 wrong value \(round 1\)$/m, "a base moved past the finding's commit still reconciles it");
+  assert.equal(decision(push(b)), "deny");
+  const db = openDb(b);
+  try {
+    assert.equal(new Set(db.prepare("SELECT base_ref FROM cc_reviews WHERE lab = 'codex'").all().map((x) => x.base_ref)).size, 1, "every row records the branch's base");
+  } finally {
+    db.close();
+  }
+});
+
+test("R3-B2: a later review of an ancestor does not clear a descendant's finding", () => {
+  const b = repo();
+  commit(b, "c.txt", "bug\n");
+  review(b, [], { LEDGER_REVIEW_BIN_CODEX: stub(b, "codex", "1. [blocking] c.txt:1 bug") });
+  git(b, "checkout", "-q", "HEAD~1");
+  review(b, [], { LEDGER_REVIEW_BIN_CODEX: stub(b, "codex", "PASS") });
+  git(b, "checkout", "-q", "feat");
+  const r = review(b, [], { LEDGER_REVIEW_BIN_CODEX: stub(b, "codex", "PASS"), LEDGER_JUDGE_BIN: judge(b, "no") });
+  assert.match(r.out, /^ {2}judge no: \[blocking\] c\.txt:1 bug \(round 1\)$/m);
+  assert.equal(decision(push(b)), "deny");
+});
+
+test("R3-B3: command-local git config or environment that steers a push is not followed, so the gate says so", async () => {
+  const { pushOperations } = await import("../lib/gate.mjs");
+  for (const cmd of [
+    "git -c push.default=matching push origin",
+    "git -c remote.origin.push=other:main push origin",
+    "git -c branch.feat.pushRemote=fork push",
+    "git --config-env=push.default=PD push",
+    "git --config-env push.default=PD push",
+    "GIT_CONFIG_PARAMETERS=\"'push.default'='matching'\" git push origin",
+    "export GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=push.default GIT_CONFIG_VALUE_0=matching; git push origin",
+    "env GIT_DIR=/x git push",
+  ]) {
+    assert.ok(pushOperations(cmd)[0].unsupported, cmd);
+  }
+  assert.equal(pushOperations("git -c user.name=x push origin HEAD")[0].unsupported, null, "config that does not steer a push is fine");
+  const b = repo();
+  review(b, [], { LEDGER_REVIEW_BIN_CODEX: stub(b, "codex", "PASS") });
+  const p = push(b, "git -c push.default=matching push origin");
+  assert.equal(decision(p), "allow");
+  assert.match(p.json.systemMessage, /could not tell which commit this command publishes \(-c push\.default is not followed\)/);
+});
+
+test("R3-B4: a remote that hangs is cut off, and the push is allowed with a notice, not denied", () => {
+  const b = repo();
+  review(b, [], { LEDGER_REVIEW_BIN_CODEX: stub(b, "codex", "PASS") });
+  git(b, "config", "protocol.ext.allow", "always");
+  git(b, "remote", "add", "origin", "ext::sleep 30");
+  const started = Date.now();
+  const p = push(b, "gh pr create --head feat --title t");
+  assert.ok(Date.now() - started < 9000, `${Date.now() - started} ms`);
+  assert.equal(decision(p), "allow");
+  assert.match(p.json.systemMessage, /git ls-remote origin timed out after 5s; a local remote-tracking ref may be stale/);
+});
+
+test("R3-S1: a cd inside a subshell or command substitution does not move a later push", async () => {
+  const { pushOperations } = await import("../lib/gate.mjs");
+  for (const cmd of ['echo "$(cd /tmp)"; git push origin HEAD', "(cd /tmp); git push origin HEAD", "(cd /tmp && true) && git push origin HEAD", "x=`cd /tmp`; git push origin HEAD", "(cd $X); git push origin HEAD"]) {
+    const [op] = pushOperations(cmd);
+    assert.deepEqual([op.cds, op.unsupported], [[], null], cmd);
+  }
+  assert.deepEqual(pushOperations("(cd /tmp && git push origin HEAD)")[0].cds, ["/tmp"], "inside the subshell the cd holds");
+  assert.deepEqual(pushOperations("cd /a; (cd b; git push); git push")[0].cds, ["/a", "b"]);
+  assert.deepEqual(pushOperations("cd /a; (cd b; git push); git push")[1].cds, ["/a"]);
 });

@@ -55,6 +55,14 @@ export function evaluate(input, { db, config, cwd, cli = "ledger", sessionId = n
 const GIT_OPT_WITH_ARG = new Set(["-C", "-c", "--git-dir", "--work-tree", "--namespace", "--exec-path", "--super-prefix", "--config-env"]);
 // Words that run the rest of the command line as the command.
 const PREFIX_WORDS = new Set(["command", "env", "exec", "time", "nohup"]);
+// The one-word commands simpleCommands emits around a subshell or command substitution: what
+// runs between them cannot change the directory or environment of what follows.
+export const SCOPE_OPEN = "\0(";
+export const SCOPE_CLOSE = "\0)";
+// Config keys that change which refs a push publishes or where it goes.
+const PUSH_CONFIG = /^(push\.|remote\.pushdefault$|remote\..+\.(push|pushurl|url|mirror)$|branch\..+\.(remote|pushremote|merge)$|url\.)/i;
+// Environment variables that change git's config or repository.
+const GIT_ENV = /^(GIT_CONFIG[A-Z0-9_]*|GIT_DIR|GIT_WORK_TREE|GIT_NAMESPACE)=/;
 
 /** The index of the `)` closing a `$(` whose body starts at `i`; quotes and nesting honoured. */
 function closeParen(s, i) {
@@ -117,7 +125,8 @@ function bodySubstitutions(text) {
  * and redirections with their target are dropped. Command substitutions (`$(…)` and backticks,
  * unquoted, inside double quotes, or in an unquoted here-document body) are scanned as commands
  * of their own, listed before the command they appear in; their text also stays in its word.
- * Here-document bodies are otherwise text.
+ * Here-document bodies are otherwise text. A subshell `( … )` and each command substitution are
+ * bracketed by the one-word commands [SCOPE_OPEN] and [SCOPE_CLOSE].
  * @returns {string[][]}
  */
 export function simpleCommands(text) {
@@ -136,9 +145,10 @@ export function simpleCommands(text) {
     else words.push(word);
     word = null;
   };
+  const scoped = (body) => [[SCOPE_OPEN], ...simpleCommands(body), [SCOPE_CLOSE]];
   const endCmd = () => {
     endWord();
-    for (const body of nested) cmds.push(...simpleCommands(body));
+    for (const body of nested) cmds.push(...scoped(body));
     nested = [];
     if (words.length) cmds.push(words);
     words = [];
@@ -159,7 +169,7 @@ export function simpleCommands(text) {
           if (line === delim) break;
           lines.push(line);
         }
-        if (!quoted) for (const body of bodySubstitutions(lines.join("\n"))) cmds.push(...simpleCommands(body));
+        if (!quoted) for (const body of bodySubstitutions(lines.join("\n"))) cmds.push(...scoped(body));
       }
       continue;
     }
@@ -225,7 +235,11 @@ export function simpleCommands(text) {
       i++;
       while (s[i] === ">" || s[i] === "<" || s[i] === "&" || s[i] === "|") i++;
       dropNext = true;
-    } else if (";&|()".includes(c)) {
+    } else if (c === "(" || c === ")") {
+      endCmd();
+      cmds.push([c === "(" ? SCOPE_OPEN : SCOPE_CLOSE]);
+      i++;
+    } else if (";&|".includes(c)) {
       endCmd();
       i++;
     } else {
@@ -244,35 +258,59 @@ const dynamicDir = (d) => !d || d === "-" || /[$`~*?]/.test(d);
  * The publishing operations in `command`: one per simple command that is `git push …` or
  * `gh pr <sub> …` for a `sub` in `ghPr` (default `create`). Leading `VAR=value` words and
  * `command`/`env`/`exec`/`time`/`nohup` are skipped, a path on the binary is tolerated, and git's
- * global options are read. Every operation carries the `cd` directories run before it in the same
- * command text (`cds`, in order), so a relative `-C` resolves where git would run:
+ * global options are read. Every operation carries the `cd` directories run before it in its own
+ * shell scope (`cds`, in order; a `cd` inside a subshell or command substitution does not reach
+ * past it), so a relative `-C` resolves where git would run:
  *   { tool: "git", cds, dirs: [-C dirs in order], unsupported: <why>|null, args }
  *   { tool: "gh", cds, unsupported: <why>|null, sub, args }
- * `unsupported` names what the gate cannot follow (`--git-dir`, `--work-tree`, a `cd` or `-C`
- * whose directory is an expansion, `~` or `-`). `args` are the words after `push` / `pr <sub>`.
+ * `unsupported` names what the gate cannot follow: `--git-dir`, `--work-tree`, a `cd` or `-C`
+ * whose directory is an expansion, `~` or `-`, a `-c`/`--config-env` that sets push, remote or
+ * branch config, a `GIT_CONFIG*`/`GIT_DIR`/`GIT_WORK_TREE` assignment or export. `args` are the
+ * words after `push` / `pr <sub>`.
  */
 export function pushOperations(command, ghPr = ["create"]) {
   const ops = [];
-  const cds = [];
-  let cdUnknown = null;
+  let scope = { cds: [], unknown: null };
+  const outer = [];
   for (const words of simpleCommands(command)) {
+    if (words.length === 1 && words[0] === SCOPE_OPEN) {
+      outer.push(scope);
+      scope = { cds: [...scope.cds], unknown: scope.unknown };
+      continue;
+    }
+    if (words.length === 1 && words[0] === SCOPE_CLOSE) {
+      if (outer.length) scope = outer.pop();
+      continue;
+    }
     const tokens = [...words];
-    while (tokens.length && (/^[A-Za-z_][A-Za-z0-9_]*=/.test(tokens[0]) || PREFIX_WORDS.has(tokens[0]))) tokens.shift();
-    if (!tokens.length) continue;
+    let envUnknown = null;
+    while (tokens.length && (/^[A-Za-z_][A-Za-z0-9_]*=/.test(tokens[0]) || PREFIX_WORDS.has(tokens[0]))) {
+      if (GIT_ENV.test(tokens[0])) envUnknown = tokens[0].split("=")[0];
+      tokens.shift();
+    }
+    if (!tokens.length) {
+      if (envUnknown) scope.unknown = envUnknown;
+      continue;
+    }
+    if (tokens[0] === "export") {
+      const set = tokens.slice(1).find((t) => GIT_ENV.test(t));
+      if (set) scope.unknown = `export ${set.split("=")[0]}`;
+      continue;
+    }
     if (tokens[0] === "cd" || tokens[0] === "pushd") {
       const dir = tokens.slice(1).find((t) => !t.startsWith("-") || t === "-");
-      if (dynamicDir(dir)) cdUnknown = `${tokens[0]} ${dir ?? "(home)"}`;
-      else cds.push(dir);
+      if (dynamicDir(dir)) scope.unknown = `${tokens[0]} ${dir ?? "(home)"}`;
+      else scope.cds.push(dir);
       continue;
     }
     const bin = tokens[0].split("/").pop();
     if (bin === "gh") {
-      if (tokens[1] === "pr" && ghPr.includes(tokens[2])) ops.push({ tool: "gh", cds: [...cds], unsupported: cdUnknown, sub: tokens[2], args: tokens.slice(3) });
+      if (tokens[1] === "pr" && ghPr.includes(tokens[2])) ops.push({ tool: "gh", cds: [...scope.cds], unsupported: envUnknown ?? scope.unknown, sub: tokens[2], args: tokens.slice(3) });
       continue;
     }
     if (bin !== "git") continue;
     const dirs = [];
-    let unsupported = cdUnknown;
+    let unsupported = envUnknown ?? scope.unknown;
     let i = 1;
     while (i < tokens.length && tokens[i].startsWith("-")) {
       const t = tokens[i];
@@ -283,9 +321,11 @@ export function pushOperations(command, ghPr = ["create"]) {
       }
       if (t === "--git-dir" || t.startsWith("--git-dir=")) unsupported = "--git-dir";
       if (t === "--work-tree" || t.startsWith("--work-tree=")) unsupported = "--work-tree";
+      const setting = t === "-c" || t === "--config-env" ? tokens[i + 1] ?? "" : t.startsWith("--config-env=") ? t.slice("--config-env=".length) : null;
+      if (setting !== null && PUSH_CONFIG.test(setting.split("=")[0])) unsupported = `${t.split("=")[0]} ${setting.split("=")[0]}`;
       i += GIT_OPT_WITH_ARG.has(t) ? 2 : 1;
     }
-    if (tokens[i] === "push") ops.push({ tool: "git", cds: [...cds], dirs, unsupported, args: tokens.slice(i + 1) });
+    if (tokens[i] === "push") ops.push({ tool: "git", cds: [...scope.cds], dirs, unsupported, args: tokens.slice(i + 1) });
   }
   return ops;
 }
