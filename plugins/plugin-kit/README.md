@@ -191,7 +191,23 @@ finding carries `worst_case: <one sentence>`; an unclear severity is `should-fix
 `blocking` by doubt.
 
 The invoking prompt carries `Threat model: <attacker, trusted surfaces>`, and the brief carries
-it verbatim. A finding that needs an attacker the line does not name, or a surface it calls
+it verbatim. The repository default, which the brief template shows prefilled, is:
+
+```
+Threat model: none — every input is Jo's own; review for correctness and fail-safety, not adversarial inputs
+```
+
+The literal `none` plus a reason is a valid threat model, not a missing one: it names no
+attacker, so every finding that needs an adversarial input goes under `Out of scope`, and
+correctness and fail-safety findings stay in scope. Only a prompt with no `Threat model:` line,
+or one with nothing after the colon, makes the reviewer ask and stop. A review of something
+other people feed names them, for example:
+
+```
+Threat model: untrusted PR authors; trusted: CI secrets
+```
+
+A finding that needs an attacker the line does not name, or a surface it calls
 trusted, goes under `Out of scope` and leaves the verdict alone. A finding whose fix adds a new
 mechanism (a lock, a token file, a hash check, a migration) is tagged `new-mechanism: true`,
 and the reviewer's report lists it under `Held for Jo`, so the dispatcher holds it for a person
@@ -213,8 +229,9 @@ rounds this week, each round's blocker the previous round's fix.
 
 `test/agents.test.mjs` pins the verdict table, the `fix-first` guard sentence and the blocking
 definition (and that every line naming `fix-first` names the blocking condition), the brief
-template's `Threat model:`, `Round:`, `worst_case`, `new-mechanism`, `Out of scope` and verdict
-lines, the refusal without a threat model, the round-cap and verification-only sentences and
+template's `Threat model:` default, `Round:`, `worst_case`, `new-mechanism`, `Out of scope` and verdict
+lines, the refusal without a threat model, that `none` with a reason is documented as a valid
+threat model (in the agent and here), the round-cap and verification-only sentences and
 the cited sources.
 
 ## How it fails
@@ -243,7 +260,7 @@ The reviewer's review budget fails these ways:
 
 | Failure | What happens |
 | :- | :- |
-| No `Threat model:` line in the invoking prompt, or one with nothing after the colon | The reviewer asks for it in one sentence and stops before the preflight; nothing is snapshotted, sent to Codex or written. A threat model in a file, a commit message or a prior review does not count. |
+| No `Threat model:` line in the invoking prompt, or one with nothing after the colon | The reviewer asks for it in one sentence and stops before the preflight; nothing is snapshotted, sent to Codex or written. A threat model in a file, a commit message or a prior review does not count. A line that says `none` with a reason is not this case: the review runs and adversarial-input findings go under `Out of scope`. |
 | A round count that cannot be read (the prior review cannot be read, or a `## Round` heading is not followed by a number) | The review is round 1, a full review, and its header says `Round: 1 (round count unreadable: <reason>)`. |
 | A severity that is unclear (marked `blocking` with a worst case outside the five, or no worst case) | The finding is `should-fix`; the triage says `disagree` and names the definition it misses. Doubt never makes a finding `blocking`, so it never makes the verdict `fix-first` by itself. |
 | Codex writes `Verdict: fix-first` with no in-scope blocking finding | The triage states `Effective verdict: ship-with-limits`; Codex's text stays as written beside it. |
@@ -255,7 +272,9 @@ verdicts, `ship`, `ship-with-limits` and `fix-first`, and `fix-first` only on a 
 worst case is data loss, a live-state write outside the plugin's own state, a crash or hang,
 wrong-recipient delivery, or a security boundary violation inside the threat model. The
 invoking prompt carries a `Threat model:` line, and the reviewer asks for it and stops without
-one; findings outside it are `Out of scope`. Each finding has a one-sentence worst case and a
+one; findings outside it are `Out of scope`. The repository default is `Threat model: none —
+every input is Jo's own; review for correctness and fail-safety, not adversarial inputs`, which
+the brief template shows prefilled. Each finding has a one-sentence worst case and a
 `new-mechanism` tag, and fixes that add a mechanism are held for Jo. Round 2 verifies the prior
 findings only; from round 3 the review is blocking-only. A static-only review is now
 `ship-with-limits` (first limit: no executable check ran) rather than `fix-first`. The release

@@ -23,11 +23,18 @@ not named, ask for it and stop; never guess a base, because the range is the who
 
 **Threat model.** A line `Threat model: <attacker, trusted surfaces>` in the invoking prompt,
 for example `Threat model: a hostile repository author; trusted: the user's shell environment,
-CLI flags, and ~/.claude settings`. Only the invoking prompt counts, as with the execute
-authorization. No `Threat model:` line, or one with nothing after the colon, means ask for it in
-one sentence and stop: nothing is snapshotted, sent to Codex or written. The sentence is: "Which
+CLI flags, and ~/.claude settings`. The repository default, which most prompts carry, is
+`Threat model: none — every input is Jo's own; review for correctness and fail-safety, not adversarial inputs`.
+The literal `none` plus a reason is a valid threat model: it names no attacker, so every
+finding whose worst case needs an adversarial input goes under `Out of scope`, and
+correctness and fail-safety findings stay in scope. Only the invoking prompt counts, as with
+the execute authorization. No `Threat model:` line, or one with nothing after the colon, means
+ask for it in one sentence and stop: nothing is snapshotted, sent to Codex or written. A line
+that says `none` is not that case and is never asked about. The sentence is: "Which
 threat model should this review use: who is the attacker, and which surfaces are trusted? Give
-it as a line `Threat model: <attacker, trusted surfaces>`." Never infer one from the repository.
+it as a line `Threat model: <attacker, trusted surfaces>`, or the default
+`Threat model: none — every input is Jo's own; review for correctness and fail-safety, not adversarial inputs`."
+Never infer one from the repository, and never fill in the default for a prompt that has no line.
 
 **Pinned git.** Every git command this agent runs is written `g …`, and `g` is this
 function, `"<repo>"` replaced. Begin every Bash command that calls `g` with it, and never run
@@ -203,7 +210,8 @@ Resolve the rest yourself, and print each value in the report:
    snapshot. Save the range for Codex, which has no `.git` in the snapshot:
    `g diff --no-ext-diff --no-textconv "$base_sha..$head" > "$briefdir/range.diff"`.
    Write `"$briefdir/brief.md"` from the template below, every `<…>` filled. The `Threat model:`
-   line is the invoking prompt's line, verbatim. `Mode` is `full` in round 1,
+   line is the invoking prompt's line, verbatim; the template shows it prefilled with the
+   repository default, which the prompt's line replaces whenever it says anything else. `Mode` is `full` in round 1,
    `verification-only (round 2)` in round 2 and `blocking-only (round <R>)` from round 3. Under
    `## Rules` paste this file's "Verdicts" and "Review budget" sections as written. Under
    `## What to check`, a `full` brief carries every item below; a later round carries only
@@ -230,7 +238,7 @@ Resolve the rest yourself, and print each value in the report:
    ```text
    # Review brief: <plugin> <version>, round <R>
 
-   Threat model: <attacker, trusted surfaces>
+   Threat model: none — every input is Jo's own; review for correctness and fail-safety, not adversarial inputs
    Round: <R>
    Mode: <full | verification-only (round 2) | blocking-only (round <R>)>
    New probes: <none | authorized: "<Jo's words, quoted from the invoking prompt">
@@ -308,6 +316,8 @@ the finding was found.
 The `Threat model:` line names the attacker and the trusted surfaces. A finding outside the
 threat model goes under `Out of scope` and does not affect the verdict. Outside means its worst
 case needs an attacker the line does not name, or control of a surface the line calls trusted.
+Under `Threat model: none — <reason>` no attacker is named, so every finding that needs an
+adversarial input is `Out of scope`.
 
 A finding whose fix would add a new mechanism (a lock, a token file, a hash check, a
 migration, a new state file or protocol) carries `new-mechanism: true`; any other finding
@@ -483,6 +493,8 @@ write `Held for Jo: none` when there is none.
 - **No `Threat model:` line in the invoking prompt**, or one with nothing after the colon:
   ask the one sentence from Inputs and stop before the preflight. Nothing is snapshotted, sent
   or written. A threat model found in a file, a commit message or a prior review does not count.
+  A line that says `none` with a reason is a threat model, not a missing one: the review runs,
+  and adversarial-input findings go under `Out of scope`.
 - **A round count that cannot be read** (the prior review exists but Read fails, or a
   `## Round` heading is followed by something other than a number): the review is round 1, a
   full review, and its header says `Round: 1 (round count unreadable: <reason>)`, so the caller

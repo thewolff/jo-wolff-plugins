@@ -454,6 +454,7 @@ test("agents: the README's Agents section names every agent", () => {
 // `fix-first`, the threat-model line the brief cannot go without, the per-finding fields and the
 // round rules. Each is pinned by its exact wording, so a reword that loosens one fails here.
 const REVIEWER = () => readFileSync(join(AGENTS, "cross-lab-reviewer.md"), "utf8");
+const DEFAULT_THREAT_MODEL = "Threat model: none — every input is Jo's own; review for correctness and fail-safety, not adversarial inputs";
 const flatText = (text) => text.replace(/\s+/g, " ");
 
 /** The rows of the first markdown table under `## <heading>`, as arrays of trimmed cells. */
@@ -506,7 +507,7 @@ test("review budget: the brief template requires the threat-model line, and the 
   const raw = REVIEWER();
   const brief = briefTemplate(raw);
   assert.ok(brief, "a fenced `text` brief template after 'The brief template:'");
-  assert.match(brief, /^Threat model: <attacker, trusted surfaces>$/m, "the brief carries the threat-model line");
+  assert.ok(brief.split("\n").includes(DEFAULT_THREAT_MODEL), "the brief carries the threat-model line, prefilled with the repository default");
   assert.match(brief, /^Round: <R>$/m, "the brief carries the round");
   assert.match(brief, /^## Out of scope$/m, "findings outside the threat model have their own section");
   assert.match(brief, /^worst_case: <one sentence>$/m, "every finding carries a worst case");
@@ -520,6 +521,23 @@ test("review budget: the brief template requires the threat-model line, and the 
   assert.ok(text.includes("A finding outside the threat model goes under `Out of scope` and does not affect the verdict."), "out-of-scope rule");
   assert.ok(text.includes("`new-mechanism: true`"), "the hold tag");
   assert.ok(text.includes("Held for Jo"), "the report lists held findings");
+});
+
+test("review budget: the default threat model is `none` with a reason, documented as valid in the agent and the README", () => {
+  const text = flatText(REVIEWER());
+  assert.ok(text.includes(`The repository default, which most prompts carry, is \`${DEFAULT_THREAT_MODEL}\`.`), "the agent states the default");
+  assert.ok(
+    text.includes("The literal `none` plus a reason is a valid threat model: it names no attacker, so every finding whose worst case needs an adversarial input goes under `Out of scope`, and correctness and fail-safety findings stay in scope."),
+    "the agent: none is valid and moves adversarial findings out of scope",
+  );
+  assert.ok(text.includes("A line that says `none` is not that case and is never asked about."), "the agent: none never triggers the ask");
+  assert.ok(text.includes("never fill in the default for a prompt that has no line"), "the agent: an absent line is still asked about");
+  const readme = readFileSync(join(KIT_ROOT, "README.md"), "utf8");
+  const budget = /\n## Review budget\n([\s\S]*?)\n## /.exec(readme);
+  assert.ok(budget, "a Review budget section");
+  assert.ok(budget[1].split("\n").includes(DEFAULT_THREAT_MODEL), "Review budget shows the default line");
+  assert.ok(budget[1].split("\n").includes("Threat model: untrusted PR authors; trusted: CI secrets"), "Review budget shows a non-default example");
+  assert.ok(flatText(budget[1]).includes("The literal `none` plus a reason is a valid threat model, not a missing one"), "Review budget: none is valid");
 });
 
 test("review budget: the round count, the round-3 cap and verification-only follow-ups are stated, with their sources", () => {
