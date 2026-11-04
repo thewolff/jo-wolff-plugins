@@ -27,6 +27,7 @@ it, keeping a record of what it did and asked, and a vendored set of engineering
   state declaration, and a skill with its "When this can't run" section, scaffolded by
   `/plugin-kit:new-plugin`; `ledger gate check` passes on it, the `evals` row excepted, before
   the first rule is written, and that row fails naming the stubs until they are filled.
+  Changes in plugin-kit 0.3.0: `lib/judge.mjs`, the shared judge dispatch every judging plugin vendors byte for byte (a sameness test diffs the copies), configured once with `node lib/judge.mjs setup`; `--judge` on the scaffolder.
   Changes in plugin-kit 0.2.1: the `cross-lab-reviewer` agent has a review budget: verdicts `ship`, `ship-with-limits` and `fix-first` (only on a blocking finding), a required `Threat model:` line, a one-sentence worst case per finding, and blocking-only reviews from round 3.
   Changes in plugin-kit 0.2.0: the shared scenario runner `lib/live-run.mjs` and the evals, prune
   and state scaffold templates. Changes in plugin-kit 0.1.2: two agents, `cross-lab-reviewer` (a Codex review of the branch) and `release-gate` (the release checklist, report-only).

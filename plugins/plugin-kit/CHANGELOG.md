@@ -4,6 +4,31 @@ All notable changes to plugin-kit are recorded here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Releases before 0.2.0 are described in
 the README's "Changes in" sections.
 
+## [0.3.0] - 2026-11-04
+
+### Added
+
+- `lib/judge.mjs`: the shared judge dispatch, vendored byte for byte by every plugin that
+  judges. One command through `/bin/sh` in its own process group, the prompt on stdin or in place
+  of `{prompt}`, stdout only, a hard timeout that reaps the group, never a throw. `json` mode
+  returns the last JSON object on stdout (a `claude -p --output-format json` envelope unwrapped)
+  or `{ error, detail, stderr }` with `error` one of `timeout`, `nonzero`, `unparseable`,
+  `spawn-failed`; `yesno` mode returns `yes`, `no`, or `unverified`.
+- `resolveJudgeCommand()`: the command resolved once for every plugin, first found wins, naming
+  its source: the plugin's env var → the plugin's own setting → `${XDG_CONFIG_HOME:-~/.config}/judge/config.json`
+  `{ "command", "timeoutMs" }` → i-have-audhd's `enforcement.judgeCommand` (legacy, read-only).
+- `node lib/judge.mjs setup` (one test call, then the shared file written atomically after a
+  yes; `--command`, `--timeout-ms`, `--yes`, `--force`) and `node lib/judge.mjs which`.
+- `test/judge.test.mjs`: the resolution order over a fake HOME and XDG_CONFIG_HOME, each failure
+  class from a tiny shell command, both parsers, the CLI as a spawned process, and the sameness
+  test: every `plugins/*/lib/judge.mjs` and `plugins/*/judge/judge.mjs` outside the allowlist
+  (`ledger/lib/judge.mjs`, until ledger's next release) is byte-identical to the kit's.
+- `new-plugin.mjs --judge`: the scaffold also gets `lib/judge.mjs`.
+
+### Unchanged
+
+The runner, the agents, and the rest of the scaffold.
+
 ## [0.2.1] - 2026-11-04
 
 ### Changed

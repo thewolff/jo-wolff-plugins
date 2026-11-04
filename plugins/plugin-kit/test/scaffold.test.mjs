@@ -142,6 +142,21 @@ test("refusals: an existing directory, a bad name, an unknown event, no events; 
   assert.deepEqual(readdirSync(d).sort(), ["second", "taken"]);
 });
 
+test("--judge: the scaffold also gets lib/judge.mjs, the kit's copy byte for byte; without the flag there is none", () => {
+  const d = dest();
+  assert.equal(parseArgs(["fine", "--events", "Stop", "--dest", d]).judge, false);
+  assert.equal(parseArgs(["fine", "--events", "Stop", "--dest", d, "--judge"]).judge, true);
+  const plain = scaffold({ name: "plain", events: ["Stop"], description: "x", dest: d });
+  assert.ok(!existsSync(join(plain.root, "lib", "judge.mjs")));
+  assert.ok(!plain.written.includes("lib/judge.mjs"));
+  const judged = scaffold({ name: "judged", events: ["Stop"], description: "x", dest: d, judge: true });
+  assert.ok(judged.written.includes("lib/judge.mjs"));
+  assert.ok(readFileSync(join(judged.root, "lib", "judge.mjs")).equals(readFileSync(join(KIT_ROOT, "lib", "judge.mjs"))));
+  const cli = spawnSync(process.execPath, [SCRIPT, "third", "--events", "Stop", "--dest", d, "--judge"], { encoding: "utf8" });
+  assert.equal(cli.status, 0, cli.stderr);
+  assert.match(cli.stdout, /\n  lib\/judge\.mjs\n/);
+});
+
 test("the default destination is the cwd's repository, not the kit's: a scaffold from inside another repository lands under that repository's plugins/; a cwd in no repository is refused naming --dest", () => {
   // A repository elsewhere, with the cwd in a subdirectory of it.
   const repo = dest();

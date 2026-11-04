@@ -674,7 +674,14 @@ test("review budget: the README has the 0.2.1 changes, a Review budget section a
   assert.ok(fails.includes("No `Threat model:` line in the invoking prompt"), "how-it-fails: missing threat model");
   assert.ok(fails.includes("A round count that cannot be read"), "how-it-fails: unreadable round count");
   assert.ok(fails.includes("A severity that is unclear"), "how-it-fails: ambiguous severity");
+  // The budget shipped in 0.2.1; later releases keep it, so the version is at least that.
+  const atLeast = (v, min) => {
+    const [a, b] = [v, min].map((s) => s.split(".").map(Number));
+    for (let i = 0; i < 3; i++) if (a[i] !== b[i]) return a[i] > b[i];
+    return true;
+  };
   for (const file of [".claude-plugin/plugin.json", "package.json"]) {
-    assert.equal(JSON.parse(readFileSync(join(KIT_ROOT, file), "utf8")).version, "0.2.1", `${file} version`);
+    const { version } = JSON.parse(readFileSync(join(KIT_ROOT, file), "utf8"));
+    assert.ok(atLeast(version, "0.2.1"), `${file} version ${version} is at least 0.2.1`);
   }
 });

@@ -19,6 +19,9 @@ check` passes on the scaffold as written.
    is open; do not invent an event list.
 2. Run the scaffolder from inside the repository the plugin is for (any directory in it):
    `node "${CLAUDE_PLUGIN_ROOT}/scripts/new-plugin.mjs" <name> --events <A,B> --description "<sentence>"`
+   (add `--judge` when a hook will ask a model to grade something: the plugin then also gets
+   `lib/judge.mjs`, the shared judge dispatch, and reads the judge command the person configured
+   once with `node lib/judge.mjs setup`)
    It writes `<that repository's toplevel>/plugins/<name>/` (the toplevel is
    `git rev-parse --show-toplevel` of the cwd; never the kit's own checkout or the marketplace
    cache it runs from) and prints the files. `--dest <plugins dir>` names another destination
@@ -48,7 +51,9 @@ check` passes on the scaffold as written.
 
 The runner is copied, not shared: `plugins/<name>/lib/hook-runner.mjs` belongs to the new plugin.
 A later change to plugin-kit's copy reaches it only by copying again, on purpose; an installed
-plugin never depends on a sibling plugin being installed.
+plugin never depends on a sibling plugin being installed. The same holds for `lib/judge.mjs`,
+with one difference: the kit's `test/judge.test.mjs` diffs every plugin's copy against the kit's,
+so a copy that drifts fails the kit's tests until it is copied again.
 
 ## When this can't run
 

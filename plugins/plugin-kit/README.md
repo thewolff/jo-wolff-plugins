@@ -26,7 +26,7 @@ a retrofit.
 `/plugin-kit:new-plugin` (skill `new-plugin`) runs the scaffolder:
 
 ```
-node "${CLAUDE_PLUGIN_ROOT}/scripts/new-plugin.mjs" <name> --events PreToolUse,Stop --description "<one sentence>"
+node "${CLAUDE_PLUGIN_ROOT}/scripts/new-plugin.mjs" <name> --events PreToolUse,Stop --description "<one sentence>" [--judge]
 ```
 
 run from inside the repository the plugin is for, which writes `plugins/<name>/` under that
@@ -37,6 +37,7 @@ installed from are never where a plugin lands):
 | File | What it is |
 |---|---|
 | `lib/hook-runner.mjs` | a copy of this plugin's [`lib/hook-runner.mjs`](lib/hook-runner.mjs): `runHook(event, import.meta.url, { plugin, quiet })` reads stdin, parses it (empty is `{}`), runs the module's exported `handle(input, { env })` on a worker thread, prints its JSON, exits 0. Stdin not JSON, a thrown error, or no answer in 4 s (inside the host's 5 s budget, so the host never kills the hook and loses the message; the one timer lives on the main thread, which does nothing but wait, so it fires whatever the handler is doing: a stdin the host holds open, a promise that never settles, a synchronous loop that never yields; at the deadline the thread is terminated and an answer that would have come later is never printed as a late block) → one line in `${XDG_STATE_HOME:-~/.local/state}/<plugin>/errors.log` and `{ systemMessage: "<plugin> <event> failed open: <why>" }` (not on SessionEnd, whose output the host discards). A hook never exits 2. |
+| `lib/judge.mjs` | with `--judge`: a copy of this plugin's [`lib/judge.mjs`](lib/judge.mjs), the shared judge dispatch (see "Shared judge" below); the kit's `test/judge.test.mjs` diffs every shipped copy against the kit's |
 | `hooks/hooks.json` | one entry per event, `node "${CLAUDE_PLUGIN_ROOT}/hooks/<event>.mjs"`, timeout 5; tool events get a matcher |
 | `hooks/<event>.mjs` | one handler per event, `handle(input, { env })` returning null (allow) until the rule is written; the header comment says what the runner does and what the handler owes. The handler runs on a worker thread (that is what makes the deadline hold), so it returns a plain JSON-able object or null and nothing else: never `process.exit()` (the thread ending is "ended without an answer", a logged fault), never its own stdout writes (only what the runner prints is the answer), a subprocess gets its `cwd` passed explicitly from `input.cwd` (the thread's `process.cwd()` is the runner's), and a child's environment goes on the spawn's `env`, not `process.env` |
 | `test/hook-contract.test.mjs` | per hook: empty stdin, malformed JSON, an unknown event, an unwritable state directory, no config → exit 0 inside 5 s, no deny/block/`continue: false`; malformed JSON → one errors.log line and a systemMessage |
@@ -63,6 +64,45 @@ someone copies it again and runs that plugin's tests. The plugins in this reposi
 `lib/live-run.mjs` from `../plugin-kit/` (the template `e2e/live-run.sh` looks in the plugin's
 own `lib/` first, then there), so one runner serves them all and a scaffold outside the
 repository carries its own; they keep their own hook runners.
+
+## Shared judge
+
+`lib/judge.mjs` is the one judge dispatch for every plugin that asks a model to grade something
+(i-have-audhd's Stop checks, ledger's "is this finding resolved", output-types' receipts check).
+A plugin vendors a byte-identical copy (`--judge` on the scaffolder, or copy the file by hand);
+`test/judge.test.mjs` fails when any `plugins/*/lib/judge.mjs` or `plugins/*/judge/judge.mjs`
+differs from the kit's, outside an explicit allowlist of the plugins that have not switched yet
+(ledger's `lib/judge.mjs` and i-have-audhd's `judge/ask.mjs`, until their next releases).
+
+**The command.** One string, run through `/bin/sh` as the leader of its own process group: with a
+literal `{prompt}` in it, every occurrence is replaced by the shell-escaped prompt; without one,
+the prompt is piped to stdin. `codex exec --skip-git-repo-check -` and
+`claude -p --output-format json` both work. Stdout only is read: the last JSON object on it in
+`json` mode (a `{"type":"result","result":"…"}` envelope is unwrapped), the first word of the last
+non-empty line in `yesno` mode.
+
+**Configure it once.** `node lib/judge.mjs setup` (from any plugin's copy, or the kit's) asks for
+the command, makes one test call, shows what it will write and, after a yes, writes
+`${XDG_CONFIG_HOME:-~/.config}/judge/config.json` as `{ "command", "timeoutMs" }`, atomically,
+other keys kept. A failed test call is refused unless `--force`; `--command <cmd>`, `--timeout-ms
+<n>` and `--yes` make it scriptable. `node lib/judge.mjs which [--env-var <NAME>]` prints the
+command, timeout and source as a plugin would resolve them.
+
+**Resolution order**, `resolveJudgeCommand({ pluginKey: { envVar, command, timeoutMs, source }, env })`,
+first found wins, and the result names its `source` so a warning can say which one supplied the
+command: the plugin's env var (`LEDGER_JUDGE_BIN`, `OUTPUT_TYPES_JUDGE_BIN`: tests and one-off
+overrides) → the plugin's own setting, passed in by the caller → the shared file → i-have-audhd's
+`enforcement.judgeCommand` in `~/.claude/i-have-audhd.json` (`$I_HAVE_AUDHD_PROFILE`), read-only,
+for a profile written before the shared file existed. The timeout is the plugin's own, else the
+shared file's, else 30 s. Nothing configured anywhere is `null`, and a plugin treats that as "the
+judge is off".
+
+**It never throws.** `runJudge(prompt, { command, timeoutMs, mode })` returns, in `json` mode, the
+object or `{ error, detail, stderr }` with `error` one of `timeout`, `nonzero`, `unparseable`,
+`spawn-failed` (`isJudgeError()` tells the two apart); in `yesno` mode, `"yes"`, `"no"`, or
+`"unverified"` for every failure. A timeout kills the whole process group, so a pipeline stage or a
+wrapper's child cannot hold the hook open. `dispatch()` underneath returns the raw
+`{ ok, stdout, stderr, code, error, detail }` for a caller that needs the reason with a yes/no.
 
 ## Agents
 
@@ -270,6 +310,20 @@ The reviewer's review budget fails these ways:
 | A severity that is unclear (marked `blocking` with a worst case outside the five, or no worst case) | The finding is `should-fix`; the triage says `disagree` and names the definition it misses. Doubt never makes a finding `blocking`, so it never makes the verdict `fix-first` by itself. |
 | Codex writes `Verdict: fix-first` with no in-scope blocking finding | The triage states `Effective verdict: ship-with-limits`; Codex's text stays as written beside it. |
 | A later edit reverses a budget rule other than the round increment or the `fix-first` guard | The tests pin vocabulary and selected sentences; a reversal of the `new-mechanism` classification or the rule that holds those findings for Jo, of the limit that a follow-up reports new findings only in lines the fixes changed, or of the statement that blocking-only from round 3 is this repository's own rule (not the cited sources') passes them. Read the diff of `agents/cross-lab-reviewer.md` against those rules. |
+
+## Changes in 0.3.0
+
+`lib/judge.mjs`, the shared judge dispatch (see "Shared judge"): i-have-audhd's `judge/ask.mjs`
+contract (one command through `/bin/sh` in its own process group, the prompt on stdin or in place
+of `{prompt}`, stdout only, a hard timeout that reaps the group, never a throw) with ledger's
+one-word yes/no answer folded in as a mode, the command resolved once for every plugin (env var →
+the plugin's own key → `${XDG_CONFIG_HOME:-~/.config}/judge/config.json` → i-have-audhd's profile,
+legacy), and a `setup` and `which` CLI in the file itself so any plugin's copy can configure the
+judge with one test call. `test/judge.test.mjs` drives the resolution order, each failure class,
+both parsers and the CLI, and fails when any shipped copy under `plugins/*/lib/judge.mjs` or
+`plugins/*/judge/judge.mjs` differs from the kit's (ledger and i-have-audhd are allowlisted until
+their next releases). The scaffolder takes `--judge` to copy it into a new plugin. The runner,
+the agents and the rest of the scaffold are unchanged.
 
 ## Changes in 0.2.1
 
