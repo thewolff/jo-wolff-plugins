@@ -123,6 +123,12 @@ gone; unreceipted statements, actions, questions and degraded coverage are plain
 contract now lives in `skills/output-types/reference.md`, which the skill points at and the hook
 injects from.
 
+Changes in 0.2.1: a hook fault (contract file missing, unreadable or without its markers, or the
+hook's own module failing to load) now appends one line naming the hook file and the reason to
+`${XDG_STATE_HOME:-~/.local/state}/output-types/errors.log`, and the one-line warning reaches you
+as well as the model and says where the reason went. The hook no longer waits on a stdin pipe
+its caller leaves open: it reads for at most one second, then injects.
+
 ### What this does, and what it does not do: it delivers, it does not enforce
 
 Two pieces, and it is worth knowing which does what before you install.
@@ -152,6 +158,14 @@ and say so in your own instructions if you want more than the core in force from
 
 If you want the injection off without uninstalling the plugin, set `OUTPUT_TYPES_INJECT=off` in the
 environment; the hook then emits nothing and the skill still loads on demand.
+
+If the core did not load, the session still starts and shows one line saying so. The reason is in
+`${XDG_STATE_HOME:-~/.local/state}/output-types/errors.log`, one line per failure, or in the warning
+itself when that log cannot be written.
+
+### Developing output-types
+
+The tests run with `node --test` from inside `plugins/output-types/`.
 
 ## i-have-audhd
 
