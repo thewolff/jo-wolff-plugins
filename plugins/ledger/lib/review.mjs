@@ -112,6 +112,29 @@ function gitConfig(top, key, opts = {}) {
   }
 }
 
+/**
+ * The sha `remote` has at exactly `ref` now: { sha } or { sha: null, why }. `git ls-remote`
+ * with no terminal prompt, its stderr discarded (a credential helper or ssh child holding that
+ * pipe open past the kill would otherwise hold the hook), and killed after GH_TIMEOUT_MS.
+ */
+function lsRemote(top, remote, ref, env = process.env) {
+  const r = spawnSync("git", ["ls-remote", "--", remote, ref], {
+    cwd: top,
+    env: { ...env, GIT_TERMINAL_PROMPT: "0" },
+    encoding: "utf8",
+    stdio: ["ignore", "pipe", "ignore"],
+    timeout: GH_TIMEOUT_MS,
+    killSignal: "SIGKILL",
+  });
+  if (r.error) return { sha: null, why: r.error.code === "ETIMEDOUT" ? `git ls-remote ${remote} timed out after ${GH_TIMEOUT_MS / 1000}s` : `git ls-remote ${remote} failed (${r.error.message})` };
+  if (r.status !== 0) return { sha: null, why: `git ls-remote ${remote} could not read it (exit ${r.status})` };
+  const line = String(r.stdout ?? "")
+    .split("\n")
+    .map((l) => l.split("\t"))
+    .find(([sha, name]) => name === ref && /^[0-9a-f]{40}$/i.test(sha));
+  return line ? { sha: line[0].toLowerCase() } : { sha: null, why: `${remote} has no ${ref}` };
+}
+
 /** The commit `ref` names in `top`, as a full sha; throws when it names none. */
 function commitOf(top, ref, opts = {}) {
   try {
@@ -261,34 +284,41 @@ export function stillListed(item, items) {
 /**
  * Each lab's outstanding blocking and should findings on this branch: for every lab with a row in
  * `rounds` (the current commit's earlier rows included), its latest row that is not
- * `unavailable`; when that row has open serious items and no `addressed` row came after it on a
- * commit that `head` contains, { lab, row, round, items }. A later pass supersedes earlier
- * findings; a lab that was skipped or unavailable keeps its findings outstanding.
+ * `unavailable`, where a row supersedes the lab's current one only when it is on the same commit
+ * or a descendant of it (a later review of an ancestor did not read the descendant's change, so
+ * it clears nothing). When that row has open serious items and no `addressed` row came after it
+ * on a commit between it and `head`, { lab, row, round, items }. A lab that was skipped or
+ * unavailable keeps its findings outstanding.
  * @returns {Map<string, { lab, row, round, items }>}
  */
 export function outstanding(db, top, rounds, head) {
-  const byLab = new Map();
-  for (const r of rounds) {
-    for (const row of r.rows) {
-      if (row.verdict === "unavailable") continue;
-      const prev = byLab.get(row.lab);
-      if (!prev || row.at > prev.row.at || (row.at === prev.row.at && row.id > prev.row.id)) byLab.set(row.lab, { lab: row.lab, row, round: r.round });
+  const known = new Map();
+  const isAncestor = (a, b) => {
+    if (a === b) return true;
+    const key = `${a}\0${b}`;
+    if (!known.has(key)) {
+      try {
+        git(top, ["merge-base", "--is-ancestor", a, b]);
+        known.set(key, true);
+      } catch {
+        known.set(key, false);
+      }
     }
-  }
-  const contains = (sha) => {
-    if (sha === head) return true;
-    try {
-      git(top, ["merge-base", "--is-ancestor", sha, head]);
-      return true;
-    } catch {
-      return false;
-    }
+    return known.get(key);
   };
+  const roundOfSha = new Map(rounds.map((r) => [r.sha, r.round]));
+  const rows = rounds.flatMap((r) => r.rows).sort((x, y) => (x.at === y.at ? x.id - y.id : x.at < y.at ? -1 : 1));
+  const byLab = new Map();
+  for (const row of rows) {
+    if (row.verdict === "unavailable") continue;
+    const prev = byLab.get(row.lab);
+    if (!prev || isAncestor(prev.row.head_sha, row.head_sha)) byLab.set(row.lab, { lab: row.lab, row, round: roundOfSha.get(row.head_sha) });
+  }
   const addressedAfter = (row) =>
     db
       .prepare("SELECT head_sha FROM cc_reviews WHERE cwd = ? AND lab = ? AND verdict = 'addressed' AND (at > ? OR (at = ? AND id > ?))")
       .all(top, META_LAB, row.at, row.at, row.id)
-      .some((a) => contains(a.head_sha));
+      .some((a) => isAncestor(row.head_sha, a.head_sha) && isAncestor(a.head_sha, head));
   const out = new Map();
   for (const [lab, entry] of byLab) {
     const items = openSerious(itemsOf(entry.row));
@@ -334,15 +364,19 @@ const itemLine = (i) => `[${i.severity}] ${i.text.split("\n")[0]}`;
  * `ledger review [--base <ref>] [--labs a,b] [--force-round]`: every lab in parallel, one row
  * each for HEAD; refuses a round past review.maxRounds unless forced. HEAD and the base are
  * resolved to shas once, and the diff is taken between those shas, so the commit the rows name
- * is the commit the labs read even if HEAD moves while they run.
+ * is the commit the labs read even if HEAD moves while they run. `--base` changes only the diff
+ * the labs read: the rounds, the outstanding findings and the base recorded in each row always
+ * come from the branch's own base (defaultBase), so a narrower diff cannot drop a finding
+ * without the judge.
  * @returns {Promise<{ code: number, text: string }>}
  */
 export async function runReview({ db, dbPath, cwd, env = process.env, config, labs = null, base = null, forceRound = false, sessionId = null, cli = "ledger", now = () => Date.now(), timeoutMs = REVIEW_TIMEOUT_MS }) {
-  let top, head, branch, baseSha, diff;
+  let top, head, branch, branchBase, baseSha, diff;
   try {
     ({ top, head } = gitHead(cwd));
     branch = currentBranch(top);
-    baseSha = base ? commitOf(top, base) : defaultBase(db, top, head, branch);
+    branchBase = defaultBase(db, top, head, branch);
+    baseSha = base ? commitOf(top, base) : branchBase;
     diff = git(top, ["diff", baseSha ?? EMPTY_TREE, head]);
   } catch (err) {
     return { code: 1, text: `refused ${err.message}; nothing reviewed` };
@@ -351,7 +385,7 @@ export async function runReview({ db, dbPath, cwd, env = process.env, config, la
   const list = labs ?? config.review?.labs ?? ["codex"];
   if (!list.length) return { code: 1, text: "refused review.labs is empty; nothing reviewed" };
   const max = config.review?.maxRounds ?? DEFAULT_MAX_ROUNDS;
-  const rounds = branchRounds(db, top, baseSha, head);
+  const rounds = branchRounds(db, top, branchBase, head);
   const round = roundOf(rounds, head);
   if (round > max && !forceRound) {
     return {
@@ -381,7 +415,7 @@ export async function runReview({ db, dbPath, cwd, env = process.env, config, la
   const out = [`review of ${short(head)} (${range}) in ${top}, round ${round} of ${max}${round > max ? " (forced)" : ""}:`];
   let anyFindings = false;
   const record = (lab, r, judged = [], fromRound = null) => {
-    insertRow(db, dbPath, { sessionId, cwd: top, head, base: baseSha ?? ROOT_BASE, branch, lab, model: r.model, verdict: r.verdict, findings: r.findings, items: r.items, reason: r.reason ?? null, at: nowIso(now()) });
+    insertRow(db, dbPath, { sessionId, cwd: top, head, base: branchBase ?? ROOT_BASE, branch, lab, model: r.model, verdict: r.verdict, findings: r.findings, items: r.items, reason: r.reason ?? null, at: nowIso(now()) });
     const model = r.model ? ` (${r.model})` : "";
     if (r.verdict === "findings") {
       anyFindings = true;
@@ -657,8 +691,11 @@ function positionals(args, withArg) {
  *                  and then `push.default`: HEAD, unless either says more (a configured push
  *                  refspec, or `matching`).
  *   gh pr create   no `--head`: HEAD (gh pushes the current branch). `--head <branch>`: gh does
- *                  not push, so the pull request's head is the remote branch: its upstream,
- *                  else `origin/<branch>`. `--head <owner>:<branch>` is another repository.
+ *                  not push, so the pull request's head is the branch on the remote as it is
+ *                  now: `git ls-remote` of the branch's upstream (`branch.<b>.remote` and
+ *                  `.merge`), else `origin`'s `refs/heads/<branch>`, bounded by GH_TIMEOUT_MS.
+ *                  A local remote-tracking ref is never trusted: it may be stale.
+ *                  `--head <owner>:<branch>` is another repository.
  *   gh pr merge    `--match-head-commit <sha>` when it is a full sha, else the head commit
  *                  `gh pr view [<selector>] [--repo …]` reports, marked `unbound`: the merge
  *                  itself does not require that commit.
@@ -666,7 +703,7 @@ function positionals(args, withArg) {
  * UnknownTarget when the command does not say: `--all`, `--mirror`, `--tags`, `--branches`, a
  * matching (`:`) or pattern refspec, a configured push refspec or `push.default matching`,
  * `--git-dir`/`--work-tree`, a `cd` or `-C` the gate cannot resolve, another owner's branch, a
- * ref that names no commit, gh failing.
+ * remote that cannot be read in time or has no such branch, a ref that names no commit, gh failing.
  */
 export function operationTargets(op, cwd, { env = process.env } = {}) {
   const opts = { timeoutMs: HOOK_GIT_TIMEOUT_MS };
@@ -721,14 +758,12 @@ export function operationTargets(op, cwd, { env = process.env } = {}) {
     const head = optValue(op.args, ["-H", "--head"]);
     if (!head) return [{ top: repo.top, sha: repo.head }];
     if (head.includes(":")) throw new UnknownTarget(`gh pr create --head ${head} names another owner's branch, which is not in this repository`);
-    for (const ref of [`${head}@{upstream}`, `refs/remotes/origin/${head}`]) {
-      try {
-        return [{ top: repo.top, sha: commitOf(repo.top, ref, opts) }];
-      } catch {
-        /* try the next */
-      }
-    }
-    throw new UnknownTarget(`gh pr create --head ${head} opens the pull request from the remote branch, and no remote-tracking ref for it is here`);
+    const first = (key) => gitConfig(repo.top, key, opts)[0] ?? null;
+    const remote = first(`branch.${head}.remote`) ?? "origin";
+    const ref = first(`branch.${head}.merge`) ?? `refs/heads/${head}`;
+    const r = lsRemote(repo.top, remote, ref, env);
+    if (!r.sha) throw new UnknownTarget(`gh pr create --head ${head} opens the pull request from ${remote}'s ${ref}, and ${r.why}; a local remote-tracking ref may be stale, so it was not used`);
+    return [{ top: repo.top, sha: r.sha }];
   }
   const match = optValue(op.args, ["--match-head-commit"]);
   if (match && /^[0-9a-f]{40}$/i.test(match)) return [{ top: null, sha: match.toLowerCase() }];

@@ -287,15 +287,17 @@ comes back with the remedy. `cc_sessions.last_block_*` is unchanged.
 
 `ledger review` sends the branch's diff (`git diff <base>..HEAD`; the default base is the
 merge-base with `origin/main`, else with a local `main` or `master` HEAD has moved past, else
-`HEAD~1`; `--base <ref>` overrides it) to every lab in `review.labs` at once and records one
-`cc_reviews` row per lab for the HEAD commit. Each lab is asked to start every finding with
-`[blocking]`, `[should]` or `[nit]` (untagged counts as `should`); the parsed list is kept in
-`findings_json`. A row's verdict is `pass` (no findings), `pass-with-nits` (nits only),
+`HEAD~1`; `--base <ref>` overrides it for the diff only) to every lab in `review.labs` at once
+and records one `cc_reviews` row per lab for the HEAD commit. Each lab is asked to start every
+finding with `[blocking]`, `[should]` or `[nit]` (untagged counts as `should`); the parsed list is
+kept in `findings_json`. A row's verdict is `pass` (no findings), `pass-with-nits` (nits only),
 `findings` (any blocking or should) or `unavailable` (the error). `--labs a,b` runs only those
 labs this once. Each lab has 240 seconds; a timeout kills the CLI's whole process group. HEAD and
 the base are resolved to commits once, before the labs start, and the diff is taken between those
-two commits, so the rows name exactly the commit the labs read. Every row records that base and
-the branch name.
+two commits, so the rows name exactly the commit the labs read. Every row records the branch's
+base (the default one, whatever `--base` said) and the branch name. `--base` never changes the
+round count or which earlier findings are reconciled, so a narrower diff cannot drop a finding
+without the judge.
 
 A reviewer reads the diff it is handed and nothing else. Each CLI runs with its lab's own
 tool-free switch (below), from a fresh empty scratch folder (so no agent file, settings, hooks or
@@ -313,22 +315,26 @@ variables) instead of the caller's, and `LEDGER_ENABLED=0` so the ledger's hooks
 `LEDGER_REVIEW_BIN_<LAB>` (e.g. `LEDGER_REVIEW_BIN_CODEX`) points a lab at another binary.
 
 The gate checks the commits the command publishes, not the hook's folder. Each command runs in
-the folder its preceding `cd`/`pushd` select. `git push` checks the repository its `-C` options
-select, then each refspec's source; a deletion publishes nothing. With no refspec, git's own
-choice is followed: HEAD under `push.default` `simple`, `current` or `upstream`, nothing under
-`nothing`. `gh pr create` without `--head` checks HEAD (gh pushes the current branch). With
-`--head <branch>` gh does not push, so the gate checks the remote branch (its upstream, else
-`origin/<branch>`), not the local one. `gh pr merge` checks the full sha given to
-`--match-head-commit`, else the head commit `gh pr view` reports for that pull request
-(5 seconds); in that case an allowed merge carries a notice naming the commit checked and the
-`--match-head-commit <sha>` that binds the merge to it, because the head can move before the
-merge runs. The command is read with shell quoting, so a quoted `git push` inside an argument is
-not a push, while one inside `$(…)` or backticks (unquoted, in double quotes, or in an unquoted
-heredoc) is. When the command does not say which commit, the call is allowed with a notice
-saying so: `--all`, `--mirror`, `--tags`, `--branches`, a `:` or pattern refspec, a configured
-`remote.<name>.push`, `push.default matching`, `--git-dir`, a `cd` or `-C` whose folder is
-computed (`$`, `~`, a glob, `cd -`), `--head <owner>:<branch>`, a remote branch not fetched here,
-gh failing.
+the folder its preceding `cd`/`pushd` select, in its own shell scope: a `cd` inside `( … )` or a
+command substitution does not move a command after it. `git push` checks the repository its
+`-C` options select, then each refspec's source; a deletion publishes nothing. With no refspec,
+git's own choice is followed: HEAD under `push.default` `simple`, `current` or `upstream`,
+nothing under `nothing`. `gh pr create` without `--head` checks HEAD (gh pushes the current
+branch). With `--head <branch>` gh does not push, so the gate asks the remote for that branch as
+it is now (`git ls-remote` of the branch's upstream, else `origin`'s `refs/heads/<branch>`, no
+prompt, 5 seconds) and checks that commit; a local remote-tracking ref is never used, because it
+may be stale. `gh pr merge` checks the full sha given to `--match-head-commit`, else the head
+commit `gh pr view` reports for that pull request (5 seconds); in that case an allowed merge
+carries a notice naming the commit checked and the `--match-head-commit <sha>` that binds the
+merge to it, because the head can move before the merge runs. The command is read with shell
+quoting, so a quoted `git push` inside an argument is not a push, while one inside `$(…)` or
+backticks (unquoted, in double quotes, or in an unquoted heredoc) is. When the command does not
+say which commit, the call is allowed with a notice saying so: `--all`, `--mirror`, `--tags`,
+`--branches`, a `:` or pattern refspec, a configured `remote.<name>.push`, `push.default
+matching`, a `-c` or `--config-env` that sets push, remote or branch config, a `GIT_CONFIG*`,
+`GIT_DIR` or `GIT_WORK_TREE` assignment or export, `--git-dir`, a `cd` or `-C` whose folder is
+computed (`$`, `~`, a glob, `cd -`), `--head <owner>:<branch>`, a remote that cannot be read in
+time or has no such branch, gh failing.
 
 For each commit the gate reads its rows, strictest first: a `waived` row lets it through; any lab
 whose latest row is `findings` (and not followed by `addressed`) denies, with the findings
@@ -351,7 +357,9 @@ or continue with `--force-round`.
 
 **The judge.** A blocking or should finding counts as resolved only when a judge model agrees.
 Each lab's outstanding findings are its latest row that is not `unavailable`, on any reviewed
-commit of the branch, this one included. Three things go to the judge: an outstanding finding the
+commit of the branch, this one included; a later row replaces an earlier one only when it is on
+the same commit or a descendant, so a review of an older commit clears nothing found on a newer
+one. Three things go to the judge: an outstanding finding the
 lab's new reply no longer lists, one it lists again only as a nit, and every outstanding finding
 on an earlier commit when the agent runs `review addressed "<why>"`. A lab that is `unavailable`
 this time, or not in this run's labs, gets a `findings` row on the new commit carrying its
