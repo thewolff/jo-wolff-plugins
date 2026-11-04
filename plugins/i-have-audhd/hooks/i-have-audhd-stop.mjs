@@ -42,12 +42,14 @@
 //      command-only handoff is short by nature, and rule 10 holds at any length.
 //   6. Deterministic checks run per their configured modes; findings collect.
 //   7. Judge-gated checks run only where their deterministic trigger fired and a judge
-//      command is configured; a skipped one leaves a line in skipped.log naming the rule —
-//      a skipped check must be inspectable, never silently dead. conclusion-first and
-//      bad-news-first run per unit (checks/sections.mjs): each block-labeled section of a
-//      labeled message, or the whole message when it has none. One judge job per qualifying
-//      unit, one finding per rule naming every violating section; a judge that cannot answer
-//      is never a pass for its section (JUDGE UNAVAILABLE below).
+//      command resolves (judge/ask.mjs resolveJudge: the profile's enforcement.judgeCommand,
+//      else the shared judge file, plugin-kit's order); a skipped one leaves a line in
+//      skipped.log naming the rule and both places looked — a skipped check must be
+//      inspectable, never silently dead. conclusion-first and bad-news-first run per unit
+//      (checks/sections.mjs): each block-labeled section of a labeled message, or the whole
+//      message when it has none. One judge job per qualifying unit, one finding per rule
+//      naming every violating section; a judge that cannot answer is never a pass for its
+//      section (JUDGE UNAVAILABLE below).
 //   8. Harness cap — only when I_HAVE_AUDHD_HARNESS=omp (set by the OMP adapter on its
 //      child, never by Claude Code): harnessCapsBlocks in lib/config.mjs turns every
 //      block-mode finding into a warn one when the profile does not set enforcement.armOmp,
@@ -97,7 +99,7 @@ import { checkLinksResolve } from "../checks/links-resolve.mjs";
 import { readGhCache, ghCachePath } from "../lib/gh-cache.mjs";
 import { splitLabeledSections, openingWords, OPENING_WORDS } from "../checks/sections.mjs";
 import { proseCharCount } from "../checks/lines.mjs";
-import { loadEnforcement, loadSwitches, effectiveMode, harnessCapsBlocks, defaultProfilePath } from "../lib/config.mjs";
+import { loadEnforcement, loadSwitches, effectiveMode, harnessCapsBlocks } from "../lib/config.mjs";
 import { ruleRef } from "../lib/rules.mjs";
 import { stateDir, killSwitchPath, lastBlockedPath, resumeMarkerPath, sha256hex, appendLog, logFault, faultWarning } from "../lib/state.mjs";
 import { writePending } from "../lib/pending.mjs";
@@ -107,7 +109,7 @@ import { conclusionFirstApplicable, conclusionFirstQuestion } from "../triggers/
 import { lastIncompleteTodos, reportQuestion, todoJudgeContext } from "../triggers/todo-unfinished.mjs";
 import { badNewsGate, badNewsQuestion } from "../triggers/bad-news-lexicon.mjs";
 import { linksJudgeJobs } from "../triggers/links-judge.mjs";
-import { askJudge } from "../judge/ask.mjs";
+import { askJudge, resolveJudge, judgeSources } from "../judge/ask.mjs";
 
 // restate-resumed-thread's judge question. Static per rule — variable data rides in the context
 // (the verdict cache keys on the whole prompt either way).
@@ -491,15 +493,17 @@ function judgeReason(hits) {
 const SETUP_COMMAND = `node ${fileURLToPath(new URL("../tools/setup.mjs", import.meta.url))}`;
 
 // The finding for a rule whose judge gave no verdict for `misses` (its unavailable jobs, each
-// with its result). It names the rule, the cause(s), the unchecked sections, the evidence and
-// the next step, and says outright that this is not a pass.
+// with its result). It names the rule, where the command came from, the error(s) and cause(s),
+// the unchecked sections, the evidence and the next step, and says outright that this is not
+// a pass.
 function unavailableFinding(rule, misses) {
-  const errors = [...new Set(misses.map((m) => `${m.verdict.error}, ${m.verdict.cause ?? "other"}`))].join("; ");
+  const errors = [...new Set(misses.map((m) => `${m.verdict.error}${m.verdict.detail ? `: ${m.verdict.detail}` : ""}, ${m.verdict.cause ?? "other"}`))].join("; ");
+  const source = misses.find((m) => m.verdict.source)?.verdict.source;
   const sections = misses.filter((m) => m.job.unit).map((m) => sectionName(m.job.unit));
   const where = sections.length ? ` for ${sections.join("; ")}` : "";
   return {
     text:
-      `Judge unavailable (${rule}) — the judge gave no verdict${where} (${errors}), so this rule was not checked; ` +
+      `Judge unavailable (${rule}) — the judge${source ? ` (${source})` : ""} gave no verdict${where} (${errors}), so this rule was not checked; ` +
       `that is not a pass. The judge's stderr is in ${join(stateDir(), "judge-failures.log")}; ` +
       `\`${SETUP_COMMAND}\` re-tests the judge command.`,
     paste: "Nothing in the message can bring the judge back; a revision is only warned.",
@@ -626,9 +630,10 @@ async function main() {
   const judged = (rule) => !belowFloor && effectiveMode(config, rule) !== "off";
 
   // Judge-gated rules: deterministic trigger first; the judge runs only where a trigger fired
-  // AND a judge command is configured. A skipped judge rule leaves a line in skipped.log —
-  // inspectable, never silently dead. Judge jobs run in parallel so slow verdicts share
-  // the harness-specific deadline rather than adding their waits together.
+  // AND a judge command resolves (the profile's override, else the shared file). A skipped
+  // judge rule leaves a line in skipped.log naming both places (and the shared file's parse
+  // problem when that is why) — inspectable, never silently dead. Judge jobs run in parallel
+  // so slow verdicts share the harness-specific deadline rather than adding their waits together.
   const judgeJobs = [];
 
   // restate-resumed-thread — restate the resumed thread. The injector left a one-shot marker at session start
@@ -702,9 +707,13 @@ async function main() {
   }
   let judgeAlert = "";
   if (judgeJobs.length) {
-    if (!config.judgeCommand) {
+    if (!resolveJudge(config)) {
+      const { profile, shared, malformed } = judgeSources();
       for (const job of judgeJobs) {
-        appendLog("skipped.log", `rule=${job.rule} reason=no-judge-command profile=${defaultProfilePath()} session=${sessionId}`);
+        appendLog(
+          "skipped.log",
+          `rule=${job.rule} reason=no-judge-command profile=${profile} shared=${shared} session=${sessionId}` + (malformed ? ` malformed=${JSON.stringify(malformed)}` : ""),
+        );
       }
     } else {
       const verdicts = await Promise.all(
