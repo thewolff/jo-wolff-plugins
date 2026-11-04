@@ -23,7 +23,7 @@ test("C: SessionStart lists other-folder questions with body, options, default a
   const i = text.indexOf("1 question waiting on you in 1 other folder");
   assert.ok(i >= 0, text);
   const block = text.slice(i).split("\n");
-  assert.match(block[0], /asked elsewhere, not for this folder's work; for you, not the human: when the human's reply answers one, run `.*answer <q-id> <option>` and tell them it is recorded; never show the id/);
+  assert.match(block[0], /answer <q-id> <option>/, "the header names the command");
   assert.equal(block[1], other);
   assert.match(block[2], new RegExp(`^remote ${q}  # db mode · Should the trial use a local or a remote database\\? · default remote · also: local / withdraw$`));
 
@@ -31,7 +31,10 @@ test("C: SessionStart lists other-folder questions with body, options, default a
   const p = prompt(box, "s-c", "Local.");
   assert.equal(p.code, 0, p.err);
   assert.ok(p.json?.hookSpecificOutput?.additionalContext, p.out);
-  assert.match(p.json.hookSpecificOutput.additionalContext, new RegExp(`the prompt "Local\\." is option local of an open question \\(asked in ${other}\\): remote ${q}  # db mode .* If the human meant it as their reply, run \`ledger answer ${q} local\` and tell them it is recorded; do not show the id\\. Nothing is recorded yet\\.`));
+  const ctx = p.json.hookSpecificOutput.additionalContext;
+  assert.match(ctx, new RegExp(`is option local of an open question \\(asked in ${other}\\)`));
+  assert.match(ctx, new RegExp(`remote ${q}  # db mode · Should the trial use a local or a remote database\\? · default remote · also: local / withdraw`), "the question's pending line");
+  assert.match(ctx, new RegExp(`ledger answer ${q} local`), "the command to run");
   assert.equal(p.json.systemMessage, undefined, "the human is not shown the hint");
   assert.equal(row(openDb(box), "SELECT state FROM cc_questions WHERE id = ?", q).state, "open");
 
@@ -46,6 +49,23 @@ test("C: SessionStart lists other-folder questions with body, options, default a
   assert.equal(a.code, 0, a.err);
   assert.equal(row(openDb(box), "SELECT state FROM cc_questions WHERE id = ?", q).state, "answered");
   assert.ok(!start(box, "s-c2").json.hookSpecificOutput.additionalContext.includes("other folder"));
+});
+
+// Codex review of 0.3.1, should-fix: a held question elsewhere carried only id, name and body.
+test("C: a held question in another folder carries its options and default at SessionStart, marked held; the bare option still hints it", () => {
+  const box = sandbox();
+  const other = `${box.root}/elsewhere`;
+  const q = askQuestion(box, { name: "storage", body: "Which storage mode?", options: "local,remote", extra: ["--default", "remote"], cwd: other });
+  apply(box, [`hold ${q}`], { cwd: other });
+  const text = start(box, "s-h").json.hookSpecificOutput.additionalContext;
+  const i = text.indexOf("1 question waiting on you in 1 other folder");
+  assert.ok(i >= 0, text);
+  const block = text.slice(i).split("\n");
+  assert.equal(block[1], other);
+  assert.equal(block[2], `held ${q}  # storage · Which storage mode? · default remote · also: local / withdraw`);
+  const p = prompt(box, "s-h", "local");
+  assert.match(p.json?.hookSpecificOutput?.additionalContext ?? "", new RegExp(`ledger answer ${q} local`));
+  assert.equal(row(openDb(box), "SELECT state FROM cc_questions WHERE id = ?", q).state, "held", "a hint records nothing");
 });
 
 test("C: the hint ranks this session's question first, then this folder's, then elsewhere; held rows count", () => {

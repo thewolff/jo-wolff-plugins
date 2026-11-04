@@ -7,7 +7,7 @@
 // first, never the held or open questions, the other-folders block, review or doctor lines.
 
 import { fileURLToPath } from "node:url";
-import { elsewhereQuestions, heldLines, heldQuestions, logEntries, openQuestions, pendingLines, renderLog, renderPending } from "./commands.mjs";
+import { elsewhereQuestions, heldQuestions, logEntries, openQuestions, pendingLines, renderLog, renderPending } from "./commands.mjs";
 import { quickIssues } from "./doctor.mjs";
 import { findingsLine } from "./review.mjs";
 
@@ -122,10 +122,10 @@ export const ELSEWHERE_MAX = 10;
 
 /**
  * The open and held questions outside the scope of `cwd` (not it, not an ancestor, not under
- * it), grouped under their folder: one `pending` line per open question (body, options, default
- * and the q- id, so the session can record the human's reply without a lookup) and one `held`
- * line per held one; "" when there are none. Past ELSEWHERE_MAX questions the rest are counted
- * and left to `pending --all`.
+ * it), grouped under their folder: one `pending` line per question (body, options, default and
+ * the q- id, so the session can record the human's reply without a lookup), a held one's line
+ * opening with `held` in place of the default word; "" when there are none. Past ELSEWHERE_MAX
+ * questions the rest are counted and left to `pending --all`.
  */
 export function elsewhereLine(db, cwd, { now = Date.now(), timezone = null } = {}) {
   const groups = elsewhereQuestions(db, cwd);
@@ -141,7 +141,9 @@ export function elsewhereLine(db, cwd, { now = Date.now(), timezone = null } = {
     out.push(folder);
     for (const q of questions) {
       if (shown >= ELSEWHERE_MAX) break;
-      out.push(...(q.state === "held" ? heldLines([q]) : pendingLines(q, { now, timezone })));
+      const lines = pendingLines(q, { now, timezone });
+      if (q.state === "held") lines[0] = `held ${lines[0].slice(q.default_opt.length + 1)}`;
+      out.push(...lines);
       shown++;
     }
   }

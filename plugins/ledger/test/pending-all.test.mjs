@@ -70,7 +70,7 @@ test("SessionStart counts open and held questions per folder, pluralised", () =>
   const text = injected(box);
   assert.deepEqual(elsewhereLines(text), [header(3, 2)]);
   // Folders in path order; open before held within a folder; each line is the `pending`/`held` line.
-  assert.match(text, new RegExp(`^${other}\\na \\S+  # three · .*\\n${box.sibling}\\na \\S+  # one · .*\\nheld ${held}  # two · `, "m"));
+  assert.match(text, new RegExp(`^${other}\\na \\S+  # three · .*\\n${box.sibling}\\na \\S+  # one · .*\\nheld ${held}  # two · Which way \\(two\\)\\? · default a · also: b / withdraw$`, "m"));
 });
 
 test("a question in a parent or a subfolder of the session folder is in scope, not elsewhere", () => {
