@@ -6,13 +6,15 @@
 // whose session has ended are withdrawn with a note, at most 20 per start (lib/sweep.mjs).
 // Output: hookSpecificOutput.additionalContext with, in order and only when non-empty: open
 // questions (the `pending` block), the last N notes/questions/answers, the verb summary. On
-// `source: compact` only the questions and a one-line summary.
+// `source: compact` only the questions and a one-line summary. Last (0.3.2), the repository's
+// `.ai/decision-log/` entries where the newdle plugin's hook is not on to inject them
+// (lib/decision-log.mjs readDecisionLog; `decisionLog.enabled` false turns it off).
 //
 // Fail open: config switch off → exit 0 before the store is touched; store busy or unavailable →
 // no injection and one systemMessage line; anything thrown → runHook's systemMessage.
 
 import { StoreError, transaction } from "../lib/db.mjs";
-import { runHook, noticeField, invokedDirectly } from "../lib/failopen.mjs";
+import { runHook, noticeField, invokedDirectly, logError } from "../lib/failopen.mjs";
 import { buildInjection, invocation } from "../lib/inject.mjs";
 import { withStore, hookConfig } from "../lib/store.mjs";
 import { appendFileSync } from "node:fs";
@@ -21,6 +23,7 @@ const SESSION_ID_OK = /^[A-Za-z0-9_.-]+$/;
 import { nowIso } from "../lib/time.mjs";
 import { autoWithdraw } from "../lib/sweep.mjs";
 import { sessionStartLines, stampFirstSeen } from "../lib/digest.mjs";
+import { readDecisionLog, repoRoot } from "../lib/decision-log.mjs";
 
 export function handle(input, { env = process.env, now = Date.now() } = {}) {
   const ready = hookConfig(env, input, "sessionStart");
@@ -72,9 +75,16 @@ export function handle(input, { env = process.env, now = Date.now() } = {}) {
       /* advisory */
     }
     notices.push(...digest);
+    // 0.3.2: the repository's decision log, where the newdle plugin's own hook will not inject it.
+    let log = "";
+    try {
+      log = readDecisionLog(repoRoot(cwd).root, store.config);
+    } catch (err) {
+      logError("SessionStart", `decision log not read: ${err.message}`, env);
+    }
     return {
       ...noticeField(notices),
-      hookSpecificOutput: { hookEventName: "SessionStart", additionalContext: text },
+      hookSpecificOutput: { hookEventName: "SessionStart", additionalContext: [text, log].filter(Boolean).join("\n\n") },
     };
   });
 }

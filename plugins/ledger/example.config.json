@@ -39,6 +39,9 @@
     "enabled": true,
     "issue": "thewolff/jo-issues#325"
   },
+  "decisionLog": {
+    "enabled": true
+  },
   "review": {
     "mode": "gate",
     "labs": [

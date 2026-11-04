@@ -4,6 +4,10 @@
 // session's bounce rows still open into `bypassed`, so both land or neither does. Open questions
 // stay open until answered or withdrawn.
 //
+// 0.3.2: after the stamp, the decision-log entry (lib/decision-log.mjs): one file under the
+// repository's `.ai/decision-log/` when the session recorded an answer or a note and
+// `decisionLog.enabled` is not false; its faults are errors.log lines, never a failed stamp.
+//
 // Budget: SessionEnd hooks share a 1.5-second budget that a plugin cannot raise, so this does
 // the least possible, and waits at most SESSION_END_BUSY_MS for a lock (the open and the write
 // each retry once). SessionEnd discards JSON output, so failures go to errors.log only.
@@ -14,6 +18,7 @@ import { runHook, logError, invokedDirectly } from "../lib/failopen.mjs";
 import { openStore, hookConfig } from "../lib/store.mjs";
 import { nowIso } from "../lib/time.mjs";
 import { bypassOpenBounces } from "../lib/bounces.mjs";
+import { writeDecisionLog } from "../lib/decision-log.mjs";
 
 export const SESSION_END_BUSY_MS = 250;
 
@@ -38,6 +43,7 @@ export function handle(input, { env = process.env, now = Date.now() } = {}) {
     for (const n of store.notices) logError("SessionEnd", n, env);
     const reason = typeof input.reason === "string" && input.reason ? input.reason : "other";
     const iso = nowIso(now);
+    const startedAt = store.db.prepare("SELECT started_at FROM cc_sessions WHERE id = ?").get(sessionId)?.started_at ?? null;
     transaction(
       store.db,
       () => {
@@ -48,7 +54,13 @@ export function handle(input, { env = process.env, now = Date.now() } = {}) {
       },
       store.dbPath,
     );
-    return { ended: sessionId };
+    let decisionLog = null;
+    try {
+      decisionLog = writeDecisionLog({ db: store.db, sessionId, cwd, config: store.config, now, startedAt });
+    } catch (err) {
+      logError("SessionEnd", `decision log not written: ${err.message}`, env);
+    }
+    return { ended: sessionId, decisionLog };
   } finally {
     store.db.close();
   }
