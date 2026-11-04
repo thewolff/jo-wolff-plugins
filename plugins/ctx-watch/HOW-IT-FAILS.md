@@ -1,0 +1,20 @@
+# How ctx-watch fails
+
+The receipt the repository test bar asks for before a plugin ships: every piece that can fail,
+how it fails, where the failure is visible, and what the person does about it. `ledger gate
+check` checks the mechanical parts (the hooks survive five fault inputs; faults leave an
+errors.log line and a systemMessage; every skill has a "When this can't run" section; every deny
+text names a command); this table is the part a person reads.
+
+| Piece | Fails how | Visible where | The person does |
+|---|---|---|---|
+| `hooks/session-start.mjs` | stdin not JSON; the handler throws; no answer in 4 s (`handle()` runs on a worker thread, the main thread's timer ends the run and a late answer is dropped; each ctx spawn inside is bounded at 1.2 s so three fit) | one line in `${XDG_STATE_HOME:-~/.local/state}/ctx-watch/errors.log`; a `systemMessage` (`ctx-watch SessionStart failed open: …`) | nothing for one line; a repeating line is a bug: open an issue with the line |
+| the probe (`ctx daemon status --format json`, CI removed) | `ctx` not on PATH; no answer in 10 s (1.2 s in the hook); output not JSON; `.daemon` missing | a failing probe with that as the reason: the SessionStart line, `check`'s line, `tick`'s log line and the popup all say `ctx could not run: …` or `` `ctx daemon status --format json` printed no JSON … `` with `fix: \`…\`` | install ctx (`ctx docs show getting-started`) or run the fix command in a Terminal; never a silent pass |
+| the daemon (what the probe is for) | `.daemon.running` not true; `.daemon.supervisor.status` not `installed`; `core_refresh.last_run_at_ms` over 2 h old | the same four places, with the field and its value in the reason | run `ctx index mode auto` in your own Terminal (not an agent shell: `CI=true` there makes ctx refuse to start a daemon) |
+| the repair (`ctx index mode auto`, CI removed) | ctx reports a mode other than `auto`, or names a config file that does not exist → not attempted; the command fails or prints no JSON → attempted, failed | `healed.detail` in `check --json`, the `heal:` clause of `tick`'s line and of `status`; the probe after it decides the line | for `manual`: decide whether you want the daemon at all (`ctx index mode auto` turns it on); for a missing config: `ctx setup`; otherwise read ctx's line |
+| `<state>/state.json` | missing or unreadable → treated as never ticked (EMPTY); unwritable | `tick` prints `state not written to <path>: <error>`; the hook ignores it and still speaks | fix the directory's permissions; `status` shows the path |
+| the timer (`com.jo-wolff-plugins.ctx-watch`) | not bootstrapped; bootout by hand; plist path gone after a plugin update; launchd throttled it | the SessionStart dead-man's line (`timer has not run since <time>`) once the stamp is older than 2× the interval; `status` shows the last tick and `launchctl print`'s answer | `node <plugin dir>/scripts/ctx-watch.mjs install`, then the printed `launchctl bootstrap` (or bootout-and-bootstrap) line, from a GUI login Terminal |
+| `install` | a relative or missing path; an interval under 30 s; `plutil -lint` rejects the plist | exit 1 with the reason on stdout; nothing bootstrapped, no interval recorded | fix the argument; a lint failure is a bug: open an issue with the plist |
+| `plutil` / `launchctl` | not installed (not macOS) or refused (a sandbox) | `install` and `status` say `plutil not found: …` / `launchctl not found: …` / `launchctl could not run: …` and go on | run `install` from a normal Terminal on macOS |
+| the popup (`/usr/bin/osascript display dialog`) | cannot spawn (no osascript, no GUI session); nobody answers | `popup not shown: …` in `tick`'s log line; the dialog gives up after 1 h on its own; the episode is `down` either way and the SessionStart line still fires | nothing; the next session says it; `status` shows `popup shown <time>` |
+| `e2e/live-run.sh` (the canary) | `claude` missing or cannot log in | exit 75 with the reason on the last line; `ledger canary runs` shows `unavailable` | nothing; the canary tries again tomorrow |

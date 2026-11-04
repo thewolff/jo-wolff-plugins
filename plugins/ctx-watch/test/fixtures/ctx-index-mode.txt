@@ -1,0 +1,8 @@
+{
+  "config_path": "/Users/example/.ctx/config.toml",
+  "indexing": {
+    "mode": "auto"
+  },
+  "read_only": true,
+  "schema_version": 2
+}
