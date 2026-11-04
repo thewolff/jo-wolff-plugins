@@ -48,7 +48,7 @@ test("review judge <key> prints a cached answer with its passage; an unknown key
   const r = cli(box, ["review", "judge", "abc123"]);
   assert.equal(r.code, 0, r.err);
   assert.equal(r.out, "judge:abc123\nanswer: no at 2026-11-03T00:00:00.000Z\nquestion: Does the change address the finding?\npassage:\nFinding:\nx\n\nChange:\ny\n");
-  assert.match(cli(box, ["review", "judge", "judge:old"]).out, /question: \(not kept: cached before 0\.3\.2\)\npassage:\n\(not kept: cached before 0\.3\.2\)/);
+  assert.match(cli(box, ["review", "judge", "judge:old"]).out, /question: \(not kept: cached before 0\.3\.3\)\npassage:\n\(not kept: cached before 0\.3\.3\)/);
   const miss = cli(box, ["review", "judge", "nope"]);
   assert.equal(miss.code, 1);
   assert.match(miss.out, /no cached judge answer for nope; keys are listed in `.* report`/);

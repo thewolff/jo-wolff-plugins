@@ -427,7 +427,13 @@ Claude Code plugins: one holding `plugins/*/hooks/hooks.json` or a root
 the same three for every kind of agent-facing artifact, run by `ledger gate check` and recorded
 as one `cc_gate_checks` row per (HEAD, plugin, check); a rerun replaces the rows. Only plugins
 with a file changed in base..HEAD are checked (base: the review's default base, or `--base`;
-`--plugins a,b` names them instead).
+`--plugins a,b` names them instead). The checks read the commit, never the checkout: each
+plugin is checked out of HEAD's tree into a temporary directory (`git read-tree` and
+`checkout-index` against a scratch index, so the repository's index stays as it was), and each
+row keeps the hash of that plugin tree (`tree_sha`). An uncommitted repair counts for nothing
+until it is committed, and the run says so (`(uncommitted changes under plugins/x/ were not
+checked; commit them and rerun)`); a committed file deleted from the checkout is still checked,
+since it is still pushed.
 
 | Check | Passes when | Fails naming |
 |---|---|---|
@@ -439,9 +445,14 @@ The whole run is capped at 60 s; a check that does not start before the cap reco
 with `timeout`. Exit 0 when every row passes or is skipped, 1 when one fails, 2 when the
 repository holds no plugin.
 
-The PreToolUse deny, given with the note and review gates' as one numbered list when more than
-one applies, is `ledger: plugin gate: <plugin> has no check rows for <sha>; run \`… gate
-check\`, fix, or \`… review waive "<why>"\`` or `… failed <check>: <detail>; run …`. A
+At push time the plugins are the pushed commit's (`git ls-tree`), not the checkout's, so
+removing a plugin's `hooks.json` from the checkout does not take it out of the gate, and a
+push of a commit other than HEAD needs rows for that commit. The PreToolUse deny, given with
+the note and review gates' as one numbered list when more than one applies, is `ledger: plugin
+gate: <plugin> has no check rows for <sha>; run \`… gate check\`, fix, or \`… review waive
+"<why>"\``, `… failed <check>: <detail>; run …`, or, for rows whose `tree_sha` is not that
+commit's plugin tree, `… <plugin>'s rows for <sha> certify tree <t1>, not its tree <t2>; run
+…`. A
 `review waive` row for HEAD lifts this gate as it lifts the review gate; `review.mode`
 `advise` turns the deny into a notice and `off` turns the gate off. A repository that holds no
 plugin never sees it. The push's commits are resolved once for both gates, so a remote that hangs
@@ -587,7 +598,8 @@ given; the `judge:` rows that lived in `cc_meta` move here with `passage` NULL a
 `cc_meta`), `cc_canary_runs` (one row per nightly canary run of one plugin: status
 `pass`/`fail`/`unavailable`, exit code, duration, transcript path, summary, diff against the last
 green run, grade `biting`/`silent`/`fine` and who graded it) and `cc_gate_checks` (one row per
-HEAD, plugin and check of the plugin push gate, `pass`/`fail`/`skipped` with a detail).
+commit, plugin and check of the plugin push gate, `pass`/`fail`/`skipped` with a detail and
+the hash of the plugin tree it certifies).
 
 ### Sharing the file with another tool
 

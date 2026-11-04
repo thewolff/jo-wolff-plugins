@@ -252,7 +252,8 @@ export const MIGRATIONS = [
   //                              `judge:<sha>` → yes|no in cc_meta with no passage). The old rows
   //                              move here with passage NULL and leave cc_meta.
   //   cc_canary_runs             one row per nightly canary run of one plugin's live-run.sh.
-  //   cc_gate_checks             one row per (HEAD, plugin, check) of the plugin push gate.
+  //   cc_gate_checks             one row per (commit, plugin, check) of the plugin push gate, with
+  //                              the hash of the plugin's tree in that commit (what was checked).
   (db) => {
     db.exec(`
       ALTER TABLE cc_bounces ADD COLUMN text TEXT;
@@ -290,6 +291,7 @@ export const MIGRATIONS = [
         name     TEXT NOT NULL,
         status   TEXT NOT NULL CHECK (status IN ('pass','fail','skipped')),
         detail   TEXT,
+        tree_sha TEXT NOT NULL,
         at       TEXT NOT NULL,
         UNIQUE (cwd, head_sha, plugin, name)
       );

@@ -1,9 +1,14 @@
 // plugin-gate.mjs — the three-check push gate for a repository of Claude Code plugins (the
-// repo-root AGENTS.md test bar, kind-agnostic). It applies when the pushed repository holds
+// repo-root AGENTS.md test bar, kind-agnostic). It applies when the pushed commit holds
 // `plugins/*/hooks/hooks.json` or a root `.claude-plugin/plugin.json`, and only to plugins with a
 // file changed between the push's base and its head. For each such plugin, `ledger gate check`
-// runs and records three checks as rows of cc_gate_checks (one per head, plugin and check name;
-// a rerun replaces them):
+// runs and records three checks as rows of cc_gate_checks (one per commit, plugin and check
+// name; a rerun replaces them). The checks read the commit, never the checkout: each plugin is
+// checked out of HEAD's tree into a temporary directory (`git read-tree` + `checkout-index`
+// against a scratch index), and the row keeps the hash of that plugin tree. An uncommitted
+// repair counts for nothing until it is committed; a committed file removed from the checkout
+// is still checked and still pushed. At push time the gate discovers plugins in the pushed
+// commit's tree, and a row whose tree hash is not that commit's plugin tree is no pass.
 //
 //   survives   can't break the session: every hook command in hooks.json is spawned once per
 //              fault input (empty stdin, malformed JSON, an unknown event, an unwritable state,
@@ -55,30 +60,60 @@ export const FAULT_INPUTS = Object.freeze([
   { name: "no config", visible: false },
 ]);
 
-/** The plugins of `top`: `{ name, dir }` each, [] when `top` is not a repository of plugins. */
-export function repoPlugins(top) {
-  const out = [];
-  const pluginsDir = join(top, "plugins");
-  if (existsSync(pluginsDir)) {
-    for (const name of readdirSync(pluginsDir).sort()) {
-      const dir = join(pluginsDir, name);
-      if (existsSync(join(dir, "hooks", "hooks.json")) || existsSync(join(dir, ".claude-plugin", "plugin.json"))) out.push({ name, dir, prefix: `plugins/${name}/` });
-    }
+/**
+ * The plugins of commit `sha` in `top`: `{ name, prefix }` each, read from the commit's tree
+ * (`git ls-tree`), not the checkout; [] when the commit holds no plugin.
+ */
+export function treePlugins(top, sha) {
+  const files = git(top, ["ls-tree", "-r", "--name-only", sha, "--", "plugins", ".claude-plugin"]).split("\n").filter(Boolean);
+  const names = new Set();
+  for (const f of files) {
+    const m = /^plugins\/([^/]+)\/(?:hooks\/hooks\.json|\.claude-plugin\/plugin\.json)$/.exec(f);
+    if (m) names.add(m[1]);
   }
-  if (!out.length && existsSync(join(top, ".claude-plugin", "plugin.json"))) {
+  const out = [...names].sort().map((name) => ({ name, prefix: `plugins/${name}/` }));
+  if (!out.length && files.includes(".claude-plugin/plugin.json")) {
     let name = top.split("/").pop();
     try {
-      name = JSON.parse(readFileSync(join(top, ".claude-plugin", "plugin.json"), "utf8")).name || name;
+      name = JSON.parse(git(top, ["show", `${sha}:.claude-plugin/plugin.json`])).name || name;
     } catch {
       /* the directory's name */
     }
-    out.push({ name, dir: top, prefix: "" });
+    out.push({ name, prefix: "" });
   }
   return out;
 }
 
-/** The plugins of `top` with a file changed in base..head (every plugin when base is null: the root commit). */
-export function changedPlugins(top, base, head, plugins = repoPlugins(top)) {
+/** The hash of the plugin's tree in commit `sha` (the commit's whole tree for a root plugin). */
+export function treeSha(top, sha, prefix) {
+  return git(top, ["rev-parse", "--verify", prefix ? `${sha}:${prefix.replace(/\/$/, "")}` : `${sha}^{tree}`]).trim();
+}
+
+/**
+ * The plugin's tree of commit `sha` checked out into a temporary directory: `{ dir, tree,
+ * release }`. A scratch index file keeps the repository's own index and checkout untouched.
+ */
+export function snapshotTree(top, sha, prefix) {
+  const tree = treeSha(top, sha, prefix);
+  const root = mkdtempSync(join(tmpdir(), "ledger-gate-tree-"));
+  const dir = join(root, "tree");
+  mkdirSync(dir);
+  const env = { ...process.env, GIT_INDEX_FILE: join(root, "index") };
+  for (const args of [
+    ["read-tree", tree],
+    ["--work-tree", dir, "checkout-index", "-a", "-f"],
+  ]) {
+    const r = spawnSync("git", args, { cwd: top, env, encoding: "utf8", timeout: 60_000, killSignal: "SIGKILL" });
+    if (r.error || r.status !== 0) {
+      rmSync(root, { recursive: true, force: true });
+      throw new Error(`git ${args.join(" ")}: ${r.error?.message ?? (r.stderr || "").trim() ?? `exit ${r.status}`}`);
+    }
+  }
+  return { dir, tree, release: () => rmSync(root, { recursive: true, force: true }) };
+}
+
+/** The plugins (of `treePlugins`) with a file changed in base..head (every plugin when base is null: the root commit). */
+export function changedPlugins(top, base, head, plugins = treePlugins(top, head)) {
   if (!plugins.length) return [];
   if (!base) return plugins;
   const files = git(top, ["diff", "--name-only", `${base}..${head}`]).split("\n").filter(Boolean);
@@ -344,14 +379,14 @@ export function checkPlugin(plugin, { env = process.env, deadline = Date.now() +
   return rows;
 }
 
-/** Replace the rows of (top, head, plugin) with `rows`. */
-export function recordChecks(db, dbPath, top, head, pluginName, rows, now = Date.now()) {
+/** Replace the rows of (top, head, plugin) with `rows`, each certifying the plugin tree `tree`. */
+export function recordChecks(db, dbPath, top, head, pluginName, tree, rows, now = Date.now()) {
   const at = nowIso(now);
-  const put = db.prepare("INSERT OR REPLACE INTO cc_gate_checks (cwd, head_sha, plugin, name, status, detail, at) VALUES (?, ?, ?, ?, ?, ?, ?)");
+  const put = db.prepare("INSERT OR REPLACE INTO cc_gate_checks (cwd, head_sha, plugin, name, status, detail, tree_sha, at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)");
   transaction(
     db,
     () => {
-      for (const r of rows) put.run(top, head, pluginName, r.name, r.status, r.detail ?? null, at);
+      for (const r of rows) put.run(top, head, pluginName, r.name, r.status, r.detail ?? null, tree, at);
     },
     dbPath,
   );
@@ -359,7 +394,7 @@ export function recordChecks(db, dbPath, top, head, pluginName, rows, now = Date
 
 /** The rows of (top, head, plugin), in CHECKS order. */
 export function checkRows(db, top, head, pluginName) {
-  const rows = db.prepare("SELECT name, status, detail, at FROM cc_gate_checks WHERE cwd = ? AND head_sha = ? AND plugin = ?").all(top, head, pluginName);
+  const rows = db.prepare("SELECT name, status, detail, tree_sha, at FROM cc_gate_checks WHERE cwd = ? AND head_sha = ? AND plugin = ?").all(top, head, pluginName);
   return CHECKS.map((name) => rows.find((r) => r.name === name)).filter(Boolean);
 }
 
@@ -367,9 +402,10 @@ const short = (sha) => String(sha).slice(0, 8);
 
 /**
  * `ledger gate check [--plugins a,b] [--base <ref>]`: run the three checks on every plugin of
- * the repository `cwd` is in with a change in base..HEAD (or the named ones), record the rows,
- * print them. Exit 0 when every row passes or is skipped, 1 when one fails, 2 when the
- * repository holds no plugin.
+ * HEAD's tree with a change in base..HEAD (or the named ones), each read out of the commit,
+ * record the rows with the plugin tree they certify, print them. Exit 0 when every row passes
+ * or is skipped, 1 when one fails, 2 when the commit holds no plugin. Uncommitted changes
+ * under a checked plugin are named: they were not checked.
  */
 export function gateCheck({ db, dbPath, cwd, env = process.env, plugins: only = null, base: baseRef = null, now = Date.now() }) {
   let repo;
@@ -380,8 +416,8 @@ export function gateCheck({ db, dbPath, cwd, env = process.env, plugins: only = 
     throw err;
   }
   const { top, head } = repo;
-  const all = repoPlugins(top);
-  if (!all.length) return { code: 2, text: `gate check: ${top} holds no plugin (no plugins/*/hooks/hooks.json, no .claude-plugin/plugin.json)` };
+  const all = treePlugins(top, head);
+  if (!all.length) return { code: 2, text: `gate check: ${short(head)} holds no plugin (no plugins/*/hooks/hooks.json, no .claude-plugin/plugin.json)` };
   let chosen;
   if (only) {
     const unknown = only.filter((n) => !all.some((p) => p.name === n));
@@ -398,12 +434,19 @@ export function gateCheck({ db, dbPath, cwd, env = process.env, plugins: only = 
   const lines = [`gate check ${short(head)}`];
   let failed = 0;
   for (const plugin of chosen) {
-    const rows = checkPlugin(plugin, { env, deadline });
-    recordChecks(db, dbPath, top, head, plugin.name, rows, now);
+    const snap = snapshotTree(top, head, plugin.prefix);
+    let rows;
+    try {
+      rows = checkPlugin({ name: plugin.name, dir: snap.dir }, { env, deadline });
+    } finally {
+      snap.release();
+    }
+    recordChecks(db, dbPath, top, head, plugin.name, snap.tree, rows, now);
     for (const r of rows) {
       if (r.status === "fail") failed++;
       lines.push(`  ${plugin.name.padEnd(16)} ${r.name.padEnd(9)} ${r.status.padEnd(7)} ${r.detail ?? ""}`);
     }
+    if (git(top, ["status", "--porcelain", "--", plugin.prefix || "."]).trim()) lines.push(`  ${plugin.name.padEnd(16)} (uncommitted changes under ${plugin.prefix || "the repository"} were not checked; commit them and rerun)`);
   }
   lines.push(failed ? `${failed} check(s) failed; fix and rerun \`ledger gate check\`, or \`ledger review waive "<why>"\` to push anyway` : "every check passed");
   return { code: failed ? 1 : 0, text: lines.join("\n") };
@@ -425,14 +468,15 @@ export function parseGateArgs(tokens) {
 
 /**
  * The gate's answer for the push targets `[{ top, sha }]` (the review gate's): null when no
- * target is a repository of plugins, `{}` to allow, `{ deny }` with the reason. A waived head
- * is allowed. Faults are the caller's (it allows with a notice).
+ * pushed commit holds a plugin, `{}` to allow, `{ deny }` with the reason. A waived head is
+ * allowed. The plugins are the pushed commit's, and a row counts only when it certifies that
+ * commit's plugin tree. Faults are the caller's (it allows with a notice).
  */
 export function pluginGateDecision(db, targets, { cli = "ledger" } = {}) {
   let applies = false;
   for (const t of targets) {
     if (!t.top) continue;
-    const all = repoPlugins(t.top);
+    const all = treePlugins(t.top, t.sha);
     if (!all.length) continue;
     applies = true;
     if (headState(db, t.top, t.sha).kind === "waived") continue;
@@ -441,6 +485,9 @@ export function pluginGateDecision(db, targets, { cli = "ledger" } = {}) {
       const rows = checkRows(db, t.top, t.sha, plugin.name);
       const wayOut = `run \`${cli} gate check\`, fix, or \`${cli} review waive "<why>"\``;
       if (!rows.length) return { deny: `ledger: plugin gate: ${plugin.name} has no check rows for ${short(t.sha)}; ${wayOut}` };
+      const tree = treeSha(t.top, t.sha, plugin.prefix);
+      const other = rows.find((r) => r.tree_sha !== tree);
+      if (other) return { deny: `ledger: plugin gate: ${plugin.name}'s rows for ${short(t.sha)} certify tree ${short(other.tree_sha)}, not its tree ${short(tree)}; ${wayOut}` };
       const failed = rows.find((r) => r.status === "fail");
       if (failed) return { deny: `ledger: plugin gate: ${plugin.name} failed ${failed.name}: ${cut(failed.detail ?? "", 600)}; ${wayOut}` };
     }
