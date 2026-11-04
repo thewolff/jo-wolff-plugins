@@ -11,9 +11,12 @@
 //   node ledger.mjs --cwd <dir> …                     → bind to <dir> instead of the working directory
 //   node ledger.mjs config                            → every setting and where it came from
 //   node ledger.mjs pending --all                     → every open and held question, grouped by folder
+//   node ledger.mjs doctor                            → ok/warn/fail per check; never writes
+//   node ledger.mjs bounces --since 1d                → the hooks' bounces, per rule and the last 20
 //
 // Exit codes: 0 every non-blank line applied; 1 any line refused or not a command; 2 the store
-// could not be opened (nothing applied, one line says why).
+// could not be opened (nothing applied, one line says why). `doctor`: 0 no check failed, 1 any
+// check failed (warns do not change it).
 //
 // Environment: LEDGER_DB (database path), LEDGER_CONFIG (config file), LEDGER_CWD (folder).
 
@@ -23,6 +26,7 @@ import { StoreError } from "../lib/db.mjs";
 import { openStore, makeCtx, resolveCwd } from "../lib/store.mjs";
 import { runBatch, formatBatch, batchJson, exitCodeFor, busyWord } from "../lib/batch.mjs";
 import { renderHelp, setEnabled } from "../lib/commands.mjs";
+import { renderDoctor, runDoctor } from "../lib/doctor.mjs";
 
 /** Pull the CLI's own flags out of argv; everything else is the command. */
 export function splitCliFlags(argv) {
@@ -72,6 +76,13 @@ export function main(argv = process.argv.slice(2), { env = process.env, stdin = 
     const r = setEnabled(cwd, cli.rest[0].toLowerCase() === "enable");
     out(`${r.status === "ok" ? r.message : `refused ${r.message}`}\n`);
     return r.status === "ok" ? 0 : 1;
+  }
+
+  // `doctor` reads only: it must not create or migrate the store it is checking.
+  if (cli.rest.length === 1 && cli.rest[0].toLowerCase() === "doctor") {
+    const report = runDoctor({ env, cwd });
+    out(renderDoctor(report) + "\n");
+    return report.fails ? 1 : 0;
   }
 
   let store;

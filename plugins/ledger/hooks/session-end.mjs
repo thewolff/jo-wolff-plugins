@@ -1,8 +1,8 @@
 #!/usr/bin/env node
 // session-end.mjs — SessionEnd: record that the session ended. Input read: session_id, reason
-// (hooks reference § SessionEnd input). One UPDATE on the sessions row; nothing else changes,
-// because nothing in the ledger is "in flight" per session: open questions stay open until
-// answered or withdrawn.
+// (hooks reference § SessionEnd input). One UPDATE on the sessions row, then the session's bounce
+// rows still open become `bypassed` (a separate, fail-open write). Open questions stay open
+// until answered or withdrawn.
 //
 // Budget: SessionEnd hooks share a 1.5-second budget that a plugin cannot raise, so this does
 // the least possible. SessionEnd discards JSON output, so failures go to errors.log only.
@@ -12,6 +12,7 @@ import { StoreError, transaction } from "../lib/db.mjs";
 import { runHook, logError, invokedDirectly } from "../lib/failopen.mjs";
 import { openStore, hookConfig } from "../lib/store.mjs";
 import { nowIso } from "../lib/time.mjs";
+import { bypassBounces } from "../lib/bounces.mjs";
 
 export function handle(input, { env = process.env, now = Date.now() } = {}) {
   const ready = hookConfig(env, input, "sessionEnd");
@@ -43,6 +44,7 @@ export function handle(input, { env = process.env, now = Date.now() } = {}) {
       },
       store.dbPath,
     );
+    bypassBounces(store, { sessionId, env });
     return { ended: sessionId };
   } finally {
     store.db.close();

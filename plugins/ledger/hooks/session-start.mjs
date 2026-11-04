@@ -51,7 +51,7 @@ export function handle(input, { env = process.env, now = Date.now() } = {}) {
         notices.push(`ledger: could not write ${env.CLAUDE_ENV_FILE} (${err.message}); CLI rows in this session will not carry its id`);
       }
     }
-    const { text } = buildInjection(store.db, cwd, store.config, { source: input.source, now });
+    const { text } = buildInjection(store.db, cwd, store.config, { source: input.source, now, env });
     return {
       ...noticeField(notices),
       hookSpecificOutput: { hookEventName: "SessionStart", additionalContext: text },

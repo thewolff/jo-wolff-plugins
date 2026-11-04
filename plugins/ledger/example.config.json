@@ -30,6 +30,7 @@
   "inject": {
     "notes": 5,
     "elsewhere": true,
-    "answers": true
+    "answers": true,
+    "doctor": true
   }
 }
