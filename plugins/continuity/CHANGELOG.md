@@ -51,6 +51,14 @@ both on the SessionStart that follows a compaction and never on a fresh start:
 - `hooks/session-start.mjs` after a compaction with nothing to restore still gives the two
   sections above, after the `not restored` line. `"snapshot": "off"` skips the save and the
   restore as before and not the two sections; `"rules": "off"` and `"notesCount": 0` are theirs.
+- The 20,000-character restore guard covers the whole post-compaction context. The restore's
+  heading, handoff notice and `TRUNCATED` notice are now counted inside it, as are the liveness
+  line and a config-problem line, where 0.1.x capped the snapshot body alone and added the
+  framing on top, so a restore could exceed the guard. A snapshot that fits whole with its framing is
+  consumed as before; one that does not is cut on a character boundary (never half a surrogate
+  pair), says how many characters are shown, and is kept. Tests: a snapshot body one under, at,
+  one over and far over the guard, alone and with the rules, notes and liveness line wanting
+  room, and the exact fit, in `test/lib.test.mjs` and `test/hooks.test.mjs`.
 
 ## [0.1.1] - 2026-11-04
 

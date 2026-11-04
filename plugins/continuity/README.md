@@ -79,10 +79,13 @@ act on it. A manual `/compact` says nothing.
 On SessionStart with `source: "compact"`, `lib/snapshot.mjs` reads this session's snapshot (by
 `session_id`; another session's is never injected), renders it as markdown under
 `## Restored session state (post-compaction)` with a line asking the model to restate what the
-thread is and what is pending on it before continuing, and unlinks it. A snapshot over 20,000
-characters is cut at that length, says so with the file's path, and is kept; one older than a
-day is ignored and left for prune. A restore that refills the window the compaction just cleared
-is worse than none.
+thread is and what is pending on it before continuing, and unlinks it. The whole context after a
+compaction (the restore with its heading and notices, the two sections below, the liveness line
+and the blank lines joining them) is at most 20,000 characters. A restore that does not fit whole
+in its share of that guard is cut on a character boundary, says so with the number of characters
+shown and the file's path, inside the same guard, and is kept; one older than a day is ignored
+and left for prune. A restore that refills the window the compaction just cleared is worse than
+none.
 
 After the same compaction, with or without a snapshot to restore, two more sections follow
 (`lib/repo-rules.mjs`); neither appears on a fresh start, a resume or a clear:

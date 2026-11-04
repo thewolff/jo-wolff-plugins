@@ -16,7 +16,7 @@ import { handle as preCompact } from "../hooks/pre-compact.mjs";
 import { handle as sessionStart } from "../hooks/session-start.mjs";
 import { handle as userPrompt } from "../hooks/user-prompt-submit.mjs";
 import { handle as stop } from "../hooks/stop.mjs";
-import { RESTORE_MAX_CHARS } from "../lib/snapshot.mjs";
+import { RESTORE_MAX_CHARS, renderSnapshot } from "../lib/snapshot.mjs";
 
 const HOOKS = ["pre-compact.mjs", "session-start.mjs", "user-prompt-submit.mjs", "stop.mjs"];
 // A transcript whose last assistant reply recorded 160,000 tokens of context (2 + 150,000 cache
@@ -294,6 +294,33 @@ test("session-start: after a compaction the block carries the re-inlined rules a
     assert.equal(r.json.systemMessage, "continuity: the re-inlined repo rules and the durable notes list left out of the post-compaction restore: the block before them reached the 20,000-character restore guard; read the rules files and the notes directory directly.");
     rmSync(join(b.stateDir, "s-test.json"));
     rmSync(join(b.work, ".ai", "handoffs"), { recursive: true });
+
+    // A snapshot body one under the guard, at it, one over it and far over it, with the rules,
+    // the notes and (second pass) the liveness line all wanting room: the whole context, heading,
+    // notices and truncation marker included, is within the guard; the snapshot is cut, the cut
+    // said in-band, and the file kept; the sections it crowds out are named in the systemMessage.
+    spawnHook(b, "pre-compact.mjs", input("PreCompact", b, { trigger: "auto" }));
+    const snap = join(b.stateDir, "s-test.json");
+    const json = JSON.parse(readFileSync(snap, "utf8"));
+    for (const liveness of ["off", "on"]) {
+      b.writeConfig({ liveness });
+      for (const n of [RESTORE_MAX_CHARS - 1, RESTORE_MAX_CHARS, RESTORE_MAX_CHARS + 1, 60_000]) {
+        json.hostFileOperations = "w";
+        json.hostFileOperations = "w".repeat(n - (renderSnapshot(json).length - 1));
+        writeFileSync(snap, JSON.stringify(json));
+        assert.equal(renderSnapshot(json).length, n);
+        r = spawnHook(b, "session-start.mjs", { hook_event_name: "SessionStart", session_id: "s-test", cwd: join(b.work, "pkg", "deep"), source: "compact" });
+        ctx = r.json.hookSpecificOutput.additionalContext;
+        const what = `liveness ${liveness}, body ${n}: context ${ctx.length}`;
+        assert.ok(ctx.length <= RESTORE_MAX_CHARS && ctx.length >= RESTORE_MAX_CHARS - 1, what);
+        assert.match(ctx, new RegExp(`\\*\\*TRUNCATED: this snapshot is ${n} characters and only the first \\d+ are shown\\.\\*\\*`), what);
+        assert.ok(existsSync(snap), `${what}: the snapshot is kept`);
+        assert.equal(r.json.systemMessage, "continuity: the re-inlined repo rules and the durable notes list left out of the post-compaction restore: the block before them reached the 20,000-character restore guard; read the rules files and the notes directory directly.", what);
+        if (liveness === "on") assert.ok(ctx.search(/pre-compaction save liveness/) > ctx.indexOf("**TRUNCATED"), `${what}: the liveness line closes the context`);
+      }
+    }
+    b.writeConfig({ liveness: "off" });
+    rmSync(snap);
 
     // No snapshot and a walk past the section cap: the rules section is at most 9,000 bytes whole.
     writeFileSync(join(b.work, "pkg", "AGENTS.md"), `# pkg rules\n${"p".repeat(7000)}\n`);

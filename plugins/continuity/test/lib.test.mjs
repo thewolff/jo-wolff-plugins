@@ -710,9 +710,67 @@ test("snapshot: restore() injects and unlinks its own fresh snapshot, keeps an o
     writeFileSync(join(b.work, ".ai", "handoffs", "h3.md"), handoffText({ lane: "three" }).replace("Clean.\n", `${"z".repeat(100)}\n`.repeat(100)));
     await capture({ session_id: "s-test", cwd: b.work, transcript_path: b.transcript, file_operations: "w".repeat(7000), agent_judgment: ["j".repeat(7000)] }, { env: b.env });
     const big = restore({ session_id: "s-test" }, { env: b.env });
-    assert.match(big, new RegExp(`\\*\\*TRUNCATED: this snapshot is \\d+ characters and only the first ${RESTORE_MAX_CHARS} are shown\\.\\*\\*`));
+    assert.match(big, /\*\*TRUNCATED: this snapshot is \d+ characters and only the first \d+ are shown\.\*\*/);
+    assert.ok(big.length <= RESTORE_MAX_CHARS, `heading, notices and cut snapshot within the cap: ${big.length}`);
     assert.match(big, /This snapshot includes an agent-authored handoff section/);
     assert.ok(existsSync(snapshotPath("s-test", b.env)), "an over-budget restore keeps its file");
+  } finally {
+    b.release();
+  }
+});
+
+test("snapshot: restore() keeps its whole text (heading, notices, truncation marker, snapshot) within its cap at and around the boundary, cut on a character boundary", async () => {
+  const b = box();
+  try {
+    b.writeTranscript([{ message: { role: "user", content: "the ask" } }]);
+    const path = snapshotPath("s-test", b.env);
+    await capture({ session_id: "s-test", cwd: b.work, transcript_path: b.transcript, trigger: "auto" }, { env: b.env });
+    const json = JSON.parse(readFileSync(path, "utf8"));
+    // A snapshot whose rendered body is exactly n characters: the host-supplied section padded.
+    const withBody = (n) => {
+      json.hostFileOperations = "w";
+      json.hostFileOperations = "w".repeat(n - (renderSnapshot(json).length - 1));
+      writeFileSync(path, JSON.stringify(json));
+      assert.equal(renderSnapshot(json).length, n);
+      return renderSnapshot(json);
+    };
+    const TRUNC = /\*\*TRUNCATED: this snapshot is (\d+) characters and only the first (\d+) are shown\.\*\*/;
+
+    // A body at, just under and just over the cap, and far over it: the frame no longer rides on
+    // top. Each is cut, says so with the true count shown, uses the cap, and keeps its file.
+    for (const n of [RESTORE_MAX_CHARS - 1, RESTORE_MAX_CHARS, RESTORE_MAX_CHARS + 1, 60_000]) {
+      const body = withBody(n);
+      const t = restore({ session_id: "s-test" }, { env: b.env });
+      assert.ok(t.length <= RESTORE_MAX_CHARS && t.length >= RESTORE_MAX_CHARS - 1, `body ${n}: the restore is ${t.length}`);
+      const m = t.match(TRUNC);
+      assert.ok(m, `body ${n}: the cut is announced`);
+      assert.equal(Number(m[1]), n);
+      assert.ok(t.endsWith(body.slice(0, Number(m[2]))), `body ${n}: the shown count is the head actually shown`);
+      assert.ok(existsSync(path), `body ${n}: the file is kept`);
+    }
+
+    // The exact fit: a body that with its frame is the cap lands whole and is consumed; one
+    // character more is cut, within the cap, and kept.
+    const frame = (withBody(5000), restore({ session_id: "s-test" }, { env: b.env }).length - 5000);
+    withBody(RESTORE_MAX_CHARS - frame);
+    let t = restore({ session_id: "s-test" }, { env: b.env });
+    assert.equal(t.length, RESTORE_MAX_CHARS);
+    assert.doesNotMatch(t, TRUNC);
+    assert.equal(existsSync(path), false, "a whole restore is consumed");
+    withBody(RESTORE_MAX_CHARS - frame + 1);
+    t = restore({ session_id: "s-test" }, { env: b.env });
+    assert.ok(t.length <= RESTORE_MAX_CHARS, `${t.length}`);
+    assert.match(t, TRUNC);
+    assert.ok(existsSync(path));
+
+    // The caller's smaller share is honoured, and a cut never splits a surrogate pair.
+    json.hostFileOperations = "😀".repeat(9000);
+    writeFileSync(path, JSON.stringify(json));
+    for (const max of [5000, 5001, 120]) {
+      t = restore({ session_id: "s-test" }, { env: b.env, max });
+      assert.ok(t.length <= max && t.length >= max - 1, `max ${max}: ${t.length}`);
+      assert.equal(Buffer.from(t, "utf8").toString("utf8"), t, `max ${max}: valid UTF-8, no half character`);
+    }
   } finally {
     b.release();
   }

@@ -4,16 +4,19 @@
 // a block.
 //
 // What it does, as `additionalContext`: after a compaction (`source: "compact"`) it injects the
-// snapshot hooks/pre-compact.mjs saved for this session and removes the file (a snapshot over
-// 20,000 characters is cut, says so, and is kept); when there is no snapshot to restore, it says
+// snapshot hooks/pre-compact.mjs saved for this session and removes the file (a restore that does
+// not fit whole in its share of the 20,000-character restore guard is cut, says so, and is kept);
+// when there is no snapshot to restore, it says
 // that this compaction's state was not restored and what the heartbeat recorded for this
 // session's save. After the same compaction it also re-inlines the rules files on the walk from
 // the payload's cwd to the walk root (lib/repo-rules.mjs; `rules: "off"` skips it) and lists the
 // newest entries of the durable-notes directory (`notesDir`, default `.ai/decision-log` at the
-// git root of the real cwd; `notesCount: 0` skips it). Each whole rendered section fits in what
-// the restore block before it left of the 20,000-character restore guard (the rules section also
-// in 9,000 bytes); one with no room for its heading is left out and named in the systemMessage.
-// Neither appears on a fresh start. On every start it adds the liveness line: the newest save's
+// git root of the real cwd; `notesCount: 0` skips it). The whole context after a compaction
+// (restore with its heading and notices, sections, liveness line, separators) is at most 20,000
+// characters: each whole rendered section fits in what the blocks before it and the closing lines
+// left (the rules section also in 9,000 bytes); one with no room for its heading is left out and
+// named in the systemMessage.
+// The two sections never appear on a fresh start. On every start it adds the liveness line: the newest save's
 // result and the age of the last success, or a short block saying no save ever succeeded. The
 // line is marked said for the session, so hooks/user-prompt-submit.mjs does not repeat it.
 //
@@ -44,17 +47,35 @@ export function handle(input, { env = process.env } = {}) {
   const key = sessionKey(input);
   const parts = [];
   const omitted = [];
+  const later = [];
+  // The lines that close the context (liveness, a config problem) are settled first: after a
+  // compaction they count against the restore guard too, so the restore is fitted around them.
+  const tail = [];
+  if (config.liveness !== "off") {
+    tail.push(renderLiveness({ env }));
+    if (!markFlag(key, "livenessSaid", env)) {
+      // The line was still given; what failed is the once-mark, so the prompt hook will repeat it.
+      const where = sessionFlagsPath(key, env);
+      logError("continuity", "SessionStart", `once-mark not written to ${where}; the liveness line will repeat at the first prompt`, env);
+      later.push(`continuity: the session mark could not be written to ${where}; the liveness line will repeat once at the first prompt.`);
+    }
+  }
+  if (problem && !readFlags(key, env).configNoted) {
+    tail.push(`continuity: ${problem}.`);
+    markFlag(key, "configNoted", env);
+  }
+  // The whole context after a compaction (the restore or the not-restored line, each section,
+  // the closing lines, the blank lines joining them) stays within RESTORE_MAX_CHARS. The restore
+  // is fitted first, its heading, notices and any truncation marker inside its share; each
+  // section's cap is in bytes against a character guard, so never more. The notes list is small
+  // and is fitted next; the rules get what is left and give way. A section with no room for even
+  // its heading is left out and named in the systemMessage.
+  const room = (...more) => Math.max(0, RESTORE_MAX_CHARS - block([...parts, ...more, ...tail]));
   if (config.snapshot !== "off" && input.source === "compact") {
-    const restored = restore(input, { env });
+    const restored = restore(input, { env, max: room("") });
     parts.push(restored || notRestored(lastSaveFor(sanitizeSessionId(input.session_id), { env })));
   }
   if (input.source === "compact") {
-    // The rules and notes sections count against the restore guard: the whole block (the restore
-    // or the not-restored line, each section, the blank lines joining them) stays within
-    // RESTORE_MAX_CHARS, each section's cap in bytes against a character guard, so never more.
-    // The notes list is small and is fitted first; the rules get what is left and give way. A
-    // section with no room for even its heading is left out and named in the systemMessage.
-    const room = (...more) => Math.max(0, RESTORE_MAX_CHARS - block([...parts, ...more]));
     const notes = config.notesCount > 0 ? renderNotes(config.notesDir, notesRoot(input.cwd), config.notesCount, room("")) : null;
     if (config.rules !== "off") {
       const rules = renderRules(walkRules(input.cwd, env), notes ? room("", notes) : room(""));
@@ -64,21 +85,10 @@ export function handle(input, { env = process.env } = {}) {
     if (notes) parts.push(notes);
     else if (notes === "") omitted.push("the durable notes list");
   }
+  parts.push(...tail);
   const messages = [];
   if (omitted.length) messages.push(`continuity: ${omitted.join(" and ")} left out of the post-compaction restore: the block before ${omitted.length > 1 ? "them" : "it"} reached the ${String(RESTORE_MAX_CHARS).replace(/\B(?=(\d{3})+$)/g, ",")}-character restore guard; read the rules files and the notes directory directly.`);
-  if (config.liveness !== "off") {
-    parts.push(renderLiveness({ env }));
-    if (!markFlag(key, "livenessSaid", env)) {
-      // The line was still given; what failed is the once-mark, so the prompt hook will repeat it.
-      const where = sessionFlagsPath(key, env);
-      logError("continuity", "SessionStart", `once-mark not written to ${where}; the liveness line will repeat at the first prompt`, env);
-      messages.push(`continuity: the session mark could not be written to ${where}; the liveness line will repeat once at the first prompt.`);
-    }
-  }
-  if (problem && !readFlags(key, env).configNoted) {
-    parts.push(`continuity: ${problem}.`);
-    markFlag(key, "configNoted", env);
-  }
+  messages.push(...later);
   if (!parts.length && !messages.length) return null;
   const out = {};
   if (parts.length) out.hookSpecificOutput = { hookEventName: "SessionStart", additionalContext: parts.join(SEP) };
