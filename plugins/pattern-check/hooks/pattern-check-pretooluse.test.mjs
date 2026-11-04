@@ -33,7 +33,7 @@ function fixture(t) {
   const decision = (out) => out?.hookSpecificOutput?.permissionDecision ?? null;
   const setUser = (text) => { mkdirSync(join(config, "pattern-check"), { recursive: true }); writeFileSync(join(config, "pattern-check", "config.json"), text); };
   const setRepo = (text) => writeFileSync(join(repo, ".pattern-check.json"), text);
-  const record = (args = ["--no-new-pieces", "test"]) => spawnSync(process.execPath, [CLI, "record", "--session", SESSION, "--cwd", repo, ...args], { env: { ...process.env, HOME: base, ...env }, encoding: "utf8" });
+  const record = (args = ["--no-new-pieces", "test"]) => spawnSync(process.execPath, [CLI, "record", "--session", SESSION, "--cwd", repo, ...args], { env: { ...process.env, HOME: base, ...env }, encoding: "utf8", timeout: 5000 });
   return { base, state, repo, env, sd, file, edit, write, bash, run, call, decision, setUser, setRepo, record };
 }
 
@@ -79,6 +79,7 @@ test("end to end through stdin: exit 0 and the deny JSON on the Nth file; nothin
   const f = fixture(t);
   assert.deepEqual([f.run(f.edit("a.ts")).stdout, f.run(f.edit("b.ts")).stdout], ["", ""]);
   const r = f.run(f.edit("c.ts"));
+  assert.equal(r.error, undefined, String(r.error));
   assert.equal(r.status, 0);
   assert.equal(JSON.parse(r.stdout).hookSpecificOutput.permissionDecision, "deny");
 });
@@ -99,6 +100,7 @@ test("a receipt lifts the deny: record via the CLI, then the next edit, commit a
   f.call(f.edit("b.ts"));
   assert.equal(f.decision(f.call(f.edit("c.ts"))), "deny");
   const rec = f.record();
+  assert.equal(rec.error, undefined, String(rec.error));
   assert.equal(rec.status, 0, rec.stderr);
   assert.equal(existsSync(join(f.repo, ".pattern-check", `${SESSION}.md`)), true);
   assert.equal(f.call(f.edit("c.ts")), null);
@@ -158,12 +160,30 @@ test("the held flag: once the Nth file was denied, commit and PR are denied even
   assert.equal(f.call(f.bash("git status")), null);
 });
 
+test("while held, a shell write whose target holds an expansion is denied and says so; a known target outside the repo is allowed", (t) => {
+  const f = fixture(t);
+  // Before the hold: an unreadable target is neither counted nor denied.
+  assert.equal(f.call(f.bash('printf x > "$OUT"')), null);
+  f.call(f.edit("a.ts"));
+  f.call(f.edit("b.ts"));
+  assert.equal(f.decision(f.call(f.edit("c.ts"))), "deny");
+  for (const cmd of ['printf x > "$OUT"', "echo x | tee $(mktemp)", 'sed -i "s/a/b/" "$F"', 'echo x >> "$HOME/notes.md"']) {
+    const out = f.call(f.bash(cmd));
+    assert.equal(f.decision(out), "deny", cmd);
+    assert.match(out.hookSpecificOutput.permissionDecisionReason, /its target holds an expansion and could not be read statically/, cmd);
+  }
+  assert.equal(f.call(f.bash(`printf x > ${join(f.base, "outside.txt")}`)), null);
+  assert.equal(f.call(f.bash("printf x > /tmp/pattern-check-outside.txt")), null);
+  assert.equal(f.call(f.bash("npm test > /dev/null 2>&1")), null);
+});
+
 test("fail open on a corrupt state file: the call is allowed, a systemMessage warns, and the counter restarts", (t) => {
   const f = fixture(t);
   f.call(f.edit("a.ts"));
   f.call(f.edit("b.ts"));
   writeFileSync(paths.session(f.sd, SESSION), "{ torn");
   const r = f.run(f.edit("c.ts"));
+  assert.equal(r.error, undefined, String(r.error));
   assert.equal(r.status, 0);
   const out = JSON.parse(r.stdout);
   assert.equal(out.hookSpecificOutput, undefined);

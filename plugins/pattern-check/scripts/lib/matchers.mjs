@@ -229,10 +229,36 @@ export function lex(s) {
   return { commands: commands.filter((c) => c.length), redirects };
 }
 
-// The words of a simple command from its command name on: assignments and wrappers skipped.
+// Options of the wrappers that take a separate value (`sudo -u root`, `env -u NAME`, `nice -n 5`,
+// `exec -a name`). Other dash words after a wrapper are flags without a value.
+const WRAPPER_VALUE_OPTIONS = Object.freeze({
+  sudo: new Set(["-u", "-g", "-h", "-p", "-C", "-D", "-r", "-t", "-U", "-T", "--user", "--group", "--host", "--prompt", "--chdir"]),
+  env: new Set(["-u", "-C", "--unset", "--chdir"]),
+  nice: new Set(["-n", "--adjustment"]),
+  exec: new Set(["-a"]),
+});
+// Shell reserved words that can stand where a command name stands (`then tee x`, `! sed -i ...`).
+const CONTROL = new Set(["if", "then", "else", "elif", "do", "while", "until", "!", "{", "}", "time"]);
+
+// The words of a simple command from its command name on: assignments, control words, wrappers
+// and the wrappers' options skipped.
 function commandWords(words) {
   let k = 0;
-  while (k < words.length && (ASSIGNMENT.test(words[k].text) || WRAPPERS.has(words[k].text))) k++;
+  while (k < words.length) {
+    const w = words[k].text;
+    if (ASSIGNMENT.test(w) || CONTROL.has(w)) { k++; continue; }
+    if (WRAPPERS.has(w) || w === "nice") {
+      const valued = WRAPPER_VALUE_OPTIONS[w] ?? new Set();
+      k++;
+      while (k < words.length && words[k].text.startsWith("-")) {
+        const o = words[k].text;
+        k += o === "--" ? 1 : valued.has(o) ? 2 : 1;
+        if (o === "--") break;
+      }
+      continue;
+    }
+    break;
+  }
   return words.slice(k);
 }
 
@@ -250,6 +276,8 @@ function sedInPlaceFiles(rest) {
   let hasScriptFlag = false;
   for (let k = 0; k < rest.length; k++) {
     const w = rest[k].text;
+    // BSD `sed -i '' ...`: the empty word after a bare -i is the backup suffix, not the script.
+    if (/^-[A-Za-z]*i$/.test(w) && rest[k + 1]?.text === "" && !rest[k + 1].dynamic) { k++; continue; }
     if (w === "-e" || w === "-f" || w === "--expression" || w === "--file") { hasScriptFlag = true; k++; continue; }
     if (/^-[A-Za-z]*[ef]/.test(w) && !/^-[A-Za-z]*i/.test(w)) { hasScriptFlag = true; continue; }
     if (w.startsWith("--expression=") || w.startsWith("--file=")) { hasScriptFlag = true; continue; }
@@ -260,15 +288,17 @@ function sedInPlaceFiles(rest) {
   return files;
 }
 
-/** The write forms a command uses, with their static targets. */
+/** The write forms a command uses, their static targets, and how many targets hold an expansion. */
 function writeForms(command) {
   const { commands, redirects } = lex(command);
   const forms = { redirect: [], tee: [], sed: [] };
+  let unknown = 0;
   let redirect = false;
   for (const r of redirects) {
     if (!r.target || isNull(r.target.text)) continue;
     redirect = true;
-    if (!r.target.dynamic && r.target.text !== "") forms.redirect.push(r.target.text);
+    if (r.target.dynamic) unknown++;
+    else if (r.target.text !== "") forms.redirect.push(r.target.text);
   }
   let tee = false;
   let sed = false;
@@ -278,13 +308,13 @@ function writeForms(command) {
     if (name.text === "tee") {
       const args = rest.filter((w) => !w.text.startsWith("-") && !isNull(w.text));
       if (args.length) tee = true;
-      for (const w of args) if (!w.dynamic) forms.tee.push(w.text);
+      for (const w of args) if (w.dynamic) unknown++; else forms.tee.push(w.text);
     } else if (name.text === "sed") {
       const files = sedInPlaceFiles(rest);
-      if (files) { sed = true; for (const w of files) if (!w.dynamic) forms.sed.push(w.text); }
+      if (files) { sed = true; for (const w of files) if (w.dynamic) unknown++; else forms.sed.push(w.text); }
     }
   }
-  return { ...forms, has: { redirect, tee, sed } };
+  return { ...forms, unknown, has: { redirect, tee, sed } };
 }
 
 export const BUILT_IN = Object.freeze([
@@ -324,4 +354,15 @@ export function writeTargets(command) {
   if (typeof command !== "string") return [];
   const f = writeForms(command);
   return [...new Set([...f.redirect, ...f.tee, ...f.sed].map(expandTilde))];
+}
+
+/**
+ * Whether a command writes to a target that holds an expansion (`> "$OUT"`, `tee "$f"`), whose
+ * path cannot be known before the shell runs. The PreToolUse hook denies such a write while the
+ * session is held, since it may land in the repository.
+ * @param {string} command
+ * @returns {boolean}
+ */
+export function hasUnreadableWriteTarget(command) {
+  return typeof command === "string" && writeForms(command).unknown > 0;
 }

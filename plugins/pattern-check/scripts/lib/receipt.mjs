@@ -40,11 +40,19 @@ export const HEADER = `| ${[...BASE_COLUMNS, ...FAIL_COLUMNS].join(" | ")} |`;
 export const SEPARATOR = `|${"---|".repeat(BASE_COLUMNS.length + FAIL_COLUMNS.length)}`;
 
 const HEADER_CELL = /^new piece$/i;
-// `n/a`, `N/A`, `na`, `n.a.` with nothing after it, or a placeholder that says nothing.
-const BARE_NA = /^n\/?\.?a\.?\s*[:(,;-]?\s*\)?$/i;
-const NA_WITH_REASON = /^n\/?\.?a\.?(?:\s*[:(,;-]\s*|\s+)(\S.*)$/i;
-const PLACEHOLDER = /^(?:-+|—|–|\?+|tbd|todo|unknown|\.\.\.|…)$/i;
-const RESTART = /^(?:yes|no)\b\s*[:,;(-]?\s*(\S.*)$/i;
+// `n/a`, `N/A`, `na`, `n.a.`, then the reason (if any) after a separator.
+const NA = /^n\/?\.?a\.?(?=$|[\s:(,;-])(.*)$/i;
+const PLACEHOLDER = /^(?:tbd|todo|unknown|n\/?\.?a\.?)$/i;
+const RESTART = /^(yes|no)\b(.*)$/i;
+
+/**
+ * Whether a reason says something: not empty, not punctuation only, not a placeholder word.
+ * No minimum length; `pure` is a reason.
+ */
+function substantive(reason) {
+  const r = String(reason ?? "").replace(/^[\s:,;()\-–—.]+|[\s()\-–—.,;:]+$/g, "");
+  return /[\p{L}\p{N}]/u.test(r) && !PLACEHOLDER.test(r);
+}
 
 // Splits a row on unescaped pipes; `\|` becomes a literal pipe in the cell.
 function splitRow(line) {
@@ -60,10 +68,14 @@ const escapeCell = (c) => String(c).replace(/\|/g, "\\|");
 export function failCellProblem(column, value) {
   const v = String(value ?? "").trim();
   if (v === "") return `"${column}" is empty`;
-  if (BARE_NA.test(v)) return `"${column}" is n/a without a reason (write "n/a: <why>")`;
-  if (NA_WITH_REASON.test(v)) return null;
-  if (PLACEHOLDER.test(v)) return `"${column}" is a placeholder (${v}), not an answer`;
-  if (column === "restart-safe" && !RESTART.test(v)) return `"restart-safe" must start with yes or no and say why, got "${v}"`;
+  const na = v.match(NA);
+  if (na) return substantive(na[1]) ? null : `"${column}" is n/a without a reason (write "n/a: <why>")`;
+  if (!substantive(v)) return `"${column}" is a placeholder (${v}), not an answer`;
+  if (column === "restart-safe") {
+    const m = v.match(RESTART);
+    if (!m) return `"restart-safe" must start with yes or no and say why, got "${v}"`;
+    if (!substantive(m[2])) return `"restart-safe" says ${m[1].toLowerCase()} without a reason (write "${m[1].toLowerCase()}: <why>")`;
+  }
   return null;
 }
 

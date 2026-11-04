@@ -37,7 +37,7 @@ test("an empty fail cell is refused, naming the column", () => {
     const r = parseTable(row("a | src/a.ts:1 | reuse | ok", cells.join(" | ")));
     assert.equal(r.ok, false, col);
     assert.ok(r.error.includes(`"${col}" is empty`), r.error);
-    assert.match(r.error, /reading the piece's error paths, not by guessing/);
+    assert.ok(r.error.includes('row "a"'), r.error);
   }
 });
 
@@ -48,25 +48,43 @@ test("n/a is accepted only with a reason after it; placeholders are refused", ()
   assert.equal(failCellProblem("bounded", "n/a because it never retries"), null);
   assert.match(failCellProblem("bounded", "n/a"), /n\/a without a reason/);
   assert.match(failCellProblem("bounded", "N/A"), /n\/a without a reason/);
-  assert.match(failCellProblem("bounded", "n/a:"), /n\/a without a reason|placeholder|empty/);
-  for (const p of ["-", "—", "?", "TBD", "todo", "unknown", "…"]) assert.match(failCellProblem("fails how", p), /placeholder/, p);
+  assert.match(failCellProblem("bounded", "n/a:"), /n\/a without a reason/);
+  for (const p of ["-", "—", "?", "TBD", "todo", "unknown", "…", "...", "--", "?!"]) assert.match(failCellProblem("fails how", p), /placeholder/, p);
   assert.equal(failCellProblem("bounded", "none: one attempt"), null);
   assert.equal(failCellProblem("fails how", "nasty: throws"), null); // starts with "na" but is not n/a
+  // Short real answers are answers: no minimum length.
+  for (const v of ["throws", "retry", "stderr", "none", "pure"]) assert.equal(failCellProblem("fails how", v), null, v);
+});
+
+test("regression (codex review B1): n/a followed by a placeholder or punctuation is n/a without a reason", () => {
+  for (const v of ["n/a: TBD", "n/a: -", "n/a: ?", "n/a: ...", "N/A (todo)", "n/a - unknown", "n/a: n/a", "n/a: —", "n/a:  :"]) {
+    assert.match(failCellProblem("bounded", v) ?? "", /n\/a without a reason/, v);
+  }
+  const r = parseTable(row("a | src/a.ts:1 | reuse | ok", "n/a: TBD | n/a: - | yes: pure | n/a: ? | n/a: ..."));
+  assert.equal(r.ok, false);
+  assert.match(r.error, /row "a": "fails how" is n\/a without a reason/);
 });
 
 test("restart-safe must start with yes or no and say why", () => {
   assert.equal(failCellProblem("restart-safe", "yes: idempotent"), null);
   assert.equal(failCellProblem("restart-safe", "no, the migration is not reversible"), null);
+  assert.equal(failCellProblem("restart-safe", "yes pure"), null);
   assert.equal(failCellProblem("restart-safe", "n/a: nothing runs twice"), null);
-  assert.match(failCellProblem("restart-safe", "yes"), /must start with yes or no and say why/);
-  assert.match(failCellProblem("restart-safe", "probably"), /must start with yes or no and say why/);
+  assert.match(failCellProblem("restart-safe", "probably"), /must start with yes or no/);
+  assert.match(failCellProblem("restart-safe", "yesterday it worked"), /must start with yes or no/);
+});
+
+test("regression (codex review B1): restart-safe yes or no without a reason is refused", () => {
+  for (const v of ["yes", "yes:", "no,", "No -", "yes: TBD", "no: ?", "yes (…)"]) {
+    assert.match(failCellProblem("restart-safe", v) ?? "", /restart-safe" says (yes|no) without a reason/, v);
+  }
 });
 
 test("a four-column row is refused by default (record) and read with requireFailColumns false (old receipts)", () => {
   const old = "| retry helper | src/net/retry.ts:12 | reuse | same backoff |";
   const strict = parseTable(old);
   assert.equal(strict.ok, false);
-  assert.match(strict.error, /row "retry helper" has no fail columns; every piece needs fails how \| next step \| restart-safe \| bounded \| evidence kept/);
+  assert.match(strict.error, /row "retry helper" has no fail columns.*fails how \| next step \| restart-safe \| bounded \| evidence kept/);
   const lenient = parseTable(old, { requireFailColumns: false });
   assert.equal(lenient.ok, true, lenient.error);
   assert.equal(lenient.rows[0].failsHow, null);

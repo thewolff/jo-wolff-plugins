@@ -2,7 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { homedir } from "node:os";
 import { REAL_ABSENT, REAL_PIN } from "../../test-fixtures/real-commands.mjs";
-import { lex, matchDeny, writeTargets } from "./matchers.mjs";
+import { hasUnreadableWriteTarget, lex, matchDeny, writeTargets } from "./matchers.mjs";
 
 const name = (cmd, extra) => matchDeny(cmd, extra)?.name ?? null;
 
@@ -54,6 +54,36 @@ test("redirects: > >> >| &> 2> and glued forms yield their targets; 2>&1, >&2 an
   assert.deepEqual(writeTargets("cat <<-EOF\n\tx > y\n\tEOF\necho z > after.txt"), ["after.txt"]);
   assert.deepEqual(writeTargets("echo a \\\n > continued.txt"), ["continued.txt"]);
   assert.deepEqual(writeTargets("echo x > ~/home.txt"), [`${homedir()}/home.txt`]);
+});
+
+test("regression (codex review B2): a write target holding an expansion is flagged unreadable; static, /dev/null and fd targets are not", () => {
+  for (const cmd of ['printf x > "$OUT"', "echo x > $(mktemp)", 'echo x | tee "$f"', 'sed -i "s/a/b/" "$F"', 'echo x >> "$HOME/n.md"']) {
+    assert.equal(hasUnreadableWriteTarget(cmd), true, cmd);
+  }
+  for (const cmd of ["printf x > a.ts", "echo '$OUT' > a.ts", "npm test > /dev/null 2>&1", "cmd >&2", 'echo "$x"', "ls", 42]) {
+    assert.equal(hasUnreadableWriteTarget(cmd), false, String(cmd));
+  }
+});
+
+test("regression (codex review S1): BSD sed -i '' takes the empty word as the backup suffix, not the script", () => {
+  assert.deepEqual(writeTargets("sed -i '' 's/a/b/' a.ts"), ["a.ts"]);
+  assert.deepEqual(writeTargets("sed -i \"\" -e 's/a/b/' a.ts b.ts"), ["a.ts", "b.ts"]);
+  assert.deepEqual(writeTargets("sed -i 's/a/b/' a.ts"), ["a.ts"]);
+  assert.deepEqual(writeTargets("sed -i.bak 's/a/b/' a.ts"), ["a.ts"]);
+});
+
+test("regression (codex review S2): wrapper options and shell control words do not hide a write", () => {
+  assert.deepEqual(writeTargets("sudo -u root tee a.ts"), ["a.ts"]);
+  assert.deepEqual(writeTargets("sudo -E tee a.ts"), ["a.ts"]);
+  assert.deepEqual(writeTargets("env -i tee a.ts"), ["a.ts"]);
+  assert.deepEqual(writeTargets("env -u HOME FOO=1 tee a.ts"), ["a.ts"]);
+  assert.deepEqual(writeTargets("nice -n 5 sed -i 's/a/b/' a.ts"), ["a.ts"]);
+  assert.deepEqual(writeTargets("if true; then tee a.ts; fi"), ["a.ts"]);
+  assert.deepEqual(writeTargets("for f in x; do sed -i 's/a/b/' b.ts; done"), ["b.ts"]);
+  assert.deepEqual(writeTargets("! tee c.ts"), ["c.ts"]);
+  assert.equal(name("sudo -u root tee a.ts"), "tee");
+  // the option's value is not mistaken for the command, nor for a target
+  assert.deepEqual(writeTargets("sudo -u tee ls"), []);
 });
 
 test("a redirect whose target holds an expansion is a redirect with no known path", () => {

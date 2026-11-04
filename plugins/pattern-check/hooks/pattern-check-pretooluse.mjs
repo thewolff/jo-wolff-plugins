@@ -33,7 +33,7 @@ import { realpathSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { recordCommand, resolveContext } from "../scripts/lib/context.mjs";
 import { runHook } from "../scripts/lib/hookio.mjs";
-import { matchDeny, writeTargets } from "../scripts/lib/matchers.mjs";
+import { hasUnreadableWriteTarget, matchDeny, writeTargets } from "../scripts/lib/matchers.mjs";
 import { normalizePath, readSession, writeCurrent, writeSession } from "../scripts/lib/state.mjs";
 
 export const FILE_TOOLS = new Set(["Edit", "Write", "MultiEdit", "NotebookEdit"]);
@@ -107,11 +107,15 @@ export function handle(input, opts = {}) {
     blocked = `Bash ${command.length > 200 ? `${command.slice(0, 200)}…` : command}`;
     // Commit, PR and in-repo write forms are denied once the session is held: it reached the
     // threshold (a file-tool call was denied), or shell writes alone brought the count to it.
+    // A write whose target holds an expansion (`> "$OUT"`) may land in the repository, so it is
+    // denied too; a write whose every target is known and outside the repository is not.
     if (session.held || known.size >= threshold) {
       const hit = matchDeny(command, config.denyCommands);
       const isWriteForm = hit && ["redirect", "sed -i", "tee"].includes(hit.name);
-      if (hit && (!isWriteForm || candidates.length > 0)) {
-        return deny(denyReason({ count: known.size, threshold, key, env, blocked: `${blocked} (matched: ${hit.name})` }), warnings);
+      const unreadable = isWriteForm && hasUnreadableWriteTarget(command);
+      if (hit && (!isWriteForm || candidates.length > 0 || unreadable)) {
+        const note = unreadable && candidates.length === 0 ? "; its target holds an expansion and could not be read statically" : "";
+        return deny(denyReason({ count: known.size, threshold, key, env, blocked: `${blocked} (matched: ${hit.name}${note})` }), warnings);
       }
     }
   } else {

@@ -46,6 +46,7 @@ test("a reply that proposes a plan with no receipt is refused, and the reason na
 test("end to end through stdin: exit 0 and the block JSON", (t) => {
   const f = fixture(t);
   const r = f.run(f.payload());
+  assert.equal(r.error, undefined, String(r.error));
   assert.equal(r.status, 0);
   assert.equal(JSON.parse(r.stdout).decision, "block");
 });
@@ -91,7 +92,8 @@ test("fail open: a corrupt config warns and still refuses under the defaults; an
   assert.match(out.systemMessage, /not valid JSON/);
   // The refusal record cannot be written: pass rather than loop.
   writeFileSync(join(f.base, "state-file"), "");
-  const r = spawnSync(process.execPath, [HOOK], { input: JSON.stringify(f.payload("**Verdict:** later.")), env: { ...process.env, HOME: f.base, ...f.env, XDG_STATE_HOME: join(f.base, "state-file") }, encoding: "utf8" });
+  const r = spawnSync(process.execPath, [HOOK], { input: JSON.stringify(f.payload("**Verdict:** later.")), env: { ...process.env, HOME: f.base, ...f.env, XDG_STATE_HOME: join(f.base, "state-file") }, encoding: "utf8", timeout: 5000 });
+  assert.equal(r.error, undefined, String(r.error));
   assert.equal(r.status, 0);
   const o = JSON.parse(r.stdout);
   assert.equal(o.decision, undefined);
@@ -107,7 +109,8 @@ test("a missing session_id degrades to a per-cwd key: still refused, with a warn
   assert.equal(out.decision, "block");
   assert.match(out.systemMessage, /no usable session_id/);
   const key = out.reason.match(/--session (cwd-[0-9a-f]{16})/)[1];
-  const rec = spawnSync(process.execPath, [CLI, "record", "--session", key, "--cwd", f.repo, "--no-new-pieces", "x"], { env: { ...process.env, HOME: f.base, ...f.env }, encoding: "utf8" });
+  const rec = spawnSync(process.execPath, [CLI, "record", "--session", key, "--cwd", f.repo, "--no-new-pieces", "x"], { env: { ...process.env, HOME: f.base, ...f.env }, encoding: "utf8", timeout: 5000 });
+  assert.equal(rec.error, undefined, String(rec.error));
   assert.equal(rec.status, 0, rec.stderr);
   const after = f.call({ ...p, last_assistant_message: "## Design\nanother" });
   assert.equal(after.decision, undefined);
@@ -119,6 +122,7 @@ test("process: empty stdin, malformed JSON and a non-object payload exit 0, let 
   const f = fixture(t);
   for (const [input, re] of [["", /got empty stdin/], ["{ torn", /got stdin that is not JSON/], ["42", /not a JSON object/]]) {
     const r = f.run(input);
+    assert.equal(r.error, undefined, String(r.error));
     assert.equal(r.error, undefined, String(r.error));
     assert.equal(r.status, 0);
     const out = JSON.parse(r.stdout);

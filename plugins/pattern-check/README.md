@@ -198,10 +198,14 @@ killed mid-write leaves the previous file. Delete the directory to reset everyth
 The Bash matchers catch the obvious write forms and nothing else. They read the command through a
 small shell lexer: a `>` counts only as a shell operator, never inside quotes, `${…}`, `$(…)`,
 backticks, a heredoc body, `[[ … ]]` or `(( … ))`, and never as part of `>=`, `=>`, `->` or
-`<>`. A redirect whose target holds an expansion (`> "$OUT"`) is denied once the session is held
-but not counted, because its path is not known before the shell runs. A `python -c`, `perl -pi`,
-`cp`, `mv`, `install`, `dd`, a script that writes from inside, a redirect inside `$(…)`, `eval`
-or `sh -c '…'` is neither counted nor denied. `git commit` and `gh pr create` are the backstop:
+`<>`. A redirect, `tee` or `sed -i` whose target holds an expansion (`> "$OUT"`) is not counted,
+because its path is not known before the shell runs; once the session is held it is denied, and
+the deny says the target could not be read statically. A write whose every target is known and
+outside the repository is never denied. Wrappers (`sudo -u root`, `env -i`, `nice -n 5`) and
+control words (`then`, `do`, `!`) in front of `tee` or `sed` are skipped. A `python -c`,
+`perl -pi`, `cp`, `mv`, `install`, `dd`, a script that writes from inside, a write inside a
+process substitution (`>(tee x)`), a redirect inside `$(…)`, `eval` or `sh -c '…'` is neither
+counted nor denied. `git commit` and `gh pr create` are the backstop:
 once a session is held (it reached the threshold through counted writes), committing or opening
 the PR is denied however the files got written; they are matched as text, so a quoted mention
 (`echo 'git commit'`) is denied too. A session that writes everything through uncaught forms and
