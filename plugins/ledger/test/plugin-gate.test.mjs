@@ -227,7 +227,7 @@ test("checkPlugin: a plugin that meets the bar passes all six checks once a cana
   assert.equal(rows[5].detail, "version 0.0.1 unchanged since the base");
   // Without the repository context the row cannot compare and says so.
   const cold = withDb(b, (db) => checkPlugin({ name: "good", dir: join(b.work, "plugins", "good"), prefix: "plugins/good/" }, { db, tree }));
-  assert.deepEqual(cold[5], { name: "docs", status: "skipped", detail: "no base commit to compare the version with" });
+  assert.deepEqual(cold[5], { name: "docs", status: "skipped", detail: "not given a base to compare the version with" });
 });
 
 test("checkPlugin: the failing plugin fails each check, naming the hook and input, the missing fixture, the SKILL.md, the reason literal and the missing manifest", () => {
@@ -332,17 +332,17 @@ test("docs row: a changed version needs a CHANGELOG.md entry, a README release h
   const manifest = (version) => write(dir, ".claude-plugin/plugin.json", JSON.stringify({ name: "good", version, state: GOOD_STATE }));
   const run = (docs) => docsCheck({ name: "good", dir, prefix: "plugins/good/" }, docs);
   const ROOT = "- **[good](#good)** — does the thing.\n  Changes in good 0.2.0: more.\n- **[other](#other)** — 0.3.0 is other's.\n\n## good\n\nChanges in 0.1.0: first.\n";
-  // Skipped: the same version as the base, or no version at all.
+  // Skipped: the same version as the base, or no version at the base or the head.
   assert.deepEqual(run({ baseVersion: "0.0.1", rootReadme: ROOT }), { status: "skipped", detail: "version 0.0.1 unchanged since the base" });
   write(dir, ".claude-plugin/plugin.json", JSON.stringify({ name: "good" }));
-  assert.deepEqual(run({ baseVersion: "0.0.1", rootReadme: ROOT }), { status: "skipped", detail: "no `version` in .claude-plugin/plugin.json" });
+  assert.deepEqual(run({ baseVersion: null, rootReadme: ROOT }), { status: "skipped", detail: "no `version` in .claude-plugin/plugin.json" });
   // Bumped with nothing written: three failures, each naming the file and the heading it wants.
   manifest("0.3.0");
   rmSync(join(dir, "README.md"), { force: true });
   assert.deepEqual(run({ baseVersion: "0.0.1", rootReadme: ROOT }), {
     status: "fail",
     detail:
-      'version 0.0.1 → 0.3.0: CHANGELOG.md is missing: add it with a "## [0.3.0]" (or "## 0.3.0") entry; README.md is missing: add it with a "## Changes in 0.3.0" (or "### 0.3.0", "### <date> — 0.3.0") entry; the repository README.md does not name 0.3.0 for good: put it in the plugin\'s bullet, on a "Changes in good 0.3.0" line, or on a "Changes in 0.3.0" line under "## good"',
+      'version 0.0.1 → 0.3.0: CHANGELOG.md is missing: add it with a "## [0.3.0]" (or "## 0.3.0") entry; README.md is missing: add it with a "## Changes in 0.3.0" (or "### 0.3.0", "### <date> — 0.3.0") entry; the repository README.md does not name 0.3.0 for good: put it in the plugin\'s bullet, on a "Changes in good 0.3.0" line, or on a "Changes in 0.3.0" line under "## good" (written "0.3.0" as a whole token: "v0.3.0" or "0.3.0-rc.1" does not count)',
   });
   // Files present without the heading, or with an empty section under it.
   write(dir, "CHANGELOG.md", "# Changelog\n\n## [0.2.0] - 2026-01-01\n\n- old\n");
@@ -354,6 +354,11 @@ test("docs row: a changed version needs a CHANGELOG.md entry, a README release h
   // A longer version is not this one: 0.3.0 is not found in 10.3.0, 0.3.01 or 0.3.0.1.
   write(dir, "CHANGELOG.md", "# Changelog\n\n## [10.3.0]\n\n- x\n\n## 0.3.01\n\n- y\n\n## 0.3.0.1\n\n- z\n");
   assert.match(run({ baseVersion: "0.0.1", rootReadme: ROOT }).detail, /CHANGELOG\.md has no "## \[0\.3\.0\]"/);
+  // Nor a pre-release, an unbalanced bracket, or a heading inside a fenced code block.
+  for (const md of ["## 0.3.0-rc.1\n\n- x\n", "## [0.3.0\n\n- x\n", "## 0.3.0]\n\n- x\n", "# x\n\n```sh\n## 0.3.0\nls\n```\n", "# x\n\n~~~\n## 0.3.0\n~~~\n"]) assert.equal(releaseEntry(md, "0.3.0"), "missing", md);
+  // A fenced line that looks like a heading does not end a section.
+  assert.equal(releaseEntry("## 0.3.0\n\n```\n# not a heading\n```\n", "0.3.0"), "ok");
+  assert.equal(releaseEntry("## 0.3.0\n\n```\n## 0.2.0\n```\n## 0.2.0\n", "0.3.0"), "ok");
   // Every documented heading shape passes, in either file; the root README names the version in the bullet.
   write(dir, "CHANGELOG.md", "# Changelog\n\n## [0.3.0] - 2026-11-04\n\n### Added\n\n- the thing\n");
   write(dir, "README.md", "# Good\n\n## Changes in 0.3.0\n\nThe thing.\n");
@@ -374,6 +379,13 @@ test("docs row: a changed version needs a CHANGELOG.md entry, a README release h
   assert.equal(rootReadmeNames("- **[good-two](#good-two)** — 0.3.0.\n", "good", "0.3.0"), false, "a bullet for another plugin whose name starts the same");
   assert.equal(rootReadmeNames("- **[good](#good)** — needs ledger 0.3.0 or 10.3.0.\n", "good", "0.3.0"), true, "the version anywhere in the bullet counts");
   assert.equal(rootReadmeNames("- **[good](#good)** — needs 10.3.0 or 0.3.01.\n", "good", "0.3.0"), false);
+  assert.equal(rootReadmeNames("- **[good](#good)** 0.3.0-rc.1\n", "good", "0.3.0"), false, "a pre-release is not the version");
+  assert.equal(rootReadmeNames("- **[good](#good)** v0.3.0\n", "good", "0.3.0"), false, "a v prefix is not the version");
+  assert.equal(rootReadmeNames("## Layout\n- good/ the store\n\n## Plugins\n- **[good](y)** 0.3.0\n", "good", "0.3.0"), true, "every bullet starting with the name is read, not only the first");
+  // A version the base had and the head dropped fails.
+  manifest(undefined);
+  assert.deepEqual(run({ baseVersion: "0.0.1", rootReadme: rootBullet }), { status: "fail", detail: 'manifest version missing at head: the base has 0.0.1; put a "version" back in .claude-plugin/plugin.json' });
+  assert.deepEqual(run({ baseVersion: null, rootReadme: rootBullet }), { status: "skipped", detail: "no `version` in .claude-plugin/plugin.json" });
   // releaseEntry: the section runs to the next heading of the same or a higher level.
   assert.equal(releaseEntry("## [0.3.0]\n\n### Added\n\n- x\n\n## [0.2.0]\n", "0.3.0"), "ok");
   assert.equal(releaseEntry("## [0.3.0]\n\n\n## [0.2.0]\n\n- old\n", "0.3.0"), "empty");
@@ -416,6 +428,13 @@ test("gate check: the docs row reads the base commit's manifest and the head com
   // Against a base that already has 0.0.2 the row is skipped.
   const r4 = cli(b, ["gate", "check", "--base", "HEAD~1", "--plugins", "good"], { env: { LEDGER_SESSION_ID: SID } });
   assert.match(r4.out, /good\s+docs\s+skipped\s+version 0\.0\.2 unchanged since the base/);
+  // A --base that names no commit is an exit 1 naming it, in both modes, before the plugin names are read.
+  for (const args of [["gate", "check", "--plugins", "good", "--base", "bogus"], ["gate", "check", "--plugins", "typo", "--base", "bogus"], ["gate", "check", "--base", "bogus"]]) {
+    const r5 = cli(b, args, { env: { LEDGER_SESSION_ID: SID } });
+    assert.equal(r5.code, 1, r5.out + r5.err);
+    assert.match(r5.out + r5.err, /gate check: --base bogus is not a commit/);
+    assert.doesNotMatch(r5.out + r5.err, /\bat \w+ \(/, "no stack trace");
+  }
 });
 
 test("checkPlugin: past the run cap every check records fail with timeout", () => {
@@ -617,6 +636,17 @@ test("PreToolUse: the gate reads the pushed commit, not the checkout: a passed c
   const r2 = push(b);
   assert.equal(decision(r2), "deny");
   assert.match(reason(r2), /^ledger: plugin gate: good's rows for [0-9a-f]{8} certify tree 01234567, not its tree [0-9a-f]{8}; run `/);
+  // Rows recorded before a check existed (an older ledger, no docs row): the push names the missing row.
+  const db2 = openDb(b);
+  try {
+    db2.prepare("UPDATE cc_gate_checks SET tree_sha = (SELECT tree_sha FROM cc_gate_checks WHERE head_sha = ? AND plugin = 'good' AND name = 'survives') WHERE head_sha = ? AND plugin = 'good'").run(head, head);
+    db2.prepare("DELETE FROM cc_gate_checks WHERE head_sha = ? AND plugin = 'good' AND name = 'docs'").run(head);
+  } finally {
+    db2.close();
+  }
+  const r3 = push(b);
+  assert.equal(decision(r3), "deny");
+  assert.match(reason(r3), /^ledger: plugin gate: good's rows for [0-9a-f]{8} have no docs row \(recorded by an older ledger\); run `[^`]*gate check` again/);
 });
 
 test("PreToolUse: the three gates deny together as one numbered list; `review waive` lifts the plugin gate; advise mode turns the deny into a notice", () => {
