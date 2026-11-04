@@ -1,8 +1,7 @@
 # Changelog
 
 All notable changes to output-types are recorded here. The format follows
-[Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Releases before 0.3.0 are described in
-the root README's output-types section ("Changes in").
+[Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## 0.3.2 - 2026-11-04
 
@@ -60,11 +59,46 @@ the root README's output-types section ("Changes in").
   `evals/stop-unreceipted-warns.scenario.json` (`systemMessage`) and its sibling
   `evals/stop-check-off.scenario.json` (`silent` under `OUTPUT_TYPES_CHECK=off`), so the gate's
   `evals` row covers the new hook.
-- `README.md` in the plugin: what it is, a link to the root README's output-types section for
-  the full documentation, and a `## Changes in 0.3.0` entry, so ledger's `gate check` `docs` row
-  finds the release written down in the plugin.
+- `README.md` in the plugin: what it is, a pointer to the full documentation (then in the
+  root README's output-types section; since moved into this README), and a
+  `## Changes in 0.3.0` entry, so ledger's `gate check` `docs` row finds the release written
+  down in the plugin.
 
 ### Changed
 
-- The root README's output-types section: "it delivers, it does not enforce" is now "it
-  delivers, and it warns", with the new "The Stop check" section.
+- The root README's output-types section (now this README): "it delivers, it does not enforce"
+  is now "it delivers, and it warns", with the new "The Stop check" section.
+
+## [0.2.2]
+
+### Changed
+
+- The plugin meets ledger 0.3.5's five-row gate. `evals/manifest.json` declares what the
+  session-start hook can return (the core as a `systemMessage`, or silence under
+  `OUTPUT_TYPES_INJECT=off`), one `evals/<x>.scenario.json` proves each, and the core scenario
+  carries a `session` and a `judge` rubric the nightly canary runs under `claude -p` and grades
+  with `claude plugin eval`. `e2e/live-run.sh` hands off to plugin-kit's scenario runner.
+  `.claude-plugin/plugin.json` declares the one state path (`$XDG_STATE_HOME/output-types`, 30
+  days) and `scripts/prune.mjs` prunes it. The skill has a "When this can't run" section.
+
+## [0.2.1]
+
+### Fixed
+
+- A hook fault (contract file missing, unreadable or without its markers, or the hook's own
+  module failing to load or loading broken) now appends one line naming the hook file and the
+  reason to `${XDG_STATE_HOME:-~/.local/state}/output-types/errors.log`, and the one-line
+  warning reaches you as well as the model and says where the reason went.
+  `OUTPUT_TYPES_INJECT=off` is read first, so it silences the hook even when the install is
+  broken. The hook no longer waits on a stdin pipe its caller leaves open: it reads for at most
+  one second, then injects.
+
+## [0.2.0]
+
+### Changed
+
+- Only receipted facts are labeled, as CLAIM or CITE. The GUESS, PMDW, ACTION and QUESTION
+  labels, the `<!-- output-types … -->` envelope and the numbered degradation tiers are gone;
+  unreceipted statements, actions, questions and degraded coverage are plain prose. The whole
+  contract now lives in `skills/output-types/reference.md`, which the skill points at and the
+  hook injects from.

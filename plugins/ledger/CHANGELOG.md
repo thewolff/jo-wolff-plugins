@@ -1,9 +1,8 @@
 # Changelog
 
 All notable changes to ledger are recorded here. The format follows
-[Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Entries before 0.3.5 are the
-"Changes" section of the README (one line per version) and the "Changes in" paragraphs of the
-repository root README's ledger section.
+[Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Entries before 0.2.1 are the
+"Changes" section of the README (one line per version).
 
 ## 0.3.9 - 2026-11-04
 
@@ -166,3 +165,212 @@ repository root README's ledger section.
   scenario runner `lib/live-run.mjs`; the ledger's own scenarios cover its five events.
 - Schema 8: two columns on `cc_canary_runs` (`tree_sha`, `writes`) and the `cc_canary_prunes`
   table. A 0.3.3 or 0.3.4 ledger on a schema-8 file runs on the tables both know.
+
+### Fixed
+
+- The hooks' direct-invocation guards compare real paths, the fix the i-have-audhd and
+  ask-graham scripts needed: a hook reached through a symlink (macOS's `/var/folders` tmpdir,
+  where `gate check` snapshots the plugin) otherwise never ran.
+
+## [0.3.4]
+
+With plugin-kit 0.1.1: two fixes to what 0.3.3 shipped.
+
+### Fixed
+
+- The canary no longer hands its `e2e/live-run.sh` the caller's `LEDGER_*` environment; a
+  `LEDGER_DB` in the shell that ran `ledger canary run` outranked the script's throwaway config
+  and pointed the seeded question and the headless session at the real store (the scripts,
+  ledger's and the kit's template, also `unset` those keys for a run by hand).
+- plugin-kit's `new-plugin` scaffolds into the `plugins/` of the git repository the cwd is in,
+  found with `git rev-parse --show-toplevel`, instead of the directory above the kit (which,
+  installed from the marketplace, was the plugin cache); a cwd in no repository is refused
+  naming `--dest`.
+
+## [0.3.3]
+
+The fault-tolerance gate and the feedback loop.
+
+### Added
+
+- `ledger gate check` runs the repository test bar's checks (three then; five since 0.3.5; six
+  since 0.3.6) on every plugin changed since the base of a repository of plugins (can't break
+  the session: each hook on five fault inputs; failures visible: an `errors.log` line and a
+  `systemMessage`, and an `<x>.unavailable.txt` fixture beside every `<x>.txt`; text says what
+  to do: a "When this can't run" section in every skill and agent, a backtick command in every
+  deny text), records the rows for the committed tree it checked, and the push gate denies a
+  push or PR without rows or with a failed check, naming `gate check` and `review waive` as the
+  ways out. The labs read the author's pattern-check receipt before the diff and tag a stated
+  failure path the code lacks, or a silent one the receipt lacks, `[blocking] fault-tolerance:`.
+- Three verbs tell whether the hooks are doing anything: `canary run` runs every plugin's
+  `e2e/live-run.sh` under `claude -p` nightly (`canary install` writes the launchd plist and
+  prints the bootstrap line); `report` grades a week of bounces per rule, with a cached judge
+  overlay; `digest` posts the week's report as a comment on the configured `owner/repo#number`
+  issue (`digest install` likewise), and session start says when it is overdue.
+- Session end writes a decision-log entry in the `/wrap-up` shape under the repository's
+  `.ai/decision-log/` when the session answered or noted anything, and session start injects
+  the newest and the open or durable entries where the newdle plugin's hook will not.
+- Session start withdraws questions asked more than `sweep.autoWithdrawDays` ago (7) whose
+  session has ended, and `doctor` counts stale ones.
+- Bounces keep the text that fired the rule and the transcript path; `bounces` shows them;
+  `review judge <key>` shows a cached answer.
+- A session-start question from another window is relayed to the human in one plain line
+  (never its id), an `ask` with no `--default` invents none, and every hook's store failure now
+  leaves an `errors.log` line beside its message.
+- Schema 7 adds `cc_judge_cache`, `cc_canary_runs`, `cc_gate_checks` and two `cc_bounces`
+  columns; the README's "Inspecting the database" section says what an older ledger does with
+  a schema-7 file.
+- The new `plugin-kit` plugin scaffolds a plugin that passes the gate on day one.
+
+## [0.3.2]
+
+### Added
+
+- A side pane for Claude Code Desktop. The ledger mod opens a pane listing the questions still
+  open in other folders and the answers recorded since your last turn, and
+  `/ledger answer <id> <reply>` (or the pane's own buttons and reply field) records through the
+  ledger CLI without spending a model turn. Where no pane can draw (`claude -p`, narrow
+  terminals, OMP) the same information lands as one block in the transcript. See the README,
+  "Ledger pane (Desktop)", for the two-window test.
+
+## [0.3.1]
+
+Three fixes from the first live sessions on 0.3.0, each from a bounce that had no way out.
+
+### Fixed
+
+- An `ask` that repeats a question still open from an earlier session or an untagged CLI run in
+  the same folder (same text, same set of options in any order) now adopts that row (its
+  session id and asked-at move to the asking session; its options and default stay) instead of
+  writing nothing; before, the session had no row of its own and the Stop ask rule sent every
+  reply back with "this session has no open question row".
+- The ask rule itself now stands down on any question open for the folder (this session's, or
+  one in the cwd or a parent of it), and it fires only on a question that asks for a decision:
+  a request ("should I", "do you want", "ready to"), an explicit choice ("whether", "do you
+  prefer", an option list after a comma or colon), or a wh-question carrying one ("How should
+  we proceed?"). A greeting or a request for information ("What are we working on?", "Which
+  file holds the config?", "Are the logs compressed or uncompressed?") needs no row; a "why"
+  question never does.
+- Session start now lists the questions waiting in other folders in full, folder by folder
+  with each question's `pending` line (default, id, name, body, the other options; a held one
+  marked `held`), so a session can record the human's answer to one of them without a lookup;
+  before, it only counted them. And a prompt that is just an option word of an open question
+  ("local", "Remote.") gives Claude one line naming that question and the `answer` command, as
+  a hint only: nothing is recorded until Claude runs it.
+- In the review gate: the `glm` lab no longer has a built-in `omp` profile. It runs with no
+  `--profile` (omp's base profile) unless `review.profiles.glm` names one; before, the default
+  was `agent-system-2`, and a user file with `"profiles": {"glm": ""}` (rejected by the
+  loader, which wants a non-empty string) silently ran every GLM review under that profile.
+
+## [0.3.0]
+
+The ledger checks itself and records its own bounces.
+
+### Added
+
+- `ledger doctor` prints one `ok`, `warn` or `fail` line per check (the database opens
+  read-write, the schema version is current, which config layer set `db` and `enabled`,
+  `hooks.json` lists every event, `errors.log` lines in the last 7 days per hook, bounces left
+  open for more than a day) and exits 1 only when a check fails; it never writes the database.
+  Session start adds one last line, `ledger: doctor reports N issue(s)`, when the cheap subset
+  of those checks (schema version, recent `errors.log` lines) finds something;
+  `inject.doctor: false` turns it off.
+- Every Stop block and PreToolUse deny now writes a row to a new `cc_bounces` table, marked
+  `satisfied` when the remedy happens later in the session and `bypassed` at session end
+  otherwise, and `ledger bounces [--since 7d]` counts them per rule, so the rules that only get
+  walked past can be found and retired. A bounce marked `bypassed` at SessionEnd turns
+  `satisfied` when the same session resumes and does the remedy.
+- A cross-lab review gate now stands in front of `git push`, `gh pr create` and `gh pr merge`:
+  `ledger review` sends the branch's diff to the labs in `review.labs` (`codex`, `kimi`,
+  `claude`, and `glm` through `omp`) in parallel and records each verdict for the HEAD commit
+  in a new `cc_reviews` table; the push is denied while HEAD has no review or has findings, a
+  lab that cannot run is named and left out, and `ledger review waive "<reason>"` lets a commit
+  through with the human's reason on record. `review.mode` (`gate` by default, or `advise`, or
+  `off`) is read from the user config file only. Findings carry a severity (`blocking`,
+  `should`, `nit`); nits alone let the push through with a notice. Each reviewed commit is a
+  numbered round, and past `review.maxRounds` (default 3) the review stops and says to ask the
+  human. A judge model checks every claim that a finding is resolved, whether a later review
+  dropped it, listed it again only as a nit, or the agent ran `review addressed "<why>"`; a
+  `no` keeps the gate closed, and a judge that cannot answer counts the finding resolved and
+  says so. A lab that is skipped or unavailable keeps its findings open on the new commit, and
+  `review addressed` is refused while HEAD has findings of its own. The judge is
+  `review.judgeCommand`, or the i-have-audhd plugin's `enforcement.judgeCommand`; its passage
+  is capped at 8 kB and says when it was cut. Reviewers run without tools, from an empty
+  scratch folder, with an allowlisted environment.
+- The gate checks the commit a command actually publishes (`cd` and `git -C` folders, each in
+  its own shell scope, refspecs, git's own choice when no refspec is given, the branch
+  `gh pr create --head` names as the remote has it now, read with a `git ls-remote` that cannot
+  prompt and is killed with its helpers after 5 seconds, the pull request `gh pr merge` names,
+  pushes inside `$(…)`), and allows with a notice when it cannot tell, including a `-c` or
+  `GIT_CONFIG*` setting that steers the push and a remote that does not answer in 5 seconds; a
+  merge not bound with `--match-head-commit` gets a notice naming the commit checked.
+  `review --base` narrows only the diff the labs read, and a later review of an older commit
+  clears nothing found on a newer one.
+- Session start now also shows the open and held questions asked in folders under the
+  session's folder, each naming its folder, and `pending` lists them the same way.
+- A push missing both a note and a review is denied once, naming both.
+
+### Changed
+
+- Opening a 0.2.3 database migrates it to schema version 6 by creating new tables; no existing
+  table is touched.
+- The Stop ask rule now catches a question mid-line ("Should I …? I'd say yes."); the decision
+  rule stands down when the reply asks a question recorded that turn, and `instead of` left the
+  default phrase list.
+- `errors.log` lines carry the database they were written against, and `doctor` counts only
+  its own.
+
+## [0.2.3]
+
+### Added
+
+- One database shared by every folder is now readable across folders. `ledger pending --all`
+  lists every open and held question in the database, grouped under the path of the folder it
+  was asked in, oldest first within a folder. Session start adds one line when questions are
+  waiting on you outside the session's folder (not the folder, a parent or a subfolder of it):
+  how many, in how many other folders, and the `pending --all` command to see them. The line is
+  kept after a compaction; set `inject.elsewhere` to `false` to turn it off. `ledger pending`
+  without `--all` is unchanged.
+- An answer now reaches the session that asked while it is still open: when a question is
+  answered or withdrawn from another session or folder, the asking session's next prompt
+  carries one line saying so (`answered since your last turn: <name> → <word>`), once. Set
+  `inject.answers` to `false` to turn it off.
+
+### Changed
+
+- Opening a 0.2.2 database migrates it to schema version 5 in place by adding two columns; no
+  table is rebuilt.
+
+## [0.2.2]
+
+### Changed
+
+- An `outcome` lifts the push gate the same as a `note`, so one
+  `ledger outcome <ref> "<what and why>"` per push is enough. The Stop hook's decision rule
+  still wants a `note` in the turn that states the decision.
+- A reply that is none of a question's options is recorded as given:
+  `ledger answer <q-id> "<reply>"` stores it as a free-form answer (up to 200 characters), and
+  `log` shows it as `answered (freeform)`, so a question is no longer withdrawn because your
+  reply was off the list. A prompt line such as `approve q-…` still applies exact options only,
+  so a typo never becomes an answer.
+- Opening a 0.2.1 database migrates it to schema version 4 in place, rebuilding `cc_answers`
+  and keeping every row.
+
+## [0.2.1]
+
+### Changed
+
+- You never type a question id. The agent asks in plain words and records your reply with
+  `ledger answer`; the Stop hook sends a turn back once when you replied and the answer is not
+  recorded, and no longer requires a reply to name its row (`approve q-…` typed into a prompt
+  still works as a shortcut).
+- The hooks are on by default, with `/ledger:enable` and `/ledger:disable` to set a folder's
+  switch.
+- A question the agent forms but defers is `held` (`ledger hold`, `ledger reopen`), never
+  dropped, and is listed as *Waiting on you* at session start;
+  `ledger outcome <ref> [q-id] "<text>"` records what a decision produced (a PR, a commit, a
+  path).
+- Opening a 0.2.0 database migrates it to schema version 3 in place, keeping every row. A
+  database at a configured `db` path that fails to open as SQLite (corrupt, or not a database)
+  is reported and left exactly as it is; only the plugin's own default file is moved aside to
+  `<path>.corrupt-<stamp>` and recreated.

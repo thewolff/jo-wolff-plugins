@@ -1,7 +1,7 @@
 # Changelog
 
 All notable changes to plugin-kit are recorded here. The format follows
-[Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Releases before 0.2.0 are described in
+[Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Releases before 0.1.2 are described in
 the README's "Changes in" sections.
 
 ## 0.3.3 - 2026-11-04
@@ -158,3 +158,16 @@ compare made the scaffolder a silent no-op when reached through one (macOS's `/v
 tmpdir included), exiting 0 with nothing written. `test/live-run.test.mjs` is new; the scaffold
 test runs a scaffold end to end in a fresh repository through `ledger gate check` and `ledger
 canary run`.
+
+## [0.1.2]
+
+### Added
+
+Two agents, `cross-lab-reviewer` (a Codex review of the branch) and `release-gate` (the release
+checklist, report-only): the Codex review brief and the release checklist that were written by
+hand for each plugin release, as files. Neither runs code from the checkout unless the invoking
+prompt says `execute: <sha>` for the exact head sha, and then only in a credential-free `env -i`;
+both check one snapshot of the head sha, written blob by blob with `git cat-file` and checked
+blob by blob against its id. The release gate reports `ledger gate check` unavailable rather than
+run it against live `HEAD`. The scaffolder and the runner are unchanged; the README's "Changes
+in 0.1.2" has the rest.

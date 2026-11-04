@@ -3,21 +3,37 @@
 // same files run under both harnesses, so one test suite covers the rules.
 //
 // EVENT MAPPING
-//   input               the whole typed text is `brb` (with an optional note), `back` or
-//                       `pending` → spawn hooks/user-prompt-submit.mjs with the text as the
-//                       prompt, show its block `reason` (the confirmation or the digest), and
-//                       return { handled: true } at once, so no turn starts. The reason is shown
+//   input               the whole typed text is `brb` (with an optional note) or `pending` →
+//                       spawn hooks/user-prompt-submit.mjs with the text as the prompt, show
+//                       its block `reason` (the confirmation or the digest), and return
+//                       { handled: true } at once, so no turn starts. The reason is shown
 //                       through pi.sendMessage({ display: true }) without triggerTurn only when
 //                       ctx.isIdle() says the agent is idle; while it streams (or when the host
 //                       has no sendMessage or isIdle) it goes to ctx.ui.notify, because a custom
 //                       message sent mid-stream is steered into the agent's context
-//                       (displayChannel). `back` or `pending` while the session is not away
-//                       (no away.json) returns undefined, so the word reaches the agent as an
-//                       ordinary reply. Any other text returns undefined; the away context
-//                       reaches the agent through before_agent_start, below.
+//                       (displayChannel). `back` while away is awaited (OMP awaits input
+//                       handlers; emitInput in its bundle, 30 s budget): the prompt hook
+//                       archives and clears the hold and answers additionalContext (the back
+//                       instruction over the digest, lib/text.mjs backInstruction); the
+//                       adapter stages that text for before_agent_start, notifies the archive
+//                       line, and returns undefined so the turn starts and the agent's reply is
+//                       the digest, as on Claude Code (backHandler). `back` or `pending` while
+//                       the session is not away (no away.json) returns undefined, so the word
+//                       reaches the agent as an ordinary reply. Any other text returns
+//                       undefined; the away context reaches the agent through
+//                       before_agent_start, below. While away the handler first runs the
+//                       prompt hook with the text and waits for it (newTurnHandler; OMP awaits
+//                       input handlers, so the prompt is not dispatched before it returns),
+//                       output ignored: the hook's new-turn reset clears the Stop backstop's
+//                       per-turn state before the turn starts, as on Claude Code, so a Stop of
+//                       the new turn cannot run ahead of the reset and the reset cannot land
+//                       after that Stop and wipe its once-per-turn flag.
 //   before_agent_start  spawn hooks/session-start.mjs; when it returns additionalContext (the
-//                       session is away) hand it to the turn as a hidden custom message. Home →
-//                       the hook prints nothing and nothing is added.
+//                       session is away) hand it to the turn as a hidden custom message, with
+//                       the text `back` staged (above) under it when there is one. Home with
+//                       nothing staged → the hook prints nothing and nothing is added. The
+//                       staged text stays until the next input or session_stop, because OMP may
+//                       prepare the same submission again (a source-base retry).
 //   session_stop        spawn hooks/stop.mjs with BRB_HARNESS=omp and return its verdict:
 //                       { decision: "block", reason } keeps the agent working (OMP never caps an
 //                       explicit block; the core's own release rules end the loop). A
@@ -285,21 +301,75 @@ export async function inputWordHandler(text: string, ctx: Ctx, show: (reason: st
   }
 }
 
-/** before_agent_start: the away context as a hidden message, or undefined when home or on a fault. */
+/** Ordinary text while away: run the prompt hook for its new-turn reset of away.json and wait for it; output ignored, a fault logged. Always resolves. */
+export async function newTurnHandler(text: string, ctx: Ctx, deps: Deps = {}): Promise<void> {
+  const env = deps.env ?? process.env;
+  const stateDir = deps.stateDir ?? defaultStateDir(env);
+  const run = deps.runCli ?? ((h, p, c, ms) => spawnHook(h, p, c, ms, env));
+  try {
+    await run(PROMPT_HOOK, buildPromptPayload(text, ctx), ctx.cwd, PROMPT_TIMEOUT_MS);
+  } catch (err) {
+    logError(stateDir, `${PROMPT_HOOK}: ${err instanceof Error ? err.message : String(err)}`);
+  }
+}
+
+/**
+ * Text `back` staged for the next turn, per manager session id: the prompt hook's
+ * additionalContext (the back instruction over the digest). Set by backHandler, read by
+ * before_agent_start, cleared by the next input and by session_stop. Module-level on purpose:
+ * OMP binds fresh registrations per child session but shares module variables, so the key is
+ * the session.
+ */
+export const stagedBack = new Map<string, string>();
+
+/**
+ * The `input` handler's work for `back` while away. The prompt hook archives and clears the
+ * hold and answers additionalContext; that text is staged for before_agent_start, the archive
+ * line (the first line of its systemMessage) is notified, and undefined lets the prompt through
+ * so the agent's reply is the digest. A hook that answered a block (an older hook), nothing,
+ * or threw: what it said is shown and the word is handled, no turn. Always resolves.
+ */
+export async function backHandler(text: string, ctx: Ctx, show: (reason: string) => void, deps: Deps = {}): Promise<{ handled: true } | undefined> {
+  const env = deps.env ?? process.env;
+  const stateDir = deps.stateDir ?? defaultStateDir(env);
+  const run = deps.runCli ?? ((h, p, c, ms) => spawnHook(h, p, c, ms, env));
+  try {
+    const out = await run(PROMPT_HOOK, buildPromptPayload(text, ctx), ctx.cwd, PROMPT_TIMEOUT_MS);
+    const hso = out?.hookSpecificOutput;
+    const content = hso && typeof hso === "object" && "additionalContext" in hso ? hso.additionalContext : undefined;
+    if (out?.decision !== "block" && typeof content === "string" && content) {
+      stagedBack.set(managerSessionId(ctx), content);
+      const first = typeof out?.systemMessage === "string" ? out.systemMessage.split("\n")[0].trim() : "";
+      if (first) notify(ctx, first, "info");
+      return undefined;
+    }
+    if (out?.decision === "block" && typeof out.reason === "string" && out.reason) show(out.reason);
+    else show(`brb: the back hook answered nothing; see errors.log under ${stateDir}`);
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    logError(stateDir, `${PROMPT_HOOK}: ${message}`);
+    show(`brb: could not run the hook (${message}); nothing changed`);
+  }
+  return { handled: true };
+}
+
+/** before_agent_start: the away context and/or the staged `back` text as one hidden message; undefined when there is neither or on a fault. */
 export async function beforeAgentStartHandler(ctx: Ctx, deps: Deps = {}): Promise<{ message: { customType: string; content: string; display: false } } | undefined> {
   if (ctx.agent?.kind === "sub") return undefined;
   const env = deps.env ?? process.env;
   const stateDir = deps.stateDir ?? defaultStateDir(env);
   const run = deps.runCli ?? ((h, p, c, ms) => spawnHook(h, p, c, ms, env));
+  const staged = stagedBack.get(managerSessionId(ctx)) ?? "";
   try {
     const out = await run(START_HOOK, buildStartPayload(ctx), ctx.cwd, START_TIMEOUT_MS);
     const hso = out?.hookSpecificOutput;
-    const content = hso && typeof hso === "object" && "additionalContext" in hso ? hso.additionalContext : undefined;
-    if (typeof content !== "string" || !content) return undefined;
-    return { message: { customType: CONTEXT_MESSAGE_TYPE, content, display: false } };
+    const away = hso && typeof hso === "object" && "additionalContext" in hso ? hso.additionalContext : undefined;
+    const content = [typeof away === "string" ? away : "", staged].filter(Boolean).join("\n\n");
+    if (!content) return undefined;
+    return { message: { customType: staged && !away ? DIGEST_MESSAGE_TYPE : CONTEXT_MESSAGE_TYPE, content, display: false } };
   } catch (err) {
     logError(stateDir, `${START_HOOK}: ${err instanceof Error ? err.message : String(err)}`);
-    return undefined;
+    return staged ? { message: { customType: DIGEST_MESSAGE_TYPE, content: staged, display: false } } : undefined;
   }
 }
 
@@ -335,13 +405,24 @@ export default function brbOmp(pi: PiLike, deps: Deps = {}): void {
   };
   pi.on("input", (event, ctx) => {
     const word = surfaceWord(event?.text);
-    if (!word) return undefined;
+    const away = isAway(ctx, deps.stateDir ?? defaultStateDir(deps.env ?? process.env));
+    stagedBack.delete(managerSessionId(ctx)); // a new submission supersedes any `back` text not yet delivered
+    if (!word) {
+      // A human prompt while away is a new turn for the Stop backstop: the reset runs to completion, then the prompt proceeds.
+      if (away) return newTurnHandler(String(event?.text ?? ""), ctx, deps).then(() => undefined);
+      return undefined;
+    }
     // `back` / `pending` while home is an ordinary reply for the agent, as on Claude Code.
-    if (word !== "brb" && !isAway(ctx, deps.stateDir ?? defaultStateDir(deps.env ?? process.env))) return undefined;
+    if (word !== "brb" && !away) return undefined;
+    // `back` while away: awaited, so the hold is cleared and the digest staged before the turn starts.
+    if (word === "back") return backHandler(String(event.text), ctx, show(ctx), deps);
     // Decided synchronously so the host never dispatches the word as a prompt; the hook runs after.
     void inputWordHandler(String(event.text), ctx, show(ctx), deps);
     return { handled: true };
   });
   pi.on("before_agent_start", (_event, ctx) => beforeAgentStartHandler(ctx, deps));
-  pi.on("session_stop", (event, ctx) => sessionStopHandler(event, ctx, deps));
+  pi.on("session_stop", (event, ctx) => {
+    stagedBack.delete(managerSessionId(ctx)); // the turn that carried it has ended
+    return sessionStopHandler(event, ctx, deps);
+  });
 }

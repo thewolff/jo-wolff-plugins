@@ -1,5 +1,6 @@
 {
   "name": "continuity",
+  "description": "Keep a long session's state across compaction: a snapshot saved before it and restored after, a liveness line on every start, and a handoff skill for what no hook can derive.",
   "version": "0.3.1",
   "private": true,
   "type": "module",

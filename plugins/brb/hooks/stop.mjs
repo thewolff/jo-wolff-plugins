@@ -3,9 +3,12 @@
 // one errors.log line and a systemMessage, never a block for its own fault.
 //
 // What it does: while the session is away (away.json present), hand the final message to
-// lib/stop-core.mjs decideStop: new Needs-you lines go to the digest, on-fire lines surface at
-// once (systemMessage + OSC 9 terminalSequence + a macOS notification), and the agent is sent
-// back to work (hookSpecificOutput.additionalContext on Claude Code, `decision: "block"` under
+// lib/stop-core.mjs decideStop: new Needs-you lines and a closing ask go to the digest (once;
+// an item the agent already held with scripts/brb.mjs is not filed twice), on-fire lines
+// surface at once (systemMessage + OSC 9 terminalSequence + a macOS notification), a message
+// that showed an ask at all is blocked once per turn (`decision: "block"`, the backstop: the
+// agent replies again with the body only), and otherwise the agent is sent back to work
+// (hookSpecificOutput.additionalContext on Claude Code, `decision: "block"` under
 // BRB_HARNESS=omp) unless an `idle:` line is among the message's last five non-blank lines, a
 // tool-less stop-hook continuation brought nothing new, or two stops passed with no tool calls
 // between them. Home → null, nothing printed. The whole contract is in stop-core.mjs's header.

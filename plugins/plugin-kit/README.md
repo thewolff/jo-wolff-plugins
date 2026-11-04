@@ -11,8 +11,8 @@ names a command), its behaviour is proved (an `evals/manifest.json` declaring wh
 can return and one `evals/<x>.scenario.json` per event × outcome, replayed by the nightly
 canary), its state is declared and pruned (`state` in `.claude-plugin/plugin.json`, with a
 prune command for anything kept for a number of days), and a release is written down (a
-version bump has a `CHANGELOG.md` entry, a README release heading and a mention in the
-repository README). `ledger gate check` (the ledger plugin, 0.3.7) enforces the six before a
+version bump has a `CHANGELOG.md` entry and a README release heading, and the repository
+README has a row naming the plugin). `ledger gate check` (the ledger plugin, 0.3.7) enforces the six before a
 push. This plugin makes meeting them the default rather than a retrofit.
 
 ## Install
@@ -54,13 +54,13 @@ installed from are never where a plugin lands):
 
 The scaffold passes its own `node --test` and five of the six `ledger gate check` rows as
 written (`survives`, `visible`, `says`, `retention`, and `docs` once the repository README's
-bullet for the plugin names 0.1.0); the `evals` row fails naming every unfilled
+plugin table has a row for the plugin); the `evals` row fails naming every unfilled
 stub, which is the shape it is meant to have until the author fills the scenarios. What is left
 is the author's: the rule in each hook, the skill's steps, the receipt's rows, the scenarios'
 real inputs and expectations, the fixtures for any program shelled out to. The root README
-bullet for the plugin, naming 0.1.0, goes in by hand before the first `gate check`: the `docs`
-row fails a new plugin without it. The marketplace entry is added by hand when the plugin is
-ready to publish.
+row for the plugin (its name and one sentence; the root README never names a version) goes in
+by hand before the first `gate check`: the `docs` row fails a new plugin without it. The
+marketplace entry is added by hand when the plugin is ready to publish.
 
 The two runners are copied, not imported across plugins, on purpose: an installed plugin never
 depends on a sibling being installed, and a change to the kit's copy reaches a plugin only when

@@ -344,12 +344,12 @@ test("retention row: a write site with no `state`, an empty `state`, a retention
   assert.equal(dryRunPrune(good, "sleep 5 #", { timeoutMs: 200 }), "prune `sleep 5 #` --dry-run: no exit within 200 ms");
 });
 
-test("docs row: a changed version needs a CHANGELOG.md entry, a README release heading and a root README mention, each failure naming the file and the heading; every documented heading shape passes; unchanged or absent versions are skipped; a root plugin is not asked for a root README", () => {
+test("docs row: a changed version needs a CHANGELOG.md entry, a README release heading and a root README row naming the plugin (never its version), each failure naming the file and the heading; every documented heading shape passes; unchanged or absent versions are skipped; a root plugin is not asked for a root README", () => {
   const b = pluginRepo();
   const dir = join(b.work, "plugins", "good");
   const manifest = (version) => write(dir, ".claude-plugin/plugin.json", JSON.stringify({ name: "good", version, state: GOOD_STATE }));
   const run = (docs) => docsCheck({ name: "good", dir, prefix: "plugins/good/" }, docs);
-  const ROOT = "- **[good](#good)** — does the thing.\n  Changes in good 0.2.0: more.\n- **[other](#other)** — 0.3.0 is other's.\n\n## good\n\nChanges in 0.1.0: first.\n";
+  const ROOT = "| Plugin | What it does |\n|---|---|\n| other | the other thing |\n\n## other\n\nText.\n";
   // Skipped: the same version as the base, or no version at the base or the head.
   assert.deepEqual(run({ baseVersion: "0.0.1", rootReadme: ROOT }), { status: "skipped", detail: "version 0.0.1 unchanged since the base" });
   write(dir, ".claude-plugin/plugin.json", JSON.stringify({ name: "good" }));
@@ -360,14 +360,14 @@ test("docs row: a changed version needs a CHANGELOG.md entry, a README release h
   assert.deepEqual(run({ baseVersion: "0.0.1", rootReadme: ROOT }), {
     status: "fail",
     detail:
-      'version 0.0.1 → 0.3.0: CHANGELOG.md is missing: add it with a "## [0.3.0]" (or "## 0.3.0") entry; README.md is missing: add it with a "## Changes in 0.3.0" (or "### 0.3.0", "### <date> — 0.3.0") entry; the repository README.md does not name 0.3.0 for good: put it in the plugin\'s bullet, on a "Changes in good 0.3.0" line, or on a "Changes in 0.3.0" line under "## good" (written "0.3.0" as a whole token: "v0.3.0" or "0.3.0-rc.1" does not count)',
+      'version 0.0.1 → 0.3.0: CHANGELOG.md is missing: add it with a "## [0.3.0]" (or "## 0.3.0") entry; README.md is missing: add it with a "## Changes in 0.3.0" (or "### 0.3.0", "### <date> — 0.3.0") entry; the repository README.md does not name good: add its row to the plugin table ("| good | …"), or a bullet starting with "good", or a "## good" heading (the root README never names a version)',
   });
   // Files present without the heading, or with an empty section under it.
   write(dir, "CHANGELOG.md", "# Changelog\n\n## [0.2.0] - 2026-01-01\n\n- old\n");
   write(dir, "README.md", "# Good\n\n## Changes in 0.3.0\n\n## Changes in 0.2.0\n\nold\n");
   assert.deepEqual(run({ baseVersion: "0.0.1", rootReadme: null }), {
     status: "fail",
-    detail: 'version 0.0.1 → 0.3.0: CHANGELOG.md has no "## [0.3.0]" (or "## 0.3.0") heading; README.md has nothing under its 0.3.0 heading; the repository README.md is not in the commit, so nothing names good 0.3.0',
+    detail: 'version 0.0.1 → 0.3.0: CHANGELOG.md has no "## [0.3.0]" (or "## 0.3.0") heading; README.md has nothing under its 0.3.0 heading; the repository README.md is not in the commit, so nothing names good',
   });
   // A longer version is not this one: 0.3.0 is not found in 10.3.0, 0.3.01 or 0.3.0.1.
   write(dir, "CHANGELOG.md", "# Changelog\n\n## [10.3.0]\n\n- x\n\n## 0.3.01\n\n- y\n\n## 0.3.0.1\n\n- z\n");
@@ -379,10 +379,10 @@ test("docs row: a changed version needs a CHANGELOG.md entry, a README release h
   assert.equal(releaseEntry("## 0.3.0\n\n```\n## 0.2.0\n```\n## 0.2.0\n", "0.3.0"), "ok");
   // Four or more spaces of indent is an indented code block, not a fence opener, so the heading after it counts.
   assert.equal(releaseEntry("# x\n\n    ```\n## 0.3.6\n\nbody\n", "0.3.6"), "ok", "a four-space ``` does not open a fence");
-  // Every documented heading shape passes, in either file; the root README names the version in the bullet.
+  // Every documented heading shape passes, in either file; the root README names the plugin in a table row, with no version anywhere.
   write(dir, "CHANGELOG.md", "# Changelog\n\n## [0.3.0] - 2026-11-04\n\n### Added\n\n- the thing\n");
   write(dir, "README.md", "# Good\n\n## Changes in 0.3.0\n\nThe thing.\n");
-  const rootBullet = "- **[good](#good)** — does the thing. Changes in good 0.3.0: the thing.\n";
+  const rootBullet = "| Plugin | What it does |\n|---|---|\n| good | does the thing |\n";
   assert.deepEqual(run({ baseVersion: "0.0.1", rootReadme: rootBullet }), { status: "pass", detail: "version 0.0.1 → 0.3.0: CHANGELOG.md has its 0.3.0 entry; README.md has its 0.3.0 entry; the repository README names it" });
   for (const heading of ["## 0.3.0", "### 0.3.0", "## [0.3.0]", "### 2026-11-04 — 0.3.0", "### 2026-11-04 - 0.3.0", "## Changes in 0.3.0"]) {
     write(dir, "CHANGELOG.md", `# Changelog\n\n${heading}\n\n- the thing\n`);
@@ -391,18 +391,25 @@ test("docs row: a changed version needs a CHANGELOG.md entry, a README release h
   }
   // A new plugin (no base manifest) is checked against its first version.
   assert.equal(run({ baseVersion: null, rootReadme: rootBullet }).detail, "version 0.3.0, new since the base: CHANGELOG.md has its 0.3.0 entry; README.md has its 0.3.0 entry; the repository README names it");
-  // The root README: the version in the bullet's continuation lines, a "Changes in <plugin> <ver>" line anywhere, or a "Changes in <ver>" line under "## <plugin>"; another plugin's bullet or section does not count.
-  assert.equal(rootReadmeNames("- **[good](plugins/good/README.md)** — does\n  the thing (0.3.0).\n", "good", "0.3.0"), true);
-  assert.equal(rootReadmeNames("- **[good](#good)** — does the thing.\n\nChanges in good 0.3.0: the thing.\n", "good", "0.3.0"), true);
-  assert.equal(rootReadmeNames("- **[good](#good)** — does the thing.\n\n## good\n\nText.\n\nChanges in 0.3.0: the thing.\n\n### Install\n", "good", "0.3.0"), true);
-  assert.equal(rootReadmeNames("- **[good](#good)** — does the thing.\n- **[other](#other)** — 0.3.0.\n\n## other\n\nChanges in 0.3.0: other's.\n", "good", "0.3.0"), false);
-  assert.equal(rootReadmeNames("- **[good-two](#good-two)** — 0.3.0.\n", "good", "0.3.0"), false, "a bullet for another plugin whose name starts the same");
-  assert.equal(rootReadmeNames("- **[good](#good)** — needs ledger 0.3.0 or 10.3.0.\n", "good", "0.3.0"), true, "the version anywhere in the bullet counts");
-  assert.equal(rootReadmeNames("- **[good](#good)** — needs 10.3.0 or 0.3.01.\n", "good", "0.3.0"), false);
-  assert.equal(rootReadmeNames("- **[good](#good)** 0.3.0-rc.1\n", "good", "0.3.0"), false, "a pre-release is not the version");
-  assert.equal(rootReadmeNames("- **[good](#good)** v0.3.0\n", "good", "0.3.0"), false, "a v prefix is not the version");
-  assert.equal(rootReadmeNames("## Layout\n- good/ the store\n\n## Plugins\n- **[good](y)** 0.3.0\n", "good", "0.3.0"), true, "every bullet starting with the name is read, not only the first");
-  assert.equal(rootReadmeNames("```\n- **[good](y)** 0.3.0\n```\n", "good", "0.3.0"), false, "a bullet inside a fenced code block does not count");
+  // The root README: a table row whose first cell is the name (in code or not), a bullet starting with the name, or a heading that is the name; a version is never required and never counted; another plugin's row, bullet or section does not count.
+  assert.equal(rootReadmeNames("| good | does the thing |\n", "good"), true);
+  assert.equal(rootReadmeNames("|`good`| does the thing |\n", "good"), true, "a code-span name in the first cell");
+  assert.equal(rootReadmeNames("- **[good](plugins/good/README.md)** — does\n  the thing.\n", "good"), true);
+  assert.equal(rootReadmeNames("- good: does the thing\n", "good"), true, "a plain bullet");
+  assert.equal(rootReadmeNames("Intro.\n\n## good\n\nText.\n\n### Install\n", "good"), true, "a heading that is the name");
+  assert.equal(rootReadmeNames("| other | 0.3.0 |\n- **[other](#other)** — good things.\n\n## other\n\ngood 0.3.0.\n", "good"), false, "the name inside another plugin's row, bullet or section does not count");
+  assert.equal(rootReadmeNames("| good-two | x |\n- **[good-two](#good-two)** — x.\n\n## good-two\n", "good"), false, "another plugin whose name starts the same");
+  assert.equal(rootReadmeNames("## Layout\n- the good store\n\n| Plugin |\n|---|\n| good |\n", "good"), true, "every line is read, not only the first candidate");
+  assert.equal(rootReadmeNames("```\n| good | x |\n- **[good](y)** x\n## good\n```\n", "good"), false, "a row, bullet or heading inside a fenced code block does not count");
+  // The whole first cell is compared, not a prefix of it: a longer label is another item's row.
+  for (const row of ["| good archive | x |", "| good.foo | x |", "| good-foo | x |", "| **good** badge | x |", "| [good](y) extra | x |"]) {
+    assert.equal(rootReadmeNames(`${row}\n`, "good"), false, `a longer first cell: ${row}`);
+  }
+  assert.equal(rootReadmeNames("| **[`good`](plugins/good/README.md)** | x |\n", "good"), true, "bold, link and code wrappers are removed in any nesting");
+  // Up to three spaces of indent is still a table row; four is an indented code block.
+  assert.equal(rootReadmeNames("   | good | x |\n", "good"), true, "a row indented by three spaces");
+  assert.equal(rootReadmeNames("  | good | x |\n", "good"), true, "a row indented by two spaces");
+  assert.equal(rootReadmeNames("    | good | x |\n", "good"), false, "four spaces is code, not a row");
   // A version the base had and the head dropped fails.
   manifest(undefined);
   assert.deepEqual(run({ baseVersion: "0.0.1", rootReadme: rootBullet }), { status: "fail", detail: 'manifest version missing at head: the base has 0.0.1; put a "version" back in .claude-plugin/plugin.json' });
@@ -430,7 +437,7 @@ test("gate check: the docs row reads the base commit's manifest and the head com
   seedCanaryPass(b, "good", goodTree(b));
   const r1 = cli(b, ["gate", "check", "--base", "main"], { env: { LEDGER_SESSION_ID: SID } });
   assert.equal(r1.code, 1, r1.out + r1.err);
-  assert.match(r1.out, /good\s+docs\s+fail\s+version 0\.0\.1 → 0\.0\.2: CHANGELOG\.md is missing: add it with a "## \[0\.0\.2\]" \(or "## 0\.0\.2"\) entry; README\.md has no "## Changes in 0\.0\.2" \(or "### 0\.0\.2", "### <date> — 0\.0\.2"\) heading; the repository README\.md does not name 0\.0\.2 for good: put it in the plugin's bullet/);
+  assert.match(r1.out, /good\s+docs\s+fail\s+version 0\.0\.1 → 0\.0\.2: CHANGELOG\.md is missing: add it with a "## \[0\.0\.2\]" \(or "## 0\.0\.2"\) entry; README\.md has no "## Changes in 0\.0\.2" \(or "### 0\.0\.2", "### <date> — 0\.0\.2"\) heading; the repository README\.md does not name good: add its row to the plugin table/);
   // Written in the checkout only: the commit is what is checked, so the row still fails.
   write(good, "CHANGELOG.md", "# Changelog\n\n## [0.0.2]\n\n- the thing\n");
   write(good, "README.md", "# Good\n\n## Changes in 0.0.2\n\nThe thing.\n");

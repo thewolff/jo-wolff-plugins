@@ -106,3 +106,40 @@ line now proves only the source whose whole label it carries:
 a label (`Found items`) is not read as the status. The standing "Delegate the search" rule now says
 the configured sources stay in the parent session while everything else may be delegated.
 
+## 0.7.2 - 2026-11-04
+
+### Changed
+
+The plugin meets ledger 0.3.5's five-row gate. `evals/manifest.json` declares what the two hooks
+can return and four `evals/<x>.scenario.json` prove them (the every-idea nudge and the quiet
+prompt at `ask`; the Stop check blocking a reply with no verdict, with a `session` and a `judge`
+rubric the nightly canary runs under `claude -p` and grades with `claude plugin eval`, and
+letting one with a verdict through); `e2e/live-run.sh` hands off to plugin-kit's scenario
+runner. The state directory (`$XDG_STATE_HOME/ask-graham`, 30 days) is declared and
+`scripts/prune.mjs` prunes it; the skill has a "When this can't run" section.
+
+### Fixed
+
+`scripts/upkeep.mjs` compared `import.meta.url` with `file://${process.argv[1]}` as strings, and
+node resolves the main module through symlinks, so reached through one it did nothing and exited
+0; the guard now compares real paths.
+
+## 0.7.1 - 2026-11-03
+
+### Fixed
+
+The Stop check reads the reply from the Stop payload's `last_assistant_message`, and no longer
+takes Claude Code's telemetry entries as the newest entry of the conversation, which had let a
+reply with no verdict through and blocked one that had a verdict. An unreadable block record now
+lets the stop through. The Claude Code hooks no longer fail silently: a fault still lets the
+prompt or stop through, and now lands in `errors.log` with the hook file and reason and shows one
+warning line.
+
+## 0.7.0 - 2026-10-28
+
+### Added
+
+The structure check. Its reply opens with `**Structure check:**` and then a `**Found:**` or
+`**No similar:**` line, which the Stop check requires in place of a verdict line. The every-idea
+nudge names the structure check.
+

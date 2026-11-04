@@ -1,6 +1,6 @@
 {
   "name": "continuity",
-  "description": "Keep a long session's state across compaction: a PreCompact hook saves branch, diff, touched files and recent asks to a snapshot the post-compaction SessionStart restores, with the rules files on the cwd's walk re-inlined and the newest durable notes listed; a liveness line says when the save last worked; a context-pressure check asks for a handoff once before the window fills; and a handoff skill writes the judgment layer no hook can derive. Ships an OMP adapter that runs the same save and restore around an omp session's compactions.",
+  "description": "Keep a long session's state across compaction: a snapshot saved before it and restored after, a liveness line on every start, and a handoff skill for what no hook can derive.",
   "version": "0.3.1",
   "author": { "name": "Jo Wolff" },
   "license": "MIT",

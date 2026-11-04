@@ -55,11 +55,11 @@
 //              differs from the base commit's, `CHANGELOG.md` has a heading for the new version
 //              (`## [<ver>]` or `## <ver>`) with text under it, README.md has a release heading
 //              for it (`## Changes in <ver>`, `### <ver>`, `### <date> — <ver>`, or the
-//              CHANGELOG shapes) with text under it, and the repository root README names it
-//              (the version in the plugin's top-level bullet, a `Changes in <plugin> <ver>`
-//              line, or a `Changes in <ver>` line inside the root README's `## <plugin>`
-//              section). Skipped when the version did not change. The base manifest and the
-//              root README are read out of the commits (`git show`), never the checkout.
+//              CHANGELOG shapes) with text under it, and the repository root README names the
+//              plugin (a table row or bullet starting with its name, or a `## <plugin>`
+//              heading; the root README is an index and never names a version). Skipped when
+//              the version did not change. The base manifest and the root README are read out
+//              of the commits (`git show`), never the checkout.
 //
 // A plugin with no `hooks/hooks.json` is `skipped` for survives and for evals (unless it has
 // scenarios; the other checks still run). The whole run is capped at 60 s: a check that does not start
@@ -585,12 +585,6 @@ export function retentionCheck(plugin, { db = null, env = process.env, dryRun = 
 
 const escapeRe = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 /**
- * `version` as a whole token: not the tail of `10.3.6` or `v0.3.6`, not the head of `0.3.60`,
- * `0.3.6.1` or the pre-release `0.3.6-rc.1`.
- */
-const versionToken = (version) => `(?<![\\w.])${escapeRe(version)}(?!\\w|\\.\\d|-[0-9A-Za-z])`;
-
-/**
  * A release heading for `version`, any level: `## [<ver>]` and `## <ver>` (Keep a Changelog
  * and the "Changes" sections), `## Changes in <ver>`, and `### <date> — <ver>`. The version is
  * a whole token: brackets balanced, no pre-release suffix.
@@ -643,25 +637,35 @@ export function releaseEntry(md, version) {
 }
 
 /**
- * Whether the repository README names `version` for `pluginName`: in one of the plugin's
- * bullets (a `-` or `*` bullet starting with the name, bold and linked or not, with its indented
- * continuation lines; every such bullet is read), on a `Changes in <name> <ver>` line anywhere,
- * or on a `Changes in <ver>` line under its `## <name>` heading.
+ * Whether the repository README names `pluginName`: a table row (up to three spaces of indent)
+ * whose whole first cell is the name once code spans, bold and a link around it are removed, a
+ * `-` or `*` bullet starting with the name (bold and linked or not), or a heading whose whole
+ * text is the name. The root README is an index: it is never asked for a version.
  */
-export function rootReadmeNames(md, pluginName, version) {
+export function rootReadmeNames(md, pluginName) {
   const name = escapeRe(pluginName);
-  const token = versionToken(version);
-  const lines = linesWithFences(md);
-  const bulletStart = new RegExp(`^[-*][ \\t]+(?:\\*\\*)?\\[?${name}(?![\\w-])`);
-  for (let start = 0; start < lines.length; start++) {
-    if (lines[start].code || !bulletStart.test(lines[start].text)) continue;
-    const bullet = [lines[start].text];
-    for (let j = start + 1; j < lines.length && !lines[j].code && /^[ \t]+\S/.test(lines[j].text); j++) bullet.push(lines[j].text);
-    if (new RegExp(token).test(bullet.join("\n"))) return true;
+  const bullet = new RegExp(`^[-*][ \\t]+(?:\\*\\*)?\\[?\`?${name}\`?(?![\\w-])`);
+  const names = (text) => {
+    if (bullet.test(text)) return true;
+    const cell = /^ {0,3}\|([^|]*)(?:\||$)/.exec(text);
+    return cell !== null && cellLabel(cell[1]) === pluginName;
+  };
+  if (linesWithFences(md).some((l) => !l.code && names(l.text))) return true;
+  return sectionUnder(md, new RegExp(`^#{1,6}[ \\t]+${name}[ \\t]*$`, "i")) !== null;
+}
+
+/** A table cell's text with the bold, link and code-span wrappers around it removed, in any nesting. */
+function cellLabel(cell) {
+  let label = cell.trim();
+  for (let prev = null; prev !== label; ) {
+    prev = label;
+    label = label
+      .replace(/^\*\*(.*)\*\*$/, "$1")
+      .replace(/^\[(.*)\]\([^)]*\)$/, "$1")
+      .replace(/^`(.*)`$/, "$1")
+      .trim();
   }
-  if (new RegExp(`changes in[ \\t]+${name}[ \\t]+${token}`, "i").test(md)) return true;
-  const section = sectionUnder(md, new RegExp(`^#{1,6}[ \\t]+${name}[ \\t]*$`, "i"));
-  return section !== null && new RegExp(`changes in[ \\t]+${token}`, "i").test(section);
+  return label;
 }
 
 /** The `version` string of `<dir>/.claude-plugin/plugin.json`; null when the file, or the field, is not there. */
@@ -699,10 +703,10 @@ export function manifestVersionAt(top, sha, prefix) {
 
 /**
  * Check 6: a version that differs from the base's is written down. `CHANGELOG.md` and README.md
- * each have a release heading for it with text under it, and the repository README names it
- * for the plugin (not asked of a root plugin, whose README is the repository's). Skipped when
- * the version is unchanged, or when neither the base nor the head manifest has one; a version
- * the base had and the head dropped fails.
+ * each have a release heading for it with text under it, and the repository README names the
+ * plugin (not asked of a root plugin, whose README is the repository's). Skipped when the
+ * version is unchanged, or when neither the base nor the head manifest has one; a version the
+ * base had and the head dropped fails.
  */
 export function docsCheck(plugin, { baseVersion = null, rootReadme = null } = {}) {
   const version = manifestVersion(plugin.dir);
@@ -725,8 +729,8 @@ export function docsCheck(plugin, { baseVersion = null, rootReadme = null } = {}
     else found.push(`${file} has its ${version} entry`);
   }
   if (plugin.prefix === "") found.push("a root plugin: README.md is the repository's");
-  else if (rootReadme === null) problems.push(`the repository README.md is not in the commit, so nothing names ${plugin.name} ${version}`);
-  else if (!rootReadmeNames(rootReadme, plugin.name, version)) problems.push(`the repository README.md does not name ${version} for ${plugin.name}: put it in the plugin's bullet, on a "Changes in ${plugin.name} ${version}" line, or on a "Changes in ${version}" line under "## ${plugin.name}" (written "${version}" as a whole token: "v${version}" or "${version}-rc.1" does not count)`);
+  else if (rootReadme === null) problems.push(`the repository README.md is not in the commit, so nothing names ${plugin.name}`);
+  else if (!rootReadmeNames(rootReadme, plugin.name)) problems.push(`the repository README.md does not name ${plugin.name}: add its row to the plugin table ("| ${plugin.name} | …"), or a bullet starting with "${plugin.name}", or a "## ${plugin.name}" heading (the root README never names a version)`);
   else found.push("the repository README names it");
   if (problems.length) return { status: "fail", detail: cut(`${bump}: ${problems.join("; ")}`) };
   return { status: "pass", detail: `${bump}: ${found.join("; ")}` };

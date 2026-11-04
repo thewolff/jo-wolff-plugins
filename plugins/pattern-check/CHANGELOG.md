@@ -50,3 +50,40 @@ four-column (0.1, 0.2) and nine-column (0.3) shapes.
 Receipts already on disk are not invalidated: `record` validates only the rows it is given, and
 the hooks only check that a receipt file exists for the session, so an old receipt still lifts
 the hold. The Stop check is unchanged.
+
+## 0.3.2
+
+### Changed
+
+The plugin meets ledger 0.3.5's five-row gate. `evals/manifest.json` declares what the three
+hooks can return and eight `evals/<x>.scenario.json` prove them (under the threshold, the third
+file held, with a `session` and a `judge` rubric the nightly canary runs under `claude -p` and
+grades with `claude plugin eval`, the receipt lifting the hold, a corrupt config warning and
+letting the call through; a plan refused without a receipt, passed with one, a report passing;
+SessionEnd cleaning its files); `e2e/live-run.sh` hands off to plugin-kit's scenario runner.
+`pattern-check prune [--days 30]` removes receipt copies, stop guards and session files older
+than that (errors.log and `current/` stay) and prints the bytes freed; the state directory, the
+config file and the repository's `.pattern-check/` are declared as state. The skill's "When this
+can't run" section names the scenarios.
+
+## 0.3.0
+
+### Added
+
+The receipt gains the five fail columns (`fails how`, `next step`, `restart-safe`, `bounded`,
+`evidence kept`), and `record` refuses a row whose fail cells are empty, placeholders, or `n/a`
+without a reason; four-column receipts already written still count. The deny and Stop refusal
+texts ask both questions: what exists already, and how does it fail.
+
+### Fixed
+
+Bash write forms are read through a shell lexer, fixing two real commands the redirect matcher
+miscounted. Hook faults are appended to `errors.log` as well as shown, `hooks.json` sets a 5 s
+timeout, and NotebookEdit is counted.
+
+## 0.2.0
+
+### Added
+
+An OMP adapter (`omp/pattern-check-omp.ts`) runs the PreToolUse counter on OMP's `tool_call` and
+the Stop refusal on `session_stop`, through the hooks' own functions and state.
