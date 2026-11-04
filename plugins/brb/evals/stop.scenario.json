@@ -1,7 +1,0 @@
-{
-  "$comment": "Stub for the Stop hook: `ledger gate check` fails until \"stub\": true is removed and the fixture is real. Fill stdin with the input that makes the hook answer `expect`; add \"reason\" for the text a deny or message must carry, \"before\" for earlier inputs, \"setup\" for files and commands, \"after\" for state that must exist or be gone, \"session\" for a live `claude -p` check (and \"judge\" for a rubric). A silent scenario names a \"sibling\" that fires once the event can.",
-  "stub": true,
-  "event": "Stop",
-  "expect": "silent",
-  "stdin": {"session_id":"${SESSION_ID}","transcript_path":"${TRANSCRIPT}","cwd":"${CWD}","hook_event_name":"Stop","stop_hook_active":false}
-}

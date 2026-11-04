@@ -1,0 +1,7 @@
+{
+  "event": "Stop",
+  "expect": "silent",
+  "sibling": "stop-away-asks.scenario.json",
+  "stdin": {"session_id":"${SESSION_ID}","transcript_path":"${TRANSCRIPT}","cwd":"${CWD}","hook_event_name":"Stop","stop_hook_active":false,"last_assistant_message":"## Needs you\n- Pick a cache"},
+  "after": { "absent": ["$XDG_STATE_HOME/brb/${SESSION_ID}"] }
+}

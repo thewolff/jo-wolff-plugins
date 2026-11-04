@@ -75,5 +75,5 @@ Use these only when the marketplace install is not an option. Neither is needed 
 1. `omp plugin uninstall brb@jo-wolff-plugins` for the marketplace install;
    `rm ~/.omp/agent/extensions/brb-omp.ts` for the symlink; or exit the `omp -e` process
    (nothing on disk to undo).
-2. State is under `${XDG_STATE_HOME:-~/.local/state}/brb/`; `node scripts/prune.mjs --all`
-   removes it, or delete the directory.
+2. State is under `${XDG_STATE_HOME:-~/.local/state}/brb/`; delete the directory, or leave it
+   for `node scripts/prune.mjs --days 30` (the nightly canary runs it).

@@ -42,6 +42,10 @@ it, keeping a record of what it did and asked, and a vendored set of engineering
   or stale, repair it with the one command ctx documents, and say so at SessionStart and in a
   macOS popup from a launchd timer; the SessionStart line also says when the timer itself has
   stopped. macOS; Claude Code hooks, plus a CLI that works anywhere.
+- **[brb](#brb)** — type `brb` and walk away: the agent keeps working, every ask it would
+  have stopped for waits in a digest, and only a broken main, data loss, a security finding,
+  spend near a ceiling or a blocker on everything comes through at once; `back` prints the
+  digest. Claude Code hooks plus an OMP extension. Changes in brb 0.1.0: first release.
 
 output-types delivers text and does not read what the agent sends back; see its *delivers, does
 not enforce* note. i-have-audhd delivers its rules and checks every finished message, warning by
@@ -66,6 +70,7 @@ the receipt.
 /plugin install as2-skills@jo-wolff-plugins
 /plugin install plugin-kit@jo-wolff-plugins
 /plugin install ctx-watch@jo-wolff-plugins
+/plugin install brb@jo-wolff-plugins
 ```
 
 On OMP, from a shell:
@@ -81,6 +86,7 @@ omp plugin install pattern-check@jo-wolff-plugins
 omp plugin install as2-skills@jo-wolff-plugins
 omp plugin install plugin-kit@jo-wolff-plugins
 omp plugin install ctx-watch@jo-wolff-plugins
+omp plugin install brb@jo-wolff-plugins
 ```
 
 Inside a running OMP session the commands are `/marketplace add` and `/marketplace install`, with
@@ -88,7 +94,8 @@ the same arguments. `/plugin install` inside OMP installs nothing. On OMP output
 skill only; its hooks do not run there. i-have-audhd and paired-coding install OMP extensions
 that run their hooks, and ask-graham installs its prompt nudge (see each section). plugin-kit
 is a skill and a script, so it works on both. ctx-watch's SessionStart line is Claude Code
-only; its skill, CLI and launchd timer work on both. ledger is Claude Code only.
+only; its skill, CLI and launchd timer work on both. ledger is Claude Code only. brb installs an
+OMP extension that runs its hooks.
 
 To update, update each harness separately. On OMP, refresh the marketplace first, because
 `omp plugin upgrade` installs the version in OMP's cached copy of it:
@@ -1026,6 +1033,38 @@ Then, once, from your own Terminal: `node <plugin dir>/scripts/ctx-watch.mjs ins
 
 The tests run with `node --test` from inside `plugins/ctx-watch/`. The ctx captures in
 `test/fixtures/` are re-made by `test/fixtures/capture.sh`, by hand.
+
+## brb
+
+Type `brb` (a note may follow) as the whole prompt and walk away. The prompt is blocked before
+it reaches the model, a hold is written for the session, and from then on every prompt carries
+an away instruction: keep working, put every ask under `## Needs you`, start a line with
+`on fire:` only for a broken main branch, data loss, a security finding, spend near a ceiling
+or a blocker on everything, and end with a literal `idle: <why>` line when nothing is runnable.
+The Stop hook copies each new Needs-you line into a digest, surfaces each on-fire line at once
+(a `systemMessage`, an OSC 9 terminal notification, a best-effort macOS notification) without
+holding it, and sends the agent back to work with `decision: "block"` until an `idle:` line,
+a continuation that brings nothing new, or two stops with no tool call between them. `pending`
+prints the digest; `back` prints it, archives it and ends the hold. The on-fire kinds mirror
+agent-system 2.0's surface. Built on plugin-kit 0.2.1; Node 22.13 or later; Claude Code hooks
+plus an OMP extension that runs the same hooks. The exact instruction text, the three release
+rules, the config (`onFireCap`, `idleStops`) and the failure table are in
+[`plugins/brb/README.md`](plugins/brb/README.md).
+
+### Install
+
+```
+/plugin marketplace add thewolff/jo-wolff-plugins
+/plugin install brb@jo-wolff-plugins
+```
+
+On OMP: `omp plugin install brb@jo-wolff-plugins`;
+[`plugins/brb/omp/REGISTRATION.md`](plugins/brb/omp/REGISTRATION.md) has the fallbacks.
+
+### Developing brb
+
+The tests run with `node --test` from inside `plugins/brb/`; `bash e2e/live-run.sh --no-live`
+replays the scenarios offline.
 
 ## License
 

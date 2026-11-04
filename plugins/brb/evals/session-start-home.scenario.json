@@ -1,0 +1,6 @@
+{
+  "event": "SessionStart",
+  "expect": "silent",
+  "sibling": "session-start-away.scenario.json",
+  "stdin": {"session_id":"${SESSION_ID}","transcript_path":"${TRANSCRIPT}","cwd":"${CWD}","hook_event_name":"SessionStart","source":"startup"}
+}
