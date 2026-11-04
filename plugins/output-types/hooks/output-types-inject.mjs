@@ -25,58 +25,110 @@
 // FAIL-OPEN, BUT NOT FAIL-SILENT
 //   Every error path exits 0 — a broken hook must never break somebody's session. But a hook
 //   that fails silently is indistinguishable from a hook that is working, which is the exact
-//   confusion this contract exists to prevent. So a failure emits one short line saying the core
-//   did not load. It costs nothing when things work.
+//   confusion this contract exists to prevent. So a failure emits one short warning line (to the
+//   model and to the person) and appends one line naming this file and the reason to
+//   ${XDG_STATE_HOME:-~/.local/state}/output-types/errors.log. When that log cannot be written,
+//   the warning carries the reason itself. It costs nothing when things work.
+//
+// NEVER WAITS ON STDIN
+//   The payload is unused. Stdin is drained so the pipe closes, but only for STDIN_GRACE_MS: a
+//   caller that never closes the pipe still gets the core, inside the 5-second budget.
 //
 // Contract: read JSON on stdin (SessionStart payload; unused, but consumed so the pipe closes).
 // Emit hookSpecificOutput.additionalContext, exit 0.
 
-import { readFileSync } from "node:fs";
+import { appendFileSync, mkdirSync, readFileSync } from "node:fs";
+import { homedir } from "node:os";
+import { join } from "node:path";
 import { fileURLToPath } from "node:url";
+
+const HOOK_FILE = "hooks/output-types-inject.mjs";
+const STDIN_GRACE_MS = 1000;
 
 // Resolved from this file, never from a working directory or an assumed layout.
 const CONTRACT_PATH = fileURLToPath(new URL("../skills/output-types/reference.md", import.meta.url));
 
-// Line-anchored: the contract's own prose names the markers, and must not match.
-const START = "\n<!-- inject:start -->\n";
-const END = "\n<!-- inject:end -->";
-
-// The only text this file owns.
-const POINTER =
-  "\nThe rest of the contract (receipts, the seven rules, what unlabeled prose still owes, degraded " +
-  "reports, commands handed to a person) is in the `output-types` skill. Load it before writing " +
-  "anything someone will act on.";
-
-function emit(text) {
-  process.stdout.write(
-    JSON.stringify({
-      hookSpecificOutput: { hookEventName: "SessionStart", additionalContext: text },
-    }),
-  );
-  process.exit(0);
+// Used when lib/core.mjs cannot load, or loaded but broke (an export missing or throwing), so the
+// lib's logger and replies cannot be trusted. Same log path and line format as lib/core.mjs
+// logError; kept to these few lines on purpose.
+const WARN_NO_LIB = "The output-types core could not load this session.";
+function noLibReply(reason) {
+  let logged = null;
+  try {
+    const xdg = process.env.XDG_STATE_HOME?.trim() ? process.env.XDG_STATE_HOME : join(process.env.HOME || homedir(), ".local", "state");
+    const dir = join(xdg, "output-types");
+    mkdirSync(dir, { recursive: true });
+    appendFileSync(join(dir, "errors.log"), `${new Date().toISOString()} ${HOOK_FILE} ${reason}\n`);
+    logged = join(dir, "errors.log");
+  } catch {
+    /* nowhere to log; the warning carries the reason */
+  }
+  const line = logged ? `${WARN_NO_LIB} Reason logged to ${logged}.` : `${WARN_NO_LIB} Reason: ${reason}`;
+  return { systemMessage: line, hookSpecificOutput: { hookEventName: "SessionStart", additionalContext: line } };
 }
 
-try {
-  try {
-    readFileSync(0, "utf8"); // drain stdin; the payload is not needed
-  } catch {
-    /* no stdin is fine */
-  }
+function drainStdin(ms) {
+  return new Promise((resolve) => {
+    const stdin = process.stdin;
+    const done = () => {
+      clearTimeout(timer);
+      stdin.removeAllListeners("data");
+      stdin.destroy();
+      resolve();
+    };
+    const timer = setTimeout(done, ms);
+    stdin.on("data", () => {});
+    stdin.once("end", done);
+    stdin.once("error", done);
+  });
+}
 
-  if (String(process.env.OUTPUT_TYPES_INJECT || "").toLowerCase() === "off") process.exit(0);
+function finish(reply) {
+  if (!reply) process.exit(0);
+  process.stdout.on("error", () => process.exit(0));
+  process.stdout.write(JSON.stringify(reply), () => process.exit(0));
+}
 
-  const md = readFileSync(CONTRACT_PATH, "utf8");
-  const start = md.indexOf(START);
-  const end = start === -1 ? -1 : md.indexOf(END, start + START.length);
-  if (start === -1 || end === -1) {
-    emit("The output-types core could not load: its markers are missing from the contract file.");
-  }
-  emit(md.slice(start + START.length, end).trim() + POINTER);
-} catch {
-  // Fail open, and say so — a silent failure reads exactly like success.
+// The off-switch is read here, before the lib loads, so `off` means no output even on a broken install.
+function isOff() {
+  return String(process.env.OUTPUT_TYPES_INJECT || "").toLowerCase() === "off";
+}
+
+const oneLine = (err) => String(err?.message ?? err).replace(/\s+/g, " ").trim();
+
+async function main() {
+  await drainStdin(STDIN_GRACE_MS);
+  if (isOff()) return finish(null);
+  // Imported here, not at the top, so a broken or partial install still exits 0 and says so.
+  let lib;
   try {
-    emit("The output-types core could not load this session.");
+    lib = await import("../lib/core.mjs");
+  } catch (err) {
+    return finish(noLibReply(`cannot load lib/core.mjs: ${oneLine(err)}`));
+  }
+  try {
+    const { WARN_LOAD, WARN_MARKERS, extractCore, failureReply, logError, successReply } = lib;
+    const fail = (warning, reason) => finish(failureReply(warning, reason, logError(HOOK_FILE, reason)));
+    let md;
+    try {
+      md = readFileSync(CONTRACT_PATH, "utf8");
+    } catch (err) {
+      return fail(WARN_LOAD, `cannot read ${CONTRACT_PATH}: ${err?.message ?? err}`);
+    }
+    const core = extractCore(md);
+    if (core === null) return fail(WARN_MARKERS, `inject markers missing from ${CONTRACT_PATH}`);
+    finish(successReply(core));
+  } catch (err) {
+    // Fail open, and say so — a silent failure reads exactly like success. The lib may be the
+    // thing that broke (an export missing or throwing), so report through the independent path.
+    finish(noLibReply(`unexpected: ${oneLine(err)}`));
+  }
+}
+
+main().catch((err) => {
+  try {
+    finish(noLibReply(`unexpected: ${oneLine(err)}`));
   } catch {
     process.exit(0);
   }
-}
+});
