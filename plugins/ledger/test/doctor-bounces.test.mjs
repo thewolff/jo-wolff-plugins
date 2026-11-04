@@ -139,7 +139,7 @@ test("(g) doctor on a store at an older schema version: fail, exit 1, and the st
   db.close();
   const r = doctor(b);
   assert.equal(r.code, 1, r.out);
-  assert.match(r.out, /^fail schema: version 5, this plugin expects 7$/m);
+  assert.match(r.out, /^fail schema: version 5, this plugin expects 8$/m);
   const raw = new DatabaseSync(b.dbPath);
   assert.equal(storeVersion(raw), 5, "doctor never writes");
   raw.close();
@@ -191,7 +191,7 @@ test("(i) inject.doctor false: no doctor line", () => {
   assert.ok(!ctx.includes("doctor reports"), ctx);
 });
 
-test("(j) a version 5 store migrates to 7 keeping its rows; the new tables are empty and the judge words move", () => {
+test("(j) a version 5 store migrates to 8 keeping its rows; the new tables are empty and the judge words move", () => {
   const b = sandbox();
   const p = join(b.root, "v5.db");
   const old = new DatabaseSync(p);
@@ -204,13 +204,16 @@ test("(j) a version 5 store migrates to 7 keeping its rows; the new tables are e
   old.exec("INSERT INTO cc_meta VALUES ('judge:def', 'maybe')");
   old.close();
   const { db } = open(p);
-  assert.equal(storeVersion(db), 7);
+  assert.equal(storeVersion(db), 8);
   // 7: the judge's words moved to cc_judge_cache (a passage is "not kept" for them); a value that
   // is not yes|no is dropped rather than failing the migration.
   assert.deepEqual(db.prepare("SELECT key, answer, passage FROM cc_judge_cache ORDER BY key").all().map((r) => ({ ...r })), [{ key: "judge:abc", answer: "yes", passage: null }]);
   assert.equal(count(db, "cc_meta", "key LIKE 'judge:%'"), 0);
   assert.equal(count(db, "cc_canary_runs"), 0);
   assert.equal(count(db, "cc_gate_checks"), 0);
+  // 8: the canary rows gained tree_sha and writes; the prune table exists and is empty.
+  assert.deepEqual(db.prepare("PRAGMA table_info(cc_canary_runs)").all().map((c) => c.name).filter((n) => n === "tree_sha" || n === "writes"), ["tree_sha", "writes"]);
+  assert.equal(count(db, "cc_canary_prunes"), 0);
   assert.deepEqual(row(db, "SELECT id, body FROM cc_notes"), { id: "nt-1", body: "kept" });
   assert.equal(row(db, "SELECT last_block_rule FROM cc_sessions").last_block_rule, "stopAskRule");
   assert.equal(count(db, "cc_bounces"), 0);

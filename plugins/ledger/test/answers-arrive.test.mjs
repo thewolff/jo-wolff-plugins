@@ -99,7 +99,7 @@ test("migration 5: a store at version 4 keeps its rows and gains the answer sess
   old.exec("INSERT INTO cc_sessions (id, cwd, started_at) VALUES ('s-1', '/w', '2026-01-01T00:00:00.000Z')");
   old.close();
   const { db } = open(p);
-  assert.equal(storeVersion(db), 7);
+  assert.equal(storeVersion(db), 8);
   assert.deepEqual({ ...db.prepare("SELECT id, word, session_id FROM cc_answers").get() }, { id: "an-1", word: "yes", session_id: null });
   assert.deepEqual({ ...db.prepare("SELECT id, last_prompt_seen_at FROM cc_sessions").get() }, { id: "s-1", last_prompt_seen_at: null });
   assert.deepEqual(db.prepare("PRAGMA foreign_key_check").all(), []);

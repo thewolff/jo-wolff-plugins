@@ -4,11 +4,12 @@
 
 import test from "node:test";
 import assert from "node:assert/strict";
-import { chmodSync, existsSync, mkdirSync, readFileSync, utimesSync, writeFileSync } from "node:fs";
+import { spawnSync } from "node:child_process";
+import { chmodSync, existsSync, mkdirSync, readFileSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { sandbox, cli, hook, openDb, row, count } from "./helpers.mjs";
 import { openStore } from "../lib/store.mjs";
-import { runCanary, lineDiff, cut, listPlugins, prune, install as canaryInstall, gradeRun, parseCanaryArgs, plistText, childEnv } from "../lib/canary.mjs";
+import { runCanary, lineDiff, cut, listPlugins, prune, install as canaryInstall, gradeRun, parseCanaryArgs, plistText, childEnv, listPrunes } from "../lib/canary.mjs";
 import { gather, mechanicalGrade, overlayJudge, render, runReport, parseReportArgs, judgePassage } from "../lib/report.mjs";
 import { runDigest, sessionStartLines, body, KEYS, install as digestInstall, parseDigestArgs, doctorCheck } from "../lib/digest.mjs";
 import { recordBounce } from "../lib/bounces.mjs";
@@ -84,8 +85,12 @@ test("canary run: pass, fail, exit 75, timeout, no script, not a plugin; rows, t
   assert.equal(by.epsilon.status, "unavailable");
   assert.equal(by.epsilon.note, "no e2e/live-run.sh");
   assert.equal(by.epsilon.transcript_path, null);
-  assert.match(r.text, /^alpha\s+pass\s+\d+\.\ds\s+#\d+\s+transcript \S+\.jsonl; output \S+\.out\.txt$/m);
-  assert.match(r.text, /^beta\s+fail\s+\d+\.\ds\s+#\d+\s+exit 3; no transcript from the script; output /m);
+  assert.match(r.text, /^alpha\s+pass\s+\d+\.\ds\s+#\d+\s+uncommitted tree; transcript \S+\.jsonl; output \S+\.out\.txt$/m, "a fake checkout is no repository: the row says its tree is uncommitted");
+  assert.match(r.text, /^beta\s+fail\s+\d+\.\ds\s+#\d+\s+exit 3; no transcript from the script; uncommitted tree; output /m);
+  assert.equal(by.alpha.tree_sha, null);
+  assert.equal(by.alpha.writes, "[]", "no `wrote:` lines: an empty list, not NULL");
+  assert.equal(by.epsilon.writes, null, "a script that never ran observed nothing");
+  assert.deepEqual(r.prunes, [], "no plugin.json declares a prune");
   assert.match(r.text, /^zeta\s+unavailable\s+not a plugin under /m);
   const db = openDb(b);
   assert.equal(count(db, "cc_canary_runs"), 5);
@@ -112,7 +117,7 @@ test("canary run: pass, fail, exit 75, timeout, no script, not a plugin; rows, t
   assert.match(r4.text, /no plugins\/ directory under/);
 });
 
-test("canary env: the caller's LEDGER_* keys never reach live-run.sh (a LEDGER_DB would outrank the script's throwaway config and point the seeded question at the real store); CANARY_* and the rest do; both scripts unset them before setting their own", async () => {
+test("canary env: the caller's LEDGER_* keys never reach live-run.sh (a LEDGER_DB would outrank the script's throwaway config and point the seeded question at the real store); CANARY_* and the rest do; the runner drops LEDGER_* and the plugin's own keys again before any hook or session, so a by-hand run is as isolated", async () => {
   const b = sandbox();
   const root = repo(b, { alpha: "#!/bin/bash\nenv | grep -E '^(LEDGER_|CANARY_|KEEP_ME)' | sort\nexit 0\n" });
   const env = { ...b.env, LEDGER_DB: "/tmp/real-store.sqlite", LEDGER_CONFIG: "/tmp/real-config.json", LEDGER_ENABLED: "false", LEDGER_JUDGE_BIN: "/x", KEEP_ME: "yes" };
@@ -125,13 +130,99 @@ test("canary env: the caller's LEDGER_* keys never reach live-run.sh (a LEDGER_D
   assert.match(seen, /^CANARY_TIMEOUT_S=\d+$/m);
   assert.match(seen, /^KEEP_ME=yes$/m);
   assert.deepEqual(Object.keys(childEnv({ LEDGER_DB: "x", LEDGER_: "y", PATH: "p", LEDGERX: "z" })), ["PATH", "LEDGERX"]);
-  // The scripts protect themselves when run by hand: the unset precedes their own exports.
+  // The shell wrappers delegate to the kit's runner, whose sandbox scrubs the keys itself (a
+  // by-hand `e2e/live-run.sh` is as isolated as the canary's): both wrappers exec it, and
+  // scrubEnv drops LEDGER_* and <PLUGIN>_* while keeping the rest.
+  const { scrubEnv } = await import("../../plugin-kit/lib/live-run.mjs");
+  assert.deepEqual(Object.keys(scrubEnv({ LEDGER_DB: "x", LEDGER_CONFIG: "y", LEDGER_ENABLED: "0", ALPHA_THING: "z", ALPHAX: "k", PATH: "p" }, "alpha")), ["ALPHAX", "PATH"]);
+  assert.deepEqual(Object.keys(scrubEnv({ MY_PLUGIN_TOKEN: "t", PATH: "p" }, "my-plugin")), ["PATH"]);
   for (const script of [new URL("../e2e/live-run.sh", import.meta.url), new URL("../../plugin-kit/templates/e2e/live-run.sh", import.meta.url)]) {
     const text = readFileSync(script, "utf8");
-    const unset = text.indexOf("unset LEDGER_DB LEDGER_CONFIG LEDGER_ENABLED");
-    const own = text.search(/^export (LEDGER_CONFIG|XDG_STATE_HOME)=/m);
-    assert.ok(unset > 0 && own > unset, `${script.pathname}: unset at ${unset}, own export at ${own}`);
+    assert.match(text, /^exec node "\$HELPER" --plugin-dir "\$PLUGIN_DIR" "\$@"$/m, `${script.pathname}: the wrapper execs the runner`);
+    assert.doesNotMatch(text, /^export LEDGER_/m, `${script.pathname}: no LEDGER_* export of its own`);
   }
+});
+
+test("canary tree_sha and writes: a committed plugin tree is certified by its sha; a dirty one is NULL; the script's `wrote:` lines land as a sorted JSON list; status renders both", async () => {
+  const b = sandbox();
+  const root = repo(b, { alpha: "#!/bin/bash\necho 'wrote: $XDG_STATE_HOME/alpha/errors.log'\necho 'wrote: $XDG_DATA_HOME/alpha/store'\necho 'wrote: $XDG_STATE_HOME/alpha/errors.log'\necho 'wrote:' \necho 'not a write line'\nexit 0\n" });
+  const git = (...args) => {
+    const g = spawnSync("git", args, { cwd: root, encoding: "utf8", env: { ...b.env, GIT_AUTHOR_NAME: "t", GIT_AUTHOR_EMAIL: "t@t", GIT_COMMITTER_NAME: "t", GIT_COMMITTER_EMAIL: "t@t" } });
+    assert.equal(g.status, 0, g.stderr);
+    return g.stdout.trim();
+  };
+  git("init", "-q");
+  git("add", "-A");
+  git("commit", "-qm", "plugins");
+  const tree = git("rev-parse", "HEAD:plugins/alpha");
+  assert.match(tree, /^[0-9a-f]{40}$/);
+  const r = await withStore(b, (s) => runCanary({ db: s.db, dbPath: s.dbPath, env: b.env, repo: root, claudePresent: true }));
+  assert.equal(r.code, 0, r.text);
+  assert.equal(r.rows[0].tree_sha, tree);
+  assert.equal(r.rows[0].writes, JSON.stringify(["$XDG_DATA_HOME/alpha/store", "$XDG_STATE_HOME/alpha/errors.log"]), "deduplicated, sorted; a bare `wrote:` is no path");
+  assert.match(r.text, new RegExp(`^alpha\\s+pass\\s+\\d+\\.\\ds\\s+#1\\s+no transcript from the script; tree ${tree.slice(0, 8)}; output`, "m"));
+  // An uncommitted change under the plugin: the run certifies nothing.
+  writeFileSync(join(root, "plugins", "alpha", "README.md"), "edited\n");
+  const r2 = await withStore(b, (s) => runCanary({ db: s.db, dbPath: s.dbPath, env: b.env, repo: root, claudePresent: true }));
+  assert.equal(r2.rows[0].tree_sha, null);
+  assert.match(r2.text, /^alpha\s+pass\s+\d+\.\ds\s+#2\s+no transcript from the script; uncommitted tree; /m);
+  // A change elsewhere in the checkout leaves alpha's tree certified (the untracked README under
+  // alpha was the dirt; it goes).
+  writeFileSync(join(root, "README.md"), "elsewhere\n");
+  rmSync(join(root, "plugins", "alpha", "README.md"));
+  const r3 = await withStore(b, (s) => runCanary({ db: s.db, dbPath: s.dbPath, env: b.env, repo: root, claudePresent: true }));
+  assert.equal(r3.rows[0].tree_sha, tree);
+  // `canary status`: the newest row per plugin with its tree or the lack of one, and the last pass.
+  const status = cli(b, ["canary", "status"]);
+  assert.equal(status.code, 0, status.err);
+  assert.match(status.out, new RegExp(`^alpha\\s+last pass\\s+#3 \\S+ tree ${tree.slice(0, 8)}; last pass #3 `, "m"));
+  assert.equal(cli(sandbox(), ["canary", "status"]).out.trim(), "no canary runs recorded");
+});
+
+test("canary prunes: every declared `state[].prune` runs after the live runs with CLAUDE_PLUGIN_ROOT set, one cc_canary_prunes row each (pass with the bytes freed, fail with the exit, 75 unavailable, a missing binary unavailable); --no-prune skips them; status shows the last per path", async () => {
+  const b = sandbox();
+  const root = repo(b, { alpha: "#!/bin/bash\nexit 0\n", beta: "#!/bin/bash\nexit 0\n", gamma: "#!/bin/bash\nexit 0\n" });
+  const declare = (name, state) => {
+    mkdirSync(join(root, "plugins", name, ".claude-plugin"), { recursive: true });
+    writeFileSync(join(root, "plugins", name, ".claude-plugin", "plugin.json"), JSON.stringify({ name, version: "0.0.1", state }));
+  };
+  declare("alpha", [
+    { path: "$XDG_STATE_HOME/alpha/runs", retentionDays: 7, prune: 'test -n "$CLAUDE_PLUGIN_ROOT" && echo "pruned: 2 file(s), 1234 bytes freed"' },
+    { path: "$XDG_STATE_HOME/alpha/errors.log", kind: "file", retentionDays: null, prune: null },
+    { path: "$XDG_CACHE_HOME/alpha", retentionDays: 1, prune: "echo nope >&2; exit 4" },
+  ]);
+  declare("beta", [{ path: "$XDG_STATE_HOME/beta", retentionDays: 3, prune: "echo 'no store to prune'; exit 75" }]);
+  declare("gamma", [{ path: "$XDG_STATE_HOME/gamma", retentionDays: 3, prune: "/nonexistent/prune-binary --days 3" }]);
+  const r = await withStore(b, (s) => runCanary({ db: s.db, dbPath: s.dbPath, env: b.env, repo: root, claudePresent: true }));
+  assert.equal(r.code, 0, r.text);
+  assert.deepEqual(
+    r.prunes.map((p) => [p.plugin, p.path, p.status, p.exit_code, p.bytes_freed, p.note]),
+    [
+      ["alpha", "$XDG_STATE_HOME/alpha/runs", "pass", 0, 1234, "pruned: 2 file(s), 1234 bytes freed"],
+      ["alpha", "$XDG_CACHE_HOME/alpha", "fail", 4, null, "exit 4: nope"],
+      ["beta", "$XDG_STATE_HOME/beta", "unavailable", 75, null, "no store to prune"],
+      ["gamma", "$XDG_STATE_HOME/gamma", "fail", 127, null, "exit 127: /bin/sh: /nonexistent/prune-binary: No such file or directory"],
+    ],
+  );
+  assert.ok(r.prunes.every((p) => Number.isInteger(p.id)), "each prune is a row");
+  assert.match(r.text, /^alpha\s+prune pass\s+1234 bytes freed\s+#1\s+\$XDG_STATE_HOME\/alpha\/runs; pruned: 2 file\(s\), 1234 bytes freed$/m);
+  assert.match(r.text, /^alpha\s+prune fail\s+#2\s+\$XDG_CACHE_HOME\/alpha; exit 4: nope$/m);
+  const db = openDb(b);
+  assert.equal(count(db, "cc_canary_prunes"), 4);
+  assert.equal(count(db, "cc_canary_runs"), 3);
+  db.close();
+  // --no-prune: live runs only, no new prune rows.
+  assert.deepEqual(parseCanaryArgs(["run", "--no-prune"]), { action: "run", repo: null, plugins: null, timeoutS: 600, prunes: false });
+  const r2 = await withStore(b, (s) => runCanary({ db: s.db, dbPath: s.dbPath, env: b.env, repo: root, claudePresent: true, prunes: false }));
+  assert.deepEqual(r2.prunes, []);
+  const db2 = openDb(b);
+  assert.equal(count(db2, "cc_canary_prunes"), 4);
+  db2.close();
+  // status: the last prune per (plugin, path), without a row id, with its time.
+  const status = cli(b, ["canary", "status"]);
+  assert.match(status.out, /^alpha\s+prune pass\s+1234 bytes freed\s+\$XDG_STATE_HOME\/alpha\/runs; pruned: 2 file\(s\), 1234 bytes freed at \d{4}-/m);
+  assert.match(status.out, /^gamma\s+prune fail\s+\$XDG_STATE_HOME\/gamma; exit 127: /m);
+  assert.deepEqual(listPrunes(openDb(b), { plugin: "beta" }).map((p) => [p.plugin, p.status]), [["beta", "unavailable"]]);
 });
 
 test("canary: the canary directory unwritable → row inserted with transcript_path and output_path NULL and the errors in note; a read-only db → exit 2 naming the files", { skip: process.getuid?.() === 0 ? "root ignores modes" : false }, async () => {
@@ -176,7 +267,7 @@ test("canary grade, runs, prune: a grade needs a known id and one of three words
   const past = new Date(Date.now() - 40 * D);
   utimesSync(old, past, past);
   const p = prune({ env: b.env, days: 30 });
-  assert.deepEqual(p, { removed: 1, kept: 1 });
+  assert.deepEqual(p, { removed: 1, kept: 1, bytes: 1 }, "the bytes freed are counted for the prune row");
   assert.equal(existsSync(old), false);
   assert.equal(existsSync(r.rows[0].output_path), true);
   const db = openDb(b);
@@ -230,7 +321,7 @@ test("canary install: writes the plist under <state>/launchd, lints it, prints t
   assert.equal(real.code, 0, real.text);
   // Usage.
   assert.match(parseCanaryArgs(["install", "--hour", "25"]).error, /^usage: canary/);
-  assert.deepEqual(parseCanaryArgs(["run", "--plugins", "a,b", "--timeout", "30"]), { action: "run", repo: null, plugins: ["a", "b"], timeoutS: 30 });
+  assert.deepEqual(parseCanaryArgs(["run", "--plugins", "a,b", "--timeout", "30"]), { action: "run", repo: null, plugins: ["a", "b"], timeoutS: 30, prunes: true });
   assert.match(parseCanaryArgs(["run", "--timeout", "0"]).error, /^usage/);
   assert.match(parseCanaryArgs(["bogus"]).error, /^usage/);
   assert.match(plistText({ cliPath: "/c", repo: "/r", logDir: "/l" }), /<string>\/r<\/string>/);

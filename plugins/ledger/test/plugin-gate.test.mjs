@@ -8,7 +8,7 @@ import { spawnSync } from "node:child_process";
 import { chmodSync, existsSync, mkdirSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { sandbox, cli, hook, openDb } from "./helpers.mjs";
-import { checkPlugin, fixturesWithoutUnavailable, hookCommands, reasonsWithoutCommand, treePlugins, treeSha, snapshotTree, textsWithoutWhenCant, changedPlugins, CHECKS, FAULT_INPUTS } from "../lib/plugin-gate.mjs";
+import { checkPlugin, evalsCheck, retentionCheck, fixturesWithoutUnavailable, hookCommands, reasonsWithoutCommand, treePlugins, treeSha, snapshotTree, textsWithoutWhenCant, changedPlugins, CHECKS, FAULT_INPUTS } from "../lib/plugin-gate.mjs";
 
 const SID = "s-gate";
 
@@ -54,18 +54,42 @@ process.stdin.on("end", () => {
 });
 `;
 const hooksJson = (name, file) => JSON.stringify({ hooks: { PreToolUse: [{ matcher: "Bash", hooks: [{ type: "command", command: "node", args: [`\${CLAUDE_PLUGIN_ROOT}/hooks/${file}`], timeout: 5 }] }] } });
+// The declared outcomes of GOOD_HOOK: a well-formed input is silent, a fault is a systemMessage.
+const GOOD_MANIFEST = JSON.stringify({ events: { PreToolUse: ["silent", "systemMessage"] } });
+const GOOD_SCENARIOS = {
+  "evals/pre-tool-use-ok.scenario.json": JSON.stringify({ event: "PreToolUse", expect: "silent", sibling: "pre-tool-use-fault.scenario.json", stdin: { hook_event_name: "PreToolUse", tool_name: "Bash", tool_input: { command: "ls" } } }),
+  "evals/pre-tool-use-fault.scenario.json": JSON.stringify({ event: "PreToolUse", expect: "systemMessage", stdin: "{not json" }),
+};
+// The paths GOOD_HOOK writes, kept by design.
+const GOOD_STATE = [
+  { path: "$XDG_STATE_HOME/good/errors.log", kind: "file", retentionDays: null, prune: null },
+  { path: "$XDG_DATA_HOME/good/store", retentionDays: null, prune: null },
+];
+const GOOD_SKILL = "# Good\n\nDo the thing.\n\n## When this can't run\n\nSay so; evals/pre-tool-use-fault.scenario.json proves the message.\n";
 
+/** Seed a canary pass row certifying `tree` for `plugin` at `at` (the row `evals` wants); returns its id. */
+function seedCanaryPass(b, plugin, tree, { at = new Date().toISOString(), status = "pass", writes = null, note = null } = {}) {
+  const db = openDb(b);
+  try {
+    return Number(db.prepare("INSERT INTO cc_canary_runs (plugin, at, status, exit_code, duration_ms, tree_sha, writes, note) VALUES (?, ?, ?, 0, 1, ?, ?, ?)").run(plugin, at, status, tree, writes, note).lastInsertRowid);
+  } finally {
+    db.close();
+  }
+}
 /** A repository with plugins/good (meets the bar) and plugins/bad (fails every check), committed on main, then a change on `feat`. */
 function pluginRepo({ changeBad = true, changeGood = true } = {}) {
   const b = sandbox();
   git(b, "init", "-q", "-b", "main");
   const good = join(b.work, "plugins", "good");
+  write(good, ".claude-plugin/plugin.json", JSON.stringify({ name: "good", version: "0.0.1", state: GOOD_STATE }));
   write(good, "hooks/hooks.json", hooksJson("good", "good.mjs"));
   write(good, "hooks/good.mjs", GOOD_HOOK);
-  write(good, "skills/good/SKILL.md", "# Good\n\nDo the thing.\n\n## When this can't run\n\nSay so.\n");
+  write(good, "skills/good/SKILL.md", GOOD_SKILL);
   write(good, "lib/rules.mjs", "export const deny = () => ({ permissionDecision: \"deny\", permissionDecisionReason: `good: run \\`good fix\\` first` });\n");
   write(good, "test/fixtures/lab.txt", "ok\n");
   write(good, "test/fixtures/lab.unavailable.txt", "lab: unavailable\n");
+  write(good, "evals/manifest.json", GOOD_MANIFEST);
+  for (const [rel, text] of Object.entries(GOOD_SCENARIOS)) write(good, rel, text);
   const bad = join(b.work, "plugins", "bad");
   write(bad, "hooks/hooks.json", hooksJson("bad", "bad.mjs"));
   write(bad, "hooks/bad.mjs", BAD_HOOK);
@@ -173,17 +197,36 @@ test("hookCommands: every command of hooks.json with ${CLAUDE_PLUGIN_ROOT} resol
   assert.equal(hookCommands(join(b.work, "plugins", "docs-only")), null);
 });
 
-test("checkPlugin: a plugin that meets the bar passes all three checks", () => {
+/** The committed tree of plugins/good in HEAD, and a db handle for checkPlugin. */
+function goodTree(b) {
+  return git(b, "rev-parse", "HEAD:plugins/good");
+}
+function withDb(b, fn) {
+  const db = openDb(b);
+  try {
+    return fn(db);
+  } finally {
+    db.close();
+  }
+}
+
+test("checkPlugin: a plugin that meets the bar passes all five checks once a canary pass certifies its committed tree", () => {
   const b = pluginRepo();
-  const rows = checkPlugin({ name: "good", dir: join(b.work, "plugins", "good"), prefix: "plugins/good/" });
+  const tree = goodTree(b);
+  const id = seedCanaryPass(b, "good", tree, { writes: JSON.stringify(["$XDG_STATE_HOME/good/errors.log", "$XDG_DATA_HOME/good/store"]) });
+  const rows = withDb(b, (db) => checkPlugin({ name: "good", dir: join(b.work, "plugins", "good"), prefix: "plugins/good/" }, { db, tree }));
   assert.deepEqual(
     rows.map((r) => [r.name, r.status]),
     CHECKS.map((c) => [c, "pass"]),
+    JSON.stringify(rows),
   );
   assert.equal(rows[0].detail, `1 hook(s) × ${FAULT_INPUTS.length} fault inputs`);
+  assert.equal(rows[2].detail, "every skill and agent text has the section and names a scenario; every deny reason names a command");
+  assert.equal(rows[3].detail, `2 scenario(s) cover 1 event(s); canary #${id} at ${withDb(b, (db) => db.prepare("SELECT at FROM cc_canary_runs WHERE id = ?").get(id).at)}: live pass`);
+  assert.equal(rows[4].detail, "2 state path(s) declared (0 with a prune, 2 kept by design); 3 write site(s) in source");
 });
 
-test("checkPlugin: the failing plugin fails each check, naming the hook and input, the missing fixture, the SKILL.md and the reason literal", () => {
+test("checkPlugin: the failing plugin fails each check, naming the hook and input, the missing fixture, the SKILL.md, the reason literal and the missing manifest", () => {
   const b = pluginRepo();
   const rows = checkPlugin({ name: "bad", dir: join(b.work, "plugins", "bad"), prefix: "plugins/bad/" });
   const by = Object.fromEntries(rows.map((r) => [r.name, r]));
@@ -193,11 +236,15 @@ test("checkPlugin: the failing plugin fails each check, naming the hook and inpu
   assert.equal(by.visible.status, "fail");
   assert.match(by.visible.detail, /test\/fixtures\/lab\.txt has no lab\.unavailable\.txt/);
   assert.equal(by.says.status, "fail");
-  assert.match(by.says.detail, /skills\/bad\/SKILL\.md has no "When this can't" heading/);
+  assert.match(by.says.detail, /skills\/bad\/SKILL\.md has no "How it fails" or "When this can't" heading/);
   assert.match(by.says.detail, /lib\/rules\.mjs:1 "bad: no" names no command/);
+  assert.equal(by.evals.status, "fail");
+  assert.equal(by.evals.detail, "evals/manifest.json missing; PreToolUse has no declared outcomes");
+  assert.equal(by.retention.status, "pass", "a hook that writes nothing needs no state declaration");
+  assert.equal(by.retention.detail, "no `state` field; no source site writes outside the worktree");
 });
 
-test("checkPlugin: no hooks.json → survives is skipped, the other two still run", () => {
+test("checkPlugin: no hooks.json → survives and evals are skipped, the other three still run", () => {
   const b = pluginRepo();
   const rows = checkPlugin({ name: "docs-only", dir: join(b.work, "plugins", "docs-only"), prefix: "plugins/docs-only/" });
   assert.deepEqual(
@@ -206,9 +253,70 @@ test("checkPlugin: no hooks.json → survives is skipped, the other two still ru
       ["survives", "skipped"],
       ["visible", "pass"],
       ["says", "pass"],
+      ["evals", "skipped"],
+      ["retention", "pass"],
     ],
   );
   assert.equal(rows[0].detail, "no hooks/hooks.json");
+  assert.equal(rows[3].detail, "no hooks/hooks.json and no evals/");
+});
+
+test("evals row: a scenario missing for a declared outcome, a stub, a scenario for an undeclared outcome, a judge needing a fresh pass, and no canary row each fail naming the gap; coverage plus a canary pass for the tree passes", () => {
+  const b = pluginRepo();
+  const good = join(b.work, "plugins", "good");
+  const run = (opts = {}) => withDb(b, (db) => evalsCheck({ name: "good", dir: good }, { db, ...opts }));
+  // Coverage first, before any canary row is consulted.
+  assert.deepEqual(run(), { status: "fail", detail: "2 scenario(s) cover the manifest; no committed tree to look a canary row up for" });
+  const tree = goodTree(b);
+  assert.deepEqual(run({ tree }), { status: "fail", detail: `2 scenario(s) cover the manifest; no canary row for tree ${tree.slice(0, 8)}: run \`ledger canary run --plugins good\` on this commit` });
+  rmSync(join(good, "evals", "pre-tool-use-ok.scenario.json"));
+  assert.deepEqual(run({ tree }), { status: "fail", detail: "no scenario for PreToolUse × silent" });
+  write(good, "evals/pre-tool-use-ok.scenario.json", JSON.stringify({ stub: true, event: "PreToolUse", expect: "silent", sibling: "pre-tool-use-fault.scenario.json", stdin: {} }));
+  assert.deepEqual(run({ tree }), { status: "fail", detail: 'no scenario for PreToolUse × silent; evals/pre-tool-use-ok.scenario.json is an unfilled stub (remove "stub": true once its stdin and expect are real)' });
+  write(good, "evals/pre-tool-use-ok.scenario.json", GOOD_SCENARIOS["evals/pre-tool-use-ok.scenario.json"]);
+  write(good, "evals/pre-tool-use-deny.scenario.json", JSON.stringify({ event: "PreToolUse", expect: "deny", stdin: {} }));
+  assert.deepEqual(run({ tree }), { status: "fail", detail: "evals/pre-tool-use-deny.scenario.json expects deny, which the manifest does not declare for PreToolUse" });
+  rmSync(join(good, "evals", "pre-tool-use-deny.scenario.json"));
+  write(good, "evals/manifest.json", JSON.stringify({ events: { PreToolUse: ["silent", "systemMessage"], Stop: ["silent"] } }));
+  assert.deepEqual(run({ tree }), { status: "fail", detail: "evals/manifest.json declares Stop, which hooks/hooks.json does not register; no scenario for Stop × silent" });
+  write(good, "evals/manifest.json", GOOD_MANIFEST);
+  // A failed canary run for the tree fails naming it; a pass passes.
+  const failed = seedCanaryPass(b, "good", tree, { status: "fail", note: "exit 1", at: "2026-01-01T00:00:00.000Z" });
+  assert.deepEqual(run({ tree }), { status: "fail", detail: `canary run #${failed} at 2026-01-01T00:00:00.000Z failed for tree ${tree.slice(0, 8)} (exit 1)` });
+  const passed = seedCanaryPass(b, "good", tree, { at: "2026-01-02T00:00:00.000Z" });
+  assert.deepEqual(run({ tree }), { status: "pass", detail: `2 scenario(s) cover 1 event(s); canary #${passed} at 2026-01-02T00:00:00.000Z: live pass` });
+  // An unavailable run (no claude) passes on the hook scenarios alone, unless a judge rubric is in play.
+  const unavailable = seedCanaryPass(b, "good", tree, { status: "unavailable", note: "claude not found on PATH", at: "2026-01-03T00:00:00.000Z" });
+  assert.deepEqual(run({ tree }), { status: "pass", detail: `2 scenario(s) cover 1 event(s); canary #${unavailable} at 2026-01-03T00:00:00.000Z: live unavailable (claude not found on PATH); hook scenarios passed offline` });
+  write(good, "evals/judged.scenario.json", JSON.stringify({ event: "session", session: { prompt: "do it" }, judge: "PASS if it did" }));
+  assert.deepEqual(run({ tree }), { status: "fail", detail: `a judge-backed scenario needs a passing canary run; #${unavailable} at 2026-01-03T00:00:00.000Z is unavailable (claude not found on PATH)` });
+  const stale = seedCanaryPass(b, "good", tree, { at: "2026-01-04T00:00:00.000Z" });
+  const now = Date.parse("2026-01-20T00:00:00.000Z");
+  assert.match(run({ tree, now }).detail, new RegExp(`^a judge-backed scenario needs a canary pass within \\d+ days; #${stale} is 16\\.0 days old: run \`ledger canary run --plugins good\`$`));
+  assert.equal(run({ tree, now: Date.parse("2026-01-05T00:00:00.000Z") }).status, "pass");
+});
+
+test("retention row: a write site with no `state`, an empty `state`, a retention with no prune, a malformed entry, and a canary-observed write under no declared path each fail; a declaration covering the writes passes", () => {
+  const b = pluginRepo();
+  const good = join(b.work, "plugins", "good");
+  const manifest = (state) => write(good, ".claude-plugin/plugin.json", JSON.stringify({ name: "good", version: "0.0.1", ...(state === undefined ? {} : { state }) }));
+  const run = () => withDb(b, (db) => retentionCheck({ name: "good", dir: good }, { db }));
+  assert.deepEqual(run(), { status: "pass", detail: "2 state path(s) declared (0 with a prune, 2 kept by design); 3 write site(s) in source" });
+  manifest(undefined);
+  assert.deepEqual(run(), { status: "fail", detail: "no `state` field in .claude-plugin/plugin.json, yet 3 source site(s) write or resolve paths outside the worktree: hooks/good.mjs:4, hooks/good.mjs:5, hooks/good.mjs:12" });
+  manifest([]);
+  assert.deepEqual(run(), { status: "fail", detail: "`state` is empty, yet 3 source site(s) write or resolve paths outside the worktree: hooks/good.mjs:4, hooks/good.mjs:5, hooks/good.mjs:12" });
+  manifest([{ path: "$XDG_STATE_HOME/good", retentionDays: 30 }]);
+  assert.deepEqual(run(), { status: "fail", detail: ".claude-plugin/plugin.json state[0] ($XDG_STATE_HOME/good): retentionDays 30 with no prune command" });
+  manifest([{ path: "$XDG_STATE_HOME/good", retentionDays: "soon" }, { retentionDays: null }]);
+  assert.deepEqual(run(), { status: "fail", detail: ".claude-plugin/plugin.json state[0] ($XDG_STATE_HOME/good): retentionDays must be a whole number of days or null (kept by design); .claude-plugin/plugin.json state[1] has no path" });
+  manifest([{ path: "$XDG_STATE_HOME/good", retentionDays: 30, prune: "node x prune --days 30" }, { path: "$XDG_DATA_HOME/good", retentionDays: null }]);
+  assert.deepEqual(run(), { status: "pass", detail: "2 state path(s) declared (1 with a prune, 1 kept by design); 3 write site(s) in source" });
+  // The canary saw a write the declaration does not cover: the newest row with writes decides.
+  seedCanaryPass(b, "good", goodTree(b), { writes: JSON.stringify(["$XDG_STATE_HOME/good/errors.log", "$XDG_CACHE_HOME/good/blob"]) });
+  assert.deepEqual(run(), { status: "fail", detail: "the canary saw a write at $XDG_CACHE_HOME/good/blob under no declared state path (declared: $XDG_STATE_HOME/good, $XDG_DATA_HOME/good)" });
+  manifest([{ path: "$XDG_STATE_HOME/good", retentionDays: 30, prune: "node x prune --days 30" }, { path: "$XDG_DATA_HOME/good", retentionDays: null }, { path: "$XDG_CACHE_HOME/good", retentionDays: 0 }]);
+  assert.deepEqual(run(), { status: "pass", detail: "3 state path(s) declared (1 with a prune, 1 kept by design); 3 write site(s) in source" });
 });
 
 test("checkPlugin: past the run cap every check records fail with timeout", () => {
@@ -256,43 +364,57 @@ test("textsWithoutWhenCant and fixturesWithoutUnavailable: curly apostrophe and 
   assert.deepEqual(fixturesWithoutUnavailable(dir), ["y.txt"]);
 });
 
-test("gate check: records one row per changed plugin and check for HEAD, exits 1 on a failure, replaces rows on rerun; --plugins names them; a plain repo is exit 2", () => {
+test("gate check: records one row per changed plugin and check for HEAD, exits 1 on a failure, replaces rows on rerun; --plugins names them; a plain repo is exit 2; evals wants a canary pass for the committed tree", () => {
   const b = pluginRepo();
   const head = git(b, "rev-parse", "HEAD");
+  const tree = goodTree(b);
+  // Before any canary run, good's evals row fails and names the command.
+  const r0 = cli(b, ["gate", "check", "--plugins", "good"], { env: { LEDGER_SESSION_ID: SID } });
+  assert.equal(r0.code, 1, r0.out + r0.err);
+  assert.match(r0.out, new RegExp(`good\\s+evals\\s+fail\\s+2 scenario\\(s\\) cover the manifest; no canary row for tree ${tree.slice(0, 8)}: run \`ledger canary run --plugins good\` on this commit`));
+  seedCanaryPass(b, "good", tree);
   const r = cli(b, ["gate", "check"], { env: { LEDGER_SESSION_ID: SID } });
   assert.equal(r.code, 1, r.out + r.err);
   assert.match(r.out, /^gate check [0-9a-f]{8}\n/);
   assert.match(r.out, /bad\s+survives\s+fail/);
+  assert.match(r.out, /bad\s+evals\s+fail\s+evals\/manifest\.json missing; PreToolUse has no declared outcomes/);
   assert.match(r.out, /good\s+says\s+pass/);
+  assert.match(r.out, /good\s+evals\s+pass\s+2 scenario\(s\) cover 1 event\(s\); canary #\d+ at \S+: live pass/);
+  assert.match(r.out, /good\s+retention\s+pass\s+2 state path\(s\) declared/);
   assert.match(r.out, /fix and rerun `ledger gate check`, or `ledger review waive "<why>"` to push anyway/);
   const rows = gateRows(b);
   assert.deepEqual(
     rows.map((x) => [x.plugin, x.name, x.status]),
     [
+      ["bad", "evals", "fail"],
+      ["bad", "retention", "pass"],
       ["bad", "says", "fail"],
       ["bad", "survives", "fail"],
       ["bad", "visible", "fail"],
+      ["good", "evals", "pass"],
+      ["good", "retention", "pass"],
       ["good", "says", "pass"],
       ["good", "survives", "pass"],
       ["good", "visible", "pass"],
     ],
   );
   assert.ok(rows.every((x) => x.head_sha === head));
-  assert.ok(rows.filter((x) => x.plugin === "good").every((x) => x.tree_sha === git(b, "rev-parse", `${head}:plugins/good`)), "each row certifies the plugin's tree in HEAD");
+  assert.ok(rows.filter((x) => x.plugin === "good").every((x) => x.tree_sha === tree), "each row certifies the plugin's tree in HEAD");
   // Fix the bad plugin's text without committing and rerun for it alone: the commit is what is
   // checked, so the findings stand and the run says the repair was not checked.
-  write(join(b.work, "plugins", "bad"), "skills/bad/SKILL.md", "# Bad\n\n## When this can't run\n\nSay so.\n");
+  write(join(b.work, "plugins", "bad"), "skills/bad/SKILL.md", "# Bad\n\n## When this can't run\n\nSay so; evals/pre-tool-use-deny.scenario.json proves it.\n");
+  write(join(b.work, "plugins", "bad"), "evals/pre-tool-use-deny.scenario.json", JSON.stringify({ event: "PreToolUse", expect: "deny", stdin: "{not json" }));
   write(join(b.work, "plugins", "bad"), "lib/rules.mjs", 'export const deny = () => ({ permissionDecision: "deny", permissionDecisionReason: "bad: run `bad fix`" });\n');
   const r2 = cli(b, ["gate", "check", "--plugins", "bad"], { env: { LEDGER_SESSION_ID: SID } });
   assert.equal(r2.code, 1);
   assert.match(r2.out, /bad\s+\(uncommitted changes under plugins\/bad\/ were not checked; commit them and rerun\)/);
-  assert.match(gateRows(b).find((x) => x.plugin === "bad" && x.name === "says").detail, /skills\/bad\/SKILL\.md has no "When this can't" heading/);
+  assert.match(gateRows(b).find((x) => x.plugin === "bad" && x.name === "says").detail, /skills\/bad\/SKILL\.md has no "How it fails" or "When this can't" heading/);
   // Committed, the repair counts: bad's rows move to the new commit, good's stay on the old one.
   const head2 = commitAll(b, "repair bad");
   const r2b = cli(b, ["gate", "check", "--plugins", "bad"], { env: { LEDGER_SESSION_ID: SID } });
   assert.equal(r2b.code, 1);
   assert.doesNotMatch(r2b.out, /uncommitted changes/);
-  assert.equal(gateRows(b).length, 9);
+  assert.equal(gateRows(b).length, 15);
   const says = gateRows(b).find((x) => x.plugin === "bad" && x.name === "says" && x.head_sha === head2);
   assert.equal(says.detail, 'hooks/bad.mjs:6 "bad: no" names no command', "the SKILL.md and lib/rules.mjs findings are gone; the hook's own literal remains");
   assert.equal(cli(b, ["gate", "check", "--plugins", "nope"]).code, 1);
@@ -325,27 +447,34 @@ test("PreToolUse: a push from a repository of plugins is denied without check ro
   write(join(b.work, "plugins", "good"), "skills/good/SKILL.md", "# Good\n");
   commitAll(b, "break good");
   passReview(b);
+  seedCanaryPass(b, "good", goodTree(b));
   assert.equal(cli(b, ["gate", "check"]).code, 1);
   const r2 = push(b);
   assert.equal(decision(r2), "deny");
-  assert.match(reason(r2), /^ledger: plugin gate: good failed says: skills\/good\/SKILL\.md has no "When this can't" heading; run `/);
+  assert.match(reason(r2), /^ledger: plugin gate: good failed says: skills\/good\/SKILL\.md has no "How it fails" or "When this can't" heading; run `/);
   // Repaired in the checkout only: the committed text is what is pushed, so the deny stands.
-  write(join(b.work, "plugins", "good"), "skills/good/SKILL.md", "# Good\n\n## When this can't run\n\nSay so.\n");
+  write(join(b.work, "plugins", "good"), "skills/good/SKILL.md", GOOD_SKILL);
   assert.equal(cli(b, ["gate", "check"]).code, 1);
   assert.equal(decision(push(b)), "deny");
-  // Committed: the pass is for the repaired commit.
+  // Committed: the pass is for the repaired commit, once the canary has passed on its tree.
   commitAll(b, "repair good");
   passReview(b);
+  assert.equal(cli(b, ["gate", "check"]).code, 1, "the repaired tree has no canary pass yet");
+  const r2b = push(b);
+  assert.equal(decision(r2b), "deny");
+  assert.match(reason(r2b), /^ledger: plugin gate: good failed evals: 2 scenario\(s\) cover the manifest; no canary row for tree [0-9a-f]{8}: run `ledger canary run --plugins good` on this commit; run `/);
+  seedCanaryPass(b, "good", goodTree(b));
   assert.equal(cli(b, ["gate", "check"]).code, 0);
   const r3 = push(b);
   assert.equal(decision(r3), "allow", r3.out);
   assert.equal(r3.json?.systemMessage, undefined, r3.out);
-  // The bounce rows: three denies, then satisfied by the allow.
+  // The bounce rows: four denies, then satisfied by the allow.
   const db = openDb(b);
   try {
     assert.deepEqual(
       db.prepare("SELECT rule, outcome FROM cc_bounces WHERE rule = 'pluginGate' ORDER BY id").all().map((x) => [x.rule, x.outcome]),
       [
+        ["pluginGate", "satisfied"],
         ["pluginGate", "satisfied"],
         ["pluginGate", "satisfied"],
         ["pluginGate", "satisfied"],
@@ -359,6 +488,7 @@ test("PreToolUse: a push from a repository of plugins is denied without check ro
 test("PreToolUse: the gate reads the pushed commit, not the checkout: a passed commit stays passed after its checkout is broken; a plugin whose discovery file was removed from the checkout is still gated; a push of another commit needs rows for that commit; rows certifying another tree are no pass", () => {
   const b = pluginRepo({ changeBad: false });
   passReview(b);
+  seedCanaryPass(b, "good", goodTree(b));
   assert.equal(cli(b, ["gate", "check"]).code, 0);
   // Break the checkout after the pass: the push carries the committed, passing text.
   write(join(b.work, "plugins", "good"), "skills/good/SKILL.md", "# Good\n");
@@ -373,6 +503,7 @@ test("PreToolUse: the gate reads the pushed commit, not the checkout: a passed c
   const r = push(b);
   assert.equal(decision(r), "deny");
   assert.match(reason(r), /^ledger: plugin gate: good has no check rows for [0-9a-f]{8}; run `/);
+  seedCanaryPass(b, "good", goodTree(b));
   assert.equal(cli(b, ["gate", "check"]).code, 0);
   assert.equal(decision(push(b)), "allow");
   // Rows for HEAD that certify another tree (a hand-edited row): no pass.
@@ -424,12 +555,25 @@ test("PreToolUse: a push from a repository that holds no plugin never sees the p
   }
 });
 
-test("the ledger plugin itself passes its own gate", () => {
-  const rows = checkPlugin({ name: "ledger", dir: join(import.meta.dirname, ".."), prefix: "plugins/ledger/" });
+test("the ledger plugin itself passes its own gate: the four static rows on the checkout, and evals once a canary pass certifies its committed tree", () => {
+  const dir = join(import.meta.dirname, "..");
+  const top = spawnSync("git", ["rev-parse", "--show-toplevel"], { cwd: dir, encoding: "utf8" }).stdout.trim();
+  const tree = treeSha(top, "HEAD", "plugins/ledger/");
+  const b = sandbox();
+  // The canary row the real `canary run` would record for this tree; the live run itself is
+  // the canary's job (test/canary-report-digest.test.mjs), not this suite's.
+  const id = seedCanaryPass(b, "ledger", tree);
+  const rows = withDb(b, (db) => checkPlugin({ name: "ledger", dir, prefix: "plugins/ledger/" }, { db, tree }));
   assert.deepEqual(
     rows.map((r) => [r.name, r.status]),
     CHECKS.map((c) => [c, "pass"]),
     JSON.stringify(rows),
   );
+  assert.match(rows[3].detail, new RegExp(`^\\d+ scenario\\(s\\) cover 5 event\\(s\\); canary #${id} at \\S+: live pass$`));
+  assert.match(rows[4].detail, /^6 state path\(s\) declared \(1 with a prune, 4 kept by design\); \d+ write site\(s\) in source$/);
+  // Without the canary row the same checkout fails evals alone, naming the command.
+  const cold = withDb(sandbox(), (db) => checkPlugin({ name: "ledger", dir, prefix: "plugins/ledger/" }, { db, tree }));
+  assert.deepEqual(cold.map((r) => [r.name, r.status]), CHECKS.map((c) => [c, c === "evals" ? "fail" : "pass"]));
+  assert.equal(cold[3].detail, `${rows[3].detail.match(/^\d+/)[0]} scenario(s) cover the manifest; no canary row for tree ${tree.slice(0, 8)}: run \`ledger canary run --plugins ledger\` on this commit`);
 });
 
