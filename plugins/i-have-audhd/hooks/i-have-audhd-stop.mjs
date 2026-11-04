@@ -35,8 +35,9 @@
 //      only after its OWN block in this session, because OMP's flag is set by any extension.
 //      If the sha256 of this text equals the hash recorded at this plugin's last block, exit
 //      0: never block the same message twice, or a model that ignores the reason loops forever.
-//   5. Master floor — under 200 substantive chars nothing runs. Short messages are the
-//      false-positive population for every structural check this plugin ships.
+//   5. Master floor — under 200 substantive chars only handed-command runs. Short messages are
+//      the false-positive population for every structural check this plugin ships; a
+//      command-only handoff is short by nature, and rule 10 holds at any length.
 //   6. Deterministic checks run per their configured modes; findings collect.
 //   7. Judge-gated checks run only where their deterministic trigger fired and a judge
 //      command is configured; a skipped one leaves a line in skipped.log naming the rule —
@@ -258,26 +259,40 @@ function runDeterministicChecks(text, config, switches) {
   }
 
   // handed-command — a command handed to the reader is one script line. The profile's
-  // handedCommand.allow globs extend the passing shape.
-  if (effectiveMode(config, "handed-command") !== "off") {
-    const r = checkHandedCommand(text, { allow: switches.handedCommandAllow });
-    if (r.flagged) {
-      const [first, ...more] = r.findings;
-      const others = more.length ? ` (and ${more.length} more: line${more.length > 1 ? "s" : ""} ${more.map((f) => f.line).join(", ")})` : "";
-      findings.push({
-        rule: "handed-command",
-        mode: effectiveMode(config, "handed-command"),
-        text:
-          `${cite("Handed command", "handed-command")} — line ${first.line} hands the reader \`${first.command}\`${others}. ` +
-          `Rule 10: more than one command, or any interactive input, is a script file in a scratch directory outside ` +
-          `every git repository; the reader types one line, \`zsh /path/to/script.sh\`, that stays byte-identical, and ` +
-          `fixes edit the file. Put the command in a script and hand that one line.`,
-        paste: paste("command line"),
-      });
-    }
-  }
+  // handedCommand.allow globs extend the passing shape; handedCommand.scriptRoots says where
+  // a script may live.
+  findings.push(...handedCommandFindings(text, config, switches));
 
   return findings;
+}
+
+// The handed-command finding, alone: the Stop hook also runs it under the master floor, where
+// a command-only handoff is short by nature.
+function handedCommandFindings(text, config, switches) {
+  const mode = effectiveMode(config, "handed-command");
+  if (mode === "off") return [];
+  const r = checkHandedCommand(text, { allow: switches.handedCommandAllow, scriptRoots: switches.handedCommandScriptRoots });
+  if (!r.flagged) return [];
+  const [first, ...more] = r.findings;
+  const others = more.length ? ` (and ${more.length} more: line${more.length > 1 ? "s" : ""} ${more.map((f) => f.line).join(", ")})` : "";
+  const where =
+    first.problem === "in-checkout"
+      ? `, a script inside the git checkout ${first.checkout}`
+      : first.problem === "outside-script-roots"
+        ? `, a script outside every scratch root (${first.roots.join(", ")}; the profile's handedCommand.scriptRoots)`
+        : "";
+  return [
+    {
+      rule: "handed-command",
+      mode,
+      text:
+        `${cite("Handed command", "handed-command")} — line ${first.line} hands the reader \`${first.command}\`${where}${others}. ` +
+        `Rule 10: more than one command, or any interactive input, is a script file in a scratch directory outside ` +
+        `every git repository; the reader types one line, \`zsh /path/to/script.sh\`, that stays byte-identical, and ` +
+        `fixes edit the file. Put the command in a script and hand that one line.`,
+      paste: paste("command line"),
+    },
+  ];
 }
 
 // A unit of a labeled message tells the judge what it is looking at: one section, judged alone.
@@ -483,14 +498,18 @@ async function main() {
   }
 
   // 5. Master floor. proseChars comes from the needs-you-first check's own accounting — one shared
-  // definition of "substantive", not a second one that can drift.
+  // definition of "substantive", not a second one that can drift. Under it only handed-command
+  // runs: a command-only handoff is short by nature, and the rule holds at any length.
   const r1 = checkNeedsYouFirst(text);
-  if (r1.proseChars < MASTER_FLOOR) return {};
+  const belowFloor = r1.proseChars < MASTER_FLOOR;
 
   // 6–7. Checks per configured modes.
   const harness = process.env.I_HAVE_AUDHD_HARNESS;
   const config = loadEnforcement(harness);
-  const findings = [...runDeterministicChecks(text, config, switches)];
+  const findings = belowFloor ? handedCommandFindings(text, config, switches) : [...runDeterministicChecks(text, config, switches)];
+  if (belowFloor && !findings.length) return {};
+  // A judge rule runs above the floor only.
+  const judged = (rule) => !belowFloor && effectiveMode(config, rule) !== "off";
 
   // Judge-gated rules: deterministic trigger first; the judge runs only where a trigger fired
   // AND a judge command is configured. A skipped judge rule leaves a line in skipped.log —
@@ -503,7 +522,7 @@ async function main() {
   // after it. Consuming the marker before dispatch means the judgment is one-shot even when
   // no judge is configured (the skip is logged) — a marker that survives a fired trigger
   // would re-judge every message in the session.
-  if (effectiveMode(config, "restate-resumed-thread") !== "off" && existsSync(resumeMarkerPath(sessionId))) {
+  if (judged("restate-resumed-thread") && existsSync(resumeMarkerPath(sessionId))) {
     try {
       rmSync(resumeMarkerPath(sessionId), { force: true });
       judgeJobs.push({ rule: "restate-resumed-thread", question: restateQuestion, contextText: text });
@@ -512,7 +531,7 @@ async function main() {
     }
   }
 
-  if (effectiveMode(config, "do-not-batch-by-label") !== "off") {
+  if (judged("do-not-batch-by-label")) {
     const t = findTrailingBatchSection(text);
     if (t.applicable) {
       judgeJobs.push({
@@ -530,7 +549,7 @@ async function main() {
 
   // conclusion-first — conclusion first: 400 prose chars per unit; below that the judge would
   // only be guessing at "setup".
-  if (effectiveMode(config, "conclusion-first") !== "off") {
+  if (judged("conclusion-first")) {
     judgeJobs.push(...unitJobs("conclusion-first", conclusionFirstQuestion, units, conclusionFirstApplicable));
   }
 
@@ -538,7 +557,7 @@ async function main() {
   // LAST todo list (Claude Code's TodoWrite call, or OMP's todo tool result; the OMP adapter passes
   // its session file as transcript_path). A payload with no transcript has no todo data, and the
   // boundary is documented: with no tracked plan the violation is silence.
-  if (effectiveMode(config, "report-what-you-did-not-do") !== "off" && typeof payload.transcript_path === "string") {
+  if (judged("report-what-you-did-not-do") && typeof payload.transcript_path === "string") {
     let transcriptRaw = "";
     try {
       transcriptRaw = readFileSync(payload.transcript_path, "utf8");
@@ -557,7 +576,7 @@ async function main() {
 
   // bad-news-first — bad news first: the lexicon gate decides applicability only, per unit.
   // "Fixed the error" trips the gate and is exactly the message the judge must acquit.
-  if (effectiveMode(config, "bad-news-first") !== "off") {
+  if (judged("bad-news-first")) {
     judgeJobs.push(...unitJobs("bad-news-first", badNewsQuestion, units, badNewsGate));
   }
   let judgeAlert = "";

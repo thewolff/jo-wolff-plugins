@@ -301,7 +301,8 @@ README and `skills/i-have-audhd/reference.md` carry the schema, every check's co
 measured rates.
 
 Changes in 1.6.0: a new check, `handed-command`, warns when a message hands you a shell command
-that is not one `zsh /absolute/path/script.sh` line (rule 10); commands quoted as evidence do not
+that is not one `zsh /absolute/path/script.sh` line with its script in a scratch directory
+(`~/agent-scratch` by default) outside every git checkout (rule 10); commands quoted as evidence do not
 count. A new profile field, `inject` (`full`, `rules` or `none`), switches the session-start rules
 and the Stop checks independently; the package README's *What you can turn on and off* has a
 checks-only and a rules-only profile. The kill-switch file still wins over every value.

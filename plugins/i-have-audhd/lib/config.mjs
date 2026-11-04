@@ -53,6 +53,7 @@ import { readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { logFault } from "./state.mjs";
+import { DEFAULT_SCRIPT_ROOTS } from "../checks/handed-command.mjs";
 
 const MODES = new Set(["block", "warn", "off"]);
 
@@ -133,7 +134,7 @@ export function harnessCapsBlocks(config, harness, stopHookActive) {
   return stopHookActive === true; // (b) armed, but this stop revises this plugin's own block
 }
 
-// ─── profile switches: `inject` and `handedCommand.allow` ─────────────────────
+// ─── profile switches: `inject` and `handedCommand.allow` / `.scriptRoots` ────
 //
 //   inject: "full" | "rules" | "none", default "full". What the plugin runs, independent of
 //   enforcement modes:
@@ -147,15 +148,19 @@ export function harnessCapsBlocks(config, harness, stopHookActive) {
 //   literal) for handed-over command lines the handed-command check accepts on top of its
 //   built-in `zsh /abs/path/file.sh` shape. A pattern matches the whole line.
 //
+//   handedCommand.scriptRoots: the directories a handed script may live under, absolute or
+//   `~/` paths, default ["~/agent-scratch"]. A script under none of them, or inside any git
+//   checkout, is a finding.
+//
 // Whole-file faults (unreadable is normal; unparseable or not an object) are NOT logged here:
 // each hook already reports them through its own profile reader, and one fault is one line.
 // A field of the wrong shape is logged here and reads as its default.
 
 const INJECT_VALUES = new Set(["full", "rules", "none"]);
 
-// Never throws. Returns { inject, handedCommandAllow }.
+// Never throws. Returns { inject, handedCommandAllow, handedCommandScriptRoots }.
 export function loadSwitches(path = defaultProfilePath()) {
-  const out = { inject: "full", handedCommandAllow: [] };
+  const out = { inject: "full", handedCommandAllow: [], handedCommandScriptRoots: [...DEFAULT_SCRIPT_ROOTS] };
   let parsed;
   try {
     parsed = JSON.parse(readFileSync(path, "utf8"));
@@ -175,6 +180,17 @@ export function loadSwitches(path = defaultProfilePath()) {
       out.handedCommandAllow = allow.map((p) => p.trim());
     } else if (allow !== undefined || typeof hc !== "object" || Array.isArray(hc)) {
       logFault("lib/config.mjs", "handedCommand.allow is not an array of non-empty strings; ignored");
+    }
+    const roots = hc && typeof hc === "object" && !Array.isArray(hc) ? hc.scriptRoots : undefined;
+    if (roots !== undefined) {
+      if (Array.isArray(roots) && roots.length && roots.every((p) => typeof p === "string" && /^(?:\/|~\/|~$)/.test(p.trim()))) {
+        out.handedCommandScriptRoots = roots.map((p) => p.trim());
+      } else {
+        logFault(
+          "lib/config.mjs",
+          `handedCommand.scriptRoots is not a non-empty array of absolute or ~/ paths; ${DEFAULT_SCRIPT_ROOTS.join(", ")} applies`,
+        );
+      }
     }
   }
   return out;

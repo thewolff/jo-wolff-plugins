@@ -292,11 +292,13 @@ under every `inject` value, within one turn; it never turns off the injection.
 checks, each until the host relaunches.
 
 `handed-command` accepts one line of the shape `zsh /absolute/path/script.sh` (or `bash`,
-`sh`, or a `~/` path). To accept a line shape of your own as well, list it in
+`sh`, or a `~/` path) whose script sits under `~/agent-scratch` and outside every git
+checkout. To let scripts live somewhere else, list the directories in
+`handedCommand.scriptRoots`; to accept a line shape of your own as well, list it in
 `handedCommand.allow` as a glob, where `*` matches anything:
 
 ```json
-{ "handedCommand": { "allow": ["just deploy-*"] } }
+{ "handedCommand": { "scriptRoots": ["~/agent-scratch", "~/scratch"], "allow": ["just deploy-*"] } }
 ```
 
 ## Upgrading from communication-rules
@@ -353,12 +355,16 @@ Exit 0 means every item is done or had nothing to do, 1 means one was refused or
 ### 1.6.0
 
 - New check `handed-command` (rule 10, Commands handed to the user). A final message that
-  hands the reader a shell command (a `bash`, `sh`, `zsh` or `shell` fence, or *run*, *paste*,
-  *type*, *execute* or *enter* followed by a code span starting with a known binary) warns
-  unless what it hands is one `zsh /absolute/path/script.sh` line or matches
-  `handedCommand.allow`. Commands quoted as evidence do not count: a receipt under a
-  `**CLAIM**` or `**CITE**` label, a `command → result` line, a blockquote, or a `console`
-  fence. Warn by default, like every check.
+  hands the reader a shell command (a `bash`, `sh`, `zsh` or `shell` fence, *run*, *paste*,
+  *type*, *execute* or *enter* followed by code spans starting with a known binary, or `$`
+  prompt lines under such an instruction) warns unless what it hands is one
+  `zsh /absolute/path/script.sh` line, with the script under `handedCommand.scriptRoots`
+  (default `~/agent-scratch`) and outside every git checkout, or matches
+  `handedCommand.allow`. It runs on short messages too. Commands quoted as evidence do not
+  count: a receipt under a `**CLAIM**` or `**CITE**` label, a command with its result
+  attached (`→`, `exit 0` on the next line), a numbered *What I ran* list with results, a
+  table row with a result column, a blockquote, or console output with no instruction above
+  it. Warn by default, like every check.
 - New profile field `inject`: `full` (default, unchanged behavior), `rules` (injection only,
   no Stop checks) or `none` (no injection, the checks still run). See *What you can turn on
   and off*. The kill-switch file still wins over every value.

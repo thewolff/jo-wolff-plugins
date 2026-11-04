@@ -19,7 +19,7 @@ different instrument with a different error profile, not a non-enforcement.
 | `do-not-batch-by-label` | 1, Skeleton (caveats beside what they qualify) | Judge-in-hook — `findTrailingBatchSection` | A trailing labeled section (Uncertainties, Open questions, Questions, Caveats, Notes — configurable) with substance | warn |
 | `conclusion-first` | 1, Skeleton (body, conclusion first) | Judge-in-hook — `conclusionFirstApplicable` | Per labeled section (the whole message when it has no block labels): ≥ 400 substantive chars; the judge reads the section's opening 20 words | warn |
 | `plural-back-reference` | 6, References survive without scrolling | Deterministic — `checkPluralBackReference` | A closing-ask marker exists and its ask uses *those, these, both, them, the two, either one* with no referent in the same sentence | warn |
-| `handed-command` | 10, Commands handed to the user | Deterministic — `checkHandedCommand` | The message hands the reader a shell command (a `bash`/`sh`/`zsh`/`shell` fence, or *run/paste/type/execute/enter* + a code span starting with a known binary) that is not one `zsh /abs/path/file.sh` line or a `handedCommand.allow` match; receipts are exempt | warn |
+| `handed-command` | 10, Commands handed to the user | Deterministic — `checkHandedCommand` | The message hands the reader a shell command (a `bash`/`sh`/`zsh`/`shell` fence, *run/paste/type/execute/enter* + a code span starting with a known binary, or prompt lines under such an instruction) that is not one `zsh /abs/path/file.sh` line whose script sits under a `handedCommand.scriptRoots` root and outside every git checkout, or a `handedCommand.allow` match; receipts are exempt; runs at any length | warn |
 | `restate-resumed-thread` | 8, Resume by restating content | Injector marker + judge | Session source was resume/compact; first substantive message after it | warn |
 | `name-the-artifact` | 11, Machinery anchors | Deterministic — `checkNamesArtifact` | Report-shaped (≥ 400 chars + a report verb) and no artifact token anywhere | warn |
 | `report-what-you-did-not-do` | 11, Machinery anchors | Todo trigger + judge | The transcript's last todo write has items not completed | warn |
@@ -136,7 +136,8 @@ Order of operations, each early return silent:
    (tool-call-only entries are skipped).
 4. **Loop guard** — with `stop_hook_active`, a text hash equal to the recorded one passes:
    never block the same message twice. This runs before any check, on both harnesses.
-5. **Master floor** — under 200 substantive chars, nothing runs.
+5. **Master floor** — under 200 substantive chars only `handed-command` runs (a command-only
+   handoff is short by nature); every other check and judge job needs the floor.
 6. Deterministic checks per their modes.
 7. Judge jobs where triggers fired; a fired trigger with no judge command → `skipped.log`.
 8. **Harness cap** — only when the env carries `I_HAVE_AUDHD_HARNESS=omp` (the OMP
@@ -240,38 +241,75 @@ command. **A vocabulary check, labeled as one** — hence warn by default.
 ### handed-command
 
 `checkHandedCommand(text, options)` → `{applicable, flagged, reason, findings}`; `reason` ∈
-`no-handed-command | script-line-only | bare-command`; each finding is `{line, command,
-where}` with `where` ∈ `fence | inline`. Options: `allow`, glob patterns (`*` any run of
-characters, `?` one, everything else literal) matched against the whole command line; the
-hook passes the profile's `handedCommand.allow`. No length floor of its own: the Stop hook's
-200-char master floor gates it.
+`no-handed-command | script-line-only | bare-command | script-location` (`script-location`
+when every finding is about where a script lives). Each finding is `{line, command, where,
+problem}` with `where` ∈ `fence | inline | prompt` and `problem` ∈ `bare-command |
+in-checkout | outside-script-roots`; `in-checkout` adds `checkout` (the directory holding
+`.git`), `outside-script-roots` adds `roots` (as configured). Options: `allow`, glob patterns
+(`*` any run of characters, `?` one, everything else literal) matched against the whole
+command line by a bounded matcher (O(pattern × line), no regex backtracking);
+`scriptRoots`, default `["~/agent-scratch"]`; `home`, what `~/` expands to (default the
+user's home directory). The hook passes the profile's `handedCommand.allow` and
+`handedCommand.scriptRoots`. No length floor: the Stop hook runs it under its master floor
+too.
 
 Handed means one of:
 
 - a fenced block tagged `bash`, `sh`, `zsh` or `shell`;
 - an untagged fenced block whose first command starts with a known binary, under a paragraph
   that tells the reader to *run, paste, type, execute* or *enter* it;
-- an inline code span starting with a known binary, on a line that tells the reader to run,
-  paste, type, execute or enter it at the start of a clause (`Run`, `then paste`, `Once it
-  merges, run`, `you can run`). `I ran` and `I'll run` are the agent's own runs, not handed.
+- a `console`, `text` or `shell-session` fenced block, or unfenced lines starting with a
+  `$ `/`% ` prompt, whose first prompt line's command starts with a known binary, under a
+  paragraph with that same kind of instruction ("Run this in your terminal:"). Only the
+  prompt lines are commands; output lines are not;
+- an inline code span starting with a known binary, after a clause on the same line that
+  tells the reader to run, paste, type, execute or enter (`Run`, `then paste`, `Once it
+  merges, run`, `you can run`). Every such span after the line's first imperative counts,
+  not only the first. Spans separated only by whitespace are one command (`` `gh` `pr
+  list` `` is `gh pr list`), and a span group that ends its line continues into a span group
+  that opens the next line. `I ran` and `I'll run` are the agent's own runs, not handed. A
+  table row's cells are read one by one.
 
 Known binaries are `name-the-artifact`'s command list plus `rm, sudo, open, launchctl,
 defaults, kill, pkill, ln, tar, unzip, export, source, omp, claude, codex, just, vercel, fly,
 op, security`.
 
-Evidence never counts: the paragraph and the one fenced block directly under a `**CLAIM**` or
-`**CITE**` label line (a receipt), any line or fenced block carrying `→` (the `command →
-result` form), blockquotes, HTML comments, and fences tagged anything else (`console`,
-`text`, a language).
+Evidence never counts:
+
+- **a receipt** — the block under a `**CLAIM**` or `**CITE**` label line: its first
+  paragraph, then explanatory paragraphs (none tells the reader to run anything), fenced
+  blocks and result lines. It ends at a heading, another label, a later paragraph with an
+  imperative, or, once a fenced block is taken, the next paragraph that is neither a fence
+  nor a result line;
+- **an attached result** — any line or fenced block carrying `→`, and any line or fenced
+  block whose very next line is a result line (opens with `→`, `exit N`, `exited N` or
+  `Exit code: N`). A result after a blank line does not attach;
+- **a retrospective list** — a numbered list item under a `What I ran`, `Ran` or
+  `Verification` heading (a `#` heading, a bold-only line, or a line ending in a colon)
+  whose own text carries a result (`→`, `exit 0`, `Exit code: 0`), fenced blocks inside it
+  included;
+- **a result table row** — a row with an entry in a column headed `Result`, `Exit`,
+  `Output`, `Outcome` or `Status`, or with a result-line cell;
+- blockquotes, HTML comments, and fences tagged anything else (a language).
 
 A handed block or span passes when it holds exactly one command line of the shape
-`zsh|bash|sh <absolute or ~/ path>.sh`, with no arguments and no shell operators, or one
-matching an `allow` glob. A leading `$ `/`% ` prompt and `# …` comment lines are ignored. Two
-commands in one block are a finding even when both are script lines. Every failing block or
-span is a finding; the warn or block reason names the first one's line and command, counts
-the rest, and carries rule 10's text: more than one command, or any interactive input, is a
-script file outside every git repository, and the reader types one byte-identical line.
-Warn by default and unmeasured.
+`zsh|bash|sh <absolute or ~/ path>.sh`, with no arguments and no shell operators, whose
+script — symlinks resolved (the nearest existing ancestor's real path when the file does not
+exist yet) — sits under one of `scriptRoots` and not inside a git checkout (a `.git` file or
+directory in any parent, so worktrees count; a checkout listed as a root is still a
+checkout); or one matching an `allow` glob, wherever it points. A leading `$ `/`% ` prompt
+and `# …` comment lines are ignored. Two commands in one block are a finding even when both
+are script lines. Every failing block or span is a finding; the warn or block reason names
+the first one's line and command — plus the checkout, or the roots and the profile field,
+for a location finding — counts the rest, and carries rule 10's text: more than one command,
+or any interactive input, is a script file outside every git repository, and the reader
+types one byte-identical line. Warn by default and unmeasured.
+
+Where the heuristics cannot tell instruction from evidence, they stay silent only for text
+under a label or with a result attached (a receipt, an attached result, a retrospective
+list, a result table row) and warn everywhere else: any later code span starting with a
+known binary on an instruction line is handed, and a console block or prompt line under any
+imperative is handed.
 
 ## The triggers (deterministic halves of judge rules)
 
@@ -380,7 +418,7 @@ empty object is valid and yields the defaults.
   "reader": "the person you are reporting to",
   "traits": ["reads the first two lines of any message and skims the rest"],
   "inject": "full",
-  "handedCommand": { "allow": ["just deploy-*"] },
+  "handedCommand": { "allow": ["just deploy-*"], "scriptRoots": ["~/agent-scratch"] },
   "enforcement": {
     "mode": "block",
     "judgeCommand": "codex exec --skip-git-repo-check -",
@@ -400,6 +438,10 @@ empty object is valid and yields the defaults.
   other value is one `errors.log` line and reads as `full`.
 - **`handedCommand.allow`** — glob patterns the `handed-command` check accepts besides
   `zsh /abs/path/file.sh`. Not an array of non-empty strings → one `errors.log` line, ignored.
+- **`handedCommand.scriptRoots`** — directories a handed script may live under, absolute or
+  `~/` paths, default `["~/agent-scratch"]`. A script outside all of them, or inside any git
+  checkout, is a finding. Not a non-empty array of absolute or `~/` paths → one `errors.log`
+  line, and the default applies.
 - **`enforcement.mode`** — `block | warn | off`. Unset = each rule's built-in default (warn
   for every rule — the measured default above); set = overrides built-ins both ways.
 - **`enforcement.judgeCommand`** — see the judge section.

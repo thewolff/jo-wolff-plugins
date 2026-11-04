@@ -1022,7 +1022,7 @@ test("a transcript handing a bare `gh pr list` warns handed-command, naming rule
   assert.ok(existsSync(join(home, ".claude", ".i-have-audhd-state", "pending-warn-hc1.json")), "delivered next turn");
 });
 
-test("a transcript handing `zsh /Users/example/agent-scratch/…/x.sh` is silent", () => {
+test("a transcript handing `zsh ~/agent-scratch/…/x.sh` is silent", () => {
   const home = mkhome();
   const r = runHook({ session_id: "hc2", transcript_path: scriptTranscript }, home);
   assert.equal(r.status, 0);
@@ -1055,6 +1055,108 @@ test("a malformed handedCommand.allow is one errors.log line; the built-in shape
   assert.equal(logLines(home, "errors.log").length, 1);
   assert.match(readLog(home, "errors.log"), /handedCommand\.allow is not an array/);
   assert.match(readLog(home, "warnings.log"), /rule=handed-command/);
+});
+
+// ─── handed-command: round-1 review regressions (probe inputs reused) ───────
+
+const hcBlock = { inject: "none", enforcement: { mode: "off", rules: { "handed-command": "block" } } };
+
+test("HC-03 short_handoff: a one-line handoff under the master floor still blocks", () => {
+  const home = mkhome();
+  writeProfile(home, hcBlock);
+  const out = parseOut(runHook({ session_id: "hcs1", last_assistant_message: "Run `gh pr list`." }, home).stdout);
+  assert.equal(out.decision, "block");
+  assert.match(out.reason, /line 1 hands the reader `gh pr list`/);
+});
+
+test("HC-03 shell_fence_only: a command-only bash fence blocks", () => {
+  const home = mkhome();
+  writeProfile(home, hcBlock);
+  const out = parseOut(runHook({ session_id: "hcs2", last_assistant_message: "```bash\ngh pr list\n```" }, home).stdout);
+  assert.equal(out.decision, "block");
+  assert.match(out.reason, /line 2 hands the reader `gh pr list`/);
+});
+
+test("HC-03: under the floor only handed-command runs; a short message with no command stays silent", () => {
+  const home = mkhome();
+  const r = runHook({ session_id: "hcs3", last_assistant_message: "Run `gh pr list`." }, home);
+  assert.equal(r.stdout, "");
+  assert.equal(logLines(home, "warnings.log").length, 1, "default warn");
+  assert.match(readLog(home, "warnings.log"), /rule=handed-command/);
+  assert.equal(readLog(home, "skipped.log"), "", "no judge rule runs under the floor");
+  const quiet = mkhome();
+  writeProfile(quiet, hcBlock);
+  assert.equal(runHook({ session_id: "hcs4", last_assistant_message: "Done. Small body." }, quiet).stdout, "");
+  assert.ok(!existsSync(join(quiet, ".claude", ".i-have-audhd-state")), "nothing written");
+});
+
+test("HC-03: kill switch, inject rules, a rule set to off and the loop guard still win under the floor", () => {
+  const short = { last_assistant_message: "Run `gh pr list`." };
+  const killed = mkhome();
+  writeProfile(killed, hcBlock);
+  writeFileSync(join(killed, ".claude", ".i-have-audhd-off"), "");
+  assert.equal(runHook({ session_id: "hcs5", ...short }, killed).stdout, "");
+  const rules = mkhome();
+  writeProfile(rules, { ...hcBlock, inject: "rules" });
+  assert.equal(runHook({ session_id: "hcs6", ...short }, rules).stdout, "");
+  const off = mkhome();
+  writeProfile(off, { inject: "none", enforcement: { mode: "block", rules: { "handed-command": "off" } } });
+  assert.equal(runHook({ session_id: "hcs7", ...short }, off).stdout, "");
+  assert.ok(!existsSync(join(off, ".claude", ".i-have-audhd-state")), "nothing written");
+  const guarded = mkhome();
+  writeProfile(guarded, hcBlock);
+  assert.equal(parseOut(runHook({ session_id: "hcs8", ...short }, guarded).stdout).decision, "block");
+  assert.equal(runHook({ session_id: "hcs8", ...short, stop_hook_active: true }, guarded).stdout, "");
+});
+
+test("HC-01: a script outside every scratch root warns, naming the roots; scriptRoots moves them", () => {
+  const msg = `${body(4)}\n\nRun \`zsh /path/script.sh\`.`;
+  const home = mkhome();
+  runHook({ session_id: "hcr1", last_assistant_message: msg }, home);
+  assert.match(readLog(home, "warnings.log"), /a script outside every scratch root \(~\/agent-scratch; the profile's handedCommand\.scriptRoots\)/);
+  const moved = mkhome();
+  writeProfile(moved, { handedCommand: { scriptRoots: ["/path"] } });
+  runHook({ session_id: "hcr2", last_assistant_message: msg }, moved);
+  assert.equal(readLog(moved, "warnings.log"), "");
+  assert.equal(readLog(moved, "errors.log"), "");
+});
+
+test("HC-01: a script inside a git checkout warns, naming the checkout", () => {
+  const home = mkhome();
+  mkdirSync(join(home, "agent-scratch", "repo", ".git"), { recursive: true });
+  runHook({ session_id: "hcr3", last_assistant_message: `${body(4)}\n\nRun \`zsh ~/agent-scratch/repo/x.sh\`.` }, home);
+  assert.match(readLog(home, "warnings.log"), /a script inside the git checkout .*agent-scratch\/repo/);
+});
+
+test("a malformed handedCommand.scriptRoots is one errors.log line; ~/agent-scratch applies", () => {
+  for (const scriptRoots of [[], "~/x", ["relative/dir"], [3]]) {
+    const home = mkhome();
+    writeProfile(home, { handedCommand: { scriptRoots } });
+    runHook({ session_id: "hcr4", last_assistant_message: `${body(4)}\n\nRun \`zsh /path/script.sh\`.` }, home);
+    assert.equal(logLines(home, "errors.log").length, 1, JSON.stringify(scriptRoots));
+    assert.match(readLog(home, "errors.log"), /handedCommand\.scriptRoots is not a non-empty array/);
+    assert.match(readLog(home, "warnings.log"), /~\/agent-scratch/);
+  }
+});
+
+test("HC-02/05/06/07/08/09/10 through the hook: the review's long-form probes", () => {
+  const cases = [
+    ["e2e_split_inline_spans", "Run `zsh /path/script.sh` `--flag`.", true],
+    ["e2e_safe_then_unsafe_inline", "Run `zsh ~/agent-scratch/x.sh`, then run `gh pr list`.", true],
+    ["e2e_script_split_across_lines", "Run `zsh ~/agent-scratch/x.sh`\n`--flag`.", true],
+    ["e2e_claim_two_paragraphs", "**CLAIM**\nThe completed check used the following command.\n\nIts exact invocation and result follow.\n\n```bash\ngh pr list\n```\nThe command exited zero.", false],
+    ["e2e_arrow_next_line_inline", "Run `gh pr list`\n→ exit 0, three pull requests.", false],
+    ["e2e_numbered_what_i_ran_fence", "## What I ran\n1. Listed open pull requests:\n\n   ```bash\n   gh pr list\n   ```\n\n   Exit code: 0.", false],
+    ["e2e_console_instructions", "Run this in your terminal:\n\n```console\n$ gh pr list\n```", true],
+    ["e2e_table_colon_evidence", "| Check | Result |\n| --- | --- |\n| Completed: run `gh pr list` | exit 0 |", false],
+    ["e2e_prompt_after_run", "Run this in your terminal:\n\n$ gh pr list", true],
+  ];
+  for (const [name, tail, blocks] of cases) {
+    const home = mkhome();
+    writeProfile(home, hcBlock);
+    const r = runHook({ session_id: name, last_assistant_message: `${body(4)}\n\n${tail}` }, home);
+    assert.equal(r.stdout.includes('"decision":"block"'), blocks, name);
+  }
 });
 
 // ─── the profile's inject switch, Stop half ──────────────────────────────────
