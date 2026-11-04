@@ -7,7 +7,7 @@
     "Stop": ["deny", "silent"]
   },
   "manual": [
-    "That the context-pressure estimate (transcript bytes since the last compaction marker, divided by 4) is near the real context on Claude Code: when the warning fires, run /context in the same session and compare its token figure with the percentage the warning gave of `contextTokens`. Measured on the machine this was written on, transcript files ran about 8 to 9.5 bytes per context token, so expect the estimate to read high.",
+    "That the context-pressure measure (the token usage the last main-thread reply recorded in the transcript: input_tokens + cache_read_input_tokens + cache_creation_input_tokens) matches the real context on Claude Code: when the warning fires, run /context in the same session and compare its token figure with the percentage the warning gave of `contextTokens`. A warning that says `(estimate)` used the bytes / 8 fallback instead and can be off in either direction.",
     "That Claude Code writes a `compact_boundary` line into the same transcript after a compaction, so the estimate restarts from it: compact a session, then check the transcript for the marker. No transcript on the machine this was written on had one.",
     "That the restored snapshot arrives in the model's context after a real auto-compaction: run a session past the threshold and ask it, after the compaction, what branch it was on."
   ]

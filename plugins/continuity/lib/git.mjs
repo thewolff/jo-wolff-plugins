@@ -35,7 +35,8 @@ export function git(args, cwd, timeoutMs) {
     }
     timer = setTimeout(() => {
       try {
-        process.kill(-child.pid, "SIGKILL");
+        // pid > 0 only: a failed spawn's pid is not a number, and -0 would be kill(0), this process's own group.
+        if (child.pid > 0) process.kill(-child.pid, "SIGKILL");
       } catch {
         /* already gone */
       }

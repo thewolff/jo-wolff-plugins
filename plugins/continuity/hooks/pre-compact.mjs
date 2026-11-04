@@ -8,7 +8,7 @@
 // invocation leaves two heartbeat records (`started`, then `ok` or `failed:<reason>`) that the
 // liveness line reads. When the payload carries a real `token_count` (a host adapter that passes
 // one; Claude Code's PreCompact payload does not), it also leaves one calibration record that
-// sharpens the context-pressure estimate. When auto-compaction fires with no handoff written, it
+// sharpens the context-pressure byte estimate for a transcript with no recorded usage. When auto-compaction fires with no handoff written, it
 // says so in a `systemMessage`: the person sees it, the model does not (PreCompact cannot inject
 // context, and no hook gives the model a turn before auto-compaction).
 //

@@ -5,8 +5,9 @@
 //
 // What it does, as `additionalContext`, each at most once per session: the liveness line, when
 // this session has not heard it (a host that did not run hooks/session-start.mjs); and the
-// context-pressure warning, when the context estimate (lib/pressure.mjs: the transcript's bytes
-// since its last compaction marker, / 4 or through a calibrated ratio) is at or past `threshold`
+// context-pressure warning, when the context size (lib/pressure.mjs: the token usage the last
+// reply recorded in the transcript, or, with none, the transcript's bytes since its last
+// compaction marker through a calibrated ratio or / 8) is at or past `threshold`
 // (default 0.65) of `contextTokens` (default 200000). The warning asks the model to run
 // `/continuity:handoff` during this turn, while it still has the context the handoff needs;
 // hooks/stop.mjs blocks once at the end of a turn for the same reason.

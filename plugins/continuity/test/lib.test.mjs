@@ -2,8 +2,9 @@
 
 import test from "node:test";
 import assert from "node:assert/strict";
-import { chmodSync, cpSync, existsSync, mkdirSync, readdirSync, readFileSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
-import { spawnSync } from "node:child_process";
+import { chmodSync, cpSync, existsSync, mkdirSync, readdirSync, readFileSync, statSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
+import { spawn, spawnSync } from "node:child_process";
+import { pathToFileURL } from "node:url";
 import { join } from "node:path";
 import { box, PLUGIN_ROOT } from "./helpers.mjs";
 import { calibrationPath, configPath, heartbeatPath, sanitizeSessionId, sessionFlagsPath, snapshotPath, stateDir } from "../lib/paths.mjs";
@@ -17,6 +18,7 @@ import { ENTRY_LINE_CAP, handoffWrittenBy, listHandoffs, parseFrontmatter, rende
 import { MAX_STATUS_ENTRIES, RESTORE_MAX_CHARS, STATE_MAX_AGE_MS, buildSnapshot, capture, readTranscript, renderSnapshot, restore } from "../lib/snapshot.mjs";
 import { ERRORS_MAX_LINES, logError } from "../lib/errors.mjs";
 import { git } from "../lib/git.mjs";
+import { appendBounded } from "../lib/bounded-log.mjs";
 import { prune } from "../scripts/prune.mjs";
 
 const handoffText = (over = {}) => {
@@ -90,10 +92,11 @@ test("heartbeat: records carry every field, trim to the cap, and an unwritable o
     assert.deepEqual(readHeartbeat(b.env), [{ at: "2026-11-04T10:00:00.000Z", event: "PreCompact", trigger: "auto", session: "s1", cwd: "/w", outcome: "started" }]);
     assert.equal(recordHeartbeat({}, b.env), true);
     assert.deepEqual(readHeartbeat(b.env)[1], { ...readHeartbeat(b.env)[1], event: "(none)", trigger: "", session: "unknown", cwd: "", outcome: "unknown" });
-    for (let i = 0; i < HEARTBEAT_MAX_LINES + 10; i++) recordHeartbeat({ event: "PreCompact", outcome: `n${i}` }, b.env);
+    for (let i = 0; i < 2 * HEARTBEAT_MAX_LINES + 10; i++) recordHeartbeat({ event: "PreCompact", outcome: `n${i}` }, b.env);
     const all = readHeartbeat(b.env);
-    assert.equal(all.length, HEARTBEAT_MAX_LINES);
-    assert.equal(all[all.length - 1].outcome, `n${HEARTBEAT_MAX_LINES + 9}`);
+    // 2 + 2 × max + 10 writes: trimmed to max once it passed 2 × max, then 11 more appended.
+    assert.equal(all.length, HEARTBEAT_MAX_LINES + 11);
+    assert.equal(all[all.length - 1].outcome, `n${2 * HEARTBEAT_MAX_LINES + 9}`);
     writeFileSync(heartbeatPath(b.env), '{"event":"PreCompact","outcome":"ok","at":"x"}\nnot json\n');
     assert.equal(readHeartbeat(b.env).length, 1);
     // The trim is a rename-swap: no temp file is left beside the log.
@@ -109,11 +112,37 @@ test("heartbeat: records carry every field, trim to the cap, and an unwritable o
 test("errors log: the hooks' own lines keep the runner's format and trim to the cap by rename-swap", () => {
   const b = box();
   try {
-    for (let i = 0; i < ERRORS_MAX_LINES + 15; i++) logError("continuity", "Stop", `fault  ${i}`, b.env);
+    for (let i = 0; i < 2 * ERRORS_MAX_LINES + 15; i++) logError("continuity", "Stop", `fault  ${i}`, b.env);
     const lines = readFileSync(join(stateDir(b.env), "errors.log"), "utf8").trim().split("\n");
-    assert.equal(lines.length, ERRORS_MAX_LINES);
-    assert.match(lines.at(-1), new RegExp(`^\\d{4}-\\d{2}-\\d{2}T\\S+ Stop fault ${ERRORS_MAX_LINES + 14}$`));
+    assert.equal(lines.length, ERRORS_MAX_LINES + 14, "trimmed to the cap once past twice the cap, then appended to");
+    assert.match(lines.at(-1), new RegExp(`^\\d{4}-\\d{2}-\\d{2}T\\S+ Stop fault ${2 * ERRORS_MAX_LINES + 14}$`));
     assert.deepEqual(readdirSync(stateDir(b.env)).filter((f) => f.endsWith(".tmp")), []);
+  } finally {
+    b.release();
+  }
+});
+
+test("bounded log: a plain append below twice the cap, a rename-swap trim past it, and concurrent appends below the cap all land", async () => {
+  const b = box();
+  try {
+    const log = join(b.root, "logs", "x.log");
+    appendBounded(log, "first", 3);
+    const ino = statSync(log).ino;
+    for (let i = 0; i < 5; i++) appendBounded(log, `l${i}`, 3);
+    assert.equal(statSync(log).ino, ino, "six lines of a cap of 3: appended in place, never swapped");
+    assert.equal(readFileSync(log, "utf8"), "first\nl0\nl1\nl2\nl3\nl4\n");
+    appendBounded(log, "l5", 3);
+    assert.equal(readFileSync(log, "utf8"), "l3\nl4\nl5\n", "the seventh line passes 2 × 3: trimmed to the newest 3");
+    assert.deepEqual(readdirSync(join(b.root, "logs")).filter((f) => f.endsWith(".tmp")), []);
+
+    // 8 processes × 40 lines at a cap of 10,000: nothing is trimmed, so nothing may be lost.
+    const shared = join(b.root, "logs", "shared.log");
+    const mod = pathToFileURL(join(PLUGIN_ROOT, "lib", "bounded-log.mjs")).href;
+    const script = `const { appendBounded } = await import(${JSON.stringify(mod)}); for (let i = 0; i < 40; i++) appendBounded(process.argv[1], process.pid + " " + i, 10000);`;
+    await Promise.all(
+      Array.from({ length: 8 }, () => new Promise((resolve, reject) => spawn(process.execPath, ["--input-type=module", "-e", script, shared], { stdio: "ignore" }).on("exit", (code) => (code === 0 ? resolve() : reject(new Error(`writer exit ${code}`)))))),
+    );
+    assert.equal(readFileSync(shared, "utf8").split("\n").filter(Boolean).length, 320);
   } finally {
     b.release();
   }
@@ -139,6 +168,11 @@ test("liveness: the four cases, invocations not records, the newest result per s
   // A save that recorded `started` and nothing after it did not finish; a skip is not a result.
   const unfinished = renderLiveness({ env, now, records: [...save("2026-11-04T11:30:00Z", "ok"), { at: "2026-11-04T11:55:00Z", event: "PreCompact", session: "b", outcome: "started" }, { at: "2026-11-04T11:58:00Z", event: "PreCompact", session: "c", outcome: "skipped:off" }] });
   assert.match(unfinished, /\*\*the last save failed\*\* 5 minutes ago \(`started` with no result recorded: the save did not finish/);
+  // A `started` younger than the runner's 4 s deadline may be another session's save still running: not a failure.
+  const running = renderLiveness({ env, now, records: [...save("2026-11-04T11:30:00Z", "ok"), { at: "2026-11-04T11:59:58Z", event: "PreCompact", session: "b", outcome: "started" }] });
+  assert.match(running, /^continuity, pre-compaction save liveness: last successful save 30 minutes ago/);
+  const stale = renderLiveness({ env, now, records: [...save("2026-11-04T11:30:00Z", "ok"), { at: "2026-11-04T11:59:55Z", event: "PreCompact", session: "b", outcome: "started" }] });
+  assert.match(stale, /\*\*the last save failed\*\* less than a minute ago \(`started` with no result recorded/, "5 s old is past the deadline");
   const failed = renderLiveness({ env, now, records: [...save("2026-11-04T11:40:00Z", "failed:EACCES"), ...save("2026-11-04T11:50:00Z", "failed:EACCES")] });
   assert.match(failed, /\*\*no pre-compaction save has ever succeeded on this machine\.\*\*/);
   assert.match(failed, /invoked 2 times and the most recent outcome was `failed:EACCES`/, "four records, two invocations");
@@ -153,9 +187,9 @@ test("calibration: measures bytes after the last compaction marker or the whole 
   try {
     assert.equal(measureTranscript("/nowhere"), null);
     b.writeTranscript(["x".repeat(99)]);
-    assert.deepEqual(measureTranscript(b.transcript), { bytes: 100, sinceMarker: false });
+    assert.deepEqual(measureTranscript(b.transcript), { bytes: 100, sinceMarker: false, usageTokens: null });
     b.writeTranscript(["a".repeat(500), { type: "system", subtype: "compact_boundary" }, "y".repeat(49)]);
-    assert.deepEqual(measureTranscript(b.transcript), { bytes: 50, sinceMarker: true }, "only what follows the marker line counts");
+    assert.deepEqual(measureTranscript(b.transcript), { bytes: 50, sinceMarker: true, usageTokens: null }, "only what follows the marker line counts");
 
     assert.equal(readCalibration(b.env), null);
     assert.equal(recordCalibration({ token_count: 100, transcript_path: "/nowhere" }, b.env), false);
@@ -172,35 +206,68 @@ test("calibration: measures bytes after the last compaction marker or the whole 
     assert.deepEqual(readCalibration(b.env), { ratio: 20 });
     writeFileSync(calibrationPath(b.env), "garbage\n{\"bytes\":0,\"tokens\":5}\n");
     assert.equal(readCalibration(b.env), null);
-    for (let i = 0; i < CALIBRATION_MAX_LINES + 5; i++) recordCalibration({ token_count: 100, transcript_path: b.transcript }, b.env);
-    assert.equal(readFileSync(calibrationPath(b.env), "utf8").split("\n").filter(Boolean).length, CALIBRATION_MAX_LINES);
+    for (let i = 0; i < 2 * CALIBRATION_MAX_LINES + 5; i++) recordCalibration({ token_count: 100, transcript_path: b.transcript }, b.env);
+    assert.equal(readFileSync(calibrationPath(b.env), "utf8").split("\n").filter(Boolean).length, CALIBRATION_MAX_LINES + 6, "2 old + 2 × max + 5 writes: trimmed to max past 2 × max, then 6 more");
   } finally {
     b.release();
   }
 });
 
-test("pressure: a plain transcript of known size, no calibration, is estimated at bytes / 4 against contextTokens", () => {
+test("pressure: the last main-thread reply's recorded usage is the context size; sidechain and zero-usage replies are passed over; a compaction marker resets it", () => {
   const b = box();
   try {
-    assert.equal(BYTES_PER_TOKEN_ESTIMATE, 4);
-    // 640,000 bytes / 4 = 160,000 tokens = 80% of the 200,000 default.
-    b.writeTranscript(["x".repeat(639_999)]);
+    const reply = (usage, extra = {}) => ({ type: "assistant", isSidechain: false, message: { role: "assistant", content: [{ type: "text", text: "ok" }], usage }, ...extra });
     const input = { transcript_path: b.transcript };
-    assert.deepEqual(estimateContext(b.transcript, b.env), { tokens: 160000, bytes: 640000, basis: "estimate", sinceMarker: false });
-    assert.deepEqual(pressure(input, { threshold: 0.65, contextTokens: 200000, env: b.env }), { pct: 80, estimated: 160000, target: 200000, basis: "estimate" });
+    // Claude Code's shape: 2 + 150,000 cache read + 9,998 cache creation = 160,000 = 80% of 200,000.
+    const full = { input_tokens: 2, cache_creation_input_tokens: 9_998, cache_read_input_tokens: 150_000, output_tokens: 5 };
+    b.writeTranscript([reply({ input_tokens: 10 }), { type: "user", message: { role: "user", content: "go" } }, reply(full), { type: "user", message: { role: "user", content: "next" } }]);
+    assert.equal(measureTranscript(b.transcript).usageTokens, 160000);
+    const bytes = measureTranscript(b.transcript).bytes;
+    assert.deepEqual(estimateContext(b.transcript, b.env), { tokens: 160000, bytes, basis: "usage", sinceMarker: false });
+    assert.deepEqual(pressure(input, { threshold: 0.65, contextTokens: 200000, env: b.env }), { pct: 80, estimated: 160000, target: 200000, basis: "usage" });
     assert.equal(pressure(input, { threshold: 0.9, contextTokens: 200000, env: b.env }), null);
     assert.equal(pressure(input, { threshold: 0.65, contextTokens: 400000, env: b.env }), null, "a larger window is honoured");
+    // No cache fields: input_tokens alone.
+    b.writeTranscript([reply({ input_tokens: 140_000, output_tokens: 3 })]);
+    assert.equal(measureTranscript(b.transcript).usageTokens, 140000);
+    // A newer sidechain (subagent) reply and a newer synthetic zero-usage reply do not replace the main thread's.
+    b.writeTranscript([reply(full), reply({ input_tokens: 5, cache_read_input_tokens: 1 }, { isSidechain: true }), reply({ input_tokens: 0, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 })]);
+    assert.equal(measureTranscript(b.transcript).usageTokens, 160000);
+    // A usage record before the compaction marker does not count after it.
+    b.writeTranscript([reply(full), { type: "system", subtype: "compact_boundary" }, reply({ input_tokens: 3, cache_read_input_tokens: 20_000 })]);
+    assert.deepEqual(measureTranscript(b.transcript), { bytes: measureTranscript(b.transcript).bytes, sinceMarker: true, usageTokens: 20003 });
+    assert.equal(pressure(input, { threshold: 0.65, contextTokens: 200000, env: b.env }), null);
+    // Usage beats a calibration record.
+    b.writeTranscript([reply(full)]);
+    mkdirSync(stateDir(b.env), { recursive: true });
+    writeFileSync(calibrationPath(b.env), '{"bytes":1,"tokens":1}\n');
+    assert.equal(pressure(input, { threshold: 0.65, contextTokens: 200000, env: b.env }).basis, "usage");
+    assert.match(handoffRequest(80, "usage"), /^continuity: this session's context is 80% full \(from the token usage the last reply recorded\)\. .*`\/continuity:handoff`/);
+  } finally {
+    b.release();
+  }
+});
+
+test("pressure: with no recorded usage, the transcript's bytes / 8 is the estimate and the warning says (estimate); a calibration record replaces the constant", () => {
+  const b = box();
+  try {
+    assert.equal(BYTES_PER_TOKEN_ESTIMATE, 8);
+    // 1,280,000 bytes / 8 = 160,000 tokens = 80% of the 200,000 default.
+    b.writeTranscript(["x".repeat(1_279_999)]);
+    const input = { transcript_path: b.transcript };
+    assert.deepEqual(estimateContext(b.transcript, b.env), { tokens: 160000, bytes: 1280000, basis: "estimate", sinceMarker: false });
+    assert.deepEqual(pressure(input, { threshold: 0.65, contextTokens: 200000, env: b.env }), { pct: 80, estimated: 160000, target: 200000, basis: "estimate" });
     assert.equal(pressure({ transcript_path: "/nowhere" }, { threshold: 0.1, contextTokens: 200000, env: b.env }), null);
     assert.equal(pressure({}, { threshold: 0.1, contextTokens: 200000, env: b.env }), null);
-    // A compaction marker: only the bytes after it count, so a fresh window reads as nearly empty.
-    b.writeTranscript(["x".repeat(639_999), { type: "system", subtype: "compact_boundary" }, "y".repeat(3)]);
+    // A usage record only before the marker: the fallback applies to the bytes after it.
+    b.writeTranscript([{ type: "assistant", message: { usage: { input_tokens: 190_000 } } }, { type: "system", subtype: "compact_boundary" }, "y".repeat(3)]);
     assert.equal(pressure(input, { threshold: 0.65, contextTokens: 200000, env: b.env }), null);
     // A real token count ever recorded (an adapter that passes one) replaces the constant.
     b.writeTranscript(["x".repeat(3999)]);
     mkdirSync(stateDir(b.env), { recursive: true });
     writeFileSync(calibrationPath(b.env), '{"bytes":4000,"tokens":160000}\n');
     assert.deepEqual(pressure(input, { threshold: 0.65, contextTokens: 200000, env: b.env }), { pct: 80, estimated: 160000, target: 200000, basis: "calibrated" });
-    assert.match(handoffRequest(80), /context is roughly 80% full \(estimated from the transcript's size, not counted\).*`\/continuity:handoff`/);
+    assert.match(handoffRequest(80), /context is roughly 80% full \(estimate\), judged from the transcript's size.*`\/continuity:handoff`/);
     assert.match(handoffRequest(80, "calibrated"), /roughly 80% full \(calibrated from this machine's compactions\)/);
   } finally {
     b.release();

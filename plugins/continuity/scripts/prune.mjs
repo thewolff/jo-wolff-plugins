@@ -9,7 +9,7 @@
 // directory left empty. Prints `pruned: <n> file(s), <bytes> bytes freed` as the last line (the
 // canary records the bytes). errors.log, heartbeat.ndjson and calibration.ndjson are kept whatever
 // their age: they are the record (the liveness line and the pressure check read the last two, and
-// each is already trimmed to 200 lines on write).
+// each is already trimmed to its newest 200 lines on write once it passes 400).
 //
 // How it fails: no state directory → `pruned: 0 file(s), 0 bytes freed`, exit 0. A file that
 // cannot be removed is counted as kept and named on stderr; exit stays 0 (a prune that cannot

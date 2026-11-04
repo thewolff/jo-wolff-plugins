@@ -3,7 +3,8 @@
 // parse / allow / warn / unparseable; the last test walks a whole session through all four.
 //
 // No test here hands a hook a `token_count`: Claude Code's PreCompact payload has none, so the
-// pressure check is exercised the way it runs there, from a plain transcript of known size.
+// pressure check is exercised the way it runs there, from the token usage the transcript's last
+// assistant reply recorded.
 
 import test from "node:test";
 import assert from "node:assert/strict";
@@ -17,9 +18,15 @@ import { handle as userPrompt } from "../hooks/user-prompt-submit.mjs";
 import { handle as stop } from "../hooks/stop.mjs";
 
 const HOOKS = ["pre-compact.mjs", "session-start.mjs", "user-prompt-submit.mjs", "stop.mjs"];
-// A transcript of about 640,000 bytes: 160,000 tokens at the bytes / 4 estimate, 80% of the
-// 200,000 default, past the 0.65 default threshold. No calibration file anywhere.
-const nearlyFull = (b, entries = []) => b.writeTranscript([...entries, { type: "user", message: { role: "user", content: "x".repeat(639_900) } }]);
+// A transcript whose last assistant reply recorded 160,000 tokens of context (2 + 150,000 cache
+// read + 9,998 cache creation, in Claude Code's `usage` shape), 80% of the 200,000 default, past
+// the 0.65 default threshold. No calibration file anywhere.
+const nearlyFull = (b, entries = []) =>
+  b.writeTranscript([
+    ...entries,
+    { type: "user", message: { role: "user", content: "carry on" } },
+    { type: "assistant", isSidechain: false, message: { role: "assistant", content: [{ type: "text", text: "ok" }], usage: { input_tokens: 2, cache_creation_input_tokens: 9_998, cache_read_input_tokens: 150_000, output_tokens: 5 } } },
+  ]);
 const handoff = (b, session, name = "h.md") => {
   mkdirSync(join(b.work, ".ai", "handoffs"), { recursive: true });
   writeFileSync(join(b.work, ".ai", "handoffs", name), `---\nsession_id: ${session}\nlane: l\nstatus: open\n---\n## Where I left off\nmidway\n`);
@@ -233,7 +240,7 @@ test("user-prompt-submit: liveness once if unsaid; pressure warning once from a 
     nearlyFull(b);
     r = spawnHook(b, "user-prompt-submit.mjs", input("UserPromptSubmit", b, { prompt: "more" }));
     assert.equal(r.json.hookSpecificOutput.hookEventName, "UserPromptSubmit");
-    assert.match(r.json.hookSpecificOutput.additionalContext, /^continuity: this session's context is roughly 80% full \(estimated from the transcript's size, not counted\).*`\/continuity:handoff`/);
+    assert.match(r.json.hookSpecificOutput.additionalContext, /^continuity: this session's context is 80% full \(from the token usage the last reply recorded\)\..*`\/continuity:handoff`/);
     assert.equal(existsSync(join(b.stateDir, "calibration.ndjson")), false, "no calibration was needed");
     r = spawnHook(b, "user-prompt-submit.mjs", input("UserPromptSubmit", b, { prompt: "more" }));
     assert.equal(r.json, null, "warned once");
@@ -249,7 +256,7 @@ test("user-prompt-submit: liveness once if unsaid; pressure warning once from a 
     assert.equal(r.json, null);
     b.writeConfig({ threshold: "lots" });
     r = spawnHook(b, "user-prompt-submit.mjs", input("UserPromptSubmit", b, { session_id: "s4", prompt: "x" }));
-    assert.match(r.json.hookSpecificOutput.additionalContext, /roughly 80% full/, "a bad threshold falls back to the default");
+    assert.match(r.json.hookSpecificOutput.additionalContext, / 80% full \(from the token usage/, "a bad threshold falls back to the default");
     assert.match(r.json.hookSpecificOutput.additionalContext, /continuity: .*threshold must be a number between 0 and 1, not "lots"/);
     r = spawnHook(b, "user-prompt-submit.mjs", input("UserPromptSubmit", b, { session_id: "s4", prompt: "x" }));
     assert.equal(r.json, null, "the config complaint is also once per session");
@@ -284,7 +291,7 @@ test("stop: quiet when small; blocks once near full with the handoff request; no
     r = spawnHook(b, "stop.mjs", input("Stop", b, { stop_hook_active: false }));
     assert.equal(r.status, 0);
     assert.equal(r.json.decision, "block");
-    assert.match(r.json.reason, /roughly 80% full.*`\/continuity:handoff`/);
+    assert.match(r.json.reason, / 80% full \(from the token usage.*`\/continuity:handoff`/);
     assert.match(b.readState("sessions/s-test.json"), /stopBlocked/);
     r = spawnHook(b, "stop.mjs", input("Stop", b, { stop_hook_active: false }));
     assert.equal(r.json, null, "once per session");
@@ -293,7 +300,7 @@ test("stop: quiet when small; blocks once near full with the handoff request; no
 
     // The prompt warned, the model wrote the handoff in that turn: the stop at the end of it passes.
     r = spawnHook(b, "user-prompt-submit.mjs", input("UserPromptSubmit", b, { session_id: "wrote", prompt: "go" }));
-    assert.match(r.json.hookSpecificOutput.additionalContext, /roughly 80% full/);
+    assert.match(r.json.hookSpecificOutput.additionalContext, / 80% full \(from the token usage/);
     handoff(b, "wrote");
     r = spawnHook(b, "stop.mjs", input("Stop", b, { session_id: "wrote", stop_hook_active: false }));
     assert.equal(r.json, null, `a handoff from this session is already open: ${r.stdout}`);

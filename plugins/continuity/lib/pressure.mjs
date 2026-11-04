@@ -1,26 +1,30 @@
 // lib/pressure.mjs — how full is this session's context, as a fraction of `contextTokens` from
-// the config (default 200,000), estimated from the transcript's size (lib/calibration.mjs).
+// the config (default 200,000), measured from the transcript (lib/calibration.mjs).
 //
-// The estimate is the transcript's bytes since its last compaction marker divided by
-// BYTES_PER_TOKEN_ESTIMATE. It is an estimate, not a count: Claude Code gives a hook no token
-// count before compaction, so the size of the transcript file is the only measure every hook
-// event can reach. A transcript line is JSON with metadata around the text, so bytes / 4 tends to
-// overstate the context, which makes the check speak early rather than late. When a host has
-// ever reported a real `token_count` at PreCompact (an adapter that passes it; Claude Code does
-// not), the calibrated ratio replaces the constant and the answer says which basis it used.
+// The measure, best first:
+// - "usage": the token usage the newest main-thread reply since the last compaction marker
+//   recorded (input + cache read + cache creation). Exact for that turn; Claude Code writes it.
+// - "calibrated": the transcript's bytes since the marker times the median tokens-per-byte ratio
+//   recorded when a host passed a real `token_count` at PreCompact (an adapter that passes it;
+//   Claude Code does not).
+// - "estimate": those bytes divided by BYTES_PER_TOKEN_ESTIMATE, when neither exists (a fresh
+//   window with no reply yet, or a host whose transcript carries no usage). Measured on Claude
+//   Code transcripts, bytes per context token ran about 8 to 9.5, with a wide spread; the warning
+//   says `(estimate)` when this is the basis.
 
 import { readCalibration, measureTranscript } from "./calibration.mjs";
 
 /** Bytes of transcript per token of context when nothing better is known. An estimate. */
-export const BYTES_PER_TOKEN_ESTIMATE = 4;
+export const BYTES_PER_TOKEN_ESTIMATE = 8;
 
 /**
  * `{ tokens, bytes, basis, sinceMarker }` for the transcript at `path`, where basis is
- * "calibrated" or "estimate"; null when the transcript cannot be measured or is empty.
+ * "usage", "calibrated" or "estimate"; null when the transcript cannot be measured or is empty.
  */
 export function estimateContext(path, env = process.env) {
   const m = measureTranscript(path);
   if (!m || !m.bytes) return null;
+  if (m.usageTokens) return { tokens: m.usageTokens, bytes: m.bytes, basis: "usage", sinceMarker: m.sinceMarker };
   const cal = readCalibration(env);
   return cal
     ? { tokens: m.bytes * cal.ratio, bytes: m.bytes, basis: "calibrated", sinceMarker: m.sinceMarker }
@@ -39,9 +43,14 @@ export function pressure(input, { threshold, contextTokens, env = process.env } 
 
 /** The text that asks for a handoff; the same on both surfaces, with the way out in backticks. */
 export function handoffRequest(pct, basis = "estimate") {
-  const how = basis === "calibrated" ? "calibrated from this machine's compactions" : "estimated from the transcript's size, not counted";
+  const how =
+    basis === "usage"
+      ? `${pct}% full (from the token usage the last reply recorded)`
+      : basis === "calibrated"
+        ? `roughly ${pct}% full (calibrated from this machine's compactions)`
+        : `roughly ${pct}% full (estimate), judged from the transcript's size because no reply since the last compaction recorded its token usage`;
   return (
-    `continuity: this session's context is roughly ${pct}% full (${how}). Before it ends, run \`/continuity:handoff\` ` +
+    `continuity: this session's context is ${how}. Before it ends, run \`/continuity:handoff\` ` +
     "to write the judgment layer to `.ai/handoffs/` in the repository: what you were in the middle of, what you already ruled " +
     "out, what is still uncertain. The next session inherits that file and nothing else beyond the repository itself; " +
     "mechanical state (branch, diff, touched files, recent asks) is saved automatically at compaction and is not what gets lost. " +

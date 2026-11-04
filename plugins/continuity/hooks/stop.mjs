@@ -2,8 +2,9 @@
 // hooks/stop.mjs — the continuity plugin's Stop hook. Runs under lib/hook-runner.mjs: exit 0
 // always; a fault is one errors.log line and a systemMessage, never a block.
 //
-// What it does: once per session, when the context estimate (lib/pressure.mjs: the transcript's
-// bytes since its last compaction marker, / 4 or through a calibrated ratio) is at or past
+// What it does: once per session, when the context size (lib/pressure.mjs: the token usage the
+// last reply recorded in the transcript, or, with none, the transcript's bytes since its last
+// compaction marker through a calibrated ratio or / 8) is at or past
 // `threshold` (default 0.65) of `contextTokens` (default 200000), and no handoff carrying this
 // session's id is open in the repository's `.ai/handoffs/`, it blocks the stop
 // (`decision: "block"`) and hands the model one more turn to run `/continuity:handoff`. Why Stop:

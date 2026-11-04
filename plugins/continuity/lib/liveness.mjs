@@ -9,6 +9,7 @@
 //
 // Pure: no filesystem writes, no stdout. The heartbeat read goes through lib/heartbeat.mjs.
 
+import { DEADLINE_MS } from "./hook-runner.mjs";
 import { readHeartbeat } from "./heartbeat.mjs";
 import { heartbeatPath } from "./paths.mjs";
 
@@ -44,8 +45,10 @@ export function renderLiveness({ env = process.env, records = readHeartbeat(env)
 
   // The newest save's result decides the sentence, not the newest success: a save that broke
   // after one good run must not read as alive for the next 100 compactions. `skipped:` records
-  // are a config choice, not a result, and are passed over.
-  const saves = records.filter((r) => r.event === "PreCompact" && !String(r.outcome).startsWith("skipped:"));
+  // are a config choice, not a result, and are passed over. So is a `started` younger than the
+  // runner's deadline: that save may still be running in another session, not failed.
+  const inFlight = (r) => r.outcome === "started" && now - Date.parse(String(r.at)) < DEADLINE_MS;
+  const saves = records.filter((r) => r.event === "PreCompact" && !String(r.outcome).startsWith("skipped:") && !inFlight(r));
   const latest = saves.length ? saves[saves.length - 1] : null;
   const lastOk = [...saves].reverse().find((r) => r.outcome === "ok");
   const ago = (r) => {

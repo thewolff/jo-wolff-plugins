@@ -1,11 +1,9 @@
 {
-  "$comment": "No calibration file and a plain 640,000-byte transcript: the estimate is 640,000 / 4 = 160,000 tokens, 80% of the 200,000 default, past the 0.65 default, so the prompt carries the handoff request once.",
+  "$comment": "No calibration file and a transcript whose last assistant reply recorded usage of 2 input + 150,000 cache read + 9,998 cache creation = 160,000 tokens, 80% of the 200,000 default, past the 0.65 default, so the prompt carries the handoff request once.",
   "event": "UserPromptSubmit",
   "expect": "systemMessage",
   "reason": "/continuity:handoff",
-  "setup": {
-    "commands": ["yes '{\"type\":\"user\",\"message\":{\"role\":\"user\",\"content\":\"carry on with the port\"}}' | head -c 640000 > \"${TRANSCRIPT}\""]
-  },
+  "transcript": [{ "type": "user", "message": { "role": "user", "content": "carry on with the port" } }, { "type": "assistant", "isSidechain": false, "message": { "role": "assistant", "content": [{ "type": "text", "text": "Done." }], "usage": { "input_tokens": 2, "cache_creation_input_tokens": 9998, "cache_read_input_tokens": 150000, "output_tokens": 5 } } }],
   "before": [{ "event": "SessionStart", "stdin": { "hook_event_name": "SessionStart", "session_id": "${SESSION_ID}", "cwd": "${CWD}", "source": "startup" } }],
   "stdin": { "hook_event_name": "UserPromptSubmit", "session_id": "${SESSION_ID}", "cwd": "${CWD}", "transcript_path": "${TRANSCRIPT}", "prompt": "carry on" },
   "after": { "commands": ["grep -q promptWarned \"${XDG_STATE_HOME}/continuity/sessions/${SESSION_ID}.json\""] }
