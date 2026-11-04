@@ -3,9 +3,11 @@
 // open(path):
 //   1. create the parent directory;
 //   2. open with node:sqlite, WAL, busy_timeout 2000 ms, foreign keys on;
-//   3. a file that is not a database (SQLITE_NOTADB 26) or is corrupt (SQLITE_CORRUPT 11) is
-//      renamed `<path>.corrupt-<timestamp>` and a fresh one is created; the move is returned as a
-//      notice so the caller can show it;
+//   3. a file that is not a database (SQLITE_NOTADB 26) or is corrupt (SQLITE_CORRUPT 11) is,
+//      with `healCorrupt` (the caller sets it only for the plugin's own default path), renamed
+//      `<path>.corrupt-<timestamp>` and a fresh one is created, the move returned as a notice;
+//      without it (a configured path, which may be another tool's file) the file is left exactly
+//      as found and a StoreError with kind `corrupt` is thrown;
 //   4. a locked database (SQLITE_BUSY 5, after busy_timeout) is retried once, then thrown as a
 //      StoreError with kind `busy`, so every caller can say "nothing applied" in one line;
 //   5. migrations run inside one transaction, from the cc_meta schema_version up to the latest.
@@ -38,14 +40,19 @@ export const SQLITE_CORRUPT = 11;
 export const SQLITE_NOTADB = 26;
 
 export class StoreError extends Error {
-  /** @param {"busy"|"open"|"migrate"|"readonly"} kind */
+  /** @param {"busy"|"open"|"migrate"|"readonly"|"corrupt"} kind */
   constructor(kind, path, cause) {
-    super(`ledger: database ${kind === "busy" ? "busy" : kind === "readonly" ? "read-only" : "unavailable"} at ${path}${cause ? `: ${cause.message}` : ""}`);
+    super(`ledger: database ${storeWord(kind)} at ${path}${cause ? `: ${cause.message}` : ""}`);
     this.name = "StoreError";
     this.kind = kind;
     this.path = path;
     this.cause = cause;
   }
+}
+
+/** The word for a StoreError kind in a one-line notice: busy, read-only, corrupt, unavailable. */
+export function storeWord(kind) {
+  return kind === "busy" ? "busy" : kind === "readonly" ? "read-only" : kind === "corrupt" ? "corrupt" : "unavailable";
 }
 
 /** The tables this plugin owns, in creation order. Anything else in the file is foreign. */
@@ -204,10 +211,13 @@ export function migrate(db) {
  * Open (creating if needed) and migrate the store at `path`.
  * @returns {{ db: import("node:sqlite").DatabaseSync, notices: string[], path: string, shared: boolean }}
  *   `shared` is true when the file carries tables that are not the plugin's own.
- * @throws {StoreError} when the store cannot be opened: `busy` after one retry, or `open` for
- *   anything else (an unwritable directory, for example). Nothing is written in that case.
+ * @param opts.healCorrupt  move a corrupt file aside and start fresh; only for the default path.
+ *   Off, a corrupt file is never renamed, recreated or written: `corrupt` is thrown instead.
+ * @throws {StoreError} when the store cannot be opened: `busy` after one retry, `corrupt` for a
+ *   corrupt file without healCorrupt, or `open` for anything else (an unwritable directory, for
+ *   example). Nothing is written in that case.
  */
-export function open(path, { now = Date.now(), busyTimeoutMs = BUSY_TIMEOUT_MS } = {}) {
+export function open(path, { now = Date.now(), busyTimeoutMs = BUSY_TIMEOUT_MS, healCorrupt = false } = {}) {
   const notices = [];
   try {
     mkdirSync(dirname(path), { recursive: true });
@@ -223,6 +233,7 @@ export function open(path, { now = Date.now(), busyTimeoutMs = BUSY_TIMEOUT_MS }
       break;
     } catch (err) {
       if (isCorrupt(err)) {
+        if (!healCorrupt) throw new StoreError("corrupt", path, err);
         const aside = `${path}.corrupt-${safeStamp(now)}`;
         try {
           renameSync(path, aside);
@@ -253,6 +264,7 @@ export function open(path, { now = Date.now(), busyTimeoutMs = BUSY_TIMEOUT_MS }
     if (isReadOnly(err)) throw new StoreError("readonly", path, err);
     if (isCorrupt(err)) {
       // Corruption surfaced by the first real statement rather than the pragmas.
+      if (!healCorrupt) throw new StoreError("corrupt", path, err);
       const aside = `${path}.corrupt-${safeStamp(now)}`;
       try {
         renameSync(path, aside);
@@ -260,7 +272,7 @@ export function open(path, { now = Date.now(), busyTimeoutMs = BUSY_TIMEOUT_MS }
         throw new StoreError("open", path, renameErr);
       }
       notices.push(`ledger: moved corrupt database aside to ${aside}`);
-      const fresh = open(path, { now, busyTimeoutMs });
+      const fresh = open(path, { now, busyTimeoutMs, healCorrupt });
       return { db: fresh.db, notices: [...notices, ...fresh.notices], path, shared: fresh.shared };
     }
     throw new StoreError(isBusy(err) ? "busy" : "migrate", path, err);

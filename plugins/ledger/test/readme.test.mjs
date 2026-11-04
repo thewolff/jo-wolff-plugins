@@ -24,7 +24,7 @@ test("example.config.json is DEFAULTS verbatim and the README config table lists
 
 test("the README fail-open table has a row per condition", () => {
   const readme = readFileSync(join(root, "README.md"), "utf8");
-  for (const row of ["database file missing", "database locked", "database read-only", "database corrupt", "config file unparsable", "unknown config key", "hook throws or stdin is not JSON", "hook times out", "switch off in config", "project not enabled"]) {
+  for (const row of ["database file missing", "database locked", "database read-only", "database corrupt, default path", "database corrupt, configured path", "config file unparsable", "unknown config key", "hook throws or stdin is not JSON", "hook times out", "switch off in config", "project not enabled"]) {
     assert.ok(readme.includes(`| ${row}`), row);
   }
 });

@@ -170,7 +170,7 @@ defaults verbatim.
 | Key | Default | Effect |
 |---|---|---|
 | `enabled` | `false` | whether the hooks run for this folder; `ledger enable` sets it in `.ledger.json` |
-| `db` | `~/.local/share/ledger/ledger.db` | database path; `~` is your home, `XDG_DATA_HOME` is honoured when absolute |
+| `db` | `~/.local/share/ledger/ledger.db` | database path; `~` is your home, `XDG_DATA_HOME` is honoured when absolute. A configured `db` is never renamed or recreated: if it is corrupt the ledger reports it and fails open (see the fail-open table) |
 | `user` | `null` | name recorded on answers; `null` means your OS username |
 | `timezone` | `null` | zone for displayed times; `null` means the process's local zone (storage is UTC) |
 | `hooks.sessionStart` | `true` | the SessionStart injection and session row |
@@ -202,7 +202,8 @@ appends one line to `${XDG_STATE_HOME:-~/.local/state}/ledger/errors.log` and te
 | database file missing | creates the directory and the schema, proceeds | same | same | same | same | same |
 | database locked (busy timeout, one retry) | exit 2, `ledger: database busy at <path>; nothing applied` (lines already applied are named) | injects what it can read; session not recorded, one `systemMessage` | passes with `systemMessage` where it would deny (the `ask` or `note` it would demand cannot write); a tool it would pass anyway passes silently | passes without checking, `systemMessage` (the turn stamp is a write) | log only | lines report `not applied (database busy)`, one `systemMessage`, prompt proceeds |
 | database read-only (file mode, mounted read-only) | reads work; a write is exit 2, `ledger: database read-only at <path>; nothing applied`; `enable`, `disable` and `help` never touch the database | injects what it can read; session not recorded, one `systemMessage` | same as locked | same as locked | log only | lines report `not applied (database read-only)`, one `systemMessage`, prompt proceeds |
-| database corrupt | moves it to `<path>.corrupt-<stamp>`, creates a fresh one, says so, proceeds | same, in `systemMessage` | same | same | rename and log only | same |
+| database corrupt, default path (no `db` configured) | moves it to `<path>.corrupt-<stamp>`, creates a fresh one, says so, proceeds | same, in `systemMessage` | same | same | rename and log only | same |
+| database corrupt, configured path (`db` from env, project or user file) | exit 2, `ledger: database corrupt at <path>: <error>; nothing applied`; the file is not renamed, recreated or written | no injection, one `systemMessage` naming the path and the error | passes, `systemMessage` | passes without checking, `systemMessage` | log only | nothing applied, one `systemMessage`, prompt proceeds |
 | config file unparsable or a key of the wrong type | next layer, one stderr line | next layer, `systemMessage` | next layer, `systemMessage` | next layer, `systemMessage` | next layer, log | next layer, `systemMessage` |
 | unknown config key | ignored | | | | | |
 | hook throws or stdin is not JSON | n/a | allow, nothing injected, `ledger SessionStart failed open: <msg>` | allow with `systemMessage` | pass with `systemMessage` | exit 0, log | pass with `systemMessage` |
@@ -231,7 +232,8 @@ tool already uses: the plugin adds its `cc_` tables beside the others, migrates 
 never reads or writes a table it does not own, and leaves `user_version` to the other tool.
 `config` reports `shared file` when it sees foreign tables and `own file` otherwise. The file
 must be a real SQLite database the plugin can write (WAL journal mode is set on open); a file
-it cannot write is the read-only row above.
+it cannot write is the read-only row above, and a file that does not open as a database is the
+configured-path corrupt row: reported, never moved.
 
 ## Node and `node:sqlite`
 

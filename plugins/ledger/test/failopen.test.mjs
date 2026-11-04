@@ -3,8 +3,9 @@
 
 import test from "node:test";
 import assert from "node:assert/strict";
-import { existsSync, readFileSync, writeFileSync, mkdirSync, chmodSync } from "node:fs";
-import { join } from "node:path";
+import { existsSync, readdirSync, readFileSync, writeFileSync, mkdirSync, chmodSync } from "node:fs";
+import { createHash } from "node:crypto";
+import { dirname, join } from "node:path";
 import { sandbox, hook, cli, openDb, HOOKS } from "./helpers.mjs";
 
 const hookCli = (box, args) => cli(box, args).out;
@@ -87,14 +88,18 @@ test("row: DB locked → CLI-side proven in db.test; every hook allows with one 
   assert.match(log, /SessionEnd ledger: database busy/);
 });
 
-test("row: DB corrupt → every hook moves it aside, names the move, and does its job on a fresh db", () => {
+test("row: DB corrupt at the default path → every hook moves it aside, names the move, and does its job on a fresh db", () => {
   for (const name of HOOK_NAMES) {
     const box = sandbox();
-    writeFileSync(box.dbPath, "junk ".repeat(2000));
-    const r = hook(box, name, payloads(box)[name]);
+    // No LEDGER_DB and no `db` in any file: the plugin's own default path under XDG_DATA_HOME.
+    const dataDir = join(box.root, "data", "ledger");
+    const env = { LEDGER_DB: "", XDG_DATA_HOME: join(box.root, "data") };
+    mkdirSync(dataDir, { recursive: true });
+    writeFileSync(join(dataDir, "ledger.db"), "junk ".repeat(2000));
+    const r = hook(box, name, payloads(box)[name], { env });
     assert.equal(r.code, 0, `${name}: ${r.err}`);
-    assert.ok(existsSync(box.dbPath), name);
-    const aside = globalThis.process.getBuiltinModule("node:fs").readdirSync(box.root).filter((f) => f.startsWith("ledger.db.corrupt-"));
+    assert.ok(existsSync(join(dataDir, "ledger.db")), name);
+    const aside = globalThis.process.getBuiltinModule("node:fs").readdirSync(dataDir).filter((f) => f.startsWith("ledger.db.corrupt-"));
     assert.equal(aside.length, 1, `${name}: ${aside}`);
     if (name === "session-end") {
       assert.equal(r.out, "");
@@ -218,6 +223,32 @@ test("row: DB file read-only → reads still work, writes fail open: SessionStar
   db.close();
 });
 
+test("row: DB corrupt at a configured path → nothing is renamed, recreated or written; PreToolUse allows with the notice, SessionEnd logs it", () => {
+  for (const [name, tail] of [
+    ["pre-tool-use", "the ledger gate is not enforced for this call"],
+    ["session-end", null],
+  ]) {
+    const box = sandbox();
+    // `db` from the user file, the way a shared database (another tool's file) is configured.
+    const path = join(box.root, "shared", "other-tool.db");
+    mkdirSync(dirname(path), { recursive: true });
+    writeFileSync(path, "junk ".repeat(2000));
+    box.writeConfig({ db: path });
+    const before = createHash("sha256").update(readFileSync(path)).digest("hex");
+    const r = hook(box, name, payloads(box)[name], { env: { LEDGER_DB: "" } });
+    assert.equal(r.code, 0, `${name}: ${r.err}`);
+    assert.equal(createHash("sha256").update(readFileSync(path)).digest("hex"), before, name);
+    assert.deepEqual(readdirSync(dirname(path)), ["other-tool.db"], name);
+    if (name === "session-end") {
+      assert.equal(r.out, "");
+      assert.match(readFileSync(box.errorsLog, "utf8"), new RegExp(`SessionEnd ledger: database corrupt at ${path}: .*not a database`));
+    } else {
+      assert.equal(r.json.hookSpecificOutput, undefined, "allow: no deny");
+      assert.equal(r.json.systemMessage, `ledger: database corrupt at ${path}: file is not a database; ${tail}`);
+    }
+  }
+});
+
 test("row: database unavailable → `enable`, `disable` and `help` still work (exit 0), other verbs exit 2", { skip: process.getuid?.() === 0 ? "root ignores modes" : false }, () => {
   const box = sandbox();
   const dir = join(box.root, "ro");
@@ -240,9 +271,10 @@ test("row: database unavailable → `enable`, `disable` and `help` still work (e
   }
 });
 
-test("row: project not enabled → every hook exits 0 with no output and no db, whatever the payload", () => {
+test("row: project disabled (`\"enabled\": false` in .ledger.json) → every hook exits 0 with no output and no db, whatever the payload", () => {
   for (const name of HOOK_NAMES) {
     const box = sandbox();
+    writeFileSync(join(box.work, ".ledger.json"), JSON.stringify({ enabled: false }));
     const r = hook(box, name, payloads(box)[name], { env: { LEDGER_ENABLED: "" } });
     assert.equal(r.code, 0);
     assert.equal(r.out, "", `${name}: ${r.out}`);
