@@ -4,6 +4,41 @@ All notable changes to i-have-audhd are recorded here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Entries before 1.5.2 live in the
 README's *Changes* section.
 
+## [1.6.1]
+
+- New check `links-resolve` (rule 11, Machinery anchors; warn by default). A local path in a
+  code span or markdown link (`/absolute`, `~/`, `file://`, line suffixes stripped) has to
+  exist; a sentence that says the file is still to come or gone is skipped, as are commands,
+  placeholders, globs, fenced blocks and quoted evidence. A github.com URL has to be
+  `/issues/N` or `/pull/N`, and the sentence's word (PR or issue) has to agree with it.
+  Whether the GitHub target exists and which kind it is comes only from a local cache
+  (`gh-cache.json` in the state directory; a week for a hit, ten minutes for a 404): a link
+  with no fresh entry is unknown and never a finding. The hook hands unknown keys to a
+  detached helper, `scripts/gh-cache-fill.mjs` (lock, at most 20 `gh api --cache 1h` lookups
+  inside 45 s, atomic write), and exits without waiting; the next stop reads the answer. A
+  cache that never fills costs nothing but those two sub-checks. `agent://<id>` references
+  are not checked: neither host writes a registry to disk. Measured on a 200-link message:
+  37 ms before, 42 ms after (45 ms with the helper spawn). The Stop hook entry in
+  `hooks.json` now declares its timeout (35 s: the 30 s judge budget plus the checks).
+- New judge check `links-judge` (rule 11), **off by default** and not armed by a global
+  `enforcement.mode`: only `enforcement.rules["links-judge"]` turns it on. It asks the judge
+  whether the thing behind a resolved link is what the sentence says it is, after a
+  word-overlap prefilter (the sentence's words against the target's name, first 1,500 bytes,
+  directory entries or cached GitHub title; one shared word skips the judge), at most five
+  judge jobs per stop.
+- Every judge failure line in `judge-failures.log` now carries `cause=` (one of
+  `credential-revoked`, `no-credential`, `rate-limited`, `judge-self-abort`,
+  `hook-deadline`, `bad-json`, `other`, classified from the error kind and the judge's
+  stderr), the session, harness, model (read off the judge command), elapsed and budget
+  milliseconds, the judged section (`<label>@<line>` or `whole`), the prompt's cache key and
+  the path of the prompt written on failure (`cache/<key>.prompt.txt`, replayable with
+  `<judgeCommand> < <file>`). A judge that printed no verdict keeps the last 300 characters
+  of its stdout on the line. The person-facing notice states the cause and its fix, once per
+  rule and cause, then hourly as before. Each cause is pinned by a test to a stderr string
+  from this machine's own failure log (`judge/fixtures/failure-corpus.mjs`); no failure was
+  reproduced live. `skipped.log` lines name the profile path the hook read.
+- The no-judge notice and the setup tool count thirteen checks, five of them judge-gated.
+
 ## [1.6.0]
 
 - New check `handed-command` (rule 10, Commands handed to the user). A final message that

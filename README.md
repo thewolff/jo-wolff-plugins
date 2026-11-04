@@ -301,6 +301,16 @@ choose a judge (install step 2), and each fired trigger is logged to `skipped.lo
 README and `skills/i-have-audhd/reference.md` carry the schema, every check's contract, and the
 measured rates.
 
+Changes in 1.6.1: `links-resolve` warns when a link in the message does not open: a local path
+in backticks that does not exist, a GitHub URL with no such page shape, a sentence that calls an
+issue a PR, or (from a local cache a detached helper fills, never a live call) a target GitHub
+says is missing or is the other kind. A sentence that says the file is still to come is not
+checked. `links-judge`, off by default, asks the judge whether the linked thing is what the
+sentence says it is. Every judge failure line now names its cause (revoked credential, no
+credential, rate limit, judge self-abort, hook deadline, bad JSON, other), with session,
+harness, model, timing, section and a replayable prompt file; the notice states the cause and
+its fix.
+
 Changes in 1.6.0: two new checks. `handed-command` warns when a message hands you a shell command
 that is not one `zsh /absolute/path/script.sh` line with its script in a scratch directory
 (`~/agent-scratch` by default) outside every git checkout (rule 10); commands quoted as evidence do not

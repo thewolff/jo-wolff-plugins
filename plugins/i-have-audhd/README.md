@@ -15,7 +15,7 @@ The plugin delivers the rules in two ways:
   options rule, reference survival, commands, and three machinery anchors) plus every rule
   heading, so the model has the shape before its first message and knows the full skill
   exists.
-- **At every stop**, a hook checks the finished message against eleven checks. A warn finding
+- **At every stop**, a hook checks the finished message against thirteen checks. A warn finding
   reaches the agent with its next turn (and you, as a one-line notice), and is logged to
   `warnings.log`. Every check warns by default; nothing blocks until you arm it.
 
@@ -40,7 +40,7 @@ adapter runs them under node resolved to an absolute path (`I_HAVE_AUDHD_NODE` p
    omp plugin install i-have-audhd@jo-wolff-plugins
    ```
 
-2. **Choose a judge.** Five of the eleven checks (`do-not-batch-by-label`, `conclusion-first`,
+2. **Choose a judge.** Five of the thirteen checks (`do-not-batch-by-label`, `conclusion-first`,
    `restate-resumed-thread`, `report-what-you-did-not-do`, `bad-news-first`) need a model to
    read the message, and stay off until you choose one. Run the setup tool in a terminal:
 
@@ -170,6 +170,8 @@ of nothing. To turn the injection off without uninstalling: `I_HAVE_AUDHD_INJECT
 | Restate a resumed thread | `restate-resumed-thread` | 8, Resume by restating content | injector marker + judge | warn |
 | Name the artifact | `name-the-artifact` | 11, Machinery anchors | deterministic | warn |
 | Link the reference | `link-the-reference` | 11, Machinery anchors | deterministic | warn |
+| Links resolve | `links-resolve` | 11, Machinery anchors | deterministic (disk + local GitHub cache) | warn |
+| Links judge: the target is what the sentence says | `links-judge` | 11, Machinery anchors | word-overlap prefilter + judge | off |
 | Report what you did not do | `report-what-you-did-not-do` | 11, Machinery anchors | todo trigger + judge | warn |
 | Bad news in the opening 20 words | `bad-news-first` | 11, Machinery anchors | lexicon gate + judge | warn |
 
@@ -227,19 +229,38 @@ piped to its stdin. It has to exit 0 within 30s (20s under OMP) and print, on st
 object `{"violation": <boolean>, "reason": "<string>"}`. Banner lines before it are fine; the
 last such object wins, and one `{"result": "<json string>"}` envelope (what
 `claude -p --output-format json` prints) is unwrapped. Anything else is a judge failure, and a
-failed judge is never counted as a pass: `judge-failures.log` gets a line with the tail of the
-judge's stderr, and the rule becomes a "Judge unavailable" finding in the rule's own mode (a
-warning by default; in block mode it blocks once, and the revision is only warned). You are told
-once per rule and error, through the hook's `systemMessage` (a UI warning on OMP), again hourly
-while it keeps failing, and at once if it fails again after a stop where the judge answered.
+failed judge is never counted as a pass: `judge-failures.log` gets a line naming the rule, the
+error kind, a `cause=`, the session, harness, model, elapsed and budget milliseconds, the judged
+section (`<label>@<line>`, or `whole`), the prompt's cache key and the path of the prompt it was
+asked (`cache/<key>.prompt.txt`, written on failure so `<judgeCommand> < <that file>` replays
+it), then the tail of the judge's stderr and, for a judge that printed no verdict, the last 300
+characters of its stdout. The rule becomes a "Judge unavailable" finding in the rule's own mode
+(a warning by default; in block mode it blocks once, and the revision is only warned). You are
+told once per rule and cause, through the hook's `systemMessage` (a UI warning on OMP), again
+hourly while it keeps failing, and at once if it fails again after a stop where the judge
+answered; the notice states the cause and its fix.
+
+| `cause=` | What happened | The notice says to |
+|---|---|---|
+| `credential-revoked` | the judge's CLI got a 401, a revoked or invalid token | log that CLI in again, then re-test with the setup tool |
+| `no-credential` | the judge's profile has no credential for the model (`no credential for <model> in profile …`, `not logged in`) | add one through the judge's CLI, or pick a judge that has one |
+| `rate-limited` | 429, "rate limit", "overloaded", quota | wait, or move the judge to a quieter model |
+| `judge-self-abort` | the judge gave up on its own request ("Request was aborted", a reset connection) before the hook's budget ran out | a faster model, or a longer judge-side timeout |
+| `hook-deadline` | the hook's own timer fired (30 s, 20 s under OMP), whatever the judge was printing | a faster model; haiku-class answers in 2–4 s |
+| `bad-json` | exit 0 and no `{"violation": …}` object on stdout | run the command by hand on the prompt file the line names |
+| `other` | anything else: a bare exit 1, a command not found | read the stderr tail on the line; re-test with the setup tool |
+
+No judge failure was reproduced live for 1.6.1: each cause is pinned by tests to a stderr
+string that appeared in this machine's own `judge-failures.log` (`judge/fixtures/failure-corpus.mjs`).
 A judge that is itself a Claude Code or OMP
 session should run with `I_HAVE_AUDHD_ENFORCE=off I_HAVE_AUDHD_INJECT=off` in front, so this
 plugin's hooks do not run inside the judge's own session; the setup tool's choices do.
 
 To run without a judge, set `judgeCommand` to `null` (the setup tool's "none"). Left out
 entirely, it means the same to the Stop hook, but the session-start notice treats it as "not
-chosen yet". The six deterministic checks still run; the five judge-gated checks stay
-inactive and each fired trigger is logged to `skipped.log`:
+chosen yet". The seven deterministic checks still run; the five judge-gated checks stay
+inactive and each fired trigger is logged to `skipped.log` with the profile path the hook
+read (`rule=<rule> reason=no-judge-command profile=<path> session=<id>`):
 
 ```json
 {
@@ -280,6 +301,9 @@ Every switch, with its default. All of them live in the profile
 | A handed command is one script line (rule 10) | `enforcement.rules.handed-command` | `block`, `warn`, `off` | `warn` |
 | Name the artifact (rule 11) | `enforcement.rules.name-the-artifact` | `block`, `warn`, `off` | `warn` |
 | Link the reference (rule 11) | `enforcement.rules.link-the-reference` | `block`, `warn`, `off` | `warn` |
+| Links resolve (rule 11) | `enforcement.rules.links-resolve` | `block`, `warn`, `off` | `warn` |
+| Links judge (rule 11, judge) | `enforcement.rules.links-judge` | `block`, `warn`, `off` | `off`; a global `enforcement.mode` does not turn it on, only this key |
+| GitHub lookups for links-resolve | env `I_HAVE_AUDHD_NO_GH_FILL` | `1` (never spawn the cache helper) | unset |
 | Report what you did not do (rule 11, judge) | `enforcement.rules.report-what-you-did-not-do` | `block`, `warn`, `off` | `warn` |
 | Bad news first (rule 11, judge) | `enforcement.rules.bad-news-first` | `block`, `warn`, `off` | `warn` |
 | Link the reference: PR and issue numbers | `linkTheReference.kinds.issue-ref` | `true`, `false` | `true` |
@@ -341,7 +365,8 @@ not shown.
 
 **What wins when settings disagree,** strongest first: the kill-switch file
 `~/.claude/.i-have-audhd-off` > `inject` mode > the check's `enforcement.rules` entry > its
-rule switched off in `inject.rules` (off) > `enforcement.mode` > the built-in default (warn).
+rule switched off in `inject.rules` (off) > a built-in off (`links-judge`) > `enforcement.mode` >
+the built-in default (warn).
 The kill-switch file turns every check off under every `inject` value, within one turn; it
 never turns off the injection. `I_HAVE_AUDHD_INJECT=off` still silences the injection, and
 `I_HAVE_AUDHD_ENFORCE=off` the checks, each until the host relaunches.
@@ -364,6 +389,61 @@ PR and issue numbers flagged 93 lines with 8 % false positives and file names 90
 ```json
 { "linkTheReference": { "kinds": { "artifact": true } } }
 ```
+
+### Links resolve, and the links judge
+
+`links-resolve` asks whether a link the message hands you opens, with nothing but the local
+disk and a local cache, so the Stop hook never waits on the network:
+
+- A **local path** in a code span or a markdown link (`/absolute`, `~/`, `file://`) has to
+  exist; `:41`, `:41-50` and `#L12` suffixes are stripped first. A sentence that says the
+  file is still to come ("will be written to", "to be produced at", "once it lands") or gone
+  ("removed", "no longer exists") is not checked, nor is a span that is a command (`rm /x`), a
+  placeholder (`/path/to/<name>`, a glob, `$HOME/…`), a relative path, or anything inside a
+  fenced block, a blockquote, a heading, or a line carrying `→` (quoted evidence).
+- A **GitHub URL** has to have the shape of a page: `/issues/N` or `/pull/N`, never `/issue/N`
+  or `/pulls/N`. When the sentence calls it a PR and the URL says `/issues/`, or the reverse,
+  that is a finding too; GitHub redirects either way, so the page opens, but the word is what
+  misleads. (A sentence that uses both words is not judged.)
+- Whether the GitHub target **exists**, and whether it **is** an issue or a PR, comes only from
+  `~/.claude/.i-have-audhd-state/gh-cache.json`. An entry inside its TTL (a week for a hit, ten
+  minutes for a 404, because `gh api --cache` keeps 404s and a PR named before it is opened
+  would otherwise read as dead for an hour) gives a verdict; anything else is **unknown, and
+  unknown is never a finding**. The hook hands every unknown key to a detached helper,
+  `scripts/gh-cache-fill.mjs`, and exits without waiting: the helper takes a lock, looks up at
+  most 20 keys with `gh api --cache 1h repos/<owner>/<repo>/issues/<n>` inside 45 s, and merges
+  what it learned through a temp file and a rename. The *next* stop that names the link reads
+  the answer. `I_HAVE_AUDHD_NO_GH_FILL=1` keeps the hook from spawning the helper at all.
+- `agent://<id>` references are not checked: neither Claude Code nor OMP writes a registry of
+  agent ids to disk (looked for 2026-11-04 under `~/.omp` and `~/.claude`), so there is nothing
+  to resolve them against.
+
+Each finding names the line, the link and what is wrong with it (`no such file: …`,
+`GitHub has no /pulls/ page`, `the sentence says PR but the URL is /issues/`, `GitHub answered
+404 for o/r#1`, `o/r#2 is a pull request, the URL says /issues/`); the first five are shown and
+the rest counted. Measured on a 200-link message, the check adds 5 ms to the Stop hook (37 ms
+before, 42 ms after; 45 ms with the helper spawn).
+
+`links-judge` is the question the disk cannot answer: is the thing behind the link what the
+sentence says it is? A sentence that calls a test log "the comparables report" resolves and is
+still wrong. It is **off by default** and a global `enforcement.mode` does not turn it on;
+only `"enforcement": {"rules": {"links-judge": "warn"}}` does, because each unmatched link is
+one judge call. When on, every link `links-resolve` opened goes through a word-overlap
+prefilter: the sentence's words (three letters or more, common words and link vocabulary out)
+against the target's name and first 1,500 bytes (a GitHub link: its cached title; a directory:
+its entries). One shared word is enough to skip the judge; no shared word is one judge job,
+at most five per stop, in line order. The verdict reads like the other judge checks and
+names the line and the link.
+
+How the GitHub side fails, and what you see:
+
+| What goes wrong | What happens | How you tell |
+|---|---|---|
+| The cache is stale (a PR merged after the hit was cached, an issue opened after the 404) | a hit is trusted for a week, a miss for ten minutes; a finding can lag by that much | the entry's `at` in `gh-cache.json` |
+| The helper never ran (the host did not let the detached child outlive the hook, or `I_HAVE_AUDHD_NO_GH_FILL=1`) | every GitHub link stays unknown; path and shape findings are unaffected | no `gh-cache.json`, or one whose `helper.at` never moves; the detached child is not proven to survive Claude Code's hook process lifetime, which is why a missing cache has to be harmless |
+| `gh` is not on `PATH`, or not logged in, or rate-limited | no entry is written for the key, `helper.error` names it (`gh-not-found`, `gh-not-logged-in`, `gh-rate-limited`), one `errors.log` line at once and then hourly | `helper.error` in `gh-cache.json`; the `errors.log` line names `scripts/gh-cache-fill.mjs` |
+| `gh-cache.json` does not parse | read as empty: every GitHub link unknown; one `errors.log` line; the next helper run rewrites it | the `errors.log` line names `lib/gh-cache.mjs` |
+| A second helper starts while one runs | the second sees the lock (younger than two minutes) and exits with nothing done | nothing; the first run's results arrive |
 
 ## Upgrading from communication-rules
 
@@ -415,6 +495,41 @@ file and a replaced one are kept.
 Exit 0 means every item is done or had nothing to do, 1 means one was refused or failed.
 
 ## Changes
+
+### 1.6.1
+
+- New check `links-resolve` (rule 11, Machinery anchors; warn by default). A local path in a
+  code span or markdown link (`/absolute`, `~/`, `file://`, line suffixes stripped) has to
+  exist; a sentence that says the file is still to come or gone is skipped, as are commands,
+  placeholders, globs, fenced blocks and quoted evidence. A github.com URL has to be
+  `/issues/N` or `/pull/N`, and the sentence's word (PR or issue) has to agree with it.
+  Whether the GitHub target exists and which kind it is comes only from a local cache
+  (`gh-cache.json` in the state directory; a week for a hit, ten minutes for a 404): a link
+  with no fresh entry is unknown and never a finding. The hook hands unknown keys to a
+  detached helper, `scripts/gh-cache-fill.mjs` (lock, at most 20 `gh api --cache 1h` lookups
+  inside 45 s, atomic write), and exits without waiting; the next stop reads the answer. A
+  cache that never fills costs nothing but those two sub-checks. `agent://<id>` references
+  are not checked: neither host writes a registry to disk. Measured on a 200-link message:
+  37 ms before, 42 ms after (45 ms with the helper spawn). The Stop hook entry in
+  `hooks.json` now declares its timeout (35 s: the 30 s judge budget plus the checks).
+- New judge check `links-judge` (rule 11), **off by default** and not armed by a global
+  `enforcement.mode`: only `enforcement.rules["links-judge"]` turns it on. It asks the judge
+  whether the thing behind a resolved link is what the sentence says it is, after a
+  word-overlap prefilter (the sentence's words against the target's name, first 1,500 bytes,
+  directory entries or cached GitHub title; one shared word skips the judge), at most five
+  judge jobs per stop.
+- Every judge failure line in `judge-failures.log` now carries `cause=` (one of
+  `credential-revoked`, `no-credential`, `rate-limited`, `judge-self-abort`,
+  `hook-deadline`, `bad-json`, `other`, classified from the error kind and the judge's
+  stderr), the session, harness, model (read off the judge command), elapsed and budget
+  milliseconds, the judged section (`<label>@<line>` or `whole`), the prompt's cache key and
+  the path of the prompt written on failure (`cache/<key>.prompt.txt`, replayable with
+  `<judgeCommand> < <file>`). A judge that printed no verdict keeps the last 300 characters
+  of its stdout on the line. The person-facing notice states the cause and its fix, once per
+  rule and cause, then hourly as before. Each cause is pinned by a test to a stderr string
+  from this machine's own failure log (`judge/fixtures/failure-corpus.mjs`); no failure was
+  reproduced live. `skipped.log` lines name the profile path the hook read.
+- The no-judge notice and the setup tool count thirteen checks, five of them judge-gated.
 
 ### 1.6.0
 
