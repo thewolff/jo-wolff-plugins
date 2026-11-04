@@ -1,0 +1,23 @@
+{
+  "$comment": "A Read bounded by a limit at or under the threshold is never counted or flagged.",
+  "event": "PreToolUse",
+  "expect": "silent",
+  "sibling": "delegation-guard-warn-large-read.scenario.json",
+  "setup": {
+    "commands": [
+      "seq 1 1500 > big.txt"
+    ]
+  },
+  "stdin": {
+    "session_id": "${SESSION_ID}",
+    "transcript_path": "${TRANSCRIPT}",
+    "cwd": "${CWD}",
+    "hook_event_name": "PreToolUse",
+    "tool_name": "Read",
+    "tool_input": {
+      "file_path": "${CWD}/big.txt",
+      "offset": 1,
+      "limit": 200
+    }
+  }
+}

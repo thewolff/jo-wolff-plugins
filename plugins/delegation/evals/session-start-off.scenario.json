@@ -1,0 +1,18 @@
+{
+  "$comment": "`off: true` in the config: no teaching block.",
+  "event": "SessionStart",
+  "expect": "silent",
+  "sibling": "session-start-teach.scenario.json",
+  "setup": {
+    "files": {
+      "$XDG_CONFIG_HOME/delegation/config.json": "{\"off\": true}\n"
+    }
+  },
+  "stdin": {
+    "session_id": "${SESSION_ID}",
+    "transcript_path": "${TRANSCRIPT}",
+    "cwd": "${CWD}",
+    "hook_event_name": "SessionStart",
+    "source": "startup"
+  }
+}

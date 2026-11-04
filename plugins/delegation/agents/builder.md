@@ -88,3 +88,8 @@ recommend and why in one sentence.
 End the report with exactly one of these as its last line: `Stopped because: acceptance met`,
 `Stopped because: bound hit` (name the bound), or `Stopped because: told to stop`. A report
 without the line draws a warning in the parent's transcript.
+
+## When this can't run
+
+A brief without `## How it fails` and `## Spiral bound`, or without this session's pattern-check receipt when pattern-check is installed, is refused before this agent starts (evals/spawn-gate-deny-builder-no-spiral-bound.scenario.json).
+When a check it was told to run cannot run (missing tool, no network, a failing step after its one retry), it stops, names the step and its output, and ends with `Stopped because: bound hit (<which>)`; a report without that last line draws a warning shown to the user (evals/subagent-stop-warn-no-stopped-line.scenario.json).

@@ -39,3 +39,8 @@ is that the small part which *is* verified stands out from the large part which 
 - **Saying what an assumption rests on is what protects the builder.** A task whose shape rests on something you only remember is a blocker and goes at the top of the plan — never into an assumption the builder silently inherits as fact. A task resting on a pattern you recognized is acceptable if it says so; unsaid, it becomes an acceptance criterion nobody checked.
 - **A fork the brief did not resolve is a decision, not an assumption.** *Assumptions* is for things you believe and could be wrong about; a point where two approaches lead somewhere materially different is a decision for a person. Name it at the end of the plan with both branches and the cost of each, and flag it on the task it changes. Buried as assumption 4 it hands the builder a choice nobody made — they read the task, not the preamble, and pick whichever the wording implies.
 - A plan you could only partly ground — a repo you could not read, a doc you could not reach — is degraded coverage. Say so at the top, and say which tasks are grounded and which are sketched.
+
+## When this can't run
+
+A brief with no `## How it fails` heading is refused before this agent starts (evals/spawn-gate-deny-no-how-it-fails.scenario.json); it is not in the default builder class.
+When the code or spec it plans against cannot be read, it says which part is missing and plans only the part it read.

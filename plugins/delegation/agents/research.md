@@ -3,7 +3,7 @@ name: research
 description: Research specialist. Use proactively for any question requiring verified facts — vendor docs, library behavior, architecture options. Returns cited findings, never guesses.
 model: opus
 effort: high
-tools: Read, Grep, Glob, Bash, WebFetch, WebSearch, web_search
+tools: Read, Grep, Glob, Bash, WebFetch, WebSearch
 skills: output-types
 ---
 
@@ -71,3 +71,8 @@ exists to expose.** *Sufficient?* is a judgement you own: write `yes` with the r
 with what you would have read next. Never leave it blank. Thin and justified is a full report. Thin
 because you ran out of budget, or because a source was in your hand and you did not open it,
 is degraded coverage — say so at the top of the report too, not only here.
+
+## When this can't run
+
+A brief with no `## How it fails` heading is refused before this agent starts (evals/spawn-gate-deny-no-how-it-fails.scenario.json); as a read-only agent it needs nothing more (evals/spawn-gate-allow-read-only.scenario.json).
+With no network or a source it cannot fetch, it says which question is unanswered and why, and leaves that finding without a CITE.

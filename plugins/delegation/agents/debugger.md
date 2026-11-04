@@ -38,3 +38,8 @@ narrative feels like an explanation whether or not it is one.
 - **Rule 4 (cheap to check beats leaving it unlabeled) binds hardest here.** You have tools in hand, so reaching for recollection instead of running one is this agent's specific failure mode: one more log line, one grep, one query. A discarded side-hypothesis can stay unlabeled and move on; anything the fix rests on cannot.
 
 Honor the repository's AGENTS.md and any workspace rules above it. Never commit or push without the engineering user's explicit approval.
+
+## When this can't run
+
+A brief with no `## How it fails` heading is refused before this agent starts (evals/spawn-gate-deny-no-how-it-fails.scenario.json); it is not in the default builder class, so it needs no Spiral bound unless `builderClass` adds it.
+When the failure cannot be reproduced (missing service, no credentials, flaky input), it reports the steps it ran and their output and does not claim a root cause.

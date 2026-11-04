@@ -1,0 +1,24 @@
+{
+  "$comment": "repo-rules-inject: an Edit under a directory whose CLAUDE.md the host did not load at launch gets that file as additionalContext.",
+  "event": "PreToolUse",
+  "expect": "systemMessage",
+  "reason": "Indent with tabs in this package.",
+  "setup": {
+    "files": {
+      "pkg/CLAUDE.md": "# pkg rules\n\nIndent with tabs in this package.\n",
+      "pkg/x.ts": "export const x = 1;\n"
+    }
+  },
+  "stdin": {
+    "session_id": "${SESSION_ID}",
+    "transcript_path": "${TRANSCRIPT}",
+    "cwd": "${CWD}",
+    "hook_event_name": "PreToolUse",
+    "tool_name": "Edit",
+    "tool_input": {
+      "file_path": "${CWD}/pkg/x.ts",
+      "old_string": "1",
+      "new_string": "2"
+    }
+  }
+}

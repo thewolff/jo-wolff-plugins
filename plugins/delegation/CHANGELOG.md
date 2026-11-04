@@ -37,3 +37,26 @@ First release: the delegation seam, on Claude Code and OMP. Teaching first, gate
 - Every hook runs under plugin-kit's fail-open runner with a 4 s budget; a gate that cannot judge
   its input lets the call through and writes one line to
   `${XDG_STATE_HOME:-~/.local/state}/delegation/skipped.log`.
+
+### Before release, from the first review
+
+- OMP: each task is judged on the shared `context` plus its own `task`; the single-task form is
+  judged; a top-level `agent` applies to entries without one; the teaching block is offered
+  again after `session_compact`.
+- Headings: a trailing parenthetical is accepted; a heading inside a fenced code block no longer
+  counts.
+- `readOnlyAgents` config (default `reviewer-codex, reviewer, auditor, scout, reader, research,
+  beefy-research, security-reviewer, summarizer, changelog, checker`): never builder-class, so
+  no Spiral bound, receipt or stop warning; `## How it fails` still applies.
+- Gate 2: skipped with a skipped.log line when pattern-check is not installed; the deny names
+  `requirePatternCheck: false`; cache versions sort numerically.
+- Stop warning: worded for the user (a SubagentStop `systemMessage` reaches the user, not the
+  parent model); an empty `agent_type` is not builder-class; `Stopped because:` may carry a
+  detail and backticks and must be the last non-empty line.
+- delegation-guard: the streak resets on PostToolUse `Agent|Task`, so a denied spawn does not
+  reset it; line counting stops at the threshold.
+- hooks.json timeouts 5 s (the runner's deadline is 4 s).
+- Every agent has a `## When this can't run` section; `research` drops `web_search` from
+  `tools:`.
+- `evals/manifest.json` and scenarios for every hook × outcome; `plugin.json` `state`;
+  `scripts/prune.mjs`.

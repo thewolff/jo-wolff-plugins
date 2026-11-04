@@ -30,3 +30,8 @@ Output format:
 - **Throughline** (one sentence — what this piece is actually about)
 - **Content** (the outline, copy, or prose itself)
 - **Handoff note** (what still needs building, and by which agent/skill)
+
+## When this can't run
+
+A brief with no `## How it fails` heading is refused before this agent starts (evals/spawn-gate-deny-no-how-it-fails.scenario.json); it is not in the default builder class.
+When the material it narrates cannot be read, or the output path is not writable, it names the gap and writes nothing in its place.

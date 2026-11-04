@@ -1,0 +1,18 @@
+{
+  "$comment": "A read-only agent (reviewer-codex is in readOnlyAgents by default) with a How-it-fails heading passes: no Spiral bound, no pattern-check receipt.",
+  "event": "PreToolUse",
+  "expect": "silent",
+  "sibling": "spawn-gate-deny-no-how-it-fails.scenario.json",
+  "stdin": {
+    "session_id": "${SESSION_ID}",
+    "transcript_path": "${TRANSCRIPT}",
+    "cwd": "${CWD}",
+    "hook_event_name": "PreToolUse",
+    "tool_name": "Agent",
+    "tool_input": {
+      "subagent_type": "reviewer-codex",
+      "description": "review",
+      "prompt": "# Goal\nReview the diff.\n\n## How it fails (both tasks)\n- A missed finding shows in the next round; one retry.\n"
+    }
+  }
+}

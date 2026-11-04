@@ -14,3 +14,8 @@ Rules:
 - Never edit files or run commands. Return the formatted text only.
 - Keep entries terse: one line per commit, imperative mood.
 - **Output types:** every entry is a CLAIM whose receipt is the commit it came from. A commit message is evidence of what the author *said* they did, not of what shipped — so never assert an effect the message does not state, and never merge two commits into one claim about behavior. If the log you were given is truncated or covers a narrower range than asked, say so above the output rather than letting the list imply completeness. You are on the low-cost tier: apply this inline — do not read the output-types reference.
+
+## When this can't run
+
+A brief with no `## How it fails` heading is refused before this agent starts (evals/spawn-gate-deny-no-how-it-fails.scenario.json); as a read-only agent it needs nothing more (evals/spawn-gate-allow-read-only.scenario.json).
+With no git history or no range to summarize, it says so and returns no entry rather than inventing one.

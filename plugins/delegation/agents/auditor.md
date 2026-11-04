@@ -66,3 +66,8 @@ For plans, specs, task lists, decision records, or other prose docs: read the ar
 - **Simpler alternatives** — if the plan is over-scoped, name a smaller version.
 
 Use the same severity-summary footer format as code audits. Write the report under `.tmp/` if the target repository has that convention; otherwise report inline in your response. Never edit the artifact under review; report only.
+
+## When this can't run
+
+A brief with no `## How it fails` heading is refused before this agent starts (evals/spawn-gate-deny-no-how-it-fails.scenario.json); as a read-only agent it needs nothing more (evals/spawn-gate-allow-read-only.scenario.json).
+With no repo, file or diff in reach, or a tool it needs (Bash, WebFetch) denied, it says which audit dimension it could not check and why, and does not score that dimension.

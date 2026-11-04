@@ -37,8 +37,12 @@ Spiral bound section exists for it.
 ## The sections, in order
 
 Headings are literal. The gate reads `## How it fails` and `## Spiral bound` as heading lines
-(any level, case does not matter, a trailing colon is fine) and nothing else, so prose that
-mentions the words does not count and a heading inside a code fence does not count.
+(any level, case does not matter, a trailing colon or a parenthetical such as
+`## Spiral bound (builder)` is fine) and nothing else, so prose that mentions the words does not
+count and a heading inside a fenced code block does not count. On OMP the shared `context` and
+each task are read together, so a section in `context` covers every task. A read-only agent
+(`reviewer-codex`, `scout`, `reader`, `research`, `auditor` and the rest of `readOnlyAgents`)
+needs `## How it fails` only.
 
 1. `# Target`: the repository, the branch or worktree, the files in play, and the non-goals
    (what the agent is not to touch, so "while I'm here" has an answer).
@@ -55,8 +59,10 @@ mentions the words does not count and a heading inside a code fence does not cou
    budget when there is one.
 6. The report's last line: exactly one of `Stopped because: acceptance met` (every acceptance
    check passed once), `Stopped because: bound hit` (a retry, commit, time or tool bound stopped
-   it; the report names which), `Stopped because: told to stop` (the parent sent a stop). A
-   builder-class report without the line draws a warning in the parent's transcript.
+   it; the report names which after it, as in `Stopped because: bound hit (commit budget)`),
+   `Stopped because: told to stop` (the parent sent a stop). A builder-class report without it
+   as the last non-empty line draws a warning: on Claude Code it is shown to the user, not to
+   you; on OMP it is added to your context.
 
 Every assertion of fact in the report is labeled only when it has a receipt: **CLAIM** with an
 absolute `file:line` or the exact command and its output, **CITE** with a URL fetched this
@@ -111,7 +117,8 @@ End the report with one line: Stopped because: acceptance met | bound hit | told
 A builder report that ends `Stopped because: bound hit` is not a failure of the brief; it is
 the brief working. Read which bound, decide whether to widen it, and re-issue with the new
 bound named. A report with no `Stopped because:` line is unfinished until you know which of
-the three applies; the warning in your transcript says so.
+the three applies; read its last lines and ask the agent if they do not say. On Claude Code the
+warning about a missing line goes to the user, so you will not see it yourself.
 
 A message sent to a subagent that came back marked `this message was NOT delivered` was not
 read by anyone: spawn a new agent or fix the name; do not wait for a reply.
@@ -121,11 +128,13 @@ read by anyone: spawn a new agent or fix the name; do not wait for a reply.
 - The spawn was refused and the reason starts `Spawn refused:`: the plugin is working. The
   reason carries the missing section in full; add it to the prompt and re-issue the same spawn.
 - The reason names a pattern-check receipt and a `node "<pattern-check>/scripts/pattern-check.mjs" open …` command: run that
-  command (it is pattern-check's own CLI), then re-issue. If pattern-check is not installed the
-  reason says so; install it, or set `requirePatternCheck: false` in
-  `${XDG_CONFIG_HOME:-~/.config}/delegation/config.json`.
+  command (it is pattern-check's own CLI), then re-issue. To run without the receipt instead,
+  set `requirePatternCheck: false` in `${XDG_CONFIG_HOME:-~/.config}/delegation/config.json`;
+  with pattern-check not installed the gate is skipped on its own.
 - A `delegation <hook> failed open: <why>` line appeared: the hook let a call through without
   its check and wrote the line to `${XDG_STATE_HOME:-~/.local/state}/delegation/errors.log`.
   Tell the person once; do not treat the allowed call as checked.
 - The template is missing (`templates/builder-brief.md` does not exist where
   `CLAUDE_PLUGIN_ROOT` points): the sections above are the template; write them by hand.
+- The gates each have an offline scenario: `evals/spawn-gate-deny-no-how-it-fails.scenario.json`
+  is the refusal this section describes first.

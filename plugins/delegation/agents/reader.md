@@ -77,3 +77,8 @@ Callers don't always need a full map. Match output depth to what was asked:
 - **Full map** ("map this component for planning") → produce all applicable sections.
 
 A tight answer to a tight question is better than a full report the caller didn't need.
+
+## When this can't run
+
+A brief with no `## How it fails` heading is refused before this agent starts (evals/spawn-gate-deny-no-how-it-fails.scenario.json); as a read-only agent it needs nothing more (evals/spawn-gate-allow-read-only.scenario.json).
+A file it cannot open (missing, binary, permission denied) is named in the report as unread, never summarized from its name.

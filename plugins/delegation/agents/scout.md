@@ -24,3 +24,8 @@ Your output is nearly all CLAIM, and a `path:line` is the receipt. That is the w
 - If you must include an inference (e.g. two candidates and you think one is the real definition), leave it unlabeled and say what it rests on: "the export in api-client.ts looks like the live one; both match."
 - **You have Grep and Glob in hand — before leaving an inference in, check whether one more search would resolve it in under a minute.** If so, run it instead. This applies when the caller's next step depends on which candidate is right — not to every stray "could also check X."
 - If you could not search at all (tool failure, no access), say that plainly instead of returning a plausible answer. An honest empty result is the correct output; invented paths are the one thing that makes this agent dangerous.
+
+## When this can't run
+
+A brief with no `## How it fails` heading is refused before this agent starts (evals/spawn-gate-deny-no-how-it-fails.scenario.json); as a read-only agent it needs nothing more (evals/spawn-gate-allow-read-only.scenario.json).
+When nothing matches, it says so with the searches it ran, rather than returning the nearest guess.

@@ -10,21 +10,44 @@
 #   stdout (no `claude`, no credentials, no network). Any other exit = fail. Every line of stdout
 #   is kept as the run's summary, so print the evidence for each step.
 #
-# What this run proves, headless (`claude -p`), with the plugin loaded from THIS checkout and the
+# What this run proves. First, offline: every evals/*.scenario.json passes against this
+# checkout's hooks, run by plugin-kit's lib/live-run.mjs hook phase (a sandbox per scenario; no
+# model). Then headless (`claude -p`), with the plugin loaded from THIS checkout and the
 # installed copy disabled:
 #   1. The plugin's hooks ran (a hook event naming one of them appears in the stream-json).
 #   2. The SessionStart hook's teaching block reached the run: the stream-json carries the
 #      "# Delegation: how to brief a subagent" heading (the additionalContext the hook returns).
 #
-# How it fails: `claude` missing → 75. `claude` present but the run exits non-zero and names a
-# login, credential or network problem → 75; any other non-zero → that exit code. An assertion
-# fails with its step number and the evidence line. Everything is under a mktemp directory
-# removed at exit; the transcript is copied to CANARY_TRANSCRIPT when set.
+# How it fails: a hook scenario fails → exit 1 with the helper's lines. No helper found → the
+# hook phase is skipped with a line saying so. `claude` missing → 75. `claude` present but the
+# run exits non-zero and names a login, credential or network problem → 75; any other non-zero
+# → that exit code. An assertion fails with its step number and the evidence line. Everything
+# is under a mktemp directory removed at exit; the transcript is copied to CANARY_TRANSCRIPT
+# when set.
 
 set -u
 PLUGIN_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 PLUGIN="${CANARY_PLUGIN:-delegation}"
 TIMEOUT="${CANARY_TIMEOUT_S:-300}"
+
+HELPER=""
+for candidate in "$PLUGIN_DIR/lib/live-run.mjs" "$PLUGIN_DIR/../plugin-kit/lib/live-run.mjs"; do
+  if [ -f "$candidate" ]; then
+    HELPER="$candidate"
+    break
+  fi
+done
+if [ -n "$HELPER" ]; then
+  CANARY_PLUGIN="$PLUGIN" node "$HELPER" --plugin-dir "$PLUGIN_DIR" --no-live
+  HOOKS=$?
+  # 75 is the helper's "live phase skipped" with every hook scenario passed; this script runs the live part.
+  if [ "$HOOKS" -ne 75 ] && [ "$HOOKS" -ne 0 ]; then
+    echo "fail: a hook scenario failed (live-run.mjs exit $HOOKS)"
+    exit 1
+  fi
+else
+  echo "hook scenarios skipped: no live-run helper at $PLUGIN_DIR/lib/live-run.mjs or $PLUGIN_DIR/../plugin-kit/lib/live-run.mjs"
+fi
 
 if ! command -v claude >/dev/null 2>&1; then
   echo "unavailable: claude not found on PATH"
