@@ -63,13 +63,14 @@ omp plugin install ask-graham@jo-wolff-plugins
 omp plugin install reminders-review@jo-wolff-plugins
 omp plugin install pattern-check@jo-wolff-plugins
 omp plugin install as2-skills@jo-wolff-plugins
+omp plugin install plugin-kit@jo-wolff-plugins
 ```
 
 Inside a running OMP session the commands are `/marketplace add` and `/marketplace install`, with
 the same arguments. `/plugin install` inside OMP installs nothing. On OMP output-types delivers its
 skill only; its hooks do not run there. i-have-audhd and paired-coding install OMP extensions
-that run their hooks, and ask-graham installs its prompt nudge (see each section). ledger is
-Claude Code only.
+that run their hooks, and ask-graham installs its prompt nudge (see each section). plugin-kit
+is a skill and a script, so it works on both. ledger is Claude Code only.
 
 To update, update each harness separately. On OMP, refresh the marketplace first, because
 `omp plugin upgrade` installs the version in OMP's cached copy of it:
