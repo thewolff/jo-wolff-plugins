@@ -55,8 +55,9 @@ const LABEL_LINE = new RegExp(
   `^\\*\\*((?:${SECTION_LABELS.join("|")})(?:\\s*\\([^()*]*\\))?)(?::\\*\\*|\\*\\*:?)$`,
 );
 
-// The label a line opens, or null. Only prose lines qualify; see the header.
-function labelOf(entry) {
+// The label a line opens, or null. Only prose lines qualify; see the header. Exported for
+// checks/handed-command.mjs, whose receipts sit directly under a label.
+export function labelOf(entry) {
   if (entry.kind !== "prose") return null;
   const m = LABEL_LINE.exec(entry.raw.trim());
   return m ? m[1] : null;

@@ -37,22 +37,13 @@ import { homedir, tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import { defaultProfilePath } from "../lib/config.mjs";
 import { killSwitchPath } from "../lib/state.mjs";
+import { CHECK_IDS } from "../lib/rules.mjs";
 
 const CONFIG_URL = new URL("../lib/config.mjs", import.meta.url).href;
 
-// The rule ids the Stop hook passes to effectiveMode (hooks/i-have-audhd-stop.mjs). Used only
-// to print each rule's effective mode; an override for any other id is counted, not named.
-const RULES = [
-  "needs-you-first",
-  "closing-ask-last",
-  "do-not-batch-by-label",
-  "conclusion-first",
-  "plural-back-reference",
-  "restate-resumed-thread",
-  "name-the-artifact",
-  "report-what-you-did-not-do",
-  "bad-news-first",
-];
+// The check ids the Stop hook passes to effectiveMode, defined once in lib/rules.mjs. Used only
+// to print each check's effective mode; an override for any other id is counted, not named.
+const RULES = CHECK_IDS;
 
 // Old variable → what replaces it. The old names are read here only to report them.
 const ENV_CUTOVER = [

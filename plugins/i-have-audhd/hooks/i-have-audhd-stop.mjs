@@ -23,7 +23,11 @@
 //      of the host process that spawns hooks, so an env switch cannot be thrown without
 //      relaunching the host. The file works within one turn. Chosen silence: documented
 //      here, not announced to the model. $I_HAVE_AUDHD_ENFORCE=off is a secondary
-//      switch with exactly that frozen caveat — it costs a host relaunch to change.
+//      switch with exactly that frozen caveat — it costs a host relaunch to change. Then the
+//      profile's `inject` (lib/config.mjs loadSwitches): "rules" means injection only, so
+//      this hook checks nothing. The flag file is read first and wins over every value. A
+//      check bound to a rule the profile's `inject.rules` switches off (lib/rules.mjs CHECKS)
+//      defaults to off; its own enforcement.rules entry still wins (lib/config.mjs).
 //   2. Parse the payload. Empty stdin, unparseable stdin or a non-object → a fault, exit 0.
 //   3. Extract the final assistant text: last_assistant_message when it is a non-empty
 //      string, else the transcript JSONL scanned backwards for the last type:"assistant"
@@ -33,8 +37,9 @@
 //      only after its OWN block in this session, because OMP's flag is set by any extension.
 //      If the sha256 of this text equals the hash recorded at this plugin's last block, exit
 //      0: never block the same message twice, or a model that ignores the reason loops forever.
-//   5. Master floor — under 200 substantive chars nothing runs. Short messages are the
-//      false-positive population for every structural check this plugin ships.
+//   5. Master floor — under 200 substantive chars only handed-command runs. Short messages are
+//      the false-positive population for every structural check this plugin ships; a
+//      command-only handoff is short by nature, and rule 10 holds at any length.
 //   6. Deterministic checks run per their configured modes; findings collect.
 //   7. Judge-gated checks run only where their deterministic trigger fired and a judge
 //      command is configured; a skipped one leaves a line in skipped.log naming the rule —
@@ -85,8 +90,12 @@ import { checkClosingAskLast } from "../checks/closing-ask-last.mjs";
 import { checkNeedsYouFirst } from "../checks/needs-you-first.mjs";
 import { checkNamesArtifact } from "../checks/name-the-artifact.mjs";
 import { checkPluralBackReference } from "../checks/plural-back-reference.mjs";
+import { checkHandedCommand } from "../checks/handed-command.mjs";
+import { checkLinkTheReference } from "../checks/link-the-reference.mjs";
 import { splitLabeledSections, openingWords, OPENING_WORDS } from "../checks/sections.mjs";
-import { loadEnforcement, effectiveMode, harnessCapsBlocks } from "../lib/config.mjs";
+import { proseCharCount } from "../checks/lines.mjs";
+import { loadEnforcement, loadSwitches, effectiveMode, harnessCapsBlocks } from "../lib/config.mjs";
+import { ruleRef } from "../lib/rules.mjs";
 import { stateDir, killSwitchPath, lastBlockedPath, resumeMarkerPath, sha256hex, appendLog, logFault, faultWarning } from "../lib/state.mjs";
 import { writePending } from "../lib/pending.mjs";
 import { dueAlerts, clearAlerts } from "../lib/alerts.mjs";
@@ -106,22 +115,10 @@ const restateQuestion =
   "work. A message that itself summarizes or hands off (naming subject and status) is " +
   "compliant. When unsure, answer violation=false.";
 
-// The skill rule each check enforces (skills/i-have-audhd/SKILL.md headings). Every warn and
+// The skill rule each check enforces is declared once, in lib/rules.mjs CHECKS. Every warn and
 // block reason names it, so a finding points at text the model has or can load.
-const RULE_REFS = {
-  "needs-you-first": "i-have-audhd rule 1, Skeleton",
-  "closing-ask-last": "i-have-audhd rule 1, Skeleton",
-  "do-not-batch-by-label": "i-have-audhd rule 1, Skeleton",
-  "conclusion-first": "i-have-audhd rule 1, Skeleton",
-  "plural-back-reference": "i-have-audhd rule 6, References survive without scrolling",
-  "restate-resumed-thread": "i-have-audhd rule 8, Resume by restating content",
-  "name-the-artifact": "i-have-audhd rule 11, Machinery anchors",
-  "report-what-you-did-not-do": "i-have-audhd rule 11, Machinery anchors",
-  "bad-news-first": "i-have-audhd rule 11, Machinery anchors",
-};
-
 // "<Check name> (<skill rule>)" — the head of every reason this hook emits.
-const cite = (name, rule) => (RULE_REFS[rule] ? `${name} (${RULE_REFS[rule]})` : name);
+const cite = (name, rule) => (ruleRef(rule) ? `${name} (${ruleRef(rule)})` : name);
 
 const MASTER_FLOOR = 200;
 
@@ -184,7 +181,7 @@ export function extractText(payload) {
 }
 
 // The deterministic checks, wired one by one. Each returns findings for the emit stage.
-function runDeterministicChecks(text, config) {
+function runDeterministicChecks(text, config, switches) {
   const findings = [];
 
   // needs-you-first — needs you first. Calls the EXISTING check; not a fork, not a copy.
@@ -253,7 +250,63 @@ function runDeterministicChecks(text, config) {
     }
   }
 
+  // link-the-reference — a named PR, issue, file, artifact or branch carries its link. The
+  // profile's linkTheReference.kinds picks which of the four kinds run.
+  if (effectiveMode(config, "link-the-reference") !== "off") {
+    const r = checkLinkTheReference(text, { kinds: switches.linkKinds });
+    if (r.flagged) {
+      const shown = r.findings.slice(0, 5).map((f) => `${f.where} \`${f.excerpt}\` (${f.kind})`).join("; ");
+      const more = r.findings.length > 5 ? `; and ${r.findings.length - 5} more line(s)` : "";
+      findings.push({
+        rule: "link-the-reference",
+        mode: effectiveMode(config, "link-the-reference"),
+        text:
+          `${cite("Link the reference", "link-the-reference")} — ${shown}${more} name something the reader cannot open ` +
+          `from the line. Add the link on the same line: a PR or issue gets its https://github.com/…/pull/N or ` +
+          `/issues/N URL; a file gets its absolute or ~/ path; "the report", "the plan" and the like get the path ` +
+          `or URL in the same sentence; a branch gets its PR URL or its checkout's absolute path.`,
+        paste: paste("lines"),
+      });
+    }
+  }
+
+  // handed-command — a command handed to the reader is one script line. The profile's
+  // handedCommand.allow globs extend the passing shape; handedCommand.scriptRoots says where
+  // a script may live.
+  findings.push(...handedCommandFindings(text, config, switches));
+
   return findings;
+}
+
+// The handed-command finding, alone: the Stop hook also runs it under the master floor, where
+// a command-only handoff is short by nature.
+function handedCommandFindings(text, config, switches) {
+  const mode = effectiveMode(config, "handed-command");
+  if (mode === "off") return [];
+  const r = checkHandedCommand(text, { allow: switches.handedCommandAllow, scriptRoots: switches.handedCommandScriptRoots });
+  if (!r.flagged) return [];
+  const [first, ...more] = r.findings;
+  const others = more.length ? ` (and ${more.length} more: line${more.length > 1 ? "s" : ""} ${more.map((f) => f.line).join(", ")})` : "";
+  const where =
+    first.problem === "in-checkout"
+      ? `, a script inside the git checkout ${first.checkout}`
+      : first.problem === "outside-script-roots"
+        ? `, a script outside every scratch root (${first.roots.join(", ")}; the profile's handedCommand.scriptRoots)`
+        : first.problem === "unresolvable-path"
+          ? `, a script path that does not resolve (${first.error}), so nothing shows it sits outside every git checkout`
+          : "";
+  return [
+    {
+      rule: "handed-command",
+      mode,
+      text:
+        `${cite("Handed command", "handed-command")} — line ${first.line} hands the reader \`${first.command}\`${where}${others}. ` +
+        `Rule 10: more than one command, or any interactive input, is a script file in a scratch directory outside ` +
+        `every git repository; the reader types one line, \`zsh /path/to/script.sh\`, that stays byte-identical, and ` +
+        `fixes edit the file. Put the command in a script and hand that one line.`,
+      paste: paste("command line"),
+    },
+  ];
 }
 
 // A unit of a labeled message tells the judge what it is looking at: one section, judged alone.
@@ -421,6 +474,9 @@ async function main() {
   // Secondary env switch. Caveat, documented: env is frozen per host process, so changing
   // this one means relaunching the host — the flag file above is the fast control.
   if (String(process.env.I_HAVE_AUDHD_ENFORCE || "").toLowerCase() === "off") return {};
+  // The profile's inject switch: "rules" is injection only, so no check runs here.
+  const switches = loadSwitches();
+  if (switches.inject === "rules") return {};
 
   // 2. Payload. The host always sends a JSON object, so anything else is a fault.
   if (!raw.trim()) {
@@ -455,15 +511,20 @@ async function main() {
     }
   }
 
-  // 5. Master floor. proseChars comes from the needs-you-first check's own accounting — one shared
-  // definition of "substantive", not a second one that can drift.
-  const r1 = checkNeedsYouFirst(text);
-  if (r1.proseChars < MASTER_FLOOR) return {};
+  // 5. Master floor. proseCharCount is lines.mjs's rule-free count over the same line
+  // classification every check uses, so no rule's check runs to measure the floor — a rule the
+  // profile switched off never executes. Under it only handed-command runs: a command-only
+  // handoff is short by nature, and the rule holds at any length.
+  const belowFloor = proseCharCount(text) < MASTER_FLOOR;
 
   // 6–7. Checks per configured modes.
   const harness = process.env.I_HAVE_AUDHD_HARNESS;
-  const config = loadEnforcement(harness);
-  const findings = [...runDeterministicChecks(text, config)];
+  // The profile's inject.rules: a check bound to a switched-off rule defaults to off.
+  const config = { ...loadEnforcement(harness), disabledRules: switches.disabledRules };
+  const findings = belowFloor ? handedCommandFindings(text, config, switches) : [...runDeterministicChecks(text, config, switches)];
+  if (belowFloor && !findings.length) return {};
+  // A judge rule runs above the floor only.
+  const judged = (rule) => !belowFloor && effectiveMode(config, rule) !== "off";
 
   // Judge-gated rules: deterministic trigger first; the judge runs only where a trigger fired
   // AND a judge command is configured. A skipped judge rule leaves a line in skipped.log —
@@ -476,7 +537,7 @@ async function main() {
   // after it. Consuming the marker before dispatch means the judgment is one-shot even when
   // no judge is configured (the skip is logged) — a marker that survives a fired trigger
   // would re-judge every message in the session.
-  if (effectiveMode(config, "restate-resumed-thread") !== "off" && existsSync(resumeMarkerPath(sessionId))) {
+  if (judged("restate-resumed-thread") && existsSync(resumeMarkerPath(sessionId))) {
     try {
       rmSync(resumeMarkerPath(sessionId), { force: true });
       judgeJobs.push({ rule: "restate-resumed-thread", question: restateQuestion, contextText: text });
@@ -485,7 +546,7 @@ async function main() {
     }
   }
 
-  if (effectiveMode(config, "do-not-batch-by-label") !== "off") {
+  if (judged("do-not-batch-by-label")) {
     const t = findTrailingBatchSection(text);
     if (t.applicable) {
       judgeJobs.push({
@@ -503,7 +564,7 @@ async function main() {
 
   // conclusion-first — conclusion first: 400 prose chars per unit; below that the judge would
   // only be guessing at "setup".
-  if (effectiveMode(config, "conclusion-first") !== "off") {
+  if (judged("conclusion-first")) {
     judgeJobs.push(...unitJobs("conclusion-first", conclusionFirstQuestion, units, conclusionFirstApplicable));
   }
 
@@ -511,7 +572,7 @@ async function main() {
   // LAST todo list (Claude Code's TodoWrite call, or OMP's todo tool result; the OMP adapter passes
   // its session file as transcript_path). A payload with no transcript has no todo data, and the
   // boundary is documented: with no tracked plan the violation is silence.
-  if (effectiveMode(config, "report-what-you-did-not-do") !== "off" && typeof payload.transcript_path === "string") {
+  if (judged("report-what-you-did-not-do") && typeof payload.transcript_path === "string") {
     let transcriptRaw = "";
     try {
       transcriptRaw = readFileSync(payload.transcript_path, "utf8");
@@ -530,7 +591,7 @@ async function main() {
 
   // bad-news-first — bad news first: the lexicon gate decides applicability only, per unit.
   // "Fixed the error" trips the gate and is exactly the message the judge must acquit.
-  if (effectiveMode(config, "bad-news-first") !== "off") {
+  if (judged("bad-news-first")) {
     judgeJobs.push(...unitJobs("bad-news-first", badNewsQuestion, units, badNewsGate));
   }
   let judgeAlert = "";

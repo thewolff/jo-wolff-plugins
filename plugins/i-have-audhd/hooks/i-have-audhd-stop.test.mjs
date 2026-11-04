@@ -19,13 +19,14 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { OMP_TODO_CALL, OMP_TODO_RESULT } from "../triggers/fixtures/omp-todo-fragment.mjs";
 import { conclusionFirstApplicable } from "../triggers/conclusion-first.mjs";
 import { badNewsGate } from "../triggers/bad-news-lexicon.mjs";
+import { RULE_IDS } from "../lib/rules.mjs";
 
 const HOOK = fileURLToPath(new URL("./i-have-audhd-stop.mjs", import.meta.url));
 
@@ -1001,4 +1002,368 @@ test("the judge is shown the section's first 20 words: bad news at words 25-30 o
   assert.ok(!window.includes("failed"));
   assert.ok(job.question.includes(`one labeled section (**CITE**, line ${lineOf(msg, "**CITE**")})`), job.question);
   assert.ok(!job.message.includes("**CITE**"), "the framing rides in the question, not the judged message");
+});
+
+// ─── handed-command (rule 10) through the hook, from transcript fixtures ─────
+
+const FIXTURES = fileURLToPath(new URL("./fixtures/", import.meta.url));
+const bareTranscript = join(FIXTURES, "handed-command-bare.jsonl");
+const scriptTranscript = join(FIXTURES, "handed-command-script.jsonl");
+const writeProfile = (home, profile) => writeFileSync(join(home, ".claude", "i-have-audhd.json"), JSON.stringify(profile));
+
+test("a transcript handing a bare `gh pr list` warns handed-command, naming rule 10 and the line", () => {
+  const home = mkhome();
+  const r = runHook({ session_id: "hc1", transcript_path: bareTranscript }, home);
+  assert.equal(r.status, 0);
+  assert.equal(r.stdout, "", "warn by default: nothing on stdout");
+  const warns = logLines(home, "warnings.log").filter((l) => l.includes("rule=handed-command"));
+  assert.equal(warns.length, 1);
+  assert.match(warns[0], /i-have-audhd rule 10, Commands handed to the user/);
+  assert.match(warns[0], /line 3 hands the reader `gh pr list`/);
+  assert.ok(existsSync(join(home, ".claude", ".i-have-audhd-state", "pending-warn-hc1.json")), "delivered next turn");
+});
+
+test("a transcript handing `zsh ~/agent-scratch/…/x.sh` is silent", () => {
+  const home = mkhome();
+  const r = runHook({ session_id: "hc2", transcript_path: scriptTranscript }, home);
+  assert.equal(r.status, 0);
+  assert.equal(r.stdout, "");
+  assert.equal(readLog(home, "warnings.log"), "");
+  assert.equal(readLog(home, "errors.log"), "");
+});
+
+test("handed-command armed to block blocks, and the reason ends with the way out", () => {
+  const home = mkhome();
+  writeProfile(home, { enforcement: { rules: { "handed-command": "block" } } });
+  const out = parseOut(runHook({ session_id: "hc3", transcript_path: bareTranscript }, home).stdout);
+  assert.equal(out.decision, "block");
+  assert.deepEqual(blockedRules(home, "hc3"), ["handed-command"]);
+  assert.match(out.reason, /Way out: .*"handed-command": "warn"/);
+});
+
+test("handedCommand.allow globs let the operator's own line through", () => {
+  const home = mkhome();
+  writeProfile(home, { handedCommand: { allow: ["gh pr list"] } });
+  runHook({ session_id: "hc4", transcript_path: bareTranscript }, home);
+  assert.equal(readLog(home, "warnings.log"), "");
+});
+
+test("a malformed handedCommand.allow is one errors.log line; the built-in shape still applies", () => {
+  const home = mkhome();
+  writeProfile(home, { handedCommand: { allow: "gh *" } });
+  const r = runHook({ session_id: "hc5", transcript_path: bareTranscript }, home);
+  assert.match(parseOut(r.stdout).systemMessage, /failed open/);
+  assert.equal(logLines(home, "errors.log").length, 1);
+  assert.match(readLog(home, "errors.log"), /handedCommand\.allow is not an array/);
+  assert.match(readLog(home, "warnings.log"), /rule=handed-command/);
+});
+
+// ─── handed-command: round-1 review regressions (probe inputs reused) ───────
+
+const hcBlock = { inject: "none", enforcement: { mode: "off", rules: { "handed-command": "block" } } };
+
+test("HC-03 short_handoff: a one-line handoff under the master floor still blocks", () => {
+  const home = mkhome();
+  writeProfile(home, hcBlock);
+  const out = parseOut(runHook({ session_id: "hcs1", last_assistant_message: "Run `gh pr list`." }, home).stdout);
+  assert.equal(out.decision, "block");
+  assert.match(out.reason, /line 1 hands the reader `gh pr list`/);
+});
+
+test("HC-03 shell_fence_only: a command-only bash fence blocks", () => {
+  const home = mkhome();
+  writeProfile(home, hcBlock);
+  const out = parseOut(runHook({ session_id: "hcs2", last_assistant_message: "```bash\ngh pr list\n```" }, home).stdout);
+  assert.equal(out.decision, "block");
+  assert.match(out.reason, /line 2 hands the reader `gh pr list`/);
+});
+
+test("HC-03: under the floor only handed-command runs; a short message with no command stays silent", () => {
+  const home = mkhome();
+  const r = runHook({ session_id: "hcs3", last_assistant_message: "Run `gh pr list`." }, home);
+  assert.equal(r.stdout, "");
+  assert.equal(logLines(home, "warnings.log").length, 1, "default warn");
+  assert.match(readLog(home, "warnings.log"), /rule=handed-command/);
+  assert.equal(readLog(home, "skipped.log"), "", "no judge rule runs under the floor");
+  const quiet = mkhome();
+  writeProfile(quiet, hcBlock);
+  assert.equal(runHook({ session_id: "hcs4", last_assistant_message: "Done. Small body." }, quiet).stdout, "");
+  assert.ok(!existsSync(join(quiet, ".claude", ".i-have-audhd-state")), "nothing written");
+});
+
+test("HC-03: kill switch, inject rules, a rule set to off and the loop guard still win under the floor", () => {
+  const short = { last_assistant_message: "Run `gh pr list`." };
+  const killed = mkhome();
+  writeProfile(killed, hcBlock);
+  writeFileSync(join(killed, ".claude", ".i-have-audhd-off"), "");
+  assert.equal(runHook({ session_id: "hcs5", ...short }, killed).stdout, "");
+  const rules = mkhome();
+  writeProfile(rules, { ...hcBlock, inject: "rules" });
+  assert.equal(runHook({ session_id: "hcs6", ...short }, rules).stdout, "");
+  const off = mkhome();
+  writeProfile(off, { inject: "none", enforcement: { mode: "block", rules: { "handed-command": "off" } } });
+  assert.equal(runHook({ session_id: "hcs7", ...short }, off).stdout, "");
+  assert.ok(!existsSync(join(off, ".claude", ".i-have-audhd-state")), "nothing written");
+  const guarded = mkhome();
+  writeProfile(guarded, hcBlock);
+  assert.equal(parseOut(runHook({ session_id: "hcs8", ...short }, guarded).stdout).decision, "block");
+  assert.equal(runHook({ session_id: "hcs8", ...short, stop_hook_active: true }, guarded).stdout, "");
+});
+
+test("HC-01: a script outside every scratch root warns, naming the roots; scriptRoots moves them", () => {
+  const msg = `${body(4)}\n\nRun \`zsh /path/script.sh\`.`;
+  const home = mkhome();
+  runHook({ session_id: "hcr1", last_assistant_message: msg }, home);
+  assert.match(readLog(home, "warnings.log"), /a script outside every scratch root \(~\/agent-scratch; the profile's handedCommand\.scriptRoots\)/);
+  const moved = mkhome();
+  writeProfile(moved, { handedCommand: { scriptRoots: ["/path"] } });
+  runHook({ session_id: "hcr2", last_assistant_message: msg }, moved);
+  assert.equal(readLog(moved, "warnings.log"), "");
+  assert.equal(readLog(moved, "errors.log"), "");
+});
+
+test("HC-01: a script inside a git checkout warns, naming the checkout", () => {
+  const home = mkhome();
+  mkdirSync(join(home, "agent-scratch", "repo", ".git"), { recursive: true });
+  runHook({ session_id: "hcr3", last_assistant_message: `${body(4)}\n\nRun \`zsh ~/agent-scratch/repo/x.sh\`.` }, home);
+  assert.match(readLog(home, "warnings.log"), /a script inside the git checkout .*agent-scratch\/repo/);
+});
+
+// ─── handed-command: round-2 review regressions ──────────────────────────────
+
+test("HC-01-R2: a symlink then `..` into a checkout blocks, naming the checkout", () => {
+  const home = mkhome();
+  writeProfile(home, hcBlock);
+  mkdirSync(join(home, "repo", ".git"), { recursive: true });
+  mkdirSync(join(home, "repo", "scripts"), { recursive: true });
+  writeFileSync(join(home, "repo", "danger.sh"), "echo nope\n");
+  mkdirSync(join(home, "agent-scratch"), { recursive: true });
+  symlinkSync(join(home, "repo", "scripts"), join(home, "agent-scratch", "jump"));
+  const out = parseOut(runHook({ session_id: "hcq1", last_assistant_message: "Run `zsh ~/agent-scratch/jump/../danger.sh`." }, home).stdout);
+  assert.equal(out.decision, "block");
+  assert.match(out.reason, /a script inside the git checkout .*\/repo\b/);
+});
+
+test("HC-01-R2: a symlink loop blocks as a path that does not resolve", () => {
+  const home = mkhome();
+  writeProfile(home, hcBlock);
+  mkdirSync(join(home, "agent-scratch"), { recursive: true });
+  symlinkSync(join(home, "agent-scratch", "loop.sh"), join(home, "agent-scratch", "loop.sh"));
+  const out = parseOut(runHook({ session_id: "hcq2", last_assistant_message: "Run `zsh ~/agent-scratch/loop.sh`." }, home).stdout);
+  assert.equal(out.decision, "block");
+  assert.match(out.reason, /a script path that does not resolve \(ELOOP\)/);
+});
+
+test("HC-02-R2: a three-line span continuation blocks on the assembled command", () => {
+  const home = mkhome();
+  writeProfile(home, hcBlock);
+  mkdirSync(join(home, "agent-scratch"), { recursive: true });
+  const out = parseOut(runHook({ session_id: "hcq3", last_assistant_message: "Run `zsh`\n`~/agent-scratch/a.sh`\n`--force`." }, home).stdout);
+  assert.equal(out.decision, "block");
+  assert.match(out.reason, /line 1 hands the reader `zsh ~\/agent-scratch\/a\.sh --force`/);
+});
+
+test("a malformed handedCommand.scriptRoots is one errors.log line; ~/agent-scratch applies", () => {
+  for (const scriptRoots of [[], "~/x", ["relative/dir"], [3]]) {
+    const home = mkhome();
+    writeProfile(home, { handedCommand: { scriptRoots } });
+    runHook({ session_id: "hcr4", last_assistant_message: `${body(4)}\n\nRun \`zsh /path/script.sh\`.` }, home);
+    assert.equal(logLines(home, "errors.log").length, 1, JSON.stringify(scriptRoots));
+    assert.match(readLog(home, "errors.log"), /handedCommand\.scriptRoots is not a non-empty array/);
+    assert.match(readLog(home, "warnings.log"), /~\/agent-scratch/);
+  }
+});
+
+test("HC-02/05/06/07/08/09/10 through the hook: the review's long-form probes", () => {
+  const cases = [
+    ["e2e_split_inline_spans", "Run `zsh /path/script.sh` `--flag`.", true],
+    ["e2e_safe_then_unsafe_inline", "Run `zsh ~/agent-scratch/x.sh`, then run `gh pr list`.", true],
+    ["e2e_script_split_across_lines", "Run `zsh ~/agent-scratch/x.sh`\n`--flag`.", true],
+    ["e2e_claim_two_paragraphs", "**CLAIM**\nThe completed check used the following command.\n\nIts exact invocation and result follow.\n\n```bash\ngh pr list\n```\nThe command exited zero.", false],
+    ["e2e_arrow_next_line_inline", "Run `gh pr list`\n→ exit 0, three pull requests.", false],
+    ["e2e_numbered_what_i_ran_fence", "## What I ran\n1. Listed open pull requests:\n\n   ```bash\n   gh pr list\n   ```\n\n   Exit code: 0.", false],
+    ["e2e_console_instructions", "Run this in your terminal:\n\n```console\n$ gh pr list\n```", true],
+    ["e2e_table_colon_evidence", "| Check | Result |\n| --- | --- |\n| Completed: run `gh pr list` | exit 0 |", false],
+    ["e2e_prompt_after_run", "Run this in your terminal:\n\n$ gh pr list", true],
+  ];
+  for (const [name, tail, blocks] of cases) {
+    const home = mkhome();
+    writeProfile(home, hcBlock);
+    const r = runHook({ session_id: name, last_assistant_message: `${body(4)}\n\n${tail}` }, home);
+    assert.equal(r.stdout.includes('"decision":"block"'), blocks, name);
+  }
+});
+
+// ─── the profile's inject switch, Stop half ──────────────────────────────────
+
+test("inject full and absent: the Stop checks run", () => {
+  for (const profile of [{}, { inject: "full" }]) {
+    const home = mkhome();
+    writeProfile(home, profile);
+    runHook({ session_id: "inj1", last_assistant_message: misordered }, home);
+    assert.match(readLog(home, "warnings.log"), /rule=needs-you-first/, JSON.stringify(profile));
+  }
+});
+
+test("inject rules: injection only, so the Stop hook checks nothing, even armed to block", () => {
+  const home = mkhome();
+  writeProfile(home, { inject: "rules", enforcement: { mode: "block" } });
+  const r = runHook({ session_id: "inj2", last_assistant_message: misordered }, home);
+  assert.equal(r.status, 0);
+  assert.equal(r.stdout, "");
+  assert.ok(!existsSync(join(home, ".claude", ".i-have-audhd-state")), "nothing checked, nothing written");
+});
+
+test("inject none: no injection, and the Stop checks still run", () => {
+  const home = mkhome();
+  writeProfile(home, { inject: "none", enforcement: { rules: { "needs-you-first": "block" } } });
+  const out = parseOut(runHook({ session_id: "inj3", last_assistant_message: misordered }, home).stdout);
+  assert.equal(out.decision, "block");
+});
+
+test("the kill-switch file wins over every inject value", () => {
+  for (const inject of ["full", "rules", "none"]) {
+    const home = mkhome();
+    writeProfile(home, { inject, enforcement: { mode: "block" } });
+    writeFileSync(join(home, ".claude", ".i-have-audhd-off"), "");
+    const r = runHook({ session_id: "inj4", last_assistant_message: misordered }, home);
+    assert.equal(r.stdout, "", inject);
+    assert.ok(!existsSync(join(home, ".claude", ".i-have-audhd-state")), inject);
+  }
+});
+
+test("an inject value outside full|rules|none is one errors.log line and the checks run as under full", () => {
+  const home = mkhome();
+  writeProfile(home, { inject: "off" });
+  const r = runHook({ session_id: "inj5", last_assistant_message: misordered }, home);
+  assert.match(parseOut(r.stdout).systemMessage, /failed open/);
+  assert.match(readLog(home, "errors.log"), /inject: "off" is not full\|rules\|none; full with every rule on applies/);
+  assert.match(readLog(home, "warnings.log"), /rule=needs-you-first/);
+});
+
+// ─── per-rule switches and link-the-reference, Stop half ─────────────────────
+
+// A message long enough to clear the master floor that hands `gh pr list` and names PR #42 and
+// notes.md with no link: handed-command (rule 10) and link-the-reference (rule 11) both fire.
+const handsAndRefs = `${body(4)}\n\nPR #42 touched notes.md.\n\nRun \`gh pr list\` to see it.`;
+
+const warnedRules = (home) => [...readLog(home, "warnings.log").matchAll(/rule=(\S+)/g)].map((m) => m[1]).sort();
+
+test("link-the-reference warns by default, names its rule, its line and its kind", () => {
+  const home = mkhome();
+  runHook({ session_id: "ltr1", last_assistant_message: handsAndRefs }, home);
+  const line = readLog(home, "warnings.log").split("\n").find((l) => l.includes("rule=link-the-reference"));
+  assert.ok(line, "a link-the-reference warning");
+  assert.match(line, /i-have-audhd rule 11, Machinery anchors/);
+  assert.match(line, /line \d+ `PR #42` \(issue-ref\)/);
+});
+
+test("link-the-reference: an artifact phrase is silent by default and warns once linkTheReference.kinds turns it on", () => {
+  const msg = `${body(4)}\n\nThe report is ready for you to read.`;
+  const quiet = mkhome();
+  runHook({ session_id: "ltr2", last_assistant_message: msg }, quiet);
+  assert.ok(!warnedRules(quiet).includes("link-the-reference"));
+  const on = mkhome();
+  writeProfile(on, { linkTheReference: { kinds: { artifact: true } } });
+  runHook({ session_id: "ltr3", last_assistant_message: msg }, on);
+  assert.match(readLog(on, "warnings.log"), /rule=link-the-reference .*`The report` \(artifact\)/);
+});
+
+test("a rule switched off in inject.rules silences every check bound to it, even under enforcement.mode block", () => {
+  const home = mkhome();
+  writeProfile(home, { inject: { rules: { commands: false, "machinery-anchors": false } }, enforcement: { mode: "block" } });
+  const r = runHook({ session_id: "rs1", last_assistant_message: handsAndRefs }, home);
+  assert.equal(r.stdout, "");
+  assert.ok(!warnedRules(home).includes("handed-command"));
+  assert.ok(!warnedRules(home).includes("link-the-reference"));
+});
+
+test("a bound check's own enforcement.rules entry re-enables it under a switched-off rule", () => {
+  const home = mkhome();
+  writeProfile(home, {
+    inject: { rules: { commands: false, "machinery-anchors": false } },
+    enforcement: { rules: { "handed-command": "block", "link-the-reference": "warn" } },
+  });
+  const out = parseOut(runHook({ session_id: "rs2", last_assistant_message: handsAndRefs }, home).stdout);
+  assert.equal(out.decision, "block");
+  assert.deepEqual(blockedRules(home, "rs2"), ["handed-command"]);
+  assert.ok(warnedRules(home).includes("link-the-reference"));
+});
+
+test("a switched-off rule silences the bound check under the master floor too", () => {
+  const home = mkhome();
+  writeProfile(home, { inject: { mode: "none", rules: { commands: false } }, enforcement: { mode: "block" } });
+  const r = runHook({ session_id: "rs3", transcript_path: bareTranscript }, home);
+  assert.equal(r.stdout, "");
+  assert.equal(readLog(home, "warnings.log"), "");
+});
+
+test("a malformed inject object is one errors.log line, and every check runs as under full", () => {
+  const home = mkhome();
+  writeProfile(home, { inject: { mode: "full", rules: { commands: "off" } } });
+  const r = runHook({ session_id: "rs4", last_assistant_message: handsAndRefs }, home);
+  assert.match(parseOut(r.stdout).systemMessage, /failed open/);
+  const errors = readLog(home, "errors.log").trim().split("\n");
+  assert.equal(errors.length, 1);
+  assert.match(errors[0], /inject: rules\["commands"\] "off" is not true\|false; full with every rule on applies/);
+  assert.ok(warnedRules(home).includes("handed-command"));
+});
+
+// ─── a disabled rule's check never executes ──────────────────────────────────
+// Silence is not the contract: a check whose finding is discarded is silent too. These count the
+// exported predicates' calls through hooks/fixtures/count-check-calls.mjs (a module hook that
+// wraps each one in memory) and assert on the count.
+
+const COUNTER = fileURLToPath(new URL("./fixtures/count-check-calls.mjs", import.meta.url));
+
+function checkCalls(payload, home) {
+  const log = join(home, "check-calls.log");
+  writeFileSync(log, "");
+  const r = spawnSync(process.execPath, ["--import", COUNTER, HOOK], {
+    input: JSON.stringify(payload),
+    encoding: "utf8",
+    env: {
+      ...process.env,
+      HOME: home,
+      I_HAVE_AUDHD_ENFORCE: "",
+      I_HAVE_AUDHD_PROFILE: "",
+      I_HAVE_AUDHD_HARNESS: "",
+      AUDHD_CHECK_COUNT_FILE: log,
+    },
+    timeout: 5_000,
+  });
+  assert.equal(r.status, 0, r.stderr);
+  return readFileSync(log, "utf8").split("\n").filter(Boolean);
+}
+
+const countOf = (calls, name) => calls.filter((c) => c === name).length;
+
+test("defaults: needs-you-first's check runs exactly once per Stop (the floor does not call it)", () => {
+  const calls = checkCalls({ session_id: "ex1", last_assistant_message: misordered }, mkhome());
+  assert.equal(countOf(calls, "checkNeedsYouFirst"), 1);
+});
+
+test("skeleton switched off: needs-you-first's check never runs, under any enforcement mode", () => {
+  for (const enforcement of [{ mode: "off" }, { mode: "warn" }, { mode: "block" }]) {
+    const home = mkhome();
+    writeProfile(home, { inject: { rules: { skeleton: false } }, enforcement });
+    const calls = checkCalls({ session_id: "ex2", last_assistant_message: misordered }, home);
+    assert.equal(countOf(calls, "checkNeedsYouFirst"), 0, `enforcement ${enforcement.mode}`);
+    assert.equal(countOf(calls, "checkClosingAskLast"), 0, `enforcement ${enforcement.mode}`);
+  }
+});
+
+test("every rule switched off: no check or trigger runs at all, even under enforcement.mode block", () => {
+  const home = mkhome();
+  const rules = Object.fromEntries(RULE_IDS.map((id) => [id, false]));
+  writeProfile(home, { inject: { rules }, enforcement: { mode: "block" } });
+  const calls = checkCalls({ session_id: "ex3", last_assistant_message: `${misordered}\n\n${handsAndRefs}` }, home);
+  assert.deepEqual(calls, []);
+});
+
+test("enforcement.mode off: no check or trigger runs at all", () => {
+  const home = mkhome();
+  writeProfile(home, { enforcement: { mode: "off" } });
+  const calls = checkCalls({ session_id: "ex4", last_assistant_message: `${misordered}\n\n${handsAndRefs}` }, home);
+  assert.deepEqual(calls, []);
 });

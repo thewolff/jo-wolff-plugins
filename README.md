@@ -245,7 +245,7 @@ Three steps:
    omp plugin install i-have-audhd@jo-wolff-plugins
    ```
 
-2. **Choose a judge.** Five of the nine Stop-hook checks (`do-not-batch-by-label`,
+2. **Choose a judge.** Five of the eleven Stop-hook checks (`do-not-batch-by-label`,
    `conclusion-first`, `restate-resumed-thread`, `report-what-you-did-not-do`,
    `bad-news-first`) need a model to read the message, and they stay off until you pick one. In a
    terminal, run the setup tool from the marketplace copy you just added:
@@ -278,7 +278,7 @@ fallback and an isolated live probe.
 - **A session-start injection** of the skill's first-turn core — the message skeleton, the
   options rule, reference survival, commands, and three machinery anchors — plus every rule
   heading, read out of `skills/i-have-audhd/SKILL.md` between its markers so there is one copy.
-- **A Stop hook** that checks every finished message with nine checks (four deterministic, five
+- **A Stop hook** that checks every finished message with eleven checks (six deterministic, five
   judge-gated) and names the skill rule behind each finding.
 - **A prompt hook** that delivers the last checked message's warn findings to the agent with
   your next prompt, once, as a short notice carrying the fix.
@@ -301,11 +301,16 @@ choose a judge (install step 2), and each fired trigger is logged to `skipped.lo
 README and `skills/i-have-audhd/reference.md` carry the schema, every check's contract, and the
 measured rates.
 
-Changes in 1.5.1: a hook's own fault is no longer silent. Empty or malformed stdin, a throw, an
-unparseable profile, or a state file that cannot be written leaves one line in `errors.log` and
-one warning line; the hook still exits 0 and blocks nothing. Every block reason now ends with the
-way out: `touch ~/.claude/.i-have-audhd-off`, or the check's `enforcement.rules` key set to
-`"warn"`.
+Changes in 1.6.0: two new checks. `handed-command` warns when a message hands you a shell command
+that is not one `zsh /absolute/path/script.sh` line with its script in a scratch directory
+(`~/agent-scratch` by default) outside every git checkout (rule 10); commands quoted as evidence do not
+count. `link-the-reference` warns when a line names a PR, an issue or a file with no link to it on
+the same line (rule 11); receipts, fenced code and `→` evidence lines never count. A new profile
+field, `inject`, switches the session-start rules and the Stop checks independently (`full`,
+`rules` or `none`) and, in its object form, switches each of the eleven rules on or off: a rule
+switched off leaves the injection, and the checks bound to it go quiet. The package README's
+*What you can turn on and off* lists every switch with its default. The kill-switch file still
+wins over every value.
 
 Changes in 1.5.2: the plugin meets ledger 0.3.5's five-row gate. `evals/manifest.json` declares
 what each of the three hooks can return and seven `evals/<x>.scenario.json` prove them
@@ -318,6 +323,12 @@ Stop hook and the four check scripts compared `import.meta.url` with `file://${p
 as strings, and node resolves the main module through symlinks, so reached through one (macOS's
 `/var/folders` tmpdir, where `ledger gate check` snapshots the plugin) the Stop hook never ran
 and exited 0 with nothing printed and nothing logged; the guards now compare real paths.
+
+Changes in 1.5.1: a hook's own fault is no longer silent. Empty or malformed stdin, a throw, an
+unparseable profile, or a state file that cannot be written leaves one line in `errors.log` and
+one warning line; the hook still exits 0 and blocks nothing. Every block reason now ends with the
+way out: `touch ~/.claude/.i-have-audhd-off`, or the check's `enforcement.rules` key set to
+`"warn"`.
 
 ## paired-coding
 

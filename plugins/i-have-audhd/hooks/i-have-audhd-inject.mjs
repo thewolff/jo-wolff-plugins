@@ -37,6 +37,13 @@
 // (omp/i-have-audhd-omp.ts) spawns this same file and forwards additionalContext.
 // A fault (empty or malformed stdin, an unparseable profile, a marker that cannot be written, a
 // throw) leaves one errors.log line and one warning line in systemMessage (lib/state.mjs, FAULTS).
+//
+// The profile's `inject` (lib/config.mjs loadSwitches): "full" and "rules" emit the core as
+// below; "none" emits no additionalContext (a checks-only install), while the resume marker the
+// Stop hook's checks consume is still written and the one-time judge notice still shows. Under
+// "rules" the Stop hook checks nothing, so the judge notice, which is about checks, is skipped.
+// A rule the profile's `inject.rules` switches off is left out of the emitted core: its core
+// block and its line in the rule list (lib/rules.mjs compileCore).
 
 import { readFileSync, writeFileSync, mkdirSync, existsSync } from "node:fs";
 import { homedir } from "node:os";
@@ -44,6 +51,8 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { stateDir, resumeMarkerPath, judgeNoticeMarkerPath, logFault, faultWarning } from "../lib/state.mjs";
 import { judgeChoiceState, judgeNotice } from "../lib/judge-setup.mjs";
+import { loadSwitches } from "../lib/config.mjs";
+import { compileCore } from "../lib/rules.mjs";
 
 const SKILL_PATH = fileURLToPath(
   new URL("../skills/i-have-audhd/SKILL.md", import.meta.url),
@@ -199,6 +208,9 @@ try {
 
   if (String(process.env.I_HAVE_AUDHD_INJECT || "").toLowerCase() === "off") emit(null);
 
+  const { inject, disabledRules } = loadSwitches(profilePath());
+  if (inject === "none") emit(null, judgeNoticeOnce());
+
   const md = readFileSync(SKILL_PATH, "utf8");
   const start = md.indexOf(START);
   const end = start === -1 ? -1 : md.indexOf(END, start + START.length);
@@ -207,9 +219,9 @@ try {
     emit("The i-have-audhd core could not load: its markers are missing from the skill file.");
   }
 
-  const core = md.slice(start + START.length, end).trim();
+  const core = compileCore(md.slice(start + START.length, end).trim(), disabledRules);
   const { text, note } = readProfile();
-  const notice = judgeNoticeOnce();
+  const notice = inject === "rules" ? "" : judgeNoticeOnce();
   emit(INTRO + core + text + POINTER + (note ? `\n${note}` : "") + (notice ? `\n${notice}` : ""), notice);
 } catch (err) {
   // Fail open, and say so — a silent failure reads exactly like success.

@@ -1,0 +1,2 @@
+{"type": "user", "message": {"role": "user", "content": "Where are the open PRs?"}}
+{"type": "assistant", "message": {"role": "assistant", "content": [{"type": "text", "text": "The open-PR sweep is done for the backend repo: the three stale branches are rebased and their checks are green again. The one left is the cache fix, which waits on review from the platform team before it can land on main.\n\nRun `zsh ~/agent-scratch/backend/open-prs.sh` to see what is still open on your side; it logs beside the script."}]}}
