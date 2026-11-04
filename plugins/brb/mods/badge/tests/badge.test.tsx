@@ -76,17 +76,17 @@ test("session.start while home: no status line is pinned, and nothing is logged"
 });
 
 test("a prompt is refreshed after it entered: `brb` pins the badge, `back` clears it; the prompt's own result is untouched", async ($, on) => {
-  const { statuses, state } = stubs(on, { snapshot: HOME });
+  const { statuses, state, clock } = stubs(on, { snapshot: HOME });
   await start($);
   state.snapshot = AWAY;
   const entered = await $.prompt.submit({ text: "brb" });
   expect(entered.text).toBe("brb");
-  await $.clock.sleep(0);
+  await clock.settle();
   expect(statuses.length).toBe(1);
   expect(statuses[0]).toMatch(BADGE);
   state.snapshot = HOME;
   await $.prompt.submit({ text: "back" });
-  await $.clock.sleep(0);
+  await clock.settle();
   expect(statuses.length).toBe(2);
   expect(statuses[1]).toBe(undefined);
 });
@@ -100,18 +100,18 @@ test("the status line is set once per distinct text: a refresh that changes noth
 });
 
 test("turn.start and turn.complete refresh for the main conversation only; the turn's result is Claude's own", async ($, on) => {
-  const { processes } = stubs(on, { answer: "Here is the reply." });
+  const { processes, clock } = stubs(on, { answer: "Here is the reply." });
   await start($);
   expect(processes.length).toBe(1);
   await $.turn.start({ turnId: "t-1", origin: { kind: "person" } });
-  await $.clock.sleep(0);
+  await clock.settle();
   expect(processes.length).toBe(2);
   const out = await completeTurn($);
   expect(out).toEqual({ text: "Here is the reply." });
   expect(processes.length).toBe(3);
   await $.turn.start({ turnId: "t-2", agentId: "a-1", origin: { kind: "person" } });
   await completeTurn($, { turnId: "t-2", agentId: "a-1" });
-  await $.clock.sleep(0);
+  await clock.settle();
   expect(processes.length).toBe(3);
 });
 
