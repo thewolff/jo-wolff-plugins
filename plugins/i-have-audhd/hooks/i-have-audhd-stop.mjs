@@ -84,6 +84,7 @@
 //   stderr is in judge-failures.log (judge/ask.mjs).
 
 import { existsSync, readFileSync, writeFileSync, mkdirSync, rmSync, realpathSync } from "node:fs";
+import { spawn } from "node:child_process";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { checkClosingAskLast } from "../checks/closing-ask-last.mjs";
@@ -92,9 +93,11 @@ import { checkNamesArtifact } from "../checks/name-the-artifact.mjs";
 import { checkPluralBackReference } from "../checks/plural-back-reference.mjs";
 import { checkHandedCommand } from "../checks/handed-command.mjs";
 import { checkLinkTheReference } from "../checks/link-the-reference.mjs";
+import { checkLinksResolve } from "../checks/links-resolve.mjs";
+import { readGhCache, ghCachePath } from "../lib/gh-cache.mjs";
 import { splitLabeledSections, openingWords, OPENING_WORDS } from "../checks/sections.mjs";
 import { proseCharCount } from "../checks/lines.mjs";
-import { loadEnforcement, loadSwitches, effectiveMode, harnessCapsBlocks } from "../lib/config.mjs";
+import { loadEnforcement, loadSwitches, effectiveMode, harnessCapsBlocks, defaultProfilePath } from "../lib/config.mjs";
 import { ruleRef } from "../lib/rules.mjs";
 import { stateDir, killSwitchPath, lastBlockedPath, resumeMarkerPath, sha256hex, appendLog, logFault, faultWarning } from "../lib/state.mjs";
 import { writePending } from "../lib/pending.mjs";
@@ -103,6 +106,7 @@ import { findTrailingBatchSection, batchByLabelQuestion, batchJudgeContext } fro
 import { conclusionFirstApplicable, conclusionFirstQuestion } from "../triggers/conclusion-first.mjs";
 import { lastIncompleteTodos, reportQuestion, todoJudgeContext } from "../triggers/todo-unfinished.mjs";
 import { badNewsGate, badNewsQuestion } from "../triggers/bad-news-lexicon.mjs";
+import { linksJudgeJobs } from "../triggers/links-judge.mjs";
 import { askJudge } from "../judge/ask.mjs";
 
 // restate-resumed-thread's judge question. Static per rule — variable data rides in the context
@@ -278,6 +282,58 @@ function runDeterministicChecks(text, config, switches) {
   return findings;
 }
 
+// links-resolve — a link the message hands the reader opens: local paths exist, GitHub URLs
+// have the shape of a page, and the sentence's word (PR/issue) matches the URL. GitHub
+// existence and kind come from the local cache only (lib/gh-cache.mjs); the keys it cannot
+// answer come back as `lookups` for the detached helper, the links it could as `links` for
+// the judge stage. Returns { findings, lookups, links }.
+const LINK_PROBLEM = {
+  "missing-path": (f) => `no such file: ${f.path}`,
+  "gh-shape": (f) => `GitHub has no /${f.segment}/ page; use /issues/N or /pull/N`,
+  "gh-word": (f) => `the sentence says ${f.word} but the URL is /${f.urlKind === "pr" ? "pull" : "issues"}/`,
+  "gh-missing": (f) => `GitHub answered 404 for ${f.key}`,
+  "gh-kind": (f) => `${f.key} is ${f.actualKind === "pr" ? "a pull request" : "an issue"}, the URL says /${f.urlKind === "pr" ? "pull" : "issues"}/`,
+};
+function linksResolveFindings(text, config) {
+  const mode = effectiveMode(config, "links-resolve");
+  if (mode === "off") return { findings: [], lookups: [], links: [] };
+  const r = checkLinksResolve(text, { ghCache: readGhCache() });
+  if (!r.flagged) return { findings: [], lookups: r.lookups, links: r.links };
+  const shown = r.findings.slice(0, 5).map((f) => `${f.where} \`${f.excerpt}\` (${LINK_PROBLEM[f.kind](f)})`).join("; ");
+  const more = r.findings.length > 5 ? `; and ${r.findings.length - 5} more` : "";
+  return {
+    findings: [
+      {
+        rule: "links-resolve",
+        mode,
+        text:
+          `${cite("Links resolve", "links-resolve")} — ${shown}${more}. A link the reader cannot open is worse than none: ` +
+          `fix the path or URL, or say in the same sentence that the file is still to come.`,
+        paste: paste("lines"),
+      },
+    ],
+    lookups: r.lookups,
+    links: r.links,
+  };
+}
+
+// The detached helper that fills the GitHub cache for `keys` (scripts/gh-cache-fill.mjs):
+// its own process group, stdio ignored, unref'd, never awaited — this hook exits without
+// it. Whether the host lets it outlive the hook is not proven under Claude Code; a cache
+// that never fills only keeps the GitHub sub-checks silent. A spawn failure is one
+// errors.log line.
+const GH_FILL = fileURLToPath(new URL("../scripts/gh-cache-fill.mjs", import.meta.url));
+function spawnGhCacheFill(keys) {
+  if (!keys.length || process.env.I_HAVE_AUDHD_NO_GH_FILL === "1") return;
+  try {
+    const child = spawn(process.execPath, [GH_FILL, ghCachePath(), ...keys], { detached: true, stdio: "ignore" });
+    child.on("error", (err) => logFault(HOOK_FILE, `gh-cache-fill could not start (${err.message}); GitHub links stay unknown`));
+    child.unref();
+  } catch (err) {
+    logFault(HOOK_FILE, `gh-cache-fill could not start (${err.message}); GitHub links stay unknown`);
+  }
+}
+
 // The handed-command finding, alone: the Stop hook also runs it under the master floor, where
 // a command-only handoff is short by nature.
 function handedCommandFindings(text, config, switches) {
@@ -415,6 +471,15 @@ function judgeReason(hits) {
           `opening ${OPENING_WORDS} words; the explanation goes second.`,
         paste: paste("opening lines"),
       };
+    case "links-judge": {
+      const where = hits.map((h) => `line ${h.job.line} \`${h.job.link.href}\` — judge: ${h.verdict.reason}`).join("; ");
+      return {
+        text:
+          `${cite("Links judge", job.rule)} — the thing behind the link is judged not to be what the sentence says ` +
+          `it is: ${where}. Point the sentence at the right artifact, or describe the one it points at.`,
+        paste: paste("lines"),
+      };
+    }
     default:
       return { text: `${cite(job.rule, job.rule)} — judge: ${verdict.reason}.`, paste: paste("lines") };
   }
@@ -424,10 +489,10 @@ function judgeReason(hits) {
 const SETUP_COMMAND = `node ${fileURLToPath(new URL("../tools/setup.mjs", import.meta.url))}`;
 
 // The finding for a rule whose judge gave no verdict for `misses` (its unavailable jobs, each
-// with its result). It names the rule, the error(s), the unchecked sections, the evidence and the
-// next step, and says outright that this is not a pass.
+// with its result). It names the rule, the cause(s), the unchecked sections, the evidence and
+// the next step, and says outright that this is not a pass.
 function unavailableFinding(rule, misses) {
-  const errors = [...new Set(misses.map((m) => m.verdict.error))].join(", ");
+  const errors = [...new Set(misses.map((m) => `${m.verdict.error}, ${m.verdict.cause ?? "other"}`))].join("; ");
   const sections = misses.filter((m) => m.job.unit).map((m) => sectionName(m.job.unit));
   const where = sections.length ? ` for ${sections.join("; ")}` : "";
   return {
@@ -439,18 +504,40 @@ function unavailableFinding(rule, misses) {
   };
 }
 
+// What the person does about each cause (judge/ask.mjs CAUSES). `model` is the judge
+// command's model, the thing a credential is for.
+function causeFix(cause, model, budgetMs) {
+  switch (cause) {
+    case "credential-revoked":
+      return `the credential for ${model} was revoked; log the judge's CLI in again (its own login command), then \`${SETUP_COMMAND}\` re-tests it`;
+    case "no-credential":
+      return `no credential for ${model} in the judge's profile; add one through the judge's CLI, or pick a judge that has one with \`${SETUP_COMMAND}\``;
+    case "rate-limited":
+      return `${model} is rate-limiting the judge; it heals by itself, or \`${SETUP_COMMAND} --judge omp --model <a quieter model>\` moves it`;
+    case "judge-self-abort":
+      return `the judge aborted its own request before answering (its client-side timeout or a dropped connection); a faster model via \`${SETUP_COMMAND}\`, or a longer judge-side timeout`;
+    case "hook-deadline":
+      return `${model} did not answer inside the ${Math.round(budgetMs / 1000)} s budget; a faster model via \`${SETUP_COMMAND}\` (haiku-class answers in 2–4 s)`;
+    case "bad-json":
+      return `the judge printed no {"violation": …, "reason": …} object; run the command by hand on the prompt file the log names and read what it prints`;
+    default:
+      return `the judge exited without a known cause; the stderr tail is on the log line, and \`${SETUP_COMMAND}\` re-tests the command`;
+  }
+}
+
 // The person-facing systemMessage for the judge-unavailable alerts due now ({key, since} from
-// lib/alerts.mjs, key "judge-unavailable:<rule>:<error>"); "" when none is due.
-function unavailableAlert(due) {
+// lib/alerts.mjs, key "judge-unavailable:<rule>:<cause>"); "" when none is due. `detail` maps a
+// key to the { model, budgetMs } its failure carried.
+function unavailableAlert(due, detail) {
   if (!due.length) return "";
   const parts = due.map(({ key, since }) => {
-    const [, rule, ...rest] = key.split(":");
-    return `${rule} (${rest.join(":")}${since ? `, still failing since ${since}` : ""})`;
+    const [, rule, cause] = key.split(":");
+    const d = detail.get(key) ?? { model: "unknown", budgetMs: 0 };
+    return `${rule}: ${cause} — ${causeFix(cause, d.model, d.budgetMs)}${since ? ` (still failing since ${since})` : ""}`;
   });
   return (
-    `i-have-audhd: judge unavailable for ${parts.join("; ")}. Those rules were not checked, ` +
-    `which is not a pass. Evidence: ${join(stateDir(), "judge-failures.log")}. ` +
-    `Next step: \`${SETUP_COMMAND}\` re-tests the judge command.`
+    `i-have-audhd: judge unavailable. ${parts.join(". ")}. Those rules were not checked, ` +
+    `which is not a pass. Evidence: ${join(stateDir(), "judge-failures.log")}.`
   );
 }
 function recordBlock(sessionId, textHash, rules) {
@@ -522,6 +609,11 @@ async function main() {
   // The profile's inject.rules: a check bound to a switched-off rule defaults to off.
   const config = { ...loadEnforcement(harness), disabledRules: switches.disabledRules };
   const findings = belowFloor ? handedCommandFindings(text, config, switches) : [...runDeterministicChecks(text, config, switches)];
+  // links-resolve runs above the floor like every structural check; its GitHub unknowns go to
+  // the detached helper right away, so the lookups run while the judge (if any) is asked.
+  const linksResolved = belowFloor ? { findings: [], lookups: [], links: [] } : linksResolveFindings(text, config);
+  findings.push(...linksResolved.findings);
+  spawnGhCacheFill(linksResolved.lookups);
   if (belowFloor && !findings.length) return {};
   // A judge rule runs above the floor only.
   const judged = (rule) => !belowFloor && effectiveMode(config, rule) !== "off";
@@ -594,15 +686,26 @@ async function main() {
   if (judged("bad-news-first")) {
     judgeJobs.push(...unitJobs("bad-news-first", badNewsQuestion, units, badNewsGate));
   }
+
+  // links-judge — is the linked artifact what the sentence says it is? Off until the profile
+  // names it; the word-overlap prefilter (triggers/links-judge.mjs) keeps it to the links whose
+  // sentence shares no word with the target, at most MAX_JOBS per stop.
+  if (judged("links-judge")) {
+    judgeJobs.push(...linksJudgeJobs(linksResolved.links));
+  }
   let judgeAlert = "";
   if (judgeJobs.length) {
     if (!config.judgeCommand) {
       for (const job of judgeJobs) {
-        appendLog("skipped.log", `rule=${job.rule} reason=no-judge-command`);
+        appendLog("skipped.log", `rule=${job.rule} reason=no-judge-command profile=${defaultProfilePath()} session=${sessionId}`);
       }
     } else {
       const verdicts = await Promise.all(
-        judgeJobs.map((job) => askJudge(job.rule, job.question, job.contextText, config)),
+        judgeJobs.map((job) =>
+          askJudge(job.rule, job.question, job.contextText, config, {
+            meta: { session: sessionId, section: job.unit ? `${job.unit.label ?? "opening"}@${job.unit.line}` : "whole" },
+          }),
+        ),
       );
       // One finding per rule: a rule judged per section collects every violating section, and
       // every section its judge could not answer for (JUDGE UNAVAILABLE in the header).
@@ -622,18 +725,25 @@ async function main() {
         findings.push({ rule, mode: effectiveMode(config, rule), ...judgeReason(hits) });
       }
       const failing = [];
+      const detail = new Map();
       for (const [rule, misses] of missesByRule) {
         const mode = effectiveMode(config, rule);
         // A dead judge blocks once; the revision of that block is only warned.
         const capped = mode === "block" && payload.stop_hook_active === true ? "warn" : mode;
         findings.push({ rule, mode: capped, unavailable: true, ...unavailableFinding(rule, misses) });
-        for (const error of new Set(misses.map((m) => m.verdict.error))) failing.push(`judge-unavailable:${rule}:${error}`);
+        for (const m of misses) {
+          const key = `judge-unavailable:${rule}:${m.verdict.cause ?? "other"}`;
+          if (!detail.has(key)) {
+            failing.push(key);
+            detail.set(key, { model: m.verdict.model ?? "unknown", budgetMs: m.verdict.budgetMs ?? 0 });
+          }
+        }
       }
       // A rule whose judge answered and did not also fail this stop has healed.
       for (const rule of answered) {
         if (!missesByRule.has(rule)) clearAlerts(`judge-unavailable:${rule}:`);
       }
-      judgeAlert = unavailableAlert(dueAlerts(failing));
+      judgeAlert = unavailableAlert(dueAlerts(failing), detail);
     }
   }
 

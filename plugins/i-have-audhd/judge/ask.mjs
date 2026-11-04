@@ -30,12 +30,22 @@
 //
 // FAILURE IS OPEN AND LOUD, AND NEVER A PASS
 //   Timeout, non-zero exit, a judge that cannot start, or unparseable output each return
-//   {unavailable: true, error: …} and no verdict at all: no `violation` field, so no caller can
-//   read a judge that could not speak as a pass. Each appends one line to judge-failures.log
-//   naming the rule, the error, and the last STDERR_LOGGED characters of the judge's stderr
-//   (judge CLIs print why they failed there: not logged in, rate limited, unknown flag). The
-//   Stop hook turns an unavailable judge into a "judge unavailable" finding for its rule and
-//   tells the person (i-have-audhd-stop.mjs, JUDGE UNAVAILABLE).
+//   {unavailable: true, error: …, cause: …} and no verdict at all: no `violation` field, so no
+//   caller can read a judge that could not speak as a pass. Each appends one line to
+//   judge-failures.log; since 1.6.1 the line carries everything needed to place and replay it:
+//
+//     rule=<rule> error=<kind> cause=<cause> session=<id> harness=<claude-code|omp>
+//     model=<model|unknown> elapsedMs=<n> budgetMs=<n> section=<label@line|whole>
+//     cache=<sha256 of the prompt> prompt=<path of the prompt, written on failure>
+//     [stderr="<last STDERR_LOGGED chars>"] [stdout="<last STDOUT_LOGGED chars, bad-json only>"]
+//
+//   `cause` is one of CAUSES, classified from the error kind and the judge's stderr (classify
+//   below): the hook's own deadline is hook-deadline whatever stderr says, because the fact
+//   to act on is that the judge was slower than the budget; a judge that exited after
+//   aborting its own request is judge-self-abort. The person-facing alert states the cause
+//   and its fix (i-have-audhd-stop.mjs, JUDGE UNAVAILABLE). session and section come from the
+//   caller (options.meta); model is read off the judge command (modelOf) and is "unknown"
+//   when no --model/-m flag or provider/model token is there.
 //
 // THE TIMEOUT follows the harness tag the stop core already runs under; there is no setting.
 //   Untagged (Claude Code): 30s. I_HAVE_AUDHD_HARNESS=omp (set only by the OMP adapter on the
@@ -58,6 +68,9 @@
 //   for a labeled section, a framing sentence), and an unlabeled message can equal one
 //   section's text, so rule + contextText no longer determines what the judge sees. Cache
 //   files keyed the old way simply stop matching: one re-bill per message, no migration.
+//   On a FAILURE the prompt itself is written next to where the verdict would go,
+//   cache/<hash>.prompt.txt, so the failure line's cache key is a replayable prompt:
+//   `<judge command> < cache/<hash>.prompt.txt`. The state directory's 30-day prune covers it.
 
 import { spawn } from "node:child_process";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
@@ -199,16 +212,69 @@ function runCommand(cmdLine, promptText, timeoutMs) {
   });
 }
 
-// The judge-failures.log line, and the result every failure returns: no verdict.
-function unavailable(log, rule, error, stderr) {
-  const tail = String(stderr ?? "").replace(/\s+/g, " ").trim().slice(-STDERR_LOGGED);
-  log("judge-failures.log", `rule=${rule} error=${error}${tail ? ` stderr=${JSON.stringify(tail)}` : ""}`);
-  return { unavailable: true, error, ...(tail ? { stderr: tail } : {}) };
+// How much of a bad-json judge's stdout reaches the log: the tail, where a half-printed verdict
+// or an error page's last words are.
+const STDOUT_LOGGED = 300;
+
+// Every cause a failure line can carry, and the fix the person-facing alert states for each.
+export const CAUSES = ["credential-revoked", "no-credential", "rate-limited", "judge-self-abort", "hook-deadline", "bad-json", "other"];
+
+// The cause of a failed dispatch, from its error kind and the judge's stderr. Order matters:
+// the hook's own deadline is hook-deadline whatever stderr says (the judge was slower than
+// the budget), unparseable stdout is bad-json, then the stderr patterns, then other.
+export function classify(error, stderr) {
+  if (error === "judge-timeout") return "hook-deadline";
+  if (error === "judge-unparseable") return "bad-json";
+  const s = String(stderr ?? "");
+  if (/\b401\b|revoked|invalid[_ ]?(?:api[_ ]?key|token)|token (?:is |has )?(?:expired|invalid)|authentication_error|unauthori[sz]ed/i.test(s)) return "credential-revoked";
+  if (/no credential|not logged in|login required|not authenticated|no api key|missing (?:api )?key|\bgh auth login\b|\bcodex login\b|\bclaude login\b|please (?:log in|login|run .*login)/i.test(s)) return "no-credential";
+  if (/\b429\b|rate.?limit|too many requests|overloaded|quota|\b529\b/i.test(s)) return "rate-limited";
+  if (/request was aborted|\baborted\b|AbortError|ECONNRESET|socket hang up/i.test(s)) return "judge-self-abort";
+  return "other";
+}
+
+// The model named in a judge command: `--model x`, `--model=x`, `-m x`, or a trailing
+// provider/model token (`… model-judge.ts anthropic/claude-haiku-5-5`); "unknown" otherwise.
+export function modelOf(command) {
+  const c = String(command ?? "");
+  const flag = /(?:^|\s)(?:--model|-m)(?:=|\s+)([^\s'"]+)/.exec(c);
+  if (flag) return flag[1];
+  const slash = [...c.matchAll(/(?:^|\s)([a-z0-9-]+\/[a-z0-9][a-z0-9.-]*)(?=\s|$)/gi)].map((m) => m[1]).filter((t) => !t.startsWith("/") && !/\.(mjs|ts|js|sh)$/.test(t) && !t.includes("//"));
+  return slash.length ? slash[slash.length - 1] : "unknown";
+}
+
+const oneLineTail = (s, n) => String(s ?? "").replace(/\s+/g, " ").trim().slice(-n);
+
+// The judge-failures.log line, and the result every failure returns: no verdict. `ctx` is
+// { session, harness, model, elapsedMs, budgetMs, section, cacheKey, promptPath }; `run` the
+// dispatch result (stderr, stdout).
+function unavailable(log, rule, error, run, ctx) {
+  const cause = classify(error, run.stderr);
+  const stderrTail = oneLineTail(run.stderr, STDERR_LOGGED);
+  const stdoutTail = cause === "bad-json" ? oneLineTail(run.stdout, STDOUT_LOGGED) : "";
+  log(
+    "judge-failures.log",
+    `rule=${rule} error=${error} cause=${cause} session=${ctx.session} harness=${ctx.harness} model=${ctx.model} ` +
+      `elapsedMs=${ctx.elapsedMs} budgetMs=${ctx.budgetMs} section=${ctx.section} cache=${ctx.cacheKey} prompt=${ctx.promptPath}` +
+      (stderrTail ? ` stderr=${JSON.stringify(stderrTail)}` : "") +
+      (stdoutTail ? ` stdout=${JSON.stringify(stdoutTail)}` : ""),
+  );
+  return {
+    unavailable: true,
+    error,
+    cause,
+    model: ctx.model,
+    budgetMs: ctx.budgetMs,
+    ...(stderrTail ? { stderr: stderrTail } : {}),
+    ...(stdoutTail ? { stdout: stdoutTail } : {}),
+  };
 }
 
 // askJudge(rule, question, contextText, config, options?)
 //   options: { timeoutMs, stateDir } — for tests; production takes the harness timeout and
-//   the shared state dir.
+//   the shared state dir. { meta: { session, section } } — who is asking, for the failure
+//   line: the Stop hook passes its session id and the judged section ("<label>@<line>", or
+//   "whole" for an unsectioned message).
 //   Never throws.
 export async function askJudge(rule, question, contextText, config, options = {}) {
   const dir = options.stateDir ?? null;
@@ -234,12 +300,31 @@ export async function askJudge(rule, question, contextText, config, options = {}
   const cmdLine = command.includes("{prompt}")
     ? command.split("{prompt}").join(shellEscape(promptText))
     : command;
+  const started = Date.now();
   const run = await runCommand(cmdLine, promptText, timeoutMs);
+  const verdict = run.ok ? parseVerdict(run.stdout) : null;
 
-  if (!run.ok) return unavailable(log, rule, run.error ?? `judge-exit-${run.code}`, run.stderr);
-
-  const verdict = parseVerdict(run.stdout);
-  if (!verdict) return unavailable(log, rule, "judge-unparseable", run.stderr);
+  if (!verdict) {
+    // The replayable prompt, next to where the verdict would have gone.
+    const promptPath = join(cacheDir, `${key}.prompt.txt`);
+    try {
+      mkdirSync(cacheDir, { recursive: true });
+      writeFileSync(promptPath, promptText);
+    } catch {
+      /* the line still names the path; a state dir that cannot be written is logged by the caller's other writes */
+    }
+    const meta = options.meta ?? {};
+    return unavailable(log, rule, run.ok ? "judge-unparseable" : (run.error ?? `judge-exit-${run.code}`), run, {
+      session: meta.session ?? "no-session",
+      harness: process.env.I_HAVE_AUDHD_HARNESS === "omp" ? "omp" : "claude-code",
+      model: modelOf(command),
+      elapsedMs: Date.now() - started,
+      budgetMs: timeoutMs,
+      section: meta.section ?? "whole",
+      cacheKey: key,
+      promptPath,
+    });
+  }
 
   try {
     mkdirSync(cacheDir, { recursive: true });

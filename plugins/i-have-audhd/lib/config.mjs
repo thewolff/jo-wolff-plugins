@@ -59,10 +59,12 @@ import { RULE_IDS, ruleOf } from "./rules.mjs";
 
 const MODES = new Set(["block", "warn", "off"]);
 
-// Built-in per-rule modes. EMPTY since the 2026-09-21 corpus measurement (header): no
-// rule's false-positive rate supports block-by-default, so the map is kept only as the
-// shape a future measurement would refill — one entry per rule that earns block.
-const BUILT_IN_MODES = {};
+// Built-in per-rule modes. EMPTY of block entries since the 2026-09-21 corpus measurement
+// (header): no rule's false-positive rate supports block-by-default, so block arms only by
+// explicit config. The one entry is a rule that is OFF until named: links-judge costs a judge
+// call per unmatched link, so neither the warn default nor a global enforcement.mode turns it
+// on — only enforcement.rules["links-judge"] (effectiveMode below).
+const BUILT_IN_MODES = { "links-judge": "off" };
 
 export function defaultProfilePath() {
   const explicit = process.env.I_HAVE_AUDHD_PROFILE;
@@ -124,9 +126,11 @@ export function loadEnforcement(harness, path = defaultProfilePath()) {
 // `config.disabledRules` (a Set of rule ids from the profile's `inject.rules`, attached by the
 // Stop hook) turns every check bound to a switched-off rule off by default; an explicit
 // enforcement.rules[check] still wins, and nothing else does — not even enforcement.mode.
+// A rule whose built-in mode is "off" stays off under a global mode too: it is opt-in by name.
 export function effectiveMode(config, rule) {
   if (config.rules[rule]) return config.rules[rule];
   if (config.disabledRules?.has(ruleOf(rule))) return "off";
+  if (BUILT_IN_MODES[rule] === "off") return "off";
   if (config.mode) return config.mode;
   return BUILT_IN_MODES[rule] ?? "warn"; // the measured default; block arms by explicit config
 }
