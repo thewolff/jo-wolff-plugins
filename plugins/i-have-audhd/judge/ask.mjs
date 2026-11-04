@@ -87,11 +87,15 @@
 //   files keyed the old way simply stop matching: one re-bill per message, no migration.
 //   On a FAILURE the prompt itself is written next to where the verdict would go,
 //   cache/<hash>.prompt.txt, so the failure line's cache key is a replayable prompt:
-//   `<judge command> < cache/<hash>.prompt.txt`. The state directory's 30-day prune covers it.
+//   `<judge command> < cache/<hash>.prompt.txt`. The cache is capped (lib/judge-cache.mjs): at
+//   most 2,000 files, none older than 7 days, whichever bites first; about one write in 50 runs
+//   the cap here (options.capCheck forces or skips it, for tests), and the plugin's prune verb
+//   runs it every time. A verdict older than 7 days is for a prompt long out of context.
 
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { sha256hex, appendLog, stateDir } from "../lib/state.mjs";
+import { CAP_EVERY, capCache } from "../lib/judge-cache.mjs";
 import { dispatch, lastJsonObject, legacyProfilePath, readSharedConfig, resolveJudgeCommand } from "../lib/judge.mjs";
 
 export const DEFAULT_TIMEOUT_MS = 30_000; // hooks/hooks.json's Stop timeout sits 5 s above this (pinned in the stop hook's tests)
@@ -269,6 +273,7 @@ export async function askJudge(rule, question, contextText, config, options = {}
     try {
       mkdirSync(cacheDir, { recursive: true });
       writeFileSync(promptPath, promptText);
+      maybeCap(cacheDir, options);
     } catch {
       /* the line still names the path; a state dir that cannot be written is logged by the caller's other writes */
     }
@@ -292,8 +297,15 @@ export async function askJudge(rule, question, contextText, config, options = {}
   try {
     mkdirSync(cacheDir, { recursive: true });
     writeFileSync(cachePath, JSON.stringify(verdict));
+    maybeCap(cacheDir, options);
   } catch (err) {
     log("judge-failures.log", `rule=${rule} error=cache-write-failed (${err.message})`);
   }
   return { ...verdict, cached: false };
+}
+
+/** One write in CAP_EVERY trims the cache; `options.capCheck` true runs it now, false never. */
+function maybeCap(cacheDir, options) {
+  const check = options.capCheck ?? Math.random() < 1 / CAP_EVERY;
+  if (check) capCache(cacheDir);
 }
