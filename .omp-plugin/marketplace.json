@@ -27,7 +27,7 @@
     {
       "name": "reminders-review",
       "source": "./plugins/reminders-review",
-      "description": "Go through your open Apple Reminders one at a time with an agent: it answers the questions, confirms before acting on the instructions, asks when unclear, and closes each one only when you say yes. macOS, via remindctl."
+      "description": "Go through your open Apple Reminders one at a time with an agent: it answers the questions, confirms before acting on the instructions, asks when unclear, and closes each one only when you say yes. Optionally raises what is due in the lists you watch at the start of every session and hourly after. macOS, via remindctl."
     },
     {
       "name": "pattern-check",

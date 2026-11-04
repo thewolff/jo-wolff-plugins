@@ -1,0 +1,25 @@
+{
+  "$comment": "No check yet this session (no SessionStart stamp): the prompt hook checks and injects the Due block.",
+  "event": "UserPromptSubmit",
+  "expect": "systemMessage",
+  "reason": "Due (list Plumb): ",
+  "setup": {
+    "env": {
+      "REMINDERS_REVIEW_REMINDCTL": "${HOME}/bin/remindctl",
+      "REMINDERS_REVIEW_WATCH": "Plumb"
+    },
+    "files": {
+      "~/bin/remindctl": "#!/bin/sh\n# fake remindctl for this scenario: show <overdue|today> --list <name> --json\ncase \"$2\" in\n  overdue) cat \"${PLUGIN_DIR}/test/fixtures/remindctl-show-overdue.json\" ;;\n  today) cat \"${PLUGIN_DIR}/test/fixtures/remindctl-show-today.json\" ;;\n  *) exit 2 ;;\nesac\n"
+    },
+    "commands": [
+      "chmod +x ${HOME}/bin/remindctl"
+    ]
+  },
+  "stdin": {
+    "session_id": "${SESSION_ID}",
+    "transcript_path": "${TRANSCRIPT}",
+    "cwd": "${CWD}",
+    "hook_event_name": "UserPromptSubmit",
+    "prompt": "carry on"
+  }
+}

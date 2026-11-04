@@ -1,0 +1,16 @@
+{
+  "$comment": "Every event hooks/hooks.json registers and the outcomes its handler returns. additionalContext counts as systemMessage. Each event x outcome is proved by one *.scenario.json; `ledger gate check` fails naming the gap.",
+  "events": {
+    "SessionStart": [
+      "systemMessage",
+      "silent"
+    ],
+    "UserPromptSubmit": [
+      "systemMessage",
+      "silent"
+    ]
+  },
+  "manual": [
+    "The real remindctl is never run by a scenario: each one stubs it through REMINDERS_REVIEW_REMINDCTL. Against the real Reminders database, run `REMINDERS_REVIEW_WATCH=<list> node hooks/session-start.mjs <<< '{\"session_id\":\"manual\"}'` on a Mac with remindctl authorized and a reminder due today in <list>; it prints the Due block as additionalContext."
+  ]
+}

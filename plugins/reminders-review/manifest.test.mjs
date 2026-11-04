@@ -7,11 +7,18 @@ import { readFileSync } from "node:fs";
 
 const read = (p) => JSON.parse(readFileSync(new URL(p, import.meta.url), "utf8"));
 
-test("both manifests carry the same name and version", () => {
+test("both manifests and package.json carry the same name and version", () => {
   const claude = read("./.claude-plugin/plugin.json");
-  const omp = read("./.omp-plugin/plugin.json");
-  assert.equal(omp.name, claude.name);
-  assert.equal(omp.version, claude.version);
+  for (const other of [read("./.omp-plugin/plugin.json"), read("./package.json")]) {
+    assert.equal(other.name, claude.name);
+    assert.equal(other.version, claude.version);
+  }
+});
+
+test("the declared state's prune command names the CLI's prune verb", () => {
+  const [state] = read("./.claude-plugin/plugin.json").state;
+  assert.equal(state.path, "$XDG_STATE_HOME/reminders-review");
+  assert.match(state.prune, /scripts\/reminders-review\.mjs\\?" prune --days 30$/);
 });
 
 test("the skill's frontmatter name matches the plugin name", () => {

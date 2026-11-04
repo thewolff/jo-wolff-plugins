@@ -1,0 +1,25 @@
+{
+  "$comment": "Sibling of session-start-due-fires: remindctl answers its empty array for both buckets, so SessionStart prints nothing.",
+  "event": "SessionStart",
+  "expect": "silent",
+  "sibling": "session-start-due-fires.scenario.json",
+  "setup": {
+    "env": {
+      "REMINDERS_REVIEW_REMINDCTL": "${HOME}/bin/remindctl",
+      "REMINDERS_REVIEW_WATCH": "Plumb"
+    },
+    "files": {
+      "~/bin/remindctl": "#!/bin/sh\n# fake remindctl for this scenario: nothing due in any bucket\ncat \"${PLUGIN_DIR}/test/fixtures/remindctl-show-empty.json\"\n"
+    },
+    "commands": [
+      "chmod +x ${HOME}/bin/remindctl"
+    ]
+  },
+  "stdin": {
+    "session_id": "${SESSION_ID}",
+    "transcript_path": "${TRANSCRIPT}",
+    "cwd": "${CWD}",
+    "hook_event_name": "SessionStart",
+    "source": "startup"
+  }
+}
