@@ -205,11 +205,14 @@ call) and OMP does not cap at all. The ceiling bounds it: three quiet continuati
 end the turn. The price is that a working agent that raises nothing is let go after three
 quiet steps; any new ask or fire resets the count.
 
-## Away badge (Desktop)
+## Away badge (Desktop and terminal)
 
 A status line for Claude Code Desktop and the terminal (Claude Code 2.1.286 or later, where
-plugins can ship mods; `hooks/hooks.json` names the module, `mods/badge/register.mjs`). While
-this session is away, brb's line under the prompt reads
+plugins can ship mods; `hooks/hooks.json` names the module, `mods/badge/register.mjs`). The mod
+sets the line with `$.ui.status`, which reaches the app as a `ui_status` message: the terminal
+draws it under the prompt, and Claude Desktop, which runs Claude Code headless (`--input-format
+stream-json`, so the session has no surface), draws it from that message. While this session is
+away, brb's line under the prompt reads
 
 ```
 ⚠ brb: away 40m · lunch · 12 held · say back
@@ -233,9 +236,9 @@ the start and end of each of your turns, and every 5 s while away, so the count 
 of the agent's `hold`. While home the only poll is `$.fs.exists` on `away.json` inside Claude
 Code, once a second, which starts a query when the file appears. The mod never writes.
 
-Where nothing can draw (`claude -p`, OMP, a session with no surface) the mod shows nothing and
-the hooks' own lines cover it: the confirmation at `brb`, `brb: away since <when>; N held` at
-SessionStart. The badge fails the same way as the hooks: a query or a home probe that fails
+Where no host draws `ui_status` (`claude -p`, OMP) the line goes nowhere and the hooks' own lines
+cover it: the confirmation at `brb`, `brb: away since <when>; N held` at SessionStart. The badge
+fails the same way as the hooks: a query or a home probe that fails
 clears the line and writes one dim transcript line (`brb badge: query: …`, `brb badge: probe: …`)
 per distinct error; a hook that throws logs one line and passes the event on; no error reaches
 Claude Code.
@@ -244,9 +247,8 @@ Tests: `node --test` covers the data and query layers and the mod's timers and p
 an in-memory host (`mods/badge/tests/data.test.mjs`, `mods/badge/tests/query.test.mjs`,
 `mods/badge/tests/register.test.mjs`); `claude plugin test` from `plugins/brb` runs the mod
 through Claude Code's test kit (`mods/badge/tests/badge.test.tsx`: the line set and cleared,
-the refresh points, the poll and the probe, the fault inputs). The test-kit file was written for
-0.3.0 and not run by its author (the environment it was built in could not invoke `claude`);
-`evals/manifest.json` lists the Desktop check under `manual`.
+the refresh points, the poll and the probe, the fault inputs, the line set for a Desktop session
+with no surface and for a terminal session); `evals/manifest.json` lists the Desktop check under `manual`.
 
 ## State and config
 
@@ -306,8 +308,9 @@ the refresh points, the poll and the probe, the fault inputs). The test-kit file
 - **The OMP adapter has not been run in a live omp session** for this version; its handlers
   are tested with a fake runner and one real spawn of the hooks (`omp/brb-omp.test.mjs`).
 - **The badge has not been watched on Desktop or in a terminal** for this version: its data and
-  query layers run under `node --test`; its hooks are written for `claude plugin test`
-  (`mods/badge/tests/badge.test.tsx`), which the author's environment could not run. The tell
+  query layers run under `node --test`; its hooks run under `claude plugin test`
+  (`mods/badge/tests/badge.test.tsx`), with the Desktop session start (no surface, not
+  interactive) and the terminal one. 0.3.0 drew nothing in Desktop for that reason. The tell
   that the mod loaded: `/plugin` shows `1 mod active · brb` (Claude Code 2.1.286 or later; an
   older Claude Code ignores `modules` and the hooks still run). The tell that it did not draw:
   no `⚠ brb:` line under the prompt after `brb` while the confirmation line did show.
@@ -334,6 +337,13 @@ hooks as spawned processes with fixture stdin and fixture transcripts, the hold 
 spawned process, the OMP adapter's handlers, the badge's data and query layers. `bash
 e2e/live-run.sh --no-live` replays the fourteen `evals/*.scenario.json` offline. `claude plugin
 test` runs the badge mod itself (`mods/badge/tests/badge.test.tsx`).
+
+## Changes in 0.3.1
+
+The away badge draws in Claude Desktop. Desktop runs Claude Code headless (`--input-format
+stream-json`), so `session.start` carries no surface, and 0.3.0 took that to mean nothing could
+draw: it never set the line and never started its timers. Desktop does draw a `ui_status`
+message, so the mod now sets the line in every session, Desktop and terminal alike.
 
 ## Changes in 0.3.0
 
