@@ -1202,6 +1202,74 @@ test("an inject value outside full|rules|none is one errors.log line and the che
   writeProfile(home, { inject: "off" });
   const r = runHook({ session_id: "inj5", last_assistant_message: misordered }, home);
   assert.match(parseOut(r.stdout).systemMessage, /failed open/);
-  assert.match(readLog(home, "errors.log"), /inject "off" is not full\|rules\|none; full applies/);
+  assert.match(readLog(home, "errors.log"), /inject: "off" is not full\|rules\|none; full with every rule on applies/);
   assert.match(readLog(home, "warnings.log"), /rule=needs-you-first/);
+});
+
+// ─── per-rule switches and link-the-reference, Stop half ─────────────────────
+
+// A message long enough to clear the master floor that hands `gh pr list` and names PR #42 and
+// notes.md with no link: handed-command (rule 10) and link-the-reference (rule 11) both fire.
+const handsAndRefs = `${body(4)}\n\nPR #42 touched notes.md.\n\nRun \`gh pr list\` to see it.`;
+
+const warnedRules = (home) => [...readLog(home, "warnings.log").matchAll(/rule=(\S+)/g)].map((m) => m[1]).sort();
+
+test("link-the-reference warns by default, names its rule, its line and its kind", () => {
+  const home = mkhome();
+  runHook({ session_id: "ltr1", last_assistant_message: handsAndRefs }, home);
+  const line = readLog(home, "warnings.log").split("\n").find((l) => l.includes("rule=link-the-reference"));
+  assert.ok(line, "a link-the-reference warning");
+  assert.match(line, /i-have-audhd rule 11, Machinery anchors/);
+  assert.match(line, /line \d+ `PR #42` \(issue-ref\)/);
+});
+
+test("link-the-reference: an artifact phrase is silent by default and warns once linkTheReference.kinds turns it on", () => {
+  const msg = `${body(4)}\n\nThe report is ready for you to read.`;
+  const quiet = mkhome();
+  runHook({ session_id: "ltr2", last_assistant_message: msg }, quiet);
+  assert.ok(!warnedRules(quiet).includes("link-the-reference"));
+  const on = mkhome();
+  writeProfile(on, { linkTheReference: { kinds: { artifact: true } } });
+  runHook({ session_id: "ltr3", last_assistant_message: msg }, on);
+  assert.match(readLog(on, "warnings.log"), /rule=link-the-reference .*`The report` \(artifact\)/);
+});
+
+test("a rule switched off in inject.rules silences every check bound to it, even under enforcement.mode block", () => {
+  const home = mkhome();
+  writeProfile(home, { inject: { rules: { commands: false, "machinery-anchors": false } }, enforcement: { mode: "block" } });
+  const r = runHook({ session_id: "rs1", last_assistant_message: handsAndRefs }, home);
+  assert.equal(r.stdout, "");
+  assert.ok(!warnedRules(home).includes("handed-command"));
+  assert.ok(!warnedRules(home).includes("link-the-reference"));
+});
+
+test("a bound check's own enforcement.rules entry re-enables it under a switched-off rule", () => {
+  const home = mkhome();
+  writeProfile(home, {
+    inject: { rules: { commands: false, "machinery-anchors": false } },
+    enforcement: { rules: { "handed-command": "block", "link-the-reference": "warn" } },
+  });
+  const out = parseOut(runHook({ session_id: "rs2", last_assistant_message: handsAndRefs }, home).stdout);
+  assert.equal(out.decision, "block");
+  assert.deepEqual(blockedRules(home, "rs2"), ["handed-command"]);
+  assert.ok(warnedRules(home).includes("link-the-reference"));
+});
+
+test("a switched-off rule silences the bound check under the master floor too", () => {
+  const home = mkhome();
+  writeProfile(home, { inject: { mode: "none", rules: { commands: false } }, enforcement: { mode: "block" } });
+  const r = runHook({ session_id: "rs3", transcript_path: bareTranscript }, home);
+  assert.equal(r.stdout, "");
+  assert.equal(readLog(home, "warnings.log"), "");
+});
+
+test("a malformed inject object is one errors.log line, and every check runs as under full", () => {
+  const home = mkhome();
+  writeProfile(home, { inject: { mode: "full", rules: { commands: "off" } } });
+  const r = runHook({ session_id: "rs4", last_assistant_message: handsAndRefs }, home);
+  assert.match(parseOut(r.stdout).systemMessage, /failed open/);
+  const errors = readLog(home, "errors.log").trim().split("\n");
+  assert.equal(errors.length, 1);
+  assert.match(errors[0], /inject: rules\["commands"\] "off" is not true\|false; full with every rule on applies/);
+  assert.ok(warnedRules(home).includes("handed-command"));
 });

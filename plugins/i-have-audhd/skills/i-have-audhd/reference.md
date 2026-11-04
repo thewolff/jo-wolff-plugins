@@ -22,6 +22,7 @@ different instrument with a different error profile, not a non-enforcement.
 | `handed-command` | 10, Commands handed to the user | Deterministic — `checkHandedCommand` | The message hands the reader a shell command (a `bash`/`sh`/`zsh`/`shell` fence, *run/paste/type/execute/enter* + a code span starting with a known binary, or prompt lines under such an instruction) that is not one `zsh /abs/path/file.sh` line whose script sits under a `handedCommand.scriptRoots` root and outside every git checkout, or a `handedCommand.allow` match; receipts are exempt; runs at any length | warn |
 | `restate-resumed-thread` | 8, Resume by restating content | Injector marker + judge | Session source was resume/compact; first substantive message after it | warn |
 | `name-the-artifact` | 11, Machinery anchors | Deterministic — `checkNamesArtifact` | Report-shaped (≥ 400 chars + a report verb) and no artifact token anywhere | warn |
+| `link-the-reference` | 11, Machinery anchors | Deterministic — `checkLinkTheReference` | A substantive line names `PR #N`, `pull request N`, `issue N` or a bare `#NN` with no GitHub pull/issues URL for that N on the line, or a file name with a listed extension and no absolute, `~/`, `file://` or http(s) path containing it on the line; two more kinds (*the report*-style phrases, branch-name code spans) ship off; receipts, fences and `→` lines are exempt | warn |
 | `report-what-you-did-not-do` | 11, Machinery anchors | Todo trigger + judge | The transcript's last todo write has items not completed | warn |
 | `bad-news-first` | 11, Machinery anchors | Lexicon gate + judge | Per labeled section (the whole message when it has no block labels): ≥ 200 chars and a negative-lexicon word in substantive lines; the judge reads the section's opening 20 words | warn |
 
@@ -173,7 +174,7 @@ plugin registers no `SubagentStop` hook on Claude Code either.
 
 ## The checks (deterministic)
 
-All five: plain-object results, never throw, options as a second argument, `markers`
+All six: plain-object results, never throw, options as a second argument, `markers`
 supplied by the caller REPLACE the default, and a stdin-or-file CLI that prints one JSON
 object and exits 0. Line semantics are shared (`checks/lines.mjs`): headings are
 navigation; fences, HTML-comment envelopes, blockquotes, and blank/structural lines carry
@@ -311,6 +312,47 @@ list, a result table row) and warn everywhere else: any later code span starting
 known binary on an instruction line is handed, and a console block or prompt line under any
 imperative is handed.
 
+### link-the-reference
+
+`checkLinkTheReference(text, options)` → `{applicable, flagged, reason, findings}`; `reason` ∈
+`no-prose | all-linked | unlinked-reference | no-kind-enabled`. Each finding is `{line, where,
+kind, excerpt}`, one per offending line, naming the line's first unlinked reference. Option:
+`kinds`, `{<kind>: boolean}`; a kind left out keeps its default. The hook passes the profile's
+`linkTheReference.kinds`. No length floor of its own; it runs above the Stop hook's master
+floor like every check but `handed-command`. One pass over the lines, regexes with no nested
+quantifiers: a 1.9 MB message checks in tens of milliseconds
+(`checks/link-the-reference.test.mjs` holds it under 400 ms).
+
+| Kind | Flags | The link that clears it, on the same line | Default |
+|---|---|---|---|
+| `issue-ref` | `PR #N`, `PR N`, `pull request N`, `issue N`, and a bare `#N` of two digits or more not inside a URL, path or code span | an `https://github.com/…/pull/N` or `/issues/N` URL for that same N | on |
+| `file-name` | a name ending in `.md .sh .zsh .mjs .ts .js .json .yaml .yml .txt .log .sql .py`, alone or ending a relative path | an absolute, `~/`, `file://` or http(s) path containing that name; a name that is itself part of such a path is the link | on |
+| `artifact` | `the report`, `guide`, `handoff`, `inventory`, `review`, `spec`, `plan`, `script`, `log` or `transcript` | a URL, absolute or `~/` path, or markdown link after it in the same sentence | off |
+| `branch` | a code span holding `[a-z0-9]+(-[a-z0-9]+)+` on a line that also says `branch` or `PR` | a PR URL or an absolute path on the line | off |
+
+Never counts: every line `checks/lines.mjs` does not call prose (fences, HTML comments,
+blockquotes, headings, structural lines); a receipt under a `**CLAIM**` or `**CITE**` label
+(the same `receiptLines` definition `handed-command` uses), and a line that opens with its own
+bold `**CLAIM**` or `**CITE**` label (a receipt written inline); any line carrying `→`; a line, or
+a code span, whose first word is a known command (`handed-command`'s list plus `head, tail,
+wc, diff, less, sort, xargs, env, tee`), whose file names are arguments rather than references.
+
+**Measured** on the 2026-10-14 corpus, 469 real final messages from Claude Code and OMP
+sessions (private: the corpus holds real message bodies), every kind on: 229 flagged lines in
+138 messages. Every flag was classified by hand as a true reference the reader cannot open
+from the line, or a false positive:
+
+| Kind | Flagged lines | False positives | Rate | Shipped |
+|---|---|---|---|---|
+| `issue-ref` | 93 | 7 | 8 % | on |
+| `file-name` | 90 | 3 | 3 % | on |
+| `artifact` | 44 | 33 | 75 % | off |
+| `branch` | 2 | 1 | 50 % | off (two flags; too few to trust either way) |
+
+A kind over 30 % ships off. The `artifact` false positives are the phrase used generically
+("the review flow", "the plan is to", the reader's own spec under discussion), with nothing to
+link. `linkTheReference.kinds` turns either off kind on.
+
 ## The triggers (deterministic halves of judge rules)
 
 - **`triggers/batch-heading.mjs`** — `findTrailingBatchSection(text, {headings})` →
@@ -417,7 +459,8 @@ empty object is valid and yields the defaults.
 {
   "reader": "the person you are reporting to",
   "traits": ["reads the first two lines of any message and skims the rest"],
-  "inject": "full",
+  "inject": { "mode": "full", "rules": { "commands": true } },
+  "linkTheReference": { "kinds": { "artifact": false } },
   "handedCommand": { "allow": ["just deploy-*"], "scriptRoots": ["~/agent-scratch"] },
   "enforcement": {
     "mode": "block",
@@ -431,11 +474,24 @@ empty object is valid and yields the defaults.
 - **`reader`** — short noun phrase, emitted verbatim at session start.
 - **`traits`** — plain sentences about how that person reads, emitted verbatim after the
   skill's core. The plugin ships none.
-- **`inject`** — `full | rules | none`, default `full`. What the plugin runs, independent
-  of the enforcement modes: `full` is the session-start injection and the Stop checks;
-  `rules` is the injection only, and the Stop hook checks nothing; `none` is no injection,
-  and the Stop checks still run. Read by both hooks (`lib/config.mjs` `loadSwitches`); any
-  other value is one `errors.log` line and reads as `full`.
+- **`inject`** — `full | rules | none`, or an object `{"mode": "full|rules|none", "rules":
+  {"<rule id>": true|false}}`; default `full`, every rule on. The string form is the object
+  with that mode and every rule on; a missing `mode` is `full`. What the plugin runs,
+  independent of the enforcement modes: `full` is the session-start injection and the Stop
+  checks; `rules` is the injection only, and the Stop hook checks nothing; `none` is no
+  injection, and the Stop checks still run. A rule set to `false` is cut from the injected
+  core (its `**Name (rule N).**` block and its `- N.` list line, `lib/rules.mjs`
+  `compileCore`), and every check bound to it defaults to `off`. Rule ids, defined once in
+  `lib/rules.mjs` `RULES`: `skeleton` (1), `layer` (2), `blunt-facts` (3), `recommend` (4),
+  `grade-signals` (5), `references` (6), `assumptions` (7), `resume` (8), `durable` (9),
+  `commands` (10), `machinery-anchors` (11); the check-to-rule binding is `lib/rules.mjs`
+  `CHECKS` (the Skill rule column of the scoreboard). Read by both hooks (`lib/config.mjs`
+  `loadSwitches`); any invalid shape (an unknown mode, key or rule id, a non-boolean switch)
+  is one `errors.log` line naming every problem, and the whole field reads as `full` with
+  every rule on.
+- **`linkTheReference.kinds`** — `{"issue-ref"|"file-name"|"artifact"|"branch": boolean}`;
+  a kind left out keeps its default (`issue-ref` and `file-name` on, the other two off). Any
+  other shape → one `errors.log` line and every kind's default.
 - **`handedCommand.allow`** — glob patterns the `handed-command` check accepts besides
   `zsh /abs/path/file.sh`. Not an array of non-empty strings → one `errors.log` line, ignored.
 - **`handedCommand.scriptRoots`** — directories a handed script may live under, absolute or
@@ -451,11 +507,11 @@ empty object is valid and yields the defaults.
   (stop-hook step 8): `true` lets OMP seats block on a first stop; anything else keeps them
   at warn. Under the tag a non-boolean is one `errors.log` line and reads as `false`;
   without the tag the field is never read, so a malformed value logs nothing.
-- Precedence: kill-switch file > `inject` > `rules[rule]` > explicit `mode` > built-in
-  default, then the OMP harness cap last (OMP seats only: unarmed → warn; armed + a revision
-  after this plugin's own block → warn). The same-text loop guard precedes all of it. The
-  kill-switch file turns the Stop checks off under every `inject` value; it never touched the
-  injection and still does not.
+- Precedence: kill-switch file > `inject` mode > `rules[rule]` > the check's rule switched
+  off in `inject.rules` (→ `off`) > explicit `mode` > built-in default, then the OMP harness
+  cap last (OMP seats only: unarmed → warn; armed + a revision after this plugin's own block
+  → warn). The same-text loop guard precedes all of it. The kill-switch file turns the Stop
+  checks off under every `inject` value; it never touched the injection and still does not.
 
 A missing file or field is silent defaults. An unparseable file, or a value of the wrong
 shape, is defaults plus one `errors.log` line and the hook's warning line.

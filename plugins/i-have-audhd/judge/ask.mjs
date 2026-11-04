@@ -1,7 +1,7 @@
 // ask.mjs — the judge dispatch: one external command, one verdict, one bill per unique prompt.
 //
 // WHY A JUDGE IS MACHINERY
-//   Five of the Stop hook's ten checks are not decidable by string matching — "is this trailing
+//   Five of the Stop hook's eleven checks are not decidable by string matching — "is this trailing
 //   section a batched dump or a legitimate summary" requires reading for meaning. The governing
 //   reframe (2026-09-21): a model-graded check that runs AUTOMATICALLY inside a hook is still
 //   machinery. It fires on a deterministic trigger, it returns pass or fail, and every failure

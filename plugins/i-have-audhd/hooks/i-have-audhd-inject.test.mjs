@@ -116,7 +116,7 @@ const writeProfile = (home, obj) => writeFileSync(join(home, ".claude", "i-have-
 test("a fresh install with no profile shows the no-judge notice once, naming the checks and the setup command", () => {
   const home = mkhome();
   const first = JSON.parse(runInject({ session_id: "s1", source: "startup" }, home).stdout);
-  assert.match(first.systemMessage, /no judge is configured, so 5 of its 10 checks are off/);
+  assert.match(first.systemMessage, /no judge is configured, so 5 of its 11 checks are off/);
   for (const rule of ["do-not-batch-by-label", "conclusion-first", "restate-resumed-thread", "report-what-you-did-not-do", "bad-news-first"]) {
     assert.ok(first.systemMessage.includes(rule), rule);
   }
@@ -187,5 +187,45 @@ test("an inject value outside full|rules|none is one errors.log line and reads a
   assert.match(out.systemMessage, /failed open/);
   const errors = readFileSync(join(home, ".claude", ".i-have-audhd-state", "errors.log"), "utf8").trim().split("\n");
   assert.equal(errors.length, 1);
-  assert.match(errors[0], /lib\/config\.mjs inject "some" is not full\|rules\|none; full applies/);
+  assert.match(errors[0], /lib\/config\.mjs inject: "some" is not full\|rules\|none; full with every rule on applies/);
+});
+
+// ─── per-rule switches ───────────────────────────────────────────────────────
+
+test("a rule switched off in inject.rules is absent from the injection: its core block and its list line", () => {
+  const home = mkhome();
+  writeProfile(home, { inject: { rules: { commands: false } }, enforcement: { judgeCommand: null } });
+  const ctx = JSON.parse(runInject({ session_id: "s1", source: "startup" }, home).stdout).hookSpecificOutput.additionalContext;
+  assert.doesNotMatch(ctx, /Commands \(rule 10\)/);
+  assert.doesNotMatch(ctx, /^- 10\. Commands handed to the user$/m);
+  assert.match(ctx, /Machinery anchors \(rule 11\)/);
+  assert.match(ctx, /^- 11\. Machinery anchors$/m);
+});
+
+test("every rule on, in string or object form, injects the skill's span unchanged", () => {
+  const texts = [{ inject: "full" }, { inject: { mode: "full", rules: { commands: true } } }].map((profile) => {
+    const home = mkhome();
+    writeProfile(home, { ...profile, enforcement: { judgeCommand: null } });
+    const ctx = JSON.parse(runInject({ session_id: "s1", source: "startup" }, home).stdout).hookSpecificOutput.additionalContext;
+    return ctx.split(home).join("<home>"); // the profile note names each run's own home
+  });
+  assert.equal(texts[0], texts[1]);
+  assert.match(texts[0], /^- 10\. Commands handed to the user$/m);
+});
+
+test("inject object with mode none injects nothing, whatever its rules say", () => {
+  const home = mkhome();
+  writeProfile(home, { inject: { mode: "none", rules: { commands: false } }, enforcement: { judgeCommand: null } });
+  assert.equal(runInject({ session_id: "s1", source: "startup" }, home).stdout, "");
+});
+
+test("a malformed inject object is one errors.log line and the full injection with every rule", () => {
+  const home = mkhome();
+  writeProfile(home, { inject: { rules: { "rule-10": false } }, enforcement: { judgeCommand: null } });
+  const out = JSON.parse(runInject({ session_id: "s1", source: "startup" }, home).stdout);
+  assert.match(out.hookSpecificOutput.additionalContext, /^- 10\. Commands handed to the user$/m);
+  assert.match(out.systemMessage, /failed open/);
+  const errors = readFileSync(join(home, ".claude", ".i-have-audhd-state", "errors.log"), "utf8").trim().split("\n");
+  assert.equal(errors.length, 1);
+  assert.match(errors[0], /inject: rules\["rule-10"\] is not a rule id/);
 });

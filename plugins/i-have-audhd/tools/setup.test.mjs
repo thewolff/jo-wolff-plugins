@@ -124,7 +124,7 @@ test("an unparseable profile is refused untouched and its contents are not print
 test("the listed choices are Claude Code, Codex, OMP, custom, and none", () => {
   const home = mkhome();
   const r = runSetup(home, []);
-  for (const line of [/1\. Claude Code CLI, Haiku model/, /2\. Codex CLI/, /3\. OMP, a model you name/, /4\. A command you type/, /5\. None: 5 of 10 checks stay off/]) {
+  for (const line of [/1\. Claude Code CLI, Haiku model/, /2\. Codex CLI/, /3\. OMP, a model you name/, /4\. A command you type/, /5\. None: 5 of 11 checks stay off/]) {
     assert.match(r.stdout, line);
   }
 });

@@ -54,6 +54,8 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { logFault } from "./state.mjs";
 import { DEFAULT_SCRIPT_ROOTS } from "../checks/handed-command.mjs";
+import { KINDS as LINK_KINDS, DEFAULT_KINDS as LINK_DEFAULT_KINDS } from "../checks/link-the-reference.mjs";
+import { RULE_IDS, ruleOf } from "./rules.mjs";
 
 const MODES = new Set(["block", "warn", "off"]);
 
@@ -119,8 +121,12 @@ export function loadEnforcement(harness, path = defaultProfilePath()) {
   return out;
 }
 
+// `config.disabledRules` (a Set of rule ids from the profile's `inject.rules`, attached by the
+// Stop hook) turns every check bound to a switched-off rule off by default; an explicit
+// enforcement.rules[check] still wins, and nothing else does — not even enforcement.mode.
 export function effectiveMode(config, rule) {
   if (config.rules[rule]) return config.rules[rule];
+  if (config.disabledRules?.has(ruleOf(rule))) return "off";
   if (config.mode) return config.mode;
   return BUILT_IN_MODES[rule] ?? "warn"; // the measured default; block arms by explicit config
 }
@@ -134,7 +140,7 @@ export function harnessCapsBlocks(config, harness, stopHookActive) {
   return stopHookActive === true; // (b) armed, but this stop revises this plugin's own block
 }
 
-// ─── profile switches: `inject` and `handedCommand.allow` / `.scriptRoots` ────
+// ─── profile switches: `inject`, `handedCommand`, `linkTheReference` ──────────
 //
 //   inject: "full" | "rules" | "none", default "full". What the plugin runs, independent of
 //   enforcement modes:
@@ -144,6 +150,15 @@ export function harnessCapsBlocks(config, harness, stopHookActive) {
 //   The kill-switch file still wins over all three: with it present the Stop hook checks
 //   nothing whatever `inject` says. It never touched the injection and still does not.
 //
+//   inject may instead be an object, { "mode": <one of the three>, "rules": { <rule id>:
+//   true|false } }; the string form is the object with that mode and every rule on, and a
+//   missing mode is "full". A rule set to false is left out of the session-start injection
+//   (its core block and its line in the rule list, lib/rules.mjs compileCore), and every Stop
+//   check bound to it defaults to off (effectiveMode above). Rule ids are lib/rules.mjs RULES.
+//   Any invalid shape anywhere in `inject` — an unknown mode, an unknown key or rule id, a
+//   non-boolean switch — is one errors.log line naming every problem, and the whole field
+//   reads as its default: "full", every rule on.
+//
 //   handedCommand.allow: glob patterns (`*` any run of characters, `?` one, everything else
 //   literal) for handed-over command lines the handed-command check accepts on top of its
 //   built-in `zsh /abs/path/file.sh` shape. A pattern matches the whole line.
@@ -152,15 +167,54 @@ export function harnessCapsBlocks(config, harness, stopHookActive) {
 //   `~/` paths, default ["~/agent-scratch"]. A script under none of them, or inside any git
 //   checkout, is a finding.
 //
+//   linkTheReference.kinds: { <kind>: true|false } for the link-the-reference check's four
+//   kinds (checks/link-the-reference.mjs KINDS); a kind left out keeps its shipped default
+//   (DEFAULT_KINDS). An invalid shape is one errors.log line and every kind's default.
+//
 // Whole-file faults (unreadable is normal; unparseable or not an object) are NOT logged here:
 // each hook already reports them through its own profile reader, and one fault is one line.
 // A field of the wrong shape is logged here and reads as its default.
 
 const INJECT_VALUES = new Set(["full", "rules", "none"]);
 
-// Never throws. Returns { inject, handedCommandAllow, handedCommandScriptRoots }.
+const isPlainObject = (v) => v !== null && typeof v === "object" && !Array.isArray(v);
+
+// { mode, disabled: Set } from a profile's `inject`, or { problems } when its shape is invalid.
+function parseInject(value) {
+  if (typeof value === "string") {
+    return INJECT_VALUES.has(value) ? { mode: value, disabled: new Set() } : { problems: [`${JSON.stringify(value)} is not full|rules|none`] };
+  }
+  if (!isPlainObject(value)) return { problems: [`${JSON.stringify(value)} is neither full|rules|none nor an object`] };
+  const problems = [];
+  const disabled = new Set();
+  for (const key of Object.keys(value)) {
+    if (key !== "mode" && key !== "rules") problems.push(`unknown key "${key}"`);
+  }
+  const mode = value.mode === undefined ? "full" : value.mode;
+  if (typeof mode !== "string" || !INJECT_VALUES.has(mode)) problems.push(`mode ${JSON.stringify(value.mode)} is not full|rules|none`);
+  if (value.rules !== undefined) {
+    if (!isPlainObject(value.rules)) problems.push("rules is not an object");
+    else {
+      for (const [id, on] of Object.entries(value.rules)) {
+        if (!RULE_IDS.includes(id)) problems.push(`rules["${id}"] is not a rule id (${RULE_IDS.join(", ")})`);
+        else if (typeof on !== "boolean") problems.push(`rules["${id}"] ${JSON.stringify(on)} is not true|false`);
+        else if (!on) disabled.add(id);
+      }
+    }
+  }
+  return problems.length ? { problems } : { mode, disabled };
+}
+
+// Never throws. Returns { inject, disabledRules, handedCommandAllow, handedCommandScriptRoots,
+// linkKinds }. `inject` is the mode string; `disabledRules` the Set of rule ids switched off.
 export function loadSwitches(path = defaultProfilePath()) {
-  const out = { inject: "full", handedCommandAllow: [], handedCommandScriptRoots: [...DEFAULT_SCRIPT_ROOTS] };
+  const out = {
+    inject: "full",
+    disabledRules: new Set(),
+    handedCommandAllow: [],
+    handedCommandScriptRoots: [...DEFAULT_SCRIPT_ROOTS],
+    linkKinds: { ...LINK_DEFAULT_KINDS },
+  };
   let parsed;
   try {
     parsed = JSON.parse(readFileSync(path, "utf8"));
@@ -170,8 +224,28 @@ export function loadSwitches(path = defaultProfilePath()) {
   if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return out;
 
   if (parsed.inject !== undefined) {
-    if (typeof parsed.inject === "string" && INJECT_VALUES.has(parsed.inject)) out.inject = parsed.inject;
-    else logFault("lib/config.mjs", `inject ${JSON.stringify(parsed.inject)} is not full|rules|none; full applies`);
+    const r = parseInject(parsed.inject);
+    if (r.problems) logFault("lib/config.mjs", `inject: ${r.problems.join("; ")}; full with every rule on applies`);
+    else {
+      out.inject = r.mode;
+      out.disabledRules = r.disabled;
+    }
+  }
+  const ltr = parsed.linkTheReference;
+  if (ltr !== undefined && ltr !== null) {
+    const kinds = isPlainObject(ltr) ? ltr.kinds : undefined;
+    const valid =
+      isPlainObject(ltr) &&
+      Object.keys(ltr).every((k) => k === "kinds") &&
+      (kinds === undefined ||
+        (isPlainObject(kinds) && Object.entries(kinds).every(([k, v]) => LINK_KINDS.includes(k) && typeof v === "boolean")));
+    if (valid) Object.assign(out.linkKinds, kinds ?? {});
+    else {
+      logFault(
+        "lib/config.mjs",
+        `linkTheReference is not {"kinds": {<${LINK_KINDS.join("|")}>: true|false}}; the default kinds apply`,
+      );
+    }
   }
   const hc = parsed.handedCommand;
   if (hc !== undefined && hc !== null) {

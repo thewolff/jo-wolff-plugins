@@ -62,7 +62,9 @@ import { classifyLines } from "./lines.mjs";
 import { labelOf } from "./sections.mjs";
 import { COMMON_COMMANDS } from "./name-the-artifact.mjs";
 
-const KNOWN_BINARIES = new Set([
+// Exported for checks/link-the-reference.mjs, which reads a code span starting with one as a
+// command rather than a file reference.
+export const KNOWN_BINARIES = new Set([
   ...COMMON_COMMANDS,
   "rm", "sudo", "open", "launchctl", "defaults", "kill", "pkill", "ln", "tar", "unzip",
   "export", "source", "omp", "claude", "codex", "just", "vercel", "fly", "op", "security",
@@ -215,7 +217,9 @@ function* blocksFrom(entries, from) {
 }
 
 // The line numbers (1-indexed) of every receipt: the block under a label line (see the header).
-function receiptLines(entries) {
+// Takes classifyLines entries. Exported for checks/link-the-reference.mjs: one definition of a
+// receipt for every check that exempts them.
+export function receiptLines(entries) {
   const out = new Set();
   for (let i = 0; i < entries.length; i++) {
     if (!labelOf(entries[i])) continue;

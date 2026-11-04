@@ -25,7 +25,9 @@
 //      here, not announced to the model. $I_HAVE_AUDHD_ENFORCE=off is a secondary
 //      switch with exactly that frozen caveat — it costs a host relaunch to change. Then the
 //      profile's `inject` (lib/config.mjs loadSwitches): "rules" means injection only, so
-//      this hook checks nothing. The flag file is read first and wins over every value.
+//      this hook checks nothing. The flag file is read first and wins over every value. A
+//      check bound to a rule the profile's `inject.rules` switches off (lib/rules.mjs CHECKS)
+//      defaults to off; its own enforcement.rules entry still wins (lib/config.mjs).
 //   2. Parse the payload. Empty stdin, unparseable stdin or a non-object → a fault, exit 0.
 //   3. Extract the final assistant text: last_assistant_message when it is a non-empty
 //      string, else the transcript JSONL scanned backwards for the last type:"assistant"
@@ -89,8 +91,10 @@ import { checkNeedsYouFirst } from "../checks/needs-you-first.mjs";
 import { checkNamesArtifact } from "../checks/name-the-artifact.mjs";
 import { checkPluralBackReference } from "../checks/plural-back-reference.mjs";
 import { checkHandedCommand } from "../checks/handed-command.mjs";
+import { checkLinkTheReference } from "../checks/link-the-reference.mjs";
 import { splitLabeledSections, openingWords, OPENING_WORDS } from "../checks/sections.mjs";
 import { loadEnforcement, loadSwitches, effectiveMode, harnessCapsBlocks } from "../lib/config.mjs";
+import { ruleRef } from "../lib/rules.mjs";
 import { stateDir, killSwitchPath, lastBlockedPath, resumeMarkerPath, sha256hex, appendLog, logFault, faultWarning } from "../lib/state.mjs";
 import { writePending } from "../lib/pending.mjs";
 import { dueAlerts, clearAlerts } from "../lib/alerts.mjs";
@@ -110,23 +114,10 @@ const restateQuestion =
   "work. A message that itself summarizes or hands off (naming subject and status) is " +
   "compliant. When unsure, answer violation=false.";
 
-// The skill rule each check enforces (skills/i-have-audhd/SKILL.md headings). Every warn and
+// The skill rule each check enforces is declared once, in lib/rules.mjs CHECKS. Every warn and
 // block reason names it, so a finding points at text the model has or can load.
-const RULE_REFS = {
-  "needs-you-first": "i-have-audhd rule 1, Skeleton",
-  "closing-ask-last": "i-have-audhd rule 1, Skeleton",
-  "do-not-batch-by-label": "i-have-audhd rule 1, Skeleton",
-  "conclusion-first": "i-have-audhd rule 1, Skeleton",
-  "plural-back-reference": "i-have-audhd rule 6, References survive without scrolling",
-  "restate-resumed-thread": "i-have-audhd rule 8, Resume by restating content",
-  "name-the-artifact": "i-have-audhd rule 11, Machinery anchors",
-  "report-what-you-did-not-do": "i-have-audhd rule 11, Machinery anchors",
-  "bad-news-first": "i-have-audhd rule 11, Machinery anchors",
-  "handed-command": "i-have-audhd rule 10, Commands handed to the user",
-};
-
 // "<Check name> (<skill rule>)" — the head of every reason this hook emits.
-const cite = (name, rule) => (RULE_REFS[rule] ? `${name} (${RULE_REFS[rule]})` : name);
+const cite = (name, rule) => (ruleRef(rule) ? `${name} (${ruleRef(rule)})` : name);
 
 const MASTER_FLOOR = 200;
 
@@ -254,6 +245,26 @@ function runDeterministicChecks(text, config, switches) {
           `${cite("Plural back-reference", "plural-back-reference")} — the closing ask (line ${r.markerLine}) uses ` +
           `${words} with no referent in the same sentence. Restore the nouns so the ask reads alone.`,
         paste: paste("ask"),
+      });
+    }
+  }
+
+  // link-the-reference — a named PR, issue, file, artifact or branch carries its link. The
+  // profile's linkTheReference.kinds picks which of the four kinds run.
+  if (effectiveMode(config, "link-the-reference") !== "off") {
+    const r = checkLinkTheReference(text, { kinds: switches.linkKinds });
+    if (r.flagged) {
+      const shown = r.findings.slice(0, 5).map((f) => `${f.where} \`${f.excerpt}\` (${f.kind})`).join("; ");
+      const more = r.findings.length > 5 ? `; and ${r.findings.length - 5} more line(s)` : "";
+      findings.push({
+        rule: "link-the-reference",
+        mode: effectiveMode(config, "link-the-reference"),
+        text:
+          `${cite("Link the reference", "link-the-reference")} — ${shown}${more} name something the reader cannot open ` +
+          `from the line. Add the link on the same line: a PR or issue gets its https://github.com/…/pull/N or ` +
+          `/issues/N URL; a file gets its absolute or ~/ path; "the report", "the plan" and the like get the path ` +
+          `or URL in the same sentence; a branch gets its PR URL or its checkout's absolute path.`,
+        paste: paste("lines"),
       });
     }
   }
@@ -505,7 +516,8 @@ async function main() {
 
   // 6–7. Checks per configured modes.
   const harness = process.env.I_HAVE_AUDHD_HARNESS;
-  const config = loadEnforcement(harness);
+  // The profile's inject.rules: a check bound to a switched-off rule defaults to off.
+  const config = { ...loadEnforcement(harness), disabledRules: switches.disabledRules };
   const findings = belowFloor ? handedCommandFindings(text, config, switches) : [...runDeterministicChecks(text, config, switches)];
   if (belowFloor && !findings.length) return {};
   // A judge rule runs above the floor only.

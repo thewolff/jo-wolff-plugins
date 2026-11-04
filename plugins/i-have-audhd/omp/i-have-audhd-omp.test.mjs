@@ -365,7 +365,7 @@ test("integration: with no judge chosen, the first main session shows the setup 
   const context = await run("startup", ctx);
   assert.equal(notices.length, 1);
   assert.equal(notices[0].type, "warning");
-  assert.match(notices[0].message, /no judge is configured, so 5 of its 10 checks are off/);
+  assert.match(notices[0].message, /no judge is configured, so 5 of its 11 checks are off/);
   assert.ok(notices[0].message.includes(join(PLUGIN_ROOT, "tools", "setup.mjs")));
   assert.ok(context.includes(notices[0].message), "the agent gets the same text");
   await run("startup", ctx);

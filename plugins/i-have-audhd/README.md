@@ -15,7 +15,7 @@ The plugin delivers the rules in two ways:
   options rule, reference survival, commands, and three machinery anchors) plus every rule
   heading, so the model has the shape before its first message and knows the full skill
   exists.
-- **At every stop**, a hook checks the finished message against ten checks. A warn finding
+- **At every stop**, a hook checks the finished message against eleven checks. A warn finding
   reaches the agent with its next turn (and you, as a one-line notice), and is logged to
   `warnings.log`. Every check warns by default; nothing blocks until you arm it.
 
@@ -40,7 +40,7 @@ adapter runs them under node resolved to an absolute path (`I_HAVE_AUDHD_NODE` p
    omp plugin install i-have-audhd@jo-wolff-plugins
    ```
 
-2. **Choose a judge.** Five of the ten checks (`do-not-batch-by-label`, `conclusion-first`,
+2. **Choose a judge.** Five of the eleven checks (`do-not-batch-by-label`, `conclusion-first`,
    `restate-resumed-thread`, `report-what-you-did-not-do`, `bad-news-first`) need a model to
    read the message, and stay off until you choose one. Run the setup tool in a terminal:
 
@@ -136,7 +136,9 @@ while any harness or OMP profile still has the plugin installed.
 `hooks/i-have-audhd-inject.mjs` returns `hookSpecificOutput.additionalContext`: one line
 saying the person in the session installed these rules, the span of `SKILL.md` between
 `<!-- inject:start -->` and `<!-- inject:end -->`, and any reader traits from your profile.
-Editing the skill is editing what sessions receive; there is one copy of the text.
+Editing the skill is editing what sessions receive; there is one copy of the text. A rule the
+profile switches off (`inject.rules`, see *What you can turn on and off*) is cut from that span
+before it is sent: its core paragraph and its line in the rule list.
 
 On Claude Code this runs on every SessionStart source. On OMP the adapter runs it on the
 main session's start, on a session switch, and after a compaction, and attaches the context to
@@ -167,6 +169,7 @@ of nothing. To turn the injection off without uninstalling: `I_HAVE_AUDHD_INJECT
 | A handed command is one script line | `handed-command` | 10, Commands handed to the user | deterministic | warn |
 | Restate a resumed thread | `restate-resumed-thread` | 8, Resume by restating content | injector marker + judge | warn |
 | Name the artifact | `name-the-artifact` | 11, Machinery anchors | deterministic | warn |
+| Link the reference | `link-the-reference` | 11, Machinery anchors | deterministic | warn |
 | Report what you did not do | `report-what-you-did-not-do` | 11, Machinery anchors | todo trigger + judge | warn |
 | Bad news in the opening 20 words | `bad-news-first` | 11, Machinery anchors | lexicon gate + judge | warn |
 
@@ -235,7 +238,7 @@ plugin's hooks do not run inside the judge's own session; the setup tool's choic
 
 To run without a judge, set `judgeCommand` to `null` (the setup tool's "none"). Left out
 entirely, it means the same to the Stop hook, but the session-start notice treats it as "not
-chosen yet". The five deterministic checks still run; the five judge-gated checks stay
+chosen yet". The six deterministic checks still run; the five judge-gated checks stay
 inactive and each fired trigger is logged to `skipped.log`:
 
 ```json
@@ -250,9 +253,48 @@ describes a real person.**
 
 ## What you can turn on and off
 
-Two things switch independently: the **rules** (the skill's core, injected into every session
-at start) and the **checks** (the Stop hook reading every finished message). The profile's
-`inject` field picks which of the two run:
+Every switch, with its default. All of them live in the profile
+(`~/.claude/i-have-audhd.json`) except the flag file and the environment variables.
+
+| Switch | Where | Values | Default |
+|---|---|---|---|
+| What runs: rules, checks, or both | `inject` (string) or `inject.mode` | `full`, `rules`, `none` | `full` |
+| Rule 1, Skeleton, injected | `inject.rules.skeleton` | `true`, `false` | `true` |
+| Rule 2, Layer, injected | `inject.rules.layer` | `true`, `false` | `true` |
+| Rule 3, Blunt facts, declarative requests, injected | `inject.rules.blunt-facts` | `true`, `false` | `true` |
+| Rule 4, Recommend; at most two open decisions, injected | `inject.rules.recommend` | `true`, `false` | `true` |
+| Rule 5, Grade every signal, injected | `inject.rules.grade-signals` | `true`, `false` | `true` |
+| Rule 6, References survive without scrolling, injected | `inject.rules.references` | `true`, `false` | `true` |
+| Rule 7, Assumptions and intent, injected | `inject.rules.assumptions` | `true`, `false` | `true` |
+| Rule 8, Resume by restating content, injected | `inject.rules.resume` | `true`, `false` | `true` |
+| Rule 9, Durable means written, injected | `inject.rules.durable` | `true`, `false` | `true` |
+| Rule 10, Commands handed to the user, injected | `inject.rules.commands` | `true`, `false` | `true` |
+| Rule 11, Machinery anchors, injected | `inject.rules.machinery-anchors` | `true`, `false` | `true` |
+| Every check at once | `enforcement.mode` | `block`, `warn`, `off` | unset (each check's own default) |
+| Needs you first (rule 1) | `enforcement.rules.needs-you-first` | `block`, `warn`, `off` | `warn` |
+| One closing ask, last (rule 1) | `enforcement.rules.closing-ask-last` | `block`, `warn`, `off` | `warn` |
+| Do not batch by label (rule 1, judge) | `enforcement.rules.do-not-batch-by-label` | `block`, `warn`, `off` | `warn` |
+| Conclusion first (rule 1, judge) | `enforcement.rules.conclusion-first` | `block`, `warn`, `off` | `warn` |
+| Plural back-reference (rule 6) | `enforcement.rules.plural-back-reference` | `block`, `warn`, `off` | `warn` |
+| Restate a resumed thread (rule 8, judge) | `enforcement.rules.restate-resumed-thread` | `block`, `warn`, `off` | `warn` |
+| A handed command is one script line (rule 10) | `enforcement.rules.handed-command` | `block`, `warn`, `off` | `warn` |
+| Name the artifact (rule 11) | `enforcement.rules.name-the-artifact` | `block`, `warn`, `off` | `warn` |
+| Link the reference (rule 11) | `enforcement.rules.link-the-reference` | `block`, `warn`, `off` | `warn` |
+| Report what you did not do (rule 11, judge) | `enforcement.rules.report-what-you-did-not-do` | `block`, `warn`, `off` | `warn` |
+| Bad news first (rule 11, judge) | `enforcement.rules.bad-news-first` | `block`, `warn`, `off` | `warn` |
+| Link the reference: PR and issue numbers | `linkTheReference.kinds.issue-ref` | `true`, `false` | `true` |
+| Link the reference: file names | `linkTheReference.kinds.file-name` | `true`, `false` | `true` |
+| Link the reference: "the report", "the plan" and kin | `linkTheReference.kinds.artifact` | `true`, `false` | `false` (measured, see below) |
+| Link the reference: branch names | `linkTheReference.kinds.branch` | `true`, `false` | `false` (measured, see below) |
+| The judge for the five judge checks | `enforcement.judgeCommand` | a shell command, or `null` | unset: those five stay off |
+| Where a handed script may live | `handedCommand.scriptRoots` | absolute or `~/` directories | `["~/agent-scratch"]` |
+| Extra handed-command line shapes | `handedCommand.allow` | globs, `*` matches anything | `[]` |
+| OMP block cap: the OMP adapter tags its hook runs `I_HAVE_AUDHD_HARNESS=omp`, and under that tag every block is delivered as a warn | `enforcement.armOmp` | `true` (blocks deliver on OMP), `false` | `false` |
+| Stop hook kill switch | the flag file `~/.claude/.i-have-audhd-off` | present, absent | absent |
+| Injection, until relaunch | env `I_HAVE_AUDHD_INJECT` | `off` | unset |
+| Checks, until relaunch | env `I_HAVE_AUDHD_ENFORCE` | `off` | unset |
+
+The `inject` modes:
 
 | `inject` | Rules injected at session start | Stop checks |
 |---|---|---|
@@ -260,8 +302,21 @@ at start) and the **checks** (the Stop hook reading every finished message). The
 | `rules` | yes | none |
 | `none` | no | yes, at their modes |
 
-Inside the checks, `enforcement.mode` sets every check at once (`block`, `warn` or `off`) and
-`enforcement.rules` sets one check by its rule id.
+**One rule off.** `inject` can be an object: `mode` is one of the three values above
+(`full` when left out), and `rules` switches single rules by id. A rule set to `false` is
+left out of the session-start injection, its core paragraph and its line in the rule list,
+and every check bound to it (the Skill rule column in *What happens when you stop*) defaults
+to off. Rule 10 off, for a reader who does not mind running commands by hand:
+
+```json
+{ "inject": { "mode": "full", "rules": { "commands": false } } }
+```
+
+A check's own `enforcement.rules` entry still wins: `"enforcement": {"rules":
+{"handed-command": "warn"}}` beside the profile above keeps that check warning while rule 10
+stays out of the injection. A rule left out of `rules` is on. A malformed `inject` (an unknown
+mode, key or rule id, a switch that is not `true` or `false`) is one `errors.log` line and the
+default, `full` with every rule on.
 
 **Checks only.** No rules in the session's context; one check, `handed-command`, warns, and
 every other check is off:
@@ -285,11 +340,11 @@ the profile's enforcement at all, and the session-start notice about choosing a 
 not shown.
 
 **What wins when settings disagree,** strongest first: the kill-switch file
-`~/.claude/.i-have-audhd-off` > `inject` > the check's `enforcement.rules` entry >
-`enforcement.mode` > the built-in default (warn). The kill-switch file turns every check off
-under every `inject` value, within one turn; it never turns off the injection.
-`I_HAVE_AUDHD_INJECT=off` still silences the injection, and `I_HAVE_AUDHD_ENFORCE=off` the
-checks, each until the host relaunches.
+`~/.claude/.i-have-audhd-off` > `inject` mode > the check's `enforcement.rules` entry > its
+rule switched off in `inject.rules` (off) > `enforcement.mode` > the built-in default (warn).
+The kill-switch file turns every check off under every `inject` value, within one turn; it
+never turns off the injection. `I_HAVE_AUDHD_INJECT=off` still silences the injection, and
+`I_HAVE_AUDHD_ENFORCE=off` the checks, each until the host relaunches.
 
 `handed-command` accepts one line of the shape `zsh /absolute/path/script.sh` (or `bash`,
 `sh`, or a `~/` path) whose script sits under `~/agent-scratch` and outside every git
@@ -299,6 +354,15 @@ checkout. To let scripts live somewhere else, list the directories in
 
 ```json
 { "handedCommand": { "scriptRoots": ["~/agent-scratch", "~/scratch"], "allow": ["just deploy-*"] } }
+```
+
+`link-the-reference` ships two of its four kinds on. Measured over 469 real final messages,
+PR and issue numbers flagged 93 lines with 8 % false positives and file names 90 with 3 %;
+"the report"-style phrases flagged 44 with 75 % false positives and branch names 2 lines with
+1 false, so those two ship off. To turn one on:
+
+```json
+{ "linkTheReference": { "kinds": { "artifact": true } } }
 ```
 
 ## Upgrading from communication-rules
@@ -365,10 +429,21 @@ Exit 0 means every item is done or had nothing to do, 1 means one was refused or
   attached (`→`, `exit 0` on the next line), a numbered *What I ran* list with results, a
   table row with a result column, a blockquote, or console output with no instruction above
   it. Warn by default, like every check.
+- New check `link-the-reference` (rule 11, Machinery anchors). A line that names `PR #N`,
+  `issue N`, `pull request N` or a bare `#NN` with no `https://github.com/…/pull/N` or
+  `/issues/N` URL for it on the same line warns, as does a file name (`.md`, `.sh`, `.mjs`,
+  `.json` and nine more) with no absolute, `~/` or `file://` path ending in it on the line.
+  Receipts, fenced code, `→` evidence lines, blockquotes, headings and command lines never
+  count. Two more kinds, "the report"-style phrases and branch names, are built and ship off:
+  they measured 75 % and 50 % false positives. `linkTheReference.kinds` switches each kind.
 - New profile field `inject`: `full` (default, unchanged behavior), `rules` (injection only,
-  no Stop checks) or `none` (no injection, the checks still run). See *What you can turn on
-  and off*. The kill-switch file still wins over every value.
-- The no-judge notice and the setup tool count ten checks, five of them judge-gated.
+  no Stop checks) or `none` (no injection, the checks still run), or an object
+  `{"mode": …, "rules": {"<rule id>": false}}` that also switches single rules off. A rule
+  switched off is cut from the session-start injection and every check bound to it defaults
+  to off; a check's own `enforcement.rules` entry still wins. The eleven rule ids are defined
+  once, in `lib/rules.mjs`. See *What you can turn on and off*, which now lists every switch
+  with its default. The kill-switch file still wins over every value.
+- The no-judge notice and the setup tool count eleven checks, five of them judge-gated.
 
 ### 1.5.2
 
