@@ -1091,8 +1091,10 @@ can be a SQLite file another tool already uses.
 Changes in 0.3.7 (with plugin-kit 0.3.2): `lib/judge.mjs` is plugin-kit's shared judge dispatch,
 copied byte for byte, and ledger's cache and verdicts live in `lib/ledger-judge.mjs`. The review
 judge is `LEDGER_JUDGE_BIN`, else `review.judgeCommand`, else the shared judge file
-`${XDG_CONFIG_HOME:-~/.config}/judge/config.json` (new), else the i-have-audhd profile; verdicts,
-the cache and error wording are unchanged.
+`${XDG_CONFIG_HOME:-~/.config}/judge/config.json` (new), else the i-have-audhd profile; verdicts
+and the cache are unchanged, and `judge could not start:` is now followed by the error code.
+Ledger's diff judge never runs shorter than 60 s; a longer shared `timeoutMs` is honoured. A
+judge printing a `claude -p --output-format json` envelope is read through it.
 
 Changes in 0.3.6 (with plugin-kit 0.2.2): the gate grows from five rows to six. `docs` (a
 release is written down): when a plugin's `.claude-plugin/plugin.json` version differs from the

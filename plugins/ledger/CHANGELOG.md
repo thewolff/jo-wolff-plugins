@@ -12,16 +12,24 @@ repository root README's ledger section.
 - `lib/judge.mjs` is now plugin-kit's shared judge dispatch, copied byte for byte (plugin-kit's
   sameness test diffs it). Ledger's own judge logic (the `cc_judge_cache` cache, the passage
   builder, `ask` for review's "is this finding resolved" and `askWord` for the report's grades)
-  moved to `lib/ledger-judge.mjs`, which calls the shared `resolveJudgeCommand`, `dispatch` and
-  `parseAnswer`. Verdicts, cache keys, prompts and error wording (`judge exited <n>`,
-  `judge timed out after <n>s`, `judge could not start: …`) are unchanged.
+  moved to `lib/ledger-judge.mjs`, which calls the shared `resolveJudgeCommand`,
+  `readSharedConfig`, `dispatch`, `parseAnswer` and `topLevelJsonSpans`. Verdicts, cache keys,
+  prompts and the error wording `judge exited <n>` and `judge timed out after <n>s` are
+  unchanged. The text after `judge could not start:` is now the error code (`ENOENT`) where it
+  was the full message (`spawn /bin/sh ENOENT`).
 - The judge command is found in this order: env `LEDGER_JUDGE_BIN`, then `review.judgeCommand`
   in the ledger user file (ledger's own settings first, as before), then `command` in the
   shared judge file `${XDG_CONFIG_HOME:-~/.config}/judge/config.json` (new; written by
   `node lib/judge.mjs setup`), then `enforcement.judgeCommand` in the i-have-audhd profile. A
   shared file that exists but is malformed stops the search before the i-have-audhd profile;
-  `doctor` names the file and the parse error. The timeout is the shared file's `timeoutMs`
-  when it sets one, else 60 seconds as before.
+  `doctor` names the file and the parse error, and so does the `unverified` verdict's error
+  (`no judge configured (malformed <path>: <error>)`).
+- Ledger's diff judge never runs shorter than 60 s; a longer shared `timeoutMs` is honoured.
+  `judge setup` writes `timeoutMs: 30000` unless given `--timeout-ms`, and ledger keeps its
+  60 seconds over that, because a judge cut off early gives `unverified`, which fails open.
+- A judge command that prints a `claude -p --output-format json` envelope
+  (`{"type":"result","result":"…"}`) is read through it: the yes/no answer is taken from
+  `result`. Before, every such answer was `unverified`.
 - `doctor`'s judge row names the i-have-audhd source with a trailing ` (legacy)`, and its
   warning lists all four places it looked.
 

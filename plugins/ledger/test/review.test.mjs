@@ -4,7 +4,7 @@ import { spawn, spawnSync } from "node:child_process";
 import { chmodSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { sandbox, cli, hook, openDb } from "./helpers.mjs";
-import { ask, judgeCommand, JUDGE_TIMEOUT_MS } from "../lib/ledger-judge.mjs";
+import { ask, askWord, judgeCommand, JUDGE_TIMEOUT_MS } from "../lib/ledger-judge.mjs";
 
 const SID = "s-review";
 
@@ -429,8 +429,12 @@ test("judge: LEDGER_JUDGE_BIN, then review.judgeCommand, then the shared judge f
   mkdirSync(join(b.env.XDG_CONFIG_HOME, "judge"), { recursive: true });
   writeFileSync(shared, JSON.stringify({ command: "shared-judge" }));
   assert.deepEqual(judgeCommand({}, env), { command: "shared-judge", timeoutMs: JUDGE_TIMEOUT_MS, source: shared, malformed: null });
-  writeFileSync(shared, JSON.stringify({ command: "shared-judge", timeoutMs: 5000 }));
-  assert.equal(judgeCommand({}, env).timeoutMs, 5000, "the shared file's timeoutMs wins over ledger's 60 s default");
+  writeFileSync(shared, JSON.stringify({ command: "shared-judge", timeoutMs: 90000 }));
+  assert.equal(judgeCommand({}, env).timeoutMs, 90000, "a shared timeoutMs longer than ledger's 60 s is honoured");
+  writeFileSync(shared, JSON.stringify({ command: "shared-judge", timeoutMs: 30000 }));
+  assert.equal(judgeCommand({}, env).timeoutMs, JUDGE_TIMEOUT_MS, "ledger's diff judge never runs shorter than 60 s");
+  writeFileSync(shared, JSON.stringify({ command: "shared-judge", timeoutMs: 0.5 }));
+  assert.equal(judgeCommand({}, env).timeoutMs, JUDGE_TIMEOUT_MS, "a fractional timeoutMs under 1 is no timeout");
   const own = judgeCommand({ review: { judgeCommand: "own-judge" } }, env);
   assert.deepEqual([own.command, own.source], ["own-judge", "review.judgeCommand"]);
   const bin = judgeCommand({ review: { judgeCommand: "own-judge" } }, { ...env, LEDGER_JUDGE_BIN: "env-judge" });
@@ -440,6 +444,56 @@ test("judge: LEDGER_JUDGE_BIN, then review.judgeCommand, then the shared judge f
   assert.equal(broken.command, null, "a malformed shared file does not fall through to the legacy profile");
   assert.match(broken.malformed, /judge\/config\.json/);
   assert.equal(judgeCommand({ review: { judgeCommand: "own-judge" } }, env).command, "own-judge", "ledger's own setting still wins");
+});
+
+// Codex review round 1 of 0.3.7: one regression per finding fixed.
+
+test("0.3.7 S1: the shared timeoutMs reaches dispatch, floored at 60 s, for ask and askWord", async () => {
+  const b = sandbox();
+  const dir = join(b.env.XDG_CONFIG_HOME, "judge");
+  mkdirSync(dir, { recursive: true });
+  const seen = [];
+  const run = async (_prompt, { command, timeoutMs }) => {
+    seen.push([command, timeoutMs]);
+    return { ok: true, stdout: "yes\n", stderr: "" };
+  };
+  const db = openDb(b);
+  for (const [timeoutMs, expected] of [[30000, 60000], [90000, 90000]]) {
+    writeFileSync(join(dir, "config.json"), JSON.stringify({ command: "shared-judge", timeoutMs }));
+    const r = await ask({ db, config: {}, env: b.env, passage: `Finding:\nt${timeoutMs}`, run });
+    assert.equal(r.verdict, "yes");
+    const w = await askWord({ config: {}, env: b.env, passage: "p", question: "q", words: ["fine"], run: async (p, o) => (await run(p, o), { ok: true, stdout: "fine\n", stderr: "" }) });
+    assert.equal(w.answer, "fine");
+    assert.deepEqual(seen.splice(0), [["shared-judge", expected], ["shared-judge", expected]], `shared timeoutMs ${timeoutMs}`);
+  }
+  db.close();
+});
+
+test("0.3.7 S2: a judge printing a claude -p --output-format json envelope is read through it", async () => {
+  const b = sandbox();
+  const envelope = JSON.stringify({ type: "result", subtype: "success", is_error: false, result: "yes" });
+  const db = openDb(b);
+  const env = { ...b.env, LEDGER_JUDGE_BIN: `cat > /dev/null; printf '%s\\n' '${envelope}'` };
+  assert.deepEqual(await ask({ db, config: {}, env, passage: "Finding:\nenvelope" }), { verdict: "yes", cached: false, error: null });
+  const bold = { ...b.env, LEDGER_JUDGE_BIN: `cat > /dev/null; printf '%s\\n' '${JSON.stringify({ type: "result", result: "**biting**" })}'` };
+  assert.deepEqual(await askWord({ config: {}, env: bold, passage: "p", question: "q", words: ["biting", "silent", "fine"] }), { answer: "biting", error: null });
+  db.close();
+});
+
+test("0.3.7 S3: a malformed shared judge file is named by doctor and by ask's error", async () => {
+  const b = repo();
+  openDb(b).close();
+  mkdirSync(join(b.env.XDG_CONFIG_HOME, "judge"), { recursive: true });
+  writeFileSync(join(b.env.XDG_CONFIG_HOME, "judge", "config.json"), "{ nope");
+  const r = cli(b, ["doctor"], { env: { LEDGER_REVIEW_BIN_CODEX: process.execPath } });
+  assert.match(r.out, /^warn judge: malformed shared judge file .*judge\/config\.json: .*addressed claims unverified$/m);
+  const db = openDb(b);
+  const a = await ask({ db, config: {}, env: b.env, passage: "Finding:\nmalformed" });
+  assert.equal(a.verdict, "unverified");
+  assert.match(a.error, /^no judge configured \(malformed .*judge\/config\.json: /);
+  db.close();
+  const w = await askWord({ config: {}, env: b.env, passage: "p", question: "q", words: ["fine"] });
+  assert.deepEqual([w.answer, /^no judge configured \(malformed /.test(w.error)], [null, true]);
 });
 
 // Codex review round 1 of 0.3.0: one regression per finding fixed.

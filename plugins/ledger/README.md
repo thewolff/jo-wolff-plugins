@@ -396,9 +396,12 @@ not configured, cannot start, times out (60 seconds) or answers anything else gi
 are cached in `cc_judge_cache` under `judge:<sha256>` with the passage they were given, so asking the same thing again costs nothing and a cached answer can be read back with `review judge <key>`. The
 judge command is `LEDGER_JUDGE_BIN`, else `review.judgeCommand`, else `command` in the shared
 judge file `${XDG_CONFIG_HOME:-~/.config}/judge/config.json` (written by `node lib/judge.mjs
-setup`; its `timeoutMs`, when set, replaces the 60 seconds), else the i-have-audhd plugin's
-`enforcement.judgeCommand`: one judge, configured once. `lib/judge.mjs` is plugin-kit's shared
-dispatch, copied byte for byte; ledger's cache and verdicts live in `lib/ledger-judge.mjs`.
+setup`), else the i-have-audhd plugin's `enforcement.judgeCommand`: one judge, configured once.
+Ledger's diff judge never runs shorter than 60 s; a longer shared `timeoutMs` is honoured (`setup`
+writes 30000 unless given `--timeout-ms`, and ledger keeps its 60 seconds over that). A command
+that prints a `claude -p --output-format json` envelope is read through it: the answer is its
+`result`. `lib/judge.mjs` is plugin-kit's shared dispatch, copied byte for byte; ledger's cache
+and verdicts live in `lib/ledger-judge.mjs`.
 
 | Verb | Effect |
 | :- | :- |
@@ -763,8 +766,9 @@ Tests use a sandboxed `HOME`, `XDG_*` and `LEDGER_*` so they never touch your le
   and verdict logic lives in `lib/ledger-judge.mjs`. The judge command is `LEDGER_JUDGE_BIN`,
   else `review.judgeCommand`, else the shared judge file
   `${XDG_CONFIG_HOME:-~/.config}/judge/config.json` (new), else the i-have-audhd profile's
-  `enforcement.judgeCommand`. Verdicts, the cache and error wording are unchanged; the timeout
-  is the shared file's `timeoutMs` when set, else 60 seconds.
+  `enforcement.judgeCommand`. Verdicts and the cache are unchanged; `judge could not start:`
+  is now followed by the error code. Ledger's diff judge never runs shorter than 60 s; a longer
+  shared `timeoutMs` is honoured. A `claude -p --output-format json` envelope is read through.
 
 ### 0.3.6
 

@@ -13,7 +13,11 @@
 //      written by `node lib/judge.mjs setup`; a malformed shared file ends the search here
 //   4. `enforcement.judgeCommand` in the i-have-audhd profile ($I_HAVE_AUDHD_PROFILE, else
 //      ~/.claude/i-have-audhd.json), legacy, when that file exists and parses
-// The timeout is the shared file's `timeoutMs` when it sets one, else JUDGE_TIMEOUT_MS.
+// The timeout is the shared file's `timeoutMs` when it is longer than JUDGE_TIMEOUT_MS, else
+// JUDGE_TIMEOUT_MS: ledger's diff judge never runs shorter than 60 s (0.3.7), because `judge
+// setup` writes 30 s by default and a judge cut off early fails open as `unverified`.
+// A command that prints a `claude -p --output-format json` envelope ({"type":"result",
+// "result":"…"}) is read through it: the answer is taken from `result`.
 //
 // Verdicts: `yes` (resolved), `no` (not resolved), `unverified` (no judge configured, it could
 // not start, exited non-zero, timed out, or answered something else). `unverified` is fail-open:
@@ -26,7 +30,7 @@
 import { createHash } from "node:crypto";
 import { transaction } from "./db.mjs";
 import { logError } from "./failopen.mjs";
-import { dispatch, parseAnswer, readSharedConfig, resolveJudgeCommand } from "./judge.mjs";
+import { dispatch, parseAnswer, readSharedConfig, resolveJudgeCommand, topLevelJsonSpans } from "./judge.mjs";
 import { nowIso } from "./time.mjs";
 
 export const JUDGE_QUESTION = "Does this change resolve the finding? Answer yes or no.";
@@ -35,25 +39,38 @@ export const PASSAGE_CAP_BYTES = 8 * 1024;
 export const JUDGE_ENV_VAR = "LEDGER_JUDGE_BIN";
 
 /** The pluginKey lib/judge.mjs resolves with: ledger's env override and `review.judgeCommand`. */
-function pluginKey(config, env) {
-  const ownTimeout = Number(readSharedConfig({ env }).config?.timeoutMs) > 0 ? undefined : JUDGE_TIMEOUT_MS;
-  return { envVar: JUDGE_ENV_VAR, command: config?.review?.judgeCommand ?? null, source: "review.judgeCommand", timeoutMs: ownTimeout };
+function pluginKey(config) {
+  return { envVar: JUDGE_ENV_VAR, command: config?.review?.judgeCommand ?? null, source: "review.judgeCommand" };
 }
 
 /**
  * { command, timeoutMs, source } for the judge, or all three null when none is configured.
- * `malformed` is `<path>: <error>` when the shared file exists and cannot be used, else null.
+ * timeoutMs is the shared file's `timeoutMs` floored at JUDGE_TIMEOUT_MS. `malformed` is
+ * `<path>: <error>` when no command was found and the shared file exists but cannot be used,
+ * else null.
  */
 export function judgeCommand(config, env = process.env) {
-  const malformed = readSharedConfig({ env }).malformed;
-  const found = resolveJudgeCommand({ pluginKey: pluginKey(config, env), env });
-  return found ? { ...found, malformed } : { command: null, timeoutMs: null, source: null, malformed };
+  const found = resolveJudgeCommand({ pluginKey: pluginKey(config), env });
+  if (found) return { ...found, timeoutMs: Math.max(found.timeoutMs, JUDGE_TIMEOUT_MS), malformed: null };
+  return { command: null, timeoutMs: null, source: null, malformed: readSharedConfig({ env }).malformed };
+}
+
+/** `stdout`, or the `result` string of a `{"type":"result","result":"…"}` envelope when that is its last top-level JSON object. */
+function unwrapEnvelope(stdout) {
+  const last = topLevelJsonSpans(stdout).at(-1);
+  if (!last) return stdout;
+  try {
+    const envelope = JSON.parse(last);
+    return envelope?.type === "result" && typeof envelope.result === "string" ? envelope.result : stdout;
+  } catch {
+    return stdout;
+  }
 }
 
 /** One judge run: { ok: true, stdout } or { ok: false, error, stderr } with ledger's wording of the failure. */
-async function runOnce(command, prompt, timeoutMs, env) {
-  const r = await dispatch(prompt, { command, timeoutMs, env });
-  if (r.ok) return { ok: true, stdout: r.stdout, stderr: r.stderr.slice(-300) };
+async function runOnce(command, prompt, timeoutMs, env, run = dispatch) {
+  const r = await run(prompt, { command, timeoutMs, env });
+  if (r.ok) return { ok: true, stdout: unwrapEnvelope(r.stdout), stderr: r.stderr.slice(-300) };
   const error =
     r.error === "nonzero" ? `judge exited ${r.code}` : r.error === "timeout" ? `judge timed out after ${Math.round(timeoutMs / 1000)}s` : `judge could not start: ${r.detail}`;
   return { ok: false, error, stderr: r.stderr.slice(-300) };
@@ -63,12 +80,13 @@ async function runOnce(command, prompt, timeoutMs, env) {
  * One uncached judge call whose answer is one of `words` (the report's biting|silent|fine).
  * Returns { answer, error }: answer null with the reason when no judge is configured, it fails,
  * or it says none of the words. Nothing is written: a grade is recomputed each time.
+ * `run` stands in for lib/judge.mjs dispatch (tests).
  */
-export async function askWord({ config, env = process.env, passage, question, words, timeoutMs }) {
+export async function askWord({ config, env = process.env, passage, question, words, timeoutMs, run = dispatch }) {
   const judge = judgeCommand(config, env);
   if (!judge.command) return { answer: null, error: judge.malformed ? `no judge configured (malformed ${judge.malformed})` : "no judge configured" };
   const prompt = `${passage}\n\nQuestion: ${question}\nReply with a single word: ${words.join(", ")}.`;
-  const r = await runOnce(judge.command, prompt, timeoutMs ?? judge.timeoutMs, env);
+  const r = await runOnce(judge.command, prompt, timeoutMs ?? judge.timeoutMs, env, run);
   if (!r.ok) return { answer: null, error: r.error };
   const answer = parseAnswer(r.stdout, words);
   return answer ? { answer, error: null } : { answer: null, error: `unparsed: judge answered none of ${words.join("|")}` };
@@ -127,10 +145,10 @@ export function passageFor(findingText, diff) {
 }
 
 /**
- * Ask the judge about one passage. Never throws.
+ * Ask the judge about one passage. Never throws. `run` stands in for lib/judge.mjs dispatch (tests).
  * @returns {Promise<{ verdict: "yes"|"no"|"unverified", cached: boolean, error: string|null }>}
  */
-export async function ask({ db, dbPath, config, env = process.env, passage, question = JUDGE_QUESTION, timeoutMs, now = Date.now() }) {
+export async function ask({ db, dbPath, config, env = process.env, passage, question = JUDGE_QUESTION, timeoutMs, now = Date.now(), run = dispatch }) {
   try {
     const key = `judge:${createHash("sha256").update(passage + question).digest("hex")}`;
     const hit = cached(db, key);
@@ -138,7 +156,7 @@ export async function ask({ db, dbPath, config, env = process.env, passage, ques
     const judge = judgeCommand(config, env);
     if (!judge.command) return { verdict: "unverified", cached: false, error: judge.malformed ? `no judge configured (malformed ${judge.malformed})` : "no judge configured" };
     const prompt = `${passage}\n\nQuestion: ${question}\nReply with the single word yes or no.`;
-    const r = await runOnce(judge.command, prompt, timeoutMs ?? judge.timeoutMs, env);
+    const r = await runOnce(judge.command, prompt, timeoutMs ?? judge.timeoutMs, env, run);
     const answer = r.ok ? parseAnswer(r.stdout) : null;
     if (!answer) {
       const error = r.ok ? "judge answered neither yes nor no" : r.error;
