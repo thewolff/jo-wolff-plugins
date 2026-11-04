@@ -13,7 +13,9 @@
 // skills/*/test/, which a bare `node --test` would try to run.
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { readFileSync, readdirSync, existsSync } from "node:fs";
+import { readFileSync, readdirSync, existsSync, statSync } from "node:fs";
+import { dirname, join, relative, resolve, sep } from "node:path";
+import { fileURLToPath } from "node:url";
 
 const root = new URL("./", import.meta.url);
 const read = (p) => readFileSync(new URL(p, root), "utf8");
@@ -153,4 +155,87 @@ test("the reader rejects what it does not understand", () => {
     description: "a b",
     metadata: { v: "1" },
   });
+});
+
+// Every `. "…"` / `source "…"` line in a skill's shell scripts has to land on a file inside that same
+// skill directory: a skill is uploaded to claude.ai and installed on its own, so a sourced file
+// anywhere else (the plugin root, a sibling skill, the newdle monolith) is missing on first use.
+// The resolver understands exactly the forms these scripts use, a path built on a variable the
+// script sets to `$(cd "$(dirname "${BASH_SOURCE[0]}")<rel>" && pwd)`, or on that `dirname`
+// expression itself. Any other form fails the test rather than being guessed at.
+const pluginDir = fileURLToPath(root);
+const SOURCE_LINE = /^\s*(?:\.|source)\s+(.+?)\s*(?:#.*)?$/;
+const DIR_ASSIGN = /^\s*([A-Za-z_][A-Za-z0-9_]*)="\$\(cd "\$\(dirname "\$\{BASH_SOURCE\[0\]\}"\)([^"]*)" && pwd\)"\s*$/;
+const SCRIPT_DIR_EXPR = '$(dirname "${BASH_SOURCE[0]}")';
+
+function resolveSources(src, scriptPath) {
+  const here = dirname(scriptPath);
+  const vars = new Map();
+  const out = [];
+  src.split("\n").forEach((line, i) => {
+    const assign = DIR_ASSIGN.exec(line);
+    if (assign) vars.set(assign[1], resolve(here + assign[2]));
+    const m = SOURCE_LINE.exec(line);
+    if (!m) return;
+    const where = `${scriptPath}:${i + 1}`;
+    const arg = m[1];
+    if (!/^"[^"]*"$/.test(arg) && !arg.startsWith(`"${SCRIPT_DIR_EXPR}`)) throw new Error(`${where}: unquoted source path ${arg}`);
+    const body = arg.slice(1, -1);
+    let base, rest;
+    if (body.startsWith(SCRIPT_DIR_EXPR)) {
+      base = here;
+      rest = body.slice(SCRIPT_DIR_EXPR.length);
+    } else {
+      const v = /^\$(?:\{([A-Za-z_][A-Za-z0-9_]*)\}|([A-Za-z_][A-Za-z0-9_]*))(\/.*)$/.exec(body);
+      if (!v || !vars.has(v[1] ?? v[2])) throw new Error(`${where}: cannot resolve ${arg}`);
+      base = vars.get(v[1] ?? v[2]);
+      rest = v[3];
+    }
+    if (rest.includes("$")) throw new Error(`${where}: cannot resolve ${arg}`);
+    out.push({ where, target: resolve(base + rest) });
+  });
+  return out;
+}
+
+function shellScripts(dir) {
+  return readdirSync(dir, { withFileTypes: true }).flatMap((d) => {
+    const p = join(dir, d.name);
+    if (d.isDirectory()) return d.name === "node_modules" ? [] : shellScripts(p);
+    if (/\.(?:sh|bash)$/.test(d.name)) return [p];
+    return /^#!.*\b(?:ba)?sh\b/.test(readFileSync(p, "utf8").slice(0, 64)) ? [p] : [];
+  });
+}
+
+const inside = (child, parent) => child === parent || child.startsWith(parent + sep);
+
+test("every sourced shell file resolves to a file inside its own skill directory", () => {
+  const scripts = shellScripts(join(pluginDir, "skills"));
+  assert.ok(scripts.length > 0, "found no shell scripts to check");
+  let checked = 0;
+  for (const script of scripts) {
+    const skillDir = join(pluginDir, "skills", relative(join(pluginDir, "skills"), script).split(sep)[0]);
+    for (const { where, target } of resolveSources(readFileSync(script, "utf8"), script)) {
+      const shown = relative(pluginDir, target);
+      assert.ok(inside(target, skillDir), `${relative(pluginDir, where)} sources ${shown}, outside ${relative(pluginDir, skillDir)}`);
+      assert.ok(existsSync(target) && statSync(target).isFile(), `${relative(pluginDir, where)} sources ${shown}, which does not exist`);
+      checked++;
+    }
+  }
+  // triad-fanout.sh and quorum-fanout.sh each source lib/leg-runner.sh; a resolver that matched
+  // nothing would pass vacuously.
+  assert.ok(checked >= 2, `checked ${checked} source lines, expected at least the two leg-runner lines`);
+});
+
+test("the source resolver reports what it cannot follow", () => {
+  const s = "/p/skills/x/references/t/scripts/run.sh";
+  const dirLine = 'SKILL_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"';
+  assert.deepEqual(resolveSources(`${dirLine}\n. "$SKILL_DIR/../../lib/a.sh"\n`, s), [
+    { where: `${s}:2`, target: "/p/skills/x/lib/a.sh" },
+  ]);
+  assert.deepEqual(resolveSources('source "$(dirname "${BASH_SOURCE[0]}")/b.sh"\n', s), [
+    { where: `${s}:1`, target: "/p/skills/x/references/t/scripts/b.sh" },
+  ]);
+  assert.throws(() => resolveSources('. "$UNSET_DIR/a.sh"\n', s), /cannot resolve/);
+  assert.throws(() => resolveSources(". lib/a.sh\n", s), /unquoted/);
+  assert.throws(() => resolveSources(`${dirLine}\n. "$SKILL_DIR/$OTHER/a.sh"\n`, s), /cannot resolve/);
 });

@@ -114,5 +114,13 @@ The test parses every `SKILL.md` frontmatter and fails when a top-level key fall
 that claude.ai uploads accept (`name`, `description`, `license`, `compatibility`, `metadata`,
 `allowed-tools`; https://code.claude.com/docs/en/skills), when `name` does not match the skill's
 directory, or when a field breaks an Agent Skills limit (https://agentskills.io/specification).
-Move any other key under `metadata:`. Run the test file by name: a bare `node --test` also picks
-up the Bun tests under `skills/*/test/`, which do not run under Node.
+Move any other key under `metadata:`. A second test resolves every `. "…"` / `source "…"` line in
+the skills' shell scripts and fails when the sourced file is missing or sits outside the script's
+own skill directory. Run the test file by name: a bare `node --test` also picks up the Bun tests
+under `skills/*/test/`, which do not run under Node.
+
+## Changes in 0.1.1
+
+- `cross-model-review`: the triad and quorum fan-out scripts no longer fail on first use. Both
+  source `lib/leg-runner.sh`, which 0.1.0 did not ship; it is now vendored at
+  `skills/cross-model-review/lib/leg-runner.sh` from newdle-claude-plugins `28e7356`.
