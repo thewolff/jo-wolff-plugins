@@ -41,7 +41,7 @@ export const DEFAULTS = Object.freeze({
     stopAskRule: true,
     pushNeedsNote: true,
     stopDecisionRule: true,
-    decisionPhrases: Object.freeze(["I decided", "decided to", "assumption:", "assuming", "going with", "instead of", "chose", "I'll go with", "trade-off"]),
+    decisionPhrases: Object.freeze(["I decided", "decided to", "assumption:", "assuming", "going with", "chose", "I'll go with", "trade-off"]),
   }),
   inject: Object.freeze({ notes: 5, elsewhere: true, answers: true, doctor: true }),
   review: Object.freeze({ mode: "gate", labs: Object.freeze(["codex"]), models: null, profiles: null, maxRounds: 3, judgeCommand: null }),
@@ -233,8 +233,18 @@ export function loadConfig({ env = process.env, home = homedir(), cwd = null } =
   }
   if (sources.db === "default") config.db = defaultDbPath(env, home);
   else config.db = expandHome(config.db, home);
+  loggedDb = config.db;
 
   return { config, notices, sources, path, projectPath };
+}
+
+// The database the last loadConfig in this process resolved: errors.log lines are tagged with it,
+// so `doctor` counts only the lines written against the database it is checking.
+let loggedDb = null;
+
+/** The database path errors.log lines in this process are tagged with; null before any loadConfig. */
+export function currentLogDb() {
+  return loggedDb;
 }
 
 /** The display name recorded as the human actor: the configured one, else the OS user name. */

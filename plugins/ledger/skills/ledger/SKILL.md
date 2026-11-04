@@ -52,7 +52,7 @@ the human for permission. `… help` prints the whole grammar.
 2. **When you decide something without asking: `note`, in the same turn.**
    `… note "<what you chose and why, one line>"` prints an `nt-` id. The last few entries are
    injected at the next session start, so a future thread knows what was settled. The Stop hook
-   sends back, once, a reply that states a decision ("I decided", "going with", "instead of",
+   sends back, once, a reply that states a decision ("I decided", "going with",
    "assuming", "chose", "trade-off" and the rest of the configured list) when no note was
    recorded during that turn: record the note first, then say it.
 

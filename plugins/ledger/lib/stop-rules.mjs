@@ -5,15 +5,20 @@
 //                  human's latest prompt (`dueQuestions`) → block: the human has replied, so the
 //                  agent records the answer from that reply (`answer <q-id> <option>`) before it
 //                  finishes. The ids go to the agent only; the human never has to type one.
-//   ask rule       (forcing.stopAskRule)       after removing fenced code blocks and inline
-//                  code, some line ends with `?` AND the session has no open question row →
-//                  block: the agent asked the human something without a ledger row. Messages
-//                  under MIN_CHARS substantive characters are not checked.
+//   ask rule       (forcing.stopAskRule)       after removing fenced code blocks, inline code
+//                  and double-quoted spans, some sentence ends with `?` (a `?` at the end of a
+//                  line or followed by a space: "Should I …? I'd say yes." counts; a URL's
+//                  `?query` does not) AND the session has no open question row → block: the
+//                  agent asked the human something without a ledger row. Messages under
+//                  MIN_CHARS substantive characters are not checked.
 //   decision rule  (forcing.stopDecisionRule)  after removing code and double-quoted spans, the
 //                  message contains one of forcing.decisionPhrases (whole words, any case) AND
-//                  no `note` was recorded in this turn → block: a decision was stated but not
-//                  recorded. Quoted text is skipped so a reply that cites the human's words or
-//                  a file does not count. No length floor: "Chose A." is a decision too.
+//                  no `note` was recorded in this turn AND no question was asked in this turn →
+//                  block: a decision was stated but not recorded. Quoted text is skipped so a
+//                  reply that cites the human's words or a file does not count; a question asked
+//                  this turn means the phrase is the stated default ("if you don't answer, I'll
+//                  go with alpha"), which the question row already records. No length floor:
+//                  "Chose A." is a decision too.
 //
 // Checked in that order; one block per Stop.
 
@@ -60,23 +65,29 @@ export function decisionPhrase(text, phrases) {
   return null;
 }
 
+/** Whether `text` asks something: a `?` at the end of a line or followed by whitespace. */
+export function asksQuestion(text) {
+  return /\?(\s|$)/m.test(String(text ?? ""));
+}
+
 /**
  * @param message                   last_assistant_message
  * @param opts.dueQuestions         open questions of this session asked before the human's latest prompt, newest first
  * @param opts.sessionHasOpenQuestion whether this session has any open question row
+ * @param opts.turnQuestions        how many open questions this session asked during this turn
  * @param opts.turnNotes            how many `note` rows this session recorded during this turn
  * @param opts.forcing              { stopAskRule, stopDecisionRule, decisionPhrases }
  * @returns {null | { rule: 'stopAnswerRule'|'stopAskRule'|'stopDecisionRule', reason: string }}
  */
-export function checkStop(message, { dueQuestions = [], sessionHasOpenQuestion = false, turnNotes = 0, forcing = {}, cli = "ledger" } = {}) {
+export function checkStop(message, { dueQuestions = [], sessionHasOpenQuestion = false, turnQuestions = 0, turnNotes = 0, forcing = {}, cli = "ledger" } = {}) {
   if (forcing.stopAskRule !== false && dueQuestions.length) return { rule: "stopAnswerRule", reason: answerReason(dueQuestions, cli) };
   const text = stripCode(message);
-  if (forcing.stopAskRule !== false && !sessionHasOpenQuestion && text.replace(/\s+/g, "").length >= MIN_CHARS) {
-    const lines = text.split("\n").map((l) => l.trim());
-    if (lines.some((l) => l.endsWith("?"))) return { rule: "stopAskRule", reason: askReason(cli) };
+  const prose = stripQuoted(text);
+  if (forcing.stopAskRule !== false && !sessionHasOpenQuestion && text.replace(/\s+/g, "").length >= MIN_CHARS && asksQuestion(prose)) {
+    return { rule: "stopAskRule", reason: askReason(cli) };
   }
-  if (forcing.stopDecisionRule !== false && turnNotes === 0) {
-    const phrase = decisionPhrase(stripQuoted(text), forcing.decisionPhrases);
+  if (forcing.stopDecisionRule !== false && turnNotes === 0 && turnQuestions === 0) {
+    const phrase = decisionPhrase(prose, forcing.decisionPhrases);
     if (phrase) return { rule: "stopDecisionRule", reason: decisionReason(phrase, cli) };
   }
   return null;

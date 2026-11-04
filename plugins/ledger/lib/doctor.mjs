@@ -19,7 +19,7 @@
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { loadConfig } from "./config.mjs";
+import { currentLogDb, loadConfig } from "./config.mjs";
 import { probe, SCHEMA_VERSION, storeVersion } from "./db.mjs";
 import { errorsLogPath, readErrors } from "./failopen.mjs";
 import { nowIso } from "./time.mjs";
@@ -40,19 +40,24 @@ function layerName(label, cfg) {
   return "default";
 }
 
-/** errors.log lines of the last 7 days: { lines, byHook: [[hook, n], …] }. */
-export function recentErrors(env, now) {
-  const lines = readErrors(env, { since: now - ERRORS_WINDOW_MS });
+/**
+ * errors.log lines of the last 7 days written against database `db`: { lines, byHook: [[hook, n], …],
+ * others } (`others`: lines in the window for another database, or untagged).
+ */
+export function recentErrors(env, now, db) {
+  const all = readErrors(env, { since: now - ERRORS_WINDOW_MS });
+  const lines = all.filter((l) => l.db === db);
   const counts = new Map();
   for (const l of lines) counts.set(l.hook, (counts.get(l.hook) ?? 0) + 1);
-  return { lines, byHook: [...counts.entries()].sort((a, b) => a[0].localeCompare(b[0])) };
+  return { lines, byHook: [...counts.entries()].sort((a, b) => a[0].localeCompare(b[0])), others: all.length - lines.length };
 }
 
-function errorsCheck(env, now) {
-  const { lines, byHook } = recentErrors(env, now);
-  if (!lines.length) return check("ok", "errors", `no errors.log lines in the last 7 days (${errorsLogPath(env)})`);
+function errorsCheck(env, now, db) {
+  const { lines, byHook, others } = recentErrors(env, now, db);
+  const elsewhere = others ? `; ${others} other line(s) are for another database or an older ledger, not counted` : "";
+  if (!lines.length) return check("ok", "errors", `no errors.log lines for this database in the last 7 days (${errorsLogPath(env)}${elsewhere})`);
   const detail = lines.slice(-5).map((l) => `${l.at} ${l.hook} ${l.message}`);
-  return check("warn", "errors", `${lines.length} errors.log line(s) in the last 7 days: ${byHook.map(([h, n]) => `${h} ${n}`).join(", ")} (${errorsLogPath(env)})`, detail);
+  return check("warn", "errors", `${lines.length} errors.log line(s) for this database in the last 7 days: ${byHook.map(([h, n]) => `${h} ${n}`).join(", ")} (${errorsLogPath(env)}${elsewhere})`, detail);
 }
 
 function hooksCheck(pluginRoot) {
@@ -99,7 +104,7 @@ export function runDoctor({ env = process.env, cwd = null, now = Date.now(), plu
   else checks.push(check("ok", "config", layers));
 
   checks.push(hooksCheck(pluginRoot));
-  checks.push(errorsCheck(env, now));
+  checks.push(errorsCheck(env, now, dbPath));
 
   if (p.query && p.version === SCHEMA_VERSION) {
     try {
@@ -138,9 +143,9 @@ export function renderDoctor({ checks }) {
  * The SessionStart subset, cheap: schema version of the open store and the errors.log count.
  * Returns the number of issues (0, 1 or 2).
  */
-export function quickIssues(db, { env = process.env, now = Date.now() } = {}) {
+export function quickIssues(db, { env = process.env, now = Date.now(), dbPath = currentLogDb() } = {}) {
   let n = 0;
   if (storeVersion(db) !== SCHEMA_VERSION) n++;
-  if (recentErrors(env, now).lines.length) n++;
+  if (recentErrors(env, now, dbPath).lines.length) n++;
   return n;
 }

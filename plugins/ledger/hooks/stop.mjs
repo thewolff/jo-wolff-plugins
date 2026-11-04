@@ -74,11 +74,15 @@ export function handle(input, { env = process.env, now = Date.now() } = {}) {
 
     const newTurn = Boolean(promptId && session?.last_stop_prompt && session.last_stop_prompt !== promptId && session.last_stop_at);
     // With a session, "a row exists" means one of this session's; without one, any open in scope.
-    const sessionHasOpenQuestion = sessionId ? sessionQuestions(db, { sessionId, cwd }).length > 0 : openQuestions(db, cwd, { below: false }).length > 0;
+    const open = sessionId ? sessionQuestions(db, { sessionId, cwd }) : openQuestions(db, cwd, { below: false });
+    const turnSince = session?.last_stop_at ?? session?.started_at ?? null;
     const verdict = checkStop(input.last_assistant_message, {
       dueQuestions: newTurn ? sessionQuestions(db, { sessionId, cwd, askedBy: session.last_stop_at }) : [],
-      sessionHasOpenQuestion,
-      turnNotes: sessionNotes(db, { sessionId, cwd, after: session?.last_stop_at ?? session?.started_at ?? null }).length,
+      sessionHasOpenQuestion: open.length > 0,
+      // A question asked this turn: its stated default ("if you don't answer, I'll go with alpha")
+      // is not a decision, so the decision rule stands down for this reply.
+      turnQuestions: sessionId ? open.filter((q) => !turnSince || q.asked_at > turnSince).length : 0,
+      turnNotes: sessionNotes(db, { sessionId, cwd, after: turnSince }).length,
       forcing: store.config.forcing,
       cli: invocation(),
     });

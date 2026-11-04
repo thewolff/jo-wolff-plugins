@@ -1,6 +1,8 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { existsSync, mkdirSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { loadConfig } from "../lib/config.mjs";
+import { logError } from "../lib/failopen.mjs";
 import { dirname, join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { MIGRATIONS, open, storeVersion } from "../lib/db.mjs";
@@ -143,16 +145,16 @@ test("(g) doctor on a store at an older schema version: fail, exit 1, and the st
   raw.close();
 });
 
-test("(h) two recent errors.log lines: doctor warns per hook and SessionStart ends with the doctor line, compact too", () => {
+test("(h) two recent errors.log lines for this database: doctor warns per hook and SessionStart ends with the doctor line, compact too", () => {
   const b = sandbox();
   openDb(b).close();
   mkdirSync(dirname(b.errorsLog), { recursive: true });
   const old = new Date(Date.now() - 9 * 86_400_000).toISOString();
   const now = new Date().toISOString();
-  writeFileSync(b.errorsLog, `${old} Stop ancient\n${now} Stop boom one\n${now} PreToolUse boom two\n`);
+  writeFileSync(b.errorsLog, `${old} Stop ancient [db ${b.dbPath}]\n${now} Stop boom one [db ${b.dbPath}]\n${now} PreToolUse boom two [db ${b.dbPath}]\n`);
   const r = doctor(b);
   assert.equal(r.code, 0, r.out);
-  assert.match(r.out, /^warn errors: 2 errors\.log line\(s\) in the last 7 days: PreToolUse 1, Stop 1 /m);
+  assert.match(r.out, /^warn errors: 2 errors\.log line\(s\) for this database in the last 7 days: PreToolUse 1, Stop 1 /m);
   assert.match(r.out, /^ {7}\S+ PreToolUse boom two$/m);
   assert.ok(!r.out.includes("ancient"));
   for (const source of ["startup", "compact"]) {
@@ -161,11 +163,29 @@ test("(h) two recent errors.log lines: doctor warns per hook and SessionStart en
   }
 });
 
+test("(h2) errors.log lines for another database or from ledger 0.2.x are not counted: doctor ok, no SessionStart doctor line", () => {
+  // The live run: 0.2.3 wrote untagged lines against another database in the same state folder.
+  const b = sandbox();
+  openDb(b).close();
+  mkdirSync(dirname(b.errorsLog), { recursive: true });
+  const now = new Date().toISOString();
+  writeFileSync(b.errorsLog, `${now} SessionEnd ledger: database read-only at /elsewhere/ledger.db: attempt to write a readonly database\n${now} Stop boom [db /elsewhere/ledger.db]\n`);
+  const r = doctor(b);
+  assert.equal(r.code, 0, r.out);
+  assert.match(r.out, /^ok {3}errors: no errors\.log lines for this database in the last 7 days \(.*; 2 other line\(s\) are for another database or an older ledger, not counted\)$/m);
+  assert.ok(!start(b, "s-h2").json.hookSpecificOutput.additionalContext.includes("doctor reports"));
+  // A line logged after this sandbox's config loaded carries its database, and doctor counts it.
+  loadConfig({ env: b.env, cwd: b.work });
+  logError("Stop", "boom here", b.env);
+  assert.match(readFileSync(b.errorsLog, "utf8").trim().split("\n").at(-1), / Stop boom here \[db .*\]$/);
+  assert.match(doctor(b).out, /^warn errors: 1 errors\.log line\(s\) for this database/m);
+});
+
 test("(i) inject.doctor false: no doctor line", () => {
   const b = sandbox();
   openDb(b).close();
   mkdirSync(dirname(b.errorsLog), { recursive: true });
-  writeFileSync(b.errorsLog, `${new Date().toISOString()} Stop boom\n`);
+  writeFileSync(b.errorsLog, `${new Date().toISOString()} Stop boom [db ${b.dbPath}]\n`);
   b.writeConfig({ inject: { doctor: false } });
   const ctx = start(b, "s-i").json.hookSpecificOutput.additionalContext;
   assert.ok(!ctx.includes("doctor reports"), ctx);
@@ -236,4 +256,28 @@ test("(m) SessionEnd under a held lock changes nothing: the end stamp and the by
   db.close();
   hook(b, "session-end", { session_id: "s-m", cwd: b.work, hook_event_name: "SessionEnd", reason: "exit" });
   assert.deepEqual(bounces(b).map((x) => x.outcome), ["bypassed"]);
+});
+
+test("live run finding 1: a bounce bypassed at SessionEnd is satisfied by the remedy after a resume under the same session id", () => {
+  const b = sandbox();
+  const pushInput = (sid) => ({ session_id: sid, cwd: b.work, hook_event_name: "PreToolUse", tool_name: "Bash", tool_input: { command: "git push" } });
+  start(b, "s-resume");
+  assert.equal(hook(b, "pre-tool-use", pushInput("s-resume")).json.hookSpecificOutput.permissionDecision, "deny");
+  hook(b, "session-end", { session_id: "s-resume", cwd: b.work, hook_event_name: "SessionEnd", reason: "other" });
+  assert.deepEqual(bounces(b).map((x) => x.outcome), ["bypassed"]);
+  start(b, "s-resume", "resume");
+  cli(b, ["note", "pushing after the resume"], { env: { LEDGER_SESSION_ID: "s-resume" } });
+  assert.equal(hook(b, "pre-tool-use", pushInput("s-resume")).json?.hookSpecificOutput?.permissionDecision ?? "allow", "allow");
+  const [row] = bounces(b);
+  assert.equal(row.outcome, "satisfied");
+  assert.ok(row.satisfied_at);
+});
+
+test("live run finding 3, through the hook: a reply stating the default of a question asked this turn is not sent back", () => {
+  const b = sandbox();
+  start(b, "s-def");
+  stop(b, "s-def", "p-0", "Ready.");
+  cli(b, ["ask", "Which name for the helper?", "--name", "helper-name", "--options", "alpha,beta", "--default", "alpha"], { env: { LEDGER_SESSION_ID: "s-def" } });
+  const r = stop(b, "s-def", "p-1", "Which name do you want for the helper, alpha or beta? If you don't answer, I'll go with alpha.");
+  assert.equal(r.json?.decision, undefined, r.out);
 });

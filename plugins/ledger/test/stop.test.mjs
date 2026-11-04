@@ -219,3 +219,20 @@ test("decision rule: forcing.decisionPhrases of the wrong shape falls back to th
   c.writeConfig({ forcing: { stopDecisionRule: false } });
   passed(hook(c, "stop", { ...payload(DECISION), cwd: c.work, session_id: "s-off" }));
 });
+
+// The live headless run of 0.3.0 (2026-11-03), findings 2 and 3: the texts are the model's own.
+test("live run: a closing ask mid-line fires the ask rule; a URL query and a quoted question do not", () => {
+  const closing = "**Closing ask:** Should I change the README heading from `# helper` to `# alpha` so the repo uses the name you picked? I recommend doing it: the README should match.";
+  assert.equal(checkStop(closing, { forcing: DEFAULTS.forcing })?.rule, "stopAskRule");
+  assert.equal(checkStop("Should I write a ledger note about the push again? I'd say yes, it is cheap.", { forcing: DEFAULTS.forcing })?.rule, "stopAskRule");
+  assert.equal(checkStop("The docs are at https://example.com/page?id=4 and they cover the whole flag set.", { forcing: DEFAULTS.forcing }), null);
+  assert.equal(checkStop('The ticket asked "should this be green?" and the answer was recorded already.', { forcing: DEFAULTS.forcing }), null);
+});
+
+test("live run: a stated default beside a question asked this turn, and a bug described with `instead of`, are not decisions", () => {
+  const withDefault = "I asked which name you want for the helper; if you don't answer, I'll go with alpha.";
+  assert.equal(checkStop(withDefault, { forcing: DEFAULTS.forcing, sessionHasOpenQuestion: true, turnQuestions: 1 }), null);
+  assert.equal(checkStop(withDefault, { forcing: DEFAULTS.forcing, sessionHasOpenQuestion: true, turnQuestions: 0 })?.rule, "stopDecisionRule", "without a question this turn it is a decision");
+  assert.equal(checkStop("Codex found that add subtracts instead of adding, so I fixed it and reran the review.", { forcing: DEFAULTS.forcing }), null);
+  assert.ok(!PHRASES.includes("instead of"));
+});
