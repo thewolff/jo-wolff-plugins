@@ -267,8 +267,12 @@ probe after it decides. What this plugin cannot do: tell why launchd refused ctx
 10-28 (the system log is sandboxed off), restart a daemon in `manual` mode, or rebuild the
 semantic index (ctx 2.3.0 has no verb for it; the line names `ctx semantic enable --wait`).
 
-The Stop hook never blocks on its own fault: no `transcript_path`, or a transcript it cannot
-read, is nothing to scan (one errors.log line when a resume marker was pending, since that
+The Stop hook never blocks on its own fault (`evals/stop-fresh-start.scenario.json` is a Stop
+with nothing to say; `evals/stop-resume-warn.scenario.json`, `evals/stop-resume-block.scenario.json`,
+`evals/stop-resume-ctx-consulted.scenario.json` and `evals/stop-phrase-warn.scenario.json` the
+check's four answers; `evals/session-start-semantic-not-ready.scenario.json`,
+`evals/session-start-daemon-down.scenario.json` and `evals/session-start-healthy.scenario.json`
+the SessionStart line's): no `transcript_path`, or a transcript it cannot read, is nothing to scan (one errors.log line when a resume marker was pending, since that
 resume went unchecked); a config file it cannot use is one errors.log line and `warn`; a
 resume marker it cannot remove is one errors.log line and the check still runs (it will be
 read once more on the next Stop); a `checks.log` it cannot append to is one errors.log line

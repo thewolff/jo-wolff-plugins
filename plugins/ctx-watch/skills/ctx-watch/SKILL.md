@@ -84,7 +84,8 @@ consulting history`.
   contended after <ms> ms`) another tick was writing it. Tell the person
   the path; the probe and the line still work without it, but no popup starts until the state
   can be written.
-- `check` printed `ctx-watch: the ctx semantic index is not ready (…); fix: \`ctx semantic enable --wait\``:
+- `check` printed `ctx-watch: the ctx semantic index is not ready (…); fix: \`ctx semantic enable --wait\``
+  (`evals/session-start-semantic-not-ready.scenario.json` is that line at SessionStart):
   the daemon is up but hybrid search is lexical only. Hand the person the fix for their own
   Terminal (step 3); do not run it from here. `ctx semantic status --format json` shows the
   reason in detail if they ask.
@@ -95,7 +96,9 @@ consulting history`.
   open: <why>`: the hook let the session go on without its check; the line is also in
   `${XDG_STATE_HOME:-~/.local/state}/ctx-watch/errors.log`. Tell the person once, and run step 1
   (or, for Stop, the `ctx search` of step 6 with the prompt's words) by hand.
-- A Stop line fired on a resume where you did consult history through a subagent: the check
+- A Stop line fired on a resume (`evals/stop-resume-warn.scenario.json`; the block form is
+  `evals/stop-resume-block.scenario.json`; a turn that did call ctx is silent,
+  `evals/stop-resume-ctx-consulted.scenario.json`) where you did consult history through a subagent: the check
   reads this session's transcript only (a subagent's `mcp__ctx__search` is `isSidechain`, or in
   its own file). Say what the subagent found, in this thread, and move on; that is the point
   of the check.
