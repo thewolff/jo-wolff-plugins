@@ -264,8 +264,9 @@ user-named filename.
 
 - `scripts/quorum-fanout.sh` — brief staging, symmetric isolation, parallel fan-out,
   timeouts, preflight, opt-in cross-refutation, manifest. Leg-runner machinery
-  (run_leg, resolve_cli, timeout preflight) is shared with `triad` via the plugin's
-  `lib/leg-runner.sh`, extracted 2026-08-14 once this skill had a validated run.
+  (run_leg, resolve_cli, timeout preflight) is shared with `triad` via the
+  cross-model-review skill's `lib/leg-runner.sh`, extracted 2026-08-14 once this skill
+  had a validated run.
 - `prompts/ground.md` — the Step G grounding agent (skill-spawned, script-free)
 - `prompts/plan.md` — the one identical leg prompt (JSON per `plan.schema.json`)
 - `prompts/plan.schema.json` — leg A inline via `--json-schema`, leg B as a path via

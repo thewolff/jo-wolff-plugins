@@ -1,7 +1,7 @@
 {
   "name": "as2-skills",
   "description": "The 22 engineering skills of agent-system 2.0 (spec and plan, TDD, debugging, code review, git workflow, security, research, cross-model review and more), vendored from addyosmani/agent-skills, pbakaus/impeccable, blader/humanizer and obra/superpowers at pinned releases, with frontmatter claude.ai accepts.",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "author": { "name": "Jo Wolff" },
   "license": "SEE LICENSE IN README.md",
   "repository": "https://github.com/thewolff/jo-wolff-plugins",
