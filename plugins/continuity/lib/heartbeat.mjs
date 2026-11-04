@@ -16,12 +16,13 @@
 //
 // Fail-quiet: a heartbeat that threw would take down the save it exists to observe.
 
-import { appendFileSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { dirname } from "node:path";
+import { readFileSync } from "node:fs";
+import { appendBounded } from "./bounded-log.mjs";
 import { heartbeatPath, sanitizeSessionId } from "./paths.mjs";
 
-// Trimmed on write so the reader stays trivial and bounded. Two records per compaction means
-// 200 lines is about 100 compactions of history, well past the week anyone reasons about.
+// Trimmed on write (a rename-swap, lib/bounded-log.mjs) so the reader stays trivial and bounded.
+// Two records per compaction means 200 lines is about 100 compactions of history, well past the
+// week anyone reasons about.
 export const HEARTBEAT_MAX_LINES = 200;
 
 /**
@@ -31,8 +32,6 @@ export const HEARTBEAT_MAX_LINES = 200;
  */
 export function recordHeartbeat(fields, env = process.env, now = new Date()) {
   try {
-    const path = heartbeatPath(env);
-    mkdirSync(dirname(path), { recursive: true });
     const record = {
       at: now.toISOString(),
       event: String(fields?.event ?? "(none)"),
@@ -41,9 +40,7 @@ export function recordHeartbeat(fields, env = process.env, now = new Date()) {
       cwd: String(fields?.cwd ?? ""),
       outcome: String(fields?.outcome ?? "unknown"),
     };
-    appendFileSync(path, `${JSON.stringify(record)}\n`);
-    const lines = readFileSync(path, "utf8").split("\n").filter(Boolean);
-    if (lines.length > HEARTBEAT_MAX_LINES) writeFileSync(path, `${lines.slice(-HEARTBEAT_MAX_LINES).join("\n")}\n`);
+    appendBounded(heartbeatPath(env), JSON.stringify(record), HEARTBEAT_MAX_LINES);
     return true;
   } catch {
     return false;

@@ -1,11 +1,10 @@
 {
-  "$comment": "The block fires once: the same calibrated input a second time in the same session passes, so the person can always end the session.",
+  "$comment": "The block fires once: the same near-full input (a plain 640,000-byte transcript, no calibration) a second time in the same session passes, so the person can always end the session.",
   "event": "Stop",
   "expect": "silent",
   "sibling": "stop-blocks-near-full.scenario.json",
   "setup": {
-    "files": { "$XDG_STATE_HOME/continuity/calibration.ndjson": "{\"bytes\":4000,\"tokens\":160000,\"target\":200000}\n" },
-    "commands": ["yes '{\"type\":\"user\",\"message\":{\"role\":\"user\",\"content\":\"carry on with the port\"}}' | head -c 4000 > \"${TRANSCRIPT}\""]
+    "commands": ["yes '{\"type\":\"user\",\"message\":{\"role\":\"user\",\"content\":\"carry on with the port\"}}' | head -c 640000 > \"${TRANSCRIPT}\""]
   },
   "before": [{ "stdin": { "hook_event_name": "Stop", "session_id": "${SESSION_ID}", "cwd": "${CWD}", "transcript_path": "${TRANSCRIPT}", "stop_hook_active": false, "last_assistant_message": "Done." } }],
   "stdin": { "hook_event_name": "Stop", "session_id": "${SESSION_ID}", "cwd": "${CWD}", "transcript_path": "${TRANSCRIPT}", "stop_hook_active": false, "last_assistant_message": "Done." }

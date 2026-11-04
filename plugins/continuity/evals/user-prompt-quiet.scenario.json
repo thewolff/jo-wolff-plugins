@@ -1,5 +1,5 @@
 {
-  "$comment": "The liveness line was already said at SessionStart and the machine has never compacted (no calibration): the prompt passes with nothing added.",
+  "$comment": "The liveness line was already said at SessionStart and the payload carries no transcript to measure: the prompt passes with nothing added.",
   "event": "UserPromptSubmit",
   "expect": "silent",
   "sibling": "user-prompt-pressure-warns.scenario.json",

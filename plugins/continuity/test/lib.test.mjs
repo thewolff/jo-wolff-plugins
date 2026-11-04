@@ -2,18 +2,21 @@
 
 import test from "node:test";
 import assert from "node:assert/strict";
-import { chmodSync, existsSync, mkdirSync, readFileSync, utimesSync, writeFileSync } from "node:fs";
+import { chmodSync, cpSync, existsSync, mkdirSync, readdirSync, readFileSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
+import { spawnSync } from "node:child_process";
 import { join } from "node:path";
-import { box } from "./helpers.mjs";
+import { box, PLUGIN_ROOT } from "./helpers.mjs";
 import { calibrationPath, configPath, heartbeatPath, sanitizeSessionId, sessionFlagsPath, snapshotPath, stateDir } from "../lib/paths.mjs";
 import { DEFAULTS, readConfig } from "../lib/config.mjs";
 import { HEARTBEAT_MAX_LINES, readHeartbeat, recordHeartbeat } from "../lib/heartbeat.mjs";
-import { age, renderLiveness } from "../lib/liveness.mjs";
-import { CALIBRATION_MAX_LINES, readCalibration, recordCalibration } from "../lib/calibration.mjs";
-import { handoffRequest, pressure } from "../lib/pressure.mjs";
+import { age, lastSaveFor, renderLiveness } from "../lib/liveness.mjs";
+import { CALIBRATION_MAX_LINES, measureTranscript, readCalibration, recordCalibration } from "../lib/calibration.mjs";
+import { BYTES_PER_TOKEN_ESTIMATE, estimateContext, handoffRequest, pressure } from "../lib/pressure.mjs";
 import { markFlag, readFlags, sessionKey } from "../lib/session-flags.mjs";
-import { ENTRY_LINE_CAP, listHandoffs, parseFrontmatter, renderHandoffs, resolveHandoffRoot } from "../lib/handoffs.mjs";
+import { ENTRY_LINE_CAP, handoffWrittenBy, listHandoffs, parseFrontmatter, renderHandoffs, resolveHandoffRoot } from "../lib/handoffs.mjs";
 import { MAX_STATUS_ENTRIES, RESTORE_MAX_CHARS, STATE_MAX_AGE_MS, buildSnapshot, capture, readTranscript, renderSnapshot, restore } from "../lib/snapshot.mjs";
+import { ERRORS_MAX_LINES, logError } from "../lib/errors.mjs";
+import { git } from "../lib/git.mjs";
 import { prune } from "../scripts/prune.mjs";
 
 const handoffText = (over = {}) => {
@@ -56,6 +59,19 @@ test("config: absent is the defaults; malformed, wrong-typed and partial files e
     assert.deepEqual(r.config, { ...DEFAULTS, snapshot: "off" });
     assert.match(r.problem, /threshold must be a number between 0 and 1, not 2/);
     assert.match(r.problem, /liveness must be "on" or "off", not "maybe"/);
+    // A threshold must be a JSON number: strings and arrays that Number() would coerce are problems.
+    for (const t of ["0.5", [0.5], " 0.5 ", "0x0", null, true]) {
+      r = readConfig((b.writeConfig({ threshold: t }), b.env));
+      assert.equal(r.config.threshold, DEFAULTS.threshold, JSON.stringify(t));
+      assert.match(r.problem, /threshold must be a number between 0 and 1/, JSON.stringify(t));
+    }
+    b.writeConfig({ contextTokens: 100000 });
+    assert.deepEqual(readConfig(b.env), { config: { ...DEFAULTS, contextTokens: 100000 }, path: configPath(b.env), problem: null });
+    for (const n of [0, -5, 1.5, "200000", [1]]) {
+      r = readConfig((b.writeConfig({ contextTokens: n }), b.env));
+      assert.equal(r.config.contextTokens, DEFAULTS.contextTokens, JSON.stringify(n));
+      assert.match(r.problem, /contextTokens must be a positive whole number/, JSON.stringify(n));
+    }
     chmodSync(configPath(b.env), 0o000);
     r = readConfig(b.env);
     assert.deepEqual(r.config, { ...DEFAULTS });
@@ -80,6 +96,8 @@ test("heartbeat: records carry every field, trim to the cap, and an unwritable o
     assert.equal(all[all.length - 1].outcome, `n${HEARTBEAT_MAX_LINES + 9}`);
     writeFileSync(heartbeatPath(b.env), '{"event":"PreCompact","outcome":"ok","at":"x"}\nnot json\n');
     assert.equal(readHeartbeat(b.env).length, 1);
+    // The trim is a rename-swap: no temp file is left beside the log.
+    assert.deepEqual(readdirSync(stateDir(b.env)).filter((f) => f.endsWith(".tmp")), []);
     // A state dir that cannot exist (its parent is a regular file): the write fails quietly.
     writeFileSync(join(b.root, "notadir"), "");
     assert.equal(recordHeartbeat({ outcome: "ok" }, { ...b.env, XDG_STATE_HOME: join(b.root, "notadir") }), false);
@@ -88,7 +106,20 @@ test("heartbeat: records carry every field, trim to the cap, and an unwritable o
   }
 });
 
-test("liveness: the three cases, and age() is coarse", () => {
+test("errors log: the hooks' own lines keep the runner's format and trim to the cap by rename-swap", () => {
+  const b = box();
+  try {
+    for (let i = 0; i < ERRORS_MAX_LINES + 15; i++) logError("continuity", "Stop", `fault  ${i}`, b.env);
+    const lines = readFileSync(join(stateDir(b.env), "errors.log"), "utf8").trim().split("\n");
+    assert.equal(lines.length, ERRORS_MAX_LINES);
+    assert.match(lines.at(-1), new RegExp(`^\\d{4}-\\d{2}-\\d{2}T\\S+ Stop fault ${ERRORS_MAX_LINES + 14}$`));
+    assert.deepEqual(readdirSync(stateDir(b.env)).filter((f) => f.endsWith(".tmp")), []);
+  } finally {
+    b.release();
+  }
+});
+
+test("liveness: the four cases, invocations not records, the newest result per session, and age() is coarse", () => {
   assert.equal(age(10_000), "less than a minute ago");
   assert.equal(age(60_000), "1 minute ago");
   assert.equal(age(25 * 60_000), "25 minutes ago");
@@ -98,48 +129,79 @@ test("liveness: the three cases, and age() is coarse", () => {
   assert.match(renderLiveness({ env, records: [] }), /\*\*no pre-compaction save has ever been recorded on this machine\.\*\*/);
   assert.match(renderLiveness({ env, records: [] }), /\/s\/continuity\/heartbeat\.ndjson/);
   const now = Date.parse("2026-11-04T12:00:00Z");
-  const ok = renderLiveness({ env, now, records: [{ at: "2026-11-04T11:30:00Z", event: "PreCompact", outcome: "started" }, { at: "2026-11-04T11:30:00Z", event: "PreCompact", outcome: "ok" }, { at: "2026-11-04T11:50:00Z", event: "PreCompact", outcome: "started" }, { at: "2026-11-04T11:50:00Z", event: "PreCompact", outcome: "failed:EACCES" }] });
+  const save = (at, outcome, session = "a") => [{ at, event: "PreCompact", session, outcome: "started" }, { at, event: "PreCompact", session, outcome }];
+  const ok = renderLiveness({ env, now, records: [...save("2026-11-04T11:00:00Z", "failed:EACCES"), ...save("2026-11-04T11:30:00Z", "ok")] });
   assert.equal(ok, "continuity, pre-compaction save liveness: last successful save 30 minutes ago (2026-11-04T11:30:00Z); the snapshot path is alive.");
-  const failed = renderLiveness({ env, now, records: [{ at: "2026-11-04T11:50:00Z", event: "PreCompact", outcome: "started" }, { at: "2026-11-04T11:50:00Z", event: "PreCompact", outcome: "failed:EACCES" }] });
+  // A failure after a success is the newest result, and it is what the line leads with.
+  const broke = renderLiveness({ env, now, records: [...save("2026-11-04T11:30:00Z", "ok"), ...save("2026-11-04T11:50:00Z", "failed:EACCES")] });
+  assert.match(broke, /^continuity, pre-compaction save liveness: \*\*the last save failed\*\* 10 minutes ago \(`failed:EACCES`, 2026-11-04T11:50:00Z\); the last success was 30 minutes ago \(2026-11-04T11:30:00Z\)\./);
+  assert.doesNotMatch(broke, /alive/);
+  // A save that recorded `started` and nothing after it did not finish; a skip is not a result.
+  const unfinished = renderLiveness({ env, now, records: [...save("2026-11-04T11:30:00Z", "ok"), { at: "2026-11-04T11:55:00Z", event: "PreCompact", session: "b", outcome: "started" }, { at: "2026-11-04T11:58:00Z", event: "PreCompact", session: "c", outcome: "skipped:off" }] });
+  assert.match(unfinished, /\*\*the last save failed\*\* 5 minutes ago \(`started` with no result recorded: the save did not finish/);
+  const failed = renderLiveness({ env, now, records: [...save("2026-11-04T11:40:00Z", "failed:EACCES"), ...save("2026-11-04T11:50:00Z", "failed:EACCES")] });
   assert.match(failed, /\*\*no pre-compaction save has ever succeeded on this machine\.\*\*/);
-  assert.match(failed, /invoked 2 times and the most recent outcome was `failed:EACCES`/);
-  assert.match(renderLiveness({ env, now, records: [{ at: "x", event: "SessionStart", outcome: "ok" }] }), /ever succeeded.*invoked 1 time and/s);
+  assert.match(failed, /invoked 2 times and the most recent outcome was `failed:EACCES`/, "four records, two invocations");
+  assert.match(renderLiveness({ env, now, records: [{ at: "x", event: "SessionStart", outcome: "ok" }] }), /ever succeeded.*invoked 0 times and/s);
+  const records = [...save("2026-11-04T11:00:00Z", "ok", "a"), ...save("2026-11-04T11:10:00Z", "failed:ENOSPC", "a"), ...save("2026-11-04T11:20:00Z", "ok", "b")];
+  assert.equal(lastSaveFor("a", { records }).outcome, "failed:ENOSPC");
+  assert.equal(lastSaveFor("z", { records }), null);
 });
 
-test("calibration: records only with the fields and a measurable transcript, trims, and reads back the median ratio and newest target", () => {
+test("calibration: measures bytes after the last compaction marker or the whole file; records only a real token_count; median ratio", () => {
   const b = box();
   try {
+    assert.equal(measureTranscript("/nowhere"), null);
+    b.writeTranscript(["x".repeat(99)]);
+    assert.deepEqual(measureTranscript(b.transcript), { bytes: 100, sinceMarker: false });
+    b.writeTranscript(["a".repeat(500), { type: "system", subtype: "compact_boundary" }, "y".repeat(49)]);
+    assert.deepEqual(measureTranscript(b.transcript), { bytes: 50, sinceMarker: true }, "only what follows the marker line counts");
+
     assert.equal(readCalibration(b.env), null);
     assert.equal(recordCalibration({ token_count: 100, transcript_path: "/nowhere" }, b.env), false);
     assert.equal(recordCalibration({ token_count: 0, transcript_path: b.transcript }, b.env), false);
+    assert.equal(recordCalibration({ token_count: "1000", transcript_path: b.transcript }, b.env), false, "a string is not a token count");
+    // Claude Code's own PreCompact payload: no token_count, so nothing is recorded.
+    assert.equal(recordCalibration({ trigger: "auto", custom_instructions: "", transcript_path: b.transcript }, b.env), false);
+    assert.equal(existsSync(calibrationPath(b.env)), false);
     b.writeTranscript(["x".repeat(99)]);
-    assert.equal(recordCalibration({ token_count: 1000, compaction_target: 200000, transcript_path: b.transcript }, b.env), true);
-    assert.deepEqual(readCalibration(b.env), { ratio: 10, target: 200000 });
+    assert.equal(recordCalibration({ token_count: 1000, transcript_path: b.transcript }, b.env), true);
+    assert.deepEqual(readCalibration(b.env), { ratio: 10 });
     assert.equal(recordCalibration({ token_count: 3000, transcript_path: b.transcript }, b.env), true);
-    assert.equal(recordCalibration({ token_count: 2000, compaction_target: "bad", transcript_path: b.transcript }, b.env), true);
-    assert.deepEqual(readCalibration(b.env), { ratio: 20, target: 200000 });
+    assert.equal(recordCalibration({ token_count: 2000, transcript_path: b.transcript }, b.env), true);
+    assert.deepEqual(readCalibration(b.env), { ratio: 20 });
     writeFileSync(calibrationPath(b.env), "garbage\n{\"bytes\":0,\"tokens\":5}\n");
     assert.equal(readCalibration(b.env), null);
-    for (let i = 0; i < CALIBRATION_MAX_LINES + 5; i++) recordCalibration({ token_count: 100, compaction_target: 7, transcript_path: b.transcript }, b.env);
+    for (let i = 0; i < CALIBRATION_MAX_LINES + 5; i++) recordCalibration({ token_count: 100, transcript_path: b.transcript }, b.env);
     assert.equal(readFileSync(calibrationPath(b.env), "utf8").split("\n").filter(Boolean).length, CALIBRATION_MAX_LINES);
   } finally {
     b.release();
   }
 });
 
-test("pressure: silent when uncalibrated, unmeasurable or under the threshold; the percentage past it; the request names the command", () => {
+test("pressure: a plain transcript of known size, no calibration, is estimated at bytes / 4 against contextTokens", () => {
   const b = box();
   try {
-    b.writeTranscript(["x".repeat(3999)]);
+    assert.equal(BYTES_PER_TOKEN_ESTIMATE, 4);
+    // 640,000 bytes / 4 = 160,000 tokens = 80% of the 200,000 default.
+    b.writeTranscript(["x".repeat(639_999)]);
     const input = { transcript_path: b.transcript };
-    assert.equal(pressure(input, { threshold: 0.65, env: b.env }), null);
+    assert.deepEqual(estimateContext(b.transcript, b.env), { tokens: 160000, bytes: 640000, basis: "estimate", sinceMarker: false });
+    assert.deepEqual(pressure(input, { threshold: 0.65, contextTokens: 200000, env: b.env }), { pct: 80, estimated: 160000, target: 200000, basis: "estimate" });
+    assert.equal(pressure(input, { threshold: 0.9, contextTokens: 200000, env: b.env }), null);
+    assert.equal(pressure(input, { threshold: 0.65, contextTokens: 400000, env: b.env }), null, "a larger window is honoured");
+    assert.equal(pressure({ transcript_path: "/nowhere" }, { threshold: 0.1, contextTokens: 200000, env: b.env }), null);
+    assert.equal(pressure({}, { threshold: 0.1, contextTokens: 200000, env: b.env }), null);
+    // A compaction marker: only the bytes after it count, so a fresh window reads as nearly empty.
+    b.writeTranscript(["x".repeat(639_999), { type: "system", subtype: "compact_boundary" }, "y".repeat(3)]);
+    assert.equal(pressure(input, { threshold: 0.65, contextTokens: 200000, env: b.env }), null);
+    // A real token count ever recorded (an adapter that passes one) replaces the constant.
+    b.writeTranscript(["x".repeat(3999)]);
     mkdirSync(stateDir(b.env), { recursive: true });
-    writeFileSync(calibrationPath(b.env), '{"bytes":4000,"tokens":160000,"target":200000}\n');
-    assert.deepEqual(pressure(input, { threshold: 0.65, env: b.env }), { pct: 80, estimated: 160000, target: 200000 });
-    assert.equal(pressure(input, { threshold: 0.9, env: b.env }), null);
-    assert.equal(pressure({ transcript_path: "/nowhere" }, { threshold: 0.1, env: b.env }), null);
-    assert.equal(pressure({}, { threshold: 0.1, env: b.env }), null);
-    assert.match(handoffRequest(80), /roughly 80% of the way to auto-compaction.*`\/continuity:handoff`/);
+    writeFileSync(calibrationPath(b.env), '{"bytes":4000,"tokens":160000}\n');
+    assert.deepEqual(pressure(input, { threshold: 0.65, contextTokens: 200000, env: b.env }), { pct: 80, estimated: 160000, target: 200000, basis: "calibrated" });
+    assert.match(handoffRequest(80), /context is roughly 80% full \(estimated from the transcript's size, not counted\).*`\/continuity:handoff`/);
+    assert.match(handoffRequest(80, "calibrated"), /roughly 80% full \(calibrated from this machine's compactions\)/);
   } finally {
     b.release();
   }
@@ -165,24 +227,25 @@ test("session flags: keyed by session, then transcript, then nosess; marks accum
   }
 });
 
-test("handoffs: root resolution order, frontmatter, the open-and-fresh filter, the render caps", () => {
+test("handoffs: root resolution order, frontmatter, the open-and-fresh filter, the render caps", async () => {
   const b = box();
   try {
-    assert.equal(resolveHandoffRoot(b.work, { CLAUDE_PROJECT_DIR: b.root }), b.root);
-    assert.equal(resolveHandoffRoot(b.work, { CLAUDE_PROJECT_DIR: "/nowhere/x" }), b.work);
+    const rootOf = async (cwd, env) => (await resolveHandoffRoot(cwd, env)).root;
+    assert.equal(await rootOf(b.work, { CLAUDE_PROJECT_DIR: b.root }), b.root);
+    assert.equal(await rootOf(b.work, { CLAUDE_PROJECT_DIR: "/nowhere/x" }), b.work);
     const sub = join(b.work, "deep", "er");
     mkdirSync(sub, { recursive: true });
-    assert.equal(resolveHandoffRoot(sub, {}), b.work);
+    assert.equal(await rootOf(sub, {}), b.work);
     const bare = join(b.root, "bare");
     mkdirSync(bare);
-    assert.equal(resolveHandoffRoot(bare, {}), bare);
+    assert.deepEqual(await resolveHandoffRoot(bare, {}), { root: bare, note: null }, "not a repository is an answer, not a timeout");
     // A linked worktree resolves to the main worktree, so every worktree shares one pool.
     writeFileSync(join(b.work, "f"), "1");
     b.git("add", "f");
     b.git("commit", "-q", "-m", "one");
     const wt = join(b.root, "wt");
     b.git("worktree", "add", "-q", wt, "-b", "side");
-    assert.equal(resolveHandoffRoot(wt, {}), b.work);
+    assert.equal(await rootOf(wt, {}), b.work);
 
     assert.equal(parseFrontmatter("no frontmatter"), null);
     assert.deepEqual(parseFrontmatter("---\na: 1\nb-c: two words\n---\nbody\n"), { meta: { a: "1", "b-c": "two words" }, body: "body" });
@@ -202,6 +265,10 @@ test("handoffs: root resolution order, frontmatter, the open-and-fresh filter, t
     assert.deepEqual(list.map((e) => e.lane), ["open-lane"]);
     assert.equal(list[0].date, "2026-11-04");
     assert.equal(list[0].author, "jo");
+    assert.equal(list[0].session, "s-test");
+    assert.equal(handoffWrittenBy(b.work, "s-test"), true);
+    assert.equal(handoffWrittenBy(b.work, "someone-else"), false);
+    assert.equal(handoffWrittenBy(b.work, undefined), false);
 
     for (let i = 0; i < 4; i++) writeFileSync(join(dir, `m${i}.md`), handoffText({ lane: `lane-${i}`, created: `2026-11-0${i + 1}T00:00:00Z` }));
     writeFileSync(join(dir, "long.md"), handoffText({ lane: "long" }).replace("Clean.\n", `${"line\n".repeat(ENTRY_LINE_CAP + 40)}## Tail\nend\n`));
@@ -216,7 +283,7 @@ test("handoffs: root resolution order, frontmatter, the open-and-fresh filter, t
   }
 });
 
-test("snapshot: transcript reading, the capture's sources and caps, the render, and capture() on an unwritable state", () => {
+test("snapshot: transcript reading, the capture's sources and caps, the render, and capture() on an unwritable state", async () => {
   const b = box();
   try {
     assert.deepEqual(readTranscript("/nowhere"), { read: false, prompts: [], touched: [] });
@@ -232,10 +299,12 @@ test("snapshot: transcript reading, the capture's sources and caps, the render, 
     b.git("checkout", "-q", "-b", "feature/x");
     for (let i = 0; i < MAX_STATUS_ENTRIES + 3; i++) writeFileSync(join(b.work, `dirty-${String(i).padStart(2, "0")}.txt`), "x");
     const now = new Date("2026-11-04T12:00:00Z");
-    const s = buildSnapshot({ session_id: "s-test", cwd: b.work, transcript_path: b.transcript, trigger: "auto" }, { env: b.env, now });
-    assert.equal(s.version, 1);
+    const s = await buildSnapshot({ session_id: "s-test", cwd: b.work, transcript_path: b.transcript, trigger: "auto" }, { env: b.env, now });
+    assert.equal(s.version, 2);
     assert.equal(s.at, "2026-11-04T12:00:00.000Z");
     assert.equal(s.branch, "feature/x");
+    assert.equal(s.branchUnknown, null);
+    assert.equal(s.status.unknown, null);
     assert.equal(s.captureSource, "session transcript");
     assert.equal(s.status.total, MAX_STATUS_ENTRIES + 3);
     assert.equal(s.status.lines.length, MAX_STATUS_ENTRIES);
@@ -250,7 +319,7 @@ test("snapshot: transcript reading, the capture's sources and caps, the render, 
     assert.match(md, /\*\*No agent-authored handoff was written before this compaction\.\*\* Everything above is mechanical/);
 
     // No transcript, host-supplied fields: their sections, their sources, no reconstruction.
-    const h = buildSnapshot({ cwd: b.work, intents: ["from host", 3, " "], file_operations: " read x\nwrote y ", agent_judgment: ["I think\n so"] }, { env: b.env, now });
+    const h = await buildSnapshot({ cwd: b.work, intents: ["from host", 3, " "], file_operations: " read x\nwrote y ", agent_judgment: ["I think\n so"] }, { env: b.env, now });
     assert.equal(h.captureSource, "host-supplied payload fields");
     assert.deepEqual(h.recentIntent, { source: "host-supplied `intents` (no readable transcript on this payload)", lines: ["from host"] });
     assert.equal(h.hostFileOperations, "read x\nwrote y");
@@ -266,11 +335,11 @@ test("snapshot: transcript reading, the capture's sources and caps, the render, 
     writeFileSync(join(b.work, "c"), "1");
     b.git("add", "c");
     b.git("commit", "-q", "-m", "a commit");
-    const d = buildSnapshot({ cwd: b.work, trigger: "manual" }, { env: b.env, now });
+    const d = await buildSnapshot({ cwd: b.work, trigger: "manual" }, { env: b.env, now });
     assert.match(d.captureSource, /^repository only/);
     assert.equal(d.reconstruction.missing.length, 4);
     assert.deepEqual(d.reconstruction.recentCommits.lines.map((l) => l.replace(/^\w+ /, "")), ["a commit"]);
-    assert.deepEqual(d.reconstruction.unpushed, { lines: [], total: 0 });
+    assert.deepEqual(d.reconstruction.unpushed, { lines: [], total: 0, unknown: null });
     const dmd = renderSnapshot(d);
     assert.match(dmd, /## Capture was degraded: this is a reconstruction, not a record/);
     assert.match(dmd, /### Committed but not pushed\n\n\(none, or no upstream to compare against\)/);
@@ -278,24 +347,38 @@ test("snapshot: transcript reading, the capture's sources and caps, the render, 
     // With a handoff: inlined under its heading, and the warning is replaced.
     mkdirSync(join(b.work, ".ai", "handoffs"), { recursive: true });
     writeFileSync(join(b.work, ".ai", "handoffs", "h.md"), handoffText());
-    const w = buildSnapshot({ cwd: b.work }, { env: b.env, now });
+    const w = await buildSnapshot({ cwd: b.work }, { env: b.env, now });
     assert.equal(w.handoff.present, true);
     assert.equal(w.handoff.root, b.work);
     const wmd = renderSnapshot(w);
     assert.match(wmd, /## Agent-authored handoff \(from `.*\/\.ai\/handoffs\/`\)\n[\s\S]*Tmpdir flags\./);
     assert.doesNotMatch(wmd, /No agent-authored handoff was written/);
 
-    // A cwd that is not a repository: no branch, a clean status, still a file.
+    // A cwd that is not a repository: no branch and no status, each said to be unknown, never
+    // "(clean)"; the file is still written.
     const nowhere = join(b.root, "plain");
     mkdirSync(nowhere);
-    const p = capture({ session_id: "p", cwd: nowhere }, { env: b.env, now });
+    const p = await capture({ session_id: "p", cwd: nowhere }, { env: b.env, now });
     assert.equal(p.outcome, "ok");
     assert.equal(p.snapshot.branch, null);
+    assert.match(p.snapshot.branchUnknown, /^git branch failed \(exit \d+\)$/);
+    assert.match(p.snapshot.status.unknown, /^git status failed \(exit \d+\)$/);
+    const pmd = renderSnapshot(p.snapshot);
+    assert.match(pmd, /## Branch\n\(unknown: git branch failed \(exit \d+\)\)\n/);
+    assert.match(pmd, /## Uncommitted changes\n\(unknown: git status failed \(exit \d+\); run `git status --short` before assuming the tree is clean\)\n/);
+    assert.doesNotMatch(pmd, /\(clean\)/);
     assert.ok(existsSync(snapshotPath("p", b.env)));
+
+    // A git budget already spent: every git field is `(unknown: timed out)` and the snapshot is still built.
+    const t = await buildSnapshot({ session_id: "t", cwd: b.work, transcript_path: b.transcript }, { env: b.env, now, gitBudgetMs: 0 });
+    assert.equal(t.branchUnknown, "timed out");
+    assert.equal(t.status.unknown, "timed out");
+    assert.match(renderSnapshot(t), /## Branch\n\(unknown: timed out\)\n\n## Uncommitted changes\n\(unknown: timed out;/);
+    assert.deepEqual(await git(["status"], b.work, 0), { ok: false, reason: "timed out" });
 
     chmodSync(stateDir(b.env), 0o555);
     if (process.getuid?.() !== 0) {
-      const f = capture({ session_id: "q", cwd: b.work }, { env: b.env });
+      const f = await capture({ session_id: "q", cwd: b.work }, { env: b.env });
       assert.match(f.outcome, /^failed:EACCES/);
       assert.ok(f.snapshot, "the snapshot was still built");
     }
@@ -305,12 +388,12 @@ test("snapshot: transcript reading, the capture's sources and caps, the render, 
   }
 });
 
-test("snapshot: restore() injects and unlinks its own fresh snapshot, keeps an over-budget one, ignores a stale, foreign or broken one", () => {
+test("snapshot: restore() injects and unlinks its own fresh snapshot, keeps an over-budget one, ignores a stale, foreign or broken one", async () => {
   const b = box();
   try {
     b.writeTranscript([{ message: { role: "user", content: "the ask" } }]);
     assert.equal(restore({ session_id: "s-test" }, { env: b.env }), null);
-    capture({ session_id: "s-test", cwd: b.work, transcript_path: b.transcript, trigger: "auto" }, { env: b.env });
+    await capture({ session_id: "s-test", cwd: b.work, transcript_path: b.transcript, trigger: "auto" }, { env: b.env });
     assert.equal(restore({ session_id: "other" }, { env: b.env }), null, "another session's id sees nothing");
     const text = restore({ session_id: "s-test" }, { env: b.env });
     assert.match(text, /^## Restored session state \(post-compaction\)\n/);
@@ -320,7 +403,7 @@ test("snapshot: restore() injects and unlinks its own fresh snapshot, keeps an o
     assert.equal(existsSync(snapshotPath("s-test", b.env)), false, "consumed");
     assert.equal(restore({ session_id: "s-test" }, { env: b.env }), null, "one-shot");
 
-    capture({ session_id: "s-test", cwd: b.work, transcript_path: b.transcript }, { env: b.env });
+    await capture({ session_id: "s-test", cwd: b.work, transcript_path: b.transcript }, { env: b.env });
     const old = (Date.now() - STATE_MAX_AGE_MS - 60_000) / 1000;
     utimesSync(snapshotPath("s-test", b.env), old, old);
     assert.equal(restore({ session_id: "s-test" }, { env: b.env }), null, "stale is invisible");
@@ -333,7 +416,7 @@ test("snapshot: restore() injects and unlinks its own fresh snapshot, keeps an o
     writeFileSync(join(b.work, ".ai", "handoffs", "h.md"), handoffText().replace("Clean.\n", `${"x".repeat(100)}\n`.repeat(100)));
     writeFileSync(join(b.work, ".ai", "handoffs", "h2.md"), handoffText({ lane: "two" }).replace("Clean.\n", `${"y".repeat(100)}\n`.repeat(100)));
     writeFileSync(join(b.work, ".ai", "handoffs", "h3.md"), handoffText({ lane: "three" }).replace("Clean.\n", `${"z".repeat(100)}\n`.repeat(100)));
-    capture({ session_id: "s-test", cwd: b.work, transcript_path: b.transcript, file_operations: "w".repeat(7000), agent_judgment: ["j".repeat(7000)] }, { env: b.env });
+    await capture({ session_id: "s-test", cwd: b.work, transcript_path: b.transcript, file_operations: "w".repeat(7000), agent_judgment: ["j".repeat(7000)] }, { env: b.env });
     const big = restore({ session_id: "s-test" }, { env: b.env });
     assert.match(big, new RegExp(`\\*\\*TRUNCATED: this snapshot is \\d+ characters and only the first ${RESTORE_MAX_CHARS} are shown\\.\\*\\*`));
     assert.match(big, /This snapshot includes an agent-authored handoff section/);
@@ -362,6 +445,28 @@ test("prune: removes old snapshots and marks, keeps errors.log, heartbeat and ca
     assert.equal(existsSync(join(dir, "sessions")), false);
     for (const f of ["errors.log", "heartbeat.ndjson", "calibration.ndjson", "fresh.json"]) assert.ok(existsSync(join(dir, f)), f);
     assert.deepEqual(prune(join(b.root, "nowhere")), { removed: 0, bytes: 0, kept: 0 });
+  } finally {
+    b.release();
+  }
+});
+
+test("prune: run as a script from a directory with a space in its name, and through a symlink, it still runs", () => {
+  const b = box();
+  try {
+    const spaced = join(b.root, "plugin dir");
+    for (const d of ["scripts", "lib"]) cpSync(join(PLUGIN_ROOT, d), join(spaced, d), { recursive: true });
+    symlinkSync(spaced, join(b.root, "linked"));
+    const dir = stateDir(b.env);
+    for (const via of [spaced, join(b.root, "linked")]) {
+      mkdirSync(dir, { recursive: true });
+      writeFileSync(join(dir, "old.json"), "{}");
+      const old = (Date.now() - 40 * 24 * 3_600_000) / 1000;
+      utimesSync(join(dir, "old.json"), old, old);
+      const r = spawnSync(process.execPath, [join(via, "scripts", "prune.mjs"), "--days", "30"], { env: b.env, encoding: "utf8" });
+      assert.equal(r.status, 0, r.stderr);
+      assert.match(r.stdout, /^pruned: 1 file\(s\), 2 bytes freed; kept 0\n$/, `via ${via}`);
+      assert.equal(existsSync(join(dir, "old.json")), false, `via ${via}`);
+    }
   } finally {
     b.release();
   }

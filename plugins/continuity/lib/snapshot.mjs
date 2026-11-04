@@ -23,19 +23,24 @@
 //     written returns `failed:<reason>`, and the heartbeat records it.
 
 import { mkdirSync, readFileSync, statSync, unlinkSync, writeFileSync } from "node:fs";
-import { execFileSync } from "node:child_process";
 import { dirname } from "node:path";
+import { budget, git } from "./git.mjs";
 import { renderHandoffs, resolveHandoffRoot } from "./handoffs.mjs";
 import { sanitizeSessionId, snapshotPath } from "./paths.mjs";
 
-export const SNAPSHOT_VERSION = 1;
+export const SNAPSHOT_VERSION = 2;
 export const STATE_MAX_AGE_MS = 24 * 60 * 60 * 1000;
 export const MAX_STATUS_ENTRIES = 40;
 export const MAX_TOUCHED_FILES = 40;
 export const MAX_INTENTS = 5;
 export const MAX_SECTION_CHARS = 8000;
 export const RESTORE_MAX_CHARS = 20000;
-const GIT_TIMEOUT_MS = 800;
+// Every git call the save makes runs at once and shares this one wall-clock budget (the two
+// handoff-root lookups are also capped at 500 ms each, lib/handoffs.mjs), so the repository
+// reads cost at most 2 s whatever the checkout does, and the snapshot is written inside the
+// runner's 4 s deadline. A call still running at the budget is killed and its field is saved
+// as `(unknown: timed out)`: the snapshot is written anyway, never dropped for want of git.
+export const GIT_BUDGET_MS = 2000;
 
 /** `{ lines, total }`: the first `max` lines; `total` says how many there were. */
 export function capLines(text, max) {
@@ -64,13 +69,12 @@ export function failureReason(err) {
   return (code || (err && err.message ? String(err.message) : "error")).replace(/\s+/g, " ").slice(0, 120);
 }
 
-const git = (args, cwd) => {
-  try {
-    return execFileSync("git", args, { encoding: "utf8", timeout: GIT_TIMEOUT_MS, cwd, stdio: ["ignore", "pipe", "ignore"] }).trim();
-  } catch {
-    return "";
-  }
-};
+// What a git answer that never came reads as in the snapshot: "timed out", or the failed
+// command and its exit. Never "", which a reader would take for "nothing to report".
+const unknownWhy = (r, what) => (r.reason === "timed out" ? "timed out" : `${what} failed (${r.reason})`);
+
+/** `{ lines, total, unknown }` for a git listing: `unknown` null when git answered. */
+const gitList = (r, max, what) => (r.ok ? { ...capLines(r.out, max), unknown: null } : { lines: [], total: 0, unknown: unknownWhy(r, what) });
 
 /** Prompts and edited paths read from a Claude Code transcript (JSONL); `read` false when it could not be read. */
 export function readTranscript(path) {
@@ -108,9 +112,10 @@ export function readTranscript(path) {
 
 /**
  * The snapshot object for a PreCompact input: pure apart from reading the transcript, the
- * repository (git, with a short timeout per command) and the handoffs. `now` is injectable.
+ * repository (every git call at once, inside one GIT_BUDGET_MS budget) and the handoffs. `now`
+ * and `gitBudgetMs` are injectable.
  */
-export function buildSnapshot(input, { env = process.env, now = new Date() } = {}) {
+export async function buildSnapshot(input, { env = process.env, now = new Date(), gitBudgetMs = GIT_BUDGET_MS } = {}) {
   const cwd = String(input?.cwd || "") || process.cwd();
   const transcript = readTranscript(input?.transcript_path);
 
@@ -147,7 +152,15 @@ export function buildSnapshot(input, { env = process.env, now = new Date() } = {
   const degraded = missing.length === 4;
   const captureSource = transcript.read ? "session transcript" : !degraded ? "host-supplied payload fields" : "repository only: the session's own view was not available";
 
-  const handoffRoot = resolveHandoffRoot(cwd, env);
+  // Every repository read starts now and shares one deadline; nothing below waits on git longer.
+  const b = budget(gitBudgetMs);
+  const rootP = resolveHandoffRoot(cwd, env, { budget: b });
+  const branchP = git(["branch", "--show-current"], cwd, b.left());
+  const statusP = git(["status", "--short"], cwd, b.left());
+  const commitsP = degraded ? git(["log", "--oneline", "--no-decorate", "-12"], cwd, b.left()) : null;
+  const unpushedP = degraded ? git(["log", "--oneline", "--no-decorate", "@{u}..HEAD"], cwd, b.left()) : null;
+  const [{ root: handoffRoot, note: rootNote }, branch, status, commits, unpushed] = await Promise.all([rootP, branchP, statusP, commitsP, unpushedP]);
+
   let handoff = "";
   try {
     handoff = capChars(renderHandoffs(handoffRoot).trim(), MAX_SECTION_CHARS, "the handoff section", `Read \`${handoffRoot}/.ai/handoffs/\` for the rest.`);
@@ -162,20 +175,22 @@ export function buildSnapshot(input, { env = process.env, now = new Date() } = {
     session: sanitizeSessionId(input?.session_id),
     cwd,
     captureSource,
-    branch: git(["branch", "--show-current"], cwd) || null,
-    status: capLines(git(["status", "--short"], cwd), MAX_STATUS_ENTRIES),
+    // "" from a git that answered is a detached HEAD; null with branchUnknown is no answer.
+    branch: branch.ok ? branch.out || null : null,
+    branchUnknown: branch.ok ? null : unknownWhy(branch, "git branch"),
+    status: gitList(status, MAX_STATUS_ENTRIES, "git status"),
     filesTouched: { source: filesSource, ...capLines(transcript.touched.join("\n"), MAX_TOUCHED_FILES) },
     hostFileOperations: hostFileOps || null,
     recentIntent: { source: intentSource, lines: intents },
     hostJudgment: capChars(hostJudgment.map((p) => `- ${p}`).join("\n"), MAX_SECTION_CHARS, "the host-supplied judgment section", "The compacting host holds the rest.") || null,
-    handoff: { root: handoffRoot, present: Boolean(handoff), text: handoff || null },
+    handoff: { root: handoffRoot, present: Boolean(handoff), text: handoff || null, note: rootNote },
     reconstruction: degraded
       ? {
           missing,
-          recentCommits: capLines(git(["log", "--oneline", "--no-decorate", "-12"], cwd), 12),
-          // `@{u}` fails on a branch with no upstream and git() swallows that to "", which is the
-          // right answer: no upstream means nothing is known to be unpushed.
-          unpushed: capLines(git(["log", "--oneline", "--no-decorate", "@{u}..HEAD"], cwd), 12),
+          recentCommits: gitList(commits, 12, "git log"),
+          // `@{u}` fails on a branch with no upstream, which is an answer: nothing is known to be
+          // unpushed. Only a timeout leaves it unknown.
+          unpushed: unpushed.ok || unpushed.reason !== "timed out" ? { ...capLines(unpushed.ok ? unpushed.out : "", 12), unknown: null } : gitList(unpushed, 12, "git log"),
         }
       : null,
   };
@@ -188,10 +203,13 @@ export function renderSnapshot(s) {
     `_${s.at} · trigger: ${s.trigger} · capture source: ${s.captureSource}_`,
     ``,
     `## Branch`,
-    s.branch || "(unknown)",
+    s.branch || (s.branchUnknown ? `(unknown: ${s.branchUnknown})` : "(none: detached HEAD, or no branch yet)"),
     ``,
     `## Uncommitted changes`,
-    listBlock(s.status, "changed paths", "Run `git status --short` for the full list; this is a resumption payload, not a diagnostic.") || "(clean)",
+    // A git status that did not answer is unknown, never clean: "(clean)" only from an answer.
+    s.status.unknown
+      ? `(unknown: ${s.status.unknown}; run \`git status --short\` before assuming the tree is clean)`
+      : listBlock(s.status, "changed paths", "Run `git status --short` for the full list; this is a resumption payload, not a diagnostic.") || "(clean)",
     ``,
     `## Files touched this session`,
     `_source: ${s.filesTouched.source}_`,
@@ -209,11 +227,11 @@ export function renderSnapshot(s) {
       ``,
       `### Recent commits`,
       ``,
-      listBlock(s.reconstruction.recentCommits, "commits", "Run `git log` for more.") || "(none)",
+      s.reconstruction.recentCommits.unknown ? `(unknown: ${s.reconstruction.recentCommits.unknown})` : listBlock(s.reconstruction.recentCommits, "commits", "Run `git log` for more.") || "(none)",
       ``,
       `### Committed but not pushed`,
       ``,
-      listBlock(s.reconstruction.unpushed, "unpushed commits") || "(none, or no upstream to compare against)",
+      s.reconstruction.unpushed.unknown ? `(unknown: ${s.reconstruction.unpushed.unknown})` : listBlock(s.reconstruction.unpushed, "unpushed commits") || "(none, or no upstream to compare against)",
     );
   }
   if (s.handoff.present) {
@@ -228,6 +246,7 @@ export function renderSnapshot(s) {
   }
   if (s.hostJudgment) parts.push(``, `## Host-supplied agent judgment`, `_the agent's own words as the host recorded them, not derived by this hook_`, ``, s.hostJudgment);
   parts.push(``, `> Rebuild from here. The repository and its committed record are the source of truth; this file is only the in-flight scratch state.`);
+  if (s.handoff.note) parts.push(`> Handoff lookup: ${s.handoff.note}; handoffs under the repository's main root may not have been read.`);
   if (!s.handoff.present) {
     parts.push(
       s.hostJudgment
@@ -242,11 +261,11 @@ export function renderSnapshot(s) {
  * Build and write the snapshot for a PreCompact input. Returns `{ outcome, snapshot, path }`
  * where outcome is "ok" or "failed:<reason>"; never throws.
  */
-export function capture(input, { env = process.env, now = new Date() } = {}) {
+export async function capture(input, { env = process.env, now = new Date(), gitBudgetMs = GIT_BUDGET_MS } = {}) {
   const path = snapshotPath(input?.session_id, env);
   let snapshot = null;
   try {
-    snapshot = buildSnapshot(input, { env, now });
+    snapshot = await buildSnapshot(input, { env, now, gitBudgetMs });
     mkdirSync(dirname(path), { recursive: true });
     writeFileSync(path, `${JSON.stringify(snapshot, null, 2)}\n`);
     return { outcome: "ok", snapshot, path };

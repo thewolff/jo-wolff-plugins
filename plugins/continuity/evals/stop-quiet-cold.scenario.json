@@ -1,5 +1,5 @@
 {
-  "$comment": "A machine that has never compacted (no calibration file): the Stop hook stays silent rather than guessing.",
+  "$comment": "A short transcript (one line, a few dozen bytes): the estimate is far under the threshold, so the Stop hook stays silent.",
   "event": "Stop",
   "expect": "silent",
   "sibling": "stop-blocks-near-full.scenario.json",

@@ -1,11 +1,10 @@
 {
-  "$comment": "A calibrated machine (one compaction observed: 4,000 bytes of transcript were 160,000 tokens against a 200,000 target) and a 4,000-byte transcript: the estimate is 80% of the target, past the 0.65 default, so the prompt carries the handoff request once.",
+  "$comment": "No calibration file and a plain 640,000-byte transcript: the estimate is 640,000 / 4 = 160,000 tokens, 80% of the 200,000 default, past the 0.65 default, so the prompt carries the handoff request once.",
   "event": "UserPromptSubmit",
   "expect": "systemMessage",
   "reason": "/continuity:handoff",
   "setup": {
-    "files": { "$XDG_STATE_HOME/continuity/calibration.ndjson": "{\"bytes\":4000,\"tokens\":160000,\"target\":200000}\n" },
-    "commands": ["yes '{\"type\":\"user\",\"message\":{\"role\":\"user\",\"content\":\"carry on with the port\"}}' | head -c 4000 > \"${TRANSCRIPT}\""]
+    "commands": ["yes '{\"type\":\"user\",\"message\":{\"role\":\"user\",\"content\":\"carry on with the port\"}}' | head -c 640000 > \"${TRANSCRIPT}\""]
   },
   "before": [{ "event": "SessionStart", "stdin": { "hook_event_name": "SessionStart", "session_id": "${SESSION_ID}", "cwd": "${CWD}", "source": "startup" } }],
   "stdin": { "hook_event_name": "UserPromptSubmit", "session_id": "${SESSION_ID}", "cwd": "${CWD}", "transcript_path": "${TRANSCRIPT}", "prompt": "carry on" },

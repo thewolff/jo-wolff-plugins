@@ -1,5 +1,6 @@
 // lib/liveness.mjs — the one place the pre-compaction-save liveness sentence is written, and
-// the only thing that decides which of its three cases a session hears.
+// the only thing that decides which of its four cases a session hears: no record, the newest save
+// succeeded, the newest save failed after an earlier success, no save ever succeeded.
 //
 // Always a string: there is no "nothing to say" case, because silence is the failure mode this
 // path was written to end (a save that ran in no session for 34 days, unnoticed). Other
@@ -41,20 +42,45 @@ export function renderLiveness({ env = process.env, records = readHeartbeat(env)
     );
   }
 
-  const saves = records.filter((r) => r.event === "PreCompact");
+  // The newest save's result decides the sentence, not the newest success: a save that broke
+  // after one good run must not read as alive for the next 100 compactions. `skipped:` records
+  // are a config choice, not a result, and are passed over.
+  const saves = records.filter((r) => r.event === "PreCompact" && !String(r.outcome).startsWith("skipped:"));
+  const latest = saves.length ? saves[saves.length - 1] : null;
   const lastOk = [...saves].reverse().find((r) => r.outcome === "ok");
-  if (lastOk) {
-    const when = Date.parse(String(lastOk.at));
-    const ago = Number.isFinite(when) ? age(now - when) : `at ${lastOk.at}`;
-    return `continuity, pre-compaction save liveness: last successful save ${ago} (${lastOk.at}); the snapshot path is alive.`;
+  const ago = (r) => {
+    const when = Date.parse(String(r.at));
+    return Number.isFinite(when) ? age(now - when) : `at ${r.at}`;
+  };
+  if (latest && latest.outcome === "ok") {
+    return `continuity, pre-compaction save liveness: last successful save ${ago(latest)} (${latest.at}); the snapshot path is alive.`;
+  }
+  if (latest && lastOk) {
+    return (
+      `continuity, pre-compaction save liveness: **the last save failed** ${ago(latest)} (${outcomeText(latest)}, ${latest.at}); ` +
+      `the last success was ${ago(lastOk)} (${lastOk.at}). Full log: \`${path}\`. Tell the person; do not assume the save works.`
+    );
   }
 
-  // The hook has run and has never succeeded. `failed:<reason>` is the useful half; a run that
-  // only ever recorded `started` crashed between the two records.
-  const last = saves.length ? saves[saves.length - 1] : records[records.length - 1];
+  // The hook has run and has never succeeded. Invocations are counted, not records: each save
+  // writes `started` and then its result, so the `started` records are the invocations.
+  const invoked = records.filter((r) => r.event === "PreCompact" && (r.outcome === "started" || String(r.outcome).startsWith("skipped:"))).length;
+  const last = latest ?? records[records.length - 1];
   return (
     "continuity, pre-compaction save liveness: **no pre-compaction save has ever succeeded on this machine.** " +
-    `The hook has been invoked ${records.length} time${records.length === 1 ? "" : "s"} and the most recent outcome was ` +
-    `\`${last.outcome}\` (${last.at}, event \`${last.event}\`). Full log: \`${path}\`. Tell the person.`
+    `The hook has been invoked ${invoked} time${invoked === 1 ? "" : "s"} and the most recent outcome was ` +
+    `${outcomeText(last)} (${last.at}, event \`${last.event}\`). Full log: \`${path}\`. Tell the person.`
   );
+}
+
+// A `started` with nothing after it is a save that crashed, or hit the runner's deadline,
+// between its two records.
+function outcomeText(r) {
+  return r.outcome === "started" ? "`started` with no result recorded: the save did not finish" : `\`${r.outcome}\``;
+}
+
+/** The newest PreCompact result recorded for `session` (sanitised id), or null. */
+export function lastSaveFor(session, { env = process.env, records = readHeartbeat(env) } = {}) {
+  const mine = records.filter((r) => r.event === "PreCompact" && r.session === session);
+  return mine.length ? mine[mine.length - 1] : null;
 }

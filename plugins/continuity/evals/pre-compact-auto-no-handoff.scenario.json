@@ -1,5 +1,5 @@
 {
-  "$comment": "Auto-compaction with no handoff written: the snapshot is saved, the heartbeat and calibration records land, and the person is told (systemMessage) that the judgment layer was not captured.",
+  "$comment": "Auto-compaction with no handoff written, on Claude Code's documented PreCompact payload (trigger and custom_instructions, no token_count): the snapshot is saved, the heartbeat lands, no calibration record is made, and the person is told (systemMessage) that the judgment layer was not captured.",
   "event": "PreCompact",
   "expect": "systemMessage",
   "reason": "no handoff written",
@@ -9,17 +9,17 @@
     { "type": "assistant", "message": { "role": "assistant", "content": [{ "type": "tool_use", "name": "Write", "input": { "file_path": "${CWD}/notes.md", "content": "draft" } }] } },
     { "type": "user", "message": { "role": "user", "content": [{ "type": "text", "text": "now the tests" }] } }
   ],
-  "stdin": { "hook_event_name": "PreCompact", "session_id": "${SESSION_ID}", "cwd": "${CWD}", "transcript_path": "${TRANSCRIPT}", "trigger": "auto", "custom_instructions": "", "token_count": 150000, "compaction_target": 200000 },
+  "stdin": { "hook_event_name": "PreCompact", "session_id": "${SESSION_ID}", "cwd": "${CWD}", "transcript_path": "${TRANSCRIPT}", "trigger": "auto", "custom_instructions": "" },
   "after": {
-    "exists": ["$XDG_STATE_HOME/continuity/${SESSION_ID}.json", "$XDG_STATE_HOME/continuity/heartbeat.ndjson", "$XDG_STATE_HOME/continuity/calibration.ndjson"],
+    "exists": ["$XDG_STATE_HOME/continuity/${SESSION_ID}.json", "$XDG_STATE_HOME/continuity/heartbeat.ndjson"],
+    "absent": ["$XDG_STATE_HOME/continuity/calibration.ndjson"],
     "commands": [
       "grep -q '\"branch\": \"feature/port\"' \"${XDG_STATE_HOME}/continuity/${SESSION_ID}.json\"",
       "grep -q 'notes.md' \"${XDG_STATE_HOME}/continuity/${SESSION_ID}.json\"",
       "grep -q 'now the tests' \"${XDG_STATE_HOME}/continuity/${SESSION_ID}.json\"",
       "grep -q '\"present\": false' \"${XDG_STATE_HOME}/continuity/${SESSION_ID}.json\"",
       "grep -c '\"outcome\":\"started\"' \"${XDG_STATE_HOME}/continuity/heartbeat.ndjson\" | grep -qx 1",
-      "grep -c '\"outcome\":\"ok\"' \"${XDG_STATE_HOME}/continuity/heartbeat.ndjson\" | grep -qx 1",
-      "grep -q '\"tokens\":150000,\"target\":200000' \"${XDG_STATE_HOME}/continuity/calibration.ndjson\""
+      "grep -c '\"outcome\":\"ok\"' \"${XDG_STATE_HOME}/continuity/heartbeat.ndjson\" | grep -qx 1"
     ]
   }
 }

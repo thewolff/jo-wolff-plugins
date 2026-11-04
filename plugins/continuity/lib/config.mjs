@@ -1,12 +1,15 @@
 // lib/config.mjs — `${XDG_CONFIG_HOME:-~/.config}/continuity/config.json`, read by every hook.
 //
-//   { "threshold": 0.65, "pressure": "on", "liveness": "on", "snapshot": "on" }
+//   { "threshold": 0.65, "contextTokens": 200000, "pressure": "on", "liveness": "on", "snapshot": "on" }
 //
-//   threshold  the fraction of the compaction target at which the context-pressure check speaks
-//              (a number strictly between 0 and 1; the default is the one the newdle hook shipped)
-//   pressure   "off" silences the UserPromptSubmit warning and the Stop block
-//   liveness   "off" silences the liveness line
-//   snapshot   "off" stops the PreCompact save and the post-compaction restore
+//   threshold      the fraction of `contextTokens` at which the context-pressure check speaks (a
+//                  JSON number strictly between 0 and 1; a string or an array is a problem, not a
+//                  number; the default is the one the newdle hook shipped)
+//   contextTokens  the context size the estimate is compared against: a positive JSON integer,
+//                  default 200000 (the context window of the models this was written against)
+//   pressure       "off" silences the UserPromptSubmit warning and the Stop block
+//   liveness       "off" silences the liveness line
+//   snapshot       "off" stops the PreCompact save and the post-compaction restore
 //
 // How it fails: a missing file is the defaults. A file that does not parse, is not an object, or
 // carries a value of the wrong shape is the defaults for that value, with `problem` naming the
@@ -16,7 +19,7 @@
 import { readFileSync } from "node:fs";
 import { configPath } from "./paths.mjs";
 
-export const DEFAULTS = Object.freeze({ threshold: 0.65, pressure: "on", liveness: "on", snapshot: "on" });
+export const DEFAULTS = Object.freeze({ threshold: 0.65, contextTokens: 200000, pressure: "on", liveness: "on", snapshot: "on" });
 const SWITCHES = ["pressure", "liveness", "snapshot"];
 
 /** `{ config, path, problem }`: `config` always complete; `problem` null when the file was absent or whole. */
@@ -39,9 +42,14 @@ export function readConfig(env = process.env) {
   const config = { ...DEFAULTS };
   const wrong = [];
   if ("threshold" in json) {
-    const t = Number(json.threshold);
-    if (Number.isFinite(t) && t > 0 && t < 1) config.threshold = t;
-    else wrong.push(`threshold must be a number between 0 and 1, not ${JSON.stringify(json.threshold)}`);
+    const t = json.threshold;
+    if (typeof t === "number" && Number.isFinite(t) && t > 0 && t < 1) config.threshold = t;
+    else wrong.push(`threshold must be a number between 0 and 1, not ${JSON.stringify(t)}`);
+  }
+  if ("contextTokens" in json) {
+    const n = json.contextTokens;
+    if (Number.isInteger(n) && n > 0) config.contextTokens = n;
+    else wrong.push(`contextTokens must be a positive whole number, not ${JSON.stringify(n)}`);
   }
   for (const key of SWITCHES) {
     if (!(key in json)) continue;

@@ -5,20 +5,21 @@
 //
 // What it does, as `additionalContext`, each at most once per session: the liveness line, when
 // this session has not heard it (a host that did not run hooks/session-start.mjs); and the
-// context-pressure warning, when the transcript's size against the machine's calibration puts
-// the session at or past `threshold` (default 0.65) of the compaction target. The warning asks
-// the model to run `/continuity:handoff` during this turn, while it still has the context the
-// handoff needs; hooks/stop.mjs blocks once at the end of a turn for the same reason.
+// context-pressure warning, when the context estimate (lib/pressure.mjs: the transcript's bytes
+// since its last compaction marker, / 4 or through a calibrated ratio) is at or past `threshold`
+// (default 0.65) of `contextTokens` (default 200000). The warning asks the model to run
+// `/continuity:handoff` during this turn, while it still has the context the handoff needs;
+// hooks/stop.mjs blocks once at the end of a turn for the same reason.
 //
 // How it fails: stdin not JSON, a thrown error, or no answer in 4 s → the runner logs it to
-// errors.log and allows. No calibration yet (the machine has never compacted), no
-// `transcript_path`, or a transcript that cannot be measured → no warning, silently: a
-// fabricated estimate would produce warnings to dismiss. A mark that cannot be written → the
-// line is still given this once, with one errors.log line and a systemMessage. `"pressure": "off"`
-// / `"liveness": "off"` in the config file silence each.
+// errors.log and allows. No `transcript_path`, or a transcript that cannot be measured → no
+// warning, silently. A mark that cannot be written → the line is still given this once, with one
+// errors.log line and a systemMessage. A config file with a problem is named once per session.
+// `"pressure": "off"` / `"liveness": "off"` in the config file silence each.
 
-import { runHook, invokedDirectly, logError } from "../lib/hook-runner.mjs";
+import { runHook, invokedDirectly } from "../lib/hook-runner.mjs";
 import { readConfig } from "../lib/config.mjs";
+import { logError } from "../lib/errors.mjs";
 import { renderLiveness } from "../lib/liveness.mjs";
 import { handoffRequest, pressure } from "../lib/pressure.mjs";
 import { markFlag, readFlags, sessionKey } from "../lib/session-flags.mjs";
@@ -39,10 +40,10 @@ export function handle(input, { env = process.env } = {}) {
     mark("livenessSaid");
   }
   if (config.pressure !== "off" && !flags.promptWarned) {
-    const p = pressure(input, { threshold: config.threshold, env });
+    const p = pressure(input, { threshold: config.threshold, contextTokens: config.contextTokens, env });
     if (p) {
       mark("promptWarned");
-      parts.push(handoffRequest(p.pct));
+      parts.push(handoffRequest(p.pct, p.basis));
     }
   }
   if (problem && !flags.configNoted) {

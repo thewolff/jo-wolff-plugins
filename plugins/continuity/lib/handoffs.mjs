@@ -8,8 +8,8 @@
 // thrown. A hook must never crash a session over a handoff.
 
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
-import { execFileSync } from "node:child_process";
 import { join } from "node:path";
+import { git } from "./git.mjs";
 
 export const HANDOFFS_DIR = ".ai/handoffs";
 export const STALE_DAYS = 7;
@@ -18,13 +18,9 @@ export const SHOW_FULL = 3;
 // verbatim, up to SHOW_FULL of them, on every compaction.
 export const ENTRY_LINE_CAP = 120;
 
-const git = (args, cwd) => {
-  try {
-    return execFileSync("git", args, { encoding: "utf8", timeout: 1500, cwd, stdio: ["ignore", "pipe", "ignore"] }).trim();
-  } catch {
-    return "";
-  }
-};
+// Each of the two root lookups gets at most this long; the PreCompact save has a 2 s budget for
+// all of its git calls, and these run beside its branch and status calls inside that budget.
+export const ROOT_GIT_TIMEOUT_MS = 500;
 
 /**
  * The handoff root for `cwd`, in this order (the skill resolves it the same way):
@@ -34,19 +30,26 @@ const git = (args, cwd) => {
  *      worktree of one repository shares one handoff pool.
  *   3. `git rev-parse --show-toplevel`.
  *   4. `cwd`.
+ * `{ root, note }`: `note` is null, or says that git timed out and the root fell back, so a
+ * caller can say where it looked. Each git call is capped at ROOT_GIT_TIMEOUT_MS and at what is
+ * left of `budget` (lib/git.mjs) when one is passed.
  */
-export function resolveHandoffRoot(cwd, env = process.env) {
+export async function resolveHandoffRoot(cwd, env = process.env, { budget: b = null } = {}) {
   const base = cwd || process.cwd();
   const projectDir = env.CLAUDE_PROJECT_DIR;
-  if (projectDir && existsSync(projectDir)) return projectDir;
-  const commonDir = git(["rev-parse", "--path-format=absolute", "--git-common-dir"], base);
-  if (commonDir) {
-    const root = commonDir.replace(/\/\.git$/, "");
-    if (root && existsSync(root)) return root;
+  if (projectDir && existsSync(projectDir)) return { root: projectDir, note: null };
+  const limit = () => (b ? b.left(ROOT_GIT_TIMEOUT_MS) : ROOT_GIT_TIMEOUT_MS);
+  let timedOut = false;
+  const common = await git(["rev-parse", "--path-format=absolute", "--git-common-dir"], base, limit());
+  if (common.ok && common.out) {
+    const root = common.out.replace(/\/\.git$/, "");
+    if (root && existsSync(root)) return { root, note: null };
   }
-  const toplevel = git(["rev-parse", "--show-toplevel"], base);
-  if (toplevel && existsSync(toplevel)) return toplevel;
-  return base;
+  if (!common.ok && common.reason === "timed out") timedOut = true;
+  const top = await git(["rev-parse", "--show-toplevel"], base, limit());
+  if (top.ok && top.out && existsSync(top.out)) return { root: top.out, note: null };
+  if (!top.ok && top.reason === "timed out") timedOut = true;
+  return { root: base, note: timedOut ? `git did not answer in time, so the handoff root fell back to \`${base}\`` : null };
 }
 
 /** `---\nkey: value\n---\nbody` split; null when the text has no frontmatter. */
@@ -94,6 +97,7 @@ export function listHandoffs(root, now = Date.now()) {
       mtimeMs: st.mtimeMs,
       lane: parsed.meta.lane || "unknown",
       author: parsed.meta.author || "unknown",
+      session: parsed.meta.session_id || "",
       date: (parsed.meta.created || "").slice(0, 10) || new Date(st.mtimeMs).toISOString().slice(0, 10),
       body: parsed.body,
     });
@@ -133,4 +137,10 @@ export function renderHandoffs(root, now = Date.now()) {
     lines.push("", `(${rest.length} more suppressed; see ${HANDOFFS_DIR}/)`);
   }
   return `${lines.join("\n")}\n`;
+}
+
+/** True when `root` holds an open, fresh handoff whose frontmatter `session_id` is `sessionId`. */
+export function handoffWrittenBy(root, sessionId, now = Date.now()) {
+  if (!sessionId) return false;
+  return listHandoffs(root, now).some((e) => e.session === String(sessionId));
 }

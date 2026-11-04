@@ -17,6 +17,7 @@
 
 import { readdirSync, rmdirSync, rmSync, statSync } from "node:fs";
 import { join } from "node:path";
+import { invokedDirectly } from "../lib/hook-runner.mjs";
 import { KEPT_FILES, stateDir } from "../lib/paths.mjs";
 
 export { stateDir };
@@ -67,7 +68,10 @@ export function prune(dir, { days = 30, now = Date.now(), dryRun = false } = {})
   return out;
 }
 
-if (process.argv[1] && new URL(import.meta.url).pathname === process.argv[1]) {
+// realpath on both sides (lib/hook-runner.mjs invokedDirectly): a URL pathname is percent-encoded
+// and argv is the path as typed, so a plain comparison skipped the run through a symlink or a
+// directory with a space in its name, silently.
+if (invokedDirectly(import.meta.url)) {
   const argv = process.argv.slice(2);
   let days = 30;
   let dryRun = false;
