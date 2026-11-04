@@ -53,11 +53,14 @@
 //      block, not shown as a hook error); under BRB_HARNESS=omp as `decision: "block"`, the
 //      shape OMP's session_stop takes. The backstop block comes before the keep-working answer
 //      and before the `idle:` and guard releases.
-//   6. Write: re-read away.json under the session lock (lib/state.mjs withAwayLock) first; a
-//      hold that `back` ended while this stop ran is left ended (only the fire output returns).
-//      New held lines go to the digest, then away.json.
-//      A write that throws is one errors.log line and a systemMessage beside any fire; the stop
-//      then proceeds with no keep-working answer.
+//   6. Write. Steps 1 and 3 to 5 run on a record re-read under the session lock (lib/state.mjs
+//      withAwayLock), and the write follows in the same critical section: a read-merge-write,
+//      so an item the hold command filed while this stop was reading is in `seen` (held once,
+//      counted once) and a hold that `back` ended meanwhile is left ended (only the fire output
+//      returns). New held lines go to the digest, then away.json. Step 2 runs before the lock,
+//      from the first read. A lock that cannot be taken in 2 s, or a write that throws, is one
+//      errors.log line and a systemMessage beside any fire; the stop then proceeds with no
+//      keep-working answer.
 //
 // The 8-continuation cap Claude Code applies resets on each tool call (hooks reference, Stop
 // input), so a working agent is never cut off by it; OMP has no cap on explicit blocks, which is
@@ -139,42 +142,30 @@ const hash = (s) => createHash("sha1").update(String(s)).digest("hex").slice(0, 
  */
 export function decideStop(input, { env = process.env, now = () => new Date().toISOString(), platform = process.platform } = {}) {
   const sessionId = typeof input?.session_id === "string" ? input.session_id : "";
-  const away = readAway(sessionId, env);
-  if (!away) return null;
+  const snapshot = readAway(sessionId, env);
+  if (!snapshot) return null;
   const config = loadConfig(env);
   const message = typeof input?.last_assistant_message === "string" ? input.last_assistant_message : "";
   const at = now();
   const parts = splitNeedsYou(message);
   const continuing = input?.stop_hook_active === true;
-  const prev = away.lastStop;
   const messageHash = hash(message);
-
-  // 1. What is new in this message. A closing ask is an ask too: held under `closing ask: …`,
-  //    deduplicated like the section's lines, counted.
   const fires = parts.onFire.map((line) => ({ line, key: normalizeLine(fireText(line) ?? line) }));
-  const restated = new Set(continuing && Array.isArray(prev?.fires) ? prev.fires : []);
-  const newFire = fires.filter((f) => !restated.has(f.key)).map((f) => f.line);
-  const seen = new Set(away.seen);
-  const newHeld = [];
-  for (const line of parts.held) {
-    const key = normalizeLine(line);
-    if (!key || seen.has(key)) continue;
-    seen.add(key);
-    newHeld.push(line);
-  }
-  const askKey = parts.closingAsk === null ? "" : normalizeLine(`closing ask: ${parts.closingAsk}`);
-  const newAsk = askKey !== "" && !seen.has(askKey);
-  if (newAsk) seen.add(askKey);
-  away.seen = [...seen].slice(-SEEN_CAP);
-  away.held += newHeld.length + (newAsk ? 1 : 0);
+  /** The fires this stop brings against a record's previous stop: all of them unless this is a continuation restating them. */
+  const freshFires = (away) => {
+    const restated = new Set(continuing && Array.isArray(away.lastStop?.fires) ? away.lastStop.fires : []);
+    return fires.filter((f) => !restated.has(f.key)).map((f) => f.line);
+  };
 
-  // 2. Fires, before any write.
+  // 2. Fires, before any write and before the lock, from the snapshot: an unwritable or locked
+  //    state directory cannot swallow them.
   const out = {};
+  const newFire = freshFires(snapshot);
   if (newFire.length) {
-    away.onFire += newFire.length;
+    const onFire = snapshot.onFire + newFire.length;
     const plain = newFire.map((l) => (fireText(l) ?? l).replace(/\*\*|__/g, "").trim());
     const text = `brb on fire: ${plain.join(" | ")}`;
-    const capNote = away.onFire > config.onFireCap ? ` (on-fire cap of ${config.onFireCap} passed this hold: ${away.onFire} so far; check the tagging)` : "";
+    const capNote = onFire > config.onFireCap ? ` (on-fire cap of ${config.onFireCap} passed this hold: ${onFire} so far; check the tagging)` : "";
     out.systemMessage = text + capNote;
     if (env.BRB_HARNESS !== "omp") out.terminalSequence = osc9(text);
     desktopNotify("brb: on fire", plain.join(" | "), { env, platform });
@@ -183,62 +174,87 @@ export function decideStop(input, { env = process.env, now = () => new Date().to
     out.systemMessage = out.systemMessage ? `${out.systemMessage}\n${line}` : line;
   };
 
-  // 3. Tool-less stops.
-  const counted = countToolUses(input?.transcript_path, prev?.line ?? 0);
-  let toolLess;
-  let line = prev?.line ?? 0;
-  if (counted) {
-    toolLess = prev !== null && counted.count === 0;
-    line = counted.lines;
-  } else {
-    toolLess = prev !== null && (continuing || prev.hash === messageHash);
-  }
-  away.toolLessStops = toolLess ? away.toolLessStops + 1 : 0;
-  away.lastStop = { at, line, hash: messageHash, transcript: counted !== null, fires: fires.map((f) => f.key) };
-
-  // 4. Quiet continuations.
-  const nothingNew = !newHeld.length && !newAsk && !newFire.length;
-  away.nothingNewStops = continuing && nothingNew ? away.nothingNewStops + 1 : 0;
-
-  // 5. The backstop, or keep working, or let the turn end. The backstop: asks were shown (a
-  //    Needs-you item or a closing ask). Once per turn: a stop that continues a backstopped
-  //    turn (stop_hook_active, or the same message again) goes to the rules below, so an agent
-  //    that restates cannot loop on it; and it yields to the tool-less bound, the hard stop for
-  //    a harness with no continuation cap.
-  const sameTurn = continuing || (prev !== null && prev.hash === messageHash);
-  if (!sameTurn) away.backstopped = false;
-  const shown = parts.held.length + (parts.closingAsk === null ? 0 : 1);
-  const noFirstLine = message.trim() !== "" && !hasReplyFirstLine(message);
-  const backstop = (shown > 0 || noFirstLine) && !away.backstopped && away.toolLessStops < config.idleStops;
-  if (backstop) away.backstopped = true;
-  const held = `${away.held} held; type \`back\` to read them`;
-  let release = null;
-  if (parts.idle !== null) release = `brb: the agent is idle${parts.idle ? ` (${parts.idle})` : ""}; ${held}.`;
-  else if (continuing && nothingNew && toolLess) release = "";
-  else if (away.toolLessStops >= config.idleStops) release = `brb: ${away.toolLessStops} stops with no tool calls between them; letting the agent stop. ${held}.`;
-  else if (away.nothingNewStops >= QUIET_CONTINUATIONS) release = `brb: released the agent after ${away.nothingNewStops} continuations with nothing new; ${held}.`;
-
-  // 6. Write, unless `back` ended the hold meanwhile.
+  // The rest is a read-merge-write under the session lock: the record is re-read there, so an
+  // item the hold command filed while this stop was computing is in `seen` and counted once,
+  // and a `back` that ended the hold meanwhile leaves it ended (only the fire output returns).
+  let verdict;
   try {
-    const ended = withAwayLock(sessionId, env, () => {
-      const current = readAway(sessionId, env);
-      if (!current || current.since !== away.since) return true;
+    verdict = withAwayLock(sessionId, env, () => {
+      const away = readAway(sessionId, env);
+      if (!away || away.since !== snapshot.since) return null;
+      const prev = away.lastStop;
+
+      // 1. What is new in this message. A closing ask is an ask too: held under `closing ask: …`,
+      //    deduplicated like the section's lines, counted.
+      const newFireHere = freshFires(away);
+      const seen = new Set(away.seen);
+      const newHeld = [];
+      for (const line of parts.held) {
+        const key = normalizeLine(line);
+        if (!key || seen.has(key)) continue;
+        seen.add(key);
+        newHeld.push(line);
+      }
+      const askKey = parts.closingAsk === null ? "" : normalizeLine(`closing ask: ${parts.closingAsk}`);
+      const newAsk = askKey !== "" && !seen.has(askKey);
+      if (newAsk) seen.add(askKey);
+      away.seen = [...seen].slice(-SEEN_CAP);
+      away.held += newHeld.length + (newAsk ? 1 : 0);
+      away.onFire += newFireHere.length;
+
+      // 3. Tool-less stops.
+      const counted = countToolUses(input?.transcript_path, prev?.line ?? 0);
+      let toolLess;
+      let line = prev?.line ?? 0;
+      if (counted) {
+        toolLess = prev !== null && counted.count === 0;
+        line = counted.lines;
+      } else {
+        toolLess = prev !== null && (continuing || prev.hash === messageHash);
+      }
+      away.toolLessStops = toolLess ? away.toolLessStops + 1 : 0;
+      away.lastStop = { at, line, hash: messageHash, transcript: counted !== null, fires: fires.map((f) => f.key) };
+
+      // 4. Quiet continuations.
+      const nothingNew = !newHeld.length && !newAsk && !newFireHere.length;
+      away.nothingNewStops = continuing && nothingNew ? away.nothingNewStops + 1 : 0;
+
+      // 5. The backstop, or keep working, or let the turn end. The backstop: asks were shown (a
+      //    Needs-you item or a closing ask). Once per turn: a stop that continues a backstopped
+      //    turn (stop_hook_active, or the same message again) goes to the rules below, so an agent
+      //    that restates cannot loop on it; and it yields to the tool-less bound, the hard stop for
+      //    a harness with no continuation cap.
+      const sameTurn = continuing || (prev !== null && prev.hash === messageHash);
+      if (!sameTurn) away.backstopped = false;
+      const shown = parts.held.length + (parts.closingAsk === null ? 0 : 1);
+      const noFirstLine = message.trim() !== "" && !hasReplyFirstLine(message);
+      const backstop = (shown > 0 || noFirstLine) && !away.backstopped && away.toolLessStops < config.idleStops;
+      if (backstop) away.backstopped = true;
+      const held = `${away.held} held; type \`back\` to read them`;
+      let release = null;
+      if (parts.idle !== null) release = `brb: the agent is idle${parts.idle ? ` (${parts.idle})` : ""}; ${held}.`;
+      else if (continuing && nothingNew && toolLess) release = "";
+      else if (away.toolLessStops >= config.idleStops) release = `brb: ${away.toolLessStops} stops with no tool calls between them; letting the agent stop. ${held}.`;
+      else if (away.nothingNewStops >= QUIET_CONTINUATIONS) release = `brb: released the agent after ${away.nothingNewStops} continuations with nothing new; ${held}.`;
+
+      // 6. Write: new held lines to the digest, then the record.
       if (newHeld.length || newAsk) appendDigest(sessionId, { at, lines: newHeld, closingAsk: newAsk ? parts.closingAsk : null }, env);
       writeAway(sessionId, away, env);
-      return false;
+      return { backstop, release, shown, noFirstLine, held: away.held, firstLine: replyFirstLine(away, at) };
     });
-    if (ended) return Object.keys(out).length ? out : null;
   } catch (err) {
     const why = err instanceof Error ? err.message : String(err);
     logError("brb", "Stop", `could not write state: ${why}`, env);
     say(`brb Stop could not write its state (${why}); this message's asks are not held and the stop proceeds.`);
     return out;
   }
+  if (verdict === null) return Object.keys(out).length ? out : null;
+  const { backstop, release, shown, noFirstLine, held, firstLine } = verdict;
   if (backstop) {
     out.decision = "block";
-    out.reason = [shown > 0 ? backstopReason(shown) : "", noFirstLine ? firstLineReason(replyFirstLine(away, at)) : ""].filter(Boolean).join(" ");
+    out.reason = [shown > 0 ? backstopReason(shown) : "", noFirstLine ? firstLineReason(firstLine) : ""].filter(Boolean).join(" ");
   } else if (release === null) {
-    const reason = keepWorkingReason(away.held);
+    const reason = keepWorkingReason(held);
     if (env.BRB_HARNESS === "omp") {
       out.decision = "block";
       out.reason = reason;

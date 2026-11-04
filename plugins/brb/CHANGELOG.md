@@ -89,6 +89,22 @@ hold exists to prevent.
   longer invites a closing ask after `idle:`. Its first line is now `brb: still away since
   <since> (<duration>); N held` (`stillAwayLine`, `awayFor`), so every prompt while away says
   the hold is still on; the note moves to line 2. The `brb` skill says the same.
+- `back` is answered by the agent, not shown as a hook frame. Why: on 2026-11-04 Jo typed
+  `back` from the Claude mobile app; the hook archived the digest (six sections) and blocked
+  the prompt with it as the reason, and the app, which renders no `UserPromptSubmit` block
+  message, showed nothing. Now `back` while away archives and clears as before but does not
+  block: the prompt goes through with `additionalContext` = `brb: Jo is back (away
+  <duration>). Reply with the digest below verbatim as your whole message, then stop (end
+  with nothing else). If a held item is already resolved, append '— resolved: <how>' to that
+  line.` over `brb: hold cleared; digest archived to <path>.` and the digest (`lib/text.mjs`
+  `backInstruction`), and the same archive-line-plus-digest as a `systemMessage` for the
+  surfaces that render frames. `back` while not away passes through with `brb: you were not
+  away; nothing held` as `additionalContext` (`NOT_AWAY_TEXT`) instead of silently. The
+  `brb` skill's step 7 says what to do with the context. On OMP the adapter awaits the prompt
+  hook on `back` (OMP awaits `input` handlers), stages the hook's context for
+  `before_agent_start` (`stagedBack`, cleared by the next input and by `session_stop`), notifies
+  the archive line and lets the word through, so the agent's reply is the digest there too;
+  `brb` and `pending` are handled as before. `evals/prompt-back` expects `systemMessage`.
 - A second `brb` while away is no longer blocked: it passes through with ``brb: still away since
   <since> (<duration>); N held. Only `back` ends the hold; `pending` peeks. Your questions
   answered while away did not end it.`` as a `systemMessage` and at the head of the agent's
@@ -104,13 +120,16 @@ hold exists to prevent.
 
 ### Fixed
 
-- The backstop resets per human turn: every prompt while away except `pending` clears `backstopped` and `toolLessStops` in `away.json` (prompt hook `newTurn`; on OMP the adapter runs the prompt hook in the background for ordinary text), so a word-for-word repeat or a run of tool-less turns is backstopped again.
-- `hold`, `brb`, `back`, the new-turn reset and the Stop hook's write are serialized per session by `away.lock` (`lib/state.mjs` `withAwayLock`: O_EXCL create, 2 s wait, stale after 10 s) with a re-read inside it, so a `back` between hold's read and its write prints `not away; say it to Jo` and writes nothing instead of recreating the hold.
+- The backstop resets per human turn: every prompt while away except `pending` clears `backstopped` and `toolLessStops` in `away.json` (prompt hook `newTurn`). On OMP the adapter runs the prompt hook for ordinary text and waits for it before the prompt proceeds (OMP awaits `input` handlers; `newTurnHandler`), so the reset is on disk before the turn starts: a Stop of the new turn cannot run ahead of it, and it cannot land after that Stop and wipe the once-per-turn flag (Codex R2, B1; the earlier background spawn could do both).
+- `hold`, `brb`, `back`, the new-turn reset, the Stop hook's read-merge-write and `pending`'s read are serialized per session by `away.lock` (`lib/state.mjs` `withAwayLock`: O_EXCL create holding `<pid> <token>`, 2 s wait) with a re-read inside it, so a `back` between hold's read and its write prints `not away; say it to Jo` and writes nothing instead of recreating the hold. A lock is taken over only when its holder's pid is dead (`kill(pid, 0)` → ESRCH) or the lock is older than 60 s; a live slow holder is waited on for the 2 s and then the caller fails closed (`hold`: `brb: the hold is locked (<path>, held by pid N); try again in a moment`, exit 1; the Stop hook: its write-error path; `pending`: logged, the word proceeds). Takeover is a rename then a remove, and release removes the lock only while it still holds the caller's token, so two waiters cannot each remove the other's fresh lock (Codex R2, B2; the earlier lock was age-only at 10 s and could displace a live holder).
+- The Stop hook merges under the lock (`lib/stop-core.mjs` `decideStop`): the record is re-read inside `withAwayLock` and the digest merge, counts, backstop flag and write all happen there, so an item the hold command files while a stop is computing is in `seen` and counted once, not overwritten by the stop's stale copy (Codex R2, S1; before, the state was computed from a read taken before the lock). The fire output still comes from the first read, before the lock, so a locked state directory cannot swallow a fire.
+- `pending` reads the record and the digest under the lock, so a digest a writer is mid-way through (lines appended, count not yet written) is never shown (Codex R2, S2).
 
 ### Unchanged
 
-- `pending` and `back` print the digest as before; its entries now come from both sources, each
-  once. The on-fire path, the release rules (`idle:`, the guard, `idleStops`, three quiet
+- `pending` prints the digest as before, and `back`'s text is the same digest; its entries
+  now come from both sources, each once. The on-fire path, the release rules (`idle:`, the
+  guard, `idleStops`, three quiet
   continuations) and `lib/hook-runner.mjs` (plugin-kit 0.3.2's, byte for byte; the kit's 0.3.2
   did not touch it).
 

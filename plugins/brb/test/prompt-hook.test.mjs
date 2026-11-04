@@ -1,14 +1,16 @@
 // test/prompt-hook.test.mjs — hooks/user-prompt-submit.mjs as a spawned process with fixture
-// stdin: brb (bare and with a note), back, pending, another prompt while away, another prompt
-// while home, and the session-start hook while away and home. node --test.
+// stdin: brb (bare and with a note), back (through, with the digest as additionalContext and a
+// systemMessage; any case), pending (under the session lock: a writer mid-way is waited for,
+// one held past the wait fails open), another prompt while away, another prompt while home,
+// and the session-start hook while away and home. node --test.
 
 import test from "node:test";
 import assert from "node:assert/strict";
 import { existsSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 
-import { AWAY_NOTICE, awayFor, awayInstruction, hasReplyFirstLine, holdCommand, replyFirstLine } from "../lib/text.mjs";
-import { box, promptInput, runHook } from "./helpers.mjs";
+import { AWAY_NOTICE, NOT_AWAY_TEXT, awayFor, awayInstruction, hasReplyFirstLine, holdCommand, replyFirstLine } from "../lib/text.mjs";
+import { box, exited, lockHolder, promptInput, runHook } from "./helpers.mjs";
 
 const blocked = (r) => {
   assert.equal(r.status, 0);
@@ -16,6 +18,18 @@ const blocked = (r) => {
   assert.equal(r.json.hookSpecificOutput?.hookEventName, "UserPromptSubmit");
   assert.equal(r.json.hookSpecificOutput?.suppressOriginalPrompt, true);
   return r.json.reason;
+};
+/** `back`'s answer: no block, the digest as a systemMessage and, under the back instruction, as additionalContext. Returns the systemMessage. */
+const cameBack = (r) => {
+  assert.equal(r.status, 0);
+  assert.equal(r.json?.decision, undefined, r.stdout);
+  assert.equal(r.json.hookSpecificOutput?.hookEventName, "UserPromptSubmit");
+  assert.equal(r.json.hookSpecificOutput?.suppressOriginalPrompt, undefined, "not a block");
+  const ctx = r.json.hookSpecificOutput?.additionalContext;
+  assert.match(ctx, /^brb: Jo is back(?: \(away \d+m\))?\. Reply with the digest below verbatim as your whole message, then stop \(end with nothing else\)\. If a held item is already resolved, append '— resolved: <how>' to that line\.\n\n/);
+  assert.ok(ctx.endsWith(`\n\n${r.json.systemMessage}`), "the context carries the same text as the systemMessage");
+  assert.ok(ctx.length <= 10_000, `additionalContext length ${ctx.length} (Claude Code caps it at 10,000)`);
+  return r.json.systemMessage;
 };
 
 test("bare brb: blocks the prompt with the confirmation and writes away.json", () => {
@@ -113,15 +127,31 @@ test("another prompt while away: proceeds with the away instruction as additiona
   }
 });
 
-test("back and pending while home: pass through (nothing printed), so the word reaches the model as a reply", () => {
+test("pending while home passes through (nothing printed); back while home passes through saying nothing was held, so the word reaches the model as a reply", () => {
   const b = box();
   try {
-    for (const w of ["back", "pending", "Back."]) {
-      const r = runHook(b, "user-prompt-submit", promptInput(b, w));
-      assert.equal(r.status, 0);
-      assert.equal(r.stdout.trim(), "", `${w}: ${r.stdout}`);
+    const r = runHook(b, "user-prompt-submit", promptInput(b, "pending"));
+    assert.equal(r.status, 0);
+    assert.equal(r.stdout.trim(), "", r.stdout);
+    for (const w of ["back", "Back.", "BACK"]) {
+      const home = runHook(b, "user-prompt-submit", promptInput(b, w));
+      assert.equal(home.status, 0);
+      assert.deepEqual(home.json, { hookSpecificOutput: { hookEventName: "UserPromptSubmit", additionalContext: NOT_AWAY_TEXT } }, `${w}: ${home.stdout}`);
     }
     assert.ok(!existsSync(b.stateDir("s1")), "nothing written");
+  } finally {
+    b.release();
+  }
+});
+
+test("back in any case or with a trailing mark (Back, back., BACK) ends the hold and answers the digest", () => {
+  const b = box();
+  try {
+    for (const w of ["Back", "back.", "BACK"]) {
+      runHook(b, "user-prompt-submit", promptInput(b, "brb"));
+      assert.match(cameBack(runHook(b, "user-prompt-submit", promptInput(b, w))), /^brb: hold cleared\.\n\nbrb digest — held since/, w);
+      assert.ok(!existsSync(join(b.stateDir("s1"), "away.json")), `${w} clears the hold`);
+    }
   } finally {
     b.release();
   }
@@ -134,7 +164,7 @@ test("pending while away with an empty digest: says so and changes nothing; back
     const peek = blocked(runHook(b, "user-prompt-submit", promptInput(b, "pending")));
     assert.match(peek, /^brb digest — held since .*, 0 items\n\n\(nothing held\)$/);
     assert.ok(existsSync(join(b.stateDir("s1"), "away.json")), "pending leaves the hold");
-    const back = blocked(runHook(b, "user-prompt-submit", promptInput(b, "back")));
+    const back = cameBack(runHook(b, "user-prompt-submit", promptInput(b, "back")));
     assert.match(back, /^brb: hold cleared\.\n\nbrb digest — held since .*\n\n\(nothing held\)$/);
     assert.ok(!existsSync(join(b.stateDir("s1"), "away.json")), "back clears the hold");
   } finally {
@@ -142,7 +172,7 @@ test("pending while away with an empty digest: says so and changes nothing; back
   }
 });
 
-test("back with held items: prints the digest, archives it, clears the hold; pending first leaves it", () => {
+test("back with held items: answers the digest (for the agent to reply with, and as a systemMessage), archives it, clears the hold; pending first leaves it", () => {
   const b = box();
   try {
     runHook(b, "user-prompt-submit", promptInput(b, "brb"));
@@ -151,7 +181,7 @@ test("back with held items: prints the digest, archives it, clears the hold; pen
     const peek = blocked(runHook(b, "user-prompt-submit", promptInput(b, "pending")));
     assert.match(peek, /2 items\n\n## .*\n- Pick Redis or in-process\nclosing ask: which\?$/);
     assert.ok(existsSync(join(b.stateDir("s1"), "digest.md")));
-    const back = blocked(runHook(b, "user-prompt-submit", promptInput(b, "back")));
+    const back = cameBack(runHook(b, "user-prompt-submit", promptInput(b, "back")));
     assert.match(back, /^brb: hold cleared; digest archived to .*archive\/.*\.md\.\n\nbrb digest — held since .*, 2 items\n\n## .*\n- Pick Redis or in-process\nclosing ask: which\?$/);
     assert.ok(!existsSync(join(b.stateDir("s1"), "digest.md")));
     assert.ok(!existsSync(join(b.stateDir("s1"), "away.json")));
@@ -163,7 +193,34 @@ test("back with held items: prints the digest, archives it, clears the hold; pen
   }
 });
 
-test("a large digest: back's reason is capped at 8000 characters, the archive path first and again in the cut note", () => {
+test("pending reads under the session lock: a writer holding it mid-way is waited for and the committed digest shows; a lock held past the wait fails open (no block, logged)", async () => {
+  const b = box();
+  let holder = null;
+  try {
+    runHook(b, "user-prompt-submit", promptInput(b, "brb"));
+    holder = lockHolder(b, "s1", {
+      ms: 1_000,
+      code: `state.appendDigest("s1", { at: "2026-11-04T00:00:00.000Z", lines: ["Pick Redis"], closingAsk: null }, process.env); const a = state.readAway("s1", process.env); a.held = 1; a.seen = ["pick redis"]; state.writeAway("s1", a, process.env)`,
+    });
+    const started = Date.now();
+    const r = blocked(runHook(b, "user-prompt-submit", promptInput(b, "pending")));
+    assert.ok(Date.now() - started >= 900, "waited for the writer");
+    assert.match(r, /^brb digest — held since .*, 1 item\n\n## .*\n- Pick Redis$/, "the count and the line, both committed");
+    assert.equal(await exited(holder), 0);
+    holder = lockHolder(b, "s1", { ms: 3_000 });
+    const slow = runHook(b, "user-prompt-submit", promptInput(b, "pending"));
+    assert.equal(slow.status, 0);
+    assert.equal(slow.json.decision, undefined, slow.stdout);
+    assert.match(slow.json.systemMessage, /^brb UserPromptSubmit failed open: brb: the hold is locked \(.*away\.lock, held by pid \d+\); try again in a moment$/);
+    assert.match(b.read(b.errorsLog), / UserPromptSubmit brb: the hold is locked/);
+    assert.equal(await exited(holder), 0);
+  } finally {
+    if (holder) await exited(holder);
+    b.release();
+  }
+});
+
+test("a large digest: back's text is capped at 8000 characters (the context under 10,000), the archive path first and again in the cut note", () => {
   const b = box();
   try {
     runHook(b, "user-prompt-submit", promptInput(b, "brb"));
@@ -172,7 +229,7 @@ test("a large digest: back's reason is capped at 8000 characters, the archive pa
     const peek = blocked(runHook(b, "user-prompt-submit", promptInput(b, "pending")));
     assert.ok(peek.length <= 8000, `pending length ${peek.length}`);
     assert.match(peek, /\n… \(\d+ more lines; full digest: .*digest\.md\)$/);
-    const back = blocked(runHook(b, "user-prompt-submit", promptInput(b, "back")));
+    const back = cameBack(runHook(b, "user-prompt-submit", promptInput(b, "back")));
     assert.ok(back.length <= 8000, `back length ${back.length}`);
     const path = /^brb: hold cleared; digest archived to (.*archive\/.*\.md)\.\n/.exec(back)?.[1];
     assert.ok(path, back.slice(0, 200));

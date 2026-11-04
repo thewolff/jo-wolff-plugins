@@ -16,7 +16,7 @@ are the one thing that still reaches you at once.
 |---|---|---|
 | away | first line `brb: still away (<duration>, N held) — say \`back\` to read them`, then the body: what was done, ending `idle: <why>` when nothing is runnable; no `Needs you`, no question, no closing ask | the still-away line at the top of every reply; `brb on fire: …` for a fire; `brb: the agent is idle (<why>); N held` when it stops; on Claude Code Desktop and the terminal, `⚠ brb: away 40m · N held · say back` under the prompt while you type |
 | you answer a fire (or anything) while away | your answer handled, then the same shape as away | the hold continues; the away instruction is re-injected on every prompt, and only `back` ends the hold |
-| back | | `brb: hold cleared; digest archived to <path>.` then the digest: every item the command held and every one the backstop moved, each once; the badge goes |
+| back | the digest, verbatim, as its whole reply: `brb: hold cleared; digest archived to <path>.` then every item the command held and every one the backstop moved, each once; an item it already resolved ends `— resolved: <how>` | that reply, on every surface (terminal, desktop, mobile app); on the surfaces that render hook frames, the same text once more as a hook line; the badge goes |
 
 Built on plugin-kit 0.3.2. Claude Code hooks, a Claude Code mod for the badge, plus an OMP
 extension that runs the same hooks. Node 22.13 or later. No other plugin is needed.
@@ -34,23 +34,29 @@ the fallbacks and the exact reversal.
 
 ## Usage
 
-Three words, each typed as the whole prompt (trailing `.`, `!` or `?` allowed; `brb, lunch`
-and `brb: lunch` carry a note too). None of them starts a turn while away.
+Three words, each typed as the whole prompt (any case; trailing `.`, `!` or `?` allowed; `brb, lunch`
+and `brb: lunch` carry a note too). `brb` and `pending` start no turn; `back` starts one whose
+reply is the digest.
 
 | You type | What happens | What you see |
 |---|---|---|
 | `brb` or `brb <note>` | the hold begins: `away.json` is written for this session | `brb: holding needs-you items until \`back\`; on-fire items still come through` (the note appended) |
 | `pending` | nothing changes | the digest so far, under `brb digest — held since <when>, N items` |
-| `back` | the digest is archived to `archive/<when>.md` and the hold ends | `brb: hold cleared; digest archived to <path>.` first, then the digest |
+| `back` | the digest is archived to `archive/<when>.md`, the hold ends, and the prompt goes through with the digest and `brb: Jo is back (away <duration>). Reply with the digest below verbatim as your whole message, then stop …` as `additionalContext` (plus the digest as a `systemMessage`) | the agent's reply: `brb: hold cleared; digest archived to <path>.` first, then the digest |
 
-An empty digest shows `(nothing held)`. A `back` or `pending` reason longer than 8000
+An empty digest shows `(nothing held)`. A `back` or `pending` text longer than 8000
 characters is cut at a line and ends `… (N more lines; full digest: <path>)`; the archive keeps
-every line. `back` or `pending` while not away is passed to the agent as an ordinary prompt, so
-a one-word answer to an agent's question ("revert or go back?") is not swallowed. A second
-`brb` while away changes nothing and is not blocked: you see ``brb: still away since <when>
-(<duration>); N held. Only `back` ends the hold; `pending` peeks. Your questions answered
-while away did not end it.``, and the agent gets the same line over the away instruction, so it
-goes back to holding. (On OMP the adapter shows that line and starts no turn.)
+every line. Why `back` is answered by the agent and not shown as a hook frame: the Claude
+mobile app renders no `UserPromptSubmit` block message, so a `back` typed there archived the
+digest and showed nothing; an assistant message renders on every surface. `pending` while not
+away is passed to the agent as an ordinary prompt, and `back` while not away too, with
+`brb: you were not away; nothing held` as `additionalContext`, so a one-word answer to an
+agent's question ("revert or go back?") is not swallowed. A second `brb` while away changes
+nothing and is not blocked: you see ``brb: still away since <when> (<duration>); N held. Only
+`back` ends the hold; `pending` peeks. Your questions answered while away did not end it.``,
+and the agent gets the same line over the away instruction, so it goes back to holding. (On
+OMP the adapter shows that line and starts no turn; on `back` it stages the digest context for
+the turn and lets the word through, so the agent's reply is the digest there as well.)
 
 Typing anything else while away, an answer to an `on fire:` line included, does not end the
 hold: the instruction, whose first line says the hold is still on, rides along with your
@@ -356,6 +362,25 @@ refused as already away. Now the instruction's first line says the hold is still
 long and how many held), rule 6 says Jo's reply is not `back`, every reply starts with a
 visible `brb: still away (…) — say \`back\` to read them` line that the backstop enforces once
 per turn, and a second `brb` passes through to re-arm the agent instead of being blocked.
+
+`back` is answered by the agent. On 2026-11-04 Jo typed `back` from the Claude mobile app:
+the hook archived the digest (six sections) and blocked the prompt, and the app, which renders
+no hook frame, showed nothing. Now `back` archives and clears as before but lets the prompt
+through with the digest and an instruction to reply with it verbatim as `additionalContext`
+(the same text rides a `systemMessage` for the surfaces that render frames), so what you see
+is the agent's reply, on every surface. `back` while not away passes through with
+`brb: you were not away; nothing held` as context. On OMP the adapter awaits the hook on
+`back`, stages its context for `before_agent_start` and lets the word through.
+
+Four races closed after the second Codex review. The OMP adapter waits for the prompt hook's
+new-turn reset before an ordinary prompt proceeds (OMP awaits `input` handlers), so the reset
+cannot land after the new turn's Stop and wipe its once-per-turn flag. The session lock
+(`away.lock`) holds its holder's pid and is taken over only when that pid is dead or the lock
+is older than 60 s; a live slow holder is waited on for 2 s and then the caller fails closed
+(`hold` exits 1 with `try again in a moment`, the Stop hook takes its write-error path,
+`pending` logs and lets the word through). The Stop hook re-reads the record under the lock and
+merges, counts and writes there, so an item the hold command files while a stop is computing
+is kept, not overwritten. `pending` reads under the lock, so a digest mid-write is never shown.
 
 ## Changes in 0.1.1
 

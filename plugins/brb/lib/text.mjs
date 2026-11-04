@@ -111,6 +111,19 @@ export function firstLineReason(line) {
   return `brb: every reply while away starts with the line \`\`${line}\`\`; reply again with that line first.`;
 }
 
+/**
+ * What the agent is told on `back`, over the digest: Jo is back, reply with the digest below as
+ * the whole message. The digest reaches Jo as the agent's reply, which every surface renders;
+ * a hook frame does not render on the mobile app.
+ */
+export function backInstruction(away, now) {
+  const d = awayFor(away.since, now);
+  return `brb: Jo is back${d ? ` (away ${d})` : ""}. Reply with the digest below verbatim as your whole message, then stop (end with nothing else). If a held item is already resolved, append '— resolved: <how>' to that line.`;
+}
+
+/** What the agent is told on `back` while not away; the word itself still reaches it as the prompt. */
+export const NOT_AWAY_TEXT = "brb: you were not away; nothing held";
+
 /** The most a `back` or `pending` reason carries; past it the digest is cut and points at its file. */
 export const REASON_CAP = 8000;
 
