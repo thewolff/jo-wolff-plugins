@@ -1112,11 +1112,19 @@ export function pairNote(state, args, io) {
   return { ok: true, state: next, roadmapOpen: openRoadmapItems(roadmap), journal: [entry("note", io, { ...text, roadmap })] };
 }
 
+/** What the user types, inside their latest turn, before pair_learn may turn learning mode off. */
+export const LEARNING_OFF_PHRASE = "learning mode off";
+/** pair_learn's refusal of on: false without that phrase in the user's latest typed turn. */
+export const LEARNING_OFF_REASON = `only your partner turns learning mode off: their latest typed turn has to contain "${LEARNING_OFF_PHRASE}"`;
+
 /**
  * pair_learn: turn learning mode on or off for this pairing session. Journaled as a `learning`
  * entry, like a note. pair_start and a carry always start with it off, so it never leaks from one
  * session into the next. While it is on, pair_propose needs `why` and `sources` (sourceProblem)
- * and pair_done needs `recall`; while it is off neither verb checks them.
+ * and pair_done needs `recall`; while it is off neither verb checks them. Turning it on only
+ * adds checks, so the agent may do it on its own; turning it off removes them, so it is refused
+ * unless the latest trusted turn (the one pair_begin binds a quote to) contains
+ * LEARNING_OFF_PHRASE as whole words, in any case.
  * @param {State} state
  * @param {{ on?: unknown }} args
  * @param {Io} [io]
@@ -1126,6 +1134,8 @@ export function pairLearn(state, args, io) {
   if (state.phase === "inactive") return refuse(state, "pair_learn", "pairing is not active", io);
   if (state.carried) return refuse(state, "pair_learn", CARRIED_REASON, io);
   if (typeof args?.on !== "boolean") return refuse(state, "pair_learn", "on is not true or false", io);
+  const typed = typeof state.lastInput?.text === "string" ? state.lastInput.text.toLowerCase() : "";
+  if (!args.on && state.learning === true && !occursAtWordBoundaries(typed, LEARNING_OFF_PHRASE)) return refuse(state, "pair_learn", LEARNING_OFF_REASON, io);
   const next = clone(state);
   next.learning = args.on;
   return { ok: true, state: next, journal: [entry("learning", io, { on: args.on, was: state.learning === true })] };
@@ -1133,8 +1143,7 @@ export function pairLearn(state, args, io) {
 
 /** The forms a learning-mode source takes, as pair_propose's refusal names them. */
 export const SOURCE_FORMS = 'each source is a URL object { "url": "https://…", "passage": "the words you relied on" }, an absolute file:line or file:line-line path, or a string starting "from memory"';
-const FILE_LINE_SOURCE = /^\/.+:\d+(-\d+)?$/;
-const URL_SOURCE = /^https?:\/\//;
+const FILE_LINE_SOURCE = /^(\/\S.*):(\d+)(?:-(\d+))?$/;
 const MEMORY_SOURCE = /^from memory\b/i;
 
 /** `x` as JSON, cut to a length a refusal can quote. */
@@ -1143,18 +1152,38 @@ function quoted(x) {
   return s.length > 120 ? `${s.slice(0, 117)}...` : s;
 }
 
+/** A string source: "from memory…", or an absolute path naming a file, then a line >= 1 or an ascending range. Trimmed first. */
+function stringSourceOk(raw) {
+  if (CONTROL.test(raw)) return false;
+  const s = raw.trim();
+  if (MEMORY_SOURCE.test(s)) return true;
+  const m = FILE_LINE_SOURCE.exec(s);
+  if (!m || !/[^\s/]/.test(m[1])) return false;
+  const start = Number(m[2]);
+  const end = m[3] === undefined ? start : Number(m[3]);
+  return start >= 1 && end >= start;
+}
+
+/** A URL source: an http(s) URL that parses, with a host and no whitespace, and a non-empty passage; no control characters in either. */
+function urlSourceOk(s) {
+  if (!isObj(s) || typeof s.url !== "string" || typeof s.passage !== "string") return false;
+  if (CONTROL.test(s.url) || CONTROL.test(s.passage) || /\s/.test(s.url) || s.passage.trim() === "") return false;
+  let url;
+  try { url = new URL(s.url); } catch { return false; }
+  return (url.protocol === "http:" || url.protocol === "https:") && url.hostname !== "";
+}
+
 /**
  * Why a learning-mode card's sources are unusable, or null. A non-empty list; each entry a URL
- * object with a non-empty passage, an absolute `file:line` or `file:line-line` string, or a
- * string starting "from memory". Names the first bad entry by its index.
+ * object (urlSourceOk), an absolute `file:line` or `file:line-line` string, or a string starting
+ * "from memory" (stringSourceOk). Names the first bad entry by its index.
  * @param {unknown} sources
  * @returns {string | null}
  */
 export function sourceProblem(sources) {
   if (!Array.isArray(sources) || sources.length === 0) return `the card has no sources; ${SOURCE_FORMS}`;
   for (const [i, s] of sources.entries()) {
-    if (typeof s === "string" && !CONTROL.test(s) && (FILE_LINE_SOURCE.test(s) || MEMORY_SOURCE.test(s))) continue;
-    if (isObj(s) && typeof s.url === "string" && URL_SOURCE.test(s.url) && typeof s.passage === "string" && s.passage.trim() !== "") continue;
+    if (typeof s === "string" ? stringSourceOk(s) : urlSourceOk(s)) continue;
     return `sources[${i}] is ${quoted(s)}; ${SOURCE_FORMS}`;
   }
   return null;

@@ -63,6 +63,7 @@ import {
   sourceProblem,
   RECALL_REASON,
   WHY_REASON,
+  LEARNING_OFF_REASON,
 } from "./gate.mjs";
 
 const ROOT = "/work/repo";
@@ -1380,9 +1381,31 @@ describe("learning mode", () => {
     const on = pairLearn(started(host), { on: true }, host.io);
     assert.equal(ok(on).learning, true);
     assert.deepEqual({ type: on.journal[0].type, on: on.journal[0].on, was: on.journal[0].was }, { type: "learning", on: true, was: false });
-    const off = pairLearn(on.state, { on: false }, host.io);
+    const off = pairLearn(say(on.state, "OK, Learning Mode Off for now"), { on: false }, host.io);
     assert.equal(ok(off).learning, false);
     assert.equal(off.journal[0].was, true);
+  });
+
+  test("pair_learn on: false is refused unless the latest typed turn says learning mode off", () => {
+    const host = fakeHost();
+    const on = learning(host);
+    // No typed turn at all, a turn without the phrase, the phrase inside a longer word, and the
+    // phrase only in an untrusted turn: all refused, and the flag stays on.
+    const cases = [
+      on,
+      say(on, "keep going"),
+      say(on, "learning mode offline"),
+      say(say(on, "keep going"), "learning mode off", "tool-result"),
+      say(say(on, "learning mode off"), "next card please"),
+    ];
+    for (const s of cases) {
+      const r = pairLearn(s, { on: false }, host.io);
+      refusedWith(r, /only your partner turns learning mode off/);
+      assert.equal(r.reason, LEARNING_OFF_REASON);
+      assert.equal(r.state.learning, true);
+    }
+    // Already off: nothing to remove, so no phrase is needed.
+    assert.equal(ok(pairLearn(started(host), { on: false }, host.io)).learning, false);
   });
 
   test("pair_learn is refused when pairing is off, in a carried session, and without a boolean", () => {
@@ -1448,12 +1471,30 @@ describe("learning mode", () => {
   test("sourceProblem accepts file:line, file:line-line, from memory with a note, and a URL with its passage", () => {
     assert.equal(sourceProblem(["/work/repo/src/a.ts:12"]), null);
     assert.equal(sourceProblem(["/work/repo/src/a.ts:12-40"]), null);
+    assert.equal(sourceProblem(["/work/repo/src/a.ts:12-12"]), null);
+    assert.equal(sourceProblem(["  /work/repo/src/a.ts:12 "]), null);
     assert.equal(sourceProblem(["from memory"]), null);
+    assert.equal(sourceProblem([" from memory, unchecked "]), null);
     assert.equal(sourceProblem(["from memory: Node's fs.rm needs force to ignore a missing path; not checked this session"]), null);
     assert.equal(sourceProblem(["From memory, unchecked"]), null);
     assert.equal(sourceProblem([{ url: "http://localhost:3000/docs", passage: "the API returns 204" }]), null);
     assert.match(sourceProblem(["from memoryless"]), /sources\[0\]/);
     assert.match(sourceProblem("from memory"), /no sources/);
+  });
+
+  test("sourceProblem refuses a file:line with a blank path, line 0 or a backwards range", () => {
+    for (const s of ["/ :1", "//:1", "/a:0", "/a:9-3", "/a:0-2", "/:1"]) assert.match(sourceProblem([s]) ?? "accepted", /sources\[0\]/, s);
+  });
+
+  test("sourceProblem refuses a URL with no host, with whitespace, or with a control character in url or passage", () => {
+    const bad = [
+      { url: "https://", passage: "x" },
+      { url: "https:// nope", passage: "x" },
+      { url: "https://a\n", passage: "x" },
+      { url: "https://example.com/doc", passage: "x\u0007" },
+      { url: "file:///etc/hosts", passage: "x" },
+    ];
+    for (const s of bad) assert.match(sourceProblem([s]) ?? "accepted", /sources\[0\]/, JSON.stringify(s));
   });
 
   test("a card with why and sources is recorded with both", () => {

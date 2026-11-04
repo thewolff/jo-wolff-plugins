@@ -68,7 +68,7 @@
 
 import { CARRIED_PHRASE, EARLIER_ROADMAP_CHOICES, PAIR_TOOLS, ROADMAP_STATUSES } from "../core/gate.mjs";
 import { logFault, reasonOf } from "../lib/host-io.mjs";
-import { carryInto, clearInPlace, endSession, executeVerb, messageText, pairingOrUncertain, recallWarning, recordTrustedInput, sessionDirFor, verdict } from "../lib/verbs.mjs";
+import { carryInto, clearInPlace, closingTextOf, endSession, executeVerb, messageText, pairingOrUncertain, recallWarning, recordTrustedInput, sessionDirFor, verdict } from "../lib/verbs.mjs";
 
 // ─── host shapes (structural; only what this adapter reads) ────────────────────────────
 
@@ -113,7 +113,7 @@ export type PiLike = {
 	on(event: "tool_call", handler: (event: { toolName: string; input?: Record<string, unknown> }, ctx: OmpContext) => unknown): void;
 	on(event: "input", handler: (event: { text: string; source: string }, ctx: OmpContext) => unknown): void;
 	on(event: "session_shutdown", handler: (event: unknown, ctx: OmpContext) => unknown): void;
-	on(event: "session_stop", handler: (event: { last_assistant_message?: unknown }, ctx: OmpContext) => unknown): void;
+	on(event: "session_stop", handler: (event: { last_assistant_message?: unknown; messages?: unknown }, ctx: OmpContext) => unknown): void;
 	on(event: "session_before_switch" | "session_before_branch", handler: (event: unknown, ctx: OmpContext) => unknown): void;
 	on(event: "session_switch" | "session_branch", handler: (event: { reason?: string }, ctx: OmpContext) => unknown): void;
 	on(event: "session_tree", handler: (event: { newLeafId?: string | null; oldLeafId?: string | null }, ctx: OmpContext) => unknown): void;
@@ -428,7 +428,19 @@ export default function pairedCodingOmp(pi: PiLike, deps: AdapterDeps = {}): voi
 		try {
 			const dir = dirOf(ctx, env);
 			if (!dir) return undefined;
-			const warning = recallWarning({ sessionDir: dir, text: () => messageText(event?.last_assistant_message) });
+			// last_assistant_message is optional; without it, the turn's messages, read back no
+			// further than the newest user message (closingTextOf).
+			const warning = recallWarning({
+				sessionDir: dir,
+				text: () =>
+					event?.last_assistant_message !== undefined
+						? messageText(event.last_assistant_message)
+						: closingTextOf(
+								event?.messages,
+								(m: unknown) => (m !== null && typeof m === "object" && "role" in m ? m.role : undefined),
+								(m: unknown) => m,
+							),
+			});
 			if (warning) warn(ctx, warning);
 		} catch (err) {
 			const logged = logFault(env, "session_stop", { session_id: ctx.sessionManager.getSessionId() }, `the learning-mode recall check failed: ${reasonOf(err)}`, OMP_FILE);

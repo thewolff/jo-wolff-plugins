@@ -40,7 +40,7 @@ import { dirname, join, relative } from "node:path";
 import { fileURLToPath } from "node:url";
 import { CARRIED_PHRASE, PAIR_TOOLS, isStopPhrase } from "../core/gate.mjs";
 import { PENDING_DIR, activated, findRoot, loadState, loadStateReport, logFault as logFaultLine, reasonOf, stateBase, withLock } from "../lib/host-io.mjs";
-import { RECEIPT_FILE, carryInto, endSession, messageText, pairingCarry, pairingOrUncertain, recallWarning, recordTrustedInput, sessionDirFor, takeCarryMarker, verdict, writeCarryMarker } from "../lib/verbs.mjs";
+import { RECEIPT_FILE, carryInto, closingTextOf, endSession, pairingCarry, pairingOrUncertain, recallWarning, recordTrustedInput, sessionDirFor, takeCarryMarker, verdict, writeCarryMarker } from "../lib/verbs.mjs";
 import { bareToolName, hostAllowFor, writeBinding } from "../server/binding.mjs";
 
 const sleepSync = (ms) => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
@@ -69,21 +69,17 @@ function readTail(path, bytes = 2 * 1024 * 1024) {
 
 /**
  * The text of the turn's closing message: Stop's `last_assistant_message`, else the newest
- * assistant transcript entry that has text. Null when neither can be read.
+ * assistant transcript entry with text after the newest user entry (closingTextOf). The
+ * transcript can lag the turn, so a user entry reached first means this turn's text is not
+ * written yet: null, never an earlier turn's message. Null when neither can be read.
  */
 function closingText(input) {
   if (typeof input?.last_assistant_message === "string") return input.last_assistant_message;
   if (typeof input?.transcript_path !== "string" || input.transcript_path === "") return null;
   let lines;
   try { lines = readTail(input.transcript_path).split("\n"); } catch { return null; }
-  for (let i = lines.length - 1; i >= 0; i--) {
-    let e;
-    try { e = JSON.parse(lines[i]); } catch { continue; }
-    if (e?.type !== "assistant") continue;
-    const text = messageText(e.message);
-    if (text !== null) return text;
-  }
-  return null;
+  const entries = lines.map((line) => { try { return JSON.parse(line); } catch { return null; } });
+  return closingTextOf(entries, (e) => e?.type, (e) => e?.message);
 }
 
 /** Read the head of a file (a forked transcript's copied entries come first). */
@@ -402,8 +398,15 @@ export function handle(event, input, opts = {}) {
     // for the next event that does (the next UserPromptSubmit or PreToolUse).
     stashNotices(dir, resolvePending(dir, { waitMs: opts.waitMs }));
     // Learning mode: a change set closed this turn and the closing message asked no recall
-    // question. The user is warned; the turn is not reopened.
-    const warning = recallWarning({ sessionDir: dir, text: () => closingText(input) });
+    // question. The user is warned; the turn is not reopened. Its own fault message: the queued
+    // turns above were judged already, so faultReply's Stop wording would be wrong here.
+    let warning;
+    try {
+      warning = recallWarning({ sessionDir: dir, text: () => closingText(input) });
+    } catch (err) {
+      const reason = `the learning-mode recall check failed: ${reasonOf(err)}`;
+      return { systemMessage: `paired-coding: ${reason}. ${logFault(env, event, input, reason)} Queued turns were judged; only the check for a "Recall:" line in the closing message was skipped.` };
+    }
     return warning ? { systemMessage: warning } : null;
   }
   if (event === "session-end") {

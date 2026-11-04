@@ -11,7 +11,7 @@ import { syncBuiltinESMExports } from "node:module";
 import { homedir, tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import {
-  CARRY_MAX_AGE_MS, PLUGIN_ROOT, RECALL_LINE, RECEIPT_FILE, ROADMAP_WALK_LIMIT, VERSION, carryInto, clearInPlace, endSession, executeVerb, messageText, recallWarning, recordTrustedInput, takeCarryMarker, verdict, writeCarryMarker,
+  CARRY_MAX_AGE_MS, PLUGIN_ROOT, RECALL_LINE, RECEIPT_FILE, ROADMAP_WALK_LIMIT, VERSION, carryInto, clearInPlace, closingTextOf, endSession, executeVerb, messageText, recallWarning, recordTrustedInput, takeCarryMarker, verdict, writeCarryMarker,
 } from "./verbs.mjs";
 import { PROC_LABELS, describeHolder, hashBoundary, loadState, realpathLoose, reapGroups, sandboxBackend, sandboxProblem, snapshotTree, unlockStale, withLock, writeSandboxed } from "./host-io.mjs";
 import { pairRunProfile, pairWriteProfile } from "../core/gate.mjs";
@@ -1742,9 +1742,39 @@ test("recallWarning: inert with learning off, warns once per pair_done, and says
   assert.equal(read, 1, "the closing text is read only when a pair_done is unchecked");
 });
 
+test("recallWarning: a pair_learn that leaves the flag as it was does not restart the count, and the agent cannot switch it off to skip the check", { skip: !hasSandbox }, async () => {
+  const f = fixture();
+  assert.equal((await executeVerb("pair_start", {}, f.ctx)).ok, true);
+  assert.equal((await executeVerb("pair_learn", { on: true }, f.ctx)).ok, true);
+  const p = await executeVerb("pair_propose", { boundary: ["src/a.txt"], why: "w", sources: ["from memory"] }, f.ctx);
+  typed(f, "yes, go ahead");
+  await executeVerb("pair_begin", { cardId: p.result.card.id, quote: "go ahead" }, f.ctx);
+  assert.equal((await executeVerb("pair_done", { cardId: p.result.card.id, recall: "q?" }, f.ctx)).ok, true);
+  assert.equal((await executeVerb("pair_learn", { on: true }, f.ctx)).ok, true);
+  const off = await executeVerb("pair_learn", { on: false }, f.ctx);
+  assert.equal(off.ok, false);
+  assert.match(off.text, /only your partner turns learning mode off: their latest typed turn has to contain "learning mode off"/);
+  assert.match(recallWarning({ sessionDir: f.dir, text: "Card closed." }) ?? "", /no line starting "Recall:".*card-1: q\?/);
+});
+
+test("closingTextOf reads back to the newest user entry and no further", () => {
+  const kind = (e) => e?.type;
+  const body = (e) => e?.message;
+  const user = { type: "user", message: { content: "go" } };
+  const said = (text) => ({ type: "assistant", message: { content: [{ type: "text", text }] } });
+  const toolOnly = { type: "assistant", message: { content: [{ type: "tool_use" }] } };
+  assert.equal(closingTextOf([said("Recall: old?"), user, said("Done."), toolOnly, null], kind, body), "Done.");
+  assert.equal(closingTextOf([said("Recall: old?"), user], kind, body), null, "the turn's text is not written yet: never the earlier turn's");
+  assert.equal(closingTextOf([said("Recall: old?"), user, toolOnly], kind, body), null);
+  assert.equal(closingTextOf("not a list", kind, body), null);
+  const role = (m) => m?.role;
+  assert.equal(closingTextOf([{ role: "user", content: "go" }, { role: "assistant", content: [{ type: "text", text: "a" }] }, { role: "toolResult", content: "r" }], role, (m) => m), "a");
+});
+
 test("RECALL_LINE and messageText", () => {
-  for (const t of ["Recall: why?", "  Recall: why?", "**Recall:** why?", "> Recall: why?", "Done.\n\nRecall: why?"]) assert.match(t, RECALL_LINE, t);
-  for (const t of ["recall: why?", "No Recall: here", "Recalls: why?"]) assert.doesNotMatch(t, RECALL_LINE, t);
+  const asked = ["Recall: why?", "  Recall: why?", "**Recall:** why?", "**Recall**: why?", "> Recall: why?", "Done.\n\nRecall: why?", "- Recall: why?", "* Recall: why?", "1. Recall: why?", "2) Recall: why?", "### Recall: why?", "RECALL: why?", "recall: why?", "- **Recall:** why?"];
+  for (const t of asked) assert.match(t, RECALL_LINE, t);
+  for (const t of ["No Recall: here", "Recalls: why?", "-Recall: why?", "####### Recall: why?", "Recall why?"]) assert.doesNotMatch(t, RECALL_LINE, t);
   assert.equal(messageText("plain"), "plain");
   assert.equal(messageText({ content: "s" }), "s");
   assert.equal(messageText({ content: [{ type: "thinking", thinking: "t" }, { type: "text", text: "a" }, { type: "text", text: "b" }] }), "a\nb");

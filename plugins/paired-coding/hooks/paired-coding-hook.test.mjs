@@ -744,6 +744,26 @@ test("learning mode: a Recall: line in the closing message, read from the transc
   assert.deepEqual({ cardIds: check.cardIds, recallShown: check.recallShown }, { cardIds: ["card-1"], recallShown: true });
 });
 
+test("learning mode: the transcript fallback stops at the newest user entry, so an earlier turn's Recall: line never counts", { skip: !hasSandbox }, async () => {
+  const f = fixture();
+  await learnedChangeSet(f);
+  appendFileSync(f.transcript, `${JSON.stringify({ type: "assistant", message: { role: "assistant", content: [{ type: "text", text: "Recall: an OLD question" }] } })}\n`);
+  appendFileSync(f.transcript, `${JSON.stringify({ type: "user", message: { role: "user", content: "next" } })}\n`);
+  assert.equal(handle("stop", { ...f.common }, { env: f.env, waitMs: 100 }), null, "unknown, not a warning");
+  const entries = readFileSync(join(f.base, "s1", "journal.jsonl"), "utf8").trim().split("\n").map((l) => JSON.parse(l));
+  assert.equal(entries.find((e) => e.type === "recall-check").recallShown, null, "recorded as unknown, not as shown");
+});
+
+test("learning mode: a recall check that throws at Stop says the queued turns were judged, and still never blocks", { skip: !hasSandbox }, async () => {
+  const f = fixture();
+  await learnedChangeSet(f);
+  const input = { ...f.common, get last_assistant_message() { throw new Error("boom"); } };
+  const out = handle("stop", input, { env: f.env, waitMs: 100 });
+  assert.deepEqual(Object.keys(out), ["systemMessage"]);
+  assert.match(out.systemMessage, /^paired-coding: the learning-mode recall check failed: boom\. .* Queued turns were judged; only the check for a "Recall:" line in the closing message was skipped\.$/);
+  assert.doesNotMatch(out.systemMessage, /were not judged/);
+});
+
 test("learning mode off: Stop stays silent after pair_done and journals no recall check", { skip: !hasSandbox }, async () => {
   const f = fixture();
   await call(f, "pair_start", {});

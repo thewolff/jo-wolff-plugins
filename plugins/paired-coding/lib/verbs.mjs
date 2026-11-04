@@ -128,8 +128,34 @@ export function recordTrustedInput(ctx) {
   return { recorded: true, trusted: true, active: true, stopped: true, receipt, changedSinceReadBack: r.changedSinceReadBack ?? [], unapproved: r.unapproved ?? [] };
 }
 
-/** A closing-message line that asks the recall question: "Recall:" first, bold or quoted allowed. */
-export const RECALL_LINE = /^[ \t>]*(?:\*\*|__|\*|_)?Recall:/m;
+/**
+ * A closing-message line that asks the recall question: "Recall:" first, in any case, after an
+ * optional quote marker, list marker (`-`, `*`, `+`, `1.`, `1)`) or heading (`#`…`######`), with
+ * bold or italic allowed around the word (`**Recall:**`, `**Recall**:`).
+ */
+export const RECALL_LINE = /^[ \t>]*(?:[-*+][ \t]+|\d+[.)][ \t]+|#{1,6}[ \t]+)?(?:\*\*|__|\*|_)?Recall(?:\*\*|__|\*|_)?:/im;
+
+/**
+ * The closing message's text from a turn's messages, oldest first: the newest assistant
+ * message with text, read back only as far as the newest user message. Null when that user
+ * message comes first, so an earlier turn's text is never taken for this one's. `kind` reads an
+ * entry's role (a Claude Code transcript's `type`, an OMP message's `role`); `body` its message.
+ * @param {unknown} entries
+ * @param {(e: unknown) => unknown} kind
+ * @param {(e: unknown) => unknown} body
+ * @returns {string | null}
+ */
+export function closingTextOf(entries, kind, body) {
+  if (!Array.isArray(entries)) return null;
+  for (let i = entries.length - 1; i >= 0; i--) {
+    const k = kind(entries[i]);
+    if (k === "user") return null;
+    if (k !== "assistant") continue;
+    const text = messageText(body(entries[i]));
+    if (text !== null) return text;
+  }
+  return null;
+}
 
 /**
  * A host message's text: a string as it is, or a message object's string content or text blocks
@@ -149,11 +175,12 @@ export function messageText(message) {
 /**
  * The learning-mode check at the end of a turn (Claude Code Stop, OMP session_stop). ADAPTER
  * MACHINERY ONLY. Inert unless pairing is on with learning on. It looks for `done` entries since
- * the last check, the last `learning` toggle, or the last `start`; when there are any it journals
- * a `recall-check` entry and, if the closing message (`text`, null when the host gave none; a
- * function is called only then, so a host that must read a transcript reads it only when it
- * matters) has no line starting "Recall:", returns the warning for the user. It never blocks:
- * the turn has ended either way.
+ * the last check, the last `learning` entry that changed the flag, or the last `start` (a
+ * pair_learn that leaves the flag as it was does not restart the count); when there are any it
+ * journals a `recall-check` entry and, if the closing message (`text`, null when the host gave
+ * none; a function is called only then, so a host that must read a transcript reads it only
+ * when it matters) has no RECALL_LINE, returns the warning for the user. It never blocks: the
+ * turn has ended either way.
  * @param {{ sessionDir: string, text: string | null | (() => string | null) }} ctx
  * @returns {string | null}
  */
@@ -166,8 +193,8 @@ export function recallWarning(ctx) {
     const entries = readJournal(dir);
     let from = 0;
     for (let i = entries.length - 1; i >= 0; i--) {
-      const t = entries[i]?.type;
-      if (t === "recall-check" || t === "learning" || t === "start") { from = i + 1; break; }
+      const e = entries[i];
+      if (e?.type === "recall-check" || e?.type === "start" || (e?.type === "learning" && e.on !== e.was)) { from = i + 1; break; }
     }
     const done = entries.slice(from).filter((e) => e?.type === "done");
     if (done.length === 0) return null;
@@ -427,7 +454,7 @@ function cardArgs(a) {
 /** What pair_learn tells the agent, on and off. */
 function learnText(r) {
   return r.state.learning
-    ? 'Learning mode is on. Every card now needs why (why this approach over the alternatives) and sources (each a { "url", "passage" } object, an absolute file:line or file:line-line path, or a string starting "from memory"); pair_done needs recall, one question about the change set, and your closing message asks it on a line starting "Recall:". pair_learn with on: false turns it off.'
+    ? 'Learning mode is on. Every card now needs why (why this approach over the alternatives) and sources (each a { "url", "passage" } object, an absolute file:line or file:line-line path, or a string starting "from memory"); pair_done needs recall, one question about the change set, and your closing message asks it on a line starting "Recall:". pair_learn with on: false turns it off, and only after your partner types "learning mode off".'
     : "Learning mode is off. Cards and pair_done take their usual fields.";
 }
 

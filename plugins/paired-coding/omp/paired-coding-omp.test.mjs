@@ -492,6 +492,21 @@ sandboxOnly("learning mode on OMP: a Recall: line means no warning", async () =>
   assert.equal(s.notes.length, before);
 });
 
+sandboxOnly("learning mode on OMP: without last_assistant_message, session_stop reads the turn's messages back to the newest user message", async () => {
+  const s = setup();
+  assert.equal((await s.call("pair_start")).ok, true);
+  await s.call("pair_learn", { on: true });
+  await s.call("pair_propose", { boundary: ["a.txt"], why: "w", sources: ["from memory"] });
+  await s.type("yes, go ahead with that");
+  await s.call("pair_begin", { cardId: "card-1", quote: "go ahead" });
+  await s.call("pair_done", { cardId: "card-1", recall: "What changed?" });
+  const before = s.notes.length;
+  const said = (text) => ({ role: "assistant", content: [{ type: "text", text }] });
+  await s.emit("session_stop", { messages: [said("Recall: an OLD question"), { role: "user", content: "go" }, said("Closed card-1."), { role: "toolResult", content: "ok" }] });
+  assert.equal(s.notes.length, before + 1, "this turn's message has no Recall: line; the earlier turn's does not count");
+  assert.match(s.notes.at(-1).m, /no line starting "Recall:"/);
+});
+
 sandboxOnly("pair_propose through the adapter journals proposedCode and shows it as a code block", async () => {
   const s = setup();
   assert.equal((await s.call("pair_start")).ok, true);
