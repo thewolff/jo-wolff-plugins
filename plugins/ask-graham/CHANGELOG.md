@@ -4,6 +4,31 @@ All notable changes to the ask-graham plugin are recorded here. The format follo
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Earlier releases are described under
 "Release notes" in [README.md](README.md#release-notes).
 
+## 0.8.0 - 2026-11-04
+
+### Added
+
+The reply shows the better design beside the pattern-fit one. Jo's rule (2026-11-04): "ask-graham
+will share solutions based on whether or not it's a pattern in the code base. In those cases make
+sure it's capable and encouraged to show both the best solution based on existing patterns, and
+another solution which is better/optimal if one exists." Step 4's second-pattern flag still makes
+the design use the repo's pattern or say why it cannot; now, when a design beats the pattern-fit
+one on a stated axis (fewer moving parts, removes a known failure mode, closes a gap the pattern
+leaves, or is what the repo would adopt if starting today), the reply shows it too, with what it
+costs over the pattern (the callers that migrate, a second way to do the thing until the old one
+goes). The completed-check template gains an `**Alternative:**` line after `**Red flags:**`: the
+better design, its axis and its cost, or `none: <what was weighed>`. Step 5's fewer-lines rule
+still picks the default; the alternative is shown either way, never dropped for losing the pick.
+The structure check carries the line only when its second-pattern flag fires. pattern-check 0.4.0's
+`better design` column is what the line carries when that plugin is installed.
+
+Two live scenarios prove the two shapes: `evals/session-alternative-shown.scenario.json` (three
+scripts parse config by hand; a shared loader is better and costs a migration) and
+`evals/session-alternative-none.scenario.json` (one loader already serves every script, and the
+prompt leaves only the settings loader open: `none` with what was weighed).
+They have no hook phase: the Stop check is unchanged and does not block a reply that lacks the
+line, so the line is encouraged by the skill and graded by the canary, not enforced by a hook.
+
 ## 0.7.3 - 2026-11-04
 
 ### Changed

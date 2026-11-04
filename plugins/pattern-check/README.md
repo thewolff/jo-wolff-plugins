@@ -13,8 +13,9 @@ read what is already there. This plugin makes the reading mandatory and the resu
 - **The skill** (`skills/pattern-check/SKILL.md`) is the method: list every new piece, then for
   each one grep the repository for its nouns and verbs, list what is registered beside it in the
   same router, registry or directory, read the hits, and read the conventions files if present.
-  Each piece ends as `reuse`, `replace`, or `new` with a reason, and with five columns saying how
-  it fails, filled from its error paths.
+  Each piece ends as `reuse`, `replace`, or `new` with a reason, a `better design` cell (`none: <what was weighed>`,
+  or the design that beats the pattern-fit one with its axis and its cost), and five columns
+  saying how it fails, filled from its error paths.
 - **The script** (`scripts/pattern-check.mjs`) opens the receipt, records the table, and shows
   status. The receipt is Markdown at `<repo>/.pattern-check/<session>.md`, with a copy in the
   plugin's state directory.
@@ -94,15 +95,15 @@ does the search the skill describes, and records the table:
 
 ```sh
 cat <<'EOF' | node "<plugin root>/scripts/pattern-check.mjs" record
-| new piece | existing pattern (file:line) | reuse / replace / new | reason | fails how | next step | restart-safe | bounded | evidence kept |
-|---|---|---|---|---|---|---|---|---|
-| retry helper | src/net/retry.ts:12 | reuse | same backoff, already exported | gives up after the last attempt and throws RetryExhausted; the job runner logs it at src/jobs/run.ts:88 | the log line names the upstream to check | yes: each attempt is a GET | 5 attempts, 30 s total (src/net/retry.ts:14) | the job's error row in jobs.failures |
-| webhook parser | (none: grep webhook, inbound, signature in src/; read src/net/) | new | only an outbound client exists, it parses nothing | throws WebhookError; the router answers 400 and logs the request id | the 400 body names the field to fix | yes: parsing is pure | n/a: no retries, one parse per request | the access log line with the request id |
+| new piece | existing pattern (file:line) | reuse / replace / new | reason | better design | fails how | next step | restart-safe | bounded | evidence kept |
+|---|---|---|---|---|---|---|---|---|---|
+| retry helper | src/net/retry.ts:12 | reuse | same backoff, already exported | none: weighed a per-call deadline helper, same shape with one more knob | gives up after the last attempt and throws RetryExhausted; the job runner logs it at src/jobs/run.ts:88 | the log line names the upstream to check | yes: each attempt is a GET | 5 attempts, 30 s total (src/net/retry.ts:14) | the job's error row in jobs.failures |
+| webhook parser | (none: grep webhook, inbound, signature in src/; read src/net/) | new | only an outbound client exists, it parses nothing | one inbound module holding parse and signature check (closes the gap: today each route verifies on its own); costs: the two existing routes move their checks into it | throws WebhookError; the router answers 400 and logs the request id | the 400 body names the field to fix | yes: parsing is pure | n/a: no retries, one parse per request | the access log line with the request id |
 EOF
 ```
 
-Rows can also be given as `--row "piece | pattern | decision | reason | fails how | next step |
-restart-safe | bounded | evidence kept"`, one per row. When the work adds no new piece at all,
+Rows can also be given as `--row "piece | pattern | decision | reason | better design | fails how |
+next step | restart-safe | bounded | evidence kept"`, one per row. When the work adds no new piece at all,
 the receipt is one line:
 
 ```sh
@@ -110,18 +111,29 @@ node "<plugin root>/scripts/pattern-check.mjs" record --no-new-pieces "two copy 
 ```
 
 `record` refuses an empty table, a decision other than `reuse`, `replace` or `new`, a `new` row
-without a reason, a `reuse` or `replace` row without a `file:line`, and a row whose fail columns
-are missing, empty, a placeholder (`-`, `?`, `TBD`, `todo`, `unknown`), or `n/a` without a reason;
-the message names the row and the column. Nothing is written on refusal. `status` prints the
-session, the files counted so far, the receipt path, and the config files in effect.
+without a reason, a `reuse` or `replace` row without a `file:line`, a row whose `better design`
+cell is missing, empty, a bare `none` (or `nothing`, `nothing better`, `no better`, `no better
+design`) or a placeholder (`none: <what was weighed>` is an answer;
+`-`, `?`, `TBD`, a bare `n/a`, `none: TBD`, `n/a: TBD`, `tbd later` and `see above` are not), and
+a row whose fail columns are missing, empty, a placeholder (`-`, `?`, `TBD`,
+`todo`, `unknown`), or `n/a` without a reason; the message names the row and the column. Nothing
+is written on refusal. `status` prints the session, the files counted so far, the receipt path,
+and the config files in effect.
 
-### The fail columns
+### The better design and fail columns
 
-The first four columns answer "what exists already". The last five answer "how does it fail",
-before the piece is written, so a review can later check the code against them.
+The first four columns answer "what exists already". The fifth answers "what would beat the
+pattern": pattern fit is the default, not the ceiling, so when a design beats the pattern-fit one
+on a stated axis (fewer moving parts, removes a known failure mode, closes a gap the pattern
+leaves, or is what the repository would adopt if starting today) the cell names it with its axis
+and what it costs over the pattern (the callers that migrate, a second way to do the thing until
+the old one goes); when nothing does, it says `none: <what was weighed>` (a bare `none` is refused). ask-graham 0.8.0's
+`**Alternative:**` line carries this cell. The last five answer "how does it fail", before the
+piece is written, so a review can later check the code against them.
 
 | column | what it holds |
 |---|---|
+| `better design` | `none: <what was weighed>` (a bare `none` is refused), or the design that beats the pattern-fit one, its axis, and its cost over the pattern. |
 | `fails how` | What breaks, and what the operator sees: where it is logged or surfaced (a log file, a status line, an HTTP status, a warning). |
 | `next step` | What the failure message tells the reader to do. |
 | `restart-safe` | `yes` or `no`, then why: is rerunning after a crash halfway through safe? |
@@ -131,8 +143,8 @@ before the piece is written, so a review can later check the code against them.
 Every cell must say something. `n/a` is accepted only with a reason after it (`n/a: pure
 function, nothing to retry`). A literal pipe inside a cell is written `\|`.
 
-Receipts written by 0.1 and 0.2 have four columns. They still count: the hooks only check that a
-receipt exists for the session. A new receipt needs all nine.
+Receipts written by 0.1 and 0.2 have four columns; by 0.3, nine (no `better design`). They still
+count: the hooks only check that a receipt exists for the session. A new receipt needs all ten.
 
 In skill content `<plugin root>` is written `${CLAUDE_PLUGIN_ROOT}`, which Claude Code substitutes
 when the skill loads; the hooks print the resolved path in their deny texts.
@@ -239,9 +251,9 @@ cd plugins/pattern-check && node --test
 Four layers, all in that one command; every spawned process has a 5 s timeout, so a hang fails.
 
 - **Units** (`scripts/lib/*.test.mjs`): the shell lexer and matchers, including the two real
-  commands 0.2.0 miscounted (`test-fixtures/real-commands.mjs`); the receipt parser and its fail
-  columns, `n/a` rules and four-column back-compat; the hook runner's stdin, deadline and
-  errors.log handling; config, state, context and the plan detector.
+  commands 0.2.0 miscounted (`test-fixtures/real-commands.mjs`); the receipt parser, its
+  `better design` cell, its fail columns, `n/a` rules and four- and nine-column back-compat; the
+  hook runner's stdin, deadline and errors.log handling; config, state, context and the plan detector.
 - **Hooks as processes** (`hooks/*.test.mjs`): each hook spawned with the JSON Claude Code sends
   (`session_id`, `cwd`, `tool_name`, `tool_input`; Stop's `stop_hook_active` and
   `last_assistant_message`). Exit 0 and allow on empty stdin, malformed JSON, a non-object
@@ -250,8 +262,9 @@ Four layers, all in that one command; every spawned process has a 5 s timeout, s
   NotebookEdit counted from their real field names.
 - **End to end** (`e2e.test.mjs`): a `git init` repository and private state; files 1 and 2
   allowed, the 3rd denied with the exact command; the Stop hook refuses a design reply once and
-  never twice; the command run through `/bin/sh` refuses a table without fail columns and records
-  a full one; the 3rd and 4th files, a commit and a new design reply then go through.
+  never twice; the command run through `/bin/sh` refuses a table without fail columns, refuses
+  one without the `better design` cell, and records a full one; the 3rd and 4th files, a commit
+  and a new design reply then go through.
 - **Script** (`scripts/pattern-check.test.mjs`), **manifests** (`manifest.test.mjs`) and the
   **OMP adapter** (`omp/pattern-check-omp.test.mjs`, a fake `pi` and `ctx`). The adapter test
   imports the `.ts` file through Node's built-in type stripping; CI runs the suite on Node 24.
@@ -259,6 +272,29 @@ Four layers, all in that one command; every spawned process has a 5 s timeout, s
 A live headless run (`claude -p --plugin-dir`) is not part of the suite; it costs a model call.
 
 ## Changelog
+
+### 0.4.0
+
+- The receipt gains a `better design` column per piece, after `reason`: `none: <what was
+  weighed>` (a bare `none` is refused), or the design that beats the pattern-fit one on a stated axis
+  (fewer moving parts, removes a known failure mode, closes a gap the pattern leaves, or is what
+  the repository would adopt if starting today) with what it costs over the pattern. Pattern fit
+  stays the default; the better design is shown beside it, never instead of it. Jo's rule
+  (2026-11-04): "show both the best solution based on existing patterns, and another solution
+  which is better/optimal if one exists." ask-graham 0.8.0's `**Alternative:**` line carries the
+  cell.
+- `record` refuses a row whose `better design` cell is missing (a nine-column 0.3 row), empty or
+  a placeholder (`-`, `?`, `TBD`, a bare `n/a`, a bare `none`, `nothing`, `nothing better`, `no
+  better` or `no better design`, `none: TBD`, `n/a: TBD`, `tbd
+  later`, `see above`), naming the row and the column, before it checks
+  the fail cells. Nothing is written on refusal. Two scenarios prove it:
+  `stop-record-better-design-none` (a row with `none: <what was weighed>` records and the plan passes) and
+  `stop-record-without-better-design` (the nine-column row is refused and the plan stays held).
+- Receipts already on disk are not invalidated: `record` validates only the rows it is given,
+  and the hooks only check that a receipt file exists, so a four-column (0.1, 0.2) or
+  nine-column (0.3) receipt still lifts the hold. The lenient parser option is now
+  `requireAllColumns: false` (was `requireFailColumns`) and reads both older shapes.
+- The skill's "When this can't run" section names the two scenarios and the refusal texts.
 
 ### 0.3.2
 
