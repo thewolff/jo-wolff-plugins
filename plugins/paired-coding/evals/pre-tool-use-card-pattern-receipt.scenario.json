@@ -1,0 +1,31 @@
+{
+  "$comment": "The same pattern claim with one file:line inside <git root>/.pattern-check/ (the pattern-check receipt the scenario wrote): pair_propose records the card (evals/card-checks.mjs pattern-receipt exits non-zero otherwise). Pairing is on, so the host Write is then denied as usual.",
+  "event": "PreToolUse",
+  "expect": "deny",
+  "reason": "paired-coding",
+  "setup": {
+    "files": {
+      ".pattern-check/${SESSION_ID}.md": "# pattern-check receipt\n\n| piece | existing pattern |\n|---|---|\n| card-eval.txt | the one file every eval writes |\n"
+    },
+    "commands": [
+      "node \"${PLUGIN_DIR}/evals/card-checks.mjs\" \"${SESSION_ID}\" pattern-receipt"
+    ]
+  },
+  "stdin": {
+    "session_id": "${SESSION_ID}",
+    "transcript_path": "${TRANSCRIPT}",
+    "cwd": "${CWD}",
+    "hook_event_name": "PreToolUse",
+    "tool_name": "Write",
+    "tool_use_id": "toolu_01",
+    "tool_input": {
+      "file_path": "${CWD}/card-eval.txt",
+      "content": "x"
+    }
+  },
+  "after": {
+    "exists": [
+      "~/.local/state/paired-coding/${SESSION_ID}/activated"
+    ]
+  }
+}

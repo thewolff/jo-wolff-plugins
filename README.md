@@ -27,6 +27,7 @@ it, keeping a record of what it did and asked, and a vendored set of engineering
   state declaration, and a skill with its "When this can't run" section, scaffolded by
   `/plugin-kit:new-plugin`; `ledger gate check` passes on it, the `evals` row excepted, before
   the first rule is written, and that row fails naming the stubs until they are filled.
+  Changes in plugin-kit 0.3.2: the judge sameness test allowlists nothing: ledger 0.3.7 ships the kit's `lib/judge.mjs` byte for byte.
   Changes in plugin-kit 0.3.1: the hook runner waits for stdout to drain before it exits (bounded by its deadline), so an answer larger than one 64 KiB pipe buffer is no longer cut short.
   Changes in plugin-kit 0.3.0: `lib/judge.mjs`, the shared judge dispatch every judging plugin vendors byte for byte (a sameness test diffs the copies), configured once with `node lib/judge.mjs setup`; `--judge` on the scaffolder.
   Changes in plugin-kit 0.2.2: the scaffold writes a `CHANGELOG.md` (Keep a Changelog, with the
@@ -217,13 +218,13 @@ receipt and removes its working files.
 | Plugin | Version | What it does | Reads from / gives to another plugin |
 |---|---|---|---|
 | output-types | 0.3.1 | the CLAIM/CITE contract at SessionStart; a Stop check that warns on a label without its receipt | vendors plugin-kit's `lib/judge.mjs` and `lib/hook-runner.mjs`; delegation's brief skeleton carries its CLAIM/CITE line |
-| i-have-audhd | 1.6.1 | the message skeleton and thirteen Stop checks (links-resolve and the opt-in links-judge since 1.6.1), warning by default | its `enforcement.judgeCommand` is the last fallback of plugin-kit's judge resolution and of ledger's review judge |
-| paired-coding | 1.5.0 | change sets behind a write gate; learning mode with `pair_learn`, `why` + `sources` on a card, `recall` on done | none |
-| ask-graham | 0.8.0 | "should we build X?" with a verdict; a prompt nudge and a Stop check | reads your `sources.md`; nothing from another plugin; its `**Alternative:**` line carries pattern-check's `better design` cell when that plugin is installed |
+| i-have-audhd | 1.7.0 | the message skeleton and thirteen Stop checks (links-resolve and the opt-in links-judge since 1.6.1), warning by default; its judge is the shared one since 1.7.0 | vendors plugin-kit's `lib/judge.mjs`; its `enforcement.judgeCommand` is an override of the shared judge file, and the last fallback of plugin-kit's judge resolution and of ledger's review judge |
+| paired-coding | 1.6.0 | change sets behind a write gate; learning mode with `pair_learn`, `why` + `sources` on a card, `recall` on done; a pattern claim needs a pattern source, `alternatives` drawn from ask-graham's findings | reads pattern-check's receipt and ask-graham's findings when present; no dependency |
+| ask-graham | 0.8.1 | "should we build X?" with a verdict; a prompt nudge and a Stop check; each verdict or structure check recorded per session in `ask-graham/findings/<session id>.json` | reads your `sources.md`; nothing from another plugin; its `**Alternative:**` line carries pattern-check's `better design` cell when that plugin is installed; its findings file is for other plugins to read |
 | pattern-check | 0.4.0 | holds big work until a reuse/replace/new receipt exists, each row with its `better design` and how it fails | its receipt file is what delegation's spawn gate requires |
 | reminders-review | 0.2.1 | Apple Reminders, one at a time | none |
-| ledger | 0.3.6 | questions and choices on rows; the push gate with six rows (`docs` new) | its `says` row checks the "When this can't" heading every skill and agent carries; its canary runs every plugin's `e2e/live-run.sh` |
-| plugin-kit | 0.3.1 | the scaffold (with `CHANGELOG.md` since 0.2.2), the hook runner, the shared judge lib, the scenario runner, two agents | gives `lib/hook-runner.mjs` and `lib/judge.mjs` to the plugins that vendor them, and `lib/live-run.mjs` to every `e2e/live-run.sh` |
+| ledger | 0.3.7 | questions and choices on rows; the push gate with six rows; the review judge from plugin-kit's shared `lib/judge.mjs` | its `says` row checks the "When this can't" heading every skill and agent carries; its canary runs every plugin's `e2e/live-run.sh` |
+| plugin-kit | 0.3.2 | the scaffold (with `CHANGELOG.md` since 0.2.2), the hook runner, the shared judge lib, the scenario runner, two agents | gives `lib/hook-runner.mjs` and `lib/judge.mjs` to the plugins that vendor them, and `lib/live-run.mjs` to every `e2e/live-run.sh` |
 | as2-skills | 0.1.2 | 22 vendored engineering skills, each with "How it fails" | its sections meet ledger's `says` row |
 | ctx-watch | 0.2.1 | ctx daemon and semantic-index health, repair, and the consult-history Stop check | vendors the hook runner and the scenario runner |
 | delegation | 0.1.1 | brief teaching, spawn gate, `SendMessage` check, SubagentStop warning, 11 agents, three guards | needs pattern-check's receipt for builder-class spawns; vendors the hook runner |
@@ -234,8 +235,9 @@ receipt and removes its working files.
 
 - **The judge command.** plugin-kit's `lib/judge.mjs` resolves one command (the plugin's env
   var, its own setting, `~/.config/judge/config.json`, then i-have-audhd's
-  `enforcement.judgeCommand`) and output-types vendors it, while i-have-audhd's `judge/ask.mjs`
-  and ledger's `lib/judge.mjs` still read the i-have-audhd profile themselves.
+  `enforcement.judgeCommand`) and output-types and i-have-audhd vendor it (i-have-audhd's own
+  setting is that same `enforcement.judgeCommand`, so for it the profile comes first), while
+  ledger's `lib/judge.mjs` still reads the i-have-audhd profile itself.
 - **The receipt.** output-types defines what earns a CLAIM or CITE and warns at Stop when a
   label lacks one; pattern-check's receipt is the `.pattern-check/<session>.md` file, which
   delegation's spawn gate requires before a builder-class spawn.
@@ -489,26 +491,28 @@ Three steps:
    omp plugin install i-have-audhd@jo-wolff-plugins
    ```
 
-2. **Choose a judge.** Five of the eleven Stop-hook checks (`do-not-batch-by-label`,
+2. **Choose a judge.** Five of the thirteen Stop-hook checks (`do-not-batch-by-label`,
    `conclusion-first`, `restate-resumed-thread`, `report-what-you-did-not-do`,
-   `bad-news-first`) need a model to read the message, and they stay off until you pick one. In a
-   terminal, run the setup tool from the marketplace copy you just added:
+   `bad-news-first`) need a model to read the message, and they stay off until a judge command
+   is configured. Since 1.7.0 that is the shared judge every judging plugin reads,
+   `~/.config/judge/config.json`; write it once from the marketplace copy you just added:
 
    ```
-   node ~/.claude/plugins/marketplaces/jo-wolff-plugins/plugins/i-have-audhd/tools/setup.mjs
+   node ~/.claude/plugins/marketplaces/jo-wolff-plugins/plugins/i-have-audhd/lib/judge.mjs setup
    ```
 
    On OMP the same file is at
-   `~/.omp/plugins/cache/marketplaces/jo-wolff-plugins/plugins/i-have-audhd/tools/setup.mjs`.
-   Either copy configures both hosts: they read one profile, `~/.claude/i-have-audhd.json`.
-   The tool checks `node`, lists the judges (the Claude Code CLI, the Codex CLI, OMP, a command
-   you type, or none), makes one test call to the judge you pick, shows the JSON it will write,
-   and writes `enforcement.judgeCommand` only after you type `yes`. Choosing none writes
-   `"judgeCommand": null` and leaves those five checks off. Run it again any time to change the
-   choice.
+   `~/.omp/plugins/cache/marketplaces/jo-wolff-plugins/plugins/i-have-audhd/lib/judge.mjs`
+   (any plugin's vendored copy writes the same file). It asks for the command, makes one test
+   call, shows the JSON it will write, and writes after you type `yes`. To give i-have-audhd a
+   judge of its own that wins over the shared file, or to choose none, run
+   `node <same directory>/tools/setup.mjs` instead: it lists the judges (the Claude Code CLI,
+   the Codex CLI, OMP, a command you type, or none of its own), tests the pick, and writes
+   `enforcement.judgeCommand` in `~/.claude/i-have-audhd.json`, the one profile both hosts
+   read, only after a `yes`. Run either again any time to change the choice.
 
 3. **Start a new session.** If you skipped step 2, the first session shows a one-time notice
-   naming the five checks that are off and the exact setup command.
+   naming the five checks that are off, both files, and both setup commands.
 
 OMP does not run a plugin's `hooks/hooks.json`. The install registers the plugin's OMP extension,
 `omp/i-have-audhd-omp.ts` (registered on omp 18.8.6), which runs the same two hooks, the
@@ -544,6 +548,17 @@ choose a judge (install step 2), and each fired trigger is logged to `skipped.lo
 `I_HAVE_AUDHD_INJECT=off` turns the injection off; the skill still loads on demand. The package
 README and `skills/i-have-audhd/reference.md` carry the schema, every check's contract, and the
 measured rates.
+
+Changes in 1.7.0: the judge command is plugin-kit's shared judge. `lib/judge.mjs` is vendored
+byte for byte and resolves the command in the kit's order, the profile's
+`enforcement.judgeCommand` first, else `~/.config/judge/config.json`, so one
+`node lib/judge.mjs setup` configures this plugin with every other that judges; an existing
+profile with `judgeCommand` keeps working unchanged, and `null` there means no override.
+`judge/ask.mjs` keeps the prompt, the verdict shape, the cache, the harness budget and the
+`cause=` failure line; that line now carries the kit's error kinds, a `detail=` and the
+`source=` the command came from. `tools/setup.mjs` writes the override only, and the
+session-start notice names both files. Eval `stop-judge-shared-config` replays the real-judge
+capture with the command in the shared file.
 
 Changes in 1.6.1: `links-resolve` warns when a link in the message does not open: a local path
 in backticks that does not exist, a GitHub URL with no such page shape, a sentence that calls an
@@ -638,6 +653,19 @@ installing the plugin.
   ask a process outside the sandbox to write for it.
 - **A journal** of every card, quote, verdict, refusal and diff, kept outside the worktree.
 - **A stop only you can give:** pairing ends when you type `pair stop` as a message of its own.
+
+Changes in 1.6.0: the card's `why` and `sources` draw on what the session already found. A
+`why` that claims a codebase pattern (`pattern used in`, `the rest of the codebase`,
+`convention here`, `how the codebase does`, `existing pattern`, `follows the pattern`, `the
+pattern in`) needs a pattern source, in any mode: one absolute `file:line` inside
+`<git root>/.pattern-check/` (pattern-check's receipt) or two inside the repository, else
+`pair_propose` refuses naming the receipt path it looked for and both counts. A new optional
+card field `alternatives` (`[{ design, chosen }]`, exactly one chosen) is required when
+ask-graham's findings file for the session is on disk, and then has to carry the findings'
+chosen design and, when they weighed another, a non-chosen entry; the card lists them with the
+chosen one marked. Both checks read sibling plugins' files only, neither plugin has to be
+installed, and a missing file never refuses. See the plugin README, *A pattern claim needs a
+pattern source*.
 
 Changes in 1.5.0: learning mode, off by default. Type `learning mode on` or `teach me as we go`
 while pairing and each card's decision line adds **Why this approach** with **Sources** (a URL
@@ -828,6 +856,14 @@ extension (`omp/ask-graham-omp.ts`, declared in the plugin's `package.json`): wi
   else hangs off the same parent and reports what it found, or plainly that it found nothing
   similar. It gives no verdict and does not ask the comparables question.
 - **A level you set**, `ask` or `every-idea`, for how eagerly it runs (next section).
+
+Changes in 0.8.1: the Claude Code Stop hook records each reply that carries a `**Verdict:**` or
+`**Structure check:**` line in `${XDG_STATE_HOME:-$HOME/.local/state}/ask-graham/findings/<session id>.json`
+(the ask, the verdict, the verdict line's one-line why as the chosen design and the
+`**Alternative:**` design, the `**Found:**` items), one file per session, overwritten at each such
+stop and pruned after 30 days, so other plugins can read what the check decided; consumers apply a
+file to the first decision after its `writtenAt`. A write that fails is one `errors.log` line,
+never a blocked turn.
 
 Changes in 0.8.0: the reply shows the better design beside the pattern-fit one. Step 4's
 second-pattern flag still makes the design use the repo's pattern or say why it cannot; when a
@@ -1110,6 +1146,18 @@ decision without a note. Every hook fails open.
 The hooks record every session until you switch a folder off with `/ledger:disable`
 (`/ledger:enable` turns it back on). The plugin's tables are all prefixed `cc_`, so the database
 can be a SQLite file another tool already uses.
+
+Changes in 0.3.7 (with plugin-kit 0.3.2): `lib/judge.mjs` is plugin-kit's shared judge dispatch,
+copied byte for byte, and ledger's cache and verdicts live in `lib/ledger-judge.mjs`. The review
+judge is `LEDGER_JUDGE_BIN`, else `review.judgeCommand`, else the shared judge file
+`${XDG_CONFIG_HOME:-~/.config}/judge/config.json` (new), else the i-have-audhd profile; verdicts
+and the cache are unchanged, and `judge could not start:` is now followed by the error code.
+Ledger's diff judge never runs shorter than 60 s; a longer shared `timeoutMs` is honoured. A
+judge printing a `claude -p --output-format json` envelope is read through it. Desktop fixes: the
+skill is renamed `record` (`/ledger:record`), so `/ledger` opens the pane instead of running the
+skill; the pane's end-of-turn line no longer repeats Claude's reply; the pane logs one
+`ledger pane: surface=… placed=…` line per session; `doctor` drops `config …: … ignoring it`
+errors.log lines whose notice no longer reproduces (`n stale config notice(s) ignored`).
 
 Changes in 0.3.6 (with plugin-kit 0.2.2): the gate grows from five rows to six. `docs` (a
 release is written down): when a plugin's `.claude-plugin/plugin.json` version differs from the

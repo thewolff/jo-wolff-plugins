@@ -379,10 +379,11 @@ export const GATE_BULLETS = Object.freeze(["- Why:", "- How long lived:", "- Alr
 // an answer. Owner takes any suffix before its colon (`Owner / maintenance:`, `Owner:`).
 const GATE_LABELS = [/^why\s*:/i, /^how long lived\s*:/i, /^already exists\s*:/i, /^in scope\s*:/i, /^owner\b[^:]*:/i];
 
-// Fenced code blocks (``` or ~~~, to a matching closer or the end) removed, so a label shown as an
-// example inside one never counts. Quoted lines need no stripping: every label below must start
-// its line, and a quoted line starts with `>`. scripts/sources.mjs uses it on the sources file too.
-export const stripFences = (text) => text.replace(/^[ \t]*(`{3,}|~{3,})[^\n]*\n[\s\S]*?(?:^[ \t]*\1[ \t]*$|(?![\s\S]))/gm, "");
+// Fenced code blocks (``` or ~~~, to a closer of the same character at least as long, or the end;
+// CommonMark 0.31.2 §4.5) removed, so a label shown as an example inside one never counts. Quoted
+// lines need no stripping: every label below must start its line, and a quoted line starts with
+// `>`. scripts/sources.mjs uses it on the sources file too.
+export const stripFences = (text) => text.replace(/^[ \t]*(([`~])\2{2,})[^\n]*\n[\s\S]*?(?:^[ \t]*\1\2*[ \t]*$|(?![\s\S]))/gm, "");
 
 /**
  * What a waiting reply lacks of SKILL.md's waiting shape (Jo): a `**Ask:**` line with text (step 1),

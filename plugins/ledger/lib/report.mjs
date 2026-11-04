@@ -7,7 +7,7 @@
 //   silent   sessions ran in the window and the rule never fired
 //   fine     otherwise (no sessions at all is fine too: nothing could have fired)
 // The mechanical grade is always computed, so a report exists without a judge. When a judge is
-// configured (review.judgeCommand, LEDGER_JUDGE_BIN, or the i-have-audhd profile) it reads up to
+// configured (LEDGER_JUDGE_BIN, review.judgeCommand, the shared judge file, or the i-have-audhd profile: lib/ledger-judge.mjs) it reads up to
 // JUDGE_TEXTS bounce texts per rule that fired and answers biting, silent or fine; that answer is
 // printed beside the mechanical one, never stored. A judge that is missing, fails, or answers
 // none of the three words → `judge unavailable: <reason>` for that rule; the mechanical grade
@@ -17,7 +17,7 @@
 // in the window with their reasons, and the judge's cached answers in the window. Read-only.
 
 import { parseSpan, BOUNCES_DEFAULT_SINCE } from "./bounces.mjs";
-import { askWord, judgementsSince } from "./judge.mjs";
+import { askWord, judgementsSince } from "./ledger-judge.mjs";
 import { nowIso } from "./time.mjs";
 
 export const RULES = Object.freeze(["stopAnswerRule", "stopAskRule", "stopDecisionRule", "denyAskWithoutRow", "pushNeedsNote", "reviewGate", "pluginGate"]);

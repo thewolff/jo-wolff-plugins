@@ -12,7 +12,11 @@
 //   - the data refreshes at session start, at each main turn's start and end, and once a second
 //     while the pane is placed, each refresh one `node mods/pane/query.mjs` run out of process;
 //   - where nothing draws (`claude -p`, a pane that is not placed), `turn.complete` adds one
-//     transcript line naming what waits and the command that answers it.
+//     transcript line naming what waits and the command that answers it; the line replaces the
+//     engine's default `{ text: <Claude's answer> }`, it never repeats the answer;
+//   - once per session, one dim line `ledger pane: surface=<surface|none> placed=<true|false|null>`
+//     says whether the app gave the mod a surface and placed the pane (at session start, or at the
+//     first fallback turn when session start faulted before it).
 //
 // How it fails: every hook catches its own error, logs one dim transcript line (`$.ui.log`) and
 // passes the event on with `next(e)`; `command.run` answers with the error as text; `ui.render`
@@ -34,6 +38,8 @@ let notice = null;
 let lastError = null;
 let inFlight = false;
 let draws = false;
+let surface = null;
+let diagnosed = false;
 
 function pathUnder(root, rel) {
   return `${String(root).replace(/[\\/]+$/, "")}/${rel}`;
@@ -120,6 +126,17 @@ async function openPane($, focus) {
   return { isPlaced: result && typeof result.isPlaced === "boolean" ? result.isPlaced : null };
 }
 
+/** The once-per-session placement line; never throws. */
+async function diagnose($, placed) {
+  if (diagnosed) return;
+  diagnosed = true;
+  try {
+    await $.ui.log(`ledger pane: surface=${surface ?? "none"} placed=${placed}`);
+  } catch {
+    // nowhere to log
+  }
+}
+
 /** The poll: only while the pane is placed, never while a refresh is in flight. */
 async function tick($) {
   if (inFlight) return;
@@ -130,17 +147,24 @@ async function tick($) {
 
 export function register(on) {
   on("session.start", async ($, e, next) => {
+    diagnosed = false;
     try {
       await $.command.register({ name: "ledger", description: "Ledger: questions waiting in other folders, answers since your last turn; answer <q-id> <reply> records without a turn", argumentHint: "[answer <q-id> <reply> | close]", immediate: true });
-      draws = e.surface !== null && e.surface !== undefined;
+      surface = e.surface ?? null;
+      draws = surface !== null;
+      let placed = false;
       if (draws) {
         $.clock.every(POLL_MS, () => tick($));
         await refresh($);
         if (snapshot.ok && (snapshot.elsewhere.length || snapshot.answers.length)) {
           const opened = await openPane($, false);
+          placed = opened.isPlaced;
           if (opened.isPlaced === false) await $.ui.toast(`${headline(snapshot)} · /ledger opens the pane`);
+        } else {
+          placed = await paneIsPlaced($);
         }
       }
+      await diagnose($, placed);
     } catch (err) {
       await logFault($, "session.start", err);
     }
@@ -162,15 +186,19 @@ export function register(on) {
       if (e.agentId === undefined) {
         await refresh($);
         const placed = draws ? await paneIsPlaced($) : false;
-        if (placed !== true) line = fallbackLine(snapshot);
+        if (placed !== true) {
+          line = fallbackLine(snapshot);
+          await diagnose($, placed);
+        }
       }
     } catch (err) {
       await logFault($, "turn.complete", err);
     }
     const result = await next(e);
     if (!line) return result;
-    const text = [result && typeof result.text === "string" ? result.text : "", line].filter(Boolean).join("\n");
-    return { ...(result ?? {}), text };
+    // The engine's default result is `{ text: e.answer }`; returning it joined to the line showed
+    // Claude's whole answer a second time under the hop label. The line goes alone.
+    return { ...(result ?? {}), text: line };
   });
 
   on("command.run", { command: "ledger" }, async ($, e) => {

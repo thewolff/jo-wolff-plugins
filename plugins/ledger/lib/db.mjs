@@ -8,8 +8,9 @@
 //      `<path>.corrupt-<timestamp>` and a fresh one is created, the move returned as a notice;
 //      without it (a configured path, which may be another tool's file) the file is left exactly
 //      as found and a StoreError with kind `corrupt` is thrown;
-//   4. a locked database (SQLITE_BUSY 5, after busy_timeout) is retried once, then thrown as a
-//      StoreError with kind `busy`, so every caller can say "nothing applied" in one line;
+//   4. a locked database (SQLITE_BUSY 5) is retried up to OPEN_ATTEMPTS times in all, with a
+//      jittered 25–200 ms pause, while busy_timeout has not run out (one retry always), then
+//      thrown as a StoreError with kind `busy`, so every caller can say "nothing applied" in one line;
 //   5. migrations run inside one transaction, from the cc_meta schema_version up to the latest.
 //
 // Every table is prefixed `cc_` and the schema version lives in `cc_meta`, not in
@@ -358,10 +359,26 @@ function safeStamp(now) {
 
 export const BUSY_TIMEOUT_MS = 2000;
 
+/** Tries at opening a busy file, the first included. */
+export const OPEN_ATTEMPTS = 5;
+
+const sleepCell = new Int32Array(new SharedArrayBuffer(4));
+function sleepMs(ms) {
+  if (ms > 0) Atomics.wait(sleepCell, 0, 0, ms);
+}
+
+/** The pause before retry `attempt` (0-based): jittered, 25 ms up to a 50–200 ms ceiling, never past `remaining`. */
+function openBackoffMs(attempt, remaining) {
+  const ceiling = Math.min(200, 25 * 2 ** (attempt + 1));
+  return Math.max(0, Math.min(remaining, 25 + Math.random() * (ceiling - 25)));
+}
+
 function openOnce(path, busyTimeoutMs) {
   const db = new DatabaseSync(path);
   try {
-    // busy_timeout first: switching to WAL takes a lock, and two first opens at once must wait, not fail.
+    // busy_timeout first, so a lock someone holds is waited for. Switching a fresh file to WAL is
+    // the one step SQLite can refuse at once without waiting (it holds a shared lock and needs an
+    // exclusive one, so the busy handler stands aside to avoid a deadlock); open() retries that.
     db.exec(`PRAGMA busy_timeout = ${Math.max(0, Math.floor(busyTimeoutMs))}`);
     db.exec("PRAGMA journal_mode = WAL");
     db.exec("PRAGMA foreign_keys = ON");
@@ -441,7 +458,7 @@ function migrateLocked(db) {
  *   `shared` is true when the file carries tables that are not the plugin's own.
  * @param opts.healCorrupt  move a corrupt file aside and start fresh; only for the default path.
  *   Off, a corrupt file is never renamed, recreated or written: `corrupt` is thrown instead.
- * @throws {StoreError} when the store cannot be opened: `busy` after one retry, `corrupt` for a
+ * @throws {StoreError} when the store cannot be opened: `busy` once the retries run out, `corrupt` for a
  *   corrupt file without healCorrupt, or `open` for anything else (an unwritable directory, for
  *   example). Nothing is written in that case.
  */
@@ -455,6 +472,7 @@ export function open(path, { now = Date.now(), busyTimeoutMs = BUSY_TIMEOUT_MS, 
 
   let db;
   let attempt = 0;
+  const started = Date.now();
   for (;;) {
     try {
       db = openOnce(path, busyTimeoutMs);
@@ -471,7 +489,12 @@ export function open(path, { now = Date.now(), busyTimeoutMs = BUSY_TIMEOUT_MS, 
         notices.push(`ledger: moved corrupt database aside to ${aside}`);
         continue;
       }
-      if (isBusy(err) && attempt === 0) {
+      // Several processes opening a fresh file at once race the switch to WAL, which fails at once
+      // rather than waiting; a jittered pause lets one finish. One retry always (the pre-0.3.7
+      // contract), more only while busy_timeout has not run out.
+      const remaining = busyTimeoutMs - (Date.now() - started);
+      if (isBusy(err) && attempt < OPEN_ATTEMPTS - 1 && (attempt === 0 || remaining > 0)) {
+        sleepMs(openBackoffMs(attempt, remaining));
         attempt++;
         continue;
       }

@@ -1,6 +1,6 @@
 ---
-name: ledger
-description: Keep a durable, id'd record of the questions this thread asks the human and the choices it makes without asking, with the ledger CLI, and read the open items it injects. Use whenever a session has the ledger plugin enabled for the folder and the agent is about to ask the human for a decision, has just received the human's reply to one, or makes a choice without asking; also on `/ledger`.
+name: record
+description: Keep a durable, id'd record of the questions this thread asks the human and the choices it makes without asking, with the ledger CLI, and read the open items it injects. Use whenever a session has the ledger plugin enabled for the folder and the agent is about to ask the human for a decision, has just received the human's reply to one, or makes a choice without asking; also on `/ledger:record`. (`/ledger` alone opens the ledger pane, not this skill.)
 argument-hint: "[ask <body> | note <text> | pending | log | help]"
 license: MIT
 ---
@@ -104,7 +104,7 @@ human's too (`/ledger:enable`, `/ledger:disable`).
 ## Reading what you are given
 
 - `… pending` lists the open questions with their ids, for you; do not paste it to the human. `… pending --all` lists every open and held question in the database under its folder.
-- The session start lists the questions waiting on the human in other folders in full (folder, then each question's `pending` line). They were asked by another window and are not this folder's work: do not take them up. If the human's prompt answers one, run `… answer <q-id> <option>` from here and say it is recorded. Otherwise, in your first reply, tell the human in one plain line per question that another window is waiting on them (the question's body, its options, its default when it has one); repeating that body does not trip the Stop ask rule. Never show the id.
+- The session start lists the questions waiting on the human in other folders in full (folder, then each question's `pending` line). They were asked by another window and are not this folder's work: do not take them up. If the human's prompt answers one, run `… answer <q-id> <option>` from here and say it is recorded. Otherwise, in your first reply, tell the human in one plain line per question that another window is waiting on them (the question's body, its options, its default when it has one); repeating that body does not trip the Stop ask rule. Never show the id. Questions listed from other folders are informational: never put them under your own *Needs you*, because they belong to another window and answering them is not what this thread is waiting on.
 - A prompt that is just an option word ("local", "Remote.") comes with a line naming the open question that offers it and the `answer` command. If the human meant it as their reply, run that command and say it is recorded; if they meant something else, ignore the line. The hook records nothing on its own.
 - An answer may arrive mid-session: a prompt can carry `ledger: answered since your last turn: <name> → <word>`, recorded from another session. Act on it as the human's answer to that question.
 - When session start ends with `ledger: doctor reports N issue(s)`, run `… doctor` and tell the human, in plain words, which checks said `warn` or `fail`.

@@ -5,6 +5,79 @@ All notable changes to paired-coding are recorded here. The format follows
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html). Releases before 1.5.0 are described
 in the README's *Changes* section.
 
+## [1.6.0] - 2026-11-04
+
+### Added
+
+- A pattern claim needs a pattern source, in learning mode or out of it. When a card's `why`
+  carries an affirmative claim of a codebase convention (`PATTERN_CLAIM_PATTERNS` in
+  `core/gate.mjs`, matched at word boundaries in any case: a verb of conformity before
+  "pattern" or "convention" such as `follows the existing pattern`, `matches the codebase
+  pattern`, `per the repo convention`, `consistent with the established pattern`; `the
+  pattern in/from/here`, `the pattern used in`, `the convention here`, `how the codebase
+  does`, `as`/`like the rest of the codebase`, `pattern-fit`), `sources` must include one
+  absolute `file:line` inside the pattern-check receipt directory `<git root>/.pattern-check/`,
+  or two or more absolute `file:line` sources at distinct locations inside the repository the
+  worktree is in: the path after `.` and `..` collapse plus the line or range, so one citation
+  spelled twice is one source. Ordinary prose is no claim (`the pattern introduced by the
+  bug`, `the pattern input`, `the anti-pattern used in`, `no existing pattern handles this`),
+  and a denial or removal word anywhere before the match in its own clause (`not` but not
+  `not only`, `no`, `never`, `without`, `rather than`, `doesn't`, `isn't`, `stop`, `drop`,
+  `remove`, …: `PATTERN_CLAIM_NEGATIONS`; typographic apostrophes read as `'`) turns a match
+  off. A clause ends at `, ; : ( )`, a sentence-ending `. ! ?`, or ` but `/` and `/` so `/
+  ` because ` (`PATTERN_CLAIM_CLAUSE_BREAKS`), so a claim after a denied clause still counts
+  (`No migration needed, follows the existing pattern`). Otherwise
+  `pair_propose` refuses, quoting the claim as written and naming this session's receipt path
+  (`<git root>/.pattern-check/<session id>.md`) and both counts. Paths are compared lexically;
+  existence is not checked, as with every `file:line` source.
+- `alternatives`, an optional card field: `[{ "design", "chosen" }]` with exactly one
+  `chosen: true`, checked for form when given and recorded on the card and in the journal.
+  Required for the first card proposed after ask-graham's findings file for this session was
+  written (`${XDG_STATE_HOME:-$HOME/.local/state}/ask-graham/findings/<session id>.json`,
+  looked up under the host adapter's environment, `HOME` from it when it names no
+  `XDG_STATE_HOME`, with no fall back to the process's own): then one entry must contain the
+  findings' chosen design (whitespace collapsed, case ignored) and, when the findings weighed
+  a design they did not choose, at least one entry is not chosen. When that card is recorded
+  the pairing state keeps `findingsConsumed: { sessionId, writtenAt }`, and the same findings
+  hold no later card of the pairing; a refused card consumes nothing, and a findings file
+  written later (a later `writtenAt`) re-arms the check. A marker whose `writtenAt` is not an
+  ISO 8601 date or whose `sessionId` is not this session's is ignored (the findings read as
+  not consumed) with one `findings-marker-ignored` journal line. The file counts only as this
+  session's findings: a regular file (`lstat`, no symlink) of at most 64 KiB
+  (`FINDINGS_MAX_BYTES`, the read bounded at that size) holding a JSON object with
+  `version: 1`, a `sessionId` equal to this session's, an ISO 8601 `writtenAt`, and
+  `alternatives` as a list of `{ design: non-empty string, chosen: boolean }`. Anything else
+  (a symlink, a directory, an oversized or unreadable file, non-JSON, another session's
+  record, a bad entry) reads as missing with one `errors.log` line under this plugin's state
+  base naming the file and what was wrong; nothing is dropped silently, and ask-graham's
+  files are never written.
+- The card's reply lists `alternatives` with the chosen one marked (`[chosen]`), after the
+  planned code, so the learner sees the pattern-fit pick and the better design side by side;
+  `pair_learn`'s reply names the pattern-source rule.
+- `lib/card-context.mjs`: the copied path rules (pattern-check's receipt, ask-graham's
+  findings; no plugin dependency) and the validated, bounded findings reader (`findingsPath`,
+  `readFindings`, `cardContext`, which requires the adapter's `env`), handed to the gate as
+  `io.cardContext`. The gate's `patternClaim`, `patternSourceProblem`, `alternativesProblem`
+  and `applicableFindings` are pure and exported.
+- MCP and OMP schemas: `alternatives` on `pair_propose`.
+- Evals: `pre-tool-use-card-pattern-unsourced`, `pre-tool-use-card-pattern-receipt`,
+  `pre-tool-use-card-alternatives-missing` and `pre-tool-use-card-alternatives-pass`, each set
+  up by `evals/card-checks.mjs` through the real verbs (the setup exits non-zero unless
+  `pair_propose` answered as the scenario says), with the findings file written under the
+  sandbox's `$XDG_STATE_HOME` and the receipt under the sandbox worktree.
+- README: *A pattern claim needs a pattern source* with its how-it-fails rows and *Not in
+  1.6.0*; skill: the two fields under *The card* and *Learning mode*.
+
+### Changed
+
+- Pairing state gains the optional `findingsConsumed` field (`null` or
+  `{ sessionId: string | null, writtenAt: string }`); one of the wrong shape reads as a
+  malformed state, like any other field, and a well-shaped one `pair_propose` cannot trust is
+  ignored, as above. A state without it reads as before.
+
+The checks read sibling plugins' files only. A card whose `why` makes no pattern claim, in a
+session with no findings file, runs exactly as in 1.5.0.
+
 ## [1.5.0] - 2026-11-04
 
 ### Added

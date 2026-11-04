@@ -12,7 +12,7 @@ can return and one `evals/<x>.scenario.json` per event × outcome, replayed by t
 canary), its state is declared and pruned (`state` in `.claude-plugin/plugin.json`, with a
 prune command for anything kept for a number of days), and a release is written down (a
 version bump has a `CHANGELOG.md` entry, a README release heading and a mention in the
-repository README). `ledger gate check` (the ledger plugin, 0.3.6) enforces the six before a
+repository README). `ledger gate check` (the ledger plugin, 0.3.7) enforces the six before a
 push. This plugin makes meeting them the default rather than a retrofit.
 
 ## Install
@@ -76,9 +76,11 @@ repository carries its own; they keep their own hook runners.
 A plugin vendors a byte-identical copy (`--judge` on the scaffolder, or copy the file by hand);
 `test/judge.test.mjs` fails when any `plugins/*/lib/judge.mjs` or `plugins/*/judge/judge.mjs`
 differs from the kit's, outside an explicit allowlist of the plugins that have not switched yet.
-Only ledger's `lib/judge.mjs` is allowlisted, until ledger's next release; i-have-audhd's
-`judge/ask.mjs` has a different name and is not scanned at all until i-have-audhd ships
-`lib/judge.mjs`.
+Nothing is allowlisted since ledger 0.3.7 vendored the kit's copy. i-have-audhd vendors
+`lib/judge.mjs` since 1.7.0 and is scanned; its `judge/ask.mjs` keeps only what is its own (the
+prompt, the strict verdict shape, the cache, the harness budget and the `cause=` failure line)
+and calls the vendored copy for resolution and dispatch, with its `enforcement.judgeCommand`
+passed as the plugin's own key.
 
 **The command.** One string, run through `/bin/sh` as the leader of its own process group: with a
 literal `{prompt}` in it, every occurrence is replaced by the shell-escaped prompt; without one,
@@ -328,6 +330,12 @@ The reviewer's review budget fails these ways:
 | Codex writes `Verdict: fix-first` with no in-scope blocking finding | The triage states `Effective verdict: ship-with-limits`; Codex's text stays as written beside it. |
 | A later edit reverses a budget rule other than the round increment or the `fix-first` guard | The tests pin vocabulary and selected sentences; a reversal of the `new-mechanism` classification or the rule that holds those findings for Jo, of the limit that a follow-up reports new findings only in lines the fixes changed, or of the statement that blocking-only from round 3 is this repository's own rule (not the cited sources') passes them. Read the diff of `agents/cross-lab-reviewer.md` against those rules. |
 
+## Changes in 0.3.2
+
+`test/judge.test.mjs`'s `NOT_YET_VENDORED` allowlist is empty: ledger 0.3.7 ships the kit's
+`lib/judge.mjs` byte for byte, so every `plugins/*/lib/judge.mjs` is now diffed against the
+kit's. `lib/judge.mjs` itself is unchanged.
+
 ## Changes in 0.3.1
 
 The hook runner waits for stdout to drain before it exits. 0.3.0 wrote the answer and exited at
@@ -354,7 +362,7 @@ itself so any plugin's copy can configure the judge with one test call. `test/ju
 drives the resolution order, each failure class, both parsers and the CLI, and fails when any
 shipped copy under `plugins/*/lib/judge.mjs` or `plugins/*/judge/judge.mjs` differs from the
 kit's (ledger's `lib/judge.mjs` is allowlisted until its next release; i-have-audhd's
-`judge/ask.mjs` has a different name and is not scanned until i-have-audhd ships
+`judge/ask.mjs` had a different name and was not scanned until i-have-audhd 1.7.0 shipped
 `lib/judge.mjs`). The scaffolder takes `--judge` to copy it into a new plugin. The hook runner
 tells the handler thread its start time and deadline (`HOOK_RUNNER_STARTED_AT_MS`,
 `HOOK_RUNNER_DEADLINE_MS`) and kills any process group the thread registered when it exits, so a

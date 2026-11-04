@@ -232,8 +232,10 @@ function envEnabled(env) {
  * Resolve the effective configuration for the folder `cwd` binds to.
  * @returns {{ config: object, notices: string[], sources: Record<string, string>, path: string, projectPath: string|null }}
  *   `sources` maps each dotted leaf key to `default`, `user file`, `project file`, or `env`.
+ * `track: false` leaves the errors.log database tag (currentLogDb) as it was: doctor re-reads
+ * config files of other folders to test whether an old notice still reproduces.
  */
-export function loadConfig({ env = process.env, home = homedir(), cwd = null } = {}) {
+export function loadConfig({ env = process.env, home = homedir(), cwd = null, track = true } = {}) {
   const path = configPath(env, home);
   const projectPath = projectConfigPath(cwd);
   const notices = [];
@@ -257,7 +259,7 @@ export function loadConfig({ env = process.env, home = homedir(), cwd = null } =
   }
   if (sources.db === "default") config.db = defaultDbPath(env, home);
   else config.db = expandHome(config.db, home);
-  loggedDb = config.db;
+  if (track) loggedDb = config.db;
 
   return { config, notices, sources, path, projectPath };
 }
