@@ -52,6 +52,27 @@ on a sibling being installed, and a change to the kit's copy reaches a plugin on
 copies it again and runs that plugin's tests. The existing plugins (ledger, pattern-check,
 paired-coding, …) keep their own runners; this one is for new ones.
 
+## Agents
+
+Two agents load from `agents/` (by the plugin-agent convention; nothing registers them), as
+`plugin-kit:cross-lab-reviewer` and `plugin-kit:release-gate`. Name one in a prompt or
+@-mention it to run it for certain; otherwise Claude routes by the description.
+
+| Agent | When | What it does | Tools, model |
+|---|---|---|---|
+| `cross-lab-reviewer` | a plugin branch is built and its suites pass, before a PR | sends the range `<base>..HEAD` to OpenAI Codex with `codex exec --sandbox read-only` and the release review brief: security first (hook command parsing, fail-open paths), each prior finding marked closed, partial or open, the env-only failure set (tests that fail only under `env -i` with a fresh HOME), the `/Users/<name>` path scrub, and a `Verdict: ship` or `Verdict: fix-first` line; writes `~/agent-scratch/<repo>/<plugin>/REVIEW-<version>-codex.md` (a `-round<N>` suffix when one exists) with its triage of each finding | Read, Grep, Glob, Bash, Write; sonnet |
+| `release-gate` | before a version bump, PR or publish | runs the checklist and reports pass or fail per check with command and output: the path scrub, the version across `plugin.json`, `package.json`, the README "Changes in" headings and the marketplace entry, `node --test` normally and under a stripped environment, `ledger gate check` against a throwaway `LEDGER_DB`, and the README against the plugin's hooks, skills and agents; checks `node --version` against the CI pin first | Read, Grep, Glob, Bash; haiku |
+
+Neither edits product source, pushes, merges or installs: the reviewer's Write is for its review
+file, and the gate has no Write at all. A plugin agent cannot block a single Bash command (plugin
+agents ignore `hooks` and `permissionMode`), so these limits are the agents' text plus their tool
+lists; a push block belongs in settings deny rules. The reviewer sends the diff and the source
+Codex reads to OpenAI on the account `codex` is logged in to. OMP loads both from the plugin but
+drops their `model:` lines. Each agent's "How it fails" section covers the unavailable paths: no
+`codex` on PATH stops the review with the handed-over command and never falls back to a
+Claude-only review; no `ledger` checkout or a sandbox refusal marks that check unavailable, never
+passed. `test/agents.test.mjs` checks each file's frontmatter, the contract and that section.
+
 ## How it fails
 
 The scaffolder refuses an existing directory, a name that is not lowercase kebab, an unknown
@@ -63,6 +84,12 @@ handler holding a timer that never answers, a stdin held open, a synchronous `At
 6 s under the default 4 s deadline (exit inside 4.5 s wall clock). The kit's tests are a bare
 `node --test` (the contract-test template carries a `.template` suffix so the runner does not
 pick it up: it has no plugin to test until it is scaffolded).
+
+## Changes in 0.1.2
+
+Two agents, `cross-lab-reviewer` and `release-gate` (see "Agents"): the Codex review brief and
+the release checklist that were written by hand for each plugin release, as files. The
+scaffolder and the runner are unchanged.
 
 ## Changes in 0.1.1
 

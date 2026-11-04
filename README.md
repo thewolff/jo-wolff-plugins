@@ -24,6 +24,7 @@ it, keeping a record of what it did and asked, and a vendored set of engineering
   bar on day one: the fail-open hook runner, one handler per event, the five-fault contract test,
   the canary live run, and a skill with its "When this can't run" section, scaffolded by
   `/plugin-kit:new-plugin`; `ledger gate check` passes on it before the first rule is written.
+  Changes in plugin-kit 0.1.2: two agents, `cross-lab-reviewer` (a Codex review of the branch) and `release-gate` (the release checklist, report-only).
 - **[as2-skills](plugins/as2-skills/README.md)** — the 22 engineering skills of agent-system 2.0,
   vendored from four upstream skill packs at pinned releases, with frontmatter claude.ai accepts.
   Install with `/plugin install as2-skills@jo-wolff-plugins`; skills only.
