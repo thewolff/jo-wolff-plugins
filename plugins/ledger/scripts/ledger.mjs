@@ -10,6 +10,7 @@
 //   node ledger.mjs --by <name> …                     → record <name> as the actor
 //   node ledger.mjs --cwd <dir> …                     → bind to <dir> instead of the working directory
 //   node ledger.mjs config                            → every setting and where it came from
+//   node ledger.mjs pending --all                     → every open and held question, grouped by folder
 //
 // Exit codes: 0 every non-blank line applied; 1 any line refused or not a command; 2 the store
 // could not be opened (nothing applied, one line says why).

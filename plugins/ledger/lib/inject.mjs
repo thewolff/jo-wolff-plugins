@@ -1,10 +1,11 @@
 // inject.mjs — the text SessionStart hands Claude: held questions (Waiting on you), open
-// questions, recent notes, and the verb summary. Sections appear in that order and only when
-// non-empty. Capped at CAP characters (the doc's limit is 10,000): notes are truncated first,
-// never the held or open questions.
+// questions, recent notes, the verb summary, and one line counting the open and held questions
+// in other folders. Sections appear in that order and only when non-empty. Capped at CAP
+// characters (the doc's limit is 10,000): notes are truncated first, never the held or open
+// questions or the other-folders line.
 
 import { fileURLToPath } from "node:url";
-import { heldQuestions, logEntries, openQuestions, renderLog, renderPending } from "./commands.mjs";
+import { elsewhereCount, heldQuestions, logEntries, openQuestions, renderLog, renderPending } from "./commands.mjs";
 
 export const CAP = 9000;
 
@@ -45,7 +46,7 @@ export function allowRule(p = cliPath()) {
 export function verbSummary() {
   return [
     `ledger: questions to the human and decisions made without asking are recorded with the \`ledger\` CLI. Always run it exactly as \`${invocation()} <verb> …\` (that literal path, no alias, no shell variable, no cd) so the one allow rule \`${allowRule()}\` matches and Claude Code never asks about it.`,
-    "Verbs: ask \"<body>\" --name <short> --options a,b --default a · answer <q-id> <option> · withdraw <q-id> · extend <q-id> · hold <q-id> · reopen <q-id> · note \"<text>\" · outcome <ref> [q-id] \"<text>\" · pending · log [N] · help.",
+    "Verbs: ask \"<body>\" --name <short> --options a,b --default a · answer <q-id> <option> · withdraw <q-id> · extend <q-id> · hold <q-id> · reopen <q-id> · note \"<text>\" · outcome <ref> [q-id] \"<text>\" · pending [--all] · log [N] · help.",
     "To ask the human: run `ledger ask` first, then ask in plain words. Never show the human a q- id; ids are for you. When the human replies, run `ledger answer <q-id> <option>` with the option their words mean before anything else; a reply that is none of the options is recorded as given with `ledger answer <q-id> \"<reply>\"`, never withdrawn. Record a choice made without asking with `note`, in the same turn you state it. `git push` and `gh pr create` need one `note` or `outcome` in this session first. `ledger help` has the grammar.",
   ].join("\n");
 }
@@ -84,11 +85,25 @@ export function buildInjection(db, cwd, config, { source = "startup", now = Date
   const summary = compact ? verbSummary().split("\n")[0] : verbSummary();
   if (summary) sections.push("summary");
 
-  const assemble = (notes) => [waitingText, questionsText, notes, summary].filter(Boolean).join("\n\n");
+  const elsewhereText = config.inject?.elsewhere === false ? "" : elsewhereLine(db, cwd);
+  if (elsewhereText) sections.push("elsewhere");
+
+  const assemble = (notes) => [waitingText, questionsText, notes, summary, elsewhereText].filter(Boolean).join("\n\n");
   let text = assemble(notesText);
   if (text.length > CAP) text = assemble(truncate(notesText, Math.max(0, CAP - (text.length - notesText.length))));
   if (text.length > CAP) text = assemble("");
   return { text, sections };
+}
+
+/**
+ * One line when open or held questions exist outside the scope of `cwd` (not it, not an ancestor,
+ * not under it); "" when there are none.
+ */
+export function elsewhereLine(db, cwd) {
+  const { count, folders } = elsewhereCount(db, cwd);
+  if (!count) return "";
+  const plural = (n, word) => `${n} ${word}${n === 1 ? "" : "s"}`;
+  return `ledger: ${plural(count, "question")} waiting on you in ${plural(folders, "other folder")}; run \`${invocation()} pending --all\` to see them.`;
 }
 
 /** `block` cut at a line break so that the result, marker included, is at most `max` characters. */

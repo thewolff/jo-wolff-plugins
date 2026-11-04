@@ -4,6 +4,7 @@
 // trailing whitespace trimmed, a trailing ` # comment` dropped):
 //
 //   <verb>                              help, pending, log [N], config, enable, disable
+//   pending --all                       every open and held question in the db, grouped by folder
 //   <verb> <q-id>                       withdraw q-…, extend q-…
 //   <verb> <one token> [flags]          ask <body> --options …, note <text>
 //                                        (free text with spaces is quoted: ask "ship it?")
@@ -42,7 +43,7 @@ export const VERBS = Object.freeze([
   { verb: "reopen", who: "agent", usage: "reopen <q-id>", help: "put a held question to the human: open again, asked now" },
   { verb: "note", who: "agent", usage: 'note "<text>"', help: "record a decision or assumption made without asking (prints nt-…)" },
   { verb: "outcome", who: "agent", usage: 'outcome <ref> [q-id] "<text>"', help: "record what a decision or an answered question produced; ref is a PR URL, commit or path (prints nt-…)" },
-  { verb: "pending", who: "either", usage: "pending", help: "the paste-ready block: one `<default> <q-id>  # …` line per open question" },
+  { verb: "pending", who: "either", usage: "pending [--all]", help: "the paste-ready block: one `<default> <q-id>  # …` line per open question here, then the held ones; `--all`: every open and held question in the db, grouped under its folder" },
   { verb: "log", who: "either", usage: "log [N]", help: "the last N notes, questions and answers for this folder across sessions (default 20)" },
   { verb: "enable", who: "human", usage: "enable", help: "turn the hooks on for this folder: writes `\"enabled\": true` to .ledger.json here" },
   { verb: "disable", who: "human", usage: "disable", help: "turn the hooks off for this folder: sets `\"enabled\": false` in .ledger.json here (never deletes it)" },
@@ -278,8 +279,9 @@ export function parseLine(text, lookup = NULL_LOOKUP, tokens = null) {
   }
 
   // No-argument verbs.
+  if (t0 === "pending" && rest.length === 1 && rest[0] === "--all") return command(shown, { verb: "pending", all: true });
   if (["pending", "help", "config", "enable", "disable"].includes(t0)) {
-    if (rest.length) return prose(shown, null, `usage: ${t0}`);
+    if (rest.length) return prose(shown, null, `usage: ${t0 === "pending" ? "pending [--all]" : t0}`);
     return command(shown, { verb: t0 });
   }
   if (t0 === "log") {
