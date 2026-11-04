@@ -115,7 +115,7 @@ node <plugin dir>/scripts/ledger.mjs help                # the verb table, id gr
 | `canary run` / `runs` / `status` / `grade` / `prune` / `install` | human | the nightly canary (see [The feedback loop](#the-feedback-loop-canary-report-digest)). Runs on its own line. |
 | `report [--since 7d] [--no-judge]` | either | the graded report of what the hooks did in the window. Runs on its own line. |
 | `digest [--dry-run] [--force]` / `digest install` | human | the weekly report posted as a comment on the digest issue, and its launchd job. Runs on its own line. |
-| `gate check [--plugins a,b] [--base <ref>]` | either | the plugin push gate's five checks on every plugin of this repository with a change since the base, recorded for HEAD (see [The plugin gate](#the-plugin-gate)). Runs on its own line. |
+| `gate check [--plugins a,b] [--base <ref>]` | either | the plugin push gate's six checks on every plugin of this repository with a change since the base, recorded for HEAD (see [The plugin gate](#the-plugin-gate)). Runs on its own line. |
 | `help` | either | the table above, the id grammar, the batch rule. |
 
 "Who" is advisory; the CLI does not refuse by caller. `--by <name>` overrides the recorded
@@ -424,9 +424,9 @@ the prompt as before, the review runs.
 
 A second gate on `git push` and `gh pr create`/`merge`, since 0.3.3, for a repository of
 Claude Code plugins: one holding `plugins/*/hooks/hooks.json` or a root
-`.claude-plugin/plugin.json`. It enforces the repository `AGENTS.md` test bar as five checks
-(three since 0.3.3, `evals` and `retention` since 0.3.5), the same five for every kind of
-agent-facing artifact, run by `ledger gate check` and recorded
+`.claude-plugin/plugin.json`. It enforces the repository `AGENTS.md` test bar as six checks
+(three since 0.3.3, `evals` and `retention` since 0.3.5, `docs` since 0.3.6), the same six for
+every kind of agent-facing artifact, run by `ledger gate check` and recorded
 as one `cc_gate_checks` row per (HEAD, plugin, check); a rerun replaces the rows. Only plugins
 with a file changed in base..HEAD are checked (base: the review's default base, or `--base`;
 `--plugins a,b` names them instead). The checks read the commit, never the checkout: each
@@ -444,6 +444,7 @@ since it is still pushed.
 | `says` (text says what to do when it can't) | every `skills/*/SKILL.md` and `agents/*.md` has a heading matching `when this can't` (`it cannot`, a curly apostrophe count too); every deny or block reason literal in `hooks/*.mjs` and `lib/*.mjs` (a string or template right after `permissionDecisionReason:`, or after `reason:` with `deny`, `block` or `rule:` within the five lines up to it; comments are skipped) names a command in backticks | the file, or the file, line and literal |
 | `evals` (behaviour is proved) | `evals/manifest.json` declares, for every event `hooks.json` registers, the outcomes its handler can return (`deny`, `allow`, `ask`, `systemMessage`, `silent`); every declared event × outcome has one `evals/<x>.scenario.json` naming `event`, `expect` and a stdin fixture (`stdin` or `stdinFile`) and not marked `"stub": true`; a silent scenario of an event that can also fire names a `sibling` that does; a `judge` rubric has a `session` to grade. Then freshness: the newest `cc_canary_runs` row for the committed plugin tree (`tree_sha`) is a `pass`, or `unavailable` with its reason (no `claude` on the canary's PATH is the canary's finding, not the plugin's), and when any scenario is judge-backed that row is a `pass` at most 7 days old | the gap (`no scenario for Stop × deny`), the stub or malformed scenario file, or the canary: `no canary row for tree <sha>: run \`ledger canary run --plugins <p>\` on this commit`, a failed run with its note, or a judge-backed plugin whose newest row is not a pass. A plugin with no `hooks.json` and no `evals/` is `skipped` |
 | `retention` (state is declared and pruned) | `.claude-plugin/plugin.json` `state` is an array of `{ path, retentionDays, prune }` (`~`, `$HOME`, `$XDG_*`, `$TMPDIR`, `<worktree>` placeholders, `*` for one segment; `kind: "file"` for a single file; `retentionDays: null` is kept by design; a positive `retentionDays` needs a `prune` command); a plugin whose source (`hooks/`, `lib/`, `scripts/` and the rest; tests, fixtures, evals, e2e, templates and the kit's two copied runners excluded) writes or resolves paths outside the worktree declares `state`; every write the canary observed (`cc_canary_runs.writes`) sits under a declared path | the malformed entry, the write sites with no `state` (`hooks/stop.mjs:41, …`), or `the canary saw a write at $XDG_STATE_HOME/<p>/x under no declared state path` |
+| `docs` (a release is written down) | the plugin's `.claude-plugin/plugin.json` `version` is the base commit's (`skipped`: `version 0.3.5 unchanged since the base`; also skipped when the manifest has no `version`), or, when it differs (or the base has no manifest: a new plugin), all three hold: `CHANGELOG.md` in the plugin has a heading for the new version with text under it (`## [<ver>]`, Keep a Changelog, or `## <ver>`); the plugin's `README.md` has a release heading for it with text under it (`## Changes in <ver>`, `### <ver>` under a `## Changes` heading, or `### <date> — <ver>`; the CHANGELOG shapes count too, at any heading level); and the repository root `README.md` names the version for the plugin: in the plugin's top-level bullet (`- **[<plugin>](…)** …` and its indented continuation lines), on a `Changes in <plugin> <ver>` line anywhere, or on a `Changes in <ver>` line inside the root README's `## <plugin>` section. The version is matched as a whole (`0.3.6` is not found in `10.3.6` or `0.3.60`). The base manifest and the root README are read out of the commits, like the plugin's own files. A root plugin's README is the repository's, so the third part is not asked of it | the file and the heading it wanted (`CHANGELOG.md has no "## [0.3.6]" (or "## 0.3.6") heading`, `README.md has nothing under its 0.3.6 heading`, `the repository README.md does not name 0.3.6 for ledger: put it in the plugin's bullet, on a "Changes in ledger 0.3.6" line, or on a "Changes in 0.3.6" line under "## ledger"`), or `CHANGELOG.md is missing: add it with a "## [0.3.6]" (or "## 0.3.6") entry` |
 
 The whole run is capped at 60 s; a check that does not start before the cap records `fail`
 with `timeout`. Exit 0 when every row passes or is skipped, 1 when one fails, 2 when the
@@ -749,6 +750,20 @@ Tests use a sandboxed `HOME`, `XDG_*` and `LEDGER_*` so they never touch your le
 `LEDGER_CWD` and `LEDGER_BUSY_TIMEOUT_MS` environment variables exist for the tests.
 
 ## Changes
+
+### 0.3.6
+
+- The plugin gate runs six checks, not five: `docs` (a release is written down). When a
+  plugin's `.claude-plugin/plugin.json` version differs from the base commit's, its
+  `CHANGELOG.md` has an entry for the new version, its `README.md` has a release heading for it
+  (`## Changes in <ver>`, `### <ver>` or `### <date> — <ver>`), and the repository root
+  README names the version for the plugin (in its bullet, on a `Changes in <plugin> <ver>` line,
+  or on a `Changes in <ver>` line under `## <plugin>`). The row is `skipped` while the version
+  is unchanged, and each failure names the file and the heading it wanted. The base manifest
+  and the root README are read out of the commits, like every other row's input, so a
+  `--plugins` run now resolves the base too. See [The plugin gate](#the-plugin-gate).
+- `plugins/ledger/CHANGELOG.md` exists from this version on, in the Keep a Changelog shape the
+  row accepts; the "Changes" section here keeps one entry per version as before.
 
 ### 0.3.5
 

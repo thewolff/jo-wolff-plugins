@@ -4,6 +4,24 @@ All notable changes to plugin-kit are recorded here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Releases before 0.2.0 are described in
 the README's "Changes in" sections.
 
+## [0.2.2] - 2026-11-04
+
+### Added
+
+- The scaffold writes `CHANGELOG.md` (Keep a Changelog, with the `## [0.1.0]` entry) beside the
+  README's `## Changes in 0.1.0`, from `templates/CHANGELOG.md` (20 files, from 19). A
+  scaffolded plugin's first version is written down in the two places ledger 0.3.6's
+  `gate check` `docs` row reads from the plugin; the repository README's bullet is the author's.
+
+### Changed
+
+- The `release-gate` agent's version-match step (check 4) wants the three things the `docs` row
+  wants, with the exact headings it accepts: a `## [<version>]` or `## <version>` entry in
+  `CHANGELOG.md` with text under it; a `## Changes in <version>`, `### <version>` or
+  `### <date> — <version>` heading in the README with text under it; and the root README naming
+  the version in the plugin's bullet, on a `Changes in <name> <version>` line, or on a
+  `Changes in <version>` line under `## <name>`.
+
 ## [0.2.1] - 2026-11-04
 
 ### Changed
