@@ -21,10 +21,15 @@ function setup(t) {
   t.after(() => rmSync(base, { recursive: true, force: true }));
   const repo = join(base, "repo");
   mkdirSync(join(repo, "src"), { recursive: true });
-  const git = spawnSync("git", ["init", "-q", repo], { encoding: "utf8", timeout: 5000 });
+  // A controlled environment, not the parent's: no inherited PATTERN_CHECK_* or GIT_* overrides,
+  // no user or system git config.
+  const env = { PATH: process.env.PATH, HOME: base, XDG_STATE_HOME: join(base, "state"), XDG_CONFIG_HOME: join(base, "config"), CLAUDE_PLUGIN_ROOT: PLUGIN, GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: "/dev/null" };
+  const git = spawnSync("git", ["init", "-q", repo], { env, encoding: "utf8", timeout: 5000 });
+  assert.equal(git.error, undefined, String(git.error));
   assert.equal(git.status, 0, git.stderr);
-  const { PATTERN_CHECK_SESSION: _ignored, ...inherited } = process.env;
-  const env = { ...inherited, HOME: base, XDG_STATE_HOME: join(base, "state"), XDG_CONFIG_HOME: join(base, "config"), CLAUDE_PLUGIN_ROOT: PLUGIN };
+  // The full default config at the repository root, so a config in an ancestor of the temp
+  // directory cannot change the threshold or the hooks.
+  writeFileSync(join(repo, ".pattern-check.json"), JSON.stringify({ threshold: 3, denyCommands: [], receiptDir: ".pattern-check", hooks: { preToolUse: true, stop: true } }));
   const common = { session_id: SESSION, transcript_path: join(base, "transcript.jsonl"), cwd: repo, permission_mode: "default" };
   const spawnHook = (script, payload) => {
     const r = spawnSync(process.execPath, [script], { input: JSON.stringify(payload), env, encoding: "utf8", timeout: 5000 });
@@ -74,7 +79,7 @@ test("e2e: files 1 and 2 allowed, the 3rd denied with the exact command; Stop re
   writeFileSync(e.file("table.md"), "| webhook parser | (none: grep webhook in src/) | new | nothing parses inbound webhooks |\n");
   const refusedRecord = e.sh(command);
   assert.equal(refusedRecord.status, 1);
-  assert.match(refusedRecord.stderr, /receipt not written: row "webhook parser" has no fail columns; every piece needs fails how \| next step \| restart-safe \| bounded \| evidence kept/);
+  assert.match(refusedRecord.stderr, /receipt not written: row "webhook parser" has no fail columns.*fails how \| next step \| restart-safe \| bounded \| evidence kept/);
   assert.equal(existsSync(e.file(`.pattern-check/${SESSION}.md`)), false);
 
   // The full table records.

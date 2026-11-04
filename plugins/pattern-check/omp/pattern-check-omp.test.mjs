@@ -43,7 +43,7 @@ function fixture(t, { deps = {}, sessionId = SESSION } = {}) {
   const stop = (text, messages = [user(1)]) =>
     emit("session_stop", { type: "session_stop", messages, turn_id: 0, session_id: "provider-id", stop_hook_active: false, last_assistant_message: { role: "assistant", content: [{ type: "text", text }] } });
   const counted = (key = SESSION) => JSON.parse(readFileSync(paths.session(sd, key), "utf8")).files;
-  const record = (key = SESSION) => spawnSync(process.execPath, [CLI, "record", "--session", key, "--cwd", repo, "--no-new-pieces", "test"], { env: { ...process.env, HOME: base, ...env }, encoding: "utf8" });
+  const record = (key = SESSION) => spawnSync(process.execPath, [CLI, "record", "--session", key, "--cwd", repo, "--no-new-pieces", "test"], { env: { ...process.env, HOME: base, ...env }, encoding: "utf8", timeout: 5000 });
   const setRepo = (obj) => writeFileSync(join(repo, ".pattern-check.json"), JSON.stringify(obj));
   return { base, repo, env, sd, pi, handlers, calls, ctx, notes, emit, file, edit, write, bash, stop, user, counted, record, setRepo };
 }

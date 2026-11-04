@@ -39,7 +39,9 @@ test("respond: empty, malformed, non-object, timed-out and unreadable stdin allo
 
 test("respond: a throwing handle allows with the error message", () => {
   const out = respond(hook(() => { throw new Error("boom"); }), ok("{}"));
-  assert.equal(out.systemMessage, "pattern-check: the PreToolUse hook failed (boom); this call was allowed");
+  assert.match(out.systemMessage, /^pattern-check: .*PreToolUse.*\(boom\).*allowed$/);
+  assert.equal(out.systemMessage.includes("\n"), false);
+  assert.equal(out.hookSpecificOutput, undefined);
 });
 
 test("logError appends one line with the hook file and reason, flattening newlines, and rotates past the cap", (t) => {

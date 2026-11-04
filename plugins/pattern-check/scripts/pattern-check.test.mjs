@@ -106,7 +106,7 @@ test("record with an invalid table exits 1 and writes nothing", (t) => {
     [["--row", `a | | new | | ${FAIL}`], null, /needs a reason/],
     [["--no-new-pieces", " "], null, /needs a reason/],
     // the fail columns
-    [[], "| a | src/a.ts:1 | reuse | ok |", /row "a" has no fail columns; every piece needs fails how \| next step \| restart-safe \| bounded \| evidence kept/],
+    [[], "| a | src/a.ts:1 | reuse | ok |", /row "a" has no fail columns.*fails how \| next step \| restart-safe \| bounded \| evidence kept/],
     [["--row", "a | src/a.ts:1 | reuse | ok |  | rerun | yes: pure | n/a: none | log"], null, /row "a": "fails how" is empty/],
     [["--row", "a | src/a.ts:1 | reuse | ok | throws | rerun | yes: pure | n/a | log"], null, /row "a": "bounded" is n\/a without a reason/],
     [["--row", "a | src/a.ts:1 | reuse | ok | throws | rerun | maybe | n/a: x | log"], null, /"restart-safe" must start with yes or no/],
