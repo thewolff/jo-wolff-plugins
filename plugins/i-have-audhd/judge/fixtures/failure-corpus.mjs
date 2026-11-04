@@ -3,13 +3,14 @@
 // representative per failure kind, verbatim. judge/failure-causes.test.mjs drives classify()
 // and askJudge() with these so every `cause=` value is pinned to a line that really happened.
 //
-//   kind                corpus count   error kind       expected cause
-//   401 token revoked   6              judge-exit-1     credential-revoked
-//   no credential       2              judge-exit-1     no-credential
-//   Request was aborted 4              judge-exit-1     judge-self-abort
-//   bare exit 1         4              judge-exit-1     other
-//   timeout             10             judge-timeout    hook-deadline
-//   unparseable         3              judge-unparseable bad-json
+//   kind                corpus count   error kind (1.7.0: the kit's)   expected cause
+//   401 token revoked   6              nonzero, detail "exit 1"        credential-revoked
+//   no credential       2              nonzero, detail "exit 1"        no-credential
+//   Request was aborted 4              nonzero, detail "exit 1"        judge-self-abort
+//   bare exit 1         4              nonzero, detail "exit 1"        other
+//   timeout             10             timeout                         hook-deadline
+//   unparseable         3              unparseable                     bad-json
+//   (the 1.6.1 log lines wrote these as judge-exit-1, judge-timeout and judge-unparseable)
 
 export const CORPUS = {
   "credential-revoked": {

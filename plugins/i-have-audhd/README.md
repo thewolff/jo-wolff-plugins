@@ -42,32 +42,49 @@ adapter runs them under node resolved to an absolute path (`I_HAVE_AUDHD_NODE` p
 
 2. **Choose a judge.** Five of the thirteen checks (`do-not-batch-by-label`, `conclusion-first`,
    `restate-resumed-thread`, `report-what-you-did-not-do`, `bad-news-first`) need a model to
-   read the message, and stay off until you choose one. Run the setup tool in a terminal:
+   read the message, and stay off until a judge command is configured. Since 1.7.0 the command
+   is plugin-kit's shared judge: one file, `${XDG_CONFIG_HOME:-~/.config}/judge/config.json`,
+   read by every plugin that asks a model to grade something. Write it once, in a terminal:
+
+   ```
+   node ~/.claude/plugins/marketplaces/jo-wolff-plugins/plugins/i-have-audhd/lib/judge.mjs setup
+   ```
+
+   The OMP copy is
+   `~/.omp/plugins/cache/marketplaces/jo-wolff-plugins/plugins/i-have-audhd/lib/judge.mjs`;
+   either one, or any other plugin's copy, writes the same file. `setup` asks for the command
+   (`--command <cmd>`, `--timeout-ms <n>` and `--yes` script it), makes one test call, shows
+   the JSON it will write and writes it after a yes; a failed test call is refused unless
+   `--force`. `node <that path> which` prints the command, timeout and source as this plugin
+   resolves them. The full contract is in
+   [plugin-kit's README, "Shared judge"](../plugin-kit/README.md#shared-judge).
+
+   To give this plugin a judge of its own that wins over the shared file, or to choose none
+   and stop the notice below, run the plugin's setup tool instead:
 
    ```
    node ~/.claude/plugins/marketplaces/jo-wolff-plugins/plugins/i-have-audhd/tools/setup.mjs
    ```
 
-   The OMP copy is
-   `~/.omp/plugins/cache/marketplaces/jo-wolff-plugins/plugins/i-have-audhd/tools/setup.mjs`;
-   either one configures both hosts, because both read the same profile (below). The tool:
-   - checks that `node` is on `PATH`, and on a login shell's `PATH`;
+   It shows the shared file and the judge that resolves right now, then:
+   - checks that `node` is on `PATH`;
    - lists the judges and requires a pick: the Claude Code CLI on Haiku, the Codex CLI, OMP
-     with a model you name, a command you type, or none;
+     with a model you name, a command you type, or none of its own;
    - makes one test call to that judge through the Stop hook's own dispatch
      (`judge/ask.mjs`) and reports a failure, a wrong answer, or a judge slower than OMP's 20s
      judge budget;
    - prints the profile path and the full JSON it will write, and writes only after you type
      `yes`. Every other profile field is kept.
 
-   Choosing none writes `"judgeCommand": null`: the five checks stay off and nothing nags you.
-   Re-running is safe; the same choice again writes nothing. For a scripted install:
+   Choosing none writes `"judgeCommand": null`: no override, so the shared file applies when
+   it names a command, and otherwise the five checks stay off and nothing nags you. Re-running
+   is safe; the same choice again writes nothing. For a scripted install:
    `node <that path> --judge claude|codex|omp|custom|none [--command <cmd>] [--model <name>] --yes`
    (`--yes` still refuses a judge whose test call failed).
 
 3. **Start a new session.** If you skipped step 2, the first session start shows a one-time
    notice (on Claude Code a hook message, on OMP a UI warning) naming the five checks that are
-   off and the exact command to run.
+   off, both files, and both commands.
 
 On Claude Code both hooks run from `hooks/hooks.json`. OMP does not run `hooks.json`; the
 install registers `omp/i-have-audhd-omp.ts` (declared in `package.json` under
@@ -185,9 +202,9 @@ measured: the corpus adjudications found no check whose false-positive rate supp
 blocking by default; the rates are in `skills/i-have-audhd/reference.md`. Block is one
 profile flip away, globally or per check.
 
-The five judge-gated checks are inactive until you configure `enforcement.judgeCommand`;
-each trigger that fires without one leaves a line in `skipped.log`, so a skipped check stays
-inspectable.
+The five judge-gated checks are inactive until a judge command resolves (the profile's
+`enforcement.judgeCommand`, else the shared judge file); each trigger that fires without one
+leaves a line in `skipped.log` naming both places, so a skipped check stays inspectable.
 
 On OMP the Stop hook runs for the main session only: OMP's `session_stop` never fires for
 subagent sessions, and OMP has no blocking equivalent of Claude Code's `SubagentStop`. OMP
@@ -219,22 +236,39 @@ generic starting point. Every field is optional:
 }
 ```
 
-`tools/setup.mjs` (install step 2) writes `judgeCommand` for you after testing it. You can also
-write it by hand. The example `judgeCommand`, `codex exec --skip-git-repo-check -`, assumes the
-Codex CLI is installed and signed in; it is an example, not a requirement.
+`judgeCommand` is optional since 1.7.0: it is this plugin's override of the shared judge file
+(install step 2), and `tools/setup.mjs` writes it for you after testing it. You can also write
+it by hand. The example, `codex exec --skip-git-repo-check -`, assumes the Codex CLI is
+installed and signed in; it is an example, not a requirement.
 
-**The judge contract** (`judge/ask.mjs`): `judgeCommand` is run by `/bin/sh -c`. If it contains
-`{prompt}`, every occurrence is replaced by the shell-escaped prompt; otherwise the prompt is
-piped to its stdin. It has to exit 0 within 30s (20s under OMP) and print, on stdout, a JSON
-object `{"violation": <boolean>, "reason": "<string>"}`. Banner lines before it are fine; the
-last such object wins, and one `{"result": "<json string>"}` envelope (what
-`claude -p --output-format json` prints) is unwrapped. Anything else is a judge failure, and a
-failed judge is never counted as a pass: `judge-failures.log` gets a line naming the rule, the
-error kind, a `cause=`, the session, harness, model, elapsed and budget milliseconds, the judged
-section (`<label>@<line>`, or `whole`), the prompt's cache key and the path of the prompt it was
-asked (`cache/<key>.prompt.txt`, written on failure so `<judgeCommand> < <that file>` replays
-it), then the tail of the judge's stderr and, for a judge that printed no verdict, the last 300
-characters of its stdout. The rule becomes a "Judge unavailable" finding in the rule's own mode
+**Where the command comes from** (`judge/ask.mjs` `resolveJudge`, plugin-kit's order, first
+found wins): `enforcement.judgeCommand` in the profile; else `command` in
+`${XDG_CONFIG_HOME:-~/.config}/judge/config.json`. `null` or absent in the profile means "no
+override", not "no judge". A shared file that exists but is not valid JSON is no judge
+(the kit never swaps in another command for a typo): the Stop hook's `skipped.log` line and
+one session-start fault line name the parse problem. Every judge-failure line and every "Judge
+unavailable" finding name the source the command came from, so an override silently winning
+over the shared file is never a mystery. The budget is this plugin's harness budget below, never
+the shared file's `timeoutMs`: the hook's own deadline is fixed.
+
+**The judge contract** (plugin-kit's `lib/judge.mjs`, vendored byte for byte; the kit's tests
+diff it): the command is run by `/bin/sh -c`, with `I_HAVE_AUDHD_ENFORCE=off` and
+`I_HAVE_AUDHD_INJECT=off` in its environment so a judge that is itself a Claude Code or OMP
+session runs none of this plugin's hooks on its own reply. If it contains `{prompt}`, every
+occurrence is replaced by the shell-escaped prompt; otherwise the prompt is piped to its stdin.
+It has to exit 0 within 30s (20s under OMP) and print, on stdout, a JSON object
+`{"violation": <boolean>, "reason": "<string>"}` as the LAST JSON object there. Banner lines
+before it are fine, and one `{"type": "result", "result": "<json string>"}` envelope (what
+`claude -p --output-format json` prints; a bare `{"result": …}` works too) is unwrapped.
+Anything else is a judge failure, and a failed judge is never counted as a pass:
+`judge-failures.log` gets a line naming the rule, the error kind (the kit's: `timeout`,
+`nonzero`, `unparseable`, `spawn-failed`), a `cause=`, the session, harness, model, elapsed
+and budget milliseconds, the judged section (`<label>@<line>`, or `whole`), the prompt's cache
+key and the path of the prompt it was asked (`cache/<key>.prompt.txt`, written on failure so
+`<judgeCommand> < <that file>` replays it), the kit's `detail=` (`"exit 127"`, `"no exit
+within 30000 ms"`), the `source=` the command came from, then the tail of the judge's stderr
+and, for a judge that printed no verdict, the last 300 characters of its stdout. The rule
+becomes a "Judge unavailable" finding in the rule's own mode
 (a warning by default; in block mode it blocks once, and the revision is only warned). You are
 told once per rule and cause, through the hook's `systemMessage` (a UI warning on OMP), again
 hourly while it keeps failing, and at once if it fails again after a stop where the judge
@@ -250,23 +284,29 @@ answered; the notice states the cause and its fix.
 | `bad-json` | exit 0 and no `{"violation": …}` object on stdout | run the command by hand on the prompt file the line names |
 | `other` | anything else: a bare exit 1, a command not found | read the stderr tail on the line; re-test with the setup tool |
 
-No judge failure was reproduced live for 1.6.1: each cause is pinned by tests to a stderr
-string that appeared in this machine's own `judge-failures.log` (`judge/fixtures/failure-corpus.mjs`).
-A judge that is itself a Claude Code or OMP
-session should run with `I_HAVE_AUDHD_ENFORCE=off I_HAVE_AUDHD_INJECT=off` in front, so this
-plugin's hooks do not run inside the judge's own session; the setup tool's choices do.
+No judge failure was reproduced live for 1.6.1 or 1.7.0: each cause is pinned by tests to a
+stderr string that appeared in this machine's own `judge-failures.log`
+(`judge/fixtures/failure-corpus.mjs`). The setup tool's Claude Code and OMP choices also put
+`I_HAVE_AUDHD_ENFORCE=off I_HAVE_AUDHD_INJECT=off` in front of the command they write, so it
+is quiet when run by hand too.
 
-To run without a judge, set `judgeCommand` to `null` (the setup tool's "none"). Left out
-entirely, it means the same to the Stop hook, but the session-start notice treats it as "not
-chosen yet". The seven deterministic checks still run; the five judge-gated checks stay
-inactive and each fired trigger is logged to `skipped.log` with the profile path the hook
-read (`rule=<rule> reason=no-judge-command profile=<path> session=<id>`):
+To run without a judge, leave both the shared file and `judgeCommand` without a command. In
+the profile, `"judgeCommand": null` (the setup tool's "none of its own") means no override:
+the shared file applies when it names a command, and the session-start notice is not shown
+(a choice was made). Left out entirely, the notice shows once unless the shared file names a
+command. With no command anywhere the seven deterministic checks still run; the five judge-gated
+checks stay inactive and each fired trigger is logged to `skipped.log` with both paths the
+hook read (`rule=<rule> reason=no-judge-command profile=<path> shared=<path> session=<id>`,
+plus `malformed="<path>: <error>"` when the shared file is the reason):
 
 ```json
 {
   "enforcement": { "mode": "warn", "judgeCommand": null }
 }
 ```
+
+To switch the judge checks off for this plugin while a shared judge exists, set their modes:
+`"enforcement": {"rules": {"conclusion-first": "off", …}}`, or `"mode": "off"` for every check.
 
 The full schema, precedence, every check's contract, and the judge machinery are in
 `skills/i-have-audhd/reference.md`. **Keep your profile out of version control if it
@@ -310,7 +350,7 @@ Every switch, with its default. All of them live in the profile
 | Link the reference: file names | `linkTheReference.kinds.file-name` | `true`, `false` | `true` |
 | Link the reference: "the report", "the plan" and kin | `linkTheReference.kinds.artifact` | `true`, `false` | `false` (measured, see below) |
 | Link the reference: branch names | `linkTheReference.kinds.branch` | `true`, `false` | `false` (measured, see below) |
-| The judge for the five judge checks | `enforcement.judgeCommand` | a shell command, or `null` | unset: those five stay off |
+| This plugin's own judge, winning over the shared judge file | `enforcement.judgeCommand` | a shell command, or `null` (no override) | unset: the shared file `${XDG_CONFIG_HOME:-~/.config}/judge/config.json` applies, else those five stay off |
 | Where a handed script may live | `handedCommand.scriptRoots` | absolute or `~/` directories | `["~/agent-scratch"]` |
 | Extra handed-command line shapes | `handedCommand.allow` | globs, `*` matches anything | `[]` |
 | OMP block cap: the OMP adapter tags its hook runs `I_HAVE_AUDHD_HARNESS=omp`, and under that tag every block is delivered as a warn | `enforcement.armOmp` | `true` (blocks deliver on OMP), `false` | `false` |
@@ -510,6 +550,30 @@ file and a replaced one are kept.
 Exit 0 means every item is done or had nothing to do, 1 means one was refused or failed.
 
 ## Changes
+
+### 1.7.0
+
+- The judge command is plugin-kit's shared judge. `lib/judge.mjs` is the kit's dispatch,
+  vendored byte for byte (the kit's `test/judge.test.mjs` diffs every vendored copy), and
+  `judge/ask.mjs` keeps only what is this plugin's: the prompt, the strict verdict shape, the
+  cache, the harness budget, and the failure line with its `cause=`. Resolution is the kit's
+  order: the profile's `enforcement.judgeCommand` first, else `command` in
+  `${XDG_CONFIG_HOME:-~/.config}/judge/config.json`. **An existing profile with
+  `enforcement.judgeCommand` keeps working unchanged**: the plugin key wins, and `null`
+  there means "no override" (the shared file applies), not "no judge". The shared file's
+  `timeoutMs` is not used; the hook's own budget (30 s, 20 s under OMP) is unchanged.
+- `node lib/judge.mjs setup` writes the shared file (the kit's CLI, in the vendored copy;
+  `which` prints what resolves). `tools/setup.mjs` is this plugin's override only: it now
+  shows the shared file and the judge that resolves before asking, and "none" reads "none of
+  its own". The session-start notice names both files and both commands and shows only when
+  neither has a command; a malformed shared file is one fault line, not a notice.
+- `judge-failures.log` lines carry the kit's error kinds (`timeout`, `nonzero`,
+  `unparseable`, `spawn-failed`; 1.6.1 wrote `judge-timeout`, `judge-exit-<n>`,
+  `judge-unparseable`, `judge-spawn-<errno>`), plus `detail="exit 127"` and the `source=`
+  the command came from; `cause=` values are unchanged. `skipped.log` lines name
+  `shared=<path>` and, when it is the reason, `malformed=`. "Judge unavailable" findings
+  name the source. Eval `stop-judge-shared-config` replays the real-judge capture with the
+  command in the shared file and no profile.
 
 ### 1.6.1
 

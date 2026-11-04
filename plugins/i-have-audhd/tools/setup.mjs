@@ -1,14 +1,23 @@
 #!/usr/bin/env node
-// setup.mjs — the install-time step that makes an operator choose a judge for the Stop hook.
+// setup.mjs — this plugin's own judge choice for the Stop hook: the override in the profile.
 // Run it in a terminal: `node <plugin dir>/tools/setup.mjs`. It works the same for Claude Code
 // and OMP installs, because both read one profile (lib/config.mjs, defaultProfilePath).
 //
+// Since 1.7.0 the judge command is resolved in plugin-kit's shared order (judge/ask.mjs,
+// resolveJudge): the profile's enforcement.judgeCommand first, else the shared judge file
+// ${XDG_CONFIG_HOME:-~/.config}/judge/config.json that every judging plugin reads. The shared
+// file is written by `node <plugin dir>/lib/judge.mjs setup` (the vendored kit CLI; not forked
+// here). This tool writes the OVERRIDE only, for a judge that is this plugin's alone; it shows
+// the shared file and what resolves right now, so the two never surprise each other.
+//
 // What it does, in order, announcing each step:
-//   1. Checks that `node` is on PATH: the hooks are run as `node <hook>.mjs` by both hosts.
+//   1. Checks that `node` is on PATH: the hooks are run as `node <hook>.mjs` by both hosts, and
+//      prints the profile, the shared file, and the judge that resolves today with its source.
 //   2. Lists the judge choices — Claude Code CLI, Codex CLI, OMP, a custom command, or none —
 //      marking which CLIs it found on PATH, and requires an explicit pick. "none" is a real
-//      choice: it writes judgeCommand: null, which leaves the five judge checks off and stops
-//      the session-start notice (lib/judge-setup.mjs, THE THREE STATES).
+//      choice: it writes judgeCommand: null, no override, which stops the session-start notice
+//      (lib/judge-setup.mjs, THE STATES); the shared file applies when it names a command, and
+//      otherwise the five judge checks stay off.
 //   3. For any judge, makes one cheap test call through the hook's own dispatch (askJudge in
 //      judge/ask.mjs), with a throwaway state dir so the test leaves no cache entry or log
 //      line in the real one. A judge that fails, or that is slower than OMP's 20s judge budget,
@@ -28,13 +37,15 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { createInterface } from "node:readline";
 import { fileURLToPath } from "node:url";
-import { askJudge } from "../judge/ask.mjs";
+import { askJudge, judgeSources, resolveJudge } from "../judge/ask.mjs";
 import { defaultProfilePath } from "../lib/config.mjs";
-import { JUDGE_RULES, TOTAL_CHECKS } from "../lib/judge-setup.mjs";
+import { JUDGE_RULES, TOTAL_CHECKS, SHARED_SETUP_COMMAND } from "../lib/judge-setup.mjs";
 
 // The judge's own session must not run this plugin's hooks on the judge's reply. Both Claude
 // Code and OMP pass the environment to the hooks they spawn, and these two switches turn the
-// injection and the Stop hook off for that one child.
+// injection and the Stop hook off for that one child. askJudge sets them on every judge it runs
+// as well (so a command from the shared file is covered); the prefix keeps a command written
+// here self-describing when run by hand.
 const QUIET = "I_HAVE_AUDHD_ENFORCE=off I_HAVE_AUDHD_INJECT=off";
 const OMP_BUDGET_MS = 20_000; // judge/ask.mjs, THE TIMEOUT: the judge's budget under OMP
 const TEST_TIMEOUT_MS = 60_000;
@@ -60,7 +71,7 @@ export const CHOICES = [
       `${QUIET} omp -p --no-session --no-tools --no-extensions --no-skills --no-rules --no-lsp --no-title --model ${model || "haiku"}`,
   },
   { id: "custom", label: "A command you type", bin: null, command: (c) => c },
-  { id: "none", label: `None: ${JUDGE_RULES.length} of ${TOTAL_CHECKS} checks stay off`, bin: null, command: () => null },
+  { id: "none", label: `None of its own: the shared judge file applies when it names a command; otherwise ${JUDGE_RULES.length} of ${TOTAL_CHECKS} checks stay off`, bin: null, command: () => null },
 ];
 
 const USAGE =
@@ -130,7 +141,7 @@ function readProfile(path) {
 
 function describe(judgeCommand) {
   if (judgeCommand === undefined) return "not chosen yet";
-  if (judgeCommand === null) return `none (${JUDGE_RULES.length} of ${TOTAL_CHECKS} checks off)`;
+  if (judgeCommand === null) return "none of its own (the shared judge file applies when it names a command)";
   return JSON.stringify(judgeCommand);
 }
 
@@ -152,14 +163,17 @@ async function testJudge(command) {
 }
 
 const FAILURE_WORDS = {
-  "judge-timeout": `it printed no verdict within ${TEST_TIMEOUT_MS / 1000}s`,
-  "judge-unparseable": 'it exited 0 but printed no {"violation": <boolean>, "reason": <string>} object on stdout',
+  timeout: `it printed no verdict within ${TEST_TIMEOUT_MS / 1000}s`,
+  unparseable: 'it exited 0 but printed no {"violation": <boolean>, "reason": <string>} object last on stdout',
+  "spawn-failed": "/bin/sh could not start it",
 };
-function failureText(error) {
+function failureText(error, detail) {
   if (FAILURE_WORDS[error]) return FAILURE_WORDS[error];
-  const exit = /^judge-exit-(.+)$/.exec(error);
-  if (exit) return `it exited with status ${exit[1]} (127 usually means the command is not on PATH; otherwise check it is signed in)`;
-  return error;
+  if (error === "nonzero") {
+    const status = /^exit (\S+)$/.exec(String(detail ?? ""))?.[1] ?? "unknown";
+    return `it exited with status ${status} (127 usually means the command is not on PATH; otherwise check it is signed in)`;
+  }
+  return detail ? `${error} (${detail})` : error;
 }
 
 function writeProfile(path, profile) {
@@ -210,7 +224,12 @@ async function run(args, { ask }) {
   }
   const current = profile?.enforcement && typeof profile.enforcement === "object" ? profile.enforcement.judgeCommand : undefined;
   console.log(`  Profile: ${path}${profile ? "" : " (does not exist yet)"}`);
-  console.log(`  Current judge: ${describe(current)}`);
+  console.log(`  This plugin's own judge (enforcement.judgeCommand, the override): ${describe(current)}`);
+  const { shared, malformed } = judgeSources();
+  console.log(`  Shared judge file, read by every plugin that judges: ${shared}${malformed ? ` (malformed: ${malformed})` : ""}`);
+  console.log(`  Written by \`${SHARED_SETUP_COMMAND}\`.`);
+  const resolved = resolveJudge({ judgeCommand: typeof current === "string" ? current : null });
+  console.log(`  Resolves now to: ${resolved ? `${JSON.stringify(resolved.command)} from ${resolved.source}` : "no judge"}`);
 
   console.log(`\nStep 2 of 4: choose a judge. ${JUDGE_RULES.length} of the ${TOTAL_CHECKS} checks need one:`);
   console.log(`  ${JUDGE_RULES.join(", ")}.`);
@@ -253,14 +272,19 @@ async function run(args, { ask }) {
   console.log("\nStep 3 of 4: testing the judge with one call.");
   let failed = false;
   if (command === null) {
-    console.log(`  No judge, no test. ${JUDGE_RULES.join(", ")} stay off; each time one would have fired,`);
-    console.log("  skipped.log gets a line. Run this again any time to add a judge.");
+    const sharedJudge = resolveJudge({ judgeCommand: null });
+    if (sharedJudge) {
+      console.log(`  No judge of its own, no test. The shared judge applies: ${JSON.stringify(sharedJudge.command)} from ${sharedJudge.source}.`);
+    } else {
+      console.log(`  No judge, no test. ${JUDGE_RULES.join(", ")} stay off; each time one would have fired,`);
+      console.log(`  skipped.log gets a line. Run this again any time to add a judge, or \`${SHARED_SETUP_COMMAND}\` for one every plugin shares.`);
+    }
   } else {
     const result = await testJudge(command);
     const secs = (result.ms / 1000).toFixed(1);
     if (result.error) {
       failed = true;
-      console.log(`  The judge did not work: ${failureText(result.error)}. (${secs}s)`);
+      console.log(`  The judge did not work: ${failureText(result.error, result.detail)}. (${secs}s)`);
     } else {
       console.log(`  The judge answered in ${secs}s: violation=${result.violation}, "${result.reason}"`);
       if (result.violation) console.log("  Warning: that answer is wrong (the test message has no banana). A weak judge makes noisy checks.");

@@ -213,7 +213,7 @@ receipt and removes its working files.
 | Plugin | Version | What it does | Reads from / gives to another plugin |
 |---|---|---|---|
 | output-types | 0.3.1 | the CLAIM/CITE contract at SessionStart; a Stop check that warns on a label without its receipt | vendors plugin-kit's `lib/judge.mjs` and `lib/hook-runner.mjs`; delegation's brief skeleton carries its CLAIM/CITE line |
-| i-have-audhd | 1.6.1 | the message skeleton and thirteen Stop checks (links-resolve and the opt-in links-judge since 1.6.1), warning by default | its `enforcement.judgeCommand` is the last fallback of plugin-kit's judge resolution and of ledger's review judge |
+| i-have-audhd | 1.7.0 | the message skeleton and thirteen Stop checks (links-resolve and the opt-in links-judge since 1.6.1), warning by default; its judge is the shared one since 1.7.0 | vendors plugin-kit's `lib/judge.mjs`; its `enforcement.judgeCommand` is an override of the shared judge file, and the last fallback of plugin-kit's judge resolution and of ledger's review judge |
 | paired-coding | 1.5.0 | change sets behind a write gate; learning mode with `pair_learn`, `why` + `sources` on a card, `recall` on done | none |
 | ask-graham | 0.7.3 | "should we build X?" with a verdict; a prompt nudge and a Stop check | reads your `sources.md`; nothing from another plugin |
 | pattern-check | 0.3.2 | holds big work until a reuse/replace/new receipt exists | its receipt file is what delegation's spawn gate requires |
@@ -230,8 +230,9 @@ receipt and removes its working files.
 
 - **The judge command.** plugin-kit's `lib/judge.mjs` resolves one command (the plugin's env
   var, its own setting, `~/.config/judge/config.json`, then i-have-audhd's
-  `enforcement.judgeCommand`) and output-types vendors it, while i-have-audhd's `judge/ask.mjs`
-  and ledger's `lib/judge.mjs` still read the i-have-audhd profile themselves.
+  `enforcement.judgeCommand`) and output-types and i-have-audhd vendor it (i-have-audhd's own
+  setting is that same `enforcement.judgeCommand`, so for it the profile comes first), while
+  ledger's `lib/judge.mjs` still reads the i-have-audhd profile itself.
 - **The receipt.** output-types defines what earns a CLAIM or CITE and warns at Stop when a
   label lacks one; pattern-check's receipt is the `.pattern-check/<session>.md` file, which
   delegation's spawn gate requires before a builder-class spawn.
@@ -485,26 +486,28 @@ Three steps:
    omp plugin install i-have-audhd@jo-wolff-plugins
    ```
 
-2. **Choose a judge.** Five of the eleven Stop-hook checks (`do-not-batch-by-label`,
+2. **Choose a judge.** Five of the thirteen Stop-hook checks (`do-not-batch-by-label`,
    `conclusion-first`, `restate-resumed-thread`, `report-what-you-did-not-do`,
-   `bad-news-first`) need a model to read the message, and they stay off until you pick one. In a
-   terminal, run the setup tool from the marketplace copy you just added:
+   `bad-news-first`) need a model to read the message, and they stay off until a judge command
+   is configured. Since 1.7.0 that is the shared judge every judging plugin reads,
+   `~/.config/judge/config.json`; write it once from the marketplace copy you just added:
 
    ```
-   node ~/.claude/plugins/marketplaces/jo-wolff-plugins/plugins/i-have-audhd/tools/setup.mjs
+   node ~/.claude/plugins/marketplaces/jo-wolff-plugins/plugins/i-have-audhd/lib/judge.mjs setup
    ```
 
    On OMP the same file is at
-   `~/.omp/plugins/cache/marketplaces/jo-wolff-plugins/plugins/i-have-audhd/tools/setup.mjs`.
-   Either copy configures both hosts: they read one profile, `~/.claude/i-have-audhd.json`.
-   The tool checks `node`, lists the judges (the Claude Code CLI, the Codex CLI, OMP, a command
-   you type, or none), makes one test call to the judge you pick, shows the JSON it will write,
-   and writes `enforcement.judgeCommand` only after you type `yes`. Choosing none writes
-   `"judgeCommand": null` and leaves those five checks off. Run it again any time to change the
-   choice.
+   `~/.omp/plugins/cache/marketplaces/jo-wolff-plugins/plugins/i-have-audhd/lib/judge.mjs`
+   (any plugin's vendored copy writes the same file). It asks for the command, makes one test
+   call, shows the JSON it will write, and writes after you type `yes`. To give i-have-audhd a
+   judge of its own that wins over the shared file, or to choose none, run
+   `node <same directory>/tools/setup.mjs` instead: it lists the judges (the Claude Code CLI,
+   the Codex CLI, OMP, a command you type, or none of its own), tests the pick, and writes
+   `enforcement.judgeCommand` in `~/.claude/i-have-audhd.json`, the one profile both hosts
+   read, only after a `yes`. Run either again any time to change the choice.
 
 3. **Start a new session.** If you skipped step 2, the first session shows a one-time notice
-   naming the five checks that are off and the exact setup command.
+   naming the five checks that are off, both files, and both setup commands.
 
 OMP does not run a plugin's `hooks/hooks.json`. The install registers the plugin's OMP extension,
 `omp/i-have-audhd-omp.ts` (registered on omp 18.8.6), which runs the same two hooks, the

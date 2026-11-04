@@ -29,7 +29,7 @@ function runSetup(home, answers = [], args = []) {
   return spawnSync(process.execPath, [SETUP, ...args], {
     input: answers.map((a) => `${a}\n`).join(""),
     encoding: "utf8",
-    env: { ...process.env, HOME: home, I_HAVE_AUDHD_PROFILE: "" },
+    env: { ...process.env, HOME: home, I_HAVE_AUDHD_PROFILE: "", XDG_CONFIG_HOME: "" },
     timeout: 5_000,
   });
 }
@@ -124,7 +124,7 @@ test("an unparseable profile is refused untouched and its contents are not print
 test("the listed choices are Claude Code, Codex, OMP, custom, and none", () => {
   const home = mkhome();
   const r = runSetup(home, []);
-  for (const line of [/1\. Claude Code CLI, Haiku model/, /2\. Codex CLI/, /3\. OMP, a model you name/, /4\. A command you type/, /5\. None: 5 of 13 checks stay off/]) {
+  for (const line of [/1\. Claude Code CLI, Haiku model/, /2\. Codex CLI/, /3\. OMP, a model you name/, /4\. A command you type/, /5\. None of its own: the shared judge file applies when it names a command; otherwise 5 of 13 checks stay off/]) {
     assert.match(r.stdout, line);
   }
 });

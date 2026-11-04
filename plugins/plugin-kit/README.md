@@ -76,9 +76,11 @@ repository carries its own; they keep their own hook runners.
 A plugin vendors a byte-identical copy (`--judge` on the scaffolder, or copy the file by hand);
 `test/judge.test.mjs` fails when any `plugins/*/lib/judge.mjs` or `plugins/*/judge/judge.mjs`
 differs from the kit's, outside an explicit allowlist of the plugins that have not switched yet.
-Only ledger's `lib/judge.mjs` is allowlisted, until ledger's next release; i-have-audhd's
-`judge/ask.mjs` has a different name and is not scanned at all until i-have-audhd ships
-`lib/judge.mjs`.
+Only ledger's `lib/judge.mjs` is allowlisted, until ledger's next release. i-have-audhd vendors
+`lib/judge.mjs` since 1.7.0 and is scanned; its `judge/ask.mjs` keeps only what is its own (the
+prompt, the strict verdict shape, the cache, the harness budget and the `cause=` failure line)
+and calls the vendored copy for resolution and dispatch, with its `enforcement.judgeCommand`
+passed as the plugin's own key.
 
 **The command.** One string, run through `/bin/sh` as the leader of its own process group: with a
 literal `{prompt}` in it, every occurrence is replaced by the shell-escaped prompt; without one,
@@ -354,7 +356,7 @@ itself so any plugin's copy can configure the judge with one test call. `test/ju
 drives the resolution order, each failure class, both parsers and the CLI, and fails when any
 shipped copy under `plugins/*/lib/judge.mjs` or `plugins/*/judge/judge.mjs` differs from the
 kit's (ledger's `lib/judge.mjs` is allowlisted until its next release; i-have-audhd's
-`judge/ask.mjs` has a different name and is not scanned until i-have-audhd ships
+`judge/ask.mjs` had a different name and was not scanned until i-have-audhd 1.7.0 shipped
 `lib/judge.mjs`). The scaffolder takes `--judge` to copy it into a new plugin. The hook runner
 tells the handler thread its start time and deadline (`HOOK_RUNNER_STARTED_AT_MS`,
 `HOOK_RUNNER_DEADLINE_MS`) and kills any process group the thread registered when it exits, so a
