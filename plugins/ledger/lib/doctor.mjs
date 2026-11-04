@@ -10,6 +10,8 @@
 //   hooks    hooks/hooks.json lists every event the plugin handles and each script exists
 //   errors   errors.log lines from the last 7 days, counted per hook; warn when any, last 5 shown
 //   bounces  open bounce rows older than 24 hours (warn when any)
+//   review <lab>  one per lab in review.labs, unless review.mode is off: the lab's binary is on
+//            PATH (or LEDGER_REVIEW_BIN_<LAB>); warn when missing
 //
 // The SessionStart line (inject.doctor) runs only the cheap subset, quickIssues: schema version
 // and the errors.log count. The db-open check is implied (the hook has the store open already).
@@ -21,6 +23,7 @@ import { loadConfig } from "./config.mjs";
 import { probe, SCHEMA_VERSION, storeVersion } from "./db.mjs";
 import { errorsLogPath, readErrors } from "./failopen.mjs";
 import { nowIso } from "./time.mjs";
+import { labChecks } from "./review.mjs";
 
 export const PLUGIN_ROOT = fileURLToPath(new URL("..", import.meta.url));
 export const EXPECTED_EVENTS = Object.freeze(["SessionStart", "UserPromptSubmit", "PreToolUse", "Stop", "SessionEnd"]);
@@ -71,11 +74,11 @@ function hooksCheck(pluginRoot) {
 }
 
 /**
- * Run every check. `extraChecks(cfg)` returns more checks (the review labs' binaries).
+ * Run every check. `extraChecks(cfg, env)` returns more checks (default: the review labs' binaries).
  * @returns {{ checks: Array<{status, name, text, detail}>, fails: number, issues: number }}
  *   `issues`: fails plus warns other than a database that does not exist yet.
  */
-export function runDoctor({ env = process.env, cwd = null, now = Date.now(), pluginRoot = PLUGIN_ROOT, extraChecks = null } = {}) {
+export function runDoctor({ env = process.env, cwd = null, now = Date.now(), pluginRoot = PLUGIN_ROOT, extraChecks = labChecks } = {}) {
   const cfg = loadConfig({ env, cwd });
   const checks = [];
   const dbPath = cfg.config.db;

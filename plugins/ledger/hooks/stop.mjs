@@ -74,7 +74,7 @@ export function handle(input, { env = process.env, now = Date.now() } = {}) {
 
     const newTurn = Boolean(promptId && session?.last_stop_prompt && session.last_stop_prompt !== promptId && session.last_stop_at);
     // With a session, "a row exists" means one of this session's; without one, any open in scope.
-    const sessionHasOpenQuestion = sessionId ? sessionQuestions(db, { sessionId, cwd }).length > 0 : openQuestions(db, cwd).length > 0;
+    const sessionHasOpenQuestion = sessionId ? sessionQuestions(db, { sessionId, cwd }).length > 0 : openQuestions(db, cwd, { below: false }).length > 0;
     const verdict = checkStop(input.last_assistant_message, {
       dueQuestions: newTurn ? sessionQuestions(db, { sessionId, cwd, askedBy: session.last_stop_at }) : [],
       sessionHasOpenQuestion,

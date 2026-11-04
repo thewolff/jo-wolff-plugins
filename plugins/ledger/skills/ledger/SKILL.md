@@ -66,8 +66,23 @@ the human for permission. `… help` prints the whole grammar.
    `… outcome <ref> "<what and why>"` once the ref exists). One per session lifts the gate for
    the rest of the session.
 
+4. **Before `git push`, `gh pr create` or `gh pr merge`: `… review`, after the last commit.**
+   It sends the branch's diff to other labs' models and records their verdicts for HEAD; the
+   PreToolUse hook denies the push while HEAD has no review or has findings. On findings, fix
+   them, commit, and run `… review` again (or `… review addressed` once the fixes are
+   committed). When the human says they are prototyping or need the push anyway, run
+   `… review waive "<their words>"` with their words as the reason. Never ask them to edit the
+   config to get past the gate.
+
 There is no "open" or "close": the folder you are in is the unit of work, and questions and
-notes bind to it (a question asked in the repo root is open for its subfolders too).
+notes bind to it. A question is in scope in its own folder, in every folder below it, and in
+every folder above it, so a session in a parent folder sees the questions asked in its
+subfolders (each line names the subfolder).
+
+**When the human asks what is waiting, pending or open: report first.** Run `… pending --all`
+and tell them every row in plain words (the question's name, what it asks, its options) before
+you do anything else, and ask nothing else in that turn. Do not go on to other work or another
+repository until every row has been reported.
 
 ## Lines the human types (optional shortcut)
 

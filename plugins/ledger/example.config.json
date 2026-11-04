@@ -32,5 +32,13 @@
     "elsewhere": true,
     "answers": true,
     "doctor": true
+  },
+  "review": {
+    "mode": "gate",
+    "labs": [
+      "codex"
+    ],
+    "models": null,
+    "profiles": null
   }
 }

@@ -46,12 +46,12 @@ test("pending shows deadlines as local time plus relative, with `overdue` once p
   assert.match(after[1], /\(overdue, 3h ago\)$/);
 });
 
-test("pending with nothing open says so and is scoped to the folder (ancestor questions count, siblings do not)", () => {
+test("pending with nothing open says so and is scoped to the folder (ancestor and subfolder questions count, unrelated folders do not)", () => {
   const other = sandbox();
   assert.equal(renderPending([], other.work), `no open questions for ${other.work}`);
   const q = askQuestion(other, { name: "root q" , cwd: other.root });
   const fromWork = cli(other, ["pending"], { cwd: other.work });
   assert.ok(fromWork.out.includes(q), fromWork.out);
-  const unrelated = cli(other, ["pending"], { env: { LEDGER_CWD: "/" } });
-  assert.match(unrelated.out, /^no open questions for \//);
+  const unrelated = cli(other, ["pending"], { env: { LEDGER_CWD: "/usr" } });
+  assert.match(unrelated.out, /^no open questions for \/usr/);
 });

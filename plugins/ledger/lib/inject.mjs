@@ -1,13 +1,14 @@
 // inject.mjs — the text SessionStart hands Claude: held questions (Waiting on you), open
 // questions, recent notes, the verb summary, one line counting the open and held questions in
-// other folders, and, last, one doctor line when the cheap health checks find issues. Sections
-// appear in that order and only when non-empty. Capped at CAP characters (the doc's limit is
-// 10,000): notes are truncated first, never the held or open questions, the other-folders line
-// or the doctor line.
+// other folders, one line when the cross-lab review found problems on HEAD, and, last, one
+// doctor line when the cheap health checks find issues. Sections appear in that order and only
+// when non-empty. Capped at CAP characters (the doc's limit is 10,000): notes are truncated
+// first, never the held or open questions, the other-folders, review or doctor lines.
 
 import { fileURLToPath } from "node:url";
 import { elsewhereCount, heldQuestions, logEntries, openQuestions, renderLog, renderPending } from "./commands.mjs";
 import { quickIssues } from "./doctor.mjs";
+import { findingsLine } from "./review.mjs";
 
 export const CAP = 9000;
 
@@ -48,8 +49,8 @@ export function allowRule(p = cliPath()) {
 export function verbSummary() {
   return [
     `ledger: questions to the human and decisions made without asking are recorded with the \`ledger\` CLI. Always run it exactly as \`${invocation()} <verb> …\` (that literal path, no alias, no shell variable, no cd) so the one allow rule \`${allowRule()}\` matches and Claude Code never asks about it.`,
-    "Verbs: ask \"<body>\" --name <short> --options a,b --default a · answer <q-id> <option> · withdraw <q-id> · extend <q-id> · hold <q-id> · reopen <q-id> · note \"<text>\" · outcome <ref> [q-id] \"<text>\" · pending [--all] · log [N] · help.",
-    "To ask the human: run `ledger ask` first, then ask in plain words. Never show the human a q- id; ids are for you. When the human replies, run `ledger answer <q-id> <option>` with the option their words mean before anything else; a reply that is none of the options is recorded as given with `ledger answer <q-id> \"<reply>\"`, never withdrawn. Record a choice made without asking with `note`, in the same turn you state it. `git push` and `gh pr create` need one `note` or `outcome` in this session first. `ledger help` has the grammar.",
+    "Verbs: ask \"<body>\" --name <short> --options a,b --default a · answer <q-id> <option> · withdraw <q-id> · extend <q-id> · hold <q-id> · reopen <q-id> · note \"<text>\" · outcome <ref> [q-id] \"<text>\" · pending [--all] · log [N] · review · doctor · bounces · help.",
+    "To ask the human: run `ledger ask` first, then ask in plain words. Never show the human a q- id; ids are for you. When the human replies, run `ledger answer <q-id> <option>` with the option their words mean before anything else; a reply that is none of the options is recorded as given with `ledger answer <q-id> \"<reply>\"`, never withdrawn. Asked what is waiting: run `pending --all`, report every row first. Record a choice made without asking with `note`, in the same turn you state it. `git push` and `gh pr create` need one `note` or `outcome` in this session first, and a `ledger review` of HEAD. `ledger help` has the grammar.",
   ].join("\n");
 }
 
@@ -63,14 +64,14 @@ export function buildInjection(db, cwd, config, { source = "startup", now = Date
   const held = heldQuestions(db, cwd);
   let waitingText = "";
   if (held.length) {
-    waitingText = `ledger: Waiting on you (held questions for ${cwd}, oldest first; formed and deferred, not yet put to the human; when you ask one, run \`reopen <q-id>\` first):\n${held.map((q) => `- ${q.name}: ${q.body.replace(/\s+/g, " ").trim()} (${q.id})`).join("\n")}`;
+    waitingText = `ledger: Waiting on you (held questions for ${cwd} and the folders below it, oldest first; formed and deferred, not yet put to the human; when you ask one, run \`reopen <q-id>\` first):\n${held.map((q) => `- ${q.name}: ${q.body.replace(/\s+/g, " ").trim()} (${q.id}${q.cwd !== cwd && q.cwd.startsWith(cwd) ? `, in ${q.cwd}` : ""})`).join("\n")}`;
     sections.push("waiting");
   }
 
   const questions = openQuestions(db, cwd);
   let questionsText = "";
   if (questions.length) {
-    questionsText = `ledger: open questions for ${cwd} (for you, not the human: when the human answers one in their own words, record it with \`answer <q-id> <option>\`; never show them the id):\n${renderPending(questions, cwd, { now, timezone: config.timezone ?? null })}`;
+    questionsText = `ledger: open questions for ${cwd} and the folders below it (for you, not the human: when the human answers one in their own words, record it with \`answer <q-id> <option>\`; never show them the id):\n${renderPending(questions, cwd, { now, timezone: config.timezone ?? null })}`;
     sections.push("questions");
   }
 
@@ -90,10 +91,18 @@ export function buildInjection(db, cwd, config, { source = "startup", now = Date
   const elsewhereText = config.inject?.elsewhere === false ? "" : elsewhereLine(db, cwd);
   if (elsewhereText) sections.push("elsewhere");
 
+  let reviewText = "";
+  try {
+    reviewText = findingsLine(db, cwd, config, invocation());
+  } catch {
+    /* the review line is advisory; a fault leaves it out */
+  }
+  if (reviewText) sections.push("review");
+
   const doctorText = config.inject?.doctor === false ? "" : doctorLine(db, { env, now });
   if (doctorText) sections.push("doctor");
 
-  const assemble = (notes) => [waitingText, questionsText, notes, summary, elsewhereText, doctorText].filter(Boolean).join("\n\n");
+  const assemble = (notes) => [waitingText, questionsText, notes, summary, elsewhereText, reviewText, doctorText].filter(Boolean).join("\n\n");
   let text = assemble(notesText);
   if (text.length > CAP) text = assemble(truncate(notesText, Math.max(0, CAP - (text.length - notesText.length))));
   if (text.length > CAP) text = assemble("");
