@@ -1,10 +1,12 @@
 // omp/brb-omp.test.mjs — the OMP adapter under node --test with no OMP: the pure helpers
-// (surfaceWord, assistantText, payload builders, resolveNode), the three handlers with a fake
+// (surfaceWord, assistantText, payload builders, resolveNode), the handlers with a fake
 // runCli (what they show, what they return, fail-open on a throw with one errors.log line), the
-// registration shape (input returns { handled: true } synchronously for a word, undefined
-// otherwise; ordinary text while away runs the prompt hook in the background for its new-turn
-// reset), and one real spawn through spawnHook against the plugin's own hooks. The live OMP
-// path (an actual omp session delivering these events) is not run here.
+// registration shape (input returns { handled: true } synchronously for brb and pending,
+// undefined otherwise; `back` while away is awaited: the hook's digest context is staged for
+// before_agent_start and the prompt goes through; ordinary text while away runs the prompt hook
+// in the background for its new-turn reset), and one real spawn through spawnHook against the
+// plugin's own hooks. The live OMP path (an actual omp session delivering these events) is not
+// run here.
 
 import test from "node:test";
 import assert from "node:assert/strict";
@@ -14,6 +16,7 @@ import { join } from "node:path";
 
 import brbOmp, {
   assistantText,
+  backHandler,
   beforeAgentStartHandler,
   buildPromptPayload,
   buildStartPayload,
@@ -26,6 +29,7 @@ import brbOmp, {
   resolveNode,
   sessionStopHandler,
   spawnHook,
+  stagedBack,
   surfaceWord,
 } from "./brb-omp.ts";
 
@@ -147,6 +151,84 @@ test("beforeAgentStartHandler: the away context as a hidden message; home → un
   }
 });
 
+test("back while away: the hook's digest context is staged, the archive line notified, the prompt let through; before_agent_start carries the staged text; a block, nothing or a throw is handled with no turn", async () => {
+  const b = box();
+  try {
+    stagedBack.clear();
+    const digest = "brb: hold cleared; digest archived to /x/archive/t.md.\n\nbrb digest — held since t0, 1 item\n\n## t0\n- Pick a cache";
+    const context = `brb: Jo is back (away 5m). Reply with the digest below verbatim as your whole message, then stop (end with nothing else). If a held item is already resolved, append '— resolved: <how>' to that line.\n\n${digest}`;
+    const hookOut = { systemMessage: digest, hookSpecificOutput: { hookEventName: "UserPromptSubmit", additionalContext: context } };
+    const notices = [];
+    const shown = [];
+    const c = ctx({ ui: { notify: (t, type) => notices.push([t, type]) } });
+    assert.equal(await backHandler("back", c, (t) => shown.push(t), { runCli: async () => hookOut, stateDir: b.stateDir, env: b.env }), undefined, "the prompt proceeds");
+    assert.deepEqual(notices, [["brb: hold cleared; digest archived to /x/archive/t.md.", "info"]]);
+    assert.deepEqual(shown, []);
+    assert.equal(stagedBack.get("omp-session-1"), context);
+    // before_agent_start: home now (the start hook prints nothing), so the staged text is the whole hidden message; it survives a second preparation of the same turn.
+    const expected = { message: { customType: "brb-digest", content: context, display: false } };
+    assert.deepEqual(await beforeAgentStartHandler(c, { runCli: async () => undefined, stateDir: b.stateDir, env: b.env }), expected);
+    assert.deepEqual(await beforeAgentStartHandler(c, { runCli: async () => undefined, stateDir: b.stateDir, env: b.env }), expected, "a retry of the same turn still gets it");
+    // Still away somehow (a start hook with context): both ride one message, the away text first.
+    const both = await beforeAgentStartHandler(c, { runCli: async () => ({ hookSpecificOutput: { hookEventName: "SessionStart", additionalContext: "brb: still away" } }), stateDir: b.stateDir, env: b.env });
+    assert.deepEqual(both, { message: { customType: "brb-away", content: `brb: still away\n\n${context}`, display: false } });
+    // A start hook that throws still delivers the staged text.
+    assert.deepEqual(await beforeAgentStartHandler(c, { runCli: async () => { throw new Error("bang"); }, stateDir: b.stateDir, env: b.env }), expected);
+    stagedBack.clear();
+    // An older hook that blocks: shown, handled, nothing staged. Nothing: the answered-nothing line. A throw: logged and shown.
+    assert.deepEqual(await backHandler("back", c, (t) => shown.push(t), { runCli: async () => ({ decision: "block", reason: "brb: hold cleared.\n\n(nothing held)" }), stateDir: b.stateDir, env: b.env }), { handled: true });
+    assert.deepEqual(shown, ["brb: hold cleared.\n\n(nothing held)"]);
+    assert.equal(stagedBack.size, 0);
+    shown.length = 0;
+    assert.deepEqual(await backHandler("back", c, (t) => shown.push(t), { runCli: async () => undefined, stateDir: b.stateDir, env: b.env }), { handled: true });
+    assert.match(shown[0], /^brb: the back hook answered nothing/);
+    shown.length = 0;
+    assert.deepEqual(await backHandler("back", c, (t) => shown.push(t), { runCli: async () => { throw new Error("boom"); }, stateDir: b.stateDir, env: b.env }), { handled: true });
+    assert.equal(shown[0], "brb: could not run the hook (boom); nothing changed");
+    assert.match(readFileSync(join(b.stateDir, "errors.log"), "utf8"), /omp-adapter user-prompt-submit\.mjs: boom\n$/);
+  } finally {
+    stagedBack.clear();
+    b.release();
+  }
+});
+
+test("registration: back while away returns a promise that settles only after the hook ran, to undefined; the next input and session_stop clear the staged text", async () => {
+  const b = box();
+  try {
+    stagedBack.clear();
+    markAway(b.stateDir);
+    const { promise: gate, resolve: open } = Promise.withResolvers();
+    const calls = [];
+    const handlers = {};
+    const notices = [];
+    const hookOut = { systemMessage: "brb: hold cleared.\n\n(nothing held)", hookSpecificOutput: { hookEventName: "UserPromptSubmit", additionalContext: "brb: Jo is back. Reply …\n\nbrb: hold cleared.\n\n(nothing held)" } };
+    brbOmp({ on: (name, h) => (handlers[name] = h), sendMessage() {} }, { runCli: async (hook, payload) => { calls.push({ hook, prompt: JSON.parse(payload).prompt }); if (hook === "user-prompt-submit.mjs") await gate; return hook === "user-prompt-submit.mjs" ? hookOut : undefined; }, stateDir: b.stateDir, env: b.env });
+    const c = ctx({ ui: { notify: (t) => notices.push(t) } });
+    const p = handlers.input({ text: "Back." }, c);
+    assert.ok(p instanceof Promise, "back is awaited by the host");
+    let settled = false;
+    p.then(() => (settled = true));
+    await tick();
+    assert.deepEqual(calls, [{ hook: "user-prompt-submit.mjs", prompt: "Back." }]);
+    assert.equal(settled, false, "not before the hook answers");
+    assert.equal(stagedBack.size, 0);
+    open();
+    assert.equal(await p, undefined, "the prompt goes through");
+    assert.equal(stagedBack.get("omp-session-1"), hookOut.hookSpecificOutput.additionalContext);
+    assert.deepEqual(notices, ["brb: hold cleared."]);
+    assert.deepEqual(await handlers.before_agent_start({}, c), { message: { customType: "brb-digest", content: hookOut.hookSpecificOutput.additionalContext, display: false } });
+    await handlers.session_stop({ last_assistant_message: "the digest" }, c);
+    assert.equal(stagedBack.size, 0, "session_stop clears it");
+    // Staged again, then any new input clears it before the hook runs.
+    stagedBack.set("omp-session-1", "stale");
+    assert.equal(handlers.input({ text: "fix the tests" }, c), undefined);
+    assert.equal(stagedBack.size, 0, "a new submission clears it");
+  } finally {
+    stagedBack.clear();
+    b.release();
+  }
+});
+
 test("sessionStopHandler: returns the block verdict, notifies the systemMessage, allows on a quiet hook or a throw", async () => {
   const b = box();
   try {
@@ -167,7 +249,7 @@ test("sessionStopHandler: returns the block verdict, notifies the systemMessage,
   }
 });
 
-test("registration: input handles a word synchronously and shows via sendMessage when idle; other text is not handled; the three events are registered", async () => {
+test("registration: input handles brb and pending synchronously and shows via sendMessage when idle; other text is not handled; the three events are registered", async () => {
   const b = box();
   try {
     const handlers = {};
@@ -192,7 +274,7 @@ test("registration: input handles a word synchronously and shows via sendMessage
     // While the agent streams, the reason goes to notify, never sendMessage (which would steer into context).
     sent.length = 0;
     notices.length = 0;
-    handlers.input({ text: "back" }, ctx({ isIdle: () => false, ui: { notify: (t, type) => notices.push([t, type]) } }));
+    handlers.input({ text: "pending" }, ctx({ isIdle: () => false, ui: { notify: (t, type) => notices.push([t, type]) } }));
     await tick();
     await tick();
     assert.deepEqual(sent, []);
@@ -210,7 +292,7 @@ test("displayChannel: sendMessage only when the host has it and the agent is idl
   assert.equal(displayChannel(ctx({ isIdle: () => true }), false), "notify");
 });
 
-test("back and pending while home pass through to the agent; brb is always handled", () => {
+test("back and pending while home pass through to the agent; brb is always handled; back while away is awaited", async () => {
   const b = box();
   try {
     const handlers = {};
@@ -223,7 +305,11 @@ test("back and pending while home pass through to the agent; brb is always handl
     assert.deepEqual(handlers.input({ text: "brb" }, ctx()), { handled: true });
     markAway(b.stateDir);
     assert.equal(isAway(ctx(), b.stateDir), true);
-    assert.deepEqual(handlers.input({ text: "back!" }, ctx()), { handled: true });
+    const back = handlers.input({ text: "back!" }, ctx());
+    assert.ok(back instanceof Promise, "back while away is awaited");
+    assert.equal(ran, 2, "the prompt hook ran for brb and for back");
+    assert.deepEqual(await back, { handled: true }, "a hook that answered nothing: handled, no turn");
+    assert.deepEqual(handlers.input({ text: "Pending." }, ctx()), { handled: true });
     assert.equal(isAway(ctx({ sessionManager: { getSessionId: () => "a/b" } }), b.stateDir), false, "the key maps / to _");
     markAway(b.stateDir, "a_b");
     assert.equal(isAway(ctx({ sessionManager: { getSessionId: () => "a/b" } }), b.stateDir), true);
@@ -252,7 +338,9 @@ test("spawnHook runs the real hooks: brb through the prompt hook, then the stop 
     assert.equal(stop.systemMessage, "brb on fire: main is red");
     assert.equal(stop.terminalSequence, undefined, "no OSC under BRB_HARNESS=omp");
     const back = await spawnHook("user-prompt-submit.mjs", buildPromptPayload("back", c), b.root, 5000, env);
-    assert.match(back.reason, /^brb: hold cleared; digest archived to .*\n\nbrb digest — .*1 item\n\n## .*\n- Pick a cache$/);
+    assert.equal(back.decision, undefined, "back is not a block");
+    assert.match(back.systemMessage, /^brb: hold cleared; digest archived to .*\n\nbrb digest — .*1 item\n\n## .*\n- Pick a cache$/);
+    assert.match(back.hookSpecificOutput.additionalContext, /^brb: Jo is back \(away 0m\)\. Reply with the digest below verbatim as your whole message, then stop \(end with nothing else\)\. If a held item is already resolved, append '— resolved: <how>' to that line\.\n\nbrb: hold cleared; digest archived to /);
     assert.equal(await spawnHook("stop.mjs", buildStopPayload({ last_assistant_message: "x" }, c), b.root, 5000, env), undefined, "home: a quiet exit");
     await assert.rejects(spawnHook("missing.mjs", "{}", b.root, 5000, env), /missing\.mjs exited 1/);
     await assert.rejects(spawnHook("stop.mjs", "{}", b.root, 5000, { ...env, BRB_NODE: join(b.root, "no-node") }), /BRB_NODE=.* is not an executable file/);

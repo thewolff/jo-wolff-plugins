@@ -171,7 +171,7 @@ test("a `back` that lands between hold's read and its write: nothing is appended
       return "2026-11-04T00:00:00.000Z";
     };
     assert.deepEqual(hold("s1", "Pick a cache", { env: b.env, now }), { status: "home" });
-    assert.match(backed.reason, /^brb: hold cleared/);
+    assert.match(backed.systemMessage, /^brb: hold cleared/);
     assert.ok(!existsSync(join(b.stateDir("s1"), "away.json")), "the away flag stays gone");
     assert.ok(!existsSync(join(b.stateDir("s1"), "digest.md")), "nothing appended after the return");
     assert.ok(!existsSync(join(b.stateDir("s1"), "away.lock")), "the lock is released");

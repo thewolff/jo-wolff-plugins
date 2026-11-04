@@ -38,8 +38,16 @@ working; this skill is what it needs from you.
    sent back once.
 6. **Answering a fire, or anything the person types, does not end the hold.** Answer it, then
    go back to steps 1 to 5; only the prompt `back` on its own ends the hold.
+7. **When the prompt `back` arrives with `brb: Jo is back (away <duration>). Reply with the
+   digest below verbatim …` as context, your whole reply is that digest**, starting with its
+   `brb: hold cleared; digest archived to <path>.` line, then nothing else. The person may be
+   on a surface that renders no hook output (the mobile app), so your reply is the only way the
+   digest reaches them. Where you already resolved a held item during the hold, append
+   `— resolved: <how>` to that line; do not drop the line. `back` with
+   `brb: you were not away; nothing held` as context is an ordinary one-word reply to whatever
+   you asked; answer it as such.
 
-The person reads the digest with `back` (which clears it) or `pending` (which does not).
+The person reads the digest with `pending` (which does not clear it) or `back` (which does).
 
 ## When this can't run
 

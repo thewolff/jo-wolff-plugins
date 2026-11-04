@@ -10,16 +10,22 @@ omp plugin install brb@jo-wolff-plugins
 
 That one module does three jobs for the main session (see its header for the event mapping):
 
-- **The three words.** On `input`, when the whole typed text is `brb` (a note may follow),
-  `back` or `pending`, it returns `{ handled: true }` at once so no turn starts, then spawns
+- **The three words.** On `input`, when the whole typed text is `brb` (a note may follow) or
+  `pending`, it returns `{ handled: true }` at once so no turn starts, then spawns
   `hooks/user-prompt-submit.mjs` with the text as the prompt and shows the hook's block reason
   (the confirmation, or the digest) through `pi.sendMessage({ display: true })` without a
-  `triggerTurn`, falling back to `ctx.ui.notify` when the host has no `sendMessage`. Any other
-  text is left to the host.
+  `triggerTurn`, falling back to `ctx.ui.notify` when the host has no `sendMessage`. `back`
+  while away is awaited (OMP awaits `input` handlers): the hook archives and clears the hold
+  and answers the back instruction over the digest as `additionalContext`; the adapter stages
+  that text, notifies the archive line (`brb: hold cleared; digest archived to <path>.`) and
+  returns `undefined`, so the word starts a turn whose reply is the digest. Any other text is
+  left to the host.
 - **The away instruction.** On `before_agent_start` it spawns `hooks/session-start.mjs`; while
   the session is away the hook's `additionalContext` becomes a hidden custom message
-  (`customType` `brb-away`) for that turn. Home → nothing is added. Subagent sessions are
-  skipped.
+  (`customType` `brb-away`) for that turn; the staged `back` text, when there is one, rides
+  the same message (`brb-digest` when it is alone) and stays staged until the next `input` or
+  `session_stop`, since OMP may prepare one submission twice. Home with nothing staged →
+  nothing is added. Subagent sessions are skipped.
 - **Stop.** On `session_stop` it spawns `hooks/stop.mjs` with `BRB_HARNESS=omp` and returns
   the core's verdict: `{ decision: "block", reason }` sends the agent back to work (the
   keep-working reason, or the backstop's `brb: N item(s) moved to the digest; …` when the reply
