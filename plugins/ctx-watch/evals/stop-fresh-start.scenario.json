@@ -1,0 +1,15 @@
+{
+  "$comment": "Sibling of stop-resume-warn: no SessionStart resume marker (a fresh session) and a final message without a history phrase: the Stop hook says nothing and writes nothing.",
+  "event": "Stop",
+  "expect": "silent",
+  "sibling": "stop-resume-warn.scenario.json",
+  "transcript": [
+    { "type": "user", "timestamp": "2026-11-04T10:00:00.000Z", "message": { "role": "user", "content": "start the migration plan" } },
+    { "type": "assistant", "timestamp": "2026-11-04T10:00:05.000Z", "message": { "role": "assistant", "content": [ { "type": "text", "text": "Started." } ] } },
+    { "type": "user", "timestamp": "2026-11-04T12:00:00.000Z", "message": { "role": "user", "content": "ok continue the migration plan from before please" } },
+    
+    { "type": "assistant", "timestamp": "2026-11-04T12:00:09.000Z", "message": { "role": "assistant", "content": [ { "type": "text", "text": "Picking the migration back up: the next step is the index." } ] } }
+  ],
+  "stdin": { "session_id": "${SESSION_ID}", "transcript_path": "${TRANSCRIPT}", "cwd": "${CWD}", "hook_event_name": "Stop", "stop_hook_active": false },
+  "after": { "absent": ["$XDG_STATE_HOME/ctx-watch/checks.log", "$XDG_STATE_HOME/ctx-watch/errors.log"] }
+}

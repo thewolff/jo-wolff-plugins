@@ -8,6 +8,8 @@
 //   state.lock                        held for a few file operations by each state.json writer
 //   popups/<token>.json               one popup supervisor's outcome, one small file per popup
 //   errors.log                        one line per hook fault or ignored state file (appended)
+//   checks.log                        one line per consult-history finding (appended by the Stop hook)
+//   resume/<session id>               the SessionStart hook's resume marker, consumed by the next Stop
 //   launchd/<label>.plist             the timer (kept: the person bootstrapped it)
 //   launchd/<label>.out.log           launchd appends every tick's summary line here
 //   launchd/<label>.err.log           and anything the tick printed on stderr
@@ -19,7 +21,8 @@
 // the hook runner with no handle kept open, so it rotates the same way.
 //
 // prune(dir, { days }) rotates, then removes every `*.1` older than `days`, every
-// `popups/<token>.json` older than `days`, and any `state.json.<pid>.tmp`,
+// `popups/<token>.json` older than `days`, every `resume/<id>` marker older than `days` (a
+// session that never reached a Stop), and any `state.json.<pid>.tmp`,
 // `state.lock.<pid>.stale` or `popups/<token>.json.<pid>.tmp` a failed write or a crashed lock
 // takeover left behind. It never touches state.json, state.lock, the plist, or a current log,
 // and never removes:
@@ -41,7 +44,7 @@ export const DEFAULT_RETENTION_DAYS = 30;
 
 /** The logs ctx-watch rotates under `dir`. */
 export function logFiles(dir, label = LABEL) {
-  return [join(dir, "errors.log"), join(dir, "launchd", `${label}.out.log`), join(dir, "launchd", `${label}.err.log`)];
+  return [join(dir, "errors.log"), join(dir, "launchd", `${label}.out.log`), join(dir, "launchd", `${label}.err.log`), join(dir, "checks.log")];
 }
 
 const sizeOf = (p) => {
@@ -105,6 +108,11 @@ export function prune(dir, { days = DEFAULT_RETENTION_DAYS, now = Date.now(), ma
     }
   } catch {
     /* no popup has run */
+  }
+  try {
+    for (const name of readdirSync(join(dir, "resume"))) candidates.push({ path: join(dir, "resume", name), pid: null });
+  } catch {
+    /* no resume marker has been left */
   }
   for (const { path, pid } of candidates) {
     if (justRotated.has(path) || (pid !== null && running(pid))) {

@@ -13,6 +13,21 @@
 //   .daemon.jobs.core_refresh.last_run_at_ms missing, not a whole number of epoch ms in range,
 //   or more than 5 min ahead of this clock                "… has no / invalid … / core_refresh in the future …"
 //   .daemon.jobs.core_refresh.last_run_at_ms > 2 h old   "core_refresh last ran … ago (…)"
+//   .daemon.jobs.semantic_index missing                   "… has no .daemon.jobs.semantic_index"
+//   .daemon.jobs.semantic_index.semantic_enabled === true and .status !== "ready"
+//                                                        "the ctx semantic index is not ready (…)"
+//
+// The semantic rows read the same `ctx daemon status` output as the rest (no second spawn: the
+// cheapest call that exposes semantic status is the one already made; `ctx semantic status
+// --format json` took 2.8-9 s on 2026-11-04 and `ctx search --format json` 2.9 s, against 0.15 s).
+// Evidence that the field tracks search: on 2026-11-04 03:00 `ctx search` reported
+// `semantic_status: unavailable` while this field read `budget_exhausted`
+// (test/fixtures/ctx-daemon-status-semantic-not-ready.txt); at 13:00 search reported `ready`
+// and so did the field. ctx 2.3.0 has no rebuild verb (`ctx semantic --help`: enable, status,
+// disable), so a not-ready index is not repaired here: the line names `ctx semantic enable
+// --wait` ("Enable semantic search and start model indexing"; "--wait: Wait until semantic
+// search is ready for the current index"). Semantic search not opted in (`semantic_enabled`
+// false) is a pass: nothing to watch.
 //
 // `ctx` is the executable: the bare name by default (PATH lookup), or the absolute path the
 // launchd timer was installed with (`--ctx`), so a PATH edited after install cannot change which
@@ -58,6 +73,10 @@ export const HEAL_ARGV = Object.freeze([CTX, "index", "mode", "auto", "--format"
 /** The one command a person runs for every failing probe (the heal, by hand, outside CI). */
 export const FIX = "ctx index mode auto";
 export const FIX_MISSING = "ctx docs show getting-started";
+/** The command for a semantic index that is not ready: ctx 2.3.0 has no rebuild verb. */
+export const SEMANTIC_FIX = "ctx semantic enable --wait";
+/** The command for a status output with no semantic block at all (a ctx this plugin does not read). */
+export const SEMANTIC_STATUS = "ctx semantic status";
 
 /** `env` without CI: what every ctx spawn gets. */
 export function ctxEnv(env = process.env) {
@@ -125,18 +144,23 @@ const firstLine = (r) => (r.stderr || r.stdout || "").trim().split("\n")[0]?.sli
  * `pid`) so a report can show it.
  */
 export function judge(r, now) {
-  const fail = (reason, fields = {}, fix = FIX) => ({ ok: false, reason, fix, fields });
+  // `healable`: whether `ctx index mode auto` is the repair for this failure (false for the
+  // semantic rows: the daemon is up, and the mode command would change nothing).
+  const fail = (reason, fields = {}, fix = FIX, healable = true) => ({ ok: false, reason, fix, fields, healable });
   if (r.error) return fail(`ctx could not run: ${r.error}`, {}, /is not on PATH$|does not exist \(/.test(r.error) ? FIX_MISSING : FIX);
   const j = parseJson(r.stdout);
   if (!j) return fail(`\`${STATUS_ARGV.join(" ")}\` printed no JSON (exit ${r.code ?? "none"}): ${firstLine(r)}`);
   const d = field(j, "daemon");
   if (!d) return fail(`\`${STATUS_ARGV.join(" ")}\` has no .daemon`);
+  const semantic = field(field(d, "jobs"), "semantic_index");
   const fields = {
     running: field(d, "running") ?? null,
     status: field(d, "status") ?? null,
     pid: field(d, "pid") ?? null,
     supervisor: field(field(d, "supervisor"), "status") ?? null,
     lastRunAtMs: field(field(field(d, "jobs"), "core_refresh"), "last_run_at_ms") ?? null,
+    semanticEnabled: field(semantic, "semantic_enabled") ?? null,
+    semanticStatus: field(semantic, "status") ?? null,
   };
   if (fields.running !== true || fields.status !== "running") return fail(`the ctx daemon is not running (.daemon.running = ${JSON.stringify(fields.running)}, .daemon.status = ${JSON.stringify(fields.status)})`, fields);
   if (fields.supervisor !== "installed") return fail(`the ctx supervisor is not installed (.daemon.supervisor.status = ${JSON.stringify(fields.supervisor)}): launchd will not restart the daemon`, fields);
@@ -145,7 +169,13 @@ export function judge(r, now) {
   const ago = now - fields.lastRunAtMs;
   if (ago < -SKEW_MS) return fail(`core_refresh in the future (.daemon.jobs.core_refresh.last_run_at_ms = ${iso(fields.lastRunAtMs)}, ${age(-ago)} ahead of this clock; over ${age(SKEW_MS)} of skew)`, fields);
   if (ago > STALE_MS) return fail(`the ctx daemon runs but core_refresh last ran ${age(ago)} ago (.daemon.jobs.core_refresh.last_run_at_ms = ${iso(fields.lastRunAtMs)}; over ${age(STALE_MS)})`, fields);
-  return { ok: true, reason: null, fix: null, fields, summary: `daemon running (pid ${fields.pid ?? "?"}), supervisor installed, core_refresh ${age(ago)} ago` };
+  if (semantic === undefined || semantic === null) return fail(`\`${STATUS_ARGV.join(" ")}\` has no .daemon.jobs.semantic_index`, fields, SEMANTIC_STATUS, false);
+  const semanticNote = fields.semanticEnabled !== true ? "semantic search not enabled" : `semantic index ${fields.semanticStatus}`;
+  if (fields.semanticEnabled === true && fields.semanticStatus !== "ready") {
+    const reason = field(semantic, "reason");
+    return fail(`the ctx semantic index is not ready (.daemon.jobs.semantic_index.status = ${JSON.stringify(fields.semanticStatus)}${typeof reason === "string" ? `, reason = ${JSON.stringify(reason)}` : ""})`, fields, SEMANTIC_FIX, false);
+  }
+  return { ok: true, reason: null, fix: null, fields, healable: false, summary: `daemon running (pid ${fields.pid ?? "?"}), supervisor installed, core_refresh ${age(ago)} ago, ${semanticNote}` };
 }
 
 /** One probe: spawn, judge, stamp. */
@@ -187,7 +217,9 @@ export function heal({ run = runCtx, env = process.env, exists = existsSync, tim
 /**
  * Probe; on failure heal and probe again. `{ ok, reason, fix, fields, at, first, healed,
  * timedOut, budgetExhausted }`: the top level is the last probe; `first` is the failing one when
- * a heal was tried. `deadlineMs` (optional) is the one clock the whole check runs on, measured
+ * a heal was tried. A failure the heal cannot touch (`healable: false`: the semantic rows, where
+ * the daemon is up) is returned as is, with `healed: { attempted: false, … }` naming why.
+ * `deadlineMs` (optional) is the one clock the whole check runs on, measured
  * from the first `now()`. Each spawn's budget (the smaller of `timeoutMs` and what is left) is
  * computed once; a budget that is not positive skips that spawn, never runs it with timeout 0,
  * and the result says `budgetExhausted: true` (and, failing, `timedOut: true`).
@@ -207,6 +239,7 @@ export function check(deps = {}) {
   if (firstBudget <= 0) return done({ at: start, ok: false, reason: "no time left to probe ctx", fix: FIX, fields: {}, first: null, healed: null }, true);
   const first = probe({ ...deps, timeoutMs: firstBudget });
   if (first.ok) return { ...first, first: null, healed: null, timedOut: false, budgetExhausted: false };
+  if (first.healable === false) return done({ ...first, first: null, healed: { attempted: false, ok: false, detail: `not attempted: the daemon is running; \`${FIX}\` does not touch the semantic index` } });
   const healed = heal({ ...deps, remaining });
   if (!healed.attempted) return done({ ...first, first: null, healed }, healed.budgetExhausted === true);
   const secondBudget = budget();

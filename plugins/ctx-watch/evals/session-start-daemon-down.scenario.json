@@ -1,0 +1,19 @@
+{
+  "$comment": "The daemon is not running (the 2026-11-03 capture): the heal `ctx index mode auto` is tried, the re-probe still says down, and the one line names the fix.",
+  "event": "SessionStart",
+  "expect": "systemMessage",
+  "reason": "ctx-watch: the ctx daemon is not running (.daemon.running = false, .daemon.status = \"stale_lock\"); fix: `ctx index mode auto`",
+  "setup": {
+    "env": {
+      "CTX_WATCH_CTX": "${PLUGIN_DIR}/evals/fixtures/fake-ctx.sh",
+      "FAKE_CTX_FIXTURES": "${PLUGIN_DIR}/test/fixtures",
+      "FAKE_CTX_STATUS": "ctx-daemon-status-not-running.txt"
+    }
+  },
+  "stdin": {
+    "session_id": "${SESSION_ID}",
+    "cwd": "${CWD}",
+    "hook_event_name": "SessionStart",
+    "source": "startup"
+  }
+}

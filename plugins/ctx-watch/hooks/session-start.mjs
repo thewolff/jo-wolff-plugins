@@ -9,7 +9,12 @@
 // twice its interval (or, never ticked, since this hook first ran), `ctx-watch: timer has not run
 // since <time>; run \`node <cli> install\` and the printed launchctl line` (as long as the
 // plugin's path makes it: a truncated path is not a command). Healthy and on time → nothing.
-// No deny, no block: this hook only talks.
+// No deny, no block: this hook only talks. First of all, when the payload's `source` is `resume`,
+// `compact` or `fork`, it leaves <state>/resume/<session_id> holding the time the hook started
+// (before the probe, which can take up to 3 s: a prompt typed meanwhile is inside the window),
+// for the Stop hook's consult-history check (lib/consult-history.mjs); a marker that cannot be
+// written is one errors.log line and nothing else (the check then has nothing to consume). The
+// flag file ~/.claude/.ctx-watch-off does not reach this hook: it turns off the Stop check only.
 //
 // How it fails: stdin not JSON, a thrown error, or no answer in 4 s (handle() runs on a worker
 // thread; the runner's timer on the main thread fires whatever it is doing) → the runner logs it
@@ -21,14 +26,18 @@
 // "never ticked"; one that cannot be stamped (first-seen) is one errors.log line and a third
 // message line naming the path: without the stamp the dead-man's switch cannot work, so the
 // person needs to know.
+// `CTX_WATCH_CTX` in the environment (an absolute path) is the ctx binary to spawn instead of
+// `ctx` from PATH: the evals sandbox points it at a fake that prints a fixture, so no scenario
+// starts a real daemon under its empty HOME.
 //
 // handle() runs on a worker thread, which is what makes the deadline hold. So: return the
 // answer as a plain JSON-able object; never process.exit() or write to stdout; a child's
 // environment goes on the spawn's env (the probe passes `env` with CI removed), not process.env.
 
 import { runHook, invokedDirectly, logError } from "../lib/hook-runner.mjs";
-import { check, needsYouLine, LINE_MAX } from "../lib/probe.mjs";
+import { check, needsYouLine, LINE_MAX, CTX } from "../lib/probe.mjs";
 import { readState, writeState, statePath, timerOverdue, withStateLock } from "../lib/state.mjs";
+import { isResume, markResumed } from "../lib/consult-history.mjs";
 import { dirname } from "node:path";
 import { shellQuote } from "../lib/launchd.mjs";
 import { CLI_PATH } from "../scripts/ctx-watch.mjs";
@@ -55,11 +64,14 @@ export function stampLine(file, err) {
  * @returns {object|null}  { systemMessage } or null for "nothing to say"
  */
 export function handle(input, { env = process.env, now = Date.now, run, exists, cliPath = CLI_PATH, timeoutMs = HOOK_SPAWN_MS, deadlineMs = HOOK_DEADLINE_MS } = {}) {
-  void input;
   const lines = [];
-  const result = check({ env, now, run, exists, timeoutMs, deadlineMs });
-  if (!result.ok) lines.push(needsYouLine(result));
   const file = statePath(env);
+  if (isResume(input.source) && typeof input.session_id === "string" && input.session_id.trim()) {
+    const err = markResumed(dirname(file), input.session_id.trim(), now());
+    if (err) logError("ctx-watch", "SessionStart", `resume marker for ${input.session_id.trim()} not written (${err.message}); consult-history will not check this resume`, env);
+  }
+  const result = check({ env, now, run, exists, timeoutMs, deadlineMs, ctx: typeof env.CTX_WATCH_CTX === "string" && env.CTX_WATCH_CTX ? env.CTX_WATCH_CTX : CTX });
+  if (!result.ok) lines.push(needsYouLine(result));
   const state = readState(file);
   const at = now();
   if (state.lastTickAt === null && state.firstSeenAt === null) {

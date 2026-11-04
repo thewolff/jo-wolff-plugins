@@ -1,0 +1,73 @@
+{
+  "$comment": "The same resume with ~/.claude/ctx-watch.json checks.consult-history = block: the Stop is blocked; the reason names the `ctx search` command and the way out.",
+  "event": "Stop",
+  "expect": "deny",
+  "reason": "Run `ctx search 'ok continue the migration plan from'` (or the ctx MCP search) and read what it finds before going on. Way out: `touch ~/.claude/.ctx-watch-off`",
+  "setup": {
+    "files": {
+      "~/.claude/ctx-watch.json": "{\"checks\": {\"consult-history\": \"block\"}}"
+    },
+    "commands": [
+      "mkdir -p \"$XDG_STATE_HOME/ctx-watch/resume\" && printf '2026-11-04T11:00:00.000Z\\n' > \"$XDG_STATE_HOME/ctx-watch/resume/${SESSION_ID}\""
+    ]
+  },
+  "transcript": [
+    {
+      "type": "user",
+      "timestamp": "2026-11-04T10:00:00.000Z",
+      "message": {
+        "role": "user",
+        "content": "start the migration plan"
+      }
+    },
+    {
+      "type": "assistant",
+      "timestamp": "2026-11-04T10:00:05.000Z",
+      "message": {
+        "role": "assistant",
+        "content": [
+          {
+            "type": "text",
+            "text": "Started."
+          }
+        ]
+      }
+    },
+    {
+      "type": "user",
+      "timestamp": "2026-11-04T12:00:00.000Z",
+      "message": {
+        "role": "user",
+        "content": "ok continue the migration plan from before please"
+      }
+    },
+    {
+      "type": "assistant",
+      "timestamp": "2026-11-04T12:00:09.000Z",
+      "message": {
+        "role": "assistant",
+        "content": [
+          {
+            "type": "text",
+            "text": "Picking the migration back up: the next step is the index."
+          }
+        ]
+      }
+    }
+  ],
+  "stdin": {
+    "session_id": "${SESSION_ID}",
+    "transcript_path": "${TRANSCRIPT}",
+    "cwd": "${CWD}",
+    "hook_event_name": "Stop",
+    "stop_hook_active": false
+  },
+  "after": {
+    "exists": [
+      "$XDG_STATE_HOME/ctx-watch/checks.log"
+    ],
+    "absent": [
+      "$XDG_STATE_HOME/ctx-watch/resume/${SESSION_ID}"
+    ]
+  }
+}

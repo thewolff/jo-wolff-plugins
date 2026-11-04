@@ -1,0 +1,43 @@
+{
+  "$comment": "Sibling of session-start-semantic-not-ready: the healthy capture (daemon running, supervisor installed, core_refresh fresh, semantic index ready) and a first-ever run of the timer stamp: nothing is said. A resume leaves the marker the Stop check reads.",
+  "event": "SessionStart",
+  "expect": "silent",
+  "sibling": "session-start-semantic-not-ready.scenario.json",
+  "setup": {
+    "env": {
+      "CTX_WATCH_CTX": "${PLUGIN_DIR}/evals/fixtures/fake-ctx.sh",
+      "FAKE_CTX_FIXTURES": "${PLUGIN_DIR}/test/fixtures",
+      "FAKE_CTX_STATUS": "ctx-daemon-status.txt"
+    }
+  },
+  "stdin": {
+    "session_id": "${SESSION_ID}",
+    "cwd": "${CWD}",
+    "hook_event_name": "SessionStart",
+    "source": "resume"
+  },
+  "after": {
+    "exists": [
+      "$XDG_STATE_HOME/ctx-watch/state.json",
+      "$XDG_STATE_HOME/ctx-watch/resume/${SESSION_ID}"
+    ],
+    "absent": [
+      "$XDG_STATE_HOME/ctx-watch/errors.log"
+    ]
+  },
+  "session": {
+    "prompt": "Say hello in one line.",
+    "allowedTools": [
+      "Read"
+    ],
+    "maxTurns": 2,
+    "after": {
+      "exists": [
+        "$XDG_STATE_HOME/ctx-watch/state.json"
+      ],
+      "absent": [
+        "$XDG_STATE_HOME/ctx-watch/errors.log"
+      ]
+    }
+  }
+}
