@@ -35,6 +35,7 @@ function fixture(t, reply = "Searched the repo; nothing like it exists.", args =
       input: typeof input === "string" ? input : JSON.stringify(input),
       env: { ...process.env, HOME: base, XDG_STATE_HOME: state, XDG_CONFIG_HOME: config, ...envOverride },
       encoding: "utf8",
+      timeout: 5000,
     });
   return { base, state, env, cc, opener, transcript, save, payload, record, run, setUser };
 }
@@ -124,7 +125,9 @@ test("a missing or unreadable transcript fails open", (t) => {
   }
   const r = f.run(f.payload({ transcript_path: join(f.base, "nope.jsonl") }));
   assert.equal(r.status, 0);
-  assert.equal(r.stdout, "");
+  const out = JSON.parse(r.stdout);
+  assert.equal(out.decision, undefined);
+  assert.match(out.systemMessage, /nope\.jsonl could not be read \(ENOENT\), so the Stop check did not run/);
 });
 
 test("a session id that is not a plain file name fails open", (t) => {
@@ -140,11 +143,13 @@ test("an unwritable state directory fails open rather than block without a recor
   assert.equal(handle(f.payload(), { env: { XDG_STATE_HOME: join(f.base, "file") }, home: f.base }), null);
 });
 
-test("garbage on stdin exits 0 with nothing on stdout", (t) => {
+test("garbage on stdin exits 0 with no block, only the fault warning", (t) => {
   const f = fixture(t);
   const r = f.run("not json");
   assert.equal(r.status, 0);
-  assert.equal(r.stdout, "");
+  const out = JSON.parse(r.stdout);
+  assert.equal(out.decision, undefined);
+  assert.match(out.systemMessage, /^ask-graham ask-graham-stop\.mjs failed open \(the stop went through\): stdin is not a JSON object/);
 });
 
 test("the record lives under XDG_STATE_HOME only when it is absolute", () => {

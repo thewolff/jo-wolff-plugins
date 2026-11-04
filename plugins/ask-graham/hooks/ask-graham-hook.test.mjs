@@ -16,12 +16,9 @@ function fixture(t) {
   const repo = join(base, "repo");
   mkdirSync(join(xdg, "ask-graham"), { recursive: true });
   mkdirSync(join(repo, ".git"), { recursive: true });
+  const env = { ...process.env, XDG_CONFIG_HOME: xdg, XDG_STATE_HOME: join(base, "state"), HOME: base };
   const run = (payload) =>
-    spawnSync(process.execPath, [HOOK], {
-      input: JSON.stringify(payload),
-      env: { ...process.env, XDG_CONFIG_HOME: xdg, HOME: base },
-      encoding: "utf8",
-    });
+    spawnSync(process.execPath, [HOOK], { input: typeof payload === "string" ? payload : JSON.stringify(payload), env, encoding: "utf8", timeout: 5000 });
   return { xdg, repo, run };
 }
 
@@ -51,10 +48,11 @@ test("a repo file at ask silences a user file at every-idea", (t) => {
   assert.equal(r.stdout, "");
 });
 
-test("garbage on stdin still exits 0", (t) => {
+test("garbage on stdin still exits 0 with no nudge", (t) => {
   const f = fixture(t);
-  const r = spawnSync(process.execPath, [HOOK], { input: "not json", env: { ...process.env, XDG_CONFIG_HOME: f.xdg }, encoding: "utf8" });
+  const r = f.run("not json");
   assert.equal(r.status, 0);
+  assert.equal(JSON.parse(r.stdout).hookSpecificOutput, undefined);
 });
 
 test("the nudge names new ideas, the structure check for new structures in a project, and silence otherwise", () => {

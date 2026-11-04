@@ -135,7 +135,9 @@ message is a new idea, so a ticket can still draw a check if the agent misreads 
 
 - **Claude Code**: a `UserPromptSubmit` hook (`hooks/ask-graham-hook.mjs`) reads the level from
   the prompt's working directory and returns the line as `additionalContext`. It always exits 0.
-  If the setting cannot be read, it adds one line saying so and treats the level as `ask`.
+  If stdin is empty or not JSON, a config file names no valid level, or the hook throws, it
+  treats the level as `ask` (or reads it from its own working directory, for bad stdin), appends
+  one line to `errors.log` (see [Faults](#faults)), and shows you one `systemMessage` line saying so.
 - **OMP**: the extension reads the level from the session's working directory each time a turn
   starts (OMP's `before_agent_start` event: once per message you send while the agent is idle,
   and once per batch of messages you typed while it was working) and adds the line to that
@@ -214,9 +216,9 @@ turn, one whose every use of the skill is a settings invocation, is not checked.
 also invokes the skill with other args (or none) or reads the skill file is checked, and so is
 an ordinary check that runs the settings script along the way.
 
-Only the current turn is read: the transcript is walked back from its latest entry to the
-message you sent, so a skill read in an earlier turn, or on a branch you rewound away from, does
-not count.
+Only the current turn is read: from the last message you sent to the end of the transcript, so a
+skill read in an earlier turn does not count. A branch you rewound away from was written before
+the message that replaced it, so it does not count either.
 
 - **Once per turn.** After one block the next stop in the same turn passes, verdict or not, so a
   reply that still lacks the line cannot loop. A stop that follows another hook's or extension's
@@ -224,10 +226,13 @@ not count.
 - **Main session only.** Claude Code subagents end on `SubagentStop`, which the check is not
   registered for, and OMP does not fire `session_stop` for subagents. A subagent's ask-graham
   answer is checked only if the main agent reads the skill itself.
-- **Fails open.** A missing or unreadable transcript, or any error, lets the stop through. On
-  Claude Code the hook always exits 0 and prints nothing unless it blocks.
-- **Claude Code** (`hooks/ask-graham-stop.mjs`, a `Stop` hook) reads the transcript at
-  `transcript_path` and remembers the turn it last blocked in
+- **Fails open.** A missing or unreadable transcript, a record that cannot be written, or any
+  error lets the stop through. On Claude Code the hook always exits 0, never blocks because of
+  its own fault, and prints nothing unless it blocks or hits a fault (see [Faults](#faults)).
+- **Claude Code** (`hooks/ask-graham-stop.mjs`, a `Stop` hook) checks the reply in the Stop
+  payload's `last_assistant_message` (falling back to the transcript's last reply when the payload
+  has none), reads the turn's skill use from the transcript at `transcript_path`, and remembers
+  the turn it last blocked in
   `${XDG_STATE_HOME:-$HOME/.local/state}/ask-graham/blocked/<session id>` (`XDG_STATE_HOME`
   counts only when it is an absolute path), one small file per session. If that file cannot be
   written, the stop passes rather than block with no record. Delete the directory whenever you
@@ -310,15 +315,49 @@ machine, record the detection command and output, and compare the selected insta
 with support evidence. If a runtime cannot be detected or its version's support is unverified,
 report it as unknown rather than guessing.
 
+## Faults
+
+A Claude Code hook's own fault never blocks a prompt or a stop. Each fault, from either hook,
+appends one line `<ISO time> <hook file> <reason>` to
+`${XDG_STATE_HOME:-$HOME/.local/state}/ask-graham/errors.log` (`XDG_STATE_HOME` counts only when
+it is an absolute path) and puts one line in the hook's `systemMessage`:
+`ask-graham <hook file> failed open (<what happened>): <reasons> (logged to <path>)`. The faults
+are: stdin empty or not a JSON object; a config file (`.ask-graham` or the user file) that names
+no valid value for the setting the hook reads, which then counts as its default; for the Stop
+hook, a payload without a usable `session_id` or `transcript_path`, a transcript or block record
+that cannot be read, and a block record that cannot be written (the stop then passes); and any
+throw. If `errors.log` itself cannot be written, the warning says so. A missing config file is not
+a fault. Delete the log whenever you like.
+
 ## Tests
 
 Run `node --test` from this directory. Tests exercise the consumer-visible upkeep report and
 warnings, verdict behavior on hand-built transcripts in both Claude Code and OMP shapes
 (`verdict.test.mjs`, fixtures in `fixtures/transcripts.mjs`), intensity resolution and CLI, both
-hosts' hooks/extensions, and manifest version parity. CI runs the same command on Ubuntu and
-macOS with Node 24 (`.github/workflows/ask-graham.yml`).
+hosts' hooks/extensions, and manifest version parity. Both Claude Code hooks also run as spawned
+processes under every fault above with a 5 s budget per process (`hooks/failopen.test.mjs`), one
+end-to-end run goes through the settings CLI and both hooks over a temp repo and state dir
+(`e2e.test.mjs`), and the Stop hook reads real Claude Code transcripts captured with
+`zsh fixtures/capture-claude-code.sh` (`fixtures/claude-code/`, `hooks/real-transcripts.test.mjs`).
+CI runs the same command on Ubuntu and macOS with Node 24 (`.github/workflows/ask-graham.yml`).
 
 ## Release notes
+
+### 2026-11-03 — 0.7.1
+
+The Stop check now reads the reply from the Stop payload's `last_assistant_message`, and reads
+the turn from the last message you sent forward instead of walking the parent chain back from
+the transcript's last entry. Captured runs of Claude Code 2.1.317 showed the Stop hooks running
+before the final reply was in the transcript, with an `api-request` entry (an `id`, no parent) as
+the last entry, so 0.7.0 let a reply with no verdict through, and in another run blocked a reply
+that ended in a verdict, which made the agent send its answer twice.
+
+The Claude Code hooks no longer fail silently. Bad stdin, an invalid config value, an unreadable
+transcript, an unwritable block record, or a throw still lets the prompt or stop through, and now
+also lands in `errors.log` with the hook file and reason and shows one warning line (see
+[Faults](#faults)). Adds process-level fault tests, an end-to-end test, and Stop-hook tests on
+captured real Claude Code payloads and transcripts (`fixtures/claude-code/`, with the account,
+email, home and temp paths redacted).
 
 ### 2026-10-28 — 0.7.0
 

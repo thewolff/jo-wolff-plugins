@@ -15,9 +15,12 @@
 // turn: the caller keeps the opener id of the turn it last blocked and passes it back as
 // `blockedOpener`.
 //
-// TRANSCRIPTS. Both harnesses write a JSONL tree. Claude Code links entries by uuid/parentUuid,
-// OMP by id/parentId. The active turn is read by walking the parent chain back from the leaf (the
-// last entry with an id), so an abandoned branch or a rewound turn is never read.
+// TRANSCRIPTS. Both harnesses write an append-only JSONL file. The active turn is every
+// main-session entry from the last turn opener (a prompt the person sent) to the end of the file,
+// in file order. A branch rewound away from was written before the prompt that replaced it, so it
+// is never read. No parent chain is walked: Claude Code 2.1.317 appends entries off the chain (an
+// `api-request` entry with an `id` and no parent) and writes the final reply only after the Stop
+// hooks run, so a chain walked back from the last entry can miss the turn (fixtures/claude-code/).
 
 export const VERDICTS = Object.freeze(["do it now", "start now", "later", "don't build"]);
 
@@ -59,12 +62,8 @@ export function parseJsonl(text) {
   return entries;
 }
 
-// Claude Code entries carry uuid/parentUuid; OMP entries carry id/parentId.
+// Claude Code entries carry uuid; OMP entries carry id.
 const idOf = (e) => (typeof e.uuid === "string" ? e.uuid : typeof e.id === "string" ? e.id : null);
-const parentOf = (e) => {
-  const p = "parentUuid" in e ? e.parentUuid : e.parentId;
-  return typeof p === "string" ? p : null;
-};
 
 // The text of a content value: a string, or the text blocks of an array joined by newlines.
 function contentText(content) {
@@ -101,43 +100,29 @@ function isOpener(e) {
 }
 
 // Claude Code writes each block of one model response as its own entry, all with the same
-// message.id. Parallel tool calls are such blocks, and their results are chained so that only
-// one of them sits on the parent chain from the leaf (seen in real transcripts). The id of the
-// response an assistant entry belongs to, for collecting those siblings back into the turn.
+// message.id. The id of the response an assistant entry belongs to, for joining its text.
 const responseId = (e) => (e.type === "assistant" && typeof e.message?.id === "string" ? e.message.id : null);
 
 /**
- * The active turn of one parsed JSONL transcript, either harness: the turn opener's id and, in
- * file order, the opener plus every entry after it on the parent chain from the leaf (plus, on
- * Claude Code, the parallel blocks of a response on that chain). When the chain ends without an
- * opener, the turn is the whole chain and its id is the chain's root. Null when no entry has an id.
+ * The active turn of one parsed JSONL transcript, either harness: the id of the last turn opener
+ * and, in file order, every main-session (not sidechain) entry from it to the end. When no entry
+ * opens a turn, the turn is every main-session entry and its id is the first entry's id. Null
+ * when no main-session entry has an id.
  */
 export function currentTurn(entries) {
   if (!Array.isArray(entries)) return null;
-  const byId = new Map();
-  let leaf = null;
-  for (const e of entries) {
-    if (!isObject(e)) continue;
-    const id = idOf(e);
-    if (id === null) continue;
-    byId.set(id, e);
-    if (!e.isSidechain) leaf = e;
-  }
-  if (!leaf) return null;
-  const chain = new Set();
-  let opener = null;
-  let root = leaf;
-  for (let e = leaf; e && !chain.has(e); e = byId.get(parentOf(e))) {
-    chain.add(e);
-    root = e;
-    if (isOpener(e)) {
-      opener = e;
+  const main = entries.filter((e) => isObject(e) && !e.isSidechain);
+  const first = main.find((e) => idOf(e) !== null);
+  if (!first) return null;
+  let start = -1;
+  for (let i = main.length - 1; i >= 0; i--) {
+    if (idOf(main[i]) !== null && isOpener(main[i])) {
+      start = i;
       break;
     }
   }
-  const responses = new Set([...chain].map(responseId).filter(Boolean));
-  const inTurn = (e) => chain.has(e) || (responses.has(responseId(e)) && !e.isSidechain);
-  return { id: idOf(opener ?? root), entries: entries.filter((e) => isObject(e) && inTurn(e)) };
+  if (start === -1) return { id: idOf(first), entries: main };
+  return { id: idOf(main[start]), entries: main.slice(start) };
 }
 
 // `ask-graham` or `<plugin>:ask-graham` (Claude Code), `ask-graham` or `<ns>/ask-graham` (OMP).
