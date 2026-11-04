@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { chmodSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { sandbox, cli, hook, openDb } from "./helpers.mjs";
@@ -758,16 +758,80 @@ test("R3-B3: command-local git config or environment that steers a push is not f
   assert.match(p.json.systemMessage, /could not tell which commit this command publishes \(-c push\.default is not followed\)/);
 });
 
-test("R3-B4: a remote that hangs is cut off, and the push is allowed with a notice, not denied", () => {
+/** True while `pid` exists; null when this process may not ask (EPERM), so the caller can skip. */
+function alive(pid) {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (err) {
+    return err.code === "EPERM" ? null : false;
+  }
+}
+
+test("R3-B4 and R4-S1: a remote that hangs is cut off with its helpers, and the push is allowed with a notice, not denied", async (t) => {
   const b = repo();
   review(b, [], { LEDGER_REVIEW_BIN_CODEX: stub(b, "codex", "PASS") });
+  const pids = join(b.root, "ext.pids");
   git(b, "config", "protocol.ext.allow", "always");
-  git(b, "remote", "add", "origin", "ext::sleep 30");
+  // `git remote-ext` runs `sh`, which records its pid and its parent's (remote-ext), then becomes `sleep 30`.
+  git(b, "remote", "add", "origin", `ext::sh -c echo% $$% $PPID% >% ${pids};% exec% sleep% 30`);
   const started = Date.now();
   const p = push(b, "gh pr create --head feat --title t");
   assert.ok(Date.now() - started < 9000, `${Date.now() - started} ms`);
   assert.equal(decision(p), "allow");
   assert.match(p.json.systemMessage, /git ls-remote origin timed out after 5s; a local remote-tracking ref may be stale/);
+  const [sleeper, helper] = readFileSync(pids, "utf8").trim().split(/\s+/).map(Number);
+  assert.ok(sleeper > 1 && helper > 1, `pids ${sleeper} ${helper}`);
+  let left = [sleeper, helper].map(alive);
+  for (let i = 0; i < 40 && left.some(Boolean); i++) {
+    await new Promise((r) => setTimeout(r, 50));
+    left = [sleeper, helper].map(alive);
+  }
+  if (left.includes(null)) return t.skip("this sandbox does not let the test signal those pids");
+  assert.deepEqual(left, [false, false], "sleep and git remote-ext were killed with git");
+});
+
+test("R4-B1: the remote lookup runs no askpass program and no credential helper", async () => {
+  const b = repo();
+  review(b, [], { LEDGER_REVIEW_BIN_CODEX: stub(b, "codex", "PASS") });
+  const marker = join(b.root, "prompted");
+  const prompt = join(b.root, "askpass");
+  writeFileSync(prompt, `#!/bin/sh\necho "$0 $*" >> "${marker}"\necho secret\n`);
+  chmodSync(prompt, 0o755);
+  // A server in its own process (the hook runs synchronously) that answers every request with a Basic-auth challenge.
+  const server = spawn(process.execPath, ["-e", "const s=require('http').createServer((q,r)=>{r.writeHead(401,{'WWW-Authenticate':'Basic realm=\"x\"'});r.end();});s.listen(0,'127.0.0.1',()=>console.log(s.address().port));"], { stdio: ["ignore", "pipe", "inherit"] });
+  try {
+    const port = await new Promise((resolve, reject) => {
+      server.stdout.once("data", (d) => resolve(String(d).trim()));
+      server.once("error", reject);
+    });
+    git(b, "remote", "add", "origin", `http://127.0.0.1:${port}/repo.git`);
+    git(b, "config", "core.askPass", prompt);
+    git(b, "config", "credential.helper", `!${prompt}`);
+    const p = push(b, "gh pr create --head feat --title t", { GIT_ASKPASS: prompt, SSH_ASKPASS: prompt, SSH_ASKPASS_REQUIRE: "force", DISPLAY: ":0" });
+    assert.equal(decision(p), "allow");
+    assert.match(p.json.systemMessage, /git ls-remote origin could not read it \(exit \d+\)/);
+    assert.equal(readFileSafe(marker), "", "no askpass program or credential helper ran");
+  } finally {
+    server.kill("SIGKILL");
+  }
+});
+
+function readFileSafe(path) {
+  try {
+    return readFileSync(path, "utf8");
+  } catch {
+    return "";
+  }
+}
+
+test("R4-B1: the quiet environment drops every prompt and keeps the repository's ssh command", async () => {
+  const { quietRemoteEnv } = await import("../lib/review.mjs");
+  const b = repo();
+  const env = quietRemoteEnv(b.work, { PATH: process.env.PATH, GIT_ASKPASS: "/x", SSH_ASKPASS: "/y", GIT_SSH_COMMAND: "ssh -i key" });
+  assert.deepEqual([env.GIT_ASKPASS, env.GIT_TERMINAL_PROMPT, env.SSH_ASKPASS, env.SSH_ASKPASS_REQUIRE, env.GIT_SSH_COMMAND], ["", "0", undefined, "never", "ssh -i key -o BatchMode=yes"]);
+  git(b, "config", "core.sshCommand", "ssh -F cfg");
+  assert.equal(quietRemoteEnv(b.work, { PATH: process.env.PATH }).GIT_SSH_COMMAND, "ssh -F cfg -o BatchMode=yes");
 });
 
 test("R3-S1: a cd inside a subshell or command substitution does not move a later push", async () => {

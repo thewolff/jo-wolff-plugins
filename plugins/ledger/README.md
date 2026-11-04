@@ -321,9 +321,14 @@ command substitution does not move a command after it. `git push` checks the rep
 git's own choice is followed: HEAD under `push.default` `simple`, `current` or `upstream`,
 nothing under `nothing`. `gh pr create` without `--head` checks HEAD (gh pushes the current
 branch). With `--head <branch>` gh does not push, so the gate asks the remote for that branch as
-it is now (`git ls-remote` of the branch's upstream, else `origin`'s `refs/heads/<branch>`, no
-prompt, 5 seconds) and checks that commit; a local remote-tracking ref is never used, because it
-may be stale. `gh pr merge` checks the full sha given to `--match-head-commit`, else the head
+it is now (`git ls-remote` of the branch's upstream, else `origin`'s `refs/heads/<branch>`) and
+checks that commit; a local remote-tracking ref is never used, because it may be stale. The
+lookup cannot prompt: an empty `GIT_ASKPASS` with `GIT_TERMINAL_PROMPT=0`, `-c core.askPass=`
+and `-c credential.helper=` (no askpass program, keychain or other credential helper runs),
+`SSH_ASKPASS` dropped with `SSH_ASKPASS_REQUIRE=never`, and ssh with `-o BatchMode=yes` added to
+the ssh command the repository already uses. It runs in a process group of its own, and after
+5 seconds the whole group is killed, transport helpers included; where process groups do not
+exist only git is killed, and the notice says its helpers may still be running. `gh pr merge` checks the full sha given to `--match-head-commit`, else the head
 commit `gh pr view` reports for that pull request (5 seconds); in that case an allowed merge
 carries a notice naming the commit checked and the `--match-head-commit <sha>` that binds the
 merge to it, because the head can move before the merge runs. The command is read with shell

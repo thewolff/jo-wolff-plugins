@@ -521,7 +521,8 @@ folder, and `pending` lists them the same way. Reviewers run without tools, from
 scratch folder, with an allowlisted environment. The gate checks the commit a command actually
 publishes (`cd` and `git -C` folders, each in its own shell scope, refspecs, git's own choice
 when no refspec is given, the branch `gh pr create --head` names as the remote has it now, read
-with a bounded `git ls-remote`, the pull request `gh pr merge` names, pushes inside `$(…)`), and
+with a `git ls-remote` that cannot prompt and is killed with its helpers after 5 seconds, the
+pull request `gh pr merge` names, pushes inside `$(…)`), and
 allows with a notice when it cannot tell, including a `-c` or `GIT_CONFIG*` setting that steers
 the push and a remote that does not answer in 5 seconds; a merge not bound with
 `--match-head-commit` gets a notice naming the commit checked. `review --base` narrows only the
