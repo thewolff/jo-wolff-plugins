@@ -40,9 +40,12 @@ the human for permission. `… help` prints the whole grammar.
 
    The Stop hook sends back, once per turn, a reply that ends while a question asked before the
    human's latest message still has no answer, naming the ids to answer; and a reply that asks the
-   human something while this session has no open question row. Asking the same open question
-   again returns the same id; do not re-ask in new words. Do not use the AskUserQuestion tool
-   without an open `q-` row; the hook denies it and the human cannot find the question later.
+   human for a decision (a choice, a should-I, a do-you-want, a confirmation) while no question
+   is open for this folder. A greeting or a request for information ("What are we working on?")
+   is not a decision and needs no row. Asking the same open question again returns the same id
+   (an open row an earlier session left in this folder becomes yours when you ask it; put it to
+   the human and record their reply); do not re-ask in new words. Do not use the AskUserQuestion
+   tool without an open `q-` row; the hook denies it and the human cannot find the question later.
 
    **A question you form but should not put to the human yet: `hold`, never drop it.**
    `… ask …` it as usual, then `… hold <q-id>`. It stays unresolved, is listed under *Waiting on
@@ -99,7 +102,9 @@ human's too (`/ledger:enable`, `/ledger:disable`).
 
 ## Reading what you are given
 
-- `… pending` lists the open questions with their ids, for you; do not paste it to the human. `… pending --all` lists every open and held question in the database under its folder, for when the session start says questions are waiting in other folders.
+- `… pending` lists the open questions with their ids, for you; do not paste it to the human. `… pending --all` lists every open and held question in the database under its folder.
+- The session start lists the questions waiting in other folders in full (folder, then each question's `pending` line). They were asked elsewhere and are not this folder's work: do not take them up, but when the human's reply answers one, run `… answer <q-id> <option>` from here and tell them it is recorded. Never show the id.
+- A prompt that is just an option word ("local", "Remote.") comes with a line naming the open question that offers it and the `answer` command. If the human meant it as their reply, run that command and say it is recorded; if they meant something else, ignore the line. The hook records nothing on its own.
 - An answer may arrive mid-session: a prompt can carry `ledger: answered since your last turn: <name> → <word>`, recorded from another session. Act on it as the human's answer to that question.
 - When session start ends with `ledger: doctor reports N issue(s)`, run `… doctor` and tell the human, in plain words, which checks said `warn` or `fail`.
 - `… log [N]` is the last N notes, questions and answers for this folder, newest first; read it

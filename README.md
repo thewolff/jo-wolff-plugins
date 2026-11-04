@@ -505,6 +505,25 @@ for that folder (it writes `.ledger.json` there, found from any subfolder); `/le
 them back on. The plugin's tables are all prefixed `cc_`, so the database can be a SQLite file
 another tool already uses.
 
+Changes in 0.3.1: three fixes from the first live sessions on 0.3.0, each from a bounce that had
+no way out. An `ask` that repeats a question still open from an earlier session or an untagged
+CLI run in the same folder now adopts that row (its session id and asked-at move to the asking
+session) instead of writing nothing; before, the session had no row of its own and the Stop ask
+rule sent every reply back with "this session has no open question row". The ask rule itself now
+stands down on any question open for the folder (this session's, or one in the cwd or a parent
+of it), and it fires only on a question that asks for a decision: a choice with `or`, a "should
+I", a "do you want", a "which", a confirmation. A greeting or a request for information ("What
+are we working on?") needs no row. Session start now lists the questions waiting in other
+folders in full, folder by folder with each question's `pending` line (default, id, name, body,
+the other options), so a session can record the human's answer to one of them without a lookup;
+before, it only counted them. And a prompt that is just an option word of an open question
+("local", "Remote.") gives Claude one line naming that question and the `answer` command, as a
+hint only: nothing is recorded until Claude runs it. One more, in the review gate: the `glm`
+lab no longer has a built-in `omp` profile. It runs with no `--profile` (omp's base profile)
+unless `review.profiles.glm` names one; before, the default was `agent-system-2`, and a user
+file with `"profiles": {"glm": ""}` (rejected by the loader, which wants a non-empty string)
+silently ran every GLM review under that profile.
+
 Changes in 0.3.0: the ledger checks itself and records its own bounces. `ledger doctor`
 prints one `ok`, `warn` or `fail` line per check (the database opens read-write, the schema
 version is current, which config layer set `db` and `enabled`, `hooks.json` lists every
