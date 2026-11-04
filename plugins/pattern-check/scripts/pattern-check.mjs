@@ -7,7 +7,7 @@
 //   pattern-check status                                 the session key, files counted, receipt path
 //
 // A row has ten cells: what exists already (piece, pattern, decision, reason), what would beat
-// the pattern (better design: `none`, or the design with its axis and its cost) and how the piece
+// the pattern (better design: `none: <what was weighed>`, or the design with its axis and its cost) and how the piece
 // fails (fails how, next step, restart-safe, bounded, evidence kept). `record` refuses a row whose
 // better design cell is missing, empty or a placeholder, or whose fail cells are empty or `n/a`
 // without a reason; receipt.mjs has the rules.
@@ -38,7 +38,7 @@ import { isSafeKey, readCurrent, readSession, stateDir, writeAtomic, writeSessio
 
 export const USAGE = `usage:
   pattern-check open "<what you are about to build>"
-  pattern-check record [< table.md] [--row "new piece | existing pattern (file:line) | reuse|replace|new | reason | better design (none, or the design + its axis + its cost) | fails how | next step | restart-safe (yes/no + why) | bounded | evidence kept"]... [--no-new-pieces "<reason>"]
+  pattern-check record [< table.md] [--row "new piece | existing pattern (file:line) | reuse|replace|new | reason | better design (none: <what was weighed>, or the design + its axis + its cost) | fails how | next step | restart-safe (yes/no + why) | bounded | evidence kept"]... [--no-new-pieces "<reason>"]
   pattern-check status
   pattern-check prune [--days <n>]   remove receipt copies, stop guards and session files in the state directory older than n days (default 30); errors.log and current/ stay
 options: --session <key>   --cwd <dir>`;

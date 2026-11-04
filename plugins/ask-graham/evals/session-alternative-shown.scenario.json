@@ -20,7 +20,7 @@
     ],
     "maxTurns": 12,
     "tool": "Skill",
-    "reply": "\\*\\*Alternative:\\*\\*\\s*(?!none\\b)\\S"
+    "reply": "\\*\\*Alternative:\\*\\*\\s*(?![`*_\"']*(?:none|n\\/?a|nothing|no better|not a technical ask)(?![a-z0-9]))\\S"
   },
   "judge": "PASS if the final reply carries a **Verdict:** line and an **Alternative:** line, and the Alternative line names a design that differs from copying the per-script config block into the new script (a shared config loader or the equivalent), states the axis on which it is better (fewer moving parts, one place for the missing-file handling, closes the gap where the three scripts disagree, or similar) and states what it costs over the pattern (the three existing scripts migrate, or two ways to load config exist until they do). FAIL if the Alternative line is missing, says none, names no axis, or names no cost."
 }

@@ -84,7 +84,7 @@ when a design beats the pattern-fit one on a stated axis (fewer moving parts, re
 failure mode, closes a gap the pattern leaves, or is what the repo would adopt if starting
 today), the reply's `**Alternative:**` line, after `**Red flags:**`, names it with its axis and
 what it costs over the pattern (the callers that migrate, a second way to do the thing until the
-old one goes). When nothing beats the pattern the line says `none` and what was weighed. Fewer
+old one goes). When nothing beats the pattern the line says `none: <what was weighed>`. Fewer
 lines still picks the default; the alternative is shown either way. Jo's rule, 2026-11-04. The
 Stop check does not block a reply that lacks the line.
 
@@ -433,9 +433,9 @@ another solution which is better/optimal if one exists."). Step 4's second-patte
 its rule, the design uses the pattern or says why it cannot, and adds: when a design beats the
 pattern-fit one on a stated axis, show it beside the pattern-fit design with what it costs over
 the pattern. The completed-check template gains an `**Alternative:**` line after
-`**Red flags:**` (the better design, its axis and its cost, or `none` with what was weighed);
+`**Red flags:**` (the better design, its axis and its cost, or `none: <what was weighed>`);
 step 5's fewer-lines rule still picks the default and never drops the alternative; the structure
-check carries the line when its second-pattern flag fires. With pattern-check 0.4.0 installed the
+check carries the line only when its second-pattern flag fires. With pattern-check 0.4.0 installed the
 line carries the receipt's `better design` cell. Two live scenarios prove the two shapes
 (`evals/session-alternative-shown.scenario.json`, `evals/session-alternative-none.scenario.json`);
 the Stop check is unchanged and does not block a reply without the line.

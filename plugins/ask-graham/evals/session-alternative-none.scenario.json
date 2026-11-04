@@ -12,7 +12,7 @@
     }
   },
   "session": {
-    "prompt": "Use the Skill tool to run the ask-graham skill on this idea, then answer: should we add a fourth script, scripts/archive.mjs, that reads the settings and moves exports older than keepDays into archive/? Read lib/config.mjs and the three existing scripts first. The skill will want to ask whether to research comparables; my answer is given here in advance: no, do not research the internet, search only this repo. Do not end the turn on that question. Finish with the completed-check template the skill requires, including its **Red flags:** line and its **Alternative:** line.",
+    "prompt": "Use the Skill tool to run the ask-graham skill on this idea, then answer: should we add a fourth script, scripts/archive.mjs, that reads the settings and moves exports older than keepDays into archive/? Read lib/config.mjs and the three existing scripts first. The archive behaviour is decided (a separate script, one job per script); the only open design question is how archive.mjs reads its settings. The skill will want to ask whether to research comparables; my answer is given here in advance: no, do not research the internet, search only this repo. Do not end the turn on that question. Finish with the completed-check template the skill requires, including its **Red flags:** line and its **Alternative:** line.",
     "allowedTools": [
       "Skill",
       "Read",
@@ -21,7 +21,7 @@
     ],
     "maxTurns": 12,
     "tool": "Skill",
-    "reply": "\\*\\*Alternative:\\*\\*\\s*none\\b"
+    "reply": "\\*\\*Alternative:\\*\\*\\s*[`*_\"']*none(?![a-z0-9])"
   },
   "judge": "PASS if the final reply carries a **Verdict:** line and an **Alternative:** line that says none and names what was weighed (the new script imports loadConfig from lib/config.mjs, the pattern every script already uses, and nothing beats it). FAIL if the Alternative line is missing, or proposes a second way to load the settings as a better design."
 }

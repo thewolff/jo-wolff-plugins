@@ -8,8 +8,8 @@ All notable changes to the pattern-check plugin are recorded here. The format fo
 
 ### Added
 
-The receipt gains a `better design` column per piece, after `reason`: `none` (with what was
-weighed, when anything was), or the design that beats the pattern-fit one on a stated axis
+The receipt gains a `better design` column per piece, after `reason`: `none: <what was weighed>`
+(a bare `none` is refused), or the design that beats the pattern-fit one on a stated axis
 (fewer moving parts, removes a known failure mode, closes a gap the pattern leaves, or is what
 the repository would adopt if starting today) with what it costs over the pattern (the callers
 that migrate, a second way to do the thing until the old one goes). Pattern fit stays the
@@ -20,14 +20,15 @@ existing patterns, and another solution which is better/optimal if one exists." 
 0.8.0's `**Alternative:**` line carries the cell.
 
 Two scenarios prove the accept and the refusal: `evals/stop-record-better-design-none.scenario.json`
-(a row with `none` records and the plan-shaped reply passes) and
+(a row with `none: <what was weighed>` records and the plan-shaped reply passes) and
 `evals/stop-record-without-better-design.scenario.json` (a nine-column row is refused naming the
 row and the missing cell; the plan stays held).
 
 ### Changed
 
-`record` refuses a row whose `better design` cell is missing (a nine-column 0.3 row), empty or a
-placeholder (`-`, `?`, `TBD`, a bare `n/a`), naming the row and the column, before it checks the
+`record` refuses a row whose `better design` cell is missing (a nine-column 0.3 row), empty, a
+bare `none`, or a placeholder (`-`, `?`, `TBD`, a bare `n/a`, `none: TBD`, `n/a: TBD`, `N/A - TBD`,
+`tbd later`, `see above`), naming the row and the column, before it checks the
 fail cells. Nothing is written on refusal. The skill's table, its `**Pattern check:**` reply
 guidance and its "When this can't run" section carry the column and name the two scenarios. The
 lenient parser option is `requireAllColumns: false` (was `requireFailColumns`) and reads the

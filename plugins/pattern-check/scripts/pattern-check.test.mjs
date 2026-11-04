@@ -11,7 +11,7 @@ import { paths, stateDir, writeCurrent } from "./lib/state.mjs";
 const CLI = join(dirname(fileURLToPath(import.meta.url)), "pattern-check.mjs");
 const SESSION = "0b0e6a1c-5d2f-4c1e-9a77-3f0e2c1d9b10";
 // The better design cell and the five fail cells of a well-formed row.
-const DESIGN = "none";
+const DESIGN = "none: weighed a shared helper, one caller";
 const FAIL = "throws, caller logs to stderr | rerun after fixing input | yes: pure | n/a: no retries | stderr line";
 
 function fixture(t) {
@@ -110,7 +110,7 @@ test("record from stdin writes the repo receipt and the state copy, marks the se
   assert.equal(existsSync(receipt), true);
   assert.equal(readFileSync(receipt, "utf8"), readFileSync(paths.receiptCopy(f.sd, SESSION), "utf8"));
   assert.match(readFileSync(receipt, "utf8"), /^what: thing$/m);
-  assert.match(readFileSync(receipt, "utf8"), /\| retry helper \| src\/net\/retry.ts:12 \| reuse \| same backoff \| none \| throws, caller logs to stderr \| rerun after fixing input \| yes: pure \| n\/a: no retries \| stderr line \|/);
+  assert.match(readFileSync(receipt, "utf8"), /\| retry helper \| src\/net\/retry.ts:12 \| reuse \| same backoff \| none: weighed a shared helper, one caller \| throws, caller logs to stderr \| rerun after fixing input \| yes: pure \| n\/a: no retries \| stderr line \|/);
   assert.match(readFileSync(receipt, "utf8"), /\| webhook parser \| .* \| new \| .* \| one inbound module \(fewer moving parts\); costs: the signer moves \| throws, /);
   assert.ok(readFileSync(receipt, "utf8").includes("| new piece | existing pattern (file:line) | reuse / replace / new | reason | better design | fails how | next step | restart-safe | bounded | evidence kept |"));
   assert.match(r.stdout, /2 rows: 1 reuse, 0 replace, 1 new/);
@@ -142,12 +142,15 @@ test("record with an invalid table exits 1 and writes nothing", (t) => {
     [["--row", `a | src/a.ts:1 | reuse | ok |  | ${FAIL}`], null, /row "a": "better design" is empty/],
     [["--row", `a | src/a.ts:1 | reuse | ok | TBD | ${FAIL}`], null, /row "a": "better design" is a placeholder \(TBD\)/],
     [["--row", `a | src/a.ts:1 | reuse | ok | n/a | ${FAIL}`], null, /row "a": "better design" is a placeholder \(n\/a\)/],
+    [["--row", `a | src/a.ts:1 | reuse | ok | none | ${FAIL}`], null, /row "a": "better design" says none without what was weighed \(write "none: <what was weighed>"/],
+    [["--row", `a | src/a.ts:1 | reuse | ok | none: TBD | ${FAIL}`], null, /row "a": "better design" says none without what was weighed/],
+    [["--row", `a | src/a.ts:1 | reuse | ok | n/a: TBD | ${FAIL}`], null, /row "a": "better design" is a placeholder \(n\/a: TBD\)/],
     // the fail columns
     [[], "| a | src/a.ts:1 | reuse | ok |", /row "a" has no fail columns.*better design \| fails how \| next step \| restart-safe \| bounded \| evidence kept/],
-    [["--row", "a | src/a.ts:1 | reuse | ok | none |  | rerun | yes: pure | n/a: none | log"], null, /row "a": "fails how" is empty/],
-    [["--row", "a | src/a.ts:1 | reuse | ok | none | throws | rerun | yes: pure | n/a | log"], null, /row "a": "bounded" is n\/a without a reason/],
-    [["--row", "a | src/a.ts:1 | reuse | ok | none | throws | rerun | maybe | n/a: x | log"], null, /"restart-safe" must start with yes or no/],
-    [["--row", "a | src/a.ts:1 | reuse | ok | none | throws | rerun | yes: pure | n/a: x | TBD"], null, /"evidence kept" is a placeholder/],
+    [["--row", `a | src/a.ts:1 | reuse | ok | ${DESIGN} |  | rerun | yes: pure | n/a: none | log`], null, /row "a": "fails how" is empty/],
+    [["--row", `a | src/a.ts:1 | reuse | ok | ${DESIGN} | throws | rerun | yes: pure | n/a | log`], null, /row "a": "bounded" is n\/a without a reason/],
+    [["--row", `a | src/a.ts:1 | reuse | ok | ${DESIGN} | throws | rerun | maybe | n/a: x | log`], null, /"restart-safe" must start with yes or no/],
+    [["--row", `a | src/a.ts:1 | reuse | ok | ${DESIGN} | throws | rerun | yes: pure | n/a: x | TBD`], null, /"evidence kept" is a placeholder/],
   ]) {
     const r = f.cli(["record", "--session", SESSION, ...args], { stdin });
     assert.equal(r.code, 1, JSON.stringify(args));

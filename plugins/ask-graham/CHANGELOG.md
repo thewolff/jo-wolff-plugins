@@ -17,14 +17,15 @@ one on a stated axis (fewer moving parts, removes a known failure mode, closes a
 leaves, or is what the repo would adopt if starting today), the reply shows it too, with what it
 costs over the pattern (the callers that migrate, a second way to do the thing until the old one
 goes). The completed-check template gains an `**Alternative:**` line after `**Red flags:**`: the
-better design, its axis and its cost, or `none` with what was weighed. Step 5's fewer-lines rule
+better design, its axis and its cost, or `none: <what was weighed>`. Step 5's fewer-lines rule
 still picks the default; the alternative is shown either way, never dropped for losing the pick.
-The structure check carries the line when its second-pattern flag fires. pattern-check 0.4.0's
+The structure check carries the line only when its second-pattern flag fires. pattern-check 0.4.0's
 `better design` column is what the line carries when that plugin is installed.
 
 Two live scenarios prove the two shapes: `evals/session-alternative-shown.scenario.json` (three
 scripts parse config by hand; a shared loader is better and costs a migration) and
-`evals/session-alternative-none.scenario.json` (one loader already serves every script: `none`).
+`evals/session-alternative-none.scenario.json` (one loader already serves every script, and the
+prompt leaves only the settings loader open: `none` with what was weighed).
 They have no hook phase: the Stop check is unchanged and does not block a reply that lacks the
 line, so the line is encouraged by the skill and graded by the canary, not enforced by a hook.
 

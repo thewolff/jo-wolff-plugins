@@ -13,7 +13,7 @@ read what is already there. This plugin makes the reading mandatory and the resu
 - **The skill** (`skills/pattern-check/SKILL.md`) is the method: list every new piece, then for
   each one grep the repository for its nouns and verbs, list what is registered beside it in the
   same router, registry or directory, read the hits, and read the conventions files if present.
-  Each piece ends as `reuse`, `replace`, or `new` with a reason, a `better design` cell (`none`,
+  Each piece ends as `reuse`, `replace`, or `new` with a reason, a `better design` cell (`none: <what was weighed>`,
   or the design that beats the pattern-fit one with its axis and its cost), and five columns
   saying how it fails, filled from its error paths.
 - **The script** (`scripts/pattern-check.mjs`) opens the receipt, records the table, and shows
@@ -112,8 +112,9 @@ node "<plugin root>/scripts/pattern-check.mjs" record --no-new-pieces "two copy 
 
 `record` refuses an empty table, a decision other than `reuse`, `replace` or `new`, a `new` row
 without a reason, a `reuse` or `replace` row without a `file:line`, a row whose `better design`
-cell is missing, empty or a placeholder (`none` is an answer; `-`, `?`, `TBD` and a bare `n/a`
-are not), and a row whose fail columns are missing, empty, a placeholder (`-`, `?`, `TBD`,
+cell is missing, empty, a bare `none` or a placeholder (`none: <what was weighed>` is an answer;
+`-`, `?`, `TBD`, a bare `n/a`, `none: TBD`, `n/a: TBD`, `tbd later` and `see above` are not), and
+a row whose fail columns are missing, empty, a placeholder (`-`, `?`, `TBD`,
 `todo`, `unknown`), or `n/a` without a reason; the message names the row and the column. Nothing
 is written on refusal. `status` prints the session, the files counted so far, the receipt path,
 and the config files in effect.
@@ -125,13 +126,13 @@ pattern": pattern fit is the default, not the ceiling, so when a design beats th
 on a stated axis (fewer moving parts, removes a known failure mode, closes a gap the pattern
 leaves, or is what the repository would adopt if starting today) the cell names it with its axis
 and what it costs over the pattern (the callers that migrate, a second way to do the thing until
-the old one goes); when nothing does, it says `none`, with what was weighed. ask-graham 0.8.0's
+the old one goes); when nothing does, it says `none: <what was weighed>` (a bare `none` is refused). ask-graham 0.8.0's
 `**Alternative:**` line carries this cell. The last five answer "how does it fail", before the
 piece is written, so a review can later check the code against them.
 
 | column | what it holds |
 |---|---|
-| `better design` | `none` (optionally with what was weighed), or the design that beats the pattern-fit one, its axis, and its cost over the pattern. |
+| `better design` | `none: <what was weighed>` (a bare `none` is refused), or the design that beats the pattern-fit one, its axis, and its cost over the pattern. |
 | `fails how` | What breaks, and what the operator sees: where it is logged or surfaced (a log file, a status line, an HTTP status, a warning). |
 | `next step` | What the failure message tells the reader to do. |
 | `restart-safe` | `yes` or `no`, then why: is rerunning after a crash halfway through safe? |
@@ -273,8 +274,8 @@ A live headless run (`claude -p --plugin-dir`) is not part of the suite; it cost
 
 ### 0.4.0
 
-- The receipt gains a `better design` column per piece, after `reason`: `none` (with what was
-  weighed, when anything was), or the design that beats the pattern-fit one on a stated axis
+- The receipt gains a `better design` column per piece, after `reason`: `none: <what was
+  weighed>` (a bare `none` is refused), or the design that beats the pattern-fit one on a stated axis
   (fewer moving parts, removes a known failure mode, closes a gap the pattern leaves, or is what
   the repository would adopt if starting today) with what it costs over the pattern. Pattern fit
   stays the default; the better design is shown beside it, never instead of it. Jo's rule
@@ -282,9 +283,10 @@ A live headless run (`claude -p --plugin-dir`) is not part of the suite; it cost
   which is better/optimal if one exists." ask-graham 0.8.0's `**Alternative:**` line carries the
   cell.
 - `record` refuses a row whose `better design` cell is missing (a nine-column 0.3 row), empty or
-  a placeholder (`-`, `?`, `TBD`, a bare `n/a`), naming the row and the column, before it checks
+  a placeholder (`-`, `?`, `TBD`, a bare `n/a`, a bare `none`, `none: TBD`, `n/a: TBD`, `tbd
+  later`, `see above`), naming the row and the column, before it checks
   the fail cells. Nothing is written on refusal. Two scenarios prove it:
-  `stop-record-better-design-none` (a row with `none` records and the plan passes) and
+  `stop-record-better-design-none` (a row with `none: <what was weighed>` records and the plan passes) and
   `stop-record-without-better-design` (the nine-column row is refused and the plan stays held).
 - Receipts already on disk are not invalidated: `record` validates only the rows it is given,
   and the hooks only check that a receipt file exists, so a four-column (0.1, 0.2) or

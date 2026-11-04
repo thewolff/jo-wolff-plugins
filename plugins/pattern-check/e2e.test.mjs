@@ -86,7 +86,7 @@ test("e2e: files 1 and 2 allowed, the 3rd denied with the exact command; Stop re
   writeFileSync(e.file("table.md"), "| webhook parser | (none: grep webhook in src/) | new | nothing parses inbound webhooks | throws WebhookError; the router logs it and answers 400 | the 400 body names the field to fix | yes: parsing is pure | n/a: no retries, one parse per request | the request id in the access log |\n");
   const refusedDesign = e.sh(command);
   assert.equal(refusedDesign.status, 1);
-  assert.match(refusedDesign.stderr, /receipt not written: row "webhook parser" has no "better design" cell; every piece needs it after the reason, before fails how \(write "none", or the better design with its axis and its cost\)/);
+  assert.match(refusedDesign.stderr, /receipt not written: row "webhook parser" has no "better design" cell; every piece needs it after the reason, before fails how \(write "none: <what was weighed>", or the better design with its axis and its cost\)/);
   assert.equal(existsSync(e.file(`.pattern-check/${SESSION}.md`)), false);
 
   // The full table records.

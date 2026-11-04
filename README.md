@@ -831,7 +831,7 @@ design beats the pattern-fit one on a stated axis (fewer moving parts, removes a
 mode, closes a gap the pattern leaves, or is what the repo would adopt if starting today) the
 reply shows it too, with what it costs over the pattern. The completed-check template gains an
 `**Alternative:**` line after `**Red flags:**` (the better design, its axis and its cost, or
-`none` with what was weighed); fewer lines still picks the default and never drops the
+`none: <what was weighed>`); fewer lines still picks the default and never drops the
 alternative. Two live scenarios prove the two shapes; the Stop check is unchanged. (Jo, 2026-11-04)
 
 Changes in 0.7.3: a reply that waits on the comparables question must also carry step 1's
@@ -944,11 +944,11 @@ the session has a receipt.
 
 The receipt is a table with one row per new piece and ten columns. The first four answer "what
 exists already": `new piece`, `existing pattern (file:line)`, `reuse / replace / new`, `reason`.
-The fifth, `better design`, answers "what would beat the pattern": `none`, or the design that
+The fifth, `better design`, answers "what would beat the pattern": `none: <what was weighed>`, or the design that
 beats the pattern-fit one on a stated axis with what it costs over the pattern. The last five
 answer "how does it fail", before the piece is written: `fails how`, `next step`,
 `restart-safe`, `bounded`, `evidence kept`. The script refuses a row whose `better design` cell
-is missing, empty or a placeholder, and a row whose fail cells are empty, a placeholder (`-`,
+is missing, empty, a bare `none` or a placeholder, and a row whose fail cells are empty, a placeholder (`-`,
 `?`, `TBD`, `todo`, `unknown`), or `n/a` without a reason, and names the row and column it
 refused.
 
@@ -1019,8 +1019,8 @@ does it fail. Bash write forms are read through a shell lexer, fixing two real c
 redirect matcher miscounted. Hook faults are appended to `errors.log` as well as shown,
 `hooks.json` sets a 5 s timeout, and NotebookEdit is counted.
 
-Changes in 0.4.0: the receipt gains a `better design` column after `reason`: `none` (with what
-was weighed), or the design that beats the pattern-fit one on a stated axis with what it costs
+Changes in 0.4.0: the receipt gains a `better design` column after `reason`: `none: <what was
+weighed>` (a bare `none` is refused), or the design that beats the pattern-fit one on a stated axis with what it costs
 over the pattern; pattern fit stays the default and the better design is shown beside it.
 `record` refuses a row whose cell is missing (a nine-column 0.3 row), empty or a placeholder,
 naming the row and column; receipts already on disk still lift the hold. ask-graham 0.8.0's

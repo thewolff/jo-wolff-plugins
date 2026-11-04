@@ -9,9 +9,9 @@
 // (one row, split here for width). The first four say what exists already; the fifth says what
 // would beat the pattern; the last five say how the piece fails, before it is written:
 //
-//   better design  `none`, or a design better than the pattern-fit one with the axis it wins on
-//                  (fewer moving parts, a failure mode removed, a gap closed, what the repo would
-//                  adopt today) and what it costs over the pattern
+//   better design  `none: <what was weighed>`, or a design better than the pattern-fit one with
+//                  the axis it wins on (fewer moving parts, a failure mode removed, a gap closed,
+//                  what the repo would adopt today) and what it costs over the pattern
 //   fails how      what breaks and what the operator sees: where it is logged or surfaced
 //   next step      what the failure message tells the reader to do
 //   restart-safe   `yes` or `no`, then why (is a rerun after a crash safe?)
@@ -20,8 +20,10 @@
 //
 // `reuse` and `replace` name the existing pattern; `new` needs a reason, because "nothing like it
 // exists" is the claim the whole check exists to make an agent earn. The better design cell is
-// `none` or an answer; a placeholder (`-`, `?`, `TBD`, a bare `n/a`) is refused, because "is
-// there a better way?" is the second question this check asks on every row. Every fail column
+// `none: <what was weighed>` or the design; a bare `none`, a placeholder (`-`, `?`, `TBD`, a bare
+// `n/a`), a prefix with a placeholder after it (`none: TBD`, `n/a: TBD`) or a deferral (`tbd
+// later`, `see above`) is refused, because "is there a better way?" is the second question this
+// check asks on every row, and it is answered only by saying what was weighed. Every fail column
 // must be filled; `n/a` is accepted only with a reason after it (`n/a: pure function, nothing to
 // retry`). A receipt with no rows is valid only when it says, in so many words,
 // `No new pieces: <reason>`. An empty receipt, a row whose decision is not one of the three
@@ -53,6 +55,11 @@ const HEADER_CELL = /^new piece$/i;
 const NA = /^n\/?\.?a\.?(?=$|[\s:(),;\-–—])(.*)$/i;
 const PLACEHOLDER = /^(?:tbd|tba|tbc|todo|fixme|unknown|n\/?\.?a\.?)$/i;
 const RESTART = /^(yes|no)\b(.*)$/i;
+const NONE = /^none\b(.*)$/i;
+// A design cell that defers instead of answering: a placeholder word first (`tbd later`), or a
+// pointer elsewhere (`see above`, `same as above`, `ditto`).
+const DEFERRAL = /^(?:(?:tbd|tba|tbc|todo|fixme)(?=$|[\s:;,.!?)–—])|see (?:above|below)\b|(?:same )?as above\b|ditto\b)/i;
+const DESIGN_HINT = 'write "none: <what was weighed>", or the better design with its axis and its cost';
 
 // The three row shapes: 0.1/0.2 (four cells), 0.3 (nine: no better design), current (ten).
 const LEGACY_FOUR = BASE_COLUMNS.length;
@@ -113,15 +120,27 @@ export function failCellProblem(column, value) {
 }
 
 /**
- * Why the better design cell is not acceptable, or null when it is. `none` (with or without what
- * was weighed after it) is an answer; so is any design with its axis. An empty cell, a
- * placeholder, or a bare `n/a` is not: the question has to be answered one way or the other.
+ * Why the better design cell is not acceptable, or null when it is. `none: <what was weighed>`
+ * is an answer; so is any design with its axis. The cell is normalized (`forCheck`), then split
+ * into a `none` or `n/a` prefix and its reason, like the fail cells. An empty cell, a bare `none`
+ * or `n/a`, a placeholder (`none: TBD`, `N/A - TBD`) or a deferral (`tbd later`, `see above`) is
+ * not: the question has to be answered, and `none` has to say what was weighed.
  */
 export function designCellProblem(value) {
   const v = String(value ?? "").trim();
-  if (v === "") return `"${DESIGN_COLUMN}" is empty (write "none", or the better design with its axis and its cost)`;
-  if (!substantive(forCheck(v))) return `"${DESIGN_COLUMN}" is a placeholder (${v}), not an answer (write "none", or the better design with its axis and its cost)`;
+  if (v === "") return `"${DESIGN_COLUMN}" is empty (${DESIGN_HINT})`;
+  const c = forCheck(v).replace(/^[^\p{L}\p{N}]+/u, ""); // `(none: TBD)` reads as `none: TBD)`
+  const none = c.match(NONE);
+  if (none) return answers(none[1]) ? null : `"${DESIGN_COLUMN}" says none without what was weighed (${DESIGN_HINT})`;
+  const na = c.match(NA);
+  if (!answers(na ? na[1] : c)) return `"${DESIGN_COLUMN}" is a placeholder (${v}), not an answer (${DESIGN_HINT})`;
   return null;
+}
+
+/** Whether a design cell's text (after any prefix) answers: substantive and not a deferral. */
+function answers(text) {
+  const r = String(text ?? "").replace(/^[^\p{L}\p{N}]+/u, "");
+  return substantive(r) && !DEFERRAL.test(r);
 }
 
 /**
@@ -156,11 +175,12 @@ export function parseTable(text, { requireAllColumns = true } = {}) {
     if (!DECISIONS.includes(decision)) return { ok: false, error: `decision must be one of ${DECISIONS.join(", ")}, got "${decisionRaw}": ${line}` };
     if (decision === "new" && reason === "") return { ok: false, error: `a "new" row needs a reason: ${line}` };
     if (decision !== "new" && pattern === "") return { ok: false, error: `a "${decision}" row needs the existing pattern (file:line): ${line}` };
-    if (requireAllColumns && shape === LEGACY_FOUR) {
-      return { ok: false, error: `row "${piece}" has no fail columns; every piece needs ${DESIGN_COLUMN} | ${FAIL_COLUMNS.join(" | ")} after the reason (better design: "none" or the design with its axis; n/a only with a reason: "n/a: <why>"): ${line}` };
+    const hasFail = shape !== LEGACY_FOUR;
+    if (requireAllColumns && !hasFail) {
+      return { ok: false, error: `row "${piece}" has no fail columns; every piece needs ${DESIGN_COLUMN} | ${FAIL_COLUMNS.join(" | ")} after the reason (better design: "none: <what was weighed>" or the design with its axis; n/a only with a reason: "n/a: <why>"): ${line}` };
     }
     if (requireAllColumns && shape === LEGACY_NINE) {
-      return { ok: false, error: `row "${piece}" has no "${DESIGN_COLUMN}" cell; every piece needs it after the reason, before ${FAIL_COLUMNS[0]} (write "none", or the better design with its axis and its cost): ${line}` };
+      return { ok: false, error: `row "${piece}" has no "${DESIGN_COLUMN}" cell; every piece needs it after the reason, before ${FAIL_COLUMNS[0]} (${DESIGN_HINT}): ${line}` };
     }
     let betterDesign = null;
     let failStart = BASE_COLUMNS.length;
@@ -172,8 +192,8 @@ export function parseTable(text, { requireAllColumns = true } = {}) {
     }
     const fail = {};
     for (let k = 0; k < FAIL_KEYS.length; k++) {
-      const value = shape === LEGACY_FOUR ? null : cells[failStart + k];
-      if (shape !== LEGACY_FOUR) {
+      const value = hasFail ? cells[failStart + k] : null;
+      if (hasFail) {
         const problem = failCellProblem(FAIL_COLUMNS[k], value);
         if (problem) return { ok: false, error: `row "${piece}": ${problem}. Fill it by reading the piece's error paths, not by guessing: ${line}` };
       }
