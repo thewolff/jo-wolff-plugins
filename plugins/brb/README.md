@@ -14,12 +14,12 @@ are the one thing that still reaches you at once.
 
 | | What the agent's reply shows | What you see |
 |---|---|---|
-| away | first line `brb: still away (<duration>, N held) — say \`back\` to read them`, then the body: what was done, ending `idle: <why>` when nothing is runnable; no `Needs you`, no question, no closing ask | the still-away line at the top of every reply; `brb on fire: …` for a fire; `brb: the agent is idle (<why>); N held` when it stops |
+| away | first line `brb: still away (<duration>, N held) — say \`back\` to read them`, then the body: what was done, ending `idle: <why>` when nothing is runnable; no `Needs you`, no question, no closing ask | the still-away line at the top of every reply; `brb on fire: …` for a fire; `brb: the agent is idle (<why>); N held` when it stops; on Claude Code Desktop and the terminal, `⚠ brb: away 40m · N held · say back` under the prompt while you type |
 | you answer a fire (or anything) while away | your answer handled, then the same shape as away | the hold continues; the away instruction is re-injected on every prompt, and only `back` ends the hold |
-| back | the digest, verbatim, as its whole reply: `brb: hold cleared; digest archived to <path>.` then every item the command held and every one the backstop moved, each once; an item it already resolved ends `— resolved: <how>` | that reply, on every surface (terminal, desktop, mobile app); on the surfaces that render hook frames, the same text once more as a hook line |
+| back | the digest, verbatim, as its whole reply: `brb: hold cleared; digest archived to <path>.` then every item the command held and every one the backstop moved, each once; an item it already resolved ends `— resolved: <how>` | that reply, on every surface (terminal, desktop, mobile app); on the surfaces that render hook frames, the same text once more as a hook line; the badge goes |
 
-Built on plugin-kit 0.3.2. Claude Code hooks, plus an OMP extension that runs the same hooks.
-Node 22.13 or later. No other plugin is needed.
+Built on plugin-kit 0.3.2. Claude Code hooks, a Claude Code mod for the badge, plus an OMP
+extension that runs the same hooks. Node 22.13 or later. No other plugin is needed.
 
 ## Install
 
@@ -205,6 +205,49 @@ call) and OMP does not cap at all. The ceiling bounds it: three quiet continuati
 end the turn. The price is that a working agent that raises nothing is let go after three
 quiet steps; any new ask or fire resets the count.
 
+## Away badge (Desktop)
+
+A status line for Claude Code Desktop and the terminal (Claude Code 2.1.286 or later, where
+plugins can ship mods; `hooks/hooks.json` names the module, `mods/badge/register.mjs`). While
+this session is away, brb's line under the prompt reads
+
+```
+⚠ brb: away 40m · lunch · 12 held · say back
+```
+
+so a person who comes back to a window they left and starts typing sees the hold before they
+send. The `⚠ brb:` is the app's own prefix for a plugin's status line; the rest is brb's, never
+more than 40 characters: how long ago the hold began, to the minute (`40m`, `1h 5m`, `1d 3h`),
+the `brb <note>` text if there was one, the held count and the word that ends it. When the line
+would pass 40 characters the note is dropped whole (`away 40m · 12 held · say back`), then
+`· say back`; a count too long even for that is cut with `…`. Home, the line is removed. There
+is nothing to click; `back` as the whole prompt is the one action, the same as before.
+
+The data is this session's `away.json`, read out of process by `node mods/badge/query.mjs
+--session <id>` (read-only; the file is opened once without following a link, and the open
+descriptor must be a regular file of at most 64 KiB, of which at most 64 KiB + 1 byte is read,
+so a directory, a link, or a file over 64 KiB, even one swapped in or grown after the check, is a
+fault, never a parse; an `away.json` that does not parse is home, the hooks' own reading). The
+badge refreshes at session start, after each prompt enters (so `brb` and `back` show at once), at
+the start and end of each of your turns, and every 5 s while away, so the count moves within 5 s
+of the agent's `hold`. While home the only poll is `$.fs.exists` on `away.json` inside Claude
+Code, once a second, which starts a query when the file appears. The mod never writes.
+
+Where nothing can draw (`claude -p`, OMP, a session with no surface) the mod shows nothing and
+the hooks' own lines cover it: the confirmation at `brb`, `brb: away since <when>; N held` at
+SessionStart. The badge fails the same way as the hooks: a query or a home probe that fails
+clears the line and writes one dim transcript line (`brb badge: query: …`, `brb badge: probe: …`)
+per distinct error; a hook that throws logs one line and passes the event on; no error reaches
+Claude Code.
+
+Tests: `node --test` covers the data and query layers and the mod's timers and probe faults with
+an in-memory host (`mods/badge/tests/data.test.mjs`, `mods/badge/tests/query.test.mjs`,
+`mods/badge/tests/register.test.mjs`); `claude plugin test` from `plugins/brb` runs the mod
+through Claude Code's test kit (`mods/badge/tests/badge.test.tsx`: the line set and cleared,
+the refresh points, the poll and the probe, the fault inputs). The test-kit file was written for
+0.3.0 and not run by its author (the environment it was built in could not invoke `claude`);
+`evals/manifest.json` lists the Desktop check under `manual`.
+
 ## State and config
 
 - `${XDG_STATE_HOME:-~/.local/state}/brb/<session id>/` — `away.json` (since, note, counts, the
@@ -262,6 +305,17 @@ quiet steps; any new ask or fire resets the count.
   message. Which channel is picked is tested (`displayChannel`); the live path is not.
 - **The OMP adapter has not been run in a live omp session** for this version; its handlers
   are tested with a fake runner and one real spawn of the hooks (`omp/brb-omp.test.mjs`).
+- **The badge has not been watched on Desktop or in a terminal** for this version: its data and
+  query layers run under `node --test`; its hooks are written for `claude plugin test`
+  (`mods/badge/tests/badge.test.tsx`), which the author's environment could not run. The tell
+  that the mod loaded: `/plugin` shows `1 mod active · brb` (Claude Code 2.1.286 or later; an
+  older Claude Code ignores `modules` and the hooks still run). The tell that it did not draw:
+  no `⚠ brb:` line under the prompt after `brb` while the confirmation line did show.
+- **The badge lags the hook** by at most a second for a `brb`, and at most 5 s for a `back`,
+  when a prompt's hooks run after the mod's own `prompt.submit` has returned (the mod refreshes
+  once after the prompt enters, then probes `away.json` once a second while home and queries
+  every 5 s while away). A `brb` typed into a session where the mod is not loaded shows no badge
+  at all; the hooks hold as before.
 
 ## How it fails
 
@@ -277,8 +331,18 @@ worktree and `scripts/prune.mjs` removes what is older than its retention.
 
 `node --test` from `plugins/brb/` runs everything: the state round-trip, the splitter, the three
 hooks as spawned processes with fixture stdin and fixture transcripts, the hold command as a
-spawned process, the OMP adapter's handlers. `bash e2e/live-run.sh --no-live` replays the
-fourteen `evals/*.scenario.json` offline.
+spawned process, the OMP adapter's handlers, the badge's data and query layers. `bash
+e2e/live-run.sh --no-live` replays the fourteen `evals/*.scenario.json` offline. `claude plugin
+test` runs the badge mod itself (`mods/badge/tests/badge.test.tsx`).
+
+## Changes in 0.3.0
+
+The away badge: a Claude Code mod (`mods/badge/`) that pins `⚠ brb: away <elapsed> · [note ·]
+N held · say back` (never over 40 characters: the note goes first, then `· say back`) under the
+prompt while this session is away, on Desktop and in the terminal, and removes it at `back`.
+Read-only (`mods/badge/query.mjs` reads `away.json` through one descriptor, bounded at 64 KiB);
+refreshed at session start, after each prompt, at each turn's start and end, and every 5 s while
+away. The hooks, the adapter, the hold command and the away instruction are unchanged.
 
 ## Changes in 0.2.0
 

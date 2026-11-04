@@ -152,9 +152,20 @@ export function freshAway({ since = new Date().toISOString(), note = "" } = {}) 
 
 /** The session's away record, or null when home (no file, or a file that does not parse). */
 export function readAway(sessionId, env = process.env) {
+  let text;
+  try {
+    text = readFileSync(awayPath(sessionId, env), "utf8");
+  } catch {
+    return null;
+  }
+  return parseAway(text);
+}
+
+/** away.json's text → the typed away record, or null (home) when it does not parse or has no `since`. */
+export function parseAway(text) {
   let parsed;
   try {
-    parsed = JSON.parse(readFileSync(awayPath(sessionId, env), "utf8"));
+    parsed = JSON.parse(text);
   } catch {
     return null;
   }

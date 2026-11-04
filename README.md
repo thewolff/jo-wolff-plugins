@@ -82,10 +82,11 @@ it, keeping a record of what it did and asked, and a vendored set of engineering
 - **[brb](#brb)** — type `brb` and walk away: the agent keeps working, every ask it would
   have stopped for waits in a digest, and only a broken main, data loss, a security finding,
   spend near a ceiling or a blocker on everything comes through at once; `back` prints the
-  digest. Claude Code hooks plus an OMP extension. Changes in brb 0.2.0: while away, asks are
-  written, not shown: the agent files each one with `scripts/brb.mjs hold` and its reply shows
-  no `Needs you` section, no question and no closing ask; a reply that still shows one is filed
-  and sent back once by the Stop hook. See the plugin's [CHANGELOG](plugins/brb/CHANGELOG.md).
+  digest. Claude Code hooks, a Claude Code mod, plus an OMP extension. Changes in brb 0.3.0: an
+  away badge under the prompt on Claude Code Desktop and in the terminal, `⚠ brb: away 40m ·
+  lunch · 12 held · say back` (at most 40 characters), so a person typing into a session they
+  left sees the hold before they send; removed at `back`. See the plugin's
+  [CHANGELOG](plugins/brb/CHANGELOG.md).
 
 output-types delivers text and, since 0.3.0, checks every finished message for a label without
 a receipt, warning only; see its *delivers, and warns* note. i-have-audhd delivers its rules and checks every finished message, warning by
@@ -232,7 +233,7 @@ receipt and removes its working files.
 | ctx-watch | 0.2.1 | ctx daemon and semantic-index health, repair, and the consult-history Stop check | vendors the hook runner and the scenario runner |
 | delegation | 0.1.1 | brief teaching, spawn gate, `SendMessage` check, SubagentStop warning, 11 agents, three guards | needs pattern-check's receipt for builder-class spawns; vendors the hook runner |
 | continuity | 0.3.0 | PreCompact snapshot, post-compaction restore with the rules files and durable notes re-inlined, liveness line, context-pressure warning, `/continuity:handoff`; the save and restore also on OMP | vendors the hook runner |
-| brb | 0.2.0 | `brb` / `back` / `pending`, the hold command, the away digest, the backstop, keep-working, on-fire surfacing | vendors the hook runner |
+| brb | 0.3.0 | `brb` / `back` / `pending`, the hold command, the away digest, the backstop, keep-working, on-fire surfacing, the away badge (a mod) | vendors the hook runner |
 
 ### What they share
 
@@ -1490,10 +1491,11 @@ The Stop hook copies each new Needs-you line into a digest, surfaces each on-fir
 holding it, and sends the agent back to work (Stop hook feedback on Claude Code, a block on
 OMP) until an `idle:` line, a tool-less continuation that brings nothing new, or two stops with
 no tool call between them. `pending` prints the digest; `back` prints it, archives it and ends
-the hold. The on-fire kinds mirror
-agent-system 2.0's surface. Built on plugin-kit 0.3.1; Node 22.13 or later; Claude Code hooks
-plus an OMP extension that runs the same hooks. The exact instruction text, the three release
-rules, the config (`onFireCap`, `idleStops`) and the failure table are in
+the hold. While away, on Claude Code Desktop and in the terminal, a mod pins `⚠ brb: away
+<elapsed> · [note ·] N held · say back` (at most 40 characters) under the prompt. The on-fire
+kinds mirror agent-system 2.0's surface. Built on plugin-kit 0.3.2; Node 22.13 or later; Claude Code hooks
+and a mod, plus an OMP extension that runs the same hooks. The exact instruction text, the three
+release rules, the config (`onFireCap`, `idleStops`) and the failure table are in
 [`plugins/brb/README.md`](plugins/brb/README.md).
 
 ### Install
