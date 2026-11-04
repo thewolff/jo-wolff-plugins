@@ -8,6 +8,6 @@
   "manual": [
     "The on-fire desktop notification (osascript display notification on macOS): type brb, have the agent write a line starting with 'on fire:', and watch for the Notification Center banner. Tests run with BRB_DESKTOP_NOTIFY=off; the osascript path is never exercised by them.",
     "The OSC 9 terminalSequence reaching a terminal that renders it (iTerm2, Ghostty, WezTerm): same trigger; the bell/notification shows in the terminal, not only in the hook's JSON.",
-    "The OMP adapter in a live omp session: omp -e plugins/brb/omp/brb-omp.ts, type brb, then a prompt whose answer carries a Needs-you section, then back; the digest shows as a displayed message."
+    "The OMP adapter in a live omp session: omp -e plugins/brb/omp/brb-omp.ts, type brb, then a prompt whose answer carries a Needs-you section, then back while the agent is idle (the digest shows as a displayed message) and once while it is working (the digest shows as a notification and does not enter the agent's context)."
   ]
 }

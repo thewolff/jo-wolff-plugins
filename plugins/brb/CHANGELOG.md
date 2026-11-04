@@ -7,19 +7,25 @@ All notable changes to brb are recorded here. The format follows
 
 ### Added
 
-- The three words, typed as the whole prompt: `brb` (a note may follow) starts a hold for the
-  session; `pending` prints the digest and changes nothing; `back` prints it, archives it to
-  `archive/<when>.md` and ends the hold. None of them starts a turn.
+- The three words, typed as the whole prompt: `brb` (a note may follow, `brb lunch` or
+  `brb, lunch`) starts a hold for the session; `pending` prints the digest and changes nothing;
+  `back` archives it to `archive/<when>.md`, ends the hold and prints the archive path first,
+  then the digest, capped at 8000 characters. None of them starts a turn while away; `back` and
+  `pending` while not away pass through to the agent.
 - The away instruction, delivered as `additionalContext` on every prompt while away and again at
   SessionStart: keep working, asks under `## Needs you`, `on fire:` lines only for the five
-  on-fire kinds, a literal `idle: <why>` last line when nothing is runnable.
-- The Stop hook while away: Needs-you lines to `digest.md` (restated lines held once), on-fire
-  lines surfaced at once (a `systemMessage`, an OSC 9 `terminalSequence`, a best-effort macOS
-  notification) and kept out of the digest, then `decision: "block"` sending the agent back to
-  work, except on an `idle:` line, a `stop_hook_active` continuation with nothing new, or
-  `idleStops` (default 2) stops with no tool call between them. An on-fire cap (`onFireCap`,
-  default 3) that notes when it is passed.
-- The OMP extension `omp/brb-omp.ts`: `input` handles the three words without a turn,
+  on-fire kinds, an `idle: <why>` line when nothing is runnable (a closing ask may follow it).
+- The Stop hook while away: Needs-you lines to `digest.md` (restated lines held once; heading
+  forms with counts, numbers and emoji; continuation lines joined), on-fire lines surfaced at
+  once and before any write (a `systemMessage`, an OSC 9 `terminalSequence`, a best-effort macOS
+  notification) and kept out of the digest, then a keep-working answer (Stop hook
+  `additionalContext` on Claude Code, `decision: "block"` on OMP), except on an `idle:` line, a
+  tool-less `stop_hook_active` continuation with nothing new, or `idleStops` (default 2) stops
+  with no tool call between them. Tool calls are counted in both Claude Code and OMP transcripts;
+  with no readable transcript every continuation counts as tool-less. An on-fire cap
+  (`onFireCap`, default 3) that notes when it is passed.
+- The OMP extension `omp/brb-omp.ts`: `input` handles the three words without a turn (the reason
+  shown as a message when the agent is idle, as a notification while it works),
   `before_agent_start` carries the away instruction, `session_stop` runs the same stop hook
   under `BRB_HARNESS=omp`.
 - State under `${XDG_STATE_HOME:-~/.local/state}/brb/<session id>/`, declared and pruned at

@@ -21,8 +21,9 @@ things it needs from you.
 3. **Start a line with `on fire:` only for** a broken main branch, data loss, a security
    finding, spend near a ceiling, or a blocker on everything you could work on. That line goes
    to the person at once, as a notification; everything else waits.
-4. **When nothing is runnable without the person, end with a literal last line `idle: <why>`.**
-   The Stop hook then lets the turn end. Without it the hook answers
+4. **When nothing is runnable without the person, end with a line `idle: <why>`**; your closing
+   ask may come after it (the hook reads the last five non-blank lines). The Stop hook then lets
+   the turn end. Without it the hook answers
    `brb is holding your asks (N in the digest). Keep working …` and you are back at step 1; the
    hook also lets you stop after two stops in a row with no tool call between them.
 
@@ -30,13 +31,18 @@ The person reads the digest with `back` (which clears it) or `pending` (which do
 
 ## When this can't run
 
-- A stop was answered with `brb Stop failed open: <why>`: the hook let the turn end without
-  holding anything; the line is also in `${XDG_STATE_HOME:-~/.local/state}/brb/errors.log`.
-  Your Needs-you section is still on screen in your message; say in your next message that the
-  hold missed once, and do not count the ask as delivered.
-- No `brb is holding your asks` reply ever arrives after a Needs-you section: the hook is not
-  running (hooks disabled, plugin not loaded). Keep writing the section; the person reads
-  messages when they return. Nothing to undo.
+- **The held count did not grow.** The keep-working reply (`brb is holding your asks (N in the
+  digest)`) and the last line of the away instruction (`N items held so far.`) both carry the
+  count. If you wrote a new ask and the next N you see is the same as before, the ask was not
+  held (the hook failed open, or could not write its state). Restate it under `## Needs you` in
+  your next message and say the hold missed it once; a missed ask is not marked seen, so the
+  restatement lands.
+- **No away instruction although the person typed `brb`.** Each prompt while away arrives with
+  `brb: Jo is away since …`. If that line is missing, the hook is not running (hooks disabled,
+  plugin not loaded): keep writing the section anyway; the person reads messages when they
+  return. Nothing to undo. A turn that ends with no keep-working reply is not this signal: the
+  hook lets an `idle:` stop, a tool-less stop with nothing new, and the second tool-less stop
+  end silently or with a line for the person.
 - The person is not away (no `brb` was typed): this skill does not apply; ask as usual.
 
 The scenario that proves the hook's first outcome is `evals/prompt-brb.scenario.json`.

@@ -1040,12 +1040,13 @@ Type `brb` (a note may follow) as the whole prompt and walk away. The prompt is 
 it reaches the model, a hold is written for the session, and from then on every prompt carries
 an away instruction: keep working, put every ask under `## Needs you`, start a line with
 `on fire:` only for a broken main branch, data loss, a security finding, spend near a ceiling
-or a blocker on everything, and end with a literal `idle: <why>` line when nothing is runnable.
+or a blocker on everything, and end with an `idle: <why>` line when nothing is runnable.
 The Stop hook copies each new Needs-you line into a digest, surfaces each on-fire line at once
 (a `systemMessage`, an OSC 9 terminal notification, a best-effort macOS notification) without
-holding it, and sends the agent back to work with `decision: "block"` until an `idle:` line,
-a continuation that brings nothing new, or two stops with no tool call between them. `pending`
-prints the digest; `back` prints it, archives it and ends the hold. The on-fire kinds mirror
+holding it, and sends the agent back to work (Stop hook feedback on Claude Code, a block on
+OMP) until an `idle:` line, a tool-less continuation that brings nothing new, or two stops with
+no tool call between them. `pending` prints the digest; `back` prints it, archives it and ends
+the hold. The on-fire kinds mirror
 agent-system 2.0's surface. Built on plugin-kit 0.2.1; Node 22.13 or later; Claude Code hooks
 plus an OMP extension that runs the same hooks. The exact instruction text, the three release
 rules, the config (`onFireCap`, `idleStops`) and the failure table are in
