@@ -1,0 +1,26 @@
+{
+  "$comment": "Every hook event hooks/hooks.json registers, with the outcomes its handlers can return (additionalContext counts as systemMessage; the PostToolUse block is `deny`). Each event \u00d7 outcome has at least one evals/<name>.scenario.json, and each hook \u00d7 outcome has its own; a silent scenario names a sibling that fires. `ledger gate check` fails naming any gap. `manual` lists what no scenario can prove.",
+  "events": {
+    "SessionStart": [
+      "systemMessage",
+      "silent"
+    ],
+    "PreToolUse": [
+      "deny",
+      "systemMessage",
+      "silent"
+    ],
+    "PostToolUse": [
+      "deny",
+      "silent"
+    ],
+    "SubagentStop": [
+      "systemMessage",
+      "silent"
+    ]
+  },
+  "manual": [
+    "That Claude Code puts a PreToolUse deny reason in front of the model as an is_error tool result and the model re-issues the spawn with the section filled in: measured once on 2.1.318 (REVIEW-0.1.0-codex focus item 1); re-run `claude -p` in a temp directory with a thin brief to confirm on a new Claude Code version.",
+    "That the OMP adapter (omp/delegation-omp.ts) blocks a thin `task` call and re-teaches after a compaction inside a live OMP session: covered by omp/delegation-omp.test.mjs on a structural `pi`, not by a live OMP run."
+  ]
+}

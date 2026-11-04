@@ -1,0 +1,17 @@
+{
+  "$comment": "Claude Code's internal agents (prompt suggestions, /btw) stop with an empty agent_type: not builder-class, no warning.",
+  "event": "SubagentStop",
+  "expect": "silent",
+  "sibling": "subagent-stop-warn-no-stopped-line.scenario.json",
+  "stdin": {
+    "session_id": "${SESSION_ID}",
+    "transcript_path": "${TRANSCRIPT}",
+    "cwd": "${CWD}",
+    "hook_event_name": "SubagentStop",
+    "stop_hook_active": false,
+    "agent_id": "a2",
+    "agent_type": "",
+    "agent_transcript_path": "${TRANSCRIPT}",
+    "last_assistant_message": "Maybe ask about the tests next?"
+  }
+}

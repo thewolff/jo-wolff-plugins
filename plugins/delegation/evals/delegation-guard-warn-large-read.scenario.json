@@ -1,0 +1,21 @@
+{
+  "$comment": "delegation-guard check 1: an unbounded Read of a file over 1000 lines gets a warning pointing at a `reader` subagent; the call proceeds.",
+  "event": "PreToolUse",
+  "expect": "systemMessage",
+  "reason": "is over the 1000-line threshold",
+  "setup": {
+    "commands": [
+      "seq 1 1500 > big.txt"
+    ]
+  },
+  "stdin": {
+    "session_id": "${SESSION_ID}",
+    "transcript_path": "${TRANSCRIPT}",
+    "cwd": "${CWD}",
+    "hook_event_name": "PreToolUse",
+    "tool_name": "Read",
+    "tool_input": {
+      "file_path": "${CWD}/big.txt"
+    }
+  }
+}
