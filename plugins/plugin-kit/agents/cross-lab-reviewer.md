@@ -87,10 +87,34 @@ Resolve the rest yourself, and print each value in the report:
 2. **Snapshot**, before any executable step, and in every mode, static only
    included. It is a plain file tree with no `.git`, made without checking out, so no checkout
    hook and no filter driver runs:
-   - **Attributes first.** `git archive` runs `filter=` smudge drivers and applies
-     `export-ignore` and `export-subst`, so refuse a commit where any of them is set:
-     `git -C "<repo>" ls-tree -r -z --name-only "$head" | git -C "<repo>" check-attr --source="$head" -z --stdin filter export-ignore export-subst | tr '\0' '\n' | awk 'NR % 3 == 0 && $0 != "unspecified"'`
-     must print nothing and exit 0.
+   - **Attributes first.** `git archive` runs `filter` drivers, applies `export-ignore`,
+     `export-subst`, `ident` and the end-of-line attributes, so refuse a commit where any path
+     or directory carries an attribute by any of the names below, whatever its value: `set`,
+     `unset`, a value, or the value `unspecified` (`filter=unspecified` names a driver called
+     `unspecified`; `!filter` assigns nothing, is not listed and runs nothing). Run this block as one Bash
+     command, `"<repo>"` replaced and `$head` set; it must print its `attributes:` line and exit
+     0. Any `refused:` line or any other exit is a failed snapshot, and the reason it names goes
+     in the report. A git whose `check-attr` has no `--source` fails it.
+
+     ```sh
+     ( set -o pipefail
+       list() { git -C "<repo>" ls-tree -r -z --name-only "$head" &&
+         git -C "<repo>" ls-tree -r -d -z --name-only "$head" &&
+         git -C "<repo>" ls-tree -r -d -z --name-only "$head" | tr '\0' '\n' | sed 's|$|/|' | tr '\n' '\0'; }
+       n="$(list | tr -cd '\0' | wc -c | tr -d ' ')" || { echo "refused: git ls-tree failed on $head"; exit 1; }
+       [ "$n" -gt 0 ] || { echo "refused: git ls-tree listed no paths in $head"; exit 1; }
+       nl="$(list | tr -cd '\n' | wc -c | tr -d ' ')" || { echo "refused: git ls-tree failed on $head"; exit 1; }
+       [ "$nl" = 0 ] || { echo "refused: a path in $head holds a newline"; exit 1; }
+       f="$(list | git -C "<repo>" check-attr --source="$head" -z --stdin filter | tr -cd '\0' | wc -c | tr -d ' ')" || { echo "refused: git check-attr --source failed"; exit 1; }
+       [ "$f" = "$((3 * n))" ] || { echo "refused: git check-attr answered $f fields for $n paths"; exit 1; }
+       bad="$(list | git -C "<repo>" check-attr --source="$head" -z --all --stdin | tr '\0' '\n' | awk 'NR % 3 == 1 { p = $0 } NR % 3 == 2 && /^(filter|export-ignore|export-subst|ident|eol|text|crlf|working-tree-encoding|diff|merge)$/ { print p ": " $0 }')" || { echo "refused: git check-attr --all failed"; exit 1; }
+       [ -z "$bad" ] || { printf 'refused: %s\n' "$bad"; exit 1; }
+       echo "attributes: none refused on $n paths of $head" )
+     ```
+
+     Directories are listed twice, as `dir` and `dir/`, because a pattern ending in `/` only
+     matches the second; the `filter` pass proves `check-attr` answered for every path before
+     the `--all` pass is trusted, so an empty answer is never read as a clean commit.
    - **Extract.** `snaproot="$(mktemp -d)"`, `snap="$snaproot/snap"`, `mkdir "$snap"`, then
      `set -o pipefail; git -C "<repo>" archive --format=tar "$head" | tar -x -f - -C "$snap"`.
    - **Compare.** The extracted names must equal the commit's:
@@ -199,10 +223,11 @@ quoted, the count of blocking, should-fix and nit findings, the env-only set wit
 - **Permission or containment fails** (`viewerPermission` not `ADMIN`, `MAINTAIN` or `WRITE`,
   no `origin`, `gh` missing or logged out, or a variable leaking past `env -i`): the same static
   only review, each executable check `unavailable: <reason>` with the command and its output.
-- **The snapshot fails** (an attribute set on a tracked path, `git archive` or `tar` exiting
-  non-zero, or extracted names differing from the commit's): nothing is reviewed, sent or
-  written. Report the command, its exit code and output; a repository that needs filters or
-  export attributes cannot be snapshotted this way.
+- **The snapshot fails** (the attribute block prints `refused:` or exits non-zero, including a
+  git without `check-attr --source`; `git archive` or `tar` exiting non-zero; or extracted
+  names differing from the commit's): nothing is reviewed, sent or written. Report the command,
+  its exit code and output; a repository whose paths carry any refused attribute name,
+  `text=auto` included, cannot be snapshotted this way.
 - **An output path component fails validation** (`<repo>`, `<plugin>` or `<version>` outside
   `^[A-Za-z0-9._-]+$`, containing `..` or equal to `.`, a destination folder that is a symlink
   or not a directory, or one whose `realpath` leaves `~/agent-scratch/`): refuse, naming the

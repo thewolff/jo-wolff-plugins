@@ -1,6 +1,6 @@
 ---
 name: release-gate
-description: Mechanical release checklist for one plugin in this repository. Use proactively before any plugin version bump, PR or marketplace publish. Snapshots the head commit with git archive (no hooks, no filters), then runs the path scrub, the version match across plugin.json, package.json, the README "Changes in" headings and the marketplace entry, README consistency against the plugin's hooks, skills and agents, and, only when the prompt says execute and the head sha, `node --test` and `ledger gate check` in a credential-free environment on the CI node major. Reports pass or fail per check with the command and its output. Executes and reports only; never edits, never pushes, never installs.
+description: Mechanical release checklist for one plugin in this repository. Use proactively before any plugin version bump, PR or marketplace publish. Snapshots the head commit with git archive (no hooks, and refused when any attribute that runs a driver or changes bytes is named), then runs the path scrub, the version match across plugin.json, package.json, the README "Changes in" headings and the marketplace entry, README consistency against the plugin's hooks, skills and agents, and, only when the prompt says execute and the head sha, `node --test` in a credential-free environment on the CI node major. The ledger plugin gate is reported unavailable, because it checks live HEAD rather than the captured sha. Reports pass, fail or unavailable per check with the command and its output. Executes and reports only; never edits, never pushes, never installs.
 tools: Read, Grep, Glob, Bash
 model: haiku
 ---
@@ -39,22 +39,46 @@ output lines that decided it. Quote every substitution in every command.
      passes only when `viewerPermission` is `ADMIN`, `MAINTAIN` or `WRITE`. Any other value, no
      `origin`, `gh` missing or logged out, or a non-zero exit fails it. It says who may push to
      `origin`, not who wrote `$head`, so it never stands in for 0a.
-   - **c. Containment.** Every command that runs repository code (checks 5 and 6) runs under
+   - **c. Containment.** Every command that runs repository code (check 5) runs under
      `env -i HOME="$(mktemp -d)" XDG_CONFIG_HOME="$(mktemp -d)" PATH="$(dirname "$(command -v node)"):/usr/bin:/bin"`,
      so no `GH_TOKEN`, `*_API_KEY`, `SSH_AUTH_SOCK` or other inherited variable reaches it.
      Show it once with `env` as the command: any variable other than `HOME`,
-     `XDG_CONFIG_HOME` and `PATH` (plus check 6's two temp `LEDGER_*` paths) fails containment.
-   Unless a, b and c all pass, checks 5 and 6 are `unavailable: <reason>` naming the part that
+     `XDG_CONFIG_HOME` and `PATH` fails containment.
+   Unless a, b and c all pass, check 5 is `unavailable: <reason>` naming the part that
    failed (for a missing authorization, `unavailable: no execute authorization for <head>`) and
-   are not run; the static checks still run, and the gate line is `fail`.
+   is not run; the static checks still run, and the gate line is `fail`.
 1. **Snapshot**, before any executable step and whatever 0 found. `git -C "<repo>" status --porcelain`:
    any output is listed in the report as "uncommitted, not checked" and is never inspected.
    The snapshot is a plain file tree with no `.git`, made without checking out, so no checkout
    hook and no filter driver runs:
-   - **Attributes first.** `git archive` runs `filter=` smudge drivers and applies
-     `export-ignore` and `export-subst`, so refuse a commit where any of them is set:
-     `git -C "<repo>" ls-tree -r -z --name-only "$head" | git -C "<repo>" check-attr --source="$head" -z --stdin filter export-ignore export-subst | tr '\0' '\n' | awk 'NR % 3 == 0 && $0 != "unspecified"'`
-     must print nothing and exit 0.
+   - **Attributes first.** `git archive` runs `filter` drivers, applies `export-ignore`,
+     `export-subst`, `ident` and the end-of-line attributes, so refuse a commit where any path
+     or directory carries an attribute by any of the names below, whatever its value: `set`,
+     `unset`, a value, or the value `unspecified` (`filter=unspecified` names a driver called
+     `unspecified`; `!filter` assigns nothing, is not listed and runs nothing). Run this block as one Bash
+     command, `"<repo>"` replaced and `$head` set; it must print its `attributes:` line and exit
+     0. Any `refused:` line or any other exit is a failed snapshot, and the reason it names goes
+     in the report. A git whose `check-attr` has no `--source` fails it.
+
+     ```sh
+     ( set -o pipefail
+       list() { git -C "<repo>" ls-tree -r -z --name-only "$head" &&
+         git -C "<repo>" ls-tree -r -d -z --name-only "$head" &&
+         git -C "<repo>" ls-tree -r -d -z --name-only "$head" | tr '\0' '\n' | sed 's|$|/|' | tr '\n' '\0'; }
+       n="$(list | tr -cd '\0' | wc -c | tr -d ' ')" || { echo "refused: git ls-tree failed on $head"; exit 1; }
+       [ "$n" -gt 0 ] || { echo "refused: git ls-tree listed no paths in $head"; exit 1; }
+       nl="$(list | tr -cd '\n' | wc -c | tr -d ' ')" || { echo "refused: git ls-tree failed on $head"; exit 1; }
+       [ "$nl" = 0 ] || { echo "refused: a path in $head holds a newline"; exit 1; }
+       f="$(list | git -C "<repo>" check-attr --source="$head" -z --stdin filter | tr -cd '\0' | wc -c | tr -d ' ')" || { echo "refused: git check-attr --source failed"; exit 1; }
+       [ "$f" = "$((3 * n))" ] || { echo "refused: git check-attr answered $f fields for $n paths"; exit 1; }
+       bad="$(list | git -C "<repo>" check-attr --source="$head" -z --all --stdin | tr '\0' '\n' | awk 'NR % 3 == 1 { p = $0 } NR % 3 == 2 && /^(filter|export-ignore|export-subst|ident|eol|text|crlf|working-tree-encoding|diff|merge)$/ { print p ": " $0 }')" || { echo "refused: git check-attr --all failed"; exit 1; }
+       [ -z "$bad" ] || { printf 'refused: %s\n' "$bad"; exit 1; }
+       echo "attributes: none refused on $n paths of $head" )
+     ```
+
+     Directories are listed twice, as `dir` and `dir/`, because a pattern ending in `/` only
+     matches the second; the `filter` pass proves `check-attr` answered for every path before
+     the `--all` pass is trusted, so an empty answer is never read as a clean commit.
    - **Extract.** `snaproot="$(mktemp -d)"`, `snap="$snaproot/snap"`, `mkdir "$snap"`, then
      `set -o pipefail; git -C "<repo>" archive --format=tar "$head" | tar -x -f - -C "$snap"`.
    - **Compare.** The extracted names must equal the commit's:
@@ -95,14 +119,13 @@ output lines that decided it. Quote every substitution in every command.
    CI job sets any variable under `env:` and `ℹ skipped` is above 0, the check is
    `unavailable: CI sets <names>; <n> cases skipped here may run there`, and the gate line is
    `fail`.
-6. **Plugin gate.** Only when 0 passed. The snapshot has no `.git`, so the ledger from the
-   snapshot reads the commit from the repository: from `"<repo>"`, contained,
-   `env -i HOME="$(mktemp -d)" XDG_CONFIG_HOME="$(mktemp -d)" PATH="$(dirname "$(command -v node)"):/usr/bin:/bin" LEDGER_DB="$(mktemp -d)/ledger.db" LEDGER_CONFIG="$(mktemp -d)/config.json" node "$snap/plugins/ledger/scripts/ledger.mjs" gate check --base "$base_sha" --plugins "<name>"`.
-   Its first line, `gate check <short sha>`, must be a prefix of `$head`; anything else means
-   the checkout moved, and the check is `unavailable: HEAD moved`. Report the `survives`,
-   `visible` and `says` rows as printed. The throwaway `LEDGER_DB` keeps this run out of the
-   real store, so the push gate still needs the author's own `gate check`; say that in the
-   report.
+6. **Plugin gate.** Not run, in every mode:
+   `unavailable: ledger gate check runs against live HEAD; pinned invocation not supported`.
+   `ledger gate check` resolves `HEAD` itself when it starts and runs that commit's hooks, so a
+   checkout that moved after `$head` was captured would run hooks from a commit no `execute:`
+   names, and comparing its printed sha afterwards cannot undo that. The gate line is `fail`
+   while this check is unavailable; say in the report that the author's own `ledger gate check`
+   on `$head` is still owed, and that the push gate reads that run, not this one.
 7. **README consistency.** In `"$snap/plugins/<name>/README.md"`: every event in
    `hooks/hooks.json`, every `skills/*/` name and every `agents/*.md` name is mentioned; every
    `/<name>:<skill>` the README mentions exists under `skills/`. List each gap as a fail with
@@ -118,8 +141,8 @@ output lines that decided it. Quote every substitution in every command.
 - Make the snapshot with `git checkout`, `git worktree add` or `git clone`: each can run hooks
   or filters from the checkout.
 - Push, merge, open a PR, publish, or run `npm install`, `/plugin install` or any installer.
-- Use the real ledger database or config: check 6 always runs with a temp `LEDGER_DB` and
-  `LEDGER_CONFIG`.
+- Run `ledger gate check` or any other ledger command: check 6 is unavailable until ledger
+  checks a sha it is given rather than live `HEAD`.
 
 The containment strips credentials from the environment. It does not cut the network, and a
 test can still read any file the user can read by its path. That is why execution needs the
@@ -137,23 +160,24 @@ not observe. A command that timed out or crashed is reported as that, not as a p
 
 Report shape: the checked head sha and the execute authorization as given first, then one
 table (check, status, one-line reason), then each check's command, exit code and deciding
-output, then the one line `Release gate: pass` only when every check passed, the execute
-authorization matched `$head`, and check 2 was `exact` or `same major` (say which), else
-`Release gate: fail` naming the failed and unavailable checks.
+output, then the one line `Release gate: fail` naming the failed and unavailable checks. Check
+6 is unavailable in every run, so the gate line is never `pass`; a run where every other check
+passed says so in the same line, with check 2 `exact` or `same major` (say which).
 
 ## How it fails: when this can't run
 
-- **No execute authorization, or one naming another sha:** checks 5 and 6 are
-  `unavailable: no execute authorization for <head>` (or name the mismatch) and nothing from the
-  checkout runs. The static checks still report; the gate line is `fail`. To run them, the user
-  reinvokes with `execute: <head>` after deciding the commit is theirs to run.
+- **No execute authorization, or one naming another sha:** check 5 is
+  `unavailable: no execute authorization for <head>` (or names the mismatch) and nothing from
+  the checkout runs. The static checks still report; the gate line is `fail`. To run it, the
+  user reinvokes with `execute: <head>` after deciding the commit is theirs to run.
 - **Permission or containment fails** (`viewerPermission` not `ADMIN`, `MAINTAIN` or `WRITE`, no
-  `origin`, `gh` missing or logged out, or a variable leaking past `env -i`): checks 5 and 6 are
+  `origin`, `gh` missing or logged out, or a variable leaking past `env -i`): check 5 is
   `unavailable: <reason>` and nothing from the checkout runs. The static checks still report;
   the gate line is `fail`.
-- **The snapshot fails** (an attribute set on a tracked path, `git archive` or `tar` exiting
-  non-zero, or extracted names differing from the commit's): checks 2 to 7 are
-  `unavailable: no snapshot` with the command and its output; the gate line is `fail`.
+- **The snapshot fails** (the attribute block prints `refused:` or exits non-zero, including a
+  git without `check-attr --source`; `git archive` or `tar` exiting non-zero; or extracted
+  names differing from the commit's): checks 2 to 7 are `unavailable: no snapshot` with the
+  command and its output; the gate line is `fail`.
 - **No CI job runs this plugin's tests, more than one pin matches, or the major differs:**
   check 2 is `unavailable` naming what the grep or `node --version` found, check 5 does not run,
   and the gate line is `fail`. Adding or fixing the workflow, or switching node, is the
@@ -161,8 +185,10 @@ authorization matched `$head`, and check 2 was `exact` or `same major` (say whic
 - **No `node`, or `node --test` cannot start:** check 5 is `unavailable` with the exact error;
   the gate line is `fail`. Hand over the zsh line to run on the Mac, contained:
   `cd "<snap>/plugins/<name>" && env -i HOME="$(mktemp -d)" XDG_CONFIG_HOME="$(mktemp -d)" PATH="$(dirname "$(command -v node)"):/usr/bin:/bin" node --test`.
-- **No `ledger`** (no `plugins/ledger/scripts/ledger.mjs` in the snapshot): check 6 is
-  `unavailable` naming the missing path; the gate line is `fail`, because the push gate needs it.
+- **The ledger plugin gate:** check 6 is always
+  `unavailable: ledger gate check runs against live HEAD; pinned invocation not supported`, so
+  the gate line is `fail`. The author's own `ledger gate check` on the head commit is what the
+  push gate reads; this gate never runs it.
 - **A sandbox refusal** (Bash denied, `env -i`, `mktemp`, `git archive` or `tar` refused, `git`
   blocked): that check is `unavailable` with the refused command and the exact error. Hand over
   the command as one zsh line for Jo to run, and never mark the check `pass`. A refused snapshot

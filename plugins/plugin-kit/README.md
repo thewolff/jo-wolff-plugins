@@ -61,9 +61,9 @@ Two agents load from `agents/` (by the plugin-agent convention; nothing register
 | Agent | When | What it does | Tools, model |
 |---|---|---|---|
 | `cross-lab-reviewer` | a plugin branch is built and its suites pass, before a PR | runs a preflight (execute authorization, permission, containment, output path), reviews one `git archive` snapshot of the head commit, and sends the range `<base>..<head sha>` to OpenAI Codex with `codex exec --sandbox read-only` and the release review brief: security first (hook command parsing, fail-open paths), each prior finding marked closed, partial or open, the env-only failure set (tests failing in the credential-free run, stated as `exact` or `same major` to the CI node pin), the `/Users/<name>` path scrub, and a `Verdict: ship` or `Verdict: fix-first` line; writes `~/agent-scratch/<repo>/<plugin>/REVIEW-<version>-codex.md` (a `-round<N>` suffix when one exists) with its triage of each finding | Read, Grep, Glob, Bash, Write; sonnet |
-| `release-gate` | before a version bump, PR or publish | runs a preflight (execute authorization, permission, containment) and checks one `git archive` snapshot of the head commit, reporting pass, fail or unavailable per check with command and output: the CI node pin from the workflow job that runs the plugin's tests, the path scrub, the version across `plugin.json`, `package.json`, the README "Changes in" headings and the marketplace entry, `node --test` and `ledger gate check` (throwaway `LEDGER_DB` and `LEDGER_CONFIG`) in a credential-free environment, and the README against the plugin's hooks, skills and agents | Read, Grep, Glob, Bash; haiku |
+| `release-gate` | before a version bump, PR or publish | runs a preflight (execute authorization, permission, containment) and checks one `git archive` snapshot of the head commit, reporting pass, fail or unavailable per check with command and output: the CI node pin from the workflow job that runs the plugin's tests, the path scrub, the version across `plugin.json`, `package.json`, the README "Changes in" headings and the marketplace entry, `node --test` in a credential-free environment, and the README against the plugin's hooks, skills and agents. `ledger gate check` is reported `unavailable` and never run: it checks live `HEAD`, not the captured sha, so the gate line is `fail` until ledger takes a pinned sha | Read, Grep, Glob, Bash; haiku |
 
-Both agents run code from the checkout (the suites, `ledger gate check`) only when the prompt
+Both agents run code from the checkout (the suites) only when the prompt
 that invokes them carries `execute: <sha>` naming the full head sha, which the agent derives
 again with `git rev-parse HEAD` and refuses on any mismatch, for example:
 
@@ -85,9 +85,14 @@ verdict cannot be `ship` and the gate line is `fail`.
 
 Every check reads a snapshot of the captured head sha made with
 `git archive --format=tar <sha> | tar -x`: a plain file tree with no `.git`, made without a
-checkout, so no checkout hook runs. Because `git archive` still runs `filter=` smudge drivers
-and applies `export-ignore` and `export-subst`, the agents first refuse a commit with any of
-those attributes (`git check-attr --source=<sha>`), then compare the extracted names with
+checkout, so no checkout hook runs. Because `git archive` still runs `filter` drivers and
+applies `export-ignore`, `export-subst`, `ident` and the end-of-line attributes, the agents
+first ask `git check-attr --source=<sha> --all` for every path and directory of the commit and
+refuse it when any attribute is named `filter`, `export-ignore`, `export-subst`, `ident`, `eol`,
+`text`, `crlf`, `working-tree-encoding`, `diff` or `merge`, whatever its value
+(`filter=unspecified`, a driver named `unspecified`, is refused too). The block runs under `pipefail`, checks that
+`check-attr` answered for every path, and stops with a named `refused:` reason on any git
+failure, a git without `--source` included. They then compare the extracted names with
 `git ls-tree -r --name-only <sha>` and refuse on any difference; a refused snapshot reviews
 nothing. Uncommitted changes are listed, never inspected. The CI node pin comes from the one
 workflow job that runs the plugin's tests and is reported as `exact` or `same major`, never as
@@ -107,11 +112,16 @@ drops their `model:` lines. Each agent's "How it fails" section covers the unava
 matching `execute: <sha>` or a failed permission or containment check runs nothing from the
 checkout; a refused snapshot reviews nothing; no `codex` on PATH stops the review before a brief
 exists, a `codex` failure after launch keeps the brief and hands over the retry line, and
-neither falls back to a Claude-only review; no `ledger` checkout, no CI pin or a sandbox refusal
-marks that check unavailable, never passed. `test/agents.test.mjs` checks each file's
-frontmatter, the contract, that section, that no `/Users/<name>` other than exactly `example`
-appears, and that each agent carries the `execute: <sha>` authorization sentence and the
-`git archive` snapshot line and never `git worktree add`.
+neither falls back to a Claude-only review; no CI pin or a sandbox refusal marks that check
+unavailable, never passed, and the gate's ledger check is always unavailable.
+`test/agents.test.mjs` checks each file's frontmatter, the contract, that section, that no
+`/Users/<name>` other than exactly `example` appears, and that each agent carries the
+`execute: <sha>` authorization sentence and the `git archive` snapshot line and never
+`git worktree add`. It also runs each agent's attribute block, as written, against throwaway
+repositories: a clean one passes; `filter=evil`, `filter=unspecified`, a directory-only
+`export-ignore` and `text=auto` are refused, while `!filter` over `filter=evil` passes and
+`git archive` runs no driver for it; and a `git` that fails mid-pipe, answers nothing, or rejects
+`--source` stops it with a named reason.
 
 ## How it fails
 
@@ -131,8 +141,9 @@ Two agents, `cross-lab-reviewer` and `release-gate` (see "Agents"): the Codex re
 the release checklist that were written by hand for each plugin release, as files. Neither runs
 code from the checkout unless the invoking prompt says `execute: <sha>` for the exact head sha,
 and then only in a credential-free `env -i`; both check one `git archive` snapshot of the head
-sha, made without hooks and refused when filter or export attributes are set. The scaffolder and
-the runner are unchanged.
+sha, made without hooks and refused when any path carries an attribute that runs a driver or
+changes bytes. The release gate reports `ledger gate check` unavailable rather than run it
+against live `HEAD`. The scaffolder and the runner are unchanged.
 
 ## Changes in 0.1.1
 
