@@ -1,15 +1,17 @@
-// test/probe.test.mjs — judge(), probe(), heal(), check() and needsYouLine() against captured
-// ctx 2.3.0 output (test/fixtures, captured 2026-11-04; see fixtures/README.md). The two
-// derived cases (supervisor install_failed, stale core_refresh) change exactly one field of the
-// healthy capture, named here, because ctx could not be made to print them without breaking a
-// real installation; stale is also reachable by moving `now`.
+// test/probe.test.mjs — judge(), probe(), heal(), check(), runCtx() and needsYouLine() against
+// captured ctx 2.3.0 output (test/fixtures, captured 2026-11-04; see fixtures/README.md). The
+// derived cases (supervisor install_failed, stale core_refresh, a status that is not "running",
+// a stamp out of range or in the future) change exactly one field of the healthy capture, named
+// here, because ctx could not be made to print them without breaking a real installation; stale
+// and future are also reachable by moving `now`. runCtx's hard bound is proved on a real child
+// that ignores SIGTERM, with a grandchild, and never on ctx.
 
 import test from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
-import { judge, probe, heal, check, needsYouLine, ctxEnv, age, STALE_MS, STATUS_ARGV, MODE_ARGV, HEAL_ARGV, FIX, FIX_MISSING, LINE_MAX } from "../lib/probe.mjs";
+import { judge, probe, heal, check, runCtx, needsYouLine, ctxEnv, age, validMs, STALE_MS, SKEW_MS, STATUS_ARGV, MODE_ARGV, HEAL_ARGV, FIX, FIX_MISSING, LINE_MAX } from "../lib/probe.mjs";
 
 const FIX_DIR = join(dirname(fileURLToPath(import.meta.url)), "fixtures");
 const fixture = (name) => readFileSync(join(FIX_DIR, name), "utf8");
@@ -61,6 +63,15 @@ test("running=false capture (a killed daemon, status stale_lock): fails naming .
   assert.equal(r.fields.supervisor, "fallback");
 });
 
+test("a status that is not \"running\" is not running, whatever .daemon.running says (missing, stopped, stale_lock)", () => {
+  for (const [status, want] of [[undefined, "null"], ["stopped", '"stopped"'], ["stale_lock", '"stale_lock"']]) {
+    const r = judge(good(mutated((j) => (status === undefined ? delete j.daemon.status : (j.daemon.status = status)))), NOW);
+    assert.equal(r.ok, false, `status ${want}`);
+    assert.equal(r.reason, `the ctx daemon is not running (.daemon.running = true, .daemon.status = ${want})`);
+    assert.equal(r.fields.running, true, "every other field is the healthy one");
+  }
+});
+
 test("supervisor install_failed (healthy capture, .daemon.supervisor.status edited): fails naming the field", () => {
   const r = judge(good(mutated((j) => (j.daemon.supervisor.status = "install_failed"))), NOW);
   assert.equal(r.ok, false);
@@ -89,6 +100,34 @@ test("a missing last_run_at_ms is a failure that names the field", () => {
   const r = judge(good(mutated((j) => delete j.daemon.jobs.core_refresh.last_run_at_ms)), NOW);
   assert.equal(r.ok, false);
   assert.equal(r.reason, "`ctx daemon status --format json` has no .daemon.jobs.core_refresh.last_run_at_ms");
+  const nul = judge(good(mutated((j) => (j.daemon.jobs.core_refresh.last_run_at_ms = null))), NOW);
+  assert.equal(nul.reason, r.reason);
+});
+
+test("a last_run_at_ms that is not whole epoch milliseconds is a failing probe naming the field and the value, never a throw", () => {
+  for (const bad of [-1e100, -1, 1.5, 9e15, "1700000000000", true]) {
+    const r = judge(good(mutated((j) => (j.daemon.jobs.core_refresh.last_run_at_ms = bad))), NOW);
+    assert.equal(r.ok, false, JSON.stringify(bad));
+    assert.equal(r.reason, `\`ctx daemon status --format json\` has an invalid .daemon.jobs.core_refresh.last_run_at_ms (${JSON.stringify(bad)}: not whole epoch milliseconds)`);
+    assert.doesNotThrow(() => needsYouLine(r));
+  }
+  assert.equal(validMs(0), true);
+  assert.equal(validMs(8.64e15), true);
+  assert.equal(validMs(8.64e15 + 2), false);
+  assert.equal(validMs(NaN), false);
+});
+
+test("a stamp more than 5 min ahead of this clock is `core_refresh in the future`; inside the skew it is fresh", () => {
+  assert.equal(SKEW_MS, 300_000);
+  const inside = judge(good(HEALTHY), HEALTHY_LAST_RUN - SKEW_MS);
+  assert.equal(inside.ok, true, "exactly 5 min ahead is allowed skew");
+  const ahead = judge(good(HEALTHY), HEALTHY_LAST_RUN - SKEW_MS - 60_000);
+  assert.equal(ahead.ok, false);
+  assert.match(ahead.reason, /^core_refresh in the future \(\.daemon\.jobs\.core_refresh\.last_run_at_ms = \d{4}-.*Z, 6m ahead of this clock; over 5m of skew\)$/);
+  const far = judge(good(mutated((j) => (j.daemon.jobs.core_refresh.last_run_at_ms = NOW + 365 * 86_400_000))), NOW);
+  assert.equal(far.ok, false);
+  assert.match(far.reason, /^core_refresh in the future/);
+  assert.equal(far.fix, FIX);
 });
 
 test("non-JSON output: fails with the exit code and the first line", () => {
@@ -101,7 +140,7 @@ test("non-JSON output: fails with the exit code and the first line", () => {
   assert.equal(noDaemon.reason, "`ctx daemon status --format json` has no .daemon");
 });
 
-test("ctx missing: the spawn error is the reason and the fix is the install doc", () => {
+test("ctx missing: the spawn error is the reason and the fix is the install doc; a pinned path that is gone says so", () => {
   const r = judge({ code: null, stdout: "", stderr: "", error: "ctx is not on PATH" }, NOW);
   assert.equal(r.ok, false);
   assert.equal(r.reason, "ctx could not run: ctx is not on PATH");
@@ -110,9 +149,49 @@ test("ctx missing: the spawn error is the reason and the fix is the install doc"
   const slow = judge({ code: null, stdout: "", stderr: "", error: "ctx daemon status --format json did not answer in 10 s" }, NOW);
   assert.equal(slow.reason, "ctx could not run: ctx daemon status --format json did not answer in 10 s");
   assert.equal(slow.fix, FIX);
+  const gone = judge(runCtx(["/Users/example/.local/bin/ctx", "daemon", "status"], { PATH: "/usr/bin" }, 1_000), NOW);
+  assert.equal(gone.reason, "ctx could not run: /Users/example/.local/bin/ctx does not exist (pinned at install; run install again)");
+  assert.equal(gone.fix, FIX_MISSING);
 });
 
-test("probe spawns ctx daemon status with CI removed, under the bound, and stamps the time", () => {
+test("runCtx: a child that ignores SIGTERM is killed at the bound, and so is its process group", async () => {
+  const ignoring = "process.on('SIGTERM',()=>{});setInterval(()=>{},1e3)";
+  const t = Date.now();
+  const r = runCtx([process.execPath, "-e", ignoring], process.env, 300);
+  const took = Date.now() - t;
+  assert.ok(took < 2_000, `returned in ${took} ms`);
+  assert.equal(r.code, null);
+  assert.match(r.error, / did not answer in 0\.3 s$/);
+
+  // The child starts a grandchild that also ignores SIGTERM, prints its pid, then hangs.
+  const withGrandchild = `const {spawn}=require("node:child_process");const g=spawn(process.execPath,["-e",${JSON.stringify(ignoring)}],{stdio:"ignore"});console.log(g.pid);${ignoring}`;
+  const r2 = runCtx([process.execPath, "-e", withGrandchild], process.env, 500);
+  assert.match(r2.error, / did not answer in 0\.5 s$/);
+  const gpid = Number(r2.stdout.trim());
+  assert.ok(gpid > 0, `grandchild pid from stdout: ${JSON.stringify(r2.stdout)}`);
+  let alive = true;
+  for (let i = 0; i < 100 && alive; i++) {
+    try {
+      process.kill(gpid, 0);
+      await new Promise((res) => setTimeout(res, 20));
+    } catch {
+      alive = false;
+    }
+  }
+  if (alive) {
+    try {
+      process.kill(gpid, "SIGKILL");
+    } catch {
+      /* already gone */
+    }
+  }
+  assert.equal(alive, false, "the grandchild is gone after the group kill");
+
+  const ok = runCtx([process.execPath, "-e", "console.log('hi')"], process.env, 5_000);
+  assert.deepEqual(ok, { code: 0, stdout: "hi\n", stderr: "", error: undefined });
+});
+
+test("probe spawns ctx daemon status with CI removed, under the bound, and stamps the time; `ctx` pins the executable", () => {
   const calls = [];
   const run = (argv, env, timeoutMs) => {
     calls.push({ argv, env, timeoutMs });
@@ -122,9 +201,11 @@ test("probe spawns ctx daemon status with CI removed, under the bound, and stamp
   assert.equal(r.ok, true);
   assert.equal(r.at, NOW);
   assert.deepEqual(calls, [{ argv: [...STATUS_ARGV], env: { PATH: "/usr/bin" }, timeoutMs: 1_234 }]);
+  probe({ run, env: { PATH: "/somewhere/else" }, now: () => NOW, ctx: "/Users/example/.local/bin/ctx" });
+  assert.deepEqual(calls[1].argv, ["/Users/example/.local/bin/ctx", ...STATUS_ARGV.slice(1)], "the pinned path replaces the bare name; PATH does not matter");
 });
 
-test("heal runs ctx index mode auto only when mode is auto and the config file exists", () => {
+test("heal runs ctx index mode auto only when mode is auto and the config file exists; `ctx` pins both spawns", () => {
   const calls = [];
   const run = (argv) => {
     calls.push(argv.join(" "));
@@ -133,6 +214,8 @@ test("heal runs ctx index mode auto only when mode is auto and the config file e
   const r = heal({ run, env: { CI: "true" }, exists: (p) => p === "/Users/example/.ctx/config.toml" });
   assert.deepEqual(r, { attempted: true, ok: true, detail: '`ctx index mode auto --format json`: daemon running = true, supervisor "fallback"' });
   assert.deepEqual(calls, [MODE_ARGV.join(" "), HEAL_ARGV.join(" ")]);
+  heal({ run, exists: () => true, ctx: "/opt/ctx" });
+  assert.deepEqual(calls.slice(2), ["/opt/ctx index mode --format json", "/opt/ctx index mode auto --format json"]);
 });
 
 test("heal is not attempted on a manual mode, a missing config file, or a missing ctx", () => {
@@ -159,6 +242,7 @@ test("check: a passing probe is one spawn; a failing one heals and probes again"
   const ok = check({ run: (argv) => (passing.push(argv.join(" ")), good(HEALTHY)), now: () => NOW });
   assert.equal(ok.ok, true);
   assert.equal(ok.healed, null);
+  assert.equal(ok.timedOut, false);
   assert.deepEqual(passing, [STATUS_ARGV.join(" ")]);
 
   let status = 0;
@@ -188,6 +272,49 @@ test("check: a heal that is not attempted leaves the first probe as the result, 
   assert.equal(r.first, null);
   assert.match(r.healed.detail, /^not attempted/);
   assert.deepEqual(calls, [STATUS_ARGV.join(" "), MODE_ARGV.join(" ")]);
+});
+
+test("check with a deadline: the four spawns share one clock; each gets what is left; a step with nothing left is skipped and the line says it timed out", () => {
+  // Each spawn is inside its own 1200 ms bound but takes 1000 ms; a 3000 ms deadline fits three.
+  let clock = NOW;
+  const now = () => clock;
+  const calls = [];
+  const run = (argv, _env, timeoutMs) => {
+    calls.push({ argv: argv.join(" "), timeoutMs });
+    clock += 1_000;
+    if (argv[1] === "daemon") return good(NOT_RUNNING);
+    if (argv[3] === "auto") return good(HEALED);
+    return good(MODE);
+  };
+  const r = check({ run, exists: () => true, now, timeoutMs: 1_200, deadlineMs: 3_000 });
+  assert.equal(r.ok, false);
+  assert.equal(r.timedOut, true);
+  assert.deepEqual(calls.map((c) => c.argv), [STATUS_ARGV.join(" "), MODE_ARGV.join(" "), HEAL_ARGV.join(" ")], "no fourth spawn: nothing left on the clock");
+  assert.deepEqual(calls.map((c) => c.timeoutMs), [1_200, 1_200, 1_000], "the third spawn gets what is left, not its own 1200");
+  assert.equal(r.healed.attempted, true);
+  assert.match(r.healed.detail, /; no time left to probe again$/);
+  assert.match(r.reason, /^check timed out after 3000 ms \(the ctx daemon is not running \(/);
+  assert.equal(r.fix, FIX);
+  const line = needsYouLine(r);
+  assert.match(line, /^ctx-watch: check timed out after 3000 ms \(/);
+  assert.ok(line.length <= LINE_MAX);
+
+  // A first probe that eats the whole clock: the heal is not attempted, and the line says so.
+  clock = NOW;
+  const slow = check({ run: (argv, _e, timeoutMs) => ((clock += timeoutMs), { code: null, stdout: "", stderr: "", error: `${argv.join(" ")} did not answer in ${timeoutMs / 1000} s` }), now, timeoutMs: 10_000, deadlineMs: 3_000 });
+  assert.equal(slow.timedOut, true);
+  assert.equal(slow.reason, "check timed out after 3000 ms (ctx could not run: ctx daemon status --format json did not answer in 3 s)");
+  assert.equal(slow.healed.detail, "not attempted: the check's deadline passed");
+
+  // A pass is a pass, however slow; and without a deadline nothing is cut.
+  clock = NOW;
+  const late = check({ run: () => ((clock += 5_000), good(HEALTHY)), now, timeoutMs: 1_200, deadlineMs: 3_000 });
+  assert.equal(late.ok, true);
+  assert.equal(late.timedOut, false);
+  clock = NOW;
+  const free = check({ run: (argv) => ((clock += 5_000), argv[1] === "daemon" ? good(NOT_RUNNING) : good(MODE)), exists: () => true, now, timeoutMs: 1_200 });
+  assert.equal(free.timedOut, false);
+  assert.match(free.reason, /^the ctx daemon is not running/);
 });
 
 test("needsYouLine: null when ok; `ctx-watch: <reason>; fix: `<command>`` at most 160 characters", () => {
