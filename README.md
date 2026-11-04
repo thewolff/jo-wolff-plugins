@@ -137,7 +137,7 @@ compares the two installs and prints the commands for any plugin that differs (e
 
 ## How the plugins fit together
 
-This section describes the repository once pull requests #72 to #77 have merged onto `6c68968`.
+This section describes the repository at `9c786ca`: pull requests #73 to #77 and #80 merged onto `6c68968`.
 The versions are in the table under *Who does what*; per-plugin detail is in each plugin's
 section or README.
 
