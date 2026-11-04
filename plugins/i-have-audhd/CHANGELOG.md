@@ -4,6 +4,35 @@ All notable changes to i-have-audhd are recorded here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Entries before 1.5.2 live in the
 README's *Changes* section.
 
+## [1.7.0]
+
+- The judge command is plugin-kit's shared judge. `lib/judge.mjs` is the kit's dispatch,
+  vendored byte for byte (the kit's `test/judge.test.mjs` diffs every vendored copy), and
+  `judge/ask.mjs` keeps only what is this plugin's: the prompt, the strict verdict shape, the
+  cache, the harness budget, and the failure line with its `cause=`. Resolution is the kit's
+  order: the profile's `enforcement.judgeCommand` first, else `command` in
+  `${XDG_CONFIG_HOME:-~/.config}/judge/config.json`. **An existing profile with
+  `enforcement.judgeCommand` keeps working unchanged**: the plugin key wins, and `null`
+  there means "no override" (the shared file applies), not "no judge". The shared file's
+  `timeoutMs` is not used; the hook's own budget (30 s, 20 s under OMP) is unchanged.
+- `node lib/judge.mjs setup` writes the shared file (the kit's CLI, in the vendored copy;
+  its `which` is the kit's generic resolver, not this plugin's effective judge: it does not
+  read the override first and reports the shared or default timeout). `tools/setup.mjs` is
+  this plugin's override only: it now shows the shared file and the judge that resolves for
+  this plugin before asking, and "none" reads "none of its own" and previews the shared file
+  alone, never the override it is removing. The session-start notice names both files and
+  both commands and shows only when neither has a command; a malformed shared file is one
+  fault line, not a notice, whether the profile's key is absent or `null`.
+- `judge-failures.log` lines carry the kit's error kinds (`timeout`, `nonzero`,
+  `unparseable`, `spawn-failed`; 1.6.1 wrote `judge-timeout`, `judge-exit-<n>`,
+  `judge-unparseable`, `judge-spawn-<errno>`), plus `detail="exit 127"` and the `source=`
+  the command came from; `cause=` values are unchanged. `skipped.log` lines name
+  `shared=<path>` and, when it is the reason, `malformed=`. "Judge unavailable" findings
+  name the source. Eval `stop-judge-shared-config` replays the real-judge capture with the
+  command in the shared file and no profile.
+
+Tickets: thewolff/jo-issues #327 (i-have-audhd) and #333 (shared judge).
+
 ## [1.6.1]
 
 - New check `links-resolve` (rule 11, Machinery anchors; warn by default). A local path in a

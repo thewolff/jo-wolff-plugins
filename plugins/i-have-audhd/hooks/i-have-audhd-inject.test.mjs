@@ -26,7 +26,7 @@ function runInject(payload, home) {
   return spawnSync(process.execPath, [INJECTOR], {
     input: JSON.stringify(payload),
     encoding: "utf8",
-    env: { ...process.env, HOME: home, I_HAVE_AUDHD_INJECT: "", I_HAVE_AUDHD_PROFILE: "" },
+    env: { ...process.env, HOME: home, XDG_CONFIG_HOME: "", I_HAVE_AUDHD_INJECT: "", I_HAVE_AUDHD_PROFILE: "" },
     cwd: join(INJECTOR, ".."),
     timeout: 5_000,
   });
@@ -113,13 +113,22 @@ test("unparseable stdin is fail-open: emit, exit 0, no marker", () => {
 const noticeMarker = (home) => join(home, ".claude", ".i-have-audhd-state", "judge-notice-shown");
 const writeProfile = (home, obj) => writeFileSync(join(home, ".claude", "i-have-audhd.json"), JSON.stringify(obj));
 
-test("a fresh install with no profile shows the no-judge notice once, naming the checks and the setup command", () => {
+const sharedJudgeFile = (home) => join(home, ".config", "judge", "config.json");
+const writeSharedJudge = (home, text) => {
+  mkdirSync(join(home, ".config", "judge"), { recursive: true });
+  writeFileSync(sharedJudgeFile(home), typeof text === "string" ? text : JSON.stringify(text));
+};
+
+test("a fresh install with no profile and no shared judge file shows the no-judge notice once, naming the checks, both files and both setup commands", () => {
   const home = mkhome();
   const first = JSON.parse(runInject({ session_id: "s1", source: "startup" }, home).stdout);
-  assert.match(first.systemMessage, /no judge is configured, so 5 of its 13 checks are off/);
+  assert.match(first.systemMessage, /no judge is configured \(no enforcement\.judgeCommand in the profile and no command in /);
+  assert.ok(first.systemMessage.includes(sharedJudgeFile(home)), "the shared file is named");
+  assert.match(first.systemMessage, /so 5 of its 13 checks are off/);
   for (const rule of ["do-not-batch-by-label", "conclusion-first", "restate-resumed-thread", "report-what-you-did-not-do", "bad-news-first"]) {
     assert.ok(first.systemMessage.includes(rule), rule);
   }
+  assert.ok(first.systemMessage.includes(`node ${join(INJECTOR, "..", "..", "lib", "judge.mjs")} setup`), "the shared setup is named");
   assert.ok(first.systemMessage.includes(`node ${join(INJECTOR, "..", "..", "tools", "setup.mjs")}`));
   assert.ok(first.hookSpecificOutput.additionalContext.includes(first.systemMessage));
   assert.ok(existsSync(noticeMarker(home)));
@@ -136,6 +145,22 @@ test("a profile without enforcement.judgeCommand still counts as no choice", () 
   assert.match(out.systemMessage, /no judge is configured/);
 });
 
+test("a shared judge file naming a command suppresses the notice; a malformed one suppresses it too and logs one fault", () => {
+  const configured = mkhome();
+  writeSharedJudge(configured, { command: "codex exec --skip-git-repo-check -" });
+  const out = JSON.parse(runInject({ session_id: "s1", source: "startup" }, configured).stdout);
+  assert.equal(out.systemMessage, undefined);
+  assert.ok(!existsSync(noticeMarker(configured)));
+
+  const broken = mkhome();
+  writeSharedJudge(broken, "{ not json");
+  const r = JSON.parse(runInject({ session_id: "s1", source: "startup" }, broken).stdout);
+  assert.ok(!r.systemMessage.includes("no judge is configured"), "something was configured: no setup notice");
+  assert.match(r.systemMessage, /failed open .*the shared judge file is malformed \(.*judge\/config\.json: .*\); the judge checks stay off until it is fixed/);
+  assert.match(readFileSync(join(broken, ".claude", ".i-have-audhd-state", "errors.log"), "utf8"), /the shared judge file is malformed/);
+  assert.ok(!existsSync(noticeMarker(broken)));
+});
+
 test("judgeCommand null (chose none) and a set judge both suppress the notice", () => {
   for (const judgeCommand of [null, "codex exec --skip-git-repo-check -"]) {
     const home = mkhome();
@@ -144,6 +169,17 @@ test("judgeCommand null (chose none) and a set judge both suppress the notice", 
     assert.equal(out.systemMessage, undefined, String(judgeCommand));
     assert.ok(!existsSync(noticeMarker(home)));
   }
+});
+
+test("judgeCommand null with a malformed shared judge file logs the shared-file fault and still shows no setup notice", () => {
+  const home = mkhome();
+  writeProfile(home, { enforcement: { judgeCommand: null } });
+  writeSharedJudge(home, "{ not json");
+  const r = JSON.parse(runInject({ session_id: "s1", source: "startup" }, home).stdout);
+  assert.ok(!r.systemMessage.includes("no judge is configured"), "null is a choice: no setup notice");
+  assert.match(r.systemMessage, /failed open .*the shared judge file is malformed \(.*judge\/config\.json: .*\); the judge checks stay off until it is fixed/);
+  assert.match(readFileSync(join(home, ".claude", ".i-have-audhd-state", "errors.log"), "utf8"), /the shared judge file is malformed/);
+  assert.ok(!existsSync(noticeMarker(home)));
 });
 
 // ─── the profile's inject switch ─────────────────────────────────────────────

@@ -1,0 +1,77 @@
+{
+  "$comment": "Sibling of stop-judge-warns with NO profile at all: the judge command comes from the shared judge file ${XDG_CONFIG_HOME}/judge/config.json (plugin-kit's lib/judge.mjs, vendored), which i-have-audhd reads when enforcement.judgeCommand is absent. The same replayed real-judge capture flags the buried conclusion, every rule warns (no profile = the measured default), and warnings.log records that the judge resolved from the shared file: no skipped.log line, no judge-failures.log line.",
+  "event": "Stop",
+  "expect": "silent",
+  "sibling": "stop-judge-warns.scenario.json",
+  "setup": {
+    "files": {
+      "$XDG_CONFIG_HOME/judge/config.json": "{\"command\": \"p=$(cat); case \\\"$p\\\" in *\\\"Rule: conclusion-first\\\"*) cat '${PLUGIN_DIR}/judge/fixtures/conclusion-first.stdout.txt';; *\\\"Rule: bad-news-first\\\"*) cat '${PLUGIN_DIR}/judge/fixtures/bad-news-first.stdout.txt';; *) echo '{\\\"violation\\\": false, \\\"reason\\\": \\\"no fixture for this rule\\\"}';; esac\", \"timeoutMs\": 30000}"
+    }
+  },
+  "transcript": [
+    {
+      "type": "user",
+      "message": {
+        "role": "user",
+        "content": "why is the site broken?"
+      }
+    },
+    {
+      "type": "assistant",
+      "message": {
+        "role": "assistant",
+        "content": [
+          {
+            "type": "tool_use",
+            "id": "t1",
+            "name": "Bash",
+            "input": {
+              "command": "gh run list"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "type": "user",
+      "message": {
+        "role": "user",
+        "content": [
+          {
+            "type": "tool_result",
+            "tool_use_id": "t1",
+            "content": "failure"
+          }
+        ]
+      }
+    },
+    {
+      "type": "assistant",
+      "message": {
+        "role": "assistant",
+        "content": [
+          {
+            "type": "text",
+            "text": "I started by reading the deploy workflow end to end, then compared the staging and production configuration files line by line, then walked through the last three release tags to see how the cache keys were derived in each of them, and then read the runbook section on rollbacks.\n\nAfter all of that, the conclusion is that the production deploy failed last night and the rollback did not run, so the site is still serving the broken build. The fix is to rerun the rollback job by hand from the actions page.\n\n## Closing ask\n\nShould I rerun those?"
+          }
+        ]
+      }
+    }
+  ],
+  "stdin": {
+    "session_id": "${SESSION_ID}",
+    "transcript_path": "${TRANSCRIPT}",
+    "cwd": "${CWD}",
+    "hook_event_name": "Stop",
+    "stop_hook_active": false
+  },
+  "after": {
+    "commands": [
+      "grep -q 'rule=conclusion-first' ~/.claude/.i-have-audhd-state/warnings.log",
+      "grep -q 'judge: The opening sentence' ~/.claude/.i-have-audhd-state/warnings.log",
+      "test ! -e ~/.claude/i-have-audhd.json",
+      "test ! -e ~/.claude/.i-have-audhd-state/skipped.log",
+      "test ! -e ~/.claude/.i-have-audhd-state/judge-failures.log"
+    ]
+  }
+}
