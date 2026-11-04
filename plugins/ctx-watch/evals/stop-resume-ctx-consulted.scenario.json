@@ -1,0 +1,101 @@
+{
+  "$comment": "Sibling of stop-resume-warn: the same resume, but the turn called the ctx MCP search (`mcp__ctx__search`, the name Claude Code 2.1.317 writes) before replying: nothing is said, the marker is still consumed.",
+  "event": "Stop",
+  "expect": "silent",
+  "sibling": "stop-resume-warn.scenario.json",
+  "setup": {
+    "commands": [
+      "mkdir -p \"$XDG_STATE_HOME/ctx-watch/resume\" && printf '2026-11-04T11:00:00.000Z\\n' > \"$XDG_STATE_HOME/ctx-watch/resume/${SESSION_ID}\""
+    ]
+  },
+  "transcript": [
+    {
+      "type": "user",
+      "timestamp": "2026-11-04T10:00:00.000Z",
+      "message": {
+        "role": "user",
+        "content": "start the migration plan"
+      }
+    },
+    {
+      "type": "assistant",
+      "timestamp": "2026-11-04T10:00:05.000Z",
+      "message": {
+        "role": "assistant",
+        "content": [
+          {
+            "type": "text",
+            "text": "Started."
+          }
+        ]
+      }
+    },
+    {
+      "type": "user",
+      "timestamp": "2026-11-04T12:00:00.000Z",
+      "message": {
+        "role": "user",
+        "content": "ok continue the migration plan from before please"
+      }
+    },
+    {
+      "type": "assistant",
+      "timestamp": "2026-11-04T12:00:03.000Z",
+      "message": {
+        "role": "assistant",
+        "content": [
+          {
+            "type": "tool_use",
+            "id": "t1",
+            "name": "mcp__ctx__search",
+            "input": {
+              "query": "migration plan",
+              "limit": 5
+            }
+          }
+        ]
+      }
+    },
+    {
+      "type": "user",
+      "timestamp": "2026-11-04T12:00:04.000Z",
+      "message": {
+        "role": "user",
+        "content": [
+          {
+            "type": "tool_result",
+            "tool_use_id": "t1",
+            "content": "3 sessions"
+          }
+        ]
+      }
+    },
+    {
+      "type": "assistant",
+      "timestamp": "2026-11-04T12:00:09.000Z",
+      "message": {
+        "role": "assistant",
+        "content": [
+          {
+            "type": "text",
+            "text": "Picking the migration back up: the next step is the index."
+          }
+        ]
+      }
+    }
+  ],
+  "stdin": {
+    "session_id": "${SESSION_ID}",
+    "transcript_path": "${TRANSCRIPT}",
+    "cwd": "${CWD}",
+    "hook_event_name": "Stop",
+    "stop_hook_active": false
+  },
+  "after": {
+    "absent": [
+      "$XDG_STATE_HOME/ctx-watch/resume/${SESSION_ID}",
+      "$XDG_STATE_HOME/ctx-watch/checks.log",
+      "$XDG_STATE_HOME/ctx-watch/errors.log"
+    ]
+  }
+}

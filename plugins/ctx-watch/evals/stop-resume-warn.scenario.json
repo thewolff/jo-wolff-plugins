@@ -1,0 +1,71 @@
+{
+  "$comment": "The first Stop after a SessionStart with source resume (the setup writes the marker hooks/session-start.mjs leaves on a resume, <state>/resume/<session id> holding the ISO time, dated before the transcript's resumed prompt; session-start-healthy proves the hook writes it) when the transcript since then holds no ctx history call: default mode warn, one systemMessage line naming `ctx search '<first six words of the resumed prompt>'`, one checks.log line, and the marker is consumed.",
+  "event": "Stop",
+  "expect": "systemMessage",
+  "reason": "ctx-watch: resumed without consulting history — `ctx search 'ok continue the migration plan from'`",
+  "setup": {
+    "commands": [
+      "mkdir -p \"$XDG_STATE_HOME/ctx-watch/resume\" && printf '2026-11-04T11:00:00.000Z\\n' > \"$XDG_STATE_HOME/ctx-watch/resume/${SESSION_ID}\""
+    ]
+  },
+  "transcript": [
+    {
+      "type": "user",
+      "timestamp": "2026-11-04T10:00:00.000Z",
+      "message": {
+        "role": "user",
+        "content": "start the migration plan"
+      }
+    },
+    {
+      "type": "assistant",
+      "timestamp": "2026-11-04T10:00:05.000Z",
+      "message": {
+        "role": "assistant",
+        "content": [
+          {
+            "type": "text",
+            "text": "Started."
+          }
+        ]
+      }
+    },
+    {
+      "type": "user",
+      "timestamp": "2026-11-04T12:00:00.000Z",
+      "message": {
+        "role": "user",
+        "content": "ok continue the migration plan from before please"
+      }
+    },
+    {
+      "type": "assistant",
+      "timestamp": "2026-11-04T12:00:09.000Z",
+      "message": {
+        "role": "assistant",
+        "content": [
+          {
+            "type": "text",
+            "text": "Picking the migration back up: the next step is the index."
+          }
+        ]
+      }
+    }
+  ],
+  "stdin": {
+    "session_id": "${SESSION_ID}",
+    "transcript_path": "${TRANSCRIPT}",
+    "cwd": "${CWD}",
+    "hook_event_name": "Stop",
+    "stop_hook_active": false
+  },
+  "after": {
+    "exists": [
+      "$XDG_STATE_HOME/ctx-watch/checks.log"
+    ],
+    "absent": [
+      "$XDG_STATE_HOME/ctx-watch/resume/${SESSION_ID}",
+      "$XDG_STATE_HOME/ctx-watch/errors.log"
+    ]
+  }
+}

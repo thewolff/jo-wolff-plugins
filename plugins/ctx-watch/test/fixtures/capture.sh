@@ -23,6 +23,8 @@ CI=true ctx index mode --format json | scrub >"$HERE/ctx-index-mode.txt"
 (env -i PATH=/usr/bin:/bin ctx daemon status --format json 2>&1 || true) | scrub >"$HERE/ctx-daemon-status.unavailable.txt"
 cp "$HERE/ctx-daemon-status.unavailable.txt" "$HERE/ctx-index-mode.unavailable.txt"
 cp "$HERE/ctx-daemon-status.unavailable.txt" "$HERE/ctx-daemon-status-not-running.unavailable.txt"
+cp "$HERE/ctx-daemon-status.unavailable.txt" "$HERE/ctx-daemon-status-semantic-not-ready.unavailable.txt"
+# ctx-daemon-status-semantic-not-ready.txt is a one-off (2026-11-04 03:00, semantic_index budget_exhausted); not recaptured here.
 
 # Throwaway root: set up without a daemon, start one with the repair, kill it, read the status.
 env -u CI ctx setup --data-root "$ROOT" --no-daemon --format json --progress none >/dev/null

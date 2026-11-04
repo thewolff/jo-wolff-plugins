@@ -10,8 +10,8 @@
         "semantic_enabled": true,
         "semantic_executor": "builtin"
       },
-      "last_applied_at_ms": 1793784029595,
-      "last_attempt_at_ms": 1793784029595,
+      "last_applied_at_ms": 1793800997048,
+      "last_attempt_at_ms": 1793800997048,
       "out_of_sync": false,
       "requested": {
         "daemon_enabled": true,
@@ -32,8 +32,8 @@
       "transport": "unix"
     },
     "enabled": true,
-    "heartbeat_age_ms": 1252,
-    "heartbeat_at_ms": 1793784029595,
+    "heartbeat_age_ms": 4558,
+    "heartbeat_at_ms": 1793800997048,
     "heartbeat_stale": false,
     "jobs": {
       "core_refresh": {
@@ -41,29 +41,33 @@
         "daemon_mode": "full",
         "enabled": true,
         "kind": "core_refresh",
-        "last_run_at_ms": 1793783627044,
+        "last_run_at_ms": 1793800997773,
         "mode": "background",
         "owner": "daemon",
-        "previous_generation": "fbcbdc53d0f00052c70ea936e76d1065f33db3cbdc49bc49e2dcc47cd9dff47a",
+        "previous_generation": "23de8538b1e8ab545d3bb91adfbae77792634780dd4e4045b4783942f0319a83",
         "progress": {
           "completed_sources": 0,
-          "phase": "queued",
+          "elapsed_millis": 0,
+          "phase": "discovering",
           "processed_bytes": 0,
           "processed_messages": 0,
           "processed_sessions": 0,
           "processed_tool_calls": 0,
-          "providers": [],
-          "total_sources": 0,
-          "total_sources_known": false,
+          "providers": [
+            "pi",
+            "openclaw"
+          ],
+          "total_sources": 2,
+          "total_sources_known": true,
           "whole_run_stage": "preparing"
         },
-        "published_generation": "fbcbdc53d0f00052c70ea936e76d1065f33db3cbdc49bc49e2dcc47cd9dff47a",
-        "request_id": "01a1a5d5-fd13-7921-bece-369ffaaa329c",
-        "request_state": "queued",
-        "source_count": 0,
+        "published_generation": "23de8538b1e8ab545d3bb91adfbae77792634780dd4e4045b4783942f0319a83",
+        "request_id": "01a1a6df-0b77-7d63-b022-1b26465863e3",
+        "request_state": "running",
+        "source_count": 2,
         "status": "running",
-        "trigger": "search",
-        "trigger_provenance": "manual"
+        "trigger": "periodic",
+        "trigger_provenance": "daemon_scheduler"
       },
       "semantic_index": {
         "config_reload_status": "applied",
@@ -89,14 +93,14 @@
           "runtime_artifact_identity": "coreml-native:0.2.0"
         },
         "enabled": true,
-        "last_run_at_ms": 1793784027708,
-        "last_run_status": "budget_exhausted",
+        "last_run_at_ms": 1793800990786,
+        "last_run_status": "ready",
         "model_key": "e5-small-v1:mean-pool:l2:query-passage",
         "runtime_active": true,
         "semantic_configured": true,
         "semantic_enabled": true,
         "semantic_requested": true,
-        "status": "budget_exhausted"
+        "status": "ready"
       }
     },
     "live_pid": 1706,
@@ -248,7 +252,7 @@
           "PATH",
           "TMPDIR"
         ],
-        "current_observed_at_ms": 1793784030747,
+        "current_observed_at_ms": 1793801001506,
         "restart_required": false,
         "schema_version": 1,
         "values_exposed": false
@@ -272,36 +276,36 @@
       "backend": "notify_recommended_with_metadata_poll",
       "backend_errors": 0,
       "catalog_routes": 55,
-      "coalesced_wakeups": 26568,
+      "coalesced_wakeups": 32102,
       "daemon_owner": {
         "owner_id": "01a19ec5-f4fb-7251-89a8-6141e3ec0145",
         "pid": 1706,
         "started_at_ms": 1793665135867
       },
-      "forced_rearms": 958,
+      "forced_rearms": 1038,
       "idle_strategy": "blocking",
       "ignored_access_events": 0,
       "ignored_access_time_events": 0,
-      "ignored_other_events": 171928,
+      "ignored_other_events": 200857,
       "ingress_disconnects": 0,
       "ingress_overflows": 8210,
-      "last_relevant_path": "/Users/example/.omp/agent/seat-sessions/plumb/2026-10-30T17-35-29-503Z_01a18de1-84df-7000-9fac-6af58e92d55c/PaneModSurvey2.jsonl",
-      "raw_events": 142118,
-      "reconciliations": 7883,
-      "registration_attempts": 18218,
-      "rescan_notifications": 93993,
+      "last_relevant_path": "/Users/example/.openclaw",
+      "raw_events": 168173,
+      "reconciliations": 8003,
+      "registration_attempts": 19738,
+      "rescan_notifications": 99148,
       "schema_version": 1,
       "status": "active",
       "wakeup": {
-        "blocking_waits": 8264,
-        "filesystem_signals": 26568,
-        "ipc_signals": 106531,
-        "no_work_cycles": 14854,
+        "blocking_waits": 8373,
+        "filesystem_signals": 32102,
+        "ipc_signals": 106824,
+        "no_work_cycles": 15533,
         "scheduled_refresh_wakeups": 94,
         "scheduled_retry_wakeups": 0,
         "shutdown_signals": 0,
-        "timeout_wakeups": 494,
-        "work_cycles": 3950
+        "timeout_wakeups": 496,
+        "work_cycles": 6451
       },
       "watched_roots": 19
     }

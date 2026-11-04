@@ -1,0 +1,18 @@
+{
+  "$comment": "Every event hooks/hooks.json registers and the outcomes its handler returns. Each event x outcome is proved by one *.scenario.json; `ledger gate check` fails naming the gap. SessionStart scenarios point CTX_WATCH_CTX at evals/fixtures/fake-ctx.sh (a shell script printing a test/fixtures capture) so no scenario spawns or heals a real ctx daemon under its empty HOME.",
+  "events": {
+    "SessionStart": [
+      "systemMessage",
+      "silent"
+    ],
+    "Stop": [
+      "deny",
+      "systemMessage",
+      "silent"
+    ]
+  },
+  "manual": [
+    "The launchd timer (scripts/ctx-watch.mjs tick, the popup) is not a hook and has no scenario here; it is covered by test/cli.test.mjs and test/popup.test.mjs, and a real tick is `node scripts/ctx-watch.mjs tick --json` against the live daemon.",
+    "The real ctx: with `CTX_WATCH_CTX` unset the SessionStart hook spawns `ctx daemon status --format json` from PATH; on 2026-11-04 (ctx 2.3.0) it answered in 0.15 s and the healthy capture is test/fixtures/ctx-daemon-status.txt. A scenario against the real binary would heal (`ctx index mode auto`) into the sandbox's empty HOME, so none does."
+  ]
+}
