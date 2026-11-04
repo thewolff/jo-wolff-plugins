@@ -26,6 +26,7 @@ import { fileURLToPath } from "node:url";
 import { OMP_TODO_CALL, OMP_TODO_RESULT } from "../triggers/fixtures/omp-todo-fragment.mjs";
 import { conclusionFirstApplicable } from "../triggers/conclusion-first.mjs";
 import { badNewsGate } from "../triggers/bad-news-lexicon.mjs";
+import { RULE_IDS } from "../lib/rules.mjs";
 
 const HOOK = fileURLToPath(new URL("./i-have-audhd-stop.mjs", import.meta.url));
 
@@ -1306,4 +1307,63 @@ test("a malformed inject object is one errors.log line, and every check runs as 
   assert.equal(errors.length, 1);
   assert.match(errors[0], /inject: rules\["commands"\] "off" is not true\|false; full with every rule on applies/);
   assert.ok(warnedRules(home).includes("handed-command"));
+});
+
+// ─── a disabled rule's check never executes ──────────────────────────────────
+// Silence is not the contract: a check whose finding is discarded is silent too. These count the
+// exported predicates' calls through hooks/fixtures/count-check-calls.mjs (a module hook that
+// wraps each one in memory) and assert on the count.
+
+const COUNTER = fileURLToPath(new URL("./fixtures/count-check-calls.mjs", import.meta.url));
+
+function checkCalls(payload, home) {
+  const log = join(home, "check-calls.log");
+  writeFileSync(log, "");
+  const r = spawnSync(process.execPath, ["--import", COUNTER, HOOK], {
+    input: JSON.stringify(payload),
+    encoding: "utf8",
+    env: {
+      ...process.env,
+      HOME: home,
+      I_HAVE_AUDHD_ENFORCE: "",
+      I_HAVE_AUDHD_PROFILE: "",
+      I_HAVE_AUDHD_HARNESS: "",
+      AUDHD_CHECK_COUNT_FILE: log,
+    },
+    timeout: 5_000,
+  });
+  assert.equal(r.status, 0, r.stderr);
+  return readFileSync(log, "utf8").split("\n").filter(Boolean);
+}
+
+const countOf = (calls, name) => calls.filter((c) => c === name).length;
+
+test("defaults: needs-you-first's check runs exactly once per Stop (the floor does not call it)", () => {
+  const calls = checkCalls({ session_id: "ex1", last_assistant_message: misordered }, mkhome());
+  assert.equal(countOf(calls, "checkNeedsYouFirst"), 1);
+});
+
+test("skeleton switched off: needs-you-first's check never runs, under any enforcement mode", () => {
+  for (const enforcement of [{ mode: "off" }, { mode: "warn" }, { mode: "block" }]) {
+    const home = mkhome();
+    writeProfile(home, { inject: { rules: { skeleton: false } }, enforcement });
+    const calls = checkCalls({ session_id: "ex2", last_assistant_message: misordered }, home);
+    assert.equal(countOf(calls, "checkNeedsYouFirst"), 0, `enforcement ${enforcement.mode}`);
+    assert.equal(countOf(calls, "checkClosingAskLast"), 0, `enforcement ${enforcement.mode}`);
+  }
+});
+
+test("every rule switched off: no check or trigger runs at all, even under enforcement.mode block", () => {
+  const home = mkhome();
+  const rules = Object.fromEntries(RULE_IDS.map((id) => [id, false]));
+  writeProfile(home, { inject: { rules }, enforcement: { mode: "block" } });
+  const calls = checkCalls({ session_id: "ex3", last_assistant_message: `${misordered}\n\n${handsAndRefs}` }, home);
+  assert.deepEqual(calls, []);
+});
+
+test("enforcement.mode off: no check or trigger runs at all", () => {
+  const home = mkhome();
+  writeProfile(home, { enforcement: { mode: "off" } });
+  const calls = checkCalls({ session_id: "ex4", last_assistant_message: `${misordered}\n\n${handsAndRefs}` }, home);
+  assert.deepEqual(calls, []);
 });

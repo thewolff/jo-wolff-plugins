@@ -449,6 +449,8 @@ Exit 0 means every item is done or had nothing to do, 1 means one was refused or
   to off; a check's own `enforcement.rules` entry still wins. The eleven rule ids are defined
   once, in `lib/rules.mjs`. See *What you can turn on and off*, which now lists every switch
   with its default. The kill-switch file still wins over every value.
+- The Stop hook's 200-character floor counts prose without calling any check, so a rule
+  switched off never has its check run, not even to measure the floor.
 - The no-judge notice and the setup tool count eleven checks, five of them judge-gated.
 
 ### 1.5.2

@@ -138,7 +138,9 @@ Order of operations, each early return silent:
 4. **Loop guard** — with `stop_hook_active`, a text hash equal to the recorded one passes:
    never block the same message twice. This runs before any check, on both harnesses.
 5. **Master floor** — under 200 substantive chars only `handed-command` runs (a command-only
-   handoff is short by nature); every other check and judge job needs the floor.
+   handoff is short by nature); every other check and judge job needs the floor. The floor's
+   prose count is rule-free (`proseCharCount`, `checks/lines.mjs`), so a disabled rule's check
+   never runs.
 6. Deterministic checks per their modes.
 7. Judge jobs where triggers fired; a fired trigger with no judge command → `skipped.log`.
 8. **Harness cap** — only when the env carries `I_HAVE_AUDHD_HARNESS=omp` (the OMP

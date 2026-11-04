@@ -93,6 +93,7 @@ import { checkPluralBackReference } from "../checks/plural-back-reference.mjs";
 import { checkHandedCommand } from "../checks/handed-command.mjs";
 import { checkLinkTheReference } from "../checks/link-the-reference.mjs";
 import { splitLabeledSections, openingWords, OPENING_WORDS } from "../checks/sections.mjs";
+import { proseCharCount } from "../checks/lines.mjs";
 import { loadEnforcement, loadSwitches, effectiveMode, harnessCapsBlocks } from "../lib/config.mjs";
 import { ruleRef } from "../lib/rules.mjs";
 import { stateDir, killSwitchPath, lastBlockedPath, resumeMarkerPath, sha256hex, appendLog, logFault, faultWarning } from "../lib/state.mjs";
@@ -510,11 +511,11 @@ async function main() {
     }
   }
 
-  // 5. Master floor. proseChars comes from the needs-you-first check's own accounting — one shared
-  // definition of "substantive", not a second one that can drift. Under it only handed-command
-  // runs: a command-only handoff is short by nature, and the rule holds at any length.
-  const r1 = checkNeedsYouFirst(text);
-  const belowFloor = r1.proseChars < MASTER_FLOOR;
+  // 5. Master floor. proseCharCount is lines.mjs's rule-free count over the same line
+  // classification every check uses, so no rule's check runs to measure the floor — a rule the
+  // profile switched off never executes. Under it only handed-command runs: a command-only
+  // handoff is short by nature, and the rule holds at any length.
+  const belowFloor = proseCharCount(text) < MASTER_FLOOR;
 
   // 6–7. Checks per configured modes.
   const harness = process.env.I_HAVE_AUDHD_HARNESS;
