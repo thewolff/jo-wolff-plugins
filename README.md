@@ -15,8 +15,8 @@ place, going through your reminders with it, and keeping a record of what it did
 - **[reminders-review](#reminders-review)** — go through your open Apple Reminders one at a
   time: the agent answers, confirms before acting, and closes each one only when you say yes.
 - **[ledger](#ledger)** — a durable, id'd record of the questions an agent asks you and the
-  choices it makes without asking, in one SQLite file; opt-in per folder, with hooks that keep
-  every question on a row you can answer by typing its id back.
+  choices it makes without asking, in one SQLite file; on by default and off per folder, with
+  hooks that keep every question on a row you can answer by typing its id back.
 - **[as2-skills](plugins/as2-skills/README.md)** — the 22 engineering skills of agent-system 2.0,
   vendored from four upstream skill packs at pinned releases, with frontmatter claude.ai accepts.
   Install with `/plugin install as2-skills@jo-wolff-plugins`; skills only.
@@ -484,9 +484,15 @@ session start, deny the AskUserQuestion tool until the question has a row, deny 
 `gh pr create` until the session has a note saying why, and send back once a reply that asks a
 question without naming its row or states a decision without a note. Every hook fails open.
 
-The hooks are off until you run `ledger enable` in a folder, which writes `.ledger.json` there;
-the file is found from any subfolder. The plugin's tables are all prefixed `cc_`, so the database
-can be a SQLite file another tool already uses.
+The hooks are on in every folder by default. Type `/ledger:disable` in a session to turn them off
+for that folder (it writes `.ledger.json` there, found from any subfolder); `/ledger:enable` turns
+them back on. The plugin's tables are all prefixed `cc_`, so the database can be a SQLite file
+another tool already uses.
+
+Changes in 0.2.1: the hooks are on by default, with `/ledger:enable` and `/ledger:disable` to set
+a folder's switch. A database at a configured `db` path that fails to open as SQLite (corrupt, or
+not a database) is reported and left exactly as it is; only the plugin's own default file is
+moved aside to `<path>.corrupt-<stamp>` and recreated.
 
 Needs Node 22.13 or later (`node:sqlite`). Claude Code only; no OMP adapter. One allow rule
 keeps the agent's ledger commands from prompting for permission; the plugin prints it at

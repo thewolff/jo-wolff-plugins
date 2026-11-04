@@ -1,5 +1,5 @@
 {
-  "enabled": false,
+  "enabled": true,
   "db": "~/.local/share/ledger/ledger.db",
   "user": null,
   "timezone": null,

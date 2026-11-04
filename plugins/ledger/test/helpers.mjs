@@ -31,7 +31,7 @@ export function sandbox() {
     LEDGER_BUSY_TIMEOUT_MS: "50",
     TZ: "UTC",
     TMPDIR: join(root, "tmp"),
-    // The hooks are opt-in per project; the suite turns them on by env and enabled.test.mjs clears this.
+    // The hooks are on by default; the suite pins that by env so a stray user file cannot turn them off. enabled.test.mjs clears it.
     LEDGER_ENABLED: "1",
   };
   const box = {

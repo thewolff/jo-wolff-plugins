@@ -1,5 +1,6 @@
-// enabled.test.mjs — the hooks are opt-in per project: `.ledger.json` found by walking up from cwd,
-// `ledger enable` / `ledger disable` write it, LEDGER_ENABLED overrides it. Also `log`.
+// enabled.test.mjs — the hooks are on by default and opt-out per project: `.ledger.json` found by
+// walking up from cwd, `ledger enable` / `ledger disable` write it, LEDGER_ENABLED overrides it.
+// Also `log`.
 
 import test from "node:test";
 import assert from "node:assert/strict";
@@ -14,14 +15,34 @@ const box = sandbox();
 const off = { LEDGER_ENABLED: "" };
 const session = (cwd) => ({ session_id: "s-enabled", cwd, hook_event_name: "SessionStart", source: "startup" });
 
-test("by default the hooks do nothing: no project file, no env → every hook prints nothing and writes nothing", () => {
-  for (const name of ["session-start", "pre-tool-use", "stop", "user-prompt", "session-end"]) {
-    const r = hook(box, name, { ...session(box.work), tool_name: "AskUserQuestion", tool_input: {}, prompt: "pending", last_assistant_message: "Which?", stop_hook_active: false }, { env: off });
-    assert.equal(r.code, 0, `${name}: ${r.err}`);
-    assert.equal(r.out, "", `${name} printed: ${r.out}`);
-    assert.equal(r.err, "", `${name} complained: ${r.err}`);
+test("by default the hooks run: no project file, no user file, no env → SessionStart injects and records, PreToolUse denies an unrecorded ask", () => {
+  const b = sandbox();
+  const start = hook(b, "session-start", session(b.work), { env: off });
+  assert.equal(start.code, 0, start.err);
+  assert.equal(start.json?.hookSpecificOutput?.hookEventName, "SessionStart");
+  assert.match(start.json.hookSpecificOutput.additionalContext, /ledger/);
+  assert.ok(existsSync(b.dbPath), "the default-on hooks create the database");
+  const pre = hook(b, "pre-tool-use", { ...session(b.work), hook_event_name: "PreToolUse", tool_name: "AskUserQuestion", tool_input: { questions: [] } }, { env: off });
+  assert.equal(pre.code, 0, pre.err);
+  assert.equal(pre.json?.hookSpecificOutput?.permissionDecision, "deny");
+  assert.equal(existsSync(join(b.work, PROJECT_FILE)), false, "no file is needed and none is written");
+});
+
+test("`\"enabled\": false` in .ledger.json or the user file turns every hook off: nothing printed, nothing written, no database", () => {
+  const payload = (cwd) => ({ ...session(cwd), tool_name: "AskUserQuestion", tool_input: {}, prompt: "pending", last_assistant_message: "Which?", stop_hook_active: false });
+  const project = sandbox();
+  writeFileSync(join(project.work, PROJECT_FILE), JSON.stringify({ enabled: false }));
+  const user = sandbox();
+  user.writeConfig({ enabled: false });
+  for (const b of [project, user]) {
+    for (const name of ["session-start", "pre-tool-use", "stop", "user-prompt", "session-end"]) {
+      const r = hook(b, name, payload(b.work), { env: off });
+      assert.equal(r.code, 0, `${name}: ${r.err}`);
+      assert.equal(r.out, "", `${name} printed: ${r.out}`);
+      assert.equal(r.err, "", `${name} complained: ${r.err}`);
+    }
+    assert.equal(existsSync(b.dbPath), false, "a disabled project does not even create the database");
   }
-  assert.equal(existsSync(box.dbPath), false, "a disabled project does not even create the database");
 });
 
 test("`ledger enable` writes .ledger.json in cwd and the hooks come on; `ledger disable` turns them off again", () => {
@@ -54,9 +75,12 @@ test("the project file is found by walking up from cwd; a sibling folder is not 
   assert.ok(deep, "enabled from the ancestor file");
   assert.equal(deep.cfg.config.inject.notes, 1);
   assert.equal(deep.cfg.sources["inject.notes"], "project file");
-  // The sibling is under the same root, so it is covered too; outside the root it is not.
-  assert.ok(hookConfig(env, { cwd: b.sibling }, "sessionStart"));
-  assert.equal(hookConfig({ ...env, LEDGER_CWD: "/" }, { cwd: nested }, "sessionStart"), null);
+  // The sibling is under the same root, so it is covered too; outside the root it is not (the
+  // hooks still run there, being on by default, but without the file's keys).
+  assert.equal(hookConfig(env, { cwd: b.sibling }, "sessionStart").cfg.sources["inject.notes"], "project file");
+  const outside = hookConfig({ ...env, LEDGER_CWD: "/" }, { cwd: nested }, "sessionStart");
+  assert.equal(outside.cfg.projectPath, null);
+  assert.equal(outside.cfg.sources["inject.notes"], "default");
 });
 
 test("enable/disable only touch the `enabled` key and keep the rest of an existing file; an unparsable file is refused, not overwritten", () => {
