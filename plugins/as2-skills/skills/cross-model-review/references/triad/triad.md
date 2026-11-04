@@ -605,7 +605,7 @@ work that isn't shipping this session — a triad read is a valid endpoint on it
 
 - `scripts/triad-fanout.sh` — parallel fan-out, isolation enforcement, timeouts, preflight,
   manifest. Leg-runner machinery (run_leg, resolve_cli, timeout preflight) is shared
-  with `quorum` via the plugin's `lib/leg-runner.sh`.
+  with `quorum` via the cross-model-review skill's `lib/leg-runner.sh`.
 - `prompts/architecture.md` — leg A (JSON output, see `architecture.schema.json`)
 - `prompts/architecture.schema.json` — leg A's `--json-schema` contract (passed inline)
 - `prompts/correctness.md` — leg B (JSON output, see `correctness.schema.json`)

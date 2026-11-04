@@ -123,4 +123,7 @@ under `skills/*/test/`, which do not run under Node.
 
 - `cross-model-review`: the triad and quorum fan-out scripts no longer fail on first use. Both
   source `lib/leg-runner.sh`, which 0.1.0 did not ship; it is now vendored at
-  `skills/cross-model-review/lib/leg-runner.sh` from newdle-claude-plugins `28e7356`.
+  `skills/cross-model-review/lib/leg-runner.sh` from newdle-claude-plugins `28e7356`, with one
+  owned patch: the codex network-banner check now reads all of `head`'s output, so under the
+  callers' `set -o pipefail` a leg whose banner is present is no longer reported as having no
+  network when `head` dies of SIGPIPE.

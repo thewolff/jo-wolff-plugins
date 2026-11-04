@@ -1,4 +1,4 @@
-# Vendored from newdle-claude-plugins plugins/newdle/lib/leg-runner.sh at commit 28e7356 (2026-11-04); byte-identical below this line.
+# Vendored from newdle-claude-plugins plugins/newdle/lib/leg-runner.sh at commit 28e7356 (2026-11-04); owned patch: line 210 banner check consumes head output (pipefail/SIGPIPE); otherwise byte-identical below this line.
 # leg-runner.sh — shared leg-runner machinery for the cross-provider fan-out
 # skills (triad, quorum). Sourced, not executed; no shebang on purpose.
 #
@@ -207,7 +207,7 @@ run_leg() {
   # satisfied by a target that merely MENTIONS the banner string, and the
   # assertion would pass with the network off.
   local netfail=""
-  if [[ "$cmd" == *codex* ]] && ! head -n 40 "$log" 2>/dev/null | grep -q '^[[:space:]]*sandbox: read-only (network access enabled)[[:space:]]*$'; then
+  if [[ "$cmd" == *codex* ]] && ! head -n 40 "$log" 2>/dev/null | grep '^[[:space:]]*sandbox: read-only (network access enabled)[[:space:]]*$' >/dev/null; then
     netfail=1
   fi
 

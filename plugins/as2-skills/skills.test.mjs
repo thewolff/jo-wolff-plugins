@@ -13,8 +13,10 @@
 // skills/*/test/, which a bare `node --test` would try to run.
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { readFileSync, readdirSync, existsSync, statSync } from "node:fs";
+import { readFileSync, readdirSync, existsSync, statSync, mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { dirname, join, relative, resolve, sep } from "node:path";
+import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 
 const root = new URL("./", import.meta.url);
@@ -238,4 +240,74 @@ test("the source resolver reports what it cannot follow", () => {
   assert.throws(() => resolveSources('. "$UNSET_DIR/a.sh"\n', s), /cannot resolve/);
   assert.throws(() => resolveSources(". lib/a.sh\n", s), /unquoted/);
   assert.throws(() => resolveSources(`${dirLine}\n. "$SKILL_DIR/$OTHER/a.sh"\n`, s), /cannot resolve/);
+});
+
+// run_leg's codex banner check reads the top of the leg's stderr through `head -n 40 | grep`. With
+// grep -q, grep exits on the first match while head is still writing, head dies of SIGPIPE (141), and
+// the callers' `set -o pipefail` turns that into "no network" on a leg that had it. Long stderr lines
+// make head's 40 lines outrun the pipe buffer, which is what codex's prompt echo does in real runs.
+// Whether head is still writing when grep exits is a race, so each case runs the leg RUNS times and
+// every verdict has to hold.
+const RUNS = 20;
+
+function runCodexLeg(bannerLine) {
+  const tmp = mkdtempSync(join(tmpdir(), "as2-leg-runner-"));
+  try {
+    const bin = join(tmp, "bin");
+    const out = join(tmp, "out");
+    mkdirSync(bin);
+    mkdirSync(out);
+    writeFileSync(join(tmp, "prompt.md"), "review this\n");
+    const noise = Array.from({ length: 60 }, () => "x".repeat(2000));
+    writeFileSync(join(tmp, "stderr.txt"), ["OpenAI Codex (stub)", bannerLine, ...noise].join("\n") + "\n");
+    writeFileSync(
+      join(bin, "codex"),
+      [
+        "#!/bin/bash",
+        "cat >/dev/null",
+        `cat "${join(tmp, "stderr.txt")}" >&2`,
+        "printf '## Findings\\n\\nNo findings in the reviewed diff.\\n'",
+      ].join("\n") + "\n",
+      { mode: 0o755 },
+    );
+    const lib = join(pluginDir, "skills/cross-model-review/lib/leg-runner.sh");
+    const script = [
+      "set -uo pipefail",
+      `source "${lib}"`,
+      // The callers get `timeout` from require_timeout; a pass-through keeps the test off coreutils.
+      'timeout() { shift; "$@"; }',
+      `OUT="${out}" LEG_TIMEOUT=30 LEG_SECTION_LABEL="" LEG_ARGMODE_HINT="prompt is too large" LEG_CODEX_CMD_VAR=TEST_CODEX_CMD`,
+      `for i in $(seq ${RUNS}); do`,
+      `  run_leg b-codex "${tmp}" codex "${join(tmp, "prompt.md")}" 2>/dev/null`,
+      `  cat "${join(out, "b-codex.status")}"`,
+      "done",
+    ].join("\n");
+    const r = spawnSync("bash", ["-c", script], {
+      env: { ...process.env, PATH: `${bin}:${process.env.PATH}` },
+      encoding: "utf8",
+    });
+    assert.equal(r.status, 0, r.stderr);
+    const verdicts = r.stdout.split("\n").filter(Boolean);
+    assert.equal(verdicts.length, RUNS, r.stdout);
+    return verdicts;
+  } finally {
+    rmSync(tmp, { recursive: true, force: true });
+  }
+}
+
+test("a codex leg whose stderr carries the network banner is ok under pipefail", () => {
+  for (const v of runCodexLeg("  sandbox: read-only (network access enabled)")) assert.match(v, /^b-codex ok \d+s$/);
+});
+
+test("a codex leg whose stderr lacks the network banner is reported as having no network", () => {
+  for (const v of runCodexLeg("  sandbox: read-only")) {
+    assert.match(v, /^b-codex failed: codex sandbox banner shows no network access/);
+  }
+});
+
+test("the banner check stays anchored: a mid-line mention of the banner does not count", () => {
+  // codex echoes the prompt into the same log, so a target that merely quotes the banner must not pass.
+  for (const v of runCodexLeg("prompt echo: sandbox: read-only (network access enabled)")) {
+    assert.match(v, /^b-codex failed: codex sandbox banner shows no network access/);
+  }
 });
