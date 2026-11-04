@@ -279,3 +279,66 @@ test("end to end: an ordinary run that prints a structure check reply is blocked
   assert.deepEqual(JSON.parse(f.run(f.payload()).stdout), { decision: "block", reason: BLOCK_REASON });
   assert.equal(existsSync(f.record), true);
 });
+
+// --- The sources file: the Stop check's sources proof, end to end ------------------------------------
+
+const SOURCES_MD = '- **Old tickets:** `todo-cli list -- "<the ask>"`\n- **Held decisions:** /tmp/fixture/HELD.md\n';
+const LOCAL_SEARCH = "**Local search:**\n- Old tickets: nothing found\n- Held decisions: found: line 2 parks it";
+
+// The fixture's turn, rebuilt: prompt, skill load, `work`, then `reply`; plus a sources file.
+function sourcesFixture(t, work, reply) {
+  const f = fixture(t);
+  mkdirSync(join(f.base, "config", "ask-graham"), { recursive: true });
+  const file = join(f.base, "config", "ask-graham", "sources.md");
+  writeFileSync(file, SOURCES_MD);
+  const cc = claudeCode();
+  const opener = cc.prompt("should we build a cache?");
+  cc.skill("ask-graham:ask-graham", "should we build a cache");
+  work(cc, file);
+  cc.say(reply);
+  writeFileSync(f.transcript, cc.jsonl());
+  return { ...f, opener, file };
+}
+
+test("end to end: with a sources file, a verdict reply and no tool calls is blocked once, naming the sources file", (t) => {
+  const f = sourcesFixture(t, () => {}, "**Verdict:** later");
+  const r = f.run(f.payload());
+  assert.equal(r.status, 0);
+  const out = JSON.parse(r.stdout);
+  assert.equal(out.decision, "block");
+  assert.match(out.reason, /First missing: sources file: a Read of .*\/config\/ask-graham\/sources\.md \(\+3 more\)\./);
+  assert.ok(out.reason.length <= 300);
+  assert.equal(readFileSync(f.record, "utf8"), `${f.opener}\n`);
+  assert.equal(f.run(f.payload()).stdout, "");
+});
+
+test("end to end: with a sources file, the file read, each source checked and the Local search block pass", (t) => {
+  const f = sourcesFixture(t, (cc, file) => {
+    cc.read(file);
+    cc.tool("Bash", { command: "todo-cli list -- cache" }, "exit 2", true);
+    cc.read("/tmp/fixture/HELD.md");
+  }, `${LOCAL_SEARCH}\n\n**Verdict:** later`);
+  const r = f.run(f.payload());
+  assert.equal(r.status, 0);
+  assert.equal(r.stdout, "");
+  assert.equal(existsSync(f.record), false);
+});
+
+test("a throw in the sources proof lets the stop through, warned and logged (in process)", (t) => {
+  const f = sourcesFixture(t, () => {}, "**Verdict:** later");
+  const replace = String.prototype.replace;
+  // Throw only when the sources proof expands the sources file's path.
+  String.prototype.replace = function (...a) {
+    if (this.endsWith("/ask-graham/sources.md")) throw new Error("sources boom");
+    return replace.apply(this, a);
+  };
+  let out;
+  try {
+    out = run(JSON.stringify(f.payload()), { env: f.env, home: f.base });
+  } finally {
+    String.prototype.replace = replace;
+  }
+  assert.equal(out?.decision, undefined, JSON.stringify(out));
+  assert.match(out.systemMessage, /the Stop check threw \(sources boom\), so the stop went through/);
+  assert.equal(existsSync(f.record), false);
+});

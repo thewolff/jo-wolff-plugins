@@ -88,7 +88,7 @@ For the local search, check every source below that applies, and record each one
 - **Where open work lives**, read-only and nothing else:
   - the repo's issue tracker (for a GitHub repo, `gh issue list --search "<noun>"` and `gh pr list --search "<noun>"`);
   - any to-do, roadmap or task file the project's `AGENTS.md` or `CLAUDE.md` names;
-  - the user's own sources file, if it exists: `${XDG_CONFIG_HOME:-$HOME/.config}/ask-graham/sources.md`. It lists extra places to check, in the user's words: a work database and the read-only query that lists open items, a held-decisions file, a planning folder. Read it, then check each source it lists the way it says to. A missing file is not an error; record the source as *not configured* and move on.
+  - the user's own sources file, if it exists: `${XDG_CONFIG_HOME:-$HOME/.config}/ask-graham/sources.md`. It lists extra places to check, in the user's words: a work database and the read-only query that lists open items, a held-decisions file, a planning folder. Read it with the host's Read tool, then check each source it lists, yourself, in this turn: run a listed command through Bash or eval (narrowed to the ask), open or search a listed path, and look up a source that has neither the way it says. A failed command still counts as run; mark the source *unreachable* with the error. A search a subagent ran does not count, because the Stop check sees only this session's tool calls: run each source here, even when a subagent's findings are also reported. Report every source by its label in the reply's `**Local search:**` block (see "Output"). The Stop check enforces all of this when the file exists, on both harnesses, and blocks once naming the first source left unchecked. A missing file is not an error; record the source as *not configured* and move on. (Jo, 2026-11-04)
 
   For each, narrow to the ask's key nouns rather than reading everything.
 - **For an established external tool or library** that does the job (a schema validator, a scheduler, a vendor API's own enum), one check of what the repo already depends on (`package.json`, lockfile) before anything is built by hand.
@@ -167,8 +167,13 @@ While the comparables answer is pending, use the waiting reply below: step 1's `
 - In scope: <answer>
 - Owner / maintenance: <answer>
 
+**Local search:**
+- <each sources-file label>: <found, naming the overlap | nothing found | unreachable, with the error>
+
 Do you want me to research and see if something comparable exists?
 ```
+
+With a sources file, both replies also carry the `**Local search:**` block: one line per source the file lists, its label (any case, bold optional) and one of *found*, *nothing found* or *unreachable*. Outside code fences and quotes only. Without a sources file the block is optional. (Jo, 2026-11-04)
 
 After the user answers, use the completed-check template below. A structure check uses the shape in "When it runs" instead: its `**Structure check:**` line, its `**Found:**` or `**No similar:**` line, and the red flags. (Skill)
 
@@ -183,6 +188,9 @@ After the user answers, use the completed-check template below. A structure chec
 - Already exists: <step 2 result, naming the overlap>
 - In scope: <answer>
 - Owner / maintenance: <answer>
+
+**Local search:**
+- <each sources-file label>: <found, naming the overlap | nothing found | unreachable, with the error>
 
 **Comparables** (Skill criteria; research choice: Jo)
 <If research was declined, write "not researched (user said no)" and omit the options table. Keep local build sizing in the verdict and breakdown. Otherwise use the options table below, using the default columns in references/comparables-criteria.md. If approved research is unreachable, say so and name the missing evidence. For every recommended package/tool—including local-only recommendations—include the five-field upkeep receipt from references/upkeep.md.>
@@ -217,6 +225,8 @@ The closing ask names the thing in full ("Start the CSV export for the billing p
 ```
 
 Every source it lists is read-only for this skill. If a listed command would write anything, skip it and record the source as *unreachable*.
+
+How the Stop check reads each bullet: the bold label names the source. A bullet with a backticked command needs a Bash or eval call containing the command's first two words (three when the second is `node`, `bun`, `python3`, `sh`, `zsh` or `npx`); text from a placeholder such as `<the ask>` on is not required. A bullet with only a path (backticked or bare; `*` matches any part) needs a tool call naming that path. A bullet with both counts as a command. A bullet with neither needs its line in `**Local search:**`. A bullet with no bold label is ignored.
 
 ## When this can't run
 

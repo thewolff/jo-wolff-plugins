@@ -82,6 +82,11 @@ export function claudeCode() {
     bash(command) {
       result(toolCall("Bash", { command }), "");
     },
+    // Any tool call and its result; `isError` marks the result failed (a command that exited non-zero).
+    tool(name, input, text = "", isError = false) {
+      const id = toolCall(name, input);
+      user([{ type: "tool_result", tool_use_id: id, content: text, ...(isError ? { is_error: true } : {}) }]);
+    },
     // Two tool calls in one response, chained the way Claude Code chains them: the second call is
     // a child of the first, its result a child of the second, and the first call's result a child
     // of the first call, so the leaf's parent chain runs through the first call only.
@@ -138,6 +143,8 @@ export function omp() {
     read: (path) => toolCall("read", { path }),
     bash: (command) => toolCall("bash", { command }),
     say: (text) => message("assistant", [{ type: "text", text }]),
+    // Any tool call (eval, pair_run, grep, ...) and its result.
+    tool: (name, args) => toolCall(name, args),
     continuation: (reason) => c.add({ type: "custom_message", customType: "session-stop-continuation", content: reason, display: false, attribution: "agent" }),
   };
 }

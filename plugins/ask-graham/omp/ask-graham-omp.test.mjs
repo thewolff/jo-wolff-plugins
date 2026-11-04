@@ -220,3 +220,46 @@ test("session_stop blocks the bare comparables question once, naming the missing
   assert.match(out.reason, /`\*\*Ask:\*\*`.*`\*\*Gate questions\*\*`/);
   assert.equal(f.stop(said("Do you want me to research and see if something comparable exists?")), undefined);
 });
+
+// --- The sources file -------------------------------------------------------------------------------
+
+const SOURCES_MD = '- **Old tickets:** `todo-cli list -- "<the ask>"`\n- **Held decisions:** /tmp/fixture/HELD.md\n';
+
+test("at every-idea with a sources file the nudge carries one line per source; without one it is NUDGE alone", (t) => {
+  const f = fixture(t);
+  writeFileSync(join(f.xdg, "ask-graham", "config"), "intensity=every-idea\n");
+  writeFileSync(join(f.xdg, "ask-graham", "sources.md"), SOURCES_MD);
+  assert.deepEqual(f.start(), {
+    message: {
+      customType: "ask-graham",
+      content: `${NUDGE}\nask-graham source: **Old tickets:** \`todo-cli list -- "<the ask>"\`\nask-graham source: **Held decisions:** /tmp/fixture/HELD.md`,
+      display: false,
+    },
+  });
+  writeFileSync(join(f.xdg, "ask-graham", "sources.md"), "no list here\n");
+  assert.deepEqual(f.start(), EXPECTED);
+});
+
+test("session_stop with a sources file reads the proof from the session file's tool calls", (t) => {
+  const verdict = "**Local search:**\n- Old tickets: nothing found\n- Held decisions: nothing found\n\n**Verdict:** later";
+  const bare = stopFixture(t, (s) => {
+    s.prompt("should we build a cache?");
+    s.read("skill://ask-graham");
+  });
+  writeFileSync(join(bare.xdg, "ask-graham", "sources.md"), SOURCES_MD);
+  const out = bare.stop(said(verdict));
+  assert.equal(out.decision, "block");
+  assert.match(out.reason, /First missing: sources file: a Read of .*sources\.md \(\+2 more\)\./);
+
+  const done = stopFixture(t, (s) => {
+    s.prompt("should we build a cache?");
+    s.read("skill://ask-graham");
+  });
+  const file = join(done.xdg, "ask-graham", "sources.md");
+  writeFileSync(file, SOURCES_MD);
+  done.s.read(file);
+  done.s.tool("eval", { language: "js", code: "await $`todo-cli list -- cache`" });
+  done.s.tool("bash", { command: "cat /tmp/fixture/HELD.md" });
+  done.save();
+  assert.equal(done.stop(said(verdict)), undefined);
+});
