@@ -62,6 +62,7 @@ function runHook(payload, home, extraEnv = {}) {
     I_HAVE_AUDHD_ENFORCE: "",
     I_HAVE_AUDHD_PROFILE: "",
     I_HAVE_AUDHD_HARNESS: "", // only the OMP adapter sets it; tests opt in per call
+    XDG_CONFIG_HOME: "", // the shared judge file is under this HOME's ~/.config, never this machine's
     ...extraEnv,
   };
   return spawnSync(process.execPath, [HOOK], {
@@ -405,7 +406,55 @@ test("a fired trigger with no judge command lands in skipped.log, named", () => 
   const r = runHook({ session_id: "j3", last_assistant_message: batchyMessage }, home);
   assert.equal(r.status, 0);
   assert.equal(r.stdout, "");
-  assert.match(readLog(home, "skipped.log"), new RegExp(`rule=do-not-batch-by-label reason=no-judge-command profile=${join(home, ".claude", "i-have-audhd.json")} session=`));
+  assert.match(readLog(home, "skipped.log"), new RegExp(`rule=do-not-batch-by-label reason=no-judge-command profile=${join(home, ".claude", "i-have-audhd.json")} shared=${join(home, ".config", "judge", "config.json")} session=`));
+});
+
+// The shared judge file every judging plugin reads (plugin-kit's lib/judge.mjs, vendored).
+const writeSharedJudge = (home, text) => {
+  mkdirSync(join(home, ".config", "judge"), { recursive: true });
+  writeFileSync(join(home, ".config", "judge", "config.json"), typeof text === "string" ? text : JSON.stringify(text));
+};
+
+test("with no enforcement.judgeCommand the shared judge file's command is the judge; the profile's own, when set, wins over it", () => {
+  const shared = mkhome();
+  writeFakeJudge(shared, true, "the shared judge spoke");
+  writeSharedJudge(shared, { command: `node ${fakeJudgePath(shared)}` });
+  writeFileSync(join(shared, ".claude", "i-have-audhd.json"), JSON.stringify({ enforcement: { mode: "block", judgeCommand: null } }));
+  const r = runHook({ session_id: "j3s", last_assistant_message: batchyMessage }, shared);
+  assert.equal(parseOut(r.stdout).decision, "block");
+  assert.match(parseOut(r.stdout).reason, /judge: the shared judge spoke/);
+  assert.equal(readLog(shared, "skipped.log"), "");
+
+  const own = mkhome();
+  writeFakeJudge(own, false, "the profile's judge spoke");
+  writeSharedJudge(own, { command: "echo 'shared judge must not run' >&2; exit 9" });
+  writeFileSync(join(own, ".claude", "i-have-audhd.json"), JSON.stringify({ enforcement: { mode: "block", judgeCommand: `node ${fakeJudgePath(own)}` } }));
+  const r2 = runHook({ session_id: "j3o", last_assistant_message: batchyMessage }, own);
+  assert.equal(r2.status, 0);
+  assert.equal(r2.stdout, "", "the profile's judge acquitted; the shared one never ran");
+  assert.equal(readLog(own, "judge-failures.log"), "");
+});
+
+test("a malformed shared judge file is no judge: skipped.log names the parse problem, and the profile's own command still wins", () => {
+  const home = mkhome();
+  writeSharedJudge(home, "{ not json");
+  const r = runHook({ session_id: "j3m", last_assistant_message: batchyMessage }, home);
+  assert.equal(r.stdout, "");
+  const line = readLog(home, "skipped.log");
+  assert.match(line, new RegExp(`rule=do-not-batch-by-label reason=no-judge-command profile=\\S+ shared=${join(home, ".config", "judge", "config.json")} session=j3m malformed="[^"]*judge/config\\.json: `));
+
+  writeFakeJudge(home, true, "own judge");
+  writeFileSync(join(home, ".claude", "i-have-audhd.json"), JSON.stringify({ enforcement: { mode: "block", judgeCommand: `node ${fakeJudgePath(home)}` } }));
+  assert.equal(parseOut(runHook({ session_id: "j3m2", last_assistant_message: batchyMessage }, home).stdout).decision, "block");
+});
+
+test("a judge-unavailable finding names where the command came from", () => {
+  const home = mkhome();
+  writeSharedJudge(home, { command: "exit 5" });
+  const r = runHook({ session_id: "j3u", last_assistant_message: batchyMessage }, home);
+  const pending = JSON.parse(readFileSync(join(home, ".claude", ".i-have-audhd-state", "pending-warn-j3u.json"), "utf8"));
+  assert.match(pending.notice, new RegExp(`Judge unavailable \\(do-not-batch-by-label\\) — the judge \\(${join(home, ".config", "judge", "config.json")}\\) gave no verdict \\(nonzero: exit 5, other\\)`));
+  assert.match(readLog(home, "judge-failures.log"), new RegExp(`error=nonzero cause=other .* detail="exit 5" source="${join(home, ".config", "judge", "config.json")}"`));
 });
 
 test("a judge rule in warn mode warns instead of blocking", () => {
@@ -450,7 +499,7 @@ test("a failing judge is reported as judge unavailable, never as a pass: a warn 
   failingJudge(home);
   const r = runHook({ session_id: "j5", last_assistant_message: batchyMessage }, home);
   assert.equal(r.status, 0);
-  assert.match(readLog(home, "judge-failures.log"), /rule=do-not-batch-by-label error=judge-exit-4 cause=no-credential session=j5 harness=claude-code .* stderr=.*not logged in/);
+  assert.match(readLog(home, "judge-failures.log"), /rule=do-not-batch-by-label error=nonzero cause=no-credential session=j5 harness=claude-code .* detail="exit 4" source="enforcement\.judgeCommand in [^"]+" stderr=.*not logged in/);
   assert.equal(unavailableLines(home, "do-not-batch-by-label").length, 1, "the unchecked rule is a finding, not silence");
   const pending = JSON.parse(readFileSync(join(home, ".claude", ".i-have-audhd-state", "pending-warn-j5.json"), "utf8"));
   assert.match(pending.notice, /judge unavailable/i, "the agent is told the rule was not checked");
@@ -469,12 +518,12 @@ test("the alert states each cause's own fix: the model for a revoked credential,
   });
   const r1 = parseOut(runHook({ session_id: "j5e", last_assistant_message: batchyMessage }, revoked).stdout);
   assert.match(r1.systemMessage, /do-not-batch-by-label: credential-revoked — the credential for anthropic\/claude-haiku-5-5 was revoked; log the judge's CLI in again/);
-  assert.match(readLog(revoked, "judge-failures.log"), /cause=credential-revoked session=j5e harness=claude-code model=anthropic\/claude-haiku-5-5 elapsedMs=\d+ budgetMs=30000 section=whole cache=[0-9a-f]{64} prompt=\S+cache\/[0-9a-f]{64}\.prompt\.txt stderr=/);
+  assert.match(readLog(revoked, "judge-failures.log"), /cause=credential-revoked session=j5e harness=claude-code model=anthropic\/claude-haiku-5-5 elapsedMs=\d+ budgetMs=30000 section=whole cache=[0-9a-f]{64} prompt=\S+cache\/[0-9a-f]{64}\.prompt\.txt detail="exit 1" source="enforcement\.judgeCommand in [^"]+" stderr=/);
   const vibes = mkhome();
   writeProfile(vibes, { enforcement: { judgeCommand: "echo 'I have no thoughts, only vibes.' # --model haiku" } });
   const r2 = parseOut(runHook({ session_id: "j5f", last_assistant_message: batchyMessage }, vibes, { I_HAVE_AUDHD_HARNESS: "omp" }).stdout);
   assert.match(r2.systemMessage, /do-not-batch-by-label: bad-json — the judge printed no \{"violation": …, "reason": …\} object; run the command by hand on the prompt file/);
-  assert.match(readLog(vibes, "judge-failures.log"), /error=judge-unparseable cause=bad-json session=j5f harness=omp model=haiku elapsedMs=\d+ budgetMs=20000 section=whole .* stdout="I have no thoughts, only vibes\."/);
+  assert.match(readLog(vibes, "judge-failures.log"), /error=unparseable cause=bad-json session=j5f harness=omp model=haiku elapsedMs=\d+ budgetMs=20000 section=whole .* stdout="I have no thoughts, only vibes\."/);
 });
 
 test("a credential alert names the judge's profile when the judge's stderr carries one", () => {
@@ -970,7 +1019,7 @@ test("a judge error on one section reports that section as judge unavailable: th
   const unavailable = out.reason.split("\n\n").filter((f) => f.startsWith("Judge unavailable (conclusion-first)"));
   assert.equal(unavailable.length, 1);
   assert.ok(unavailable[0].includes(claimName), "the unjudged section is named as unchecked, not passed");
-  assert.match(readLog(blocking, "judge-failures.log"), /rule=conclusion-first error=judge-exit-2/);
+  assert.match(readLog(blocking, "judge-failures.log"), /rule=conclusion-first error=nonzero .* detail="exit 2"/);
 
   // warn mode
   const warning = mkhome();
@@ -983,7 +1032,7 @@ test("a judge error on one section reports that section as judge unavailable: th
   assert.equal(warned.length, 2, "one violation finding, one judge-unavailable finding");
   assert.ok(warned.some((l) => l.includes(citeName) && !/judge unavailable/i.test(l)), warned.join("\n"));
   assert.ok(warned.some((l) => l.includes(claimName) && /judge unavailable/i.test(l)), warned.join("\n"));
-  assert.match(readLog(warning, "judge-failures.log"), /rule=conclusion-first error=judge-exit-2/);
+  assert.match(readLog(warning, "judge-failures.log"), /rule=conclusion-first error=nonzero .* detail="exit 2"/);
 });
 
 test("bad news leading a later section is judged in that section alone; a short section with a lexicon word dispatches nothing", () => {

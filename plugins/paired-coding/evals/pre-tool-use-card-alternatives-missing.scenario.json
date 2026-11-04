@@ -1,0 +1,35 @@
+{
+  "$comment": "ask-graham's findings file for this session exists under $XDG_STATE_HOME (the scenario wrote it) and the card has no alternatives: pair_propose refuses it, naming the file, the findings' chosen design and the need for a non-chosen entry (evals/card-checks.mjs alternatives-missing exits non-zero on any other answer). Pairing is on, so the host Write is then denied as usual. The findings file is read only: nothing is written under $XDG_STATE_HOME/ask-graham.",
+  "event": "PreToolUse",
+  "expect": "deny",
+  "reason": "paired-coding",
+  "setup": {
+    "files": {
+      "$XDG_STATE_HOME/ask-graham/findings/${SESSION_ID}.json": "{\"version\":1,\"sessionId\":\"${SESSION_ID}\",\"writtenAt\":\"2026-11-04T00:00:00.000Z\",\"kind\":\"verdict\",\"ask\":\"queue the exports\",\"verdict\":\"do it now\",\"alternative\":\"a direct call\",\"alternatives\":[{\"design\":\"a queue table with a worker\",\"chosen\":true},{\"design\":\"a direct call\",\"chosen\":false}],\"found\":[],\"cwd\":\"${CWD}\"}"
+    },
+    "commands": [
+      "node \"${PLUGIN_DIR}/evals/card-checks.mjs\" \"${SESSION_ID}\" alternatives-missing"
+    ]
+  },
+  "stdin": {
+    "session_id": "${SESSION_ID}",
+    "transcript_path": "${TRANSCRIPT}",
+    "cwd": "${CWD}",
+    "hook_event_name": "PreToolUse",
+    "tool_name": "Write",
+    "tool_use_id": "toolu_01",
+    "tool_input": {
+      "file_path": "${CWD}/card-eval.txt",
+      "content": "x"
+    }
+  },
+  "after": {
+    "exists": [
+      "~/.local/state/paired-coding/${SESSION_ID}/activated"
+    ],
+    "absent": [
+      "$XDG_STATE_HOME/ask-graham/errors.log",
+      "~/.local/state/paired-coding/errors.log"
+    ]
+  }
+}

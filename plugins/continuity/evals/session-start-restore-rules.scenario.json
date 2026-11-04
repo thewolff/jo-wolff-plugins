@@ -1,0 +1,19 @@
+{
+  "$comment": "After a compaction (source compact) with the session cwd in a nested directory: the restore block re-inlines the rules files on the walk from the cwd to the git root under `## Repo rules re-inlined`. The scenario runner sets CLAUDE_PROJECT_DIR to the work directory, as Claude Code sets it to the launch directory, so the root CLAUDE.md is the host's (named as skipped, not inlined), the nested pkg/AGENTS.md is inlined, and the empty pkg/deep/CLAUDE.md is named as skipped. The reason carries the nested file's text followed by the first skip line (the sandbox cwd is not a real path and the walk reports real ones, so no path is in it); the per-file order, the launch-dir rule and the caps are the unit tests' to prove.",
+  "event": "SessionStart",
+  "expect": "systemMessage",
+  "reason": "# Package rules\n\nNo em dashes in UI strings.\n\n- skipped `",
+  "setup": {
+    "files": {
+      "CLAUDE.md": "# Root rules\n\nRun the tests from the package directory.\n",
+      "pkg/AGENTS.md": "# Package rules\n\nNo em dashes in UI strings.\n",
+      "pkg/deep/CLAUDE.md": "   \n"
+    }
+  },
+  "transcript": [{ "type": "user", "message": { "role": "user", "content": "finish the walk" } }],
+  "before": [
+    { "event": "PreCompact", "stdin": { "hook_event_name": "PreCompact", "session_id": "${SESSION_ID}", "cwd": "${CWD}", "transcript_path": "${TRANSCRIPT}", "trigger": "auto", "custom_instructions": "" } }
+  ],
+  "stdin": { "hook_event_name": "SessionStart", "session_id": "${SESSION_ID}", "cwd": "${CWD}/pkg/deep", "source": "compact" },
+  "after": { "absent": ["$XDG_STATE_HOME/continuity/${SESSION_ID}.json"] }
+}

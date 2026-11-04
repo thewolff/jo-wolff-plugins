@@ -9,13 +9,14 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { box, input, spawnHook } from "./helpers.mjs";
 import { handle as preCompact } from "../hooks/pre-compact.mjs";
 import { handle as sessionStart } from "../hooks/session-start.mjs";
 import { handle as userPrompt } from "../hooks/user-prompt-submit.mjs";
 import { handle as stop } from "../hooks/stop.mjs";
+import { RESTORE_MAX_CHARS, renderSnapshot } from "../lib/snapshot.mjs";
 
 const HOOKS = ["pre-compact.mjs", "session-start.mjs", "user-prompt-submit.mjs", "stop.mjs"];
 // A transcript whose last assistant reply recorded 160,000 tokens of context (2 + 150,000 cache
@@ -220,6 +221,145 @@ test("session-start: startup gives the liveness line and marks it; compact resto
     b.writeConfig({ liveness: "off" });
     r = spawnHook(b, "session-start.mjs", { hook_event_name: "SessionStart", session_id: "s-test", cwd: b.work, source: "resume" });
     assert.equal(r.json, null, r.stdout);
+  } finally {
+    b.release();
+  }
+});
+
+test("session-start: after a compaction the block carries the re-inlined rules and the durable notes, inside the restore guard; never on a fresh start; each switched off by config", () => {
+  const b = box();
+  try {
+    mkdirSync(join(b.work, "pkg", "deep"), { recursive: true });
+    writeFileSync(join(b.work, "CLAUDE.md"), "# root rules\n");
+    writeFileSync(join(b.work, "pkg", "AGENTS.md"), "# pkg rules\n");
+    mkdirSync(join(b.work, ".ai", "decision-log"), { recursive: true });
+    writeFileSync(join(b.work, ".ai", "decision-log", "2026-01-01--one.md"), "one");
+    writeFileSync(join(b.work, ".ai", "decision-log", "2026-01-02--two.md"), "two");
+    const compact = (extra = {}, env = {}) => spawnHook(b, "session-start.mjs", { hook_event_name: "SessionStart", session_id: "s-test", cwd: join(b.work, "pkg", "deep"), source: "compact", ...extra }, { env }).json.hookSpecificOutput.additionalContext;
+
+    // A fresh start, a resume and a clear: neither section.
+    for (const source of ["startup", "resume", "clear"]) {
+      const r = spawnHook(b, "session-start.mjs", { hook_event_name: "SessionStart", session_id: "s-test", cwd: join(b.work, "pkg", "deep"), source });
+      assert.doesNotMatch(r.json.hookSpecificOutput.additionalContext, /Repo rules re-inlined|Durable notes/, source);
+    }
+
+    // After a compaction with a snapshot: restore, then rules root-first, then the notes, then liveness.
+    b.writeTranscript([{ type: "user", message: { role: "user", content: "resume me" } }]);
+    spawnHook(b, "pre-compact.mjs", input("PreCompact", b, { trigger: "auto" }));
+    let ctx = compact();
+    const at = (re) => {
+      const i = ctx.search(re);
+      assert.ok(i >= 0, `${re} in ${ctx.slice(0, 200)}`);
+      return i;
+    };
+    assert.ok(at(/^## Restored session state/) < at(/\n## Repo rules re-inlined\n/) && at(/# root rules/) < at(/# pkg rules/) && at(/# pkg rules/) < at(/\n## Durable notes \(/) && at(/- 2026-01-02--two\.md\n- 2026-01-01--one\.md\n/) < at(/pre-compaction save liveness/));
+    assert.match(ctx, /The notes directory and the rules files are the source of truth; the restored snapshot is only the safety net/);
+    assert.match(ctx, /The newest 2 of 2 entries/);
+
+    // After a compaction with nothing to restore: the not-restored line, and still both sections.
+    ctx = compact();
+    assert.match(ctx, /\*\*this compaction's state was not restored\*\*/);
+    assert.match(ctx, /## Repo rules re-inlined[\s\S]*# root rules[\s\S]*# pkg rules[\s\S]*## Durable notes/);
+
+    // A level at or above CLAUDE_PROJECT_DIR is the host's: named as skipped, its text not inlined.
+    ctx = compact({}, { CLAUDE_PROJECT_DIR: b.work });
+    assert.doesNotMatch(ctx, /# root rules/);
+    assert.match(ctx, /- skipped `.*\/CLAUDE\.md`: loaded by the host at launch/);
+    assert.match(ctx, /# pkg rules/);
+
+    // The whole restore block stays inside the guard. With liveness off the context is the block
+    // alone. A mid-size snapshot leaves room for the notes and part of the rules: the notes land
+    // whole, the large root file is cut, and the block is at most RESTORE_MAX_CHARS characters.
+    writeFileSync(join(b.work, "CLAUDE.md"), `# root rules\n${"r".repeat(6000)}\n`);
+    b.writeConfig({ liveness: "off" });
+    spawnHook(b, "pre-compact.mjs", input("PreCompact", b, { trigger: "auto", file_operations: "w".repeat(8000), agent_judgment: ["j".repeat(6000)] }));
+    ctx = compact();
+    assert.ok(ctx.length <= RESTORE_MAX_CHARS, `the block is within the guard: ${ctx.length}`);
+    assert.ok(ctx.length > RESTORE_MAX_CHARS - 400, `the rules used what the snapshot left: ${ctx.length}`);
+    assert.match(ctx, /^## Restored session state/);
+    assert.doesNotMatch(ctx, /\*\*TRUNCATED: this snapshot is/);
+    assert.match(ctx, /# root rules\nr+\n\n\(truncated at \d+ bytes; the file is 6014 bytes, read it for the rest\)/);
+    assert.match(ctx, /The newest 2 of 2 entries/);
+    assert.ok(ctx.endsWith("Read the newest note before continuing a thread it covers.\n"), "the notes close the block");
+
+    // A snapshot at the guard leaves no room: both sections are left out of the context and named
+    // in the systemMessage, and the block is the snapshot alone.
+    mkdirSync(join(b.work, ".ai", "handoffs"), { recursive: true });
+    writeFileSync(join(b.work, ".ai", "handoffs", "long.md"), `---\nsession_id: s-test\nlane: l\nstatus: open\n---\n## Where I left off\n${`${"h".repeat(100)}\n`.repeat(100)}`);
+    spawnHook(b, "pre-compact.mjs", input("PreCompact", b, { trigger: "auto", file_operations: "w".repeat(9000), agent_judgment: ["j".repeat(9000)] }));
+    let r = spawnHook(b, "session-start.mjs", { hook_event_name: "SessionStart", session_id: "s-test", cwd: join(b.work, "pkg", "deep"), source: "compact" });
+    ctx = r.json.hookSpecificOutput.additionalContext;
+    assert.match(ctx, /\*\*TRUNCATED: this snapshot is \d+ characters/);
+    assert.doesNotMatch(ctx, /Repo rules re-inlined|Durable notes|rrrrrrrr/);
+    assert.equal(r.json.systemMessage, "continuity: the re-inlined repo rules and the durable notes list left out of the post-compaction restore: the block before them reached the 20,000-character restore guard; read the rules files and the notes directory directly.");
+    rmSync(join(b.stateDir, "s-test.json"));
+    rmSync(join(b.work, ".ai", "handoffs"), { recursive: true });
+
+    // A snapshot body one under the guard, at it, one over it and far over it, with the rules,
+    // the notes and (second pass) the liveness line all wanting room: the whole context, heading,
+    // notices and truncation marker included, is within the guard; the snapshot is cut, the cut
+    // said in-band, and the file kept; the sections it crowds out are named in the systemMessage.
+    spawnHook(b, "pre-compact.mjs", input("PreCompact", b, { trigger: "auto" }));
+    const snap = join(b.stateDir, "s-test.json");
+    const json = JSON.parse(readFileSync(snap, "utf8"));
+    for (const liveness of ["off", "on"]) {
+      b.writeConfig({ liveness });
+      for (const n of [RESTORE_MAX_CHARS - 1, RESTORE_MAX_CHARS, RESTORE_MAX_CHARS + 1, 60_000]) {
+        json.hostFileOperations = "w";
+        json.hostFileOperations = "w".repeat(n - (renderSnapshot(json).length - 1));
+        writeFileSync(snap, JSON.stringify(json));
+        assert.equal(renderSnapshot(json).length, n);
+        r = spawnHook(b, "session-start.mjs", { hook_event_name: "SessionStart", session_id: "s-test", cwd: join(b.work, "pkg", "deep"), source: "compact" });
+        ctx = r.json.hookSpecificOutput.additionalContext;
+        const what = `liveness ${liveness}, body ${n}: context ${ctx.length}`;
+        assert.ok(ctx.length <= RESTORE_MAX_CHARS && ctx.length >= RESTORE_MAX_CHARS - 1, what);
+        assert.match(ctx, new RegExp(`\\*\\*TRUNCATED: this snapshot is ${n} characters and only the first \\d+ are shown\\.\\*\\*`), what);
+        assert.ok(existsSync(snap), `${what}: the snapshot is kept`);
+        assert.equal(r.json.systemMessage, "continuity: the re-inlined repo rules and the durable notes list left out of the post-compaction restore: the block before them reached the 20,000-character restore guard; read the rules files and the notes directory directly.", what);
+        if (liveness === "on") assert.ok(ctx.search(/pre-compaction save liveness/) > ctx.indexOf("**TRUNCATED"), `${what}: the liveness line closes the context`);
+      }
+    }
+    b.writeConfig({ liveness: "off" });
+    rmSync(snap);
+
+    // No snapshot and a walk past the section cap: the rules section is at most 9,000 bytes whole.
+    writeFileSync(join(b.work, "pkg", "AGENTS.md"), `# pkg rules\n${"p".repeat(7000)}\n`);
+    ctx = compact();
+    const rules = ctx.slice(ctx.indexOf("## Repo rules re-inlined"), ctx.indexOf("\n\n## Durable notes"));
+    assert.ok(rules.endsWith("\n"));
+    assert.ok(Buffer.byteLength(rules) <= 9000 && Buffer.byteLength(rules) > 8600, `the rules section: ${Buffer.byteLength(rules)} bytes`);
+    assert.ok(ctx.length <= RESTORE_MAX_CHARS);
+    writeFileSync(join(b.work, "pkg", "AGENTS.md"), "# pkg rules\n");
+    rmSync(join(b.env.XDG_CONFIG_HOME, "continuity", "config.json"));
+
+    // Config: rules off drops the section; notesCount 0 drops the probe; notesDir moves it; an absent dir is one line.
+    b.writeConfig({ rules: "off", notesDir: "docs/log" });
+    ctx = compact();
+    assert.doesNotMatch(ctx, /Repo rules re-inlined/);
+    assert.match(ctx, /## Durable notes \(`.*\/docs\/log`\)\n\n\(no notes directory at /);
+    b.writeConfig({ notesCount: 0 });
+    ctx = compact();
+    assert.match(ctx, /Repo rules re-inlined/);
+    assert.doesNotMatch(ctx, /Durable notes/);
+    // snapshot off skips the restore and not the rules.
+    b.writeConfig({ snapshot: "off", notesCount: 1 });
+    ctx = compact();
+    assert.doesNotMatch(ctx, /not restored|Restored session state/);
+    assert.match(ctx, /Repo rules re-inlined[\s\S]*The newest 1 of 2 entries/);
+
+    // A cwd reached through a symlink into a nested directory: the notes hang off the real git
+    // root, the same root the rules walk finds, with the rules on and with them off.
+    const link = join(b.root, "link-to-deep");
+    symlinkSync(join(b.work, "pkg", "deep"), link);
+    const viaLink = () => spawnHook(b, "session-start.mjs", { hook_event_name: "SessionStart", session_id: "s-test", cwd: link, source: "compact" }).json.hookSpecificOutput.additionalContext;
+    const notesHere = `## Durable notes (\`${join(b.work, ".ai", "decision-log")}\`)\n\nThe newest 2 of 2 entries`;
+    b.writeConfig({ snapshot: "off" });
+    ctx = viaLink();
+    assert.ok(ctx.includes(notesHere), ctx);
+    assert.match(ctx, /# root rules[\s\S]*# pkg rules/);
+    b.writeConfig({ snapshot: "off", rules: "off" });
+    ctx = viaLink();
+    assert.ok(ctx.includes(notesHere), ctx);
   } finally {
     b.release();
   }

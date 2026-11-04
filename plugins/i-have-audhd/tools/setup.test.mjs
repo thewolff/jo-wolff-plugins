@@ -29,7 +29,7 @@ function runSetup(home, answers = [], args = []) {
   return spawnSync(process.execPath, [SETUP, ...args], {
     input: answers.map((a) => `${a}\n`).join(""),
     encoding: "utf8",
-    env: { ...process.env, HOME: home, I_HAVE_AUDHD_PROFILE: "" },
+    env: { ...process.env, HOME: home, I_HAVE_AUDHD_PROFILE: "", XDG_CONFIG_HOME: "" },
     timeout: 5_000,
   });
 }
@@ -42,6 +42,24 @@ test("choosing none writes judgeCommand null, says which checks stay off, and ma
   assert.match(r.stdout, /node v\d+/);
   assert.match(r.stdout, /No judge, no test\. do-not-batch-by-label, conclusion-first, restate-resumed-thread, report-what-you-did-not-do, bad-news-first stay off/);
   assert.equal(statSync(profilePath(home)).mode & 0o777, 0o600);
+});
+
+test("switching an existing override to none previews the shared file alone, never the override being removed", () => {
+  const home = mkhome();
+  writeFileSync(profilePath(home), JSON.stringify({ enforcement: { judgeCommand: GOOD_JUDGE } }));
+  const r = runSetup(home, ["5", "yes"]);
+  assert.equal(r.status, 0, r.stdout);
+  assert.ok(!r.stdout.includes("The shared judge applies"), r.stdout);
+  assert.match(r.stdout, /No judge, no test\. do-not-batch-by-label/);
+  assert.equal(readProfile(home).enforcement.judgeCommand, null);
+
+  const shared = mkhome();
+  writeFileSync(profilePath(shared), JSON.stringify({ enforcement: { judgeCommand: GOOD_JUDGE } }));
+  mkdirSync(join(shared, ".config", "judge"), { recursive: true });
+  writeFileSync(join(shared, ".config", "judge", "config.json"), JSON.stringify({ command: "shared-judge-cmd" }));
+  const s = runSetup(shared, ["5", "yes"]);
+  assert.equal(s.status, 0, s.stdout);
+  assert.match(s.stdout, /The shared judge applies: "shared-judge-cmd" from .*judge\/config\.json\./);
 });
 
 test("a custom judge is tested, previewed, and written; every other profile field is kept", () => {
@@ -124,7 +142,7 @@ test("an unparseable profile is refused untouched and its contents are not print
 test("the listed choices are Claude Code, Codex, OMP, custom, and none", () => {
   const home = mkhome();
   const r = runSetup(home, []);
-  for (const line of [/1\. Claude Code CLI, Haiku model/, /2\. Codex CLI/, /3\. OMP, a model you name/, /4\. A command you type/, /5\. None: 5 of 13 checks stay off/]) {
+  for (const line of [/1\. Claude Code CLI, Haiku model/, /2\. Codex CLI/, /3\. OMP, a model you name/, /4\. A command you type/, /5\. None of its own: the shared judge file applies when it names a command; otherwise 5 of 13 checks stay off/]) {
     assert.match(r.stdout, line);
   }
 });

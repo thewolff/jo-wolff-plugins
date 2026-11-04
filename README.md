@@ -72,10 +72,13 @@ it, keeping a record of what it did and asked, and a vendored set of engineering
   snapshot the post-compaction SessionStart injects back; every start says when that save last
   succeeded, so a dead save is never silent; a context-pressure check warns once and blocks one
   stop near the compaction target, naming `/continuity:handoff`; and the handoff skill writes
-  the judgment layer no hook can derive. Claude Code hooks. Changes in continuity 0.1.1:
-  `lib/hook-runner.mjs` re-vendored from plugin-kit 0.3.1 (the handler's env carries the
-  runner's start and deadline; stdout drains before exit); hooks answer as before. See the plugin's
-  [CHANGELOG](plugins/continuity/CHANGELOG.md).
+  the judgment layer no hook can derive. Claude Code hooks. Changes in continuity 0.2.0: after a
+  compaction the restore block also re-inlines the rules files (`CLAUDE.md`, `CLAUDE.local.md`,
+  `AGENTS.md`) on the walk from the cwd to the repository root, root first, inside what the
+  restore guard has left (8,000 bytes per file, 9,000 for the section, every cut and skip
+  named), and lists the newest entries of the repository's durable-notes directory
+  (`notesDir`, default `.ai/decision-log`); config keys `rules`, `notesDir`, `notesCount`. See
+  the plugin's [CHANGELOG](plugins/continuity/CHANGELOG.md).
 - **[brb](#brb)** — type `brb` and walk away: the agent keeps working, every ask it would
   have stopped for waits in a digest, and only a broken main, data loss, a security finding,
   spend near a ceiling or a blocker on everything comes through at once; `back` prints the
@@ -214,8 +217,8 @@ receipt and removes its working files.
 | Plugin | Version | What it does | Reads from / gives to another plugin |
 |---|---|---|---|
 | output-types | 0.3.1 | the CLAIM/CITE contract at SessionStart; a Stop check that warns on a label without its receipt | vendors plugin-kit's `lib/judge.mjs` and `lib/hook-runner.mjs`; delegation's brief skeleton carries its CLAIM/CITE line |
-| i-have-audhd | 1.6.1 | the message skeleton and thirteen Stop checks (links-resolve and the opt-in links-judge since 1.6.1), warning by default | its `enforcement.judgeCommand` is the last fallback of plugin-kit's judge resolution and of ledger's review judge |
-| paired-coding | 1.5.0 | change sets behind a write gate; learning mode with `pair_learn`, `why` + `sources` on a card, `recall` on done | none |
+| i-have-audhd | 1.7.0 | the message skeleton and thirteen Stop checks (links-resolve and the opt-in links-judge since 1.6.1), warning by default; its judge is the shared one since 1.7.0 | vendors plugin-kit's `lib/judge.mjs`; its `enforcement.judgeCommand` is an override of the shared judge file, and the last fallback of plugin-kit's judge resolution and of ledger's review judge |
+| paired-coding | 1.6.0 | change sets behind a write gate; learning mode with `pair_learn`, `why` + `sources` on a card, `recall` on done; a pattern claim needs a pattern source, `alternatives` drawn from ask-graham's findings | reads pattern-check's receipt and ask-graham's findings when present; no dependency |
 | ask-graham | 0.8.1 | "should we build X?" with a verdict; a prompt nudge and a Stop check; each verdict or structure check recorded per session in `ask-graham/findings/<session id>.json` | reads your `sources.md`; nothing from another plugin; its `**Alternative:**` line carries pattern-check's `better design` cell when that plugin is installed; its findings file is for other plugins to read |
 | pattern-check | 0.4.0 | holds big work until a reuse/replace/new receipt exists, each row with its `better design` and how it fails | its receipt file is what delegation's spawn gate requires |
 | reminders-review | 0.2.1 | Apple Reminders, one at a time | none |
@@ -224,15 +227,16 @@ receipt and removes its working files.
 | as2-skills | 0.1.2 | 22 vendored engineering skills, each with "How it fails" | its sections meet ledger's `says` row |
 | ctx-watch | 0.2.1 | ctx daemon and semantic-index health, repair, and the consult-history Stop check | vendors the hook runner and the scenario runner |
 | delegation | 0.1.1 | brief teaching, spawn gate, `SendMessage` check, SubagentStop warning, 11 agents, three guards | needs pattern-check's receipt for builder-class spawns; vendors the hook runner |
-| continuity | 0.1.1 | PreCompact snapshot, liveness line, context-pressure warning, `/continuity:handoff` | vendors the hook runner |
+| continuity | 0.2.0 | PreCompact snapshot, post-compaction restore with the rules files and durable notes re-inlined, liveness line, context-pressure warning, `/continuity:handoff` | vendors the hook runner |
 | brb | 0.1.1 | `brb` / `back` / `pending`, the away digest, keep-working, on-fire surfacing | vendors the hook runner |
 
 ### What they share
 
 - **The judge command.** plugin-kit's `lib/judge.mjs` resolves one command (the plugin's env
   var, its own setting, `~/.config/judge/config.json`, then i-have-audhd's
-  `enforcement.judgeCommand`) and output-types vendors it, while i-have-audhd's `judge/ask.mjs`
-  and ledger's `lib/judge.mjs` still read the i-have-audhd profile themselves.
+  `enforcement.judgeCommand`) and output-types and i-have-audhd vendor it (i-have-audhd's own
+  setting is that same `enforcement.judgeCommand`, so for it the profile comes first), while
+  ledger's `lib/judge.mjs` still reads the i-have-audhd profile itself.
 - **The receipt.** output-types defines what earns a CLAIM or CITE and warns at Stop when a
   label lacks one; pattern-check's receipt is the `.pattern-check/<session>.md` file, which
   delegation's spawn gate requires before a builder-class spawn.
@@ -486,26 +490,28 @@ Three steps:
    omp plugin install i-have-audhd@jo-wolff-plugins
    ```
 
-2. **Choose a judge.** Five of the eleven Stop-hook checks (`do-not-batch-by-label`,
+2. **Choose a judge.** Five of the thirteen Stop-hook checks (`do-not-batch-by-label`,
    `conclusion-first`, `restate-resumed-thread`, `report-what-you-did-not-do`,
-   `bad-news-first`) need a model to read the message, and they stay off until you pick one. In a
-   terminal, run the setup tool from the marketplace copy you just added:
+   `bad-news-first`) need a model to read the message, and they stay off until a judge command
+   is configured. Since 1.7.0 that is the shared judge every judging plugin reads,
+   `~/.config/judge/config.json`; write it once from the marketplace copy you just added:
 
    ```
-   node ~/.claude/plugins/marketplaces/jo-wolff-plugins/plugins/i-have-audhd/tools/setup.mjs
+   node ~/.claude/plugins/marketplaces/jo-wolff-plugins/plugins/i-have-audhd/lib/judge.mjs setup
    ```
 
    On OMP the same file is at
-   `~/.omp/plugins/cache/marketplaces/jo-wolff-plugins/plugins/i-have-audhd/tools/setup.mjs`.
-   Either copy configures both hosts: they read one profile, `~/.claude/i-have-audhd.json`.
-   The tool checks `node`, lists the judges (the Claude Code CLI, the Codex CLI, OMP, a command
-   you type, or none), makes one test call to the judge you pick, shows the JSON it will write,
-   and writes `enforcement.judgeCommand` only after you type `yes`. Choosing none writes
-   `"judgeCommand": null` and leaves those five checks off. Run it again any time to change the
-   choice.
+   `~/.omp/plugins/cache/marketplaces/jo-wolff-plugins/plugins/i-have-audhd/lib/judge.mjs`
+   (any plugin's vendored copy writes the same file). It asks for the command, makes one test
+   call, shows the JSON it will write, and writes after you type `yes`. To give i-have-audhd a
+   judge of its own that wins over the shared file, or to choose none, run
+   `node <same directory>/tools/setup.mjs` instead: it lists the judges (the Claude Code CLI,
+   the Codex CLI, OMP, a command you type, or none of its own), tests the pick, and writes
+   `enforcement.judgeCommand` in `~/.claude/i-have-audhd.json`, the one profile both hosts
+   read, only after a `yes`. Run either again any time to change the choice.
 
 3. **Start a new session.** If you skipped step 2, the first session shows a one-time notice
-   naming the five checks that are off and the exact setup command.
+   naming the five checks that are off, both files, and both setup commands.
 
 OMP does not run a plugin's `hooks/hooks.json`. The install registers the plugin's OMP extension,
 `omp/i-have-audhd-omp.ts` (registered on omp 18.8.6), which runs the same two hooks, the
@@ -541,6 +547,17 @@ choose a judge (install step 2), and each fired trigger is logged to `skipped.lo
 `I_HAVE_AUDHD_INJECT=off` turns the injection off; the skill still loads on demand. The package
 README and `skills/i-have-audhd/reference.md` carry the schema, every check's contract, and the
 measured rates.
+
+Changes in 1.7.0: the judge command is plugin-kit's shared judge. `lib/judge.mjs` is vendored
+byte for byte and resolves the command in the kit's order, the profile's
+`enforcement.judgeCommand` first, else `~/.config/judge/config.json`, so one
+`node lib/judge.mjs setup` configures this plugin with every other that judges; an existing
+profile with `judgeCommand` keeps working unchanged, and `null` there means no override.
+`judge/ask.mjs` keeps the prompt, the verdict shape, the cache, the harness budget and the
+`cause=` failure line; that line now carries the kit's error kinds, a `detail=` and the
+`source=` the command came from. `tools/setup.mjs` writes the override only, and the
+session-start notice names both files. Eval `stop-judge-shared-config` replays the real-judge
+capture with the command in the shared file.
 
 Changes in 1.6.1: `links-resolve` warns when a link in the message does not open: a local path
 in backticks that does not exist, a GitHub URL with no such page shape, a sentence that calls an
@@ -635,6 +652,19 @@ installing the plugin.
   ask a process outside the sandbox to write for it.
 - **A journal** of every card, quote, verdict, refusal and diff, kept outside the worktree.
 - **A stop only you can give:** pairing ends when you type `pair stop` as a message of its own.
+
+Changes in 1.6.0: the card's `why` and `sources` draw on what the session already found. A
+`why` that claims a codebase pattern (`pattern used in`, `the rest of the codebase`,
+`convention here`, `how the codebase does`, `existing pattern`, `follows the pattern`, `the
+pattern in`) needs a pattern source, in any mode: one absolute `file:line` inside
+`<git root>/.pattern-check/` (pattern-check's receipt) or two inside the repository, else
+`pair_propose` refuses naming the receipt path it looked for and both counts. A new optional
+card field `alternatives` (`[{ design, chosen }]`, exactly one chosen) is required when
+ask-graham's findings file for the session is on disk, and then has to carry the findings'
+chosen design and, when they weighed another, a non-chosen entry; the card lists them with the
+chosen one marked. Both checks read sibling plugins' files only, neither plugin has to be
+installed, and a missing file never refuses. See the plugin README, *A pattern claim needs a
+pattern source*.
 
 Changes in 1.5.0: learning mode, off by default. Type `learning mode on` or `teach me as we go`
 while pairing and each card's decision line adds **Why this approach** with **Sources** (a URL
@@ -1404,9 +1434,15 @@ the open handoffs under the repository's `.ai/handoffs/`) to
 `${XDG_STATE_HOME:-~/.local/state}/continuity/<session_id>.json`, every list capped and every
 cut announced in the file, and leaves a heartbeat record saying whether it worked. On the
 SessionStart that follows a compaction, `hooks/session-start.mjs` injects that snapshot back
-(this session's only, at most 20,000 characters) and removes it; on every start it adds one
-line, `continuity, pre-compaction save liveness: last successful save N minutes ago; the
-snapshot path is alive`, or a bold line saying the save has never been recorded or never
+(this session's only, at most 20,000 characters) and removes it, then re-inlines the rules files
+(`CLAUDE.md` with `CLAUDE.local.md`, else `AGENTS.md`) of every directory from the cwd to the
+repository root that the host does not re-read on its own, root first, inside what the restore
+guard has left (8,000 bytes per file, 9,000 for the section, the largest files cut first with a
+marker, every skipped file named; a level the host loaded at launch is skipped), and lists the
+newest five entries of the repository's durable-notes directory (`notesDir`, default
+`.ai/decision-log`) as the source of truth the snapshot is only the safety net for; on every
+start it adds one line, `continuity, pre-compaction save liveness: last successful save N minutes
+ago; the snapshot path is alive`, or a bold line saying the save has never been recorded or never
 succeeded on this machine, so a save that silently died is seen the next morning. The
 context-pressure check (`hooks/user-prompt-submit.mjs`, `hooks/stop.mjs`) estimates the
 session's size from the transcript and the ratio observed at earlier compactions, and at 0.65
@@ -1416,7 +1452,7 @@ that has never compacted hears nothing. The handoff skill writes
 `<root>/.ai/handoffs/<date>--<time>--<author>--<lane>.md` with five sections (where I left off,
 next move, already ruled out, live uncertainty, working state) and the rule that a resuming
 session restates the content before continuing. Every hook fails open. Built on plugin-kit
-0.2.1; Node 22.13 or later. The config keys, the state table, the failure table and the
+0.3.1; Node 22.13 or later. The config keys, the state table, the failure table and the
 "Ported from newdle 0.2.175" table are in
 [`plugins/continuity/README.md`](plugins/continuity/README.md).
 
@@ -1430,7 +1466,7 @@ session restates the content before continuing. Every hook fails open. Built on 
 ### Developing continuity
 
 The tests run with `node --test` from inside `plugins/continuity/`;
-`bash e2e/live-run.sh --no-live` replays the twelve scenarios offline.
+`bash e2e/live-run.sh --no-live` replays the fourteen scenarios offline.
 
 ## brb
 

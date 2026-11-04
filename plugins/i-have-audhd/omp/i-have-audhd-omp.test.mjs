@@ -365,7 +365,8 @@ test("integration: with no judge chosen, the first main session shows the setup 
   const context = await run("startup", ctx);
   assert.equal(notices.length, 1);
   assert.equal(notices[0].type, "warning");
-  assert.match(notices[0].message, /no judge is configured, so 5 of its 13 checks are off/);
+  assert.match(notices[0].message, /no judge is configured \(no enforcement\.judgeCommand in the profile and no command in \S+\/judge\/config\.json\), so 5 of its 13 checks are off/);
+  assert.ok(notices[0].message.includes(`node ${join(PLUGIN_ROOT, "lib", "judge.mjs")} setup`), "the shared setup is named");
   assert.ok(notices[0].message.includes(join(PLUGIN_ROOT, "tools", "setup.mjs")));
   assert.ok(context.includes(notices[0].message), "the agent gets the same text");
   await run("startup", ctx);
@@ -505,7 +506,7 @@ test("lifecycle: a hung judge at the production budgets — the stop settles its
   assert.ok(elapsed < 25_000, `the stop took ${elapsed}ms; the adapter's kill or the host's cutoff decided it`);
   assert.equal(out, undefined, "no profile mode: the deterministic finding warns");
   assert.equal(readLog(stateDir, "errors.log"), "", "the core settled itself; the adapter did not fail open");
-  assert.match(readLog(stateDir, "judge-failures.log"), /error=judge-timeout/);
+  assert.match(readLog(stateDir, "judge-failures.log"), /error=timeout cause=hook-deadline/);
   assert.match(readLog(stateDir, "warnings.log"), /rule=needs-you-first/, "the deterministic warning survived the hung judge");
   assert.ok(pids.length > 0, "a judge job ran");
   assert.ok(gone.every(Boolean), `judge descendants ${pids.join(", ")} outlived the stop`);

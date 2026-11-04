@@ -22,7 +22,7 @@ That one module does two jobs for the main session (see its header for the event
 - **Inside OMP's 30s handler budget.** OMP drops a `session_stop` handler's result after
   30s. Under the `omp` tag each judge call gets 20s (Claude Code keeps 30s), and the adapter
   kills a core still running at 25s and logs one `omp-adapter fail-open` line. A hung judge
-  therefore costs a `judge-timeout` line in `judge-failures.log` per judge call; the stop
+  therefore costs an `error=timeout` line in `judge-failures.log` per judge call; the stop
   still settles with the core's deterministic findings. Neither value is configurable.
 - **One session id.** Both hooks and the adapter's own-block record use the session
   manager's id (`ctx.sessionManager.getSessionId()`), not the provider id in the
@@ -145,7 +145,7 @@ deterministic rather than dependent on what the model writes:
   replaced Stop text from the second check (two paragraphs of prose before `## Needs you`,
   so the deterministic check and the conclusion-first trigger both fire). It passes when the
   turn settles within 25s of the final message, `warnings.log` gains one
-  `rule=needs-you-first` line, `judge-failures.log` gains a `error=judge-timeout` line,
+  `rule=needs-you-first` line, `judge-failures.log` gains an `error=timeout` line,
   `errors.log` gains no `omp-adapter fail-open` line, the omp log for the run (the logs dir,
   `omp.<day>.<pid>.log`) carries no `Extension handler timed out` warning for
   `session_stop`, and `pgrep -f 'sleep 45'` prints nothing once the turn has settled.

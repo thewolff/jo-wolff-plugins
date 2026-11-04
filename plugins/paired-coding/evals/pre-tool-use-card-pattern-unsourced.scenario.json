@@ -1,0 +1,31 @@
+{
+  "$comment": "A card whose why claims a codebase pattern (\"the pattern used in the rest of the codebase\") with one file:line in the repository and none in <git root>/.pattern-check/: pair_propose refuses it, naming this session's receipt path and both counts (evals/card-checks.mjs pattern-unsourced exits non-zero on any other answer). Pairing is on, so the host Write is then denied as usual.",
+  "event": "PreToolUse",
+  "expect": "deny",
+  "reason": "paired-coding",
+  "setup": {
+    "commands": [
+      "node \"${PLUGIN_DIR}/evals/card-checks.mjs\" \"${SESSION_ID}\" pattern-unsourced"
+    ]
+  },
+  "stdin": {
+    "session_id": "${SESSION_ID}",
+    "transcript_path": "${TRANSCRIPT}",
+    "cwd": "${CWD}",
+    "hook_event_name": "PreToolUse",
+    "tool_name": "Write",
+    "tool_use_id": "toolu_01",
+    "tool_input": {
+      "file_path": "${CWD}/card-eval.txt",
+      "content": "x"
+    }
+  },
+  "after": {
+    "exists": [
+      "~/.local/state/paired-coding/${SESSION_ID}/activated"
+    ],
+    "absent": [
+      "${CWD}/.pattern-check"
+    ]
+  }
+}
