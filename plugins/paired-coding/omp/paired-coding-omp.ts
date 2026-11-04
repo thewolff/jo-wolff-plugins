@@ -23,6 +23,9 @@
 //                         rewritten (adversarial test 16). There is no stop tool.
 //   session_shutdown   -> endSession(): reap every pair_run process group, take the final
 //                         snapshot, write the pair-accepted receipt, go inactive.
+//   session_stop       -> recallWarning(): in learning mode, a turn that closed a change set and
+//                         whose final message has no line starting "Recall:" gets a warning
+//                         (ui.notify). Never a block: the handler returns nothing.
 //   session_before_switch, session_switch, session_before_branch, session_branch
 //                      -> a session change inside the running process (/new, /fork, /resume
 //                         emit the switch events; /btw's branch and a branch requested over RPC
@@ -65,7 +68,7 @@
 
 import { CARRIED_PHRASE, EARLIER_ROADMAP_CHOICES, PAIR_TOOLS, ROADMAP_STATUSES } from "../core/gate.mjs";
 import { logFault, reasonOf } from "../lib/host-io.mjs";
-import { carryInto, clearInPlace, endSession, executeVerb, pairingOrUncertain, recordTrustedInput, sessionDirFor, verdict } from "../lib/verbs.mjs";
+import { carryInto, clearInPlace, endSession, executeVerb, messageText, pairingOrUncertain, recallWarning, recordTrustedInput, sessionDirFor, verdict } from "../lib/verbs.mjs";
 
 // ─── host shapes (structural; only what this adapter reads) ────────────────────────────
 
@@ -86,6 +89,7 @@ type ZodLike = {
 	number(): { describe(d: string): Schema & { optional(): Schema } };
 	boolean(): { describe(d: string): Schema & { optional(): Schema } };
 	array(item: Schema): { describe(d: string): Schema & { optional(): Schema } };
+	union(options: Schema[]): Schema;
 };
 
 type ToolDefinition = {
@@ -109,6 +113,7 @@ export type PiLike = {
 	on(event: "tool_call", handler: (event: { toolName: string; input?: Record<string, unknown> }, ctx: OmpContext) => unknown): void;
 	on(event: "input", handler: (event: { text: string; source: string }, ctx: OmpContext) => unknown): void;
 	on(event: "session_shutdown", handler: (event: unknown, ctx: OmpContext) => unknown): void;
+	on(event: "session_stop", handler: (event: { last_assistant_message?: unknown }, ctx: OmpContext) => unknown): void;
 	on(event: "session_before_switch" | "session_before_branch", handler: (event: unknown, ctx: OmpContext) => unknown): void;
 	on(event: "session_switch" | "session_branch", handler: (event: { reason?: string }, ctx: OmpContext) => unknown): void;
 	on(event: "session_tree", handler: (event: { newLeafId?: string | null; oldLeafId?: string | null }, ctx: OmpContext) => unknown): void;
@@ -280,6 +285,16 @@ const SPECS: Record<string, ToolSpec> = {
 				effect: OPT_STR(z, "What will be different afterwards."),
 				checks: OPT_LIST(z, "The checks that will show it works."),
 				openPoints: OPT_LIST(z, "Questions still open. While any remain, pair_begin is refused."),
+				why: OPT_STR(z, "Learning mode: why this approach over the alternatives. Required while learning mode is on."),
+				sources: z
+					.array(
+						z.union([
+							z.string().describe('An absolute file:line or file:line-line path, or a string starting "from memory".'),
+							z.object({ url: STR(z, "An http(s) URL you fetched."), passage: STR(z, "The words at that URL you relied on.") }),
+						]),
+					)
+					.describe("Learning mode: what why rests on, at least one. Required while learning mode is on.")
+					.optional(),
 			}),
 	},
 	pair_begin: {
@@ -298,7 +313,11 @@ const SPECS: Record<string, ToolSpec> = {
 		description:
 			"Close the open change set. Kills anything left running from its pair_run calls, then returns the machine-produced diff of the boundary since pair_begin for your partner to read back.",
 		approval: "write",
-		parameters: (z) => z.object({ cardId: STR(z, "The open change set's card id.") }),
+		parameters: (z) =>
+			z.object({
+				cardId: STR(z, "The open change set's card id."),
+				recall: OPT_STR(z, 'Learning mode: one question, on one line, your partner answers from memory about this change set; ask it in your closing message on a line starting "Recall:". Required while learning mode is on.'),
+			}),
 	},
 	pair_write: {
 		label: "Pair: write file",
@@ -332,6 +351,13 @@ const SPECS: Record<string, ToolSpec> = {
 				command: STR(z, "The command, run with /bin/sh -c in the worktree root."),
 				timeoutSeconds: z.number().describe("Timeout in seconds (default 600, max 3600).").optional(),
 			}),
+	},
+	pair_learn: {
+		label: "Pair: learning mode",
+		description:
+			'Turn learning mode on or off for this pairing session, when your partner asks. While it is on, pair_propose needs why and sources, and pair_done needs recall, one question your closing message asks on a line starting "Recall:". Every pair_start starts with it off.',
+		approval: "read",
+		parameters: (z) => z.object({ on: z.boolean().describe("true turns learning mode on, false turns it off.") }),
 	},
 };
 
@@ -395,6 +421,19 @@ export default function pairedCodingOmp(pi: PiLike, deps: AdapterDeps = {}): voi
 	pi.on("session_shutdown", (_event, ctx) => {
 		const dir = dirOf(ctx, env);
 		if (dir) endSession({ sessionDir: dir });
+		return undefined;
+	});
+
+	pi.on("session_stop", (event, ctx) => {
+		try {
+			const dir = dirOf(ctx, env);
+			if (!dir) return undefined;
+			const warning = recallWarning({ sessionDir: dir, text: () => messageText(event?.last_assistant_message) });
+			if (warning) warn(ctx, warning);
+		} catch (err) {
+			const logged = logFault(env, "session_stop", { session_id: ctx.sessionManager.getSessionId() }, `the learning-mode recall check failed: ${reasonOf(err)}`, OMP_FILE);
+			warn(ctx, `paired coding: the learning-mode recall check failed (${reasonOf(err)}). ${logged}`);
+		}
 		return undefined;
 	});
 

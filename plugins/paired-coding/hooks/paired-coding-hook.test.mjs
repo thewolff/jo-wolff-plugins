@@ -707,3 +707,50 @@ test("quitting while pairing, then a fresh launch: the new session stays inert",
   // The launch did not take the marker: resuming the quit session still starts closed.
   assert.notEqual(handle("session-start", { ...f.common, session_id: "s3", source: "resume" }, { env: f.env, waitMs: 0 }), null);
 });
+
+// ─── learning mode: the Stop warning ────────────────────────────────────────────────────
+
+/** Pairing with learning on and card-1 closed by pair_done with a recall question. */
+async function learnedChangeSet(f) {
+  assert.equal((await call(f, "pair_start", {})).ok, true);
+  assert.equal((await call(f, "pair_learn", { on: true })).ok, true);
+  const p = await call(f, "pair_propose", { boundary: ["a.txt"], why: "w", sources: ["from memory"] });
+  assert.equal(p.ok, true, p.text);
+  typedPrompt(f, "yes, go ahead");
+  assert.equal((await call(f, "pair_begin", { cardId: "card-1", quote: "go ahead" })).ok, true);
+  const refused = await call(f, "pair_done", { cardId: "card-1" });
+  assert.equal(refused.ok, false);
+  assert.match(refused.text, /^pair_done refused: learning mode is on: pair_done needs recall/);
+  const done = await call(f, "pair_done", { cardId: "card-1", recall: "What does pair_done hash?" });
+  assert.equal(done.ok, true, done.text);
+}
+
+test("learning mode: Stop warns once when pair_done closed a card and the closing message asks no Recall question; it never blocks", { skip: !hasSandbox }, async () => {
+  const f = fixture();
+  await learnedChangeSet(f);
+  const out = handle("stop", { ...f.common, last_assistant_message: "Card 1 is closed. Diff above." }, { env: f.env, waitMs: 100 });
+  assert.deepEqual(Object.keys(out), ["systemMessage"], "a warning, never a decision");
+  assert.equal(out.systemMessage, 'paired-coding learning mode: pair_done closed card-1 this turn, but the closing message has no line starting "Recall:", so the recall question was not put to you. From the journal: card-1: What does pair_done hash?');
+  assert.equal(handle("stop", { ...f.common, last_assistant_message: "Next turn." }, { env: f.env, waitMs: 100 }), null, "the same pair_done warns once");
+});
+
+test("learning mode: a Recall: line in the closing message, read from the transcript when Stop names none, means no warning", { skip: !hasSandbox }, async () => {
+  const f = fixture();
+  await learnedChangeSet(f);
+  appendFileSync(f.transcript, `${JSON.stringify({ type: "assistant", message: { role: "assistant", content: [{ type: "text", text: "Read-back done.\n**Recall:** What does pair_done hash?" }] } })}\n`);
+  assert.equal(handle("stop", { ...f.common }, { env: f.env, waitMs: 100 }), null);
+  const entries = readFileSync(join(f.base, "s1", "journal.jsonl"), "utf8").trim().split("\n").map((l) => JSON.parse(l));
+  const check = entries.find((e) => e.type === "recall-check");
+  assert.deepEqual({ cardIds: check.cardIds, recallShown: check.recallShown }, { cardIds: ["card-1"], recallShown: true });
+});
+
+test("learning mode off: Stop stays silent after pair_done and journals no recall check", { skip: !hasSandbox }, async () => {
+  const f = fixture();
+  await call(f, "pair_start", {});
+  await call(f, "pair_propose", { boundary: ["a.txt"] });
+  typedPrompt(f, "yes, go ahead");
+  assert.equal((await call(f, "pair_begin", { cardId: "card-1", quote: "go ahead" })).ok, true);
+  assert.equal((await call(f, "pair_done", { cardId: "card-1" })).ok, true);
+  assert.equal(handle("stop", { ...f.common, last_assistant_message: "Closed." }, { env: f.env, waitMs: 100 }), null);
+  assert.equal(readFileSync(join(f.base, "s1", "journal.jsonl"), "utf8").includes("recall-check"), false);
+});

@@ -41,6 +41,7 @@ import {
   pairBegin,
   pairDone,
   pairNote,
+  pairLearn,
   pairPropose,
   pairRunProfile,
   pairWriteProfile,
@@ -59,6 +60,9 @@ import {
   toolVerdict,
   usableCarveOuts,
   MID_TURN_REASON,
+  sourceProblem,
+  RECALL_REASON,
+  WHY_REASON,
 } from "./gate.mjs";
 
 const ROOT = "/work/repo";
@@ -1338,7 +1342,159 @@ test("boundaryProblem accepts clean entries", () => {
 });
 
 test("PAIR_TOOLS are the model-callable verbs", () => {
-  assert.deepEqual([...PAIR_TOOLS].sort(), ["pair_begin", "pair_done", "pair_edit", "pair_note", "pair_propose", "pair_run", "pair_start", "pair_write"]);
+  assert.deepEqual([...PAIR_TOOLS].sort(), ["pair_begin", "pair_done", "pair_edit", "pair_learn", "pair_note", "pair_propose", "pair_run", "pair_start", "pair_write"]);
+});
+
+// ─── learning mode ──────────────────────────────────────────────────────────────────────
+
+describe("learning mode", () => {
+  const learning = (host = fakeHost()) => ok(pairLearn(started(host), { on: true }, host.io));
+  const SOURCES = ["/work/repo/src/a.ts:12", { url: "https://nodejs.org/api/fs.html", passage: "Returns undefined." }];
+
+  test("off by default: the 1.4.4 card flow runs unchanged, and no card or done entry gains a field", () => {
+    const host = fakeHost();
+    let s = started(host);
+    assert.equal(s.learning, false);
+    const proposed = pairPropose(s, card(), host.io);
+    s = ok(proposed);
+    assert.equal(Object.hasOwn(proposed.card, "why"), false);
+    assert.equal(Object.hasOwn(proposed.card, "sources"), false);
+    s = say(s, "yes, go ahead with that");
+    s = ok(pairBegin(s, { cardId: s.card.id, quote: "go ahead" }, host.io));
+    host.files.set("src/a.ts", "a2");
+    const done = pairDone(s, { cardId: "card-1" }, host.io);
+    ok(done);
+    assert.equal(Object.hasOwn(done.journal[0], "recall"), false);
+    assert.equal(Object.hasOwn(done, "recall"), false);
+  });
+
+  test("off: why and sources are recorded as given and never checked", () => {
+    const host = fakeHost();
+    const r = pairPropose(started(host), card({ why: "", sources: "not a list" }), host.io);
+    ok(r);
+    assert.equal(r.card.sources, "not a list");
+  });
+
+  test("pair_learn turns it on and off, journaled like a note", () => {
+    const host = fakeHost();
+    const on = pairLearn(started(host), { on: true }, host.io);
+    assert.equal(ok(on).learning, true);
+    assert.deepEqual({ type: on.journal[0].type, on: on.journal[0].on, was: on.journal[0].was }, { type: "learning", on: true, was: false });
+    const off = pairLearn(on.state, { on: false }, host.io);
+    assert.equal(ok(off).learning, false);
+    assert.equal(off.journal[0].was, true);
+  });
+
+  test("pair_learn is refused when pairing is off, in a carried session, and without a boolean", () => {
+    const host = fakeHost();
+    refusedWith(pairLearn(inactiveState(), { on: true }, host.io), /not active/);
+    const carried = ok(carryClosed(inactiveState(), { sessionId: "s2", root: ROOT, stateDir: "/state/s2", from: "s1", reason: "clear" }, host.io));
+    assert.equal(carried.learning, false);
+    refusedWith(pairLearn(carried, { on: true }, host.io), /carried/);
+    refusedWith(pairLearn(started(host), { on: "yes" }, host.io), /not true or false/);
+    refusedWith(pairLearn(started(host), {}, host.io), /not true or false/);
+  });
+
+  test("the flag does not leak: a typed stop and the next pair_start start it off", () => {
+    const host = fakeHost();
+    const s = learning(host);
+    const stopped = recordInput(s, { text: "pair stop", source: "interactive" }, host.io);
+    assert.equal(stopped.state.phase, "inactive");
+    assert.equal(ok(pairStart(stopped.state, { sessionId: "s1", root: ROOT, stateDir: STATE_DIR }, host.io)).learning, false);
+  });
+
+  test("the state keeps the flag across a save; a flag that is not a boolean reads as degraded", () => {
+    const s = learning();
+    assert.equal(readState(serializeState(s), { activated: true }).learning, true);
+    const bad = readState(JSON.stringify({ ...s, learning: "on" }), { activated: true, root: ROOT, stateDir: STATE_DIR });
+    assert.equal(bad.degraded, "state file malformed");
+    assert.equal(bad.learning, undefined);
+  });
+
+  test("pair_propose refuses a card without why", () => {
+    const host = fakeHost();
+    const s = learning(host);
+    for (const why of [undefined, "", "   ", 7]) {
+      const r = pairPropose(s, card({ why, sources: SOURCES }), host.io);
+      refusedWith(r, /learning mode is on: the card needs why/);
+      assert.equal(r.reason, WHY_REASON);
+      assert.equal(r.state, s);
+    }
+  });
+
+  test("pair_propose refuses missing or empty sources and names the first bad entry", () => {
+    const host = fakeHost();
+    const s = learning(host);
+    refusedWith(pairPropose(s, card({ why: "w" }), host.io), /learning mode is on: the card has no sources; each source is a URL object/);
+    refusedWith(pairPropose(s, card({ why: "w", sources: [] }), host.io), /no sources/);
+    const bad = [
+      ["src/a.ts:3", /sources\[1\] is "src\/a\.ts:3"/],
+      ["/work/repo/src/a.ts", /sources\[1\] is "\/work\/repo\/src\/a\.ts"/],
+      ["/work/repo/src/a.ts:3-", /sources\[1\]/],
+      ["https://example.com/doc", /sources\[1\] is "https:\/\/example\.com\/doc"/],
+      [{ url: "https://example.com/doc" }, /sources\[1\] is \{"url":"https:\/\/example\.com\/doc"\}/],
+      [{ url: "https://example.com/doc", passage: " " }, /sources\[1\]/],
+      [{ url: "ftp://example.com/doc", passage: "p" }, /sources\[1\]/],
+      ["I remember this", /sources\[1\]/],
+      [42, /sources\[1\] is 42/],
+    ];
+    for (const [entry, pattern] of bad) {
+      const r = pairPropose(s, card({ why: "w", sources: ["/work/repo/src/b.ts:1", entry, "also bad"] }), host.io);
+      refusedWith(r, pattern);
+      assert.match(r.reason, /each source is a URL object \{ "url": "https:\/\/…", "passage": "the words you relied on" \}, an absolute file:line or file:line-line path, or a string starting "from memory"/);
+    }
+  });
+
+  test("sourceProblem accepts file:line, file:line-line, from memory with a note, and a URL with its passage", () => {
+    assert.equal(sourceProblem(["/work/repo/src/a.ts:12"]), null);
+    assert.equal(sourceProblem(["/work/repo/src/a.ts:12-40"]), null);
+    assert.equal(sourceProblem(["from memory"]), null);
+    assert.equal(sourceProblem(["from memory: Node's fs.rm needs force to ignore a missing path; not checked this session"]), null);
+    assert.equal(sourceProblem(["From memory, unchecked"]), null);
+    assert.equal(sourceProblem([{ url: "http://localhost:3000/docs", passage: "the API returns 204" }]), null);
+    assert.match(sourceProblem(["from memoryless"]), /sources\[0\]/);
+    assert.match(sourceProblem("from memory"), /no sources/);
+  });
+
+  test("a card with why and sources is recorded with both", () => {
+    const host = fakeHost();
+    const r = pairPropose(learning(host), card({ why: "early return keeps callers simple", sources: SOURCES }), host.io);
+    ok(r);
+    assert.equal(r.card.why, "early return keeps callers simple");
+    assert.deepEqual(r.card.sources, SOURCES);
+    assert.deepEqual(r.journal[0].card.sources, SOURCES);
+  });
+
+  test("an open point starting 'teach me more' keeps pair_begin refused", () => {
+    const host = fakeHost();
+    let s = ok(pairPropose(learning(host), card({ why: "w", sources: SOURCES, openPoints: ["teach me more: why an early return and not a Result type?"] }), host.io));
+    s = say(s, "yes, go ahead with that");
+    refusedWith(pairBegin(s, { cardId: s.card.id, quote: "go ahead" }, host.io), /open points/);
+  });
+
+  test("pair_done refuses without one recall question, before reaping or snapshotting", () => {
+    const host = fakeHost();
+    let s = ok(pairPropose(learning(host), card({ why: "w", sources: SOURCES }), host.io));
+    s = say(s, "yes, go ahead with that");
+    s = ok(pairBegin(s, { cardId: s.card.id, quote: "go ahead" }, host.io));
+    s = { ...s, changeSet: { ...s.changeSet, runs: ["run-1"] } };
+    let reaped = 0;
+    const io = { ...host.io, reapRuns: () => { reaped += 1; } };
+    host.log.length = 0;
+    for (const recall of [undefined, "", "  ", "two\nquestions?", 3]) {
+      const r = pairDone(s, { cardId: "card-1", recall }, io);
+      refusedWith(r, /learning mode is on: pair_done needs recall/);
+      assert.equal(r.reason, RECALL_REASON);
+      assert.equal(r.state.phase, "open");
+    }
+    assert.equal(reaped, 0);
+    assert.deepEqual(host.log, []);
+    const done = pairDone(s, { cardId: "card-1", recall: " Why does the early return need no try/catch? " }, io);
+    assert.equal(ok(done).phase, "closed");
+    assert.equal(done.journal[0].type, "done");
+    assert.equal(done.journal[0].recall, "Why does the early return need no try/catch?");
+    assert.equal(done.recall, "Why does the early return need no try/catch?");
+  });
 });
 
 // ─── adversarial gate tests ─────────────────────────────────────────────────────────────
