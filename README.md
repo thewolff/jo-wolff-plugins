@@ -28,6 +28,10 @@ it, keeping a record of what it did and asked, and a vendored set of engineering
 - **[as2-skills](plugins/as2-skills/README.md)** — the 22 engineering skills of agent-system 2.0,
   vendored from four upstream skill packs at pinned releases, with frontmatter claude.ai accepts.
   Install with `/plugin install as2-skills@jo-wolff-plugins`; skills only.
+- **[ctx-watch](#ctx-watch)** — notice when the ctx daemon is dead, unsupervised,
+  or stale, repair it with the one command ctx documents, and say so at SessionStart and in a
+  macOS popup from a launchd timer; the SessionStart line also says when the timer itself has
+  stopped. macOS; Claude Code hooks, plus a CLI that works anywhere.
 
 output-types delivers text and does not read what the agent sends back; see its *delivers, does
 not enforce* note. i-have-audhd delivers its rules and checks every finished message, warning by
@@ -51,6 +55,7 @@ the receipt.
 /plugin install ledger@jo-wolff-plugins
 /plugin install as2-skills@jo-wolff-plugins
 /plugin install plugin-kit@jo-wolff-plugins
+/plugin install ctx-watch@jo-wolff-plugins
 ```
 
 On OMP, from a shell:
@@ -65,13 +70,15 @@ omp plugin install reminders-review@jo-wolff-plugins
 omp plugin install pattern-check@jo-wolff-plugins
 omp plugin install as2-skills@jo-wolff-plugins
 omp plugin install plugin-kit@jo-wolff-plugins
+omp plugin install ctx-watch@jo-wolff-plugins
 ```
 
 Inside a running OMP session the commands are `/marketplace add` and `/marketplace install`, with
 the same arguments. `/plugin install` inside OMP installs nothing. On OMP output-types delivers its
 skill only; its hooks do not run there. i-have-audhd and paired-coding install OMP extensions
 that run their hooks, and ask-graham installs its prompt nudge (see each section). plugin-kit
-is a skill and a script, so it works on both. ledger is Claude Code only.
+is a skill and a script, so it works on both. ctx-watch's SessionStart line is Claude Code
+only; its skill, CLI and launchd timer work on both. ledger is Claude Code only.
 
 To update, update each harness separately. On OMP, refresh the marketplace first, because
 `omp plugin upgrade` installs the version in OMP's cached copy of it:
@@ -884,6 +891,38 @@ session start. Verbs, config keys, the fail-open table and the known gaps are in
 ### Developing ledger
 
 The tests run with `node --test` from inside `plugins/ledger/`.
+
+## ctx-watch
+
+Notice when the [ctx](https://github.com/ctxrs/ctx) daemon is dead, not supervised, or stale,
+and say so where you will see it. The probe is `ctx daemon status --format json` with `CI`
+removed from the environment, judged on `.daemon.running`, `.daemon.supervisor.status` and
+`.daemon.jobs.core_refresh.last_run_at_ms` (over 2 h is stale) and never on the exit code,
+which is 0 either way. A failing probe is repaired with `ctx index mode auto`, the command
+ctx's own docs give for "installs or repairs supervision and starts the persistent background
+daemon" (verified on a throwaway data root; a non-CI `ctx daemon status` does not restart
+anything), guarded so it never sets ctx up or flips a deliberate `manual` mode. Two surfaces:
+a SessionStart line, `ctx-watch: <reason>; fix: \`<command>\``, plus a dead-man's line when the
+timer itself has not run; and a launchd timer (`install` writes the plist and prints the one
+`launchctl bootstrap` line, never running it) whose `tick` strikes once, goes down on the
+second failing probe in a row, and shows one `osascript` dialog per episode. Built on
+plugin-kit 0.1.0; macOS; Node 22.13 or later. The reasons, the repair's guard, the episode
+rules and the failure table are in [`plugins/ctx-watch/README.md`](plugins/ctx-watch/README.md).
+
+### Install
+
+```
+/plugin marketplace add thewolff/jo-wolff-plugins
+/plugin install ctx-watch@jo-wolff-plugins
+```
+
+Then, once, from your own Terminal: `node <plugin dir>/scripts/ctx-watch.mjs install` and the
+`launchctl bootstrap gui/<uid> <plist>` line it prints.
+
+### Developing ctx-watch
+
+The tests run with `node --test` from inside `plugins/ctx-watch/`. The ctx captures in
+`test/fixtures/` are re-made by `test/fixtures/capture.sh`, by hand.
 
 ## License
 
