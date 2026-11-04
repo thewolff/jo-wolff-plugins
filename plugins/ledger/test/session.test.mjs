@@ -50,7 +50,7 @@ test("200 notes seeded with inject.notes 200 → injection under the cap, questi
   b.writeConfig({ inject: { notes: 200 } });
   apply(b, Array.from({ length: 200 }, (_, i) => ({ tokens: ["note", `note number ${i} ${"x".repeat(80)}`], text: "" })));
   const db = openDb(b);
-  const { text, sections } = buildInjection(db, b.work, loadConfig({ env: b.env, cwd: b.work }).config);
+  const { text, sections } = buildInjection(db, b.work, loadConfig({ env: b.env, cwd: b.work }).config, { env: b.env });
   db.close();
   assert.ok(text.length <= CAP, String(text.length));
   assert.ok(text.includes(q));
@@ -74,7 +74,7 @@ test("inject.notes 0 → no entries section even with notes recorded", () => {
   cli(b, ["note", "quiet"]);
   b.writeConfig({ inject: { notes: 0 } });
   const db = openDb(b);
-  const { sections } = buildInjection(db, b.work, loadConfig({ env: b.env, cwd: b.work }).config);
+  const { sections } = buildInjection(db, b.work, loadConfig({ env: b.env, cwd: b.work }).config, { env: b.env });
   db.close();
   assert.deepEqual(sections, ["summary"]);
 });

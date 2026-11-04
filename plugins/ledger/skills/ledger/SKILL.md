@@ -82,6 +82,7 @@ human's too (`/ledger:enable`, `/ledger:disable`).
 
 - `… pending` lists the open questions with their ids, for you; do not paste it to the human. `… pending --all` lists every open and held question in the database under its folder, for when the session start says questions are waiting in other folders.
 - An answer may arrive mid-session: a prompt can carry `ledger: answered since your last turn: <name> → <word>`, recorded from another session. Act on it as the human's answer to that question.
+- When session start ends with `ledger: doctor reports N issue(s)`, run `… doctor` and tell the human, in plain words, which checks said `warn` or `fail`.
 - `… log [N]` is the last N notes, questions and answers for this folder, newest first; read it
   when you resume so you do not re-decide what a note already settled.
 - A refused line (`refused no such question q-…`, `refused raise is not an option of q-…;

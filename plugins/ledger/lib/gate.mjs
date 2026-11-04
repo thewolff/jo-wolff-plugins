@@ -15,6 +15,17 @@
 import { openQuestions, sessionNotes } from "./commands.mjs";
 
 /**
+ * The switched-on rule this input is subject to, whether or not it passes: `denyAskWithoutRow`,
+ * `pushNeedsNote`, or null. The hook uses it to mark earlier bounces of that rule satisfied.
+ */
+export function gatedRule(input, config) {
+  const forcing = config.forcing ?? {};
+  if (input.tool_name === "AskUserQuestion") return forcing.denyAskWithoutRow === false ? null : "denyAskWithoutRow";
+  if (input.tool_name === "Bash" && forcing.pushNeedsNote !== false && isPushCommand(input.tool_input?.command)) return "pushNeedsNote";
+  return null;
+}
+
+/**
  * The PreToolUse decision for one hook input: `{ rule, reason }` to deny, null to pass.
  * `cli` is the exact invocation the reason tells the agent to run; `sessionId` the hook's.
  */

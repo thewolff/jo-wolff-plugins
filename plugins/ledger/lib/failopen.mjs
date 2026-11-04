@@ -30,6 +30,33 @@ export function logError(hook, message, env = process.env) {
   }
 }
 
+/** The errors log's path. */
+export function errorsLogPath(env = process.env) {
+  return join(stateDir(env), "errors.log");
+}
+
+/**
+ * The errors log lines written at or after `since` (ms), oldest first: { at, hook, message }.
+ * A missing or unreadable log is no lines; a line that does not start with an ISO stamp is skipped.
+ */
+export function readErrors(env = process.env, { since = 0 } = {}) {
+  let text = "";
+  try {
+    text = readFileSync(errorsLogPath(env), "utf8");
+  } catch {
+    return [];
+  }
+  const out = [];
+  for (const line of text.split("\n")) {
+    const m = /^(\d{4}-\d{2}-\d{2}T\S+)\s+(\S+)\s?(.*)$/.exec(line);
+    if (!m) continue;
+    const t = Date.parse(m[1]);
+    if (!Number.isFinite(t) || t < since) continue;
+    out.push({ at: m[1], hook: m[2], message: m[3] });
+  }
+  return out;
+}
+
 /**
  * @param name   the hook's name as it appears in messages (`SessionStart`, …)
  * @param fn     (input) → object | null | Promise<…>

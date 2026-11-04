@@ -21,6 +21,11 @@
 // cc_sessions.last_stop_at, stamped on every Stop, pass or block; the session's start before
 // the first) to now: a note made in that window counts.
 //
+// Bounce ledger (lib/bounces.mjs): every block inserts a cc_bounces row (rule, prompt_id); every
+// Stop with a session and prompt_id first marks that prompt's open Stop-rule rows `satisfied`
+// when their remedy has happened since (an answer, a question asked, a note). Both are fail-open:
+// a failed bounce write is logged and never changes the verdict.
+//
 // Output on block: {"decision":"block","reason":"…"}; on pass nothing. Fail open: switch off →
 // nothing; store busy/unavailable/read-only (the stamp is a write) → pass with one
 // systemMessage; anything thrown → runHook's systemMessage. Never exit 2.
@@ -32,6 +37,7 @@ import { checkStop } from "../lib/stop-rules.mjs";
 import { invocation } from "../lib/inject.mjs";
 import { withStore, hookConfig } from "../lib/store.mjs";
 import { nowIso } from "../lib/time.mjs";
+import { recordBounce, satisfyBounces, stopRemedyDone, STOP_RULES } from "../lib/bounces.mjs";
 
 export function handle(input, { env = process.env, now = Date.now() } = {}) {
   const ready = hookConfig(env, input, "stop");
@@ -57,6 +63,9 @@ export function handle(input, { env = process.env, now = Date.now() } = {}) {
         store.dbPath,
       );
     };
+    if (sessionId && promptId) {
+      satisfyBounces(store, { sessionId, promptId, rules: STOP_RULES, now, env, hook: "Stop", check: (row) => stopRemedyDone(db, row, { sessionId, cwd }) });
+    }
     if (promptId && session?.last_block_prompt === promptId) {
       stamp(null);
       return pass();
@@ -75,6 +84,7 @@ export function handle(input, { env = process.env, now = Date.now() } = {}) {
     });
     stamp(verdict);
     if (!verdict) return pass();
+    recordBounce(store, { sessionId, rule: verdict.rule, promptId, now, env, hook: "Stop" });
     return { ...noticeField(store.notices), decision: "block", reason: verdict.reason };
   });
 }

@@ -37,8 +37,8 @@ test("migration 3: a store left at version 2 by 0.2.0 keeps every row, gains hel
 
   const r = open(p);
   const db = r.db;
-  assert.equal(SCHEMA_VERSION, 5);
-  assert.equal(storeVersion(db), 5);
+  assert.equal(SCHEMA_VERSION, 6);
+  assert.equal(storeVersion(db), 6);
   assert.equal(r.shared, true);
   assert.deepEqual(db.prepare("SELECT id, state, resolved_at FROM cc_questions ORDER BY id").all().map((x) => ({ ...x })), [
     { id: "q-a1", state: "answered", resolved_at: "2026-01-01T00:01:00.000Z" },
@@ -125,7 +125,7 @@ test("SessionStart: a Waiting on you block lists held questions, oldest first, b
   one(b, ["hold", first]);
   const db = openDb(b);
   for (const source of ["startup", "compact"]) {
-    const { text, sections } = buildInjection(db, b.work, DEFAULTS, { source });
+    const { text, sections } = buildInjection(db, b.work, DEFAULTS, { source, env: b.env });
     assert.deepEqual(sections.slice(0, 2), ["waiting", "questions"], source);
     assert.ok(text.startsWith("ledger: Waiting on you (held questions for "), text);
     const block = text.slice(0, text.indexOf("\n\n"));

@@ -159,7 +159,7 @@ test("ids: shape, prefix, cut-short", () => {
 
 test("#179: the help table and the parser's verb set are the same list", () => {
   assert.deepEqual(new Set(VERBS.map((v) => v.verb)), VERB_SET);
-  assert.equal(VERBS.length, 16);
+  assert.equal(VERBS.length, 18);
   for (const v of VERBS) assert.ok(v.usage && v.help && ["agent", "human", "either"].includes(v.who), v.verb);
 });
 

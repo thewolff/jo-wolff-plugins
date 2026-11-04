@@ -28,6 +28,8 @@ import { newId, prefixOf } from "./ids.mjs";
 import { VERBS, optionList } from "./parse.mjs";
 import { nowIso, parseDeadline, relative, formatLocal } from "./time.mjs";
 import { transaction } from "./db.mjs";
+import { renderBounces, BOUNCES_DEFAULT_SINCE } from "./bounces.mjs";
+import { renderDoctor, runDoctor } from "./doctor.mjs";
 
 const KINDS = ["question", "approval", "plan"];
 const KIND_DEFAULT_OPTIONS = { approval: ["approve", "deny"], plan: ["approve", "revise", "cancel"] };
@@ -330,6 +332,13 @@ export function execute(db, parsed, ctx) {
     case "pending":
       if (parsed.all) return ok(null, renderPendingAll(unresolvedByFolder(db), { now, timezone: tz }));
       return ok(null, renderPending(openQuestions(db, ctx.cwd), ctx.cwd, { now, timezone: tz }, heldQuestions(db, ctx.cwd)));
+    case "bounces":
+      return ok(null, renderBounces(db, { since: parsed.since ?? BOUNCES_DEFAULT_SINCE, now }));
+    case "doctor": {
+      // The CLI runs `doctor` before opening the store; this path is a batch line.
+      const report = runDoctor({ env: process.env, cwd: ctx.cwd, now });
+      return report.fails ? refused(renderDoctor(report)) : ok(null, renderDoctor(report));
+    }
     case "log": {
       const count = parsed.count ?? LOG_DEFAULT;
       return ok(null, renderLog(logEntries(db, ctx.cwd, count), ctx.cwd, count, { now }));

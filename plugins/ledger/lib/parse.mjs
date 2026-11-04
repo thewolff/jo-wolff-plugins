@@ -48,6 +48,8 @@ export const VERBS = Object.freeze([
   { verb: "enable", who: "human", usage: "enable", help: "turn the hooks on for this folder: writes `\"enabled\": true` to .ledger.json here" },
   { verb: "disable", who: "human", usage: "disable", help: "turn the hooks off for this folder: sets `\"enabled\": false` in .ledger.json here (never deletes it)" },
   { verb: "config", who: "either", usage: "config", help: "the effective settings and where each came from" },
+  { verb: "doctor", who: "either", usage: "doctor", help: "check the store, schema, config layers, hooks, errors.log and open bounces; each line ok, warn or fail; exit 1 on any fail; never writes" },
+  { verb: "bounces", who: "either", usage: "bounces [--since <N>d|<N>h]", help: "the hooks' bounces since then (default 7d): per rule fired, satisfied, bypassed and open counts, then the last 20" },
   { verb: "help", who: "either", usage: "help", help: "this table, the id grammar and the batch rule" },
 ]);
 
@@ -246,7 +248,7 @@ export function parseLine(text, lookup = NULL_LOOKUP, tokens = null) {
       if (t0 === "hold" || t0 === "reopen") return command(shown, { verb: t0, id });
       if (t0 === "outcome") return refused(shown, 'outcome needs a ref first: outcome <ref> [q-id] "<what it produced>"');
       if (t0 === "answer") return refused(shown, `answer needs a word: answer ${id} <word>`);
-      if (["pending", "log", "help", "config", "enable", "disable", "ask", "note"].includes(t0)) return refused(shown, `${t0} does not take an id`);
+      if (["pending", "log", "help", "config", "enable", "disable", "ask", "note", "doctor", "bounces"].includes(t0)) return refused(shown, `${t0} does not take an id`);
       if (!q) {
         if (isVerb) return refused(shown, `no such question ${id}`);
         // A non-verb word on an unknown question: a typo of a verb reads as prose (#313), else refused.
@@ -280,9 +282,15 @@ export function parseLine(text, lookup = NULL_LOOKUP, tokens = null) {
 
   // No-argument verbs.
   if (t0 === "pending" && rest.length === 1 && rest[0] === "--all") return command(shown, { verb: "pending", all: true });
-  if (["pending", "help", "config", "enable", "disable"].includes(t0)) {
+  if (["pending", "help", "config", "enable", "disable", "doctor"].includes(t0)) {
     if (rest.length) return prose(shown, null, `usage: ${t0 === "pending" ? "pending [--all]" : t0}`);
     return command(shown, { verb: t0 });
+  }
+  if (t0 === "bounces") {
+    if (!rest.length) return command(shown, { verb: "bounces", since: null });
+    const spec = rest[0] === "--since" && rest.length === 2 ? rest[1] : rest.length === 1 && rest[0].startsWith("--since=") ? rest[0].slice(8) : null;
+    if (spec !== null && /^\d+[dh]$/.test(spec)) return command(shown, { verb: "bounces", since: spec });
+    return prose(shown, null, "usage: bounces [--since <N>d|<N>h]");
   }
   if (t0 === "log") {
     if (!rest.length) return command(shown, { verb: "log", count: null });
@@ -346,7 +354,7 @@ export function parseLine(text, lookup = NULL_LOOKUP, tokens = null) {
 export function promptApplicable(parsed) {
   if (parsed.kind !== "command") return false;
   if (FREE_TEXT_VERBS.has(parsed.verb)) return false;
-  if (["config", "enable", "disable"].includes(parsed.verb)) return false;
-  if (["pending", "log", "help"].includes(parsed.verb)) return true;
+  if (["config", "enable", "disable", "doctor"].includes(parsed.verb)) return false;
+  if (["pending", "log", "help", "bounces"].includes(parsed.verb)) return true;
   return Boolean(parsed.id) || parsed.ordinal !== undefined;
 }

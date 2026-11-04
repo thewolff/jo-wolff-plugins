@@ -1,11 +1,13 @@
 // inject.mjs — the text SessionStart hands Claude: held questions (Waiting on you), open
-// questions, recent notes, the verb summary, and one line counting the open and held questions
-// in other folders. Sections appear in that order and only when non-empty. Capped at CAP
-// characters (the doc's limit is 10,000): notes are truncated first, never the held or open
-// questions or the other-folders line.
+// questions, recent notes, the verb summary, one line counting the open and held questions in
+// other folders, and, last, one doctor line when the cheap health checks find issues. Sections
+// appear in that order and only when non-empty. Capped at CAP characters (the doc's limit is
+// 10,000): notes are truncated first, never the held or open questions, the other-folders line
+// or the doctor line.
 
 import { fileURLToPath } from "node:url";
 import { elsewhereCount, heldQuestions, logEntries, openQuestions, renderLog, renderPending } from "./commands.mjs";
+import { quickIssues } from "./doctor.mjs";
 
 export const CAP = 9000;
 
@@ -54,7 +56,7 @@ export function verbSummary() {
 /**
  * @returns {{ text: string, sections: string[] }}
  */
-export function buildInjection(db, cwd, config, { source = "startup", now = Date.now() } = {}) {
+export function buildInjection(db, cwd, config, { source = "startup", now = Date.now(), env = process.env } = {}) {
   const compact = source === "compact";
   const sections = [];
 
@@ -88,11 +90,21 @@ export function buildInjection(db, cwd, config, { source = "startup", now = Date
   const elsewhereText = config.inject?.elsewhere === false ? "" : elsewhereLine(db, cwd);
   if (elsewhereText) sections.push("elsewhere");
 
-  const assemble = (notes) => [waitingText, questionsText, notes, summary, elsewhereText].filter(Boolean).join("\n\n");
+  const doctorText = config.inject?.doctor === false ? "" : doctorLine(db, { env, now });
+  if (doctorText) sections.push("doctor");
+
+  const assemble = (notes) => [waitingText, questionsText, notes, summary, elsewhereText, doctorText].filter(Boolean).join("\n\n");
   let text = assemble(notesText);
   if (text.length > CAP) text = assemble(truncate(notesText, Math.max(0, CAP - (text.length - notesText.length))));
   if (text.length > CAP) text = assemble("");
   return { text, sections };
+}
+
+/** One line when the cheap doctor checks (schema version, errors.log in the last 7 days) find issues; "" otherwise. */
+export function doctorLine(db, { env = process.env, now = Date.now() } = {}) {
+  const n = quickIssues(db, { env, now });
+  if (!n) return "";
+  return `ledger: doctor reports ${n} issue(s); run \`${invocation()} doctor\``;
 }
 
 /**

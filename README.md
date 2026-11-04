@@ -505,6 +505,19 @@ for that folder (it writes `.ledger.json` there, found from any subfolder); `/le
 them back on. The plugin's tables are all prefixed `cc_`, so the database can be a SQLite file
 another tool already uses.
 
+Changes in 0.3.0: the ledger checks itself and records its own bounces. `ledger doctor`
+prints one `ok`, `warn` or `fail` line per check (the database opens read-write, the schema
+version is current, which config layer set `db` and `enabled`, `hooks.json` lists every
+event, `errors.log` lines in the last 7 days per hook, bounces left open for more than a day)
+and exits 1 only when a check fails; it never writes the database. Session start adds one last
+line, `ledger: doctor reports N issue(s)`, when the cheap subset of those checks (schema
+version, recent `errors.log` lines) finds something; `inject.doctor: false` turns it off.
+Every Stop block and PreToolUse deny now writes a row to a new `cc_bounces` table, marked
+`satisfied` when the remedy happens later in the session and `bypassed` at session end
+otherwise, and `ledger bounces [--since 7d]` counts them per rule, so the rules that only get
+walked past can be found and retired. Opening a 0.2.3 database migrates it to schema version 6
+by creating new tables; no existing table is touched.
+
 Changes in 0.2.3: one database shared by every folder is now readable across folders.
 `ledger pending --all` lists every open and held question in the database, grouped under the
 path of the folder it was asked in, oldest first within a folder. Session start adds one line

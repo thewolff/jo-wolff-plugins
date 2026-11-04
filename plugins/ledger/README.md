@@ -110,6 +110,8 @@ node <plugin dir>/scripts/ledger.mjs help                # the verb table, id gr
 | `log [N]` | either | the last N notes, questions and answers for the cwd (default 20), newest first, across sessions. |
 | `enable` / `disable` | human | writes `"enabled": true` / `false` to `.ledger.json` in the cwd, keeping any other keys in it. An unparsable existing file is refused, not overwritten. `/ledger:enable` and `/ledger:disable` run these in the session's folder. |
 | `config` | either | the effective settings, where each came from, both config file paths, and whether the database file is the plugin's own or shared. |
+| `doctor` | either | is the ledger healthy: one `ok`, `warn` or `fail` line per check (see [Doctor and the bounce ledger](#doctor-and-the-bounce-ledger)). Exit 0 when nothing failed, 1 when anything did; warns do not change it. Never writes the database and never creates it. |
+| `bounces [--since <N>d\|<N>h]` | either | the hooks' bounces since then (default `7d`): per rule, how many fired, were satisfied, were bypassed and are still open; then the last 20 rows (time, session short id, rule, tool, outcome). Covers every folder. |
 | `help` | either | the table above, the id grammar, the batch rule. |
 
 "Who" is advisory; the CLI does not refuse by caller. `--by <name>` overrides the recorded
@@ -197,6 +199,7 @@ defaults verbatim.
 | `inject.notes` | `5` | how many recent `log` entries SessionStart injects |
 | `inject.elsewhere` | `true` | whether SessionStart adds the one line counting open and held questions in other folders; `false` turns it off |
 | `inject.answers` | `true` | whether each prompt tells the session about answers to its questions recorded in other sessions since its last prompt; `false` turns it off |
+| `inject.doctor` | `true` | whether SessionStart adds, last, `ledger: doctor reports N issue(s); run … doctor` when the cheap doctor checks find something; `false` turns it off |
 
 The default `forcing.decisionPhrases`: `I decided`, `decided to`, `assumption:`, `assuming`,
 `going with`, `instead of`, `chose`, `I'll go with`, `trade-off`. A project file can replace the
@@ -223,6 +226,41 @@ appends one line to `${XDG_STATE_HOME:-~/.local/state}/ledger/errors.log` and te
 | hook times out | n/a | Claude Code cancels it; no injection | the tool proceeds | the stop proceeds | cut off | the prompt proceeds |
 | switch off in config | n/a | exit 0 before opening the database | same | same | same | same |
 | project disabled (`"enabled": false`) | the CLI works regardless | exit 0 before opening the database, nothing printed | same | same | same | same |
+| bounce row cannot be written | n/a | n/a | the deny or allow stands; one `errors.log` line | the block or pass stands; one `errors.log` line | the end stamp stands; one `errors.log` line | n/a |
+
+## Doctor and the bounce ledger
+
+`ledger doctor` runs these checks, in this order, and prints one line each:
+
+| Check | ok | warn | fail |
+| :- | :- | :- | :- |
+| `db` | the configured path opens, and the file and its folder are writable | the file does not exist yet (it is created on first use) | it does not open, or it or its folder is read-only |
+| `schema` | `cc_meta` schema version equals this plugin's | | any other version |
+| `config` | names the layer that set `db` and the one that set `enabled` | `enabled` resolves `false`, or a config file did not parse | |
+| `hooks` | `hooks/hooks.json` lists SessionStart, UserPromptSubmit, PreToolUse, Stop and SessionEnd, and each script exists | | an event or a script is missing |
+| `errors` | no `errors.log` lines in the last 7 days | lines in the last 7 days: counted per hook, the last 5 printed | |
+| `bounces` | no open bounce rows older than 24 hours | open rows older than 24 hours, counted per rule | |
+
+Doctor opens the database read-only and never creates or migrates it. The SessionStart doctor
+line does not run all of this on every start: it runs only the cheap checks (the database
+opened, which the hook needs anyway; the schema version; the `errors.log` count for the last 7
+days) and adds one line, after everything else and never truncated, on `compact` too, when any
+of them finds an issue. A database that does not exist yet is not an issue.
+
+The bounce ledger is `cc_bounces`: one row per Stop block and PreToolUse deny, with the rule,
+session, `prompt_id`, tool and time. A row starts open and is closed once:
+
+| Rule | Marked `satisfied` when |
+| :- | :- |
+| `stopAnswerRule` | a later Stop of the same session and `prompt_id` finds an answer or withdraw for one of the session's questions recorded after the bounce |
+| `stopAskRule` | a later Stop of the same session and `prompt_id` finds a question the session asked after the bounce |
+| `stopDecisionRule` | a later Stop of the same session and `prompt_id` finds a `note` the session recorded after the bounce |
+| `denyAskWithoutRow` | a later `AskUserQuestion` in the same session is allowed |
+| `pushNeedsNote` | a later `git push` / `gh pr create` in the same session is allowed |
+
+The Stop rules are matched on the remedy, not by re-reading the reply, so a reply that only drops
+the question mark or the decision phrase leaves its row open. At SessionEnd every row still open
+for the session becomes `bypassed`. `cc_sessions.last_block_*` is unchanged.
 
 ## Inspecting the database
 
@@ -234,14 +272,17 @@ SELECT q.id, q.name, q.state, a.word FROM cc_questions q LEFT JOIN cc_answers a 
 SELECT id, kind, body, made_by, made_at FROM cc_notes ORDER BY made_at DESC LIMIT 20;
 ```
 
-Tables: `cc_meta`, `cc_questions`, `cc_answers`, `cc_notes`, `cc_sessions`. Timestamps are ISO
+Tables: `cc_meta`, `cc_questions`, `cc_answers`, `cc_notes`, `cc_sessions`, `cc_bounces`,
+`cc_reviews`. Timestamps are ISO
 8601 UTC. `cc_questions.state` is `open`, `held`, `answered` or `withdrawn`; `cc_answers.via` is
 `cli`, `prompt-hook` or `freeform`; `cc_notes.kind` is `note`, `withdraw`, `extend` or `outcome`,
 and `cc_notes.ref` carries an outcome's PR, commit or path. Schema version 3 rebuilt
 `cc_questions` and `cc_notes`, and version 4 rebuilt `cc_answers`, in place to widen those CHECK
 constraints (SQLite cannot alter one); no other table is touched. Version 5 adds two columns and
 rebuilds nothing: `cc_answers.session_id` (the session that recorded the answer) and
-`cc_sessions.last_prompt_seen_at` (the prompt hook's answers mark).
+`cc_sessions.last_prompt_seen_at` (the prompt hook's answers mark). Version 6 creates two tables
+and touches no existing one: `cc_bounces` (the bounce ledger; `outcome` is `satisfied`,
+`bypassed` or empty while open) and `cc_reviews` (one row per cross-lab review result).
 
 ### Sharing the file with another tool
 

@@ -22,7 +22,7 @@
 // load. The CLI's stdout is read by an agent and a hook's stderr is shown to the person, so the
 // SQLite warning (only that one) is dropped while the module loads.
 
-import { mkdirSync, renameSync } from "node:fs";
+import { accessSync, constants as fsConstants, existsSync, mkdirSync, renameSync } from "node:fs";
 import { dirname } from "node:path";
 
 const originalEmitWarning = process.emitWarning;
@@ -56,7 +56,7 @@ export function storeWord(kind) {
 }
 
 /** The tables this plugin owns, in creation order. Anything else in the file is foreign. */
-export const OWN_TABLES = Object.freeze(["cc_meta", "cc_questions", "cc_answers", "cc_notes", "cc_sessions"]);
+export const OWN_TABLES = Object.freeze(["cc_meta", "cc_questions", "cc_answers", "cc_notes", "cc_sessions", "cc_bounces", "cc_reviews"]);
 
 export const MIGRATIONS = [
   // 1: the initial schema. Rows bind to a folder (`cwd`), never to a "workload" row: the folder
@@ -202,6 +202,41 @@ export const MIGRATIONS = [
   (db) => {
     db.exec("ALTER TABLE cc_sessions ADD COLUMN last_prompt_seen_at TEXT");
     db.exec("ALTER TABLE cc_answers ADD COLUMN session_id TEXT");
+  },
+  // 6: the bounce ledger and the cross-lab review record, both new tables (nothing rebuilt).
+  // cc_bounces: one row per Stop block, PreToolUse deny or review-gate notice; closed as
+  // `satisfied` when the remedy happens in the session, as `bypassed` at SessionEnd otherwise.
+  // cc_reviews: one row per `ledger review` run (and per waive / addressed), keyed by HEAD sha.
+  (db) => {
+    db.exec(`
+      CREATE TABLE cc_bounces (
+        id           INTEGER PRIMARY KEY,
+        session_id   TEXT,
+        rule         TEXT NOT NULL,
+        prompt_id    TEXT,
+        tool         TEXT,
+        at           TEXT NOT NULL,
+        satisfied_at TEXT,
+        outcome      TEXT CHECK (outcome IS NULL OR outcome IN ('satisfied','bypassed'))
+      );
+      CREATE INDEX cc_bounces_session_outcome ON cc_bounces (session_id, outcome);
+      CREATE INDEX cc_bounces_at ON cc_bounces (at);
+
+      CREATE TABLE cc_reviews (
+        id         INTEGER PRIMARY KEY,
+        session_id TEXT,
+        cwd        TEXT NOT NULL,
+        head_sha   TEXT NOT NULL,
+        base_ref   TEXT,
+        lab        TEXT NOT NULL,
+        model      TEXT,
+        verdict    TEXT NOT NULL CHECK (verdict IN ('pass','findings','addressed','unavailable','waived')),
+        findings   TEXT,
+        reason     TEXT,
+        at         TEXT NOT NULL
+      );
+      CREATE INDEX cc_reviews_cwd_head ON cc_reviews (cwd, head_sha, at);
+    `);
   },
 ];
 
@@ -428,5 +463,39 @@ export function transaction(db, fn, path = "") {
       if (isReadOnly(err)) throw new StoreError("readonly", path, err);
       throw err;
     }
+  }
+}
+
+/**
+ * Look at the store at `path` without creating, migrating or writing it (the doctor's view).
+ * @returns {{ exists: boolean, writable: boolean, version: number|null, error: string|null, query: Function|null }}
+ *   `query(fn)` runs `fn(db)` on a read-only handle and closes it; null when the file cannot be read.
+ */
+export function probe(path) {
+  if (!existsSync(path)) return { exists: false, writable: false, version: null, error: null, query: null };
+  let writable = true;
+  try {
+    accessSync(path, fsConstants.W_OK);
+    accessSync(dirname(path), fsConstants.W_OK);
+  } catch {
+    writable = false;
+  }
+  const query = (fn) => {
+    const db = new DatabaseSync(path, { readOnly: true });
+    try {
+      db.exec(`PRAGMA busy_timeout = ${BUSY_TIMEOUT_MS}`);
+      return fn(db);
+    } finally {
+      db.close();
+    }
+  };
+  try {
+    const version = query((db) => {
+      db.prepare("SELECT count(*) AS n FROM sqlite_master").get();
+      return storeVersion(db);
+    });
+    return { exists: true, writable, version, error: null, query };
+  } catch (err) {
+    return { exists: true, writable, version: null, error: err.message, query: null };
   }
 }
