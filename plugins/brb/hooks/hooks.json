@@ -1,5 +1,5 @@
 {
-  "modules": ["../mods/badge/register.mjs"],
+  "modules": ["../mods/band/register.mjs"],
   "hooks": {
     "UserPromptSubmit": [
       {
