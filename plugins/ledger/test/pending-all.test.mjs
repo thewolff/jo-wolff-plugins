@@ -1,0 +1,83 @@
+import test from "node:test";
+import assert from "node:assert/strict";
+import { sandbox, apply, askQuestion, cli, hook } from "./helpers.mjs";
+import { invocation } from "../lib/inject.mjs";
+
+const start = (box, extra = {}) => ({ session_id: "s-all", cwd: box.work, hook_event_name: "SessionStart", source: "startup", ...extra });
+const injected = (box, extra, opts) => {
+  const r = hook(box, "session-start", start(box, extra), opts);
+  assert.equal(r.code, 0, r.err);
+  return r.json.hookSpecificOutput.additionalContext;
+};
+const elsewhereLines = (text) => text.split("\n").filter((l) => l.includes("other folder"));
+
+test("pending --all from either of two folders lists both questions under their folder headers; plain pending stays scoped", () => {
+  const box = sandbox();
+  const a = askQuestion(box, { name: "in work", cwd: box.work });
+  const b = askQuestion(box, { name: "in sibling", cwd: box.sibling });
+  apply(box, [`hold ${b}`], { cwd: box.sibling });
+  const expected = [
+    box.sibling,
+    `held ${b}  # in sibling · Which way (in sibling)?`,
+    "",
+    box.work,
+    `a ${a}  # in work · Which way (in work)? · default a · also: b / withdraw`,
+  ].join("\n");
+  for (const cwd of [box.work, box.sibling]) {
+    const r = cli(box, ["pending", "--all"], { cwd });
+    assert.equal(r.code, 0, r.err);
+    assert.equal(r.out, `${expected}\n`);
+  }
+  const scoped = cli(box, ["pending"], { cwd: box.work }).out;
+  assert.ok(scoped.includes(a), scoped);
+  assert.ok(!scoped.includes(b), scoped);
+  const scopedSibling = cli(box, ["pending"], { cwd: box.sibling }).out;
+  assert.ok(scopedSibling.includes(b) && !scopedSibling.includes(a), scopedSibling);
+});
+
+test("pending --all orders oldest first within a folder and says so when nothing is waiting", () => {
+  const box = sandbox();
+  assert.equal(cli(box, ["pending", "--all"]).out, "no open or held questions in the ledger\n");
+  const first = askQuestion(box, { name: "first", now: Date.parse("2026-11-01T00:00:00Z") });
+  const second = askQuestion(box, { name: "second", now: Date.parse("2026-11-02T00:00:00Z") });
+  const out = cli(box, ["pending", "--all"]).out;
+  assert.ok(out.indexOf(first) < out.indexOf(second), out);
+  assert.equal(cli(box, ["pending", "--everything"]).code, 1);
+});
+
+test("SessionStart from folder A with one open question in unrelated folder B → one line, N=1, M=1, last; answered → no line", () => {
+  const box = sandbox();
+  const b = askQuestion(box, { name: "over there", cwd: box.sibling });
+  const text = injected(box);
+  const want = `ledger: 1 question waiting on you in 1 other folder; run \`${invocation()} pending --all\` to see them.`;
+  assert.deepEqual(elsewhereLines(text), [want]);
+  assert.ok(text.endsWith(want), text);
+  apply(box, [`answer ${b} a`], { cwd: box.sibling });
+  assert.deepEqual(elsewhereLines(injected(box)), []);
+});
+
+test("SessionStart counts open and held questions per folder, pluralised", () => {
+  const box = sandbox();
+  const other = `${box.root}/elsewhere`;
+  askQuestion(box, { name: "one", cwd: box.sibling });
+  const held = askQuestion(box, { name: "two", cwd: box.sibling });
+  apply(box, [`hold ${held}`], { cwd: box.sibling });
+  askQuestion(box, { name: "three", cwd: other });
+  assert.deepEqual(elsewhereLines(injected(box)), [`ledger: 3 questions waiting on you in 2 other folders; run \`${invocation()} pending --all\` to see them.`]);
+});
+
+test("a question in a parent or a subfolder of the session folder is in scope, not elsewhere", () => {
+  const box = sandbox();
+  askQuestion(box, { name: "parent", cwd: box.root });
+  askQuestion(box, { name: "child", cwd: `${box.work}/sub` });
+  assert.deepEqual(elsewhereLines(injected(box)), []);
+});
+
+test("inject.elsewhere false → no line; compact source still carries it", () => {
+  const box = sandbox();
+  askQuestion(box, { name: "over there", cwd: box.sibling });
+  assert.equal(elsewhereLines(injected(box, { source: "compact" })).length, 1);
+  box.writeConfig({ inject: { elsewhere: false } });
+  assert.deepEqual(elsewhereLines(injected(box)), []);
+  assert.deepEqual(elsewhereLines(injected(box, { source: "compact" })), []);
+});

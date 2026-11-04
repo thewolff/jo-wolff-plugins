@@ -17,7 +17,8 @@
 //
 // Scope. A row is bound to the folder it was written in. "In scope for <cwd>" means the row's
 // cwd equals <cwd> or is an ancestor of it, so a question asked at a repository root is pending
-// in its subfolders too. There is no "workload" row: the folder is the project, and the
+// in its subfolders too. `pending --all` and the SessionStart other-folders line read open and
+// held questions from every folder. There is no "workload" row: the folder is the project, and the
 // project's own tools (git, the issue tracker) say what is in flight.
 
 import { writeFileSync } from "node:fs";
@@ -54,6 +55,32 @@ export function heldQuestions(db, cwd) {
 export function openQuestions(db, cwd) {
   const rows = db.prepare("SELECT * FROM cc_questions WHERE state = 'open' ORDER BY asked_at ASC, id ASC").all();
   return rows.filter((q) => isWithin(cwd, q.cwd)).map(parseQuestion);
+}
+
+/**
+ * Every open and held question in the db, whatever its folder: a Map of cwd → questions, folders
+ * in path order, oldest first within a folder.
+ */
+export function unresolvedByFolder(db) {
+  const rows = db.prepare("SELECT * FROM cc_questions WHERE state IN ('open', 'held') ORDER BY cwd ASC, asked_at ASC, id ASC").all();
+  const groups = new Map();
+  for (const q of rows) {
+    if (!groups.has(q.cwd)) groups.set(q.cwd, []);
+    groups.get(q.cwd).push(parseQuestion(q));
+  }
+  return groups;
+}
+
+/**
+ * Open and held questions outside the scope of `cwd`: their folder is not `cwd`, not an ancestor
+ * of it and not under it. Returns { count, folders } (folders = distinct cwds among them).
+ */
+export function elsewhereCount(db, cwd) {
+  const rows = db
+    .prepare("SELECT cwd FROM cc_questions WHERE state IN ('open', 'held')")
+    .all()
+    .filter((q) => !isWithin(cwd, q.cwd) && !isWithin(q.cwd, cwd));
+  return { count: rows.length, folders: new Set(rows.map((q) => q.cwd)).size };
 }
 
 /**
@@ -177,6 +204,23 @@ export function renderPending(questions, cwd, opts = {}, held = []) {
   return out.join("\n");
 }
 
+/**
+ * `pending --all`: one group per folder, headed by the folder's path, then its open questions as
+ * `pending` lines (not numbered: an ordinal answers only the current folder's list) and its held
+ * ones marked `held`. Groups are separated by a blank line.
+ */
+export function renderPendingAll(groups, opts = {}) {
+  if (!groups.size) return "no open or held questions in the ledger";
+  const blocks = [];
+  for (const [cwd, questions] of groups) {
+    const out = [cwd];
+    for (const q of questions.filter((x) => x.state === "open")) out.push(...pendingLines(q, opts));
+    out.push(...heldLines(questions.filter((x) => x.state === "held")));
+    blocks.push(out.join("\n"));
+  }
+  return blocks.join("\n\n");
+}
+
 /** The last `count` events in scope for `cwd` (notes, questions, answers), newest first. */
 export function logEntries(db, cwd, count) {
   const rows = db
@@ -268,6 +312,7 @@ export function execute(db, parsed, ctx) {
     case "disable":
       return setEnabled(ctx.cwd, parsed.verb === "enable");
     case "pending":
+      if (parsed.all) return ok(null, renderPendingAll(unresolvedByFolder(db), { now, timezone: tz }));
       return ok(null, renderPending(openQuestions(db, ctx.cwd), ctx.cwd, { now, timezone: tz }, heldQuestions(db, ctx.cwd)));
     case "log": {
       const count = parsed.count ?? LOG_DEFAULT;

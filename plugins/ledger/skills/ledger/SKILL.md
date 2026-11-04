@@ -80,7 +80,7 @@ human's too (`/ledger:enable`, `/ledger:disable`).
 
 ## Reading what you are given
 
-- `… pending` lists the open questions with their ids, for you; do not paste it to the human.
+- `… pending` lists the open questions with their ids, for you; do not paste it to the human. `… pending --all` lists every open and held question in the database under its folder, for when the session start says questions are waiting in other folders.
 - `… log [N]` is the last N notes, questions and answers for this folder, newest first; read it
   when you resume so you do not re-decide what a note already settled.
 - A refused line (`refused no such question q-…`, `refused raise is not an option of q-…;
