@@ -1,6 +1,6 @@
 ---
 name: cross-lab-reviewer
-description: Independent cross-lab review of a plugin branch by OpenAI Codex. Use proactively after a plugin branch is built and its suites pass, before a PR is opened. Snapshots the head commit with git archive (no hooks, no filters), runs the suites only when the prompt says execute and the head sha, in a credential-free environment, then sends the commit range to `codex exec --sandbox read-only` with the release review brief (security first, each prior finding closed, partial or open, the env-only failure set, the path scrub, a ship or fix-first verdict) and writes the review to agent-scratch. Read-only on source; never fixes what it finds, never pushes.
+description: Independent cross-lab review of a plugin branch by OpenAI Codex. Use proactively after a plugin branch is built and its suites pass, before a PR is opened. Snapshots the head commit by writing each blob with git cat-file (no checkout, no hooks, no attribute or filter conversion), runs the suites only when the prompt says execute and the head sha, in a credential-free environment, then sends the commit range to `codex exec --sandbox read-only` with the release review brief (security first, each prior finding closed, partial or open, the env-only failure set, the path scrub, a ship or fix-first verdict) and writes the review to agent-scratch. Read-only on source; never fixes what it finds, never pushes.
 tools: Read, Grep, Glob, Bash, Write
 model: sonnet
 ---
@@ -84,44 +84,55 @@ Resolve the rest yourself, and print each value in the report:
    verdict cannot be `ship`. A review written that way keeps `Verdict: fix-first` even when
    Codex finds nothing. When 0d fails, stop.
 1. `command -v codex && codex --version`. No `codex` means stop (see How it fails).
-2. **Snapshot**, before any executable step, and in every mode, static only
-   included. It is a plain file tree with no `.git`, made without checking out, so no checkout
-   hook and no filter driver runs:
-   - **Attributes first.** `git archive` runs `filter` drivers, applies `export-ignore`,
-     `export-subst`, `ident` and the end-of-line attributes, so refuse a commit where any path
-     or directory carries an attribute by any of the names below, whatever its value: `set`,
-     `unset`, a value, or the value `unspecified` (`filter=unspecified` names a driver called
-     `unspecified`; `!filter` assigns nothing, is not listed and runs nothing). Run this block as one Bash
-     command, `"<repo>"` replaced and `$head` set; it must print its `attributes:` line and exit
-     0. Any `refused:` line or any other exit is a failed snapshot, and the reason it names goes
-     in the report. A git whose `check-attr` has no `--source` fails it.
+2. **Snapshot**, before any executable step, and in every mode, static only included. It is a
+   plain file tree with no `.git` and no links, written from the commit's own objects:
+   `git ls-tree` lists every entry of `$head` and `git cat-file blob` writes each one's committed
+   bytes. Neither command reads attributes, so no `filter` driver, `ident`, end-of-line or
+   `export-*` conversion applies, and nothing is checked out, so no hook runs, whatever
+   `.gitattributes`, `$GIT_DIR/info/attributes`, `core.attributesFile` or any config file says,
+   and whenever they change. Every git call in the block reads no global or system config, no
+   inherited `GIT_CONFIG_*` setting, `GIT_DIR` or replacement object, runs with
+   `core.hooksPath=/dev/null`, and fetches no missing object. There is no attribute check: no
+   attribute can change these bytes, so a repository with `text=auto` snapshots too.
+   Set `snaproot="$(mktemp -d)"`, then run this block as one Bash command, `"<repo>"` replaced
+   and `$head` set; it must print its `snapshot:` line and exit 0. The snapshot is then
+   `snap="$snaproot/snap"`.
 
      ```sh
-     ( set -o pipefail
-       list() { git -C "<repo>" ls-tree -r -z --name-only "$head" &&
-         git -C "<repo>" ls-tree -r -d -z --name-only "$head" &&
-         git -C "<repo>" ls-tree -r -d -z --name-only "$head" | tr '\0' '\n' | sed 's|$|/|' | tr '\n' '\0'; }
-       n="$(list | tr -cd '\0' | wc -c | tr -d ' ')" || { echo "refused: git ls-tree failed on $head"; exit 1; }
-       [ "$n" -gt 0 ] || { echo "refused: git ls-tree listed no paths in $head"; exit 1; }
-       nl="$(list | tr -cd '\n' | wc -c | tr -d ' ')" || { echo "refused: git ls-tree failed on $head"; exit 1; }
-       [ "$nl" = 0 ] || { echo "refused: a path in $head holds a newline"; exit 1; }
-       f="$(list | git -C "<repo>" check-attr --source="$head" -z --stdin filter | tr -cd '\0' | wc -c | tr -d ' ')" || { echo "refused: git check-attr --source failed"; exit 1; }
-       [ "$f" = "$((3 * n))" ] || { echo "refused: git check-attr answered $f fields for $n paths"; exit 1; }
-       bad="$(list | git -C "<repo>" check-attr --source="$head" -z --all --stdin | tr '\0' '\n' | awk 'NR % 3 == 1 { p = $0 } NR % 3 == 2 && /^(filter|export-ignore|export-subst|ident|eol|text|crlf|working-tree-encoding|diff|merge)$/ { print p ": " $0 }')" || { echo "refused: git check-attr --all failed"; exit 1; }
-       [ -z "$bad" ] || { printf 'refused: %s\n' "$bad"; exit 1; }
-       echo "attributes: none refused on $n paths of $head" )
+     ( set -o pipefail; set -C
+       unset GIT_DIR GIT_WORK_TREE GIT_CONFIG_PARAMETERS GIT_CONFIG_COUNT
+       export GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_SYSTEM=/dev/null GIT_CONFIG_NOSYSTEM=1 GIT_NO_LAZY_FETCH=1 GIT_NO_REPLACE_OBJECTS=1
+       g() { git --no-pager -c core.hooksPath=/dev/null -C "<repo>" "$@"; }
+       snap="$snaproot/snap"; tree="$snaproot/tree"; tab="$(printf '\t')"; n=0
+       mkdir "$snap" || { echo "refused: cannot make $snap"; exit 1; }
+       g ls-tree -r -z --full-tree "$head" > "$tree" || { echo "refused: git ls-tree failed on $head"; exit 1; }
+       rec=""; while IFS= read -r -d '' rec; do
+         meta="${rec%%"$tab"*}"; p="${rec#*"$tab"}"; mode="${meta%% *}"; oid="${meta##* }"
+         case "/$p/" in */./*|*/../*|*//*|*/[.][Gg][Ii][Tt]/*) printf 'refused: path %s in %s\n' "$p" "$head"; exit 1 ;; esac
+         case "$mode" in
+           100644|100755) ;;
+           120000) printf 'refused: symlink %s in %s\n' "$p" "$head"; exit 1 ;;
+           160000) printf 'refused: submodule %s in %s\n' "$p" "$head"; exit 1 ;;
+           *) printf 'refused: mode %s of %s in %s\n' "$mode" "$p" "$head"; exit 1 ;;
+         esac
+         case "$p" in */*) mkdir -p "$snap/${p%/*}" || { printf 'refused: cannot make the folder of %s\n' "$p"; exit 1; } ;; esac
+         g cat-file blob "$oid" > "$snap/$p" || { printf 'refused: cannot write %s from git cat-file\n' "$p"; exit 1; }
+         if [ "$mode" = 100755 ]; then chmod +x "$snap/$p" || { printf 'refused: cannot chmod %s\n' "$p"; exit 1; }; fi
+         n=$((n + 1))
+       done < "$tree"
+       [ -z "$rec" ] || { echo "refused: the listing of $head ends inside an entry"; exit 1; }
+       t="$(tr -cd '\0' < "$tree" | wc -c | tr -d ' ')" || { echo "refused: cannot count $tree"; exit 1; }
+       f="$(find "$snap" -type f -print0 | tr -cd '\0' | wc -c | tr -d ' ')" || { echo "refused: cannot count $snap"; exit 1; }
+       [ "$n" -gt 0 ] && [ "$t" = "$n" ] && [ "$f" = "$n" ] || { echo "refused: $n blobs written, $t tree entries, $f files in $snap"; exit 1; }
+       echo "snapshot: $n files of $head, no conversion" )
      ```
 
-     Directories are listed twice, as `dir` and `dir/`, because a pattern ending in `/` only
-     matches the second; the `filter` pass proves `check-attr` answered for every path before
-     the `--all` pass is trusted, so an empty answer is never read as a clean commit.
-   - **Extract.** `snaproot="$(mktemp -d)"`, `snap="$snaproot/snap"`, `mkdir "$snap"`, then
-     `set -o pipefail; git -C "<repo>" archive --format=tar "$head" | tar -x -f - -C "$snap"`.
-   - **Compare.** The extracted names must equal the commit's:
-     `diff <(git -C "<repo>" ls-tree -r -z --name-only "$head" | tr '\0' '\n' | LC_ALL=C sort) <(cd "$snap" && find . \( -type f -o -type l \) -print | sed 's|^\./||' | LC_ALL=C sort)`
-     must print nothing and exit 0 (a submodule entry differs, and is refused).
-   Any of the three failing fails closed: report the command, its exit code and output, write
-   nothing, send nothing to Codex, remove the snapshot and stop. Steps 3 to 6 read the commit
+   It refuses, with a named `refused:` line, a symlink (mode `120000`), a submodule (`160000`),
+   any mode other than `100644` and `100755`, a path with an empty, `.`, `..` or `.git` (any
+   letter case) component, a path written twice (`set -C`), any git or write failure, and a run
+   where the blobs written, the tree's entries and the files under `"$snap"` are not one count.
+   `100755` files get `+x`. Any `refused:` line or other exit fails closed: report the command,
+   its exit code and output, write nothing, send nothing to Codex, remove the snapshot and stop. Steps 3 to 6 read the commit
    only in `"$snap"` or as `$head` through `git -C "<repo>"`, and run code only in `"$snap"`;
    the report names `$head` as the reviewed sha. When the review ends, however it
    ends, `rm -r -- "$snaproot"`, removing only the folder this step made.
@@ -183,8 +194,8 @@ Resolve the rest yourself, and print each value in the report:
   the one exception, created in step 2 and removed when the review ends.
 - Run any code from the checkout without a matching `execute: <sha>` in the invoking prompt,
   outside the containment prefix, or before the preflight passed.
-- Make the snapshot with `git checkout`, `git worktree add` or `git clone`: each can run hooks
-  or filters from the checkout.
+- Make the snapshot with `git checkout`, `git worktree add`, `git clone` or `git archive`: each
+  can run hooks, or filters named by attributes that can change after any check.
 - Push, merge, open a PR, comment on GitHub, install anything, or bump a version.
 - Run Codex with `--sandbox workspace-write`, `--sandbox danger-full-access`,
   `--approve-for-me`, `--dangerously-bypass-approvals-and-sandbox` or `--worktree`.
@@ -223,11 +234,17 @@ quoted, the count of blocking, should-fix and nit findings, the env-only set wit
 - **Permission or containment fails** (`viewerPermission` not `ADMIN`, `MAINTAIN` or `WRITE`,
   no `origin`, `gh` missing or logged out, or a variable leaking past `env -i`): the same static
   only review, each executable check `unavailable: <reason>` with the command and its output.
-- **The snapshot fails** (the attribute block prints `refused:` or exits non-zero, including a
-  git without `check-attr --source`; `git archive` or `tar` exiting non-zero; or extracted
-  names differing from the commit's): nothing is reviewed, sent or written. Report the command,
-  its exit code and output; a repository whose paths carry any refused attribute name,
-  `text=auto` included, cannot be snapshotted this way.
+- **The snapshot fails** (the snapshot block prints `refused:` or exits non-zero: a symlink, a
+  submodule, an unsafe or repeated path, a git or write failure, or counts that differ): nothing
+  is reviewed, sent or written. Report the command, its exit code and output; a commit holding a
+  symlink or a submodule cannot be snapshotted this way.
+- **Local metadata changes during the review** (another process editing `.git/info/attributes`,
+  `core.attributesFile` or the file it names, or a filter driver's config): it cannot change the
+  snapshot or run a driver, because no command in the snapshot block reads attributes, global or
+  system config, or replacement objects. What can still make the review wrong is a wrong
+  `$head`: the snapshot is exactly the commit `$head` names, so a checkout that moved before
+  `$head` was captured is reviewed as the commit it moved to. The report names `$head` as the
+  reviewed sha for that reason.
 - **An output path component fails validation** (`<repo>`, `<plugin>` or `<version>` outside
   `^[A-Za-z0-9._-]+$`, containing `..` or equal to `.`, a destination folder that is a symlink
   or not a directory, or one whose `realpath` leaves `~/agent-scratch/`): refuse, naming the
@@ -245,7 +262,7 @@ quoted, the count of blocking, should-fix and nit findings, the env-only set wit
 - **The Bash call times out** before Codex answers: the review is not done. Say so, give what
   it printed, and hand over the same retry line; a partial `-o` file is reported as partial.
 - **A sandbox refusal** (Bash denied, `codex` blocked from the network, a write to
-  `~/agent-scratch/` refused, `git archive` or `tar` refused): name the refused command and the
+  `~/agent-scratch/` refused, `git cat-file` refused): name the refused command and the
   exact error, skip that step, and say which part of the review is missing. A refused snapshot
   stops the review. A refused write means the review text goes in the report instead, marked
   as not written to disk.

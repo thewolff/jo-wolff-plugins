@@ -3,15 +3,16 @@
 // `name` (the file's stem) and `description`, a `tools` allowlist without Agent and a Claude
 // `model`; its text has the CLAIM/CITE contract and a "How it fails" heading the plugin gate's
 // `says` check accepts; it names no personal home directory; it runs checkout code only on an
-// `execute: <sha>` authorization and snapshots with `git archive`; its attribute block, run as
-// written against throwaway repositories, refuses every attribute name that runs a driver or
-// changes bytes, whatever the value, and stops on any git failure; the gate never runs ledger;
-// the README lists every agent.
+// `execute: <sha>` authorization; its snapshot block, run as written against throwaway
+// repositories in bash and zsh, writes each committed blob's exact bytes with `git cat-file` and
+// runs no driver even when attributes and filter config are hostile or swapped in mid-run,
+// refuses links, submodules and escaping paths, and stops on any git failure; the gate never
+// runs ledger; the README lists every agent.
 
 import test from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { KIT_ROOT } from "../scripts/new-plugin.mjs";
@@ -72,7 +73,7 @@ test("agents: the report-only gate has no Write or Edit and runs on haiku; the r
   assert.match(readFileSync(join(AGENTS, "cross-lab-reviewer.md"), "utf8"), /codex exec --sandbox read-only /);
 });
 
-test("agents: each runs checkout code only on an execute authorization for the head sha, and snapshots with git archive, never a checkout", () => {
+test("agents: each runs checkout code only on an execute authorization for the head sha, and snapshots from git objects, never a checkout or an archive", () => {
   const flat = (text) => text.replace(/\s+/g, " ");
   for (const file of files()) {
     const text = flat(readFileSync(join(AGENTS, file), "utf8"));
@@ -82,9 +83,10 @@ test("agents: each runs checkout code only on an execute authorization for the h
     );
     assert.ok(text.includes("`unavailable: no execute authorization for <head>`"), `${file}: the missing-authorization outcome`);
     assert.ok(text.includes("containment strips credentials from the environment"), `${file}: says what containment does not cover`);
-    assert.ok(text.includes('set -o pipefail; git -C "<repo>" archive --format=tar "$head" | tar -x -f - -C "$snap"'), `${file}: the git archive snapshot line`);
-    assert.ok(text.includes('check-attr --source="$head" -z --all --stdin'), `${file}: every attribute name asked for before the archive`);
-    assert.ok(text.includes('diff <(git -C "<repo>" ls-tree -r -z --name-only "$head"'), `${file}: extracted names compared with the commit`);
+    assert.ok(text.includes('g cat-file blob "$oid" > "$snap/$p"'), `${file}: each blob written by git cat-file`);
+    assert.ok(text.includes("export GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_SYSTEM=/dev/null GIT_CONFIG_NOSYSTEM=1"), `${file}: no global or system config`);
+    assert.ok(text.includes('g() { git --no-pager -c core.hooksPath=/dev/null -C "<repo>" "$@"; }'), `${file}: every git call through one pinned function`);
+    assert.doesNotMatch(text, /git -C "<repo>" (archive|check-attr)/, `${file}: no archive and no attribute guard`);
     assert.doesNotMatch(text, /git -C "<repo>" worktree /, `${file}: no worktree snapshot`);
   }
   const readme = flat(readFileSync(join(KIT_ROOT, "README.md"), "utf8"));
@@ -97,11 +99,11 @@ test("agents: the release gate reports the ledger plugin gate unavailable and ne
   assert.doesNotMatch(text, /ledger\.mjs/, "no ledger invocation");
 });
 
-/** The fenced `sh` attribute block of one agent, dedented. */
-function attributeBlock(file) {
+/** The fenced `sh` snapshot block of one agent, dedented. */
+function snapshotBlock(file) {
   const text = readFileSync(join(AGENTS, file), "utf8");
-  const m = /\*\*Attributes first\.\*\*[\s\S]*?\n( *)```sh\n([\s\S]*?)\n *```\n/.exec(text);
-  assert.ok(m, `${file}: an sh block under "Attributes first"`);
+  const m = /\*\*Snapshot\*\*[\s\S]*?\n( *)```sh\n([\s\S]*?)\n *```\n/.exec(text);
+  assert.ok(m, `${file}: an sh block under "Snapshot"`);
   return m[2]
     .split("\n")
     .map((l) => (l.startsWith(m[1]) ? l.slice(m[1].length) : l))
@@ -116,105 +118,187 @@ function gitEnv(home) {
   return { HOME: home, PATH: process.env.PATH, GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: "/dev/null" };
 }
 
-/** A throwaway repository with a.txt, d/e/b.md and an optional .gitattributes, committed. */
-function fixtureRepo(attributes) {
-  const dir = mkdtempSync(join(tmpdir(), "plugin-kit-attr-"));
+/** A throwaway repository with a.txt and d/e/b.md committed, plus a git helper. */
+function fixtureRepo() {
+  const dir = mkdtempSync(join(tmpdir(), "plugin-kit-snap-"));
   const env = gitEnv(dir);
-  const git = (...args) => {
-    const r = spawnSync(REAL_GIT, ["-c", "init.defaultBranch=main", "-c", "user.name=t", "-c", "user.email=t@example.com", "-c", "commit.gpgsign=false", ...args], { cwd: dir, env, encoding: "utf8" });
+  const git = (args, input) => {
+    const r = spawnSync(REAL_GIT, ["-c", "init.defaultBranch=main", "-c", "user.name=t", "-c", "user.email=t@example.com", "-c", "commit.gpgsign=false", ...args], { cwd: dir, env, input });
     assert.equal(r.status, 0, `git ${args.join(" ")}: ${r.stderr}`);
-    return r.stdout.trim();
+    return r.stdout.toString().trim();
   };
-  git("init", "-q");
-  writeFileSync(join(dir, "a.txt"), "a\n");
-  mkdirSync(join(dir, "d", "e"), { recursive: true });
-  writeFileSync(join(dir, "d", "e", "b.md"), "b\n");
-  if (attributes !== undefined) writeFileSync(join(dir, ".gitattributes"), attributes);
-  git("add", "-A");
-  git("commit", "-qm", "fixture");
-  return { dir, env, head: git("rev-parse", "HEAD"), git };
+  const files = { "a.txt": "a\n", "d/e/b.md": "b\n" };
+  git(["init", "-q"]);
+  for (const [p, body] of Object.entries(files)) {
+    mkdirSync(dirname(join(dir, p)), { recursive: true });
+    writeFileSync(join(dir, p), body);
+  }
+  git(["add", "-A"]);
+  git(["commit", "-qm", "fixture"]);
+  const repo = { dir, env, git, files, head: git(["rev-parse", "HEAD"]) };
+  /** Commit more files exactly as given (no attribute applies at add: .gitattributes goes last). */
+  repo.commit = (more, { exec = [] } = {}) => {
+    for (const [p, body] of Object.entries(more)) {
+      mkdirSync(dirname(join(dir, p)), { recursive: true });
+      writeFileSync(join(dir, p), body);
+      if (exec.includes(p)) chmodSync(join(dir, p), 0o755);
+      git(["add", "--", p]);
+      git(["commit", "-qm", p]);
+    }
+    Object.assign(files, more);
+    repo.head = git(["rev-parse", "HEAD"]);
+  };
+  return repo;
 }
 
-/** Run one agent's block, as written, with <repo> and $head filled in. */
+/** Run one agent's block, as written, with <repo>, $head and a fresh $snaproot filled in. */
 function runBlock(shell, block, repo, { env = repo.env, PATH } = {}) {
+  const snaproot = mkdtempSync(join(tmpdir(), "plugin-kit-snaproot-"));
   const script = block.replaceAll('"<repo>"', `"${repo.dir}"`);
-  return spawnSync(shell, ["-c", script], { env: { ...env, ...(PATH ? { PATH } : {}), head: repo.head }, encoding: "utf8" });
+  const r = spawnSync(shell, ["-c", script], { env: { ...env, ...(PATH ? { PATH } : {}), head: repo.head, snaproot }, encoding: "utf8" });
+  return { ...r, snaproot, snap: join(snaproot, "snap") };
 }
 
-test("agents: both agents carry the same attribute block", () => {
-  assert.equal(attributeBlock("cross-lab-reviewer.md"), attributeBlock("release-gate.md"));
+/** Every regular file under dir, relative, sorted. */
+function walk(dir, rel = "") {
+  return readdirSync(join(dir, rel), { withFileTypes: true }).flatMap((e) => {
+    const p = rel ? `${rel}/${e.name}` : e.name;
+    assert.ok(e.isFile() || e.isDirectory(), `${p} is neither file nor directory`);
+    return e.isDirectory() ? walk(dir, p) : [p];
+  }).sort();
+}
+
+/** The snapshot holds exactly the committed bytes: same names, byte-equal content, +x only where committed. */
+function assertCommittedBytes(r, repo, exec, label) {
+  assert.equal(r.status, 0, `${label}: ${r.stdout}${r.stderr}`);
+  assert.match(r.stdout, new RegExp(`^snapshot: ${Object.keys(repo.files).length} files of ${repo.head}, no conversion$`, "m"), label);
+  assert.deepEqual(walk(r.snap), Object.keys(repo.files).sort(), `${label}: names`);
+  for (const [p, body] of Object.entries(repo.files)) {
+    assert.ok(readFileSync(join(r.snap, p)).equals(Buffer.from(body)), `${label}: ${p} bytes equal the committed blob`);
+    assert.equal((statSync(join(r.snap, p)).mode & 0o100) !== 0, exec.includes(p), `${label}: ${p} executable bit`);
+  }
+}
+
+/** A fake git on PATH: `body` runs first, then the real git. */
+function fakeGit(name, body) {
+  const bin = join(mkdtempSync(join(tmpdir(), "plugin-kit-fakegit-")), name);
+  mkdirSync(bin);
+  writeFileSync(join(bin, "git"), `#!/bin/sh\n${body}\nexec "${REAL_GIT}" "$@"\n`);
+  chmodSync(join(bin, "git"), 0o755);
+  return `${bin}:${dirname(REAL_GIT)}:/usr/bin:/bin`;
+}
+
+// Bytes every byte-changing attribute would rewrite: an ident keyword, an export-subst
+// placeholder, a CRLF line, and an executable script.
+const TRAPS = { "x.txt": "$Id$\r\n$Format:%H$\n", "run.sh": "#!/bin/sh\nexit 0\n" };
+const HOSTILE_ATTRIBUTES = "* filter=evil text eol=crlf ident\n*.txt export-subst\nd/ export-ignore\n";
+
+test("agents: both agents carry the same snapshot block", () => {
+  assert.equal(snapshotBlock("cross-lab-reviewer.md"), snapshotBlock("release-gate.md"));
 });
 
-test("agents: the attribute block passes a clean commit and refuses every driver or byte-changing attribute name, whatever its value", () => {
+test("agents: the snapshot holds the committed bytes and runs no driver, whatever the committed, local, global and info attributes say", () => {
   assert.ok(REAL_GIT, "git on PATH");
-  const block = attributeBlock("release-gate.md");
-  const refusals = [
-    ["*.txt filter=evil\n", "a.txt: filter"],
-    // The round-3 bypass: a driver literally named `unspecified`, which check-attr prints as the
-    // same token it uses for an absent attribute when asked for `filter` by name.
-    ["*.txt filter=unspecified\n", "a.txt: filter"],
-    ["*.md -filter\n", "d/e/b.md: filter"],
-    ["e/ export-ignore\n", "d/e/: export-ignore"],
-    ["d export-subst\n", "d: export-subst"],
-    ["* text=auto\n", ": text"],
-    ["*.md binary\n", "d/e/b.md: diff"],
-    ["*.txt ident\n", "a.txt: ident"],
-  ];
+  const block = snapshotBlock("release-gate.md");
   for (const shell of SHELLS) {
     const clean = fixtureRepo();
-    const ok = runBlock(shell, block, clean);
-    assert.equal(ok.status, 0, `${shell} clean: ${ok.stdout}${ok.stderr}`);
-    assert.match(ok.stdout, /^attributes: none refused on 6 paths of [0-9a-f]{40}$/m, `${shell} clean`);
-    const harmless = fixtureRepo("*.md linguist-documentation\n");
-    assert.equal(runBlock(shell, block, harmless).status, 0, `${shell}: an unrelated attribute passes`);
-    // `!filter` over `filter=evil` assigns nothing: check-attr --all lists nothing for a.txt and
-    // git archive runs no driver for it, so the block passes it and that is safe.
-    const overridden = fixtureRepo("*.txt filter=evil\na.txt !filter\n");
-    overridden.git("config", "filter.evil.smudge", `touch "${join(overridden.dir, "SMUDGED")}"; cat`);
-    const o = runBlock(shell, block, overridden);
-    assert.equal(o.status, 0, `${shell} !filter override: ${o.stdout}${o.stderr}`);
-    const archive = spawnSync(REAL_GIT, ["archive", "--format=tar", overridden.head], { cwd: overridden.dir, env: overridden.env });
-    assert.equal(archive.status, 0, `${shell}: git archive of the !filter override`);
-    assert.ok(!existsSync(join(overridden.dir, "SMUDGED")), `${shell}: !filter ran no driver in git archive`);
-    for (const [attributes, named] of refusals) {
-      const repo = fixtureRepo(attributes);
-      for (const driver of ["evil", "unspecified"]) repo.git("config", `filter.${driver}.smudge`, `touch "${join(repo.dir, "SMUDGED")}"; cat`);
-      const r = runBlock(shell, block, repo);
-      assert.equal(r.status, 1, `${shell} ${JSON.stringify(attributes)}: ${r.stdout}${r.stderr}`);
-      assert.ok(r.stdout.startsWith("refused: ") && r.stdout.includes(named), `${shell} ${JSON.stringify(attributes)} names ${named}: ${r.stdout}`);
-      assert.ok(!existsSync(join(repo.dir, "SMUDGED")), `${shell}: no driver ran`);
-      if (/filter=/.test(attributes)) {
-        // The control: the same repository's git archive does run the driver the block refused.
-        spawnSync(REAL_GIT, ["archive", "--format=tar", repo.head], { cwd: repo.dir, env: repo.env });
-        assert.ok(existsSync(join(repo.dir, "SMUDGED")), `${shell} ${JSON.stringify(attributes)}: git archive runs the driver`);
-      }
-    }
+    assertCommittedBytes(runBlock(shell, block, clean), clean, [], `${shell} clean`);
+
+    const repo = fixtureRepo();
+    repo.commit({ ...TRAPS, ".gitattributes": HOSTILE_ATTRIBUTES }, { exec: ["run.sh"] });
+    const marker = join(repo.dir, "SMUDGED");
+    const touch = `touch "${marker}"; cat`;
+    repo.git(["config", "filter.evil.smudge", touch]);
+    writeFileSync(join(repo.dir, ".git", "info", "attributes"), "* filter=info\n");
+    repo.git(["config", "filter.info.smudge", touch]);
+    // A global config naming a helper and its own attributes file: the block must not read it.
+    const globalAttrs = join(repo.dir, "global-attributes");
+    writeFileSync(globalAttrs, "* filter=glob\n");
+    const globalConfig = join(repo.dir, "global-config");
+    writeFileSync(globalConfig, `[core]\n\tattributesFile = ${globalAttrs}\n[filter "glob"]\n\tsmudge = ${touch}\n`);
+    const env = { ...repo.env, GIT_CONFIG_GLOBAL: globalConfig, GIT_CONFIG_PARAMETERS: `'filter.evil.smudge'='${touch}'` };
+    const r = runBlock(shell, block, repo, { env });
+    assertCommittedBytes(r, repo, ["run.sh"], `${shell} hostile`);
+    assert.ok(!existsSync(marker), `${shell}: no driver ran`);
+    // The control: the same repository's git archive runs the driver the snapshot never ran.
+    spawnSync(REAL_GIT, ["archive", "--format=tar", repo.head], { cwd: repo.dir, env: repo.env });
+    assert.ok(existsSync(marker), `${shell}: git archive runs the driver`);
   }
 });
 
-test("agents: the attribute block stops with a named reason when git fails mid-pipe, answers nothing, or has no --source", () => {
-  const block = attributeBlock("release-gate.md");
-  const fake = mkdtempSync(join(tmpdir(), "plugin-kit-fakegit-"));
-  const modes = {
-    // check-attr reads part of its input, then dies: the case pipefail exists for.
-    "check-attr-dies": ['case "$*" in *check-attr*) head -c 3 >/dev/null; exit 1 ;; esac', "refused: git check-attr --source failed"],
-    // check-attr exits 0 with no answer: an empty --all result must not read as clean.
-    "check-attr-silent": ['case "$*" in *check-attr*) cat >/dev/null; exit 0 ;; esac', "refused: git check-attr answered 0 fields for 6 paths"],
-    // A git from before check-attr --source.
-    "no-source": ['case "$*" in *--source=*) echo "error: unknown option" >&2; exit 129 ;; esac', "refused: git check-attr --source failed"],
-    // ls-tree of the directories fails inside the path list.
-    "ls-tree-dirs-die": ['case "$*" in *ls-tree*-d*) exit 1 ;; esac', "refused: git ls-tree failed"],
-    // Only the --all pass fails, after the coverage pass succeeded.
-    "all-dies": ['case "$*" in *--all*) cat >/dev/null; exit 1 ;; esac', "refused: git check-attr --all failed"],
-  };
+test("agents: attributes and a filter driver swapped in after the listing and before the blobs are written change nothing", () => {
+  const block = snapshotBlock("release-gate.md");
   for (const shell of SHELLS) {
     const repo = fixtureRepo();
+    repo.commit(TRAPS, { exec: ["run.sh"] });
+    const marker = join(repo.dir, "SMUDGED");
+    const evilAttrs = join(repo.dir, "evil-attributes");
+    writeFileSync(evilAttrs, "* filter=evil text eol=crlf ident\n");
+    // Between the block's ls-tree and its first cat-file, another process points
+    // core.attributesFile at a filter, writes $GIT_DIR/info/attributes and configures the driver.
+    const PATH = fakeGit(
+      "swap",
+      `case "$*" in *ls-tree*)
+  "${REAL_GIT}" -C "${repo.dir}" config core.attributesFile "${evilAttrs}"
+  "${REAL_GIT}" -C "${repo.dir}" config filter.evil.smudge 'touch "${marker}"; cat'
+  printf '* filter=evil ident\\n' > "${repo.dir}/.git/info/attributes" ;;
+esac`,
+    );
+    const r = runBlock(shell, block, repo, { PATH });
+    assertCommittedBytes(r, repo, ["run.sh"], `${shell} swapped`);
+    assert.ok(!existsSync(marker), `${shell}: no driver ran after the swap`);
+    assert.match(spawnSync(REAL_GIT, ["config", "core.attributesFile"], { cwd: repo.dir, env: repo.env, encoding: "utf8" }).stdout, /evil-attributes/, `${shell}: the swap happened`);
+    spawnSync(REAL_GIT, ["archive", "--format=tar", repo.head], { cwd: repo.dir, env: repo.env });
+    assert.ok(existsSync(marker), `${shell}: after the swap, git archive runs the driver`);
+  }
+});
+
+test("agents: the snapshot block refuses a symlink, a submodule, an escaping or .git path, and stops with a named reason on any git failure", () => {
+  const block = snapshotBlock("release-gate.md");
+  /** A commit whose root tree holds one blob under `name`, written without git's path checks. */
+  const craftedCommit = (repo, name) => {
+    const blob = repo.git(["hash-object", "-w", "--stdin"], "escaped\n");
+    const entry = Buffer.concat([Buffer.from(`100644 ${name}\0`), Buffer.from(blob, "hex")]);
+    const tree = repo.git(["hash-object", "-t", "tree", "--literally", "-w", "--stdin"], entry);
+    repo.head = repo.git(["commit-tree", tree, "-m", "crafted"]);
+  };
+  for (const shell of SHELLS) {
+    const link = fixtureRepo();
+    symlinkSync("a.txt", join(link.dir, "l"));
+    link.git(["add", "l"]);
+    link.git(["commit", "-qm", "link"]);
+    link.head = link.git(["rev-parse", "HEAD"]);
+    const sub = fixtureRepo();
+    sub.git(["update-index", "--add", "--cacheinfo", `160000,${sub.head},sub`]);
+    sub.git(["commit", "-qm", "sub"]);
+    sub.head = sub.git(["rev-parse", "HEAD"]);
+    const escape = fixtureRepo();
+    craftedCommit(escape, "../escaped");
+    const dotgit = fixtureRepo();
+    craftedCommit(dotgit, ".GiT");
+    for (const [repo, reason] of [
+      [link, "refused: symlink l in "],
+      [sub, "refused: submodule sub in "],
+      [escape, "refused: path ../escaped in "],
+      [dotgit, "refused: path .GiT in "],
+    ]) {
+      const r = runBlock(shell, block, repo);
+      assert.equal(r.status, 1, `${shell} ${reason}: ${r.stdout}${r.stderr}`);
+      assert.ok(r.stdout.startsWith(reason), `${shell}: ${r.stdout}`);
+      assert.ok(!existsSync(join(r.snaproot, "escaped")), `${shell}: nothing written outside the snapshot`);
+    }
+    const repo = fixtureRepo();
+    const modes = {
+      // ls-tree writes part of the listing, then dies.
+      "ls-tree-dies": ['case "$*" in *ls-tree*) "' + REAL_GIT + '" "$@" | head -c 10; exit 1 ;; esac', "refused: git ls-tree failed on "],
+      // ls-tree exits 0 with no listing: an empty snapshot is never a clean one.
+      "ls-tree-silent": ['case "$*" in *ls-tree*) exit 0 ;; esac', "refused: 0 blobs written, 0 tree entries, 0 files in "],
+      // ls-tree exits 0 with its last entry cut short.
+      "ls-tree-cut": ['case "$*" in *ls-tree*) "' + REAL_GIT + '" "$@" | head -c 60; exit 0 ;; esac', "refused: the listing of "],
+      "cat-file-dies": ['case "$*" in *cat-file*) exit 1 ;; esac', "refused: cannot write a.txt from git cat-file"],
+    };
     for (const [mode, [body, reason]] of Object.entries(modes)) {
-      const bin = join(fake, mode);
-      mkdirSync(bin, { recursive: true });
-      writeFileSync(join(bin, "git"), `#!/bin/sh\n${body}\nexec "${REAL_GIT}" "$@"\n`);
-      chmodSync(join(bin, "git"), 0o755);
-      const r = runBlock(shell, block, repo, { PATH: `${bin}:${dirname(REAL_GIT)}:/usr/bin:/bin` });
+      const r = runBlock(shell, block, repo, { PATH: fakeGit(mode, body) });
       assert.equal(r.status, 1, `${shell} ${mode}: ${r.stdout}${r.stderr}`);
       assert.ok(r.stdout.startsWith(reason), `${shell} ${mode}: ${r.stdout}`);
     }
