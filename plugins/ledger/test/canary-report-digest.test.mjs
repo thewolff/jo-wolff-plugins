@@ -8,7 +8,7 @@ import { chmodSync, existsSync, mkdirSync, readFileSync, utimesSync, writeFileSy
 import { join } from "node:path";
 import { sandbox, cli, hook, openDb, row, count } from "./helpers.mjs";
 import { openStore } from "../lib/store.mjs";
-import { runCanary, lineDiff, cut, listPlugins, prune, install as canaryInstall, gradeRun, parseCanaryArgs, plistText } from "../lib/canary.mjs";
+import { runCanary, lineDiff, cut, listPlugins, prune, install as canaryInstall, gradeRun, parseCanaryArgs, plistText, childEnv } from "../lib/canary.mjs";
 import { gather, mechanicalGrade, overlayJudge, render, runReport, parseReportArgs, judgePassage } from "../lib/report.mjs";
 import { runDigest, sessionStartLines, body, KEYS, install as digestInstall, parseDigestArgs, doctorCheck } from "../lib/digest.mjs";
 import { recordBounce } from "../lib/bounces.mjs";
@@ -110,6 +110,28 @@ test("canary run: pass, fail, exit 75, timeout, no script, not a plugin; rows, t
   const r4 = await withStore(b, (s) => runCanary({ db: s.db, dbPath: s.dbPath, env: b.env, repo: join(b.root, "nowhere"), claudePresent: true }));
   assert.equal(r4.code, 2);
   assert.match(r4.text, /no plugins\/ directory under/);
+});
+
+test("canary env: the caller's LEDGER_* keys never reach live-run.sh (a LEDGER_DB would outrank the script's throwaway config and point the seeded question at the real store); CANARY_* and the rest do; both scripts unset them before setting their own", async () => {
+  const b = sandbox();
+  const root = repo(b, { alpha: "#!/bin/bash\nenv | grep -E '^(LEDGER_|CANARY_|KEEP_ME)' | sort\nexit 0\n" });
+  const env = { ...b.env, LEDGER_DB: "/tmp/real-store.sqlite", LEDGER_CONFIG: "/tmp/real-config.json", LEDGER_ENABLED: "false", LEDGER_JUDGE_BIN: "/x", KEEP_ME: "yes" };
+  const r = await withStore(b, (s) => runCanary({ db: s.db, dbPath: s.dbPath, env, repo: root, plugins: ["alpha"], claudePresent: true }));
+  assert.equal(r.code, 0, r.text);
+  const seen = readFileSync(r.rows[0].output_path, "utf8");
+  assert.doesNotMatch(seen, /^LEDGER_/m, seen);
+  assert.match(seen, /^CANARY_PLUGIN=alpha$/m);
+  assert.match(seen, /^CANARY_TRANSCRIPT=.+alpha.+\.jsonl$/m);
+  assert.match(seen, /^CANARY_TIMEOUT_S=\d+$/m);
+  assert.match(seen, /^KEEP_ME=yes$/m);
+  assert.deepEqual(Object.keys(childEnv({ LEDGER_DB: "x", LEDGER_: "y", PATH: "p", LEDGERX: "z" })), ["PATH", "LEDGERX"]);
+  // The scripts protect themselves when run by hand: the unset precedes their own exports.
+  for (const script of [new URL("../e2e/live-run.sh", import.meta.url), new URL("../../plugin-kit/templates/e2e/live-run.sh", import.meta.url)]) {
+    const text = readFileSync(script, "utf8");
+    const unset = text.indexOf("unset LEDGER_DB LEDGER_CONFIG LEDGER_ENABLED");
+    const own = text.search(/^export (LEDGER_CONFIG|XDG_STATE_HOME)=/m);
+    assert.ok(unset > 0 && own > unset, `${script.pathname}: unset at ${unset}, own export at ${own}`);
+  }
 });
 
 test("canary: the canary directory unwritable → row inserted with transcript_path and output_path NULL and the errors in note; a read-only db → exit 2 naming the files", { skip: process.getuid?.() === 0 ? "root ignores modes" : false }, async () => {

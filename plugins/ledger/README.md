@@ -522,8 +522,11 @@ nothing is lost).
 
 The canary contract a plugin's `e2e/live-run.sh` follows (plugin-kit's `new-plugin` skill
 ships a template): run from the plugin directory with `CANARY_PLUGIN`, `CANARY_TRANSCRIPT` (the
-path the script copies its transcript to; the canary never writes there) and `CANARY_TIMEOUT_S`;
-exit 0 pass, 75 unavailable
+path the script copies its transcript to; the canary never writes there) and `CANARY_TIMEOUT_S`,
+and with every `LEDGER_*` key of the caller's environment removed, so a `LEDGER_DB` in the shell
+that runs the canary cannot outrank the script's throwaway config and point its seeded question
+and headless session at the real store (the scripts `unset` the same keys themselves, for a run
+by hand); exit 0 pass, 75 unavailable
 with the reason on the last stdout line, anything else fail. The ledger's own script seeds a
 question in another folder, runs `claude -p` headless with the plugin loaded from the checkout
 and the installed one disabled, and checks that the first reply relays the question's body,

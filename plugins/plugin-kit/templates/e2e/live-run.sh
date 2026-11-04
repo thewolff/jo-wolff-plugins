@@ -34,6 +34,9 @@ fi
 T="$(mktemp -d "${TMPDIR:-/tmp}/$PLUGIN-canary.XXXXXX")"
 trap 'rm -r -f "$T"' EXIT
 mkdir -p "$T/trial" "$T/state"
+# A throwaway state dir, never the caller's: drop the env that would point this plugin (or
+# ledger, when its canary runs this script) at a real store before setting our own.
+unset LEDGER_DB LEDGER_CONFIG LEDGER_ENABLED
 export XDG_STATE_HOME="$T/state"
 
 echo "$PLUGIN canary: plugin $PLUGIN_DIR"
