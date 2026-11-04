@@ -162,7 +162,7 @@ async function runOwnLineVerb({ store, cwd, env, verb, tokens, by, out, err }) {
       else if (p.action === "grade") r = gradeRun({ db: store.db, dbPath: store.dbPath, id: p.id, grade: p.grade, note: p.note, by: by ?? "human" });
       else if (p.action === "prune") {
         const { removed, kept } = canaryPrune({ env, days: p.days });
-        r = { code: 0, text: `canary prune: removed ${removed} transcript file(s) older than ${p.days} day(s), kept ${kept}; rows untouched` };
+        r = { code: 0, text: `canary prune: removed ${removed} file(s) older than ${p.days} day(s), kept ${kept}; rows untouched` };
       } else r = canaryInstall({ env, cliPath: cliPath(), repo: p.repo, hour: p.hour, minute: p.minute });
     } else if (verb === "gate") {
       const p = parseGateArgs(tokens);

@@ -47,10 +47,11 @@ function withStore(b, fn) {
   return r;
 }
 
-test("canary run: pass, fail, exit 75, timeout, no script, not a plugin; rows, transcripts and the diff against the last pass", async () => {
+test("canary run: pass, fail, exit 75, timeout, no script, not a plugin; rows, the script's transcript kept byte for byte, the output beside it, and the diff against the last pass", async () => {
   const b = sandbox();
+  const TRANSCRIPT = '{"type":"assistant","text":"evidence"}\n';
   const root = repo(b, {
-    alpha: "#!/bin/bash\necho line one\necho line two\nexit 0\n",
+    alpha: `#!/bin/bash\nmkdir -p "$(dirname "$CANARY_TRANSCRIPT")" && printf '%s' '${TRANSCRIPT}' > "$CANARY_TRANSCRIPT"\necho line one\necho line two\nexit 0\n`,
     beta: "#!/bin/bash\necho boom >&2\nexit 3\n",
     gamma: "#!/bin/bash\necho 'no claude credentials here'\nexit 75\n",
     delta: "#!/bin/bash\nsleep 5\n",
@@ -63,32 +64,41 @@ test("canary run: pass, fail, exit 75, timeout, no script, not a plugin; rows, t
   assert.equal(by.alpha.status, "pass");
   assert.equal(by.alpha.exit_code, 0);
   assert.match(by.alpha.summary, /^line one\nline two\n$/);
-  assert.ok(existsSync(by.alpha.transcript_path), by.alpha.transcript_path);
   assert.ok(by.alpha.transcript_path.startsWith(join(b.env.XDG_STATE_HOME, "ledger", "canary", "alpha")));
+  assert.equal(readFileSync(by.alpha.transcript_path, "utf8"), TRANSCRIPT, "the script's stream-json, not the canary's summary");
+  assert.equal(by.alpha.output_path, by.alpha.transcript_path.replace(/\.jsonl$/, ".out.txt"));
+  assert.equal(readFileSync(by.alpha.output_path, "utf8"), "line one\nline two\n");
+  assert.equal(by.alpha.note, null);
   assert.equal(by.alpha.diff, null, "first run has nothing to diff against");
   assert.equal(by.beta.status, "fail");
-  assert.equal(by.beta.note, "exit 3");
+  assert.equal(by.beta.note, "exit 3; no transcript from the script");
+  assert.equal(by.beta.transcript_path, null);
+  assert.match(readFileSync(by.beta.output_path, "utf8"), /\[stderr\]\nboom/);
   assert.match(by.beta.summary, /\[stderr\]\nboom/);
   assert.equal(by.gamma.status, "unavailable");
   assert.equal(by.gamma.note, "no claude credentials here");
   assert.equal(by.delta.status, "fail");
-  assert.equal(by.delta.note, "timeout after 1s");
+  assert.equal(by.delta.note, "timeout after 1s; no transcript from the script");
   assert.ok(by.delta.duration_ms >= 900 && by.delta.duration_ms < 4000, String(by.delta.duration_ms));
   assert.equal(by.epsilon.status, "unavailable");
   assert.equal(by.epsilon.note, "no e2e/live-run.sh");
   assert.equal(by.epsilon.transcript_path, null);
-  assert.match(r.text, /^alpha\s+pass\s+\d+\.\ds\s+#\d+\s+transcript /m);
+  assert.match(r.text, /^alpha\s+pass\s+\d+\.\ds\s+#\d+\s+transcript \S+\.jsonl; output \S+\.out\.txt$/m);
+  assert.match(r.text, /^beta\s+fail\s+\d+\.\ds\s+#\d+\s+exit 3; no transcript from the script; output /m);
   assert.match(r.text, /^zeta\s+unavailable\s+not a plugin under /m);
   const db = openDb(b);
   assert.equal(count(db, "cc_canary_runs"), 5);
-  assert.equal(row(db, "SELECT status, note FROM cc_canary_runs WHERE plugin = 'delta'").note, "timeout after 1s");
+  assert.equal(row(db, "SELECT status, note FROM cc_canary_runs WHERE plugin = 'delta'").note, "timeout after 1s; no transcript from the script");
   db.close();
 
   // Second run of alpha with different output: diff against the last pass.
-  writeFileSync(join(root, "plugins", "alpha", "e2e", "live-run.sh"), "#!/bin/bash\necho line one\necho line changed\nexit 0\n");
+  writeFileSync(join(root, "plugins", "alpha", "e2e", "live-run.sh"), "#!/bin/bash\nprintf 'again' > \"$CANARY_TRANSCRIPT\"\necho line one\necho line changed\nexit 0\n");
   const r2 = await withStore(b, (s) => runCanary({ db: s.db, dbPath: s.dbPath, env: b.env, repo: root, plugins: ["alpha"], claudePresent: true }));
   assert.equal(r2.code, 0);
   assert.equal(r2.rows[0].diff, " line one\n-line two\n+line changed\n ");
+  assert.equal(readFileSync(r2.rows[0].transcript_path, "utf8"), "again");
+  assert.notEqual(r2.rows[0].transcript_path, by.alpha.transcript_path, "a new file per run; the first run's bytes stay");
+  assert.equal(readFileSync(by.alpha.transcript_path, "utf8"), TRANSCRIPT);
   assert.match(r2.text, /diff vs last pass: 2 line\(s\)/);
 
   // No claude: every scripted plugin unavailable with the reason; the no-script one keeps its own.
@@ -101,7 +111,7 @@ test("canary run: pass, fail, exit 75, timeout, no script, not a plugin; rows, t
   assert.match(r4.text, /no plugins\/ directory under/);
 });
 
-test("canary: the transcript directory unwritable → row inserted with transcript_path NULL and the error in note; a read-only db → exit 2 naming the transcript", { skip: process.getuid?.() === 0 ? "root ignores modes" : false }, async () => {
+test("canary: the canary directory unwritable → row inserted with transcript_path and output_path NULL and the errors in note; a read-only db → exit 2 naming the files", { skip: process.getuid?.() === 0 ? "root ignores modes" : false }, async () => {
   const b = sandbox();
   const root = repo(b, { alpha: "#!/bin/bash\necho ok\n" });
   const cdir = join(b.env.XDG_STATE_HOME, "ledger", "canary");
@@ -112,15 +122,16 @@ test("canary: the transcript directory unwritable → row inserted with transcri
   assert.equal(r.code, 0, r.text);
   assert.equal(r.rows[0].status, "pass");
   assert.equal(r.rows[0].transcript_path, null);
-  assert.match(r.rows[0].note, /^transcript not written: /);
+  assert.equal(r.rows[0].output_path, null);
+  assert.match(r.rows[0].note, /^no transcript from the script; output not written: /);
   const db = openDb(b);
-  assert.equal(row(db, "SELECT transcript_path FROM cc_canary_runs").transcript_path, null);
+  assert.equal(row(db, "SELECT transcript_path, output_path FROM cc_canary_runs").output_path, null);
   db.close();
   chmodSync(b.dbPath, 0o444);
   const r2 = await withStore(b, (s) => runCanary({ db: s.db, dbPath: s.dbPath, env: b.env, repo: root, claudePresent: true }));
   chmodSync(b.dbPath, 0o644);
   assert.equal(r2.code, 2);
-  assert.match(r2.text, /could not record the alpha run .*; its transcript is at /);
+  assert.match(r2.text, /could not record the alpha run .*; its transcript is at \(none\), its output at \S+\.out\.txt/);
 });
 
 test("canary grade, runs, prune: a grade needs a known id and one of three words; prune removes only files older than N days and leaves rows", async () => {
@@ -144,12 +155,12 @@ test("canary grade, runs, prune: a grade needs a known id and one of three words
   const p = prune({ env: b.env, days: 30 });
   assert.deepEqual(p, { removed: 1, kept: 1 });
   assert.equal(existsSync(old), false);
-  assert.equal(existsSync(r.rows[0].transcript_path), true);
+  assert.equal(existsSync(r.rows[0].output_path), true);
   const db = openDb(b);
   assert.equal(count(db, "cc_canary_runs"), 1);
   db.close();
   const viaCli = cli(b, ["canary", "prune", "--days", "0"]);
-  assert.match(viaCli.out, /removed 1 transcript file\(s\) older than 0 day\(s\), kept 0; rows untouched/);
+  assert.match(viaCli.out, /removed 1 file\(s\) older than 0 day\(s\), kept 0; rows untouched/);
   assert.match(cli(b, ["canary", "prune", "--days", "x"]).out, /^usage: canary/);
 });
 

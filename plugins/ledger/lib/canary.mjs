@@ -5,10 +5,13 @@
 //       .claude-plugin/plugin.json), run `e2e/live-run.sh` from the plugin directory with the
 //       canary contract below, and insert one cc_canary_runs row: status pass (exit 0), fail
 //       (any other exit, or the deadline), unavailable (no script, exit 75, or `claude` missing).
-//       The script's stdout is the transcript, written to <state>/canary/<plugin>/<iso>.jsonl;
-//       the row keeps its last 16 KiB as `summary` and a line diff against the last pass as
-//       `diff`. Exit 0 when every plugin passed or was unavailable, 1 when any failed, 2 when the
-//       store could not be written (the canary has no session to fail open into).
+//       The script's own stream-json transcript, written by it to CANARY_TRANSCRIPT
+//       (<state>/canary/<plugin>/<iso>.jsonl), is kept as it wrote it (transcript_path; NULL
+//       with a note when the script wrote none); the script's stdout and stderr go to
+//       <iso>.out.txt beside it (output_path), and the row keeps their last 16 KiB as `summary`
+//       and a line diff against the last pass as `diff`. Exit 0 when every plugin passed or was
+//       unavailable, 1 when any failed, 2 when the store could not be written (the canary has no
+//       session to fail open into).
 //   canary grade <id> biting|silent|fine ["<note>"]
 //       Records who read the run and what they made of it.
 //   canary prune [--days 30]
@@ -21,14 +24,16 @@
 //
 // THE CANARY CONTRACT for a plugin's e2e/live-run.sh (documented for new plugins in
 // plugin-kit's new-plugin skill): run from the plugin directory with CANARY_PLUGIN (its name),
-// CANARY_TRANSCRIPT (a path the script may write its stream-json transcript to; stdout is kept
-// regardless) and CANARY_TIMEOUT_S; exit 0 = pass, 75 = unavailable (say why on the last stdout
-// line: no `claude`, no credentials), anything else = fail. Every line of stdout is kept.
+// CANARY_TRANSCRIPT (a path the script writes its stream-json transcript to; the canary never
+// writes there itself) and CANARY_TIMEOUT_S; exit 0 = pass, 75 = unavailable (say why on the
+// last stdout line: no `claude`, no credentials), anything else = fail. Every line of stdout is
+// kept, in its own file.
 //
 // How it fails: a plugin with no script → unavailable, note `no e2e/live-run.sh`. A run past the
 // deadline (default 600 s) is killed with its process group → fail, note `timeout after Ns`.
 // `claude` not on PATH → every scripted plugin unavailable, note `claude not found on PATH`. A
-// transcript that cannot be written → the row is still inserted, transcript_path NULL, the error
+// output file that cannot be written → the row is still inserted, output_path NULL, the error in
+// note; a script that wrote no transcript → transcript_path NULL, `no transcript from the script`
 // in note. Summary and diff are cut at 16 KiB with a marker. Rerun-safe: one row per run; running
 // twice makes two rows, which is the record. Evidence kept: rows forever, files 30 days.
 
@@ -186,11 +191,18 @@ export async function runCanary({ db, dbPath, env = process.env, now = Date.now(
   for (const p of wanted) {
     const at = nowIso(Date.now());
     const script = join(p.dir, "e2e", "live-run.sh");
-    const row = { plugin: p.name, at, status: "unavailable", exit_code: null, duration_ms: 0, transcript_path: null, summary: null, diff: null, note: null };
+    const row = { plugin: p.name, at, status: "unavailable", exit_code: null, duration_ms: 0, transcript_path: null, output_path: null, summary: null, diff: null, note: null };
     if (!existsSync(script)) row.note = "no e2e/live-run.sh";
     else if (!hasClaude) row.note = "claude not found on PATH";
     else {
-      const file = join(canaryDir(env), p.name, `${at.replace(/[:.]/g, "-")}.jsonl`);
+      const stem = join(canaryDir(env), p.name, at.replace(/[:.]/g, "-"));
+      const file = `${stem}.jsonl`;
+      const outFile = `${stem}.out.txt`;
+      try {
+        mkdirSync(join(canaryDir(env), p.name), { recursive: true });
+      } catch {
+        /* the script's own mkdir, or the write below, reports it */
+      }
       const r = await run(script, { cwd: p.dir, env: { ...env, CANARY_PLUGIN: p.name, CANARY_TRANSCRIPT: file, CANARY_TIMEOUT_S: String(timeoutS) }, timeoutMs: timeoutS * 1000 });
       row.duration_ms = r.durationMs;
       row.exit_code = r.code;
@@ -210,12 +222,20 @@ export async function runCanary({ db, dbPath, env = process.env, now = Date.now(
         row.status = "fail";
         row.note = `exit ${r.code ?? r.signal}`;
       }
+      // The script's transcript is its own: kept byte for byte, never written over.
+      let size = 0;
       try {
-        mkdirSync(join(canaryDir(env), p.name), { recursive: true });
-        writeFileSync(file, out);
-        row.transcript_path = file;
+        size = statSync(file).size;
+      } catch {
+        /* none written */
+      }
+      if (size > 0) row.transcript_path = file;
+      else if (row.status !== "unavailable") row.note = `${row.note ? `${row.note}; ` : ""}no transcript from the script`;
+      try {
+        writeFileSync(outFile, out);
+        row.output_path = outFile;
       } catch (err) {
-        row.note = `${row.note ? `${row.note}; ` : ""}transcript not written: ${err.message}`;
+        row.note = `${row.note ? `${row.note}; ` : ""}output not written: ${err.message}`;
       }
       const prev = lastPassSummary(db, p.name);
       if (prev !== null && row.status !== "unavailable") row.diff = lineDiff(prev, row.summary) || null;
@@ -225,14 +245,14 @@ export async function runCanary({ db, dbPath, env = process.env, now = Date.now(
         db,
         () => {
           const r = db
-            .prepare("INSERT INTO cc_canary_runs (plugin, at, status, exit_code, duration_ms, transcript_path, summary, diff, note) VALUES (?,?,?,?,?,?,?,?,?)")
-            .run(row.plugin, row.at, row.status, row.exit_code, row.duration_ms, row.transcript_path, row.summary, row.diff, row.note);
+            .prepare("INSERT INTO cc_canary_runs (plugin, at, status, exit_code, duration_ms, transcript_path, output_path, summary, diff, note) VALUES (?,?,?,?,?,?,?,?,?,?)")
+            .run(row.plugin, row.at, row.status, row.exit_code, row.duration_ms, row.transcript_path, row.output_path, row.summary, row.diff, row.note);
           row.id = Number(r.lastInsertRowid);
         },
         dbPath,
       );
     } catch (err) {
-      return { code: 2, text: `${lines.join("\n")}${lines.length ? "\n" : ""}canary: could not record the ${p.name} run (${err.message}); its transcript is at ${row.transcript_path ?? "(not written)"}`, rows };
+      return { code: 2, text: `${lines.join("\n")}${lines.length ? "\n" : ""}canary: could not record the ${p.name} run (${err.message}); its transcript is at ${row.transcript_path ?? "(none)"}, its output at ${row.output_path ?? "(not written)"}`, rows };
     }
     rows.push(row);
     lines.push(renderRow(row));
@@ -244,7 +264,7 @@ export async function runCanary({ db, dbPath, env = process.env, now = Date.now(
 
 export function renderRow(r) {
   const secs = r.duration_ms ? ` ${(r.duration_ms / 1000).toFixed(1)}s` : "";
-  const extra = [r.note ? r.note : null, r.diff ? `diff vs last pass: ${r.diff.split("\n").filter((l) => /^[+-]/.test(l)).length} line(s)` : null, r.transcript_path ? `transcript ${r.transcript_path}` : null].filter(Boolean);
+  const extra = [r.note ? r.note : null, r.diff ? `diff vs last pass: ${r.diff.split("\n").filter((l) => /^[+-]/.test(l)).length} line(s)` : null, r.transcript_path ? `transcript ${r.transcript_path}` : null, r.output_path ? `output ${r.output_path}` : null].filter(Boolean);
   return `${r.plugin.padEnd(16)} ${r.status.padEnd(11)}${secs}${r.id ? `  #${r.id}` : ""}${extra.length ? `  ${extra.join("; ")}` : ""}`;
 }
 

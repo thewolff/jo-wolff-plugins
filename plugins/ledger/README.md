@@ -507,15 +507,19 @@ on its own line (never inside a batch) because each spawns processes.
 `hooks/hooks.json` or `.claude-plugin/plugin.json`; `--repo` defaults to the checkout this
 plugin is loaded from) and inserts one `cc_canary_runs` row per plugin: `pass` (exit 0), `fail`
 (any other exit, or the deadline, default 600 s, the process group killed), `unavailable` (no
-script, exit 75, or no `claude` on PATH). The script's stdout and stderr are the transcript,
-written to `<state>/canary/<plugin>/<time>.jsonl`; the row keeps the last 16 KiB as `summary`
-and a line diff against the plugin's last pass as `diff`. Exit 0 when nothing failed, 1 when
-something did, 2 when the store could not be written (the canary has no session to fail open
-into; the transcript path is named so nothing is lost).
+script, exit 75, or no `claude` on PATH). The script writes its own stream-json transcript to
+`CANARY_TRANSCRIPT` (`<state>/canary/<plugin>/<time>.jsonl`), and the canary keeps that file as
+written (`transcript_path`; NULL with `no transcript from the script` in the note when the
+script wrote none); the script's stdout and stderr go to `<time>.out.txt` beside it
+(`output_path`), and the row keeps their last 16 KiB as `summary` and a line diff against the
+plugin's last pass as `diff`. Exit 0 when nothing failed, 1 when something did, 2 when the store
+could not be written (the canary has no session to fail open into; both paths are named so
+nothing is lost).
 
 The canary contract a plugin's `e2e/live-run.sh` follows (plugin-kit's `new-plugin` skill
-ships a template): run from the plugin directory with `CANARY_PLUGIN`, `CANARY_TRANSCRIPT` (a
-path the script may copy its transcript to) and `CANARY_TIMEOUT_S`; exit 0 pass, 75 unavailable
+ships a template): run from the plugin directory with `CANARY_PLUGIN`, `CANARY_TRANSCRIPT` (the
+path the script copies its transcript to; the canary never writes there) and `CANARY_TIMEOUT_S`;
+exit 0 pass, 75 unavailable
 with the reason on the last stdout line, anything else fail. The ledger's own script seeds a
 question in another folder, runs `claude -p` headless with the plugin loaded from the checkout
 and the installed one disabled, and checks that the first reply relays the question's body,
@@ -525,7 +529,7 @@ e2e/live-run.sh`, which is the correct reading, not a failure.
 
 `canary runs [N] [--plugin <name>]` lists the last N rows. `canary grade <id> biting|silent|fine
 ["<note>"]` records who read a run and what they made of it (`--by`, default `human`).
-`canary prune [--days 30]` removes transcript files older than that; rows stay for ever.
+`canary prune [--days 30]` removes transcript and output files older than that; rows stay for ever.
 `canary install [--repo] [--hour 3] [--minute 30]` writes
 `<state>/launchd/com.jo-wolff-plugins.ledger-canary.plist` (nightly, `canary run --repo …`,
 logs beside it), checks it with `plutil -lint`, asks `launchctl print` whether the job is
@@ -596,7 +600,7 @@ named, so the row can be reproduced) and creates three tables: `cc_judge_cache` 
 `yes`/`no` per `judge:<sha256(passage + question)>` key, with the passage and question it was
 given; the `judge:` rows that lived in `cc_meta` move here with `passage` NULL and leave
 `cc_meta`), `cc_canary_runs` (one row per nightly canary run of one plugin: status
-`pass`/`fail`/`unavailable`, exit code, duration, transcript path, summary, diff against the last
+`pass`/`fail`/`unavailable`, exit code, duration, transcript and output paths, summary, diff against the last
 green run, grade `biting`/`silent`/`fine` and who graded it) and `cc_gate_checks` (one row per
 commit, plugin and check of the plugin push gate, `pass`/`fail`/`skipped` with a detail and
 the hash of the plugin tree it certifies).

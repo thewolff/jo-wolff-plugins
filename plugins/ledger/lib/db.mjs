@@ -275,6 +275,7 @@ export const MIGRATIONS = [
         exit_code       INTEGER,
         duration_ms     INTEGER,
         transcript_path TEXT,
+        output_path     TEXT,
         summary         TEXT,
         diff            TEXT,
         grade           TEXT CHECK (grade IS NULL OR grade IN ('biting','silent','fine')),
