@@ -14,9 +14,18 @@
 // stop_hook_active is true.
 //
 // "The human has replied": every Stop stamps its prompt_id in cc_sessions.last_stop_prompt. A
-// Stop whose prompt_id differs from the stamped one belongs to a new turn, so a human prompt
-// arrived after the previous Stop; the session's open questions asked at or before that Stop
-// (cc_sessions.last_stop_at) are due. Without a prompt_id the answer rule does not run.
+// Stop whose prompt_id differs from the stamped one belongs to a new turn. A new turn is not proof
+// the human wrote: a subagent's `<task-notification>`, a `<system-reminder>`, another session's
+// message all start one (0.3.8, #340). So when the transcript (transcript_path) holds timestamped
+// `user` entries, the answer rule runs only if one written after the previous Stop
+// (cc_sessions.last_stop_at) is a typed prompt (lib/transcript.mjs isHumanPrompt); a transcript
+// that cannot be read, or holds no such entries, falls back to the prompt_id change alone. The
+// session's open questions asked at or before that Stop are due. Without a prompt_id the answer
+// rule does not run.
+//
+// brb: while ${XDG_STATE_HOME:-~/.local/state}/brb/<session_id>/away.json exists and parses, the
+// human is away by their own word: the answer rule does not run, and the ask rule asks for `ask`
+// then `hold` instead of a question in plain words. Read-only; any error reads as not away.
 //
 // "This turn" for the decision rule runs from the previous Stop of the session (its
 // cc_sessions.last_stop_at, stamped on every Stop, pass or block; the session's start before
@@ -35,6 +44,7 @@ import { transaction } from "../lib/db.mjs";
 import { runHook, noticeField, invokedDirectly } from "../lib/failopen.mjs";
 import { elsewhereQuestions, openQuestions, sessionNotes, sessionQuestions } from "../lib/commands.mjs";
 import { checkStop } from "../lib/stop-rules.mjs";
+import { brbAway, humanWroteSince } from "../lib/transcript.mjs";
 import { invocation } from "../lib/inject.mjs";
 import { withStore, hookConfig } from "../lib/store.mjs";
 import { nowIso } from "../lib/time.mjs";
@@ -87,6 +97,8 @@ export function handle(input, { env = process.env, now = Date.now() } = {}) {
     if (input.stop_hook_active === true && (!promptId || !session?.last_block_prompt)) return pass();
 
     const newTurn = Boolean(promptId && session?.last_stop_prompt && session.last_stop_prompt !== promptId && session.last_stop_at);
+    const away = brbAway(sessionId, env);
+    const humanWrote = newTurn && !away && humanWroteSince(input.transcript_path, session.last_stop_at) !== false;
     // The session's own open questions drive the answer rule and the decision rule's "asked this
     // turn" count. The ask rule stands down on any open question in scope for the folder (its
     // own, or one an earlier session left in this cwd or a parent): a leftover row is still a
@@ -99,7 +111,7 @@ export function handle(input, { env = process.env, now = Date.now() } = {}) {
     const relayed = inScope.length || open.length ? false : relaysElsewhere(db, cwd, input.last_assistant_message);
     const turnSince = session?.last_stop_at ?? session?.started_at ?? null;
     const verdict = checkStop(input.last_assistant_message, {
-      dueQuestions: newTurn ? sessionQuestions(db, { sessionId, cwd, askedBy: session.last_stop_at }) : [],
+      dueQuestions: humanWrote ? sessionQuestions(db, { sessionId, cwd, askedBy: session.last_stop_at }) : [],
       sessionHasOpenQuestion: open.length > 0 || inScope.length > 0 || relayed,
       // A question asked this turn: its stated default ("if you don't answer, I'll go with alpha")
       // is not a decision, so the decision rule stands down for this reply.
@@ -107,6 +119,7 @@ export function handle(input, { env = process.env, now = Date.now() } = {}) {
       turnNotes: sessionNotes(db, { sessionId, cwd, after: turnSince }).length,
       forcing: store.config.forcing,
       cli: invocation(),
+      away,
     });
     stamp(verdict);
     if (!verdict) return pass();

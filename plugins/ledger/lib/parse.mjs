@@ -246,11 +246,14 @@ export function parseLine(text, lookup = NULL_LOOKUP, tokens = null) {
     const id = rest[0];
     const prefix = prefixOf(id);
     if (prefix === "q") {
+      // `hold` and `reopen` change a question's state and never answer it, even when a question
+      // lists that word as an option (0.3.8, #340: `hold q-…` on a question with a `hold` option
+      // recorded the answer "hold"). `answer <q-id> hold` still answers with that option.
+      if (t0 === "hold" || t0 === "reopen") return command(shown, { verb: t0, id });
       const q = lookup.question(id);
       if (q && q.options.includes(t0)) return command(shown, { verb: "answer", id, word: t0 });
       if (t0 === "withdraw") return command(shown, { verb: "withdraw", id });
       if (t0 === "extend") return command(shown, { verb: "extend", id });
-      if (t0 === "hold" || t0 === "reopen") return command(shown, { verb: t0, id });
       if (t0 === "outcome") return refused(shown, 'outcome needs a ref first: outcome <ref> [q-id] "<what it produced>"');
       if (t0 === "answer") return refused(shown, `answer needs a word: answer ${id} <word>`);
       if (["pending", "log", "help", "config", "enable", "disable", "ask", "note", "doctor", "bounces"].includes(t0)) return refused(shown, `${t0} does not take an id`);
