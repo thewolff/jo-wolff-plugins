@@ -53,6 +53,11 @@
       "name": "ctx-watch",
       "source": "./plugins/ctx-watch",
       "description": "Notice when the ctx daemon is dead, unsupervised, or stale (judged from `ctx daemon status --format json`, never its exit code), repair it with `ctx index mode auto`, and say so twice: a SessionStart line, and a macOS popup from a launchd timer that `install` writes and you bootstrap. The SessionStart line also says when the timer itself has stopped. macOS; Claude Code hooks."
+    },
+    {
+      "name": "continuity",
+      "source": "./plugins/continuity",
+      "description": "Keep a long session's state across compaction. A PreCompact hook saves branch, diff, touched files, recent asks and the repository's open handoffs to a snapshot the post-compaction SessionStart injects back; every session start says when that save last succeeded, so a dead save is never silent; a context-pressure check warns once, and blocks one stop, when the transcript nears the compaction target, naming `/continuity:handoff`; and the handoff skill writes the judgment layer (what was attempted, ruled out, still open) that no hook can derive. Every hook fails open."
     }
   ]
 }
