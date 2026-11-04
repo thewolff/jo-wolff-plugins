@@ -254,6 +254,24 @@ test("spawned: a host that never reads stdout → exit 0 at the deadline, one er
   assert.match(lines[0], /^\S+ PreToolUse stdout not drained within \d+ ms: the host is not reading it; the rest of a \d+-byte answer was dropped$/);
 });
 
+test("spawned: a host that closed stdout before the answer (EPIPE) → exit 0 inside the deadline, one `stdout write failed` errors.log line, never exit 1", async () => {
+  const b = box();
+  const started = Date.now();
+  // The handler answers after 100 ms; the host has closed its read end of stdout before that.
+  const child = spawn(process.execPath, [hookScript(b, "() => new Promise((res) => setTimeout(() => res({ text: 'late' }), 100))", 2_000)], { env: { ...process.env, ...b.env }, stdio: ["pipe", "pipe", "pipe"] });
+  child.stdout.destroy();
+  let err = "";
+  child.stderr.on("data", (c) => (err += c));
+  child.stdin.end("{}");
+  const code = await new Promise((resolve) => child.on("exit", resolve));
+  const ms = Date.now() - started;
+  assert.equal(code, 0, `stderr: ${err}`);
+  assert.ok(ms < 2_000, `${ms} ms: past the deadline`);
+  const lines = b.log();
+  assert.equal(lines.length, 1, lines.join("\n"));
+  assert.match(lines[0], /^\S+ PreToolUse stdout write failed: .*EPIPE/);
+});
+
 test("runHook without { plugin }, or with a function instead of the module URL, is a programming error, thrown at once", async () => {
   await assert.rejects(runHook("Stop", "file:///x.mjs", {}), /needs \{ plugin \}/);
   await assert.rejects(runHook("Stop", () => null, { plugin: "trial" }), /needs the hook module's import.meta.url/);

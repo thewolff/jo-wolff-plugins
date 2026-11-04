@@ -35,8 +35,8 @@
 // true (a runner older than this never set it, so a handler checks it before posting), and the
 // thread posts { kitReap: <pgid> } when it starts one and { kitReaped: <pgid> } when it has reaped
 // it itself (lib/judge.mjs does both inside this runner's thread); every group still registered
-// when the runner exits, at the deadline or after an answer, gets one negative-pid SIGKILL, so
-// terminating the thread never leaves its children running.
+// when the runner takes an answer or gives up at the deadline (before it drains stdout) gets one
+// negative-pid SIGKILL, so terminating the thread never leaves its children running.
 //
 // errors.log is `${XDG_STATE_HOME:-~/.local/state}/<plugin>/errors.log`, one line per fault:
 // `<iso> <hook> <message>` (a thrown error's line carries two stack frames after ` | `; the

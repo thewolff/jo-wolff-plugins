@@ -316,8 +316,8 @@ turn.
   each receipt licenses its sentence. Warns, never blocks; off switch and the judge's switch below.
 
 Changes in 0.3.1: `lib/hook-runner.mjs` re-vendored from plugin-kit 0.3.1, so the Stop hook's
-answer drains before the hook exits (bounded by the 4 s deadline) instead of being cut at one
-64 KiB pipe buffer; the check itself is unchanged.
+answer drains before the hook exits (bounded by the hook's deadline: 4 s, or 55 s with the judge
+on) instead of being cut at one 64 KiB pipe buffer; the check itself is unchanged.
 
 Changes in 0.3.0: the Stop check (next section). Mechanical, every turn: each `**CLAIM**` without
 an absolute `file:line` or a command and its result, and each `**CITE**` without a URL or a test
