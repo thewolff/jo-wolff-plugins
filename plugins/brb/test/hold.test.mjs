@@ -3,16 +3,19 @@
 // case or spacing) is held once; not away → `not away; say it to Jo`, nothing written, exit 0;
 // the session from --session, BRB_SESSION_ID, CLAUDE_CODE_SESSION_ID or the one away session;
 // several away and no id → exit 1; no text or a bad verb → usage, exit 1; an item held here
-// is not held again by the Stop hook, and `pending` shows both sources. node --test.
+// is not held again by the Stop hook, and `pending` shows both sources; a `back` between hold's
+// read and its write leaves the hold ended and nothing appended (the session lock); a live lock
+// fails hold after the wait, a stale one is taken over. node --test.
 
 import test from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { chmodSync, existsSync } from "node:fs";
+import { chmodSync, existsSync, utimesSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
 import { hold, parseHoldArgs, resolveSession } from "../scripts/brb.mjs";
-import { freshAway, writeAway } from "../lib/state.mjs";
+import { handle } from "../hooks/user-prompt-submit.mjs";
+import { LOCK_STALE_MS, LOCK_WAIT_MS, freshAway, withAwayLock, writeAway } from "../lib/state.mjs";
 import { backstopReason } from "../lib/text.mjs";
 import { PLUGIN_ROOT, box, promptInput, row, runHook, stopInput } from "./helpers.mjs";
 
@@ -153,6 +156,58 @@ test("an unwritable state directory: the error on stderr, exit 1, nothing held",
     assert.equal(awayRecord(b).held, 0);
   } finally {
     chmodSync(b.stateDir("s1"), 0o700);
+    b.release();
+  }
+});
+
+test("a `back` that lands between hold's read and its write: nothing is appended, away.json is not recreated, `not away`", () => {
+  const b = box();
+  try {
+    runHook(b, "user-prompt-submit", promptInput(b, "brb"));
+    // The reviewer's interleaving: hold has read away.json; Jo types `back` (through the prompt hook, which takes the lock) before hold writes.
+    let backed = null;
+    const now = () => {
+      backed = handle(promptInput(b, "back"), { env: b.env });
+      return "2026-11-04T00:00:00.000Z";
+    };
+    assert.deepEqual(hold("s1", "Pick a cache", { env: b.env, now }), { status: "home" });
+    assert.match(backed.reason, /^brb: hold cleared/);
+    assert.ok(!existsSync(join(b.stateDir("s1"), "away.json")), "the away flag stays gone");
+    assert.ok(!existsSync(join(b.stateDir("s1"), "digest.md")), "nothing appended after the return");
+    assert.ok(!existsSync(join(b.stateDir("s1"), "away.lock")), "the lock is released");
+    // A hold replaced by a new `brb` in the same window is not written to either.
+    runHook(b, "user-prompt-submit", promptInput(b, "brb"));
+    const replace = () => {
+      handle(promptInput(b, "back"), { env: b.env });
+      handle(promptInput(b, "brb"), { env: b.env, now: () => "2026-11-04T01:00:00.000Z" });
+      return "2026-11-04T00:00:00.000Z";
+    };
+    assert.deepEqual(hold("s1", "Pick a cache", { env: b.env, now: replace }), { status: "home" });
+    assert.equal(awayRecord(b).held, 0);
+    assert.ok(!existsSync(join(b.stateDir("s1"), "digest.md")));
+  } finally {
+    b.release();
+  }
+});
+
+test("the session lock: a live lock makes hold wait and then fail (nothing held); a stale lock is taken over", () => {
+  const b = box();
+  try {
+    runHook(b, "user-prompt-submit", promptInput(b, "brb"));
+    const lock = join(b.stateDir("s1"), "away.lock");
+    writeFileSync(lock, "");
+    const started = Date.now();
+    const r = run(b, ["hold", "--session", "s1", "Pick a cache"]);
+    assert.ok(Date.now() - started >= LOCK_WAIT_MS, "waited the bound");
+    assert.equal(r.status, 1);
+    assert.match(r.stderr, /^brb hold: could not write the digest \(brb: the hold is locked \(.*away\.lock\)\); say it to Jo/);
+    assert.equal(awayRecord(b).held, 0);
+    const old = new Date(Date.now() - LOCK_STALE_MS - 1_000);
+    utimesSync(lock, old, old);
+    assert.equal(run(b, ["hold", "--session", "s1", "Pick a cache"]).stdout, "held 1\n");
+    assert.ok(!existsSync(lock));
+    assert.equal(withAwayLock("s1", b.env, () => 7), 7);
+  } finally {
     b.release();
   }
 });
