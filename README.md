@@ -1,8 +1,9 @@
 # jo-wolff-plugins
 
 Plugins about working with an agent: what its output is made of, what shape that output
-arrives in, when it may write code at all, whether the thing is worth building in the first
-place, going through your reminders with it, and keeping a record of what it did and asked.
+arrives in, when it may write code at all, whether it has looked for what the repository already
+has, whether the thing is worth building in the first place, going through your reminders with
+it, keeping a record of what it did and asked, and a vendored set of engineering skills.
 
 - **[output-types](#output-types)** — label receipted facts, and only those, with the receipt
   that earns the label.
@@ -28,9 +29,11 @@ not enforce* note. i-have-audhd delivers its rules and checks every finished mes
 default. paired-coding enforces at the tool boundary, within the limits in its *what this
 enforces, and what it does not* note. ask-graham is a skill, a one-line prompt nudge you can
 turn off, and a Stop check that blocks once per turn when an answer that read the skill has no
-verdict line, which `/ask-graham stop-check off` turns off.
-reminders-review is a skill only. pattern-check enforces at the tool boundary: it holds writes,
-commits and PRs past a file threshold until a receipt exists, and does not judge the receipt.
+verdict line (or, for a structure check, no `**Found:**` or `**No similar:**` line), which
+`/ask-graham stop-check off` turns off.
+reminders-review and as2-skills are skills only. pattern-check enforces at the tool boundary: it
+holds writes, commits and PRs past a file threshold until a receipt exists, and does not judge
+the receipt.
 
 ```
 /plugin marketplace add thewolff/jo-wolff-plugins
@@ -41,6 +44,7 @@ commits and PRs past a file threshold until a receipt exists, and does not judge
 /plugin install reminders-review@jo-wolff-plugins
 /plugin install pattern-check@jo-wolff-plugins
 /plugin install ledger@jo-wolff-plugins
+/plugin install as2-skills@jo-wolff-plugins
 ```
 
 On OMP, from a shell:
@@ -53,12 +57,14 @@ omp plugin install paired-coding@jo-wolff-plugins
 omp plugin install ask-graham@jo-wolff-plugins
 omp plugin install reminders-review@jo-wolff-plugins
 omp plugin install pattern-check@jo-wolff-plugins
+omp plugin install as2-skills@jo-wolff-plugins
 ```
 
 Inside a running OMP session the commands are `/marketplace add` and `/marketplace install`, with
 the same arguments. `/plugin install` inside OMP installs nothing. On OMP output-types delivers its
 skill only; its hooks do not run there. i-have-audhd and paired-coding install OMP extensions
-that run their hooks, and ask-graham installs its prompt nudge (see each section).
+that run their hooks, and ask-graham installs its prompt nudge (see each section). ledger is
+Claude Code only.
 
 To update, update each harness separately. On OMP, refresh the marketplace first, because
 `omp plugin upgrade` installs the version in OMP's cached copy of it:
@@ -229,10 +235,10 @@ Three steps:
    naming the five checks that are off and the exact setup command.
 
 OMP does not run a plugin's `hooks/hooks.json`. The install registers the plugin's OMP extension,
-`omp/i-have-audhd-omp.ts`, which runs the same two hooks for the main session: the session-start
-injection, and the Stop check. Subagent sessions get neither; OMP has no blocking equivalent of
-Claude Code's `SubagentStop`. `omp/REGISTRATION.md` carries the manual fallback and an isolated
-live probe.
+`omp/i-have-audhd-omp.ts` (registered on omp 18.8.6), which runs the same two hooks, the
+session-start injection and the Stop check, for the main session only, not for subagents; OMP has
+no blocking equivalent of Claude Code's `SubagentStop`. `omp/REGISTRATION.md` carries the manual
+fallback and an isolated live probe.
 
 ### What you get
 
@@ -242,6 +248,8 @@ live probe.
   heading, read out of `skills/i-have-audhd/SKILL.md` between its markers so there is one copy.
 - **A Stop hook** that checks every finished message with nine checks (four deterministic, five
   judge-gated) and names the skill rule behind each finding.
+- **A prompt hook** that delivers the last checked message's warn findings to the agent with
+  your next prompt, once, as a short notice carrying the fix.
 - **An optional operator profile** you write on your own machine, so the rules can name a real
   addressee and adapt to how that person reads. The repository ships only a generic example
   (`example.i-have-audhd.json`). **Keep your profile out of version control if it describes a
@@ -249,8 +257,9 @@ live probe.
 
 ### What this does, and what it does not do: it warns, it does not block
 
-Every check warns by default: findings land in `~/.claude/.i-have-audhd-state/warnings.log` and
-the turn ends normally. A 2026-09-21 corpus adjudication found no check whose false-positive rate
+Every check warns by default: findings land in `~/.claude/.i-have-audhd-state/warnings.log`, the
+turn ends normally, and the agent gets the findings with your next prompt so the fix applies from
+its next message on. A 2026-09-21 corpus adjudication found no check whose false-positive rate
 supports blocking by default, so block is a deliberate profile setting, per check or global; on
 OMP it also needs `enforcement.armOmp: true`. The five judge-gated checks stay inactive until you
 choose a judge (install step 2), and each fired trigger is logged to `skipped.log`.
@@ -259,6 +268,12 @@ choose a judge (install step 2), and each fired trigger is logged to `skipped.lo
 `I_HAVE_AUDHD_INJECT=off` turns the injection off; the skill still loads on demand. The package
 README and `skills/i-have-audhd/reference.md` carry the schema, every check's contract, and the
 measured rates.
+
+Changes in 1.5.1: a hook's own fault is no longer silent. Empty or malformed stdin, a throw, an
+unparseable profile, or a state file that cannot be written leaves one line in `errors.log` and
+one warning line; the hook still exits 0 and blocks nothing. Every block reason now ends with the
+way out: `touch ~/.claude/.i-have-audhd-off`, or the check's `enforcement.rules` key set to
+`"warn"`.
 
 ## paired-coding
 
@@ -345,6 +360,18 @@ only if it writes inside the worktree.
 
 The plugin's own README carries the full list, with the evidence behind each line.
 
+Changes in 1.4.2: a fault in any hook appends one line to `errors.log` in the plugin's state
+directory and shows one warning, and never blocks a session that is not pairing. While pairing,
+for `pair_*` tools, or when the gate cannot tell whether pairing is on, the tool is still refused,
+and the refusal names the tool and the way out (`pair stop`, or disabling the plugin). The OMP
+adapter's `tool_call` handles these faults the same way.
+
+Changes in 1.4.1: a prompt typed in the Claude Desktop app counts as typed. Any other
+programmatic prompt is still refused as untrusted.
+
+Changes in 1.4.0: every card shows the planned code before you agree, unprompted, and
+`pair_propose` takes it as a `proposedCode` field on both hosts.
+
 ## ask-graham
 
 A skill that answers "should we build X?" the way Graham, a frontend engineer, says he decides:
@@ -407,7 +434,22 @@ extension (`omp/ask-graham-omp.ts`, declared in the plugin's `package.json`): wi
 - **Every rule tagged with its source**: *Graham #N* for his words, *Jo* for the author's
   overrides, *Skill* for mechanics the skill adds. The skill never presents its own mechanics as
   Graham's view.
+- **A structure check** for tasks inside a decided project: before one writes a new table, a new
+  column on an existing table, a new top-level module or a new service, the skill searches what
+  else hangs off the same parent and reports what it found, or plainly that it found nothing
+  similar. It gives no verdict and does not ask the comparables question.
 - **A level you set**, `ask` or `every-idea`, for how eagerly it runs (next section).
+
+Changes in 0.7.1: the Stop check reads the reply from the Stop payload's
+`last_assistant_message`, and no longer takes Claude Code's telemetry entries as the newest entry
+of the conversation, which had let a reply with no verdict through and blocked one that had a
+verdict. An unreadable block record now lets the stop through. The Claude Code hooks no longer
+fail silently: a fault still lets the prompt or stop through, and now lands in `errors.log` with
+the hook file and reason and shows one warning line.
+
+Changes in 0.7.0: adds the structure check. Its reply opens with `**Structure check:**` and then a
+`**Found:**` or `**No similar:**` line, which the Stop check requires in place of a verdict line.
+The every-idea nudge names the structure check.
 
 ### When it runs
 
@@ -417,14 +459,15 @@ Two levels:
   this?" / "is it worth building?". Its description is written so nothing else matches.
 - **`every-idea`**. It also runs whenever you propose a new project, product, feature or tool
   that does not exist yet. A hook adds one short line to each of your messages telling the agent
-  to run the check if the message is a new idea and to ignore the line otherwise. On Claude Code
-  that is a `UserPromptSubmit` hook; on OMP an extension on the `before_agent_start` event. At `ask` neither
-  adds anything.
+  to run the check if the message is a new idea, to run the structure check if it is a task that
+  creates a new table, column, top-level module or service, and to ignore the line otherwise. On
+  Claude Code that is a `UserPromptSubmit` hook; on OMP an extension on the `before_agent_start`
+  event. At `ask` neither adds anything.
 
 At both levels it does not run on a ticket or issue, a bug fix, a task inside an
-already-decided project, or a request to continue existing work. Deciding which messages are
-new ideas is left to the agent: the hook does not classify anything, so a ticket can still
-draw a check if the agent misreads it.
+already-decided project (apart from the structure check above), or a request to continue
+existing work. Deciding which messages are new ideas is left to the agent: the hook does not
+classify anything, so a ticket can still draw a check if the agent misreads it.
 
 The level comes from the first of these that exists:
 
@@ -580,9 +623,32 @@ gets a question. Before moving on, the agent asks "Can I close this one?" and ma
 complete only on a yes. It never deletes reminders.
 
 Needs macOS and [remindctl](https://github.com/openclaw/remindctl)
-(`brew install steipete/tap/remindctl`). Run `/reminders-review` with list names, or save
-defaults with `/reminders-review lists <name> ...`. Details are in
-`plugins/reminders-review/README.md`.
+(`brew install steipete/tap/remindctl`). [rem](https://github.com/BRO3886/rem) is optional: with
+it installed the agent also reads the link field you see in Reminders.app, which remindctl cannot
+see. Run `/reminders-review` with list names, or save defaults with
+`/reminders-review lists <name> ...`. Details are in `plugins/reminders-review/README.md`.
+
+Changes in 0.1.2: reads the Reminders.app link field with `rem show` when rem is installed, and
+gives its install line once when it is missing. remindctl stays the source for everything else,
+and `remindctl complete` is still the only write.
+
+Changes in 0.1.1: shows each reminder's notes and URL. When a reminder has neither, the agent
+says in one line that a Reminders.app link may not have reached it and asks you to paste it,
+instead of working from the title alone.
+
+### Install
+
+```
+/plugin marketplace add thewolff/jo-wolff-plugins
+/plugin install reminders-review@jo-wolff-plugins
+```
+
+#### Install on OMP
+
+```
+omp plugin marketplace add thewolff/jo-wolff-plugins
+omp plugin install reminders-review@jo-wolff-plugins
+```
 
 ## ledger
 
