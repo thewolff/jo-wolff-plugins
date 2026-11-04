@@ -35,7 +35,7 @@ const PANE = {
 type Run = { argv: string[]; init: { cwd?: string; env?: Record<string, string>; timeoutMs?: number } };
 
 /** The stubs every test needs; `processes` collects each process the mod started. */
-function stubs(on, { snapshot = SNAPSHOT, cli = RECORDED, placed = true, openDeny = null as null | string, processRun = null as null | ((e: { argv: string[] }) => unknown) } = {}) {
+function stubs(on, { snapshot = SNAPSHOT, cli = RECORDED, placed = true, answer = "", openDeny = null as null | string, processRun = null as null | ((e: { argv: string[] }) => unknown) } = {}) {
   const processes: Run[] = [];
   const logs: string[] = [];
   const toasts: string[] = [];
@@ -47,7 +47,8 @@ function stubs(on, { snapshot = SNAPSHOT, cli = RECORDED, placed = true, openDen
   on("session.cwd", () => ({ value: "/Users/example/code/this" }));
   on("session.start", () => ({ cwd: "/Users/example/code/this" }));
   on("turn.start", ($, e) => ({ turnId: e.turnId }));
-  on("turn.complete", () => ({ text: "" }));
+  // The engine's default turn.complete result is `{ text: e.answer }`: Claude's whole reply.
+  on("turn.complete", () => ({ text: answer }));
   on("ui.log", ($, e) => {
     logs.push(e.text);
     return { value: undefined };
@@ -188,6 +189,29 @@ test("turn.complete adds the fallback line to the transcript when the pane is no
   );
 });
 
+test("turn.complete returns the fallback line alone, never Claude's answer joined to it", async ($, on) => {
+  stubs(on, { placed: false, answer: "Here is Claude's whole reply.\nAlpha or beta?" });
+  await start($);
+  const out = await completeTurn($);
+  expect(out.text).not.toContain("Claude's whole reply");
+  expect(out.text).toMatch(/^answered since your last turn: colour → green \(via cli\)\n/);
+});
+
+test("one placement line per session: surface and isPlaced at session start, not repeated per turn", async ($, on) => {
+  const { logs } = stubs(on, { placed: false });
+  await start($);
+  await completeTurn($);
+  await completeTurn($);
+  expect(logs.filter((l) => l.startsWith("ledger pane: surface="))).toEqual(["ledger pane: surface=desktop placed=false"]);
+});
+
+test("where nothing draws, the placement line says surface=none", async ($, on) => {
+  const { logs } = stubs(on);
+  await $.session.start({ surface: null, isInteractive: false, cwd: "/Users/example/code/this" });
+  await completeTurn($);
+  expect(logs.filter((l) => l.startsWith("ledger pane: surface="))).toEqual(["ledger pane: surface=none placed=false"]);
+});
+
 test("turn.complete with the pane placed leaves the result alone", async ($, on) => {
   stubs(on, { placed: true });
   await start($);
@@ -270,9 +294,12 @@ test("fault: the CLI exits 2 with a store line on stdout → the command carries
 });
 
 test("fault: ui.open is denied → /ledger answers with text instead of a pane", async ($, on) => {
-  const { logs } = stubs(on, { openDeny: "no panes here" });
+  const { logs } = stubs(on, { openDeny: "no panes here", placed: false });
   await start($);
   expect(logs).toEqual(["ledger pane: session.start: ledger: $.ui.open: no panes here"]);
+  // The placement line waits for the first fallback turn when session start faulted before it.
+  await completeTurn($);
+  expect(logs.filter((l) => l.startsWith("ledger pane: surface="))).toEqual(["ledger pane: surface=desktop placed=false"]);
   const out = await $.command.run({ command: "ledger", args: "" });
   expect(out.text).toMatch(/^ledger pane: ledger: \$\.ui\.open: no panes here\nusage: \/ledger/);
 });
