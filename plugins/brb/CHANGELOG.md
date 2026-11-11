@@ -3,6 +3,44 @@
 All notable changes to brb are recorded here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.5.0] - 2026-11-10
+
+### Added
+
+- While away, the transcript rows of the hold are kept off the screen: `mods/band/register.mjs`
+  registers `ui.render` hooks on `AssistantMessage`, `ToolUse`, `ToolResult` and `ToolGroup`
+  (raised on the terminal, Desktop and VS Code) that draw one dim line `held while away · say
+  back` per run of hidden rows and an empty Box for the rest of the run. `UserMessage` is watched
+  only so your prompt ends a run. The hooks return their own tree and never call `next`, so no
+  stored message changes.
+- `mods/band/hide.mjs`: the ledger that tells the hold's rows by id (the row sites carry no
+  time). Rows drawn, and tool calls started, while home predate the hold; rows first drawn during
+  it are hidden; a `ToolGroup` only when none of its calls predates it; at `back` the hold's rows
+  join the past, so the next hold hides only its own. Before the first query answers and after a
+  failed query no row is hidden and nothing is recorded. A reply with an `on fire:` line (the Stop
+  hook's parser, `lib/sections.mjs` `splitNeedsYou`) is never hidden. Ids only, capped at 20,000
+  per set; no row text is kept.
+- On `back` (or any end of the hold) the mod calls `$.ui.invalidate("ui.render")` and every row
+  draws as before.
+- The away text: while away the mod appends a fixed instruction (work without narration, hold
+  each ask with the hold command, reply only with the still-away line, the body and
+  `idle: <why>`) to the environment section of the system prompt (`prompt.section` on
+  `env_info_simple` and `env_info_static`), with `breakPromptCache: true` only when the away state
+  changed since its last answer, after `$.ui.invalidate("prompt.section")`. A turn that began
+  home and is running when `brb` lands gets the same text once as `context` on the main agent's
+  next tool result (`tool.call`), in process.
+- Tests: `mods/band/tests/hide.test.mjs` (the away window, runs, the on-fire exemption, the end
+  of a hold, the section's cache rule); `register.test.mjs` (rows replaced while away and drawn
+  after back, a failed query, a faulting hook, `session.end`, the section, the mid-turn
+  reminder); `band.test.tsx` under `claude plugin test` (rows mounted in a Desktop and a terminal
+  session, an empty Box accepted, rows redrawn after back, the section, the reminder).
+
+### Not covered
+
+- Permission prompts (not a render site), Desktop's own task rows, and possibly the terminal's
+  in-flight streaming preview still show while away. A MessageDisplay hook is deferred until a
+  live test shows streaming text leaks.
+
 ## [0.4.2] - 2026-11-10
 
 ### Changed
