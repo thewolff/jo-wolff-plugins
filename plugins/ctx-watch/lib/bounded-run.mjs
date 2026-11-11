@@ -7,6 +7,12 @@
 // of being killed mid-write: spawnSync alone can only send one signal, and a child that ignores
 // SIGTERM would then hold it for ever.
 //
+// The group is ended when the leader exits as well: anything the command left in its group
+// gets SIGTERM, and SIGKILL `graceMs` later if still there, before this process exits. ctx's
+// daemon is not in it: ctx starts its persistent daemon with setsid() (ctx-daemon-runtime
+// launch.rs spawn_detached) and its finite workers with setpgid(0, 0) (spawn_attached), each in
+// a group of its own; what this reaps is a stray the command did not detach.
+//
 // Exit: the command's own status (or 128 + its signal number); 124 after a timeout, with
 // TIMEOUT_MARK on stderr; 127 when the command could not start, with SPAWN_MARK<code> on stderr.
 
@@ -65,9 +71,27 @@ child.on("error", (err) => {
   process.stderr.write(`${SPAWN_MARK}${err.code ?? err.message}\n`);
   process.exit(127);
 });
+/** End whatever is left of the group (SIGTERM, then SIGKILL after the grace), then exit `code`. */
+const reapThenExit = (code) => {
+  if (!groupAlive()) process.exit(code);
+  signalGroup("SIGTERM");
+  const until = Date.now() + graceMs;
+  const poll = setInterval(() => {
+    if (!groupAlive()) {
+      clearInterval(poll);
+      process.exit(code);
+    }
+    if (Date.now() >= until) {
+      clearInterval(poll);
+      signalGroup("SIGKILL");
+      process.exit(code);
+    }
+  }, POLL_MS);
+};
+
 child.on("exit", (code, signal) => {
   leaderGone = true;
   if (timedOut) return; // the poll above or the grace timer ends this run
   clearTimeout(termTimer);
-  process.exit(code ?? 128 + (constants.signals[signal] ?? 0));
+  reapThenExit(code ?? 128 + (constants.signals[signal] ?? 0));
 });

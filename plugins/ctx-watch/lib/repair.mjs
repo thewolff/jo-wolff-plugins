@@ -5,43 +5,58 @@
 // Order, stopping at the first refusal or failure:
 //   1. probe `ctx daemon status`: healthy → exit 0, nothing changed;
 //   2. LANG: this shell's, else the LANG ctx recorded in supervisor-environment.json, else one
-//      derived from AppleLocale (launchd.mjs resolveLang), passed to every ctx spawn; refuse
-//      only when none of the three gives one (ctx would record a daemon launch environment
-//      without LANG and report `environment_invalid`, the 2026-11-11 state). A shell launchd
-//      started (Claude Desktop's Bash tool) has no LANG of its own, so this is the usual path
-//      from Desktop;
-//   3. refuse when the GUI launchd domain gui/<uid> is not reachable (`launchctl print` fails:
-//      an ssh or sandboxed shell), since the ctx-watch timer could not be paused and restored;
+//      derived from AppleLocale (launchd.mjs resolveLang, which checks each fallback against
+//      `locale -a` and reports what it skipped), passed to every ctx spawn; refuse only when
+//      none gives one (ctx would record a daemon launch environment without LANG and report
+//      `environment_invalid`, the 2026-11-11 state). A shell launchd started (Claude Desktop's
+//      Bash tool) has no LANG of its own, so the fallback is the usual path from Desktop;
+//   3. refuse when launchctl is not found or the GUI launchd domain gui/<uid> is not reachable
+//      (an ssh or sandboxed shell), since the ctx-watch timer could not be paused and restored;
 //   4. refuse when ctx's indexing mode is not `auto` or its config file is missing (ctx-watch
 //      never flips a deliberate `manual` and never sets ctx up);
 //   5. the upgrade gate (probe.mjs upgradeGate and readHandoff): refuse while an upgrade is in
-//      progress, while a handoff owner process is alive, or while the handoff marker is younger
-//      than ctx's DAEMON_UPGRADE_HANDOFF_STALE_AFTER (15 min) even with its owner dead; refuse a
-//      stuck state other than `quiescing` (the release below was only observed on quiescing);
-//   6. pause the ctx-watch timer when launchd has it (`launchctl bootout`), so a tick cannot
-//      heal into the middle of the repair;
+//      progress, while the upgrade state is unknown (`ctx upgrade status` failed or named a
+//      state ctx-watch does not know), while a handoff owner process is alive, or while the
+//      handoff marker is younger than ctx's DAEMON_UPGRADE_HANDOFF_STALE_AFTER (15 min) even
+//      with its owner dead; refuse a stuck state other than `quiescing` (the release below was
+//      only observed on quiescing);
+//   6. refuse when launchctl cannot say whether the ctx-watch timer is loaded (anything but
+//      loaded, or launchctl's 113 "no such service"); else pause it when loaded (`launchctl
+//      bootout`), so a tick cannot heal into the middle of the repair;
 //   7. on a stuck `quiescing` upgrade: `ctx upgrade disable` (when automatic upgrades are on,
-//      so the failing upgrade does not retry) and `ctx upgrade --dry-run --format json`, which
-//      moved the state from `quiescing` to `dry_run` on 2026-11-11 (observed; ctx does not
-//      document it as a release);
+//      so the failing upgrade does not retry; never turned back on here) and `ctx upgrade
+//      --dry-run --format json`, which moved the state from `quiescing` to `dry_run` on
+//      2026-11-11 (observed; ctx does not document it as a release);
 //   8. `ctx index mode auto` under probe.mjs HEAL_TIMEOUT_MS with a SIGTERM grace;
 //   9. verify: poll `ctx daemon status` until the daemon reads running, supervisor installed,
 //      and no restart required (VERIFY_TRIES × VERIFY_GAP_MS);
-//  10. restore the timer (`launchctl bootstrap`) when step 6 paused it, whatever happened in 7-9.
+//  10. restore the timer (`launchctl bootstrap`) when step 6 paused it, in a `finally`: after a
+//      failure, a throw, or SIGINT/SIGTERM/SIGHUP. A restore that fails makes the run a failure.
+//
+// The gate of step 5 is read again before each state-changing ctx command in 7 and 8 (the
+// preflight is a snapshot, and pausing the timer is no check that no upgrade has started): a
+// live or unknown upgrade, a live owner, a young marker, or, before 7, a state or attempt other
+// than the stuck `quiescing` attempt the preflight saw, stops the run there. The reads are not
+// atomic with the command that follows them; the window is the time between one ctx spawn and
+// the next. A signal arriving while a ctx command runs takes effect when that command returns
+// (each is bounded: 10 s, the heal 120 s + 15 s); SIGKILL cannot be handled at all.
 //
 // Every ctx spawn has CI removed (probe.mjs ctxEnv), LANG as resolved in step 2, and keeps
 // everything else. Output: the first line is one JSON object `{ ok, changed, refused, reason,
-// lang: { value, source }, steps, timer, verified }` (source `env`, `ctx-recorded`,
+// lang: { value, source, skipped }, steps, timer, verified }` (source `env`, `ctx-recorded`,
 // `AppleLocale`, or null); the last line is `ctx-watch repair: <repaired | healthy; nothing
-// changed | refused: … | failed: …>`. Exit 0 repaired or healthy, 1 failed, 3 refused (nothing
-// changed).
+// changed | refused: … | failed: … | interrupted by SIG…>`. Exit 0 repaired or healthy, 1 failed,
+// 3 refused (no ctx change; the timer, if paused, restored), 128 + n on signal n.
 
 import { existsSync } from "node:fs";
-import { CTX, HANDOFF_STALE_MS, HEAL_GRACE_MS, HEAL_TIMEOUT_MS, MODE_ARGV, PROBE_TIMEOUT_MS, STATUS_ARGV, age, ctxEnv, handoffPath, parseJson, readHandoff, runCtx, upgradeGate } from "./probe.mjs";
+import { constants } from "node:os";
+import { CTX, HANDOFF_STALE_MS, HEAL_GRACE_MS, HEAL_TIMEOUT_MS, MODE_ARGV, PROBE_TIMEOUT_MS, STATUS_ARGV, age, ctxEnv, parseJson, runCtx, upgradeGate } from "./probe.mjs";
 import { LABEL, loaded, plistPath, resolveLang, runCheck } from "./launchd.mjs";
 
 export const VERIFY_TRIES = 10;
 export const VERIFY_GAP_MS = 3_000;
+/** The signals the protected section turns into "restore the timer, then exit 128 + n". */
+export const HANDLED_SIGNALS = Object.freeze(["SIGINT", "SIGTERM", "SIGHUP"]);
 const DISABLE_ARGV = Object.freeze([CTX, "upgrade", "disable"]);
 const RELEASE_ARGV = Object.freeze([CTX, "upgrade", "--dry-run", "--format", "json"]);
 const HEAL_ARGV = Object.freeze([CTX, "index", "mode", "auto", "--format", "json"]);
@@ -49,11 +64,10 @@ const HEAL_ARGV = Object.freeze([CTX, "index", "mode", "auto", "--format", "json
 const withCtx = (argv, ctx) => [ctx, ...argv.slice(1)];
 const field = (o, k) => (o && typeof o === "object" && !Array.isArray(o) ? o[k] : undefined);
 const firstLine = (r) => (r.error ? r.error : (r.stderr || r.stdout || "").trim().split("\n")[0]?.slice(0, 160) || "(no output)");
-
-/** A blocking sleep (the CLI is synchronous between its spawns). */
-function sleepSync(ms) {
-  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
-}
+const lastLine = (s) => (s ?? "").trim().split("\n").at(-1);
+const sleepAsync = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+/** One trip round the event loop, so a signal that arrived during a synchronous spawn is delivered. */
+const turn = () => new Promise((resolve) => setImmediate(resolve));
 
 /** The daemon fields the verification reads, from one `ctx daemon status --format json`. */
 function daemonFields(r) {
@@ -67,18 +81,39 @@ function daemonFields(r) {
 }
 const up = (f) => f.running === true && f.status === "running" && f.supervisor === "installed" && f.restartRequired !== true;
 
+/** Why the gate forbids changing anything now, or null. */
+function blocker(gate) {
+  const h = gate.handoff ?? { pid: null };
+  if (gate.verdict === "upgrading") return `${gate.reason.replace(/; not healing$/, "")}; not repairing during a live upgrade`;
+  if (gate.verdict === "unknown") return `${gate.reason.replace(/; not healing$/, "")}; not repairing while it cannot be read`;
+  if (h.pid !== null && h.alive) return `upgrade handoff owner pid ${h.pid} is alive (phase ${JSON.stringify(h.phase)}): an upgrade may be in progress; not repairing`;
+  if (h.pid !== null && h.ageMs !== null && h.ageMs < HANDOFF_STALE_MS) return `the upgrade handoff marker is ${age(h.ageMs)} old, under ctx's 15 min stale bound (owner pid ${h.pid} dead); wait ${age(HANDOFF_STALE_MS - h.ageMs)} and run repair again`;
+  const status = gate.upgrade?.status ?? null;
+  if (gate.verdict === "stuck" && status !== "quiescing") return `ctx upgrade is stuck in ${JSON.stringify(status)}, not "quiescing": the observed release covers quiescing only; see \`ctx upgrade status --format json\` and \`ctx docs show upgrade\``;
+  return null;
+}
+
+/** A stop inside the protected section: `interrupted` names the signal when it was one. */
+class Stop extends Error {
+  constructor(reason, interrupted = null) {
+    super(reason);
+    this.interrupted = interrupted;
+  }
+}
+
 /**
- * Run the repair. `{ code, text }`. Deps: `run` (runCtx shape), `check` (launchd.mjs runCheck
- * shape, for launchctl), `uid`, `exists` (ctx's config path), `sleep(ms)`, `ctx`, `stateDir`
- * (where the timer's plist lives), `now`.
+ * Run the repair. Resolves to `{ code, text }`. Deps: `run` (runCtx shape), `check`
+ * (launchd.mjs runCheck shape, for launchctl, `defaults` and `locale`), `uid`, `exists` (ctx's
+ * config path), `sleep(ms)` (may return a promise), `ctx`, `stateDir` (where the timer's plist
+ * lives), `now`, `signals` (false: do not install SIGINT/SIGTERM/SIGHUP handlers).
  */
-export function repair({ env: shellEnv = process.env, run = runCtx, check = runCheck, uid = process.getuid?.() ?? 501, exists = existsSync, sleep = sleepSync, ctx = CTX, stateDir, now = Date.now } = {}) {
+export async function repair({ env: shellEnv = process.env, run = runCtx, check = runCheck, uid = process.getuid?.() ?? 501, exists = existsSync, sleep = sleepAsync, ctx = CTX, stateDir, now = Date.now, signals = true } = {}) {
   const lang = resolveLang({ env: shellEnv, check });
   const env = lang.value ? { ...shellEnv, LANG: lang.value } : shellEnv;
   const e = ctxEnv(env);
   const steps = [];
   const timer = { wasLoaded: false, paused: false, restored: null };
-  const report = { ok: false, changed: false, refused: false, reason: null, lang: { value: lang.value, source: lang.source }, steps, timer, verified: null };
+  const report = { ok: false, changed: false, refused: false, reason: null, lang: { value: lang.value, source: lang.source, skipped: lang.skipped }, steps, timer, verified: null };
   const out = (code, last) => ({ code, text: `${JSON.stringify(report)}\n${last}` });
   const refuse = (reason) => {
     Object.assign(report, { refused: true, reason });
@@ -86,6 +121,7 @@ export function repair({ env: shellEnv = process.env, run = runCtx, check = runC
   };
   const ctxRun = (argv, timeoutMs = PROBE_TIMEOUT_MS, opts) => run(withCtx(argv, ctx), e, timeoutMs, opts);
   const cmd = (argv) => `\`${["ctx", ...argv.slice(1)].join(" ")}\``;
+  const gate = () => upgradeGate({ run, env, ctx, now });
 
   // 1. Healthy: nothing to do.
   const first = ctxRun(STATUS_ARGV);
@@ -96,9 +132,10 @@ export function repair({ env: shellEnv = process.env, run = runCtx, check = runC
   }
   // 2. LANG.
   if (lang.value === null) return refuse(`LANG could not be found: ${lang.detail}; ctx would record a daemon launch environment without it and report \`environment_invalid\`; run from a shell with LANG set (a Terminal login shell has it)`);
-  // 3. The GUI launchd domain.
+  // 3. launchctl and the GUI launchd domain.
   const domain = check("launchctl", ["print", `gui/${uid}`]);
-  if (!domain.missing && domain.code !== 0) return refuse(`launchd domain gui/${uid} is not reachable from this shell (launchctl print exit ${domain.code ?? "none"}: ${(domain.output ?? "").trim().split("\n").at(-1)}); run from a GUI login session`);
+  if (domain.missing) return refuse("launchctl not found: the ctx-watch timer could not be paused and restored; run from a macOS GUI login session");
+  if (domain.code !== 0) return refuse(`launchd domain gui/${uid} is not reachable from this shell (launchctl print exit ${domain.code ?? "none"}: ${lastLine(domain.output)}); run from a GUI login session`);
   // 4. Indexing mode.
   const mode = ctxRun(MODE_ARGV);
   if (mode.error) return refuse(`ctx could not run: ${mode.error}`);
@@ -108,67 +145,114 @@ export function repair({ env: shellEnv = process.env, run = runCtx, check = runC
   if (current !== "auto") return refuse(`ctx indexing mode is ${JSON.stringify(current ?? null)}, not auto; ctx-watch does not change it (\`ctx index mode auto\` is yours to run if you mean it)`);
   if (typeof configPath !== "string" || !exists(configPath)) return refuse(`${configPath ?? "ctx's config file"} does not exist: ctx is not set up here (\`ctx docs show getting-started\`)`);
   // 5. The upgrade gate.
-  const gate = upgradeGate({ run, env, ctx, now });
-  const h = gate.handoff ?? readHandoff(handoffPath(env), { now: now() });
-  if (gate.verdict === "upgrading") return refuse(`${gate.reason.replace(/; not healing$/, "")}; not repairing during a live upgrade`);
-  if (h.pid !== null && h.alive) return refuse(`upgrade handoff owner pid ${h.pid} is alive (phase ${JSON.stringify(h.phase)}): an upgrade may be in progress; not repairing`);
-  if (h.pid !== null && h.ageMs !== null && h.ageMs < HANDOFF_STALE_MS) return refuse(`the upgrade handoff marker is ${age(h.ageMs)} old, under ctx's 15 min stale bound (owner pid ${h.pid} dead); wait ${age(HANDOFF_STALE_MS - h.ageMs)} and run repair again`);
-  const status = gate.upgrade?.status ?? null;
-  if (gate.verdict === "stuck" && status !== "quiescing") return refuse(`ctx upgrade is stuck in ${JSON.stringify(status)}, not "quiescing": the observed release covers quiescing only; see \`ctx upgrade status --format json\` and \`ctx docs show upgrade\``);
-  const release = gate.verdict === "stuck";
+  const pre = gate();
+  const preBlock = blocker(pre);
+  if (preBlock) return refuse(preBlock);
+  const release = pre.verdict === "stuck";
+  const attempt = { id: pre.upgrade?.attemptId ?? null, sinceMs: pre.upgrade?.sinceMs ?? null };
+  const autoWasOn = pre.upgrade?.autoEnabled !== false;
 
-  // 6. Pause the timer.
+  // 6. The timer: known loaded or known absent, else refuse; pause it when loaded.
   const l = loaded({ uid, label: LABEL, check });
+  if (l.loaded === null) return refuse(`launchctl could not say whether the ctx-watch timer is loaded (${l.detail}); not repairing without pausing it`);
   timer.wasLoaded = l.loaded === true;
   if (timer.wasLoaded) {
     const b = check("launchctl", ["bootout", `gui/${uid}/${LABEL}`]);
     if (b.code !== 0) return refuse(`could not pause the ctx-watch timer (launchctl bootout exit ${b.code ?? "none"}: ${(b.output ?? "").trim()})`);
     timer.paused = true;
   }
-  const restore = () => {
-    if (!timer.paused) return;
-    const r = check("launchctl", ["bootstrap", `gui/${uid}`, plistPath(env, LABEL, stateDir)]);
-    timer.restored = r.code === 0;
-    if (!timer.restored) steps.push({ name: "restore-timer", status: "failed", detail: `launchctl bootstrap exit ${r.code ?? "none"}: ${(r.output ?? "").trim()}` });
+
+  // 7-9, protected: whatever happens, the timer is restored once, in `finally`.
+  let interrupted = null;
+  const onSignal = (sig) => {
+    interrupted ??= sig;
   };
-  const fail = (reason) => {
-    restore();
-    Object.assign(report, { ok: false, reason });
-    return out(1, `ctx-watch repair: failed: ${reason}${timer.paused ? (timer.restored ? " (timer restored)" : " (timer NOT restored: run install's bootstrap line)") : ""}`);
+  if (signals) for (const s of HANDLED_SIGNALS) process.on(s, onSignal);
+  const checkpoint = async () => {
+    await turn();
+    if (interrupted) throw new Stop(`interrupted by ${interrupted}`, interrupted);
   };
-  const ranStep = (name, argv, timeoutMs, opts) => {
+  const ranStep = async (name, argv, timeoutMs, opts) => {
     report.changed = true;
     const r = ctxRun(argv, timeoutMs, opts);
     const ok = !r.error && r.code === 0;
     steps.push({ name, status: ok ? "ran" : "failed", detail: `${cmd(argv)} (exit ${r.code ?? "none"}): ${firstLine(r)}` });
-    return ok ? null : `${cmd(argv)} (exit ${r.code ?? "none"}): ${firstLine(r)}`;
+    await checkpoint();
+    if (!ok) throw new Stop(`${cmd(argv)} (exit ${r.code ?? "none"}): ${firstLine(r)}`);
   };
-
-  // 7. Release a stuck quiescing upgrade.
-  if (release && gate.upgrade.autoEnabled !== false) {
-    const err = ranStep("disable-upgrades", DISABLE_ARGV);
-    if (err) return fail(err);
-  } else steps.push({ name: "disable-upgrades", status: "skipped", detail: release ? "automatic upgrades are already off" : "no stuck upgrade: automatic upgrades left as they are" });
-  if (release) {
-    const err = ranStep("release-upgrade", RELEASE_ARGV);
-    if (err) return fail(err);
-  } else steps.push({ name: "release-upgrade", status: "skipped", detail: `ctx upgrade state ${JSON.stringify(status)} is not quiescing; nothing to release` });
-  // 8. Heal.
-  const healErr = ranStep("heal", HEAL_ARGV, HEAL_TIMEOUT_MS, { graceMs: HEAL_GRACE_MS });
-  if (healErr) return fail(healErr);
-  // 9. Verify.
-  let last = null;
-  for (let i = 0; i < VERIFY_TRIES; i++) {
-    if (i > 0) sleep(VERIFY_GAP_MS);
-    const r = ctxRun(STATUS_ARGV);
-    last = r.error ? { running: null, status: null, supervisor: null, restartRequired: null, error: r.error } : daemonFields(r);
-    if (up(last)) break;
+  /** Read the gate again just before `what`; throw when it no longer allows it. */
+  const recheck = async (what, { stuckAttempt }) => {
+    const g = gate();
+    await checkpoint();
+    const block = blocker(g);
+    if (block) throw new Stop(`before ${what}: ${block}`);
+    if (stuckAttempt) {
+      if (g.verdict !== "stuck" || g.upgrade.status !== "quiescing") throw new Stop(`before ${what}: the upgrade state changed since the preflight (now ${JSON.stringify(g.upgrade.status)}, ${g.verdict}); not releasing`);
+      if (attempt.id !== null ? g.upgrade.attemptId !== attempt.id : g.upgrade.sinceMs !== attempt.sinceMs) throw new Stop(`before ${what}: ctx reports a different upgrade attempt (${g.upgrade.attemptId ?? "no id"}) than the one checked (${attempt.id ?? "no id"}); not releasing`);
+    } else if (g.verdict !== "none") throw new Stop(`before ${what}: ${g.reason}; not healing`);
+  };
+  let failure = null;
+  try {
+    await checkpoint();
+    if (release && autoWasOn) {
+      await recheck(cmd(DISABLE_ARGV), { stuckAttempt: true });
+      await ranStep("disable-upgrades", DISABLE_ARGV);
+    } else steps.push({ name: "disable-upgrades", status: "skipped", detail: release ? "automatic upgrades are already off" : "no stuck upgrade: automatic upgrades left as they are" });
+    if (release) {
+      await recheck(cmd(RELEASE_ARGV), { stuckAttempt: true });
+      await ranStep("release-upgrade", RELEASE_ARGV);
+    } else steps.push({ name: "release-upgrade", status: "skipped", detail: `ctx upgrade state ${JSON.stringify(pre.upgrade?.status ?? null)} is not quiescing; nothing to release` });
+    await recheck(cmd(HEAL_ARGV), { stuckAttempt: false });
+    await ranStep("heal", HEAL_ARGV, HEAL_TIMEOUT_MS, { graceMs: HEAL_GRACE_MS });
+    let last = null;
+    for (let i = 0; i < VERIFY_TRIES; i++) {
+      if (i > 0) {
+        await sleep(VERIFY_GAP_MS);
+        await checkpoint();
+      }
+      const r = ctxRun(STATUS_ARGV);
+      last = r.error ? { running: null, status: null, supervisor: null, restartRequired: null, error: r.error } : daemonFields(r);
+      await checkpoint();
+      if (up(last)) break;
+    }
+    report.verified = last;
+    steps.push({ name: "verify", status: up(last) ? "ran" : "failed", detail: JSON.stringify(last) });
+    if (!up(last)) throw new Stop(`verification failed: after ${VERIFY_TRIES} checks the daemon reads ${JSON.stringify(last)}`);
+  } catch (err) {
+    failure = err instanceof Stop ? err : new Stop(`${err?.message ?? err}`);
+  } finally {
+    if (timer.paused) {
+      let r;
+      try {
+        r = check("launchctl", ["bootstrap", `gui/${uid}`, plistPath(env, LABEL, stateDir)]);
+      } catch (err) {
+        r = { code: null, output: `${err?.message ?? err}` };
+      }
+      timer.restored = r.code === 0;
+      if (!timer.restored) steps.push({ name: "restore-timer", status: "failed", detail: `launchctl bootstrap exit ${r.code ?? "none"}: ${(r.output ?? "").trim()}` });
+    }
+    if (signals) for (const s of HANDLED_SIGNALS) process.removeListener(s, onSignal);
   }
-  report.verified = last;
-  steps.push({ name: "verify", status: up(last) ? "ran" : "failed", detail: JSON.stringify(last) });
-  if (!up(last)) return fail(`verification failed: after ${VERIFY_TRIES} checks the daemon reads ${JSON.stringify(last)}`);
-  // 10. Restore.
-  restore();
+
+  const timerNote = timer.paused ? (timer.restored ? "; ctx-watch timer restored" : "; ctx-watch timer NOT restored: run install's bootstrap line") : "";
+  const notRestored = timer.paused && !timer.restored ? `the ctx-watch timer was NOT restored (${steps.at(-1).detail})` : null;
+  if (failure?.interrupted) {
+    Object.assign(report, { ok: false, reason: notRestored ? `${failure.message}; ${notRestored}` : failure.message });
+    return out(128 + (constants.signals[failure.interrupted] ?? 0), `ctx-watch repair: ${failure.message}${timerNote}`);
+  }
+  if (failure) {
+    const reason = notRestored ? `${failure.message}; ${notRestored}` : failure.message;
+    if (!report.changed && !notRestored) {
+      Object.assign(report, { refused: true, reason });
+      return out(3, `ctx-watch repair: refused: ${reason}${timerNote}`);
+    }
+    Object.assign(report, { ok: false, reason });
+    return out(1, `ctx-watch repair: failed: ${reason}${timerNote}`);
+  }
+  if (notRestored) {
+    Object.assign(report, { ok: false, reason: `the ctx daemon is repaired, but ${notRestored}` });
+    return out(1, `ctx-watch repair: failed: the ctx daemon is repaired, but ${notRestored}`);
+  }
   report.ok = true;
-  return out(0, `ctx-watch repair: repaired; the ctx daemon is running, supervisor installed${release ? `; the stuck upgrade was released${gate.upgrade.autoEnabled !== false ? " and automatic upgrades are now off (`ctx upgrade enable` to turn them back on)" : ""}` : ""}${timer.paused ? (timer.restored ? "; ctx-watch timer restored" : "; ctx-watch timer NOT restored: run install's bootstrap line") : ""}`);
+  return out(0, `ctx-watch repair: repaired; the ctx daemon is running, supervisor installed${release ? `; the stuck upgrade was released${autoWasOn ? " and automatic upgrades are now off (`ctx upgrade enable` to turn them back on)" : ""}` : ""}${timerNote}`);
 }

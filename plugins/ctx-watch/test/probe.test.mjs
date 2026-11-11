@@ -23,6 +23,10 @@ const MODE = fixture("ctx-index-mode.txt");
 const HEALED = fixture("ctx-index-mode-auto.txt");
 const HEAL_SUPPRESSED = fixture("ctx-index-mode-auto.unavailable.txt");
 const CTX_MISSING = fixture("ctx-daemon-status.unavailable.txt");
+/** The 2026-11-11 `ctx upgrade status` capture: state `dry_run`, no upgrade in progress. */
+const UPGRADE = fixture("ctx-upgrade-status.txt");
+/** What the doubles answer for anything but `daemon status` and the heal: the upgrade capture or the mode fixture. */
+const other = (argv) => (argv[1] === "upgrade" ? good(UPGRADE) : good(MODE));
 
 const HEALTHY_LAST_RUN = JSON.parse(HEALTHY).daemon.jobs.core_refresh.last_run_at_ms;
 /** A `now` one minute after the healthy capture's core_refresh. */
@@ -381,7 +385,7 @@ test("check: a passing probe is one spawn; a failing one heals and probes again"
     calls.push(argv.join(" "));
     if (argv[1] === "daemon") return good(status++ === 0 ? NOT_RUNNING : HEALTHY);
     if (argv[3] === "auto") return good(HEALED);
-    return good(MODE);
+    return other(argv);
   };
   const r = check({ run, exists: () => true, now: () => NOW, env: ENV });
   assert.equal(r.ok, true, "the second probe passes after the heal");
@@ -395,7 +399,7 @@ test("check: a heal that is not attempted leaves the first probe as the result, 
   const calls = [];
   const run = (argv) => {
     calls.push(argv.join(" "));
-    return argv[1] === "daemon" ? good(NOT_RUNNING) : good(MODE);
+    return argv[1] === "daemon" ? good(NOT_RUNNING) : other(argv);
   };
   const r = check({ run, exists: () => false, now: () => NOW, env: ENV });
   assert.equal(r.ok, false);
@@ -414,7 +418,7 @@ test("check with a deadline: the five spawns share one clock; each gets what is 
     clock += 1_000;
     if (argv[1] === "daemon") return good(NOT_RUNNING);
     if (argv[3] === "auto") return good(HEALED);
-    return good(MODE);
+    return other(argv);
   };
   const r = check({ run, exists: () => true, now, timeoutMs: 1_200, deadlineMs: 4_000, env: ENV });
   assert.equal(r.ok, false);
@@ -443,7 +447,7 @@ test("check with a deadline: the five spawns share one clock; each gets what is 
   assert.equal(late.ok, true);
   assert.equal(late.timedOut, false);
   clock = NOW;
-  const free = check({ run: (argv) => ((clock += 5_000), argv[1] === "daemon" ? good(NOT_RUNNING) : good(MODE)), exists: () => true, now, timeoutMs: 1_200, env: ENV });
+  const free = check({ run: (argv) => ((clock += 5_000), argv[1] === "daemon" ? good(NOT_RUNNING) : other(argv)), exists: () => true, now, timeoutMs: 1_200, env: ENV });
   assert.equal(free.timedOut, false);
   assert.match(free.reason, /^the ctx daemon is not running/);
 });
@@ -469,7 +473,7 @@ test("check with an exhausted deadline never spawns: deadlineMs 0 skips the firs
     clock += argv[3] === "auto" ? 1_000 : argv[1] === "index" ? 2_000 : 1_000;
     if (argv[1] === "daemon") return good(NOT_RUNNING);
     if (argv[3] === "auto") return good(HEALED);
-    return good(MODE);
+    return other(argv);
   };
   const cut = check({ run, exists: () => true, now: () => clock, timeoutMs: 5_000, deadlineMs: 3_000, env: ENV });
   assert.deepEqual(seen.map((c) => c.argv), [STATUS_ARGV.join(" "), UPGRADE_ARGV.join(" "), MODE_ARGV.join(" ")]);

@@ -140,7 +140,11 @@ export function runCheck(bin, args) {
   return { missing: false, code: r.status, output: `${r.stdout ?? ""}${r.stderr ?? ""}` };
 }
 
-/** Whether launchd has the job: `launchctl print gui/<uid>/<label>`. */
+/**
+ * Whether launchd has the job: `launchctl print gui/<uid>/<label>`. `loaded` true (exit 0),
+ * false only on launchctl's 113 ("Could not find service"), null on anything else (not found,
+ * did not run, any other exit): a failed query is not an answer.
+ */
 export function loaded({ uid = process.getuid?.() ?? 501, label = LABEL, check = runCheck } = {}) {
   const r = check("launchctl", ["print", `gui/${uid}/${label}`]);
   if (r.missing) return { loaded: null, detail: "launchctl not found: could not tell whether the job is loaded" };
@@ -150,7 +154,8 @@ export function loaded({ uid = process.getuid?.() ?? 501, label = LABEL, check =
     return { loaded: true, detail: `launchd has ${label}${state ? ` (state = ${state}` : ""}${last ? `, last exit code = ${last})` : state ? ")" : ""}` };
   }
   if (r.code === null) return { loaded: null, detail: `launchctl could not run: ${r.output.trim()}` };
-  return { loaded: false, detail: `launchd does not have ${label}` };
+  if (r.code === 113) return { loaded: false, detail: `launchd does not have ${label}` };
+  return { loaded: null, detail: `launchctl print gui/${uid}/${label} exit ${r.code}: ${(r.output ?? "").trim().split("\n").at(-1) || "(no output)"}` };
 }
 
 /**
@@ -200,28 +205,60 @@ export function langFromAppleLocale(locale) {
 }
 
 /**
- * The LANG to give ctx: `{ value, source, detail }`, value null when none is found. This shell's
- * LANG first (source `env`); else the LANG ctx itself recorded for its daemon in
- * supervisor-environment.json (`ctx-recorded`; supervisor.json holds the names only,
- * `values_exposed: false`); else one derived from `defaults read -g AppleLocale` (`AppleLocale`).
- * A process launchd started (Claude Desktop and its tools, this timer) usually has no LANG, and a
- * ctx heal from one records a launch environment ctx then calls `environment_invalid`
- * (2026-11-10 23:29). Read-only: one file and one default.
+ * The locales this host has, as `locale -a` lists them, normalised (`en_GB.utf8` and
+ * `en_GB.UTF-8` are the same locale), or null when the list cannot be read.
+ */
+function hostLocales(check) {
+  const r = check("locale", ["-a"]);
+  if (r.missing || r.code !== 0) return null;
+  return new Set(String(r.output).split("\n").map((s) => normLocale(s.trim())).filter(Boolean));
+}
+const normLocale = (s) => s.replace(/\.utf-?8$/i, ".UTF-8");
+
+/**
+ * The LANG to give ctx: `{ value, source, detail, skipped }`, value null when none is found.
+ * This shell's LANG first, used as given (source `env`); else the LANG ctx itself recorded for
+ * its daemon in supervisor-environment.json (`ctx-recorded`; supervisor.json holds the names
+ * only, `values_exposed: false`); else one derived from `defaults read -g AppleLocale`
+ * (`AppleLocale`). Each fallback candidate must name a locale `locale -a` lists; one that does
+ * not (a value from another machine, an AppleLocale pair like en_DE that macOS has no locale
+ * for), or any when the list cannot be read, is not used and goes into `skipped` with why.
+ * A process launchd started (Claude Desktop and its tools, this timer) usually has no LANG,
+ * and a ctx heal from one records a launch environment ctx then calls `environment_invalid`
+ * (2026-11-10 23:29). Read-only: one file, one default, one locale list.
  */
 export function resolveLang({ env = process.env, check = runCheck } = {}) {
-  if (typeof env.LANG === "string" && env.LANG !== "") return { value: env.LANG, source: "env", detail: "this shell's LANG" };
+  if (typeof env.LANG === "string" && env.LANG !== "") return { value: env.LANG, source: "env", detail: "this shell's LANG", skipped: [] };
   const file = recordedEnvPath(env);
+  const skipped = [];
+  let locales;
+  const usable = (c) => {
+    if (!LOCALE_NAME.test(c.value)) return skipped.push({ value: c.value, source: c.source, why: "not a locale name" }), false;
+    locales ??= hostLocales(check);
+    if (locales === null) return skipped.push({ value: c.value, source: c.source, why: "`locale -a` could not be read, so it could not be checked" }), false;
+    if (!locales.has(normLocale(c.value))) return skipped.push({ value: c.value, source: c.source, why: "not in `locale -a` on this host" }), false;
+    return true;
+  };
+  let recorded;
   try {
     const entries = JSON.parse(readFileSync(file, "utf8"))?.environment;
-    const v = Array.isArray(entries) ? entries.find((e) => e?.name === "LANG")?.value : undefined;
-    if (typeof v === "string" && LOCALE_NAME.test(v)) return { value: v, source: "ctx-recorded", detail: file };
+    recorded = Array.isArray(entries) ? entries.find((e) => e?.name === "LANG")?.value : undefined;
   } catch {
-    // absent or unreadable: fall through to AppleLocale
+    // absent or unreadable: no recorded candidate
+  }
+  if (typeof recorded === "string" && recorded !== "") {
+    const c = { value: recorded, source: "ctx-recorded", detail: file };
+    if (usable(c)) return { ...c, skipped };
   }
   const r = check("defaults", ["read", "-g", "AppleLocale"]);
-  const derived = !r.missing && r.code === 0 ? langFromAppleLocale(r.output) : null;
-  if (derived) return { value: derived, source: "AppleLocale", detail: `defaults read -g AppleLocale = ${String(r.output).trim()}` };
-  return { value: null, source: null, detail: `no LANG in this shell, none recorded in ${file}, and no usable AppleLocale (\`defaults read -g AppleLocale\`)` };
+  const raw = !r.missing && r.code === 0 ? String(r.output).trim() : null;
+  const derived = raw === null ? null : langFromAppleLocale(raw);
+  if (derived) {
+    const c = { value: derived, source: "AppleLocale", detail: `defaults read -g AppleLocale = ${raw}` };
+    if (usable(c)) return { ...c, skipped };
+  }
+  const tried = skipped.length ? `; skipped ${skipped.map((s) => `${s.value} (${s.source}): ${s.why}`).join(", ")}` : "";
+  return { value: null, source: null, detail: `no LANG in this shell, none usable recorded in ${file}, and no usable AppleLocale (\`defaults read -g AppleLocale\`${raw !== null ? ` = ${raw}` : ""})${tried}`, skipped };
 }
 
 /**

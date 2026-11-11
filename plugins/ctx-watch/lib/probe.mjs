@@ -125,6 +125,14 @@ export const HANDOFF_STALE_MS = 15 * 60 * 1000;
 export const UPGRADE_STUCK_MS = 30 * 60 * 1000;
 /** ctx-upgrade-engine state.rs is_active_upgrade_status. */
 export const UPGRADE_ACTIVE = Object.freeze(["staged", "quiescing", "applying", "scheduled", "recovering"]);
+/**
+ * The other states ctx 2.3.0 writes to `.state.status`, none of which fences the daemon out:
+ * "" (never upgraded: UpgradeState's default), "checking" (UpgradeState::begin),
+ * "available"/"up_to_date" (a check), "applied", "dry_run", "disabled", "error" (the terminal
+ * ones, state.rs terminal_installation_upgrade_attempt_id). Any status outside this list and
+ * UPGRADE_ACTIVE is a state ctx-watch cannot judge, and the gate fails closed on it.
+ */
+export const UPGRADE_SETTLED = Object.freeze(["", "checking", "available", "up_to_date", "applied", "dry_run", "disabled", "error"]);
 export const STALE_MS = 2 * 60 * 60 * 1000;
 /** How far ahead of this clock a core_refresh stamp may sit before it is "in the future". */
 export const SKEW_MS = 5 * 60 * 1000;
@@ -364,25 +372,28 @@ export function readHandoff(file, { now = Date.now(), alive = pidAlive } = {}) {
   return { state, phase, pid, alive: isAlive, ageMs };
 }
 
-/** `ctx upgrade status --format json`, read: `{ status, sinceMs, autoEnabled, error }` (status null when ctx could not say). */
+/** `ctx upgrade status --format json`, read: `{ status, attemptId, sinceMs, autoEnabled, error }` (status null when ctx could not say). */
 export function readUpgrade({ run = runCtx, env = process.env, ctx = CTX, timeoutMs = PROBE_TIMEOUT_MS } = {}) {
+  const none = { status: null, attemptId: null, sinceMs: null, autoEnabled: null };
   const r = run(withCtx(UPGRADE_ARGV, ctx), ctxEnv(env), timeoutMs);
-  if (r.error) return { status: null, sinceMs: null, autoEnabled: null, error: r.error };
+  if (r.error) return { ...none, error: r.error };
   const j = parseJson(r.stdout);
   const st = field(j, "state");
   const status = typeof field(st, "status") === "string" ? st.status : null;
-  if (status === null) return { status: null, sinceMs: null, autoEnabled: null, error: `\`${UPGRADE_ARGV.join(" ")}\` (exit ${r.code ?? "none"}) has no .state.status: ${firstLine(r)}` };
+  if (status === null) return { ...none, error: `\`${UPGRADE_ARGV.join(" ")}\` (exit ${r.code ?? "none"}) has no .state.status: ${firstLine(r)}` };
   const since = Date.parse(field(st, "last_attempt_at") ?? "");
   const enabled = field(field(j, "auto_upgrade"), "enabled");
-  return { status, sinceMs: Number.isFinite(since) ? since : null, autoEnabled: typeof enabled === "boolean" ? enabled : null, error: null };
+  const attemptId = field(st, "attempt_id");
+  return { status, attemptId: typeof attemptId === "string" ? attemptId : null, sinceMs: Number.isFinite(since) ? since : null, autoEnabled: typeof enabled === "boolean" ? enabled : null, error: null };
 }
 
 /**
- * Whether ctx is mid-upgrade, stuck in one, or neither. `{ verdict: "none" | "upgrading" |
- * "stuck", reason, fix, upgrade, handoff }`. Upgrading: a handoff ctx calls active, or an active
- * upgrade state younger than UPGRADE_STUCK_MS (or of unknown age). Stuck: an active state at least
- * that old with no active handoff. A state ctx could not report counts as no state: the handoff
- * alone then decides.
+ * Whether ctx is mid-upgrade, stuck in one, neither, or cannot be told. `{ verdict: "none" |
+ * "upgrading" | "stuck" | "unknown", reason, fix, upgrade, handoff }`. Upgrading: a handoff ctx
+ * calls active, or an active upgrade state younger than UPGRADE_STUCK_MS (or of unknown age).
+ * Stuck: an active state at least that old with no active handoff. Unknown: no active handoff,
+ * and `ctx upgrade status` failed, printed no state, or named one outside UPGRADE_ACTIVE and
+ * UPGRADE_SETTLED; nothing then says no upgrade is running, so nothing may change state.
  */
 export function upgradeGate({ run = runCtx, env = process.env, ctx = CTX, now = Date.now, timeoutMs = PROBE_TIMEOUT_MS } = {}) {
   const at = now();
@@ -399,6 +410,10 @@ export function upgradeGate({ run = runCtx, env = process.env, ctx = CTX, now = 
   if (active) {
     const why = handoff.pid !== null && handoff.alive ? `handoff marker over ${age(HANDOFF_STALE_MS)} old` : owner;
     return { verdict: "stuck", reason: `ctx upgrade stuck in ${JSON.stringify(upgrade.status)} for ${age(old)} (${why}): no ctx daemon can start`, fix: upgradeFix(upgrade.autoEnabled), upgrade, handoff };
+  }
+  if (upgrade.error !== null || !UPGRADE_SETTLED.includes(upgrade.status)) {
+    const why = upgrade.error ?? `ctx upgrade state ${JSON.stringify(upgrade.status)} is not one ctx-watch knows`;
+    return { verdict: "unknown", reason: `upgrade state unknown (${why}); ${owner}; not healing`, fix: UPGRADE_STATUS, upgrade, handoff };
   }
   return { verdict: "none", reason: null, fix: null, upgrade, handoff };
 }
@@ -468,6 +483,12 @@ export function check(deps = {}) {
   if (gate.verdict === "upgrading") return done({ ...first, reason: gate.reason, fix: gate.fix, upgrading: true, upgrade: gate.upgrade, handoff: gate.handoff, first: null, healed: { attempted: false, ok: false, detail: "not attempted: an upgrade is in progress" } });
   if (gate.verdict === "stuck") return done({ ...first, reason: gate.reason, fix: gate.fix, kind: "upgrade", healable: false, upgrade: gate.upgrade, handoff: gate.handoff, first: null, healed: { attempted: false, ok: false, detail: "not attempted: a stuck upgrade fences the daemon out; the release is `repair`'s, not the watcher's" } });
   if (!mayHeal) return done({ ...first, first: null, healed: { attempted: false, ok: false, detail: "not attempted: the session-start check does not heal" } });
+  if (gate.verdict === "unknown") {
+    const skipped = { attempted: false, ok: false, detail: `not attempted: ${gate.reason}` };
+    // ctx itself could not run: that is the finding, and its fix is the one to show.
+    if (first.fix === FIX_MISSING) return done({ ...first, upgrade: gate.upgrade, handoff: gate.handoff, first: null, healed: skipped });
+    return done({ ...first, reason: `${first.reason}; not healed: upgrade state unknown`, fix: gate.fix, upgrade: gate.upgrade, handoff: gate.handoff, first: null, healed: skipped });
+  }
   const healed = heal({ ...deps, remaining });
   if (!healed.attempted) return done({ ...first, first: null, healed }, healed.budgetExhausted === true);
   const secondBudget = budget();

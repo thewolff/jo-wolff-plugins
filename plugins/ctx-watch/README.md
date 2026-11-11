@@ -146,7 +146,9 @@ those it says `not attempted: …` and leaves the fix to you.
 
 **The heal's bound** (0.3.0) is 120 s, with SIGTERM at the bound and SIGKILL only 15 s later
 (`HEAL_TIMEOUT_MS`, `HEAL_GRACE_MS` in `lib/probe.mjs`; the heal runs under
-`lib/bounded-run.mjs`, which signals the heal's process group). Until 0.2.2 it was 10 s, and
+`lib/bounded-run.mjs`, which signals the heal's process group, and also ends that group when the
+heal exits on its own, so nothing it left in it outlives the run; ctx's daemon is not in it,
+since ctx starts the daemon with `setsid()` in a session of its own). Until 0.2.2 it was 10 s, and
 1.2 s inside the SessionStart hook, with SIGKILL at once. ctx 2.3.0's own daemon handoff waits
 up to 75 s for installation quiescence, then up to 5 s to stop and 5 s to restart a daemon
 (`daemon_autostart.rs`), so any bound under 85 s can kill `ctx index mode auto` in the middle of
@@ -180,24 +182,51 @@ the file is under 15 min old, `DAEMON_UPGRADE_HANDOFF_STALE_AFTER`, and its owne
   `--dry-run` step is **observed, not documented**: on 2026-11-11 it moved the state from
   `quiescing` to `dry_run`; ctx's docs do not describe it as a release. The watcher runs none of
   it; `repair` does, behind its own gates.
+- **Upgrade state unknown**: `ctx upgrade status` failed, timed out, printed no `.state.status`,
+  or named a state outside ctx 2.3.0's list (the five active ones plus `""`, `checking`,
+  `available`, `up_to_date`, `applied`, `dry_run`, `disabled`, `error`), with no active handoff
+  marker. Nothing then says that no upgrade is running, so the heal is not run: the line is the
+  probe's reason plus `not healed: upgrade state unknown`, with `ctx upgrade status --format json`
+  as its fix (when ctx itself cannot run, that stays the finding and its fix). It still strikes
+  and pops up like the probe's failure.
 
 **`repair`** (0.3.0) is the repair an agent can run: `node <plugin dir>/scripts/ctx-watch.mjs
 repair`, no prompts, about three minutes at most. It needs a `LANG` for its ctx calls and takes
-the first of: its shell's `LANG`; the `LANG` ctx recorded for its daemon in
+the first of: its shell's `LANG`, as given; the `LANG` ctx recorded for its daemon in
 `<CTX_DATA_ROOT or ~/.ctx>/daemon/supervisor-environment.json` (read only; `supervisor.json`
 holds the names, not the values); one derived from `defaults read -g AppleLocale` (`en_GB` →
-`en_GB.UTF-8`). A Bash tool in Claude Desktop has no `LANG` of its own, since launchd starts
-Desktop, so the fallback is the usual path from there. It refuses (exit 3, nothing changed) when
-none of the three gives a `LANG`, when launchd's `gui/<uid>` domain is not reachable from it,
-when indexing mode is not `auto`, during a live upgrade, while any handoff owner pid is alive,
-while the handoff marker is under 15 min old, or when the stuck state is not `quiescing` (the
-only one the release was seen to work on). Otherwise it pauses the ctx-watch timer
-(`launchctl bootout`, so a tick cannot heal into the repair), releases a stuck `quiescing`
-upgrade as above, runs the heal under its 120 s bound, polls `ctx daemon status` until the
-daemon reads running, supervisor `installed` and no `restart_required`, and restores the timer
-whatever happened. The first output line is JSON (`ok`, `changed`, `refused`, `reason`, `lang`
-with its `value` and `source` (`env`, `ctx-recorded`, `AppleLocale`, or null), `steps`,
-`timer`, `verified`), the last a summary; exit 0 repaired or already healthy, 1 failed. The
+`en_GB.UTF-8`). A fallback is used only when `locale -a` lists it (`en_GB.utf8` counts as
+`en_GB.UTF-8`): a recorded value from another machine, or an AppleLocale pair such as `en_DE`
+that has no locale, is skipped and named in the JSON's `lang.skipped`, and so is every fallback
+when `locale -a` cannot be read. A Bash tool in Claude Desktop has no `LANG` of its own, since
+launchd starts Desktop, so the fallback is the usual path from there.
+
+It refuses (exit 3, no ctx change) when no usable `LANG` is found, when `launchctl` is missing or
+launchd's `gui/<uid>` domain is not reachable from it, when indexing mode is not `auto`, during a
+live upgrade, while the upgrade state is unknown (as above), while any handoff owner pid is
+alive, while the handoff marker is under 15 min old, when the stuck state is not `quiescing`
+(the only one the release was seen to work on), or when `launchctl print` cannot say whether
+the ctx-watch timer is loaded (anything but loaded, or launchctl's 113 "no such service").
+Otherwise it pauses the timer (`launchctl bootout`, so a tick cannot heal into the repair),
+releases a stuck `quiescing` upgrade as above, runs the heal under its 120 s bound, polls
+`ctx daemon status` until the daemon reads running, supervisor `installed` and no
+`restart_required`, and restores the timer.
+
+The preflight is a snapshot, so the upgrade gate is read again just before each command that
+changes ctx state: before `ctx upgrade disable` and `ctx upgrade --dry-run` it must still show
+the same stuck `quiescing` attempt (same `attempt_id`), and before `ctx index mode auto` no
+upgrade at all; a live owner, a young marker or an unknown state found there stops the run
+(exit 3 when nothing had changed yet, else 1). The read and the command are not atomic: the
+window is the gap between two ctx spawns. The timer is restored in a `finally`, after a refusal
+found there, a failure, a step that throws, or SIGINT, SIGTERM or SIGHUP (a signal that arrives
+while a ctx command runs takes effect when that bounded command returns; the exit is then
+128 + the signal number). A restore that fails makes the whole run a failure (exit 1, `timer
+NOT restored` and the bootstrap error), even when the daemon came back. SIGKILL cannot be
+handled; after one, run `install`'s bootstrap line.
+
+The first output line is JSON (`ok`, `changed`, `refused`, `reason`, `lang` with its `value`,
+`source` (`env`, `ctx-recorded`, `AppleLocale`, or null) and `skipped`, `steps`, `timer`,
+`verified`), the last a summary; exit 0 repaired or already healthy, 1 failed. The
 `/ctx-watch:repair` skill runs it.
 
 **Automatic upgrades stay off after a release.** Releasing a stuck upgrade first runs `ctx
@@ -439,9 +468,10 @@ it is guarded as described above; a repair that fails is reported with ctx's own
 probe after it decides. It is never run during a live upgrade (owner liveness, not
 `daemon.running`, decides), and the watcher never runs the stuck-upgrade release: auto-running
 `ctx upgrade --dry-run` while an upgrade is genuinely live would release its state and let a
-second daemon start mid-upgrade, so only `repair`, with its owner and 15 min gates, does. A
-`ctx upgrade status` that does not answer leaves the handoff marker to decide; with neither an
-active state nor an active marker the heal runs as before 0.3.0. What this plugin cannot do:
+second daemon start mid-upgrade, so only `repair`, with its owner and 15 min gates, does. An
+upgrade state ctx-watch cannot read or does not know, with no active marker, is no heal (fail
+closed); with a known settled state and no active marker the heal runs as before 0.3.0. What
+this plugin cannot do:
 tell why launchd refused ctx's bootstrap on 10-28 (the system log is sandboxed off), restart a
 daemon in `manual` mode, rebuild the semantic index (ctx 2.3.0 has no verb for it; the line
 names `ctx semantic enable --wait`), or release a stuck upgrade in a state other than
@@ -508,15 +538,18 @@ From the 2026-11-05 to 11-11 outage (see *Why* at the top):
 
 - **A live upgrade is not healed.** On a failing probe the check reads `ctx upgrade status` and
   ctx's upgrade handoff marker first; during an upgrade (or while a handoff owner is alive) it
-  skips the heal, strikes nothing, and says `upgrade in progress`.
+  skips the heal, strikes nothing, and says `upgrade in progress`. An upgrade state it cannot
+  read or does not know is no heal either (`not healed: upgrade state unknown`).
 - **A stuck upgrade is its own finding** (`upgrade` kind, own popup latch) naming the release
   sequence `ctx upgrade disable && ctx upgrade --dry-run && ctx index mode auto`, marked
   observed-not-documented. The watcher runs none of it.
 - **`repair`**, a new verb and the `/ctx-watch:repair` skill: the 2026-11-11 hand-run sequence,
-  non-interactive, behind gates (owner dead, marker over 15 min old, a `LANG` found, `gui/<uid>`
-  reachable, mode `auto`), pausing and restoring the timer, verifying before it says repaired.
-  With no `LANG` in its shell (Claude Desktop's tools) it uses the `LANG` ctx recorded, else
-  one from `AppleLocale`. After releasing a stuck upgrade it leaves automatic upgrades off.
+  non-interactive, behind gates (owner dead, marker over 15 min old, upgrade state known, a
+  `LANG` found, `gui/<uid>` reachable, mode `auto`, the timer's state known), re-read before
+  every state change, pausing the timer and restoring it in a `finally` (signals included),
+  verifying before it says repaired. With no `LANG` in its shell (Claude Desktop's tools) it
+  uses the `LANG` ctx recorded, else one from `AppleLocale`, each only if `locale -a` lists it.
+  After releasing a stuck upgrade it leaves automatic upgrades off.
 - **The heal's bound** is 120 s with a 15 s SIGTERM grace (was 10 s, SIGKILL), and the
   SessionStart hook no longer heals (it had 1.2 s).
 - **`install` carries `LANG`** and ctx's other launch-environment settings into the plist, with

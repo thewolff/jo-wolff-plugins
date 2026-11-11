@@ -27,17 +27,19 @@ const FIX_DIR = join(dirname(fileURLToPath(import.meta.url)), "fixtures");
 const HEALTHY = readFileSync(join(FIX_DIR, "ctx-daemon-status.txt"), "utf8");
 const NOT_RUNNING = readFileSync(join(FIX_DIR, "ctx-daemon-status-not-running.txt"), "utf8");
 const MODE = readFileSync(join(FIX_DIR, "ctx-index-mode.txt"), "utf8");
+const UPGRADE = readFileSync(join(FIX_DIR, "ctx-upgrade-status.txt"), "utf8");
 const NOW = JSON.parse(HEALTHY).daemon.jobs.core_refresh.last_run_at_ms + 60_000;
 const good = (stdout) => ({ code: 0, stdout, stderr: "" });
 const ctxExists = (p) => p === "/Users/example/.local/bin/ctx";
 
-/** A ctx double: `daemon status` answers from `statuses` in order (the last repeats); heal reports not running. */
+/** A ctx double: `daemon status` answers from `statuses` in order (the last repeats); `upgrade status` the 2026-11-11 capture (dry_run); heal reports not running. */
 function fakeCtx(statuses) {
   const calls = [];
   let i = 0;
   const run = (argv) => {
     calls.push(argv.join(" "));
     if (argv[1] === "daemon") return good(statuses[Math.min(i++, statuses.length - 1)]);
+    if (argv[1] === "upgrade") return good(UPGRADE);
     if (argv[3] === "auto") return good(NOT_RUNNING);
     return good(MODE);
   };
@@ -551,14 +553,15 @@ test("tick rotates a log over the bound before probing; prune rotates, removes r
   }
 });
 
-/** A fake `ctx` on PATH that prints `status` for `daemon status` and the mode fixture for `index mode`. */
+/** A fake `ctx` on PATH that prints `status` for `daemon status`, the mode fixture for `index mode`, and the upgrade capture for `upgrade status`. */
 function fakeCtxBin(dir, status) {
   const bin = join(dir, "bin");
   mkdirSync(bin, { recursive: true });
   writeFileSync(join(bin, "status.json"), status);
   writeFileSync(join(bin, "mode.json"), MODE);
+  writeFileSync(join(bin, "upgrade.json"), UPGRADE);
   const ctx = join(bin, "ctx");
-  writeFileSync(ctx, `#!/bin/sh\ncase "$1 $2" in\n  "daemon status") cat "${join(bin, "status.json")}";;\n  "index mode") if [ "$3" = "auto" ]; then echo "Error: fake ctx does not heal" >&2; exit 1; fi; cat "${join(bin, "mode.json")}";;\n  *) echo "fake ctx: unknown $*" >&2; exit 2;;\nesac\n`);
+  writeFileSync(ctx, `#!/bin/sh\ncase "$1 $2" in\n  "daemon status") cat "${join(bin, "status.json")}";;\n  "upgrade status") cat "${join(bin, "upgrade.json")}";;\n  "index mode") if [ "$3" = "auto" ]; then echo "Error: fake ctx does not heal" >&2; exit 1; fi; cat "${join(bin, "mode.json")}";;\n  *) echo "fake ctx: unknown $*" >&2; exit 2;;\nesac\n`);
   chmodSync(ctx, 0o755);
   return bin;
 }

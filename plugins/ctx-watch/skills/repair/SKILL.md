@@ -18,15 +18,20 @@ brought it back on 2026-11-11, with that run's confirmations turned into checks 
    - exit 0, `repaired` or `healthy; nothing changed`: say so in one line. If it says automatic
      upgrades are now off, tell the person `ctx upgrade enable` turns them back on once a fixed
      ctx release is out.
-   - exit 3, `refused: …`: nothing was changed. Say the reason. `upgrade in progress` or `owner
-     pid … is alive` means wait; `wait Nm and run repair again` means exactly that; `LANG could
-     not be found` or an unreachable `gui/<uid>` launchd domain means the person runs the same
-     command from their own Terminal; indexing mode `manual` is their decision.
+   - exit 3, `refused: …`: no ctx change was made. Say the reason. `upgrade in progress`,
+     `upgrade state unknown` or `owner pid … is alive` means wait; `wait Nm and run repair
+     again` means exactly that; `LANG could not be found`, `launchctl not found`, an
+     unreachable `gui/<uid>` launchd domain, or launchctl not saying whether the timer is loaded
+     means the person runs the same command from their own Terminal; indexing mode `manual` is
+     their decision.
    - no LANG in this shell (Claude Desktop's tools have none): not a problem. `repair` takes the
-     LANG ctx recorded, else one from AppleLocale, and names it in the first line's JSON `lang`.
+     LANG ctx recorded, else one from AppleLocale (each only if `locale -a` lists it), and names
+     it in the first line's JSON `lang`, with anything it skipped in `lang.skipped`.
    - exit 1, `failed: …`: say the line and hand the person the first line's JSON `steps` entry
      that failed. If it says the timer was NOT restored, hand over the `launchctl bootstrap`
-     line `install` prints.
+     line `install` prints: the run counts as failed even when the daemon came back.
+   - exit 130, 143 or 129, `interrupted by SIG…`: the run was stopped; the timer was restored
+     unless the line says otherwise. Run it again when nothing is interrupting it.
 3. Never run `ctx upgrade --dry-run`, `ctx upgrade disable` or `launchctl` yourself in place of
    this command: `repair` runs them only after checking that no upgrade owner process is alive.
    The `--dry-run` release was observed to work on 2026-11-11; ctx does not document it.
