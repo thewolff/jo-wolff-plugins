@@ -7,15 +7,19 @@
 //                 or `{ ok: true, away: false }`. Writes nothing; the mod then sends `back` as the
 //                 user's prompt (`$.prompt.submit`), and
 //                 hooks/user-prompt-submit.mjs ends the hold as it does for `back` typed.
-//   done <index>  toggle row <index> (0-based) of checklist.json and write it back; once every row
-//                 is done the file is removed (the band clears). Cosmetic: the agent is told nothing.
-//   clear         remove checklist.json.
+//   open          whether a returned digest is open, and which: `{ ok: true, open: true, at }` or
+//                 `{ ok: true, open: false }`. Writes nothing. The band's Show, Done and Clear send
+//                 `brb item N`, `brb done N` and `brb clear` as the user's prompt
+//                 (`$.prompt.submit`) only while this still names the checklist the band drew, and
+//                 hooks/user-prompt-submit.mjs does the rest, so the agent is told of every one.
+//                 Nothing here ticks or removes checklist.json: every write that could drop an
+//                 unshown item goes through lib/back.mjs.
 //
 // Prints one JSON object: `{ ok: true, ... }` or `{ ok: false, error }`. Always exits 0.
 
 import { realpathSync } from "node:fs";
 import { fileURLToPath } from "node:url";
-import { clearChecklist, readAway, toggleChecklistItem } from "../../lib/state.mjs";
+import { readAway, readChecklist } from "../../lib/state.mjs";
 
 /** `--session <id> <verb> [index]` → { sessionId, verb, index }; a missing or blank id is null, a non-integer index null. */
 export function parseArgs(argv) {
@@ -38,16 +42,11 @@ export function act(sessionId, verb, index, { env = process.env } = {}) {
     const away = readAway(sessionId, env);
     return away ? { ok: true, away: true, since: away.since } : { ok: true, away: false };
   }
-  if (verb === "done") {
-    if (index === null) return { ok: false, error: "done needs a row index" };
-    const checklist = toggleChecklistItem(sessionId, index, env);
-    return { ok: true, checklist };
+  if (verb === "open") {
+    const checklist = readChecklist(sessionId, env);
+    return checklist ? { ok: true, open: true, at: checklist.at } : { ok: true, open: false };
   }
-  if (verb === "clear") {
-    clearChecklist(sessionId, env);
-    return { ok: true, checklist: null };
-  }
-  return { ok: false, error: `unknown verb ${JSON.stringify(verb)}; one of back, done <index>, clear` };
+  return { ok: false, error: `unknown verb ${JSON.stringify(verb)}; one of back, open` };
 }
 
 export function main(argv = process.argv.slice(2), { env = process.env, out = (s) => process.stdout.write(s) } = {}) {

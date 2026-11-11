@@ -112,13 +112,102 @@ export function firstLineReason(line) {
 }
 
 /**
- * What the agent is told on `back`, over the digest: Jo is back, reply with the digest below as
- * the whole message. The digest reaches Jo as the agent's reply, which every surface renders;
- * a hook frame does not render on the mobile app.
+ * What the agent is told on `back`, over the numbered list: Jo is back, reply with the list as
+ * the whole message. The list reaches Jo as the agent's reply, which every surface renders; a
+ * hook frame does not render on the mobile app. Items come one at a time after that (itemInstruction).
  */
 export function backInstruction(away, now) {
   const d = awayFor(away.since, now);
+  return `brb: Jo is back${d ? ` (away ${d})` : ""}. Reply with the list below verbatim as your whole message, then stop (end with nothing else). Do not show any item in full yet: Jo picks one at a time by typing its number.`;
+}
+
+/** backInstruction for a harness that does not route the item words (OMP): the whole digest, as in 0.5.0. */
+export function backDigestInstruction(away, now) {
+  const d = awayFor(away.since, now);
   return `brb: Jo is back${d ? ` (away ${d})` : ""}. Reply with the digest below verbatim as your whole message, then stop (end with nothing else). If a held item is already resolved, append '— resolved: <how>' to that line.`;
+}
+
+/** The most characters one line of the returned digest's numbered list carries; the item in full comes when Jo picks it. */
+export const LIST_LINE_MAX = 120;
+
+/** `text` with whitespace collapsed, cut to `max` characters with a trailing `…`. */
+export function clipLine(text, max = LIST_LINE_MAX) {
+  const t = String(text ?? "").replace(/\s+/g, " ").trim();
+  return t.length <= max ? t : `${t.slice(0, max - 1)}…`;
+}
+
+/** The returned digest as `back` lists it: one line per row, `N. <text, cut>`, ticked rows marked `(done)`. */
+export function digestList(checklist) {
+  return checklist.items.map((item, i) => `${i + 1}. ${item.done ? "(done) " : ""}${clipLine(item.text)}`).join("\n");
+}
+
+/** The footer under `back`'s list: how Jo works it. */
+export function listFooter(checklist) {
+  const n = checklist.items.length;
+  return `Type a number (1${n > 1 ? `-${n}` : ""}) to open that item, \`done N\` when it is dealt with, \`brb clear\` to close the list (anything not done is shown in full first).`;
+}
+
+/**
+ * A prompt that works the returned digest, or null: a bare number (`3`, `#3`, `3.`) or
+ * `brb item 3` opens item 3; `done 3` or `brb done 3` ticks it; `brb clear` closes the list.
+ * `prefixed` is true for the `brb …` forms, which the band sends and which never reach the
+ * agent as an ordinary prompt. Trailing `.`, `!` allowed; any case.
+ */
+export function digestWord(text) {
+  const t = String(text ?? "").trim();
+  let m = /^#?(\d{1,4})[.)!]?$/.exec(t);
+  if (m) return { verb: "show", n: Number(m[1]), prefixed: false };
+  m = /^brb\s+item\s+#?(\d{1,4})[.!]?$/i.exec(t);
+  if (m) return { verb: "show", n: Number(m[1]), prefixed: true };
+  m = /^(brb\s+)?done\s+#?(\d{1,4})[.!]?$/i.exec(t);
+  if (m) return { verb: "done", n: Number(m[2]), prefixed: Boolean(m[1]) };
+  if (/^brb\s+clear[.!]?$/i.test(t)) return { verb: "clear", n: null, prefixed: true };
+  return null;
+}
+
+/** What a `brb item N`, `brb done N` or `brb clear` says while home with no returned digest open; the prompt still reaches the agent. */
+export const NO_OPEN_TEXT = "brb: no returned digest is open; nothing to open, tick or clear. Tell Jo that in one line.";
+
+/** An item number off the open list. */
+export function noItemText(n, total) {
+  return `brb: the returned digest has no item ${n} (it has ${total}, numbered 1-${total}). Tell Jo that in one line, then stop.`;
+}
+
+/** One row in full: its number, the entry it was held under, its whole text, and whether it is ticked. */
+export function itemBlock(item, n, total) {
+  return [`item ${n} of ${total}${item.heading ? ` (held ${item.heading})` : ""}${item.done ? ", done" : ""}`, "", item.text].join("\n");
+}
+
+/** What the agent is told when Jo opens item N: show it in full, work it with Jo, leave the tick to Jo. */
+export function itemInstruction(n) {
+  return `brb: Jo opened item ${n} of the returned digest. Start your reply with the item below verbatim, then work it with Jo: answer it, or ask what you need to act on it. Show no other item. The item stays open until Jo types \`done ${n}\` or ticks it in the band; do not mark it done yourself.`;
+}
+
+/** What the agent is told when Jo ticks item N: acknowledge, and what is left. */
+export function tickText({ n, item, already, closed, open }) {
+  const what = `item ${n} (${clipLine(item.text, 80)})`;
+  if (already) return `brb: ${what} was already done. Say so in one line, then stop.`;
+  if (closed) return `brb: Jo ticked ${what} done. That was the last open item: the returned digest is closed. Say so in one line, then stop.`;
+  return `brb: Jo ticked ${what} done. Still open: ${open.join(", ")}. Say so in one line, then stop.`;
+}
+
+/** What the agent is told on `brb clear`: reply with the block below as the whole message. */
+export function clearInstruction(open) {
+  return open
+    ? `brb: Jo closed the returned digest with ${open} item${open === 1 ? "" : "s"} not done. Reply with the block below verbatim as your whole message, then stop: the items not done are in full so none is lost.`
+    : "brb: Jo closed the returned digest; every item was done. Reply with the block below verbatim as your whole message, then stop.";
+}
+
+/** The block `brb clear` shows: every row not done in full (itemBlock), then the done rows one line each. */
+export function clearBlock(checklist) {
+  const total = checklist.items.length;
+  const open = [];
+  const done = [];
+  checklist.items.forEach((item, i) => (item.done ? done : open).push(item.done ? `${i + 1}. ${clipLine(item.text)}` : itemBlock(item, i + 1, total)));
+  const parts = [];
+  if (open.length) parts.push(`Not done (${open.length}):`, "", open.join("\n\n"));
+  if (done.length) parts.push(...(open.length ? [""] : []), `Done (${done.length}):`, done.join("\n"));
+  return parts.join("\n");
 }
 
 /** What the agent is told on `back` while not away; the word itself still reaches it as the prompt. */

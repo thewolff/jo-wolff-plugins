@@ -3,6 +3,44 @@
 All notable changes to brb are recorded here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.6.0] - 2026-11-11
+
+### Added
+
+- The returned digest is worked one item at a time. After `back`, a bare number or `brb item N`
+  makes the agent reply with that item in full (its whole held text and entry heading) and work
+  it; `done N` or `brb done N` ticks it; `brb clear` closes the list, and the agent first replies
+  with every item not done in full, verbatim, and the done ones one line each. The words are read
+  by the prompt hook (`lib/text.mjs` `digestWord`, `lib/back.mjs` `showItem`, `tickItem`,
+  `clearReturned`); with no list open a bare number or `done N` is an ordinary prompt, and while
+  away every word is an answer to the agent.
+- `checklist.json` carries each item's full text and heading and the archive paths of every
+  hold in it. A second hold while a list is open appends its items, keeping the numbers and
+  ticks (`lib/state.mjs` `mergeChecklist`). The last tick closes the list.
+- The band's rows have a Show button (hotkey: the row number) beside Done. Show, Done and Clear
+  send `brb item N`, `brb done N` and `brb clear` as the person's own prompt, after act.mjs
+  `open` confirms the same list is still open; while the agent works the word waits for the
+  turn to end.
+- Evals: `prompt-item-show`, `prompt-done-ticks`, `prompt-clear-shows-open`,
+  `prompt-number-home`; tests in `test/returned-digest.test.mjs`.
+
+### Changed
+
+- `back` replies with a numbered list, one line per held item cut at 120 characters, and how to
+  work it, instead of the whole digest. The digest is still archived at `back`.
+- A hold that held nothing leaves an open list as it is.
+- Under OMP (`BRB_HARNESS=omp`) nothing changes: the adapter never routes the item words, so
+  `back` still replies with the whole digest verbatim and opens no list (`lib/back.mjs`).
+- An item clears only when the person ticks it; the agent never marks one done.
+- `skills/brb/SKILL.md` steps 7 and 8 describe the list and the item words.
+
+### Removed
+
+- `lib/state.mjs` `toggleChecklistItem` (replaced by the idempotent `tickChecklistItem`).
+- act.mjs `done` and `clear` verbs: the band no longer writes ticks itself, so the agent is told
+  of each one.
+- The band's Undo button: a tick is final once the agent has been told.
+
 ## [0.5.0] - 2026-11-10
 
 ### Added

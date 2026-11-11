@@ -9,6 +9,19 @@
 /** The word that ends the hold; the band suggests it in the prompt box, and the Back button sends it. */
 export const BACK_WORD = "back";
 
+/**
+ * The prompt a band press on the returned digest sends (hooks/user-prompt-submit.mjs reads it
+ * through lib/text.mjs digestWord): Show → `brb item N`, Done → `brb done N`, Clear → `brb clear`.
+ * `index` is the 0-based row; null for anything else.
+ */
+export function pickPrompt(verb, index) {
+  if (verb === "clear") return "brb clear";
+  if (!Number.isInteger(index) || index < 0) return null;
+  if (verb === "item") return `brb item ${index + 1}`;
+  if (verb === "done") return `brb done ${index + 1}`;
+  return null;
+}
+
 /** The longest the fallback status line may be: 40 characters. */
 export const STATUS_MAX = 40;
 
@@ -74,7 +87,11 @@ export function readSnapshot(stdout) {
   };
 }
 
-/** What act.mjs printed → `{ ok: true }` (with `away`, and `since` when away, when the action printed them, as `back` does) or `{ ok: false, error }`; junk is an error, never a throw. */
+/**
+ * What act.mjs printed → `{ ok: true }` (with `away`, and `since` when away, when the action
+ * printed them, as `back` does; with `open`, and `at` when open, as `open` does) or
+ * `{ ok: false, error }`; junk is an error, never a throw.
+ */
 export function readResult(stdout) {
   let parsed;
   try {
@@ -84,6 +101,7 @@ export function readResult(stdout) {
   }
   if (!parsed || typeof parsed !== "object") return { ok: false, error: "action printed no object" };
   if (parsed.ok !== true) return { ok: false, error: String(parsed.error ?? "action failed") };
+  if (typeof parsed.open === "boolean") return parsed.open && typeof parsed.at === "string" ? { ok: true, open: true, at: parsed.at } : { ok: true, open: false };
   if (typeof parsed.away !== "boolean") return { ok: true };
   return parsed.away && typeof parsed.since === "string" ? { ok: true, away: true, since: parsed.since } : { ok: true, away: parsed.away };
 }

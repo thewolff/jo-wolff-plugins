@@ -39,15 +39,27 @@ working; this skill is what it needs from you.
 6. **Answering a fire, or anything the person types, does not end the hold.** Answer it, then
    go back to steps 1 to 5; only the prompt `back` on its own ends the hold.
 7. **When the prompt `back` arrives with `brb: Jo is back (away <duration>). Reply with the
-   digest below verbatim …` as context, your whole reply is that digest**, starting with its
-   `brb: hold cleared; digest archived to <path>.` line, then nothing else. The person may be
-   on a surface that renders no hook output (the mobile app), so your reply is the only way the
-   digest reaches them. Where you already resolved a held item during the hold, append
-   `— resolved: <how>` to that line; do not drop the line. `back` with
+   list below verbatim …` as context, your whole reply is that list**, starting with its
+   `brb: hold cleared; digest archived to <path>.` line: one line per held item, then the line
+   on how to work it. The person may be on a surface that renders no hook output (the mobile
+   app), so your reply is the only way the list reaches them. `back` with
    `brb: you were not away; nothing held` as context is an ordinary one-word reply to whatever
    you asked; answer it as such.
+8. **After `back`, the person works the list one item at a time; each step arrives as context
+   on their prompt.** Follow the context line exactly:
+   - `brb: Jo opened item N …`: start your reply with the item block below it verbatim, then
+     work that one item with them. The item stays open after your reply.
+   - `brb: Jo ticked item N … done …`: reply with one line saying so and naming what is still
+     open.
+   - `brb: Jo closed the returned digest …`: your whole reply is the block below it, verbatim;
+     every item not done is in it in full, and is reaching the person for the last time.
+   - `brb: no returned digest is open …` or `brb: the returned digest has no item N …`: say that
+     in one line.
+   An item is done only when the person types `done N` or ticks it in the band; your reply on
+   an item leaves it open, whatever you resolved.
 
-The person reads the digest with `pending` (which does not clear it) or `back` (which does).
+The person reads the digest with `pending` (which does not clear it) or `back` (which lists it
+and opens the items one at a time).
 
 ## When this can't run
 

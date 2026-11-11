@@ -13,15 +13,15 @@
 //                            instruction as additionalContext, so it returns to holding. (On OMP
 //                            the adapter handles `brb` itself: it shows that line, no turn.)
 //   `back`                   end the hold (lib/back.mjs endHold: archive the digest to
-//                            archive/<ts>.md, write checklist.json from its items for the band
-//                            above the prompt, clear away.json) and let the prompt through (no
-//                            block) with two outputs carrying the same text: additionalContext
-//                            for the agent, lib/text.mjs backInstruction (`brb: Jo is back
-//                            (away <duration>). Reply with the digest below verbatim as your
-//                            whole message …`) over `brb: hold cleared; digest archived to
-//                            <path>.` and the digest, so the agent's reply IS the digest; and a
-//                            systemMessage with the archive line and the digest, for the
-//                            surfaces that render hook frames. Why both: the mobile app renders
+//                            archive/<ts>.md, write checklist.json, the returned digest, from
+//                            its items, clear away.json) and let the prompt through (no block)
+//                            with two outputs carrying the same text: additionalContext for the
+//                            agent, lib/text.mjs backInstruction (`brb: Jo is back (away
+//                            <duration>). Reply with the list below verbatim as your whole
+//                            message …`) over `brb: hold cleared; digest archived to <path>.`
+//                            and the numbered list, one line per item, so the agent's reply IS
+//                            the list; and a systemMessage with the same, for the surfaces that
+//                            render hook frames. Why both: the mobile app renders
 //                            no hook frame, so a blocked prompt showed Jo nothing; an assistant
 //                            message renders everywhere. The only way out. The band's Back
 //                            button (mods/band) sends this same word as the user's own prompt
@@ -32,6 +32,15 @@
 //                            writer is mid-way through (lines appended, count not yet written)
 //                            is not shown; a lock held past 2 s is a throw, logged, and the word
 //                            proceeds to the model.
+//   the returned digest      while home with checklist.json present (lib/text.mjs digestWord):
+//                            `3` / `brb item 3` → the agent is told to show item 3 in full and
+//                            work it (lib/back.mjs showItem); `done 3` / `brb done 3` → item 3 is
+//                            ticked and the agent told (tickItem; the last tick closes the
+//                            list); `brb clear` → every item not done in full, then the file is
+//                            removed (clearReturned; also a systemMessage). All pass through as
+//                            additionalContext. With no checklist, `3` and `done 3` are ordinary
+//                            prompts (null) and the `brb …` forms say lib/text.mjs NO_OPEN_TEXT
+//                            and start no hold. While away none of these is special.
 //   anything else, away      the prompt proceeds with the away instruction as additionalContext
 //                            (lib/text.mjs awayInstruction, rendered with this session's hold
 //                            command: the absolute path of scripts/brb.mjs and the session id;
@@ -62,9 +71,9 @@
 // stdout itself.
 
 import { runHook, invokedDirectly } from "../lib/hook-runner.mjs";
-import { endHold } from "../lib/back.mjs";
-import { digestPath, freshAway, readAway, readDigest, renderDigest, withAwayLock, writeAway } from "../lib/state.mjs";
-import { AWAY_NOTICE, NOT_AWAY_TEXT, alreadyAwayText, awayInstruction, cappedReason, holdCommand, surfaceWord } from "../lib/text.mjs";
+import { clearReturned, endHold, showItem, tickItem } from "../lib/back.mjs";
+import { digestPath, freshAway, readAway, readChecklist, readDigest, renderDigest, withAwayLock, writeAway } from "../lib/state.mjs";
+import { AWAY_NOTICE, NOT_AWAY_TEXT, NO_OPEN_TEXT, alreadyAwayText, awayInstruction, cappedReason, digestWord, holdCommand, surfaceWord } from "../lib/text.mjs";
 
 const block = (reason) => ({ decision: "block", reason, hookSpecificOutput: { hookEventName: "UserPromptSubmit", suppressOriginalPrompt: true } });
 const context = (text) => ({ hookSpecificOutput: { hookEventName: "UserPromptSubmit", additionalContext: text } });
@@ -77,12 +86,33 @@ function newTurn(sessionId, away, env) {
   writeAway(sessionId, away, env);
 }
 
+/** A prompt that works the returned digest while home: its output; undefined when it is not one (the prompt goes on as usual). */
+function workReturned(sessionId, pick, env) {
+  if (!readChecklist(sessionId, env)) return pick.prefixed ? context(NO_OPEN_TEXT) : undefined;
+  if (pick.verb === "show") {
+    const r = showItem(sessionId, pick.n, env);
+    return r ? context(r.agentText) : pick.prefixed ? context(NO_OPEN_TEXT) : undefined;
+  }
+  if (pick.verb === "done") {
+    const r = tickItem(sessionId, pick.n, env);
+    return r ? context(r.agentText) : pick.prefixed ? context(NO_OPEN_TEXT) : undefined;
+  }
+  const r = clearReturned(sessionId, env);
+  return r ? { systemMessage: r.text, ...context(r.agentText) } : context(NO_OPEN_TEXT);
+}
+
 /**
  * @param {object} input  the UserPromptSubmit payload; session_id and prompt are read
  * @returns {object|null}
  */
 export function handle(input, { env = process.env, now = () => new Date().toISOString() } = {}) {
   const sessionId = typeof input?.session_id === "string" ? input.session_id : "";
+  // OMP's adapter reads `brb item N` and `brb clear` as `brb` with a note, so OMP keeps 0.5.0's words.
+  const pick = env.BRB_HARNESS === "omp" ? null : digestWord(input?.prompt);
+  if (pick && !readAway(sessionId, env)) {
+    const out = workReturned(sessionId, pick, env);
+    if (out !== undefined) return out;
+  }
   const word = surfaceWord(input?.prompt);
   if (word?.word === "pending") {
     if (!readAway(sessionId, env)) return null;

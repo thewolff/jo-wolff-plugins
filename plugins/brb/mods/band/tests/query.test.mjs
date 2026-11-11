@@ -83,9 +83,10 @@ test("away: after `brb lunch` the snapshot carries since, the note, the counts a
     const after = query(b, ["--session", "s1"]).json;
     assert.equal(after.away, false);
     assert.deepEqual(after.checklist.items, [
-      { text: "Pick Redis or in-process for the cache", done: false },
-      { text: "Approve the schema change", done: false },
+      { text: "Pick Redis or in-process for the cache", heading: after.checklist.items[0].heading, done: false },
+      { text: "Approve the schema change", heading: after.checklist.items[0].heading, done: false },
     ]);
+    assert.match(after.checklist.items[0].heading, /^\d{4}-\d\d-\d\d /);
     assert.equal(after.checklist.note, "lunch");
   } finally {
     b.release();

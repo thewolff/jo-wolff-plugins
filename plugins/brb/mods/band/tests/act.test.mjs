@@ -1,7 +1,8 @@
 // act.test.mjs — mods/band/act.mjs, as the subprocess the band's buttons run: `back` reports
-// whether the session is away and writes nothing; `done <i>` toggles one checklist row and removes the file when every row
-// is done; `clear` removes it; a missing session, a missing index and an unknown verb are
-// `{ ok: false, error }`; every run exits 0 and prints JSON. node --test.
+// whether the session is away and `open` which returned digest is open, both writing nothing;
+// the old `done` and `clear` verbs are gone (the band sends prompts; the prompt hook writes); a
+// missing session and an unknown verb are `{ ok: false, error }`; every run exits 0 and prints
+// JSON. node --test.
 
 import test from "node:test";
 import assert from "node:assert/strict";
@@ -44,38 +45,29 @@ test("back: reports home, or away with the hold's `since`, and writes nothing; t
   }
 });
 
-test("done toggles one row and persists it; the last row done removes checklist.json; clear removes it", () => {
+test("open: reports no list, or the open one's `at`, and writes nothing; done and clear are no longer verbs here", () => {
   const b = box();
   try {
+    assert.deepEqual(act(b, "--session", "s1", "open"), { ok: true, open: false });
     runHook(b, "user-prompt-submit", promptInput(b, "brb"));
     hold(b, "First");
     hold(b, "Second");
     runHook(b, "user-prompt-submit", promptInput(b, "back"));
-    const one = act(b, "--session", "s1", "done", "0");
-    assert.deepEqual(one.checklist.items, [{ text: "First", done: true }, { text: "Second", done: false }]);
-    assert.deepEqual(readChecklist("s1", b.env).items, one.checklist.items);
-    act(b, "--session", "s1", "done", "0");
-    assert.equal(readChecklist("s1", b.env).items[0].done, false, "done again is undo");
-    act(b, "--session", "s1", "done", "0");
-    assert.deepEqual(act(b, "--session", "s1", "done", "1"), { ok: true, checklist: null });
-    assert.equal(existsSync(join(b.stateDir("s1"), "checklist.json")), false);
-
-    runHook(b, "user-prompt-submit", promptInput(b, "brb"));
-    hold(b, "Third");
-    runHook(b, "user-prompt-submit", promptInput(b, "back"));
-    assert.ok(readChecklist("s1", b.env));
-    assert.deepEqual(act(b, "--session", "s1", "clear"), { ok: true, checklist: null });
-    assert.equal(readChecklist("s1", b.env), null);
+    const before = readdirSync(b.stateDir("s1")).sort();
+    assert.deepEqual(act(b, "--session", "s1", "open"), { ok: true, open: true, at: readChecklist("s1", b.env).at });
+    for (const verb of ["done", "clear"]) assert.match(act(b, "--session", "s1", verb, "0").error, /^unknown verb/, verb);
+    assert.deepEqual(readdirSync(b.stateDir("s1")).sort(), before, "no file written or removed");
+    assert.ok(existsSync(join(b.stateDir("s1"), "checklist.json")));
+    assert.deepEqual(readChecklist("s1", b.env).items.map((i) => i.done), [false, false]);
   } finally {
     b.release();
   }
 });
 
-test("faults: no session, done with no index, an unknown verb", () => {
+test("faults: no session, an unknown verb", () => {
   const b = box();
   try {
     assert.deepEqual(act(b, "back"), { ok: false, error: "act needs --session <id>" });
-    assert.deepEqual(act(b, "--session", "s1", "done"), { ok: false, error: "done needs a row index" });
     assert.match(act(b, "--session", "s1", "nope").error, /^unknown verb "nope"/);
   } finally {
     b.release();

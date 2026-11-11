@@ -32,7 +32,9 @@ import {
   sessionKey,
   stateRoot,
   localTime,
-  toggleChecklistItem,
+  tickChecklistItem,
+  digestEntries,
+  mergeChecklist,
   writeAway,
   writeChecklist,
 } from "../lib/state.mjs";
@@ -209,22 +211,26 @@ test("digestItems: the held lines and closing asks of appendDigest's entries, ma
   assert.deepEqual(digestItems(undefined), []);
 });
 
-test("checklist.json: none by default; written whole and read back; Done toggles and persists; the last row done removes the file; clear removes it", () => {
+test("checklist.json: none by default; written whole and read back; a tick sets done (ticking again changes nothing); the last tick removes the file; clear removes it", () => {
   const b = box();
   try {
     assert.equal(readChecklist("s1", b.env), null);
-    const fresh = freshChecklist({ at: "2026-11-04T19:30:00.000Z", since: "2026-11-04T18:42:00.000Z", note: "lunch", items: ["a", "b"] });
-    assert.deepEqual(fresh.items, [{ text: "a", done: false }, { text: "b", done: false }]);
+    const fresh = freshChecklist({ at: "2026-11-04T19:30:00.000Z", since: "2026-11-04T18:42:00.000Z", note: "lunch", archived: ["/a.md"], items: ["a", { text: "b", heading: "2026-11-04 10:42 AM PST" }] });
+    assert.deepEqual(fresh.items, [{ text: "a", heading: "", done: false }, { text: "b", heading: "2026-11-04 10:42 AM PST", done: false }]);
     assert.equal(writeChecklist("s1", fresh, b.env), checklistPath("s1", b.env));
     assert.deepEqual(readChecklist("s1", b.env), fresh);
 
-    assert.deepEqual(toggleChecklistItem("s1", 0, b.env).items, [{ text: "a", done: true }, { text: "b", done: false }]);
-    assert.deepEqual(readChecklist("s1", b.env).items[0], { text: "a", done: true });
-    assert.equal(toggleChecklistItem("s1", 5, b.env), null, "off the list");
-    assert.equal(toggleChecklistItem("s1", -1, b.env), null);
-    assert.equal(readChecklist("s1", b.env).items[0].done, true, "an off-list toggle changes nothing");
-    assert.equal(toggleChecklistItem("s1", 1, b.env), null, "every row done");
+    const one = tickChecklistItem("s1", 0, b.env);
+    assert.deepEqual([one.item.text, one.already, one.closed], ["a", false, false]);
+    assert.deepEqual(readChecklist("s1", b.env).items[0], { text: "a", heading: "", done: true });
+    assert.equal(tickChecklistItem("s1", 0, b.env).already, true, "ticking a ticked row");
+    assert.equal(readChecklist("s1", b.env).items[0].done, true, "a second tick is no undo");
+    assert.equal(tickChecklistItem("s1", 5, b.env), null, "off the list");
+    assert.equal(tickChecklistItem("s1", -1, b.env), null);
+    const last = tickChecklistItem("s1", 1, b.env);
+    assert.equal(last.closed, true, "every row done");
     assert.equal(existsSync(checklistPath("s1", b.env)), false);
+    assert.equal(tickChecklistItem("s1", 0, b.env), null, "nothing open");
 
     writeChecklist("s1", fresh, b.env);
     clearChecklist("s1", b.env);
@@ -235,10 +241,24 @@ test("checklist.json: none by default; written whole and read back; Done toggles
   }
 });
 
+test("digestEntries: each item with the heading of its entry; mergeChecklist keeps an open list's rows, ticks and at, and appends the new hold's", () => {
+  const body = "## 2026-11-04 10:42 AM PST\n- Pick a cache\nclosing ask: which?\n\n## 2026-11-04 11:05 AM PST\n- Approve the schema\n";
+  assert.deepEqual(digestEntries(body), [
+    { text: "Pick a cache", heading: "2026-11-04 10:42 AM PST" },
+    { text: "closing ask: which?", heading: "2026-11-04 10:42 AM PST" },
+    { text: "Approve the schema", heading: "2026-11-04 11:05 AM PST" },
+  ]);
+  assert.deepEqual(digestEntries("- no heading yet"), [{ text: "no heading yet", heading: "" }]);
+  const open = { at: "T1", since: "S1", note: "lunch", archived: ["/1.md"], items: [{ text: "a", heading: "", done: true }, { text: "b", heading: "", done: false }] };
+  const fresh = freshChecklist({ at: "T2", since: "S2", note: "", archived: ["/2.md"], items: ["c"] });
+  assert.deepEqual(mergeChecklist(open, fresh), { at: "T1", since: "S2", note: "", archived: ["/1.md", "/2.md"], items: [...open.items, { text: "c", heading: "", done: false }] });
+  assert.equal(mergeChecklist(null, fresh), fresh);
+});
+
 test("parseChecklist: junk is null; rows with no text are dropped; done is only ever true or false", () => {
   assert.equal(parseChecklist("{nope"), null);
   assert.equal(parseChecklist("[]"), null);
   assert.equal(parseChecklist('{"items":"x"}'), null);
-  assert.deepEqual(parseChecklist('{"items":[{"text":"a","done":"yes"},{"done":true},null]}'), { at: "", since: "", note: "", items: [{ text: "a", done: false }] });
+  assert.deepEqual(parseChecklist('{"items":[{"text":"a","done":"yes"},{"done":true},null]}'), { at: "", since: "", note: "", archived: [], items: [{ text: "a", heading: "", done: false }] });
 });
 

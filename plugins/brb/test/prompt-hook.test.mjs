@@ -1,7 +1,7 @@
 // test/prompt-hook.test.mjs — hooks/user-prompt-submit.mjs as a spawned process with fixture
-// stdin: brb (bare and with a note), back (through, with the digest as additionalContext and a
-// systemMessage; any case; checklist.json written from the held items for the band, none for an
-// empty hold), a `back-requested` file left by 0.4.0 or 0.4.1 ignored (no hold ended by it),
+// stdin: brb (bare and with a note), back (through, with the numbered list as additionalContext
+// and a systemMessage; any case; checklist.json written from the held items, an open one left as
+// it is by an empty hold; the item words are test/returned-digest.test.mjs), a `back-requested` file left by 0.4.0 or 0.4.1 ignored (no hold ended by it),
 // pending (under the session lock: a writer mid-way is
 // waited for, one held past the wait fails open), another prompt while away, another prompt
 // while home, and the session-start hook while away and home. node --test.
@@ -30,7 +30,7 @@ const cameBack = (r) => {
   assert.equal(r.json.hookSpecificOutput?.hookEventName, "UserPromptSubmit");
   assert.equal(r.json.hookSpecificOutput?.suppressOriginalPrompt, undefined, "not a block");
   const ctx = r.json.hookSpecificOutput?.additionalContext;
-  assert.match(ctx, /^brb: Jo is back(?: \(away \d+m\))?\. Reply with the digest below verbatim as your whole message, then stop \(end with nothing else\)\. If a held item is already resolved, append '— resolved: <how>' to that line\.\n\n/);
+  assert.match(ctx, /^brb: Jo is back(?: \(away \d+m\))?\. Reply with the list below verbatim as your whole message, then stop \(end with nothing else\)\. Do not show any item in full yet: Jo picks one at a time by typing its number\.\n\n/);
   assert.ok(ctx.endsWith(`\n\n${r.json.systemMessage}`), "the context carries the same text as the systemMessage");
   assert.ok(ctx.length <= 10_000, `additionalContext length ${ctx.length} (Claude Code caps it at 10,000)`);
   return r.json.systemMessage;
@@ -176,7 +176,7 @@ test("pending while away with an empty digest: says so and changes nothing; back
   }
 });
 
-test("back with held items: answers the digest (for the agent to reply with, and as a systemMessage), archives it, clears the hold; pending first leaves it", () => {
+test("back with held items: answers a numbered list, one line per item (for the agent to reply with, and as a systemMessage), archives the digest, clears the hold; pending first shows the digest and leaves it", () => {
   const b = box();
   try {
     runHook(b, "user-prompt-submit", promptInput(b, "brb"));
@@ -186,7 +186,7 @@ test("back with held items: answers the digest (for the agent to reply with, and
     assert.match(peek, /2 items\n\n## .*\n- Pick Redis or in-process\nclosing ask: which\?$/);
     assert.ok(existsSync(join(b.stateDir("s1"), "digest.md")));
     const back = cameBack(runHook(b, "user-prompt-submit", promptInput(b, "back")));
-    assert.match(back, /^brb: hold cleared; digest archived to .*archive\/.*\.md\.\n\nbrb digest — held since .*, 2 items\n\n## .*\n- Pick Redis or in-process\nclosing ask: which\?$/);
+    assert.match(back, /^brb: hold cleared; digest archived to .*archive\/.*\.md\.\n\nbrb digest — held since .*, 2 items\n\n1\. Pick Redis or in-process\n2\. closing ask: which\?\n\nType a number \(1-2\) to open that item, `done N` when it is dealt with, `brb clear` to close the list \(anything not done is shown in full first\)\.$/);
     assert.ok(!existsSync(join(b.stateDir("s1"), "digest.md")));
     assert.ok(!existsSync(join(b.stateDir("s1"), "away.json")));
     const archived = readdirSync(join(b.stateDir("s1"), "archive"));
@@ -272,7 +272,7 @@ test("a prompt with no session id still works, under the no-session key", () => 
   }
 });
 
-test("back writes checklist.json from the held items, none done, for the band; an empty hold writes none and removes a stale one", () => {
+test("back writes checklist.json from the held items, each with its entry heading, none done; an empty hold leaves an open checklist as it is", () => {
   const b = box();
   try {
     runHook(b, "user-prompt-submit", promptInput(b, "brb lunch"));
@@ -281,14 +281,15 @@ test("back writes checklist.json from the held items, none done, for the band; a
     cameBack(runHook(b, "user-prompt-submit", promptInput(b, "back")));
     const checklist = readChecklist("s1", b.env);
     assert.equal(checklist.note, "lunch");
-    assert.deepEqual(checklist.items, [
+    assert.deepEqual(checklist.items.map(({ text, done }) => ({ text, done })), [
       { text: "Pick Redis or in-process for the cache", done: false },
       { text: "Approve the schema change", done: false },
     ]);
+    for (const item of checklist.items) assert.match(item.heading, /^\d{4}-\d\d-\d\d \d{1,2}:\d\d [AP]M /, "the entry heading rides each row");
 
     runHook(b, "user-prompt-submit", promptInput(b, "brb"));
     cameBack(runHook(b, "user-prompt-submit", promptInput(b, "back")));
-    assert.equal(readChecklist("s1", b.env), null, "an empty hold leaves no checklist");
+    assert.deepEqual(readChecklist("s1", b.env), checklist, "an empty hold leaves the open checklist untouched");
   } finally {
     b.release();
   }
@@ -302,7 +303,7 @@ test("holds while home never make a checklist; a checklist is left alone by late
 
     writeChecklist("s1", { at: "", since: "", note: "", items: [{ text: "a", done: true }, { text: "b", done: false }] }, b.env);
     runHook(b, "user-prompt-submit", promptInput(b, "next thing"));
-    assert.deepEqual(readChecklist("s1", b.env).items, [{ text: "a", done: true }, { text: "b", done: false }]);
+    assert.deepEqual(readChecklist("s1", b.env).items, [{ text: "a", heading: "", done: true }, { text: "b", heading: "", done: false }]);
   } finally {
     b.release();
   }

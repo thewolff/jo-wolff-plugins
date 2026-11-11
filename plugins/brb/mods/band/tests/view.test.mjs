@@ -110,19 +110,19 @@ test("bandTree away: gold border and background, the headline bold, the numbered
   assert.deepEqual(pressed, ["back"]);
 });
 
-test("bandTree back: blue border, Clear in the header, a Done per row (Undo once done, struck and dim), handlers get the 0-based row", () => {
+test("bandTree back: blue border, Clear in the header, Show (hotkey: the row number) and Done per open row, Show only on a done row (struck and dim), handlers get the 0-based row", () => {
   const calls = [];
   const model = bandModel(back([{ text: "a", done: false }, { text: "b", done: true }]));
-  const tree = bandTree(UI, model, { onClear: () => calls.push("clear"), onDone: (i) => calls.push(`done ${i}`) });
+  const tree = bandTree(UI, model, { onClear: () => calls.push("clear"), onShow: (i) => calls.push(`show ${i}`), onDone: (i) => calls.push(`done ${i}`) });
   assert.equal(tree.props.borderColor, BACK_COLORS.border);
   assert.equal(texts(tree)[0], "BACK · 1 to act on");
   const b = buttons(tree);
-  assert.deepEqual(b.map((x) => [x.props.key, x.props.label]), [["clear", "Clear"], ["done-1", "Done"], ["done-2", "Undo"]]);
+  assert.deepEqual(b.map((x) => [x.props.key, x.props.label, x.props.hotkey]), [["clear", "Clear", "c"], ["item-1", "Show", "1"], ["done-1", "Done", undefined], ["item-2", "Show", "2"]]);
   const struck = nodes(tree).find((n) => n.type === "Text" && n.children.join("") === "2. b");
   assert.equal(struck.props.strikethrough, true);
   assert.equal(struck.props.dimColor, true);
   for (const x of b) x.props.onPress();
-  assert.deepEqual(calls, ["clear", "done 0", "done 1"]);
+  assert.deepEqual(calls, ["clear", "show 0", "done 0", "show 1"]);
 });
 
 test("bandTree keeps what later mods drew under the band", () => {
@@ -140,7 +140,7 @@ test("no emoji anywhere in a drawn band: every character is single-width", () =>
   }
 });
 
-test("R1 S1: rows still to act on come first; 11 items with the first 10 done shows row 11 with a Done button and one `10 done` line; `+N more` counts only hidden open rows", () => {
+test("R1 S1: rows still to act on come first; 11 items with the first 10 done shows row 11 with its Show and Done buttons and one `10 done` line; `+N more` counts only hidden open rows", () => {
   const items = Array.from({ length: 11 }, (_, i) => ({ text: `item ${i + 1}`, done: i < 10 }));
   const m = bandModel(back(items));
   assert.equal(m.headline, "BACK · 1 to act on");
@@ -162,13 +162,13 @@ test("R1 S1: rows still to act on come first; 11 items with the first 10 done sh
   assert.equal(mm.doneHidden, 2);
 });
 
-test("R1 S1: done rows fill the room left after the open rows, in their original numbering, with Undo", () => {
+test("R1 S1: done rows fill the room left after the open rows, in their original numbering, with Show only", () => {
   const m = bandModel(back([{ text: "a", done: true }, { text: "b", done: false }, { text: "c", done: true }, { text: "d", done: false }]));
   assert.deepEqual(m.rows.map((r) => [r.n, r.done]), [[2, false], [4, false], [1, true], [3, true]]);
   assert.equal(m.doneHidden, 0);
   assert.equal(m.more, 0);
   const labels = buttons(bandTree(UI, m)).map((b) => [b.props.key, b.props.label]);
-  assert.deepEqual(labels, [["clear", "Clear"], ["done-2", "Done"], ["done-4", "Done"], ["done-1", "Undo"], ["done-3", "Undo"]]);
+  assert.deepEqual(labels, [["clear", "Clear"], ["item-2", "Show"], ["done-2", "Done"], ["item-4", "Show"], ["done-4", "Done"], ["item-1", "Show"], ["item-3", "Show"]]);
 });
 
 test("R1 S1: a tight maxRows keeps every open row reachable before any done row; the lines never pass maxRows", () => {
@@ -205,10 +205,11 @@ test("R1 S2: no drawn line is wider than the band at any width; a narrow band st
     }
   }
   const narrow = bandTree(UI, bandModel(back([{ text: long, done: false }]), { bodyColumns: 15 }));
-  const rowBox = nodes(narrow).find((n) => n.type === "Box" && (n.children ?? []).some((c) => c.type === "Button" && c.props.key === "done-1"));
-  assert.equal(rowBox.props.flexDirection, "column", "the Done button goes under the text");
+  const holdsDone = (n) => n.type === "Box" && (n.children ?? []).some((c) => c.type === "Box" && (c.children ?? []).some((d) => d.type === "Button" && d.props.key === "done-1"));
+  const rowBox = nodes(narrow).find(holdsDone);
+  assert.equal(rowBox.props.flexDirection, "column", "the Show and Done buttons go under the text");
   const wide = bandTree(UI, bandModel(back([{ text: long, done: false }]), { bodyColumns: 80 }));
-  const wideBox = nodes(wide).find((n) => n.type === "Box" && (n.children ?? []).some((c) => c.type === "Button" && c.props.key === "done-1"));
+  const wideBox = nodes(wide).find(holdsDone);
   assert.equal(wideBox.props.flexDirection, "row");
 });
 

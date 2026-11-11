@@ -1,6 +1,6 @@
 {
   "name": "brb",
   "description": "Type brb and walk away: the agent keeps working, its questions wait in a digest, and only an on-fire problem reaches you. Claude Code hides its output meanwhile. Type back to read the digest.",
-  "version": "0.5.0",
+  "version": "0.6.0",
   "mcpServers": {}
 }

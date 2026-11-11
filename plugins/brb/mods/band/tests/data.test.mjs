@@ -9,7 +9,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { join } from "node:path";
 
-import { MAX_BYTES, STATUS_MAX, actArgv, awayPath, elapsed, emptySnapshot, queryArgv, readResult, readSnapshot, sessionKey as bandKey, statusText, suggestionText } from "../data.mjs";
+import { MAX_BYTES, STATUS_MAX, actArgv, awayPath, elapsed, emptySnapshot, pickPrompt, queryArgv, readResult, readSnapshot, sessionKey as bandKey, statusText, suggestionText } from "../data.mjs";
 import { sessionDir, sessionKey } from "../../../lib/state.mjs";
 import { awayFor } from "../../../lib/text.mjs";
 
@@ -50,6 +50,9 @@ test("readResult: ok (with `away`, and `since` when away, when the action printe
   assert.deepEqual(readResult('{"ok":false,"error":"no"}'), { ok: false, error: "no" });
   assert.deepEqual(readResult("garbage"), { ok: false, error: "action printed no JSON" });
   assert.deepEqual(readResult("null"), { ok: false, error: "action printed no object" });
+  assert.deepEqual(readResult(`{"ok":true,"open":true,"at":"${SINCE}"}`), { ok: true, open: true, at: SINCE });
+  assert.deepEqual(readResult('{"ok":true,"open":true}'), { ok: true, open: false }, "open with no at is not a list the band can bind to");
+  assert.deepEqual(readResult('{"ok":true,"open":false}'), { ok: true, open: false });
 });
 
 test("statusText: away shows the elapsed time, the count and the word; home shows nothing; after back the open rows", () => {
@@ -87,6 +90,15 @@ test("elapsed: as lib/text.mjs awayFor prints it; the future and junk are 0m", (
   for (const n of [0, 1, 59, 60, 65, 1439, 1440, 1650, 3000]) assert.equal(elapsed(SINCE, minutes(n)), awayFor(SINCE, new Date(minutes(n)).toISOString()), `${n} minutes`);
   assert.equal(elapsed(SINCE, minutes(-10)), "0m");
   assert.equal(elapsed("not a date", minutes(10)), "0m");
+});
+
+test("pickPrompt: Show, Done and Clear name the prompt the band sends, rows 1-based; junk is null", () => {
+  assert.equal(pickPrompt("item", 0), "brb item 1");
+  assert.equal(pickPrompt("done", 2), "brb done 3");
+  assert.equal(pickPrompt("clear"), "brb clear");
+  assert.equal(pickPrompt("item", -1), null);
+  assert.equal(pickPrompt("item", undefined), null);
+  assert.equal(pickPrompt("back", 0), null);
 });
 
 test("queryArgv and actArgv name the script, the session, the verb and the row", () => {
