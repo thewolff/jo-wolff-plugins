@@ -13,6 +13,9 @@ All notable changes to ledger are recorded here. The format follows
   Code uses a PreCompact hook's plain stdout as instructions for the compaction summary, so it
   is an answer, not a crash. JSON stays valid; every other event keeps the JSON rule; a
   PreCompact text of 10,000 characters or more fails naming its length.
+- The `visible` row no longer asks a PreCompact hook for a `systemMessage` on a fault, as it
+  never asked SessionEnd: Claude Code discards a PreCompact hook's `systemMessage` and
+  `continue` fields. The `errors.log` line is still required.
 
 ## 0.3.9 - 2026-11-04
 

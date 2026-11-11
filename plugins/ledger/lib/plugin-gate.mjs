@@ -19,7 +19,8 @@
 //              least one line in `<state>/<plugin>/errors.log` (or in `errors.log` under a path
 //              the plugin declares in its `state`, resolved into the sandbox) and a
 //              `systemMessage` on stdout
-//              (SessionEnd has no reader, so its message is not required; a hook that printed
+//              (SessionEnd has no reader, and Claude Code discards a PreCompact hook's
+//              systemMessage, so neither one's message is required; a hook that printed
 //              nothing and logged nothing on the unwritable state never reached it, which is
 //              not a failure: the malformed-JSON input is the one every hook must answer);
 //              every `test/fixtures/<x>.txt` has an `<x>.unavailable.txt` sibling (the adapter's
@@ -295,7 +296,8 @@ export function spawnHook(plugin, hook, input, { env: outer = process.env, cwd, 
       }
     }
     const hasMessage = typeof json?.systemMessage === "string" && json.systemMessage.trim() !== "";
-    const needsMessage = hook.event !== "SessionEnd";
+    // SessionEnd has no reader; Claude Code discards a PreCompact hook's systemMessage.
+    const needsMessage = hook.event !== "SessionEnd" && hook.event !== "PreCompact";
     // Unwritable state touched nothing when the hook printed what it prints on a healthy run
     // (its baseline, or nothing) and logged nothing: a hook that needs no state has no fault to show.
     const untouched = input.unwritable && logged === 0 && (!r.stdout.trim() || (baselineStdout !== null && r.stdout === baselineStdout));

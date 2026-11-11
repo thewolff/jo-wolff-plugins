@@ -780,4 +780,8 @@ test("survives: plain-text stdout is an answer from a PreCompact hook (summary i
   for (const r of run("PreCompact", "over.mjs")) assert.match(r.why ?? "", /^PreCompact hook on .*: plain-text stdout is 10000 characters; Claude Code takes PreCompact summary instructions under 10000$/);
   for (const event of ["Stop", "UserPromptSubmit", "SessionStart"]) for (const r of run(event, "text.mjs")) assert.match(r.why ?? "", new RegExp(`^${event} hook on .*: stdout is not JSON \\(End the summary`));
   for (const r of run("Stop", "json.mjs")) assert.equal(r.ok, true, r.why);
+  // visible: Claude Code discards a PreCompact systemMessage, so a PreCompact fault needs only its
+  // errors.log line; every other event (but SessionEnd) still needs the message too.
+  assert.deepEqual([...new Set(run("PreCompact", "text.mjs").map((r) => r.needsMessage))], [false]);
+  assert.deepEqual([...new Set(run("Stop", "json.mjs").map((r) => r.needsMessage))], [true]);
 });
