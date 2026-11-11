@@ -81,9 +81,8 @@
 //   sha256(promptText) → cache/<hash>.json, written only on a SUCCESSFUL verdict — a timeout
 //   is never cached, because the judge might come back. Same prompt, same verdict, one judge
 //   bill. The key is the whole prompt (rule, question, message): since 1.1.0 the question
-//   varies per call (conclusion-first and bad-news-first append the unit's opening window and,
-//   for a labeled section, a framing sentence), and an unlabeled message can equal one
-//   section's text, so rule + contextText no longer determines what the judge sees. Cache
+//   varies per call (conclusion-first and bad-news-first append the message's opening
+//   window), so rule + contextText does not determine what the judge sees. Cache
 //   files keyed the old way simply stop matching: one re-bill per message, no migration.
 //   On a FAILURE the prompt itself is written next to where the verdict would go,
 //   cache/<hash>.prompt.txt, so the failure line's cache key is a replayable prompt:
@@ -234,8 +233,8 @@ function unavailable(log, rule, error, run, ctx) {
 //   config: lib/config.mjs's enforcement object (judgeCommand is the override; resolveJudge).
 //   options: { timeoutMs, stateDir, env } — for tests; production takes the harness timeout,
 //   the shared state dir and process.env. { meta: { session, section } } — who is asking, for
-//   the failure line: the Stop hook passes its session id and the judged section
-//   ("<label>@<line>", or "whole" for an unsectioned message).
+//   the failure line; section defaults to "whole". The Stop hook passes its session id only:
+//   since 1.7.2 it judges whole messages, never a labeled section alone.
 //   Never throws.
 export async function askJudge(rule, question, contextText, config, options = {}) {
   const dir = options.stateDir ?? null;

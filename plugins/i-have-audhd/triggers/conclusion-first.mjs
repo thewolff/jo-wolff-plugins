@@ -4,9 +4,9 @@
 //   Is the unit ≥ 400 substantive chars? That is the trigger. Whether the unit's opening 20
 //   words state its decision or verdict — versus being setup — is a judgment and belongs to
 //   the judge. A keyword version of that judgment fires on every message that opens with
-//   context for a good reason, which is most of them. The Stop hook runs this per unit: each
-//   block-labeled section of a labeled message, or the whole message when it has no labels
-//   (checks/sections.mjs).
+//   context for a good reason, which is most of them. The Stop hook runs this on the whole
+//   message: a receipt block under a **CLAIM** or **CITE** label is part of the message it
+//   backs, never judged alone (checks/sections.mjs).
 //
 // WHY 400, AND NO PARAGRAPH MINIMUM
 //   The needs-you floor (200) protects short exchanges from structural checks; this rule

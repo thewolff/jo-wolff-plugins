@@ -17,14 +17,14 @@ different instrument with a different error profile, not a non-enforcement.
 | `needs-you-first` | 1, Skeleton | Deterministic — `checkNeedsYouFirst` | A needs-you marker exists and substantive prose precedes it | warn |
 | `closing-ask-last` | 1, Skeleton | Deterministic — `checkClosingAskLast` | A closing-ask marker exists; more than one, or substantive prose follows the ask section | warn |
 | `do-not-batch-by-label` | 1, Skeleton (caveats beside what they qualify) | Judge-in-hook — `findTrailingBatchSection` | A trailing labeled section (Uncertainties, Open questions, Questions, Caveats, Notes — fixed; the hook calls it on these defaults) with substance | warn |
-| `conclusion-first` | 1, Skeleton (body, conclusion first) | Judge-in-hook — `conclusionFirstApplicable` | Per labeled section (the whole message when it has no block labels): ≥ 400 substantive chars; the judge reads the section's opening 20 words | warn |
+| `conclusion-first` | 1, Skeleton (body, conclusion first) | Judge-in-hook — `conclusionFirstApplicable` | The whole message, receipt blocks included: ≥ 400 substantive chars; the judge reads the message's opening 20 words | warn |
 | `plural-back-reference` | 6, References survive without scrolling | Deterministic — `checkPluralBackReference` | A closing-ask marker exists and its ask uses *those, these, both, them, the two, either one* with no referent in the same sentence | warn |
 | `handed-command` | 10, Commands handed to the user | Deterministic — `checkHandedCommand` | The message hands the reader a shell command (a `bash`/`sh`/`zsh`/`shell` fence, *run/paste/type/execute/enter* + a code span starting with a known binary, or prompt lines under such an instruction) that is not one `zsh /abs/path/file.sh` line whose script sits under a `handedCommand.scriptRoots` root and outside every git checkout, or a `handedCommand.allow` match; receipts are exempt; runs at any length | warn |
 | `restate-resumed-thread` | 8, Resume by restating content | Injector marker + judge | Session source was resume/compact; first substantive message after it | warn |
 | `name-the-artifact` | 11, Machinery anchors | Deterministic — `checkNamesArtifact` | Report-shaped (≥ 400 chars + a report verb) and no artifact token anywhere | warn |
 | `link-the-reference` | 11, Machinery anchors | Deterministic — `checkLinkTheReference` | A substantive line names `PR #N`, `pull request N`, `issue N` or a bare `#NN` with no GitHub pull/issues URL for that N on the line, or a file name with a listed extension and no absolute, `~/`, `file://` or http(s) path containing it on the line; two more kinds (*the report*-style phrases, branch-name code spans) ship off; receipts, fences and `→` lines are exempt | warn |
 | `report-what-you-did-not-do` | 11, Machinery anchors | Todo trigger + judge | The transcript's last todo write has items not completed | warn |
-| `bad-news-first` | 11, Machinery anchors | Lexicon gate + judge | Per labeled section (the whole message when it has no block labels): ≥ 200 chars and a negative-lexicon word in substantive lines; the judge reads the section's opening 20 words | warn |
+| `bad-news-first` | 11, Machinery anchors | Lexicon gate + judge | The whole message, receipt blocks included: ≥ 200 chars and a negative-lexicon word in substantive lines; the judge reads the message's opening 20 words | warn |
 
 Every warning and block reason names its skill rule, for example
 `Needs you first (i-have-audhd rule 1, Skeleton) — …`, so a finding points at text the
@@ -482,29 +482,26 @@ each hit's line, link and the judge's reason. Unmeasured.
   must be the last heading in the text; bold pseudo-headings (`**Notes**`) count; the
   section must contain prose. `batchJudgeContext(text, section)` marks the section for the
   judge.
-- **`checks/sections.mjs`** — the units `conclusion-first` and `bad-news-first` judge.
-  `splitLabeledSections(text)` → `[{label, line, text}]`. A label line is a prose line
-  (never fenced, commented or quoted) that is exactly one bold label, `CLAIM` or `CITE`,
+- **`checks/sections.mjs`** — the receipt label line and the opening window.
+  `labelOf(entry)` → the label a classified line carries, or null. A label line is a prose
+  line (never fenced, commented or quoted) that is exactly one bold label, `CLAIM` or `CITE`,
   optionally with a parenthetical inside the bold (`**CITE(vendor docs)**`) and a trailing
   colon; an inline or bulleted bold label is not. The retired output-types labels (`PMDW`,
-  `GUESS`, `ACTION`, `QUESTION`) are ordinary prose since 1.5.0 and open nothing.
-  No label line → one unit, the whole text, judged as before 1.1.0. Otherwise the text before
-  the first label is a preamble unit and each label line opens a unit running to the next;
-  the label line is dropped from the unit, and a heading, blank or rule run directly above a
-  label belongs to the section that label opens. `openingWords(text, 20)` is a unit's
+  `GUESS`, `ACTION`, `QUESTION`) are ordinary prose since 1.5.0. `checks/handed-command.mjs`
+  reads the block under a label line as a receipt. `openingWords(text, 20)` is the message's
   opening window: the first 20 words of its heading and prose lines (markup stripped,
   crossing line and sentence breaks). The label set and the window size are constants, not
   profile settings.
-- **Per-section judging** — the Stop hook runs each gate on each unit and sends one judge
-  job per qualifying unit, its `contextText` the unit's text only. The question carries the
-  unit's window (`The reader's first 20 words here are: "…"`) and, for a unit of a labeled
-  message, one framing sentence naming the section (`**CLAIM**, line 12`) and telling the
-  judge to judge it alone; both sit outside the judged message. Each rule yields one finding
-  naming every violating section in line order (`**CLAIM** at line 12 — judge: …`); an
-  unlabeled message keeps the whole-message wording. A judge error on one section fails open
-  for that section only.
+- **Receipt blocks are not judge units** — `conclusion-first` and `bad-news-first` each send
+  at most one judge job, its `contextText` the whole message verbatim, label lines and receipt
+  blocks included. A receipt block (a `**CLAIM**` or `**CITE**` label line and its evidence)
+  backs the point made around it, so it is judged with that point. From 1.1.0 to 1.7.1 the
+  hook judged each labeled block alone; a blind re-measure on 2026-11-10 traced every
+  conclusion-first false alarm on two judge models to a receipt block judged that way, because
+  a receipt opens with its evidence by design. The question carries the message's window
+  (`The reader's first 20 words here are: "…"`) outside the judged message.
 - **`triggers/conclusion-first.mjs`** — `conclusionFirstApplicable(text, {minProseChars})`
-  → `{applicable, proseChars}`. Default 400, per unit. The two-paragraph minimum it carried
+  → `{applicable, proseChars}`. Default 400, over the whole message. The two-paragraph minimum it carried
   until 1.1.0 is gone: with "at the start" meaning the first 20 words, a single 400-char
   paragraph can bury its point at word 40.
 - **`triggers/todo-unfinished.mjs`** — `lastIncompleteTodos(jsonl)` → `{applicable,
@@ -525,7 +522,7 @@ each hit's line, link and the judge's reason. Unmeasured.
   accusation in a block reason. `todoJudgeContext(text, todos)` appends the unfinished list,
   each item with its exact status and, for OMP, its phase (`- [abandoned] (Ship) Open PR`).
 - **`triggers/bad-news-lexicon.mjs`** — `badNewsGate(text, {lexicon, minProseChars})` →
-  `{applicable, proseChars, hits}`, per unit. Lexicon `[failed, failure, error, broke, broken,
+  `{applicable, proseChars, hits}`, over the whole message. Lexicon `[failed, failure, error, broke, broken,
   blocker, regression, cannot, can't, rejected, lost, missed, wrong]`, matched at word
   start (so "errors" matches, "terror" does not) over SUBSTANTIVE lines only. Deliberately
   over-inclusive: "fixed the error" trips the gate and is exactly the message the judge
@@ -581,8 +578,8 @@ plugin-kit's shared judge, `lib/judge.mjs`, vendored byte for byte (the kit's te
   `ECONNRESET`, `socket hang up` → `judge-self-abort`;
   else `other`. `model` is read off the judge command (`modelOf`: `--model x`, `--model=x`,
   `-m x`, else the last `provider/model` token, else `unknown`); `session` and `section` come
-  from the caller's `options.meta` (the Stop hook: its session id and `<label>@<line>` for a
-  labeled section, `whole` otherwise). The prompt is written on failure so the line's cache
+  from the caller's `options.meta` (the Stop hook passes its session id only, so its lines read
+  `section=whole`). The prompt is written on failure so the line's cache
   key is replayable: `<judgeCommand> < <prompt path>`. Each cause is pinned by
   `judge/failure-causes.test.mjs` to a stderr string from this machine's own log
   (`judge/fixtures/failure-corpus.mjs`); none was reproduced live. The Stop hook reports the
@@ -599,8 +596,8 @@ plugin-kit's shared judge, `lib/judge.mjs`, vendored byte for byte (the kit's te
   cannot hold the hook open.
 - **Cache** — `sha256(prompt)` → `state/cache/<hash>.json`, written only on a successful
   verdict. The key is the whole prompt (rule, question, message), because the
-  `conclusion-first` and `bad-news-first` questions vary per unit (window and section
-  framing). Same prompt, same verdict, one bill; cache files from before 1.1.0 stop matching.
+  `conclusion-first` and `bad-news-first` questions carry the message's opening window. Same
+  prompt, same verdict, one bill; cache files from before 1.1.0 stop matching.
 - **Example command** (stdin form): `codex exec --skip-git-repo-check -`. Any command that
   prints the verdict object on stdout and exits 0 inside the timeout works; run the one you
   configure once by hand, with a short prompt on stdin, before relying on it.
