@@ -63,6 +63,7 @@ omp plugin install paired-coding@jo-wolff-plugins
 omp plugin install ask-graham@jo-wolff-plugins
 omp plugin install reminders-review@jo-wolff-plugins
 omp plugin install pattern-check@jo-wolff-plugins
+omp plugin install ledger@jo-wolff-plugins
 omp plugin install as2-skills@jo-wolff-plugins
 omp plugin install delegation@jo-wolff-plugins
 omp plugin install continuity@jo-wolff-plugins
@@ -221,10 +222,12 @@ gate*.
 2. Add the plugin's row to the table at the top of this file: its name and one sentence saying
    what it does for the user. That is the only edit this file takes for a new plugin, and a
    later release takes none.
-3. Add its entry to `.claude-plugin/marketplace.json` (name, source, the same sentence) when it
-   is ready to publish. The `description` in `.claude-plugin/plugin.json`,
-   `.omp-plugin/plugin.json`, `package.json` and the marketplace entry is one purpose statement,
-   the same in all four, and never a list of changes.
+3. Add its entry to both `.claude-plugin/marketplace.json` and `.omp-plugin/marketplace.json`
+   (name, source, the same sentence) when it is ready to publish. OMP reads the second file
+   when it exists, so an entry missing there makes `omp plugin install <name>@jo-wolff-plugins`
+   fail with "not found in marketplace". The `description` in `.claude-plugin/plugin.json`,
+   `.omp-plugin/plugin.json`, `package.json` and the marketplace entries is one purpose
+   statement, the same everywhere, and never a list of changes.
 4. Run `node --test` in the plugin and `node plugins/ledger/scripts/ledger.mjs gate check
    --plugins <name>` from the repository root; both green before the first push.
 

@@ -18,7 +18,7 @@ const Q = {
   asked_at: "2026-11-04T06:00:00.000Z",
   age: "3m ago",
 };
-const ANSWER = { id: "q-mw1z", name: "colour", state: "answered", word: "green", via: "cli" };
+const ANSWER = { id: "q-mw1z", name: "colour", body: "Which colour?", state: "answered", word: "green", via: "cli" };
 const SNAPSHOT = { ok: true, since: "2026-11-04T06:00:00.000Z", elsewhere: [Q], answers: [ANSWER] };
 const EMPTY = { ok: true, since: null, elsewhere: [], answers: [] };
 const RECORDED = [{ line: 1, text: "answer q-mw1a approve", status: "ok", id: "an-1", message: "an-1 approve → q-mw1a (ship)" }];
@@ -132,23 +132,168 @@ test("session.start on a narrow screen: the pane is opened but not placed, so a 
   expect(toasts).toEqual(["1 question waiting in 1 other folder · 1 answer since your last turn · /ledger opens the pane"]);
 });
 
-test("the pane draws the headline, the answers, the question with its options, and records a pressed option", async ($, on) => {
+/** Every string a person can read in a drawn tree: text, button labels, field labels and placeholders. */
+function readable(node): string[] {
+  if (typeof node === "string") return [node];
+  if (!node || typeof node !== "object") return [];
+  const own = ["label", "placeholder", "submitLabel"].map((k) => node.props?.[k]).filter((v) => typeof v === "string");
+  return [...own, ...(node.children ?? []).flatMap(readable)];
+}
+
+/** Every Text element's own string in a drawn tree. */
+function texts(node): string[] {
+  if (!node || typeof node !== "object") return [];
+  const own = node.type === "Text" ? [(node.children ?? []).filter((c) => typeof c === "string").join("")] : [];
+  return [...own, ...(node.children ?? []).flatMap(texts)];
+}
+
+test("the pane draws the answers and the question, and a pressed option records it through the CLI", async ($, on) => {
   const { processes } = stubs(on);
   await start($);
   const ui = await $.ui.mount(PANE);
-  expect(await ui.find({ type: "Text", text: "1 question waiting in 1 other folder · 1 answer since your last turn" })).toBeDefined();
-  expect(await ui.find({ type: "Text", text: "  colour → green (via cli)" })).toBeDefined();
-  expect(await ui.find({ type: "Text", text: "/Users/example/code/other" })).toBeDefined();
-  expect(await ui.find({ type: "Text", text: "  Ship the release?" })).toBeDefined();
-  expect(await ui.find({ type: "Text", text: "  options: approve (default) · deny" })).toBeDefined();
-  expect(await ui.find({ key: "pick-q-mw1a" })).toBeDefined();
+  expect(await ui.find({ type: "Text", text: "Ship the release?" })).toBeDefined();
+  expect(await ui.find({ type: "Text", text: "Which colour?" })).toBeDefined();
+  expect(await ui.find({ type: "Text", text: "→ green" })).toBeDefined();
+  // The folder is named by its last path segment.
+  expect(await ui.find({ type: "Text", text: "other" })).toBeDefined();
   // The first open question is selected, so its option buttons and the Reply field are drawn.
   expect(await ui.find({ key: "opt-q-mw1a-deny" })).toBeDefined();
   expect(await ui.find({ key: "reply-q-mw1a" })).toBeDefined();
   await ui.press({ key: "opt-q-mw1a-deny" });
   const cli = processes.find((p) => String(p.argv[1]).endsWith("scripts/ledger.mjs"));
   expect(cli.argv.slice(2)).toEqual(["--json", "answer", "q-mw1a", "deny"]);
-  expect(await ui.find({ type: "Text", text: "recorded: an-1 approve → q-mw1a (ship)" })).toBeDefined();
+  expect(await ui.find({ type: "Text", text: "Recorded: deny" })).toBeDefined();
+  await ui.unmount();
+});
+
+test("the default option is marked on its own button, and no line repeats the options as text", async ($, on) => {
+  stubs(on);
+  await start($);
+  const ui = await $.ui.mount(PANE);
+  const approve = await ui.find({ key: "opt-q-mw1a-approve" });
+  expect(approve.props).toMatchObject({ label: "approve · default", variant: "primary" });
+  const deny = await ui.find({ key: "opt-q-mw1a-deny" });
+  expect(deny.props.label).toBe("deny");
+  expect(deny.props.variant).toBeUndefined();
+  expect(await ui.find({ type: "Text", text: /options:/ })).toBeUndefined();
+  await ui.unmount();
+});
+
+test("no row id and no question slug name is drawn, before or after an answer is recorded", async ($, on) => {
+  const second = { ...Q, id: "q-mw2b", name: "release-gate-approval", body: "Tag the release now?", options: ["yes", "no"], default: null, state: "held" };
+  stubs(on, { snapshot: { ...SNAPSHOT, elsewhere: [Q, second], answers: [{ ...ANSWER, name: "colour-choice" }] } });
+  await start($);
+  const ui = await $.ui.mount(PANE);
+  const ids = /\b(?:q|an)-[a-z0-9]+\b|release-gate-approval|colour-choice/;
+  const before = readable(await ui.find({ type: "Box" }));
+  // The scan reads the whole tree: the question texts and the second question's button are in it.
+  expect(before).toContain("Tag the release now?");
+  expect(before).toContain("answer");
+  expect(before.filter((s) => ids.test(s))).toEqual([]);
+  // The CLI's own message names the row ids; the pane's notice does not.
+  await ui.press({ key: "opt-q-mw1a-approve" });
+  const after = readable(await ui.find({ type: "Box" }));
+  expect(after).toContain("Recorded: approve");
+  expect(after.filter((s) => ids.test(s))).toEqual([]);
+  await ui.unmount();
+});
+
+/** Any row id (complete or cut short) in a list of drawn strings. */
+const ID_TEXT = /\b(?:q|an|nt)-(?:[a-z0-9]+\b|(?![a-z0-9]))/;
+
+test("a question or answer with no text: the pane says the text is missing, never its name or id", async ($, on) => {
+  const elsewhere = [
+    { ...Q, id: "q-mw3c", name: "release-gate-slug", body: null },
+    { id: "q-mw4d", cwd: "/Users/example/code/other", state: "held", options: ["yes", "no"] },
+    { ...Q, id: "q-mw5e", name: "empty-body-slug", body: "" },
+  ];
+  const answers = [
+    { id: "q-mw6f", name: "answered-slug", body: null, state: "answered", word: "approve", via: "cli" },
+    { id: "q-mw7g", state: "withdrawn", word: "withdraw" },
+  ];
+  stubs(on, { snapshot: { ...SNAPSHOT, elsewhere, answers } });
+  await start($);
+  const ui = await $.ui.mount(PANE);
+  const drawn = readable(await ui.find({ type: "Box" }));
+  expect(drawn.filter((s) => ID_TEXT.test(s) || /slug/.test(s))).toEqual([]);
+  // Three questions and two answers, each drawn with the missing-text line in place of its text.
+  expect(drawn.filter((s) => s === "(question text missing)").length).toBe(5);
+  await ui.unmount();
+});
+
+test("the pane's error and refusal text carries no row id", async ($, on) => {
+  let queryFails = true;
+  stubs(on, {
+    processRun: (e) => {
+      const script = String(e.argv[1] ?? "");
+      if (script.endsWith("query.mjs")) return queryFails ? { deny: "no such question q-mvr3k2p9a1xq" } : { value: { exitCode: 0, stdout: JSON.stringify(SNAPSHOT), stderr: "" } };
+      // Captured from the real CLI: an answer on a question another window answered first.
+      return { value: { exitCode: 0, stdout: JSON.stringify([{ line: 1, status: "refused", id: null, message: "q-mw1a already answered green (an-mwcq3q4mo4i7); an answer is final" }]), stderr: "" } };
+    },
+  });
+  await start($);
+  let ui = await $.ui.mount(PANE);
+  let drawn = readable(await ui.find({ type: "Box" }));
+  expect(drawn).toContain("Can't read the ledger");
+  expect(drawn.filter((s) => ID_TEXT.test(s))).toEqual([]);
+  await ui.unmount();
+  queryFails = false;
+  await completeTurn($);
+  ui = await $.ui.mount(PANE);
+  await ui.press({ key: "opt-q-mw1a-deny" });
+  drawn = readable(await ui.find({ type: "Box" }));
+  expect(drawn).toContain("Not recorded");
+  expect(drawn.filter((s) => ID_TEXT.test(s) || s.includes("()"))).toEqual([]);
+  await ui.unmount();
+});
+
+/** Every Text element in a drawn tree. */
+function textNodes(node) {
+  if (!node || typeof node !== "object") return [];
+  return [...(node.type === "Text" ? [node] : []), ...(node.children ?? []).flatMap(textNodes)];
+}
+
+test("at 40 columns nothing is cut short: folder names keep the segment that tells them apart, and the recorded question wraps", async ($, on) => {
+  const long = "a-folder-name-long-enough-to-overflow-forty-columns";
+  const body = "Approve the plan as revised, with every lane from origin/main and one pull request per platform?";
+  const elsewhere = [
+    { ...Q, id: "q-mw8a", cwd: `/Users/example/alpha/${long}`, body },
+    { ...Q, id: "q-mw8b", cwd: `/Users/example/beta/${long}`, body: "Tag it?" },
+  ];
+  stubs(on, { snapshot: { ...SNAPSHOT, elsewhere } });
+  await start($);
+  const ui = await $.ui.mount({ ...PANE, props: { ...PANE.props, bodyColumns: 40 } });
+  const labels = readable(await ui.find({ type: "Box" })).filter((s) => s.endsWith(long));
+  expect(labels).toEqual([`alpha/${long}`, `beta/${long}`]);
+  await ui.press({ key: "opt-q-mw8a-approve" });
+  const tree = await ui.find({ type: "Box" });
+  expect(readable(tree)).toContain(body);
+  expect(textNodes(tree).filter((t) => String(t.props.wrap ?? "wrap").startsWith("truncate")).map((t) => t.children.join(""))).toEqual([]);
+  await ui.unmount();
+});
+
+test("no drawn line is indented with spaces; indentation is layout", async ($, on) => {
+  stubs(on);
+  await start($);
+  const ui = await $.ui.mount(PANE);
+  const lines = texts(await ui.find({ type: "Box" }));
+  expect(lines.length > 0).toBe(true);
+  expect(lines.filter((s) => /^\s/.test(s))).toEqual([]);
+  await ui.unmount();
+});
+
+test("a question that is not selected has one button, its digit, which selects it and shows its options", async ($, on) => {
+  const second = { ...Q, id: "q-mw2b", name: "tag", body: "Tag the release now?", options: ["yes", "no"], default: null };
+  stubs(on, { snapshot: { ...SNAPSHOT, elsewhere: [Q, second] } });
+  await start($);
+  const ui = await $.ui.mount(PANE);
+  expect(await ui.find({ key: "opt-q-mw2b-yes" })).toBeUndefined();
+  const pick = await ui.find({ key: "pick-q-mw2b" });
+  expect(pick.props).toMatchObject({ hotkey: "2", label: "answer" });
+  await ui.press({ key: "pick-q-mw2b" });
+  expect(await ui.find({ key: "opt-q-mw2b-yes" })).toBeDefined();
+  expect(await ui.find({ key: "reply-q-mw2b" })).toBeDefined();
+  expect(await ui.find({ key: "opt-q-mw1a-approve" })).toBeUndefined();
   await ui.unmount();
 });
 
@@ -168,8 +313,7 @@ test("the pane with nothing waiting says so, and /ledger close closes it", async
   const { closes } = stubs(on, { snapshot: EMPTY });
   await start($);
   const ui = await $.ui.mount(PANE);
-  expect(await ui.find({ type: "Text", text: "nothing waiting elsewhere, no new answers" })).toBeDefined();
-  expect(await ui.find({ type: "Text", text: "No questions waiting in other folders." })).toBeDefined();
+  expect(await ui.find({ type: "Text", text: /^Nothing waiting/ })).toBeDefined();
   await ui.unmount();
   expect(await $.command.run({ command: "ledger", args: "close" })).toEqual({});
   expect(closes.length).toBe(1);
@@ -272,7 +416,7 @@ test("fault: the query process is denied → the pane shows the error, one dim l
   const { logs } = stubs(on, { processRun: () => ({ deny: "no process for you" }) });
   await start($);
   const ui = await $.ui.mount(PANE);
-  expect(await ui.find({ type: "Text", text: /^ledger: .*no process for you/ })).toBeDefined();
+  expect(await ui.find({ type: "Text", text: /no process for you/ })).toBeDefined();
   expect(logs.filter((l) => l.startsWith("ledger pane: query:")).length).toBe(1);
   await ui.unmount();
   // A second refresh with the same error logs nothing new.
@@ -290,7 +434,7 @@ test("fault: the query prints garbage → the pane names it; the CLI prints garb
   });
   await start($);
   const ui = await $.ui.mount(PANE);
-  expect(await ui.find({ type: "Text", text: "ledger: query printed no JSON" })).toBeDefined();
+  expect(await ui.find({ type: "Text", text: /^query printed no JSON$/i })).toBeDefined();
   await ui.unmount();
   const out = await $.command.run({ command: "ledger", args: "answer q-mw1a approve" });
   expect(out.text).toBe("ledger error: TypeError: boom");

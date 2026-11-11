@@ -3,10 +3,11 @@
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { PANE_ID, USAGE, answerArgv, byFolder, emptySnapshot, fallbackLine, fingerprint, headline, optionList, parseCommand, readCliResult, readSnapshot, selectQuestion } from "../mods/pane/data.mjs";
+import { PANE_ID, USAGE, answerArgv, answersHeading, byFolder, emptySnapshot, fallbackLine, fingerprint, folderLabels, headline, optionLabel, optionList, parseCommand, readCliResult, readSnapshot, selectQuestion, waitingHeading, withoutIds } from "../mods/pane/data.mjs";
+import { cli, sandbox } from "./helpers.mjs";
 
 const Q = (over = {}) => ({ id: "q-mw1a", cwd: "/Users/example/code/a", name: "ship", body: "Ship it?", options: ["approve", "deny"], default: "approve", state: "open", asked_at: "2026-11-04T06:00:00.000Z", age: "3m ago", ...over });
-const A = (over = {}) => ({ id: "q-mw1z", name: "colour", state: "answered", word: "green", via: "cli", ...over });
+const A = (over = {}) => ({ id: "q-mw1z", name: "colour", body: "Which colour?", state: "answered", word: "green", via: "cli", ...over });
 
 test("parseCommand: open, close, answer, short form, usage", () => {
   assert.deepEqual(parseCommand(""), { kind: "open" });
@@ -53,7 +54,7 @@ test("readSnapshot: a good snapshot, a failed one, garbage, and mis-shaped rows"
   assert.equal(shaped.ok, true);
   assert.equal(shaped.since, null);
   assert.deepEqual(shaped.elsewhere, [{ id: "q-1", cwd: "", name: "q-1", body: "", options: [], default: null, state: "open", asked_at: null, age: "" }]);
-  assert.deepEqual(shaped.answers, [{ id: "q-2", name: "q-2", state: "answered", word: "", via: "" }]);
+  assert.deepEqual(shaped.answers, [{ id: "q-2", name: "q-2", body: "", state: "answered", word: "", via: "" }]);
 });
 
 test("headline counts questions, folders and answers; names the error", () => {
@@ -80,6 +81,68 @@ test("fallbackLine: null when nothing waits; otherwise every item and the comman
 test("optionList marks the default", () => {
   assert.equal(optionList(Q()), "approve (default) · deny");
   assert.equal(optionList(Q({ default: null })), "approve · deny");
+});
+
+test("optionLabel marks the default option only", () => {
+  assert.equal(optionLabel(Q(), "approve"), "approve · default");
+  assert.equal(optionLabel(Q(), "deny"), "deny");
+  assert.equal(optionLabel(Q({ default: null }), "approve"), "approve");
+});
+
+test("the pane's headings lead with the count and say one folder or several", () => {
+  const one = { ok: true, since: null, elsewhere: [Q(), Q({ id: "q-2" })], answers: [A()] };
+  const two = { ...one, elsewhere: [Q(), Q({ id: "q-2", cwd: "/Users/example/code/b" })], answers: [A(), A({ id: "q-3" })] };
+  assert.match(waitingHeading(one), /^2 questions .*another folder$/);
+  assert.match(waitingHeading(two), /^2 questions .*other folders$/);
+  assert.match(waitingHeading({ ...one, elsewhere: [Q()] }), /^1 question /);
+  assert.match(answersHeading(one), /^1 answer /);
+  assert.match(answersHeading(two), /^2 answers /);
+});
+
+test("folderLabels: the last path segment, longer only where two folders share it", () => {
+  assert.deepEqual(folderLabels(["/Users/example/code/newdle-mobile", "/Users/example/code/newdle-api"]), ["newdle-mobile", "newdle-api"]);
+  assert.deepEqual(folderLabels(["/x/a/web", "/x/b/web", "/x/api"]), ["a/web", "b/web", "api"]);
+  assert.deepEqual(folderLabels(["/a/web", "/web"]), ["a/web", "web"]);
+  assert.deepEqual(folderLabels(["C:\\code\\site", "/home/site"]), ["code/site", "home/site"]);
+  assert.deepEqual(folderLabels(["", "/"]), ["(no folder)", "(no folder)"]);
+});
+
+test("withoutIds: every refusal the real CLI gives the pane's own answer argv reads as a sentence with no id in it", () => {
+  const box = sandbox();
+  // The pane runs `--json answer <q-id> <reply>` (answerArgv) and reads it back with readCliResult.
+  const record = (id, reply) => readCliResult({ exitCode: 0, stdout: cli(box, answerArgv(id, reply), { env: { LEDGER_SESSION_ID: "s-pane" } }).out });
+  const ask = (name) => /q-[a-z0-9]+/.exec(cli(box, ["ask", `Which ${name}?`, "--name", `${name} (the (nested) one)`, "--options", "green,red", "--default", "green"]).out)[0];
+  const answered = ask("colour");
+  assert.equal(record(answered, "use q- here").status, "ok");
+  const withdrawn = ask("size");
+  assert.equal(record(withdrawn, "withdraw").status, "ok");
+  const open = ask("shape");
+  const cases = [
+    ["answered, another reply", record(answered, "red"), /^Already answered with use q- here; an answer is final$/],
+    ["answered, withdraw", record(answered, "withdraw"), /^Already answered with use q- here; .*cannot be withdrawn$/],
+    ["withdrawn", record(withdrawn, "red"), /withdrawn/i],
+    ["no such question", record("q-mvr3k2p9a1xq", "red"), /no longer|not in the ledger/i],
+    ["too long", record(open, "x".repeat(201)), /200 characters/],
+    ...["q-", "an-", "nt-"].map((cut) => [`cut short ${cut}`, record(open, cut), /nothing (was )?recorded/i]),
+  ];
+  const ID_TEXT = /\b(?:q|an|nt)-(?:[a-z0-9]{4,}\b|(?![a-z0-9]))/;
+  for (const [label, result, meaning] of cases) {
+    assert.equal(result.status, "refused", `${label}: ${result.message}`);
+    const shown = withoutIds(result.message);
+    // The reply the human typed ("use q- here") is their text and stays; only the CLI's ids go.
+    assert.doesNotMatch(shown.replace("use q- here", ""), ID_TEXT, `${label}: ${shown}`);
+    assert.doesNotMatch(shown, /\(\s*\)|<q-id>|\bid looks like\b|\(the \(nested\) one\)|nested/, `${label}: ${shown}`);
+    assert.match(shown, meaning, `${label}: ${shown}`);
+    assert.match(shown, /^[A-Z]/, `${label}: ${shown}`);
+  }
+});
+
+test("withoutIds: a message in no known shape loses its ids and keeps its words", () => {
+  assert.equal(withoutIds("ledger: database busy at /tmp/x/ledger.db; nothing applied"), "Ledger: database busy at /tmp/x/ledger.db; nothing applied");
+  const shown = withoutIds("q-mw1a is closed (an-mw9z9z9z); see nt-mw8y8y8y and q- too");
+  assert.doesNotMatch(shown, /\b(?:q|an|nt)-|\(\s*\)/);
+  assert.match(shown, /is closed/);
+  assert.equal(withoutIds(undefined), "");
 });
 
 test("selectQuestion keeps a listed selection, else the first open one, else the first held, else null", () => {
