@@ -219,13 +219,13 @@ export function parseSectionState(text) {
 }
 
 /**
- * The away state a section name last carried. After its first answer in a conversation, what this
- * process last answered for it. At its first answer (a new conversation, a resume, a restarted
- * Claude Code), away when either the process last answered away for it or section.json saved it
- * away for this session: the saved prompt may carry the away text. A session never saved away,
- * or no file, is home, so a resume never breaks the cache for nothing.
+ * The away state a section name last carried in this conversation. Once the conversation has
+ * answered it, that answer. At its first answer (a new conversation, a resume, a restarted Claude
+ * Code), only this session's own section.json counts: saved away is away (the saved prompt may
+ * carry the away text). A session never saved away, no file, or one that does not parse is home,
+ * so a resume never breaks the cache for nothing, whatever an earlier conversation answered.
  */
-export function lastCarried(answered, saved, name, first) {
-  if (answered.get(name) === true) return true;
-  return first === true && saved?.[name] === true;
+export function lastCarried(answered, saved, name) {
+  if (answered.has(name)) return answered.get(name) === true;
+  return saved?.[name] === true;
 }

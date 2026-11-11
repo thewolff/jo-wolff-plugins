@@ -46,6 +46,10 @@ All notable changes to brb are recorded here. The format follows
   Code), a file that says away while the session is home makes that answer carry
   `breakPromptCache: true` once and records home. A session never saved away, a missing,
   unreadable or unparsable file, or one saved away and resumed still away: no break, no throw.
+  The section state belongs to one conversation (one object, replaced at `session.end`): a
+  resumed conversation's first answer is seeded only from its own section.json, never from what
+  an earlier conversation in the same process answered, and a section hook whose section.json
+  read finishes after a `/clear` or `/resume` returns core's answer and records or writes nothing.
 - Tests: `mods/band/tests/hide.test.mjs` (the away window, runs, the on-fire exemption, the end
   of a hold, the section's cache rule); `register.test.mjs` (rows replaced while away and drawn
   after back, a failed query, a faulting hook, `session.end`, the section, the mid-turn
@@ -54,7 +58,9 @@ All notable changes to brb are recorded here. The format follows
   `hideRows` switch, another hook's cache break). `test/state.test.mjs` and `query.test.mjs`
   cover `hideRows` read from config.json. `register.test.mjs` and `band.test.tsx` cover the
   resume: saved away and resumed home breaks once, then never; never away, missing, unreadable
-  or corrupt file: no break.
+  or corrupt file: no break; an away predecessor followed by a home resume with a missing,
+  corrupt or home marker: no break; an old conversation's read finishing after `/resume`: the new
+  conversation still breaks once and only its own answer records it home.
 
 ### Not covered
 

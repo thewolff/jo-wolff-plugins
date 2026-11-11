@@ -97,16 +97,16 @@ let known = false;
 let awayNow = false;
 /** Row hiding is on, as config.json said at the last answered query (`hideRows`). */
 let hideRows = true;
-/** Section name → the away state its last `prompt.section` answer carried (absent: home). */
-const sectionAway = new Map();
-/** Section names answered in this conversation: a name's first answer also reads section.json. */
-let sectionsAnswered = new Set();
 /**
- * This conversation's section.json, loaded once: a promise of `{ path, saved, writing }`
- * (`saved` `{}` when the file is missing, unreadable or unparsable; `path` null when the state
- * directory or the session id is unknown, and then nothing is written).
+ * One conversation's section state: `answered`, section name → the away state its last
+ * `prompt.section` answer in this conversation carried; `store`, the promise of its section.json
+ * (`{ path, saved, writing }`: `saved` `{}` when the file is missing, unreadable or unparsable;
+ * `path` null when the state directory or the session id is unknown, and then nothing is written).
+ * stop() replaces the whole object, so a section hook that began in an earlier conversation finds
+ * a different object after any await and touches nothing of the new one.
  */
-let savedSections = null;
+const newConversation = () => ({ answered: new Map(), store: null });
+let conversation = newConversation();
 /** The running turn has had the away text (or began away, when the prompt hook and the section carry it). */
 let reminded = false;
 /** The last row-hook fault logged, so a fault on every row logs once. */
@@ -380,13 +380,13 @@ async function pollTick($) {
 }
 
 /**
- * This conversation's section.json, read once (`$.fs.read`, in Claude Code). A missing file, a
- * read the host refuses, or text that does not parse is `saved: {}`: nothing known, so no cache
- * break. An unknown state directory or session id is `path: null` (nothing read or written) and is
- * not kept, so an answer after session.start tries again. Never rejects.
+ * `conv`'s section.json, read once (`$.fs.read`, in Claude Code). A missing file, a read the host
+ * refuses, or text that does not parse is `saved: {}`: nothing known, so no cache break. An
+ * unknown state directory or session id is `path: null` (nothing read or written) and is not
+ * kept, so a later answer in the same conversation tries again. Never rejects.
  */
-function loadSavedSections($) {
-  if (!savedSections) {
+function loadSavedSections($, conv) {
+  if (!conv.store) {
     const pending = (async () => {
       let path = null;
       try {
@@ -403,12 +403,12 @@ function loadSavedSections($) {
       }
       return { path, saved: parseSectionState(text), writing: Promise.resolve() };
     })();
-    savedSections = pending;
+    conv.store = pending;
     pending.then((store) => {
-      if (!store.path && savedSections === pending) savedSections = null;
+      if (!store.path && conv.store === pending) conv.store = null;
     });
   }
-  return savedSections;
+  return conv.store;
 }
 
 /**
@@ -471,9 +471,9 @@ function stop($) {
   ledger = createLedger();
   known = false;
   lastRowError = null;
-  // The next conversation (a /clear, a /resume) reads its own section.json at its first answer.
-  sectionsAnswered = new Set();
-  savedSections = null;
+  // The next conversation (a /clear, a /resume) starts with no answers and reads its own
+  // section.json at its first answer; a hook still running for this one drops its result.
+  conversation = newConversation();
   if (awayNow) {
     awayNow = false;
     $.ui.invalidate("prompt.section");
@@ -576,13 +576,16 @@ export function register(on, options) {
   // first answer; one never saved away (or with no readable file) does not.
   for (const name of SECTION_NAMES) {
     on("prompt.section", { name }, async ($, e, next) => {
+      // The conversation is checked after the section.json load, the one await before any state
+      // is read or written (core's `next` comes before it): an answer that crosses a /clear or
+      // /resume is returned as core gave it and records nothing.
+      const conv = conversation;
       const core = await next(e);
       try {
-        const store = await loadSavedSections($);
-        const first = !sectionsAnswered.has(name);
-        const answer = sectionAnswer(core, awayNow, lastCarried(sectionAway, store.saved, name, first));
-        sectionsAnswered.add(name);
-        sectionAway.set(name, awayNow);
+        const store = await loadSavedSections($, conv);
+        if (conv !== conversation) return core;
+        const answer = sectionAnswer(core, awayNow, lastCarried(conv.answered, store.saved, name));
+        conv.answered.set(name, awayNow);
         if (store.path && (store.saved[name] === true) !== awayNow) await saveSections($, store, name, awayNow);
         return answer;
       } catch (err) {

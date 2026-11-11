@@ -839,3 +839,88 @@ test("R3: a save the host refuses is logged; the answer still carries the away t
   assert.ok(answer.text.includes(AWAY_TEXT));
   assert.equal(s.logs.filter((l) => l.includes("EROFS")).length, 1);
 });
+
+// ---- 0.5.0 R4: section state belongs to one conversation ----
+
+for (const [what, marker] of [
+  ["missing", undefined],
+  ["corrupt", "{"],
+  ["saved home", JSON.stringify({ env_info_simple: false })],
+]) {
+  test(`R4 S1: an ordinary home resume with a ${what} marker after an away predecessor does not break and writes nothing for it`, async () => {
+    const hooks = await load();
+    const s = stub({ snapshot: AWAY });
+    await start(hooks, s);
+    assert.equal(await breaks(hooks, s), true, "A: brb's own break");
+    await end(hooks, s, "resume");
+    s.sessionId = "s2";
+    s.snapshot = HOME;
+    if (marker !== undefined) s.files.set("/tmp/state/brb/s2/section.json", marker);
+    const writesBefore = s.writes.length;
+    await start(hooks, s);
+    assert.equal(await breaks(hooks, s), false, "B's first answer is seeded only by B's own marker");
+    assert.equal(s.writes.slice(writesBefore).filter((p) => p.includes("/s2/")).length, 0);
+  });
+}
+
+test("R4 S1: the same sequence with B saved away still breaks once for B", async () => {
+  const hooks = await load();
+  const s = stub({ snapshot: AWAY });
+  await start(hooks, s);
+  await breaks(hooks, s);
+  await end(hooks, s, "resume");
+  s.sessionId = "s2";
+  s.snapshot = HOME;
+  s.files.set("/tmp/state/brb/s2/section.json", JSON.stringify({ env_info_simple: true }));
+  await start(hooks, s);
+  assert.equal(await breaks(hooks, s), true);
+  assert.equal(await breaks(hooks, s), false);
+});
+
+test("R4 B1: an old conversation's section read that finishes after /resume touches nothing of the new one; the new one breaks once and records home", async () => {
+  const hooks = await load();
+  const s = stub({ snapshot: AWAY });
+  s.files.set("/tmp/state/brb/s1/section.json", JSON.stringify({ env_info_simple: true }));
+  s.files.set("/tmp/state/brb/s2/section.json", JSON.stringify({ env_info_simple: true }));
+  const read = s.$.fs.read;
+  let release;
+  let started;
+  const readStarted = new Promise((r) => (started = r));
+  s.$.fs.read = async (path) => {
+    if (path.includes("/s1/")) {
+      started();
+      return new Promise((r) => (release = r));
+    }
+    return read(path);
+  };
+  await start(hooks, s);
+  const old = sectionWith(hooks, s, "env_info_simple", { text: "cwd: /w" });
+  await readStarted;
+  await end(hooks, s, "resume");
+  s.sessionId = "s2";
+  s.snapshot = HOME;
+  await start(hooks, s);
+  release(JSON.stringify({ env_info_simple: true }));
+  const oldAnswer = await old;
+  assert.equal(oldAnswer.breakPromptCache, undefined, "the abandoned answer is core's, untouched");
+  assert.equal(JSON.parse(s.files.get("/tmp/state/brb/s1/section.json")).env_info_simple, true, "A's marker is not rewritten by the stale hook");
+  assert.equal(await breaks(hooks, s), true, "B's own first answer breaks");
+  assert.deepEqual(JSON.parse(s.files.get("/tmp/state/brb/s2/section.json")), { env_info_simple: false }, "only B's own answer records B home");
+  assert.equal(await breaks(hooks, s), false);
+});
+
+test("R4 B1: an answer whose core `next` resolves after /resume records nothing either", async () => {
+  const hooks = await load();
+  const s = stub({ snapshot: AWAY });
+  s.files.set("/tmp/state/brb/s2/section.json", JSON.stringify({ env_info_simple: true }));
+  await start(hooks, s);
+  let release;
+  const old = hooks.get("prompt.section:env_info_simple")(s.$, { name: "env_info_simple", text: "cwd: /w" }, () => new Promise((r) => (release = r)));
+  await end(hooks, s, "resume");
+  s.sessionId = "s2";
+  s.snapshot = HOME;
+  await start(hooks, s);
+  release({ text: "cwd: /w" });
+  assert.deepEqual(await old, { text: "cwd: /w" });
+  assert.equal(await breaks(hooks, s), true);
+});
