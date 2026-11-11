@@ -26,7 +26,7 @@
 //       and never `CI` or CTX_SEMANTIC_EMBEDDING_TOKEN.
 //   uninstall({ env, uid })   prints the bootout line (and removes nothing).
 //   loaded({ uid, check })    `{ loaded: true|false|null, detail }` from `launchctl print`.
-//   reachProbe({ uid, check, tmp }) `{ ok, missing, detail }`: whether this shell can write to
+//   reachProbe({ uid, check, tmp }) `{ ok, missing, detail, label, loaded, plistRemoved }`: whether this shell can write to
 //       gui/<uid> (bootstrap and bootout a throwaway LaunchAgent running /usr/bin/true and never
 //       started, labelled PROBE_LABEL.<pid>.<random> so two runs never share one, its plist in a
 //       fresh temp directory removed on every path; first, the probes and temp directories of
@@ -42,7 +42,7 @@
 // person pastes into zsh, and a state directory with a space in it is a legal one.
 
 import { spawnSync } from "node:child_process";
-import { accessSync, constants, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { accessSync, constants, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { isAbsolute, join, resolve } from "node:path";
 import { randomBytes } from "node:crypto";
@@ -198,9 +198,12 @@ export function probePlist(label = PROBE_LABEL) {
 
 /**
  * Whether this shell can load and unload a LaunchAgent in gui/<uid>, the two things `repair`
- * does to the ctx-watch timer: `{ ok: true }`, or `{ ok: false, missing, detail }` with
- * launchctl's own last line. First clears what killed runs left: every loaded
- * `<PROBE_LABEL>.<pid>.*` whose pid is not running is booted out, and every
+ * does to the ctx-watch timer: `{ ok, missing, detail, label, loaded, plistRemoved }`, `detail`
+ * null on success, else launchctl's own last line. `label` is this run's probe; `loaded` is false
+ * only when it is known not to be loaded (never bootstrapped, a bootstrap launchctl refused, or a
+ * bootout that succeeded or found nothing), null when it may still be (a bootout that failed or
+ * threw); `plistRemoved` whether its temp directory is gone. First clears what killed runs left:
+ * every loaded `<PROBE_LABEL>.<pid>.*` whose pid is not running is booted out, and every
  * `ctx-watch-reach-<pid>-*` directory under `tmp` whose pid is not running is removed (a live
  * run's, another repair in its own probe window, is never touched). Then writes this run's probe
  * plist, `<PROBE_LABEL>.<this pid>.<random>`, into a fresh directory under `tmp`, bootstraps,
@@ -218,10 +221,14 @@ export function reachProbe({ uid = process.getuid?.() ?? 501, check = runCheck, 
   const last = (r) => (r.output ?? "").trim().split("\n").at(-1) || "(no output)";
   const label = `${PROBE_LABEL}.${process.pid}.${randomBytes(6).toString("hex")}`;
   const target = `gui/${uid}/${label}`;
+  // A bootout that succeeded, or found no such process (3), leaves nothing loaded.
+  const gone = (r) => r.code === 0 || r.code === 3;
+  const result = { ok: false, missing: false, detail: null, label, loaded: false, plistRemoved: true };
+  const end = (fields) => Object.assign(result, fields);
   let dir = null;
   try {
     const list = run(["list"]);
-    if (list.missing) return { ok: false, missing: true, detail: "launchctl not found" };
+    if (list.missing) return end({ missing: true, detail: "launchctl not found" });
     if (list.code === 0) {
       for (const line of (list.output ?? "").split("\n")) {
         const left = line.split("\t").at(-1)?.trim() ?? "";
@@ -237,17 +244,18 @@ export function reachProbe({ uid = process.getuid?.() ?? 501, check = runCheck, 
     const plist = join(dir, `${label}.plist`);
     writeFileSync(plist, probePlist(label));
     const boot = run(["bootstrap", `gui/${uid}`, plist]);
-    if (boot.missing) return { ok: false, missing: true, detail: "launchctl not found" };
+    if (boot.missing) return end({ missing: true, detail: "launchctl not found" });
     if (boot.code !== 0) {
       // A bootstrap that did not answer may have loaded it anyway.
-      if (boot.code === null) run(["bootout", target]);
-      return { ok: false, missing: false, detail: `launchctl bootstrap gui/${uid} of a throwaway LaunchAgent failed (exit ${boot.code ?? "none"}: ${last(boot)})` };
+      const after = boot.code === null ? run(["bootout", target]) : null;
+      const loaded = after === null || gone(after) ? false : null;
+      return end({ loaded, detail: `launchctl bootstrap gui/${uid} of a throwaway LaunchAgent failed (exit ${boot.code ?? "none"}: ${last(boot)})${loaded === null ? `; ${label} may still be loaded (bootout exit ${after.code ?? "none"}: ${last(after)})` : ""}` });
     }
     const out = run(["bootout", target]);
-    if (out.code !== 0) return { ok: false, missing: false, detail: `launchctl bootout ${target} of the throwaway LaunchAgent failed (exit ${out.code ?? "none"}: ${last(out)}); it may still be loaded (it runs nothing; the next repair boots it out once this process has exited)` };
-    return { ok: true, missing: false, detail: null };
+    if (out.code !== 0) return end({ loaded: null, detail: `launchctl bootout ${target} of the throwaway LaunchAgent failed (exit ${out.code ?? "none"}: ${last(out)}); it may still be loaded (it runs nothing; the next repair boots it out once this process has exited)` });
+    return end({ ok: true });
   } catch (err) {
-    return { ok: false, missing: false, detail: `the launchd reach probe could not be written: ${err?.message ?? err}` };
+    return end({ detail: `the launchd reach probe could not be written: ${err?.message ?? err}` });
   } finally {
     if (dir) {
       try {
@@ -255,6 +263,7 @@ export function reachProbe({ uid = process.getuid?.() ?? 501, check = runCheck, 
       } catch {
         /* a temp directory the OS clears */
       }
+      result.plistRemoved = !existsSync(dir);
     }
   }
 }

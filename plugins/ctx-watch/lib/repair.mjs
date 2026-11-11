@@ -14,8 +14,9 @@
 //      gui/<uid> (launchd.mjs reachProbe: bootstrap and bootout a throwaway LaunchAgent that
 //      runs nothing, labelled per run, its plist removed on every path, a killed run's leftovers
 //      cleared first), since the ctx-watch timer could not be paused and restored. A signal
-//      during the probe ends the run once the probe has unloaded itself (exit 128 + n, nothing
-//      changed). Until 0.4.0 this was `launchctl print gui/<uid>`, which a sandboxed
+//      during the probe ends the run once the probe's own cleanup has run (exit 128 + n,
+//      nothing changed; an unload is claimed only when launchctl confirmed it, else launchctl's
+//      error and the label that may still be loaded). Until 0.4.0 this was `launchctl print gui/<uid>`, which a sandboxed
 //      shell passes while its `launchctl bootstrap` fails ("Bootstrap failed: 5: Input/output
 //      error", 2026-11-11): repair would have booted the timer out and failed to restore it;
 //   4. refuse when ctx's indexing mode is not `auto` or its config file is missing (ctx-watch
@@ -143,8 +144,10 @@ export async function repair({ env: shellEnv = process.env, run = runCtx, check 
   // 2. LANG.
   if (lang.value === null) return refuse(`LANG could not be found: ${lang.detail}; ctx would record a daemon launch environment without it and report \`environment_invalid\`; run from a shell with LANG set (a Terminal login shell has it)`);
   // 3. launchctl, and write access to the GUI launchd domain, before anything is paused. A
-  // signal during the probe is held until the probe has unloaded its LaunchAgent and removed its
-  // plist (it runs synchronously), then ends the run: nothing changed, exit 128 + n.
+  // signal during the probe is held until the probe has run its own cleanup (it runs
+  // synchronously), then ends the run: nothing changed, exit 128 + n, and the reason says what
+  // the cleanup did: unloaded only when launchctl confirmed it, else launchctl's error and the
+  // label that may still be loaded.
   let probeSignal = null;
   const onProbeSignal = (sig) => {
     probeSignal ??= sig;
@@ -158,7 +161,15 @@ export async function repair({ env: shellEnv = process.env, run = runCtx, check 
     if (signals) for (const s of HANDLED_SIGNALS) process.removeListener(s, onProbeSignal);
   }
   if (probeSignal) {
-    report.reason = `interrupted by ${probeSignal} during the launchd reach probe (the probe was unloaded and its plist removed; nothing changed)`;
+    const plist = reach.plistRemoved ? "" : "; its temp plist directory could not be removed";
+    const probe = reach.ok
+      ? `the probe ${reach.label} was unloaded${reach.plistRemoved ? " and its plist removed" : ""}${plist}`
+      : reach.missing
+        ? `launchctl not found; nothing was loaded`
+        : reach.loaded === null
+          ? `the probe failed and ${reach.label} may still be loaded (it runs nothing; the next repair boots it out once this process has exited): ${reach.detail}${plist}`
+          : `the probe failed: ${reach.detail}; ${reach.label} was not loaded, or no longer is${plist}`;
+    report.reason = `interrupted by ${probeSignal} during the launchd reach probe (${probe}); the ctx-watch timer was not touched; nothing changed`;
     return out(128 + (constants.signals[probeSignal] ?? 0), `ctx-watch repair: ${report.reason}`);
   }
   if (reach.missing) return refuse("launchctl not found: the ctx-watch timer could not be paused and restored; run from a macOS GUI login session");

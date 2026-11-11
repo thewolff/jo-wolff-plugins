@@ -35,8 +35,9 @@ two repairs), and until now the agent heard about it only at SessionStart.
   gui/<uid>`, the 0.3.0 gate, passes in a sandboxed shell whose bootstrap fails with `Bootstrap
   failed: 5: Input/output error`, so repair would have booted the timer out and failed to
   restore it. Probes and temp directories of runs whose pid is dead are cleared first; a live
-  run's are left alone. SIGINT, SIGTERM or SIGHUP during the probe ends the run once the probe
-  has unloaded itself (exit 128 + n, nothing changed).
+  run's are left alone. SIGINT, SIGTERM or SIGHUP during the probe ends the run once the probe's
+  own cleanup has run (exit 128 + n, nothing changed); the reason claims an unload only when
+  launchctl confirmed it, else keeps launchctl's error and names the label left loaded.
 - The SessionStart hook records in the session's latch every outage it tells the agent of
   (down, stuck, ctx missing; not a live upgrade), even one the timer has not declared, so the
   first prompt does not repeat it and the recovery line still comes.

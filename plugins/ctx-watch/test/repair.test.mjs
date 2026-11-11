@@ -447,8 +447,8 @@ test("0.4.0 a probe running inside another's bootstrap-to-bootout window removes
       return r;
     };
     const outer = launchd.reachProbe({ uid: 501, check, tmp: b.env.TMPDIR });
-    assert.deepEqual(inner, { ok: true, missing: false, detail: null });
-    assert.deepEqual(outer, { ok: true, missing: false, detail: null });
+    for (const r of [inner, outer]) assert.deepEqual({ ok: r?.ok, missing: r?.missing, detail: r?.detail, loaded: r?.loaded, plistRemoved: r?.plistRemoved }, { ok: true, missing: false, detail: null, loaded: false, plistRemoved: true });
+    assert.notEqual(inner.label, outer.label);
     assert.equal(lc.probeLabels.size, 0, "both unloaded their own");
     assert.equal(new Set(lc.plists.map((p) => p.label)).size, 2);
     assert.deepEqual(probeDirs(b), []);

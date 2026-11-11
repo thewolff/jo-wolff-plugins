@@ -264,8 +264,10 @@ repairs at once never unload each other's; `/usr/bin/true`, never started: no `R
 interval), from a plist in a fresh temp directory, then boots it out, and removes the directory
 on every path. Probes and temp directories a killed run left (its pid in the label or directory
 name, and not running) are booted out and removed first; a live run's are left alone. SIGINT,
-SIGTERM or SIGHUP during the probe ends the run once the probe has unloaded itself: exit 128 + n,
-nothing changed, the timer untouched. A failure is the
+SIGTERM or SIGHUP during the probe ends the run once the probe's own cleanup has run: exit
+128 + n, nothing changed, the timer untouched; the reason says the probe was unloaded only when
+launchctl confirmed it, and otherwise keeps launchctl's error and names the label that may still
+be loaded (it runs nothing; the next repair boots it out). A failure is the
 refusal, with launchctl's own line. Until 0.4.0 the test was `launchctl print gui/<uid>`, which a
 sandboxed agent shell passes while its `launchctl bootstrap` fails with `Bootstrap failed: 5:
 Input/output error` (seen 2026-11-11): `repair` would have booted the timer out and failed to
