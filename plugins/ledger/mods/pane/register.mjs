@@ -31,7 +31,7 @@
 // Rules this file keeps for `claude plugin validate`: every mods API call is spelled `$.ns.method`,
 // `$` is passed only to top-level functions of this file, imports are relative, no node builtins.
 
-import { PANE_ID, USAGE, answerArgv, answersHeading, byFolder, emptySnapshot, fallbackLine, fingerprint, folderLabels, headline, optionLabel, parseCommand, readCliResult, readSnapshot, selectQuestion, waitingHeading, withoutIds } from "./data.mjs";
+import { PANE_ID, USAGE, answerArgv, answersHeading, byFolder, emptySnapshot, fallbackLine, fingerprint, folderLabels, headline, optionLabel, parseCommand, questionText, readCliResult, readSnapshot, selectQuestion, waitingHeading, withoutIds } from "./data.mjs";
 
 const POLL_MS = 1000;
 const QUERY_TIMEOUT_MS = 5000;
@@ -240,7 +240,7 @@ export function register(on) {
       return drawPane($, { Box, Text, Button, Input });
     } catch (err) {
       await logFault($, "render", err);
-      return Text({ children: [`ledger pane: ${errorText(err)}`] });
+      return Text({ wrap: "wrap", children: [`ledger pane: ${withoutIds(errorText(err))}`] });
     }
   });
 }
@@ -255,7 +255,7 @@ function drawPane($, el) {
     blocks.push(
       Box({
         flexDirection: "column",
-        children: [Text({ bold: true, color: "red", children: ["Can't read the ledger"] }), Text({ wrap: "wrap", dimColor: true, children: [snapshot.error] })],
+        children: [Text({ bold: true, color: "red", children: ["Can't read the ledger"] }), Text({ wrap: "wrap", dimColor: true, children: [withoutIds(snapshot.error)] })],
       }),
     );
   } else {
@@ -281,7 +281,7 @@ function drawAnswers({ Box, Text }) {
       key: `answer-${a.id}`,
       flexDirection: "column",
       marginTop: i === 0 ? 0 : 1,
-      children: [Text({ wrap: "wrap", children: [a.body || a.name] }), Text({ dimColor: a.state === "withdrawn", children: [a.state === "withdrawn" ? "withdrawn" : `→ ${a.word}`] })],
+      children: [Text({ wrap: "wrap", children: [questionText(a)] }), Text({ dimColor: a.state === "withdrawn", children: [a.state === "withdrawn" ? "withdrawn" : `→ ${a.word}`] })],
     }),
   );
   return Box({ flexDirection: "column", children: [Text({ bold: true, children: [answersHeading(snapshot)] }), Box({ flexDirection: "column", marginTop: 1, paddingLeft: 2, children: items })] });
@@ -305,7 +305,7 @@ function drawWaiting($, el) {
 
 /** One question: its text, its state and age, then its actions (the selected one's options and Reply field, or the button that selects it). */
 function drawQuestion($, { Box, Text, Button, Input }, q, n) {
-  const rows = [Text({ wrap: "wrap", children: [q.body || q.name] }), Text({ dimColor: true, children: [[q.state === "held" ? "on hold" : null, q.age].filter(Boolean).join(" · ")] })];
+  const rows = [Text({ wrap: "wrap", children: [questionText(q)] }), Text({ dimColor: true, children: [[q.state === "held" ? "on hold" : null, q.age].filter(Boolean).join(" · ")] })];
   if (q.id !== selectedId) {
     const pick = { key: `pick-${q.id}`, label: "answer", plain: true, onPress: () => select($, q.id) };
     if (n <= 9) pick.hotkey = String(n);

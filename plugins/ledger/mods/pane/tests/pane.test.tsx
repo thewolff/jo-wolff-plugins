@@ -198,6 +198,55 @@ test("no row id and no question slug name is drawn, before or after an answer is
   await ui.unmount();
 });
 
+/** Any row id (complete or cut short) in a list of drawn strings. */
+const ID_TEXT = /\b(?:q|an|nt)-(?:[a-z0-9]+\b|(?![a-z0-9]))/;
+
+test("a question or answer with no text: the pane says the text is missing, never its name or id", async ($, on) => {
+  const elsewhere = [
+    { ...Q, id: "q-mw3c", name: "release-gate-slug", body: null },
+    { id: "q-mw4d", cwd: "/Users/example/code/other", state: "held", options: ["yes", "no"] },
+    { ...Q, id: "q-mw5e", name: "empty-body-slug", body: "" },
+  ];
+  const answers = [
+    { id: "q-mw6f", name: "answered-slug", body: null, state: "answered", word: "approve", via: "cli" },
+    { id: "q-mw7g", state: "withdrawn", word: "withdraw" },
+  ];
+  stubs(on, { snapshot: { ...SNAPSHOT, elsewhere, answers } });
+  await start($);
+  const ui = await $.ui.mount(PANE);
+  const drawn = readable(await ui.find({ type: "Box" }));
+  expect(drawn.filter((s) => ID_TEXT.test(s) || /slug/.test(s))).toEqual([]);
+  // Three questions and two answers, each drawn with the missing-text line in place of its text.
+  expect(drawn.filter((s) => s === "(question text missing)").length).toBe(5);
+  await ui.unmount();
+});
+
+test("the pane's error and refusal text carries no row id", async ($, on) => {
+  let queryFails = true;
+  stubs(on, {
+    processRun: (e) => {
+      const script = String(e.argv[1] ?? "");
+      if (script.endsWith("query.mjs")) return queryFails ? { deny: "no such question q-mvr3k2p9a1xq" } : { value: { exitCode: 0, stdout: JSON.stringify(SNAPSHOT), stderr: "" } };
+      // Captured from the real CLI: an answer on a question another window answered first.
+      return { value: { exitCode: 0, stdout: JSON.stringify([{ line: 1, status: "refused", id: null, message: "q-mw1a already answered green (an-mwcq3q4mo4i7); an answer is final" }]), stderr: "" } };
+    },
+  });
+  await start($);
+  let ui = await $.ui.mount(PANE);
+  let drawn = readable(await ui.find({ type: "Box" }));
+  expect(drawn).toContain("Can't read the ledger");
+  expect(drawn.filter((s) => ID_TEXT.test(s))).toEqual([]);
+  await ui.unmount();
+  queryFails = false;
+  await completeTurn($);
+  ui = await $.ui.mount(PANE);
+  await ui.press({ key: "opt-q-mw1a-deny" });
+  drawn = readable(await ui.find({ type: "Box" }));
+  expect(drawn).toContain("Not recorded");
+  expect(drawn.filter((s) => ID_TEXT.test(s) || s.includes("()"))).toEqual([]);
+  await ui.unmount();
+});
+
 test("no drawn line is indented with spaces; indentation is layout", async ($, on) => {
   stubs(on);
   await start($);

@@ -155,10 +155,20 @@ export function folderLabels(cwds) {
 /** A CLI message with its row ids taken out, for the pane: `q-… (name)` becomes `this question`, other ids go. */
 export function withoutIds(message) {
   return String(message ?? "")
+    .replace(/\s*\((?:q|an|nt)-[a-z0-9]+\)/gi, "")
     .replace(/\bq-[a-z0-9]+(?:\s*\([^)]*\))?/gi, "this question")
     .replace(/\b(?:an|nt|oc)-[a-z0-9]+\s*/gi, "")
     .replace(/\s{2,}/g, " ")
     .trim();
+}
+
+/** What the pane shows in place of a question's text when the row has none; never its name or id. */
+export const MISSING_TEXT = "(question text missing)";
+
+/** A question's or an answer's text for the pane: its body, or MISSING_TEXT. */
+export function questionText(row) {
+  const body = typeof row?.body === "string" ? row.body.trim() : "";
+  return body || MISSING_TEXT;
 }
 
 /** An option button's label: the default option says so. */
