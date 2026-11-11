@@ -111,6 +111,19 @@ three things: the effort level (the Agent tool's input has no such field), the m
 session doing the spawning, and the model an agent definition pins when the spawn sets none.
 `"warnModelRouting": false` turns it off.
 
+**The routing log.** Every spawn the gate examines appends one JSON line to
+`${XDG_STATE_HOME:-~/.local/state}/delegation/routing.jsonl`: `ts`, `session_id`, `cwd`,
+`subagent_type`, `model` (as set on the spawn, or null), `tableModel` and `ceiling` (the table's
+row for the type, or null), `outcome` and `description`. The outcome is `match` (listed type,
+model at or under the ceiling), `warned-above` (model above the ceiling), `warned-below` (listed
+type, no model set), `unmapped` (the table lists no such type) or `not-checked` (a refused spawn,
+a prompt that is not a string, a model naming no single family, an unreadable table, or
+`warnModelRouting` off). The prompt is never written; the description is cut at 200 characters.
+The file is renamed to `routing.jsonl.1` past 1 MiB (replacing the previous `.1`), so it holds at
+most about 2 MiB; `scripts/prune.mjs` ages out a `.1` older than its `--days`. A failed write is
+one errors.log line and never changes the spawn decision. `"logModelRouting": false` turns the
+log off. It exists so a review can read what spawns asked for next to the subagent transcripts.
+
 A brief rebuilt from a refusal alone passes the gate; `test/gates.test.mjs` does exactly that.
 The brief this plugin was built from asked for a reason under 300 characters; Jo's steering on
 2026-11-04 (the full section in the refusal, since nobody writes these from memory) replaced
@@ -172,6 +185,7 @@ widens or narrows a gate.
   "requireSpiralBound": true,
   "requirePatternCheck": true,
   "warnModelRouting": true,
+  "logModelRouting": true,
   "checks": { "delegation-guard": "warn", "worktree-spawn-guard": "warn", "repo-rules-inject": "on", "session-brief-gate": "block" },
   "readLineThreshold": 1000,
   "streakThreshold": 6,
@@ -222,6 +236,7 @@ refusal and re-issue is a manual check in `evals/manifest.json`: no scenario can
 | spawn-gate gate 2 | the cwd is in no git repository, or the payload has no cwd | the spawn is allowed; one skipped.log line | run the spawn from inside the repository if the receipt is wanted |
 | spawn-gate gate 2 | pattern-check is not installed | the spawn is allowed; one skipped.log line naming the reason | install pattern-check if the receipt is wanted |
 | spawn-gate model line | `lib/model-routing.json` is missing or malformed, or `tool_input.model` names no single family in it (`inherit`, another vendor's model) | the spawn is allowed with no model line; one skipped.log line `model not checked: …` | nothing for an unjudged model; a line naming the table file is a broken install: reinstall the plugin |
+| spawn-gate routing log | the state directory is unwritable, or `routing.jsonl` cannot be appended to | the spawn is decided as it would have been; one errors.log line `routing log not written: <code>` | nothing for one line; a repeating line means the state directory needs fixing |
 | session-brief-gate | `tool_input.prompt` is missing (and no `proposal_id`) or not a string | the start is allowed; one skipped.log line | nothing; the line is the trace that the gate was awake |
 | session-brief-gate | the model gives up after a refusal instead of re-issuing | no session starts; the refusal is the last tool result | ask for the session again, or set `"checks": { "session-brief-gate": "warn" }` |
 | send-message-check | the response has no `success` field (another host version) | nothing; the send's own result is the only signal | nothing |
@@ -268,6 +283,8 @@ general was kept.
 | `agents/beefy-builder.md`, `agents/beefy-research.md` | not ported | both are shipyard-specific end to end (Newdle monorepo ownership, `.projects/` sync, Linear closing); `beefy-builder` stays in the default builder class so a repository that ships its own is gated |
 
 ## Changes in 0.1.5
+
+The spawn gate also writes a routing log, `routing.jsonl` in the state directory: one JSON line per examined spawn with the type, the model set, the table's row, the outcome and the description (never the prompt), capped by rotation at 1 MiB. `"logModelRouting": false` turns it off; a failed write is one errors.log line. It is for the one-week review of routing against the subagent transcripts.
 
 A new gate on the desktop app's `mcp__ccd_session__start_session`: a prompt for a new session needs the five heading lines Target, Change, Acceptance, How it fails and Spiral bound, each alone on its line, or the call is refused with each missing section to fill in. Starting an offered card (`proposal_id`, no prompt) is never judged; a prompt that is not a string is allowed with a skipped.log line. `"checks": { "session-brief-gate": "warn" }` turns the refusal into one warning line, `"off"` turns it off. The SessionStart block, the template's intro and the skill each say it in one sentence. The spawn gates are unchanged.
 
