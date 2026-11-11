@@ -220,15 +220,23 @@ per session per episode:
   daemon (which includes `not healed: upgrade state unknown`) or upgrade (stuck). Two lines: what
   is down since `downSince`, the timer's last probe reason, and `/ctx-watch:repair` (or `node
   <cli> repair`). Latched on `downSince`, so a second outage in the same session is told again.
-- **Back**: a session told of a down, once the state no longer shows one. One line.
+- **Back**: a session told of an outage, once a tick probe made after the telling has passed
+  (or failed only on the semantic index: the daemon is back, and the line says the index is not
+  ready). One line. A state file that is missing, unreadable, out of shape, reset, still
+  failing, or whose last pass is from before the telling is not a recovery: the latch stays.
 - **Stale**: the tick stamp (or, never ticked, the first SessionStart's) is over 15 min old, or
   three intervals, whichever is longer. One line naming the stamp, since a state the timer
   stopped writing cannot say ctx is up; while stale nothing else is said. Latched on the stamp.
 
-Healthy, a strike, a semantic-only episode, no session id, or already told: nothing printed. The
-SessionStart hook writes the same latch when it tells the agent about a down episode, so the
-first prompt does not repeat it and the recovery line still comes. A latch that cannot be written
-still lets the note out, saying it may repeat. A failed ctx call is told only what the timer's
+Healthy, a strike, a semantic-only episode, no session id, or already told: nothing printed, and
+no lock taken. The latch, `{ down, toldAt, stale }`, is claimed under its own lock
+(`sessions/<session id>.json.lock`), so two hooks of one session firing at once (a prompt and a
+failed ctx call) say a thing once: the second waits up to 200 ms and reads what the first wrote,
+or, when the lock is still held, says nothing. The SessionStart hook writes the same latch when it
+tells the agent of an outage (down, stuck, ctx missing; not a live upgrade), including one only
+its own probe saw before the timer declared it, so the first prompt does not repeat it, the
+timer's later `down` is adopted silently, and the recovery line still comes. A latch that cannot
+be written still lets the note out, saying it may repeat. A failed ctx call is told only what the timer's
 state says: the hook does not read ctx's error text (not a contract), so a call that failed while
 the state is healthy and fresh says nothing, and a daemon that died since the last tick is told
 at the next tick's second failure (up to ten minutes at the default interval).
@@ -251,9 +259,13 @@ owner pid is alive, while the handoff marker is under 15 min old, when the stuck
 `quiescing` (the only one the release was seen to work on), or when `launchctl print` cannot say
 whether the ctx-watch timer is loaded (anything but loaded, or launchctl's 113 "no such
 service"). The launchd test (0.4.0) is a write, not a read: it bootstraps a throwaway LaunchAgent
-(`com.jo-wolff-plugins.ctx-watch.reach-probe`, `/usr/bin/true`, never started: no `RunAtLoad`,
-no interval), from a plist in a fresh temp directory, then boots it out, and removes the
-directory on every path; one an earlier run left loaded is booted out first. A failure is the
+(`com.jo-wolff-plugins.ctx-watch.reach-probe.<pid>.<random>`, a label of its own per run, so two
+repairs at once never unload each other's; `/usr/bin/true`, never started: no `RunAtLoad`, no
+interval), from a plist in a fresh temp directory, then boots it out, and removes the directory
+on every path. Probes and temp directories a killed run left (its pid in the label or directory
+name, and not running) are booted out and removed first; a live run's are left alone. SIGINT,
+SIGTERM or SIGHUP during the probe ends the run once the probe has unloaded itself: exit 128 + n,
+nothing changed, the timer untouched. A failure is the
 refusal, with launchctl's own line. Until 0.4.0 the test was `launchctl print gui/<uid>`, which a
 sandboxed agent shell passes while its `launchctl bootstrap` fails with `Bootstrap failed: 5:
 Input/output error` (seen 2026-11-11): `repair` would have booted the timer out and failed to
@@ -604,11 +616,16 @@ From ctx dying in the middle of sessions (see *Why* at the top):
   once when it is back, and once when the timer has not stamped the state in over 15 min. See
   *The mid-session hook*. Latches live in `sessions/<session id>.json`, pruned after 30 days.
 - **`repair` tests launchd write access.** Before pausing the timer it bootstraps and boots out
-  a throwaway LaunchAgent; a shell that cannot (a sandbox: `Bootstrap failed: 5: Input/output
-  error`) is refused with exit 3 and nothing changed. Until 0.4.0 `launchctl print gui/<uid>`
-  passed there, and repair would have booted the timer out and failed to restore it.
-- The SessionStart hook writes the mid-session latch when it tells the agent about a down
-  episode.
+  a throwaway LaunchAgent with a label of its own per run; a shell that cannot (a sandbox:
+  `Bootstrap failed: 5: Input/output error`) is refused with exit 3 and nothing changed. Until
+  0.4.0 `launchctl print gui/<uid>` passed there, and repair would have booted the timer out and
+  failed to restore it. A killed run's probe is cleared by the next; a signal during the probe
+  ends the run after the probe unloads itself.
+- The SessionStart hook writes the mid-session latch when it tells the agent about an outage,
+  including one the timer has not declared yet.
+- The recovery line needs a tick probe after the telling that passed: a missing, broken or reset
+  state is not a recovery. The latch is claimed under a per-session lock, so concurrent hooks of
+  one session say a thing once.
 - `repair`'s JSON `timer.wasLoaded` is `null` (not checked) on the healthy return and on a
   refusal before the timer step; it read `false` there, even with the timer loaded.
 

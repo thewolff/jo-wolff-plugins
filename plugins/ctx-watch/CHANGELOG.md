@@ -15,24 +15,31 @@ two repairs), and until now the agent heard about it only at SessionStart.
   (`Bash` with `if: "Bash(ctx *)"`, and `mcp__ctx__.*`). It spawns nothing: it reads the timer's
   `state.json` and a per-session latch, `sessions/<session id>.json`, and adds
   `additionalContext` once per session per episode: ctx down (daemon, stuck upgrade, or upgrade
-  state unknown) since when, with `/ctx-watch:repair`; ctx back (one line); the timer's state
+  state unknown) since when, with `/ctx-watch:repair`; ctx back (one line), only once a tick
+  probe after the telling passed (a missing, broken or reset state is not a recovery); the timer's state
   over 15 min old, so not trusted (one line). Healthy: no output. Measured median 56 ms per
   healthy prompt, 27 ms of it node's own start.
-- `prune` removes session latches older than `--days`; `plugin.json` `state` declares
-  `sessions/`.
+- The latch is claimed under `sessions/<session id>.json.lock`, so a prompt and a failed ctx
+  call firing at once in one session say a thing once; a held lock means silence.
+- `prune` removes session latches and their lock files older than `--days`; `plugin.json`
+  `state` declares `sessions/`.
 - Seven eval scenarios for the two new events (`evals/prompt-*`, `evals/failed-*`), with
   `evals/fixtures/write-state.mjs` writing the timer's state from the run's clock.
 
 ### Changed
 
 - `repair`'s launchd gate is a write: it bootstraps and boots out a throwaway LaunchAgent
-  (`com.jo-wolff-plugins.ctx-watch.reach-probe`, `/usr/bin/true`, never started; its plist in a
-  temp directory removed on every path) before pausing the timer, and refuses (exit 3, nothing
-  changed, launchctl's line) if it cannot. `launchctl print gui/<uid>`, the 0.3.0 gate, passes
-  in a sandboxed shell whose bootstrap fails with `Bootstrap failed: 5: Input/output error`, so
-  repair would have booted the timer out and failed to restore it.
-- The SessionStart hook records in the session's latch that it told the agent of a down
-  episode, so the first prompt does not repeat it and the recovery line still comes.
+  (`com.jo-wolff-plugins.ctx-watch.reach-probe.<pid>.<random>`, unique per run, `/usr/bin/true`,
+  never started; its plist in a temp directory removed on every path) before pausing the timer,
+  and refuses (exit 3, nothing changed, launchctl's line) if it cannot. `launchctl print
+  gui/<uid>`, the 0.3.0 gate, passes in a sandboxed shell whose bootstrap fails with `Bootstrap
+  failed: 5: Input/output error`, so repair would have booted the timer out and failed to
+  restore it. Probes and temp directories of runs whose pid is dead are cleared first; a live
+  run's are left alone. SIGINT, SIGTERM or SIGHUP during the probe ends the run once the probe
+  has unloaded itself (exit 128 + n, nothing changed).
+- The SessionStart hook records in the session's latch every outage it tells the agent of
+  (down, stuck, ctx missing; not a live upgrade), even one the timer has not declared, so the
+  first prompt does not repeat it and the recovery line still comes.
 
 ### Fixed
 
