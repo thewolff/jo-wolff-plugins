@@ -4,9 +4,12 @@
 // band redrawn (`$.ui.invalidate`) when what it draws changes; the prompt-box suggestion; the
 // fallback status line set only where the band never renders and cleared once it does; a home
 // probe that throws caught inside the timer; the buttons running act.mjs; Back sending `back` as
-// the person's prompt (`$.prompt.submit`, never awaited) with a toast; both session payloads
-// (Desktop's `surface: null, isInteractive: false` and the terminal's). band.test.tsx covers the
-// same hooks under `claude plugin test`.
+// the person's prompt (`$.prompt.submit`, never awaited) with a toast, at once when idle and at the
+// running turn's end otherwise, only for the hold it was pressed for (a `back` typed meanwhile, or
+// a new hold, drops it), one press pending at a time even across a failed query, and no word from
+// an earlier conversation's press; both session payloads (Desktop's `surface: null,
+// isInteractive: false` and the terminal's). band.test.tsx covers the same hooks under
+// `claude plugin test`.
 
 import test from "node:test";
 import assert from "node:assert/strict";
@@ -32,11 +35,12 @@ const CHECKLIST = { ok: true, away: false, checklist: { at: SINCE, since: SINCE,
 /**
  * An in-memory `$`: `timers` by interval, `runs` each query, `acts` each action, `submits` each
  * `$.prompt.submit` input, `toasts` each toast, and what the mod set. act.mjs `back` answers with
- * the current snapshot's `away`; `submit` is the promise `$.prompt.submit` returns (default: one
- * that never settles, as a call made while the agent works).
+ * the current snapshot's `away` and `since`, after `actHold` when set; `submit` is the promise
+ * `$.prompt.submit` returns (default: one that never settles, as a call whose turn has not
+ * started); `queryFails` makes the next query throw.
  */
 function stub({ snapshot = HOME, exists = async () => false } = {}) {
-  const s = { timers: new Map(), live: new Set(), cancelled: [], runs: 0, acts: [], submits: [], toasts: [], statuses: [], logs: [], suggestions: [], invalidations: 0, invalidated: [], snapshot, exists, sessionId: "s1", hold: null, submit: () => new Promise(() => {}) };
+  const s = { timers: new Map(), live: new Set(), cancelled: [], runs: 0, acts: [], submits: [], toasts: [], statuses: [], logs: [], suggestions: [], invalidations: 0, invalidated: [], snapshot, exists, sessionId: "s1", hold: null, actHold: null, queryFails: false, submit: () => new Promise(() => {}) };
   s.$ = {
     env: { get: async (name) => (name === "XDG_STATE_HOME" ? "/tmp/state" : name === "HOME" ? "/Users/example" : undefined) },
     clock: {
@@ -53,7 +57,13 @@ function stub({ snapshot = HOME, exists = async () => false } = {}) {
       run: async (argv) => {
         if (String(argv[1]).endsWith("mods/band/act.mjs")) {
           s.acts.push(argv.slice(4));
-          return { exitCode: 0, stdout: JSON.stringify(argv[4] === "back" ? { ok: true, away: s.snapshot.away === true } : { ok: true }) + "\n", stderr: "" };
+          if (s.actHold) await s.actHold;
+          const away = s.snapshot.away === true;
+          return { exitCode: 0, stdout: JSON.stringify(argv[4] === "back" ? { ok: true, away, ...(away ? { since: s.snapshot.since } : {}) } : { ok: true }) + "\n", stderr: "" };
+        }
+        if (s.queryFails) {
+          s.queryFails = false;
+          throw new Error("query timed out");
         }
         s.runs++;
         const answer = JSON.stringify(s.snapshot) + "\n";
@@ -89,6 +99,20 @@ const render = (hooks, s, over = {}) => hooks.get("ui.render")(s.$, { ...BAND, .
 const texts = (tree) => (tree?.type === "Text" ? [tree.children.join("")] : (tree?.children ?? []).flatMap(texts));
 const buttons = (tree) => (tree?.type === "Button" ? [tree] : (tree?.children ?? []).flatMap(buttons));
 const tick = () => new Promise((r) => setImmediate(r));
+const settle = async () => {
+  for (let i = 0; i < 10; i++) await tick();
+};
+const turnStart = (hooks, s, e = {}) => hooks.get("turn.start")(s.$, { turnId: "t1", ...e }, async () => ({}));
+const turnComplete = async (hooks, s, e = {}) => {
+  await hooks.get("turn.complete")(s.$, { turnId: "t1", answer: "", durationMs: 1, isAborted: false, usage: null, ...e }, async () => ({}));
+  await settle();
+};
+/** A promise and its resolve, to hold an answer until the test lets it go. */
+const gate = () => {
+  let open;
+  const p = new Promise((r) => (open = r));
+  return { p, open };
+};
 
 for (const [where, e] of [["Desktop (surface null, not interactive)", DESKTOP], ["terminal", TERMINAL]]) {
   test(`${where}: session.start queries, installs both timers, suggests the way back, and the band draws the headline, the rows and Back`, async () => {
@@ -174,6 +198,154 @@ test("Back whose submit is dropped: a failure toast with the reason, and the but
   s.submit = () => new Promise(() => {});
   await buttons(after)[0].props.onPress();
   assert.equal(s.submits.length, 2);
+});
+
+test("Back while a turn runs: a toast now, `back` sent at the turn's end, checked again first, act.mjs twice", async () => {
+  const hooks = await load();
+  const s = stub({ snapshot: AWAY });
+  await start(hooks, s);
+  await turnStart(hooks, s);
+  await buttons(await render(hooks, s))[0].props.onPress();
+  assert.deepEqual(s.toasts, ["brb: Back pressed, ending the hold"]);
+  assert.deepEqual(s.submits, [], "nothing sent while the turn runs");
+  assert.equal(texts(await render(hooks, s))[1], "Back pressed · ending the hold");
+  // A subagent's turn ending is not the session going idle.
+  await turnComplete(hooks, s, { agentId: "a1" });
+  assert.deepEqual(s.submits, []);
+  await turnComplete(hooks, s);
+  assert.deepEqual(s.acts, [["back"], ["back"]]);
+  assert.deepEqual(s.submits, [{ text: "back", asUser: true }]);
+  assert.equal(s.toasts.length, 1);
+});
+
+test("Back while a turn runs, then `back` typed: the hold ended, so the turn's end sends nothing and the band shows the checklist", async () => {
+  const hooks = await load();
+  const s = stub({ snapshot: AWAY });
+  await start(hooks, s);
+  await turnStart(hooks, s);
+  await buttons(await render(hooks, s))[0].props.onPress();
+  // `back` typed: the prompt hook ends the hold at Enter.
+  s.snapshot = CHECKLIST;
+  await turnComplete(hooks, s);
+  assert.deepEqual(s.submits, []);
+  assert.deepEqual(s.toasts, ["brb: Back pressed, ending the hold"], "no failure toast either");
+  assert.match(texts(await render(hooks, s))[0], /^BACK/);
+});
+
+test("Back while a turn runs, then `back` typed and a new `brb`: the press was for the old hold, so nothing is sent", async () => {
+  const hooks = await load();
+  const s = stub({ snapshot: AWAY });
+  await start(hooks, s);
+  await turnStart(hooks, s);
+  await buttons(await render(hooks, s))[0].props.onPress();
+  s.snapshot = { ...AWAY, since: new Date().toISOString(), held: 0, items: [] };
+  await turnComplete(hooks, s);
+  assert.deepEqual(s.submits, []);
+  const tree = await render(hooks, s);
+  assert.notEqual(texts(tree)[1], "Back pressed · ending the hold", "the new hold's band is live");
+  // A press now is for the new hold, and goes.
+  await buttons(tree)[0].props.onPress();
+  assert.deepEqual(s.submits, [{ text: "back", asUser: true }]);
+});
+
+test("Back whose act.mjs answer comes after a typed `back` started a turn: it waits, checks again, sends nothing", async () => {
+  const hooks = await load();
+  const s = stub({ snapshot: AWAY });
+  await start(hooks, s);
+  const held = gate();
+  s.actHold = held.p;
+  const press = buttons(await render(hooks, s))[0].props.onPress();
+  await settle();
+  // act.mjs read away.json before `back` was typed; its answer (still away) arrives after the
+  // typed prompt started a turn.
+  await turnStart(hooks, s);
+  held.open();
+  s.actHold = null;
+  await press;
+  assert.deepEqual(s.submits, [], "a turn is running: the press waits");
+  s.snapshot = CHECKLIST;
+  await turnComplete(hooks, s);
+  assert.deepEqual(s.submits, []);
+});
+
+test("Back whose first act.mjs read comes after `back` typed and a new `brb`: the press was for the drawn hold, so nothing is sent and the new hold stays", async () => {
+  const hooks = await load();
+  const s = stub({ snapshot: AWAY });
+  await start(hooks, s);
+  const held = gate();
+  s.actHold = held.p;
+  // act.mjs is held before it reads away.json.
+  const press = buttons(await render(hooks, s))[0].props.onPress();
+  await settle();
+  // `back` typed (the turn it starts runs and ends), then a new `brb`: a replacement hold.
+  s.snapshot = { ...AWAY, since: new Date(Date.now() - 60_000).toISOString(), held: 0, items: [] };
+  held.open();
+  s.actHold = null;
+  await press;
+  await turnComplete(hooks, s);
+  assert.deepEqual(s.submits, [], "the old click never reaches the new hold");
+  assert.deepEqual(s.toasts, [], "dropped without a word");
+  const tree = await render(hooks, s);
+  assert.notEqual(texts(tree)[1], "Back pressed · ending the hold", "the new hold's band is live");
+});
+
+test("Back with no hold drawn does nothing", async () => {
+  const hooks = await load();
+  const s = stub({ snapshot: AWAY });
+  await start(hooks, s);
+  const tree = await render(hooks, s);
+  // The hold ended and the band drew home before the stale button was pressed.
+  s.snapshot = HOME;
+  await s.timers.get(5000)();
+  await buttons(tree)[0].props.onPress();
+  assert.deepEqual(s.acts, []);
+  assert.deepEqual(s.submits, []);
+});
+
+test("Back in a mod loaded mid-turn (no turn event yet, the band drawn with isWorking): it waits for the turn's end", async () => {
+  const hooks = await load();
+  const s = stub({ snapshot: AWAY });
+  await start(hooks, s);
+  await buttons(await render(hooks, s, { props: { isWorking: true } }))[0].props.onPress();
+  assert.deepEqual(s.submits, [], "a turn is running by the band's own isWorking");
+  // `back` typed while it runs: the turn's end finds the hold gone and sends nothing.
+  s.snapshot = CHECKLIST;
+  await turnComplete(hooks, s);
+  assert.deepEqual(s.submits, []);
+});
+
+test("a failed query while a press is pending keeps it pending: a press after recovery sends nothing more", async () => {
+  const hooks = await load();
+  const s = stub({ snapshot: AWAY });
+  await start(hooks, s);
+  await buttons(await render(hooks, s))[0].props.onPress();
+  assert.equal(s.submits.length, 1);
+  s.queryFails = true;
+  await s.timers.get(5000)();
+  assert.deepEqual(s.logs, ["brb band: query: query timed out"]);
+  // Recovery: the home probe finds away.json and queries again; the hold is still on.
+  s.exists = async () => true;
+  await s.timers.get(1000)();
+  const tree = await render(hooks, s);
+  assert.equal(texts(tree)[1], "Back pressed · ending the hold");
+  await buttons(tree)[0].props.onPress();
+  assert.equal(s.submits.length, 1);
+  assert.deepEqual(s.acts, [["back"]]);
+});
+
+test("a press from an earlier conversation that fails late says nothing in the new one", async () => {
+  const hooks = await load();
+  const s = stub({ snapshot: AWAY });
+  const late = gate();
+  s.submit = () => late.p;
+  await start(hooks, s);
+  await buttons(await render(hooks, s))[0].props.onPress();
+  await hooks.get("session.end")(s.$, {}, async () => ({}));
+  await hooks.get("classic.SessionStart")(s.$, { source: "clear" }, async () => ({}));
+  late.open({ drop: "old conversation drop" });
+  await settle();
+  assert.deepEqual(s.toasts, ["brb: Back pressed, ending the hold"]);
+  assert.deepEqual(s.logs, []);
 });
 
 test("after back: the checklist draws BACK with Done per row and Clear; Done and Clear run act.mjs; the poll keeps running while it is up", async () => {
@@ -347,8 +519,6 @@ const rowOf = (hooks, s, surface, component, requestId, props) =>
   hooks.get(`ui.render:${component}`)(s.$, { component, surface, requestId, props }, async () => DRAWN);
 const said = (id, text = "ran the migration") => ["AssistantMessage", id, { text, isFirstOfReply: true }];
 const ran = (id, component = "ToolUse") => [component, id, { tool_use_id: id, tool: "Bash", input: {}, isRunning: false, isErrored: false, isInterrupted: false }];
-const complete = (hooks, s) => hooks.get("turn.complete")(s.$, { turnId: "t" }, async () => ({}));
-const turnStart = (hooks, s, e = {}) => hooks.get("turn.start")(s.$, { turnId: "t", ...e }, async () => ({}));
 const toolCall = (hooks, s, e, answer = { result: { stdout: "" }, text: "", ref: 1 }) => hooks.get("tool.call")(s.$, { tool: "Bash", input: {}, ...e }, async () => answer);
 const section = (hooks, s, name, text) => hooks.get(`prompt.section:${name}`)(s.$, { name, text }, async (e) => ({ text: e.text }));
 
@@ -362,7 +532,7 @@ for (const [where, e, surface] of [["Desktop (surface null, not interactive)", D
 
     s.snapshot = AWAY;
     const before = s.invalidated.length;
-    await complete(hooks, s);
+    await turnComplete(hooks, s);
     assert.ok(s.invalidated.slice(before).includes("ui.render"), "the rows were asked to draw again at brb");
     assert.ok(s.invalidated.slice(before).includes("prompt.section"), "the section was asked again at brb");
 
@@ -380,7 +550,7 @@ for (const [where, e, surface] of [["Desktop (surface null, not interactive)", D
 
     s.snapshot = CHECKLIST;
     const atBack = s.invalidated.length;
-    await complete(hooks, s);
+    await turnComplete(hooks, s);
     assert.ok(s.invalidated.slice(atBack).includes("ui.render"), "back asks every row to draw again");
     assert.equal(await rowOf(hooks, s, surface, ...said("m-away")), DRAWN, "the hidden reply is back");
     assert.equal(await rowOf(hooks, s, surface, ...ran("t-away")), DRAWN, "the hidden tool row is back");
@@ -394,10 +564,10 @@ test("a failed query while away draws every row as is; the next answered query h
   await start(hooks, s);
   assert.notEqual(await rowOf(hooks, s, "terminal", ...said("a1")), DRAWN);
   s.snapshot = { ok: false, error: "query: node not found" };
-  await complete(hooks, s);
+  await turnComplete(hooks, s);
   assert.equal(await rowOf(hooks, s, "terminal", ...said("a1")), DRAWN, "fail open: the mod cannot tell, so it hides nothing");
   s.snapshot = AWAY;
-  await complete(hooks, s);
+  await turnComplete(hooks, s);
   assert.notEqual(await rowOf(hooks, s, "terminal", ...said("a1")), DRAWN, "the failure did not end the hold's ledger");
 });
 
@@ -432,13 +602,13 @@ test("prompt.section: home passes core's text; away appends the away text and br
   for (const name of ["env_info_simple", "env_info_static"]) assert.ok(hooks.has(`prompt.section:${name}`), name);
   assert.deepEqual(await section(hooks, s, "env_info_simple", "cwd: /w"), { text: "cwd: /w" });
   s.snapshot = AWAY;
-  await complete(hooks, s);
+  await turnComplete(hooks, s);
   const away = await section(hooks, s, "env_info_simple", "cwd: /w");
   assert.equal(away.breakPromptCache, true);
   assert.ok(away.text.includes("cwd: /w") && away.text.includes(AWAY_TEXT));
   assert.equal((await section(hooks, s, "env_info_simple", "cwd: /w")).breakPromptCache, undefined, "asked again while away: no second break");
   s.snapshot = HOME;
-  await complete(hooks, s);
+  await turnComplete(hooks, s);
   assert.deepEqual(await section(hooks, s, "env_info_simple", "cwd: /w"), { text: "cwd: /w", breakPromptCache: true });
 });
 
@@ -464,4 +634,23 @@ test("tool.call: a turn begun home gets the away text once after the first tool 
   // the tool row of c1 (called home) first draws now: it predates the hold
   assert.equal(await rowOf(hooks, s, "terminal", ...ran("c1")), DRAWN);
   assert.notEqual(await rowOf(hooks, s, "terminal", ...ran("c4")), DRAWN);
+});
+
+test("Back pressed mid-turn while rows are hidden: one turn.complete both keeps the rows hidden and sends `back`; the query that sees home redraws them", async () => {
+  const hooks = await load();
+  const s = stub({ snapshot: AWAY });
+  await start(hooks, s);
+  await turnStart(hooks, s);
+  assert.notEqual(await rowOf(hooks, s, "terminal", ...said("a1")), DRAWN);
+  await buttons(await render(hooks, s))[0].props.onPress();
+  await turnComplete(hooks, s);
+  assert.deepEqual(s.submits, [{ text: "back", asUser: true }], "the drain ran on the same turn.complete");
+  assert.notEqual(await rowOf(hooks, s, "terminal", ...said("a1")), DRAWN, "still away until a query says otherwise");
+  // the submitted `back` ends the hold; the next query sees home
+  s.snapshot = CHECKLIST;
+  const before = s.invalidated.length;
+  await turnComplete(hooks, s);
+  assert.ok(s.invalidated.slice(before).includes("ui.render"));
+  assert.equal(await rowOf(hooks, s, "terminal", ...said("a1")), DRAWN);
+  assert.equal(await rowOf(hooks, s, "terminal", "UserMessage", "u-back", { text: "back" }), DRAWN);
 });

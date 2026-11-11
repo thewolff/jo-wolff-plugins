@@ -3,8 +3,9 @@
 // (`node mods/band/act.mjs --session <id> <verb> [index]`), because the hooks module may import
 // no node builtin and the writes belong to lib/state.mjs (temp file + rename, one convention).
 //
-//   back          whether the session is away: `{ ok: true, away: true|false }`. Writes nothing; the
-//                 mod then sends `back` as the user's prompt (`$.prompt.submit`), and
+//   back          whether the session is away, and since when: `{ ok: true, away: true, since }`
+//                 or `{ ok: true, away: false }`. Writes nothing; the mod then sends `back` as the
+//                 user's prompt (`$.prompt.submit`), and
 //                 hooks/user-prompt-submit.mjs ends the hold as it does for `back` typed.
 //   done <index>  toggle row <index> (0-based) of checklist.json and write it back; once every row
 //                 is done the file is removed (the band clears). Cosmetic: the agent is told nothing.
@@ -33,7 +34,10 @@ export function parseArgs(argv) {
 
 /** Run one verb for `sessionId`; the JSON the script prints. Throws on a write that fails. */
 export function act(sessionId, verb, index, { env = process.env } = {}) {
-  if (verb === "back") return { ok: true, away: readAway(sessionId, env) !== null };
+  if (verb === "back") {
+    const away = readAway(sessionId, env);
+    return away ? { ok: true, away: true, since: away.since } : { ok: true, away: false };
+  }
   if (verb === "done") {
     if (index === null) return { ok: false, error: "done needs a row index" };
     const checklist = toggleChecklistItem(sessionId, index, env);

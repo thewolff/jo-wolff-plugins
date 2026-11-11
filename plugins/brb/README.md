@@ -261,7 +261,7 @@ you type, the same as before.
 
 | host | press Back |
 |---|---|
-| Claude Code, terminal | the button sends `back` as your own prompt (`$.prompt.submit({ text: "back", asUser: true })`, the same call Claude Code makes for a typed prompt), so the prompt hook ends the hold exactly as `back` typed does and the agent replies with the digest. A toast says `brb: Back pressed, ending the hold` and the band reads `Back pressed · ending the hold` until the hold ends; another press meanwhile sends nothing. While the agent is working, the prompt waits until the turn ends and runs then. If Claude Code drops it (for example after Esc stopped a turn), a toast says `brb: Back failed: <reason>; type back`, and the button works again. Click the button, or press `b` while the band has focus (ctrl+x tab moves focus to it); `b` typed in the prompt box is just a letter. |
+| Claude Code, terminal | the button sends `back` as your own prompt (`$.prompt.submit({ text: "back", asUser: true })`, the same call Claude Code makes for a typed prompt), so the prompt hook ends the hold exactly as `back` typed does and the agent replies with the digest. A press belongs to the hold the band showed when you pressed it. A toast says `brb: Back pressed, ending the hold` and the band reads `Back pressed · ending the hold` until the hold ends; another press meanwhile sends nothing, even if a refresh fails in between. While the agent is working, the press waits for the turn to end, checks again, and sends `back` only if the same hold is still on: a `back` you typed meanwhile, or a new `brb`, drops the press without a word, so it never ends a hold it was not pressed for and never produces a `you were not away` reply. If Claude Code drops the prompt (for example after Esc stopped a turn), a toast says `brb: Back failed: <reason>; type back`, and the button works again. Click the button, or press `b` while the band has focus (ctrl+x tab moves focus to it); `b` typed in the prompt box is just a letter. |
 | Claude Code Desktop | the same call and the same hook. Desktop draws the band: a press in a Desktop session on 2026-11-10 ran the button's action. Where the band is never drawn there is no button: the mod falls back to the one status line of 0.3.x under the prompt (`⚠ brb: away 40m · 3 held · say back`, after back `⚠ brb: back · 2 to act on`), and `back` typed is the way out. |
 | `claude -p`, mobile, OMP | no band and no button. OMP has no mod surface; type `back`. The still-away first line of every reply and the hooks' own lines are unchanged. |
 
@@ -269,13 +269,13 @@ you type, the same as before.
 The mod sets `$.ui.status` only where the band's render site has never been asked to draw, from
 the first timer tick on, and clears it the first time the band draws.
 
-**Refresh.** The data is this session's `away.json`, `digest.md`, `checklist.json` and the
-marker, read out of process by `node mods/band/query.mjs --session <id>` (read-only; each file is
+**Refresh.** The data is this session's `away.json`, `digest.md` and `checklist.json`,
+read out of process by `node mods/band/query.mjs --session <id>` (read-only; each file is
 opened once without following a link, and the open descriptor must be a regular file of at most
 64 KiB, of which at most 64 KiB + 1 byte is read, so a directory, a link, or a file over 64 KiB,
 even one swapped in or grown after the check, is a fault, never a parse; an `away.json` or
 `checklist.json` that does not parse is absent). The buttons run `node mods/band/act.mjs
---session <id> back|done <row>|clear`, which writes through `lib/state.mjs`. The band refreshes at
+--session <id> back|done <row>|clear`: `back` only reports whether the session is away and since when; `done` and `clear` write through `lib/state.mjs`. The band refreshes at
 session start, after each prompt enters (so `brb` and `back` show at once), at the start and end
 of each of your turns, after each button press, and every 5 s while away or while a checklist is
 up. While home with no checklist the only poll is `$.fs.exists` on `away.json` inside Claude
@@ -479,9 +479,10 @@ gets it once after its next tool result.
 ## Changes in 0.4.2
 
 The Back button ends the hold itself: it sends `back` as your own prompt
-(`$.prompt.submit({ text: "back", asUser: true })`), never awaited, with a toast; the band reads
-`Back pressed · ending the hold` until it ends, and a refused or dropped prompt shows `brb: Back
-failed: <reason>; type back`. The `back-requested` marker and the prompt and Stop hooks' handling
+(`$.prompt.submit({ text: "back", asUser: true })`), never awaited, with a toast; at once when the
+agent is idle, at the end of the running turn otherwise, and only if the hold it was pressed for
+is still on. The band reads `Back pressed · ending the hold` until it ends, and a refused or
+dropped prompt shows `brb: Back failed: <reason>; type back`. The `back-requested` marker and the prompt and Stop hooks' handling
 of it are gone: one path, the same as `back` typed. The digest's `held since` and each entry's
 heading are printed in local time (`2026-11-10 5:50 PM PST`, the machine's zone or `TZ`);
 `away.json`, `checklist.json` and the archive names keep ISO times.

@@ -55,13 +55,12 @@ function stubs(on, { snapshot = AWAY as Snapshot, exists = false } = {}) {
   on("session.end", ($, e) => ({ sessionId: e.sessionId }));
   on("turn.start", ($, e) => ({ turnId: e.turnId }));
   on("turn.complete", () => ({ text: "" }));
-  // The mod's own `$.prompt.submit` arrives here too: the press's `back`, which the prompt hook
-  // would turn into the end of the hold (the checklist).
+  // Every prompt arrives here: one the test types (`$.prompt.submit`, no origin) and the mod's own
+  // (origin plugin). `back` while away stands for the prompt hook ending the hold (the checklist);
+  // `submits` collects only the mod's.
   on("prompt.submit", ($, e) => {
-    if (e.text === "back") {
-      submits.push({ text: e.text, origin: e.origin });
-      state.snapshot = CHECKLIST;
-    }
+    if (e.origin?.kind === "plugin") submits.push({ text: e.text, origin: e.origin });
+    if (e.text === "back" && state.snapshot.away) state.snapshot = CHECKLIST;
     return { text: e.text };
   });
   on("ui.toast", ($, e) => {
@@ -96,7 +95,7 @@ function stubs(on, { snapshot = AWAY as Snapshot, exists = false } = {}) {
       const [verb, index] = e.argv.slice(4);
       acts.push(e.argv.slice(4));
       const s = state.snapshot;
-      if (verb === "back") return { value: { exitCode: 0, stdout: JSON.stringify({ ok: true, away: s.away === true }) + "\n", stderr: "" } };
+      if (verb === "back") return { value: { exitCode: 0, stdout: JSON.stringify(s.away ? { ok: true, away: true, since: s.since } : { ok: true, away: false }) + "\n", stderr: "" } };
       if (verb === "clear") state.snapshot = HOME;
       if (verb === "done" && s.checklist) {
         const items = s.checklist.items.map((it, i) => (i === Number(index) ? { ...it, done: !it.done } : it));
@@ -150,6 +149,27 @@ for (const [where, payload, surface] of SESSIONS) {
     const again = await $.ui.mount({ ...BAND, surface });
     expect(await again.find({ type: "Text", text: "BACK · 3 to act on" })).toBeDefined();
     expect(await again.find({ key: "back" })).toBeUndefined();
+    await again.unmount();
+  });
+
+  test(`${where}: Back pressed while a turn runs waits for its end; \`back\` typed meanwhile ends the hold, and the press sends nothing`, async ($, on) => {
+    const { acts, submits, toasts, clock } = stubs(on);
+    await $.session.start(payload);
+    await $.turn.start({ turnId: "t-work" });
+    const ui = await $.ui.mount({ ...BAND, surface });
+    await ui.press({ key: "back" });
+    await clock.settle();
+    expect(toasts).toEqual(["brb: Back pressed, ending the hold"]);
+    expect(submits).toEqual([]);
+    await ui.unmount();
+    await $.prompt.submit({ text: "back" });
+    await $.turn.complete({ turnId: "t-work", answer: "", durationMs: 1, isAborted: false, usage: null });
+    await clock.settle();
+    expect(acts).toEqual([["back"], ["back"]]);
+    expect(submits).toEqual([]);
+    expect(toasts).toEqual(["brb: Back pressed, ending the hold"]);
+    const again = await $.ui.mount({ ...BAND, surface });
+    expect(await again.find({ type: "Text", text: "BACK · 3 to act on" })).toBeDefined();
     await again.unmount();
   });
 

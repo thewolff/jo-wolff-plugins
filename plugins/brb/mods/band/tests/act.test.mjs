@@ -29,14 +29,14 @@ test("parseArgs: the session, the verb and a non-negative integer index", () => 
   assert.deepEqual(parseArgs(["done", "-1", "--session", " "]), { sessionId: null, verb: "done", index: null });
 });
 
-test("back: reports home or away and writes nothing; the hold stays until `back` arrives as a prompt", () => {
+test("back: reports home, or away with the hold's `since`, and writes nothing; the hold stays until `back` arrives as a prompt", () => {
   const b = box();
   try {
     assert.deepEqual(act(b, "--session", "s1", "back"), { ok: true, away: false });
     runHook(b, "user-prompt-submit", promptInput(b, "brb"));
     hold(b, "Pick the cache");
     const before = readdirSync(b.stateDir("s1")).sort();
-    assert.deepEqual(act(b, "--session", "s1", "back"), { ok: true, away: true });
+    assert.deepEqual(act(b, "--session", "s1", "back"), { ok: true, away: true, since: readAway("s1", b.env).since });
     assert.deepEqual(readdirSync(b.stateDir("s1")).sort(), before, "no file written or removed");
     assert.notEqual(readAway("s1", b.env), null, "still away");
   } finally {
