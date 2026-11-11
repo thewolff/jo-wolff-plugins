@@ -44,11 +44,19 @@ test("the reader agent's definition pins the table's model for reader (the pilot
 
 test("loadTable and checkTable never throw: a missing file, text that is not JSON and each malformed shape is a fault and no table", (t) => {
   const { root } = box(t);
-  assert.match(loadTable(pathToFileURL(join(root, "nope.json"))).fault, /cannot be read \(ENOENT\)/);
-  writeFileSync(join(root, "bad.json"), "{ nope");
-  const bad = loadTable(pathToFileURL(join(root, "bad.json")));
+  // Every load fault names the file, so the skipped.log line says which file to repair.
+  const at = (name) => join(root, name);
+  assert.equal(loadTable(pathToFileURL(at("nope.json"))).fault, `the routing table ${at("nope.json")} cannot be read (ENOENT)`);
+  writeFileSync(at("bad.json"), "{ nope");
+  const bad = loadTable(pathToFileURL(at("bad.json")));
   assert.equal(bad.table, null);
-  assert.match(bad.fault, /is not JSON/);
+  assert.ok(bad.fault.startsWith(`the routing table ${at("bad.json")} is not JSON (`), bad.fault);
+  writeFileSync(at("shape.json"), JSON.stringify({ order: ["haiku"], agents: { scout: { model: "opus", ceiling: "opus" } } }));
+  const shape = loadTable(pathToFileURL(at("shape.json")));
+  assert.equal(shape.table, null);
+  assert.equal(shape.fault, `the routing table ${at("shape.json")}: agents.scout needs a \`model\` and a \`ceiling\` from \`order\``);
+  writeFileSync(at("good.json"), JSON.stringify({ order: ["haiku"], agents: { scout: { model: "haiku", ceiling: "haiku" } } }));
+  assert.deepEqual(loadTable(pathToFileURL(at("good.json"))), { table: { order: ["haiku"], agents: { scout: { model: "haiku", ceiling: "haiku" } } }, fault: null });
   const order = ["haiku", "sonnet"];
   for (const [shape, why] of [
     [null, /not a JSON object/],

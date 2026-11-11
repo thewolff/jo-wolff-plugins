@@ -14,6 +14,7 @@
 // definition pins. So a spawn with no model is told the table's model for its type, not judged.
 
 import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 import { agentKey } from "./brief.mjs";
 
 export const TABLE_URL = new URL("./model-routing.json", import.meta.url);
@@ -38,19 +39,28 @@ export function checkTable(parsed) {
   return { table: { order: [...order], agents: out }, fault: null };
 }
 
-/** Read and validate the table file. Never throws. */
+/** Read and validate the table file. Never throws. Every fault names the file. */
 export function loadTable(url = TABLE_URL) {
+  let path;
+  try {
+    path = fileURLToPath(url);
+  } catch {
+    path = String(url);
+  }
   let raw;
   try {
     raw = readFileSync(url, "utf8");
   } catch (err) {
-    return { table: null, fault: `the routing table cannot be read (${err.code ?? err.message})` };
+    return { table: null, fault: `the routing table ${path} cannot be read (${err.code ?? err.message})` };
   }
+  let parsed;
   try {
-    return checkTable(JSON.parse(raw));
+    parsed = JSON.parse(raw);
   } catch (err) {
-    return { table: null, fault: `the routing table is not JSON (${err.message})` };
+    return { table: null, fault: `the routing table ${path} is not JSON (${err.message})` };
   }
+  const checked = checkTable(parsed);
+  return checked.table ? checked : { table: null, fault: `the routing table ${path}: ${checked.fault}` };
 }
 
 /** The family in `order` that `model` names, or null when it names none or more than one. */
