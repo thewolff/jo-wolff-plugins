@@ -53,7 +53,11 @@ hook returns is the consult-history verdict in `block` mode, and that mode is yo
 |---|---|---|
 | ctx not on PATH | fail: `ctx could not run: ctx is not on PATH`; fix `ctx docs show getting-started`; repair not attempted | `test/probe.test.mjs`, `test/session-start.test.mjs` (spawned, empty PATH) |
 | the pinned `--ctx` path no longer exists | fail: `ctx could not run: <path> does not exist (pinned at install; run install again)`; never falls back to PATH | `test/probe.test.mjs`, `test/cli.test.mjs` |
-| ctx does not answer in the bound (10 s; 1.2 s in the hook) | fail naming the bound; the child gets SIGKILL and so does its process group | `test/probe.test.mjs` (a child that ignores SIGTERM, with a grandchild) |
+| ctx does not answer in the bound (10 s; 1.2 s in the hook), and its daemon is not demonstrably alive (no `query-endpoint.json`, its pid not running, or nothing accepting on its socket) | fail naming the bound; the child gets SIGKILL and so does its process group | `test/probe.test.mjs` (a child that ignores SIGTERM, with a grandchild), `test/slow.test.mjs` |
+| ctx does not answer in the bound while its daemon's pid runs and its query socket accepts | `slow: true`: the reason ends `the ctx daemon is running (…): slow, not down`; no upgrade read, no heal | `test/slow.test.mjs` (a double; `daemonAlive` against a real unix socket in a temp dir) |
+| the endpoint's pid was reused by another process | not alive: that process does not listen on the daemon's socket, so the connect is refused; a dead pid is answered without connecting | `test/slow.test.mjs` (this process's pid, a plain file at the socket path) |
+| a live daemon hung for good (its socket still accepts) | slow until the run has lasted 30 min (`SLOW_MAX_MS`), then a failure: strike, then down with the popup | `test/slow.test.mjs` |
+| the liveness check itself is slow (a loaded machine starting the connecting node child) | bounded at 2 s, and by what is left of the hook's 3 s clock; over it, not alive, so a failure as before | by construction (`connectSocket`, `probe` `aliveBudget`), not exercised |
 | output not JSON, or no `.daemon` | fail with the exit code and the first output line | `test/probe.test.mjs` |
 | `.daemon.running !== true` or `.daemon.status !== "running"` (missing, `stopped`, `stale_lock`) | fail naming both fields | `test/probe.test.mjs` (captured `stale_lock`; the healthy capture with `status` edited) |
 | `.daemon.supervisor.status !== "installed"` | fail naming the field | `test/probe.test.mjs` (healthy capture, field edited to `install_failed`) |
@@ -106,6 +110,7 @@ both its events (`test/hook-contract.test.mjs` runs every hooks.json entry).
 | two hooks of one session at once (a prompt and a failed ctx call) | the latch is claimed under `sessions/<id>.json.lock`: said once; a lock still held after 200 ms means silence | `test/mid-session.test.mjs` (two processes, a barrier after the read) |
 | SessionStart told an outage the timer has not declared | the latch has `toldAt`, no `down`; the timer's later `down` is adopted silently; one recovery line after a fresh pass | `test/mid-session.test.mjs` |
 | the tick stamp over 15 min old (or 3 intervals) | one line, once per stamp; a down or recovery read from it is not said | `test/mid-session.test.mjs`, `evals/prompt-state-stale.scenario.json` |
+| the timer has found ctx slow (not down) | nothing for under 15 min; then one line, once per slow run, that ctx is answering slowly and searches may time out, never "down" or a repair; the end of the run says nothing; a run past 30 min is told as down | `test/slow.test.mjs` |
 | the latch or its lock cannot be written (a filesystem error, not a held lock) | the note still goes out, with a line that it may repeat | not exercised |
 | a failed Bash call that is not ctx (the `if` filter is best-effort) | silent | `test/mid-session.test.mjs`, `evals/failed-other-call.scenario.json` |
 | ctx died after the last tick | not known until the timer's second failing tick (up to 10 min at the default interval): the hook reads no ctx | by design |
@@ -123,6 +128,7 @@ both its events (`test/hook-contract.test.mjs` runs every hooks.json entry).
 | `plutil` or `launchctl` missing or refused (not macOS, a sandbox) | said in the output; the plist is still written; `loaded` is `null`, not `false` | `test/launchd.test.mjs` |
 | printed commands with a path containing spaces or shell metacharacters | one shell word each (`shellQuote`); the plist itself carries the path unquoted | `test/launchd.test.mjs` |
 | a failing tick, then another | strike, then down with the popup; later failing ticks silent; a pass re-arms | `test/state.test.mjs`, `test/cli.test.mjs` |
+| slow ticks (status timed out, daemon alive) | `slow: …` line; no strike, no popup; `slowSince` kept from the first; a pass or a real failure clears it, and a real failure strikes as usual | `test/slow.test.mjs` |
 | the semantic index fails and its popup is shown, then the daemon dies | the daemon has its own latch: its popup comes on the second daemon tick in a row (each kind has `popupShown.<kind>`; a semantic failure means the daemon is up and re-arms the daemon latch) | `test/state.test.mjs`, `test/cli.test.mjs` (the review's P4 shape through `main(["tick"])`) |
 | the semantic status flips: not ready, `ready` for one tick, not ready again | one popup: the semantic latch re-arms only after two passing ticks in a row (`STRIKES_TO_DOWN`) | `test/state.test.mjs` |
 | a popup of one kind is pending when the other kind is due | no second dialog meanwhile; the other kind's popup comes on the first failing tick after the pending one settles | `test/state.test.mjs` |

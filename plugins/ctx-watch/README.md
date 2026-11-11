@@ -205,6 +205,29 @@ the file is under 15 min old, `DAEMON_UPGRADE_HANDOFF_STALE_AFTER`, and its owne
   as its fix (when ctx itself cannot run, that stays the finding and its fix). It still strikes
   and pops up like the probe's failure.
 
+**Slow is not down** (0.4.0). A `ctx daemon status` that times out (10 s on the timer, 1.2 s in
+the SessionStart hook) is not yet a dead daemon: on 2026-11-11, 22:44-23:06Z, a machine at load
+average 78-183 made it miss the bound twice while the daemon, pid 51357, ran throughout, and
+the two "ctx is down" popups were false. So a timed-out status call asks whether the daemon's
+process is alive, without running ctx: the pid in `<data root>/daemon/query-endpoint.json` must
+be running (`kill -0`), and the query socket that same file names must accept a connection (a
+node child connects, bounded at 2 s; the connect itself took 0.7 ms). The socket is what makes a
+reused pid harmless: whatever took over a dead daemon's pid does not listen on its socket, and a
+socket file left behind refuses. `ps` is not used: it is setuid, refused (`EPERM`) in a
+sandboxed shell, and a command name proves less than a listening socket.
+
+- **Alive**: slow. The tick's line is `slow: …` (the reason ends `slow, not down`); no strike,
+  no popup, no heal, no upgrade read; `state.json` keeps `slowSince`, the first slow tick of the
+  run. The SessionStart hook says nothing. The mid-session hook says one line once the timer
+  has seen it slow for 15 min (three ticks): "ctx is answering slowly (the machine is likely
+  under load) …; ctx searches may time out", once per slow run, never "down" and never a
+  repair (a repair would restart a working daemon).
+- **Not alive** (no endpoint file, pid not running, or nothing accepting on the socket): a
+  failure, exactly as before.
+- **Bound**: a daemon hung for good still accepts on its socket (the kernel queues the
+  connection), so a slow run that has lasted 30 min (`SLOW_MAX_MS`, six ticks) counts as a
+  failure: it strikes, then goes down with its popup, and the agent is told it is down.
+
 **The mid-session hook** (0.4.0, `hooks/mid-session.mjs`, `lib/mid-session.mjs`). Registered on
 `UserPromptSubmit` (every prompt, including a scheduled task or a background subagent reporting
 back) and on `PostToolUseFailure` of a ctx call (matcher `Bash` with `if: "Bash(ctx *)"`, and
@@ -228,8 +251,8 @@ per session per episode:
   three intervals, whichever is longer. One line naming the stamp, since a state the timer
   stopped writing cannot say ctx is up; while stale nothing else is said. Latched on the stamp.
 
-Healthy, a strike, a semantic-only episode, no session id, or already told: nothing printed, and
-no lock taken. The latch, `{ down, toldAt, stale }`, is claimed under its own lock
+Healthy, a strike, a semantic-only episode, a slow run under 15 min, no session id, or already
+told: nothing printed, and no lock taken. The latch, `{ down, toldAt, stale, slow }`, is claimed under its own lock
 (`sessions/<session id>.json.lock`), so two hooks of one session firing at once (a prompt and a
 failed ctx call) say a thing once: the second waits up to 200 ms and reads what the first wrote,
 or, when the lock is still held, says nothing. The SessionStart hook writes the same latch when it
@@ -622,7 +645,7 @@ From ctx dying in the middle of sessions (see *Why* at the top):
   `Bootstrap failed: 5: Input/output error`) is refused with exit 3 and nothing changed. Until
   0.4.0 `launchctl print gui/<uid>` passed there, and repair would have booted the timer out and
   failed to restore it. A killed run's probe is cleared by the next; a signal during the probe
-  ends the run after the probe unloads itself.
+  ends the run once the probe's own cleanup has run, and says what that cleanup did.
 - The SessionStart hook writes the mid-session latch when it tells the agent about an outage,
   including one the timer has not declared yet.
 - The recovery line needs a tick probe after the telling that passed: a missing, broken or reset
@@ -630,6 +653,11 @@ From ctx dying in the middle of sessions (see *Why* at the top):
   one session say a thing once.
 - `repair`'s JSON `timer.wasLoaded` is `null` (not checked) on the healthy return and on a
   refusal before the timer step; it read `false` there, even with the timer loaded.
+- **Slow is not down.** A `ctx daemon status` that times out while the daemon's pid runs and
+  its query socket accepts is `slow: …`: no strike, no popup, no heal, no SessionStart line, and
+  at most one quiet mid-session line after 15 min. Two false "ctx is down" popups on
+  2026-11-11 under load average 78-183 came from treating it as down. Slow for 30 min counts as
+  down. See *Slow is not down*.
 
 ## Changes in 0.3.0
 

@@ -46,6 +46,17 @@ two repairs), and until now the agent heard about it only at SessionStart.
 
 - `repair`'s JSON `timer.wasLoaded` is `null` (not checked) on the healthy return and on a
   refusal before the timer step; it read `false` there, even with the timer loaded.
+- A slow ctx is no longer told as down. On 2026-11-11 (22:44-23:06Z, load average 78-183) the
+  `ctx daemon status` call missed its 10 s twice while the daemon ran throughout, and two "ctx is
+  down" popups were false. A status call that times out now asks whether the daemon's process
+  is alive, without running ctx: the pid in `<data root>/daemon/query-endpoint.json` is running
+  and the query socket that file names accepts a connection (the socket rules out a reused pid).
+  Alive: the tick logs `slow: …`, with no strike, no popup, no heal and no upgrade read; the
+  SessionStart hook says nothing; the mid-session hook says one quiet line once the timer has
+  seen it slow for 15 min ("ctx is answering slowly …; ctx searches may time out"), never
+  "down" or a repair. Not alive: a failure, as before. A slow run that lasts 30 min
+  (`SLOW_MAX_MS`) counts as down, since a hung daemon still accepts on its socket. `state.json`
+  gains `slowSince`; the session latch gains `slow`.
 
 ## [0.3.0] - 2026-11-11
 
