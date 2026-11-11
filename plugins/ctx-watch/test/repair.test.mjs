@@ -9,7 +9,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -86,15 +86,27 @@ function fakeCtx({ status = brokenEnv(), upgrade = "dry_run", auto = true, fail 
 /** The `locale -a` the doubles answer with by default: a few of what macOS 15 lists. */
 const HOST_LOCALES = ["C", "POSIX", "en_US", "en_US.UTF-8", "en_GB.UTF-8", "de_DE.UTF-8"];
 
+/** The reach probe's label (0.4.0): a throwaway LaunchAgent repair bootstraps and boots out before it pauses anything. */
+const PROBE = "com.jo-wolff-plugins.ctx-watch.reach-probe";
+const SANDBOX_BOOTSTRAP = { missing: false, code: 5, output: "Bootstrap failed: 5: Input/output error\n" };
+
 /**
  * A launchctl double: the GUI domain answers, the timer is loaded; `unreachable` makes the domain
- * print fail as launchctl does (112); `missing` makes launchctl not found; `jobQuery` replaces
- * the answer to `launchctl print gui/<uid>/<label>`; `onBootout` runs when the timer is paused.
- * It also answers `defaults read -g AppleLocale` with `locale` (null: the key is absent, exit 1,
- * as `defaults` says for a missing key) and `locale -a` with `locales`.
+ * print fail as launchctl does (112) and any bootstrap fail; `missing` makes launchctl not found;
+ * `jobQuery` replaces the answer to `launchctl print gui/<uid>/<label>`; `onBootout` runs when
+ * the timer is paused. The reach probe's calls go to `probe` (never `calls`, which is the
+ * ctx-watch timer's and the locale lookups'): `probeBootstrap` and `probeBootout` replace their
+ * answers (a function may throw), and `plists` keeps each probe plist as it was when bootstrapped,
+ * with its path. A probe bootout while the probe is not loaded answers launchctl's 3 (no such
+ * process). It also answers `defaults read -g AppleLocale` with `locale` (null: the key is
+ * absent, exit 1, as `defaults` says for a missing key) and `locale -a` with `locales`.
  */
-function fakeLaunchctl({ loaded = true, unreachable = false, bootstrapCode = 0, locale = null, locales = HOST_LOCALES, missing = false, jobQuery = null, onBootout = () => {} } = {}) {
+function fakeLaunchctl({ loaded = true, unreachable = false, bootstrapCode = 0, locale = null, locales = HOST_LOCALES, missing = false, jobQuery = null, onBootout = () => {}, probeBootstrap = null, probeBootout = null, probeLeftLoaded = false } = {}) {
   const calls = [];
+  const probe = [];
+  const plists = [];
+  let probeLoaded = probeLeftLoaded;
+  const answer = (a) => (typeof a === "function" ? a() : a);
   const check = (bin, args) => {
     if (bin === "defaults") {
       calls.push(`defaults ${args.join(" ")}`);
@@ -107,17 +119,34 @@ function fakeLaunchctl({ loaded = true, unreachable = false, bootstrapCode = 0, 
       return { missing: false, code: 0, output: `${locales.join("\n")}\n` };
     }
     assert.equal(bin, "launchctl");
+    const [verb, target, path] = args;
+    if (verb === "bootstrap" && String(path).endsWith(`${PROBE}.plist`)) {
+      probe.push(args.join(" "));
+      if (missing) return { missing: true, code: null, output: "" };
+      plists.push({ path, text: readFileSync(path, "utf8") });
+      // launchd answers a bootstrap of a label it already has with 5 as well.
+      const r = probeLoaded ? SANDBOX_BOOTSTRAP : answer(probeBootstrap) ?? (unreachable ? SANDBOX_BOOTSTRAP : { missing: false, code: 0, output: "" });
+      if (r.code === 0) probeLoaded = true;
+      return r;
+    }
+    if (verb === "bootout" && target.endsWith(`/${PROBE}`)) {
+      probe.push(args.join(" "));
+      if (missing) return { missing: true, code: null, output: "" };
+      if (!probeLoaded) return { missing: false, code: 3, output: "Boot-out failed: 3: No such process\n" };
+      const r = answer(probeBootout) ?? { missing: false, code: 0, output: "" };
+      if (r.code === 0) probeLoaded = false;
+      return r;
+    }
     calls.push(args.join(" "));
     if (missing) return { missing: true, code: null, output: "" };
-    const [verb, target] = args;
     if (verb === "print" && /^gui\/\d+$/.test(target)) return unreachable ? { missing: false, code: 112, output: `Bad request.\nCould not find domain for user gui: ${target.slice(4)}\n` } : { missing: false, code: 0, output: "domain" };
     if (verb === "print" && jobQuery) return jobQuery;
     if (verb === "print") return loaded ? { missing: false, code: 0, output: "state = not running\n" } : { missing: false, code: 113, output: "Could not find service" };
     if (verb === "bootout") return onBootout(), { missing: false, code: 0, output: "" };
-    if (verb === "bootstrap") return { missing: false, code: bootstrapCode, output: bootstrapCode ? "Bootstrap failed: 5: Input/output error" : "" };
+    if (verb === "bootstrap") return unreachable ? SANDBOX_BOOTSTRAP : { missing: false, code: bootstrapCode, output: bootstrapCode ? "Bootstrap failed: 5: Input/output error" : "" };
     return { missing: false, code: 1, output: "?" };
   };
-  return { calls, check };
+  return { calls, probe, plists, check, probeLoaded: () => probeLoaded };
 }
 
 const repair = (b, ctx, lc, extra = {}) => cli.main(["repair"], { env: b.env, run: ctx.run, check: lc.check, uid: 501, exists: () => true, sleep: () => {}, ...extra });
@@ -265,6 +294,114 @@ test("7. repair refuses before any change when the GUI launchd domain is not rea
     assert.equal(j.refused, true);
     assert.match(j.reason, /gui\/501/);
     assert.deepEqual(changing(ctx), []);
+  } finally {
+    b.release();
+  }
+});
+
+const timerBootouts = (lc) => lc.calls.filter((c) => c === "bootout gui/501/com.jo-wolff-plugins.ctx-watch");
+const probeGone = (lc) => lc.plists.every((p) => !existsSync(dirname(p.path)));
+
+test("0.4.0 repair refuses when launchctl can read gui/501 but not bootstrap into it (the sandboxed shell): exit 3, launchctl's error, the real timer never booted out, the probe's plist gone", async () => {
+  const b = box();
+  try {
+    const ctx = fakeCtx();
+    const lc = fakeLaunchctl({ probeBootstrap: SANDBOX_BOOTSTRAP });
+    const r = await repair(b, ctx, lc);
+    const j = parse(r);
+    assert.equal(r.code, 3, r.text);
+    assert.equal(j.refused, true);
+    assert.equal(j.changed, false);
+    assert.match(j.reason, /Bootstrap failed: 5: Input\/output error/);
+    assert.match(j.reason, /gui\/501/);
+    assert.deepEqual(changing(ctx), [], "no ctx change");
+    assert.deepEqual(timerBootouts(lc), [], "the ctx-watch timer was never paused");
+    assert.deepEqual(lc.calls.filter((c) => /^boot/.test(c)), [], "nothing but the probe touched launchd");
+    assert.ok(lc.probe.some((c) => c.startsWith("bootstrap gui/501 ")), "the probe was tried");
+    assert.equal(lc.plists.length, 1);
+    assert.ok(probeGone(lc), "the probe's temp plist is removed");
+    assert.equal(lc.probeLoaded(), false);
+  } finally {
+    b.release();
+  }
+});
+
+test("0.4.0 the reach probe runs before the timer is paused: a throwaway /usr/bin/true LaunchAgent, bootstrapped and booted out, its plist removed", async () => {
+  const b = box();
+  try {
+    writeHandoff(b.env, { pid: deadPid(), ageMs: 40 * MIN });
+    const ctx = fakeCtx({ upgrade: "quiescing" });
+    const order = [];
+    const lc = fakeLaunchctl({ onBootout: () => order.push("timer bootout") });
+    const check = (bin, args) => {
+      if (bin === "launchctl" && String(args.at(-1)).includes(PROBE)) order.push(`probe ${args[0]}`);
+      return lc.check(bin, args);
+    };
+    const r = await repair(b, ctx, { ...lc, check });
+    assert.equal(r.code, 0, r.text);
+    assert.equal(lc.plists.length, 1);
+    const { text } = lc.plists[0];
+    assert.match(text, new RegExp(`<key>Label</key>\\s*<string>${PROBE.replaceAll(".", "\\.")}</string>`));
+    assert.match(text, /<key>ProgramArguments<\/key>\s*<array>\s*<string>\/usr\/bin\/true<\/string>\s*<\/array>/);
+    assert.doesNotMatch(text, /RunAtLoad<\/key>\s*<true\/>/, "the probe never runs anything");
+    assert.ok(order.indexOf("probe bootstrap") >= 0 && order.indexOf("probe bootstrap") < order.indexOf("timer bootout"), order.join(", "));
+    assert.ok(order.lastIndexOf("probe bootout") < order.indexOf("timer bootout"), `probe booted out before the timer is paused: ${order.join(", ")}`);
+    assert.equal(lc.probeLoaded(), false, "the probe is not left loaded");
+    assert.ok(probeGone(lc), "the probe's temp plist is removed");
+  } finally {
+    b.release();
+  }
+});
+
+test("0.4.0 a probe that bootstraps but cannot be booted out refuses (bootout is how the timer is paused), plist removed, timer untouched", async () => {
+  const b = box();
+  try {
+    const ctx = fakeCtx();
+    const lc = fakeLaunchctl({ probeBootout: { missing: false, code: 5, output: "Boot-out failed: 5: Input/output error\n" } });
+    const r = await repair(b, ctx, lc);
+    const j = parse(r);
+    assert.equal(r.code, 3, r.text);
+    assert.match(j.reason, /Boot-out failed: 5/);
+    assert.match(j.reason, new RegExp(PROBE.replaceAll(".", "\\.")), "names the label left behind");
+    assert.deepEqual(changing(ctx), []);
+    assert.deepEqual(timerBootouts(lc), []);
+    assert.ok(probeGone(lc));
+  } finally {
+    b.release();
+  }
+});
+
+test("0.4.0 a launchctl that throws during the probe is a refusal, not a crash, and the probe's plist is still removed", async () => {
+  const b = box();
+  try {
+    const ctx = fakeCtx();
+    const lc = fakeLaunchctl({
+      probeBootstrap: () => {
+        throw new Error("spawn launchctl EPERM");
+      },
+    });
+    const r = await repair(b, ctx, lc);
+    const j = parse(r);
+    assert.equal(r.code, 3, r.text);
+    assert.match(j.reason, /EPERM/);
+    assert.deepEqual(changing(ctx), []);
+    assert.deepEqual(timerBootouts(lc), []);
+    assert.equal(lc.plists.length, 1);
+    assert.ok(probeGone(lc));
+  } finally {
+    b.release();
+  }
+});
+
+test("0.4.0 a probe an earlier run left loaded (killed mid-probe) is booted out first, so it does not read as a sandbox", async () => {
+  const b = box();
+  try {
+    const ctx = fakeCtx();
+    const lc = fakeLaunchctl({ probeLeftLoaded: true });
+    const r = await repair(b, ctx, lc);
+    assert.equal(r.code, 0, r.text);
+    assert.equal(lc.probeLoaded(), false);
+    assert.ok(probeGone(lc));
   } finally {
     b.release();
   }
@@ -544,7 +681,7 @@ process.exit(r.code);
       assert.equal(p.signal, null, `${sig}: the process handled the signal (stderr: ${p.stderr})`);
       assert.equal(p.status, 128 + n, `${sig}: exit ${p.status}; stderr: ${p.stderr}`);
       const o = JSON.parse(p.stdout.trim().split("\n").at(-1));
-      assert.ok(o.calls.some((c) => c.startsWith("launchctl bootstrap gui/501 ")), `${sig}: timer restored`);
+      assert.ok(o.calls.some((c) => c.startsWith("launchctl bootstrap gui/501 ") && c.endsWith("com.jo-wolff-plugins.ctx-watch.plist")), `${sig}: timer restored`);
       assert.equal(o.report.ok, false);
       assert.match(o.last, new RegExp(`interrupted by ${sig}`));
     }
