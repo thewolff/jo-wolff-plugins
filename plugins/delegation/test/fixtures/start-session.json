@@ -1,0 +1,21 @@
+{
+  "$comment": "PreToolUse for mcp__ccd_session__start_session, key set as captured from the desktop app on 2026-11-11 (top-level keys, tool_input keys, effort.level, prompt a string, mcp_server an object). Every value is a stand-in: the capture kept shapes, not values, and mcp_server's own keys were not recorded.",
+  "cwd": "/tmp/fixture-workspace",
+  "effort": { "level": "high" },
+  "hook_event_name": "PreToolUse",
+  "mcp_server": {},
+  "permission_mode": "auto",
+  "prompt_id": "prompt-fixture-1",
+  "scratchpad_dir": "/tmp/fixture-scratchpad",
+  "session_id": "s-fixture-1",
+  "tool_input": {
+    "background": false,
+    "context": "stand-in context",
+    "initiation": "user_asked",
+    "prompt": "Fix the flaky test.",
+    "title": "Fix the flaky test"
+  },
+  "tool_name": "mcp__ccd_session__start_session",
+  "tool_use_id": "toolu_fixture_1",
+  "transcript_path": "/tmp/fixture-transcript.jsonl"
+}

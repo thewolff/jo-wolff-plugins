@@ -24,6 +24,8 @@
 //                          delegation-guard     warn (newdle's ask/deny is `block`)
 //                          worktree-spawn-guard warn (newdle's deny is `block`)
 //                          repo-rules-inject    on (`off` or anything else; it never decides)
+//                          session-brief-gate   block (a thin `start_session` prompt is denied;
+//                                               `warn` allows it with one line)
 //   readLineThreshold    delegation-guard check 1 (default 1000 lines)
 //   streakThreshold      delegation-guard check 2 (default 6 distinct files)
 //   rulesBudget          repo-rules-inject's largest additionalContext (default 9000 chars)
@@ -45,7 +47,7 @@ export const DEFAULTS = Object.freeze({
   requireSpiralBound: true,
   requirePatternCheck: true,
   warnModelRouting: true,
-  checks: Object.freeze({ "delegation-guard": "warn", "worktree-spawn-guard": "warn", "repo-rules-inject": "on" }),
+  checks: Object.freeze({ "delegation-guard": "warn", "worktree-spawn-guard": "warn", "repo-rules-inject": "on", "session-brief-gate": "block" }),
   readLineThreshold: 1000,
   streakThreshold: 6,
   rulesBudget: 9000,
