@@ -31,9 +31,24 @@ test("judgeModel: a configured [1m] suffix or date is normalised like the incomi
   assert.equal(judgeModel("claude-sonnet-5-5", "claude-opus-5-5-20261101[1m]"), "mismatch");
 });
 
+test("judgeModel: expectedModel is a minimum", () => {
+  const E = "claude-opus-5-5";
+  const pass = ["claude-opus-5-5", "claude-opus-5-5-20261101", "claude-opus-5-5[1m]", "claude-opus-5-6", "claude-opus-6", "claude-fable-5-2"];
+  const below = ["claude-opus-5", "claude-opus-4-8", "claude-sonnet-5-5", "claude-haiku-5-5"];
+  const unknown = ["claude-mythos-5-2", "gpt-5"];
+  for (const id of pass) assert.equal(judgeModel(id, E), "match", id);
+  for (const id of below) assert.equal(judgeModel(id, E), "mismatch", id);
+  for (const id of unknown) assert.equal(judgeModel(id, E), "unknown", id);
+  assert.equal(judgeModel("claude-opus-5-20261101", E), "mismatch");
+  assert.equal(judgeModel("claude-sonnet-6", E), "mismatch");
+  assert.equal(judgeModel("claude-fable-6", E), "match");
+  assert.equal(judgeModel("claude-newfam-1", E), "unknown");
+  assert.equal(judgeModel("claude-newfam-1", E, ["haiku", "sonnet", "opus", "fable", "newfam"]), "match");
+});
+
 test("judgeModel: another family or a longer version is a mismatch; an alias or a non-string is unknown", () => {
   assert.equal(judgeModel("claude-sonnet-5-5", "claude-opus-5-5"), "mismatch");
-  assert.equal(judgeModel("claude-opus-5-5", "claude-opus-5"), "mismatch");
+  assert.equal(judgeModel("claude-opus-5", "claude-opus-5-5"), "mismatch");
   assert.equal(judgeModel("opus", "claude-opus-5-5"), "unknown");
   assert.equal(judgeModel(undefined, "claude-opus-5-5"), "unknown");
   assert.equal(normalizeModel(42), "");
@@ -88,7 +103,7 @@ test("decide: a switch to another family fires the model-only notice, word for w
     const r = decide({ cwd: t.folder, toModel: "claude-sonnet-5-5", fromModel: "claude-opus-5-5", source: "sdk" }, { ...EXPECTED, folders: [t.folder] });
     assert.equal(
       r.say,
-      "Coordinator notice: this session is running claude-sonnet-5-5 (effort not visible to hooks here). The owner's setting for coordinator sessions is claude-opus-5-5 at medium effort. Switching is suggested (/model, /effort), and the first reply to the owner should say so.",
+      "Coordinator notice: this session is running claude-sonnet-5-5 (effort not visible to hooks here). The owner's setting for coordinator sessions is at least claude-opus-5-5 at medium effort. Switching is suggested (/model, /effort), and the first reply to the owner should say so.",
     );
     assert.equal(r.skipped, null);
   } finally {

@@ -38,7 +38,7 @@ test("no file gives the defaults and no fault", () => {
 test("every field is read when valid", () => {
   const { e, release } = env(JSON.stringify({ off: true, folders: ["/a", "/b/"], expectedModel: " claude-x ", expectedEffort: "high", clock: false }));
   try {
-    assert.deepEqual(loadConfig(e), { config: { off: true, folders: ["/a", "/b/"], expectedModel: "claude-x", expectedEffort: "high", clock: false }, path: configPath(e), fault: null });
+    assert.deepEqual(loadConfig(e), { config: { off: true, folders: ["/a", "/b/"], expectedModel: "claude-x", modelFamilyRank: DEFAULTS.modelFamilyRank, expectedEffort: "high", clock: false }, path: configPath(e), fault: null });
   } finally {
     release();
   }
@@ -49,6 +49,8 @@ for (const [what, text, why] of [
   ["an array", "[]", /is not a JSON object/],
   ["a non-boolean clock", '{"clock":"no"}', /clock must be true or false/],
   ["an empty expectedModel", '{"expectedModel":""}', /expectedModel must be a non-empty string/],
+  ["an empty modelFamilyRank", '{"modelFamilyRank":[]}', /modelFamilyRank must be a non-empty array/],
+  ["an uppercase family", '{"modelFamilyRank":["Opus"]}', /modelFamilyRank must be a non-empty array/],
   ["a relative folder", '{"folders":["here"]}', /folders must be an array of absolute paths/],
 ]) {
   test(`${what}: every field is its default, and the fault names why`, () => {
@@ -62,6 +64,15 @@ for (const [what, text, why] of [
     }
   });
 }
+
+test("modelFamilyRank is read when valid", () => {
+  const { e, release } = env(JSON.stringify({ modelFamilyRank: ["haiku", "newfam"] }));
+  try {
+    assert.deepEqual(loadConfig(e).config.modelFamilyRank, ["haiku", "newfam"]);
+  } finally {
+    release();
+  }
+});
 
 test("logSkipped appends one line, and an unwritable state is swallowed", () => {
   const { e, release } = env();

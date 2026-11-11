@@ -2,11 +2,14 @@
 // model id match the owner's expected one, and the exact text of each notice. No I/O except
 // realpath, which the caller can replace.
 //
-// Model match: a trailing bracket suffix such as `[1m]` is stripped, then the id must equal
-// expectedModel or be it plus a `-YYYYMMDD` date (so a dated id matches and `claude-opus-5`
-// does not swallow `claude-opus-5-5`). expectedModel is normalised the same way (bracket suffix
-// and a trailing date dropped), so a configured `claude-opus-5-5[1m]` matches itself. An id that does not start with `claude-` (an alias such
-// as `opus`) cannot be judged.
+// Model match: expectedModel is a minimum. A trailing bracket suffix such as `[1m]` is stripped,
+// then the id is parsed as claude-<family>-<major>[-<minor>][-YYYYMMDD]. It passes when its family
+// ranks above the expected family (config `modelFamilyRank`, default haiku < sonnet < opus < fable), or the family is the same and
+// its version is at least the expected one (major, then minor; a missing minor is 0), so
+// `claude-opus-5` falls below `claude-opus-5-5`. expectedModel is normalised the same way, so a
+// configured `claude-opus-5-5[1m]` is the minimum 5.5. An id that does not start with `claude-`
+// (an alias such as `opus`), or whose family is not in the ranking (a brand-new family stays silent until listed), cannot be judged.
+// An expectedModel that cannot be parsed falls back to the older exact-or-dated comparison.
 //
 // Effort: compared only when the caller passes one. The hook input at PostModelSwitch carries
 // no effort today (measured on the desktop app and the CLI, 2026-11-11), so the notice is
@@ -20,12 +23,30 @@ export function normalizeModel(id) {
   return typeof id === "string" ? id.trim().replace(/\[[^\]]*\]$/, "") : "";
 }
 
-/** "match", "mismatch" or "unknown" (not a claude- id, so it cannot be judged). */
-export function judgeModel(id, expectedModel) {
+/** Family order, lowest first; the config key `modelFamilyRank` replaces it, so a new family needs no code change. */
+export const DEFAULT_FAMILY_RANK = Object.freeze(["haiku", "sonnet", "opus", "fable"]);
+
+/** `{ family, major, minor }` for a claude-<family>-<major>[-<minor>][-YYYYMMDD] id (bracket suffix already removed), else null. */
+function parseModel(id) {
+  const m = /^claude-([a-z]+)-(\d+)(?:-(\d{1,2}))?(?:-\d{8})?$/.exec(id);
+  return m ? { family: m[1], major: Number(m[2]), minor: m[3] === undefined ? 0 : Number(m[3]) } : null;
+}
+
+/** "match" (at least expectedModel), "mismatch" (below it) or "unknown" (not a ranked claude- id, so it cannot be judged). */
+export function judgeModel(id, expectedModel, familyRank = DEFAULT_FAMILY_RANK) {
   const m = normalizeModel(id);
   if (!m.startsWith("claude-")) return "unknown";
   const want = normalizeModel(expectedModel).replace(/-\d{8}$/, "");
-  return m === want || (m.startsWith(want) && /^-\d{8}(?:$|-)/.test(m.slice(want.length))) ? "match" : "mismatch";
+  const rank = (f) => familyRank.indexOf(f);
+  const have = parseModel(m);
+  const min = parseModel(want);
+  if (!min || rank(min.family) < 0) {
+    return m === want || (m.startsWith(want) && /^-\d{8}(?:$|-)/.test(m.slice(want.length))) ? "match" : "mismatch";
+  }
+  if (!have || rank(have.family) < 0) return "unknown";
+  const [a, b] = [rank(have.family), rank(min.family)];
+  if (a !== b) return a > b ? "match" : "mismatch";
+  return have.major > min.major || (have.major === min.major && have.minor >= min.minor) ? "match" : "mismatch";
 }
 
 const real = (p, realpath) => {
@@ -50,7 +71,7 @@ export function inFolders(cwd, folders, { realpath = realpathSync } = {}) {
 /** The notice for a session on the wrong model (or effort, when known). */
 export function wrongModelText(model, effort, { expectedModel, expectedEffort }) {
   const at = typeof effort === "string" && effort ? `at ${effort} effort` : "(effort not visible to hooks here)";
-  return `Coordinator notice: this session is running ${model} ${at}. The owner's setting for coordinator sessions is ${expectedModel} at ${expectedEffort} effort. Switching is suggested (/model, /effort), and the first reply to the owner should say so.`;
+  return `Coordinator notice: this session is running ${model} ${at}. The owner's setting for coordinator sessions is at least ${expectedModel} at ${expectedEffort} effort. Switching is suggested (/model, /effort), and the first reply to the owner should say so.`;
 }
 
 /** The notice for a switch back onto the expected model. */
@@ -69,11 +90,11 @@ export function decide(sw, config, { realpath = realpathSync } = {}) {
   const none = { say: null, skipped: null };
   if (!inFolders(sw.cwd, config.folders, { realpath })) return none;
   if (sw.source === "resume") return none;
-  const to = judgeModel(sw.toModel, config.expectedModel);
-  if (to === "unknown") return { say: null, skipped: `to_model ${JSON.stringify(sw.toModel ?? null)} is not a claude- model id; cannot judge` };
+  const to = judgeModel(sw.toModel, config.expectedModel, config.modelFamilyRank);
+  if (to === "unknown") return { say: null, skipped: `to_model ${JSON.stringify(sw.toModel ?? null)} is not ${typeof sw.toModel === "string" && normalizeModel(sw.toModel).startsWith("claude-") ? "a ranked claude- family (see modelFamilyRank)" : "a claude- model id"}; cannot judge` };
   const effortKnown = typeof sw.effort === "string" && sw.effort !== "";
   const effortOk = !effortKnown || sw.effort === config.expectedEffort;
   if (to === "mismatch" || !effortOk) return { say: wrongModelText(sw.toModel, effortKnown ? sw.effort : null, config), skipped: null };
-  if (judgeModel(sw.fromModel, config.expectedModel) === "mismatch") return { say: backOnModelText(sw.toModel), skipped: null };
+  if (judgeModel(sw.fromModel, config.expectedModel, config.modelFamilyRank) === "mismatch") return { say: backOnModelText(sw.toModel), skipped: null };
   return none;
 }

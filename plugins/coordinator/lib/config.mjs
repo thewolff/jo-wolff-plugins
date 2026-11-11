@@ -10,8 +10,12 @@
 //   folders        absolute paths; the model notice speaks only when the session's cwd is one of
 //                  them or inside one (both sides compared after realpath). Default [], so the
 //                  notice is silent until a folder is listed.
-//   expectedModel  the model id coordinator sessions should run on; a switch to an id that does
-//                  not start with it draws the notice. Default `claude-opus-5-5`.
+//   expectedModel  the minimum model for coordinator sessions; a switch to a lower model draws the
+//                  notice (family order haiku < sonnet < opus < fable, then version). Default
+//                  `claude-opus-5-5`.
+//   modelFamilyRank model families lowest first, lowercase strings. Default
+//                  ["haiku","sonnet","opus","fable"]. A family not listed is never judged (no
+//                  notice), so a new release stays silent until it is added here.
 //   expectedEffort the effort level named in the notice, and compared when the host puts
 //                  `effort.level` in the hook input. Default `medium`.
 //   clock          false turns off the per-prompt clock line. Default true, in every session.
@@ -23,11 +27,13 @@
 import { appendFileSync, mkdirSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { isAbsolute, join } from "node:path";
+import { DEFAULT_FAMILY_RANK } from "./model-notice.mjs";
 
 export const DEFAULTS = Object.freeze({
   off: false,
   folders: Object.freeze([]),
   expectedModel: "claude-opus-5-5",
+  modelFamilyRank: DEFAULT_FAMILY_RANK,
   expectedEffort: "medium",
   clock: true,
 });
@@ -75,6 +81,10 @@ export function loadConfig(env = process.env, home = homedir()) {
     if (parsed[key] === undefined) continue;
     if (typeof parsed[key] === "string" && parsed[key].trim()) out[key] = parsed[key].trim();
     else bad.push(`${key} must be a non-empty string`);
+  }
+  if (parsed.modelFamilyRank !== undefined) {
+    if (Array.isArray(parsed.modelFamilyRank) && parsed.modelFamilyRank.length && parsed.modelFamilyRank.every((f) => typeof f === "string" && /^[a-z]+$/.test(f))) out.modelFamilyRank = [...parsed.modelFamilyRank];
+    else bad.push("modelFamilyRank must be a non-empty array of lowercase family names");
   }
   if (parsed.folders !== undefined) {
     if (Array.isArray(parsed.folders) && parsed.folders.every((s) => typeof s === "string" && isAbsolute(s))) out.folders = [...parsed.folders];

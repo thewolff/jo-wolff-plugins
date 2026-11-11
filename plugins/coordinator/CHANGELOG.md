@@ -10,8 +10,9 @@ All notable changes to coordinator are recorded here. The format follows
 - `hooks/clock.mjs` (UserPromptSubmit): one line with the system clock, local and UTC, on every
   prompt. `clock: false` turns it off.
 - `hooks/model-notice.mjs` (PostModelSwitch): inside a folder listed in the config, a switch onto
-  a model other than `expectedModel` adds one notice line, and a switch back says the earlier
-  notice no longer applies. Model-only: the hook input carries no effort level. `expectedModel`
+  a model below `expectedModel` adds one notice line, and a switch back to at least that model says
+  the earlier notice no longer applies. `expectedModel` is a minimum: family order is haiku,
+  sonnet, opus, fable, then major and minor version within a family. The family order is the `modelFamilyRank` config key; a family not in it is not judged. Model-only: the hook input carries no effort level. `expectedModel`
   may carry a `[1m]` suffix or a date; both sides are normalised before the match.
 - `lib/config.mjs` and `${XDG_CONFIG_HOME:-~/.config}/coordinator/config.json` (`off`, `folders`,
   `expectedModel`, `expectedEffort`, `clock`), the state directory with `scripts/prune.mjs`, eight

@@ -37,7 +37,7 @@ Claude Code only; the OMP manifest carries no hooks.
 | Hook | Event | What it adds | When it is silent |
 |---|---|---|---|
 | `hooks/clock.mjs` | `UserPromptSubmit` | `The system clock reads 2026-11-11 14:07:41 PST (UTC-08:00), which is 2026-11-11T22:07:41Z, as of this prompt.` | `clock: false` or `off: true` |
-| `hooks/model-notice.mjs` | `PostModelSwitch` | `Coordinator notice: this session is running claude-sonnet-5-5 (effort not visible to hooks here). The owner's setting for coordinator sessions is claude-opus-5-5 at medium effort. Switching is suggested (/model, /effort), and the first reply to the owner should say so.` On a switch back: `Coordinator notice: this session is now on claude-opus-5-5. The earlier model notice no longer applies.` | the session's `cwd` is in no listed folder (the default: no folders); the new model matches; `source` is `resume`; the model id is an alias such as `opus` (one `skipped.log` line) |
+| `hooks/model-notice.mjs` | `PostModelSwitch` | `Coordinator notice: this session is running claude-sonnet-5-5 (effort not visible to hooks here). The owner's setting for coordinator sessions is at least claude-opus-5-5 at medium effort. Switching is suggested (/model, /effort), and the first reply to the owner should say so.` On a switch back: `Coordinator notice: this session is now on claude-opus-5-5. The earlier model notice no longer applies.` | the session's `cwd` is in no listed folder (the default: no folders); the new model is at least `expectedModel`; `source` is `resume`; the model id is an alias such as `opus` (one `skipped.log` line) |
 
 The clock line runs in every session with the plugin on, including the arrival of a worker's report
 or a peer's message, and names its own time because a resumed session replays it unchanged.
@@ -55,7 +55,8 @@ so the notice judges the model alone. `PostModelSwitch` needs Claude Code 2.1.25
 |---|---|---|
 | `off` | `false` | `true` turns both hooks off |
 | `folders` | `[]` | absolute paths; the model notice speaks only when the session's `cwd` is one of them or inside one (compared after resolving symlinks) |
-| `expectedModel` | `"claude-opus-5-5"` | the model coordinator sessions should run on; the id matches with or without a `-YYYYMMDD` date or a `[1m]` suffix |
+| `expectedModel` | `"claude-opus-5-5"` | the minimum model for coordinator sessions: that model or a later one passes, with or without a `-YYYYMMDD` date or a `[1m]` suffix. Families rank haiku, sonnet, opus, fable, then the version number decides within a family |
+| `modelFamilyRank` | `["haiku","sonnet","opus","fable"]` | model families, lowest first, lowercase names. A newer version of a listed family passes with no change. A family not listed is never judged: no notice, one `skipped.log` line, so a new release stays silent until you add its family here |
 | `expectedEffort` | `"medium"` | the effort named in the notice |
 | `clock` | `true` | `false` turns off the clock line |
 

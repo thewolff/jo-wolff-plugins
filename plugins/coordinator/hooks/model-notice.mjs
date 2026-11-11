@@ -4,14 +4,14 @@
 // deny or block (PostModelSwitch cannot block anyway).
 //
 // What it does: when the session's cwd is inside a folder listed in the config's `folders`, a
-// switch onto a model other than `expectedModel` adds one additionalContext line naming the model
-// and the owner's setting, and a switch from such a model back onto `expectedModel` adds one line
+// switch onto a model below `expectedModel` (a minimum) adds one additionalContext line naming the
+// model and the owner's setting, and a switch from such a model back onto at least `expectedModel` adds one line
 // saying the earlier notice no longer applies. Text and matching rules: lib/model-notice.mjs.
 //
 // Only PostModelSwitch: SessionStart input carries no model on the desktop app or the CLI
 // (measured 2026-11-11), so the starting model stays the first reply's job (the skill's "Model
 // check"). Silent on `source: "resume"`, on an empty folder list, and outside every folder. An
-// alias where a model id belongs is not judged: one skipped.log line.
+// alias, or a family not in `modelFamilyRank`, is not judged: one skipped.log line.
 //
 // How it fails: stdin not JSON, a thrown error, or no answer in 4 s → the runner logs it to
 // ${XDG_STATE_HOME:-~/.local/state}/coordinator/errors.log and allows. A malformed config → the
