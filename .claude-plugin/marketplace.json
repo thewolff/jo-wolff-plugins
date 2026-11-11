@@ -1,7 +1,7 @@
 {
   "name": "jo-wolff-plugins",
   "owner": { "name": "Jo Wolff" },
-  "description": "Plugins for Claude Code and OMP about working with an agent: receipted facts, ADHD-friendly messages, gated pairing, build-or-not checks, pattern reuse, reminders, a question ledger, engineering skills, subagent briefs, compaction handoffs, an away mode, ctx health and a plugin kit.",
+  "description": "Claude Code and OMP plugins for working with an agent: receipted facts, readable messages, gated pairing, build-or-not checks, handoffs across compaction, an away mode, and more.",
   "plugins": [
     {
       "name": "output-types",

@@ -62,8 +62,6 @@ omp plugin install ask-graham@jo-wolff-plugins
 omp plugin install reminders-review@jo-wolff-plugins
 omp plugin install pattern-check@jo-wolff-plugins
 omp plugin install as2-skills@jo-wolff-plugins
-omp plugin install plugin-kit@jo-wolff-plugins
-omp plugin install ctx-watch@jo-wolff-plugins
 omp plugin install delegation@jo-wolff-plugins
 omp plugin install continuity@jo-wolff-plugins
 omp plugin install brb@jo-wolff-plugins
