@@ -283,6 +283,22 @@ test("7. repair on a healthy daemon changes nothing and says so (exit 0)", async
   }
 });
 
+test("0.4.0 a healthy repair reports the timer as not checked (wasLoaded null), never false, and touches no launchd job, probe included", async () => {
+  const b = box();
+  try {
+    const ctx = fakeCtx({ status: healthy() });
+    const lc = fakeLaunchctl({ loaded: true });
+    const r = await repair(b, ctx, lc);
+    const j = parse(r);
+    assert.equal(r.code, 0, r.text);
+    assert.deepEqual(j.timer, { wasLoaded: null, paused: false, restored: null }, "a loaded timer that was never asked about is not reported unloaded");
+    assert.deepEqual(lc.calls.filter((c) => /^(bootout|bootstrap)/.test(c)), []);
+    assert.deepEqual(lc.probe, [], "no reach probe on the healthy path");
+  } finally {
+    b.release();
+  }
+});
+
 test("7. repair refuses before any change when the GUI launchd domain is not reachable from this shell", async () => {
   const b = box();
   try {

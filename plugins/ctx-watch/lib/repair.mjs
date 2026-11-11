@@ -48,7 +48,10 @@
 // Every ctx spawn has CI removed (probe.mjs ctxEnv), LANG as resolved in step 2, and keeps
 // everything else. Output: the first line is one JSON object `{ ok, changed, refused, reason,
 // lang: { value, source, skipped }, steps, timer, verified }` (source `env`, `ctx-recorded`,
-// `AppleLocale`, or null); the last line is `ctx-watch repair: <repaired | healthy; nothing
+// `AppleLocale`, or null; timer `{ wasLoaded, paused, restored }`, wasLoaded null = not checked:
+// the healthy return and refusals before step 6 never ask launchctl about the timer, 0.4.0; until
+// then it read false there even with the timer loaded); the last line is `ctx-watch repair:
+// <repaired | healthy; nothing
 // changed | refused: … | failed: … | interrupted by SIG…>`. Exit 0 repaired or healthy, 1 failed,
 // 3 refused (no ctx change; the timer, if paused, restored), 128 + n on signal n.
 
@@ -115,7 +118,9 @@ export async function repair({ env: shellEnv = process.env, run = runCtx, check 
   const env = lang.value ? { ...shellEnv, LANG: lang.value } : shellEnv;
   const e = ctxEnv(env);
   const steps = [];
-  const timer = { wasLoaded: false, paused: false, restored: null };
+  // wasLoaded: null = not checked (the healthy return and every refusal before step 6 never ask
+  // launchctl about the timer), true/false = what `launchctl print` said before pausing it.
+  const timer = { wasLoaded: null, paused: false, restored: null };
   const report = { ok: false, changed: false, refused: false, reason: null, lang: { value: lang.value, source: lang.source, skipped: lang.skipped }, steps, timer, verified: null };
   const out = (code, last) => ({ code, text: `${JSON.stringify(report)}\n${last}` });
   const refuse = (reason) => {
