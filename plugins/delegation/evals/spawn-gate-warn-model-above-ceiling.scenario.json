@@ -1,0 +1,19 @@
+{
+  "$comment": "spawn-gate: a reader spawn that passes gate 1 and asks for a model above the routing table's ceiling for reader is allowed, with one warning line naming the type, the model and the ceiling.",
+  "event": "PreToolUse",
+  "expect": "systemMessage",
+  "reason": "the routing table's ceiling for reader is sonnet",
+  "stdin": {
+    "session_id": "${SESSION_ID}",
+    "transcript_path": "${TRANSCRIPT}",
+    "cwd": "${CWD}",
+    "hook_event_name": "PreToolUse",
+    "tool_name": "Agent",
+    "tool_input": {
+      "subagent_type": "reader",
+      "description": "map it",
+      "model": "opus",
+      "prompt": "# Target\nMap the retry module.\n\n## How it fails\n- A wrong map shows as a missing symbol in the plan; one retry, then report it.\n"
+    }
+  }
+}
