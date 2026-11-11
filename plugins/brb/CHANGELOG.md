@@ -18,22 +18,31 @@ All notable changes to brb are recorded here. The format follows
   it are hidden; a `ToolGroup` only when none of its calls predates it; at `back` the hold's rows
   join the past, so the next hold hides only its own. Before the first query answers and after a
   failed query no row is hidden and nothing is recorded. A reply with an `on fire:` line (the Stop
-  hook's parser, `lib/sections.mjs` `splitNeedsYou`) is never hidden. Ids only, capped at 20,000
-  per set; no row text is kept.
+  hook's parser, `lib/sections.mjs` `splitNeedsYou`) is never hidden. Ids only, at most 20,000
+  per set and none ever dropped: once an id does not fit, the ledger is full and, for the rest of
+  the conversation, hides only rows it already hid in the current hold (a forgotten id is never
+  taken for a new row). No row text is kept.
 - On `back` (or any end of the hold) the mod calls `$.ui.invalidate("ui.render")` and every row
   draws as before.
+- A switch: `{ "hideRows": "off" }` in `${XDG_CONFIG_HOME:-~/.config}/brb/config.json` turns the
+  row hiding off (lib/state.mjs `hideRowsEnabled`, read by `mods/band/query.mjs` on every query,
+  carried as `hideRows` in its answer). On with no file or no key; off for `"off"`, `false`, any
+  other value, or a file that cannot be read or parsed. The mod redraws the rows when it flips.
 - The away text: while away the mod appends a fixed instruction (work without narration, hold
   each ask with the hold command, reply only with the still-away line, the body and
   `idle: <why>`) to the environment section of the system prompt (`prompt.section` on
-  `env_info_simple` and `env_info_static`), with `breakPromptCache: true` only when the away state
-  changed since its last answer, after `$.ui.invalidate("prompt.section")`. A turn that began
-  home and is running when `brb` lands gets the same text once as `context` on the main agent's
-  next tool result (`tool.call`), in process.
+  `env_info_simple` and `env_info_static`), after `$.ui.invalidate("prompt.section")`. Every field
+  of the answer the hook got from `next` is kept, its own `breakPromptCache` included, home and
+  away; brb adds `breakPromptCache: true` when the away state changed since that section name's
+  last answer (tracked per name). A turn that began home and is running when `brb` lands gets the
+  same text once as `context` on the main agent's next tool result (`tool.call`), in process.
 - Tests: `mods/band/tests/hide.test.mjs` (the away window, runs, the on-fire exemption, the end
   of a hold, the section's cache rule); `register.test.mjs` (rows replaced while away and drawn
   after back, a failed query, a faulting hook, `session.end`, the section, the mid-turn
   reminder); `band.test.tsx` under `claude plugin test` (rows mounted in a Desktop and a terminal
-  session, an empty Box accepted, rows redrawn after back, the section, the reminder).
+  session, an empty Box accepted, rows redrawn after back, the section, the reminder, the
+  `hideRows` switch, another hook's cache break). `test/state.test.mjs` and `query.test.mjs`
+  cover `hideRows` read from config.json.
 
 ### Not covered
 

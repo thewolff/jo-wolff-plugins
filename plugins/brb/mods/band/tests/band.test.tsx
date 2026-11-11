@@ -430,3 +430,36 @@ test("a turn begun home: once brb lands, the next tool result carries the away t
   expect((await $.tool.call({ tool: "Bash", input: { command: "ls" } })).context).toEqual([AWAY_TEXT]);
   expect((await $.tool.call({ tool: "Bash", input: { command: "ls" } })).context).toBeUndefined();
 });
+
+// ---- 0.5.0 R1: the hideRows switch and another hook's cache break ----
+
+for (const [where, payload, surface] of SESSIONS) {
+  test(`${where}: hideRows off in config.json draws the hold's rows as Claude Code draws them; on again hides only new rows`, async ($, on) => {
+    const { state, clock } = stubs(on, { snapshot: { ...AWAY, hideRows: false } });
+    await $.session.start(payload);
+    await clock.settle();
+    const reply = await $.ui.mount({ ...said("m-off"), surface });
+    expect(await reply.find({ type: "Text", text: THEIRS })).toBeDefined();
+    expect(await reply.find({ type: "Text", text: HELD_LINE })).toBeUndefined();
+    state.snapshot = AWAY;
+    await turnDone($);
+    await clock.settle();
+    expect(await reply.find({ type: "Text", text: THEIRS })).toBeDefined();
+    const fresh = await $.ui.mount({ ...said("m-on"), surface });
+    expect(await fresh.find({ type: "Text", text: HELD_LINE })).toBeDefined();
+    state.snapshot = { ...AWAY, hideRows: false };
+    await turnDone($);
+    await clock.settle();
+    expect(await fresh.find({ type: "Text", text: THEIRS })).toBeDefined();
+    for (const ui of [reply, fresh]) await ui.unmount();
+  });
+}
+
+test("a later section hook's breakPromptCache passes through brb's section hook while home", async ($, on) => {
+  stubs(on, { snapshot: HOME });
+  on("prompt.section", () => ({ text: "OTHER MOD UPDATED THIS", breakPromptCache: true }));
+  await $.session.start({ surface: "terminal", isInteractive: true, cwd: "/Users/example/code/this" });
+  const answer = await $.prompt.section({ name: "env_info_simple", text: "cwd: /w" });
+  expect(answer.breakPromptCache).toBe(true);
+  expect(answer.text).toBe("OTHER MOD UPDATED THIS");
+});

@@ -654,3 +654,60 @@ test("Back pressed mid-turn while rows are hidden: one turn.complete both keeps 
   assert.equal(await rowOf(hooks, s, "terminal", ...said("a1")), DRAWN);
   assert.equal(await rowOf(hooks, s, "terminal", "UserMessage", "u-back", { text: "back" }), DRAWN);
 });
+
+// ---- 0.5.0 R1: another hook's cache break, two section names, the hideRows switch ----
+
+const sectionWith = (hooks, s, name, answer) => hooks.get(`prompt.section:${name}`)(s.$, { name, text: "cwd: /w" }, async () => answer);
+
+test("R1 B1: a cache break asked for by the answer under brb's section hook survives, home and away", async () => {
+  const hooks = await load();
+  const s = stub({ snapshot: HOME });
+  await start(hooks, s);
+  const theirs = { text: "OTHER MOD UPDATED THIS", breakPromptCache: true };
+  const home = await sectionWith(hooks, s, "env_info_simple", theirs);
+  assert.equal(home.breakPromptCache, true, "home");
+  assert.equal(home.text, "OTHER MOD UPDATED THIS");
+  s.snapshot = AWAY;
+  await turnComplete(hooks, s);
+  await sectionWith(hooks, s, "env_info_simple", { text: "cwd: /w" }); // brb's own transition, spent
+  const away = await sectionWith(hooks, s, "env_info_simple", theirs);
+  assert.equal(away.breakPromptCache, true, "away, with brb's state unchanged since the last answer");
+  assert.ok(away.text.startsWith("OTHER MOD UPDATED THIS") && away.text.includes(AWAY_TEXT));
+});
+
+for (const order of [["env_info_simple", "env_info_static"], ["env_info_static", "env_info_simple"]]) {
+  test(`R1 S1: each section name breaks the cache once at brb and once at back, asked ${order.join(" then ")}`, async () => {
+    const hooks = await load();
+    const s = stub({ snapshot: HOME });
+    await start(hooks, s);
+    const ask = async (name) => (await sectionWith(hooks, s, name, { text: "cwd: /w" })).breakPromptCache === true;
+    for (const name of order) assert.equal(await ask(name), false, `${name} home`);
+    s.snapshot = AWAY;
+    await turnComplete(hooks, s);
+    for (const name of order) assert.equal(await ask(name), true, `${name} at brb`);
+    for (const name of order) assert.equal(await ask(name), false, `${name} asked again away`);
+    s.snapshot = HOME;
+    await turnComplete(hooks, s);
+    for (const name of [...order].reverse()) assert.equal(await ask(name), true, `${name} at back`);
+    for (const name of order) assert.equal(await ask(name), false, `${name} asked again home`);
+  });
+}
+
+test("R1 kill switch: hideRows off draws every row as is while away; switching it on hides only rows first drawn after, off again redraws", async () => {
+  const hooks = await load();
+  const s = stub({ snapshot: { ...AWAY, hideRows: false } });
+  await start(hooks, s);
+  assert.equal(await rowOf(hooks, s, "terminal", ...said("off-1")), DRAWN, "off: drawn as Claude Code draws it");
+  assert.equal(await rowOf(hooks, s, "terminal", ...ran("off-2")), DRAWN);
+  s.snapshot = AWAY;
+  const before = s.invalidated.length;
+  await turnComplete(hooks, s);
+  assert.ok(s.invalidated.slice(before).includes("ui.render"), "the switch flipping redraws the rows");
+  assert.equal(await rowOf(hooks, s, "terminal", ...said("off-1")), DRAWN, "a row shown while off stays shown");
+  assert.notEqual(await rowOf(hooks, s, "terminal", ...said("on-1")), DRAWN, "on: a new row of the hold is hidden");
+  s.snapshot = { ...AWAY, hideRows: false };
+  const flip = s.invalidated.length;
+  await turnComplete(hooks, s);
+  assert.ok(s.invalidated.slice(flip).includes("ui.render"));
+  assert.equal(await rowOf(hooks, s, "terminal", ...said("on-1")), DRAWN, "off again: the hidden row is drawn");
+});

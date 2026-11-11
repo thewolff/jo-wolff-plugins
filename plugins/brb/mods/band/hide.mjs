@@ -20,8 +20,11 @@
 // prompt Jo typed, a row from before the hold) ends the run.
 //
 // Only ids and a hidden/shown flag per row are kept, in memory; never a row's text. The on-fire
-// check reads the text in memory and keeps nothing. Every set is capped at ID_CAP entries, the
-// oldest dropped first.
+// check reads the text in memory and keeps nothing. The id sets never drop an id: once one would
+// pass ID_CAP the ledger is `full` and, for the rest of the conversation, hides only rows it
+// already hid in the current hold; every other row draws as is (an id it could not keep might be
+// an old row's, so it is never taken for a new one). The order maps (runs only) drop their oldest
+// entry past ID_CAP, which at worst draws one more dim line.
 
 import { splitNeedsYou } from "../../lib/sections.mjs";
 
@@ -80,9 +83,12 @@ export function rowIds(component, requestId, props) {
   return ids;
 }
 
-function capAdd(set, value) {
+/** Add `value` to `set` unless the set is at ID_CAP; false when it could not be kept. */
+function keep(set, value) {
+  if (set.has(value)) return true;
+  if (set.size >= ID_CAP) return false;
   set.add(value);
-  if (set.size > ID_CAP) set.delete(set.values().next().value);
+  return true;
 }
 
 function capSet(map, key, value) {
@@ -98,6 +104,7 @@ function capSet(map, key, value) {
  *   noteCall(id, { known, away })   a tool call started: home, it predates any later hold.
  *   endHold()                       the hold ended: what it hid is from before the next one.
  *   held                            how many rows the current hold hides.
+ *   full                            an id could not be kept: only rows already hidden stay hidden.
  */
 export function createLedger() {
   /** Ids known to predate the current hold. */
@@ -109,6 +116,13 @@ export function createLedger() {
   /** Row key → whether it is hidden as last drawn. */
   const hidden = new Map();
   let last = null;
+  let full = false;
+
+  /** Keep each id in `set`; once one does not fit, the ledger is full for good. */
+  function keepAll(set, ids) {
+    for (const id of ids) if (!keep(set, id)) full = true;
+    return !full;
+  }
 
   /** Place a row in first-seen order and record whether it is hidden now. */
   function place(key, isHidden) {
@@ -123,8 +137,11 @@ export function createLedger() {
     get held() {
       return heldIds.size;
     },
+    get full() {
+      return full;
+    },
     noteCall(id, { known, away }) {
-      if (known && !away && typeof id === "string" && id) capAdd(seen, id);
+      if (known && !away && typeof id === "string" && id) keepAll(seen, [id]);
     },
     decide({ known, away, component, requestId, props }) {
       const ids = rowIds(component, requestId, props);
@@ -134,7 +151,7 @@ export function createLedger() {
         return "show";
       }
       if (!away) {
-        for (const id of ids) capAdd(seen, id);
+        keepAll(seen, ids);
         place(key, false);
         return "show";
       }
@@ -142,24 +159,38 @@ export function createLedger() {
         place(key, false);
         return "show";
       }
-      for (const id of ids) capAdd(heldIds, id);
+      // Full: an id not kept might be an old row's; only a row this hold already hid stays hidden.
+      const hide = full ? ids.every((id) => heldIds.has(id)) : keepAll(heldIds, ids);
+      if (!hide) {
+        place(key, false);
+        return "show";
+      }
       place(key, true);
       const before = prev.get(key);
       return before !== null && before !== undefined && hidden.get(before) === true ? "empty" : "line";
     },
     endHold() {
-      for (const id of heldIds) capAdd(seen, id);
+      keepAll(seen, heldIds);
       heldIds.clear();
     },
   };
 }
 
 /**
- * The environment section with the away text appended while away; core's text unchanged while
- * home. `breakPromptCache` only when the away state differs from the last answer, so the cache
- * starts over at `brb` and at `back`, never on an unrelated re-ask.
+ * What the environment-section hook returns: core's (or a later hook's) answer with every field
+ * kept, the away text appended to its text while away. `breakPromptCache` is true when that
+ * answer asked for it or when the away state differs from the one this section name last carried
+ * (so the cache starts over at `brb` and at `back`, never on an unrelated re-ask). Home with no
+ * change, the answer is returned as it came.
  */
-export function sectionAnswer(coreText, away, lastAway) {
-  const text = away ? (typeof coreText === "string" && coreText ? `${coreText}\n\n${AWAY_TEXT}` : AWAY_TEXT) : (coreText ?? null);
-  return away === lastAway ? { text } : { text, breakPromptCache: true };
+export function sectionAnswer(core, away, lastAway) {
+  const changed = away !== lastAway;
+  if (!away && !changed) return core;
+  const base = core && typeof core === "object" ? core : {};
+  const coreText = typeof base.text === "string" ? base.text : null;
+  const text = away ? (coreText ? `${coreText}\n\n${AWAY_TEXT}` : AWAY_TEXT) : coreText;
+  // Every field of the answer is kept, its own `breakPromptCache` included; ours only adds a break.
+  const answer = { ...base, text };
+  if (changed) answer.breakPromptCache = true;
+  return answer;
 }

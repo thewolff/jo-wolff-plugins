@@ -101,23 +101,51 @@ test("a row with no id is drawn as is; a site the mod does not hide is drawn as 
   assert.equal(l.decide({ ...AWAY, component: "Spinner", requestId: "s", props: {} }), "show");
 });
 
-test("the ledger is capped: past ID_CAP ids the oldest are dropped, never an unbounded set", () => {
+test("at the cap, home: an old row the ledger saw stays shown; once an id cannot be kept, a row it cannot place is shown, never taken for new", () => {
   const l = createLedger();
-  for (let i = 0; i <= ID_CAP; i++) l.noteCall(`c${i}`, HOME);
-  assert.notEqual(l.decide({ ...AWAY, ...tool("c0") }), "show", "the oldest id fell out");
-  assert.equal(l.decide({ ...AWAY, ...tool(`c${ID_CAP}`) }), "show");
+  assert.equal(l.decide({ ...HOME, ...msg("old") }), "show");
+  for (let i = 0; i < ID_CAP; i++) l.noteCall(`c${i}`, HOME);
+  assert.equal(l.full, true, "the set was at the cap when the last call came");
+  assert.equal(l.decide({ ...AWAY, ...msg("old") }), "show", "the first row seen home is still known");
+  assert.equal(l.decide({ ...AWAY, ...tool("c0") }), "show", "the oldest call id is still known");
+  assert.equal(l.decide({ ...AWAY, ...tool(`c${ID_CAP - 1}`) }), "show", "an id the ledger could not keep is not taken for new");
+  assert.equal(l.decide({ ...AWAY, ...msg("brand-new") }), "show", "full: a row it cannot place is shown");
 });
 
-test("the section: the away text appended while away, core's text home; the cache breaks only when the away state changed", () => {
-  const away = sectionAnswer("Working directory: /w", true, false);
+test("at the cap, in a hold: rows already hidden stay hidden; rows past the cap show; after back the next hold hides nothing it cannot place", () => {
+  const l = createLedger();
+  assert.equal(l.decide({ ...AWAY, ...msg("first-held") }), "line");
+  for (let i = 1; i < ID_CAP; i++) l.decide({ ...AWAY, ...msg(`held-${i}`) });
+  assert.equal(l.full, false, "exactly at the cap, nothing dropped yet");
+  assert.equal(l.decide({ ...AWAY, ...msg("over") }), "show", "the row past the cap shows");
+  assert.equal(l.full, true);
+  assert.notEqual(l.decide({ ...AWAY, ...msg("first-held") }), "show", "a row this hold already hid stays hidden");
+  l.endHold();
+  assert.equal(l.decide({ ...AWAY, ...msg("first-held") }), "show", "the last hold's oldest row is past for the next hold");
+  assert.equal(l.decide({ ...AWAY, ...msg("next-hold-row") }), "show", "full: nothing it cannot place is hidden");
+});
+
+test("the section: the away text appended while away, core's answer as it came home; the cache breaks when the away state changed or the answer asked for it", () => {
+  const core = { text: "Working directory: /w" };
+  const away = sectionAnswer(core, true, false);
   assert.equal(away.breakPromptCache, true);
   assert.ok(away.text.startsWith("Working directory: /w"));
   assert.ok(away.text.endsWith(AWAY_TEXT));
-  assert.deepEqual(sectionAnswer("Working directory: /w", true, true), { text: away.text }, "asked again for another reason: same text, no break");
-  assert.deepEqual(sectionAnswer("Working directory: /w", false, true), { text: "Working directory: /w", breakPromptCache: true });
-  assert.deepEqual(sectionAnswer("Working directory: /w", false, false), { text: "Working directory: /w" });
-  assert.deepEqual(sectionAnswer(null, false, false), { text: null }, "a section core omits stays omitted home");
+  assert.deepEqual(sectionAnswer(core, true, true), { text: away.text }, "asked again for another reason: same text, no break");
+  assert.deepEqual(sectionAnswer(core, false, true), { text: "Working directory: /w", breakPromptCache: true });
+  assert.equal(sectionAnswer(core, false, false), core, "home with no change: the very answer that came");
+  assert.equal(sectionAnswer(null, false, false), null, "a section core omits stays omitted home");
   assert.equal(sectionAnswer(null, true, false).text, AWAY_TEXT);
+});
+
+test("the section keeps another hook's cache break and every other field, home and away", () => {
+  const theirs = { text: "OTHER MOD UPDATED THIS", breakPromptCache: true, extra: 1 };
+  assert.deepEqual(sectionAnswer(theirs, false, false), theirs, "home, no change: theirs as is");
+  const away = sectionAnswer(theirs, true, true);
+  assert.equal(away.breakPromptCache, true, "away, no change of ours: theirs still breaks");
+  assert.equal(away.extra, 1);
+  assert.ok(away.text.startsWith("OTHER MOD UPDATED THIS"));
+  assert.equal(sectionAnswer({ text: "x", breakPromptCache: false }, true, true).breakPromptCache, false, "a false flag is passed on, not raised");
 });
 
 test("the away text is fixed: no session id, path or note in it", () => {

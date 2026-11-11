@@ -5,7 +5,7 @@
 //   ${XDG_STATE_HOME:-~/.local/state}/brb/<session id>/archive/<ts>.md   digests `back` released
 //   ${XDG_STATE_HOME:-~/.local/state}/brb/<session id>/checklist.json   the last digest as a checklist, written by `back`; rows are ticked by the band
 //   ${XDG_STATE_HOME:-~/.local/state}/brb/<session id>/away.lock   held while away.json is read-modified-written; holds `<pid> <token>`
-//   ${XDG_CONFIG_HOME:-~/.config}/brb/config.json                  optional: onFireCap, idleStops
+//   ${XDG_CONFIG_HOME:-~/.config}/brb/config.json                  optional: onFireCap, idleStops, hideRows
 //
 // The times Jo reads (a digest entry's heading, the digest's `held since`) are local time
 // (localTime: `2026-11-10 5:50 PM PST`, in env.TZ or the machine's zone); the times a program
@@ -148,6 +148,24 @@ export function loadConfig(env = process.env) {
     if (Number.isInteger(v) && v >= 0) out[key] = v;
   }
   return out;
+}
+
+/**
+ * Whether the band mod hides the hold's transcript rows: config.json `hideRows`. No file is on;
+ * `"on"` or `true`, or no `hideRows` key, is on; `"off"` or `false` is off. A file that cannot be
+ * read or parsed, or any other value, is off: the switch exists to turn hiding off in one step,
+ * so a broken file never leaves it on. (The other keys keep loadConfig's rule: defaults.)
+ */
+export function hideRowsEnabled(env = process.env) {
+  let parsed;
+  try {
+    parsed = JSON.parse(readFileSync(configPath(env), "utf8"));
+  } catch (err) {
+    return err?.code === "ENOENT";
+  }
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return false;
+  const v = parsed.hideRows;
+  return v === undefined || v === "on" || v === true;
 }
 
 /** A fresh away record: when the hold began, the note typed after `brb`, zeroed counters, no backstop yet this turn. */

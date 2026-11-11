@@ -49,7 +49,9 @@
 //     Which rows belong to the hold is hide.mjs's ledger (by row id; the sites carry no time).
 //     The stored messages are never touched: a hook returns a tree in the row's place and does
 //     not call `next`. When the hold ends (`back`, the Back button, the hold gone), the mod calls
-//     `$.ui.invalidate("ui.render")` and every row draws as before;
+//     `$.ui.invalidate("ui.render")` and every row draws as before. config.json `hideRows: "off"`
+//     (read by query.mjs each query; lib/state.mjs hideRowsEnabled) turns the row hiding off: every
+//     row draws as Claude Code draws it, and the mod invalidates the rows when the switch flips;
 //   - while away, the agent reads hide.mjs AWAY_TEXT (work without narration, hold every ask,
 //     reply with the still-away line, the body and `idle: <why>`): appended to the environment
 //     section of the system prompt (`prompt.section`, `breakPromptCache: true` at `brb` and at
@@ -93,8 +95,10 @@ let ledger = createLedger();
 let known = false;
 /** The session is away, as the last answered query said. */
 let awayNow = false;
-/** The away state the last `prompt.section` answer carried. */
-let sectionAway = false;
+/** Row hiding is on, as config.json said at the last answered query (`hideRows`). */
+let hideRows = true;
+/** Section name → the away state its last `prompt.section` answer carried (absent: home). */
+const sectionAway = new Map();
 /** The running turn has had the away text (or began away, when the prompt hook and the section carry it). */
 let reminded = false;
 /** The last row-hook fault logged, so a fault on every row logs once. */
@@ -251,9 +255,11 @@ async function drainBack($, checked = null) {
  */
 function applyAway($, next) {
   const wasKnown = known;
+  const wasHiding = hideRows;
   known = next.ok === true;
+  if (known) hideRows = next.hideRows !== false;
   const away = known ? next.away === true : awayNow;
-  if (away === awayNow && known === wasKnown) return;
+  if (away === awayNow && known === wasKnown && hideRows === wasHiding) return;
   if (away !== awayNow) {
     if (awayNow) ledger.endHold();
     awayNow = away;
@@ -482,7 +488,8 @@ export function register(on, options) {
   for (const component of [...HIDDEN_SITES, ORDER_SITE]) {
     on("ui.render", { component }, async ($, e, next) => {
       try {
-        const verdict = ledger.decide({ known, away: awayNow, component: e.component, requestId: e.requestId, props: e.props });
+        // Row hiding off (config.json): the ledger is told home, so every row draws as is.
+        const verdict = ledger.decide({ known, away: awayNow && hideRows, component: e.component, requestId: e.requestId, props: e.props });
         if (verdict === "show") return next(e);
         const { Box, Text } = await $.ui.resolve(e);
         return verdict === "line" ? Text({ dimColor: true, wrap: "truncate-end", children: [HELD_LINE] }) : Box({});
@@ -498,13 +505,15 @@ export function register(on, options) {
   }
 
   // The away text in the system prompt. Only the engine's own section names are asked for, so it
-  // is appended to the environment section; home, core's text passes as it is.
+  // is appended to the environment section; home, core's answer passes as it is. Every field of
+  // the answer `next` gave is kept, its own `breakPromptCache` included; each name tracks the
+  // away state it last carried, so each breaks the cache once at `brb` and once at `back`.
   for (const name of SECTION_NAMES) {
     on("prompt.section", { name }, async ($, e, next) => {
       const core = await next(e);
       try {
-        const answer = sectionAnswer(core?.text ?? null, awayNow, sectionAway);
-        sectionAway = awayNow;
+        const answer = sectionAnswer(core, awayNow, sectionAway.get(name) === true);
+        sectionAway.set(name, awayNow);
         return answer;
       } catch (err) {
         await logFault($, "prompt.section", err);

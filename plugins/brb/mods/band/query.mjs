@@ -3,20 +3,20 @@
 // (`node mods/band/query.mjs --session <id>`), because the hooks module runs inside Claude Code
 // and may import no node builtin, so it cannot read lib/state.mjs itself.
 //
-//   { ok: true, away: true, since, note, held, onFire, items }
+//   { ok: true, away: true, since, note, held, onFire, items, hideRows }
 //        the hold from away.json; `items` the held lines of digest.md (lib/state.mjs digestItems)
-//   { ok: true, away: false, checklist }
+//   { ok: true, away: false, checklist, hideRows }
 //        home: no away.json, or one that does not parse (parseAway's rule); `checklist` is
 //        checklist.json's record ({ at, since, note, items: [{ text, done }] }) or null
+//   `hideRows`: config.json's row-hiding switch (lib/state.mjs hideRowsEnabled), read every query
 //   { ok: false, error }
 //        no --session; a state file that is a link or not a regular file; one over MAX_BYTES
-//
 // Read-only: nothing under the state directory is written. Always exits 0 and always prints JSON.
 
 import { closeSync, constants, fstatSync, openSync, readSync, realpathSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { digestItems, parseAway, parseChecklist, sessionDir } from "../../lib/state.mjs";
+import { digestItems, hideRowsEnabled, parseAway, parseChecklist, sessionDir } from "../../lib/state.mjs";
 import { MAX_BYTES } from "./data.mjs";
 
 // No link is followed, and a FIFO's open does not wait for a writer (it is then refused as not a regular file).
@@ -70,10 +70,10 @@ export function snapshot(sessionId, { env = process.env } = {}) {
     const away = awayText === null ? null : parseAway(awayText);
     if (away) {
       const items = digestItems(readBounded(join(dir, "digest.md")) ?? "");
-      return { ok: true, away: true, since: away.since, note: away.note, held: away.held, onFire: away.onFire, items };
+      return { ok: true, away: true, since: away.since, note: away.note, held: away.held, onFire: away.onFire, items, hideRows: hideRowsEnabled(env) };
     }
     const checklistText = readBounded(join(dir, "checklist.json"));
-    return { ok: true, away: false, checklist: checklistText === null ? null : parseChecklist(checklistText) };
+    return { ok: true, away: false, checklist: checklistText === null ? null : parseChecklist(checklistText), hideRows: hideRowsEnabled(env) };
   } catch (err) {
     return { ok: false, error: err?.message ?? String(err) };
   }
