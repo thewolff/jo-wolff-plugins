@@ -247,6 +247,31 @@ test("the pane's error and refusal text carries no row id", async ($, on) => {
   await ui.unmount();
 });
 
+/** Every Text element in a drawn tree. */
+function textNodes(node) {
+  if (!node || typeof node !== "object") return [];
+  return [...(node.type === "Text" ? [node] : []), ...(node.children ?? []).flatMap(textNodes)];
+}
+
+test("at 40 columns nothing is cut short: folder names keep the segment that tells them apart, and the recorded question wraps", async ($, on) => {
+  const long = "a-folder-name-long-enough-to-overflow-forty-columns";
+  const body = "Approve the plan as revised, with every lane from origin/main and one pull request per platform?";
+  const elsewhere = [
+    { ...Q, id: "q-mw8a", cwd: `/Users/example/alpha/${long}`, body },
+    { ...Q, id: "q-mw8b", cwd: `/Users/example/beta/${long}`, body: "Tag it?" },
+  ];
+  stubs(on, { snapshot: { ...SNAPSHOT, elsewhere } });
+  await start($);
+  const ui = await $.ui.mount({ ...PANE, props: { ...PANE.props, bodyColumns: 40 } });
+  const labels = readable(await ui.find({ type: "Box" })).filter((s) => s.endsWith(long));
+  expect(labels).toEqual([`alpha/${long}`, `beta/${long}`]);
+  await ui.press({ key: "opt-q-mw8a-approve" });
+  const tree = await ui.find({ type: "Box" });
+  expect(readable(tree)).toContain(body);
+  expect(textNodes(tree).filter((t) => String(t.props.wrap ?? "wrap").startsWith("truncate")).map((t) => t.children.join(""))).toEqual([]);
+  await ui.unmount();
+});
+
 test("no drawn line is indented with spaces; indentation is layout", async ($, on) => {
   stubs(on);
   await start($);

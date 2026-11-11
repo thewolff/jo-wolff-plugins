@@ -246,7 +246,8 @@ export function register(on) {
 }
 
 // The pane is one column at every width: a heading, then each line on its own row, indented by
-// padding (never by spaces in the text), so a narrow dock wraps text and clips nothing.
+// padding (never by spaces in the text). Every Text wraps; none is truncated, so a folder name
+// keeps the parent segment that tells it apart and a long question shows in full.
 function drawPane($, el) {
   const { Box, Text } = el;
   const blocks = [];
@@ -271,7 +272,7 @@ function drawPane($, el) {
 
 function drawNotice({ Box, Text }, { ok, title, detail }) {
   const rows = [Text(ok ? { bold: true, wrap: "wrap", children: [title] } : { bold: true, color: "red", wrap: "wrap", children: [title] })];
-  if (detail) rows.push(Text({ dimColor: true, wrap: ok ? "truncate-end" : "wrap", children: [detail] }));
+  if (detail) rows.push(Text({ dimColor: true, wrap: "wrap", children: [detail] }));
   return Box({ flexDirection: "column", children: rows });
 }
 
@@ -298,7 +299,7 @@ function drawWaiting($, el) {
       n += 1;
       return Box({ key: `q-${q.id}`, flexDirection: "column", marginTop: i === 0 ? 0 : 1, children: drawQuestion($, el, q, n) });
     });
-    rows.push(Box({ flexDirection: "column", marginTop: 1, children: [Text({ bold: true, wrap: "truncate-start", children: [labels[g]] }), Box({ flexDirection: "column", paddingLeft: 2, children: questions })] }));
+    rows.push(Box({ flexDirection: "column", marginTop: 1, children: [Text({ bold: true, wrap: "wrap", children: [labels[g]] }), Box({ flexDirection: "column", paddingLeft: 2, children: questions })] }));
   });
   return Box({ flexDirection: "column", children: rows });
 }
