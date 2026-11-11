@@ -7,15 +7,19 @@
 //     numbered list (at most 10 rows, then `+N more`), and a Back button; the prompt box suggests
 //     `away 40m — type back` (`$.prompt.suggest`, Tab takes it);
 //   - the Back button sends `back` as the person's own prompt: it runs `node mods/band/act.mjs
-//     --session <id> back` (read-only: is this session away?), and when it is, calls
-//     `$.prompt.submit({ text: "back", asUser: true })`, the same call the engine makes for a
-//     typed prompt, so hooks/user-prompt-submit.mjs ends the hold exactly as for `back` typed.
-//     The call is never awaited (it resolves only once the session is idle and the turn began),
-//     a toast says `brb: Back pressed, ending the hold`, and until the hold ends the band says
-//     `Back pressed · ending the hold` and further presses do nothing. A refused or dropped
-//     submit (`{ drop }`, or a rejection) shows `brb: Back failed: <reason>; type back` and the
-//     button works again. Its `b` hotkey fires only while the band has focus (ctrl+x tab), not
-//     from the prompt box;
+//     --session <id> back` (read-only: is this session away, since when?), and when it is, a
+//     toast says `brb: Back pressed, ending the hold` and the press is pending until the session
+//     is idle (now, or the running turn's `turn.complete`). Then act.mjs is asked again and, when
+//     the same hold (same `since`) is still on, the mod calls `$.prompt.submit({ text: "back",
+//     asUser: true })`, the same call the engine makes for a typed prompt, so
+//     hooks/user-prompt-submit.mjs ends the hold exactly as for `back` typed. A hold that ended
+//     (`back` typed meanwhile) or was replaced (a new `brb`) drops the press silently. The call
+//     is never awaited (it resolves only once its turn starts). While the press is pending the
+//     band says `Back pressed · ending the hold` and further presses do nothing; a failed query
+//     does not release it, a query that sees the hold gone does. A refused or dropped submit
+//     (`{ drop }`, or a rejection) shows `brb: Back failed: <reason>; type back` and the button
+//     works again; one from an earlier conversation says nothing. Its `b` hotkey fires only
+//     while the band has focus (ctrl+x tab), not from the prompt box;
 //   - after `back` the hold's digest stays on screen as a checklist (checklist.json, written by
 //     lib/back.mjs endHold): `BACK · 3 to act on` in blue, a Done button per row (struck and
 //     dim once done; Undo puts it back) and a Clear button; the band clears when every row is
@@ -67,8 +71,14 @@ let ticked = false;
 let stateEnv = { xdgStateHome: undefined, home: undefined };
 let timers = [];
 let generation = 0;
-/** A Back press is on its way: the band says so, and a second press sends nothing. */
-let backPressed = false;
+/**
+ * The pending Back press, or null: `{ since, phase }`, `since` the hold it was made for (from
+ * act.mjs), `phase` pressed → waiting (for idle) → checking → sent. While it is set the band says
+ * so and a second press sends nothing; it ends when a query sees that hold gone, or the press fails.
+ */
+let pendingBack = null;
+/** A top-level turn is running (turn.start until turn.complete); a pending press waits for it. */
+let turnRunning = false;
 
 /** The sources of classic.SessionStart that begin a new conversation (the d.ts spelling: /branch reports `fork`). */
 const NEW_CONVERSATION = ["clear", "resume", "fork"];
@@ -123,30 +133,69 @@ function toast($, text) {
   }
 }
 
-/** A Back press that did not end the hold: logged, a toast with the reason, and the button live again. */
-function backFailed($, gen, err) {
+/**
+ * A Back press that did not end the hold: logged, a toast with the reason, and the button live
+ * again. Only for the press still pending; one from an earlier conversation, or one whose hold
+ * already ended, says nothing.
+ */
+function backFailed($, intent, err) {
+  if (pendingBack !== intent) return;
+  pendingBack = null;
   logFault($, "back", err);
   toast($, `brb: Back failed: ${reasonText(err)}; type back`);
-  if (gen !== generation) return;
-  backPressed = false;
   applySnapshot($, snapshot);
 }
 
+/** Ask act.mjs whether this session is away: `{ away, since }`; throws when the action failed. */
+async function checkAway($) {
+  const sessionId = await $.session.id();
+  const script = pathUnder($.plugin.root, "mods/band/act.mjs");
+  const run = await $.process.run(["node", ...actArgv(script, sessionId, "back")], { timeoutMs: SCRIPT_TIMEOUT_MS });
+  const result = readResult(run.stdout);
+  if (!result.ok) throw new Error(result.error);
+  return { away: result.away === true, since: result.since ?? null };
+}
+
 /**
- * Send `back` as the person's own prompt. Not awaited: `$.prompt.submit` waits until the session
- * is idle and resolves when the turn starts, so awaiting it would hold the press while the agent
- * works. A `{ drop }` answer or a rejection is a failed press.
+ * Send `back` for the pending press when the session is idle; while a turn runs, wait for its
+ * `turn.complete`. Before sending after a wait, act.mjs is asked again (`checked`, the answer the
+ * press itself just got, spares that when nothing ran between): a hold that ended (`back` typed)
+ * or was replaced (a new `brb`, another `since`) since the press drops the press without a word,
+ * so a press never ends a hold it was not made for and never sends a `back` that finds no hold.
+ * `$.prompt.submit` is not awaited (it resolves only once its turn starts); a `{ drop }` answer or a
+ * rejection is a failed press.
  */
-function sendBack($, gen) {
+async function drainBack($, checked = null) {
+  const intent = pendingBack;
+  if (!intent || intent.phase !== "waiting" || turnRunning) return;
+  intent.phase = "checking";
+  let now = checked;
+  try {
+    now ??= await checkAway($);
+  } catch (err) {
+    backFailed($, intent, err);
+    return;
+  }
+  if (pendingBack !== intent) return;
+  if (!now.away || now.since !== intent.since) {
+    pendingBack = null;
+    applySnapshot($, snapshot);
+    return;
+  }
+  if (turnRunning) {
+    intent.phase = "waiting";
+    return;
+  }
+  intent.phase = "sent";
   try {
     Promise.resolve($.prompt.submit({ text: BACK_WORD, asUser: true })).then(
       (r) => {
-        if (r?.drop) backFailed($, gen, r.drop);
+        if (r?.drop) backFailed($, intent, r.drop);
       },
-      (err) => backFailed($, gen, err),
+      (err) => backFailed($, intent, err),
     );
   } catch (err) {
-    backFailed($, gen, err);
+    backFailed($, intent, err);
   }
 }
 
@@ -157,9 +206,11 @@ function sendBack($, gen) {
  * error is logged once, named by `where`.
  */
 function applySnapshot($, next, where = "query") {
-  if (!(next.ok && next.away)) backPressed = false;
+  // The press is done once a query sees its hold gone (home, or another hold). A failed query
+  // proves nothing, so the press stays pending and a second press still sends nothing.
+  if (pendingBack?.since && next.ok && (!next.away || next.since !== pendingBack.since)) pendingBack = null;
   const { backPressed: _shown, ...query } = next;
-  snapshot = backPressed ? { ...query, backPressed: true } : query;
+  snapshot = pendingBack ? { ...query, backPressed: true } : query;
   const key = JSON.stringify(bandModel(snapshot));
   if (key !== viewKey) {
     viewKey = key;
@@ -196,32 +247,41 @@ async function refresh($) {
 }
 
 /**
- * Run act.mjs with one verb, then refresh. Back: mark the press at once (so a second press sends
- * nothing), and when act.mjs says the session is away, toast and send `back`; home, the mark goes.
- * A failed action is logged (Back's also toasted), and the band redrawn from the query either way.
+ * Run act.mjs with one verb, then refresh. Back: one pending press at a time (a second press, or
+ * one while the first waits, sends nothing); when act.mjs says the session is away, a toast and
+ * `back` sent now or at the end of the running turn (drainBack); home, the press is dropped. A
+ * failed action is logged (Back's also toasted), and the band redrawn from the query either way.
  */
 async function act($, verb, index) {
   const gen = generation;
   if (verb === "back") {
-    if (backPressed) return;
-    backPressed = true;
+    if (pendingBack) return;
+    const intent = { since: null, phase: "pressed" };
+    pendingBack = intent;
     applySnapshot($, snapshot);
-  }
-  try {
-    const sessionId = await $.session.id();
-    const script = pathUnder($.plugin.root, "mods/band/act.mjs");
-    const run = await $.process.run(["node", ...actArgv(script, sessionId, verb, index)], { timeoutMs: SCRIPT_TIMEOUT_MS });
-    const result = readResult(run.stdout);
-    if (!result.ok) throw new Error(result.error);
-    if (verb === "back" && gen === generation) {
-      if (result.away) {
-        toast($, "brb: Back pressed, ending the hold");
-        sendBack($, gen);
-      } else backPressed = false;
+    try {
+      const checked = await checkAway($);
+      if (pendingBack === intent) {
+        if (checked.away) {
+          intent.since = checked.since;
+          intent.phase = "waiting";
+          toast($, "brb: Back pressed, ending the hold");
+          await drainBack($, checked);
+        } else pendingBack = null;
+      }
+    } catch (err) {
+      backFailed($, intent, err);
     }
-  } catch (err) {
-    if (verb === "back") backFailed($, gen, err);
-    else await logFault($, verb, err);
+  } else {
+    try {
+      const sessionId = await $.session.id();
+      const script = pathUnder($.plugin.root, "mods/band/act.mjs");
+      const run = await $.process.run(["node", ...actArgv(script, sessionId, verb, index)], { timeoutMs: SCRIPT_TIMEOUT_MS });
+      const result = readResult(run.stdout);
+      if (!result.ok) throw new Error(result.error);
+    } catch (err) {
+      await logFault($, verb, err);
+    }
   }
   if (gen === generation) await refresh($);
 }
@@ -261,7 +321,8 @@ function stop($) {
   }
   timers = [];
   generation++;
-  backPressed = false;
+  pendingBack = null;
+  turnRunning = false;
   inFlight = false;
   snapshot = emptySnapshot();
   suggested = null;
@@ -349,7 +410,10 @@ export function register(on, options) {
 
   on("turn.start", async ($, e, next) => {
     try {
-      if (e.agentId === undefined) refresh($);
+      if (e.agentId === undefined) {
+        turnRunning = true;
+        refresh($);
+      }
     } catch (err) {
       await logFault($, "turn.start", err);
     }
@@ -358,7 +422,12 @@ export function register(on, options) {
 
   on("turn.complete", async ($, e, next) => {
     try {
-      if (e.agentId === undefined) await refresh($);
+      if (e.agentId === undefined) {
+        turnRunning = false;
+        await refresh($);
+        // Not awaited past its own check: a pending press sends `back` now the session is idle.
+        drainBack($).catch((err) => logFault($, "turn.complete", err));
+      }
     } catch (err) {
       await logFault($, "turn.complete", err);
     }

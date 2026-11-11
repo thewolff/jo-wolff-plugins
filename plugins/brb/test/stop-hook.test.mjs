@@ -8,8 +8,8 @@
 // shapes, and with no transcript); an unwritable state dir still surfaces the fire; a `back`
 // mid-stop is not undone; a hold filed while the stop computes (before its lock, and from a
 // second process holding the lock) is merged, not overwritten; malformed input → exit 0, one
-// errors.log line, no block; the band's Back marker ends the hold at a stop (a stale one
-// is removed). Plus the pure helpers of lib/stop-core.mjs. node --test.
+// errors.log line, no block; a `back-requested` file left by 0.4.0 or 0.4.1 does not end the
+// hold at a stop. Plus the pure helpers of lib/stop-core.mjs. node --test.
 
 import test from "node:test";
 import assert from "node:assert/strict";
@@ -17,7 +17,7 @@ import { chmodSync, existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
 import { appleScript, countToolUses, decideStop, osc9 } from "../lib/stop-core.mjs";
-import { clearAway, freshAway, readChecklist, writeAway } from "../lib/state.mjs";
+import { clearAway, freshAway, readAway, readChecklist, writeAway } from "../lib/state.mjs";
 import { backstopReason, firstLineReason, keepWorkingReason } from "../lib/text.mjs";
 import { hold } from "../scripts/brb.mjs";
 import { box, exited, lockHolder, promptInput, row, runHook, stopInput } from "./helpers.mjs";
@@ -41,6 +41,21 @@ test("home: passthrough, nothing printed, nothing written", () => {
     assert.equal(r.status, 0);
     assert.ok(r.stdout.trim() === "" || r.stdout.trim() === "{}", r.stdout);
     assert.ok(!existsSync(b.stateDir("s1")));
+  } finally {
+    b.release();
+  }
+});
+
+test("a `back-requested` file left by 0.4.0 or 0.4.1 ends no hold at a stop", () => {
+  const b = box();
+  try {
+    goAway(b);
+    writeFileSync(join(b.stateDir("s1"), "back-requested"), "");
+    b.writeTranscript([row.user(), row.tool()]);
+    const r = runHook(b, "stop", stopInput(b, { last_assistant_message: "Renamed the flag." }));
+    assert.equal(r.status, 0);
+    assert.notEqual(readAway("s1", b.env), null, "still away");
+    assert.equal(readChecklist("s1", b.env), null, "no checklist: the hold did not end");
   } finally {
     b.release();
   }

@@ -38,9 +38,11 @@ test("readSnapshot: away, home and error shapes come back typed; junk is an erro
   assert.deepEqual(emptySnapshot(), { ok: true, away: false, checklist: null });
 });
 
-test("readResult: ok (with `away` when the action printed one), a named error, and junk", () => {
+test("readResult: ok (with `away`, and `since` when away, when the action printed them), a named error, and junk", () => {
   assert.deepEqual(readResult('{"ok":true,"checklist":null}\n'), { ok: true });
   assert.deepEqual(readResult('{"ok":true,"away":true}\n'), { ok: true, away: true });
+  assert.deepEqual(readResult(`{"ok":true,"away":true,"since":"${SINCE}"}`), { ok: true, away: true, since: SINCE });
+  assert.deepEqual(readResult('{"ok":true,"away":false,"since":"x"}'), { ok: true, away: false });
   assert.deepEqual(readResult('{"ok":true,"away":false}'), { ok: true, away: false });
   assert.deepEqual(readResult('{"ok":true,"away":"yes"}'), { ok: true });
   assert.deepEqual(readResult('{"ok":false,"error":"no"}'), { ok: false, error: "no" });

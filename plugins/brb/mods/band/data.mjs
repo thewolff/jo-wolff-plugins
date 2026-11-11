@@ -71,7 +71,7 @@ export function readSnapshot(stdout) {
   };
 }
 
-/** What act.mjs printed → `{ ok: true }` (with `away` when it printed one, as `back` does) or `{ ok: false, error }`; junk is an error, never a throw. */
+/** What act.mjs printed → `{ ok: true }` (with `away`, and `since` when away, when the action printed them, as `back` does) or `{ ok: false, error }`; junk is an error, never a throw. */
 export function readResult(stdout) {
   let parsed;
   try {
@@ -81,7 +81,8 @@ export function readResult(stdout) {
   }
   if (!parsed || typeof parsed !== "object") return { ok: false, error: "action printed no object" };
   if (parsed.ok !== true) return { ok: false, error: String(parsed.error ?? "action failed") };
-  return typeof parsed.away === "boolean" ? { ok: true, away: parsed.away } : { ok: true };
+  if (typeof parsed.away !== "boolean") return { ok: true };
+  return parsed.away && typeof parsed.since === "string" ? { ok: true, away: true, since: parsed.since } : { ok: true, away: parsed.away };
 }
 
 /**
