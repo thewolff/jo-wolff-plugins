@@ -35,9 +35,24 @@
       "description": "Before big work in a repo, make the agent find the existing pattern that does each new piece's job and record reuse, replace, or new with a reason. Hooks hold Edit, Write, commits and PRs after N distinct files, and refuse a plan-proposing reply, until the receipt exists."
     },
     {
+      "name": "ledger",
+      "source": "./plugins/ledger",
+      "description": "A durable record of the questions an agent asks you and the choices it makes without asking, in one SQLite file; hooks keep every question, answer and decision on a row and gate a push on it."
+    },
+    {
       "name": "as2-skills",
       "source": "./plugins/as2-skills",
       "description": "The 22 engineering skills of agent-system 2.0: spec and plan, plan execution, TDD, debugging, code review, git workflow, security, research, cross-model review and more. Vendored from addyosmani/agent-skills, pbakaus/impeccable, blader/humanizer and obra/superpowers at pinned releases, with frontmatter claude.ai accepts."
+    },
+    {
+      "name": "plugin-kit",
+      "source": "./plugins/plugin-kit",
+      "description": "Start a new plugin that meets this repository's test bar on day one: ask the agent to create or scaffold one. Also keeps the shared libraries and release reviewers the other plugins vendor."
+    },
+    {
+      "name": "ctx-watch",
+      "source": "./plugins/ctx-watch",
+      "description": "Notice when the ctx daemon is dead, unsupervised or stale, or its semantic index is not ready; repair it, and say so at session start and in a macOS popup from a launchd timer."
     },
     {
       "name": "delegation",
@@ -48,6 +63,11 @@
       "name": "continuity",
       "source": "./plugins/continuity",
       "description": "Keep a long session's state across compaction. Before every compaction a save writes branch, diff, the host's file operations and the recent asks to a snapshot; right after, a restore injects it back with the durable notes listed and a liveness line saying when the save last worked. An OMP extension runs the plugin's own Claude Code hooks around session_before_compact and session_compact. Every hook fails open."
+    },
+    {
+      "name": "brb",
+      "source": "./plugins/brb",
+      "description": "Type brb and walk away: the agent keeps working, every ask waits in a digest, only an on-fire finding comes through at once, and back prints the digest and ends the hold."
     }
   ]
 }
