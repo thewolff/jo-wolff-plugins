@@ -13,14 +13,6 @@
 // tool-less stop-hook continuation brought nothing new, or two stops passed with no tool calls
 // between them. Home → null, nothing printed. The whole contract is in stop-core.mjs's header.
 //
-// The band's Back button (mods/band) cannot run a hook, so it leaves a `back-requested` marker
-// in the session directory. A stop that finds the marker while away ends the hold first, as
-// `back` does (lib/back.mjs endHold: archive, checklist.json for the band, away.json cleared),
-// and blocks this stop once with the back instruction and the digest as the reason, so the
-// agent's next reply is the digest, the same as after `back` typed; the archive line and the
-// digest ride a systemMessage too. The message that was stopping is not filed: Jo is back and
-// reads it. A marker with no hold is removed and the stop goes on as home.
-//
 // How it fails: stdin not JSON, a thrown error, or no answer in 4 s → the runner logs it to
 // ${XDG_STATE_HOME:-~/.local/state}/brb/errors.log and the stop proceeds. An unreadable
 // transcript counts every stop-hook continuation as tool-less. An unwritable state directory is
@@ -29,20 +21,13 @@
 // OMP spawns this same file with BRB_HARNESS=omp (omp/brb-omp.ts) and reads the same JSON.
 
 import { runHook, invokedDirectly } from "../lib/hook-runner.mjs";
-import { endHold } from "../lib/back.mjs";
-import { backRequested } from "../lib/state.mjs";
 import { decideStop } from "../lib/stop-core.mjs";
 
 /**
  * @param {object} input  the Stop payload
  * @returns {object|null}
  */
-export function handle(input, { env = process.env, now = () => new Date().toISOString() } = {}) {
-  const sessionId = typeof input?.session_id === "string" ? input.session_id : "";
-  if (backRequested(sessionId, env)) {
-    const ended = endHold(sessionId, env, now());
-    if (ended) return { decision: "block", reason: ended.agentText, systemMessage: ended.text };
-  }
+export function handle(input, { env = process.env } = {}) {
   return decideStop(input, { env });
 }
 

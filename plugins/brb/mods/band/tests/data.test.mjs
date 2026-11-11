@@ -14,7 +14,7 @@ import { sessionDir, sessionKey } from "../../../lib/state.mjs";
 import { awayFor } from "../../../lib/text.mjs";
 
 const SINCE = "2026-11-04T18:42:00.000Z";
-const AWAY = { ok: true, away: true, since: SINCE, note: "", held: 12, onFire: 0, items: [], backRequested: false };
+const AWAY = { ok: true, away: true, since: SINCE, note: "", held: 12, onFire: 0, items: [] };
 const minutes = (n) => Date.parse(SINCE) + n * 60_000;
 
 test("readSnapshot: away, home and error shapes come back typed; junk is an error, never a throw", () => {
@@ -22,9 +22,9 @@ test("readSnapshot: away, home and error shapes come back typed; junk is an erro
   assert.deepEqual(readSnapshot(JSON.stringify({ ok: true, away: false })), { ok: true, away: false, checklist: null });
   assert.deepEqual(
     readSnapshot(JSON.stringify({ ok: true, away: true, since: SINCE, note: "lunch", held: 3, onFire: 1, items: ["a", 7, "b"], backRequested: true })),
-    { ok: true, away: true, since: SINCE, note: "lunch", held: 3, onFire: 1, items: ["a", "b"], backRequested: true },
+    { ok: true, away: true, since: SINCE, note: "lunch", held: 3, onFire: 1, items: ["a", "b"] },
   );
-  assert.deepEqual(readSnapshot(JSON.stringify({ ok: true, away: true, since: SINCE, held: -1, onFire: 1.5, note: 7 })), { ok: true, away: true, since: SINCE, note: "", held: 0, onFire: 0, items: [], backRequested: false });
+  assert.deepEqual(readSnapshot(JSON.stringify({ ok: true, away: true, since: SINCE, held: -1, onFire: 1.5, note: 7 })), { ok: true, away: true, since: SINCE, note: "", held: 0, onFire: 0, items: [] });
   assert.deepEqual(
     readSnapshot(JSON.stringify({ ok: true, away: false, checklist: { at: "t", since: SINCE, note: "n", items: [{ text: "a", done: true }, { text: "b" }, { nope: 1 }, "c"] } })),
     { ok: true, away: false, checklist: { at: "t", since: SINCE, note: "n", items: [{ text: "a", done: true }, { text: "b", done: false }] } },
@@ -38,8 +38,13 @@ test("readSnapshot: away, home and error shapes come back typed; junk is an erro
   assert.deepEqual(emptySnapshot(), { ok: true, away: false, checklist: null });
 });
 
-test("readResult: ok, a named error, and junk", () => {
+test("readResult: ok (with `away`, and `since` when away, when the action printed them), a named error, and junk", () => {
   assert.deepEqual(readResult('{"ok":true,"checklist":null}\n'), { ok: true });
+  assert.deepEqual(readResult('{"ok":true,"away":true}\n'), { ok: true, away: true });
+  assert.deepEqual(readResult(`{"ok":true,"away":true,"since":"${SINCE}"}`), { ok: true, away: true, since: SINCE });
+  assert.deepEqual(readResult('{"ok":true,"away":false,"since":"x"}'), { ok: true, away: false });
+  assert.deepEqual(readResult('{"ok":true,"away":false}'), { ok: true, away: false });
+  assert.deepEqual(readResult('{"ok":true,"away":"yes"}'), { ok: true });
   assert.deepEqual(readResult('{"ok":false,"error":"no"}'), { ok: false, error: "no" });
   assert.deepEqual(readResult("garbage"), { ok: false, error: "action printed no JSON" });
   assert.deepEqual(readResult("null"), { ok: false, error: "action printed no object" });
@@ -70,9 +75,8 @@ test("statusText: the note is dropped whole past STATUS_MAX, then `say back`, th
   }
 });
 
-test("suggestionText: `away <dur> — type back` while away, `back` once Back was pressed, nothing home", () => {
+test("suggestionText: `away <dur> — type back` while away, nothing home", () => {
   assert.equal(suggestionText(AWAY, { now: minutes(40) }), "away 40m — type back");
-  assert.equal(suggestionText({ ...AWAY, backRequested: true }, { now: minutes(40) }), "back");
   assert.equal(suggestionText(emptySnapshot()), null);
   assert.equal(suggestionText({ ok: false, error: "x" }), null);
 });
