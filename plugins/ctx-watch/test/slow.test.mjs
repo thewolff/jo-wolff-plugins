@@ -11,7 +11,7 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "nod
 import { createServer } from "node:net";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
-import { probe, check, daemonAlive, FIX } from "../lib/probe.mjs";
+import { probe, check, daemonAlive, connectSocket, FIX } from "../lib/probe.mjs";
 import { EMPTY, step, statePath, writeState, readState, STRIKES_TO_DOWN, SLOW_MAX_MS } from "../lib/state.mjs";
 import * as lib from "../lib/mid-session.mjs";
 import * as hook from "../hooks/mid-session.mjs";
@@ -258,4 +258,108 @@ test("slow: FIX is unchanged for a slow run that outlasted the bound (the popup'
   const r = slowResult(NOW);
   assert.equal(r.fix, FIX);
   assert.ok(STRIKES_TO_DOWN >= 2);
+});
+
+// --- Codex round 4 on PR #112 ---------------------------------------------------------------
+
+/** A semantic-down state, a session SessionStart told of a daemon outage (no timer downSince yet), then one tick of `result`. */
+function toldThenTick(b, result, at) {
+  const s0 = { ...EMPTY, episode: "down", episodeKind: "semantic", strikes: 2, kindStrikes: 2, downSince: NOW - 2 * MIN, lastTickAt: NOW - 1000, intervalS: 300, lastProbe: { at: NOW - 1000, ok: false, reason: "the ctx semantic index is not ready", healed: null } };
+  writeState(statePath(b.env), s0);
+  const dir = join(b.env.XDG_STATE_HOME, "ctx-watch");
+  assert.equal(lib.noteTold(dir, "s-slow", { toldAt: NOW }), null);
+  writeState(statePath(b.env), step(s0, result, at).state);
+  return dir;
+}
+
+test("r4: a slow tick after a semantic episode is no recovery: nothing said, the outage latch kept", () => {
+  const b = sessionBox();
+  try {
+    const dir = toldThenTick(b, slowResult(NOW + 1000), NOW + 1000);
+    assert.equal(readState(statePath(b.env)).episodeKind, "semantic", "the slow tick holds the old kind (the precondition)");
+    assert.equal(say(b, NOW + 2000), null, "a status call that timed out answered nothing");
+    assert.equal(lib.readLatch(lib.latchPath(dir, "s-slow")).toldAt, NOW, "the outage latch survives");
+  } finally {
+    b.release();
+  }
+});
+
+test("r4: a live-upgrade tick after a semantic episode is no recovery either", () => {
+  const b = sessionBox();
+  try {
+    const waiting = { ok: false, upgrading: true, at: NOW + 1000, reason: "upgrade in progress", fix: "ctx upgrade status --format json", fields: {}, healed: null };
+    const dir = toldThenTick(b, waiting, NOW + 1000);
+    assert.equal(say(b, NOW + 2000), null);
+    assert.equal(lib.readLatch(lib.latchPath(dir, "s-slow")).toldAt, NOW);
+  } finally {
+    b.release();
+  }
+});
+
+test("r4: a tick that answered semantic-only after the telling is still the daemon's recovery", () => {
+  const b = sessionBox();
+  try {
+    const semantic = { ok: false, healable: false, at: NOW + 1000, reason: "the ctx semantic index is not ready", fix: "ctx semantic enable --wait", fields: {}, healed: null };
+    const dir = toldThenTick(b, semantic, NOW + 1000);
+    const text = say(b, NOW + 2000)?.hookSpecificOutput?.additionalContext ?? "";
+    assert.match(text, /daemon is back/);
+    assert.equal(lib.readLatch(lib.latchPath(dir, "s-slow")).toldAt, null);
+  } finally {
+    b.release();
+  }
+});
+
+test("r4: endpoint paths that are not ctx's socket shapes are not alive, and never reach the connector", () => {
+  let connects = 0;
+  const connect = () => (connects++, { ok: true, detail: "connected" });
+  const ep = endpoint(process.pid);
+  const file = join(ep.root, "daemon", "query-endpoint.json");
+  const put = (o) => writeFileSync(file, JSON.stringify({ schema_version: 1, transport: "unix", pid: process.pid, token: "t", ...o }));
+  try {
+    for (const path of ["--version", "--help", "-e", "bad\0socket", "query.sock", "daemon/query.sock", "/etc/passwd", join(ep.root, "elsewhere.sock"), `/tmp/ctx-q-${"a".repeat(32)}/../x.sock`, "/".repeat(2048), 42, null, ""]) {
+      put({ path });
+      const r = daemonAlive({ env: { CTX_DATA_ROOT: ep.root }, connect });
+      assert.equal(r.alive, false, `path ${JSON.stringify(path)}`);
+      assert.match(r.detail, /not ctx's query socket|no pid and socket path/, `path ${JSON.stringify(path)}: ${r.detail}`);
+    }
+    put({ path: ep.sock, transport: "tcp" });
+    assert.equal(daemonAlive({ env: { CTX_DATA_ROOT: ep.root }, connect }).alive, false, "a transport other than unix");
+    assert.equal(connects, 0, "the connector is never handed a path of the wrong shape");
+    // The two shapes ctx 2.3.0 binds: <data root>/daemon/query.sock, or /tmp-or-TMPDIR/ctx-q-<32 hex>/q.sock when that is too long.
+    put({ path: ep.sock });
+    assert.equal(daemonAlive({ env: { CTX_DATA_ROOT: ep.root }, connect }).alive, true);
+    put({ path: `/tmp/ctx-q-${"0123456789abcdef".repeat(2)}/q.sock` });
+    assert.equal(daemonAlive({ env: { CTX_DATA_ROOT: ep.root }, connect }).alive, true);
+  } finally {
+    ep.release();
+  }
+});
+
+test("r4: a connector that throws, and the default connector handed option-like text, are not alive and never throw", () => {
+  const ep = endpoint(process.pid);
+  try {
+    const r = daemonAlive({ env: { CTX_DATA_ROOT: ep.root }, connect: () => { throw new TypeError("boom"); } });
+    assert.equal(r.alive, false);
+    assert.match(r.detail, /boom/);
+    for (const path of ["--version", "--help", "bad\0socket"]) {
+      const c = connectSocket(path, 2_000);
+      assert.equal(c.ok, false, `connectSocket(${JSON.stringify(path)}): ${c.detail}`);
+    }
+  } finally {
+    ep.release();
+  }
+});
+
+test("r4: check() with a garbled endpoint and a timed-out status call is an ordinary failure, not slow, and does not throw", () => {
+  const ep = endpoint(process.pid);
+  try {
+    for (const path of ["--version", "bad\0socket"]) {
+      writeFileSync(join(ep.root, "daemon", "query-endpoint.json"), JSON.stringify({ schema_version: 1, transport: "unix", pid: process.pid, path }));
+      const r = check({ env: { ...ENV, CTX_DATA_ROOT: ep.root }, now: () => NOW, run: timingOut().run, exists: () => true });
+      assert.equal(r.ok, false);
+      assert.notEqual(r.slow, true, JSON.stringify(path));
+    }
+  } finally {
+    ep.release();
+  }
 });
