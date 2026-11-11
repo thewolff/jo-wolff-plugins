@@ -66,7 +66,7 @@ export function emptySnapshot() {
 
 /**
  * What query.mjs printed → a snapshot the pane can draw, with every field present and typed:
- *   { ok: true, since, elsewhere: [{ id, cwd, name, body, options, default, state, asked_at, age }], answers: [{ id, name, state, word, via }] }
+ *   { ok: true, since, elsewhere: [{ id, cwd, name, body, options, default, state, asked_at, age }], answers: [{ id, name, body, state, word, via }] }
  *   { ok: false, error }
  * Anything unparseable or mis-shaped becomes `{ ok: false, error }`, never a throw.
  */
@@ -105,6 +105,7 @@ function normalizeAnswer(a) {
   return {
     id: a.id,
     name: typeof a.name === "string" ? a.name : a.id,
+    body: typeof a.body === "string" ? a.body : "",
     state: a.state === "withdrawn" ? "withdrawn" : "answered",
     word: typeof a.word === "string" ? a.word : "",
     via: typeof a.via === "string" ? a.via : "",
@@ -121,6 +122,48 @@ export function headline(snapshot) {
   if (snapshot.elsewhere.length) parts.push(`${plural(snapshot.elsewhere.length, "question")} waiting in ${plural(folders, "other folder")}`);
   if (snapshot.answers.length) parts.push(`${plural(snapshot.answers.length, "answer")} since your last turn`);
   return parts.length ? parts.join(" · ") : "nothing waiting elsewhere, no new answers";
+}
+
+/** The pane's heading over the answers, count first: `1 answer since your last turn`. */
+export function answersHeading(snapshot) {
+  return `${plural(snapshot.answers.length, "answer")} since your last turn`;
+}
+
+/** The pane's heading over the questions, count first: `2 questions waiting in other folders`. */
+export function waitingHeading(snapshot) {
+  const folders = new Set(snapshot.elsewhere.map((q) => q.cwd)).size;
+  return `${plural(snapshot.elsewhere.length, "question")} waiting in ${folders === 1 ? "another folder" : "other folders"}`;
+}
+
+/**
+ * Each folder's shortest trailing path that no other listed folder ends in: `newdle-mobile`, or
+ * `a/web` and `b/web` when two folders are both called `web`. A folder with no path is `(no folder)`.
+ */
+export function folderLabels(cwds) {
+  const parts = cwds.map((c) => String(c ?? "").split(/[\\/]+/).filter(Boolean));
+  return cwds.map((cwd, i) => {
+    const own = parts[i];
+    if (!own.length) return "(no folder)";
+    for (let n = 1; n < own.length; n++) {
+      const tail = own.slice(-n).join("/");
+      if (!parts.some((other, j) => cwds[j] !== cwd && other.slice(-n).join("/") === tail)) return tail;
+    }
+    return own.join("/");
+  });
+}
+
+/** A CLI message with its row ids taken out, for the pane: `q-… (name)` becomes `this question`, other ids go. */
+export function withoutIds(message) {
+  return String(message ?? "")
+    .replace(/\bq-[a-z0-9]+(?:\s*\([^)]*\))?/gi, "this question")
+    .replace(/\b(?:an|nt|oc)-[a-z0-9]+\s*/gi, "")
+    .replace(/\s{2,}/g, " ")
+    .trim();
+}
+
+/** An option button's label: the default option says so. */
+export function optionLabel(q, option) {
+  return option === q.default ? `${option} · default` : option;
 }
 
 /**
