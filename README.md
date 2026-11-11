@@ -29,6 +29,7 @@ release; versions live there and in each plugin's `.claude-plugin/plugin.json`, 
 | [delegation](plugins/delegation/README.md) | Teach an agent what a subagent's brief must contain, and refuse a spawn whose brief lacks a required section, naming the section to add. Also ships 11 general agents and 3 delegation guards. |
 | [continuity](plugins/continuity/README.md) | Keep a long session's state across compaction: ask the agent for a handoff and block one stop until it writes one, snapshot the session before compaction, restore it after, and say if saving works. |
 | [brb](plugins/brb/README.md) | Type brb and walk away: the agent keeps working, its questions wait in a digest, and only an on-fire problem reaches you. Claude Code hides its output meanwhile. Type back to read the digest. |
+| [coordinator](plugins/coordinator/README.md) | Habits for a session that coordinates other sessions and subagents: briefing, checking what comes back, relaying the owner's decisions, and keeping a record. |
 
 ## Install
 
@@ -49,6 +50,7 @@ On Claude Code:
 /plugin install delegation@jo-wolff-plugins
 /plugin install continuity@jo-wolff-plugins
 /plugin install brb@jo-wolff-plugins
+/plugin install coordinator@jo-wolff-plugins
 ```
 
 On OMP, from a shell:
