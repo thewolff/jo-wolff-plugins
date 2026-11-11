@@ -1,7 +1,7 @@
 {
   "name": "jo-wolff-plugins",
   "owner": { "name": "Jo Wolff" },
-  "description": "What an agent's output is made of, what shape it arrives in, when an agent may write code, and whether a thing is worth building at all: published for anyone to install.",
+  "description": "Claude Code and OMP plugins for working with an agent: receipted facts, readable messages, gated pairing, build-or-not checks, handoffs across compaction, an away mode, and more.",
   "plugins": [
     {
       "name": "output-types",
@@ -27,7 +27,7 @@
     {
       "name": "reminders-review",
       "source": "./plugins/reminders-review",
-      "description": "Go through your open Apple Reminders one at a time with an agent: it answers, confirms before acting, and closes a reminder only when you say yes. macOS, via remindctl."
+      "description": "Go through your open Apple Reminders one at a time with an agent: it answers, confirms before acting, and closes one only on your yes. It can also raise what is due each session. macOS, via remindctl."
     },
     {
       "name": "pattern-check",
@@ -42,32 +42,32 @@
     {
       "name": "as2-skills",
       "source": "./plugins/as2-skills",
-      "description": "The 22 engineering skills of agent-system 2.0, vendored from four upstream skill packs at pinned releases, with frontmatter claude.ai accepts. Skills only, no hooks."
+      "description": "22 engineering skills (spec and plan, TDD, debugging, code review, security, research and more), most vendored from four upstream skill packs at pinned releases. Skills only, no hooks."
     },
     {
       "name": "plugin-kit",
       "source": "./plugins/plugin-kit",
-      "description": "Start a new plugin that meets this repository's test bar on day one: ask the agent to create or scaffold one. Also keeps the shared libraries and release reviewers the other plugins vendor."
+      "description": "Scaffold a new plugin for this repository that passes its test bar on day one. Also holds the shared libraries, templates and release-review agents the other plugins copy."
     },
     {
       "name": "ctx-watch",
       "source": "./plugins/ctx-watch",
-      "description": "Notice when the ctx daemon is dead, unsupervised or stale, or its semantic index is not ready; repair it, and say so at session start and in a macOS popup from a launchd timer."
+      "description": "Notice when the ctx daemon is dead, unsupervised or stale or its index is not ready, repair it, say so at session start and in a macOS popup, and warn when a resumed session skips ctx."
     },
     {
       "name": "delegation",
       "source": "./plugins/delegation",
-      "description": "Teach an agent the brief a subagent is handed, then gate on it: a spawn whose brief lacks a required section is refused with that section to fill in. Ships the general agents and guards."
+      "description": "Teach an agent what a subagent's brief must contain, and refuse a spawn whose brief lacks a required section, naming the section to add. Also ships 11 general agents and 3 delegation guards."
     },
     {
       "name": "continuity",
       "source": "./plugins/continuity",
-      "description": "Keep a long session's state across compaction: a snapshot saved before it and restored after, a liveness line on every start, and a handoff skill for what no hook can derive."
+      "description": "Keep a long session's state across compaction: ask the agent for a handoff and block one stop until it writes one, snapshot the session before compaction, restore it after, and say if saving works."
     },
     {
       "name": "brb",
       "source": "./plugins/brb",
-      "description": "Type brb and walk away: the agent keeps working, every ask waits in a digest, only an on-fire finding comes through at once, and back prints the digest and ends the hold."
+      "description": "Type brb and walk away: the agent keeps working, its questions wait in a digest, and only an on-fire problem reaches you. Claude Code hides its output meanwhile. Type back to read the digest."
     }
   ]
 }

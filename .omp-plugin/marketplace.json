@@ -1,12 +1,12 @@
 {
   "name": "jo-wolff-plugins",
   "owner": { "name": "Jo Wolff" },
-  "description": "What an agent's output is made of, what shape it arrives in, when an agent may write code, and whether a thing is worth building at all: published for anyone to install.",
+  "description": "Claude Code and OMP plugins for working with an agent: receipted facts, readable messages, gated pairing, build-or-not checks, handoffs across compaction, an away mode, and more.",
   "plugins": [
     {
       "name": "output-types",
       "source": "./plugins/output-types",
-      "description": "Label receipted facts as CLAIM or CITE, with the receipt that earns the label, and leave the rest unlabeled, so a reader can tell what was checked from what was assumed."
+      "description": "Label only receipted facts, as CLAIM or CITE with the receipt that earns the label, and leave the rest unlabeled; a Stop check warns about any label that has no receipt."
     },
     {
       "name": "i-have-audhd",
@@ -17,37 +17,42 @@
     {
       "name": "paired-coding",
       "source": "./plugins/paired-coding",
-      "description": "Pair with an agent one change set at a time: it proposes a card naming the decision inside the change, you agree in conversation, and a gate at the tool boundary refuses every write outside the agreed change set. Gate on Claude Code and OMP, on macOS and Linux."
+      "description": "Pair with an agent one change set at a time: a card names the decision in each change, you agree in conversation, and a gate at the tool boundary refuses every write outside the agreed set."
     },
     {
       "name": "ask-graham",
       "source": "./plugins/ask-graham",
-      "description": "Answer \"should we build X?\" with Graham's stated judgment — his gate questions, the 2-minute rule, fewer lines wins — and one verdict: do it now, start now, later, or don't build."
+      "description": "Decide whether a new idea is worth building, with one engineer's stated judgment and one verdict. Runs on /ask-graham or \"should we build X?\", and on every new idea if you opt in."
     },
     {
       "name": "reminders-review",
       "source": "./plugins/reminders-review",
-      "description": "Go through your open Apple Reminders one at a time with an agent: it answers the questions, confirms before acting on the instructions, asks when unclear, and closes each one only when you say yes. Optionally raises what is due in the lists you watch at the start of every session and hourly after. macOS, via remindctl."
+      "description": "Go through your open Apple Reminders one at a time with an agent: it answers, confirms before acting, and closes one only on your yes. It can also raise what is due each session. macOS, via remindctl."
     },
     {
       "name": "pattern-check",
       "source": "./plugins/pattern-check",
-      "description": "Before big work in a repo, make the agent find the existing pattern that does each new piece's job and record reuse, replace, or new with a reason. Hooks hold Edit, Write, commits and PRs after N distinct files, and refuse a plan-proposing reply, until the receipt exists."
+      "description": "Before big work in a repository, make the agent find the existing pattern for each new piece and record reuse, replace or new; hooks hold writes, commits and PRs until that receipt exists."
     },
     {
       "name": "as2-skills",
       "source": "./plugins/as2-skills",
-      "description": "The 22 engineering skills of agent-system 2.0: spec and plan, plan execution, TDD, debugging, code review, git workflow, security, research, cross-model review and more. Vendored from addyosmani/agent-skills, pbakaus/impeccable, blader/humanizer and obra/superpowers at pinned releases, with frontmatter claude.ai accepts."
+      "description": "22 engineering skills (spec and plan, TDD, debugging, code review, security, research and more), most vendored from four upstream skill packs at pinned releases. Skills only, no hooks."
     },
     {
       "name": "delegation",
       "source": "./plugins/delegation",
-      "description": "Teach the brief a subagent is handed, then gate on it: a spawn without a How-it-fails section is refused and the refusal carries the section to fill in; a builder-class spawn also needs a Spiral bound and this session's pattern-check receipt; an undeliverable message is marked NOT delivered; a builder report without its Stopped-because line draws a warning. With the eleven general agents and three direct-work guards ported from newdle. Claude Code hooks and an OMP extension."
+      "description": "Teach an agent what a subagent's brief must contain, and refuse a spawn whose brief lacks a required section, naming the section to add. Also ships 11 general agents and 3 delegation guards."
     },
     {
       "name": "continuity",
       "source": "./plugins/continuity",
-      "description": "Keep a long session's state across compaction. Before every compaction a save writes branch, diff, the host's file operations and the recent asks to a snapshot; right after, a restore injects it back with the durable notes listed and a liveness line saying when the save last worked. An OMP extension runs the plugin's own Claude Code hooks around session_before_compact and session_compact. Every hook fails open."
+      "description": "Keep a long session's state across compaction: ask the agent for a handoff and block one stop until it writes one, snapshot the session before compaction, restore it after, and say if saving works."
+    },
+    {
+      "name": "brb",
+      "source": "./plugins/brb",
+      "description": "Type brb and walk away: the agent keeps working, its questions wait in a digest, and only an on-fire problem reaches you. Claude Code hides its output meanwhile. Type back to read the digest."
     }
   ]
 }
