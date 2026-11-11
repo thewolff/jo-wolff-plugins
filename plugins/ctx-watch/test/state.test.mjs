@@ -50,7 +50,7 @@ test("one failing tick strikes; the second goes down and asks for the popup; del
   assert.equal(two.state.downSince, T0 + 300_000);
   assert.equal(two.state.popupShown.daemon, false, "step asks; delivery latches");
   const delivered = popupDelivered(two.state, shown, T0 + 300_000);
-  assert.deepEqual(delivered.popupShown, { daemon: true, semantic: false });
+  assert.deepEqual(delivered.popupShown, { daemon: true, semantic: false, upgrade: false });
   assert.equal(delivered.lastPopupAt, T0 + 300_000);
   assert.equal(delivered.popupFailedAt, null);
 
@@ -106,7 +106,8 @@ test("a popup still up after the grace is pending, not delivered: only a confirm
 
   const confirmed = popupSettled(pending, outcome({ code: 0 }), T0 + 6);
   assert.deepEqual({ shown: confirmed.state.popupShown.daemon, pending: confirmed.state.popupPending, at: confirmed.state.lastPopupAt }, { shown: true, pending: null, at: T0 + 1 });
-  assert.equal(confirmed.line, "popup delivered: /usr/bin/osascript ended with exit 0");
+  assert.equal(confirmed.line, "popup delivered: /usr/bin/osascript ended with exit 0 (not answered; raised again after 4 h if still failing)", "an outcome with no `gave up:` answer counts as unanswered");
+  assert.equal(popupSettled(pending, outcome({ code: 0, gaveUp: false }), T0 + 6).line, "popup delivered: /usr/bin/osascript ended with exit 0");
   assert.equal(step(confirmed.state, fail, T0 + 7).popup, false);
   const acknowledged = popupSettled(pending, outcome({ code: 1, acknowledged: true }), T0 + 6);
   assert.equal(acknowledged.state.popupShown.daemon, true, "a person dismissing the dialog (-128) is an acknowledgement");
@@ -124,7 +125,7 @@ test("a passing tick closes the episode and re-arms the popup; the next down pop
   assert.equal(s.episode, "down");
   const up = step(s, pass, T0 + 2);
   assert.equal(up.popup, false);
-  assert.deepEqual({ episode: up.state.episode, strikes: up.state.strikes, popupShown: up.state.popupShown, downSince: up.state.downSince, popupFailedAt: up.state.popupFailedAt }, { episode: "up", strikes: 0, popupShown: { daemon: false, semantic: false }, downSince: null, popupFailedAt: null });
+  assert.deepEqual({ episode: up.state.episode, strikes: up.state.strikes, popupShown: up.state.popupShown, downSince: up.state.downSince, popupFailedAt: up.state.popupFailedAt }, { episode: "up", strikes: 0, popupShown: { daemon: false, semantic: false, upgrade: false }, downSince: null, popupFailedAt: null });
   assert.equal(up.state.lastPopupAt, T0 + 1, "the history of the last popup is kept");
   s = step(up.state, fail, T0 + 3).state;
   assert.equal(s.episode, "strike");
@@ -169,11 +170,11 @@ function drive(results, state = EMPTY) {
 test("each failure kind has its own latch: a daemon death after a semantic popup raises its own popup (the review's P4 shape)", () => {
   const { popped, state } = drive([semantic, semantic, fail, fail, fail, fail]);
   assert.deepEqual(popped, ["semantic", "daemon"]);
-  assert.deepEqual({ episode: state.episode, strikes: state.strikes, episodeKind: state.episodeKind, kindStrikes: state.kindStrikes, popupShown: state.popupShown }, { episode: "down", strikes: 6, episodeKind: "daemon", kindStrikes: 4, popupShown: { daemon: true, semantic: true } });
+  assert.deepEqual({ episode: state.episode, strikes: state.strikes, episodeKind: state.episodeKind, kindStrikes: state.kindStrikes, popupShown: state.popupShown }, { episode: "down", strikes: 6, episodeKind: "daemon", kindStrikes: 4, popupShown: { daemon: true, semantic: true, upgrade: false } });
   // The daemon comes back while the semantic index is still not ready: no second semantic popup, and the daemon's latch re-arms.
   const back = drive([semantic, semantic], state);
   assert.deepEqual(back.popped, []);
-  assert.deepEqual(back.state.popupShown, { daemon: false, semantic: true });
+  assert.deepEqual(back.state.popupShown, { daemon: false, semantic: true, upgrade: false });
   assert.deepEqual(drive([fail, fail], back.state).popped, ["daemon"], "the next daemon death pops again");
   assert.deepEqual(drive([fail, fail, semantic, semantic]).popped, ["daemon", "semantic"], "the reverse order pops both too");
 });
@@ -183,7 +184,7 @@ test("a semantic status that flips ready once between not-ready runs pops once; 
   assert.deepEqual(flip.popped, ["semantic"]);
   assert.equal(flip.state.popupShown.semantic, true);
   const rearmed = drive([pass, pass], flip.state);
-  assert.deepEqual({ popupShown: rearmed.state.popupShown, passStreak: rearmed.state.passStreak }, { popupShown: { daemon: false, semantic: false }, passStreak: STRIKES_TO_DOWN });
+  assert.deepEqual({ popupShown: rearmed.state.popupShown, passStreak: rearmed.state.passStreak }, { popupShown: { daemon: false, semantic: false, upgrade: false }, passStreak: STRIKES_TO_DOWN });
   assert.deepEqual(drive([semantic, semantic], rearmed.state).popped, ["semantic"], "a real return to not ready after the streak pops again");
   // A daemon popup re-arms on the first pass, as in 0.1.0.
   assert.deepEqual(drive([fail, fail, pass, fail, fail]).popped, ["daemon", "daemon"]);
@@ -197,7 +198,7 @@ test("a pending popup blocks the other kind's until it settles, and is dropped w
   const d2 = step(step(pending, fail, T0 + 2).state, fail, T0 + 3);
   assert.equal(d2.popup, false, "no second dialog while the semantic one may still be up");
   const settled = popupSettled(d2.state, { token: "t1", at: T0 + 4, bin: "/usr/bin/osascript", code: 0, signal: null, error: null, acknowledged: false }, T0 + 4);
-  assert.deepEqual(settled.state.popupShown, { daemon: false, semantic: true }, "the delivery latches the claim's kind");
+  assert.deepEqual(settled.state.popupShown, { daemon: false, semantic: true, upgrade: false }, "the delivery latches the claim's kind");
   assert.equal(step(settled.state, fail, T0 + 5).popup, true, "then the daemon's popup is asked for");
   assert.deepEqual(step(pending, pass, T0 + 2).state.popupPending, pending.popupPending, "one ready tick does not end a semantic popup's claim");
   assert.equal(step(step(pending, pass, T0 + 2).state, pass, T0 + 3).state.popupPending, null, "the streak does");
@@ -206,8 +207,8 @@ test("a pending popup blocks the other kind's until it settles, and is dropped w
 test("a state file from before 0.2.0 migrates on read: the one boolean latch is the daemon's, a pending popup with no kind is the daemon's, a strike or down is a daemon episode", () => {
   const old = { episode: "down", strikes: 5, popupShown: true, popupPending: { token: "1793700000000-13", since: 5 }, downSince: 1 };
   const { state } = validateState(old);
-  assert.deepEqual({ popupShown: state.popupShown, popupPending: state.popupPending, episodeKind: state.episodeKind, kindStrikes: state.kindStrikes, passStreak: state.passStreak }, { popupShown: { daemon: true, semantic: false }, popupPending: { token: "1793700000000-13", since: 5, kind: "daemon" }, episodeKind: "daemon", kindStrikes: 5, passStreak: 0 });
-  assert.deepEqual(validateState({ popupShown: false }).state.popupShown, { daemon: false, semantic: false });
+  assert.deepEqual({ popupShown: state.popupShown, popupPending: state.popupPending, episodeKind: state.episodeKind, kindStrikes: state.kindStrikes, passStreak: state.passStreak }, { popupShown: { daemon: true, semantic: false, upgrade: false }, popupPending: { token: "1793700000000-13", since: 5, kind: "daemon" }, episodeKind: "daemon", kindStrikes: 5, passStreak: 0 });
+  assert.deepEqual(validateState({ popupShown: false }).state.popupShown, { daemon: false, semantic: false, upgrade: false });
   assert.deepEqual(drive([fail], validateState({ episode: "strike", strikes: 1 }).state).popped, ["daemon"], "an old strike goes down and pops on the next daemon tick, as before");
   assert.equal(validateState({ episode: "strike", strikes: 1, episodeKind: null }).state.episodeKind, null, "a 0.2.0 file is taken as written");
   // Migrated: an old latch held by a semantic popup still lets a later daemon death pop once a semantic tick re-arms it.
@@ -216,7 +217,7 @@ test("a state file from before 0.2.0 migrates on read: the one boolean latch is 
   try {
     const file = join(dir, "state.json");
     writeFileSync(file, JSON.stringify(old));
-    assert.deepEqual(readState(file).popupShown, { daemon: true, semantic: false });
+    assert.deepEqual(readState(file).popupShown, { daemon: true, semantic: false, upgrade: false });
     assert.equal(existsSync(join(dir, "errors.log")), false, "a migration is not an error");
   } finally {
     rmSync(dir, { recursive: true, force: true });
@@ -231,10 +232,10 @@ test("validateState: known fields in shape pass (unknown dropped); each field ou
     [{ strikes: -100 }, "strikes is -100, not a whole number 0..1100000"],
     [{ strikes: 1.5 }, "strikes is 1.5, not a whole number 0..1100000"],
     [{ strikes: "3" }, 'strikes is "3", not a whole number 0..1100000'],
-    [{ popupShown: "yes" }, 'popupShown is "yes", not { daemon, semantic } of true | false (or one true | false from before 0.2.0)'],
-    [{ popupShown: 1 }, "popupShown is 1, not { daemon, semantic } of true | false (or one true | false from before 0.2.0)"],
-    [{ popupShown: { daemon: true } }, 'popupShown is {"daemon":true}, not { daemon, semantic } of true | false (or one true | false from before 0.2.0)'],
-    [{ episodeKind: "both" }, 'episodeKind is "both", not "daemon" | "semantic" | null'],
+    [{ popupShown: "yes" }, 'popupShown is "yes", not { daemon, semantic, upgrade? } of true | false (or one true | false from before 0.2.0)'],
+    [{ popupShown: 1 }, "popupShown is 1, not { daemon, semantic, upgrade? } of true | false (or one true | false from before 0.2.0)"],
+    [{ popupShown: { daemon: true } }, 'popupShown is {"daemon":true}, not { daemon, semantic, upgrade? } of true | false (or one true | false from before 0.2.0)'],
+    [{ episodeKind: "both" }, 'episodeKind is "both", not "daemon" | "semantic" | "upgrade" | null'],
     [{ kindStrikes: -1 }, "kindStrikes is -1, not a whole number 0..1100000"],
     [{ passStreak: 0.5 }, "passStreak is 0.5, not a whole number 0..1100000"],
     [{ lastTickAt: "soon" }, 'lastTickAt is "soon", not epoch ms | null'],

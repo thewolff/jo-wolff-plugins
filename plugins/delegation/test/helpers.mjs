@@ -85,6 +85,8 @@ export function gitRepo(dir, env) {
 export const GOOD_BRIEF = "# Target\nx\n\n## How it fails\n- it breaks\n\n## Spiral bound\n- one retry\n";
 export const HOW_ONLY = "# Target\nx\n\n## How it fails\n- it breaks\n";
 
-export function spawnPayload({ prompt = GOOD_BRIEF, subagent_type = "builder", cwd, session_id = "s-test-1", tool_name = "Agent", extra = {} } = {}) {
-  return { session_id, cwd, hook_event_name: "PreToolUse", tool_name, tool_input: { prompt, subagent_type, description: "d", ...extra } };
+// `model` defaults to haiku, which is at or under every ceiling in lib/model-routing.json, so a
+// payload built here draws no model line unless a test asks for one (`model: null` leaves it out).
+export function spawnPayload({ prompt = GOOD_BRIEF, subagent_type = "builder", cwd, session_id = "s-test-1", tool_name = "Agent", model = "haiku", extra = {} } = {}) {
+  return { session_id, cwd, hook_event_name: "PreToolUse", tool_name, tool_input: { prompt, subagent_type, description: "d", ...(model === null ? {} : { model }), ...extra } };
 }

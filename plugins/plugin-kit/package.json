@@ -1,6 +1,6 @@
 {
   "name": "plugin-kit",
-  "description": "Start a new plugin that meets this repository's test bar on day one: ask the agent to create or scaffold one. Also keeps the shared libraries and release reviewers the other plugins vendor.",
+  "description": "Scaffold a new plugin for this repository that passes its test bar on day one. Also holds the shared libraries, templates and release-review agents the other plugins copy.",
   "version": "0.4.1",
   "private": true,
   "type": "module",

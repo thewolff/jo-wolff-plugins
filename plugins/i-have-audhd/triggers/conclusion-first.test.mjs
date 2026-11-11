@@ -2,7 +2,7 @@
 //
 // The not-applicable cases are the point: the judge question is expensive and imprecise on
 // short messages, and the trigger's whole job is to keep those away from it. The Stop hook
-// runs it per unit (checks/sections.mjs), so "message" below is one unit.
+// runs it on the whole message, receipt blocks included (checks/sections.mjs).
 //
 // Run: node --test 'plugins/i-have-audhd/triggers/*.test.mjs'
 

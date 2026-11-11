@@ -45,11 +45,10 @@
 //      command resolves (judge/ask.mjs resolveJudge: the profile's enforcement.judgeCommand,
 //      else the shared judge file, plugin-kit's order); a skipped one leaves a line in
 //      skipped.log naming the rule and both places looked — a skipped check must be
-//      inspectable, never silently dead. conclusion-first and bad-news-first run per unit
-//      (checks/sections.mjs): each block-labeled section of a labeled message, or the whole
-//      message when it has none. One judge job per qualifying unit, one finding per rule
-//      naming every violating section; a judge that cannot answer is never a pass for its
-//      section (JUDGE UNAVAILABLE below).
+//      inspectable, never silently dead. conclusion-first and bad-news-first judge the whole
+//      message, output-types receipt blocks included: a receipt backs the point around it and
+//      is never judged alone (checks/sections.mjs). A judge that cannot answer is never a
+//      pass (JUDGE UNAVAILABLE below).
 //   8. Harness cap — only when I_HAVE_AUDHD_HARNESS=omp (set by the OMP adapter on its
 //      child, never by Claude Code): harnessCapsBlocks in lib/config.mjs turns every
 //      block-mode finding into a warn one when the profile does not set enforcement.armOmp,
@@ -97,7 +96,7 @@ import { checkHandedCommand } from "../checks/handed-command.mjs";
 import { checkLinkTheReference } from "../checks/link-the-reference.mjs";
 import { checkLinksResolve } from "../checks/links-resolve.mjs";
 import { readGhCache, ghCachePath } from "../lib/gh-cache.mjs";
-import { splitLabeledSections, openingWords, OPENING_WORDS } from "../checks/sections.mjs";
+import { openingWords, OPENING_WORDS } from "../checks/sections.mjs";
 import { proseCharCount } from "../checks/lines.mjs";
 import { loadEnforcement, loadSwitches, effectiveMode, harnessCapsBlocks } from "../lib/config.mjs";
 import { ruleRef } from "../lib/rules.mjs";
@@ -369,72 +368,21 @@ function handedCommandFindings(text, config, switches) {
   ];
 }
 
-// A unit of a labeled message tells the judge what it is looking at: one section, judged alone.
-function unitFraming(unit) {
-  return unit.label
-    ? `The message below is one labeled section (**${unit.label}**, line ${unit.line}) of a longer ` +
-        "message; the reader reads each labeled section as its own message, so judge it alone."
-    : "The message below is the unlabeled opening of a longer message, the text before its first " +
-        "labeled section; the reader reads each section as its own message, so judge it alone.";
-}
-
-// The per-unit question for conclusion-first and bad-news-first: the rule's question, the
-// framing when the message is labeled, then the unit's opening window — all outside the judged
-// message, so the judge reads the unit verbatim and does not have to count words.
-function unitQuestion(question, unit, sectioned) {
-  const window = openingWords(unit.text);
+// The question for conclusion-first and bad-news-first: the rule's question, then the message's
+// opening window, outside the judged message, so the judge reads the message verbatim and does
+// not have to count words.
+function openingQuestion(question, text) {
+  const window = openingWords(text);
   const count = window ? window.split(" ").length : 0;
-  return [
-    question,
-    ...(sectioned ? [unitFraming(unit)] : []),
-    `The reader's first ${count} words here are: "${window}".`,
-  ].join(" ");
+  return `${question} The reader's first ${count} words here are: "${window}".`;
 }
-
-// One judge job per unit of `text` that passes `gate`. Unlabeled: one unit, the whole text.
-function unitJobs(rule, question, units, gate) {
-  const sectioned = units.some((u) => u.label);
-  return units
-    .filter((unit) => gate(unit.text).applicable)
-    .map((unit) => ({
-      rule,
-      question: unitQuestion(question, unit, sectioned),
-      contextText: unit.text,
-      unit: sectioned ? unit : null,
-    }));
-}
-
-// "**CLAIM** at line 12" — how a finding names a section of a labeled message.
-const sectionName = (unit) =>
-  unit.label ? `**${unit.label}** at line ${unit.line}` : "the opening before the first label, at line 1";
 
 // House reason format for judge findings: rule named, what to move or add, judge's one-liner
 // carried; the block-only paste instruction rides separately (see `paste`). `hits` is every
-// violating job of ONE rule with its verdict, in job order (line order for sections); one
-// builder per rule id. Only conclusion-first and bad-news-first can carry more than one hit:
-// one per labeled section. Returns { text, paste }.
+// violating job of ONE rule with its verdict, in job order; one builder per rule id. Only
+// links-judge can carry more than one hit: one per judged link. Returns { text, paste }.
 function judgeReason(hits) {
   const [{ job, verdict }] = hits;
-  if (job.unit) {
-    const where = hits.map((h) => `${sectionName(h.job.unit)} — judge: ${h.verdict.reason}`).join("; ");
-    const count = hits.length === 1 ? "one section" : `${hits.length} sections`;
-    if (job.rule === "conclusion-first") {
-      return {
-        text:
-          `${cite("Conclusion first", job.rule)} — judged per labeled section, the point arrives after the opening ` +
-          `${OPENING_WORDS} words in ${count}: ${where}. Move each named section's point into its opening ` +
-          `${OPENING_WORDS} words and let the rest earn it.`,
-        paste: paste("opening lines of each named section"),
-      };
-    }
-    return {
-      text:
-        `${cite("Bad news first", job.rule)} — judged per labeled section, bad news arrives after the opening ` +
-        `${OPENING_WORDS} words in ${count}: ${where}. Move the bad news into the opening ${OPENING_WORDS} words ` +
-        `of each named section; the explanation goes second.`,
-      paste: paste("opening lines of each named section"),
-    };
-  }
   switch (job.rule) {
     case "do-not-batch-by-label":
       return {
@@ -494,16 +442,13 @@ const SETUP_COMMAND = `node ${fileURLToPath(new URL("../tools/setup.mjs", import
 
 // The finding for a rule whose judge gave no verdict for `misses` (its unavailable jobs, each
 // with its result). It names the rule, where the command came from, the error(s) and cause(s),
-// the unchecked sections, the evidence and the next step, and says outright that this is not
-// a pass.
+// the evidence and the next step, and says outright that this is not a pass.
 function unavailableFinding(rule, misses) {
   const errors = [...new Set(misses.map((m) => `${m.verdict.error}${m.verdict.detail ? `: ${m.verdict.detail}` : ""}, ${m.verdict.cause ?? "other"}`))].join("; ");
   const source = misses.find((m) => m.verdict.source)?.verdict.source;
-  const sections = misses.filter((m) => m.job.unit).map((m) => sectionName(m.job.unit));
-  const where = sections.length ? ` for ${sections.join("; ")}` : "";
   return {
     text:
-      `Judge unavailable (${rule}) — the judge${source ? ` (${source})` : ""} gave no verdict${where} (${errors}), so this rule was not checked; ` +
+      `Judge unavailable (${rule}) — the judge${source ? ` (${source})` : ""} gave no verdict (${errors}), so this rule was not checked; ` +
       `that is not a pass. The judge's stderr is in ${join(stateDir(), "judge-failures.log")}; ` +
       `\`${SETUP_COMMAND}\` re-tests the judge command.`,
     paste: "Nothing in the message can bring the judge back; a revision is only warned.",
@@ -662,14 +607,11 @@ async function main() {
     }
   }
 
-  // conclusion-first and bad-news-first judge each unit: every block-labeled section of a
-  // labeled message on its own, or the whole message when it has no labels.
-  const units = splitLabeledSections(text);
-
-  // conclusion-first — conclusion first: 400 prose chars per unit; below that the judge would
-  // only be guessing at "setup".
-  if (judged("conclusion-first")) {
-    judgeJobs.push(...unitJobs("conclusion-first", conclusionFirstQuestion, units, conclusionFirstApplicable));
+  // conclusion-first — conclusion first: 400 prose chars; below that the judge would only be
+  // guessing at "setup". The whole message is one unit: a receipt block under a **CLAIM** or
+  // **CITE** label backs the point around it, so it is judged with that point, never alone.
+  if (judged("conclusion-first") && conclusionFirstApplicable(text).applicable) {
+    judgeJobs.push({ rule: "conclusion-first", question: openingQuestion(conclusionFirstQuestion, text), contextText: text });
   }
 
   // report-what-you-did-not-do — report what you did not do. Needs the transcript: the trigger reads the session's
@@ -693,10 +635,11 @@ async function main() {
     }
   }
 
-  // bad-news-first — bad news first: the lexicon gate decides applicability only, per unit.
-  // "Fixed the error" trips the gate and is exactly the message the judge must acquit.
-  if (judged("bad-news-first")) {
-    judgeJobs.push(...unitJobs("bad-news-first", badNewsQuestion, units, badNewsGate));
+  // bad-news-first — bad news first: the lexicon gate decides applicability only, over the
+  // whole message. "Fixed the error" trips the gate and is exactly the message the judge must
+  // acquit.
+  if (judged("bad-news-first") && badNewsGate(text).applicable) {
+    judgeJobs.push({ rule: "bad-news-first", question: openingQuestion(badNewsQuestion, text), contextText: text });
   }
 
   // links-judge — is the linked artifact what the sentence says it is? Off until the profile
@@ -717,14 +660,10 @@ async function main() {
       }
     } else {
       const verdicts = await Promise.all(
-        judgeJobs.map((job) =>
-          askJudge(job.rule, job.question, job.contextText, config, {
-            meta: { session: sessionId, section: job.unit ? `${job.unit.label ?? "opening"}@${job.unit.line}` : "whole" },
-          }),
-        ),
+        judgeJobs.map((job) => askJudge(job.rule, job.question, job.contextText, config, { meta: { session: sessionId } })),
       );
-      // One finding per rule: a rule judged per section collects every violating section, and
-      // every section its judge could not answer for (JUDGE UNAVAILABLE in the header).
+      // One finding per rule: every violating job of a rule (links-judge has one per link), and
+      // every job its judge could not answer for (JUDGE UNAVAILABLE in the header).
       const hitsByRule = new Map();
       const missesByRule = new Map();
       const answered = new Set();

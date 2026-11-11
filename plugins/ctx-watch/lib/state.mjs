@@ -5,20 +5,29 @@
 //
 //   episode          "up" | "strike" | "down"
 //   strikes          failing ticks in a row, of any kind (0 when up)
-//   episodeKind      "daemon" | "semantic" | null: the kind of the last failing tick (null when up).
-//                    "semantic" is a failure `ctx index mode auto` cannot touch (`healable: false`:
-//                    the daemon passed every check above the semantic rows); anything else is "daemon"
+//   episodeKind      "daemon" | "semantic" | "upgrade" | null: the kind of the last failing tick
+//                    (null when up). "semantic" is a failure `ctx index mode auto` cannot touch
+//                    (`healable: false`: the daemon passed every check above the semantic rows);
+//                    "upgrade" is a ctx upgrade stuck in an active state (probe.mjs upgradeGate);
+//                    anything else is "daemon"
 //   kindStrikes      failing ticks of episodeKind in a row (0 when up)
 //   passStreak       passing ticks in a row (0 while failing)
-//   popupShown       { daemon, semantic }: one latch per failure kind, true once that kind's popup
-//                    was delivered (osascript exited 0, or the person dismissed it). The daemon
-//                    latch re-arms on any tick where the daemon is up (a pass, or a semantic
-//                    failure); the semantic latch only after STRIKES_TO_DOWN passing ticks in a row,
-//                    so a semantic status that flips ready → not ready → ready does not pop each
-//                    time. A file from before 0.2.0 has one boolean: it is read as the daemon latch
+//   popupShown       { daemon, semantic, upgrade }: one latch per failure kind, true once that
+//                    kind's popup was delivered (osascript exited 0, or the person dismissed it).
+//                    The daemon and upgrade latches re-arm on a pass; the daemon latch also on a
+//                    semantic failure (the daemon is up); the semantic latch only after
+//                    STRIKES_TO_DOWN passing ticks in a row, so a semantic status that flips
+//                    ready → not ready → ready does not pop each time. A file from before 0.2.0
+//                    has one boolean: it is read as the daemon latch; one from before 0.3.0 has
+//                    no upgrade latch: false
+//   popupUnseenAt    { daemon, semantic, upgrade }: ms a kind's popup was delivered without an
+//                    answer (osascript's `giving up after` ran out, or no answer was recorded),
+//                    else null. While its kind keeps failing, that latch opens again
+//                    POPUP_REARM_MS (4 h) later, so an outage nobody saw is raised again the same
+//                    day and not every tick; cleared whenever the kind's latch re-arms
 //   popupPending     { token, since, kind } from the moment a tick claims a popup (written before
 //                    the supervisor starts) until it is settled: not delivered yet, and no second
-//                    dialog of either kind is asked for meanwhile (`kind` missing: "daemon"). It
+//                    dialog of any kind is asked for meanwhile (`kind` missing: "daemon"). It
 //                    is dropped when its kind's latch re-arms
 //   popupFailedAt    ms of the last popup that could not be delivered this episode, or null
 //   popupFailReason  why, or null
@@ -62,7 +71,7 @@ import { appendFileSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileS
 import { randomUUID } from "node:crypto";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
-import { GIVE_UP_SECS, TOKEN, delivered, describeExit } from "./popup.mjs";
+import { GIVE_UP_SECS, TOKEN, answered, delivered, describeExit } from "./popup.mjs";
 
 export const PLUGIN = "ctx-watch";
 export const DEFAULT_INTERVAL_S = 300;
@@ -214,10 +223,23 @@ export function withStateLock(dir, fn, { waitMs = LOCK_WAIT_MS, staleMs = LOCK_S
 }
 
 /** The popup kinds, each with its own latch. */
-export const FAILURE_KINDS = Object.freeze(["daemon", "semantic"]);
+export const FAILURE_KINDS = Object.freeze(["daemon", "semantic", "upgrade"]);
 
-/** A failing check() result's kind: "semantic" for the rows the heal cannot touch (`healable: false`), else "daemon". */
+/**
+ * How long a popup that was shown but not answered (osascript's `giving up after` ran out: the
+ * person was away) stays latched before the next failing tick of its kind may pop it again.
+ * Four hours: an outage that outlasts a lunch or a meeting is raised again the same day, and a
+ * person at the desk who saw nothing is not asked again every five-minute tick.
+ */
+export const POPUP_REARM_MS = 4 * 60 * 60 * 1000;
+
+/**
+ * A failing check() result's kind: "upgrade" for a stuck ctx upgrade (`kind: "upgrade"`, the
+ * release the heal cannot do), "semantic" for the rows the heal cannot touch (`healable: false`),
+ * else "daemon".
+ */
 export function failureKind(result) {
+  if (result.kind === "upgrade") return "upgrade";
   return result.healable === false ? "semantic" : "daemon";
 }
 
@@ -227,7 +249,8 @@ export const EMPTY = Object.freeze({
   episodeKind: null,
   kindStrikes: 0,
   passStreak: 0,
-  popupShown: Object.freeze({ daemon: false, semantic: false }),
+  popupShown: Object.freeze({ daemon: false, semantic: false, upgrade: false }),
+  popupUnseenAt: Object.freeze({ daemon: null, semantic: null, upgrade: null }),
   popupFailedAt: null,
   popupFailReason: null,
   popupPending: null,
@@ -246,17 +269,19 @@ const isStr = (v) => typeof v === "string";
 const isProbe = (v) => v && typeof v === "object" && !Array.isArray(v) && validMs(v.at) && isBool(v.ok) && nullOr(isStr)(v.reason ?? null) && nullOr(isStr)(v.healed ?? null);
 const isKind = (v) => FAILURE_KINDS.includes(v);
 const isPending = (v) => v && typeof v === "object" && !Array.isArray(v) && isStr(v.token) && TOKEN.test(v.token) && validMs(v.since) && (v.kind === undefined || isKind(v.kind));
-const isLatch = (v) => isBool(v) || (v && typeof v === "object" && !Array.isArray(v) && isBool(v.daemon) && isBool(v.semantic));
+const isLatch = (v) => isBool(v) || (v && typeof v === "object" && !Array.isArray(v) && isBool(v.daemon) && isBool(v.semantic) && (v.upgrade === undefined || isBool(v.upgrade)));
+const isUnseen = (v) => v && typeof v === "object" && !Array.isArray(v) && FAILURE_KINDS.every((k) => v[k] === undefined || v[k] === null || validMs(v[k]));
 const isCount = (v) => Number.isInteger(v) && v >= 0 && v <= MAX_STRIKES;
 
 /** Each field's test and, for the message, its shape. */
 const SHAPE = Object.freeze({
   episode: [(v) => v === "up" || v === "strike" || v === "down", '"up" | "strike" | "down"'],
   strikes: [isCount, `a whole number 0..${MAX_STRIKES}`],
-  episodeKind: [nullOr(isKind), '"daemon" | "semantic" | null'],
+  episodeKind: [nullOr(isKind), '"daemon" | "semantic" | "upgrade" | null'],
   kindStrikes: [isCount, `a whole number 0..${MAX_STRIKES}`],
   passStreak: [isCount, `a whole number 0..${MAX_STRIKES}`],
-  popupShown: [isLatch, "{ daemon, semantic } of true | false (or one true | false from before 0.2.0)"],
+  popupShown: [isLatch, "{ daemon, semantic, upgrade? } of true | false (or one true | false from before 0.2.0)"],
+  popupUnseenAt: [isUnseen, "{ daemon?, semantic?, upgrade? } of epoch ms | null"],
   popupFailedAt: [nullOr(validMs), "epoch ms | null"],
   popupFailReason: [nullOr(isStr), "a string | null"],
   popupPending: [nullOr(isPending), "{ token, since, kind? } | null"],
@@ -272,7 +297,8 @@ const SHAPE = Object.freeze({
 function normalize(k, v) {
   if (k === "lastProbe" && v) return { at: v.at, ok: v.ok, reason: v.reason ?? null, healed: v.healed ?? null };
   if (k === "popupPending" && v) return { token: v.token, since: v.since, kind: v.kind ?? "daemon" };
-  if (k === "popupShown") return isBool(v) ? { daemon: v, semantic: false } : { daemon: v.daemon, semantic: v.semantic };
+  if (k === "popupShown") return isBool(v) ? { daemon: v, semantic: false, upgrade: false } : { daemon: v.daemon, semantic: v.semantic, upgrade: v.upgrade ?? false };
+  if (k === "popupUnseenAt") return { daemon: v.daemon ?? null, semantic: v.semantic ?? null, upgrade: v.upgrade ?? null };
   return v;
 }
 
@@ -353,32 +379,40 @@ export function writeState(path, state) {
 }
 
 /**
- * One tick's transition. `result` is a `check()` result (`ok`, `reason`, `healed`, `healable`);
- * `now` ms. `popup: true` asks the tick to claim and show the popup of `state.episodeKind`; see
- * popupDelivered for the latch. While any popup is pending none is asked for: the dialog may
- * still be up.
+ * One tick's transition. `result` is a `check()` result (`ok`, `reason`, `healed`, `healable`,
+ * `kind`, `upgrading`); `now` ms. `popup: true` asks the tick to claim and show the popup of
+ * `state.episodeKind`; see popupDelivered for the latch. While any popup is pending none is asked
+ * for: the dialog may still be up. A kind's latch that was delivered but not seen (its
+ * `popupUnseenAt` stamp set) opens again POPUP_REARM_MS after that stamp. A result with
+ * `upgrading: true` (ctx is mid-upgrade; the daemon reads not running by design) holds the
+ * episode as it was: no strike, no pass, no popup; only the tick stamp and lastProbe move.
  */
 export function step(state, result, now) {
   const base = { ...EMPTY, ...state, lastTickAt: now, lastProbe: { at: now, ok: result.ok, reason: result.reason ?? null, healed: result.healed?.detail ?? null } };
+  if (!result.ok && result.upgrading === true) return { state: base, popup: false };
   const shown = { ...EMPTY.popupShown, ...base.popupShown };
+  const unseen = { ...EMPTY.popupUnseenAt, ...base.popupUnseenAt };
   // A pending popup whose kind just re-armed belongs to an episode that is over; its late outcome is ignored.
   const pendingAfter = (rearmed) => (base.popupPending && !rearmed[base.popupPending.kind ?? "daemon"] ? base.popupPending : null);
+  const clear = (rearmed) => Object.fromEntries(FAILURE_KINDS.map((k) => [k, rearmed[k] ? null : unseen[k]]));
   if (result.ok) {
     const passStreak = Math.min(base.passStreak + 1, MAX_STRIKES);
-    const rearmed = { daemon: true, semantic: passStreak >= STRIKES_TO_DOWN };
-    const popupShown = { daemon: false, semantic: shown.semantic && !rearmed.semantic };
-    return { state: { ...base, episode: "up", strikes: 0, episodeKind: null, kindStrikes: 0, passStreak, popupShown, popupPending: pendingAfter(rearmed), popupFailedAt: null, popupFailReason: null, downSince: null }, popup: false };
+    const rearmed = { daemon: true, semantic: passStreak >= STRIKES_TO_DOWN, upgrade: true };
+    const popupShown = { daemon: false, semantic: shown.semantic && !rearmed.semantic, upgrade: false };
+    return { state: { ...base, episode: "up", strikes: 0, episodeKind: null, kindStrikes: 0, passStreak, popupShown, popupUnseenAt: clear(rearmed), popupPending: pendingAfter(rearmed), popupFailedAt: null, popupFailReason: null, downSince: null }, popup: false };
   }
   const kind = failureKind(result);
   // A semantic failure means the daemon is up: the daemon's latch re-arms.
-  const rearmed = { daemon: kind === "semantic", semantic: false };
-  const popupShown = { daemon: shown.daemon && !rearmed.daemon, semantic: shown.semantic };
+  const rearmed = { daemon: kind === "semantic", semantic: false, upgrade: false };
+  const popupShown = { daemon: shown.daemon && !rearmed.daemon, semantic: shown.semantic, upgrade: shown.upgrade };
+  const popupUnseenAt = clear(rearmed);
   const popupPending = pendingAfter(rearmed);
   const strikes = Math.min(base.strikes + 1, MAX_STRIKES);
   const kindStrikes = base.episodeKind === kind ? Math.min(base.kindStrikes + 1, MAX_STRIKES) : 1;
-  const next = { ...base, strikes, episodeKind: kind, kindStrikes, passStreak: 0, popupShown, popupPending };
+  const next = { ...base, strikes, episodeKind: kind, kindStrikes, passStreak: 0, popupShown, popupUnseenAt, popupPending };
   if (strikes < STRIKES_TO_DOWN) return { state: { ...next, episode: "strike" }, popup: false };
-  return { state: { ...next, episode: "down", downSince: base.downSince ?? now }, popup: kindStrikes >= STRIKES_TO_DOWN && !popupShown[kind] && !popupPending };
+  const open = !popupShown[kind] || (popupUnseenAt[kind] !== null && now - popupUnseenAt[kind] >= POPUP_REARM_MS);
+  return { state: { ...next, episode: "down", downSince: base.downSince ?? now }, popup: kindStrikes >= STRIKES_TO_DOWN && open && !popupPending };
 }
 
 const reason = (s) => String(s).slice(0, 200);
@@ -386,17 +420,20 @@ const reason = (s) => String(s).slice(0, 200);
 /** The kind a popup was claimed for: the pending claim's, else the episode's. */
 const claimKind = (state) => state.popupPending?.kind ?? state.episodeKind ?? "daemon";
 const latch = (state, kind, value) => ({ ...EMPTY.popupShown, ...state.popupShown, [kind]: value });
+const unseenAt = (state, kind, value) => ({ ...EMPTY.popupUnseenAt, ...state.popupUnseenAt, [kind]: value });
 
 /**
- * Record what showPopup resolved (`{ started, pending?, token?, detail }`) on the state that
- * holds its claim: confirmed delivered → the claim kind's latch set and `lastPopupAt` stamped;
- * still running after the grace → pending under its token, latch open; not delivered → claim
- * released, `popupFailedAt` and the reason, latch open so the next failing tick tries again.
+ * Record what showPopup resolved (`{ started, pending?, seen?, token?, detail }`) on the state
+ * that holds its claim: confirmed delivered → the claim kind's latch set and `lastPopupAt`
+ * stamped, and `popupUnseenAt` stamped unless the person answered it (`seen: true`), so an
+ * unanswered popup re-arms after POPUP_REARM_MS; still running after the grace → pending under
+ * its token, latch open; not delivered → claim released, `popupFailedAt` and the reason, latch
+ * open so the next failing tick tries again.
  */
 export function popupDelivered(state, outcome, now) {
   const kind = claimKind(state);
   if (outcome.started && outcome.pending) return { ...state, popupShown: latch(state, kind, false), popupPending: { token: outcome.token, since: now, kind }, popupFailedAt: null, popupFailReason: null };
-  if (outcome.started) return { ...state, popupShown: latch(state, kind, true), popupPending: null, lastPopupAt: now, popupFailedAt: null, popupFailReason: null };
+  if (outcome.started) return { ...state, popupShown: latch(state, kind, true), popupUnseenAt: unseenAt(state, kind, outcome.seen === true ? null : now), popupPending: null, lastPopupAt: now, popupFailedAt: null, popupFailReason: null };
   return { ...state, popupShown: latch(state, kind, false), popupPending: null, popupFailedAt: now, popupFailReason: reason(outcome.detail ?? "popup not shown") };
 }
 
@@ -413,7 +450,11 @@ export function popupSettled(state, outcome, now, staleMs = PENDING_STALE_MS) {
   if (!p) return { state, line: null };
   const kind = p.kind ?? "daemon";
   if (outcome && outcome.token === p.token) {
-    if (delivered(outcome)) return { state: { ...state, popupShown: latch(state, kind, true), popupPending: null, lastPopupAt: p.since, popupFailedAt: null, popupFailReason: null }, line: `popup delivered: ${describeExit(outcome)}${outcome.acknowledged ? " (dismissed)" : ""}` };
+    if (delivered(outcome)) {
+      const seen = answered(outcome);
+      const note = outcome.acknowledged ? " (dismissed)" : seen ? "" : ` (not answered; raised again after ${POPUP_REARM_MS / 3_600_000} h if still failing)`;
+      return { state: { ...state, popupShown: latch(state, kind, true), popupUnseenAt: unseenAt(state, kind, seen ? null : p.since), popupPending: null, lastPopupAt: p.since, popupFailedAt: null, popupFailReason: null }, line: `popup delivered: ${describeExit(outcome)}${note}` };
+    }
     const why = `popup not delivered: ${describeExit(outcome)} after the grace`;
     return { state: { ...state, popupShown: latch(state, kind, false), popupPending: null, popupFailedAt: outcome.at, popupFailReason: reason(why) }, line: `${why}; the popup is due again` };
   }

@@ -29,6 +29,8 @@ What the parent will check, exactly: the command, what green looks like, what is
 
 ## Report
 
+Lead the report with the outcome in its first sentence: what happened or what was found. Then: what changed, what was verified, what could not be confirmed, and anything needing the owner's decision.
+
 End the report with exactly one of these lines, as the last line:
 
 ```

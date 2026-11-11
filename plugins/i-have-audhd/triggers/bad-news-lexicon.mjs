@@ -5,8 +5,8 @@
 //   lexicon (failed, failure, error, broke, broken, blocker, regression, cannot, can't,
 //   rejected, lost, missed, wrong — configurable)? That is the TRIGGER. Lexicon words match
 //   at word START, case-insensitively, so "errors" matches "error" and "terror" does not.
-//   The Stop hook runs this per unit: each block-labeled section of a labeled message, or the
-//   whole message when it has no labels (checks/sections.mjs).
+//   The Stop hook runs this on the whole message: a receipt block under a **CLAIM** or
+//   **CITE** label is part of the message it backs, never judged alone (checks/sections.mjs).
 //
 // WHY THE GATE IS DELIBERATELY OVER-INCLUSIVE
 //   "Fixed the error" and "tests failed yesterday, now green" both trip this gate while

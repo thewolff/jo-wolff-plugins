@@ -102,7 +102,7 @@ const ctxAt = (...paths) => (p) => paths.includes(p);
 test("install writes the plist under <state>/launchd with absolute paths, the state directory and the resolved ctx pinned, lints it, and prints the bootstrap line (never bootstraps)", () => {
   const root = mkdtempSync(join(tmpdir(), "ctx-watch-launchd-"));
   try {
-    const env = { XDG_STATE_HOME: join(root, "state"), PATH: ".:/Users/example/.local/bin:/usr/bin:/bin" };
+    const env = { XDG_STATE_HOME: join(root, "state"), PATH: ".:/Users/example/.local/bin:/usr/bin:/bin", LANG: "en_US.UTF-8" };
     const { calls, check } = fakeCheck({ plutil: { missing: false, code: 0, output: `${plistPath(env)}: OK\n` }, launchctl: { missing: false, code: 113, output: "Could not find service" } });
     const r = install({ env, interval: 300, cliPath: "scripts/ctx-watch.mjs", cwd: "/Users/example/plugins/ctx-watch", node: NODE, uid: 501, check, exists: ctxAt("./ctx", CTX_BIN) });
     assert.equal(r.code, 0, r.text);
@@ -114,7 +114,7 @@ test("install writes the plist under <state>/launchd with absolute paths, the st
     assert.match(text, /<key>PATH<\/key>\s*<string>\/Users\/example\/.local\/bin:\/usr\/bin:\/bin<\/string>/, "the relative PATH entry is gone");
     assert.match(text, /<integer>300<\/integer>/);
     assert.deepEqual(calls, [["plutil", "-lint", r.file], ["launchctl", "print", `gui/501/${LABEL}`]]);
-    assert.match(r.text, new RegExp(`^wrote .*ctx-watch\\.plist \\(com\\.jo-wolff-plugins\\.ctx-watch, every 300 s, \`tick\`; ctx pinned at ${CTX_BIN}, state in ${rx(join(root, "state", "ctx-watch"))}\\)\nplutil -lint: OK\n`));
+    assert.match(r.text, new RegExp(`^wrote .*ctx-watch\\.plist \\(com\\.jo-wolff-plugins\\.ctx-watch, every 300 s, \`tick\`; ctx pinned at ${CTX_BIN}, state in ${rx(join(root, "state", "ctx-watch"))}\\)\nenvironment: PATH, LANG\nplutil -lint: OK\n`));
     assert.match(r.text, new RegExp(`launchd does not have ${LABEL}\\. To install it, run from your own Terminal[^\\n]*:\\n  launchctl bootstrap gui/501 ${rx(r.file)}\\n`));
     assert.match(r.text, /then check with:\n  node \/Users\/example\/plugins\/ctx-watch\/scripts\/ctx-watch.mjs status$/);
     assert.doesNotMatch(r.text, /bootout/);
@@ -126,7 +126,7 @@ test("install writes the plist under <state>/launchd with absolute paths, the st
 test("install: no ctx on PATH is exit 1 naming the PATH; --ctx pins a given executable (and must exist)", () => {
   const root = mkdtempSync(join(tmpdir(), "ctx-watch-launchd-"));
   try {
-    const env = { XDG_STATE_HOME: join(root, "state"), PATH: "/usr/bin:/bin" };
+    const env = { XDG_STATE_HOME: join(root, "state"), HOME: join(root, "home"), PATH: "/usr/bin:/bin" };
     const none = fakeCheck({});
     const r = install({ env, cliPath: CLI, node: NODE, uid: 501, check: none.check, exists: () => false });
     assert.equal(r.code, 1);
@@ -149,7 +149,7 @@ test("install: no ctx on PATH is exit 1 naming the PATH; --ctx pins a given exec
 test("install: a loaded job gets the bootout-then-bootstrap line; a failed lint is exit 1; missing plutil/launchctl are said", () => {
   const root = mkdtempSync(join(tmpdir(), "ctx-watch-launchd-"));
   try {
-    const env = { XDG_STATE_HOME: join(root, "state"), PATH: "/usr/bin" };
+    const env = { XDG_STATE_HOME: join(root, "state"), HOME: join(root, "home"), PATH: "/usr/bin" };
     const exists = ctxAt("/usr/bin/ctx");
     const loadedJob = fakeCheck({ plutil: { missing: false, code: 0, output: "OK" }, launchctl: { missing: false, code: 0, output: `${LABEL} = {\n\tstate = waiting\n\tlast exit code = 0\n}` } });
     const r1 = install({ env, cliPath: CLI, node: NODE, uid: 501, check: loadedJob.check, exists });
@@ -160,7 +160,7 @@ test("install: a loaded job gets the bootout-then-bootstrap line; a failed lint 
     const r2 = install({ env, cliPath: CLI, node: NODE, uid: 501, check: badLint.check, exists });
     assert.equal(r2.code, 1);
     assert.match(r2.text, /plutil -lint failed: x\.plist: Unexpected character$/);
-    assert.equal(badLint.calls.length, 1, "no launchctl after a failed lint");
+    assert.deepEqual(badLint.calls.filter(([bin]) => bin === "launchctl"), [], "no launchctl after a failed lint");
 
     const none = fakeCheck({});
     const r3 = install({ env, cliPath: CLI, node: NODE, uid: 501, check: none.check, exists });
@@ -184,7 +184,7 @@ test("install: a loaded job gets the bootout-then-bootstrap line; a failed lint 
 test("install: paths with spaces and metacharacters are one shell word each in the printed commands", () => {
   const root = mkdtempSync(join(tmpdir(), "ctx-watch launchd $x-"));
   try {
-    const env = { XDG_STATE_HOME: join(root, "state dir"), PATH: "/usr/bin" };
+    const env = { XDG_STATE_HOME: join(root, "state dir"), HOME: join(root, "home"), PATH: "/usr/bin" };
     const { check } = fakeCheck({ plutil: { missing: false, code: 0, output: "OK" }, launchctl: { missing: false, code: 0, output: "state = waiting" } });
     const cli = "/Users/example/My Plugins/ctx-watch/scripts/ctx-watch.mjs";
     const r = install({ env, cliPath: cli, node: NODE, uid: 501, check, exists: ctxAt("/usr/bin/ctx") });
@@ -280,7 +280,7 @@ test("popup: an asynchronous spawn error, an early non-zero exit, and an early e
   const quick = fakeChild();
   const p4 = showPopup({ ...opts, graceMs: 500, spawn: () => quick });
   quick.emit("exit", 0, null);
-  assert.deepEqual(await p4, { started: true, detail: `popup shown (${OSASCRIPT} under supervisor pid 42, answered within 500 ms)` });
+  assert.deepEqual(await p4, { started: true, seen: false, detail: `popup shown (${OSASCRIPT} under supervisor pid 42, ended within 500 ms, no answer recorded)` });
 
   const twice = fakeChild();
   const p5 = showPopup({ ...opts, graceMs: 20, spawn: () => twice });
@@ -338,7 +338,7 @@ test("readOutcome: the file, or null when missing, not JSON, or out of shape", (
   try {
     const f = join(dir, "popup.json");
     assert.equal(readOutcome(f), null);
-    const good = { token: "t", at: 1, bin: OSASCRIPT, code: 7, signal: null, error: null, acknowledged: false };
+    const good = { token: "t", at: 1, bin: OSASCRIPT, code: 7, signal: null, error: null, acknowledged: false, gaveUp: null };
     writeFileSync(f, JSON.stringify(good));
     assert.deepEqual(readOutcome(f), good);
     for (const bad of ["nope", JSON.stringify({ ...good, code: "7" }), JSON.stringify({ ...good, token: "" }), JSON.stringify({ ...good, at: -1 }), JSON.stringify({ ...good, acknowledged: "yes" })]) {

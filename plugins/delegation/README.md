@@ -68,6 +68,7 @@ The text is `sessionBlock()` in `lib/brief.mjs`.
 | 4 Spiral bound | same | `subagent_type` is builder-class and the prompt has no heading line `## Spiral bound` | deny; same shape |
 | 2 Receipt | same | builder-class, pattern-check installed, and no `<git root of cwd>/.pattern-check/<session_id>.md` (nor pattern-check's state copy) | deny; reason names the path, the exact `pattern-check.mjs open … then record --session <key>` command, and `requirePatternCheck: false` |
 | 3 Not delivered | PostToolUse `SendMessage`; OMP `write agent://…` | `tool_response.success === false` (OMP: `isError`) | `decision: "block"`, reason = the tool's own `message` + `this message was NOT delivered; spawn a new agent or fix the name` + the two tool calls that do it |
+| Model line (warn-only) | PreToolUse `Agent`/`Task`; not on OMP | the spawn passed gates 1, 4 and 2, `subagent_type` is listed in `lib/model-routing.json`, and `tool_input.model` is above that type's ceiling or absent | `additionalContext`, one line; never a deny |
 | Stop line | SubagentStop; OMP `task` result | `agent_type` builder-class (an empty `agent_type` is not) and the last non-empty line of `last_assistant_message` is not `Stopped because: acceptance met \| bound hit \| told to stop` (a detail may follow the value, as in `bound hit (commit budget)`) | `systemMessage`, shown to the user; never a block. On OMP, additionalContext for the parent |
 
 A heading matches literally: any level `#` to `######`, case-insensitive, an optional trailing
@@ -91,6 +92,21 @@ from `templates/builder-brief.md`, verbatim, one per missing heading):
 - gate 2: `Spawn refused: builder-class "<type>" needs a pattern-check receipt for this session, and none exists at <root>/.pattern-check/<key>.md. Run: node "<pattern-check>/scripts/pattern-check.mjs" open "<what you are about to build>" then node "<pattern-check>/scripts/pattern-check.mjs" record --session <key> with --row "..." or --no-new-pieces "<reason>". Then re-issue this spawn. To turn this gate off instead, set \`"requirePatternCheck": false\` in <config file>.`
 - gate 3: `<the tool's message> (to: <name>)` on one line, then ``this message was NOT delivered; spawn a new agent or fix the name (a new `Agent` call, or `SendMessage` to a name that is running)``.
 - the stop warning, worded for the person reading the session because that is who a SubagentStop `systemMessage` reaches: `delegation: builder-class agent "<type>" (<id>) ended without a "Stopped because:" line. Its report is unfinished until it says which applies. The report's last line is exactly one of: \`Stopped because: acceptance met\` (every acceptance check passed once), \`Stopped because: bound hit\` (a retry, commit, time or tool bound stopped it; name which after it), \`Stopped because: told to stop\` (the parent sent a stop). The next builder-class brief needs: "End your report with one line: Stopped because: acceptance met | bound hit | told to stop." Full template: templates/builder-brief.md in the delegation plugin.` (or `ended with "Stopped because: <value>", which is not one of the three values`, or `has "Stopped because: <value>" but not as its last line`).
+
+The model line reads the routing table in `lib/model-routing.json`: the model families low to
+high (`haiku`, `sonnet`, `opus`, `fable`) and, per agent name, the table's `model` and its
+`ceiling`. The agent name is compared bare, like a builder-class name. A model string is reduced
+to the one family it contains (`sonnet`, `claude-sonnet-5-5` and `sonnet[1m]` are all `sonnet`).
+The two lines, exactly:
+
+- above the ceiling: `delegation model routing (warn-only): this "<type>" spawn asks for <model>; the routing table's ceiling for <name> is <ceiling>. The spawn proceeds.`
+- no model: `delegation model routing (warn-only): this "<type>" spawn sets no model; the routing table's model for <name> is <model>. The spawn proceeds on the model its agent definition pins.`
+
+A model at or under the ceiling and an agent type the table does not list draw nothing. The
+line never refuses a spawn, and a spawn a gate refuses carries no model line. It cannot see
+three things: the effort level (the Agent tool's input has no such field), the model of the
+session doing the spawning, and the model an agent definition pins when the spawn sets none.
+`"warnModelRouting": false` turns it off.
 
 A brief rebuilt from a refusal alone passes the gate; `test/gates.test.mjs` does exactly that.
 The brief this plugin was built from asked for a reason under 300 characters; Jo's steering on
@@ -126,6 +142,8 @@ removed (the list is in *Ported from newdle*). Each is set by `checks.<name>` in
 
 Eleven agents from newdle 0.2.175, in `agents/`: `auditor`, `builder`, `changelog`,
 `checker`, `debugger`, `planner`, `reader`, `research`, `scout`, `storyteller`, `summarizer`.
+`reader` runs on `sonnet`, the routing table's model for it (the first agent moved to the
+table); the others keep the models they were ported with.
 Each preloads the `output-types` skill (from the output-types plugin) and, where newdle did,
 one `as2-skills` skill; both are sibling plugins in this marketplace and are installed
 separately. The default builder class is `builder`, `beefy-builder` (newdle's larger-scope
@@ -150,6 +168,7 @@ widens or narrows a gate.
   "requireHowItFails": true,
   "requireSpiralBound": true,
   "requirePatternCheck": true,
+  "warnModelRouting": true,
   "checks": { "delegation-guard": "warn", "worktree-spawn-guard": "warn", "repo-rules-inject": "on" },
   "readLineThreshold": 1000,
   "streakThreshold": 6,
@@ -185,7 +204,8 @@ before its live phase: the denies (`evals/spawn-gate-deny-no-how-it-fails.scenar
 `evals/spawn-gate-deny-builder-no-spiral-bound.scenario.json`,
 `evals/send-message-check-deny-undelivered.scenario.json`), the warnings
 (`evals/subagent-stop-warn-no-stopped-line.scenario.json`,
-`evals/delegation-guard-warn-large-read.scenario.json`) and the silent siblings.
+`evals/delegation-guard-warn-large-read.scenario.json`,
+`evals/spawn-gate-warn-model-above-ceiling.scenario.json`) and the silent siblings.
 
 | Piece | Fails how | Visible where | The person does |
 |---|---|---|---|
@@ -194,6 +214,7 @@ before its live phase: the denies (`evals/spawn-gate-deny-no-how-it-fails.scenar
 | spawn-gate | `tool_input.prompt` is not a string | the spawn is allowed; one line in `…/delegation/skipped.log` | nothing; the line is the trace that the gate was awake |
 | spawn-gate gate 2 | the cwd is in no git repository, or the payload has no cwd | the spawn is allowed; one skipped.log line | run the spawn from inside the repository if the receipt is wanted |
 | spawn-gate gate 2 | pattern-check is not installed | the spawn is allowed; one skipped.log line naming the reason | install pattern-check if the receipt is wanted |
+| spawn-gate model line | `lib/model-routing.json` is missing or malformed, or `tool_input.model` names no single family in it (`inherit`, another vendor's model) | the spawn is allowed with no model line; one skipped.log line `model not checked: …` | nothing for an unjudged model; a line naming the table file is a broken install: reinstall the plugin |
 | send-message-check | the response has no `success` field (another host version) | nothing; the send's own result is the only signal | nothing |
 | subagent-stop | `last_assistant_message` is absent (older host, or the agent ended on a tool call) | the warning says the report ended without the line | read the report; the warning is advisory |
 | subagent-stop | auto mode: the subagent hands its report back through the `SubagentHandback` tool (Claude Code 2.1.271+), so `last_assistant_message` holds only its closing text; the SubagentStop input carries no field with the handed-back report | the warning can fire on a report that did end with the line | read the delivered report; the warning is advisory and nothing is blocked |
@@ -236,6 +257,14 @@ general was kept.
 | `hooks/worktree-spawn-guard.mjs` | `hooks/worktree-spawn-guard.mjs` | the shipyard decision-log citations and the "shipyard root" naming (the check itself, a `repos/` holding independent git repositories, is unchanged); the deny-only answer (now `warn` default, `block` by config) |
 | `hooks/repo-rules-inject.mjs` + `lib/repo-rules-walk.mjs` + `lib/budget-fit.mjs` | `hooks/repo-rules-inject.mjs`, `lib/repo-rules.mjs` | the `tmpdir()/newdle-repo-rules-<id>.json` state file (now under the plugin's XDG state dir); the shipyard-specific comments; `budget-fit-cli.mjs` (a CLI no hook called) was not ported |
 | `agents/beefy-builder.md`, `agents/beefy-research.md` | not ported | both are shipyard-specific end to end (Newdle monorepo ownership, `.projects/` sync, Linear closing); `beefy-builder` stays in the default builder class so a repository that ships its own is gated |
+
+## Changes in 0.1.4
+
+The report guidance says to lead with the outcome in the first sentence, then what changed, what was verified, what could not be confirmed, and anything needing the owner's decision. It is in the template's Report section, the builder agent, the skill and the SessionStart brief. The `Stopped because:` rule is unchanged; nothing new is enforced.
+
+## Changes in 0.1.3
+
+`reader` runs on `sonnet` (was `opus`), the first agent moved to the model routing table. The spawn gate gains a warn-only model line: a spawn the gates allow whose `model` is above the table's ceiling for its `subagent_type`, or that sets no `model` on a listed type, draws one `additionalContext` line; it never denies, and gates 1, 4 and 2 are unchanged. The table is `lib/model-routing.json`; `"warnModelRouting": false` turns the line off.
 
 ## Changes in 0.1.2
 

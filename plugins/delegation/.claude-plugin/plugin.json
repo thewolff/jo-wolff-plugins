@@ -1,7 +1,7 @@
 {
   "name": "delegation",
-  "description": "Teach an agent the brief a subagent is handed, then gate on it: a spawn whose brief lacks a required section is refused with that section to fill in. Ships the general agents and guards.",
-  "version": "0.1.2",
+  "description": "Teach an agent what a subagent's brief must contain, and refuse a spawn whose brief lacks a required section, naming the section to add. Also ships 11 general agents and 3 delegation guards.",
+  "version": "0.1.4",
   "author": { "name": "Jo Wolff" },
   "license": "MIT",
   "repository": "https://github.com/thewolff/jo-wolff-plugins",

@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.1.4 - 2026-11-11
+
+- The report guidance now says to lead with the outcome in the first sentence (what happened or what was found), then what changed, what was verified, what could not be confirmed, and anything needing the owner's decision. It sits in the Report section of `templates/builder-brief.md` (and `STOPPED_SECTION` in `lib/brief.mjs`, which the template must match), in `agents/builder.md`, in the `delegation` skill, and in the SessionStart brief. The `Stopped because:` rule is unchanged and stays the last line. Nothing new is enforced; no hook logic changed.
+- Why: only 9 of 28 recent subagent reports led with the outcome. Anthropic's Opus 5 prompting guidance says a report's first sentence should say what happened.
+
+## 0.1.3 - 2026-11-11
+
+- `agents/reader.md` runs on `model: sonnet` (was `opus`), the routing table's model for reading and mapping code. It is the pilot: no other agent's model changed.
+- `hooks/spawn-gate.mjs` reads `tool_input.model` on a spawn the gates allow and compares it with the routing table's ceiling for the `subagent_type`. Above the ceiling: one `additionalContext` line naming the agent type, the model asked for and the ceiling. No `model` on a listed type: one line naming the table's model for it. At or under the ceiling, or a type the table does not list: nothing. It never denies on model, and a refused spawn carries no model line; gates 1, 4 and 2 and their deny texts are unchanged.
+- The table is data in one file, `lib/model-routing.json` (the family order `haiku`, `sonnet`, `opus`, `fable`, and a `model` and `ceiling` per agent name), read through `lib/model-routing.mjs`. A table that cannot be read, or a model string naming no single family (`inherit`), is one `skipped.log` line and no warning.
+- Config `warnModelRouting` (default `true`); `false` turns the line off.
+- Not checked, because the hook cannot see it: the effort level (the Agent tool's input has no such field), the model of the session doing the spawning, and the model an agent definition pins when a spawn sets none. The OMP adapter has no model line.
+
 ## 0.1.2 - 2026-11-04
 
 - `scripts/prune.mjs` is plugin-kit 0.4.1's template, re-copied: after the age pass it rotates every log under the state directory past 256 KiB (errors.log included) to `<name>.1`, replacing the previous `.1` and counting its bytes as freed, so an appended log is bounded; `--dry-run` prints `would rotate …` per log. The `pruned:` line and the `state` declaration are unchanged. Only `*.log` rotates here: its `.jsonl` files are state read back whole.

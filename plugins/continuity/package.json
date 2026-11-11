@@ -1,6 +1,6 @@
 {
   "name": "continuity",
-  "description": "Keep a long session's state across compaction: a snapshot saved before it and restored after, a liveness line on every start, and a handoff skill for what no hook can derive.",
+  "description": "Keep a long session's state across compaction: ask the agent for a handoff and block one stop until it writes one, snapshot the session before compaction, restore it after, and say if saving works.",
   "version": "0.4.0",
   "private": true,
   "type": "module",

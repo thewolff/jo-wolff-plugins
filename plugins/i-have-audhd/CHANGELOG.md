@@ -4,6 +4,29 @@ All notable changes to i-have-audhd are recorded here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Entries before 1.5.1 live in the
 README's *Changes* section.
 
+## 1.7.2 - 2026-11-11
+
+### Fixed
+
+- `conclusion-first` and `bad-news-first` no longer judge an output-types receipt block on its
+  own. A receipt block (a bold `CLAIM` or `CITE` label line and the evidence under it) backs
+  the point made around it, so both rules now judge the whole message, receipt blocks included,
+  as they always did for a message with no labels. Since 1.5.0 `CLAIM` and `CITE` were the only
+  labels that split a message, so no message is split any more; headings such as
+  `## Needs you` never split one and still do not. From 1.1.0 to 1.7.1 each receipt block ran
+  to the next label and was judged alone: it opens with its evidence by design, so the judge
+  read a path, a command or a byte count as setup burying the point, and the block swallowed
+  the prose and closing ask after it. A blind re-measure on 2026-11-10 traced every
+  `conclusion-first` false alarm on two judge models (four per model) to that shape.
+  `hooks/receipt-blocks.test.mjs` replays four of those messages, paraphrased, against a stub
+  judge that convicts a receipt-first opening.
+- Findings for the two rules use the whole-message wording; they no longer name a section by
+  label and line. Bad news written only inside a receipt block is judged against the message
+  it backs: it belongs in the message's first 20 words. The skill's "Bad news first" says so.
+- `checks/sections.mjs` keeps `labelOf` (the receipt exemption in `handed-command` reads it)
+  and `openingWords`; `splitLabeledSections` is gone. The Stop hook's judge failure lines
+  always read `section=whole`.
+
 ## 1.7.1 - 2026-11-04
 
 - The judge cache (`cache/<sha>.json`, `cache/<sha>.prompt.txt` under the state directory) is
@@ -20,7 +43,7 @@ README's *Changes* section.
   `pruned:` line and the `state` declaration are unchanged.
 - The re-copied prune skips symlinks (a linked `x.log` is never rotated over its `.1`) and a
   dry run no longer counts an expired `.1` twice: its totals are the real run's (plugin-kit
-  0.3.3's fix).
+  0.4.1's fix).
 
 ## [1.7.0]
 
