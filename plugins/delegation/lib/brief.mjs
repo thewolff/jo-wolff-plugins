@@ -92,9 +92,12 @@ export function sessionBlock(builderClass) {
 
 Before any Agent/Task call, the prompt you hand the subagent carries these sections, in this order. A spawn without \`## How it fails\` is refused; a builder-class spawn (${builderClass.join(", ")}) without \`## Spiral bound\` or without this session's pattern-check receipt is refused. A \`mcp__ccd_session__start_session\` prompt carries all five headings below, each alone on its line, or the start is refused. The refusal carries the missing section as a fill-in template. Teaching: the \`delegation\` skill; template: templates/builder-brief.md in the plugin.
 
-# Target        the repository, branch, files in play, and the non-goals
-# Change        the steps in order, with the interfaces each keeps
-# Acceptance    the exact command, what green looks like, what is reported back
+# Target
+the repository, branch, files in play, and the non-goals
+# Change
+the steps in order, with the interfaces each keeps
+# Acceptance
+the exact command, what green looks like, what is reported back
 ## How it fails
 - what breaks if this is wrong and where it shows first; the undo; one retry per failing step, then report the failure as a named item
 ## Spiral bound
@@ -106,21 +109,61 @@ Which agent: \`scout\` finds paths and lines; \`reader\` maps code you will not 
 }
 
 const escape = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-const headingRe = (title) => new RegExp(`^[ \\t]{0,3}#{1,6}[ \\t]+${escape(title)}(?:[ \\t]*\\([^()\\n]*\\))?[ \\t]*:?[ \\t]*#*[ \\t]*$`, "i");
-const HOW_RE = headingRe(HOW_IT_FAILS);
-const SPIRAL_RE = headingRe(SPIRAL_BOUND);
+const lower = (s) => s.toLowerCase();
+const isWs = (c) => c === " " || c === "\t";
+const skipWs = (line, i) => {
+  while (i < line.length && isWs(line[i])) i++;
+  return i;
+};
+
+/**
+ * A single left-to-right scan of one line, so a line of any length costs time linear in it (no
+ * backtracking). Grammar: up to three leading spaces or tabs, one to six `#`, whitespace, the
+ * title, then optionally whitespace and a parenthetical without nested parentheses, whitespace,
+ * a colon, whitespace, closing `#`s and whitespace, then the end of the line.
+ */
+function headingMatches(line, title) {
+  let i = 0;
+  while (i < 3 && i < line.length && isWs(line[i])) i++;
+  const hashes = i;
+  while (i < line.length && line[i] === "#") i++;
+  const level = i - hashes;
+  if (level < 1 || level > 6) return false;
+  const afterHashes = i;
+  i = skipWs(line, i);
+  if (i === afterHashes) return false;
+  if (lower(line.slice(i, i + title.length)) !== lower(title)) return false;
+  i = skipWs(line, i + title.length);
+  if (line[i] === "(") {
+    const close = line.indexOf(")", i + 1);
+    if (close === -1 || line.slice(i + 1, close).includes("(")) return false;
+    i = skipWs(line, close + 1);
+  }
+  if (line[i] === ":") i = skipWs(line, i + 1);
+  while (i < line.length && line[i] === "#") i++;
+  return skipWs(line, i) === line.length;
+}
 const FENCE_RE = /^[ \t]{0,3}(`{3,}|~{3,})/;
 const STOPPED_RE = /^Stopped because:[*_]{0,2}[ \t]*(.*)$/i;
 const VALID_STOPPED_RE = new RegExp(`^(?:${STOPPED_VALUES.map(escape).join("|")})(?:$|[ \\t]*[(:;,\\u2014\\u2013-][\\s\\S]*$|[ \\t]+[\\s\\S]*$)`);
 
-/** The lines of `text` outside fenced code blocks (``` or ~~~, closed by the same character, at least as long). */
-function unfencedLines(text) {
+/**
+ * The lines of `text` outside fenced code blocks (``` or ~~~, closed by the same character, at
+ * least as long). With `closeOpenFence`, a fence that never closes ends at the end of the text
+ * and its opening line is the only line dropped, so sections appended after an unclosed fence
+ * still count; without it (the spawn gates) an unclosed fence runs to the end, as in CommonMark.
+ */
+function unfencedLines(text, { closeOpenFence = false } = {}) {
   const out = [];
   let fence = null;
+  let inside = [];
   for (const line of text.split(/\r?\n/)) {
     const m = FENCE_RE.exec(line);
     if (fence) {
-      if (m && m[1][0] === fence[0] && m[1].length >= fence.length && line.trim() === m[1]) fence = null;
+      if (m && m[1][0] === fence[0] && m[1].length >= fence.length && line.trim() === m[1]) {
+        fence = null;
+        inside = [];
+      } else if (closeOpenFence) inside.push(line);
       continue;
     }
     if (m) {
@@ -129,14 +172,14 @@ function unfencedLines(text) {
     }
     out.push(line);
   }
+  if (fence && closeOpenFence) out.push(...inside);
   return out;
 }
 
 /** True when `text` has a heading line titled `title`. A non-string is false. */
-export function hasHeading(text, title) {
+export function hasHeading(text, title, opts) {
   if (typeof text !== "string") return false;
-  const re = title === HOW_IT_FAILS ? HOW_RE : title === SPIRAL_BOUND ? SPIRAL_RE : headingRe(title);
-  return unfencedLines(text).some((line) => re.test(line));
+  return unfencedLines(text, opts).some((line) => headingMatches(line, title));
 }
 
 /** The bare agent name: trimmed, lower-cased, `plugin:`/`dir/` prefix dropped. */
@@ -201,7 +244,7 @@ const SECTION_OF = Object.freeze({ [TARGET]: TARGET_SECTION, [CHANGE]: CHANGE_SE
  * @returns {string[]}
  */
 export function missingSessionHeadings(prompt) {
-  return SESSION_HEADINGS.filter((h) => !hasHeading(prompt, h));
+  return SESSION_HEADINGS.filter((h) => !hasHeading(prompt, h, { closeOpenFence: true }));
 }
 
 const headingList = (missing) => missing.map((m) => `"## ${m}"`).join(", ");

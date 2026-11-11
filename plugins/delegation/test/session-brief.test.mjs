@@ -7,7 +7,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { box, runHook, setConfig, skippedLog, PLUGIN_ROOT } from "./helpers.mjs";
-import { ACCEPTANCE, CHANGE, HOW_IT_FAILS, HOW_IT_FAILS_SECTION, missingSessionHeadings, SESSION_HEADINGS, sessionHeadingReason, sessionHeadingWarning, SPIRAL_BOUND, SPIRAL_BOUND_SECTION, START_SESSION_TOOL, TARGET, TARGET_SECTION, TEMPLATE } from "../lib/brief.mjs";
+import { sessionBlock, ACCEPTANCE, CHANGE, HOW_IT_FAILS, HOW_IT_FAILS_SECTION, missingSessionHeadings, SESSION_HEADINGS, sessionHeadingReason, sessionHeadingWarning, SPIRAL_BOUND, SPIRAL_BOUND_SECTION, START_SESSION_TOOL, TARGET, TARGET_SECTION, TEMPLATE } from "../lib/brief.mjs";
 
 const FULL_SESSION_BRIEF = "# Target\nthe repo\n\n# Change\n1. do it\n\n# Acceptance\n`node --test` green\n\n## How it fails\n- it breaks\n\n## Spiral bound\n- one retry\n";
 
@@ -50,6 +50,31 @@ test("a prompt whose only heading had text on its line passes once the refusal's
   assert.deepEqual(missing, [...SESSION_HEADINGS]);
   const rebuilt = `${thin}\n\n${sessionHeadingReason(missing).split("\n\n").slice(1).join("\n\n")}`;
   assert.deepEqual(missingSessionHeadings(rebuilt), []);
+});
+
+test("an unclosed code fence in the original prompt does not swallow the sections appended after it", () => {
+  const thin = "Fix it.\n```js\nconst example = 1;";
+  const missing = missingSessionHeadings(thin);
+  assert.deepEqual(missing, [...SESSION_HEADINGS]);
+  const rebuilt = `${thin}\n\n${sessionHeadingReason(missing).split("\n\n").slice(1).join("\n\n")}`;
+  assert.deepEqual(missingSessionHeadings(rebuilt), []);
+});
+
+test("a heading inside a fence that does close still does not count", () => {
+  assert.deepEqual(missingSessionHeadings(FULL_SESSION_BRIEF.replace("# Target\n", "```\n# Target\n```\n")), [TARGET]);
+});
+
+test("the heading match is linear: a heading-like line with 5000 trailing spaces returns in under 50 ms", () => {
+  const started = performance.now();
+  missingSessionHeadings(`## Target${" ".repeat(5000)}!\n`);
+  const ms = performance.now() - started;
+  assert.ok(ms < 50, `took ${ms} ms`);
+});
+
+test("the SessionStart teaching skeleton passes the session-brief gate: each heading alone on its line", () => {
+  const block = sessionBlock(["builder"]);
+  assert.deepEqual(missingSessionHeadings(block), []);
+  assert.ok(block.split("\n").length < 25);
 });
 
 test("sessionHeadingWarning: names the tool and the missing headings, says the call goes ahead and what the repair is", () => {
@@ -128,4 +153,17 @@ test("session-brief-gate: a malformed config still denies on the defaults and sa
   const r = runHook("session-brief-gate", withInput({}), env);
   assert.ok(denyOf(r));
   assert.match(r.out.systemMessage, /delegation session-brief-gate: config ignored: .*config\.json is not JSON/);
+});
+
+test("session-brief-gate: an invalid unrelated field keeps off:true and warn mode, and still names the fault", (t) => {
+  const { env } = box(t);
+  setConfig(env, { off: true, rulesBudget: 0 });
+  assert.equal(runHook("session-brief-gate", withInput({}), env).out, null);
+  setConfig(env, { checks: { "session-brief-gate": "warn" }, rulesBudget: 0 });
+  const w = runHook("session-brief-gate", withInput({}), env);
+  assert.equal(w.out.hookSpecificOutput.permissionDecision, undefined);
+  assert.match(w.out.hookSpecificOutput.additionalContext, /^delegation: this/);
+  assert.match(w.out.systemMessage, /rulesBudget must be a positive integer/);
+  setConfig(env, { rulesBudget: 0 });
+  assert.ok(denyOf(runHook("session-brief-gate", withInput({}), env)));
 });

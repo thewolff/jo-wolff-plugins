@@ -311,7 +311,7 @@ test("session-start: a fresh session gets the brief skeleton as additionalContex
   assert.match(ctx, /^# Delegation: how to brief a subagent/);
   assert.match(ctx, /Before any Agent\/Task call, the prompt you hand the subagent carries these sections/);
   assert.match(ctx, /builder-class spawn \(builder, beefy-builder, task, sonic, general-purpose\)/);
-  assert.match(ctx, /\n# Target .*\n# Change .*\n# Acceptance .*\n## How it fails\n- .*\n## Spiral bound\n- /);
+  assert.match(ctx, /\n# Target\n.*\n# Change\n.*\n# Acceptance\n.*\n## How it fails\n- .*\n## Spiral bound\n- /);
   assert.ok(ctx.includes(`\`${STOPPED_LINE}\``));
   assert.match(ctx, /\*\*CLAIM\*\* \(file:line, or command and output\) or \*\*CITE\*\*/);
   for (const source of ["resume", "clear", "compact"]) assert.ok(runHook("session-start", { session_id: "s", cwd: env.HOME, hook_event_name: "SessionStart", source }, env).out.hookSpecificOutput.additionalContext, source);

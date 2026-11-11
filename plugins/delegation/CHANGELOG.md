@@ -7,6 +7,7 @@
 - Config `checks["session-brief-gate"]`: `block` (default), `warn` (one additionalContext line, the call goes ahead), `off`.
 - `lib/brief.mjs` gains `TARGET_SECTION`, `CHANGE_SECTION`, `ACCEPTANCE_SECTION` (held equal to `templates/builder-brief.md` by the tests), `SESSION_HEADINGS`, `missingSessionHeadings`, `sessionHeadingReason`, `sessionHeadingWarning`.
 - The SessionStart block, the template intro and the skill's "When this can't run" each gain one sentence about the new gate. Four new scenarios in `evals/` and one manual item for the desktop proof.
+- An unclosed code fence in the original prompt no longer swallows the sections the refusal tells the model to append (session gate only; the spawn gates keep the CommonMark reading). The heading match is a linear scan, so a line with thousands of trailing spaces no longer eats the 4 s deadline. An invalid unrelated config field no longer discards `off: true` or this gate's `checks` entry (`loadConfig` also returns `partial`, read only by this gate; every other hook still gets defaults). The SessionStart skeleton puts each heading alone on its line, so it passes the gate it describes.
 - Why: a hook-input capture in the desktop app on 2026-11-11 showed PreToolUse firing for this tool with a string `prompt`, and the model issuing the call again after a deny.
 
 ## 0.1.4 - 2026-11-11

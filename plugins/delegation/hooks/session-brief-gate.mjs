@@ -21,7 +21,7 @@
 // `checks` entry; `requireHowItFails` belongs to the spawn gate.
 //
 // How it fails: stdin not JSON, a thrown error, or no answer in 4 s → the runner logs it to
-// errors.log and allows. A malformed config → defaults plus a systemMessage naming the file.
+// errors.log and allows. A malformed config → a systemMessage naming the file; a bad field falls back to its default while `off` and this gate's `checks` entry, when valid, still apply.
 
 import { runHook, invokedDirectly } from "../lib/hook-runner.mjs";
 import { loadConfig, logSkipped, withFault } from "../lib/config.mjs";
@@ -37,7 +37,7 @@ const deny = (reason) => ({ hookSpecificOutput: { hookEventName: "PreToolUse", p
  * @returns {object|null}  a deny, an additionalContext line, a systemMessage, or null
  */
 export function handle(input, { env = process.env } = {}) {
-  const { config, fault } = loadConfig(env);
+  const { partial: config, fault } = loadConfig(env);
   if (config.off) return null;
   const mode = config.checks[HOOK];
   if (mode === "off" || input?.tool_name !== START_SESSION_TOOL) return withFault(null, fault, HOOK);

@@ -67,8 +67,11 @@ export function stateDir(env = process.env, home = homedir()) {
 
 /**
  * Load the config. Never throws.
- * @returns {{ config: object, path: string, fault: string|null }} `fault` names the problem when
- *   the file exists and is unusable; every field is then its default.
+ * @returns {{ config: object, partial: object, path: string, fault: string|null }} `fault` names
+ *   the problem when the file exists and is unusable; `config` is then every field's default.
+ *   `partial` is the same file read field by field: each valid field kept, each bad one
+ *   defaulted. Only a gate that must honour `off` or its own `checks` entry despite an unrelated
+ *   bad field reads it; every other caller reads `config`.
  */
 export function loadConfig(env = process.env, home = homedir()) {
   const path = configPath(env, home);
@@ -76,16 +79,16 @@ export function loadConfig(env = process.env, home = homedir()) {
   try {
     raw = readFileSync(path, "utf8");
   } catch {
-    return { config: { ...DEFAULTS }, path, fault: null };
+    return { config: { ...DEFAULTS }, partial: { ...DEFAULTS }, path, fault: null };
   }
   let parsed;
   try {
     parsed = JSON.parse(raw);
   } catch (err) {
-    return { config: { ...DEFAULTS }, path, fault: `${path} is not JSON (${err.message}); using defaults` };
+    return { config: { ...DEFAULTS }, partial: { ...DEFAULTS }, path, fault: `${path} is not JSON (${err.message}); using defaults` };
   }
   if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
-    return { config: { ...DEFAULTS }, path, fault: `${path} is not a JSON object; using defaults` };
+    return { config: { ...DEFAULTS }, partial: { ...DEFAULTS }, path, fault: `${path} is not a JSON object; using defaults` };
   }
   const bad = [];
   const out = { ...DEFAULTS };
@@ -115,8 +118,8 @@ export function loadConfig(env = process.env, home = homedir()) {
       out.checks = checks;
     } else bad.push("checks must be an object");
   }
-  if (bad.length) return { config: { ...DEFAULTS }, path, fault: `${path}: ${bad.join("; ")}; using defaults` };
-  return { config: out, path, fault: null };
+  if (bad.length) return { config: { ...DEFAULTS }, partial: out, path, fault: `${path}: ${bad.join("; ")}; using defaults` };
+  return { config: out, partial: out, path, fault: null };
 }
 
 /** Append `<iso> <hook> <why>` to skipped.log; never throws. */
