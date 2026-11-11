@@ -20,16 +20,20 @@ launch environment without `LANG`. ctx-watch popped once and went quiet for six 
   kind, `upgrade`, with its own popup latch and the release sequence `ctx upgrade disable &&
   ctx upgrade --dry-run && ctx index mode auto` as its fix, marked observed-not-documented.
 - `ctx-watch repair` and the `/ctx-watch:repair` skill: the 2026-11-11 hand-run repair,
-  non-interactive. Refuses (exit 3) without `LANG`, without a reachable `gui/<uid>`, with mode
-  not `auto`, during a live upgrade, while a handoff owner is alive or its marker is under
-  15 min old, or for a stuck state other than `quiescing`; otherwise pauses the timer, releases,
-  heals, verifies, restores the timer.
+  non-interactive. With no `LANG` in its shell (a Claude Desktop tool, which launchd started)
+  it passes ctx the `LANG` ctx recorded in `supervisor-environment.json`, else one derived from
+  `defaults read -g AppleLocale`, and reports which in its JSON `lang.source`. Refuses (exit 3)
+  when none of those gives a `LANG`, without a reachable `gui/<uid>`, with mode not `auto`,
+  during a live upgrade, while a handoff owner is alive or its marker is under 15 min old, or
+  for a stuck state other than `quiescing`; otherwise pauses the timer, releases, heals,
+  verifies, restores the timer. After a release it leaves automatic upgrades off.
 - SessionStart adds `hookSpecificOutput.additionalContext` for the agent when ctx is down,
   stuck, mid-upgrade or missing: what, since when, the exact command. Nothing when healthy or
   when only the semantic index is not ready.
 - `install` carries `LANG`, `LC_ALL`, `TMPDIR`, `XDG_CONFIG_HOME`, `XDG_DATA_HOME` and ctx's
-  `CTX_*` settings (never `CI`, never `CTX_SEMANTIC_EMBEDDING_TOKEN`) into the plist, and warns
-  when `LANG` is missing. Existing installs get them on the next `install`.
+  `CTX_*` settings (never `CI`, never `CTX_SEMANTIC_EMBEDDING_TOKEN`) into the plist. With no
+  `LANG` in the installing shell it uses the same fallback as `repair` and says where the value
+  came from; with none found it warns. Existing installs get them on the next `install`.
 
 ### Changed
 

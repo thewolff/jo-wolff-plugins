@@ -45,11 +45,12 @@ bootstrap line. Until you do, the SessionStart dead-man's line says the timer ha
 `install` refuses to write a plist when no `ctx` is on this shell's PATH (a timer that can
 never find ctx would only ever pop up); `--ctx <path>` names one by hand.
 
-Run it from a shell with `LANG` set (a Terminal login shell has it): since 0.3.0 the plist
-carries `LANG` and ctx's other launch-environment settings from that shell (see *The timer and
-the popup*), and `install` says so when `LANG` is missing. **An existing install gets them only
-on the next `install`** and the printed bootout-and-bootstrap line; until then a heal the timer
-runs may record a daemon launch environment without `LANG`.
+Since 0.3.0 the plist carries `LANG` and ctx's other launch-environment settings from the
+installing shell (see *The timer and the popup*). A shell without `LANG` (one launchd started,
+such as Claude Desktop's) gets a fallback: the `LANG` ctx itself recorded for its daemon, else
+one derived from macOS's `AppleLocale`; `install` says which. **An existing install gets them
+only on the next `install`** and the printed bootout-and-bootstrap line; until then a heal the
+timer runs may record a daemon launch environment without `LANG`.
 
 ## What it does
 
@@ -181,18 +182,29 @@ the file is under 15 min old, `DAEMON_UPGRADE_HANDOFF_STALE_AFTER`, and its owne
   it; `repair` does, behind its own gates.
 
 **`repair`** (0.3.0) is the repair an agent can run: `node <plugin dir>/scripts/ctx-watch.mjs
-repair`, no prompts, about three minutes at most. It refuses (exit 3, nothing changed) when
-`LANG` is not set in its shell, when launchd's `gui/<uid>` domain is not reachable from it,
+repair`, no prompts, about three minutes at most. It needs a `LANG` for its ctx calls and takes
+the first of: its shell's `LANG`; the `LANG` ctx recorded for its daemon in
+`<CTX_DATA_ROOT or ~/.ctx>/daemon/supervisor-environment.json` (read only; `supervisor.json`
+holds the names, not the values); one derived from `defaults read -g AppleLocale` (`en_GB` →
+`en_GB.UTF-8`). A Bash tool in Claude Desktop has no `LANG` of its own, since launchd starts
+Desktop, so the fallback is the usual path from there. It refuses (exit 3, nothing changed) when
+none of the three gives a `LANG`, when launchd's `gui/<uid>` domain is not reachable from it,
 when indexing mode is not `auto`, during a live upgrade, while any handoff owner pid is alive,
 while the handoff marker is under 15 min old, or when the stuck state is not `quiescing` (the
 only one the release was seen to work on). Otherwise it pauses the ctx-watch timer
 (`launchctl bootout`, so a tick cannot heal into the repair), releases a stuck `quiescing`
 upgrade as above, runs the heal under its 120 s bound, polls `ctx daemon status` until the
 daemon reads running, supervisor `installed` and no `restart_required`, and restores the timer
-whatever happened. The first output line is JSON (`ok`, `changed`, `refused`, `reason`,
-`steps`, `timer`, `verified`), the last a summary; exit 0 repaired or already healthy, 1
-failed. The `/ctx-watch:repair` skill runs it. When it disabled automatic upgrades it says so:
-`ctx upgrade enable` turns them back on.
+whatever happened. The first output line is JSON (`ok`, `changed`, `refused`, `reason`, `lang`
+with its `value` and `source` (`env`, `ctx-recorded`, `AppleLocale`, or null), `steps`,
+`timer`, `verified`), the last a summary; exit 0 repaired or already healthy, 1 failed. The
+`/ctx-watch:repair` skill runs it.
+
+**Automatic upgrades stay off after a release.** Releasing a stuck upgrade first runs `ctx
+upgrade disable`, and `repair` never turns automatic upgrades back on: turned on, ctx would try
+the same upgrade that hung on 2026-11-05 again. The summary line says they are off; `ctx
+upgrade enable` turns them back on, once a ctx release fixes the hang or after a manual
+`ctx upgrade` has gone through. A repair with no stuck upgrade leaves the setting as it was.
 
 **The SessionStart line.** Healthy and on time: nothing. Otherwise one or two lines in a
 `systemMessage`:
@@ -249,8 +261,11 @@ supervisor environment-snapshot allowlist (`ctx daemon status --format json`
 ctx records its daemon's launch environment, and a heal from a launchd job that set only `PATH`
 recorded one without `LANG`, which ctx reported as supervisor `environment_invalid` with
 `restart_required` (2026-11-11). Never `CI` and never `CTX_SEMANTIC_EMBEDDING_TOKEN` (a
-credential; the plist is a plain file). `HOME` is launchd's own. `install` prints the carried
-names, and a warning when `LANG` is missing. Existing installs get this on the next `install`.
+credential; the plist is a plain file). `HOME` is launchd's own. With no `LANG` in the
+installing shell, the plist gets the same fallback `repair` uses (the `LANG` in ctx's
+`supervisor-environment.json`, else one from `AppleLocale`), and `install` names where it came
+from; with none of the three it writes no `LANG` and warns what that costs. `install` prints the
+carried names. Existing installs get this on the next `install`.
 
 Each `tick` rotates any log over 256 KB (see Retention), probes (and repairs) as above, then
 advances an episode in `<state>/state.json`: one failing tick is a strike, the second in a row
@@ -498,12 +513,15 @@ From the 2026-11-05 to 11-11 outage (see *Why* at the top):
   sequence `ctx upgrade disable && ctx upgrade --dry-run && ctx index mode auto`, marked
   observed-not-documented. The watcher runs none of it.
 - **`repair`**, a new verb and the `/ctx-watch:repair` skill: the 2026-11-11 hand-run sequence,
-  non-interactive, behind gates (owner dead, marker over 15 min old, `LANG` set, `gui/<uid>`
+  non-interactive, behind gates (owner dead, marker over 15 min old, a `LANG` found, `gui/<uid>`
   reachable, mode `auto`), pausing and restoring the timer, verifying before it says repaired.
+  With no `LANG` in its shell (Claude Desktop's tools) it uses the `LANG` ctx recorded, else
+  one from `AppleLocale`. After releasing a stuck upgrade it leaves automatic upgrades off.
 - **The heal's bound** is 120 s with a 15 s SIGTERM grace (was 10 s, SIGKILL), and the
   SessionStart hook no longer heals (it had 1.2 s).
-- **`install` carries `LANG`** and ctx's other launch-environment settings into the plist.
-  Existing installs get them on the next `install` and its bootout-and-bootstrap line.
+- **`install` carries `LANG`** and ctx's other launch-environment settings into the plist, with
+  the same `LANG` fallback as `repair`. Existing installs get them on the next `install` and its
+  bootout-and-bootstrap line.
 - **An unanswered popup is raised again** 4 h later while its kind still fails (was: once per
   episode, a give-up counting as seen).
 - **The agent is told.** SessionStart adds `hookSpecificOutput.additionalContext` when ctx is
