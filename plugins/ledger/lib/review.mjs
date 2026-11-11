@@ -853,6 +853,37 @@ export function operationTargets(op, cwd, { env = process.env } = {}) {
 }
 
 /**
+ * What the command text alone says the gate cannot check, before any commit is resolved; null
+ * when every operation can be followed. Under `gate` the hook denies with `reason`; under
+ * `advise` it is a notice.
+ *   unfollowed  an operation runs where the gate cannot follow (pushOperations `unsupported`: a
+ *               computed `cd` or `-C`, `--git-dir`, `--work-tree`, a `GIT_*` setting, a `-c`
+ *               that steers the push), so the repository and commit cannot be named.
+ *   chained     a `git push` or `gh pr create` follows a command that can move HEAD on the same
+ *               command line (pushOperations `after`), so the commit it publishes does not
+ *               exist yet. `gh pr merge` is left out: its commit is the remote's, not HEAD.
+ * Each reason states the way out: the push re-issued as its own literal command.
+ */
+export function commandRefusal(ops, cli = "ledger") {
+  const name = (op) => (op.tool === "git" ? "git push" : `gh pr ${op.sub}`);
+  const lost = ops.find((op) => op.unsupported);
+  if (lost) {
+    return {
+      kind: "unfollowed",
+      reason: `ledger: review gate: the gate cannot follow where this \`${name(lost)}\` runs (${lost.unsupported}), so the commit it publishes cannot be checked for a review. Re-issue it as its own command with a literal folder: \`cd /absolute/path && git push <remote> <branch>\`, with no variable, \`$(…)\`, \`~\`, glob or \`cd -\` in the folder, and no \`--git-dir\`, \`--work-tree\`, \`GIT_*\` setting or \`-c\` push config.`,
+    };
+  }
+  const chained = ops.find((op) => op.after && !(op.tool === "gh" && op.sub === "merge"));
+  if (chained) {
+    return {
+      kind: "chained",
+      reason: `ledger: review gate: \`${chained.after}\` runs before this \`${name(chained)}\` on the same command line and can move HEAD, so the commit that would be published is not the one the gate can check now. Run \`${chained.after}\` first, review the new HEAD (\`${cli} review\`), then run \`${name(chained)}\` as its own command.`,
+    };
+  }
+  return null;
+}
+
+/**
  * The review gate's answer for a set of publishing operations under `mode`: the strictest of
  * gateDecision over every commit they publish ({ deny } before { notice } before {}), or, when a
  * commit cannot be told from the command, an allow with a notice saying so. An allowed merge

@@ -1,0 +1,22 @@
+{
+  "$comment": "Review gate, hole two: a push chained after `git commit` on one command line is denied; the commit it would publish does not exist yet.",
+  "event": "PreToolUse",
+  "expect": "deny",
+  "reason": "`git commit` runs before this `git push` on the same command line and can move HEAD",
+  "setup": {
+    "commands": [
+      "git -c user.name=t -c user.email=t@t -C \"${CWD}\" commit -q --allow-empty -m init",
+      "LEDGER_SESSION_ID=\"${SESSION_ID}\" node \"${PLUGIN_DIR}/scripts/ledger.mjs\" note \"pushing the change\""
+    ]
+  },
+  "stdin": {
+    "session_id": "${SESSION_ID}",
+    "transcript_path": "${TRANSCRIPT}",
+    "cwd": "${CWD}",
+    "hook_event_name": "PreToolUse",
+    "tool_name": "Bash",
+    "tool_input": {
+      "command": "git add -A && git commit -m \"fix\" && git push origin HEAD"
+    }
+  }
+}

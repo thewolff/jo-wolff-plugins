@@ -59,6 +59,9 @@ const PREFIX_WORDS = new Set(["command", "env", "exec", "time", "nohup"]);
 // runs between them cannot change the directory or environment of what follows.
 export const SCOPE_OPEN = "\0(";
 export const SCOPE_CLOSE = "\0)";
+// Git subcommands that can move HEAD, so a push after one on the same command line publishes a
+// commit that does not exist yet when the hook runs.
+const HEAD_MOVERS = new Set(["commit", "rebase", "merge", "cherry-pick", "revert", "reset", "pull", "checkout", "switch", "am", "bisect", "update-ref", "symbolic-ref"]);
 // Config keys that change which refs a push publishes or where it goes.
 const PUSH_CONFIG = /^(push\.|remote\.pushdefault$|remote\..+\.(push|pushurl|url|mirror)$|branch\..+\.(remote|pushremote|merge)$|url\.)/i;
 // Environment variables that change git's config or repository.
@@ -251,7 +254,10 @@ export function simpleCommands(text) {
   return cmds;
 }
 
-/** A directory word the gate cannot resolve statically: an expansion, `~`, or `-`. */
+/**
+ * A directory word the gate cannot resolve statically: an expansion (`$`, a backtick), `~`, a
+ * glob, or the bare word `-` (`cd -`). A hyphen inside a literal path is an ordinary character.
+ */
 const dynamicDir = (d) => !d || d === "-" || /[$`~*?]/.test(d);
 
 /**
@@ -261,16 +267,19 @@ const dynamicDir = (d) => !d || d === "-" || /[$`~*?]/.test(d);
  * global options are read. Every operation carries the `cd` directories run before it in its own
  * shell scope (`cds`, in order; a `cd` inside a subshell or command substitution does not reach
  * past it), so a relative `-C` resolves where git would run:
- *   { tool: "git", cds, dirs: [-C dirs in order], unsupported: <why>|null, args }
- *   { tool: "gh", cds, unsupported: <why>|null, sub, args }
+ *   { tool: "git", cds, dirs: [-C dirs in order], unsupported: <why>|null, after: <cmd>|null, args }
+ *   { tool: "gh", cds, unsupported: <why>|null, after: <cmd>|null, sub, args }
  * `unsupported` names what the gate cannot follow: `--git-dir`, `--work-tree`, a `cd` or `-C`
  * whose directory is an expansion, `~` or `-`, a `-c`/`--config-env` that sets push, remote or
- * branch config, a `GIT_CONFIG*`/`GIT_DIR`/`GIT_WORK_TREE` assignment or export. `args` are the
- * words after `push` / `pr <sub>`.
+ * branch config, a `GIT_CONFIG*`/`GIT_DIR`/`GIT_WORK_TREE` assignment or export. `after` names the
+ * first command earlier on the command line that can move HEAD (`git commit`, `git rebase`, …
+ * HEAD_MOVERS, or `gh pr checkout`), in any shell scope: the hook sees HEAD as it is before any of
+ * the line runs. `args` are the words after `push` / `pr <sub>`.
  */
 export function pushOperations(command, ghPr = ["create"]) {
   const ops = [];
   let scope = { cds: [], unknown: null };
+  let moved = null;
   const outer = [];
   for (const words of simpleCommands(command)) {
     if (words.length === 1 && words[0] === SCOPE_OPEN) {
@@ -305,7 +314,8 @@ export function pushOperations(command, ghPr = ["create"]) {
     }
     const bin = tokens[0].split("/").pop();
     if (bin === "gh") {
-      if (tokens[1] === "pr" && ghPr.includes(tokens[2])) ops.push({ tool: "gh", cds: [...scope.cds], unsupported: envUnknown ?? scope.unknown, sub: tokens[2], args: tokens.slice(3) });
+      if (tokens[1] === "pr" && ghPr.includes(tokens[2])) ops.push({ tool: "gh", cds: [...scope.cds], unsupported: envUnknown ?? scope.unknown, after: moved, sub: tokens[2], args: tokens.slice(3) });
+      if (tokens[1] === "pr" && tokens[2] === "checkout") moved ??= "gh pr checkout";
       continue;
     }
     if (bin !== "git") continue;
@@ -325,7 +335,8 @@ export function pushOperations(command, ghPr = ["create"]) {
       if (setting !== null && PUSH_CONFIG.test(setting.split("=")[0])) unsupported = `${t.split("=")[0]} ${setting.split("=")[0]}`;
       i += GIT_OPT_WITH_ARG.has(t) ? 2 : 1;
     }
-    if (tokens[i] === "push") ops.push({ tool: "git", cds: [...scope.cds], dirs, unsupported, args: tokens.slice(i + 1) });
+    if (tokens[i] === "push") ops.push({ tool: "git", cds: [...scope.cds], dirs, unsupported, after: moved, args: tokens.slice(i + 1) });
+    else if (HEAD_MOVERS.has(tokens[i])) moved ??= `git ${tokens[i]}`;
   }
   return ops;
 }

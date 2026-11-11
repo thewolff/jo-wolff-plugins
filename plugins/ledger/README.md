@@ -374,13 +374,28 @@ commit `gh pr view` reports for that pull request (5 seconds); in that case an a
 carries a notice naming the commit checked and the `--match-head-commit <sha>` that binds the
 merge to it, because the head can move before the merge runs. The command is read with shell
 quoting, so a quoted `git push` inside an argument is not a push, while one inside `$(…)` or
-backticks (unquoted, in double quotes, or in an unquoted heredoc) is. When the command does not
-say which commit, the call is allowed with a notice saying so: `--all`, `--mirror`, `--tags`,
-`--branches`, a `:` or pattern refspec, a configured `remote.<name>.push`, `push.default
-matching`, a `-c` or `--config-env` that sets push, remote or branch config, a `GIT_CONFIG*`,
-`GIT_DIR` or `GIT_WORK_TREE` assignment or export, `--git-dir`, a `cd` or `-C` whose folder is
-computed (`$`, `~`, a glob, `cd -`), `--head <owner>:<branch>`, a remote that cannot be read in
-time or has no such branch, gh failing.
+backticks (unquoted, in double quotes, or in an unquoted heredoc) is.
+
+Two shapes are denied under `gate` from the command text alone, whatever HEAD's review says
+(since 0.3.11; under `advise` each is a notice):
+
+- **A push from a folder the gate cannot follow.** A `cd`, `pushd` or `-C` whose folder is
+  computed (`$VAR`, `$(…)`, a backtick, `~`, a glob, `cd -`, a bare `cd`), `--git-dir`,
+  `--work-tree`, a `GIT_CONFIG*`, `GIT_DIR`, `GIT_WORK_TREE` or `GIT_NAMESPACE` assignment or
+  export, a `-c` or `--config-env` that sets push, remote or branch config. The way out, named
+  in the reason: re-issue the push as its own command with a literal folder,
+  `cd /absolute/path && git push <remote> <branch>`. A hyphen in a literal folder name is fine.
+- **A push chained after a command that can move HEAD.** A `git push` or `gh pr create` on the
+  same command line as an earlier `git commit`, `rebase`, `merge`, `cherry-pick`, `revert`,
+  `reset`, `pull`, `checkout`, `switch`, `am`, `bisect`, `update-ref`, `symbolic-ref` or
+  `gh pr checkout`: the hook runs before any of the line does, so the commit that would be
+  published does not exist yet. The way out: run that command first, review the new HEAD, then
+  run the push as its own command.
+
+When the command does not say which commit for another reason, the call is allowed with a notice
+saying so: `--all`, `--mirror`, `--tags`, `--branches`, a `:` or pattern refspec, a configured
+`remote.<name>.push`, `push.default matching`, `--head <owner>:<branch>`, a remote that cannot
+be read in time or has no such branch, gh failing.
 
 For each commit the gate reads its rows, strictest first: a `waived` row lets it through; any lab
 whose latest row is `findings` (and not followed by `addressed`) denies, with the findings
@@ -803,7 +818,9 @@ fault inputs).
 
 - The Stop rules look only at the final message; a question asked and withdrawn mid-turn is not seen, and a decision stated in an earlier message of the same turn is not either.
 - The decision rule is a phrase list. A decision worded outside the list passes; a phrase used in a different sense ("I chose not to look") blocks once. A reply that asks a question recorded this turn is not checked: its stated default ("if you don't answer, I'll go with alpha") is already the question's `--default`. `instead of` left the default list in 0.3.0, because it fired on descriptions of bugs ("`add` subtracts instead of adding"). Tune `forcing.decisionPhrases` per project.
-- The push gate reads the Bash command text with shell quoting. A push run from a script file or an alias is not seen.
+- The push gate reads the Bash command text with shell quoting. A push run from a script file, a shell or git alias, a shell function, `sh -c "…"`, `eval` or `xargs` is not seen.
+- The review gate's chained-push rule knows git's own HEAD-moving subcommands and `gh pr checkout`. A command that moves HEAD some other way before a push on the same line (a script, `npm version`, a git alias for `commit`) is not seen, and the push is checked against HEAD as it was.
+- Under `gate`, a push whose refs cannot be named is still allowed with a notice: `--all`, `--mirror`, `--tags`, `--branches`, a `:` or pattern refspec, a configured `remote.<name>.push`, `push.default matching`, a remote or `gh` that does not answer.
 - A ceiling on a question is recorded and shown, never metered: nothing stops at the ceiling.
 - Disabling is per folder tree, not per repository: a `.ledger.json` with `"enabled": false` in your home directory would disable every project under it.
 - Claude Code only. On OMP the skill installs but no hook runs.
@@ -819,6 +836,17 @@ Tests use a sandboxed `HOME`, `XDG_*` and `LEDGER_*` so they never touch your le
 `LEDGER_CWD` and `LEDGER_BUSY_TIMEOUT_MS` environment variables exist for the tests.
 
 ## Changes
+
+### 0.3.11
+
+- Review gate, `gate` mode: a push from a folder the gate cannot follow (`cd $W`, `cd $(…)`,
+  `~`, a glob, `cd -`, `--git-dir`, a `GIT_*` setting, a `-c` that steers the push) is denied
+  instead of allowed with a notice; the reason names the literal form,
+  `cd /absolute/path && git push <remote> <branch>`. Hyphens in a literal folder name resolve.
+- Review gate, `gate` mode: a `git push` or `gh pr create` chained after a HEAD-moving command
+  on the same command line (`git commit`, `rebase`, `merge`, `pull`, `checkout`, …) is denied;
+  the reason says to run the push as its own command after a review of the new HEAD.
+- `advise` still never denies; both shapes are a notice there.
 
 ### 0.3.10
 
