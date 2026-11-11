@@ -14,11 +14,11 @@ are the one thing that still reaches you at once.
 
 | | What the agent's reply shows | What you see |
 |---|---|---|
-| away | first line `brb: still away (<duration>, N held) — say \`back\` to read them`, then the body: what was done, ending `idle: <why>` when nothing is runnable; no `Needs you`, no question, no closing ask | the still-away line at the top of every reply; `brb on fire: …` for a fire; `brb: the agent is idle (<why>); N held` when it stops; on Claude Code Desktop and the terminal, `⚠ brb: away 40m · N held · say back` under the prompt while you type |
+| away | first line `brb: still away (<duration>, N held) — say \`back\` to read them`, then the body: what was done, ending `idle: <why>` when nothing is runnable; no `Needs you`, no question, no closing ask | the still-away line at the top of every reply; `brb on fire: …` for a fire; `brb: the agent is idle (<why>); N held` when it stops; on Claude Code, the away band above the prompt: `AWAY 40m · N held`, the held items, a Back button |
 | you answer a fire (or anything) while away | your answer handled, then the same shape as away | the hold continues; the away instruction is re-injected on every prompt, and only `back` ends the hold |
-| back | the digest, verbatim, as its whole reply: `brb: hold cleared; digest archived to <path>.` then every item the command held and every one the backstop moved, each once; an item it already resolved ends `— resolved: <how>` | that reply, on every surface (terminal, desktop, mobile app); on the surfaces that render hook frames, the same text once more as a hook line; the badge goes |
+| back | the digest, verbatim, as its whole reply: `brb: hold cleared; digest archived to <path>.` then every item the command held and every one the backstop moved, each once; an item it already resolved ends `— resolved: <how>` | that reply, on every surface (terminal, desktop, mobile app); on the surfaces that render hook frames, the same text once more as a hook line; on Claude Code the band stays, now a checklist: `BACK · N to act on`, Done per row, Clear |
 
-Built on plugin-kit 0.3.2. Claude Code hooks, a Claude Code mod for the badge, plus an OMP
+Built on plugin-kit 0.3.2. Claude Code hooks, a Claude Code mod for the away band, plus an OMP
 extension that runs the same hooks. Node 22.13 or later. No other plugin is needed.
 
 ## Install
@@ -205,56 +205,105 @@ call) and OMP does not cap at all. The ceiling bounds it: three quiet continuati
 end the turn. The price is that a working agent that raises nothing is let go after three
 quiet steps; any new ask or fire resets the count.
 
-## Away badge (Desktop and terminal)
+## Away band (Claude Code)
 
-A status line for Claude Code Desktop and the terminal (Claude Code 2.1.286 or later, where
-plugins can ship mods; `hooks/hooks.json` names the module, `mods/badge/register.mjs`). The mod
-sets the line with `$.ui.status`, which reaches the app as a `ui_status` message: the terminal
-draws it under the prompt, and Claude Desktop, which runs Claude Code headless (`--input-format
-stream-json`, so the session has no surface), draws it from that message. While this session is
-away, brb's line under the prompt reads
+A band above the prompt, drawn by a Claude Code mod (Claude Code 2.1.286 or later, where
+plugins can ship mods; `hooks/hooks.json` names the module, `mods/band/register.mjs`), on the
+`AbovePrompt` render site. While this session is away it carries the digest:
 
 ```
-⚠ brb: away 40m · lunch · 12 held · say back
+╭──────────────────────────────────────────────────────────────────────╮
+│ AWAY 40m · 3 held · lunch                                   [ Back ] │
+│ 1 on fire came through · the rest wait for you                       │
+│ 1. Create the read-token secret on the org?                          │
+│ 2. Billing limit on the org: raise it?                               │
+│ 3. Clear the review round                                            │
+╰──────────────────────────────────────────────────────────────────────╯
 ```
 
-so a person who comes back to a window they left and starts typing sees the hold before they
-send. The `⚠ brb:` is the app's own prefix for a plugin's status line; the rest is brb's, never
-more than 40 characters: how long ago the hold began, to the minute (`40m`, `1h 5m`, `1d 3h`),
-the `brb <note>` text if there was one, the held count and the word that ends it. When the line
-would pass 40 characters the note is dropped whole (`away 40m · 12 held · say back`), then
-`· say back`; a count too long even for that is cut with `…`. Home, the line is removed. There
-is nothing to click; `back` as the whole prompt is the one action, the same as before.
+- **The headline**, bold, on a gold border and a tinted background: `AWAY <how long> · N held`,
+  with ` · <note>` (the `brb <note>` text) only while the headline stays within 40 characters;
+  past that the note is dropped. The word AWAY carries the state; the colour never does alone.
+- **The sub-line**, muted: `F on fire came through · the rest wait for you`, absent when no fire
+  came through.
+- **The held items**, numbered, one row each: every item line and closing ask in `digest.md`,
+  cut with `…` at the band's width; at most 10 rows, fewer when the band has fewer rows to give,
+  then `+N more`.
+- **The prompt box** suggests `away 40m — type back` while it is empty (`$.prompt.suggest`; Tab
+  takes it). Claude Code shows no suggestion while a turn runs or in a headless session.
+- **No emoji**, single-width symbols only.
 
-The data is this session's `away.json`, read out of process by `node mods/badge/query.mjs
---session <id>` (read-only; the file is opened once without following a link, and the open
-descriptor must be a regular file of at most 64 KiB, of which at most 64 KiB + 1 byte is read,
-so a directory, a link, or a file over 64 KiB, even one swapped in or grown after the check, is a
-fault, never a parse; an `away.json` that does not parse is home, the hooks' own reading). The
-badge refreshes at session start, after each prompt enters (so `brb` and `back` show at once), at
-the start and end of each of your turns, and every 5 s while away, so the count moves within 5 s
-of the agent's `hold`. While home the only poll is `$.fs.exists` on `away.json` inside Claude
-Code, once a second, which starts a query when the file appears. The mod never writes.
+**After `back` the list stays.** `back` (typed, or the Back button) writes the digest's items to
+`checklist.json`, and the band turns into a checklist on a blue border:
 
-Where no host draws `ui_status` (`claude -p`, OMP) the line goes nowhere and the hooks' own lines
-cover it: the confirmation at `brb`, `brb: away since <when>; N held` at SessionStart. The badge
-fails the same way as the hooks: a query or a home probe that fails
-clears the line and writes one dim transcript line (`brb badge: query: …`, `brb badge: probe: …`)
-per distinct error; a hook that throws logs one line and passes the event on; no error reaches
-Claude Code.
+```
+╭──────────────────────────────────────────────────────────────────────╮
+│ BACK · 2 to act on                                         [ Clear ] │
+│ 1. Create the read-token secret on the org?                 [ Done ] │
+│ 3. Clear the review round                                   [ Done ] │
+│ 2. Billing limit on the org: raise it?                      [ Undo ] │  ← struck, dim
+╰──────────────────────────────────────────────────────────────────────╯
+```
 
-Tests: `node --test` covers the data and query layers and the mod's timers and probe faults with
-an in-memory host (`mods/badge/tests/data.test.mjs`, `mods/badge/tests/query.test.mjs`,
-`mods/badge/tests/register.test.mjs`); `claude plugin test` from `plugins/brb` runs the mod
-through Claude Code's test kit (`mods/badge/tests/badge.test.tsx`: the line set and cleared,
-the refresh points, the poll and the probe, the fault inputs, the line set for a Desktop session
-with no surface and for a terminal session); `evals/manifest.json` lists the Desktop check under `manual`.
+Rows still to act on come first, in their own numbers; done rows follow, struck, while there is
+room, and when there is not they fold into one `N done` line. `+N more` counts only the rows still
+to act on that did not fit, so a row you have not done is never hidden behind a done one. On a
+narrow band (under 26 columns inside the border) each button sits under its text instead of
+beside it, and no line runs wider than the band.
+
+Done strikes a row and keeps it (Undo puts it back); the choice is saved in `checklist.json`, so
+it survives a restart of the window. The band clears when every row is done, or on Clear. A hold
+that held nothing leaves no checklist. Items held while you are home never make one.
+**Done is cosmetic: it tells the agent nothing.** The agent learns what you resolved from what
+you type, the same as before.
+
+**What the Back button does, per host:**
+
+| host | press Back |
+|---|---|
+| Claude Code, terminal | a mod cannot run a hook, so the button leaves a `back-requested` marker in the session's state directory and puts `back` in the prompt box (Tab takes it). The hold ends on the next hook event: the next prompt you send, whatever it says (the hook ends the hold exactly as `back` does, then lets that prompt through with the digest for the agent), or the agent's next stop if a turn is running (that stop is blocked once and the agent replies with the digest). Until then the band reads `Back pressed · the next prompt ends the hold`. |
+| Claude Code Desktop | the same marker and the same hooks. Whether Desktop draws the band is not settled: Claude Code's type file says the `AbovePrompt` site is raised on the terminal surface only, and a strings dump of the Desktop app found a renderer for it. Where the band is never drawn there is no button: the mod falls back to the one status line of 0.3.x under the prompt (`⚠ brb: away 40m · 3 held · say back`, after back `⚠ brb: back · 2 to act on`), and `back` typed is the way out. |
+| `claude -p`, mobile, OMP | no band and no button. OMP has no mod surface; type `back`. The still-away first line of every reply and the hooks' own lines are unchanged. |
+
+**The status line is a fallback only.** Jo called the footer row unusable; the band replaces it.
+The mod sets `$.ui.status` only where the band's render site has never been asked to draw, from
+the first timer tick on, and clears it the first time the band draws.
+
+**Refresh.** The data is this session's `away.json`, `digest.md`, `checklist.json` and the
+marker, read out of process by `node mods/band/query.mjs --session <id>` (read-only; each file is
+opened once without following a link, and the open descriptor must be a regular file of at most
+64 KiB, of which at most 64 KiB + 1 byte is read, so a directory, a link, or a file over 64 KiB,
+even one swapped in or grown after the check, is a fault, never a parse; an `away.json` or
+`checklist.json` that does not parse is absent). The buttons run `node mods/band/act.mjs
+--session <id> back|done <row>|clear`, which writes through `lib/state.mjs`. The band refreshes at
+session start, after each prompt enters (so `brb` and `back` show at once), at the start and end
+of each of your turns, after each button press, and every 5 s while away or while a checklist is
+up. While home with no checklist the only poll is `$.fs.exists` on `away.json` inside Claude
+Code, once a second, which starts a query when the file appears. `session.end` stops both timers
+and clears the band. `/clear`, `/resume` and `/branch` end the conversation and start another in
+the same window: the mod's `session.start` does not fire again, so it also listens for
+`classic.SessionStart` with source `clear`, `resume` or `fork`, and starts over from there, with
+one probe and one poll, the new conversation's state, and any answer the last conversation still
+had in flight dropped.
+
+**Faults** go the way the hooks' do: a query, an action or a home probe that fails clears the
+band and writes one dim transcript line (`brb band: query: …`, `brb band: probe: …`,
+`brb band: back: …`) per distinct error; a hook that throws logs one line and passes the event
+on; no error reaches Claude Code.
+
+Tests: `node --test` covers the data, view, query and action layers and the mod's timers, buttons
+and fallback with an in-memory host (`mods/band/tests/*.test.mjs`); `claude plugin test` from
+`plugins/brb` mounts the `AbovePrompt` site through Claude Code's test kit
+(`mods/band/tests/band.test.tsx`) for a Desktop session start (no surface, not interactive) and a
+terminal one, presses Back, Done and Clear and checks the drawn tree; `evals/manifest.json` lists
+the live checks under `manual`.
 
 ## State and config
 
 - `${XDG_STATE_HOME:-~/.local/state}/brb/<session id>/` — `away.json` (since, note, counts, the
   lines seen, whether this turn was backstopped, the previous stop's transcript line and
-  fires), `digest.md`, `archive/<when>.md`.
+  fires), `digest.md`, `archive/<when>.md`, `checklist.json` (the last hold's items for the band,
+  each with its Done state), `back-requested` (the Back button's marker, removed when honoured).
   Declared in `.claude-plugin/plugin.json` `state`; `node scripts/prune.mjs --days 30` removes
   files older than 30 days (`errors.log` kept), and the nightly canary runs it.
 - `${XDG_CONFIG_HOME:-~/.config}/brb/config.json`, optional:
@@ -307,18 +356,25 @@ with no surface and for a terminal session); `evals/manifest.json` lists the Des
   message. Which channel is picked is tested (`displayChannel`); the live path is not.
 - **The OMP adapter has not been run in a live omp session** for this version; its handlers
   are tested with a fake runner and one real spawn of the hooks (`omp/brb-omp.test.mjs`).
-- **The badge has not been watched on Desktop or in a terminal** for this version: its data and
-  query layers run under `node --test`; its hooks run under `claude plugin test`
-  (`mods/badge/tests/badge.test.tsx`), with the Desktop session start (no surface, not
-  interactive) and the terminal one. 0.3.0 drew nothing in Desktop for that reason. The tell
-  that the mod loaded: `/plugin` shows `1 mod active · brb` (Claude Code 2.1.286 or later; an
-  older Claude Code ignores `modules` and the hooks still run). The tell that it did not draw:
-  no `⚠ brb:` line under the prompt after `brb` while the confirmation line did show.
-- **The badge lags the hook** by at most a second for a `brb`, and at most 5 s for a `back`,
+- **The band has not been watched on Desktop or in a terminal** for this version: its data,
+  view, query and action layers run under `node --test`; its hooks and the drawn tree run under
+  `claude plugin test` (`mods/band/tests/band.test.tsx`), with the Desktop session start (no
+  surface, not interactive) and the terminal one. The kit checks the tree, not how the app paints
+  it. The tell that the mod loaded: `/plugin` shows `1 mod active · brb` (Claude Code 2.1.286 or
+  later; an older Claude Code ignores `modules` and the hooks still run). The tell that the band
+  did not draw: no band after `brb` while the confirmation line did show, and the `⚠ brb:` status
+  line appearing within 5 s instead.
+- **The band lags the hook** by at most a second for a `brb`, and at most 5 s for a `back`,
   when a prompt's hooks run after the mod's own `prompt.submit` has returned (the mod refreshes
   once after the prompt enters, then probes `away.json` once a second while home and queries
-  every 5 s while away). A `brb` typed into a session where the mod is not loaded shows no badge
+  every 5 s while away). A `brb` typed into a session where the mod is not loaded shows no band
   at all; the hooks hold as before.
+- **The Back button does not end the hold by itself.** It takes the next prompt or the next stop
+  (see the table above). A session closed between the press and that event keeps the hold and
+  the marker; the next prompt in that session honours it.
+- **The band is shared and collapsible.** Other mods may draw in the same band (brb keeps their
+  tree under its own), a survey takes the band over while it runs, and in the terminal the person
+  can collapse it (ctrl+x ctrl+a) without the mod knowing.
 
 ## How it fails
 
@@ -334,13 +390,23 @@ worktree and `scripts/prune.mjs` removes what is older than its retention.
 
 `node --test` from `plugins/brb/` runs everything: the state round-trip, the splitter, the three
 hooks as spawned processes with fixture stdin and fixture transcripts, the hold command as a
-spawned process, the OMP adapter's handlers, the badge's data and query layers. `bash
-e2e/live-run.sh --no-live` replays the fourteen `evals/*.scenario.json` offline. `claude plugin
-test` runs the badge mod itself (`mods/badge/tests/badge.test.tsx`).
+spawned process, the OMP adapter's handlers, the band's data, view, query and action layers.
+`bash e2e/live-run.sh --no-live` replays the fourteen `evals/*.scenario.json` offline. `claude
+plugin test` runs the band mod itself (`mods/band/tests/band.test.tsx`).
 
-## Changes in 0.3.2
+## Changes in 0.4.1
 
-`scripts/prune.mjs` is plugin-kit 0.3.3's template, re-copied: after the age pass it rotates every log under the state directory past 256 KiB (errors.log included) to `<name>.1`, replacing the previous `.1` and counting its bytes as freed, so an appended log is bounded; `--dry-run` prints `would rotate …` per log. The `pruned:` line and the `state` declaration are unchanged.
+`scripts/prune.mjs` is plugin-kit 0.4.1's template, re-copied: after the age pass it rotates every log under the state directory past 256 KiB (errors.log included) to `<name>.1`, replacing the previous `.1` and counting its bytes as freed, so an appended log is bounded; `--dry-run` prints `would rotate …` per log. The `pruned:` line and the `state` declaration are unchanged.
+
+## Changes in 0.4.0
+
+The footer status row of 0.3.x is replaced by a band above the prompt. While away it carries the
+digest: `AWAY <dur> · N held`, the on-fire count, the held items as a numbered list and a Back
+button; the prompt box suggests `away <dur> — type back`. After `back` the band stays as a
+checklist (`BACK · N to act on`, Done per row, Clear) from the new `checklist.json`, until every
+row is done or Clear. The Back button leaves a `back-requested` marker that the prompt and Stop
+hooks honour on their next event. The status line remains only where the band never draws.
+The hold, the hooks' outputs at `back`, the OMP adapter and the away instruction are unchanged.
 
 ## Changes in 0.3.1
 

@@ -4,7 +4,7 @@ All notable changes to plugin-kit are recorded here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Releases before 0.1.2 are described in
 the README's "Changes in" sections.
 
-## 0.3.3 - 2026-11-04
+## 0.4.1 - 2026-11-10
 
 ### Added
 
@@ -24,6 +24,34 @@ the README's "Changes in" sections.
   A `.1` the age pass removes (or would remove) is not counted again as replaced by its log's
   rotation, so a `--dry-run` prints the real run's totals. Every template-following
   `plugins/*/scripts/prune.mjs` carries both, pinned by `test/prune-template.test.mjs`.
+## [0.4.0] - 2026-11-04
+
+The brb badge and the ledger pane drew nothing in Claude Desktop: both gated on the session's
+surface, and Desktop starts a session as `surface: null, isInteractive: false`. What Desktop
+did draw, the status line, is a 32-character grey footnote in the footer. No public guide shows
+how a mod looks in either host, so each plugin found these by shipping them.
+
+### Added
+
+- `skills/new-mod/SKILL.md`: pick the surface by the signal, write for both hosts without
+  gating on `e.surface`, make it readable (single-width symbols, colour never alone, the first
+  32 characters carry the point), register in the engine's validated shape, prove it with the
+  real terminal and Desktop `session.start` payloads, and ship it. The status line is a fallback
+  only until the `AbovePrompt` render hook has been called once in the session, then cleared
+  (brb 0.4.0's rule); a terminal user who collapses the band is not detectable, so anything
+  the person has to answer also raises a toast.
+- `skills/new-mod/reference.md`: every surface, element and render site by host, the limits
+  that shape a drawing, and the session payload per host, each row with its receipt.
+- `templates/mod/register.mjs`: a hooks module with the poll, the band, the fallback status
+  line and once-per-message fault logging. One `begin()` runs from `session.start` and from
+  `classic.SessionStart` filtered to `clear`, `resume` and `fork`, so `/clear`, `/resume` and
+  `/branch` (which fire `session.end` but not `session.start`) restart the poll and drop the
+  last conversation's band; the skill's step 4 states the rule. `clip()` cuts at the last space
+  that fits and gives nothing for a width of 0 or less; the band stacks its button below about
+  12 columns of room; the dismiss button's label names its hotkey. The scaffolder does not copy it.
+- `test/mod-template.test.mjs`: drives the template with a fake `on` and `$` through start,
+  band, `session.end` and `classic.SessionStart` for each of the three sources and both host
+  payloads, and checks `clip()` and the button at narrow widths.
 
 ## [0.3.2] - 2026-11-04
 

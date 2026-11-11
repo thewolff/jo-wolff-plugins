@@ -12,16 +12,25 @@
 //                            as a systemMessage, and the agent gets the same line over the away
 //                            instruction as additionalContext, so it returns to holding. (On OMP
 //                            the adapter handles `brb` itself: it shows that line, no turn.)
-//   `back`                   archive the digest to archive/<ts>.md, clear away.json, and let the
-//                            prompt through (no block) with two outputs carrying the same text:
-//                            additionalContext for the agent, lib/text.mjs backInstruction
-//                            (`brb: Jo is back (away <duration>). Reply with the digest below
-//                            verbatim as your whole message …`) over `brb: hold cleared; digest
-//                            archived to <path>.` and the digest, so the agent's reply IS the
-//                            digest; and a systemMessage with the archive line and the digest,
-//                            for the surfaces that render hook frames. Why both: the mobile
-//                            app renders no hook frame, so a blocked prompt showed Jo nothing;
-//                            an assistant message renders everywhere. The only way out.
+//   `back`                   end the hold (lib/back.mjs endHold: archive the digest to
+//                            archive/<ts>.md, write checklist.json from its items for the band
+//                            above the prompt, clear away.json) and let the prompt through (no
+//                            block) with two outputs carrying the same text: additionalContext
+//                            for the agent, lib/text.mjs backInstruction (`brb: Jo is back
+//                            (away <duration>). Reply with the digest below verbatim as your
+//                            whole message …`) over `brb: hold cleared; digest archived to
+//                            <path>.` and the digest, so the agent's reply IS the digest; and a
+//                            systemMessage with the archive line and the digest, for the
+//                            surfaces that render hook frames. Why both: the mobile app renders
+//                            no hook frame, so a blocked prompt showed Jo nothing; an assistant
+//                            message renders everywhere. The only way out.
+//   any prompt, Back pressed the band's Back button (mods/band) cannot run this hook, so it leaves
+//                            a `back-requested` marker in the session directory and suggests
+//                            `back` in the prompt box. Whatever the next prompt is, the marker
+//                            is honoured first: the hold ends exactly as `back` does, the
+//                            marker goes, and that prompt proceeds carrying the same outputs
+//                            (`back` or `pending` typed after the press is just that prompt).
+//                            A marker with no hold (a stale one) is removed and ignored.
 //   `pending`                print the digest as a block reason and change nothing. The record
 //                            and the digest are read under the session lock, so a digest a
 //                            writer is mid-way through (lines appended, count not yet written)
@@ -57,8 +66,9 @@
 // stdout itself.
 
 import { runHook, invokedDirectly } from "../lib/hook-runner.mjs";
-import { archiveDigest, clearAway, digestPath, freshAway, readAway, readDigest, renderDigest, withAwayLock, writeAway } from "../lib/state.mjs";
-import { AWAY_NOTICE, NOT_AWAY_TEXT, alreadyAwayText, awayInstruction, backInstruction, cappedReason, holdCommand, surfaceWord } from "../lib/text.mjs";
+import { endHold } from "../lib/back.mjs";
+import { backRequested, digestPath, freshAway, readAway, readDigest, renderDigest, withAwayLock, writeAway } from "../lib/state.mjs";
+import { AWAY_NOTICE, NOT_AWAY_TEXT, alreadyAwayText, awayInstruction, cappedReason, holdCommand, surfaceWord } from "../lib/text.mjs";
 
 const block = (reason) => ({ decision: "block", reason, hookSpecificOutput: { hookEventName: "UserPromptSubmit", suppressOriginalPrompt: true } });
 const context = (text) => ({ hookSpecificOutput: { hookEventName: "UserPromptSubmit", additionalContext: text } });
@@ -78,6 +88,10 @@ function newTurn(sessionId, away, env) {
 export function handle(input, { env = process.env, now = () => new Date().toISOString() } = {}) {
   const sessionId = typeof input?.session_id === "string" ? input.session_id : "";
   const word = surfaceWord(input?.prompt);
+  if (backRequested(sessionId, env)) {
+    const ended = endHold(sessionId, env, now());
+    if (ended) return { systemMessage: ended.text, ...context(ended.agentText) };
+  }
   if (word?.word === "pending") {
     if (!readAway(sessionId, env)) return null;
     const { away, body } = withAwayLock(sessionId, env, () => ({ away: readAway(sessionId, env), body: readDigest(sessionId, env) }));
@@ -86,6 +100,10 @@ export function handle(input, { env = process.env, now = () => new Date().toISOS
     return block(cappedReason(header, rest.join("\n").replace(/^\n+/, ""), digestPath(sessionId, env)));
   }
   if (!readAway(sessionId, env) && word?.word !== "brb") return word?.word === "back" ? context(NOT_AWAY_TEXT) : null;
+  if (word?.word === "back") {
+    const ended = endHold(sessionId, env, now());
+    return ended ? { systemMessage: ended.text, ...context(ended.agentText) } : context(NOT_AWAY_TEXT);
+  }
   return withAwayLock(sessionId, env, () => {
     const away = readAway(sessionId, env);
     if (!word) {
@@ -93,23 +111,14 @@ export function handle(input, { env = process.env, now = () => new Date().toISOS
       newTurn(sessionId, away, env);
       return context(awayInstruction(away, holdCommand(sessionId), now()));
     }
-    if (word.word === "brb") {
-      if (away) {
-        newTurn(sessionId, away, env);
-        const at = now();
-        return { systemMessage: alreadyAwayText(away, at), ...context(`${alreadyAwayText(away, at)}\n\n${awayInstruction(away, holdCommand(sessionId), at)}`) };
-      }
-      writeAway(sessionId, freshAway({ since: now(), note: word.note }), env);
-      return block(word.note ? `${AWAY_NOTICE} (note: ${word.note})` : AWAY_NOTICE);
+    // brb
+    if (away) {
+      newTurn(sessionId, away, env);
+      const at = now();
+      return { systemMessage: alreadyAwayText(away, at), ...context(`${alreadyAwayText(away, at)}\n\n${awayInstruction(away, holdCommand(sessionId), at)}`) };
     }
-    // back
-    if (!away) return context(NOT_AWAY_TEXT);
-    const at = now();
-    const digest = renderDigest(away, readDigest(sessionId, env));
-    const archived = archiveDigest(sessionId, env, at);
-    clearAway(sessionId, env);
-    const text = cappedReason(`brb: hold cleared${archived ? `; digest archived to ${archived}` : ""}.`, digest, archived ?? digestPath(sessionId, env));
-    return { systemMessage: text, ...context(`${backInstruction(away, at)}\n\n${text}`) };
+    writeAway(sessionId, freshAway({ since: now(), note: word.note }), env);
+    return block(word.note ? `${AWAY_NOTICE} (note: ${word.note})` : AWAY_NOTICE);
   });
 }
 

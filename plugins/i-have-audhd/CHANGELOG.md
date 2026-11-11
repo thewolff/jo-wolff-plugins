@@ -13,7 +13,7 @@ README's *Changes* section.
   the harness's context. The judge runs the cap on about one write in 50 (`judge/ask.mjs`,
   `options.capCheck` forces or skips it for tests); `scripts/prune.mjs` runs it on every run and
   counts its removals in the `pruned:` line.
-- `scripts/prune.mjs` is plugin-kit 0.3.3's template, re-copied, with the cache cap added:
+- `scripts/prune.mjs` is plugin-kit 0.4.1's template, re-copied, with the cache cap added:
   after the age pass it rotates every log under the state directory past 256 KiB
   (`warnings.log`, `skipped.log`, `judge-failures.log`, `judge-usage.jsonl`, `errors.log`) to
   `<name>.1`, replacing the previous `.1`; `--dry-run` prints `would rotate …` per log. The

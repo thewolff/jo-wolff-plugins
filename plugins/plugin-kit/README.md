@@ -69,6 +69,22 @@ someone copies it again and runs that plugin's tests. The plugins in this reposi
 own `lib/` first, then there), so one runner serves them all and a scaffold outside the
 repository carries its own; they keep their own hook runners.
 
+## Writing a mod
+
+`/plugin-kit:new-mod` (skill `new-mod`) is the visual guide for a Claude Code mod in a plugin
+here: which surface carries which signal (the band above the prompt for anything standing, a
+toast for a moment, the status line only as a fallback until the band has been asked for once
+in the session, then cleared), what the terminal and Claude Desktop each do to it, how to make
+it readable in both, the `register(on, options)` shape the engine validates, and how to test it
+with the payloads each host really sends (Desktop starts a session as `surface: null,
+isInteractive: false`, so a mod that gates on the surface draws nothing there). The per-surface
+lookup tables, with their receipts, are in
+[`skills/new-mod/reference.md`](skills/new-mod/reference.md); a hooks module to start from,
+with the poll, the band, the fallback status line and the fault logging already in place, is
+[`templates/mod/register.mjs`](templates/mod/register.mjs) (`{{name}}` is the plugin's name; the
+scaffolder does not copy it). A terminal user who collapses the band is not detectable by the
+mod, so once the status line is cleared they see only the mod's toasts until they expand it.
+
 ## Shared judge
 
 `lib/judge.mjs` is the one judge dispatch for every plugin that asks a model to grade something
@@ -365,7 +381,7 @@ template-following `plugins/*/scripts/prune.mjs` to check the symlink skip and t
 totals, and its drift guard checks every copy for the contract line, the usage line and the
 rotation.
 
-## Changes in 0.3.3
+## Changes in 0.4.1
 
 `templates/scripts/prune.mjs` rotates logs: every `*.log` / `*.jsonl` under the state
 directory past 256 KiB, errors.log included, is renamed to `<name>.1` (the previous `.1`
@@ -377,6 +393,16 @@ re-copied template (delegation and paired-coding rotate `*.log` only, their `.js
 state).
 Symlinks are skipped (`lstat`, regular files only) and a dry run with an expired `.1` prints the
 real run's totals; every re-copied prune carries both.
+## Changes in 0.4.0
+
+A `new-mod` skill (see "Writing a mod") with a reference of every surface by host and a
+`templates/mod/register.mjs` to start from. The brb badge and the ledger pane drew nothing in
+Claude Desktop because both gated on the session's surface, which Desktop reports as `null`; the
+status line Desktop does draw is a 32-character grey footnote; and no public guide says how a
+mod looks in either host. The skill and the template follow brb 0.4.0's rule: the status line
+is a fallback only until the `AbovePrompt` render hook has been called once in the session, and
+is cleared after that. The scaffolder, the runners, `lib/judge.mjs` and the agents are
+unchanged.
 
 ## Changes in 0.3.2
 

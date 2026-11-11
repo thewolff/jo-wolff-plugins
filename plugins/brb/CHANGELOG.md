@@ -3,12 +3,60 @@
 All notable changes to brb are recorded here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
-## [0.3.2] - 2026-11-04
+## [0.4.1] - 2026-11-10
 
 ### Changed
 
-- `scripts/prune.mjs` is plugin-kit 0.3.3's template, re-copied: after the age pass it rotates every log under the state directory past 256 KiB (errors.log included) to `<name>.1`, replacing the previous `.1` and counting its bytes as freed, so an appended log is bounded; `--dry-run` prints `would rotate …` per log. The `pruned:` line and the `state` declaration are unchanged.
-- The re-copied prune skips symlinks (a linked `x.log` is never rotated over its `.1`) and a dry run no longer counts an expired `.1` twice: its totals are the real run's (plugin-kit 0.3.3's fix).
+- `scripts/prune.mjs` is plugin-kit 0.4.1's template, re-copied: after the age pass it rotates every log under the state directory past 256 KiB (errors.log included) to `<name>.1`, replacing the previous `.1` and counting its bytes as freed, so an appended log is bounded; `--dry-run` prints `would rotate …` per log. The `pruned:` line and the `state` declaration are unchanged.
+- The re-copied prune skips symlinks (a linked `x.log` is never rotated over its `.1`) and a dry run no longer counts an expired `.1` twice: its totals are the real run's (plugin-kit 0.4.1's fix).
+
+## [0.4.0] - 2026-11-04
+
+The footer status row was the wrong surface. Jo, 2026-11-04, on the 0.3.x badge in Desktop:
+"completely unusable" (a grey footnote cut at 32 characters beside the model picker), and, on the
+list that `back` wiped from view: "bad UX to make that list disappear". 0.4.0 moves the hold into
+a band above the prompt and keeps the list there after `back`.
+
+### Added
+
+- `mods/band/` (replaces `mods/badge/`): a Claude Code mod drawing the `AbovePrompt` band. While
+  away: a gold-bordered band, bold headline `AWAY <dur> · N held` (` · <note>` while the headline
+  stays within 40 characters), the muted `F on fire came through · the rest wait for you` line
+  when F > 0, the held items numbered (at most 10 rows, then `+N more`, cut with `…` at the band's
+  width) and a Back button; the empty prompt box suggests `away <dur> — type back`.
+- After `back`: the band stays as a checklist on a blue border, `BACK · N to act on`, a Done
+  button per row (struck and dim once done, Undo puts it back) and Clear. It clears when every
+  row is done or on Clear. Done is cosmetic; the agent is told nothing.
+- `checklist.json` in the session directory, written by `back` from the digest's items
+  (`lib/back.mjs` `endHold`, shared by both hooks). A hold that held nothing writes none; holds
+  while home never make one. `lib/state.mjs`: `digestItems`, `readChecklist`, `writeChecklist`,
+  `toggleChecklistItem`, `clearChecklist`, `requestBack`, `backRequested`, `takeBackRequest`.
+- The Back button: a mod cannot run a hook, so it leaves a `back-requested` marker
+  (`mods/band/act.mjs back`) and suggests `back` in the prompt box. `hooks/user-prompt-submit.mjs`
+  honours the marker on the next prompt, whatever it says, exactly as `back`; `hooks/stop.mjs`
+  honours it at the next stop by ending the hold and blocking that stop once with the digest. A
+  stale marker while home is removed.
+
+### Changed
+
+- The band restarts with the conversation: `/clear`, `/resume` and `/branch` fire `session.end`
+  and then `classic.SessionStart` (source `clear`, `resume`, `fork`), never `session.start` again,
+  so the mod listens for both and starts over (one probe, one poll, the band from the new
+  conversation's state, the fallback line armed again); an answer from the last conversation that
+  lands after the restart is dropped.
+- The checklist puts rows still to act on first (in their own numbers), done rows after them while
+  there is room, then one `N done` line; `+N more` counts only rows still to act on, so an open row
+  and its Done button are never hidden behind done rows.
+- Every drawn line fits the band's width: a finite width is clamped at 0, the headline is capped
+  at 40 characters, and below 26 inner columns each button goes under its text.
+- `$.ui.status` is a fallback only: set where the band's render site is never asked to draw
+  (from the first timer tick), cleared the first time the band draws.
+- The 5 s poll runs while away or while a checklist is up; the 1 s `$.fs.exists` probe only when
+  home with no checklist. `session.end` cancels both timers.
+
+### Removed
+
+- `mods/badge/` (register, data, query and their tests).
 
 ## [0.3.1] - 2026-11-04
 
