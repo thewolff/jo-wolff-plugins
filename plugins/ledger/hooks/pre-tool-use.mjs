@@ -21,8 +21,15 @@
 // a published commit has no review or has findings; gate → deny those two. The gate checks the
 // commits the command itself publishes (lib/review.mjs operationTargets: the repository `git -C`
 // selects, each refspec's source, `gh pr create --head`, the head commit of the pull request
-// `gh pr merge` names), not the hook cwd's HEAD; when the command does not say, the call is
-// allowed with a notice. Only a deny writes a `reviewGate` bounce row; any allowed gated command
+// `gh pr merge` names), not the hook cwd's HEAD. Under `gate`, a command whose text alone shows
+// the gate cannot check it is denied (lib/review.mjs commandRefusal): a push from a folder the
+// gate cannot follow (a `cd` or `-C` that is a variable, a substitution, `~`, a glob, a brace
+// expansion or `cd -`; a literal `cd` to a folder that does not exist; `--git-dir`, `--work-tree`, a `GIT_*` setting, a `-c` that steers the push), and a `git push`
+// or `gh pr create` that follows, on the same command line, a git command not known to leave HEAD and
+// every other ref alone (`commit`, `rebase`, `pull`, `branch -f`, `fetch`, an alias, …). The reason tells the agent to re-issue the push as its own
+// `cd /absolute/path && git push …`. Under `advise` both are a notice. When the refs cannot be
+// named for another reason (`--all`, a pattern refspec, a remote that does not answer), the call
+// is allowed with a notice. Only a deny writes a `reviewGate` bounce row; any allowed gated command
 // marks the session's open `reviewGate` rows satisfied. A deny is only given while the store can
 // take the write that lifts it (`review`, `waive`); otherwise the call is allowed with a notice.
 // Any fault while deciding (git missing or past its deadline, a query that throws) allows the
@@ -48,7 +55,7 @@ import { invocation } from "../lib/inject.mjs";
 import { withStore, hookConfig } from "../lib/store.mjs";
 import { assertWritable } from "../lib/db.mjs";
 import { recordBounce, satisfyBounces } from "../lib/bounces.mjs";
-import { reviewDecision, operationTargets, UnknownTarget } from "../lib/review.mjs";
+import { reviewDecision, operationTargets, commandRefusal, UnknownTarget } from "../lib/review.mjs";
 import { pluginGateDecision } from "../lib/plugin-gate.mjs";
 
 export const REVIEW_PR_SUBCOMMANDS = Object.freeze(["create", "merge"]);
@@ -57,15 +64,20 @@ export const REVIEW_PR_SUBCOMMANDS = Object.freeze(["create", "merge"]);
  * The push operations of this input and the commits they publish, resolved once for both the
  * review gate and the plugin gate (a remote that hangs is waited on once): null when the input
  * is no push or the review mode is off; { ops, targets } | { ops, unknown: <message> } (the
- * command's refs cannot be named) | { ops, fault: <message> } (git failed; logged).
+ * command's refs cannot be named) | { ops, fault: <message> } (git failed; logged) |
+ * { ops, refused: <reason> } (gate mode, and the command text alone cannot be checked). In
+ * `advise` mode a chained push keeps its targets and carries `chained: <notice>`.
  */
 function pushTargets(input, { store, cwd, env }) {
   const mode = store.config.review?.mode ?? "gate";
   if (mode === "off" || input.tool_name !== "Bash") return null;
   const ops = pushOperations(input.tool_input?.command, REVIEW_PR_SUBCOMMANDS);
   if (!ops.length) return null;
+  const refusal = commandRefusal(ops, invocation(), cwd);
+  if (refusal && mode === "gate") return { mode, ops, refused: refusal.reason };
+  const chained = refusal?.kind === "chained" ? refusal.reason.replace(/^ledger: review gate: /, `ledger: review gate (${mode}): `) : null;
   try {
-    return { mode, ops, targets: ops.flatMap((op) => operationTargets(op, cwd, { env })) };
+    return { mode, ops, chained, targets: ops.flatMap((op) => operationTargets(op, cwd, { env })) };
   } catch (err) {
     if (err instanceof UnknownTarget) return { mode, ops, unknown: err.message };
     logError("PreToolUse", `review gate: ${err.message}`, env);
@@ -77,9 +89,12 @@ function pushTargets(input, { store, cwd, env }) {
 function reviewGate(push, { store, cwd, env }) {
   if (!push) return null;
   try {
+    if (push.refused) return { deny: push.refused };
     if (push.fault) return { notice: `ledger: the review gate could not decide (${push.fault}); allowed` };
     if (push.unknown) return { notice: `ledger: the review gate could not tell which commit this command publishes (${push.unknown}); allowed without a review check` };
-    return reviewDecision(store.db, push.ops, cwd, push.mode, { cli: invocation(), env, targets: push.targets });
+    const decision = reviewDecision(store.db, push.ops, cwd, push.mode, { cli: invocation(), env, targets: push.targets });
+    if (!push.chained || decision.deny) return decision;
+    return { ...decision, notice: [decision.notice, push.chained].filter(Boolean).join("\n") };
   } catch (err) {
     logError("PreToolUse", `review gate: ${err.message}`, env);
     return { notice: `ledger: the review gate could not decide (${err.message}); allowed` };
@@ -92,7 +107,7 @@ function reviewGate(push, { store, cwd, env }) {
  * notice; a fault is allowed with a notice.
  */
 function pluginGate(push, { store, env }) {
-  if (!push || push.unknown || push.fault) return null;
+  if (!push || push.unknown || push.fault || push.refused) return null;
   try {
     const decision = pluginGateDecision(store.db, push.targets, { cli: invocation() });
     if (decision?.deny && push.mode !== "gate") return { notice: decision.deny.replace(/^ledger: plugin gate: /, `ledger: plugin gate (${push.mode}): `) };

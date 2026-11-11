@@ -1,0 +1,27 @@
+{
+  "$comment": "A literal absolute `cd` whose folder name has hyphens resolves; its HEAD has no review, so the deny is the review gate's own, not `cannot follow`.",
+  "event": "PreToolUse",
+  "expect": "deny",
+  "reason": "no cross-lab review for",
+  "setup": {
+    "commands": [
+      "git -c user.name=t -c user.email=t@t -C \"${CWD}\" commit -q --allow-empty -m init",
+      "LEDGER_SESSION_ID=\"${SESSION_ID}\" node \"${PLUGIN_DIR}/scripts/ledger.mjs\" note \"pushing the change\"",
+      "mkdir \"${CWD}/story-charts-step1\"",
+      "git -C \"${CWD}/story-charts-step1\" init -q -b main",
+      "echo one > \"${CWD}/story-charts-step1/a.txt\"",
+      "git -C \"${CWD}/story-charts-step1\" add a.txt",
+      "git -c user.name=t -c user.email=t@t -C \"${CWD}/story-charts-step1\" commit -q -m one"
+    ]
+  },
+  "stdin": {
+    "session_id": "${SESSION_ID}",
+    "transcript_path": "${TRANSCRIPT}",
+    "cwd": "${CWD}",
+    "hook_event_name": "PreToolUse",
+    "tool_name": "Bash",
+    "tool_input": {
+      "command": "cd ${CWD}/story-charts-step1 && git push origin HEAD"
+    }
+  }
+}
