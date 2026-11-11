@@ -6,14 +6,16 @@
 //     bold gold, `2 on fire came through · the rest wait for you` under it, the held items as a
 //     numbered list (at most 10 rows, then `+N more`), and a Back button; the prompt box suggests
 //     `away 40m — type back` (`$.prompt.suggest`, Tab takes it);
-//   - the Back button sends `back` as the person's own prompt: it runs `node mods/band/act.mjs
-//     --session <id> back` (read-only: is this session away, since when?), and when it is, a
-//     toast says `brb: Back pressed, ending the hold` and the press is pending until the session
-//     is idle (now, or the running turn's `turn.complete`). Then act.mjs is asked again and, when
-//     the same hold (same `since`) is still on, the mod calls `$.prompt.submit({ text: "back",
-//     asUser: true })`, the same call the engine makes for a typed prompt, so
-//     hooks/user-prompt-submit.mjs ends the hold exactly as for `back` typed. A hold that ended
-//     (`back` typed meanwhile) or was replaced (a new `brb`) drops the press silently. The call
+//   - the Back button sends `back` as the person's own prompt. A press is bound to the hold the
+//     band drew (its `since`) the moment it is accepted. It runs `node mods/band/act.mjs
+//     --session <id> back` (read-only: is this session away, since when?), and when that is the
+//     same hold, a toast says `brb: Back pressed, ending the hold` and the press is pending until
+//     the session is idle (now, or the running turn's `turn.complete`; before any turn event,
+//     the band's `isWorking`). Then act.mjs is asked again and, when the same hold is still on,
+//     the mod calls `$.prompt.submit({ text: "back", asUser: true })`, the same call the engine
+//     makes for a typed prompt, so hooks/user-prompt-submit.mjs ends the hold exactly as for
+//     `back` typed. A hold that ended (`back` typed meanwhile) or was replaced (a new `brb`),
+//     at either check, drops the press silently. The call
 //     is never awaited (it resolves only once its turn starts). While the press is pending the
 //     band says `Back pressed · ending the hold` and further presses do nothing; a failed query
 //     does not release it, a query that sees the hold gone does. A refused or dropped submit
@@ -72,13 +74,28 @@ let stateEnv = { xdgStateHome: undefined, home: undefined };
 let timers = [];
 let generation = 0;
 /**
- * The pending Back press, or null: `{ since, phase }`, `since` the hold it was made for (from
- * act.mjs), `phase` pressed → waiting (for idle) → checking → sent. While it is set the band says
- * so and a second press sends nothing; it ends when a query sees that hold gone, or the press fails.
+ * The pending Back press, or null: `{ since, phase }`. `since` is the hold the band drew when the
+ * press was accepted, fixed then and never changed; every act.mjs check, the first included, must
+ * report that same hold or the press is dropped. `phase` pressed → waiting (for idle) → checking →
+ * sent. While it is set the band says so and a second press sends nothing; it ends when a query
+ * sees that hold gone, or the press fails.
  */
 let pendingBack = null;
-/** A top-level turn is running (turn.start until turn.complete); a pending press waits for it. */
+/** A top-level turn is running (turn.start until turn.complete), as the turn events said. */
 let turnRunning = false;
+/** A top-level turn.start or turn.complete has been seen in this conversation, so turnRunning is known. */
+let turnSeen = false;
+/** The band's own `isWorking` as last drawn (true while a model turn runs), or null where the host gives none. */
+let drawnWorking = null;
+
+/**
+ * Whether a turn is running now: the turn events once one has been seen; before that (the mod
+ * loaded mid-turn) the band's `isWorking`; with neither, idle (the conversation just started).
+ */
+function busy() {
+  if (turnSeen) return turnRunning;
+  return drawnWorking === true;
+}
 
 /** The sources of classic.SessionStart that begin a new conversation (the d.ts spelling: /branch reports `fork`). */
 const NEW_CONVERSATION = ["clear", "resume", "fork"];
@@ -167,7 +184,7 @@ async function checkAway($) {
  */
 async function drainBack($, checked = null) {
   const intent = pendingBack;
-  if (!intent || intent.phase !== "waiting" || turnRunning) return;
+  if (!intent || intent.phase !== "waiting" || busy()) return;
   intent.phase = "checking";
   let now = checked;
   try {
@@ -182,7 +199,7 @@ async function drainBack($, checked = null) {
     applySnapshot($, snapshot);
     return;
   }
-  if (turnRunning) {
+  if (busy()) {
     intent.phase = "waiting";
     return;
   }
@@ -247,27 +264,31 @@ async function refresh($) {
 }
 
 /**
- * Run act.mjs with one verb, then refresh. Back: one pending press at a time (a second press, or
- * one while the first waits, sends nothing); when act.mjs says the session is away, a toast and
- * `back` sent now or at the end of the running turn (drainBack); home, the press is dropped. A
- * failed action is logged (Back's also toasted), and the band redrawn from the query either way.
+ * Run act.mjs with one verb, then refresh. Back: only while the band shows a hold, and bound to
+ * that hold (its `since`) at the press; one pending press at a time (a second press, or one while
+ * the first waits, sends nothing); when act.mjs reports that same hold, a toast and `back` sent
+ * now or at the end of the running turn (drainBack); home or another hold, the press is dropped
+ * without a word. A failed action is logged (Back's also toasted), and the band redrawn from the
+ * query either way.
  */
 async function act($, verb, index) {
   const gen = generation;
   if (verb === "back") {
-    if (pendingBack) return;
-    const intent = { since: null, phase: "pressed" };
+    if (pendingBack || !(snapshot.ok && snapshot.away && typeof snapshot.since === "string")) return;
+    const intent = { since: snapshot.since, phase: "pressed" };
     pendingBack = intent;
     applySnapshot($, snapshot);
     try {
       const checked = await checkAway($);
       if (pendingBack === intent) {
-        if (checked.away) {
-          intent.since = checked.since;
+        if (checked.away && checked.since === intent.since) {
           intent.phase = "waiting";
           toast($, "brb: Back pressed, ending the hold");
           await drainBack($, checked);
-        } else pendingBack = null;
+        } else {
+          pendingBack = null;
+          applySnapshot($, snapshot);
+        }
       }
     } catch (err) {
       backFailed($, intent, err);
@@ -323,6 +344,8 @@ function stop($) {
   generation++;
   pendingBack = null;
   turnRunning = false;
+  turnSeen = false;
+  drawnWorking = null;
   inFlight = false;
   snapshot = emptySnapshot();
   suggested = null;
@@ -372,6 +395,7 @@ export function register(on, options) {
         bandSeen = true;
         applyStatus($, undefined);
       }
+      drawnWorking = typeof e.props?.isWorking === "boolean" ? e.props.isWorking : null;
       if (e.props?.hasSurvey) return next(e);
       const model = bandModel(snapshot, { maxRows: e.props?.maxRows, bodyColumns: e.props?.bodyColumns });
       if (!model) return next(e);
@@ -412,6 +436,7 @@ export function register(on, options) {
     try {
       if (e.agentId === undefined) {
         turnRunning = true;
+        turnSeen = true;
         refresh($);
       }
     } catch (err) {
@@ -424,6 +449,7 @@ export function register(on, options) {
     try {
       if (e.agentId === undefined) {
         turnRunning = false;
+        turnSeen = true;
         await refresh($);
         // Not awaited past its own check: a pending press sends `back` now the session is idle.
         drainBack($).catch((err) => logFault($, "turn.complete", err));

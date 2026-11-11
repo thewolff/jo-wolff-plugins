@@ -264,6 +264,52 @@ test("Back whose act.mjs answer comes after a typed `back` started a turn: it wa
   assert.deepEqual(s.submits, []);
 });
 
+test("Back whose first act.mjs read comes after `back` typed and a new `brb`: the press was for the drawn hold, so nothing is sent and the new hold stays", async () => {
+  const hooks = await load();
+  const s = stub({ snapshot: AWAY });
+  await start(hooks, s);
+  const held = gate();
+  s.actHold = held.p;
+  // act.mjs is held before it reads away.json.
+  const press = buttons(await render(hooks, s))[0].props.onPress();
+  await settle();
+  // `back` typed (the turn it starts runs and ends), then a new `brb`: a replacement hold.
+  s.snapshot = { ...AWAY, since: new Date(Date.now() - 60_000).toISOString(), held: 0, items: [] };
+  held.open();
+  s.actHold = null;
+  await press;
+  await turnComplete(hooks, s);
+  assert.deepEqual(s.submits, [], "the old click never reaches the new hold");
+  assert.deepEqual(s.toasts, [], "dropped without a word");
+  const tree = await render(hooks, s);
+  assert.notEqual(texts(tree)[1], "Back pressed · ending the hold", "the new hold's band is live");
+});
+
+test("Back with no hold drawn does nothing", async () => {
+  const hooks = await load();
+  const s = stub({ snapshot: AWAY });
+  await start(hooks, s);
+  const tree = await render(hooks, s);
+  // The hold ended and the band drew home before the stale button was pressed.
+  s.snapshot = HOME;
+  await s.timers.get(5000)();
+  await buttons(tree)[0].props.onPress();
+  assert.deepEqual(s.acts, []);
+  assert.deepEqual(s.submits, []);
+});
+
+test("Back in a mod loaded mid-turn (no turn event yet, the band drawn with isWorking): it waits for the turn's end", async () => {
+  const hooks = await load();
+  const s = stub({ snapshot: AWAY });
+  await start(hooks, s);
+  await buttons(await render(hooks, s, { props: { isWorking: true } }))[0].props.onPress();
+  assert.deepEqual(s.submits, [], "a turn is running by the band's own isWorking");
+  // `back` typed while it runs: the turn's end finds the hold gone and sends nothing.
+  s.snapshot = CHECKLIST;
+  await turnComplete(hooks, s);
+  assert.deepEqual(s.submits, []);
+});
+
 test("a failed query while a press is pending keeps it pending: a press after recovery sends nothing more", async () => {
   const hooks = await load();
   const s = stub({ snapshot: AWAY });

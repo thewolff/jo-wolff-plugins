@@ -10,10 +10,12 @@ All notable changes to brb are recorded here. The format follows
 - The Back button ends the hold itself. `mods/band/register.mjs` runs `act.mjs back` (now
   read-only: is the session away, and since when?) and then `$.prompt.submit({ text: "back",
   asUser: true })`, the call Claude Code makes for a typed prompt, so
-  `hooks/user-prompt-submit.mjs` ends the hold exactly as for `back` typed. Idle, it is sent at
-  once; while a turn runs, the press waits for that turn's end, asks act.mjs again, and sends only
-  if the same hold (same `since`) is still on, so a `back` typed meanwhile or a new `brb` drops
-  the press without a word. The call is never awaited. A toast says `brb: Back pressed, ending
+  `hooks/user-prompt-submit.mjs` ends the hold exactly as for `back` typed. A press is bound, the
+  moment it is accepted, to the hold the band drew (its `since`), and every check, the first
+  included, must report that same hold. Idle, it is sent at once; while a turn runs (the turn
+  events, or before any, the band's `isWorking`), the press waits for that turn's end, asks
+  act.mjs again, and sends only if the same hold is still on, so a `back` typed meanwhile or a
+  new `brb` drops the press without a word. The call is never awaited. A toast says `brb: Back pressed, ending
   the hold`; the band reads `Back pressed · ending the hold` until a query sees the hold gone, and
   further presses send nothing (a failed query does not re-arm it); a refused or dropped prompt
   toasts `brb: Back failed: <reason>; type back` and the button works again, except one from an
