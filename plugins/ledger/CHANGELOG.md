@@ -4,6 +4,54 @@ All notable changes to ledger are recorded here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Entries before 0.2.1 are the
 "Changes" section of the README (one line per version).
 
+## 0.3.11 - 2026-11-10
+
+### Fixed
+
+- Review gate, `review.mode` `gate`: a `git push`, `gh pr create` or `gh pr merge` that runs
+  where the gate cannot follow is denied; before, it was allowed with a notice, so
+  `W=/some/worktree; cd $W; git push; gh pr create` published an unreviewed commit. Covered: a
+  `cd`, `pushd` or `-C` whose folder is a variable, a `$(…)` or backtick substitution, `~`, a
+  glob (`*`, `?`, `[…]`), a brace expansion, `cd -` or a bare `cd`; a literal `cd` to a folder
+  that does not exist, from inside a repository (the `cd` fails, and after a `;` the push runs
+  where the shell already was); `--git-dir`; `--work-tree`; a `GIT_DIR`, `GIT_WORK_TREE`,
+  `GIT_NAMESPACE` or `GIT_CONFIG*` assignment or export; a `-c` or `--config-env` that sets
+  push, remote or branch config. The reason names the way out: the push re-issued as its own
+  `cd /absolute/path && git push <remote> <branch>`. A hyphen in a literal folder name was
+  never a problem and stays one (`cd /a/story-charts-step1 && git push` resolves); only the
+  bare word `-` is unresolved.
+- Review gate, `gate` mode: a `git push` or `gh pr create` that follows, on the same command
+  line, a command that may change the commit it publishes is denied; before, it was checked against HEAD as it was before the
+  line ran, so `git rebase origin/main && git push` and `git commit -m … && git push` published
+  a commit no review had seen. The commands: every git subcommand not on a list of ones known to
+  leave HEAD and every other ref alone (`HEAD_KEEPERS` in lib/gate.mjs: `add`, `status`,
+  `log`, `diff`, `stash`, a listing `branch` or `tag`, a reading `config`, …), so `git commit`,
+  `rebase`, `merge`, `cherry-pick`, `revert`, `reset`, `pull`, `checkout`, `switch`, `am`,
+  `bisect`, `update-ref`, `symbolic-ref`, `subtree`, `fetch`, and a git alias; plus
+  a `stash` other than `list` or `show` (`stash branch` moves HEAD; the rest rewrite
+  `refs/stash`, which a refspec can name), a `branch` or `tag` that creates, moves or deletes, a `config` that
+  writes, a `submodule` other than `status` or `summary`, a `worktree` other than `list`, a
+  `remote` other than a bare one, `show` or `get-url`, a `notes` other than `list` or `show`,
+  and `gh pr checkout`. A `branch` or `tag` listing with a pattern (`--list 'v*'`,
+  `--contains`, `--merged`, `--points-at`) is a listing and does not refuse the push.
+  Git's global options are read, in any shell scope. The reason says to run
+  that command first, review the new HEAD, then run the push as its own command. `gh pr merge`
+  is refused for this only when it names no pull request (no selector and no full sha to
+  `--match-head-commit`): gh then merges the pull request of the branch checked out when it
+  runs, so `gh pr checkout 5 && gh pr merge` would be checked against another pull request.
+
+### Changed
+
+- `review.mode` `advise` still never denies: the unfollowable folder keeps its notice, and the
+  chained push is checked against HEAD as it is, with a new notice saying what that misses.
+- A push whose refs cannot be named for another reason (`--all`, `--mirror`, `--tags`,
+  `--branches`, a `:` or pattern refspec, a configured `remote.<name>.push`, `push.default
+  matching`, a remote or `gh` that does not answer) is still allowed with a notice in every
+  mode. These are named under *Known gaps* in the README.
+- `pushOperations` (lib/gate.mjs) operations carry `after`: the first HEAD-moving command
+  before them on the command line, or null. `commandRefusal` (lib/review.mjs) is new.
+- Six eval scenarios for the above (`evals/pre-tool-use-push-*`).
+
 ## 0.3.10 - 2026-11-10
 
 ### Changed

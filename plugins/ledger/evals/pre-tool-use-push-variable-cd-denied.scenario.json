@@ -1,0 +1,22 @@
+{
+  "$comment": "Review gate, hole one: the session has a note, but the push runs after `cd $W`, a folder the gate cannot follow, so it is denied and the reason names the literal form.",
+  "event": "PreToolUse",
+  "expect": "deny",
+  "reason": "Re-issue it as its own command with a literal folder: `cd /absolute/path && git push <remote> <branch>`",
+  "setup": {
+    "commands": [
+      "git -c user.name=t -c user.email=t@t -C \"${CWD}\" commit -q --allow-empty -m init",
+      "LEDGER_SESSION_ID=\"${SESSION_ID}\" node \"${PLUGIN_DIR}/scripts/ledger.mjs\" note \"pushing the change\""
+    ]
+  },
+  "stdin": {
+    "session_id": "${SESSION_ID}",
+    "transcript_path": "${TRANSCRIPT}",
+    "cwd": "${CWD}",
+    "hook_event_name": "PreToolUse",
+    "tool_name": "Bash",
+    "tool_input": {
+      "command": "W=${CWD}; cd $W; git push origin HEAD; gh pr create --fill"
+    }
+  }
+}

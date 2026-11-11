@@ -59,6 +59,59 @@ const PREFIX_WORDS = new Set(["command", "env", "exec", "time", "nohup"]);
 // runs between them cannot change the directory or environment of what follows.
 export const SCOPE_OPEN = "\0(";
 export const SCOPE_CLOSE = "\0)";
+// Git subcommands that leave HEAD and every other ref where they are (see movesHead for the
+// forms of `branch`, `tag`, `fetch`, `config`, `submodule` and `stash` that do not). Every other one (`commit`, `rebase`, `merge`,
+// `cherry-pick`, `revert`, `reset`, `pull`, `checkout`, `switch`, `am`, `bisect`, `update-ref`,
+// `symbolic-ref`, `subtree`, an alias, a subcommand this list has not met) may move it, so a
+// push after one on the same command line may publish a commit that does not exist yet when the
+// hook runs. An allow-list, so an unknown subcommand errs towards refusing the chained push.
+const HEAD_KEEPERS = new Set([
+  "add", "rm", "mv", "restore", "status", "log", "diff", "show", "fetch", "branch", "tag", "remote", "config", "stash", "push",
+  "rev-parse", "rev-list", "ls-files", "ls-remote", "ls-tree", "describe", "blame", "grep", "shortlog", "reflog", "cat-file",
+  "merge-base", "name-rev", "for-each-ref", "show-ref", "diff-tree", "diff-index", "diff-files", "range-diff", "whatchanged",
+  "count-objects", "clean", "fsck", "version", "help", "var", "check-ignore", "check-attr",
+  "hash-object", "update-index", "write-tree", "format-patch", "apply", "archive", "notes", "worktree", "submodule",
+  "sparse-checkout", "verify-commit", "verify-tag",
+]);
+// Flags that make `git branch` / `git tag` a listing even with a pattern argument.
+const LISTING = /^(-l|--list|--contains|--no-contains|--merged|--no-merged|--points-at)(=|$)/;
+/**
+ * True when `git <sub> <rest…>` may change the commit a later push publishes: it may move HEAD,
+ * move another ref a refspec can name, or change the config git push reads. That is every
+ * subcommand outside HEAD_KEEPERS, and inside it:
+ *   stash      anything but `list` or `show`: `stash branch` checks out the stash's base commit,
+ *              and a bare `stash`, `push`, `pop`, `drop`, `store`, `clear` rewrite `refs/stash`,
+ *              which a refspec can name
+ *   fetch      always: it moves remote-tracking refs, `src:dst` moves a local one, `-u` HEAD
+ *   branch,    anything but a listing: `-f -m -M -c -C -d -D -u` and their long forms change a
+ *   tag        ref; otherwise `-l`, `--list`, `--contains`, `--merged`, `--points-at` (LISTING)
+ *              make it a listing, pattern or not; otherwise a positional argument creates one
+ *   config     anything but a read (`--get…`, `--list`, `-l`, `get`, `list`)
+ *   submodule  anything but `status` or `summary` (`update` moves the submodule's HEAD)
+ *   worktree   anything but `list` (`add -B` resets a branch)
+ *   remote     anything but a bare `remote`, `show`, `get-url` (`update`, `add -f` and `prune`
+ *              move remote-tracking refs; `set-url` changes where a push goes)
+ *   notes      anything but a bare `notes`, `list`, `show` (the rest write a notes ref)
+ *   reflog     anything but a bare `reflog`, `show`, `exists`
+ */
+function movesHead(sub, rest) {
+  if (!HEAD_KEEPERS.has(sub)) return true;
+  const first = rest.find((t) => !t.startsWith("-"));
+  if (sub === "stash") return !(first === "list" || first === "show");
+  if (sub === "fetch") return true;
+  if (sub === "branch" || sub === "tag") {
+    if (rest.some((t) => /^-[a-zA-Z]*[fmMcCdDu]/.test(t) || /^--(force|move|copy|delete|set-upstream|unset-upstream|edit-description|create-reflog)/.test(t))) return true;
+    return rest.some((t) => LISTING.test(t)) ? false : first !== undefined;
+  }
+  const only = (...ok) => !(first === undefined || ok.includes(first));
+  if (sub === "worktree") return first !== "list";
+  if (sub === "remote") return only("show", "get-url");
+  if (sub === "notes") return only("list", "show");
+  if (sub === "reflog") return only("show", "exists");
+  if (sub === "config") return !(first === "get" || first === "list" || rest.some((t) => /^(--get|--list$|-l$)/.test(t)));
+  if (sub === "submodule") return !(first === undefined || first === "status" || first === "summary");
+  return false;
+}
 // Config keys that change which refs a push publishes or where it goes.
 const PUSH_CONFIG = /^(push\.|remote\.pushdefault$|remote\..+\.(push|pushurl|url|mirror)$|branch\..+\.(remote|pushremote|merge)$|url\.)/i;
 // Environment variables that change git's config or repository.
@@ -251,8 +304,13 @@ export function simpleCommands(text) {
   return cmds;
 }
 
-/** A directory word the gate cannot resolve statically: an expansion, `~`, or `-`. */
-const dynamicDir = (d) => !d || d === "-" || /[$`~*?]/.test(d);
+/**
+ * A directory word the gate cannot resolve statically: an expansion (`$`, a backtick), `~`, a
+ * glob (`*`, `?`, `[…]`), a brace expansion (`{a,b}`), or the bare word `-` (`cd -`). Quotes
+ * are gone by the time a word is read, so a quoted `[` or `{` counts too. A hyphen inside a
+ * literal path is an ordinary character.
+ */
+const dynamicDir = (d) => !d || d === "-" || /[$`~*?[\]{}]/.test(d);
 
 /**
  * The publishing operations in `command`: one per simple command that is `git push …` or
@@ -261,16 +319,20 @@ const dynamicDir = (d) => !d || d === "-" || /[$`~*?]/.test(d);
  * global options are read. Every operation carries the `cd` directories run before it in its own
  * shell scope (`cds`, in order; a `cd` inside a subshell or command substitution does not reach
  * past it), so a relative `-C` resolves where git would run:
- *   { tool: "git", cds, dirs: [-C dirs in order], unsupported: <why>|null, args }
- *   { tool: "gh", cds, unsupported: <why>|null, sub, args }
+ *   { tool: "git", cds, dirs: [-C dirs in order], unsupported: <why>|null, after: <cmd>|null, args }
+ *   { tool: "gh", cds, unsupported: <why>|null, after: <cmd>|null, sub, args }
  * `unsupported` names what the gate cannot follow: `--git-dir`, `--work-tree`, a `cd` or `-C`
- * whose directory is an expansion, `~` or `-`, a `-c`/`--config-env` that sets push, remote or
- * branch config, a `GIT_CONFIG*`/`GIT_DIR`/`GIT_WORK_TREE` assignment or export. `args` are the
- * words after `push` / `pr <sub>`.
+ * whose directory is an expansion, `~`, a glob, a brace expansion or `-`, a `-c`/`--config-env` that sets push, remote or
+ * branch config, a `GIT_CONFIG*`/`GIT_DIR`/`GIT_WORK_TREE` assignment or export. `after` names the
+ * first command earlier on the command line that may change the commit a push publishes (see
+ * movesHead: `git commit`, `git rebase`, an alias, `git branch -f`, `git fetch`, …; and
+ * `gh pr checkout`), in any shell scope: the hook sees HEAD as it is before any of
+ * the line runs. `args` are the words after `push` / `pr <sub>`.
  */
 export function pushOperations(command, ghPr = ["create"]) {
   const ops = [];
   let scope = { cds: [], unknown: null };
+  let moved = null;
   const outer = [];
   for (const words of simpleCommands(command)) {
     if (words.length === 1 && words[0] === SCOPE_OPEN) {
@@ -305,7 +367,8 @@ export function pushOperations(command, ghPr = ["create"]) {
     }
     const bin = tokens[0].split("/").pop();
     if (bin === "gh") {
-      if (tokens[1] === "pr" && ghPr.includes(tokens[2])) ops.push({ tool: "gh", cds: [...scope.cds], unsupported: envUnknown ?? scope.unknown, sub: tokens[2], args: tokens.slice(3) });
+      if (tokens[1] === "pr" && ghPr.includes(tokens[2])) ops.push({ tool: "gh", cds: [...scope.cds], unsupported: envUnknown ?? scope.unknown, after: moved, sub: tokens[2], args: tokens.slice(3) });
+      if (tokens[1] === "pr" && tokens[2] === "checkout") moved ??= "gh pr checkout";
       continue;
     }
     if (bin !== "git") continue;
@@ -325,7 +388,8 @@ export function pushOperations(command, ghPr = ["create"]) {
       if (setting !== null && PUSH_CONFIG.test(setting.split("=")[0])) unsupported = `${t.split("=")[0]} ${setting.split("=")[0]}`;
       i += GIT_OPT_WITH_ARG.has(t) ? 2 : 1;
     }
-    if (tokens[i] === "push") ops.push({ tool: "git", cds: [...scope.cds], dirs, unsupported, args: tokens.slice(i + 1) });
+    if (tokens[i] === "push") ops.push({ tool: "git", cds: [...scope.cds], dirs, unsupported, after: moved, args: tokens.slice(i + 1) });
+    else if (tokens[i] && movesHead(tokens[i], tokens.slice(i + 1))) moved ??= `git ${tokens[i]}${tokens[i] === "stash" && tokens.slice(i + 1).find((t) => !t.startsWith("-")) === "branch" ? " branch" : ""}`;
   }
   return ops;
 }

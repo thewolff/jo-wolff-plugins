@@ -722,6 +722,15 @@ export function findingsLine(db, cwd, config, cli = "ledger") {
   return `ledger: cross-lab review found ${n} finding(s) on ${short(state.head)}; run \`${cli} review status\``;
 }
 
+/** True when `path` is a folder (a link to one counts); false when it is missing or cannot be read. */
+function isDirectory(path) {
+  try {
+    return statSync(path).isDirectory();
+  } catch {
+    return false;
+  }
+}
+
 /** Thrown when the gate cannot tell from a command which commit it publishes. */
 export class UnknownTarget extends Error {}
 
@@ -850,6 +859,67 @@ export function operationTargets(op, cwd, { env = process.env } = {}) {
     throw new UnknownTarget(`gh pr view did not name the pull request's head commit (${why})`);
   }
   return [{ top: null, sha: sha.toLowerCase(), unbound: true }];
+}
+
+/**
+ * What the command text alone says the gate cannot check, before any commit is resolved; null
+ * when every operation can be followed. Under `gate` the hook denies with `reason`; under
+ * `advise` it is a notice.
+ *   unfollowed  an operation runs where the gate cannot follow (pushOperations `unsupported`: a
+ *               computed `cd` or `-C`, `--git-dir`, `--work-tree`, a `GIT_*` setting, a `-c`
+ *               that steers the push), so the repository and commit cannot be named.
+ *   chained     a `git push` or `gh pr create` follows a command that may move HEAD or another
+ *               ref on the same command line (pushOperations `after`), so the commit it publishes does not
+ *               exist yet. `gh pr merge` is refused too unless it names its pull request (a
+ *               selector, or a full sha to `--match-head-commit`): with neither, gh picks the
+ *               pull request of the branch checked out when it runs, which the earlier
+ *               command may have changed.
+ * With `cwd` (the hook's), a literal `cd` that names no existing folder is `unfollowed` too when
+ * the folder the shell was in is inside a repository: the `cd` fails, and after a `;` the push
+ * runs there.
+ * Each reason states the way out: the push re-issued as its own literal command.
+ */
+export function commandRefusal(ops, cli = "ledger", cwd = null) {
+  const name = (op) => (op.tool === "git" ? "git push" : `gh pr ${op.sub}`);
+  const lost = ops.find((op) => op.unsupported);
+  if (!lost && cwd) {
+    for (const op of ops) {
+      let dir = cwd;
+      for (const d of op.cds ?? []) {
+        const next = resolvePath(dir, d);
+        if (isDirectory(next)) {
+          dir = next;
+          continue;
+        }
+        // The push would run in `dir`, the last folder that exists. Outside a repository git
+        // and gh refuse it themselves; git failing here is a fault, and a fault never denies.
+        try {
+          gitHead(dir, { timeoutMs: HOOK_GIT_TIMEOUT_MS });
+        } catch {
+          break;
+        }
+        return {
+          kind: "unfollowed",
+          reason: `ledger: review gate: \`cd ${d}\` names no folder (${next}), so this \`${name(op)}\` would run somewhere the gate did not check. Re-issue it as its own command with a folder that exists: \`cd /absolute/path && git push <remote> <branch>\`.`,
+        };
+      }
+    }
+  }
+  if (lost) {
+    return {
+      kind: "unfollowed",
+      reason: `ledger: review gate: the gate cannot follow where this \`${name(lost)}\` runs (${lost.unsupported}), so the commit it publishes cannot be checked for a review. Re-issue it as its own command with a literal folder: \`cd /absolute/path && git push <remote> <branch>\`, with no variable, \`$(…)\`, \`~\`, glob or \`cd -\` in the folder, and no \`--git-dir\`, \`--work-tree\`, \`GIT_*\` setting or \`-c\` push config.`,
+    };
+  }
+  const named = (op) => positionals(op.args, GH_MERGE_OPTS_WITH_ARG).length > 0 || /^[0-9a-f]{40}$/i.test(optValue(op.args, ["--match-head-commit"]) ?? "");
+  const chained = ops.find((op) => op.after && !(op.tool === "gh" && op.sub === "merge" && named(op)));
+  if (chained) {
+    return {
+      kind: "chained",
+      reason: `ledger: review gate: \`${chained.after}\` runs before this \`${name(chained)}\` on the same command line and may change the commit it publishes, so the commit that would be published is not the one the gate can check now. Run \`${chained.after}\` first, review the commit to be pushed (\`${cli} review\`), then run \`${name(chained)}\` as its own command.`,
+    };
+  }
+  return null;
 }
 
 /**

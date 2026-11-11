@@ -623,8 +623,8 @@ test("S1: the push matcher reads shell quoting, comments and here-documents", as
   assert.equal(isPushCommand("cat <<'EOF' > notes.md\ngh pr merge 3\nEOF", merge), false);
   assert.equal(isPushCommand("cd x && GIT_TRACE=1 git push", merge), true);
   assert.equal(isPushCommand("cat <<EOF\nbody\nEOF\ngit push", merge), true, "a push after the here-document still counts");
-  assert.deepEqual(pushOperations('git -C "my repo" -c user.name=x push origin "feat:main"', merge), [{ tool: "git", cds: [], dirs: ["my repo"], unsupported: null, args: ["origin", "feat:main"] }]);
-  assert.deepEqual(pushOperations('gh pr create --title "git push fix" --head feat', merge), [{ tool: "gh", sub: "create", cds: [], unsupported: null, args: ["--title", "git push fix", "--head", "feat"] }]);
+  assert.deepEqual(pushOperations('git -C "my repo" -c user.name=x push origin "feat:main"', merge), [{ tool: "git", cds: [], dirs: ["my repo"], unsupported: null, after: null, args: ["origin", "feat:main"] }]);
+  assert.deepEqual(pushOperations('gh pr create --title "git push fix" --head feat', merge), [{ tool: "gh", sub: "create", cds: [], unsupported: null, after: null, args: ["--title", "git push fix", "--head", "feat"] }]);
 });
 
 test("live run finding 5: a push with no note and no review is denied once, naming both, and writes both bounce rows", () => {
@@ -824,7 +824,7 @@ test("R3-B2: a later review of an ancestor does not clear a descendant's finding
   assert.equal(decision(push(b)), "deny");
 });
 
-test("R3-B3: command-local git config or environment that steers a push is not followed, so the gate says so", async () => {
+test("R3-B3: command-local git config or environment that steers a push is not followed: gate denies it, advise says so", async () => {
   const { pushOperations } = await import("../lib/gate.mjs");
   for (const cmd of [
     "git -c push.default=matching push origin",
@@ -841,9 +841,177 @@ test("R3-B3: command-local git config or environment that steers a push is not f
   assert.equal(pushOperations("git -c user.name=x push origin HEAD")[0].unsupported, null, "config that does not steer a push is fine");
   const b = repo();
   review(b, [], { LEDGER_REVIEW_BIN_CODEX: stub(b, "codex", "PASS") });
-  const p = push(b, "git -c push.default=matching push origin");
+  let p = push(b, "git -c push.default=matching push origin");
+  assert.equal(decision(p), "deny");
+  assert.match(p.json.hookSpecificOutput.permissionDecisionReason, /cannot follow where this `git push` runs \(-c push\.default\)/);
+  b.writeConfig({ review: { mode: "advise" } });
+  p = push(b, "git -c push.default=matching push origin");
   assert.equal(decision(p), "allow");
   assert.match(p.json.systemMessage, /could not tell which commit this command publishes \(-c push\.default is not followed\)/);
+});
+
+/** A second repository in a folder whose name has hyphens, with one commit; returns its path. */
+function hyphenRepo(b) {
+  const dir = join(b.sibling, "story-charts-step1");
+  mkdirSync(dir);
+  const env = { ...b.env, GIT_AUTHOR_NAME: "t", GIT_AUTHOR_EMAIL: "t@t", GIT_COMMITTER_NAME: "t", GIT_COMMITTER_EMAIL: "t@t" };
+  writeFileSync(join(dir, "a.txt"), "one\n");
+  for (const args of [["init", "-q", "-b", "main"], ["add", "a.txt"], ["commit", "-q", "-m", "one"]]) assert.equal(spawnSync("git", args, { cwd: dir, env }).status, 0);
+  return dir;
+}
+
+test("0.3.11 hole one: under gate a push from a folder the gate cannot follow is denied, with the literal form as the way out", () => {
+  const b = repo();
+  review(b, [], { LEDGER_REVIEW_BIN_CODEX: stub(b, "codex", "PASS") });
+  assert.equal(push(b).out, "", "HEAD is reviewed, so only the folder is in question");
+  for (const [cmd, why] of [
+    [`W=${b.work}; cd $W; git push origin feat; gh pr create --fill`, "cd $W"],
+    [`W=${b.work}; cd "$W" && git push`, "cd $W"],
+    ["cd $(git rev-parse --show-toplevel) && git push origin feat", "cd $(git rev-parse --show-toplevel)"],
+    ["cd `pwd` && git push origin feat", "cd `pwd`"],
+    ["cd ~/code/repo && git push origin feat", "cd ~/code/repo"],
+    ["cd ../wor* && git push origin feat", "cd ../wor*"],
+    ["cd ../wor[k] && git push origin feat", "cd ../wor[k]"],
+    [`cd ${b.work.slice(0, -1)}[jk] && git push origin feat`, `cd ${b.work.slice(0, -1)}[jk]`],
+    ["cd ../{work,sibling} && git push origin feat", "cd ../{work,sibling}"],
+    ["git -C ../wor[k] push origin feat", "-C ../wor[k]"],
+    ["cd - && git push origin feat", "cd -"],
+    ["cd && git push origin feat", "cd (home)"],
+    ["git -C $REPO push origin feat", "-C $REPO"],
+    [`git --git-dir ${b.work}/.git push origin feat`, "--git-dir"],
+    [`cd $W && gh pr create --fill`, "cd $W"],
+  ]) {
+    const p = push(b, cmd);
+    assert.equal(decision(p), "deny", cmd);
+    const reason = p.json.hookSpecificOutput.permissionDecisionReason;
+    assert.ok(reason.includes(`(${why})`), `${cmd}: ${reason}`);
+    assert.match(reason, /Re-issue it as its own command with a literal folder: `cd \/absolute\/path && git push <remote> <branch>`/, cmd);
+  }
+  // A literal cd to a folder that does not exist fails, and after `;` the push runs in the hook's folder.
+  for (const cmd of ["cd /no/such-folder; git push origin feat", "cd nowhere-here; gh pr create --fill", `cd ${b.work} && cd missing-sub; git push`]) {
+    const p = push(b, cmd);
+    assert.equal(decision(p), "deny", cmd);
+    assert.match(p.json.hookSpecificOutput.permissionDecisionReason, /names no folder \(.*\), so this `(git push|gh pr create)` would run somewhere the gate did not check\. Re-issue it as its own command with a folder that exists: `cd \/absolute\/path && git push <remote> <branch>`/, cmd);
+  }
+  assert.equal(decision(hook(b, "pre-tool-use", { session_id: SID, cwd: b.sibling, hook_event_name: "PreToolUse", tool_name: "Bash", tool_input: { command: "cd nowhere-here; git push origin feat" } })), "allow", "outside a repository git refuses the push itself");
+  assert.ok(reviewBounces(b).length >= 18, "each deny left a reviewGate bounce row");
+  assert.equal(push(b, `cd ${b.work} && git push origin feat`).out, "", "the literal form the reason names passes");
+  assert.equal(reviewBounces(b).at(-1), "satisfied");
+});
+
+test("0.3.11 hole one: advise keeps the notice, off says nothing, and a locked store turns the deny into an allow", () => {
+  const b = repo({ mode: "advise" });
+  let p = push(b, "cd $W && git push origin feat");
+  assert.equal(decision(p), "allow");
+  assert.match(p.json.systemMessage, /could not tell which commit this command publishes \(cd \$W is not followed\); allowed without a review check/);
+  b.writeConfig({ review: { mode: "off" } });
+  assert.equal(push(b, "cd $W && git push origin feat").out, "");
+  b.writeConfig({ review: { mode: "advise" } });
+  assert.equal(decision(push(b, "cd /no/such-folder; git push origin feat")), "allow", "advise never denies");
+  b.writeConfig({ review: { mode: "gate" } });
+  const db = openDb(b);
+  db.exec("BEGIN IMMEDIATE");
+  p = push(b, "cd $W && git push origin feat");
+  db.exec("ROLLBACK");
+  db.close();
+  assert.equal(decision(p), "allow", "a deny is only given while the store can record it");
+});
+
+test("0.3.11: a literal absolute cd with hyphens resolves: reviewed HEAD allows, unreviewed denies for the review, waived allows", async () => {
+  const { pushOperations } = await import("../lib/gate.mjs");
+  const [op] = pushOperations("cd /Users/x/agent-scratch/kitchen/story-charts-step1-plumbing && git push -u origin feat-a-b");
+  assert.deepEqual([op.cds, op.unsupported, op.after], [["/Users/x/agent-scratch/kitchen/story-charts-step1-plumbing"], null, null]);
+  assert.equal(pushOperations("git -C /a/story-charts-step1 push")[0].unsupported, null);
+  const b = repo();
+  const dir = hyphenRepo(b);
+  const cmd = `cd ${dir} && git push origin HEAD`;
+  let p = push(b, cmd);
+  assert.equal(decision(p), "deny", "unreviewed HEAD");
+  assert.match(p.json.hookSpecificOutput.permissionDecisionReason, /no cross-lab review for/);
+  assert.doesNotMatch(p.json.hookSpecificOutput.permissionDecisionReason, /cannot follow/);
+  const reviewed = cli(b, ["review"], { cwd: dir, env: { LEDGER_SESSION_ID: SID, LEDGER_REVIEW_BIN_CODEX: stub(b, "codex", "PASS") } });
+  assert.match(reviewed.out, /^codex: pass$/m, reviewed.out + reviewed.err);
+  assert.equal(push(b, cmd).out, "", "reviewed HEAD");
+  assert.equal(push(b, `git -C ${dir} push origin HEAD`).out, "");
+  const env = { ...b.env, GIT_AUTHOR_NAME: "t", GIT_AUTHOR_EMAIL: "t@t", GIT_COMMITTER_NAME: "t", GIT_COMMITTER_EMAIL: "t@t" };
+  assert.equal(spawnSync("git", ["commit", "-q", "--allow-empty", "-m", "two"], { cwd: dir, env }).status, 0);
+  assert.equal(decision(push(b, cmd)), "deny", "a new HEAD has no review");
+  assert.equal(cli(b, ["review", "waive", "prototype, Jo said push it"], { cwd: dir, env: { LEDGER_SESSION_ID: SID } }).code, 0);
+  assert.equal(push(b, cmd).out, "", "waived HEAD");
+});
+
+test("0.3.11 hole two: under gate a push chained after a HEAD-moving command is denied, even on a reviewed HEAD", async () => {
+  const { pushOperations } = await import("../lib/gate.mjs");
+  const b = repo();
+  review(b, [], { LEDGER_REVIEW_BIN_CODEX: stub(b, "codex", "PASS") });
+  for (const [cmd, mover] of [
+    [`cd ${b.work} && git rebase origin/main && git push origin feat`, "git rebase"],
+    ['git add -A && git commit -m "fix" && git push origin feat', "git commit"],
+    ["git commit -am fix; git push", "git commit"],
+    [`git -C ${b.work} commit -am fix && git -C ${b.work} push origin feat`, "git commit"],
+    ["git merge main && git push origin feat", "git merge"],
+    ["git cherry-pick abc123 && git push origin feat", "git cherry-pick"],
+    ["git revert HEAD --no-edit && git push origin feat", "git revert"],
+    ["git reset --hard origin/feat && git push origin feat", "git reset"],
+    ["git pull --rebase && git push origin feat", "git pull"],
+    ["git checkout other && git push origin HEAD", "git checkout"],
+    ["git switch other && git push origin HEAD", "git switch"],
+    ["git am fix.patch && git push origin feat", "git am"],
+    ["(git commit -m x) && git push origin feat", "git commit"],
+    ["gh pr checkout 5 && git push", "gh pr checkout"],
+    ["git stash branch recovered stash@{0} && git push origin HEAD", "git stash branch"],
+    ["git stash -q branch recovered && git push origin HEAD", "git stash branch"],
+    ["git fetch -u origin main:feat && git push origin feat", "git fetch"],
+    ['git ci -m "an alias for commit" && git push origin feat', "git ci"],
+    ["git subtree pull --prefix lib other main && git push origin feat", "git subtree"],
+    ["git update-ref HEAD abc123 && git push origin feat", "git update-ref"],
+    ["git branch -f release abc123 && git push origin release", "git branch"],
+    ["git branch release abc123 && git push origin release", "git branch"],
+    ["git tag -f v1 abc123 && git push origin v1", "git tag"],
+    ["git fetch origin source:release && git push origin release", "git fetch"],
+    ["git fetch origin && git push origin origin/main:release", "git fetch"],
+    ["git config remote.origin.push other:main && git push origin", "git config"],
+    ["git submodule update --remote sub && git -C sub push origin HEAD:release", "git submodule"],
+    ["git worktree add -B release /tmp/release-worktree abc123 && git push origin release", "git worktree"],
+    ["git remote update && git push origin origin/main:release", "git remote"],
+    ["git remote set-url origin git@example.com:x/y.git && git push origin feat", "git remote"],
+    ["git notes add -m reviewed HEAD && git push origin refs/notes/commits", "git notes"],
+    ["git tag -l -d v1 && git push origin feat", "git tag"],
+    ["git gc --prune=now && git push origin feat", "git gc"],
+    ["git stash push && git push origin refs/stash:refs/heads/recovery", "git stash"],
+    ["git stash && git push origin refs/stash:refs/heads/recovery", "git stash"],
+    ["git add -A && git stash && git stash pop && git push origin feat", "git stash"],
+  ]) {
+    assert.equal(pushOperations(cmd)[0].after, mover, cmd);
+    const p = push(b, cmd);
+    assert.equal(decision(p), "deny", cmd);
+    const reason = p.json.hookSpecificOutput.permissionDecisionReason;
+    assert.ok(reason.includes(`\`${mover}\` runs before this \`git push\` on the same command line and may change the commit it publishes`), `${cmd}: ${reason}`);
+    assert.match(reason, /review the commit to be pushed \(`.*review`\), then run `git push` as its own command/, cmd);
+  }
+  let p = push(b, 'git commit -m "x" && gh pr create --fill');
+  assert.equal(decision(p), "deny", "gh pr create pushes the current branch");
+  assert.match(p.json.hookSpecificOutput.permissionDecisionReason, /`git commit` runs before this `gh pr create`/);
+  // What stays allowed: the push on its own, a push before the mover, commands that do not move HEAD.
+  for (const cmd of ["git push origin feat", "git push origin feat && git checkout main", "git status && git diff --stat && git log -1 --oneline && git push origin feat", "git branch --show-current && git tag -l && git config --get user.name && git submodule status && git push origin feat", "git branch --list 'release*' && git tag --list 'v*' && git push origin HEAD", "git branch -a --contains HEAD && git tag -l 'v*' --points-at HEAD && git push origin HEAD", "git remote -v && git remote show origin && git worktree list && git notes list && git reflog && git push origin feat", "git add -A && git stash list && git stash show -p && git push origin feat", "git --version && git branch -vv && git remote -v && git push origin feat", 'echo "git commit" && git push origin feat', "git push -u origin feat && gh pr create --fill"]) {
+    assert.equal(pushOperations(cmd)[0].after, null, cmd);
+    assert.equal(push(b, cmd).out, "", cmd);
+  }
+  // gh pr merge that names its pull request merges the remote's commit, not HEAD: a mover before it does not refuse it.
+  const head = git(b, "rev-parse", "HEAD");
+  assert.equal(push(b, `git checkout main && gh pr merge 5 --rebase --match-head-commit ${head}`).out, "");
+  assert.equal(push(b, `gh pr checkout 5 && gh pr merge --merge --match-head-commit ${head}`).out, "", "a full sha binds the merge");
+  // With no selector gh merges the pull request of the branch checked out when it runs.
+  for (const cmd of ["gh pr checkout 5 && gh pr merge --merge", "git switch other && gh pr merge --squash --delete-branch", "gh pr checkout 5 && gh pr merge --merge --match-head-commit abc123"]) {
+    p = push(b, cmd, ghStub(b, head));
+    assert.equal(decision(p), "deny", cmd);
+    assert.match(p.json.hookSpecificOutput.permissionDecisionReason, /` runs before this `gh pr merge` on the same command line and may change the commit it publishes/, cmd);
+  }
+  // advise: the push is checked against HEAD as it is, and a notice says what that misses.
+  b.writeConfig({ review: { mode: "advise" } });
+  p = push(b, "git commit -am fix && git push origin feat");
+  assert.equal(decision(p), "allow");
+  assert.match(p.json.systemMessage, /^ledger: review gate \(advise\): `git commit` runs before this `git push`/m);
 });
 
 /** True while `pid` exists; null when this process may not ask (EPERM), so the caller can skip. */
