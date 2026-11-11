@@ -12,17 +12,29 @@ import {
   DEFAULT_CONFIG,
   appendDigest,
   archiveDigest,
+  backRequested,
+  checklistPath,
   clearAway,
+  clearChecklist,
   configPath,
+  digestItem,
+  digestItems,
   freshAway,
+  freshChecklist,
   loadConfig,
+  parseChecklist,
   readAway,
+  readChecklist,
   readDigest,
   renderDigest,
+  requestBack,
   sessionDir,
   sessionKey,
   stateRoot,
+  takeBackRequest,
+  toggleChecklistItem,
   writeAway,
+  writeChecklist,
 } from "../lib/state.mjs";
 
 function box() {
@@ -129,6 +141,68 @@ test("config: defaults with no file; integer fields override; junk is ignored", 
     assert.deepEqual(loadConfig(b.env), DEFAULT_CONFIG);
     writeFileSync(configPath(b.env), JSON.stringify({ onFireCap: -1, idleStops: 0 }));
     assert.deepEqual(loadConfig(b.env), { onFireCap: 3, idleStops: 0 });
+  } finally {
+    b.release();
+  }
+});
+
+test("digestItems: the held lines and closing asks of appendDigest's entries, markers off; headings and blanks are not items", () => {
+  const b = box();
+  try {
+    appendDigest("s1", { at: "2026-11-04T18:42:00.000Z", lines: ["Pick Redis or in-process for the cache"] }, b.env);
+    appendDigest("s1", { at: "2026-11-04T18:43:00.000Z", lines: ["- Approve the schema change", "Ship it?"], closingAsk: "ship after the demo?" }, b.env);
+    assert.deepEqual(digestItems(readDigest("s1", b.env)), ["Pick Redis or in-process for the cache", "Approve the schema change", "Ship it?", "closing ask: ship after the demo?"]);
+  } finally {
+    b.release();
+  }
+  assert.equal(digestItem("## 18:42"), null);
+  assert.equal(digestItem(""), null);
+  assert.equal(digestItem("3) third   one "), "third one");
+  assert.deepEqual(digestItems(undefined), []);
+});
+
+test("checklist.json: none by default; written whole and read back; Done toggles and persists; the last row done removes the file; clear removes it", () => {
+  const b = box();
+  try {
+    assert.equal(readChecklist("s1", b.env), null);
+    const fresh = freshChecklist({ at: "2026-11-04T19:30:00.000Z", since: "2026-11-04T18:42:00.000Z", note: "lunch", items: ["a", "b"] });
+    assert.deepEqual(fresh.items, [{ text: "a", done: false }, { text: "b", done: false }]);
+    assert.equal(writeChecklist("s1", fresh, b.env), checklistPath("s1", b.env));
+    assert.deepEqual(readChecklist("s1", b.env), fresh);
+
+    assert.deepEqual(toggleChecklistItem("s1", 0, b.env).items, [{ text: "a", done: true }, { text: "b", done: false }]);
+    assert.deepEqual(readChecklist("s1", b.env).items[0], { text: "a", done: true });
+    assert.equal(toggleChecklistItem("s1", 5, b.env), null, "off the list");
+    assert.equal(toggleChecklistItem("s1", -1, b.env), null);
+    assert.equal(readChecklist("s1", b.env).items[0].done, true, "an off-list toggle changes nothing");
+    assert.equal(toggleChecklistItem("s1", 1, b.env), null, "every row done");
+    assert.equal(existsSync(checklistPath("s1", b.env)), false);
+
+    writeChecklist("s1", fresh, b.env);
+    clearChecklist("s1", b.env);
+    assert.equal(readChecklist("s1", b.env), null);
+    clearChecklist("s1", b.env);
+  } finally {
+    b.release();
+  }
+});
+
+test("parseChecklist: junk is null; rows with no text are dropped; done is only ever true or false", () => {
+  assert.equal(parseChecklist("{nope"), null);
+  assert.equal(parseChecklist("[]"), null);
+  assert.equal(parseChecklist('{"items":"x"}'), null);
+  assert.deepEqual(parseChecklist('{"items":[{"text":"a","done":"yes"},{"done":true},null]}'), { at: "", since: "", note: "", items: [{ text: "a", done: false }] });
+});
+
+test("back-requested marker: absent by default; requestBack leaves it; takeBackRequest removes it once", () => {
+  const b = box();
+  try {
+    assert.equal(backRequested("s1", b.env), false);
+    requestBack("s1", b.env);
+    assert.equal(backRequested("s1", b.env), true);
+    assert.equal(takeBackRequest("s1", b.env), true);
+    assert.equal(takeBackRequest("s1", b.env), false);
+    assert.equal(backRequested("s1", b.env), false);
   } finally {
     b.release();
   }

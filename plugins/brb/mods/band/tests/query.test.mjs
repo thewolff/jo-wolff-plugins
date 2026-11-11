@@ -1,9 +1,10 @@
-// query.test.mjs — mods/badge/query.mjs, as the subprocess the mod runs and through its exports:
-// home → `{ ok: true, away: false }`; after `brb` → the hold's since, note and count; a hold
-// command bumps the count; another session's hold is not this session's; a missing --session,
-// an away.json that is a directory or a link, and one over AWAY_MAX_BYTES are `{ ok: false, error }`;
-// the bound holds on the descriptor read, so a file replaced or grown after the check is still
-// bounded; every run exits 0, prints JSON and writes nothing. node --test.
+// query.test.mjs — mods/band/query.mjs, as the subprocess the mod runs and through its exports:
+// home → `{ ok: true, away: false, checklist: null }`; after `brb` → the hold's since, note,
+// counts and held items; the Back marker shows as `backRequested`; after `back` → home with the
+// checklist `back` wrote; another session's hold is not this session's; a missing --session, a
+// state file that is a directory, a link or over MAX_BYTES are `{ ok: false, error }`; the bound
+// holds on the descriptor read, so a file replaced or grown after the check is still bounded;
+// every run exits 0, prints JSON and writes nothing. node --test.
 
 import test from "node:test";
 import assert from "node:assert/strict";
@@ -13,11 +14,12 @@ import { syncBuiltinESMExports } from "node:module";
 import { join } from "node:path";
 
 import { main, parseArgs, snapshot } from "../query.mjs";
-import { AWAY_MAX_BYTES } from "../data.mjs";
+import { MAX_BYTES } from "../data.mjs";
 import { PLUGIN_ROOT, box, promptInput, runHook } from "../../../test/helpers.mjs";
 
-const QUERY = join(PLUGIN_ROOT, "mods", "badge", "query.mjs");
+const QUERY = join(PLUGIN_ROOT, "mods", "band", "query.mjs");
 const HOLD = join(PLUGIN_ROOT, "scripts", "brb.mjs");
+const HOME = { ok: true, away: false, checklist: null };
 
 /** Run query.mjs as the mod does: `node query.mjs --session <id>` with the sandbox env; JSON on stdout. */
 function query(b, args) {
@@ -42,12 +44,12 @@ test("parseArgs reads --session as two tokens or one; a missing or blank id is n
   assert.deepEqual(parseArgs([]), { sessionId: null });
 });
 
-test("home: no away.json is `away: false`, exit 0, and the state directory is left untouched", () => {
+test("home: no away.json and no checklist is `away: false, checklist: null`, exit 0, and the state directory is left untouched", () => {
   const b = box();
   try {
     const r = query(b, ["--session", "s1"]);
     assert.equal(r.status, 0, r.stderr);
-    assert.deepEqual(r.json, { ok: true, away: false });
+    assert.deepEqual(r.json, HOME);
     assert.equal(r.stderr, "");
     assert.equal(existsSync(join(b.env.XDG_STATE_HOME, "brb")), false, "the query created the state directory");
   } finally {
@@ -55,7 +57,7 @@ test("home: no away.json is `away: false`, exit 0, and the state directory is le
   }
 });
 
-test("away: after `brb lunch` the snapshot carries since, the note and the counts; a hold bumps the count; `back` ends it", () => {
+test("away: after `brb lunch` the snapshot carries since, the note, the counts and the held items in order; `back` leaves the checklist", () => {
   const b = box();
   try {
     runHook(b, "user-prompt-submit", promptInput(b, "brb lunch"));
@@ -67,17 +69,36 @@ test("away: after `brb lunch` the snapshot carries since, the note and the count
     assert.equal(r.json.note, "lunch");
     assert.equal(r.json.held, 0);
     assert.equal(r.json.onFire, 0);
+    assert.deepEqual(r.json.items, []);
+    assert.equal(r.json.backRequested, false);
     assert.ok(Date.parse(r.json.since) >= before, `since ${r.json.since} is before the hold began`);
-    assert.deepEqual(Object.keys(r.json).sort(), ["away", "held", "note", "ok", "onFire", "since"]);
+    assert.deepEqual(Object.keys(r.json).sort(), ["away", "backRequested", "held", "items", "note", "ok", "onFire", "since"]);
 
-    const h = hold(b, "s1", "Pick Redis or in-process for the cache");
-    assert.equal(h.stdout, "held 1\n", h.stderr);
-    assert.equal(query(b, ["--session", "s1"]).json.held, 1);
+    assert.equal(hold(b, "s1", "Pick Redis or in-process for the cache").stdout, "held 1\n");
     hold(b, "s1", "Approve the schema change");
-    assert.equal(query(b, ["--session", "s1"]).json.held, 2);
+    const two = query(b, ["--session", "s1"]).json;
+    assert.equal(two.held, 2);
+    assert.deepEqual(two.items, ["Pick Redis or in-process for the cache", "Approve the schema change"]);
 
     runHook(b, "user-prompt-submit", promptInput(b, "back"));
-    assert.deepEqual(query(b, ["--session", "s1"]).json, { ok: true, away: false });
+    const after = query(b, ["--session", "s1"]).json;
+    assert.equal(after.away, false);
+    assert.deepEqual(after.checklist.items, [
+      { text: "Pick Redis or in-process for the cache", done: false },
+      { text: "Approve the schema change", done: false },
+    ]);
+    assert.equal(after.checklist.note, "lunch");
+  } finally {
+    b.release();
+  }
+});
+
+test("the Back marker shows as backRequested while away", () => {
+  const b = box();
+  try {
+    runHook(b, "user-prompt-submit", promptInput(b, "brb"));
+    writeFileSync(join(b.stateDir("s1"), "back-requested"), "now\n");
+    assert.equal(query(b, ["--session", "s1"]).json.backRequested, true);
   } finally {
     b.release();
   }
@@ -87,9 +108,8 @@ test("another session's hold is not this one's: s2 away leaves s1 home; the id i
   const b = box();
   try {
     runHook(b, "user-prompt-submit", promptInput(b, "brb", { session_id: "s2" }));
-    assert.deepEqual(query(b, ["--session", "s1"]).json, { ok: true, away: false });
+    assert.deepEqual(query(b, ["--session", "s1"]).json, HOME);
     assert.equal(query(b, ["--session", "s2"]).json.away, true);
-    // An id with characters the state directory maps to `_` finds the same record the hook wrote.
     runHook(b, "user-prompt-submit", promptInput(b, "brb", { session_id: "odd id/here" }));
     assert.equal(query(b, ["--session", "odd id/here"]).json.away, true);
     assert.equal(query(b, ["--session", "odd_id_here"]).json.away, true);
@@ -98,7 +118,7 @@ test("another session's hold is not this one's: s2 away leaves s1 home; the id i
   }
 });
 
-test("faults are `{ ok: false, error }` with exit 0: no --session, an away.json that is a directory, one over the byte limit", () => {
+test("faults are `{ ok: false, error }` with exit 0: no --session, an away.json that is a directory, one over the byte limit, a checklist that is a directory", () => {
   const b = box();
   try {
     const none = query(b, []);
@@ -112,21 +132,26 @@ test("faults are `{ ok: false, error }` with exit 0: no --session, an away.json 
     assert.match(dir.json.error, /away\.json is not a regular file$/);
 
     mkdirSync(b.stateDir("s4"), { recursive: true });
-    const big = JSON.stringify({ since: "2026-11-04T18:42:00.000Z", note: "x".repeat(AWAY_MAX_BYTES), held: 1 });
+    const big = JSON.stringify({ since: "2026-11-04T18:42:00.000Z", note: "x".repeat(MAX_BYTES), held: 1 });
     writeFileSync(join(b.stateDir("s4"), "away.json"), big);
     const over = query(b, ["--session", "s4"]);
     assert.equal(over.status, 0);
     assert.equal(over.json.ok, false);
-    assert.match(over.json.error, new RegExp(`away\\.json is ${big.length} bytes, over the ${AWAY_MAX_BYTES} byte limit$`));
+    assert.match(over.json.error, new RegExp(`away\\.json is ${big.length} bytes, over the ${MAX_BYTES} byte limit$`));
 
-    // An away.json that does not parse is home, the same reading the hooks make.
+    // An away.json that does not parse is home, the same reading the hooks make; so is a checklist that does not parse.
     mkdirSync(b.stateDir("s5"), { recursive: true });
     writeFileSync(join(b.stateDir("s5"), "away.json"), "{not json");
-    assert.deepEqual(query(b, ["--session", "s5"]).json, { ok: true, away: false });
+    writeFileSync(join(b.stateDir("s5"), "checklist.json"), "{not json");
+    assert.deepEqual(query(b, ["--session", "s5"]).json, HOME);
 
-    // Nothing was written by any of the reads: the session directories hold only what the test put there.
+    mkdirSync(join(b.stateDir("s6"), "checklist.json"), { recursive: true });
+    const cdir = query(b, ["--session", "s6"]);
+    assert.equal(cdir.json.ok, false);
+    assert.match(cdir.json.error, /checklist\.json is not a regular file$/);
+
     assert.deepEqual(readdirSync(b.stateDir("s4")), ["away.json"]);
-    assert.deepEqual(readdirSync(b.stateDir("s5")), ["away.json"]);
+    assert.deepEqual(readdirSync(b.stateDir("s5")).sort(), ["away.json", "checklist.json"]);
   } finally {
     b.release();
   }
@@ -135,7 +160,7 @@ test("faults are `{ ok: false, error }` with exit 0: no --session, an away.json 
 test("in process: snapshot and main agree with the subprocess, and main returns 0 after printing one JSON line", () => {
   const b = box();
   try {
-    assert.deepEqual(snapshot("s1", { env: b.env }), { ok: true, away: false });
+    assert.deepEqual(snapshot("s1", { env: b.env }), HOME);
     runHook(b, "user-prompt-submit", promptInput(b, "brb"));
     assert.equal(snapshot("s1", { env: b.env }).away, true);
     let printed = "";
@@ -174,24 +199,24 @@ test("the bound is on the descriptor read: an away.json atomically replaced by a
     const path = join(dir, "away.json");
     const swap = join(dir, "away.tmp");
     writeFileSync(path, JSON.stringify({ since: SINCE, note: "small" }));
-    writeFileSync(swap, JSON.stringify({ since: SINCE, note: "x".repeat(AWAY_MAX_BYTES) }));
+    writeFileSync(swap, JSON.stringify({ since: SINCE, note: "x".repeat(MAX_BYTES) }));
     let swapped = false;
     const result = withFs("openSync", (open) => (...args) => {
       const fd = open(...args);
       if (args[0] === path && !swapped) {
-        renameSync(swap, path); // the probe from the review: replace the checked file right after the check's syscall
+        renameSync(swap, path);
         swapped = true;
       }
       return fd;
     }, () => snapshot("s1", { env: b.env }));
     assert.equal(swapped, true);
-    assert.deepEqual(result, { ok: true, away: true, since: SINCE, note: "small", held: 0, onFire: 0 });
+    assert.deepEqual(result, { ok: true, away: true, since: SINCE, note: "small", held: 0, onFire: 0, items: [], backRequested: false });
   } finally {
     b.release();
   }
 });
 
-test("the read stops at AWAY_MAX_BYTES + 1: a file that grows past the limit after fstat is a fault, not a parse", () => {
+test("the read stops at MAX_BYTES + 1: a file that grows past the limit after fstat is a fault, not a parse", () => {
   const b = box();
   try {
     const dir = b.stateDir("s1");
@@ -200,11 +225,11 @@ test("the read stops at AWAY_MAX_BYTES + 1: a file that grows past the limit aft
     writeFileSync(path, JSON.stringify({ since: SINCE, note: "small" }));
     const result = withFs("fstatSync", (fstat) => (...args) => {
       const st = fstat(...args);
-      fs.appendFileSync(path, " ".repeat(AWAY_MAX_BYTES));
+      fs.appendFileSync(path, " ".repeat(MAX_BYTES));
       return st;
     }, () => snapshot("s1", { env: b.env }));
     assert.equal(result.ok, false);
-    assert.match(result.error, new RegExp(`away\\.json is over the ${AWAY_MAX_BYTES} byte limit$`));
+    assert.match(result.error, new RegExp(`away\\.json is over the ${MAX_BYTES} byte limit$`));
   } finally {
     b.release();
   }
