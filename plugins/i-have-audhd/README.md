@@ -268,7 +268,7 @@ before it are fine, and one `{"type": "result", "result": "<json string>"}` enve
 Anything else is a judge failure, and a failed judge is never counted as a pass:
 `judge-failures.log` gets a line naming the rule, the error kind (the kit's: `timeout`,
 `nonzero`, `unparseable`, `spawn-failed`), a `cause=`, the session, harness, model, elapsed
-and budget milliseconds, the judged section (`<label>@<line>`, or `whole`), the prompt's cache
+and budget milliseconds, the judged part (always `whole` from the Stop hook), the prompt's cache
 key and the path of the prompt it was asked (`cache/<key>.prompt.txt`, written on failure so
 `<judgeCommand> < <that file>` replays it), the kit's `detail=` (`"exit 127"`, `"no exit
 within 30000 ms"`), the `source=` the command came from, then the tail of the judge's stderr
@@ -555,6 +555,15 @@ file and a replaced one are kept.
 Exit 0 means every item is done or had nothing to do, 1 means one was refused or failed.
 
 ## Changes
+
+### 1.7.2
+
+- `conclusion-first` and `bad-news-first` judge the whole message, output-types receipt blocks
+  (a bold `CLAIM` or `CITE` label line and its evidence) included. Each receipt block was
+  judged alone from 1.1.0 to 1.7.1, and every `conclusion-first` false alarm in the 2026-11-10
+  re-measure came from that: the judge read the receipt's evidence as setup burying the point.
+  Headings such as `## Needs you` never split a message and still do not. Full entry in
+  `CHANGELOG.md`.
 
 ### 1.7.1
 

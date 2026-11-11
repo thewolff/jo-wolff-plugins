@@ -10,9 +10,7 @@
 // assertion wherever the message is fine.
 //
 // Which rule fired is asserted by rule id — warnings.log's `rule=` field and the `rules` the
-// loop guard records in last-blocked-<session>.json — never by the wording of a reason. The one
-// exception is the per-section tests at the end: which sections a finding names (`**CITE** at
-// line 7`) is the contract under test there, so that token is asserted.
+// loop guard records in last-blocked-<session>.json — never by the wording of a reason.
 //
 // Run: node --test 'plugins/i-have-audhd/hooks/*.test.mjs'
 
@@ -24,8 +22,6 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { OMP_TODO_CALL, OMP_TODO_RESULT } from "../triggers/fixtures/omp-todo-fragment.mjs";
-import { conclusionFirstApplicable } from "../triggers/conclusion-first.mjs";
-import { badNewsGate } from "../triggers/bad-news-lexicon.mjs";
 import { RULE_IDS } from "../lib/rules.mjs";
 import { DEFAULT_TIMEOUT_MS } from "../judge/ask.mjs";
 
@@ -897,14 +893,13 @@ test("untagged (Claude Code): a malformed armOmp changes nothing — same stdout
   assert.equal(readLog(malformed, "errors.log"), "", "the field is never read without the omp tag");
 });
 
-// ─── conclusion-first and bad-news-first per labeled section ─────────────────
+// ─── conclusion-first and bad-news-first: the whole message, receipts included ──
 
 // A content-sensitive fake judge: it records every prompt it is given (rule, question, and the
-// judged message between <<<MSG and MSG) to judged.jsonl, exits 2 when the judged message holds
-// FAIL_MARK, and answers violation=true only when it holds VIOLATE_MARK. So one hook run can get
-// opposite verdicts per section, and the test can read exactly what each judge call saw.
+// judged message between <<<MSG and MSG) to judged.jsonl and answers violation=true only when
+// the judged message holds VIOLATE_MARK, so the test can read exactly what each judge call saw.
+// hooks/receipt-blocks.test.mjs carries the measured false-alarm shapes.
 const VIOLATE_MARK = "zq-violate-mark";
-const FAIL_MARK = "zq-error-mark";
 const markerJudgePath = (home) => join(home, "marker-judge.mjs");
 const judgedLogPath = (home) => join(home, "judged.jsonl");
 const writeMarkerJudge = (home) =>
@@ -918,9 +913,8 @@ const writeMarkerJudge = (home) =>
       'const open = prompt.indexOf("<<<MSG\\n") + "<<<MSG\\n".length;',
       'const message = prompt.slice(open, prompt.lastIndexOf("\\nMSG"));',
       `appendFileSync(${JSON.stringify(judgedLogPath(home))}, JSON.stringify({ rule, question, message }) + "\\n");`,
-      `if (message.includes(${JSON.stringify(FAIL_MARK)})) process.exit(2);`,
       `const violation = message.includes(${JSON.stringify(VIOLATE_MARK)});`,
-      'process.stdout.write(JSON.stringify({ violation, reason: violation ? "marked section" : "clean section" }));',
+      'process.stdout.write(JSON.stringify({ violation, reason: violation ? "marked message" : "clean message" }));',
       "",
     ].join("\n"),
   );
@@ -941,154 +935,72 @@ const markerProfile = (home, extra = {}) => {
 
 const section = (label, prose) => `**${label}**\n${prose}`;
 const labeledMessage = (...sections) => sections.join("\n\n");
-const lineOf = (msg, labelLine) => msg.split("\n").indexOf(labelLine) + 1;
 
 // The conclusion-first finding in a block reason (one finding per rule, findings joined by blank lines).
 const conclusionFinding = (reason) => reason.split("\n\n").filter((f) => f.startsWith("Conclusion first ("));
 
-test("sections each under the floor dispatch no conclusion-first job, even when the whole message passes", () => {
+test("receipt blocks are one conclusion-first job: the whole message verbatim, label lines included, no section framing", () => {
   const home = mkhome();
   markerProfile(home);
-  const msg = labeledMessage(section("CLAIM", body(4)), section("CITE", body(4)), section("CLAIM", body(4)));
-  assert.equal(conclusionFirstApplicable(msg).applicable, true, "precondition: the whole text passes the gate");
+  const msg = labeledMessage(section("CLAIM", body(4)), section("CITE", body(4)), section("CITE(vendor docs)", body(4)));
   const r = runHook({ session_id: "s1", last_assistant_message: msg }, home);
   assert.equal(r.status, 0);
-  assert.equal(r.stdout, "");
-  assert.deepEqual(judged(home, "conclusion-first"), []);
-  assert.equal(readLog(home, "warnings.log"), "");
-});
-
-test("one long section among short ones: one conclusion-first job, judging that section's prose alone", () => {
-  const home = mkhome();
-  markerProfile(home);
-  const msg = labeledMessage(section("CLAIM", body(2)), section("CITE", body(7)), section("CLAIM", body(2)));
-  runHook({ session_id: "s2", last_assistant_message: msg }, home);
   const jobs = judged(home, "conclusion-first");
   assert.equal(jobs.length, 1);
-  assert.equal(jobs[0].message, body(7), "the judged message is the section's prose: no label line, no other section");
+  assert.equal(jobs[0].message, msg);
+  assert.ok(!jobs[0].question.includes("labeled section"), jobs[0].question);
 });
 
-test("opposite verdicts per section: the finding names only the violating section's label and line", () => {
+test("a violation anywhere in a message with receipts is one whole-message finding, naming no section", () => {
   const home = mkhome();
   markerProfile(home);
   const msg = labeledMessage(section("CLAIM", body(7)), section("CITE", `${body(7)}${VIOLATE_MARK}`));
-  const r = runHook({ session_id: "s3", last_assistant_message: msg }, home);
+  const r = runHook({ session_id: "s2", last_assistant_message: msg }, home);
   const out = parseOut(r.stdout);
   assert.equal(out.decision, "block");
-  assert.equal(judged(home, "conclusion-first").length, 2);
+  assert.equal(judged(home, "conclusion-first").length, 1);
   const [finding, ...more] = conclusionFinding(out.reason);
   assert.equal(more.length, 0, "one finding per rule");
-  assert.ok(finding.includes(`**CITE** at line ${lineOf(msg, "**CITE**")}`), finding);
-  assert.ok(!finding.includes("**CLAIM**"), finding);
+  assert.ok(!/\*\*(CLAIM|CITE)\*\* at line/.test(finding), finding);
+  assert.deepEqual(blockedRules(home, "s2"), ["conclusion-first"]);
 });
 
-test("two violating sections: one finding naming both labels and lines, in line order", () => {
-  const home = mkhome();
-  markerProfile(home);
-  const msg = labeledMessage(
-    section("CLAIM", `${body(7)}${VIOLATE_MARK}`),
-    section("CITE", body(2)),
-    section("CITE(vendor docs)", `${body(7)}${VIOLATE_MARK}`),
-  );
-  const r = runHook({ session_id: "s4", last_assistant_message: msg }, home);
-  const out = parseOut(r.stdout);
-  const [finding, ...more] = conclusionFinding(out.reason);
-  assert.equal(more.length, 0, "one finding per rule");
-  const claim = finding.indexOf(`**CLAIM** at line ${lineOf(msg, "**CLAIM**")}`);
-  const cite = finding.indexOf(`**CITE(vendor docs)** at line ${lineOf(msg, "**CITE(vendor docs)**")}`);
-  assert.ok(claim > -1 && cite > -1, finding);
-  assert.ok(claim < cite, "sections are named in line order");
-  assert.ok(!finding.includes("**CITE**"), finding);
-  assert.deepEqual(blockedRules(home, "s4"), ["conclusion-first"]);
-});
-
-test("a judge error on one section reports that section as judge unavailable: the other's violation still counts", () => {
-  const msg = labeledMessage(section("CLAIM", `${body(7)}${FAIL_MARK}`), section("CITE", `${body(7)}${VIOLATE_MARK}`));
-  const citeName = `**CITE** at line ${lineOf(msg, "**CITE**")}`;
-  const claimName = `**CLAIM** at line ${lineOf(msg, "**CLAIM**")}`;
-
-  // block mode
-  const blocking = mkhome();
-  markerProfile(blocking);
-  const r = runHook({ session_id: "s5", last_assistant_message: msg }, blocking);
-  const out = parseOut(r.stdout);
-  assert.equal(out.decision, "block");
-  assert.ok(blockedRules(blocking, "s5").includes("conclusion-first"));
-  assert.ok(conclusionFinding(out.reason)[0].includes(citeName));
-  assert.ok(!conclusionFinding(out.reason)[0].includes(claimName), "the violation names only the judged section");
-  const unavailable = out.reason.split("\n\n").filter((f) => f.startsWith("Judge unavailable (conclusion-first)"));
-  assert.equal(unavailable.length, 1);
-  assert.ok(unavailable[0].includes(claimName), "the unjudged section is named as unchecked, not passed");
-  assert.match(readLog(blocking, "judge-failures.log"), /rule=conclusion-first error=nonzero .* detail="exit 2"/);
-
-  // warn mode
-  const warning = mkhome();
-  markerProfile(warning, { mode: "warn" });
-  const w = runHook({ session_id: "s6", last_assistant_message: msg }, warning);
-  const wout = parseOut(w.stdout);
-  assert.equal(wout.decision, undefined, "warn mode: no block");
-  assert.match(wout.systemMessage, /judge unavailable/i);
-  const warned = logLines(warning, "warnings.log").filter((l) => l.includes(" rule=conclusion-first "));
-  assert.equal(warned.length, 2, "one violation finding, one judge-unavailable finding");
-  assert.ok(warned.some((l) => l.includes(citeName) && !/judge unavailable/i.test(l)), warned.join("\n"));
-  assert.ok(warned.some((l) => l.includes(claimName) && /judge unavailable/i.test(l)), warned.join("\n"));
-  assert.match(readLog(warning, "judge-failures.log"), /rule=conclusion-first error=nonzero .* detail="exit 2"/);
-});
-
-test("bad news leading a later section is judged in that section alone; a short section with a lexicon word dispatches nothing", () => {
+test("bad news inside a receipt block is judged with the whole message", () => {
   const home = mkhome();
   markerProfile(home);
   const news = `The migration failed last night and the index is missing three rows. ${body(3)}`;
   const msg = labeledMessage(section("CLAIM", body(4)), section("CITE", news));
-  runHook({ session_id: "s7", last_assistant_message: msg }, home);
+  runHook({ session_id: "s3", last_assistant_message: msg }, home);
   const jobs = judged(home, "bad-news-first");
   assert.equal(jobs.length, 1);
-  assert.equal(jobs[0].message, news);
-
-  const quiet = mkhome();
-  markerProfile(quiet);
-  const short = labeledMessage(section("CLAIM", body(4)), section("CITE", "The deploy failed."));
-  assert.equal(badNewsGate(short).applicable, true, "precondition: the whole text passes the gate");
-  runHook({ session_id: "s8", last_assistant_message: short }, quiet);
-  assert.deepEqual(judged(quiet, "bad-news-first"), []);
+  assert.equal(jobs[0].message, msg);
 });
 
-test("omp tag, unarmed: a per-section block is capped to warn", () => {
+test("an unlabeled message keeps one whole-message job, with its opening window", () => {
   const home = mkhome();
   markerProfile(home);
-  const msg = labeledMessage(section("CLAIM", body(7)), section("CITE", `${body(7)}${VIOLATE_MARK}`));
-  const r = runHook({ session_id: "s9", last_assistant_message: msg }, home, OMP);
-  assert.equal(r.stdout, "");
-  assert.match(readLog(home, "warnings.log"), /rule=conclusion-first .*\*\*CITE\*\* at line/);
-});
-
-test("an unlabeled message keeps one whole-message job, with its opening window and no section framing", () => {
-  const home = mkhome();
-  markerProfile(home);
-  runHook({ session_id: "s10", last_assistant_message: twoParagraphReport }, home);
+  runHook({ session_id: "s4", last_assistant_message: twoParagraphReport }, home);
   const jobs = judged(home, "conclusion-first");
   assert.equal(jobs.length, 1);
   assert.equal(jobs[0].message, twoParagraphReport);
-  assert.ok(!jobs[0].question.includes("labeled section"), jobs[0].question);
   assert.ok(jobs[0].question.includes(`The reader's first 20 words here are: "${body(3).split(" ").slice(0, 20).join(" ")}".`));
 });
 
-test("the judge is shown the section's first 20 words: bad news at words 25-30 of a long first sentence is outside them", () => {
+test("the judge is shown the message's first 20 words: bad news at words 25-30 of a long first sentence is outside them", () => {
   const home = mkhome();
   markerProfile(home);
   const sentence =
     "After the long weekend of careful planning and three rounds of review with the platform team and " +
     "the database owners we finally tried it and the migration failed on step four, leaving the index short.";
-  const msg = labeledMessage(section("CLAIM", body(4)), section("CITE", `${sentence} ${body(3)}`));
-  runHook({ session_id: "s11", last_assistant_message: msg }, home);
+  const msg = labeledMessage(`${sentence} ${body(3)}`, section("CLAIM", body(4)));
+  runHook({ session_id: "s5", last_assistant_message: msg }, home);
   const [job, ...more] = judged(home, "bad-news-first");
   assert.equal(more.length, 0);
   const window =
     "After the long weekend of careful planning and three rounds of review with the platform team and the database owners";
   assert.ok(job.question.includes(`The reader's first 20 words here are: "${window}".`), job.question);
   assert.ok(!window.includes("failed"));
-  assert.ok(job.question.includes(`one labeled section (**CITE**, line ${lineOf(msg, "**CITE**")})`), job.question);
-  assert.ok(!job.message.includes("**CITE**"), "the framing rides in the question, not the judged message");
+  assert.equal(job.message, msg, "the judged message is verbatim, receipt label included");
 });
 
 // ─── handed-command (rule 10) through the hook, from transcript fixtures ─────
