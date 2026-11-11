@@ -152,15 +152,42 @@ export function folderLabels(cwds) {
   });
 }
 
-/** A CLI message with its row ids taken out, for the pane: `q-… (name)` becomes `this question`, other ids go. */
+const ID = String.raw`(?:q|an|nt|oc)-[a-z0-9]+`;
+
+// The refusals `ledger --json answer <q-id> <reply>` gives (lib/commands.mjs), each as the pane
+// says it. The reply in `already answered <reply>` is the human's own text and is kept whole,
+// even when it holds something that looks like an id.
+const KNOWN = [
+  [new RegExp(String.raw`^q-[a-z0-9]+ already answered ([\s\S]*) \(an-[a-z0-9]+\); ([\s\S]*)$`, "i"), (m) => `Already answered with ${m[1]}; ${m[2]}`],
+  [new RegExp(String.raw`^q-[a-z0-9]+ was withdrawn \(an-[a-z0-9]+\); ([\s\S]*)$`, "i"), (m) => `This question was withdrawn; ${m[1]}`],
+  [/^no such question q-[a-z0-9]+$/i, () => "This question is no longer in the ledger"],
+  [/^id cut short: /i, () => "That reply looks like a cut-short id; nothing was recorded"],
+];
+
+/**
+ * A CLI message as the pane shows it, with no row id in it. The CLI's known refusals become
+ * plain sentences; any other message loses its ids (a `q-…` and the name in brackets after it
+ * become `this question`; answer, note and other ids, and ids cut short, go).
+ */
 export function withoutIds(message) {
-  return String(message ?? "")
-    .replace(/\s*\((?:q|an|nt)-[a-z0-9]+\)/gi, "")
-    .replace(/\bq-[a-z0-9]+(?:\s*\([^)]*\))?/gi, "this question")
-    .replace(/\b(?:an|nt|oc)-[a-z0-9]+\s*/gi, "")
+  const text = String(message ?? "").trim();
+  for (const [shape, say] of KNOWN) {
+    const m = shape.exec(text);
+    if (m) return capitalized(say(m));
+  }
+  const stripped = text
+    .replace(new RegExp(String.raw`\s*\(${ID}\)`, "gi"), "")
+    .replace(/\bq-[a-z0-9]+(?:\s*\((?:[^()]|\([^()]*\))*\))?/gi, "this question")
+    .replace(new RegExp(String.raw`\b${ID}\b`, "gi"), "")
+    .replace(/\b(?:q|an|nt|oc)-(?![a-z0-9])/gi, "")
+    .replace(/\(\s*\)/g, "")
+    .replace(/\s+([;,.])/g, "$1")
     .replace(/\s{2,}/g, " ")
     .trim();
+  return capitalized(stripped);
 }
+
+const capitalized = (s) => s.charAt(0).toUpperCase() + s.slice(1);
 
 /** What the pane shows in place of a question's text when the row has none; never its name or id. */
 export const MISSING_TEXT = "(question text missing)";

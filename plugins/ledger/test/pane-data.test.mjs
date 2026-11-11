@@ -4,6 +4,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { PANE_ID, USAGE, answerArgv, answersHeading, byFolder, emptySnapshot, fallbackLine, fingerprint, folderLabels, headline, optionLabel, optionList, parseCommand, readCliResult, readSnapshot, selectQuestion, waitingHeading, withoutIds } from "../mods/pane/data.mjs";
+import { cli, sandbox } from "./helpers.mjs";
 
 const Q = (over = {}) => ({ id: "q-mw1a", cwd: "/Users/example/code/a", name: "ship", body: "Ship it?", options: ["approve", "deny"], default: "approve", state: "open", asked_at: "2026-11-04T06:00:00.000Z", age: "3m ago", ...over });
 const A = (over = {}) => ({ id: "q-mw1z", name: "colour", body: "Which colour?", state: "answered", word: "green", via: "cli", ...over });
@@ -106,10 +107,41 @@ test("folderLabels: the last path segment, longer only where two folders share i
   assert.deepEqual(folderLabels(["", "/"]), ["(no folder)", "(no folder)"]);
 });
 
-test("withoutIds takes the row ids out of a CLI message", () => {
-  assert.equal(withoutIds("q-mw1a (ship) takes approve or deny; maybe is not one of them"), "this question takes approve or deny; maybe is not one of them");
-  assert.equal(withoutIds("an-1 approve → q-mw1a (ship)"), "approve → this question");
-  assert.equal(withoutIds("ledger: database busy"), "ledger: database busy");
+test("withoutIds: every refusal the real CLI gives the pane's own answer argv reads as a sentence with no id in it", () => {
+  const box = sandbox();
+  // The pane runs `--json answer <q-id> <reply>` (answerArgv) and reads it back with readCliResult.
+  const record = (id, reply) => readCliResult({ exitCode: 0, stdout: cli(box, answerArgv(id, reply), { env: { LEDGER_SESSION_ID: "s-pane" } }).out });
+  const ask = (name) => /q-[a-z0-9]+/.exec(cli(box, ["ask", `Which ${name}?`, "--name", `${name} (the (nested) one)`, "--options", "green,red", "--default", "green"]).out)[0];
+  const answered = ask("colour");
+  assert.equal(record(answered, "use q- here").status, "ok");
+  const withdrawn = ask("size");
+  assert.equal(record(withdrawn, "withdraw").status, "ok");
+  const open = ask("shape");
+  const cases = [
+    ["answered, another reply", record(answered, "red"), /^Already answered with use q- here; an answer is final$/],
+    ["answered, withdraw", record(answered, "withdraw"), /^Already answered with use q- here; .*cannot be withdrawn$/],
+    ["withdrawn", record(withdrawn, "red"), /withdrawn/i],
+    ["no such question", record("q-mvr3k2p9a1xq", "red"), /no longer|not in the ledger/i],
+    ["too long", record(open, "x".repeat(201)), /200 characters/],
+    ...["q-", "an-", "nt-"].map((cut) => [`cut short ${cut}`, record(open, cut), /nothing (was )?recorded/i]),
+  ];
+  const ID_TEXT = /\b(?:q|an|nt)-(?:[a-z0-9]{4,}\b|(?![a-z0-9]))/;
+  for (const [label, result, meaning] of cases) {
+    assert.equal(result.status, "refused", `${label}: ${result.message}`);
+    const shown = withoutIds(result.message);
+    // The reply the human typed ("use q- here") is their text and stays; only the CLI's ids go.
+    assert.doesNotMatch(shown.replace("use q- here", ""), ID_TEXT, `${label}: ${shown}`);
+    assert.doesNotMatch(shown, /\(\s*\)|<q-id>|\bid looks like\b|\(the \(nested\) one\)|nested/, `${label}: ${shown}`);
+    assert.match(shown, meaning, `${label}: ${shown}`);
+    assert.match(shown, /^[A-Z]/, `${label}: ${shown}`);
+  }
+});
+
+test("withoutIds: a message in no known shape loses its ids and keeps its words", () => {
+  assert.equal(withoutIds("ledger: database busy at /tmp/x/ledger.db; nothing applied"), "Ledger: database busy at /tmp/x/ledger.db; nothing applied");
+  const shown = withoutIds("q-mw1a is closed (an-mw9z9z9z); see nt-mw8y8y8y and q- too");
+  assert.doesNotMatch(shown, /\b(?:q|an|nt)-|\(\s*\)/);
+  assert.match(shown, /is closed/);
   assert.equal(withoutIds(undefined), "");
 });
 
