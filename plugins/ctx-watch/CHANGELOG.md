@@ -50,13 +50,19 @@ two repairs), and until now the agent heard about it only at SessionStart.
   `ctx daemon status` call missed its 10 s twice while the daemon ran throughout, and two "ctx is
   down" popups were false. A status call that times out now asks whether the daemon's process
   is alive, without running ctx: the pid in `<data root>/daemon/query-endpoint.json` is running
-  and the query socket that file names accepts a connection (the socket rules out a reused pid).
+  and the query socket that file names accepts a connection (a dead daemon's leftover socket
+  refuses; the check does not prove the pid owns the listener, and a slow run is bounded).
   Alive: the tick logs `slow: …`, with no strike, no popup, no heal and no upgrade read; the
   SessionStart hook says nothing; the mid-session hook says one quiet line once the timer has
   seen it slow for 15 min ("ctx is answering slowly …; ctx searches may time out"), never
   "down" or a repair. Not alive: a failure, as before. A slow run that lasts 30 min
   (`SLOW_MAX_MS`) counts as down, since a hung daemon still accepts on its socket. `state.json`
-  gains `slowSince`; the session latch gains `slow`.
+  gains `slowSince`, and `lastProbe.kind` (what that probe itself found: a failure kind, `slow`
+  or `upgrading`); the session latch gains `slow`. A slow or live-upgrade tick is never read as
+  the daemon's recovery (it holds the episode's old kind). The endpoint's socket path must be
+  one ctx 2.3.0 binds (`<data root>/daemon/query.sock`, or `ctx-q-<32 hex>/q.sock` under `/tmp`
+  or `TMPDIR`, at most 90 bytes, transport `unix`); any other is not alive and never connected
+  to, and the path reaches the connecting child in its environment, not its argv.
 
 ## [0.3.0] - 2026-11-11
 

@@ -211,10 +211,17 @@ average 78-183 made it miss the bound twice while the daemon, pid 51357, ran thr
 the two "ctx is down" popups were false. So a timed-out status call asks whether the daemon's
 process is alive, without running ctx: the pid in `<data root>/daemon/query-endpoint.json` must
 be running (`kill -0`), and the query socket that same file names must accept a connection (a
-node child connects, bounded at 2 s; the connect itself took 0.7 ms). The socket is what makes a
-reused pid harmless: whatever took over a dead daemon's pid does not listen on its socket, and a
-socket file left behind refuses. `ps` is not used: it is setuid, refused (`EPERM`) in a
-sandboxed shell, and a command name proves less than a listening socket.
+node child connects, bounded at 2 s; the connect itself took 0.7 ms). The two are checked
+separately, so they do not prove the pid owns the listener; what they rule out is the usual
+leftovers of a dead daemon: a socket file no one listens on refuses, and a reused pid alone is
+not enough. The socket path must be one ctx 2.3.0 binds,
+`<data root>/daemon/query.sock` or `/tmp`-or-`TMPDIR`/`ctx-q-<32 hex>/q.sock`, at most 90 bytes,
+with transport `unix`; anything else in that file (an option such as `--version`, a NUL, a
+foreign path) is not alive and is never connected to, and the path reaches the connecting child
+in its environment, never its argv. Proving ownership (`lsof`, or a ctx request over the
+socket) would cost a spawn or a ctx call on every timeout and is not done; the 30 min bound
+below covers a check that is fooled. `ps` is not used: it is setuid, refused (`EPERM`) in a
+sandboxed shell.
 
 - **Alive**: slow. The tick's line is `slow: …` (the reason ends `slow, not down`); no strike,
   no popup, no heal, no upgrade read; `state.json` keeps `slowSince`, the first slow tick of the
@@ -245,8 +252,11 @@ per session per episode:
   <cli> repair`). Latched on `downSince`, so a second outage in the same session is told again.
 - **Back**: a session told of an outage, once a tick probe made after the telling has passed
   (or failed only on the semantic index: the daemon is back, and the line says the index is not
-  ready). One line. A state file that is missing, unreadable, out of shape, reset, still
-  failing, or whose last pass is from before the telling is not a recovery: the latch stays.
+  ready). That is read from the probe's own `lastProbe.kind`, never the episode: a slow or
+  live-upgrade tick keeps the episode's old kind and shows nothing about the daemon, so neither
+  is a recovery. One line. A state file that is missing, unreadable, out of shape, reset, still
+  failing, slow, upgrading, or whose last pass is from before the telling is not a recovery: the
+  latch stays.
 - **Stale**: the tick stamp (or, never ticked, the first SessionStart's) is over 15 min old, or
   three intervals, whichever is longer. One line naming the stamp, since a state the timer
   stopped writing cannot say ctx is up; while stale nothing else is said. Latched on the stamp.
