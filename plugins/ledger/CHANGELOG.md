@@ -4,6 +4,41 @@ All notable changes to ledger are recorded here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Entries before 0.2.1 are the
 "Changes" section of the README (one line per version).
 
+## 0.3.12 - 2026-11-11
+
+### Changed
+
+- Ledger pane (`mods/pane/register.mjs`): redrawn as one column for a narrow dock (about 290 pt
+  in Claude Desktop, 40 columns in a terminal). The age and state ("16m ago · selected") sat in
+  a side column beside the question's name and clipped (`16m ag`, `selecte`); they are now their
+  own line under the question's text (`on hold · 2h ago` for a held one), and the word
+  `selected` is gone: the selected question is the one with buttons.
+- Folder groups are headed by the folder's name (`newdle-mobile`), not its absolute path; two
+  folders with the same name show one more path segment each (`a/web`, `b/web`). `folderLabels`
+  in `mods/pane/data.mjs`.
+- No row id and no question `--name` is drawn. A question leads with its text; a question that
+  is not selected has one `answer` button with its digit (1 to 9). An answer since your last
+  turn shows its question's text and `→ <answer>` or `withdrawn` (the query now returns each
+  answer's question body); `(via …)` is no longer shown. After a press the pane says
+  `Recorded: <reply>` over the question's text, or `Not recorded` with the CLI's reason with its
+  ids taken out (`withoutIds`), in place of the CLI's `recorded: an-… → q-… (name)` line.
+- The `options: approve (default) · revise` line under each question is gone; the default
+  option's button reads `approve · default` and is the primary button.
+- Headings lead with their count: `1 answer since your last turn`, `2 questions waiting in
+  other folders` (`in another folder` for one). The empty state is one line; the error state
+  is `Can't read the ledger` and the reason.
+- The footer is `Esc back to prompt · Ctrl+X X close`; the `/ledger answer <q-id> <reply>`
+  form stays in the command's description and the README.
+- The Reply field's placeholder is `type your own`, short enough to show whole beside its label
+  and the `record` button at the narrow width.
+- Indentation is `paddingLeft` on a Box, never leading spaces in a Text.
+
+### Unchanged
+
+- Polling, refresh points, option presses and Reply recording through the CLI, `/ledger`,
+  `/ledger answer`, `/ledger close`, Esc and Ctrl+X, the toast, the fallback transcript line,
+  and the session-start text.
+
 ## 0.3.11 - 2026-11-10
 
 ### Fixed
