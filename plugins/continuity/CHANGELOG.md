@@ -44,6 +44,21 @@ All notable changes to continuity are recorded here. The format follows
   With a 300,000 window that is an ask at 175,000 and another at 227,000. An `askTokens` or
   `threshold` the person set is not lowered. The ask names the size of the next ask instead of
   the step.
+- With a modelled compaction point, the baseline floor never pushes the first ask past
+  `askMarginTokens` before it: a window that already opened past that point is asked on its
+  next turn. A 200,000 window (compaction at 167,000) whose session opened at 130,000 was
+  otherwise first asked at 170,000, after the compaction.
+- A re-ask at the margin point comes only when that point is past the last ask, so
+  `askMarginTokens: 0` no longer blocks Stop twice at the same size.
+- `CLAUDE_AUTOCOMPACT_PCT_OVERRIDE` with no window set (or `"auto"`) applies to a native 1M
+  model's 1,000,000 default window (the Fable models, Sonnet 5 and later, Haiku 5.5 and later,
+  Opus 4.7 and later). Other models, and `CLAUDE_CODE_DISABLE_1M_CONTEXT=1`, are not modelled.
+- A transcript's `message.model` matches its `modelSettings` entry through Bedrock
+  (`us.anthropic.claude-sonnet-4-5-20250929-v1:0`) and Vertex (`claude-sonnet-4-5@20250929`)
+  spellings, `[1m]`, a date suffix and case. Aliases and ARNs are not resolved.
+- A compaction marker is only a top-level `{"type":"system","subtype":"compact_boundary"}` line.
+  The same text nested in a tool input or result no longer starts a new window or moves its
+  baseline, and a `uuid` over 128 characters is not stored as the window's epoch.
 
 ## 0.3.1 - 2026-11-04
 

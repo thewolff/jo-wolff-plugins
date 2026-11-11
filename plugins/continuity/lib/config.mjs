@@ -15,7 +15,9 @@
 //   askMarginTokens  how far past the window's first recorded usage the context must grow before
 //                    the first ask, and how far before a set auto-compact point the last ask
 //                    comes (a whole number, 0 or more; default 40,000): the ask point is never
-//                    below the first, so a session that starts large is not asked on turn one
+//                    below the first, so a session that starts large is not asked on turn one,
+//                    except that with a modelled compaction point the first never pushes the ask
+//                    past the second (a window that opens past it is asked on its next turn)
 //   reaskStepTokens  how much further the context must grow, in the same compaction window,
 //                    after an ask or a handoff before the next ask (a positive integer; default
 //                    150,000); with a set auto-compact window the next ask comes at its margin

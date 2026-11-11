@@ -176,8 +176,9 @@ The line is marked said in `sessions/<session_id>.json`, so the prompt hook does
 
 **On Claude Code this is the token usage the last reply recorded.** Claude Code writes each
 assistant reply into the transcript with a `message.usage` object; `lib/pressure.mjs` (through
-`lib/calibration.mjs`) takes the newest main-thread reply after the last compaction marker (a line
-with `"subtype":"compact_boundary"`) and sums `input_tokens + cache_read_input_tokens +
+`lib/calibration.mjs`) takes the newest main-thread reply after the last compaction marker (a
+top-level `{"type":"system","subtype":"compact_boundary"}` line; the same text nested in a tool
+input or result is not a marker) and sums `input_tokens + cache_read_input_tokens +
 cache_creation_input_tokens`, which is what the model was sent on that turn. A reply without the
 cache fields counts `input_tokens` alone; subagent (sidechain) replies and zero-usage replies are
 passed over. The oldest such reply after the marker is the window's **baseline**: what the
@@ -197,10 +198,14 @@ tokens-per-byte ratio replaces the constant. The ask says which basis it used.
 **When it asks.** Counted per compaction window, separately for the prompt hook and the Stop
 hook (`dueAsk()` in `lib/pressure.mjs`):
 
-1. **The first ask in a window** comes at the ask point, and never before the context is
+1. **The first ask in a window** comes at the ask point, and not before the context is
    `askMarginTokens` (40,000) past the window's baseline. A Desktop session that opens at 130,000
    tokens is not asked on its first turn, and neither is the first turn after a compaction. The
-   ask point, first match wins:
+   one exception: with a set auto-compact window, that floor never pushes the ask past
+   `askMarginTokens` before the compaction point. A window that already opened past that point
+   is asked on its first turn past the baseline (a 200,000 window compacts at 167,000; a session
+   that opens at 130,000 is asked at its next turn, not at 170,000). The ask point, first match
+   wins:
    - `askTokens` in the config file;
    - else, when the file sets `threshold` or `contextTokens` (the 0.3 keys), `threshold` ×
      `contextTokens`, each defaulting to its 0.3 value (0.65 and 200,000);
@@ -212,8 +217,8 @@ hook (`dueAsk()` in `lib/pressure.mjs`):
 2. **After an ask** the next one in the same window comes once the context has grown a further
    `reaskStepTokens` (150,000) past the size it was asked at. An agent that answered "nothing in
    flight" at 180,000 is asked again at 330,000, not on every prompt in between. With a set
-   auto-compact window, the next ask comes at its margin point instead when that is sooner and
-   at least `askMarginTokens` further on.
+   auto-compact window, the next ask comes at its margin point instead when that is sooner, past
+   the last ask, and at least `askMarginTokens` further on.
 3. **A compaction re-arms both.** The marks in `sessions/<session_id>.json` (`promptWarned`,
    `stopBlocked`) record the window they belong to: the `uuid` of the last `compact_boundary`
    line (its byte offset when it has none, `start` before the first). The transcript is
@@ -240,7 +245,10 @@ configuration](https://code.claude.com/docs/en/model-config.md), "Set the auto-c
 `<project>/.claude/settings.local.json`, `<project>/.claude/settings.json`, and the user file
 (`$CLAUDE_CONFIG_DIR/settings.json`, else `~/.claude/settings.json`); inside a file the model's
 `modelSettings` entry beats the top level; `"auto"` is Claude Code's default; the model is the
-transcript's newest `message.model`. It does not see `--autocompact`, `--settings` or managed
+transcript's newest `message.model`, matched to a `modelSettings` key after both are
+canonicalized (lower case; `[1m]`, a `-YYYYMMDD` date, a Bedrock `[<region>.]anthropic.` prefix
+and `-v<n>[:<n>]` version, and a Vertex `@YYYYMMDD` taken off; aliases such as `opus` and
+ARNs are not resolved). It does not see `--autocompact`, `--settings` or managed
 settings. Claude Code compacts about 33,000 tokens before the window, or at
 `CLAUDE_AUTOCOMPACT_PCT_OVERRIDE` percent of it when that is earlier. The 33,000 is measured,
 not documented, so it may move between releases: on Claude Code 2.1.321, with a 300,000 window
@@ -249,7 +257,12 @@ for claude-fable-5-2, session eacf7986 compacted automatically on 2026-11-10 at 
 The default ask point is pulled down to `askMarginTokens` before that point, and the re-ask is
 brought forward to it: with `"autoCompactWindow": 300000` the session is asked at 175,000 and
 again at 227,000, before the compaction at about 267,000; with 200,000, first at 127,000. An
-`askTokens` or `threshold` set in continuity's config is never lowered.
+`askTokens` or `threshold` set in continuity's config is never lowered. With no window set (or
+`"auto"`), `CLAUDE_AUTOCOMPACT_PCT_OVERRIDE` applies to the 1,000,000 default window of a native
+1M model (the Fable models, Sonnet 5 and later, Haiku 5.5 and later, Opus 4.7 and later): at 10
+it compacts at 100,000 and the default ask moves to 60,000. Any other model, or
+`CLAUDE_CODE_DISABLE_1M_CONTEXT=1`, compacts at its context limit, where the documentation says
+the override does not apply, and nothing is modelled.
 
 The prompt hook adds the ask as `additionalContext`:
 
@@ -491,8 +504,10 @@ context is `askMarginTokens` (40,000) past where the window started, so a sessio
 `reaskStepTokens` (150,000), and a compaction re-arms both the prompt ask and the Stop block; a
 0.3 flags file is re-armed. A 0.3 config with `threshold` or `contextTokens` keeps its ask point.
 With an auto-compact window set (`CLAUDE_CODE_AUTO_COMPACT_WINDOW` or `autoCompactWindow`, per
-model under `modelSettings`), the default ask and the re-ask come no later than `askMarginTokens`
-before the point Claude Code compacts at.
+model under `modelSettings`, matched through Bedrock and Vertex model spellings), or
+`CLAUDE_AUTOCOMPACT_PCT_OVERRIDE` on a native 1M model, the default ask, the first ask of a
+window that opened large, and the re-ask come no later than `askMarginTokens` before the point
+Claude Code compacts at. Only a top-level `compact_boundary` line starts a new window.
 On Claude Code the PreCompact hook prints plain-text summary instructions asking for a
 `## Handoff` section, and the no-handoff notice Claude Code discarded from PreCompact is given
 after the compaction by the SessionStart hook. Details in "The context-pressure check" and
