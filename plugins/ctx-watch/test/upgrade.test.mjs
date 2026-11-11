@@ -357,13 +357,17 @@ test("4. install from a shell without LANG, with nothing recorded and no AppleLo
   }
 });
 
-/** A check double for install: plutil lints OK, launchctl says not loaded, `defaults read -g AppleLocale` answers `locale` (null: absent). */
-const installCheck = (locale) => (bin, args) => {
+/** What the doubles answer `locale -a` with: a few of what macOS 15 lists. */
+const HOST_LOCALES = "C\nPOSIX\nen_US\nen_US.UTF-8\nen_GB.UTF-8\nde_DE.UTF-8\n";
+
+/** A check double for install: plutil lints OK, launchctl says not loaded, `defaults read -g AppleLocale` answers `locale` (null: absent), `locale -a` answers `locales`. */
+const installCheck = (locale, locales = HOST_LOCALES) => (bin, args) => {
   if (bin === "plutil") return { missing: false, code: 0, output: "OK" };
   if (bin === "defaults") {
     assert.deepEqual(args, ["read", "-g", "AppleLocale"]);
     return locale === null ? { missing: false, code: 1, output: "does not exist\n" } : { missing: false, code: 0, output: `${locale}\n` };
   }
+  if (bin === "locale") return locales === null ? { missing: true, code: null, output: "" } : { missing: false, code: 0, output: locales };
   return { missing: false, code: 113, output: "" };
 };
 
@@ -554,6 +558,121 @@ test("6. a semantic index that is not ready is the user's line only: the agent's
     const out = hook.handle(input, { env: b.env, now, run: ctxDouble({ status: JSON.stringify(j) }).run });
     assert.match(out.systemMessage, /semantic index is not ready/);
     assert.equal(out.hookSpecificOutput, undefined);
+  } finally {
+    b.release();
+  }
+});
+
+// ---------------------------------------------------------------------------------------------
+// Review round 1 (PR #109): each finding's reproduction, red at 98639c3.
+
+test("R1.3 the timer's check fails closed when the upgrade state is unknown: `ctx upgrade status` erroring, timing out or naming a state ctx-watch does not know, with no marker, skips the heal and says so", () => {
+  const b = box();
+  try {
+    const answers = [
+      { code: 1, stdout: "", stderr: "upgrade status unavailable" },
+      { code: null, stdout: "", stderr: "", error: "ctx upgrade status --format json did not answer in 10 s" },
+      good(upgradeAt("frobnicating", Date.now() - 3 * 60 * MIN)),
+      good("{ not json"),
+    ];
+    for (const upgrade of answers) {
+      const d = ctxDouble({ upgrade });
+      const r = probe.check({ env: b.env, run: d.run, exists: () => true, now: Date.now });
+      assert.equal(r.ok, false);
+      assert.match(r.reason, /upgrade state unknown/, JSON.stringify(upgrade));
+      assert.equal(r.healed.attempted, false);
+      assert.notEqual(r.upgrading, true, "unknown is not a live upgrade: the episode still counts it");
+      assert.deepEqual(d.cmds().filter((c) => STATE_CHANGING.test(c)), [], "no heal under an unknown upgrade state");
+    }
+  } finally {
+    b.release();
+  }
+});
+
+test("R1.3 every upgrade state ctx 2.3.0 writes is known: the settled ones still heal", () => {
+  const b = box();
+  try {
+    for (const status of ["", "checking", "available", "up_to_date", "applied", "dry_run", "disabled", "error"]) {
+      const d = ctxDouble({ upgrade: upgradeAt(status, Date.now() - 3 * 60 * MIN) });
+      const r = probe.check({ env: b.env, run: d.run, exists: () => true, now: Date.now });
+      assert.ok(d.cmds().includes("index mode auto --format json"), `${JSON.stringify(status)} heals`);
+      assert.doesNotMatch(r.reason ?? "", /upgrade state unknown/);
+    }
+  } finally {
+    b.release();
+  }
+});
+
+const BOUNDED_RUN = fileURLToPath(new URL("../lib/bounded-run.mjs", import.meta.url));
+const waitGone = (pid, ms = 2_000) => {
+  const until = Date.now() + ms;
+  while (Date.now() < until) {
+    try {
+      process.kill(pid, 0);
+    } catch {
+      return true;
+    }
+    spawnSync("/bin/sleep", ["0.05"]);
+  }
+  return false;
+};
+
+test("R1.4 bounded-run: a leader that exits before the timeout does not leave its process group behind (one that ignores SIGTERM is killed after the grace)", () => {
+  for (const grandchild of ["setInterval(() => {}, 1000)", "process.on('SIGTERM', () => {}); setInterval(() => {}, 1000)"]) {
+    const leader = `const { spawn } = require("node:child_process"); const g = spawn(process.execPath, ["-e", ${JSON.stringify(grandchild)}], { stdio: "ignore" }); setTimeout(() => { console.log(g.pid); process.exit(0); }, 200);`;
+    const t = Date.now();
+    const r = spawnSync(process.execPath, [BOUNDED_RUN, "10000", "400", process.execPath, "-e", leader], { encoding: "utf8", timeout: 8_000 });
+    const pid = Number((r.stdout || "").trim());
+    assert.ok(pid > 0, `grandchild pid printed: ${r.stdout} ${r.stderr}`);
+    const gone = waitGone(pid);
+    if (!gone) process.kill(pid, "SIGKILL");
+    assert.equal(r.status, 0, "the leader's own status");
+    assert.ok(gone, `grandchild ${pid} still alive after the wrapper returned`);
+    assert.ok(Date.now() - t < 8_000, "well inside the 10 s timeout");
+  }
+});
+
+test("R1.5 loaded(): only launchctl's 113 (no such service) is `not loaded`; any other failure is unknown (null)", () => {
+  assert.equal(launchd.loaded({ uid: 501, check: () => ({ missing: false, code: 113, output: "Could not find service" }) }).loaded, false);
+  assert.equal(launchd.loaded({ uid: 501, check: () => ({ missing: false, code: 5, output: "Input/output error" }) }).loaded, null);
+  assert.equal(launchd.loaded({ uid: 501, check: () => ({ missing: false, code: null, output: "timed out" }) }).loaded, null);
+});
+
+test("R1.6 resolveLang validates fallback candidates against `locale -a`: an unusable recorded value falls to AppleLocale, an unusable AppleLocale pair is not invented, and an unreadable locale list accepts no fallback", () => {
+  const b = box();
+  try {
+    const env = { HOME: b.env.HOME };
+    const file = launchd.recordedEnvPath(env);
+    mkdirSync(dirname(file), { recursive: true });
+    writeFileSync(file, JSON.stringify({ environment: [{ name: "LANG", value: "zz_ZZ.UTF-8" }] }));
+    const a = launchd.resolveLang({ env, check: installCheck("en_GB") });
+    assert.equal(a.value, "en_GB.UTF-8");
+    assert.equal(a.source, "AppleLocale");
+    assert.deepEqual(a.skipped.map((s) => [s.source, s.value]), [["ctx-recorded", "zz_ZZ.UTF-8"]]);
+    const c = launchd.resolveLang({ env: { HOME: join(b.root, "nohome") }, check: installCheck("en_DE") });
+    assert.equal(c.value, null);
+    assert.deepEqual(c.skipped.map((s) => [s.source, s.value]), [["AppleLocale", "en_DE.UTF-8"]]);
+    const linux = launchd.resolveLang({ env: { HOME: join(b.root, "nohome") }, check: installCheck("en_GB", "C\nen_GB.utf8\n") });
+    assert.equal(linux.value, "en_GB.UTF-8", "en_GB.utf8 in the list is the same locale");
+    const blind = launchd.resolveLang({ env, check: installCheck("en_GB", null) });
+    assert.equal(blind.value, null, "no locale list: no fallback is trusted");
+    assert.equal(blind.skipped.length, 2);
+    assert.match(blind.skipped[0].why, /locale -a/);
+    assert.equal(launchd.resolveLang({ env: { LANG: "xx_YY.whatever" }, check: installCheck(null) }).value, "xx_YY.whatever", "the shell's own LANG is used as given");
+  } finally {
+    b.release();
+  }
+});
+
+test("R1.6 install from a shell without LANG whose only candidate is unusable (AppleLocale en_DE) writes no LANG and says what it skipped", () => {
+  const b = box();
+  try {
+    const env = { HOME: b.env.HOME, XDG_STATE_HOME: b.env.XDG_STATE_HOME, PATH: "/Users/example/.local/bin:/usr/bin:/bin" };
+    const r = launchd.install({ env, cliPath: "/Users/example/plugins/ctx-watch/scripts/ctx-watch.mjs", node: "/usr/local/bin/node", uid: 501, check: installCheck("en_DE"), stateDir: join(b.root, "s"), exists: (p) => p === "/Users/example/.local/bin/ctx" });
+    assert.equal(r.code, 0, r.text);
+    assert.doesNotMatch(readFileSync(r.file, "utf8"), /<key>LANG<\/key>/);
+    assert.match(r.text, /skipped en_DE\.UTF-8 \(AppleLocale\)/);
+    assert.match(r.text, /environment_invalid/);
   } finally {
     b.release();
   }

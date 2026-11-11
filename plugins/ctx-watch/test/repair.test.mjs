@@ -83,12 +83,17 @@ function fakeCtx({ status = brokenEnv(), upgrade = "dry_run", auto = true, fail 
   return { s, calls, run, cmds: () => calls.map((c) => c.cmd) };
 }
 
+/** The `locale -a` the doubles answer with by default: a few of what macOS 15 lists. */
+const HOST_LOCALES = ["C", "POSIX", "en_US", "en_US.UTF-8", "en_GB.UTF-8", "de_DE.UTF-8"];
+
 /**
  * A launchctl double: the GUI domain answers, the timer is loaded; `unreachable` makes the domain
- * print fail as launchctl does (112). It also answers `defaults read -g AppleLocale` with
- * `locale` (null: the key is absent, exit 1, as `defaults` says for a missing key).
+ * print fail as launchctl does (112); `missing` makes launchctl not found; `jobQuery` replaces
+ * the answer to `launchctl print gui/<uid>/<label>`; `onBootout` runs when the timer is paused.
+ * It also answers `defaults read -g AppleLocale` with `locale` (null: the key is absent, exit 1,
+ * as `defaults` says for a missing key) and `locale -a` with `locales`.
  */
-function fakeLaunchctl({ loaded = true, unreachable = false, bootstrapCode = 0, locale = null } = {}) {
+function fakeLaunchctl({ loaded = true, unreachable = false, bootstrapCode = 0, locale = null, locales = HOST_LOCALES, missing = false, jobQuery = null, onBootout = () => {} } = {}) {
   const calls = [];
   const check = (bin, args) => {
     if (bin === "defaults") {
@@ -96,12 +101,19 @@ function fakeLaunchctl({ loaded = true, unreachable = false, bootstrapCode = 0, 
       assert.deepEqual(args, ["read", "-g", "AppleLocale"]);
       return locale === null ? { missing: false, code: 1, output: "The domain/default pair of (kCFPreferencesAnyApplication, AppleLocale) does not exist\n" } : { missing: false, code: 0, output: `${locale}\n` };
     }
+    if (bin === "locale") {
+      calls.push(`locale ${args.join(" ")}`);
+      assert.deepEqual(args, ["-a"]);
+      return { missing: false, code: 0, output: `${locales.join("\n")}\n` };
+    }
     assert.equal(bin, "launchctl");
     calls.push(args.join(" "));
+    if (missing) return { missing: true, code: null, output: "" };
     const [verb, target] = args;
     if (verb === "print" && /^gui\/\d+$/.test(target)) return unreachable ? { missing: false, code: 112, output: `Bad request.\nCould not find domain for user gui: ${target.slice(4)}\n` } : { missing: false, code: 0, output: "domain" };
+    if (verb === "print" && jobQuery) return jobQuery;
     if (verb === "print") return loaded ? { missing: false, code: 0, output: "state = not running\n" } : { missing: false, code: 113, output: "Could not find service" };
-    if (verb === "bootout") return { missing: false, code: 0, output: "" };
+    if (verb === "bootout") return onBootout(), { missing: false, code: 0, output: "" };
     if (verb === "bootstrap") return { missing: false, code: bootstrapCode, output: bootstrapCode ? "Bootstrap failed: 5: Input/output error" : "" };
     return { missing: false, code: 1, output: "?" };
   };
@@ -282,7 +294,7 @@ test("8. no LANG in this shell (Claude Desktop under launchd): repair takes the 
     const r = await cli.main(["repair"], { env: noLang, run: ctx.run, check: lc.check, uid: 501, exists: () => true, sleep: () => {} });
     const j = parse(r);
     assert.equal(r.code, 0, r.text);
-    assert.deepEqual(j.lang, { value: "de_DE.UTF-8", source: "ctx-recorded" });
+    assert.deepEqual(j.lang, { value: "de_DE.UTF-8", source: "ctx-recorded", skipped: [] });
     assert.equal(ctx.calls.find((c) => c.cmd === "index mode auto --format json").env.LANG, "de_DE.UTF-8");
     assert.ok(ctx.calls.every((c) => c.env.LANG === "de_DE.UTF-8"), "every ctx spawn carries it");
     assert.ok(!lc.calls.some((c) => c.startsWith("defaults")), "the recorded value wins; AppleLocale is not asked");
@@ -299,7 +311,7 @@ test("8. no LANG and nothing recorded: repair derives it from AppleLocale (en_GB
     const ctx = fakeCtx();
     const r = await cli.main(["repair"], { env: noLang, run: ctx.run, check: fakeLaunchctl({ locale: "en_GB" }).check, uid: 501, exists: () => true, sleep: () => {} });
     assert.equal(r.code, 0, r.text);
-    assert.deepEqual(parse(r).lang, { value: "en_GB.UTF-8", source: "AppleLocale" });
+    assert.deepEqual(parse(r).lang, { value: "en_GB.UTF-8", source: "AppleLocale", skipped: [] });
     assert.equal(ctx.calls.find((c) => c.cmd === "index mode auto --format json").env.LANG, "en_GB.UTF-8");
   } finally {
     b.release();
@@ -311,7 +323,7 @@ test("8. LANG set in this shell: used as is (source env)", async () => {
   try {
     writeRecordedEnv(b.env, RECORDED);
     const r = await cli.main(["repair"], { env: b.env, run: fakeCtx().run, check: fakeLaunchctl({ locale: "fr_FR" }).check, uid: 501, exists: () => true, sleep: () => {} });
-    assert.deepEqual(parse(r).lang, { value: "en_US.UTF-8", source: "env" });
+    assert.deepEqual(parse(r).lang, { value: "en_US.UTF-8", source: "env", skipped: [] });
   } finally {
     b.release();
   }
@@ -342,7 +354,10 @@ test("8. a recorded LANG that is not a locale name is ignored, never passed to c
     const { LANG: _l, ...noLang } = b.env;
     writeRecordedEnv(b.env, [{ name: "LANG", value: "en_US.UTF-8; touch /tmp/x" }]);
     const r = await cli.main(["repair"], { env: noLang, run: fakeCtx().run, check: fakeLaunchctl({ locale: "en_US" }).check, uid: 501, exists: () => true, sleep: () => {} });
-    assert.deepEqual(parse(r).lang, { value: "en_US.UTF-8", source: "AppleLocale" });
+    const lang = parse(r).lang;
+    assert.equal(lang.value, "en_US.UTF-8");
+    assert.equal(lang.source, "AppleLocale");
+    assert.deepEqual(lang.skipped.map((s) => s.source), ["ctx-recorded"], "the rejected recorded value is reported as skipped");
   } finally {
     b.release();
   }
@@ -381,4 +396,235 @@ test("7. the repair verb is in the help, and the plugin ships a /ctx-watch:repai
   const skill = readFileSync(join(FIX_DIR, "..", "..", "skills", "repair", "SKILL.md"), "utf8");
   assert.match(skill, /^---\nname: repair\ndescription: /);
   assert.match(skill, /scripts\/ctx-watch\.mjs" repair/);
+});
+
+// ---------------------------------------------------------------------------------------------
+// Review round 1 (PR #109): each finding's reproduction, red at 98639c3.
+
+/** The fake ctx with `upgrade status` answering `answer()` instead (an object: a run result). */
+const withUpgrade = (ctx, answer) => (argv, env, t, o) => {
+  if (argv.slice(1).join(" ") === "upgrade status --format json") {
+    ctx.calls.push({ cmd: "upgrade status --format json", env, timeoutMs: t, opts: o });
+    return answer();
+  }
+  return ctx.run(argv, env, t, o);
+};
+const restoredTimer = (lc) => lc.calls.some((c) => c.startsWith("bootstrap gui/501 "));
+
+test("R1.1 a live upgrade that starts after the preflight (while the timer is being paused) stops the repair before any ctx change; the timer is restored", async () => {
+  const b = box();
+  try {
+    const ctx = fakeCtx({ upgrade: "quiescing" });
+    const lc = fakeLaunchctl({ onBootout: () => writeHandoff(b.env, { pid: process.pid }) });
+    const r = await repair(b, ctx, lc);
+    const j = parse(r);
+    assert.notEqual(r.code, 0, r.text);
+    assert.equal(j.ok, false);
+    assert.match(j.reason, /in progress|alive/);
+    assert.deepEqual(changing(ctx), [], "no disable, no release, no heal against a live owner");
+    assert.ok(restoredTimer(lc), "timer restored");
+    assert.equal(j.timer.restored, true);
+  } finally {
+    b.release();
+  }
+});
+
+test("R1.1 a live upgrade that starts between the release and the heal stops the repair before `ctx index mode auto`", async () => {
+  const b = box();
+  try {
+    const ctx = fakeCtx({ upgrade: "quiescing" });
+    const run = (argv, env, t, o) => {
+      const r = ctx.run(argv, env, t, o);
+      if (argv.slice(1).join(" ") === "upgrade --dry-run --format json") writeHandoff(b.env, { pid: process.pid });
+      return r;
+    };
+    const lc = fakeLaunchctl();
+    const r = await cli.main(["repair"], { env: b.env, run, check: lc.check, uid: 501, exists: () => true, sleep: () => {} });
+    const j = parse(r);
+    assert.equal(r.code, 1, r.text);
+    assert.match(j.reason, /in progress|alive/);
+    assert.deepEqual(changing(ctx), ["upgrade disable", "upgrade --dry-run --format json"], "the heal never ran");
+    assert.ok(restoredTimer(lc));
+  } finally {
+    b.release();
+  }
+});
+
+test("R1.1 a different upgrade attempt by the time of the release is not released", async () => {
+  const b = box();
+  try {
+    const ctx = fakeCtx({ upgrade: "quiescing" });
+    let swapped = false;
+    const run = withUpgrade(ctx, () => good(swapped ? JSON.stringify({ ...JSON.parse(upgradeJson("quiescing")), state: { ...JSON.parse(upgradeJson("quiescing")).state, attempt_id: "ua_other" } }) : upgradeJson(ctx.s.upgrade, { auto: ctx.s.auto })));
+    const lc = fakeLaunchctl({ onBootout: () => (swapped = true) });
+    const r = await cli.main(["repair"], { env: b.env, run, check: lc.check, uid: 501, exists: () => true, sleep: () => {} });
+    assert.notEqual(r.code, 0, r.text);
+    assert.match(parse(r).reason, /attempt/);
+    assert.deepEqual(changing(ctx), []);
+    assert.ok(restoredTimer(lc));
+  } finally {
+    b.release();
+  }
+});
+
+test("R1.2 a step that throws is a structured failure (exit 1) and the timer is restored", async () => {
+  const b = box();
+  try {
+    const ctx = fakeCtx();
+    const run = (argv, env, t, o) => {
+      if (argv.slice(1).join(" ") === "index mode auto --format json") throw new Error("mock heal threw");
+      return ctx.run(argv, env, t, o);
+    };
+    const lc = fakeLaunchctl();
+    const r = await cli.main(["repair"], { env: b.env, run, check: lc.check, uid: 501, exists: () => true, sleep: () => {} });
+    const j = parse(r);
+    assert.equal(r.code, 1);
+    assert.equal(j.ok, false);
+    assert.match(j.reason, /mock heal threw/);
+    assert.ok(restoredTimer(lc));
+    assert.equal(j.timer.restored, true);
+  } finally {
+    b.release();
+  }
+});
+
+test("R1.2 a restore that fails is a failed repair, never a success", async () => {
+  const b = box();
+  try {
+    const ctx = fakeCtx();
+    const lc = fakeLaunchctl({ bootstrapCode: 5 });
+    const r = await repair(b, ctx, lc);
+    const j = parse(r);
+    assert.equal(r.code, 1, r.text);
+    assert.equal(j.ok, false);
+    assert.equal(j.timer.restored, false);
+    assert.match(j.reason, /timer/);
+    assert.match(r.text.split("\n").at(-1), /^ctx-watch repair: failed: .*NOT restored/);
+  } finally {
+    b.release();
+  }
+});
+
+test("R1.2 SIGTERM or SIGINT during the heal: the timer is restored, then the process exits 128 + the signal number", () => {
+  const b = box();
+  try {
+    const program = join(b.root, "signalled.mjs");
+    writeFileSync(
+      program,
+      `import { main } from ${JSON.stringify(new URL("../scripts/ctx-watch.mjs", import.meta.url).href)};
+const SIG = process.argv[2];
+const calls = [];
+let healed = false;
+const out = (x) => ({ code: 0, stdout: JSON.stringify(x), stderr: "" });
+const run = (argv) => {
+  const cmd = argv.slice(1).join(" ");
+  if (cmd === "daemon status --format json") return out({ daemon: { running: healed, status: healed ? "running" : "stopped", supervisor: { status: "installed", environment_snapshot: { restart_required: false } } } });
+  if (cmd === "upgrade status --format json") return out({ state: { status: "dry_run", attempt_id: "ua_x", last_attempt_at: "2026-11-05T00:00:00Z" }, auto_upgrade: { enabled: true } });
+  if (cmd === "index mode --format json") return out({ indexing: { mode: "auto" }, config_path: "/x" });
+  if (cmd === "index mode auto --format json") {
+    process.kill(process.pid, SIG);
+    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 300);
+    healed = true;
+    return out({ daemon: { running: true } });
+  }
+  return { code: 2, stdout: "", stderr: "unexpected " + cmd };
+};
+const check = (bin, args) => {
+  calls.push(bin + " " + args.join(" "));
+  if (bin === "launchctl" && args[0] === "print") return { missing: false, code: 0, output: "state = waiting" };
+  return { missing: false, code: 0, output: "" };
+};
+const r = await main(["repair"], { env: ${JSON.stringify(b.env)}, run, check, uid: 501, exists: () => true, sleep: () => {} });
+process.stdout.write(JSON.stringify({ code: r.code, report: JSON.parse(r.text.split("\\n")[0]), last: r.text.split("\\n").at(-1), calls }) + "\\n");
+process.exit(r.code);
+`,
+    );
+    for (const [sig, n] of [["SIGTERM", 15], ["SIGINT", 2]]) {
+      const p = spawnSync(process.execPath, [program, sig], { encoding: "utf8", timeout: 20_000 });
+      assert.equal(p.signal, null, `${sig}: the process handled the signal (stderr: ${p.stderr})`);
+      assert.equal(p.status, 128 + n, `${sig}: exit ${p.status}; stderr: ${p.stderr}`);
+      const o = JSON.parse(p.stdout.trim().split("\n").at(-1));
+      assert.ok(o.calls.some((c) => c.startsWith("launchctl bootstrap gui/501 ")), `${sig}: timer restored`);
+      assert.equal(o.report.ok, false);
+      assert.match(o.last, new RegExp(`interrupted by ${sig}`));
+    }
+  } finally {
+    b.release();
+  }
+});
+
+test("R1.3 `ctx upgrade status` failing, with no handoff marker to settle it, refuses the repair before any change: upgrade state unknown", async () => {
+  const b = box();
+  try {
+    for (const answer of [() => ({ code: 1, stdout: "", stderr: "upgrade status unavailable" }), () => ({ code: null, stdout: "", stderr: "", error: "ctx upgrade status --format json did not answer in 10 s" }), () => good(upgradeJson("frobnicating"))]) {
+      const ctx = fakeCtx();
+      const lc = fakeLaunchctl();
+      const r = await cli.main(["repair"], { env: b.env, run: withUpgrade(ctx, answer), check: lc.check, uid: 501, exists: () => true, sleep: () => {} });
+      const j = parse(r);
+      assert.equal(r.code, 3, r.text);
+      assert.equal(j.refused, true);
+      assert.match(j.reason, /upgrade state unknown/);
+      assert.deepEqual(changing(ctx), []);
+      assert.deepEqual(lc.calls.filter((c) => /^boot/.test(c)), []);
+    }
+  } finally {
+    b.release();
+  }
+});
+
+test("R1.5 launchctl missing, or a timer query that cannot say whether the job is loaded, refuses the repair: nothing changed, timer untouched", async () => {
+  const b = box();
+  try {
+    for (const opts of [{ missing: true }, { jobQuery: { missing: false, code: null, output: "query timed out" } }, { jobQuery: { missing: false, code: 5, output: "Input/output error" } }]) {
+      const ctx = fakeCtx();
+      const lc = fakeLaunchctl(opts);
+      const r = await repair(b, ctx, lc);
+      const j = parse(r);
+      assert.equal(r.code, 3, `${JSON.stringify(opts)}: ${r.text}`);
+      assert.equal(j.refused, true);
+      assert.match(j.reason, /launchctl/);
+      assert.deepEqual(changing(ctx), []);
+      assert.deepEqual(lc.calls.filter((c) => /^boot/.test(c)), []);
+    }
+  } finally {
+    b.release();
+  }
+});
+
+test("R1.6 a fallback LANG this host has no locale for is skipped and reported: recorded zz_ZZ.UTF-8 falls through to AppleLocale", async () => {
+  const b = box();
+  try {
+    const { LANG: _l, ...noLang } = b.env;
+    writeRecordedEnv(b.env, [{ name: "LANG", value: "zz_ZZ.UTF-8" }]);
+    const ctx = fakeCtx();
+    const r = await cli.main(["repair"], { env: noLang, run: ctx.run, check: fakeLaunchctl({ locale: "en_GB" }).check, uid: 501, exists: () => true, sleep: () => {} });
+    assert.equal(r.code, 0, r.text);
+    const lang = parse(r).lang;
+    assert.equal(lang.value, "en_GB.UTF-8");
+    assert.equal(lang.source, "AppleLocale");
+    assert.equal(lang.skipped.length, 1);
+    assert.equal(lang.skipped[0].source, "ctx-recorded");
+    assert.equal(lang.skipped[0].value, "zz_ZZ.UTF-8");
+    assert.match(lang.skipped[0].why, /locale -a/);
+    assert.ok(ctx.calls.every((c) => c.env.LANG === "en_GB.UTF-8"));
+  } finally {
+    b.release();
+  }
+});
+
+test("R1.6 an AppleLocale pair the host has no locale for (en_DE) is not invented: with nothing else, repair refuses and names what it skipped", async () => {
+  const b = box();
+  try {
+    const { LANG: _l, ...noLang } = b.env;
+    const ctx = fakeCtx();
+    const r = await cli.main(["repair"], { env: noLang, run: ctx.run, check: fakeLaunchctl({ locale: "en_DE" }).check, uid: 501, exists: () => true, sleep: () => {} });
+    const j = parse(r);
+    assert.equal(r.code, 3, r.text);
+    assert.equal(j.lang.value, null);
+    assert.deepEqual(j.lang.skipped.map((s) => [s.source, s.value]), [["AppleLocale", "en_DE.UTF-8"]]);
+    assert.match(j.reason, /en_DE\.UTF-8/);
+    assert.deepEqual(changing(ctx), []);
+  } finally {
+    b.release();
+  }
 });
