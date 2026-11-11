@@ -5,10 +5,14 @@ on:
     paths:
       - "scripts/**"
       - ".github/workflows/scripts.yml"
+      - ".claude-plugin/marketplace.json"
+      - ".omp-plugin/marketplace.json"
   pull_request:
     paths:
       - "scripts/**"
       - ".github/workflows/scripts.yml"
+      - ".claude-plugin/marketplace.json"
+      - ".omp-plugin/marketplace.json"
 
 permissions:
   contents: read

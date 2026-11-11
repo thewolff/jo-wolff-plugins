@@ -35,9 +35,24 @@
       "description": "Before big work in a repository, make the agent find the existing pattern for each new piece and record reuse, replace or new; hooks hold writes, commits and PRs until that receipt exists."
     },
     {
+      "name": "ledger",
+      "source": "./plugins/ledger",
+      "description": "A durable record of the questions an agent asks you and the choices it makes without asking, in one SQLite file; hooks keep every question, answer and decision on a row and gate a push on it."
+    },
+    {
       "name": "as2-skills",
       "source": "./plugins/as2-skills",
       "description": "22 engineering skills (spec and plan, TDD, debugging, code review, security, research and more), most vendored from four upstream skill packs at pinned releases. Skills only, no hooks."
+    },
+    {
+      "name": "plugin-kit",
+      "source": "./plugins/plugin-kit",
+      "description": "Start a new plugin that meets this repository's test bar on day one: ask the agent to create or scaffold one. Also keeps the shared libraries and release reviewers the other plugins vendor."
+    },
+    {
+      "name": "ctx-watch",
+      "source": "./plugins/ctx-watch",
+      "description": "Notice when the ctx daemon is dead, unsupervised or stale, or its semantic index is not ready; repair it, and say so at session start and in a macOS popup from a launchd timer."
     },
     {
       "name": "delegation",
@@ -53,6 +68,11 @@
       "name": "brb",
       "source": "./plugins/brb",
       "description": "Type brb and walk away: the agent keeps working, its questions wait in a digest, and only an on-fire problem reaches you. Claude Code hides its output meanwhile. Type back to read the digest."
+    },
+    {
+      "name": "coordinator",
+      "source": "./plugins/coordinator",
+      "description": "Habits for a session that coordinates other sessions and subagents: briefing, checking what comes back, relaying the owner's decisions, and keeping a record."
     }
   ]
 }
