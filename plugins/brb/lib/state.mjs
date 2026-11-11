@@ -5,6 +5,7 @@
 //   ${XDG_STATE_HOME:-~/.local/state}/brb/<session id>/archive/<ts>.md   digests `back` released
 //   ${XDG_STATE_HOME:-~/.local/state}/brb/<session id>/checklist.json   the last digest as a checklist, written by `back`; rows are ticked by the band
 //   ${XDG_STATE_HOME:-~/.local/state}/brb/<session id>/away.lock   held while away.json is read-modified-written; holds `<pid> <token>`
+//   ${XDG_STATE_HOME:-~/.local/state}/brb/<session id>/section.json   written by the band mod (mods/band/data.mjs sectionPath, `$.fs.write`): the away state each environment section of the system prompt last carried, so a resumed conversation drops a saved away text once; written only when that state changes; scripts/prune.mjs ages it out with the rest
 //   ${XDG_CONFIG_HOME:-~/.config}/brb/config.json                  optional: onFireCap, idleStops, hideRows
 //
 // The times Jo reads (a digest entry's heading, the digest's `held since`) are local time

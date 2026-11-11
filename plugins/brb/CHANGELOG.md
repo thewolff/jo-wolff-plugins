@@ -39,13 +39,22 @@ All notable changes to brb are recorded here. The format follows
   away; brb adds `breakPromptCache: true` when the away state changed since that section name's
   last answer (tracked per name). A turn that began home and is running when `brb` lands gets the
   same text once as `context` on the main agent's next tool result (`tool.call`), in process.
+- A resumed conversation drops a saved away text: the mod records the away state each section
+  name last carried in `<state>/brb/<session>/section.json` (`$.fs.write`, only when that state
+  changes, so a session never away has no file; `scripts/prune.mjs` ages it out after 30 days
+  like the rest). At a name's first answer in a conversation (a `/resume`, a restarted Claude
+  Code), a file that says away while the session is home makes that answer carry
+  `breakPromptCache: true` once and records home. A session never saved away, a missing,
+  unreadable or unparsable file, or one saved away and resumed still away: no break, no throw.
 - Tests: `mods/band/tests/hide.test.mjs` (the away window, runs, the on-fire exemption, the end
   of a hold, the section's cache rule); `register.test.mjs` (rows replaced while away and drawn
   after back, a failed query, a faulting hook, `session.end`, the section, the mid-turn
   reminder); `band.test.tsx` under `claude plugin test` (rows mounted in a Desktop and a terminal
   session, an empty Box accepted, rows redrawn after back, the section, the reminder, the
   `hideRows` switch, another hook's cache break). `test/state.test.mjs` and `query.test.mjs`
-  cover `hideRows` read from config.json.
+  cover `hideRows` read from config.json. `register.test.mjs` and `band.test.tsx` cover the
+  resume: saved away and resumed home breaks once, then never; never away, missing, unreadable
+  or corrupt file: no break.
 
 ### Not covered
 

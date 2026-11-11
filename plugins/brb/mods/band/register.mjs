@@ -68,8 +68,8 @@
 // `$` is passed only to top-level functions of this file, imports are relative, no node builtins,
 // `$.env.get` takes a string literal.
 
-import { BACK_WORD, actArgv, awayPath, emptySnapshot, queryArgv, readResult, readSnapshot, statusText, suggestionText } from "./data.mjs";
-import { AWAY_TEXT, HELD_LINE, HIDDEN_SITES, ORDER_SITE, SECTION_NAMES, createLedger, sectionAnswer } from "./hide.mjs";
+import { BACK_WORD, actArgv, awayPath, emptySnapshot, queryArgv, readResult, readSnapshot, sectionPath, statusText, suggestionText } from "./data.mjs";
+import { AWAY_TEXT, HELD_LINE, HIDDEN_SITES, ORDER_SITE, SECTION_NAMES, createLedger, lastCarried, parseSectionState, sectionAnswer } from "./hide.mjs";
 import { bandModel, bandTree } from "./view.mjs";
 
 const PROBE_MS = 1000;
@@ -99,6 +99,14 @@ let awayNow = false;
 let hideRows = true;
 /** Section name → the away state its last `prompt.section` answer carried (absent: home). */
 const sectionAway = new Map();
+/** Section names answered in this conversation: a name's first answer also reads section.json. */
+let sectionsAnswered = new Set();
+/**
+ * This conversation's section.json, loaded once: a promise of `{ path, saved, writing }`
+ * (`saved` `{}` when the file is missing, unreadable or unparsable; `path` null when the state
+ * directory or the session id is unknown, and then nothing is written).
+ */
+let savedSections = null;
 /** The running turn has had the away text (or began away, when the prompt hook and the section carry it). */
 let reminded = false;
 /** The last row-hook fault logged, so a fault on every row logs once. */
@@ -372,6 +380,55 @@ async function pollTick($) {
 }
 
 /**
+ * This conversation's section.json, read once (`$.fs.read`, in Claude Code). A missing file, a
+ * read the host refuses, or text that does not parse is `saved: {}`: nothing known, so no cache
+ * break. An unknown state directory or session id is `path: null` (nothing read or written) and is
+ * not kept, so an answer after session.start tries again. Never rejects.
+ */
+function loadSavedSections($) {
+  if (!savedSections) {
+    const pending = (async () => {
+      let path = null;
+      try {
+        path = sectionPath({ ...stateEnv, sessionId: await $.session.id() });
+      } catch {
+        path = null;
+      }
+      if (!path) return { path: null, saved: {}, writing: Promise.resolve() };
+      let text = null;
+      try {
+        text = await $.fs.read(path);
+      } catch {
+        // missing (a session never away) or unreadable: nothing known
+      }
+      return { path, saved: parseSectionState(text), writing: Promise.resolve() };
+    })();
+    savedSections = pending;
+    pending.then((store) => {
+      if (!store.path && savedSections === pending) savedSections = null;
+    });
+  }
+  return savedSections;
+}
+
+/**
+ * Record that `name` now carries `away` and write the whole record (`$.fs.write`), one write
+ * after another so the last one holds every name. A write that fails is logged once per call and
+ * leaves the answer as it is.
+ */
+function saveSections($, store, name, away) {
+  store.saved[name] = away;
+  store.writing = store.writing.then(async () => {
+    try {
+      await $.fs.write(store.path, `${JSON.stringify(store.saved)}\n`);
+    } catch (err) {
+      await logFault($, "prompt.section save", err);
+    }
+  });
+  return store.writing;
+}
+
+/**
  * The home probe (every PROBE_MS): one `$.fs.exists` on away.json, and a query only when it
  * appeared. A probe that throws (a session id or a path the host refuses) clears the band and is
  * logged once per distinct message, as a query fault is; it never rejects into the timer.
@@ -414,6 +471,9 @@ function stop($) {
   ledger = createLedger();
   known = false;
   lastRowError = null;
+  // The next conversation (a /clear, a /resume) reads its own section.json at its first answer.
+  sectionsAnswered = new Set();
+  savedSections = null;
   if (awayNow) {
     awayNow = false;
     $.ui.invalidate("prompt.section");
@@ -511,12 +571,19 @@ export function register(on, options) {
   // is appended to the environment section; home, core's answer passes as it is. Every field of
   // the answer `next` gave is kept, its own `breakPromptCache` included; each name tracks the
   // away state it last carried, so each breaks the cache once at `brb` and once at `back`.
+  // section.json keeps that state per session across a resume or a restart: a conversation that
+  // comes back home while its saved prompt carried the away text breaks the cache once, at its
+  // first answer; one never saved away (or with no readable file) does not.
   for (const name of SECTION_NAMES) {
     on("prompt.section", { name }, async ($, e, next) => {
       const core = await next(e);
       try {
-        const answer = sectionAnswer(core, awayNow, sectionAway.get(name) === true);
+        const store = await loadSavedSections($);
+        const first = !sectionsAnswered.has(name);
+        const answer = sectionAnswer(core, awayNow, lastCarried(sectionAway, store.saved, name, first));
+        sectionsAnswered.add(name);
         sectionAway.set(name, awayNow);
+        if (store.path && (store.saved[name] === true) !== awayNow) await saveSections($, store, name, awayNow);
         return answer;
       } catch (err) {
         await logFault($, "prompt.section", err);

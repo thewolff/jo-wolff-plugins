@@ -38,7 +38,7 @@ type Checklist = { at: string; since: string; note: string; items: Item[] };
 type Snapshot = { ok: boolean; away: boolean; checklist?: Checklist | null } & Record<string, unknown>;
 
 /** The stubs every test needs; `acts` collects each action argv tail, `statuses` each status-line call, `suggestions` each prompt-box text, `submits` each prompt the mod submits, `toasts` each toast. */
-function stubs(on, { snapshot = AWAY as Snapshot, exists = false } = {}) {
+function stubs(on, { snapshot = AWAY as Snapshot, exists = false, files = new Map<string, string>() } = {}) {
   const acts: string[][] = [];
   const statuses: (string | undefined)[] = [];
   const suggestions: string[] = [];
@@ -105,7 +105,16 @@ function stubs(on, { snapshot = AWAY as Snapshot, exists = false } = {}) {
     }
     return { deny: `unexpected process ${e.argv.join(" ")}` };
   });
-  return { acts, statuses, suggestions, logs, probes, queries, submits, toasts, state, clock };
+  // section.json in memory (never the real disk): a missing file rejects as the host's read does
+  on("fs.read", ($, e) => {
+    if (!files.has(e.path)) throw new Error(`ENOENT: no such file, read '${e.path}'`);
+    return { value: files.get(e.path) };
+  });
+  on("fs.write", ($, e) => {
+    files.set(e.path, e.text);
+    return { value: undefined };
+  });
+  return { acts, statuses, suggestions, logs, probes, queries, submits, toasts, state, clock, files };
 }
 
 const SESSIONS = [
@@ -463,3 +472,31 @@ test("a later section hook's breakPromptCache passes through brb's section hook 
   expect(answer.breakPromptCache).toBe(true);
   expect(answer.text).toBe("OTHER MOD UPDATED THIS");
 });
+
+// ---- 0.5.0 R3: a resumed conversation drops a saved away text once ----
+
+const SECTION_FILE = `/tmp/state/brb/${SESSION}/section.json`;
+
+for (const [where, payload] of SESSIONS) {
+  test(`${where}: resumed home after the section was saved away: the first answer breaks the cache, the next does not`, async ($, on) => {
+    const files = new Map([[SECTION_FILE, JSON.stringify({ env_info_simple: true })]]);
+    stubs(on, { snapshot: HOME, files });
+    on("prompt.section", ($, e) => ({ text: e.text }));
+    await $.session.start(payload);
+    const first = await $.prompt.section({ name: "env_info_simple", text: "cwd: /w" });
+    expect(first.breakPromptCache).toBe(true);
+    expect(first.text).toBe("cwd: /w");
+    expect((await $.prompt.section({ name: "env_info_simple", text: "cwd: /w" })).breakPromptCache).toBeUndefined();
+    expect(JSON.parse(files.get(SECTION_FILE) ?? "{}")).toEqual({ env_info_simple: false });
+  });
+
+  for (const [what, saved] of [["no saved state", null], ["a file that does not parse", "{ broken"]] as const) {
+    test(`${where}: resumed home with ${what}: no break`, async ($, on) => {
+      const files = new Map<string, string>(saved === null ? [] : [[SECTION_FILE, saved]]);
+      stubs(on, { snapshot: HOME, files });
+      on("prompt.section", ($, e) => ({ text: e.text }));
+      await $.session.start(payload);
+      expect((await $.prompt.section({ name: "env_info_simple", text: "cwd: /w" })).breakPromptCache).toBeUndefined();
+    });
+  }
+}

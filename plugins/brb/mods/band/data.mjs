@@ -137,12 +137,25 @@ export function sessionKey(sessionId) {
   return s && s !== "." && s !== ".." ? s.slice(0, 120) : "no-session";
 }
 
+/** `${XDG_STATE_HOME:-$HOME/.local/state}/brb/<session key>/<file>`; null when neither variable has a value. */
+function sessionFile({ xdgStateHome, home, sessionId }, file) {
+  const root = xdgStateHome?.trim() ? xdgStateHome : home ? `${home.replace(/[\\/]+$/, "")}/.local/state` : null;
+  if (!root) return null;
+  return `${root.replace(/[\\/]+$/, "")}/brb/${sessionKey(sessionId)}/${file}`;
+}
+
 /**
  * `${XDG_STATE_HOME:-$HOME/.local/state}/brb/<session key>/away.json`, as lib/state.mjs places it;
  * null when neither variable has a value (the mod then relies on its query alone).
  */
-export function awayPath({ xdgStateHome, home, sessionId }) {
-  const root = xdgStateHome?.trim() ? xdgStateHome : home ? `${home.replace(/[\\/]+$/, "")}/.local/state` : null;
-  if (!root) return null;
-  return `${root.replace(/[\\/]+$/, "")}/brb/${sessionKey(sessionId)}/away.json`;
+export function awayPath(where) {
+  return sessionFile(where, "away.json");
+}
+
+/**
+ * `…/brb/<session key>/section.json`: the away state each environment section last carried in
+ * this session's system prompt (lib/state.mjs lists it); null when neither variable has a value.
+ */
+export function sectionPath(where) {
+  return sessionFile(where, "section.json");
 }

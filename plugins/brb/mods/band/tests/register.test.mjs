@@ -40,7 +40,7 @@ const CHECKLIST = { ok: true, away: false, checklist: { at: SINCE, since: SINCE,
  * started); `queryFails` makes the next query throw.
  */
 function stub({ snapshot = HOME, exists = async () => false } = {}) {
-  const s = { timers: new Map(), live: new Set(), cancelled: [], runs: 0, acts: [], submits: [], toasts: [], statuses: [], logs: [], suggestions: [], invalidations: 0, invalidated: [], snapshot, exists, sessionId: "s1", hold: null, actHold: null, queryFails: false, submit: () => new Promise(() => {}) };
+  const s = { timers: new Map(), live: new Set(), cancelled: [], runs: 0, acts: [], submits: [], toasts: [], statuses: [], logs: [], suggestions: [], invalidations: 0, invalidated: [], snapshot, exists, sessionId: "s1", hold: null, actHold: null, queryFails: false, submit: () => new Promise(() => {}), files: new Map(), reads: [], writes: [], readFails: null };
   s.$ = {
     env: { get: async (name) => (name === "XDG_STATE_HOME" ? "/tmp/state" : name === "HOME" ? "/Users/example" : undefined) },
     clock: {
@@ -86,7 +86,20 @@ function stub({ snapshot = HOME, exists = async () => false } = {}) {
         Button: (props) => ({ type: "Button", props }),
       }),
     },
-    fs: { exists: (path) => s.exists(path) },
+    fs: {
+      exists: (path) => s.exists(path),
+      // section.json in memory: a missing file rejects as the host's read does
+      read: async (path) => {
+        s.reads.push(path);
+        if (s.readFails) throw s.readFails;
+        if (!s.files.has(path)) throw Object.assign(new Error(`ENOENT: ${path}`), { code: "ENOENT" });
+        return s.files.get(path);
+      },
+      write: async (path, text) => {
+        s.writes.push(path);
+        s.files.set(path, text);
+      },
+    },
   };
   return s;
 }
@@ -726,4 +739,103 @@ test("R2 B1: switching hiding off retires the hold's hidden rows at once: a row 
   await turnComplete(hooks, s);
   assert.equal(await rowOf(hooks, s, "terminal", ...said("old")), DRAWN, "on again: the row hidden before the switch stays shown");
   assert.notEqual(await rowOf(hooks, s, "terminal", ...said("new")), DRAWN, "a row first drawn after on still hides");
+});
+
+// ---- 0.5.0 R3: section.json carries the section's away state across a resume or a restart ----
+
+const SECTION_FILE = "/tmp/state/brb/s1/section.json";
+const breaks = async (hooks, s, name = "env_info_simple") => (await sectionWith(hooks, s, name, { text: "cwd: /w" })).breakPromptCache === true;
+/** A restarted Claude Code: a fresh module and stub over the same files. */
+async function restart(from, snapshot) {
+  const hooks = await load();
+  const s = stub({ snapshot });
+  s.files = from.files;
+  await start(hooks, s);
+  return { hooks, s };
+}
+
+test("R3: a session saved away and resumed home breaks the cache once, records home, and the next resume does not break", async () => {
+  const hooks = await load();
+  const s = stub({ snapshot: AWAY });
+  await start(hooks, s);
+  assert.equal(await breaks(hooks, s), true, "brb: the away text is added");
+  assert.deepEqual(JSON.parse(s.files.get(SECTION_FILE)), { env_info_simple: true }, "saved away");
+  // Claude Code restarts; the hold ended meanwhile; the conversation is resumed home
+  const one = await restart(s, HOME);
+  assert.equal(await breaks(one.hooks, one.s), true, "the first answer drops the saved away text");
+  assert.equal(await breaks(one.hooks, one.s), false, "once");
+  assert.deepEqual(JSON.parse(one.s.files.get(SECTION_FILE)), { env_info_simple: false }, "home recorded");
+  const two = await restart(one.s, HOME);
+  assert.equal(await breaks(two.hooks, two.s), false, "a second resume finds home saved: no break");
+});
+
+test("R3: a session never away, resumed home, never breaks and writes nothing", async () => {
+  const hooks = await load();
+  const s = stub({ snapshot: HOME });
+  await start(hooks, s);
+  assert.equal(await breaks(hooks, s), false);
+  const again = await restart(s, HOME);
+  assert.equal(await breaks(again.hooks, again.s), false);
+  assert.equal(again.s.writes.length + s.writes.length, 0, "no file for a session never away");
+});
+
+test("R3: a session saved away and resumed still away does not break (the saved prompt has the text)", async () => {
+  const hooks = await load();
+  const s = stub({ snapshot: AWAY });
+  await start(hooks, s);
+  await breaks(hooks, s);
+  const again = await restart(s, AWAY);
+  assert.equal(await breaks(again.hooks, again.s), false);
+});
+
+test("R3: each section name is saved and dropped on its own", async () => {
+  const hooks = await load();
+  const s = stub({ snapshot: AWAY });
+  await start(hooks, s);
+  await breaks(hooks, s, "env_info_static");
+  const again = await restart(s, HOME);
+  assert.equal(await breaks(again.hooks, again.s, "env_info_simple"), false, "never saved away");
+  assert.equal(await breaks(again.hooks, again.s, "env_info_static"), true, "saved away");
+});
+
+test("R3: /resume in the same process to a session saved away breaks once at its first answer", async () => {
+  const hooks = await load();
+  const s = stub({ snapshot: HOME });
+  s.files.set("/tmp/state/brb/s2/section.json", JSON.stringify({ env_info_simple: true }));
+  await start(hooks, s);
+  assert.equal(await breaks(hooks, s), false, "s1: never away");
+  await end(hooks, s, "resume");
+  s.sessionId = "s2";
+  await start(hooks, s);
+  assert.equal(await breaks(hooks, s), true, "s2's saved away text is dropped");
+  assert.equal(await breaks(hooks, s), false);
+});
+
+for (const [what, prepare] of [
+  ["missing", () => {}],
+  ["not JSON", (s) => s.files.set(SECTION_FILE, "{ env_info_simple: tr")],
+  ["an array", (s) => s.files.set(SECTION_FILE, "[true]")],
+  ["a string where a boolean goes", (s) => s.files.set(SECTION_FILE, JSON.stringify({ env_info_simple: "true" }))],
+  ["unreadable", (s) => (s.readFails = Object.assign(new Error("EACCES: permission denied"), { code: "EACCES" }))],
+]) {
+  test(`R3: section.json ${what}: home answers without a break and without throwing`, async () => {
+    const hooks = await load();
+    const s = stub({ snapshot: HOME });
+    prepare(s);
+    await start(hooks, s);
+    assert.deepEqual(await sectionWith(hooks, s, "env_info_simple", { text: "cwd: /w" }), { text: "cwd: /w" });
+  });
+}
+
+test("R3: a save the host refuses is logged; the answer still carries the away text and the break", async () => {
+  const hooks = await load();
+  const s = stub({ snapshot: AWAY });
+  s.$.fs.write = async () => {
+    throw new Error("EROFS: read-only file system");
+  };
+  await start(hooks, s);
+  const answer = await sectionWith(hooks, s, "env_info_simple", { text: "cwd: /w" });
+  assert.equal(answer.breakPromptCache, true);
+  assert.ok(answer.text.includes(AWAY_TEXT));
+  assert.equal(s.logs.filter((l) => l.includes("EROFS")).length, 1);
 });

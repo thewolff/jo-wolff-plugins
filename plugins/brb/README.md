@@ -357,8 +357,11 @@ line, the body and `idle: <why>`. It is added at `brb` and removed at `back`, ea
 `breakPromptCache: true` so a running conversation reads the change on its next turn (Desktop's
 bundled Claude Code 2.1.321 needs the field; the next turn's prompt cache starts over, once at
 `brb` and once at `back`, per section name). The answer Claude Code or another mod gave for the
-section is passed on whole, its own `breakPromptCache` included, home and away. A `brb` typed
-while a turn is running reaches that turn too: the next
+section is passed on whole, its own `breakPromptCache` included, home and away. The state each
+section last carried is saved in the session's `section.json` (two booleans, nothing else), so a
+conversation resumed home after its prompt was saved away drops the away text once, at its first
+answer; a session never away, or with no readable file, never breaks the cache on resume. A `brb`
+typed while a turn is running reaches that turn too: the next
 tool result of the main agent carries the same text once (`tool.call` `context`, in Claude Code,
 no process started). A running turn that makes no further tool call does not get it; its reply
 is hidden anyway, and the next turn has the section and the prompt hook's instruction.

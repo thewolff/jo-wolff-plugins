@@ -197,3 +197,35 @@ export function sectionAnswer(core, away, lastAway) {
   if (changed) answer.breakPromptCache = true;
   return answer;
 }
+
+/**
+ * section.json's text → the away state each environment section last carried in this session's
+ * saved system prompt: `{ [name]: boolean }`, only SECTION_NAMES keys with boolean values. Missing
+ * (null), unparsable or mis-shaped text is `{}`: nothing known, so nothing breaks the cache.
+ * Never throws.
+ */
+export function parseSectionState(text) {
+  const saved = {};
+  if (typeof text !== "string") return saved;
+  let parsed;
+  try {
+    parsed = JSON.parse(text);
+  } catch {
+    return saved;
+  }
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return saved;
+  for (const name of SECTION_NAMES) if (typeof parsed[name] === "boolean") saved[name] = parsed[name];
+  return saved;
+}
+
+/**
+ * The away state a section name last carried. After its first answer in a conversation, what this
+ * process last answered for it. At its first answer (a new conversation, a resume, a restarted
+ * Claude Code), away when either the process last answered away for it or section.json saved it
+ * away for this session: the saved prompt may carry the away text. A session never saved away,
+ * or no file, is home, so a resume never breaks the cache for nothing.
+ */
+export function lastCarried(answered, saved, name, first) {
+  if (answered.get(name) === true) return true;
+  return first === true && saved?.[name] === true;
+}
