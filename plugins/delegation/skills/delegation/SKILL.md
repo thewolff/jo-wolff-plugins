@@ -100,7 +100,7 @@ The template filled in for a real task: a builder adding one config field to a C
 
 ```
 # Target
-Repository /Users/me/code/ledger, branch `config-timeout`, worktree at `.tmp/config-timeout-wt`.
+Repository /Users/example/code/ledger, branch `config-timeout`, worktree at `.tmp/config-timeout-wt`.
 Files: `src/config.mjs`, `src/cli.mjs`, `test/config.test.mjs`, `README.md`.
 Non-goals: no change to the SQLite schema; no new dependency; the other CLI flags stay as they are.
 
