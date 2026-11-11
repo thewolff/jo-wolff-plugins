@@ -88,12 +88,26 @@ export function askPoint(config, env = process.env, cliff = null) {
 }
 
 /**
- * The next ask after one at `tokens`: a re-ask step on, or `cap` when that comes first and is at
- * least `gap` further on (an ask already within `gap` of the cap was the near-compaction ask; it
- * is not repeated a turn later).
+ * The next ask after one at `tokens`: a re-ask step on, or `cap` when that comes first, is past
+ * `tokens`, and is at least `gap` further on (an ask already within `gap` of the cap was the
+ * near-compaction ask; it is not repeated a turn later, and a zero gap never repeats an ask at
+ * the same size).
  */
 export function nextAsk(tokens, step, cap, gap = 0) {
-  return cap != null && cap - tokens >= gap ? Math.min(tokens + step, cap) : tokens + step;
+  return cap != null && cap > tokens && cap - tokens >= gap ? Math.min(tokens + step, cap) : tokens + step;
+}
+
+/**
+ * The first ask of a window: the ask point, and not before the context is `margin` past the
+ * window's `baseline` (null when no reply recorded one). The baseline floor never pushes the ask
+ * past `point.cap`: when the floor would, the ask comes at the cap, or at the first turn past the
+ * baseline when the window already opened at or past the cap.
+ */
+export function firstAsk(point, baseline, margin) {
+  if (baseline == null) return point.tokens;
+  const floor = baseline + margin;
+  const held = point.cap != null && floor > point.cap ? Math.max(point.cap, baseline + 1) : floor;
+  return Math.max(point.tokens, held);
 }
 
 /** The anchor stored under a flag when it belongs to `epoch`; null for another window, a 0.3 ISO string, or junk. */
@@ -118,8 +132,7 @@ export async function dueAsk(input, flag, { config, flags = {}, env = process.en
   const cliff = autoCompactCliff({ model: est.model, projectDir: env?.CLAUDE_PROJECT_DIR || input?.cwd || null, env });
   const point = askPoint(config, env, cliff);
   const prev = anchorIn(flags[flag], est.epoch);
-  const floor = est.baselineTokens != null ? est.baselineTokens + config.askMarginTokens : 0;
-  const due = prev ? nextAsk(prev.tokens, config.reaskStepTokens, point.cap, config.askMarginTokens) : Math.max(point.tokens, floor);
+  const due = prev ? nextAsk(prev.tokens, config.reaskStepTokens, point.cap, config.askMarginTokens) : firstAsk(point, est.baselineTokens, config.askMarginTokens);
   if (est.tokens < due) return null;
   const key = sessionKey(input);
   const tokens = Math.round(est.tokens);

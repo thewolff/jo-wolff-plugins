@@ -644,6 +644,37 @@ test("pressure, when, with a set auto-compact window: a 300,000 window asks at 1
   }
 });
 
+test("pressure, when, a window that opens past the cap: with a 200,000 window (compaction at 167,000) a session that opens at 130,000 is asked on its next turn on both surfaces, not at 170,000 after the compaction", () => {
+  const b = box();
+  try {
+    b.writeConfig({ liveness: "off" });
+    const env = { CLAUDE_CODE_AUTO_COMPACT_WINDOW: "200k" };
+    const prompt = (session) => /\/continuity:handoff/.test(spawnHook(b, "user-prompt-submit.mjs", input("UserPromptSubmit", b, { session_id: session, prompt: "x" }), { env }).json?.hookSpecificOutput?.additionalContext ?? "");
+    const stops = (session) => spawnHook(b, "stop.mjs", input("Stop", b, { session_id: session, stop_hook_active: false }), { env }).json?.decision === "block";
+    b.writeTranscript([...turn(130_000)]);
+    assert.deepEqual([prompt("o130"), stops("o130")], [false, false], "the opening turn itself");
+    b.writeTranscript([...turn(130_000), ...turn(140_000)]);
+    assert.deepEqual([prompt("o130"), stops("o130")], [true, true], "140,000: before the 167,000 compaction");
+    b.writeTranscript([...turn(130_000), ...turn(140_000), ...turn(150_000)]);
+    assert.deepEqual([prompt("o130"), stops("o130")], [false, false], "once asked, not again a turn later");
+  } finally {
+    b.release();
+  }
+});
+
+test("pressure, when, a zero askMarginTokens: two ordinary Stops at the same size block once", () => {
+  const b = box();
+  try {
+    b.writeConfig({ liveness: "off", askMarginTokens: 0 });
+    const env = { CLAUDE_CODE_AUTO_COMPACT_WINDOW: "300000" };
+    const stops = () => spawnHook(b, "stop.mjs", input("Stop", b, { session_id: "z0", stop_hook_active: false }), { env }).json?.decision === "block";
+    b.writeTranscript([...turn(125_000), ...turn(267_000)]);
+    assert.deepEqual([stops(), stops()], [true, false]);
+  } finally {
+    b.release();
+  }
+});
+
 test("end to end: a session starts, works, compacts, resumes with its own state, fills up, is nudged once, and hands off", () => {
   const b = box();
   try {

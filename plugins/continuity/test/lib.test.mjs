@@ -12,8 +12,8 @@ import { DEFAULTS, readConfig } from "../lib/config.mjs";
 import { HEARTBEAT_MAX_LINES, readHeartbeat, recordHeartbeat } from "../lib/heartbeat.mjs";
 import { age, lastSaveFor, renderLiveness } from "../lib/liveness.mjs";
 import { CALIBRATION_MAX_LINES, measureTranscript, readCalibration, recordCalibration } from "../lib/calibration.mjs";
-import { ASK_TOKENS, BYTES_PER_TOKEN_ESTIMATE, askPoint, dueAsk, estimateContext, handoffRequest, idleCompactMinTokens, nextAsk } from "../lib/pressure.mjs";
-import { AUTO_COMPACT_BUFFER, autoCompactCliff, autoCompactWindow, envWindow } from "../lib/autocompact.mjs";
+import { ASK_TOKENS, BYTES_PER_TOKEN_ESTIMATE, askPoint, dueAsk, estimateContext, firstAsk, handoffRequest, idleCompactMinTokens, nextAsk } from "../lib/pressure.mjs";
+import { AUTO_COMPACT_BUFFER, autoCompactCliff, autoCompactWindow, canonicalModel, defaultWindow, envWindow } from "../lib/autocompact.mjs";
 import { markFlag, readFlags, sessionKey, setFlag } from "../lib/session-flags.mjs";
 import { ENTRY_LINE_CAP, lastHandoffBy, listHandoffs, parseFrontmatter, renderHandoffs, resolveHandoffRoot } from "../lib/handoffs.mjs";
 import { MAX_STATUS_ENTRIES, RESTORE_MAX_CHARS, STATE_MAX_AGE_MS, buildSnapshot, capture, readTranscript, renderSnapshot, restore } from "../lib/snapshot.mjs";
@@ -480,6 +480,16 @@ test("pressure: the newest main-thread reply's usage is the context size and the
     // The model is the newest reply's; with none since the marker, the newest before it.
     b.writeTranscript([reply(full, {}, "claude-fable-5-2"), { type: "system", subtype: "compact_boundary", uuid: "u-3" }, "y".repeat(9)]);
     assert.equal(measureTranscript(b.transcript).model, "claude-fable-5-2");
+    // Only a top-level system compact_boundary line is a marker: the same text nested in a tool
+    // input after a genuine marker, or on a line that does not parse, moves neither the epoch nor
+    // the baseline. An over-long uuid is not stored as the epoch.
+    const fake = { type: "assistant", isSidechain: false, uuid: "ordinary-reply", message: { role: "assistant", model: "claude-opus-5-5", content: [{ type: "tool_use", name: "Write", input: { subtype: "compact_boundary" } }], usage: { input_tokens: 182_000 } } };
+    b.writeTranscript([reply(full), { type: "system", subtype: "compact_boundary", uuid: "u-real" }, reply({ input_tokens: 20_000 }), fake, '{"subtype":"compact_boundary", not json', reply({ input_tokens: 190_000 })]);
+    assert.deepEqual([measureTranscript(b.transcript).epoch, measureTranscript(b.transcript).baselineTokens, measureTranscript(b.transcript).usageTokens], ["u-real", 20000, 190000]);
+    b.writeTranscript([reply(full), fake, reply({ input_tokens: 190_000 })]);
+    assert.deepEqual([measureTranscript(b.transcript).epoch, measureTranscript(b.transcript).sinceMarker], ["start", false], "a nested marker alone is no marker");
+    b.writeTranscript([{ type: "system", subtype: "compact_boundary", uuid: "u".repeat(129) }]);
+    assert.equal(measureTranscript(b.transcript).epoch, "@0");
     // Usage beats a calibration record.
     b.writeTranscript([reply(full)]);
     mkdirSync(stateDir(b.env), { recursive: true });
@@ -540,6 +550,30 @@ test("pressure: the ask point's precedence: askTokens, then the 0.3 threshold ×
   assert.equal(nextAsk(227000, 150000, 227000, 40000), 377000);
   assert.equal(nextAsk(200000, 150000, 227000, 40000), 350000);
   assert.equal(nextAsk(175000, 150000, null, 40000), 325000);
+  // A zero margin never re-asks at the size it just asked at.
+  assert.equal(nextAsk(267000, 150000, 267000, 0), 417000);
+  assert.equal(nextAsk(175000, 150000, 267000, 0), 267000);
+});
+
+test("pressure: the first ask lands before the modelled compaction whatever the window's baseline: the baseline floor is held at the cap, or at the first turn past a baseline already past it", () => {
+  const c = DEFAULTS;
+  // The case that suppressed every ask: a 200,000 window compacts at 167,000; a window that
+  // opened at 130,000 asked only at 170,000. It now asks at the first turn past 130,000.
+  const p200 = askPoint(c, {}, { tokens: 167000 });
+  assert.equal(firstAsk(p200, 130000, c.askMarginTokens), 130001);
+  assert.equal(firstAsk(p200, 80000, c.askMarginTokens), 127000, "a low baseline keeps the cap");
+  assert.equal(firstAsk(p200, null, c.askMarginTokens), 127000);
+  assert.equal(firstAsk(askPoint(c, {}, null), 130000, c.askMarginTokens), 175000, "no window: the floor as before");
+  assert.equal(firstAsk(askPoint(c, {}, null), 150000, c.askMarginTokens), 190000);
+  // The sweep: every window Claude Code accepts, every baseline below its compaction point.
+  for (let window = 100000; window <= 1000000; window += 25000) {
+    const cliff = window - AUTO_COMPACT_BUFFER;
+    const point = askPoint(c, {}, { tokens: cliff });
+    for (let baseline = 0; baseline < cliff - 1; baseline += 2500) {
+      const due = firstAsk(point, baseline, c.askMarginTokens);
+      assert.ok(due > baseline && due < cliff, `window ${window}, baseline ${baseline}: first ask at ${due}, compaction at ${cliff}`);
+    }
+  }
 });
 
 test("autocompact: the window from CLAUDE_CODE_AUTO_COMPACT_WINDOW, then project local, project, user settings; modelSettings beats the top level inside a file; \"auto\" is the default; the point is 33,000 before the window or the percentage override", () => {
@@ -581,6 +615,34 @@ test("autocompact: the window from CLAUDE_CODE_AUTO_COMPACT_WINDOW, then project
     assert.equal(autoCompactCliff({ model: "claude-opus-5-5", projectDir: project, env: { ...b.env, CLAUDE_AUTOCOMPACT_PCT_OVERRIDE: "50" } }).tokens, 200000, "the override only moves it earlier");
     assert.equal(autoCompactCliff({ model: "claude-opus-5-5", projectDir: project, env: { ...b.env, CLAUDE_AUTOCOMPACT_PCT_OVERRIDE: "100" } }).tokens, 367000);
     assert.equal(autoCompactCliff({ model: "claude-opus-5-5", projectDir: null, env: { HOME: join(b.root, "none") } }), null);
+    // Provider spellings match the canonical modelSettings entry, as Claude Code matches them.
+    for (const [id, canon] of [
+      ["us.anthropic.claude-sonnet-4-5-20250929-v1:0", "claude-sonnet-4-5"],
+      ["anthropic.claude-opus-4-1-20250805-v1:0", "claude-opus-4-1"],
+      ["global.anthropic.claude-opus-5-5-v1", "claude-opus-5-5"],
+      ["claude-sonnet-4-5@20250929", "claude-sonnet-4-5"],
+      ["claude-opus-5-5-20261001[1m]", "claude-opus-5-5"],
+      ["Claude-Opus-5-5", "claude-opus-5-5"],
+    ]) assert.equal(canonicalModel(id), canon, id);
+    const prov = join(b.root, "prov");
+    put(prov, "settings.json", { modelSettings: { "claude-sonnet-4-5": { autoCompactWindow: 100000 } } });
+    const provEnv = { ...b.env, CLAUDE_CONFIG_DIR: prov };
+    assert.equal(autoCompactWindow({ model: "us.anthropic.claude-sonnet-4-5-20250929-v1:0", projectDir: null, env: provEnv }).tokens, 100000, "Bedrock id");
+    assert.equal(autoCompactWindow({ model: "claude-sonnet-4-5@20250929", projectDir: null, env: provEnv }).tokens, 100000, "Vertex id");
+    assert.equal(autoCompactWindow({ model: "claude-sonnet-4-6", projectDir: null, env: provEnv }), null, "another model");
+    // A percentage override with no window set applies to a native 1M model's default window;
+    // "auto" is the same as unset; a model that compacts at its limit gets no point.
+    const none = { HOME: join(b.root, "none") };
+    assert.deepEqual(autoCompactCliff({ model: "claude-opus-5-5", projectDir: null, env: { ...none, CLAUDE_AUTOCOMPACT_PCT_OVERRIDE: "10" } }), { tokens: 100000, window: 1000000, source: "CLAUDE_AUTOCOMPACT_PCT_OVERRIDE" });
+    put(join(b.root, "auto"), "settings.json", { autoCompactWindow: "auto" });
+    assert.equal(autoCompactCliff({ model: "claude-fable-5-2", projectDir: null, env: { ...none, CLAUDE_CONFIG_DIR: join(b.root, "auto"), CLAUDE_AUTOCOMPACT_PCT_OVERRIDE: "10" } }).tokens, 100000, "\"auto\" plus a percentage");
+    assert.equal(autoCompactCliff({ model: "claude-opus-5-5", projectDir: null, env: { ...none, CLAUDE_AUTOCOMPACT_PCT_OVERRIDE: "100" } }).tokens, 967000, "the default point, about 967,000");
+    assert.equal(autoCompactCliff({ model: "claude-opus-5-5", projectDir: null, env: { ...none, CLAUDE_AUTOCOMPACT_PCT_OVERRIDE: "10", CLAUDE_CODE_DISABLE_1M_CONTEXT: "1" } }), null, "1M disabled: compacts at the 200K limit");
+    assert.equal(autoCompactCliff({ model: "claude-opus-4-6", projectDir: null, env: { ...none, CLAUDE_AUTOCOMPACT_PCT_OVERRIDE: "10" } }), null, "not a native 1M model");
+    assert.equal(autoCompactCliff({ model: null, projectDir: null, env: { ...none, CLAUDE_AUTOCOMPACT_PCT_OVERRIDE: "10" } }), null, "no model");
+    for (const [model, native] of [["claude-fable-5-2", 1000000], ["claude-sonnet-5", 1000000], ["claude-haiku-5-5", 1000000], ["claude-haiku-4-5", null], ["claude-opus-4-7", 1000000], ["claude-opus-4-6", null], ["claude-sonnet-4-6", null], ["us.anthropic.claude-opus-5-5-v1:0", 1000000], ["opus", null]]) {
+      assert.equal(defaultWindow(model, {}), native, model);
+    }
   } finally {
     b.release();
   }

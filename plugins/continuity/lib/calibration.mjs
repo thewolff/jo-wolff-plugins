@@ -10,8 +10,9 @@
 // last compaction marker is used; a sidechain (subagent) reply and a reply whose sum is 0 (a
 // synthetic one) are passed over. A line without the cache fields counts `input_tokens` alone.
 //
-// The measure: the size of the transcript file after its last compaction marker (a line with
-// `"subtype":"compact_boundary"`), or the whole file when it has none. The marker is what a
+// The measure: the size of the transcript file after its last compaction marker (a top-level
+// line `{"type":"system","subtype":"compact_boundary",…}`; the same text nested inside a tool
+// input or result is not a marker), or the whole file when it has none. The marker is what a
 // Claude Code transcript is understood to carry after a compaction; no transcript on the machine
 // this was written on had one, so in practice the measure is usually the whole file, and after a
 // compaction that does not write a marker it still counts the bytes from before it. The README
@@ -61,23 +62,20 @@ export function measureTranscript(path) {
       read += n;
     }
     const data = buf.subarray(0, read);
-    const at = data.lastIndexOf(MARKER);
-    if (at < 0) {
+    const boundary = lastBoundary(data);
+    if (!boundary) {
       const last = lastReply(data, 0);
       return { bytes: data.length, sinceMarker: false, usageTokens: last?.tokens ?? null, baselineTokens: firstUsage(data, 0), epoch: "start", markerAt: null, model: last?.model ?? null };
     }
-    const sol = data.lastIndexOf(0x0a, at) + 1;
-    const eol = data.indexOf(0x0a, at);
-    const from = eol < 0 ? data.length : eol + 1;
-    const marker = parseLine(data.subarray(sol, eol < 0 ? data.length : eol));
-    const stamp = typeof marker?.timestamp === "string" ? Date.parse(marker.timestamp) : NaN;
+    const { sol, from, rec: marker } = boundary;
+    const stamp = typeof marker.timestamp === "string" ? Date.parse(marker.timestamp) : NaN;
     const last = lastReply(data, from);
     return {
       bytes: data.length - from,
       sinceMarker: true,
       usageTokens: last?.tokens ?? null,
       baselineTokens: firstUsage(data, from),
-      epoch: typeof marker?.uuid === "string" && marker.uuid ? marker.uuid : `@${sol}`,
+      epoch: typeof marker.uuid === "string" && marker.uuid && marker.uuid.length <= 128 ? marker.uuid : `@${sol}`,
       markerAt: Number.isFinite(stamp) ? stamp : null,
       model: last ? last.model : (lastReply(data.subarray(0, sol), 0)?.model ?? null),
     };
@@ -100,6 +98,26 @@ function parseLine(line) {
   } catch {
     return null;
   }
+}
+
+/**
+ * The last compaction marker in `data`, `{ sol, from, rec }` (its line's start, the byte after
+ * the line, the parsed record), or null: the last line holding the marker text that parses as a
+ * top-level `type: "system"`, `subtype: "compact_boundary"` record. A line that only nests the
+ * text (a tool input or result) or does not parse is passed over.
+ */
+function lastBoundary(data) {
+  let at = data.length;
+  while (at > 0) {
+    at = data.lastIndexOf(MARKER, at - 1);
+    if (at < 0) return null;
+    const sol = data.lastIndexOf(0x0a, at) + 1;
+    const nl = data.indexOf(0x0a, at);
+    const rec = parseLine(data.subarray(sol, nl < 0 ? data.length : nl));
+    if (rec?.type === "system" && rec.subtype === "compact_boundary") return { sol, from: nl < 0 ? data.length : nl + 1, rec };
+    at = sol;
+  }
+  return null;
 }
 
 /** `{ tokens, model }` when the line is a main-thread assistant reply recording usage above 0; null otherwise. */

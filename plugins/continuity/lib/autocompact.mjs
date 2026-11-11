@@ -16,13 +16,21 @@
 //    `autoCompactWindow`. A value of `"auto"` there is Claude Code's tuned default: no window.
 //    `<project>` is `CLAUDE_PROJECT_DIR`, else the hook's cwd. Managed settings and `--settings`
 //    are not read.
-// 3. None: Claude Code's default for the model (about 967,000 on a native 1M window), which is
-//    past the idle-compaction point, so it changes nothing here and is not modelled.
+// 3. None (or `"auto"`): Claude Code's default for the model (about 967,000 on a native 1M
+//    window), which is past the idle-compaction point, so it changes nothing here and is not
+//    modelled, except under CLAUDE_AUTOCOMPACT_PCT_OVERRIDE: the percentage then applies to
+//    a native 1M model's 1,000,000 window (`defaultWindow()`: the Fable models, Sonnet 5 and
+//    later, Haiku 5.5 and later, Opus 4.7 and later, per model-config.md "Default auto-compact
+//    thresholds"). Any other model, or `CLAUDE_CODE_DISABLE_1M_CONTEXT=1`, compacts at its
+//    context limit, where the docs say the percentage does not apply; no point is modelled.
 //
-// The model is the transcript's newest main-thread `message.model`; a `modelSettings` key matches
-// it exactly or with its `[1m]` and `-YYYYMMDD` suffixes taken off. Claude Code compacts about
-// AUTO_COMPACT_BUFFER tokens before the window (measured, not documented; see the constant);
-// CLAUDE_AUTOCOMPACT_PCT_OVERRIDE (1-100, a percentage of the window) only moves that earlier.
+// The model is the transcript's newest main-thread `message.model`. A `modelSettings` key matches
+// it after both are canonicalized (`canonicalModel()`): lower case, the `[1m]` suffix, a Bedrock
+// `[<region>.]anthropic.` prefix and `-v<n>[:<n>]` suffix, a Vertex `@YYYYMMDD` suffix and a
+// `-YYYYMMDD` date taken off. Aliases (`opus`, `sonnet`) and ARNs are not resolved. Claude Code
+// compacts about AUTO_COMPACT_BUFFER tokens before the window (measured, not documented; see the
+// constant); CLAUDE_AUTOCOMPACT_PCT_OVERRIDE (1-100, a percentage of the window) only moves that
+// earlier.
 //
 // How it fails: open. A settings file that is missing, unreadable, not JSON, or carries a value
 // of the wrong shape is skipped as if it set nothing; with no window found the ask point is what
@@ -57,7 +65,32 @@ function settingsWindow(v) {
   return undefined;
 }
 
-const modelKey = (model) => String(model).replace(/\[1m\]$/i, "").replace(/-\d{8}$/, "");
+/**
+ * `model` as Claude Code keys it in `modelSettings`: lower case, without `[1m]`, a Bedrock
+ * `[<region>.]anthropic.` prefix or `-v<n>[:<n>]` version, a Vertex `@YYYYMMDD`, or a `-YYYYMMDD`
+ * date. `us.anthropic.claude-sonnet-4-5-20250929-v1:0` and `claude-sonnet-4-5@20250929` are both
+ * `claude-sonnet-4-5`.
+ */
+export function canonicalModel(model) {
+  return String(model)
+    .trim()
+    .toLowerCase()
+    .replace(/\[1m\]$/, "")
+    .replace(/^(?:[a-z]{2,8}\.)?anthropic\./, "")
+    .replace(/-v\d+(?::\d+)?$/, "")
+    .replace(/@\d{8}$/, "")
+    .replace(/-\d{8}$/, "");
+}
+
+/** The native window a model compacts before when no window is set: 1,000,000 for a native 1M model, null for any other or unknown model. */
+export function defaultWindow(model, env = process.env) {
+  if (!model || String(env?.CLAUDE_CODE_DISABLE_1M_CONTEXT ?? "") === "1") return null;
+  const m = /^claude-(opus|sonnet|haiku|fable)-(\d+)(?:-(\d+))?$/.exec(canonicalModel(model));
+  if (!m) return null;
+  const v = Number(m[2]) + Number(m[3] ?? 0) / 10;
+  const native = m[1] === "fable" || (m[1] === "sonnet" && v >= 5) || (m[1] === "haiku" && v >= 5.5) || (m[1] === "opus" && v >= 4.7);
+  return native ? WINDOW_MAX : null;
+}
 
 function readJson(path) {
   try {
@@ -90,9 +123,9 @@ export function autoCompactWindow({ model = null, projectDir = null, env = proce
     let found;
     const per = json.modelSettings;
     if (model && per && typeof per === "object" && !Array.isArray(per)) {
-      const want = [String(model), modelKey(model)];
+      const want = canonicalModel(model);
       for (const [key, entry] of Object.entries(per)) {
-        if (!want.includes(key) && modelKey(key) !== want[1]) continue;
+        if (key !== String(model) && canonicalModel(key) !== want) continue;
         found = settingsWindow(entry?.autoCompactWindow);
         if (found !== undefined) break;
       }
@@ -115,12 +148,15 @@ export function pctOverride(env = process.env) {
 /**
  * The context size at which Claude Code will auto-compact, `{ tokens, window, source }`: the
  * window less AUTO_COMPACT_BUFFER, or the percentage override of the window when that is
- * earlier; null when no window is set.
+ * earlier. With no window set, the percentage override of a native 1M model's default window
+ * (source "CLAUDE_AUTOCOMPACT_PCT_OVERRIDE"); null otherwise.
  */
 export function autoCompactCliff(opts = {}) {
+  const env = opts.env ?? process.env;
+  const pct = pctOverride(env);
+  const at = (window) => Math.min(window - AUTO_COMPACT_BUFFER, pct == null ? Infinity : Math.floor(window * pct));
   const w = autoCompactWindow(opts);
-  if (!w) return null;
-  const pct = pctOverride(opts.env ?? process.env);
-  const tokens = Math.min(w.tokens - AUTO_COMPACT_BUFFER, pct == null ? Infinity : Math.floor(w.tokens * pct));
-  return { tokens, window: w.tokens, source: w.source };
+  if (w) return { tokens: at(w.tokens), window: w.tokens, source: w.source };
+  const native = pct == null ? null : defaultWindow(opts.model, env);
+  return native == null ? null : { tokens: at(native), window: native, source: "CLAUDE_AUTOCOMPACT_PCT_OVERRIDE" };
 }
