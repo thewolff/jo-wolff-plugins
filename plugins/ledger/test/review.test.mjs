@@ -978,6 +978,9 @@ test("0.3.11 hole two: under gate a push chained after a HEAD-moving command is 
     ["git notes add -m reviewed HEAD && git push origin refs/notes/commits", "git notes"],
     ["git tag -l -d v1 && git push origin feat", "git tag"],
     ["git gc --prune=now && git push origin feat", "git gc"],
+    ["git stash push && git push origin refs/stash:refs/heads/recovery", "git stash"],
+    ["git stash && git push origin refs/stash:refs/heads/recovery", "git stash"],
+    ["git add -A && git stash && git stash pop && git push origin feat", "git stash"],
   ]) {
     assert.equal(pushOperations(cmd)[0].after, mover, cmd);
     const p = push(b, cmd);
@@ -990,13 +993,20 @@ test("0.3.11 hole two: under gate a push chained after a HEAD-moving command is 
   assert.equal(decision(p), "deny", "gh pr create pushes the current branch");
   assert.match(p.json.hookSpecificOutput.permissionDecisionReason, /`git commit` runs before this `gh pr create`/);
   // What stays allowed: the push on its own, a push before the mover, commands that do not move HEAD.
-  for (const cmd of ["git push origin feat", "git push origin feat && git checkout main", "git status && git diff --stat && git log -1 --oneline && git push origin feat", "git branch --show-current && git tag -l && git config --get user.name && git submodule status && git push origin feat", "git branch --list 'release*' && git tag --list 'v*' && git push origin HEAD", "git branch -a --contains HEAD && git tag -l 'v*' --points-at HEAD && git push origin HEAD", "git remote -v && git remote show origin && git worktree list && git notes list && git reflog && git push origin feat", "git add -A && git stash && git stash pop && git push origin feat", "git --version && git branch -vv && git remote -v && git push origin feat", 'echo "git commit" && git push origin feat', "git push -u origin feat && gh pr create --fill"]) {
+  for (const cmd of ["git push origin feat", "git push origin feat && git checkout main", "git status && git diff --stat && git log -1 --oneline && git push origin feat", "git branch --show-current && git tag -l && git config --get user.name && git submodule status && git push origin feat", "git branch --list 'release*' && git tag --list 'v*' && git push origin HEAD", "git branch -a --contains HEAD && git tag -l 'v*' --points-at HEAD && git push origin HEAD", "git remote -v && git remote show origin && git worktree list && git notes list && git reflog && git push origin feat", "git add -A && git stash list && git stash show -p && git push origin feat", "git --version && git branch -vv && git remote -v && git push origin feat", 'echo "git commit" && git push origin feat', "git push -u origin feat && gh pr create --fill"]) {
     assert.equal(pushOperations(cmd)[0].after, null, cmd);
     assert.equal(push(b, cmd).out, "", cmd);
   }
-  // gh pr merge publishes the remote's commit, not HEAD: a mover before it does not refuse it.
+  // gh pr merge that names its pull request merges the remote's commit, not HEAD: a mover before it does not refuse it.
   const head = git(b, "rev-parse", "HEAD");
   assert.equal(push(b, `git checkout main && gh pr merge 5 --rebase --match-head-commit ${head}`).out, "");
+  assert.equal(push(b, `gh pr checkout 5 && gh pr merge --merge --match-head-commit ${head}`).out, "", "a full sha binds the merge");
+  // With no selector gh merges the pull request of the branch checked out when it runs.
+  for (const cmd of ["gh pr checkout 5 && gh pr merge --merge", "git switch other && gh pr merge --squash --delete-branch", "gh pr checkout 5 && gh pr merge --merge --match-head-commit abc123"]) {
+    p = push(b, cmd, ghStub(b, head));
+    assert.equal(decision(p), "deny", cmd);
+    assert.match(p.json.hookSpecificOutput.permissionDecisionReason, /` runs before this `gh pr merge` on the same command line and may change the commit it publishes/, cmd);
+  }
   // advise: the push is checked against HEAD as it is, and a notice says what that misses.
   b.writeConfig({ review: { mode: "advise" } });
   p = push(b, "git commit -am fix && git push origin feat");

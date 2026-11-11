@@ -79,7 +79,9 @@ const LISTING = /^(-l|--list|--contains|--no-contains|--merged|--no-merged|--poi
  * True when `git <sub> <rest…>` may change the commit a later push publishes: it may move HEAD,
  * move another ref a refspec can name, or change the config git push reads. That is every
  * subcommand outside HEAD_KEEPERS, and inside it:
- *   stash      `stash branch` (checks out the stash's base commit)
+ *   stash      anything but `list` or `show`: `stash branch` checks out the stash's base commit,
+ *              and a bare `stash`, `push`, `pop`, `drop`, `store`, `clear` rewrite `refs/stash`,
+ *              which a refspec can name
  *   fetch      always: it moves remote-tracking refs, `src:dst` moves a local one, `-u` HEAD
  *   branch,    anything but a listing: `-f -m -M -c -C -d -D -u` and their long forms change a
  *   tag        ref; otherwise `-l`, `--list`, `--contains`, `--merged`, `--points-at` (LISTING)
@@ -95,7 +97,7 @@ const LISTING = /^(-l|--list|--contains|--no-contains|--merged|--no-merged|--poi
 function movesHead(sub, rest) {
   if (!HEAD_KEEPERS.has(sub)) return true;
   const first = rest.find((t) => !t.startsWith("-"));
-  if (sub === "stash") return first === "branch";
+  if (sub === "stash") return !(first === "list" || first === "show");
   if (sub === "fetch") return true;
   if (sub === "branch" || sub === "tag") {
     if (rest.some((t) => /^-[a-zA-Z]*[fmMcCdDu]/.test(t) || /^--(force|move|copy|delete|set-upstream|unset-upstream|edit-description|create-reflog)/.test(t))) return true;
@@ -387,7 +389,7 @@ export function pushOperations(command, ghPr = ["create"]) {
       i += GIT_OPT_WITH_ARG.has(t) ? 2 : 1;
     }
     if (tokens[i] === "push") ops.push({ tool: "git", cds: [...scope.cds], dirs, unsupported, after: moved, args: tokens.slice(i + 1) });
-    else if (tokens[i] && movesHead(tokens[i], tokens.slice(i + 1))) moved ??= `git ${tokens[i]}${tokens[i] === "stash" ? " branch" : ""}`;
+    else if (tokens[i] && movesHead(tokens[i], tokens.slice(i + 1))) moved ??= `git ${tokens[i]}${tokens[i] === "stash" && tokens.slice(i + 1).find((t) => !t.startsWith("-")) === "branch" ? " branch" : ""}`;
   }
   return ops;
 }

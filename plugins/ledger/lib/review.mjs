@@ -870,7 +870,10 @@ export function operationTargets(op, cwd, { env = process.env } = {}) {
  *               that steers the push), so the repository and commit cannot be named.
  *   chained     a `git push` or `gh pr create` follows a command that may move HEAD or another
  *               ref on the same command line (pushOperations `after`), so the commit it publishes does not
- *               exist yet. `gh pr merge` is left out: its commit is the remote's, not HEAD.
+ *               exist yet. `gh pr merge` is refused too unless it names its pull request (a
+ *               selector, or a full sha to `--match-head-commit`): with neither, gh picks the
+ *               pull request of the branch checked out when it runs, which the earlier
+ *               command may have changed.
  * With `cwd` (the hook's), a literal `cd` that names no existing folder is `unfollowed` too when
  * the folder the shell was in is inside a repository: the `cd` fails, and after a `;` the push
  * runs there.
@@ -908,7 +911,8 @@ export function commandRefusal(ops, cli = "ledger", cwd = null) {
       reason: `ledger: review gate: the gate cannot follow where this \`${name(lost)}\` runs (${lost.unsupported}), so the commit it publishes cannot be checked for a review. Re-issue it as its own command with a literal folder: \`cd /absolute/path && git push <remote> <branch>\`, with no variable, \`$(…)\`, \`~\`, glob or \`cd -\` in the folder, and no \`--git-dir\`, \`--work-tree\`, \`GIT_*\` setting or \`-c\` push config.`,
     };
   }
-  const chained = ops.find((op) => op.after && !(op.tool === "gh" && op.sub === "merge"));
+  const named = (op) => positionals(op.args, GH_MERGE_OPTS_WITH_ARG).length > 0 || /^[0-9a-f]{40}$/i.test(optValue(op.args, ["--match-head-commit"]) ?? "");
+  const chained = ops.find((op) => op.after && !(op.tool === "gh" && op.sub === "merge" && named(op)));
   if (chained) {
     return {
       kind: "chained",
