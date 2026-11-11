@@ -25,7 +25,7 @@ release; versions live there and in each plugin's `.claude-plugin/plugin.json`, 
 | [ledger](plugins/ledger/README.md) | Keeps a durable record of the questions the agent asks you and the choices it makes without asking, in one SQLite file, and gates a push on it. |
 | [as2-skills](plugins/as2-skills/README.md) | 22 engineering skills (spec and plan, TDD, debugging, code review, security, research and more), most vendored from four upstream skill packs at pinned releases. Skills only, no hooks. |
 | [plugin-kit](plugins/plugin-kit/README.md) | Scaffold a new plugin for this repository that passes its test bar on day one. Also holds the shared libraries, templates and release-review agents the other plugins copy. |
-| [ctx-watch](plugins/ctx-watch/README.md) | Notice when the ctx daemon is dead, unsupervised or stale or its index is not ready, repair it, say so at session start and in a macOS popup, and warn when a resumed session skips ctx. |
+| [ctx-watch](plugins/ctx-watch/README.md) | Notice when the ctx daemon is dead, unsupervised or stale or its index is not ready, repair it, say so at session start, mid-session to the agent and in a macOS popup, and warn when a resumed session skips ctx. |
 | [delegation](plugins/delegation/README.md) | Teach an agent what a subagent's brief must contain, and refuse a spawn whose brief lacks a required section, naming the section to add. Also ships 11 general agents and 3 delegation guards. |
 | [continuity](plugins/continuity/README.md) | Keep a long session's state across compaction: ask the agent for a handoff and block one stop until it writes one, snapshot the session before compaction, restore it after, and say if saving works. |
 | [brb](plugins/brb/README.md) | Type brb and walk away: the agent keeps working, its questions wait in a digest, and only an on-fire problem reaches you. Claude Code hides its output meanwhile. Type back to read the digest. |
@@ -177,7 +177,7 @@ listed under `omp.extensions` in its `package.json`, installed through `.omp-plu
 | pattern-check | PreToolUse, Stop, SessionEnd | `omp/pattern-check-omp.ts`: `tool_call`, `session_start`, `session_stop` |
 | reminders-review | SessionStart, UserPromptSubmit | `omp/reminders-review-omp.ts`: `session_start`, `before_agent_start` |
 | ledger | SessionStart, UserPromptSubmit, PreToolUse, Stop, SessionEnd | none; Claude Code only |
-| ctx-watch | SessionStart, Stop | none; the skill, CLI and launchd timer work on both; the Stop check is Claude Code only |
+| ctx-watch | SessionStart, UserPromptSubmit, PostToolUseFailure, Stop | none; the skill, CLI and launchd timer work on both; the mid-session notes and the Stop check are Claude Code only |
 | delegation | SessionStart, PreToolUse, PostToolUse, SubagentStop | `omp/delegation-omp.ts`: `before_agent_start`, `context`, `tool_call`, `tool_result`, `session_compact`; the three ported guards are Claude Code only |
 | continuity | SessionStart, UserPromptSubmit, PreCompact, Stop | `omp/continuity-omp.ts`: `auto_compaction_start`, `auto_compaction_end`, `session_before_compact`, `session_compact`; the context-pressure check is Claude Code only |
 | brb | SessionStart, UserPromptSubmit, Stop | `omp/brb-omp.ts`: `input`, `before_agent_start`, `session_stop` |

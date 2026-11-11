@@ -76,7 +76,8 @@ hook returns is the consult-history verdict in `block` mode, and that mode is yo
 | the heal runs past 120 s | SIGTERM to its process group, SIGKILL 15 s later if anything is left (`lib/bounded-run.mjs`); read-only spawns keep the 10 s SIGKILL bound | `test/upgrade.test.mjs` (a child that traps SIGTERM, one that ignores it) |
 | the heal exits but leaves something in its process group | `bounded-run` sends the group SIGTERM, then SIGKILL after the grace, before it returns the heal's own status (ctx's daemon is in a session of its own, not in the group) | `test/upgrade.test.mjs` (a grandchild that ignores SIGTERM) |
 | `repair` from a shell without `LANG` (Claude Desktop's tools) | every ctx call gets the `LANG` in ctx's `supervisor-environment.json`, else one derived from `AppleLocale`, each only if `locale -a` lists it; the JSON's `lang.source` says which and `lang.skipped` what was passed over and why | `test/repair.test.mjs` |
-| `repair` with no usable `LANG`, no `launchctl` or an unreachable `gui/<uid>`, mode not `auto`, a live or unknown upgrade state, a live handoff owner, a marker under 15 min old, a stuck state other than `quiescing`, or a timer `launchctl` cannot say is loaded or not | exit 3, `refused: …`, nothing changed, the timer untouched | `test/repair.test.mjs` |
+| `repair` with no usable `LANG`, no `launchctl`, a shell that cannot bootstrap a throwaway LaunchAgent into `gui/<uid>` (a sandbox: `Bootstrap failed: 5: Input/output error`, though `launchctl print gui/<uid>` works), mode not `auto`, a live or unknown upgrade state, a live handoff owner, a marker under 15 min old, a stuck state other than `quiescing`, or a timer `launchctl` cannot say is loaded or not | exit 3, `refused: …` (for launchd, launchctl's own line), nothing changed, the timer untouched | `test/repair.test.mjs` |
+| `repair`'s reach probe: bootstraps but cannot be booted out, launchctl throws, or an earlier run left it loaded | the first two refuse (exit 3, the probe's label named, the timer untouched); the third is booted out first and the probe runs; the probe's temp plist directory is removed on every path | `test/repair.test.mjs` |
 | `repair`: an upgrade starts, an owner comes alive, or the stuck attempt changes after the preflight | the gate read just before `ctx upgrade disable`, `ctx upgrade --dry-run` and `ctx index mode auto` stops the run there (exit 3 if nothing changed yet, else 1); the timer restored | `test/repair.test.mjs` |
 | `repair`: a ctx step fails or throws, or the daemon does not come back within 10 checks | exit 1, `failed: …` with ctx's line or the error; the timer restored either way | `test/repair.test.mjs` |
 | `repair` gets SIGINT, SIGTERM or SIGHUP | the timer restored, then exit 128 + n, `interrupted by SIG…` (a signal during a ctx command takes effect when that bounded command returns; SIGKILL cannot be handled) | `test/repair.test.mjs` (a child process signalled during the heal) |
@@ -88,6 +89,21 @@ measured is a throwaway data root (see README). `ctx semantic enable --wait` is 
 this plugin; that it re-pins an already-enabled index was measured once on a throwaway root.
 `repair` was not run against the real install (the 2026-11-11 hand run is its source); the
 `ctx upgrade --dry-run` release of `quiescing` is observed once, not documented by ctx.
+
+## The mid-session hook (`hooks/mid-session.mjs`, under `lib/hook-runner.mjs`)
+
+The fault rows of the SessionStart table (stdin, a throw, the 4 s deadline) hold for it too, on
+both its events (`test/hook-contract.test.mjs` runs every hooks.json entry).
+
+| Input or condition | What happens | Proof |
+|---|---|---|
+| healthy and fresh, a one-tick strike, a semantic-only episode, no `session_id`, or already told | no stdout; no latch written | `test/mid-session.test.mjs`, `evals/prompt-healthy.scenario.json`, `evals/prompt-ctx-down-latched.scenario.json` |
+| `state.json` missing (never ticked, never seen) | silent: nothing is known; the SessionStart dead-man's line covers it | `test/mid-session.test.mjs` |
+| `state.json` out of shape | read as never ticked, without an errors.log line (SessionStart and the tick log it) | `lib/state.mjs` `readState`, not exercised here |
+| the tick stamp over 15 min old (or 3 intervals) | one line, once per stamp; a down or recovery read from it is not said | `test/mid-session.test.mjs`, `evals/prompt-state-stale.scenario.json` |
+| the latch cannot be written | the note still goes out, with a line that it may repeat | not exercised |
+| a failed Bash call that is not ctx (the `if` filter is best-effort) | silent | `test/mid-session.test.mjs`, `evals/failed-other-call.scenario.json` |
+| ctx died after the last tick | not known until the timer's second failing tick (up to 10 min at the default interval): the hook reads no ctx | by design |
 
 ## The timer, the state and the popup (`lib/state.mjs`, `lib/launchd.mjs`, `lib/popup.mjs`, `lib/popup-supervisor.mjs`, `lib/retention.mjs`, `scripts/ctx-watch.mjs`)
 

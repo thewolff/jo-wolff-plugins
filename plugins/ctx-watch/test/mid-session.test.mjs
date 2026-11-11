@@ -5,8 +5,8 @@
 // unknown), once (one line) when it comes back, once when the state itself is stale. Healthy, a
 // one-tick blip, or only the semantic index not ready: nothing. handle() is driven in-process
 // against a temp XDG_STATE_HOME; the hook is then spawned as Claude Code spawns it, with a `ctx`
-// and a `launchctl` on PATH that leave a mark if anything runs them, and timed. Every module is
-// imported as a namespace so a checkout without the hook fails each test on its own assertion.
+// and a `launchctl` on PATH that leave a mark if anything runs them, and timed. On a checkout
+// without hooks/mid-session.mjs (0.3.0) the import fails and the whole file fails as one test.
 
 import test from "node:test";
 import assert from "node:assert/strict";
@@ -250,6 +250,8 @@ const spawnHook = (b, env, input, event = "UserPromptSubmit") => {
   return { ...r, ms: Number(process.hrtime.bigint() - started) / 1e6 };
 };
 const median = (xs) => [...xs].sort((x, y) => x - y)[Math.floor(xs.length / 2)];
+/** The spawned hook's bound here: the target is well under 100 ms idle (measured by hand), loosened so a parallel `node --test` does not flake. */
+const SPAWN_BUDGET_MS = 250;
 
 test("mid-session: spawned, it runs no ctx and no launchctl, answers once, and a healthy prompt costs one node start", () => {
   const b = box();
@@ -274,7 +276,7 @@ test("mid-session: spawned, it runs no ctx and no launchctl, answers once, and a
     assert.equal(existsSync(join(b.root, "ran")), false, `ran: ${existsSync(join(b.root, "ran")) ? readFileSync(join(b.root, "ran"), "utf8") : ""}`);
     // The budget is "well under 100 ms" on an idle machine (measured in the report); under a
     // parallel `node --test` the bound here is looser so the suite does not flake.
-    assert.ok(median(healthy) < hook.TEST_BUDGET_MS, `healthy median ${median(healthy).toFixed(1)} ms over ${hook.TEST_BUDGET_MS} ms: ${healthy.map((x) => x.toFixed(0)).join(", ")}`);
+    assert.ok(median(healthy) < SPAWN_BUDGET_MS, `healthy median ${median(healthy).toFixed(1)} ms over ${SPAWN_BUDGET_MS} ms: ${healthy.map((x) => x.toFixed(0)).join(", ")}`);
   } finally {
     b.release();
   }

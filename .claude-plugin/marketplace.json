@@ -52,7 +52,7 @@
     {
       "name": "ctx-watch",
       "source": "./plugins/ctx-watch",
-      "description": "Notice when the ctx daemon is dead, unsupervised or stale or its index is not ready, repair it, say so at session start and in a macOS popup, and warn when a resumed session skips ctx."
+      "description": "Notice when the ctx daemon is dead, unsupervised or stale or its index is not ready, repair it, say so at session start, mid-session to the agent and in a macOS popup, and warn when a resumed session skips ctx."
     },
     {
       "name": "delegation",
