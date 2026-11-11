@@ -1,0 +1,15 @@
+{
+  "$comment": "Every prompt gets one additionalContext line with the system clock, local and UTC.",
+  "event": "UserPromptSubmit",
+  "expect": "systemMessage",
+  "reason": "The system clock reads",
+  "stdin": {
+    "session_id": "${SESSION_ID}",
+    "transcript_path": "${TRANSCRIPT}",
+    "cwd": "${CWD}",
+    "hook_event_name": "UserPromptSubmit",
+    "permission_mode": "default",
+    "prompt": "carry on",
+    "prompt_id": "p-clock"
+  }
+}
