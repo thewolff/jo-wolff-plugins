@@ -3,10 +3,11 @@
 //
 // It reads two files and spawns nothing: the timer's `<state>/state.json` (the launchd tick
 // probes ctx every 5 min and keeps the episode there; lib/state.mjs) and the session's latch,
-// `<state>/sessions/<session id>.json` = `{ down, toldAt, stale }`: when this session was last
-// told ctx is down (`toldAt`, null once told it is back), the timer's `downSince` for that outage
-// (null when SessionStart told it from its own probe before the timer declared one), and the
-// tick stamp it was told was stale. A per-prompt hook that ran `ctx daemon status` would add its
+// `<state>/sessions/<session id>.json` = `{ down, toldAt, stale, slow }`: when this session was
+// last told ctx is down (`toldAt`, null once told it is back), the timer's `downSince` for that
+// outage (null when SessionStart told it from its own probe before the timer declared one), the
+// tick stamp it was told was stale, and the `slowSince` of the slow run it was told about. A
+// per-prompt hook that ran `ctx daemon status` would add its
 // 0.15 s (or a hung ctx's whole bound) to every prompt; this costs one node start and two small
 // file reads.
 //
@@ -26,7 +27,13 @@
 //                up): one line. Nothing else is a recovery: a state that is missing, unreadable,
 //                out of shape or reset (all read as EMPTY, with no probe), a pass older than the
 //                telling, or a failing strike says nothing and keeps the latch.
-//   null         nothing to say: healthy, a strike, semantic, or already told.
+//   "slow"       the timer's ticks have found ctx slow, not down (its status call timing out while
+//                its daemon's process is alive: probe.mjs daemonAlive), for SLOW_TELL_MS (15 min,
+//                three ticks) or more, and the episode is not down: one quiet line, once per slow
+//                run, that searches may time out. Never "down" and never a repair: nothing is
+//                down, and a repair would restart a working daemon. Its end says nothing; a slow
+//                run that outlasts state.mjs SLOW_MAX_MS goes down and is told as down.
+//   null         nothing to say: healthy, a strike, semantic, a short slow run, or already told.
 //
 // The claim is atomic: when there is something to say or record, the latch is re-read, decided
 // and written under `<latch>.lock` (state.mjs withStateLock, LATCH_LOCK_WAIT_MS), the lock
@@ -44,6 +51,8 @@ import { shellQuote } from "./launchd.mjs";
 
 /** The least age of the tick stamp at which the state is not trusted. */
 export const STALE_AFTER_MS = 15 * 60 * 1000;
+/** How long the timer must have found ctx slow before the agent hears of it (three default ticks). */
+export const SLOW_TELL_MS = 15 * 60 * 1000;
 /** How long a hook waits for another hook of the same session holding its latch (each holds it for two small file operations). */
 export const LATCH_LOCK_WAIT_MS = 200;
 /** The events the hook answers, each with its own hookSpecificOutput.hookEventName. */
@@ -52,13 +61,13 @@ export const EVENTS = Object.freeze(["UserPromptSubmit", "PostToolUseFailure"]);
 export const CLI_PATH = fileURLToPath(new URL("../scripts/ctx-watch.mjs", import.meta.url));
 const REASON_MAX = 240;
 const MAX_DATE_MS = 8.64e15;
-const NO_LATCH = Object.freeze({ down: null, toldAt: null, stale: null });
+const NO_LATCH = Object.freeze({ down: null, toldAt: null, stale: null, slow: null });
 
 const safeId = (id) => String(id).replace(/[^A-Za-z0-9._-]/g, "_").slice(0, 120);
 const validMs = (v) => Number.isInteger(v) && v >= 0 && v <= MAX_DATE_MS;
 const iso = (ms) => new Date(ms).toISOString();
 const cut = (s) => (String(s).length > REASON_MAX ? `${String(s).slice(0, REASON_MAX - 1)}…` : String(s));
-const same = (a, b) => a.down === b.down && a.toldAt === b.toldAt && a.stale === b.stale;
+const same = (a, b) => a.down === b.down && a.toldAt === b.toldAt && a.stale === b.stale && a.slow === b.slow;
 
 /** `<dir>/sessions/<session id>.json`. */
 export const latchPath = (dir, sessionId) => join(dir, "sessions", `${safeId(sessionId)}.json`);
@@ -69,7 +78,7 @@ export function readLatch(path) {
     const j = JSON.parse(readFileSync(path, "utf8"));
     const down = validMs(j?.down) ? j.down : null;
     const toldAt = validMs(j?.toldAt) ? j.toldAt : "toldAt" in (j ?? {}) ? null : down;
-    return { down, toldAt, stale: validMs(j?.stale) ? j.stale : null };
+    return { down, toldAt, stale: validMs(j?.stale) ? j.stale : null, slow: validMs(j?.slow) ? j.slow : null };
   } catch {
     return { ...NO_LATCH };
   }
@@ -80,7 +89,7 @@ export function writeLatch(path, latch) {
   const tmp = `${path}.${process.pid}.tmp`;
   try {
     mkdirSync(dirname(path), { recursive: true });
-    writeFileSync(tmp, `${JSON.stringify({ down: latch.down, toldAt: latch.toldAt, stale: latch.stale })}\n`);
+    writeFileSync(tmp, `${JSON.stringify({ down: latch.down, toldAt: latch.toldAt, stale: latch.stale, slow: latch.slow ?? null })}\n`);
     renameSync(tmp, path);
     return null;
   } catch (err) {
@@ -132,6 +141,13 @@ export function recoveredSince(state, toldAt) {
   return p.ok || state.episodeKind === "semantic";
 }
 
+/** The `slowSince` of a slow run the timer has seen for SLOW_TELL_MS or more, or null. */
+export function slowFor(state) {
+  const since = state.slowSince ?? null;
+  if (since === null || state.lastTickAt === null || state.episode === "down") return null;
+  return state.lastTickAt - since >= SLOW_TELL_MS ? since : null;
+}
+
 /** What to say now, and the latch after saying it. */
 export function decide(state, latch, now) {
   const stale = staleSince(state, now);
@@ -142,6 +158,8 @@ export function decide(state, latch, now) {
     return latch.down === null ? { say: null, latch: { ...latch, down: state.downSince } } : { say: null, latch };
   }
   if (told && recoveredSince(state, latch.toldAt)) return { say: "recovered", latch: { ...latch, down: null, toldAt: null } };
+  const slow = slowFor(state);
+  if (slow !== null && latch.slow !== slow) return { say: "slow", latch: { ...latch, slow } };
   return { say: null, latch };
 }
 
@@ -154,6 +172,9 @@ export function message(say, state, now, cliPath = CLI_PATH) {
     const since = staleSince(state, now);
     const what = state.lastTickAt === null ? `its timer has never run (first seen ${iso(since)})` : `its timer has not run since ${iso(since)}`;
     return `ctx-watch: ${what}, over ${Math.round((now - since) / 60_000)} min, so it cannot tell whether ctx is up now (${lastProbeText(state.lastProbe)}); check with \`ctx daemon status --format json\`, and ask the person to reinstall the timer from a Terminal: \`node ${cli} install\` and the launchctl line it prints.`;
+  }
+  if (say === "slow") {
+    return `ctx-watch: ctx is answering slowly (the machine is likely under load): its daemon is running, but \`ctx daemon status\` has not answered in time on the ctx-watch timer's probes since ${iso(state.slowSince)}; ctx searches may time out, and a retry later may answer.`;
   }
   if (say === "recovered") {
     const p = state.lastProbe;

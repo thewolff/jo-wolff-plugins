@@ -107,6 +107,20 @@
 // reads as "no limit") and the result says `budgetExhausted: true`; a failing result past the
 // deadline says `check timed out after <deadlineMs> ms (<what the last step said>)`. Without it
 // each spawn gets its own bound (the CLI and the timer, where nothing waits on the answer).
+//
+// A status call that timed out is not yet a dead daemon: on a loaded machine (2026-11-11
+// 22:44-23:06Z, load average 78-183) `ctx daemon status` missed its 10 s twice while the daemon,
+// pid 51357, ran throughout, and two "ctx is down" popups were false. So a timed-out status call
+// asks daemonAlive(), which never runs ctx: the pid in <data root>/daemon/query-endpoint.json
+// must be running (`process.kill(pid, 0)`, under a millisecond) and the query socket that file
+// names must accept a connection (a node child connecting, bounded by ALIVE_TIMEOUT_MS; ~1 ms
+// to connect, the child's start dominates). The socket is what makes a reused pid harmless: a
+// process that took over the dead daemon's pid does not listen on its socket, and a socket file
+// left behind refuses the connection. Both true: the result is `slow: true`, its reason says the
+// daemon is running, and check() stops there (no upgrade read, no heal: nothing is down). `ps`
+// is not used: it is setuid and refused (EPERM) inside a sandboxed shell, and a pid's command
+// name proves less than its socket. A live daemon that is hung for good still accepts on its
+// socket (the kernel queues the connection), so the state bounds a slow run (SLOW_MAX_MS).
 
 import { spawnSync } from "node:child_process";
 import { existsSync, readFileSync, statSync } from "node:fs";
@@ -115,6 +129,8 @@ import { isAbsolute, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 export const PROBE_TIMEOUT_MS = 10_000;
+/** The bound on daemonAlive's socket connect, child start included. */
+export const ALIVE_TIMEOUT_MS = 2_000;
 /** The heal's bound: above ctx's 75 s installation-quiescence wait plus its 5 s stop and 5 s restart, with room. */
 export const HEAL_TIMEOUT_MS = 120_000;
 /** How long the heal has between SIGTERM and SIGKILL once its bound is reached. */
@@ -191,8 +207,10 @@ export function runCtx(argv, env, timeoutMs = PROBE_TIMEOUT_MS, { graceMs } = {}
   let error;
   const notFound = () => (isAbsolute(argv[0]) ? `${argv[0]} does not exist (pinned at install; run install again)` : `${argv[0]} is not on PATH`);
   const timedOut = () => `${argv.join(" ")} did not answer in ${timeoutMs / 1000} s`;
+  let timed = false;
   if (graceful && r.status === 124 && stderr.includes(TIMEOUT_MARK)) {
     error = timedOut();
+    timed = true;
     stderr = stderr.replace(`\n${TIMEOUT_MARK}\n`, "");
   } else if (graceful && r.status === 127 && stderr.includes(SPAWN_MARK)) {
     const code = stderr.slice(stderr.indexOf(SPAWN_MARK) + SPAWN_MARK.length).trim();
@@ -201,6 +219,7 @@ export function runCtx(argv, env, timeoutMs = PROBE_TIMEOUT_MS, { graceMs } = {}
   } else if (r.error?.code === "ENOENT") error = notFound();
   else if (r.error?.code === "ETIMEDOUT" || r.signal === "SIGKILL") {
     error = timedOut();
+    timed = true;
     if (r.pid) {
       try {
         process.kill(-r.pid, "SIGKILL");
@@ -209,7 +228,7 @@ export function runCtx(argv, env, timeoutMs = PROBE_TIMEOUT_MS, { graceMs } = {}
       }
     }
   } else if (r.error) error = r.error.message;
-  return { code: r.status, stdout: r.stdout ?? "", stderr, error };
+  return timed ? { code: r.status, stdout: r.stdout ?? "", stderr, error, timedOut: true } : { code: r.status, stdout: r.stdout ?? "", stderr, error };
 }
 
 const field = (o, k) => (o && typeof o === "object" && !Array.isArray(o) ? o[k] : undefined);
@@ -314,17 +333,61 @@ export function judge(r, now) {
   return { ok: true, reason: null, fix: null, fields, healable: false, summary: `daemon running (pid ${fields.pid ?? "?"}), supervisor installed, core_refresh ${age(ago)} ago, ${semanticNote}` };
 }
 
-/** One probe: spawn, judge, stamp. */
-export function probe({ run = runCtx, env = process.env, now = Date.now, timeoutMs = PROBE_TIMEOUT_MS, ctx = CTX } = {}) {
+/**
+ * One probe: spawn, judge, stamp. A status call that timed out while daemonAlive() says the
+ * daemon is running is `slow: true` (still `ok: false`), its reason saying so; `aliveBudget()`
+ * (ms) bounds that check, and one that is not positive skips it (not slow).
+ */
+export function probe({ run = runCtx, env = process.env, now = Date.now, timeoutMs = PROBE_TIMEOUT_MS, ctx = CTX, daemonAlive: alive = daemonAlive, aliveBudget = () => ALIVE_TIMEOUT_MS } = {}) {
   const at = now();
   const r = run(withCtx(STATUS_ARGV, ctx), ctxEnv(env), timeoutMs);
-  return { at, ...judge(r, at) };
+  const judged = { at, ...judge(r, at) };
+  if (judged.ok || r.timedOut !== true) return judged;
+  const budget = Math.min(ALIVE_TIMEOUT_MS, aliveBudget());
+  if (!(budget > 0)) return judged;
+  const live = alive({ env, timeoutMs: budget });
+  if (live?.alive !== true) return judged;
+  return { ...judged, slow: true, reason: `${judged.reason}; the ctx daemon is running (${live.detail}): slow, not down` };
 }
+
+/** ctx's data root: CTX_DATA_ROOT, else ~/.ctx (ctx 2.3.0's default). */
+const dataRoot = (env) => env.CTX_DATA_ROOT || join(env.HOME || homedir(), ".ctx");
 
 /** <data root>/daemon/upgrade-handoff.json: CTX_DATA_ROOT, else ~/.ctx (ctx 2.3.0's default data root). */
 export function handoffPath(env = process.env) {
-  const root = env.CTX_DATA_ROOT || join(env.HOME || homedir(), ".ctx");
-  return join(root, "daemon", "upgrade-handoff.json");
+  return join(dataRoot(env), "daemon", "upgrade-handoff.json");
+}
+
+/** Connect to the unix socket `path` from a node child within `timeoutMs`: `{ ok, detail }`. Never throws. */
+export function connectSocket(path, timeoutMs = ALIVE_TIMEOUT_MS) {
+  const script = 'const s=require("node:net").connect(process.argv[1]);s.on("connect",()=>{s.destroy();process.exit(0)});s.on("error",(e)=>{process.stderr.write(String(e.code||e.message));process.exit(1)})';
+  const r = spawnSync(process.execPath, ["-e", script, path], { encoding: "utf8", timeout: timeoutMs, killSignal: "SIGKILL", env: {}, stdio: ["ignore", "ignore", "pipe"] });
+  if (r.status === 0) return { ok: true, detail: "connected" };
+  if (r.error?.code === "ETIMEDOUT" || r.signal === "SIGKILL") return { ok: false, detail: `no connection within ${timeoutMs} ms` };
+  return { ok: false, detail: (r.stderr || r.error?.message || `exit ${r.status}`).trim() };
+}
+
+/**
+ * Whether the ctx daemon's process is demonstrably alive, without running ctx: `{ alive, pid,
+ * detail }`. Reads <data root>/daemon/query-endpoint.json (`pid`, `path`); alive only when that
+ * pid is running and its query socket accepts a connection. A dead pid is answered without
+ * connecting. Never throws.
+ */
+export function daemonAlive({ env = process.env, timeoutMs = ALIVE_TIMEOUT_MS, connect = connectSocket } = {}) {
+  const file = join(dataRoot(env), "daemon", "query-endpoint.json");
+  let ep;
+  try {
+    ep = JSON.parse(readFileSync(file, "utf8"));
+  } catch (err) {
+    return { alive: false, pid: null, detail: `${file} unreadable (${err.code ?? err.message})` };
+  }
+  const pid = field(ep, "pid");
+  const sock = field(ep, "path");
+  if (!Number.isInteger(pid) || pid <= 0 || typeof sock !== "string" || !sock) return { alive: false, pid: null, detail: `${file} has no pid and socket path` };
+  if (!pidAlive(pid)) return { alive: false, pid, detail: `pid ${pid} is not running` };
+  const c = connect(sock, timeoutMs);
+  if (!c.ok) return { alive: false, pid, detail: `pid ${pid} runs, but its query socket ${sock} did not accept a connection (${c.detail})` };
+  return { alive: true, pid, detail: `the ctx daemon's query socket accepted a connection (pid ${pid})` };
 }
 
 /** Whether `pid` names a running process (EPERM: running, someone else's). */
@@ -474,8 +537,9 @@ export function check(deps = {}) {
   };
   const firstBudget = budget();
   if (firstBudget <= 0) return done({ at: start, ok: false, reason: "no time left to probe ctx", fix: FIX, fields: {}, first: null, healed: null }, true);
-  const first = probe({ ...deps, timeoutMs: firstBudget });
+  const first = probe({ ...deps, timeoutMs: firstBudget, aliveBudget: remaining });
   if (first.ok) return { ...first, first: null, healed: null, timedOut: false, budgetExhausted: false };
+  if (first.slow === true) return done({ ...first, first: null, healed: { attempted: false, ok: false, detail: "not attempted: the ctx daemon is running, only slow to answer" } });
   if (first.healable === false) return done({ ...first, first: null, healed: { attempted: false, ok: false, detail: `not attempted: the daemon is running; \`${FIX}\` does not touch the semantic index` } });
   const gateBudget = budget();
   if (gateBudget <= 0) return done({ ...first, first: null, healed: { attempted: false, ok: false, detail: "not attempted: no time left to read the upgrade state" } }, true);
@@ -493,7 +557,7 @@ export function check(deps = {}) {
   if (!healed.attempted) return done({ ...first, first: null, healed }, healed.budgetExhausted === true);
   const secondBudget = budget();
   if (secondBudget <= 0) return done({ ...first, first: null, healed: { ...healed, detail: `${healed.detail}; no time left to probe again` } }, true);
-  const second = probe({ ...deps, timeoutMs: secondBudget });
+  const second = probe({ ...deps, timeoutMs: secondBudget, aliveBudget: remaining });
   return done({ ...second, first, healed });
 }
 

@@ -35,6 +35,9 @@
 //   lastTickAt       ms of the last `tick` (the dead-man's stamp)
 //   intervalS        the StartInterval the last `install` wrote, so the hook knows 2× of it
 //   lastProbe        { at, ok, reason, healed } from the last tick
+//   slowSince        ms of the first tick of a run of slow ones (`ctx daemon status` timed out
+//                    while the daemon's process was demonstrably alive: probe.mjs daemonAlive),
+//                    else null; cleared by any tick that is not slow
 //   lastPopupAt      ms of the last delivered popup
 //   firstSeenAt      ms the SessionStart hook first ran: a timer that never ticked is overdue
 //                    measured from here (ledger's digest dead-man's switch does the same)
@@ -42,7 +45,11 @@
 // step(state, result, now) → { state, popup }: a failing probe strikes once, then goes down on
 // the second failing tick in a row; a kind's popup is asked for once its kind has failed
 // STRIKES_TO_DOWN ticks in a row and its latch is open, so a daemon death after a semantic popup
-// gets its own popup. A passing probe closes the episode and re-arms as above. `popup: true` is a
+// gets its own popup. A passing probe closes the episode and re-arms as above. A slow result
+// (`slow: true`: the status call timed out, the daemon's process alive and its query socket
+// accepting) holds the episode as it was, like a live upgrade: no strike, no pass, no popup, only
+// the stamps, lastProbe and slowSince move; once a slow run has lasted SLOW_MAX_MS it counts as a
+// failure (a live daemon hung for good), so it strikes and goes down as any other. `popup: true` is a
 // request for the episodeKind's popup: the tick first records the claim
 // (`popupPending` under a fresh token) and only once that write has landed starts the dialog,
 // then calls popupDelivered(state, outcome, now), which latches the claim's kind only on a confirmed
@@ -78,6 +85,13 @@ export const DEFAULT_INTERVAL_S = 300;
 export const STRIKES_TO_DOWN = 2;
 /** More failing ticks in a row than a year of 30 s ticks: anything beyond is not a count. */
 export const MAX_STRIKES = 1_100_000;
+/**
+ * How long a run of slow ticks (the daemon alive, its status call timing out) is held as slow
+ * before it counts as down: 30 min, six ticks at the default interval. A loaded machine (load
+ * average 78-183 on 2026-11-11 22:44-23:06Z) answered within one or two ticks; a daemon still not
+ * answering after half an hour is hung, alive or not, and is told as down.
+ */
+export const SLOW_MAX_MS = 30 * 60 * 1000;
 /**
  * The StartInterval range, in seconds: `install` refuses anything outside it before writing the
  * plist, and readState treats a state file holding anything outside it as out of shape. One
@@ -256,6 +270,7 @@ export const EMPTY = Object.freeze({
   popupFailReason: null,
   popupPending: null,
   downSince: null,
+  slowSince: null,
   lastTickAt: null,
   intervalS: null,
   lastProbe: null,
@@ -287,6 +302,7 @@ const SHAPE = Object.freeze({
   popupFailReason: [nullOr(isStr), "a string | null"],
   popupPending: [nullOr(isPending), "{ token, since, kind? } | null"],
   downSince: [nullOr(validMs), "epoch ms | null"],
+  slowSince: [nullOr(validMs), "epoch ms | null"],
   lastTickAt: [nullOr(validMs), "epoch ms | null"],
   intervalS: [nullOr((v) => Number.isInteger(v) && v >= INTERVAL_BOUNDS.min && v <= INTERVAL_BOUNDS.max), `a whole number ${INTERVAL_BOUNDS.min}..${INTERVAL_BOUNDS.max} | null`],
   lastProbe: [nullOr(isProbe), "{ at, ok, reason, healed } | null"],
@@ -389,8 +405,10 @@ export function writeState(path, state) {
  * episode as it was: no strike, no pass, no popup; only the tick stamp and lastProbe move.
  */
 export function step(state, result, now) {
-  const base = { ...EMPTY, ...state, lastTickAt: now, lastProbe: { at: now, ok: result.ok, reason: result.reason ?? null, healed: result.healed?.detail ?? null } };
+  const slowSince = result.slow === true ? (state.slowSince ?? now) : null;
+  const base = { ...EMPTY, ...state, lastTickAt: now, slowSince, lastProbe: { at: now, ok: result.ok, reason: result.reason ?? null, healed: result.healed?.detail ?? null } };
   if (!result.ok && result.upgrading === true) return { state: base, popup: false };
+  if (!result.ok && result.slow === true && now - slowSince < SLOW_MAX_MS) return { state: base, popup: false };
   const shown = { ...EMPTY.popupShown, ...base.popupShown };
   const unseen = { ...EMPTY.popupUnseenAt, ...base.popupUnseenAt };
   // A pending popup whose kind just re-armed belongs to an episode that is over; its late outcome is ignored.
