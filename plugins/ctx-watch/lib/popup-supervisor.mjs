@@ -14,15 +14,19 @@ import { recordOutcome, delivered } from "./popup.mjs";
 
 /** osascript's "User canceled." (error -128): the person dismissed the dialog. */
 const CANCELED = /\(-128\)/;
+/** `display dialog … giving up after` prints `button returned:OK, gave up:false` (clicked) or `…, gave up:true` (timed out unread). */
+const GAVE_UP = /gave up:(true|false)/;
 
 const [outcomeFile, token, bin, ...args] = process.argv.slice(2);
 let stderr = "";
+let stdout = "";
 let done = false;
 
 function finish({ code = null, signal = null, error = null }) {
   if (done) return;
   done = true;
-  const outcome = { token, at: Date.now(), bin, code, signal, error, acknowledged: code !== 0 && CANCELED.test(stderr) };
+  const answer = GAVE_UP.exec(stdout)?.[1];
+  const outcome = { token, at: Date.now(), bin, code, signal, error, acknowledged: code !== 0 && CANCELED.test(stderr), gaveUp: answer === undefined ? null : answer === "true" };
   recordOutcome(outcomeFile, outcome);
   process.exit(delivered(outcome) ? 0 : Number.isInteger(code) && code > 0 && code < 256 ? code : 1);
 }
@@ -31,7 +35,11 @@ if (!outcomeFile || !token || !bin) {
   process.exit(2);
 } else {
   try {
-    const child = spawn(bin, args, { stdio: ["ignore", "ignore", "pipe"] });
+    const child = spawn(bin, args, { stdio: ["ignore", "pipe", "pipe"] });
+    child.stdout.setEncoding("utf8");
+    child.stdout.on("data", (d) => {
+      if (stdout.length < 1_000) stdout += d;
+    });
     child.stderr.setEncoding("utf8");
     child.stderr.on("data", (d) => {
       if (stderr.length < 1_000) stderr += d;

@@ -39,7 +39,7 @@ const brokenEnv = () => {
   return JSON.stringify(j);
 };
 const upgradeJson = (status, { auto = true, attemptAtMs = Date.now() - 3 * 60 * MIN } = {}) =>
-  JSON.stringify({ ...UPGRADE, auto_upgrade: auto ? { enabled: true, mode: "apply" } : { enabled: false, mode: "off" }, state: { ...UPGRADE.state, status, last_attempt_at: new Date(attemptAtMs).toISOString() } });
+  JSON.stringify({ ...UPGRADE, auto_upgrade: { ...UPGRADE.auto_upgrade, enabled: auto }, state: { ...UPGRADE.state, status, last_attempt_at: new Date(attemptAtMs).toISOString() } });
 const deadPid = () => spawnSync("/bin/sh", ["-c", "exit 0"]).pid;
 
 function box() {

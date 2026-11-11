@@ -1,25 +1,33 @@
 #!/usr/bin/env node
 // scripts/ctx-watch.mjs — the ctx-watch CLI.
 //
-//   check [--json]           one probe (heal and re-probe on failure); prints the needs-you line
-//                            or nothing; --json prints the whole result. Exit 0 always.
+//   check [--json]           one probe (on a daemon failure: the upgrade gate, then heal and
+//                            re-probe); prints the needs-you line or nothing; --json prints the
+//                            whole result. Exit 0 always.
 //   tick                     the launchd timer's run: rotate the logs over their bound, probe,
 //                            then, holding <state>/state.lock: settle a popup an earlier tick left
 //                            pending (from its token's <state>/popups/<token>.json), advance the
 //                            episode state in <state>/state.json, and on the second failing tick
-//                            in a row of one failure kind (daemon or semantic) record that kind's
-//                            popup claim (pending under a fresh token).
+//                            in a row of one failure kind (daemon, semantic or upgrade) record
+//                            that kind's popup claim (pending under a fresh token).
 //                            Only once that claim is on disk does the dialog start; its result is
 //                            then applied, under the lock again, to the state as it is by then.
-//                            Once per kind per episode, once its delivery is confirmed; a popup
-//                            that could not be shown, or that failed after the grace, is tried
-//                            again next failing tick; re-armed as lib/state.mjs says (the daemon
-//                            latch by a tick with the daemon up, the semantic latch by two passing
-//                            ticks in a row). A claim that cannot be
-//                            recorded (no lock, a failed write) starts no popup. One summary line.
+//                            Once per kind per episode once a person answered it; a popup that
+//                            gave up unanswered is raised again POPUP_REARM_MS (4 h) later while
+//                            its kind still fails; a popup that could not be shown, or that
+//                            failed after the grace, is tried again next failing tick; re-armed
+//                            as lib/state.mjs says. A tick during a live ctx upgrade (`upgrading`)
+//                            heals nothing, strikes nothing, pops nothing: one `wait:` line. A
+//                            claim that cannot be recorded (no lock, a failed write) starts no
+//                            popup. One summary line.
+//   repair                   the agent-runnable repair (lib/repair.mjs): refuses during a live
+//                            upgrade, releases a stuck `quiescing` one, heals, verifies, pausing
+//                            and restoring the timer. JSON first line, summary last; exit 0
+//                            repaired or healthy, 1 failed, 3 refused.
 //   install [--interval 300] write <state>/launchd/com.jo-wolff-plugins.ctx-watch.plist, lint it,
 //                            print the `launchctl bootstrap` line. Never bootstraps. The plist
-//                            pins this script, the state directory and the ctx executable.
+//                            pins this script, the state directory and the ctx executable, and
+//                            carries LANG and ctx's other launch-environment names.
 //   uninstall                print the `launchctl bootout` line. Removes nothing.
 //   status                   the last probe, the episode, and whether launchd has the job.
 //   prune [--days 30]        rotate the logs, remove rotated logs older than --days and stray
@@ -38,23 +46,35 @@ import { realpathSync } from "node:fs";
 import { resolve } from "node:path";
 import { check as runCheckOnce, needsYouLine, CTX } from "../lib/probe.mjs";
 import { readState, writeState, statePath, stateDir as defaultStateDir, step, popupDelivered, popupSettled, timerOverdue, withStateLock, LOCK_WAIT_MS } from "../lib/state.mjs";
-import { install, uninstall, loaded, plistPath } from "../lib/launchd.mjs";
+import { install, uninstall, loaded, plistPath, shellQuote } from "../lib/launchd.mjs";
 import { showPopup, readOutcome, outcomePath } from "../lib/popup.mjs";
 import { rotateLogs, prune, DEFAULT_RETENTION_DAYS } from "../lib/retention.mjs";
+import { repair } from "../lib/repair.mjs";
 
 export const CLI_PATH = fileURLToPath(import.meta.url);
 
-export const HELP = `ctx-watch: notice when the ctx daemon is dead, unsupervised, or stale, or its semantic index is not ready.
+export const HELP = `ctx-watch: notice when the ctx daemon is dead, unsupervised, or stale, its upgrade is stuck, or its semantic index is not ready.
 
-  check [--json]            probe once (heal with \`ctx index mode auto\`, then re-probe, on a daemon failure); print the needs-you line or nothing
+  check [--json]            probe once (on a daemon failure: skip during a live ctx upgrade, else heal with \`ctx index mode auto\` and re-probe); print the needs-you line or nothing
   tick                      the launchd timer's run: probe, keep the episode state, popup on the second failing tick
-  install [--interval 300]  write the launchd plist and print the bootstrap line (never bootstraps)
+  repair                    repair a down daemon or a stuck ctx upgrade without prompts (refuses during a live upgrade); exit 0 repaired or healthy, 1 failed, 3 refused
+  install [--interval 300]  write the launchd plist (carrying LANG) and print the bootstrap line (never bootstraps)
   uninstall                 print the bootout line
   status                    last probe, episode, whether launchd has the job
   prune [--days 30]         rotate the logs; remove rotated logs older than --days
   help
 
   every verb: --state-dir <dir> (default \${XDG_STATE_HOME:-~/.local/state}/ctx-watch), --ctx <executable> (default ctx on PATH)`;
+
+/** The popup's text for a failing result: the needs-you line, then what to do, by kind. */
+export function popupText(result, state, cliPath = CLI_PATH) {
+  const repairCmd = `node ${shellQuote(cliPath)} repair`;
+  const since = `since ${iso(state.downSince)}`;
+  if (state.episodeKind === "upgrade") {
+    return `${needsYouLine(result)}\n\nctx's upgrade has been stuck ${since}, and no ctx daemon can start until it is released. Have an agent run \`${repairCmd}\`, or in a Terminal run: ${result.fix}\n(The \`ctx upgrade --dry-run\` release worked on 2026-11-11: observed, not documented by ctx.) ctx-watch checks again in ${state.intervalS ?? 300} s.`;
+  }
+  return `${needsYouLine(result)}\n\nctx has failed ${state.strikes} checks in a row (${since}). Open a Terminal and run the fix, or have an agent run \`${repairCmd}\`; ctx-watch checks again in ${state.intervalS ?? 300} s.`;
+}
 
 const iso = (ms) => (typeof ms === "number" ? new Date(ms).toISOString() : "never");
 
@@ -76,7 +96,7 @@ export function parseArgs(argv) {
 }
 
 export async function main(argv, deps = {}) {
-  const { env = process.env, now = Date.now, run, exists, popup = showPopup, check: checkBin, node, uid, cwd = process.cwd(), cliPath = CLI_PATH, timeoutMs, ctxExists, lockWaitMs = LOCK_WAIT_MS } = deps;
+  const { env = process.env, now = Date.now, run, exists, popup = showPopup, check: checkBin, node, uid, cwd = process.cwd(), cliPath = CLI_PATH, timeoutMs, ctxExists, lockWaitMs = LOCK_WAIT_MS, sleep } = deps;
   let verb;
   let opts;
   try {
@@ -98,6 +118,10 @@ export async function main(argv, deps = {}) {
       if (opts.json) return { code: 0, text: JSON.stringify(result, null, 2) };
       return { code: 0, text: needsYouLine(result) ?? "" };
     }
+    case "repair": {
+      const r = repair({ env, run, check: checkBin, uid, exists, sleep, ctx, stateDir: dir, now });
+      return r;
+    }
     case "tick": {
       const lines = [];
       const rot = rotateLogs(dir);
@@ -106,7 +130,8 @@ export async function main(argv, deps = {}) {
       const result = runCheckOnce(probeDeps);
       const at = now();
       const token = `${at}-${process.pid}`;
-      const probeLine = `${iso(at)} ${result.ok ? "pass" : "fail"}: ${result.ok ? result.summary : result.reason}${result.healed ? ` | heal: ${result.healed.detail}` : ""}`;
+      const verdict = result.ok ? "pass" : result.upgrading ? "wait" : "fail";
+      const probeLine = `${iso(at)} ${verdict}: ${result.ok ? result.summary : result.reason}${result.healed ? ` | heal: ${result.healed.detail}` : ""}`;
       const notWritten = (err) => `state not written to ${file}: ${err?.message}`;
       // Settle, step and claim in one locked read-modify-write: a second tick sees the claim.
       const claim = withStateLock(
@@ -133,7 +158,7 @@ export async function main(argv, deps = {}) {
         return { code: 0, text: lines.join("\n") };
       }
       if (wantPopup) {
-        const outcome = await popup({ text: `${needsYouLine(result)}\n\nctx has failed ${state.strikes} checks in a row (since ${iso(state.downSince)}). Open a Terminal and run the fix; ctx-watch checks again in ${state.intervalS ?? 300} s.`, outcomeFile: outcomePath(dir, token), token });
+        const outcome = await popup({ text: popupText(result, state, cliPath), outcomeFile: outcomePath(dir, token), token });
         lines.push(outcome.started ? outcome.detail : `${outcome.detail}; will try again on the next failing tick`);
         // Apply the result to the state as it is now (another tick may have written since), and only while the claim is still this popup's.
         const done = withStateLock(

@@ -44,8 +44,12 @@ const UPGRADE = JSON.parse(readFileSync(join(FIX_DIR, "ctx-upgrade-status.txt"),
 const good = (stdout) => ({ code: 0, stdout, stderr: "" });
 const MIN = 60_000;
 
-/** The upgrade fixture with `.state.status` and `.state.last_attempt_at` changed (derived: no `quiescing` capture exists that did not break a real install). */
-const upgradeAt = (status, attemptAtMs) => JSON.stringify({ ...UPGRADE, state: { ...UPGRADE.state, status, last_attempt_at: new Date(attemptAtMs).toISOString() } });
+/**
+ * The upgrade fixture with `.state.status` and `.state.last_attempt_at` changed and automatic
+ * upgrades on, as they were through the outage (derived: the capture was taken after
+ * `ctx upgrade disable`, and no `quiescing` capture exists that did not break a real install).
+ */
+const upgradeAt = (status, attemptAtMs) => JSON.stringify({ ...UPGRADE, auto_upgrade: { ...UPGRADE.auto_upgrade, enabled: true }, state: { ...UPGRADE.state, status, last_attempt_at: new Date(attemptAtMs).toISOString() } });
 
 /** A pid that is not running: a child that has already exited. */
 const deadPid = () => spawnSync("/bin/sh", ["-c", "exit 0"]).pid;
@@ -294,8 +298,9 @@ test("3. runCtx with a grace: a timed-out child gets SIGTERM first and may exit 
     const polite = join(dir, "polite.sh");
     writeFileSync(polite, `#!/bin/sh\ntrap 'echo term > "${mark}"; exit 0' TERM\nwhile :; do sleep 0.05; done\n`);
     chmodSync(polite, 0o755);
-    const r = probe.runCtx([polite], { PATH: "/usr/bin:/bin" }, 300, { graceMs: 3_000 });
-    assert.match(r.error ?? "", /did not answer in 0\.3 s/);
+    // 1.5 s: under a loaded parallel suite the wrapper and sh need time to start and install the trap before the bound.
+    const r = probe.runCtx([polite], { PATH: "/usr/bin:/bin" }, 1_500, { graceMs: 3_000 });
+    assert.match(r.error ?? "", /did not answer in 1\.5 s/);
     assert.equal(existsSync(mark) && readFileSync(mark, "utf8").trim(), "term", "the child saw SIGTERM before any SIGKILL");
 
     const stubborn = join(dir, "stubborn.sh");

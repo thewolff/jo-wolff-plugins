@@ -1,5 +1,5 @@
 {
-  "$comment": "The daemon is not running (the 2026-11-03 capture): the heal `ctx index mode auto` is tried, the re-probe still says down, and the one line names the fix.",
+  "$comment": "The daemon is not running (the 2026-11-03 capture) and no upgrade is in progress: the hook does not heal (the timer and `repair` do), the one line names the fix, and the agent gets additionalContext.",
   "event": "SessionStart",
   "expect": "systemMessage",
   "reason": "ctx-watch: the ctx daemon is not running (.daemon.running = false, .daemon.status = \"stale_lock\"); fix: `ctx index mode auto`",
