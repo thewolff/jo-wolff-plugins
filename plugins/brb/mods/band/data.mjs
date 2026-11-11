@@ -6,7 +6,7 @@
 // No imports: this file is loaded inside Claude Code by the hooks module (register.mjs), where
 // only relative imports and `claude-code` are allowed, and by `node --test` for its unit tests.
 
-/** The word that ends the hold; the band suggests it in the prompt box. */
+/** The word that ends the hold; the band suggests it in the prompt box, and the Back button sends it. */
 export const BACK_WORD = "back";
 
 /** The longest the fallback status line may be: 40 characters. */
@@ -45,7 +45,7 @@ export function readChecklistValue(value) {
 /**
  * What query.mjs printed → a snapshot the band can draw, with every field present and typed:
  *   { ok: true, away: false, checklist: null | { at, since, note, items: [{ text, done }] } }
- *   { ok: true, away: true, since, note, held, onFire, items: [string], backRequested }
+ *   { ok: true, away: true, since, note, held, onFire, items: [string] }
  *   { ok: false, error }
  * Anything unparseable or mis-shaped becomes `{ ok: false, error }`, never a throw.
  */
@@ -68,11 +68,10 @@ export function readSnapshot(stdout) {
     held: count(parsed.held),
     onFire: count(parsed.onFire),
     items: strings(parsed.items),
-    backRequested: parsed.backRequested === true,
   };
 }
 
-/** What act.mjs printed → `{ ok: true }` or `{ ok: false, error }`; junk is an error, never a throw. */
+/** What act.mjs printed → `{ ok: true }` (with `away` when it printed one, as `back` does) or `{ ok: false, error }`; junk is an error, never a throw. */
 export function readResult(stdout) {
   let parsed;
   try {
@@ -81,7 +80,8 @@ export function readResult(stdout) {
     return { ok: false, error: "action printed no JSON" };
   }
   if (!parsed || typeof parsed !== "object") return { ok: false, error: "action printed no object" };
-  return parsed.ok === true ? { ok: true } : { ok: false, error: String(parsed.error ?? "action failed") };
+  if (parsed.ok !== true) return { ok: false, error: String(parsed.error ?? "action failed") };
+  return typeof parsed.away === "boolean" ? { ok: true, away: parsed.away } : { ok: true };
 }
 
 /**
@@ -121,10 +121,10 @@ export function statusText(snapshot, { now = Date.now() } = {}) {
   return fits ?? `${[since, held].join(" · ").slice(0, STATUS_MAX - 1)}…`;
 }
 
-/** The text the band proposes for the empty prompt box: `away 40m — type back`, or `back` once the Back button was pressed. */
+/** The text the band proposes for the empty prompt box while away: `away 40m — type back`. */
 export function suggestionText(snapshot, { now = Date.now() } = {}) {
   if (!snapshot.ok || !snapshot.away) return null;
-  return snapshot.backRequested ? BACK_WORD : `away ${elapsed(snapshot.since, now)} — type ${BACK_WORD}`;
+  return `away ${elapsed(snapshot.since, now)} — type ${BACK_WORD}`;
 }
 
 /** lib/state.mjs `sessionKey`, repeated here because this file may import nothing: the session id as a directory name. */

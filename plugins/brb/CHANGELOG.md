@@ -3,6 +3,29 @@
 All notable changes to brb are recorded here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.4.2] - 2026-11-10
+
+### Changed
+
+- The Back button ends the hold itself. `mods/band/register.mjs` runs `act.mjs back` (now
+  read-only: is the session away?) and then `$.prompt.submit({ text: "back", asUser: true })`,
+  the call Claude Code makes for a typed prompt, so `hooks/user-prompt-submit.mjs` ends the hold
+  exactly as for `back` typed. The call is never awaited (it waits for the session to go idle). A
+  toast says `brb: Back pressed, ending the hold`; the band reads `Back pressed · ending the hold`
+  until the hold ends and further presses send nothing; a refused or dropped prompt toasts
+  `brb: Back failed: <reason>; type back` and the button works again. In 0.4.1 a press only left
+  a marker that waited for the next prompt or stop, so with the agent idle nothing happened.
+- The digest's `held since` and each entry's heading print local time (`2026-11-10 5:50 PM PST`,
+  `lib/state.mjs` `localTime`, the zone from `TZ` or the machine). `away.json`, `checklist.json`
+  and archive file names keep ISO times.
+
+### Removed
+
+- The `back-requested` marker: `lib/state.mjs` `requestBack`, `backRequested`, `takeBackRequest`,
+  `backRequestPath`; its handling in `hooks/user-prompt-submit.mjs`, `hooks/stop.mjs` and
+  `lib/back.mjs`; `backRequested` in `mods/band/query.mjs`; the `back` prompt-box suggestion after
+  a press. A marker left on disk by 0.4.0 or 0.4.1 is ignored.
+
 ## [0.4.1] - 2026-11-10
 
 ### Changed

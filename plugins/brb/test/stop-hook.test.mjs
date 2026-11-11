@@ -17,7 +17,7 @@ import { chmodSync, existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
 import { appleScript, countToolUses, decideStop, osc9 } from "../lib/stop-core.mjs";
-import { clearAway, freshAway, readChecklist, requestBack, writeAway } from "../lib/state.mjs";
+import { clearAway, freshAway, readChecklist, writeAway } from "../lib/state.mjs";
 import { backstopReason, firstLineReason, keepWorkingReason } from "../lib/text.mjs";
 import { hold } from "../scripts/brb.mjs";
 import { box, exited, lockHolder, promptInput, row, runHook, stopInput } from "./helpers.mjs";
@@ -639,43 +639,6 @@ test("helpers: countToolUses counts assistant tool_use blocks from a line; osc9 
     assert.equal(osc9("a\u001bb\nc"), "\u001b]9;a b c\u0007");
     assert.equal(osc9("x".repeat(300)).length, 200 + "\u001b]9;".length + 1, "text capped at 200");
     assert.equal(appleScript('t "q"', 'say "hi"\\now\nnext'), 'display notification "say \\"hi\\"\\\\now next" with title "t \\"q\\""');
-  } finally {
-    b.release();
-  }
-});
-
-test("the band's Back marker at a stop: the hold ends as `back` does (checklist written, marker gone) and the stop is blocked once with the back instruction and the digest; the message is not filed", () => {
-  const b = box();
-  try {
-    goAway(b, "lunch");
-    hold("s1", "Pick a cache", { env: b.env });
-    requestBack("s1", b.env);
-    b.writeTranscript([row.user(), row.tool()]);
-    const r = runHook(b, "stop", stopInput(b, { last_assistant_message: ASKS }));
-    assert.equal(r.status, 0);
-    assert.equal(r.json.decision, "block");
-    assert.match(r.json.reason, /^brb: Jo is back(?: \(away \d+m\))?\. Reply with the digest below verbatim/);
-    assert.match(r.json.systemMessage, /^brb: hold cleared; digest archived to .*\n\nbrb digest — held since .* \(lunch\), 1 item\n\n## .*\n- Pick a cache$/);
-    assert.ok(!existsSync(join(b.stateDir("s1"), "away.json")));
-    assert.ok(!existsSync(join(b.stateDir("s1"), "back-requested")));
-    assert.ok(!existsSync(join(b.stateDir("s1"), "digest.md")), "the stopping message was not filed into a new digest");
-    assert.deepEqual(readChecklist("s1", b.env).items, [{ text: "Pick a cache", done: false }]);
-    // The next stop is home: passthrough.
-    const next = runHook(b, "stop", stopInput(b, { last_assistant_message: ASKS }));
-    assert.ok(next.stdout.trim() === "" || next.stdout.trim() === "{}", next.stdout);
-  } finally {
-    b.release();
-  }
-});
-
-test("a stale Back marker at a stop while home is removed; the stop passes", () => {
-  const b = box();
-  try {
-    requestBack("s1", b.env);
-    b.writeTranscript([row.user(), row.tool()]);
-    const r = runHook(b, "stop", stopInput(b, { last_assistant_message: ASKS }));
-    assert.ok(r.stdout.trim() === "" || r.stdout.trim() === "{}", r.stdout);
-    assert.ok(!existsSync(join(b.stateDir("s1"), "back-requested")));
   } finally {
     b.release();
   }

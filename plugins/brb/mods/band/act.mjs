@@ -3,10 +3,9 @@
 // (`node mods/band/act.mjs --session <id> <verb> [index]`), because the hooks module may import
 // no node builtin and the writes belong to lib/state.mjs (temp file + rename, one convention).
 //
-//   back          leave the `back-requested` marker in the session directory. The mod cannot run a
-//                 hook, so the hooks end the hold on the next event (hooks/user-prompt-submit.mjs
-//                 on the next prompt, whatever it says; hooks/stop.mjs when the agent next stops).
-//                 Home (no away.json): nothing is written, `{ ok: true, away: false }`.
+//   back          whether the session is away: `{ ok: true, away: true|false }`. Writes nothing; the
+//                 mod then sends `back` as the user's prompt (`$.prompt.submit`), and
+//                 hooks/user-prompt-submit.mjs ends the hold as it does for `back` typed.
 //   done <index>  toggle row <index> (0-based) of checklist.json and write it back; once every row
 //                 is done the file is removed (the band clears). Cosmetic: the agent is told nothing.
 //   clear         remove checklist.json.
@@ -15,7 +14,7 @@
 
 import { realpathSync } from "node:fs";
 import { fileURLToPath } from "node:url";
-import { clearChecklist, readAway, requestBack, toggleChecklistItem } from "../../lib/state.mjs";
+import { clearChecklist, readAway, toggleChecklistItem } from "../../lib/state.mjs";
 
 /** `--session <id> <verb> [index]` → { sessionId, verb, index }; a missing or blank id is null, a non-integer index null. */
 export function parseArgs(argv) {
@@ -34,11 +33,7 @@ export function parseArgs(argv) {
 
 /** Run one verb for `sessionId`; the JSON the script prints. Throws on a write that fails. */
 export function act(sessionId, verb, index, { env = process.env } = {}) {
-  if (verb === "back") {
-    if (!readAway(sessionId, env)) return { ok: true, away: false };
-    requestBack(sessionId, env);
-    return { ok: true, away: true, backRequested: true };
-  }
+  if (verb === "back") return { ok: true, away: readAway(sessionId, env) !== null };
   if (verb === "done") {
     if (index === null) return { ok: false, error: "done needs a row index" };
     const checklist = toggleChecklistItem(sessionId, index, env);

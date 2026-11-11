@@ -1,6 +1,7 @@
 // test/state.test.mjs — lib/state.mjs round-trips under a temp XDG_STATE_HOME: away.json written
 // and read back, cleared; the digest appended, read, archived; config over defaults; session ids
-// made safe as directory names. node --test.
+// made safe as directory names; the times Jo reads in local time, the zone always given (env.TZ
+// or an argument), so no assertion depends on the runner's zone. node --test.
 
 import test from "node:test";
 import assert from "node:assert/strict";
@@ -12,7 +13,6 @@ import {
   DEFAULT_CONFIG,
   appendDigest,
   archiveDigest,
-  backRequested,
   checklistPath,
   clearAway,
   clearChecklist,
@@ -27,11 +27,10 @@ import {
   readChecklist,
   readDigest,
   renderDigest,
-  requestBack,
   sessionDir,
   sessionKey,
   stateRoot,
-  takeBackRequest,
+  localTime,
   toggleChecklistItem,
   writeAway,
   writeChecklist,
@@ -99,13 +98,15 @@ test("digest: empty until appended; entries keep order; archive moves it and cle
   const b = box();
   try {
     assert.equal(readDigest("s1", b.env), "");
-    appendDigest("s1", { at: "2026-11-04T10:05:00.000Z", lines: ["Pick Redis or in-process", "- already a bullet"], closingAsk: "Which cache?" }, b.env);
-    appendDigest("s1", { at: "2026-11-04T10:09:00.000Z", lines: ["Approve the schema change"] }, b.env);
+    const env = { ...b.env, TZ: "UTC" };
+    appendDigest("s1", { at: "2026-11-04T10:05:00.000Z", lines: ["Pick Redis or in-process", "- already a bullet"], closingAsk: "Which cache?" }, env);
+    appendDigest("s1", { at: "2026-11-04T10:09:00.000Z", lines: ["Approve the schema change"] }, env);
     const body = readDigest("s1", b.env);
-    assert.equal(body, "## 2026-11-04T10:05:00.000Z\n- Pick Redis or in-process\n- already a bullet\nclosing ask: Which cache?\n\n## 2026-11-04T10:09:00.000Z\n- Approve the schema change\n\n");
+    assert.equal(body, "## 2026-11-04 10:05 AM UTC\n- Pick Redis or in-process\n- already a bullet\nclosing ask: Which cache?\n\n## 2026-11-04 10:09 AM UTC\n- Approve the schema change\n\n");
     const away = { ...freshAway({ since: "2026-11-04T10:00:00.000Z" }), held: 3 };
-    const text = renderDigest(away, body);
-    assert.match(text, /^brb digest — held since 2026-11-04T10:00:00.000Z, 3 items\n\n## 2026-11-04T10:05/);
+    assert.equal(away.since, "2026-11-04T10:00:00.000Z", "the record keeps ISO");
+    const text = renderDigest(away, body, env);
+    assert.match(text, /^brb digest — held since 2026-11-04 10:00 AM UTC, 3 items\n\n## 2026-11-04 10:05 AM UTC/);
     assert.ok(text.endsWith("- Approve the schema change"));
     const archived = archiveDigest("s1", b.env, "2026-11-04T11:00:00.000Z");
     assert.equal(archived, join(sessionDir("s1", b.env), "archive", "2026-11-04T11-00-00-000Z.md"));
@@ -126,6 +127,21 @@ test("renderDigest: nothing held says so, one item is singular, the note rides t
   const away = { ...freshAway({ since: "T", note: "lunch" }), held: 1 };
   assert.equal(renderDigest(away, ""), "brb digest — held since T (lunch), 1 item\n\n(nothing held)");
   assert.equal(renderDigest({ ...away, note: "", held: 0 }, "  \n"), "brb digest — held since T, 0 items\n\n(nothing held)");
+});
+
+test("localTime: the given zone, 12-hour clock and the zone's short name; standard and daylight time; junk as given", () => {
+  const iso = "2026-11-11T01:50:39.219Z";
+  assert.equal(localTime(iso, "America/Los_Angeles"), "2026-11-10 5:50 PM PST");
+  assert.equal(localTime("2026-07-04T19:05:00.000Z", "America/Los_Angeles"), "2026-07-04 12:05 PM PDT");
+  assert.equal(localTime(iso, "UTC"), "2026-11-11 1:50 AM UTC");
+  // A zone Intl refuses falls back to the machine's zone: some time, never the raw ISO and never a throw.
+  assert.match(localTime(iso, "Not/AZone"), /^\d{4}-\d{2}-\d{2} \d{1,2}:\d{2} [AP]M \S+$/);
+  assert.equal(localTime("t"), "t");
+  assert.equal(localTime(""), "");
+  // The digest header follows env.TZ; the zone is never the runner's.
+  const away = { ...freshAway({ since: iso }), held: 0 };
+  assert.equal(renderDigest(away, "", { TZ: "America/Los_Angeles" }), "brb digest — held since 2026-11-10 5:50 PM PST, 0 items\n\n(nothing held)");
+  assert.equal(renderDigest(away, "", { TZ: "Asia/Tokyo" }).split("\n")[0], "brb digest — held since 2026-11-11 10:50 AM GMT+9, 0 items");
 });
 
 test("config: defaults with no file; integer fields override; junk is ignored", () => {
@@ -194,16 +210,3 @@ test("parseChecklist: junk is null; rows with no text are dropped; done is only 
   assert.deepEqual(parseChecklist('{"items":[{"text":"a","done":"yes"},{"done":true},null]}'), { at: "", since: "", note: "", items: [{ text: "a", done: false }] });
 });
 
-test("back-requested marker: absent by default; requestBack leaves it; takeBackRequest removes it once", () => {
-  const b = box();
-  try {
-    assert.equal(backRequested("s1", b.env), false);
-    requestBack("s1", b.env);
-    assert.equal(backRequested("s1", b.env), true);
-    assert.equal(takeBackRequest("s1", b.env), true);
-    assert.equal(takeBackRequest("s1", b.env), false);
-    assert.equal(backRequested("s1", b.env), false);
-  } finally {
-    b.release();
-  }
-});

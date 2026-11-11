@@ -22,7 +22,7 @@
 // Imports only ./data.mjs: loaded inside Claude Code by the hooks module, where only relative
 // imports are allowed, and by `node --test`.
 
-import { BACK_WORD, elapsed } from "./data.mjs";
+import { elapsed } from "./data.mjs";
 
 /** The most characters a whole headline may run; the note is dropped first, then the rest is cut. */
 export const HEADLINE_MAX = 40;
@@ -111,7 +111,7 @@ export function checklistWindow(items, { maxRows } = {}) {
 /**
  * The lines the band draws from a snapshot, or null when there is nothing to draw (home with no
  * checklist, every checklist row done, or a query that failed):
- *   { kind: "away", headline, sub, rows: [{ n, text, done: false }], more, moreText, doneHidden: 0, doneText: null, compact, backRequested }
+ *   { kind: "away", headline, sub, rows: [{ n, text, done: false }], more, moreText, doneHidden: 0, doneText: null, compact, backPressed }
  *   { kind: "back", headline, sub: null, rows: [{ n, text, done }], more, moreText, doneHidden, doneText, compact }
  * `n` is the row's 1-based number in the whole list; `text` is already clipped to the width the
  * row has (beside its button, or the whole width when `compact` puts the buttons under the text).
@@ -126,8 +126,8 @@ export function bandModel(snapshot, { now = Date.now(), maxRows, bodyColumns } =
   const beside = (cells) => (compact ? width : width - cells);
   const rowText = (n, text, button) => clip(text, beside(button) - `${n}. `.length);
   if (snapshot.away) {
-    const sub = snapshot.backRequested
-      ? `Back pressed · the next prompt ends the hold (Tab takes "${BACK_WORD}")`
+    const sub = snapshot.backPressed
+      ? "Back pressed · ending the hold"
       : snapshot.onFire > 0
         ? `${snapshot.onFire} on fire came through · the rest wait for you`
         : null;
@@ -135,7 +135,7 @@ export function bandModel(snapshot, { now = Date.now(), maxRows, bodyColumns } =
     const shown = rowBudget({ total: items.length, maxRows, hasSub: sub !== null });
     const rows = items.slice(0, shown).map((text, i) => ({ n: i + 1, text: rowText(i + 1, text, 0), done: false }));
     const more = items.length - shown;
-    return { kind: "away", headline: clip(awayHeadline(snapshot, now), beside(HEAD_BUTTON_COLUMNS)), sub: sub && clip(sub, width), rows, more, moreText: more > 0 ? clip(`+${more} more`, width) : null, doneHidden: 0, doneText: null, compact, backRequested: snapshot.backRequested === true };
+    return { kind: "away", headline: clip(awayHeadline(snapshot, now), beside(HEAD_BUTTON_COLUMNS)), sub: sub && clip(sub, width), rows, more, moreText: more > 0 ? clip(`+${more} more`, width) : null, doneHidden: 0, doneText: null, compact, backPressed: snapshot.backPressed === true };
   }
   const items = snapshot.checklist?.items ?? [];
   const open = items.filter((i) => !i.done).length;
@@ -165,7 +165,7 @@ export function bandTree({ Box, Text, Button }, model, { onBack, onClear, onDone
   const direction = model.compact ? "column" : "row";
   const headButton =
     model.kind === "away"
-      ? Button({ key: "back", label: "Back", hotkey: "b", dimColor: model.backRequested, onPress: () => onBack?.() })
+      ? Button({ key: "back", label: "Back", hotkey: "b", dimColor: model.backPressed, onPress: () => onBack?.() })
       : Button({ key: "clear", label: "Clear", hotkey: "c", onPress: () => onClear?.() });
   const head = Box({
     flexDirection: direction,

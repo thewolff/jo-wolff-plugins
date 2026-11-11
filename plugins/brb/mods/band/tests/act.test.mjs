@@ -1,16 +1,16 @@
-// act.test.mjs — mods/band/act.mjs, as the subprocess the band's buttons run: `back` leaves the
-// marker only while away; `done <i>` toggles one checklist row and removes the file when every row
+// act.test.mjs — mods/band/act.mjs, as the subprocess the band's buttons run: `back` reports
+// whether the session is away and writes nothing; `done <i>` toggles one checklist row and removes the file when every row
 // is done; `clear` removes it; a missing session, a missing index and an unknown verb are
 // `{ ok: false, error }`; every run exits 0 and prints JSON. node --test.
 
 import test from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { existsSync } from "node:fs";
+import { existsSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 
 import { parseArgs } from "../act.mjs";
-import { readChecklist } from "../../../lib/state.mjs";
+import { readAway, readChecklist } from "../../../lib/state.mjs";
 import { PLUGIN_ROOT, box, promptInput, runHook } from "../../../test/helpers.mjs";
 
 const ACT = join(PLUGIN_ROOT, "mods", "band", "act.mjs");
@@ -29,21 +29,16 @@ test("parseArgs: the session, the verb and a non-negative integer index", () => 
   assert.deepEqual(parseArgs(["done", "-1", "--session", " "]), { sessionId: null, verb: "done", index: null });
 });
 
-test("back: home writes nothing; away leaves the marker; the next prompt ends the hold as `back` does and leaves the checklist", () => {
+test("back: reports home or away and writes nothing; the hold stays until `back` arrives as a prompt", () => {
   const b = box();
   try {
     assert.deepEqual(act(b, "--session", "s1", "back"), { ok: true, away: false });
-    assert.equal(existsSync(join(b.stateDir("s1"), "back-requested")), false);
     runHook(b, "user-prompt-submit", promptInput(b, "brb"));
     hold(b, "Pick the cache");
-    assert.deepEqual(act(b, "--session", "s1", "back"), { ok: true, away: true, backRequested: true });
-    assert.equal(existsSync(join(b.stateDir("s1"), "back-requested")), true);
-    const r = runHook(b, "user-prompt-submit", promptInput(b, "thanks"));
-    assert.match(r.json.systemMessage, /^brb: hold cleared; digest archived to /);
-    assert.match(r.json.hookSpecificOutput.additionalContext, /^brb: Jo is back/);
-    assert.equal(existsSync(join(b.stateDir("s1"), "away.json")), false);
-    assert.equal(existsSync(join(b.stateDir("s1"), "back-requested")), false);
-    assert.deepEqual(readChecklist("s1", b.env).items, [{ text: "Pick the cache", done: false }]);
+    const before = readdirSync(b.stateDir("s1")).sort();
+    assert.deepEqual(act(b, "--session", "s1", "back"), { ok: true, away: true });
+    assert.deepEqual(readdirSync(b.stateDir("s1")).sort(), before, "no file written or removed");
+    assert.notEqual(readAway("s1", b.env), null, "still away");
   } finally {
     b.release();
   }

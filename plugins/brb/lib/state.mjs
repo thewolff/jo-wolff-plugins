@@ -4,9 +4,12 @@
 //   ${XDG_STATE_HOME:-~/.local/state}/brb/<session id>/digest.md   held items, append-only while away
 //   ${XDG_STATE_HOME:-~/.local/state}/brb/<session id>/archive/<ts>.md   digests `back` released
 //   ${XDG_STATE_HOME:-~/.local/state}/brb/<session id>/checklist.json   the last digest as a checklist, written by `back`; rows are ticked by the band
-//   ${XDG_STATE_HOME:-~/.local/state}/brb/<session id>/back-requested   the band's Back button was pressed; the next hook event runs `back`
 //   ${XDG_STATE_HOME:-~/.local/state}/brb/<session id>/away.lock   held while away.json is read-modified-written; holds `<pid> <token>`
 //   ${XDG_CONFIG_HOME:-~/.config}/brb/config.json                  optional: onFireCap, idleStops
+//
+// The times Jo reads (a digest entry's heading, the digest's `held since`) are local time
+// (localTime: `2026-11-10 5:50 PM PST`, in env.TZ or the machine's zone); the times a program
+// reads (away.json `since`, checklist.json, archive file names) stay ISO.
 //
 // away.json is the one record that the session is away: present means away, absent means home.
 // It is written whole through a temp file and a rename, so a reader never sees half of it.
@@ -202,11 +205,35 @@ export function clearAway(sessionId, env = process.env) {
   rmSync(awayPath(sessionId, env), { force: true });
 }
 
-/** Append one digest entry: a timestamp heading, one line per held item, the closing ask when there is one. */
+/**
+ * An ISO time as Jo reads it: `2026-11-10 5:50 PM PST`, in `timeZone` (an IANA name such as
+ * `America/Los_Angeles`; absent, or one Intl refuses, the machine's zone). Display only. Anything
+ * that is not a time comes back as given.
+ */
+export function localTime(iso, timeZone) {
+  const t = Date.parse(iso);
+  if (!Number.isFinite(t)) return String(iso);
+  const format = (zone) => {
+    const parts = new Intl.DateTimeFormat("en-US", { timeZone: zone, year: "numeric", month: "2-digit", day: "2-digit", hour: "numeric", minute: "2-digit", hour12: true, timeZoneName: "short" }).formatToParts(new Date(t));
+    const p = Object.fromEntries(parts.map(({ type, value }) => [type, value]));
+    return `${p.year}-${p.month}-${p.day} ${p.hour}:${p.minute} ${p.dayPeriod} ${p.timeZoneName}`;
+  };
+  try {
+    return format(timeZone || undefined);
+  } catch {
+    try {
+      return format(undefined);
+    } catch {
+      return String(iso);
+    }
+  }
+}
+
+/** Append one digest entry: a heading with the time in local time (localTime, env.TZ), one line per held item, the closing ask when there is one. */
 export function appendDigest(sessionId, { at = new Date().toISOString(), lines = [], closingAsk = null }, env = process.env) {
   const dir = sessionDir(sessionId, env);
   mkdirSync(dir, { recursive: true });
-  const body = [`## ${at}`, ...lines.map((l) => (/^\s*([-*+]|\d+[.)])\s+/.test(l) ? l.trim() : `- ${l.trim()}`)), ...(closingAsk ? [`closing ask: ${closingAsk.trim()}`] : []), ""];
+  const body = [`## ${localTime(at, env.TZ)}`, ...lines.map((l) => (/^\s*([-*+]|\d+[.)])\s+/.test(l) ? l.trim() : `- ${l.trim()}`)), ...(closingAsk ? [`closing ask: ${closingAsk.trim()}`] : []), ""];
   appendFileSync(digestPath(sessionId, env), `${body.join("\n")}\n`);
 }
 
@@ -231,17 +258,15 @@ export function archiveDigest(sessionId, env = process.env, at = new Date().toIS
   return to;
 }
 
-/** The digest as `back` and `pending` print it: a header line, then the body or "(nothing held)". */
-export function renderDigest(away, body) {
+/** The digest as `back` and `pending` print it: a header line (`held since` in local time, env.TZ), then the body or "(nothing held)". */
+export function renderDigest(away, body, env = process.env) {
   const n = away.held;
-  const header = `brb digest — held since ${away.since}${away.note ? ` (${away.note})` : ""}, ${n} item${n === 1 ? "" : "s"}`;
+  const header = `brb digest — held since ${localTime(away.since, env.TZ)}${away.note ? ` (${away.note})` : ""}, ${n} item${n === 1 ? "" : "s"}`;
   return body.trim() ? `${header}\n\n${body.trim()}` : `${header}\n\n(nothing held)`;
 }
 
 /** `<session dir>/checklist.json`, the after-back checklist. */
 export const checklistPath = (sessionId, env = process.env) => join(sessionDir(sessionId, env), "checklist.json");
-/** `<session dir>/back-requested`, the marker the band's Back button leaves. */
-export const backRequestPath = (sessionId, env = process.env) => join(sessionDir(sessionId, env), "back-requested");
 
 /** A digest entry's item line → its text: the list marker off, whitespace collapsed; null for a heading, a blank or anything else. */
 export function digestItem(line) {
@@ -319,26 +344,4 @@ export function toggleChecklistItem(sessionId, index, env = process.env) {
   }
   writeChecklist(sessionId, checklist, env);
   return checklist;
-}
-
-/** Leave the back-requested marker (the band's Back button). Creates the session directory. */
-export function requestBack(sessionId, env = process.env) {
-  const dir = sessionDir(sessionId, env);
-  mkdirSync(dir, { recursive: true });
-  const path = backRequestPath(sessionId, env);
-  writeFileSync(path, `${new Date().toISOString()}\n`);
-  return path;
-}
-
-/** Whether the back-requested marker is present. */
-export function backRequested(sessionId, env = process.env) {
-  return existsSync(backRequestPath(sessionId, env));
-}
-
-/** Remove the back-requested marker; true when there was one. */
-export function takeBackRequest(sessionId, env = process.env) {
-  const path = backRequestPath(sessionId, env);
-  if (!existsSync(path)) return false;
-  rmSync(path, { force: true });
-  return true;
 }

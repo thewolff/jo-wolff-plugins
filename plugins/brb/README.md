@@ -41,7 +41,7 @@ reply is the digest.
 | You type | What happens | What you see |
 |---|---|---|
 | `brb` or `brb <note>` | the hold begins: `away.json` is written for this session | `brb: holding needs-you items until \`back\`; on-fire items still come through` (the note appended) |
-| `pending` | nothing changes | the digest so far, under `brb digest — held since <when>, N items` |
+| `pending` | nothing changes | the digest so far, under `brb digest — held since <when>, N items` (`<when>` and each entry's heading in local time, `2026-11-10 5:50 PM PST`) |
 | `back` | the digest is archived to `archive/<when>.md`, the hold ends, and the prompt goes through with the digest and `brb: Jo is back (away <duration>). Reply with the digest below verbatim as your whole message, then stop …` as `additionalContext` (plus the digest as a `systemMessage`) | the agent's reply: `brb: hold cleared; digest archived to <path>.` first, then the digest |
 
 An empty digest shows `(nothing held)`. A `back` or `pending` text longer than 8000
@@ -261,8 +261,8 @@ you type, the same as before.
 
 | host | press Back |
 |---|---|
-| Claude Code, terminal | a mod cannot run a hook, so the button leaves a `back-requested` marker in the session's state directory and puts `back` in the prompt box (Tab takes it). The hold ends on the next hook event: the next prompt you send, whatever it says (the hook ends the hold exactly as `back` does, then lets that prompt through with the digest for the agent), or the agent's next stop if a turn is running (that stop is blocked once and the agent replies with the digest). Until then the band reads `Back pressed · the next prompt ends the hold`. |
-| Claude Code Desktop | the same marker and the same hooks. Whether Desktop draws the band is not settled: Claude Code's type file says the `AbovePrompt` site is raised on the terminal surface only, and a strings dump of the Desktop app found a renderer for it. Where the band is never drawn there is no button: the mod falls back to the one status line of 0.3.x under the prompt (`⚠ brb: away 40m · 3 held · say back`, after back `⚠ brb: back · 2 to act on`), and `back` typed is the way out. |
+| Claude Code, terminal | the button sends `back` as your own prompt (`$.prompt.submit({ text: "back", asUser: true })`, the same call Claude Code makes for a typed prompt), so the prompt hook ends the hold exactly as `back` typed does and the agent replies with the digest. A toast says `brb: Back pressed, ending the hold` and the band reads `Back pressed · ending the hold` until the hold ends; another press meanwhile sends nothing. While the agent is working, the prompt waits until the turn ends and runs then. If Claude Code drops it (for example after Esc stopped a turn), a toast says `brb: Back failed: <reason>; type back`, and the button works again. Click the button, or press `b` while the band has focus (ctrl+x tab moves focus to it); `b` typed in the prompt box is just a letter. |
+| Claude Code Desktop | the same call and the same hook. Desktop draws the band: a press in a Desktop session on 2026-11-10 ran the button's action. Where the band is never drawn there is no button: the mod falls back to the one status line of 0.3.x under the prompt (`⚠ brb: away 40m · 3 held · say back`, after back `⚠ brb: back · 2 to act on`), and `back` typed is the way out. |
 | `claude -p`, mobile, OMP | no band and no button. OMP has no mod surface; type `back`. The still-away first line of every reply and the hooks' own lines are unchanged. |
 
 **The status line is a fallback only.** Jo called the footer row unusable; the band replaces it.
@@ -303,7 +303,8 @@ the live checks under `manual`.
 - `${XDG_STATE_HOME:-~/.local/state}/brb/<session id>/` — `away.json` (since, note, counts, the
   lines seen, whether this turn was backstopped, the previous stop's transcript line and
   fires), `digest.md`, `archive/<when>.md`, `checklist.json` (the last hold's items for the band,
-  each with its Done state), `back-requested` (the Back button's marker, removed when honoured).
+  each with its Done state). A `back-requested` file left by 0.4.0 or 0.4.1 is no longer read;
+  prune removes it with the rest.
   Declared in `.claude-plugin/plugin.json` `state`; `node scripts/prune.mjs --days 30` removes
   files older than 30 days (`errors.log` kept), and the nightly canary runs it.
 - `${XDG_CONFIG_HOME:-~/.config}/brb/config.json`, optional:
@@ -369,9 +370,10 @@ the live checks under `manual`.
   once after the prompt enters, then probes `away.json` once a second while home and queries
   every 5 s while away). A `brb` typed into a session where the mod is not loaded shows no band
   at all; the hooks hold as before.
-- **The Back button does not end the hold by itself.** It takes the next prompt or the next stop
-  (see the table above). A session closed between the press and that event keeps the hold and
-  the marker; the next prompt in that session honours it.
+- **The Back button needs Claude Code with `asUser` on `$.prompt.submit`** (present in 2.1.318,
+  the version this was tested on). On a version without it the prompt may reach the hook wrapped
+  in a sentence naming the mod, the hook does not read it as `back`, and the hold stays: type
+  `back`.
 - **The band is shared and collapsible.** Other mods may draw in the same band (brb keeps their
   tree under its own), a survey takes the band over while it runs, and in the terminal the person
   can collapse it (ctrl+x ctrl+a) without the mod knowing.
@@ -393,6 +395,16 @@ hooks as spawned processes with fixture stdin and fixture transcripts, the hold 
 spawned process, the OMP adapter's handlers, the band's data, view, query and action layers.
 `bash e2e/live-run.sh --no-live` replays the fourteen `evals/*.scenario.json` offline. `claude
 plugin test` runs the band mod itself (`mods/band/tests/band.test.tsx`).
+
+## Changes in 0.4.2
+
+The Back button ends the hold itself: it sends `back` as your own prompt
+(`$.prompt.submit({ text: "back", asUser: true })`), never awaited, with a toast; the band reads
+`Back pressed · ending the hold` until it ends, and a refused or dropped prompt shows `brb: Back
+failed: <reason>; type back`. The `back-requested` marker and the prompt and Stop hooks' handling
+of it are gone: one path, the same as `back` typed. The digest's `held since` and each entry's
+heading are printed in local time (`2026-11-10 5:50 PM PST`, the machine's zone or `TZ`);
+`away.json`, `checklist.json` and the archive names keep ISO times.
 
 ## Changes in 0.4.1
 

@@ -1,6 +1,6 @@
 // query.test.mjs — mods/band/query.mjs, as the subprocess the mod runs and through its exports:
 // home → `{ ok: true, away: false, checklist: null }`; after `brb` → the hold's since, note,
-// counts and held items; the Back marker shows as `backRequested`; after `back` → home with the
+// counts and held items; after `back` → home with the
 // checklist `back` wrote; another session's hold is not this session's; a missing --session, a
 // state file that is a directory, a link or over MAX_BYTES are `{ ok: false, error }`; the bound
 // holds on the descriptor read, so a file replaced or grown after the check is still bounded;
@@ -70,9 +70,8 @@ test("away: after `brb lunch` the snapshot carries since, the note, the counts a
     assert.equal(r.json.held, 0);
     assert.equal(r.json.onFire, 0);
     assert.deepEqual(r.json.items, []);
-    assert.equal(r.json.backRequested, false);
     assert.ok(Date.parse(r.json.since) >= before, `since ${r.json.since} is before the hold began`);
-    assert.deepEqual(Object.keys(r.json).sort(), ["away", "backRequested", "held", "items", "note", "ok", "onFire", "since"]);
+    assert.deepEqual(Object.keys(r.json).sort(), ["away", "held", "items", "note", "ok", "onFire", "since"]);
 
     assert.equal(hold(b, "s1", "Pick Redis or in-process for the cache").stdout, "held 1\n");
     hold(b, "s1", "Approve the schema change");
@@ -88,17 +87,6 @@ test("away: after `brb lunch` the snapshot carries since, the note, the counts a
       { text: "Approve the schema change", done: false },
     ]);
     assert.equal(after.checklist.note, "lunch");
-  } finally {
-    b.release();
-  }
-});
-
-test("the Back marker shows as backRequested while away", () => {
-  const b = box();
-  try {
-    runHook(b, "user-prompt-submit", promptInput(b, "brb"));
-    writeFileSync(join(b.stateDir("s1"), "back-requested"), "now\n");
-    assert.equal(query(b, ["--session", "s1"]).json.backRequested, true);
   } finally {
     b.release();
   }
@@ -210,7 +198,7 @@ test("the bound is on the descriptor read: an away.json atomically replaced by a
       return fd;
     }, () => snapshot("s1", { env: b.env }));
     assert.equal(swapped, true);
-    assert.deepEqual(result, { ok: true, away: true, since: SINCE, note: "small", held: 0, onFire: 0, items: [], backRequested: false });
+    assert.deepEqual(result, { ok: true, away: true, since: SINCE, note: "small", held: 0, onFire: 0, items: [] });
   } finally {
     b.release();
   }

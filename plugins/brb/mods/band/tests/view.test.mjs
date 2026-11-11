@@ -10,7 +10,7 @@ import { AWAY_COLORS, BACK_COLORS, HEADLINE_MAX, ROWS_MAX, awayHeadline, bandMod
 
 const SINCE = "2026-11-04T18:42:00.000Z";
 const NOW = Date.parse(SINCE) + 40 * 60_000;
-const away = (over = {}) => ({ ok: true, away: true, since: SINCE, note: "", held: 3, onFire: 0, items: ["Create the token secret?", "Billing limit on the org", "Clear the review round"], backRequested: false, ...over });
+const away = (over = {}) => ({ ok: true, away: true, since: SINCE, note: "", held: 3, onFire: 0, items: ["Create the token secret?", "Billing limit on the org", "Clear the review round"], ...over });
 const back = (items) => ({ ok: true, away: false, checklist: { at: SINCE, since: SINCE, note: "", items } });
 
 /** Plain-data constructors, as the element table builds them: `{ type, props, children }`, Button a leaf. */
@@ -50,7 +50,10 @@ test("bandModel away: headline, no sub-line with no fires, the sub-line with the
   assert.deepEqual(m.rows.map((r) => `${r.n}. ${r.text}`), ["1. Create the token secret?", "2. Billing limit on the org", "3. Clear the review round"]);
   assert.equal(m.more, 0);
   assert.equal(bandModel(away({ onFire: 2 }), { now: NOW }).sub, "2 on fire came through · the rest wait for you");
-  assert.match(bandModel(away({ backRequested: true }), { now: NOW }).sub, /^Back pressed · the next prompt ends the hold/);
+  const pressed = bandModel(away({ onFire: 2, backPressed: true }), { now: NOW });
+  assert.equal(pressed.sub, "Back pressed · ending the hold", "the press outranks the fire line");
+  assert.equal(pressed.backPressed, true);
+  assert.equal(bandModel(away(), { now: NOW }).backPressed, false);
 });
 
 test("bandModel: at most 10 rows then `+N more`; fewer when maxRows has no room; at least one", () => {
@@ -130,7 +133,7 @@ test("bandTree keeps what later mods drew under the band", () => {
 });
 
 test("no emoji anywhere in a drawn band: every character is single-width", () => {
-  const trees = [bandTree(UI, bandModel(away({ onFire: 1, note: "lunch", backRequested: true }), { now: NOW })), bandTree(UI, bandModel(back([{ text: "a", done: false }, { text: "b", done: true }])))];
+  const trees = [bandTree(UI, bandModel(away({ onFire: 1, note: "lunch", backPressed: true }), { now: NOW })), bandTree(UI, bandModel(back([{ text: "a", done: false }, { text: "b", done: true }])))];
   for (const tree of trees) {
     const all = [...texts(tree), ...buttons(tree).map((b) => b.props.label)].join("");
     assert.doesNotMatch(all, /\p{Extended_Pictographic}/u, all);
