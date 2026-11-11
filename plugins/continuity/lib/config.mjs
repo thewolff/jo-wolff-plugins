@@ -7,13 +7,19 @@
 //                    for a handoff in a compaction window (a positive JSON integer). Unset, it is
 //                    `CLAUDE_CODE_IDLE_COMPACT_MIN_TOKENS` minus `askMarginTokens` when that
 //                    variable is set (Claude Code's idle-compaction threshold, raised to 100,000
-//                    when lower), else 175,000. lib/pressure.mjs askPoint() resolves it.
+//                    when lower), else 175,000; and when Claude Code's auto-compact window is set
+//                    (`CLAUDE_CODE_AUTO_COMPACT_WINDOW`, or `autoCompactWindow` in a settings
+//                    file, per model under `modelSettings`), never later than `askMarginTokens`
+//                    before the point it compacts at (lib/autocompact.mjs). A value set here is
+//                    never lowered. lib/pressure.mjs askPoint() resolves it.
 //   askMarginTokens  how far past the window's first recorded usage the context must grow before
-//                    the first ask (a whole number, 0 or more; default 40,000): the ask point is
-//                    never below that, so a session that starts large is not asked on turn one
+//                    the first ask, and how far before a set auto-compact point the last ask
+//                    comes (a whole number, 0 or more; default 40,000): the ask point is never
+//                    below the first, so a session that starts large is not asked on turn one
 //   reaskStepTokens  how much further the context must grow, in the same compaction window,
 //                    after an ask or a handoff before the next ask (a positive integer; default
-//                    150,000)
+//                    150,000); with a set auto-compact window the next ask comes at its margin
+//                    point instead when that is sooner
 //   threshold, contextTokens
 //                    the 0.3 settings, kept for an existing config file: when either is set and
 //                    `askTokens` is not, the ask point is `threshold` × `contextTokens` (each

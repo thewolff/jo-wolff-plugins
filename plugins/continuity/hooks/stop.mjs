@@ -33,7 +33,7 @@ export async function handle(input, { env = process.env } = {}) {
   const ask = await dueAsk(input, "stopBlocked", { config, flags: readFlags(sessionKey(input), env), env });
   if (!ask || !ask.mark()) return null;
   // The block reason names the way out, `/continuity:handoff`, and the one-line alternative.
-  return { decision: "block", reason: handoffRequest(ask.tokens, ask.basis, ask.step) };
+  return { decision: "block", reason: handoffRequest(ask.tokens, ask.basis, ask.next) };
 }
 
 if (invokedDirectly(import.meta.url)) runHook("Stop", import.meta.url, { plugin: "continuity", quiet: false });

@@ -46,7 +46,7 @@ export async function handle(input, { env = process.env } = {}) {
     const ask = await dueAsk(input, "promptWarned", { config, flags, env });
     if (ask) {
       if (!ask.mark()) unmarked = true;
-      parts.push(handoffRequest(ask.tokens, ask.basis, ask.step));
+      parts.push(handoffRequest(ask.tokens, ask.basis, ask.next));
     }
   }
   if (problem && !flags.configNoted) {

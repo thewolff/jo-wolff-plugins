@@ -22,7 +22,7 @@ const HOOKS = ["pre-compact.mjs", "session-start.mjs", "user-prompt-submit.mjs",
 // Transcript fixtures in Claude Code's shapes. A main-thread reply recording `tokens` of context
 // (input + cache read + cache creation); a compaction marker as Claude Code writes it (`uuid`,
 // `timestamp`); a turn is a prompt and its reply. No calibration file anywhere.
-const reply = (tokens) => ({ type: "assistant", isSidechain: false, message: { role: "assistant", content: [{ type: "text", text: "ok" }], usage: { input_tokens: 2, cache_creation_input_tokens: 998, cache_read_input_tokens: tokens - 1000, output_tokens: 5 } } });
+const reply = (tokens) => ({ type: "assistant", isSidechain: false, message: { role: "assistant", model: "claude-opus-5-5", content: [{ type: "text", text: "ok" }], usage: { input_tokens: 2, cache_creation_input_tokens: 998, cache_read_input_tokens: tokens - 1000, output_tokens: 5 } } });
 const turn = (tokens) => [{ type: "user", message: { role: "user", content: "carry on" } }, reply(tokens)];
 const boundary = (uuid, at = new Date()) => ({ type: "system", subtype: "compact_boundary", uuid, timestamp: at.toISOString(), compactMetadata: { trigger: "auto" } });
 // A session that opened at 125,000 tokens and grew to 180,000: past the 175,000 default ask point
@@ -596,6 +596,49 @@ test("pressure, when: silent on the first turn; asks at 180,000; not again until
     b.writeTranscript([...turn(125_000), ...turn(180_000)]);
     assert.deepEqual(both("legacy"), [true, true], "0.3 marks");
     assert.equal(existsSync(join(b.stateDir, "errors.log")), false, "no hook faulted");
+  } finally {
+    b.release();
+  }
+});
+
+// An auto-compact window in the person's settings (`modelSettings.<model>.autoCompactWindow`)
+// moves the point Claude Code compacts at; the ask comes askMarginTokens before it.
+test("pressure, when, with a set auto-compact window: a 300,000 window asks at 175,000 and again at 247,000 before the 287,000 compaction, not between; a 200,000 window asks first at 147,000; askTokens set by the person stays", () => {
+  const b = box();
+  try {
+    b.writeConfig({ liveness: "off" });
+    const user = join(b.env.HOME, ".claude");
+    mkdirSync(user, { recursive: true });
+    const window = (tokens) => writeFileSync(join(user, "settings.json"), JSON.stringify({ modelSettings: { "claude-opus-5-5": { autoCompactWindow: tokens } } }));
+    const prompt = (session) => /\/continuity:handoff/.test(spawnHook(b, "user-prompt-submit.mjs", input("UserPromptSubmit", b, { session_id: session, prompt: "x" })).json?.hookSpecificOutput?.additionalContext ?? "");
+    const stops = (session) => spawnHook(b, "stop.mjs", input("Stop", b, { session_id: session, stop_hook_active: false })).json?.decision === "block";
+    const both = (session) => [prompt(session), stops(session)];
+
+    window(300000);
+    const t = [...turn(125_000), ...turn(176_000)];
+    b.writeTranscript(t);
+    assert.deepEqual(both("w300"), [true, true], "176,000");
+    for (const n of [200_000, 246_000]) {
+      t.push(...turn(n));
+      b.writeTranscript(t);
+      assert.deepEqual(both("w300"), [false, false], `${n}`);
+    }
+    t.push(...turn(247_000));
+    b.writeTranscript(t);
+    assert.deepEqual(both("w300"), [true, true], "247,000: 40,000 before the 287,000 compaction");
+    for (const n of [260_000, 286_000]) {
+      t.push(...turn(n));
+      b.writeTranscript(t);
+      assert.deepEqual(both("w300"), [false, false], `${n}: asked at the near-compaction point already`);
+    }
+
+    window(200000);
+    b.writeTranscript([...turn(100_000), ...turn(146_000)]);
+    assert.deepEqual(both("w200"), [false, false], "146,000");
+    b.writeTranscript([...turn(100_000), ...turn(147_000)]);
+    assert.deepEqual(both("w200"), [true, true], "147,000: 40,000 before the 187,000 compaction");
+    b.writeConfig({ liveness: "off", askTokens: 180000 });
+    assert.deepEqual(both("w200-own"), [false, false], "the person's own askTokens is not lowered");
   } finally {
     b.release();
   }

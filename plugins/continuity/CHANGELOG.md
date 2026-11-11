@@ -34,6 +34,14 @@ All notable changes to continuity are recorded here. The format follows
 - `threshold` and `contextTokens` are kept for existing config files: when either is set and
   `askTokens` is not, the ask point is their product (each defaulting to its 0.3 value). The
   margin and the re-ask step apply either way.
+- A set auto-compact window is honoured (`lib/autocompact.mjs`): `CLAUDE_CODE_AUTO_COMPACT_WINDOW`,
+  else `autoCompactWindow` in the project local, project, then user settings file, per model
+  under `modelSettings` before the top level. The default ask point and the re-ask come no later
+  than `askMarginTokens` before the point Claude Code compacts at (the window less 13,000, a
+  figure read from the binary and not documented, or `CLAUDE_AUTOCOMPACT_PCT_OVERRIDE` of it
+  when earlier). With a 300,000 window that is
+  an ask at 175,000 and another at 247,000. An `askTokens` or `threshold` the person set is not
+  lowered. The ask names the size of the next ask instead of the step.
 
 ## 0.3.1 - 2026-11-04
 

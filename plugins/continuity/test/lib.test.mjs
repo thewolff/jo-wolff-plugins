@@ -12,7 +12,8 @@ import { DEFAULTS, readConfig } from "../lib/config.mjs";
 import { HEARTBEAT_MAX_LINES, readHeartbeat, recordHeartbeat } from "../lib/heartbeat.mjs";
 import { age, lastSaveFor, renderLiveness } from "../lib/liveness.mjs";
 import { CALIBRATION_MAX_LINES, measureTranscript, readCalibration, recordCalibration } from "../lib/calibration.mjs";
-import { ASK_TOKENS, BYTES_PER_TOKEN_ESTIMATE, askPoint, dueAsk, estimateContext, handoffRequest, idleCompactMinTokens } from "../lib/pressure.mjs";
+import { ASK_TOKENS, BYTES_PER_TOKEN_ESTIMATE, askPoint, dueAsk, estimateContext, handoffRequest, idleCompactMinTokens, nextAsk } from "../lib/pressure.mjs";
+import { AUTO_COMPACT_BUFFER, autoCompactCliff, autoCompactWindow, envWindow } from "../lib/autocompact.mjs";
 import { markFlag, readFlags, sessionKey, setFlag } from "../lib/session-flags.mjs";
 import { ENTRY_LINE_CAP, lastHandoffBy, listHandoffs, parseFrontmatter, renderHandoffs, resolveHandoffRoot } from "../lib/handoffs.mjs";
 import { MAX_STATUS_ENTRIES, RESTORE_MAX_CHARS, STATE_MAX_AGE_MS, buildSnapshot, capture, readTranscript, renderSnapshot, restore } from "../lib/snapshot.mjs";
@@ -429,11 +430,11 @@ test("calibration: measures bytes after the last compaction marker or the whole 
   try {
     assert.equal(measureTranscript("/nowhere"), null);
     b.writeTranscript(["x".repeat(99)]);
-    assert.deepEqual(measureTranscript(b.transcript), { bytes: 100, sinceMarker: false, usageTokens: null, baselineTokens: null, epoch: "start", markerAt: null });
+    assert.deepEqual(measureTranscript(b.transcript), { bytes: 100, sinceMarker: false, usageTokens: null, baselineTokens: null, epoch: "start", markerAt: null, model: null });
     b.writeTranscript(["a".repeat(500), { type: "system", subtype: "compact_boundary" }, "y".repeat(49)]);
-    assert.deepEqual(measureTranscript(b.transcript), { bytes: 50, sinceMarker: true, usageTokens: null, baselineTokens: null, epoch: "@501", markerAt: null }, "only what follows the marker line counts; a marker with no uuid is named by the byte offset of its line");
+    assert.deepEqual(measureTranscript(b.transcript), { bytes: 50, sinceMarker: true, usageTokens: null, baselineTokens: null, epoch: "@501", markerAt: null, model: null }, "only what follows the marker line counts; a marker with no uuid is named by the byte offset of its line");
     b.writeTranscript(["a".repeat(9), { type: "system", subtype: "compact_boundary", uuid: "u-1", timestamp: "2026-11-04T20:33:00.000Z" }, "y".repeat(49)]);
-    assert.deepEqual(measureTranscript(b.transcript), { bytes: 50, sinceMarker: true, usageTokens: null, baselineTokens: null, epoch: "u-1", markerAt: Date.parse("2026-11-04T20:33:00.000Z") });
+    assert.deepEqual(measureTranscript(b.transcript), { bytes: 50, sinceMarker: true, usageTokens: null, baselineTokens: null, epoch: "u-1", markerAt: Date.parse("2026-11-04T20:33:00.000Z"), model: null });
 
     assert.equal(readCalibration(b.env), null);
     assert.equal(recordCalibration({ token_count: 100, transcript_path: "/nowhere" }, b.env), false);
@@ -460,13 +461,13 @@ test("calibration: measures bytes after the last compaction marker or the whole 
 test("pressure: the newest main-thread reply's usage is the context size and the oldest one in the window its baseline; sidechain and zero-usage replies are passed over; a compaction marker starts a new window", () => {
   const b = box();
   try {
-    const reply = (usage, extra = {}) => ({ type: "assistant", isSidechain: false, message: { role: "assistant", content: [{ type: "text", text: "ok" }], usage }, ...extra });
+    const reply = (usage, extra = {}, model = "claude-opus-5-5") => ({ type: "assistant", isSidechain: false, message: { role: "assistant", model, content: [{ type: "text", text: "ok" }], usage }, ...extra });
     // Claude Code's shape: 2 + 150,000 cache read + 9,998 cache creation = 160,000.
     const full = { input_tokens: 2, cache_creation_input_tokens: 9_998, cache_read_input_tokens: 150_000, output_tokens: 5 };
     b.writeTranscript([reply({ input_tokens: 10 }), { type: "user", message: { role: "user", content: "go" } }, reply(full), { type: "user", message: { role: "user", content: "next" } }]);
     const m = measureTranscript(b.transcript);
     assert.deepEqual([m.usageTokens, m.baselineTokens], [160000, 10]);
-    assert.deepEqual(estimateContext(b.transcript, b.env), { tokens: 160000, bytes: m.bytes, basis: "usage", sinceMarker: false, baselineTokens: 10, epoch: "start", markerAt: null });
+    assert.deepEqual(estimateContext(b.transcript, b.env), { tokens: 160000, bytes: m.bytes, basis: "usage", sinceMarker: false, baselineTokens: 10, epoch: "start", markerAt: null, model: "claude-opus-5-5" });
     // No cache fields: input_tokens alone.
     b.writeTranscript([reply({ input_tokens: 140_000, output_tokens: 3 })]);
     assert.equal(measureTranscript(b.transcript).usageTokens, 140000);
@@ -474,8 +475,11 @@ test("pressure: the newest main-thread reply's usage is the context size and the
     b.writeTranscript([reply({ input_tokens: 5, cache_read_input_tokens: 1 }, { isSidechain: true }), reply({ input_tokens: 0 }), reply(full), reply({ input_tokens: 5, cache_read_input_tokens: 1 }, { isSidechain: true }), reply({ input_tokens: 0, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 })]);
     assert.deepEqual([measureTranscript(b.transcript).usageTokens, measureTranscript(b.transcript).baselineTokens], [160000, 160000]);
     // A usage record before the compaction marker counts for neither after it.
-    b.writeTranscript([reply(full), { type: "system", subtype: "compact_boundary", uuid: "u-2" }, reply({ input_tokens: 3, cache_read_input_tokens: 20_000 }), reply({ input_tokens: 3, cache_read_input_tokens: 30_000 })]);
-    assert.deepEqual(measureTranscript(b.transcript), { bytes: measureTranscript(b.transcript).bytes, sinceMarker: true, usageTokens: 30003, baselineTokens: 20003, epoch: "u-2", markerAt: null });
+    b.writeTranscript([reply(full, {}, "claude-fable-5-2"), { type: "system", subtype: "compact_boundary", uuid: "u-2" }, reply({ input_tokens: 3, cache_read_input_tokens: 20_000 }), reply({ input_tokens: 3, cache_read_input_tokens: 30_000 })]);
+    assert.deepEqual(measureTranscript(b.transcript), { bytes: measureTranscript(b.transcript).bytes, sinceMarker: true, usageTokens: 30003, baselineTokens: 20003, epoch: "u-2", markerAt: null, model: "claude-opus-5-5" });
+    // The model is the newest reply's; with none since the marker, the newest before it.
+    b.writeTranscript([reply(full, {}, "claude-fable-5-2"), { type: "system", subtype: "compact_boundary", uuid: "u-3" }, "y".repeat(9)]);
+    assert.equal(measureTranscript(b.transcript).model, "claude-fable-5-2");
     // Usage beats a calibration record.
     b.writeTranscript([reply(full)]);
     mkdirSync(stateDir(b.env), { recursive: true });
@@ -495,7 +499,7 @@ test("pressure: with no recorded usage, the transcript's bytes / 8 is the estima
     b.writeTranscript(["x".repeat(1_439_999)]);
     const input = { transcript_path: b.transcript };
     const config = { ...DEFAULTS };
-    assert.deepEqual(estimateContext(b.transcript, b.env), { tokens: 180000, bytes: 1440000, basis: "estimate", sinceMarker: false, baselineTokens: null, epoch: "start", markerAt: null });
+    assert.deepEqual(estimateContext(b.transcript, b.env), { tokens: 180000, bytes: 1440000, basis: "estimate", sinceMarker: false, baselineTokens: null, epoch: "start", markerAt: null, model: null });
     const ask = await dueAsk(input, "promptWarned", { config, env: b.env });
     assert.deepEqual([ask.tokens, ask.basis], [180000, "estimate"]);
     assert.equal(await dueAsk({ transcript_path: "/nowhere" }, "promptWarned", { config, env: b.env }), null);
@@ -515,18 +519,71 @@ test("pressure: with no recorded usage, the transcript's bytes / 8 is the estima
   }
 });
 
-test("pressure: the ask point's precedence: askTokens, then the 0.3 threshold × contextTokens, then CLAUDE_CODE_IDLE_COMPACT_MIN_TOKENS minus the margin, then 175,000", () => {
+test("pressure: the ask point's precedence: askTokens, then the 0.3 threshold × contextTokens, then CLAUDE_CODE_IDLE_COMPACT_MIN_TOKENS minus the margin, then 175,000; a set auto-compact window pulls only the default earlier", () => {
   const c = (over = {}) => ({ ...DEFAULTS, ...over });
-  assert.deepEqual(askPoint(c(), {}), { tokens: ASK_TOKENS, source: "default" });
+  assert.deepEqual(askPoint(c(), {}), { tokens: ASK_TOKENS, source: "default", cap: null });
   assert.equal(ASK_TOKENS, 175000);
-  assert.deepEqual(askPoint(c(), { CLAUDE_CODE_IDLE_COMPACT_MIN_TOKENS: "300000" }), { tokens: 260000, source: "idle" });
-  assert.deepEqual(askPoint(c({ askMarginTokens: 10000 }), { CLAUDE_CODE_IDLE_COMPACT_MIN_TOKENS: "300000" }), { tokens: 290000, source: "idle" });
-  assert.deepEqual(askPoint(c(), { CLAUDE_CODE_IDLE_COMPACT_MIN_TOKENS: "50000" }), { tokens: 60000, source: "idle" }, "Claude Code raises a value under 100,000 to 100,000");
+  assert.deepEqual(askPoint(c(), { CLAUDE_CODE_IDLE_COMPACT_MIN_TOKENS: "300000" }), { tokens: 260000, source: "idle", cap: null });
+  assert.deepEqual(askPoint(c({ askMarginTokens: 10000 }), { CLAUDE_CODE_IDLE_COMPACT_MIN_TOKENS: "300000" }), { tokens: 290000, source: "idle", cap: null });
+  assert.deepEqual(askPoint(c(), { CLAUDE_CODE_IDLE_COMPACT_MIN_TOKENS: "50000" }), { tokens: 60000, source: "idle", cap: null }, "Claude Code raises a value under 100,000 to 100,000");
   for (const junk of ["", "lots", "-5", "0", "1e6"]) assert.equal(askPoint(c(), { CLAUDE_CODE_IDLE_COMPACT_MIN_TOKENS: junk }).source, "default", JSON.stringify(junk));
-  assert.deepEqual(askPoint(c({ threshold: 0.5 }), { CLAUDE_CODE_IDLE_COMPACT_MIN_TOKENS: "300000" }), { tokens: 100000, source: "threshold" }, "a 0.3 config wins over the env");
-  assert.deepEqual(askPoint(c({ contextTokens: 1000000 }), {}), { tokens: 650000, source: "threshold" });
-  assert.deepEqual(askPoint(c({ askTokens: 120000, threshold: 0.5 }), {}), { tokens: 120000, source: "askTokens" });
+  assert.deepEqual(askPoint(c({ threshold: 0.5 }), { CLAUDE_CODE_IDLE_COMPACT_MIN_TOKENS: "300000" }), { tokens: 100000, source: "threshold", cap: null }, "a 0.3 config wins over the env");
+  assert.deepEqual(askPoint(c({ contextTokens: 1000000 }), {}), { tokens: 650000, source: "threshold", cap: null });
+  assert.deepEqual(askPoint(c({ askTokens: 120000, threshold: 0.5 }), {}), { tokens: 120000, source: "askTokens", cap: null });
   assert.equal(idleCompactMinTokens({}), null);
+  // An auto-compact point at 187,000 (a 200,000 window): the default moves to 147,000; a later one leaves it.
+  assert.deepEqual(askPoint(c(), {}, { tokens: 187000 }), { tokens: 147000, source: "autoCompactWindow", cap: 147000 });
+  assert.deepEqual(askPoint(c(), {}, { tokens: 287000 }), { tokens: 175000, source: "default", cap: 247000 });
+  assert.deepEqual(askPoint(c({ askTokens: 200000 }), {}, { tokens: 187000 }), { tokens: 200000, source: "askTokens", cap: 147000 }, "an explicit askTokens is not lowered");
+  // The re-ask: a step on, or the cap first; an ask already within the margin of the cap is not repeated there.
+  assert.equal(nextAsk(175000, 150000, 247000, 40000), 247000);
+  assert.equal(nextAsk(247000, 150000, 247000, 40000), 397000);
+  assert.equal(nextAsk(220000, 150000, 247000, 40000), 370000);
+  assert.equal(nextAsk(175000, 150000, null, 40000), 325000);
+});
+
+test("autocompact: the window from CLAUDE_CODE_AUTO_COMPACT_WINDOW, then project local, project, user settings; modelSettings beats the top level inside a file; \"auto\" is the default; the point is 13,000 before the window or the percentage override", () => {
+  const b = box();
+  try {
+    const project = join(b.work);
+    const user = join(b.env.HOME, ".claude");
+    const put = (dir, name, json) => {
+      mkdirSync(dir, { recursive: true });
+      writeFileSync(join(dir, name), typeof json === "string" ? json : JSON.stringify(json));
+    };
+    const w = (model, env = b.env) => autoCompactWindow({ model, projectDir: project, env });
+    assert.equal(w("claude-opus-5-5"), null, "nothing set: Claude Code's default");
+    put(user, "settings.json", { modelSettings: { "claude-opus-5-5": { autoCompactWindow: 300000 } } });
+    assert.deepEqual(w("claude-opus-5-5"), { tokens: 300000, source: join(user, "settings.json") });
+    assert.deepEqual(w("claude-opus-5-5[1m]"), { tokens: 300000, source: join(user, "settings.json") }, "the [1m] suffix matches the base model");
+    assert.equal(w("claude-fable-5-2"), null, "another model");
+    put(user, "settings.json", { autoCompactWindow: 250000, modelSettings: { "claude-opus-5-5": { autoCompactWindow: 300000 } } });
+    assert.equal(w("claude-fable-5-2").tokens, 250000, "the top level for a model without its own");
+    assert.equal(w("claude-opus-5-5").tokens, 300000, "modelSettings beats the top level");
+    put(join(project, ".claude"), "settings.json", { autoCompactWindow: 400000 });
+    assert.equal(w("claude-opus-5-5").tokens, 400000, "a project file beats the user file");
+    put(join(project, ".claude"), "settings.local.json", { autoCompactWindow: "auto" });
+    assert.equal(w("claude-opus-5-5"), null, "\"auto\" in the highest file is the default");
+    put(join(project, ".claude"), "settings.local.json", "{not json");
+    assert.equal(w("claude-opus-5-5").tokens, 400000, "an unreadable file is skipped");
+    put(join(project, ".claude"), "settings.local.json", { autoCompactWindow: 50 });
+    assert.equal(w("claude-opus-5-5").tokens, 400000, "an out-of-range value is skipped");
+    assert.deepEqual(w("claude-opus-5-5", { ...b.env, CLAUDE_CODE_AUTO_COMPACT_WINDOW: "200k" }), { tokens: 200000, source: "CLAUDE_CODE_AUTO_COMPACT_WINDOW" });
+    assert.equal(envWindow("1M"), 1000000);
+    assert.equal(envWindow("50000"), 100000);
+    assert.equal(envWindow("2M"), 1000000);
+    assert.equal(envWindow("lots"), null);
+    const alt = join(b.root, "alt");
+    put(alt, "settings.json", { autoCompactWindow: 220000 });
+    assert.equal(autoCompactWindow({ model: "x", projectDir: null, env: { ...b.env, CLAUDE_CONFIG_DIR: alt } }).tokens, 220000, "CLAUDE_CONFIG_DIR replaces ~/.claude");
+    assert.equal(AUTO_COMPACT_BUFFER, 13000);
+    assert.deepEqual(autoCompactCliff({ model: "claude-opus-5-5", projectDir: project, env: b.env }), { tokens: 387000, window: 400000, source: join(project, ".claude", "settings.json") });
+    assert.equal(autoCompactCliff({ model: "claude-opus-5-5", projectDir: project, env: { ...b.env, CLAUDE_AUTOCOMPACT_PCT_OVERRIDE: "50" } }).tokens, 200000, "the override only moves it earlier");
+    assert.equal(autoCompactCliff({ model: "claude-opus-5-5", projectDir: project, env: { ...b.env, CLAUDE_AUTOCOMPACT_PCT_OVERRIDE: "100" } }).tokens, 387000);
+    assert.equal(autoCompactCliff({ model: "claude-opus-5-5", projectDir: null, env: { HOME: join(b.root, "none") } }), null);
+  } finally {
+    b.release();
+  }
 });
 
 test("session flags: keyed by session, then transcript, then nosess; marks accumulate; an unwritable dir returns false", () => {

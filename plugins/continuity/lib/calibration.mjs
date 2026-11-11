@@ -36,14 +36,16 @@ const ASSISTANT = '"type":"assistant"';
 const USAGE = '"usage"';
 
 /**
- * `{ bytes, sinceMarker, usageTokens, baselineTokens, epoch, markerAt }` for the transcript at
- * `path`: bytes after the line holding the last compaction marker, or the whole file
- * (`sinceMarker` false); the context size the newest main-thread reply in that span recorded
+ * `{ bytes, sinceMarker, usageTokens, baselineTokens, epoch, markerAt, model }` for the
+ * transcript at `path`: bytes after the line holding the last compaction marker, or the whole
+ * file (`sinceMarker` false); the context size the newest main-thread reply in that span recorded
  * (`usageTokens`) and the oldest one (`baselineTokens`, what the window started at), each null
  * when none did; `epoch`, which compaction window this is (the marker line's `uuid`, else
  * `@<byte offset>` of the marker line, else "start" when there is no marker), and `markerAt`,
- * the marker's `timestamp` in ms (null when there is no marker or it carries none). A transcript
- * is append-only, so a window's epoch does not change when the session is resumed days later.
+ * the marker's `timestamp` in ms (null when there is no marker or it carries none); `model`, the
+ * `message.model` of the newest main-thread reply with usage in the whole file (null when none
+ * names one), which lib/autocompact.mjs looks up in `modelSettings`. A transcript is
+ * append-only, so a window's epoch does not change when the session is resumed days later.
  * Null when the transcript cannot be read.
  */
 export function measureTranscript(path) {
@@ -60,19 +62,24 @@ export function measureTranscript(path) {
     }
     const data = buf.subarray(0, read);
     const at = data.lastIndexOf(MARKER);
-    if (at < 0) return { bytes: data.length, sinceMarker: false, usageTokens: lastUsage(data, 0), baselineTokens: firstUsage(data, 0), epoch: "start", markerAt: null };
+    if (at < 0) {
+      const last = lastReply(data, 0);
+      return { bytes: data.length, sinceMarker: false, usageTokens: last?.tokens ?? null, baselineTokens: firstUsage(data, 0), epoch: "start", markerAt: null, model: last?.model ?? null };
+    }
     const sol = data.lastIndexOf(0x0a, at) + 1;
     const eol = data.indexOf(0x0a, at);
     const from = eol < 0 ? data.length : eol + 1;
     const marker = parseLine(data.subarray(sol, eol < 0 ? data.length : eol));
     const stamp = typeof marker?.timestamp === "string" ? Date.parse(marker.timestamp) : NaN;
+    const last = lastReply(data, from);
     return {
       bytes: data.length - from,
       sinceMarker: true,
-      usageTokens: lastUsage(data, from),
+      usageTokens: last?.tokens ?? null,
       baselineTokens: firstUsage(data, from),
       epoch: typeof marker?.uuid === "string" && marker.uuid ? marker.uuid : `@${sol}`,
       markerAt: Number.isFinite(stamp) ? stamp : null,
+      model: last ? last.model : (lastReply(data.subarray(0, sol), 0)?.model ?? null),
     };
   } catch {
     return null;
@@ -95,23 +102,26 @@ function parseLine(line) {
   }
 }
 
-/** The context size a line records when it is a main-thread assistant reply with usage; 0 otherwise. */
-function lineUsage(line) {
-  if (!line.includes(ASSISTANT) || !line.includes(USAGE)) return 0;
+/** `{ tokens, model }` when the line is a main-thread assistant reply recording usage above 0; null otherwise. */
+function lineReply(line) {
+  if (!line.includes(ASSISTANT) || !line.includes(USAGE)) return null;
   const rec = parseLine(line);
-  if (rec?.type !== "assistant" || rec.isSidechain === true) return 0;
-  return usageTokens(rec.message?.usage);
+  if (rec?.type !== "assistant" || rec.isSidechain === true) return null;
+  const tokens = usageTokens(rec.message?.usage);
+  if (!(tokens > 0)) return null;
+  const model = rec.message?.model;
+  return { tokens, model: typeof model === "string" && model ? model : null };
 }
 
-/** The context size recorded by the newest main-thread assistant line in `data` at or after `from`; null when none. */
-function lastUsage(data, from) {
+/** The newest main-thread reply with usage in `data` at or after `from`, as `{ tokens, model }`; null when none. */
+function lastReply(data, from) {
   let end = data.length;
   while (end > from) {
     const nl = data.lastIndexOf(0x0a, end - 1);
     const start = nl < from ? from : nl + 1;
-    const tokens = lineUsage(data.subarray(start, end));
+    const reply = lineReply(data.subarray(start, end));
     end = nl < from ? from : nl;
-    if (tokens > 0) return tokens;
+    if (reply) return reply;
   }
   return null;
 }
@@ -122,9 +132,9 @@ function firstUsage(data, from) {
   while (start < data.length) {
     const nl = data.indexOf(0x0a, start);
     const end = nl < 0 ? data.length : nl;
-    const tokens = lineUsage(data.subarray(start, end));
+    const reply = lineReply(data.subarray(start, end));
     start = end + 1;
-    if (tokens > 0) return tokens;
+    if (reply) return reply.tokens;
   }
   return null;
 }

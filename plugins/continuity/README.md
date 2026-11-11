@@ -206,10 +206,14 @@ hook (`dueAsk()` in `lib/pressure.mjs`):
      `contextTokens`, each defaulting to its 0.3 value (0.65 and 200,000);
    - else, when `CLAUDE_CODE_IDLE_COMPACT_MIN_TOKENS` is set, that value (raised to 100,000 when
      lower, as Claude Code does) minus `askMarginTokens`;
-   - else 175,000.
+   - else 175,000;
+   - and in the last two cases, when an auto-compact window is set, no later than
+     `askMarginTokens` before the point Claude Code compacts at (see below).
 2. **After an ask** the next one in the same window comes once the context has grown a further
    `reaskStepTokens` (150,000) past the size it was asked at. An agent that answered "nothing in
-   flight" at 180,000 is asked again at 330,000, not on every prompt in between.
+   flight" at 180,000 is asked again at 330,000, not on every prompt in between. With a set
+   auto-compact window, the next ask comes at its margin point instead when that is sooner and
+   at least `askMarginTokens` further on.
 3. **A compaction re-arms both.** The marks in `sessions/<session_id>.json` (`promptWarned`,
    `stopBlocked`) record the window they belong to: the `uuid` of the last `compact_boundary`
    line (its byte offset when it has none, `start` before the first). The transcript is
@@ -228,13 +232,30 @@ after about an hour (`idleCompaction`, on by default there, threshold
 reference](https://code.claude.com/docs/en/settings-reference.md)). Asking 25,000 below that
 leaves room to write the handoff before an idle compaction can take the context.
 
+**A set auto-compact window.** Claude Code lets the person move auto-compaction earlier: the
+`CLAUDE_CODE_AUTO_COMPACT_WINDOW` variable, or `autoCompactWindow` in a settings file, top level
+or per model under `modelSettings` ([model
+configuration](https://code.claude.com/docs/en/model-config.md), "Set the auto-compact window").
+`lib/autocompact.mjs` resolves it the way Claude Code does: the variable first, then
+`<project>/.claude/settings.local.json`, `<project>/.claude/settings.json`, and the user file
+(`$CLAUDE_CONFIG_DIR/settings.json`, else `~/.claude/settings.json`); inside a file the model's
+`modelSettings` entry beats the top level; `"auto"` is Claude Code's default; the model is the
+transcript's newest `message.model`. It does not see `--autocompact`, `--settings` or managed
+settings. Claude Code compacts about 13,000 tokens before the window (a figure read from the
+Claude Code binary, not documented, so it may move between releases), or at
+`CLAUDE_AUTOCOMPACT_PCT_OVERRIDE` percent of it when that is earlier.
+The default ask point is pulled down to `askMarginTokens` before that point, and the re-ask is
+brought forward to it: with `"autoCompactWindow": 300000` the session is asked at 175,000 and
+again at 247,000, before the compaction at about 287,000; with 200,000, first at 147,000. An
+`askTokens` or `threshold` set in continuity's config is never lowered.
+
 The prompt hook adds the ask as `additionalContext`:
 
 > continuity: this session's context is 180,000 tokens (from the token usage the last reply
 > recorded). Before it is compacted, run `/continuity:handoff` to write the judgment layer to
 > `.ai/handoffs/` in the repository … If there is genuinely nothing in flight worth passing on …
-> say so in one line and stop. This asks again only after the context grows by another 150,000
-> tokens, or after the next compaction.
+> say so in one line and stop. This asks again only once the context reaches 330,000 tokens, or
+> after the next compaction.
 
 and the Stop hook returns `{ decision: "block", reason: <the same text> }` under the same rule, so
 the model gets one more turn to write the handoff. A stop with `stop_hook_active: true` is never
@@ -265,9 +286,9 @@ name, before continuing: resuming a session is structurally a standup.
 
 | Key | Default | Meaning |
 |---|---|---|
-| `askTokens` | unset: `CLAUDE_CODE_IDLE_COMPACT_MIN_TOKENS` − `askMarginTokens` when that variable is set, else `175000` | the context size, in tokens, of the first handoff ask in a compaction window; a positive whole number. Wins over `threshold` and `contextTokens` |
-| `askMarginTokens` | `40000` | how far past the window's first recorded usage the context must be before the first ask; a whole number, 0 or more |
-| `reaskStepTokens` | `150000` | how much further the context must grow, in the same window, after an ask or a handoff before the next ask; a positive whole number |
+| `askTokens` | unset: `CLAUDE_CODE_IDLE_COMPACT_MIN_TOKENS` − `askMarginTokens` when that variable is set, else `175000`; either one no later than `askMarginTokens` before a set auto-compact point | the context size, in tokens, of the first handoff ask in a compaction window; a positive whole number. Wins over `threshold` and `contextTokens`, and is never lowered |
+| `askMarginTokens` | `40000` | how far past the window's first recorded usage the context must be before the first ask, and how far before a set auto-compact point the default ask comes; a whole number, 0 or more |
+| `reaskStepTokens` | `150000` | how much further the context must grow, in the same window, after an ask or a handoff before the next ask (sooner at a set auto-compact point's margin); a positive whole number |
 | `threshold` | unset (0.3: `0.65`) | kept for 0.3 config files: with `askTokens` unset, setting this or `contextTokens` makes the ask point `threshold` × `contextTokens`, the unset one at its 0.3 default; a JSON number strictly between 0 and 1 (a string or an array is a problem, not a number) |
 | `contextTokens` | unset (0.3: `200000`) | the other half of that product; a positive whole number |
 | `pressure` | `"on"` | `"off"` silences the prompt ask and the Stop block |
@@ -467,6 +488,9 @@ context is `askMarginTokens` (40,000) past where the window started, so a sessio
 130,000 tokens is not asked on its first turn. It asks again after each further
 `reaskStepTokens` (150,000), and a compaction re-arms both the prompt ask and the Stop block; a
 0.3 flags file is re-armed. A 0.3 config with `threshold` or `contextTokens` keeps its ask point.
+With an auto-compact window set (`CLAUDE_CODE_AUTO_COMPACT_WINDOW` or `autoCompactWindow`, per
+model under `modelSettings`), the default ask and the re-ask come no later than `askMarginTokens`
+before the point Claude Code compacts at.
 On Claude Code the PreCompact hook prints plain-text summary instructions asking for a
 `## Handoff` section, and the no-handoff notice Claude Code discarded from PreCompact is given
 after the compaction by the SessionStart hook. Details in "The context-pressure check" and
