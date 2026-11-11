@@ -380,11 +380,14 @@ Two shapes are denied under `gate` from the command text alone, whatever HEAD's 
 (since 0.3.11; under `advise` each is a notice):
 
 - **A push from a folder the gate cannot follow.** A `cd`, `pushd` or `-C` whose folder is
-  computed (`$VAR`, `$(…)`, a backtick, `~`, a glob, `cd -`, a bare `cd`), `--git-dir`,
+  computed (`$VAR`, `$(…)`, a backtick, `~`, a glob with `*`, `?` or `[…]`, a `{a,b}` brace
+  expansion, `cd -`, a bare `cd`), a literal `cd` from inside a repository to a folder that does not exist, `--git-dir`,
   `--work-tree`, a `GIT_CONFIG*`, `GIT_DIR`, `GIT_WORK_TREE` or `GIT_NAMESPACE` assignment or
   export, a `-c` or `--config-env` that sets push, remote or branch config. The way out, named
   in the reason: re-issue the push as its own command with a literal folder,
-  `cd /absolute/path && git push <remote> <branch>`. A hyphen in a literal folder name is fine.
+  `cd /absolute/path && git push <remote> <branch>`. A hyphen in a literal folder name is fine;
+  a folder whose own name has `[`, `]`, `{` or `}` is refused even when quoted, so push from a
+  folder above it.
 - **A push chained after a command that can move HEAD.** A `git push` or `gh pr create` on the
   same command line as an earlier `git commit`, `rebase`, `merge`, `cherry-pick`, `revert`,
   `reset`, `pull`, `checkout`, `switch`, `am`, `bisect`, `update-ref`, `symbolic-ref` or

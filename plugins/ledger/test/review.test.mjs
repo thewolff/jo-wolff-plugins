@@ -871,6 +871,10 @@ test("0.3.11 hole one: under gate a push from a folder the gate cannot follow is
     ["cd `pwd` && git push origin feat", "cd `pwd`"],
     ["cd ~/code/repo && git push origin feat", "cd ~/code/repo"],
     ["cd ../wor* && git push origin feat", "cd ../wor*"],
+    ["cd ../wor[k] && git push origin feat", "cd ../wor[k]"],
+    [`cd ${b.work.slice(0, -1)}[jk] && git push origin feat`, `cd ${b.work.slice(0, -1)}[jk]`],
+    ["cd ../{work,sibling} && git push origin feat", "cd ../{work,sibling}"],
+    ["git -C ../wor[k] push origin feat", "-C ../wor[k]"],
     ["cd - && git push origin feat", "cd -"],
     ["cd && git push origin feat", "cd (home)"],
     ["git -C $REPO push origin feat", "-C $REPO"],
@@ -883,7 +887,14 @@ test("0.3.11 hole one: under gate a push from a folder the gate cannot follow is
     assert.ok(reason.includes(`(${why})`), `${cmd}: ${reason}`);
     assert.match(reason, /Re-issue it as its own command with a literal folder: `cd \/absolute\/path && git push <remote> <branch>`/, cmd);
   }
-  assert.ok(reviewBounces(b).length >= 11, "each deny left a reviewGate bounce row");
+  // A literal cd to a folder that does not exist fails, and after `;` the push runs in the hook's folder.
+  for (const cmd of ["cd /no/such-folder; git push origin feat", "cd nowhere-here; gh pr create --fill", `cd ${b.work} && cd missing-sub; git push`]) {
+    const p = push(b, cmd);
+    assert.equal(decision(p), "deny", cmd);
+    assert.match(p.json.hookSpecificOutput.permissionDecisionReason, /names no folder \(.*\), so this `(git push|gh pr create)` would run somewhere the gate did not check\. Re-issue it as its own command with a folder that exists: `cd \/absolute\/path && git push <remote> <branch>`/, cmd);
+  }
+  assert.equal(decision(hook(b, "pre-tool-use", { session_id: SID, cwd: b.sibling, hook_event_name: "PreToolUse", tool_name: "Bash", tool_input: { command: "cd nowhere-here; git push origin feat" } })), "allow", "outside a repository git refuses the push itself");
+  assert.ok(reviewBounces(b).length >= 18, "each deny left a reviewGate bounce row");
   assert.equal(push(b, `cd ${b.work} && git push origin feat`).out, "", "the literal form the reason names passes");
   assert.equal(reviewBounces(b).at(-1), "satisfied");
 });
@@ -895,6 +906,8 @@ test("0.3.11 hole one: advise keeps the notice, off says nothing, and a locked s
   assert.match(p.json.systemMessage, /could not tell which commit this command publishes \(cd \$W is not followed\); allowed without a review check/);
   b.writeConfig({ review: { mode: "off" } });
   assert.equal(push(b, "cd $W && git push origin feat").out, "");
+  b.writeConfig({ review: { mode: "advise" } });
+  assert.equal(decision(push(b, "cd /no/such-folder; git push origin feat")), "allow", "advise never denies");
   b.writeConfig({ review: { mode: "gate" } });
   const db = openDb(b);
   db.exec("BEGIN IMMEDIATE");

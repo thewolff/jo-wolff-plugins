@@ -12,7 +12,9 @@ All notable changes to ledger are recorded here. The format follows
   where the gate cannot follow is denied; before, it was allowed with a notice, so
   `W=/some/worktree; cd $W; git push; gh pr create` published an unreviewed commit. Covered: a
   `cd`, `pushd` or `-C` whose folder is a variable, a `$(…)` or backtick substitution, `~`, a
-  glob, `cd -` or a bare `cd`; `--git-dir`; `--work-tree`; a `GIT_DIR`, `GIT_WORK_TREE`,
+  glob (`*`, `?`, `[…]`), a brace expansion, `cd -` or a bare `cd`; a literal `cd` to a folder
+  that does not exist, from inside a repository (the `cd` fails, and after a `;` the push runs
+  where the shell already was); `--git-dir`; `--work-tree`; a `GIT_DIR`, `GIT_WORK_TREE`,
   `GIT_NAMESPACE` or `GIT_CONFIG*` assignment or export; a `-c` or `--config-env` that sets
   push, remote or branch config. The reason names the way out: the push re-issued as its own
   `cd /absolute/path && git push <remote> <branch>`. A hyphen in a literal folder name was

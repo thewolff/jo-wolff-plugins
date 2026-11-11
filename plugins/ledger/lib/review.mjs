@@ -722,6 +722,15 @@ export function findingsLine(db, cwd, config, cli = "ledger") {
   return `ledger: cross-lab review found ${n} finding(s) on ${short(state.head)}; run \`${cli} review status\``;
 }
 
+/** True when `path` is a folder (a link to one counts); false when it is missing or cannot be read. */
+function isDirectory(path) {
+  try {
+    return statSync(path).isDirectory();
+  } catch {
+    return false;
+  }
+}
+
 /** Thrown when the gate cannot tell from a command which commit it publishes. */
 export class UnknownTarget extends Error {}
 
@@ -862,11 +871,37 @@ export function operationTargets(op, cwd, { env = process.env } = {}) {
  *   chained     a `git push` or `gh pr create` follows a command that can move HEAD on the same
  *               command line (pushOperations `after`), so the commit it publishes does not
  *               exist yet. `gh pr merge` is left out: its commit is the remote's, not HEAD.
+ * With `cwd` (the hook's), a literal `cd` that names no existing folder is `unfollowed` too when
+ * the folder the shell was in is inside a repository: the `cd` fails, and after a `;` the push
+ * runs there.
  * Each reason states the way out: the push re-issued as its own literal command.
  */
-export function commandRefusal(ops, cli = "ledger") {
+export function commandRefusal(ops, cli = "ledger", cwd = null) {
   const name = (op) => (op.tool === "git" ? "git push" : `gh pr ${op.sub}`);
   const lost = ops.find((op) => op.unsupported);
+  if (!lost && cwd) {
+    for (const op of ops) {
+      let dir = cwd;
+      for (const d of op.cds ?? []) {
+        const next = resolvePath(dir, d);
+        if (isDirectory(next)) {
+          dir = next;
+          continue;
+        }
+        // The push would run in `dir`, the last folder that exists. Outside a repository git
+        // and gh refuse it themselves; git failing here is a fault, and a fault never denies.
+        try {
+          gitHead(dir, { timeoutMs: HOOK_GIT_TIMEOUT_MS });
+        } catch {
+          break;
+        }
+        return {
+          kind: "unfollowed",
+          reason: `ledger: review gate: \`cd ${d}\` names no folder (${next}), so this \`${name(op)}\` would run somewhere the gate did not check. Re-issue it as its own command with a folder that exists: \`cd /absolute/path && git push <remote> <branch>\`.`,
+        };
+      }
+    }
+  }
   if (lost) {
     return {
       kind: "unfollowed",

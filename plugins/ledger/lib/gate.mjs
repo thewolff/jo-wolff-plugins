@@ -256,9 +256,11 @@ export function simpleCommands(text) {
 
 /**
  * A directory word the gate cannot resolve statically: an expansion (`$`, a backtick), `~`, a
- * glob, or the bare word `-` (`cd -`). A hyphen inside a literal path is an ordinary character.
+ * glob (`*`, `?`, `[…]`), a brace expansion (`{a,b}`), or the bare word `-` (`cd -`). Quotes
+ * are gone by the time a word is read, so a quoted `[` or `{` counts too. A hyphen inside a
+ * literal path is an ordinary character.
  */
-const dynamicDir = (d) => !d || d === "-" || /[$`~*?]/.test(d);
+const dynamicDir = (d) => !d || d === "-" || /[$`~*?[\]{}]/.test(d);
 
 /**
  * The publishing operations in `command`: one per simple command that is `git push …` or
@@ -270,7 +272,7 @@ const dynamicDir = (d) => !d || d === "-" || /[$`~*?]/.test(d);
  *   { tool: "git", cds, dirs: [-C dirs in order], unsupported: <why>|null, after: <cmd>|null, args }
  *   { tool: "gh", cds, unsupported: <why>|null, after: <cmd>|null, sub, args }
  * `unsupported` names what the gate cannot follow: `--git-dir`, `--work-tree`, a `cd` or `-C`
- * whose directory is an expansion, `~` or `-`, a `-c`/`--config-env` that sets push, remote or
+ * whose directory is an expansion, `~`, a glob, a brace expansion or `-`, a `-c`/`--config-env` that sets push, remote or
  * branch config, a `GIT_CONFIG*`/`GIT_DIR`/`GIT_WORK_TREE` assignment or export. `after` names the
  * first command earlier on the command line that can move HEAD (`git commit`, `git rebase`, …
  * HEAD_MOVERS, or `gh pr checkout`), in any shell scope: the hook sees HEAD as it is before any of
