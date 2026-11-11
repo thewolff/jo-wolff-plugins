@@ -1,7 +1,15 @@
 {
-  "$comment": "Every event hooks/hooks.json registers and the outcomes its handler returns. Each event x outcome is proved by one *.scenario.json; `ledger gate check` fails naming the gap. SessionStart scenarios point CTX_WATCH_CTX at evals/fixtures/fake-ctx.sh (a shell script printing a test/fixtures capture) so no scenario spawns or heals a real ctx daemon under its empty HOME.",
+  "$comment": "Every event hooks/hooks.json registers and the outcomes its handler returns. Each event x outcome is proved by one *.scenario.json; `ledger gate check` fails naming the gap. SessionStart scenarios point CTX_WATCH_CTX at evals/fixtures/fake-ctx.sh (a shell script printing a test/fixtures capture) so no scenario spawns or heals a real ctx daemon under its empty HOME. The mid-session scenarios (UserPromptSubmit, PostToolUseFailure) write the timer's state.json with evals/fixtures/write-state.mjs, timed from the run, since that hook reads only that file.",
   "events": {
     "SessionStart": [
+      "systemMessage",
+      "silent"
+    ],
+    "UserPromptSubmit": [
+      "systemMessage",
+      "silent"
+    ],
+    "PostToolUseFailure": [
       "systemMessage",
       "silent"
     ],

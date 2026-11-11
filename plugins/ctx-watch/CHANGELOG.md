@@ -4,6 +4,66 @@ All notable changes to ctx-watch are recorded here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). The 0.1.0 release is described under
 *Changes in 0.1.0* in [README.md](README.md#changes-in-010).
 
+## [0.4.0] - 2026-11-11
+
+ctx dies in the middle of sessions (2026-11-04 three times in one afternoon, 2026-11-11 between
+two repairs), and until now the agent heard about it only at SessionStart.
+
+### Added
+
+- `hooks/mid-session.mjs` on `UserPromptSubmit`, and on `PostToolUseFailure` of a ctx call
+  (`Bash` with `if: "Bash(ctx *)"`, and `mcp__ctx__.*`). It spawns nothing: it reads the timer's
+  `state.json` and a per-session latch, `sessions/<session id>.json`, and adds
+  `additionalContext` once per session per episode: ctx down (daemon, stuck upgrade, or upgrade
+  state unknown) since when, with `/ctx-watch:repair`; ctx back (one line), only once a tick
+  probe after the telling passed (a missing, broken or reset state is not a recovery); the timer's state
+  over 15 min old, so not trusted (one line). Healthy: no output. Measured median 56 ms per
+  healthy prompt, 27 ms of it node's own start.
+- The latch is claimed under `sessions/<session id>.json.lock`, so a prompt and a failed ctx
+  call firing at once in one session say a thing once; a held lock means silence.
+- `prune` removes session latches and their lock files older than `--days`; `plugin.json`
+  `state` declares `sessions/`.
+- Seven eval scenarios for the two new events (`evals/prompt-*`, `evals/failed-*`), with
+  `evals/fixtures/write-state.mjs` writing the timer's state from the run's clock.
+
+### Changed
+
+- `repair`'s launchd gate is a write: it bootstraps and boots out a throwaway LaunchAgent
+  (`com.jo-wolff-plugins.ctx-watch.reach-probe.<pid>.<random>`, unique per run, `/usr/bin/true`,
+  never started; its plist in a temp directory removed on every path) before pausing the timer,
+  and refuses (exit 3, nothing changed, launchctl's line) if it cannot. `launchctl print
+  gui/<uid>`, the 0.3.0 gate, passes in a sandboxed shell whose bootstrap fails with `Bootstrap
+  failed: 5: Input/output error`, so repair would have booted the timer out and failed to
+  restore it. Probes and temp directories of runs whose pid is dead are cleared first; a live
+  run's are left alone. SIGINT, SIGTERM or SIGHUP during the probe ends the run once the probe's
+  own cleanup has run (exit 128 + n, nothing changed); the reason claims an unload only when
+  launchctl confirmed it, else keeps launchctl's error and names the label left loaded.
+- The SessionStart hook records in the session's latch every outage it tells the agent of
+  (down, stuck, ctx missing; not a live upgrade), even one the timer has not declared, so the
+  first prompt does not repeat it and the recovery line still comes.
+
+### Fixed
+
+- `repair`'s JSON `timer.wasLoaded` is `null` (not checked) on the healthy return and on a
+  refusal before the timer step; it read `false` there, even with the timer loaded.
+- A slow ctx is no longer told as down. On 2026-11-11 (22:44-23:06Z, load average 78-183) the
+  `ctx daemon status` call missed its 10 s twice while the daemon ran throughout, and two "ctx is
+  down" popups were false. A status call that times out now asks whether the daemon's process
+  is alive, without running ctx: the pid in `<data root>/daemon/query-endpoint.json` is running
+  and the query socket that file names accepts a connection (a dead daemon's leftover socket
+  refuses; the check does not prove the pid owns the listener, and a slow run is bounded).
+  Alive: the tick logs `slow: …`, with no strike, no popup, no heal and no upgrade read; the
+  SessionStart hook says nothing; the mid-session hook says one quiet line once the timer has
+  seen it slow for 15 min ("ctx is answering slowly …; ctx searches may time out"), never
+  "down" or a repair. Not alive: a failure, as before. A slow run that lasts 30 min
+  (`SLOW_MAX_MS`) counts as down, since a hung daemon still accepts on its socket. `state.json`
+  gains `slowSince`, and `lastProbe.kind` (what that probe itself found: a failure kind, `slow`
+  or `upgrading`); the session latch gains `slow`. A slow or live-upgrade tick is never read as
+  the daemon's recovery (it holds the episode's old kind). The endpoint's socket path must be
+  one ctx 2.3.0 binds (`<data root>/daemon/query.sock`, or `ctx-q-<32 hex>/q.sock` under `/tmp`
+  or `TMPDIR`, at most 90 bytes, transport `unix`); any other is not alive and never connected
+  to, and the path reaches the connecting child in its environment, not its argv.
+
 ## [0.3.0] - 2026-11-11
 
 From the 2026-11-05 to 11-11 outage: ctx 2.3.0's automatic upgrade died between `quiescing`

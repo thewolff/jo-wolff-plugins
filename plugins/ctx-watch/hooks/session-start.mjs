@@ -12,7 +12,14 @@
 // When ctx is down, stuck in an upgrade, or mid-upgrade, the answer also carries
 // hookSpecificOutput.additionalContext (agentContext): one short block for the agent naming what
 // is down, since when, and the exact command it may run or hand over. Healthy, or only the
-// semantic index not ready (the daemon is up; the systemMessage covers it): no context.
+// semantic index not ready (the daemon is up; the systemMessage covers it): no context. Only
+// slow (the status call timed out while the daemon's process is alive and its query socket
+// accepts: probe.mjs daemonAlive): no line and no context, since nothing is down. Every
+// outage it tells the agent about (down, stuck, ctx missing; not a live upgrade, which is not an
+// outage to repair) is recorded in the session's latch (lib/mid-session.mjs noteTold), with the
+// timer's downSince when the timer has declared it and null when only this hook's own probe saw
+// it, so the mid-session hook does not repeat it, adopts the timer's episode when it is declared,
+// and still says when ctx is back; a latch it cannot write is one errors.log line.
 // Then the dead-man's line: when the launchd tick has not stamped <state>/state.json in more than
 // twice its interval (or, never ticked, since this hook first ran), `ctx-watch: timer has not run
 // since <time>; run \`node <cli> install\` and the printed launchctl line` (as long as the
@@ -48,6 +55,7 @@ import { runHook, invokedDirectly, logError } from "../lib/hook-runner.mjs";
 import { check, needsYouLine, LINE_MAX, CTX, FIX_MISSING } from "../lib/probe.mjs";
 import { readState, writeState, statePath, timerOverdue, withStateLock, failureKind } from "../lib/state.mjs";
 import { isResume, markResumed } from "../lib/consult-history.mjs";
+import { noteTold } from "../lib/mid-session.mjs";
 import { dirname } from "node:path";
 import { shellQuote } from "../lib/launchd.mjs";
 import { CLI_PATH } from "../scripts/ctx-watch.mjs";
@@ -72,12 +80,13 @@ export function stampLine(file, err) {
 }
 
 /**
- * The agent's block for a failing check, or null when the agent needs nothing: ctx healthy, or
- * only the semantic index not ready. `since` (ms) is when the outage started: the timer's
+ * The agent's block for a failing check, or null when the agent needs nothing: ctx healthy, only
+ * the semantic index not ready, or only slow (its status call timed out while its daemon's
+ * process is alive: probe.mjs daemonAlive). `since` (ms) is when the outage started: the timer's
  * downSince when it has one, else this probe.
  */
 export function agentContext(result, since, cliPath = CLI_PATH) {
-  if (result.ok) return null;
+  if (result.ok || result.slow === true) return null;
   const upgrading = result.upgrading === true;
   const kind = failureKind(result);
   if (!upgrading && kind === "semantic") return null;
@@ -114,15 +123,16 @@ export function agentContext(result, since, cliPath = CLI_PATH) {
  * @param {object} input  the host's JSON for this event
  * @returns {object|null}  { systemMessage, hookSpecificOutput? } or null for "nothing to say"
  */
-export function handle(input, { env = process.env, now = Date.now, run, exists, cliPath = CLI_PATH, timeoutMs = HOOK_SPAWN_MS, deadlineMs = HOOK_DEADLINE_MS } = {}) {
+export function handle(input, { env = process.env, now = Date.now, run, exists, daemonAlive, cliPath = CLI_PATH, timeoutMs = HOOK_SPAWN_MS, deadlineMs = HOOK_DEADLINE_MS } = {}) {
   const lines = [];
   const file = statePath(env);
   if (isResume(input.source) && typeof input.session_id === "string" && input.session_id.trim()) {
     const err = markResumed(dirname(file), input.session_id.trim(), now());
     if (err) logError("ctx-watch", "SessionStart", `resume marker for ${input.session_id.trim()} not written (${err.message}); consult-history will not check this resume`, env);
   }
-  const result = check({ env, now, run, exists, timeoutMs, deadlineMs, heal: false, ctx: typeof env.CTX_WATCH_CTX === "string" && env.CTX_WATCH_CTX ? env.CTX_WATCH_CTX : CTX });
-  if (!result.ok) lines.push(needsYouLine(result));
+  const result = check({ env, now, run, exists, daemonAlive, timeoutMs, deadlineMs, heal: false, ctx: typeof env.CTX_WATCH_CTX === "string" && env.CTX_WATCH_CTX ? env.CTX_WATCH_CTX : CTX });
+  // Slow is not down: the person gets no line for it, as the timer gives no popup.
+  if (!result.ok && result.slow !== true) lines.push(needsYouLine(result));
   const state = readState(file);
   const at = now();
   if (state.lastTickAt === null && state.firstSeenAt === null) {
@@ -144,6 +154,11 @@ export function handle(input, { env = process.env, now = Date.now, run, exists, 
   if (t.overdue) lines.push(timerLine(t.since, cliPath));
   if (!lines.length) return null;
   const context = agentContext(result, (state.episode === "down" ? state.downSince : null) ?? result.at ?? at, cliPath);
+  const id = typeof input.session_id === "string" ? input.session_id.trim() : "";
+  if (context && id && result.upgrading !== true) {
+    const err = noteTold(dirname(file), id, { down: state.episode === "down" && state.episodeKind !== "semantic" ? state.downSince : null, toldAt: at });
+    if (err) logError("ctx-watch", "SessionStart", `mid-session latch for ${id} not written (${err.message}); the first prompt will repeat this`, env);
+  }
   return context ? { systemMessage: lines.join("\n"), hookSpecificOutput: { hookEventName: "SessionStart", additionalContext: context } } : { systemMessage: lines.join("\n") };
 }
 

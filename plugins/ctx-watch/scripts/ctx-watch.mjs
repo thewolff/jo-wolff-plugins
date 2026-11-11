@@ -18,6 +18,10 @@
 //                            failed after the grace, is tried again next failing tick; re-armed
 //                            as lib/state.mjs says. A tick during a live ctx upgrade (`upgrading`)
 //                            heals nothing, strikes nothing, pops nothing: one `wait:` line. A
+//                            tick whose status call timed out while the daemon's process is
+//                            alive (probe.mjs daemonAlive) is `slow:`: no heal, no strike, no
+//                            popup, until the slow run has lasted SLOW_MAX_MS (30 min), when it
+//                            counts as down (the line stays `slow:`; the episode says so). A
 //                            claim that cannot be recorded (no lock, a failed write) starts no
 //                            popup. One summary line.
 //   repair                   the agent-runnable repair (lib/repair.mjs): refuses during a live
@@ -97,7 +101,7 @@ export function parseArgs(argv) {
 }
 
 export async function main(argv, deps = {}) {
-  const { env = process.env, now = Date.now, run, exists, popup = showPopup, check: checkBin, node, uid, cwd = process.cwd(), cliPath = CLI_PATH, timeoutMs, ctxExists, lockWaitMs = LOCK_WAIT_MS, sleep } = deps;
+  const { env = process.env, now = Date.now, run, exists, popup = showPopup, check: checkBin, node, uid, cwd = process.cwd(), cliPath = CLI_PATH, timeoutMs, ctxExists, lockWaitMs = LOCK_WAIT_MS, sleep, daemonAlive } = deps;
   let verb;
   let opts;
   try {
@@ -112,7 +116,7 @@ export async function main(argv, deps = {}) {
   const dir = opts["state-dir"] ? resolve(cwd, opts["state-dir"]) : defaultStateDir(env);
   const ctx = opts.ctx ? resolve(cwd, opts.ctx) : CTX;
   const file = statePath(env, dir);
-  const probeDeps = { env, now, run, exists, timeoutMs, ctx };
+  const probeDeps = { env, now, run, exists, timeoutMs, ctx, daemonAlive };
   switch (verb) {
     case "check": {
       const result = runCheckOnce(probeDeps);
@@ -131,7 +135,7 @@ export async function main(argv, deps = {}) {
       const result = runCheckOnce(probeDeps);
       const at = now();
       const token = `${at}-${process.pid}`;
-      const verdict = result.ok ? "pass" : result.upgrading ? "wait" : "fail";
+      const verdict = result.ok ? "pass" : result.upgrading ? "wait" : result.slow ? "slow" : "fail";
       const probeLine = `${iso(at)} ${verdict}: ${result.ok ? result.summary : result.reason}${result.healed ? ` | heal: ${result.healed.detail}` : ""}`;
       const notWritten = (err) => `state not written to ${file}: ${err?.message}`;
       // Settle, step and claim in one locked read-modify-write: a second tick sees the claim.
@@ -205,7 +209,7 @@ export async function main(argv, deps = {}) {
         `ctx: ${ctx}`,
         `last tick: ${iso(state.lastTickAt)}${t.overdue ? ` (overdue: more than ${2 * t.intervalS} s ago)` : ""}`,
         `last probe: ${state.lastProbe ? `${state.lastProbe.ok ? "pass" : `fail: ${state.lastProbe.reason}`} at ${iso(state.lastProbe.at)}${state.lastProbe.healed ? ` | heal: ${state.lastProbe.healed}` : ""}` : "never"}`,
-        `episode: ${state.episode}${state.episodeKind ? ` [${state.episodeKind}]` : ""} (strikes ${state.strikes}${state.downSince ? `, down since ${iso(state.downSince)}` : ""}${popupLine})`,
+        `episode: ${state.episode}${state.episodeKind ? ` [${state.episodeKind}]` : ""} (strikes ${state.strikes}${state.downSince ? `, down since ${iso(state.downSince)}` : ""}${state.slowSince ? `, slow since ${iso(state.slowSince)}` : ""}${popupLine})`,
         `plist: ${plistPath(env, undefined, dir)}${state.intervalS ? ` (every ${state.intervalS} s)` : " (not written by install yet)"}`,
         `launchd: ${loaded({ uid, check: checkBin }).detail}`,
       ];

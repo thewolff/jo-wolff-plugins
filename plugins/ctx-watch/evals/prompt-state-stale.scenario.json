@@ -1,0 +1,17 @@
+{
+  "$comment": "The timer has not stamped state.json in 40 min: its 'healthy' is not trusted, and the agent is told once.",
+  "event": "UserPromptSubmit",
+  "expect": "systemMessage",
+  "reason": "so it cannot tell whether ctx is up now",
+  "setup": {
+    "commands": [
+      "node \"${PLUGIN_DIR}/evals/fixtures/write-state.mjs\" stale"
+    ]
+  },
+  "stdin": {
+    "session_id": "${SESSION_ID}",
+    "cwd": "${CWD}",
+    "hook_event_name": "UserPromptSubmit",
+    "prompt": "carry on with the refactor"
+  }
+}

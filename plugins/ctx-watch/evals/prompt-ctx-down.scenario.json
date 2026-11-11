@@ -1,0 +1,22 @@
+{
+  "$comment": "The timer's state says ctx has been down since 2026-11-04T07:20:00Z: the first prompt of the session tells the agent once, with /ctx-watch:repair, and latches it. No ctx and no launchctl run (none is on the hook's path here).",
+  "event": "UserPromptSubmit",
+  "expect": "systemMessage",
+  "reason": "Repair: `/ctx-watch:repair`",
+  "setup": {
+    "commands": [
+      "node \"${PLUGIN_DIR}/evals/fixtures/write-state.mjs\" down"
+    ]
+  },
+  "stdin": {
+    "session_id": "${SESSION_ID}",
+    "cwd": "${CWD}",
+    "hook_event_name": "UserPromptSubmit",
+    "prompt": "carry on with the refactor"
+  },
+  "after": {
+    "exists": [
+      "${XDG_STATE_HOME}/ctx-watch/sessions/${SESSION_ID}.json"
+    ]
+  }
+}

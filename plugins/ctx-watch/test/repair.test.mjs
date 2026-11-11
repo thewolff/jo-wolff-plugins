@@ -8,12 +8,13 @@
 
 import test from "node:test";
 import assert from "node:assert/strict";
-import { spawnSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { spawn, spawnSync } from "node:child_process";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, utimesSync, writeFileSync } from "node:fs";
+import { constants as osConstants, tmpdir } from "node:os";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import * as cli from "../scripts/ctx-watch.mjs";
+import * as launchd from "../lib/launchd.mjs";
 
 const FIX_DIR = join(dirname(fileURLToPath(import.meta.url)), "fixtures");
 const HEALTHY_RAW = JSON.parse(readFileSync(join(FIX_DIR, "ctx-daemon-status.txt"), "utf8"));
@@ -44,8 +45,9 @@ const deadPid = () => spawnSync("/bin/sh", ["-c", "exit 0"]).pid;
 
 function box() {
   const root = mkdtempSync(join(tmpdir(), "ctx-watch-repair-"));
-  const env = { XDG_STATE_HOME: join(root, "state"), HOME: join(root, "home"), CTX_DATA_ROOT: join(root, "ctx"), PATH: "/usr/bin:/bin", LANG: "en_US.UTF-8", CI: "true" };
+  const env = { XDG_STATE_HOME: join(root, "state"), HOME: join(root, "home"), CTX_DATA_ROOT: join(root, "ctx"), PATH: "/usr/bin:/bin", LANG: "en_US.UTF-8", CI: "true", TMPDIR: join(root, "tmp") };
   mkdirSync(env.HOME, { recursive: true });
+  mkdirSync(env.TMPDIR, { recursive: true });
   return { root, env, release: () => rmSync(root, { recursive: true, force: true }) };
 }
 
@@ -86,15 +88,30 @@ function fakeCtx({ status = brokenEnv(), upgrade = "dry_run", auto = true, fail 
 /** The `locale -a` the doubles answer with by default: a few of what macOS 15 lists. */
 const HOST_LOCALES = ["C", "POSIX", "en_US", "en_US.UTF-8", "en_GB.UTF-8", "de_DE.UTF-8"];
 
+/** The reach probe's label prefix (0.4.0): each run's throwaway LaunchAgent is `<PROBE>.<pid>.<random>`. */
+const PROBE = "com.jo-wolff-plugins.ctx-watch.reach-probe";
+const isProbe = (label) => String(label).startsWith(`${PROBE}.`);
+const SANDBOX_BOOTSTRAP = { missing: false, code: 5, output: "Bootstrap failed: 5: Input/output error\n" };
+
 /**
  * A launchctl double: the GUI domain answers, the timer is loaded; `unreachable` makes the domain
- * print fail as launchctl does (112); `missing` makes launchctl not found; `jobQuery` replaces
- * the answer to `launchctl print gui/<uid>/<label>`; `onBootout` runs when the timer is paused.
- * It also answers `defaults read -g AppleLocale` with `locale` (null: the key is absent, exit 1,
- * as `defaults` says for a missing key) and `locale -a` with `locales`.
+ * print fail as launchctl does (112) and any bootstrap fail; `missing` makes launchctl not found;
+ * `jobQuery` replaces the answer to `launchctl print gui/<uid>/<label>`; `onBootout` runs when
+ * the timer is paused. Reach-probe calls (any label under PROBE) go to `probe` (never `calls`,
+ * which is the ctx-watch timer's and the locale lookups'), tracked per label in `probeLabels`
+ * (seeded with `probeLeftLoaded`): `probeBootstrap` and `probeBootout` replace their answers (a
+ * function may throw; it gets the label), and `plists` keeps each probe plist as it was when
+ * bootstrapped, with its path. A bootout of a probe label that is not loaded answers launchctl's 3
+ * (no such process); a bootstrap of one already loaded answers 5, as launchd does. It also answers
+ * `defaults read -g AppleLocale` with `locale` (null: the key is absent, exit 1, as `defaults`
+ * says for a missing key) and `locale -a` with `locales`.
  */
-function fakeLaunchctl({ loaded = true, unreachable = false, bootstrapCode = 0, locale = null, locales = HOST_LOCALES, missing = false, jobQuery = null, onBootout = () => {} } = {}) {
+function fakeLaunchctl({ loaded = true, unreachable = false, bootstrapCode = 0, locale = null, locales = HOST_LOCALES, missing = false, jobQuery = null, onBootout = () => {}, probeBootstrap = null, probeBootout = null, probeLeftLoaded = [] } = {}) {
   const calls = [];
+  const probe = [];
+  const plists = [];
+  const probeLabels = new Set(probeLeftLoaded);
+  const answer = (a, label) => (typeof a === "function" ? a(label) : a);
   const check = (bin, args) => {
     if (bin === "defaults") {
       calls.push(`defaults ${args.join(" ")}`);
@@ -107,17 +124,40 @@ function fakeLaunchctl({ loaded = true, unreachable = false, bootstrapCode = 0, 
       return { missing: false, code: 0, output: `${locales.join("\n")}\n` };
     }
     assert.equal(bin, "launchctl");
+    const [verb, target, path] = args;
+    const bootLabel = verb === "bootstrap" ? String(path).split("/").at(-1).replace(/\.plist$/, "") : null;
+    if (verb === "bootstrap" && isProbe(bootLabel)) {
+      probe.push(args.join(" "));
+      if (missing) return { missing: true, code: null, output: "" };
+      plists.push({ path, label: bootLabel, text: readFileSync(path, "utf8") });
+      const r = probeLabels.has(bootLabel) ? SANDBOX_BOOTSTRAP : answer(probeBootstrap, bootLabel) ?? (unreachable ? SANDBOX_BOOTSTRAP : { missing: false, code: 0, output: "" });
+      if (r.code === 0) probeLabels.add(bootLabel);
+      return r;
+    }
+    if (verb === "list" && args.length === 1) {
+      probe.push("list");
+      if (missing) return { missing: true, code: null, output: "" };
+      return { missing: false, code: 0, output: `PID\tStatus\tLabel\n-\t0\tcom.apple.example\n-\t0\tcom.jo-wolff-plugins.ctx-watch\n${[...probeLabels].map((l) => `-\t0\t${l}\n`).join("")}` };
+    }
+    const outLabel = verb === "bootout" ? String(target).split("/").at(-1) : null;
+    if (verb === "bootout" && isProbe(outLabel)) {
+      probe.push(args.join(" "));
+      if (missing) return { missing: true, code: null, output: "" };
+      if (!probeLabels.has(outLabel)) return { missing: false, code: 3, output: "Boot-out failed: 3: No such process\n" };
+      const r = answer(probeBootout, outLabel) ?? { missing: false, code: 0, output: "" };
+      if (r.code === 0) probeLabels.delete(outLabel);
+      return r;
+    }
     calls.push(args.join(" "));
     if (missing) return { missing: true, code: null, output: "" };
-    const [verb, target] = args;
     if (verb === "print" && /^gui\/\d+$/.test(target)) return unreachable ? { missing: false, code: 112, output: `Bad request.\nCould not find domain for user gui: ${target.slice(4)}\n` } : { missing: false, code: 0, output: "domain" };
     if (verb === "print" && jobQuery) return jobQuery;
     if (verb === "print") return loaded ? { missing: false, code: 0, output: "state = not running\n" } : { missing: false, code: 113, output: "Could not find service" };
     if (verb === "bootout") return onBootout(), { missing: false, code: 0, output: "" };
-    if (verb === "bootstrap") return { missing: false, code: bootstrapCode, output: bootstrapCode ? "Bootstrap failed: 5: Input/output error" : "" };
+    if (verb === "bootstrap") return unreachable ? SANDBOX_BOOTSTRAP : { missing: false, code: bootstrapCode, output: bootstrapCode ? "Bootstrap failed: 5: Input/output error" : "" };
     return { missing: false, code: 1, output: "?" };
   };
-  return { calls, check };
+  return { calls, probe, plists, probeLabels, check, probeLoaded: () => probeLabels.size > 0 };
 }
 
 const repair = (b, ctx, lc, extra = {}) => cli.main(["repair"], { env: b.env, run: ctx.run, check: lc.check, uid: 501, exists: () => true, sleep: () => {}, ...extra });
@@ -254,6 +294,22 @@ test("7. repair on a healthy daemon changes nothing and says so (exit 0)", async
   }
 });
 
+test("0.4.0 a healthy repair reports the timer as not checked (wasLoaded null), never false, and touches no launchd job, probe included", async () => {
+  const b = box();
+  try {
+    const ctx = fakeCtx({ status: healthy() });
+    const lc = fakeLaunchctl({ loaded: true });
+    const r = await repair(b, ctx, lc);
+    const j = parse(r);
+    assert.equal(r.code, 0, r.text);
+    assert.deepEqual(j.timer, { wasLoaded: null, paused: false, restored: null }, "a loaded timer that was never asked about is not reported unloaded");
+    assert.deepEqual(lc.calls.filter((c) => /^(bootout|bootstrap)/.test(c)), []);
+    assert.deepEqual(lc.probe, [], "no reach probe on the healthy path");
+  } finally {
+    b.release();
+  }
+});
+
 test("7. repair refuses before any change when the GUI launchd domain is not reachable from this shell", async () => {
   const b = box();
   try {
@@ -268,6 +324,292 @@ test("7. repair refuses before any change when the GUI launchd domain is not rea
   } finally {
     b.release();
   }
+});
+
+const timerBootouts = (lc) => lc.calls.filter((c) => c === "bootout gui/501/com.jo-wolff-plugins.ctx-watch");
+const probeGone = (lc) => lc.plists.every((p) => !existsSync(dirname(p.path)));
+
+test("0.4.0 repair refuses when launchctl can read gui/501 but not bootstrap into it (the sandboxed shell): exit 3, launchctl's error, the real timer never booted out, the probe's plist gone", async () => {
+  const b = box();
+  try {
+    const ctx = fakeCtx();
+    const lc = fakeLaunchctl({ probeBootstrap: SANDBOX_BOOTSTRAP });
+    const r = await repair(b, ctx, lc);
+    const j = parse(r);
+    assert.equal(r.code, 3, r.text);
+    assert.equal(j.refused, true);
+    assert.equal(j.changed, false);
+    assert.match(j.reason, /Bootstrap failed: 5: Input\/output error/);
+    assert.match(j.reason, /gui\/501/);
+    assert.deepEqual(changing(ctx), [], "no ctx change");
+    assert.deepEqual(timerBootouts(lc), [], "the ctx-watch timer was never paused");
+    assert.deepEqual(lc.calls.filter((c) => /^boot/.test(c)), [], "nothing but the probe touched launchd");
+    assert.ok(lc.probe.some((c) => c.startsWith("bootstrap gui/501 ")), "the probe was tried");
+    assert.equal(lc.plists.length, 1);
+    assert.ok(probeGone(lc), "the probe's temp plist is removed");
+    assert.equal(lc.probeLoaded(), false);
+  } finally {
+    b.release();
+  }
+});
+
+test("0.4.0 the reach probe runs before the timer is paused: a throwaway /usr/bin/true LaunchAgent, bootstrapped and booted out, its plist removed", async () => {
+  const b = box();
+  try {
+    writeHandoff(b.env, { pid: deadPid(), ageMs: 40 * MIN });
+    const ctx = fakeCtx({ upgrade: "quiescing" });
+    const order = [];
+    const lc = fakeLaunchctl({ onBootout: () => order.push("timer bootout") });
+    const check = (bin, args) => {
+      if (bin === "launchctl" && String(args.at(-1)).includes(PROBE)) order.push(`probe ${args[0]}`);
+      return lc.check(bin, args);
+    };
+    const r = await repair(b, ctx, { ...lc, check });
+    assert.equal(r.code, 0, r.text);
+    assert.equal(lc.plists.length, 1);
+    const { text } = lc.plists[0];
+    assert.match(text, new RegExp(`<key>Label</key>\\s*<string>${PROBE.replaceAll(".", "\\.")}\\.${process.pid}\\.[A-Za-z0-9]+</string>`));
+    assert.match(text, /<key>ProgramArguments<\/key>\s*<array>\s*<string>\/usr\/bin\/true<\/string>\s*<\/array>/);
+    assert.doesNotMatch(text, /RunAtLoad<\/key>\s*<true\/>/, "the probe never runs anything");
+    assert.ok(order.indexOf("probe bootstrap") >= 0 && order.indexOf("probe bootstrap") < order.indexOf("timer bootout"), order.join(", "));
+    assert.ok(order.lastIndexOf("probe bootout") < order.indexOf("timer bootout"), `probe booted out before the timer is paused: ${order.join(", ")}`);
+    assert.equal(lc.probeLoaded(), false, "the probe is not left loaded");
+    assert.ok(probeGone(lc), "the probe's temp plist is removed");
+  } finally {
+    b.release();
+  }
+});
+
+test("0.4.0 a probe that bootstraps but cannot be booted out refuses (bootout is how the timer is paused), plist removed, timer untouched", async () => {
+  const b = box();
+  try {
+    const ctx = fakeCtx();
+    const lc = fakeLaunchctl({ probeBootout: { missing: false, code: 5, output: "Boot-out failed: 5: Input/output error\n" } });
+    const r = await repair(b, ctx, lc);
+    const j = parse(r);
+    assert.equal(r.code, 3, r.text);
+    assert.match(j.reason, /Boot-out failed: 5/);
+    assert.match(j.reason, new RegExp(PROBE.replaceAll(".", "\\.")), "names the label left behind");
+    assert.deepEqual(changing(ctx), []);
+    assert.deepEqual(timerBootouts(lc), []);
+    assert.ok(probeGone(lc));
+  } finally {
+    b.release();
+  }
+});
+
+test("0.4.0 a launchctl that throws during the probe is a refusal, not a crash, and the probe's plist is still removed", async () => {
+  const b = box();
+  try {
+    const ctx = fakeCtx();
+    const lc = fakeLaunchctl({
+      probeBootstrap: () => {
+        throw new Error("spawn launchctl EPERM");
+      },
+    });
+    const r = await repair(b, ctx, lc);
+    const j = parse(r);
+    assert.equal(r.code, 3, r.text);
+    assert.match(j.reason, /EPERM/);
+    assert.deepEqual(changing(ctx), []);
+    assert.deepEqual(timerBootouts(lc), []);
+    assert.equal(lc.plists.length, 1);
+    assert.ok(probeGone(lc));
+  } finally {
+    b.release();
+  }
+});
+
+test("0.4.0 each probe has its own label (prefix, pid, random), so two runs never share one", async () => {
+  const b = box();
+  try {
+    const lc = fakeLaunchctl();
+    assert.equal((await repair(b, fakeCtx(), lc)).code, 0);
+    assert.equal((await repair(b, fakeCtx(), lc)).code, 0);
+    const labels = lc.plists.map((p) => p.label);
+    assert.equal(labels.length, 2);
+    for (const l of labels) assert.match(l, new RegExp(`^${PROBE.replaceAll(".", "\\.")}\\.${process.pid}\\.[A-Za-z0-9]+$`));
+    assert.notEqual(labels[0], labels[1]);
+    for (const p of lc.plists) assert.match(p.text, new RegExp(`<string>${p.label.replaceAll(".", "\\.")}</string>`));
+  } finally {
+    b.release();
+  }
+});
+
+test("0.4.0 a probe running inside another's bootstrap-to-bootout window removes nothing of the other's: both pass", () => {
+  const b = box();
+  try {
+    const lc = fakeLaunchctl();
+    let inner = null;
+    const check = (bin, args) => {
+      const r = lc.check(bin, args);
+      if (inner === null && bin === "launchctl" && args[0] === "bootstrap" && r.code === 0) inner = launchd.reachProbe({ uid: 501, check: lc.check, tmp: b.env.TMPDIR });
+      return r;
+    };
+    const outer = launchd.reachProbe({ uid: 501, check, tmp: b.env.TMPDIR });
+    for (const r of [inner, outer]) assert.deepEqual({ ok: r?.ok, missing: r?.missing, detail: r?.detail, loaded: r?.loaded, plistRemoved: r?.plistRemoved }, { ok: true, missing: false, detail: null, loaded: false, plistRemoved: true });
+    assert.notEqual(inner.label, outer.label);
+    assert.equal(lc.probeLabels.size, 0, "both unloaded their own");
+    assert.equal(new Set(lc.plists.map((p) => p.label)).size, 2);
+    assert.deepEqual(probeDirs(b), []);
+  } finally {
+    b.release();
+  }
+});
+
+const probeDirs = (b) => readdirSync(b.env.TMPDIR).filter((n) => n.startsWith("ctx-watch-reach-"));
+
+test("0.4.0 a probe a killed run left behind (dead pid in its label) is booted out and its temp directory removed; a live run's is left alone", async () => {
+  const b = box();
+  try {
+    const dead = deadPid();
+    const live = process.ppid;
+    const deadLabel = `${PROBE}.${dead}.zz`;
+    const liveLabel = `${PROBE}.${live}.yy`;
+    for (const [pid, label] of [[dead, deadLabel], [live, liveLabel]]) {
+      const d = join(b.env.TMPDIR, `ctx-watch-reach-${pid}-abc${pid}`);
+      mkdirSync(d);
+      writeFileSync(join(d, `${label}.plist`), "<plist/>");
+    }
+    const lc = fakeLaunchctl({ probeLeftLoaded: [deadLabel, liveLabel] });
+    const r = await repair(b, fakeCtx(), lc);
+    assert.equal(r.code, 0, r.text);
+    assert.ok(lc.probe.includes(`bootout gui/501/${deadLabel}`), lc.probe.join("\n"));
+    assert.ok(!lc.probe.includes(`bootout gui/501/${liveLabel}`), "a live run's probe is not touched");
+    assert.deepEqual([...lc.probeLabels], [liveLabel]);
+    assert.deepEqual(probeDirs(b), [`ctx-watch-reach-${live}-abc${live}`]);
+  } finally {
+    b.release();
+  }
+});
+
+/**
+ * A repair process whose launchctl double blocks inside the reach probe's bootstrap or bootout, and records what it did in files.
+ * Phases: `bootstrap` and `bootout` block, then succeed; `bootout-fail` blocks, then answers launchctl's 5 and leaves the probe
+ * loaded; `bootout-throw` blocks, then throws (the probe left loaded); `bootstrap-fail` blocks, then refuses the bootstrap (5,
+ * nothing loaded).
+ */
+const PROBE_CHILD = `
+import fs from "node:fs";
+import { repair } from "./lib/repair.mjs";
+const [dir, phase, statusFile] = process.argv.slice(1);
+const log = (s) => fs.appendFileSync(dir + "/calls", s + "\\n");
+const loadedFile = dir + "/loaded";
+const block = () => { fs.writeFileSync(dir + "/ready", ""); Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 1500); };
+const check = (bin, args) => {
+  log(bin + " " + args.join(" "));
+  if (bin === "locale") return { missing: false, code: 0, output: "C\\nen_US.UTF-8\\n" };
+  if (bin === "defaults") return { missing: false, code: 1, output: "" };
+  const [verb, target, path] = args;
+  if (verb === "list") return { missing: false, code: 0, output: "PID\\tStatus\\tLabel\\n" + (fs.existsSync(loadedFile) ? "-\\t0\\t" + fs.readFileSync(loadedFile, "utf8") + "\\n" : "") };
+  if (verb === "bootstrap" && String(path).includes("reach-probe")) {
+    if (phase === "bootstrap-fail") {
+      block();
+      return { missing: false, code: 5, output: "Bootstrap failed: 5: Input/output error" };
+    }
+    fs.writeFileSync(loadedFile, String(path).split("/").at(-1).replace(/\\.plist$/, ""));
+    if (phase === "bootstrap") block();
+    return { missing: false, code: 0, output: "" };
+  }
+  if (verb === "bootout" && String(target).includes("reach-probe")) {
+    if (!fs.existsSync(loadedFile)) return { missing: false, code: 3, output: "Boot-out failed: 3: No such process" };
+    if (phase.startsWith("bootout")) block();
+    if (phase === "bootout-fail") return { missing: false, code: 5, output: "Boot-out failed: 5: Input/output error" };
+    if (phase === "bootout-throw") throw new Error("spawn launchctl EPERM");
+    fs.rmSync(loadedFile);
+    return { missing: false, code: 0, output: "" };
+  }
+  return { missing: false, code: 0, output: "" };
+};
+const status = fs.readFileSync(statusFile, "utf8");
+const run = () => ({ code: 0, stdout: status, stderr: "" });
+const env = { HOME: dir, XDG_STATE_HOME: dir + "/state", CTX_DATA_ROOT: dir + "/ctx", TMPDIR: dir + "/tmp", LANG: "en_US.UTF-8", PATH: "/usr/bin:/bin" };
+const r = await repair({ env, run, check, uid: 501, exists: () => true, sleep: () => {} });
+process.stdout.write(r.text);
+process.exit(r.code);
+`;
+
+function signalDuringProbe(phase, sig) {
+  const root = mkdtempSync(join(tmpdir(), "ctx-watch-probe-sig-"));
+  mkdirSync(join(root, "tmp"));
+  const child = spawn(process.execPath, ["--input-type=module", "-e", PROBE_CHILD, root, phase, join(FIX_DIR, "ctx-daemon-status-not-running.txt")], { cwd: join(FIX_DIR, "..", ".."), stdio: ["ignore", "pipe", "pipe"] });
+  let out = "";
+  let err = "";
+  child.stdout.on("data", (d) => (out += d));
+  child.stderr.on("data", (d) => (err += d));
+  const done = new Promise((resolve) => child.on("close", (code, signal) => resolve({ code, signal })));
+  return (async () => {
+    const until = Date.now() + 10_000;
+    while (!existsSync(join(root, "ready"))) {
+      if (Date.now() > until) break;
+      await new Promise((r) => setTimeout(r, 5));
+    }
+    child.kill(sig);
+    const { code, signal } = await done;
+    const calls = existsSync(join(root, "calls")) ? readFileSync(join(root, "calls"), "utf8") : "";
+    const result = { code, signal, out, err, calls, loaded: existsSync(join(root, "loaded")), probeDirs: readdirSync(join(root, "tmp")) };
+    rmSync(root, { recursive: true, force: true });
+    return result;
+  })();
+}
+
+test("0.4.0 SIGTERM, SIGINT or SIGHUP during the probe's bootstrap or bootout: the probe is unloaded, its plist removed, the timer never touched, exit 128+n", async () => {
+  const cases = [["bootstrap", "SIGTERM"], ["bootout", "SIGTERM"], ["bootstrap", "SIGINT"], ["bootstrap", "SIGHUP"]];
+  const results = await Promise.all(cases.map(([phase, sig]) => signalDuringProbe(phase, sig)));
+  for (const [i, [phase, sig]] of cases.entries()) {
+    const r = results[i];
+    const what = `${sig} during ${phase}`;
+    assert.equal(r.signal, null, `${what}: the process handled the signal, not died of it (${r.err})`);
+    assert.equal(r.code, 128 + osConstants.signals[sig], `${what}: ${r.out}${r.err}`);
+    const j = JSON.parse(r.out.split("\n")[0]);
+    assert.equal(j.changed, false, what);
+    assert.match(j.reason, new RegExp(`interrupted by ${sig}`), what);
+    assert.equal(r.loaded, false, `${what}: probe unloaded`);
+    assert.deepEqual(r.probeDirs, [], `${what}: probe plist directory removed`);
+    assert.doesNotMatch(r.calls, /launchctl bootout gui\/501\/com\.jo-wolff-plugins\.ctx-watch\n/, `${what}: the timer was never paused`);
+  }
+});
+
+test("0.4.0 a signal during the probe whose bootout then fails or throws keeps launchctl's error, names the label left loaded, and never claims it was unloaded", async () => {
+  const cases = [["bootout-fail", /Boot-out failed: 5: Input\/output error/], ["bootout-throw", /spawn launchctl EPERM/]];
+  const results = await Promise.all(cases.map(([phase]) => signalDuringProbe(phase, "SIGTERM")));
+  for (const [i, [phase, error]] of cases.entries()) {
+    const r = results[i];
+    const what = `SIGTERM during ${phase}`;
+    assert.equal(r.signal, null, `${what}: handled (${r.err})`);
+    assert.equal(r.code, 128 + osConstants.signals.SIGTERM, `${what}: ${r.out}${r.err}`);
+    assert.equal(r.loaded, true, `${what}: the double still has the probe loaded`);
+    const lines = r.out.trim().split("\n");
+    const j = JSON.parse(lines[0]);
+    const label = new RegExp(`${PROBE.replaceAll(".", "\\.")}\\.\\d+\\.[a-f0-9]+`);
+    for (const text of [j.reason, lines.at(-1)]) {
+      assert.match(text, /interrupted by SIGTERM/, what);
+      assert.match(text, error, `${what}: launchctl's own error survives`);
+      assert.match(text, label, `${what}: names the probe left behind`);
+      assert.match(text, /may still be loaded/, what);
+      assert.doesNotMatch(text, /was unloaded/, `${what}: no claim of a cleanup that failed`);
+    }
+    assert.equal(j.changed, false, what);
+    assert.deepEqual(j.timer, { wasLoaded: null, paused: false, restored: null }, `${what}: the timer untouched`);
+    assert.doesNotMatch(r.calls, /launchctl bootout gui\/501\/com\.jo-wolff-plugins\.ctx-watch\n/, `${what}: the timer was never paused`);
+    assert.deepEqual(r.probeDirs, [], `${what}: the plist directory is still removed`);
+  }
+});
+
+test("0.4.0 a signal during the probe: a refused bootstrap keeps launchctl's error and says nothing was loaded; a clean probe says it was unloaded, naming its label", async () => {
+  const [refused, clean] = await Promise.all([signalDuringProbe("bootstrap-fail", "SIGTERM"), signalDuringProbe("bootout", "SIGTERM")]);
+  const label = new RegExp(`${PROBE.replaceAll(".", "\\.")}\\.\\d+\\.[a-f0-9]+`);
+  assert.equal(refused.code, 143, refused.out + refused.err);
+  const jr = JSON.parse(refused.out.split("\n")[0]);
+  assert.match(jr.reason, /Bootstrap failed: 5: Input\/output error/);
+  assert.match(jr.reason, /was not loaded/);
+  assert.doesNotMatch(jr.reason, /was unloaded|may still be loaded/);
+  assert.equal(refused.loaded, false);
+  assert.equal(clean.code, 143, clean.out + clean.err);
+  const jc = JSON.parse(clean.out.split("\n")[0]);
+  assert.match(jc.reason, /was unloaded/);
+  assert.match(jc.reason, label);
+  assert.equal(clean.loaded, false);
 });
 
 /** <CTX_DATA_ROOT>/daemon/supervisor-environment.json as ctx 2.3.0 writes it (values made up). */
@@ -544,7 +886,7 @@ process.exit(r.code);
       assert.equal(p.signal, null, `${sig}: the process handled the signal (stderr: ${p.stderr})`);
       assert.equal(p.status, 128 + n, `${sig}: exit ${p.status}; stderr: ${p.stderr}`);
       const o = JSON.parse(p.stdout.trim().split("\n").at(-1));
-      assert.ok(o.calls.some((c) => c.startsWith("launchctl bootstrap gui/501 ")), `${sig}: timer restored`);
+      assert.ok(o.calls.some((c) => c.startsWith("launchctl bootstrap gui/501 ") && c.endsWith("com.jo-wolff-plugins.ctx-watch.plist")), `${sig}: timer restored`);
       assert.equal(o.report.ok, false);
       assert.match(o.last, new RegExp(`interrupted by ${sig}`));
     }

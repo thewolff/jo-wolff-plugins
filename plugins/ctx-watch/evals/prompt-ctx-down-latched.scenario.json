@@ -1,0 +1,27 @@
+{
+  "$comment": "The same down episode, the next prompt of the same session: told already, so nothing.",
+  "event": "UserPromptSubmit",
+  "expect": "silent",
+  "sibling": "prompt-ctx-down.scenario.json",
+  "setup": {
+    "commands": [
+      "node \"${PLUGIN_DIR}/evals/fixtures/write-state.mjs\" down"
+    ]
+  },
+  "before": [
+    {
+      "stdin": {
+        "session_id": "${SESSION_ID}",
+        "cwd": "${CWD}",
+        "hook_event_name": "UserPromptSubmit",
+        "prompt": "carry on with the refactor"
+      }
+    }
+  ],
+  "stdin": {
+    "session_id": "${SESSION_ID}",
+    "cwd": "${CWD}",
+    "hook_event_name": "UserPromptSubmit",
+    "prompt": "carry on with the refactor"
+  }
+}

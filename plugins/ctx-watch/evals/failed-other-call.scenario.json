@@ -1,0 +1,22 @@
+{
+  "$comment": "A failed Bash call that is not ctx says nothing, whatever the state (the hooks.json `if` is best-effort; the hook checks too).",
+  "event": "PostToolUseFailure",
+  "expect": "silent",
+  "sibling": "failed-ctx-call-down.scenario.json",
+  "setup": {
+    "commands": [
+      "node \"${PLUGIN_DIR}/evals/fixtures/write-state.mjs\" down"
+    ]
+  },
+  "stdin": {
+    "session_id": "${SESSION_ID}",
+    "cwd": "${CWD}",
+    "hook_event_name": "PostToolUseFailure",
+    "tool_name": "Bash",
+    "tool_input": {
+      "command": "npm test"
+    },
+    "error": "Exit code 1\nError: ctx daemon is not running",
+    "is_interrupt": false
+  }
+}

@@ -20,8 +20,9 @@ brought it back on 2026-11-11, with that run's confirmations turned into checks 
      ctx release is out.
    - exit 3, `refused: …`: no ctx change was made. Say the reason. `upgrade in progress`,
      `upgrade state unknown` or `owner pid … is alive` means wait; `wait Nm and run repair
-     again` means exactly that; `LANG could not be found`, `launchctl not found`, an
-     unreachable `gui/<uid>` launchd domain, or launchctl not saying whether the timer is loaded
+     again` means exactly that; `LANG could not be found`, `launchctl not found`, `cannot load
+     LaunchAgents into launchd domain gui/<uid>` (a sandboxed shell: launchctl can read the
+     domain but its bootstrap fails), or launchctl not saying whether the timer is loaded
      means the person runs the same command from their own Terminal; indexing mode `manual` is
      their decision.
    - no LANG in this shell (Claude Desktop's tools have none): not a problem. `repair` takes the

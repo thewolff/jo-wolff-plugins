@@ -10,6 +10,8 @@
 //   errors.log                        one line per hook fault or ignored state file (appended)
 //   checks.log                        one line per consult-history finding (appended by the Stop hook)
 //   resume/<session id>               the SessionStart hook's resume marker, consumed by the next Stop
+//   sessions/<session id>.json        the mid-session hook's latch (what this session was told), a few bytes
+//   sessions/<session id>.json.lock   held for a few file operations by a hook claiming that latch
 //   launchd/<label>.plist             the timer (kept: the person bootstrapped it)
 //   launchd/<label>.out.log           launchd appends every tick's summary line here
 //   launchd/<label>.err.log           and anything the tick printed on stderr
@@ -22,9 +24,12 @@
 //
 // prune(dir, { days }) rotates, then removes every `*.1` older than `days`, every
 // `popups/<token>.json` older than `days`, every `resume/<id>` marker older than `days` (a
-// session that never reached a Stop), and any `state.json.<pid>.tmp`,
-// `state.lock.<pid>.stale` or `popups/<token>.json.<pid>.tmp` a failed write or a crashed lock
-// takeover left behind. It never touches state.json, state.lock, the plist, or a current log,
+// session that never reached a Stop), every `sessions/<id>.json` latch and `.json.lock` older
+// than `days` (a latch is rewritten only when the session is told something, so an old one is a
+// session long over; a lock is held for milliseconds, so an old one is a crashed hook's), and
+// any `state.json.<pid>.tmp`, `state.lock.<pid>.stale`, `popups/<token>.json.<pid>.tmp` or
+// `sessions/<id>.json.<pid>.tmp` a failed write or a crashed lock takeover left behind.
+// It never touches state.json, state.lock, the plist, or a current log,
 // and never removes:
 //   - a `.1` this same prune just rotated: its mtime is the old log's, but a running tick may
 //     still hold it open (rotation renames under launchd's descriptor), so `--days 0` keeps it;
@@ -113,6 +118,14 @@ export function prune(dir, { days = DEFAULT_RETENTION_DAYS, now = Date.now(), ma
     for (const name of readdirSync(join(dir, "resume"))) candidates.push({ path: join(dir, "resume", name), pid: null });
   } catch {
     /* no resume marker has been left */
+  }
+  try {
+    for (const name of readdirSync(join(dir, "sessions"))) {
+      const pid = /\.json\.(\d+)\.tmp$/.exec(name)?.[1];
+      candidates.push({ path: join(dir, "sessions", name), pid: pid === undefined ? null : Number(pid) });
+    }
+  } catch {
+    /* no session has been told anything */
   }
   for (const { path, pid } of candidates) {
     if (justRotated.has(path) || (pid !== null && running(pid))) {

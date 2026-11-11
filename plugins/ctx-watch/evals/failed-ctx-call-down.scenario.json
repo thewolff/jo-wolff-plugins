@@ -1,0 +1,22 @@
+{
+  "$comment": "A `ctx search` Bash call failed while the timer's state says ctx is down: the agent is told then, not at the next prompt.",
+  "event": "PostToolUseFailure",
+  "expect": "systemMessage",
+  "reason": "Repair: `/ctx-watch:repair`",
+  "setup": {
+    "commands": [
+      "node \"${PLUGIN_DIR}/evals/fixtures/write-state.mjs\" down"
+    ]
+  },
+  "stdin": {
+    "session_id": "${SESSION_ID}",
+    "cwd": "${CWD}",
+    "hook_event_name": "PostToolUseFailure",
+    "tool_name": "Bash",
+    "tool_input": {
+      "command": "ctx search 'the thread' --limit 5"
+    },
+    "error": "Exit code 1\nError: ctx daemon is not running",
+    "is_interrupt": false
+  }
+}

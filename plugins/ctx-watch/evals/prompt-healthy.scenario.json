@@ -1,0 +1,22 @@
+{
+  "$comment": "Healthy and fresh: nothing printed, nothing written.",
+  "event": "UserPromptSubmit",
+  "expect": "silent",
+  "sibling": "prompt-ctx-down.scenario.json",
+  "setup": {
+    "commands": [
+      "node \"${PLUGIN_DIR}/evals/fixtures/write-state.mjs\" healthy"
+    ]
+  },
+  "stdin": {
+    "session_id": "${SESSION_ID}",
+    "cwd": "${CWD}",
+    "hook_event_name": "UserPromptSubmit",
+    "prompt": "carry on with the refactor"
+  },
+  "after": {
+    "absent": [
+      "${XDG_STATE_HOME}/ctx-watch/sessions"
+    ]
+  }
+}

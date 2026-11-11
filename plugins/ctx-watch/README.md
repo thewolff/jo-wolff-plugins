@@ -1,11 +1,21 @@
 # ctx-watch
 
 Notice when the [ctx](https://github.com/ctxrs/ctx) daemon is dead, not supervised, or stale,
-or its semantic index is not ready; repair what ctx documents a command for; and say so in two
-places: a line at Claude Code's SessionStart and a macOS popup from a launchd timer that runs
-whether or not a session is open. And, at Stop, notice a session that picked a thread back up
-(a resume or a compaction, or a reply that says "as discussed") without asking ctx what the
-thread was: the `consult-history` check.
+or its semantic index is not ready; repair what ctx documents a command for; and say so in three
+places: a line at Claude Code's SessionStart, a note to the agent mid-session when ctx goes down
+or comes back, and a macOS popup from a launchd timer that runs whether or not a session is
+open. And, at Stop, notice a session that picked a thread back up (a resume or a compaction, or
+a reply that says "as discussed") without asking ctx what the thread was: the
+`consult-history` check.
+
+The hooks (`hooks/hooks.json`, Claude Code only):
+
+| Event | Script | What it says |
+|---|---|---|
+| `SessionStart` | `hooks/session-start.mjs` | probes ctx; one line to the person, a block to the agent when ctx is down |
+| `UserPromptSubmit` | `hooks/mid-session.mjs` | reads the timer's state only; tells the agent once when ctx goes down, once when it is back |
+| `PostToolUseFailure` (a failed `ctx` Bash call or `mcp__ctx__*` tool) | `hooks/mid-session.mjs` | the same, at the failed call, sharing the latch |
+| `Stop` | `hooks/stop.mjs` | the `consult-history` check |
 
 Why: from 2026-10-28 to 10-31 the ctx daemon was down and nothing said so. Its launchd job had
 never loaded (ctx's own `launchctl bootstrap` had failed with "Bootstrap failed: 5: Input/output
@@ -20,6 +30,11 @@ called `environment_invalid`. ctx-watch saw it, popped once, and went quiet for 
 does not heal into a live upgrade, names a stuck one, keeps raising an unanswered popup, carries
 `LANG` into the timer, tells the agent as well as the person, and gives the agent a `repair`
 verb that runs the sequence that worked on 2026-11-11.
+
+And ctx dies in the middle of sessions (2026-11-04 three times in one afternoon, and 2026-11-11
+between two repairs), while until 0.4.0 the agent heard about it only at SessionStart. 0.4.0
+tells it at its next prompt, or at the failed ctx call, from the state the timer already keeps,
+and makes `repair` test that it can load a LaunchAgent before it pauses the timer.
 
 ## Install
 
@@ -190,6 +205,75 @@ the file is under 15 min old, `DAEMON_UPGRADE_HANDOFF_STALE_AFTER`, and its owne
   as its fix (when ctx itself cannot run, that stays the finding and its fix). It still strikes
   and pops up like the probe's failure.
 
+**Slow is not down** (0.4.0). A `ctx daemon status` that times out (10 s on the timer, 1.2 s in
+the SessionStart hook) is not yet a dead daemon: on 2026-11-11, 22:44-23:06Z, a machine at load
+average 78-183 made it miss the bound twice while the daemon, pid 51357, ran throughout, and
+the two "ctx is down" popups were false. So a timed-out status call asks whether the daemon's
+process is alive, without running ctx: the pid in `<data root>/daemon/query-endpoint.json` must
+be running (`kill -0`), and the query socket that same file names must accept a connection (a
+node child connects, bounded at 2 s; the connect itself took 0.7 ms). The two are checked
+separately, so they do not prove the pid owns the listener; what they rule out is the usual
+leftovers of a dead daemon: a socket file no one listens on refuses, and a reused pid alone is
+not enough. The socket path must be one ctx 2.3.0 binds,
+`<data root>/daemon/query.sock` or `/tmp`-or-`TMPDIR`/`ctx-q-<32 hex>/q.sock`, at most 90 bytes,
+with transport `unix`; anything else in that file (an option such as `--version`, a NUL, a
+foreign path) is not alive and is never connected to, and the path reaches the connecting child
+in its environment, never its argv. Proving ownership (`lsof`, or a ctx request over the
+socket) would cost a spawn or a ctx call on every timeout and is not done; the 30 min bound
+below covers a check that is fooled. `ps` is not used: it is setuid, refused (`EPERM`) in a
+sandboxed shell.
+
+- **Alive**: slow. The tick's line is `slow: …` (the reason ends `slow, not down`); no strike,
+  no popup, no heal, no upgrade read; `state.json` keeps `slowSince`, the first slow tick of the
+  run. The SessionStart hook says nothing. The mid-session hook says one line once the timer
+  has seen it slow for 15 min (three ticks): "ctx is answering slowly (the machine is likely
+  under load) …; ctx searches may time out", once per slow run, never "down" and never a
+  repair (a repair would restart a working daemon).
+- **Not alive** (no endpoint file, pid not running, or nothing accepting on the socket): a
+  failure, exactly as before.
+- **Bound**: a daemon hung for good still accepts on its socket (the kernel queues the
+  connection), so a slow run that has lasted 30 min (`SLOW_MAX_MS`, six ticks) counts as a
+  failure: it strikes, then goes down with its popup, and the agent is told it is down.
+
+**The mid-session hook** (0.4.0, `hooks/mid-session.mjs`, `lib/mid-session.mjs`). Registered on
+`UserPromptSubmit` (every prompt, including a scheduled task or a background subagent reporting
+back) and on `PostToolUseFailure` of a ctx call (matcher `Bash` with `if: "Bash(ctx *)"`, and
+matcher `mcp__ctx__.*`; the hook checks the command again, since `if` is best-effort). It runs no
+ctx and no launchctl: it reads the timer's `state.json` and the session's latch,
+`<state>/sessions/<session id>.json`, and answers with `hookSpecificOutput.additionalContext`
+only (the person has the popup). Measured on 2026-11-11 (Apple silicon, node 24, 40 spawns of a
+healthy prompt): median 56 ms, p90 62 ms, against 27 ms for `node` running an empty file; the
+hook's own read and latch take under 10 ms (`test/mid-session.test.mjs`). What it says, each once
+per session per episode:
+
+- **Down**: the timer's episode is `down` (two failing ticks in a row; one is a blip) of kind
+  daemon (which includes `not healed: upgrade state unknown`) or upgrade (stuck). Two lines: what
+  is down since `downSince`, the timer's last probe reason, and `/ctx-watch:repair` (or `node
+  <cli> repair`). Latched on `downSince`, so a second outage in the same session is told again.
+- **Back**: a session told of an outage, once a tick probe made after the telling has passed
+  (or failed only on the semantic index: the daemon is back, and the line says the index is not
+  ready). That is read from the probe's own `lastProbe.kind`, never the episode: a slow or
+  live-upgrade tick keeps the episode's old kind and shows nothing about the daemon, so neither
+  is a recovery. One line. A state file that is missing, unreadable, out of shape, reset, still
+  failing, slow, upgrading, or whose last pass is from before the telling is not a recovery: the
+  latch stays.
+- **Stale**: the tick stamp (or, never ticked, the first SessionStart's) is over 15 min old, or
+  three intervals, whichever is longer. One line naming the stamp, since a state the timer
+  stopped writing cannot say ctx is up; while stale nothing else is said. Latched on the stamp.
+
+Healthy, a strike, a semantic-only episode, a slow run under 15 min, no session id, or already
+told: nothing printed, and no lock taken. The latch, `{ down, toldAt, stale, slow }`, is claimed under its own lock
+(`sessions/<session id>.json.lock`), so two hooks of one session firing at once (a prompt and a
+failed ctx call) say a thing once: the second waits up to 200 ms and reads what the first wrote,
+or, when the lock is still held, says nothing. The SessionStart hook writes the same latch when it
+tells the agent of an outage (down, stuck, ctx missing; not a live upgrade), including one only
+its own probe saw before the timer declared it, so the first prompt does not repeat it, the
+timer's later `down` is adopted silently, and the recovery line still comes. A latch that cannot
+be written still lets the note out, saying it may repeat. A failed ctx call is told only what the timer's
+state says: the hook does not read ctx's error text (not a contract), so a call that failed while
+the state is healthy and fresh says nothing, and a daemon that died since the last tick is told
+at the next tick's second failure (up to ten minutes at the default interval).
+
 **`repair`** (0.3.0) is the repair an agent can run: `node <plugin dir>/scripts/ctx-watch.mjs
 repair`, no prompts, about three minutes at most. It needs a `LANG` for its ctx calls and takes
 the first of: its shell's `LANG`, as given; the `LANG` ctx recorded for its daemon in
@@ -202,15 +286,33 @@ when `locale -a` cannot be read. A Bash tool in Claude Desktop has no `LANG` of 
 launchd starts Desktop, so the fallback is the usual path from there.
 
 It refuses (exit 3, no ctx change) when no usable `LANG` is found, when `launchctl` is missing or
-launchd's `gui/<uid>` domain is not reachable from it, when indexing mode is not `auto`, during a
-live upgrade, while the upgrade state is unknown (as above), while any handoff owner pid is
-alive, while the handoff marker is under 15 min old, when the stuck state is not `quiescing`
-(the only one the release was seen to work on), or when `launchctl print` cannot say whether
-the ctx-watch timer is loaded (anything but loaded, or launchctl's 113 "no such service").
+this shell cannot load a LaunchAgent into launchd's `gui/<uid>` domain, when indexing mode is not
+`auto`, during a live upgrade, while the upgrade state is unknown (as above), while any handoff
+owner pid is alive, while the handoff marker is under 15 min old, when the stuck state is not
+`quiescing` (the only one the release was seen to work on), or when `launchctl print` cannot say
+whether the ctx-watch timer is loaded (anything but loaded, or launchctl's 113 "no such
+service"). The launchd test (0.4.0) is a write, not a read: it bootstraps a throwaway LaunchAgent
+(`com.jo-wolff-plugins.ctx-watch.reach-probe.<pid>.<random>`, a label of its own per run, so two
+repairs at once never unload each other's; `/usr/bin/true`, never started: no `RunAtLoad`, no
+interval), from a plist in a fresh temp directory, then boots it out, and removes the directory
+on every path. Probes and temp directories a killed run left (its pid in the label or directory
+name, and not running) are booted out and removed first; a live run's are left alone. SIGINT,
+SIGTERM or SIGHUP during the probe ends the run once the probe's own cleanup has run: exit
+128 + n, nothing changed, the timer untouched; the reason says the probe was unloaded only when
+launchctl confirmed it, and otherwise keeps launchctl's error and names the label that may still
+be loaded (it runs nothing; the next repair boots it out). A failure is the
+refusal, with launchctl's own line. Until 0.4.0 the test was `launchctl print gui/<uid>`, which a
+sandboxed agent shell passes while its `launchctl bootstrap` fails with `Bootstrap failed: 5:
+Input/output error` (seen 2026-11-11): `repair` would have booted the timer out and failed to
+put it back.
 Otherwise it pauses the timer (`launchctl bootout`, so a tick cannot heal into the repair),
 releases a stuck `quiescing` upgrade as above, runs the heal under its 120 s bound, polls
 `ctx daemon status` until the daemon reads running, supervisor `installed` and no
-`restart_required`, and restores the timer.
+`restart_required`, and restores the timer. Its first line's JSON `timer` is `{ wasLoaded,
+paused, restored }`: `wasLoaded` is `true` or `false` as `launchctl print` said before the
+pause, and `null` when it was not checked (a healthy daemon, or a refusal before the timer step;
+until 0.4.0 these read `false` even with the timer loaded); `restored` is `null` when nothing
+was paused.
 
 The preflight is a snapshot, so the upgrade gate is read again just before each command that
 changes ctx state: before `ctx upgrade disable` and `ctx upgrade --dry-run` it must still show
@@ -420,13 +522,15 @@ it): `state.json` (one small file, rewritten each tick; its temp file is removed
 fails), `state.lock` (present only while a writer holds it), `popups/<token>.json` (one small
 outcome file per popup shown), `errors.log` (one line per hook fault or ignored state file),
 `checks.log` (one line per consult-history finding), `resume/<session id>` (the SessionStart
-hook's resume marker, a few bytes, consumed by the next Stop), and `launchd/` with the plist and
-the two logs launchd appends to. Any of the four logs over 256 KB
+hook's resume marker, a few bytes, consumed by the next Stop), `sessions/<session id>.json` (the
+mid-session hook's latch, a few bytes, rewritten only when that session is told something), and
+`launchd/` with the plist and the two logs launchd appends to. Any of the four logs over 256 KB
 is renamed to `<log>.1` (replacing the last) at the start of a tick or a prune, so each is at
 most 256 KB plus one run's lines and the pair at most twice that; `prune` removes a `.1`, a
-popup outcome and a resume marker older than 30 days (a session that never reached a Stop), and
-a `state.json.<pid>.tmp`, `state.lock.<pid>.stale` or
-`popups/<token>.json.<pid>.tmp` a failed write or a crashed lock takeover left. It never removes
+popup outcome, a resume marker (a session that never reached a Stop) and a session latch older
+than 30 days, and a `state.json.<pid>.tmp`, `state.lock.<pid>.stale`,
+`popups/<token>.json.<pid>.tmp` or `sessions/<id>.json.<pid>.tmp` a failed write or a crashed
+lock takeover left. It never removes
 a `.1` it rotated in the same run (a tick launchd started may still be writing to it, so even
 `--days 0` keeps it), the outcome of the popup `state.json` has pending, however old, or a temp
 file whose `<pid>` is still running. `state.json`, `state.lock` and the plist are never pruned.
@@ -477,9 +581,9 @@ daemon in `manual` mode, rebuild the semantic index (ctx 2.3.0 has no verb for i
 names `ctx semantic enable --wait`), or release a stuck upgrade in a state other than
 `quiescing` (`repair` refuses it and names `ctx docs show upgrade`).
 
-OMP sessions get none of the SessionStart output: ctx-watch has no OMP adapter (its hooks are
-Claude Code's `hooks/hooks.json` only). The timer's popup and `repair` work the same whichever
-harness an agent runs in.
+OMP sessions get none of the SessionStart output and none of the mid-session notes (0.4.0 does
+not change this): ctx-watch has no OMP adapter (its hooks are Claude Code's `hooks/hooks.json`
+only). The timer's popup and `repair` work the same whichever harness an agent runs in.
 
 The Stop hook never blocks on its own fault (`evals/stop-fresh-start.scenario.json` is a Stop
 with nothing to say; `evals/stop-resume-warn.scenario.json`, `evals/stop-resume-block.scenario.json`,
@@ -511,7 +615,11 @@ arithmetic; `test/upgrade.test.mjs` the 0.3.0 behaviours (a live upgrade skips t
 stuck one is its own finding, the heal's bound and SIGTERM grace, `LANG` in the plist, the 4 h
 re-arm, and the agent's context present when down and absent when healthy);
 `test/repair.test.mjs` every gate and step of `repair` against a stateful fake ctx and a fake
-launchctl; `test/consult-history.test.mjs` the switch, the marker's round trip from
+launchctl (0.4.0: the reach probe refusing in the sandbox case, before the timer is touched, and
+its plist removed on every path); `test/mid-session.test.mjs` the mid-session hook (once per
+session per episode, the recovery line, the stale line, silence when healthy, the latch shared
+with SessionStart and PostToolUseFailure, prune, and spawned: no ctx or launchctl run, timed);
+`test/consult-history.test.mjs` the switch, the marker's round trip from
 SessionStart to Stop, what counts as a ctx call and as a prompt, both triggers, the topic, and
 the Stop hook's three answers in-process and spawned; `test/state.test.mjs` the episode
 machine, the delivery latch (pending, confirmed, failed late, never reported) and the field
@@ -521,8 +629,9 @@ error, early-exit and late-exit paths on a real supervisor over children that ar
 osascript); `test/retention.test.mjs` what `prune` keeps and that a dry run plans the real run;
 `test/cli.test.mjs` every verb, the `--state-dir` round trip from install to tick, and a PATH
 that cannot shadow `--ctx`. `e2e/live-run.sh` hands off to plugin-kit's scenario runner: the
-eight `evals/*.scenario.json` prove every event × outcome in `evals/manifest.json` offline (the
-SessionStart ones against `evals/fixtures/fake-ctx.sh`), and `session-start-healthy` adds a
+fifteen `evals/*.scenario.json` prove every event × outcome in `evals/manifest.json` offline (the
+SessionStart ones against `evals/fixtures/fake-ctx.sh`, the mid-session ones against a
+`state.json` written by `evals/fixtures/write-state.mjs`), and `session-start-healthy` adds a
 headless `claude -p` session when `claude` is on PATH. Run the tests with `node --test` from
 inside `plugins/ctx-watch/`; the scenarios with `bash e2e/live-run.sh --no-live`. The ctx
 captures in `test/fixtures/` are re-made by hand with `bash test/fixtures/capture.sh` (needs ctx
@@ -531,6 +640,34 @@ part of `node --test`); `ctx-daemon-status-semantic-not-ready.txt` is a one-off 
 not remake. `ctx-upgrade-status.txt` is the 2026-11-11 `ctx upgrade status --format json`
 (state `dry_run`, after the release); the tests derive `quiescing` and `applying` from it,
 since no capture of a live upgrade exists that did not break a real install.
+
+## Changes in 0.4.0
+
+From ctx dying in the middle of sessions (see *Why* at the top):
+
+- **The agent is told mid-session.** `hooks/mid-session.mjs` on `UserPromptSubmit` and on
+  `PostToolUseFailure` of a ctx call reads the timer's `state.json` (no ctx, no launchctl) and
+  tells the agent once per session per episode when ctx is down or its upgrade stuck or unknown,
+  once when it is back, and once when the timer has not stamped the state in over 15 min. See
+  *The mid-session hook*. Latches live in `sessions/<session id>.json`, pruned after 30 days.
+- **`repair` tests launchd write access.** Before pausing the timer it bootstraps and boots out
+  a throwaway LaunchAgent with a label of its own per run; a shell that cannot (a sandbox:
+  `Bootstrap failed: 5: Input/output error`) is refused with exit 3 and nothing changed. Until
+  0.4.0 `launchctl print gui/<uid>` passed there, and repair would have booted the timer out and
+  failed to restore it. A killed run's probe is cleared by the next; a signal during the probe
+  ends the run once the probe's own cleanup has run, and says what that cleanup did.
+- The SessionStart hook writes the mid-session latch when it tells the agent about an outage,
+  including one the timer has not declared yet.
+- The recovery line needs a tick probe after the telling that passed: a missing, broken or reset
+  state is not a recovery. The latch is claimed under a per-session lock, so concurrent hooks of
+  one session say a thing once.
+- `repair`'s JSON `timer.wasLoaded` is `null` (not checked) on the healthy return and on a
+  refusal before the timer step; it read `false` there, even with the timer loaded.
+- **Slow is not down.** A `ctx daemon status` that times out while the daemon's pid runs and
+  its query socket accepts is `slow: …`: no strike, no popup, no heal, no SessionStart line, and
+  at most one quiet mid-session line after 15 min. Two false "ctx is down" popups on
+  2026-11-11 under load average 78-183 came from treating it as down. Slow for 30 min counts as
+  down. See *Slow is not down*.
 
 ## Changes in 0.3.0
 

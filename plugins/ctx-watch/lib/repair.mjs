@@ -10,8 +10,15 @@
 //      none gives one (ctx would record a daemon launch environment without LANG and report
 //      `environment_invalid`, the 2026-11-11 state). A shell launchd started (Claude Desktop's
 //      Bash tool) has no LANG of its own, so the fallback is the usual path from Desktop;
-//   3. refuse when launchctl is not found or the GUI launchd domain gui/<uid> is not reachable
-//      (an ssh or sandboxed shell), since the ctx-watch timer could not be paused and restored;
+//   3. refuse when launchctl is not found or this shell cannot write to the GUI launchd domain
+//      gui/<uid> (launchd.mjs reachProbe: bootstrap and bootout a throwaway LaunchAgent that
+//      runs nothing, labelled per run, its plist removed on every path, a killed run's leftovers
+//      cleared first), since the ctx-watch timer could not be paused and restored. A signal
+//      during the probe ends the run once the probe's own cleanup has run (exit 128 + n,
+//      nothing changed; an unload is claimed only when launchctl confirmed it, else launchctl's
+//      error and the label that may still be loaded). Until 0.4.0 this was `launchctl print gui/<uid>`, which a sandboxed
+//      shell passes while its `launchctl bootstrap` fails ("Bootstrap failed: 5: Input/output
+//      error", 2026-11-11): repair would have booted the timer out and failed to restore it;
 //   4. refuse when ctx's indexing mode is not `auto` or its config file is missing (ctx-watch
 //      never flips a deliberate `manual` and never sets ctx up);
 //   5. the upgrade gate (probe.mjs upgradeGate and readHandoff): refuse while an upgrade is in
@@ -44,14 +51,17 @@
 // Every ctx spawn has CI removed (probe.mjs ctxEnv), LANG as resolved in step 2, and keeps
 // everything else. Output: the first line is one JSON object `{ ok, changed, refused, reason,
 // lang: { value, source, skipped }, steps, timer, verified }` (source `env`, `ctx-recorded`,
-// `AppleLocale`, or null); the last line is `ctx-watch repair: <repaired | healthy; nothing
+// `AppleLocale`, or null; timer `{ wasLoaded, paused, restored }`, wasLoaded null = not checked:
+// the healthy return and refusals before step 6 never ask launchctl about the timer, 0.4.0; until
+// then it read false there even with the timer loaded); the last line is `ctx-watch repair:
+// <repaired | healthy; nothing
 // changed | refused: … | failed: … | interrupted by SIG…>`. Exit 0 repaired or healthy, 1 failed,
 // 3 refused (no ctx change; the timer, if paused, restored), 128 + n on signal n.
 
 import { existsSync } from "node:fs";
-import { constants } from "node:os";
+import { constants, tmpdir } from "node:os";
 import { CTX, HANDOFF_STALE_MS, HEAL_GRACE_MS, HEAL_TIMEOUT_MS, MODE_ARGV, PROBE_TIMEOUT_MS, STATUS_ARGV, age, ctxEnv, parseJson, runCtx, upgradeGate } from "./probe.mjs";
-import { LABEL, loaded, plistPath, resolveLang, runCheck } from "./launchd.mjs";
+import { LABEL, loaded, plistPath, reachProbe, resolveLang, runCheck } from "./launchd.mjs";
 
 export const VERIFY_TRIES = 10;
 export const VERIFY_GAP_MS = 3_000;
@@ -64,7 +74,6 @@ const HEAL_ARGV = Object.freeze([CTX, "index", "mode", "auto", "--format", "json
 const withCtx = (argv, ctx) => [ctx, ...argv.slice(1)];
 const field = (o, k) => (o && typeof o === "object" && !Array.isArray(o) ? o[k] : undefined);
 const firstLine = (r) => (r.error ? r.error : (r.stderr || r.stdout || "").trim().split("\n")[0]?.slice(0, 160) || "(no output)");
-const lastLine = (s) => (s ?? "").trim().split("\n").at(-1);
 const sleepAsync = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 /** One trip round the event loop, so a signal that arrived during a synchronous spawn is delivered. */
 const turn = () => new Promise((resolve) => setImmediate(resolve));
@@ -112,7 +121,9 @@ export async function repair({ env: shellEnv = process.env, run = runCtx, check 
   const env = lang.value ? { ...shellEnv, LANG: lang.value } : shellEnv;
   const e = ctxEnv(env);
   const steps = [];
-  const timer = { wasLoaded: false, paused: false, restored: null };
+  // wasLoaded: null = not checked (the healthy return and every refusal before step 6 never ask
+  // launchctl about the timer), true/false = what `launchctl print` said before pausing it.
+  const timer = { wasLoaded: null, paused: false, restored: null };
   const report = { ok: false, changed: false, refused: false, reason: null, lang: { value: lang.value, source: lang.source, skipped: lang.skipped }, steps, timer, verified: null };
   const out = (code, last) => ({ code, text: `${JSON.stringify(report)}\n${last}` });
   const refuse = (reason) => {
@@ -132,10 +143,37 @@ export async function repair({ env: shellEnv = process.env, run = runCtx, check 
   }
   // 2. LANG.
   if (lang.value === null) return refuse(`LANG could not be found: ${lang.detail}; ctx would record a daemon launch environment without it and report \`environment_invalid\`; run from a shell with LANG set (a Terminal login shell has it)`);
-  // 3. launchctl and the GUI launchd domain.
-  const domain = check("launchctl", ["print", `gui/${uid}`]);
-  if (domain.missing) return refuse("launchctl not found: the ctx-watch timer could not be paused and restored; run from a macOS GUI login session");
-  if (domain.code !== 0) return refuse(`launchd domain gui/${uid} is not reachable from this shell (launchctl print exit ${domain.code ?? "none"}: ${lastLine(domain.output)}); run from a GUI login session`);
+  // 3. launchctl, and write access to the GUI launchd domain, before anything is paused. A
+  // signal during the probe is held until the probe has run its own cleanup (it runs
+  // synchronously), then ends the run: nothing changed, exit 128 + n, and the reason says what
+  // the cleanup did: unloaded only when launchctl confirmed it, else launchctl's error and the
+  // label that may still be loaded.
+  let probeSignal = null;
+  const onProbeSignal = (sig) => {
+    probeSignal ??= sig;
+  };
+  if (signals) for (const s of HANDLED_SIGNALS) process.on(s, onProbeSignal);
+  let reach;
+  try {
+    reach = reachProbe({ uid, check, tmp: shellEnv.TMPDIR || tmpdir() });
+    await turn();
+  } finally {
+    if (signals) for (const s of HANDLED_SIGNALS) process.removeListener(s, onProbeSignal);
+  }
+  if (probeSignal) {
+    const plist = reach.plistRemoved ? "" : "; its temp plist directory could not be removed";
+    const probe = reach.ok
+      ? `the probe ${reach.label} was unloaded${reach.plistRemoved ? " and its plist removed" : ""}${plist}`
+      : reach.missing
+        ? `launchctl not found; nothing was loaded`
+        : reach.loaded === null
+          ? `the probe failed and ${reach.label} may still be loaded (it runs nothing; the next repair boots it out once this process has exited): ${reach.detail}${plist}`
+          : `the probe failed: ${reach.detail}; ${reach.label} was not loaded, or no longer is${plist}`;
+    report.reason = `interrupted by ${probeSignal} during the launchd reach probe (${probe}); the ctx-watch timer was not touched; nothing changed`;
+    return out(128 + (constants.signals[probeSignal] ?? 0), `ctx-watch repair: ${report.reason}`);
+  }
+  if (reach.missing) return refuse("launchctl not found: the ctx-watch timer could not be paused and restored; run from a macOS GUI login session");
+  if (!reach.ok) return refuse(`this shell cannot load LaunchAgents into launchd domain gui/${uid} (${reach.detail}): the ctx-watch timer could not be paused and restored; run from a GUI login session (a Terminal window), not a sandboxed or ssh shell`);
   // 4. Indexing mode.
   const mode = ctxRun(MODE_ARGV);
   if (mode.error) return refuse(`ctx could not run: ${mode.error}`);
