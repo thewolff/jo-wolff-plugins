@@ -17,6 +17,9 @@
 //   requireSpiralBound   gate 4: a builder-class spawn also needs `## Spiral bound`.
 //   requirePatternCheck  gate 2: a builder-class spawn needs this session's pattern-check receipt
 //                        (skipped, with a skipped.log line, when pattern-check is not installed).
+//   warnModelRouting     the spawn gate's model line: a spawn whose `model` is above the routing
+//                        table's ceiling for its agent type, or that sets none, draws one
+//                        warning line. Never a deny. false turns the line off.
 //   checks               the ported guards, each `off`, `warn` or `block`:
 //                          delegation-guard     warn (newdle's ask/deny is `block`)
 //                          worktree-spawn-guard warn (newdle's deny is `block`)
@@ -41,6 +44,7 @@ export const DEFAULTS = Object.freeze({
   requireHowItFails: true,
   requireSpiralBound: true,
   requirePatternCheck: true,
+  warnModelRouting: true,
   checks: Object.freeze({ "delegation-guard": "warn", "worktree-spawn-guard": "warn", "repo-rules-inject": "on" }),
   readLineThreshold: 1000,
   streakThreshold: 6,
@@ -83,7 +87,7 @@ export function loadConfig(env = process.env, home = homedir()) {
   }
   const bad = [];
   const out = { ...DEFAULTS };
-  for (const key of ["off", "requireHowItFails", "requireSpiralBound", "requirePatternCheck"]) {
+  for (const key of ["off", "requireHowItFails", "requireSpiralBound", "requirePatternCheck", "warnModelRouting"]) {
     if (parsed[key] === undefined) continue;
     if (typeof parsed[key] === "boolean") out[key] = parsed[key];
     else bad.push(`${key} must be true or false`);

@@ -18,9 +18,19 @@
 // agent-scratch/jo-wolff-plugins/CLAUDE-CODE-DELEGATION-HOOKS-2026-11-04.md) and holds under
 // `--dangerously-skip-permissions`.
 //
+// MODEL  (warn-only, never a deny) a spawn the gates above allow is compared with the routing
+//         table (lib/model-routing.json, read through lib/model-routing.mjs): `tool_input.model`
+//         above the ceiling for `tool_input.subagent_type` → one additionalContext line naming the
+//         type, the model asked for and the ceiling; no `model` on a listed type → one line naming
+//         the table's model. A type the table does not list, or a model at or under the ceiling →
+//         nothing. A model string naming no family, or an unreadable table → nothing, one
+//         skipped.log line. Config `warnModelRouting: false` turns it off. It cannot see the effort
+//         level or the model of the session doing the spawning.
+//
 // NESTED SPAWNS are gated too: a subagent's Agent call fires this hook with `agent_id` set, and
 // the brief it writes is held to the same bar. The gate reads the heading only; it does not
-// inspect `context`, `description` or anything but `tool_input.prompt`.
+// inspect `context`, `description` or anything but `tool_input.prompt` (the model line reads
+// `tool_input.model` and `tool_input.subagent_type`, and decides nothing).
 //
 // UNPARSEABLE: no `tool_input`, a `prompt` that is not a string → allow, one line in
 // `${XDG_STATE_HOME:-~/.local/state}/delegation/skipped.log`. `off: true` in the config → null.
@@ -33,10 +43,12 @@ import { runHook, invokedDirectly } from "../lib/hook-runner.mjs";
 import { loadConfig, logSkipped, withFault } from "../lib/config.mjs";
 import { headingReason, isBuilderClass, missingHeadings } from "../lib/brief.mjs";
 import { checkReceipt, receiptReason } from "../lib/receipt.mjs";
+import { loadTable, routingWarning } from "../lib/model-routing.mjs";
 
 const HOOK = "spawn-gate";
 const SPAWN_TOOLS = new Set(["agent", "task"]);
 
+const warn = (text) => ({ hookSpecificOutput: { hookEventName: "PreToolUse", additionalContext: text } });
 const deny = (reason) => ({ hookSpecificOutput: { hookEventName: "PreToolUse", permissionDecision: "deny", permissionDecisionReason: reason } });
 
 /**
@@ -61,7 +73,20 @@ export function handle(input, { env = process.env } = {}) {
     if (receipt.status === "skipped") logSkipped(HOOK, `pattern-check receipt not checked: ${receipt.why}; spawn allowed`, env);
     else if (receipt.status === "missing") return withFault(deny(receiptReason(type, receipt)), fault, HOOK);
   }
-  return withFault(null, fault, HOOK);
+  return withFault(modelLine(ti, type, config, env), fault, HOOK);
+}
+
+/** The warn-only model line for a spawn the gates allowed, or null. Never a deny. */
+function modelLine(ti, type, config, env) {
+  if (!config.warnModelRouting) return null;
+  const { table, fault } = loadTable();
+  if (!table) {
+    logSkipped(HOOK, `model not checked: ${fault}; spawn allowed`, env);
+    return null;
+  }
+  const { warning, skipped } = routingWarning(table, type, ti.model);
+  if (skipped) logSkipped(HOOK, `model not checked: ${skipped}; spawn allowed`, env);
+  return warning ? warn(warning) : null;
 }
 
 if (invokedDirectly(import.meta.url)) runHook(HOOK, import.meta.url, { plugin: "delegation" });
