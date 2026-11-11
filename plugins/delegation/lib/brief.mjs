@@ -49,6 +49,8 @@ export const SPIRAL_BOUND_SECTION = `## Spiral bound
 export const STOPPED_LINE = `Stopped because: ${STOPPED_VALUES.join(" | ")}`;
 export const STOPPED_SECTION = `## Report
 
+Lead the report with the outcome in its first sentence: what happened or what was found. Then: what changed, what was verified, what could not be confirmed, and anything needing the owner's decision.
+
 End the report with exactly one of these lines, as the last line:
 
 \`\`\`
@@ -78,7 +80,7 @@ Before any Agent/Task call, the prompt you hand the subagent carries these secti
 ## Spiral bound
 - one retry per failing step; a commit budget (name N); when acceptance cannot be met, report what was tried and the last green state instead of loosening the check or skipping the step
 
-The report from a builder-class agent ends with one line: \`${STOPPED_LINE}\`. Facts in any report are labeled only with a receipt: **CLAIM** (file:line, or command and output) or **CITE** (a fetched URL or live probe); everything else is unlabeled prose.
+The report from a builder-class agent leads with the outcome in its first sentence (what happened or what was found), then what changed, what was verified, what could not be confirmed, and anything needing the owner's decision; it ends with one line: \`${STOPPED_LINE}\`. Facts in any report are labeled only with a receipt: **CLAIM** (file:line, or command and output) or **CITE** (a fetched URL or live probe); everything else is unlabeled prose.
 
 Which agent: \`scout\` finds paths and lines; \`reader\` maps code you will not read yourself; \`research\` answers from fetched sources; \`planner\` orders the steps before code; \`builder\` changes code (a handful of files, one repository); \`auditor\`, \`checker\`, \`debugger\` for review, verification, root cause. A message to a subagent that could not be delivered is marked NOT delivered next to the tool result; spawn a new agent or fix the name.`;
 }
