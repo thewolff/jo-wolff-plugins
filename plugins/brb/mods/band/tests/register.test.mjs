@@ -711,3 +711,19 @@ test("R1 kill switch: hideRows off draws every row as is while away; switching i
   assert.ok(s.invalidated.slice(flip).includes("ui.render"));
   assert.equal(await rowOf(hooks, s, "terminal", ...said("on-1")), DRAWN, "off again: the hidden row is drawn");
 });
+
+test("R2 B1: switching hiding off retires the hold's hidden rows at once: a row not drawn while off is shown after on again; a new row still hides", async () => {
+  const hooks = await load();
+  const s = stub({ snapshot: AWAY });
+  await start(hooks, s);
+  assert.notEqual(await rowOf(hooks, s, "terminal", ...said("old")), DRAWN, "hidden while on");
+  s.snapshot = { ...AWAY, hideRows: false };
+  const off = s.invalidated.length;
+  await turnComplete(hooks, s);
+  assert.ok(s.invalidated.slice(off).includes("ui.render"), "switching off redraws the rows");
+  // the old row is not drawn while off (unmounted, off screen)
+  s.snapshot = AWAY;
+  await turnComplete(hooks, s);
+  assert.equal(await rowOf(hooks, s, "terminal", ...said("old")), DRAWN, "on again: the row hidden before the switch stays shown");
+  assert.notEqual(await rowOf(hooks, s, "terminal", ...said("new")), DRAWN, "a row first drawn after on still hides");
+});

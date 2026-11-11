@@ -19,15 +19,18 @@ All notable changes to brb are recorded here. The format follows
   join the past, so the next hold hides only its own. Before the first query answers and after a
   failed query no row is hidden and nothing is recorded. A reply with an `on fire:` line (the Stop
   hook's parser, `lib/sections.mjs` `splitNeedsYou`) is never hidden. Ids only, at most 20,000
-  per set and none ever dropped: once an id does not fit, the ledger is full and, for the rest of
-  the conversation, hides only rows it already hid in the current hold (a forgotten id is never
-  taken for a new row). No row text is kept.
+  per set and none ever dropped: a row's ids are kept all together or not at all (a `ToolGroup`
+  that does not fit leaves none of its calls behind); once they do not fit, the ledger is full
+  and, for the rest of the conversation, hides only rows it already hid in the current hold (a
+  forgotten id is never taken for a new row). No row text is kept.
 - On `back` (or any end of the hold) the mod calls `$.ui.invalidate("ui.render")` and every row
   draws as before.
 - A switch: `{ "hideRows": "off" }` in `${XDG_CONFIG_HOME:-~/.config}/brb/config.json` turns the
   row hiding off (lib/state.mjs `hideRowsEnabled`, read by `mods/band/query.mjs` on every query,
   carried as `hideRows` in its answer). On with no file or no key; off for `"off"`, `false`, any
-  other value, or a file that cannot be read or parsed. The mod redraws the rows when it flips.
+  other value, or a file that cannot be read or parsed. Switching it off moves every row hidden so
+  far into the past at once, drawn again or not, so switching on again hides only rows first
+  drawn after that; the mod redraws the rows whenever it flips.
 - The away text: while away the mod appends a fixed instruction (work without narration, hold
   each ask with the hold command, reply only with the still-away line, the body and
   `idle: <why>`) to the environment section of the system prompt (`prompt.section` on

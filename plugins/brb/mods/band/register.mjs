@@ -260,6 +260,9 @@ function applyAway($, next) {
   if (known) hideRows = next.hideRows !== false;
   const away = known ? next.away === true : awayNow;
   if (away === awayNow && known === wasKnown && hideRows === wasHiding) return;
+  // Switched off: every row hidden so far joins the past now, drawn again or not, so switching
+  // back on hides only rows first drawn after that (never one this hold hid before).
+  if (wasHiding && !hideRows) ledger.endHold();
   if (away !== awayNow) {
     if (awayNow) ledger.endHold();
     awayNow = away;

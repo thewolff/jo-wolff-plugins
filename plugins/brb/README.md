@@ -345,8 +345,9 @@ every row the mod has not seen while home, older rows included: with no time on 
 nothing else to go by. `back` brings them all back.
 
 **A very long conversation stops hiding.** The mod keeps at most 20,000 row ids per set and never
-drops one. Once an id does not fit, a row it cannot place could be an old one, so from then on in
-that conversation it hides only rows it already hid in the current hold and draws the rest as is.
+drops one; a row's ids (a tool group's calls) are kept together or not at all. Once they do not
+fit, a row it cannot place could be an old one, so from then on in that conversation it hides
+only rows it already hid in the current hold and draws the rest as is.
 
 **What the agent is told.** While away the mod appends a fixed text to the system prompt's
 environment section (`prompt.section` on `env_info_simple` / `env_info_static`, the two names
@@ -366,8 +367,9 @@ is hidden anyway, and the next turn has the section and the prompt hook's instru
 `${XDG_CONFIG_HOME:-~/.config}/brb/config.json` (merge the key into the file if it already has
 `onFireCap` or `idleStops`). The mod reads it at its next query, at most 5 seconds while away or
 at the end of the next turn, and redraws every row as Claude Code draws it; the hold, the digest,
-the band and the away text stay as they are. `"on"` or removing the key turns hiding back on for
-rows first drawn after that. A config file that cannot be read or parsed also turns hiding off.
+the band and the away text stay as they are. Every row hidden until then counts as past from that
+moment, whether or not it is on screen, so `"on"` or removing the key turns hiding back on only
+for rows first drawn after that. A config file that cannot be read or parsed also turns hiding off.
 
 **Check it live.** In a terminal session (the classic renderer: `/tui` names the one in use) and
 in a Desktop Code-tab session: ask for something that takes several tool calls, then type `brb`

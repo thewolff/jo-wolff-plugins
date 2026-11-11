@@ -153,3 +153,23 @@ test("the away text is fixed: no session id, path or note in it", () => {
   assert.match(AWAY_TEXT, /idle: <why>/);
   assert.match(AWAY_TEXT, /hold/);
 });
+
+test("R2 S1: at one slot left a two-call ToolGroup is shown whole, and neither of its calls is later hidden on its own", () => {
+  const l = createLedger();
+  for (let i = 0; i < ID_CAP - 1; i++) l.decide({ ...AWAY, ...msg(`held-${i}`) });
+  assert.equal(l.held, ID_CAP - 1, "one slot left");
+  assert.equal(l.decide({ ...AWAY, ...group("g1", "g2") }), "show", "the group does not fit");
+  assert.equal(l.full, true);
+  assert.equal(l.held, ID_CAP - 1, "no call of the group was kept as hidden");
+  assert.equal(l.decide({ ...AWAY, ...tool("g1") }), "show", "the group's first call, drawn on its own");
+  assert.equal(l.decide({ ...AWAY, ...tool("g2") }), "show");
+  assert.notEqual(l.decide({ ...AWAY, ...msg("held-0") }), "show", "a row already hidden stays hidden");
+});
+
+test("R2 S1: a group whose ids repeat counts each new id once: two calls of one id fit in one slot", () => {
+  const l = createLedger();
+  for (let i = 0; i < ID_CAP - 1; i++) l.decide({ ...AWAY, ...msg(`held-${i}`) });
+  assert.notEqual(l.decide({ ...AWAY, ...group("same", "same") }), "show");
+  assert.equal(l.full, false);
+  assert.equal(l.held, ID_CAP);
+});

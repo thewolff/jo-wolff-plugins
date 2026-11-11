@@ -20,9 +20,10 @@
 // prompt Jo typed, a row from before the hold) ends the run.
 //
 // Only ids and a hidden/shown flag per row are kept, in memory; never a row's text. The on-fire
-// check reads the text in memory and keeps nothing. The id sets never drop an id: once one would
-// pass ID_CAP the ledger is `full` and, for the rest of the conversation, hides only rows it
-// already hid in the current hold; every other row draws as is (an id it could not keep might be
+// check reads the text in memory and keeps nothing. The id sets never drop an id, and a row's ids
+// (a group's calls) go in together or not at all: once they would pass ID_CAP the ledger is
+// `full` and, for the rest of the conversation, hides only rows it already hid in the current
+// hold; every other row draws as is (an id it could not keep might be
 // an old row's, so it is never taken for a new one). The order maps (runs only) drop their oldest
 // entry past ID_CAP, which at worst draws one more dim line.
 
@@ -83,14 +84,6 @@ export function rowIds(component, requestId, props) {
   return ids;
 }
 
-/** Add `value` to `set` unless the set is at ID_CAP; false when it could not be kept. */
-function keep(set, value) {
-  if (set.has(value)) return true;
-  if (set.size >= ID_CAP) return false;
-  set.add(value);
-  return true;
-}
-
 function capSet(map, key, value) {
   map.set(key, value);
   if (map.size > ID_CAP) map.delete(map.keys().next().value);
@@ -118,10 +111,20 @@ export function createLedger() {
   let last = null;
   let full = false;
 
-  /** Keep each id in `set`; once one does not fit, the ledger is full for good. */
+  /**
+   * Keep every id in `set`, or none of them: the new distinct ids are counted first, so a group
+   * that does not fit leaves no call of it behind. When they do not fit the ledger is full for
+   * good. True when all were kept.
+   */
   function keepAll(set, ids) {
-    for (const id of ids) if (!keep(set, id)) full = true;
-    return !full;
+    const fresh = new Set();
+    for (const id of ids) if (!set.has(id)) fresh.add(id);
+    if (set.size + fresh.size > ID_CAP) {
+      full = true;
+      return false;
+    }
+    for (const id of fresh) set.add(id);
+    return true;
   }
 
   /** Place a row in first-seen order and record whether it is hidden now. */
