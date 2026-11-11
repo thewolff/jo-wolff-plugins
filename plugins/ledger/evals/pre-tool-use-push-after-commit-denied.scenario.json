@@ -2,7 +2,7 @@
   "$comment": "Review gate, hole two: a push chained after `git commit` on one command line is denied; the commit it would publish does not exist yet.",
   "event": "PreToolUse",
   "expect": "deny",
-  "reason": "`git commit` runs before this `git push` on the same command line and can move HEAD",
+  "reason": "`git commit` runs before this `git push` on the same command line and may move HEAD",
   "setup": {
     "commands": [
       "git -c user.name=t -c user.email=t@t -C \"${CWD}\" commit -q --allow-empty -m init",

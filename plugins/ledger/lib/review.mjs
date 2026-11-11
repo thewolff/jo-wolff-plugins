@@ -912,7 +912,7 @@ export function commandRefusal(ops, cli = "ledger", cwd = null) {
   if (chained) {
     return {
       kind: "chained",
-      reason: `ledger: review gate: \`${chained.after}\` runs before this \`${name(chained)}\` on the same command line and can move HEAD, so the commit that would be published is not the one the gate can check now. Run \`${chained.after}\` first, review the new HEAD (\`${cli} review\`), then run \`${name(chained)}\` as its own command.`,
+      reason: `ledger: review gate: \`${chained.after}\` runs before this \`${name(chained)}\` on the same command line and may move HEAD, so the commit that would be published is not the one the gate can check now. Run \`${chained.after}\` first, review the new HEAD (\`${cli} review\`), then run \`${name(chained)}\` as its own command.`,
     };
   }
   return null;

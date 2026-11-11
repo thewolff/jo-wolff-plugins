@@ -959,19 +959,26 @@ test("0.3.11 hole two: under gate a push chained after a HEAD-moving command is 
     ["git am fix.patch && git push origin feat", "git am"],
     ["(git commit -m x) && git push origin feat", "git commit"],
     ["gh pr checkout 5 && git push", "gh pr checkout"],
+    ["git stash branch recovered stash@{0} && git push origin HEAD", "git stash branch"],
+    ["git stash -q branch recovered && git push origin HEAD", "git stash branch"],
+    ["git fetch -u origin main:feat && git push origin feat", "git fetch"],
+    ["git fetch --update-head-ok origin main:feat && git push origin feat", "git fetch"],
+    ['git ci -m "an alias for commit" && git push origin feat', "git ci"],
+    ["git subtree pull --prefix lib other main && git push origin feat", "git subtree"],
+    ["git update-ref HEAD abc123 && git push origin feat", "git update-ref"],
   ]) {
     assert.equal(pushOperations(cmd)[0].after, mover, cmd);
     const p = push(b, cmd);
     assert.equal(decision(p), "deny", cmd);
     const reason = p.json.hookSpecificOutput.permissionDecisionReason;
-    assert.ok(reason.includes(`\`${mover}\` runs before this \`git push\` on the same command line and can move HEAD`), `${cmd}: ${reason}`);
+    assert.ok(reason.includes(`\`${mover}\` runs before this \`git push\` on the same command line and may move HEAD`), `${cmd}: ${reason}`);
     assert.match(reason, /review the new HEAD \(`.*review`\), then run `git push` as its own command/, cmd);
   }
   let p = push(b, 'git commit -m "x" && gh pr create --fill');
   assert.equal(decision(p), "deny", "gh pr create pushes the current branch");
   assert.match(p.json.hookSpecificOutput.permissionDecisionReason, /`git commit` runs before this `gh pr create`/);
   // What stays allowed: the push on its own, a push before the mover, commands that do not move HEAD.
-  for (const cmd of ["git push origin feat", "git push origin feat && git checkout main", "git status && git fetch origin && git log -1 --oneline && git push origin feat", 'echo "git commit" && git push origin feat', "git push -u origin feat && gh pr create --fill"]) {
+  for (const cmd of ["git push origin feat", "git push origin feat && git checkout main", "git status && git fetch origin && git log -1 --oneline && git push origin feat", "git add -A && git stash && git stash pop && git push origin feat", "git --version && git branch -vv && git remote -v && git push origin feat", 'echo "git commit" && git push origin feat', "git push -u origin feat && gh pr create --fill"]) {
     assert.equal(pushOperations(cmd)[0].after, null, cmd);
     assert.equal(push(b, cmd).out, "", cmd);
   }

@@ -25,8 +25,8 @@
 // the gate cannot check it is denied (lib/review.mjs commandRefusal): a push from a folder the
 // gate cannot follow (a `cd` or `-C` that is a variable, a substitution, `~`, a glob, a brace
 // expansion or `cd -`; a literal `cd` to a folder that does not exist; `--git-dir`, `--work-tree`, a `GIT_*` setting, a `-c` that steers the push), and a `git push`
-// or `gh pr create` that follows a HEAD-moving git command on the same command line (`commit`,
-// `rebase`, `merge`, `pull`, …). The reason tells the agent to re-issue the push as its own
+// or `gh pr create` that follows, on the same command line, a git command not known to leave HEAD
+// alone (`commit`, `rebase`, `merge`, `pull`, `stash branch`, an alias, …). The reason tells the agent to re-issue the push as its own
 // `cd /absolute/path && git push …`. Under `advise` both are a notice. When the refs cannot be
 // named for another reason (`--all`, a pattern refspec, a remote that does not answer), the call
 // is allowed with a notice. Only a deny writes a `reviewGate` bounce row; any allowed gated command

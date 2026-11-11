@@ -20,12 +20,15 @@ All notable changes to ledger are recorded here. The format follows
   `cd /absolute/path && git push <remote> <branch>`. A hyphen in a literal folder name was
   never a problem and stays one (`cd /a/story-charts-step1 && git push` resolves); only the
   bare word `-` is unresolved.
-- Review gate, `gate` mode: a `git push` or `gh pr create` that follows a HEAD-moving command on
-  the same command line is denied; before, it was checked against HEAD as it was before the
+- Review gate, `gate` mode: a `git push` or `gh pr create` that follows, on the same command
+  line, a command that may move HEAD is denied; before, it was checked against HEAD as it was before the
   line ran, so `git rebase origin/main && git push` and `git commit -m … && git push` published
-  a commit no review had seen. The commands: `git commit`, `rebase`, `merge`, `cherry-pick`,
-  `revert`, `reset`, `pull`, `checkout`, `switch`, `am`, `bisect`, `update-ref`, `symbolic-ref`
-  (git's global options read, in any shell scope) and `gh pr checkout`. The reason says to run
+  a commit no review had seen. The commands: every git subcommand not on a list of ones known to
+  leave HEAD alone (`HEAD_KEEPERS` in lib/gate.mjs: `add`, `status`, `log`, `diff`, `fetch`,
+  `stash`, `branch`, `tag`, …), so `git commit`, `rebase`, `merge`, `cherry-pick`, `revert`,
+  `reset`, `pull`, `checkout`, `switch`, `am`, `bisect`, `update-ref`, `symbolic-ref`,
+  `subtree`, and a git alias; plus `git stash branch`, `git fetch -u` and `gh pr checkout`.
+  Git's global options are read, in any shell scope. The reason says to run
   that command first, review the new HEAD, then run the push as its own command. `gh pr merge`
   is not refused for this: the commit it merges is the remote's, not HEAD.
 
