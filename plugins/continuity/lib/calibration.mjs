@@ -36,10 +36,15 @@ const ASSISTANT = '"type":"assistant"';
 const USAGE = '"usage"';
 
 /**
- * `{ bytes, sinceMarker, usageTokens }` for the transcript at `path`: bytes after the line
- * holding the last compaction marker, or the whole file (`sinceMarker` false), and the context
- * size the newest main-thread reply in that span recorded (null when none did). Null when the
- * transcript cannot be read.
+ * `{ bytes, sinceMarker, usageTokens, baselineTokens, epoch, markerAt }` for the transcript at
+ * `path`: bytes after the line holding the last compaction marker, or the whole file
+ * (`sinceMarker` false); the context size the newest main-thread reply in that span recorded
+ * (`usageTokens`) and the oldest one (`baselineTokens`, what the window started at), each null
+ * when none did; `epoch`, which compaction window this is (the marker line's `uuid`, else
+ * `@<byte offset>` of the marker line, else "start" when there is no marker), and `markerAt`,
+ * the marker's `timestamp` in ms (null when there is no marker or it carries none). A transcript
+ * is append-only, so a window's epoch does not change when the session is resumed days later.
+ * Null when the transcript cannot be read.
  */
 export function measureTranscript(path) {
   let fd;
@@ -55,10 +60,20 @@ export function measureTranscript(path) {
     }
     const data = buf.subarray(0, read);
     const at = data.lastIndexOf(MARKER);
-    if (at < 0) return { bytes: data.length, sinceMarker: false, usageTokens: lastUsage(data, 0) };
+    if (at < 0) return { bytes: data.length, sinceMarker: false, usageTokens: lastUsage(data, 0), baselineTokens: firstUsage(data, 0), epoch: "start", markerAt: null };
+    const sol = data.lastIndexOf(0x0a, at) + 1;
     const eol = data.indexOf(0x0a, at);
     const from = eol < 0 ? data.length : eol + 1;
-    return { bytes: data.length - from, sinceMarker: true, usageTokens: lastUsage(data, from) };
+    const marker = parseLine(data.subarray(sol, eol < 0 ? data.length : eol));
+    const stamp = typeof marker?.timestamp === "string" ? Date.parse(marker.timestamp) : NaN;
+    return {
+      bytes: data.length - from,
+      sinceMarker: true,
+      usageTokens: lastUsage(data, from),
+      baselineTokens: firstUsage(data, from),
+      epoch: typeof marker?.uuid === "string" && marker.uuid ? marker.uuid : `@${sol}`,
+      markerAt: Number.isFinite(stamp) ? stamp : null,
+    };
   } catch {
     return null;
   } finally {
@@ -72,23 +87,43 @@ export function measureTranscript(path) {
   }
 }
 
+function parseLine(line) {
+  try {
+    return JSON.parse(line.toString("utf8"));
+  } catch {
+    return null;
+  }
+}
+
+/** The context size a line records when it is a main-thread assistant reply with usage; 0 otherwise. */
+function lineUsage(line) {
+  if (!line.includes(ASSISTANT) || !line.includes(USAGE)) return 0;
+  const rec = parseLine(line);
+  if (rec?.type !== "assistant" || rec.isSidechain === true) return 0;
+  return usageTokens(rec.message?.usage);
+}
+
 /** The context size recorded by the newest main-thread assistant line in `data` at or after `from`; null when none. */
 function lastUsage(data, from) {
   let end = data.length;
   while (end > from) {
     const nl = data.lastIndexOf(0x0a, end - 1);
     const start = nl < from ? from : nl + 1;
-    const line = data.subarray(start, end);
+    const tokens = lineUsage(data.subarray(start, end));
     end = nl < from ? from : nl;
-    if (!line.includes(ASSISTANT) || !line.includes(USAGE)) continue;
-    let rec;
-    try {
-      rec = JSON.parse(line.toString("utf8"));
-    } catch {
-      continue;
-    }
-    if (rec?.type !== "assistant" || rec.isSidechain === true) continue;
-    const tokens = usageTokens(rec.message?.usage);
+    if (tokens > 0) return tokens;
+  }
+  return null;
+}
+
+/** The context size recorded by the oldest main-thread assistant line in `data` at or after `from`; null when none. */
+function firstUsage(data, from) {
+  let start = from;
+  while (start < data.length) {
+    const nl = data.indexOf(0x0a, start);
+    const end = nl < 0 ? data.length : nl;
+    const tokens = lineUsage(data.subarray(start, end));
+    start = end + 1;
     if (tokens > 0) return tokens;
   }
   return null;

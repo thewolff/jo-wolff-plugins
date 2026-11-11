@@ -7,8 +7,8 @@
     "Stop": ["deny", "silent"]
   },
   "manual": [
-    "That the context-pressure measure (the token usage the last main-thread reply recorded in the transcript: input_tokens + cache_read_input_tokens + cache_creation_input_tokens) matches the real context on Claude Code: when the warning fires, run /context in the same session and compare its token figure with the percentage the warning gave of `contextTokens`. A warning that says `(estimate)` used the bytes / 8 fallback instead and can be off in either direction.",
-    "That Claude Code writes a `compact_boundary` line into the same transcript after a compaction, so the estimate restarts from it: compact a session, then check the transcript for the marker. No transcript on the machine this was written on had one.",
-    "That the restored snapshot arrives in the model's context after a real auto-compaction: run a session past the threshold and ask it, after the compaction, what branch it was on."
+    "That the context-pressure measure (the token usage the last main-thread reply recorded in the transcript: input_tokens + cache_read_input_tokens + cache_creation_input_tokens) matches the real context on Claude Code: when the warning fires, run /context in the same session and compare its token figure with the one the ask gave. A warning that says `(estimate)` used the bytes / 8 fallback instead and can be off in either direction.",
+    "That the compaction-summary instructions the PreCompact hook prints as plain text reach Claude Code's summary: after a real compaction, check that the summary ends with a `## Handoff` section (In flight, Ruled out, Still open, Next step). No scenario can see the summary.",
+    "That the restored snapshot arrives in the model's context after a real auto-compaction: run a session past the ask point and ask it, after the compaction, what branch it was on."
   ]
 }

@@ -1,5 +1,6 @@
-// lib/pressure.mjs — how full is this session's context, as a fraction of `contextTokens` from
-// the config (default 200,000), measured from the transcript (lib/calibration.mjs).
+// lib/pressure.mjs — when to ask for a handoff: how large this session's context is, measured
+// from the transcript (lib/calibration.mjs), against an absolute ask point in tokens, counted per
+// compaction window.
 //
 // The measure, best first:
 // - "usage": the token usage the newest main-thread reply since the last compaction marker
@@ -9,52 +10,126 @@
 //   Claude Code does not).
 // - "estimate": those bytes divided by BYTES_PER_TOKEN_ESTIMATE, when neither exists (a fresh
 //   window with no reply yet, or a host whose transcript carries no usage). Measured on Claude
-//   Code transcripts, bytes per context token ran about 8 to 9.5, with a wide spread; the warning
+//   Code transcripts, bytes per context token ran about 8 to 9.5, with a wide spread; the ask
 //   says `(estimate)` when this is the basis.
+//
+// When, per surface (the UserPromptSubmit ask and the Stop block each keep their own anchor):
+// - The first ask in a compaction window comes at the ask point (askPoint(): `askTokens`, else
+//   the 0.3 `threshold` × `contextTokens`, else `CLAUDE_CODE_IDLE_COMPACT_MIN_TOKENS` minus the
+//   margin, else 175,000), and never below the window's first recorded usage plus
+//   `askMarginTokens` (40,000): a Desktop session that opens at 130,000 tokens is not asked on
+//   its first turn, and neither is the first turn after a compaction.
+// - After an ask, the next one in the same window comes once the context has grown a further
+//   `reaskStepTokens` (150,000) past the size it was asked at. The anchor is written per window
+//   (`epoch`), so a compaction re-arms the ask, and a 0.3 flag (an ISO string, no epoch) counts
+//   as an earlier window.
+// - A handoff this session wrote after the window's compaction marker and after the last ask
+//   silences the ask that is due, and becomes the anchor the next step is counted from (at the
+//   size of the turn it silenced).
 
 import { readCalibration, measureTranscript } from "./calibration.mjs";
+import { lastHandoffBy, resolveHandoffRoot } from "./handoffs.mjs";
+import { setFlag, sessionKey } from "./session-flags.mjs";
 
 /** Bytes of transcript per token of context when nothing better is known. An estimate. */
 export const BYTES_PER_TOKEN_ESTIMATE = 8;
+/** The ask point when nothing configures one: under Claude Code's 200,000-token idle-compaction threshold. */
+export const ASK_TOKENS = 175000;
+/** The 0.3 defaults a config file that sets only one of `threshold` / `contextTokens` falls back to. */
+export const LEGACY_THRESHOLD = 0.65;
+export const LEGACY_CONTEXT_TOKENS = 200000;
+/** Claude Code raises an idle-compaction threshold below this to this. */
+export const IDLE_COMPACT_FLOOR = 100000;
 
 /**
- * `{ tokens, bytes, basis, sinceMarker }` for the transcript at `path`, where basis is
- * "usage", "calibrated" or "estimate"; null when the transcript cannot be measured or is empty.
+ * `{ tokens, bytes, basis, sinceMarker, baselineTokens, epoch, markerAt }` for the transcript at
+ * `path`, where basis is "usage", "calibrated" or "estimate"; null when the transcript cannot be
+ * measured or is empty.
  */
 export function estimateContext(path, env = process.env) {
   const m = measureTranscript(path);
   if (!m || !m.bytes) return null;
-  if (m.usageTokens) return { tokens: m.usageTokens, bytes: m.bytes, basis: "usage", sinceMarker: m.sinceMarker };
+  const window = { bytes: m.bytes, sinceMarker: m.sinceMarker, baselineTokens: m.baselineTokens, epoch: m.epoch, markerAt: m.markerAt };
+  if (m.usageTokens) return { tokens: m.usageTokens, basis: "usage", ...window };
   const cal = readCalibration(env);
-  return cal
-    ? { tokens: m.bytes * cal.ratio, bytes: m.bytes, basis: "calibrated", sinceMarker: m.sinceMarker }
-    : { tokens: m.bytes / BYTES_PER_TOKEN_ESTIMATE, bytes: m.bytes, basis: "estimate", sinceMarker: m.sinceMarker };
+  return cal ? { tokens: m.bytes * cal.ratio, basis: "calibrated", ...window } : { tokens: m.bytes / BYTES_PER_TOKEN_ESTIMATE, basis: "estimate", ...window };
+}
+
+/** `CLAUDE_CODE_IDLE_COMPACT_MIN_TOKENS` as Claude Code reads it (a positive whole number, at least 100,000); null when unset or not a number. */
+export function idleCompactMinTokens(env = process.env) {
+  const raw = String(env?.CLAUDE_CODE_IDLE_COMPACT_MIN_TOKENS ?? "").trim();
+  if (!/^\d+$/.test(raw) || Number(raw) <= 0) return null;
+  return Math.max(IDLE_COMPACT_FLOOR, Number(raw));
 }
 
 /**
- * `{ pct, estimated, target, basis }` when the estimate is at or past `threshold` × `contextTokens`;
- * null when the transcript cannot be measured or the estimate is under.
+ * The first ask point of a window before the baseline floor, `{ tokens, source }`, in precedence
+ * order: the config's `askTokens`; the 0.3 `threshold` × `contextTokens` when the file sets
+ * either; `CLAUDE_CODE_IDLE_COMPACT_MIN_TOKENS` minus `askMarginTokens`; ASK_TOKENS.
  */
-export function pressure(input, { threshold, contextTokens, env = process.env } = {}) {
-  const est = estimateContext(input?.transcript_path, env);
-  if (!est || est.tokens < contextTokens * threshold) return null;
-  return { pct: Math.round((est.tokens / contextTokens) * 100), estimated: Math.round(est.tokens), target: contextTokens, basis: est.basis };
+export function askPoint(config, env = process.env) {
+  if (config.askTokens != null) return { tokens: config.askTokens, source: "askTokens" };
+  if (config.threshold != null || config.contextTokens != null) {
+    return { tokens: Math.round((config.threshold ?? LEGACY_THRESHOLD) * (config.contextTokens ?? LEGACY_CONTEXT_TOKENS)), source: "threshold" };
+  }
+  const idle = idleCompactMinTokens(env);
+  if (idle != null) return { tokens: Math.max(1, idle - config.askMarginTokens), source: "idle" };
+  return { tokens: ASK_TOKENS, source: "default" };
 }
 
+/** The anchor stored under a flag when it belongs to `epoch`; null for another window, a 0.3 ISO string, or junk. */
+function anchorIn(value, epoch) {
+  if (!value || typeof value !== "object" || value.epoch !== epoch) return null;
+  if (typeof value.tokens !== "number" || !Number.isFinite(value.tokens)) return null;
+  const at = Date.parse(value.at);
+  return { tokens: value.tokens, at: Number.isFinite(at) ? at : 0 };
+}
+
+/**
+ * Whether the surface whose anchor is `flags[flag]` ("promptWarned" or "stopBlocked") asks now.
+ * Null when the transcript cannot be measured, the context is under the point due, or a handoff
+ * this session wrote silences it (that silence is recorded as the new anchor, best effort).
+ * Otherwise `{ tokens, basis, step, mark }`: `mark()` writes the ask as the anchor and returns
+ * false when it could not, so the caller decides whether to ask anyway.
+ */
+export async function dueAsk(input, flag, { config, flags = {}, env = process.env, now = Date.now() } = {}) {
+  const est = estimateContext(input?.transcript_path, env);
+  if (!est) return null;
+  const prev = anchorIn(flags[flag], est.epoch);
+  const floor = est.baselineTokens != null ? est.baselineTokens + config.askMarginTokens : 0;
+  const due = prev ? prev.tokens + config.reaskStepTokens : Math.max(askPoint(config, env).tokens, floor);
+  if (est.tokens < due) return null;
+  const key = sessionKey(input);
+  const anchor = (by) => setFlag(key, flag, { epoch: est.epoch, tokens: Math.round(est.tokens), at: new Date(now).toISOString(), by }, env);
+  // A handoff written after this window's compaction and after the last ask already holds what
+  // the ask would ask for. Without a session id there is no handoff to attribute.
+  if (input?.session_id) {
+    const { root } = await resolveHandoffRoot(String(input.cwd || "") || process.cwd(), env);
+    const wrote = lastHandoffBy(root, input.session_id, now);
+    if (wrote != null && wrote > (est.markerAt ?? -Infinity) && wrote > (prev?.at ?? -Infinity)) {
+      anchor("handoff");
+      return null;
+    }
+  }
+  return { tokens: Math.round(est.tokens), basis: est.basis, step: config.reaskStepTokens, mark: () => anchor("ask") };
+}
+
+const thousands = (n) => String(Math.round(n)).replace(/\B(?=(\d{3})+$)/g, ",");
+
 /** The text that asks for a handoff; the same on both surfaces, with the way out in backticks. */
-export function handoffRequest(pct, basis = "estimate") {
+export function handoffRequest(tokens, basis = "estimate", step = 150000) {
   const how =
     basis === "usage"
-      ? `${pct}% full (from the token usage the last reply recorded)`
+      ? `${thousands(tokens)} tokens (from the token usage the last reply recorded)`
       : basis === "calibrated"
-        ? `roughly ${pct}% full (calibrated from this machine's compactions)`
-        : `roughly ${pct}% full (estimate), judged from the transcript's size because no reply since the last compaction recorded its token usage`;
+        ? `roughly ${thousands(tokens)} tokens (calibrated from this machine's compactions)`
+        : `roughly ${thousands(tokens)} tokens (estimate), judged from the transcript's size because no reply since the last compaction recorded its token usage`;
   return (
-    `continuity: this session's context is ${how}. Before it ends, run \`/continuity:handoff\` ` +
+    `continuity: this session's context is ${how}. Before it is compacted, run \`/continuity:handoff\` ` +
     "to write the judgment layer to `.ai/handoffs/` in the repository: what you were in the middle of, what you already ruled " +
     "out, what is still uncertain. The next session inherits that file and nothing else beyond the repository itself; " +
     "mechanical state (branch, diff, touched files, recent asks) is saved automatically at compaction and is not what gets lost. " +
     "If there is genuinely nothing in flight worth passing on, a short session or a finished task, say so in one line and stop. " +
-    "This fires once per session either way."
+    `This asks again only after the context grows by another ${thousands(step)} tokens, or after the next compaction.`
   );
 }

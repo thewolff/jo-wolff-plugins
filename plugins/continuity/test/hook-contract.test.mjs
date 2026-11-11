@@ -51,6 +51,10 @@ function assertAllowed(r, what) {
   assert.equal(r.status, 0, `${what}: exit ${r.status} ${r.stderr}`);
   assert.ok(r.ms < BUDGET_MS, `${what}: took ${r.ms} ms`);
   if (!r.stdout.trim()) return null;
+  // Plain text (continuity's PreCompact summary instructions) is not JSON output to Claude Code
+  // and cannot deny or block (code.claude.com/docs/en/hooks.md: stdout that does not start with
+  // `{` is plain text).
+  if (!r.stdout.trimStart().startsWith("{")) return null;
   const json = JSON.parse(r.stdout);
   assert.notEqual(json.hookSpecificOutput?.permissionDecision, "deny", `${what}: denied`);
   assert.notEqual(json.decision, "block", `${what}: blocked`);

@@ -4,7 +4,9 @@
 //
 // runHook(name, handlerUrl, { plugin, quiet, deadlineMs }) reads stdin, parses it as JSON (empty
 // stdin is `{}`), runs the hook module's exported `handle(input, { env })` in a worker thread and
-// prints what it returns: an object → JSON on stdout, null → nothing. It exits 0 once stdout has
+// prints what it returns: an object → JSON on stdout, a string → that text as it is (an event
+// whose plain stdout the host reads as text: PreCompact's compaction-summary instructions; this
+// is continuity's own addition to the copied runner), null → nothing. It exits 0 once stdout has
 // taken the whole answer (an exit right after the write loses everything past one pipe buffer,
 // 64 KiB, when stdout is a pipe the host has not read yet). Whatever goes wrong, it still exits 0
 // with an "allow":
@@ -195,6 +197,7 @@ export async function runHook(name, handlerUrl, { plugin, quiet = false, deadlin
   if (result === TIMED_OUT || done) return;
   if (result.error) return failOpen(result.error.message, result.error.stack ? ` | ${result.error.stack.split("\n").slice(1, 3).join(" ")}` : "");
   const out = result.out;
+  if (typeof out === "string") return finish(out);
   return finish(out && typeof out === "object" && Object.keys(out).length ? JSON.stringify(out) : "");
 }
 

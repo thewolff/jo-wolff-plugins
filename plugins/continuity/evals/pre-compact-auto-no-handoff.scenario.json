@@ -1,8 +1,9 @@
 {
-  "$comment": "Auto-compaction with no handoff written, on Claude Code's documented PreCompact payload (trigger and custom_instructions, no token_count): the snapshot is saved, the heartbeat lands, no calibration record is made, and the person is told (systemMessage) that the judgment layer was not captured.",
+  "$comment": "Auto-compaction with no handoff written, on Claude Code's documented PreCompact payload (trigger and custom_instructions, no token_count): the snapshot is saved, the heartbeat lands, no calibration record is made, and stdout is the plain-text compaction-summary instructions asking for a `## Handoff` section, which the runner's vocabulary counts as `silent` (not JSON: no systemMessage, which Claude Code would discard from PreCompact). The person hears about the missing handoff after the compaction, from the SessionStart hook.",
   "event": "PreCompact",
-  "expect": "systemMessage",
-  "reason": "no handoff written",
+  "expect": "silent",
+  "sibling": "pre-compact-omp-payload.scenario.json",
+  "reason": "a section headed exactly `## Handoff`",
   "setup": { "commands": ["git -C \"${CWD}\" checkout -q -b feature/port", "echo draft > \"${CWD}/notes.md\""] },
   "transcript": [
     { "type": "user", "message": { "role": "user", "content": "port the continuity hooks" } },

@@ -12,9 +12,9 @@ import { DEFAULTS, readConfig } from "../lib/config.mjs";
 import { HEARTBEAT_MAX_LINES, readHeartbeat, recordHeartbeat } from "../lib/heartbeat.mjs";
 import { age, lastSaveFor, renderLiveness } from "../lib/liveness.mjs";
 import { CALIBRATION_MAX_LINES, measureTranscript, readCalibration, recordCalibration } from "../lib/calibration.mjs";
-import { BYTES_PER_TOKEN_ESTIMATE, estimateContext, handoffRequest, pressure } from "../lib/pressure.mjs";
-import { markFlag, readFlags, sessionKey } from "../lib/session-flags.mjs";
-import { ENTRY_LINE_CAP, handoffWrittenBy, listHandoffs, parseFrontmatter, renderHandoffs, resolveHandoffRoot } from "../lib/handoffs.mjs";
+import { ASK_TOKENS, BYTES_PER_TOKEN_ESTIMATE, askPoint, dueAsk, estimateContext, handoffRequest, idleCompactMinTokens } from "../lib/pressure.mjs";
+import { markFlag, readFlags, sessionKey, setFlag } from "../lib/session-flags.mjs";
+import { ENTRY_LINE_CAP, lastHandoffBy, listHandoffs, parseFrontmatter, renderHandoffs, resolveHandoffRoot } from "../lib/handoffs.mjs";
 import { MAX_STATUS_ENTRIES, RESTORE_MAX_CHARS, STATE_MAX_AGE_MS, buildSnapshot, capture, readTranscript, renderSnapshot, restore } from "../lib/snapshot.mjs";
 import { ERRORS_MAX_LINES, logError } from "../lib/errors.mjs";
 import { git } from "../lib/git.mjs";
@@ -74,6 +74,14 @@ test("config: absent is the defaults; malformed, wrong-typed and partial files e
       r = readConfig((b.writeConfig({ contextTokens: n }), b.env));
       assert.equal(r.config.contextTokens, DEFAULTS.contextTokens, JSON.stringify(n));
       assert.match(r.problem, /contextTokens must be a positive whole number/, JSON.stringify(n));
+    }
+    assert.deepEqual([DEFAULTS.askTokens, DEFAULTS.askMarginTokens, DEFAULTS.reaskStepTokens, DEFAULTS.threshold, DEFAULTS.contextTokens], [null, 40000, 150000, null, null], "unset ask point, so askPoint() decides");
+    b.writeConfig({ askTokens: 300000, askMarginTokens: 0, reaskStepTokens: 50000 });
+    assert.deepEqual(readConfig(b.env), { config: { ...DEFAULTS, askTokens: 300000, askMarginTokens: 0, reaskStepTokens: 50000 }, path: configPath(b.env), problem: null });
+    for (const [key, bad, what] of [["askTokens", 0, /askTokens must be a positive whole number/], ["askTokens", "175000", /askTokens must be a positive whole number/], ["askMarginTokens", -1, /askMarginTokens must be a whole number, 0 or more/], ["reaskStepTokens", 1.5, /reaskStepTokens must be a positive whole number/]]) {
+      r = readConfig((b.writeConfig({ [key]: bad }), b.env));
+      assert.equal(r.config[key], DEFAULTS[key], `${key} ${JSON.stringify(bad)}`);
+      assert.match(r.problem, what);
     }
     b.writeConfig({ rules: "off", notesDir: "docs/notes", notesCount: 0 });
     assert.deepEqual(readConfig(b.env), { config: { ...DEFAULTS, rules: "off", notesDir: "docs/notes", notesCount: 0 }, path: configPath(b.env), problem: null });
@@ -421,9 +429,11 @@ test("calibration: measures bytes after the last compaction marker or the whole 
   try {
     assert.equal(measureTranscript("/nowhere"), null);
     b.writeTranscript(["x".repeat(99)]);
-    assert.deepEqual(measureTranscript(b.transcript), { bytes: 100, sinceMarker: false, usageTokens: null });
+    assert.deepEqual(measureTranscript(b.transcript), { bytes: 100, sinceMarker: false, usageTokens: null, baselineTokens: null, epoch: "start", markerAt: null });
     b.writeTranscript(["a".repeat(500), { type: "system", subtype: "compact_boundary" }, "y".repeat(49)]);
-    assert.deepEqual(measureTranscript(b.transcript), { bytes: 50, sinceMarker: true, usageTokens: null }, "only what follows the marker line counts");
+    assert.deepEqual(measureTranscript(b.transcript), { bytes: 50, sinceMarker: true, usageTokens: null, baselineTokens: null, epoch: "@501", markerAt: null }, "only what follows the marker line counts; a marker with no uuid is named by the byte offset of its line");
+    b.writeTranscript(["a".repeat(9), { type: "system", subtype: "compact_boundary", uuid: "u-1", timestamp: "2026-11-04T20:33:00.000Z" }, "y".repeat(49)]);
+    assert.deepEqual(measureTranscript(b.transcript), { bytes: 50, sinceMarker: true, usageTokens: null, baselineTokens: null, epoch: "u-1", markerAt: Date.parse("2026-11-04T20:33:00.000Z") });
 
     assert.equal(readCalibration(b.env), null);
     assert.equal(recordCalibration({ token_count: 100, transcript_path: "/nowhere" }, b.env), false);
@@ -447,65 +457,76 @@ test("calibration: measures bytes after the last compaction marker or the whole 
   }
 });
 
-test("pressure: the last main-thread reply's recorded usage is the context size; sidechain and zero-usage replies are passed over; a compaction marker resets it", () => {
+test("pressure: the newest main-thread reply's usage is the context size and the oldest one in the window its baseline; sidechain and zero-usage replies are passed over; a compaction marker starts a new window", () => {
   const b = box();
   try {
     const reply = (usage, extra = {}) => ({ type: "assistant", isSidechain: false, message: { role: "assistant", content: [{ type: "text", text: "ok" }], usage }, ...extra });
-    const input = { transcript_path: b.transcript };
-    // Claude Code's shape: 2 + 150,000 cache read + 9,998 cache creation = 160,000 = 80% of 200,000.
+    // Claude Code's shape: 2 + 150,000 cache read + 9,998 cache creation = 160,000.
     const full = { input_tokens: 2, cache_creation_input_tokens: 9_998, cache_read_input_tokens: 150_000, output_tokens: 5 };
     b.writeTranscript([reply({ input_tokens: 10 }), { type: "user", message: { role: "user", content: "go" } }, reply(full), { type: "user", message: { role: "user", content: "next" } }]);
-    assert.equal(measureTranscript(b.transcript).usageTokens, 160000);
-    const bytes = measureTranscript(b.transcript).bytes;
-    assert.deepEqual(estimateContext(b.transcript, b.env), { tokens: 160000, bytes, basis: "usage", sinceMarker: false });
-    assert.deepEqual(pressure(input, { threshold: 0.65, contextTokens: 200000, env: b.env }), { pct: 80, estimated: 160000, target: 200000, basis: "usage" });
-    assert.equal(pressure(input, { threshold: 0.9, contextTokens: 200000, env: b.env }), null);
-    assert.equal(pressure(input, { threshold: 0.65, contextTokens: 400000, env: b.env }), null, "a larger window is honoured");
+    const m = measureTranscript(b.transcript);
+    assert.deepEqual([m.usageTokens, m.baselineTokens], [160000, 10]);
+    assert.deepEqual(estimateContext(b.transcript, b.env), { tokens: 160000, bytes: m.bytes, basis: "usage", sinceMarker: false, baselineTokens: 10, epoch: "start", markerAt: null });
     // No cache fields: input_tokens alone.
     b.writeTranscript([reply({ input_tokens: 140_000, output_tokens: 3 })]);
     assert.equal(measureTranscript(b.transcript).usageTokens, 140000);
-    // A newer sidechain (subagent) reply and a newer synthetic zero-usage reply do not replace the main thread's.
-    b.writeTranscript([reply(full), reply({ input_tokens: 5, cache_read_input_tokens: 1 }, { isSidechain: true }), reply({ input_tokens: 0, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 })]);
-    assert.equal(measureTranscript(b.transcript).usageTokens, 160000);
-    // A usage record before the compaction marker does not count after it.
-    b.writeTranscript([reply(full), { type: "system", subtype: "compact_boundary" }, reply({ input_tokens: 3, cache_read_input_tokens: 20_000 })]);
-    assert.deepEqual(measureTranscript(b.transcript), { bytes: measureTranscript(b.transcript).bytes, sinceMarker: true, usageTokens: 20003 });
-    assert.equal(pressure(input, { threshold: 0.65, contextTokens: 200000, env: b.env }), null);
+    // A sidechain (subagent) reply and a synthetic zero-usage reply are neither the size nor the baseline.
+    b.writeTranscript([reply({ input_tokens: 5, cache_read_input_tokens: 1 }, { isSidechain: true }), reply({ input_tokens: 0 }), reply(full), reply({ input_tokens: 5, cache_read_input_tokens: 1 }, { isSidechain: true }), reply({ input_tokens: 0, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 })]);
+    assert.deepEqual([measureTranscript(b.transcript).usageTokens, measureTranscript(b.transcript).baselineTokens], [160000, 160000]);
+    // A usage record before the compaction marker counts for neither after it.
+    b.writeTranscript([reply(full), { type: "system", subtype: "compact_boundary", uuid: "u-2" }, reply({ input_tokens: 3, cache_read_input_tokens: 20_000 }), reply({ input_tokens: 3, cache_read_input_tokens: 30_000 })]);
+    assert.deepEqual(measureTranscript(b.transcript), { bytes: measureTranscript(b.transcript).bytes, sinceMarker: true, usageTokens: 30003, baselineTokens: 20003, epoch: "u-2", markerAt: null });
     // Usage beats a calibration record.
     b.writeTranscript([reply(full)]);
     mkdirSync(stateDir(b.env), { recursive: true });
     writeFileSync(calibrationPath(b.env), '{"bytes":1,"tokens":1}\n');
-    assert.equal(pressure(input, { threshold: 0.65, contextTokens: 200000, env: b.env }).basis, "usage");
-    assert.match(handoffRequest(80, "usage"), /^continuity: this session's context is 80% full \(from the token usage the last reply recorded\)\. .*`\/continuity:handoff`/);
+    assert.equal(estimateContext(b.transcript, b.env).basis, "usage");
+    assert.match(handoffRequest(160000, "usage"), /^continuity: this session's context is 160,000 tokens \(from the token usage the last reply recorded\)\. .*`\/continuity:handoff`/);
   } finally {
     b.release();
   }
 });
 
-test("pressure: with no recorded usage, the transcript's bytes / 8 is the estimate and the warning says (estimate); a calibration record replaces the constant", () => {
+test("pressure: with no recorded usage, the transcript's bytes / 8 is the estimate and the ask says (estimate); a calibration record replaces the constant", async () => {
   const b = box();
   try {
     assert.equal(BYTES_PER_TOKEN_ESTIMATE, 8);
-    // 1,280,000 bytes / 8 = 160,000 tokens = 80% of the 200,000 default.
-    b.writeTranscript(["x".repeat(1_279_999)]);
+    // 1,440,000 bytes / 8 = 180,000 tokens.
+    b.writeTranscript(["x".repeat(1_439_999)]);
     const input = { transcript_path: b.transcript };
-    assert.deepEqual(estimateContext(b.transcript, b.env), { tokens: 160000, bytes: 1280000, basis: "estimate", sinceMarker: false });
-    assert.deepEqual(pressure(input, { threshold: 0.65, contextTokens: 200000, env: b.env }), { pct: 80, estimated: 160000, target: 200000, basis: "estimate" });
-    assert.equal(pressure({ transcript_path: "/nowhere" }, { threshold: 0.1, contextTokens: 200000, env: b.env }), null);
-    assert.equal(pressure({}, { threshold: 0.1, contextTokens: 200000, env: b.env }), null);
+    const config = { ...DEFAULTS };
+    assert.deepEqual(estimateContext(b.transcript, b.env), { tokens: 180000, bytes: 1440000, basis: "estimate", sinceMarker: false, baselineTokens: null, epoch: "start", markerAt: null });
+    const ask = await dueAsk(input, "promptWarned", { config, env: b.env });
+    assert.deepEqual([ask.tokens, ask.basis], [180000, "estimate"]);
+    assert.equal(await dueAsk({ transcript_path: "/nowhere" }, "promptWarned", { config, env: b.env }), null);
+    assert.equal(await dueAsk({}, "promptWarned", { config, env: b.env }), null);
     // A usage record only before the marker: the fallback applies to the bytes after it.
     b.writeTranscript([{ type: "assistant", message: { usage: { input_tokens: 190_000 } } }, { type: "system", subtype: "compact_boundary" }, "y".repeat(3)]);
-    assert.equal(pressure(input, { threshold: 0.65, contextTokens: 200000, env: b.env }), null);
+    assert.equal(await dueAsk(input, "promptWarned", { config, env: b.env }), null);
     // A real token count ever recorded (an adapter that passes one) replaces the constant.
     b.writeTranscript(["x".repeat(3999)]);
     mkdirSync(stateDir(b.env), { recursive: true });
-    writeFileSync(calibrationPath(b.env), '{"bytes":4000,"tokens":160000}\n');
-    assert.deepEqual(pressure(input, { threshold: 0.65, contextTokens: 200000, env: b.env }), { pct: 80, estimated: 160000, target: 200000, basis: "calibrated" });
-    assert.match(handoffRequest(80), /context is roughly 80% full \(estimate\), judged from the transcript's size.*`\/continuity:handoff`/);
-    assert.match(handoffRequest(80, "calibrated"), /roughly 80% full \(calibrated from this machine's compactions\)/);
+    writeFileSync(calibrationPath(b.env), '{"bytes":4000,"tokens":180000}\n');
+    assert.equal((await dueAsk(input, "promptWarned", { config, env: b.env })).basis, "calibrated");
+    assert.match(handoffRequest(180000), /context is roughly 180,000 tokens \(estimate\), judged from the transcript's size.*`\/continuity:handoff`/);
+    assert.match(handoffRequest(180000, "calibrated"), /roughly 180,000 tokens \(calibrated from this machine's compactions\)/);
   } finally {
     b.release();
   }
+});
+
+test("pressure: the ask point's precedence: askTokens, then the 0.3 threshold × contextTokens, then CLAUDE_CODE_IDLE_COMPACT_MIN_TOKENS minus the margin, then 175,000", () => {
+  const c = (over = {}) => ({ ...DEFAULTS, ...over });
+  assert.deepEqual(askPoint(c(), {}), { tokens: ASK_TOKENS, source: "default" });
+  assert.equal(ASK_TOKENS, 175000);
+  assert.deepEqual(askPoint(c(), { CLAUDE_CODE_IDLE_COMPACT_MIN_TOKENS: "300000" }), { tokens: 260000, source: "idle" });
+  assert.deepEqual(askPoint(c({ askMarginTokens: 10000 }), { CLAUDE_CODE_IDLE_COMPACT_MIN_TOKENS: "300000" }), { tokens: 290000, source: "idle" });
+  assert.deepEqual(askPoint(c(), { CLAUDE_CODE_IDLE_COMPACT_MIN_TOKENS: "50000" }), { tokens: 60000, source: "idle" }, "Claude Code raises a value under 100,000 to 100,000");
+  for (const junk of ["", "lots", "-5", "0", "1e6"]) assert.equal(askPoint(c(), { CLAUDE_CODE_IDLE_COMPACT_MIN_TOKENS: junk }).source, "default", JSON.stringify(junk));
+  assert.deepEqual(askPoint(c({ threshold: 0.5 }), { CLAUDE_CODE_IDLE_COMPACT_MIN_TOKENS: "300000" }), { tokens: 100000, source: "threshold" }, "a 0.3 config wins over the env");
+  assert.deepEqual(askPoint(c({ contextTokens: 1000000 }), {}), { tokens: 650000, source: "threshold" });
+  assert.deepEqual(askPoint(c({ askTokens: 120000, threshold: 0.5 }), {}), { tokens: 120000, source: "askTokens" });
+  assert.equal(idleCompactMinTokens({}), null);
 });
 
 test("session flags: keyed by session, then transcript, then nosess; marks accumulate; an unwritable dir returns false", () => {
@@ -518,6 +539,8 @@ test("session flags: keyed by session, then transcript, then nosess; marks accum
     assert.equal(markFlag("k", "livenessSaid", b.env, new Date("2026-11-04T10:00:00Z")), true);
     assert.equal(markFlag("k", "stopBlocked", b.env, new Date("2026-11-04T10:01:00Z")), true);
     assert.deepEqual(readFlags("k", b.env), { livenessSaid: "2026-11-04T10:00:00.000Z", stopBlocked: "2026-11-04T10:01:00.000Z" });
+    assert.equal(setFlag("k", "stopBlocked", { epoch: "e", tokens: 1 }, b.env), true);
+    assert.deepEqual(readFlags("k", b.env).stopBlocked, { epoch: "e", tokens: 1 });
     writeFileSync(sessionFlagsPath("bad", b.env), "[1,2]");
     assert.deepEqual(readFlags("bad", b.env), {});
     chmodSync(join(stateDir(b.env), "sessions"), 0o555);
@@ -567,9 +590,10 @@ test("handoffs: root resolution order, frontmatter, the open-and-fresh filter, t
     assert.equal(list[0].date, "2026-11-04");
     assert.equal(list[0].author, "jo");
     assert.equal(list[0].session, "s-test");
-    assert.equal(handoffWrittenBy(b.work, "s-test"), true);
-    assert.equal(handoffWrittenBy(b.work, "someone-else"), false);
-    assert.equal(handoffWrittenBy(b.work, undefined), false);
+    const mtime = statSync(join(dir, "a--open.md")).mtimeMs;
+    assert.equal(lastHandoffBy(b.work, "s-test"), mtime);
+    assert.equal(lastHandoffBy(b.work, "someone-else"), null);
+    assert.equal(lastHandoffBy(b.work, undefined), null);
 
     for (let i = 0; i < 4; i++) writeFileSync(join(dir, `m${i}.md`), handoffText({ lane: `lane-${i}`, created: `2026-11-0${i + 1}T00:00:00Z` }));
     writeFileSync(join(dir, "long.md"), handoffText({ lane: "long" }).replace("Clean.\n", `${"line\n".repeat(ENTRY_LINE_CAP + 40)}## Tail\nend\n`));
@@ -699,7 +723,7 @@ test("snapshot: restore() injects and unlinks its own fresh snapshot, keeps an o
     const text = restore({ session_id: "s-test" }, { env: b.env });
     assert.match(text, /^## Restored session state \(post-compaction\)\n/);
     assert.match(text, /restate what the thread is and what is pending on it/);
-    assert.match(text, /\*\*No handoff was written before compaction\.\*\*/);
+    assert.match(text, /\*\*No handoff file was written before compaction\.\*\* The compaction summary was asked to end with a `## Handoff` section/);
     assert.match(text, /- the ask\n/);
     assert.equal(existsSync(snapshotPath("s-test", b.env)), false, "consumed");
     assert.equal(restore({ session_id: "s-test" }, { env: b.env }), null, "one-shot");
