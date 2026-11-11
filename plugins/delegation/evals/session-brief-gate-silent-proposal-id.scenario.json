@@ -1,0 +1,16 @@
+{
+  "$comment": "session-brief-gate: starting an offered card (proposal_id, no prompt) is never judged.",
+  "event": "PreToolUse",
+  "expect": "silent",
+  "sibling": "session-brief-gate-deny-missing-headings.scenario.json",
+  "stdin": {
+    "session_id": "${SESSION_ID}",
+    "transcript_path": "${TRANSCRIPT}",
+    "cwd": "${CWD}",
+    "hook_event_name": "PreToolUse",
+    "tool_name": "mcp__ccd_session__start_session",
+    "tool_input": {
+      "proposal_id": "task_scenario1"
+    }
+  }
+}

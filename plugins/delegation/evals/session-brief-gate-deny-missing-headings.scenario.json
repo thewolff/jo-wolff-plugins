@@ -1,0 +1,20 @@
+{
+  "$comment": "session-brief-gate: a start_session prompt without the five heading lines is refused; text on the heading line (`# Target: \u2026`) does not count, and the refusal carries each missing section.",
+  "event": "PreToolUse",
+  "expect": "deny",
+  "reason": "Session start refused: the prompt lacks the heading lines \"## Target\", \"## Change\"",
+  "stdin": {
+    "session_id": "${SESSION_ID}",
+    "transcript_path": "${TRANSCRIPT}",
+    "cwd": "${CWD}",
+    "hook_event_name": "PreToolUse",
+    "tool_name": "mcp__ccd_session__start_session",
+    "tool_input": {
+      "initiation": "user_asked",
+      "title": "Retry loop",
+      "context": "",
+      "background": false,
+      "prompt": "# Target: the retry module\nMake the retry loop stop after three attempts."
+    }
+  }
+}

@@ -1,0 +1,20 @@
+{
+  "$comment": "session-brief-gate: a start_session prompt with all five heading lines starts in silence.",
+  "event": "PreToolUse",
+  "expect": "silent",
+  "sibling": "session-brief-gate-deny-missing-headings.scenario.json",
+  "stdin": {
+    "session_id": "${SESSION_ID}",
+    "transcript_path": "${TRANSCRIPT}",
+    "cwd": "${CWD}",
+    "hook_event_name": "PreToolUse",
+    "tool_name": "mcp__ccd_session__start_session",
+    "tool_input": {
+      "initiation": "user_asked",
+      "title": "Retry loop",
+      "context": "",
+      "background": false,
+      "prompt": "# Target\nThe retry module in this repository.\n\n# Change\n1. Make the retry loop stop after three attempts.\n\n# Acceptance\n`node --test` green.\n\n## How it fails\n- A loop that never stops shows as a hung test; one retry, then report it.\n\n## Spiral bound\n- One retry per failing step; at most 2 commits.\n"
+    }
+  }
+}

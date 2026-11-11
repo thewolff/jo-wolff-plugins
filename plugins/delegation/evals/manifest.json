@@ -21,6 +21,7 @@
   },
   "manual": [
     "That Claude Code puts a PreToolUse deny reason in front of the model as an is_error tool result and the model re-issues the spawn with the section filled in: measured once on 2.1.318 (REVIEW-0.1.0-codex focus item 1); re-run `claude -p` in a temp directory with a thin brief to confirm on a new Claude Code version.",
-    "That the OMP adapter (omp/delegation-omp.ts) blocks a thin `task` call and re-teaches after a compaction inside a live OMP session: covered by omp/delegation-omp.test.mjs on a structural `pi`, not by a live OMP run."
+    "That the OMP adapter (omp/delegation-omp.ts) blocks a thin `task` call and re-teaches after a compaction inside a live OMP session: covered by omp/delegation-omp.test.mjs on a structural `pi`, not by a live OMP run.",
+    "That the desktop app refuses a thin `mcp__ccd_session__start_session` call through session-brief-gate and the model re-issues it with the five headings, then the session starts, and a `proposal_id` start passes: a hook-input capture on 2026-11-11 saw PreToolUse fire for the tool and a second call follow a deny, but not a repaired brief. Check by hand in the desktop app after installing: a thin-brief start, a full one, a proposal start."
   ]
 }
