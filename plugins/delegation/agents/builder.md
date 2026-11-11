@@ -85,6 +85,8 @@ consumer depends on (API contracts, design tokens, shared components, SSR or met
 it is slow and expensive, so it is the wrong call for a single-file change. Say which you
 recommend and why in one sentence.
 
+Lead the report with the outcome in its first sentence: what happened or what was found. Then: what changed, what was verified, what could not be confirmed, and anything needing the owner's decision.
+
 End the report with exactly one of these as its last line: `Stopped because: acceptance met`,
 `Stopped because: bound hit` (name the bound), or `Stopped because: told to stop`. A report
 without the line draws a warning in the parent's transcript.
