@@ -1,5 +1,5 @@
 {
   "name": "delegation",
   "description": "Teach an agent what a subagent's brief must contain, and refuse a spawn whose brief lacks a required section, naming the section to add. Also ships 11 general agents and 3 delegation guards.",
-  "version": "0.1.2"
+  "version": "0.1.3"
 }

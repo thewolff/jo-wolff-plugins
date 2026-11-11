@@ -1,7 +1,7 @@
 ---
 name: reader
 description: Understand a component, file, or subsystem without dumping raw source into the caller's context. Use proactively when an agent needs to map existing code before implementing or planning — especially large files. Returns a structured analysis safe for the caller's context window.
-model: opus
+model: sonnet
 effort: medium
 tools: Read, Grep, Glob, Bash
 skills: output-types
