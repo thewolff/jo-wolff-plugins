@@ -24,7 +24,7 @@
 // - After an ask, the next one in the same window comes once the context has grown a further
 //   `reaskStepTokens` (150,000) past the size it was asked at, or sooner, at `askMarginTokens`
 //   before the auto-compact point, when that comes first and was not already passed by an ask
-//   (so a 300,000-token window asks near 175,000 and again near 247,000, never twice at one
+//   (so a 300,000-token window asks near 175,000 and again near 227,000, never twice at one
 //   point). The anchor is written per window (`epoch`), so a compaction re-arms the ask, and a
 //   0.3 flag (an ISO string, no epoch) counts as an earlier window.
 // - A handoff this session wrote after the window's compaction marker and after the last ask

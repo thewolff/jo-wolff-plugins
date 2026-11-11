@@ -241,12 +241,14 @@ configuration](https://code.claude.com/docs/en/model-config.md), "Set the auto-c
 (`$CLAUDE_CONFIG_DIR/settings.json`, else `~/.claude/settings.json`); inside a file the model's
 `modelSettings` entry beats the top level; `"auto"` is Claude Code's default; the model is the
 transcript's newest `message.model`. It does not see `--autocompact`, `--settings` or managed
-settings. Claude Code compacts about 13,000 tokens before the window (a figure read from the
-Claude Code binary, not documented, so it may move between releases), or at
-`CLAUDE_AUTOCOMPACT_PCT_OVERRIDE` percent of it when that is earlier.
+settings. Claude Code compacts about 33,000 tokens before the window, or at
+`CLAUDE_AUTOCOMPACT_PCT_OVERRIDE` percent of it when that is earlier. The 33,000 is measured,
+not documented, so it may move between releases: on Claude Code 2.1.321, with a 300,000 window
+for claude-fable-5-2, session eacf7986 compacted automatically on 2026-11-10 at 7:03 PM PST with
+`compactMetadata.preTokens` 267,109, which is 32,891 before the window.
 The default ask point is pulled down to `askMarginTokens` before that point, and the re-ask is
 brought forward to it: with `"autoCompactWindow": 300000` the session is asked at 175,000 and
-again at 247,000, before the compaction at about 287,000; with 200,000, first at 147,000. An
+again at 227,000, before the compaction at about 267,000; with 200,000, first at 127,000. An
 `askTokens` or `threshold` set in continuity's config is never lowered.
 
 The prompt hook adds the ask as `additionalContext`:

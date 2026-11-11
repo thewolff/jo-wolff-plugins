@@ -531,18 +531,18 @@ test("pressure: the ask point's precedence: askTokens, then the 0.3 threshold ×
   assert.deepEqual(askPoint(c({ contextTokens: 1000000 }), {}), { tokens: 650000, source: "threshold", cap: null });
   assert.deepEqual(askPoint(c({ askTokens: 120000, threshold: 0.5 }), {}), { tokens: 120000, source: "askTokens", cap: null });
   assert.equal(idleCompactMinTokens({}), null);
-  // An auto-compact point at 187,000 (a 200,000 window): the default moves to 147,000; a later one leaves it.
-  assert.deepEqual(askPoint(c(), {}, { tokens: 187000 }), { tokens: 147000, source: "autoCompactWindow", cap: 147000 });
-  assert.deepEqual(askPoint(c(), {}, { tokens: 287000 }), { tokens: 175000, source: "default", cap: 247000 });
-  assert.deepEqual(askPoint(c({ askTokens: 200000 }), {}, { tokens: 187000 }), { tokens: 200000, source: "askTokens", cap: 147000 }, "an explicit askTokens is not lowered");
+  // An auto-compact point at 167,000 (a 200,000 window): the default moves to 127,000; a later one leaves it.
+  assert.deepEqual(askPoint(c(), {}, { tokens: 167000 }), { tokens: 127000, source: "autoCompactWindow", cap: 127000 });
+  assert.deepEqual(askPoint(c(), {}, { tokens: 267000 }), { tokens: 175000, source: "default", cap: 227000 });
+  assert.deepEqual(askPoint(c({ askTokens: 200000 }), {}, { tokens: 167000 }), { tokens: 200000, source: "askTokens", cap: 127000 }, "an explicit askTokens is not lowered");
   // The re-ask: a step on, or the cap first; an ask already within the margin of the cap is not repeated there.
-  assert.equal(nextAsk(175000, 150000, 247000, 40000), 247000);
-  assert.equal(nextAsk(247000, 150000, 247000, 40000), 397000);
-  assert.equal(nextAsk(220000, 150000, 247000, 40000), 370000);
+  assert.equal(nextAsk(175000, 150000, 227000, 40000), 227000);
+  assert.equal(nextAsk(227000, 150000, 227000, 40000), 377000);
+  assert.equal(nextAsk(200000, 150000, 227000, 40000), 350000);
   assert.equal(nextAsk(175000, 150000, null, 40000), 325000);
 });
 
-test("autocompact: the window from CLAUDE_CODE_AUTO_COMPACT_WINDOW, then project local, project, user settings; modelSettings beats the top level inside a file; \"auto\" is the default; the point is 13,000 before the window or the percentage override", () => {
+test("autocompact: the window from CLAUDE_CODE_AUTO_COMPACT_WINDOW, then project local, project, user settings; modelSettings beats the top level inside a file; \"auto\" is the default; the point is 33,000 before the window or the percentage override", () => {
   const b = box();
   try {
     const project = join(b.work);
@@ -576,10 +576,10 @@ test("autocompact: the window from CLAUDE_CODE_AUTO_COMPACT_WINDOW, then project
     const alt = join(b.root, "alt");
     put(alt, "settings.json", { autoCompactWindow: 220000 });
     assert.equal(autoCompactWindow({ model: "x", projectDir: null, env: { ...b.env, CLAUDE_CONFIG_DIR: alt } }).tokens, 220000, "CLAUDE_CONFIG_DIR replaces ~/.claude");
-    assert.equal(AUTO_COMPACT_BUFFER, 13000);
-    assert.deepEqual(autoCompactCliff({ model: "claude-opus-5-5", projectDir: project, env: b.env }), { tokens: 387000, window: 400000, source: join(project, ".claude", "settings.json") });
+    assert.equal(AUTO_COMPACT_BUFFER, 33000);
+    assert.deepEqual(autoCompactCliff({ model: "claude-opus-5-5", projectDir: project, env: b.env }), { tokens: 367000, window: 400000, source: join(project, ".claude", "settings.json") });
     assert.equal(autoCompactCliff({ model: "claude-opus-5-5", projectDir: project, env: { ...b.env, CLAUDE_AUTOCOMPACT_PCT_OVERRIDE: "50" } }).tokens, 200000, "the override only moves it earlier");
-    assert.equal(autoCompactCliff({ model: "claude-opus-5-5", projectDir: project, env: { ...b.env, CLAUDE_AUTOCOMPACT_PCT_OVERRIDE: "100" } }).tokens, 387000);
+    assert.equal(autoCompactCliff({ model: "claude-opus-5-5", projectDir: project, env: { ...b.env, CLAUDE_AUTOCOMPACT_PCT_OVERRIDE: "100" } }).tokens, 367000);
     assert.equal(autoCompactCliff({ model: "claude-opus-5-5", projectDir: null, env: { HOME: join(b.root, "none") } }), null);
   } finally {
     b.release();

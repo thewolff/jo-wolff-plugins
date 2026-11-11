@@ -37,11 +37,13 @@ All notable changes to continuity are recorded here. The format follows
 - A set auto-compact window is honoured (`lib/autocompact.mjs`): `CLAUDE_CODE_AUTO_COMPACT_WINDOW`,
   else `autoCompactWindow` in the project local, project, then user settings file, per model
   under `modelSettings` before the top level. The default ask point and the re-ask come no later
-  than `askMarginTokens` before the point Claude Code compacts at (the window less 13,000, a
-  figure read from the binary and not documented, or `CLAUDE_AUTOCOMPACT_PCT_OVERRIDE` of it
-  when earlier). With a 300,000 window that is
-  an ask at 175,000 and another at 247,000. An `askTokens` or `threshold` the person set is not
-  lowered. The ask names the size of the next ask instead of the step.
+  than `askMarginTokens` before the point Claude Code compacts at (the window less 33,000, or
+  `CLAUDE_AUTOCOMPACT_PCT_OVERRIDE` of it when earlier). The 33,000 is measured, not documented:
+  on Claude Code 2.1.321 with a 300,000 window for claude-fable-5-2, session eacf7986 compacted
+  automatically on 2026-11-10 at 7:03 PM PST at `preTokens` 267,109, 32,891 before the window.
+  With a 300,000 window that is an ask at 175,000 and another at 227,000. An `askTokens` or
+  `threshold` the person set is not lowered. The ask names the size of the next ask instead of
+  the step.
 
 ## 0.3.1 - 2026-11-04
 

@@ -603,7 +603,7 @@ test("pressure, when: silent on the first turn; asks at 180,000; not again until
 
 // An auto-compact window in the person's settings (`modelSettings.<model>.autoCompactWindow`)
 // moves the point Claude Code compacts at; the ask comes askMarginTokens before it.
-test("pressure, when, with a set auto-compact window: a 300,000 window asks at 175,000 and again at 247,000 before the 287,000 compaction, not between; a 200,000 window asks first at 147,000; askTokens set by the person stays", () => {
+test("pressure, when, with a set auto-compact window: a 300,000 window asks at 175,000 and again at 227,000 before the 267,000 compaction, not between; a 200,000 window asks first at 127,000; askTokens set by the person stays", () => {
   const b = box();
   try {
     b.writeConfig({ liveness: "off" });
@@ -618,25 +618,25 @@ test("pressure, when, with a set auto-compact window: a 300,000 window asks at 1
     const t = [...turn(125_000), ...turn(176_000)];
     b.writeTranscript(t);
     assert.deepEqual(both("w300"), [true, true], "176,000");
-    for (const n of [200_000, 246_000]) {
+    for (const n of [200_000, 226_000]) {
       t.push(...turn(n));
       b.writeTranscript(t);
       assert.deepEqual(both("w300"), [false, false], `${n}`);
     }
-    t.push(...turn(247_000));
+    t.push(...turn(227_000));
     b.writeTranscript(t);
-    assert.deepEqual(both("w300"), [true, true], "247,000: 40,000 before the 287,000 compaction");
-    for (const n of [260_000, 286_000]) {
+    assert.deepEqual(both("w300"), [true, true], "227,000: 40,000 before the 267,000 compaction");
+    for (const n of [240_000, 266_000]) {
       t.push(...turn(n));
       b.writeTranscript(t);
       assert.deepEqual(both("w300"), [false, false], `${n}: asked at the near-compaction point already`);
     }
 
     window(200000);
-    b.writeTranscript([...turn(100_000), ...turn(146_000)]);
-    assert.deepEqual(both("w200"), [false, false], "146,000");
-    b.writeTranscript([...turn(100_000), ...turn(147_000)]);
-    assert.deepEqual(both("w200"), [true, true], "147,000: 40,000 before the 187,000 compaction");
+    b.writeTranscript([...turn(80_000), ...turn(126_000)]);
+    assert.deepEqual(both("w200"), [false, false], "126,000");
+    b.writeTranscript([...turn(80_000), ...turn(127_000)]);
+    assert.deepEqual(both("w200"), [true, true], "127,000: 40,000 before the 167,000 compaction");
     b.writeConfig({ liveness: "off", askTokens: 180000 });
     assert.deepEqual(both("w200-own"), [false, false], "the person's own askTokens is not lowered");
   } finally {

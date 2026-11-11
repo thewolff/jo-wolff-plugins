@@ -21,7 +21,7 @@
 //
 // The model is the transcript's newest main-thread `message.model`; a `modelSettings` key matches
 // it exactly or with its `[1m]` and `-YYYYMMDD` suffixes taken off. Claude Code compacts about
-// AUTO_COMPACT_BUFFER tokens before the window (read from the binary, not documented; it may move);
+// AUTO_COMPACT_BUFFER tokens before the window (measured, not documented; see the constant);
 // CLAUDE_AUTOCOMPACT_PCT_OVERRIDE (1-100, a percentage of the window) only moves that earlier.
 //
 // How it fails: open. A settings file that is missing, unreadable, not JSON, or carries a value
@@ -31,8 +31,13 @@
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 
-/** How far before the window Claude Code auto-compacts (read from the binary, not documented; it may move between releases). */
-export const AUTO_COMPACT_BUFFER = 13000;
+/**
+ * How far before the window Claude Code auto-compacts. Measured, not documented, so it may move
+ * between releases: on Claude Code 2.1.321 with a 300,000 window for claude-fable-5-2, session
+ * eacf7986 compacted automatically on 2026-11-10 at 7:03 PM PST with `compactMetadata.preTokens`
+ * 267,109, which is 32,891 before the window.
+ */
+export const AUTO_COMPACT_BUFFER = 33000;
 export const WINDOW_MIN = 100000;
 export const WINDOW_MAX = 1000000;
 
