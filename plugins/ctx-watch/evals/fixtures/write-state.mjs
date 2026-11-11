@@ -3,7 +3,8 @@
 // Writes ${XDG_STATE_HOME}/ctx-watch/state.json as the launchd tick leaves it, timed from now (a
 // static file would go stale between writing the scenario and running it), for the mid-session
 // scenarios. With a session id, also writes that session's latch as if it had been told of the
-// down episode (the recovery scenario). Only ever writes under the sandbox's XDG_STATE_HOME.
+// down episode ten minutes ago, before the healthy state's passing probe (the recovery scenario).
+// Only ever writes under the sandbox's XDG_STATE_HOME.
 
 import { EMPTY, statePath, stateDir, writeState } from "../../lib/state.mjs";
 import { noteTold } from "../../lib/mid-session.mjs";
@@ -35,4 +36,4 @@ if (!states[shape]) {
   process.exit(2);
 }
 if (!writeState(statePath(process.env), states[shape])) process.exit(1);
-if (toldSession && noteTold(stateDir(process.env), toldSession, DOWN_SINCE)) process.exit(1);
+if (toldSession && noteTold(stateDir(process.env), toldSession, { down: DOWN_SINCE, toldAt: now - 10 * MIN })) process.exit(1);

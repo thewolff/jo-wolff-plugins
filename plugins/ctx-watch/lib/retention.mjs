@@ -11,6 +11,7 @@
 //   checks.log                        one line per consult-history finding (appended by the Stop hook)
 //   resume/<session id>               the SessionStart hook's resume marker, consumed by the next Stop
 //   sessions/<session id>.json        the mid-session hook's latch (what this session was told), a few bytes
+//   sessions/<session id>.json.lock   held for a few file operations by a hook claiming that latch
 //   launchd/<label>.plist             the timer (kept: the person bootstrapped it)
 //   launchd/<label>.out.log           launchd appends every tick's summary line here
 //   launchd/<label>.err.log           and anything the tick printed on stderr
@@ -23,8 +24,9 @@
 //
 // prune(dir, { days }) rotates, then removes every `*.1` older than `days`, every
 // `popups/<token>.json` older than `days`, every `resume/<id>` marker older than `days` (a
-// session that never reached a Stop), every `sessions/<id>.json` latch older than `days` (it is
-// rewritten only when the session is told something, so an old one is a session long over), and
+// session that never reached a Stop), every `sessions/<id>.json` latch and `.json.lock` older
+// than `days` (a latch is rewritten only when the session is told something, so an old one is a
+// session long over; a lock is held for milliseconds, so an old one is a crashed hook's), and
 // any `state.json.<pid>.tmp`, `state.lock.<pid>.stale`, `popups/<token>.json.<pid>.tmp` or
 // `sessions/<id>.json.<pid>.tmp` a failed write or a crashed lock takeover left behind.
 // It never touches state.json, state.lock, the plist, or a current log,

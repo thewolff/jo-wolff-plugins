@@ -195,10 +195,11 @@ function tryLock(path, staleMs, fs) {
  * changing under us that long. One attempt is always made; every later one is checked against the
  * same monotonic deadline first, after a backoff of 5 ms doubling to 50 ms. The lock is released
  * however `fn` ends (a throw propagates). Synchronous: every holder keeps it for a few file
- * operations. `fs` is injectable for the fault tests.
+ * operations. `fs` is injectable for the fault tests; `lock` is another lock file with the same
+ * rules (the mid-session hook's per-session `<latch>.lock`).
  */
-export function withStateLock(dir, fn, { waitMs = LOCK_WAIT_MS, staleMs = LOCK_STALE_MS, fs = nodeFs } = {}) {
-  const path = lockPath(dir);
+export function withStateLock(dir, fn, { waitMs = LOCK_WAIT_MS, staleMs = LOCK_STALE_MS, fs = nodeFs, lock = lockPath(dir) } = {}) {
+  const path = lock;
   const until = performance.now() + waitMs;
   let pause = BACKOFF_MS.first;
   for (;;) {

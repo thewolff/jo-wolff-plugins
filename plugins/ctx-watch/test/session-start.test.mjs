@@ -160,7 +160,7 @@ test("a state file with a field out of shape is one errors.log line, and the hoo
   }
 });
 
-test("an unwritable state directory: the probe line still comes, plus a stamp line and one errors.log line", () => {
+test("an unwritable state directory: the probe line still comes, plus a stamp line and an errors.log line each for the state and the latch", () => {
   const b = box();
   try {
     const dir = join(b.env.XDG_STATE_HOME, "ctx-watch");
@@ -175,8 +175,9 @@ test("an unwritable state directory: the probe line still comes, plus a stamp li
       assert.match(lines[1], new RegExp(`^ctx-watch: state not written to ${statePath(b.env)}: `));
       assert.ok(lines[1].length <= LINE_MAX);
       const log = readFileSync(join(dir, "errors.log"), "utf8").trim().split("\n");
-      assert.equal(log.length, 1);
+      assert.equal(log.length, 2, "the state line, then the mid-session latch it could not write either (the outage was told)");
       assert.match(log[0], /^\d{4}-.*Z SessionStart state not written to /);
+      assert.match(log[1], /^\d{4}-.*Z SessionStart mid-session latch for .* not written /);
       const healthy = handle(input, { env: b.env, now: () => NOW, run: runWith(HEALTHY) });
       assert.match(healthy.systemMessage, /^ctx-watch: state not written to /, "a healthy daemon still gets the stamp line: the dead-man's switch is off without it");
     } finally {

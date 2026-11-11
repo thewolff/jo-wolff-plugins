@@ -3,10 +3,12 @@
 //
 // It reads two files and spawns nothing: the timer's `<state>/state.json` (the launchd tick
 // probes ctx every 5 min and keeps the episode there; lib/state.mjs) and the session's latch,
-// `<state>/sessions/<session id>.json` = `{ down, stale }`: the `downSince` of the episode this
-// session was told about (null once told it is back), and the tick stamp it was told was stale.
-// A per-prompt hook that ran `ctx daemon status` would add its 0.15 s (or a hung ctx's whole
-// bound) to every prompt; this costs one node start and two small file reads.
+// `<state>/sessions/<session id>.json` = `{ down, toldAt, stale }`: when this session was last
+// told ctx is down (`toldAt`, null once told it is back), the timer's `downSince` for that outage
+// (null when SessionStart told it from its own probe before the timer declared one), and the
+// tick stamp it was told was stale. A per-prompt hook that ran `ctx daemon status` would add its
+// 0.15 s (or a hung ctx's whole bound) to every prompt; this costs one node start and two small
+// file reads.
 //
 // decide(state, latch, now) → { say, latch }, `say` one of:
 //   "stale"      the tick stamp (or, never ticked, the first SessionStart's) is older than
@@ -15,47 +17,61 @@
 //                nothing else is said: a down or a recovery read from it is not current news.
 //   "down"       `episode: "down"` (two failing ticks in a row; one is a blip and says nothing)
 //                of kind daemon (which includes `not healed: upgrade state unknown`) or upgrade
-//                (stuck). Once per `downSince`. A semantic-only episode says nothing: the daemon
-//                is up and ctx search answers lexically (SessionStart is the same).
-//   "recovered"  this session was told of a down and the state no longer shows one: one line.
+//                (stuck), to a session not told of an outage, or told of a different `downSince`.
+//                A semantic-only episode says nothing: the daemon is up and ctx search answers
+//                lexically (SessionStart is the same). A session SessionStart told from its own
+//                probe adopts the timer's `downSince` silently: it is the same outage.
+//   "recovered"  this session was told of an outage, and the timer's latest probe is later than
+//                that telling and passed, or failed only on the semantic index (the daemon is
+//                up): one line. Nothing else is a recovery: a state that is missing, unreadable,
+//                out of shape or reset (all read as EMPTY, with no probe), a pass older than the
+//                telling, or a failing strike says nothing and keeps the latch.
 //   null         nothing to say: healthy, a strike, semantic, or already told.
 //
-// The latch is written before the answer is returned. A latch that cannot be written (state
-// directory not writable) still lets the answer out, with a note that it may repeat: an agent told
-// twice beats an agent never told. No session id: nothing is said, since nothing could latch it.
-// SessionStart records its own telling of a down episode here (noteTold), so the first prompt does
-// not repeat it and the recovery line still comes.
+// The claim is atomic: when there is something to say or record, the latch is re-read, decided
+// and written under `<latch>.lock` (state.mjs withStateLock, LATCH_LOCK_WAIT_MS), the lock
+// SessionStart's noteTold takes too, so two hooks of one session cannot both say it. A lock held
+// by a live peer past the wait is that peer's notice: this hook says nothing. A latch (or its
+// lock) that cannot be written still lets the answer out, with a note that it may repeat: an
+// agent told twice beats an agent never told. No session id: nothing is said, since nothing could
+// latch it. The healthy path takes no lock and writes nothing.
 
 import { mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
-import { DEFAULT_INTERVAL_S, readState, stateDir, statePath } from "./state.mjs";
+import { DEFAULT_INTERVAL_S, readState, stateDir, statePath, withStateLock } from "./state.mjs";
 import { shellQuote } from "./launchd.mjs";
 
 /** The least age of the tick stamp at which the state is not trusted. */
 export const STALE_AFTER_MS = 15 * 60 * 1000;
+/** How long a hook waits for another hook of the same session holding its latch (each holds it for two small file operations). */
+export const LATCH_LOCK_WAIT_MS = 200;
 /** The events the hook answers, each with its own hookSpecificOutput.hookEventName. */
 export const EVENTS = Object.freeze(["UserPromptSubmit", "PostToolUseFailure"]);
 /** The CLI the `repair` and `install` commands name. */
 export const CLI_PATH = fileURLToPath(new URL("../scripts/ctx-watch.mjs", import.meta.url));
 const REASON_MAX = 240;
 const MAX_DATE_MS = 8.64e15;
+const NO_LATCH = Object.freeze({ down: null, toldAt: null, stale: null });
 
 const safeId = (id) => String(id).replace(/[^A-Za-z0-9._-]/g, "_").slice(0, 120);
 const validMs = (v) => Number.isInteger(v) && v >= 0 && v <= MAX_DATE_MS;
 const iso = (ms) => new Date(ms).toISOString();
 const cut = (s) => (String(s).length > REASON_MAX ? `${String(s).slice(0, REASON_MAX - 1)}…` : String(s));
+const same = (a, b) => a.down === b.down && a.toldAt === b.toldAt && a.stale === b.stale;
 
 /** `<dir>/sessions/<session id>.json`. */
 export const latchPath = (dir, sessionId) => join(dir, "sessions", `${safeId(sessionId)}.json`);
 
-/** The latch at `path`; `{ down: null, stale: null }` when missing or out of shape. */
+/** The latch at `path`; NO_LATCH when missing or out of shape. A latch from before `toldAt` with a `down` was told at that `down`. */
 export function readLatch(path) {
   try {
     const j = JSON.parse(readFileSync(path, "utf8"));
-    return { down: validMs(j?.down) ? j.down : null, stale: validMs(j?.stale) ? j.stale : null };
+    const down = validMs(j?.down) ? j.down : null;
+    const toldAt = validMs(j?.toldAt) ? j.toldAt : "toldAt" in (j ?? {}) ? null : down;
+    return { down, toldAt, stale: validMs(j?.stale) ? j.stale : null };
   } catch {
-    return { down: null, stale: null };
+    return { ...NO_LATCH };
   }
 }
 
@@ -64,7 +80,7 @@ export function writeLatch(path, latch) {
   const tmp = `${path}.${process.pid}.tmp`;
   try {
     mkdirSync(dirname(path), { recursive: true });
-    writeFileSync(tmp, `${JSON.stringify({ down: latch.down, stale: latch.stale })}\n`);
+    writeFileSync(tmp, `${JSON.stringify({ down: latch.down, toldAt: latch.toldAt, stale: latch.stale })}\n`);
     renameSync(tmp, path);
     return null;
   } catch (err) {
@@ -77,10 +93,26 @@ export function writeLatch(path, latch) {
   }
 }
 
-/** Record that `sessionId` was told about the episode that went down at `downSince` (SessionStart's telling). */
-export function noteTold(dir, sessionId, downSince) {
+/**
+ * Run `fn()` holding `<latch>.lock`: `{ value }`; `{ busy: true }` when a live holder kept it past
+ * LATCH_LOCK_WAIT_MS; or, when the lock itself cannot be made (a filesystem error), `fn()` run
+ * without it and `{ value, unlocked: error }`.
+ */
+function withLatchLock(path, fn) {
+  const r = withStateLock(dirname(path), fn, { waitMs: LATCH_LOCK_WAIT_MS, lock: `${path}.lock` });
+  if (r.ok) return { value: r.value };
+  if (r.error.cause) return { value: fn(), unlocked: r.error };
+  return { busy: true };
+}
+
+/**
+ * Record that `sessionId` was told at `toldAt` that ctx is down (SessionStart's telling), with the
+ * timer's `downSince` when the timer had declared that outage, else null. Null, or the error.
+ */
+export function noteTold(dir, sessionId, { down = null, toldAt }) {
   const path = latchPath(dir, sessionId);
-  return writeLatch(path, { ...readLatch(path), down: downSince });
+  const r = withLatchLock(path, () => writeLatch(path, { ...readLatch(path), down, toldAt }));
+  return r.busy ? new Error(`${path}.lock is held by another hook`) : r.value;
 }
 
 /** The stamp the state is stale since, or null: the tick's, else the first SessionStart's, older than the bound. */
@@ -93,12 +125,23 @@ export function staleSince(state, now) {
 
 const telling = (state) => state.episode === "down" && state.episodeKind !== "semantic" && state.downSince !== null;
 
+/** Whether the timer's latest probe, taken after `toldAt`, shows the daemon up: passed, or failed only on the semantic index. */
+export function recoveredSince(state, toldAt) {
+  const p = state.lastProbe;
+  if (!p || state.lastTickAt === null || p.at <= toldAt || telling(state)) return false;
+  return p.ok || state.episodeKind === "semantic";
+}
+
 /** What to say now, and the latch after saying it. */
 export function decide(state, latch, now) {
   const stale = staleSince(state, now);
   if (stale !== null) return latch.stale === stale ? { say: null, latch } : { say: "stale", latch: { ...latch, stale } };
-  if (telling(state)) return latch.down === state.downSince ? { say: null, latch } : { say: "down", latch: { ...latch, down: state.downSince } };
-  if (latch.down !== null) return { say: "recovered", latch: { ...latch, down: null } };
+  const told = latch.toldAt !== null;
+  if (telling(state)) {
+    if (!told || (latch.down !== null && latch.down !== state.downSince)) return { say: "down", latch: { ...latch, down: state.downSince, toldAt: now } };
+    return latch.down === null ? { say: null, latch: { ...latch, down: state.downSince } } : { say: null, latch };
+  }
+  if (told && recoveredSince(state, latch.toldAt)) return { say: "recovered", latch: { ...latch, down: null, toldAt: null } };
   return { say: null, latch };
 }
 
@@ -114,8 +157,8 @@ export function message(say, state, now, cliPath = CLI_PATH) {
   }
   if (say === "recovered") {
     const p = state.lastProbe;
-    if (p && !p.ok) return `ctx-watch: the ctx outage reported earlier in this session ended, but the timer's latest probe (${iso(p.at)}) fails again: ${cut(p.reason ?? "no reason recorded")}; ctx-watch says so here if it stays down.`;
-    return `ctx-watch: ctx is back up (the ctx-watch timer's probe passed${p ? ` at ${iso(p.at)}` : ""}); ctx search and history work again.`;
+    if (!p.ok) return `ctx-watch: the ctx daemon is back up (the ctx-watch timer's probe at ${iso(p.at)}); its semantic index is not ready yet (${cut(p.reason ?? "no reason recorded")}), so ctx search answers lexically until it is.`;
+    return `ctx-watch: ctx is back up (the ctx-watch timer's probe passed at ${iso(p.at)}); ctx search and history work again.`;
   }
   const reason = cut(state.lastProbe?.reason ?? "no reason recorded");
   const at = state.lastProbe ? ` at ${iso(state.lastProbe.at)}` : "";
@@ -148,10 +191,21 @@ export function midSession(input, { env = process.env, now = Date.now, cliPath =
   const state = readState(statePath(env, dir), { log: () => {} });
   const at = now();
   const path = latchPath(dir, id);
-  const { say, latch } = decide(state, readLatch(path), at);
+  // Unlocked first: the usual prompt has nothing to say or record, and takes no lock.
+  const seen = readLatch(path);
+  const first = decide(state, seen, at);
+  if (!first.say && same(first.latch, seen)) return null;
+  const claim = withLatchLock(path, () => {
+    const cur = readLatch(path);
+    const { say, latch } = decide(state, cur, at);
+    const err = same(latch, cur) ? null : writeLatch(path, latch);
+    return { say, err };
+  });
+  if (claim.busy) return null;
+  const { say, err } = claim.value;
   if (!say) return null;
-  const err = writeLatch(path, latch);
   const text = message(say, state, at, cliPath);
-  const note = err ? `\n(ctx-watch could not record that it said this, so it may repeat: ${err.message})` : "";
+  const failed = err ?? claim.unlocked;
+  const note = failed ? `\n(ctx-watch could not record that it said this, so it may repeat: ${failed.message})` : "";
   return { hookSpecificOutput: { hookEventName: event, additionalContext: `${text}${note}` } };
 }
