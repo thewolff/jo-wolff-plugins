@@ -16,6 +16,10 @@ All notable changes to ledger are recorded here. The format follows
 - The `visible` row no longer asks a PreCompact hook for a `systemMessage` on a fault, as it
   never asked SessionEnd: Claude Code discards a PreCompact hook's `systemMessage` and
   `continue` fields. The `errors.log` line is still required.
+- The live `session-start-relay` scenario checks that the model's reply names `local`, `remote`
+  and `database` anywhere, in its own words, instead of the exact phrase
+  `local or remote database`: a live run failed on a correct relay that read "a local or a
+  remote database". Test-only; no hook changes.
 
 ## 0.3.9 - 2026-11-04
 
