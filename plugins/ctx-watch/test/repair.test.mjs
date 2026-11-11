@@ -83,10 +83,19 @@ function fakeCtx({ status = brokenEnv(), upgrade = "dry_run", auto = true, fail 
   return { s, calls, run, cmds: () => calls.map((c) => c.cmd) };
 }
 
-/** A launchctl double: the GUI domain answers, the timer is loaded; `unreachable` makes the domain print fail as launchctl does (112). */
-function fakeLaunchctl({ loaded = true, unreachable = false, bootstrapCode = 0 } = {}) {
+/**
+ * A launchctl double: the GUI domain answers, the timer is loaded; `unreachable` makes the domain
+ * print fail as launchctl does (112). It also answers `defaults read -g AppleLocale` with
+ * `locale` (null: the key is absent, exit 1, as `defaults` says for a missing key).
+ */
+function fakeLaunchctl({ loaded = true, unreachable = false, bootstrapCode = 0, locale = null } = {}) {
   const calls = [];
   const check = (bin, args) => {
+    if (bin === "defaults") {
+      calls.push(`defaults ${args.join(" ")}`);
+      assert.deepEqual(args, ["read", "-g", "AppleLocale"]);
+      return locale === null ? { missing: false, code: 1, output: "The domain/default pair of (kCFPreferencesAnyApplication, AppleLocale) does not exist\n" } : { missing: false, code: 0, output: `${locale}\n` };
+    }
     assert.equal(bin, "launchctl");
     calls.push(args.join(" "));
     const [verb, target] = args;
@@ -249,15 +258,91 @@ test("7. repair refuses before any change when the GUI launchd domain is not rea
   }
 });
 
-test("7. repair refuses before any change without LANG (ctx would record a launch environment it then calls environment_invalid)", async () => {
+/** <CTX_DATA_ROOT>/daemon/supervisor-environment.json as ctx 2.3.0 writes it (values made up). */
+function writeRecordedEnv(env, entries) {
+  const file = join(env.CTX_DATA_ROOT, "daemon", "supervisor-environment.json");
+  mkdirSync(dirname(file), { recursive: true });
+  writeFileSync(file, JSON.stringify({ schema_version: 1, environment: entries }));
+}
+const RECORDED = [
+  { name: "CTX_DATA_ROOT", value: "/Users/example/.ctx" },
+  { name: "HOME", value: "/Users/example" },
+  { name: "LANG", value: "de_DE.UTF-8" },
+  { name: "PATH", value: "/usr/bin:/bin" },
+  { name: "TMPDIR", value: "/var/folders/xx/T/" },
+];
+
+test("8. no LANG in this shell (Claude Desktop under launchd): repair takes the LANG ctx itself recorded, passes it to every ctx call, and says where it came from", async () => {
+  const b = box();
+  try {
+    const { LANG: _l, ...noLang } = b.env;
+    writeRecordedEnv(b.env, RECORDED);
+    const ctx = fakeCtx();
+    const lc = fakeLaunchctl({ locale: "en_GB" });
+    const r = await cli.main(["repair"], { env: noLang, run: ctx.run, check: lc.check, uid: 501, exists: () => true, sleep: () => {} });
+    const j = parse(r);
+    assert.equal(r.code, 0, r.text);
+    assert.deepEqual(j.lang, { value: "de_DE.UTF-8", source: "ctx-recorded" });
+    assert.equal(ctx.calls.find((c) => c.cmd === "index mode auto --format json").env.LANG, "de_DE.UTF-8");
+    assert.ok(ctx.calls.every((c) => c.env.LANG === "de_DE.UTF-8"), "every ctx spawn carries it");
+    assert.ok(!lc.calls.some((c) => c.startsWith("defaults")), "the recorded value wins; AppleLocale is not asked");
+  } finally {
+    b.release();
+  }
+});
+
+test("8. no LANG and nothing recorded: repair derives it from AppleLocale (en_GB → en_GB.UTF-8)", async () => {
+  const b = box();
+  try {
+    const { LANG: _l, ...noLang } = b.env;
+    writeRecordedEnv(b.env, RECORDED.filter((e) => e.name !== "LANG"));
+    const ctx = fakeCtx();
+    const r = await cli.main(["repair"], { env: noLang, run: ctx.run, check: fakeLaunchctl({ locale: "en_GB" }).check, uid: 501, exists: () => true, sleep: () => {} });
+    assert.equal(r.code, 0, r.text);
+    assert.deepEqual(parse(r).lang, { value: "en_GB.UTF-8", source: "AppleLocale" });
+    assert.equal(ctx.calls.find((c) => c.cmd === "index mode auto --format json").env.LANG, "en_GB.UTF-8");
+  } finally {
+    b.release();
+  }
+});
+
+test("8. LANG set in this shell: used as is (source env)", async () => {
+  const b = box();
+  try {
+    writeRecordedEnv(b.env, RECORDED);
+    const r = await cli.main(["repair"], { env: b.env, run: fakeCtx().run, check: fakeLaunchctl({ locale: "fr_FR" }).check, uid: 501, exists: () => true, sleep: () => {} });
+    assert.deepEqual(parse(r).lang, { value: "en_US.UTF-8", source: "env" });
+  } finally {
+    b.release();
+  }
+});
+
+test("8. no LANG anywhere (none in the shell, none recorded, no AppleLocale): repair refuses before any change, exit 3", async () => {
   const b = box();
   try {
     const { LANG: _l, ...noLang } = b.env;
     const ctx = fakeCtx();
-    const r = await cli.main(["repair"], { env: noLang, run: ctx.run, check: fakeLaunchctl().check, uid: 501, exists: () => true, sleep: () => {} });
-    assert.notEqual(r.code, 0);
+    const lc = fakeLaunchctl();
+    const r = await cli.main(["repair"], { env: noLang, run: ctx.run, check: lc.check, uid: 501, exists: () => true, sleep: () => {} });
+    assert.equal(r.code, 3);
+    assert.equal(parse(r).refused, true);
     assert.match(parse(r).reason, /LANG/);
+    assert.match(parse(r).reason, /supervisor-environment\.json/);
+    assert.match(parse(r).reason, /AppleLocale/);
     assert.deepEqual(changing(ctx), []);
+    assert.deepEqual(lc.calls.filter((c) => /^boot/.test(c)), []);
+  } finally {
+    b.release();
+  }
+});
+
+test("8. a recorded LANG that is not a locale name is ignored, never passed to ctx", async () => {
+  const b = box();
+  try {
+    const { LANG: _l, ...noLang } = b.env;
+    writeRecordedEnv(b.env, [{ name: "LANG", value: "en_US.UTF-8; touch /tmp/x" }]);
+    const r = await cli.main(["repair"], { env: noLang, run: fakeCtx().run, check: fakeLaunchctl({ locale: "en_US" }).check, uid: 501, exists: () => true, sleep: () => {} });
+    assert.deepEqual(parse(r).lang, { value: "en_US.UTF-8", source: "AppleLocale" });
   } finally {
     b.release();
   }
