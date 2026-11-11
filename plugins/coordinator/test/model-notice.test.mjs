@@ -23,6 +23,14 @@ test("judgeModel: the expected id, a dated id and a [1m] suffix match", () => {
   assert.equal(normalizeModel(" claude-opus-5-5[1m] "), "claude-opus-5-5");
 });
 
+test("judgeModel: a configured [1m] suffix or date is normalised like the incoming id", () => {
+  assert.equal(judgeModel("claude-opus-5-5[1m]", "claude-opus-5-5[1m]"), "match");
+  assert.equal(judgeModel("claude-opus-5-5", "claude-opus-5-5[1m]"), "match");
+  assert.equal(judgeModel("claude-opus-5-5-20261101", "claude-opus-5-5-20261101"), "match");
+  assert.equal(judgeModel("claude-opus-5-5", "claude-opus-5-5-20261101"), "match");
+  assert.equal(judgeModel("claude-sonnet-5-5", "claude-opus-5-5-20261101[1m]"), "mismatch");
+});
+
 test("judgeModel: another family or a longer version is a mismatch; an alias or a non-string is unknown", () => {
   assert.equal(judgeModel("claude-sonnet-5-5", "claude-opus-5-5"), "mismatch");
   assert.equal(judgeModel("claude-opus-5-5", "claude-opus-5"), "mismatch");

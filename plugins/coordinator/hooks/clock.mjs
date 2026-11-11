@@ -11,7 +11,8 @@
 //
 // How it fails: stdin not JSON, a thrown error, or no answer in 4 s → the runner logs it to
 // ${XDG_STATE_HOME:-~/.local/state}/coordinator/errors.log and allows. An unreadable clock or a
-// zone Intl cannot format → no line and one errors.log line. A malformed config → the defaults
+// zone Intl cannot format → no line and one errors.log line. A `TZ` Intl rejects → the line in UTC
+// (what the runtime reads) plus a systemMessage naming the zone. A malformed config → the defaults
 // (the clock on) plus a systemMessage naming the file.
 
 import { runHook, invokedDirectly, logError } from "../lib/hook-runner.mjs";
@@ -45,6 +46,17 @@ export function clockLine(date, timeZone) {
   return `The system clock reads ${local} (${utcOffset(date, timeZone)}), which is ${utc}, as of this prompt.`;
 }
 
+/** The `TZ` value when it is set and Intl rejects it (the runtime then reads UTC), else null. */
+function rejectedZone(tz) {
+  if (typeof tz !== "string" || !tz) return null;
+  try {
+    new Intl.DateTimeFormat("en-US", { timeZone: tz.replace(/^:/, "") });
+    return null;
+  } catch {
+    return tz;
+  }
+}
+
 /**
  * @param {object} input  the UserPromptSubmit payload; only hook_event_name is read
  * @returns {object|null}  an additionalContext, a systemMessage, or null
@@ -52,6 +64,7 @@ export function clockLine(date, timeZone) {
 export function handle(input, { env = process.env, now = () => new Date(), timeZone } = {}) {
   const { config, fault } = loadConfig(env);
   if (config.off || !config.clock || input?.hook_event_name !== "UserPromptSubmit") return withFault(null, fault, HOOK);
+  const badZone = timeZone === undefined ? rejectedZone(env.TZ) : null;
   let line;
   try {
     line = clockLine(now(), timeZone);
@@ -59,7 +72,10 @@ export function handle(input, { env = process.env, now = () => new Date(), timeZ
     logError("coordinator", "UserPromptSubmit", `${HOOK}: ${err.message}`, env);
     return withFault(null, fault, HOOK);
   }
-  return withFault({ hookSpecificOutput: { hookEventName: "UserPromptSubmit", additionalContext: line } }, fault, HOOK);
+  const out = withFault({ hookSpecificOutput: { hookEventName: "UserPromptSubmit", additionalContext: line } }, fault, HOOK);
+  if (!badZone) return out;
+  const note = `coordinator clock: TZ ${JSON.stringify(badZone)} is not a time zone Intl accepts; the clock line is in UTC`;
+  return { ...out, systemMessage: out.systemMessage ? `${out.systemMessage}\n${note}` : note };
 }
 
 if (invokedDirectly(import.meta.url)) runHook("UserPromptSubmit", import.meta.url, { plugin: "coordinator" });

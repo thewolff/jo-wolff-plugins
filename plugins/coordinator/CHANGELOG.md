@@ -11,7 +11,8 @@ All notable changes to coordinator are recorded here. The format follows
   prompt. `clock: false` turns it off.
 - `hooks/model-notice.mjs` (PostModelSwitch): inside a folder listed in the config, a switch onto
   a model other than `expectedModel` adds one notice line, and a switch back says the earlier
-  notice no longer applies. Model-only: the hook input carries no effort level.
+  notice no longer applies. Model-only: the hook input carries no effort level. `expectedModel`
+  may carry a `[1m]` suffix or a date; both sides are normalised before the match.
 - `lib/config.mjs` and `${XDG_CONFIG_HOME:-~/.config}/coordinator/config.json` (`off`, `folders`,
   `expectedModel`, `expectedEffort`, `clock`), the state directory with `scripts/prune.mjs`, eight
   scenarios under `evals/`, `e2e/live-run.sh`, and `HOW-IT-FAILS.md`.

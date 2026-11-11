@@ -4,7 +4,8 @@
 //
 // Model match: a trailing bracket suffix such as `[1m]` is stripped, then the id must equal
 // expectedModel or be it plus a `-YYYYMMDD` date (so a dated id matches and `claude-opus-5`
-// does not swallow `claude-opus-5-5`). An id that does not start with `claude-` (an alias such
+// does not swallow `claude-opus-5-5`). expectedModel is normalised the same way (bracket suffix
+// and a trailing date dropped), so a configured `claude-opus-5-5[1m]` matches itself. An id that does not start with `claude-` (an alias such
 // as `opus`) cannot be judged.
 //
 // Effort: compared only when the caller passes one. The hook input at PostModelSwitch carries
@@ -23,7 +24,8 @@ export function normalizeModel(id) {
 export function judgeModel(id, expectedModel) {
   const m = normalizeModel(id);
   if (!m.startsWith("claude-")) return "unknown";
-  return m === expectedModel || (m.startsWith(expectedModel) && /^-\d{8}(?:$|-)/.test(m.slice(expectedModel.length))) ? "match" : "mismatch";
+  const want = normalizeModel(expectedModel).replace(/-\d{8}$/, "");
+  return m === want || (m.startsWith(want) && /^-\d{8}(?:$|-)/.test(m.slice(want.length))) ? "match" : "mismatch";
 }
 
 const real = (p, realpath) => {

@@ -92,3 +92,17 @@ test("handle: a malformed config keeps the clock on and names the file", () => {
     b.release();
   }
 });
+
+test("handle: a TZ Intl rejects keeps the line and adds one diagnostic naming the zone", () => {
+  const b = env();
+  try {
+    const out = handle({ hook_event_name: "UserPromptSubmit" }, { env: { ...b.e, TZ: "America/Los_Angles" }, now: () => AT });
+    assert.equal(out.hookSpecificOutput.hookEventName, "UserPromptSubmit");
+    assert.match(out.hookSpecificOutput.additionalContext, /^The system clock reads /);
+    assert.equal(out.systemMessage, 'coordinator clock: TZ "America/Los_Angles" is not a time zone Intl accepts; the clock line is in UTC');
+    const ok = handle({ hook_event_name: "UserPromptSubmit" }, { env: { ...b.e, TZ: "America/Los_Angeles" }, now: () => AT });
+    assert.equal(ok.systemMessage, undefined);
+  } finally {
+    b.release();
+  }
+});
