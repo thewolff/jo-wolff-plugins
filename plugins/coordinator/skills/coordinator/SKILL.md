@@ -122,7 +122,8 @@ Three places held what had to survive the session:
   what was verified, what was not, the undo for any local state change, and what was next,
   written so a fresh session could resume without the transcript.
 
-The clock was read from the system before stamping a block. A guessed stamp drifted.
+The clock was read from the system before stamping a block: with this plugin's hooks on, from
+the newest line beginning "The system clock reads". A guessed stamp drifted.
 Every session was told at dispatch which worker owned which branch.
 
 ## Approved-but-not-started work
@@ -140,7 +141,8 @@ habit stayed the same without it.
 
 Where the owner's instructions named a model for coordinator sessions, the first reply said
 whether the session was on it. If not, the reply said which model it was on and asked
-whether to switch.
+whether to switch. Later switches arrive as a line beginning "Coordinator notice:"; the next
+reply relayed it to the owner.
 
 ## When this can't be done
 
@@ -156,6 +158,11 @@ whether to switch.
   held items go into one dated file in the repository's notes directory, named in the reply.
 - **A worker's claim cannot be checked.** The relay says which part was not re-run and why
   (no access, no credentials, the system is down), and leaves that part unlabeled.
+- **The coordinator hooks are not installed or not firing** (no "The system clock reads" line
+  on a prompt). The clock is read from the system before each stamp, the model is re-stated
+  after any switch the session knows of, and the owner is told the hooks are silent. What a
+  firing hook adds: `evals/clock-prompt-line.scenario.json`,
+  `evals/model-notice-post-switch-wrong-model.scenario.json`.
 - **The clock cannot be read.** Handoff blocks carry no time rather than a guessed one, and
   the reply says the stamp is missing.
 - **The owner is away.** Items that need the owner go to the held list in full; nothing
