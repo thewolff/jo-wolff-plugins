@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.4 - 2026-11-11
+
+- The report guidance now says to lead with the outcome in the first sentence (what happened or what was found), then what changed, what was verified, what could not be confirmed, and anything needing the owner's decision. It sits in the Report section of `templates/builder-brief.md` (and `STOPPED_SECTION` in `lib/brief.mjs`, which the template must match), in `agents/builder.md`, in the `delegation` skill, and in the SessionStart brief. The `Stopped because:` rule is unchanged and stays the last line. Nothing new is enforced; no hook logic changed.
+- Why: only 9 of 28 recent subagent reports led with the outcome. Anthropic's Opus 5 prompting guidance says a report's first sentence should say what happened.
+
 ## 0.1.3 - 2026-11-11
 
 - `agents/reader.md` runs on `model: sonnet` (was `opus`), the routing table's model for reading and mapping code. It is the pilot: no other agent's model changed.

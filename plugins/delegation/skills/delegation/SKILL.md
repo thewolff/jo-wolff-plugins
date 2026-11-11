@@ -57,7 +57,8 @@ needs `## How it fails` only on Claude Code, and nothing on OMP.
    acceptance cannot be met, report what was tried, the exact failure and the last green state,
    and do not loosen the check, skip the step, or substitute an easier problem; a time or tool
    budget when there is one.
-6. The report's last line: exactly one of `Stopped because: acceptance met` (every acceptance
+6. Lead the report with the outcome in its first sentence: what happened or what was found. Then: what changed, what was verified, what could not be confirmed, and anything needing the owner's decision.
+   The report's last line: exactly one of `Stopped because: acceptance met` (every acceptance
    check passed once), `Stopped because: bound hit` (a retry, commit, time or tool bound stopped
    it; the report names which after it, as in `Stopped because: bound hit (commit budget)`),
    `Stopped because: told to stop` (the parent sent a stop). A builder-class report without it

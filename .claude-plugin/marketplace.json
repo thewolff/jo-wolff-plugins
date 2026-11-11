@@ -68,6 +68,11 @@
       "name": "brb",
       "source": "./plugins/brb",
       "description": "Type brb and walk away: the agent keeps working, its questions wait in a digest, and only an on-fire problem reaches you. Claude Code hides its output meanwhile. Type back to read the digest."
+    },
+    {
+      "name": "coordinator",
+      "source": "./plugins/coordinator",
+      "description": "Habits for a session that coordinates other sessions and subagents: briefing, checking what comes back, relaying the owner's decisions, and keeping a record."
     }
   ]
 }

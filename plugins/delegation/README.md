@@ -258,6 +258,10 @@ general was kept.
 | `hooks/repo-rules-inject.mjs` + `lib/repo-rules-walk.mjs` + `lib/budget-fit.mjs` | `hooks/repo-rules-inject.mjs`, `lib/repo-rules.mjs` | the `tmpdir()/newdle-repo-rules-<id>.json` state file (now under the plugin's XDG state dir); the shipyard-specific comments; `budget-fit-cli.mjs` (a CLI no hook called) was not ported |
 | `agents/beefy-builder.md`, `agents/beefy-research.md` | not ported | both are shipyard-specific end to end (Newdle monorepo ownership, `.projects/` sync, Linear closing); `beefy-builder` stays in the default builder class so a repository that ships its own is gated |
 
+## Changes in 0.1.4
+
+The report guidance says to lead with the outcome in the first sentence, then what changed, what was verified, what could not be confirmed, and anything needing the owner's decision. It is in the template's Report section, the builder agent, the skill and the SessionStart brief. The `Stopped because:` rule is unchanged; nothing new is enforced.
+
 ## Changes in 0.1.3
 
 `reader` runs on `sonnet` (was `opus`), the first agent moved to the model routing table. The spawn gate gains a warn-only model line: a spawn the gates allow whose `model` is above the table's ceiling for its `subagent_type`, or that sets no `model` on a listed type, draws one `additionalContext` line; it never denies, and gates 1, 4 and 2 are unchanged. The table is `lib/model-routing.json`; `"warnModelRouting": false` turns the line off.
