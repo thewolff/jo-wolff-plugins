@@ -434,7 +434,7 @@ test("fault: the query prints garbage → the pane names it; the CLI prints garb
   });
   await start($);
   const ui = await $.ui.mount(PANE);
-  expect(await ui.find({ type: "Text", text: "query printed no JSON" })).toBeDefined();
+  expect(await ui.find({ type: "Text", text: /^query printed no JSON$/i })).toBeDefined();
   await ui.unmount();
   const out = await $.command.run({ command: "ledger", args: "answer q-mw1a approve" });
   expect(out.text).toBe("ledger error: TypeError: boom");

@@ -32,6 +32,14 @@ All notable changes to ledger are recorded here. The format follows
 - The Reply field's placeholder is `type your own`, short enough to show whole beside its label
   and the `record` button at the narrow width.
 - Indentation is `paddingLeft` on a Box, never leading spaces in a Text.
+- Every Text in the pane wraps; none is truncated, so a folder name keeps the parent segment
+  that tells it apart (`alpha/…`, `beta/…`) and the recorded question shows in full.
+- A question or answer with no text shows `(question text missing)`, never its `--name` or row
+  id. The query-error and render-fault lines go through `withoutIds` too.
+- `withoutIds` says the CLI's refusals as sentences (`Already answered with green; an answer is
+  final`, `This question was withdrawn; …`, `This question is no longer in the ledger`,
+  `That reply looks like a cut-short id; nothing was recorded`) and keeps the human's own reply
+  whole; any other message loses complete and cut-short ids and the brackets they leave.
 
 ### Unchanged
 

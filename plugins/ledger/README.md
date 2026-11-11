@@ -793,7 +793,8 @@ that one word. Either way the answer goes through the ledger CLI as this session
 (`scripts/ledger.mjs --json answer <q-id> <reply>` with `LEDGER_SESSION_ID`), so the asking
 window's next prompt gets its `answered since your last turn` line, and the Stop hook there
 stops chasing the question. The pane redraws when the CLI returns and says `Recorded: <reply>`
-over the question's text, or `Not recorded` with the CLI's reason (its row ids taken out).
+over the question's text, or `Not recorded` with the CLI's reason said as a sentence with no row
+id in it. A question with no text shows `(question text missing)`, never its name or id.
 `/ledger` opens the pane, `/ledger close` closes it, Esc returns the keyboard to the prompt,
 Ctrl+X X closes.
 
@@ -867,7 +868,9 @@ Tests use a sandboxed `HOME`, `XDG_*` and `LEDGER_*` so they never touch your le
   `type your own`. No row id or question name is drawn: a question that is not selected shows an
   `answer` button with its digit, an answer since your last turn shows its question's text, and
   `Recorded: <reply>` replaces the CLI's `an-… → q-…` line. The query adds each answer's
-  question body for that. Indentation is padding, not spaces. Error and empty states match.
+  question body for that. Indentation is padding, not spaces; every line wraps, none is cut
+  short. A question with no text shows `(question text missing)`; CLI refusals and errors are
+  said without ids. Error and empty states match.
 
 ### 0.3.11
 
