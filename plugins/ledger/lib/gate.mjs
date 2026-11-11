@@ -59,7 +59,8 @@ const PREFIX_WORDS = new Set(["command", "env", "exec", "time", "nohup"]);
 // runs between them cannot change the directory or environment of what follows.
 export const SCOPE_OPEN = "\0(";
 export const SCOPE_CLOSE = "\0)";
-// Git subcommands that leave HEAD where it is. Every other one (`commit`, `rebase`, `merge`,
+// Git subcommands that leave HEAD and every other ref where they are (see movesHead for the
+// forms of `branch`, `tag`, `fetch`, `config`, `submodule` and `stash` that do not). Every other one (`commit`, `rebase`, `merge`,
 // `cherry-pick`, `revert`, `reset`, `pull`, `checkout`, `switch`, `am`, `bisect`, `update-ref`,
 // `symbolic-ref`, `subtree`, an alias, a subcommand this list has not met) may move it, so a
 // push after one on the same command line may publish a commit that does not exist yet when the
@@ -72,11 +73,26 @@ const HEAD_KEEPERS = new Set([
   "hash-object", "update-index", "write-tree", "format-patch", "apply", "archive", "bundle", "notes", "worktree", "submodule",
   "sparse-checkout", "verify-commit", "verify-tag", "credential", "lfs",
 ]);
-/** True when `git <sub> <rest…>` may move HEAD: not a HEAD_KEEPERS subcommand, `stash branch`, or `fetch -u`. */
+/**
+ * True when `git <sub> <rest…>` may change the commit a later push publishes: it may move HEAD,
+ * move another ref a refspec can name, or change the config git push reads. That is every
+ * subcommand outside HEAD_KEEPERS, and inside it:
+ *   stash      `stash branch` (checks out the stash's base commit)
+ *   fetch      always: it moves remote-tracking refs, `src:dst` moves a local one, `-u` HEAD
+ *   branch     anything but a listing: a positional argument creates or moves a branch, and
+ *              `-f -m -M -c -C -d -D -u` and their long forms change one
+ *   tag        anything but a listing with no positional argument
+ *   config     anything but a read (`--get…`, `--list`, `-l`, `get`, `list`)
+ *   submodule  anything but `status` or `summary` (`update` moves the submodule's HEAD)
+ */
 function movesHead(sub, rest) {
   if (!HEAD_KEEPERS.has(sub)) return true;
-  if (sub === "stash") return rest.find((t) => !t.startsWith("-")) === "branch";
-  if (sub === "fetch") return rest.some((t) => t === "--update-head-ok" || /^-[a-z]*u/.test(t));
+  const first = rest.find((t) => !t.startsWith("-"));
+  if (sub === "stash") return first === "branch";
+  if (sub === "fetch") return true;
+  if (sub === "branch" || sub === "tag") return first !== undefined || rest.some((t) => /^-[a-zA-Z]*[fmMcCdDu]/.test(t) || /^--(force|move|copy|delete|set-upstream|unset-upstream|edit-description|create-reflog)/.test(t));
+  if (sub === "config") return !(first === "get" || first === "list" || rest.some((t) => /^(--get|--list$|-l$)/.test(t)));
+  if (sub === "submodule") return !(first === undefined || first === "status" || first === "summary");
   return false;
 }
 // Config keys that change which refs a push publishes or where it goes.
@@ -291,8 +307,8 @@ const dynamicDir = (d) => !d || d === "-" || /[$`~*?[\]{}]/.test(d);
  * `unsupported` names what the gate cannot follow: `--git-dir`, `--work-tree`, a `cd` or `-C`
  * whose directory is an expansion, `~`, a glob, a brace expansion or `-`, a `-c`/`--config-env` that sets push, remote or
  * branch config, a `GIT_CONFIG*`/`GIT_DIR`/`GIT_WORK_TREE` assignment or export. `after` names the
- * first command earlier on the command line that may move HEAD (any git subcommand outside
- * HEAD_KEEPERS: `git commit`, `git rebase`, an alias; `git stash branch`; `git fetch -u`;
+ * first command earlier on the command line that may change the commit a push publishes (see
+ * movesHead: `git commit`, `git rebase`, an alias, `git branch -f`, `git fetch`, …; and
  * `gh pr checkout`), in any shell scope: the hook sees HEAD as it is before any of
  * the line runs. `args` are the words after `push` / `pr <sub>`.
  */

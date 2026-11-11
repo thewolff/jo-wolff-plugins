@@ -962,23 +962,29 @@ test("0.3.11 hole two: under gate a push chained after a HEAD-moving command is 
     ["git stash branch recovered stash@{0} && git push origin HEAD", "git stash branch"],
     ["git stash -q branch recovered && git push origin HEAD", "git stash branch"],
     ["git fetch -u origin main:feat && git push origin feat", "git fetch"],
-    ["git fetch --update-head-ok origin main:feat && git push origin feat", "git fetch"],
     ['git ci -m "an alias for commit" && git push origin feat', "git ci"],
     ["git subtree pull --prefix lib other main && git push origin feat", "git subtree"],
     ["git update-ref HEAD abc123 && git push origin feat", "git update-ref"],
+    ["git branch -f release abc123 && git push origin release", "git branch"],
+    ["git branch release abc123 && git push origin release", "git branch"],
+    ["git tag -f v1 abc123 && git push origin v1", "git tag"],
+    ["git fetch origin source:release && git push origin release", "git fetch"],
+    ["git fetch origin && git push origin origin/main:release", "git fetch"],
+    ["git config remote.origin.push other:main && git push origin", "git config"],
+    ["git submodule update --remote sub && git -C sub push origin HEAD:release", "git submodule"],
   ]) {
     assert.equal(pushOperations(cmd)[0].after, mover, cmd);
     const p = push(b, cmd);
     assert.equal(decision(p), "deny", cmd);
     const reason = p.json.hookSpecificOutput.permissionDecisionReason;
-    assert.ok(reason.includes(`\`${mover}\` runs before this \`git push\` on the same command line and may move HEAD`), `${cmd}: ${reason}`);
-    assert.match(reason, /review the new HEAD \(`.*review`\), then run `git push` as its own command/, cmd);
+    assert.ok(reason.includes(`\`${mover}\` runs before this \`git push\` on the same command line and may change the commit it publishes`), `${cmd}: ${reason}`);
+    assert.match(reason, /review the commit to be pushed \(`.*review`\), then run `git push` as its own command/, cmd);
   }
   let p = push(b, 'git commit -m "x" && gh pr create --fill');
   assert.equal(decision(p), "deny", "gh pr create pushes the current branch");
   assert.match(p.json.hookSpecificOutput.permissionDecisionReason, /`git commit` runs before this `gh pr create`/);
   // What stays allowed: the push on its own, a push before the mover, commands that do not move HEAD.
-  for (const cmd of ["git push origin feat", "git push origin feat && git checkout main", "git status && git fetch origin && git log -1 --oneline && git push origin feat", "git add -A && git stash && git stash pop && git push origin feat", "git --version && git branch -vv && git remote -v && git push origin feat", 'echo "git commit" && git push origin feat', "git push -u origin feat && gh pr create --fill"]) {
+  for (const cmd of ["git push origin feat", "git push origin feat && git checkout main", "git status && git diff --stat && git log -1 --oneline && git push origin feat", "git branch --show-current && git tag -l && git config --get user.name && git submodule status && git push origin feat", "git add -A && git stash && git stash pop && git push origin feat", "git --version && git branch -vv && git remote -v && git push origin feat", 'echo "git commit" && git push origin feat', "git push -u origin feat && gh pr create --fill"]) {
     assert.equal(pushOperations(cmd)[0].after, null, cmd);
     assert.equal(push(b, cmd).out, "", cmd);
   }

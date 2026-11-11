@@ -868,8 +868,8 @@ export function operationTargets(op, cwd, { env = process.env } = {}) {
  *   unfollowed  an operation runs where the gate cannot follow (pushOperations `unsupported`: a
  *               computed `cd` or `-C`, `--git-dir`, `--work-tree`, a `GIT_*` setting, a `-c`
  *               that steers the push), so the repository and commit cannot be named.
- *   chained     a `git push` or `gh pr create` follows a command that can move HEAD on the same
- *               command line (pushOperations `after`), so the commit it publishes does not
+ *   chained     a `git push` or `gh pr create` follows a command that may move HEAD or another
+ *               ref on the same command line (pushOperations `after`), so the commit it publishes does not
  *               exist yet. `gh pr merge` is left out: its commit is the remote's, not HEAD.
  * With `cwd` (the hook's), a literal `cd` that names no existing folder is `unfollowed` too when
  * the folder the shell was in is inside a repository: the `cd` fails, and after a `;` the push
@@ -912,7 +912,7 @@ export function commandRefusal(ops, cli = "ledger", cwd = null) {
   if (chained) {
     return {
       kind: "chained",
-      reason: `ledger: review gate: \`${chained.after}\` runs before this \`${name(chained)}\` on the same command line and may move HEAD, so the commit that would be published is not the one the gate can check now. Run \`${chained.after}\` first, review the new HEAD (\`${cli} review\`), then run \`${name(chained)}\` as its own command.`,
+      reason: `ledger: review gate: \`${chained.after}\` runs before this \`${name(chained)}\` on the same command line and may change the commit it publishes, so the commit that would be published is not the one the gate can check now. Run \`${chained.after}\` first, review the commit to be pushed (\`${cli} review\`), then run \`${name(chained)}\` as its own command.`,
     };
   }
   return null;

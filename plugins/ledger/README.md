@@ -388,12 +388,14 @@ Two shapes are denied under `gate` from the command text alone, whatever HEAD's 
   `cd /absolute/path && git push <remote> <branch>`. A hyphen in a literal folder name is fine;
   a folder whose own name has `[`, `]`, `{` or `}` is refused even when quoted, so push from a
   folder above it.
-- **A push chained after a command that may move HEAD.** A `git push` or `gh pr create` on the
-  same command line as an earlier `git commit`, `rebase`, `merge`, `cherry-pick`, `revert`,
-  `reset`, `pull`, `checkout`, `switch`, `am`, `stash branch`, `fetch -u`, `gh pr checkout`, or
-  any other git subcommand the gate does not know to leave HEAD alone, a git alias included
-  (`add`, `status`, `log`, `diff`, `fetch`, `stash`, `branch`, `tag` and the like are known): the hook runs before any of the line does, so the commit that would be
-  published does not exist yet. The way out: run that command first, review the new HEAD, then
+- **A push chained after a command that may change the commit it publishes.** A `git push` or
+  `gh pr create` on the same command line as an earlier `git commit`, `rebase`, `merge`,
+  `cherry-pick`, `revert`, `reset`, `pull`, `checkout`, `switch`, `am`, `fetch`,
+  `stash branch`, a `branch` or `tag` that creates, moves or deletes, a `config` that writes,
+  a `submodule update`, `gh pr checkout`, or any other git subcommand the gate does not know
+  to leave HEAD and every other ref alone, a git alias included (`add`, `status`, `log`,
+  `diff`, `stash`, a listing `branch` or `tag`, a reading `config` and the like are known): the hook runs before any of the line does, so the commit that would be
+  published does not exist yet. The way out: run that command first, review the commit, then
   run the push as its own command.
 
 When the command does not say which commit for another reason, the call is allowed with a notice

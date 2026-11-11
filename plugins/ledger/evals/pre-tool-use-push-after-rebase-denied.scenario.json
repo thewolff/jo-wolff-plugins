@@ -2,7 +2,7 @@
   "$comment": "Review gate, hole two: a push chained after `git rebase` on one command line is denied; the hook sees HEAD as it is before the rebase.",
   "event": "PreToolUse",
   "expect": "deny",
-  "reason": "`git rebase` runs before this `git push` on the same command line and may move HEAD",
+  "reason": "`git rebase` runs before this `git push` on the same command line and may change the commit it publishes",
   "setup": {
     "commands": [
       "git -c user.name=t -c user.email=t@t -C \"${CWD}\" commit -q --allow-empty -m init",
