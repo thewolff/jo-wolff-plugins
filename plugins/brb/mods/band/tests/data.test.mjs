@@ -18,18 +18,20 @@ const AWAY = { ok: true, away: true, since: SINCE, note: "", held: 12, onFire: 0
 const minutes = (n) => Date.parse(SINCE) + n * 60_000;
 
 test("readSnapshot: away, home and error shapes come back typed; junk is an error, never a throw", () => {
-  assert.deepEqual(readSnapshot(JSON.stringify({ ok: true, away: false, checklist: null }) + "\n"), { ok: true, away: false, checklist: null });
-  assert.deepEqual(readSnapshot(JSON.stringify({ ok: true, away: false })), { ok: true, away: false, checklist: null });
+  assert.deepEqual(readSnapshot(JSON.stringify({ ok: true, away: false, checklist: null }) + "\n"), { ok: true, away: false, checklist: null, hideRows: true });
+  assert.deepEqual(readSnapshot(JSON.stringify({ ok: true, away: false })), { ok: true, away: false, checklist: null, hideRows: true });
   assert.deepEqual(
     readSnapshot(JSON.stringify({ ok: true, away: true, since: SINCE, note: "lunch", held: 3, onFire: 1, items: ["a", 7, "b"], backRequested: true })),
-    { ok: true, away: true, since: SINCE, note: "lunch", held: 3, onFire: 1, items: ["a", "b"] },
+    { ok: true, away: true, since: SINCE, note: "lunch", held: 3, onFire: 1, items: ["a", "b"], hideRows: true },
   );
-  assert.deepEqual(readSnapshot(JSON.stringify({ ok: true, away: true, since: SINCE, held: -1, onFire: 1.5, note: 7 })), { ok: true, away: true, since: SINCE, note: "", held: 0, onFire: 0, items: [] });
+  assert.deepEqual(readSnapshot(JSON.stringify({ ok: true, away: true, since: SINCE, held: -1, onFire: 1.5, note: 7 })), { ok: true, away: true, since: SINCE, note: "", held: 0, onFire: 0, items: [], hideRows: true });
   assert.deepEqual(
     readSnapshot(JSON.stringify({ ok: true, away: false, checklist: { at: "t", since: SINCE, note: "n", items: [{ text: "a", done: true }, { text: "b" }, { nope: 1 }, "c"] } })),
-    { ok: true, away: false, checklist: { at: "t", since: SINCE, note: "n", items: [{ text: "a", done: true }, { text: "b", done: false }] } },
+    { ok: true, away: false, checklist: { at: "t", since: SINCE, note: "n", items: [{ text: "a", done: true }, { text: "b", done: false }] }, hideRows: true },
   );
-  assert.deepEqual(readSnapshot(JSON.stringify({ ok: true, away: false, checklist: { items: "nope" } })), { ok: true, away: false, checklist: null });
+  assert.deepEqual(readSnapshot(JSON.stringify({ ok: true, away: false, checklist: { items: "nope" } })), { ok: true, away: false, checklist: null, hideRows: true });
+  assert.equal(readSnapshot(JSON.stringify({ ok: true, away: true, since: SINCE, hideRows: false })).hideRows, false, "only an explicit false turns hiding off");
+  assert.equal(readSnapshot(JSON.stringify({ ok: true, away: false, hideRows: "off" })).hideRows, true, "query.mjs prints a boolean; anything else is its default");
   assert.deepEqual(readSnapshot(JSON.stringify({ ok: false, error: "boom" })), { ok: false, error: "boom" });
   assert.deepEqual(readSnapshot(JSON.stringify({ ok: true, away: true })), { ok: false, error: "query printed an away record with no since" });
   assert.deepEqual(readSnapshot(""), { ok: false, error: "query printed no JSON" });

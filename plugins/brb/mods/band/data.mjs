@@ -44,9 +44,10 @@ export function readChecklistValue(value) {
 
 /**
  * What query.mjs printed → a snapshot the band can draw, with every field present and typed:
- *   { ok: true, away: false, checklist: null | { at, since, note, items: [{ text, done }] } }
- *   { ok: true, away: true, since, note, held, onFire, items: [string] }
+ *   { ok: true, away: false, checklist: null | { at, since, note, items: [{ text, done }] }, hideRows }
+ *   { ok: true, away: true, since, note, held, onFire, items: [string], hideRows }
  *   { ok: false, error }
+ * `hideRows` is false only when query.mjs printed false (config.json turned row hiding off).
  * Anything unparseable or mis-shaped becomes `{ ok: false, error }`, never a throw.
  */
 export function readSnapshot(stdout) {
@@ -58,7 +59,8 @@ export function readSnapshot(stdout) {
   }
   if (!parsed || typeof parsed !== "object") return { ok: false, error: "query printed no object" };
   if (parsed.ok === false) return { ok: false, error: String(parsed.error ?? "query failed") };
-  if (parsed.away !== true) return { ok: true, away: false, checklist: readChecklistValue(parsed.checklist) };
+  const hideRows = parsed.hideRows !== false;
+  if (parsed.away !== true) return { ok: true, away: false, checklist: readChecklistValue(parsed.checklist), hideRows };
   if (typeof parsed.since !== "string") return { ok: false, error: "query printed an away record with no since" };
   return {
     ok: true,
@@ -68,6 +70,7 @@ export function readSnapshot(stdout) {
     held: count(parsed.held),
     onFire: count(parsed.onFire),
     items: strings(parsed.items),
+    hideRows,
   };
 }
 
@@ -134,12 +137,25 @@ export function sessionKey(sessionId) {
   return s && s !== "." && s !== ".." ? s.slice(0, 120) : "no-session";
 }
 
+/** `${XDG_STATE_HOME:-$HOME/.local/state}/brb/<session key>/<file>`; null when neither variable has a value. */
+function sessionFile({ xdgStateHome, home, sessionId }, file) {
+  const root = xdgStateHome?.trim() ? xdgStateHome : home ? `${home.replace(/[\\/]+$/, "")}/.local/state` : null;
+  if (!root) return null;
+  return `${root.replace(/[\\/]+$/, "")}/brb/${sessionKey(sessionId)}/${file}`;
+}
+
 /**
  * `${XDG_STATE_HOME:-$HOME/.local/state}/brb/<session key>/away.json`, as lib/state.mjs places it;
  * null when neither variable has a value (the mod then relies on its query alone).
  */
-export function awayPath({ xdgStateHome, home, sessionId }) {
-  const root = xdgStateHome?.trim() ? xdgStateHome : home ? `${home.replace(/[\\/]+$/, "")}/.local/state` : null;
-  if (!root) return null;
-  return `${root.replace(/[\\/]+$/, "")}/brb/${sessionKey(sessionId)}/away.json`;
+export function awayPath(where) {
+  return sessionFile(where, "away.json");
+}
+
+/**
+ * `…/brb/<session key>/section.json`: the away state each environment section last carried in
+ * this session's system prompt (lib/state.mjs lists it); null when neither variable has a value.
+ */
+export function sectionPath(where) {
+  return sessionFile(where, "section.json");
 }

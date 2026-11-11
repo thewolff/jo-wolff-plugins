@@ -19,7 +19,7 @@ import { PLUGIN_ROOT, box, promptInput, runHook } from "../../../test/helpers.mj
 
 const QUERY = join(PLUGIN_ROOT, "mods", "band", "query.mjs");
 const HOLD = join(PLUGIN_ROOT, "scripts", "brb.mjs");
-const HOME = { ok: true, away: false, checklist: null };
+const HOME = { ok: true, away: false, checklist: null, hideRows: true };
 
 /** Run query.mjs as the mod does: `node query.mjs --session <id>` with the sandbox env; JSON on stdout. */
 function query(b, args) {
@@ -71,7 +71,7 @@ test("away: after `brb lunch` the snapshot carries since, the note, the counts a
     assert.equal(r.json.onFire, 0);
     assert.deepEqual(r.json.items, []);
     assert.ok(Date.parse(r.json.since) >= before, `since ${r.json.since} is before the hold began`);
-    assert.deepEqual(Object.keys(r.json).sort(), ["away", "held", "items", "note", "ok", "onFire", "since"]);
+    assert.deepEqual(Object.keys(r.json).sort(), ["away", "held", "hideRows", "items", "note", "ok", "onFire", "since"]);
 
     assert.equal(hold(b, "s1", "Pick Redis or in-process for the cache").stdout, "held 1\n");
     hold(b, "s1", "Approve the schema change");
@@ -198,7 +198,7 @@ test("the bound is on the descriptor read: an away.json atomically replaced by a
       return fd;
     }, () => snapshot("s1", { env: b.env }));
     assert.equal(swapped, true);
-    assert.deepEqual(result, { ok: true, away: true, since: SINCE, note: "small", held: 0, onFire: 0, items: [] });
+    assert.deepEqual(result, { ok: true, away: true, since: SINCE, note: "small", held: 0, onFire: 0, items: [], hideRows: true });
   } finally {
     b.release();
   }
@@ -235,6 +235,24 @@ test("a link at away.json is not followed: it is `not a regular file`, even when
     assert.equal(r.status, 0);
     assert.equal(r.json.ok, false);
     assert.match(r.json.error, /away\.json is not a regular file$/);
+  } finally {
+    b.release();
+  }
+});
+
+test("hideRows: config.json's switch rides every answer, home and away; an unreadable file is off", () => {
+  const b = box();
+  try {
+    assert.equal(query(b, ["--session", "s1"]).json.hideRows, true, "no config: on");
+    mkdirSync(join(b.env.XDG_CONFIG_HOME, "brb"), { recursive: true });
+    writeFileSync(join(b.env.XDG_CONFIG_HOME, "brb", "config.json"), JSON.stringify({ hideRows: "off" }));
+    assert.equal(query(b, ["--session", "s1"]).json.hideRows, false, "home, off");
+    runHook(b, "user-prompt-submit", promptInput(b, "brb"));
+    const away = query(b, ["--session", "s1"]).json;
+    assert.equal(away.away, true);
+    assert.equal(away.hideRows, false, "away, off");
+    writeFileSync(join(b.env.XDG_CONFIG_HOME, "brb", "config.json"), "{ not json");
+    assert.equal(query(b, ["--session", "s1"]).json.hideRows, false, "unparsable: off");
   } finally {
     b.release();
   }

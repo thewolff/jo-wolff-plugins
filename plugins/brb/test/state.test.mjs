@@ -20,6 +20,7 @@ import {
   digestItem,
   digestItems,
   freshAway,
+  hideRowsEnabled,
   freshChecklist,
   loadConfig,
   parseChecklist,
@@ -157,6 +158,37 @@ test("config: defaults with no file; integer fields override; junk is ignored", 
     assert.deepEqual(loadConfig(b.env), DEFAULT_CONFIG);
     writeFileSync(configPath(b.env), JSON.stringify({ onFireCap: -1, idleStops: 0 }));
     assert.deepEqual(loadConfig(b.env), { onFireCap: 3, idleStops: 0 });
+  } finally {
+    b.release();
+  }
+});
+
+test("hideRows: on with no file or no key; off when set off; off when the file cannot be read or parsed", () => {
+  const b = box();
+  try {
+    assert.equal(hideRowsEnabled(b.env), true, "no file: on");
+    mkdirSync(join(b.env.XDG_CONFIG_HOME, "brb"), { recursive: true });
+    const cases = [
+      [JSON.stringify({ onFireCap: 5 }), true],
+      [JSON.stringify({ hideRows: "on" }), true],
+      [JSON.stringify({ hideRows: true }), true],
+      [JSON.stringify({ hideRows: "off" }), false],
+      [JSON.stringify({ hideRows: false }), false],
+      [JSON.stringify({ hideRows: "Off " }), false],
+      ["{ hideRows: off", false],
+      ["[1]", false],
+      ["", false],
+    ];
+    for (const [text, want] of cases) {
+      writeFileSync(configPath(b.env), text);
+      assert.equal(hideRowsEnabled(b.env), want, text);
+    }
+    rmSync(configPath(b.env));
+    mkdirSync(configPath(b.env));
+    assert.equal(hideRowsEnabled(b.env), false, "a directory where the file should be: unreadable, off");
+    rmSync(configPath(b.env), { recursive: true });
+    writeFileSync(configPath(b.env), JSON.stringify({ hideRows: "off" }));
+    assert.deepEqual(loadConfig(b.env), DEFAULT_CONFIG, "the other keys are unaffected");
   } finally {
     b.release();
   }

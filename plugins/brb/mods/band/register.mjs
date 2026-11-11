@@ -41,7 +41,22 @@
 //     startup, and compaction keeps the conversation;
 //   - `$.ui.status` is the fallback only: where the band's render site is never asked to draw
 //     (a host with no band), the one-line badge of 0.3.x is set under the prompt; the moment the
-//     band renders once in a conversation, the line is cleared and stays clear.
+//     band renders once in a conversation, the line is cleared and stays clear;
+//   - while away, the transcript rows of the hold (`AssistantMessage`, `ToolUse`, `ToolResult`,
+//     `ToolGroup`) draw as one dim line `held while away · say back` per run of hidden rows, the
+//     rest of the run an empty Box; rows from before the hold, rows with an `on fire:` line and
+//     Jo's own prompts (`UserMessage`, watched only to end a run) draw as Claude Code draws them.
+//     Which rows belong to the hold is hide.mjs's ledger (by row id; the sites carry no time).
+//     The stored messages are never touched: a hook returns a tree in the row's place and does
+//     not call `next`. When the hold ends (`back`, the Back button, the hold gone), the mod calls
+//     `$.ui.invalidate("ui.render")` and every row draws as before. config.json `hideRows: "off"`
+//     (read by query.mjs each query; lib/state.mjs hideRowsEnabled) turns the row hiding off: every
+//     row draws as Claude Code draws it, and the mod invalidates the rows when the switch flips;
+//   - while away, the agent reads hide.mjs AWAY_TEXT (work without narration, hold every ask,
+//     reply with the still-away line, the body and `idle: <why>`): appended to the environment
+//     section of the system prompt (`prompt.section`, `breakPromptCache: true` at `brb` and at
+//     `back` only, after `$.ui.invalidate("prompt.section")`), and, in a turn that began while
+//     home (`brb` typed mid-turn), once as `context` after the next tool result (`tool.call`).
 //
 // How it fails: every hook catches its own error, logs one dim transcript line (`$.ui.log`) and
 // passes the event on with `next(e)`; a query, an action or a home probe that fails clears the
@@ -53,7 +68,8 @@
 // `$` is passed only to top-level functions of this file, imports are relative, no node builtins,
 // `$.env.get` takes a string literal.
 
-import { BACK_WORD, actArgv, awayPath, emptySnapshot, queryArgv, readResult, readSnapshot, statusText, suggestionText } from "./data.mjs";
+import { BACK_WORD, actArgv, awayPath, emptySnapshot, queryArgv, readResult, readSnapshot, sectionPath, statusText, suggestionText } from "./data.mjs";
+import { AWAY_TEXT, HELD_LINE, HIDDEN_SITES, ORDER_SITE, SECTION_NAMES, createLedger, lastCarried, parseSectionState, sectionAnswer } from "./hide.mjs";
 import { bandModel, bandTree } from "./view.mjs";
 
 const PROBE_MS = 1000;
@@ -73,6 +89,28 @@ let ticked = false;
 let stateEnv = { xdgStateHome: undefined, home: undefined };
 let timers = [];
 let generation = 0;
+/** Which transcript rows belong to the hold (hide.mjs). */
+let ledger = createLedger();
+/** A query answered this conversation and its last answer read: until then, and after a failed query, no row is hidden. */
+let known = false;
+/** The session is away, as the last answered query said. */
+let awayNow = false;
+/** Row hiding is on, as config.json said at the last answered query (`hideRows`). */
+let hideRows = true;
+/**
+ * One conversation's section state: `answered`, section name → the away state its last
+ * `prompt.section` answer in this conversation carried; `store`, the promise of its section.json
+ * (`{ path, saved, writing }`: `saved` `{}` when the file is missing, unreadable or unparsable;
+ * `path` null when the state directory or the session id is unknown, and then nothing is written).
+ * stop() replaces the whole object, so a section hook that began in an earlier conversation finds
+ * a different object after any await and touches nothing of the new one.
+ */
+const newConversation = () => ({ answered: new Map(), store: null });
+let conversation = newConversation();
+/** The running turn has had the away text (or began away, when the prompt hook and the section carry it). */
+let reminded = false;
+/** The last row-hook fault logged, so a fault on every row logs once. */
+let lastRowError = null;
 /**
  * The pending Back press, or null: `{ since, phase }`. `since` is the hold the band drew when the
  * press was accepted, fixed then and never changed; every act.mjs check, the first included, must
@@ -217,6 +255,32 @@ async function drainBack($, checked = null) {
 }
 
 /**
+ * Follow the hold for the row hooks, the section and the tool reminder. An answered query sets
+ * `known` and the away state; a failed one clears `known` (every row draws as is, nothing is
+ * recorded) and keeps the away state, so one failed query neither ends the hold's ledger nor
+ * flips the system prompt. When the hold ends, its rows join the ledger's past and every site is
+ * drawn again; when the away state changes, the section is asked again.
+ */
+function applyAway($, next) {
+  const wasKnown = known;
+  const wasHiding = hideRows;
+  known = next.ok === true;
+  if (known) hideRows = next.hideRows !== false;
+  const away = known ? next.away === true : awayNow;
+  if (away === awayNow && known === wasKnown && hideRows === wasHiding) return;
+  // Switched off: every row hidden so far joins the past now, drawn again or not, so switching
+  // back on hides only rows first drawn after that (never one this hold hid before).
+  if (wasHiding && !hideRows) ledger.endHold();
+  if (away !== awayNow) {
+    if (awayNow) ledger.endHold();
+    awayNow = away;
+    reminded = !away;
+    $.ui.invalidate("prompt.section");
+  }
+  $.ui.invalidate("ui.render");
+}
+
+/**
  * Keep the snapshot; redraw the band when what it would draw changed; propose the prompt-box
  * text while away; set the fallback line only where the band has never rendered (and not before
  * the first timer tick, so a host that draws the band never flashes the line at start); a new
@@ -226,6 +290,7 @@ function applySnapshot($, next, where = "query") {
   // The press is done once a query sees its hold gone (home, or another hold). A failed query
   // proves nothing, so the press stays pending and a second press still sends nothing.
   if (pendingBack?.since && next.ok && (!next.away || next.since !== pendingBack.since)) pendingBack = null;
+  applyAway($, next);
   const { backPressed: _shown, ...query } = next;
   snapshot = pendingBack ? { ...query, backPressed: true } : query;
   const key = JSON.stringify(bandModel(snapshot));
@@ -315,6 +380,55 @@ async function pollTick($) {
 }
 
 /**
+ * `conv`'s section.json, read once (`$.fs.read`, in Claude Code). A missing file, a read the host
+ * refuses, or text that does not parse is `saved: {}`: nothing known, so no cache break. An
+ * unknown state directory or session id is `path: null` (nothing read or written) and is not
+ * kept, so a later answer in the same conversation tries again. Never rejects.
+ */
+function loadSavedSections($, conv) {
+  if (!conv.store) {
+    const pending = (async () => {
+      let path = null;
+      try {
+        path = sectionPath({ ...stateEnv, sessionId: await $.session.id() });
+      } catch {
+        path = null;
+      }
+      if (!path) return { path: null, saved: {}, writing: Promise.resolve() };
+      let text = null;
+      try {
+        text = await $.fs.read(path);
+      } catch {
+        // missing (a session never away) or unreadable: nothing known
+      }
+      return { path, saved: parseSectionState(text), writing: Promise.resolve() };
+    })();
+    conv.store = pending;
+    pending.then((store) => {
+      if (!store.path && conv.store === pending) conv.store = null;
+    });
+  }
+  return conv.store;
+}
+
+/**
+ * Record that `name` now carries `away` and write the whole record (`$.fs.write`), one write
+ * after another so the last one holds every name. A write that fails is logged once per call and
+ * leaves the answer as it is.
+ */
+function saveSections($, store, name, away) {
+  store.saved[name] = away;
+  store.writing = store.writing.then(async () => {
+    try {
+      await $.fs.write(store.path, `${JSON.stringify(store.saved)}\n`);
+    } catch (err) {
+      await logFault($, "prompt.section save", err);
+    }
+  });
+  return store.writing;
+}
+
+/**
  * The home probe (every PROBE_MS): one `$.fs.exists` on away.json, and a query only when it
  * appeared. A probe that throws (a session id or a path the host refuses) clears the band and is
  * logged once per distinct message, as a query fault is; it never rejects into the timer.
@@ -351,8 +465,22 @@ function stop($) {
   suggested = null;
   lastError = null;
   applyStatus($, undefined);
+  // The next conversation starts with no ledger and not known: no row hidden until its first
+  // query answers. A hold this one had is dropped from the section (asked again, cache broken).
+  const wasHiding = known && awayNow;
+  ledger = createLedger();
+  known = false;
+  lastRowError = null;
+  // The next conversation (a /clear, a /resume) starts with no answers and reads its own
+  // section.json at its first answer; a hook still running for this one drops its result.
+  conversation = newConversation();
+  if (awayNow) {
+    awayNow = false;
+    $.ui.invalidate("prompt.section");
+  }
+  reminded = true;
   const key = JSON.stringify(bandModel(snapshot));
-  if (key !== viewKey) {
+  if (key !== viewKey || wasHiding) {
     viewKey = key;
     $.ui.invalidate("ui.render");
   }
@@ -418,6 +546,75 @@ export function register(on, options) {
     }
   });
 
+  // The transcript rows of the hold. `UserMessage` is watched only so a prompt Jo typed ends a
+  // run of hidden rows; it is always drawn as is. A fault draws the row as Claude Code would.
+  for (const component of [...HIDDEN_SITES, ORDER_SITE]) {
+    on("ui.render", { component }, async ($, e, next) => {
+      try {
+        // Row hiding off (config.json): the ledger is told home, so every row draws as is.
+        const verdict = ledger.decide({ known, away: awayNow && hideRows, component: e.component, requestId: e.requestId, props: e.props });
+        if (verdict === "show") return next(e);
+        const { Box, Text } = await $.ui.resolve(e);
+        return verdict === "line" ? Text({ dimColor: true, wrap: "truncate-end", children: [HELD_LINE] }) : Box({});
+      } catch (err) {
+        const message = errorText(err);
+        if (message !== lastRowError) {
+          lastRowError = message;
+          await logFault($, `ui.render ${component}`, err);
+        }
+        return next(e);
+      }
+    });
+  }
+
+  // The away text in the system prompt. Only the engine's own section names are asked for, so it
+  // is appended to the environment section; home, core's answer passes as it is. Every field of
+  // the answer `next` gave is kept, its own `breakPromptCache` included; each name tracks the
+  // away state it last carried, so each breaks the cache once at `brb` and once at `back`.
+  // section.json keeps that state per session across a resume or a restart: a conversation that
+  // comes back home while its saved prompt carried the away text breaks the cache once, at its
+  // first answer; one never saved away (or with no readable file) does not.
+  for (const name of SECTION_NAMES) {
+    on("prompt.section", { name }, async ($, e, next) => {
+      // The conversation is checked after the section.json load, the one await before any state
+      // is read or written (core's `next` comes before it): an answer that crosses a /clear or
+      // /resume is returned as core gave it and records nothing.
+      const conv = conversation;
+      const core = await next(e);
+      try {
+        const store = await loadSavedSections($, conv);
+        if (conv !== conversation) return core;
+        const answer = sectionAnswer(core, awayNow, lastCarried(conv.answered, store.saved, name));
+        conv.answered.set(name, awayNow);
+        if (store.path && (store.saved[name] === true) !== awayNow) await saveSections($, store, name, awayNow);
+        return answer;
+      } catch (err) {
+        await logFault($, "prompt.section", err);
+        return core;
+      }
+    });
+  }
+
+  // A turn that began home and is still running when the hold starts (`brb` typed mid-turn) has
+  // neither the prompt hook's instruction nor the section: its next tool result carries the away
+  // text once. Home, the call's id joins the ledger's past (its row may first draw after `brb`).
+  on("tool.call", async ($, e, next) => {
+    try {
+      ledger.noteCall(e?.tool_use_id, { known, away: awayNow });
+    } catch {
+      // the ledger never throws on an id; nothing to undo
+    }
+    const result = await next(e);
+    try {
+      if (reminded || !known || !awayNow || e?.agentId !== undefined || !result || result.deny !== undefined) return result;
+      reminded = true;
+      return { ...result, context: [...(result.context ?? []), AWAY_TEXT] };
+    } catch (err) {
+      await logFault($, "tool.call", err);
+      return result;
+    }
+  });
+
   on("prompt.submit", async ($, e, next) => {
     // After `next` the engine has handled the prompt, settings hooks included (as PreToolUse runs
     // inside a tool.call's `next`), so `brb` has written away.json and `back` has removed it; were
@@ -437,6 +634,8 @@ export function register(on, options) {
       if (e.agentId === undefined) {
         turnRunning = true;
         turnSeen = true;
+        // A turn that begins away has the prompt hook's instruction and the section already.
+        reminded = awayNow && known;
         refresh($);
       }
     } catch (err) {

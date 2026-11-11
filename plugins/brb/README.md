@@ -298,6 +298,92 @@ and fallback with an in-memory host (`mods/band/tests/*.test.mjs`); `claude plug
 terminal one, presses Back, Done and Clear and checks the drawn tree; `evals/manifest.json` lists
 the live checks under `manual`.
 
+## The transcript while away (Claude Code)
+
+Since 0.5.0, while this session is away the same mod keeps the agent's text off the screen. Each
+run of transcript rows written during the hold draws as one dim line, the rest of the run as
+nothing:
+
+```
+> brb lunch
+  held while away · say back
+```
+
+**What is hidden:** the agent's replies (`AssistantMessage`), its tool calls and their results
+(`ToolUse`, `ToolResult`) and the folded tool groups (`ToolGroup`), on the terminal, Desktop and
+VS Code (the render sites Claude Code's mods reference lists for all three). Only rows from the
+hold are hidden: the sites carry no time, so the mod tells them by row id. A row it drew, or a
+tool call it saw start, while the session was home predates the hold and draws as usual; a row
+first drawn during the hold belongs to it. A `ToolGroup` is hidden only when none of its calls
+predates the hold.
+
+**What still shows:**
+
+- a reply with an `on fire:` line (the Stop hook's own parser, `lib/sections.mjs`; `on fire:
+  none` is not one, a line in a code fence is not one);
+- your own prompts, the band, the spinner, notices and `brb`'s hook lines;
+- **permission prompts**: the dialog is not a render site, so a tool that asks still asks;
+- **Desktop's own task rows** and anything else Desktop draws outside those four sites;
+- possibly **the terminal's in-flight streaming preview** of a reply before its row is drawn
+  (not observed either way; no mod hook covers it);
+- any row when the mod cannot tell: before the first query of a conversation answers, and after
+  a query fails (it shows everything rather than guess).
+
+**On `back`** (typed, or the Back button) the mod calls `$.ui.invalidate("ui.render")` and every
+row draws as Claude Code draws it. Nothing is stored differently: the hook returns its own tree in
+the row's place and never calls `next`, so the stored messages and what the model reads are
+untouched (the type file: a rewrite "changes the drawing and leaves the stored message alone").
+Rows the hold hid count as past for the next hold, so a later `brb` hides only its own rows.
+
+**ctrl+o is not a way around it.** The type file names the ctrl+o transcript among the views
+that draw rows through the same render sites (`UserMessage` `isExpanded`: "the ctrl+o transcript,
+`--verbose`"), so while away the transcript viewer draws the dim line too. The way to see every
+row while away is the `hideRows` switch below.
+
+**A conversation reopened while away** (`/resume` into a held session, a window restart) hides
+every row the mod has not seen while home, older rows included: with no time on a row there is
+nothing else to go by. `back` brings them all back.
+
+**A very long conversation stops hiding.** The mod keeps at most 20,000 row ids per set and never
+drops one; a row's ids (a tool group's calls) are kept together or not at all. Once they do not
+fit, a row it cannot place could be an old one, so from then on in that conversation it hides
+only rows it already hid in the current hold and draws the rest as is.
+
+**What the agent is told.** While away the mod appends a fixed text to the system prompt's
+environment section (`prompt.section` on `env_info_simple` / `env_info_static`, the two names
+Claude Code uses for it; a plugin's own section name is never asked for): work without narration,
+hold each question, decision or approval with the hold command, reply only with the still-away
+line, the body and `idle: <why>`. It is added at `brb` and removed at `back`, each time with
+`breakPromptCache: true` so a running conversation reads the change on its next turn (Desktop's
+bundled Claude Code 2.1.321 needs the field; the next turn's prompt cache starts over, once at
+`brb` and once at `back`, per section name). The answer Claude Code or another mod gave for the
+section is passed on whole, its own `breakPromptCache` included, home and away. The state each
+section last carried is saved in the session's `section.json` (two booleans, nothing else), so a
+conversation resumed home after its prompt was saved away drops the away text once, at its first
+answer; a session never away, or with no readable file, never breaks the cache on resume. A `brb`
+typed while a turn is running reaches that turn too: the next
+tool result of the main agent carries the same text once (`tool.call` `context`, in Claude Code,
+no process started). A running turn that makes no further tool call does not get it; its reply
+is hidden anyway, and the next turn has the section and the prompt hook's instruction.
+
+**Turn it off in one step.** Write `{ "hideRows": "off" }` to
+`${XDG_CONFIG_HOME:-~/.config}/brb/config.json` (merge the key into the file if it already has
+`onFireCap` or `idleStops`). The mod reads it at its next query, at most 5 seconds while away or
+at the end of the next turn, and redraws every row as Claude Code draws it; the hold, the digest,
+the band and the away text stay as they are. Every row hidden until then counts as past from that
+moment, whether or not it is on screen, so `"on"` or removing the key turns hiding back on only
+for rows first drawn after that. A config file that cannot be read or parsed also turns hiding off.
+
+**Check it live.** In a terminal session (the classic renderer: `/tui` names the one in use) and
+in a Desktop Code-tab session: ask for something that takes several tool calls, then type `brb`
+while it runs. Rows written after `brb` turn into one dim `held while away · say back` line per
+run; rows from before stay; a fire (`on fire:` in a reply) shows in full; a permission prompt
+still shows. Let several replies and tool results finish, scroll them off screen and back. Type
+`back` (or press Back): every row shows as it was, including the ones that scrolled away. In the
+terminal, watch whether a reply's text flashes while it streams before its row turns dim, and
+record what you see. If any row stays dim after `back`, set `"hideRows": "off"` as above and
+open an issue naming the surface and the Claude Code version.
+
 ## State and config
 
 - `${XDG_STATE_HOME:-~/.local/state}/brb/<session id>/` — `away.json` (since, note, counts, the
@@ -308,8 +394,10 @@ the live checks under `manual`.
   Declared in `.claude-plugin/plugin.json` `state`; `node scripts/prune.mjs --days 30` removes
   files older than 30 days (`errors.log` kept), and the nightly canary runs it.
 - `${XDG_CONFIG_HOME:-~/.config}/brb/config.json`, optional:
-  `{"onFireCap": 3, "idleStops": 2}`. A missing or unparsable file is the defaults; a field that
-  is not a non-negative integer is ignored.
+  `{"onFireCap": 3, "idleStops": 2, "hideRows": "on"}`. For `onFireCap` and `idleStops` a missing
+  or unparsable file is the defaults and a field that is not a non-negative integer is ignored.
+  `hideRows` is on with no file or no key, off for `"off"` or `false`, and off for a file that
+  cannot be read or parsed or any other value (the switch fails toward showing the transcript).
 - `BRB_DESKTOP_NOTIFY=off` turns off the macOS notification. `BRB_HARNESS=omp` is set by the OMP
   adapter, never by hand; under it the OSC 9 sequence is left out and the keep-working answer is
   `decision: "block"`. `BRB_SESSION_ID` (then `CLAUDE_CODE_SESSION_ID`) names the session for
@@ -377,6 +465,15 @@ the live checks under `manual`.
 - **The band is shared and collapsible.** Other mods may draw in the same band (brb keeps their
   tree under its own), a survey takes the band over while it runs, and in the terminal the person
   can collapse it (ctrl+x ctrl+a) without the mod knowing.
+- **The hidden transcript has not been watched on Desktop or in a terminal** for this version:
+  the ledger and the hooks run under `node --test` (`mods/band/tests/hide.test.mjs`,
+  `register.test.mjs`), the drawn rows under `claude plugin test` for a Desktop and a terminal
+  session start. Not proven live: that a surface redraws rows already on screen when the mod
+  invalidates (the classic terminal renderer prints finished rows to scrollback, where a redraw
+  may not reach them, so a row hidden there could stay dim after `back`; `"hideRows": "off"`
+  turns hiding off), that Claude Code keeps the tool's own result when a `tool.call` hook adds
+  `context` to it, and whether the terminal's streaming preview shows a reply before its row is
+  hidden.
 
 ## How it fails
 
@@ -395,6 +492,17 @@ hooks as spawned processes with fixture stdin and fixture transcripts, the hold 
 spawned process, the OMP adapter's handlers, the band's data, view, query and action layers.
 `bash e2e/live-run.sh --no-live` replays the fourteen `evals/*.scenario.json` offline. `claude
 plugin test` runs the band mod itself (`mods/band/tests/band.test.tsx`).
+
+## Changes in 0.5.0
+
+While away, the agent's replies and tool rows written during the hold draw as one dim line,
+`held while away · say back`, per run (a Claude Code mod `ui.render` hook on `AssistantMessage`,
+`ToolUse`, `ToolResult`, `ToolGroup`); rows from before the hold, replies with an `on fire:` line,
+your prompts and permission prompts still show. `back` redraws every row as it was; no stored
+message changes. The agent reads a fixed away text in the system prompt while away (added at
+`brb`, removed at `back`, `breakPromptCache: true`), and a turn already running when `brb` lands
+gets it once after its next tool result. `{ "hideRows": "off" }` in brb's config.json turns the
+row hiding off in one step.
 
 ## Changes in 0.4.2
 

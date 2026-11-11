@@ -15,11 +15,15 @@ import test from "node:test";
 import assert from "node:assert/strict";
 
 let fresh = 0;
-/** A fresh copy of the module (its state is module-level) with its hooks by event name. */
+/** A fresh copy of the module (its state is module-level) with its hooks by event name; a hook with a `component` or `name` matcher also as `<event>:<value>` (`ui.render` alone is the band's, the first registered). */
 async function load() {
   const { register } = await import(`../register.mjs?fresh=${++fresh}`);
   const hooks = new Map();
-  register((event, a, b) => hooks.set(event, b ?? a), {});
+  register((event, a, b) => {
+    const tag = b ? (a?.component ?? a?.name) : undefined;
+    if (tag !== undefined) hooks.set(`${event}:${tag}`, b);
+    if (!hooks.has(event)) hooks.set(event, b ?? a);
+  }, {});
   return hooks;
 }
 
@@ -36,7 +40,7 @@ const CHECKLIST = { ok: true, away: false, checklist: { at: SINCE, since: SINCE,
  * started); `queryFails` makes the next query throw.
  */
 function stub({ snapshot = HOME, exists = async () => false } = {}) {
-  const s = { timers: new Map(), live: new Set(), cancelled: [], runs: 0, acts: [], submits: [], toasts: [], statuses: [], logs: [], suggestions: [], invalidations: 0, snapshot, exists, sessionId: "s1", hold: null, actHold: null, queryFails: false, submit: () => new Promise(() => {}) };
+  const s = { timers: new Map(), live: new Set(), cancelled: [], runs: 0, acts: [], submits: [], toasts: [], statuses: [], logs: [], suggestions: [], invalidations: 0, invalidated: [], snapshot, exists, sessionId: "s1", hold: null, actHold: null, queryFails: false, submit: () => new Promise(() => {}), files: new Map(), reads: [], writes: [], readFails: null };
   s.$ = {
     env: { get: async (name) => (name === "XDG_STATE_HOME" ? "/tmp/state" : name === "HOME" ? "/Users/example" : undefined) },
     clock: {
@@ -75,14 +79,27 @@ function stub({ snapshot = HOME, exists = async () => false } = {}) {
       log: async (text) => s.logs.push(text),
       toast: (text) => s.toasts.push(text),
       status: (text) => s.statuses.push(text),
-      invalidate: () => s.invalidations++,
+      invalidate: (event) => (s.invalidations++, s.invalidated.push(event)),
       resolve: () => ({
         Box: ({ children, ...props }) => ({ type: "Box", props, children: [children ?? []].flat(Infinity) }),
         Text: ({ children, ...props }) => ({ type: "Text", props, children: [children ?? []].flat(Infinity) }),
         Button: (props) => ({ type: "Button", props }),
       }),
     },
-    fs: { exists: (path) => s.exists(path) },
+    fs: {
+      exists: (path) => s.exists(path),
+      // section.json in memory: a missing file rejects as the host's read does
+      read: async (path) => {
+        s.reads.push(path);
+        if (s.readFails) throw s.readFails;
+        if (!s.files.has(path)) throw Object.assign(new Error(`ENOENT: ${path}`), { code: "ENOENT" });
+        return s.files.get(path);
+      },
+      write: async (path, text) => {
+        s.writes.push(path);
+        s.files.set(path, text);
+      },
+    },
   };
   return s;
 }
@@ -505,4 +522,405 @@ test("R1 B1: a query answer from the last conversation that lands after the new 
   release();
   await late;
   assert.equal(await hooks.get("ui.render")(s.$, BAND, async () => "gone"), "gone", "the old checklist did not come back");
+});
+
+// ---- 0.5.0: the hold's transcript rows, the away section, the mid-turn reminder ----
+
+const { AWAY_TEXT, HELD_LINE } = await import("../hide.mjs");
+const DRAWN = { type: "Text", props: {}, children: ["drawn by Claude Code"] };
+const rowOf = (hooks, s, surface, component, requestId, props) =>
+  hooks.get(`ui.render:${component}`)(s.$, { component, surface, requestId, props }, async () => DRAWN);
+const said = (id, text = "ran the migration") => ["AssistantMessage", id, { text, isFirstOfReply: true }];
+const ran = (id, component = "ToolUse") => [component, id, { tool_use_id: id, tool: "Bash", input: {}, isRunning: false, isErrored: false, isInterrupted: false }];
+const toolCall = (hooks, s, e, answer = { result: { stdout: "" }, text: "", ref: 1 }) => hooks.get("tool.call")(s.$, { tool: "Bash", input: {}, ...e }, async () => answer);
+const section = (hooks, s, name, text) => hooks.get(`prompt.section:${name}`)(s.$, { name, text }, async (e) => ({ text: e.text }));
+
+for (const [where, e, surface] of [["Desktop (surface null, not interactive)", DESKTOP, "desktop"], ["terminal", TERMINAL, "terminal"]]) {
+  test(`${where}: while away the hold's rows draw one dim line then nothing, older rows and fires as drawn; back redraws every row as drawn`, async () => {
+    const hooks = await load();
+    const s = stub({ snapshot: HOME });
+    await start(hooks, s, e);
+    assert.equal(await rowOf(hooks, s, surface, ...said("m-before")), DRAWN);
+    assert.equal(await rowOf(hooks, s, surface, ...ran("t-before")), DRAWN);
+
+    s.snapshot = AWAY;
+    const before = s.invalidated.length;
+    await turnComplete(hooks, s);
+    assert.ok(s.invalidated.slice(before).includes("ui.render"), "the rows were asked to draw again at brb");
+    assert.ok(s.invalidated.slice(before).includes("prompt.section"), "the section was asked again at brb");
+
+    assert.equal(await rowOf(hooks, s, surface, ...said("m-before")), DRAWN, "a row from before the hold stays");
+    assert.equal(await rowOf(hooks, s, surface, ...ran("t-before")), DRAWN);
+    const first = await rowOf(hooks, s, surface, ...said("m-away"));
+    assert.notEqual(first, DRAWN);
+    assert.deepEqual(texts(first), [HELD_LINE]);
+    assert.equal(first.props.dimColor, true);
+    const rest = await rowOf(hooks, s, surface, ...ran("t-away"));
+    assert.deepEqual(texts(rest), [], "the rest of the run draws nothing");
+    assert.deepEqual(texts(await rowOf(hooks, s, surface, ...ran("t-away", "ToolResult"))), []);
+    assert.equal(await rowOf(hooks, s, surface, ...said("m-fire", "on fire: main is red since 4bd1e2")), DRAWN, "a fire is drawn");
+    assert.equal(await rowOf(hooks, s, surface, "UserMessage", "u1", { text: "status?" }), DRAWN, "Jo's prompt is drawn");
+
+    s.snapshot = CHECKLIST;
+    const atBack = s.invalidated.length;
+    await turnComplete(hooks, s);
+    assert.ok(s.invalidated.slice(atBack).includes("ui.render"), "back asks every row to draw again");
+    assert.equal(await rowOf(hooks, s, surface, ...said("m-away")), DRAWN, "the hidden reply is back");
+    assert.equal(await rowOf(hooks, s, surface, ...ran("t-away")), DRAWN, "the hidden tool row is back");
+    assert.equal(await rowOf(hooks, s, surface, ...ran("t-away", "ToolResult")), DRAWN);
+  });
+}
+
+test("a failed query while away draws every row as is; the next answered query hides the hold's rows again", async () => {
+  const hooks = await load();
+  const s = stub({ snapshot: AWAY });
+  await start(hooks, s);
+  assert.notEqual(await rowOf(hooks, s, "terminal", ...said("a1")), DRAWN);
+  s.snapshot = { ok: false, error: "query: node not found" };
+  await turnComplete(hooks, s);
+  assert.equal(await rowOf(hooks, s, "terminal", ...said("a1")), DRAWN, "fail open: the mod cannot tell, so it hides nothing");
+  s.snapshot = AWAY;
+  await turnComplete(hooks, s);
+  assert.notEqual(await rowOf(hooks, s, "terminal", ...said("a1")), DRAWN, "the failure did not end the hold's ledger");
+});
+
+test("a row hook that faults draws the row as Claude Code would and logs once", async () => {
+  const hooks = await load();
+  const s = stub({ snapshot: AWAY });
+  await start(hooks, s);
+  s.$.ui.resolve = () => {
+    throw new Error("resolve refused");
+  };
+  assert.equal(await rowOf(hooks, s, "terminal", ...said("a1")), DRAWN);
+  assert.equal(await rowOf(hooks, s, "terminal", ...said("a2")), DRAWN);
+  assert.equal(s.logs.filter((l) => l.includes("resolve refused")).length, 1);
+});
+
+test("session.end while away: rows draw as is again and the section is asked again", async () => {
+  const hooks = await load();
+  const s = stub({ snapshot: AWAY });
+  await start(hooks, s);
+  assert.notEqual(await rowOf(hooks, s, "terminal", ...said("a1")), DRAWN);
+  const before = s.invalidated.length;
+  await end(hooks, s, "clear");
+  assert.ok(s.invalidated.slice(before).includes("prompt.section"));
+  assert.ok(s.invalidated.slice(before).includes("ui.render"));
+  assert.equal(await rowOf(hooks, s, "terminal", ...said("a1")), DRAWN);
+});
+
+test("prompt.section: home passes core's text; away appends the away text and breaks the cache once; back breaks it once more", async () => {
+  const hooks = await load();
+  const s = stub({ snapshot: HOME });
+  await start(hooks, s);
+  for (const name of ["env_info_simple", "env_info_static"]) assert.ok(hooks.has(`prompt.section:${name}`), name);
+  assert.deepEqual(await section(hooks, s, "env_info_simple", "cwd: /w"), { text: "cwd: /w" });
+  s.snapshot = AWAY;
+  await turnComplete(hooks, s);
+  const away = await section(hooks, s, "env_info_simple", "cwd: /w");
+  assert.equal(away.breakPromptCache, true);
+  assert.ok(away.text.includes("cwd: /w") && away.text.includes(AWAY_TEXT));
+  assert.equal((await section(hooks, s, "env_info_simple", "cwd: /w")).breakPromptCache, undefined, "asked again while away: no second break");
+  s.snapshot = HOME;
+  await turnComplete(hooks, s);
+  assert.deepEqual(await section(hooks, s, "env_info_simple", "cwd: /w"), { text: "cwd: /w", breakPromptCache: true });
+});
+
+test("tool.call: a turn begun home gets the away text once after the first tool result once brb lands; a turn begun away, a subagent, a deny get none", async () => {
+  const hooks = await load();
+  const s = stub({ snapshot: HOME });
+  await start(hooks, s);
+  await turnStart(hooks, s);
+  const home = await toolCall(hooks, s, { tool_use_id: "c1" });
+  assert.equal(home.context, undefined);
+  // `brb` typed mid-turn: the prompt hook writes the hold inside `next`, the mod refreshes after
+  s.snapshot = AWAY;
+  await hooks.get("prompt.submit")(s.$, { text: "brb", turnId: "t" }, async (p) => ({ text: p.text }));
+  await tick();
+  assert.equal((await toolCall(hooks, s, { tool_use_id: "c2", agentId: "sub-1" })).context, undefined, "a subagent's call: none");
+  assert.deepEqual((await toolCall(hooks, s, { tool_use_id: "c3" }, { deny: "no" })), { deny: "no" }, "a deny passes untouched");
+  const first = await toolCall(hooks, s, { tool_use_id: "c4" }, { result: { stdout: "ok" }, text: "ok", ref: 7, context: ["another hook's"] });
+  assert.deepEqual(first.context, ["another hook's", AWAY_TEXT]);
+  assert.equal(first.ref, 7, "core's result is kept");
+  assert.equal((await toolCall(hooks, s, { tool_use_id: "c5" })).context, undefined, "once per turn");
+  await turnStart(hooks, s);
+  assert.equal((await toolCall(hooks, s, { tool_use_id: "c6" })).context, undefined, "a turn begun away has the section and the prompt hook");
+  // the tool row of c1 (called home) first draws now: it predates the hold
+  assert.equal(await rowOf(hooks, s, "terminal", ...ran("c1")), DRAWN);
+  assert.notEqual(await rowOf(hooks, s, "terminal", ...ran("c4")), DRAWN);
+});
+
+test("Back pressed mid-turn while rows are hidden: one turn.complete both keeps the rows hidden and sends `back`; the query that sees home redraws them", async () => {
+  const hooks = await load();
+  const s = stub({ snapshot: AWAY });
+  await start(hooks, s);
+  await turnStart(hooks, s);
+  assert.notEqual(await rowOf(hooks, s, "terminal", ...said("a1")), DRAWN);
+  await buttons(await render(hooks, s))[0].props.onPress();
+  await turnComplete(hooks, s);
+  assert.deepEqual(s.submits, [{ text: "back", asUser: true }], "the drain ran on the same turn.complete");
+  assert.notEqual(await rowOf(hooks, s, "terminal", ...said("a1")), DRAWN, "still away until a query says otherwise");
+  // the submitted `back` ends the hold; the next query sees home
+  s.snapshot = CHECKLIST;
+  const before = s.invalidated.length;
+  await turnComplete(hooks, s);
+  assert.ok(s.invalidated.slice(before).includes("ui.render"));
+  assert.equal(await rowOf(hooks, s, "terminal", ...said("a1")), DRAWN);
+  assert.equal(await rowOf(hooks, s, "terminal", "UserMessage", "u-back", { text: "back" }), DRAWN);
+});
+
+// ---- 0.5.0 R1: another hook's cache break, two section names, the hideRows switch ----
+
+const sectionWith = (hooks, s, name, answer) => hooks.get(`prompt.section:${name}`)(s.$, { name, text: "cwd: /w" }, async () => answer);
+
+test("R1 B1: a cache break asked for by the answer under brb's section hook survives, home and away", async () => {
+  const hooks = await load();
+  const s = stub({ snapshot: HOME });
+  await start(hooks, s);
+  const theirs = { text: "OTHER MOD UPDATED THIS", breakPromptCache: true };
+  const home = await sectionWith(hooks, s, "env_info_simple", theirs);
+  assert.equal(home.breakPromptCache, true, "home");
+  assert.equal(home.text, "OTHER MOD UPDATED THIS");
+  s.snapshot = AWAY;
+  await turnComplete(hooks, s);
+  await sectionWith(hooks, s, "env_info_simple", { text: "cwd: /w" }); // brb's own transition, spent
+  const away = await sectionWith(hooks, s, "env_info_simple", theirs);
+  assert.equal(away.breakPromptCache, true, "away, with brb's state unchanged since the last answer");
+  assert.ok(away.text.startsWith("OTHER MOD UPDATED THIS") && away.text.includes(AWAY_TEXT));
+});
+
+for (const order of [["env_info_simple", "env_info_static"], ["env_info_static", "env_info_simple"]]) {
+  test(`R1 S1: each section name breaks the cache once at brb and once at back, asked ${order.join(" then ")}`, async () => {
+    const hooks = await load();
+    const s = stub({ snapshot: HOME });
+    await start(hooks, s);
+    const ask = async (name) => (await sectionWith(hooks, s, name, { text: "cwd: /w" })).breakPromptCache === true;
+    for (const name of order) assert.equal(await ask(name), false, `${name} home`);
+    s.snapshot = AWAY;
+    await turnComplete(hooks, s);
+    for (const name of order) assert.equal(await ask(name), true, `${name} at brb`);
+    for (const name of order) assert.equal(await ask(name), false, `${name} asked again away`);
+    s.snapshot = HOME;
+    await turnComplete(hooks, s);
+    for (const name of [...order].reverse()) assert.equal(await ask(name), true, `${name} at back`);
+    for (const name of order) assert.equal(await ask(name), false, `${name} asked again home`);
+  });
+}
+
+test("R1 kill switch: hideRows off draws every row as is while away; switching it on hides only rows first drawn after, off again redraws", async () => {
+  const hooks = await load();
+  const s = stub({ snapshot: { ...AWAY, hideRows: false } });
+  await start(hooks, s);
+  assert.equal(await rowOf(hooks, s, "terminal", ...said("off-1")), DRAWN, "off: drawn as Claude Code draws it");
+  assert.equal(await rowOf(hooks, s, "terminal", ...ran("off-2")), DRAWN);
+  s.snapshot = AWAY;
+  const before = s.invalidated.length;
+  await turnComplete(hooks, s);
+  assert.ok(s.invalidated.slice(before).includes("ui.render"), "the switch flipping redraws the rows");
+  assert.equal(await rowOf(hooks, s, "terminal", ...said("off-1")), DRAWN, "a row shown while off stays shown");
+  assert.notEqual(await rowOf(hooks, s, "terminal", ...said("on-1")), DRAWN, "on: a new row of the hold is hidden");
+  s.snapshot = { ...AWAY, hideRows: false };
+  const flip = s.invalidated.length;
+  await turnComplete(hooks, s);
+  assert.ok(s.invalidated.slice(flip).includes("ui.render"));
+  assert.equal(await rowOf(hooks, s, "terminal", ...said("on-1")), DRAWN, "off again: the hidden row is drawn");
+});
+
+test("R2 B1: switching hiding off retires the hold's hidden rows at once: a row not drawn while off is shown after on again; a new row still hides", async () => {
+  const hooks = await load();
+  const s = stub({ snapshot: AWAY });
+  await start(hooks, s);
+  assert.notEqual(await rowOf(hooks, s, "terminal", ...said("old")), DRAWN, "hidden while on");
+  s.snapshot = { ...AWAY, hideRows: false };
+  const off = s.invalidated.length;
+  await turnComplete(hooks, s);
+  assert.ok(s.invalidated.slice(off).includes("ui.render"), "switching off redraws the rows");
+  // the old row is not drawn while off (unmounted, off screen)
+  s.snapshot = AWAY;
+  await turnComplete(hooks, s);
+  assert.equal(await rowOf(hooks, s, "terminal", ...said("old")), DRAWN, "on again: the row hidden before the switch stays shown");
+  assert.notEqual(await rowOf(hooks, s, "terminal", ...said("new")), DRAWN, "a row first drawn after on still hides");
+});
+
+// ---- 0.5.0 R3: section.json carries the section's away state across a resume or a restart ----
+
+const SECTION_FILE = "/tmp/state/brb/s1/section.json";
+const breaks = async (hooks, s, name = "env_info_simple") => (await sectionWith(hooks, s, name, { text: "cwd: /w" })).breakPromptCache === true;
+/** A restarted Claude Code: a fresh module and stub over the same files. */
+async function restart(from, snapshot) {
+  const hooks = await load();
+  const s = stub({ snapshot });
+  s.files = from.files;
+  await start(hooks, s);
+  return { hooks, s };
+}
+
+test("R3: a session saved away and resumed home breaks the cache once, records home, and the next resume does not break", async () => {
+  const hooks = await load();
+  const s = stub({ snapshot: AWAY });
+  await start(hooks, s);
+  assert.equal(await breaks(hooks, s), true, "brb: the away text is added");
+  assert.deepEqual(JSON.parse(s.files.get(SECTION_FILE)), { env_info_simple: true }, "saved away");
+  // Claude Code restarts; the hold ended meanwhile; the conversation is resumed home
+  const one = await restart(s, HOME);
+  assert.equal(await breaks(one.hooks, one.s), true, "the first answer drops the saved away text");
+  assert.equal(await breaks(one.hooks, one.s), false, "once");
+  assert.deepEqual(JSON.parse(one.s.files.get(SECTION_FILE)), { env_info_simple: false }, "home recorded");
+  const two = await restart(one.s, HOME);
+  assert.equal(await breaks(two.hooks, two.s), false, "a second resume finds home saved: no break");
+});
+
+test("R3: a session never away, resumed home, never breaks and writes nothing", async () => {
+  const hooks = await load();
+  const s = stub({ snapshot: HOME });
+  await start(hooks, s);
+  assert.equal(await breaks(hooks, s), false);
+  const again = await restart(s, HOME);
+  assert.equal(await breaks(again.hooks, again.s), false);
+  assert.equal(again.s.writes.length + s.writes.length, 0, "no file for a session never away");
+});
+
+test("R3: a session saved away and resumed still away does not break (the saved prompt has the text)", async () => {
+  const hooks = await load();
+  const s = stub({ snapshot: AWAY });
+  await start(hooks, s);
+  await breaks(hooks, s);
+  const again = await restart(s, AWAY);
+  assert.equal(await breaks(again.hooks, again.s), false);
+});
+
+test("R3: each section name is saved and dropped on its own", async () => {
+  const hooks = await load();
+  const s = stub({ snapshot: AWAY });
+  await start(hooks, s);
+  await breaks(hooks, s, "env_info_static");
+  const again = await restart(s, HOME);
+  assert.equal(await breaks(again.hooks, again.s, "env_info_simple"), false, "never saved away");
+  assert.equal(await breaks(again.hooks, again.s, "env_info_static"), true, "saved away");
+});
+
+test("R3: /resume in the same process to a session saved away breaks once at its first answer", async () => {
+  const hooks = await load();
+  const s = stub({ snapshot: HOME });
+  s.files.set("/tmp/state/brb/s2/section.json", JSON.stringify({ env_info_simple: true }));
+  await start(hooks, s);
+  assert.equal(await breaks(hooks, s), false, "s1: never away");
+  await end(hooks, s, "resume");
+  s.sessionId = "s2";
+  await start(hooks, s);
+  assert.equal(await breaks(hooks, s), true, "s2's saved away text is dropped");
+  assert.equal(await breaks(hooks, s), false);
+});
+
+for (const [what, prepare] of [
+  ["missing", () => {}],
+  ["not JSON", (s) => s.files.set(SECTION_FILE, "{ env_info_simple: tr")],
+  ["an array", (s) => s.files.set(SECTION_FILE, "[true]")],
+  ["a string where a boolean goes", (s) => s.files.set(SECTION_FILE, JSON.stringify({ env_info_simple: "true" }))],
+  ["unreadable", (s) => (s.readFails = Object.assign(new Error("EACCES: permission denied"), { code: "EACCES" }))],
+]) {
+  test(`R3: section.json ${what}: home answers without a break and without throwing`, async () => {
+    const hooks = await load();
+    const s = stub({ snapshot: HOME });
+    prepare(s);
+    await start(hooks, s);
+    assert.deepEqual(await sectionWith(hooks, s, "env_info_simple", { text: "cwd: /w" }), { text: "cwd: /w" });
+  });
+}
+
+test("R3: a save the host refuses is logged; the answer still carries the away text and the break", async () => {
+  const hooks = await load();
+  const s = stub({ snapshot: AWAY });
+  s.$.fs.write = async () => {
+    throw new Error("EROFS: read-only file system");
+  };
+  await start(hooks, s);
+  const answer = await sectionWith(hooks, s, "env_info_simple", { text: "cwd: /w" });
+  assert.equal(answer.breakPromptCache, true);
+  assert.ok(answer.text.includes(AWAY_TEXT));
+  assert.equal(s.logs.filter((l) => l.includes("EROFS")).length, 1);
+});
+
+// ---- 0.5.0 R4: section state belongs to one conversation ----
+
+for (const [what, marker] of [
+  ["missing", undefined],
+  ["corrupt", "{"],
+  ["saved home", JSON.stringify({ env_info_simple: false })],
+]) {
+  test(`R4 S1: an ordinary home resume with a ${what} marker after an away predecessor does not break and writes nothing for it`, async () => {
+    const hooks = await load();
+    const s = stub({ snapshot: AWAY });
+    await start(hooks, s);
+    assert.equal(await breaks(hooks, s), true, "A: brb's own break");
+    await end(hooks, s, "resume");
+    s.sessionId = "s2";
+    s.snapshot = HOME;
+    if (marker !== undefined) s.files.set("/tmp/state/brb/s2/section.json", marker);
+    const writesBefore = s.writes.length;
+    await start(hooks, s);
+    assert.equal(await breaks(hooks, s), false, "B's first answer is seeded only by B's own marker");
+    assert.equal(s.writes.slice(writesBefore).filter((p) => p.includes("/s2/")).length, 0);
+  });
+}
+
+test("R4 S1: the same sequence with B saved away still breaks once for B", async () => {
+  const hooks = await load();
+  const s = stub({ snapshot: AWAY });
+  await start(hooks, s);
+  await breaks(hooks, s);
+  await end(hooks, s, "resume");
+  s.sessionId = "s2";
+  s.snapshot = HOME;
+  s.files.set("/tmp/state/brb/s2/section.json", JSON.stringify({ env_info_simple: true }));
+  await start(hooks, s);
+  assert.equal(await breaks(hooks, s), true);
+  assert.equal(await breaks(hooks, s), false);
+});
+
+test("R4 B1: an old conversation's section read that finishes after /resume touches nothing of the new one; the new one breaks once and records home", async () => {
+  const hooks = await load();
+  const s = stub({ snapshot: AWAY });
+  s.files.set("/tmp/state/brb/s1/section.json", JSON.stringify({ env_info_simple: true }));
+  s.files.set("/tmp/state/brb/s2/section.json", JSON.stringify({ env_info_simple: true }));
+  const read = s.$.fs.read;
+  let release;
+  let started;
+  const readStarted = new Promise((r) => (started = r));
+  s.$.fs.read = async (path) => {
+    if (path.includes("/s1/")) {
+      started();
+      return new Promise((r) => (release = r));
+    }
+    return read(path);
+  };
+  await start(hooks, s);
+  const old = sectionWith(hooks, s, "env_info_simple", { text: "cwd: /w" });
+  await readStarted;
+  await end(hooks, s, "resume");
+  s.sessionId = "s2";
+  s.snapshot = HOME;
+  await start(hooks, s);
+  release(JSON.stringify({ env_info_simple: true }));
+  const oldAnswer = await old;
+  assert.equal(oldAnswer.breakPromptCache, undefined, "the abandoned answer is core's, untouched");
+  assert.equal(JSON.parse(s.files.get("/tmp/state/brb/s1/section.json")).env_info_simple, true, "A's marker is not rewritten by the stale hook");
+  assert.equal(await breaks(hooks, s), true, "B's own first answer breaks");
+  assert.deepEqual(JSON.parse(s.files.get("/tmp/state/brb/s2/section.json")), { env_info_simple: false }, "only B's own answer records B home");
+  assert.equal(await breaks(hooks, s), false);
+});
+
+test("R4 B1: an answer whose core `next` resolves after /resume records nothing either", async () => {
+  const hooks = await load();
+  const s = stub({ snapshot: AWAY });
+  s.files.set("/tmp/state/brb/s2/section.json", JSON.stringify({ env_info_simple: true }));
+  await start(hooks, s);
+  let release;
+  const old = hooks.get("prompt.section:env_info_simple")(s.$, { name: "env_info_simple", text: "cwd: /w" }, () => new Promise((r) => (release = r)));
+  await end(hooks, s, "resume");
+  s.sessionId = "s2";
+  s.snapshot = HOME;
+  await start(hooks, s);
+  release({ text: "cwd: /w" });
+  assert.deepEqual(await old, { text: "cwd: /w" });
+  assert.equal(await breaks(hooks, s), true);
 });
