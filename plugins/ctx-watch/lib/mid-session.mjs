@@ -134,11 +134,18 @@ export function staleSince(state, now) {
 
 const telling = (state) => state.episode === "down" && state.episodeKind !== "semantic" && state.downSince !== null;
 
-/** Whether the timer's latest probe, taken after `toldAt`, shows the daemon up: passed, or failed only on the semantic index. */
+/**
+ * Whether the timer's latest probe, taken after `toldAt`, shows the daemon up: passed, or failed
+ * only on the semantic index. The latter is read from that probe's own `kind`, never from the
+ * episode: a slow or live-upgrade tick holds episodeKind from an earlier tick, and a status call
+ * that timed out shows nothing about the daemon (Codex round 4 on PR #112). A probe recorded
+ * before `kind` existed (a state.json from an older tick) falls back to the episode's kind.
+ */
 export function recoveredSince(state, toldAt) {
   const p = state.lastProbe;
   if (!p || state.lastTickAt === null || p.at <= toldAt || telling(state)) return false;
-  return p.ok || state.episodeKind === "semantic";
+  if (p.ok) return true;
+  return (p.kind ?? (state.episodeKind === "semantic" ? "semantic" : null)) === "semantic";
 }
 
 /** The `slowSince` of a slow run the timer has seen for SLOW_TELL_MS or more, or null. */

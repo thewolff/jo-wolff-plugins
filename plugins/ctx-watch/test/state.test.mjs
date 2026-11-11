@@ -254,12 +254,14 @@ test("validateState: known fields in shape pass (unknown dropped); each field ou
     [{ popupPending: { token: "t", since: -1 } }, 'popupPending is {"token":"t","since":-1}, not { token, since, kind? } | null'],
     [{ popupPending: { token: "../../etc/x", since: 1 } }, 'popupPending is {"token":"../../etc/x","since":1}, not { token, since, kind? } | null'],
     [{ popupPending: { token: "t", since: 1, kind: "other" } }, 'popupPending is {"token":"t","since":1,"kind":"other"}, not { token, since, kind? } | null'],
-    [{ lastProbe: "fail" }, 'lastProbe is "fail", not { at, ok, reason, healed } | null'],
-    [{ lastProbe: { at: "now", ok: true } }, 'lastProbe is {"at":"now","ok":true}, not { at, ok, reason, healed } | null'],
-    [{ lastProbe: { at: 1, ok: "true" } }, 'lastProbe is {"at":1,"ok":"true"}, not { at, ok, reason, healed } | null'],
+    [{ lastProbe: "fail" }, 'lastProbe is "fail", not { at, ok, reason, healed, kind? } | null'],
+    [{ lastProbe: { at: "now", ok: true } }, 'lastProbe is {"at":"now","ok":true}, not { at, ok, reason, healed, kind? } | null'],
+    [{ lastProbe: { at: 1, ok: "true" } }, 'lastProbe is {"at":1,"ok":"true"}, not { at, ok, reason, healed, kind? } | null'],
+    [{ lastProbe: { at: 1, ok: false, kind: "other" } }, 'lastProbe is {"at":1,"ok":false,"kind":"other"}, not { at, ok, reason, healed, kind? } | null'],
   ];
   for (const [j, problem] of bad) assert.deepEqual(validateState({ ...EMPTY, ...j }), { problem }, JSON.stringify(j));
-  assert.deepEqual(validateState({ lastProbe: { at: 1, ok: false, reason: "r", healed: null, extra: 1 } }).state.lastProbe, { at: 1, ok: false, reason: "r", healed: null }, "lastProbe keeps only its four fields");
+  assert.deepEqual(validateState({ lastProbe: { at: 1, ok: false, reason: "r", healed: null, extra: 1 } }).state.lastProbe, { at: 1, ok: false, reason: "r", healed: null }, "lastProbe keeps only its fields; no kind stays no kind");
+  assert.deepEqual(validateState({ lastProbe: { at: 1, ok: false, reason: "r", healed: null, kind: "slow" } }).state.lastProbe, { at: 1, ok: false, reason: "r", healed: null, kind: "slow" }, "a probe's kind is kept");
   assert.deepEqual(validateState([1]), { problem: "not an object" });
   assert.deepEqual(validateState(null), { problem: "not an object" });
 });

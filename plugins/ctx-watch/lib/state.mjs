@@ -34,7 +34,12 @@
 //   downSince        ms of the tick that opened the episode's down, or null
 //   lastTickAt       ms of the last `tick` (the dead-man's stamp)
 //   intervalS        the StartInterval the last `install` wrote, so the hook knows 2× of it
-//   lastProbe        { at, ok, reason, healed } from the last tick
+//   lastProbe        { at, ok, reason, healed, kind? } from the last tick; `kind` (0.4.0, failing
+//                    probes only) is what that probe itself found: "daemon" | "semantic" |
+//                    "upgrade" (as episodeKind), "slow" (timed out, daemon alive) or "upgrading"
+//                    (a live upgrade). Slow and upgrading ticks hold episodeKind from an earlier
+//                    tick, so only `kind` says what the latest probe saw (lib/mid-session.mjs reads
+//                    it for a semantic-only recovery); a file from before it has none
 //   slowSince        ms of the first tick of a run of slow ones (`ctx daemon status` timed out
 //                    while the daemon's process was demonstrably alive: probe.mjs daemonAlive),
 //                    else null; cleared by any tick that is not slow
@@ -282,8 +287,10 @@ const validMs = (v) => Number.isInteger(v) && v >= 0 && v <= MAX_DATE_MS;
 const nullOr = (f) => (v) => v === null || f(v);
 const isBool = (v) => typeof v === "boolean";
 const isStr = (v) => typeof v === "string";
-const isProbe = (v) => v && typeof v === "object" && !Array.isArray(v) && validMs(v.at) && isBool(v.ok) && nullOr(isStr)(v.reason ?? null) && nullOr(isStr)(v.healed ?? null);
+const isProbe = (v) => v && typeof v === "object" && !Array.isArray(v) && validMs(v.at) && isBool(v.ok) && nullOr(isStr)(v.reason ?? null) && nullOr(isStr)(v.healed ?? null) && (v.kind === undefined || PROBE_KINDS.includes(v.kind));
 const isKind = (v) => FAILURE_KINDS.includes(v);
+/** What a failing probe itself found: a failure kind, or one of the two results that hold the episode. */
+export const PROBE_KINDS = Object.freeze([...FAILURE_KINDS, "slow", "upgrading"]);
 const isPending = (v) => v && typeof v === "object" && !Array.isArray(v) && isStr(v.token) && TOKEN.test(v.token) && validMs(v.since) && (v.kind === undefined || isKind(v.kind));
 const isLatch = (v) => isBool(v) || (v && typeof v === "object" && !Array.isArray(v) && isBool(v.daemon) && isBool(v.semantic) && (v.upgrade === undefined || isBool(v.upgrade)));
 const isUnseen = (v) => v && typeof v === "object" && !Array.isArray(v) && FAILURE_KINDS.every((k) => v[k] === undefined || v[k] === null || validMs(v[k]));
@@ -305,14 +312,14 @@ const SHAPE = Object.freeze({
   slowSince: [nullOr(validMs), "epoch ms | null"],
   lastTickAt: [nullOr(validMs), "epoch ms | null"],
   intervalS: [nullOr((v) => Number.isInteger(v) && v >= INTERVAL_BOUNDS.min && v <= INTERVAL_BOUNDS.max), `a whole number ${INTERVAL_BOUNDS.min}..${INTERVAL_BOUNDS.max} | null`],
-  lastProbe: [nullOr(isProbe), "{ at, ok, reason, healed } | null"],
+  lastProbe: [nullOr(isProbe), "{ at, ok, reason, healed, kind? } | null"],
   lastPopupAt: [nullOr(validMs), "epoch ms | null"],
   firstSeenAt: [nullOr(validMs), "epoch ms | null"],
 });
 
 /** A field's value as the state keeps it: the pre-0.2.0 boolean latch becomes the daemon latch; a pending popup with no kind is the daemon's. */
 function normalize(k, v) {
-  if (k === "lastProbe" && v) return { at: v.at, ok: v.ok, reason: v.reason ?? null, healed: v.healed ?? null };
+  if (k === "lastProbe" && v) return { at: v.at, ok: v.ok, reason: v.reason ?? null, healed: v.healed ?? null, ...(v.kind !== undefined ? { kind: v.kind } : {}) };
   if (k === "popupPending" && v) return { token: v.token, since: v.since, kind: v.kind ?? "daemon" };
   if (k === "popupShown") return isBool(v) ? { daemon: v, semantic: false, upgrade: false } : { daemon: v.daemon, semantic: v.semantic, upgrade: v.upgrade ?? false };
   if (k === "popupUnseenAt") return { daemon: v.daemon ?? null, semantic: v.semantic ?? null, upgrade: v.upgrade ?? null };
@@ -406,7 +413,9 @@ export function writeState(path, state) {
  */
 export function step(state, result, now) {
   const slowSince = result.slow === true ? (state.slowSince ?? now) : null;
-  const base = { ...EMPTY, ...state, lastTickAt: now, slowSince, lastProbe: { at: now, ok: result.ok, reason: result.reason ?? null, healed: result.healed?.detail ?? null } };
+  const probeKind = result.ok ? null : result.upgrading === true ? "upgrading" : result.slow === true ? "slow" : failureKind(result);
+  const lastProbe = { at: now, ok: result.ok, reason: result.reason ?? null, healed: result.healed?.detail ?? null, ...(probeKind ? { kind: probeKind } : {}) };
+  const base = { ...EMPTY, ...state, lastTickAt: now, slowSince, lastProbe };
   if (!result.ok && result.upgrading === true) return { state: base, popup: false };
   if (!result.ok && result.slow === true && now - slowSince < SLOW_MAX_MS) return { state: base, popup: false };
   const shown = { ...EMPTY.popupShown, ...base.popupShown };

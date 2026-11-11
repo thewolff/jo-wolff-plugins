@@ -114,17 +114,20 @@
 // asks daemonAlive(), which never runs ctx: the pid in <data root>/daemon/query-endpoint.json
 // must be running (`process.kill(pid, 0)`, under a millisecond) and the query socket that file
 // names must accept a connection (a node child connecting, bounded by ALIVE_TIMEOUT_MS; ~1 ms
-// to connect, the child's start dominates). The socket is what makes a reused pid harmless: a
-// process that took over the dead daemon's pid does not listen on its socket, and a socket file
-// left behind refuses the connection. Both true: the result is `slow: true`, its reason says the
-// daemon is running, and check() stops there (no upgrade read, no heal: nothing is down). `ps`
-// is not used: it is setuid and refused (EPERM) inside a sandboxed shell, and a pid's command
-// name proves less than its socket. A live daemon that is hung for good still accepts on its
-// socket (the kernel queues the connection), so the state bounds a slow run (SLOW_MAX_MS).
+// to connect, the child's start dominates). The two are checked separately: a running pid and
+// an accepting socket do not prove that pid owns the listener. What they rule out is the common
+// leftovers of a dead daemon: a socket file no one listens on refuses, and a reused pid alone is
+// not enough. The socket path must also be one ctx binds (isCtxSocketPath), so the file cannot
+// point the check at an arbitrary listener. Both true: the result is `slow: true`, its reason
+// says the daemon is running, and check() stops there (no upgrade read, no heal: nothing is
+// down). Proving ownership (lsof, or a ctx request over the socket) costs a spawn or a ctx call
+// on every timeout and is not done. `ps` is not used: it is setuid and refused (EPERM) inside a
+// sandboxed shell. A live daemon hung for good still accepts on its socket (the kernel queues
+// the connection), and so might a stranger, so the state bounds a slow run (SLOW_MAX_MS).
 
 import { spawnSync } from "node:child_process";
 import { existsSync, readFileSync, statSync } from "node:fs";
-import { homedir } from "node:os";
+import { homedir, tmpdir } from "node:os";
 import { isAbsolute, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -358,20 +361,50 @@ export function handoffPath(env = process.env) {
   return join(dataRoot(env), "daemon", "upgrade-handoff.json");
 }
 
-/** Connect to the unix socket `path` from a node child within `timeoutMs`: `{ ok, detail }`. Never throws. */
+/**
+ * Connect to the unix socket `path` from a node child within `timeoutMs`: `{ ok, detail }`.
+ * Never throws. The path reaches the child in its environment, never its argv, so no path is
+ * read as a node option; a path that is not a string, holds a NUL, or is not absolute is refused
+ * without spawning.
+ */
 export function connectSocket(path, timeoutMs = ALIVE_TIMEOUT_MS) {
-  const script = 'const s=require("node:net").connect(process.argv[1]);s.on("connect",()=>{s.destroy();process.exit(0)});s.on("error",(e)=>{process.stderr.write(String(e.code||e.message));process.exit(1)})';
-  const r = spawnSync(process.execPath, ["-e", script, path], { encoding: "utf8", timeout: timeoutMs, killSignal: "SIGKILL", env: {}, stdio: ["ignore", "ignore", "pipe"] });
+  if (typeof path !== "string" || !isAbsolute(path) || path.includes("\0")) return { ok: false, detail: `not a socket path: ${JSON.stringify(path)}` };
+  const script = 'const s=require("node:net").connect(process.env.CTX_WATCH_SOCK);s.on("connect",()=>{s.destroy();process.exit(0)});s.on("error",(e)=>{process.stderr.write(String(e.code||e.message));process.exit(1)})';
+  let r;
+  try {
+    r = spawnSync(process.execPath, ["-e", script], { encoding: "utf8", timeout: timeoutMs, killSignal: "SIGKILL", env: { CTX_WATCH_SOCK: path }, stdio: ["ignore", "ignore", "pipe"] });
+  } catch (err) {
+    return { ok: false, detail: `${err?.message ?? err}` };
+  }
   if (r.status === 0) return { ok: true, detail: "connected" };
   if (r.error?.code === "ETIMEDOUT" || r.signal === "SIGKILL") return { ok: false, detail: `no connection within ${timeoutMs} ms` };
   return { ok: false, detail: (r.stderr || r.error?.message || `exit ${r.status}`).trim() };
 }
 
+/** ctx 2.3.0's bound on a query socket path (DAEMON_QUERY_SOCKET_PATH_SAFE_BYTES). */
+const SOCKET_PATH_MAX_BYTES = 90;
+const trimSlash = (p) => (p.length > 1 ? p.replace(/\/+$/, "") : p);
+
+/**
+ * Whether `sock` is a path ctx 2.3.0 binds its query socket at: `<data root>/daemon/query.sock`,
+ * or, when that is longer than 90 bytes, `<root>/ctx-q-<32 hex>/q.sock` under `/tmp` or the
+ * temp directory (TMPDIR). Anything else in query-endpoint.json (an option, a NUL, a relative
+ * or foreign path) is not ctx's socket, and is never connected to.
+ */
+export function isCtxSocketPath(sock, env = process.env) {
+  if (typeof sock !== "string" || !isAbsolute(sock) || sock.includes("\0") || Buffer.byteLength(sock) > SOCKET_PATH_MAX_BYTES) return false;
+  if (sock === join(dataRoot(env), "daemon", "query.sock")) return true;
+  const m = /^(.+)\/ctx-q-[0-9a-f]{32}\/q\.sock$/.exec(sock);
+  if (!m) return false;
+  const roots = new Set(["/tmp", tmpdir(), env.TMPDIR].filter((r) => typeof r === "string" && isAbsolute(r)).map(trimSlash));
+  return roots.has(m[1]);
+}
+
 /**
  * Whether the ctx daemon's process is demonstrably alive, without running ctx: `{ alive, pid,
- * detail }`. Reads <data root>/daemon/query-endpoint.json (`pid`, `path`); alive only when that
- * pid is running and its query socket accepts a connection. A dead pid is answered without
- * connecting. Never throws.
+ * detail }`. Reads <data root>/daemon/query-endpoint.json (`pid`, `path`, `transport`); alive only
+ * when its transport is unix, its path is one ctx binds (isCtxSocketPath), that pid is running,
+ * and the socket accepts a connection. A dead pid is answered without connecting. Never throws.
  */
 export function daemonAlive({ env = process.env, timeoutMs = ALIVE_TIMEOUT_MS, connect = connectSocket } = {}) {
   const file = join(dataRoot(env), "daemon", "query-endpoint.json");
@@ -384,9 +417,15 @@ export function daemonAlive({ env = process.env, timeoutMs = ALIVE_TIMEOUT_MS, c
   const pid = field(ep, "pid");
   const sock = field(ep, "path");
   if (!Number.isInteger(pid) || pid <= 0 || typeof sock !== "string" || !sock) return { alive: false, pid: null, detail: `${file} has no pid and socket path` };
+  if (field(ep, "transport") !== "unix" || !isCtxSocketPath(sock, env)) return { alive: false, pid, detail: `${file} names ${JSON.stringify(sock).slice(0, 120)}, which is not ctx's query socket` };
   if (!pidAlive(pid)) return { alive: false, pid, detail: `pid ${pid} is not running` };
-  const c = connect(sock, timeoutMs);
-  if (!c.ok) return { alive: false, pid, detail: `pid ${pid} runs, but its query socket ${sock} did not accept a connection (${c.detail})` };
+  let c;
+  try {
+    c = connect(sock, timeoutMs);
+  } catch (err) {
+    c = { ok: false, detail: `${err?.message ?? err}` };
+  }
+  if (!c?.ok) return { alive: false, pid, detail: `pid ${pid} runs, but its query socket ${sock} did not accept a connection (${c?.detail ?? "no answer"})` };
   return { alive: true, pid, detail: `the ctx daemon's query socket accepted a connection (pid ${pid})` };
 }
 
