@@ -90,7 +90,7 @@ Stopped because: told to stop
 export function sessionBlock(builderClass) {
   return `# Delegation: how to brief a subagent (delegation plugin)
 
-Before any Agent/Task call, the prompt you hand the subagent carries these sections, in this order. A spawn without \`## How it fails\` is refused; a builder-class spawn (${builderClass.join(", ")}) without \`## Spiral bound\` or without this session's pattern-check receipt is refused. The refusal carries the missing section as a fill-in template. Teaching: the \`delegation\` skill; template: templates/builder-brief.md in the plugin.
+Before any Agent/Task call, the prompt you hand the subagent carries these sections, in this order. A spawn without \`## How it fails\` is refused; a builder-class spawn (${builderClass.join(", ")}) without \`## Spiral bound\` or without this session's pattern-check receipt is refused. A \`mcp__ccd_session__start_session\` prompt carries all five headings below, each alone on its line, or the start is refused. The refusal carries the missing section as a fill-in template. Teaching: the \`delegation\` skill; template: templates/builder-brief.md in the plugin.
 
 # Target        the repository, branch, files in play, and the non-goals
 # Change        the steps in order, with the interfaces each keeps

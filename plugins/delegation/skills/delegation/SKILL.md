@@ -77,6 +77,11 @@ this plugin.
 
 - The spawn was refused and the reason starts `Spawn refused:`: the plugin is working. The
   reason carries the missing section in full; add it to the prompt and re-issue the same spawn.
+- A `mcp__ccd_session__start_session` call was refused and the reason starts `Session start refused:`:
+  add the sections it carries, each heading alone on its line, and re-issue the same call; an
+  offer is re-issued as an offer. Where that tool is absent (every host but the desktop app) the
+  gate never fires and there is nothing to tell the person. Its offline scenario:
+  `evals/session-brief-gate-deny-missing-headings.scenario.json`.
 - The reason names a pattern-check receipt and a `node "<pattern-check>/scripts/pattern-check.mjs" open …` command: run that
   command (it is pattern-check's own CLI), then re-issue. To run without the receipt instead,
   set `requirePatternCheck: false` in `${XDG_CONFIG_HOME:-~/.config}/delegation/config.json`;

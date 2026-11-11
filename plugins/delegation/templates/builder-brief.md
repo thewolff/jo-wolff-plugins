@@ -1,6 +1,6 @@
 # Builder brief
 
-Copy this into the `prompt` of a builder-class spawn and fill every section. The spawn gate reads two headings literally (`## How it fails`, `## Spiral bound`; any heading level, case does not matter) and nothing else, so the headings stay as written. A refusal from the gate carries the missing section in full, so a brief can also be repaired from the refusal alone. The builder report ends with the `Stopped because:` line.
+Copy this into the `prompt` of a builder-class spawn and fill every section. The spawn gate reads two headings literally (`## How it fails`, `## Spiral bound`; any heading level, case does not matter) and nothing else, so the headings stay as written. A prompt for a new desktop session (`mcp__ccd_session__start_session`) is read for all five headings below, Target through Spiral bound, each alone on its line (`## Target`, with the detail on the lines under it). A refusal from the gate carries the missing section in full, so a brief can also be repaired from the refusal alone. The builder report ends with the `Stopped because:` line.
 
 ## Target
 

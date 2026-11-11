@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.1.5 - 2026-11-11
+
+- New `hooks/session-brief-gate.mjs`, PreToolUse on `mcp__ccd_session__start_session` (the desktop app's tool for starting or offering a session). A `tool_input.prompt` that lacks any of the heading lines `Target`, `Change`, `Acceptance`, `How it fails`, `Spiral bound` is denied; the reason starts `Session start refused:`, names the missing headings and the tool, says each heading line holds the heading alone (`# Target: the repo` does not match), and carries each missing section in full.
+- Silent on a full brief, on a `proposal_id` call with no prompt (starting an offered card), and with `off: true`. A prompt that is missing or not a string is allowed with one skipped.log line.
+- Config `checks["session-brief-gate"]`: `block` (default), `warn` (one additionalContext line, the call goes ahead), `off`.
+- `lib/brief.mjs` gains `TARGET_SECTION`, `CHANGE_SECTION`, `ACCEPTANCE_SECTION` (held equal to `templates/builder-brief.md` by the tests), `SESSION_HEADINGS`, `missingSessionHeadings`, `sessionHeadingReason`, `sessionHeadingWarning`.
+- The SessionStart block, the template intro and the skill's "When this can't run" each gain one sentence about the new gate. Four new scenarios in `evals/` and one manual item for the desktop proof.
+- Why: a hook-input capture in the desktop app on 2026-11-11 showed PreToolUse firing for this tool with a string `prompt`, and the model issuing the call again after a deny.
+
 ## 0.1.4 - 2026-11-11
 
 - The report guidance now says to lead with the outcome in the first sentence (what happened or what was found), then what changed, what was verified, what could not be confirmed, and anything needing the owner's decision. It sits in the Report section of `templates/builder-brief.md` (and `STOPPED_SECTION` in `lib/brief.mjs`, which the template must match), in `agents/builder.md`, in the `delegation` skill, and in the SessionStart brief. The `Stopped because:` rule is unchanged and stays the last line. Nothing new is enforced; no hook logic changed.
