@@ -8,7 +8,7 @@ import { spawnSync } from "node:child_process";
 import { chmodSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { sandbox, cli, hook, openDb } from "./helpers.mjs";
-import { checkPlugin, docsCheck, dryRunPrune, evalsCheck, retentionCheck, fixturesWithoutUnavailable, hookCommands, reasonsWithoutCommand, releaseEntry, rootReadmeNames, treePlugins, treeSha, snapshotTree, textsWithoutWhenCant, changedPlugins, CHECKS, FAULT_INPUTS } from "../lib/plugin-gate.mjs";
+import { PRECOMPACT_TEXT_MAX, spawnHook, checkPlugin, docsCheck, dryRunPrune, evalsCheck, retentionCheck, fixturesWithoutUnavailable, hookCommands, reasonsWithoutCommand, releaseEntry, rootReadmeNames, treePlugins, treeSha, snapshotTree, textsWithoutWhenCant, changedPlugins, CHECKS, FAULT_INPUTS } from "../lib/plugin-gate.mjs";
 
 const SID = "s-gate";
 
@@ -764,3 +764,20 @@ test("the ledger plugin itself passes its own gate: the five static rows on the 
   assert.equal(cold[3].detail, `${rows[3].detail.match(/^\d+/)[0]} scenario(s) cover the manifest; no canary row for tree ${tree.slice(0, 8)}: run \`ledger canary run --plugins ledger\` on this commit`);
 });
 
+test("survives: plain-text stdout is an answer from a PreCompact hook (summary instructions, exit 0, under 10,000 characters) and a crash from any other event; JSON stays valid; 10,000 characters or more fails", () => {
+  const b = sandbox();
+  const dir = join(b.root, "plugins", "text");
+  // Each prints the same stdout on every input, like a PreCompact hook giving the summary its instructions.
+  const prints = (file, text) => write(dir, `hooks/${file}`, `process.stdin.resume(); process.stdin.on("end", () => { process.stdout.write(${JSON.stringify(text)}); process.exit(0); });\n`);
+  prints("text.mjs", "End the summary with a section headed ## Handoff.");
+  prints("json.mjs", JSON.stringify({ systemMessage: "ok" }));
+  prints("longest.mjs", "x".repeat(PRECOMPACT_TEXT_MAX - 1));
+  prints("over.mjs", "x".repeat(PRECOMPACT_TEXT_MAX));
+  const plugin = { name: "text", dir };
+  const run = (event, file) => FAULT_INPUTS.map((input) => spawnHook(plugin, { event, command: process.execPath, args: [join(dir, "hooks", file)] }, input));
+  assert.equal(PRECOMPACT_TEXT_MAX, 10000);
+  for (const file of ["text.mjs", "json.mjs", "longest.mjs"]) for (const r of run("PreCompact", file)) assert.equal(r.ok, true, `${file}: ${r.why}`);
+  for (const r of run("PreCompact", "over.mjs")) assert.match(r.why ?? "", /^PreCompact hook on .*: plain-text stdout is 10000 characters; Claude Code takes PreCompact summary instructions under 10000$/);
+  for (const event of ["Stop", "UserPromptSubmit", "SessionStart"]) for (const r of run(event, "text.mjs")) assert.match(r.why ?? "", new RegExp(`^${event} hook on .*: stdout is not JSON \\(End the summary`));
+  for (const r of run("Stop", "json.mjs")) assert.equal(r.ok, true, r.why);
+});

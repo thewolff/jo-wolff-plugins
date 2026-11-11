@@ -249,6 +249,9 @@ export function sandboxPath(declared, env) {
 
 const cut = (s, max = DETAIL_MAX) => (s.length > max ? `${s.slice(0, max)}…` : s);
 
+/** Claude Code's cap on a PreCompact hook's plain-text stdout (summary instructions): under this many characters. */
+export const PRECOMPACT_TEXT_MAX = 10000;
+
 /**
  * Spawn one hook with one fault input. Returns `{ ok, why, visible }`: ok false with why when
  * the session would break; visible true when errors.log gained a line and stdout carries a
@@ -273,7 +276,11 @@ export function spawnHook(plugin, hook, input, { env: outer = process.env, cwd, 
       try {
         json = JSON.parse(r.stdout);
       } catch {
-        return { ok: false, why: `${label}: stdout is not JSON (${cut(r.stdout.trim(), 200)})` };
+        // Claude Code uses a PreCompact hook's plain stdout (exit 0, under 10,000 characters) as
+        // instructions for the compaction summary, so there plain text is an answer, not a crash.
+        // Every other event keeps the JSON rule.
+        if (hook.event !== "PreCompact") return { ok: false, why: `${label}: stdout is not JSON (${cut(r.stdout.trim(), 200)})` };
+        if (r.stdout.length >= PRECOMPACT_TEXT_MAX) return { ok: false, why: `${label}: plain-text stdout is ${r.stdout.length} characters; Claude Code takes PreCompact summary instructions under ${PRECOMPACT_TEXT_MAX}` };
       }
       if (json?.hookSpecificOutput?.permissionDecision === "deny") return { ok: false, why: `${label}: denied` };
       if (json?.decision === "block") return { ok: false, why: `${label}: blocked` };

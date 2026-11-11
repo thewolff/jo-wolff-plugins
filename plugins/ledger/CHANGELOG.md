@@ -4,6 +4,16 @@ All notable changes to ledger are recorded here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Entries before 0.2.1 are the
 "Changes" section of the README (one line per version).
 
+## 0.3.10 - 2026-11-10
+
+### Changed
+
+- `gate check`'s `survives` row accepts plain-text stdout from a PreCompact hook that exits 0
+  and prints under 10,000 characters (`PRECOMPACT_TEXT_MAX` in `lib/plugin-gate.mjs`): Claude
+  Code uses a PreCompact hook's plain stdout as instructions for the compaction summary, so it
+  is an answer, not a crash. JSON stays valid; every other event keeps the JSON rule; a
+  PreCompact text of 10,000 characters or more fails naming its length.
+
 ## 0.3.9 - 2026-11-04
 
 ### Added
