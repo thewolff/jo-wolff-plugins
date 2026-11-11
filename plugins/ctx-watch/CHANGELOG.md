@@ -4,6 +4,46 @@ All notable changes to ctx-watch are recorded here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). The 0.1.0 release is described under
 *Changes in 0.1.0* in [README.md](README.md#changes-in-010).
 
+## [0.3.0] - 2026-11-11
+
+From the 2026-11-05 to 11-11 outage: ctx 2.3.0's automatic upgrade died between `quiescing`
+and `applying`, left a state that fenced out every new daemon, and a later heal recorded a
+launch environment without `LANG`. ctx-watch popped once and went quiet for six days.
+
+### Added
+
+- The upgrade gate: on a failing probe, `ctx upgrade status --format json` and ctx's handoff
+  marker (`<data root>/daemon/upgrade-handoff.json`, judged as ctx 2.3.0 does) are read before
+  any heal. During a live upgrade (active state under 30 min old, or an active handoff) there
+  is no heal, no strike and no popup; the line says `upgrade in progress`.
+- A stuck upgrade (active state 30 min or more, no active handoff) is a finding of its own
+  kind, `upgrade`, with its own popup latch and the release sequence `ctx upgrade disable &&
+  ctx upgrade --dry-run && ctx index mode auto` as its fix, marked observed-not-documented.
+- `ctx-watch repair` and the `/ctx-watch:repair` skill: the 2026-11-11 hand-run repair,
+  non-interactive. Refuses (exit 3) without `LANG`, without a reachable `gui/<uid>`, with mode
+  not `auto`, during a live upgrade, while a handoff owner is alive or its marker is under
+  15 min old, or for a stuck state other than `quiescing`; otherwise pauses the timer, releases,
+  heals, verifies, restores the timer.
+- SessionStart adds `hookSpecificOutput.additionalContext` for the agent when ctx is down,
+  stuck, mid-upgrade or missing: what, since when, the exact command. Nothing when healthy or
+  when only the semantic index is not ready.
+- `install` carries `LANG`, `LC_ALL`, `TMPDIR`, `XDG_CONFIG_HOME`, `XDG_DATA_HOME` and ctx's
+  `CTX_*` settings (never `CI`, never `CTX_SEMANTIC_EMBEDDING_TOKEN`) into the plist, and warns
+  when `LANG` is missing. Existing installs get them on the next `install`.
+
+### Changed
+
+- The heal's bound is 120 s with SIGTERM and a 15 s grace before SIGKILL (`lib/bounded-run.mjs`),
+  was 10 s with SIGKILL: ctx's own handoff waits up to 75 s for quiescence plus 5 s stop and
+  5 s restart.
+- The SessionStart hook no longer heals (it had 1.2 s against ctx's 75 s); the timer and
+  `repair` do.
+- A popup that gave up with nobody answering re-arms after 4 h (`POPUP_REARM_MS`) while its kind
+  still fails; one clicked or dismissed stays latched for the episode. The supervisor records
+  osascript's `gave up:` answer (`gaveUp` in the outcome file).
+- `state.json` gains `popupUnseenAt` and an `upgrade` latch in `popupShown`; 0.2.x files read as
+  before.
+
 ## [0.2.2] - 2026-11-04
 
 ### Fixed
