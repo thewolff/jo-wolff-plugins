@@ -3,6 +3,38 @@
 All notable changes to continuity are recorded here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## 0.4.0 - 2026-11-10
+
+### Changed
+
+- The handoff ask (UserPromptSubmit) and the Stop block fire at an absolute ask point instead of
+  0.65 × 200,000. The point is `askTokens` (new; default 175,000, under the 200,000 tokens at
+  which Desktop's idle compaction applies), or, when unset and `CLAUDE_CODE_IDLE_COMPACT_MIN_TOKENS`
+  is set, that value minus `askMarginTokens`. It is never below the compaction window's first
+  recorded usage plus `askMarginTokens` (new; default 40,000), so a session that opens at
+  120,000 to 140,000 tokens (Desktop) is not asked on its first turn, and neither is the first
+  turn after a compaction.
+- Asks re-arm. `promptWarned` and `stopBlocked` in `sessions/<session>.json` are now
+  `{ epoch, tokens, at, by }`, keyed by the compaction window (the last `compact_boundary`
+  line's `uuid`, else its byte offset). A compaction starts the count over; within a window the
+  next ask comes after a further `reaskStepTokens` (new; default 150,000). A 0.3 flags file
+  (bare timestamps) counts as an earlier window and is re-armed.
+- A handoff carrying this session's id silences the ask only when it was written after the
+  window's compaction marker and after the last ask; the next step counts from the size it
+  silenced.
+- On Claude Code, `hooks/pre-compact.mjs` prints fixed plain-text instructions (about 1,000
+  characters) on every compaction, asking the summary to end with a `## Handoff` section (In
+  flight, Ruled out, Still open, Next step), instead of a JSON `systemMessage` that Claude Code
+  discards from PreCompact. `lib/hook-runner.mjs` prints a string answer as plain text.
+- The no-handoff notice for an auto or idle compaction moves to `hooks/session-start.mjs` after
+  the compaction (a `systemMessage`). The restore's no-handoff line points at the summary's
+  `## Handoff` section.
+- Under OMP nothing changes for the person: the adapter sets `CONTINUITY_HOST=omp`, and
+  `hooks/pre-compact.mjs` answers JSON there as before, with no summary instructions.
+- `threshold` and `contextTokens` are kept for existing config files: when either is set and
+  `askTokens` is not, the ask point is their product (each defaulting to its 0.3 value). The
+  margin and the re-ask step apply either way.
+
 ## 0.3.1 - 2026-11-04
 
 ### Changed

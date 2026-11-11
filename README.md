@@ -99,7 +99,9 @@ newest save. While you are away, brb repeats the away instruction.
 **A prompt.** ask-graham adds its one-line nudge at level `every-idea`; i-have-audhd hands back
 the last message's warn findings once; ledger relays answers recorded in other sessions. Typed as
 the whole prompt, `brb`, `back` and `pending` go to brb, and none of them starts a turn while
-away. Near the compaction target, continuity warns once and names `/continuity:handoff`.
+away. Past its ask point (175,000 tokens by default, and 40,000 past where the window started),
+continuity asks for a handoff naming `/continuity:handoff`, again every 150,000 tokens more, and
+afresh after each compaction.
 
 **A tool call.** pattern-check holds writes, `git commit` and `gh pr create` past its file
 threshold until `.pattern-check/<session>.md` exists. ledger holds `AskUserQuestion` until the
@@ -123,11 +125,12 @@ warns on every CLAIM without a `file:line` or command and every CITE without a U
 stage is off by default. ask-graham blocks once on a missing verdict or sources line;
 pattern-check once on a plan with no receipt; ledger on a decision asked outside the ledger.
 paired-coding warns in learning mode when a closed change set has no `Recall:` line. ctx-watch
-warns when a resumed or compacted session reaches its first stop without a `ctx search`. Past
-the threshold, continuity blocks once so the agent writes the handoff.
+warns when a resumed or compacted session reaches its first stop without a `ctx search`. At the
+same ask point, continuity blocks once per step so the agent writes the handoff.
 
-**Compaction.** continuity saves a snapshot of the session, git state included, before it, and
-says so when auto-compaction fires with no handoff written.
+**Compaction.** continuity saves a snapshot of the session, git state included, before it, asks
+Claude Code's compaction summary for a `## Handoff` section, and after an auto or idle
+compaction says so when no handoff file was written.
 
 **Away.** Between `brb` and `back`, the agent writes each ask into brb's digest with
 `scripts/brb.mjs hold` and shows none of it; brb's Stop hook files any `## Needs you` section
