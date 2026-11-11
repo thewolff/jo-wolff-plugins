@@ -483,7 +483,12 @@ test("0.4.0 a probe a killed run left behind (dead pid in its label) is booted o
   }
 });
 
-/** A repair process whose launchctl double blocks inside the reach probe's bootstrap or bootout, and records what it did in files. */
+/**
+ * A repair process whose launchctl double blocks inside the reach probe's bootstrap or bootout, and records what it did in files.
+ * Phases: `bootstrap` and `bootout` block, then succeed; `bootout-fail` blocks, then answers launchctl's 5 and leaves the probe
+ * loaded; `bootout-throw` blocks, then throws (the probe left loaded); `bootstrap-fail` blocks, then refuses the bootstrap (5,
+ * nothing loaded).
+ */
 const PROBE_CHILD = `
 import fs from "node:fs";
 import { repair } from "./lib/repair.mjs";
@@ -498,13 +503,19 @@ const check = (bin, args) => {
   const [verb, target, path] = args;
   if (verb === "list") return { missing: false, code: 0, output: "PID\\tStatus\\tLabel\\n" + (fs.existsSync(loadedFile) ? "-\\t0\\t" + fs.readFileSync(loadedFile, "utf8") + "\\n" : "") };
   if (verb === "bootstrap" && String(path).includes("reach-probe")) {
+    if (phase === "bootstrap-fail") {
+      block();
+      return { missing: false, code: 5, output: "Bootstrap failed: 5: Input/output error" };
+    }
     fs.writeFileSync(loadedFile, String(path).split("/").at(-1).replace(/\\.plist$/, ""));
     if (phase === "bootstrap") block();
     return { missing: false, code: 0, output: "" };
   }
   if (verb === "bootout" && String(target).includes("reach-probe")) {
     if (!fs.existsSync(loadedFile)) return { missing: false, code: 3, output: "Boot-out failed: 3: No such process" };
-    if (phase === "bootout") block();
+    if (phase.startsWith("bootout")) block();
+    if (phase === "bootout-fail") return { missing: false, code: 5, output: "Boot-out failed: 5: Input/output error" };
+    if (phase === "bootout-throw") throw new Error("spawn launchctl EPERM");
     fs.rmSync(loadedFile);
     return { missing: false, code: 0, output: "" };
   }
@@ -557,6 +568,48 @@ test("0.4.0 SIGTERM, SIGINT or SIGHUP during the probe's bootstrap or bootout: t
     assert.deepEqual(r.probeDirs, [], `${what}: probe plist directory removed`);
     assert.doesNotMatch(r.calls, /launchctl bootout gui\/501\/com\.jo-wolff-plugins\.ctx-watch\n/, `${what}: the timer was never paused`);
   }
+});
+
+test("0.4.0 a signal during the probe whose bootout then fails or throws keeps launchctl's error, names the label left loaded, and never claims it was unloaded", async () => {
+  const cases = [["bootout-fail", /Boot-out failed: 5: Input\/output error/], ["bootout-throw", /spawn launchctl EPERM/]];
+  const results = await Promise.all(cases.map(([phase]) => signalDuringProbe(phase, "SIGTERM")));
+  for (const [i, [phase, error]] of cases.entries()) {
+    const r = results[i];
+    const what = `SIGTERM during ${phase}`;
+    assert.equal(r.signal, null, `${what}: handled (${r.err})`);
+    assert.equal(r.code, 128 + osConstants.signals.SIGTERM, `${what}: ${r.out}${r.err}`);
+    assert.equal(r.loaded, true, `${what}: the double still has the probe loaded`);
+    const lines = r.out.trim().split("\n");
+    const j = JSON.parse(lines[0]);
+    const label = new RegExp(`${PROBE.replaceAll(".", "\\.")}\\.\\d+\\.[a-f0-9]+`);
+    for (const text of [j.reason, lines.at(-1)]) {
+      assert.match(text, /interrupted by SIGTERM/, what);
+      assert.match(text, error, `${what}: launchctl's own error survives`);
+      assert.match(text, label, `${what}: names the probe left behind`);
+      assert.match(text, /may still be loaded/, what);
+      assert.doesNotMatch(text, /was unloaded/, `${what}: no claim of a cleanup that failed`);
+    }
+    assert.equal(j.changed, false, what);
+    assert.deepEqual(j.timer, { wasLoaded: null, paused: false, restored: null }, `${what}: the timer untouched`);
+    assert.doesNotMatch(r.calls, /launchctl bootout gui\/501\/com\.jo-wolff-plugins\.ctx-watch\n/, `${what}: the timer was never paused`);
+    assert.deepEqual(r.probeDirs, [], `${what}: the plist directory is still removed`);
+  }
+});
+
+test("0.4.0 a signal during the probe: a refused bootstrap keeps launchctl's error and says nothing was loaded; a clean probe says it was unloaded, naming its label", async () => {
+  const [refused, clean] = await Promise.all([signalDuringProbe("bootstrap-fail", "SIGTERM"), signalDuringProbe("bootout", "SIGTERM")]);
+  const label = new RegExp(`${PROBE.replaceAll(".", "\\.")}\\.\\d+\\.[a-f0-9]+`);
+  assert.equal(refused.code, 143, refused.out + refused.err);
+  const jr = JSON.parse(refused.out.split("\n")[0]);
+  assert.match(jr.reason, /Bootstrap failed: 5: Input\/output error/);
+  assert.match(jr.reason, /was not loaded/);
+  assert.doesNotMatch(jr.reason, /was unloaded|may still be loaded/);
+  assert.equal(refused.loaded, false);
+  assert.equal(clean.code, 143, clean.out + clean.err);
+  const jc = JSON.parse(clean.out.split("\n")[0]);
+  assert.match(jc.reason, /was unloaded/);
+  assert.match(jc.reason, label);
+  assert.equal(clean.loaded, false);
 });
 
 /** <CTX_DATA_ROOT>/daemon/supervisor-environment.json as ctx 2.3.0 writes it (values made up). */
