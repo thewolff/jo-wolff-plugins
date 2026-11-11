@@ -1,0 +1,19 @@
+{
+  "$comment": "The model routing table the spawn gate warns from (warn-only). `order` ranks the model families low to high. Each agent, by bare name, has the table's `model` (named when a spawn sets none) and its `ceiling` (a spawn asking for a family above it draws one warning line). An agent type that is not listed is never warned about. Source: the routing table Jo approved on 2026-11-10; a row that names two models has the lower as `model` and the higher as `ceiling`, and a row's escalation target is not part of its ceiling.",
+  "order": ["haiku", "sonnet", "opus", "fable"],
+  "agents": {
+    "scout": { "model": "haiku", "ceiling": "haiku" },
+    "summarizer": { "model": "haiku", "ceiling": "haiku" },
+    "changelog": { "model": "haiku", "ceiling": "haiku" },
+    "checker": { "model": "haiku", "ceiling": "haiku" },
+    "reader": { "model": "sonnet", "ceiling": "sonnet" },
+    "storyteller": { "model": "sonnet", "ceiling": "sonnet" },
+    "builder": { "model": "sonnet", "ceiling": "opus" },
+    "beefy-builder": { "model": "sonnet", "ceiling": "opus" },
+    "auditor": { "model": "sonnet", "ceiling": "opus" },
+    "research": { "model": "opus", "ceiling": "opus" },
+    "beefy-research": { "model": "opus", "ceiling": "opus" },
+    "planner": { "model": "opus", "ceiling": "opus" },
+    "debugger": { "model": "opus", "ceiling": "opus" }
+  }
+}
