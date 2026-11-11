@@ -1,0 +1,8 @@
+{
+  "$comment": "Every hook event hooks/hooks.json registers, with the outcomes its handler can return (additionalContext counts as systemMessage). Each event x outcome needs one evals/<name>.scenario.json; a silent scenario names a sibling that fires. `ledger gate check` fails naming the gap. `manual` lists what no scenario can prove and how a person checks it.",
+  "events": {
+    "PostModelSwitch": ["silent"],
+    "UserPromptSubmit": ["silent"]
+  },
+  "manual": []
+}
