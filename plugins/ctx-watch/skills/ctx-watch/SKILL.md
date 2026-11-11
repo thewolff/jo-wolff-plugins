@@ -20,10 +20,13 @@ consulting history`.
 1. Run `node "${CLAUDE_PLUGIN_ROOT}/scripts/ctx-watch.mjs" check --json`. Read `ok`, `reason`,
    `fix`, and `healed.detail`. `ok: true` means running, supervised, and refreshed within 2 h;
    say so in one line and stop.
-2. If `ok` is false and `healed.attempted` is true, the repair was tried from this shell. Tell
-   the person the reason and what the repair reported, then ask them to run the `fix` command in
-   their own Terminal: agent shells carry `CI=true`, and ctx's line for that is `ctx daemon start
-   was suppressed (ci)`. Do not retry from here.
+2. If `ok` is false and the reason begins `upgrade in progress`, a ctx upgrade is handing the
+   daemon over: say so and do nothing; `ctx upgrade status --format json` shows its state. If
+   the reason says `ctx upgrade stuck`, or `ok` is false with `healed.attempted` true and the
+   daemon still down, run the `/ctx-watch:repair` skill (it runs
+   `node "${CLAUDE_PLUGIN_ROOT}/scripts/ctx-watch.mjs" repair`, which refuses during a live
+   upgrade and pauses and restores the timer). If repair refuses or fails, hand the person its
+   last line and the `fix` command for their own Terminal.
 3. If `healed.detail` begins `not attempted`, say why (indexing mode `manual`, ctx not set up
    under this HOME, or `the daemon is running; \`ctx index mode auto\` does not touch the
    semantic index`) and leave the decision to the person; `ctx index mode auto` turns the daemon

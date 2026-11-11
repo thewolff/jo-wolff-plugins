@@ -55,7 +55,8 @@ test("a failing probe is one systemMessage line, ≤ 160 chars, with the reason 
   const b = box();
   try {
     const out = handle(input, { env: b.env, now: () => NOW, run: runWith(NOT_RUNNING), exists: () => false });
-    assert.deepEqual(out, { systemMessage: 'ctx-watch: the ctx daemon is not running (.daemon.running = false, .daemon.status = "stale_lock"); fix: `ctx index mode auto`' });
+    assert.equal(out.systemMessage, 'ctx-watch: the ctx daemon is not running (.daemon.running = false, .daemon.status = "stale_lock"); fix: `ctx index mode auto`');
+    assert.equal(out.hookSpecificOutput.hookEventName, "SessionStart", "and the agent is told (upgrade.test.mjs covers the block)");
     assert.ok(out.systemMessage.length <= LINE_MAX);
     assert.equal(out.systemMessage.split("\n").length, 1);
   } finally {
@@ -77,7 +78,7 @@ test("the probe spawns with the hook's shorter bound and CI removed", () => {
   }
 });
 
-test("four spawns each inside their own bound but over the shared 3 s clock: the fourth is skipped and the line says the check timed out, under 160 chars, with the stamp still written", () => {
+test("the check's spawns share the 3 s clock: a slow probe leaves the upgrade read only what is left; past the clock the line says the check timed out, under 160 chars, with the stamp still written; the heal never runs", () => {
   const b = box();
   try {
     assert.equal(HOOK_DEADLINE_MS, 3_000);
@@ -86,12 +87,12 @@ test("four spawns each inside their own bound but over the shared 3 s clock: the
     const calls = [];
     const run = (argv, _env, timeoutMs) => {
       calls.push({ argv: argv.join(" "), timeoutMs });
-      clock += 1_000;
-      return argv[1] === "daemon" ? good(NOT_RUNNING) : argv[3] === "auto" ? good(NOT_RUNNING) : good(MODE);
+      clock += 2_000;
+      return argv[1] === "daemon" ? good(NOT_RUNNING) : good(MODE);
     };
     const out = handle(input, { env: b.env, now: () => clock, run, exists: () => true });
-    assert.equal(calls.length, 3, "status, mode, mode auto; no second status");
-    assert.deepEqual(calls.map((c) => c.timeoutMs), [1_200, 1_200, 1_000]);
+    assert.deepEqual(calls.map((c) => c.argv), ["ctx daemon status --format json", "ctx upgrade status --format json"], "status, the upgrade read; no mode read, no heal");
+    assert.deepEqual(calls.map((c) => c.timeoutMs), [1_200, 1_000], "the upgrade read gets what is left");
     const lines = out.systemMessage.split("\n");
     assert.equal(lines.length, 1);
     assert.match(lines[0], /^ctx-watch: check timed out after 3000 ms \(the ctx daemon is not running .*; fix: `ctx index mode auto`$/);
@@ -198,7 +199,7 @@ function fakeCtxBin(dir, status, { hangS = 0 } = {}) {
   writeFileSync(join(bin, "config.toml"), "");
   writeFileSync(join(bin, "mode.json"), hangS ? MODE.replace(/"config_path": "[^"]*"/, `"config_path": ${JSON.stringify(join(bin, "config.toml"))}`) : MODE);
   const hang = hangS ? `sleep ${hangS}; ` : "";
-  writeFileSync(join(bin, "ctx"), `#!/bin/sh\ncase "$1 $2" in\n  "daemon status") ${hang}cat "${join(bin, "status.json")}";;\n  "index mode") if [ "$3" = "auto" ]; then ${hang}echo "Error: fake ctx does not heal" >&2; exit 1; fi; cat "${join(bin, "mode.json")}";;\n  *) exit 2;;\nesac\n`);
+  writeFileSync(join(bin, "ctx"), `#!/bin/sh\ncase "$1 $2" in\n  "daemon status") ${hang}cat "${join(bin, "status.json")}";;\n  "upgrade status") ${hang}exit 2;;\n  "index mode") if [ "$3" = "auto" ]; then ${hang}echo "Error: fake ctx does not heal" >&2; exit 1; fi; cat "${join(bin, "mode.json")}";;\n  *) exit 2;;\nesac\n`);
   chmodSync(join(bin, "ctx"), 0o755);
   return bin;
 }
@@ -217,7 +218,8 @@ test("spawned: a failing fixture on PATH → stdout is the systemMessage JSON, e
     assert.equal(r.status, 0, r.stderr);
     assert.ok(r.ms < 5_000);
     const out = JSON.parse(r.stdout);
-    assert.deepEqual(out, { systemMessage: 'ctx-watch: the ctx daemon is not running (.daemon.running = false, .daemon.status = "stale_lock"); fix: `ctx index mode auto`' });
+    assert.equal(out.systemMessage, 'ctx-watch: the ctx daemon is not running (.daemon.running = false, .daemon.status = "stale_lock"); fix: `ctx index mode auto`');
+    assert.match(out.hookSpecificOutput.additionalContext, /^ctx-watch: the ctx daemon is not running since /, "the agent's block reaches stdout");
     assert.equal(readFileSync(join(b.env.XDG_STATE_HOME, "ctx-watch", "errors.log"), { encoding: "utf8", flag: "a+" }), "", "a failing daemon is not a hook fault");
 
     const fresh = JSON.parse(HEALTHY);
@@ -235,13 +237,13 @@ test("spawned: a failing fixture on PATH → stdout is the systemMessage JSON, e
 test("spawned: a ctx that hangs on status and heal → the hook's own timed-out line inside the runner's 4 s, exit 0, no errors.log line (not the runner's fail-open)", () => {
   const b = box();
   try {
-    // status hangs (1.2 s), mode is quick, mode auto hangs (1.2 s), the second status gets the ~0.6 s left and hangs: the clock is spent.
+    // status and the upgrade read both hang to their 1.2 s bound; the hook never heals, so ~2.4 s and its own line.
     const slow = fakeCtxBin(join(b.root, "slow"), NOT_RUNNING, { hangS: 30 });
     const r = spawnHook({ ...b.env, PATH: `${slow}:/usr/bin:/bin`, CI: "true" }, JSON.stringify(input));
     assert.equal(r.status, 0, r.stderr);
     assert.ok(r.ms < DEADLINE_MS, `answered in ${r.ms} ms, inside the runner's ${DEADLINE_MS}`);
     const out = JSON.parse(r.stdout);
-    assert.match(out.systemMessage, /^ctx-watch: check timed out after 3000 ms \(ctx could not run: ctx daemon status --format json did not answer in 0\.\d+ s\); fix: `ctx index mode auto`$/);
+    assert.match(out.systemMessage, /^ctx-watch: ctx could not run: ctx daemon status --format json did not answer in 1\.2 s; fix: `ctx index mode auto`$/);
     assert.ok(out.systemMessage.length <= LINE_MAX);
     assert.equal(readFileSync(join(b.env.XDG_STATE_HOME, "ctx-watch", "errors.log"), { encoding: "utf8", flag: "a+" }), "", "a slow ctx is the line, not a hook fault");
     assert.equal(typeof readState(statePath(b.env)).firstSeenAt, "number", "and the stamp still landed");
@@ -255,7 +257,9 @@ test("spawned: no ctx on PATH → the line says ctx could not run and points at 
   try {
     const r = spawnHook({ ...b.env, PATH: join(b.root, "nothing-here") }, JSON.stringify(input));
     assert.equal(r.status, 0, r.stderr);
-    assert.deepEqual(JSON.parse(r.stdout), { systemMessage: "ctx-watch: ctx could not run: ctx is not on PATH; fix: `ctx docs show getting-started`" });
+    const out = JSON.parse(r.stdout);
+    assert.equal(out.systemMessage, "ctx-watch: ctx could not run: ctx is not on PATH; fix: `ctx docs show getting-started`");
+    assert.match(out.hookSpecificOutput.additionalContext, /^ctx-watch: ctx could not run .*\n.*`ctx docs show getting-started`/);
   } finally {
     b.release();
   }

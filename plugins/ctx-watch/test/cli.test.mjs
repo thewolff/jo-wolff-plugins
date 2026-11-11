@@ -27,17 +27,19 @@ const FIX_DIR = join(dirname(fileURLToPath(import.meta.url)), "fixtures");
 const HEALTHY = readFileSync(join(FIX_DIR, "ctx-daemon-status.txt"), "utf8");
 const NOT_RUNNING = readFileSync(join(FIX_DIR, "ctx-daemon-status-not-running.txt"), "utf8");
 const MODE = readFileSync(join(FIX_DIR, "ctx-index-mode.txt"), "utf8");
+const UPGRADE = readFileSync(join(FIX_DIR, "ctx-upgrade-status.txt"), "utf8");
 const NOW = JSON.parse(HEALTHY).daemon.jobs.core_refresh.last_run_at_ms + 60_000;
 const good = (stdout) => ({ code: 0, stdout, stderr: "" });
 const ctxExists = (p) => p === "/Users/example/.local/bin/ctx";
 
-/** A ctx double: `daemon status` answers from `statuses` in order (the last repeats); heal reports not running. */
+/** A ctx double: `daemon status` answers from `statuses` in order (the last repeats); `upgrade status` the 2026-11-11 capture (dry_run); heal reports not running. */
 function fakeCtx(statuses) {
   const calls = [];
   let i = 0;
   const run = (argv) => {
     calls.push(argv.join(" "));
     if (argv[1] === "daemon") return good(statuses[Math.min(i++, statuses.length - 1)]);
+    if (argv[1] === "upgrade") return good(UPGRADE);
     if (argv[3] === "auto") return good(NOT_RUNNING);
     return good(MODE);
   };
@@ -97,7 +99,7 @@ test("--ctx pins the executable for every ctx spawn, whatever PATH holds", async
   try {
     const { calls, run } = fakeCtx([NOT_RUNNING]);
     await main(["check", "--ctx", "/opt/ctx/bin/ctx"], { env: { ...b.env, PATH: "/tmp/shadow:/usr/bin" }, now: () => NOW, run, exists: () => true });
-    assert.deepEqual(calls, ["/opt/ctx/bin/ctx daemon status --format json", "/opt/ctx/bin/ctx index mode --format json", "/opt/ctx/bin/ctx index mode auto --format json", "/opt/ctx/bin/ctx daemon status --format json"]);
+    assert.deepEqual(calls, ["/opt/ctx/bin/ctx daemon status --format json", "/opt/ctx/bin/ctx upgrade status --format json", "/opt/ctx/bin/ctx index mode --format json", "/opt/ctx/bin/ctx index mode auto --format json", "/opt/ctx/bin/ctx daemon status --format json"]);
     const rel = fakeCtx([HEALTHY]);
     await main(["tick", "--ctx", "bin/ctx"], { env: b.env, now: () => NOW, run: rel.run, cwd: "/opt/ctx" });
     assert.equal(rel.calls[0], "/opt/ctx/bin/ctx daemon status --format json", "a relative --ctx is resolved against cwd, never looked up");
@@ -123,8 +125,8 @@ test("tick: strike, then down with one popup, stays down silently, recovers and 
     const t2 = await main(["tick"], deps([NOT_RUNNING], NOW + 300_000));
     assert.match(t2.text, /episode down, strikes 2\npopup started \(test\)$/);
     assert.equal(popups.length, 1);
-    assert.match(popups[0], /^ctx-watch: the ctx daemon is not running .*; fix: `ctx index mode auto`\n\nctx has failed 2 checks in a row \(since \d{4}-.*Z\)\. Open a Terminal and run the fix; ctx-watch checks again in 300 s\.$/);
-    assert.deepEqual(readState(file).popupShown, { daemon: true, semantic: false });
+    assert.match(popups[0], /^ctx-watch: the ctx daemon is not running .*; fix: `ctx index mode auto`\n\nctx has failed 2 checks in a row \(since \d{4}-.*Z\)\. Open a Terminal and run the fix, or have an agent run `node \S+ctx-watch\.mjs repair`; ctx-watch checks again in 300 s\.$/);
+    assert.deepEqual(readState(file).popupShown, { daemon: true, semantic: false, upgrade: false });
     assert.equal(readState(file).lastPopupAt, NOW + 300_000);
 
     const t3 = await main(["tick"], deps([NOT_RUNNING], NOW + 600_000));
@@ -134,7 +136,7 @@ test("tick: strike, then down with one popup, stays down silently, recovers and 
     const t4 = await main(["tick"], deps([HEALTHY], NOW + 900_000));
     assert.match(t4.text, /^\d{4}-.*Z pass: daemon running \(pid 1706\), supervisor installed, core_refresh \d+m ago, semantic index ready \| episode up, strikes 0$/);
     const s = readState(file);
-    assert.deepEqual({ episode: s.episode, strikes: s.strikes, popupShown: s.popupShown, lastTickAt: s.lastTickAt }, { episode: "up", strikes: 0, popupShown: { daemon: false, semantic: false }, lastTickAt: NOW + 900_000 });
+    assert.deepEqual({ episode: s.episode, strikes: s.strikes, popupShown: s.popupShown, lastTickAt: s.lastTickAt }, { episode: "up", strikes: 0, popupShown: { daemon: false, semantic: false, upgrade: false }, lastTickAt: NOW + 900_000 });
 
     await main(["tick"], deps([NOT_RUNNING], NOW + 1_200_000));
     await main(["tick"], deps([NOT_RUNNING], NOW + 1_500_000));
@@ -204,7 +206,7 @@ test("tick: two semantic-not-ready ticks then daemon-not-running ticks ask for t
     assert.match(popups[0], /^ctx-watch: the ctx semantic index is not ready .*; fix: `ctx semantic enable --wait`$/);
     assert.match(popups[1], /^ctx-watch: the ctx daemon is not running .*; fix: `ctx index mode auto`$/);
     const s = readState(statePath(b.env));
-    assert.deepEqual({ episodeKind: s.episodeKind, popupShown: s.popupShown }, { episodeKind: "daemon", popupShown: { daemon: true, semantic: true } });
+    assert.deepEqual({ episodeKind: s.episodeKind, popupShown: s.popupShown }, { episodeKind: "daemon", popupShown: { daemon: true, semantic: true, upgrade: false } });
     const st = await main(["status"], { env: b.env, now: () => NOW + 6000, check: () => ({ missing: true, code: null, output: "" }) });
     assert.match(st.text, /\nepisode: down \[daemon\] \(strikes 6, down since \d{4}-.*Z, popup shown \d{4}-.*Z\)\n/);
   } finally {
@@ -374,7 +376,7 @@ test("tick: the current popup's outcome survives an older episode's supervisor r
     await tick(NOW + 4, [NOT_RUNNING], pending); // episode 2: popup B
     const [a, bTok] = tokens;
     assert.notEqual(a, bTok);
-    const outcome = (token, code) => ({ token, at: NOW + 5, bin: "/usr/bin/osascript", code, signal: null, error: null, acknowledged: false });
+    const outcome = (token, code) => ({ token, at: NOW + 5, bin: "/usr/bin/osascript", code, signal: null, error: null, acknowledged: false, gaveUp: false });
     assert.equal(recordOutcome(outcomePath(dir, bTok), outcome(bTok, 0)), true, "B: OK clicked");
     assert.equal(recordOutcome(outcomePath(dir, a), outcome(a, 7)), true, "then A's supervisor reports late");
     assert.equal(readOutcome(outcomePath(dir, bTok)).code, 0, "B's outcome is intact");
@@ -394,7 +396,7 @@ test("tick: a heal that brings the daemon back is a pass with the heal named, an
     const { calls, run } = fakeCtx([NOT_RUNNING, HEALTHY]);
     const r = await main(["tick"], { env: b.env, now: () => NOW, run, exists: () => true, popup: () => assert.fail("no popup") });
     assert.match(r.text, /pass: daemon running .* \| heal: `ctx index mode auto --format json`: .* \| episode up, strikes 0$/);
-    assert.equal(calls.length, 4);
+    assert.equal(calls.length, 5, "status, upgrade status, mode, heal, status");
     assert.equal(readState(statePath(b.env)).lastProbe.ok, true);
   } finally {
     b.release();
@@ -551,14 +553,15 @@ test("tick rotates a log over the bound before probing; prune rotates, removes r
   }
 });
 
-/** A fake `ctx` on PATH that prints `status` for `daemon status` and the mode fixture for `index mode`. */
+/** A fake `ctx` on PATH that prints `status` for `daemon status`, the mode fixture for `index mode`, and the upgrade capture for `upgrade status`. */
 function fakeCtxBin(dir, status) {
   const bin = join(dir, "bin");
   mkdirSync(bin, { recursive: true });
   writeFileSync(join(bin, "status.json"), status);
   writeFileSync(join(bin, "mode.json"), MODE);
+  writeFileSync(join(bin, "upgrade.json"), UPGRADE);
   const ctx = join(bin, "ctx");
-  writeFileSync(ctx, `#!/bin/sh\ncase "$1 $2" in\n  "daemon status") cat "${join(bin, "status.json")}";;\n  "index mode") if [ "$3" = "auto" ]; then echo "Error: fake ctx does not heal" >&2; exit 1; fi; cat "${join(bin, "mode.json")}";;\n  *) echo "fake ctx: unknown $*" >&2; exit 2;;\nesac\n`);
+  writeFileSync(ctx, `#!/bin/sh\ncase "$1 $2" in\n  "daemon status") cat "${join(bin, "status.json")}";;\n  "upgrade status") cat "${join(bin, "upgrade.json")}";;\n  "index mode") if [ "$3" = "auto" ]; then echo "Error: fake ctx does not heal" >&2; exit 1; fi; cat "${join(bin, "mode.json")}";;\n  *) echo "fake ctx: unknown $*" >&2; exit 2;;\nesac\n`);
   chmodSync(ctx, 0o755);
   return bin;
 }

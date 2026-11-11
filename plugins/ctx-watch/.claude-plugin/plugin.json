@@ -1,7 +1,7 @@
 {
   "name": "ctx-watch",
   "description": "Notice when the ctx daemon is dead, unsupervised or stale or its index is not ready, repair it, say so at session start and in a macOS popup, and warn when a resumed session skips ctx.",
-  "version": "0.2.2",
+  "version": "0.3.0",
   "author": { "name": "Jo Wolff" },
   "license": "MIT",
   "repository": "https://github.com/thewolff/jo-wolff-plugins",

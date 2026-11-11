@@ -1,0 +1,44 @@
+{
+  "auto_upgrade": {
+    "enabled": false,
+    "mode": "off"
+  },
+  "command": "upgrade_status",
+  "current_version": "2.3.0",
+  "install": {
+    "channel": "stable",
+    "install_path": "/Users/example/.local/bin/ctx",
+    "managed": true,
+    "marker": "valid",
+    "platform": "macos-arm64",
+    "sha256": "58853117e62ac46378de5c67a3bec47b520ed8fbb809898c485ed4b50d4ca640",
+    "version": "2.3.0"
+  },
+  "schema_version": 1,
+  "state": {
+    "artifact_url": "https://cli.ctx.rs/storage/v1/object/public/releases/artifacts/stable/2.4.1/ctx-macos-arm64",
+    "attempt_id": "ua_01a1cc4f-1355-7240-8719-efba9593b68a",
+    "attempt_source": "manual_apply",
+    "auto_upgrade_allowed": true,
+    "channel": "stable",
+    "checked_at": "2026-11-11T20:31:39.852318Z",
+    "consecutive_failures": 0,
+    "current_version": "2.3.0",
+    "install_path": "/Users/example/.local/bin/ctx",
+    "last_attempt_at": "2026-11-11T20:31:36.789716Z",
+    "last_attempt_finished_at": "2026-11-11T20:31:39.852319Z",
+    "last_checked_unix_s": 1794429099,
+    "last_successful_check_unix_s": 1793798013,
+    "latest_version": "2.4.1",
+    "managed": true,
+    "metadata_url": "https://cli.ctx.rs/functions/v3/releases/stable/ctx-release-metadata.env",
+    "next_check_unix_s": 1793884413,
+    "platform": "macos-arm64",
+    "schema_version": 1,
+    "self_upgrade_allowed": true,
+    "status": "dry_run",
+    "update_available": true,
+    "update_was_available": true
+  },
+  "warnings": []
+}

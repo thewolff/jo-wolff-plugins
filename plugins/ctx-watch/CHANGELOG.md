@@ -4,6 +4,60 @@ All notable changes to ctx-watch are recorded here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). The 0.1.0 release is described under
 *Changes in 0.1.0* in [README.md](README.md#changes-in-010).
 
+## [0.3.0] - 2026-11-11
+
+From the 2026-11-05 to 11-11 outage: ctx 2.3.0's automatic upgrade died between `quiescing`
+and `applying`, left a state that fenced out every new daemon, and a later heal recorded a
+launch environment without `LANG`. ctx-watch popped once and went quiet for six days.
+
+### Added
+
+- The upgrade gate: on a failing probe, `ctx upgrade status --format json` and ctx's handoff
+  marker (`<data root>/daemon/upgrade-handoff.json`, judged as ctx 2.3.0 does) are read before
+  any heal. During a live upgrade (active state under 30 min old, or an active handoff) there
+  is no heal, no strike and no popup; the line says `upgrade in progress`. An upgrade state
+  that cannot be read (`ctx upgrade status` failing, timing out, or naming a state outside
+  ctx 2.3.0's list) with no active marker is no heal either: `not healed: upgrade state
+  unknown`.
+- A stuck upgrade (active state 30 min or more, no active handoff) is a finding of its own
+  kind, `upgrade`, with its own popup latch and the release sequence `ctx upgrade disable &&
+  ctx upgrade --dry-run && ctx index mode auto` as its fix, marked observed-not-documented.
+- `ctx-watch repair` and the `/ctx-watch:repair` skill: the 2026-11-11 hand-run repair,
+  non-interactive. With no `LANG` in its shell (a Claude Desktop tool, which launchd started)
+  it passes ctx the `LANG` ctx recorded in `supervisor-environment.json`, else one derived from
+  `defaults read -g AppleLocale`, each only if `locale -a` lists it, and reports which in its
+  JSON `lang.source` (and what it skipped in `lang.skipped`). Refuses (exit 3) when no usable
+  `LANG` is found, without `launchctl` or a reachable `gui/<uid>`, with mode not `auto`, during
+  a live upgrade or an unknown upgrade state, while a handoff owner is alive or its marker is
+  under 15 min old, for a stuck state other than `quiescing`, or when `launchctl` cannot say
+  whether the timer is loaded. Otherwise pauses the timer, releases, heals, verifies, and
+  restores the timer in a `finally` (after a throw and on SIGINT/SIGTERM/SIGHUP too, exiting
+  128 + n); the upgrade gate is read again before each state change, and a release needs the
+  same stuck attempt. A timer it cannot restore makes the run a failure. After a release it
+  leaves automatic upgrades off.
+- SessionStart adds `hookSpecificOutput.additionalContext` for the agent when ctx is down,
+  stuck, mid-upgrade or missing: what, since when, the exact command. Nothing when healthy or
+  when only the semantic index is not ready.
+- `install` carries `LANG`, `LC_ALL`, `TMPDIR`, `XDG_CONFIG_HOME`, `XDG_DATA_HOME` and ctx's
+  `CTX_*` settings (never `CI`, never `CTX_SEMANTIC_EMBEDDING_TOKEN`) into the plist. With no
+  `LANG` in the installing shell it uses the same fallback as `repair` and says where the value
+  came from; with none found it warns. Existing installs get them on the next `install`.
+
+### Changed
+
+- The heal's bound is 120 s with SIGTERM and a 15 s grace before SIGKILL (`lib/bounded-run.mjs`),
+  was 10 s with SIGKILL: ctx's own handoff waits up to 75 s for quiescence plus 5 s stop and
+  5 s restart. `bounded-run` also ends the heal's process group when the heal exits on its own.
+- `launchd.loaded()` reads only launchctl's 113 as "not loaded"; any other failure is unknown
+  (`loaded: null`), not "not loaded".
+- The SessionStart hook no longer heals (it had 1.2 s against ctx's 75 s); the timer and
+  `repair` do.
+- A popup that gave up with nobody answering re-arms after 4 h (`POPUP_REARM_MS`) while its kind
+  still fails; one clicked or dismissed stays latched for the episode. The supervisor records
+  osascript's `gave up:` answer (`gaveUp` in the outcome file).
+- `state.json` gains `popupUnseenAt` and an `upgrade` latch in `popupShown`; 0.2.x files read as
+  before.
+
 ## [0.2.2] - 2026-11-04
 
 ### Fixed

@@ -5,23 +5,26 @@
 // next tick still runs while the dialog is up.
 //
 // Delivery is confirmed, not assumed. The supervisor is osascript's parent for its whole life:
-// when osascript ends it writes `{ token, at, bin, code, signal, error, acknowledged }` to its
-// token's own outcome file (`<state>/popups/<token>.json`, atomically) and exits with
+// when osascript ends it writes `{ token, at, bin, code, signal, error, acknowledged, gaveUp }`
+// to its token's own outcome file (`<state>/popups/<token>.json`, atomically) and exits with
 // osascript's status. One file per token: a supervisor from an earlier episode that ends late
 // writes its own file and cannot replace the current popup's outcome. Exit 0 (OK clicked, or
 // the give-up) is delivered; so is "User canceled" (-128): a person dismissed it. Anything else
 // (no GUI session, "No user interaction allowed", a crash) is not delivered, whenever it happens.
+// `gaveUp` is osascript's own answer (`gave up:true` on stdout: the dialog timed out with nobody
+// clicking OK; `false`: clicked; null: not printed). A delivery that was not answered latches its
+// kind only for POPUP_REARM_MS (state.mjs); one that was answered latches it for the episode.
 //
-// showPopup() resolves `{ started, pending?, token?, detail }` and never throws or rejects:
+// showPopup() resolves `{ started, pending?, seen?, token?, detail }` and never throws or rejects:
 //   started: false            the supervisor could not start, or it ended inside the grace with
 //                             anything but a delivery (the reason from its outcome when it wrote
 //                             one, else its exit code or signal);
-//   started: true             it ended inside the grace with a delivery (answered at once);
+//   started: true             it ended inside the grace with a delivery; `seen` says whether a
+//                             person answered it (OK clicked or dismissed, not a give-up);
 //   started: true, pending    it was still running GRACE_MS later: the dialog may be up, and
 //                             the caller keeps its claim on `token` pending. A later tick reads
 //                             that token's outcome file (readOutcome) and settles it: delivered
 //                             latches the episode, anything else reopens it (state.mjs popupSettled).
-//
 // `spawn` is injectable: tests never open a dialog. It is called as spawn(node, [SUPERVISOR,
 // outcomeFile, token, bin, ...osascriptArgs]) and returns the child (an EventEmitter with `pid`,
 // emitting `error`, `exit`) or throws.
@@ -67,10 +70,15 @@ export function readOutcome(file) {
     return null;
   }
   if (!j || typeof j !== "object" || Array.isArray(j)) return null;
-  const { token, at, bin, code, signal, error, acknowledged } = j;
+  const { token, at, bin, code, signal, error, acknowledged, gaveUp = null } = j;
   const ok =
-    isStr(token) && token.length > 0 && token.length <= 100 && validMs(at) && isStr(bin) && nullOr(Number.isInteger)(code) && nullOr(isStr)(signal) && nullOr(isStr)(error) && typeof acknowledged === "boolean";
-  return ok ? { token, at, bin, code, signal, error, acknowledged } : null;
+    isStr(token) && token.length > 0 && token.length <= 100 && validMs(at) && isStr(bin) && nullOr(Number.isInteger)(code) && nullOr(isStr)(signal) && nullOr(isStr)(error) && typeof acknowledged === "boolean" && nullOr((v) => typeof v === "boolean")(gaveUp);
+  return ok ? { token, at, bin, code, signal, error, acknowledged, gaveUp } : null;
+}
+
+/** Whether a delivered outcome was answered by a person: OK clicked (`gaveUp: false`) or dismissed. */
+export function answered(outcome) {
+  return outcome.gaveUp === false || outcome.acknowledged === true;
 }
 
 /** Write `outcome` to `file` atomically (temp file + rename). Never throws; false when it could not. */
@@ -132,8 +140,8 @@ export function showPopup({ text, title = TITLE, giveUpSecs = GIVE_UP_SECS, spaw
     child.on("exit", (code, signal) => {
       // The supervisor wrote how osascript ended before it exited; without that, its own status.
       const o = readOutcome(outcomeFile);
-      const outcome = o?.token === token ? o : { bin, code, signal, error: null, acknowledged: false };
-      if (delivered(outcome)) return finish({ started: true, detail: `popup shown (${who}, answered within ${graceMs} ms)` });
+      const outcome = o?.token === token ? o : { bin, code, signal, error: null, acknowledged: false, gaveUp: null };
+      if (delivered(outcome)) return finish({ started: true, seen: answered(outcome), detail: `popup shown (${who}, ended within ${graceMs} ms, ${answered(outcome) ? "answered" : "no answer recorded"})` });
       finish({ started: false, detail: `popup not shown: ${describeExit(outcome)}${outcome.error ? "" : ` within ${graceMs} ms`}` });
     });
     timer = setTimeout(() => finish({ started: true, pending: true, token, detail: `popup started (${who}, gives up after ${giveUpSecs} s); delivered once it exits 0` }), graceMs);
