@@ -20,7 +20,9 @@
 //         CARRIED_ENV   LANG, LC_ALL, TMPDIR, XDG_CONFIG_HOME, XDG_DATA_HOME and ctx's own
 //                       CTX_* settings, each when set in this shell: a heal the timer runs is
 //                       where ctx records its daemon's launch environment, and one recorded
-//                       without LANG is `environment_invalid` (2026-11-11);
+//                       without LANG is `environment_invalid` (2026-11-11). A shell without
+//                       LANG (one launchd started, such as Claude Desktop's) gets resolveLang's
+//                       fallback: the LANG ctx recorded, else one derived from AppleLocale;
 //       and never `CI` or CTX_SEMANTIC_EMBEDDING_TOKEN.
 //   uninstall({ env, uid })   prints the bootout line (and removes nothing).
 //   loaded({ uid, check })    `{ loaded: true|false|null, detail }` from `launchctl print`.
@@ -32,7 +34,8 @@
 // person pastes into zsh, and a state directory with a space in it is a legal one.
 
 import { spawnSync } from "node:child_process";
-import { accessSync, constants, mkdirSync, statSync, writeFileSync } from "node:fs";
+import { accessSync, constants, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { homedir } from "node:os";
 import { isAbsolute, join, resolve } from "node:path";
 import { stateDir as defaultStateDir, INTERVAL_BOUNDS } from "./state.mjs";
 
@@ -182,22 +185,65 @@ export function carriedEnv(env = process.env) {
   return Object.fromEntries(CARRIED_ENV.filter((k) => typeof env[k] === "string" && env[k] !== "").map((k) => [k, env[k]]));
 }
 
+/** A locale name LANG can hold (`C`, `POSIX`, `en_US`, `en_US.UTF-8`, `sr_RS@latin`); nothing a shell would read twice. */
+const LOCALE_NAME = /^(?:C|POSIX|[a-z]{2,3}_[A-Z]{2})(?:\.[A-Za-z0-9-]+)?(?:@[A-Za-z0-9]+)?$/;
+
+/** `<CTX_DATA_ROOT, else ~/.ctx>/daemon/supervisor-environment.json`: where ctx 2.3.0 keeps the launch environment it recorded, values included. */
+export function recordedEnvPath(env = process.env) {
+  return join(env.CTX_DATA_ROOT || join(env.HOME || homedir(), ".ctx"), "daemon", "supervisor-environment.json");
+}
+
+/** LANG from macOS's AppleLocale (`en_GB@rg=dezzzz` → `en_GB.UTF-8`, `zh-Hans_CN` → `zh_CN.UTF-8`), or null when it names no language and region. */
+export function langFromAppleLocale(locale) {
+  const m = /^([a-z]{2,3})(?:-[A-Z][a-z]{3})?_([A-Z]{2})(?:@[A-Za-z0-9=;-]*)?$/.exec(String(locale ?? "").trim());
+  return m ? `${m[1]}_${m[2]}.UTF-8` : null;
+}
+
+/**
+ * The LANG to give ctx: `{ value, source, detail }`, value null when none is found. This shell's
+ * LANG first (source `env`); else the LANG ctx itself recorded for its daemon in
+ * supervisor-environment.json (`ctx-recorded`; supervisor.json holds the names only,
+ * `values_exposed: false`); else one derived from `defaults read -g AppleLocale` (`AppleLocale`).
+ * A process launchd started (Claude Desktop and its tools, this timer) usually has no LANG, and a
+ * ctx heal from one records a launch environment ctx then calls `environment_invalid`
+ * (2026-11-10 23:29). Read-only: one file and one default.
+ */
+export function resolveLang({ env = process.env, check = runCheck } = {}) {
+  if (typeof env.LANG === "string" && env.LANG !== "") return { value: env.LANG, source: "env", detail: "this shell's LANG" };
+  const file = recordedEnvPath(env);
+  try {
+    const entries = JSON.parse(readFileSync(file, "utf8"))?.environment;
+    const v = Array.isArray(entries) ? entries.find((e) => e?.name === "LANG")?.value : undefined;
+    if (typeof v === "string" && LOCALE_NAME.test(v)) return { value: v, source: "ctx-recorded", detail: file };
+  } catch {
+    // absent or unreadable: fall through to AppleLocale
+  }
+  const r = check("defaults", ["read", "-g", "AppleLocale"]);
+  const derived = !r.missing && r.code === 0 ? langFromAppleLocale(r.output) : null;
+  if (derived) return { value: derived, source: "AppleLocale", detail: `defaults read -g AppleLocale = ${String(r.output).trim()}` };
+  return { value: null, source: null, detail: `no LANG in this shell, none recorded in ${file}, and no usable AppleLocale (\`defaults read -g AppleLocale\`)` };
+}
+
 /**
  * Write, lint, report. `{ code, text, file, ctx }`. `ctx` (optional) is the executable to pin;
  * otherwise the first `ctx` on this shell's PATH, and no ctx at all is exit 1: a timer that
- * can never find ctx would only ever pop up. The plist's environment is PATH plus carriedEnv(env).
+ * can never find ctx would only ever pop up. The plist's environment is PATH plus carriedEnv(env),
+ * with resolveLang's fallback LANG when this shell has none.
  */
 export function install({ env = process.env, interval = 300, cliPath, node = process.execPath, uid = process.getuid?.() ?? 501, check = runCheck, label = LABEL, cwd = process.cwd(), stateDir = defaultStateDir(env), ctx, exists } = {}) {
   const dir = launchdDir(env, stateDir);
   const file = plistPath(env, label, stateDir);
   const path = dedupePath(env.PATH);
-  const environment = carriedEnv(env);
   let text;
   let pinned;
+  let lang;
+  let environment;
   try {
     pinned = ctx === undefined ? resolveCtx(path, exists ? { exists } : {}) : resolve(cwd, ctx);
     if (pinned === null) throw new Error(`no executable \`ctx\` on PATH (${path}); install ctx first (\`ctx docs show getting-started\`), or pass --ctx <absolute path>`);
     if (exists ? !exists(pinned) : !executable(pinned)) throw new Error(`--ctx ${pinned} is not an executable file`);
+    lang = resolveLang({ env, check });
+    environment = lang.value && lang.source !== "env" ? { LANG: lang.value, ...carriedEnv(env) } : carriedEnv(env);
     text = plistText({ label, node, cliPath: resolve(cwd, cliPath), interval, logDir: dir, path, stateDir: resolve(cwd, stateDir), ctx: pinned, environment });
     mkdirSync(dir, { recursive: true });
     writeFileSync(file, text);
@@ -207,7 +253,8 @@ export function install({ env = process.env, interval = 300, cliPath, node = pro
   const lines = [`wrote ${file} (${label}, every ${interval} s, \`tick\`; ctx pinned at ${pinned}, state in ${resolve(cwd, stateDir)})`];
   const names = Object.keys(environment);
   lines.push(`environment: PATH${names.length ? `, ${names.join(", ")}` : ""}`);
-  if (!("LANG" in environment)) lines.push("LANG is not set in this shell, so the plist carries none: a heal the timer runs would have ctx record a launch environment without LANG, which it reports as supervisor `environment_invalid` with `restart_required`. Run install again from a shell with LANG set (a Terminal login shell has it).");
+  if (lang.value === null) lines.push(`LANG is not set in this shell, so the plist carries none (${lang.detail}): a heal the timer runs would have ctx record a launch environment without LANG, which it reports as supervisor \`environment_invalid\` with \`restart_required\`. Run install again from a shell with LANG set (a Terminal login shell has it).`);
+  else if (lang.source !== "env") lines.push(`LANG is not set in this shell; the plist carries LANG=${lang.value} from ${lang.source === "AppleLocale" ? "AppleLocale" : lang.detail} instead, so a heal the timer runs records a launch environment with LANG.`);
   const lint = check("plutil", ["-lint", file]);
   if (lint.missing) lines.push("plutil not found: the plist was not checked (not macOS?)");
   else if (lint.code !== 0) return { code: 1, text: `${lines.join("\n")}\nplutil -lint failed: ${lint.output.trim()}` };

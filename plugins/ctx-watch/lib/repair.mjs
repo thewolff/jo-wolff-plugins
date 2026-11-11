@@ -4,8 +4,12 @@
 //
 // Order, stopping at the first refusal or failure:
 //   1. probe `ctx daemon status`: healthy → exit 0, nothing changed;
-//   2. refuse without LANG in this environment (ctx would record a launch environment without
-//      it and report `environment_invalid`, the 2026-11-11 state);
+//   2. LANG: this shell's, else the LANG ctx recorded in supervisor-environment.json, else one
+//      derived from AppleLocale (launchd.mjs resolveLang), passed to every ctx spawn; refuse
+//      only when none of the three gives one (ctx would record a daemon launch environment
+//      without LANG and report `environment_invalid`, the 2026-11-11 state). A shell launchd
+//      started (Claude Desktop's Bash tool) has no LANG of its own, so this is the usual path
+//      from Desktop;
 //   3. refuse when the GUI launchd domain gui/<uid> is not reachable (`launchctl print` fails:
 //      an ssh or sandboxed shell), since the ctx-watch timer could not be paused and restored;
 //   4. refuse when ctx's indexing mode is not `auto` or its config file is missing (ctx-watch
@@ -25,14 +29,16 @@
 //      and no restart required (VERIFY_TRIES × VERIFY_GAP_MS);
 //  10. restore the timer (`launchctl bootstrap`) when step 6 paused it, whatever happened in 7-9.
 //
-// Every ctx spawn has CI removed (probe.mjs ctxEnv) and keeps everything else, LANG included.
-// Output: the first line is one JSON object `{ ok, changed, refused, reason, steps, timer,
-// verified }`; the last line is `ctx-watch repair: <repaired | healthy; nothing changed |
-// refused: … | failed: …>`. Exit 0 repaired or healthy, 1 failed, 3 refused (nothing changed).
+// Every ctx spawn has CI removed (probe.mjs ctxEnv), LANG as resolved in step 2, and keeps
+// everything else. Output: the first line is one JSON object `{ ok, changed, refused, reason,
+// lang: { value, source }, steps, timer, verified }` (source `env`, `ctx-recorded`,
+// `AppleLocale`, or null); the last line is `ctx-watch repair: <repaired | healthy; nothing
+// changed | refused: … | failed: …>`. Exit 0 repaired or healthy, 1 failed, 3 refused (nothing
+// changed).
 
 import { existsSync } from "node:fs";
 import { CTX, HANDOFF_STALE_MS, HEAL_GRACE_MS, HEAL_TIMEOUT_MS, MODE_ARGV, PROBE_TIMEOUT_MS, STATUS_ARGV, age, ctxEnv, handoffPath, parseJson, readHandoff, runCtx, upgradeGate } from "./probe.mjs";
-import { LABEL, loaded, plistPath, runCheck } from "./launchd.mjs";
+import { LABEL, loaded, plistPath, resolveLang, runCheck } from "./launchd.mjs";
 
 export const VERIFY_TRIES = 10;
 export const VERIFY_GAP_MS = 3_000;
@@ -66,11 +72,13 @@ const up = (f) => f.running === true && f.status === "running" && f.supervisor =
  * shape, for launchctl), `uid`, `exists` (ctx's config path), `sleep(ms)`, `ctx`, `stateDir`
  * (where the timer's plist lives), `now`.
  */
-export function repair({ env = process.env, run = runCtx, check = runCheck, uid = process.getuid?.() ?? 501, exists = existsSync, sleep = sleepSync, ctx = CTX, stateDir, now = Date.now } = {}) {
+export function repair({ env: shellEnv = process.env, run = runCtx, check = runCheck, uid = process.getuid?.() ?? 501, exists = existsSync, sleep = sleepSync, ctx = CTX, stateDir, now = Date.now } = {}) {
+  const lang = resolveLang({ env: shellEnv, check });
+  const env = lang.value ? { ...shellEnv, LANG: lang.value } : shellEnv;
   const e = ctxEnv(env);
   const steps = [];
   const timer = { wasLoaded: false, paused: false, restored: null };
-  const report = { ok: false, changed: false, refused: false, reason: null, steps, timer, verified: null };
+  const report = { ok: false, changed: false, refused: false, reason: null, lang: { value: lang.value, source: lang.source }, steps, timer, verified: null };
   const out = (code, last) => ({ code, text: `${JSON.stringify(report)}\n${last}` });
   const refuse = (reason) => {
     Object.assign(report, { refused: true, reason });
@@ -87,7 +95,7 @@ export function repair({ env = process.env, run = runCtx, check = runCheck, uid 
     return out(0, "ctx-watch repair: the ctx daemon is healthy; nothing changed");
   }
   // 2. LANG.
-  if (typeof env.LANG !== "string" || env.LANG === "") return refuse("LANG is not set in this shell: ctx would record a daemon launch environment without it and report `environment_invalid`; run from a shell with LANG set (a Terminal login shell has it)");
+  if (lang.value === null) return refuse(`LANG could not be found: ${lang.detail}; ctx would record a daemon launch environment without it and report \`environment_invalid\`; run from a shell with LANG set (a Terminal login shell has it)`);
   // 3. The GUI launchd domain.
   const domain = check("launchctl", ["print", `gui/${uid}`]);
   if (!domain.missing && domain.code !== 0) return refuse(`launchd domain gui/${uid} is not reachable from this shell (launchctl print exit ${domain.code ?? "none"}: ${(domain.output ?? "").trim().split("\n").at(-1)}); run from a GUI login session`);

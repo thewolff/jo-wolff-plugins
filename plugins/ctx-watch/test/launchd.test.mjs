@@ -126,7 +126,7 @@ test("install writes the plist under <state>/launchd with absolute paths, the st
 test("install: no ctx on PATH is exit 1 naming the PATH; --ctx pins a given executable (and must exist)", () => {
   const root = mkdtempSync(join(tmpdir(), "ctx-watch-launchd-"));
   try {
-    const env = { XDG_STATE_HOME: join(root, "state"), PATH: "/usr/bin:/bin" };
+    const env = { XDG_STATE_HOME: join(root, "state"), HOME: join(root, "home"), PATH: "/usr/bin:/bin" };
     const none = fakeCheck({});
     const r = install({ env, cliPath: CLI, node: NODE, uid: 501, check: none.check, exists: () => false });
     assert.equal(r.code, 1);
@@ -149,7 +149,7 @@ test("install: no ctx on PATH is exit 1 naming the PATH; --ctx pins a given exec
 test("install: a loaded job gets the bootout-then-bootstrap line; a failed lint is exit 1; missing plutil/launchctl are said", () => {
   const root = mkdtempSync(join(tmpdir(), "ctx-watch-launchd-"));
   try {
-    const env = { XDG_STATE_HOME: join(root, "state"), PATH: "/usr/bin" };
+    const env = { XDG_STATE_HOME: join(root, "state"), HOME: join(root, "home"), PATH: "/usr/bin" };
     const exists = ctxAt("/usr/bin/ctx");
     const loadedJob = fakeCheck({ plutil: { missing: false, code: 0, output: "OK" }, launchctl: { missing: false, code: 0, output: `${LABEL} = {\n\tstate = waiting\n\tlast exit code = 0\n}` } });
     const r1 = install({ env, cliPath: CLI, node: NODE, uid: 501, check: loadedJob.check, exists });
@@ -160,7 +160,7 @@ test("install: a loaded job gets the bootout-then-bootstrap line; a failed lint 
     const r2 = install({ env, cliPath: CLI, node: NODE, uid: 501, check: badLint.check, exists });
     assert.equal(r2.code, 1);
     assert.match(r2.text, /plutil -lint failed: x\.plist: Unexpected character$/);
-    assert.equal(badLint.calls.length, 1, "no launchctl after a failed lint");
+    assert.deepEqual(badLint.calls.filter(([bin]) => bin === "launchctl"), [], "no launchctl after a failed lint");
 
     const none = fakeCheck({});
     const r3 = install({ env, cliPath: CLI, node: NODE, uid: 501, check: none.check, exists });
@@ -184,7 +184,7 @@ test("install: a loaded job gets the bootout-then-bootstrap line; a failed lint 
 test("install: paths with spaces and metacharacters are one shell word each in the printed commands", () => {
   const root = mkdtempSync(join(tmpdir(), "ctx-watch launchd $x-"));
   try {
-    const env = { XDG_STATE_HOME: join(root, "state dir"), PATH: "/usr/bin" };
+    const env = { XDG_STATE_HOME: join(root, "state dir"), HOME: join(root, "home"), PATH: "/usr/bin" };
     const { check } = fakeCheck({ plutil: { missing: false, code: 0, output: "OK" }, launchctl: { missing: false, code: 0, output: "state = waiting" } });
     const cli = "/Users/example/My Plugins/ctx-watch/scripts/ctx-watch.mjs";
     const r = install({ env, cliPath: cli, node: NODE, uid: 501, check, exists: ctxAt("/usr/bin/ctx") });

@@ -19,9 +19,11 @@ brought it back on 2026-11-11, with that run's confirmations turned into checks 
      upgrades are now off, tell the person `ctx upgrade enable` turns them back on once a fixed
      ctx release is out.
    - exit 3, `refused: …`: nothing was changed. Say the reason. `upgrade in progress` or `owner
-     pid … is alive` means wait; `wait Nm and run repair again` means exactly that; a missing
-     LANG or an unreachable `gui/<uid>` launchd domain means the person runs the same command
-     from their own Terminal; indexing mode `manual` is their decision.
+     pid … is alive` means wait; `wait Nm and run repair again` means exactly that; `LANG could
+     not be found` or an unreachable `gui/<uid>` launchd domain means the person runs the same
+     command from their own Terminal; indexing mode `manual` is their decision.
+   - no LANG in this shell (Claude Desktop's tools have none): not a problem. `repair` takes the
+     LANG ctx recorded, else one from AppleLocale, and names it in the first line's JSON `lang`.
    - exit 1, `failed: …`: say the line and hand the person the first line's JSON `steps` entry
      that failed. If it says the timer was NOT restored, hand over the `launchctl bootstrap`
      line `install` prints.

@@ -27,7 +27,8 @@
 //   install [--interval 300] write <state>/launchd/com.jo-wolff-plugins.ctx-watch.plist, lint it,
 //                            print the `launchctl bootstrap` line. Never bootstraps. The plist
 //                            pins this script, the state directory and the ctx executable, and
-//                            carries LANG and ctx's other launch-environment names.
+//                            carries LANG (or, without one, the LANG ctx recorded, else one from
+//                            AppleLocale) and ctx's other launch-environment names.
 //   uninstall                print the `launchctl bootout` line. Removes nothing.
 //   status                   the last probe, the episode, and whether launchd has the job.
 //   prune [--days 30]        rotate the logs, remove rotated logs older than --days and stray
