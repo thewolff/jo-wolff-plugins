@@ -78,8 +78,9 @@ const short = (s) => (s.length > 40 ? `${s.slice(0, 37)}...` : s);
  * @param table         a table from loadTable/checkTable
  * @param subagentType  `tool_input.subagent_type` as given (may be undefined)
  * @param model         `tool_input.model` as given (may be undefined)
- * @returns {{ warning: string|null, skipped: string|null }}  `warning` is one line; `skipped`
- *   says why a model that was set could not be judged
+ * @returns {{ warning: string|null, skipped: string|null, kind?: "no-model"|"above" }}  `warning` is
+ *   one line; `kind` (set only with a warning) says which branch produced it; `skipped` says why a
+ *   model that was set could not be judged
  */
 export function routingWarning(table, subagentType, model) {
   const none = { warning: null, skipped: null };
@@ -88,25 +89,25 @@ export function routingWarning(table, subagentType, model) {
   if (!row) return none;
   const type = short(String(subagentType).trim());
   if (model === undefined || model === null || (typeof model === "string" && model.trim() === "")) {
-    return { warning: `delegation model routing (warn-only): this "${type}" spawn sets no model; the routing table's model for ${key} is ${row.model}. The spawn proceeds on the model its agent definition pins.`, skipped: null };
+    return { warning: `delegation model routing (warn-only): this "${type}" spawn sets no model; the routing table's model for ${key} is ${row.model}. The spawn proceeds on the model its agent definition pins.`, skipped: null, kind: "no-model" };
   }
   const family = modelFamily(model, table.order);
   if (!family) return { warning: null, skipped: `model ${JSON.stringify(typeof model === "string" ? short(model) : model)} for "${type}" names no single family in the routing table; not judged` };
   if (table.order.indexOf(family) <= table.order.indexOf(row.ceiling)) return none;
-  return { warning: `delegation model routing (warn-only): this "${type}" spawn asks for ${short(String(model).trim())}; the routing table's ceiling for ${key} is ${row.ceiling}. The spawn proceeds.`, skipped: null };
+  return { warning: `delegation model routing (warn-only): this "${type}" spawn asks for ${short(String(model).trim())}; the routing table's ceiling for ${key} is ${row.ceiling}. The spawn proceeds.`, skipped: null, kind: "above" };
 }
 
 /**
  * What the table says about one spawn, for the routing log: the table's row for the type (null
  * when it lists none) and the outcome name. Mirrors routingWarning's branches.
- * @returns {{ row: {model:string,ceiling:string}|null, outcome: "match"|"warned-above"|"warned-below"|"unmapped"|"not-checked" }}
+ * @returns {{ row: {model:string,ceiling:string}|null, outcome: "match"|"warned-above"|"no-model"|"unmapped"|"not-checked" }}
  */
 export function routingOutcome(table, subagentType, model) {
   const key = agentKey(subagentType);
   const row = key && Object.hasOwn(table.agents, key) ? table.agents[key] : null;
   if (!row) return { row: null, outcome: "unmapped" };
-  const { warning, skipped } = routingWarning(table, subagentType, model);
+  const { warning, skipped, kind } = routingWarning(table, subagentType, model);
   if (skipped) return { row, outcome: "not-checked" };
   if (!warning) return { row, outcome: "match" };
-  return { row, outcome: warning.includes(" sets no model;") ? "warned-below" : "warned-above" };
+  return { row, outcome: kind === "no-model" ? "no-model" : "warned-above" };
 }

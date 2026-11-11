@@ -115,8 +115,8 @@ session doing the spawning, and the model an agent definition pins when the spaw
 `${XDG_STATE_HOME:-~/.local/state}/delegation/routing.jsonl`: `ts`, `session_id`, `cwd`,
 `subagent_type`, `model` (as set on the spawn, or null), `tableModel` and `ceiling` (the table's
 row for the type, or null), `outcome` and `description`. The outcome is `match` (listed type,
-model at or under the ceiling), `warned-above` (model above the ceiling), `warned-below` (listed
-type, no model set), `unmapped` (the table lists no such type) or `not-checked` (a refused spawn,
+model at or under the ceiling), `warned-above` (model above the ceiling), `no-model` (a listed
+type that set no model; the spawn inherits the parent model, which may be above the ceiling), `unmapped` (the table lists no such type) or `not-checked` (a refused spawn,
 a prompt that is not a string, a model naming no single family, an unreadable table, or
 `warnModelRouting` off). The prompt is never written; the description is cut at 200 characters.
 The file is renamed to `routing.jsonl.1` past 1 MiB (replacing the previous `.1`), so it holds at

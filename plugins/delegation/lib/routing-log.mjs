@@ -7,8 +7,8 @@
 // and `description` (the spawn's description field). The prompt is never read here.
 //
 // OUTCOMES: `match` (a listed type, the model at or under its ceiling), `warned-above` (the model
-// is above the ceiling), `warned-below` (a listed type that set no model: the spawn runs on
-// whatever its definition pins, at or under the table's model or not), `unmapped` (the table lists
+// is above the ceiling), `no-model` (a listed type that set no model; the spawn inherits the
+// parent model, which may be above the ceiling), `unmapped` (the table lists
 // no such type), `not-checked` (the gate refused the spawn before the model step, could not
 // judge it, or `warnModelRouting` is off).
 //

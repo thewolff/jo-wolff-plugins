@@ -32,7 +32,7 @@ test("routing log: each outcome writes exactly one line with the documented fiel
   const cases = [
     [{ subagent_type: "reader", model: "sonnet" }, "match", "sonnet", "sonnet"],
     [{ subagent_type: "reader", model: "opus" }, "warned-above", "sonnet", "sonnet"],
-    [{ subagent_type: "reader", model: null }, "warned-below", "sonnet", "sonnet"],
+    [{ subagent_type: "reader", model: null }, "no-model", "sonnet", "sonnet"],
     [{ subagent_type: "reviewer-codex", model: "fable" }, "unmapped", null, null],
     [{ subagent_type: "reader", model: "inherit" }, "not-checked", "sonnet", "sonnet"],
     [{ subagent_type: "reader", prompt: "no headings", model: "opus" }, "not-checked", null, null],

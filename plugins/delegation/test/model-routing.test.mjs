@@ -9,7 +9,7 @@ import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { box, gitRepo, runHook, setConfig, skippedLog, spawnPayload, HOW_ONLY, PLUGIN_ROOT } from "./helpers.mjs";
-import { checkTable, loadTable, modelFamily, routingWarning, TABLE_URL } from "../lib/model-routing.mjs";
+import { checkTable, loadTable, modelFamily, routingOutcome, routingWarning, TABLE_URL } from "../lib/model-routing.mjs";
 import { HOW_IT_FAILS_SECTION, SPIRAL_BOUND_SECTION } from "../lib/brief.mjs";
 
 const deny = (r) => (r.out?.hookSpecificOutput?.permissionDecision === "deny" ? r.out.hookSpecificOutput.permissionDecisionReason : null);
@@ -105,6 +105,13 @@ test("routingWarning: at or under the ceiling is nothing, above it and a missing
   assert.match(odd.skipped, /model "inherit" for "reader" names no single family/);
   assert.match(routingWarning(table, "reader", 5).skipped, /model 5 for "reader"/);
   for (const r of [routingWarning(table, "reader", "opus"), routingWarning(table, "reader", undefined)]) assert.equal(r.warning.includes("\n"), false, "one line");
+});
+
+test("routingOutcome: the outcome follows the warning's kind, not its text (a type name containing ' sets no model;' above the ceiling is warned-above)", () => {
+  const { table } = loadTable();
+  assert.equal(routingOutcome(table, "x sets no model;:scout", "opus").outcome, "warned-above");
+  assert.equal(routingOutcome(table, "x sets no model;:scout", undefined).outcome, "no-model");
+  assert.equal(routingOutcome(table, "scout", "haiku").outcome, "match");
 });
 
 // ---- hooks/spawn-gate.mjs, spawned ----
