@@ -771,20 +771,32 @@ A side pane for Claude Code Desktop and the terminal (Claude Code 2.1.286 or lat
 plugins can ship mods; `hooks/hooks.json` names the module, `mods/pane/register.mjs`). It shows,
 without a model turn:
 
-- **Waiting in other folders**: every open and held question asked in a folder that is not this
-  one, grouped by folder, with its body, its options (the default marked), its state and its age.
 - **Answered since your last turn**: the answers and withdrawals recorded on this session's
-  questions since its last prompt, the same lines the UserPromptSubmit hook will give Claude on
-  your next prompt, so you see them before Claude does.
+  questions since its last prompt, the same answers the UserPromptSubmit hook will give Claude
+  on your next prompt, so you see them before Claude does. Each shows the question's text and
+  `→ <answer>` (or `withdrawn`).
+- **Waiting in other folders**: every open and held question asked in a folder that is not this
+  one, under the folder's name (its last path segment; two folders with the same name show one
+  more segment each, `a/web` and `b/web`). Each question shows its text, then its age (`on
+  hold · 2h ago` for a held one), then its actions.
 
-Answering costs no turn. A digit (1 to 9) selects a question; its option buttons record that
-option, and the Reply field records an option word or free text (Enter records). From the prompt,
+The pane is one column at every width: each heading leads with its count, nothing sits in a
+side column a narrow pane would clip, and indentation is layout, never spaces in the text. A
+person reads question text there, never a row id or a question's `--name`.
+
+Answering costs no turn. The selected question (the first open one, until you pick another)
+shows its option buttons, the default one labelled `<option> · default` and drawn as the primary
+button, and a Reply field for free text (Enter records). Every other question shows one
+`answer` button whose digit (1 to 9) selects it. From the prompt,
 `/ledger answer <q-id> <reply>` does the same; the short form `/ledger <word> <q-id>` records
 that one word. Either way the answer goes through the ledger CLI as this session
 (`scripts/ledger.mjs --json answer <q-id> <reply>` with `LEDGER_SESSION_ID`), so the asking
 window's next prompt gets its `answered since your last turn` line, and the Stop hook there
-stops chasing the question. The pane redraws when the CLI returns. `/ledger` opens the pane,
-`/ledger close` closes it, Esc returns the keyboard to the prompt, Ctrl+X X closes.
+stops chasing the question. The pane redraws when the CLI returns and says `Recorded: <reply>`
+over the question's text, or `Not recorded` with the CLI's reason said as a sentence with no row
+id in it. A question with no text shows `(question text missing)`, never its name or id.
+`/ledger` opens the pane, `/ledger close` closes it, Esc returns the keyboard to the prompt,
+Ctrl+X X closes.
 
 The data refreshes at session start, at the start and end of each of your turns, and once a
 second while the pane is on screen; each refresh is one `node mods/pane/query.mjs` run, which
@@ -806,16 +818,17 @@ at the first fallback turn when session start faulted first. A session where the
 appears every turn and this line says `placed=false` is one where the pane is not on screen.
 
 The fallback and the pane fail the same way as the hooks: a query that cannot open the database
-shows `ledger: database …` in the pane and one dim transcript line, a CLI refusal comes back as
-text (`ledger refused: …`), and no error ever reaches Claude Code.
+shows `Can't read the ledger` and the reason in the pane and one dim transcript line, a CLI
+refusal comes back as text (`ledger refused: …` from the prompt, `Not recorded` in the pane),
+and no error ever reaches Claude Code.
 
 ### Two-window test
 
 1. Open two Desktop windows on two different folders, both with the plugin enabled.
 2. In window A ask something through the ledger (`… ask "Which colour?" --name colour --options green,red --default green`, or let the agent ask).
-3. In window B type `/ledger`. The pane lists `colour` under window A's folder with both options.
-4. Press `1`, then the `red` button, or type `/ledger answer <q-id> red`. The pane shows `recorded: … red → <q-id> (colour)` with no turn spent in either window.
-5. In window A send any prompt. Claude's context carries `ledger: answered since your last turn: colour → red (via cli)` and window A's pane shows the same line under *Answered since your last turn* before the prompt is sent.
+3. In window B type `/ledger`. The pane lists `Which colour?` under window A's folder name, with a `green · default` and a `red` button.
+4. Press `red`, or type `/ledger answer <q-id> red`. The pane shows `Recorded: red` over `Which colour?` with no turn spent in either window.
+5. In window A send any prompt. Claude's context carries `ledger: answered since your last turn: colour → red (via cli)`, and before the prompt is sent window A's pane shows `Which colour?` and `→ red` under *1 answer since your last turn*.
 
 Tests: `node --test` covers the pane's data layer (`test/pane-data.test.mjs`, `test/pane-query.test.mjs`);
 `claude plugin test` from `plugins/ledger` runs the mod through Claude Code's test kit
@@ -844,6 +857,20 @@ Tests use a sandboxed `HOME`, `XDG_*` and `LEDGER_*` so they never touch your le
 `LEDGER_CWD` and `LEDGER_BUSY_TIMEOUT_MS` environment variables exist for the tests.
 
 ## Changes
+
+### 0.3.12
+
+- Ledger pane: redrawn as one column that reads at a narrow dock width. Folders go by name
+  (`newdle-mobile`, not the full path); each question leads with its text, then its age on its
+  own line, then its actions; the default option is marked on its button (`approve · default`,
+  the primary button) and the `options:` line is gone; headings lead with their count; the
+  footer is `Esc back to prompt · Ctrl+X X close`; the Reply field's placeholder is
+  `type your own`. No row id or question name is drawn: a question that is not selected shows an
+  `answer` button with its digit, an answer since your last turn shows its question's text, and
+  `Recorded: <reply>` replaces the CLI's `an-… → q-…` line. The query adds each answer's
+  question body for that. Indentation is padding, not spaces; every line wraps, none is cut
+  short. A question with no text shows `(question text missing)`; CLI refusals and errors are
+  said without ids. Error and empty states match.
 
 ### 0.3.11
 

@@ -9,7 +9,8 @@
 //     answers:   answers recorded by another session or the CLI, on questions this session asked,
 //                since this session's prompt mark (cc_sessions.last_prompt_seen_at, else its
 //                started_at): the same cursor the UserPromptSubmit hook uses, so the pane shows
-//                exactly what Claude has not been told yet; empty with no session id;
+//                exactly what Claude has not been told yet; each with its question's body, which
+//                the pane shows in place of the question's name; empty with no session id;
 //     since:     that cursor, or null.
 //   { ok: true, disabled: true, elsewhere: [], answers: [] }   the ledger is off for this folder
 //   { ok: false, error }                                        anything that went wrong
@@ -59,7 +60,8 @@ export function snapshot(db, { sessionId, cwd, now = Date.now() }) {
   if (sessionId) {
     const session = db.prepare("SELECT started_at, last_prompt_seen_at FROM cc_sessions WHERE id = ?").get(sessionId);
     since = session?.last_prompt_seen_at ?? session?.started_at ?? null;
-    answers = answersSince(db, { sessionId, since, until: iso }).map((r) => ({ id: r.id, name: r.name, state: r.state, word: r.word, via: r.via }));
+    const bodyOf = db.prepare("SELECT body FROM cc_questions WHERE id = ?");
+    answers = answersSince(db, { sessionId, since, until: iso }).map((r) => ({ id: r.id, name: r.name, body: bodyOf.get(r.id)?.body ?? "", state: r.state, word: r.word, via: r.via }));
   }
   return { ok: true, since, elsewhere, answers };
 }

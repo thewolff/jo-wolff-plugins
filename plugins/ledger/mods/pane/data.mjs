@@ -66,7 +66,7 @@ export function emptySnapshot() {
 
 /**
  * What query.mjs printed → a snapshot the pane can draw, with every field present and typed:
- *   { ok: true, since, elsewhere: [{ id, cwd, name, body, options, default, state, asked_at, age }], answers: [{ id, name, state, word, via }] }
+ *   { ok: true, since, elsewhere: [{ id, cwd, name, body, options, default, state, asked_at, age }], answers: [{ id, name, body, state, word, via }] }
  *   { ok: false, error }
  * Anything unparseable or mis-shaped becomes `{ ok: false, error }`, never a throw.
  */
@@ -105,6 +105,7 @@ function normalizeAnswer(a) {
   return {
     id: a.id,
     name: typeof a.name === "string" ? a.name : a.id,
+    body: typeof a.body === "string" ? a.body : "",
     state: a.state === "withdrawn" ? "withdrawn" : "answered",
     word: typeof a.word === "string" ? a.word : "",
     via: typeof a.via === "string" ? a.via : "",
@@ -121,6 +122,85 @@ export function headline(snapshot) {
   if (snapshot.elsewhere.length) parts.push(`${plural(snapshot.elsewhere.length, "question")} waiting in ${plural(folders, "other folder")}`);
   if (snapshot.answers.length) parts.push(`${plural(snapshot.answers.length, "answer")} since your last turn`);
   return parts.length ? parts.join(" · ") : "nothing waiting elsewhere, no new answers";
+}
+
+/** The pane's heading over the answers, count first: `1 answer since your last turn`. */
+export function answersHeading(snapshot) {
+  return `${plural(snapshot.answers.length, "answer")} since your last turn`;
+}
+
+/** The pane's heading over the questions, count first: `2 questions waiting in other folders`. */
+export function waitingHeading(snapshot) {
+  const folders = new Set(snapshot.elsewhere.map((q) => q.cwd)).size;
+  return `${plural(snapshot.elsewhere.length, "question")} waiting in ${folders === 1 ? "another folder" : "other folders"}`;
+}
+
+/**
+ * Each folder's shortest trailing path that no other listed folder ends in: `newdle-mobile`, or
+ * `a/web` and `b/web` when two folders are both called `web`. A folder with no path is `(no folder)`.
+ */
+export function folderLabels(cwds) {
+  const parts = cwds.map((c) => String(c ?? "").split(/[\\/]+/).filter(Boolean));
+  return cwds.map((cwd, i) => {
+    const own = parts[i];
+    if (!own.length) return "(no folder)";
+    for (let n = 1; n < own.length; n++) {
+      const tail = own.slice(-n).join("/");
+      if (!parts.some((other, j) => cwds[j] !== cwd && other.slice(-n).join("/") === tail)) return tail;
+    }
+    return own.join("/");
+  });
+}
+
+const ID = String.raw`(?:q|an|nt|oc)-[a-z0-9]+`;
+
+// The refusals `ledger --json answer <q-id> <reply>` gives (lib/commands.mjs), each as the pane
+// says it. The reply in `already answered <reply>` is the human's own text and is kept whole,
+// even when it holds something that looks like an id.
+const KNOWN = [
+  [new RegExp(String.raw`^q-[a-z0-9]+ already answered ([\s\S]*) \(an-[a-z0-9]+\); ([\s\S]*)$`, "i"), (m) => `Already answered with ${m[1]}; ${m[2]}`],
+  [new RegExp(String.raw`^q-[a-z0-9]+ was withdrawn \(an-[a-z0-9]+\); ([\s\S]*)$`, "i"), (m) => `This question was withdrawn; ${m[1]}`],
+  [/^no such question q-[a-z0-9]+$/i, () => "This question is no longer in the ledger"],
+  [/^id cut short: /i, () => "That reply looks like a cut-short id; nothing was recorded"],
+];
+
+/**
+ * A CLI message as the pane shows it, with no row id in it. The CLI's known refusals become
+ * plain sentences; any other message loses its ids (a `q-…` and the name in brackets after it
+ * become `this question`; answer, note and other ids, and ids cut short, go).
+ */
+export function withoutIds(message) {
+  const text = String(message ?? "").trim();
+  for (const [shape, say] of KNOWN) {
+    const m = shape.exec(text);
+    if (m) return capitalized(say(m));
+  }
+  const stripped = text
+    .replace(new RegExp(String.raw`\s*\(${ID}\)`, "gi"), "")
+    .replace(/\bq-[a-z0-9]+(?:\s*\((?:[^()]|\([^()]*\))*\))?/gi, "this question")
+    .replace(new RegExp(String.raw`\b${ID}\b`, "gi"), "")
+    .replace(/\b(?:q|an|nt|oc)-(?![a-z0-9])/gi, "")
+    .replace(/\(\s*\)/g, "")
+    .replace(/\s+([;,.])/g, "$1")
+    .replace(/\s{2,}/g, " ")
+    .trim();
+  return capitalized(stripped);
+}
+
+const capitalized = (s) => s.charAt(0).toUpperCase() + s.slice(1);
+
+/** What the pane shows in place of a question's text when the row has none; never its name or id. */
+export const MISSING_TEXT = "(question text missing)";
+
+/** A question's or an answer's text for the pane: its body, or MISSING_TEXT. */
+export function questionText(row) {
+  const body = typeof row?.body === "string" ? row.body.trim() : "";
+  return body || MISSING_TEXT;
+}
+
+/** An option button's label: the default option says so. */
+export function optionLabel(q, option) {
+  return option === q.default ? `${option} · default` : option;
 }
 
 /**

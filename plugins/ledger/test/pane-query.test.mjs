@@ -69,7 +69,7 @@ test("answers: another session's answer on this session's question shows until t
   let db = openDb(box);
   let snap = snapshot(db, { sessionId: A, cwd: box.work });
   db.close();
-  assert.deepEqual(snap.answers, [{ id: q, name: "colour", state: "answered", word: "red", via: "cli" }]);
+  assert.deepEqual(snap.answers, [{ id: q, name: "colour", body: "Which colour?", state: "answered", word: "red", via: "cli" }]);
   assert.ok(snap.since, "the session's mark is the cursor");
   // The next prompt injects the line and moves the mark: the pane shows nothing new after it.
   assert.match(prompt(box, A, box.work).json.hookSpecificOutput.additionalContext, /colour → red/);
@@ -91,7 +91,7 @@ test("answers: an answer this session recorded itself, and one before the mark, 
   const q2 = ask(box, "shape", box.work, A);
   cli(box, ["withdraw", q2], { env: { LEDGER_SESSION_ID: B } });
   db = openDb(box);
-  assert.deepEqual(snapshot(db, { sessionId: A, cwd: box.work }).answers, [{ id: q2, name: "shape", state: "withdrawn", word: "withdraw", via: "cli" }]);
+  assert.deepEqual(snapshot(db, { sessionId: A, cwd: box.work }).answers, [{ id: q2, name: "shape", body: "Which shape?", state: "withdrawn", word: "withdraw", via: "cli" }]);
   db.prepare("UPDATE cc_sessions SET last_prompt_seen_at = ? WHERE id = ?").run(new Date(Date.now() + 1000).toISOString(), A);
   assert.deepEqual(snapshot(db, { sessionId: A, cwd: box.work }).answers, []);
   db.close();
