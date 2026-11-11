@@ -1,6 +1,6 @@
 {
   "name": "paired-coding",
   "description": "Pair with an agent one change set at a time: a card names the decision in each change, you agree in conversation, and a gate at the tool boundary refuses every write outside the agreed set.",
-  "version": "1.6.0",
+  "version": "1.6.1",
   "mcpServers": {}
 }

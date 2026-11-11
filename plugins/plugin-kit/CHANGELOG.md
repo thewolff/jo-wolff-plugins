@@ -4,6 +4,26 @@ All notable changes to plugin-kit are recorded here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Releases before 0.1.2 are described in
 the README's "Changes in" sections.
 
+## 0.4.1 - 2026-11-10
+
+### Added
+
+- README "The prune contract": what every plugin's declared prune command meets (`--dry-run`,
+  the `pruned:` last line, exit 0 with a stuck file named on stderr, errors.log kept, logs
+  rotated at 256 KiB).
+- `test/prune-template.test.mjs`: drives the template prune and checks every
+  `plugins/*/scripts/prune.mjs` for the contract line, the usage line and the rotation.
+
+### Changed
+
+- `templates/scripts/prune.mjs` rotates every `*.log` / `*.jsonl` past 256 KiB (errors.log
+  included) to `<name>.1` after the age pass, replacing the previous `.1` and counting its bytes
+  as freed; `--dry-run` prints `would rotate …` per log. The contract line is unchanged.
+- The template prune considers regular files only (`lstat`): a symlink, an `x.log` linked to a
+  file elsewhere included, is never aged, rotated or counted, so its earlier `.1` is not lost.
+  A `.1` the age pass removes (or would remove) is not counted again as replaced by its log's
+  rotation, so a `--dry-run` prints the real run's totals. Every template-following
+  `plugins/*/scripts/prune.mjs` carries both, pinned by `test/prune-template.test.mjs`.
 ## [0.4.0] - 2026-11-04
 
 The brb badge and the ledger pane drew nothing in Claude Desktop: both gated on the session's

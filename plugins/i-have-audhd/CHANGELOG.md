@@ -4,6 +4,24 @@ All notable changes to i-have-audhd are recorded here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Entries before 1.5.1 live in the
 README's *Changes* section.
 
+## 1.7.1 - 2026-11-04
+
+- The judge cache (`cache/<sha>.json`, `cache/<sha>.prompt.txt` under the state directory) is
+  capped: at most 2,000 files, none older than 7 days, whichever bites first, oldest removed
+  first (`lib/judge-cache.mjs`). Measured on 2026-11-04 the cache held 8,249 files and 32 MB,
+  none older than the 30-day prune, and a verdict older than a week is for a prompt long out of
+  the harness's context. The judge runs the cap on about one write in 50 (`judge/ask.mjs`,
+  `options.capCheck` forces or skips it for tests); `scripts/prune.mjs` runs it on every run and
+  counts its removals in the `pruned:` line.
+- `scripts/prune.mjs` is plugin-kit 0.4.1's template, re-copied, with the cache cap added:
+  after the age pass it rotates every log under the state directory past 256 KiB
+  (`warnings.log`, `skipped.log`, `judge-failures.log`, `judge-usage.jsonl`, `errors.log`) to
+  `<name>.1`, replacing the previous `.1`; `--dry-run` prints `would rotate …` per log. The
+  `pruned:` line and the `state` declaration are unchanged.
+- The re-copied prune skips symlinks (a linked `x.log` is never rotated over its `.1`) and a
+  dry run no longer counts an expired `.1` twice: its totals are the real run's (plugin-kit
+  0.3.3's fix).
+
 ## [1.7.0]
 
 - The judge command is plugin-kit's shared judge. `lib/judge.mjs` is the kit's dispatch,

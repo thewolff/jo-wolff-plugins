@@ -41,7 +41,7 @@ function stubs(on, { snapshot = SNAPSHOT, cli = RECORDED, placed = true, answer 
   const toasts: string[] = [];
   const opens: unknown[] = [];
   const closes: unknown[] = [];
-  mock.clock(on);
+  const clock = mock.clock(on);
   on("command.register", () => ({ value: undefined }));
   on("session.id", () => ({ value: SESSION }));
   on("session.cwd", () => ({ value: "/Users/example/code/this" }));
@@ -74,7 +74,7 @@ function stubs(on, { snapshot = SNAPSHOT, cli = RECORDED, placed = true, answer 
     if (script.endsWith("scripts/ledger.mjs")) return { value: { exitCode: 0, stdout: JSON.stringify(cli), stderr: "" } };
     return { deny: `unexpected process ${e.argv.join(" ")}` };
   });
-  return { processes, logs, toasts, opens, closes };
+  return { processes, logs, toasts, opens, closes, clock };
 }
 
 const start = ($) => $.session.start({ surface: "desktop", isInteractive: true, cwd: "/Users/example/code/this" });
@@ -205,11 +205,11 @@ test("one placement line per session: surface and isPlaced at session start, not
   expect(logs.filter((l) => l.startsWith("ledger pane: surface="))).toEqual(["ledger pane: surface=desktop placed=false"]);
 });
 
-test("where nothing draws, the placement line says surface=none", async ($, on) => {
+test("surface null (Claude Desktop runs Code headless): the placement line says surface=none and reports the pane placed", async ($, on) => {
   const { logs } = stubs(on);
   await $.session.start({ surface: null, isInteractive: false, cwd: "/Users/example/code/this" });
   await completeTurn($);
-  expect(logs.filter((l) => l.startsWith("ledger pane: surface="))).toEqual(["ledger pane: surface=none placed=false"]);
+  expect(logs.filter((l) => l.startsWith("ledger pane: surface="))).toEqual(["ledger pane: surface=none placed=true"]);
 });
 
 test("turn.complete with the pane placed leaves the result alone", async ($, on) => {
@@ -218,11 +218,27 @@ test("turn.complete with the pane placed leaves the result alone", async ($, on)
   expect(await completeTurn($)).toEqual({ text: "" });
 });
 
-test("where nothing draws (surface null): no pane, no timer, /ledger prints the fallback text and turn.complete carries it", async ($, on) => {
-  const { opens, processes } = stubs(on);
+for (const session of [
+  { surface: null, isInteractive: false, cwd: "/Users/example/code/this" },
+  { surface: "terminal", isInteractive: true, cwd: "/Users/example/code/this" },
+]) {
+  test(`surface ${session.surface === null ? "null (Desktop)" : session.surface}: the query runs, the pane opens, the poll ticks, and turn.complete leaves a placed pane alone`, async ($, on) => {
+    const { opens, processes, clock } = stubs(on);
+    await $.session.start(session);
+    expect(processes.length).toBe(1);
+    expect(opens.length).toBe(1);
+    expect(opens[0]).toMatchObject({ id: "ledger", title: "Ledger" });
+    await clock.advance(2000);
+    expect(processes.length).toBe(3);
+    expect(await completeTurn($)).toEqual({ text: "" });
+  });
+}
+
+test("surface null with the pane not placed (claude -p): /ledger prints the fallback text and turn.complete carries it", async ($, on) => {
+  const { opens, toasts } = stubs(on, { placed: false });
   await $.session.start({ surface: null, isInteractive: false, cwd: "/Users/example/code/this" });
-  expect(processes.length).toBe(0);
-  expect(opens).toEqual([]);
+  expect(opens.length).toBe(1);
+  expect(toasts).toEqual(["1 question waiting in 1 other folder · 1 answer since your last turn · /ledger opens the pane"]);
   const out = await $.command.run({ command: "ledger", args: "" });
   expect(out.text).toMatch(/^answered since your last turn: colour → green \(via cli\)\n/);
   expect((await completeTurn($)).text).toMatch(/^answered since your last turn/);

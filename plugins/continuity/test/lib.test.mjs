@@ -797,13 +797,13 @@ test("prune: removes old snapshots and marks, keeps errors.log, heartbeat and ca
     }
     writeFileSync(join(dir, "fresh.json"), "12");
     const dry = prune(dir, { days: 30, dryRun: true });
-    assert.deepEqual(dry, { removed: 2, bytes: 8, kept: 4 });
+    assert.deepEqual(dry, { removed: 2, bytes: 8, kept: 4, rotated: [] });
     assert.ok(existsSync(join(dir, "old.json")));
-    assert.deepEqual(prune(dir, { days: 30 }), { removed: 2, bytes: 8, kept: 4 });
+    assert.deepEqual(prune(dir, { days: 30 }), { removed: 2, bytes: 8, kept: 4, rotated: [] });
     assert.equal(existsSync(join(dir, "old.json")), false);
     assert.equal(existsSync(join(dir, "sessions")), false);
     for (const f of ["errors.log", "heartbeat.ndjson", "calibration.ndjson", "fresh.json"]) assert.ok(existsSync(join(dir, f)), f);
-    assert.deepEqual(prune(join(b.root, "nowhere")), { removed: 0, bytes: 0, kept: 0 });
+    assert.deepEqual(prune(join(b.root, "nowhere")), { removed: 0, bytes: 0, kept: 0, rotated: [] });
   } finally {
     b.release();
   }

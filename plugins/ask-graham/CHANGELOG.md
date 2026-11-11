@@ -4,6 +4,13 @@ All notable changes to the ask-graham plugin are recorded here. The format follo
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Earlier releases are described under
 "Release notes" in [README.md](README.md#release-notes).
 
+## 0.8.2 - 2026-11-04
+
+### Changed
+
+- `scripts/prune.mjs` is plugin-kit 0.4.1's template, re-copied: after the age pass it rotates every log under the state directory past 256 KiB (errors.log included) to `<name>.1`, replacing the previous `.1` and counting its bytes as freed, so an appended log is bounded; `--dry-run` prints `would rotate …` per log. The `pruned:` line and the `state` declaration are unchanged.
+- The re-copied prune skips symlinks (a linked `x.log` is never rotated over its `.1`) and a dry run no longer counts an expired `.1` twice: its totals are the real run's (plugin-kit 0.4.1's fix).
+
 ## 0.8.1 - 2026-11-04
 
 ### Added

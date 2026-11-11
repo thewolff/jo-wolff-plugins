@@ -1,7 +1,7 @@
 {
   "name": "ask-graham",
   "description": "Decide whether a new idea is worth building, with one engineer's stated judgment and one verdict. Runs on /ask-graham or \"should we build X?\", and on every new idea if you opt in.",
-  "version": "0.8.1",
+  "version": "0.8.2",
   "author": { "name": "Jo Wolff" },
   "license": "MIT",
   "repository": "https://github.com/thewolff/jo-wolff-plugins",

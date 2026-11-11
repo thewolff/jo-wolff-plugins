@@ -1,7 +1,7 @@
 {
   "name": "ledger",
   "description": "A durable record of the questions an agent asks you and the choices it makes without asking, in one SQLite file; hooks keep every question, answer and decision on a row and gate a push on it.",
-  "version": "0.3.8",
+  "version": "0.3.9",
   "private": true,
   "type": "module",
   "engines": { "node": ">=22.13" },

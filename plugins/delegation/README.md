@@ -237,6 +237,10 @@ general was kept.
 | `hooks/repo-rules-inject.mjs` + `lib/repo-rules-walk.mjs` + `lib/budget-fit.mjs` | `hooks/repo-rules-inject.mjs`, `lib/repo-rules.mjs` | the `tmpdir()/newdle-repo-rules-<id>.json` state file (now under the plugin's XDG state dir); the shipyard-specific comments; `budget-fit-cli.mjs` (a CLI no hook called) was not ported |
 | `agents/beefy-builder.md`, `agents/beefy-research.md` | not ported | both are shipyard-specific end to end (Newdle monorepo ownership, `.projects/` sync, Linear closing); `beefy-builder` stays in the default builder class so a repository that ships its own is gated |
 
+## Changes in 0.1.2
+
+`scripts/prune.mjs` is plugin-kit 0.4.1's template, re-copied: after the age pass it rotates every log under the state directory past 256 KiB (errors.log included) to `<name>.1`, replacing the previous `.1` and counting its bytes as freed, so an appended log is bounded; `--dry-run` prints `would rotate …` per log. The `pruned:` line and the `state` declaration are unchanged. Only `*.log` rotates here: its `.jsonl` files are state read back whole.
+
 ## Changes in 0.1.1
 
 `lib/hook-runner.mjs` is plugin-kit 0.3.1's, byte for byte (was 0.2.1's). The handler thread's

@@ -216,7 +216,7 @@ test("canary prunes: every declared `state[].prune` runs after the live runs wit
   assert.equal(count(db, "cc_canary_runs"), 3);
   db.close();
   // --no-prune: live runs only, no new prune rows.
-  assert.deepEqual(parseCanaryArgs(["run", "--no-prune"]), { action: "run", repo: null, plugins: null, timeoutS: 600, prunes: false });
+  assert.deepEqual(parseCanaryArgs(["run", "--no-prune"]), { action: "run", repo: null, plugins: null, timeoutS: 600, prunes: false, prunesOnly: false });
   const r2 = await withStore(b, (s) => runCanary({ db: s.db, dbPath: s.dbPath, env: b.env, repo: root, claudePresent: true, prunes: false }));
   assert.deepEqual(r2.prunes, []);
   const db2 = openDb(b);
@@ -249,7 +249,102 @@ test("canary: the canary directory unwritable → row inserted with transcript_p
   const r2 = await withStore(b, (s) => runCanary({ db: s.db, dbPath: s.dbPath, env: b.env, repo: root, claudePresent: true }));
   chmodSync(b.dbPath, 0o644);
   assert.equal(r2.code, 2);
-  assert.match(r2.text, /could not record the alpha run .*; its transcript is at \(none\), its output at \S+\.out\.txt/);
+  assert.match(r2.text, /could not record the alpha run .*; its transcript is at \(none\), its output at \S+\.out\.txt$/, "the record failure is the last line");
+});
+
+test("canary run --prunes-only: no live run and no cc_canary_runs row; every declared prune runs, one `prune <plugin>: <last line>` each, exit 1 naming a prune that failed or could not start; a read-only store still runs every prune and exits 0 with `not recorded` on the line; a full run with a read-only store runs the prunes before it exits 2", { skip: process.getuid?.() === 0 ? "root ignores modes" : false }, async () => {
+  const b = sandbox();
+  const root = repo(b, { alpha: "#!/bin/bash\nexit 0\n", beta: "#!/bin/bash\nexit 0\n", gamma: "#!/bin/bash\nexit 0\n", delta: "#!/bin/bash\nexit 0\n" });
+  const declare = (name, state) => {
+    mkdirSync(join(root, "plugins", name, ".claude-plugin"), { recursive: true });
+    writeFileSync(join(root, "plugins", name, ".claude-plugin", "plugin.json"), JSON.stringify({ name, version: "0.0.1", state }));
+  };
+  const mark = join(b.root, "alpha-ran");
+  declare("alpha", [{ path: "$XDG_STATE_HOME/alpha", retentionDays: 7, prune: `touch "${mark}" && echo "pruned: 2 file(s), 1234 bytes freed; kept 1"` }]);
+  declare("beta", [{ path: "$XDG_STATE_HOME/beta", retentionDays: 3, prune: "echo 'no store to prune'; exit 75" }]);
+  declare("gamma", [{ path: "$XDG_STATE_HOME/gamma", retentionDays: 3, prune: "echo nope >&2; exit 4" }]);
+  declare("delta", [{ path: "$XDG_STATE_HOME/delta", retentionDays: 3, prune: "/nonexistent/prune-binary --days 3" }]);
+  assert.deepEqual(parseCanaryArgs(["run", "--prunes-only"]), { action: "run", repo: null, plugins: null, timeoutS: 600, prunes: true, prunesOnly: true });
+  assert.match(parseCanaryArgs(["run", "--prunes-only", "--no-prune"]).error, /^usage/, "the two switches contradict");
+  const r = await withStore(b, (s) => runCanary({ db: s.db, dbPath: s.dbPath, env: b.env, repo: root, claudePresent: true, prunesOnly: true }));
+  assert.equal(r.code, 1, r.text);
+  assert.deepEqual(r.rows, [], "no live run");
+  assert.ok(existsSync(mark));
+  // dash (Linux /bin/sh) prefixes the script line ("/bin/sh: 1: …"); macOS sh does not.
+  assert.deepEqual(r.text.split("\n").map((l) => l.replace(/No such file or directory|not found/, "missing").replace(/\/bin\/sh: \d+: /, "/bin/sh: ")), [
+    "prune alpha: pruned: 2 file(s), 1234 bytes freed; kept 1",
+    "prune beta: unavailable, no store to prune",
+    "prune delta: fail, exit 127: /bin/sh: /nonexistent/prune-binary: missing",
+    "prune gamma: fail, exit 4: nope",
+    "canary: 2 prune(s) failed: delta ($XDG_STATE_HOME/delta), gamma ($XDG_STATE_HOME/gamma)",
+  ].map((l) => l.replace(/No such file or directory|not found/, "missing")));
+  const db = openDb(b);
+  assert.equal(count(db, "cc_canary_runs"), 0, "no live-run row");
+  assert.equal(count(db, "cc_canary_prunes"), 4, "one row per prune");
+  db.close();
+  // Only the plugins that ran clean: exit 0 and the summary line.
+  const ok = await withStore(b, (s) => runCanary({ db: s.db, dbPath: s.dbPath, env: b.env, repo: root, claudePresent: true, prunesOnly: true, plugins: ["alpha", "beta", "nope"] }));
+  assert.equal(ok.code, 0, ok.text);
+  assert.deepEqual(ok.text.split("\n"), ["prune alpha: pruned: 2 file(s), 1234 bytes freed; kept 1", "prune beta: unavailable, no store to prune", `prune nope: not a plugin under ${root}/plugins`, "canary: 2 prune(s) ran (1 unavailable)"]);
+  // A read-only store: the prunes still run, exit 0, the row's absence is on the line.
+  rmSync(mark);
+  chmodSync(b.dbPath, 0o444);
+  const ro = await withStore(b, (s) => runCanary({ db: s.db, dbPath: s.dbPath, env: b.env, repo: root, claudePresent: true, prunesOnly: true, plugins: ["alpha"] }));
+  assert.equal(ro.code, 0, ro.text);
+  assert.ok(existsSync(mark), "the prune ran against a store that cannot be written");
+  assert.match(ro.text, /^prune alpha: pruned: 2 file\(s\), 1234 bytes freed; kept 1; not recorded: .+\ncanary: 1 prune\(s\) ran$/);
+  // The CLI, the way launchd runs it: exit 0 with the same lines.
+  rmSync(mark);
+  const viaCli = cli(b, ["canary", "run", "--prunes-only", "--repo", root, "--plugins", "alpha"]);
+  assert.equal(viaCli.code, 0, viaCli.err);
+  assert.ok(existsSync(mark));
+  assert.match(viaCli.out, /^prune alpha: pruned: 2 file\(s\), 1234 bytes freed; kept 1; not recorded: /);
+  // A full run against the same read-only store: exit 2 as before, but the prunes ran first.
+  rmSync(mark);
+  const full = await withStore(b, (s) => runCanary({ db: s.db, dbPath: s.dbPath, env: b.env, repo: root, claudePresent: true, plugins: ["alpha"] }));
+  chmodSync(b.dbPath, 0o644);
+  assert.equal(full.code, 2);
+  assert.ok(existsSync(mark), "the prune ran although the run row could not be written");
+  assert.match(full.text, /^alpha\s+prune pass\s+1234 bytes freed\s+\$XDG_STATE_HOME\/alpha; .*not recorded: .*\ncanary: could not record the alpha run /);
+});
+
+/** A checkout whose alpha prune passes and beta prune fails (exit 4); each touches a marker when it runs. */
+function markedPrunes(b) {
+  const root = repo(b, { alpha: null, beta: null });
+  const marks = {};
+  for (const [name, tail] of [["alpha", 'echo "pruned: 1 file(s), 7 bytes freed; kept 0"'], ["beta", "echo nope >&2; exit 4"]]) {
+    marks[name] = join(b.root, `${name}-ran`);
+    mkdirSync(join(root, "plugins", name, ".claude-plugin"), { recursive: true });
+    writeFileSync(join(root, "plugins", name, ".claude-plugin", "plugin.json"), JSON.stringify({ name, version: "0.0.1", state: [{ path: `$XDG_STATE_HOME/${name}`, retentionDays: 3, prune: `touch "${marks[name]}"; ${tail}` }] }));
+  }
+  return { root, marks };
+}
+
+test("canary run --prunes-only via the CLI: a store that cannot be opened still runs every prune; the exit is the prunes' own and stderr names the rows not recorded", () => {
+  const b = sandbox();
+  const { root, marks } = markedPrunes(b);
+  // LEDGER_DB under a regular file cannot be opened.
+  writeFileSync(join(b.root, "not-a-directory"), "");
+  const env = { LEDGER_DB: join(b.root, "not-a-directory", "l.db") };
+  const r = cli(b, ["canary", "run", "--prunes-only", "--repo", root], { env });
+  assert.equal(r.code, 1, r.out + r.err);
+  assert.ok(existsSync(marks.alpha) && existsSync(marks.beta), "both prunes ran");
+  assert.deepEqual(r.out.trim().split("\n"), ["prune alpha: pruned: 1 file(s), 7 bytes freed; kept 0", "prune beta: fail, exit 4: nope", "canary: 1 prune(s) failed: beta ($XDG_STATE_HOME/beta)"]);
+  assert.match(r.err, /^ledger: database .*EEXIST.*; the prunes ran, their rows were not recorded$/m);
+  const ok = cli(b, ["canary", "run", "--prunes-only", "--repo", root, "--plugins", "alpha"], { env });
+  assert.equal(ok.code, 0, ok.out + ok.err);
+  assert.match(ok.err, /^ledger: database .*; the prunes ran, their rows were not recorded$/m);
+});
+
+test("canary: each action takes only its own switches; `canary run --dry-run` is usage, exit 2, before any store opens or prune runs", () => {
+  const b = sandbox();
+  const { root, marks } = markedPrunes(b);
+  for (const args of [["run", "--dry-run"], ["run", "--prunes-only", "--dry-run"], ["install", "--dry-run"], ["prune", "--prunes-only"], ["runs", "--no-prune"]]) assert.match(parseCanaryArgs(args).error ?? "", /^usage: canary/, args.join(" "));
+  const dry = cli(b, ["canary", "run", "--prunes-only", "--dry-run", "--repo", root]);
+  assert.equal(dry.code, 2, dry.out + dry.err);
+  assert.match(dry.out, /^usage: canary run /);
+  assert.equal(existsSync(marks.alpha) || existsSync(marks.beta), false, "no prune ran");
+  assert.equal(existsSync(b.dbPath), false, "the store was never opened");
 });
 
 test("canary grade, runs, prune: a grade needs a known id and one of three words; prune removes only files older than N days and leaves rows", async () => {
@@ -271,14 +366,24 @@ test("canary grade, runs, prune: a grade needs a known id and one of three words
   const past = new Date(Date.now() - 40 * D);
   utimesSync(old, past, past);
   const p = prune({ env: b.env, days: 30 });
-  assert.deepEqual(p, { removed: 1, kept: 1, bytes: 1 }, "the bytes freed are counted for the prune row");
+  assert.deepEqual(p, { removed: 1, kept: 1, bytes: 1, problems: [] }, "the bytes freed are counted for the prune row");
   assert.equal(existsSync(old), false);
   assert.equal(existsSync(r.rows[0].output_path), true);
   const db = openDb(b);
   assert.equal(count(db, "cc_canary_runs"), 1);
   db.close();
+  // The CLI is the plugin's declared prune verb: the plugin-kit contract line is last; --dry-run counts and removes nothing.
+  writeFileSync(old, "xy");
+  utimesSync(old, past, past);
+  assert.deepEqual(parseCanaryArgs(["prune", "--days", "0", "--dry-run"]), { action: "prune", days: 0, dryRun: true });
+  const dry = cli(b, ["canary", "prune", "--days", "0", "--dry-run"]);
+  assert.equal(dry.code, 0, dry.err);
+  assert.equal(dry.out.trim().split("\n").pop(), "pruned: 2 file(s), 5 bytes freed (dry run); kept 0", "the dry run counts the output file too");
+  assert.equal(existsSync(old), true, "a dry run removes nothing");
   const viaCli = cli(b, ["canary", "prune", "--days", "0"]);
-  assert.match(viaCli.out, /removed 1 file\(s\) older than 0 day\(s\), kept 0; rows untouched/);
+  assert.equal(viaCli.code, 0, viaCli.err);
+  assert.match(viaCli.out, /^canary prune: files older than 0 day\(s\) under .*\/ledger\/canary; rows untouched\npruned: 2 file\(s\), 5 bytes freed; kept 0\n$/);
+  assert.equal(existsSync(old), false);
   assert.match(cli(b, ["canary", "prune", "--days", "x"]).out, /^usage: canary/);
 });
 
@@ -323,9 +428,22 @@ test("canary install: writes the plist under <state>/launchd, lints it, prints t
   // Real plutil on this machine, when present.
   const real = canaryInstall({ env: b.env, cliPath: "/x", repo: root, uid: 501, check: (bin, args) => (bin === "plutil" ? (() => { const { spawnSync } = process.getBuiltinModule("node:child_process"); const x = spawnSync("plutil", args, { encoding: "utf8" }); return x.error ? { missing: true } : { missing: false, code: x.status, output: x.stdout + x.stderr }; })() : { missing: true }) });
   assert.equal(real.code, 0, real.text);
+  // --prunes-only: its own label, the switch in the arguments, 10:00 by default.
+  const daily = canaryInstall({ env: b.env, cliPath: "/x", repo: root, uid: 501, prunesOnly: true, hour: 10, minute: 0, check });
+  assert.equal(daily.code, 0, daily.text);
+  assert.equal(daily.file, join(b.env.XDG_STATE_HOME, "ledger", "launchd", "com.jo-wolff-plugins.ledger-prunes.plist"));
+  const dailyText = readFileSync(daily.file, "utf8");
+  assert.ok(dailyText.includes("<string>run</string>\n    <string>--repo</string>"));
+  assert.ok(dailyText.includes("<string>--prunes-only</string>"));
+  assert.match(dailyText, /<key>Hour<\/key>\s*<integer>10<\/integer>\s*<key>Minute<\/key>\s*<integer>0<\/integer>/);
+  assert.match(daily.text, /launchctl bootstrap gui\/501 \S+ledger-prunes\.plist/);
+  assert.ok(existsSync(file), "the nightly plist is untouched");
+  assert.deepEqual(parseCanaryArgs(["install", "--prunes-only"]), { action: "install", repo: null, hour: 10, minute: 0, prunesOnly: true });
+  assert.deepEqual(parseCanaryArgs(["install", "--prunes-only", "--hour", "7"]), { action: "install", repo: null, hour: 7, minute: 0, prunesOnly: true });
+  assert.deepEqual(parseCanaryArgs(["install"]), { action: "install", repo: null, hour: 3, minute: 30, prunesOnly: false });
   // Usage.
   assert.match(parseCanaryArgs(["install", "--hour", "25"]).error, /^usage: canary/);
-  assert.deepEqual(parseCanaryArgs(["run", "--plugins", "a,b", "--timeout", "30"]), { action: "run", repo: null, plugins: ["a", "b"], timeoutS: 30, prunes: true });
+  assert.deepEqual(parseCanaryArgs(["run", "--plugins", "a,b", "--timeout", "30"]), { action: "run", repo: null, plugins: ["a", "b"], timeoutS: 30, prunes: true, prunesOnly: false });
   assert.match(parseCanaryArgs(["run", "--timeout", "0"]).error, /^usage/);
   assert.match(parseCanaryArgs(["bogus"]).error, /^usage/);
   assert.match(plistText({ cliPath: "/c", repo: "/r", logDir: "/l" }), /<string>\/r<\/string>/);

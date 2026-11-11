@@ -273,6 +273,13 @@ A live headless run (`claude -p --plugin-dir`) is not part of the suite; it cost
 
 ## Changelog
 
+### 0.4.1
+
+- `prune --dry-run` counts and removes nothing. The `pruned:` line is the plugin-kit contract's,
+  `pruned: N file(s), B bytes freed[ (dry run)]; kept K`, and a file that cannot be removed is
+  counted as kept, named on stderr, and no longer makes the exit code 1: the canary reads a
+  non-zero exit as a failed prune, and a stuck file is not that.
+
 ### 0.4.0
 
 - The receipt gains a `better design` column per piece, after `reason`: `none: <what was
@@ -308,11 +315,13 @@ A live headless run (`claude -p --plugin-dir`) is not part of the suite; it cost
   (`stop-plan-with-receipt`), a report passing (`stop-report-passes`); SessionEnd cleaning its
   files (`session-end-cleans-working-files`). `e2e/live-run.sh` hands off to plugin-kit's
   `lib/live-run.mjs`.
-- `pattern-check prune [--days <n>]` (default 30) removes receipt copies, stop guards and session
-  files in the state directory older than that; `errors.log` and `current/` stay. It prints
-  `pruned: N file(s), B bytes freed`, names on stderr any file it could not remove and exits 1
-  then. `.claude-plugin/plugin.json` declares the state directory with that prune, the config
-  file and the repository's `.pattern-check/` kept by design.
+- `pattern-check prune [--days <n>] [--dry-run]` (default 30) removes receipt copies, stop guards
+  and session files in the state directory older than that; `errors.log` and `current/` stay.
+  It prints `pruned: N file(s), B bytes freed[ (dry run)]; kept K` (the plugin-kit prune
+  contract line, read by ledger's canary), names on stderr any file it could not remove (counted
+  as kept) and exits 0 whatever happened to the files; `--dry-run` counts and removes nothing.
+  `.claude-plugin/plugin.json` declares the state directory with that prune, the config file and
+  the repository's `.pattern-check/` kept by design.
 - The skill's "When this can't run" section names the scenarios.
 
 ### 0.3.1

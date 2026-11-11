@@ -556,6 +556,21 @@ Exit 0 means every item is done or had nothing to do, 1 means one was refused or
 
 ## Changes
 
+### 1.7.1
+
+- The judge cache (`cache/<sha>.json`, `cache/<sha>.prompt.txt` under the state directory) is
+  capped: at most 2,000 files, none older than 7 days, whichever bites first, oldest removed
+  first (`lib/judge-cache.mjs`). Measured on 2026-11-04 the cache held 8,249 files and 32 MB,
+  none older than the 30-day prune, and a verdict older than a week is for a prompt long out of
+  the harness's context. The judge runs the cap on about one write in 50 (`judge/ask.mjs`,
+  `options.capCheck` forces or skips it for tests); `scripts/prune.mjs` runs it on every run and
+  counts its removals in the `pruned:` line.
+- `scripts/prune.mjs` is plugin-kit 0.4.1's template, re-copied, with the cache cap added:
+  after the age pass it rotates every log under the state directory past 256 KiB
+  (`warnings.log`, `skipped.log`, `judge-failures.log`, `judge-usage.jsonl`, `errors.log`) to
+  `<name>.1`, replacing the previous `.1`; `--dry-run` prints `would rotate …` per log. The
+  `pruned:` line and the `state` declaration are unchanged.
+
 ### 1.7.0
 
 - The judge command is plugin-kit's shared judge. `lib/judge.mjs` is the kit's dispatch,
@@ -673,8 +688,9 @@ Exit 0 means every item is done or had nothing to do, 1 means one was refused or
   run`; a live `claude -p` session cannot be isolated from the real state directory on macOS
   (the login lives in the keychain), so that is listed under `manual` in the manifest.
 - The three state paths are declared in `.claude-plugin/plugin.json`: `~/.claude/.i-have-audhd-state`
-  (30 days, pruned by `node scripts/prune.mjs --days 30`, which removes files older than that and
-  keeps `errors.log`), the profile and the off file kept by design. The skill has a "When this
+  (30 days, pruned by `node scripts/prune.mjs --days 30`, which removes files older than that,
+  keeps `errors.log`, and since 1.7.1 rotates logs past 256 KiB and caps the judge cache at
+  2,000 files or 7 days), the profile and the off file kept by design. The skill has a "When this
   can't run" section.
 - Fix: the Stop hook and the four check scripts compared `import.meta.url` with
   `file://${process.argv[1]}` as strings. Node resolves the main module through symlinks, so a

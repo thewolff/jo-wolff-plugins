@@ -1,7 +1,7 @@
 {
   "name": "output-types",
   "description": "Label only receipted facts, as CLAIM or CITE with the receipt that earns the label, and leave the rest unlabeled; a Stop check warns about any label that has no receipt.",
-  "version": "0.3.1",
+  "version": "0.3.2",
   "private": true,
   "type": "module",
   "scripts": {

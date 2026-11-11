@@ -26,12 +26,18 @@
 # run exits non-zero and names a login, credential or network problem → 75; any other non-zero
 # → that exit code. An assertion fails with its step number and the evidence line. Everything
 # is under a mktemp directory removed at exit; the transcript is copied to CANARY_TRANSCRIPT
-# when set.
+# when set. `--no-live` on this script's command line stops after the hook phase: exit 75 with
+# the helper's `unavailable: live phase skipped (--no-live); N hook scenario(s) passed offline`
+# last, and `claude` is never looked up or run.
 
 set -u
 PLUGIN_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 PLUGIN="${CANARY_PLUGIN:-delegation}"
 TIMEOUT="${CANARY_TIMEOUT_S:-300}"
+NO_LIVE=0
+for arg in "$@"; do
+  [ "$arg" = "--no-live" ] && NO_LIVE=1
+done
 
 HELPER=""
 for candidate in "$PLUGIN_DIR/lib/live-run.mjs" "$PLUGIN_DIR/../plugin-kit/lib/live-run.mjs"; do
@@ -50,6 +56,12 @@ if [ -n "$HELPER" ]; then
   fi
 else
   echo "hook scenarios skipped: no live-run helper at $PLUGIN_DIR/lib/live-run.mjs or $PLUGIN_DIR/../plugin-kit/lib/live-run.mjs"
+fi
+
+if [ "$NO_LIVE" = 1 ]; then
+  # With the helper, its last line is already `unavailable: live phase skipped (--no-live); N hook scenario(s) passed offline`.
+  [ -z "$HELPER" ] && echo "unavailable: live phase skipped (--no-live); hook phase skipped too (no live-run helper)"
+  exit 75
 fi
 
 if ! command -v claude >/dev/null 2>&1; then

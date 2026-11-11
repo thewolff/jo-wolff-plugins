@@ -401,6 +401,10 @@ The strings `shipyard`, `linear`, `.projects`, `newdle-hooks`, `/Users/<name>/` 
 appear in nothing the plugin runs or loads; `test/port.test.mjs` scans every file except this
 one, `CHANGELOG.md` and itself.
 
+## Changes in 0.3.1
+
+`scripts/prune.mjs` is plugin-kit 0.4.1's template, re-copied: after the age pass it rotates every log under the state directory past 256 KiB (errors.log included) to `<name>.1`, replacing the previous `.1` and counting its bytes as freed, so an appended log is bounded; `--dry-run` prints `would rotate …` per log. The `pruned:` line and the `state` declaration are unchanged.
+
 ## Changes in 0.3.0
 
 - `omp/continuity-omp.ts`, an OMP extension (`package.json` `omp.extensions`, `.omp-plugin/plugin.json`)

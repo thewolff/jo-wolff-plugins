@@ -106,7 +106,7 @@ The skills and edits written for agent-system 2.0 (`ctx`, `resolving-merge-confl
 ## Developing
 
 ```
-node --test skills.test.mjs
+node --test skills.test.mjs scripts/prune.test.mjs
 claude plugin validate .
 ```
 
@@ -118,6 +118,18 @@ Move any other key under `metadata:`. A second test resolves every `. "…"` / `
 the skills' shell scripts and fails when the sourced file is missing or sits outside the script's
 own skill directory. Run the test file by name: a bare `node --test` also picks up the Bun tests
 under `skills/*/test/`, which do not run under Node.
+
+## Changes in 0.1.3
+
+- `scripts/prune.mjs` is the plugin's prune verb, declared in `.claude-plugin/plugin.json` for
+  `$TMPDIR/seo-audit-*` (retention 1 day, was 0 days with no prune): the seo-audit skill's
+  Lighthouse run and Chrome render each make one temporary directory there and remove it in
+  `finally`, so what the verb catches is the directory a killed process (the 120 s wall clock,
+  a SIGKILL, a crash) left behind. It removes every `seo-audit-*` directory under the temp
+  directory older than `--days` (default 1) with everything in it, prints
+  `pruned: <n> file(s), <bytes> bytes freed[ (dry run)]; kept <k>` last (`--dry-run` counts and
+  removes nothing), names on stderr a directory it could not remove and exits 0. Ledger's canary
+  runs it nightly and daily.
 
 ## Changes in 0.1.2
 

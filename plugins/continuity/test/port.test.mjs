@@ -48,7 +48,7 @@ test("hooks.json registers exactly the four hooks, each pointing at a file that 
 test("plugin.json declares the state directory and the prune command the gate reads", () => {
   const manifest = JSON.parse(readFileSync(join(PLUGIN_ROOT, ".claude-plugin", "plugin.json"), "utf8"));
   assert.equal(manifest.name, "continuity");
-  assert.equal(manifest.version, "0.3.0");
+  assert.equal(manifest.version, "0.3.1");
   // The three manifests carry one version; OMP loads the extension package.json names.
   const omp = JSON.parse(readFileSync(join(PLUGIN_ROOT, ".omp-plugin", "plugin.json"), "utf8"));
   const pkg = JSON.parse(readFileSync(join(PLUGIN_ROOT, "package.json"), "utf8"));

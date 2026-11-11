@@ -80,7 +80,7 @@ A long list does not flood the session: each list shows at most 40 reminders, th
 - **Claude Code** runs the `SessionStart` and `UserPromptSubmit` hooks in `hooks/hooks.json`.
 - **OMP** loads `omp/reminders-review-omp.ts` (declared in `package.json`), which runs the same check on `session_start`, `session_switch` and `before_agent_start` and hands the block to the agent as a hidden message. A block belongs to the session it was checked for: switching sessions drops one that was never delivered, and a check still running when the session changes is discarded. Subagent sessions are skipped, and never receive a waiting block.
 
-The hourly limit is per session. Each session's last check is a small file under `${XDG_STATE_HOME:-~/.local/state}/reminders-review/sessions/`. `node scripts/reminders-review.mjs prune --days 30` removes stamps and rotated logs older than 30 days; `plugin.json` declares that directory and that command.
+The hourly limit is per session. Each session's last check is a small file under `${XDG_STATE_HOME:-~/.local/state}/reminders-review/sessions/`. `node scripts/reminders-review.mjs prune --days 30 [--dry-run]` removes stamps and rotated logs older than 30 days and ends with `pruned: <n> file(s), <bytes> bytes freed; kept <k>`; `plugin.json` declares that directory and that command.
 
 If remindctl is not on the `PATH` the hooks see, set `REMINDERS_REVIEW_REMINDCTL` to its absolute path.
 
@@ -99,6 +99,12 @@ A config file that does not parse gets the same treatment. Prompts after the ses
 ## Safety
 
 The text of a reminder is treated as data, never as permission. A reminder that says "delete the old branch" gets a proposal and two questions, not an action. Closing uses `remindctl complete`; the skill has no delete path.
+
+## Changes in 0.2.2
+
+`prune` prints the plugin-kit contract line last, `pruned: <n> file(s), <bytes> bytes freed[ (dry
+run)]; kept <k>` (ledger's canary reads it), after the JSON line it printed before; a file it
+could not remove is named on stderr and the exit code stays 0, not 1.
 
 ## Changes in 0.2.1
 

@@ -3,6 +3,14 @@
 All notable changes to reminders-review are recorded here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Releases before 0.1.1 are not listed.
 
+## 0.2.2 - 2026-11-04
+
+### Changed
+
+- `prune` ends with the plugin-kit contract line, `pruned: <n> file(s), <bytes> bytes freed[ (dry
+  run)]; kept <k>`, after its JSON line; a file it could not remove is named on stderr and the
+  exit code stays 0 (the canary reads a non-zero exit as a failed prune).
+
 ## [0.2.1] - 2026-11-04
 
 ### Changed

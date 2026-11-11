@@ -394,6 +394,10 @@ spawned process, the OMP adapter's handlers, the band's data, view, query and ac
 `bash e2e/live-run.sh --no-live` replays the fourteen `evals/*.scenario.json` offline. `claude
 plugin test` runs the band mod itself (`mods/band/tests/band.test.tsx`).
 
+## Changes in 0.4.1
+
+`scripts/prune.mjs` is plugin-kit 0.4.1's template, re-copied: after the age pass it rotates every log under the state directory past 256 KiB (errors.log included) to `<name>.1`, replacing the previous `.1` and counting its bytes as freed, so an appended log is bounded; `--dry-run` prints `would rotate …` per log. The `pruned:` line and the `state` declaration are unchanged.
+
 ## Changes in 0.4.0
 
 The footer status row of 0.3.x is replaced by a band above the prompt. While away it carries the

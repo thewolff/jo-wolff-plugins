@@ -4,6 +4,55 @@ All notable changes to ledger are recorded here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Entries before 0.2.1 are the
 "Changes" section of the README (one line per version).
 
+## 0.3.9 - 2026-11-04
+
+### Added
+
+- `canary run --prunes-only`, the daily job: no live run, no `cc_canary_runs` row, every
+  declared prune run before and independently of any database write (a `cc_canary_prunes` row
+  is still attempted; one that cannot be written is `not recorded: <reason>` on the line). One
+  line per prune, `prune <plugin>: <its last stdout line>`; exit 0 when every prune ran, 1
+  naming a prune that failed or could not start.
+- `canary install --prunes-only` writes `com.jo-wolff-plugins.ledger-prunes.plist` (daily at
+  10:00 by default) beside the nightly plist and prints its bootstrap line.
+- `canary prune --dry-run`.
+
+### Changed
+
+- `canary prune` prints the plugin-kit contract line last,
+  `pruned: <n> file(s), <bytes> bytes freed[ (dry run)]; kept <k>`; a file that cannot be
+  removed is named on stderr and counted as kept, exit 0.
+- A full `canary run` whose store cannot be written runs the declared prunes before it exits 2.
+- The gate's `retention` row runs every declared prune command once with `--dry-run` and fails
+  naming one that exits non-zero, cannot start, hangs past 60 s, or ends with any line but the
+  contract's.
+- The gate's `docs` row checks only that the root README names the plugin (`rootReadmeNames`),
+  never its version: the root README changes only when a plugin is added, removed or changes
+  purpose. Landed in #94 without a bump.
+
+### Fixed
+
+- `canary run --prunes-only` no longer needs the store to open: it is dispatched before
+  `openStore`, a store that cannot be opened records no `cc_canary_prunes` row, every prune
+  still runs, the exit is the prunes', and stderr ends `…; the prunes ran, their rows were not
+  recorded`. Before, an unopenable store exited 2 with no prune run.
+- Each `canary` action accepts only its own switches: `canary run --dry-run` was accepted and
+  ran the real prunes; it is now the usage line, exit 2, with nothing opened or run. Every
+  `canary` usage error is exit 2 (was 1).
+- The gate's `retention` row runs each prune in a throwaway HOME, XDG config/state/data/cache
+  roots and TMPDIR of its own (removed after), keeping only PATH from the gate's environment: a
+  prune that ignores `--dry-run` could otherwise remove the caller's real state, `LEDGER_DB`
+  and any `*_STATE_DIR` / `*_DB` override included.
+- The pane draws in Claude Desktop. Desktop runs Code headless, so `session.start` arrives with
+  `surface: null`, and `mods/pane/register.mjs` set `draws = surface !== null`, so the poll
+  timer, the refresh and the pane never started there. The gate is gone: the timer and the
+  refresh always start and the pane opens from the snapshot on every surface; where nothing is
+  placed (`claude -p`, a narrow screen) the end-of-turn fallback block covers it as before.
+  `mods/pane/tests/pane.test.tsx` starts the session with `surface: null, isInteractive: false`
+  and with `surface: "terminal"` and expects the query, the pane and the poll in both; the
+  "surface null → nothing" expectations are gone. The placement line still says `surface=none`
+  on Desktop.
+
 ## [0.3.8] - 2026-11-04
 
 ### Fixed
