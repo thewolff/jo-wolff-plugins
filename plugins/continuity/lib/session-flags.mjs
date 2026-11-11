@@ -1,6 +1,11 @@
-// lib/session-flags.mjs — the once-per-session marks: `<state>/sessions/<session>.json`, a
-// JSON object whose keys are the things already done this session (`livenessSaid`,
-// `promptWarned`, `stopBlocked`), each an ISO timestamp.
+// lib/session-flags.mjs — the per-session marks: `<state>/sessions/<session>.json`, a JSON
+// object whose keys are the things already done this session. `livenessSaid` and `configNoted`
+// are ISO timestamps, once per session. `promptWarned` and `stopBlocked` are the context-pressure
+// anchors, `{ epoch, tokens, at, by }`: the compaction window (lib/calibration.mjs `epoch`) and
+// the context size of the last ask (`by: "ask"`) or of the turn a handoff this session wrote
+// silenced (`by: "handoff"`), from which lib/pressure.mjs dueAsk() counts the next one. A 0.3
+// file holds an ISO string there, which names no epoch: it counts as an earlier window, so the
+// ask is re-armed.
 //
 // Keyed by session id so two concurrent sessions never share a mark: with one shared file the
 // second session to reach the pressure threshold would be silently skipped. A session with no
@@ -30,16 +35,21 @@ export function readFlags(key, env = process.env) {
   }
 }
 
-/** Set `flag` for the session; true when the file now holds it. */
-export function markFlag(key, flag, env = process.env, now = new Date()) {
+/** Set `flag` to `value` (any JSON value) for the session; true when the file now holds it. */
+export function setFlag(key, flag, value, env = process.env) {
   try {
     const path = sessionFlagsPath(key, env);
     mkdirSync(dirname(path), { recursive: true });
     const flags = readFlags(key, env);
-    flags[flag] = now.toISOString();
+    flags[flag] = value;
     writeFileSync(path, `${JSON.stringify(flags)}\n`);
     return true;
   } catch {
     return false;
   }
+}
+
+/** Set `flag` to the ISO time `now` for the session; true when the file now holds it. */
+export function markFlag(key, flag, env = process.env, now = new Date()) {
+  return setFlag(key, flag, now.toISOString(), env);
 }

@@ -1,8 +1,9 @@
 {
-  "$comment": "A manual /compact: the snapshot is saved and the heartbeat written, with nothing to tell the person (the handoff warning is for auto-compaction only).",
+  "$comment": "A manual /compact: the snapshot is saved and the heartbeat written, with no message for the person; stdout is the same plain-text compaction-summary instructions every compaction gets.",
   "event": "PreCompact",
   "expect": "silent",
-  "sibling": "pre-compact-auto-no-handoff.scenario.json",
+  "sibling": "pre-compact-omp-payload.scenario.json",
+  "reason": "a section headed exactly `## Handoff`",
   "transcript": [{ "type": "user", "message": { "role": "user", "content": "carry on" } }],
   "stdin": { "hook_event_name": "PreCompact", "session_id": "${SESSION_ID}", "cwd": "${CWD}", "transcript_path": "${TRANSCRIPT}", "trigger": "manual", "custom_instructions": "" },
   "after": {

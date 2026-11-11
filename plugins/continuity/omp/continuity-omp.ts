@@ -73,6 +73,12 @@
 // inlines a nested one; a payload cwd below the launch directory still gets its nearer files
 // inlined, as on Claude Code.
 //
+// THE HOST. The child's env also carries CONTINUITY_HOST=omp (lib/config.mjs onOmp()). On Claude
+// Code hooks/pre-compact.mjs prints the compaction-summary instructions as plain text (Claude
+// Code reads a PreCompact hook's stdout as summary instructions and discards its systemMessage);
+// here it answers JSON as before, so this adapter keeps reading one JSON object and showing the
+// `systemMessage`, and hooks/session-start.mjs does not repeat the no-handoff notice.
+//
 // SESSION ID. Every spawn carries ctx.sessionManager.getSessionId(), the id that is stable across
 // OMP's provider-id rotations, so the save and the restore share one snapshot path and one
 // once-mark file (sessions/<id>.json).
@@ -309,8 +315,9 @@ function hostNode(env: NodeJS.ProcessEnv): NodeChoice {
 
 /**
  * Spawn `hooks/<hook>` with the payload on stdin; its JSON, undefined for a quiet exit 0; rejects
- * on anything else. The child's env is the host's with the node's directory first on PATH and
- * CLAUDE_PROJECT_DIR set to `cwd` (THE RULES WALK, above).
+ * on anything else. The child's env is the host's with the node's directory first on PATH,
+ * CLAUDE_PROJECT_DIR set to `cwd` (THE RULES WALK, above) and CONTINUITY_HOST=omp (THE HOST,
+ * above).
  */
 export function spawnHook(hook: string, payload: string, cwd: string, timeoutMs: number, env: NodeJS.ProcessEnv = process.env): Promise<Verdict | undefined> {
   const root = env.CONTINUITY_PLUGIN_ROOT ?? DEFAULT_PLUGIN_ROOT;
@@ -320,7 +327,7 @@ export function spawnHook(hook: string, payload: string, cwd: string, timeoutMs:
   const child = spawn(node.path, [join(root, "hooks", hook)], {
     cwd,
     detached: true,
-    env: { ...env, PATH: [dirname(node.path), env.PATH].filter(Boolean).join(delimiter), CLAUDE_PROJECT_DIR: cwd, CONTINUITY_HOST_RULES: OMP_HOST_RULES },
+    env: { ...env, PATH: [dirname(node.path), env.PATH].filter(Boolean).join(delimiter), CLAUDE_PROJECT_DIR: cwd, CONTINUITY_HOST_RULES: OMP_HOST_RULES, CONTINUITY_HOST: "omp" },
     stdio: ["pipe", "pipe", "pipe"],
   });
   let stdout = "";

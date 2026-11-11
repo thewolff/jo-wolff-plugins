@@ -1,5 +1,5 @@
 {
-  "$comment": "A question asked in ANOTHER folder is relayed at SessionStart (the hook's additionalContext carries its body). Live: the model's first reply repeats the body, no stopAskRule bounce is written, the session row exists and `doctor` exits 0.",
+  "$comment": "A question asked in ANOTHER folder is relayed at SessionStart (the hook's additionalContext carries its body). Live: the model's first reply names both options and the database in its own words (`local`, `remote` and `database` anywhere, so `a local or a remote database` passes), no stopAskRule bounce is written, the session row exists and `doctor` exits 0.",
   "event": "SessionStart",
   "expect": "systemMessage",
   "reason": "Local or remote database",
@@ -22,7 +22,7 @@
       "Read"
     ],
     "maxTurns": 3,
-    "reply": "local or remote database"
+    "reply": "^(?=[\\s\\S]*\\blocal\\b)(?=[\\s\\S]*\\bremote\\b)[\\s\\S]*\\bdatabase\\b"
   },
   "after": {
     "commands": [

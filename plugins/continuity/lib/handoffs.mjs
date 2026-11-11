@@ -139,8 +139,12 @@ export function renderHandoffs(root, now = Date.now()) {
   return `${lines.join("\n")}\n`;
 }
 
-/** True when `root` holds an open, fresh handoff whose frontmatter `session_id` is `sessionId`. */
-export function handoffWrittenBy(root, sessionId, now = Date.now()) {
-  if (!sessionId) return false;
-  return listHandoffs(root, now).some((e) => e.session === String(sessionId));
+/**
+ * The mtime (ms) of the newest open, fresh handoff under `root` whose frontmatter `session_id`
+ * is `sessionId`; null when there is none (or no session id).
+ */
+export function lastHandoffBy(root, sessionId, now = Date.now()) {
+  if (!sessionId) return null;
+  const mine = listHandoffs(root, now).find((e) => e.session === String(sessionId));
+  return mine ? mine.mtimeMs : null;
 }

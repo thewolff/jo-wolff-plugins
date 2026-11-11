@@ -24,6 +24,7 @@
 
 import { mkdirSync, readFileSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
+import { onOmp } from "./config.mjs";
 import { budget, git } from "./git.mjs";
 import { renderHandoffs, resolveHandoffRoot } from "./handoffs.mjs";
 import { sanitizeSessionId, snapshotPath } from "./paths.mjs";
@@ -274,16 +275,8 @@ export async function capture(input, { env = process.env, now = new Date(), gitB
   }
 }
 
-/**
- * The markdown to inject after a compaction for this session, or null when there is no fresh
- * snapshot of its own. The whole returned text (heading, notices, snapshot) is at most `max`
- * characters (the caller passes what the rest of its block leaves of RESTORE_MAX_CHARS). A
- * restore that fits whole unlinks the file; one that does not shows the head of the snapshot cut
- * on a character boundary, says so with the number shown and the file's path inside the same
- * cap, and keeps the file.
- */
-export function restore(input, { env = process.env, now = Date.now(), max = RESTORE_MAX_CHARS } = {}) {
-  const path = snapshotPath(input?.session_id, env);
+/** This session's fresh snapshot, parsed, or null (absent, older than a day, unreadable, not JSON). */
+function readSnapshot(path, now) {
   let st;
   try {
     st = statSync(path);
@@ -291,9 +284,41 @@ export function restore(input, { env = process.env, now = Date.now(), max = REST
     return null;
   }
   if (!st.isFile() || now - st.mtimeMs > STATE_MAX_AGE_MS) return null;
+  try {
+    return JSON.parse(readFileSync(path, "utf8"));
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * What the post-compaction notice needs from this session's fresh snapshot, read before
+ * restore() removes it: `{ trigger, judgment }`, `judgment` true when the save carried a handoff
+ * or host-supplied judgment; null when there is no fresh, parseable snapshot.
+ */
+export function snapshotFacts(input, { env = process.env, now = Date.now() } = {}) {
+  const json = readSnapshot(snapshotPath(input?.session_id, env), now);
+  if (!json || typeof json !== "object") return null;
+  return { trigger: String(json.trigger ?? "?"), judgment: Boolean(json.handoff?.present || json.hostJudgment) };
+}
+
+/**
+ * The markdown to inject after a compaction for this session, or null when there is no fresh
+ * snapshot of its own. The whole returned text (heading, notices, snapshot) is at most `max`
+ * characters (the caller passes what the rest of its block leaves of RESTORE_MAX_CHARS). A
+ * restore that fits whole unlinks the file; one that does not shows the head of the snapshot cut
+ * on a character boundary, says so with the number shown and the file's path inside the same
+ * cap, and keeps the file. With no handoff in the snapshot, the notice points the model at the
+ * compaction summary's `## Handoff` section, which hooks/pre-compact.mjs asked Claude Code's
+ * summary to carry; under OMP (lib/config.mjs onOmp()) no such instruction is given, so it says
+ * only that no handoff was written.
+ */
+export function restore(input, { env = process.env, now = Date.now(), max = RESTORE_MAX_CHARS } = {}) {
+  const path = snapshotPath(input?.session_id, env);
+  const json = readSnapshot(path, now);
+  if (json === null) return null;
   let body;
   try {
-    const json = JSON.parse(readFileSync(path, "utf8"));
     body = renderSnapshot(json);
   } catch {
     return null;
@@ -304,7 +329,9 @@ export function restore(input, { env = process.env, now = Date.now(), max = REST
     "Before continuing any thread from it, restate what the thread is and what is pending on it, in content, not by name.\n\n";
   const kind = body.includes("## Agent-authored handoff")
     ? "This snapshot includes an agent-authored handoff section. That section carries the previous session's judgment and its labels; start from it. Everything outside it is mechanical fact.\n\n"
-    : "**No handoff was written before compaction.** What follows is mechanical only: branch, diff, files, prompts. Intent, ruled-out approaches and open questions were not captured. You are reconstructing, not resuming; say so rather than narrating inferred history as if you remembered it.\n\n";
+    : onOmp(env)
+      ? "**No handoff was written before compaction.** What follows is mechanical only: branch, diff, files, prompts. Intent, ruled-out approaches and open questions were not captured. You are reconstructing, not resuming; say so rather than narrating inferred history as if you remembered it.\n\n"
+      : "**No handoff file was written before compaction.** The compaction summary was asked to end with a `## Handoff` section (what was in flight, what was ruled out, what is still open, the next step): start from it when it is there, and treat it as the summary's account, not a file the previous session wrote. What follows here is mechanical only: branch, diff, files, prompts. Where the summary is silent, you are reconstructing, not resuming; say so rather than narrating inferred history as if you remembered it.\n\n";
   const whole = head + kind + body;
   if (whole.length <= max) {
     try {

@@ -3,6 +3,66 @@
 All notable changes to continuity are recorded here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## 0.4.0 - 2026-11-10
+
+### Changed
+
+- The handoff ask (UserPromptSubmit) and the Stop block fire at an absolute ask point instead of
+  0.65 × 200,000. The point is `askTokens` (new; default 175,000, under the 200,000 tokens at
+  which Desktop's idle compaction applies), or, when unset and `CLAUDE_CODE_IDLE_COMPACT_MIN_TOKENS`
+  is set, that value minus `askMarginTokens`. It is never below the compaction window's first
+  recorded usage plus `askMarginTokens` (new; default 40,000), so a session that opens at
+  120,000 to 140,000 tokens (Desktop) is not asked on its first turn, and neither is the first
+  turn after a compaction.
+- Asks re-arm. `promptWarned` and `stopBlocked` in `sessions/<session>.json` are now
+  `{ epoch, tokens, at, by }`, keyed by the compaction window (the last `compact_boundary`
+  line's `uuid`, else its byte offset). A compaction starts the count over; within a window the
+  next ask comes after a further `reaskStepTokens` (new; default 150,000). A 0.3 flags file
+  (bare timestamps) counts as an earlier window and is re-armed.
+- A handoff carrying this session's id silences the ask only when it was written after the
+  window's compaction marker and after the last ask; the next step counts from the size it
+  silenced.
+- On Claude Code, `hooks/pre-compact.mjs` prints fixed plain-text instructions (about 1,000
+  characters) on every compaction, asking the summary to end with a `## Handoff` section (In
+  flight, Ruled out, Still open, Next step), instead of a JSON `systemMessage` that Claude Code
+  discards from PreCompact. `lib/hook-runner.mjs` prints a string answer as plain text.
+- The no-handoff notice for an auto or idle compaction moves to `hooks/session-start.mjs` after
+  the compaction (a `systemMessage`). The restore's no-handoff line points at the summary's
+  `## Handoff` section.
+- Under OMP nothing changes for the person: the adapter sets `CONTINUITY_HOST=omp`, and
+  `hooks/pre-compact.mjs` answers JSON there as before, with no summary instructions.
+- `threshold` and `contextTokens` are kept for existing config files: when either is set and
+  `askTokens` is not, the ask point is their product (each defaulting to its 0.3 value). The
+  margin and the re-ask step apply either way.
+- A set auto-compact window is honoured (`lib/autocompact.mjs`): `CLAUDE_CODE_AUTO_COMPACT_WINDOW`,
+  else `autoCompactWindow` in the project local, project, then user settings file, per model
+  under `modelSettings` before the top level. The default ask point and the re-ask come no later
+  than `askMarginTokens` before the point Claude Code compacts at (the window less 33,000, or
+  `CLAUDE_AUTOCOMPACT_PCT_OVERRIDE` of it when earlier). The 33,000 is measured, not documented:
+  on Claude Code 2.1.321 with a 300,000 window for claude-fable-5-2, session eacf7986 compacted
+  automatically on 2026-11-10 at 7:03 PM PST at `preTokens` 267,109, 32,891 before the window.
+  With a 300,000 window that is an ask at 175,000 and another at 227,000. An `askTokens` or
+  `threshold` the person set is not lowered. The ask names the size of the next ask instead of
+  the step.
+- With a modelled compaction point, the baseline floor never pushes the first ask past
+  `askMarginTokens` before it: a window that already opened past that point is asked on its
+  next turn. A 200,000 window (compaction at 167,000) whose session opened at 130,000 was
+  otherwise first asked at 170,000, after the compaction.
+- A re-ask at the margin point comes only when that point is past the last ask, so
+  `askMarginTokens: 0` no longer blocks Stop twice at the same size.
+- `CLAUDE_AUTOCOMPACT_PCT_OVERRIDE` with no window set (or `"auto"`) applies to a native 1M
+  model's 1,000,000 default window (the Fable models, Sonnet 5 and later, Haiku 5.5 and later,
+  Opus 4.7 and later). Other models, and `CLAUDE_CODE_DISABLE_1M_CONTEXT=1`, are not modelled.
+- A transcript's `message.model` matches its `modelSettings` entry through Bedrock
+  (`us.anthropic.claude-sonnet-4-5-20250929-v1:0`) and Vertex (`claude-sonnet-4-5@20250929`)
+  spellings, `[1m]`, a date suffix and case. An exact `modelSettings` key wins over one that only
+  names the same Claude model. Any id that is not a Claude spelling (a custom gateway model)
+  matches only its exact key, so `gateway-v1` and `gateway-v2` keep separate windows. Aliases
+  and ARNs are not resolved.
+- A compaction marker is only a top-level `{"type":"system","subtype":"compact_boundary"}` line.
+  The same text nested in a tool input or result no longer starts a new window or moves its
+  baseline, and a `uuid` over 128 characters is not stored as the window's epoch.
+
 ## 0.3.1 - 2026-11-04
 
 ### Changed

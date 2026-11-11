@@ -10,8 +10,9 @@
 // last compaction marker is used; a sidechain (subagent) reply and a reply whose sum is 0 (a
 // synthetic one) are passed over. A line without the cache fields counts `input_tokens` alone.
 //
-// The measure: the size of the transcript file after its last compaction marker (a line with
-// `"subtype":"compact_boundary"`), or the whole file when it has none. The marker is what a
+// The measure: the size of the transcript file after its last compaction marker (a top-level
+// line `{"type":"system","subtype":"compact_boundary",…}`; the same text nested inside a tool
+// input or result is not a marker), or the whole file when it has none. The marker is what a
 // Claude Code transcript is understood to carry after a compaction; no transcript on the machine
 // this was written on had one, so in practice the measure is usually the whole file, and after a
 // compaction that does not write a marker it still counts the bytes from before it. The README
@@ -36,10 +37,17 @@ const ASSISTANT = '"type":"assistant"';
 const USAGE = '"usage"';
 
 /**
- * `{ bytes, sinceMarker, usageTokens }` for the transcript at `path`: bytes after the line
- * holding the last compaction marker, or the whole file (`sinceMarker` false), and the context
- * size the newest main-thread reply in that span recorded (null when none did). Null when the
- * transcript cannot be read.
+ * `{ bytes, sinceMarker, usageTokens, baselineTokens, epoch, markerAt, model }` for the
+ * transcript at `path`: bytes after the line holding the last compaction marker, or the whole
+ * file (`sinceMarker` false); the context size the newest main-thread reply in that span recorded
+ * (`usageTokens`) and the oldest one (`baselineTokens`, what the window started at), each null
+ * when none did; `epoch`, which compaction window this is (the marker line's `uuid`, else
+ * `@<byte offset>` of the marker line, else "start" when there is no marker), and `markerAt`,
+ * the marker's `timestamp` in ms (null when there is no marker or it carries none); `model`, the
+ * `message.model` of the newest main-thread reply with usage in the whole file (null when none
+ * names one), which lib/autocompact.mjs looks up in `modelSettings`. A transcript is
+ * append-only, so a window's epoch does not change when the session is resumed days later.
+ * Null when the transcript cannot be read.
  */
 export function measureTranscript(path) {
   let fd;
@@ -54,11 +62,23 @@ export function measureTranscript(path) {
       read += n;
     }
     const data = buf.subarray(0, read);
-    const at = data.lastIndexOf(MARKER);
-    if (at < 0) return { bytes: data.length, sinceMarker: false, usageTokens: lastUsage(data, 0) };
-    const eol = data.indexOf(0x0a, at);
-    const from = eol < 0 ? data.length : eol + 1;
-    return { bytes: data.length - from, sinceMarker: true, usageTokens: lastUsage(data, from) };
+    const boundary = lastBoundary(data);
+    if (!boundary) {
+      const last = lastReply(data, 0);
+      return { bytes: data.length, sinceMarker: false, usageTokens: last?.tokens ?? null, baselineTokens: firstUsage(data, 0), epoch: "start", markerAt: null, model: last?.model ?? null };
+    }
+    const { sol, from, rec: marker } = boundary;
+    const stamp = typeof marker.timestamp === "string" ? Date.parse(marker.timestamp) : NaN;
+    const last = lastReply(data, from);
+    return {
+      bytes: data.length - from,
+      sinceMarker: true,
+      usageTokens: last?.tokens ?? null,
+      baselineTokens: firstUsage(data, from),
+      epoch: typeof marker.uuid === "string" && marker.uuid && marker.uuid.length <= 128 ? marker.uuid : `@${sol}`,
+      markerAt: Number.isFinite(stamp) ? stamp : null,
+      model: last ? last.model : (lastReply(data.subarray(0, sol), 0)?.model ?? null),
+    };
   } catch {
     return null;
   } finally {
@@ -72,24 +92,67 @@ export function measureTranscript(path) {
   }
 }
 
-/** The context size recorded by the newest main-thread assistant line in `data` at or after `from`; null when none. */
-function lastUsage(data, from) {
+function parseLine(line) {
+  try {
+    return JSON.parse(line.toString("utf8"));
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * The last compaction marker in `data`, `{ sol, from, rec }` (its line's start, the byte after
+ * the line, the parsed record), or null: the last line holding the marker text that parses as a
+ * top-level `type: "system"`, `subtype: "compact_boundary"` record. A line that only nests the
+ * text (a tool input or result) or does not parse is passed over.
+ */
+function lastBoundary(data) {
+  let at = data.length;
+  while (at > 0) {
+    at = data.lastIndexOf(MARKER, at - 1);
+    if (at < 0) return null;
+    const sol = data.lastIndexOf(0x0a, at) + 1;
+    const nl = data.indexOf(0x0a, at);
+    const rec = parseLine(data.subarray(sol, nl < 0 ? data.length : nl));
+    if (rec?.type === "system" && rec.subtype === "compact_boundary") return { sol, from: nl < 0 ? data.length : nl + 1, rec };
+    at = sol;
+  }
+  return null;
+}
+
+/** `{ tokens, model }` when the line is a main-thread assistant reply recording usage above 0; null otherwise. */
+function lineReply(line) {
+  if (!line.includes(ASSISTANT) || !line.includes(USAGE)) return null;
+  const rec = parseLine(line);
+  if (rec?.type !== "assistant" || rec.isSidechain === true) return null;
+  const tokens = usageTokens(rec.message?.usage);
+  if (!(tokens > 0)) return null;
+  const model = rec.message?.model;
+  return { tokens, model: typeof model === "string" && model ? model : null };
+}
+
+/** The newest main-thread reply with usage in `data` at or after `from`, as `{ tokens, model }`; null when none. */
+function lastReply(data, from) {
   let end = data.length;
   while (end > from) {
     const nl = data.lastIndexOf(0x0a, end - 1);
     const start = nl < from ? from : nl + 1;
-    const line = data.subarray(start, end);
+    const reply = lineReply(data.subarray(start, end));
     end = nl < from ? from : nl;
-    if (!line.includes(ASSISTANT) || !line.includes(USAGE)) continue;
-    let rec;
-    try {
-      rec = JSON.parse(line.toString("utf8"));
-    } catch {
-      continue;
-    }
-    if (rec?.type !== "assistant" || rec.isSidechain === true) continue;
-    const tokens = usageTokens(rec.message?.usage);
-    if (tokens > 0) return tokens;
+    if (reply) return reply;
+  }
+  return null;
+}
+
+/** The context size recorded by the oldest main-thread assistant line in `data` at or after `from`; null when none. */
+function firstUsage(data, from) {
+  let start = from;
+  while (start < data.length) {
+    const nl = data.indexOf(0x0a, start);
+    const end = nl < 0 ? data.length : nl;
+    const reply = lineReply(data.subarray(start, end));
+    start = end + 1;
+    if (reply) return reply.tokens;
   }
   return null;
 }

@@ -3,18 +3,20 @@
 // lib/hook-runner.mjs: exit 0 always; a fault is one errors.log line and a systemMessage, never
 // a block.
 //
-// What it does, as `additionalContext`, each at most once per session: the liveness line, when
-// this session has not heard it (a host that did not run hooks/session-start.mjs); and the
-// context-pressure warning, when the context size (lib/pressure.mjs: the token usage the last
+// What it does, as `additionalContext`: the liveness line, once per session, when this session
+// has not heard it (a host that did not run hooks/session-start.mjs); and the context-pressure
+// ask, when lib/pressure.mjs dueAsk() says one is due: the context size (the token usage the last
 // reply recorded in the transcript, or, with none, the transcript's bytes since its last
-// compaction marker through a calibrated ratio or / 8) is at or past `threshold`
-// (default 0.65) of `contextTokens` (default 200000). The warning asks the model to run
-// `/continuity:handoff` during this turn, while it still has the context the handoff needs;
-// hooks/stop.mjs blocks once at the end of a turn for the same reason.
+// compaction marker through a calibrated ratio or / 8) has reached the ask point (default
+// 175,000 tokens, and at least 40,000 past the compaction window's first recorded usage), or,
+// after an ask or a handoff this session wrote, a further 150,000 tokens in the same window. A
+// compaction re-arms it. The ask tells the model to run `/continuity:handoff` during this turn,
+// while it still has the context the handoff needs; hooks/stop.mjs blocks at the end of a turn
+// under the same rule.
 //
 // How it fails: stdin not JSON, a thrown error, or no answer in 4 s → the runner logs it to
 // errors.log and allows. No `transcript_path`, or a transcript that cannot be measured → no
-// warning, silently. A mark that cannot be written → the line is still given this once, with one
+// ask, silently. A mark that cannot be written → the line is still given this once, with one
 // errors.log line and a systemMessage. A config file with a problem is named once per session.
 // `"pressure": "off"` / `"liveness": "off"` in the config file silence each.
 
@@ -22,11 +24,11 @@ import { runHook, invokedDirectly } from "../lib/hook-runner.mjs";
 import { readConfig } from "../lib/config.mjs";
 import { logError } from "../lib/errors.mjs";
 import { renderLiveness } from "../lib/liveness.mjs";
-import { handoffRequest, pressure } from "../lib/pressure.mjs";
+import { dueAsk, handoffRequest } from "../lib/pressure.mjs";
 import { markFlag, readFlags, sessionKey } from "../lib/session-flags.mjs";
 import { sessionFlagsPath } from "../lib/paths.mjs";
 
-export function handle(input, { env = process.env } = {}) {
+export async function handle(input, { env = process.env } = {}) {
   if (input?.hook_event_name !== "UserPromptSubmit") return null;
   const { config, problem } = readConfig(env);
   const key = sessionKey(input);
@@ -40,11 +42,11 @@ export function handle(input, { env = process.env } = {}) {
     parts.push(renderLiveness({ env }));
     mark("livenessSaid");
   }
-  if (config.pressure !== "off" && !flags.promptWarned) {
-    const p = pressure(input, { threshold: config.threshold, contextTokens: config.contextTokens, env });
-    if (p) {
-      mark("promptWarned");
-      parts.push(handoffRequest(p.pct, p.basis));
+  if (config.pressure !== "off") {
+    const ask = await dueAsk(input, "promptWarned", { config, flags, env });
+    if (ask) {
+      if (!ask.mark()) unmarked = true;
+      parts.push(handoffRequest(ask.tokens, ask.basis, ask.next));
     }
   }
   if (problem && !flags.configNoted) {

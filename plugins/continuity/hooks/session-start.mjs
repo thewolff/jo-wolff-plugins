@@ -15,7 +15,11 @@
 // (restore with its heading and notices, sections, liveness line, separators) is at most 20,000
 // characters: each whole rendered section fits in what the blocks before it and the closing lines
 // left (the rules section also in 9,000 bytes); one with no room for its heading is left out and
-// named in the systemMessage.
+// named in the systemMessage. When the restored save was not a manual `/compact` and found no
+// handoff file and no host-supplied judgment, a systemMessage (NO_HANDOFF_NOTICE) tells the
+// person so; this is the notice hooks/pre-compact.mjs gave before 0.4.0, which Claude Code
+// discards from a PreCompact hook. Under OMP the PreCompact hook still gives it, so it is not
+// repeated here.
 // The two sections never appear on a fresh start. On every start it adds the liveness line: the newest save's
 // result and the age of the last success, or a short block saying no save ever succeeded. The
 // line is marked said for the session, so hooks/user-prompt-submit.mjs does not repeat it.
@@ -30,16 +34,22 @@
 // still given.
 
 import { runHook, invokedDirectly } from "../lib/hook-runner.mjs";
-import { readConfig } from "../lib/config.mjs";
+import { onOmp, readConfig } from "../lib/config.mjs";
 import { logError } from "../lib/errors.mjs";
 import { lastSaveFor, renderLiveness } from "../lib/liveness.mjs";
 import { markFlag, readFlags, sessionKey } from "../lib/session-flags.mjs";
 import { sanitizeSessionId, sessionFlagsPath } from "../lib/paths.mjs";
-import { RESTORE_MAX_CHARS, restore } from "../lib/snapshot.mjs";
+import { RESTORE_MAX_CHARS, restore, snapshotFacts } from "../lib/snapshot.mjs";
 import { notesRoot, renderNotes, renderRules, walkRules } from "../lib/repo-rules.mjs";
 
 const SEP = "\n\n";
 const block = (parts) => parts.reduce((n, p) => n + p.length, 0) + SEP.length * Math.max(0, parts.length - 1);
+
+// For the person, after a compaction they did not ask for (auto or idle) whose save found no
+// handoff file. Claude Code discards a PreCompact systemMessage, so it is said here instead.
+export const NO_HANDOFF_NOTICE =
+  "continuity: this session was compacted with no handoff file written. The compaction summary was asked to end with a `## Handoff` section and the branch, diff and files were restored, but anything the summary left out of what was attempted, ruled out or still open is gone. " +
+  "In long sessions, say \"hand off\" or run `/continuity:handoff` before the context fills.";
 
 export function handle(input, { env = process.env } = {}) {
   if (input?.hook_event_name !== "SessionStart") return null;
@@ -72,6 +82,9 @@ export function handle(input, { env = process.env } = {}) {
   // its heading is left out and named in the systemMessage.
   const room = (...more) => Math.max(0, RESTORE_MAX_CHARS - block([...parts, ...more, ...tail]));
   if (config.snapshot !== "off" && input.source === "compact") {
+    // Read before restore() removes the file. Under OMP the PreCompact hook already showed this.
+    const facts = onOmp(env) ? null : snapshotFacts(input, { env });
+    if (facts && facts.trigger !== "manual" && !facts.judgment) later.push(NO_HANDOFF_NOTICE);
     const restored = restore(input, { env, max: room("") });
     parts.push(restored || notRestored(lastSaveFor(sanitizeSessionId(input.session_id), { env })));
   }

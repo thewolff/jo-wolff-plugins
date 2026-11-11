@@ -46,11 +46,20 @@ function run(b, hook, stdin, { readOnly = false } = {}) {
   }
 }
 
-function assertAllowed(r, what) {
+/** Claude Code takes a PreCompact hook's plain stdout as summary instructions under this many characters (code.claude.com/docs/en/hooks.md). */
+const PRECOMPACT_TEXT_MAX = 10_000;
+
+function assertAllowed(r, what, event) {
   assert.equal(r.error, undefined, `${what}: ${r.error?.message}`);
   assert.equal(r.status, 0, `${what}: exit ${r.status} ${r.stderr}`);
   assert.ok(r.ms < BUDGET_MS, `${what}: took ${r.ms} ms`);
   if (!r.stdout.trim()) return null;
+  // Plain text is an answer only from PreCompact (continuity's summary instructions), and only
+  // under the cap; from any other event, stdout must be JSON.
+  if (event === "PreCompact" && !r.stdout.trimStart().startsWith("{")) {
+    assert.ok(r.stdout.length < PRECOMPACT_TEXT_MAX, `${what}: plain-text stdout is ${r.stdout.length} characters`);
+    return null;
+  }
   const json = JSON.parse(r.stdout);
   assert.notEqual(json.hookSpecificOutput?.permissionDecision, "deny", `${what}: denied`);
   assert.notEqual(json.decision, "block", `${what}: blocked`);
@@ -74,11 +83,11 @@ for (const hook of HOOKS) {
   test(`${hook.event}: the five fault inputs exit 0 inside ${BUDGET_MS} ms with no deny or block`, () => {
     const b = box();
     try {
-      assertAllowed(run(b, hook, ""), `${hook.event} on empty stdin`);
-      assertAllowed(run(b, hook, "{not json"), `${hook.event} on malformed JSON`);
-      assertAllowed(run(b, hook, input("NoSuchEvent", b.root)), `${hook.event} on an unknown event`);
-      assertAllowed(run(b, hook, input(hook.event, b.root), { readOnly: true }), `${hook.event} on an unwritable state`);
-      assertAllowed(run(b, hook, input(hook.event, b.root)), `${hook.event} with no config`);
+      assertAllowed(run(b, hook, ""), `${hook.event} on empty stdin`, hook.event);
+      assertAllowed(run(b, hook, "{not json"), `${hook.event} on malformed JSON`, hook.event);
+      assertAllowed(run(b, hook, input("NoSuchEvent", b.root)), `${hook.event} on an unknown event`, hook.event);
+      assertAllowed(run(b, hook, input(hook.event, b.root), { readOnly: true }), `${hook.event} on an unwritable state`, hook.event);
+      assertAllowed(run(b, hook, input(hook.event, b.root)), `${hook.event} with no config`, hook.event);
     } finally {
       b.release();
     }
@@ -87,7 +96,7 @@ for (const hook of HOOKS) {
   test(`${hook.event}: malformed JSON is visible: one errors.log line${hook.event === "SessionEnd" ? "" : " and a systemMessage"}`, () => {
     const b = box();
     try {
-      const json = assertAllowed(run(b, hook, "{not json"), `${hook.event} on malformed JSON`);
+      const json = assertAllowed(run(b, hook, "{not json"), `${hook.event} on malformed JSON`, hook.event);
       const lines = readFileSync(b.errorsLog, "utf8").split("\n").filter(Boolean);
       assert.equal(lines.length, 1, lines.join("\n"));
       assert.match(lines[0], new RegExp(`^\\d{4}-\\d{2}-\\d{2}T\\S+ ${hook.event} stdin not JSON`));
@@ -97,3 +106,12 @@ for (const hook of HOOKS) {
     }
   });
 }
+
+test("the contract helper takes plain text from PreCompact under 10,000 characters, and from no other event", () => {
+  const ok = (stdout) => ({ error: undefined, status: 0, ms: 1, stdout, stderr: "" });
+  assert.equal(assertAllowed(ok("Summary instructions."), "PreCompact text", "PreCompact"), null);
+  assert.throws(() => assertAllowed(ok("x".repeat(PRECOMPACT_TEXT_MAX)), "PreCompact long text", "PreCompact"), /plain-text stdout is 10000 characters/);
+  for (const event of ["SessionStart", "UserPromptSubmit", "Stop", "SessionEnd"]) {
+    assert.throws(() => assertAllowed(ok("Summary instructions."), `${event} text`, event), SyntaxError);
+  }
+});

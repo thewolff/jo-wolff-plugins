@@ -4,7 +4,9 @@ Keep a long session's state across compaction. Four hooks, one skill and an OMP 
 
 - **`hooks/pre-compact.mjs`** (PreCompact) saves the session's deterministic state (branch,
   uncommitted paths, files touched, recent asks, the repository's open handoffs) to a snapshot
-  under the plugin's state directory, and leaves a heartbeat record saying whether that worked.
+  under the plugin's state directory, leaves a heartbeat record saying whether that worked, and
+  on Claude Code prints plain-text instructions asking the compaction summary to end with a
+  `## Handoff` section.
 - **`hooks/session-start.mjs`** (SessionStart) injects that snapshot back after a compaction and
   removes it, re-inlines the rules files (`CLAUDE.md`, `CLAUDE.local.md`, `AGENTS.md`) on the walk
   from the cwd to the repository root that the host does not re-read on its own, lists the newest
@@ -12,11 +14,13 @@ Keep a long session's state across compaction. Four hooks, one skill and an OMP 
   succeeded on this machine, or that it never has. A save that silently stopped working is the
   failure this line exists to end.
 - **`hooks/user-prompt-submit.mjs`** (UserPromptSubmit) says the liveness line once when
-  SessionStart did not, and asks once for a handoff when the session's context is near full. On
-  Claude Code that is the token usage the last reply recorded in the transcript; see below.
-- **`hooks/stop.mjs`** (Stop) blocks one stop per session at the same threshold, unless this
-  session already wrote a handoff, so the model has a turn to write one while it still holds the
-  context the handoff needs.
+  SessionStart did not, and asks for a handoff when the session's context has grown past the ask
+  point (default 175,000 tokens, and at least 40,000 past where the session or compaction window
+  started), again after each further 150,000, and afresh after every compaction. On Claude Code
+  the size is the token usage the last reply recorded in the transcript; see below.
+- **`hooks/stop.mjs`** (Stop) blocks one stop under the same rule, unless this session wrote a
+  handoff since the last compaction and the last block, so the model has a turn to write one
+  while it still holds the context the handoff needs.
 - **`skills/handoff/SKILL.md`** (`/continuity:handoff`) writes the judgment layer no hook can
   derive, what was in progress, the next move, what was ruled out, what is still uncertain, to
   `<repo>/.ai/handoffs/`, and says how to resume from one: restate its content before continuing.
@@ -78,10 +82,22 @@ capped at 500 ms each. A call still running when the budget ends is killed and i
 saved as `(unknown: timed out)`, and the snapshot is written anyway. A `git status` that failed
 or timed out renders as `(unknown: …)`, never as `(clean)`.
 
-Auto-compaction with no handoff written and no host-supplied judgment puts one `systemMessage`
-in front of the person: the judgment layer was not captured. PreCompact cannot inject context
-and no hook gives the model a turn before auto-compaction, so the person is the only one who can
-act on it. A manual `/compact` says nothing.
+**On Claude Code the hook also prints, on every compaction (auto, idle, manual), a fixed
+plain-text instruction (`SUMMARY_INSTRUCTIONS` in `hooks/pre-compact.mjs`, about 1,000
+characters) asking the compaction summary to end with a `## Handoff` section: In flight, Ruled
+out, Still open, Next step.** Claude Code uses a PreCompact hook's plain stdout, under 10,000
+characters, as instructions for the compaction summary, and discards its `systemMessage` and
+`continue` fields ([hooks reference, PreCompact](https://code.claude.com/docs/en/hooks.md)), so
+the judgment layer reaches the next window through the summary even when no handoff file was
+written. Nothing from the transcript or the payload is put into that text. With `"snapshot":
+"off"` the save is skipped and the instructions are still printed.
+
+The notice that an auto or idle compaction found no handoff file, which 0.3 gave here as a
+`systemMessage` Claude Code then discarded, now comes from `hooks/session-start.mjs` after the
+compaction (below). Under OMP (the adapter sets `CONTINUITY_HOST=omp`) the hook answers JSON as
+before: the no-handoff notice for an auto-compaction and any fault as a `systemMessage` the
+adapter shows, and no summary instructions. A manual `/compact` says nothing to the person on
+either host.
 
 ### The restore and the liveness line (`hooks/session-start.mjs`)
 
@@ -94,7 +110,10 @@ and the blank lines joining them) is at most 20,000 characters. A restore that d
 in its share of that guard is cut on a character boundary, says so with the number of characters
 shown and the file's path, inside the same guard, and is kept; one older than a day is ignored
 and left for prune. A restore that refills the window the compaction just cleared is worse than
-none.
+none. With no handoff file in the snapshot, the restore says so and points the model at the
+summary's `## Handoff` section instead (under OMP, whose summary got no such instruction, it says
+only that no handoff was written). When the restored save came from an auto or idle compaction
+with no handoff file and no host-supplied judgment, a `systemMessage` tells the person so.
 
 After the same compaction, with or without a snapshot to restore, two more sections follow
 (`lib/repo-rules.mjs`); neither appears on a fresh start, a resume or a clear:
@@ -157,38 +176,108 @@ The line is marked said in `sessions/<session_id>.json`, so the prompt hook does
 
 **On Claude Code this is the token usage the last reply recorded.** Claude Code writes each
 assistant reply into the transcript with a `message.usage` object; `lib/pressure.mjs` (through
-`lib/calibration.mjs`) takes the newest main-thread reply after the last compaction marker (a line
-with `"subtype":"compact_boundary"`) and sums `input_tokens + cache_read_input_tokens +
+`lib/calibration.mjs`) takes the newest main-thread reply after the last compaction marker (a
+top-level `{"type":"system","subtype":"compact_boundary"}` line; the same text nested in a tool
+input or result is not a marker) and sums `input_tokens + cache_read_input_tokens +
 cache_creation_input_tokens`, which is what the model was sent on that turn. A reply without the
 cache fields counts `input_tokens` alone; subagent (sidechain) replies and zero-usage replies are
-passed over. The answer is compared against `contextTokens` (default 200,000).
+passed over. The oldest such reply after the marker is the window's **baseline**: what the
+session (or the window since the last compaction) started at.
 
 When no reply since the marker recorded usage (a fresh window, or a host whose transcript has
 none), the check falls back to the transcript's bytes since the marker, or the whole file when it
-has none, divided by `BYTES_PER_TOKEN_ESTIMATE` (8), and the warning says `(estimate)`. On the
+has none, divided by `BYTES_PER_TOKEN_ESTIMATE` (8), and the ask says `(estimate)`. On the
 machine this was written on, Claude Code transcripts ran about 8 to 9.5 bytes per context token
-with a wide spread, so treat that fallback as rough in either direction. No transcript there had
-a compaction marker, so the fallback can also count bytes from before an earlier compaction.
+with a wide spread, so treat that fallback as rough in either direction.
 
 An OMP or other host adapter that passes a real `token_count` at PreCompact, and whose
 transcript records no usage, gets a calibrated byte estimate instead: each such compaction
 records `{bytes, tokens}` in `calibration.ndjson`, and once any record exists the median
-tokens-per-byte ratio replaces the constant. The warning says which basis it used.
+tokens-per-byte ratio replaces the constant. The ask says which basis it used.
 
-At or past `threshold` × `contextTokens` (default 0.65 × 200,000), the prompt hook adds, once per
-session:
+**When it asks.** Counted per compaction window, separately for the prompt hook and the Stop
+hook (`dueAsk()` in `lib/pressure.mjs`):
 
-> continuity: this session's context is N% full (from the token usage the last reply recorded).
-> Before it ends, run `/continuity:handoff` to write the judgment layer to
+1. **The first ask in a window** comes at the ask point, and not before the context is
+   `askMarginTokens` (40,000) past the window's baseline. A Desktop session that opens at 130,000
+   tokens is not asked on its first turn, and neither is the first turn after a compaction. The
+   one exception: with a set auto-compact window, that floor never pushes the ask past
+   `askMarginTokens` before the compaction point. A window that already opened past that point
+   is asked on its first turn past the baseline (a 200,000 window compacts at 167,000; a session
+   that opens at 130,000 is asked at its next turn, not at 170,000). The ask point, first match
+   wins:
+   - `askTokens` in the config file;
+   - else, when the file sets `threshold` or `contextTokens` (the 0.3 keys), `threshold` ×
+     `contextTokens`, each defaulting to its 0.3 value (0.65 and 200,000);
+   - else, when `CLAUDE_CODE_IDLE_COMPACT_MIN_TOKENS` is set, that value (raised to 100,000 when
+     lower, as Claude Code does) minus `askMarginTokens`;
+   - else 175,000;
+   - and in the last two cases, when an auto-compact window is set, no later than
+     `askMarginTokens` before the point Claude Code compacts at (see below).
+2. **After an ask** the next one in the same window comes once the context has grown a further
+   `reaskStepTokens` (150,000) past the size it was asked at. An agent that answered "nothing in
+   flight" at 180,000 is asked again at 330,000, not on every prompt in between. With a set
+   auto-compact window, the next ask comes at its margin point instead when that is sooner, past
+   the last ask, and at least `askMarginTokens` further on.
+3. **A compaction re-arms both.** The marks in `sessions/<session_id>.json` (`promptWarned`,
+   `stopBlocked`) record the window they belong to: the `uuid` of the last `compact_boundary`
+   line (its byte offset when it has none, `start` before the first). The transcript is
+   append-only, so the same window is recognised when the session is resumed days later, and a
+   new marker starts the count over. A 0.3 flags file, whose marks are bare timestamps with no
+   window, counts as an earlier window and is re-armed.
+4. **A handoff silences the ask that is due** when an open handoff in `.ai/handoffs/` carries
+   this session's `session_id` and was written after the window's compaction marker and after
+   the last ask. The next step is counted from the size it silenced.
+
+Why 175,000: Opus 5.5 has a native 1M-token window and auto-compacts near 967K ([model
+configuration](https://code.claude.com/docs/en/model-config.md)), so a fraction of 200,000 is no
+longer "near full"; Desktop's Code tab instead compacts an idle session at 200,000 tokens or more
+after about an hour (`idleCompaction`, on by default there, threshold
+`CLAUDE_CODE_IDLE_COMPACT_MIN_TOKENS`; [settings
+reference](https://code.claude.com/docs/en/settings-reference.md)). Asking 25,000 below that
+leaves room to write the handoff before an idle compaction can take the context.
+
+**A set auto-compact window.** Claude Code lets the person move auto-compaction earlier: the
+`CLAUDE_CODE_AUTO_COMPACT_WINDOW` variable, or `autoCompactWindow` in a settings file, top level
+or per model under `modelSettings` ([model
+configuration](https://code.claude.com/docs/en/model-config.md), "Set the auto-compact window").
+`lib/autocompact.mjs` resolves it the way Claude Code does: the variable first, then
+`<project>/.claude/settings.local.json`, `<project>/.claude/settings.json`, and the user file
+(`$CLAUDE_CONFIG_DIR/settings.json`, else `~/.claude/settings.json`); inside a file the model's
+`modelSettings` entry beats the top level; `"auto"` is Claude Code's default; the model is the
+transcript's newest `message.model`. A `modelSettings` key equal to it wins; otherwise a key that
+names the same Claude model: a Bedrock `[<region>.]anthropic.claude-…-v<n>[:<n>]` or Vertex
+`claude-…@YYYYMMDD` id is read as the bare `claude-…` name, and a `claude-…` id is compared
+without case, `[1m]` or a `-YYYYMMDD` date. Any other id (a custom gateway model) matches only
+its exact key, so `gateway-v1` and `gateway-v2` keep their own windows. Aliases such as `opus`
+and ARNs are not resolved. It does not see `--autocompact`, `--settings` or managed
+settings. Claude Code compacts about 33,000 tokens before the window, or at
+`CLAUDE_AUTOCOMPACT_PCT_OVERRIDE` percent of it when that is earlier. The 33,000 is measured,
+not documented, so it may move between releases: on Claude Code 2.1.321, with a 300,000 window
+for claude-fable-5-2, session eacf7986 compacted automatically on 2026-11-10 at 7:03 PM PST with
+`compactMetadata.preTokens` 267,109, which is 32,891 before the window.
+The default ask point is pulled down to `askMarginTokens` before that point, and the re-ask is
+brought forward to it: with `"autoCompactWindow": 300000` the session is asked at 175,000 and
+again at 227,000, before the compaction at about 267,000; with 200,000, first at 127,000. An
+`askTokens` or `threshold` set in continuity's config is never lowered. With no window set (or
+`"auto"`), `CLAUDE_AUTOCOMPACT_PCT_OVERRIDE` applies to the 1,000,000 default window of a native
+1M model (the Fable models, Sonnet 5 and later, Haiku 5.5 and later, Opus 4.7 and later): at 10
+it compacts at 100,000 and the default ask moves to 60,000. Any other model, or
+`CLAUDE_CODE_DISABLE_1M_CONTEXT=1`, compacts at its context limit, where the documentation says
+the override does not apply, and nothing is modelled.
+
+The prompt hook adds the ask as `additionalContext`:
+
+> continuity: this session's context is 180,000 tokens (from the token usage the last reply
+> recorded). Before it is compacted, run `/continuity:handoff` to write the judgment layer to
 > `.ai/handoffs/` in the repository … If there is genuinely nothing in flight worth passing on …
-> say so in one line and stop.
+> say so in one line and stop. This asks again only once the context reaches 330,000 tokens, or
+> after the next compaction.
 
-and the Stop hook returns `{ decision: "block", reason: <the same text> }` once per session, so
-the model gets one more turn to write the handoff. It does not block when an open handoff whose
-`session_id` is this session's is already in `.ai/handoffs/`: the turn it would ask for has
-happened. A stop with `stop_hook_active: true` is never blocked; the once-mark is written before
-the block is given, and a mark that cannot be written means no block, so the person can always
-end the session.
+and the Stop hook returns `{ decision: "block", reason: <the same text> }` under the same rule, so
+the model gets one more turn to write the handoff. A stop with `stop_hook_active: true` is never
+blocked; the mark is written before the block is given, and a mark that cannot be written means
+no block, so the person can always end the session.
 
 ### The handoff skill (`skills/handoff/SKILL.md`)
 
@@ -208,24 +297,29 @@ name, before continuing: resuming a session is structurally a standup.
 `${XDG_CONFIG_HOME:-~/.config}/continuity/config.json`, read by every hook (`lib/config.mjs`):
 
 ```json
-{ "threshold": 0.65, "contextTokens": 200000, "pressure": "on", "liveness": "on", "snapshot": "on",
-  "rules": "on", "notesDir": ".ai/decision-log", "notesCount": 5 }
+{ "askTokens": 175000, "askMarginTokens": 40000, "reaskStepTokens": 150000, "pressure": "on",
+  "liveness": "on", "snapshot": "on", "rules": "on", "notesDir": ".ai/decision-log", "notesCount": 5 }
 ```
 
 | Key | Default | Meaning |
 |---|---|---|
-| `threshold` | `0.65` (the newdle hook's) | the fraction of `contextTokens` at which the pressure check speaks; a JSON number strictly between 0 and 1 (a string or an array is a problem, not a number) |
-| `contextTokens` | `200000` | the context size the estimate is compared against; a positive whole number |
-| `pressure` | `"on"` | `"off"` silences the prompt warning and the Stop block |
+| `askTokens` | unset: `CLAUDE_CODE_IDLE_COMPACT_MIN_TOKENS` − `askMarginTokens` when that variable is set, else `175000`; either one no later than `askMarginTokens` before a set auto-compact point | the context size, in tokens, of the first handoff ask in a compaction window; a positive whole number. Wins over `threshold` and `contextTokens`, and is never lowered |
+| `askMarginTokens` | `40000` | how far past the window's first recorded usage the context must be before the first ask, and how far before a set auto-compact point the default ask comes; a whole number, 0 or more |
+| `reaskStepTokens` | `150000` | how much further the context must grow, in the same window, after an ask or a handoff before the next ask (sooner at a set auto-compact point's margin); a positive whole number |
+| `threshold` | unset (0.3: `0.65`) | kept for 0.3 config files: with `askTokens` unset, setting this or `contextTokens` makes the ask point `threshold` × `contextTokens`, the unset one at its 0.3 default; a JSON number strictly between 0 and 1 (a string or an array is a problem, not a number) |
+| `contextTokens` | unset (0.3: `200000`) | the other half of that product; a positive whole number |
+| `pressure` | `"on"` | `"off"` silences the prompt ask and the Stop block |
 | `liveness` | `"on"` | `"off"` silences the liveness line |
-| `snapshot` | `"on"` | `"off"` skips the PreCompact save (the heartbeat records `skipped:off`) and the restore; the two sections below still follow a compaction |
+| `snapshot` | `"on"` | `"off"` skips the PreCompact save (the heartbeat records `skipped:off`) and the restore; the summary instructions and the two sections below still follow a compaction |
 | `rules` | `"on"` | `"off"` drops the post-compaction `## Repo rules re-inlined` section |
 | `notesDir` | `".ai/decision-log"` | the durable-notes directory the post-compaction `## Durable notes` section lists; relative to the git root (the cwd when there is none) unless absolute; a non-empty string |
 | `notesCount` | `5` | how many of its newest entries to list; a whole number from 0 (the section is dropped) to 100 |
 
-A missing file is the defaults. A file that does not parse, or a value of the wrong shape, is
-the defaults for that value, and the hooks name the file and the problem once per session (one
-once-mark shared by every hook).
+The margin and the re-ask step apply whichever way the ask point was set. A missing file is the
+defaults. A file that does not parse, or a value of the wrong shape, is the defaults for that
+value, and the hooks name the file and the problem once per session (one once-mark shared by
+every hook; on Claude Code the PreCompact hook, whose messages are discarded, leaves it to the
+next hook).
 
 ## State
 
@@ -234,7 +328,7 @@ Declared in `.claude-plugin/plugin.json`:
 | Path | Kept | Pruned |
 |---|---|---|
 | `${XDG_STATE_HOME:-~/.local/state}/continuity/<session_id>.json` | the snapshot; consumed by the restore | `scripts/prune.mjs --days 30` |
-| `…/continuity/sessions/<session_id>.json` | the once-marks (`livenessSaid`, `promptWarned`, `stopBlocked`, `configNoted`) | same |
+| `…/continuity/sessions/<session_id>.json` | the once-marks (`livenessSaid`, `configNoted`) and the ask anchors (`promptWarned`, `stopBlocked`: `{ epoch, tokens, at, by }`) | same |
 | `…/continuity/heartbeat.ndjson`, `calibration.ndjson` | the save's liveness log; the tokens-per-byte observations (only from a host that passes `token_count`) | kept; trimmed to the newest 200 lines once past 400 |
 | `…/continuity/errors.log` | the hook runner's fault log | kept; the hooks' own lines trim it to the newest 200 once past 400 |
 | `${XDG_CONFIG_HOME:-~/.config}/continuity/config.json` | yours | never |
@@ -253,14 +347,15 @@ happens; a fault is one line in `${XDG_STATE_HOME:-~/.local/state}/continuity/er
 | Piece | Fails how | Then |
 |---|---|---|
 | any hook | stdin not JSON, a throw, no answer in 4 s | runner logs one line, allows; never a block |
-| `hooks/pre-compact.mjs` | the snapshot cannot be written | heartbeat `failed:<code>`, a `systemMessage` naming the path; compaction proceeds |
+| `hooks/pre-compact.mjs` | the snapshot cannot be written | heartbeat `failed:<code>` and an errors.log line; the summary instructions still print, and the restore says the state was not restored; under OMP a `systemMessage` naming the path; compaction proceeds |
 | `hooks/pre-compact.mjs` | git slow or absent, transcript unreadable | every git call shares one 2 s budget; a field git did not answer is `(unknown: timed out)` or `(unknown: … failed)`, and the snapshot is still written |
 | `hooks/session-start.mjs` | no snapshot, a stale one, one that does not parse | nothing restored; the liveness line alone, and after a compaction the rules and notes sections |
 | `hooks/session-start.mjs` (the rules walk) | the cwd missing or not a directory; a rules file unreadable, empty, a symlink out of the tree, or reached twice; the rules larger than the cap or the snapshot leaving no room | the section still appears: one line saying nothing was walked, or one `- skipped <path>: <why>` line per file; a cut file ends `(truncated at N bytes …)`; never a silently shortened rule |
 | `hooks/session-start.mjs` (the notes probe) | `notesDir` absent, not a directory, or unreadable | one line saying so under `## Durable notes` |
 | `hooks/session-start.mjs` | heartbeat absent or never `ok` | the liveness line says so, in bold; never reads as healthy |
-| `hooks/user-prompt-submit.mjs`, `hooks/stop.mjs` | no `transcript_path`, unmeasurable transcript, no recorded usage | silent when there is nothing to measure; with no recorded usage, the bytes / 8 fallback, and the warning says `(estimate)` |
-| `hooks/stop.mjs` | the once-mark cannot be written | no block |
+| `hooks/user-prompt-submit.mjs`, `hooks/stop.mjs` | no `transcript_path`, unmeasurable transcript, no recorded usage | silent when there is nothing to measure; with no recorded usage, the bytes / 8 fallback, and the ask says `(estimate)` |
+| `hooks/user-prompt-submit.mjs`, `hooks/stop.mjs` | a 0.3 flags file, a mark from an earlier compaction window | re-armed: the ask is due again at the ask point of the current window |
+| `hooks/stop.mjs` | the mark cannot be written | no block |
 | `lib/config.mjs` | config missing, malformed, wrong-typed | defaults; the problem named once per session |
 | `skills/handoff` | `.ai/handoffs/` unwritable, no git, no command | the five sections go in the reply; the skill's "When this can't run" section |
 
@@ -271,12 +366,12 @@ session end to end; `test/lib.test.mjs` covers every lib module including its er
 OMP adapter (its payload, its budgets, each fail-open path, and one save-then-restore round trip
 through the real hooks). `evals/manifest.json` declares each event's
 outcomes and the fifteen `evals/*.scenario.json` prove them: `evals/pre-compact-auto-no-handoff.scenario.json`
-is the save with its `systemMessage`, `evals/pre-compact-omp-payload.scenario.json` the same save
-on the payload the OMP adapter sends, `evals/session-start-restore.scenario.json` the restore,
+is the save with its plain-text summary instructions, `evals/pre-compact-omp-payload.scenario.json` the same save
+on the payload the OMP adapter sends, with its `systemMessage`, `evals/session-start-restore.scenario.json` the restore,
 `evals/session-start-restore-rules.scenario.json` the re-inlined rules,
 `evals/session-start-restore-notes.scenario.json` the durable-notes list,
 `evals/stop-blocks-near-full.scenario.json` the block and `evals/stop-once-per-session.scenario.json`
-its once-rule (`bash e2e/live-run.sh --no-live` replays them offline). Run `node --test` from inside `plugins/continuity/`.
+its once-per-step rule (`bash e2e/live-run.sh --no-live` replays them offline). Run `node --test` from inside `plugins/continuity/`.
 
 ### When this can't run
 
@@ -400,6 +495,25 @@ the number is known.
 The strings `shipyard`, `linear`, `.projects`, `newdle-hooks`, `/Users/<name>/` and `ENG-<n>`
 appear in nothing the plugin runs or loads; `test/port.test.mjs` scans every file except this
 one, `CHANGELOG.md` and itself.
+
+## Changes in 0.4.0
+
+The handoff ask now fires when it is useful and again when it is due. It asks at an absolute
+point (`askTokens`, default 175,000, under Desktop's 200,000-token idle compaction; or
+`CLAUDE_CODE_IDLE_COMPACT_MIN_TOKENS` minus the margin when that is set) and never before the
+context is `askMarginTokens` (40,000) past where the window started, so a session that opens at
+130,000 tokens is not asked on its first turn. It asks again after each further
+`reaskStepTokens` (150,000), and a compaction re-arms both the prompt ask and the Stop block; a
+0.3 flags file is re-armed. A 0.3 config with `threshold` or `contextTokens` keeps its ask point.
+With an auto-compact window set (`CLAUDE_CODE_AUTO_COMPACT_WINDOW` or `autoCompactWindow`, per
+model under `modelSettings`, matched through Bedrock and Vertex model spellings), or
+`CLAUDE_AUTOCOMPACT_PCT_OVERRIDE` on a native 1M model, the default ask, the first ask of a
+window that opened large, and the re-ask come no later than `askMarginTokens` before the point
+Claude Code compacts at. Only a top-level `compact_boundary` line starts a new window.
+On Claude Code the PreCompact hook prints plain-text summary instructions asking for a
+`## Handoff` section, and the no-handoff notice Claude Code discarded from PreCompact is given
+after the compaction by the SessionStart hook. Details in "The context-pressure check" and
+[CHANGELOG.md](CHANGELOG.md).
 
 ## Changes in 0.3.1
 

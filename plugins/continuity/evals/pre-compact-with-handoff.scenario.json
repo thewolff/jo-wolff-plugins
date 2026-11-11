@@ -1,8 +1,9 @@
 {
-  "$comment": "Auto-compaction with an open handoff under <root>/.ai/handoffs/: the handoff is inlined into the snapshot and the person is not warned.",
+  "$comment": "Auto-compaction with an open handoff under <root>/.ai/handoffs/: the handoff is inlined into the snapshot, the person is not warned, and the summary still gets its plain-text instructions.",
   "event": "PreCompact",
   "expect": "silent",
-  "sibling": "pre-compact-auto-no-handoff.scenario.json",
+  "sibling": "pre-compact-omp-payload.scenario.json",
+  "reason": "a section headed exactly `## Handoff`",
   "setup": {
     "files": {
       ".ai/handoffs/2026-11-04--1200--jo--port.md": "---\nsession_id: ${SESSION_ID}\nlane: port\nauthor: jo\nbranch: main\ncreated: 2026-11-04T12:00:00Z\nstatus: open\n---\n\n# Session handoff: port\n\n## Where I left off\nHalfway through the hook port.\n\n## Next move\nWrite the tests.\n\n## Already ruled out\nA shared tmpdir flag file: macOS purges it.\n\n## Live uncertainty\nNone.\n\n## Working state\nBranch main, one uncommitted file.\n"
