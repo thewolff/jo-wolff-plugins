@@ -3,8 +3,10 @@
 A marketplace of plugins for Claude Code and OMP about working with an agent: what its output is
 made of, what shape that output arrives in, when it may write code at all, whether it has looked
 for what the repository already has, whether the thing is worth building in the first place,
-going through your reminders with it, keeping a record of what it did and asked, and a vendored
-set of engineering skills.
+going through your reminders with it, keeping a record of what it did and asked, a vendored set
+of engineering skills, briefing and gating its subagents, keeping a session's state across
+compaction, an away mode that holds its questions until you are back, watching the ctx daemon,
+and a kit for starting a new plugin.
 
 This file is an index. It changes only when a plugin is added, removed, or its purpose changes.
 Each plugin's own `README.md` documents it, and each plugin's `CHANGELOG.md` records every
@@ -19,14 +21,14 @@ release; versions live there and in each plugin's `.claude-plugin/plugin.json`, 
 | [paired-coding](plugins/paired-coding/README.md) | Pairs the agent with you one change set at a time, behind a gate at the tool boundary that refuses every write you have not agreed to. |
 | [ask-graham](plugins/ask-graham/README.md) | Answers "should we build X?" with one engineer's stated judgment and a single verdict, when you ask or on every new idea. |
 | [pattern-check](plugins/pattern-check/README.md) | Makes the agent find the existing pattern for each new piece of big work and record reuse, replace or new, and holds writes, commits and PRs until that receipt exists. |
-| [reminders-review](plugins/reminders-review/README.md) | Goes through your open Apple Reminders one at a time: the agent answers, confirms before acting, and closes a reminder only when you say yes. |
+| [reminders-review](plugins/reminders-review/README.md) | Go through your open Apple Reminders one at a time with an agent: it answers, confirms before acting, and closes one only on your yes. It can also raise what is due each session. macOS, via remindctl. |
 | [ledger](plugins/ledger/README.md) | Keeps a durable record of the questions the agent asks you and the choices it makes without asking, in one SQLite file, and gates a push on it. |
-| [as2-skills](plugins/as2-skills/README.md) | Ships the 22 engineering skills of agent-system 2.0, vendored from four upstream skill packs at pinned releases. |
-| [plugin-kit](plugins/plugin-kit/README.md) | Scaffolds a new plugin that meets this repository's test bar on day one, and keeps the libraries and agents the other plugins vendor. |
-| [ctx-watch](plugins/ctx-watch/README.md) | Notices when the ctx daemon is dead, unsupervised or stale, or its semantic index is not ready, repairs it, and says so at session start and in a macOS popup. |
-| [delegation](plugins/delegation/README.md) | Teaches the agent the brief a subagent is handed and refuses a spawn whose brief lacks a required section; ships the general agents and guards. |
-| [continuity](plugins/continuity/README.md) | Keeps a long session's state across compaction: a snapshot saved before and restored after, a liveness line on every start, and a handoff skill. |
-| [brb](plugins/brb/README.md) | Lets you type `brb` and walk away: the agent keeps working, every ask waits in a digest, and only an on-fire finding comes through at once. |
+| [as2-skills](plugins/as2-skills/README.md) | 22 engineering skills (spec and plan, TDD, debugging, code review, security, research and more), most vendored from four upstream skill packs at pinned releases. Skills only, no hooks. |
+| [plugin-kit](plugins/plugin-kit/README.md) | Scaffold a new plugin for this repository that passes its test bar on day one. Also holds the shared libraries, templates and release-review agents the other plugins copy. |
+| [ctx-watch](plugins/ctx-watch/README.md) | Notice when the ctx daemon is dead, unsupervised or stale or its index is not ready, repair it, say so at session start and in a macOS popup, and warn when a resumed session skips ctx. |
+| [delegation](plugins/delegation/README.md) | Teach an agent what a subagent's brief must contain, and refuse a spawn whose brief lacks a required section, naming the section to add. Also ships 11 general agents and 3 delegation guards. |
+| [continuity](plugins/continuity/README.md) | Keep a long session's state across compaction: ask the agent for a handoff and block one stop until it writes one, snapshot the session before compaction, restore it after, and say if saving works. |
+| [brb](plugins/brb/README.md) | Type brb and walk away: the agent keeps working, its questions wait in a digest, and only an on-fire problem reaches you. Claude Code hides its output meanwhile. Type back to read the digest. |
 
 ## Install
 

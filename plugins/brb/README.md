@@ -12,13 +12,19 @@ was done, ending `idle: <why>` when nothing is runnable. A reply that still show
 section or a closing ask is filed by the Stop hook and sent back once, body only. On-fire lines
 are the one thing that still reaches you at once.
 
+**On Claude Code, the agent's output is hidden too.** Since 0.5.0 each run of rows the agent
+writes while you are away draws as one dim `held while away · say back` line, and `back`
+redraws them. `{ "hideRows": "off" }` in `brb/config.json` turns that off; see "The transcript
+while away (Claude Code)".
+
 | | What the agent's reply shows | What you see |
 |---|---|---|
 | away | first line `brb: still away (<duration>, N held) — say \`back\` to read them`, then the body: what was done, ending `idle: <why>` when nothing is runnable; no `Needs you`, no question, no closing ask | the still-away line at the top of every reply; `brb on fire: …` for a fire; `brb: the agent is idle (<why>); N held` when it stops; on Claude Code, the away band above the prompt: `AWAY 40m · N held`, the held items, a Back button |
 | you answer a fire (or anything) while away | your answer handled, then the same shape as away | the hold continues; the away instruction is re-injected on every prompt, and only `back` ends the hold |
 | back | the digest, verbatim, as its whole reply: `brb: hold cleared; digest archived to <path>.` then every item the command held and every one the backstop moved, each once; an item it already resolved ends `— resolved: <how>` | that reply, on every surface (terminal, desktop, mobile app); on the surfaces that render hook frames, the same text once more as a hook line; on Claude Code the band stays, now a checklist: `BACK · N to act on`, Done per row, Clear |
 
-Built on plugin-kit 0.3.2. Claude Code hooks, a Claude Code mod for the away band, plus an OMP
+Built on plugin-kit 0.3.2, with its prune script re-copied from plugin-kit 0.4.1. Claude Code
+hooks, a Claude Code mod for the away band and the hidden rows, plus an OMP
 extension that runs the same hooks. Node 22.13 or later. No other plugin is needed.
 
 ## Install

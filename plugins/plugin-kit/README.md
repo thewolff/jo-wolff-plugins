@@ -12,7 +12,7 @@ can return and one `evals/<x>.scenario.json` per event × outcome, replayed by t
 canary), its state is declared and pruned (`state` in `.claude-plugin/plugin.json`, with a
 prune command for anything kept for a number of days), and a release is written down (a
 version bump has a `CHANGELOG.md` entry and a README release heading, and the repository
-README has a row naming the plugin). `ledger gate check` (the ledger plugin, 0.3.7) enforces the six before a
+README has a row naming the plugin). `ledger gate check`, in the ledger plugin, enforces the six before a
 push. This plugin makes meeting them the default rather than a retrofit.
 
 ## Install

@@ -1,6 +1,6 @@
 {
   "name": "as2-skills",
-  "description": "The 22 engineering skills of agent-system 2.0, vendored from four upstream skill packs at pinned releases, with frontmatter claude.ai accepts. Skills only, no hooks.",
+  "description": "22 engineering skills (spec and plan, TDD, debugging, code review, security, research and more), most vendored from four upstream skill packs at pinned releases. Skills only, no hooks.",
   "version": "0.1.3",
   "author": { "name": "Jo Wolff" },
   "license": "SEE LICENSE IN README.md",

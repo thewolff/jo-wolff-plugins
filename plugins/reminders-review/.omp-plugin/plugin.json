@@ -1,5 +1,5 @@
 {
   "name": "reminders-review",
-  "description": "Go through your open Apple Reminders one at a time with an agent: it answers, confirms before acting, and closes a reminder only when you say yes. macOS, via remindctl.",
+  "description": "Go through your open Apple Reminders one at a time with an agent: it answers, confirms before acting, and closes one only on your yes. It can also raise what is due each session. macOS, via remindctl.",
   "version": "0.2.2"
 }

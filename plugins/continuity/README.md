@@ -16,7 +16,8 @@ Keep a long session's state across compaction. Four hooks, one skill and an OMP 
 - **`hooks/user-prompt-submit.mjs`** (UserPromptSubmit) says the liveness line once when
   SessionStart did not, and asks for a handoff when the session's context has grown past the ask
   point (default 175,000 tokens, and at least 40,000 past where the session or compaction window
-  started), again after each further 150,000, and afresh after every compaction. On Claude Code
+  started, and, when an auto-compact window is set, no later than 40,000 tokens before Claude Code
+  compacts), again after each further 150,000, and afresh after every compaction. On Claude Code
   the size is the token usage the last reply recorded in the transcript; see below.
 - **`hooks/stop.mjs`** (Stop) blocks one stop under the same rule, unless this session wrote a
   handoff since the last compaction and the last block, so the model has a turn to write one
@@ -29,7 +30,8 @@ Keep a long session's state across compaction. Four hooks, one skill and an OMP 
 
 Ported from the newdle plugin 0.2.175 (its `compact-continuity`, `compaction-liveness` and
 `context-pressure` hooks and its `handoff` skill); the table of what was stripped is at the end.
-Built on plugin-kit 0.3.1; Node 22.13 or later; Claude Code hooks plus an OMP extension.
+Built on plugin-kit 0.3.1, with its prune script re-copied from plugin-kit 0.4.1; Node 22.13 or
+later; Claude Code hooks plus an OMP extension.
 
 ## Install
 
