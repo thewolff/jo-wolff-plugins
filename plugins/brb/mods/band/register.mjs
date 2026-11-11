@@ -35,7 +35,20 @@
 //     startup, and compaction keeps the conversation;
 //   - `$.ui.status` is the fallback only: where the band's render site is never asked to draw
 //     (a host with no band), the one-line badge of 0.3.x is set under the prompt; the moment the
-//     band renders once in a conversation, the line is cleared and stays clear.
+//     band renders once in a conversation, the line is cleared and stays clear;
+//   - while away, the transcript rows of the hold (`AssistantMessage`, `ToolUse`, `ToolResult`,
+//     `ToolGroup`) draw as one dim line `held while away · say back` per run of hidden rows, the
+//     rest of the run an empty Box; rows from before the hold, rows with an `on fire:` line and
+//     Jo's own prompts (`UserMessage`, watched only to end a run) draw as Claude Code draws them.
+//     Which rows belong to the hold is hide.mjs's ledger (by row id; the sites carry no time).
+//     The stored messages are never touched: a hook returns a tree in the row's place and does
+//     not call `next`. When the hold ends (`back`, the Back button, the hold gone), the mod calls
+//     `$.ui.invalidate("ui.render")` and every row draws as before;
+//   - while away, the agent reads hide.mjs AWAY_TEXT (work without narration, hold every ask,
+//     reply with the still-away line, the body and `idle: <why>`): appended to the environment
+//     section of the system prompt (`prompt.section`, `breakPromptCache: true` at `brb` and at
+//     `back` only, after `$.ui.invalidate("prompt.section")`), and, in a turn that began while
+//     home (`brb` typed mid-turn), once as `context` after the next tool result (`tool.call`).
 //
 // How it fails: every hook catches its own error, logs one dim transcript line (`$.ui.log`) and
 // passes the event on with `next(e)`; a query, an action or a home probe that fails clears the
@@ -48,6 +61,7 @@
 // `$.env.get` takes a string literal.
 
 import { BACK_WORD, actArgv, awayPath, emptySnapshot, queryArgv, readResult, readSnapshot, statusText, suggestionText } from "./data.mjs";
+import { AWAY_TEXT, HELD_LINE, HIDDEN_SITES, ORDER_SITE, SECTION_NAMES, createLedger, sectionAnswer } from "./hide.mjs";
 import { bandModel, bandTree } from "./view.mjs";
 
 const PROBE_MS = 1000;
@@ -69,6 +83,18 @@ let timers = [];
 let generation = 0;
 /** A Back press is on its way: the band says so, and a second press sends nothing. */
 let backPressed = false;
+/** Which transcript rows belong to the hold (hide.mjs). */
+let ledger = createLedger();
+/** A query answered this conversation and its last answer read: until then, and after a failed query, no row is hidden. */
+let known = false;
+/** The session is away, as the last answered query said. */
+let awayNow = false;
+/** The away state the last `prompt.section` answer carried. */
+let sectionAway = false;
+/** The running turn has had the away text (or began away, when the prompt hook and the section carry it). */
+let reminded = false;
+/** The last row-hook fault logged, so a fault on every row logs once. */
+let lastRowError = null;
 
 /** The sources of classic.SessionStart that begin a new conversation (the d.ts spelling: /branch reports `fork`). */
 const NEW_CONVERSATION = ["clear", "resume", "fork"];
@@ -151,6 +177,27 @@ function sendBack($, gen) {
 }
 
 /**
+ * Follow the hold for the row hooks, the section and the tool reminder. An answered query sets
+ * `known` and the away state; a failed one clears `known` (every row draws as is, nothing is
+ * recorded) and keeps the away state, so one failed query neither ends the hold's ledger nor
+ * flips the system prompt. When the hold ends, its rows join the ledger's past and every site is
+ * drawn again; when the away state changes, the section is asked again.
+ */
+function applyAway($, next) {
+  const wasKnown = known;
+  known = next.ok === true;
+  const away = known ? next.away === true : awayNow;
+  if (away === awayNow && known === wasKnown) return;
+  if (away !== awayNow) {
+    if (awayNow) ledger.endHold();
+    awayNow = away;
+    reminded = !away;
+    $.ui.invalidate("prompt.section");
+  }
+  $.ui.invalidate("ui.render");
+}
+
+/**
  * Keep the snapshot; redraw the band when what it would draw changed; propose the prompt-box
  * text while away; set the fallback line only where the band has never rendered (and not before
  * the first timer tick, so a host that draws the band never flashes the line at start); a new
@@ -158,6 +205,7 @@ function sendBack($, gen) {
  */
 function applySnapshot($, next, where = "query") {
   if (!(next.ok && next.away)) backPressed = false;
+  applyAway($, next);
   const { backPressed: _shown, ...query } = next;
   snapshot = backPressed ? { ...query, backPressed: true } : query;
   const key = JSON.stringify(bandModel(snapshot));
@@ -267,8 +315,19 @@ function stop($) {
   suggested = null;
   lastError = null;
   applyStatus($, undefined);
+  // The next conversation starts with no ledger and not known: no row hidden until its first
+  // query answers. A hold this one had is dropped from the section (asked again, cache broken).
+  const wasHiding = known && awayNow;
+  ledger = createLedger();
+  known = false;
+  lastRowError = null;
+  if (awayNow) {
+    awayNow = false;
+    $.ui.invalidate("prompt.section");
+  }
+  reminded = true;
   const key = JSON.stringify(bandModel(snapshot));
-  if (key !== viewKey) {
+  if (key !== viewKey || wasHiding) {
     viewKey = key;
     $.ui.invalidate("ui.render");
   }
@@ -333,6 +392,62 @@ export function register(on, options) {
     }
   });
 
+  // The transcript rows of the hold. `UserMessage` is watched only so a prompt Jo typed ends a
+  // run of hidden rows; it is always drawn as is. A fault draws the row as Claude Code would.
+  for (const component of [...HIDDEN_SITES, ORDER_SITE]) {
+    on("ui.render", { component }, async ($, e, next) => {
+      try {
+        const verdict = ledger.decide({ known, away: awayNow, component: e.component, requestId: e.requestId, props: e.props });
+        if (verdict === "show") return next(e);
+        const { Box, Text } = await $.ui.resolve(e);
+        return verdict === "line" ? Text({ dimColor: true, wrap: "truncate-end", children: [HELD_LINE] }) : Box({});
+      } catch (err) {
+        const message = errorText(err);
+        if (message !== lastRowError) {
+          lastRowError = message;
+          await logFault($, `ui.render ${component}`, err);
+        }
+        return next(e);
+      }
+    });
+  }
+
+  // The away text in the system prompt. Only the engine's own section names are asked for, so it
+  // is appended to the environment section; home, core's text passes as it is.
+  for (const name of SECTION_NAMES) {
+    on("prompt.section", { name }, async ($, e, next) => {
+      const core = await next(e);
+      try {
+        const answer = sectionAnswer(core?.text ?? null, awayNow, sectionAway);
+        sectionAway = awayNow;
+        return answer;
+      } catch (err) {
+        await logFault($, "prompt.section", err);
+        return core;
+      }
+    });
+  }
+
+  // A turn that began home and is still running when the hold starts (`brb` typed mid-turn) has
+  // neither the prompt hook's instruction nor the section: its next tool result carries the away
+  // text once. Home, the call's id joins the ledger's past (its row may first draw after `brb`).
+  on("tool.call", async ($, e, next) => {
+    try {
+      ledger.noteCall(e?.tool_use_id, { known, away: awayNow });
+    } catch {
+      // the ledger never throws on an id; nothing to undo
+    }
+    const result = await next(e);
+    try {
+      if (reminded || !known || !awayNow || e?.agentId !== undefined || !result || result.deny !== undefined) return result;
+      reminded = true;
+      return { ...result, context: [...(result.context ?? []), AWAY_TEXT] };
+    } catch (err) {
+      await logFault($, "tool.call", err);
+      return result;
+    }
+  });
+
   on("prompt.submit", async ($, e, next) => {
     // After `next` the engine has handled the prompt, settings hooks included (as PreToolUse runs
     // inside a tool.call's `next`), so `brb` has written away.json and `back` has removed it; were
@@ -349,7 +464,11 @@ export function register(on, options) {
 
   on("turn.start", async ($, e, next) => {
     try {
-      if (e.agentId === undefined) refresh($);
+      if (e.agentId === undefined) {
+        // A turn that begins away has the prompt hook's instruction and the section already.
+        reminded = awayNow && known;
+        refresh($);
+      }
     } catch (err) {
       await logFault($, "turn.start", err);
     }

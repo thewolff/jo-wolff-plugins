@@ -12,11 +12,15 @@ import test from "node:test";
 import assert from "node:assert/strict";
 
 let fresh = 0;
-/** A fresh copy of the module (its state is module-level) with its hooks by event name. */
+/** A fresh copy of the module (its state is module-level) with its hooks by event name; a hook with a `component` or `name` matcher also as `<event>:<value>` (`ui.render` alone is the band's, the first registered). */
 async function load() {
   const { register } = await import(`../register.mjs?fresh=${++fresh}`);
   const hooks = new Map();
-  register((event, a, b) => hooks.set(event, b ?? a), {});
+  register((event, a, b) => {
+    const tag = b ? (a?.component ?? a?.name) : undefined;
+    if (tag !== undefined) hooks.set(`${event}:${tag}`, b);
+    if (!hooks.has(event)) hooks.set(event, b ?? a);
+  }, {});
   return hooks;
 }
 
@@ -32,7 +36,7 @@ const CHECKLIST = { ok: true, away: false, checklist: { at: SINCE, since: SINCE,
  * that never settles, as a call made while the agent works).
  */
 function stub({ snapshot = HOME, exists = async () => false } = {}) {
-  const s = { timers: new Map(), live: new Set(), cancelled: [], runs: 0, acts: [], submits: [], toasts: [], statuses: [], logs: [], suggestions: [], invalidations: 0, snapshot, exists, sessionId: "s1", hold: null, submit: () => new Promise(() => {}) };
+  const s = { timers: new Map(), live: new Set(), cancelled: [], runs: 0, acts: [], submits: [], toasts: [], statuses: [], logs: [], suggestions: [], invalidations: 0, invalidated: [], snapshot, exists, sessionId: "s1", hold: null, submit: () => new Promise(() => {}) };
   s.$ = {
     env: { get: async (name) => (name === "XDG_STATE_HOME" ? "/tmp/state" : name === "HOME" ? "/Users/example" : undefined) },
     clock: {
@@ -65,7 +69,7 @@ function stub({ snapshot = HOME, exists = async () => false } = {}) {
       log: async (text) => s.logs.push(text),
       toast: (text) => s.toasts.push(text),
       status: (text) => s.statuses.push(text),
-      invalidate: () => s.invalidations++,
+      invalidate: (event) => (s.invalidations++, s.invalidated.push(event)),
       resolve: () => ({
         Box: ({ children, ...props }) => ({ type: "Box", props, children: [children ?? []].flat(Infinity) }),
         Text: ({ children, ...props }) => ({ type: "Text", props, children: [children ?? []].flat(Infinity) }),
@@ -333,4 +337,131 @@ test("R1 B1: a query answer from the last conversation that lands after the new 
   release();
   await late;
   assert.equal(await hooks.get("ui.render")(s.$, BAND, async () => "gone"), "gone", "the old checklist did not come back");
+});
+
+// ---- 0.5.0: the hold's transcript rows, the away section, the mid-turn reminder ----
+
+const { AWAY_TEXT, HELD_LINE } = await import("../hide.mjs");
+const DRAWN = { type: "Text", props: {}, children: ["drawn by Claude Code"] };
+const rowOf = (hooks, s, surface, component, requestId, props) =>
+  hooks.get(`ui.render:${component}`)(s.$, { component, surface, requestId, props }, async () => DRAWN);
+const said = (id, text = "ran the migration") => ["AssistantMessage", id, { text, isFirstOfReply: true }];
+const ran = (id, component = "ToolUse") => [component, id, { tool_use_id: id, tool: "Bash", input: {}, isRunning: false, isErrored: false, isInterrupted: false }];
+const complete = (hooks, s) => hooks.get("turn.complete")(s.$, { turnId: "t" }, async () => ({}));
+const turnStart = (hooks, s, e = {}) => hooks.get("turn.start")(s.$, { turnId: "t", ...e }, async () => ({}));
+const toolCall = (hooks, s, e, answer = { result: { stdout: "" }, text: "", ref: 1 }) => hooks.get("tool.call")(s.$, { tool: "Bash", input: {}, ...e }, async () => answer);
+const section = (hooks, s, name, text) => hooks.get(`prompt.section:${name}`)(s.$, { name, text }, async (e) => ({ text: e.text }));
+
+for (const [where, e, surface] of [["Desktop (surface null, not interactive)", DESKTOP, "desktop"], ["terminal", TERMINAL, "terminal"]]) {
+  test(`${where}: while away the hold's rows draw one dim line then nothing, older rows and fires as drawn; back redraws every row as drawn`, async () => {
+    const hooks = await load();
+    const s = stub({ snapshot: HOME });
+    await start(hooks, s, e);
+    assert.equal(await rowOf(hooks, s, surface, ...said("m-before")), DRAWN);
+    assert.equal(await rowOf(hooks, s, surface, ...ran("t-before")), DRAWN);
+
+    s.snapshot = AWAY;
+    const before = s.invalidated.length;
+    await complete(hooks, s);
+    assert.ok(s.invalidated.slice(before).includes("ui.render"), "the rows were asked to draw again at brb");
+    assert.ok(s.invalidated.slice(before).includes("prompt.section"), "the section was asked again at brb");
+
+    assert.equal(await rowOf(hooks, s, surface, ...said("m-before")), DRAWN, "a row from before the hold stays");
+    assert.equal(await rowOf(hooks, s, surface, ...ran("t-before")), DRAWN);
+    const first = await rowOf(hooks, s, surface, ...said("m-away"));
+    assert.notEqual(first, DRAWN);
+    assert.deepEqual(texts(first), [HELD_LINE]);
+    assert.equal(first.props.dimColor, true);
+    const rest = await rowOf(hooks, s, surface, ...ran("t-away"));
+    assert.deepEqual(texts(rest), [], "the rest of the run draws nothing");
+    assert.deepEqual(texts(await rowOf(hooks, s, surface, ...ran("t-away", "ToolResult"))), []);
+    assert.equal(await rowOf(hooks, s, surface, ...said("m-fire", "on fire: main is red since 4bd1e2")), DRAWN, "a fire is drawn");
+    assert.equal(await rowOf(hooks, s, surface, "UserMessage", "u1", { text: "status?" }), DRAWN, "Jo's prompt is drawn");
+
+    s.snapshot = CHECKLIST;
+    const atBack = s.invalidated.length;
+    await complete(hooks, s);
+    assert.ok(s.invalidated.slice(atBack).includes("ui.render"), "back asks every row to draw again");
+    assert.equal(await rowOf(hooks, s, surface, ...said("m-away")), DRAWN, "the hidden reply is back");
+    assert.equal(await rowOf(hooks, s, surface, ...ran("t-away")), DRAWN, "the hidden tool row is back");
+    assert.equal(await rowOf(hooks, s, surface, ...ran("t-away", "ToolResult")), DRAWN);
+  });
+}
+
+test("a failed query while away draws every row as is; the next answered query hides the hold's rows again", async () => {
+  const hooks = await load();
+  const s = stub({ snapshot: AWAY });
+  await start(hooks, s);
+  assert.notEqual(await rowOf(hooks, s, "terminal", ...said("a1")), DRAWN);
+  s.snapshot = { ok: false, error: "query: node not found" };
+  await complete(hooks, s);
+  assert.equal(await rowOf(hooks, s, "terminal", ...said("a1")), DRAWN, "fail open: the mod cannot tell, so it hides nothing");
+  s.snapshot = AWAY;
+  await complete(hooks, s);
+  assert.notEqual(await rowOf(hooks, s, "terminal", ...said("a1")), DRAWN, "the failure did not end the hold's ledger");
+});
+
+test("a row hook that faults draws the row as Claude Code would and logs once", async () => {
+  const hooks = await load();
+  const s = stub({ snapshot: AWAY });
+  await start(hooks, s);
+  s.$.ui.resolve = () => {
+    throw new Error("resolve refused");
+  };
+  assert.equal(await rowOf(hooks, s, "terminal", ...said("a1")), DRAWN);
+  assert.equal(await rowOf(hooks, s, "terminal", ...said("a2")), DRAWN);
+  assert.equal(s.logs.filter((l) => l.includes("resolve refused")).length, 1);
+});
+
+test("session.end while away: rows draw as is again and the section is asked again", async () => {
+  const hooks = await load();
+  const s = stub({ snapshot: AWAY });
+  await start(hooks, s);
+  assert.notEqual(await rowOf(hooks, s, "terminal", ...said("a1")), DRAWN);
+  const before = s.invalidated.length;
+  await end(hooks, s, "clear");
+  assert.ok(s.invalidated.slice(before).includes("prompt.section"));
+  assert.ok(s.invalidated.slice(before).includes("ui.render"));
+  assert.equal(await rowOf(hooks, s, "terminal", ...said("a1")), DRAWN);
+});
+
+test("prompt.section: home passes core's text; away appends the away text and breaks the cache once; back breaks it once more", async () => {
+  const hooks = await load();
+  const s = stub({ snapshot: HOME });
+  await start(hooks, s);
+  for (const name of ["env_info_simple", "env_info_static"]) assert.ok(hooks.has(`prompt.section:${name}`), name);
+  assert.deepEqual(await section(hooks, s, "env_info_simple", "cwd: /w"), { text: "cwd: /w" });
+  s.snapshot = AWAY;
+  await complete(hooks, s);
+  const away = await section(hooks, s, "env_info_simple", "cwd: /w");
+  assert.equal(away.breakPromptCache, true);
+  assert.ok(away.text.includes("cwd: /w") && away.text.includes(AWAY_TEXT));
+  assert.equal((await section(hooks, s, "env_info_simple", "cwd: /w")).breakPromptCache, undefined, "asked again while away: no second break");
+  s.snapshot = HOME;
+  await complete(hooks, s);
+  assert.deepEqual(await section(hooks, s, "env_info_simple", "cwd: /w"), { text: "cwd: /w", breakPromptCache: true });
+});
+
+test("tool.call: a turn begun home gets the away text once after the first tool result once brb lands; a turn begun away, a subagent, a deny get none", async () => {
+  const hooks = await load();
+  const s = stub({ snapshot: HOME });
+  await start(hooks, s);
+  await turnStart(hooks, s);
+  const home = await toolCall(hooks, s, { tool_use_id: "c1" });
+  assert.equal(home.context, undefined);
+  // `brb` typed mid-turn: the prompt hook writes the hold inside `next`, the mod refreshes after
+  s.snapshot = AWAY;
+  await hooks.get("prompt.submit")(s.$, { text: "brb", turnId: "t" }, async (p) => ({ text: p.text }));
+  await tick();
+  assert.equal((await toolCall(hooks, s, { tool_use_id: "c2", agentId: "sub-1" })).context, undefined, "a subagent's call: none");
+  assert.deepEqual((await toolCall(hooks, s, { tool_use_id: "c3" }, { deny: "no" })), { deny: "no" }, "a deny passes untouched");
+  const first = await toolCall(hooks, s, { tool_use_id: "c4" }, { result: { stdout: "ok" }, text: "ok", ref: 7, context: ["another hook's"] });
+  assert.deepEqual(first.context, ["another hook's", AWAY_TEXT]);
+  assert.equal(first.ref, 7, "core's result is kept");
+  assert.equal((await toolCall(hooks, s, { tool_use_id: "c5" })).context, undefined, "once per turn");
+  await turnStart(hooks, s);
+  assert.equal((await toolCall(hooks, s, { tool_use_id: "c6" })).context, undefined, "a turn begun away has the section and the prompt hook");
+  // the tool row of c1 (called home) first draws now: it predates the hold
+  assert.equal(await rowOf(hooks, s, "terminal", ...ran("c1")), DRAWN);
+  assert.notEqual(await rowOf(hooks, s, "terminal", ...ran("c4")), DRAWN);
 });

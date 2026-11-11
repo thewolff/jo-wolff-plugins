@@ -12,6 +12,7 @@
 // nothing here touches the state directory.
 
 import { expect, mock, test } from "claude-code/testing";
+import { AWAY_TEXT, HELD_LINE } from "../hide.mjs";
 
 const SESSION = "s-this-window";
 const SINCE = new Date(Date.now() - 40 * 60_000).toISOString();
@@ -325,4 +326,87 @@ test("R1 S1: 11 checklist rows with the first 10 done: row 11 shows with its Don
   await clock.settle();
   expect(acts).toEqual([["done", "10"]]);
   await ui.unmount();
+});
+
+// ---- 0.5.0: the hold's transcript rows, the away section, the mid-turn reminder ----
+// Each row site is mounted as the surface draws it; the core stub above draws every row as
+// THEIRS, so a row the mod leaves alone shows THEIRS and a hidden one shows the mod's tree.
+
+const said = (requestId: string, text = "ran the migration") => ({ plugin: "brb", component: "AssistantMessage", requestId, props: { text, isFirstOfReply: true } }) as const;
+const ran = (id: string, component: "ToolUse" | "ToolResult" = "ToolUse") =>
+  component === "ToolUse"
+    ? ({ plugin: "brb", component, requestId: id, props: { tool_use_id: id, tool: "Bash", input: { command: "ls" }, isRunning: false, isErrored: false, isInterrupted: false } } as const)
+    : ({ plugin: "brb", component, requestId: id, props: { tool_use_id: id, tool: "Bash", output: { stdout: "", stderr: "", interrupted: false }, isErrored: false } } as const);
+const turnDone = ($) => $.turn.complete({ turnId: "t", answer: "", durationMs: 1, isAborted: false, usage: null });
+
+for (const [where, payload, surface] of SESSIONS) {
+  test(`${where}: while away the hold's rows are replaced (one dim line, then nothing); rows from before, fires and Jo's prompts draw as Claude Code draws them; after back every row draws as before`, async ($, on) => {
+    const { state, clock } = stubs(on, { snapshot: HOME });
+    await $.session.start(payload);
+    const before = await $.ui.mount({ ...said("m-before"), surface });
+    expect(await before.find({ type: "Text", text: THEIRS })).toBeDefined();
+
+    state.snapshot = AWAY;
+    await turnDone($);
+    await clock.settle();
+    expect(await before.find({ type: "Text", text: THEIRS })).toBeDefined();
+
+    const reply = await $.ui.mount({ ...said("m-away"), surface });
+    expect(await reply.find({ type: "Text", text: THEIRS })).toBeUndefined();
+    const line = await reply.find({ type: "Text", text: HELD_LINE });
+    expect(line?.props.dimColor).toBe(true);
+    const call = await $.ui.mount({ ...ran("t-away"), surface });
+    expect(await call.find({ type: "Text", text: THEIRS })).toBeUndefined();
+    expect(await call.find({ type: "Text", text: HELD_LINE })).toBeUndefined();
+    // the rest of the run is an empty Box: the surface's table accepts it (mount would reject)
+    expect(await call.drawn()).toMatchObject({ type: "Box" });
+    expect(await call.findAll({ type: "Text" })).toHaveLength(0);
+    const result = await $.ui.mount({ ...ran("t-away", "ToolResult"), surface });
+    expect(await result.find({ type: "Text", text: THEIRS })).toBeUndefined();
+    const fire = await $.ui.mount({ ...said("m-fire", "on fire: main is red since 4bd1e2"), surface });
+    expect(await fire.find({ type: "Text", text: THEIRS })).toBeDefined();
+    const prompt = await $.ui.mount({ plugin: "brb", component: "UserMessage", requestId: "u1", props: { text: "status?", origin: { kind: "composer" }, isExpanded: false }, surface });
+    expect(await prompt.find({ type: "Text", text: THEIRS })).toBeDefined();
+
+    // back: the mounted rows draw again, as Claude Code draws them
+    state.snapshot = CHECKLIST;
+    await turnDone($);
+    await clock.settle();
+    expect(await reply.find({ type: "Text", text: THEIRS })).toBeDefined();
+    expect(await reply.find({ type: "Text", text: HELD_LINE })).toBeUndefined();
+    expect(await call.find({ type: "Text", text: THEIRS })).toBeDefined();
+    expect(await result.find({ type: "Text", text: THEIRS })).toBeDefined();
+    for (const ui of [before, reply, call, result, fire, prompt]) await ui.unmount();
+  });
+
+  test(`${where}: the away text joins the environment section with breakPromptCache at brb and leaves it at back`, async ($, on) => {
+    const { state, clock } = stubs(on, { snapshot: HOME });
+    on("prompt.section", ($, e) => ({ text: e.text }));
+    await $.session.start(payload);
+    expect(await $.prompt.section({ name: "env_info_simple", text: "cwd: /w" })).toEqual({ text: "cwd: /w" });
+    state.snapshot = AWAY;
+    await turnDone($);
+    await clock.settle();
+    const away = await $.prompt.section({ name: "env_info_simple", text: "cwd: /w" });
+    expect(away.text).toContain("cwd: /w");
+    expect(away.text).toContain(AWAY_TEXT);
+    expect(away.breakPromptCache).toBe(true);
+    state.snapshot = HOME;
+    await turnDone($);
+    await clock.settle();
+    expect((await $.prompt.section({ name: "env_info_simple", text: "cwd: /w" })).text).toBe("cwd: /w");
+  });
+}
+
+test("a turn begun home: once brb lands, the next tool result carries the away text once", async ($, on) => {
+  const { state, clock } = stubs(on, { snapshot: HOME });
+  on("tool.call", () => ({ result: { stdout: "ok", stderr: "", interrupted: false } }));
+  await $.session.start({ surface: "terminal", isInteractive: true, cwd: "/Users/example/code/this" });
+  await $.turn.start({ turnId: "t1" });
+  expect((await $.tool.call({ tool: "Bash", input: { command: "ls" } })).context).toBeUndefined();
+  state.snapshot = AWAY;
+  await $.prompt.submit({ text: "brb" });
+  await clock.settle();
+  expect((await $.tool.call({ tool: "Bash", input: { command: "ls" } })).context).toEqual([AWAY_TEXT]);
+  expect((await $.tool.call({ tool: "Bash", input: { command: "ls" } })).context).toBeUndefined();
 });
