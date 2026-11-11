@@ -26,12 +26,14 @@
 //       and never `CI` or CTX_SEMANTIC_EMBEDDING_TOKEN.
 //   uninstall({ env, uid })   prints the bootout line (and removes nothing).
 //   loaded({ uid, check })    `{ loaded: true|false|null, detail }` from `launchctl print`.
-//   reachProbe({ uid, check }) `{ ok, missing, detail }`: whether this shell can write to
-//       gui/<uid> (bootstrap and bootout a throwaway LaunchAgent, PROBE_LABEL, running
-//       /usr/bin/true and never started; its plist in a fresh temp directory removed on every
-//       path). `launchctl print gui/<uid>` is not that test: a sandboxed shell reads the domain
-//       and still gets "Bootstrap failed: 5: Input/output error" (2026-11-11). `repair` runs it
-//       before pausing the timer, so it never boots out a timer it could not bootstrap back.
+//   reachProbe({ uid, check, tmp }) `{ ok, missing, detail }`: whether this shell can write to
+//       gui/<uid> (bootstrap and bootout a throwaway LaunchAgent running /usr/bin/true and never
+//       started, labelled PROBE_LABEL.<pid>.<random> so two runs never share one, its plist in a
+//       fresh temp directory removed on every path; first, the probes and temp directories of
+//       runs whose pid is dead are cleared, and a live run's are left alone). `launchctl print
+//       gui/<uid>` is not that test: a sandboxed shell reads the domain and still gets
+//       "Bootstrap failed: 5: Input/output error" (2026-11-11). `repair` runs it before pausing
+//       the timer, so it never boots out a timer it could not bootstrap back.
 //
 // `check(bin, args)` → `{ missing, code, output }` is injectable: tests never run plutil or
 // launchctl, and a sandbox that refuses launchctl reports `null` rather than failing.
@@ -40,10 +42,11 @@
 // person pastes into zsh, and a state directory with a space in it is a legal one.
 
 import { spawnSync } from "node:child_process";
-import { accessSync, constants, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { accessSync, constants, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { isAbsolute, join, resolve } from "node:path";
-import { stateDir as defaultStateDir, INTERVAL_BOUNDS } from "./state.mjs";
+import { randomBytes } from "node:crypto";
+import { stateDir as defaultStateDir, INTERVAL_BOUNDS, running } from "./state.mjs";
 
 export const LABEL = "com.jo-wolff-plugins.ctx-watch";
 export const DEFAULT_PATH = "/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin";
@@ -164,8 +167,17 @@ export function loaded({ uid = process.getuid?.() ?? 501, label = LABEL, check =
   return { loaded: null, detail: `launchctl print gui/${uid}/${label} exit ${r.code}: ${(r.output ?? "").trim().split("\n").at(-1) || "(no output)"}` };
 }
 
-/** The reach probe's label: never a job that runs anything. */
+/** The reach probes' label prefix: each run's probe is `<PROBE_LABEL>.<pid>.<random>`, never a job that runs anything. */
 export const PROBE_LABEL = `${LABEL}.reach-probe`;
+const PROBE_DIR = "ctx-watch-reach-";
+
+/** The pid a probe label or temp directory name carries after `prefix`, or null. */
+const ownerPid = (name, prefix, sep) => {
+  if (!name.startsWith(prefix)) return null;
+  const m = new RegExp(`^(\\d+)${sep.replace(".", "\\.")}`).exec(name.slice(prefix.length));
+  return m ? Number(m[1]) : null;
+};
+const deadRun = (pid) => pid !== null && pid !== process.pid && pid > 0 && !running(pid);
 
 /** The probe's plist: a Label and /usr/bin/true, no RunAtLoad, interval or KeepAlive, so it is loaded and never started. */
 export function probePlist(label = PROBE_LABEL) {
@@ -187,12 +199,15 @@ export function probePlist(label = PROBE_LABEL) {
 /**
  * Whether this shell can load and unload a LaunchAgent in gui/<uid>, the two things `repair`
  * does to the ctx-watch timer: `{ ok: true }`, or `{ ok: false, missing, detail }` with
- * launchctl's own last line. Writes the probe plist into a fresh directory under `tmp`, boots out
- * a probe an earlier run left loaded (a killed run; launchd answers a second bootstrap of a label
- * it has with the same 5 a sandbox gets), bootstraps, boots out, and removes the directory
- * whatever happened. A `check` that throws is a failed probe, never a throw.
+ * launchctl's own last line. First clears what killed runs left: every loaded
+ * `<PROBE_LABEL>.<pid>.*` whose pid is not running is booted out, and every
+ * `ctx-watch-reach-<pid>-*` directory under `tmp` whose pid is not running is removed (a live
+ * run's, another repair in its own probe window, is never touched). Then writes this run's probe
+ * plist, `<PROBE_LABEL>.<this pid>.<random>`, into a fresh directory under `tmp`, bootstraps,
+ * boots out, and removes the directory whatever happened. A `check` that throws is a failed
+ * probe, never a throw; a cleanup that fails is skipped (the label is this run's own).
  */
-export function reachProbe({ uid = process.getuid?.() ?? 501, check = runCheck, label = PROBE_LABEL, tmp = tmpdir() } = {}) {
+export function reachProbe({ uid = process.getuid?.() ?? 501, check = runCheck, tmp = tmpdir() } = {}) {
   const run = (args) => {
     try {
       return check("launchctl", args);
@@ -201,14 +216,26 @@ export function reachProbe({ uid = process.getuid?.() ?? 501, check = runCheck, 
     }
   };
   const last = (r) => (r.output ?? "").trim().split("\n").at(-1) || "(no output)";
+  const label = `${PROBE_LABEL}.${process.pid}.${randomBytes(6).toString("hex")}`;
   const target = `gui/${uid}/${label}`;
   let dir = null;
   try {
-    dir = mkdtempSync(join(tmp, "ctx-watch-reach-"));
+    const list = run(["list"]);
+    if (list.missing) return { ok: false, missing: true, detail: "launchctl not found" };
+    if (list.code === 0) {
+      for (const line of (list.output ?? "").split("\n")) {
+        const left = line.split("\t").at(-1)?.trim() ?? "";
+        if (deadRun(ownerPid(left, `${PROBE_LABEL}.`, "."))) run(["bootout", `gui/${uid}/${left}`]);
+      }
+    }
+    try {
+      for (const name of readdirSync(tmp)) if (deadRun(ownerPid(name, PROBE_DIR, "-"))) rmSync(join(tmp, name), { recursive: true, force: true });
+    } catch {
+      /* an unreadable temp directory: nothing of ours to clear there */
+    }
+    dir = mkdtempSync(join(tmp, `${PROBE_DIR}${process.pid}-`));
     const plist = join(dir, `${label}.plist`);
     writeFileSync(plist, probePlist(label));
-    const stale = run(["bootout", target]);
-    if (stale.missing) return { ok: false, missing: true, detail: "launchctl not found" };
     const boot = run(["bootstrap", `gui/${uid}`, plist]);
     if (boot.missing) return { ok: false, missing: true, detail: "launchctl not found" };
     if (boot.code !== 0) {
@@ -217,7 +244,7 @@ export function reachProbe({ uid = process.getuid?.() ?? 501, check = runCheck, 
       return { ok: false, missing: false, detail: `launchctl bootstrap gui/${uid} of a throwaway LaunchAgent failed (exit ${boot.code ?? "none"}: ${last(boot)})` };
     }
     const out = run(["bootout", target]);
-    if (out.code !== 0) return { ok: false, missing: false, detail: `launchctl bootout ${target} of the throwaway LaunchAgent failed (exit ${out.code ?? "none"}: ${last(out)}); it may still be loaded (it runs nothing)` };
+    if (out.code !== 0) return { ok: false, missing: false, detail: `launchctl bootout ${target} of the throwaway LaunchAgent failed (exit ${out.code ?? "none"}: ${last(out)}); it may still be loaded (it runs nothing; the next repair boots it out once this process has exited)` };
     return { ok: true, missing: false, detail: null };
   } catch (err) {
     return { ok: false, missing: false, detail: `the launchd reach probe could not be written: ${err?.message ?? err}` };

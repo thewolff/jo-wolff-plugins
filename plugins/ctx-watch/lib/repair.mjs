@@ -12,8 +12,10 @@
 //      Bash tool) has no LANG of its own, so the fallback is the usual path from Desktop;
 //   3. refuse when launchctl is not found or this shell cannot write to the GUI launchd domain
 //      gui/<uid> (launchd.mjs reachProbe: bootstrap and bootout a throwaway LaunchAgent that
-//      runs nothing, its plist removed on every path), since the ctx-watch timer could not be
-//      paused and restored. Until 0.4.0 this was `launchctl print gui/<uid>`, which a sandboxed
+//      runs nothing, labelled per run, its plist removed on every path, a killed run's leftovers
+//      cleared first), since the ctx-watch timer could not be paused and restored. A signal
+//      during the probe ends the run once the probe has unloaded itself (exit 128 + n, nothing
+//      changed). Until 0.4.0 this was `launchctl print gui/<uid>`, which a sandboxed
 //      shell passes while its `launchctl bootstrap` fails ("Bootstrap failed: 5: Input/output
 //      error", 2026-11-11): repair would have booted the timer out and failed to restore it;
 //   4. refuse when ctx's indexing mode is not `auto` or its config file is missing (ctx-watch
@@ -56,7 +58,7 @@
 // 3 refused (no ctx change; the timer, if paused, restored), 128 + n on signal n.
 
 import { existsSync } from "node:fs";
-import { constants } from "node:os";
+import { constants, tmpdir } from "node:os";
 import { CTX, HANDOFF_STALE_MS, HEAL_GRACE_MS, HEAL_TIMEOUT_MS, MODE_ARGV, PROBE_TIMEOUT_MS, STATUS_ARGV, age, ctxEnv, parseJson, runCtx, upgradeGate } from "./probe.mjs";
 import { LABEL, loaded, plistPath, reachProbe, resolveLang, runCheck } from "./launchd.mjs";
 
@@ -140,8 +142,25 @@ export async function repair({ env: shellEnv = process.env, run = runCtx, check 
   }
   // 2. LANG.
   if (lang.value === null) return refuse(`LANG could not be found: ${lang.detail}; ctx would record a daemon launch environment without it and report \`environment_invalid\`; run from a shell with LANG set (a Terminal login shell has it)`);
-  // 3. launchctl, and write access to the GUI launchd domain, before anything is paused.
-  const reach = reachProbe({ uid, check });
+  // 3. launchctl, and write access to the GUI launchd domain, before anything is paused. A
+  // signal during the probe is held until the probe has unloaded its LaunchAgent and removed its
+  // plist (it runs synchronously), then ends the run: nothing changed, exit 128 + n.
+  let probeSignal = null;
+  const onProbeSignal = (sig) => {
+    probeSignal ??= sig;
+  };
+  if (signals) for (const s of HANDLED_SIGNALS) process.on(s, onProbeSignal);
+  let reach;
+  try {
+    reach = reachProbe({ uid, check, tmp: shellEnv.TMPDIR || tmpdir() });
+    await turn();
+  } finally {
+    if (signals) for (const s of HANDLED_SIGNALS) process.removeListener(s, onProbeSignal);
+  }
+  if (probeSignal) {
+    report.reason = `interrupted by ${probeSignal} during the launchd reach probe (the probe was unloaded and its plist removed; nothing changed)`;
+    return out(128 + (constants.signals[probeSignal] ?? 0), `ctx-watch repair: ${report.reason}`);
+  }
   if (reach.missing) return refuse("launchctl not found: the ctx-watch timer could not be paused and restored; run from a macOS GUI login session");
   if (!reach.ok) return refuse(`this shell cannot load LaunchAgents into launchd domain gui/${uid} (${reach.detail}): the ctx-watch timer could not be paused and restored; run from a GUI login session (a Terminal window), not a sandboxed or ssh shell`);
   // 4. Indexing mode.

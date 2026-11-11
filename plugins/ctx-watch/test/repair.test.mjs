@@ -368,7 +368,7 @@ test("0.4.0 the reach probe runs before the timer is paused: a throwaway /usr/bi
     assert.equal(r.code, 0, r.text);
     assert.equal(lc.plists.length, 1);
     const { text } = lc.plists[0];
-    assert.match(text, new RegExp(`<key>Label</key>\\s*<string>${PROBE.replaceAll(".", "\\.")}</string>`));
+    assert.match(text, new RegExp(`<key>Label</key>\\s*<string>${PROBE.replaceAll(".", "\\.")}\\.${process.pid}\\.[A-Za-z0-9]+</string>`));
     assert.match(text, /<key>ProgramArguments<\/key>\s*<array>\s*<string>\/usr\/bin\/true<\/string>\s*<\/array>/);
     assert.doesNotMatch(text, /RunAtLoad<\/key>\s*<true\/>/, "the probe never runs anything");
     assert.ok(order.indexOf("probe bootstrap") >= 0 && order.indexOf("probe bootstrap") < order.indexOf("timer bootout"), order.join(", "));
