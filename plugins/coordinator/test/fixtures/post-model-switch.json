@@ -1,0 +1,17 @@
+{
+  "session_id": "00000000-0000-4000-8000-000000000000",
+  "transcript_path": "<scratch>/transcript.jsonl",
+  "cwd": "<scratch>/work",
+  "scratchpad_dir": "<scratch>/scratchpad",
+  "prompt_id": "00000000-0000-4000-8000-000000000001",
+  "hook_event_name": "PostModelSwitch",
+  "from_model": "claude-opus-5-5",
+  "to_model": "claude-sonnet-5-5",
+  "requested_model": null,
+  "source": "sdk",
+  "context_tokens": 0,
+  "prompt_cache_warm": false,
+  "cache_ttl": "5m",
+  "estimated_cache_write_usd": 0,
+  "pricing": "catalog"
+}

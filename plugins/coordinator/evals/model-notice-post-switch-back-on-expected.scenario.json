@@ -1,0 +1,26 @@
+{
+  "$comment": "A switch from another model back onto the expected one inside a listed folder: one line saying the earlier notice no longer applies.",
+  "event": "PostModelSwitch",
+  "expect": "systemMessage",
+  "reason": "The earlier model notice no longer applies.",
+  "setup": {
+    "files": {
+      "$XDG_CONFIG_HOME/coordinator/config.json": "{\"folders\":[\"${CWD}\"]}\n"
+    }
+  },
+  "stdin": {
+    "session_id": "${SESSION_ID}",
+    "transcript_path": "${TRANSCRIPT}",
+    "cwd": "${CWD}",
+    "hook_event_name": "PostModelSwitch",
+    "from_model": "claude-sonnet-5-5",
+    "to_model": "claude-opus-5-5",
+    "requested_model": null,
+    "source": "sdk",
+    "context_tokens": 0,
+    "prompt_cache_warm": false,
+    "cache_ttl": "5m",
+    "estimated_cache_write_usd": 0,
+    "pricing": "catalog"
+  }
+}
