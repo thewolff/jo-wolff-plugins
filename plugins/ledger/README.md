@@ -392,7 +392,8 @@ Two shapes are denied under `gate` from the command text alone, whatever HEAD's 
   `gh pr create` on the same command line as an earlier `git commit`, `rebase`, `merge`,
   `cherry-pick`, `revert`, `reset`, `pull`, `checkout`, `switch`, `am`, `fetch`,
   `stash branch`, a `branch` or `tag` that creates, moves or deletes, a `config` that writes,
-  a `submodule update`, `gh pr checkout`, or any other git subcommand the gate does not know
+  a `submodule update`, a `worktree add`, a `remote update` or `set-url`, a `notes` write,
+  `gh pr checkout`, or any other git subcommand the gate does not know
   to leave HEAD and every other ref alone, a git alias included (`add`, `status`, `log`,
   `diff`, `stash`, a listing `branch` or `tag`, a reading `config` and the like are known): the hook runs before any of the line does, so the commit that would be
   published does not exist yet. The way out: run that command first, review the commit, then

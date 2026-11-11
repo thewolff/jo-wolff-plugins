@@ -972,6 +972,12 @@ test("0.3.11 hole two: under gate a push chained after a HEAD-moving command is 
     ["git fetch origin && git push origin origin/main:release", "git fetch"],
     ["git config remote.origin.push other:main && git push origin", "git config"],
     ["git submodule update --remote sub && git -C sub push origin HEAD:release", "git submodule"],
+    ["git worktree add -B release /tmp/release-worktree abc123 && git push origin release", "git worktree"],
+    ["git remote update && git push origin origin/main:release", "git remote"],
+    ["git remote set-url origin git@example.com:x/y.git && git push origin feat", "git remote"],
+    ["git notes add -m reviewed HEAD && git push origin refs/notes/commits", "git notes"],
+    ["git tag -l -d v1 && git push origin feat", "git tag"],
+    ["git gc --prune=now && git push origin feat", "git gc"],
   ]) {
     assert.equal(pushOperations(cmd)[0].after, mover, cmd);
     const p = push(b, cmd);
@@ -984,7 +990,7 @@ test("0.3.11 hole two: under gate a push chained after a HEAD-moving command is 
   assert.equal(decision(p), "deny", "gh pr create pushes the current branch");
   assert.match(p.json.hookSpecificOutput.permissionDecisionReason, /`git commit` runs before this `gh pr create`/);
   // What stays allowed: the push on its own, a push before the mover, commands that do not move HEAD.
-  for (const cmd of ["git push origin feat", "git push origin feat && git checkout main", "git status && git diff --stat && git log -1 --oneline && git push origin feat", "git branch --show-current && git tag -l && git config --get user.name && git submodule status && git push origin feat", "git add -A && git stash && git stash pop && git push origin feat", "git --version && git branch -vv && git remote -v && git push origin feat", 'echo "git commit" && git push origin feat', "git push -u origin feat && gh pr create --fill"]) {
+  for (const cmd of ["git push origin feat", "git push origin feat && git checkout main", "git status && git diff --stat && git log -1 --oneline && git push origin feat", "git branch --show-current && git tag -l && git config --get user.name && git submodule status && git push origin feat", "git branch --list 'release*' && git tag --list 'v*' && git push origin HEAD", "git branch -a --contains HEAD && git tag -l 'v*' --points-at HEAD && git push origin HEAD", "git remote -v && git remote show origin && git worktree list && git notes list && git reflog && git push origin feat", "git add -A && git stash && git stash pop && git push origin feat", "git --version && git branch -vv && git remote -v && git push origin feat", 'echo "git commit" && git push origin feat', "git push -u origin feat && gh pr create --fill"]) {
     assert.equal(pushOperations(cmd)[0].after, null, cmd);
     assert.equal(push(b, cmd).out, "", cmd);
   }

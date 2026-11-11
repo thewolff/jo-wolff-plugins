@@ -29,7 +29,10 @@ All notable changes to ledger are recorded here. The format follows
   `rebase`, `merge`, `cherry-pick`, `revert`, `reset`, `pull`, `checkout`, `switch`, `am`,
   `bisect`, `update-ref`, `symbolic-ref`, `subtree`, `fetch`, and a git alias; plus
   `git stash branch`, a `branch` or `tag` that creates, moves or deletes, a `config` that
-  writes, a `submodule` other than `status` or `summary`, and `gh pr checkout`.
+  writes, a `submodule` other than `status` or `summary`, a `worktree` other than `list`, a
+  `remote` other than a bare one, `show` or `get-url`, a `notes` other than `list` or `show`,
+  and `gh pr checkout`. A `branch` or `tag` listing with a pattern (`--list 'v*'`,
+  `--contains`, `--merged`, `--points-at`) is a listing and does not refuse the push.
   Git's global options are read, in any shell scope. The reason says to run
   that command first, review the new HEAD, then run the push as its own command. `gh pr merge`
   is not refused for this: the commit it merges is the remote's, not HEAD.
