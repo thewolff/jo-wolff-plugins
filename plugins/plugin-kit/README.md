@@ -69,6 +69,22 @@ someone copies it again and runs that plugin's tests. The plugins in this reposi
 own `lib/` first, then there), so one runner serves them all and a scaffold outside the
 repository carries its own; they keep their own hook runners.
 
+## Writing a mod
+
+`/plugin-kit:new-mod` (skill `new-mod`) is the visual guide for a Claude Code mod in a plugin
+here: which surface carries which signal (the band above the prompt for anything standing, a
+toast for a moment, the status line only as a fallback until the band has been asked for once
+in the session, then cleared), what the terminal and Claude Desktop each do to it, how to make
+it readable in both, the `register(on, options)` shape the engine validates, and how to test it
+with the payloads each host really sends (Desktop starts a session as `surface: null,
+isInteractive: false`, so a mod that gates on the surface draws nothing there). The per-surface
+lookup tables, with their receipts, are in
+[`skills/new-mod/reference.md`](skills/new-mod/reference.md); a hooks module to start from,
+with the poll, the band, the fallback status line and the fault logging already in place, is
+[`templates/mod/register.mjs`](templates/mod/register.mjs) (`{{name}}` is the plugin's name; the
+scaffolder does not copy it). A terminal user who collapses the band is not detectable by the
+mod, so once the status line is cleared they see only the mod's toasts until they expand it.
+
 ## Shared judge
 
 `lib/judge.mjs` is the one judge dispatch for every plugin that asks a model to grade something
@@ -329,6 +345,17 @@ The reviewer's review budget fails these ways:
 | A severity that is unclear (marked `blocking` with a worst case outside the five, or no worst case) | The finding is `should-fix`; the triage says `disagree` and names the definition it misses. Doubt never makes a finding `blocking`, so it never makes the verdict `fix-first` by itself. |
 | Codex writes `Verdict: fix-first` with no in-scope blocking finding | The triage states `Effective verdict: ship-with-limits`; Codex's text stays as written beside it. |
 | A later edit reverses a budget rule other than the round increment or the `fix-first` guard | The tests pin vocabulary and selected sentences; a reversal of the `new-mechanism` classification or the rule that holds those findings for Jo, of the limit that a follow-up reports new findings only in lines the fixes changed, or of the statement that blocking-only from round 3 is this repository's own rule (not the cited sources') passes them. Read the diff of `agents/cross-lab-reviewer.md` against those rules. |
+
+## Changes in 0.4.0
+
+A `new-mod` skill (see "Writing a mod") with a reference of every surface by host and a
+`templates/mod/register.mjs` to start from. The brb badge and the ledger pane drew nothing in
+Claude Desktop because both gated on the session's surface, which Desktop reports as `null`; the
+status line Desktop does draw is a 32-character grey footnote; and no public guide says how a
+mod looks in either host. The skill and the template follow brb 0.4.0's rule: the status line
+is a fallback only until the `AbovePrompt` render hook has been called once in the session, and
+is cleared after that. The scaffolder, the runners, `lib/judge.mjs` and the agents are
+unchanged.
 
 ## Changes in 0.3.2
 
