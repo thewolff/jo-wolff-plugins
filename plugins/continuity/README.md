@@ -245,10 +245,12 @@ configuration](https://code.claude.com/docs/en/model-config.md), "Set the auto-c
 `<project>/.claude/settings.local.json`, `<project>/.claude/settings.json`, and the user file
 (`$CLAUDE_CONFIG_DIR/settings.json`, else `~/.claude/settings.json`); inside a file the model's
 `modelSettings` entry beats the top level; `"auto"` is Claude Code's default; the model is the
-transcript's newest `message.model`, matched to a `modelSettings` key after both are
-canonicalized (lower case; `[1m]`, a `-YYYYMMDD` date, a Bedrock `[<region>.]anthropic.` prefix
-and `-v<n>[:<n>]` version, and a Vertex `@YYYYMMDD` taken off; aliases such as `opus` and
-ARNs are not resolved). It does not see `--autocompact`, `--settings` or managed
+transcript's newest `message.model`. A `modelSettings` key equal to it wins; otherwise a key that
+names the same Claude model: a Bedrock `[<region>.]anthropic.claude-…-v<n>[:<n>]` or Vertex
+`claude-…@YYYYMMDD` id is read as the bare `claude-…` name, and a `claude-…` id is compared
+without case, `[1m]` or a `-YYYYMMDD` date. Any other id (a custom gateway model) matches only
+its exact key, so `gateway-v1` and `gateway-v2` keep their own windows. Aliases such as `opus`
+and ARNs are not resolved. It does not see `--autocompact`, `--settings` or managed
 settings. Claude Code compacts about 33,000 tokens before the window, or at
 `CLAUDE_AUTOCOMPACT_PCT_OVERRIDE` percent of it when that is earlier. The 33,000 is measured,
 not documented, so it may move between releases: on Claude Code 2.1.321, with a 300,000 window

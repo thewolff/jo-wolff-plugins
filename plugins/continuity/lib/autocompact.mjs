@@ -24,10 +24,11 @@
 //    thresholds"). Any other model, or `CLAUDE_CODE_DISABLE_1M_CONTEXT=1`, compacts at its
 //    context limit, where the docs say the percentage does not apply; no point is modelled.
 //
-// The model is the transcript's newest main-thread `message.model`. A `modelSettings` key matches
-// it after both are canonicalized (`canonicalModel()`): lower case, the `[1m]` suffix, a Bedrock
-// `[<region>.]anthropic.` prefix and `-v<n>[:<n>]` suffix, a Vertex `@YYYYMMDD` suffix and a
-// `-YYYYMMDD` date taken off. Aliases (`opus`, `sonnet`) and ARNs are not resolved. Claude Code
+// The model is the transcript's newest main-thread `message.model`. A `modelSettings` key equal
+// to it wins; else a key that names the same Claude model after `canonicalModel()`: a Bedrock
+// `[<region>.]anthropic.claude-…-v<n>[:<n>]` or Vertex `claude-…@YYYYMMDD` id becomes the bare
+// name, and a `claude-…` id loses its case, `[1m]` and `-YYYYMMDD`. Any other id is matched only
+// exactly. Aliases (`opus`, `sonnet`) and ARNs are not resolved. Claude Code
 // compacts about AUTO_COMPACT_BUFFER tokens before the window (measured, not documented; see the
 // constant); CLAUDE_AUTOCOMPACT_PCT_OVERRIDE (1-100, a percentage of the window) only moves that
 // earlier.
@@ -66,20 +67,20 @@ function settingsWindow(v) {
 }
 
 /**
- * `model` as Claude Code keys it in `modelSettings`: lower case, without `[1m]`, a Bedrock
- * `[<region>.]anthropic.` prefix or `-v<n>[:<n>]` version, a Vertex `@YYYYMMDD`, or a `-YYYYMMDD`
- * date. `us.anthropic.claude-sonnet-4-5-20250929-v1:0` and `claude-sonnet-4-5@20250929` are both
- * `claude-sonnet-4-5`.
+ * `model` as Claude Code keys it in `modelSettings`, for recognised Claude spellings only: a
+ * Bedrock `[<region>.]anthropic.claude-…-v<n>[:<n>]` id and a Vertex `claude-…@YYYYMMDD` id
+ * become the bare `claude-…` name, and a `claude-…` id loses its case, `[1m]` and `-YYYYMMDD`.
+ * `us.anthropic.claude-sonnet-4-5-20250929-v1:0` and `claude-sonnet-4-5@20250929` are both
+ * `claude-sonnet-4-5`. Any other id (a custom gateway model) is returned unchanged, so
+ * `gateway-v1` and `gateway-v2` stay distinct.
  */
 export function canonicalModel(model) {
-  return String(model)
-    .trim()
-    .toLowerCase()
-    .replace(/\[1m\]$/, "")
-    .replace(/^(?:[a-z]{2,8}\.)?anthropic\./, "")
-    .replace(/-v\d+(?::\d+)?$/, "")
-    .replace(/@\d{8}$/, "")
-    .replace(/-\d{8}$/, "");
+  const raw = String(model).trim();
+  let m = raw.toLowerCase().replace(/\[1m\]$/, "");
+  const provider = /^(?:[a-z]{2,8}\.)?anthropic\.(claude-[a-z0-9.-]+?)-v\d+(?::\d+)?$/.exec(m) ?? /^(claude-[a-z0-9.-]+)@\d{8}$/.exec(m);
+  if (provider) m = provider[1];
+  if (!m.startsWith("claude-")) return raw;
+  return m.replace(/-\d{8}$/, "");
 }
 
 /** The native window a model compacts before when no window is set: 1,000,000 for a native 1M model, null for any other or unknown model. */
@@ -123,11 +124,13 @@ export function autoCompactWindow({ model = null, projectDir = null, env = proce
     let found;
     const per = json.modelSettings;
     if (model && per && typeof per === "object" && !Array.isArray(per)) {
+      // The exact key first; then a key that canonicalizes to the same Claude model.
+      if (Object.hasOwn(per, String(model))) found = settingsWindow(per[String(model)]?.autoCompactWindow);
       const want = canonicalModel(model);
       for (const [key, entry] of Object.entries(per)) {
-        if (key !== String(model) && canonicalModel(key) !== want) continue;
-        found = settingsWindow(entry?.autoCompactWindow);
         if (found !== undefined) break;
+        if (key === String(model) || canonicalModel(key) !== want) continue;
+        found = settingsWindow(entry?.autoCompactWindow);
       }
     }
     if (found === undefined) found = settingsWindow(json.autoCompactWindow);

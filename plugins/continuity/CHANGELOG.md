@@ -55,7 +55,10 @@ All notable changes to continuity are recorded here. The format follows
   Opus 4.7 and later). Other models, and `CLAUDE_CODE_DISABLE_1M_CONTEXT=1`, are not modelled.
 - A transcript's `message.model` matches its `modelSettings` entry through Bedrock
   (`us.anthropic.claude-sonnet-4-5-20250929-v1:0`) and Vertex (`claude-sonnet-4-5@20250929`)
-  spellings, `[1m]`, a date suffix and case. Aliases and ARNs are not resolved.
+  spellings, `[1m]`, a date suffix and case. An exact `modelSettings` key wins over one that only
+  names the same Claude model. Any id that is not a Claude spelling (a custom gateway model)
+  matches only its exact key, so `gateway-v1` and `gateway-v2` keep separate windows. Aliases
+  and ARNs are not resolved.
 - A compaction marker is only a top-level `{"type":"system","subtype":"compact_boundary"}` line.
   The same text nested in a tool input or result no longer starts a new window or moves its
   baseline, and a `uuid` over 128 characters is not stored as the window's epoch.

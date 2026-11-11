@@ -576,7 +576,7 @@ test("pressure: the first ask lands before the modelled compaction whatever the 
   }
 });
 
-test("autocompact: the window from CLAUDE_CODE_AUTO_COMPACT_WINDOW, then project local, project, user settings; modelSettings beats the top level inside a file; \"auto\" is the default; the point is 33,000 before the window or the percentage override", () => {
+test("autocompact: the window from CLAUDE_CODE_AUTO_COMPACT_WINDOW, then project local, project, user settings; modelSettings beats the top level inside a file; \"auto\" is the default; the point is 33,000 before the window or the percentage override", async () => {
   const b = box();
   try {
     const project = join(b.work);
@@ -630,6 +630,26 @@ test("autocompact: the window from CLAUDE_CODE_AUTO_COMPACT_WINDOW, then project
     assert.equal(autoCompactWindow({ model: "us.anthropic.claude-sonnet-4-5-20250929-v1:0", projectDir: null, env: provEnv }).tokens, 100000, "Bedrock id");
     assert.equal(autoCompactWindow({ model: "claude-sonnet-4-5@20250929", projectDir: null, env: provEnv }).tokens, 100000, "Vertex id");
     assert.equal(autoCompactWindow({ model: "claude-sonnet-4-6", projectDir: null, env: provEnv }), null, "another model");
+    // A custom gateway id is matched exactly, never through a stripped version suffix: each
+    // version keeps its own window, and an unconfigured version inherits none.
+    for (const id of ["gateway-v1", "gateway-v2", "my-model@20250101", "claude-gateway-v2", "Gateway-V2"]) assert.equal(canonicalModel(id), id, id);
+    const gw = join(b.root, "gw");
+    put(gw, "settings.json", { modelSettings: { "gateway-v1": { autoCompactWindow: 600000 }, "gateway-v2": { autoCompactWindow: 100000 } } });
+    const gwEnv = { ...b.env, CLAUDE_CONFIG_DIR: gw };
+    assert.equal(autoCompactWindow({ model: "gateway-v1", projectDir: null, env: gwEnv }).tokens, 600000);
+    assert.equal(autoCompactWindow({ model: "gateway-v2", projectDir: null, env: gwEnv }).tokens, 100000, "gateway-v2 keeps its own window");
+    assert.equal(autoCompactWindow({ model: "gateway-v3", projectDir: null, env: gwEnv }), null, "gateway-v3 inherits no other version's window");
+    // An exact key beats a key that only canonicalizes to the same model.
+    put(gw, "settings.json", { modelSettings: { "claude-sonnet-4-5": { autoCompactWindow: 300000 }, "claude-sonnet-4-5@20250929": { autoCompactWindow: 200000 } } });
+    assert.equal(autoCompactWindow({ model: "claude-sonnet-4-5@20250929", projectDir: null, env: gwEnv }).tokens, 200000, "the exact key first");
+    assert.equal(autoCompactWindow({ model: "us.anthropic.claude-sonnet-4-5-20250929-v1:0", projectDir: null, env: gwEnv }).tokens, 300000, "no exact key: the first canonical match");
+    // The scheduling consequence: a gateway-v2 session (100,000 window, compaction at 67,000) is
+    // asked at 65,000, not held for gateway-v1's 600,000 window.
+    put(gw, "settings.json", { modelSettings: { "gateway-v1": { autoCompactWindow: 600000 }, "gateway-v2": { autoCompactWindow: 100000 } } });
+    const said = (tokens) => ({ type: "assistant", isSidechain: false, message: { role: "assistant", model: "gateway-v2", content: [{ type: "text", text: "ok" }], usage: { input_tokens: tokens } } });
+    b.writeTranscript([said(10_000), said(65_000)]);
+    const ask = await dueAsk({ transcript_path: b.transcript, cwd: null }, "promptWarned", { config: DEFAULTS, flags: {}, env: gwEnv });
+    assert.equal(ask?.tokens, 65000, "gateway-v2 asks before its own compaction");
     // A percentage override with no window set applies to a native 1M model's default window;
     // "auto" is the same as unset; a model that compacts at its limit gets no point.
     const none = { HOME: join(b.root, "none") };
