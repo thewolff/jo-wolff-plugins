@@ -11,6 +11,40 @@
         ]
       }
     ],
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/mid-session.mjs\" UserPromptSubmit",
+            "timeout": 5
+          }
+        ]
+      }
+    ],
+    "PostToolUseFailure": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "if": "Bash(ctx *)",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/mid-session.mjs\" PostToolUseFailure",
+            "timeout": 5
+          }
+        ]
+      },
+      {
+        "matcher": "mcp__ctx__.*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/mid-session.mjs\" PostToolUseFailure",
+            "timeout": 5
+          }
+        ]
+      }
+    ],
     "Stop": [
       {
         "hooks": [

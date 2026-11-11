@@ -26,6 +26,12 @@
 //       and never `CI` or CTX_SEMANTIC_EMBEDDING_TOKEN.
 //   uninstall({ env, uid })   prints the bootout line (and removes nothing).
 //   loaded({ uid, check })    `{ loaded: true|false|null, detail }` from `launchctl print`.
+//   reachProbe({ uid, check }) `{ ok, missing, detail }`: whether this shell can write to
+//       gui/<uid> (bootstrap and bootout a throwaway LaunchAgent, PROBE_LABEL, running
+//       /usr/bin/true and never started; its plist in a fresh temp directory removed on every
+//       path). `launchctl print gui/<uid>` is not that test: a sandboxed shell reads the domain
+//       and still gets "Bootstrap failed: 5: Input/output error" (2026-11-11). `repair` runs it
+//       before pausing the timer, so it never boots out a timer it could not bootstrap back.
 //
 // `check(bin, args)` → `{ missing, code, output }` is injectable: tests never run plutil or
 // launchctl, and a sandbox that refuses launchctl reports `null` rather than failing.
@@ -34,8 +40,8 @@
 // person pastes into zsh, and a state directory with a space in it is a legal one.
 
 import { spawnSync } from "node:child_process";
-import { accessSync, constants, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
-import { homedir } from "node:os";
+import { accessSync, constants, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { homedir, tmpdir } from "node:os";
 import { isAbsolute, join, resolve } from "node:path";
 import { stateDir as defaultStateDir, INTERVAL_BOUNDS } from "./state.mjs";
 
@@ -156,6 +162,74 @@ export function loaded({ uid = process.getuid?.() ?? 501, label = LABEL, check =
   if (r.code === null) return { loaded: null, detail: `launchctl could not run: ${r.output.trim()}` };
   if (r.code === 113) return { loaded: false, detail: `launchd does not have ${label}` };
   return { loaded: null, detail: `launchctl print gui/${uid}/${label} exit ${r.code}: ${(r.output ?? "").trim().split("\n").at(-1) || "(no output)"}` };
+}
+
+/** The reach probe's label: never a job that runs anything. */
+export const PROBE_LABEL = `${LABEL}.reach-probe`;
+
+/** The probe's plist: a Label and /usr/bin/true, no RunAtLoad, interval or KeepAlive, so it is loaded and never started. */
+export function probePlist(label = PROBE_LABEL) {
+  return `<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>${esc(label)}</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/usr/bin/true</string>
+  </array>
+</dict>
+</plist>
+`;
+}
+
+/**
+ * Whether this shell can load and unload a LaunchAgent in gui/<uid>, the two things `repair`
+ * does to the ctx-watch timer: `{ ok: true }`, or `{ ok: false, missing, detail }` with
+ * launchctl's own last line. Writes the probe plist into a fresh directory under `tmp`, boots out
+ * a probe an earlier run left loaded (a killed run; launchd answers a second bootstrap of a label
+ * it has with the same 5 a sandbox gets), bootstraps, boots out, and removes the directory
+ * whatever happened. A `check` that throws is a failed probe, never a throw.
+ */
+export function reachProbe({ uid = process.getuid?.() ?? 501, check = runCheck, label = PROBE_LABEL, tmp = tmpdir() } = {}) {
+  const run = (args) => {
+    try {
+      return check("launchctl", args);
+    } catch (err) {
+      return { missing: false, code: null, output: `${err?.message ?? err}` };
+    }
+  };
+  const last = (r) => (r.output ?? "").trim().split("\n").at(-1) || "(no output)";
+  const target = `gui/${uid}/${label}`;
+  let dir = null;
+  try {
+    dir = mkdtempSync(join(tmp, "ctx-watch-reach-"));
+    const plist = join(dir, `${label}.plist`);
+    writeFileSync(plist, probePlist(label));
+    const stale = run(["bootout", target]);
+    if (stale.missing) return { ok: false, missing: true, detail: "launchctl not found" };
+    const boot = run(["bootstrap", `gui/${uid}`, plist]);
+    if (boot.missing) return { ok: false, missing: true, detail: "launchctl not found" };
+    if (boot.code !== 0) {
+      // A bootstrap that did not answer may have loaded it anyway.
+      if (boot.code === null) run(["bootout", target]);
+      return { ok: false, missing: false, detail: `launchctl bootstrap gui/${uid} of a throwaway LaunchAgent failed (exit ${boot.code ?? "none"}: ${last(boot)})` };
+    }
+    const out = run(["bootout", target]);
+    if (out.code !== 0) return { ok: false, missing: false, detail: `launchctl bootout ${target} of the throwaway LaunchAgent failed (exit ${out.code ?? "none"}: ${last(out)}); it may still be loaded (it runs nothing)` };
+    return { ok: true, missing: false, detail: null };
+  } catch (err) {
+    return { ok: false, missing: false, detail: `the launchd reach probe could not be written: ${err?.message ?? err}` };
+  } finally {
+    if (dir) {
+      try {
+        rmSync(dir, { recursive: true, force: true });
+      } catch {
+        /* a temp directory the OS clears */
+      }
+    }
+  }
 }
 
 /**

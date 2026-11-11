@@ -1,0 +1,17 @@
+{
+  "$comment": "This session was told of the down episode; the timer now passes: one line saying ctx is back.",
+  "event": "UserPromptSubmit",
+  "expect": "systemMessage",
+  "reason": "ctx-watch: ctx is back up",
+  "setup": {
+    "commands": [
+      "node \"${PLUGIN_DIR}/evals/fixtures/write-state.mjs\" healthy ${SESSION_ID}"
+    ]
+  },
+  "stdin": {
+    "session_id": "${SESSION_ID}",
+    "cwd": "${CWD}",
+    "hook_event_name": "UserPromptSubmit",
+    "prompt": "carry on with the refactor"
+  }
+}

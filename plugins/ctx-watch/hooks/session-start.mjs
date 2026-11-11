@@ -12,7 +12,10 @@
 // When ctx is down, stuck in an upgrade, or mid-upgrade, the answer also carries
 // hookSpecificOutput.additionalContext (agentContext): one short block for the agent naming what
 // is down, since when, and the exact command it may run or hand over. Healthy, or only the
-// semantic index not ready (the daemon is up; the systemMessage covers it): no context.
+// semantic index not ready (the daemon is up; the systemMessage covers it): no context. When it
+// tells the agent about the timer's down episode, it records that in the session's latch
+// (lib/mid-session.mjs noteTold), so the mid-session hook does not repeat it at the first prompt
+// and still says when ctx is back; a latch it cannot write is one errors.log line.
 // Then the dead-man's line: when the launchd tick has not stamped <state>/state.json in more than
 // twice its interval (or, never ticked, since this hook first ran), `ctx-watch: timer has not run
 // since <time>; run \`node <cli> install\` and the printed launchctl line` (as long as the
@@ -48,6 +51,7 @@ import { runHook, invokedDirectly, logError } from "../lib/hook-runner.mjs";
 import { check, needsYouLine, LINE_MAX, CTX, FIX_MISSING } from "../lib/probe.mjs";
 import { readState, writeState, statePath, timerOverdue, withStateLock, failureKind } from "../lib/state.mjs";
 import { isResume, markResumed } from "../lib/consult-history.mjs";
+import { noteTold } from "../lib/mid-session.mjs";
 import { dirname } from "node:path";
 import { shellQuote } from "../lib/launchd.mjs";
 import { CLI_PATH } from "../scripts/ctx-watch.mjs";
@@ -144,6 +148,11 @@ export function handle(input, { env = process.env, now = Date.now, run, exists, 
   if (t.overdue) lines.push(timerLine(t.since, cliPath));
   if (!lines.length) return null;
   const context = agentContext(result, (state.episode === "down" ? state.downSince : null) ?? result.at ?? at, cliPath);
+  const id = typeof input.session_id === "string" ? input.session_id.trim() : "";
+  if (context && id && state.episode === "down" && state.episodeKind !== "semantic" && state.downSince !== null) {
+    const err = noteTold(dirname(file), id, state.downSince);
+    if (err) logError("ctx-watch", "SessionStart", `mid-session latch for ${id} not written (${err.message}); the first prompt will repeat this`, env);
+  }
   return context ? { systemMessage: lines.join("\n"), hookSpecificOutput: { hookEventName: "SessionStart", additionalContext: context } } : { systemMessage: lines.join("\n") };
 }
 

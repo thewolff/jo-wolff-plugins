@@ -10,8 +10,12 @@
 //      none gives one (ctx would record a daemon launch environment without LANG and report
 //      `environment_invalid`, the 2026-11-11 state). A shell launchd started (Claude Desktop's
 //      Bash tool) has no LANG of its own, so the fallback is the usual path from Desktop;
-//   3. refuse when launchctl is not found or the GUI launchd domain gui/<uid> is not reachable
-//      (an ssh or sandboxed shell), since the ctx-watch timer could not be paused and restored;
+//   3. refuse when launchctl is not found or this shell cannot write to the GUI launchd domain
+//      gui/<uid> (launchd.mjs reachProbe: bootstrap and bootout a throwaway LaunchAgent that
+//      runs nothing, its plist removed on every path), since the ctx-watch timer could not be
+//      paused and restored. Until 0.4.0 this was `launchctl print gui/<uid>`, which a sandboxed
+//      shell passes while its `launchctl bootstrap` fails ("Bootstrap failed: 5: Input/output
+//      error", 2026-11-11): repair would have booted the timer out and failed to restore it;
 //   4. refuse when ctx's indexing mode is not `auto` or its config file is missing (ctx-watch
 //      never flips a deliberate `manual` and never sets ctx up);
 //   5. the upgrade gate (probe.mjs upgradeGate and readHandoff): refuse while an upgrade is in
@@ -51,7 +55,7 @@
 import { existsSync } from "node:fs";
 import { constants } from "node:os";
 import { CTX, HANDOFF_STALE_MS, HEAL_GRACE_MS, HEAL_TIMEOUT_MS, MODE_ARGV, PROBE_TIMEOUT_MS, STATUS_ARGV, age, ctxEnv, parseJson, runCtx, upgradeGate } from "./probe.mjs";
-import { LABEL, loaded, plistPath, resolveLang, runCheck } from "./launchd.mjs";
+import { LABEL, loaded, plistPath, reachProbe, resolveLang, runCheck } from "./launchd.mjs";
 
 export const VERIFY_TRIES = 10;
 export const VERIFY_GAP_MS = 3_000;
@@ -64,7 +68,6 @@ const HEAL_ARGV = Object.freeze([CTX, "index", "mode", "auto", "--format", "json
 const withCtx = (argv, ctx) => [ctx, ...argv.slice(1)];
 const field = (o, k) => (o && typeof o === "object" && !Array.isArray(o) ? o[k] : undefined);
 const firstLine = (r) => (r.error ? r.error : (r.stderr || r.stdout || "").trim().split("\n")[0]?.slice(0, 160) || "(no output)");
-const lastLine = (s) => (s ?? "").trim().split("\n").at(-1);
 const sleepAsync = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 /** One trip round the event loop, so a signal that arrived during a synchronous spawn is delivered. */
 const turn = () => new Promise((resolve) => setImmediate(resolve));
@@ -132,10 +135,10 @@ export async function repair({ env: shellEnv = process.env, run = runCtx, check 
   }
   // 2. LANG.
   if (lang.value === null) return refuse(`LANG could not be found: ${lang.detail}; ctx would record a daemon launch environment without it and report \`environment_invalid\`; run from a shell with LANG set (a Terminal login shell has it)`);
-  // 3. launchctl and the GUI launchd domain.
-  const domain = check("launchctl", ["print", `gui/${uid}`]);
-  if (domain.missing) return refuse("launchctl not found: the ctx-watch timer could not be paused and restored; run from a macOS GUI login session");
-  if (domain.code !== 0) return refuse(`launchd domain gui/${uid} is not reachable from this shell (launchctl print exit ${domain.code ?? "none"}: ${lastLine(domain.output)}); run from a GUI login session`);
+  // 3. launchctl, and write access to the GUI launchd domain, before anything is paused.
+  const reach = reachProbe({ uid, check });
+  if (reach.missing) return refuse("launchctl not found: the ctx-watch timer could not be paused and restored; run from a macOS GUI login session");
+  if (!reach.ok) return refuse(`this shell cannot load LaunchAgents into launchd domain gui/${uid} (${reach.detail}): the ctx-watch timer could not be paused and restored; run from a GUI login session (a Terminal window), not a sandboxed or ssh shell`);
   // 4. Indexing mode.
   const mode = ctxRun(MODE_ARGV);
   if (mode.error) return refuse(`ctx could not run: ${mode.error}`);
