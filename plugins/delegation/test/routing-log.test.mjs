@@ -4,10 +4,10 @@
 
 import test from "node:test";
 import assert from "node:assert/strict";
-import { existsSync, mkdirSync, readFileSync, utimesSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, readFileSync, utimesSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { box, errorsLog, gitRepo, runHook, setConfig, spawnPayload, HOW_ONLY } from "./helpers.mjs";
-import { LOCK_STALE_MS, MAX_BYTES, logRouting, routingLogPath } from "../lib/routing-log.mjs";
+import { LOCK_STALE_MS, MAX_BYTES, acquireLock, logRouting, readLock, releaseLock, routingLogPath, takeOverStale } from "../lib/routing-log.mjs";
 
 const lines = (env) => {
   try {
@@ -176,4 +176,36 @@ test("routing log: a stale lock from a crashed hook is taken over and rotation p
   assert.equal(readFileSync(join(dir, "routing.jsonl.1"), "utf8").startsWith("xxxx"), true);
   assert.equal(lines(env).length, 1);
   assert.equal(existsSync(lock), false);
+});
+
+test("routing log: two hooks that both saw the same stale lock: one takes over, the other backs off and the fresh lock survives", (t) => {
+  const { env } = box(t);
+  const dir = join(env.XDG_STATE_HOME, "delegation");
+  mkdirSync(dir, { recursive: true });
+  const lock = join(dir, "routing.jsonl.lock");
+  writeFileSync(lock, "crashed-token");
+  const old = new Date(Date.now() - LOCK_STALE_MS - 5000);
+  utimesSync(lock, old, old);
+  const a = readLock(lock);
+  const b = readLock(lock);
+  assert.equal(a.token, "crashed-token");
+  assert.equal(b.token, "crashed-token");
+  // A takes over and acquires.
+  assert.equal(takeOverStale(lock, a.token), true);
+  const tokenA = acquireLock(lock);
+  assert.ok(tokenA);
+  // B, still holding its stale reading, tries the same takeover: it must fail and put A's lock back.
+  assert.equal(takeOverStale(lock, b.token), false);
+  assert.equal(readFileSync(lock, "utf8"), tokenA, "A's lock is intact");
+  assert.equal(acquireLock(lock), null, "B cannot acquire while A holds it");
+  // While A holds the lock a full log is not rotated by a third hook, so an archive can't be replaced.
+  writeFileSync(join(dir, "routing.jsonl"), `${"x".repeat(MAX_BYTES)}\n`);
+  writeFileSync(join(dir, "routing.jsonl.1"), "archive\n");
+  one(env);
+  assert.equal(readFileSync(join(dir, "routing.jsonl.1"), "utf8"), "archive\n");
+  releaseLock(lock, "someone-elses-token");
+  assert.ok(existsSync(lock), "release with the wrong token leaves the lock");
+  releaseLock(lock, tokenA);
+  assert.equal(existsSync(lock), false);
+  assert.deepEqual(readdirSync(dir).filter((f) => f.includes(".stale-")), [], "no moved-aside lock files are left");
 });
