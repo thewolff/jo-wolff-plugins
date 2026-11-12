@@ -19,7 +19,8 @@ All notable changes to ledger are recorded here. The format follows
   nothing" is recorded, not inferred: `lib/write-tracker.cjs` is preloaded into each spawned hook
   (`NODE_OPTIONS=--require`) and logs every path the run tried to write through `fs`, so a lock
   file made and removed within one run counts even where the directory's mtime does not move
-  (removing a path that does not exist is not a write). A run the tracker cannot follow (the
+  (removing a path that does not exist is not a write), and a write through a symlink counts
+  where the link points, not only where it sits. A run the tracker cannot follow (the
   spawned process is not node, a child process or worker thread it started did not load the
   tracker, or it loaded a native addon) has an unknown baseline and gets no such pass.
 - A hook that writes state on the healthy input and swallows the unwritable fault (no
