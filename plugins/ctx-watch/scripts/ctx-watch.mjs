@@ -136,7 +136,9 @@ export async function main(argv, deps = {}) {
       const at = now();
       const token = `${at}-${process.pid}`;
       const verdict = result.ok ? "pass" : result.upgrading ? "wait" : result.slow ? "slow" : "fail";
-      const probeLine = `${iso(at)} ${verdict}: ${result.ok ? result.summary : result.reason}${result.healed ? ` | heal: ${result.healed.detail}` : ""}`;
+      // A timeout the liveness check could not explain says which check failed (0.4.1).
+      const notSlow = !result.ok && result.liveness ? `; not slow: ${result.liveness.detail}` : "";
+      const probeLine = `${iso(at)} ${verdict}: ${result.ok ? result.summary : result.reason}${notSlow}${result.healed ? ` | heal: ${result.healed.detail}` : ""}`;
       const notWritten = (err) => `state not written to ${file}: ${err?.message}`;
       // Settle, step and claim in one locked read-modify-write: a second tick sees the claim.
       const claim = withStateLock(

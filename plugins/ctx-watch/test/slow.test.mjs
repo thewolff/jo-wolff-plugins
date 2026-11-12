@@ -76,7 +76,7 @@ test("slow: a status timeout whose liveness check failed carries why, in the res
   try {
     const env = { ...ENV, HOME: dir, XDG_STATE_HOME: join(dir, "state") };
     const t = await main(["tick"], { env, now: () => NOW, run: timingOut().run, exists: () => true, popup: () => ({ ok: true }), daemonAlive: MISSED });
-    assert.match(t.text, / fail: ctx could not run: .*did not answer in 10 s; not slow: pid 51357 runs, but its query socket \/x\/q\.sock did not accept a connection \(no connection within 2000 ms\)/);
+    assert.match(t.text, / fail: ctx could not run: .*did not answer in 10 s;.*; not slow: pid 51357 runs, but its query socket \/x\/q\.sock did not accept a connection \(no connection within 2000 ms\) \| heal: /);
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
@@ -132,7 +132,7 @@ test("slow: the SessionStart hook keeps a short liveness bound: what is left of 
   }
 });
 
-test("slow: a dead daemon's leftovers answer at once under the 10 s bound, with an error code: no socket file, a plain file", () => {
+test("slow: a dead daemon's leftovers answer at once under the 10 s bound, with an error code: no socket file, a plain file, a killed listener's socket", () => {
   const dir = mkdtempSync(join("/tmp", "cw-dead-"));
   try {
     const missing = connectSocket(join(dir, "q.sock"), ALIVE_TIMEOUT_MS);
@@ -142,6 +142,13 @@ test("slow: a dead daemon's leftovers answer at once under the 10 s bound, with 
     const plain = connectSocket(join(dir, "plain.sock"), ALIVE_TIMEOUT_MS);
     assert.equal(plain.ok, false);
     assert.match(plain.detail, /^(ECONNREFUSED|ENOTSOCK)$/, "an error code (macOS says ENOTSOCK), not the bound running out");
+    // A listener killed with SIGKILL leaves its socket file behind, as a dead daemon does.
+    const left = join(dir, "left.sock");
+    const killed = spawnSync(process.execPath, ["-e", 'require("node:net").createServer().listen(process.env.S, () => process.kill(process.pid, "SIGKILL"))'], { env: { S: left }, timeout: 30_000 });
+    assert.equal(killed.signal, "SIGKILL");
+    const refused = connectSocket(left, ALIVE_TIMEOUT_MS);
+    assert.equal(refused.ok, false);
+    assert.equal(refused.detail, "ECONNREFUSED");
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
