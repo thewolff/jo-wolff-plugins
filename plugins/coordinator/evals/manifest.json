@@ -1,0 +1,16 @@
+{
+  "$comment": "Every hook event hooks/hooks.json registers, with the outcomes its handler can return (additionalContext counts as systemMessage). Each event x outcome needs one evals/<name>.scenario.json; a silent scenario names a sibling that fires. `ledger gate check` fails naming the gap. `manual` lists what no scenario can prove and how a person checks it.",
+  "events": {
+    "PostModelSwitch": [
+      "systemMessage",
+      "silent"
+    ],
+    "UserPromptSubmit": [
+      "systemMessage",
+      "silent"
+    ]
+  },
+  "manual": [
+    "That the desktop app delivers the PostModelSwitch additionalContext to the model with the next request: no `claude -p` run can switch models. Check by hand: list the session folder in the config, run `/model sonnet` in a desktop session there, and ask what notice it has about the model."
+  ]
+}

@@ -1,5 +1,5 @@
 {
   "name": "coordinator",
   "description": "Habits for a session that coordinates other sessions and subagents: briefing, checking what comes back, relaying the owner's decisions, and keeping a record.",
-  "version": "0.1.0"
+  "version": "0.2.0"
 }

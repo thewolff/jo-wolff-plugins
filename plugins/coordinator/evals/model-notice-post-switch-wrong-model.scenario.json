@@ -1,0 +1,26 @@
+{
+  "$comment": "A switch onto another model inside a listed folder: one additionalContext line naming the model and the owner's setting, model-only because the input carries no effort.",
+  "event": "PostModelSwitch",
+  "expect": "systemMessage",
+  "reason": "Coordinator notice: this session is running claude-sonnet-5-5 (effort not visible to hooks here).",
+  "setup": {
+    "files": {
+      "$XDG_CONFIG_HOME/coordinator/config.json": "{\"folders\":[\"${CWD}\"]}\n"
+    }
+  },
+  "stdin": {
+    "session_id": "${SESSION_ID}",
+    "transcript_path": "${TRANSCRIPT}",
+    "cwd": "${CWD}",
+    "hook_event_name": "PostModelSwitch",
+    "from_model": "claude-opus-5-5",
+    "to_model": "claude-sonnet-5-5",
+    "requested_model": null,
+    "source": "sdk",
+    "context_tokens": 0,
+    "prompt_cache_warm": false,
+    "cache_ttl": "5m",
+    "estimated_cache_write_usd": 0,
+    "pricing": "catalog"
+  }
+}
