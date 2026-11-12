@@ -865,6 +865,12 @@ Tests use a sandboxed `HOME`, `XDG_*` and `LEDGER_*` so they never touch your le
 
 ## Changes
 
+### 0.4.2
+
+- The PR-creation review check gates on the commit the PR actually opens: `--head` is
+  resolved at `refs/heads/<branch>` on its remote, other options' values are skipped, attached
+  `-Hx` / `-H=x` forms are read, and a repeated `--head` checks every branch named.
+
 ### 0.4.1
 
 - Store failures name the SQLite primary and extended error codes, in the CLI's error line
