@@ -17,10 +17,22 @@ push. This plugin makes meeting them the default rather than a retrofit.
 
 ## Install
 
+On Claude Code:
+
 ```
 /plugin marketplace add thewolff/jo-wolff-plugins
 /plugin install plugin-kit@jo-wolff-plugins
 ```
+
+On OMP, from a shell:
+
+```
+omp plugin marketplace add thewolff/jo-wolff-plugins
+omp plugin install plugin-kit@jo-wolff-plugins
+```
+
+The kit has no hooks, so nothing differs by host except the agents' `model:` lines, which OMP
+drops (see *Agents*).
 
 ## What it does
 
@@ -60,7 +72,9 @@ is the author's: the rule in each hook, the skill's steps, the receipt's rows, t
 real inputs and expectations, the fixtures for any program shelled out to. The root README
 row for the plugin (its name and one sentence; the root README never names a version) goes in
 by hand before the first `gate check`: the `docs` row fails a new plugin without it. The
-marketplace entry is added by hand when the plugin is ready to publish.
+marketplace entries are added by hand when the plugin is ready to publish, one in each of
+`.claude-plugin/marketplace.json` and `.omp-plugin/marketplace.json` with the same sentence:
+OMP reads the second file when it exists, so a plugin missing there cannot be installed on OMP.
 
 The two runners are copied, not imported across plugins, on purpose: an installed plugin never
 depends on a sibling being installed, and a change to the kit's copy reaches a plugin only when
@@ -145,7 +159,7 @@ Two agents load from `agents/` (by the plugin-agent convention; nothing register
 | Agent | When | What it does | Tools, model |
 |---|---|---|---|
 | `cross-lab-reviewer` | a plugin branch is built and its suites pass, before a PR | needs a `Threat model:` line in the invoking prompt and asks for it otherwise; runs a preflight (execute authorization, permission, containment, output path), reviews one snapshot of the head commit written blob by blob with `git cat-file`, and sends the range `<base>..<head sha>` to OpenAI Codex with `codex exec --sandbox read-only` and the release review brief: security first inside the threat model (hook command parsing, fail-open paths), each prior finding marked closed, partial or open, the env-only failure set (tests failing in the credential-free run, stated as `exact` or `same major` to the CI node pin), the `/Users/<name>` path scrub, a `worst_case` and a `new-mechanism` line per finding, and a `Verdict: ship`, `ship-with-limits` or `fix-first` line under the review budget (see "Review budget"); writes `~/agent-scratch/<repo>/<plugin>/REVIEW-<version>-codex.md` (a `-round<N>` suffix when one exists) with its triage of each finding and the effective verdict | Read, Grep, Glob, Bash, Write; sonnet |
-| `release-gate` | before a version bump, PR or publish | runs a preflight (execute authorization, permission, containment) and checks one snapshot of the head commit written blob by blob with `git cat-file`, reporting pass, fail or unavailable per check with command and output: the CI node pin from the workflow job that runs the plugin's tests, the path scrub, the version across `plugin.json`, `package.json` and the marketplace entry plus the three release texts ledger's `gate check` `docs` row wants for it (a `CHANGELOG.md` entry, a README release heading, the root README naming the version), `node --test` in a credential-free environment, and the README against the plugin's hooks, skills and agents. `ledger gate check` is reported `unavailable` and never run: it checks live `HEAD`, not the captured sha, so the gate line is `fail` until ledger takes a pinned sha | Read, Grep, Glob, Bash; haiku |
+| `release-gate` | before a version bump, PR or publish | runs a preflight (execute authorization, permission, containment) and checks one snapshot of the head commit written blob by blob with `git cat-file`, reporting pass, fail or unavailable per check with command and output: the CI node pin from the workflow job that runs the plugin's tests, the path scrub, the version across `plugin.json`, `package.json` and both marketplace entries (`.claude-plugin/marketplace.json` and `.omp-plugin/marketplace.json`; a plugin missing from either fails) plus the three release texts ledger's `gate check` `docs` row wants for it (a `CHANGELOG.md` entry, a README release heading, the root README naming the plugin, never its version), `node --test` in a credential-free environment, and the README against the plugin's hooks, skills and agents. `ledger gate check` is reported `unavailable` and never run: it checks live `HEAD`, not the captured sha, so the gate line is `fail` until ledger takes a pinned sha | Read, Grep, Glob, Bash; haiku |
 
 Both agents run code from the checkout (the suites) only when the prompt
 that invokes them carries `execute: <sha>` naming the full head sha, which the agent derives
@@ -380,6 +394,18 @@ The template is the reference copy: `test/prune-template.test.mjs` drives it, im
 template-following `plugins/*/scripts/prune.mjs` to check the symlink skip and the dry-run
 totals, and its drift guard checks every copy for the contract line, the usage line and the
 rotation.
+
+## Changes in 0.4.2
+
+The kit names both marketplace files. OMP reads `.omp-plugin/marketplace.json` when it exists,
+so a plugin listed only in `.claude-plugin/marketplace.json` cannot be installed on OMP. The
+scaffolder's closing line and header comment, the `new-plugin` skill's last step and this
+README now say to add the entry to both. The `release-gate` agent's version match (check 4)
+reads both catalogs and fails a plugin missing from either, and also compares the version in
+`.omp-plugin/plugin.json` when the plugin has one; its path scrub (check 3) covers
+`.omp-plugin`. The template README has an OMP install block. The README's `release-gate` row
+no longer says the root README names the version: it names the plugin, never a version. See
+[CHANGELOG.md](CHANGELOG.md).
 
 ## Changes in 0.4.1
 

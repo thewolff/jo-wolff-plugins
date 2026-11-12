@@ -28,11 +28,13 @@
 //
 // Refuses: a name that is not lowercase kebab, an event not in the host's list, an existing
 // destination (nothing is overwritten; delete it yourself first), no events. Exit 1 with the
-// reason on stderr; exit 0 with the written paths on stdout. Two repository-root files are not
+// reason on stderr; exit 0 with the written paths on stdout. Three repository-root files are not
 // written: the root README's row for the plugin (its name and one sentence; add it by hand
 // before the first `ledger gate check`; its docs row fails a new plugin without it; the root
-// README never names a version), and the marketplace entry (.claude-plugin/marketplace.json;
-// add it by hand, with the same one-sentence description, when the plugin is ready to publish).
+// README never names a version), and the two marketplace entries (.claude-plugin/marketplace.json
+// and .omp-plugin/marketplace.json; add both by hand, each with the same one-sentence description,
+// when the plugin is ready to publish: OMP reads the second file when it exists, so an entry
+// missing there makes `omp plugin install` fail with "not found in marketplace").
 
 import { spawnSync } from "node:child_process";
 import { chmodSync, cpSync, existsSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
@@ -176,7 +178,7 @@ if (invoked) {
   }
   try {
     const { root, written } = scaffold(args);
-    process.stdout.write(`${root}\n${written.map((w) => `  ${w}`).join("\n")}\nnext: write the rule in hooks/*.mjs, the steps in skills/${args.name}/SKILL.md, the rows in HOW-IT-FAILS.md; run \`node --test\` there; add ${args.name}'s row (name and one sentence, no version) to the root README's plugin table before the first \`ledger gate check\`; add the marketplace entry when it is ready to publish.\n`);
+    process.stdout.write(`${root}\n${written.map((w) => `  ${w}`).join("\n")}\nnext: write the rule in hooks/*.mjs, the steps in skills/${args.name}/SKILL.md, the rows in HOW-IT-FAILS.md; run \`node --test\` there; add ${args.name}'s row (name and one sentence, no version) to the root README's plugin table before the first \`ledger gate check\`; when it is ready to publish, add its entry (name, source, the same sentence) to both \`.claude-plugin/marketplace.json\` and \`.omp-plugin/marketplace.json\`.\n`);
   } catch (err) {
     process.stderr.write(`new-plugin: ${err.message}\n`);
     process.exit(1);

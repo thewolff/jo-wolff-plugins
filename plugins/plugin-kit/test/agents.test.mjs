@@ -107,6 +107,19 @@ test("agents: the release gate reports the ledger plugin gate unavailable and ne
   assert.doesNotMatch(text, /ledger\.mjs/, "no ledger invocation");
 });
 
+test("agents: the release gate's version match reads both marketplace files and fails a plugin missing from either; its path scrub covers both catalog folders", () => {
+  const text = readFileSync(join(AGENTS, "release-gate.md"), "utf8");
+  const step = /\n4\. \*\*Version match\.\*\*([\s\S]*?)\n5\. \*\*/.exec(text);
+  assert.ok(step, "check 4 is there");
+  const flat = step[1].replace(/\s+/g, " ");
+  for (const file of [".claude-plugin/marketplace.json", ".omp-plugin/marketplace.json"]) assert.ok(flat.includes(`\`${file}\``), `check 4 reads ${file}`);
+  assert.ok(flat.includes("An entry missing from either file fails the check, naming the file"), "a missing OMP entry is a fail, not a note");
+  const scrub = /\n3\. \*\*Path scrub\.\*\*([^\n]*)/.exec(text);
+  assert.ok(scrub && scrub[1].includes(".claude-plugin .omp-plugin`"), "check 3 greps both catalog folders");
+  const fm = frontmatter(text);
+  assert.ok(typeof fm === "object" && fm.description.includes("both marketplace entries"), "the description says the gate reads both catalogs");
+});
+
 /** The fenced `sh` snapshot block of one agent, dedented. */
 function snapshotBlock(file) {
   const text = readFileSync(join(AGENTS, file), "utf8");

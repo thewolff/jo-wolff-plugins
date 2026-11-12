@@ -439,8 +439,13 @@ open an issue naming the surface and the Claude Code version.
 
 - `${XDG_STATE_HOME:-~/.local/state}/brb/<session id>/` — `away.json` (since, note, counts, the
   lines seen, whether this turn was backstopped, the previous stop's transcript line and
-  fires), `digest.md`, `archive/<when>.md`, `checklist.json` (the last hold's items for the band,
-  each with its Done state), `export/<when>-<what>.md` (the whole text of a `brb clear` block or
+  fires), `digest.md`, `archive/<when>.md`, `checklist.json` (the returned digest after `back`:
+  each item's full text, entry heading and Done state, and the archive path of every hold in
+  it; a hold that ends while the list is open appends its items, keeping the numbers and ticks,
+  `lib/state.mjs` `mergeChecklist`; removed once every item is ticked or by `brb clear`),
+  `hold.seq` (the last hold number issued in the session, `lib/state.mjs` `nextHold`, so a
+  number is never reused after `away.json` and `checklist.json` are gone),
+  `export/<when>-<what>.md` (the whole text of a `brb clear` block or
   an item too long for a hook's context). A `back-requested` file left by 0.4.0 or 0.4.1 is no longer read;
   prune removes it with the rest.
   Declared in `.claude-plugin/plugin.json` `state`; `node scripts/prune.mjs --days 30` removes
@@ -545,6 +550,13 @@ one item at a time (`test/returned-digest.test.mjs`), the hold command as a
 spawned process, the OMP adapter's handlers, the band's data, view, query and action layers.
 `bash e2e/live-run.sh --no-live` replays the eighteen `evals/*.scenario.json` offline. `claude
 plugin test` runs the band mod itself (`mods/band/tests/band.test.tsx`).
+
+## Changes in 0.6.1
+
+Docs only. The description ends "Type back to get what was held." everywhere it appears, which
+is true on both hosts: on Claude Code `back` lists the held items to work one at a time, and
+under OMP it returns the whole digest. *State and config* describes `checklist.json` as 0.6.0
+writes it and lists `hold.seq`. See [CHANGELOG.md](CHANGELOG.md).
 
 ## Changes in 0.6.0
 

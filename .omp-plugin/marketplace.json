@@ -47,12 +47,12 @@
     {
       "name": "plugin-kit",
       "source": "./plugins/plugin-kit",
-      "description": "Start a new plugin that meets this repository's test bar on day one: ask the agent to create or scaffold one. Also keeps the shared libraries and release reviewers the other plugins vendor."
+      "description": "Scaffold a new plugin for this repository that passes its test bar on day one. Also holds the shared libraries, templates and release-review agents the other plugins copy."
     },
     {
       "name": "ctx-watch",
       "source": "./plugins/ctx-watch",
-      "description": "Notice when the ctx daemon is dead, unsupervised or stale, or its semantic index is not ready; repair it, and say so at session start and in a macOS popup from a launchd timer."
+      "description": "Notice when the ctx daemon is dead, unsupervised or stale or its index is not ready, repair it, say so at session start, mid-session to the agent and in a macOS popup, and warn when a resumed session skips ctx."
     },
     {
       "name": "delegation",
@@ -67,7 +67,7 @@
     {
       "name": "brb",
       "source": "./plugins/brb",
-      "description": "Type brb and walk away: the agent keeps working, its questions wait in a digest, and only an on-fire problem reaches you. Claude Code hides its output meanwhile. Type back to read the digest."
+      "description": "Type brb and walk away: the agent keeps working, its questions wait in a digest, and only an on-fire problem reaches you. Claude Code hides its output meanwhile. Type back to get what was held."
     },
     {
       "name": "coordinator",

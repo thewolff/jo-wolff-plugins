@@ -48,9 +48,11 @@ check` passes on the scaffold as written.
    the root README names the plugin, never its version, and changes only when a plugin is
    added, removed, or its purpose changes), before the first `gate check`: ledger's `docs` row
    fails a new plugin without it. Then run `node --test` in the plugin, and `node "<ledger plugin>/scripts/ledger.mjs" gate check
-   --plugins <name>` from the repository; both green before the first push. Add the marketplace
-   entry (`.claude-plugin/marketplace.json` at the root: name, source, the same one sentence)
-   when it is ready to publish.
+   --plugins <name>` from the repository; both green before the first push. When it is ready to
+   publish, add its entry (name, source, the same one sentence) to both marketplace files at the
+   root, `.claude-plugin/marketplace.json` and `.omp-plugin/marketplace.json`. OMP reads the
+   second when it exists, so an entry missing there makes `omp plugin install` fail with "not
+   found in marketplace"; `node --test` in the repository's `scripts/` fails until both list it.
 
 The runner is copied, not shared: `plugins/<name>/lib/hook-runner.mjs` belongs to the new plugin.
 A later change to plugin-kit's copy reaches it only by copying again, on purpose; an installed

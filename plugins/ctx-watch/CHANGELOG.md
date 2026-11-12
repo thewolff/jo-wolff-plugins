@@ -4,6 +4,15 @@ All notable changes to ctx-watch are recorded here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). The 0.1.0 release is described under
 *Changes in 0.1.0* in [README.md](README.md#changes-in-010).
 
+## [0.4.2] - 2026-11-12
+
+### Changed
+
+- README, Install: an OMP install block, and what runs there: the skill, the CLI and the timer;
+  none of the hooks, because ctx-watch ships no OMP extension. Docs only; no code changed.
+- `.omp-plugin/marketplace.json` carries the same description as `plugin.json` and the Claude
+  Code catalog; it had fallen behind them.
+
 ## [0.4.1] - 2026-11-12
 
 On 2026-11-12 three 0.4.0 timer ticks failed as "ctx could not run" while the ctx daemon was

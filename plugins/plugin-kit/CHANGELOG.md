@@ -4,6 +4,23 @@ All notable changes to plugin-kit are recorded here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Releases before 0.1.2 are described in
 the README's "Changes in" sections.
 
+## 0.4.2 - 2026-11-12
+
+### Changed
+
+- The scaffolder's closing line and header comment, the `new-plugin` skill's last step and the
+  README name both marketplace files, `.claude-plugin/marketplace.json` and
+  `.omp-plugin/marketplace.json`. OMP reads the second when it exists, so a plugin listed only
+  in the first fails `omp plugin install` with "not found in marketplace".
+- The `release-gate` agent's version match (check 4) needs an entry in both catalogs and fails
+  a plugin missing from either, naming the file; it also compares the version in
+  `.omp-plugin/plugin.json` when the plugin has one. Its path scrub (check 3) greps
+  `.omp-plugin` too.
+- `templates/README.md` has an OMP install block and says OMP does not run `hooks/hooks.json`.
+- The README's `release-gate` row says the root README names the plugin, never its version (it
+  said "naming the version"), and the README has an OMP install block.
+- `test/scaffold.test.mjs` and `test/agents.test.mjs` pin all of the above.
+
 ## 0.4.1 - 2026-11-10
 
 ### Added

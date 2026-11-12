@@ -3,6 +3,21 @@
 All notable changes to brb are recorded here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.6.1] - 2026-11-12
+
+### Changed
+
+- The one-sentence description ends "Type back to get what was held." in `plugin.json`,
+  `.omp-plugin/plugin.json`, `package.json`, both marketplace catalogs and the repository README.
+  It had two endings: "Type back to read the digest." everywhere but the Claude Code catalog,
+  which said "Type back for a numbered list, then open and tick off one item at a time." Neither
+  was true on both hosts: on Claude Code `back` replies with a numbered list (0.6.0), and under
+  OMP it still returns the whole digest.
+- README "State and config": `checklist.json` is described as it is since 0.6.0 (each item's
+  full text, heading and Done state, the archive path of every hold in it, later holds appended
+  while it is open, removed when every item is ticked or by `brb clear`), and `hold.seq` is
+  listed. Docs only; no code changed.
+
 ## [0.6.0] - 2026-11-11
 
 ### Added

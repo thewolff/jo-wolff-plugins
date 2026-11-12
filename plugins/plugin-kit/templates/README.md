@@ -4,10 +4,22 @@
 
 ## Install
 
+On Claude Code:
+
 ```
 /plugin marketplace add thewolff/jo-wolff-plugins
 /plugin install {{name}}@jo-wolff-plugins
 ```
+
+On OMP, from a shell, once the plugin has its entry in `.omp-plugin/marketplace.json`:
+
+```
+omp plugin marketplace add thewolff/jo-wolff-plugins
+omp plugin install {{name}}@jo-wolff-plugins
+```
+
+OMP does not run `hooks/hooks.json`: on OMP only the skill loads, until the plugin ships an
+extension under `omp.extensions` in its `package.json`.
 
 ## What it does
 
