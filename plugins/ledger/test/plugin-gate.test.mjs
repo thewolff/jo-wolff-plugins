@@ -995,3 +995,67 @@ test("write tracking: promisify(exec) and promisify(execFile) still resolve to {
   assert.deepEqual(JSON.parse(viaShell.stdout).r, { stdout: "hi", stderr: "" });
   assert.match(viaShell.tracking.why, /child process \d+ did not load/);
 });
+
+test("write tracking: a write through a chain of two symlinks, or one dangling symlink, made outside the state directory counts where the chain ends, even when that file does not exist yet; a symlink loop does not crash the hook", () => {
+  const b = sandbox();
+  const plugin = { name: "chain", dir: join(b.root, "plugins", "chain") };
+  // Run in the sandbox root, outside the state directory. Each link is relative to its own
+  // directory, as the kernel resolves it.
+  write(plugin.dir, "hooks/hook.mjs", `import { rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
+const d = join(process.env.XDG_STATE_HOME, "chain");
+symlinkSync(join(d, "errors.log"), "kept-2.link");
+symlinkSync("kept-2.link", "kept-1.link");
+writeFileSync("kept-1.link", "");
+symlinkSync(join(d, "fresh.json"), "fresh-2.link");
+symlinkSync("fresh-2.link", "fresh-1.link");
+writeFileSync("fresh-1.link", "{}");
+symlinkSync(join(d, "solo.json"), "solo.link");
+writeFileSync("solo.link", "{}");
+symlinkSync("loop.link", "loop.link");
+try { writeFileSync("loop.link", "x"); } catch {}
+symlinkSync(join(d, "missing-dir", "x.json"), "nowhere.link");
+try { writeFileSync("nowhere.link", "x"); } catch {}
+process.stdout.write("{}");
+`);
+  const out = spawnHook(plugin, { event: "Stop", command: process.execPath, args: [join(plugin.dir, "hooks", "hook.mjs")] }, { name: "healthy" });
+  assert.equal(out.ok, true, out.why);
+  assert.equal(out.tracking.on, true, out.tracking.why);
+  const counted = (link) => out.tracking.writes.some((p) => p.endsWith(`/${link}`));
+  assert.ok(counted("kept-1.link"), `chain to an existing file: ${JSON.stringify(out.tracking.writes)}`);
+  assert.ok(counted("fresh-1.link"), `chain to a file the write creates: ${JSON.stringify(out.tracking.writes)}`);
+  assert.ok(counted("solo.link"), `dangling link: ${JSON.stringify(out.tracking.writes)}`);
+  assert.ok(counted("nowhere.link"), `dangling link into a missing directory: ${JSON.stringify(out.tracking.writes)}`);
+  assert.ok(!counted("loop.link"), "a loop points nowhere in the state directory");
+  assert.equal(out.wrote, true);
+});
+
+test("write tracking: a lock file made and removed within one coarse filesystem tick still moves the state directory's mtime, so a run the tracker cannot follow reads as a write, not unknown", async () => {
+  const fs = (await import("node:fs")).default;
+  const { syncBuiltinESMExports } = await import("node:module");
+  const b = sandbox();
+  const plugin = clockPlugin(b, "ticked", null, lockHook("ticked"));
+  // A shell wrapper that forks node with NODE_OPTIONS cleared: no process loads the tracker, so
+  // the directory's listing and mtime are all the gate has.
+  write(plugin.dir, "hooks/wrap.sh", `NODE_OPTIONS= "${process.execPath}" "$(dirname "$0")/clock.mjs"\n`);
+  const hook = { event: "UserPromptSubmit", command: "/bin/sh", args: [join(plugin.dir, "hooks", "wrap.sh")] };
+  // A filesystem that keeps mtimes to a 10-minute tick: every bigint stat the gate takes is
+  // rounded down to it, so a stamp before the run and one after it, in the same tick, are equal.
+  const TICK = 600_000_000_000n;
+  const statSync = fs.statSync;
+  fs.statSync = function (p, o) {
+    const s = statSync.call(this, p, o);
+    if (o?.bigint && s) s.mtimeNs = (s.mtimeNs / TICK) * TICK;
+    return s;
+  };
+  syncBuiltinESMExports();
+  try {
+    const healthy = spawnHook(plugin, hook, { name: "healthy" });
+    assert.equal(healthy.ok, true, healthy.why);
+    assert.equal(healthy.tracking.on, false);
+    assert.equal(healthy.wrote, true, JSON.stringify(healthy.tracking));
+  } finally {
+    fs.statSync = statSync;
+    syncBuiltinESMExports();
+  }
+});

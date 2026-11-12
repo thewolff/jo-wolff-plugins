@@ -22,6 +22,7 @@ if (LOG) {
   const append = fs.appendFileSync;
   const existsSync = fs.existsSync;
   const realpathSync = fs.realpathSync;
+  const readlinkSync = fs.readlinkSync;
 
   // appendFileSync opens its file through the exported (wrapped) openSync: without this guard each
   // line it writes would be recorded as a write, and that record written, without end.
@@ -63,10 +64,39 @@ if (LOG) {
       try {
         paths.push(realpathSync(abs));
       } catch {
-        /* nothing there yet, or a dangling link: the parent's resolution stands */
+        // Nothing there yet, or a dangling link (a write through it creates its target).
+        const target = finalTarget(abs);
+        if (target !== null) paths.push(target);
       }
     }
     record("write", [...new Set(paths)]);
+  };
+  // Where a chain of links ending at a missing file points: each hop read with readlink (relative
+  // targets against the link's real directory), at most 40 hops, then the last parent resolved.
+  // Runs only when realpath failed; null when even that walk fails.
+  const finalTarget = (abs) => {
+    try {
+      let p = abs;
+      for (let hops = 0; hops < 40; hops++) {
+        let next;
+        try {
+          next = readlinkSync(p);
+        } catch {
+          break;
+        }
+        p = path.resolve(realDir(path.dirname(p)), next);
+      }
+      return path.join(realDir(path.dirname(p)), path.basename(p));
+    } catch {
+      return null;
+    }
+  };
+  const realDir = (d) => {
+    try {
+      return realpathSync(d);
+    } catch {
+      return d;
+    }
   };
   const WRITE_BITS = fs.constants.O_WRONLY | fs.constants.O_RDWR | fs.constants.O_CREAT | fs.constants.O_TRUNC | fs.constants.O_APPEND;
   const writesFlags = (flags) => (flags == null ? false : typeof flags === "number" ? (flags & WRITE_BITS) !== 0 : /[wa+]/.test(String(flags)));
