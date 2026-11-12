@@ -48,6 +48,11 @@ All notable changes to brb are recorded here. The format follows
   that list is no longer open, or a hold began and ended since the press. That covers a `brb`
   typed after the band's check and a whole `brb` and `back` before the word arrives. Typed
   without the token the words behave as before.
+- A band press whose check cannot run (the session lock held past its 2 s wait) is dropped by
+  rule, with `brb: dropped a band press (…): could not check it …` and one errors.log line,
+  rather than reaching the agent unchecked. A fault in the press's work after the check still
+  fails open. A typed `3`, `done 3` or `brb clear` now checks home and does its work under one
+  session lock, so a `brb` landing between them cannot tick or clear the list during the hold.
 - A `brb clear` block or one item longer than 8000 characters is written whole to
   `export/<when>-<what>.md` (fsync'd, its size checked) before the message that points at it,
   and the message is cut and names that file by absolute path; `brb clear` removes

@@ -425,7 +425,7 @@ test("the band press check and its work take the lock once: a valid press while 
   }
 });
 
-test("the band press check: a lock held past the wait is the runner's fault path (logged, a systemMessage, no block) and the press ticks nothing", async () => {
+test("the band press check: a lock held past the wait drops the press as a stated rule (blocked, a systemMessage saying it could not be checked, logged) and ticks nothing", async () => {
   const { b } = returned();
   let holder;
   try {
@@ -433,9 +433,30 @@ test("the band press check: a lock held past the wait is the runner's fault path
     holder = lockHolder(b, "s1", { ms: 3_000 });
     const r = runHook(b, "user-prompt-submit", promptInput(b, `brb done 1 @${at}#${h}`));
     assert.equal(r.status, 0);
-    assert.notEqual(r.json?.decision, "block", "a fault never blocks");
-    assert.match(r.json.systemMessage, /the hold is locked/);
+    assert.equal(r.json.decision, "block", "no turn: the raw word never reaches the agent");
+    assert.equal(r.json.hookSpecificOutput.suppressOriginalPrompt, true);
+    assert.match(r.json.systemMessage, /^brb: dropped a band press \(`brb done 1`\): could not check it against the open returned digest \(brb: the hold is locked .*\); nothing was shown or ticked/);
+    assert.equal(r.json.reason, r.json.systemMessage);
+    assert.match(b.read(b.errorsLog), /UserPromptSubmit dropped a band press \(brb done 1\) it could not check: brb: the hold is locked/, "the drop is recorded");
     assert.equal(readChecklist("s1", b.env).items[0].done, false, "nothing ticked");
+  } finally {
+    if (holder) await exited(holder);
+    b.release();
+  }
+});
+
+test("a typed item word checks home and does its work under one lock: `done 1` arriving while a writer holds the lock and starts a hold waits, ticks nothing, and goes on as an away prompt", async () => {
+  const { b } = returned();
+  let holder;
+  try {
+    holder = lockHolder(b, "s1", { ms: 0, code: "Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 600); state.writeAway('s1', state.freshAway({ hold: state.nextHold('s1') }))" });
+    const r = runHook(b, "user-prompt-submit", promptInput(b, "done 1"));
+    assert.equal(await exited(holder), 0);
+    assert.equal(r.status, 0);
+    assert.equal(r.json?.decision, undefined, r.stdout);
+    assert.match(r.json.hookSpecificOutput.additionalContext, /^brb: still away since /, "an answer to the agent, as every word is while away");
+    assert.equal(readChecklist("s1", b.env).items[0].done, false, "nothing ticked during the hold");
+    assert.ok(readAway("s1", b.env), "the hold is on");
   } finally {
     if (holder) await exited(holder);
     b.release();

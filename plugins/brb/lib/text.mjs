@@ -182,10 +182,12 @@ export function digestWord(text) {
 
 /**
  * What Jo sees when a band press arrives during a hold (`why` "away"), after a hold began and
- * ended since the press ("cycled": the same list, a newer hold number), or for a list that is no
- * longer the open one (anything else): dropped, nothing done.
+ * ended since the press ("cycled": the same list, a newer hold number), when the check could not
+ * run ("unchecked", with `detail` the reason, e.g. the session lock held past its wait), or for a
+ * list that is no longer the open one (anything else): dropped, nothing done.
  */
-export function stalePressText(word, why) {
+export function stalePressText(word, why, detail = "") {
+  if (why === "unchecked") return `brb: dropped a band press (\`${word}\`): could not check it against the open returned digest (${detail || "unknown error"}); nothing was shown or ticked and the agent was not told. Type the word if you still want it.`;
   const what = why === "away" ? "was open before this hold began" : why === "cycled" ? "has been through a `brb` and `back` since the press" : "is no longer the open one";
   return `brb: dropped a band press (\`${word}\`) made for a returned digest that ${what}; nothing was shown or ticked and the agent was not told. Type the word if you still want it.`;
 }
