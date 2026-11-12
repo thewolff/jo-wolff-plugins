@@ -404,7 +404,9 @@ README now say to add the entry to both. The `release-gate` agent's version matc
 reads both catalogs and fails a plugin missing from either, and also compares the version in
 `.omp-plugin/plugin.json` when the plugin has one; its path scrub (check 3) covers
 `.omp-plugin`. The template README has an OMP install block. The README's `release-gate` row
-no longer says the root README names the version: it names the plugin, never a version. See
+no longer says the root README names the version: it names the plugin, never a version. The
+`new-plugin` skill says what the `scripts/` parity suite catches (a plugin in one catalog only,
+or differing descriptions) and that a plugin in neither is the release gate's check 4. See
 [CHANGELOG.md](CHANGELOG.md).
 
 ## Changes in 0.4.1

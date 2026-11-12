@@ -18,6 +18,10 @@ All notable changes to ledger are recorded here. The format follows
   - The Hooks table: SessionStart injects owed work first; Stop runs the owed and offer rules
     and lists owed-work moves on a pass; UserPromptSubmit lists owed work on every prompt and
     never applies `outcome`, `owe` or the owed-work verbs from a prompt.
+  - *What is forced*, item 6: a question's `about` or body covers an offer by being inside the
+    offer's text only when it is at least 20 characters (`OFFER_MATCH_FLOOR`).
+  - *Install* has the OMP install lines and says the skills and the CLI work there while the
+    hooks are Claude Code only; it said the whole plugin was Claude Code only.
 
 ## 0.4.0 - 2026-11-11
 

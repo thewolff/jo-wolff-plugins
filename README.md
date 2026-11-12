@@ -25,7 +25,7 @@ release; versions live there and in each plugin's `.claude-plugin/plugin.json`, 
 | [ledger](plugins/ledger/README.md) | Keeps a durable record of the questions the agent asks you and the choices it makes without asking, in one SQLite file, and gates a push on it. |
 | [as2-skills](plugins/as2-skills/README.md) | 22 engineering skills (spec and plan, TDD, debugging, code review, security, research and more), most vendored from four upstream skill packs at pinned releases. Skills only, no hooks. |
 | [plugin-kit](plugins/plugin-kit/README.md) | Scaffold a new plugin for this repository that passes its test bar on day one. Also holds the shared libraries, templates and release-review agents the other plugins copy. |
-| [ctx-watch](plugins/ctx-watch/README.md) | Notice when the ctx daemon is dead, unsupervised or stale or its index is not ready, repair it, say so at session start, mid-session to the agent and in a macOS popup, and warn when a resumed session skips ctx. |
+| [ctx-watch](plugins/ctx-watch/README.md) | Notice when the ctx daemon is dead, unsupervised or stale or its index is not ready, repair it and say so in a macOS popup; on Claude Code also say so at session start and mid-session to the agent, and warn when a resumed session skips ctx. |
 | [delegation](plugins/delegation/README.md) | Teach an agent what a subagent's brief must contain, and refuse a spawn whose brief lacks a required section, naming the section to add. Also ships 11 general agents and 3 delegation guards. |
 | [continuity](plugins/continuity/README.md) | Keep a long session's state across compaction: ask the agent for a handoff and block one stop until it writes one, snapshot the session before compaction, restore it after, and say if saving works. |
 | [brb](plugins/brb/README.md) | Type brb and walk away: the agent keeps working, its questions wait in a digest, and only an on-fire problem reaches you. Claude Code hides its output meanwhile. Type back to get what was held. |
@@ -107,8 +107,10 @@ newest save. While you are away, brb repeats the away instruction.
 the last message's warn findings once; ledger relays answers recorded in other sessions and lists
 approved work still owed; coordinator adds a line with the system clock, local and UTC; ctx-watch
 tells the agent once when ctx has gone down, and once when it is back. Typed as the whole prompt,
-`brb`, `back` and `pending` go to brb, and none of them starts a turn while away. After `back`,
-a number (`2`) opens that held item, `done 2` ticks it and `brb clear` closes the list. Past its ask point (175,000 tokens by default, and 40,000 past where the window started),
+`brb`, `back` and `pending` go to brb, and none of them starts a turn while away. On Claude
+Code, after `back`, a number (`2`) opens that held item, `done 2` ticks it and `brb clear` closes
+the list; on OMP `back` returns the whole digest, and `brb clear` starts away mode like any other
+`brb`. Past its ask point (175,000 tokens by default, and 40,000 past where the window started),
 continuity asks for a handoff naming `/continuity:handoff`, again every 150,000 tokens more, and
 afresh after each compaction.
 

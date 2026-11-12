@@ -17,6 +17,9 @@ the README's "Changes in" sections.
   `.omp-plugin/plugin.json` when the plugin has one. Its path scrub (check 3) greps
   `.omp-plugin` too.
 - `templates/README.md` has an OMP install block and says OMP does not run `hooks/hooks.json`.
+- The `new-plugin` skill no longer says `node --test` in `scripts/` fails until both catalogs
+  list a new plugin: that suite fails on a plugin in only one catalog or with differing
+  descriptions, and cannot see one listed in neither, which the release gate's check 4 fails.
 - The README's `release-gate` row says the root README names the plugin, never its version (it
   said "naming the version"), and the README has an OMP install block.
 - `test/scaffold.test.mjs` and `test/agents.test.mjs` pin all of the above.

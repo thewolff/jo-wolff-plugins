@@ -10,8 +10,11 @@ All notable changes to ctx-watch are recorded here. The format follows
 
 - README, Install: an OMP install block, and what runs there: the skill, the CLI and the timer;
   none of the hooks, because ctx-watch ships no OMP extension. Docs only; no code changed.
-- `.omp-plugin/marketplace.json` carries the same description as `plugin.json` and the Claude
-  Code catalog; it had fallen behind them.
+- The description, the same in `plugin.json`, `package.json`, both marketplace catalogs and the
+  repository README, says which notices are Claude Code only: the macOS popup and repair work on
+  both hosts, the session-start and mid-session notes and the resume warning only on Claude
+  Code. The OMP catalog had fallen behind the others, and the shared wording promised hooks OMP
+  never runs.
 
 ## [0.4.1] - 2026-11-12
 

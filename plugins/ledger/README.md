@@ -25,8 +25,18 @@ the ledger never blocks a session because the ledger itself is broken.
 ```
 
 Needs Node 22.13 or later (`node:sqlite`; see *Node and `node:sqlite`* below). Zero config: the
-database is created on first use at `~/.local/share/ledger/ledger.db`. Claude Code only in this
-version; there is no OMP adapter.
+database is created on first use at `~/.local/share/ledger/ledger.db`.
+
+On OMP, from a shell:
+
+```
+omp plugin marketplace add thewolff/jo-wolff-plugins
+omp plugin install ledger@jo-wolff-plugins
+```
+
+On OMP the skills load and the CLI runs, but none of the hooks do: ledger ships no OMP extension,
+so nothing is injected at session start or on a prompt and none of the rules under *What is
+forced* applies. The hooks are Claude Code only.
 
 ## Turning a folder off
 
@@ -190,7 +200,7 @@ Exactly six things, each with its off switch:
 3. **Push needs a note or an outcome.** `git push` and `gh pr create` are denied until the session holds one `note` or one `outcome` saying what is being pushed and why (`forcing.pushNeedsNote`).
 4. **Decision needs a note.** A reply that states a decision (`forcing.decisionPhrases`) is sent back once unless a `note` was recorded in that turn (`forcing.stopDecisionRule`); an `outcome` does not count. What the decision produced can follow as an `outcome` note with a `ref` (PR, commit, path); outcomes are never required.
 5. **Approved work gets started.** An answer records the work it approves as an `ow-` item, `owed` (`--nothing` records that it set nothing in motion; `deny` on an approval and `cancel` on a plan create none unless `--work` names some), and the agent can record more with `owe`. A reply that ends while the session owns owed work that no open or held question waits on is sent back once per prompt, listing the items and the `start`, `hold` and `drop` commands (`forcing.stopOwedRule`). Owed work other sessions own in the same folder is listed, never blocking. Once the reminder is spent the turn ends, and the Stop `systemMessage` names each item still owed.
-6. **An offer of work gets a question.** A reply with a sentence offering to do work (a closed list of eleven patterns, after removing code, double-quoted spans and `>` quote lines) is sent back once per prompt when no question covers the offer, even while another question is open (`forcing.stopOfferRule`). A question covers it when the offer's text is inside the question's `about` or body, or the other way round; the candidates are the open and held questions in scope plus every question the session asked since it started. The reason says to record the offer with `ask … --kind approval --about "<the offer sentence>"`; while brb holds the session, with `ask` then `hold`.
+6. **An offer of work gets a question.** A reply with a sentence offering to do work (a closed list of eleven patterns, after removing code, double-quoted spans and `>` quote lines) is sent back once per prompt when no question covers the offer, even while another question is open (`forcing.stopOfferRule`). A question covers it when the offer's text is inside the question's `about` or body, or that `about` or body, at least 20 characters long (`OFFER_MATCH_FLOOR`, compared after both are normalized), is inside the offer's text, so a short body such as "run the audit" does not cover "Want me to run the audit?"; the candidates are the open and held questions in scope plus every question the session asked since it started. The reason says to record the offer with `ask … --kind approval --about "<the offer sentence>"`; while brb holds the session, with `ask` then `hold`.
 
 Rules 5 and 6 share one once-per-prompt slot (`cc_sessions.last_owed_block_prompt`) of their own, checked after the answer, ask and decision rules pass or are spent; when both fire, one block lists both. A Stop with no `prompt_id` never runs them.
 
@@ -879,7 +889,9 @@ Tests use a sandboxed `HOME`, `XDG_*` and `LEDGER_*` so they never touch your le
 Docs only. The README covers 0.4.0's owed work: six forced rules with their off switches (the
 owed rule and the offer rule are new), the `owe`, `start`, `drop`, `done` and `wait` verbs and
 `hold <ow-id>`, the `ow-` id prefix, and what the SessionStart, Stop and UserPromptSubmit hooks
-do with owed work. See [CHANGELOG.md](CHANGELOG.md).
+do with owed work. The offer rule's reverse match names its 20-character floor. *Install* has the
+OMP install lines: the skills and the CLI work there, the hooks are Claude Code only. See
+[CHANGELOG.md](CHANGELOG.md).
 
 ### 0.4.0
 

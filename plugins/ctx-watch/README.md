@@ -669,8 +669,8 @@ since no capture of a live upgrade exists that did not break a real install.
 ## Changes in 0.4.2
 
 Docs only. *Install* has the OMP install lines and says what runs there: the skill, the CLI and
-the launchd timer, and none of the hooks. The OMP catalog's description now matches this
-plugin's. See [CHANGELOG.md](CHANGELOG.md).
+the launchd timer, and none of the hooks. The description, now the same in both catalogs, says
+the session notes and the resume warning are Claude Code only. See [CHANGELOG.md](CHANGELOG.md).
 
 ## Changes in 0.4.1
 
