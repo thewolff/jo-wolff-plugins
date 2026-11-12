@@ -1,14 +1,18 @@
-// inject.mjs — the text SessionStart hands Claude: held questions (Waiting on you), open
+// inject.mjs — the text SessionStart hands Claude: owed work (approved, not finished; the
+// session's own, then other sessions' in scope as not blocking), held questions (Waiting on you), open
 // questions, recent notes, the verb summary, the open and held questions in other folders
 // (each with its body, options and default, so the session can record the human's answer to
 // one without a lookup), one line when the cross-lab review found problems on HEAD, and, last,
 // one doctor line when the cheap health checks find issues. Sections appear in that order and
 // only when non-empty. Capped at CAP characters (the doc's limit is 10,000): notes are truncated
-// first, never the held or open questions, the other-folders block, review or doctor lines.
+// first, never the owed work, the held or open questions, the other-folders block, review or doctor lines.
+// The owed section has its own caps (OWED_CAPS) and on `compact` keeps only owed and started.
 
 import { fileURLToPath } from "node:url";
 import { elsewhereQuestions, heldHead, heldQuestions, logEntries, openQuestions, pendingLines, renderLog, renderPending } from "./commands.mjs";
 import { quickIssues } from "./doctor.mjs";
+import { cut, leftover, sessionItems } from "./owed.mjs";
+import { relative } from "./time.mjs";
 import { findingsLine } from "./review.mjs";
 
 export const CAP = 9000;
@@ -50,17 +54,25 @@ export function allowRule(p = cliPath()) {
 export function verbSummary() {
   return [
     `ledger: questions to the human and decisions made without asking are recorded with the \`ledger\` CLI. Always run it exactly as \`${invocation()} <verb> …\` (that literal path, no alias, no shell variable, no cd) so the one allow rule \`${allowRule()}\` matches and Claude Code never asks about it.`,
-    "Verbs: ask \"<body>\" --name <short> --options a,b --default a · answer <q-id> <option> · withdraw <q-id> · extend <q-id> · hold <q-id> · reopen <q-id> · note \"<text>\" · outcome <ref> [q-id] \"<text>\" · pending [--all] · log [N] · review · doctor · bounces · help.",
-    "To ask the human: run `ledger ask` first, then ask in plain words. Never show the human a q- id; ids are for you. When the human replies, run `ledger answer <q-id> <option>` with the option their words mean before anything else; a reply that is none of the options is recorded as given with `ledger answer <q-id> \"<reply>\"`, never withdrawn. Asked what is waiting: run `pending --all`, report every row first. Record a choice made without asking with `note`, in the same turn you state it. `git push` and `gh pr create` need one `note` or `outcome` in this session first, and a `ledger review` of HEAD. `ledger help` has the grammar.",
+    "Verbs: ask \"<body>\" --name <short> --options a,b --default a · answer <q-id> <option> [--nothing | --pointer \"<p>\"] [--work \"<text>\"] · owe \"<work>\" · start <ow-id> \"<pointer>\" · hold <ow-id> \"<why>\" · drop <ow-id> \"<why>\" · done <ow-id> [ref] · wait <ow-id> <q-id> · withdraw <q-id> · extend <q-id> · hold <q-id> · reopen <q-id> · note \"<text>\" · outcome <ref> [q-id] \"<text>\" · pending [--all] · log [N] · review · doctor · bounces · help.",
+    "To ask the human: run `ledger ask` first, then ask in plain words. Never show the human a q- id; ids are for you. When the human replies, run `ledger answer <q-id> <option>` with the option their words mean before anything else; a reply that is none of the options is recorded as given with `ledger answer <q-id> \"<reply>\"`, never withdrawn. Asked what is waiting: run `pending --all`, report every row first. Record a choice made without asking with `note`, in the same turn you state it. `git push` and `gh pr create` need one `note` or `outcome` in this session first, and a `ledger review` of HEAD. `ledger help` has the grammar. Recording an answer records the approved work as owed unless you add `--nothing`; owed work blocks the end of a turn until you start, hold, drop or finish it. Work you will not start this turn: record it with `owe`, then hold it with a reason.",
   ].join("\n");
 }
 
 /**
  * @returns {{ text: string, sections: string[] }}
  */
-export function buildInjection(db, cwd, config, { source = "startup", now = Date.now(), env = process.env } = {}) {
+export function buildInjection(db, cwd, config, { source = "startup", now = Date.now(), env = process.env, sessionId = null } = {}) {
   const compact = source === "compact";
   const sections = [];
+
+  let owedText = "";
+  try {
+    owedText = owedSection(db, cwd, sessionId, { compact, now });
+  } catch {
+    /* the owed section is advisory here; the Stop rule still holds the work */
+  }
+  if (owedText) sections.push("owed");
 
   const held = heldQuestions(db, cwd);
   let waitingText = "";
@@ -72,7 +84,7 @@ export function buildInjection(db, cwd, config, { source = "startup", now = Date
   const questions = openQuestions(db, cwd);
   let questionsText = "";
   if (questions.length) {
-    questionsText = `ledger: open questions for ${cwd} and the folders below it (for you, not the human: when the human answers one in their own words, record it with \`answer <q-id> <option>\`; never show them the id):\n${renderPending(questions, cwd, { now, timezone: config.timezone ?? null })}`;
+    questionsText = `ledger: open questions for ${cwd} and the folders below it (for you, not the human: when the human answers one in their own words, record it with \`answer <q-id> <option>\`; that also records approved work as owed (\`--nothing\` if not); never show them the id):\n${renderPending(questions, cwd, { now, timezone: config.timezone ?? null })}`;
     sections.push("questions");
   }
 
@@ -103,7 +115,7 @@ export function buildInjection(db, cwd, config, { source = "startup", now = Date
   const doctorText = config.inject?.doctor === false ? "" : doctorLine(db, { env, now });
   if (doctorText) sections.push("doctor");
 
-  const assemble = (notes) => [waitingText, questionsText, notes, summary, elsewhereText, reviewText, doctorText].filter(Boolean).join("\n\n");
+  const assemble = (notes) => [owedText, waitingText, questionsText, notes, summary, elsewhereText, reviewText, doctorText].filter(Boolean).join("\n\n");
   let text = assemble(notesText);
   if (text.length > CAP) text = assemble(truncate(notesText, Math.max(0, CAP - (text.length - notesText.length))));
   if (text.length > CAP) text = assemble("");
@@ -160,3 +172,34 @@ export function truncate(block, max) {
   return `${block.slice(0, cut > 0 ? cut : room)}${MARKER}`;
 }
 const MARKER = "\n… (truncated)";
+
+/** How many lines each owed list keeps in the SessionStart injection. */
+export const OWED_CAPS = Object.freeze({ owed: 10, started: 5, deferred: 5, others: 5 });
+
+/**
+ * The SessionStart owed section: this session's owed, started and deferred items, then items in
+ * scope owned by other sessions (listed, not blocking). Bodies cut to 120 characters, pointers
+ * and reasons to 80. On `compact` only owed and started. "" when there is nothing.
+ */
+export function owedSection(db, cwd, sessionId, { compact = false, now = Date.now() } = {}) {
+  const mine = sessionId ? sessionItems(db, { sessionId, cwd }) : [];
+  const others = compact ? [] : leftover(db, { sessionId, cwd });
+  const by = (state) => mine.filter((i) => i.state === state);
+  const owed = by("owed");
+  const started = by("started");
+  const deferred = compact ? [] : by("deferred");
+  if (!owed.length && !started.length && !deferred.length && !others.length) return "";
+  const more = (items, cap) => (items.length > cap ? [`… and ${items.length - cap} more; run \`${invocation()} pending\``] : []);
+  const list = (items, cap, line) => [...items.slice(0, cap).map(line), ...more(items, cap)];
+  const body = (i) => cut(i.body, 120);
+  const waitName = (i) => (i.waits_on ? db.prepare("SELECT name FROM cc_questions WHERE id = ?").get(i.waits_on)?.name ?? i.waits_on : null);
+  const out = [];
+  if (owed.length || started.length || deferred.length) {
+    out.push("ledger: owed work for this session (approved by the human, oldest first); owed items block the end of a turn until each is started, held, dropped or done:");
+    out.push(...list(owed, OWED_CAPS.owed, (i) => `- ${body(i)} (${i.id}, owed since ${relative(i.made_at, now)}${waitName(i) ? `, waits on ${waitName(i)}` : ""})`));
+    if (started.length) out.push("Started, not done:", ...list(started, OWED_CAPS.started, (i) => `- ${body(i)} (${i.id}, started ${relative(i.changed_at, now)}: ${cut(i.pointer, 80)})`));
+    if (deferred.length) out.push("Deferred:", ...list(deferred, OWED_CAPS.deferred, (i) => `- ${body(i)} (${i.id}, deferred ${relative(i.changed_at, now)}: ${cut(i.reason, 80)})`));
+  }
+  if (others.length) out.push("Owed by other sessions in scope (listed, not blocking; moving one takes it over):", ...list(others, OWED_CAPS.others, (i) => `- ${body(i)} (${i.id}, ${i.state})`));
+  return out.join("\n");
+}

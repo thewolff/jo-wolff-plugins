@@ -26,7 +26,10 @@ test("step 9: `approve q-…\\nwithdraw q-…` → both applied, additionalConte
   const db = openDb(box);
   assert.deepEqual(db.prepare("SELECT answered_by, via FROM cc_answers WHERE question_id = ?").get(q1).via, "prompt-hook");
   assert.equal(db.prepare("SELECT state FROM cc_questions WHERE id = ?").get(q2).state, "withdrawn");
+  const owed = db.prepare("SELECT id FROM cc_owed WHERE question_id = ?").get(q1).id;
   db.close();
+  // The approval left work owed for this session; finish it so the prompts below start with nothing owed.
+  assert.equal(cli(box, ["done", owed]).code, 0);
 });
 
 test("step 9: a prose line anywhere → nothing; a free-text verb → nothing; config off → nothing", () => {

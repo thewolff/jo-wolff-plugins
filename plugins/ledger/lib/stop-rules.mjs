@@ -66,7 +66,7 @@ export function askAwayReason(cli = "ledger") {
 export function answerReason(questions, cli = "ledger") {
   const list = questions.map((q) => `${q.id} (${q.name}): ${q.body}`).join("\n");
   const one = questions.length === 1;
-  return `ledger: the human has written since you asked ${one ? "this question" : "these questions"}, and ${one ? "it has" : "they have"} no answer recorded:\n${list}\nTake the answer from the human's latest message and run \`${cli} answer <q-id> <option>\` for ${one ? "it" : "each"} (or \`${cli} withdraw <q-id>\` if they set it aside), then finish. Do not show the q- id to the human.`;
+  return `ledger: the human has written since you asked ${one ? "this question" : "these questions"}, and ${one ? "it has" : "they have"} no answer recorded:\n${list}\nTake the answer from the human's latest message and run \`${cli} answer <q-id> <option>\` for ${one ? "it" : "each"} (or \`${cli} withdraw <q-id>\` if they set it aside), then finish. Do not show the q- id to the human. Recording an answer also records the approved work as owed. Add \`--nothing\` if the answer sets nothing in motion, \`--pointer "<agent, session or command>"\` if you start it now, and \`--work "<the work, one line>"\` if the option's words do not describe it.`;
 }
 
 export function decisionReason(phrase, cli = "ledger") {
