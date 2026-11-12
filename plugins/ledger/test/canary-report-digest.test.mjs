@@ -700,7 +700,7 @@ test("digest install and the CLI: the Monday 09:00 plist, the bootstrap line; `d
   assert.match(bareCfg.out + bareCfg.err, /digest\.issue must be owner\/repo#number; ignoring it/);
   assert.match(bareCfg.out, /would post to thewolff\/jo-issues#325/);
   writeFileSync(join(b.env.XDG_CONFIG_HOME, "ledger", "config.json"), JSON.stringify({ digest: { issue: "o/r#1" } }));
-  assert.match(readFileSync(got, "utf8"), /^## ledger weekly digest \(ledger 0\.3\.\d+\)\n/);
+  assert.match(readFileSync(got, "utf8"), /^## ledger weekly digest \(ledger 0\.4\.\d+\)\n/);
   // No gh at all.
   const b2 = sandbox();
   const none = cli(b2, ["digest"], { env: { PATH: join(b2.root, "empty") } });

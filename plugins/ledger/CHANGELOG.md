@@ -4,6 +4,32 @@ All notable changes to ledger are recorded here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Entries before 0.2.1 are the
 "Changes" section of the README (one line per version).
 
+## 0.4.0 - 2026-11-11
+
+### Added
+
+- Owed work (migration 9: `cc_owed`, `cc_owed_moves`, `cc_sessions.last_owed_block_prompt`).
+  `answer` records approved work as owed (`ow-…`), except a `deny` on an approval question
+  and a `cancel` on a plan question, which create nothing. `--nothing` records that the reply
+  sets nothing in motion, `--work` names the work, `--pointer` says what is doing it.
+- Verbs `owe`, `start`, `drop`, `done` and `wait`; `hold <ow-id> "<why>"` defers owed
+  work. None of them applies from a typed prompt.
+- Stop rule `stopOwedRule`: owed work this session has not started, deferred, dropped,
+  finished or linked to an open question blocks the end of a turn once per prompt.
+- Stop rule `stopOfferRule`: a reply that offers to do work (eleven sentence patterns,
+  question-worded offers included) with no ledger question recording it, by its `--about` or
+  its text, blocks the end of a turn once per prompt, even while another question is open.
+  While away (brb) the reason says to record the offer and `hold` it.
+- Both rules share a second once-per-prompt slot, so the answer, ask and decision rules keep
+  theirs. A pass afterwards shows what moved (`ledger: started: …`) once, up to 8 lines.
+- Owed work is listed first at session start (never truncated) and on a typed prompt that is
+  not a ledger line, in the agent's context only.
+- `ledger report` gains an owed section: formal and agent rows, how many answers set nothing
+  in motion, and the work deferred now and deferred more than 7 days ago.
+- `forcing.stopOwedRule` and `forcing.stopOfferRule` (both default true).
+- `test/offer-scan.mjs`, a by-hand scan of past transcripts for how often the offer rule
+  would fire.
+
 ## 0.3.13 - 2026-11-11
 
 ### Fixed

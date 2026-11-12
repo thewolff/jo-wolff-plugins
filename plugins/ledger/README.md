@@ -862,6 +862,14 @@ Tests use a sandboxed `HOME`, `XDG_*` and `LEDGER_*` so they never touch your le
 
 ## Changes
 
+### 0.4.0
+
+- Owed work: `answer` records approved work as owed, and new verbs `owe`, `start`, `drop`,
+  `done`, `wait` and `hold <ow-id>` move it. Two Stop rules, `stopOwedRule` and
+  `stopOfferRule`, block the end of a turn once per prompt when approved work is not started
+  or a reply offers work no question records. Owed work is listed at session start and on
+  typed prompts; `ledger report` counts it and names work deferred more than 7 days.
+
 ### 0.3.13
 
 - The gate's `visible` check no longer fails a stateless hook at random. A hook that wrote
