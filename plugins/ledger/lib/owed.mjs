@@ -10,9 +10,10 @@
 // Moves (`moveOwed`), each one UPDATE guarded by the expected from-state plus one move row, inside
 // the caller's transaction:
 //   owed     → started (start) · deferred (hold) · dropped (drop) · done (done)
-//   started  → deferred · dropped · done; `start` again with the same pointer is a noop, another
-//              pointer is refused
-//   deferred → started · dropped · done; `hold` again with the same reason is a noop
+//   started  → deferred · dropped · done; `start` again with the same pointer is a noop (from
+//              another session it takes the item over), another pointer is refused
+//   deferred → started · dropped · done; `hold` again with the same reason is a noop (from
+//              another session it takes the item over)
 //   dropped, done → refused, final
 // A move made by a session takes the item over (session_id set to it).
 //
@@ -92,6 +93,12 @@ export function moveOwed(db, id, verb, text, { by, iso, sessionId = null }) {
   if (FINAL.has(item.state)) return { status: "refused", message: `${id} is ${item.state}; that is final` };
   if (item.state === to) {
     const same = verb === "start" ? item.pointer === value : verb === "hold" ? item.reason === value : false;
+    if (same && sessionId && !(item.session_id === sessionId && owns(db, { id: sessionId, cwd: item.cwd, started_at: null }, item))) {
+      // Another session repeating the move takes the item over, like any other move by it.
+      db.prepare("UPDATE cc_owed SET session_id = ?, changed_at = ? WHERE id = ? AND state = ?").run(sessionId, iso, id, item.state);
+      addMove(db, { kind: "move", owedId: id, from: item.state, to, detail: value, by, iso, sessionId });
+      return { status: "ok", item: getOwed(db, id), message: `${id} already ${to}; this session takes it over: ${item.body} (${value})` };
+    }
     if (same) return { status: "noop", item, message: `${id} already ${to}` };
     return { status: "refused", message: `${id} is already ${to}${item.pointer && to === "started" ? ` (${item.pointer})` : item.reason ? ` (${item.reason})` : ""}; ${to === "started" ? "finish it with done, or hold or drop it" : "start, drop or finish it"}` };
   }
@@ -212,11 +219,36 @@ export function itemsInScope(db, cwd) {
     .filter((i) => inScope(cwd, i.cwd));
 }
 
-/** `pending` lines for owed items: `owed|started|deferred <ow-id>  # <body>[ · <pointer or reason>][ · waits on <q-id>]`. */
-export function owedPendingLines(items) {
+/**
+ * The `pending` list's owed items for `cwd`: every item in scope, plus session `sessionId`'s own
+ * open, started and deferred items in any other folder, oldest first.
+ */
+export function pendingItems(db, { cwd, sessionId = null }) {
+  const scoped = itemsInScope(db, cwd);
+  const seen = new Set(scoped.map((i) => i.id));
+  const elsewhere = sessionItems(db, { sessionId, cwd }).filter((i) => !seen.has(i.id));
+  return [...scoped, ...elsewhere].sort((a, b) => (a.made_at < b.made_at ? -1 : a.made_at > b.made_at ? 1 : a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
+}
+
+/** Every open, started and deferred item, whatever its folder, grouped by folder in path order, oldest first. */
+export function owedByFolder(db) {
+  const groups = new Map();
+  for (const r of db.prepare("SELECT * FROM cc_owed WHERE state IN ('owed','started','deferred') ORDER BY cwd ASC, made_at ASC, id ASC").all()) {
+    if (!groups.has(r.cwd)) groups.set(r.cwd, []);
+    groups.get(r.cwd).push({ ...r });
+  }
+  return groups;
+}
+
+/**
+ * `pending` lines for owed items: `owed|started|deferred <ow-id>  # <body>[ · <pointer or reason>][ · waits on <q-id>]`,
+ * ending ` · in <folder>` when `cwd` is given and the item is outside its scope.
+ */
+export function owedPendingLines(items, cwd = null) {
   return items.map((i) => {
     const extra = i.state === "started" ? ` · ${i.pointer}` : i.state === "deferred" ? ` · ${i.reason}` : "";
-    return `${i.state} ${i.id}  # ${i.body}${extra}${i.waits_on ? ` · waits on ${i.waits_on}` : ""}`;
+    const where = cwd && !inScope(cwd, i.cwd) ? ` · in ${i.cwd}` : "";
+    return `${i.state} ${i.id}  # ${i.body}${extra}${i.waits_on ? ` · waits on ${i.waits_on}` : ""}${where}`;
   });
 }
 

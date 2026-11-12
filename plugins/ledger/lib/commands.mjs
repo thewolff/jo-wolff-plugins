@@ -29,7 +29,7 @@ import { VERBS, optionList } from "./parse.mjs";
 import { nowIso, parseDeadline, relative, formatLocal } from "./time.mjs";
 import { transaction } from "./db.mjs";
 import { renderBounces, BOUNCES_DEFAULT_SINCE } from "./bounces.mjs";
-import { createOwed, cut, itemsInScope, moveOwed, owedPendingLines, recordNothing, waitOwed } from "./owed.mjs";
+import { createOwed, cut, moveOwed, owedByFolder, owedPendingLines, pendingItems, recordNothing, waitOwed } from "./owed.mjs";
 
 const KINDS = ["question", "approval", "plan"];
 const KIND_DEFAULT_OPTIONS = { approval: ["approve", "deny"], plan: ["approve", "revise", "cancel"] };
@@ -292,15 +292,19 @@ export function renderPending(questions, cwd, opts = {}, held = []) {
 /**
  * `pending --all`: one group per folder, headed by the folder's path, then its open questions as
  * `pending` lines (not numbered: an ordinal answers only the current folder's list) and its held
- * ones marked `held`. Groups are separated by a blank line.
+ * ones marked `held`, then its owed, started and deferred work (`owed`, a Map by folder). Groups
+ * are separated by a blank line.
  */
-export function renderPendingAll(groups, opts = {}) {
-  if (!groups.size) return "no open or held questions in the ledger";
+export function renderPendingAll(groups, opts = {}, owed = new Map()) {
+  if (!groups.size && !owed.size) return "no open or held questions in the ledger";
+  const folders = [...new Set([...groups.keys(), ...owed.keys()])].sort((a, b) => (a < b ? -1 : a > b ? 1 : 0));
   const blocks = [];
-  for (const [cwd, questions] of groups) {
+  for (const cwd of folders) {
+    const questions = groups.get(cwd) ?? [];
     const out = [cwd];
     for (const q of questions.filter((x) => x.state === "open")) out.push(...pendingLines(q, opts));
     out.push(...heldLines(questions.filter((x) => x.state === "held")));
+    out.push(...owedPendingLines(owed.get(cwd) ?? []));
     blocks.push(out.join("\n"));
   }
   return blocks.join("\n\n");
@@ -397,8 +401,8 @@ export function execute(db, parsed, ctx) {
     case "disable":
       return setEnabled(ctx.cwd, parsed.verb === "enable");
     case "pending":
-      if (parsed.all) return ok(null, renderPendingAll(unresolvedByFolder(db), { now, timezone: tz }));
-      return ok(null, [renderPending(openQuestions(db, ctx.cwd), ctx.cwd, { now, timezone: tz }, heldQuestions(db, ctx.cwd)), ...owedPendingLines(itemsInScope(db, ctx.cwd))].join("\n"));
+      if (parsed.all) return ok(null, renderPendingAll(unresolvedByFolder(db), { now, timezone: tz }, owedByFolder(db)));
+      return ok(null, [renderPending(openQuestions(db, ctx.cwd), ctx.cwd, { now, timezone: tz }, heldQuestions(db, ctx.cwd)), ...owedPendingLines(pendingItems(db, { cwd: ctx.cwd, sessionId: ctx.sessionId ?? null }), ctx.cwd)].join("\n"));
     case "review":
       return refused("review runs on its own line: `ledger review …`, not inside a batch");
     case "canary":

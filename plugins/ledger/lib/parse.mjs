@@ -42,7 +42,7 @@ import { isId, isCutShort, prefixOf } from "./ids.mjs";
 /** Every verb, who usually says it, and the one-line help entry. Order = `help` order. */
 export const VERBS = Object.freeze([
   { verb: "ask", who: "agent", usage: 'ask "<body>" --name <short> --options a,b[,c] [--default a] [--deadline 2h|<ISO>] [--kind question|approval|plan] [--allows "a: …; b: …"] [--ceiling <usd>] [--about "<what it concerns>"]', help: "ask the human a question (prints q-… and the line to answer with); repeating an open one returns its id" },
-  { verb: "answer", who: "human", usage: 'answer <q-id> <reply> [--nothing | --pointer "<p>"] [--work "<text>"]   (or just: <word> <q-id>)', help: "record the human's answer: an option word as that option, any other reply (up to 200 characters) as given, a free-form answer; `withdraw` withdraws. The answer also records the approved work as owed (body: --work, else the option's allows text, else `<name>: <reply>`); --nothing records that it set nothing in motion, --pointer that it started at once; `deny` on an approval and `cancel` on a plan create nothing unless --work is given. The short form and a prompt take options only" },
+  { verb: "answer", who: "human", usage: 'answer <q-id> <reply> [--nothing | --pointer "<p>"] [--work "<text>"]   (a reply after a bare -- is taken literally; or just: <word> <q-id>)', help: "record the human's answer: an option word as that option, any other reply (up to 200 characters) as given, a free-form answer; `withdraw` withdraws. The answer also records the approved work as owed (body: --work, else the option's allows text, else `<name>: <reply>`); --nothing records that it set nothing in motion, --pointer that it started at once; `deny` on an approval and `cancel` on a plan create nothing unless --work is given. The short form and a prompt take options only" },
   { verb: "approve", who: "human", usage: "approve <q-id>", help: "the answer `approve`, when the question offers it" },
   { verb: "deny", who: "human", usage: "deny <q-id>", help: "the answer `deny`, when the question offers it" },
   { verb: "withdraw", who: "either", usage: "withdraw <q-id>", help: "take a question back; nothing was decided" },
@@ -220,12 +220,23 @@ const FALL_THROUGH = new Set(["approve", "deny", "start", "drop", "done", "wait"
 /**
  * `--nothing`, `--pointer <v>` and `--work <v>` taken out of an answer's reply tokens (anywhere in
  * the tail; a value runs to the next `--` token). Any other `--x` token stays in the reply.
+ * `quoted` holds the indices (into `tokens`) that were quoted: a quoted token is never a flag and
+ * never ends a value. An unquoted bare `--` ends the flags; every token after it is reply text.
  */
-export function takeAnswerFlags(tokens) {
+export function takeAnswerFlags(tokens, quoted = new Set()) {
   const tail = [];
   const answerFlags = {};
+  const isFlagLike = (j) => !quoted.has(j) && tokens[j].startsWith("--");
   for (let i = 0; i < tokens.length; i++) {
     const t = tokens[i];
+    if (quoted.has(i)) {
+      tail.push(t);
+      continue;
+    }
+    if (t === "--") {
+      tail.push(...tokens.slice(i + 1));
+      break;
+    }
     const m = /^--(nothing|pointer|work)(?:=(.*))?$/.exec(t);
     if (!m) {
       tail.push(t);
@@ -240,7 +251,7 @@ export function takeAnswerFlags(tokens) {
       continue;
     }
     const values = [];
-    while (i + 1 < tokens.length && !tokens[i + 1].startsWith("--")) values.push(tokens[++i]);
+    while (i + 1 < tokens.length && !isFlagLike(i + 1)) values.push(tokens[++i]);
     answerFlags[m[1]] = values.length ? values.join(" ") : true;
   }
   return { tail, answerFlags };
@@ -346,7 +357,9 @@ export function parseLine(text, lookup = NULL_LOOKUP, tokens = null) {
   // an option; `word` is its lowercased form for matching the options.
   if (t0 === "answer") {
     if (rest.length >= 2 && isId(rest[0]) && prefixOf(rest[0]) === "q") {
-      const { tail, answerFlags } = takeAnswerFlags(rest.slice(1));
+      // rest.slice(1) starts at token 2; shift the quoted indices to match.
+      const tailQuoted = new Set([...quoted].filter((i) => i >= 2).map((i) => i - 2));
+      const { tail, answerFlags } = takeAnswerFlags(rest.slice(1), tailQuoted);
       if (!tail.length) return refused(shown, `answer needs a reply: answer ${rest[0]} <reply>`);
       const reply = tail.join(" ");
       return command(shown, { verb: "answer", id: rest[0], word: reply.toLowerCase(), reply, answerFlags });

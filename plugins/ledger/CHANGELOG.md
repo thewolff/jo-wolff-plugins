@@ -35,6 +35,9 @@ All notable changes to ledger are recorded here. The format follows
   then blocks that session, not the asker, and shows in that session's started and deferred
   lists. Other work belongs to the session it is tagged with, whatever its folder. Untagged
   work from an untagged question (no `LEDGER_SESSION_ID`) goes by folder and start time.
+- `answer`: a quoted reply or `--work`/`--pointer` value is never read as a flag, and a reply after a bare `--` is recorded literally (`answer q-… -- --nothing`).
+- A `start` or `hold` that repeats an item's pointer or reason from another session takes the item over (one move row) instead of reporting a noop.
+- `pending` also lists this session's owed work from other folders (` · in <folder>`), and `pending --all` lists every folder's owed work, so the capped owed lists' `pending` pointer shows every item they leave out.
 
 ## 0.3.13 - 2026-11-11
 
