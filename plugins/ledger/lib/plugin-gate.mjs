@@ -71,7 +71,7 @@
 // `review waive "<why>"` row for the head lifts this gate as it lifts the review gate.
 
 import { spawnSync } from "node:child_process";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { nowIso } from "./time.mjs";
@@ -255,6 +255,21 @@ function listing(dirs) {
   });
 }
 
+/**
+ * Each of `dirs` as its modification time in nanoseconds: null when it does not exist, "?" when it
+ * could not be read for another reason. A directory's mtime moves on every entry created or
+ * removed in it, so a temp or lock file made and deleted inside one run still shows.
+ */
+function stamps(dirs) {
+  return dirs.map((dir) => {
+    try {
+      return statSync(dir, { bigint: true }).mtimeNs;
+    } catch (e) {
+      return e?.code === "ENOENT" ? null : "?";
+    }
+  });
+}
+
 /** A declared state path (`~/x`, `$XDG_STATE_HOME/x`) inside the sandbox; null when not under a sandbox root. */
 export function sandboxPath(declared, env) {
   const c = canonicalPath(declared);
@@ -273,12 +288,13 @@ export const PRECOMPACT_TEXT_MAX = 10000;
  * Spawn one hook with one fault input. Returns `{ ok, why, visible, wrote }`: ok false with why
  * when the session would break; visible true when errors.log gained a line and stdout carries a
  * systemMessage; wrote true when the run left an entry, or an errors.log line, in a directory
- * the unwritable input locks. `baselineWrote` is the healthy run's `wrote`.
+ * the unwritable input locks, or changed that directory's mtime (a temp file made and removed). `baselineWrote` is the healthy run's `wrote`.
  */
 export function spawnHook(plugin, hook, input, { env: outer = process.env, cwd, stateDirs = [], baselineStdout = null, baselineWrote = null } = {}) {
   const box = faultSandbox(plugin.name, input, stateDirs);
   try {
     const before = listing(box.locked);
+    const stampsBefore = stamps(box.locked);
     const stdin = input.stdin ?? eventInput(input.event ?? hook.event, cwd ?? box.root);
     const env = { ...box.env, PATH: outer.PATH ?? box.env.PATH, CLAUDE_PLUGIN_ROOT: plugin.dir };
     const started = Date.now();
@@ -322,7 +338,13 @@ export function spawnHook(plugin, hook, input, { env: outer = process.env, cwd, 
     // the input has nothing to take away, whatever it prints (a clock line differs every second).
     const untouched = input.unwritable && logged === 0 && (!r.stdout.trim() || (baselineStdout !== null && r.stdout === baselineStdout) || baselineWrote === false);
     const after = listing(box.locked);
-    const wrote = logged > 0 || after.some((names, i) => names !== null && (before[i] === null || names.some((n) => !before[i].includes(n))));
+    const stampsAfter = stamps(box.locked);
+    // A create-then-delete leaves the entry list as it was but moves the directory's mtime. A
+    // timestamp that cannot be read means no verdict can be reached, which counts as a write.
+    const wrote =
+      logged > 0 ||
+      after.some((names, i) => names !== null && (before[i] === null || names.some((n) => !before[i].includes(n)))) ||
+      stampsAfter.some((t, i) => t === "?" || stampsBefore[i] === "?" || t !== stampsBefore[i]);
     return { ok: true, visible: untouched || (logged > 0 && (hasMessage || !needsMessage)), logged, hasMessage, needsMessage, stdout: r.stdout, wrote };
   } finally {
     box.release();

@@ -802,10 +802,14 @@ process.stdin.on("end", () => {
   process.exit(0);
 });
 `;
-function clockPlugin(b, name, where) {
+// Like clockHook with where=null, but on a healthy input it makes and removes a lock file in its
+// state directory before exiting: the final listing is empty, the directory's mtime moved. Where
+// the directory is read-only the failure is swallowed, so nothing is logged.
+const lockHook = (name) => clockHook(name, null).replace("  const where = null;", `  const where = null;\n  try { const d = join(process.env.XDG_STATE_HOME, ${JSON.stringify(name)}); mkdirSync(d, { recursive: true }); const f = join(d, "run.lock"); writeFileSync(f, "1"); rmSync(f); } catch {}`).replace('import { appendFileSync, mkdirSync, writeFileSync }', 'import { appendFileSync, mkdirSync, rmSync, writeFileSync }');
+function clockPlugin(b, name, where, source = clockHook(name, where)) {
   const dir = join(b.root, "plugins", name);
   write(dir, "hooks/hooks.json", JSON.stringify({ hooks: { UserPromptSubmit: [{ hooks: [{ type: "command", command: process.execPath, args: [`\${CLAUDE_PLUGIN_ROOT}/hooks/clock.mjs`], timeout: 5 }] }] } }));
-  write(dir, "hooks/clock.mjs", clockHook(name, where));
+  write(dir, "hooks/clock.mjs", source);
   return { name, dir };
 }
 
@@ -831,4 +835,20 @@ test("visible: a hook that keeps no state passes the unwritable-state input ever
   const kept = { name: "kept-state", dir: join(b.root, "plugins", "kept-state") };
   assert.equal(spawnHook(kept, { ...hook, args: [join(kept.dir, "hooks", "clock.mjs")] }, { name: "healthy" }).wrote, true);
   assert.equal(spawnHook(stateless, hook, FAULT_INPUTS.find((i) => i.unwritable), { baselineWrote: null }).visible, false, "with no baseline the old rule holds");
+});
+
+test("visible: a hook that makes and removes a lock file in its state directory, and swallows the unwritable fault, still fails", () => {
+  const b = sandbox();
+  // The healthy run leaves the directory listing as it found it, so only the directory's mtime
+  // shows the write. mtime has nanosecond resolution on APFS; a create and delete inside one
+  // timestamp tick would read as no write, a residual risk the 20 repeats below would expose.
+  const locker = clockPlugin(b, "locker", null, lockHook("locker"));
+  const hook = { event: "UserPromptSubmit", command: process.execPath, args: [join(locker.dir, "hooks", "clock.mjs")] };
+  const healthy = spawnHook(locker, hook, { name: "healthy" });
+  assert.equal(healthy.wrote, true, JSON.stringify(healthy));
+  for (let i = 0; i < 20; i++) {
+    const row = checkPlugin(locker).find((r) => r.name === "visible");
+    assert.equal(row.status, "fail", `run ${i + 1}: ${row.detail}`);
+    assert.equal(row.detail, "UserPromptSubmit hook on unwritable state: no errors.log line, no systemMessage");
+  }
 });
