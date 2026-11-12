@@ -60,6 +60,12 @@ test("an unclosed code fence in the original prompt does not swallow the section
   assert.deepEqual(missingSessionHeadings(rebuilt), []);
 });
 
+test("a very long prompt after an unclosed fence does not overflow the call stack", () => {
+  const thin = `Fix it.\n\`\`\`js\n${"const x = 1;\n".repeat(400_000)}`;
+  assert.deepEqual(missingSessionHeadings(thin), [...SESSION_HEADINGS]);
+  assert.deepEqual(missingSessionHeadings(`${thin}\n\n${FULL_SESSION_BRIEF}`), []);
+});
+
 test("a heading inside a fence that does close still does not count", () => {
   assert.deepEqual(missingSessionHeadings(FULL_SESSION_BRIEF.replace("# Target\n", "```\n# Target\n```\n")), [TARGET]);
 });

@@ -172,7 +172,7 @@ function unfencedLines(text, { closeOpenFence = false } = {}) {
     }
     out.push(line);
   }
-  if (fence && closeOpenFence) out.push(...inside);
+  if (fence && closeOpenFence) for (const line of inside) out.push(line);
   return out;
 }
 

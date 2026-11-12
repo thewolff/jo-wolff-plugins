@@ -13,13 +13,17 @@
 // judge it, or `warnModelRouting` is off).
 //
 // BOUND: past MAX_BYTES the file is renamed to `routing.jsonl.1` (replacing the previous one) and
-// a new file starts, so at most two files of about MAX_BYTES each exist. scripts/prune.mjs rotates
+// a new file starts, so at most two files of about MAX_BYTES each exist. The rename happens only
+// while holding `routing.jsonl.lock` (created exclusively; a lock older than LOCK_STALE_MS is
+// taken over) and only after the size is read again under the lock, so two hooks that both saw a
+// full file cannot rotate twice and replace a fresh archive. A hook that cannot get the lock
+// appends and leaves rotation to the next one. scripts/prune.mjs rotates
 // only `*.log`, so this file bounds itself; prune still ages out a `.1` older than its --days.
 //
 // How it fails: any error writing (unwritable directory, a directory where the file should be) is
 // one errors.log line from lib/hook-runner.mjs logError, and the caller's answer is unchanged.
 
-import { appendFileSync, mkdirSync, renameSync, statSync } from "node:fs";
+import { appendFileSync, closeSync, mkdirSync, openSync, renameSync, statSync, unlinkSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { stateDir } from "./config.mjs";
@@ -27,12 +31,51 @@ import { logError } from "./hook-runner.mjs";
 
 export const MAX_BYTES = 1024 * 1024;
 const MAX_DESCRIPTION = 200;
+export const LOCK_STALE_MS = 10_000;
 
 const str = (v) => (typeof v === "string" ? v : null);
 
 /** The log's path under the state directory. */
 export function routingLogPath(env = process.env, home = homedir()) {
   return join(stateDir(env, home), "routing.jsonl");
+}
+
+const sizeOf = (path) => {
+  try {
+    return statSync(path).size;
+  } catch {
+    return 0;
+  }
+};
+
+/** Rotate `path` to `path.1` if it is still over the cap, under an exclusive lock; never throws. */
+function rotateIfFull(path) {
+  const lock = `${path}.lock`;
+  let fd = null;
+  for (let attempt = 0; attempt < 2 && fd === null; attempt++) {
+    try {
+      fd = openSync(lock, "wx");
+    } catch (err) {
+      if (err?.code !== "EEXIST") return;
+      try {
+        if (Date.now() - statSync(lock).mtimeMs < LOCK_STALE_MS) return;
+        unlinkSync(lock);
+      } catch {
+        return;
+      }
+    }
+  }
+  if (fd === null) return;
+  try {
+    if (sizeOf(path) >= MAX_BYTES) renameSync(path, `${path}.1`);
+  } finally {
+    closeSync(fd);
+    try {
+      unlinkSync(lock);
+    } catch {
+      // already gone
+    }
+  }
 }
 
 /**
@@ -57,13 +100,7 @@ export function logRouting(hook, { input, toolInput, outcome, row }, env = proce
     const dir = stateDir(env, home);
     mkdirSync(dir, { recursive: true });
     const path = join(dir, "routing.jsonl");
-    let size = 0;
-    try {
-      size = statSync(path).size;
-    } catch {
-      // no file yet
-    }
-    if (size >= MAX_BYTES) renameSync(path, `${path}.1`);
+    if (sizeOf(path) >= MAX_BYTES) rotateIfFull(path);
     appendFileSync(path, `${line}\n`);
   } catch (err) {
     logError("delegation", hook, `routing log not written: ${err?.code ?? err?.message}`, env);

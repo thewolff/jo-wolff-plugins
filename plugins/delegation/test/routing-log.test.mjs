@@ -4,10 +4,10 @@
 
 import test from "node:test";
 import assert from "node:assert/strict";
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, utimesSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { box, errorsLog, gitRepo, runHook, setConfig, spawnPayload, HOW_ONLY } from "./helpers.mjs";
-import { MAX_BYTES, logRouting, routingLogPath } from "../lib/routing-log.mjs";
+import { LOCK_STALE_MS, MAX_BYTES, logRouting, routingLogPath } from "../lib/routing-log.mjs";
 
 const lines = (env) => {
   try {
@@ -132,4 +132,48 @@ test("routing log: past the cap the file moves to routing.jsonl.1 and a fresh fi
   assert.equal(readFileSync(join(dir, "routing.jsonl.1"), "utf8").startsWith("xxxx"), true);
   assert.equal(lines(env).length, 1);
   assert.equal(routingLogPath(env), join(dir, "routing.jsonl"));
+});
+
+const one = (env) => logRouting("spawn-gate", { input: { session_id: "s" }, toolInput: { subagent_type: "reader" }, outcome: "match", row: null }, env);
+
+test("routing log: a fresh lock held by another hook skips rotation and never replaces the archive", (t) => {
+  const { env } = box(t);
+  const dir = join(env.XDG_STATE_HOME, "delegation");
+  mkdirSync(dir, { recursive: true });
+  writeFileSync(join(dir, "routing.jsonl"), `${"x".repeat(MAX_BYTES)}\n`);
+  writeFileSync(join(dir, "routing.jsonl.1"), "archive\n");
+  writeFileSync(join(dir, "routing.jsonl.lock"), "");
+  one(env);
+  assert.equal(readFileSync(join(dir, "routing.jsonl.1"), "utf8"), "archive\n");
+  assert.ok(readFileSync(join(dir, "routing.jsonl"), "utf8").endsWith('"outcome":"match","description":null}\n'));
+  assert.ok(existsSync(join(dir, "routing.jsonl.lock")), "another hook's lock is left alone");
+});
+
+test("routing log: a hook that sees a full file another hook already rotated does not rotate again", (t) => {
+  const { env } = box(t);
+  const dir = join(env.XDG_STATE_HOME, "delegation");
+  mkdirSync(dir, { recursive: true });
+  writeFileSync(join(dir, "routing.jsonl"), `${"x".repeat(MAX_BYTES)}\n`);
+  one(env);
+  const archive = readFileSync(join(dir, "routing.jsonl.1"), "utf8");
+  one(env);
+  one(env);
+  assert.equal(readFileSync(join(dir, "routing.jsonl.1"), "utf8"), archive);
+  assert.equal(lines(env).length, 3);
+  assert.equal(existsSync(join(dir, "routing.jsonl.lock")), false, "the lock is released");
+});
+
+test("routing log: a stale lock from a crashed hook is taken over and rotation proceeds", (t) => {
+  const { env } = box(t);
+  const dir = join(env.XDG_STATE_HOME, "delegation");
+  mkdirSync(dir, { recursive: true });
+  writeFileSync(join(dir, "routing.jsonl"), `${"x".repeat(MAX_BYTES)}\n`);
+  const lock = join(dir, "routing.jsonl.lock");
+  writeFileSync(lock, "");
+  const old = new Date(Date.now() - LOCK_STALE_MS - 5000);
+  utimesSync(lock, old, old);
+  one(env);
+  assert.equal(readFileSync(join(dir, "routing.jsonl.1"), "utf8").startsWith("xxxx"), true);
+  assert.equal(lines(env).length, 1);
+  assert.equal(existsSync(lock), false);
 });
