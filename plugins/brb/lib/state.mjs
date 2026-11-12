@@ -4,6 +4,7 @@
 //   ${XDG_STATE_HOME:-~/.local/state}/brb/<session id>/digest.md   held items, append-only while away
 //   ${XDG_STATE_HOME:-~/.local/state}/brb/<session id>/archive/<ts>.md   digests `back` released
 //   ${XDG_STATE_HOME:-~/.local/state}/brb/<session id>/checklist.json   the returned digest: written by `back` (each row's text, entry heading, done), ticked by `done N` (typed, or the band's Done), removed once every row is ticked or by `brb clear` after the open rows are shown (lib/back.mjs)
+//   ${XDG_STATE_HOME:-~/.local/state}/brb/<session id>/export/<ts>-<what>.md   the whole text of a `brb clear` block or one item too long for a hook's context (lib/back.mjs), written and fsync'd before the message that points at it; scripts/prune.mjs ages it out with the rest
 //   ${XDG_STATE_HOME:-~/.local/state}/brb/<session id>/away.lock   held while away.json is read-modified-written; holds `<pid> <token>`
 //   ${XDG_STATE_HOME:-~/.local/state}/brb/<session id>/section.json   written by the band mod (mods/band/data.mjs sectionPath, `$.fs.write`): the away state each environment section of the system prompt last carried, so a resumed conversation drops a saved away text once; written only when that state changes; scripts/prune.mjs ages it out with the rest
 //   ${XDG_CONFIG_HOME:-~/.config}/brb/config.json                  optional: onFireCap, idleStops, hideRows
@@ -18,7 +19,7 @@
 // turns a throw into one errors.log line and an allow. A missing or unparsable config file is
 // the defaults, and a missing or unparsable away.json is "home" (readAway returns null).
 
-import { closeSync, existsSync, mkdirSync, openSync, readFileSync, renameSync, rmSync, statSync, writeFileSync, writeSync, appendFileSync } from "node:fs";
+import { closeSync, existsSync, fsyncSync, mkdirSync, openSync, readFileSync, renameSync, rmSync, statSync, writeFileSync, writeSync, appendFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 
@@ -265,15 +266,52 @@ export function readDigest(sessionId, env = process.env) {
   }
 }
 
-/** Move the digest to `archive/<ts>.md`; the archived path, or null when there was no digest. */
-export function archiveDigest(sessionId, env = process.env, at = new Date().toISOString()) {
-  const from = digestPath(sessionId, env);
-  if (!existsSync(from)) return null;
+/** Where archiveDigest would move the digest for `at`: `archive/<ts>.md`, `-2`, `-3` … past a name taken. Creates nothing. */
+export function archiveTarget(sessionId, env = process.env, at = new Date().toISOString()) {
   const archive = join(sessionDir(sessionId, env), "archive");
-  mkdirSync(archive, { recursive: true });
   let to = join(archive, `${at.replace(/[:.]/g, "-")}.md`);
   for (let n = 2; existsSync(to); n++) to = join(archive, `${at.replace(/[:.]/g, "-")}-${n}.md`);
-  renameSync(from, to);
+  return to;
+}
+
+/** Move the digest to `to` (default archiveTarget); the archived path, or null when there was no digest. */
+export function archiveDigest(sessionId, env = process.env, at = new Date().toISOString(), to = null) {
+  const from = digestPath(sessionId, env);
+  if (!existsSync(from)) return null;
+  const target = to ?? archiveTarget(sessionId, env, at);
+  mkdirSync(join(target, ".."), { recursive: true });
+  renameSync(from, target);
+  return target;
+}
+
+/**
+ * Write `text` whole to `<session dir>/export/<ts>-<name>.md` (a temp file, fsync'd, renamed),
+ * then check the file on disk holds every byte; the path. Throws when any step fails (the temp
+ * file is removed), so a caller deletes nothing on the strength of an export that is not there.
+ */
+export function writeExport(sessionId, name, text, env = process.env, at = new Date().toISOString()) {
+  const dir = join(sessionDir(sessionId, env), "export");
+  mkdirSync(dir, { recursive: true });
+  const stem = `${at.replace(/[:.]/g, "-")}-${String(name).replace(/[^A-Za-z0-9._-]/g, "_")}`;
+  let to = join(dir, `${stem}.md`);
+  for (let n = 2; existsSync(to); n++) to = join(dir, `${stem}-${n}.md`);
+  const tmp = `${to}.${process.pid}.tmp`;
+  try {
+    const fd = openSync(tmp, "w");
+    try {
+      writeFileSync(fd, text);
+      fsyncSync(fd);
+    } finally {
+      closeSync(fd);
+    }
+    renameSync(tmp, to);
+  } catch (err) {
+    rmSync(tmp, { force: true });
+    throw err;
+  }
+  const want = Buffer.byteLength(text);
+  const got = statSync(to).size;
+  if (got !== want) throw new Error(`the export ${to} holds ${got} of ${want} bytes`);
   return to;
 }
 
@@ -353,7 +391,10 @@ export function parseChecklist(text) {
   const str = (v) => (typeof v === "string" ? v : "");
   const items = parsed.items.filter((i) => i && typeof i === "object" && typeof i.text === "string").map((i) => ({ text: i.text, heading: str(i.heading), done: i.done === true }));
   const archived = Array.isArray(parsed.archived) ? parsed.archived.filter((a) => typeof a === "string") : [];
-  return { at: str(parsed.at), since: str(parsed.since), note: str(parsed.note), archived, items };
+  const out = { at: str(parsed.at), since: str(parsed.since), note: str(parsed.note), archived, items };
+  // `taken`: how many items of the hold named by `since` are already rows (lib/back.mjs endHold), so a `back` retried after its archive step failed adds only the rest.
+  if (Number.isInteger(parsed.taken) && parsed.taken >= 0) out.taken = parsed.taken;
+  return out;
 }
 
 /** The session's checklist, or null when there is none (no file, or a file that does not parse). */

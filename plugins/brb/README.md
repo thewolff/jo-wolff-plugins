@@ -57,7 +57,12 @@ reply is the numbered list. After `back`, four more work the returned digest one
 
 An empty digest shows `(nothing held)`. A `back` or `pending` text longer than 8000
 characters is cut at a line and ends `… (N more lines; full digest: <path>)`; the archive keeps
-every line. Why `back` is answered by the agent and not shown as a hook frame: the Claude
+every line. A `brb clear` block, or one item, longer than 8000 characters is first written
+whole to `export/<when>-<what>.md` in the session's state directory, and the text is cut and
+ends `… (cut at 8000 characters; the whole text: <absolute path>)`; if that file cannot be
+written, `brb clear` removes nothing and says so, and an item points at `checklist.json`,
+which still holds it whole. `back` writes the list before it archives the digest, so a `back`
+that fails part way keeps the hold on and a second `back` lists every item. Why `back` is answered by the agent and not shown as a hook frame: the Claude
 mobile app renders no `UserPromptSubmit` block message, so a `back` typed there archived the
 digest and showed nothing; an assistant message renders on every surface. `pending` while not
 away is passed to the agent as an ordinary prompt, and `back` while not away too, with
@@ -428,7 +433,8 @@ open an issue naming the surface and the Claude Code version.
 - `${XDG_STATE_HOME:-~/.local/state}/brb/<session id>/` — `away.json` (since, note, counts, the
   lines seen, whether this turn was backstopped, the previous stop's transcript line and
   fires), `digest.md`, `archive/<when>.md`, `checklist.json` (the last hold's items for the band,
-  each with its Done state). A `back-requested` file left by 0.4.0 or 0.4.1 is no longer read;
+  each with its Done state), `export/<when>-<what>.md` (the whole text of a `brb clear` block or
+  an item too long for a hook's context). A `back-requested` file left by 0.4.0 or 0.4.1 is no longer read;
   prune removes it with the rest.
   Declared in `.claude-plugin/plugin.json` `state`; `node scripts/prune.mjs --days 30` removes
   files older than 30 days (`errors.log` kept), and the nightly canary runs it.

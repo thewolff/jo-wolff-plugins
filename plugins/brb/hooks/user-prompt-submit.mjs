@@ -37,7 +37,10 @@
 //                            work it (lib/back.mjs showItem); `done 3` / `brb done 3` → item 3 is
 //                            ticked and the agent told (tickItem; the last tick closes the
 //                            list); `brb clear` → every item not done in full, then the file is
-//                            removed (clearReturned; also a systemMessage). All pass through as
+//                            removed (clearReturned; also a systemMessage). A block or item too long
+//                            for the context is exported whole first (export/<ts>-<what>.md) and
+//                            the text points at it; a failed export keeps the list and says so in
+//                            a systemMessage. All pass through as
 //                            additionalContext. With no checklist, `3` and `done 3` are ordinary
 //                            prompts (null) and the `brb …` forms say lib/text.mjs NO_OPEN_TEXT
 //                            and start no hold. While away none of these is special.
@@ -91,6 +94,7 @@ function workReturned(sessionId, pick, env) {
   if (!readChecklist(sessionId, env)) return pick.prefixed ? context(NO_OPEN_TEXT) : undefined;
   if (pick.verb === "show") {
     const r = showItem(sessionId, pick.n, env);
+    if (r?.systemMessage) return { systemMessage: r.systemMessage, ...context(r.agentText) };
     return r ? context(r.agentText) : pick.prefixed ? context(NO_OPEN_TEXT) : undefined;
   }
   if (pick.verb === "done") {

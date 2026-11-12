@@ -29,6 +29,15 @@ All notable changes to brb are recorded here. The format follows
 - `back` replies with a numbered list, one line per held item cut at 120 characters, and how to
   work it, instead of the whole digest. The digest is still archived at `back`.
 - A hold that held nothing leaves an open list as it is.
+- `back` writes `checklist.json` before it moves the digest to the archive, and records how many
+  of the hold's items are rows (`taken`), so a `back` that fails part way keeps the hold on and
+  a second `back` lists every item once (`lib/back.mjs` `endHold`).
+- A `brb clear` block or one item longer than 8000 characters is written whole to
+  `export/<when>-<what>.md` (fsync'd, its size checked) before the message that points at it,
+  and the message is cut and names that file by absolute path; `brb clear` removes
+  `checklist.json` only after the export is on disk, and removes nothing when it cannot be
+  written (`lib/state.mjs` `writeExport`, `lib/text.mjs` `cutToExport`). Before, the cut text
+  pointed at the last archive only, or at the file being removed.
 - Under OMP (`BRB_HARNESS=omp`) nothing changes: the adapter never routes the item words, so
   `back` still replies with the whole digest verbatim and opens no list (`lib/back.mjs`).
 - An item clears only when the person ticks it; the agent never marks one done.

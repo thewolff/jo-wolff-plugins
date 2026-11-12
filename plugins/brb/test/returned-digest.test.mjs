@@ -3,11 +3,13 @@
 // number (or `brb item N`) shows that item in full; `done N` (or `brb done N`) ticks it and the
 // last tick closes the list; `brb clear` shows every item not done in full before the file goes;
 // a second hold appends to a list still open; under BRB_HARNESS=omp `back` keeps the whole digest; the words are ordinary prompts with no list open
-// or while away. Plus lib/text.mjs digestWord. node --test.
+// or while away. Too long for the context: `brb clear` and one item are exported whole first, and a
+// failed export keeps the list; a `back` whose checklist write failed loses nothing on retry.
+// Plus lib/text.mjs digestWord. node --test.
 
 import test from "node:test";
 import assert from "node:assert/strict";
-import { existsSync, readdirSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
 import { checklistPath, readAway, readChecklist } from "../lib/state.mjs";
@@ -175,3 +177,109 @@ test("under BRB_HARNESS=omp, whose adapter never routes the item words, `back` r
     b.release();
   }
 });
+
+/** The context limit the reviewer named for additionalContext; brb's own cap (REASON_CAP) sits under it. */
+const CONTEXT_LIMIT = 10_000;
+/** One held item far past the cap, with a marker at its end. */
+const HUGE = (tag) => `${tag}: ${"a long held paragraph that runs past what one hook context carries, ".repeat(160)}END-${tag}`;
+
+test("`brb clear` past the cap: the whole block goes to an export first, the text points at it, then the list goes; a failed export removes nothing", () => {
+  const b = box();
+  try {
+    runHook(b, "user-prompt-submit", promptInput(b, "brb"));
+    for (const t of ["one", "two", "three"]) hold("s1", HUGE(t), { env: b.env });
+    runHook(b, "user-prompt-submit", promptInput(b, "back"));
+    // A failed export: a file where the export directory goes.
+    writeFileSync(join(b.stateDir("s1"), "export"), "not a directory");
+    const kept = runHook(b, "user-prompt-submit", promptInput(b, "brb clear"));
+    assert.equal(kept.status, 0);
+    assert.match(kept.json.systemMessage, /^brb: the returned digest was not closed\. .*could not be written \(.*\)\. Nothing was removed/);
+    assert.match(kept.json.hookSpecificOutput.additionalContext, /^brb: Jo typed `brb clear`, but the returned digest stays open/);
+    assert.equal(readChecklist("s1", b.env).items.length, 3, "the list stays when its export fails");
+    // The export can be written: every open item in full in the file, the text cut and pointing at it.
+    rmSyncFile(join(b.stateDir("s1"), "export"));
+    const r = runHook(b, "user-prompt-submit", promptInput(b, "brb clear"));
+    const agent = r.json.hookSpecificOutput.additionalContext;
+    assert.ok(agent.length < CONTEXT_LIMIT && r.json.systemMessage.length < CONTEXT_LIMIT, `context ${agent.length}`);
+    const m = /the whole text: (\/[^)]+\.md)\)$/.exec(r.json.systemMessage);
+    assert.ok(m, r.json.systemMessage.slice(-200));
+    const file = readFileSync(m[1], "utf8");
+    for (const t of ["one", "two", "three"]) assert.ok(file.includes(HUGE(t)), `item ${t} whole in the export`);
+    assert.ok(!r.json.systemMessage.includes("END-three"), "the text itself is cut");
+    assert.ok(agent.includes(m[1]), "the agent is told the export path");
+    assert.equal(existsSync(checklistPath("s1", b.env)), false, "the list goes once the export holds it");
+  } finally {
+    b.release();
+  }
+});
+
+test("a `back` whose checklist write fails fails open, keeps the hold and the digest, and the retry lists every item; a failed archive step is not doubled", () => {
+  const b = box();
+  try {
+    runHook(b, "user-prompt-submit", promptInput(b, "brb"));
+    for (const t of ["Approve the schema change", "Rotate the staging token"]) hold("s1", t, { env: b.env });
+    // checklist.json as a non-empty directory: the rename onto it fails.
+    const list = checklistPath("s1", b.env);
+    mkdirSync(join(list, "x"), { recursive: true });
+    const failed = runHook(b, "user-prompt-submit", promptInput(b, "back"));
+    assert.equal(failed.status, 0);
+    assert.match(failed.json.systemMessage, /^brb UserPromptSubmit failed open: /);
+    assert.ok(readAway("s1", b.env), "the hold is still on");
+    assert.match(readFileSync(join(b.stateDir("s1"), "digest.md"), "utf8"), /Rotate the staging token/, "the digest is not archived");
+    hold("s1", "Merge the docs branch", { env: b.env });
+    rmSyncFile(list);
+    const back = runHook(b, "user-prompt-submit", promptInput(b, "back")).json.systemMessage;
+    assert.match(back, /\n1\. Approve the schema change\n2\. Rotate the staging token\n3\. Merge the docs branch\n/);
+    assert.equal(readAway("s1", b.env), null);
+    // The archive step failing after the rows were written: the retry adds only what is new.
+    runHook(b, "user-prompt-submit", promptInput(b, "brb"));
+    hold("s1", "Pick a cache", { env: b.env });
+    const archive = join(b.stateDir("s1"), "archive");
+    rmSyncFile(archive);
+    writeFileSync(archive, "not a directory");
+    const half = runHook(b, "user-prompt-submit", promptInput(b, "back"));
+    assert.match(half.json.systemMessage, /^brb UserPromptSubmit failed open: /);
+    assert.equal(readChecklist("s1", b.env).items.length, 4, "the rows were written before the archive step");
+    hold("s1", "Tag the release", { env: b.env });
+    rmSyncFile(archive);
+    runHook(b, "user-prompt-submit", promptInput(b, "back"));
+    assert.deepEqual(readChecklist("s1", b.env).items.map((i) => i.text), ["Approve the schema change", "Rotate the staging token", "Merge the docs branch", "Pick a cache", "Tag the release"]);
+    assert.ok(readChecklist("s1", b.env).archived.every((a) => existsSync(a)), "every archive path named exists");
+  } finally {
+    b.release();
+  }
+});
+
+test("one item past the cap: the whole item goes to an export, the agent gets its start and the path, under the context limit; a failed export points at checklist.json with a systemMessage", () => {
+  const b = box();
+  try {
+    runHook(b, "user-prompt-submit", promptInput(b, "brb"));
+    hold("s1", HUGE("big"), { env: b.env });
+    runHook(b, "user-prompt-submit", promptInput(b, "back"));
+    const r = runHook(b, "user-prompt-submit", promptInput(b, "1"));
+    assert.equal(r.status, 0);
+    const agent = r.json.hookSpecificOutput.additionalContext;
+    assert.ok(agent.length < CONTEXT_LIMIT, `context ${agent.length}`);
+    assert.match(agent, /^brb: Jo opened item 1 of the returned digest\. It is too long to show whole here/);
+    const m = /the whole text: (\/[^)]+\.md)\)$/.exec(agent);
+    assert.ok(m && m[1].includes("/export/"), agent.slice(-200));
+    assert.ok(readFileSync(m[1], "utf8").includes(HUGE("big")), "the item whole in the export");
+    assert.ok(!agent.includes("END-big"), "the context itself is cut");
+    assert.equal(r.json.systemMessage, undefined);
+    assert.equal(readChecklist("s1", b.env).items[0].done, false, "showing ticks nothing");
+    // A failed export: the context still fits and points at checklist.json; Jo sees why.
+    rmSyncFile(join(b.stateDir("s1"), "export"));
+    writeFileSync(join(b.stateDir("s1"), "export"), "not a directory");
+    const f = runHook(b, "user-prompt-submit", promptInput(b, "brb item 1"));
+    assert.equal(f.status, 0);
+    assert.ok(f.json.hookSpecificOutput.additionalContext.length < CONTEXT_LIMIT);
+    assert.ok(f.json.hookSpecificOutput.additionalContext.endsWith(`the whole text: ${checklistPath("s1", b.env)})`));
+    assert.match(f.json.systemMessage, /^brb: item 1 is too long to show whole and its export could not be written \(.*\); the whole item is still in /);
+  } finally {
+    b.release();
+  }
+});
+
+function rmSyncFile(p) {
+  rmSync(p, { recursive: true, force: true });
+}

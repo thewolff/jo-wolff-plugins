@@ -234,3 +234,41 @@ export function cappedReason(head, body, path) {
   }
   return `${head}\n\n${kept.join("\n")}\n… (${lines.length - kept.length} more lines; full digest: ${path})`;
 }
+
+/**
+ * `head`, a blank line, then as much of `body` as fits so the whole stays within REASON_CAP, ending
+ * `… (cut at N characters; the whole text: <path>)`. Unlike cappedReason it cuts inside a line when
+ * a line alone is too long (a held item is one line). `path` is an export (lib/state.mjs writeExport)
+ * or another file that holds the whole text.
+ */
+export function cutToExport(head, body, path) {
+  const tail = `\n… (cut at ${REASON_CAP} characters; the whole text: ${path})`;
+  const room = Math.max(0, REASON_CAP - head.length - 2 - tail.length);
+  let kept = body.slice(0, room);
+  const nl = kept.lastIndexOf("\n");
+  if (nl > room / 2) kept = kept.slice(0, nl);
+  return `${head}\n\n${kept}${tail}`;
+}
+
+/** What the agent is told when the item Jo opened is too long to show whole: the cut part below, the whole item in a file. */
+export function itemCutInstruction(n, path) {
+  return `brb: Jo opened item ${n} of the returned digest. It is too long to show whole here: the start is below and the whole item is in ${path}. Start your reply with the part below verbatim and that path, read the file before you work the item, then work it with Jo: answer it, or ask what you need to act on it. Show no other item. The item stays open until Jo types \`done ${n}\` or ticks it in the band; do not mark it done yourself.`;
+}
+
+/** What Jo sees when a too-long item could not be exported: the item is still whole in checklist.json. */
+export function itemExportFailedText(n, err, path) {
+  return `brb: item ${n} is too long to show whole and its export could not be written (${err}); the whole item is still in ${path}.`;
+}
+
+/** What `brb clear` says when the block is too long and its export could not be written: nothing is removed. */
+export function clearExportFailedText(open, err) {
+  return `brb: the returned digest was not closed. Its ${open} item${open === 1 ? "" : "s"} not done are too long to show whole here and the export that would hold them could not be written (${err}). Nothing was removed: type a number to open an item, or \`brb clear\` again.`;
+}
+
+/** What the agent is told when `brb clear` kept the list because the export failed. */
+export const CLEAR_KEPT_INSTRUCTION = "brb: Jo typed `brb clear`, but the returned digest stays open. Reply with the block below verbatim as your whole message, then stop.";
+
+/** What the agent is told on `brb clear` when the block was cut and its whole text exported. */
+export function clearExportedInstruction(open, path) {
+  return `brb: Jo closed the returned digest with ${open} item${open === 1 ? "" : "s"} not done. The block is too long to show whole: the start is below and the whole block is in ${path}. Reply with the block below verbatim as your whole message, then stop: the file keeps every item not done in full, so none is lost.`;
+}

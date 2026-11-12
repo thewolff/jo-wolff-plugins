@@ -48,11 +48,14 @@ working; this skill is what it needs from you.
 8. **After `back`, the person works the list one item at a time; each step arrives as context
    on their prompt.** Follow the context line exactly:
    - `brb: Jo opened item N …`: start your reply with the item block below it verbatim, then
-     work that one item with them. The item stays open after your reply.
+     work that one item with them. The item stays open after your reply. When the context says
+     the item is too long to show whole, it names a file: show the part given and that path,
+     and read the file before working the item.
    - `brb: Jo ticked item N … done …`: reply with one line saying so and naming what is still
      open.
    - `brb: Jo closed the returned digest …`: your whole reply is the block below it, verbatim;
-     every item not done is in it in full, and is reaching the person for the last time.
+     every item not done is in it in full, and is reaching the person for the last time. A block
+     too long to show whole is cut and ends with the path of the file that holds all of it.
    - `brb: no returned digest is open …` or `brb: the returned digest has no item N …`: say that
      in one line.
    An item is done only when the person types `done N` or ticks it in the band; your reply on
