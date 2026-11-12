@@ -40,10 +40,46 @@ export const SQLITE_BUSY = 5;
 export const SQLITE_CORRUPT = 11;
 export const SQLITE_NOTADB = 26;
 
+// node:sqlite puts SQLite's extended result code on `err.errcode` (measured on Node 24.13: a
+// UNIQUE violation gives 2067, not 19), so the primary code is its low byte. Every
+// SQLITE_READONLY variant shares primary 8; only the extended code says which one fired.
+const SQLITE_CODE_NAMES = {
+  5: "SQLITE_BUSY",
+  8: "SQLITE_READONLY",
+  11: "SQLITE_CORRUPT",
+  14: "SQLITE_CANTOPEN",
+  26: "SQLITE_NOTADB",
+  264: "SQLITE_READONLY_RECOVERY",
+  520: "SQLITE_READONLY_CANTLOCK",
+  776: "SQLITE_READONLY_ROLLBACK",
+  1032: "SQLITE_READONLY_DBMOVED",
+  1288: "SQLITE_READONLY_CANTINIT",
+  1544: "SQLITE_READONLY_DIRECTORY",
+};
+
+/**
+ * The SQLite codes on a node:sqlite error: { primary, extended } (numbers), or null when `err`
+ * carries no numeric `errcode` (an fs error, a plain Error).
+ */
+export function sqliteCodes(err) {
+  const extended = err?.errcode;
+  if (!Number.isInteger(extended)) return null;
+  return { primary: extended & 0xff, extended };
+}
+
+/** `sqlite errcode 8 SQLITE_READONLY, extended 1032 SQLITE_READONLY_DBMOVED` for `err`, or "" when it has no codes. */
+export function sqliteCodeText(err) {
+  const c = sqliteCodes(err);
+  if (!c) return "";
+  const named = (n) => (SQLITE_CODE_NAMES[n] ? `${n} ${SQLITE_CODE_NAMES[n]}` : String(n));
+  return `sqlite errcode ${named(c.primary)}, extended ${named(c.extended)}`;
+}
+
 export class StoreError extends Error {
   /** @param {"busy"|"open"|"migrate"|"readonly"|"corrupt"} kind */
   constructor(kind, path, cause) {
-    super(`ledger: database ${storeWord(kind)} at ${path}${cause ? `: ${cause.message}` : ""}`);
+    const codes = sqliteCodeText(cause);
+    super(`ledger: database ${storeWord(kind)} at ${path}${cause ? `: ${cause.message}` : ""}${codes ? ` (${codes})` : ""}`);
     this.name = "StoreError";
     this.kind = kind;
     this.path = path;

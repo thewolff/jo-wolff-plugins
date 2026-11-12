@@ -314,7 +314,10 @@ opened, which the hook needs anyway; the schema version; the `errors.log` count 
 days) and adds one line, after everything else and never truncated, on `compact` too, when any
 of them finds an issue. A database that does not exist yet is not an issue.
 
-`errors.log` is one file per state folder, shared by every database a machine uses. Each line
+`errors.log` is one file per state folder, shared by every database a machine uses. Since
+0.4.1 each line carries `ctx={"session","cwd","ppid","parent"}` (the session id, the folder,
+and the parent process's command, `? (ps <why>)` when ps cannot run) and a store failure's line
+names its SQLite codes. Each line
 ends with ` [db <path>]`, the database the writing process had configured, and `doctor` and the
 SessionStart line count only the lines for the database they check. Lines for another database,
 and untagged lines from ledger 0.2.x, are named in the `errors` check's ok text as "not counted".
@@ -884,7 +887,7 @@ Tests use a sandboxed `HOME`, `XDG_*` and `LEDGER_*` so they never touch your le
 
 ## Changes
 
-### 0.4.1
+### 0.4.2
 
 Docs only. The README covers 0.4.0's owed work: six forced rules with their off switches (the
 owed rule and the offer rule are new), the `owe`, `start`, `drop`, `done` and `wait` verbs and
@@ -892,6 +895,13 @@ owed rule and the offer rule are new), the `owe`, `start`, `drop`, `done` and `w
 do with owed work. The offer rule's reverse match names its 20-character floor. *Install* has the
 OMP install lines: the skills and the CLI work there, the hooks are Claude Code only. See
 [CHANGELOG.md](CHANGELOG.md).
+
+### 0.4.1
+
+- Store failures name the SQLite primary and extended error codes, in the CLI's error line
+  and in `errors.log`, so a read-only database says which SQLITE_READONLY variant fired.
+  Every `errors.log` line also carries the session id, cwd and the parent process's command
+  (`ctx={…}`), looked up only when a line is written, bounded, and fail-open.
 
 ### 0.4.0
 

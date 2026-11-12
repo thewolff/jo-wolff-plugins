@@ -83,7 +83,7 @@ test("fail-open table (CLI): a corrupt db at a configured path → exit 2, one s
   const r = cli(b, ["note", "would write"]);
   assert.equal(r.code, 2, r.out + r.err);
   assert.equal(r.out, "");
-  assert.equal(r.err, `ledger: database corrupt at ${b.dbPath}: file is not a database; nothing applied, the file was left as it is\n`);
+  assert.equal(r.err, `ledger: database corrupt at ${b.dbPath}: file is not a database (sqlite errcode 26 SQLITE_NOTADB, extended 26 SQLITE_NOTADB); nothing applied, the file was left as it is\n`);
   assert.equal(hash(), before);
   assert.deepEqual(readdirSync(b.root).filter((f) => f.startsWith("ledger.db")), ["ledger.db"]);
 });

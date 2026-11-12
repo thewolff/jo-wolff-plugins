@@ -177,7 +177,7 @@ test("(h2) errors.log lines for another database or from ledger 0.2.x are not co
   // A line logged after this sandbox's config loaded carries its database, and doctor counts it.
   loadConfig({ env: b.env, cwd: b.work });
   logError("Stop", "boom here", b.env);
-  assert.match(readFileSync(b.errorsLog, "utf8").trim().split("\n").at(-1), / Stop boom here \[db .*\]$/);
+  assert.match(readFileSync(b.errorsLog, "utf8").trim().split("\n").at(-1), / Stop boom here ctx=\{.*\} \[db .*\]$/);
   assert.match(doctor(b).out, /^warn errors: 1 errors\.log line\(s\) for this database/m);
 });
 
