@@ -157,3 +157,19 @@ test("fault inputs: empty stdin, malformed JSON and a missing database pass with
   assert.equal(r.code, 0, r.err);
   assert.notEqual(r.json?.decision, "block");
 });
+
+test("more than eight events: the ones past the cap are not marked shown and appear on the next Stop", () => {
+  const b = sandbox();
+  start(b);
+  const ids = [];
+  for (let n = 0; n < 10; n++) ids.push(owedId(cli(b, ["owe", `chore number ${n}`], { env }).out));
+  for (const id of ids) cli(b, ["done", id], { env });
+  const first = passes(stop(b, "p-many"));
+  assert.match(first, /… and \d+ more/);
+  assert.doesNotMatch(first, /chore number 8/);
+  // 20 events at 8 per Stop: the second Stop starts where the first left off, the third finishes.
+  const second = passes(stop(b, "p-many"));
+  assert.match(second, /^ledger: owed: chore number 8$/m, "the events past the cap show on the next Stop");
+  assert.match(passes(stop(b, "p-many")), /^ledger: done: chore number 9$/m);
+  assert.equal(passes(stop(b, "p-many")), "", "each event is shown once");
+});

@@ -195,7 +195,9 @@ export function handle(input, { env = process.env, now = Date.now() } = {}) {
         for (const i of blockingSet(db, { sessionId, cwd })) lines.push(`ledger: still owed after one reminder, and the turn ended: ${i.body}`);
       }
       if (lines.length > MAX_LINES) lines = [...lines.slice(0, MAX_LINES), `… and ${lines.length - MAX_LINES} more; run \`${cli} pending\``];
-      if (events.length) transaction(db, () => markShown(db, events.map((e) => e.id), iso), store.dbPath);
+      // Only the events whose lines were printed are stamped; the rest show on a later Stop.
+      const shown = events.slice(0, MAX_LINES);
+      if (shown.length) transaction(db, () => markShown(db, shown.map((e) => e.id), iso), store.dbPath);
     } catch (err) {
       logError("Stop", `the forgotten-work check did not run: ${err.message}`, env);
       lines = [];
