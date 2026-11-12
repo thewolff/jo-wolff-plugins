@@ -23,8 +23,10 @@
 //              systemMessage, so neither one's message is required; a hook that printed
 //              nothing and logged nothing on the unwritable state never reached it, which is
 //              not a failure, and so did one that logged nothing there after its healthy run
-//              wrote nothing in the directories that input locks, whatever it printed: the
-//              malformed-JSON input is the one every hook must answer);
+//              wrote nothing in the directories that input locks, whatever it printed, as
+//              recorded by `lib/write-tracker.cjs` preloaded into the hook (a run it cannot
+//              follow gets no such pass): the malformed-JSON input is the one every hook must
+//              answer);
 //              every `test/fixtures/<x>.txt` has an `<x>.unavailable.txt` sibling (the adapter's
 //              unavailable path, captured).
 //   says       text says what to do when it can't: every `skills/*/SKILL.md` and `agents/*.md`
@@ -71,9 +73,10 @@
 // `review waive "<why>"` row for the head lifts this gate as it lifts the review gate.
 
 import { spawnSync } from "node:child_process";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { basename, dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { nowIso } from "./time.mjs";
 import { git, gitHead, defaultBase, headState, currentBranch, NotARepository } from "./review.mjs";
 import { transaction } from "./db.mjs";
@@ -87,6 +90,8 @@ export const RUN_CAP_MS = 60_000;
 /** The deny reason's and a row's detail are cut here. */
 export const DETAIL_MAX = 2_000;
 const SESSION_ID = "s-gate-check";
+/** Preloaded into every spawned hook (`NODE_OPTIONS=--require`); it logs the paths the run tried to write. */
+export const WRITE_TRACKER = fileURLToPath(new URL("./write-tracker.cjs", import.meta.url));
 
 /**
  * The five fault inputs, kind-agnostic. `stdin` is the hook's stdin; `unwritable` makes the
@@ -241,7 +246,10 @@ function faultSandbox(pluginName, input, stateDirs = []) {
   // The directories the unwritable input makes read-only: a run that writes nothing in them has
   // nothing the unwritable input can take away.
   const locked = [join(data, pluginName), ...dirs];
-  return { root, env, errorsLog: logs[0], errorsLogs: logs, locked, release };
+  // Outside every locked directory, so the tracker's own lines are never a write there.
+  mkdirSync(join(root, "track"));
+  const trackLog = join(root, "track", "writes.log");
+  return { root, env, errorsLog: logs[0], errorsLogs: logs, locked, trackLog, release };
 }
 
 /** Each of `dirs` as its entry names (null when it does not exist). */
@@ -258,7 +266,8 @@ function listing(dirs) {
 /**
  * Each of `dirs` as its modification time in nanoseconds: null when it does not exist, "?" when it
  * could not be read for another reason. A directory's mtime moves on every entry created or
- * removed in it, so a temp or lock file made and deleted inside one run still shows.
+ * removed in it, so a temp or lock file made and deleted inside one run usually shows; on a
+ * filesystem with coarse timestamps it may not, which is why the write tracker decides.
  */
 function stamps(dirs) {
   return dirs.map((dir) => {
@@ -268,6 +277,46 @@ function stamps(dirs) {
       return e?.code === "ENOENT" ? null : "?";
     }
   });
+}
+
+/** `p` with its symlinks resolved as far as it exists (`/var/…` and `/private/var/…` agree). */
+function resolved(p) {
+  try {
+    return realpathSync(p);
+  } catch {
+    try {
+      return join(realpathSync(dirname(p)), basename(p));
+    } catch {
+      return p;
+    }
+  }
+}
+
+/**
+ * What `lib/write-tracker.cjs` logged for one run: `{ on, why, writes }`. writes are the paths a
+ * write was attempted on at, inside or above one of `locked`. on is true only when the process
+ * spawned (`pid`) itself loaded the tracker, every child process and worker thread it started
+ * loaded it too, and no native addon ran; otherwise why says what was missing.
+ */
+export function trackedWrites(log, pid, locked) {
+  let lines;
+  try {
+    lines = readFileSync(log, "utf8").split("\n").filter(Boolean).map((l) => JSON.parse(l));
+  } catch (e) {
+    return { on: false, why: e?.code === "ENOENT" ? "no tracker log" : `tracker log unreadable (${e?.message})`, writes: [] };
+  }
+  const roots = [...new Set(locked.flatMap((d) => [d, resolved(d)]))];
+  const touches = (p) => typeof p === "string" && roots.some((d) => p === d || p.startsWith(`${d}/`) || d.startsWith(`${p}/`));
+  const writes = [...new Set(lines.filter((l) => l.kind === "write" && Array.isArray(l.value) && l.value.some(touches)).map((l) => l.value[0]))];
+  const loaded = new Set(lines.filter((l) => l.kind === "loaded").map((l) => `${l.pid}:${l.thread ?? 0}`));
+  if (!loaded.has(`${pid}:0`)) return { on: false, why: "the hook process did not load the write tracker (not node, or its NODE_OPTIONS replaced)", writes };
+  const blind = lines.find((l) => l.kind === "untracked");
+  if (blind) return { on: false, why: `the hook ran a ${blind.value}`, writes };
+  const child = lines.find((l) => l.kind === "child" && !loaded.has(`${l.value}:0`));
+  if (child) return { on: false, why: child.value === null ? "the hook started a child process whose pid is hidden" : `child process ${child.value} did not load the write tracker`, writes };
+  const worker = lines.find((l) => l.kind === "worker" && !loaded.has(`${l.pid}:${l.value}`));
+  if (worker) return { on: false, why: `worker thread ${worker.value} did not load the write tracker`, writes };
+  return { on: true, writes };
 }
 
 /** A declared state path (`~/x`, `$XDG_STATE_HOME/x`) inside the sandbox; null when not under a sandbox root. */
@@ -285,10 +334,13 @@ const cut = (s, max = DETAIL_MAX) => (s.length > max ? `${s.slice(0, max)}…` :
 export const PRECOMPACT_TEXT_MAX = 10000;
 
 /**
- * Spawn one hook with one fault input. Returns `{ ok, why, visible, wrote }`: ok false with why
- * when the session would break; visible true when errors.log gained a line and stdout carries a
- * systemMessage; wrote true when the run left an entry, or an errors.log line, in a directory
- * the unwritable input locks, or changed that directory's mtime (a temp file made and removed). `baselineWrote` is the healthy run's `wrote`.
+ * Spawn one hook with one fault input. Returns `{ ok, why, visible, wrote, tracking }`: ok false
+ * with why when the session would break; visible true when errors.log gained a line and stdout
+ * carries a systemMessage; wrote true when the write tracker recorded a write attempt in a
+ * directory the unwritable input locks, or the run left an entry or an errors.log line there, or
+ * changed that directory's mtime; false when none of those and the tracker followed the whole run;
+ * null (unknown) when nothing showed but the tracker could not follow the run. tracking is
+ * `trackedWrites`'s verdict. `baselineWrote` is the healthy run's `wrote`.
  */
 export function spawnHook(plugin, hook, input, { env: outer = process.env, cwd, stateDirs = [], baselineStdout = null, baselineWrote = null } = {}) {
   const box = faultSandbox(plugin.name, input, stateDirs);
@@ -296,7 +348,8 @@ export function spawnHook(plugin, hook, input, { env: outer = process.env, cwd, 
     const before = listing(box.locked);
     const stampsBefore = stamps(box.locked);
     const stdin = input.stdin ?? eventInput(input.event ?? hook.event, cwd ?? box.root);
-    const env = { ...box.env, PATH: outer.PATH ?? box.env.PATH, CLAUDE_PLUGIN_ROOT: plugin.dir };
+    const preload = `--require "${WRITE_TRACKER.replace(/(["\\])/g, "\\$1")}"`;
+    const env = { ...box.env, PATH: outer.PATH ?? box.env.PATH, CLAUDE_PLUGIN_ROOT: plugin.dir, NODE_OPTIONS: [box.env.NODE_OPTIONS, preload].filter(Boolean).join(" "), LEDGER_GATE_TRACK_LOG: box.trackLog };
     const started = Date.now();
     const r = hook.args.length
       ? spawnSync(hook.command, hook.args, { cwd: cwd ?? box.root, env, input: stdin, encoding: "utf8", timeout: HOOK_DEADLINE_MS, killSignal: "SIGKILL" })
@@ -337,17 +390,22 @@ export function spawnHook(plugin, hook, input, { env: outer = process.env, cwd, 
     // A healthy run that wrote nothing where the unwritable input locks needs no state there, so
     // the input has nothing to take away, whatever it prints (a clock line differs every second).
     // A healthy run that wrote (baselineWrote true) shows the hook keeps state there, so a silent
-    // or identical-output unwritable run is a swallowed fault, not an untouched one.
+    // or identical-output unwritable run is a swallowed fault, not an untouched one. An unknown
+    // baseline (null: the tracker could not follow the healthy run) grants no stateless pass.
     const untouched = input.unwritable && logged === 0 && baselineWrote !== true && (!r.stdout.trim() || (baselineStdout !== null && r.stdout === baselineStdout) || baselineWrote === false);
     const after = listing(box.locked);
     const stampsAfter = stamps(box.locked);
-    // A create-then-delete leaves the entry list as it was but moves the directory's mtime. A
-    // timestamp that cannot be read means no verdict can be reached, which counts as a write.
-    const wrote =
+    // A create-then-delete leaves the entry list as it was; the tracker records it, and the
+    // directory's mtime usually moves too. A timestamp that cannot be read counts as a write.
+    const tracking = trackedWrites(box.trackLog, r.pid, box.locked);
+    const shown =
       logged > 0 ||
+      tracking.writes.length > 0 ||
       after.some((names, i) => names !== null && (before[i] === null || names.some((n) => !before[i].includes(n)))) ||
       stampsAfter.some((t, i) => t === "?" || stampsBefore[i] === "?" || t !== stampsBefore[i]);
-    return { ok: true, visible: untouched || (logged > 0 && (hasMessage || !needsMessage)), logged, hasMessage, needsMessage, stdout: r.stdout, wrote };
+    // Nothing showed, but a run the tracker could not follow may still have written: unknown.
+    const wrote = shown ? true : tracking.on ? false : null;
+    return { ok: true, visible: untouched || (logged > 0 && (hasMessage || !needsMessage)), logged, hasMessage, needsMessage, stdout: r.stdout, wrote, tracking };
   } finally {
     box.release();
   }
