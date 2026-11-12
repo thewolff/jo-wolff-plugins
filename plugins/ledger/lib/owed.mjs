@@ -141,7 +141,15 @@ export function waitOwed(db, id, questionId, { by, iso, sessionId = null, cwd })
   if (q.state !== "open" && q.state !== "held") return { status: "refused", message: `${questionId} is ${q.state}; owed work can wait only on an open or held question` };
   const mine = sessionId ? ownedBySession(q, { sessionId, cwd, since: sessionStart(db, sessionId) }) : inScope(cwd, q.cwd);
   if (!mine) return { status: "refused", message: `${questionId} is not this session's question; ask it through the ledger first` };
-  if (item.waits_on === questionId) return { status: "noop", item, message: `${id} already waits on ${questionId}` };
+  if (item.waits_on === questionId) {
+    if (sessionId && !(item.session_id === sessionId && owns(db, { id: sessionId, cwd: item.cwd, started_at: null }, item))) {
+      // Another session repeating the wait takes the item over, like a repeated start or hold.
+      db.prepare("UPDATE cc_owed SET session_id = ?, changed_at = ? WHERE id = ? AND state = 'owed'").run(sessionId, iso, id);
+      addMove(db, { kind: "wait", owedId: id, detail: questionId, by, iso, sessionId });
+      return { status: "ok", item: getOwed(db, id), message: `${id} already waits on ${questionId} (${q.name}); this session takes it over` };
+    }
+    return { status: "noop", item, message: `${id} already waits on ${questionId}` };
+  }
   db.prepare("UPDATE cc_owed SET waits_on = ?, session_id = coalesce(?, session_id), changed_at = ? WHERE id = ? AND state = 'owed'").run(questionId, sessionId, iso, id);
   addMove(db, { kind: "wait", owedId: id, detail: questionId, by, iso, sessionId });
   return { status: "ok", item: getOwed(db, id), message: `${id} waits on your answer to ${questionId} (${q.name}); it leaves the owed list until that question is answered or withdrawn` };
@@ -255,7 +263,7 @@ export function owedPendingLines(items, cwd = null) {
 /** One line per owed item for the agent: `- <body> (<ow-id>, owed <relative>)`, at most `cap`, then a count. */
 export function owedListLines(items, { now = Date.now(), cap = 10, max = 120, cli = "ledger" } = {}) {
   const lines = items.slice(0, cap).map((i) => `- ${cut(i.body, max)} (${i.id}, owed ${relative(i.made_at, now)})`);
-  if (items.length > cap) lines.push(`… and ${items.length - cap} more; run \`${cli} pending\``);
+  if (items.length > cap) lines.push(`… and ${items.length - cap} more; run \`${cli} pending --all\``);
   return lines;
 }
 

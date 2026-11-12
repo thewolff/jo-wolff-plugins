@@ -36,7 +36,7 @@ test("thirty owed items: ten lines and the pointer to pending", () => {
   apply(box, Array.from({ length: 30 }, (_, n) => `owe "work item ${n}"`), { sessionId: SID });
   const ctx = prompt(box, "next thing").json.hookSpecificOutput.additionalContext;
   assert.equal(ctx.split("\n").filter((l) => l.startsWith("- work item")).length, 10);
-  assert.match(ctx, /… and 20 more; run `.*pending`$/);
+  assert.match(ctx, /… and 20 more; run `[^`]*pending --all`$/);
 });
 
 test("started, held, dropped, done and another session's items are not listed", () => {

@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { parseLine } from "../lib/parse.mjs";
-import { sessionItems } from "../lib/owed.mjs";
+import { blockingSet, owedListLines, sessionItems } from "../lib/owed.mjs";
 import { owedSection, OWED_CAPS } from "../lib/inject.mjs";
 import { sandbox, apply, askQuestion, cli, idOf, openDb, row, count } from "./helpers.mjs";
 
@@ -113,7 +113,54 @@ test("capped SessionStart list: every item it leaves out is shown by the pending
   const db = openDb(box);
   const text = owedSection(db, box.work, A);
   db.close();
-  assert.match(text, /… and 3 more; run `.*pending`/);
-  const out = apply(box, "pending", { sessionId: A }).results[0].message;
-  for (const id of ids) assert.ok(out.includes(id), `${id} missing from pending:\n${out}`);
+  assert.match(text, /… and 3 more; run `[^`]*pending --all`/);
+  const out = apply(box, "pending --all", { sessionId: A }).results[0].message;
+  for (const id of ids) assert.ok(out.includes(id), `${id} missing from pending --all:\n${out}`);
+});
+
+test("wait repeated from another session: it takes the item over with one wait move", () => {
+  const box = sandbox();
+  const id = idOf(apply(box, 'owe "needs a call"', { sessionId: A }));
+  const q = askQuestion(box, { name: "call", options: "yes,no", sessionId: A });
+  assert.equal(apply(box, `wait ${id} ${q}`, { sessionId: A }).results[0].status, "ok");
+  askQuestion(box, { name: "call", options: "yes,no", sessionId: B });
+  const db = openDb(box);
+  assert.equal(row(db, "SELECT session_id FROM cc_questions WHERE id = ?", q).session_id, B, "B adopted the question");
+  db.close();
+  const r = apply(box, `wait ${id} ${q}`, { sessionId: B }).results[0];
+  assert.equal(r.status, "ok", r.message);
+  const waits = (sid) => {
+    const d = openDb(box);
+    try {
+      return count(d, "cc_owed_moves", "owed_id = ? AND kind = 'wait' AND session_id = ?", id, sid);
+    } finally {
+      d.close();
+    }
+  };
+  const db2 = openDb(box);
+  assert.equal(row(db2, "SELECT session_id FROM cc_owed WHERE id = ?", id).session_id, B);
+  db2.close();
+  assert.equal(waits(B), 1);
+  assert.equal(apply(box, `wait ${id} ${q}`, { sessionId: B }).results[0].message, `${id} already waits on ${q}`, "the owner repeating it is a noop");
+  assert.equal(waits(B), 1, "B's repeat wrote no row");
+  assert.equal(waits(A), 1);
+  assert.equal(apply(box, `answer ${q} no --nothing`, { sessionId: B }).results[0].status, "ok");
+  const db3 = openDb(box);
+  assert.deepEqual(blockingSet(db3, { sessionId: B, cwd: box.work }).map((i) => i.id), [id]);
+  assert.deepEqual(blockingSet(db3, { sessionId: A, cwd: box.work }).map((i) => i.id), []);
+  db3.close();
+});
+
+test("capped owed lists point at pending --all, which shows every left-out item without a session id", () => {
+  const box = sandbox();
+  const n = OWED_CAPS.owed + 3;
+  const ids = Array.from({ length: n }, (_, k) => idOf(apply(box, `owe "far item ${k}"`, { sessionId: A, cwd: box.sibling })));
+  const db = openDb(box);
+  const section = owedSection(db, box.work, A);
+  const prompt = owedListLines(blockingSet(db, { sessionId: A, cwd: box.work }), { cap: 10 }).join("\n");
+  db.close();
+  assert.match(section, /… and 3 more; run `[^`]*pending --all`/);
+  assert.match(prompt, new RegExp(`… and ${n - 10} more; run \`[^\`]*pending --all\``));
+  const out = cli(box, ["pending", "--all"]).out;
+  for (const id of ids) assert.ok(out.includes(id), `${id} missing from pending --all:\n${out}`);
 });

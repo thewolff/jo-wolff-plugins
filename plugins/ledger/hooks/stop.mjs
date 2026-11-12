@@ -194,7 +194,7 @@ export function handle(input, { env = process.env, now = Date.now() } = {}) {
       if (owedSpent && forcing.stopOwedRule !== false) {
         for (const i of blockingSet(db, { sessionId, cwd })) lines.push(`ledger: still owed after one reminder, and the turn ended: ${i.body}`);
       }
-      if (lines.length > MAX_LINES) lines = [...lines.slice(0, MAX_LINES), `… and ${lines.length - MAX_LINES} more; run \`${cli} pending\``];
+      if (lines.length > MAX_LINES) lines = [...lines.slice(0, MAX_LINES), `… and ${lines.length - MAX_LINES} more; run \`${cli} pending --all\``];
       // Only the events whose lines were printed are stamped; the rest show on a later Stop.
       const shown = events.slice(0, MAX_LINES);
       if (shown.length) transaction(db, () => markShown(db, shown.map((e) => e.id), iso), store.dbPath);

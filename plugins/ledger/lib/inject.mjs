@@ -189,7 +189,7 @@ export function owedSection(db, cwd, sessionId, { compact = false, now = Date.no
   const started = by("started");
   const deferred = compact ? [] : by("deferred");
   if (!owed.length && !started.length && !deferred.length && !others.length) return "";
-  const more = (items, cap) => (items.length > cap ? [`… and ${items.length - cap} more; run \`${invocation()} pending\``] : []);
+  const more = (items, cap) => (items.length > cap ? [`… and ${items.length - cap} more; run \`${invocation()} pending --all\``] : []);
   const list = (items, cap, line) => [...items.slice(0, cap).map(line), ...more(items, cap)];
   const body = (i) => cut(i.body, 120);
   const waitName = (i) => (i.waits_on ? db.prepare("SELECT name FROM cc_questions WHERE id = ?").get(i.waits_on)?.name ?? i.waits_on : null);

@@ -56,7 +56,7 @@ export const VERBS = Object.freeze([
   { verb: "wait", who: "agent", usage: "wait <ow-id> <q-id> · wait <ow-id> none", help: "owed work waits on the human's answer to one of this session's open questions: it stops blocking until that question is answered or withdrawn; `none` removes the link" },
   { verb: "note", who: "agent", usage: 'note "<text>"', help: "record a decision or assumption made without asking (prints nt-…)" },
   { verb: "outcome", who: "agent", usage: 'outcome <ref> [q-id] "<text>"', help: "record what a decision or an answered question produced; ref is a PR URL, commit or path (prints nt-…)" },
-  { verb: "pending", who: "either", usage: "pending [--all]", help: "the paste-ready block: one `<default> <q-id>  # …` line per open question here, then the held ones, then owed, started and deferred work (`owed <ow-id>  # …`); `--all`: every open and held question in the db, grouped under its folder" },
+  { verb: "pending", who: "either", usage: "pending [--all]", help: "the paste-ready block: one `<default> <q-id>  # …` line per open question here, then the held ones, then owed, started and deferred work (`owed <ow-id>  # …`); `--all`: every open and held question and all owed, started and deferred work in the db, grouped under its folder" },
   { verb: "log", who: "either", usage: "log [N]", help: "the last N notes, questions and answers for this folder across sessions (default 20)" },
   { verb: "enable", who: "human", usage: "enable", help: "turn the hooks on for this folder: writes `\"enabled\": true` to .ledger.json here" },
   { verb: "disable", who: "human", usage: "disable", help: "turn the hooks off for this folder: sets `\"enabled\": false` in .ledger.json here (never deletes it)" },

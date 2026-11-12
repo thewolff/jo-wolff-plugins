@@ -173,3 +173,15 @@ test("more than eight events: the ones past the cap are not marked shown and app
   assert.match(passes(stop(b, "p-many")), /^ledger: done: chore number 9$/m);
   assert.equal(passes(stop(b, "p-many")), "", "each event is shown once");
 });
+
+test("more than eight lines: the Stop list is capped and points at pending --all", () => {
+  const b = sandbox();
+  start(b);
+  for (let k = 0; k < 5; k++) {
+    const ow = owedId(cli(b, ["owe", `capped item ${k}`], { env }).out);
+    assert.equal(cli(b, ["start", ow, `agent ${k}`], { env }).code, 0);
+  }
+  const msg = passes(stop(b, "p-1"));
+  assert.equal(msg.split("\n").filter((l) => l.startsWith("ledger: ")).length, 8, msg);
+  assert.match(msg, /… and 2 more; run `[^`]*pending --all`$/);
+});

@@ -38,6 +38,8 @@ All notable changes to ledger are recorded here. The format follows
 - `answer`: a quoted reply or `--work`/`--pointer` value is never read as a flag, and a reply after a bare `--` is recorded literally (`answer q-… -- --nothing`).
 - A `start` or `hold` that repeats an item's pointer or reason from another session takes the item over (one move row) instead of reporting a noop.
 - `pending` also lists this session's owed work from other folders (` · in <folder>`), and `pending --all` lists every folder's owed work, so the capped owed lists' `pending` pointer shows every item they leave out.
+- A `wait` that repeats an item's link to a question from another session (one that adopted the question by repeating `ask`) takes the item over (one `wait` move row) instead of reporting a noop.
+- The capped owed lists (SessionStart, UserPromptSubmit, Stop) point at `pending --all` instead of `pending`, so every item they leave out is reachable even when `LEDGER_SESSION_ID` is not set in the CLI's environment.
 
 ## 0.3.13 - 2026-11-11
 
