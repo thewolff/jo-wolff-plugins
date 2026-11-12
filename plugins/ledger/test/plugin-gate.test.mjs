@@ -785,3 +785,50 @@ test("survives: plain-text stdout is an answer from a PreCompact hook (summary i
   assert.deepEqual([...new Set(run("PreCompact", "text.mjs").map((r) => r.needsMessage))], [false]);
   assert.deepEqual([...new Set(run("Stop", "json.mjs").map((r) => r.needsMessage))], [true]);
 });
+
+// A UserPromptSubmit hook that prints a line which changes on every run (a clock), logs a fault
+// with a systemMessage, and writes to `where` (XDG_STATE_HOME or XDG_DATA_HOME) on a healthy
+// input, or nowhere when null; a write that fails is swallowed, with no errors.log line.
+const clockHook = (name, where) => `import { appendFileSync, mkdirSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
+const fail = (why) => { try { const d = join(process.env.XDG_STATE_HOME, ${JSON.stringify(name)}); mkdirSync(d, { recursive: true }); appendFileSync(join(d, "errors.log"), why + "\\n"); } catch {} process.stdout.write(JSON.stringify({ systemMessage: ${JSON.stringify(name)} + ": " + why })); process.exit(0); };
+let raw = "";
+process.stdin.on("data", (c) => (raw += c));
+process.stdin.on("end", () => {
+  try { JSON.parse(raw); } catch { return fail("stdin not JSON"); }
+  const where = ${JSON.stringify(where)};
+  if (where) { try { const d = join(process.env[where], ${JSON.stringify(name)}); mkdirSync(d, { recursive: true }); writeFileSync(join(d, "seen.json"), "{}"); } catch {} }
+  process.stdout.write(JSON.stringify({ hookSpecificOutput: { hookEventName: "UserPromptSubmit", additionalContext: "clock " + process.hrtime.bigint() } }));
+  process.exit(0);
+});
+`;
+function clockPlugin(b, name, where) {
+  const dir = join(b.root, "plugins", name);
+  write(dir, "hooks/hooks.json", JSON.stringify({ hooks: { UserPromptSubmit: [{ hooks: [{ type: "command", command: process.execPath, args: [`\${CLAUDE_PLUGIN_ROOT}/hooks/clock.mjs`], timeout: 5 }] }] } }));
+  write(dir, "hooks/clock.mjs", clockHook(name, where));
+  return { name, dir };
+}
+
+test("visible: a hook that keeps no state passes the unwritable-state input every time, whatever it prints; a hook that keeps state and swallows the unwritable fault still fails", () => {
+  const b = sandbox();
+  const visibleRow = (plugin) => checkPlugin(plugin).find((r) => r.name === "visible");
+  // Its stdout differs on every run, so it never equals the healthy run's: the rule that
+  // decides is that the healthy run wrote nothing where the unwritable input locks.
+  const stateless = clockPlugin(b, "clock", null);
+  for (let i = 0; i < 20; i++) {
+    const row = visibleRow(stateless);
+    assert.equal(row.status, "pass", `run ${i + 1}: ${row.detail}`);
+  }
+  for (const where of ["XDG_STATE_HOME", "XDG_DATA_HOME"]) {
+    const stateful = clockPlugin(b, `kept-${where === "XDG_STATE_HOME" ? "state" : "data"}`, where);
+    const row = visibleRow(stateful);
+    assert.equal(row.status, "fail", `${where}: ${row.detail}`);
+    assert.equal(row.detail, "UserPromptSubmit hook on unwritable state: no errors.log line, no systemMessage");
+  }
+  // The healthy run reports what it wrote; the unwritable run is given it as its baseline.
+  const hook = { event: "UserPromptSubmit", command: process.execPath, args: [join(stateless.dir, "hooks", "clock.mjs")] };
+  assert.equal(spawnHook(stateless, hook, { name: "healthy" }).wrote, false);
+  const kept = { name: "kept-state", dir: join(b.root, "plugins", "kept-state") };
+  assert.equal(spawnHook(kept, { ...hook, args: [join(kept.dir, "hooks", "clock.mjs")] }, { name: "healthy" }).wrote, true);
+  assert.equal(spawnHook(stateless, hook, FAULT_INPUTS.find((i) => i.unwritable), { baselineWrote: null }).visible, false, "with no baseline the old rule holds");
+});

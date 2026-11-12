@@ -22,7 +22,9 @@
 //              (SessionEnd has no reader, and Claude Code discards a PreCompact hook's
 //              systemMessage, so neither one's message is required; a hook that printed
 //              nothing and logged nothing on the unwritable state never reached it, which is
-//              not a failure: the malformed-JSON input is the one every hook must answer);
+//              not a failure, and so did one that logged nothing there after its healthy run
+//              wrote nothing in the directories that input locks, whatever it printed: the
+//              malformed-JSON input is the one every hook must answer);
 //              every `test/fixtures/<x>.txt` has an `<x>.unavailable.txt` sibling (the adapter's
 //              unavailable path, captured).
 //   says       text says what to do when it can't: every `skills/*/SKILL.md` and `agents/*.md`
@@ -236,7 +238,21 @@ function faultSandbox(pluginName, input, stateDirs = []) {
     }
     rmSync(root, { recursive: true, force: true });
   };
-  return { root, env, errorsLog: logs[0], errorsLogs: logs, release };
+  // The directories the unwritable input makes read-only: a run that writes nothing in them has
+  // nothing the unwritable input can take away.
+  const locked = [join(data, pluginName), ...dirs];
+  return { root, env, errorsLog: logs[0], errorsLogs: logs, locked, release };
+}
+
+/** Each of `dirs` as its entry names (null when it does not exist). */
+function listing(dirs) {
+  return dirs.map((dir) => {
+    try {
+      return readdirSync(dir);
+    } catch {
+      return null;
+    }
+  });
 }
 
 /** A declared state path (`~/x`, `$XDG_STATE_HOME/x`) inside the sandbox; null when not under a sandbox root. */
@@ -254,13 +270,15 @@ const cut = (s, max = DETAIL_MAX) => (s.length > max ? `${s.slice(0, max)}…` :
 export const PRECOMPACT_TEXT_MAX = 10000;
 
 /**
- * Spawn one hook with one fault input. Returns `{ ok, why, visible }`: ok false with why when
- * the session would break; visible true when errors.log gained a line and stdout carries a
- * systemMessage.
+ * Spawn one hook with one fault input. Returns `{ ok, why, visible, wrote }`: ok false with why
+ * when the session would break; visible true when errors.log gained a line and stdout carries a
+ * systemMessage; wrote true when the run left an entry, or an errors.log line, in a directory
+ * the unwritable input locks. `baselineWrote` is the healthy run's `wrote`.
  */
-export function spawnHook(plugin, hook, input, { env: outer = process.env, cwd, stateDirs = [], baselineStdout = null } = {}) {
+export function spawnHook(plugin, hook, input, { env: outer = process.env, cwd, stateDirs = [], baselineStdout = null, baselineWrote = null } = {}) {
   const box = faultSandbox(plugin.name, input, stateDirs);
   try {
+    const before = listing(box.locked);
     const stdin = input.stdin ?? eventInput(input.event ?? hook.event, cwd ?? box.root);
     const env = { ...box.env, PATH: outer.PATH ?? box.env.PATH, CLAUDE_PLUGIN_ROOT: plugin.dir };
     const started = Date.now();
@@ -300,8 +318,12 @@ export function spawnHook(plugin, hook, input, { env: outer = process.env, cwd, 
     const needsMessage = hook.event !== "SessionEnd" && hook.event !== "PreCompact";
     // Unwritable state touched nothing when the hook printed what it prints on a healthy run
     // (its baseline, or nothing) and logged nothing: a hook that needs no state has no fault to show.
-    const untouched = input.unwritable && logged === 0 && (!r.stdout.trim() || (baselineStdout !== null && r.stdout === baselineStdout));
-    return { ok: true, visible: untouched || (logged > 0 && (hasMessage || !needsMessage)), logged, hasMessage, needsMessage, stdout: r.stdout };
+    // A healthy run that wrote nothing where the unwritable input locks needs no state there, so
+    // the input has nothing to take away, whatever it prints (a clock line differs every second).
+    const untouched = input.unwritable && logged === 0 && (!r.stdout.trim() || (baselineStdout !== null && r.stdout === baselineStdout) || baselineWrote === false);
+    const after = listing(box.locked);
+    const wrote = logged > 0 || after.some((names, i) => names !== null && (before[i] === null || names.some((n) => !before[i].includes(n))));
+    return { ok: true, visible: untouched || (logged > 0 && (hasMessage || !needsMessage)), logged, hasMessage, needsMessage, stdout: r.stdout, wrote };
   } finally {
     box.release();
   }
@@ -321,7 +343,7 @@ function hookChecks(plugin, { env, deadline }) {
     const healthy = spawnHook(plugin, hook, HEALTHY_INPUT, { env, stateDirs });
     for (const input of FAULT_INPUTS) {
       if (Date.now() > deadline) return { timeout: true };
-      const r = spawnHook(plugin, hook, input, { env, stateDirs, baselineStdout: healthy.ok ? healthy.stdout : null });
+      const r = spawnHook(plugin, hook, input, { env, stateDirs, baselineStdout: healthy.ok ? healthy.stdout : null, baselineWrote: healthy.ok ? healthy.wrote : null });
       if (!r.ok) broke.push(r.why);
       // A hook whose manifest says it never reads its payload has no fault to see on malformed JSON.
       else if (input.visible && !r.visible && !(input.name === "malformed JSON" && unusedPayload.includes(hook.event))) {

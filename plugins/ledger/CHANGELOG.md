@@ -4,6 +4,27 @@ All notable changes to ledger are recorded here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Entries before 0.2.1 are the
 "Changes" section of the README (one line per version).
 
+## 0.3.13 - 2026-11-11
+
+### Fixed
+
+- `gate check`'s `visible` row failed a stateless hook on the unwritable-state input whenever
+  its output changed between runs. The rule for a hook that logged nothing there compared its
+  stdout with the healthy run's byte for byte, so the coordinator plugin's clock hook, which
+  prints the time to the second, passed or failed depending on whether the two runs fell in
+  the same second (14 of 20 runs failed in one measurement). Now a hook that logged nothing on
+  the unwritable-state input also passes when its healthy run wrote nothing in the directories
+  that input makes read-only (`<XDG_DATA_HOME>/<plugin>`, `<XDG_STATE_HOME>/<plugin>` and the
+  declared state directories), whatever it printed. No manifest key is needed.
+- A hook that writes state on the healthy input and swallows the unwritable fault (no
+  `errors.log` line) still fails, in the state directory and in the data directory alike.
+
+### Changed
+
+- `spawnHook` (`lib/plugin-gate.mjs`) returns `wrote` (the run left an entry or an `errors.log`
+  line in a directory the unwritable input locks) and takes `baselineWrote`, the healthy run's
+  `wrote`.
+
 ## 0.3.12 - 2026-11-11
 
 ### Changed
