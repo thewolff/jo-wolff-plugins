@@ -4,6 +4,27 @@ All notable changes to ledger are recorded here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Entries before 0.2.1 are the
 "Changes" section of the README (one line per version).
 
+## 0.4.1 - 2026-11-12
+
+### Changed
+
+- A store failure names its SQLite codes. The CLI's `ledger: database <word> at <path>: …`
+  line, the StoreError message and the hooks' `errors.log` line end with
+  `(sqlite errcode <primary> <NAME>, extended <extended> <NAME>)`, for example
+  `(sqlite errcode 8 SQLITE_READONLY, extended 1032 SQLITE_READONLY_DBMOVED)`. node:sqlite
+  exposes only the extended code (`err.errcode`; a UNIQUE violation gives 2067, measured on
+  Node 24.13), so the primary code is its low byte. Every SQLITE_READONLY variant has primary
+  code 8, and only the extended code says which one fired. A hook's `systemMessage` is unchanged.
+- Every `errors.log` line carries `ctx={"session","cwd","ppid","parent"}` before its
+  ` [db <path>]` tag: the hook input's `session_id` (else `LEDGER_SESSION_ID`, else null), the
+  hook input's `cwd` (else the process's), and the parent process's pid and command line from
+  `ps -o command= -p <ppid>`. The lookup runs only when a line is written, at most once per
+  process, with a 250 ms timeout and the command cut to 200 characters. When ps cannot run the
+  field says why, as `? (ps EPERM)` (what a macOS seatbelt profile gives, since ps is setuid),
+  `? (ps ENOENT)` or `? (ps timed out after 250 ms)`, and the line is still written.
+  `doctor` reads the tag apart from the message, so its counts and stale config notices work
+  as before, and lines from 0.4.0 and older still parse.
+
 ## 0.4.0 - 2026-11-11
 
 ### Added

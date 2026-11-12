@@ -4,7 +4,7 @@
 import { realpathSync } from "node:fs";
 import { resolve } from "node:path";
 import { describeConfig, loadConfig, userName } from "./config.mjs";
-import { open, StoreError, storeWord } from "./db.mjs";
+import { open, sqliteCodeText, StoreError, storeWord } from "./db.mjs";
 import { whoSays } from "./parse.mjs";
 import { logError } from "./failopen.mjs";
 
@@ -117,6 +117,7 @@ export function withStore({ env, now, notices = [], cwd = null, cfg = null, hook
 function storeFailure(err, notices, whatWasSkipped, hook, env) {
   const why = err.kind === "corrupt" && err.cause ? `: ${err.cause.message}` : "";
   const line = `ledger: database ${storeWord(err.kind)} at ${err.path}${why}; ${whatWasSkipped}`;
-  logError(hook, line.replace(/^ledger: /, ""), env);
+  const codes = sqliteCodeText(err.cause);
+  logError(hook, `${line.replace(/^ledger: /, "")}${codes ? ` (${codes})` : ""}`, env);
   return { systemMessage: [...notices, line].join("\n") };
 }
