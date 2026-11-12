@@ -697,6 +697,32 @@ test("R2-B2 and R3-B4: gh pr create --head checks the branch on the remote as it
   assert.match(p.json.systemMessage, new RegExp(`checked ${reviewed.slice(0, 8)}, the pull request's head as gh reports it now.*--match-head-commit ${reviewed}`));
 });
 
+test("gh pr create: a --head inside another option's value is that option's value, and the real --head is the one checked; a repeated --head checks every branch named", () => {
+  const b = repo();
+  review(b, [], { LEDGER_REVIEW_BIN_CODEX: stub(b, "codex", "PASS") });
+  const remote = join(b.sibling, "remote.git");
+  assert.equal(spawnSync("git", ["init", "-q", "--bare", remote]).status, 0);
+  git(b, "remote", "add", "origin", remote);
+  git(b, "push", "-q", "origin", "feat:reviewed");
+  const unreviewed = commit(b, "u.txt", "unreviewed\n");
+  git(b, "push", "-q", "origin", "feat:unreviewed");
+  git(b, "reset", "-q", "--hard", "HEAD~1");
+  assert.equal(push(b, "gh pr create --head reviewed --title t").out, "", "the reviewed branch passes");
+  for (const cmd of [
+    "gh pr create --body '--head=reviewed' --head unreviewed --title t",
+    "gh pr create -b --head=reviewed -H unreviewed --title t",
+    "gh pr create --title --head -H unreviewed",
+    "gh pr create --head reviewed --head unreviewed --title t",
+    "gh pr create -H reviewed --head=unreviewed --title t",
+  ]) {
+    const p = push(b, cmd);
+    assert.equal(decision(p), "deny", cmd);
+    assert.match(p.json.hookSpecificOutput.permissionDecisionReason, new RegExp(`no cross-lab review for ${unreviewed.slice(0, 8)}`), cmd);
+  }
+  assert.equal(push(b, "gh pr create --head reviewed --head reviewed --title t").out, "", "the same reviewed branch named twice passes");
+  assert.match(push(b, "gh pr create --head reviewed --head someone:feat --title t").json.systemMessage, /--head someone:feat names another owner's branch/);
+});
+
 test("gh pr create --head on a branch whose upstream is origin/main checks the branch's own tip on the remote, not main's; from a `cd` target, with and without --base", () => {
   const b = repo();
   const remote = join(b.root, "remote.git");
@@ -958,8 +984,8 @@ test("0.3.11 hole one: advise keeps the notice, off says nothing, and a locked s
 
 test("0.3.11: a literal absolute cd with hyphens resolves: reviewed HEAD allows, unreviewed denies for the review, waived allows", async () => {
   const { pushOperations } = await import("../lib/gate.mjs");
-  const [op] = pushOperations("cd /Users/x/agent-scratch/kitchen/story-charts-step1-plumbing && git push -u origin feat-a-b");
-  assert.deepEqual([op.cds, op.unsupported, op.after], [["/Users/x/agent-scratch/kitchen/story-charts-step1-plumbing"], null, null]);
+  const [op] = pushOperations("cd /tmp/x/agent-scratch/kitchen/story-charts-step1-plumbing && git push -u origin feat-a-b");
+  assert.deepEqual([op.cds, op.unsupported, op.after], [["/tmp/x/agent-scratch/kitchen/story-charts-step1-plumbing"], null, null]);
   assert.equal(pushOperations("git -C /a/story-charts-step1 push")[0].unsupported, null);
   const b = repo();
   const dir = hyphenRepo(b);

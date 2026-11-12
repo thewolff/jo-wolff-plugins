@@ -737,16 +737,35 @@ export class UnknownTarget extends Error {}
 // Options that take a separate value, per command, so positional arguments can be told apart.
 const PUSH_OPTS_WITH_ARG = new Set(["--repo", "--receive-pack", "--exec", "-o", "--push-option"]);
 const GH_MERGE_OPTS_WITH_ARG = new Set(["-R", "--repo", "-b", "--body", "-F", "--body-file", "-t", "--subject", "-A", "--author-email", "--match-head-commit"]);
+const GH_CREATE_OPTS_WITH_ARG = new Set(["-t", "--title", "-b", "--body", "-F", "--body-file", "-B", "--base", "-H", "--head", "-R", "--repo", "-a", "--assignee", "-l", "--label", "-m", "--milestone", "-p", "--project", "-r", "--reviewer", "-T", "--template", "--recover"]);
 
-/** The value of the first of `names` in `args` (`--x v` or `--x=v`); null when absent. */
-function optValue(args, names) {
+/**
+ * Every value of `names` in `args` (`--x v` or `--x=v`), in order. The values of the other
+ * options in `withArg` are skipped, so `--body --head=x` is a body, not a head; stops at `--`.
+ */
+function optValues(args, names, withArg) {
+  const out = [];
   for (let i = 0; i < args.length; i++) {
-    for (const name of names) {
-      if (args[i] === name) return args[i + 1] ?? null;
-      if (name.startsWith("--") && args[i].startsWith(`${name}=`)) return args[i].slice(name.length + 1);
+    const a = args[i];
+    if (a === "--") break;
+    if (names.includes(a)) {
+      out.push(args[i + 1] ?? null);
+      i++;
+      continue;
     }
+    const long = names.find((name) => name.startsWith("--") && a.startsWith(`${name}=`));
+    if (long) {
+      out.push(a.slice(long.length + 1));
+      continue;
+    }
+    if (withArg.has(a)) i++;
   }
-  return null;
+  return out;
+}
+
+/** The value of the first of `names` in `args`, as optValues reads them; null when absent. */
+function optValue(args, names, withArg) {
+  return optValues(args, names, withArg)[0] ?? null;
 }
 
 /** The positional arguments in `args`, skipping options and the values of those in `withArg`. */
@@ -778,7 +797,8 @@ function positionals(args, withArg) {
  *                  on `origin`, bounded by GH_TIMEOUT_MS. Never `branch.<b>.merge`: a branch
  *                  that tracks `main` would check main's tip, not the pull request's head.
  *                  A local remote-tracking ref is never trusted: it may be stale.
- *                  `--head <owner>:<branch>` is another repository.
+ *                  `--head <owner>:<branch>` is another repository. A repeated `--head` yields
+ *                  one target per distinct branch named.
  *   gh pr merge    `--match-head-commit <sha>` when it is a full sha, else the head commit
  *                  `gh pr view [<selector>] [--repo …]` reports, marked `unbound`: the merge
  *                  itself does not require that commit.
@@ -838,19 +858,23 @@ export function operationTargets(op, cwd, { env = process.env } = {}) {
   if (op.sub === "create") {
     const repo = local(here);
     if (!repo) return [];
-    const head = optValue(op.args, ["-H", "--head"]);
-    if (!head) return [{ top: repo.top, sha: repo.head }];
-    if (head.includes(":")) throw new UnknownTarget(`gh pr create --head ${head} names another owner's branch, which is not in this repository`);
+    // A repeated --head checks every branch named, so the gate holds whichever one gh honours.
+    const heads = [...new Set(optValues(op.args, ["-H", "--head"], GH_CREATE_OPTS_WITH_ARG).filter(Boolean))];
+    if (!heads.length) return [{ top: repo.top, sha: repo.head }];
+    const foreign = heads.find((head) => head.includes(":"));
+    if (foreign) throw new UnknownTarget(`gh pr create --head ${foreign} names another owner's branch, which is not in this repository`);
     const first = (key) => gitConfig(repo.top, key, opts)[0] ?? null;
-    const remote = first(`branch.${head}.remote`) ?? "origin";
-    const ref = `refs/heads/${head}`;
-    const r = lsRemote(repo.top, remote, ref, env);
-    if (!r.sha) throw new UnknownTarget(`gh pr create --head ${head} opens the pull request from ${remote}'s ${ref}, and ${r.why}; a local remote-tracking ref may be stale, so it was not used`);
-    return [{ top: repo.top, sha: r.sha }];
+    return heads.map((head) => {
+      const remote = first(`branch.${head}.remote`) ?? "origin";
+      const ref = `refs/heads/${head}`;
+      const r = lsRemote(repo.top, remote, ref, env);
+      if (!r.sha) throw new UnknownTarget(`gh pr create --head ${head} opens the pull request from ${remote}'s ${ref}, and ${r.why}; a local remote-tracking ref may be stale, so it was not used`);
+      return { top: repo.top, sha: r.sha };
+    });
   }
-  const match = optValue(op.args, ["--match-head-commit"]);
+  const match = optValue(op.args, ["--match-head-commit"], GH_MERGE_OPTS_WITH_ARG);
   if (match && /^[0-9a-f]{40}$/i.test(match)) return [{ top: null, sha: match.toLowerCase() }];
-  const repoOpt = optValue(op.args, ["-R", "--repo"]);
+  const repoOpt = optValue(op.args, ["-R", "--repo"], GH_MERGE_OPTS_WITH_ARG);
   const [selector] = positionals(op.args, GH_MERGE_OPTS_WITH_ARG);
   const args = ["pr", "view", ...(selector ? [selector] : []), ...(repoOpt ? ["--repo", repoOpt] : []), "--json", "headRefOid", "--jq", ".headRefOid"];
   const r = spawnSync("gh", args, { cwd: here, env, encoding: "utf8", timeout: GH_TIMEOUT_MS, killSignal: "SIGKILL" });
@@ -912,7 +936,7 @@ export function commandRefusal(ops, cli = "ledger", cwd = null) {
       reason: `ledger: review gate: the gate cannot follow where this \`${name(lost)}\` runs (${lost.unsupported}), so the commit it publishes cannot be checked for a review. Re-issue it as its own command with a literal folder: \`cd /absolute/path && git push <remote> <branch>\`, with no variable, \`$(…)\`, \`~\`, glob or \`cd -\` in the folder, and no \`--git-dir\`, \`--work-tree\`, \`GIT_*\` setting or \`-c\` push config.`,
     };
   }
-  const named = (op) => positionals(op.args, GH_MERGE_OPTS_WITH_ARG).length > 0 || /^[0-9a-f]{40}$/i.test(optValue(op.args, ["--match-head-commit"]) ?? "");
+  const named = (op) => positionals(op.args, GH_MERGE_OPTS_WITH_ARG).length > 0 || /^[0-9a-f]{40}$/i.test(optValue(op.args, ["--match-head-commit"], GH_MERGE_OPTS_WITH_ARG) ?? "");
   const chained = ops.find((op) => op.after && !(op.tool === "gh" && op.sub === "merge" && named(op)));
   if (chained) {
     return {
