@@ -119,9 +119,14 @@ model at or under the ceiling), `warned-above` (model above the ceiling), `no-mo
 type that set no model; the spawn inherits the parent model, which may be above the ceiling), `unmapped` (the table lists no such type) or `not-checked` (a refused spawn,
 a prompt that is not a string, a model naming no single family, an unreadable table, or
 `warnModelRouting` off). The prompt is never written; the description is cut at 200 characters.
-The file is renamed to `routing.jsonl.1` past 1 MiB (replacing the previous `.1`), so it holds at
-most about 2 MiB; `scripts/prune.mjs` ages out a `.1` older than its `--days`. A failed write is
-one errors.log line and never changes the spawn decision. `"logModelRouting": false` turns the
+Past 1 MiB the file is renamed to a unique archive, `routing.jsonl.<UTC stamp>-<pid>-<4 hex>`
+(for example `routing.jsonl.20261112T100000000Z-4182-9f3a`), and a new file starts. Two hooks
+rotating at once therefore never overwrite each other's archive. After each rotation only the
+three newest archives are kept, so the log holds at most about 4 MiB; pruning deletes only files
+whose names match that pattern exactly. `scripts/prune.mjs` ages out any archive, and a
+`routing.jsonl.1` left by an earlier build, older than its `--days`. A failed write is one
+errors.log line and never changes the spawn decision; so is a failed rotation, and the line is
+still appended. `"logModelRouting": false` turns the
 log off. It exists so a review can read what spawns asked for next to the subagent transcripts.
 
 A brief rebuilt from a refusal alone passes the gate; `test/gates.test.mjs` does exactly that.
@@ -237,6 +242,7 @@ refusal and re-issue is a manual check in `evals/manifest.json`: no scenario can
 | spawn-gate gate 2 | pattern-check is not installed | the spawn is allowed; one skipped.log line naming the reason | install pattern-check if the receipt is wanted |
 | spawn-gate model line | `lib/model-routing.json` is missing or malformed, or `tool_input.model` names no single family in it (`inherit`, another vendor's model) | the spawn is allowed with no model line; one skipped.log line `model not checked: …` | nothing for an unjudged model; a line naming the table file is a broken install: reinstall the plugin |
 | spawn-gate routing log | the state directory is unwritable, or `routing.jsonl` cannot be appended to | the spawn is decided as it would have been; one errors.log line `routing log not written: <code>` | nothing for one line; a repeating line means the state directory needs fixing |
+| spawn-gate routing log rotation | the full log cannot be archived or old archives cannot be pruned (a read-only state directory, a permissions fault) | the spawn is decided as it would have been; the line is appended to the full file; one errors.log line `routing log not rotated: <code>` | nothing for one line; a repeating line means the state directory needs fixing, and the log grows past 1 MiB until it is |
 | session-brief-gate | `tool_input.prompt` is missing (and no `proposal_id`) or not a string | the start is allowed; one skipped.log line | nothing; the line is the trace that the gate was awake |
 | session-brief-gate | the model gives up after a refusal instead of re-issuing | no session starts; the refusal is the last tool result | ask for the session again, or set `"checks": { "session-brief-gate": "warn" }` |
 | send-message-check | the response has no `success` field (another host version) | nothing; the send's own result is the only signal | nothing |

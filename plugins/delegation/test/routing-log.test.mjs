@@ -4,7 +4,7 @@
 
 import test from "node:test";
 import assert from "node:assert/strict";
-import { existsSync, mkdirSync, readdirSync, readFileSync, utimesSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, readdirSync, readFileSync, utimesSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { box, errorsLog, gitRepo, runHook, setConfig, spawnPayload, HOW_ONLY } from "./helpers.mjs";
 import { LOCK_STALE_MS, MAX_BYTES, acquireLock, logRouting, readLock, releaseLock, routingLogPath, takeOverStale } from "../lib/routing-log.mjs";
@@ -16,6 +16,11 @@ const lines = (env) => {
     return [];
   }
 };
+
+// Archives: `routing.jsonl.<UTC stamp>-<pid>-<4 hex>`.
+const ARCHIVE = /^routing\.jsonl\.\d{8}T\d{9}Z-\d+-[0-9a-f]{4}$/;
+const archives = (dir) => readdirSync(dir).filter((f) => ARCHIVE.test(f)).sort();
+const fill = (dir, ch = "x") => writeFileSync(join(dir, "routing.jsonl"), `${ch.repeat(MAX_BYTES)}\n`);
 
 function repoWithReceipt(env, session = "s-test-1") {
   const repo = gitRepo(join(env.HOME, "repo"), env);
@@ -123,28 +128,30 @@ test("routing log: logModelRouting false writes nothing and the model line still
   assert.equal(lines(env).length, 1);
 });
 
-test("routing log: past the cap the file moves to routing.jsonl.1 and a fresh file starts", (t) => {
+test("routing log: past the cap the file moves to a unique archive and a fresh file starts", (t) => {
   const { env } = box(t);
   const dir = join(env.XDG_STATE_HOME, "delegation");
   mkdirSync(dir, { recursive: true });
   writeFileSync(join(dir, "routing.jsonl"), `${"x".repeat(MAX_BYTES)}\n`);
   logRouting("spawn-gate", { input: { session_id: "s" }, toolInput: { subagent_type: "reader" }, outcome: "match", row: null }, env);
-  assert.equal(readFileSync(join(dir, "routing.jsonl.1"), "utf8").startsWith("xxxx"), true);
+  const names = archives(dir);
+  assert.equal(names.length, 1);
+  assert.equal(readFileSync(join(dir, names[0]), "utf8").startsWith("xxxx"), true);
+  assert.equal(existsSync(join(dir, "routing.jsonl.1")), false);
   assert.equal(lines(env).length, 1);
   assert.equal(routingLogPath(env), join(dir, "routing.jsonl"));
 });
 
 const one = (env) => logRouting("spawn-gate", { input: { session_id: "s" }, toolInput: { subagent_type: "reader" }, outcome: "match", row: null }, env);
 
-test("routing log: a fresh lock held by another hook skips rotation and never replaces the archive", (t) => {
+test("routing log: a fresh lock held by another hook skips rotation", (t) => {
   const { env } = box(t);
   const dir = join(env.XDG_STATE_HOME, "delegation");
   mkdirSync(dir, { recursive: true });
   writeFileSync(join(dir, "routing.jsonl"), `${"x".repeat(MAX_BYTES)}\n`);
-  writeFileSync(join(dir, "routing.jsonl.1"), "archive\n");
   writeFileSync(join(dir, "routing.jsonl.lock"), "");
   one(env);
-  assert.equal(readFileSync(join(dir, "routing.jsonl.1"), "utf8"), "archive\n");
+  assert.deepEqual(archives(dir), [], "no rotation while another hook holds the lock");
   assert.ok(readFileSync(join(dir, "routing.jsonl"), "utf8").endsWith('"outcome":"match","description":null}\n'));
   assert.ok(existsSync(join(dir, "routing.jsonl.lock")), "another hook's lock is left alone");
 });
@@ -155,10 +162,11 @@ test("routing log: a hook that sees a full file another hook already rotated doe
   mkdirSync(dir, { recursive: true });
   writeFileSync(join(dir, "routing.jsonl"), `${"x".repeat(MAX_BYTES)}\n`);
   one(env);
-  const archive = readFileSync(join(dir, "routing.jsonl.1"), "utf8");
+  const before = archives(dir);
+  assert.equal(before.length, 1);
   one(env);
   one(env);
-  assert.equal(readFileSync(join(dir, "routing.jsonl.1"), "utf8"), archive);
+  assert.deepEqual(archives(dir), before, "no second archive");
   assert.equal(lines(env).length, 3);
   assert.equal(existsSync(join(dir, "routing.jsonl.lock")), false, "the lock is released");
 });
@@ -173,7 +181,9 @@ test("routing log: a stale lock from a crashed hook is taken over and rotation p
   const old = new Date(Date.now() - LOCK_STALE_MS - 5000);
   utimesSync(lock, old, old);
   one(env);
-  assert.equal(readFileSync(join(dir, "routing.jsonl.1"), "utf8").startsWith("xxxx"), true);
+  const names = archives(dir);
+  assert.equal(names.length, 1);
+  assert.equal(readFileSync(join(dir, names[0]), "utf8").startsWith("xxxx"), true);
   assert.equal(lines(env).length, 1);
   assert.equal(existsSync(lock), false);
 });
@@ -198,14 +208,81 @@ test("routing log: two hooks that both saw the same stale lock: one takes over, 
   assert.equal(takeOverStale(lock, b.token), false);
   assert.equal(readFileSync(lock, "utf8"), tokenA, "A's lock is intact");
   assert.equal(acquireLock(lock), null, "B cannot acquire while A holds it");
-  // While A holds the lock a full log is not rotated by a third hook, so an archive can't be replaced.
+  // While A holds the lock a full log is not rotated by a third hook.
   writeFileSync(join(dir, "routing.jsonl"), `${"x".repeat(MAX_BYTES)}\n`);
-  writeFileSync(join(dir, "routing.jsonl.1"), "archive\n");
   one(env);
-  assert.equal(readFileSync(join(dir, "routing.jsonl.1"), "utf8"), "archive\n");
+  assert.deepEqual(archives(dir), []);
   releaseLock(lock, "someone-elses-token");
   assert.ok(existsSync(lock), "release with the wrong token leaves the lock");
   releaseLock(lock, tokenA);
   assert.equal(existsSync(lock), false);
   assert.deepEqual(readdirSync(dir).filter((f) => f.includes(".stale-")), [], "no moved-aside lock files are left");
+});
+
+
+test("routing log: two rotations at the cap in the same millisecond lose no archive", (t) => {
+  const { env } = box(t);
+  const dir = join(env.XDG_STATE_HOME, "delegation");
+  mkdirSync(dir, { recursive: true });
+  // Same clock and same pid for both rotations: only the random suffix keeps the names apart.
+  t.mock.timers.enable({ apis: ["Date"], now: Date.parse("2026-11-12T10:00:00.000Z") });
+  fill(dir, "a");
+  one(env);
+  fill(dir, "b");
+  one(env);
+  t.mock.timers.reset();
+  const names = archives(dir);
+  assert.equal(names.length, 2, `two archives, got ${readdirSync(dir).join(", ")}`);
+  const firsts = names.map((n) => readFileSync(join(dir, n), "utf8")[0]).sort();
+  assert.deepEqual(firsts, ["a", "b"], "both full generations survive");
+  for (const n of names) assert.equal(readFileSync(join(dir, n)).length, MAX_BYTES + 1);
+  assert.equal(lines(env).length, 1);
+});
+
+test("routing log: pruning keeps the newest ARCHIVES_KEPT archives and touches no other file", async (t) => {
+  const { env } = box(t);
+  const dir = join(env.XDG_STATE_HOME, "delegation");
+  mkdirSync(dir, { recursive: true });
+  const kept = (await import("../lib/routing-log.mjs")).ARCHIVES_KEPT ?? 3;
+  const old = Array.from({ length: kept + 2 }, (_, i) => `routing.jsonl.2026010${i + 1}T000000000Z-${100 + i}-abcd`);
+  for (const n of old) writeFileSync(join(dir, n), "old\n");
+  const decoys = [
+    "routing.jsonl.1",
+    "routing.jsonl.20260101T000000000Z-1-abcd.bak",
+    "other.jsonl.20260101T000000000Z-1-abcd",
+    "routing.jsonl.notes",
+    "errors.log",
+  ];
+  for (const n of decoys) writeFileSync(join(dir, n), "keep\n");
+  fill(dir);
+  one(env);
+  const names = archives(dir);
+  assert.equal(names.length, kept, `kept ${names.join(", ")}`);
+  // The newest is the one just rotated; the rest are the newest of the old ones.
+  assert.equal(readFileSync(join(dir, names.at(-1)), "utf8").startsWith("xxxx"), true);
+  assert.deepEqual(names.slice(0, -1), old.slice(-(kept - 1)));
+  for (const n of decoys) assert.equal(readFileSync(join(dir, n), "utf8"), "keep\n", `${n} untouched`);
+});
+
+test("routing log: a rotation that fails is one errors.log line and the spawn answer is unchanged", { skip: process.getuid?.() === 0 && "root ignores directory modes" }, (t) => {
+  const { env: base } = box(t);
+  const expected = spawn(base, repoWithReceipt(base), { subagent_type: "reader", model: "opus" });
+  const { env } = box(t);
+  const repo = repoWithReceipt(env);
+  const dir = join(env.XDG_STATE_HOME, "delegation");
+  mkdirSync(dir, { recursive: true });
+  fill(dir);
+  writeFileSync(join(dir, "errors.log"), "");
+  // A read-only state directory: the existing files stay appendable, but nothing can be created or renamed.
+  chmodSync(dir, 0o555);
+  let r;
+  try {
+    r = spawn(env, repo, { subagent_type: "reader", model: "opus" });
+  } finally {
+    chmodSync(dir, 0o755);
+  }
+  assert.equal(r.status, 0);
+  assert.deepEqual(r.out, expected.out);
+  assert.match(errorsLog(env), /^\S+ spawn-gate routing log not rotated: EACCES\n$/);
+  assert.equal(readFileSync(join(dir, "routing.jsonl"), "utf8").split("\n").filter(Boolean).length, 2, "the line is still appended");
 });
