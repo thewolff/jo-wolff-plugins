@@ -9,7 +9,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { join } from "node:path";
 
-import { MAX_BYTES, STATUS_MAX, actArgv, awayPath, elapsed, emptySnapshot, queryArgv, readResult, readSnapshot, sessionKey as bandKey, statusText, suggestionText } from "../data.mjs";
+import { MAX_BYTES, STATUS_MAX, actArgv, awayPath, elapsed, emptySnapshot, pickPrompt, queryArgv, readResult, readSnapshot, sessionKey as bandKey, statusText, suggestionText } from "../data.mjs";
 import { sessionDir, sessionKey } from "../../../lib/state.mjs";
 import { awayFor } from "../../../lib/text.mjs";
 
@@ -27,7 +27,7 @@ test("readSnapshot: away, home and error shapes come back typed; junk is an erro
   assert.deepEqual(readSnapshot(JSON.stringify({ ok: true, away: true, since: SINCE, held: -1, onFire: 1.5, note: 7 })), { ok: true, away: true, since: SINCE, note: "", held: 0, onFire: 0, items: [], hideRows: true });
   assert.deepEqual(
     readSnapshot(JSON.stringify({ ok: true, away: false, checklist: { at: "t", since: SINCE, note: "n", items: [{ text: "a", done: true }, { text: "b" }, { nope: 1 }, "c"] } })),
-    { ok: true, away: false, checklist: { at: "t", since: SINCE, note: "n", items: [{ text: "a", done: true }, { text: "b", done: false }] }, hideRows: true },
+    { ok: true, away: false, checklist: { at: "t", hold: 0, since: SINCE, note: "n", items: [{ text: "a", done: true }, { text: "b", done: false }] }, hideRows: true },
   );
   assert.deepEqual(readSnapshot(JSON.stringify({ ok: true, away: false, checklist: { items: "nope" } })), { ok: true, away: false, checklist: null, hideRows: true });
   assert.equal(readSnapshot(JSON.stringify({ ok: true, away: true, since: SINCE, hideRows: false })).hideRows, false, "only an explicit false turns hiding off");
@@ -50,6 +50,10 @@ test("readResult: ok (with `away`, and `since` when away, when the action printe
   assert.deepEqual(readResult('{"ok":false,"error":"no"}'), { ok: false, error: "no" });
   assert.deepEqual(readResult("garbage"), { ok: false, error: "action printed no JSON" });
   assert.deepEqual(readResult("null"), { ok: false, error: "action printed no object" });
+  assert.deepEqual(readResult(`{"ok":true,"open":true,"at":"${SINCE}","hold":4}`), { ok: true, open: true, at: SINCE, hold: 4 });
+  assert.deepEqual(readResult(`{"ok":true,"open":true,"at":"${SINCE}"}`), { ok: true, open: true, at: SINCE, hold: null }, "no hold number: one no press can match");
+  assert.deepEqual(readResult('{"ok":true,"open":true}'), { ok: true, open: false }, "open with no at is not a list the band can bind to");
+  assert.deepEqual(readResult('{"ok":true,"open":false}'), { ok: true, open: false });
 });
 
 test("statusText: away shows the elapsed time, the count and the word; home shows nothing; after back the open rows", () => {
@@ -87,6 +91,18 @@ test("elapsed: as lib/text.mjs awayFor prints it; the future and junk are 0m", (
   for (const n of [0, 1, 59, 60, 65, 1439, 1440, 1650, 3000]) assert.equal(elapsed(SINCE, minutes(n)), awayFor(SINCE, new Date(minutes(n)).toISOString()), `${n} minutes`);
   assert.equal(elapsed(SINCE, minutes(-10)), "0m");
   assert.equal(elapsed("not a date", minutes(10)), "0m");
+});
+
+test("pickPrompt: Show, Done and Clear name the prompt the band sends, rows 1-based; junk is null", () => {
+  assert.equal(pickPrompt("item", 0), "brb item 1");
+  assert.equal(pickPrompt("done", 2), "brb done 3");
+  assert.equal(pickPrompt("clear"), "brb clear");
+  assert.equal(pickPrompt("item", -1), null);
+  assert.equal(pickPrompt("item", undefined), null);
+  assert.equal(pickPrompt("back", 0), null);
+  assert.equal(pickPrompt("done", 2, "2026-11-12T04:00:00.000Z", 7), "brb done 3 @2026-11-12T04:00:00.000Z#7", "the open list's `at` and hold number ride along");
+  assert.equal(pickPrompt("clear", null, "2026-11-12T04:00:00.000Z", 0), "brb clear @2026-11-12T04:00:00.000Z#0");
+  assert.equal(pickPrompt("done", 2, "2026-11-12T04:00:00.000Z"), "brb done 3 @2026-11-12T04:00:00.000Z", "no hold number: `#<hold>` is left off, and the hook refuses the word");
 });
 
 test("queryArgv and actArgv name the script, the session, the verb and the row", () => {

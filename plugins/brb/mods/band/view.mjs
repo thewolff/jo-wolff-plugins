@@ -9,9 +9,12 @@
 //   2. v1.2.0 publish failed: GitHub Packages 403 — billing limit on ContextPress…
 //   +4 more
 //
-//   BACK · 2 to act on                                               [ Clear ]     ← bold, blue
-//   1. GH_PACKAGES_READ_TOKEN secret on ContextPress/kitchen — create it?  [ Done ]
-//   2. v1.2.0 publish failed: GitHub Packages 403                         [ Undo ] ← struck, dim
+//   BACK · 1 to act on                                               [ Clear ]     ← bold, blue
+//   1. GH_PACKAGES_READ_TOKEN secret on ContextPress/k…  [ Show ] [ Done ]
+//   2. v1.2.0 publish failed: GitHub Packages 403        [ Show ]          ← struck, dim (done)
+//
+// Show (hotkey: the row's number) opens that item with the agent; Done ticks it, and a done row
+// keeps only Show: a tick is final (the agent was told).
 //
 // Rules: no emoji, single-width symbols only; the headline is at most HEADLINE_MAX characters
 // before the note is dropped; the word AWAY or BACK carries the state, never the colour alone;
@@ -34,8 +37,10 @@ export const COMPACT_BELOW = 26;
 const FRAME_ROWS = 2;
 /** Cells a row loses to the frame and padding (border + paddingX on both sides). */
 const FRAME_COLUMNS = 4;
-/** Cells a `[ Done ]` / `[ Undo ]` button and its gap take beside a checklist row. */
-const DONE_BUTTON_COLUMNS = 9;
+/** Cells the `[ Show ]` and `[ Done ]` buttons and their gaps take beside an open checklist row. */
+const ROW_BUTTONS_COLUMNS = 18;
+/** Cells the `[ Show ]` button and its gap take beside a done row. */
+const SHOW_BUTTON_COLUMNS = 9;
 /** Cells the Back or Clear button and its gap take beside the headline. */
 const HEAD_BUTTON_COLUMNS = 10;
 
@@ -141,7 +146,7 @@ export function bandModel(snapshot, { now = Date.now(), maxRows, bodyColumns } =
   const open = items.filter((i) => !i.done).length;
   if (!items.length || open === 0) return null;
   const win = checklistWindow(items, { maxRows });
-  const rows = [...win.open, ...win.done].map((i) => ({ n: i + 1, text: rowText(i + 1, items[i].text, DONE_BUTTON_COLUMNS), done: items[i].done === true }));
+  const rows = [...win.open, ...win.done].map((i) => ({ n: i + 1, text: rowText(i + 1, items[i].text, items[i].done ? SHOW_BUTTON_COLUMNS : ROW_BUTTONS_COLUMNS), done: items[i].done === true }));
   return {
     kind: "back",
     headline: clip(backHeadline(open), beside(HEAD_BUTTON_COLUMNS)),
@@ -157,10 +162,10 @@ export function bandModel(snapshot, { now = Date.now(), maxRows, bodyColumns } =
 
 /**
  * The element tree for a model, from the site's constructors `{ Box, Text, Button }`:
- * `onBack()`, `onClear()` and `onDone(index)` are the buttons' handlers (index is 0-based);
+ * `onBack()`, `onClear()`, `onShow(index)` and `onDone(index)` are the buttons' handlers (index is 0-based);
  * `theirs` is what the mods after this one drew in the band (`await next(e)`), kept under the band.
  */
-export function bandTree({ Box, Text, Button }, model, { onBack, onClear, onDone, theirs = null } = {}) {
+export function bandTree({ Box, Text, Button }, model, { onBack, onClear, onShow, onDone, theirs = null } = {}) {
   const colors = model.kind === "away" ? AWAY_COLORS : BACK_COLORS;
   const direction = model.compact ? "column" : "row";
   const headButton =
@@ -177,10 +182,12 @@ export function bandTree({ Box, Text, Button }, model, { onBack, onClear, onDone
     const line = Text({ color: colors.body, dimColor: r.done, strikethrough: r.done, wrap: "truncate-end", children: [`${r.n}. ${r.text}`] });
     if (model.kind !== "back") return line;
     const hotkey = r.n <= 9 ? String(r.n) : undefined;
+    const show = Button({ key: `item-${r.n}`, label: "Show", ...(hotkey ? { hotkey } : {}), dimColor: r.done, onPress: () => onShow?.(r.n - 1) });
+    const done = r.done ? [] : [Button({ key: `done-${r.n}`, label: "Done", onPress: () => onDone?.(r.n - 1) })];
     return Box({
       flexDirection: direction,
       columnGap: 1,
-      children: [Box({ flexGrow: 1, children: [line] }), Button({ key: `done-${r.n}`, label: r.done ? "Undo" : "Done", ...(hotkey ? { hotkey } : {}), dimColor: r.done, onPress: () => onDone?.(r.n - 1) })],
+      children: [Box({ flexGrow: 1, children: [line] }), Box({ flexDirection: "row", columnGap: 1, children: [show, ...done] })],
     });
   };
   const muted = (text, dim = false) => Text({ color: colors.muted, dimColor: dim, wrap: "truncate-end", children: [text] });

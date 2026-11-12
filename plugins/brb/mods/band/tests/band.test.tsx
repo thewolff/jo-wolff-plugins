@@ -2,8 +2,9 @@
 // `AbovePrompt` site mounted through the kit in both session payloads (Claude Desktop's
 // `surface: null, isInteractive: false` and the terminal's), asserting the drawn tree: the
 // headline, the numbered rows, the Back button while away (a press sends `back` through
-// `$.prompt.submit` as the person's prompt, with a toast); BACK with Done per row and Clear
-// after back; the band gone once every row is done or on Clear; the fallback status line only
+// `$.prompt.submit` as the person's prompt, with a toast); BACK with Show and Done per row and
+// Clear after back, each press sending `brb item N`, `brb done N` or `brb clear` as the person's
+// prompt; the band gone once every row is done or on Clear; the fallback status line only
 // where the band never draws; the timers.
 //
 // `.test.tsx`, not `.test.mjs`, so brb's `node --test` run leaves this file to the mods test kit.
@@ -19,7 +20,7 @@ const SINCE = new Date(Date.now() - 40 * 60_000).toISOString();
 const ITEMS = ["Create the read-token secret on the org?", "Billing limit on the org: raise it?", "Clear the review round"];
 const AWAY = { ok: true, away: true, since: SINCE, note: "lunch", held: 3, onFire: 1, items: ITEMS };
 const HOME = { ok: true, away: false, checklist: null };
-const CHECKLIST = { ok: true, away: false, checklist: { at: SINCE, since: SINCE, note: "lunch", items: ITEMS.map((text) => ({ text, done: false })) } };
+const CHECKLIST = { ok: true, away: false, checklist: { at: SINCE, hold: 3, since: SINCE, note: "lunch", items: ITEMS.map((text) => ({ text, done: false })) } };
 const HEADLINE = /^AWAY 4[01]m · 3 held · lunch$/;
 const PROBE = `/tmp/state/brb/${SESSION}/away.json`;
 const THEIRS = "drawn by Claude Code";
@@ -33,7 +34,7 @@ const BAND = {
 } as const;
 
 type Item = { text: string; done: boolean };
-type Checklist = { at: string; since: string; note: string; items: Item[] };
+type Checklist = { at: string; hold: number; since: string; note: string; items: Item[] };
 /** What query.mjs prints, loose enough for every test's snapshot. */
 type Snapshot = { ok: boolean; away: boolean; checklist?: Checklist | null } & Record<string, unknown>;
 
@@ -61,6 +62,14 @@ function stubs(on, { snapshot = AWAY as Snapshot, exists = false, files = new Ma
   on("prompt.submit", ($, e) => {
     if (e.origin?.kind === "plugin") submits.push({ text: e.text, origin: e.origin });
     if (e.text === "back" && state.snapshot.away) state.snapshot = CHECKLIST;
+    // The prompt hook's work on the returned digest, as the band's presses send it.
+    const s = state.snapshot;
+    const pick = /^brb (item|done) (\d+) @\S+$/.exec(e.text);
+    if (/^brb clear @\S+$/.test(e.text) && s.checklist) state.snapshot = HOME;
+    if (pick?.[1] === "done" && s.checklist) {
+      const items = s.checklist.items.map((it, i) => (i === Number(pick[2]) - 1 ? { ...it, done: true } : it));
+      state.snapshot = items.every((it) => it.done) ? HOME : { ...s, checklist: { ...s.checklist, items } };
+    }
     return { text: e.text };
   });
   on("ui.toast", ($, e) => {
@@ -92,16 +101,12 @@ function stubs(on, { snapshot = AWAY as Snapshot, exists = false, files = new Ma
       return { value: { exitCode: 0, stdout: JSON.stringify(state.snapshot) + "\n", stderr: "" } };
     }
     if (script.endsWith("mods/band/act.mjs")) {
-      const [verb, index] = e.argv.slice(4);
+      const [verb] = e.argv.slice(4);
       acts.push(e.argv.slice(4));
       const s = state.snapshot;
       if (verb === "back") return { value: { exitCode: 0, stdout: JSON.stringify(s.away ? { ok: true, away: true, since: s.since } : { ok: true, away: false }) + "\n", stderr: "" } };
-      if (verb === "clear") state.snapshot = HOME;
-      if (verb === "done" && s.checklist) {
-        const items = s.checklist.items.map((it, i) => (i === Number(index) ? { ...it, done: !it.done } : it));
-        state.snapshot = items.every((it) => it.done) ? HOME : { ...s, checklist: { ...s.checklist, items } };
-      }
-      return { value: { exitCode: 0, stdout: '{"ok":true}\n', stderr: "" } };
+      if (verb === "open") return { value: { exitCode: 0, stdout: JSON.stringify(!s.away && s.checklist ? { ok: true, open: true, at: s.checklist.at, hold: s.checklist.hold } : { ok: true, open: false }) + "\n", stderr: "" } };
+      return { value: { exitCode: 0, stdout: '{"ok":false,"error":"unknown verb"}\n', stderr: "" } };
     }
     return { deny: `unexpected process ${e.argv.join(" ")}` };
   });
@@ -182,26 +187,32 @@ for (const [where, payload, surface] of SESSIONS) {
     await again.unmount();
   });
 
-  test(`${where}: after back the band is a checklist: BACK headline, Done per row, Clear; Done strikes a row and persists; all done clears the band`, async ($, on) => {
-    const { acts, clock } = stubs(on, { snapshot: CHECKLIST });
+  test(`${where}: after back the band is the returned digest: BACK headline, Show and Done per row, Clear; Show sends \`brb item N\`, Done \`brb done N\` and strikes the row; all done clears the band`, async ($, on) => {
+    const { acts, clock, submits } = stubs(on, { snapshot: CHECKLIST });
     await $.session.start(payload);
     let ui = await $.ui.mount({ ...BAND, surface });
     expect(await ui.find({ type: "Text", text: "BACK · 3 to act on" })).toBeDefined();
     expect(await ui.find({ key: "clear" })).toBeDefined();
     expect(await ui.find({ key: "done-1" })).toBeDefined();
     expect(await ui.find({ key: "done-3" })).toBeDefined();
+    expect(await ui.find({ key: "item-1" })).toBeDefined();
     expect(await ui.find({ key: "done-4" })).toBeUndefined();
     expect(await ui.find({ key: "back" })).toBeUndefined();
 
+    await ui.press({ key: "item-3" });
+    await clock.settle();
+    expect(submits.map((x) => x.text)).toEqual([`brb item 3 @${SINCE}#3`]);
     await ui.press({ key: "done-2" });
     await clock.settle();
-    expect(acts).toEqual([["done", "1"]]);
+    expect(submits.map((x) => x.text)).toEqual([`brb item 3 @${SINCE}#3`, `brb done 2 @${SINCE}#3`]);
+    expect(acts).toEqual([["open"], ["open"]]);
     await ui.unmount();
     ui = await $.ui.mount({ ...BAND, surface });
     expect(await ui.find({ type: "Text", text: "BACK · 2 to act on" })).toBeDefined();
     const struck = await ui.find({ type: "Text", text: `2. ${ITEMS[1]}` });
     expect(struck?.props.strikethrough).toBe(true);
-    expect((await ui.find({ key: "done-2" }))?.props.label).toBe("Undo");
+    expect(await ui.find({ key: "done-2" })).toBeUndefined();
+    expect((await ui.find({ key: "item-2" }))?.props.label).toBe("Show");
 
     await ui.press({ key: "done-1" });
     await ui.press({ key: "done-3" });
@@ -213,13 +224,14 @@ for (const [where, payload, surface] of SESSIONS) {
     await ui.unmount();
   });
 
-  test(`${where}: Clear removes the checklist and the band`, async ($, on) => {
-    const { acts, clock } = stubs(on, { snapshot: CHECKLIST });
+  test(`${where}: Clear sends \`brb clear\` as the person's prompt and the band goes`, async ($, on) => {
+    const { acts, clock, submits } = stubs(on, { snapshot: CHECKLIST });
     await $.session.start(payload);
     let ui = await $.ui.mount({ ...BAND, surface });
     await ui.press({ key: "clear" });
     await clock.settle();
-    expect(acts).toEqual([["clear"]]);
+    expect(acts).toEqual([["open"]]);
+    expect(submits.map((x) => x.text)).toEqual([`brb clear @${SINCE}#3`]);
     await ui.unmount();
     ui = await $.ui.mount({ ...BAND, surface });
     expect(await ui.find({ type: "Text", text: /^BACK/ })).toBeUndefined();
@@ -345,7 +357,7 @@ test("R1 B1: classic.SessionStart at startup and compact leaves the band and the
 
 test("R1 S1: 11 checklist rows with the first 10 done: row 11 shows with its Done button and `10 done` sums the rest", async ($, on) => {
   const items = Array.from({ length: 11 }, (_, i) => ({ text: `item ${i + 1}`, done: i < 10 }));
-  const { acts, clock } = stubs(on, { snapshot: { ...CHECKLIST, checklist: { ...CHECKLIST.checklist, items } } });
+  const { submits, clock } = stubs(on, { snapshot: { ...CHECKLIST, checklist: { ...CHECKLIST.checklist, items } } });
   await $.session.start({ surface: "terminal", isInteractive: true, cwd: "/Users/example/code/this" });
   const ui = await $.ui.mount({ ...BAND, surface: "terminal" });
   expect(await ui.find({ type: "Text", text: "11. item 11" })).toBeDefined();
@@ -353,7 +365,7 @@ test("R1 S1: 11 checklist rows with the first 10 done: row 11 shows with its Don
   expect(await ui.find({ type: "Text", text: "10 done" })).toBeDefined();
   await ui.press({ key: "done-11" });
   await clock.settle();
-  expect(acts).toEqual([["done", "10"]]);
+  expect(submits.map((x) => x.text)).toEqual([`brb done 11 @${SINCE}#3`]);
   await ui.unmount();
 });
 

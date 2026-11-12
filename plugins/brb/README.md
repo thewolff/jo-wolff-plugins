@@ -3,7 +3,8 @@
 Type `brb` and walk away. The agent keeps working; every question it would have stopped to ask
 you waits in a digest; the five things that cannot wait (a broken main, data loss, a security
 finding, spend near a ceiling, a blocker on everything) still come through at once. Type `back`
-and read the digest.
+for a numbered list of what was held, then open the items one at a time: type a number to see
+that item in full and work it with the agent, `done N` once it is dealt with.
 
 **While away, asks are written, not shown.** A question on screen pulls you back to a screen
 you left, so since 0.2.0 the agent files each ask with a command
@@ -21,7 +22,10 @@ while away (Claude Code)".
 |---|---|---|
 | away | first line `brb: still away (<duration>, N held) — say \`back\` to read them`, then the body: what was done, ending `idle: <why>` when nothing is runnable; no `Needs you`, no question, no closing ask | the still-away line at the top of every reply; `brb on fire: …` for a fire; `brb: the agent is idle (<why>); N held` when it stops; on Claude Code, the away band above the prompt: `AWAY 40m · N held`, the held items, a Back button |
 | you answer a fire (or anything) while away | your answer handled, then the same shape as away | the hold continues; the away instruction is re-injected on every prompt, and only `back` ends the hold |
-| back | the digest, verbatim, as its whole reply: `brb: hold cleared; digest archived to <path>.` then every item the command held and every one the backstop moved, each once; an item it already resolved ends `— resolved: <how>` | that reply, on every surface (terminal, desktop, mobile app); on the surfaces that render hook frames, the same text once more as a hook line; on Claude Code the band stays, now a checklist: `BACK · N to act on`, Done per row, Clear |
+| back | a numbered list, verbatim, as its whole reply: `brb: hold cleared; digest archived to <path>.` then one line per held item (cut at 120 characters), then how to work it | that reply, on every surface (terminal, desktop, mobile app); on the surfaces that render hook frames, the same text once more as a hook line; on Claude Code the band stays, now the returned digest: `BACK · N to act on`, Show and Done per row, Clear |
+| a number (`2`), after back | item 2 in full, with the time it was held, then the agent working it with you | nothing else changes: the item stays open until you tick it |
+| `done 2`, after back | one line: item 2 is done, and which are still open | the band strikes row 2; the last tick closes the list |
+| `brb clear`, after back | every item not done, in full, verbatim; the done ones one line each | the list is closed; nothing not done was dropped unseen |
 
 Built on plugin-kit 0.3.2, with its prune script re-copied from plugin-kit 0.4.1. Claude Code
 hooks, a Claude Code mod for the away band and the hidden rows, plus an OMP
@@ -42,17 +46,23 @@ the fallbacks and the exact reversal.
 
 Three words, each typed as the whole prompt (any case; trailing `.`, `!` or `?` allowed; `brb, lunch`
 and `brb: lunch` carry a note too). `brb` and `pending` start no turn; `back` starts one whose
-reply is the digest.
+reply is the numbered list. After `back`, four more work the returned digest one item at a time
+(see "The returned digest" below).
 
 | You type | What happens | What you see |
 |---|---|---|
 | `brb` or `brb <note>` | the hold begins: `away.json` is written for this session | `brb: holding needs-you items until \`back\`; on-fire items still come through` (the note appended) |
 | `pending` | nothing changes | the digest so far, under `brb digest — held since <when>, N items` (`<when>` and each entry's heading in local time, `2026-11-10 5:50 PM PST`) |
-| `back` | the digest is archived to `archive/<when>.md`, the hold ends, and the prompt goes through with the digest and `brb: Jo is back (away <duration>). Reply with the digest below verbatim as your whole message, then stop …` as `additionalContext` (plus the digest as a `systemMessage`) | the agent's reply: `brb: hold cleared; digest archived to <path>.` first, then the digest |
+| `back` | the digest is archived to `archive/<when>.md`, its items become the returned digest (`checklist.json`), the hold ends, and the prompt goes through with the numbered list and `brb: Jo is back (away <duration>). Reply with the list below verbatim as your whole message, then stop …` as `additionalContext` (plus the list as a `systemMessage`) | the agent's reply: `brb: hold cleared; digest archived to <path>.` first, then one line per item and how to work them |
 
 An empty digest shows `(nothing held)`. A `back` or `pending` text longer than 8000
 characters is cut at a line and ends `… (N more lines; full digest: <path>)`; the archive keeps
-every line. Why `back` is answered by the agent and not shown as a hook frame: the Claude
+every line. A `brb clear` block, or one item, longer than 8000 characters is first written
+whole to `export/<when>-<what>.md` in the session's state directory, and the text is cut and
+ends `… (cut at 8000 characters; the whole text: <absolute path>)`; if that file cannot be
+written, `brb clear` removes nothing and says so, and an item points at `checklist.json`,
+which still holds it whole. `back` writes the list before it archives the digest, so a `back`
+that fails part way keeps the hold on and a second `back` lists every item. Why `back` is answered by the agent and not shown as a hook frame: the Claude
 mobile app renders no `UserPromptSubmit` block message, so a `back` typed there archived the
 digest and showed nothing; an assistant message renders on every surface. `pending` while not
 away is passed to the agent as an ordinary prompt, and `back` while not away too, with
@@ -62,7 +72,31 @@ nothing and is not blocked: you see ``brb: still away since <when> (<duration>);
 `back` ends the hold; `pending` peeks. Your questions answered while away did not end it.``,
 and the agent gets the same line over the away instruction, so it goes back to holding. (On
 OMP the adapter shows that line and starts no turn; on `back` it stages the digest context for
-the turn and lets the word through, so the agent's reply is the digest there as well.)
+the turn and lets the word through, so the agent's reply is the whole digest there, as in 0.5.0.)
+
+### The returned digest, one item at a time
+
+`back` lists what was held and shows none of it in full. Each item then stays open until you
+say it is dealt with; the agent never closes one on its own. These words count only while you
+are home and a returned digest is open (`checklist.json` exists in the session's state
+directory). Without one, `2` and `done 2` are ordinary prompts, and the `brb …` forms say
+`brb: no returned digest is open; …` to the agent and start no hold. While away none of them
+is special: a number is an answer to whatever the agent asked.
+
+| You type | What happens | What the agent replies |
+|---|---|---|
+| a number (`2`, `#2`, `2.`) or `brb item 2` | nothing changes | item 2 in full (`item 2 of 3 (held <when>)`, then its whole text), then it works the item with you; no other item |
+| `done 2` or `brb done 2` | item 2 is ticked in `checklist.json`; ticking it again changes nothing; the last tick removes the file | one line: item 2 is done and which are still open, or that the list is closed |
+| `brb clear` | the file is removed, after the agent has every item not done in full | every item not done in full, verbatim, then the done ones one line each (also a `systemMessage`) |
+
+**Nothing open is dropped unseen.** A hold that held nothing leaves an open list as it is. A
+second `brb` while a list is open starts a hold as usual; at its `back` the new items are
+appended after the open ones, whose numbers and ticks stay, so one list carries both. A new item
+whose text is the same as an item still open (not done) is not added a second time. A band
+press waiting for the turn to end is dropped by a new `brb`. The archive keeps every digest
+whatever happens to the list. On OMP the adapter passes only `brb`, `back` and `pending` to the
+hooks (and reads `brb clear` as `brb` with a note), so under OMP `back` keeps 0.5.0's reply,
+the whole digest verbatim, and opens no list; the item words are ordinary prompts there.
 
 Typing anything else while away, an answer to an `on fire:` line included, does not end the
 hold: the instruction, whose first line says the hold is still on, rides along with your
@@ -240,14 +274,14 @@ plugins can ship mods; `hooks/hooks.json` names the module, `mods/band/register.
 - **No emoji**, single-width symbols only.
 
 **After `back` the list stays.** `back` (typed, or the Back button) writes the digest's items to
-`checklist.json`, and the band turns into a checklist on a blue border:
+`checklist.json`, and the band turns into the returned digest on a blue border:
 
 ```
 ╭──────────────────────────────────────────────────────────────────────╮
 │ BACK · 2 to act on                                         [ Clear ] │
-│ 1. Create the read-token secret on the org?                 [ Done ] │
-│ 3. Clear the review round                                   [ Done ] │
-│ 2. Billing limit on the org: raise it?                      [ Undo ] │  ← struck, dim
+│ 1. Create the read-token secret on the org?       [ Show ] [ Done ] │
+│ 3. Clear the review round                         [ Show ] [ Done ] │
+│ 2. Billing limit on the org: raise it?            [ Show ]          │  ← struck, dim
 ╰──────────────────────────────────────────────────────────────────────╯
 ```
 
@@ -257,17 +291,28 @@ to act on that did not fit, so a row you have not done is never hidden behind a 
 narrow band (under 26 columns inside the border) each button sits under its text instead of
 beside it, and no line runs wider than the band.
 
-Done strikes a row and keeps it (Undo puts it back); the choice is saved in `checklist.json`, so
-it survives a restart of the window. The band clears when every row is done, or on Clear. A hold
-that held nothing leaves no checklist. Items held while you are home never make one.
-**Done is cosmetic: it tells the agent nothing.** The agent learns what you resolved from what
-you type, the same as before.
+**Every press tells the agent.** Show sends `brb item N`, Done `brb done N` and Clear
+`brb clear`, each ending ` @<at>#<hold>` (the open list's `at` and hold number from
+`checklist.json`), as your own prompt (`$.prompt.submit({ text, asUser: true })`). The prompt
+hook checks that token first, under the session lock: if a hold is on, that list is no longer the
+open one, a hold has begun and ended since the press, or the check cannot get the lock, the press
+is dropped with `brb: dropped a band press (…)`, no turn starts and the agent hears nothing; typed
+without the token, the words work as before. Otherwise each does exactly
+what the typed word does (see "The returned digest, one item at a time"): Show has the agent show
+that item in full, Done ticks it and the agent says so, Clear has the agent show every item not
+done in full before the list closes. A done row is struck and keeps only Show; a tick is final.
+Show's hotkey is the row number while the band has focus. A press belongs to the list the band
+showed: before it is sent, `act.mjs open` must still name that list, or the press is dropped
+without a word. While the agent is working the press waits for the turn to end (a toast says
+`brb: brb done 2 goes when this turn ends`); one press waits at a time. A prompt Claude Code
+drops toasts `brb: <prompt> failed: <reason>; type it instead`. The band clears when every row is
+done, or after Clear. Items held while you are home never make a list.
 
 **What the Back button does, per host:**
 
 | host | press Back |
 |---|---|
-| Claude Code, terminal | the button sends `back` as your own prompt (`$.prompt.submit({ text: "back", asUser: true })`, the same call Claude Code makes for a typed prompt), so the prompt hook ends the hold exactly as `back` typed does and the agent replies with the digest. A press belongs to the hold the band showed when you pressed it. A toast says `brb: Back pressed, ending the hold` and the band reads `Back pressed · ending the hold` until the hold ends; another press meanwhile sends nothing, even if a refresh fails in between. While the agent is working, the press waits for the turn to end, checks again, and sends `back` only if the same hold is still on: a `back` you typed meanwhile, or a new `brb`, drops the press without a word, so it never ends a hold it was not pressed for and never produces a `you were not away` reply. If Claude Code drops the prompt (for example after Esc stopped a turn), a toast says `brb: Back failed: <reason>; type back`, and the button works again. Click the button, or press `b` while the band has focus (ctrl+x tab moves focus to it); `b` typed in the prompt box is just a letter. |
+| Claude Code, terminal | the button sends `back` as your own prompt (`$.prompt.submit({ text: "back", asUser: true })`, the same call Claude Code makes for a typed prompt), so the prompt hook ends the hold exactly as `back` typed does and the agent replies with the numbered list. A press belongs to the hold the band showed when you pressed it. A toast says `brb: Back pressed, ending the hold` and the band reads `Back pressed · ending the hold` until the hold ends; another press meanwhile sends nothing, even if a refresh fails in between. While the agent is working, the press waits for the turn to end, checks again, and sends `back` only if the same hold is still on: a `back` you typed meanwhile, or a new `brb`, drops the press without a word, so it never ends a hold it was not pressed for and never produces a `you were not away` reply. If Claude Code drops the prompt (for example after Esc stopped a turn), a toast says `brb: Back failed: <reason>; type back`, and the button works again. Click the button, or press `b` while the band has focus (ctrl+x tab moves focus to it); `b` typed in the prompt box is just a letter. |
 | Claude Code Desktop | the same call and the same hook. Desktop draws the band: a press in a Desktop session on 2026-11-10 ran the button's action. Where the band is never drawn there is no button: the mod falls back to the one status line of 0.3.x under the prompt (`⚠ brb: away 40m · 3 held · say back`, after back `⚠ brb: back · 2 to act on`), and `back` typed is the way out. |
 | `claude -p`, mobile, OMP | no band and no button. OMP has no mod surface; type `back`. The still-away first line of every reply and the hooks' own lines are unchanged. |
 
@@ -281,7 +326,7 @@ opened once without following a link, and the open descriptor must be a regular 
 64 KiB, of which at most 64 KiB + 1 byte is read, so a directory, a link, or a file over 64 KiB,
 even one swapped in or grown after the check, is a fault, never a parse; an `away.json` or
 `checklist.json` that does not parse is absent). The buttons run `node mods/band/act.mjs
---session <id> back|done <row>|clear`: `back` only reports whether the session is away and since when; `done` and `clear` write through `lib/state.mjs`. The band refreshes at
+--session <id> back|open`, both read-only: `back` reports whether the session is away and since when, `open` which returned digest is open (its `at`). Every write to `checklist.json` goes through the prompt hook and `lib/back.mjs`. The band refreshes at
 session start, after each prompt enters (so `brb` and `back` show at once), at the start and end
 of each of your turns, after each button press, and every 5 s while away or while a checklist is
 up. While home with no checklist the only poll is `$.fs.exists` on `away.json` inside Claude
@@ -301,7 +346,7 @@ Tests: `node --test` covers the data, view, query and action layers and the mod'
 and fallback with an in-memory host (`mods/band/tests/*.test.mjs`); `claude plugin test` from
 `plugins/brb` mounts the `AbovePrompt` site through Claude Code's test kit
 (`mods/band/tests/band.test.tsx`) for a Desktop session start (no surface, not interactive) and a
-terminal one, presses Back, Done and Clear and checks the drawn tree; `evals/manifest.json` lists
+terminal one, presses Back, Show, Done and Clear and checks the drawn tree and the prompts sent; `evals/manifest.json` lists
 the live checks under `manual`.
 
 ## The transcript while away (Claude Code)
@@ -395,7 +440,8 @@ open an issue naming the surface and the Claude Code version.
 - `${XDG_STATE_HOME:-~/.local/state}/brb/<session id>/` — `away.json` (since, note, counts, the
   lines seen, whether this turn was backstopped, the previous stop's transcript line and
   fires), `digest.md`, `archive/<when>.md`, `checklist.json` (the last hold's items for the band,
-  each with its Done state). A `back-requested` file left by 0.4.0 or 0.4.1 is no longer read;
+  each with its Done state), `export/<when>-<what>.md` (the whole text of a `brb clear` block or
+  an item too long for a hook's context). A `back-requested` file left by 0.4.0 or 0.4.1 is no longer read;
   prune removes it with the rest.
   Declared in `.claude-plugin/plugin.json` `state`; `node scripts/prune.mjs --days 30` removes
   files older than 30 days (`errors.log` kept), and the nightly canary runs it.
@@ -494,10 +540,20 @@ worktree and `scripts/prune.mjs` removes what is older than its retention.
 ## Developing
 
 `node --test` from `plugins/brb/` runs everything: the state round-trip, the splitter, the three
-hooks as spawned processes with fixture stdin and fixture transcripts, the hold command as a
+hooks as spawned processes with fixture stdin and fixture transcripts, the returned digest worked
+one item at a time (`test/returned-digest.test.mjs`), the hold command as a
 spawned process, the OMP adapter's handlers, the band's data, view, query and action layers.
-`bash e2e/live-run.sh --no-live` replays the fourteen `evals/*.scenario.json` offline. `claude
+`bash e2e/live-run.sh --no-live` replays the eighteen `evals/*.scenario.json` offline. `claude
 plugin test` runs the band mod itself (`mods/band/tests/band.test.tsx`).
+
+## Changes in 0.6.0
+
+`back` no longer pours the whole digest out at once. It lists the held items, one line each,
+and you open them one at a time: a number shows that item in full and the agent works it with
+you; `done N` ticks it; the item stays open until you do. `brb clear` closes the list, and every
+item you had not ticked comes back in full first, so none is lost. On Claude Code the band's
+rows get a Show and a Done button, and each press now tells the agent (Show and Done used to be
+a cosmetic toggle). A second hold while a list is still open appends to it.
 
 ## Changes in 0.5.0
 

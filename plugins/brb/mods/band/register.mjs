@@ -22,10 +22,19 @@
 //     (`{ drop }`, or a rejection) shows `brb: Back failed: <reason>; type back` and the button
 //     works again; one from an earlier conversation says nothing. Its `b` hotkey fires only
 //     while the band has focus (ctrl+x tab), not from the prompt box;
-//   - after `back` the hold's digest stays on screen as a checklist (checklist.json, written by
-//     lib/back.mjs endHold): `BACK · 3 to act on` in blue, a Done button per row (struck and
-//     dim once done; Undo puts it back) and a Clear button; the band clears when every row is
-//     done or on Clear. Done is cosmetic: the agent is told nothing;
+//   - after `back` the hold's digest stays on screen as the returned digest (checklist.json,
+//     written by lib/back.mjs endHold): `BACK · 3 to act on` in blue, a Show and a Done button
+//     per row (a done row is struck and dim and keeps only Show) and a Clear button. Each press
+//     sends a prompt as the person's own (`$.prompt.submit`): Show `brb item N`, Done
+//     `brb done N`, Clear `brb clear`; hooks/user-prompt-submit.mjs does the work and tells the
+//     agent (Show: the item in full; Done: the tick; Clear: every item not done, in full, before
+//     the file goes). A press is bound to the checklist the band drew (its `at` and `hold`) and sent only
+//     while act.mjs `open` still names it; idle it goes at once, while a turn runs at that turn's
+//     end (a toast says so); one at a time, and never while a Back press is pending; a query
+//     that sees a new hold drops it (act.mjs `open` is false while away, too). The word ends
+//     ` @<at>#<hold>`, and the prompt hook drops it unless that list is still open, no hold is on
+//     and none has begun since, which covers a `brb` typed between the check and the word's
+//     arrival, and a whole `brb` and `back` in that gap;
 //   - the data is this session's state, read out of process by `node mods/band/query.mjs
 //     --session <id>` (read-only); the band refreshes at session start, after each prompt is
 //     submitted (so `brb` and `back` show at once), at each main turn's start and end, after a
@@ -68,7 +77,7 @@
 // `$` is passed only to top-level functions of this file, imports are relative, no node builtins,
 // `$.env.get` takes a string literal.
 
-import { BACK_WORD, actArgv, awayPath, emptySnapshot, queryArgv, readResult, readSnapshot, sectionPath, statusText, suggestionText } from "./data.mjs";
+import { BACK_WORD, actArgv, awayPath, emptySnapshot, pickPrompt, queryArgv, readResult, readSnapshot, sectionPath, statusText, suggestionText } from "./data.mjs";
 import { AWAY_TEXT, HELD_LINE, HIDDEN_SITES, ORDER_SITE, SECTION_NAMES, createLedger, lastCarried, parseSectionState, sectionAnswer } from "./hide.mjs";
 import { bandModel, bandTree } from "./view.mjs";
 
@@ -119,6 +128,12 @@ let lastRowError = null;
  * sees that hold gone, or the press fails.
  */
 let pendingBack = null;
+/**
+ * The pending press on the returned digest, or null: `{ text, at, gen }`, the prompt it sends,
+ * the checklist the band drew at the press, and the conversation it belongs to. Sent at once when
+ * idle, else at the running turn's end, and only while act.mjs `open` still reports `at`.
+ */
+let pendingPick = null;
 /** A top-level turn is running (turn.start until turn.complete), as the turn events said. */
 let turnRunning = false;
 /** A top-level turn.start or turn.complete has been seen in this conversation, so turnRunning is known. */
@@ -199,6 +214,60 @@ function backFailed($, intent, err) {
   logFault($, "back", err);
   toast($, `brb: Back failed: ${reasonText(err)}; type back`);
   applySnapshot($, snapshot);
+}
+
+/** A press on the returned digest that was not sent: logged and toasted; one from an earlier conversation says nothing. */
+function pickFailed($, intent, err) {
+  if (intent.gen !== generation) return;
+  if (pendingPick === intent) pendingPick = null;
+  logFault($, "band", err);
+  toast($, `brb: ${intent.word} failed: ${reasonText(err)}; type it instead`);
+}
+
+/** Ask act.mjs which returned digest is open: `{ open, at, hold }`; throws when the action failed. */
+async function checkOpen($) {
+  const sessionId = await $.session.id();
+  const script = pathUnder($.plugin.root, "mods/band/act.mjs");
+  const run = await $.process.run(["node", ...actArgv(script, sessionId, "open")], { timeoutMs: SCRIPT_TIMEOUT_MS });
+  const result = readResult(run.stdout);
+  if (!result.ok) throw new Error(result.error);
+  return { open: result.open === true, at: result.at ?? null, hold: result.hold ?? null };
+}
+
+/**
+ * Send the pending press when the session is idle; while a turn runs, wait for its
+ * `turn.complete`. act.mjs `open` is asked first: a list closed or replaced since the press drops
+ * it without a word, so a press never ticks or shows a row of a list it was not made for.
+ */
+async function drainPick($) {
+  const intent = pendingPick;
+  if (!intent || intent.checking || busy()) return;
+  intent.checking = true;
+  let now;
+  try {
+    now = await checkOpen($);
+  } catch (err) {
+    pickFailed($, intent, err);
+    return;
+  }
+  intent.checking = false;
+  if (pendingPick !== intent) return;
+  if (!now.open || now.at !== intent.at || now.hold !== intent.hold) {
+    pendingPick = null;
+    return;
+  }
+  if (busy()) return;
+  pendingPick = null;
+  try {
+    Promise.resolve($.prompt.submit({ text: intent.text, asUser: true })).then(
+      (r) => {
+        if (r?.drop) pickFailed($, intent, r.drop);
+      },
+      (err) => pickFailed($, intent, err),
+    );
+  } catch (err) {
+    pickFailed($, intent, err);
+  }
 }
 
 /** Ask act.mjs whether this session is away: `{ away, since }`; throws when the action failed. */
@@ -290,6 +359,8 @@ function applySnapshot($, next, where = "query") {
   // The press is done once a query sees its hold gone (home, or another hold). A failed query
   // proves nothing, so the press stays pending and a second press still sends nothing.
   if (pendingBack?.since && next.ok && (!next.away || next.since !== pendingBack.since)) pendingBack = null;
+  // A press on the returned digest belongs to the session at home: a new hold drops it.
+  if (pendingPick && next.ok && next.away) pendingPick = null;
   applyAway($, next);
   const { backPressed: _shown, ...query } = next;
   snapshot = pendingBack ? { ...query, backPressed: true } : query;
@@ -333,8 +404,10 @@ async function refresh($) {
  * that hold (its `since`) at the press; one pending press at a time (a second press, or one while
  * the first waits, sends nothing); when act.mjs reports that same hold, a toast and `back` sent
  * now or at the end of the running turn (drainBack); home or another hold, the press is dropped
- * without a word. A failed action is logged (Back's also toasted), and the band redrawn from the
- * query either way.
+ * without a word. Show, Done and Clear (`item`, `done`, `clear`): only while the band shows a
+ * returned digest and nothing is pending; the prompt data.mjs pickPrompt names is sent now or at
+ * the running turn's end (drainPick), and a press that cannot be sent is logged and toasted. The
+ * band is redrawn from the query after a Back press.
  */
 async function act($, verb, index) {
   const gen = generation;
@@ -359,15 +432,14 @@ async function act($, verb, index) {
       backFailed($, intent, err);
     }
   } else {
-    try {
-      const sessionId = await $.session.id();
-      const script = pathUnder($.plugin.root, "mods/band/act.mjs");
-      const run = await $.process.run(["node", ...actArgv(script, sessionId, verb, index)], { timeoutMs: SCRIPT_TIMEOUT_MS });
-      const result = readResult(run.stdout);
-      if (!result.ok) throw new Error(result.error);
-    } catch (err) {
-      await logFault($, verb, err);
-    }
+    // The word carries the list's `at` and `hold`: the prompt hook refuses it if, by the time it
+    // arrives, that list is no longer the open one or a hold began (a check here cannot cover that gap).
+    const text = pickPrompt(verb, index, snapshot.checklist?.at, snapshot.checklist?.hold);
+    if (!text || pendingPick || pendingBack || !(snapshot.ok && !snapshot.away && typeof snapshot.checklist?.at === "string")) return;
+    const intent = { text, word: pickPrompt(verb, index), at: snapshot.checklist.at, hold: snapshot.checklist.hold, gen, checking: false };
+    pendingPick = intent;
+    if (busy()) toast($, `brb: ${intent.word} goes when this turn ends`);
+    await drainPick($);
   }
   if (gen === generation) await refresh($);
 }
@@ -457,6 +529,7 @@ function stop($) {
   timers = [];
   generation++;
   pendingBack = null;
+  pendingPick = null;
   turnRunning = false;
   turnSeen = false;
   drawnWorking = null;
@@ -538,6 +611,7 @@ export function register(on, options) {
         theirs,
         onBack: () => act($, "back"),
         onClear: () => act($, "clear"),
+        onShow: (index) => act($, "item", index),
         onDone: (index) => act($, "done", index),
       });
     } catch (err) {
@@ -652,6 +726,7 @@ export function register(on, options) {
         await refresh($);
         // Not awaited past its own check: a pending press sends `back` now the session is idle.
         drainBack($).catch((err) => logFault($, "turn.complete", err));
+        drainPick($).catch((err) => logFault($, "turn.complete", err));
       }
     } catch (err) {
       await logFault($, "turn.complete", err);

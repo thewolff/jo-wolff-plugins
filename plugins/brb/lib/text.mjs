@@ -112,13 +112,129 @@ export function firstLineReason(line) {
 }
 
 /**
- * What the agent is told on `back`, over the digest: Jo is back, reply with the digest below as
- * the whole message. The digest reaches Jo as the agent's reply, which every surface renders;
- * a hook frame does not render on the mobile app.
+ * What the agent is told on `back`, over the numbered list: Jo is back, reply with the list as
+ * the whole message. The list reaches Jo as the agent's reply, which every surface renders; a
+ * hook frame does not render on the mobile app. Items come one at a time after that (itemInstruction).
  */
 export function backInstruction(away, now) {
   const d = awayFor(away.since, now);
+  return `brb: Jo is back${d ? ` (away ${d})` : ""}. Reply with the list below verbatim as your whole message, then stop (end with nothing else). Do not show any item in full yet: Jo picks one at a time by typing its number.`;
+}
+
+/** backInstruction for a harness that does not route the item words (OMP): the whole digest, as in 0.5.0. */
+export function backDigestInstruction(away, now) {
+  const d = awayFor(away.since, now);
   return `brb: Jo is back${d ? ` (away ${d})` : ""}. Reply with the digest below verbatim as your whole message, then stop (end with nothing else). If a held item is already resolved, append '— resolved: <how>' to that line.`;
+}
+
+/** The most characters one line of the returned digest's numbered list carries; the item in full comes when Jo picks it. */
+export const LIST_LINE_MAX = 120;
+
+/** `text` with whitespace collapsed, cut to `max` characters with a trailing `…`. */
+export function clipLine(text, max = LIST_LINE_MAX) {
+  const t = String(text ?? "").replace(/\s+/g, " ").trim();
+  return t.length <= max ? t : `${t.slice(0, max - 1)}…`;
+}
+
+/** The returned digest as `back` lists it: one line per row, `N. <text, cut>`, ticked rows marked `(done)`. */
+export function digestList(checklist) {
+  return checklist.items.map((item, i) => `${i + 1}. ${item.done ? "(done) " : ""}${clipLine(item.text)}`).join("\n");
+}
+
+/** The footer under `back`'s list: how Jo works it. */
+export function listFooter(checklist) {
+  const n = checklist.items.length;
+  return `Type a number (1${n > 1 ? `-${n}` : ""}) to open that item, \`done N\` when it is dealt with, \`brb clear\` to close the list (anything not done is shown in full first).`;
+}
+
+/**
+ * A prompt that works the returned digest, or null: a bare number (`3`, `#3`, `3.`) or
+ * `brb item 3` opens item 3; `done 3` or `brb done 3` ticks it; `brb clear` closes the list.
+ * `prefixed` is true for the `brb …` forms, which the band sends and which never reach the
+ * agent as an ordinary prompt. Trailing `.`, `!` allowed; any case. A `brb …` form ending
+ * ` @<at>#<hold>` (the band's) also carries `token`, the `at` of the list it was pressed for, and
+ * `hold`, that list's hold number (null when the `#<hold>` part is missing or not a number).
+ */
+export function digestWord(text) {
+  let t = String(text ?? "").trim();
+  // The band's form: `brb item N @<at>#<hold>`, `brb done N @<at>#<hold>`, `brb clear @<at>#<hold>` (mods/band/data.mjs pickPrompt).
+  let token = null;
+  let hold = null;
+  const tagged = /^(brb\s.*\S)\s+@(\S+)$/i.exec(t);
+  if (tagged) {
+    [, t, token] = tagged;
+    const h = /^(.+)#(\d{1,15})$/.exec(token);
+    if (h) {
+      token = h[1];
+      hold = Number(h[2]);
+    }
+  }
+  const out = (word) => (token ? { ...word, token, hold } : word);
+  let m = token ? null : /^#?(\d{1,4})[.)!]?$/.exec(t);
+  if (m) return { verb: "show", n: Number(m[1]), prefixed: false };
+  m = /^brb\s+item\s+#?(\d{1,4})[.!]?$/i.exec(t);
+  if (m) return out({ verb: "show", n: Number(m[1]), prefixed: true });
+  m = /^(brb\s+)?done\s+#?(\d{1,4})[.!]?$/i.exec(t);
+  if (m && (m[1] || !token)) return out({ verb: "done", n: Number(m[2]), prefixed: Boolean(m[1]) });
+  if (/^brb\s+clear[.!]?$/i.test(t)) return out({ verb: "clear", n: null, prefixed: true });
+  return null;
+}
+
+/**
+ * What Jo sees when a band press arrives during a hold (`why` "away"), after a hold began and
+ * ended since the press ("cycled": the same list, a newer hold number), when the check could not
+ * run ("unchecked", with `detail` the reason, e.g. the session lock held past its wait), or for a
+ * list that is no longer the open one (anything else): dropped, nothing done.
+ */
+export function stalePressText(word, why, detail = "") {
+  if (why === "unchecked") return `brb: dropped a band press (\`${word}\`): could not check it against the open returned digest (${detail || "unknown error"}); nothing was shown or ticked and the agent was not told. Type the word if you still want it.`;
+  const what = why === "away" ? "was open before this hold began" : why === "cycled" ? "has been through a `brb` and `back` since the press" : "is no longer the open one";
+  return `brb: dropped a band press (\`${word}\`) made for a returned digest that ${what}; nothing was shown or ticked and the agent was not told. Type the word if you still want it.`;
+}
+
+/** What a `brb item N`, `brb done N` or `brb clear` says while home with no returned digest open; the prompt still reaches the agent. */
+export const NO_OPEN_TEXT = "brb: no returned digest is open; nothing to open, tick or clear. Tell Jo that in one line.";
+
+/** An item number off the open list. */
+export function noItemText(n, total) {
+  return `brb: the returned digest has no item ${n} (it has ${total}, numbered 1-${total}). Tell Jo that in one line, then stop.`;
+}
+
+/** One row in full: its number, the entry it was held under, its whole text, and whether it is ticked. */
+export function itemBlock(item, n, total) {
+  return [`item ${n} of ${total}${item.heading ? ` (held ${item.heading})` : ""}${item.done ? ", done" : ""}`, "", item.text].join("\n");
+}
+
+/** What the agent is told when Jo opens item N: show it in full, work it with Jo, leave the tick to Jo. */
+export function itemInstruction(n) {
+  return `brb: Jo opened item ${n} of the returned digest. Start your reply with the item below verbatim, then work it with Jo: answer it, or ask what you need to act on it. Show no other item. The item stays open until Jo types \`done ${n}\` or ticks it in the band; do not mark it done yourself.`;
+}
+
+/** What the agent is told when Jo ticks item N: acknowledge, and what is left. */
+export function tickText({ n, item, already, closed, open }) {
+  const what = `item ${n} (${clipLine(item.text, 80)})`;
+  if (already) return `brb: ${what} was already done. Say so in one line, then stop.`;
+  if (closed) return `brb: Jo ticked ${what} done. That was the last open item: the returned digest is closed. Say so in one line, then stop.`;
+  return `brb: Jo ticked ${what} done. Still open: ${open.join(", ")}. Say so in one line, then stop.`;
+}
+
+/** What the agent is told on `brb clear`: reply with the block below as the whole message. */
+export function clearInstruction(open) {
+  return open
+    ? `brb: Jo closed the returned digest with ${open} item${open === 1 ? "" : "s"} not done. Reply with the block below verbatim as your whole message, then stop: the items not done are in full so none is lost.`
+    : "brb: Jo closed the returned digest; every item was done. Reply with the block below verbatim as your whole message, then stop.";
+}
+
+/** The block `brb clear` shows: every row not done in full (itemBlock), then the done rows one line each. */
+export function clearBlock(checklist) {
+  const total = checklist.items.length;
+  const open = [];
+  const done = [];
+  checklist.items.forEach((item, i) => (item.done ? done : open).push(item.done ? `${i + 1}. ${clipLine(item.text)}` : itemBlock(item, i + 1, total)));
+  const parts = [];
+  if (open.length) parts.push(`Not done (${open.length}):`, "", open.join("\n\n"));
+  if (done.length) parts.push(...(open.length ? [""] : []), `Done (${done.length}):`, done.join("\n"));
+  return parts.join("\n");
 }
 
 /** What the agent is told on `back` while not away; the word itself still reaches it as the prompt. */
@@ -144,4 +260,42 @@ export function cappedReason(head, body, path) {
     used += l.length + 1;
   }
   return `${head}\n\n${kept.join("\n")}\n… (${lines.length - kept.length} more lines; full digest: ${path})`;
+}
+
+/**
+ * `head`, a blank line, then as much of `body` as fits so the whole stays within REASON_CAP, ending
+ * `… (cut at N characters; the whole text: <path>)`. Unlike cappedReason it cuts inside a line when
+ * a line alone is too long (a held item is one line). `path` is an export (lib/state.mjs writeExport)
+ * or another file that holds the whole text.
+ */
+export function cutToExport(head, body, path) {
+  const tail = `\n… (cut at ${REASON_CAP} characters; the whole text: ${path})`;
+  const room = Math.max(0, REASON_CAP - head.length - 2 - tail.length);
+  let kept = body.slice(0, room);
+  const nl = kept.lastIndexOf("\n");
+  if (nl > room / 2) kept = kept.slice(0, nl);
+  return `${head}\n\n${kept}${tail}`;
+}
+
+/** What the agent is told when the item Jo opened is too long to show whole: the cut part below, the whole item in a file. */
+export function itemCutInstruction(n, path) {
+  return `brb: Jo opened item ${n} of the returned digest. It is too long to show whole here: the start is below and the whole item is in ${path}. Start your reply with the part below verbatim and that path, read the file before you work the item, then work it with Jo: answer it, or ask what you need to act on it. Show no other item. The item stays open until Jo types \`done ${n}\` or ticks it in the band; do not mark it done yourself.`;
+}
+
+/** What Jo sees when a too-long item could not be exported: the item is still whole in checklist.json. */
+export function itemExportFailedText(n, err, path) {
+  return `brb: item ${n} is too long to show whole and its export could not be written (${err}); the whole item is still in ${path}.`;
+}
+
+/** What `brb clear` says when the block is too long and its export could not be written: nothing is removed. */
+export function clearExportFailedText(open, err) {
+  return `brb: the returned digest was not closed. Its ${open} item${open === 1 ? "" : "s"} not done are too long to show whole here and the export that would hold them could not be written (${err}). Nothing was removed: type a number to open an item, or \`brb clear\` again.`;
+}
+
+/** What the agent is told when `brb clear` kept the list because the export failed. */
+export const CLEAR_KEPT_INSTRUCTION = "brb: Jo typed `brb clear`, but the returned digest stays open. Reply with the block below verbatim as your whole message, then stop.";
+
+/** What the agent is told on `brb clear` when the block was cut and its whole text exported. */
+export function clearExportedInstruction(open, path) {
+  return `brb: Jo closed the returned digest with ${open} item${open === 1 ? "" : "s"} not done. The block is too long to show whole: the start is below and the whole block is in ${path}. Reply with the block below verbatim as your whole message, then stop: the file keeps every item not done in full, so none is lost.`;
 }

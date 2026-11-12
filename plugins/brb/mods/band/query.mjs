@@ -7,7 +7,7 @@
 //        the hold from away.json; `items` the held lines of digest.md (lib/state.mjs digestItems)
 //   { ok: true, away: false, checklist, hideRows }
 //        home: no away.json, or one that does not parse (parseAway's rule); `checklist` is
-//        checklist.json's record ({ at, since, note, items: [{ text, done }] }) or null
+//        checklist.json's record ({ at, hold, since, note, items: [{ text, done }] }) or null
 //   `hideRows`: config.json's row-hiding switch (lib/state.mjs hideRowsEnabled), read every query
 //   { ok: false, error }
 //        no --session; a state file that is a link or not a regular file; one over MAX_BYTES

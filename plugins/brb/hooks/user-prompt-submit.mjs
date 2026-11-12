@@ -13,15 +13,15 @@
 //                            instruction as additionalContext, so it returns to holding. (On OMP
 //                            the adapter handles `brb` itself: it shows that line, no turn.)
 //   `back`                   end the hold (lib/back.mjs endHold: archive the digest to
-//                            archive/<ts>.md, write checklist.json from its items for the band
-//                            above the prompt, clear away.json) and let the prompt through (no
-//                            block) with two outputs carrying the same text: additionalContext
-//                            for the agent, lib/text.mjs backInstruction (`brb: Jo is back
-//                            (away <duration>). Reply with the digest below verbatim as your
-//                            whole message …`) over `brb: hold cleared; digest archived to
-//                            <path>.` and the digest, so the agent's reply IS the digest; and a
-//                            systemMessage with the archive line and the digest, for the
-//                            surfaces that render hook frames. Why both: the mobile app renders
+//                            archive/<ts>.md, write checklist.json, the returned digest, from
+//                            its items, clear away.json) and let the prompt through (no block)
+//                            with two outputs carrying the same text: additionalContext for the
+//                            agent, lib/text.mjs backInstruction (`brb: Jo is back (away
+//                            <duration>). Reply with the list below verbatim as your whole
+//                            message …`) over `brb: hold cleared; digest archived to <path>.`
+//                            and the numbered list, one line per item, so the agent's reply IS
+//                            the list; and a systemMessage with the same, for the surfaces that
+//                            render hook frames. Why both: the mobile app renders
 //                            no hook frame, so a blocked prompt showed Jo nothing; an assistant
 //                            message renders everywhere. The only way out. The band's Back
 //                            button (mods/band) sends this same word as the user's own prompt
@@ -32,6 +32,25 @@
 //                            writer is mid-way through (lines appended, count not yet written)
 //                            is not shown; a lock held past 2 s is a throw, logged, and the word
 //                            proceeds to the model.
+//   the returned digest      while home with checklist.json present (lib/text.mjs digestWord):
+//                            `3` / `brb item 3` → the agent is told to show item 3 in full and
+//                            work it (lib/back.mjs showItem); `done 3` / `brb done 3` → item 3 is
+//                            ticked and the agent told (tickItem; the last tick closes the
+//                            list); `brb clear` → every item not done in full, then the file is
+//                            removed (clearReturned; also a systemMessage). A block or item too long
+//                            for the context is exported whole first (export/<ts>-<what>.md) and
+//                            the text points at it; a failed export keeps the list and says so in
+//                            a systemMessage. All pass through as
+//                            additionalContext. With no checklist, `3` and `done 3` are ordinary
+//                            prompts (null) and the `brb …` forms say lib/text.mjs NO_OPEN_TEXT
+//                            and start no hold. While away none of these is special. The band
+//                            sends the `brb …` forms ending ` @<at>#<hold>`, the open list's `at`
+//                            and hold number; such a word, checked first and under the session
+//                            lock, with its work done in the same lock, is blocked (no turn) with
+//                            a systemMessage when a hold is on, that list is not the open one, a
+//                            hold has started and ended since (a newer `hold`), or the check
+//                            cannot get the lock (a stated rule; logged). A typed item word's
+//                            home check and its work also share one lock.
 //   anything else, away      the prompt proceeds with the away instruction as additionalContext
 //                            (lib/text.mjs awayInstruction, rendered with this session's hold
 //                            command: the absolute path of scripts/brb.mjs and the session id;
@@ -61,10 +80,10 @@
 // handle() runs on a worker thread: it returns a plain object or null, never exits or writes to
 // stdout itself.
 
-import { runHook, invokedDirectly } from "../lib/hook-runner.mjs";
-import { endHold } from "../lib/back.mjs";
-import { digestPath, freshAway, readAway, readDigest, renderDigest, withAwayLock, writeAway } from "../lib/state.mjs";
-import { AWAY_NOTICE, NOT_AWAY_TEXT, alreadyAwayText, awayInstruction, cappedReason, holdCommand, surfaceWord } from "../lib/text.mjs";
+import { logError, runHook, invokedDirectly } from "../lib/hook-runner.mjs";
+import { clearReturned, endHold, showItem, tickItem } from "../lib/back.mjs";
+import { digestPath, freshAway, nextHold, readAway, readChecklist, readDigest, renderDigest, withAwayLock, writeAway } from "../lib/state.mjs";
+import { AWAY_NOTICE, NOT_AWAY_TEXT, NO_OPEN_TEXT, alreadyAwayText, awayInstruction, cappedReason, digestWord, holdCommand, stalePressText, surfaceWord } from "../lib/text.mjs";
 
 const block = (reason) => ({ decision: "block", reason, hookSpecificOutput: { hookEventName: "UserPromptSubmit", suppressOriginalPrompt: true } });
 const context = (text) => ({ hookSpecificOutput: { hookEventName: "UserPromptSubmit", additionalContext: text } });
@@ -77,12 +96,72 @@ function newTurn(sessionId, away, env) {
   writeAway(sessionId, away, env);
 }
 
+/** A prompt that works the returned digest while home: its output; undefined when it is not one (the prompt goes on as usual). `locked`: the caller holds the session lock. */
+function workReturned(sessionId, pick, env, { locked = false } = {}) {
+  if (!readChecklist(sessionId, env)) return pick.prefixed ? context(NO_OPEN_TEXT) : undefined;
+  if (pick.verb === "show") {
+    const r = showItem(sessionId, pick.n, env, { locked });
+    if (r?.systemMessage) return { systemMessage: r.systemMessage, ...context(r.agentText) };
+    return r ? context(r.agentText) : pick.prefixed ? context(NO_OPEN_TEXT) : undefined;
+  }
+  if (pick.verb === "done") {
+    const r = tickItem(sessionId, pick.n, env, { locked });
+    return r ? context(r.agentText) : pick.prefixed ? context(NO_OPEN_TEXT) : undefined;
+  }
+  const r = clearReturned(sessionId, env, { locked });
+  return r ? { systemMessage: r.text, ...context(r.agentText) } : context(NO_OPEN_TEXT);
+}
+
+/** A band press, under the session lock: dropped unless home with the list it names (`at` and `hold`) open; else its work, done in the same lock. */
+function pressUnderLock(sessionId, pick, input, env) {
+  const away = Boolean(readAway(sessionId, env));
+  const open = readChecklist(sessionId, env);
+  if (away || open?.at !== pick.token || open?.hold !== pick.hold) {
+    const why = stalePressText(String(input.prompt).trim().replace(/\s+@\S+$/, ""), away ? "away" : open?.at === pick.token && pick.hold !== null && pick.hold < open.hold ? "cycled" : "gone");
+    return { ...block(why), systemMessage: why };
+  }
+  return workReturned(sessionId, pick, env, { locked: true }) ?? null;
+}
+
 /**
  * @param {object} input  the UserPromptSubmit payload; session_id and prompt are read
  * @returns {object|null}
  */
 export function handle(input, { env = process.env, now = () => new Date().toISOString() } = {}) {
   const sessionId = typeof input?.session_id === "string" ? input.session_id : "";
+  // OMP's adapter reads `brb item N` and `brb clear` as `brb` with a note, so OMP keeps 0.5.0's words.
+  const pick = env.BRB_HARNESS === "omp" ? null : digestWord(input?.prompt);
+  // A band press carries the `at` and hold number of the list it was made for. It runs only while
+  // that list is the open one, no hold is on and no hold has begun since; otherwise it is dropped
+  // here, before any away handling, so a press that raced a `brb` never reaches the agent as an
+  // answer. Check and work share one lock, so no `brb`, `back` or tick lands between them.
+  // Stated rule, not a fault-deny: a band press whose check cannot run (the lock is not had) is
+  // dropped too, since only the band sends the tagged word and the person can type it instead.
+  // A fault in the work itself, once the check has passed, still fails open through the runner.
+  if (pick?.token) {
+    let entered = false;
+    try {
+      return withAwayLock(sessionId, env, () => {
+        entered = true;
+        return pressUnderLock(sessionId, pick, input, env);
+      });
+    } catch (err) {
+      if (entered) throw err;
+      const word = String(input.prompt).trim().replace(/\s+@\S+$/, "");
+      const why = stalePressText(word, "unchecked", err?.message ?? String(err));
+      logError("brb", "UserPromptSubmit", `dropped a band press (${word}) it could not check: ${err?.message ?? String(err)}`, env);
+      return { ...block(why), systemMessage: why };
+    }
+  }
+  // A typed item word: the home check and the work share one lock, so a `brb` cannot start
+  // between them and have the word tick or clear the list during the hold. With no list open
+  // there is nothing to tick, so the lock (which creates the session directory) is skipped and a
+  // prompt at home leaves no state behind.
+  if (pick) {
+    const listed = Boolean(readChecklist(sessionId, env));
+    const out = listed ? withAwayLock(sessionId, env, () => (readAway(sessionId, env) ? undefined : workReturned(sessionId, pick, env, { locked: true }))) : readAway(sessionId, env) ? undefined : workReturned(sessionId, pick, env);
+    if (out !== undefined) return out;
+  }
   const word = surfaceWord(input?.prompt);
   if (word?.word === "pending") {
     if (!readAway(sessionId, env)) return null;
@@ -109,7 +188,7 @@ export function handle(input, { env = process.env, now = () => new Date().toISOS
       const at = now();
       return { systemMessage: alreadyAwayText(away, at), ...context(`${alreadyAwayText(away, at)}\n\n${awayInstruction(away, holdCommand(sessionId), at)}`) };
     }
-    writeAway(sessionId, freshAway({ since: now(), note: word.note }), env);
+    writeAway(sessionId, freshAway({ since: now(), note: word.note, hold: nextHold(sessionId, env) }), env);
     return block(word.note ? `${AWAY_NOTICE} (note: ${word.note})` : AWAY_NOTICE);
   });
 }

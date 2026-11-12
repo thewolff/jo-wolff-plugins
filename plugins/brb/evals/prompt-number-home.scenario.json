@@ -1,0 +1,1 @@
+{"event": "UserPromptSubmit", "expect": "silent", "sibling": "prompt-item-show.scenario.json", "stdin": {"session_id": "${SESSION_ID}", "transcript_path": "${TRANSCRIPT}", "cwd": "${CWD}", "hook_event_name": "UserPromptSubmit", "prompt": "2"}, "after": {"absent": ["$XDG_STATE_HOME/brb/${SESSION_ID}"]}}

@@ -3,7 +3,7 @@
 // probe, a 5 s poll while away or while a checklist is up) and cancels at `session.end`; the
 // band redrawn (`$.ui.invalidate`) when what it draws changes; the prompt-box suggestion; the
 // fallback status line set only where the band never renders and cleared once it does; a home
-// probe that throws caught inside the timer; the buttons running act.mjs; Back sending `back` as
+// probe that throws caught inside the timer; the buttons sending their words after act.mjs `open`; Back sending `back` as
 // the person's prompt (`$.prompt.submit`, never awaited) with a toast, at once when idle and at the
 // running turn's end otherwise, only for the hold it was pressed for (a `back` typed meanwhile, or
 // a new hold, drops it), one press pending at a time even across a failed query, and no word from
@@ -30,7 +30,7 @@ async function load() {
 const SINCE = new Date(Date.now() - 40 * 60_000).toISOString();
 const AWAY = { ok: true, away: true, since: SINCE, note: "", held: 2, onFire: 0, items: ["Pick the cache", "Approve the schema"] };
 const HOME = { ok: true, away: false, checklist: null };
-const CHECKLIST = { ok: true, away: false, checklist: { at: SINCE, since: SINCE, note: "", items: [{ text: "Pick the cache", done: false }, { text: "Approve the schema", done: false }] } };
+const CHECKLIST = { ok: true, away: false, checklist: { at: SINCE, hold: 3, since: SINCE, note: "", items: [{ text: "Pick the cache", done: false }, { text: "Approve the schema", done: false }] } };
 
 /**
  * An in-memory `$`: `timers` by interval, `runs` each query, `acts` each action, `submits` each
@@ -59,7 +59,9 @@ function stub({ snapshot = HOME, exists = async () => false } = {}) {
           s.acts.push(argv.slice(4));
           if (s.actHold) await s.actHold;
           const away = s.snapshot.away === true;
-          return { exitCode: 0, stdout: JSON.stringify(argv[4] === "back" ? { ok: true, away, ...(away ? { since: s.snapshot.since } : {}) } : { ok: true }) + "\n", stderr: "" };
+          const list = s.snapshot.away ? null : s.snapshot.checklist;
+          const answer = argv[4] === "back" ? { ok: true, away, ...(away ? { since: s.snapshot.since } : {}) } : argv[4] === "open" ? { ok: true, open: Boolean(list), ...(list ? { at: list.at, hold: list.hold ?? 0 } : {}) } : { ok: true };
+          return { exitCode: 0, stdout: JSON.stringify(answer) + "\n", stderr: "" };
         }
         if (s.queryFails) {
           s.queryFails = false;
@@ -361,17 +363,20 @@ test("a press from an earlier conversation that fails late says nothing in the n
   assert.deepEqual(s.logs, []);
 });
 
-test("after back: the checklist draws BACK with Done per row and Clear; Done and Clear run act.mjs; the poll keeps running while it is up", async () => {
+test("after back: BACK with Show and Done per row and Clear; each press sends its prompt as the person's own (`brb item N`, `brb done N`, `brb clear`) after act.mjs `open`; the poll keeps running while it is up", async () => {
   const hooks = await load();
   const s = stub({ snapshot: CHECKLIST, exists: async () => assert.fail("probed while a checklist is up") });
   await start(hooks, s);
   const tree = await render(hooks, s);
   assert.equal(texts(tree)[0], "BACK · 2 to act on");
-  assert.deepEqual(buttons(tree).map((b) => b.props.label), ["Clear", "Done", "Done"]);
-  await buttons(tree)[2].props.onPress();
-  assert.deepEqual(s.acts, [["done", "1"]]);
-  await buttons(tree)[0].props.onPress();
-  assert.deepEqual(s.acts.at(-1), ["clear"]);
+  assert.deepEqual(buttons(tree).map((b) => b.props.key), ["clear", "item-1", "done-1", "item-2", "done-2"]);
+  const press = async (key) => buttons(tree).find((b) => b.props.key === key).props.onPress();
+  await press("item-2");
+  await press("done-1");
+  await press("clear");
+  assert.deepEqual(s.submits, [{ text: `brb item 2 @${SINCE}#3`, asUser: true }, { text: `brb done 1 @${SINCE}#3`, asUser: true }, { text: `brb clear @${SINCE}#3`, asUser: true }], "each word carries the list's `at` and hold number");
+  assert.deepEqual(s.acts, [["open"], ["open"], ["open"]], "only read-only checks; nothing written by the band");
+  assert.deepEqual(s.toasts, []);
   const before = s.runs;
   await s.timers.get(1000)();
   await s.timers.get(5000)();
@@ -379,6 +384,72 @@ test("after back: the checklist draws BACK with Done per row and Clear; Done and
   s.snapshot = { ...CHECKLIST, checklist: { ...CHECKLIST.checklist, items: CHECKLIST.checklist.items.map((i) => ({ ...i, done: true })) } };
   await s.timers.get(5000)();
   assert.equal(await hooks.get("ui.render")(s.$, BAND, async () => "gone"), "gone", "all done: the band clears");
+});
+
+test("a band press while a turn runs: a toast now, the prompt at the turn's end; one press at a time; a list closed or replaced meanwhile drops it", async () => {
+  const hooks = await load();
+  const s = stub({ snapshot: CHECKLIST });
+  await start(hooks, s);
+  await turnStart(hooks, s);
+  const tree = await render(hooks, s);
+  const press = async (key) => buttons(tree).find((b) => b.props.key === key).props.onPress();
+  await press("done-2");
+  assert.deepEqual(s.toasts, ["brb: brb done 2 goes when this turn ends"]);
+  await press("item-1");
+  assert.equal(s.toasts.length, 1, "a second press while one waits sends nothing");
+  assert.deepEqual(s.submits, []);
+  await turnComplete(hooks, s);
+  assert.deepEqual(s.submits, [{ text: `brb done 2 @${SINCE}#3`, asUser: true }]);
+
+  await turnStart(hooks, s);
+  await press("clear");
+  s.snapshot = { ...CHECKLIST, checklist: { ...CHECKLIST.checklist, hold: 4 } };
+  await turnComplete(hooks, s);
+  assert.equal(s.submits.length, 1, "the same list after a whole `brb` and `back` (a newer hold number): dropped");
+  s.snapshot = CHECKLIST;
+
+  await turnStart(hooks, s);
+  await press("clear");
+  s.snapshot = { ...CHECKLIST, checklist: { ...CHECKLIST.checklist, at: new Date().toISOString() } };
+  await turnComplete(hooks, s);
+  assert.equal(s.submits.length, 1, "another list since the press: dropped");
+  await turnStart(hooks, s);
+  await buttons(await render(hooks, s)).find((b) => b.props.key === "clear").props.onPress();
+  s.snapshot = HOME;
+  await turnComplete(hooks, s);
+  assert.equal(s.submits.length, 1, "the list closed since the press: dropped");
+  assert.deepEqual(s.logs, []);
+});
+
+test("a band press waiting for the turn to end is dropped by a new hold, even when the same list is open again by the turn's end", async () => {
+  const hooks = await load();
+  const s = stub({ snapshot: CHECKLIST });
+  await start(hooks, s);
+  await turnStart(hooks, s);
+  const tree = await render(hooks, s);
+  await buttons(tree).find((b) => b.props.key === "done-1").props.onPress();
+  assert.deepEqual(s.toasts, ["brb: brb done 1 goes when this turn ends"]);
+  // `brb` typed: the poll sees the new hold.
+  s.snapshot = AWAY;
+  await s.timers.get(5000)();
+  // A hold that held nothing ended: the same list (same `at`) is open again when the turn ends.
+  s.snapshot = CHECKLIST;
+  await turnComplete(hooks, s);
+  assert.deepEqual(s.submits, [], "the press made before the hold is not sent");
+});
+
+test("a band press whose prompt is dropped: a toast with the way out, and the next press works", async () => {
+  const hooks = await load();
+  const s = stub({ snapshot: CHECKLIST });
+  s.submit = async () => ({ drop: "queue full" });
+  await start(hooks, s);
+  const tree = await render(hooks, s);
+  await buttons(tree).find((b) => b.props.key === "item-1").props.onPress();
+  await settle();
+  assert.deepEqual(s.toasts, ["brb: brb item 1 failed: queue full; type it instead"]);
+  s.submit = () => new Promise(() => {});
+  await buttons(tree).find((b) => b.props.key === "item-1").props.onPress();
+  assert.equal(s.submits.length, 2);
 });
 
 test("timers: the probe does nothing while away, the poll nothing while home; session.end cancels both", async () => {

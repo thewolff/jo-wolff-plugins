@@ -3,8 +3,10 @@
 //   ${XDG_STATE_HOME:-~/.local/state}/brb/<session id>/away.json   the hold: since, note, counts
 //   ${XDG_STATE_HOME:-~/.local/state}/brb/<session id>/digest.md   held items, append-only while away
 //   ${XDG_STATE_HOME:-~/.local/state}/brb/<session id>/archive/<ts>.md   digests `back` released
-//   ${XDG_STATE_HOME:-~/.local/state}/brb/<session id>/checklist.json   the last digest as a checklist, written by `back`; rows are ticked by the band
+//   ${XDG_STATE_HOME:-~/.local/state}/brb/<session id>/checklist.json   the returned digest: written by `back` (each row's text, entry heading, done), ticked by `done N` (typed, or the band's Done), removed once every row is ticked or by `brb clear` after the open rows are shown (lib/back.mjs)
+//   ${XDG_STATE_HOME:-~/.local/state}/brb/<session id>/export/<ts>-<what>.md   the whole text of a `brb clear` block or one item too long for a hook's context (lib/back.mjs), written and fsync'd before the message that points at it; scripts/prune.mjs ages it out with the rest
 //   ${XDG_STATE_HOME:-~/.local/state}/brb/<session id>/away.lock   held while away.json is read-modified-written; holds `<pid> <token>`
+//   ${XDG_STATE_HOME:-~/.local/state}/brb/<session id>/hold.seq   the last hold number issued in the session (nextHold), so a number is never reused after away.json and checklist.json are gone
 //   ${XDG_STATE_HOME:-~/.local/state}/brb/<session id>/section.json   written by the band mod (mods/band/data.mjs sectionPath, `$.fs.write`): the away state each environment section of the system prompt last carried, so a resumed conversation drops a saved away text once; written only when that state changes; scripts/prune.mjs ages it out with the rest
 //   ${XDG_CONFIG_HOME:-~/.config}/brb/config.json                  optional: onFireCap, idleStops, hideRows
 //
@@ -18,7 +20,7 @@
 // turns a throw into one errors.log line and an allow. A missing or unparsable config file is
 // the defaults, and a missing or unparsable away.json is "home" (readAway returns null).
 
-import { closeSync, existsSync, mkdirSync, openSync, readFileSync, renameSync, rmSync, statSync, writeFileSync, writeSync, appendFileSync } from "node:fs";
+import { closeSync, existsSync, fsyncSync, mkdirSync, openSync, readFileSync, renameSync, rmSync, statSync, writeFileSync, writeSync, appendFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 
@@ -169,9 +171,34 @@ export function hideRowsEnabled(env = process.env) {
   return v === undefined || v === "on" || v === true;
 }
 
-/** A fresh away record: when the hold began, the note typed after `brb`, zeroed counters, no backstop yet this turn. */
-export function freshAway({ since = new Date().toISOString(), note = "" } = {}) {
-  return { since, note, held: 0, onFire: 0, toolLessStops: 0, nothingNewStops: 0, backstopped: false, seen: [], lastStop: null };
+/** A fresh away record: when the hold began, the note typed after `brb`, the hold's number (nextHold), zeroed counters, no backstop yet this turn. */
+export function freshAway({ since = new Date().toISOString(), note = "", hold = 0 } = {}) {
+  return { since, note, hold, held: 0, onFire: 0, toolLessStops: 0, nothingNewStops: 0, backstopped: false, seen: [], lastStop: null };
+}
+
+const holdSeqPath = (sessionId, env) => join(sessionDir(sessionId, env), "hold.seq");
+
+/**
+ * The next hold number for the session: one past the larger of hold.seq and the open checklist's
+ * `hold`, written back to hold.seq (temp file + rename) before it is returned. Call it only under
+ * withAwayLock, so two holds can never be handed the same number. A missing or unparsable
+ * hold.seq counts as 0.
+ */
+export function nextHold(sessionId, env = process.env) {
+  let last = 0;
+  try {
+    const v = Number.parseInt(readFileSync(holdSeqPath(sessionId, env), "utf8").trim(), 10);
+    if (Number.isInteger(v) && v > 0) last = v;
+  } catch {
+    // no hold yet in this session
+  }
+  const next = Math.max(last, readChecklist(sessionId, env)?.hold ?? 0) + 1;
+  mkdirSync(sessionDir(sessionId, env), { recursive: true });
+  const path = holdSeqPath(sessionId, env);
+  const tmp = `${path}.${process.pid}.tmp`;
+  writeFileSync(tmp, String(next));
+  renameSync(tmp, path);
+  return next;
 }
 
 /** The session's away record, or null when home (no file, or a file that does not parse). */
@@ -198,6 +225,7 @@ export function parseAway(text) {
   return {
     since: parsed.since,
     note: typeof parsed.note === "string" ? parsed.note : "",
+    hold: n(parsed.hold),
     held: n(parsed.held),
     onFire: n(parsed.onFire),
     toolLessStops: n(parsed.toolLessStops),
@@ -265,22 +293,64 @@ export function readDigest(sessionId, env = process.env) {
   }
 }
 
-/** Move the digest to `archive/<ts>.md`; the archived path, or null when there was no digest. */
-export function archiveDigest(sessionId, env = process.env, at = new Date().toISOString()) {
-  const from = digestPath(sessionId, env);
-  if (!existsSync(from)) return null;
+/** Where archiveDigest would move the digest for `at`: `archive/<ts>.md`, `-2`, `-3` … past a name taken. Creates nothing. */
+export function archiveTarget(sessionId, env = process.env, at = new Date().toISOString()) {
   const archive = join(sessionDir(sessionId, env), "archive");
-  mkdirSync(archive, { recursive: true });
   let to = join(archive, `${at.replace(/[:.]/g, "-")}.md`);
   for (let n = 2; existsSync(to); n++) to = join(archive, `${at.replace(/[:.]/g, "-")}-${n}.md`);
-  renameSync(from, to);
   return to;
 }
 
-/** The digest as `back` and `pending` print it: a header line (`held since` in local time, env.TZ), then the body or "(nothing held)". */
-export function renderDigest(away, body, env = process.env) {
+/** Move the digest to `to` (default archiveTarget); the archived path, or null when there was no digest. */
+export function archiveDigest(sessionId, env = process.env, at = new Date().toISOString(), to = null) {
+  const from = digestPath(sessionId, env);
+  if (!existsSync(from)) return null;
+  const target = to ?? archiveTarget(sessionId, env, at);
+  mkdirSync(join(target, ".."), { recursive: true });
+  renameSync(from, target);
+  return target;
+}
+
+/**
+ * Write `text` whole to `<session dir>/export/<ts>-<name>.md` (a temp file, fsync'd, renamed),
+ * then check the file on disk holds every byte; the path. Throws when any step fails (the temp
+ * file is removed), so a caller deletes nothing on the strength of an export that is not there.
+ */
+export function writeExport(sessionId, name, text, env = process.env, at = new Date().toISOString()) {
+  const dir = join(sessionDir(sessionId, env), "export");
+  mkdirSync(dir, { recursive: true });
+  const stem = `${at.replace(/[:.]/g, "-")}-${String(name).replace(/[^A-Za-z0-9._-]/g, "_")}`;
+  let to = join(dir, `${stem}.md`);
+  for (let n = 2; existsSync(to); n++) to = join(dir, `${stem}-${n}.md`);
+  const tmp = `${to}.${process.pid}.tmp`;
+  try {
+    const fd = openSync(tmp, "w");
+    try {
+      writeFileSync(fd, text);
+      fsyncSync(fd);
+    } finally {
+      closeSync(fd);
+    }
+    renameSync(tmp, to);
+  } catch (err) {
+    rmSync(tmp, { force: true });
+    throw err;
+  }
+  const want = Buffer.byteLength(text);
+  const got = statSync(to).size;
+  if (got !== want) throw new Error(`the export ${to} holds ${got} of ${want} bytes`);
+  return to;
+}
+
+/** The digest's header line: `brb digest — held since <local time> (<note>), N items`. */
+export function digestHeader(away, env = process.env) {
   const n = away.held;
-  const header = `brb digest — held since ${localTime(away.since, env.TZ)}${away.note ? ` (${away.note})` : ""}, ${n} item${n === 1 ? "" : "s"}`;
+  return `brb digest — held since ${localTime(away.since, env.TZ)}${away.note ? ` (${away.note})` : ""}, ${n} item${n === 1 ? "" : "s"}`;
+}
+
+/** The digest as `pending` prints it (and `back` before 0.6.0): a header line (`held since` in local time, env.TZ), then the body or "(nothing held)". */
+export function renderDigest(away, body, env = process.env) {
+  const header = digestHeader(away, env);
   return body.trim() ? `${header}\n\n${body.trim()}` : `${header}\n\n(nothing held)`;
 }
 
@@ -295,17 +365,47 @@ export function digestItem(line) {
   return ask ? ask[1].replace(/\s+/g, " ") : null;
 }
 
-/** The held items in a digest body, in order: every entry's item lines and `closing ask:` lines (appendDigest's shape); headings and blanks are not items. */
-export function digestItems(body) {
-  return String(body ?? "")
-    .split("\n")
-    .map(digestItem)
-    .filter((t) => t !== null);
+/** The held items in a digest body, in order, each with the heading of the entry it sits under (`## <local time>`, "" before any): `[{ text, heading }]`. */
+export function digestEntries(body) {
+  let heading = "";
+  const out = [];
+  for (const line of String(body ?? "").split("\n")) {
+    const h = /^##\s+(.*\S)\s*$/.exec(line);
+    if (h) {
+      heading = h[1];
+      continue;
+    }
+    const text = digestItem(line);
+    if (text !== null) out.push({ text, heading });
+  }
+  return out;
 }
 
-/** A fresh checklist from a hold that just ended: when, the hold's since and note, one row per item, none done. */
-export function freshChecklist({ at = new Date().toISOString(), since = "", note = "", items = [] } = {}) {
-  return { at, since, note, items: items.map((text) => ({ text, done: false })) };
+/** The held items in a digest body, in order: every entry's item lines and `closing ask:` lines (appendDigest's shape); headings and blanks are not items. */
+export function digestItems(body) {
+  return digestEntries(body).map((e) => e.text);
+}
+
+/**
+ * A fresh checklist from a hold that just ended: when, the hold's number, since and note, where
+ * its digest was archived, one row per item (a string, or `{ text, heading }` from
+ * digestEntries), none done.
+ */
+export function freshChecklist({ at = new Date().toISOString(), hold = 0, since = "", note = "", archived = [], items = [] } = {}) {
+  const row = (i) => (typeof i === "string" ? { text: i, heading: "", done: false } : { text: i.text, heading: i.heading ?? "", done: false });
+  return { at, hold, since, note, archived: archived.filter((a) => typeof a === "string"), items: items.map(row) };
+}
+
+/**
+ * A hold that ends while an earlier returned digest is still open: the open one keeps its rows,
+ * their numbers and ticks, and its `at`; it takes the new hold's number (the band binds a press
+ * to `at` and `hold` both, so a press from before this hold no longer matches); the new hold's
+ * rows are appended after them, and its since, note and archive path join. Nothing open: `fresh`
+ * as is.
+ */
+export function mergeChecklist(open, fresh) {
+  if (!open || !open.items.length) return fresh;
+  return { at: open.at, hold: fresh.hold, since: fresh.since, note: fresh.note, archived: [...open.archived, ...fresh.archived], items: [...open.items, ...fresh.items] };
 }
 
 /** checklist.json's text → the typed checklist, or null when it does not parse or has no `items` list. */
@@ -317,8 +417,16 @@ export function parseChecklist(text) {
     return null;
   }
   if (!parsed || typeof parsed !== "object" || !Array.isArray(parsed.items)) return null;
-  const items = parsed.items.filter((i) => i && typeof i === "object" && typeof i.text === "string").map((i) => ({ text: i.text, done: i.done === true }));
-  return { at: typeof parsed.at === "string" ? parsed.at : "", since: typeof parsed.since === "string" ? parsed.since : "", note: typeof parsed.note === "string" ? parsed.note : "", items };
+  const str = (v) => (typeof v === "string" ? v : "");
+  const items = parsed.items.filter((i) => i && typeof i === "object" && typeof i.text === "string").map((i) => ({ text: i.text, heading: str(i.heading), done: i.done === true }));
+  const archived = Array.isArray(parsed.archived) ? parsed.archived.filter((a) => typeof a === "string") : [];
+  const hold = Number.isInteger(parsed.hold) && parsed.hold >= 0 ? parsed.hold : 0;
+  const out = { at: str(parsed.at), hold, since: str(parsed.since), note: str(parsed.note), archived, items };
+  // `taken`: how many items of the hold named by `since` are already rows (lib/back.mjs endHold), so a `back` retried after its archive step failed adds only the rest.
+  if (Number.isInteger(parsed.taken) && parsed.taken >= 0) out.taken = parsed.taken;
+  // `takenArchive`: the archive path that digest was to be moved to; once it exists, `taken` no longer applies.
+  if (typeof parsed.takenArchive === "string") out.takenArchive = parsed.takenArchive;
+  return out;
 }
 
 /** The session's checklist, or null when there is none (no file, or a file that does not parse). */
@@ -343,24 +451,25 @@ export function writeChecklist(sessionId, checklist, env = process.env) {
   return path;
 }
 
-/** Remove the checklist: the band clears. */
+/** Remove the checklist: the band clears. Only lib/back.mjs calls it, after the open rows were shown (clearReturned) or once every row is ticked. */
 export function clearChecklist(sessionId, env = process.env) {
   rmSync(checklistPath(sessionId, env), { force: true });
 }
 
 /**
- * Toggle row `index` of the checklist (0-based) and write it back; once every row is done the file
- * is removed instead (the band clears). Returns the checklist written, or null when there was none,
- * the index is off the list, or the file was removed.
+ * Tick row `index` of the checklist (0-based) done and write it back; ticking a ticked row
+ * changes nothing. Once every row is done the file is removed instead (the returned digest is
+ * closed). Returns `{ checklist, item, already, closed }`, or null when there is no checklist or
+ * the index is off the list.
  */
-export function toggleChecklistItem(sessionId, index, env = process.env) {
+export function tickChecklistItem(sessionId, index, env = process.env) {
   const checklist = readChecklist(sessionId, env);
   if (!checklist || !Number.isInteger(index) || index < 0 || index >= checklist.items.length) return null;
-  checklist.items[index].done = !checklist.items[index].done;
-  if (checklist.items.every((i) => i.done)) {
-    clearChecklist(sessionId, env);
-    return null;
-  }
-  writeChecklist(sessionId, checklist, env);
-  return checklist;
+  const item = checklist.items[index];
+  const already = item.done;
+  item.done = true;
+  const closed = checklist.items.every((i) => i.done);
+  if (closed) clearChecklist(sessionId, env);
+  else if (!already) writeChecklist(sessionId, checklist, env);
+  return { checklist, item, already, closed };
 }
