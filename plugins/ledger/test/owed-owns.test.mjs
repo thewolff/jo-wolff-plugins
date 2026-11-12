@@ -43,3 +43,15 @@ test("owns: an untagged item falls back to folder and start time, then to the qu
   assert.equal(owns(db, me, { session_id: null, cwd: "/elsewhere", made_at: AFTER, question_id: null }), false);
   assert.equal(owns(db, null, { session_id: null, cwd: "/work/proj", made_at: AFTER }), false, "no session: nothing is owned");
 });
+
+test("owns: an item tagged with another session than its question's asker belongs to that session once it moved or waited the item", () => {
+  const q = { session_id: "s-other", cwd: "/work/proj", asked_at: AFTER };
+  const moved = new Set(["ow-taken"]);
+  const db = { prepare: (sql) => ({ get: (a, b) => (sql.includes("cc_owed_moves") ? (moved.has(a) && b === "s-me" ? { 1: 1 } : undefined) : a === "q-o" ? q : undefined) }) };
+  const taken = { id: "ow-taken", session_id: "s-me", cwd: "/work/proj", made_at: AFTER, question_id: "q-o" };
+  assert.equal(owns(db, me, taken), true);
+  assert.equal(owns(db, other, taken), false);
+  const unmoved = { ...taken, id: "ow-unmoved" };
+  assert.equal(owns(db, me, unmoved), false, "no move by the tagged session: the asker keeps it");
+  assert.equal(owns(db, other, unmoved), true);
+});

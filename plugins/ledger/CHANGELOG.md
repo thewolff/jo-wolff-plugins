@@ -30,9 +30,11 @@ All notable changes to ledger are recorded here. The format follows
 - `test/offer-scan.mjs`, a by-hand scan of past transcripts for how often the offer rule
   would fire.
 - Who owns owed work: work from an answered question belongs to the session that asked it,
-  whichever session recorded the answer. Other work belongs to the session it is tagged with,
-  whatever its folder. Untagged work from an untagged question (no `LEDGER_SESSION_ID`) goes
-  by folder and start time.
+  whichever session recorded the answer; the item is tagged with the asking session when it is
+  made. A `start`, `hold`, `drop`, `done` or `wait` by another session takes the item over: it
+  then blocks that session, not the asker, and shows in that session's started and deferred
+  lists. Other work belongs to the session it is tagged with, whatever its folder. Untagged
+  work from an untagged question (no `LEDGER_SESSION_ID`) goes by folder and start time.
 
 ## 0.3.13 - 2026-11-11
 

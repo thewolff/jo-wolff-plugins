@@ -16,10 +16,12 @@
 //   dropped, done → refused, final
 // A move made by a session takes the item over (session_id set to it).
 //
-// Ownership (`owns`), first match wins: work from a question tagged with a session belongs to that
-// session, whoever recorded the answer; else a tagged item belongs to its tagged session; else an
-// untagged item belongs to S when made at or after S started in or around S's folder, or when its
-// untagged question is S's by commands.mjs ownedBySession. `blockingSet` is S's owed items with no open wait. Items in scope
+// Ownership (`owns`), first match wins: a tagged item belongs to its tagged session. Work from an
+// answered question is tagged at creation with the session that asked it, whoever recorded the
+// answer, and a move or wait by another session re-tags it, so a move takes the item over. A row
+// made before that stamping, still tagged with the answering session and never moved by it,
+// belongs to the asker. An untagged item belongs to S when made at or after S started in or
+// around S's folder, or when its question is S's by commands.mjs ownedBySession. `blockingSet` is S's owed items with no open wait. Items in scope
 // that S does not own are `leftover`: listed, never blocking.
 //
 // Visible lines: every move row carries `shown_at`; the Stop hook lists the session's unshown rows
@@ -49,14 +51,15 @@ function addMove(db, { kind, owedId = null, answerId = null, from = null, to = n
 
 /**
  * Insert one owed item and its `create` move. Call inside a transaction. `pointer` makes it
- * `started` at once. Returns the item.
+ * `started` at once. `ownerId` tags the item (default `sessionId`, which tags the move row).
+ * Returns the item.
  */
-export function createOwed(db, { cwd, body, origin, questionId = null, answerId = null, pointer = null, sessionId = null, by, iso, now = Date.now() }) {
+export function createOwed(db, { cwd, body, origin, questionId = null, answerId = null, pointer = null, sessionId = null, ownerId = sessionId, by, iso, now = Date.now() }) {
   const id = freshId(db, "cc_owed", "ow", now);
   const state = pointer ? "started" : "owed";
   db.prepare(
     "INSERT INTO cc_owed (id, cwd, body, state, origin, question_id, answer_id, pointer, session_id, made_by, made_at, changed_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
-  ).run(id, cwd, cut(body), state, origin, questionId, answerId, pointer ? cut(pointer) : null, sessionId, by, iso, iso);
+  ).run(id, cwd, cut(body), state, origin, questionId, answerId, pointer ? cut(pointer) : null, ownerId, by, iso, iso);
   addMove(db, { kind: "create", owedId: id, to: state, detail: pointer ? cut(pointer) : null, by, iso, sessionId });
   return getOwed(db, id);
 }
@@ -148,10 +151,17 @@ export function sessionView(db, sessionId, cwd) {
 export function owns(db, s, i) {
   if (!s) return false;
   const q = i.question_id ? db.prepare("SELECT session_id, cwd, asked_at FROM cc_questions WHERE id = ?").get(i.question_id) : null;
+  if (i.session_id != null && (q?.session_id == null || i.session_id === q.session_id || tookOver(db, i))) return i.session_id === s.id;
   if (q?.session_id != null) return q.session_id === s.id;
-  if (i.session_id != null) return i.session_id === s.id;
   if (s.started_at && i.made_at >= s.started_at && (isWithin(s.cwd, i.cwd) || isWithin(i.cwd, s.cwd))) return true;
   return Boolean(q && ownedBySession(q, { sessionId: s.id, cwd: s.cwd, since: s.started_at }));
+}
+
+// Rows made before answers were stamped with the asker carry the answering session's id; only a
+// move or wait by that session (not the create row) makes the tag outrank the question's asker.
+function tookOver(db, i) {
+  if (!i.id) return false;
+  return Boolean(db.prepare("SELECT 1 FROM cc_owed_moves WHERE owed_id = ? AND kind IN ('move','wait') AND session_id = ? LIMIT 1").get(i.id, i.session_id));
 }
 
 function waitOpen(db, i) {
@@ -226,7 +236,7 @@ export function unshownEvents(db, { sessionId, cwd }) {
   const s = sessionView(db, sessionId, cwd);
   return db
     .prepare(
-      `SELECT m.id, m.kind, m.to_state, m.detail, m.session_id, o.body, o.session_id AS owed_session, o.cwd, o.made_at, o.question_id,
+      `SELECT m.id, m.kind, m.to_state, m.detail, m.session_id, m.owed_id, o.body, o.session_id AS owed_session, o.cwd, o.made_at, o.question_id,
               coalesce(q2.name, q.name) AS question_name, a.word, wq.name AS wait_name
          FROM cc_owed_moves m
          LEFT JOIN cc_owed o ON o.id = m.owed_id
@@ -239,7 +249,7 @@ export function unshownEvents(db, { sessionId, cwd }) {
     )
     .all()
     .map((r) => ({ ...r }))
-    .filter((r) => r.session_id === sessionId || (r.session_id == null && r.body && owns(db, s, { session_id: r.owed_session, cwd: r.cwd, made_at: r.made_at, question_id: r.question_id })));
+    .filter((r) => r.session_id === sessionId || (r.session_id == null && r.body && owns(db, s, { id: r.owed_id, session_id: r.owed_session, cwd: r.cwd, made_at: r.made_at, question_id: r.question_id })));
 }
 
 /** The person-facing line for one move row (no ids). */

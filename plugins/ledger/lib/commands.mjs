@@ -611,7 +611,7 @@ function owedFromAnswer(db, q, word, answerId, flags, { by, iso, now, ctx }) {
   }
   const allowsText = q.allows && Object.hasOwn(q.allows, word) ? q.allows[word] : null;
   const body = cut(work ?? allowsText ?? `${q.name}: ${word}`);
-  const item = createOwed(db, { cwd: q.cwd, body, origin: "answer", questionId: q.id, answerId, pointer, sessionId, by, iso, now });
+  const item = createOwed(db, { cwd: q.cwd, body, origin: "answer", questionId: q.id, answerId, pointer, sessionId, ownerId: q.session_id ?? sessionId, by, iso, now });
   if (item.state === "started") return ` · started: ${item.id} (${item.pointer})${tail}`;
   return ` · owed: ${item.id} (${item.body}); start, hold or drop it before the turn ends${tail}`;
 }
