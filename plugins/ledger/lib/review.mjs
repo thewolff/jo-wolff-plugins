@@ -886,10 +886,11 @@ export function operationTargets(op, cwd, { env = process.env } = {}) {
     // A repeated --head checks every branch named, so the gate holds whichever one gh honours.
     const heads = [...new Set(optValues(op.args, ["-H", "--head"], GH_CREATE_OPTS_WITH_ARG).filter(Boolean))];
     if (!heads.length) return [{ top: repo.top, sha: repo.head }];
-    const foreign = heads.find((head) => head.includes(":"));
-    if (foreign) throw new UnknownTarget(`gh pr create --head ${foreign} names another owner's branch, which is not in this repository`);
+    // A foreign head cannot be resolved here, so it never excuses a local one beside it.
+    const own = heads.filter((head) => !head.includes(":"));
+    if (!own.length) throw new UnknownTarget(`gh pr create --head ${heads[0]} names another owner's branch, which is not in this repository`);
     const first = (key) => gitConfig(repo.top, key, opts)[0] ?? null;
-    return heads.map((head) => {
+    return own.map((head) => {
       const remote = first(`branch.${head}.remote`) ?? "origin";
       const ref = `refs/heads/${head}`;
       const r = lsRemote(repo.top, remote, ref, env);

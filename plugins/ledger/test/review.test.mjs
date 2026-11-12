@@ -725,7 +725,7 @@ test("gh pr create: a --head inside another option's value is that option's valu
   }
   assert.equal(push(b, "gh pr create --head reviewed --head reviewed --title t").out, "", "the same reviewed branch named twice passes");
   assert.equal(push(b, "gh pr create -Hreviewed --title t").out, "", "an attached short --head naming the reviewed branch passes");
-  assert.match(push(b, "gh pr create --head reviewed --head someone:feat --title t").json.systemMessage, /--head someone:feat names another owner's branch/);
+  assert.equal(push(b, "gh pr create --head reviewed --head someone:feat --title t").out, "", "the local head is checked and reviewed; the foreign one cannot be resolved here");
 });
 
 test("gh pr create: a -H inside a short-option cluster is a head, and a value-taking letter in a cluster takes the rest of it as its value", () => {
@@ -755,6 +755,26 @@ test("gh pr create: a -H inside a short-option cluster is a head, and a value-ta
   for (const cmd of ["gh pr create -dtHunreviewed --body b", "gh pr create -dbH -Hreviewed", "gh pr create -dHreviewed --body -Hx"]) {
     assert.equal(push(b, cmd).out, "", cmd);
   }
+});
+
+test("gh pr create: a foreign --head beside a local one does not skip the local one, in either order", () => {
+  const b = repo();
+  review(b, [], { LEDGER_REVIEW_BIN_CODEX: stub(b, "codex", "PASS") });
+  const remote = join(b.sibling, "remote.git");
+  assert.equal(spawnSync("git", ["init", "-q", "--bare", remote]).status, 0);
+  git(b, "remote", "add", "origin", remote);
+  git(b, "push", "-q", "origin", "feat:reviewed");
+  const unreviewed = commit(b, "u.txt", "unreviewed\n");
+  git(b, "push", "-q", "origin", "feat:unreviewed");
+  git(b, "reset", "-q", "--hard", "HEAD~1");
+  assert.equal(push(b, "gh pr create --title t --body b").out, "", "local HEAD is reviewed");
+  for (const cmd of ["gh pr create --head someone:feat --head unreviewed --title t --body b", "gh pr create --head unreviewed --head someone:feat --title t --body b"]) {
+    const p = push(b, cmd);
+    assert.equal(decision(p), "deny", cmd);
+    assert.match(p.json.hookSpecificOutput.permissionDecisionReason, new RegExp(`no cross-lab review for ${unreviewed.slice(0, 8)}`), cmd);
+  }
+  assert.match(push(b, "gh pr create --head someone:feat --title t --body b").json.systemMessage, /--head someone:feat names another owner's branch/);
+  assert.equal(push(b, "gh pr create --head someone:feat --head reviewed --title t --body b").out, "", "the local head is reviewed");
 });
 
 test("git push: a value-taking letter at the end of a short-option cluster takes the next token, so it is not read as the remote", () => {

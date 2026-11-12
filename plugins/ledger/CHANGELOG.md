@@ -13,8 +13,8 @@ All notable changes to ledger are recorded here. The format follows
   not the branch's upstream merge ref, so a PR is gated on the commit it actually opens.
 - `--head` parsing skips the values of other options and stops at `--`, so a value such as
   `--body '--head=x'` no longer counts as a head. Attached short forms (`-Hx`, `-H=x`) are
-  read. A repeated `--head` checks every branch it names; heads containing `:` (fork heads)
-  are still allowed with a notice.
+  read. A repeated `--head` checks every local branch it names, even beside a head containing
+  `:` (a fork head); only when every head is a fork head is the call allowed with a notice.
 
 ## 0.4.1 - 2026-11-12
 
