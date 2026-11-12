@@ -31,8 +31,8 @@ omp plugin marketplace add thewolff/jo-wolff-plugins
 omp plugin install plugin-kit@jo-wolff-plugins
 ```
 
-OMP loads the skills and the two agents (see *Agents*); the kit has no hooks on either host.
-The scaffolder and the libraries run from a checkout of this repository on both.
+The kit has no hooks, so nothing differs by host except the agents' `model:` lines, which OMP
+drops (see *Agents*).
 
 ## What it does
 
