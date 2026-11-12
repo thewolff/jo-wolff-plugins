@@ -8,7 +8,9 @@
 // its version is at least the expected one (major, then minor; a missing minor is 0), so
 // `claude-opus-5` falls below `claude-opus-5-5`. expectedModel is normalised the same way, so a
 // configured `claude-opus-5-5[1m]` is the minimum 5.5. An id that does not start with `claude-`
-// (an alias such as `opus`), or whose family is not in the ranking (a brand-new family stays silent until listed), cannot be judged.
+// (an alias such as `opus`) cannot be judged. Two different families are compared only when both are in the ranking: an
+// incoming family that is not listed (a brand-new family) or an expected family that is not listed
+// is "unknown", never "mismatch". The same family needs no ranking, so its versions compare either way.
 // An expectedModel that cannot be parsed falls back to the older exact-or-dated comparison.
 //
 // Effort: compared only when the caller passes one. The hook input at PostModelSwitch carries
@@ -40,13 +42,13 @@ export function judgeModel(id, expectedModel, familyRank = DEFAULT_FAMILY_RANK) 
   const rank = (f) => familyRank.indexOf(f);
   const have = parseModel(m);
   const min = parseModel(want);
-  if (!min || rank(min.family) < 0) {
-    return m === want || (m.startsWith(want) && /^-\d{8}(?:$|-)/.test(m.slice(want.length))) ? "match" : "mismatch";
-  }
-  if (!have || rank(have.family) < 0) return "unknown";
+  if (!min) return m === want || (m.startsWith(want) && /^-\d{8}(?:$|-)/.test(m.slice(want.length))) ? "match" : "mismatch";
+  if (!have) return "unknown";
+  const atLeast = have.major > min.major || (have.major === min.major && have.minor >= min.minor);
+  if (have.family === min.family) return atLeast ? "match" : "mismatch";
   const [a, b] = [rank(have.family), rank(min.family)];
-  if (a !== b) return a > b ? "match" : "mismatch";
-  return have.major > min.major || (have.major === min.major && have.minor >= min.minor) ? "match" : "mismatch";
+  if (a < 0 || b < 0) return "unknown";
+  return a > b ? "match" : "mismatch";
 }
 
 const real = (p, realpath) => {
@@ -91,7 +93,7 @@ export function decide(sw, config, { realpath = realpathSync } = {}) {
   if (!inFolders(sw.cwd, config.folders, { realpath })) return none;
   if (sw.source === "resume") return none;
   const to = judgeModel(sw.toModel, config.expectedModel, config.modelFamilyRank);
-  if (to === "unknown") return { say: null, skipped: `to_model ${JSON.stringify(sw.toModel ?? null)} is not ${typeof sw.toModel === "string" && normalizeModel(sw.toModel).startsWith("claude-") ? "a ranked claude- family (see modelFamilyRank)" : "a claude- model id"}; cannot judge` };
+  if (to === "unknown") return { say: null, skipped: `to_model ${JSON.stringify(sw.toModel ?? null)} is not ${typeof sw.toModel === "string" && normalizeModel(sw.toModel).startsWith("claude-") ? "comparable with expectedModel: its family or expectedModel's is not in modelFamilyRank" : "a claude- model id"}; cannot judge` };
   const effortKnown = typeof sw.effort === "string" && sw.effort !== "";
   const effortOk = !effortKnown || sw.effort === config.expectedEffort;
   if (to === "mismatch" || !effortOk) return { say: wrongModelText(sw.toModel, effortKnown ? sw.effort : null, config), skipped: null };

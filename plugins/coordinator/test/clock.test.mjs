@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { clockLine, handle } from "../hooks/clock.mjs";
@@ -102,6 +102,38 @@ test("handle: a TZ Intl rejects keeps the line and adds one diagnostic naming th
     assert.equal(out.systemMessage, 'coordinator clock: TZ "America/Los_Angles" is not a time zone Intl accepts; the clock line is in UTC');
     const ok = handle({ hook_event_name: "UserPromptSubmit" }, { env: { ...b.e, TZ: "America/Los_Angeles" }, now: () => AT });
     assert.equal(ok.systemMessage, undefined);
+  } finally {
+    b.release();
+  }
+});
+
+test("handle: a read-only state directory still gives the line, plus an errors.log line and a systemMessage naming it", () => {
+  const b = env();
+  const dir = join(b.e.XDG_STATE_HOME, "coordinator");
+  mkdirSync(dir, { recursive: true });
+  writeFileSync(join(dir, "errors.log"), "");
+  chmodSync(dir, 0o555);
+  try {
+    const out = handle({ hook_event_name: "UserPromptSubmit" }, { env: b.e, now: () => AT, timeZone: "UTC" });
+    assert.equal(out.hookSpecificOutput.additionalContext, clockLine(AT, "UTC"));
+    assert.match(out.systemMessage, new RegExp(`^coordinator clock: the state directory ${dir.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")} is not writable`));
+    const lines = b.errors();
+    assert.equal(lines.length, 1);
+    assert.match(lines[0], / UserPromptSubmit clock: the state directory .* is not writable/);
+  } finally {
+    chmodSync(dir, 0o755);
+    b.release();
+  }
+});
+
+test("handle: a state path blocked by a file gives the systemMessage even though nothing can be logged", () => {
+  const b = env();
+  mkdirSync(b.e.XDG_STATE_HOME, { recursive: true });
+  writeFileSync(join(b.e.XDG_STATE_HOME, "coordinator"), "");
+  try {
+    const out = handle({ hook_event_name: "UserPromptSubmit" }, { env: b.e, now: () => AT, timeZone: "UTC" });
+    assert.equal(out.hookSpecificOutput.additionalContext, clockLine(AT, "UTC"));
+    assert.match(out.systemMessage, /is not writable/);
   } finally {
     b.release();
   }

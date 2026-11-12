@@ -91,3 +91,24 @@ test("withFault adds a systemMessage, or keeps the answer as is without a fault"
   assert.deepEqual(withFault(null, "bad", "h"), { systemMessage: "coordinator h: config ignored: bad" });
   assert.deepEqual(withFault({ systemMessage: "a" }, "bad", "h"), { systemMessage: "a\ncoordinator h: config ignored: bad" });
 });
+
+test("a config path that cannot be read for a reason other than absence is a fault, not a silent default", () => {
+  const { e, release } = env();
+  try {
+    mkdirSync(join(e.XDG_CONFIG_HOME, "coordinator", "config.json"), { recursive: true });
+    const r = loadConfig(e);
+    assert.deepEqual(r.config, { ...DEFAULTS });
+    assert.match(r.fault, /config\.json could not be read \(EISDIR\); using defaults$/);
+  } finally {
+    release();
+  }
+});
+
+test("a missing config is the defaults with no fault", () => {
+  const { e, release } = env();
+  try {
+    assert.equal(loadConfig(e).fault, null);
+  } finally {
+    release();
+  }
+});

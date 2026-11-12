@@ -14,7 +14,9 @@
 // last line (the canary records the bytes). errors.log is kept whatever its age: it is the record.
 // Only regular files count: a symlink is never aged, rotated or counted.
 //
-// How it fails: no state directory → `pruned: 0 file(s), 0 bytes freed`, exit 0. A file that
+// How it fails: no state directory → `pruned: 0 file(s), 0 bytes freed`, exit 0. A directory that
+// exists but cannot be read is named on stderr with the error and is not walked; the summary
+// line still prints and the exit stays 0. A file that
 // cannot be removed or rotated is counted as kept and named on stderr; exit stays 0 (a prune that
 // cannot finish must not read as a failed canary night). A bad --days → usage on stderr, exit 1.
 
@@ -48,7 +50,8 @@ export function prune(dir, { days = 30, now = Date.now(), dryRun = false, maxByt
     let names;
     try {
       names = readdirSync(d, { withFileTypes: true });
-    } catch {
+    } catch (err) {
+      if (err?.code !== "ENOENT") process.stderr.write(`prune: could not read ${d}: ${err.message}\n`);
       return;
     }
     for (const e of names) {

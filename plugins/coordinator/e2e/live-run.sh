@@ -16,7 +16,8 @@
 # disabled, and a temp config that lists the trial folder and names an expectedModel no model
 # matches (so a model notice, had one fired, would not pass on silence):
 #   1. The host ran UserPromptSubmit hooks: a hook_response event for UserPromptSubmit.
-#   2. This plugin's clock hook answered: the stream-json carries `The system clock reads`.
+#   2. This plugin's clock hook answered: a UserPromptSubmit hook_response event carries the full
+#      clock line (`The system clock reads <date time zone> (...), which is <UTC>, as of this prompt.`).
 #   3. A plain run leaves no errors.log line.
 # The model notice fires only on PostModelSwitch, which a one-prompt `claude -p` run never
 # triggers; its proof is the offline scenarios plus the manual entry in evals/manifest.json.
@@ -104,8 +105,11 @@ if ! grep -q '"subtype":"hook_response".*"hook_event":"UserPromptSubmit"' "$OUT"
   exit 1
 fi
 echo "step 1: the host ran UserPromptSubmit hooks"
-if ! grep -q "The system clock reads" "$OUT"; then
-  echo "fail 2: the clock line is not in the transcript"
+# The hook's own answer: a UserPromptSubmit hook_response event carrying the whole clock line, not the
+# model's reply or the prompt echoing the phrase.
+CLOCK_RE='The system clock reads [0-9]{4}-[0-9]{2}-[0-9]{2} [0-9]{2}:[0-9]{2}:[0-9]{2} .*, which is [0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z, as of this prompt\.'
+if ! grep '"subtype":"hook_response"' "$OUT" | grep '"hook_event":"UserPromptSubmit"' | grep -qE "$CLOCK_RE"; then
+  echo "fail 2: no UserPromptSubmit hook_response carries the clock line"
   exit 1
 fi
 echo "step 2: the clock line was delivered"

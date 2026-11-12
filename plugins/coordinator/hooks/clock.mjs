@@ -16,7 +16,7 @@
 // (the clock on) plus a systemMessage naming the file.
 
 import { runHook, invokedDirectly, logError } from "../lib/hook-runner.mjs";
-import { loadConfig, withFault } from "../lib/config.mjs";
+import { loadConfig, stateFault, withFault } from "../lib/config.mjs";
 
 const HOOK = "clock";
 
@@ -72,10 +72,16 @@ export function handle(input, { env = process.env, now = () => new Date(), timeZ
     logError("coordinator", "UserPromptSubmit", `${HOOK}: ${err.message}`, env);
     return withFault(null, fault, HOOK);
   }
-  const out = withFault({ hookSpecificOutput: { hookEventName: "UserPromptSubmit", additionalContext: line } }, fault, HOOK);
-  if (!badZone) return out;
-  const note = `coordinator clock: TZ ${JSON.stringify(badZone)} is not a time zone Intl accepts; the clock line is in UTC`;
-  return { ...out, systemMessage: out.systemMessage ? `${out.systemMessage}\n${note}` : note };
+  let out = withFault({ hookSpecificOutput: { hookEventName: "UserPromptSubmit", additionalContext: line } }, fault, HOOK);
+  const notes = [];
+  if (badZone) notes.push(`coordinator clock: TZ ${JSON.stringify(badZone)} is not a time zone Intl accepts; the clock line is in UTC`);
+  const unwritable = stateFault(env);
+  if (unwritable) {
+    logError("coordinator", "UserPromptSubmit", `${HOOK}: ${unwritable}`, env);
+    notes.push(`coordinator clock: ${unwritable}`);
+  }
+  if (!notes.length) return out;
+  return { ...out, systemMessage: [out.systemMessage, ...notes].filter(Boolean).join("\n") };
 }
 
 if (invokedDirectly(import.meta.url)) runHook("UserPromptSubmit", import.meta.url, { plugin: "coordinator" });

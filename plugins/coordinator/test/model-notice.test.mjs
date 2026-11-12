@@ -157,3 +157,27 @@ test("decide: outside every folder, with no folders, or on a resume, it is silen
     t.release();
   }
 });
+
+test("judgeModel: a family missing from modelFamilyRank is unknown across families, never a mismatch", () => {
+  const noOpus = ["haiku", "sonnet", "fable"];
+  // expected family removed from the ranking: another family cannot be ordered against it
+  assert.equal(judgeModel("claude-newfam-1", "claude-opus-5-5", noOpus), "unknown");
+  assert.equal(judgeModel("claude-sonnet-5-5", "claude-opus-5-5", noOpus), "unknown");
+  assert.equal(judgeModel("claude-fable-6", "claude-opus-5-5", noOpus), "unknown");
+  // the same family needs no ranking, so its versions still compare
+  assert.equal(judgeModel("claude-opus-5-6", "claude-opus-5-5", noOpus), "match");
+  assert.equal(judgeModel("claude-opus-5", "claude-opus-5-5", noOpus), "mismatch");
+  // expected family ranked, incoming family not
+  assert.equal(judgeModel("claude-newfam-1", "claude-opus-5-5", ["opus"]), "unknown");
+});
+
+test("decide: an unranked incoming family against a configured rank without the expected family is skipped, not noticed", () => {
+  const t = tree();
+  try {
+    const r = decide({ cwd: t.folder, toModel: "claude-newfam-1", fromModel: "claude-opus-5-5" }, { ...EXPECTED, folders: [t.folder], modelFamilyRank: ["haiku", "sonnet"] });
+    assert.equal(r.say, null);
+    assert.match(r.skipped, /not comparable with expectedModel/);
+  } finally {
+    t.release();
+  }
+});

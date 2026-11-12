@@ -1,7 +1,8 @@
 // config.mjs — the coordinator plugin's one config file, its defaults, and the skipped.log.
 //
 // FILE: `${XDG_CONFIG_HOME:-~/.config}/coordinator/config.json`. Missing = defaults. Present and
-// malformed (not JSON, not an object, a field of the wrong type) = defaults for every field, plus
+// malformed (not JSON, not an object, a field of the wrong type) or unreadable for any reason but
+// absence (permissions, a directory in its place) = defaults for every field, plus
 // `fault` naming what was wrong, so the hook that loaded it can say so in a systemMessage; a typo
 // in the file must never silently turn the model notice on for the wrong folders.
 //
@@ -24,7 +25,7 @@
 // `<iso> <hook> <why>` each time a hook was awake and chose not to judge (an alias where a model
 // id was expected). errors.log is for faults.
 
-import { appendFileSync, mkdirSync, readFileSync } from "node:fs";
+import { accessSync, appendFileSync, constants, mkdirSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { isAbsolute, join } from "node:path";
 import { DEFAULT_FAMILY_RANK } from "./model-notice.mjs";
@@ -58,8 +59,9 @@ export function loadConfig(env = process.env, home = homedir()) {
   let raw;
   try {
     raw = readFileSync(path, "utf8");
-  } catch {
-    return { config: { ...DEFAULTS }, path, fault: null };
+  } catch (err) {
+    if (err?.code === "ENOENT") return { config: { ...DEFAULTS }, path, fault: null };
+    return { config: { ...DEFAULTS }, path, fault: `${path} could not be read (${err?.code ?? err?.message}); using defaults` };
   }
   let parsed;
   try {
@@ -92,6 +94,18 @@ export function loadConfig(env = process.env, home = homedir()) {
   }
   if (bad.length) return { config: { ...DEFAULTS }, path, fault: `${path}: ${bad.join("; ")}; using defaults` };
   return { config: out, path, fault: null };
+}
+
+/** Null when the state directory can be written (made if missing); else a message naming it and why. Never throws. */
+export function stateFault(env = process.env, home = homedir()) {
+  const dir = stateDir(env, home);
+  try {
+    mkdirSync(dir, { recursive: true });
+    accessSync(dir, constants.W_OK);
+    return null;
+  } catch (err) {
+    return `the state directory ${dir} is not writable (${err?.code ?? err?.message}), so faults cannot be logged there`;
+  }
 }
 
 /** Append `<iso> <hook> <why>` to skipped.log; never throws. */
