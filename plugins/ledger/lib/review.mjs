@@ -740,7 +740,7 @@ const GH_MERGE_OPTS_WITH_ARG = new Set(["-R", "--repo", "-b", "--body", "-F", "-
 const GH_CREATE_OPTS_WITH_ARG = new Set(["-t", "--title", "-b", "--body", "-F", "--body-file", "-B", "--base", "-H", "--head", "-R", "--repo", "-a", "--assignee", "-l", "--label", "-m", "--milestone", "-p", "--project", "-r", "--reviewer", "-T", "--template", "--recover"]);
 
 /**
- * Every value of `names` in `args` (`--x v` or `--x=v`), in order. The values of the other
+ * Every value of `names` in `args` (`--x v`, `--x=v`, `-x v`, `-xv`, `-x=v`), in order. The values of the other
  * options in `withArg` are skipped, so `--body --head=x` is a body, not a head; stops at `--`.
  */
 function optValues(args, names, withArg) {
@@ -756,6 +756,12 @@ function optValues(args, names, withArg) {
     const long = names.find((name) => name.startsWith("--") && a.startsWith(`${name}=`));
     if (long) {
       out.push(a.slice(long.length + 1));
+      continue;
+    }
+    // An attached short value (`-Hx`, `-H=x`) carries its own value, so it never consumes the next token.
+    const short = names.find((name) => /^-[A-Za-z]$/.test(name) && a.length > 2 && a.startsWith(name));
+    if (short) {
+      out.push(a.slice(2).replace(/^=/, ""));
       continue;
     }
     if (withArg.has(a)) i++;

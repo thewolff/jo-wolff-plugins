@@ -714,12 +714,17 @@ test("gh pr create: a --head inside another option's value is that option's valu
     "gh pr create --title --head -H unreviewed",
     "gh pr create --head reviewed --head unreviewed --title t",
     "gh pr create -H reviewed --head=unreviewed --title t",
+    "gh pr create -Hunreviewed --title t",
+    "gh pr create -H=unreviewed --title t",
+    "gh pr create --head reviewed -Hunreviewed --title t",
+    "gh pr create -btext --head unreviewed --title t",
   ]) {
     const p = push(b, cmd);
     assert.equal(decision(p), "deny", cmd);
     assert.match(p.json.hookSpecificOutput.permissionDecisionReason, new RegExp(`no cross-lab review for ${unreviewed.slice(0, 8)}`), cmd);
   }
   assert.equal(push(b, "gh pr create --head reviewed --head reviewed --title t").out, "", "the same reviewed branch named twice passes");
+  assert.equal(push(b, "gh pr create -Hreviewed --title t").out, "", "an attached short --head naming the reviewed branch passes");
   assert.match(push(b, "gh pr create --head reviewed --head someone:feat --title t").json.systemMessage, /--head someone:feat names another owner's branch/);
 });
 
