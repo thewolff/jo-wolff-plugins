@@ -1,0 +1,21 @@
+{
+  "$comment": "A reply that offers to do work no ledger question records is blocked once, even while an unrelated question is open; the reason says it offers to do work and names `ledger ask ... --about`.",
+  "event": "Stop",
+  "expect": "deny",
+  "reason": "offers to do work",
+  "setup": {
+    "env": { "LEDGER_SESSION_ID": "${SESSION_ID}" },
+    "commands": [
+      "node \"${PLUGIN_DIR}/scripts/ledger.mjs\" --cwd \"${CWD}\" ask \"Which region should the cache use?\" --name region --options east,west"
+    ]
+  },
+  "stdin": {
+    "session_id": "${SESSION_ID}",
+    "transcript_path": "${TRANSCRIPT}",
+    "cwd": "${CWD}",
+    "hook_event_name": "Stop",
+    "stop_hook_active": false,
+    "prompt_id": "p-1",
+    "last_assistant_message": "Scrub done on two reports. I can run the scrub over the rest next."
+  }
+}
