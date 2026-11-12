@@ -43,7 +43,10 @@
 //                            a systemMessage. All pass through as
 //                            additionalContext. With no checklist, `3` and `done 3` are ordinary
 //                            prompts (null) and the `brb …` forms say lib/text.mjs NO_OPEN_TEXT
-//                            and start no hold. While away none of these is special.
+//                            and start no hold. While away none of these is special. The band
+//                            sends the `brb …` forms ending ` @<at>`, the open list's `at`; such a
+//                            word, checked first, is blocked (no turn) with a systemMessage when a
+//                            hold is on or that list is not the open one.
 //   anything else, away      the prompt proceeds with the away instruction as additionalContext
 //                            (lib/text.mjs awayInstruction, rendered with this session's hold
 //                            command: the absolute path of scripts/brb.mjs and the session id;
@@ -76,7 +79,7 @@
 import { runHook, invokedDirectly } from "../lib/hook-runner.mjs";
 import { clearReturned, endHold, showItem, tickItem } from "../lib/back.mjs";
 import { digestPath, freshAway, readAway, readChecklist, readDigest, renderDigest, withAwayLock, writeAway } from "../lib/state.mjs";
-import { AWAY_NOTICE, NOT_AWAY_TEXT, NO_OPEN_TEXT, alreadyAwayText, awayInstruction, cappedReason, digestWord, holdCommand, surfaceWord } from "../lib/text.mjs";
+import { AWAY_NOTICE, NOT_AWAY_TEXT, NO_OPEN_TEXT, alreadyAwayText, awayInstruction, cappedReason, digestWord, holdCommand, stalePressText, surfaceWord } from "../lib/text.mjs";
 
 const block = (reason) => ({ decision: "block", reason, hookSpecificOutput: { hookEventName: "UserPromptSubmit", suppressOriginalPrompt: true } });
 const context = (text) => ({ hookSpecificOutput: { hookEventName: "UserPromptSubmit", additionalContext: text } });
@@ -113,6 +116,16 @@ export function handle(input, { env = process.env, now = () => new Date().toISOS
   const sessionId = typeof input?.session_id === "string" ? input.session_id : "";
   // OMP's adapter reads `brb item N` and `brb clear` as `brb` with a note, so OMP keeps 0.5.0's words.
   const pick = env.BRB_HARNESS === "omp" ? null : digestWord(input?.prompt);
+  // A band press carries the `at` of the list it was made for. It runs only while that list is
+  // the open one and no hold is on; otherwise it is dropped here, before any away handling, so a
+  // press that raced a new `brb` never reaches the agent as an answer.
+  if (pick?.token) {
+    const away = Boolean(readAway(sessionId, env));
+    if (away || readChecklist(sessionId, env)?.at !== pick.token) {
+      const why = stalePressText(String(input.prompt).trim().replace(/\s+@\S+$/, ""), away);
+      return { ...block(why), systemMessage: why };
+    }
+  }
   if (pick && !readAway(sessionId, env)) {
     const out = workReturned(sessionId, pick, env);
     if (out !== undefined) return out;

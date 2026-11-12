@@ -292,7 +292,11 @@ narrow band (under 26 columns inside the border) each button sits under its text
 beside it, and no line runs wider than the band.
 
 **Every press tells the agent.** Show sends `brb item N`, Done `brb done N` and Clear
-`brb clear` as your own prompt (`$.prompt.submit({ text, asUser: true })`), so each does exactly
+`brb clear`, each ending ` @<at>` (the open list's `at` from `checklist.json`), as your own
+prompt (`$.prompt.submit({ text, asUser: true })`). The prompt hook checks that token first: if a
+hold is on, or that list is no longer the open one, the press is dropped with
+`brb: dropped a band press (…)`, no turn starts and the agent hears nothing; typed without the
+token, the words work as before. Otherwise each does exactly
 what the typed word does (see "The returned digest, one item at a time"): Show has the agent show
 that item in full, Done ticks it and the agent says so, Clear has the agent show every item not
 done in full before the list closes. A done row is struck and keeps only Show; a tick is final.

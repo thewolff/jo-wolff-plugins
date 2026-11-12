@@ -11,14 +11,17 @@ export const BACK_WORD = "back";
 
 /**
  * The prompt a band press on the returned digest sends (hooks/user-prompt-submit.mjs reads it
- * through lib/text.mjs digestWord): Show → `brb item N`, Done → `brb done N`, Clear → `brb clear`.
+ * through lib/text.mjs digestWord): Show → `brb item N`, Done → `brb done N`, Clear → `brb clear`,
+ * each followed by ` @<at>` when `at` (the open list's checklist.json `at`) is given, so the hook
+ * can refuse a press that arrives after its list was replaced or a new hold began.
  * `index` is the 0-based row; null for anything else.
  */
-export function pickPrompt(verb, index) {
-  if (verb === "clear") return "brb clear";
+export function pickPrompt(verb, index, at = null) {
+  const tag = typeof at === "string" && at && !/\s/.test(at) ? ` @${at}` : "";
+  if (verb === "clear") return `brb clear${tag}`;
   if (!Number.isInteger(index) || index < 0) return null;
-  if (verb === "item") return `brb item ${index + 1}`;
-  if (verb === "done") return `brb done ${index + 1}`;
+  if (verb === "item") return `brb item ${index + 1}${tag}`;
+  if (verb === "done") return `brb done ${index + 1}${tag}`;
   return null;
 }
 

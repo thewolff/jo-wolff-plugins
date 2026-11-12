@@ -38,7 +38,11 @@ All notable changes to brb are recorded here. The format follows
   text matches one still open (not done) is not appended again.
 - A band press on the returned digest waiting for the turn to end is dropped when a new hold
   starts, and act.mjs `open` reports no list while away, so a press made before `brb` never
-  reaches the agent as an answer during the hold.
+  reaches the agent as an answer during the hold. The word the band sends ends ` @<at>`, the
+  open list's `at` (`mods/band/data.mjs` `pickPrompt`); the prompt hook checks it before any
+  away handling and blocks the word with `brb: dropped a band press (…)` when a hold is on or
+  that list is no longer open, which covers a `brb` typed after the band's check. Typed
+  without the token the words behave as before.
 - A `brb clear` block or one item longer than 8000 characters is written whole to
   `export/<when>-<what>.md` (fsync'd, its size checked) before the message that points at it,
   and the message is cut and names that file by absolute path; `brb clear` removes

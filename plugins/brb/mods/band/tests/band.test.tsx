@@ -64,8 +64,8 @@ function stubs(on, { snapshot = AWAY as Snapshot, exists = false, files = new Ma
     if (e.text === "back" && state.snapshot.away) state.snapshot = CHECKLIST;
     // The prompt hook's work on the returned digest, as the band's presses send it.
     const s = state.snapshot;
-    const pick = /^brb (item|done) (\d+)$/.exec(e.text);
-    if (e.text === "brb clear" && s.checklist) state.snapshot = HOME;
+    const pick = /^brb (item|done) (\d+) @\S+$/.exec(e.text);
+    if (/^brb clear @\S+$/.test(e.text) && s.checklist) state.snapshot = HOME;
     if (pick?.[1] === "done" && s.checklist) {
       const items = s.checklist.items.map((it, i) => (i === Number(pick[2]) - 1 ? { ...it, done: true } : it));
       state.snapshot = items.every((it) => it.done) ? HOME : { ...s, checklist: { ...s.checklist, items } };
@@ -201,10 +201,10 @@ for (const [where, payload, surface] of SESSIONS) {
 
     await ui.press({ key: "item-3" });
     await clock.settle();
-    expect(submits.map((x) => x.text)).toEqual(["brb item 3"]);
+    expect(submits.map((x) => x.text)).toEqual([`brb item 3 @${SINCE}`]);
     await ui.press({ key: "done-2" });
     await clock.settle();
-    expect(submits.map((x) => x.text)).toEqual(["brb item 3", "brb done 2"]);
+    expect(submits.map((x) => x.text)).toEqual([`brb item 3 @${SINCE}`, `brb done 2 @${SINCE}`]);
     expect(acts).toEqual([["open"], ["open"]]);
     await ui.unmount();
     ui = await $.ui.mount({ ...BAND, surface });
@@ -231,7 +231,7 @@ for (const [where, payload, surface] of SESSIONS) {
     await ui.press({ key: "clear" });
     await clock.settle();
     expect(acts).toEqual([["open"]]);
-    expect(submits.map((x) => x.text)).toEqual(["brb clear"]);
+    expect(submits.map((x) => x.text)).toEqual([`brb clear @${SINCE}`]);
     await ui.unmount();
     ui = await $.ui.mount({ ...BAND, surface });
     expect(await ui.find({ type: "Text", text: /^BACK/ })).toBeUndefined();
@@ -365,7 +365,7 @@ test("R1 S1: 11 checklist rows with the first 10 done: row 11 shows with its Don
   expect(await ui.find({ type: "Text", text: "10 done" })).toBeDefined();
   await ui.press({ key: "done-11" });
   await clock.settle();
-  expect(submits.map((x) => x.text)).toEqual(["brb done 11"]);
+  expect(submits.map((x) => x.text)).toEqual([`brb done 11 @${SINCE}`]);
   await ui.unmount();
 });
 

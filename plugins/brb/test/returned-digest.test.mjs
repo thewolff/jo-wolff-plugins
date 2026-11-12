@@ -316,6 +316,37 @@ test("`brb` again before the list is worked is additive: old rows keep their num
   }
 });
 
+test("a band press carries its list's `at`: it works while that list is open and home; arriving after a new `brb`, or for a replaced list, it is dropped with a systemMessage and never reaches the agent", () => {
+  const { b } = returned();
+  try {
+    const at = readChecklist("s1", b.env).at;
+    assert.deepEqual(digestWord(`brb done 2 @${at}`), { verb: "done", n: 2, prefixed: true, token: at });
+    assert.equal(digestWord(`done 2 @${at}`), null, "only the `brb …` forms carry a token");
+    // Happy path: the same list, home.
+    assert.ok(ctx(b, `brb item 3 @${at}`).endsWith("\n\nRotate the staging token"));
+    assert.match(ctx(b, `brb done 3 @${at}`), /^brb: Jo ticked item 3/);
+    // The race: act.mjs `open` passed, then `brb` was typed, then the word arrives.
+    runHook(b, "user-prompt-submit", promptInput(b, "brb"));
+    const awayBefore = readFileSync(join(b.stateDir("s1"), "away.json"), "utf8");
+    const raced = runHook(b, "user-prompt-submit", promptInput(b, `brb done 1 @${at}`));
+    assert.equal(raced.status, 0);
+    assert.equal(raced.json.decision, "block", "no turn: the agent never sees it");
+    assert.equal(raced.json.hookSpecificOutput.suppressOriginalPrompt, true);
+    assert.equal(raced.json.hookSpecificOutput.additionalContext, undefined, "not handed on as an away prompt");
+    assert.match(raced.json.systemMessage, /^brb: dropped a band press \(`brb done 1`\) made for a returned digest that was open before this hold began/);
+    assert.equal(readFileSync(join(b.stateDir("s1"), "away.json"), "utf8"), awayBefore, "the hold is untouched (no new-turn write)");
+    assert.equal(readChecklist("s1", b.env).items[0].done, false, "nothing ticked");
+    // Back home, a press for another list's `at` is dropped too; the typed word still works.
+    runHook(b, "user-prompt-submit", promptInput(b, "back"));
+    const stale = runHook(b, "user-prompt-submit", promptInput(b, "brb clear @2020-01-01T00:00:00.000Z"));
+    assert.match(stale.json.systemMessage, /is no longer the open one/);
+    assert.ok(existsSync(checklistPath("s1", b.env)), "a stale clear removes nothing");
+    assert.match(ctx(b, "brb done 1"), /^brb: Jo ticked item 1/, "the typed word, with no token, keeps today's behaviour");
+  } finally {
+    b.release();
+  }
+});
+
 function rmSyncFile(p) {
   rmSync(p, { recursive: true, force: true });
 }

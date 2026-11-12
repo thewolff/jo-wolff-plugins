@@ -31,7 +31,9 @@
 //     the file goes). A press is bound to the checklist the band drew (its `at`) and sent only
 //     while act.mjs `open` still names it; idle it goes at once, while a turn runs at that turn's
 //     end (a toast says so); one at a time, and never while a Back press is pending; a query
-//     that sees a new hold drops it (act.mjs `open` is false while away, too);
+//     that sees a new hold drops it (act.mjs `open` is false while away, too). The word ends
+//     ` @<at>`, and the prompt hook drops it unless that list is still open and no hold is on,
+//     which covers a `brb` typed between the check and the word's arrival;
 //   - the data is this session's state, read out of process by `node mods/band/query.mjs
 //     --session <id>` (read-only); the band refreshes at session start, after each prompt is
 //     submitted (so `brb` and `back` show at once), at each main turn's start and end, after a
@@ -218,7 +220,7 @@ function pickFailed($, intent, err) {
   if (intent.gen !== generation) return;
   if (pendingPick === intent) pendingPick = null;
   logFault($, "band", err);
-  toast($, `brb: ${intent.text} failed: ${reasonText(err)}; type it instead`);
+  toast($, `brb: ${intent.word} failed: ${reasonText(err)}; type it instead`);
 }
 
 /** Ask act.mjs which returned digest is open: `{ open, at }`; throws when the action failed. */
@@ -429,11 +431,13 @@ async function act($, verb, index) {
       backFailed($, intent, err);
     }
   } else {
-    const text = pickPrompt(verb, index);
+    // The word carries the list's `at`: the prompt hook refuses it if, by the time it arrives, that
+    // list is no longer the open one or a new hold began (a check here cannot cover that gap).
+    const text = pickPrompt(verb, index, snapshot.checklist?.at);
     if (!text || pendingPick || pendingBack || !(snapshot.ok && !snapshot.away && typeof snapshot.checklist?.at === "string")) return;
-    const intent = { text, at: snapshot.checklist.at, gen, checking: false };
+    const intent = { text, word: pickPrompt(verb, index), at: snapshot.checklist.at, gen, checking: false };
     pendingPick = intent;
-    if (busy()) toast($, `brb: ${text} goes when this turn ends`);
+    if (busy()) toast($, `brb: ${intent.word} goes when this turn ends`);
     await drainPick($);
   }
   if (gen === generation) await refresh($);

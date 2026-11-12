@@ -374,7 +374,7 @@ test("after back: BACK with Show and Done per row and Clear; each press sends it
   await press("item-2");
   await press("done-1");
   await press("clear");
-  assert.deepEqual(s.submits, [{ text: "brb item 2", asUser: true }, { text: "brb done 1", asUser: true }, { text: "brb clear", asUser: true }]);
+  assert.deepEqual(s.submits, [{ text: `brb item 2 @${SINCE}`, asUser: true }, { text: `brb done 1 @${SINCE}`, asUser: true }, { text: `brb clear @${SINCE}`, asUser: true }], "each word carries the list's `at`");
   assert.deepEqual(s.acts, [["open"], ["open"], ["open"]], "only read-only checks; nothing written by the band");
   assert.deepEqual(s.toasts, []);
   const before = s.runs;
@@ -399,7 +399,7 @@ test("a band press while a turn runs: a toast now, the prompt at the turn's end;
   assert.equal(s.toasts.length, 1, "a second press while one waits sends nothing");
   assert.deepEqual(s.submits, []);
   await turnComplete(hooks, s);
-  assert.deepEqual(s.submits, [{ text: "brb done 2", asUser: true }]);
+  assert.deepEqual(s.submits, [{ text: `brb done 2 @${SINCE}`, asUser: true }]);
 
   await turnStart(hooks, s);
   await press("clear");

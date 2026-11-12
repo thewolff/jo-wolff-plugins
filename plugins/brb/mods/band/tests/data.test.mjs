@@ -99,6 +99,8 @@ test("pickPrompt: Show, Done and Clear name the prompt the band sends, rows 1-ba
   assert.equal(pickPrompt("item", -1), null);
   assert.equal(pickPrompt("item", undefined), null);
   assert.equal(pickPrompt("back", 0), null);
+  assert.equal(pickPrompt("done", 2, "2026-11-12T04:00:00.000Z"), "brb done 3 @2026-11-12T04:00:00.000Z", "the open list's `at` rides along");
+  assert.equal(pickPrompt("clear", null, "2026-11-12T04:00:00.000Z"), "brb clear @2026-11-12T04:00:00.000Z");
 });
 
 test("queryArgv and actArgv name the script, the session, the verb and the row", () => {

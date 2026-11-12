@@ -151,18 +151,29 @@ export function listFooter(checklist) {
  * A prompt that works the returned digest, or null: a bare number (`3`, `#3`, `3.`) or
  * `brb item 3` opens item 3; `done 3` or `brb done 3` ticks it; `brb clear` closes the list.
  * `prefixed` is true for the `brb …` forms, which the band sends and which never reach the
- * agent as an ordinary prompt. Trailing `.`, `!` allowed; any case.
+ * agent as an ordinary prompt. Trailing `.`, `!` allowed; any case. A `brb …` form ending
+ * ` @<at>` (the band's) also carries `token`, the `at` of the list it was pressed for.
  */
 export function digestWord(text) {
-  const t = String(text ?? "").trim();
-  let m = /^#?(\d{1,4})[.)!]?$/.exec(t);
+  let t = String(text ?? "").trim();
+  // The band's form: `brb item N @<at>`, `brb done N @<at>`, `brb clear @<at>` (mods/band/data.mjs pickPrompt).
+  let token = null;
+  const tagged = /^(brb\s.*\S)\s+@(\S+)$/i.exec(t);
+  if (tagged) [, t, token] = tagged;
+  const out = (word) => (token ? { ...word, token } : word);
+  let m = token ? null : /^#?(\d{1,4})[.)!]?$/.exec(t);
   if (m) return { verb: "show", n: Number(m[1]), prefixed: false };
   m = /^brb\s+item\s+#?(\d{1,4})[.!]?$/i.exec(t);
-  if (m) return { verb: "show", n: Number(m[1]), prefixed: true };
+  if (m) return out({ verb: "show", n: Number(m[1]), prefixed: true });
   m = /^(brb\s+)?done\s+#?(\d{1,4})[.!]?$/i.exec(t);
-  if (m) return { verb: "done", n: Number(m[2]), prefixed: Boolean(m[1]) };
-  if (/^brb\s+clear[.!]?$/i.test(t)) return { verb: "clear", n: null, prefixed: true };
+  if (m && (m[1] || !token)) return out({ verb: "done", n: Number(m[2]), prefixed: Boolean(m[1]) });
+  if (/^brb\s+clear[.!]?$/i.test(t)) return out({ verb: "clear", n: null, prefixed: true });
   return null;
+}
+
+/** What Jo sees when a band press arrives for a list that is no longer the open one, or during a hold: dropped, nothing done. */
+export function stalePressText(word, away) {
+  return `brb: dropped a band press (\`${word}\`) made for a returned digest that ${away ? "was open before this hold began" : "is no longer the open one"}; nothing was shown or ticked and the agent was not told. Type the word if you still want it.`;
 }
 
 /** What a `brb item N`, `brb done N` or `brb clear` says while home with no returned digest open; the prompt still reaches the agent. */
