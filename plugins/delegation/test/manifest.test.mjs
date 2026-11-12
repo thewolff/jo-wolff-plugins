@@ -8,7 +8,7 @@ import assert from "node:assert/strict";
 import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { PLUGIN_ROOT } from "./helpers.mjs";
-import { hasHeading, headingReason, HOW_IT_FAILS, HOW_IT_FAILS_SECTION, SPIRAL_BOUND, SPIRAL_BOUND_SECTION, STOPPED_SECTION, stoppedBecause, TEMPLATE } from "../lib/brief.mjs";
+import { ACCEPTANCE_SECTION, CHANGE_SECTION, hasHeading, headingReason, HOW_IT_FAILS, HOW_IT_FAILS_SECTION, missingSessionHeadings, SESSION_HEADINGS, sessionHeadingReason, SPIRAL_BOUND, SPIRAL_BOUND_SECTION, STOPPED_SECTION, stoppedBecause, TARGET_SECTION, TEMPLATE } from "../lib/brief.mjs";
 import { DEFAULTS } from "../lib/config.mjs";
 
 const read = (p) => readFileSync(join(PLUGIN_ROOT, p), "utf8");
@@ -69,6 +69,10 @@ test("the builder brief template carries the exact section texts the deny reason
   assert.ok(tpl.includes(`\n${HOW_IT_FAILS_SECTION}\n`), "How-it-fails section verbatim");
   assert.ok(tpl.includes(`\n${SPIRAL_BOUND_SECTION}\n`), "Spiral-bound section verbatim");
   assert.ok(tpl.includes(`\n${STOPPED_SECTION}\n`), "Report section verbatim");
+  assert.ok(tpl.includes(`\n${TARGET_SECTION}\n`), "Target section verbatim");
+  assert.ok(tpl.includes(`\n${CHANGE_SECTION}\n`), "Change section verbatim");
+  assert.ok(tpl.includes(`\n${ACCEPTANCE_SECTION}\n`), "Acceptance section verbatim");
+  assert.deepEqual(missingSessionHeadings(tpl), [], "the template passes the session-brief gate");
   for (const line of ["Stopped because: acceptance met", "Stopped because: bound hit", "Stopped because: told to stop"]) {
     assert.ok(tpl.includes(`\n${line}\n`), line);
     assert.equal(stoppedBecause(`Report.\n${line}`).valid, true, line);
@@ -76,4 +80,8 @@ test("the builder brief template carries the exact section texts the deny reason
   // A brief rebuilt from a refusal alone passes the gate: the deny text's sections satisfy the heading match.
   const rebuilt = `Do the thing.\n\n${headingReason([HOW_IT_FAILS, SPIRAL_BOUND], "builder").split("\n\n").slice(1).join("\n\n")}`;
   assert.ok(hasHeading(rebuilt, HOW_IT_FAILS) && hasHeading(rebuilt, SPIRAL_BOUND));
+  // The same for a start_session prompt: a thin prompt plus the refusal's sections has all five headings.
+  const thin = "Fix the flaky test.";
+  const session = `${thin}\n\n${sessionHeadingReason(SESSION_HEADINGS).split("\n\n").slice(1).join("\n\n")}`;
+  assert.deepEqual(missingSessionHeadings(session), []);
 });

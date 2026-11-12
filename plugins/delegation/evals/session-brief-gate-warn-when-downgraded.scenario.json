@@ -1,0 +1,25 @@
+{
+  "$comment": "session-brief-gate: with `checks[\"session-brief-gate\"]: \"warn\"` in the config, a thin prompt is allowed with one additionalContext line.",
+  "event": "PreToolUse",
+  "expect": "systemMessage",
+  "reason": "The session start goes ahead",
+  "setup": {
+    "files": {
+      "${XDG_CONFIG_HOME}/delegation/config.json": "{\"checks\":{\"session-brief-gate\":\"warn\"}}\n"
+    }
+  },
+  "stdin": {
+    "session_id": "${SESSION_ID}",
+    "transcript_path": "${TRANSCRIPT}",
+    "cwd": "${CWD}",
+    "hook_event_name": "PreToolUse",
+    "tool_name": "mcp__ccd_session__start_session",
+    "tool_input": {
+      "initiation": "user_asked",
+      "title": "Retry loop",
+      "context": "",
+      "background": false,
+      "prompt": "# Target: the retry module\nMake the retry loop stop after three attempts."
+    }
+  }
+}

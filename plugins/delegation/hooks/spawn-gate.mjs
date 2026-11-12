@@ -27,6 +27,12 @@
 //         skipped.log line. Config `warnModelRouting: false` turns it off. It cannot see the effort
 //         level or the model of the session doing the spawning.
 //
+// ROUTING LOG  every spawn this hook examines (including one it refuses or cannot judge) appends
+//         one line to `${XDG_STATE_HOME:-~/.local/state}/delegation/routing.jsonl` (lib/routing-log.mjs:
+//         the type, the model set, the table's row, the outcome, the description; never the prompt).
+//         A failed write is one errors.log line and changes nothing. Config `logModelRouting: false`
+//         turns it off.
+//
 // NESTED SPAWNS are gated too: a subagent's Agent call fires this hook with `agent_id` set, and
 // the brief it writes is held to the same bar. The gate reads the heading only; it does not
 // inspect `context`, `description` or anything but `tool_input.prompt` (the model line reads
@@ -43,7 +49,8 @@ import { runHook, invokedDirectly } from "../lib/hook-runner.mjs";
 import { loadConfig, logSkipped, withFault } from "../lib/config.mjs";
 import { headingReason, isBuilderClass, missingHeadings } from "../lib/brief.mjs";
 import { checkReceipt, receiptReason } from "../lib/receipt.mjs";
-import { loadTable, routingWarning } from "../lib/model-routing.mjs";
+import { loadTable, routingOutcome, routingWarning } from "../lib/model-routing.mjs";
+import { logRouting } from "../lib/routing-log.mjs";
 
 const HOOK = "spawn-gate";
 const SPAWN_TOOLS = new Set(["agent", "task"]);
@@ -60,32 +67,48 @@ export function handle(input, { env = process.env } = {}) {
   if (config.off) return null;
   if (!SPAWN_TOOLS.has(String(input?.tool_name ?? "").toLowerCase())) return withFault(null, fault, HOOK);
   const ti = input?.tool_input;
+  const record = (outcome, row = null) => {
+    if (config.logModelRouting) logRouting(HOOK, { input, toolInput: ti, outcome, row }, env);
+  };
   if (!ti || typeof ti !== "object" || typeof ti.prompt !== "string") {
     logSkipped(HOOK, `tool ${input?.tool_name}: tool_input.prompt is not a string; spawn allowed unchecked`, env);
+    record("not-checked");
     return withFault(null, fault, HOOK);
   }
   const type = typeof ti.subagent_type === "string" ? ti.subagent_type : undefined;
   const builder = isBuilderClass(type, config.builderClass, config.readOnlyAgents);
   const missing = missingHeadings(ti.prompt, { builder, requireHowItFails: config.requireHowItFails, requireSpiralBound: config.requireSpiralBound });
-  if (missing.length) return withFault(deny(headingReason(missing, type, { builder })), fault, HOOK);
+  if (missing.length) {
+    record("not-checked");
+    return withFault(deny(headingReason(missing, type, { builder })), fault, HOOK);
+  }
   if (builder && config.requirePatternCheck) {
     const receipt = checkReceipt({ sessionId: input.session_id, cwd: input.cwd }, env);
     if (receipt.status === "skipped") logSkipped(HOOK, `pattern-check receipt not checked: ${receipt.why}; spawn allowed`, env);
-    else if (receipt.status === "missing") return withFault(deny(receiptReason(type, receipt)), fault, HOOK);
+    else if (receipt.status === "missing") {
+      record("not-checked");
+      return withFault(deny(receiptReason(type, receipt)), fault, HOOK);
+    }
   }
-  return withFault(modelLine(ti, type, config, env), fault, HOOK);
+  return withFault(modelLine(ti, type, config, env, record), fault, HOOK);
 }
 
-/** The warn-only model line for a spawn the gates allowed, or null. Never a deny. */
-function modelLine(ti, type, config, env) {
-  if (!config.warnModelRouting) return null;
+/** The warn-only model line for a spawn the gates allowed, or null. Never a deny. Reports the routing outcome to `record`. */
+function modelLine(ti, type, config, env, record) {
+  if (!config.warnModelRouting) {
+    record("not-checked");
+    return null;
+  }
   const { table, fault } = loadTable();
   if (!table) {
     logSkipped(HOOK, `model not checked: ${fault}; spawn allowed`, env);
+    record("not-checked");
     return null;
   }
   const { warning, skipped } = routingWarning(table, type, ti.model);
   if (skipped) logSkipped(HOOK, `model not checked: ${skipped}; spawn allowed`, env);
+  const { row, outcome } = routingOutcome(table, type, ti.model);
+  record(outcome, row);
   return warning ? warn(warning) : null;
 }
 

@@ -20,10 +20,15 @@
 //   warnModelRouting     the spawn gate's model line: a spawn whose `model` is above the routing
 //                        table's ceiling for its agent type, or that sets none, draws one
 //                        warning line. Never a deny. false turns the line off.
+//   logModelRouting      the spawn gate's routing log: one line per spawn it examines in
+//                        `${XDG_STATE_HOME:-~/.local/state}/delegation/routing.jsonl` (lib/routing-log.mjs).
+//                        false turns the log off. Never changes a spawn decision.
 //   checks               the ported guards, each `off`, `warn` or `block`:
 //                          delegation-guard     warn (newdle's ask/deny is `block`)
 //                          worktree-spawn-guard warn (newdle's deny is `block`)
 //                          repo-rules-inject    on (`off` or anything else; it never decides)
+//                          session-brief-gate   block (a thin `start_session` prompt is denied;
+//                                               `warn` allows it with one line)
 //   readLineThreshold    delegation-guard check 1 (default 1000 lines)
 //   streakThreshold      delegation-guard check 2 (default 6 distinct files)
 //   rulesBudget          repo-rules-inject's largest additionalContext (default 9000 chars)
@@ -45,7 +50,8 @@ export const DEFAULTS = Object.freeze({
   requireSpiralBound: true,
   requirePatternCheck: true,
   warnModelRouting: true,
-  checks: Object.freeze({ "delegation-guard": "warn", "worktree-spawn-guard": "warn", "repo-rules-inject": "on" }),
+  logModelRouting: true,
+  checks: Object.freeze({ "delegation-guard": "warn", "worktree-spawn-guard": "warn", "repo-rules-inject": "on", "session-brief-gate": "block" }),
   readLineThreshold: 1000,
   streakThreshold: 6,
   rulesBudget: 9000,
@@ -65,8 +71,11 @@ export function stateDir(env = process.env, home = homedir()) {
 
 /**
  * Load the config. Never throws.
- * @returns {{ config: object, path: string, fault: string|null }} `fault` names the problem when
- *   the file exists and is unusable; every field is then its default.
+ * @returns {{ config: object, partial: object, path: string, fault: string|null }} `fault` names
+ *   the problem when the file exists and is unusable; `config` is then every field's default.
+ *   `partial` is the same file read field by field: each valid field kept, each bad one
+ *   defaulted. Only a gate that must honour `off` or its own `checks` entry despite an unrelated
+ *   bad field reads it; every other caller reads `config`.
  */
 export function loadConfig(env = process.env, home = homedir()) {
   const path = configPath(env, home);
@@ -74,20 +83,20 @@ export function loadConfig(env = process.env, home = homedir()) {
   try {
     raw = readFileSync(path, "utf8");
   } catch {
-    return { config: { ...DEFAULTS }, path, fault: null };
+    return { config: { ...DEFAULTS }, partial: { ...DEFAULTS }, path, fault: null };
   }
   let parsed;
   try {
     parsed = JSON.parse(raw);
   } catch (err) {
-    return { config: { ...DEFAULTS }, path, fault: `${path} is not JSON (${err.message}); using defaults` };
+    return { config: { ...DEFAULTS }, partial: { ...DEFAULTS }, path, fault: `${path} is not JSON (${err.message}); using defaults` };
   }
   if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
-    return { config: { ...DEFAULTS }, path, fault: `${path} is not a JSON object; using defaults` };
+    return { config: { ...DEFAULTS }, partial: { ...DEFAULTS }, path, fault: `${path} is not a JSON object; using defaults` };
   }
   const bad = [];
   const out = { ...DEFAULTS };
-  for (const key of ["off", "requireHowItFails", "requireSpiralBound", "requirePatternCheck", "warnModelRouting"]) {
+  for (const key of ["off", "requireHowItFails", "requireSpiralBound", "requirePatternCheck", "warnModelRouting", "logModelRouting"]) {
     if (parsed[key] === undefined) continue;
     if (typeof parsed[key] === "boolean") out[key] = parsed[key];
     else bad.push(`${key} must be true or false`);
@@ -113,8 +122,8 @@ export function loadConfig(env = process.env, home = homedir()) {
       out.checks = checks;
     } else bad.push("checks must be an object");
   }
-  if (bad.length) return { config: { ...DEFAULTS }, path, fault: `${path}: ${bad.join("; ")}; using defaults` };
-  return { config: out, path, fault: null };
+  if (bad.length) return { config: { ...DEFAULTS }, partial: out, path, fault: `${path}: ${bad.join("; ")}; using defaults` };
+  return { config: out, partial: out, path, fault: null };
 }
 
 /** Append `<iso> <hook> <why>` to skipped.log; never throws. */
