@@ -43,6 +43,18 @@ and makes `repair` test that it can load a LaunchAgent before it pauses the time
 /plugin install ctx-watch@jo-wolff-plugins
 ```
 
+On OMP, from a shell:
+
+```
+omp plugin marketplace add thewolff/jo-wolff-plugins
+omp plugin install ctx-watch@jo-wolff-plugins
+```
+
+ctx-watch ships no OMP extension, so OMP runs none of its hooks: no SessionStart line, no
+mid-session note on a prompt or a failed ctx call, and no Stop check. The skill, the CLI and the
+launchd timer below work the same on both; `<plugin dir>` is wherever the host installed the
+plugin.
+
 Then the timer, once, from your own Terminal (a GUI login session, which is where launchd's
 `gui/<uid>` domain lives; ctx's own bootstrap failed from somewhere else):
 
@@ -653,6 +665,12 @@ part of `node --test`); `ctx-daemon-status-semantic-not-ready.txt` is a one-off 
 not remake. `ctx-upgrade-status.txt` is the 2026-11-11 `ctx upgrade status --format json`
 (state `dry_run`, after the release); the tests derive `quiescing` and `applying` from it,
 since no capture of a live upgrade exists that did not break a real install.
+
+## Changes in 0.4.2
+
+Docs only. *Install* has the OMP install lines and says what runs there: the skill, the CLI and
+the launchd timer, and none of the hooks. The OMP catalog's description now matches this
+plugin's. See [CHANGELOG.md](CHANGELOG.md).
 
 ## Changes in 0.4.1
 
