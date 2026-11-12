@@ -136,7 +136,12 @@ export async function main(argv, deps = {}) {
       const at = now();
       const token = `${at}-${process.pid}`;
       const verdict = result.ok ? "pass" : result.upgrading ? "wait" : result.slow ? "slow" : "fail";
-      const probeLine = `${iso(at)} ${verdict}: ${result.ok ? result.summary : result.reason}${result.healed ? ` | heal: ${result.healed.detail}` : ""}`;
+      // A timeout the liveness check could not explain says which check failed (0.4.1). After a
+      // heal the top level is the re-probe and `first` the probe that led to it: each miss is
+      // logged under its own label, the first one whatever the re-probe answered.
+      const first = result.first?.liveness ? ` | first probe not slow: ${result.first.liveness.detail}` : "";
+      const notSlow = !result.ok && result.liveness ? `; ${result.first ? "re-probe " : ""}not slow: ${result.liveness.detail}` : "";
+      const probeLine = `${iso(at)} ${verdict}: ${result.ok ? result.summary : result.reason}${notSlow}${first}${result.healed ? ` | heal: ${result.healed.detail}` : ""}`;
       const notWritten = (err) => `state not written to ${file}: ${err?.message}`;
       // Settle, step and claim in one locked read-modify-write: a second tick sees the claim.
       const claim = withStateLock(

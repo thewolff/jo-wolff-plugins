@@ -11,11 +11,11 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "nod
 import { createServer } from "node:net";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
-import { probe, check, daemonAlive, connectSocket, FIX } from "../lib/probe.mjs";
+import { probe, check, daemonAlive, connectSocket, FIX, ALIVE_TIMEOUT_MS } from "../lib/probe.mjs";
 import { EMPTY, step, statePath, writeState, readState, STRIKES_TO_DOWN, SLOW_MAX_MS } from "../lib/state.mjs";
 import * as lib from "../lib/mid-session.mjs";
 import * as hook from "../hooks/mid-session.mjs";
-import { handle } from "../hooks/session-start.mjs";
+import { handle, HOOK_SPAWN_MS, HOOK_DEADLINE_MS } from "../hooks/session-start.mjs";
 import { main } from "../scripts/ctx-watch.mjs";
 
 const FIX_DIR = join(dirname(fileURLToPath(import.meta.url)), "fixtures");
@@ -61,6 +61,138 @@ test("slow: a status timeout with no live daemon stays a failure, as before (the
   assert.notEqual(r.slow, true);
   assert.match(r.reason, /ctx could not run: .*did not answer in 10 s/);
   assert.ok(t.calls.includes("upgrade status --format json"), t.calls.join(", "));
+});
+
+// 0.4.1: the 0.4.0 timer logged three misses (2026-11-12) as plain failures while the daemon
+// ran, and dropped the liveness check's reason, so the log could not say which check failed.
+const MISSED = () => ({ alive: false, pid: 51357, detail: "pid 51357 runs, but its query socket /x/q.sock did not accept a connection (no connection within 2000 ms)" });
+
+test("slow: a status timeout whose liveness check failed carries why, in the result and in the tick's line", async () => {
+  const r = check({ env: ENV, now: () => NOW, run: timingOut().run, exists: () => true, daemonAlive: MISSED });
+  assert.equal(r.ok, false);
+  assert.notEqual(r.slow, true);
+  assert.deepEqual(r.liveness, MISSED());
+  const dir = mkdtempSync(join("/tmp", "cw-tick-"));
+  try {
+    const env = { ...ENV, HOME: dir, XDG_STATE_HOME: join(dir, "state") };
+    const t = await main(["tick"], { env, now: () => NOW, run: timingOut().run, exists: () => true, popup: () => ({ ok: true }), daemonAlive: MISSED });
+    assert.match(t.text, / fail: ctx could not run: .*did not answer in 10 s;.*; not slow: pid 51357 runs, but its query socket \/x\/q\.sock did not accept a connection \(no connection within 2000 ms\) \| heal: /);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+// Codex round 1 on PR #123: when the upgrade state is settled the heal runs, check() returns the
+// re-probe at the top level, and the first probe's liveness (the miss that led to the heal) sat
+// under `first`, out of the tick's line. A run double that times out the first status call only.
+const UPGRADE = readFileSync(join(FIX_DIR, "ctx-upgrade-status.txt"), "utf8");
+const MODE = readFileSync(join(FIX_DIR, "ctx-index-mode.txt"), "utf8");
+const HEALED = readFileSync(join(FIX_DIR, "ctx-index-mode-auto.txt"), "utf8");
+const FIRST_MISS = "pid 51357 runs, but its query socket /x/q.sock did not accept a connection (no connection within 10000 ms)";
+const SECOND_MISS = "pid 51357 runs, but its query socket /x/q.sock did not accept a connection (ECONNREFUSED)";
+function healPath(reprobe) {
+  let statuses = 0;
+  let lives = 0;
+  const run = (argv) => {
+    if (argv[1] === "daemon") return statuses++ === 0 ? TIMED_OUT : reprobe === "passes" ? good(HEALTHY) : reprobe === "says down" ? good(NOT_RUNNING) : TIMED_OUT;
+    if (argv[1] === "upgrade") return good(UPGRADE);
+    return good(argv[3] === "auto" ? HEALED : MODE);
+  };
+  const daemonAlive = () => (lives++ === 0 ? { alive: false, pid: 51357, detail: FIRST_MISS } : reprobe === "is slow" ? LIVE() : { alive: false, pid: 51357, detail: SECOND_MISS });
+  return { run, daemonAlive, exists: () => true, popup: () => ({ started: false, detail: "no popup in tests" }) };
+}
+
+for (const [reprobe, verdict] of [["passes", "pass"], ["says down", "fail"], ["is slow", "slow"], ["misses again", "fail"]]) {
+  test(`slow: a heal after a liveness miss logs the first probe's miss, labelled, when the re-probe ${reprobe}`, async () => {
+    const r = check({ env: ENV, now: () => NOW, ...healPath(reprobe) });
+    assert.equal(r.healed?.attempted, true, "the heal ran");
+    assert.equal(r.first?.liveness?.detail, FIRST_MISS);
+    const dir = mkdtempSync(join("/tmp", "cw-tick-"));
+    try {
+      const env = { ...ENV, HOME: dir, XDG_STATE_HOME: join(dir, "state") };
+      const { text } = await main(["tick"], { env, now: () => NOW, ...healPath(reprobe) });
+      const line = text.split("\n").find((l) => l.includes(` ${verdict}: `)) ?? text;
+      assert.ok(line.includes(` | first probe not slow: ${FIRST_MISS} | heal: `), line);
+      assert.equal(line.split(FIRST_MISS).length, 2, `the first miss once: ${line}`);
+      if (reprobe === "misses again") assert.ok(line.includes(`; re-probe not slow: ${SECOND_MISS} | first probe not slow: `), line);
+      else assert.ok(!line.includes("re-probe not slow"), line);
+      assert.ok(!line.includes(SECOND_MISS) || reprobe === "misses again", line);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+}
+
+test("slow: the liveness reason names the check that failed: endpoint, path shape, pid, connect error code, connect timeout", () => {
+  const tick = (ep, connect) => check({ env: { ...ENV, CTX_DATA_ROOT: ep.root }, now: () => NOW, run: timingOut().run, exists: () => true, daemonAlive: (o) => daemonAlive({ ...o, ...(connect ? { connect } : {}) }) }).liveness?.detail ?? "";
+  const ep = endpoint(process.pid);
+  try {
+    assert.match(tick({ root: join(FIX_DIR, "no-ctx-data-root") }), /query-endpoint\.json unreadable \(ENOENT\)/);
+    writeFileSync(join(ep.root, "daemon", "query-endpoint.json"), JSON.stringify({ schema_version: 1, transport: "unix", pid: process.pid, path: "/elsewhere/q.sock" }));
+    assert.match(tick(ep), /not ctx's query socket/);
+    writeFileSync(join(ep.root, "daemon", "query-endpoint.json"), JSON.stringify({ schema_version: 1, transport: "unix", pid: deadPid(), path: ep.sock }));
+    assert.match(tick(ep), /pid \d+ is not running/);
+    writeFileSync(join(ep.root, "daemon", "query-endpoint.json"), JSON.stringify({ schema_version: 1, transport: "unix", pid: process.pid, path: ep.sock }));
+    assert.match(tick(ep), /did not accept a connection \(ENOENT\)/, "the real connector, no socket file");
+    assert.match(tick(ep, () => ({ ok: false, detail: `no connection within ${ALIVE_TIMEOUT_MS} ms` })), /did not accept a connection \(no connection within 10000 ms\)/);
+  } finally {
+    ep.release();
+  }
+});
+
+test("slow: a connector that needs 3 s on a loaded machine still proves the daemon alive: the timer's bound is 10 s", () => {
+  assert.equal(ALIVE_TIMEOUT_MS, 10_000);
+  const ep = endpoint(process.pid);
+  try {
+    const given = [];
+    const connect = (sock, ms) => (given.push(ms), ms >= 3_000 ? { ok: true, detail: "connected" } : { ok: false, detail: `no connection within ${ms} ms` });
+    const deps = { env: { ...ENV, CTX_DATA_ROOT: ep.root }, now: () => NOW, run: timingOut().run, exists: () => true, daemonAlive: (o) => daemonAlive({ ...o, connect }) };
+    const p = probe(deps);
+    assert.equal(p.slow, true, p.reason);
+    // The timer's check() has no deadline: the liveness check gets the whole bound.
+    const c = check(deps);
+    assert.equal(c.slow, true, c.reason);
+    assert.deepEqual(given, [10_000, 10_000]);
+  } finally {
+    ep.release();
+  }
+});
+
+test("slow: the SessionStart hook keeps a short liveness bound: what is left of its 3 s clock, never the timer's 10 s", () => {
+  const b = sessionBox();
+  try {
+    let clock = NOW;
+    const given = [];
+    const run = () => ((clock += HOOK_SPAWN_MS), TIMED_OUT);
+    const daemonAlive = ({ timeoutMs }) => (given.push(timeoutMs), MISSED());
+    handle({ session_id: "s-bound", hook_event_name: "SessionStart", source: "startup" }, { env: b.env, now: () => clock, run, exists: () => true, daemonAlive });
+    assert.deepEqual(given, [HOOK_DEADLINE_MS - HOOK_SPAWN_MS]);
+    assert.ok(given[0] < 2_000);
+  } finally {
+    b.release();
+  }
+});
+
+test("slow: a dead daemon's leftovers answer at once under the 10 s bound, with an error code: no socket file, a plain file, a killed listener's socket", () => {
+  const dir = mkdtempSync(join("/tmp", "cw-dead-"));
+  try {
+    const missing = connectSocket(join(dir, "q.sock"), ALIVE_TIMEOUT_MS);
+    assert.equal(missing.ok, false);
+    assert.equal(missing.detail, "ENOENT");
+    writeFileSync(join(dir, "plain.sock"), "");
+    const plain = connectSocket(join(dir, "plain.sock"), ALIVE_TIMEOUT_MS);
+    assert.equal(plain.ok, false);
+    assert.match(plain.detail, /^(ECONNREFUSED|ENOTSOCK)$/, "an error code (macOS says ENOTSOCK), not the bound running out");
+    // A listener killed with SIGKILL leaves its socket file behind, as a dead daemon does.
+    const left = join(dir, "left.sock");
+    const killed = spawnSync(process.execPath, ["-e", 'require("node:net").createServer().listen(process.env.S, () => process.kill(process.pid, "SIGKILL"))'], { env: { S: left }, timeout: 30_000 });
+    assert.equal(killed.signal, "SIGKILL");
+    const refused = connectSocket(left, ALIVE_TIMEOUT_MS);
+    assert.equal(refused.ok, false);
+    assert.equal(refused.detail, "ECONNREFUSED");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 });
 
 test("slow: only a timeout asks whether the daemon is alive; a daemon that says it is not running fails with no liveness check", () => {

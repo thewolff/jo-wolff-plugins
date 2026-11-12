@@ -124,6 +124,9 @@
 // on every timeout and is not done. `ps` is not used: it is setuid and refused (EPERM) inside a
 // sandboxed shell. A live daemon hung for good still accepts on its socket (the kernel queues
 // the connection), and so might a stranger, so the state bounds a slow run (SLOW_MAX_MS).
+// Not alive: the result is a failure as before and carries daemonAlive's answer as `liveness`
+// ({ alive, pid, detail }), so the tick's line can say which check failed (0.4.1: three 0.4.0
+// ticks on 2026-11-12 failed with the daemon running, and their lines could not say why).
 
 import { spawnSync } from "node:child_process";
 import { existsSync, readFileSync, statSync } from "node:fs";
@@ -132,8 +135,14 @@ import { isAbsolute, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 export const PROBE_TIMEOUT_MS = 10_000;
-/** The bound on daemonAlive's socket connect, child start included. */
-export const ALIVE_TIMEOUT_MS = 2_000;
+/**
+ * The bound on daemonAlive's socket connect, child start included. 10 s (2 s until 0.4.1): on a
+ * loaded machine the connecting node child's start is what takes the time. A dead daemon's
+ * leftovers answer at once whatever the bound (no socket file: ENOENT; nothing listening:
+ * ECONNREFUSED), so only a socket that neither accepts nor refuses waits it out. check() caps
+ * it by what is left of its deadline: the SessionStart hook's 3 s clock keeps it at most 1.8 s.
+ */
+export const ALIVE_TIMEOUT_MS = 10_000;
 /** The heal's bound: above ctx's 75 s installation-quiescence wait plus its 5 s stop and 5 s restart, with room. */
 export const HEAL_TIMEOUT_MS = 120_000;
 /** How long the heal has between SIGTERM and SIGKILL once its bound is reached. */
@@ -338,8 +347,10 @@ export function judge(r, now) {
 
 /**
  * One probe: spawn, judge, stamp. A status call that timed out while daemonAlive() says the
- * daemon is running is `slow: true` (still `ok: false`), its reason saying so; `aliveBudget()`
- * (ms) bounds that check, and one that is not positive skips it (not slow).
+ * daemon is running is `slow: true` (still `ok: false`), its reason saying so; one it says is
+ * not running stays a failure and carries its answer as `liveness` ({ alive, pid, detail }), the
+ * detail naming the check that failed. `aliveBudget()` (ms) bounds that check, and one that is
+ * not positive skips it (not slow, no `liveness`).
  */
 export function probe({ run = runCtx, env = process.env, now = Date.now, timeoutMs = PROBE_TIMEOUT_MS, ctx = CTX, daemonAlive: alive = daemonAlive, aliveBudget = () => ALIVE_TIMEOUT_MS } = {}) {
   const at = now();
@@ -349,7 +360,7 @@ export function probe({ run = runCtx, env = process.env, now = Date.now, timeout
   const budget = Math.min(ALIVE_TIMEOUT_MS, aliveBudget());
   if (!(budget > 0)) return judged;
   const live = alive({ env, timeoutMs: budget });
-  if (live?.alive !== true) return judged;
+  if (live?.alive !== true) return { ...judged, liveness: live ?? { alive: false, pid: null, detail: "no liveness answer" } };
   return { ...judged, slow: true, reason: `${judged.reason}; the ctx daemon is running (${live.detail}): slow, not down` };
 }
 
