@@ -83,3 +83,20 @@ test("the script fails, not skips, when the live-run helper is missing", () => {
   assert.match(SCRIPT, /fail: no live-run helper[\s\S]*?exit 1\nfi/);
   assert.doesNotMatch(SCRIPT, /hook scenarios skipped/);
 });
+
+// The non-zero-exit branch: a rate limit or an overload is unavailable (75), never a fail.
+const UNAVAILABLE_RE = /^ {2}UNAVAILABLE_RE='(.*)'$/m.exec(SCRIPT)?.[1];
+const unavailable = (text) => spawnSync("grep", ["-qiE", UNAVAILABLE_RE], { input: text, encoding: "utf8" }).status === 0;
+
+test("a non-zero exit naming a rate limit or an overload is classified unavailable", () => {
+  assert.ok(UNAVAILABLE_RE, "live-run.sh no longer has the UNAVAILABLE_RE this test reads");
+  assert.equal(unavailable('API Error: 429 {"type":"error","error":{"type":"rate_limit_error","message":"..."}}'), true);
+  assert.equal(unavailable('API Error: 529 {"type":"error","error":{"type":"overloaded_error","message":"Overloaded"}}'), true);
+  assert.equal(unavailable("Rate limit reached"), true);
+  assert.equal(unavailable('API Error: 500 {"type":"error","error":{"type":"api_error","message":"Internal server error"}}'), false);
+  assert.match(SCRIPT, /if \[ "\$CODE" -ne 0 \]; then[\s\S]*?session-check\.mjs[\s\S]*?-eq 2 \][\s\S]*?exit 75/);
+});
+
+test("the live run loads no user, project or local settings", () => {
+  assert.match(SCRIPT, /claude -p \\\n {2}--setting-sources "" \\/);
+});

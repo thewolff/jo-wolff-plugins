@@ -5,8 +5,8 @@
 //
 // What it does: when the session's cwd is inside a folder listed in the config's `folders`, a
 // switch onto a model below `expectedModel` (a minimum) adds one additionalContext line naming the
-// model and the owner's setting, and a switch from such a model back onto at least `expectedModel` adds one line
-// saying the earlier notice no longer applies. Text and matching rules: lib/model-notice.mjs.
+// model and the owner's setting, and a switch from such a model, or from one that cannot be judged
+// (an alias), back onto at least `expectedModel` adds one line saying the earlier notice no longer applies. Text and matching rules: lib/model-notice.mjs.
 //
 // Only PostModelSwitch: SessionStart input carries no model on the desktop app or the CLI
 // (measured 2026-11-11), so the starting model stays the first reply's job (the skill's "Model

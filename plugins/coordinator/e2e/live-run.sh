@@ -12,7 +12,8 @@
 #
 # What this run proves. First, offline: every evals/*.scenario.json passes against this
 # checkout's hooks, run by lib/live-run.mjs's hook phase (a sandbox per scenario; no model).
-# Then headless (`claude -p`), with the plugin loaded from THIS checkout, the installed copy
+# Then headless (`claude -p`), with the plugin loaded from THIS checkout, no user, project or local
+# settings (`--setting-sources ""`, so no other plugin or hook runs), the installed copy
 # disabled, and a temp config that lists the trial folder and names an expectedModel no model
 # matches (so a model notice, had one fired, would not pass on silence):
 #   1. The host ran UserPromptSubmit hooks: a hook_response event for UserPromptSubmit.
@@ -27,7 +28,7 @@
 # credential, network or rate-limit ending is exit 75.
 #
 # How it fails: a hook scenario fails, or the live-run helper is missing → exit 1 with the helper's lines. `claude` missing → 75.
-# `claude` present but the run exits non-zero naming a login, credential or network problem → 75;
+# `claude` present but the run exits non-zero naming a login, credential, network, rate-limit or overload problem → 75;
 # any other non-zero → that exit code. An assertion fails with its step number. Everything is
 # under a mktemp directory removed at exit; the transcript is copied to CANARY_TRANSCRIPT when
 # set. `--no-live` stops after the hook phase: exit 75 with the helper's
@@ -86,6 +87,7 @@ echo "claude: $(claude --version 2>/dev/null)"
 OUT="$T/run.jsonl"
 cd "$TRIAL" || exit 1
 timeout "$((TIMEOUT - 10 > 30 ? TIMEOUT - 10 : 30))" claude -p \
+  --setting-sources "" \
   --plugin-dir "$PLUGIN_DIR" \
   --settings "{\"enabledPlugins\":{\"$PLUGIN@jo-wolff-plugins\":false}}" \
   --output-format stream-json --verbose --include-hook-events \
@@ -97,8 +99,15 @@ CODE=$?
 if [ "$CODE" -ne 0 ]; then
   echo "claude exited $CODE; stderr:"
   cat "$T/run.err"
-  if grep -qiE "not logged in|log in|login|credential|unauthori[sz]ed|api key|authentication|network|ENOTFOUND|ECONNREFUSED" "$T/run.err" "$OUT"; then
-    echo "unavailable: claude could not run (credentials or network)"
+  # The same classification as a zero exit first: a result event naming credentials, network or a rate limit.
+  if [ "$(node "$PLUGIN_DIR/e2e/session-check.mjs" "$HELPER" "$OUT" "$CODE" >/dev/null 2>&1; echo $?)" -eq 2 ]; then
+    echo "unavailable: the session ended on a credential, network or rate-limit problem"
+    exit 75
+  fi
+  # rate_limit_error (429) and overloaded_error (529) are the Claude API's error types.
+  UNAVAILABLE_RE='not logged in|log in|login|credential|unauthori[sz]ed|api key|authentication|network|ENOTFOUND|ECONNREFUSED|rate[ _]limit|overloaded'
+  if grep -qiE "$UNAVAILABLE_RE" "$T/run.err" "$OUT"; then
+    echo "unavailable: claude could not run (credentials, network, rate limit or overload)"
     exit 75
   fi
   exit "$CODE"

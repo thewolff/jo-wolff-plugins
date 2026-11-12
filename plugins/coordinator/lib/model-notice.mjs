@@ -97,6 +97,8 @@ export function decide(sw, config, { realpath = realpathSync } = {}) {
   const effortKnown = typeof sw.effort === "string" && sw.effort !== "";
   const effortOk = !effortKnown || sw.effort === config.expectedEffort;
   if (to === "mismatch" || !effortOk) return { say: wrongModelText(sw.toModel, effortKnown ? sw.effort : null, config), skipped: null };
-  if (judgeModel(sw.fromModel, config.expectedModel, config.modelFamilyRank) === "mismatch") return { say: backOnModelText(sw.toModel), skipped: null };
+  // An alias between two switches (sonnet → opus → claude-opus-5-5) hides whether a notice is
+  // still standing, so only a from_model known to meet the minimum stays silent.
+  if (judgeModel(sw.fromModel, config.expectedModel, config.modelFamilyRank) !== "match") return { say: backOnModelText(sw.toModel), skipped: null };
   return none;
 }

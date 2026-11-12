@@ -122,6 +122,37 @@ test("decide: a switch back onto the expected model says the earlier notice no l
   }
 });
 
+test("decide: an alias hop keeps the notice standing until a switch onto the minimum clears it", () => {
+  const t = tree();
+  try {
+    const config = { ...EXPECTED, folders: [t.folder] };
+    const first = decide({ cwd: t.folder, toModel: "claude-sonnet-5-5", fromModel: "claude-opus-5-5", source: "command" }, config);
+    assert.equal(first.say, wrongModelText("claude-sonnet-5-5", null, EXPECTED));
+    const hop = decide({ cwd: t.folder, toModel: "opus", fromModel: "claude-sonnet-5-5", source: "command" }, config);
+    assert.equal(hop.say, null);
+    assert.ok(hop.skipped);
+    const back = decide({ cwd: t.folder, toModel: "claude-opus-5-5", fromModel: "opus", source: "command" }, config);
+    assert.deepEqual(back, { say: backOnModelText("claude-opus-5-5"), skipped: null });
+    // after the hop, a switch onto a model still below the minimum renews the notice instead of clearing it
+    const below = decide({ cwd: t.folder, toModel: "claude-sonnet-5-5", fromModel: "opus", source: "command" }, config);
+    assert.equal(below.say, wrongModelText("claude-sonnet-5-5", null, EXPECTED));
+  } finally {
+    t.release();
+  }
+});
+
+test("decide: real model changes without a hop: below to minimum clears, minimum to minimum is silent, below to below renews", () => {
+  const t = tree();
+  try {
+    const config = { ...EXPECTED, folders: [t.folder] };
+    assert.equal(decide({ cwd: t.folder, toModel: "claude-opus-5-6", fromModel: "claude-opus-5", source: "command" }, config).say, backOnModelText("claude-opus-5-6"));
+    assert.deepEqual(decide({ cwd: t.folder, toModel: "claude-opus-5-6", fromModel: "claude-opus-5-5[1m]", source: "command" }, config), { say: null, skipped: null });
+    assert.equal(decide({ cwd: t.folder, toModel: "claude-haiku-5-5", fromModel: "claude-sonnet-5-5", source: "command" }, config).say, wrongModelText("claude-haiku-5-5", null, EXPECTED));
+  } finally {
+    t.release();
+  }
+});
+
 test("decide: effort, when the input carries it, is compared and named", () => {
   const t = tree();
   try {

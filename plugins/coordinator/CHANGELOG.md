@@ -24,6 +24,10 @@ All notable changes to coordinator are recorded here. The format follows
   canary checks the clock line in the hook's own `hook_response`, requires the session to end in a
   completed `result` event, and fails when the scenario helper is missing. A `skipped.log` that
   cannot be written is named in the model hook's `systemMessage`.
+- A switch onto at least `expectedModel` from an alias the hook could not judge (`claude-sonnet-5-5`
+  then `opus` then `claude-opus-5-5`) says the earlier notice no longer applies. The canary runs
+  `claude -p` with `--setting-sources ""`, and a non-zero exit naming a rate limit or an
+  overloaded API is exit 75, the same as a zero exit whose result event names one.
 
 ### Changed
 
