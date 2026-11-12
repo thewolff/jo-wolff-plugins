@@ -336,7 +336,9 @@ export function spawnHook(plugin, hook, input, { env: outer = process.env, cwd, 
     // (its baseline, or nothing) and logged nothing: a hook that needs no state has no fault to show.
     // A healthy run that wrote nothing where the unwritable input locks needs no state there, so
     // the input has nothing to take away, whatever it prints (a clock line differs every second).
-    const untouched = input.unwritable && logged === 0 && (!r.stdout.trim() || (baselineStdout !== null && r.stdout === baselineStdout) || baselineWrote === false);
+    // A healthy run that wrote (baselineWrote true) shows the hook keeps state there, so a silent
+    // or identical-output unwritable run is a swallowed fault, not an untouched one.
+    const untouched = input.unwritable && logged === 0 && baselineWrote !== true && (!r.stdout.trim() || (baselineStdout !== null && r.stdout === baselineStdout) || baselineWrote === false);
     const after = listing(box.locked);
     const stampsAfter = stamps(box.locked);
     // A create-then-delete leaves the entry list as it was but moves the directory's mtime. A

@@ -852,3 +852,14 @@ test("visible: a hook that makes and removes a lock file in its state directory,
     assert.equal(row.detail, "UserPromptSubmit hook on unwritable state: no errors.log line, no systemMessage");
   }
 });
+
+test("visible: a hook that keeps state, swallows the unwritable fault and always prints the same JSON still fails", () => {
+  const b = sandbox();
+  // Identical stdout in the healthy and unwritable runs: the stdout-equality exemption alone
+  // would pass it, but the healthy run wrote seen.json, so the fault has to show.
+  const fixed = clockHook("steady", "XDG_STATE_HOME").replace('"clock " + process.hrtime.bigint()', '"steady"');
+  const steady = clockPlugin(b, "steady", "XDG_STATE_HOME", fixed);
+  const row = checkPlugin(steady).find((r) => r.name === "visible");
+  assert.equal(row.status, "fail", row.detail);
+  assert.equal(row.detail, "UserPromptSubmit hook on unwritable state: no errors.log line, no systemMessage");
+});
