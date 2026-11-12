@@ -14,8 +14,10 @@
 // Each step that throws leaves the earlier ones done and the later ones not, and the hold on, so a
 // retried `back` loses nothing: a failed step 2 has changed nothing (the digest is still in place);
 // a failed step 3 leaves the rows written and the digest in place, and the retry adds only the
-// items past checklist.json `taken` (the count of this hold's items, `since`, already rows); a
-// failed step 4 leaves no digest, so the retry adds nothing and removes away.json.
+// items past checklist.json `taken` (the count of that digest's items already rows; it applies
+// only while `takenArchive`, the archive path step 3 was to use, does not exist); a failed step 4
+// leaves the digest archived, so the retry counts every item of a digest held since as new and
+// removes away.json. An item already open (not done) in the list is not added a second time.
 // Under BRB_HARNESS=omp step 2 and the list are skipped: `text` is the whole digest, as in 0.5.0,
 // because OMP never routes the item words here.
 // Returns { away, at, archived, checklist, text, agentText }: `text` is the person-facing block
@@ -55,12 +57,18 @@ export function endHold(sessionId, env, at = new Date().toISOString()) {
     }
     const target = existsSync(digestPath(sessionId, env)) ? archiveTarget(sessionId, env, at) : null;
     const open = readChecklist(sessionId, env);
-    // A `back` whose archive step failed already wrote this hold's first `taken` items as rows.
-    const again = open && open.since === away.since ? Math.min(open.taken ?? 0, entries.length) : 0;
-    const fresh = freshChecklist({ at, since: away.since, note: away.note, archived: target ? [target] : [], items: entries.slice(again) });
+    // A `back` whose archive step failed already wrote this digest's first `taken` items as rows. The
+    // count belongs to the digest it was taken from: once that digest reached its archive (`takenArchive`
+    // exists), any digest.md now is a new one and every item in it is new.
+    const counted = open && open.since === away.since && open.takenArchive && !existsSync(open.takenArchive);
+    const again = counted ? Math.min(open.taken ?? 0, entries.length) : 0;
+    // Additive: an item already open (not done) in the list is not added twice.
+    const openTexts = new Set((open?.items ?? []).filter((i) => !i.done).map((i) => i.text));
+    const fresh = freshChecklist({ at, since: away.since, note: away.note, archived: target ? [target] : [], items: entries.slice(again).filter((e) => !openTexts.has(e.text)) });
+    const cursor = { taken: entries.length, takenArchive: target };
     let checklist = open;
-    if (again) checklist = { ...open, archived: [...open.archived.filter((a) => existsSync(a)), ...fresh.archived], items: [...open.items, ...fresh.items], taken: entries.length };
-    else if (fresh.items.length) checklist = { ...mergeChecklist(open, fresh), taken: entries.length };
+    if (again) checklist = { ...open, archived: [...open.archived.filter((a) => existsSync(a)), ...fresh.archived], items: [...open.items, ...fresh.items], ...cursor };
+    else if (fresh.items.length) checklist = { ...mergeChecklist(open, fresh), ...cursor };
     if (checklist !== open) writeChecklist(sessionId, checklist, env);
     const archived = target ? archiveDigest(sessionId, env, at, target) : null;
     clearAway(sessionId, env);

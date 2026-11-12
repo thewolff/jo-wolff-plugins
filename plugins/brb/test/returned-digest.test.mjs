@@ -280,6 +280,42 @@ test("one item past the cap: the whole item goes to an export, the agent gets it
   }
 });
 
+test("a `back` that archived the digest but could not remove away.json: items held after it are all added on retry", () => {
+  const b = box();
+  try {
+    runHook(b, "user-prompt-submit", promptInput(b, "brb"));
+    for (const t of ["Approve the schema change", "Rotate the staging token"]) hold("s1", t, { env: b.env });
+    const awayFile = join(b.stateDir("s1"), "away.json");
+    const awayText = readFileSync(awayFile, "utf8");
+    runHook(b, "user-prompt-submit", promptInput(b, "back"));
+    // The state a failed last step leaves: rows written, digest archived, away.json still there.
+    writeFileSync(awayFile, awayText);
+    assert.equal(existsSync(join(b.stateDir("s1"), "digest.md")), false, "the digest reached its archive");
+    for (const t of ["Merge the docs branch", "Tag the release"]) hold("s1", t, { env: b.env });
+    runHook(b, "user-prompt-submit", promptInput(b, "back"));
+    assert.deepEqual(readChecklist("s1", b.env).items.map((i) => i.text), ["Approve the schema change", "Rotate the staging token", "Merge the docs branch", "Tag the release"]);
+    assert.equal(readAway("s1", b.env), null);
+  } finally {
+    b.release();
+  }
+});
+
+test("`brb` again before the list is worked is additive: old rows keep their numbers and ticks, new ones follow, and an item still open is not added twice", () => {
+  const { b } = returned();
+  try {
+    ctx(b, "done 2");
+    runHook(b, "user-prompt-submit", promptInput(b, "brb"));
+    hold("s1", "Rotate the staging token", { env: b.env }); // still open in the list
+    hold("s1", "Approve the schema change", { env: b.env }); // done in the list: a new ask
+    hold("s1", "Merge the docs branch", { env: b.env });
+    const back = runHook(b, "user-prompt-submit", promptInput(b, "back")).json.systemMessage;
+    assert.match(back, /\n1\. Pick Redis.*\n2\. \(done\) Approve the schema change\n3\. Rotate the staging token\n4\. Approve the schema change\n5\. Merge the docs branch\n/);
+    assert.equal(readChecklist("s1", b.env).items.length, 5);
+  } finally {
+    b.release();
+  }
+});
+
 function rmSyncFile(p) {
   rmSync(p, { recursive: true, force: true });
 }

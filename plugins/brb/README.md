@@ -91,7 +91,9 @@ is special: a number is an answer to whatever the agent asked.
 
 **Nothing open is dropped unseen.** A hold that held nothing leaves an open list as it is. A
 second `brb` while a list is open starts a hold as usual; at its `back` the new items are
-appended after the open ones, whose numbers and ticks stay. The archive keeps every digest
+appended after the open ones, whose numbers and ticks stay, so one list carries both. A new item
+whose text is the same as an item still open (not done) is not added a second time. A band
+press waiting for the turn to end is dropped by a new `brb`. The archive keeps every digest
 whatever happens to the list. On OMP the adapter passes only `brb`, `back` and `pending` to the
 hooks (and reads `brb clear` as `brb` with a note), so under OMP `back` keeps 0.5.0's reply,
 the whole digest verbatim, and opens no list; the item words are ordinary prompts there.

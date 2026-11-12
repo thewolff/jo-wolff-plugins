@@ -8,7 +8,8 @@
 //                 user's prompt (`$.prompt.submit`), and
 //                 hooks/user-prompt-submit.mjs ends the hold as it does for `back` typed.
 //   open          whether a returned digest is open, and which: `{ ok: true, open: true, at }` or
-//                 `{ ok: true, open: false }`. Writes nothing. The band's Show, Done and Clear send
+//                 `{ ok: true, open: false }`; false while away (the item words are answers then,
+//                 so a press made before a new `brb` must not send one). Writes nothing. The band's Show, Done and Clear send
 //                 `brb item N`, `brb done N` and `brb clear` as the user's prompt
 //                 (`$.prompt.submit`) only while this still names the checklist the band drew, and
 //                 hooks/user-prompt-submit.mjs does the rest, so the agent is told of every one.
@@ -43,6 +44,7 @@ export function act(sessionId, verb, index, { env = process.env } = {}) {
     return away ? { ok: true, away: true, since: away.since } : { ok: true, away: false };
   }
   if (verb === "open") {
+    if (readAway(sessionId, env)) return { ok: true, open: false };
     const checklist = readChecklist(sessionId, env);
     return checklist ? { ok: true, open: true, at: checklist.at } : { ok: true, open: false };
   }

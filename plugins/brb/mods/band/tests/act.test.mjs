@@ -73,3 +73,20 @@ test("faults: no session, an unknown verb", () => {
     b.release();
   }
 });
+
+test("open: a list still open from an earlier hold reports false while a new hold is on, and true again once home", () => {
+  const b = box();
+  try {
+    runHook(b, "user-prompt-submit", promptInput(b, "brb"));
+    hold(b, "First");
+    runHook(b, "user-prompt-submit", promptInput(b, "back"));
+    const at = readChecklist("s1", b.env).at;
+    runHook(b, "user-prompt-submit", promptInput(b, "brb"));
+    assert.ok(existsSync(join(b.stateDir("s1"), "checklist.json")), "the earlier list is still on disk");
+    assert.deepEqual(act(b, "--session", "s1", "open"), { ok: true, open: false });
+    runHook(b, "user-prompt-submit", promptInput(b, "back"));
+    assert.deepEqual(act(b, "--session", "s1", "open"), { ok: true, open: true, at });
+  } finally {
+    b.release();
+  }
+});

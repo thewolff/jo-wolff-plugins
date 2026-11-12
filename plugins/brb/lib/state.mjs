@@ -394,6 +394,8 @@ export function parseChecklist(text) {
   const out = { at: str(parsed.at), since: str(parsed.since), note: str(parsed.note), archived, items };
   // `taken`: how many items of the hold named by `since` are already rows (lib/back.mjs endHold), so a `back` retried after its archive step failed adds only the rest.
   if (Number.isInteger(parsed.taken) && parsed.taken >= 0) out.taken = parsed.taken;
+  // `takenArchive`: the archive path that digest was to be moved to; once it exists, `taken` no longer applies.
+  if (typeof parsed.takenArchive === "string") out.takenArchive = parsed.takenArchive;
   return out;
 }
 

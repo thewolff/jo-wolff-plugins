@@ -30,7 +30,8 @@
 //     agent (Show: the item in full; Done: the tick; Clear: every item not done, in full, before
 //     the file goes). A press is bound to the checklist the band drew (its `at`) and sent only
 //     while act.mjs `open` still names it; idle it goes at once, while a turn runs at that turn's
-//     end (a toast says so); one at a time, and never while a Back press is pending;
+//     end (a toast says so); one at a time, and never while a Back press is pending; a query
+//     that sees a new hold drops it (act.mjs `open` is false while away, too);
 //   - the data is this session's state, read out of process by `node mods/band/query.mjs
 //     --session <id>` (read-only); the band refreshes at session start, after each prompt is
 //     submitted (so `brb` and `back` show at once), at each main turn's start and end, after a
@@ -355,6 +356,8 @@ function applySnapshot($, next, where = "query") {
   // The press is done once a query sees its hold gone (home, or another hold). A failed query
   // proves nothing, so the press stays pending and a second press still sends nothing.
   if (pendingBack?.since && next.ok && (!next.away || next.since !== pendingBack.since)) pendingBack = null;
+  // A press on the returned digest belongs to the session at home: a new hold drops it.
+  if (pendingPick && next.ok && next.away) pendingPick = null;
   applyAway($, next);
   const { backPressed: _shown, ...query } = next;
   snapshot = pendingBack ? { ...query, backPressed: true } : query;

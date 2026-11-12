@@ -414,6 +414,23 @@ test("a band press while a turn runs: a toast now, the prompt at the turn's end;
   assert.deepEqual(s.logs, []);
 });
 
+test("a band press waiting for the turn to end is dropped by a new hold, even when the same list is open again by the turn's end", async () => {
+  const hooks = await load();
+  const s = stub({ snapshot: CHECKLIST });
+  await start(hooks, s);
+  await turnStart(hooks, s);
+  const tree = await render(hooks, s);
+  await buttons(tree).find((b) => b.props.key === "done-1").props.onPress();
+  assert.deepEqual(s.toasts, ["brb: brb done 1 goes when this turn ends"]);
+  // `brb` typed: the poll sees the new hold.
+  s.snapshot = AWAY;
+  await s.timers.get(5000)();
+  // A hold that held nothing ended: the same list (same `at`) is open again when the turn ends.
+  s.snapshot = CHECKLIST;
+  await turnComplete(hooks, s);
+  assert.deepEqual(s.submits, [], "the press made before the hold is not sent");
+});
+
 test("a band press whose prompt is dropped: a toast with the way out, and the next press works", async () => {
   const hooks = await load();
   const s = stub({ snapshot: CHECKLIST });
