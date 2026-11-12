@@ -75,7 +75,7 @@ test("answer rule: the same flow after `ledger answer <q-id> <option>` → the S
   startSession(b);
   const q = askIn(b, "ship");
   passed(stopIn(b, "p-1", LONG_Q));
-  const a = cli(b, ["answer", q, "yes"], { env: sessionEnv });
+  const a = cli(b, ["answer", q, "yes", "--nothing"], { env: sessionEnv });
   assert.equal(a.code, 0, a.out + a.err);
   passed(stopIn(b, "p-2"));
 });
@@ -105,11 +105,11 @@ test("answer rule: several open questions → listed newest first; the bounce cl
   blocked(r, /since you asked these questions, and they have no answer recorded/);
   const ids = r.json.reason.match(/q-[a-z0-9]+(?= \()/g);
   assert.deepEqual(ids, [second, first], "newest first; the one asked in this turn is not due");
-  cli(b, ["answer", second, "no"], { env: sessionEnv });
+  cli(b, ["answer", second, "no", "--nothing"], { env: sessionEnv });
   const again = stopIn(b, "p-3");
   blocked(again, /since you asked these questions/);
   assert.deepEqual(again.json.reason.match(/q-[a-z0-9]+(?= \()/g), [third, first]);
-  cli(b, ["answer", first, "yes"], { env: sessionEnv });
+  cli(b, ["answer", first, "yes", "--nothing"], { env: sessionEnv });
   cli(b, ["withdraw", third], { env: sessionEnv });
   passed(stopIn(b, "p-4"));
 });

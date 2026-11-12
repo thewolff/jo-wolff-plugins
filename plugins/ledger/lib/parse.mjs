@@ -9,8 +9,12 @@
 //   <verb> <one token> [flags]          ask <body> --options …, note <text>
 //                                        (free text with spaces is quoted: ask "ship it?")
 //   <word> <q-id>                       an answer: approve q-…, yes q-…, green q-…
-//   answer <q-id> <reply…>              the same answer, spelled out; a reply that is not an
-//                                        option is recorded as given (a free-form answer)
+//   answer <q-id> <reply…> [flags]      the same answer, spelled out; a reply that is not an
+//                                        option is recorded as given (a free-form answer);
+//                                        --nothing, --pointer <p>, --work <text> are taken out
+//                                        of the reply first (what the answer sets in motion)
+//   <owed verb> <ow-id> [text]          start ow-… "<pointer>", hold ow-… "<why>",
+//                                        drop ow-… "<why>", done ow-… [ref], wait ow-… <q-id>|none
 //   <number> <word>                     an ordinal into the `pending` list: 1 approve
 //   <word>                              a bare option word, when exactly one open question offers it
 //
@@ -20,7 +24,9 @@
 // option is `withdraw` can be answered `withdraw q-…`); otherwise the verb table decides
 // (`withdraw q-…` withdraws, `extend q-…` moves the deadline); a word that is neither is REFUSED
 // with the option list and nothing is written. A verb with an id that does not exist, or an id
-// cut short (`approve q-`), is refused too, never prose.
+// cut short (`approve q-`), is refused too, never prose. The owed verbs (start, drop, done, wait)
+// alone fall through to bare-option resolution like approve and deny, so a question offering
+// `done` is still answered by a bare `done`. Owed verbs and `owe` are never applied from a prompt.
 //
 // Anything else is PROSE: `not a command`, with `closest: <word>` when the first token is within
 // edit distance 2 of a verb or of an open question's option word. Prose is never written anywhere.
@@ -29,23 +35,28 @@
 //   lookup.question(id)        → { id, options: string[], state } or null
 //   lookup.offering(word)      → q-ids of open questions in scope that offer `word`
 //   lookup.optionWords()       → every option word of every open question in scope
-//   lookup.exists(id)          → whether a q-/an-/nt- id is a row
+//   lookup.exists(id)          → whether a q-/an-/nt-/ow- id is a row
 
 import { isId, isCutShort, prefixOf } from "./ids.mjs";
 
 /** Every verb, who usually says it, and the one-line help entry. Order = `help` order. */
 export const VERBS = Object.freeze([
   { verb: "ask", who: "agent", usage: 'ask "<body>" --name <short> --options a,b[,c] [--default a] [--deadline 2h|<ISO>] [--kind question|approval|plan] [--allows "a: …; b: …"] [--ceiling <usd>] [--about "<what it concerns>"]', help: "ask the human a question (prints q-… and the line to answer with); repeating an open one returns its id" },
-  { verb: "answer", who: "human", usage: "answer <q-id> <reply>   (or just: <word> <q-id>)", help: "record the human's answer: an option word as that option, any other reply (up to 200 characters) as given, a free-form answer; `withdraw` withdraws. The short form and a prompt take options only" },
+  { verb: "answer", who: "human", usage: 'answer <q-id> <reply> [--nothing | --pointer "<p>"] [--work "<text>"]   (or just: <word> <q-id>)', help: "record the human's answer: an option word as that option, any other reply (up to 200 characters) as given, a free-form answer; `withdraw` withdraws. The answer also records the approved work as owed (body: --work, else the option's allows text, else `<name>: <reply>`); --nothing records that it set nothing in motion, --pointer that it started at once; `deny` on an approval and `cancel` on a plan create nothing unless --work is given. The short form and a prompt take options only" },
   { verb: "approve", who: "human", usage: "approve <q-id>", help: "the answer `approve`, when the question offers it" },
   { verb: "deny", who: "human", usage: "deny <q-id>", help: "the answer `deny`, when the question offers it" },
   { verb: "withdraw", who: "either", usage: "withdraw <q-id>", help: "take a question back; nothing was decided" },
   { verb: "extend", who: "human", usage: "extend <q-id>", help: "move the question's deadline by its original span (or the answer `extend`, when offered)" },
-  { verb: "hold", who: "agent", usage: "hold <q-id>", help: "defer an open question for the human without putting it to them: held, still unresolved, listed under Waiting on you" },
+  { verb: "hold", who: "agent", usage: 'hold <q-id> · hold <ow-id> "<why, and until when>"', help: "defer an open question for the human without putting it to them: held, still unresolved, listed under Waiting on you; with an ow- id and a reason, defer owed work (it stops blocking)" },
   { verb: "reopen", who: "agent", usage: "reopen <q-id>", help: "put a held question to the human: open again, asked now" },
+  { verb: "owe", who: "agent", usage: 'owe "<the work>" [--pointer "<p>"]', help: "record work you owe that no ledger answer recorded (an order given in passing); it blocks the end of a turn until started, held, dropped or done (prints ow-…)" },
+  { verb: "start", who: "agent", usage: 'start <ow-id> "<agent id, session or command>"', help: "owed or deferred work is now being done; the pointer says by what" },
+  { verb: "drop", who: "agent", usage: 'drop <ow-id> "<why>"', help: "owed, started or deferred work will not be done; final" },
+  { verb: "done", who: "agent", usage: "done <ow-id> [ref]", help: "owed, started or deferred work is finished; ref is a PR URL, commit or path; final" },
+  { verb: "wait", who: "agent", usage: "wait <ow-id> <q-id> · wait <ow-id> none", help: "owed work waits on the human's answer to one of this session's open questions: it stops blocking until that question is answered or withdrawn; `none` removes the link" },
   { verb: "note", who: "agent", usage: 'note "<text>"', help: "record a decision or assumption made without asking (prints nt-…)" },
   { verb: "outcome", who: "agent", usage: 'outcome <ref> [q-id] "<text>"', help: "record what a decision or an answered question produced; ref is a PR URL, commit or path (prints nt-…)" },
-  { verb: "pending", who: "either", usage: "pending [--all]", help: "the paste-ready block: one `<default> <q-id>  # …` line per open question here, then the held ones; `--all`: every open and held question in the db, grouped under its folder" },
+  { verb: "pending", who: "either", usage: "pending [--all]", help: "the paste-ready block: one `<default> <q-id>  # …` line per open question here, then the held ones, then owed, started and deferred work (`owed <ow-id>  # …`); `--all`: every open and held question in the db, grouped under its folder" },
   { verb: "log", who: "either", usage: "log [N]", help: "the last N notes, questions and answers for this folder across sessions (default 20)" },
   { verb: "enable", who: "human", usage: "enable", help: "turn the hooks on for this folder: writes `\"enabled\": true` to .ledger.json here" },
   { verb: "disable", who: "human", usage: "disable", help: "turn the hooks off for this folder: sets `\"enabled\": false` in .ledger.json here (never deletes it)" },
@@ -63,7 +74,10 @@ export const VERBS = Object.freeze([
 export const VERB_SET = new Set(VERBS.map((v) => v.verb));
 
 /** Verbs whose argument is free text (a body, a note); never applied from a prompt. */
-export const FREE_TEXT_VERBS = new Set(["ask", "note", "outcome"]);
+export const FREE_TEXT_VERBS = new Set(["ask", "note", "outcome", "owe"]);
+
+/** Verbs that move owed work (an ow- id); never applied from a prompt. */
+export const OWED_VERBS = new Set(["start", "drop", "done", "wait", "hold"]);
 
 const WHO = Object.fromEntries(VERBS.map((v) => [v.verb, v.who]));
 export const whoSays = (verb) => WHO[verb] ?? "either";
@@ -200,6 +214,38 @@ const NULL_LOOKUP = {
   exists: () => false,
 };
 
+const NEEDS = { withdraw: "withdraw <q-id>", extend: "extend <q-id>", approve: "approve <q-id>", deny: "deny <q-id>", hold: "hold <q-id>", reopen: "reopen <q-id>", start: 'start <ow-id> "<pointer>"', drop: 'drop <ow-id> "<why>"', done: "done <ow-id> [ref]", wait: "wait <ow-id> <q-id>" };
+const FALL_THROUGH = new Set(["approve", "deny", "start", "drop", "done", "wait"]);
+
+/**
+ * `--nothing`, `--pointer <v>` and `--work <v>` taken out of an answer's reply tokens (anywhere in
+ * the tail; a value runs to the next `--` token). Any other `--x` token stays in the reply.
+ */
+export function takeAnswerFlags(tokens) {
+  const tail = [];
+  const answerFlags = {};
+  for (let i = 0; i < tokens.length; i++) {
+    const t = tokens[i];
+    const m = /^--(nothing|pointer|work)(?:=(.*))?$/.exec(t);
+    if (!m) {
+      tail.push(t);
+      continue;
+    }
+    if (m[2] !== undefined) {
+      answerFlags[m[1]] = m[2];
+      continue;
+    }
+    if (m[1] === "nothing") {
+      answerFlags.nothing = true;
+      continue;
+    }
+    const values = [];
+    while (i + 1 < tokens.length && !tokens[i + 1].startsWith("--")) values.push(tokens[++i]);
+    answerFlags[m[1]] = values.length ? values.join(" ") : true;
+  }
+  return { tail, answerFlags };
+}
+
 const prose = (text, closest, hint) => ({ kind: "prose", text, closest: closest ?? null, hint: hint ?? null });
 const refused = (text, reason) => ({ kind: "refused", text, reason });
 const command = (text, fields) => ({ kind: "command", text, ...fields });
@@ -243,6 +289,24 @@ export function parseLine(text, lookup = NULL_LOOKUP, tokens = null) {
     if (cut) return refused(shown, `id cut short: ${cut} (an id looks like ${cut}mvr3k2p9a1xq)`);
   }
 
+  // start|drop|done|wait|hold <ow-id> …: owed work. The rest of the line is the pointer, the
+  // reason, the ref, or the question id (wait).
+  if (OWED_VERBS.has(t0) && rest.length >= 1 && !quoted.has(1) && prefixOf(rest[0]) === "ow") {
+    const id = rest[0];
+    const text = rest.slice(1).join(" ").trim();
+    if (!lookup.exists(id)) return refused(shown, `no such owed item ${id}`);
+    if (t0 === "wait") {
+      if (rest.length !== 2 || !(rest[1] === "none" || prefixOf(rest[1]) === "q")) return refused(shown, `wait needs a question id: wait ${id} <q-id> (or wait ${id} none)`);
+      return command(shown, { verb: "wait", id, questionId: rest[1] });
+    }
+    if (t0 === "done") {
+      if (rest.length > 2) return prose(shown, null, `usage: done ${id} [ref]`);
+      return command(shown, { verb: "done", id, arg: text || null });
+    }
+    if (!text) return refused(shown, t0 === "start" ? `start needs a pointer: start ${id} "<agent id, session or command>"` : `${t0} needs a reason: ${t0} ${id} "<why>"`);
+    return command(shown, { verb: t0, id, arg: text });
+  }
+
   // <word> <q-id> (or any other id): option first, then verb table. A quoted id is text.
   if (rest.length === 1 && isId(rest[0]) && !quoted.has(1)) {
     const id = rest[0];
@@ -258,7 +322,8 @@ export function parseLine(text, lookup = NULL_LOOKUP, tokens = null) {
       if (t0 === "extend") return command(shown, { verb: "extend", id });
       if (t0 === "outcome") return refused(shown, 'outcome needs a ref first: outcome <ref> [q-id] "<what it produced>"');
       if (t0 === "answer") return refused(shown, `answer needs a word: answer ${id} <word>`);
-      if (["pending", "log", "help", "config", "enable", "disable", "ask", "note", "doctor", "bounces"].includes(t0)) return refused(shown, `${t0} does not take an id`);
+      if (["pending", "log", "help", "config", "enable", "disable", "ask", "note", "doctor", "bounces", "owe"].includes(t0)) return refused(shown, `${t0} does not take an id`);
+      if (["start", "drop", "done", "wait"].includes(t0) && !(q && q.options.includes(t0))) return refused(shown, `${t0} takes an owed id (ow-…), not ${id}`);
       if (!q) {
         if (isVerb) return refused(shown, `no such question ${id}`);
         // A non-verb word on an unknown question: a typo of a verb reads as prose (#313), else refused.
@@ -281,8 +346,10 @@ export function parseLine(text, lookup = NULL_LOOKUP, tokens = null) {
   // an option; `word` is its lowercased form for matching the options.
   if (t0 === "answer") {
     if (rest.length >= 2 && isId(rest[0]) && prefixOf(rest[0]) === "q") {
-      const reply = rest.slice(1).join(" ");
-      return command(shown, { verb: "answer", id: rest[0], word: reply.toLowerCase(), reply });
+      const { tail, answerFlags } = takeAnswerFlags(rest.slice(1));
+      if (!tail.length) return refused(shown, `answer needs a reply: answer ${rest[0]} <reply>`);
+      const reply = tail.join(" ");
+      return command(shown, { verb: "answer", id: rest[0], word: reply.toLowerCase(), reply, answerFlags });
     }
     if (rest.length === 2 && isId(rest[1]) && prefixOf(rest[1]) === "q") {
       return command(shown, { verb: "answer", id: rest[1], word: rest[0].toLowerCase(), reply: rest[0] });
@@ -348,7 +415,7 @@ export function parseLine(text, lookup = NULL_LOOKUP, tokens = null) {
   if (FREE_TEXT_VERBS.has(t0)) {
     const { flags, positional } = splitFlags(rest);
     if (positional.length === 0) {
-      return refused(shown, t0 === "ask" ? 'ask needs a body: ask "<question>" --name <short> --options a,b' : 'note needs text: note "<what was decided or assumed>"');
+      return refused(shown, t0 === "ask" ? 'ask needs a body: ask "<question>" --name <short> --options a,b' : t0 === "owe" ? 'owe needs the work: owe "<the work, one line>"' : 'note needs text: note "<what was decided or assumed>"');
     }
     if (positional.length > 1) {
       // Several unquoted words: a sentence that starts with a verb, not a command (#197).
@@ -360,9 +427,9 @@ export function parseLine(text, lookup = NULL_LOOKUP, tokens = null) {
   // Verbs that reached here have the wrong shape.
   if (isVerb) {
     if (rest.length === 0) {
-      const needs = { withdraw: "withdraw <q-id>", extend: "extend <q-id>", approve: "approve <q-id>", deny: "deny <q-id>", hold: "hold <q-id>", reopen: "reopen <q-id>" };
-      // approve/deny alone fall through to bare-word resolution below when a question offers them.
-      if (t0 !== "approve" && t0 !== "deny") return refused(shown, `${t0} needs an id: ${needs[t0]}`);
+      // approve/deny and the owed verbs alone fall through to bare-word resolution below when a
+      // question offers them (a question with a `done` option is answered by a bare `done`).
+      if (!FALL_THROUGH.has(t0)) return refused(shown, `${t0} needs an id: ${NEEDS[t0]}`);
     } else {
       const usage = VERBS.find((v) => v.verb === t0).usage;
       return prose(shown, null, `usage: ${usage}`);
@@ -375,6 +442,7 @@ export function parseLine(text, lookup = NULL_LOOKUP, tokens = null) {
     if (offering.length === 1) return command(shown, { verb: "answer", id: offering[0], word: t0 });
     if (offering.length > 1) return refused(shown, `which one? ${offering.length} open questions offer ${t0}: ${offering.join(", ")}`);
     if (t0 === "approve" || t0 === "deny") return refused(shown, `${t0} needs a question id: ${t0} <q-id>`);
+    if (FALL_THROUGH.has(t0)) return refused(shown, `${t0} needs an id: ${NEEDS[t0]}`);
   }
 
   const candidates = [...VERB_SET, ...lookup.optionWords()];
@@ -385,6 +453,9 @@ export function parseLine(text, lookup = NULL_LOOKUP, tokens = null) {
 export function promptApplicable(parsed) {
   if (parsed.kind !== "command") return false;
   if (FREE_TEXT_VERBS.has(parsed.verb)) return false;
+  // Owed work is the agent's to move: `drop ow-…` typed into a prompt applies nothing.
+  if (OWED_VERBS.has(parsed.verb) && parsed.verb !== "hold") return false;
+  if (parsed.id && prefixOf(parsed.id) === "ow") return false;
   if (["config", "enable", "disable", "doctor", "review"].includes(parsed.verb)) return false;
   if (["pending", "log", "help", "bounces"].includes(parsed.verb)) return true;
   return Boolean(parsed.id) || parsed.ordinal !== undefined;

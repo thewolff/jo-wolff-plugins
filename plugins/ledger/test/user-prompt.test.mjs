@@ -21,7 +21,7 @@ test("step 9: `approve q-…\\nwithdraw q-…` → both applied, additionalConte
   assert.equal(r.json.hookSpecificOutput.hookEventName, "UserPromptSubmit");
   const ctx = r.json.hookSpecificOutput.additionalContext;
   assert.match(ctx, /^ledger applied the lines in this prompt/);
-  assert.match(ctx, new RegExp(`\n1: ok an-[a-z0-9]+ approve → ${q1} \\(one\\)\n2: ok an-[a-z0-9]+ withdrew ${q2} \\(two\\)\napplied 2, refused 0, not commands 0$`));
+  assert.match(ctx, new RegExp(`\n1: ok an-[a-z0-9]+ approve → ${q1} \\(one\\) · owed: ow-[a-z0-9]+ \\(one: approve\\); start, hold or drop it before the turn ends\n2: ok an-[a-z0-9]+ withdrew ${q2} \\(two\\)\napplied 2, refused 0, not commands 0$`));
   assert.match(r.json.systemMessage, /applied 2, refused 0/);
   const db = openDb(box);
   assert.deepEqual(db.prepare("SELECT answered_by, via FROM cc_answers WHERE question_id = ?").get(q1).via, "prompt-hook");

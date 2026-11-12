@@ -29,11 +29,14 @@ import { VERBS, optionList } from "./parse.mjs";
 import { nowIso, parseDeadline, relative, formatLocal } from "./time.mjs";
 import { transaction } from "./db.mjs";
 import { renderBounces, BOUNCES_DEFAULT_SINCE } from "./bounces.mjs";
+import { createOwed, cut, itemsInScope, moveOwed, owedPendingLines, recordNothing, waitOwed } from "./owed.mjs";
 
 const KINDS = ["question", "approval", "plan"];
 const KIND_DEFAULT_OPTIONS = { approval: ["approve", "deny"], plan: ["approve", "revise", "cancel"] };
 const KIND_DEFAULT_WORD = { approval: "deny" };
 const LOG_DEFAULT = 20;
+/** Appended where a text teaches `answer`: recording an answer also records the approved work as owed. */
+const OWED_HINT = " (that also records approved work as owed; add `--nothing` if the reply sets nothing in motion)";
 
 export const ok = (id, message) => ({ status: "ok", id, message });
 export const noop = (id, message) => ({ status: "noop", id, message });
@@ -395,7 +398,7 @@ export function execute(db, parsed, ctx) {
       return setEnabled(ctx.cwd, parsed.verb === "enable");
     case "pending":
       if (parsed.all) return ok(null, renderPendingAll(unresolvedByFolder(db), { now, timezone: tz }));
-      return ok(null, renderPending(openQuestions(db, ctx.cwd), ctx.cwd, { now, timezone: tz }, heldQuestions(db, ctx.cwd)));
+      return ok(null, [renderPending(openQuestions(db, ctx.cwd), ctx.cwd, { now, timezone: tz }, heldQuestions(db, ctx.cwd)), ...owedPendingLines(itemsInScope(db, ctx.cwd))].join("\n"));
     case "review":
       return refused("review runs on its own line: `ledger review …`, not inside a batch");
     case "canary":
@@ -425,7 +428,19 @@ export function execute(db, parsed, ctx) {
     case "outcome":
       return run(() => outcome(db, parsed, by, iso, now, ctx));
     case "hold":
+      if (prefixOf(parsed.id) === "ow") return run(() => owedMove(db, parsed, by, iso, ctx));
       return run(() => setHeld(db, parsed.id, true, iso));
+    case "owe":
+      return run(() => owe(db, parsed, by, iso, now, ctx));
+    case "start":
+    case "drop":
+    case "done":
+      return run(() => owedMove(db, parsed, by, iso, ctx));
+    case "wait":
+      return run(() => {
+        const r = waitOwed(db, parsed.id, parsed.questionId, { by, iso, sessionId: ctx.sessionId ?? null, cwd: ctx.cwd });
+        return r.status === "ok" ? ok(parsed.id, r.message) : r.status === "noop" ? noop(parsed.id, r.message) : refused(r.message);
+      });
     case "reopen":
       return run(() => setHeld(db, parsed.id, false, iso));
     default:
@@ -512,7 +527,7 @@ function ask(db, parsed, by, iso, now, ctx) {
     if (ctx.sessionId && repeat.session_id !== ctx.sessionId) {
       db.prepare("UPDATE cc_questions SET session_id = ?, asked_at = ?, asked_by = ? WHERE id = ?").run(ctx.sessionId, iso, by, repeat.id);
       const q = getQuestion(db, repeat.id);
-      return ok(repeat.id, `${repeat.id} already asked and still open${repeat.session_id ? " by an earlier session" : ""}; it is now this session's question. Ask the human in plain words without showing this id, then record their reply with \`answer ${repeat.id} <option>\`:\n${lines(q)}`);
+      return ok(repeat.id, `${repeat.id} already asked and still open${repeat.session_id ? " by an earlier session" : ""}; it is now this session's question. Ask the human in plain words without showing this id, then record their reply with \`answer ${repeat.id} <option>\`${OWED_HINT}:\n${lines(q)}`);
     }
     return noop(repeat.id, `${repeat.id} already asked and still open\n${lines(getQuestion(db, repeat.id))}`);
   }
@@ -523,7 +538,7 @@ function ask(db, parsed, by, iso, now, ctx) {
      VALUES (?,?,?,?,?,?,?,?,?,?,?,?,'open',?,?,?)`,
   ).run(id, ctx.cwd, kind, name, body, about, optionsJson, allows ? JSON.stringify(allows) : null, def, ceiling, deadline, span, by, iso, ctx.sessionId ?? null);
   const q = getQuestion(db, id);
-  return ok(id, `${id} asked for ${ctx.cwd}; ask the human in plain words without showing this id, then record their reply with \`answer ${id} <option>\`:\n${pendingLines(q, { now, timezone: ctx.config?.timezone ?? null }).join("\n")}`);
+  return ok(id, `${id} asked for ${ctx.cwd}; ask the human in plain words without showing this id, then record their reply with \`answer ${id} <option>\`${OWED_HINT}:\n${pendingLines(q, { now, timezone: ctx.config?.timezone ?? null }).join("\n")}`);
 }
 
 /** The longest free-form answer recorded, in characters. */
@@ -561,9 +576,65 @@ function answer(db, parsed, by, via, iso, now, ctx) {
   const an = freshId(db, "cc_answers", "an", now);
   db.prepare("INSERT INTO cc_answers (id, question_id, word, answered_by, answered_at, via, session_id) VALUES (?,?,?,?,?,?,?)").run(an, id, word, by, iso, answerVia, ctx.sessionId ?? null);
   db.prepare("UPDATE cc_questions SET state = 'answered', resolved_at = ? WHERE id = ?").run(iso, id);
-  if (!isOption) return ok(an, `${an} ${word} → ${id} (${q.name}) · freeform: not one of ${q.options.join(", ")}`);
+  const owedTail = owedFromAnswer(db, q, word, an, parsed.answerFlags ?? {}, { by, iso, now, ctx });
+  if (!isOption) return ok(an, `${an} ${word} → ${id} (${q.name}) · freeform: not one of ${q.options.join(", ")}${owedTail}`);
   const allows = q.allows && Object.hasOwn(q.allows, word) ? ` · allows: ${q.allows[word]}` : "";
-  return ok(an, `${an} ${word} → ${id} (${q.name})${allows}`);
+  return ok(an, `${an} ${word} → ${id} (${q.name})${allows}${owedTail}`);
+}
+
+/**
+ * What an answer sets in motion, written in the answer's transaction; returns the tail appended to
+ * the answer line. A `deny` to an approval question and a `cancel` to a plan question create
+ * nothing unless `--work` names work; `--nothing` creates nothing for any answer. Otherwise one
+ * owed item (started at once with `--pointer`). A bad flag never loses the answer: the item is
+ * recorded owed and the tail says which flag was ignored.
+ */
+function owedFromAnswer(db, q, word, answerId, flags, { by, iso, now, ctx }) {
+  const sessionId = ctx.sessionId ?? null;
+  const ignored = [];
+  let pointer = typeof flags.pointer === "string" && flags.pointer.trim() ? flags.pointer.trim() : null;
+  if (flags.pointer !== undefined && !pointer) ignored.push("--pointer needs a value");
+  const work = typeof flags.work === "string" && flags.work.trim() ? flags.work.trim() : null;
+  if (flags.work !== undefined && !work) ignored.push("--work needs a value");
+  let nothing = flags.nothing === true;
+  if (flags.nothing !== undefined && flags.nothing !== true) ignored.push("--nothing takes no value");
+  if (nothing && pointer) {
+    ignored.push("--nothing and --pointer together");
+    nothing = false;
+    pointer = null;
+  }
+  const declined = !work && ((q.kind === "approval" && word === "deny") || (q.kind === "plan" && word === "cancel"));
+  const tail = ignored.length ? ` · flag ignored: ${ignored.join("; ")}` : "";
+  if (nothing || declined) {
+    recordNothing(db, { answerId, detail: declined && !nothing ? word : null, by, iso, sessionId });
+    return ` · set nothing in motion${tail}`;
+  }
+  const allowsText = q.allows && Object.hasOwn(q.allows, word) ? q.allows[word] : null;
+  const body = cut(work ?? allowsText ?? `${q.name}: ${word}`);
+  const item = createOwed(db, { cwd: q.cwd, body, origin: "answer", questionId: q.id, answerId, pointer, sessionId, by, iso, now });
+  if (item.state === "started") return ` · started: ${item.id} (${item.pointer})${tail}`;
+  return ` · owed: ${item.id} (${item.body}); start, hold or drop it before the turn ends${tail}`;
+}
+
+/** `owe "<the work>" [--pointer "<p>"]`: owed work the agent records itself (an order given with no question). */
+function owe(db, parsed, by, iso, now, ctx) {
+  const body = String(parsed.textArg ?? "").replace(/\s+/g, " ").trim();
+  if (!body) return refused('owe needs the work: owe "<the work, one line>"');
+  if (body.length > 200) return refused(`owed work is at most 200 characters; this is ${body.length}`);
+  const f = parsed.flags ?? {};
+  const pointer = typeof f.pointer === "string" && f.pointer.trim() ? f.pointer.trim() : null;
+  if (f.pointer !== undefined && !pointer) return refused('--pointer needs a value: owe "<work>" --pointer "<agent id, session or command>"');
+  if (pointer && pointer.length > 200) return refused(`the pointer is at most 200 characters; this one is ${pointer.length}`);
+  const item = createOwed(db, { cwd: ctx.cwd, body, origin: "agent", pointer, sessionId: ctx.sessionId ?? null, by, iso, now });
+  return ok(item.id, item.state === "started" ? `${item.id} started: ${item.body} (${item.pointer})` : `${item.id} owed: ${item.body}; start, hold or drop it before the turn ends`);
+}
+
+/** `start`, `hold`, `drop`, `done` on an ow- id. */
+function owedMove(db, parsed, by, iso, ctx) {
+  const r = moveOwed(db, parsed.id, parsed.verb, parsed.arg ?? null, { by, iso, sessionId: ctx.sessionId ?? null });
+  if (r.status === "ok") return ok(parsed.id, r.message);
+  if (r.status === "noop") return noop(parsed.id, r.message);
+  return refused(r.message);
 }
 
 function withdrawQuestion(db, id, by, via, iso, now, ctx) {
