@@ -73,7 +73,7 @@
 // `review waive "<why>"` row for the head lifts this gate as it lifts the review gate.
 
 import { spawnSync } from "node:child_process";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -209,6 +209,9 @@ function eventInput(event, cwd) {
   });
 }
 
+/** The mtime, in seconds, every locked sandbox directory starts with: 2000-01-01T00:00:00Z, a whole second on any tick. */
+const BACKDATED = 946684800;
+
 /** One sandbox per spawn: an empty HOME and XDG dirs, read-only for the unwritable input. */
 function faultSandbox(pluginName, input, stateDirs = []) {
   const root = mkdtempSync(join(tmpdir(), "ledger-gate-"));
@@ -246,6 +249,16 @@ function faultSandbox(pluginName, input, stateDirs = []) {
   // The directories the unwritable input makes read-only: a run that writes nothing in them has
   // nothing the unwritable input can take away.
   const locked = [join(data, pluginName), ...dirs];
+  // Each starts with its mtime set back to BACKDATED, so an entry made or removed during the run
+  // moves it to now, years away, even where the filesystem keeps a coarse timestamp (a 2 s tick
+  // would otherwise hide a change in the tick the sandbox was made in). One utimes per directory.
+  for (const dir of locked) {
+    try {
+      utimesSync(dir, BACKDATED, BACKDATED);
+    } catch {
+      /* not made (the data directory on a writable input) */
+    }
+  }
   // Outside every locked directory, so the tracker's own lines are never a write there.
   mkdirSync(join(root, "track"));
   const trackLog = join(root, "track", "writes.log");
@@ -266,8 +279,9 @@ function listing(dirs) {
 /**
  * Each of `dirs` as its modification time in nanoseconds: null when it does not exist, "?" when it
  * could not be read for another reason. A directory's mtime moves on every entry created or
- * removed in it, so a temp or lock file made and deleted inside one run usually shows; on a
- * filesystem with coarse timestamps it may not, which is why the write tracker decides.
+ * removed in it, so a temp or lock file made and deleted inside one run shows; the sandbox sets
+ * each locked directory's mtime back to BACKDATED first, so a coarse filesystem tick cannot
+ * round the change onto the stamp taken before the run. The write tracker still decides.
  */
 function stamps(dirs) {
   return dirs.map((dir) => {

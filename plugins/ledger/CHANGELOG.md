@@ -25,6 +25,14 @@ All notable changes to ledger are recorded here. The format follows
   tracker, or it loaded a native addon) has an unknown baseline and gets no such pass.
 - A hook that writes state on the healthy input and swallows the unwritable fault (no
   `errors.log` line) still fails, in the state directory and in the data directory alike.
+- The write tracker counts a write through a dangling symlink, or a chain of symlinks ending
+  at a file that does not exist yet, at the file the write creates. It walks the chain with
+  `readlink` (at most 40 hops) only when `realpath` fails, and a loop or a missing directory
+  leaves the hook running.
+- A lock file made and removed in the state directory within one coarse filesystem tick no
+  longer leaves a run the tracker cannot follow reading as unknown. The sandbox sets each
+  directory the unwritable input locks to an mtime of 2000-01-01 before the run (one `utimes`
+  per directory), so any entry change moves it.
 
 ### Changed
 
