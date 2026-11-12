@@ -5,7 +5,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { chmodSync, existsSync, readFileSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { sandbox, hook, cli, openDb, HOOKS } from "./helpers.mjs";
 import { readErrors } from "../lib/failopen.mjs";
@@ -99,4 +99,53 @@ test("LEDGER_SESSION_ID names the session when the hook input has none", () => {
   const r = hook(box, "session-end", "not json", { env: { LEDGER_SESSION_ID: "s-env" } });
   assert.equal(r.code, 0, r.err);
   assert.equal(onlyLine(box).entry.ctx.session, "s-env");
+});
+
+// The tag's own JSON can contain ` ctx={`: the reader must split at the writer's tag, not inside it.
+test("a cwd containing \" ctx={x\" round-trips: ctx intact, message without the tag", () => {
+  const box = sandbox();
+  const cwd = join(box.root, "dir ctx={x");
+  mkdirSync(cwd);
+  const r = hook(box, "session-end", "not json", { cwd });
+  assert.equal(r.code, 0, r.err);
+  const { raw, entry } = onlyLine(box);
+  assert.ok(raw.includes(" ctx={x"), raw);
+  assert.equal(entry.ctx?.cwd, cwd, raw);
+  assert.match(entry.message, /^stdin not JSON: /, raw);
+  assert.ok(!entry.message.includes("ctx="), entry.message);
+});
+
+test("a session id containing \" ctx=\" round-trips", () => {
+  const box = sandbox();
+  const session = 's ctx={"y":2}';
+  const r = hook(box, "session-end", "not json", { env: { LEDGER_SESSION_ID: session } });
+  assert.equal(r.code, 0, r.err);
+  const { raw, entry } = onlyLine(box);
+  assert.equal(entry.ctx?.session, session, raw);
+  assert.match(entry.message, /^stdin not JSON: /, raw);
+  assert.ok(!entry.message.includes("ctx="), entry.message);
+});
+
+test("a parent command line containing ' ctx={\"a\":1}' round-trips", () => {
+  const box = sandbox();
+  // The hook's parent is a node process whose argv carries the substring early, before ps output is cut.
+  const spawner = `/* ctx={"a":1} */ const r = require("node:child_process").spawnSync(process.execPath, [process.env.HOOK], { input: "not json", stdio: ["pipe", "inherit", "inherit"] }); process.exit(r.status ?? 1);`;
+  const r = spawnSync(process.execPath, ["-e", spawner], { cwd: box.work, env: { ...box.env, HOOK: HOOKS["session-end"] }, encoding: "utf8" });
+  assert.equal(r.status, 0, r.stderr);
+  const { raw, entry } = onlyLine(box);
+  assert.ok(entry.ctx, raw);
+  assert.ok(entry.ctx.parent.includes(' ctx={"a":1}'), raw);
+  assert.equal(entry.ctx.cwd, box.work, raw);
+  assert.match(entry.message, /^stdin not JSON: /, raw);
+  assert.ok(!entry.message.includes("ctx="), entry.message);
+});
+
+test("a tagless line whose message ends in JSON keeps its message whole", () => {
+  const box = sandbox();
+  mkdirSync(join(box.root, "state", "ledger"), { recursive: true });
+  // A ledger 0.4.0 line has no ctx tag; JSON at its end is message text, not context.
+  writeFileSync(box.errorsLog, '2026-11-01T00:00:00.000Z SessionEnd boom ctx={"a":1}\n');
+  const [entry] = readErrors(box.env);
+  assert.equal(entry.ctx, null);
+  assert.equal(entry.message, 'boom ctx={"a":1}');
 });

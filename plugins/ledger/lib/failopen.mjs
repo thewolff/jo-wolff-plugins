@@ -95,6 +95,31 @@ export function errorsLogPath(env = process.env) {
   return join(stateDir(env), "errors.log");
 }
 
+const CONTEXT_KEYS = ["session", "cwd", "ppid", "parent"];
+
+/**
+ * Split `<message> ctx={…}` at the tag contextTag wrote: { message, ctx }, ctx null and the text
+ * whole when there is none. The tag's JSON can itself contain ` ctx={` (a cwd, session id or parent
+ * command line), so the leftmost occurrence whose suffix parses to an object with exactly the
+ * writer's keys wins; a message that merely ends in other JSON is left alone.
+ */
+function splitContextTag(text) {
+  const marker = " ctx={";
+  for (let i = text.indexOf(marker); i !== -1; i = text.indexOf(marker, i + 1)) {
+    let ctx;
+    try {
+      ctx = JSON.parse(text.slice(i + marker.length - 1));
+    } catch {
+      continue;
+    }
+    if (!ctx || typeof ctx !== "object" || Array.isArray(ctx)) continue;
+    const keys = Object.keys(ctx);
+    if (keys.length !== CONTEXT_KEYS.length || !CONTEXT_KEYS.every((k) => keys.includes(k))) continue;
+    return { message: text.slice(0, i), ctx };
+  }
+  return { message: text, ctx: null };
+}
+
 /**
  * The errors log lines written at or after `since` (ms), oldest first: { at, hook, db, message, ctx }
  * (`db` null for an untagged line: one written before config loaded, or by ledger 0.2.x; `ctx`
@@ -116,17 +141,7 @@ export function readErrors(env = process.env, { since = 0, db = undefined } = {}
     const t = Date.parse(m[1]);
     if (!Number.isFinite(t) || t < since) continue;
     const tag = /^(.*) \[db (.*)\]$/.exec(m[3]);
-    let message = tag ? tag[1] : m[3];
-    let ctx = null;
-    const c = /^(.*) ctx=(\{.*\})$/.exec(message);
-    if (c) {
-      try {
-        ctx = JSON.parse(c[2]);
-        message = c[1];
-      } catch {
-        /* not our tag: leave the message whole */
-      }
-    }
+    const { message, ctx } = splitContextTag(tag ? tag[1] : m[3]);
     const entry = { at: m[1], hook: m[2], db: tag ? tag[2] : null, message, ctx };
     if (db !== undefined && entry.db !== db) continue;
     out.push(entry);
