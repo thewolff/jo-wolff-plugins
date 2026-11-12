@@ -697,6 +697,45 @@ test("R2-B2 and R3-B4: gh pr create --head checks the branch on the remote as it
   assert.match(p.json.systemMessage, new RegExp(`checked ${reviewed.slice(0, 8)}, the pull request's head as gh reports it now.*--match-head-commit ${reviewed}`));
 });
 
+test("gh pr create --head on a branch whose upstream is origin/main checks the branch's own tip on the remote, not main's; from a `cd` target, with and without --base", () => {
+  const b = repo();
+  const remote = join(b.root, "remote.git");
+  assert.equal(spawnSync("git", ["init", "-q", "--bare", remote]).status, 0);
+  git(b, "remote", "add", "origin", remote);
+  git(b, "push", "-q", "origin", "main:main", "feat:feat");
+  // `git checkout -b feat origin/main` leaves this upstream: the branch tracks main, HEAD is ahead of it.
+  git(b, "config", "branch.feat.remote", "origin");
+  git(b, "config", "branch.feat.merge", "refs/heads/main");
+  const main = git(b, "rev-parse", "main");
+  review(b, [], { LEDGER_REVIEW_BIN_CODEX: stub(b, "codex", "PASS") });
+  const reviewed = git(b, "rev-parse", "HEAD");
+  assert.notEqual(reviewed, main);
+  // The session sits in another repository whose HEAD is unreviewed; the command `cd`s into the branch's repo.
+  assert.equal(spawnSync("git", ["init", "-q", "-b", "main", b.sibling]).status, 0);
+  writeFileSync(join(b.sibling, "s.txt"), "s\n");
+  assert.equal(spawnSync("git", ["-C", b.sibling, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "s", "--allow-empty"]).status, 0);
+  const from = (command) => hook(b, "pre-tool-use", { session_id: SID, cwd: b.sibling, hook_event_name: "PreToolUse", tool_name: "Bash", tool_input: { command } }, { cwd: b.sibling });
+  const cmds = [
+    `cd ${b.work} && GH_PAGER=cat gh pr create --repo o/r --base main --head feat --title t --body-file /dev/null`,
+    `cd ${b.work} && GH_PAGER=cat gh pr create --repo o/r --head feat --title t --body-file /dev/null`,
+    `cd ${b.work} && gh pr create --title t --body-file /dev/null`,
+  ];
+  for (const c of cmds) {
+    const p = from(c);
+    assert.equal(decision(p), "allow", `${c} (main ${main.slice(0, 8)}, reviewed head ${reviewed.slice(0, 8)}): ${p.out}`);
+    assert.equal(p.out, "", `${c}: the reviewed branch tip passes silently`);
+  }
+  // An unreviewed head is still refused, naming its own commit and not main's.
+  const unreviewed = commit(b, "u.txt", "unreviewed\n");
+  git(b, "push", "-q", "origin", "feat:feat");
+  for (const c of cmds) {
+    const p = from(c);
+    assert.equal(decision(p), "deny", c);
+    assert.match(p.json.hookSpecificOutput.permissionDecisionReason, new RegExp(`no cross-lab review for ${unreviewed.slice(0, 8)}`), c);
+    assert.doesNotMatch(p.json.hookSpecificOutput.permissionDecisionReason, new RegExp(main.slice(0, 8)), c);
+  }
+});
+
 test("R2-B3: a same-commit retry, a downgrade to nit and a skipped or unavailable lab do not clear a finding without the judge", () => {
   const b = repo({ labs: ["codex", "claude"], maxRounds: 9 });
   const find = "1. [blocking] a.txt:1 wrong value";

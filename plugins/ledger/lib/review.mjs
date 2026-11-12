@@ -774,8 +774,9 @@ function positionals(args, withArg) {
  *                  refspec, or `matching`).
  *   gh pr create   no `--head`: HEAD (gh pushes the current branch). `--head <branch>`: gh does
  *                  not push, so the pull request's head is the branch on the remote as it is
- *                  now: `git ls-remote` of the branch's upstream (`branch.<b>.remote` and
- *                  `.merge`), else `origin`'s `refs/heads/<branch>`, bounded by GH_TIMEOUT_MS.
+ *                  now: `git ls-remote` of `refs/heads/<branch>` on `branch.<b>.remote`, else
+ *                  on `origin`, bounded by GH_TIMEOUT_MS. Never `branch.<b>.merge`: a branch
+ *                  that tracks `main` would check main's tip, not the pull request's head.
  *                  A local remote-tracking ref is never trusted: it may be stale.
  *                  `--head <owner>:<branch>` is another repository.
  *   gh pr merge    `--match-head-commit <sha>` when it is a full sha, else the head commit
@@ -842,7 +843,7 @@ export function operationTargets(op, cwd, { env = process.env } = {}) {
     if (head.includes(":")) throw new UnknownTarget(`gh pr create --head ${head} names another owner's branch, which is not in this repository`);
     const first = (key) => gitConfig(repo.top, key, opts)[0] ?? null;
     const remote = first(`branch.${head}.remote`) ?? "origin";
-    const ref = first(`branch.${head}.merge`) ?? `refs/heads/${head}`;
+    const ref = `refs/heads/${head}`;
     const r = lsRemote(repo.top, remote, ref, env);
     if (!r.sha) throw new UnknownTarget(`gh pr create --head ${head} opens the pull request from ${remote}'s ${ref}, and ${r.why}; a local remote-tracking ref may be stale, so it was not used`);
     return [{ top: repo.top, sha: r.sha }];
