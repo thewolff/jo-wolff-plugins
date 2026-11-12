@@ -53,6 +53,7 @@ All notable changes to brb are recorded here. The format follows
   rather than reaching the agent unchecked. A fault in the press's work after the check still
   fails open. A typed `3`, `done 3` or `brb clear` now checks home and does its work under one
   session lock, so a `brb` landing between them cannot tick or clear the list during the hold.
+  With no list open it takes no lock, so a prompt at home still leaves no state behind.
 - A `brb clear` block or one item longer than 8000 characters is written whole to
   `export/<when>-<what>.md` (fsync'd, its size checked) before the message that points at it,
   and the message is cut and names that file by absolute path; `brb clear` removes

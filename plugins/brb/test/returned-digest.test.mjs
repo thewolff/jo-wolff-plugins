@@ -462,3 +462,15 @@ test("a typed item word checks home and does its work under one lock: `done 1` a
     b.release();
   }
 });
+
+test("a typed item word at home with no list open leaves no state behind: no session directory is created", () => {
+  const b = box();
+  try {
+    assert.equal(runHook(b, "user-prompt-submit", promptInput(b, "2")).stdout, "", "a bare number is an ordinary prompt");
+    assert.equal(runHook(b, "user-prompt-submit", promptInput(b, "done 2")).stdout, "");
+    assert.equal(ctx(b, "brb clear"), NO_OPEN_TEXT);
+    assert.equal(existsSync(b.stateDir("s1")), false, "no session directory");
+  } finally {
+    b.release();
+  }
+});

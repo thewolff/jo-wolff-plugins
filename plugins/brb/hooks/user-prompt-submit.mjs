@@ -154,9 +154,12 @@ export function handle(input, { env = process.env, now = () => new Date().toISOS
     }
   }
   // A typed item word: the home check and the work share one lock, so a `brb` cannot start
-  // between them and have the word tick or clear the list during the hold.
+  // between them and have the word tick or clear the list during the hold. With no list open
+  // there is nothing to tick, so the lock (which creates the session directory) is skipped and a
+  // prompt at home leaves no state behind.
   if (pick) {
-    const out = withAwayLock(sessionId, env, () => (readAway(sessionId, env) ? undefined : workReturned(sessionId, pick, env, { locked: true })));
+    const listed = Boolean(readChecklist(sessionId, env));
+    const out = listed ? withAwayLock(sessionId, env, () => (readAway(sessionId, env) ? undefined : workReturned(sessionId, pick, env, { locked: true }))) : readAway(sessionId, env) ? undefined : workReturned(sessionId, pick, env);
     if (out !== undefined) return out;
   }
   const word = surfaceWord(input?.prompt);
