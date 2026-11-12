@@ -164,3 +164,19 @@ test("capped owed lists point at pending --all, which shows every left-out item 
   const out = cli(box, ["pending", "--all"]).out;
   for (const id of ids) assert.ok(out.includes(id), `${id} missing from pending --all:\n${out}`);
 });
+
+for (const flag of ["work", "pointer"]) {
+  test(`answer through the CLI: --${flag} takes the next argv token as its value, even a flag-looking one`, () => {
+    const box = sandbox();
+    const q = askQuestion(box, { name: `argv-${flag}`, options: "yes,no", sessionId: A });
+    const r = cli(box, ["answer", q, "yes", `--${flag}`, "--nothing"], { env: { LEDGER_SESSION_ID: A } });
+    assert.equal(r.code, 0, r.out + r.err);
+    const db = openDb(box);
+    const item = row(db, "SELECT body, pointer, state FROM cc_owed WHERE question_id = ?", q);
+    db.close();
+    assert.ok(item, `--nothing was read as a flag, no owed row:\n${r.out}`);
+    if (flag === "work") assert.equal(item.body, "--nothing");
+    else assert.deepEqual([item.state, item.pointer], ["started", "--nothing"]);
+    assert.deepEqual(parseLine(`answer q-abc yes --${flag} --nothing`).answerFlags, { [flag]: "--nothing" });
+  });
+}

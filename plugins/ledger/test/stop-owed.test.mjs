@@ -174,14 +174,29 @@ test("more than eight events: the ones past the cap are not marked shown and app
   assert.equal(passes(stop(b, "p-many")), "", "each event is shown once");
 });
 
-test("more than eight lines: the Stop list is capped and points at pending --all", () => {
+test("more than eight event lines: the cut events are said to show at a later Stop, and they do", () => {
   const b = sandbox();
   start(b);
   for (let k = 0; k < 5; k++) {
     const ow = owedId(cli(b, ["owe", `capped item ${k}`], { env }).out);
-    assert.equal(cli(b, ["start", ow, `agent ${k}`], { env }).code, 0);
+    assert.equal(cli(b, ["done", ow], { env }).code, 0);
   }
   const msg = passes(stop(b, "p-1"));
+  const shown = msg.split("\n").filter((l) => l.startsWith("ledger: "));
+  assert.equal(shown.length, 8, msg);
+  assert.match(msg, /\n… and 2 more events; they show at a later Stop$/);
+  assert.doesNotMatch(msg, /pending/, "done items are not in pending --all");
+  const next = passes(stop(b, "p-2"));
+  assert.equal(next.split("\n").length, 2, next);
+  assert.ok(next.split("\n").every((l) => l.startsWith("ledger: done: capped item 4") || l.startsWith("ledger: owed: capped item 4")), next);
+});
+
+test("cut still-owed lines point at pending --all, cut events at a later Stop", () => {
+  const b = sandbox();
+  start(b);
+  for (let k = 0; k < 9; k++) cli(b, ["owe", `stuck item ${k}`], { env });
+  blocked(stop(b, "p-1"), /still owed/);
+  const msg = passes(stop(b, "p-1"));
   assert.equal(msg.split("\n").filter((l) => l.startsWith("ledger: ")).length, 8, msg);
-  assert.match(msg, /… and 2 more; run `[^`]*pending --all`$/);
+  assert.match(msg, /\n… and 1 more event; it shows at a later Stop · 9 more still owed; run `[^`]*pending --all`$/);
 });

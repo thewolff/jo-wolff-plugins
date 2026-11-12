@@ -219,7 +219,8 @@ const FALL_THROUGH = new Set(["approve", "deny", "start", "drop", "done", "wait"
 
 /**
  * `--nothing`, `--pointer <v>` and `--work <v>` taken out of an answer's reply tokens (anywhere in
- * the tail; a value runs to the next `--` token). Any other `--x` token stays in the reply.
+ * the tail; a value is the next token, whatever it is, and runs on to the next `--` token). Any
+ * other `--x` token stays in the reply.
  * `quoted` holds the indices (into `tokens`) that were quoted: a quoted token is never a flag and
  * never ends a value. An unquoted bare `--` ends the flags; every token after it is reply text.
  */
@@ -250,8 +251,10 @@ export function takeAnswerFlags(tokens, quoted = new Set()) {
       answerFlags.nothing = true;
       continue;
     }
-    const values = [];
-    while (i + 1 < tokens.length && !isFlagLike(i + 1)) values.push(tokens[++i]);
+    // The first token after --work/--pointer is always the value: argv arrives with its shell
+    // quotes already removed, so `--work "--nothing"` is indistinguishable from `--work --nothing`.
+    const values = i + 1 < tokens.length && tokens[i + 1] !== "--" ? [tokens[++i]] : [];
+    while (values.length && i + 1 < tokens.length && !isFlagLike(i + 1)) values.push(tokens[++i]);
     answerFlags[m[1]] = values.length ? values.join(" ") : true;
   }
   return { tail, answerFlags };

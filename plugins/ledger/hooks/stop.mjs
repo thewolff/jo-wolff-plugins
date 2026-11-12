@@ -194,7 +194,16 @@ export function handle(input, { env = process.env, now = Date.now() } = {}) {
       if (owedSpent && forcing.stopOwedRule !== false) {
         for (const i of blockingSet(db, { sessionId, cwd })) lines.push(`ledger: still owed after one reminder, and the turn ended: ${i.body}`);
       }
-      if (lines.length > MAX_LINES) lines = [...lines.slice(0, MAX_LINES), `… and ${lines.length - MAX_LINES} more; run \`${cli} pending --all\``];
+      if (lines.length > MAX_LINES) {
+        // Events come first; a cut event stays unstamped and shows at a later Stop, while a cut
+        // still-owed line names an open item, which `pending --all` lists.
+        const cutEvents = Math.max(0, events.length - MAX_LINES);
+        const cutOwed = lines.length - MAX_LINES - cutEvents;
+        const parts = [];
+        if (cutEvents) parts.push(cutEvents === 1 ? "1 more event; it shows at a later Stop" : `${cutEvents} more events; they show at a later Stop`);
+        if (cutOwed) parts.push(`${cutOwed} more still owed; run \`${cli} pending --all\``);
+        lines = [...lines.slice(0, MAX_LINES), `… and ${parts.join(" · ")}`];
+      }
       // Only the events whose lines were printed are stamped; the rest show on a later Stop.
       const shown = events.slice(0, MAX_LINES);
       if (shown.length) transaction(db, () => markShown(db, shown.map((e) => e.id), iso), store.dbPath);

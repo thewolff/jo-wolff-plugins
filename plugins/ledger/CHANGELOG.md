@@ -39,7 +39,9 @@ All notable changes to ledger are recorded here. The format follows
 - A `start` or `hold` that repeats an item's pointer or reason from another session takes the item over (one move row) instead of reporting a noop.
 - `pending` also lists this session's owed work from other folders (` · in <folder>`), and `pending --all` lists every folder's owed work, so the capped owed lists' `pending` pointer shows every item they leave out.
 - A `wait` that repeats an item's link to a question from another session (one that adopted the question by repeating `ask`) takes the item over (one `wait` move row) instead of reporting a noop.
-- The capped owed lists (SessionStart, UserPromptSubmit, Stop) point at `pending --all` instead of `pending`, so every item they leave out is reachable even when `LEDGER_SESSION_ID` is not set in the CLI's environment.
+- The capped owed lists (SessionStart, UserPromptSubmit, and the Stop list's still-owed lines) point at `pending --all` instead of `pending`, so every item they leave out is reachable even when `LEDGER_SESSION_ID` is not set in the CLI's environment.
+- `answer … --work` and `--pointer` take the next argv token as their value even when it starts with `--`, so `--work "--nothing"` through the CLI (where the shell has removed the quotes) records the work instead of reading `--nothing` as a flag.
+- The Stop list's overflow line no longer points cut events (done, dropped and the rest) at `pending --all`, which does not list them; it says they show at a later Stop, and only cut still-owed lines point at `pending --all`.
 
 ## 0.3.13 - 2026-11-11
 
