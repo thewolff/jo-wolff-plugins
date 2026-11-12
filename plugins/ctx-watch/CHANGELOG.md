@@ -16,13 +16,19 @@ alive", and its reason was dropped, so the log could not say which of its checks
   `liveness` (`{ alive, pid, detail }`) on the result, and the tick's line ends its reason with
   `; not slow: <detail>`, naming the failed check: the endpoint file unreadable or without a pid,
   a path that is not ctx's socket, the pid not running, the connect's error code (`ENOENT`,
-  `ECONNREFUSED`), or `no connection within <ms> ms`. The SessionStart line, `check` and the
-  state file are unchanged.
+  `ECONNREFUSED`), or `no connection within <ms> ms`. When a heal ran, the line's top level is
+  the re-probe, so the miss that led to the heal is logged as `| first probe not slow: <detail>`
+  whatever the re-probe answered (a pass included), and a re-probe that misses too says
+  `; re-probe not slow: <detail>`. The SessionStart line, `check` and the state file are
+  unchanged.
 - The liveness check's bound (`ALIVE_TIMEOUT_MS`) is 10 s, up from 2 s: the likelier cause of the
   three misses is the connecting node child not starting within 2 s on a loaded machine. A dead
   daemon still answers at once (no socket file: `ENOENT`; a socket no one listens on: refused).
   The SessionStart hook still caps it by what is left of its 3 s clock (at most 1.8 s). The
-  timer's worst-case tick grows from about 2.8 to about 3.1 minutes, under the 300 s interval.
+  configured bounds of the timer's check (status, liveness, upgrade read, indexing-mode read,
+  heal with its grace, status and liveness again) add up to 195 s, up from 179 s, or 200 s with
+  the heal wrapper's 5 s backstop, under the 300 s interval. They bound each step; the timer's
+  check has no deadline over all of them.
 
 ## [0.4.0] - 2026-11-11
 

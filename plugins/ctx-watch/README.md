@@ -169,9 +169,12 @@ up to 75 s for installation quiescence, then up to 5 s to stop and 5 s to restar
 (`daemon_autostart.rs`), so any bound under 85 s can kill `ctx index mode auto` in the middle of
 ctx's own work; a SIGKILL there is the likeliest way ctx's supervisor files were left recording
 a launch environment without `LANG` on 2026-11-10. 120 s covers the 85 s with room; the 15 s
-grace lets ctx leave its files whole. The timer's tick can then take about 3.1 minutes in the
-worst case (status 10 s, liveness 10 s, upgrade read 10 s, heal 135 s, status and liveness again
-20 s), which a 300 s `StartInterval` absorbs (launchd does not start a second run while one
+grace lets ctx leave its files whole. The configured bounds of one tick's check add up to 195 s
+(status 10 s, liveness 10 s, upgrade read 10 s, indexing-mode read 10 s, heal 120 s plus its
+15 s grace, status and liveness again 20 s), or 200 s if the heal's wrapper also needs its 5 s
+SIGKILL backstop; the state lock and the popup start add a few seconds more. These are the
+bounds of each step, not one deadline over the tick: the timer's check has none. A 300 s
+`StartInterval` absorbs them (launchd does not start a second run while one
 is running). The heal no longer runs in the SessionStart hook at all: the hook runner allows
 4 s, which cannot hold ctx's 75 s, so the hook only reads (see below) and leaves the heal to the
 timer and to `repair`.
@@ -237,7 +240,10 @@ sandboxed shell.
   failure, as before. Since 0.4.1 the result carries the check's answer as `liveness`, and the
   tick's line ends its reason with `; not slow: <detail>`, naming the check that failed, e.g.
   `; not slow: pid 29332 runs, but its query socket …/query.sock did not accept a connection
-  (no connection within 10000 ms)`.
+  (no connection within 10000 ms)`. When a heal ran, the line's top level is the re-probe, so
+  the miss that led to the heal is logged as ` | first probe not slow: <detail>` before
+  ` | heal: …`, whatever the re-probe answered (a pass included), and a re-probe that misses
+  too says `; re-probe not slow: <detail>`.
 - **Bound**: a daemon hung for good still accepts on its socket (the kernel queues the
   connection), so a slow run that has lasted 30 min (`SLOW_MAX_MS`, six ticks) counts as a
   failure: it strikes, then goes down with its popup, and the agent is told it is down.
@@ -654,7 +660,9 @@ From three 0.4.0 ticks on 2026-11-12 that failed as "ctx could not run" while th
 
 - **A miss says why.** A timed-out status call whose liveness check says "not alive" carries
   that check's answer as `liveness`, and the tick's line ends `; not slow: <detail>`, naming the
-  failed check (endpoint, socket path shape, pid, connect error code, or connect timeout). The
+  failed check (endpoint, socket path shape, pid, connect error code, or connect timeout). When
+  a heal ran, the miss that led to it is logged as `first probe not slow: <detail>`, whatever
+  the re-probe answered, and a re-probe's own miss as `re-probe not slow: <detail>`. The
   SessionStart line, `check` and `state.json` are unchanged.
 - **The liveness bound is 10 s**, up from 2 s, so a node child slow to start on a loaded machine
   still connects. A dead daemon still answers at once; the SessionStart hook keeps at most 1.8 s.
