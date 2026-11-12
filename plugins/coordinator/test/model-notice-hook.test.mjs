@@ -36,7 +36,7 @@ function box(config) {
       return [];
     }
   };
-  return { run, skipped, release: () => rmSync(root, { recursive: true, force: true }) };
+  return { run, skipped, env, release: () => rmSync(root, { recursive: true, force: true }) };
 }
 
 test("the captured switch, inside a listed folder, gets the model-only notice as additionalContext", () => {
@@ -106,6 +106,19 @@ test("a field of the wrong type: defaults plus a systemMessage naming the field"
   const b = box(() => ({ folders: ["relative/path"] }));
   try {
     assert.match(b.run().systemMessage, /folders must be an array of absolute paths; using defaults$/);
+  } finally {
+    b.release();
+  }
+});
+
+test("a skipped.log that cannot be appended to is named in a systemMessage, and the hook still exits 0", () => {
+  const b = box((work) => ({ folders: [work] }));
+  try {
+    mkdirSync(join(b.env.XDG_STATE_HOME, "coordinator", "skipped.log"), { recursive: true });
+    const out = b.run({ to_model: "sonnet" });
+    assert.match(out.systemMessage, /^coordinator model-notice: could not write .*skipped\.log \(EISDIR\); the skipped-model trace was lost$/);
+    assert.equal(out.hookSpecificOutput, undefined);
+    assert.match(readFileSync(join(b.env.XDG_STATE_HOME, "coordinator", "errors.log"), "utf8"), / PostModelSwitch model-notice: could not write .*skipped\.log/);
   } finally {
     b.release();
   }

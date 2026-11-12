@@ -21,7 +21,9 @@ All notable changes to coordinator are recorded here. The format follows
   line when the log can still be appended to); an unreadable config file is a fault, not a silent
   default; `scripts/prune.mjs` names an unreadable directory on stderr; a family missing from
   `modelFamilyRank` makes a cross-family comparison "not judged" rather than a mismatch; the
-  canary checks the clock line in the hook's own `hook_response`.
+  canary checks the clock line in the hook's own `hook_response`, requires the session to end in a
+  completed `result` event, and fails when the scenario helper is missing. A `skipped.log` that
+  cannot be written is named in the model hook's `systemMessage`.
 
 ### Changed
 

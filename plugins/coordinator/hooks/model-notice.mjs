@@ -15,9 +15,11 @@
 //
 // How it fails: stdin not JSON, a thrown error, or no answer in 4 s → the runner logs it to
 // ${XDG_STATE_HOME:-~/.local/state}/coordinator/errors.log and allows. A malformed config → the
-// defaults (folders empty, so silent) plus a systemMessage naming the file.
+// defaults (folders empty, so silent) plus a systemMessage naming the file. A model that cannot be judged
+// whose skipped.log line cannot be written → a systemMessage naming the file (and an errors.log
+// line when that can be written).
 
-import { runHook, invokedDirectly } from "../lib/hook-runner.mjs";
+import { runHook, invokedDirectly, logError } from "../lib/hook-runner.mjs";
 import { loadConfig, logSkipped, withFault } from "../lib/config.mjs";
 import { decide } from "../lib/model-notice.mjs";
 
@@ -33,8 +35,12 @@ export function handle(input, { env = process.env } = {}) {
   if (input?.hook_event_name !== "PostModelSwitch") return withFault(null, fault, HOOK);
   const effort = typeof input.effort?.level === "string" ? input.effort.level : undefined;
   const { say, skipped } = decide({ cwd: input.cwd, toModel: input.to_model, fromModel: input.from_model, source: input.source, effort }, config);
-  if (skipped) logSkipped(HOOK, skipped, env);
-  return withFault(say ? { hookSpecificOutput: { hookEventName: "PostModelSwitch", additionalContext: say } } : null, fault, HOOK);
+  const lost = skipped ? logSkipped(HOOK, skipped, env) : null;
+  if (lost) logError("coordinator", "PostModelSwitch", `${HOOK}: ${lost}`, env);
+  const out = withFault(say ? { hookSpecificOutput: { hookEventName: "PostModelSwitch", additionalContext: say } } : null, fault, HOOK);
+  if (!lost) return out;
+  const note = `coordinator ${HOOK}: ${lost}`;
+  return { ...out, systemMessage: out?.systemMessage ? `${out.systemMessage}\n${note}` : note };
 }
 
 if (invokedDirectly(import.meta.url)) runHook("PostModelSwitch", import.meta.url, { plugin: "coordinator" });

@@ -108,14 +108,16 @@ export function stateFault(env = process.env, home = homedir()) {
   }
 }
 
-/** Append `<iso> <hook> <why>` to skipped.log; never throws. */
+/** Append `<iso> <hook> <why>` to skipped.log; never throws. Returns null, or a message naming the file and why the line was lost. */
 export function logSkipped(hook, why, env = process.env, home = homedir()) {
+  const file = join(stateDir(env, home), "skipped.log");
   try {
-    const dir = stateDir(env, home);
-    mkdirSync(dir, { recursive: true });
-    appendFileSync(join(dir, "skipped.log"), `${new Date().toISOString()} ${hook} ${String(why).replace(/\s+/g, " ")}\n`);
-  } catch {
-    // an unwritable state directory loses the trace, never the prompt
+    mkdirSync(stateDir(env, home), { recursive: true });
+    appendFileSync(file, `${new Date().toISOString()} ${hook} ${String(why).replace(/\s+/g, " ")}\n`);
+    return null;
+  } catch (err) {
+    // the prompt goes on; the caller can say the trace was lost
+    return `could not write ${file} (${err?.code ?? err?.message}); the skipped-model trace was lost`;
   }
 }
 

@@ -112,3 +112,15 @@ test("a missing config is the defaults with no fault", () => {
     release();
   }
 });
+
+test("logSkipped returns null on success and names the file and error when the append fails", () => {
+  const { e, release } = env();
+  try {
+    assert.equal(logSkipped("h", "ok", e), null);
+    rmSync(join(stateDir(e), "skipped.log"));
+    mkdirSync(join(stateDir(e), "skipped.log"));
+    assert.match(logSkipped("h", "lost", e), /^could not write .*skipped\.log \(EISDIR\); the skipped-model trace was lost$/);
+  } finally {
+    release();
+  }
+});

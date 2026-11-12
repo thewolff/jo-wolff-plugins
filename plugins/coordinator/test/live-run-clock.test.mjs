@@ -49,3 +49,37 @@ test("the full clock line inside an assistant message does not pass either", () 
   const reply = { type: "assistant", message: { content: [{ type: "text", text: LINE }] } };
   assert.equal(withStream([hook, reply], step2), false);
 });
+
+// The canary's session check: e2e/session-check.mjs over lib/live-run.mjs's sessionProblem.
+const CHECK = fileURLToPath(new URL("../e2e/session-check.mjs", import.meta.url));
+const HELPER = fileURLToPath(new URL("../lib/live-run.mjs", import.meta.url));
+const hookEv = { type: "system", subtype: "hook_response", hook_event: "UserPromptSubmit", output: "{}" };
+const check = (events, code = 0) => withStream(events, (f) => spawnSync(process.execPath, [CHECK, HELPER, f, String(code)], { encoding: "utf8" }));
+
+test("a stream that ends in a successful result event completes", () => {
+  const r = check([hookEv, { type: "result", subtype: "success", is_error: false, terminal_reason: "completed" }]);
+  assert.equal(r.status, 0, r.stdout);
+});
+
+test("a clock hook response followed by an API error is a failure, not a pass", () => {
+  const r = check([hookEv, { type: "result", subtype: "error_during_execution", is_error: true, terminal_reason: "error", result: "API Error: 500 internal server error" }]);
+  assert.equal(r.status, 1);
+  assert.match(r.stdout, /terminal_reason error/);
+});
+
+test("a credential or rate-limit ending is classified unavailable (exit 2)", () => {
+  const r = check([hookEv, { type: "result", subtype: "error", is_error: true, terminal_reason: "error", result: "Invalid API key. Please run /login" }]);
+  assert.equal(r.status, 2);
+  assert.match(r.stdout, /credentials, network or rate limit/);
+});
+
+test("a stream with no result event is a failure", () => {
+  const r = check([hookEv]);
+  assert.equal(r.status, 1);
+  assert.match(r.stdout, /no result event/);
+});
+
+test("the script fails, not skips, when the live-run helper is missing", () => {
+  assert.match(SCRIPT, /fail: no live-run helper[\s\S]*?exit 1\nfi/);
+  assert.doesNotMatch(SCRIPT, /hook scenarios skipped/);
+});

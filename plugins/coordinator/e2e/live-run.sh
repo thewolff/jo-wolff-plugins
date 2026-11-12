@@ -22,7 +22,11 @@
 # The model notice fires only on PostModelSwitch, which a one-prompt `claude -p` run never
 # triggers; its proof is the offline scenarios plus the manual entry in evals/manifest.json.
 #
-# How it fails: a hook scenario fails → exit 1 with the helper's lines. `claude` missing → 75.
+# The session must also end with a result event that reports completion (e2e/session-check.mjs,
+# sessionProblem from the helper): a clock line followed by an API error is not a pass; a
+# credential, network or rate-limit ending is exit 75.
+#
+# How it fails: a hook scenario fails, or the live-run helper is missing → exit 1 with the helper's lines. `claude` missing → 75.
 # `claude` present but the run exits non-zero naming a login, credential or network problem → 75;
 # any other non-zero → that exit code. An assertion fails with its step number. Everything is
 # under a mktemp directory removed at exit; the transcript is copied to CANARY_TRANSCRIPT when
@@ -54,11 +58,11 @@ if [ -n "$HELPER" ]; then
     exit 1
   fi
 else
-  echo "hook scenarios skipped: no live-run helper at $PLUGIN_DIR/lib/live-run.mjs or $PLUGIN_DIR/../plugin-kit/lib/live-run.mjs"
+  echo "fail: no live-run helper at $PLUGIN_DIR/lib/live-run.mjs or $PLUGIN_DIR/../plugin-kit/lib/live-run.mjs, so no hook scenario ran"
+  exit 1
 fi
 
 if [ "$NO_LIVE" = 1 ]; then
-  [ -z "$HELPER" ] && echo "unavailable: live phase skipped (--no-live); hook phase skipped too (no live-run helper)"
   exit 75
 fi
 
@@ -100,6 +104,17 @@ if [ "$CODE" -ne 0 ]; then
   exit "$CODE"
 fi
 
+SESSION="$(node "$PLUGIN_DIR/e2e/session-check.mjs" "$HELPER" "$OUT" "$CODE" 2>&1)"
+SCODE=$?
+if [ "$SCODE" -eq 2 ]; then
+  echo "$SESSION"
+  echo "unavailable: the session ended on a credential, network or rate-limit problem"
+  exit 75
+elif [ "$SCODE" -ne 0 ]; then
+  echo "fail 0: the session did not complete: $SESSION"
+  exit 1
+fi
+echo "step 0: the session's result event reports completion"
 if ! grep -q '"subtype":"hook_response".*"hook_event":"UserPromptSubmit"' "$OUT"; then
   echo "fail 1: no hook_response event for UserPromptSubmit in the stream-json"
   exit 1
