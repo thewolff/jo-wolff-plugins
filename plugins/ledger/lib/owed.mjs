@@ -16,10 +16,10 @@
 //   dropped, done → refused, final
 // A move made by a session takes the item over (session_id set to it).
 //
-// Ownership (`owns`): a tagged item belongs to the session it is tagged with and no other, whatever
-// its folder or question. An untagged item belongs to session S when made at or after S started,
-// in or around S's folder, or when created from the answer to a question S owns by commands.mjs
-// ownedBySession. `blockingSet` is S's owed items with no open wait. Items in scope
+// Ownership (`owns`), first match wins: work from a question tagged with a session belongs to that
+// session, whoever recorded the answer; else a tagged item belongs to its tagged session; else an
+// untagged item belongs to S when made at or after S started in or around S's folder, or when its
+// untagged question is S's by commands.mjs ownedBySession. `blockingSet` is S's owed items with no open wait. Items in scope
 // that S does not own are `leftover`: listed, never blocking.
 //
 // Visible lines: every move row carries `shown_at`; the Stop hook lists the session's unshown rows
@@ -147,13 +147,11 @@ export function sessionView(db, sessionId, cwd) {
 /** Whether item `i` belongs to session `s` ({ id, cwd, started_at }). */
 export function owns(db, s, i) {
   if (!s) return false;
+  const q = i.question_id ? db.prepare("SELECT session_id, cwd, asked_at FROM cc_questions WHERE id = ?").get(i.question_id) : null;
+  if (q?.session_id != null) return q.session_id === s.id;
   if (i.session_id != null) return i.session_id === s.id;
   if (s.started_at && i.made_at >= s.started_at && (isWithin(s.cwd, i.cwd) || isWithin(i.cwd, s.cwd))) return true;
-  if (i.question_id) {
-    const q = db.prepare("SELECT session_id, cwd, asked_at FROM cc_questions WHERE id = ?").get(i.question_id);
-    if (q && ownedBySession(q, { sessionId: s.id, cwd: s.cwd, since: s.started_at })) return true;
-  }
-  return false;
+  return Boolean(q && ownedBySession(q, { sessionId: s.id, cwd: s.cwd, since: s.started_at }));
 }
 
 function waitOpen(db, i) {

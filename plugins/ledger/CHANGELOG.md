@@ -29,9 +29,10 @@ All notable changes to ledger are recorded here. The format follows
 - `forcing.stopOwedRule` and `forcing.stopOfferRule` (both default true).
 - `test/offer-scan.mjs`, a by-hand scan of past transcripts for how often the offer rule
   would fire.
-- Owed work tagged with a session belongs to that session alone: its folder and the question
-  it came from no longer give it to another session. Untagged work (made with no
-  `LEDGER_SESSION_ID`) still goes by folder and start time, or by who owns its question.
+- Who owns owed work: work from an answered question belongs to the session that asked it,
+  whichever session recorded the answer. Other work belongs to the session it is tagged with,
+  whatever its folder. Untagged work from an untagged question (no `LEDGER_SESSION_ID`) goes
+  by folder and start time.
 
 ## 0.3.13 - 2026-11-11
 
