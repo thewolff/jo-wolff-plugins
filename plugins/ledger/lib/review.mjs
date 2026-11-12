@@ -740,8 +740,26 @@ const GH_MERGE_OPTS_WITH_ARG = new Set(["-R", "--repo", "-b", "--body", "-F", "-
 const GH_CREATE_OPTS_WITH_ARG = new Set(["-t", "--title", "-b", "--body", "-F", "--body-file", "-B", "--base", "-H", "--head", "-R", "--repo", "-a", "--assignee", "-l", "--label", "-m", "--milestone", "-p", "--project", "-r", "--reviewer", "-T", "--template", "--recover"]);
 
 /**
- * Every value of `names` in `args` (`--x v`, `--x=v`, `-x v`, `-xv`, `-x=v`), in order. The values of the other
- * options in `withArg` are skipped, so `--body --head=x` is a body, not a head; stops at `--`.
+ * A short-option cluster `-abc`, read as gh's and git's parsers do: letters are flags until the first one
+ * that takes a value (in `withArg` or `names`), which takes the rest of the token (`-dHx`, `-dH=x`), or the
+ * next token when it is the last letter. { flag, value, next } for that letter (`next` true when the value is
+ * the next token), or null when the token is not a cluster or no letter in it takes a value.
+ */
+function shortCluster(a, names, withArg) {
+  if (!/^-[^-]/.test(a)) return null;
+  for (let j = 1; j < a.length; j++) {
+    const flag = `-${a[j]}`;
+    if (!withArg.has(flag) && !names.includes(flag)) continue;
+    const rest = a.slice(j + 1).replace(/^=/, "");
+    return rest ? { flag, value: rest, next: false } : { flag, value: null, next: true };
+  }
+  return null;
+}
+
+/**
+ * Every value of `names` in `args` (`--x v`, `--x=v`, `-x v`, `-xv`, `-x=v`, and inside a cluster such as
+ * `-dxv` or `-dx v`), in order. The values of the other options in `withArg` are skipped, so `--body --head=x`
+ * is a body, not a head; stops at `--`.
  */
 function optValues(args, names, withArg) {
   const out = [];
@@ -758,10 +776,11 @@ function optValues(args, names, withArg) {
       out.push(a.slice(long.length + 1));
       continue;
     }
-    // An attached short value (`-Hx`, `-H=x`) carries its own value, so it never consumes the next token.
-    const short = names.find((name) => /^-[A-Za-z]$/.test(name) && a.length > 2 && a.startsWith(name));
+    const short = shortCluster(a, names, withArg);
     if (short) {
-      out.push(a.slice(2).replace(/^=/, ""));
+      const value = short.next ? (args[i + 1] ?? null) : short.value;
+      if (short.next) i++;
+      if (names.includes(short.flag)) out.push(value);
       continue;
     }
     if (withArg.has(a)) i++;
@@ -780,7 +799,7 @@ function positionals(args, withArg) {
   for (let i = 0; i < args.length; i++) {
     if (args[i] === "--") return [...out, ...args.slice(i + 1)];
     if (args[i].startsWith("-") && args[i] !== "-") {
-      if (withArg.has(args[i])) i++;
+      if (withArg.has(args[i]) || shortCluster(args[i], [], withArg)?.next) i++;
       continue;
     }
     out.push(args[i]);

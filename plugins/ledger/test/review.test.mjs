@@ -728,6 +728,49 @@ test("gh pr create: a --head inside another option's value is that option's valu
   assert.match(push(b, "gh pr create --head reviewed --head someone:feat --title t").json.systemMessage, /--head someone:feat names another owner's branch/);
 });
 
+test("gh pr create: a -H inside a short-option cluster is a head, and a value-taking letter in a cluster takes the rest of it as its value", () => {
+  const b = repo();
+  review(b, [], { LEDGER_REVIEW_BIN_CODEX: stub(b, "codex", "PASS") });
+  const remote = join(b.sibling, "remote.git");
+  assert.equal(spawnSync("git", ["init", "-q", "--bare", remote]).status, 0);
+  git(b, "remote", "add", "origin", remote);
+  git(b, "push", "-q", "origin", "feat:reviewed");
+  const unreviewed = commit(b, "u.txt", "unreviewed\n");
+  git(b, "push", "-q", "origin", "feat:unreviewed");
+  git(b, "reset", "-q", "--hard", "HEAD~1");
+  assert.equal(push(b, "gh pr create -d --title t --body b").out, "", "local HEAD is reviewed");
+  for (const cmd of [
+    "gh pr create -dHunreviewed --title t --body b",
+    "gh pr create -dH unreviewed --title t --body b",
+    "gh pr create -dH=unreviewed --title t --body b",
+    "gh pr create -dt x -H unreviewed",
+    "gh pr create -dtfoo -dHunreviewed",
+    "gh pr create -db - -H unreviewed",
+  ]) {
+    const p = push(b, cmd);
+    assert.equal(decision(p), "deny", cmd);
+    assert.match(p.json.hookSpecificOutput.permissionDecisionReason, new RegExp(`no cross-lab review for ${unreviewed.slice(0, 8)}`), cmd);
+  }
+  // A value-taking letter ends the cluster: the H in -tHunreviewed is part of the title, and the next token is not a value.
+  for (const cmd of ["gh pr create -dtHunreviewed --body b", "gh pr create -dbH -Hreviewed", "gh pr create -dHreviewed --body -Hx"]) {
+    assert.equal(push(b, cmd).out, "", cmd);
+  }
+});
+
+test("git push: a value-taking letter at the end of a short-option cluster takes the next token, so it is not read as the remote", () => {
+  const b = repo();
+  review(b, [], { LEDGER_REVIEW_BIN_CODEX: stub(b, "codex", "PASS") });
+  const remote = join(b.sibling, "remote.git");
+  assert.equal(spawnSync("git", ["init", "-q", "--bare", remote]).status, 0);
+  git(b, "remote", "add", "origin", remote);
+  const unreviewed = commit(b, "u.txt", "unreviewed\n");
+  for (const cmd of ["git push -uo ci.skip origin", "git push -uoci.skip origin"]) {
+    const p = push(b, cmd);
+    assert.equal(decision(p), "deny", cmd);
+    assert.match(p.json.hookSpecificOutput.permissionDecisionReason, new RegExp(`no cross-lab review for ${unreviewed.slice(0, 8)}`), cmd);
+  }
+});
+
 test("gh pr create --head on a branch whose upstream is origin/main checks the branch's own tip on the remote, not main's; from a `cd` target, with and without --base", () => {
   const b = repo();
   const remote = join(b.root, "remote.git");
