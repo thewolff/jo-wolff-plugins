@@ -28,7 +28,7 @@ release; versions live there and in each plugin's `.claude-plugin/plugin.json`, 
 | [ctx-watch](plugins/ctx-watch/README.md) | Notice when the ctx daemon is dead, unsupervised or stale or its index is not ready, repair it, say so at session start, mid-session to the agent and in a macOS popup, and warn when a resumed session skips ctx. |
 | [delegation](plugins/delegation/README.md) | Teach an agent what a subagent's brief must contain, and refuse a spawn whose brief lacks a required section, naming the section to add. Also ships 11 general agents and 3 delegation guards. |
 | [continuity](plugins/continuity/README.md) | Keep a long session's state across compaction: ask the agent for a handoff and block one stop until it writes one, snapshot the session before compaction, restore it after, and say if saving works. |
-| [brb](plugins/brb/README.md) | Type brb and walk away: the agent keeps working, its questions wait in a digest, and only an on-fire problem reaches you. Claude Code hides its output meanwhile. Type back to read the digest. |
+| [brb](plugins/brb/README.md) | Type brb and walk away: the agent keeps working, its questions wait in a digest, and only an on-fire problem reaches you. Claude Code hides its output meanwhile. Type back to get what was held. |
 | [coordinator](plugins/coordinator/README.md) | Habits for a session that coordinates other sessions and subagents: briefing, checking what comes back, relaying the owner's decisions, and keeping a record. |
 
 ## Install

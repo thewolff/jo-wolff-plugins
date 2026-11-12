@@ -67,7 +67,7 @@
     {
       "name": "brb",
       "source": "./plugins/brb",
-      "description": "Type brb and walk away: the agent keeps working, its questions wait in a digest, and only an on-fire problem reaches you. Claude Code hides its output meanwhile. Type back for a numbered list, then open and tick off one item at a time."
+      "description": "Type brb and walk away: the agent keeps working, its questions wait in a digest, and only an on-fire problem reaches you. Claude Code hides its output meanwhile. Type back to get what was held."
     },
     {
       "name": "coordinator",
