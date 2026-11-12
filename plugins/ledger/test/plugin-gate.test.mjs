@@ -954,3 +954,44 @@ test("write tracking: a hook the tracker cannot follow (a shell wrapper that for
   assert.equal(shell.wrote, null);
   assert.equal(shell.tracking.on, false);
 });
+
+test("write tracking: a write through a symlink made outside the state directory to a file inside it is a write there and gets no stateless pass; unlinking, renaming or touching the link itself is not", () => {
+  const b = sandbox();
+  // On a healthy input the hook links its existing errors.log from its working directory and
+  // empties it through the link: no new entry and no mtime change in the state directory.
+  const aliasHook = (name, body) => clockHook(name, null).replace("  const where = null;", `  const where = null;\n  try { const link = "errors-link.log"; symlinkSync(join(process.env.XDG_STATE_HOME, ${JSON.stringify(name)}, "errors.log"), link); ${body} } catch {}`).replace('import { appendFileSync, mkdirSync, writeFileSync }', 'import { appendFileSync, lutimesSync, mkdirSync, renameSync, symlinkSync, unlinkSync, writeFileSync }');
+  const aliased = clockPlugin(b, "aliased", null, aliasHook("aliased", 'writeFileSync(link, "");'));
+  const hook = { event: "UserPromptSubmit", command: process.execPath, args: [join(aliased.dir, "hooks", "clock.mjs")] };
+  const healthy = spawnHook(aliased, hook, { name: "healthy" });
+  assert.equal(healthy.tracking.on, true, healthy.tracking.why);
+  assert.ok(healthy.tracking.writes.some((p) => p.endsWith("/errors-link.log")), JSON.stringify(healthy.tracking));
+  assert.equal(healthy.wrote, true, JSON.stringify(healthy.tracking));
+  const row = checkPlugin(aliased).find((r) => r.name === "visible");
+  assert.equal(row.status, "fail", row.detail);
+  assert.equal(row.detail, "UserPromptSubmit hook on unwritable state: no errors.log line, no systemMessage");
+  // Acting on the link leaves the file it points at alone.
+  const linkOnly = clockPlugin(b, "link-only", null, aliasHook("link-only", 'const now = new Date(); lutimesSync(link, now, now); renameSync(link, "moved.log"); unlinkSync("moved.log");'));
+  const onLink = spawnHook(linkOnly, { ...hook, args: [join(linkOnly.dir, "hooks", "clock.mjs")] }, { name: "healthy" });
+  assert.equal(onLink.tracking.on, true, onLink.tracking.why);
+  assert.equal(onLink.wrote, false, JSON.stringify(onLink.tracking));
+  assert.equal(checkPlugin(linkOnly).find((r) => r.name === "visible").status, "pass");
+});
+
+test("write tracking: promisify(exec) and promisify(execFile) still resolve to { stdout, stderr } under the tracker, and their child is recorded", () => {
+  const b = sandbox();
+  const plugin = { name: "p", dir: join(b.root, "plugins", "promisified") };
+  const run = (call) => {
+    write(plugin.dir, "hooks/hook.mjs", `import { exec, execFile } from "node:child_process";\nimport { promisify } from "node:util";\nconst r = await ${call};\nprocess.stdout.write(JSON.stringify({ r }));`);
+    const out = spawnHook(plugin, { event: "Stop", command: process.execPath, args: [join(plugin.dir, "hooks", "hook.mjs")] }, { name: "healthy" });
+    assert.equal(out.ok, true, out.why);
+    return out;
+  };
+  // A node child loads the tracker, so the run is followed: its pid was recorded and matched.
+  const viaFile = run(`promisify(execFile)(process.execPath, ["-e", "process.stdout.write('hi')"])`);
+  assert.deepEqual(JSON.parse(viaFile.stdout).r, { stdout: "hi", stderr: "" });
+  assert.equal(viaFile.tracking.on, true, viaFile.tracking.why);
+  // A shell child does not, so the run is not followed, and the reason names its pid.
+  const viaShell = run(`promisify(exec)("printf hi")`);
+  assert.deepEqual(JSON.parse(viaShell.stdout).r, { stdout: "hi", stderr: "" });
+  assert.match(viaShell.tracking.why, /child process \d+ did not load/);
+});
