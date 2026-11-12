@@ -203,7 +203,7 @@ export function createLookup(db, cwd) {
       return [...words];
     },
     exists(id) {
-      const table = { q: "cc_questions", an: "cc_answers", nt: "cc_notes" }[prefixOf(id)];
+      const table = { q: "cc_questions", an: "cc_answers", nt: "cc_notes", ow: "cc_owed" }[prefixOf(id)];
       return table ? Boolean(db.prepare(`SELECT 1 FROM ${table} WHERE id = ?`).get(id)) : false;
     },
   };
@@ -333,7 +333,7 @@ export function renderHelp() {
   for (const v of VERBS) lines.push(`  ${v.usage}`, `      [${v.who}] ${v.help}`);
   lines.push(
     "",
-    "ids: q- question, an- answer, nt- note; an id looks like q-mvr3k2p9a1xq.",
+    "ids: q- question, an- answer, nt- note, ow- owed work; an id looks like q-mvr3k2p9a1xq.",
     "answers: <word> <q-id>, where the word is one of the question's options (or withdraw); a word that is not an option is refused. `answer <q-id> <reply>` records a reply that is not an option as given (free-form, up to 200 characters).",
     "batch: with no verb and stdin piped, one command per line; each line is applied on its own, in order, and reported on its own line.",
     "prose: a line that does not match a shape above is `not a command` and is never recorded.",

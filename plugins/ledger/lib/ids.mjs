@@ -8,6 +8,7 @@ export const PREFIXES = Object.freeze({
   question: "q",
   answer: "an",
   note: "nt",
+  owed: "ow",
 });
 
 const ALL = Object.values(PREFIXES);
@@ -25,7 +26,7 @@ export function newId(prefix, now = Date.now()) {
   return `${prefix}-${now.toString(36)}${tail}`;
 }
 
-/** The table prefix of an id (`q`, `an`, `nt`) or null when the text is not an id. */
+/** The table prefix of an id (`q`, `an`, `nt`, `ow`) or null when the text is not an id. */
 export function prefixOf(text) {
   const m = ID_RE.exec(text);
   return m ? m[1] : null;

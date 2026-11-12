@@ -153,7 +153,7 @@ test("ids: shape, prefix, cut-short", () => {
   assert.ok(!isCutShort("q-1"));
   assert.ok(!isId("xx-1"));
   assert.ok(!isId("wl-1"), "workload ids are not a shape here");
-  assert.deepEqual(Object.values(PREFIXES), ["q", "an", "nt"]);
+  assert.deepEqual(Object.values(PREFIXES), ["q", "an", "nt", "ow"]);
   assert.equal(newId("q", 1_700_000_000_000).length, "q-".length + 8 + 4);
 });
 
