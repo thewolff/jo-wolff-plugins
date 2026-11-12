@@ -30,7 +30,7 @@ async function load() {
 const SINCE = new Date(Date.now() - 40 * 60_000).toISOString();
 const AWAY = { ok: true, away: true, since: SINCE, note: "", held: 2, onFire: 0, items: ["Pick the cache", "Approve the schema"] };
 const HOME = { ok: true, away: false, checklist: null };
-const CHECKLIST = { ok: true, away: false, checklist: { at: SINCE, since: SINCE, note: "", items: [{ text: "Pick the cache", done: false }, { text: "Approve the schema", done: false }] } };
+const CHECKLIST = { ok: true, away: false, checklist: { at: SINCE, hold: 3, since: SINCE, note: "", items: [{ text: "Pick the cache", done: false }, { text: "Approve the schema", done: false }] } };
 
 /**
  * An in-memory `$`: `timers` by interval, `runs` each query, `acts` each action, `submits` each
@@ -60,7 +60,7 @@ function stub({ snapshot = HOME, exists = async () => false } = {}) {
           if (s.actHold) await s.actHold;
           const away = s.snapshot.away === true;
           const list = s.snapshot.away ? null : s.snapshot.checklist;
-          const answer = argv[4] === "back" ? { ok: true, away, ...(away ? { since: s.snapshot.since } : {}) } : argv[4] === "open" ? { ok: true, open: Boolean(list), ...(list ? { at: list.at } : {}) } : { ok: true };
+          const answer = argv[4] === "back" ? { ok: true, away, ...(away ? { since: s.snapshot.since } : {}) } : argv[4] === "open" ? { ok: true, open: Boolean(list), ...(list ? { at: list.at, hold: list.hold ?? 0 } : {}) } : { ok: true };
           return { exitCode: 0, stdout: JSON.stringify(answer) + "\n", stderr: "" };
         }
         if (s.queryFails) {
@@ -374,7 +374,7 @@ test("after back: BACK with Show and Done per row and Clear; each press sends it
   await press("item-2");
   await press("done-1");
   await press("clear");
-  assert.deepEqual(s.submits, [{ text: `brb item 2 @${SINCE}`, asUser: true }, { text: `brb done 1 @${SINCE}`, asUser: true }, { text: `brb clear @${SINCE}`, asUser: true }], "each word carries the list's `at`");
+  assert.deepEqual(s.submits, [{ text: `brb item 2 @${SINCE}#3`, asUser: true }, { text: `brb done 1 @${SINCE}#3`, asUser: true }, { text: `brb clear @${SINCE}#3`, asUser: true }], "each word carries the list's `at` and hold number");
   assert.deepEqual(s.acts, [["open"], ["open"], ["open"]], "only read-only checks; nothing written by the band");
   assert.deepEqual(s.toasts, []);
   const before = s.runs;
@@ -399,7 +399,14 @@ test("a band press while a turn runs: a toast now, the prompt at the turn's end;
   assert.equal(s.toasts.length, 1, "a second press while one waits sends nothing");
   assert.deepEqual(s.submits, []);
   await turnComplete(hooks, s);
-  assert.deepEqual(s.submits, [{ text: `brb done 2 @${SINCE}`, asUser: true }]);
+  assert.deepEqual(s.submits, [{ text: `brb done 2 @${SINCE}#3`, asUser: true }]);
+
+  await turnStart(hooks, s);
+  await press("clear");
+  s.snapshot = { ...CHECKLIST, checklist: { ...CHECKLIST.checklist, hold: 4 } };
+  await turnComplete(hooks, s);
+  assert.equal(s.submits.length, 1, "the same list after a whole `brb` and `back` (a newer hold number): dropped");
+  s.snapshot = CHECKLIST;
 
   await turnStart(hooks, s);
   await press("clear");

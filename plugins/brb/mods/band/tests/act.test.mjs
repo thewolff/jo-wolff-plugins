@@ -54,7 +54,7 @@ test("open: reports no list, or the open one's `at`, and writes nothing; done an
     hold(b, "Second");
     runHook(b, "user-prompt-submit", promptInput(b, "back"));
     const before = readdirSync(b.stateDir("s1")).sort();
-    assert.deepEqual(act(b, "--session", "s1", "open"), { ok: true, open: true, at: readChecklist("s1", b.env).at });
+    assert.deepEqual(act(b, "--session", "s1", "open"), { ok: true, open: true, at: readChecklist("s1", b.env).at, hold: 1 });
     for (const verb of ["done", "clear"]) assert.match(act(b, "--session", "s1", verb, "0").error, /^unknown verb/, verb);
     assert.deepEqual(readdirSync(b.stateDir("s1")).sort(), before, "no file written or removed");
     assert.ok(existsSync(join(b.stateDir("s1"), "checklist.json")));
@@ -85,7 +85,7 @@ test("open: a list still open from an earlier hold reports false while a new hol
     assert.ok(existsSync(join(b.stateDir("s1"), "checklist.json")), "the earlier list is still on disk");
     assert.deepEqual(act(b, "--session", "s1", "open"), { ok: true, open: false });
     runHook(b, "user-prompt-submit", promptInput(b, "back"));
-    assert.deepEqual(act(b, "--session", "s1", "open"), { ok: true, open: true, at });
+    assert.deepEqual(act(b, "--session", "s1", "open"), { ok: true, open: true, at, hold: 2 }, "the same list, carrying the second hold's number");
   } finally {
     b.release();
   }

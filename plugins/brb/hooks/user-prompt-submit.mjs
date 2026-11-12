@@ -44,9 +44,11 @@
 //                            additionalContext. With no checklist, `3` and `done 3` are ordinary
 //                            prompts (null) and the `brb …` forms say lib/text.mjs NO_OPEN_TEXT
 //                            and start no hold. While away none of these is special. The band
-//                            sends the `brb …` forms ending ` @<at>`, the open list's `at`; such a
-//                            word, checked first, is blocked (no turn) with a systemMessage when a
-//                            hold is on or that list is not the open one.
+//                            sends the `brb …` forms ending ` @<at>#<hold>`, the open list's `at`
+//                            and hold number; such a word, checked first and under the session
+//                            lock, with its work done in the same lock, is blocked (no turn) with
+//                            a systemMessage when a hold is on, that list is not the open one, or
+//                            a hold has started and ended since (a newer `hold`).
 //   anything else, away      the prompt proceeds with the away instruction as additionalContext
 //                            (lib/text.mjs awayInstruction, rendered with this session's hold
 //                            command: the absolute path of scripts/brb.mjs and the session id;
@@ -78,7 +80,7 @@
 
 import { runHook, invokedDirectly } from "../lib/hook-runner.mjs";
 import { clearReturned, endHold, showItem, tickItem } from "../lib/back.mjs";
-import { digestPath, freshAway, readAway, readChecklist, readDigest, renderDigest, withAwayLock, writeAway } from "../lib/state.mjs";
+import { digestPath, freshAway, nextHold, readAway, readChecklist, readDigest, renderDigest, withAwayLock, writeAway } from "../lib/state.mjs";
 import { AWAY_NOTICE, NOT_AWAY_TEXT, NO_OPEN_TEXT, alreadyAwayText, awayInstruction, cappedReason, digestWord, holdCommand, stalePressText, surfaceWord } from "../lib/text.mjs";
 
 const block = (reason) => ({ decision: "block", reason, hookSpecificOutput: { hookEventName: "UserPromptSubmit", suppressOriginalPrompt: true } });
@@ -92,19 +94,19 @@ function newTurn(sessionId, away, env) {
   writeAway(sessionId, away, env);
 }
 
-/** A prompt that works the returned digest while home: its output; undefined when it is not one (the prompt goes on as usual). */
-function workReturned(sessionId, pick, env) {
+/** A prompt that works the returned digest while home: its output; undefined when it is not one (the prompt goes on as usual). `locked`: the caller holds the session lock. */
+function workReturned(sessionId, pick, env, { locked = false } = {}) {
   if (!readChecklist(sessionId, env)) return pick.prefixed ? context(NO_OPEN_TEXT) : undefined;
   if (pick.verb === "show") {
-    const r = showItem(sessionId, pick.n, env);
+    const r = showItem(sessionId, pick.n, env, { locked });
     if (r?.systemMessage) return { systemMessage: r.systemMessage, ...context(r.agentText) };
     return r ? context(r.agentText) : pick.prefixed ? context(NO_OPEN_TEXT) : undefined;
   }
   if (pick.verb === "done") {
-    const r = tickItem(sessionId, pick.n, env);
+    const r = tickItem(sessionId, pick.n, env, { locked });
     return r ? context(r.agentText) : pick.prefixed ? context(NO_OPEN_TEXT) : undefined;
   }
-  const r = clearReturned(sessionId, env);
+  const r = clearReturned(sessionId, env, { locked });
   return r ? { systemMessage: r.text, ...context(r.agentText) } : context(NO_OPEN_TEXT);
 }
 
@@ -116,15 +118,20 @@ export function handle(input, { env = process.env, now = () => new Date().toISOS
   const sessionId = typeof input?.session_id === "string" ? input.session_id : "";
   // OMP's adapter reads `brb item N` and `brb clear` as `brb` with a note, so OMP keeps 0.5.0's words.
   const pick = env.BRB_HARNESS === "omp" ? null : digestWord(input?.prompt);
-  // A band press carries the `at` of the list it was made for. It runs only while that list is
-  // the open one and no hold is on; otherwise it is dropped here, before any away handling, so a
-  // press that raced a new `brb` never reaches the agent as an answer.
+  // A band press carries the `at` and hold number of the list it was made for. It runs only while
+  // that list is the open one, no hold is on and no hold has begun since; otherwise it is dropped
+  // here, before any away handling, so a press that raced a `brb` never reaches the agent as an
+  // answer. Check and work share one lock, so no `brb`, `back` or tick lands between them.
   if (pick?.token) {
-    const away = Boolean(readAway(sessionId, env));
-    if (away || readChecklist(sessionId, env)?.at !== pick.token) {
-      const why = stalePressText(String(input.prompt).trim().replace(/\s+@\S+$/, ""), away);
-      return { ...block(why), systemMessage: why };
-    }
+    return withAwayLock(sessionId, env, () => {
+      const away = Boolean(readAway(sessionId, env));
+      const open = readChecklist(sessionId, env);
+      if (away || open?.at !== pick.token || open?.hold !== pick.hold) {
+        const why = stalePressText(String(input.prompt).trim().replace(/\s+@\S+$/, ""), away ? "away" : open?.at === pick.token && pick.hold !== null && pick.hold < open.hold ? "cycled" : "gone");
+        return { ...block(why), systemMessage: why };
+      }
+      return workReturned(sessionId, pick, env, { locked: true }) ?? null;
+    });
   }
   if (pick && !readAway(sessionId, env)) {
     const out = workReturned(sessionId, pick, env);
@@ -156,7 +163,7 @@ export function handle(input, { env = process.env, now = () => new Date().toISOS
       const at = now();
       return { systemMessage: alreadyAwayText(away, at), ...context(`${alreadyAwayText(away, at)}\n\n${awayInstruction(away, holdCommand(sessionId), at)}`) };
     }
-    writeAway(sessionId, freshAway({ since: now(), note: word.note }), env);
+    writeAway(sessionId, freshAway({ since: now(), note: word.note, hold: nextHold(sessionId, env) }), env);
     return block(word.note ? `${AWAY_NOTICE} (note: ${word.note})` : AWAY_NOTICE);
   });
 }

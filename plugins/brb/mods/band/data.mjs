@@ -12,12 +12,13 @@ export const BACK_WORD = "back";
 /**
  * The prompt a band press on the returned digest sends (hooks/user-prompt-submit.mjs reads it
  * through lib/text.mjs digestWord): Show → `brb item N`, Done → `brb done N`, Clear → `brb clear`,
- * each followed by ` @<at>` when `at` (the open list's checklist.json `at`) is given, so the hook
- * can refuse a press that arrives after its list was replaced or a new hold began.
- * `index` is the 0-based row; null for anything else.
+ * each followed by ` @<at>#<hold>` when `at` (the open list's checklist.json `at`) is given, with
+ * `hold` its checklist.json `hold`, so the hook can refuse a press that arrives after its list was
+ * replaced or a hold began, even one that has ended since. A `hold` that is not a whole number
+ * leaves `#<hold>` off, which the hook refuses. `index` is the 0-based row; null for anything else.
  */
-export function pickPrompt(verb, index, at = null) {
-  const tag = typeof at === "string" && at && !/\s/.test(at) ? ` @${at}` : "";
+export function pickPrompt(verb, index, at = null, hold = null) {
+  const tag = typeof at === "string" && at && !/\s/.test(at) ? ` @${at}${Number.isInteger(hold) && hold >= 0 ? `#${hold}` : ""}` : "";
   if (verb === "clear") return `brb clear${tag}`;
   if (!Number.isInteger(index) || index < 0) return null;
   if (verb === "item") return `brb item ${index + 1}${tag}`;
@@ -55,12 +56,12 @@ const strings = (v) => (Array.isArray(v) ? v.filter((s) => typeof s === "string"
 export function readChecklistValue(value) {
   if (!value || typeof value !== "object" || !Array.isArray(value.items)) return null;
   const items = value.items.filter((i) => i && typeof i === "object" && typeof i.text === "string").map((i) => ({ text: i.text, done: i.done === true }));
-  return { at: typeof value.at === "string" ? value.at : "", since: typeof value.since === "string" ? value.since : "", note: typeof value.note === "string" ? value.note : "", items };
+  return { at: typeof value.at === "string" ? value.at : "", hold: Number.isInteger(value.hold) && value.hold >= 0 ? value.hold : 0, since: typeof value.since === "string" ? value.since : "", note: typeof value.note === "string" ? value.note : "", items };
 }
 
 /**
  * What query.mjs printed → a snapshot the band can draw, with every field present and typed:
- *   { ok: true, away: false, checklist: null | { at, since, note, items: [{ text, done }] }, hideRows }
+ *   { ok: true, away: false, checklist: null | { at, hold, since, note, items: [{ text, done }] }, hideRows }
  *   { ok: true, away: true, since, note, held, onFire, items: [string], hideRows }
  *   { ok: false, error }
  * `hideRows` is false only when query.mjs printed false (config.json turned row hiding off).
@@ -92,7 +93,7 @@ export function readSnapshot(stdout) {
 
 /**
  * What act.mjs printed → `{ ok: true }` (with `away`, and `since` when away, when the action
- * printed them, as `back` does; with `open`, and `at` when open, as `open` does) or
+ * printed them, as `back` does; with `open`, and `at` and `hold` when open, as `open` does) or
  * `{ ok: false, error }`; junk is an error, never a throw.
  */
 export function readResult(stdout) {
@@ -104,7 +105,7 @@ export function readResult(stdout) {
   }
   if (!parsed || typeof parsed !== "object") return { ok: false, error: "action printed no object" };
   if (parsed.ok !== true) return { ok: false, error: String(parsed.error ?? "action failed") };
-  if (typeof parsed.open === "boolean") return parsed.open && typeof parsed.at === "string" ? { ok: true, open: true, at: parsed.at } : { ok: true, open: false };
+  if (typeof parsed.open === "boolean") return parsed.open && typeof parsed.at === "string" ? { ok: true, open: true, at: parsed.at, hold: Number.isInteger(parsed.hold) && parsed.hold >= 0 ? parsed.hold : null } : { ok: true, open: false };
   if (typeof parsed.away !== "boolean") return { ok: true };
   return parsed.away && typeof parsed.since === "string" ? { ok: true, away: true, since: parsed.since } : { ok: true, away: parsed.away };
 }

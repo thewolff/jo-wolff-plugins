@@ -7,7 +7,7 @@
 //                 or `{ ok: true, away: false }`. Writes nothing; the mod then sends `back` as the
 //                 user's prompt (`$.prompt.submit`), and
 //                 hooks/user-prompt-submit.mjs ends the hold as it does for `back` typed.
-//   open          whether a returned digest is open, and which: `{ ok: true, open: true, at }` or
+//   open          whether a returned digest is open, and which: `{ ok: true, open: true, at, hold }` or
 //                 `{ ok: true, open: false }`; false while away (the item words are answers then,
 //                 so a press made before a new `brb` must not send one). Writes nothing. The band's Show, Done and Clear send
 //                 `brb item N`, `brb done N` and `brb clear` as the user's prompt
@@ -46,7 +46,7 @@ export function act(sessionId, verb, index, { env = process.env } = {}) {
   if (verb === "open") {
     if (readAway(sessionId, env)) return { ok: true, open: false };
     const checklist = readChecklist(sessionId, env);
-    return checklist ? { ok: true, open: true, at: checklist.at } : { ok: true, open: false };
+    return checklist ? { ok: true, open: true, at: checklist.at, hold: checklist.hold } : { ok: true, open: false };
   }
   return { ok: false, error: `unknown verb ${JSON.stringify(verb)}; one of back, open` };
 }

@@ -28,7 +28,8 @@ All notable changes to brb are recorded here. The format follows
 
 - `back` replies with a numbered list, one line per held item cut at 120 characters, and how to
   work it, instead of the whole digest. The digest is still archived at `back`.
-- A hold that held nothing leaves an open list as it is.
+- A hold that held nothing leaves an open list's rows as they are (it still takes that hold's
+  number, below).
 - `back` writes `checklist.json` before it moves the digest to the archive, and records how many
   of the hold's items are rows (`taken`), so a `back` that fails part way keeps the hold on and
   a second `back` lists every item once (`lib/back.mjs` `endHold`). The count applies only
@@ -38,10 +39,14 @@ All notable changes to brb are recorded here. The format follows
   text matches one still open (not done) is not appended again.
 - A band press on the returned digest waiting for the turn to end is dropped when a new hold
   starts, and act.mjs `open` reports no list while away, so a press made before `brb` never
-  reaches the agent as an answer during the hold. The word the band sends ends ` @<at>`, the
-  open list's `at` (`mods/band/data.mjs` `pickPrompt`); the prompt hook checks it before any
-  away handling and blocks the word with `brb: dropped a band press (…)` when a hold is on or
-  that list is no longer open, which covers a `brb` typed after the band's check. Typed
+  reaches the agent as an answer during the hold. Each hold gets a number, one higher than any
+  before it in the session (away.json `hold`, kept in `hold.seq`, `lib/state.mjs` `nextHold`),
+  and an open list takes the number of each hold that ends into it. The word the band sends
+  ends ` @<at>#<hold>`, the open list's `at` and number (`mods/band/data.mjs` `pickPrompt`); the
+  prompt hook checks both before any away handling, under the session lock it then does the
+  press's work in, and blocks the word with `brb: dropped a band press (…)` when a hold is on,
+  that list is no longer open, or a hold began and ended since the press. That covers a `brb`
+  typed after the band's check and a whole `brb` and `back` before the word arrives. Typed
   without the token the words behave as before.
 - A `brb clear` block or one item longer than 8000 characters is written whole to
   `export/<when>-<what>.md` (fsync'd, its size checked) before the message that points at it,

@@ -6,6 +6,7 @@
 //   ${XDG_STATE_HOME:-~/.local/state}/brb/<session id>/checklist.json   the returned digest: written by `back` (each row's text, entry heading, done), ticked by `done N` (typed, or the band's Done), removed once every row is ticked or by `brb clear` after the open rows are shown (lib/back.mjs)
 //   ${XDG_STATE_HOME:-~/.local/state}/brb/<session id>/export/<ts>-<what>.md   the whole text of a `brb clear` block or one item too long for a hook's context (lib/back.mjs), written and fsync'd before the message that points at it; scripts/prune.mjs ages it out with the rest
 //   ${XDG_STATE_HOME:-~/.local/state}/brb/<session id>/away.lock   held while away.json is read-modified-written; holds `<pid> <token>`
+//   ${XDG_STATE_HOME:-~/.local/state}/brb/<session id>/hold.seq   the last hold number issued in the session (nextHold), so a number is never reused after away.json and checklist.json are gone
 //   ${XDG_STATE_HOME:-~/.local/state}/brb/<session id>/section.json   written by the band mod (mods/band/data.mjs sectionPath, `$.fs.write`): the away state each environment section of the system prompt last carried, so a resumed conversation drops a saved away text once; written only when that state changes; scripts/prune.mjs ages it out with the rest
 //   ${XDG_CONFIG_HOME:-~/.config}/brb/config.json                  optional: onFireCap, idleStops, hideRows
 //
@@ -170,9 +171,34 @@ export function hideRowsEnabled(env = process.env) {
   return v === undefined || v === "on" || v === true;
 }
 
-/** A fresh away record: when the hold began, the note typed after `brb`, zeroed counters, no backstop yet this turn. */
-export function freshAway({ since = new Date().toISOString(), note = "" } = {}) {
-  return { since, note, held: 0, onFire: 0, toolLessStops: 0, nothingNewStops: 0, backstopped: false, seen: [], lastStop: null };
+/** A fresh away record: when the hold began, the note typed after `brb`, the hold's number (nextHold), zeroed counters, no backstop yet this turn. */
+export function freshAway({ since = new Date().toISOString(), note = "", hold = 0 } = {}) {
+  return { since, note, hold, held: 0, onFire: 0, toolLessStops: 0, nothingNewStops: 0, backstopped: false, seen: [], lastStop: null };
+}
+
+const holdSeqPath = (sessionId, env) => join(sessionDir(sessionId, env), "hold.seq");
+
+/**
+ * The next hold number for the session: one past the larger of hold.seq and the open checklist's
+ * `hold`, written back to hold.seq (temp file + rename) before it is returned. Call it only under
+ * withAwayLock, so two holds can never be handed the same number. A missing or unparsable
+ * hold.seq counts as 0.
+ */
+export function nextHold(sessionId, env = process.env) {
+  let last = 0;
+  try {
+    const v = Number.parseInt(readFileSync(holdSeqPath(sessionId, env), "utf8").trim(), 10);
+    if (Number.isInteger(v) && v > 0) last = v;
+  } catch {
+    // no hold yet in this session
+  }
+  const next = Math.max(last, readChecklist(sessionId, env)?.hold ?? 0) + 1;
+  mkdirSync(sessionDir(sessionId, env), { recursive: true });
+  const path = holdSeqPath(sessionId, env);
+  const tmp = `${path}.${process.pid}.tmp`;
+  writeFileSync(tmp, String(next));
+  renameSync(tmp, path);
+  return next;
 }
 
 /** The session's away record, or null when home (no file, or a file that does not parse). */
@@ -199,6 +225,7 @@ export function parseAway(text) {
   return {
     since: parsed.since,
     note: typeof parsed.note === "string" ? parsed.note : "",
+    hold: n(parsed.hold),
     held: n(parsed.held),
     onFire: n(parsed.onFire),
     toolLessStops: n(parsed.toolLessStops),
@@ -360,23 +387,25 @@ export function digestItems(body) {
 }
 
 /**
- * A fresh checklist from a hold that just ended: when, the hold's since and note, where its
- * digest was archived, one row per item (a string, or `{ text, heading }` from digestEntries),
- * none done.
+ * A fresh checklist from a hold that just ended: when, the hold's number, since and note, where
+ * its digest was archived, one row per item (a string, or `{ text, heading }` from
+ * digestEntries), none done.
  */
-export function freshChecklist({ at = new Date().toISOString(), since = "", note = "", archived = [], items = [] } = {}) {
+export function freshChecklist({ at = new Date().toISOString(), hold = 0, since = "", note = "", archived = [], items = [] } = {}) {
   const row = (i) => (typeof i === "string" ? { text: i, heading: "", done: false } : { text: i.text, heading: i.heading ?? "", done: false });
-  return { at, since, note, archived: archived.filter((a) => typeof a === "string"), items: items.map(row) };
+  return { at, hold, since, note, archived: archived.filter((a) => typeof a === "string"), items: items.map(row) };
 }
 
 /**
  * A hold that ends while an earlier returned digest is still open: the open one keeps its rows,
- * their numbers and ticks, and its `at` (the band binds a press to it); the new hold's rows are
- * appended after them, and its since, note and archive path join. Nothing open: `fresh` as is.
+ * their numbers and ticks, and its `at`; it takes the new hold's number (the band binds a press
+ * to `at` and `hold` both, so a press from before this hold no longer matches); the new hold's
+ * rows are appended after them, and its since, note and archive path join. Nothing open: `fresh`
+ * as is.
  */
 export function mergeChecklist(open, fresh) {
   if (!open || !open.items.length) return fresh;
-  return { at: open.at, since: fresh.since, note: fresh.note, archived: [...open.archived, ...fresh.archived], items: [...open.items, ...fresh.items] };
+  return { at: open.at, hold: fresh.hold, since: fresh.since, note: fresh.note, archived: [...open.archived, ...fresh.archived], items: [...open.items, ...fresh.items] };
 }
 
 /** checklist.json's text → the typed checklist, or null when it does not parse or has no `items` list. */
@@ -391,7 +420,8 @@ export function parseChecklist(text) {
   const str = (v) => (typeof v === "string" ? v : "");
   const items = parsed.items.filter((i) => i && typeof i === "object" && typeof i.text === "string").map((i) => ({ text: i.text, heading: str(i.heading), done: i.done === true }));
   const archived = Array.isArray(parsed.archived) ? parsed.archived.filter((a) => typeof a === "string") : [];
-  const out = { at: str(parsed.at), since: str(parsed.since), note: str(parsed.note), archived, items };
+  const hold = Number.isInteger(parsed.hold) && parsed.hold >= 0 ? parsed.hold : 0;
+  const out = { at: str(parsed.at), hold, since: str(parsed.since), note: str(parsed.note), archived, items };
   // `taken`: how many items of the hold named by `since` are already rows (lib/back.mjs endHold), so a `back` retried after its archive step failed adds only the rest.
   if (Number.isInteger(parsed.taken) && parsed.taken >= 0) out.taken = parsed.taken;
   // `takenArchive`: the archive path that digest was to be moved to; once it exists, `taken` no longer applies.

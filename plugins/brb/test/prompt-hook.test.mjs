@@ -272,7 +272,7 @@ test("a prompt with no session id still works, under the no-session key", () => 
   }
 });
 
-test("back writes checklist.json from the held items, each with its entry heading, none done; an empty hold leaves an open checklist as it is", () => {
+test("back writes checklist.json from the held items, each with its entry heading, none done; an empty hold leaves an open checklist's rows as they are and gives it its number", () => {
   const b = box();
   try {
     runHook(b, "user-prompt-submit", promptInput(b, "brb lunch"));
@@ -289,7 +289,8 @@ test("back writes checklist.json from the held items, each with its entry headin
 
     runHook(b, "user-prompt-submit", promptInput(b, "brb"));
     cameBack(runHook(b, "user-prompt-submit", promptInput(b, "back")));
-    assert.deepEqual(readChecklist("s1", b.env), checklist, "an empty hold leaves the open checklist untouched");
+    assert.equal(checklist.hold, 1);
+    assert.deepEqual(readChecklist("s1", b.env), { ...checklist, hold: 2 }, "an empty hold leaves the open checklist's rows untouched and moves its hold number on");
   } finally {
     b.release();
   }

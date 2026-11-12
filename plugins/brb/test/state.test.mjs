@@ -5,6 +5,7 @@
 
 import test from "node:test";
 import assert from "node:assert/strict";
+import { spawn } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -35,6 +36,8 @@ import {
   tickChecklistItem,
   digestEntries,
   mergeChecklist,
+  nextHold,
+  withAwayLock,
   writeAway,
   writeChecklist,
 } from "../lib/state.mjs";
@@ -91,7 +94,7 @@ test("away.json that does not parse, or has no since, reads as home; bad counter
     writeFileSync(join(sessionDir("s1", b.env), "away.json"), JSON.stringify({ note: "x" }));
     assert.equal(readAway("s1", b.env), null);
     writeFileSync(join(sessionDir("s1", b.env), "away.json"), JSON.stringify({ since: "t", held: -1, onFire: "3", backstopped: "yes", seen: "no", lastStop: 4 }));
-    assert.deepEqual(readAway("s1", b.env), { since: "t", note: "", held: 0, onFire: 0, toolLessStops: 0, nothingNewStops: 0, backstopped: false, seen: [], lastStop: null });
+    assert.deepEqual(readAway("s1", b.env), { since: "t", note: "", hold: 0, held: 0, onFire: 0, toolLessStops: 0, nothingNewStops: 0, backstopped: false, seen: [], lastStop: null });
   } finally {
     b.release();
   }
@@ -249,9 +252,9 @@ test("digestEntries: each item with the heading of its entry; mergeChecklist kee
     { text: "Approve the schema", heading: "2026-11-04 11:05 AM PST" },
   ]);
   assert.deepEqual(digestEntries("- no heading yet"), [{ text: "no heading yet", heading: "" }]);
-  const open = { at: "T1", since: "S1", note: "lunch", archived: ["/1.md"], items: [{ text: "a", heading: "", done: true }, { text: "b", heading: "", done: false }] };
-  const fresh = freshChecklist({ at: "T2", since: "S2", note: "", archived: ["/2.md"], items: ["c"] });
-  assert.deepEqual(mergeChecklist(open, fresh), { at: "T1", since: "S2", note: "", archived: ["/1.md", "/2.md"], items: [...open.items, { text: "c", heading: "", done: false }] });
+  const open = { at: "T1", hold: 3, since: "S1", note: "lunch", archived: ["/1.md"], items: [{ text: "a", heading: "", done: true }, { text: "b", heading: "", done: false }] };
+  const fresh = freshChecklist({ at: "T2", hold: 4, since: "S2", note: "", archived: ["/2.md"], items: ["c"] });
+  assert.deepEqual(mergeChecklist(open, fresh), { at: "T1", hold: 4, since: "S2", note: "", archived: ["/1.md", "/2.md"], items: [...open.items, { text: "c", heading: "", done: false }] });
   assert.equal(mergeChecklist(null, fresh), fresh);
 });
 
@@ -259,6 +262,48 @@ test("parseChecklist: junk is null; rows with no text are dropped; done is only 
   assert.equal(parseChecklist("{nope"), null);
   assert.equal(parseChecklist("[]"), null);
   assert.equal(parseChecklist('{"items":"x"}'), null);
-  assert.deepEqual(parseChecklist('{"items":[{"text":"a","done":"yes"},{"done":true},null]}'), { at: "", since: "", note: "", archived: [], items: [{ text: "a", heading: "", done: false }] });
+  assert.deepEqual(parseChecklist('{"items":[{"text":"a","done":"yes"},{"done":true},null]}'), { at: "", hold: 0, since: "", note: "", archived: [], items: [{ text: "a", heading: "", done: false }] });
 });
 
+
+test("nextHold: 1, 2, 3 within a session; one past an open checklist's `hold`; never reused once away.json and checklist.json are gone; a bad hold.seq is 0", () => {
+  const b = box();
+  try {
+    assert.equal(nextHold("s1", b.env), 1);
+    assert.equal(nextHold("s1", b.env), 2);
+    assert.equal(nextHold("s2", b.env), 1, "per session");
+    writeChecklist("s1", freshChecklist({ hold: 9, items: ["a"] }), b.env);
+    assert.equal(nextHold("s1", b.env), 10, "past the open list's number");
+    clearChecklist("s1", b.env);
+    clearAway("s1", b.env);
+    assert.equal(nextHold("s1", b.env), 11, "hold.seq keeps the count with nothing else on disk");
+    mkdirSync(sessionDir("s3", b.env), { recursive: true });
+    writeFileSync(join(sessionDir("s3", b.env), "hold.seq"), "junk");
+    assert.equal(nextHold("s3", b.env), 1);
+    assert.equal(freshAway({ hold: 4 }).hold, 4);
+    assert.equal(freshAway().hold, 0);
+  } finally {
+    b.release();
+  }
+});
+
+test("nextHold under the session lock: eight processes asking at once each get a different number, 1-8", async () => {
+  const b = box();
+  try {
+    const lib = JSON.stringify(join(import.meta.dirname, "..", "lib", "state.mjs"));
+    const script = `import { nextHold, withAwayLock } from ${lib};\nprocess.stdout.write(String(withAwayLock("s1", process.env, () => nextHold("s1", process.env))));`;
+    const run = () =>
+      new Promise((resolve, reject) => {
+        const child = spawn(process.execPath, ["--input-type=module", "-e", script], { env: { ...b.env, PATH: process.env.PATH }, stdio: ["ignore", "pipe", "inherit"] });
+        let out = "";
+        child.stdout.on("data", (d) => (out += d));
+        child.on("error", reject);
+        child.on("exit", (code) => (code === 0 ? resolve(Number(out)) : reject(new Error(`exit ${code}`))));
+      });
+    const got = await Promise.all(Array.from({ length: 8 }, run));
+    assert.deepEqual([...got].sort((x, y) => x - y), [1, 2, 3, 4, 5, 6, 7, 8]);
+    assert.equal(withAwayLock("s1", b.env, () => nextHold("s1", b.env)), 9);
+  } finally {
+    b.release();
+  }
+});

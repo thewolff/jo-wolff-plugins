@@ -152,15 +152,24 @@ export function listFooter(checklist) {
  * `brb item 3` opens item 3; `done 3` or `brb done 3` ticks it; `brb clear` closes the list.
  * `prefixed` is true for the `brb …` forms, which the band sends and which never reach the
  * agent as an ordinary prompt. Trailing `.`, `!` allowed; any case. A `brb …` form ending
- * ` @<at>` (the band's) also carries `token`, the `at` of the list it was pressed for.
+ * ` @<at>#<hold>` (the band's) also carries `token`, the `at` of the list it was pressed for, and
+ * `hold`, that list's hold number (null when the `#<hold>` part is missing or not a number).
  */
 export function digestWord(text) {
   let t = String(text ?? "").trim();
-  // The band's form: `brb item N @<at>`, `brb done N @<at>`, `brb clear @<at>` (mods/band/data.mjs pickPrompt).
+  // The band's form: `brb item N @<at>#<hold>`, `brb done N @<at>#<hold>`, `brb clear @<at>#<hold>` (mods/band/data.mjs pickPrompt).
   let token = null;
+  let hold = null;
   const tagged = /^(brb\s.*\S)\s+@(\S+)$/i.exec(t);
-  if (tagged) [, t, token] = tagged;
-  const out = (word) => (token ? { ...word, token } : word);
+  if (tagged) {
+    [, t, token] = tagged;
+    const h = /^(.+)#(\d{1,15})$/.exec(token);
+    if (h) {
+      token = h[1];
+      hold = Number(h[2]);
+    }
+  }
+  const out = (word) => (token ? { ...word, token, hold } : word);
   let m = token ? null : /^#?(\d{1,4})[.)!]?$/.exec(t);
   if (m) return { verb: "show", n: Number(m[1]), prefixed: false };
   m = /^brb\s+item\s+#?(\d{1,4})[.!]?$/i.exec(t);
@@ -171,9 +180,14 @@ export function digestWord(text) {
   return null;
 }
 
-/** What Jo sees when a band press arrives for a list that is no longer the open one, or during a hold: dropped, nothing done. */
-export function stalePressText(word, away) {
-  return `brb: dropped a band press (\`${word}\`) made for a returned digest that ${away ? "was open before this hold began" : "is no longer the open one"}; nothing was shown or ticked and the agent was not told. Type the word if you still want it.`;
+/**
+ * What Jo sees when a band press arrives during a hold (`why` "away"), after a hold began and
+ * ended since the press ("cycled": the same list, a newer hold number), or for a list that is no
+ * longer the open one (anything else): dropped, nothing done.
+ */
+export function stalePressText(word, why) {
+  const what = why === "away" ? "was open before this hold began" : why === "cycled" ? "has been through a `brb` and `back` since the press" : "is no longer the open one";
+  return `brb: dropped a band press (\`${word}\`) made for a returned digest that ${what}; nothing was shown or ticked and the agent was not told. Type the word if you still want it.`;
 }
 
 /** What a `brb item N`, `brb done N` or `brb clear` says while home with no returned digest open; the prompt still reaches the agent. */

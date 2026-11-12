@@ -15,7 +15,7 @@ import { join } from "node:path";
 import { checklistPath, readAway, readChecklist } from "../lib/state.mjs";
 import { NO_OPEN_TEXT, digestWord } from "../lib/text.mjs";
 import { hold } from "../scripts/brb.mjs";
-import { box, promptInput, runHook } from "./helpers.mjs";
+import { box, exited, lockHolder, promptInput, runHook } from "./helpers.mjs";
 
 const LONG = `Pick Redis or in-process for the cache: ${"the in-process option needs a size bound and an eviction rule, ".repeat(3)}which?`;
 
@@ -316,19 +316,25 @@ test("`brb` again before the list is worked is additive: old rows keep their num
   }
 });
 
-test("a band press carries its list's `at`: it works while that list is open and home; arriving after a new `brb`, or for a replaced list, it is dropped with a systemMessage and never reaches the agent", () => {
+test("a band press carries its list's `at` and hold number: it works while that list is open and home; arriving after a new `brb`, or for a replaced list, it is dropped with a systemMessage and never reaches the agent", () => {
   const { b } = returned();
   try {
-    const at = readChecklist("s1", b.env).at;
-    assert.deepEqual(digestWord(`brb done 2 @${at}`), { verb: "done", n: 2, prefixed: true, token: at });
-    assert.equal(digestWord(`done 2 @${at}`), null, "only the `brb …` forms carry a token");
+    const { at, hold: h } = readChecklist("s1", b.env);
+    assert.equal(h, 1, "the first hold in the session is number 1");
+    assert.deepEqual(digestWord(`brb done 2 @${at}#${h}`), { verb: "done", n: 2, prefixed: true, token: at, hold: h });
+    assert.deepEqual(digestWord(`brb done 2 @${at}`), { verb: "done", n: 2, prefixed: true, token: at, hold: null }, "no `#<hold>`: a hold no list has");
+    assert.equal(digestWord(`done 2 @${at}#${h}`), null, "only the `brb …` forms carry a token");
     // Happy path: the same list, home.
-    assert.ok(ctx(b, `brb item 3 @${at}`).endsWith("\n\nRotate the staging token"));
-    assert.match(ctx(b, `brb done 3 @${at}`), /^brb: Jo ticked item 3/);
+    assert.ok(ctx(b, `brb item 3 @${at}#${h}`).endsWith("\n\nRotate the staging token"));
+    assert.match(ctx(b, `brb done 3 @${at}#${h}`), /^brb: Jo ticked item 3/);
+    // A token with no hold number is refused, even for the open list.
+    const bare = runHook(b, "user-prompt-submit", promptInput(b, `brb done 1 @${at}`));
+    assert.equal(bare.json.decision, "block");
+    assert.match(bare.json.systemMessage, /is no longer the open one/);
     // The race: act.mjs `open` passed, then `brb` was typed, then the word arrives.
     runHook(b, "user-prompt-submit", promptInput(b, "brb"));
     const awayBefore = readFileSync(join(b.stateDir("s1"), "away.json"), "utf8");
-    const raced = runHook(b, "user-prompt-submit", promptInput(b, `brb done 1 @${at}`));
+    const raced = runHook(b, "user-prompt-submit", promptInput(b, `brb done 1 @${at}#${h}`));
     assert.equal(raced.status, 0);
     assert.equal(raced.json.decision, "block", "no turn: the agent never sees it");
     assert.equal(raced.json.hookSpecificOutput.suppressOriginalPrompt, true);
@@ -350,3 +356,88 @@ test("a band press carries its list's `at`: it works while that list is open and
 function rmSyncFile(p) {
   rmSync(p, { recursive: true, force: true });
 }
+
+test("a band press from an earlier hold cycle (same list `at`, an older hold number) is dropped after a whole `brb` and `back`, whether that hold held anything or not; the current number works", () => {
+  const { b } = returned();
+  try {
+    const { at, hold: h1 } = readChecklist("s1", b.env);
+    // A hold that held nothing: the list's rows stay, its number moves on.
+    runHook(b, "user-prompt-submit", promptInput(b, "brb"));
+    runHook(b, "user-prompt-submit", promptInput(b, "back"));
+    const after = readChecklist("s1", b.env);
+    assert.equal(after.at, at, "the same list");
+    assert.equal(after.hold, h1 + 1, "a newer hold number");
+    const late = runHook(b, "user-prompt-submit", promptInput(b, `brb done 1 @${at}#${h1}`));
+    assert.equal(late.status, 0);
+    assert.equal(late.json.decision, "block", "no turn: the agent never sees it");
+    assert.match(late.json.systemMessage, /^brb: dropped a band press \(`brb done 1`\) made for a returned digest that has been through a `brb` and `back` since the press/);
+    assert.equal(readChecklist("s1", b.env).items[0].done, false, "nothing ticked");
+    // A hold that added a row: merged into the same list, which again takes the new number.
+    runHook(b, "user-prompt-submit", promptInput(b, "brb"));
+    hold("s1", "Merge the docs branch", { env: b.env });
+    runHook(b, "user-prompt-submit", promptInput(b, "back"));
+    const merged = readChecklist("s1", b.env);
+    assert.equal(merged.at, at);
+    assert.equal(merged.hold, h1 + 2);
+    assert.equal(runHook(b, "user-prompt-submit", promptInput(b, `brb clear @${at}#${h1 + 1}`)).json.decision, "block");
+    assert.ok(existsSync(checklistPath("s1", b.env)), "a stale clear removes nothing");
+    assert.match(ctx(b, `brb done 4 @${at}#${h1 + 2}`), /^brb: Jo ticked item 4/, "a press made for the list as it now is works");
+  } finally {
+    b.release();
+  }
+});
+
+test("the band press check runs under the session lock: a press arriving while another writer holds the lock waits for it, and sees a hold that writer started", async () => {
+  const { b } = returned();
+  let holder;
+  try {
+    const { at, hold: h } = readChecklist("s1", b.env);
+    // The writer takes the lock, waits 600 ms, then starts a hold (as the `brb` branch does) and releases.
+    holder = lockHolder(b, "s1", { ms: 0, code: "Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 600); state.writeAway('s1', state.freshAway({ hold: state.nextHold('s1') }))" });
+    const t0 = Date.now();
+    const r = runHook(b, "user-prompt-submit", promptInput(b, `brb done 1 @${at}#${h}`));
+    const waited = Date.now() - t0;
+    assert.equal(await exited(holder), 0);
+    assert.equal(r.status, 0);
+    assert.equal(r.json.decision, "block", r.stdout);
+    assert.match(r.json.systemMessage, /was open before this hold began/, "the check read away.json after the writer's release, not before");
+    assert.ok(waited >= 300, `the press waited for the lock (${waited} ms)`);
+    assert.equal(readChecklist("s1", b.env).items[0].done, false, "nothing ticked during the hold");
+    assert.ok(readAway("s1", b.env), "the hold the writer started is on");
+  } finally {
+    if (holder) await exited(holder);
+    b.release();
+  }
+});
+
+test("the band press check and its work take the lock once: a valid press while nobody holds it ticks and leaves no lock behind (no re-entrant wait)", () => {
+  const { b } = returned();
+  try {
+    const { at, hold: h } = readChecklist("s1", b.env);
+    const t0 = Date.now();
+    assert.match(ctx(b, `brb done 1 @${at}#${h}`), /^brb: Jo ticked item 1/);
+    assert.ok(ctx(b, `brb item 2 @${at}#${h}`).includes("Approve the schema change"));
+    assert.ok(Date.now() - t0 < 2_000, "no 2 s lock wait (a second acquisition of the same lock would wait it out)");
+    assert.ok(!existsSync(join(b.stateDir("s1"), "away.lock")), "the lock is released");
+    assert.equal(readChecklist("s1", b.env).items[0].done, true);
+  } finally {
+    b.release();
+  }
+});
+
+test("the band press check: a lock held past the wait is the runner's fault path (logged, a systemMessage, no block) and the press ticks nothing", async () => {
+  const { b } = returned();
+  let holder;
+  try {
+    const { at, hold: h } = readChecklist("s1", b.env);
+    holder = lockHolder(b, "s1", { ms: 3_000 });
+    const r = runHook(b, "user-prompt-submit", promptInput(b, `brb done 1 @${at}#${h}`));
+    assert.equal(r.status, 0);
+    assert.notEqual(r.json?.decision, "block", "a fault never blocks");
+    assert.match(r.json.systemMessage, /the hold is locked/);
+    assert.equal(readChecklist("s1", b.env).items[0].done, false, "nothing ticked");
+  } finally {
+    if (holder) await exited(holder);
+    b.release();
+  }
+});

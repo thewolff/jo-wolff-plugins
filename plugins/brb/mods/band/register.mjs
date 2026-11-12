@@ -28,12 +28,13 @@
 //     sends a prompt as the person's own (`$.prompt.submit`): Show `brb item N`, Done
 //     `brb done N`, Clear `brb clear`; hooks/user-prompt-submit.mjs does the work and tells the
 //     agent (Show: the item in full; Done: the tick; Clear: every item not done, in full, before
-//     the file goes). A press is bound to the checklist the band drew (its `at`) and sent only
+//     the file goes). A press is bound to the checklist the band drew (its `at` and `hold`) and sent only
 //     while act.mjs `open` still names it; idle it goes at once, while a turn runs at that turn's
 //     end (a toast says so); one at a time, and never while a Back press is pending; a query
 //     that sees a new hold drops it (act.mjs `open` is false while away, too). The word ends
-//     ` @<at>`, and the prompt hook drops it unless that list is still open and no hold is on,
-//     which covers a `brb` typed between the check and the word's arrival;
+//     ` @<at>#<hold>`, and the prompt hook drops it unless that list is still open, no hold is on
+//     and none has begun since, which covers a `brb` typed between the check and the word's
+//     arrival, and a whole `brb` and `back` in that gap;
 //   - the data is this session's state, read out of process by `node mods/band/query.mjs
 //     --session <id>` (read-only); the band refreshes at session start, after each prompt is
 //     submitted (so `brb` and `back` show at once), at each main turn's start and end, after a
@@ -223,14 +224,14 @@ function pickFailed($, intent, err) {
   toast($, `brb: ${intent.word} failed: ${reasonText(err)}; type it instead`);
 }
 
-/** Ask act.mjs which returned digest is open: `{ open, at }`; throws when the action failed. */
+/** Ask act.mjs which returned digest is open: `{ open, at, hold }`; throws when the action failed. */
 async function checkOpen($) {
   const sessionId = await $.session.id();
   const script = pathUnder($.plugin.root, "mods/band/act.mjs");
   const run = await $.process.run(["node", ...actArgv(script, sessionId, "open")], { timeoutMs: SCRIPT_TIMEOUT_MS });
   const result = readResult(run.stdout);
   if (!result.ok) throw new Error(result.error);
-  return { open: result.open === true, at: result.at ?? null };
+  return { open: result.open === true, at: result.at ?? null, hold: result.hold ?? null };
 }
 
 /**
@@ -251,7 +252,7 @@ async function drainPick($) {
   }
   intent.checking = false;
   if (pendingPick !== intent) return;
-  if (!now.open || now.at !== intent.at) {
+  if (!now.open || now.at !== intent.at || now.hold !== intent.hold) {
     pendingPick = null;
     return;
   }
@@ -431,11 +432,11 @@ async function act($, verb, index) {
       backFailed($, intent, err);
     }
   } else {
-    // The word carries the list's `at`: the prompt hook refuses it if, by the time it arrives, that
-    // list is no longer the open one or a new hold began (a check here cannot cover that gap).
-    const text = pickPrompt(verb, index, snapshot.checklist?.at);
+    // The word carries the list's `at` and `hold`: the prompt hook refuses it if, by the time it
+    // arrives, that list is no longer the open one or a hold began (a check here cannot cover that gap).
+    const text = pickPrompt(verb, index, snapshot.checklist?.at, snapshot.checklist?.hold);
     if (!text || pendingPick || pendingBack || !(snapshot.ok && !snapshot.away && typeof snapshot.checklist?.at === "string")) return;
-    const intent = { text, word: pickPrompt(verb, index), at: snapshot.checklist.at, gen, checking: false };
+    const intent = { text, word: pickPrompt(verb, index), at: snapshot.checklist.at, hold: snapshot.checklist.hold, gen, checking: false };
     pendingPick = intent;
     if (busy()) toast($, `brb: ${intent.word} goes when this turn ends`);
     await drainPick($);

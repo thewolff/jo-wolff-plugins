@@ -20,7 +20,7 @@ const SINCE = new Date(Date.now() - 40 * 60_000).toISOString();
 const ITEMS = ["Create the read-token secret on the org?", "Billing limit on the org: raise it?", "Clear the review round"];
 const AWAY = { ok: true, away: true, since: SINCE, note: "lunch", held: 3, onFire: 1, items: ITEMS };
 const HOME = { ok: true, away: false, checklist: null };
-const CHECKLIST = { ok: true, away: false, checklist: { at: SINCE, since: SINCE, note: "lunch", items: ITEMS.map((text) => ({ text, done: false })) } };
+const CHECKLIST = { ok: true, away: false, checklist: { at: SINCE, hold: 3, since: SINCE, note: "lunch", items: ITEMS.map((text) => ({ text, done: false })) } };
 const HEADLINE = /^AWAY 4[01]m · 3 held · lunch$/;
 const PROBE = `/tmp/state/brb/${SESSION}/away.json`;
 const THEIRS = "drawn by Claude Code";
@@ -34,7 +34,7 @@ const BAND = {
 } as const;
 
 type Item = { text: string; done: boolean };
-type Checklist = { at: string; since: string; note: string; items: Item[] };
+type Checklist = { at: string; hold: number; since: string; note: string; items: Item[] };
 /** What query.mjs prints, loose enough for every test's snapshot. */
 type Snapshot = { ok: boolean; away: boolean; checklist?: Checklist | null } & Record<string, unknown>;
 
@@ -105,7 +105,7 @@ function stubs(on, { snapshot = AWAY as Snapshot, exists = false, files = new Ma
       acts.push(e.argv.slice(4));
       const s = state.snapshot;
       if (verb === "back") return { value: { exitCode: 0, stdout: JSON.stringify(s.away ? { ok: true, away: true, since: s.since } : { ok: true, away: false }) + "\n", stderr: "" } };
-      if (verb === "open") return { value: { exitCode: 0, stdout: JSON.stringify(!s.away && s.checklist ? { ok: true, open: true, at: s.checklist.at } : { ok: true, open: false }) + "\n", stderr: "" } };
+      if (verb === "open") return { value: { exitCode: 0, stdout: JSON.stringify(!s.away && s.checklist ? { ok: true, open: true, at: s.checklist.at, hold: s.checklist.hold } : { ok: true, open: false }) + "\n", stderr: "" } };
       return { value: { exitCode: 0, stdout: '{"ok":false,"error":"unknown verb"}\n', stderr: "" } };
     }
     return { deny: `unexpected process ${e.argv.join(" ")}` };
@@ -201,10 +201,10 @@ for (const [where, payload, surface] of SESSIONS) {
 
     await ui.press({ key: "item-3" });
     await clock.settle();
-    expect(submits.map((x) => x.text)).toEqual([`brb item 3 @${SINCE}`]);
+    expect(submits.map((x) => x.text)).toEqual([`brb item 3 @${SINCE}#3`]);
     await ui.press({ key: "done-2" });
     await clock.settle();
-    expect(submits.map((x) => x.text)).toEqual([`brb item 3 @${SINCE}`, `brb done 2 @${SINCE}`]);
+    expect(submits.map((x) => x.text)).toEqual([`brb item 3 @${SINCE}#3`, `brb done 2 @${SINCE}#3`]);
     expect(acts).toEqual([["open"], ["open"]]);
     await ui.unmount();
     ui = await $.ui.mount({ ...BAND, surface });
@@ -231,7 +231,7 @@ for (const [where, payload, surface] of SESSIONS) {
     await ui.press({ key: "clear" });
     await clock.settle();
     expect(acts).toEqual([["open"]]);
-    expect(submits.map((x) => x.text)).toEqual([`brb clear @${SINCE}`]);
+    expect(submits.map((x) => x.text)).toEqual([`brb clear @${SINCE}#3`]);
     await ui.unmount();
     ui = await $.ui.mount({ ...BAND, surface });
     expect(await ui.find({ type: "Text", text: /^BACK/ })).toBeUndefined();
@@ -365,7 +365,7 @@ test("R1 S1: 11 checklist rows with the first 10 done: row 11 shows with its Don
   expect(await ui.find({ type: "Text", text: "10 done" })).toBeDefined();
   await ui.press({ key: "done-11" });
   await clock.settle();
-  expect(submits.map((x) => x.text)).toEqual([`brb done 11 @${SINCE}`]);
+  expect(submits.map((x) => x.text)).toEqual([`brb done 11 @${SINCE}#3`]);
   await ui.unmount();
 });
 

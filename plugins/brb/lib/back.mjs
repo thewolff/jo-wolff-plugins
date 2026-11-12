@@ -7,8 +7,9 @@
 //   2. write checklist.json, the returned digest: one row per held line and closing ask with the
 //      heading of its entry, none done, naming the archive path step 3 will use. A returned digest
 //      still open from an earlier hold keeps its rows, numbers and ticks, and the new rows follow
-//      (lib/state.mjs mergeChecklist); a hold that held nothing leaves an open one as it is and
-//      writes none otherwise;
+//      (lib/state.mjs mergeChecklist); a hold that held nothing leaves an open one's rows as they
+//      are and writes none otherwise. Either way the open list takes this hold's number (`hold`),
+//      so a band press made before this hold no longer matches it;
 //   3. move digest.md to archive/<ts>.md (the record; nothing in it is lost);
 //   4. remove away.json.
 // Each step that throws leaves the earlier ones done and the later ones not, and the hold on, so a
@@ -64,11 +65,12 @@ export function endHold(sessionId, env, at = new Date().toISOString()) {
     const again = counted ? Math.min(open.taken ?? 0, entries.length) : 0;
     // Additive: an item already open (not done) in the list is not added twice.
     const openTexts = new Set((open?.items ?? []).filter((i) => !i.done).map((i) => i.text));
-    const fresh = freshChecklist({ at, since: away.since, note: away.note, archived: target ? [target] : [], items: entries.slice(again).filter((e) => !openTexts.has(e.text)) });
+    const fresh = freshChecklist({ at, hold: away.hold, since: away.since, note: away.note, archived: target ? [target] : [], items: entries.slice(again).filter((e) => !openTexts.has(e.text)) });
     const cursor = { taken: entries.length, takenArchive: target };
     let checklist = open;
-    if (again) checklist = { ...open, archived: [...open.archived.filter((a) => existsSync(a)), ...fresh.archived], items: [...open.items, ...fresh.items], ...cursor };
+    if (again) checklist = { ...open, hold: away.hold, archived: [...open.archived.filter((a) => existsSync(a)), ...fresh.archived], items: [...open.items, ...fresh.items], ...cursor };
     else if (fresh.items.length) checklist = { ...mergeChecklist(open, fresh), ...cursor };
+    else if (open && open.hold !== away.hold) checklist = { ...open, hold: away.hold };
     if (checklist !== open) writeChecklist(sessionId, checklist, env);
     const archived = target ? archiveDigest(sessionId, env, at, target) : null;
     clearAway(sessionId, env);
@@ -82,15 +84,18 @@ export function endHold(sessionId, env, at = new Date().toISOString()) {
 /** The 1-based numbers of the rows not done. */
 const openNumbers = (checklist) => checklist.items.flatMap((item, i) => (item.done ? [] : [i + 1]));
 
+/** fn() under the session lock, or as is when `locked` says the caller already holds it (withAwayLock is not re-entrant). */
+const underLock = (sessionId, env, locked, fn) => (locked ? fn() : withAwayLock(sessionId, env, fn));
+
 /**
  * Item `n` (1-based) of the open returned digest, for the agent to show in full and work.
  * Returns `{ agentText, systemMessage? }`, or null when no returned digest is open. Changes no
  * row. An item longer than REASON_CAP is written whole to an export and `agentText` carries its
  * start and the export's path; when that write fails it points at checklist.json instead, and
- * `systemMessage` says so.
+ * `systemMessage` says so. `locked`: the caller holds the session lock.
  */
-export function showItem(sessionId, n, env) {
-  const checklist = withAwayLock(sessionId, env, () => readChecklist(sessionId, env));
+export function showItem(sessionId, n, env, { locked = false } = {}) {
+  const checklist = underLock(sessionId, env, locked, () => readChecklist(sessionId, env));
   if (!checklist) return null;
   const total = checklist.items.length;
   const item = checklist.items[n - 1];
@@ -110,9 +115,10 @@ export function showItem(sessionId, n, env) {
 /**
  * Tick item `n` (1-based) done. Ticking the last open row closes the returned digest (the file is
  * removed; the archive keeps the digest). Returns `{ agentText, closed }`, or null when none is open.
+ * `locked`: the caller holds the session lock.
  */
-export function tickItem(sessionId, n, env) {
-  return withAwayLock(sessionId, env, () => {
+export function tickItem(sessionId, n, env, { locked = false } = {}) {
+  return underLock(sessionId, env, locked, () => {
     const checklist = readChecklist(sessionId, env);
     if (!checklist) return null;
     const total = checklist.items.length;
@@ -127,10 +133,10 @@ export function tickItem(sessionId, n, env) {
  * each, then the file is removed. Returns `{ text, agentText, open, exported?, kept? }`, or null
  * when none is open. A block longer than REASON_CAP is written whole to an export first
  * (`exported`, its path) and `text` is cut and points at it; when that write fails the file stays
- * (`kept: true`) and `text` says so.
+ * (`kept: true`) and `text` says so. `locked`: the caller holds the session lock.
  */
-export function clearReturned(sessionId, env) {
-  return withAwayLock(sessionId, env, () => {
+export function clearReturned(sessionId, env, { locked = false } = {}) {
+  return underLock(sessionId, env, locked, () => {
     const checklist = readChecklist(sessionId, env);
     if (!checklist) return null;
     const open = openNumbers(checklist).length;
