@@ -22,6 +22,7 @@
     ]
   },
   "manual": [
-    "The ledger pane (mods/pane) is Desktop-only and is covered by `claude plugin test` over mods/pane/tests/pane.test.tsx; it has no live scenario."
+    "The ledger pane (mods/pane) is Desktop-only and is covered by `claude plugin test` over mods/pane/tests/pane.test.tsx; it has no live scenario.",
+    "The forgotten-work stories (a formal approval left unstarted, an offer made in passing then recorded and approved, a second offer while a question is open) run across several turns and are covered by test/e2e-owed.test.mjs; stop-owed-rule.scenario.json and stop-offer-rule.scenario.json prove the last Stop of the first two."
   ]
 }

@@ -25,7 +25,7 @@ const context = (r) => {
 test("session B answers A's question → A's next prompt gets the line; the prompt after that gets nothing", () => {
   const box = sandbox();
   const q = setup(box);
-  cli(box, ["answer", q, "red"], { env: { LEDGER_SESSION_ID: B }, cwd: box.sibling });
+  cli(box, ["answer", q, "red", "--nothing"], { env: { LEDGER_SESSION_ID: B }, cwd: box.sibling });
   const first = prompt(box);
   assert.equal(context(first), "ledger: answered since your last turn: colour → red (via cli)");
   assert.equal(first.json.systemMessage, undefined);
@@ -35,7 +35,7 @@ test("session B answers A's question → A's next prompt gets the line; the prom
 test("an answer recorded before the session's mark → nothing", () => {
   const box = sandbox();
   const q = setup(box);
-  cli(box, ["answer", q, "green"], { env: { LEDGER_SESSION_ID: B } });
+  cli(box, ["answer", q, "green", "--nothing"], { env: { LEDGER_SESSION_ID: B } });
   const db = openDb(box);
   db.prepare("UPDATE cc_sessions SET last_prompt_seen_at = ? WHERE id = ?").run(new Date(Date.now() + 1000).toISOString(), A);
   db.close();
@@ -45,7 +45,7 @@ test("an answer recorded before the session's mark → nothing", () => {
 test("an answer A recorded itself → nothing", () => {
   const box = sandbox();
   const q = setup(box);
-  cli(box, ["answer", q, "green"], { env: { LEDGER_SESSION_ID: A } });
+  cli(box, ["answer", q, "green", "--nothing"], { env: { LEDGER_SESSION_ID: A } });
   assert.equal(prompt(box).out, "");
 });
 
@@ -61,7 +61,7 @@ test("inject.answers false → nothing", () => {
   const box = sandbox();
   const q = setup(box);
   box.writeConfig({ inject: { answers: false } });
-  cli(box, ["answer", q, "red"], { env: { LEDGER_SESSION_ID: B } });
+  cli(box, ["answer", q, "red", "--nothing"], { env: { LEDGER_SESSION_ID: B } });
   assert.equal(prompt(box).out, "");
 });
 
@@ -69,7 +69,7 @@ test("the prompt hook switched off → exit 0, no output, no crash", () => {
   const box = sandbox();
   const q = setup(box);
   box.writeConfig({ hooks: { userPromptCommands: false } });
-  cli(box, ["answer", q, "red"], { env: { LEDGER_SESSION_ID: B } });
+  cli(box, ["answer", q, "red", "--nothing"], { env: { LEDGER_SESSION_ID: B } });
   const r = prompt(box);
   assert.equal(r.code, 0, r.err);
   assert.equal(r.out, "");
@@ -99,7 +99,7 @@ test("migration 5: a store at version 4 keeps its rows and gains the answer sess
   old.exec("INSERT INTO cc_sessions (id, cwd, started_at) VALUES ('s-1', '/w', '2026-01-01T00:00:00.000Z')");
   old.close();
   const { db } = open(p);
-  assert.equal(storeVersion(db), 8);
+  assert.equal(storeVersion(db), 9);
   assert.deepEqual({ ...db.prepare("SELECT id, word, session_id FROM cc_answers").get() }, { id: "an-1", word: "yes", session_id: null });
   assert.deepEqual({ ...db.prepare("SELECT id, last_prompt_seen_at FROM cc_sessions").get() }, { id: "s-1", last_prompt_seen_at: null });
   assert.deepEqual(db.prepare("PRAGMA foreign_key_check").all(), []);

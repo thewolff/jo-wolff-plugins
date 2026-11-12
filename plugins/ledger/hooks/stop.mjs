@@ -36,14 +36,26 @@
 // when their remedy has happened since (an answer, a question asked, a note). Both are fail-open:
 // a failed bounce write is logged and never changes the verdict.
 //
+// Forgotten work, a second once-per-prompt slot (cc_sessions.last_owed_block_prompt), run after
+// the rules above pass or are spent for this prompt, and also when another hook's continuation
+// set stop_hook_active: the owed rule (forcing.stopOwedRule) blocks while the session owns owed
+// work no open question waits on (lib/owed.mjs blockingSet); the offer check
+// (forcing.stopOfferRule) blocks on a sentence offering work that no candidate question records
+// (lib/stop-rules.mjs offerSentences, unrecordedOffers), whether or not a question is open.
+// Candidates: open or held questions in scope, plus every question the session owns since it
+// started, in any state. One block lists both, once per prompt; no prompt_id, never. A pass lists
+// the session's owed moves not yet shown, and what is still owed once the slot is spent, in its
+// systemMessage. An error in this slot is logged and the Stop passes.
+//
 // Output on block: {"decision":"block","reason":"…"}; on pass nothing. Fail open: switch off →
 // nothing; store busy/unavailable/read-only (the stamp is a write) → pass with one
 // systemMessage; anything thrown → runHook's systemMessage. Never exit 2.
 
 import { transaction } from "../lib/db.mjs";
-import { runHook, noticeField, invokedDirectly } from "../lib/failopen.mjs";
-import { elsewhereQuestions, openQuestions, sessionNotes, sessionQuestions } from "../lib/commands.mjs";
-import { checkStop } from "../lib/stop-rules.mjs";
+import { runHook, noticeField, invokedDirectly, logError } from "../lib/failopen.mjs";
+import { elsewhereQuestions, inScope, openQuestions, ownedBySession, sessionNotes, sessionQuestions } from "../lib/commands.mjs";
+import { checkStop, offerSentences, unrecordedOffers, offerReason, offerAwayReason } from "../lib/stop-rules.mjs";
+import { blockingSet, eventLine, markShown, owedListLines, unshownEvents } from "../lib/owed.mjs";
 import { brbAway, humanWroteSince } from "../lib/transcript.mjs";
 import { invocation } from "../lib/inject.mjs";
 import { withStore, hookConfig } from "../lib/store.mjs";
@@ -63,6 +75,25 @@ function relaysElsewhere(db, cwd, text) {
   return false;
 }
 
+/** Questions an offer may already be recorded in: open or held in scope, and every question the session owns since it started. */
+function offerCandidates(db, { sessionId, cwd, since }) {
+  return db
+    .prepare("SELECT id, cwd, about, body, state, session_id, asked_at FROM cc_questions")
+    .all()
+    .filter((q) => ((q.state === "open" || q.state === "held") && inScope(cwd, q.cwd)) || (sessionId && ownedBySession(q, { sessionId, cwd, since })));
+}
+
+/** The owed rule's block text for `items`. */
+export function owedReason(items, { now = Date.now(), cli = "ledger" } = {}) {
+  return [
+    "ledger: work the human approved is still owed, and this turn is ending without it started:",
+    ...owedListLines(items, { now, cli }),
+    `For each one: start it now (dispatch the agent or run the command, then \`${cli} start <ow-id> "<agent id, session or command>"\`), or \`${cli} hold <ow-id> "<why, and until when>"\`, or \`${cli} drop <ow-id> "<why>"\`. If it waits on the human, ask through the ledger, then \`${cli} wait <ow-id> <q-id>\`. If it is already finished, \`${cli} done <ow-id> [ref]\`. Then tell the human in plain words what you did. Do not show the ids.`,
+  ].join("\n");
+}
+
+const MAX_LINES = 8;
+
 export function handle(input, { env = process.env, now = Date.now() } = {}) {
   const ready = hookConfig(env, input, "stop");
   if (!ready) return null;
@@ -74,7 +105,7 @@ export function handle(input, { env = process.env, now = Date.now() } = {}) {
     const iso = nowIso(now);
     const pass = () => noticeField(store.notices);
 
-    const session = sessionId ? db.prepare("SELECT started_at, last_block_prompt, last_stop_at, last_stop_prompt FROM cc_sessions WHERE id = ?").get(sessionId) : null;
+    const session = sessionId ? db.prepare("SELECT started_at, last_block_prompt, last_stop_at, last_stop_prompt, last_owed_block_prompt FROM cc_sessions WHERE id = ?").get(sessionId) : null;
     const stamp = (verdict) => {
       if (!sessionId) return;
       transaction(
@@ -90,43 +121,98 @@ export function handle(input, { env = process.env, now = Date.now() } = {}) {
     if (sessionId && promptId) {
       satisfyBounces(store, { sessionId, promptId, rules: STOP_RULES, now, env, hook: "Stop", check: (row) => stopRemedyDone(db, row, { sessionId, cwd }) });
     }
-    if (promptId && session?.last_block_prompt === promptId) {
-      stamp(null);
-      return pass();
-    }
-    if (input.stop_hook_active === true && (!promptId || !session?.last_block_prompt)) return pass();
-
-    const newTurn = Boolean(promptId && session?.last_stop_prompt && session.last_stop_prompt !== promptId && session.last_stop_at);
+    const sharedSpent = Boolean(promptId && session?.last_block_prompt === promptId);
+    const otherHook = input.stop_hook_active === true && (!promptId || !session?.last_block_prompt);
     const away = brbAway(sessionId, env);
-    // Only a transcript that shows a typed prompt since the last Stop is evidence the human
-    // wrote; an unreadable or unrecognised transcript (null) is no evidence, so no answer nag.
-    const humanWrote = newTurn && !away && humanWroteSince(input.transcript_path, session.last_stop_at) === true;
-    // The session's own open questions drive the answer rule and the decision rule's "asked this
-    // turn" count. The ask rule stands down on any open question in scope for the folder (its
-    // own, or one an earlier session left in this cwd or a parent): a leftover row is still a
-    // question to the human, and a rule that ignored it sent every reply back with no way out.
-    // It also stands down when the reply relays a question open in ANOTHER folder (its body
-    // appears in the reply): SessionStart asks the model to tell the human about those, and
-    // relaying one is not asking a new question (0.3.3, live session 708406d0).
-    const open = sessionId ? sessionQuestions(db, { sessionId, cwd }) : [];
-    const inScope = openQuestions(db, cwd, { below: false });
-    const relayed = inScope.length || open.length ? false : relaysElsewhere(db, cwd, input.last_assistant_message);
-    const turnSince = session?.last_stop_at ?? session?.started_at ?? null;
-    const verdict = checkStop(input.last_assistant_message, {
-      dueQuestions: humanWrote ? sessionQuestions(db, { sessionId, cwd, askedBy: session.last_stop_at }) : [],
-      sessionHasOpenQuestion: open.length > 0 || inScope.length > 0 || relayed,
-      // A question asked this turn: its stated default ("if you don't answer, I'll go with alpha")
-      // is not a decision, so the decision rule stands down for this reply.
-      turnQuestions: sessionId ? open.filter((q) => !turnSince || q.asked_at > turnSince).length : 0,
-      turnNotes: sessionNotes(db, { sessionId, cwd, after: turnSince }).length,
-      forcing: store.config.forcing,
-      cli: invocation(),
-      away,
-    });
-    stamp(verdict);
-    if (!verdict) return pass();
-    recordBounce(store, { sessionId, rule: verdict.rule, promptId, text: input.last_assistant_message, transcriptPath: input.transcript_path, now, env, hook: "Stop" });
-    return { ...noticeField(store.notices), decision: "block", reason: verdict.reason };
+    let verdict = null;
+    if (!sharedSpent && !otherHook) {
+      const newTurn = Boolean(promptId && session?.last_stop_prompt && session.last_stop_prompt !== promptId && session.last_stop_at);
+      // Only a transcript that shows a typed prompt since the last Stop is evidence the human
+      // wrote; an unreadable or unrecognised transcript (null) is no evidence, so no answer nag.
+      const humanWrote = newTurn && !away && humanWroteSince(input.transcript_path, session.last_stop_at) === true;
+      // The session's own open questions drive the answer rule and the decision rule's "asked this
+      // turn" count. The ask rule stands down on any open question in scope for the folder (its
+      // own, or one an earlier session left in this cwd or a parent): a leftover row is still a
+      // question to the human, and a rule that ignored it sent every reply back with no way out.
+      // It also stands down when the reply relays a question open in ANOTHER folder (its body
+      // appears in the reply): SessionStart asks the model to tell the human about those, and
+      // relaying one is not asking a new question (0.3.3, live session 708406d0).
+      const open = sessionId ? sessionQuestions(db, { sessionId, cwd }) : [];
+      const inScopeOpen = openQuestions(db, cwd, { below: false });
+      const relayed = inScopeOpen.length || open.length ? false : relaysElsewhere(db, cwd, input.last_assistant_message);
+      const turnSince = session?.last_stop_at ?? session?.started_at ?? null;
+      verdict = checkStop(input.last_assistant_message, {
+        dueQuestions: humanWrote ? sessionQuestions(db, { sessionId, cwd, askedBy: session.last_stop_at }) : [],
+        sessionHasOpenQuestion: open.length > 0 || inScopeOpen.length > 0 || relayed,
+        // A question asked this turn: its stated default ("if you don't answer, I'll go with alpha")
+        // is not a decision, so the decision rule stands down for this reply.
+        turnQuestions: sessionId ? open.filter((q) => !turnSince || q.asked_at > turnSince).length : 0,
+        turnNotes: sessionNotes(db, { sessionId, cwd, after: turnSince }).length,
+        forcing: store.config.forcing,
+        cli: invocation(),
+        away,
+      });
+    }
+    if (verdict) {
+      stamp(verdict);
+      recordBounce(store, { sessionId, rule: verdict.rule, promptId, text: input.last_assistant_message, transcriptPath: input.transcript_path, now, env, hook: "Stop" });
+      return { ...noticeField(store.notices), decision: "block", reason: verdict.reason };
+    }
+    if (!otherHook) stamp(null);
+
+    let lines = [];
+    try {
+      const forcing = store.config.forcing ?? {};
+      const cli = invocation();
+      const owedSpent = Boolean(promptId && session?.last_owed_block_prompt === promptId);
+      if (sessionId && promptId && !owedSpent && (forcing.stopOwedRule !== false || forcing.stopOfferRule !== false)) {
+        const owed = forcing.stopOwedRule !== false ? blockingSet(db, { sessionId, cwd }) : [];
+        const since = session?.started_at ?? null;
+        const offers = forcing.stopOfferRule !== false ? unrecordedOffers(offerSentences(input.last_assistant_message), offerCandidates(db, { sessionId, cwd, since })) : [];
+        if (owed.length || offers.length) {
+          transaction(
+            db,
+            () => {
+              db.prepare("INSERT INTO cc_sessions (id, cwd, started_at, last_owed_block_prompt) VALUES (?,?,?,?) ON CONFLICT(id) DO UPDATE SET last_owed_block_prompt = excluded.last_owed_block_prompt").run(sessionId, cwd, iso, promptId);
+            },
+            store.dbPath,
+          );
+          const reasons = [];
+          if (owed.length) {
+            recordBounce(store, { sessionId, rule: "stopOwedRule", promptId, text: input.last_assistant_message, transcriptPath: input.transcript_path, now, env, hook: "Stop" });
+            reasons.push(owedReason(owed, { now, cli }));
+          }
+          if (offers.length) {
+            recordBounce(store, { sessionId, rule: "stopOfferRule", promptId, text: input.last_assistant_message, transcriptPath: input.transcript_path, now, env, hook: "Stop" });
+            reasons.push(away ? offerAwayReason(offers, cli) : offerReason(offers, cli));
+          }
+          return { ...noticeField(store.notices), decision: "block", reason: reasons.join("\n\n") };
+        }
+      }
+      const events = unshownEvents(db, { sessionId, cwd });
+      lines = events.map(eventLine);
+      if (owedSpent && forcing.stopOwedRule !== false) {
+        for (const i of blockingSet(db, { sessionId, cwd })) lines.push(`ledger: still owed after one reminder, and the turn ended: ${i.body}`);
+      }
+      if (lines.length > MAX_LINES) {
+        // Events come first; a cut event stays unstamped and shows at a later Stop, while a cut
+        // still-owed line names an open item, which `pending --all` lists.
+        const cutEvents = Math.max(0, events.length - MAX_LINES);
+        const cutOwed = lines.length - MAX_LINES - cutEvents;
+        const parts = [];
+        if (cutEvents) parts.push(cutEvents === 1 ? "1 more event; it shows at a later Stop" : `${cutEvents} more events; they show at a later Stop`);
+        if (cutOwed) parts.push(`${cutOwed} more still owed; run \`${cli} pending --all\``);
+        lines = [...lines.slice(0, MAX_LINES), `… and ${parts.join(" · ")}`];
+      }
+      // Only the events whose lines were printed are stamped; the rest show on a later Stop.
+      const shown = events.slice(0, MAX_LINES);
+      if (shown.length) transaction(db, () => markShown(db, shown.map((e) => e.id), iso), store.dbPath);
+    } catch (err) {
+      logError("Stop", `the forgotten-work check did not run: ${err.message}`, env);
+      lines = [];
+    }
+    const notices = [...store.notices, ...lines];
+    return notices.length ? { systemMessage: notices.join("\n") } : pass();
   });
 }
 

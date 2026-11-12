@@ -139,7 +139,7 @@ test("(g) doctor on a store at an older schema version: fail, exit 1, and the st
   db.close();
   const r = doctor(b);
   assert.equal(r.code, 1, r.out);
-  assert.match(r.out, /^fail schema: version 5, this plugin expects 8$/m);
+  assert.match(r.out, /^fail schema: version 5, this plugin expects 9$/m);
   const raw = new DatabaseSync(b.dbPath);
   assert.equal(storeVersion(raw), 5, "doctor never writes");
   raw.close();
@@ -213,7 +213,7 @@ test("(i) inject.doctor false: no doctor line", () => {
   assert.ok(!ctx.includes("doctor reports"), ctx);
 });
 
-test("(j) a version 5 store migrates to 8 keeping its rows; the new tables are empty and the judge words move", () => {
+test("(j) a version 5 store migrates to 9 keeping its rows; the new tables are empty and the judge words move", () => {
   const b = sandbox();
   const p = join(b.root, "v5.db");
   const old = new DatabaseSync(p);
@@ -226,7 +226,7 @@ test("(j) a version 5 store migrates to 8 keeping its rows; the new tables are e
   old.exec("INSERT INTO cc_meta VALUES ('judge:def', 'maybe')");
   old.close();
   const { db } = open(p);
-  assert.equal(storeVersion(db), 8);
+  assert.equal(storeVersion(db), 9);
   // 7: the judge's words moved to cc_judge_cache (a passage is "not kept" for them); a value that
   // is not yes|no is dropped rather than failing the migration.
   assert.deepEqual(db.prepare("SELECT key, answer, passage FROM cc_judge_cache ORDER BY key").all().map((r) => ({ ...r })), [{ key: "judge:abc", answer: "yes", passage: null }]);

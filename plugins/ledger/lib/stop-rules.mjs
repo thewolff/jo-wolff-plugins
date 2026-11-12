@@ -29,6 +29,13 @@
 // with `ask` then `hold` instead of asking the human in plain words.
 //
 // Checked in that order; one block per Stop.
+//
+// The offer check (forcing.stopOfferRule) is separate: the Stop hook runs it in its second
+// once-per-prompt slot, with the owed rule, whether or not a question is open. `offerSentences`
+// finds sentences offering to do work (closed patterns P1 to P11 below, after removing code,
+// double-quoted spans and `>` quote lines); `unrecordedOffers` drops those whose text matches a
+// recorded question's `about` or `body`, so a second, different offer in the same reply still
+// counts. A pattern joins the list only with a positive and a negative test sentence.
 
 export const MIN_CHARS = 40;
 
@@ -59,7 +66,7 @@ export function askAwayReason(cli = "ledger") {
 export function answerReason(questions, cli = "ledger") {
   const list = questions.map((q) => `${q.id} (${q.name}): ${q.body}`).join("\n");
   const one = questions.length === 1;
-  return `ledger: the human has written since you asked ${one ? "this question" : "these questions"}, and ${one ? "it has" : "they have"} no answer recorded:\n${list}\nTake the answer from the human's latest message and run \`${cli} answer <q-id> <option>\` for ${one ? "it" : "each"} (or \`${cli} withdraw <q-id>\` if they set it aside), then finish. Do not show the q- id to the human.`;
+  return `ledger: the human has written since you asked ${one ? "this question" : "these questions"}, and ${one ? "it has" : "they have"} no answer recorded:\n${list}\nTake the answer from the human's latest message and run \`${cli} answer <q-id> <option>\` for ${one ? "it" : "each"} (or \`${cli} withdraw <q-id>\` if they set it aside), then finish. Do not show the q- id to the human. Recording an answer also records the approved work as owed. Add \`--nothing\` if the answer sets nothing in motion, \`--pointer "<agent, session or command>"\` if you start it now, and \`--work "<the work, one line>"\` if the option's words do not describe it.`;
 }
 
 export function decisionReason(phrase, cli = "ledger") {
@@ -177,4 +184,111 @@ export function checkStop(message, { dueQuestions = [], sessionHasOpenQuestion =
     if (phrase) return { rule: "stopDecisionRule", reason: decisionReason(phrase, cli) };
   }
   return null;
+}
+
+// Verbs of perception and statement right after the modal: "I can see …", "I can tell …" report,
+// they do not offer work.
+const PERCEIVE = String.raw`(?:see|tell|say|know|notice|understand|confirm that|imagine|guess|think)\b`;
+// Words P3 and P5 refuse right after the modal: offers of conversation, not of work.
+const TALK = String.raw`(?:help|answer|explain|clarify|chat)\b`;
+
+/**
+ * The closed offer patterns, tested in this order on one trimmed sentence (apostrophes folded to
+ * '). P1 to P7 and P11 are statements; P8 to P10 are offers worded as a question. P10 followed
+ * only by `with that|it|this` or by nothing ("Should I go ahead with that?", "Shall I start?")
+ * refers to a question already put and is not a new offer.
+ */
+export const OFFER_PATTERNS = Object.freeze([
+  ["P1", new RegExp(String.raw`\b(?:i|we) (?:can|could) (?:also )?(?!${PERCEIVE})[^.!?]{1,80}\bnext[.!]?$`, "i")],
+  ["P2", /\bsay the word\b/i],
+  ["P3", new RegExp(String.raw`\bif you(?:'d| would)? (?:like|want)\b[^.!?]{0,30}\b(?:i'll|i will|i can|i could)\b(?! ${TALK})`, "i")],
+  ["P4", /\blet me know if you(?:'d)? (?:like|want) me to\b/i],
+  ["P5", new RegExp(String.raw`\b(?:i'm|i am|i'd be|i would be) happy to (?!${TALK})\w+`, "i")],
+  ["P6", /\bi(?:'ll| will) [^.!?]{1,80}\bif you (?:want|like|say so|agree|approve)\b/i],
+  ["P7", new RegExp(String.raw`\bnext,? (?:i|we) (?:can|could|would)\b(?! (?:also )?${PERCEIVE})`, "i")],
+  ["P11", /\b(?:i|we) can (?:take|pick) (?:that|this|it) (?:on|up)\b/i],
+  ["P8", /\bwant me to\b/i],
+  ["P9", /\bwould you like me to\b/i],
+  ["P10", /\b(?:shall|should|can|may) (?:i|we) (?:go ahead|start|build|run|add|write|fix|open|draft|kick off|dispatch|implement|make|do)\b/i],
+]);
+
+/** Whether a P10 match points back at the open question: only `with that|it|this`, or nothing, follows it. */
+function p10RefersBack(sentence, match) {
+  const after = sentence.slice(match.index + match[0].length).replace(/[\s.!?]+$/, "").trim();
+  return after === "" || /^with (?:that|it|this)$/i.test(after);
+}
+
+/** The id of the first offer pattern `sentence` matches, or null. */
+export function offerPattern(sentence) {
+  const s = String(sentence ?? "").replace(/[‘’]/g, "'").trim();
+  for (const [id, re] of OFFER_PATTERNS) {
+    const m = re.exec(s);
+    if (!m) continue;
+    if (id === "P10" && p10RefersBack(s, m)) continue;
+    return id;
+  }
+  return null;
+}
+
+/**
+ * The sentences of `text` that offer to do work, each `{ sentence, pattern }`. Code, double-quoted
+ * spans and lines starting with `>` are removed first; sentences are cut as `questionSentences`
+ * cuts them, keeping every sentence, not only `?` ones.
+ */
+export function offerSentences(text) {
+  const kept = stripCode(text)
+    .split("\n")
+    .filter((line) => !/^\s*>/.test(line))
+    .join("\n");
+  return stripQuoted(kept)
+    .split(/(?<=[.!?])\s+|\n+/)
+    .map((s) => s.trim())
+    .filter(Boolean)
+    .map((sentence) => ({ sentence, pattern: offerPattern(sentence) }))
+    .filter((o) => o.pattern);
+}
+
+/** Text for matching: apostrophes folded, whitespace folded, lowercase, outer punctuation and quote marks trimmed. */
+export function offerKey(text) {
+  return String(text ?? "")
+    .replace(/[‘’]/g, "'")
+    .replace(/\s+/g, " ")
+    .toLowerCase()
+    .replace(/^[\s"'“”.,;:!?()*_`-]+|[\s"'“”.,;:!?()*_`-]+$/g, "");
+}
+
+/** The shortest recorded text that counts when found inside a longer offer sentence. */
+export const OFFER_MATCH_FLOOR = 20;
+
+/**
+ * The offers no recorded question covers. A question covers an offer when the offer's text is
+ * inside its `about` or `body`, or its `about` or `body` (at least OFFER_MATCH_FLOOR characters)
+ * is inside the offer's text, both compared by `offerKey`.
+ * @param offers    from offerSentences
+ * @param questions candidates: { about, body }
+ */
+export function unrecordedOffers(offers, questions = []) {
+  const texts = [];
+  for (const q of questions) for (const t of [q.about, q.body]) if (t) texts.push(offerKey(t));
+  return offers.filter(({ sentence }) => {
+    const key = offerKey(sentence);
+    if (!key) return false;
+    return !texts.some((t) => (t && t.includes(key)) || (t.length >= OFFER_MATCH_FLOOR && key.includes(t)));
+  });
+}
+
+const cut120 = (s) => (s.length > 120 ? `${s.slice(0, 119)}…` : s);
+
+/** The offer check's block reason: each unrecorded offer, the ask line that records it, and the way out. */
+export function offerReason(offers, cli = "ledger") {
+  const list = offers.map((o) => `- ${cut120(o.sentence)}`).join("\n");
+  const one = offers.length === 1;
+  return `ledger: this turn offers to do work the human has not approved, and no ledger question records ${one ? "the offer" : "these offers"}:\n${list}\nRecord ${one ? "it" : "each one"} with \`${cli} ask "<the question, in plain words>" --kind approval --name <short> --about "<the offer sentence, verbatim>"\`, then finish; ask in plain words without showing the human the q- id. If a sentence is not an offer, or repeats one already recorded, finish: the bounce is counted.`;
+}
+
+/** The offer check's reason while brb holds the session: record the offer and hold it. */
+export function offerAwayReason(offers, cli = "ledger") {
+  const list = offers.map((o) => `- ${cut120(o.sentence)}`).join("\n");
+  const one = offers.length === 1;
+  return `ledger: this turn offers to do work the human has not approved, no ledger question records ${one ? "the offer" : "these offers"}, and the human is away (brb):\n${list}\nRecord ${one ? "it" : "each one"} with \`${cli} ask "<the question, in plain words>" --kind approval --name <short> --about "<the offer sentence, verbatim>"\`, then \`${cli} hold <q-id>\`, then finish. If a sentence is not an offer, or repeats one already recorded, finish: the bounce is counted.`;
 }

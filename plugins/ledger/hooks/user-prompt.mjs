@@ -27,7 +27,13 @@
 // option, an unknown id) is reported in the results, not swallowed: it parsed as a ledger line
 // and was turned down.
 //
-// Output: hookSpecificOutput.additionalContext = the answers-from-elsewhere lines, then "ledger
+// Owed work: with a session id and an existing database, the session's owed items that no open
+// question waits on (lib/owed.mjs blockingSet) are listed for Claude, at most ten, on every prompt
+// while any exist, on a prompt that is not ledger lines. A prose prompt with nothing owed stays
+// silent. A read failure is logged.
+//
+// Output: hookSpecificOutput.additionalContext = the answers-from-elsewhere lines, the bare-option
+// hints and the owed list, then "ledger
 // applied the lines in this prompt:" + the batch result block (Claude reads both); the batch
 // block also as systemMessage (the person sees it). Fail open: switch off → nothing; store
 // busy/unavailable → nothing applied, one systemMessage when the prompt had ledger lines, only a
@@ -42,6 +48,8 @@ import { runBatch, formatBatch, parseAll, busyWord } from "../lib/batch.mjs";
 import { answersSince, bareOptionMatches, pendingLines } from "../lib/commands.mjs";
 import { StoreError, transaction } from "../lib/db.mjs";
 import { nowIso } from "../lib/time.mjs";
+import { blockingSet, owedListLines } from "../lib/owed.mjs";
+import { invocation } from "../lib/inject.mjs";
 
 const READ_ONLY = new Set(["pending", "log", "help"]);
 
@@ -106,8 +114,24 @@ function bareOptionLines(store, prompt, cwd, sessionId, now, cfg) {
   const tz = cfg.config.timezone ?? null;
   return matches.map(({ q, word }) => {
     const where = q.cwd === cwd ? "" : ` (asked in ${q.cwd})`;
-    return `ledger: the prompt "${String(prompt).trim()}" is option ${word} of an open question${where}: ${pendingLines(q, { now, timezone: tz }).join(" ")}. If the human meant it as their reply, run \`ledger answer ${q.id} ${word}\` and tell them it is recorded; do not show the id. Nothing is recorded yet.`;
+    return `ledger: the prompt "${String(prompt).trim()}" is option ${word} of an open question${where}: ${pendingLines(q, { now, timezone: tz }).join(" ")}. If the human meant it as their reply, run \`ledger answer ${q.id} ${word}\` and tell them it is recorded; do not show the id. Nothing is recorded yet. Recording it also records the approved work as owed; add \`--nothing\` if it sets nothing in motion.`;
   });
+}
+
+/** The session's owed work no question waits on, for Claude; [] when none, or when reading it fails (logged). */
+function owedLines(store, sessionId, cwd, now, env) {
+  try {
+    const items = blockingSet(store.db, { sessionId, cwd });
+    if (!items.length) return [];
+    const cli = invocation();
+    return [
+      `ledger: approved work still owed (not started). A new topic does not cancel it; the turn is sent back once if it ends with any of these still owed. Start each (\`${cli} start <ow-id> "<agent id, session or command>"\`), or \`${cli} hold <ow-id> "<why, until when>"\`, or \`${cli} drop <ow-id> "<why>"\`. Tell the human in plain words; never show the id.`,
+      ...owedListLines(items, { now, cap: 10, cli }),
+    ];
+  } catch (err) {
+    logError("UserPromptSubmit", `owed list not read: ${err.message}`, env);
+    return [];
+  }
 }
 
 /** Apply the prompt's ledger lines; null when one of them is prose. */
@@ -137,13 +161,15 @@ export function handle(input, { env = process.env, now = Date.now() } = {}) {
     const news = answers ? takeAnswers(store, sessionId, cwd, now, env) : [];
     const hints = watch && !lines ? bareOptionLines(store, input.prompt, cwd, sessionId, now, cfg) : [];
     const applied = lines ? applyLines(store, lines, cwd, sessionId, now) : null;
-    if (!applied && !news.length && !hints.length) return null;
+    // A prompt of ledger lines gets the batch block instead: each answer line already names what it left owed.
+    const owed = watch && !lines ? owedLines(store, sessionId, cwd, now, env) : [];
+    if (!applied && !news.length && !hints.length && !owed.length) return null;
     const system = applied ? applied.systemMessage : store.notices.join("\n");
     return {
       ...(system ? { systemMessage: system } : {}),
       hookSpecificOutput: {
         hookEventName: "UserPromptSubmit",
-        additionalContext: [news.join("\n"), hints.join("\n"), applied?.context].filter(Boolean).join("\n\n"),
+        additionalContext: [news.join("\n"), hints.join("\n"), owed.join("\n"), applied?.context].filter(Boolean).join("\n\n"),
       },
     };
   });

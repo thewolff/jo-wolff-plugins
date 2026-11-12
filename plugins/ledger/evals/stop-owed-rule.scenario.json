@@ -1,0 +1,22 @@
+{
+  "$comment": "Approved work recorded by an answer and not started blocks the end of the turn once; the reason says it is still owed and names start.",
+  "event": "Stop",
+  "expect": "deny",
+  "reason": "still owed",
+  "setup": {
+    "env": { "LEDGER_SESSION_ID": "${SESSION_ID}" },
+    "commands": [
+      "node \"${PLUGIN_DIR}/scripts/ledger.mjs\" --cwd \"${CWD}\" ask \"Build the weekly digest exporter now?\" --name digest-exporter --options yes,no",
+      "node \"${PLUGIN_DIR}/scripts/ledger.mjs\" --cwd \"${CWD}\" 1 yes"
+    ]
+  },
+  "stdin": {
+    "session_id": "${SESSION_ID}",
+    "transcript_path": "${TRANSCRIPT}",
+    "cwd": "${CWD}",
+    "hook_event_name": "Stop",
+    "stop_hook_active": false,
+    "prompt_id": "p-2",
+    "last_assistant_message": "The cache TTL defaults to 300 seconds; it is set in config.mjs."
+  }
+}

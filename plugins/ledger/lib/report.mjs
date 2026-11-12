@@ -1,6 +1,6 @@
 // report.mjs — `ledger report [--since 7d]`: what the hooks did in the window, graded.
 //
-// Per rule (the three Stop rules, the two PreToolUse rules and the review gate): how often it
+// Per rule (the five Stop rules, the two PreToolUse rules and the review gate): how often it
 // fired, how many bounces were satisfied, bypassed or are still open, and a grade:
 //   biting   the rule sent back work that was then bypassed: bypassed ≥ 3, or more than half of
 //            what fired was bypassed
@@ -13,6 +13,11 @@
 // none of the three words → `judge unavailable: <reason>` for that rule; the mechanical grade
 // stands.
 //
+// Then owed work created in the window, by where the approval came from (an answer, or the
+// agent's own `owe`): created, the current state of those items, and answers that set nothing in
+// motion. When any item is deferred now: how many, how many went into deferred more than 7 days
+// ago, and the parked wake-condition fix in one sentence.
+//
 // Then: canary runs in the window (per plugin: last status, counts, graded ones), reviews waived
 // in the window with their reasons, and the judge's cached answers in the window. Read-only.
 
@@ -20,7 +25,7 @@ import { parseSpan, BOUNCES_DEFAULT_SINCE } from "./bounces.mjs";
 import { askWord, judgementsSince } from "./ledger-judge.mjs";
 import { nowIso } from "./time.mjs";
 
-export const RULES = Object.freeze(["stopAnswerRule", "stopAskRule", "stopDecisionRule", "denyAskWithoutRow", "pushNeedsNote", "reviewGate", "pluginGate"]);
+export const RULES = Object.freeze(["stopAnswerRule", "stopAskRule", "stopDecisionRule", "stopOwedRule", "stopOfferRule", "denyAskWithoutRow", "pushNeedsNote", "reviewGate", "pluginGate"]);
 export const GRADES = Object.freeze(["biting", "silent", "fine"]);
 export const JUDGE_TEXTS = 20;
 export const JUDGE_QUESTION_RULE = "You are reading the bounces of one enforcement rule in a coding agent's hooks: each is a reply or command the rule sent back, with whether the agent then satisfied the rule or bypassed it. Is the rule biting (it sent back work that was right, so the agent had to bypass it), silent (the texts show it should have fired on more than it did), or fine?";
@@ -53,7 +58,48 @@ export function gather(db, { now = Date.now(), since = BOUNCES_DEFAULT_SINCE } =
   } catch {
     judgements = [];
   }
-  return { from, since, span, sessions, rules, canary, prunes, waived, judgements };
+  return { from, since, span, sessions, rules, owed: gatherOwed(db, { from, now }), canary, prunes, waived, judgements };
+}
+
+/** Owed work in the window, per origin, and the deferred items now. Pure reads. */
+export function gatherOwed(db, { from, now = Date.now() }) {
+  const items = db.prepare("SELECT origin, state FROM cc_owed WHERE made_at >= ?").all(from);
+  const row = (origin) => {
+    const mine = items.filter((i) => i.origin === origin);
+    const n = (state) => mine.filter((i) => i.state === state).length;
+    return { created: mine.length, owed: n("owed"), started: n("started"), done: n("done"), deferred: n("deferred"), dropped: n("dropped") };
+  };
+  const notApproved = db.prepare("SELECT count(*) AS n FROM cc_owed_moves WHERE kind = 'nothing' AND at >= ?").get(from).n;
+  const weekAgo = nowIso(now - 7 * 86_400_000);
+  const deferred = db
+    .prepare("SELECT o.id, (SELECT max(m.at) FROM cc_owed_moves m WHERE m.owed_id = o.id AND m.to_state = 'deferred') AS since FROM cc_owed o WHERE o.state = 'deferred'")
+    .all()
+    .map((r) => ({ ...r }));
+  return {
+    formal: { ...row("answer"), notApproved },
+    agent: row("agent"),
+    deferredNow: deferred.length,
+    deferredOld: deferred.filter((d) => d.since && d.since < weekAgo).length,
+  };
+}
+
+export const PARKED_FIX = "If deferrals are piling up, the parked fix is a wake condition on every deferral (next prompt, a question answered, or a date), after which the item blocks again; it was set aside for stage 1 on 2026-11-11.";
+
+/** The owed section of the report. */
+export function renderOwed(owed, from) {
+  if (!owed) return [];
+  const { formal, agent } = owed;
+  const lines = [];
+  if (!formal.created && !agent.created && !formal.notApproved) lines.push("no owed work in the window");
+  else {
+    lines.push(`owed work since ${from}, by where the approval came from:`);
+    lines.push(`${pad("source", 16)} ${pad("created", 8)} ${pad("owed", 5)} ${pad("started", 8)} ${pad("done", 5)} ${pad("deferred", 9)} ${pad("dropped", 8)} not approved`);
+    const line = (name, r, na) => `${pad(name, 16)} ${pad(r.created, 8)} ${pad(r.owed, 5)} ${pad(r.started, 8)} ${pad(r.done, 5)} ${pad(r.deferred, 9)} ${pad(r.dropped, 8)} ${na}`;
+    lines.push(line("formal (answer)", formal, formal.notApproved));
+    lines.push(line("agent (owe)", agent, "-"));
+  }
+  if (owed.deferredNow) lines.push(`deferred owed work: ${owed.deferredNow} item(s) deferred now, ${owed.deferredOld} of them deferred more than 7 days ago. ${PARKED_FIX}`);
+  return lines;
 }
 
 /** The passage the judge reads for one rule: up to JUDGE_TEXTS bounce texts with their outcome. */
@@ -86,6 +132,8 @@ export function render(data) {
     lines.push(`${pad(r.rule, 18)} ${pad(r.fired, 6)} ${pad(r.satisfied, 10)} ${pad(r.bypassed, 9)} ${pad(r.open, 5)} ${r.mechanical}${judge ? ` (${judge})` : ""}`);
   }
   lines.push("");
+  const owedLines = renderOwed(data.owed, data.from);
+  if (owedLines.length) lines.push(...owedLines, "");
   const c = data.canary;
   const n = (st) => c.filter((r) => r.status === st).length;
   lines.push(`canary: ${c.length} run(s): pass ${n("pass")}, fail ${n("fail")}, unavailable ${n("unavailable")}`);

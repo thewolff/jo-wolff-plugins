@@ -29,6 +29,13 @@ function passed(r) {
   assert.equal(r.code, 0, r.err);
   assert.equal(r.out, "", `expected no output, got ${r.out}`);
 }
+// A pass whose systemMessage is exactly the forgotten-work lines for moves not yet shown.
+function passedWith(r, lines) {
+  assert.equal(r.code, 0, r.err);
+  assert.ok(r.json, `expected JSON, got ${JSON.stringify(r.out)}`);
+  assert.equal(r.json.decision, undefined);
+  assert.equal(r.json.systemMessage, lines.join("\n"));
+}
 
 test("step 8: a question while the session has no open row → block with the ask reason; the same prompt_id again → pass (guard)", () => {
   blocked(hook(box, "stop", payload(LONG_Q)), /asks the human a question but there is no open question row for this folder.*ledger\.mjs ask/);
@@ -75,9 +82,9 @@ test("answer rule: the same flow after `ledger answer <q-id> <option>` → the S
   startSession(b);
   const q = askIn(b, "ship");
   passed(stopIn(b, "p-1", LONG_Q));
-  const a = cli(b, ["answer", q, "yes"], { env: sessionEnv });
+  const a = cli(b, ["answer", q, "yes", "--nothing"], { env: sessionEnv });
   assert.equal(a.code, 0, a.out + a.err);
-  passed(stopIn(b, "p-2"));
+  passedWith(stopIn(b, "p-2"), ["ledger: your answer set nothing in motion: ship → yes"]);
 });
 
 test("answer rule: no human prompt since the question → the Stop passes (the agent is still waiting)", () => {
@@ -105,13 +112,13 @@ test("answer rule: several open questions → listed newest first; the bounce cl
   blocked(r, /since you asked these questions, and they have no answer recorded/);
   const ids = r.json.reason.match(/q-[a-z0-9]+(?= \()/g);
   assert.deepEqual(ids, [second, first], "newest first; the one asked in this turn is not due");
-  cli(b, ["answer", second, "no"], { env: sessionEnv });
+  cli(b, ["answer", second, "no", "--nothing"], { env: sessionEnv });
   const again = stopIn(b, "p-3");
   blocked(again, /since you asked these questions/);
   assert.deepEqual(again.json.reason.match(/q-[a-z0-9]+(?= \()/g), [third, first]);
-  cli(b, ["answer", first, "yes"], { env: sessionEnv });
+  cli(b, ["answer", first, "yes", "--nothing"], { env: sessionEnv });
   cli(b, ["withdraw", third], { env: sessionEnv });
-  passed(stopIn(b, "p-4"));
+  passedWith(stopIn(b, "p-4"), ["ledger: your answer set nothing in motion: second → no", "ledger: your answer set nothing in motion: first → yes"]);
 });
 
 test("ask rule: a reply ending in `?` passes while the session has an open row and is sent back once that row is answered", () => {

@@ -57,7 +57,7 @@ export function storeWord(kind) {
 }
 
 /** The tables this plugin owns, in creation order. Anything else in the file is foreign. */
-export const OWN_TABLES = Object.freeze(["cc_meta", "cc_questions", "cc_answers", "cc_notes", "cc_sessions", "cc_bounces", "cc_reviews", "cc_judge_cache", "cc_canary_runs", "cc_gate_checks", "cc_canary_prunes"]);
+export const OWN_TABLES = Object.freeze(["cc_meta", "cc_questions", "cc_answers", "cc_notes", "cc_sessions", "cc_bounces", "cc_reviews", "cc_judge_cache", "cc_canary_runs", "cc_gate_checks", "cc_canary_prunes", "cc_owed", "cc_owed_moves"]);
 
 export const MIGRATIONS = [
   // 1: the initial schema. Rows bind to a folder (`cwd`), never to a "workload" row: the folder
@@ -333,6 +333,63 @@ export const MIGRATIONS = [
       CREATE INDEX cc_canary_prunes_plugin_at ON cc_canary_prunes (plugin, at);
     `);
   },
+  // 9 (0.4.0): owed work, the forgotten-work guard.
+  //   cc_owed        one row per piece of approved work: `owed` until `started` (pointer),
+  //                  `deferred` or `dropped` (reason), or `done`. Only `owed` blocks a Stop.
+  //                  Waiting on the human is a link (`waits_on`), not a state.
+  //   cc_owed_moves  one row per event: creation, a state change, a wait link, an answer that
+  //                  set nothing in motion. `shown_at` marks the event as listed to the person
+  //                  in a Stop line.
+  //   cc_sessions.last_owed_block_prompt   the once-per-prompt mark of the forgotten-work Stop
+  //                  slot (owed work and unrecorded offers), apart from last_block_prompt.
+  (db) => {
+    db.exec(`
+      CREATE TABLE cc_owed (
+        id          TEXT PRIMARY KEY CHECK (id GLOB 'ow-?*'),
+        cwd         TEXT NOT NULL,
+        body        TEXT NOT NULL CHECK (length(trim(body)) > 0 AND length(body) <= 200),
+        state       TEXT NOT NULL DEFAULT 'owed' CHECK (state IN ('owed','started','deferred','dropped','done')),
+        origin      TEXT NOT NULL CHECK (origin IN ('answer','agent')),
+        question_id TEXT REFERENCES cc_questions(id),
+        answer_id   TEXT REFERENCES cc_answers(id),
+        waits_on    TEXT REFERENCES cc_questions(id),
+        pointer     TEXT CHECK (pointer IS NULL OR (length(trim(pointer)) > 0 AND length(pointer) <= 200)),
+        reason      TEXT CHECK (reason IS NULL OR (length(trim(reason)) > 0 AND length(reason) <= 200)),
+        ref         TEXT CHECK (ref IS NULL OR length(trim(ref)) > 0),
+        session_id  TEXT,
+        made_by     TEXT NOT NULL,
+        made_at     TEXT NOT NULL,
+        changed_at  TEXT NOT NULL,
+        resolved_at TEXT,
+        CHECK (state <> 'started' OR pointer IS NOT NULL),
+        CHECK (state NOT IN ('deferred','dropped') OR reason IS NOT NULL),
+        CHECK ((state IN ('dropped','done')) = (resolved_at IS NOT NULL)),
+        CHECK (origin <> 'answer' OR answer_id IS NOT NULL)
+      );
+      CREATE INDEX cc_owed_state_session ON cc_owed (state, session_id);
+      CREATE INDEX cc_owed_cwd_state ON cc_owed (cwd, state);
+
+      CREATE TABLE cc_owed_moves (
+        id         INTEGER PRIMARY KEY,
+        kind       TEXT NOT NULL CHECK (kind IN ('create','move','wait','nothing')),
+        owed_id    TEXT REFERENCES cc_owed(id),
+        answer_id  TEXT REFERENCES cc_answers(id),
+        from_state TEXT,
+        to_state   TEXT CHECK (to_state IS NULL OR to_state IN ('owed','started','deferred','dropped','done')),
+        detail     TEXT,
+        moved_by   TEXT NOT NULL,
+        at         TEXT NOT NULL,
+        session_id TEXT,
+        shown_at   TEXT,
+        CHECK (kind = 'nothing' OR owed_id IS NOT NULL),
+        CHECK (kind <> 'nothing' OR answer_id IS NOT NULL)
+      );
+      CREATE INDEX cc_owed_moves_session_shown ON cc_owed_moves (session_id, shown_at);
+      CREATE INDEX cc_owed_moves_owed_at ON cc_owed_moves (owed_id, at);
+
+      ALTER TABLE cc_sessions ADD COLUMN last_owed_block_prompt TEXT;
+    `);
+  },
 ];
 
 export const SCHEMA_VERSION = MIGRATIONS.length;
@@ -437,7 +494,7 @@ function migrateLocked(db) {
     db.exec("CREATE TABLE IF NOT EXISTS cc_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)");
     for (let v = from; v < SCHEMA_VERSION; v++) MIGRATIONS[v](db);
     // Only the plugin's own child tables: a foreign tool's tables in a shared file are not ours to judge.
-    const broken = ["cc_answers", "cc_notes"].flatMap((t) => db.prepare(`PRAGMA foreign_key_check(${t})`).all());
+    const broken = ["cc_answers", "cc_notes", "cc_owed", "cc_owed_moves"].flatMap((t) => db.prepare(`PRAGMA foreign_key_check(${t})`).all());
     if (broken.length) throw new Error(`migration left ${broken.length} broken foreign key(s), first in ${broken[0].table}`);
     db.prepare("INSERT INTO cc_meta (key, value) VALUES ('schema_version', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value").run(String(SCHEMA_VERSION));
     db.exec("COMMIT");

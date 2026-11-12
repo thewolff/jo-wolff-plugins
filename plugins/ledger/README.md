@@ -125,8 +125,8 @@ node <plugin dir>/scripts/ledger.mjs help                # the verb table, id gr
 | `reopen <q-id>` | agent | a held question becomes open again, with `asked_at` set to now, because the agent is putting it to you now. |
 | `note "<text>"` | agent | a note row for the cwd; prints `nt-…`. |
 | `outcome <ref> [q-id] "<text>"` | agent | what a decision or an answered question produced: `ref` (required, no spaces) is a PR URL, a commit or a path, and the optional `q-id` links the question. A note row of kind `outcome`; `log` shows `→ <ref>`. It lifts the push gate the same as a `note`; it does not count as the `note` a stated decision needs. |
-| `pending` | either | the paste-ready block, one `<default> <q-id>  # <name> · <body> · default <d> · also: <others> / withdraw` line per open question with a default and one `<q-id>  # <name> · <body> · options: <a>, <b> / withdraw` line per open question without one, in the cwd, a parent of it or a folder under it (a question from a folder under the cwd ends ` · in <folder>`), then `about …`, `ceiling $…`, `allows:` and `due …` lines when set, then one `held <q-id>  # <name> · <body>` line per held question in the same scope. |
-| `pending --all` | either | every open and held question in the database, whatever its folder: one group per folder headed by the folder's path (groups in path order), each group's open questions as `pending` lines (not numbered: `<n> <word>` answers only the cwd's own list), oldest first, then its held ones marked `held`. For a database shared by several folders. |
+| `pending` | either | the paste-ready block, one `<default> <q-id>  # <name> · <body> · default <d> · also: <others> / withdraw` line per open question with a default and one `<q-id>  # <name> · <body> · options: <a>, <b> / withdraw` line per open question without one, in the cwd, a parent of it or a folder under it (a question from a folder under the cwd ends ` · in <folder>`), then `about …`, `ceiling $…`, `allows:` and `due …` lines when set, then one `held <q-id>  # <name> · <body>` line per held question in the same scope, then one `owed|started|deferred <ow-id>  # <body>` line per open, started or deferred owed item in the same scope, plus this session's own items from other folders when `LEDGER_SESSION_ID` is set (each ending ` · in <folder>`). |
+| `pending --all` | either | every open and held question in the database, whatever its folder: one group per folder headed by the folder's path (groups in path order), each group's open questions as `pending` lines (not numbered: `<n> <word>` answers only the cwd's own list), oldest first, then its held ones marked `held`, then its open, started and deferred owed work. Needs no session id. For a database shared by several folders, and the command every capped owed list (SessionStart, UserPromptSubmit, and the Stop list's still-owed lines) points at with `… and N more; run \`… pending --all\``, so the items a list leaves out are always reachable. Events the Stop list cuts (owed, started, done and the rest) are not in `pending --all`; that line says they show at a later Stop, and they do. |
 | `log [N]` | either | the last N notes, questions and answers for the cwd (default 20), newest first, across sessions. |
 | `enable` / `disable` | human | writes `"enabled": true` / `false` to `.ledger.json` in the cwd, keeping any other keys in it. An unparsable existing file is refused, not overwritten. `/ledger:enable` and `/ledger:disable` run these in the session's folder. |
 | `config` | either | the effective settings, where each came from, both config file paths, and whether the database file is the plugin's own or shared. |
@@ -219,6 +219,8 @@ defaults verbatim.
 | `forcing.stopAskRule` | `true` | send back a reply that ends without recording an answer the human already gave, or that asks a question while the session has no open row |
 | `forcing.pushNeedsNote` | `true` | deny `git push` / `gh pr create` while the session has no note or outcome |
 | `forcing.stopDecisionRule` | `true` | send back a reply that states a decision with no note recorded this turn |
+| `forcing.stopOwedRule` | `true` | send back, once per prompt, a reply that ends while work the human approved is still owed (not started, held or dropped) |
+| `forcing.stopOfferRule` | `true` | send back, once per prompt, a reply that offers to do work with no ledger question recording the offer, even while another question is open |
 | `forcing.decisionPhrases` | the eight phrases below | the phrases the decision rule looks for, whole words, any case |
 | `inject.notes` | `5` | how many recent `log` entries SessionStart injects |
 | `inject.elsewhere` | `true` | whether SessionStart adds the block listing open and held questions in other folders; `false` turns it off |
@@ -307,6 +309,8 @@ session, `prompt_id`, tool and time. A row starts open and is closed once:
 | `stopAnswerRule` | a later Stop of the same session and `prompt_id` finds an answer or withdraw for one of the session's questions recorded after the bounce |
 | `stopAskRule` | a later Stop of the same session and `prompt_id` finds a question the session asked after the bounce |
 | `stopDecisionRule` | a later Stop of the same session and `prompt_id` finds a `note` the session recorded after the bounce |
+| `stopOwedRule` | a later Stop of the same session and `prompt_id` finds none of the session's owed items made at or before the bounce still blocking |
+| `stopOfferRule` | a later Stop of the same session and `prompt_id` finds a question the session asked after the bounce |
 | `denyAskWithoutRow` | a later `AskUserQuestion` in the same session is allowed |
 | `pushNeedsNote` | a later `git push` / `gh pr create` in the same session is allowed |
 | `reviewGate` | a later `git push` / `gh pr create` / `gh pr merge` in the same session that the review gate allows (with or without a notice). Only a deny writes a row |
@@ -857,6 +861,14 @@ Tests use a sandboxed `HOME`, `XDG_*` and `LEDGER_*` so they never touch your le
 `LEDGER_CWD` and `LEDGER_BUSY_TIMEOUT_MS` environment variables exist for the tests.
 
 ## Changes
+
+### 0.4.0
+
+- Owed work: `answer` records approved work as owed, and new verbs `owe`, `start`, `drop`,
+  `done`, `wait` and `hold <ow-id>` move it. Two Stop rules, `stopOwedRule` and
+  `stopOfferRule`, block the end of a turn once per prompt when approved work is not started
+  or a reply offers work no question records. Owed work is listed at session start and on
+  typed prompts; `ledger report` counts it and names work deferred more than 7 days.
 
 ### 0.3.13
 

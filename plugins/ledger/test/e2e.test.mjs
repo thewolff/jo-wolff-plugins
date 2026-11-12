@@ -72,7 +72,7 @@ test("end to end: subfolder question → parent answers → delivery; push gate 
   assert.equal(seen.code, 0, seen.err);
   assert.match(seen.json.hookSpecificOutput.additionalContext, new RegExp(`${q}  # badge colour .*· in ${pkg}$`, "m"));
   assert.match(run(B, ["pending"]).out, new RegExp(`${q}  # badge colour .*· in ${pkg}$`, "m"));
-  assert.equal(run(B, ["answer", q, "red"]).code, 0);
+  assert.equal(run(B, ["answer", q, "red", "--nothing"]).code, 0);
 
   // A's next prompt is told.
   const told = prompt(A, pkg, "next step");

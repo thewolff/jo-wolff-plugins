@@ -4,6 +4,45 @@ All notable changes to ledger are recorded here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Entries before 0.2.1 are the
 "Changes" section of the README (one line per version).
 
+## 0.4.0 - 2026-11-11
+
+### Added
+
+- Owed work (migration 9: `cc_owed`, `cc_owed_moves`, `cc_sessions.last_owed_block_prompt`).
+  `answer` records approved work as owed (`ow-…`), except a `deny` on an approval question
+  and a `cancel` on a plan question, which create nothing. `--nothing` records that the reply
+  sets nothing in motion, `--work` names the work, `--pointer` says what is doing it.
+- Verbs `owe`, `start`, `drop`, `done` and `wait`; `hold <ow-id> "<why>"` defers owed
+  work. None of them applies from a typed prompt.
+- Stop rule `stopOwedRule`: owed work this session has not started, deferred, dropped,
+  finished or linked to an open question blocks the end of a turn once per prompt.
+- Stop rule `stopOfferRule`: a reply that offers to do work (eleven sentence patterns,
+  question-worded offers included) with no ledger question recording it, by its `--about` or
+  its text, blocks the end of a turn once per prompt, even while another question is open.
+  While away (brb) the reason says to record the offer and `hold` it.
+- Both rules share a second once-per-prompt slot, so the answer, ask and decision rules keep
+  theirs. A pass afterwards shows what moved (`ledger: started: …`) once, up to 8 lines.
+- Owed work is listed first at session start (never truncated) and on a typed prompt that is
+  not a ledger line, in the agent's context only.
+- `ledger report` gains an owed section: formal and agent rows, how many answers set nothing
+  in motion, and the work deferred now and deferred more than 7 days ago.
+- `forcing.stopOwedRule` and `forcing.stopOfferRule` (both default true).
+- `test/offer-scan.mjs`, a by-hand scan of past transcripts for how often the offer rule
+  would fire.
+- Who owns owed work: work from an answered question belongs to the session that asked it,
+  whichever session recorded the answer; the item is tagged with the asking session when it is
+  made. A `start`, `hold`, `drop`, `done` or `wait` by another session takes the item over: it
+  then blocks that session, not the asker, and shows in that session's started and deferred
+  lists. Other work belongs to the session it is tagged with, whatever its folder. Untagged
+  work from an untagged question (no `LEDGER_SESSION_ID`) goes by folder and start time.
+- `answer`: a quoted reply or `--work`/`--pointer` value is never read as a flag, and a reply after a bare `--` is recorded literally (`answer q-… -- --nothing`).
+- A `start` or `hold` that repeats an item's pointer or reason from another session takes the item over (one move row) instead of reporting a noop.
+- `pending` also lists this session's owed work from other folders (` · in <folder>`), and `pending --all` lists every folder's owed work, so the capped owed lists' `pending` pointer shows every item they leave out.
+- A `wait` that repeats an item's link to a question from another session (one that adopted the question by repeating `ask`) takes the item over (one `wait` move row) instead of reporting a noop.
+- The capped owed lists (SessionStart, UserPromptSubmit, and the Stop list's still-owed lines) point at `pending --all` instead of `pending`, so every item they leave out is reachable even when `LEDGER_SESSION_ID` is not set in the CLI's environment.
+- `answer … --work` and `--pointer` take the next argv token as their value even when it starts with `--`, so `--work "--nothing"` through the CLI (where the shell has removed the quotes) records the work instead of reading `--nothing` as a flag.
+- The Stop list's overflow line no longer points cut events (done, dropped and the rest) at `pending --all`, which does not list them; it says they show at a later Stop, and only cut still-owed lines point at `pending --all`.
+
 ## 0.3.13 - 2026-11-11
 
 ### Fixed

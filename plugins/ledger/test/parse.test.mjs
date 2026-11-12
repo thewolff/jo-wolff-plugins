@@ -153,13 +153,13 @@ test("ids: shape, prefix, cut-short", () => {
   assert.ok(!isCutShort("q-1"));
   assert.ok(!isId("xx-1"));
   assert.ok(!isId("wl-1"), "workload ids are not a shape here");
-  assert.deepEqual(Object.values(PREFIXES), ["q", "an", "nt"]);
+  assert.deepEqual(Object.values(PREFIXES), ["q", "an", "nt", "ow"]);
   assert.equal(newId("q", 1_700_000_000_000).length, "q-".length + 8 + 4);
 });
 
 test("#179: the help table and the parser's verb set are the same list", () => {
   assert.deepEqual(new Set(VERBS.map((v) => v.verb)), VERB_SET);
-  assert.equal(VERBS.length, 23);
+  assert.equal(VERBS.length, 28);
   for (const v of VERBS) assert.ok(v.usage && v.help && ["agent", "human", "either"].includes(v.who), v.verb);
 });
 
