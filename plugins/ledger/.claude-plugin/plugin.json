@@ -1,7 +1,7 @@
 {
   "name": "ledger",
   "description": "A durable record of the questions an agent asks you and the choices it makes without asking, in one SQLite file; hooks keep every question, answer and decision on a row and gate a push on it.",
-  "version": "0.3.12",
+  "version": "0.3.13",
   "author": { "name": "Jo Wolff" },
   "license": "MIT",
   "repository": "https://github.com/thewolff/jo-wolff-plugins",

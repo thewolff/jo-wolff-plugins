@@ -8,7 +8,7 @@ import { spawnSync } from "node:child_process";
 import { chmodSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { sandbox, cli, hook, openDb } from "./helpers.mjs";
-import { PRECOMPACT_TEXT_MAX, spawnHook, checkPlugin, docsCheck, dryRunPrune, evalsCheck, retentionCheck, fixturesWithoutUnavailable, hookCommands, reasonsWithoutCommand, releaseEntry, rootReadmeNames, treePlugins, treeSha, snapshotTree, textsWithoutWhenCant, changedPlugins, CHECKS, FAULT_INPUTS } from "../lib/plugin-gate.mjs";
+import { PRECOMPACT_TEXT_MAX, WRITE_TRACKER, spawnHook, trackedWrites, checkPlugin, docsCheck, dryRunPrune, evalsCheck, retentionCheck, fixturesWithoutUnavailable, hookCommands, reasonsWithoutCommand, releaseEntry, rootReadmeNames, treePlugins, treeSha, snapshotTree, textsWithoutWhenCant, changedPlugins, CHECKS, FAULT_INPUTS } from "../lib/plugin-gate.mjs";
 
 const SID = "s-gate";
 
@@ -784,4 +784,214 @@ test("survives: plain-text stdout is an answer from a PreCompact hook (summary i
   // errors.log line; every other event (but SessionEnd) still needs the message too.
   assert.deepEqual([...new Set(run("PreCompact", "text.mjs").map((r) => r.needsMessage))], [false]);
   assert.deepEqual([...new Set(run("Stop", "json.mjs").map((r) => r.needsMessage))], [true]);
+});
+
+// A UserPromptSubmit hook that prints a line which changes on every run (a clock), logs a fault
+// with a systemMessage, and writes to `where` (XDG_STATE_HOME or XDG_DATA_HOME) on a healthy
+// input, or nowhere when null; a write that fails is swallowed, with no errors.log line.
+const clockHook = (name, where) => `import { appendFileSync, mkdirSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
+const fail = (why) => { try { const d = join(process.env.XDG_STATE_HOME, ${JSON.stringify(name)}); mkdirSync(d, { recursive: true }); appendFileSync(join(d, "errors.log"), why + "\\n"); } catch {} process.stdout.write(JSON.stringify({ systemMessage: ${JSON.stringify(name)} + ": " + why })); process.exit(0); };
+let raw = "";
+process.stdin.on("data", (c) => (raw += c));
+process.stdin.on("end", () => {
+  try { JSON.parse(raw); } catch { return fail("stdin not JSON"); }
+  const where = ${JSON.stringify(where)};
+  if (where) { try { const d = join(process.env[where], ${JSON.stringify(name)}); mkdirSync(d, { recursive: true }); writeFileSync(join(d, "seen.json"), "{}"); } catch {} }
+  process.stdout.write(JSON.stringify({ hookSpecificOutput: { hookEventName: "UserPromptSubmit", additionalContext: "clock " + process.hrtime.bigint() } }));
+  process.exit(0);
+});
+`;
+// Like clockHook with where=null, but on a healthy input it makes and removes a lock file in its
+// state directory before exiting: the final listing is empty, the directory's mtime moved. Where
+// the directory is read-only the failure is swallowed, so nothing is logged.
+const lockHook = (name) => clockHook(name, null).replace("  const where = null;", `  const where = null;\n  try { const d = join(process.env.XDG_STATE_HOME, ${JSON.stringify(name)}); mkdirSync(d, { recursive: true }); const f = join(d, "run.lock"); writeFileSync(f, "1"); rmSync(f); } catch {}`).replace('import { appendFileSync, mkdirSync, writeFileSync }', 'import { appendFileSync, mkdirSync, rmSync, writeFileSync }');
+function clockPlugin(b, name, where, source = clockHook(name, where)) {
+  const dir = join(b.root, "plugins", name);
+  write(dir, "hooks/hooks.json", JSON.stringify({ hooks: { UserPromptSubmit: [{ hooks: [{ type: "command", command: process.execPath, args: [`\${CLAUDE_PLUGIN_ROOT}/hooks/clock.mjs`], timeout: 5 }] }] } }));
+  write(dir, "hooks/clock.mjs", source);
+  return { name, dir };
+}
+
+test("visible: a hook that keeps no state passes the unwritable-state input every time, whatever it prints; a hook that keeps state and swallows the unwritable fault still fails", () => {
+  const b = sandbox();
+  const visibleRow = (plugin) => checkPlugin(plugin).find((r) => r.name === "visible");
+  // Its stdout differs on every run, so it never equals the healthy run's: the rule that
+  // decides is that the healthy run wrote nothing where the unwritable input locks.
+  const stateless = clockPlugin(b, "clock", null);
+  for (let i = 0; i < 20; i++) {
+    const row = visibleRow(stateless);
+    assert.equal(row.status, "pass", `run ${i + 1}: ${row.detail}`);
+  }
+  for (const where of ["XDG_STATE_HOME", "XDG_DATA_HOME"]) {
+    const stateful = clockPlugin(b, `kept-${where === "XDG_STATE_HOME" ? "state" : "data"}`, where);
+    const row = visibleRow(stateful);
+    assert.equal(row.status, "fail", `${where}: ${row.detail}`);
+    assert.equal(row.detail, "UserPromptSubmit hook on unwritable state: no errors.log line, no systemMessage");
+  }
+  // The healthy run reports what it wrote; the unwritable run is given it as its baseline.
+  const hook = { event: "UserPromptSubmit", command: process.execPath, args: [join(stateless.dir, "hooks", "clock.mjs")] };
+  assert.equal(spawnHook(stateless, hook, { name: "healthy" }).wrote, false);
+  const kept = { name: "kept-state", dir: join(b.root, "plugins", "kept-state") };
+  assert.equal(spawnHook(kept, { ...hook, args: [join(kept.dir, "hooks", "clock.mjs")] }, { name: "healthy" }).wrote, true);
+  assert.equal(spawnHook(stateless, hook, FAULT_INPUTS.find((i) => i.unwritable), { baselineWrote: null }).visible, false, "with no baseline the old rule holds");
+});
+
+test("visible: a hook that makes and removes a lock file in its state directory, and swallows the unwritable fault, still fails", () => {
+  const b = sandbox();
+  // The healthy run leaves the directory listing as it found it. The write tracker records the
+  // lock file's create and delete as they are attempted, so the verdict does not rest on the
+  // directory's mtime, which a create and delete inside one timestamp tick would leave unchanged.
+  const locker = clockPlugin(b, "locker", null, lockHook("locker"));
+  const hook = { event: "UserPromptSubmit", command: process.execPath, args: [join(locker.dir, "hooks", "clock.mjs")] };
+  const healthy = spawnHook(locker, hook, { name: "healthy" });
+  assert.equal(healthy.wrote, true, JSON.stringify(healthy));
+  assert.equal(healthy.tracking.on, true, healthy.tracking.why);
+  assert.ok(healthy.tracking.writes.some((p) => p.endsWith("/locker/run.lock")), JSON.stringify(healthy.tracking));
+  for (let i = 0; i < 20; i++) {
+    const row = checkPlugin(locker).find((r) => r.name === "visible");
+    assert.equal(row.status, "fail", `run ${i + 1}: ${row.detail}`);
+    assert.equal(row.detail, "UserPromptSubmit hook on unwritable state: no errors.log line, no systemMessage");
+  }
+});
+
+test("visible: a hook that keeps state, swallows the unwritable fault and always prints the same JSON still fails", () => {
+  const b = sandbox();
+  // Identical stdout in the healthy and unwritable runs: the stdout-equality exemption alone
+  // would pass it, but the healthy run wrote seen.json, so the fault has to show.
+  const fixed = clockHook("steady", "XDG_STATE_HOME").replace('"clock " + process.hrtime.bigint()', '"steady"');
+  const steady = clockPlugin(b, "steady", "XDG_STATE_HOME", fixed);
+  const row = checkPlugin(steady).find((r) => r.name === "visible");
+  assert.equal(row.status, "fail", row.detail);
+  assert.equal(row.detail, "UserPromptSubmit hook on unwritable state: no errors.log line, no systemMessage");
+});
+
+// One create-then-delete of `x.lock` in the plugin's state directory, written each way a hook can.
+const tracked = {
+  sync: `import { mkdirSync, writeFileSync, unlinkSync } from "node:fs";\nconst d = process.env.XDG_STATE_HOME + "/t"; mkdirSync(d, { recursive: true }); writeFileSync(d + "/x.lock", "1"); unlinkSync(d + "/x.lock");`,
+  callback: `import fs from "node:fs";\nconst d = process.env.XDG_STATE_HOME + "/t"; fs.open(d + "/x.lock", "w", (e, fd) => { fs.closeSync(fd); fs.rm(d + "/x.lock", () => {}); });`,
+  promise: `import { open, rm } from "node:fs/promises";\nconst d = process.env.XDG_STATE_HOME + "/t"; const h = await open(d + "/x.lock", "wx"); await h.close(); await rm(d + "/x.lock");`,
+  stream: `import { createWriteStream, unlinkSync } from "node:fs";\nconst d = process.env.XDG_STATE_HOME + "/t"; const s = createWriteStream(d + "/x.lock"); s.end("1", () => unlinkSync(d + "/x.lock"));`,
+  worker: `import { Worker } from "node:worker_threads";\nnew Worker('const fs = require("fs"); const d = process.env.XDG_STATE_HOME + "/t"; fs.mkdirSync(d, { recursive: true }); fs.writeFileSync(d + "/x.lock", "1"); fs.rmSync(d + "/x.lock");', { eval: true });`,
+  cjs: `const fs = require("fs");\nconst d = process.env.XDG_STATE_HOME + "/t"; fs.renameSync(fs.mkdtempSync(d + "/tmp-"), d + "/x.lock"); fs.rmdirSync(d + "/x.lock");`,
+};
+
+test("write tracking: a create-then-delete in a locked directory is recorded through sync, callback, promise, stream, worker-thread and CommonJS fs, whatever the directory's mtime says; a write elsewhere is not", () => {
+  const b = sandbox();
+  for (const [form, source] of Object.entries(tracked)) {
+    const plugin = { name: "t", dir: join(b.root, "plugins", `t-${form}`) };
+    const file = form === "cjs" ? "hook.cjs" : "hook.mjs";
+    write(plugin.dir, `hooks/${file}`, source);
+    const r = spawnHook(plugin, { event: "Stop", command: process.execPath, args: [join(plugin.dir, "hooks", file)] }, { name: "healthy" });
+    assert.equal(r.ok, true, `${form}: ${r.why}`);
+    assert.equal(r.tracking.on, true, `${form}: ${r.tracking.why}`);
+    assert.ok(r.tracking.writes.some((p) => /\/t\/(x\.lock|tmp-)/.test(p)), `${form}: ${JSON.stringify(r.tracking)}`);
+    assert.equal(r.wrote, true, form);
+  }
+  // The verdict from the log alone, with no directory looked at: only the locked path counts.
+  const dir = join(b.root, "trk");
+  mkdirSync(dir, { recursive: true });
+  const log = join(dir, "writes.log");
+  const line = (o) => JSON.stringify({ pid: 7, ppid: 1, ...o });
+  writeFileSync(log, [line({ kind: "loaded" }), line({ kind: "write", value: [join(dir, "elsewhere", "a")] })].join("\n") + "\n");
+  assert.deepEqual(trackedWrites(log, 7, [join(dir, "state", "p")]), { on: true, writes: [] });
+  writeFileSync(log, [line({ kind: "loaded" }), line({ kind: "write", value: [join(dir, "state", "p", "run.lock")] })].join("\n") + "\n");
+  assert.deepEqual(trackedWrites(log, 7, [join(dir, "state", "p")]).writes, [join(dir, "state", "p", "run.lock")]);
+  // Removing a parent of a locked directory removes it too.
+  writeFileSync(log, [line({ kind: "loaded" }), line({ kind: "write", value: [join(dir, "state")] })].join("\n") + "\n");
+  assert.equal(trackedWrites(log, 7, [join(dir, "state", "p")]).writes.length, 1);
+  // A child that never loaded the tracker, a hidden pid, a native addon, a missing log: no verdict.
+  writeFileSync(log, [line({ kind: "loaded" }), line({ kind: "child", value: 99 })].join("\n") + "\n");
+  assert.match(trackedWrites(log, 7, []).why, /child process 99 did not load/);
+  writeFileSync(log, [line({ kind: "loaded" }), line({ kind: "child", value: null })].join("\n") + "\n");
+  assert.match(trackedWrites(log, 7, []).why, /pid is hidden/);
+  writeFileSync(log, [line({ kind: "loaded" }), line({ kind: "untracked", value: "native addon" })].join("\n") + "\n");
+  assert.equal(trackedWrites(log, 7, []).on, false);
+  writeFileSync(log, [line({ kind: "loaded" }), line({ kind: "child", value: 8 }), JSON.stringify({ pid: 8, ppid: 7, kind: "loaded" })].join("\n") + "\n");
+  assert.equal(trackedWrites(log, 7, []).on, true, "a node child that loaded the tracker is followed");
+  assert.equal(trackedWrites(log, 8, []).on, true);
+  assert.equal(trackedWrites(log, 6, []).on, false, "the spawned process itself must have loaded it");
+  assert.equal(trackedWrites(join(dir, "missing.log"), 7, []).why, "no tracker log");
+  // A worker thread is followed when it logged its own `loaded`.
+  writeFileSync(log, [line({ kind: "loaded" }), line({ kind: "worker", value: 1 })].join("\n") + "\n");
+  assert.match(trackedWrites(log, 7, []).why, /worker thread 1 did not load/);
+  writeFileSync(log, [line({ kind: "loaded" }), line({ kind: "worker", value: 1 }), line({ thread: 1, kind: "loaded" })].join("\n") + "\n");
+  assert.equal(trackedWrites(log, 7, []).on, true);
+  // Removing what is not there is no write: a SessionEnd cleanup of a missing file stays stateless.
+  const cleanup = { name: "c", dir: join(b.root, "plugins", "cleanup") };
+  write(cleanup.dir, "hooks/hook.mjs", `import { rmSync } from "node:fs";\nrmSync(process.env.XDG_STATE_HOME + "/c/sessions/none.json", { force: true });`);
+  const swept = spawnHook(cleanup, { event: "SessionEnd", command: process.execPath, args: [join(cleanup.dir, "hooks", "hook.mjs")] }, { name: "healthy" });
+  assert.equal(swept.tracking.on, true, swept.tracking.why);
+  assert.equal(swept.wrote, false, JSON.stringify(swept.tracking));
+  assert.ok(existsSync(WRITE_TRACKER));
+});
+
+test("write tracking: a hook the tracker cannot follow (a shell wrapper that forks node, a plain shell command) has an unknown healthy write and gets no stateless pass", () => {
+  const b = sandbox();
+  // The clock hook behind a /bin/sh wrapper. Without exec the shell forks node, so the process
+  // spawned is not the one that carries the tracker; with exec they are one process.
+  const wrapped = (name, exec) => {
+    const plugin = clockPlugin(b, name, null);
+    write(plugin.dir, "hooks/wrap.sh", `${exec ? "exec " : ""}"${process.execPath}" "$(dirname "$0")/clock.mjs"\n`);
+    write(plugin.dir, "hooks/hooks.json", JSON.stringify({ hooks: { UserPromptSubmit: [{ hooks: [{ type: "command", command: "/bin/sh", args: [`\${CLAUDE_PLUGIN_ROOT}/hooks/wrap.sh`], timeout: 5 }] }] } }));
+    return plugin;
+  };
+  const forked = wrapped("forked", false);
+  const hook = { event: "UserPromptSubmit", command: "/bin/sh", args: [join(forked.dir, "hooks", "wrap.sh")] };
+  const healthy = spawnHook(forked, hook, { name: "healthy" });
+  assert.equal(healthy.ok, true, healthy.why);
+  assert.equal(healthy.wrote, null, JSON.stringify(healthy.tracking));
+  assert.match(healthy.tracking.why, /did not load the write tracker/);
+  const row = checkPlugin(forked).find((r) => r.name === "visible");
+  assert.equal(row.status, "fail", row.detail);
+  assert.equal(row.detail, "UserPromptSubmit hook on unwritable state: no errors.log line, no systemMessage");
+  const execd = wrapped("execd", true);
+  const execRow = checkPlugin(execd).find((r) => r.name === "visible");
+  assert.equal(execRow.status, "pass", execRow.detail);
+  // A shell command with no node in it: nothing loads the tracker.
+  const shell = spawnHook({ name: "sh", dir: b.root }, { event: "Stop", command: "/bin/sh", args: ["-c", "printf '{}'"] }, { name: "healthy" });
+  assert.equal(shell.ok, true, shell.why);
+  assert.equal(shell.wrote, null);
+  assert.equal(shell.tracking.on, false);
+});
+
+test("write tracking: a write through a symlink made outside the state directory to a file inside it is a write there and gets no stateless pass; unlinking, renaming or touching the link itself is not", () => {
+  const b = sandbox();
+  // On a healthy input the hook links its existing errors.log from its working directory and
+  // empties it through the link: no new entry and no mtime change in the state directory.
+  const aliasHook = (name, body) => clockHook(name, null).replace("  const where = null;", `  const where = null;\n  try { const link = "errors-link.log"; symlinkSync(join(process.env.XDG_STATE_HOME, ${JSON.stringify(name)}, "errors.log"), link); ${body} } catch {}`).replace('import { appendFileSync, mkdirSync, writeFileSync }', 'import { appendFileSync, lutimesSync, mkdirSync, renameSync, symlinkSync, unlinkSync, writeFileSync }');
+  const aliased = clockPlugin(b, "aliased", null, aliasHook("aliased", 'writeFileSync(link, "");'));
+  const hook = { event: "UserPromptSubmit", command: process.execPath, args: [join(aliased.dir, "hooks", "clock.mjs")] };
+  const healthy = spawnHook(aliased, hook, { name: "healthy" });
+  assert.equal(healthy.tracking.on, true, healthy.tracking.why);
+  assert.ok(healthy.tracking.writes.some((p) => p.endsWith("/errors-link.log")), JSON.stringify(healthy.tracking));
+  assert.equal(healthy.wrote, true, JSON.stringify(healthy.tracking));
+  const row = checkPlugin(aliased).find((r) => r.name === "visible");
+  assert.equal(row.status, "fail", row.detail);
+  assert.equal(row.detail, "UserPromptSubmit hook on unwritable state: no errors.log line, no systemMessage");
+  // Acting on the link leaves the file it points at alone.
+  const linkOnly = clockPlugin(b, "link-only", null, aliasHook("link-only", 'const now = new Date(); lutimesSync(link, now, now); renameSync(link, "moved.log"); unlinkSync("moved.log");'));
+  const onLink = spawnHook(linkOnly, { ...hook, args: [join(linkOnly.dir, "hooks", "clock.mjs")] }, { name: "healthy" });
+  assert.equal(onLink.tracking.on, true, onLink.tracking.why);
+  assert.equal(onLink.wrote, false, JSON.stringify(onLink.tracking));
+  assert.equal(checkPlugin(linkOnly).find((r) => r.name === "visible").status, "pass");
+});
+
+test("write tracking: promisify(exec) and promisify(execFile) still resolve to { stdout, stderr } under the tracker, and their child is recorded", () => {
+  const b = sandbox();
+  const plugin = { name: "p", dir: join(b.root, "plugins", "promisified") };
+  const run = (call) => {
+    write(plugin.dir, "hooks/hook.mjs", `import { exec, execFile } from "node:child_process";\nimport { promisify } from "node:util";\nconst r = await ${call};\nprocess.stdout.write(JSON.stringify({ r }));`);
+    const out = spawnHook(plugin, { event: "Stop", command: process.execPath, args: [join(plugin.dir, "hooks", "hook.mjs")] }, { name: "healthy" });
+    assert.equal(out.ok, true, out.why);
+    return out;
+  };
+  // A node child loads the tracker, so the run is followed: its pid was recorded and matched.
+  const viaFile = run(`promisify(execFile)(process.execPath, ["-e", "process.stdout.write('hi')"])`);
+  assert.deepEqual(JSON.parse(viaFile.stdout).r, { stdout: "hi", stderr: "" });
+  assert.equal(viaFile.tracking.on, true, viaFile.tracking.why);
+  // A shell child does not, so the run is not followed, and the reason names its pid.
+  const viaShell = run(`promisify(exec)("printf hi")`);
+  assert.deepEqual(JSON.parse(viaShell.stdout).r, { stdout: "hi", stderr: "" });
+  assert.match(viaShell.tracking.why, /child process \d+ did not load/);
 });
