@@ -4,6 +4,18 @@ All notable changes to ledger are recorded here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Entries before 0.2.1 are the
 "Changes" section of the README (one line per version).
 
+## 0.4.2 - 2026-11-12
+
+### Fixed
+
+- The PR-creation review check (`gh pr create`) now checks the branch named by `--head`
+  at `refs/heads/<branch>` on the branch's remote (`branch.<head>.remote`, else origin),
+  not the branch's upstream merge ref, so a PR is gated on the commit it actually opens.
+- `--head` parsing skips the values of other options and stops at `--`, so a value such as
+  `--body '--head=x'` no longer counts as a head. Attached short forms (`-Hx`, `-H=x`) are
+  read. A repeated `--head` checks every branch it names; heads containing `:` (fork heads)
+  are still allowed with a notice.
+
 ## 0.4.1 - 2026-11-12
 
 ### Changed
