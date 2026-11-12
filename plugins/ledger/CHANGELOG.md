@@ -4,6 +4,21 @@ All notable changes to ledger are recorded here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Entries before 0.2.1 are the
 "Changes" section of the README (one line per version).
 
+## 0.4.1 - 2026-11-12
+
+### Changed
+
+- README brought level with 0.4.0's owed work. Docs only; no code changed.
+  - The intro and *What is forced* list six rules, not four: items 5 (`forcing.stopOwedRule`)
+    and 6 (`forcing.stopOfferRule`) with their off switches and the once-per-prompt slot they
+    share.
+  - The CLI table has rows for `owe`, `start`, `drop`, `done` and `wait`, and the `hold` row
+    covers `hold <ow-id> "<reason>"`.
+  - *Ids* lists the `ow-` prefix.
+  - The Hooks table: SessionStart injects owed work first; Stop runs the owed and offer rules
+    and lists owed-work moves on a pass; UserPromptSubmit lists owed work on every prompt and
+    never applies `outcome`, `owe` or the owed-work verbs from a prompt.
+
 ## 0.4.0 - 2026-11-11
 
 ### Added
