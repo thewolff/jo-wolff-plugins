@@ -219,6 +219,8 @@ defaults verbatim.
 | `forcing.stopAskRule` | `true` | send back a reply that ends without recording an answer the human already gave, or that asks a question while the session has no open row |
 | `forcing.pushNeedsNote` | `true` | deny `git push` / `gh pr create` while the session has no note or outcome |
 | `forcing.stopDecisionRule` | `true` | send back a reply that states a decision with no note recorded this turn |
+| `forcing.stopOwedRule` | `true` | send back, once per prompt, a reply that ends while work the human approved is still owed (not started, held or dropped) |
+| `forcing.stopOfferRule` | `true` | send back, once per prompt, a reply that offers to do work with no ledger question recording the offer, even while another question is open |
 | `forcing.decisionPhrases` | the eight phrases below | the phrases the decision rule looks for, whole words, any case |
 | `inject.notes` | `5` | how many recent `log` entries SessionStart injects |
 | `inject.elsewhere` | `true` | whether SessionStart adds the block listing open and held questions in other folders; `false` turns it off |
@@ -307,6 +309,8 @@ session, `prompt_id`, tool and time. A row starts open and is closed once:
 | `stopAnswerRule` | a later Stop of the same session and `prompt_id` finds an answer or withdraw for one of the session's questions recorded after the bounce |
 | `stopAskRule` | a later Stop of the same session and `prompt_id` finds a question the session asked after the bounce |
 | `stopDecisionRule` | a later Stop of the same session and `prompt_id` finds a `note` the session recorded after the bounce |
+| `stopOwedRule` | a later Stop of the same session and `prompt_id` finds none of the session's owed items made at or before the bounce still blocking |
+| `stopOfferRule` | a later Stop of the same session and `prompt_id` finds a question the session asked after the bounce |
 | `denyAskWithoutRow` | a later `AskUserQuestion` in the same session is allowed |
 | `pushNeedsNote` | a later `git push` / `gh pr create` in the same session is allowed |
 | `reviewGate` | a later `git push` / `gh pr create` / `gh pr merge` in the same session that the review gate allows (with or without a notice). Only a deny writes a row |

@@ -31,8 +31,9 @@ import { transaction } from "./db.mjs";
 import { logError } from "./failopen.mjs";
 import { isWithin, ownedBySession, sessionNotes, sessionStart } from "./commands.mjs";
 import { nowIso } from "./time.mjs";
+import { blockingSet } from "./owed.mjs";
 
-export const STOP_RULES = Object.freeze(["stopAnswerRule", "stopAskRule", "stopDecisionRule"]);
+export const STOP_RULES = Object.freeze(["stopAnswerRule", "stopAskRule", "stopDecisionRule", "stopOwedRule", "stopOfferRule"]);
 
 /** The most of the triggering text a bounce row keeps. */
 export const BOUNCE_TEXT_MAX = 500;
@@ -117,13 +118,15 @@ export function stopRemedyDone(db, row, { sessionId, cwd }) {
       .all(row.at)
       .some((r) => r.answered_by === sessionId || ownedBySession(r, { sessionId, cwd, since }));
   }
-  if (row.rule === "stopAskRule") {
+  if (row.rule === "stopAskRule" || row.rule === "stopOfferRule") {
     return db
       .prepare("SELECT cwd, session_id FROM cc_questions WHERE asked_at >= ? AND (session_id = ? OR session_id IS NULL)")
       .all(row.at, sessionId)
       .some((q) => q.session_id === sessionId || isWithin(cwd, q.cwd) || isWithin(q.cwd, cwd));
   }
   if (row.rule === "stopDecisionRule") return sessionNotes(db, { sessionId, cwd, after: row.at }).length > 0;
+  // No item this session owns, made at or before the bounce, is still blocking.
+  if (row.rule === "stopOwedRule") return !blockingSet(db, { sessionId, cwd }).some((i) => i.made_at <= row.at);
   return false;
 }
 
