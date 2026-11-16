@@ -7,12 +7,14 @@ on:
       - ".github/workflows/scripts.yml"
       - ".claude-plugin/marketplace.json"
       - ".omp-plugin/marketplace.json"
+      - "plugins/**"
   pull_request:
     paths:
       - "scripts/**"
       - ".github/workflows/scripts.yml"
       - ".claude-plugin/marketplace.json"
       - ".omp-plugin/marketplace.json"
+      - "plugins/**"
 
 permissions:
   contents: read
