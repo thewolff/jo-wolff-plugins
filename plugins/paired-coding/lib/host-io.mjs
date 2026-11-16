@@ -1112,7 +1112,8 @@ export function runSandboxed(opts) {
       resolve({ exitCode: null, signal: null, stdout: "", stderr: "", timedOut: false, aborted: false, pgid: null, links: [], error: err instanceof Error ? err.message : String(err), ...ran });
       return;
     }
-    const linksMade = () => (gitBefore ? newLinks(opts.state.root, writable, opts.linkCheck.sinceMs, gitBefore, opts.linkCheck.exclusions) : []);
+    const linkBoundary = opts.state.phase === "open" && Array.isArray(opts.state.changeSet?.boundary) ? opts.state.changeSet.boundary : null;
+    const linksMade = () => (gitBefore ? newLinks(opts.state.root, writable, opts.linkCheck.sinceMs, gitBefore, opts.linkCheck.exclusions, linkBoundary) : []);
     const pgid = child.pid ?? null;
     let stdout = "";
     let stderr = "";
@@ -1198,24 +1199,88 @@ export function gitBaseline(root, roots, exclusions = []) {
  * change time is at or after `sinceMs` (making a link sets it, and so does writing a file that
  * already had a second link), and every `.git` entry that is not in `gitBefore` with the same
  * inode (a `.git` directory's own times change whenever git works in it, so it goes by inode).
+ * With `boundary` (the open change set's), a new symlink whose target stays inside that
+ * boundary (linkStaysInBoundary) is left out: `npm install` makes such links in
+ * `node_modules/.bin/`. A hard link is always found, since its other name cannot be read.
  * Sorted.
- * @param {string} root
+ * @param {string} root  canonical (realpathSync.native)
  * @param {string[]} roots  absolute paths in the worktree
  * @param {number} sinceMs
  * @param {Record<string, number>} gitBefore  from gitBaseline before the run
  * @param {string[]} [exclusions]
+ * @param {string[] | null} [boundary]
  * @returns {string[]}
  */
-export function newLinks(root, roots, sinceMs, gitBefore, exclusions = []) {
+export function newLinks(root, roots, sinceMs, gitBefore, exclusions = [], boundary = null) {
   const found = new Set();
   walkRoots(root, roots, exclusions, (rel, st, isGit) => {
     if (isGit) {
       if (gitBefore[rel] !== st.ino) found.add(rel);
     } else if (st.ctimeMs >= sinceMs && (st.isSymbolicLink() || (!st.isDirectory() && st.nlink > 1))) {
+      if (st.isSymbolicLink() && boundary && linkStaysInBoundary(root, boundary, rel)) return;
       found.add(rel);
     }
   });
   return [...found].sort();
+}
+
+const isGitSegment = (s) => s.toLowerCase() === ".git";
+
+/**
+ * Whether the symlink at worktree-relative `rel` points inside `boundary`, resolved physically:
+ * the target string is appended to the link's own directory without lexical `..` folding and
+ * handed to realpath(3) (realpathSync.native), which follows every link component by component,
+ * so `x -> ../outside-link/../..` resolves where the kernel would take it. A target that does
+ * not exist yet resolves its deepest existing ancestor that way and appends the missing names,
+ * which must be plain names (no `.`, `..`, empty segment, or dangling link among them). The
+ * result must lie in the worktree, not be the worktree root, have no `.git` segment in any
+ * letter case, and be covered by the boundary: a file by boundaryMatches, a directory only by
+ * a subtree entry covering it whole (`dir/`, `dir/**`, `**`), so a write anywhere beneath it
+ * stays agreed. Anything unreadable or ambiguous is false, so the link is reported.
+ * @param {string} root  canonical
+ * @param {string[]} boundary
+ * @param {string} rel
+ * @returns {boolean}
+ */
+export function linkStaysInBoundary(root, boundary, rel) {
+  let target;
+  try { target = readlinkSync(`${root}/${rel}`); } catch { return false; }
+  if (target === "") return false;
+  // Plain concatenation: node:path's join and resolve fold ".." lexically.
+  const full = target.startsWith("/") ? target : `${root}/${rel.includes("/") ? rel.slice(0, rel.lastIndexOf("/")) : "."}/${target}`;
+  const parts = full.split("/");
+  const missing = [];
+  let real = null;
+  while (parts.length > 1) {
+    const prefix = parts.join("/");
+    try {
+      real = realpathSync.native(prefix);
+      break;
+    } catch (err) {
+      if (err?.code !== "ENOENT") return false;
+      // A dangling link at this prefix points somewhere this walk has not read.
+      try { lstatSync(prefix); return false; } catch { /* truly absent */ }
+      const name = parts.pop();
+      if (name === "" || name === "." || name === "..") return false;
+      missing.unshift(name);
+    }
+  }
+  if (real === null) return false;
+  const abs = missing.length ? `${real}/${missing.join("/")}` : real;
+  if (!abs.startsWith(`${root}/`)) return false;
+  const out = abs.slice(root.length + 1);
+  const segs = out.split("/");
+  if (segs.some(isGitSegment) || segs.some((s) => s === "" || s === "." || s === "..")) return false;
+  let isDir = false;
+  if (!missing.length) {
+    try { isDir = statSync(abs).isDirectory(); } catch { return false; }
+  }
+  if (!isDir) return boundaryMatches(boundary, out);
+  return boundary.some((e) => {
+    if (e === "**" || e === "**/") return true;
+    const prefix = e.endsWith("/**") ? e.slice(0, -3) : e.endsWith("/") ? e.slice(0, -1) : null;
+    return prefix !== null && !/[*?]/.test(prefix) && (out === prefix || out.startsWith(`${prefix}/`));
+  });
 }
 
 function walkRoots(root, roots, exclusions, visitFn) {

@@ -25,6 +25,7 @@ import {
   closedRunProblem, describeSandbox, realpathLoose, recordRun, runPgids, runSandboxed, sandboxBackend, sandboxJournal, sandboxProblem, sessionDir, stateBase, withLock, withSession, writeAtomic, writeSandboxed,
 } from "./host-io.mjs";
 import { cardContext } from "./card-context.mjs";
+import { commitBoundary, someOf } from "./commit.mjs";
 import { PATTERN_CHECK_DIR, siblingState } from "./sibling-state.mjs";
 
 /**
@@ -450,7 +451,7 @@ function simple(name, ctx, step, describe) {
 
 function cardArgs(a) {
   const pick = {};
-  for (const k of ["boundary", "whyNow", "decision", "currentCode", "proposedCode", "effect", "checks", "openPoints", "why", "sources", "alternatives"]) if (a[k] !== undefined) pick[k] = a[k];
+  for (const k of ["boundary", "whyNow", "decision", "currentCode", "proposedCode", "effect", "checks", "openPoints", "why", "sources", "alternatives", "commit"]) if (a[k] !== undefined) pick[k] = a[k];
   return pick;
 }
 
@@ -465,19 +466,23 @@ function learnText(r) {
  * The card as the agent gets it back. A non-empty proposedCode is lifted out of the JSON and
  * shown after it as a fenced block, so the planned code reads as code rather than as an
  * escaped string. Alternatives, when the card has them, follow as a list with the chosen one
- * marked, for the card to show side by side. A card without either reads exactly as it did
- * before the fields existed.
+ * marked, for the card to show side by side. A commit request follows as the message the gate
+ * will commit with, fenced. A card without any of these reads exactly as it did before the
+ * fields existed.
  */
 function cardText(r) {
   const head = `Card ${r.card.id} recorded. Show it to your partner and wait for their reply.\n`;
-  const { proposedCode, alternatives, ...rest } = r.card;
+  const { proposedCode, alternatives, commit, ...rest } = r.card;
   const hasAlternatives = Array.isArray(alternatives) && alternatives.length > 0;
-  const tail = hasAlternatives
-    ? `\nAlternatives, to show on the card with the chosen one marked:\n${alternatives.map((a) => `  ${a.chosen ? "[chosen]" : "[      ]"} ${a.design}`).join("\n")}`
+  const commitTail = commit
+    ? `\nCommit at pair_done, to show on the card: when the change set closes with a change inside the boundary, the gate commits the changed boundary files, and nothing else, with this message:\n${fenced(commit.message)}`
     : "";
+  const tail = (hasAlternatives
+    ? `\nAlternatives, to show on the card with the chosen one marked:\n${alternatives.map((a) => `  ${a.chosen ? "[chosen]" : "[      ]"} ${a.design}`).join("\n")}`
+    : "") + commitTail;
   if (typeof proposedCode !== "string" || proposedCode === "") {
-    const { alternatives: _lifted, ...plain } = r.card;
-    return `${head}${JSON.stringify(hasAlternatives ? plain : r.card, null, 2)}${tail}`;
+    const { alternatives: _lifted, commit: _commit, ...plain } = r.card;
+    return `${head}${JSON.stringify(hasAlternatives || commit ? plain : r.card, null, 2)}${tail}`;
   }
   return `${head}${JSON.stringify(rest, null, 2)}\nPlanned code (proposedCode), to show on the card:\n${fenced(proposedCode)}${tail}`;
 }
@@ -646,11 +651,42 @@ function pairDoneVerb(args, ctx) {
   const diff = machineDiff(dir, r.state.root, String(args.cardId), r.changed ?? []);
   const parts = [`Change set ${args.cardId} closed.`];
   parts.push(diff ? `Diff of the boundary since pair_begin (machine-produced):\n${diff}` : "No change inside the boundary.");
+  const commit = r.commit ? commitChangeSet(dir, r, String(args.cardId), ctx) : null;
+  if (commit) parts.push(commit.text);
   if (r.halted) parts.push(`STOPPED: unapproved write outside the boundary: ${r.unapproved.map((u) => `${u.change} ${u.path}`).join(", ")}. Show this to your partner; only your partner ends the session, by typing pair stop.`);
   const roadmapOpen = r.roadmapOpen ?? [];
   if (roadmapOpen.length) parts.push(`Roadmap items still open or not ready:\n${roadmapLines(roadmapOpen)}`);
   if (r.recall) parts.push(`Recall question, journaled: ${r.recall}\nAsk it in your closing message on a line starting "Recall:", after the read-back.`);
-  return { ok: true, text: parts.join("\n\n"), result: { changed: r.changed, unapproved: r.unapproved, halted: r.halted, diff, roadmapOpen, ...(r.recall ? { recall: r.recall } : {}) } };
+  return { ok: true, text: parts.join("\n\n"), result: { changed: r.changed, unapproved: r.unapproved, halted: r.halted, diff, roadmapOpen, ...(commit ? { commit: commit.result } : {}), ...(r.recall ? { recall: r.recall } : {}) } };
+}
+
+/**
+ * The commit the agreed card asked for, run by the gate after the change set closed (it closes
+ * whatever happens here). Nothing is committed when nothing inside the boundary changed, or
+ * when the change set wrote outside it (the session is stopped). The outcome is journaled: a
+ * `commit` entry with the SHA, or `commit-refused` / `commit-failed` with the reason.
+ * @returns {{ text: string, result: object }}
+ */
+function commitChangeSet(dir, r, cardId, ctx) {
+  const changed = (r.changed ?? []).map((c) => c.path);
+  const at = () => new Date().toISOString();
+  let outcome;
+  if (changed.length === 0) outcome = { ok: false, refused: true, reason: "nothing inside the boundary changed" };
+  else if (r.halted) outcome = { ok: false, refused: true, reason: "the change set wrote outside its boundary, so the session is stopped" };
+  else {
+    try {
+      outcome = commitBoundary({ root: r.state.root, paths: changed, message: r.commit.message, env: ctx.env && typeof ctx.env === "object" ? ctx.env : process.env });
+    } catch (err) {
+      outcome = { ok: false, reason: `the commit threw: ${err instanceof Error ? err.message : String(err)}` };
+    }
+  }
+  if (outcome.ok) {
+    appendJournal(dir, [{ type: "commit", at: at(), cardId, sha: outcome.sha, subject: outcome.subject, paths: outcome.paths, skipped: outcome.skipped }]);
+    const skippedNote = outcome.skipped.length ? ` Left out because git ignores them or never tracked them: ${someOf(outcome.skipped)}.` : "";
+    return { text: `Committed ${outcome.sha} "${outcome.subject}" with ${someOf(outcome.paths)}.${skippedNote}`, result: { sha: outcome.sha, subject: outcome.subject, paths: outcome.paths, skipped: outcome.skipped } };
+  }
+  appendJournal(dir, [{ type: outcome.refused ? "commit-refused" : "commit-failed", at: at(), cardId, reason: outcome.reason }]);
+  return { text: `Not committed: ${outcome.reason}. The change set is closed either way.`, result: { error: outcome.reason, ...(outcome.refused ? { refused: true } : {}) } };
 }
 
 function machineDiff(dir, root, cardId, changed) {

@@ -57,6 +57,7 @@
  * @property {Array<{ design: string, chosen: boolean }>} [alternatives]  the designs weighed, exactly one chosen (alternativesProblem)
  * @property {string[]} [checks]
  * @property {string[]} [openPoints]
+ * @property {{ message: string }} [commit]  the gate commits the change set's boundary files at pair_done with this message (commitProblem)
  * @property {Array<{path: string, change: string}>} [changedSinceReadBack]
  */
 /**
@@ -65,6 +66,7 @@
  * @property {string[]} boundary
  * @property {string} quote
  * @property {number} inputSeq
+ * @property {{ message: string }} [commit]  copied from the card at pair_begin; pair_done returns it for the adapter's commit
  * @property {string[]} runs  every pair_run started under this change set
  * @property {unknown} [openedAt]
  */
@@ -1409,6 +1411,26 @@ export const RECALL_REASON = 'learning mode is on: pair_done needs recall, one q
 
 const isRecall = (x) => typeof x === "string" && x.trim() !== "" && !/[\r\n]/.test(x.trim());
 
+/** The largest commit message a card may carry, in UTF-16 code units. */
+export const COMMIT_MESSAGE_MAX = 16 * 1024;
+
+/**
+ * Why a card's commit request is unusable, or null. It is an object `{ message }` and nothing
+ * else; the message is a string with a non-blank first line, no NUL, at most
+ * COMMIT_MESSAGE_MAX long. An absent request (undefined) is fine: the card asks for no commit.
+ * @param {unknown} commit
+ * @returns {string | null}
+ */
+export function commitProblem(commit) {
+  if (commit === undefined) return null;
+  if (!isObj(commit) || Object.keys(commit).some((k) => k !== "message")) return 'commit is an object { "message": "the commit message" } and nothing else';
+  const m = commit.message;
+  if (typeof m !== "string" || m.split("\n")[0].trim() === "") return "commit.message needs a non-blank first line, the commit's subject";
+  if (m.includes("\u0000")) return "commit.message holds a NUL character";
+  if (m.length > COMMIT_MESSAGE_MAX) return `commit.message is longer than ${COMMIT_MESSAGE_MAX} characters`;
+  return null;
+}
+
 /**
  * pair_propose: record the next card. Its boundary is hashed now (io.hashBoundary), and the
  * card remembers the latest trusted-input sequence number, so only a turn typed after this
@@ -1422,7 +1444,7 @@ const isRecall = (x) => typeof x === "string" && x.trim() !== "" && !/[\r\n]/.te
  * repoRoot, findings }`, and take a missing one as bareCardContext. A card held to the
  * findings marks them consumed in the state when it is recorded, not when it is refused.
  * @param {State} state
- * @param {{ boundary: string[], whyNow?: string, decision?: string, currentCode?: string, proposedCode?: string, effect?: string, checks?: string[], openPoints?: string[], why?: string, sources?: unknown[], alternatives?: unknown }} card
+ * @param {{ boundary: string[], whyNow?: string, decision?: string, currentCode?: string, proposedCode?: string, effect?: string, checks?: string[], openPoints?: string[], why?: string, sources?: unknown[], alternatives?: unknown, commit?: { message: string } }} card
  * @param {Io} io
  * @returns {Result & { card?: Card }}
  */
@@ -1438,6 +1460,8 @@ export function pairPropose(state, card, io) {
   if (problem) return refuse(state, "pair_propose", problem, io);
   if (card.openPoints !== undefined && !isStrArr(card.openPoints)) return refuse(state, "pair_propose", "openPoints is not a list of strings", io);
   if (card.checks !== undefined && !isStrArr(card.checks)) return refuse(state, "pair_propose", "checks is not a list of strings", io);
+  const badCommit = commitProblem(card.commit);
+  if (badCommit) return refuse(state, "pair_propose", badCommit, io);
   if (state.learning) {
     if (typeof card.why !== "string" || card.why.trim() === "") return refuse(state, "pair_propose", WHY_REASON, io);
     const bad = sourceProblem(card.sources);
@@ -1475,6 +1499,7 @@ export function pairPropose(state, card, io) {
     why: card.why,
     sources: card.sources,
     alternatives: card.alternatives,
+    ...(card.commit !== undefined ? { commit: { message: card.commit.message } } : {}),
     boundary: [...card.boundary],
     checks: card.checks ? [...card.checks] : [],
     openPoints: card.openPoints ? [...card.openPoints] : [],
@@ -1528,6 +1553,7 @@ export function pairBegin(state, args, io) {
     quote: args.quote,
     inputSeq: next.lastInput.seq,
     runs: [],
+    ...(isObj(card.commit) && typeof card.commit.message === "string" ? { commit: { message: card.commit.message } } : {}),
     openedAt: stamp(io),
   };
   const journal = [];
@@ -1546,10 +1572,12 @@ export function pairBegin(state, args, io) {
  * journal entry records the boundary and what its paths held at this snapshot (boundaryHashes),
  * which the pair-accepted receipt copies at the stop (pairAcceptedReceipt). In learning mode it
  * needs `recall`, one question on one line, which the `done` entry records (RECALL_REASON).
+ * Returns `commit`, the agreed card's commit request (`{ message }`) or null: the gate core
+ * does no I/O, so the adapter runs the commit after the change set closed (lib/commit.mjs).
  * @param {State} state
  * @param {{ cardId: unknown, recall?: unknown }} args
  * @param {Io} io
- * @returns {Result & { changed?: Array<{path: string, change: string}>, unapproved?: Array<{path: string, change: string}> }}
+ * @returns {Result & { changed?: Array<{path: string, change: string}>, unapproved?: Array<{path: string, change: string}>, commit?: { message: string } | null }}
  */
 export function pairDone(state, args, io) {
   if (state.phase !== "open") return refuse(state, "pair_done", "no change set is open", io);
@@ -1578,7 +1606,8 @@ export function pairDone(state, args, io) {
     next.halt = { reason: `unapproved write outside change set ${cs.cardId}: ${unapproved.map((d) => d.path).join(", ")}`, at: stamp(io) };
     journal.push(entry("unapproved-write", io, { cardId: cs.cardId, paths: unapproved }));
   }
-  return { ok: true, state: next, journal, changed, unapproved, halted: unapproved.length > 0, roadmapOpen: openRoadmapItems(state.roadmap), ...recall };
+  const commit = isObj(cs.commit) && typeof cs.commit.message === "string" ? { message: cs.commit.message } : null;
+  return { ok: true, state: next, journal, changed, unapproved, halted: unapproved.length > 0, roadmapOpen: openRoadmapItems(state.roadmap), commit, ...recall };
 }
 
 // ─── tool verdicts ──────────────────────────────────────────────────────────────────────

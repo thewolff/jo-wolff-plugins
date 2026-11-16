@@ -5,6 +5,17 @@ All notable changes to paired-coding are recorded here. The format follows
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html). Releases before 1.4.0 are not
 listed.
 
+## 1.7.0 - 2026-11-16
+
+### Added
+
+- A card can ask for a commit. `pair_propose` takes `commit: { message }` (an object with only `message`, whose first line is not blank, no NUL, at most 16384 characters) and shows the message on the card, so the partner's agreement covers it. At `pair_done`, when something inside the boundary changed, the gate commits outside the sandbox, in a linked worktree too: only the changed paths inside the boundary, through `git commit --only` with literal pathspecs passed NUL-separated on stdin and the message read from a temporary file, so the person's own staged work is neither committed nor unstaged. New files are added with `--intent-to-add` and taken back out of the index when the commit fails; paths git ignores are left out and listed. Hooks run normally. git gets the adapter's environment less `GIT_DIR`, `GIT_WORK_TREE`, `GIT_INDEX_FILE`, `GIT_CONFIG_PARAMETERS` and the other variables that steer it at another repository, index or config. It does not commit, and says why, when nothing changed inside the boundary, when the change set wrote outside it, during a merge, rebase, cherry-pick, revert or bisect, on a detached HEAD, or when the change set changed the hooks directory git runs. The change set closes either way; `pair_done` returns the SHA and subject or the reason, and the journal records `commit`, `commit-refused` or `commit-failed`. Never pushes, never amends, never skips hooks.
+
+### Changed
+
+- A symlink `pair_run` makes while a change set is open no longer stops the session when its target, resolved physically from the link's own directory by `realpath(3)`, lies in the worktree outside any `.git` and inside the boundary (a file the boundary covers, or a directory a subtree entry covers whole). `npm install` with `node_modules/` agreed made relative links in `node_modules/.bin/` and stopped the session; it no longer does. A link leaving the boundary (relative, absolute, or through another link: `x -> ../hop/../y`), dangling outside it, or reaching `.git` still stops it, and so does every new hard link. Landlock still grants no symlink creation.
+- The README and the skill replace "commit outside `pair_run`" with the card's commit request; the sandbox facts about `.git` are unchanged.
+
 ## 1.6.2 - 2026-11-16
 
 ### Changed
