@@ -393,6 +393,83 @@ test("0.4.3 untrustedReason: a symlink someone else owns in sticky /tmp is refus
   }
 });
 
+test("0.4.3 untrustedReason resolves `..` after a symlink the way the kernel does: a trusted link to `/tmp/attacker-link/../good` checks the attacker's link and where it leads, not /tmp/good (Codex, PR #130 round 3)", () => {
+  const root = realpathSync(mkdtempSync(join(tmpdir(), "ctx-watch-trust-")));
+  const tag = `${process.pid}-${Date.now()}`;
+  const attacker = `/tmp/ctx-watch-attacker-link-${tag}`;
+  const good = `ctx-watch-good-${tag}`;
+  const decoy = `/tmp/${good}`; // where a lexical `path.resolve` lands: a trusted file
+  try {
+    chmodSync(root, 0o755);
+    for (const d of ["safe", "evil", join("evil", "sub")]) {
+      mkdirSync(join(root, d));
+      chmodSync(join(root, d), 0o755);
+    }
+    writeFileSync(decoy, "#!/bin/sh\n");
+    chmodSync(decoy, 0o755);
+    const evil = join(root, "evil", good); // where the kernel lands: attacker-link → evil/sub, `..` → evil
+    writeFileSync(evil, "#!/bin/sh\n");
+    chmodSync(evil, 0o777);
+    symlinkSync(join(root, "evil", "sub"), attacker);
+    const tool = join(root, "safe", "tool");
+    symlinkSync(`${attacker}/../${good}`, tool);
+    assert.equal(realpathSync.native(tool), evil, "the fixture: the kernel reaches evil/, not /tmp");
+    assert.equal(untrustedReason(decoy), null, "the decoy alone is trusted");
+
+    // The link is yours: the walk follows it and finds the world-writable file the kernel would run.
+    assert.equal(untrustedReason(tool), `${tool} (real path ${evil}) is writable by every user`);
+    // Someone else owns it (sticky /tmp lets anyone add one): refused at the link.
+    const realAttacker = join(realpathSync("/tmp"), attacker.slice("/tmp/".length));
+    const lstat = (q) => (q === realAttacker ? statWith(lstatSync(q), { uid: ME + 1000 }) : lstatSync(q));
+    assert.equal(untrustedReason(tool, { lstat }), `${realAttacker} (a symlink on the way to ${tool}) is a symlink owned by uid ${ME + 1000}, not you (${ME}) or root`);
+  } finally {
+    // unlink, not rmSync: rmSync follows a link to a directory and throws EISDIR.
+    for (const f of [attacker, decoy]) {
+      try {
+        unlinkSync(f);
+      } catch {}
+    }
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("0.4.3 untrustedReason: `..` after a trusted symlink is the parent of where the link leads, in the given path and in a link's target", () => {
+  const root = realpathSync(mkdtempSync(join(tmpdir(), "ctx-watch-trust-")));
+  try {
+    chmodSync(root, 0o755);
+    for (const d of ["a", join("a", "b"), join("a", "c"), "c"]) {
+      mkdirSync(join(root, d));
+      chmodSync(join(root, d), 0o755);
+    }
+    const physical = join(root, "a", "c", "tool"); // where `lnk/../c/tool` leads
+    const lexical = join(root, "c", "tool"); // where text normalization would land
+    for (const f of [physical, lexical]) {
+      writeFileSync(f, "#!/bin/sh\n");
+      chmodSync(f, 0o755);
+    }
+    symlinkSync(join(root, "a", "b"), join(root, "lnk"));
+    const given = `${root}/lnk/../c/tool`;
+    assert.equal(realpathSync.native(given), physical);
+    assert.equal(untrustedReason(given), null, "both files fine");
+
+    chmodSync(physical, 0o777);
+    assert.equal(untrustedReason(given), `${given} (real path ${physical}) is writable by every user`, "the file the kernel runs is checked");
+    chmodSync(physical, 0o755);
+    chmodSync(lexical, 0o777);
+    assert.equal(untrustedReason(given), null, "the file text normalization would name is not the one run");
+
+    // The same inside a link's target: tool2 → lnk/../c/tool, relative to its own directory.
+    const tool2 = join(root, "tool2");
+    symlinkSync("lnk/../c/tool", tool2);
+    assert.equal(realpathSync.native(tool2), physical);
+    assert.equal(untrustedReason(tool2), null);
+    chmodSync(physical, 0o777);
+    assert.equal(untrustedReason(tool2), `${tool2} (real path ${physical}) is writable by every user`);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test("install: no ctx on PATH is exit 1 naming the PATH; --ctx pins a given executable (and must exist)", () => {
   const root = mkdtempSync(join(tmpdir(), "ctx-watch-launchd-"));
   try {

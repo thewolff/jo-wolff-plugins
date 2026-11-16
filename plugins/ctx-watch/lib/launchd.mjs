@@ -134,25 +134,32 @@ const MAX_LINK_HOPS = 32;
 /**
  * Why a path is not safe for a job running as `owner` to execute, or null. The timer runs node,
  * the CLI and ctx as that user at every login, so whoever can replace any of them, or any entry
- * on the way to them, runs code as that user. The path is walked one component at a time from /
- * with `lstat`, never `stat`, so every symlink is itself an entry on the way:
+ * on the way to them, runs code as that user. The path is resolved the way the kernel resolves
+ * it (the realpath algorithm), with `lstat` on every entry and no lexical normalization at all:
+ * a stack of unresolved components, and the physical directory reached so far.
+ *   - `.` is skipped; `..` pops the physical directory (never the text before it: in
+ *     `link/../x`, `..` is the parent of where `link` leads, not the directory holding `link`);
  *   - every entry (directory, symlink, the file) must be owned by `owner` or root;
  *   - every directory walked through must let no one else replace its entries: writable by every
  *     user only when sticky (/tmp: then only an entry's owner, checked above, may rename or
  *     remove it), by its group only when sticky or the group is wheel or admin (whose members
  *     can already act as root);
- *   - a symlink is followed by walking its target from / (or from its directory), so the
- *     target's own directories are checked too;
+ *   - a symlink's raw `readlink` text is split into components and put in front of the rest,
+ *     resolved from / when it is absolute, else from the symlink's physical directory, so its
+ *     target and the target's directories are checked too; at most MAX_LINK_HOPS symlinks;
  *   - the file at the end must be writable by no one else (group wheel or admin aside).
- * Codex, PR #130 round 2: an attacker's symlink directly in sticky /tmp pointing at a trusted
- * node passed a `stat`-based check and could be retargeted afterwards. `lstat` and `readlink`
- * are injectable.
+ * Codex, PR #130: round 2, an attacker's symlink in sticky /tmp pointing at a trusted node passed
+ * a `stat`-based check; round 3, `path.resolve` on a link target turned `attacker-link/../good`
+ * into `good`, so the attacker's link and where it led were never checked. `lstat` and
+ * `readlink` are injectable.
  */
 export function untrustedReason(p, { owner = process.getuid?.() ?? 501, lstat = lstatSync, readlink = readlinkSync } = {}) {
-  const given = resolve(p);
-  let parts = given.split("/").filter(Boolean);
+  const given = isAbsolute(p) ? p : `${process.cwd()}/${p}`;
+  const split = (text) => text.split("/").filter(Boolean);
+  let parts = split(given);
   let dir = "/";
   let hops = 0;
+  const child = (name) => (dir === "/" ? `/${name}` : `${dir}/${name}`);
   const mine = (s) => s.uid === owner || s.uid === 0;
   const othersMayReplace = (s) => {
     const sticky = (s.mode & 0o1000) !== 0;
@@ -172,7 +179,14 @@ export function untrustedReason(p, { owner = process.getuid?.() ?? 501, lstat = 
     if (!mine(root)) return `/ is owned by uid ${root.uid}, not you (${owner}) or root`;
     if (othersMayReplace(root)) return `/ is writable by ${othersMayReplace(root)}`;
     while (parts.length) {
-      const at = join(dir, parts.shift());
+      const name = parts.shift();
+      if (name === ".") continue;
+      if (name === "..") {
+        // The parent of the physical directory reached, already checked on the way in.
+        dir = dirname(dir);
+        continue;
+      }
+      const at = child(name);
       const s = stat(at);
       const last = parts.length === 0;
       if (s.isSymbolicLink()) {
@@ -185,9 +199,9 @@ export function untrustedReason(p, { owner = process.getuid?.() ?? 501, lstat = 
         } catch (err) {
           return `${given} cannot be resolved (${err.code ?? err.message})`;
         }
-        // Walk the target from /: its own directories are entries on the way too.
-        parts = [...resolve(dir, to).split("/").filter(Boolean), ...parts];
-        dir = "/";
+        // The raw target, never normalized: absolute from /, relative from the link's own directory.
+        if (to.startsWith("/")) dir = "/";
+        parts = [...split(to), ...parts];
         continue;
       }
       const where = last ? (at === given ? given : `${given} (real path ${at})`) : `${at} (above ${given})`;

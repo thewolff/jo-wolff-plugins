@@ -437,7 +437,8 @@ and refuses with the reason, writing nothing:
   rename it), by its group only when sticky or the group is wheel or admin, whose members can
   already act as root (Homebrew's `/opt/homebrew` is group admin). The file itself must be
   writable by no one else. So a symlink in `/tmp` that someone else owns is refused even when it
-  points at a good node.
+  points at a good node. `..` is resolved as the kernel resolves it, against the directory a
+  symlink actually leads to, never by trimming the text before it.
 - `HOME` must be set, absolute, and exist: install never guesses whose LaunchAgents to write.
 
 **The timer and the popup.** `install` writes

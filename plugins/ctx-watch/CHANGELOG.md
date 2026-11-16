@@ -31,7 +31,10 @@ reloads a person's agents at login only from `~/Library/LaunchAgents`.
   its entries: writable by every user only when sticky (`/tmp`), by its group only when sticky
   or the group is wheel or admin; the file must be writable by no one else
   (`untrustedReason`). A symlink someone else owns in `/tmp` pointing at a trusted node is
-  refused (Codex, review round 2: a `stat`-based check followed it and passed).
+  refused (Codex, review round 2: a `stat`-based check followed it and passed). The path is
+  resolved as the kernel resolves it: a link's raw target is never normalized, and `..` is the
+  parent of the directory actually reached, so `/tmp/attacker-link/../good` checks the
+  attacker's link and where it leads, not `/tmp/good` (Codex, review round 3).
 - `uninstall` prints the `rm` of the plist as well as the bootout: a plist left in
   LaunchAgents is loaded again at the next login.
 - `repair` restores a timer it paused from the plist `launchctl print` said the job came from,
