@@ -12,7 +12,7 @@ import { test, describe } from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { randomBytes } from "node:crypto";
-import { chmodSync, existsSync, linkSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, renameSync, statSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, linkSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, renameSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -223,6 +223,14 @@ const fsNow = (root) => {
   return statSync(p).mtimeMs;
 };
 
+// Waits until the filesystem clock has passed `path`'s change time. Linux stamps files from a
+// coarse clock (one tick is milliseconds), so a link made just before fsNow can share its tick,
+// and newLinks rightly counts a change time equal to the floor as new.
+const pastCtime = (root, path) => {
+  const p = join(root, ".stamp-wait");
+  do writeFileSync(p, ""); while (statSync(p).mtimeMs <= lstatSync(path).ctimeMs);
+};
+
 describe("newLinks", () => {
   test("finds a new symlink, a new hard link and a new .git, under the roots only", () => {
     const root = tree();
@@ -327,6 +335,7 @@ describe("newLinks", () => {
       symlinkSync("../../far/deep", join(root, "client", "node_modules", "hop"));
       mkdirSync(join(root, "far", "vitest"));
       writeFileSync(join(root, "far", "vitest", "vitest.mjs"), "outside");
+      pastCtime(root, join(root, "client", "node_modules", "hop"));
       assert.deepEqual(check(root, () => {
         symlinkSync("../hop/../vitest/vitest.mjs", bin(root, "x"));
         symlinkSync("../hop/../..", bin(root, "up"));
@@ -364,6 +373,7 @@ describe("newLinks", () => {
         symlinkSync("../../../w/t", join(root, "w", "a", "b", "l"));
         assert.deepEqual(newLinks(root, roots, since, before, [], ["w/"], memory), []);
         assert.deepEqual(Object.values(memory.accepted), [{ path: "w/a/b/l", resolved: "w/t" }]);
+        pastCtime(root, join(root, "w", "a", "b", "l"));
         return { root, roots, known: memory.accepted };
       };
       const nextRun = ({ root, roots, known }, make) => {
