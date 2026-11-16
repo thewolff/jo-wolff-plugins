@@ -14,6 +14,26 @@ the README's "Changes in" sections.
   reads the new path and still writes `<plugin>/.claude-plugin/plugin.json`; the scaffold's
   output is unchanged. The new-plugin skill's copy-by-hand fallback names the new path.
 
+## 0.4.2 - 2026-11-12
+
+### Changed
+
+- The scaffolder's closing line and header comment, the `new-plugin` skill's last step and the
+  README name both marketplace files, `.claude-plugin/marketplace.json` and
+  `.omp-plugin/marketplace.json`. OMP reads the second when it exists, so a plugin listed only
+  in the first fails `omp plugin install` with "not found in marketplace".
+- The `release-gate` agent's version match (check 4) needs an entry in both catalogs and fails
+  a plugin missing from either, naming the file; it also compares the version in
+  `.omp-plugin/plugin.json` when the plugin has one. Its path scrub (check 3) greps
+  `.omp-plugin` too.
+- `templates/README.md` has an OMP install block and says OMP does not run `hooks/hooks.json`.
+- The `new-plugin` skill no longer says `node --test` in `scripts/` fails until both catalogs
+  list a new plugin: that suite fails on a plugin in only one catalog or with differing
+  descriptions, and cannot see one listed in neither, which the release gate's check 4 fails.
+- The README's `release-gate` row says the root README names the plugin, never its version (it
+  said "naming the version"), and the README has an OMP install block.
+- `test/scaffold.test.mjs` and `test/agents.test.mjs` pin all of the above.
+
 ## 0.4.1 - 2026-11-10
 
 ### Added

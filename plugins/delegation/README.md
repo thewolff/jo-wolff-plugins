@@ -177,9 +177,13 @@ tools are out of reach.
 ## Config
 
 `${XDG_CONFIG_HOME:-~/.config}/delegation/config.json`; a missing file is the defaults. A
-present file that is not JSON, or has a field of the wrong type, is ignored whole and said so
-once per hook answer (`delegation <hook>: config ignored: <file>: <what>`), so a typo never
-widens or narrows a gate.
+present file that is not JSON, or is not an object, is ignored whole. A file with a field of the
+wrong type is ignored whole by every hook but one: the session-brief gate reads it field by field,
+keeping each valid field and defaulting each bad one, so an unrelated typo never discards
+`off: true` or the gate's own `checks["session-brief-gate"]` entry (`lib/config.mjs` `loadConfig`
+returns both readings as `config` and `partial`). Either way the problem is said once per hook
+answer (`delegation <hook>: config ignored: <file>: <what>`), so a typo never silently widens or
+narrows a gate.
 
 ```json
 {
@@ -287,6 +291,12 @@ general was kept.
 | `hooks/worktree-spawn-guard.mjs` | `hooks/worktree-spawn-guard.mjs` | the shipyard decision-log citations and the "shipyard root" naming (the check itself, a `repos/` holding independent git repositories, is unchanged); the deny-only answer (now `warn` default, `block` by config) |
 | `hooks/repo-rules-inject.mjs` + `lib/repo-rules-walk.mjs` + `lib/budget-fit.mjs` | `hooks/repo-rules-inject.mjs`, `lib/repo-rules.mjs` | the `tmpdir()/newdle-repo-rules-<id>.json` state file (now under the plugin's XDG state dir); the shipyard-specific comments; `budget-fit-cli.mjs` (a CLI no hook called) was not ported |
 | `agents/beefy-builder.md`, `agents/beefy-research.md` | not ported | both are shipyard-specific end to end (Newdle monorepo ownership, `.projects/` sync, Linear closing); `beefy-builder` stays in the default builder class so a repository that ships its own is gated |
+
+## Changes in 0.1.6
+
+Docs only. *Config* says the session-brief gate reads a file with a wrong-typed field field by
+field, keeping `off: true` and its own `checks` entry, while every other hook still ignores such a
+file whole. See [CHANGELOG.md](CHANGELOG.md).
 
 ## Changes in 0.1.5
 

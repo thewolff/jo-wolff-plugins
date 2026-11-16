@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.1.6 - 2026-11-12
+
+- README, Config: a file with a wrong-typed field is ignored whole by every hook except the session-brief gate, which reads it field by field (`loadConfig`'s `partial`, since 0.1.5) and keeps `off: true` and its own `checks` entry. The README said every hook ignored such a file whole. Docs only; no code changed.
+
 ## 0.1.5 - 2026-11-11
 
 - New `hooks/session-brief-gate.mjs`, PreToolUse on `mcp__ccd_session__start_session` (the desktop app's tool for starting or offering a session). A `tool_input.prompt` that lacks any of the heading lines `Target`, `Change`, `Acceptance`, `How it fails`, `Spiral bound` is denied; the reason starts `Session start refused:`, names the missing headings and the tool, says each heading line holds the heading alone (`# Target: the repo` does not match), and carries each missing section in full.
