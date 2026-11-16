@@ -349,6 +349,40 @@ describe("newLinks", () => {
         linkSync(join(root, "client", "node_modules", "vitest", "vitest.mjs"), bin(root, "hard"));
       }, ["client/node_modules/.bin/*", "client/node_modules/vitest/*.mjs"]), ["client/node_modules/.bin/dir", "client/node_modules/.bin/hard", "client/node_modules/vitest/vitest.mjs"]);
     });
+
+    describe("links accepted in an earlier run", () => {
+      // Probe E: w/a/b/l -> ../../../w/t resolves to w/t, inside w/. Moving w/a/b to w/b leaves
+      // the link's own change time alone and re-aims it to the worktree's parent.
+      const setup = () => {
+        const root = npmTree();
+        mkdirSync(join(root, "w", "a", "b"), { recursive: true });
+        writeFileSync(join(root, "w", "t"), "t");
+        const roots = [join(root, "w")];
+        const memory = { known: {}, accepted: {} };
+        const before = gitBaseline(root, roots, []);
+        const since = fsNow(root);
+        symlinkSync("../../../w/t", join(root, "w", "a", "b", "l"));
+        assert.deepEqual(newLinks(root, roots, since, before, [], ["w/"], memory), []);
+        assert.deepEqual(Object.values(memory.accepted), [{ path: "w/a/b/l", resolved: "w/t" }]);
+        return { root, roots, known: memory.accepted };
+      };
+      const nextRun = ({ root, roots, known }, make) => {
+        const before = gitBaseline(root, roots, []);
+        const since = fsNow(root);
+        make();
+        return newLinks(root, roots, since, before, [], ["w/"], { known, accepted: {} });
+      };
+
+      test("one re-aimed outside by moving its directory is reported", () => {
+        const s = setup();
+        assert.deepEqual(nextRun(s, () => renameSync(join(s.root, "w", "a", "b"), join(s.root, "w", "b"))), ["w/b/l"]);
+      });
+
+      test("one still resolving where it did is not reported again", () => {
+        const s = setup();
+        assert.deepEqual(nextRun(s, () => writeFileSync(join(s.root, "w", "other"), "x")), []);
+      });
+    });
   });
 });
 

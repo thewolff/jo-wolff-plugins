@@ -1415,8 +1415,19 @@ const isRecall = (x) => typeof x === "string" && x.trim() !== "" && !/[\r\n]/.te
 export const COMMIT_MESSAGE_MAX = 16 * 1024;
 
 /**
+ * Characters a commit message may not hold: C0 controls other than newline and tab, DEL, and
+ * the C1 controls. A terminal acts on them (ESC[8m hides what follows, a bare carriage return
+ * overwrites the line), so the card would show less than the commit holds.
+ */
+const MESSAGE_CONTROL = /[\u0000-\u0008\u000B-\u001F\u007F-\u009F]/;
+
+/** A line Markdown reads as a code fence: it would end the fence the card shows the message in. */
+const FENCE_LINE = /^ {0,3}(`{3,}|~{3,})/m;
+
+/**
  * Why a card's commit request is unusable, or null. It is an object `{ message }` and nothing
- * else; the message is a string with a non-blank first line, no NUL, at most
+ * else; the message is a string with a non-blank first line, no control character other than
+ * newline and tab (MESSAGE_CONTROL), no line that opens or closes a code fence, at most
  * COMMIT_MESSAGE_MAX long. An absent request (undefined) is fine: the card asks for no commit.
  * @param {unknown} commit
  * @returns {string | null}
@@ -1426,7 +1437,8 @@ export function commitProblem(commit) {
   if (!isObj(commit) || Object.keys(commit).some((k) => k !== "message")) return 'commit is an object { "message": "the commit message" } and nothing else';
   const m = commit.message;
   if (typeof m !== "string" || m.split("\n")[0].trim() === "") return "commit.message needs a non-blank first line, the commit's subject";
-  if (m.includes("\u0000")) return "commit.message holds a NUL character";
+  if (MESSAGE_CONTROL.test(m)) return "commit.message holds a control character; only newline and tab are allowed, so the card shows all of what gets committed";
+  if (FENCE_LINE.test(m)) return "commit.message has a line starting with ``` or ~~~, which would end the code block the card shows it in";
   if (m.length > COMMIT_MESSAGE_MAX) return `commit.message is longer than ${COMMIT_MESSAGE_MAX} characters`;
   return null;
 }

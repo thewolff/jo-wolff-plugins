@@ -159,14 +159,17 @@ your partner says "show more", expand any field.
   the card as **Alternatives:**, one per line, with the chosen one marked, as the gate's
   reply lists them.
 - **Commit** (`commit`): when your partner wants the change committed, pass
-  `{ "message": "subject line\n\nbody" }` and show the message on the card as **Commit:**. The
-  gate commits at `pair_done`, outside the sandbox, with only the files that changed inside the
-  boundary; whatever your partner staged themselves stays staged and out of it. `pair_done`
+  `{ "message": "subject line\n\nbody" }` and show the message on the card as **Commit:**. No
+  control characters other than newline and tab, and no line starting with three backticks or
+  tildes. The gate commits at `pair_done`, outside the sandbox, the exact bytes the read-back
+  diff shows, of only the files that changed inside the boundary; whatever your partner staged
+  themselves stays staged and out of it. It runs no git hooks, filters or signing, so say so in
+  the read-back and run the project's checks inside `pair_run` before `pair_done`. `pair_done`
   returns the commit's SHA and subject, or why it did not commit (nothing changed, a merge,
-  rebase, cherry-pick or bisect in progress, a detached HEAD, a hook that failed, a change to
-  the hooks directory git runs); the change set closes either way, so report the outcome in the
-  read-back. Leave it out and nothing is committed. Never commit through `pair_run`: it cannot
-  write a linked worktree's git directory, nor any `.git` on Linux.
+  rebase, cherry-pick or bisect in progress, a detached HEAD, git config read from a file in the
+  worktree, a file that changed after the snapshot); the change set closes either way, so report
+  the outcome in the read-back. Leave it out and nothing is committed. Never commit through
+  `pair_run`: it cannot write a linked worktree's git directory, nor any `.git` on Linux.
 
 When the gate reports files changed since the last read-back, put that list at the top of the
 next card and ask your partner which changes are theirs. If they do not recognise a change,

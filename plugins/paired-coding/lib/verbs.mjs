@@ -21,7 +21,7 @@ import {
   pairStart, recordInput, runEnd, runStart, sessionEnd, siblingRunProblem, toolVerdict,
 } from "../core/gate.mjs";
 import {
-  activated, appendJournal, defaultTempPaths, findRoot, loadState, loadStateReport, makeIo, markActivated, reapGroups, saveState,
+  activated, addAcceptedLinks, appendJournal, defaultTempPaths, findRoot, loadState, loadStateReport, makeIo, markActivated, readAcceptedLinks, reapGroups, saveState,
   closedRunProblem, describeSandbox, realpathLoose, recordRun, runPgids, runSandboxed, sandboxBackend, sandboxJournal, sandboxProblem, sessionDir, stateBase, withLock, withSession, writeAtomic, writeSandboxed,
 } from "./host-io.mjs";
 import { cardContext } from "./card-context.mjs";
@@ -646,12 +646,24 @@ function pairDoneVerb(args, ctx) {
   const inactive = requireActive(ctx, "pair_done");
   if (inactive) return inactive;
   const dir = ctx.sessionDir;
-  const r = withSession(dir, {}, (s) => pairDone(s, { cardId: args.cardId, recall: args.recall }, ioFor(dir, s)));
+  const cardId = String(args.cardId);
+  // One lock for closing, copying the read-back bytes, and the commit, so nothing in this
+  // session moves between the snapshot the diff shows and the commit built from it.
+  const r = withLock(dir, () => {
+    const s = loadState(dir);
+    const out = pairDone(s, { cardId: args.cardId, recall: args.recall }, ioFor(dir, s));
+    if (out.state && out.state !== s) saveState(dir, out.state);
+    if (out.journal) appendJournal(dir, out.journal);
+    if (!out.ok) return out;
+    const after = keepAfterCopies(dir, out.state.root, cardId, out.changed ?? [], out.state.baseline ?? {});
+    const diff = machineDiff(dir, cardId, out.changed ?? [], after);
+    const commit = out.commit ? commitChangeSet(dir, out, cardId, ctx, after) : null;
+    return { ...out, diff, commitOutcome: commit };
+  });
   if (!r.ok) return fail("pair_done", r.reason);
-  const diff = machineDiff(dir, r.state.root, String(args.cardId), r.changed ?? []);
+  const { diff, commitOutcome: commit } = r;
   const parts = [`Change set ${args.cardId} closed.`];
   parts.push(diff ? `Diff of the boundary since pair_begin (machine-produced):\n${diff}` : "No change inside the boundary.");
-  const commit = r.commit ? commitChangeSet(dir, r, String(args.cardId), ctx) : null;
   if (commit) parts.push(commit.text);
   if (r.halted) parts.push(`STOPPED: unapproved write outside the boundary: ${r.unapproved.map((u) => `${u.change} ${u.path}`).join(", ")}. Show this to your partner; only your partner ends the session, by typing pair stop.`);
   const roadmapOpen = r.roadmapOpen ?? [];
@@ -661,40 +673,97 @@ function pairDoneVerb(args, ctx) {
 }
 
 /**
- * The commit the agreed card asked for, run by the gate after the change set closed (it closes
- * whatever happens here). Nothing is committed when nothing inside the boundary changed, or
- * when the change set wrote outside it (the session is stopped). The outcome is journaled: a
- * `commit` entry with the SHA, or `commit-refused` / `commit-failed` with the reason.
+ * The read-back bytes: each changed boundary file copied, right after pair_done's snapshot,
+ * into `changesets/<card>/after/`, and its copy checked against the snapshot's hash. A symlink
+ * is its target as the snapshot read it; a path the snapshot does not hold is gone. A
+ * directory (a mode change) carries no bytes and is left out. `mismatched` lists the paths
+ * whose copy is not what the snapshot hashed (something wrote them in between).
+ * @returns {{ entries: Array<{ path: string, kind: "file" | "link" | "absent", source?: string, exec?: boolean, target?: string }>, mismatched: string[], other: string[] }}
+ */
+function keepAfterCopies(dir, root, cardId, changed, snap) {
+  const into = join(dir, "changesets", cardId, "after");
+  const entries = [];
+  const mismatched = [];
+  const other = [];
+  for (const { path } of changed) {
+    const fp = Object.hasOwn(snap, path) ? snap[path] : null;
+    if (fp === null) { entries.push({ path, kind: "absent" }); continue; }
+    if (fp.startsWith("link:")) { entries.push({ path, kind: "link", target: fp.slice(5) }); continue; }
+    if (fp.startsWith("dir:")) continue;
+    if (!fp.startsWith("file:")) { other.push(path); continue; }
+    const [, mode, hash] = fp.split(":");
+    const copy = join(into, path);
+    try {
+      mkdirSync(dirname(copy), { recursive: true, mode: 0o700 });
+      copyFileSync(join(root, path), copy);
+    } catch {
+      mismatched.push(path);
+      continue;
+    }
+    if (createHash("sha256").update(readFileSync(copy)).digest("hex") !== hash) mismatched.push(path);
+    entries.push({ path, kind: "file", source: copy, exec: (parseInt(mode, 8) & 0o100) !== 0 });
+  }
+  return { entries, mismatched, other };
+}
+
+/**
+ * The commit the agreed card asked for, built from the read-back bytes (keepAfterCopies) while
+ * the session lock is held, after the change set closed (it closes whatever happens here).
+ * Nothing is committed when nothing inside the boundary changed, when the change set wrote
+ * outside it (the session is stopped), or when a file changed between the snapshot and its
+ * copy. The outcome is journaled: a `commit` entry with the SHA, or `commit-refused` /
+ * `commit-failed` with the reason.
  * @returns {{ text: string, result: object }}
  */
-function commitChangeSet(dir, r, cardId, ctx) {
-  const changed = (r.changed ?? []).map((c) => c.path);
+function commitChangeSet(dir, r, cardId, ctx, after) {
   const at = () => new Date().toISOString();
   let outcome;
-  if (changed.length === 0) outcome = { ok: false, refused: true, reason: "nothing inside the boundary changed" };
+  if ((r.changed ?? []).length === 0) outcome = { ok: false, refused: true, reason: "nothing inside the boundary changed" };
   else if (r.halted) outcome = { ok: false, refused: true, reason: "the change set wrote outside its boundary, so the session is stopped" };
+  else if (after.mismatched.length) outcome = { ok: false, refused: true, reason: `${someOf(after.mismatched)} changed after the gate's snapshot, so the diff above may not be what is on disk` };
+  else if (after.other.length) outcome = { ok: false, refused: true, reason: `${someOf(after.other)} is neither a file nor a symlink` };
+  else if (after.entries.length === 0) outcome = { ok: false, refused: true, reason: "only directory modes changed, and git does not record them" };
   else {
     try {
-      outcome = commitBoundary({ root: r.state.root, paths: changed, message: r.commit.message, env: ctx.env && typeof ctx.env === "object" ? ctx.env : process.env });
+      outcome = commitBoundary({ root: r.state.root, entries: after.entries, message: r.commit.message, env: ctx.env && typeof ctx.env === "object" ? ctx.env : process.env });
     } catch (err) {
       outcome = { ok: false, reason: `the commit threw: ${err instanceof Error ? err.message : String(err)}` };
     }
   }
   if (outcome.ok) {
-    appendJournal(dir, [{ type: "commit", at: at(), cardId, sha: outcome.sha, subject: outcome.subject, paths: outcome.paths, skipped: outcome.skipped }]);
-    const skippedNote = outcome.skipped.length ? ` Left out because git ignores them or never tracked them: ${someOf(outcome.skipped)}.` : "";
-    return { text: `Committed ${outcome.sha} "${outcome.subject}" with ${someOf(outcome.paths)}.${skippedNote}`, result: { sha: outcome.sha, subject: outcome.subject, paths: outcome.paths, skipped: outcome.skipped } };
+    const { sha, subject, paths, skipped, keptStaged, indexNote } = outcome;
+    appendJournal(dir, [{ type: "commit", at: at(), cardId, sha, subject, paths, skipped, keptStaged, hooks: "not run", ...(indexNote ? { indexNote } : {}) }]);
+    const notes = [
+      skipped.length ? ` Left out because git ignores them or never tracked them: ${someOf(skipped)}.` : "",
+      keptStaged.length ? ` Your own staged version of ${someOf(keptStaged)} stays staged; the commit holds the read-back version.` : "",
+      indexNote ? ` Note: ${indexNote}.` : "",
+    ].join("");
+    return {
+      text: `Committed ${sha} "${subject}" with ${someOf(paths)}, without running git hooks: run your checks yourself after the read-back.${notes}`,
+      result: { sha, subject, paths, skipped, keptStaged, hooksRun: false, ...(indexNote ? { indexNote } : {}) },
+    };
   }
   appendJournal(dir, [{ type: outcome.refused ? "commit-refused" : "commit-failed", at: at(), cardId, reason: outcome.reason }]);
   return { text: `Not committed: ${outcome.reason}. The change set is closed either way.`, result: { error: outcome.reason, ...(outcome.refused ? { refused: true } : {}) } };
 }
 
-function machineDiff(dir, root, cardId, changed) {
+/** The diff of each changed path from its pair_begin copy to its read-back copy (keepAfterCopies). */
+function machineDiff(dir, cardId, changed, after) {
   const before = join(dir, "changesets", cardId, "before");
+  const byPath = new Map(after.entries.map((e) => [e.path, e]));
   const out = [];
   for (const c of changed) {
+    const e = byPath.get(c.path);
+    if (e?.kind === "link") {
+      out.push(`${c.change} ${c.path} (a symlink to ${e.target})\n`);
+      continue;
+    }
+    if (!e && after.mismatched.includes(c.path)) {
+      out.push(`${c.change} ${c.path} (gone or unreadable again right after the snapshot; not shown)\n`);
+      continue;
+    }
     const a = join(before, c.path);
-    const b = join(root, c.path);
+    const b = e?.kind === "file" ? e.source : "/dev/null";
     const res = spawnSync("/usr/bin/diff", ["-u", "--label", `a/${c.path}`, "--label", `b/${c.path}`, existsSync(a) ? a : "/dev/null", existsSync(b) ? b : "/dev/null"], { encoding: "utf8", maxBuffer: 4 * 1024 * 1024 });
     out.push(res.stdout || `${c.change} ${c.path} (not a text diff)`);
   }
@@ -775,9 +844,11 @@ async function runVerb(args, ctx) {
     timeoutMs,
     signal: ctx.signal,
     onSpawn: (pgid) => recordRun(dir, runId, pgid),
-    linkCheck: { sinceMs, exclusions: start.state.exclusions ?? [] },
+    linkCheck: { sinceMs, exclusions: start.state.exclusions ?? [], known: readAcceptedLinks(dir) },
   });
   withSession(dir, {}, (s) => {
+    // Remembered before runEnd judges the run, so the next run rechecks them however this one ends.
+    addAcceptedLinks(dir, res.acceptedLinks);
     const out = runEnd(s, { runId, exitCode: res.exitCode, links: res.links, supervisorKilled: res.supervisorKilled }, makeIo({}));
     out.journal = out.journal.map((e) => ({ ...e, timedOut: res.timedOut, aborted: res.aborted, signal: res.signal }));
     return out;

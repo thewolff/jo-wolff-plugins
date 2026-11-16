@@ -479,27 +479,45 @@ How it works:
   main repository's `.git/worktrees/`, outside the worktree, so `git add` and `git commit`
   inside `pair_run` fail there whatever the boundary says.
 - To commit, ask on the card: `pair_propose`'s `commit: { message }` is shown on the card, so
-  your agreement covers it, and at `pair_done` the gate itself commits, outside the sandbox.
-  It commits only the files that changed inside the boundary, with `git commit --only`, so
-  whatever you staged yourself is neither committed nor unstaged, and a changed file outside
-  the boundary stays out. Every pathspec is literal and passed NUL-separated on stdin, and the
-  message goes in a temporary file read with `-F`: no shell, and no file name or message can
-  become an option. A new file is added with `--intent-to-add` first, and taken back out of
-  the index when the commit fails; a changed path git ignores (`node_modules/`, say), or a
-  removed one it never tracked, is left out and listed. Your repository's hooks run as they
-  would for you, and git runs with the adapter's environment (your identity and git config,
-  never `pair_run`'s), less the variables that point git at another repository, index or
-  config (`GIT_DIR`, `GIT_WORK_TREE`, `GIT_INDEX_FILE`, `GIT_CONFIG_PARAMETERS` and the
-  like). The gate does not commit, and says why, when nothing inside the boundary changed,
-  when the change set wrote outside its boundary (the session is stopped), while a merge,
-  rebase, cherry-pick, revert or bisect is in progress, on a detached HEAD, or when the change
-  set changed the hooks directory git runs (`core.hooksPath` pointing into the worktree, such
-  as husky's `.husky/`): those hooks would run outside the sandbox before you read them back.
-  The change set closes either way. `pair_done` returns the SHA and subject, or the refusal or
-  git's error, and the journal records a `commit`, `commit-refused` or `commit-failed` entry.
-  Nothing is pushed and nothing is amended. The git fence above is what keeps this safe: git
-  reads `config`, `hooks/` and `info/` from the git directory, and `pair_run` can write none of
-  them.
+  your agreement covers it, and at `pair_done` the gate itself commits, outside the sandbox,
+  while it still holds the session lock. It commits the bytes the read-back diff showed, not
+  the worktree as it is a moment later: right after its snapshot the gate copies each changed
+  boundary file into the session directory, checks the copy against the snapshot's hash, and
+  builds both the diff and the commit from those copies. A copy that does not match refuses
+  the commit. The commit is built with plumbing in a temporary index that starts from HEAD:
+  `read-tree`, `hash-object --no-filters` for each copy, `update-index`, `write-tree`,
+  `commit-tree --no-gpg-sign -F <message file>`, then `update-ref HEAD <new> <old>`, which
+  refuses if the branch moved meanwhile. So a changed file outside the boundary stays out, and
+  so does anything you staged yourself. Afterwards your own index takes the new version of a
+  committed path only where its entry still equalled the old HEAD; where you had staged
+  something different, that stays staged and `pair_done` lists it. A path no index entry knows
+  is added unless git ignores it (`node_modules/`, say); an ignored one, or a removed one git
+  never tracked, is left out and listed. Paths go in as data on stdin, never as arguments, and
+  no shell is involved, so no file name or message can become an option.
+- The gate's commit runs no code from your repository: no hooks (`core.hooksPath=/dev/null`,
+  which also silences the `reference-transaction` hook `update-ref` would run; `commit-tree`
+  runs none), no clean filter, no fsmonitor, no
+  signing program, and the index work runs against an empty work tree, so even the re-check
+  git makes when it writes an index reads no file and runs no filter (an entry it could not
+  confirm is left for your next `git status` to refresh). `pair_done` says "without running git
+  hooks": run your checks yourself after the read-back, or inside `pair_run` before
+  `pair_done`. This is deliberate. A hook, a husky script, a lint-staged config or a filter can
+  run a file in the boundary, and the agent may have just written it; run outside the sandbox
+  before you read the diff, it would be the agent's code with your permissions. For the same
+  reason the gate refuses to commit while git reads config from a file inside the worktree
+  (outside `.git`), such as a tracked file your config includes with `include.path`. git runs
+  with the adapter's environment (your identity and git config, never `pair_run`'s), less the
+  variables that point git at another repository, index or config (`GIT_DIR`,
+  `GIT_WORK_TREE`, `GIT_INDEX_FILE`, `GIT_CONFIG_PARAMETERS` and the like) or name a program
+  for it to run (`GIT_EDITOR`, `GIT_SSH_COMMAND`, `GIT_ASKPASS`, `GIT_EXTERNAL_DIFF`, the
+  pager and gpg variables).
+- The gate does not commit, and says why, when nothing inside the boundary changed, when the
+  change set wrote outside its boundary (the session is stopped), while a merge, rebase,
+  cherry-pick, revert or bisect is in progress, on a detached HEAD, when git reads config from
+  the worktree, or when the read-back bytes already equal HEAD. The change set closes either
+  way. `pair_done` returns the SHA and subject, or the refusal or git's error, and the journal
+  records a `commit`, `commit-refused` or `commit-failed` entry. Nothing is pushed and nothing
+  is amended.
 - `pair_done` returns the diff of the boundary, computed by the gate, and lists the roadmap cards
   still `open` or `not-ready`. Every card, quote, verdict, refusal and diff goes into a journal
   outside the worktree, under `$PAIRED_CODING_STATE_DIR` (default
@@ -851,8 +869,12 @@ target outside the boundary, absolute or relative, a dangling one outside it, an
 `.git`, and every new hard link, whose other name cannot be read. So `npm install` inside a
 card works when `node_modules/` is in the boundary: the links it makes in
 `node_modules/.bin/` point at packages in the same `node_modules/`. Landlock grants no symlink
-creation, so there `npm install` still fails to make them. A later write through such a link
-reaches only the boundary: the kernel fences `pair_run` by the file a path resolves to, and
+creation, so there `npm install` still fails to make them. The gate remembers each link it let
+through, by device and inode with where it resolved, in the session directory, and resolves it
+again whenever a later run's walk meets it: moving a directory re-aims every relative link
+beneath it without touching the link itself, so a remembered link that no longer resolves where
+it did stops the session like a new one. A write through such a link reaches only the boundary
+while it is checked: the kernel fences `pair_run` by the file a path resolves to, and
 `pair_write` and `pair_edit` replace a link rather than write through it (above). Snapshot
 exclusions such as `node_modules` are not searched, except `.pattern-check/`, which a run may
 write and so is walked. This holds under every sandbox.
@@ -1113,7 +1135,9 @@ boundary governs them. `.gitattributes` can select filter and diff drivers, but 
 already defined in a git config, and the repository's own config cannot be written. A
 repository whose config points `core.hooksPath` at a directory in the worktree (husky's
 `.husky/`, for one) runs hooks from there, and `pair_run` can write that directory when it is
-in the boundary; unlike `.git/`, such a write shows in the read-back diff.
+in the boundary; unlike `.git/`, such a write shows in the read-back diff. The gate's own commit
+at `pair_done` runs neither hooks nor filters (see the `.git` points under *The gate*), so
+nothing written there runs until you run git yourself, after the read-back.
 
 **Escaped writers are caught late, and only inside the worktree.** On macOS a process that
 leaves its run's process group survives the reap and keeps the write permission its run had
@@ -1132,8 +1156,8 @@ worktree, inside an excluded directory, or after the final snapshot is not detec
 
 ### 1.7.0
 
-- A card can ask for a commit: `pair_propose`'s `commit: { message }` shows on the card, and at `pair_done` the gate commits the files that changed inside the boundary, and nothing else, with `git commit --only`, outside the sandbox, in a linked worktree too. It refuses during a merge, rebase, cherry-pick, revert or bisect, on a detached HEAD, and when the change set changed the hooks directory git runs; the change set closes either way, and the SHA or the reason is returned and journaled. See the `.git` points under *The gate*.
-- A symlink `pair_run` makes inside an open change set no longer stops the session when its target, resolved physically, stays inside the boundary and outside `.git`, so `npm install` works when `node_modules/` is agreed. Every other link, and every new hard link, still stops it (see *A run that makes a link stops the session*).
+- A card can ask for a commit: `pair_propose`'s `commit: { message }` shows on the card, and at `pair_done` the gate commits the read-back bytes of the files that changed inside the boundary, and nothing else, with plumbing in a temporary index, outside the sandbox, in a linked worktree too. It runs no hooks, filters, fsmonitor or signing program, so the agent's code never runs outside the sandbox before the read-back; the result says "without running git hooks". It refuses during a merge, rebase, cherry-pick, revert or bisect, on a detached HEAD, and while git reads config from a file in the worktree; the change set closes either way, and the SHA or the reason is returned and journaled. A version of a committed path you staged yourself stays staged. See the `.git` points under *The gate*.
+- A symlink `pair_run` makes inside an open change set no longer stops the session when its target, resolved physically, stays inside the boundary and outside `.git`, so `npm install` works when `node_modules/` is agreed. The gate remembers each such link and stops the session if a later run re-aims it, by moving its directory for one. Every other link, and every new hard link, still stops it (see *A run that makes a link stops the session*).
 
 ### 1.6.2
 

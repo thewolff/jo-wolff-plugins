@@ -999,6 +999,20 @@ test("a pair_run that makes a symlink staying inside the boundary (npm's node_mo
   assert.equal((await executeVerb("pair_done", { cardId }, f.ctx)).ok, false);
 });
 
+test("a link accepted in one pair_run and re-aimed by moving its directory in a later one stops the session", { skip: !hasSandbox || BACKEND === "landlock" ? "needs a backend that lets a run make a symlink (Landlock grants none)" : false }, async () => {
+  const f = fixture();
+  mkdirSync(join(f.root, "client", "node_modules", "a", "b"), { recursive: true });
+  writeFileSync(join(f.root, "client", "node_modules", "t"), "t\n");
+  const cardId = await openChangeSet(f, ["client/node_modules/"]);
+  // a/b/l -> ../../../node_modules/t is client/node_modules/t; moved to b/l it is node_modules/t.
+  const made = await executeVerb("pair_run", { command: "ln -s ../../../node_modules/t client/node_modules/a/b/l" }, f.ctx);
+  assert.equal(made.ok, true, made.text);
+  const moved = await executeVerb("pair_run", { command: "mv client/node_modules/a/b client/node_modules/b" }, f.ctx);
+  assert.equal(moved.ok, false);
+  assert.ok(moved.text.includes("STOPPED: pair_run made a link or a .git entry inside the paths it could write (client/node_modules/b/l)"), moved.text);
+  assert.equal((await executeVerb("pair_done", { cardId }, f.ctx)).ok, false);
+});
+
 test("a pair_run that makes no link leaves the session going", { skip: !hasSandbox }, async () => {
   const f = fixture();
   const cardId = await openChangeSet(f, ["src/**"]);

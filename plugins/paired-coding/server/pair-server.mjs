@@ -82,7 +82,7 @@ export const TOOLS = [
         },
         commit: {
           type: "object",
-          description: "Ask the gate to commit at pair_done: it commits the changed files inside the boundary, and nothing else, with this message. Shown on the card, so your partner's agreement covers it. Omit it and nothing is committed.",
+          description: "Ask the gate to commit at pair_done: it commits the read-back bytes of the changed files inside the boundary, and nothing else, with this message, running no git hooks or filters. Shown on the card, so your partner's agreement covers it. Omit it and nothing is committed.",
           properties: { message: str("The commit message; its first line is the subject.") },
           required: ["message"],
           additionalProperties: false,
@@ -98,7 +98,7 @@ export const TOOLS = [
   },
   {
     name: "pair_done",
-    description: "Close the open change set. Kills anything left from its pair_run calls, snapshots the worktree and returns the machine-produced diff of the boundary since pair_begin for the read-back. When the agreed card asked for a commit and something inside the boundary changed, the gate commits those files and returns the commit's SHA and subject, or why it did not commit; the change set closes either way.",
+    description: "Close the open change set. Kills anything left from its pair_run calls, snapshots the worktree and returns the machine-produced diff of the boundary since pair_begin for the read-back. When the agreed card asked for a commit and something inside the boundary changed, the gate commits the read-back bytes of those files, running no git hooks or filters, and returns the commit's SHA and subject, or why it did not commit; the change set closes either way.",
     inputSchema: {
       type: "object",
       properties: {
