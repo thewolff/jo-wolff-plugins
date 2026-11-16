@@ -29,6 +29,16 @@ On Claude Code:
 
 The skill runs as `/coordinator:coordinator`.
 
+On OMP, from a shell:
+
+```
+omp plugin marketplace add thewolff/jo-wolff-plugins
+omp plugin install coordinator@jo-wolff-plugins
+```
+
+On OMP only the skill loads: `.omp-plugin/plugin.json` carries no hooks and the plugin ships no
+OMP extension, so neither the clock line nor the model notice runs there.
+
 ## Hooks
 
 Both hooks add one line to the model's context (`additionalContext`) and never block. They run on
@@ -44,8 +54,15 @@ or a peer's message, and names its own time because a resumed session replays it
 
 The model notice fires only after a switch. Claude Code's SessionStart input carries no model on the
 desktop app or the CLI (measured 2026-11-11), so the starting model stays the first reply's job, as
-the skill's "Model check" says. The hook input carries no effort level at `PostModelSwitch` either,
-so the notice judges the model alone. `PostModelSwitch` needs Claude Code 2.1.251 or later.
+the skill's "Model check" says. When the `PostModelSwitch` input carries `effort.level`, the notice
+also fires on a model that passes if that effort is not exactly `expectedEffort`, and names the
+effort it saw; without it the notice judges the model alone and says the effort is not visible to
+hooks. The hook input carried no effort level when this was written, so today the model decides.
+`PostModelSwitch` needs Claude Code 2.1.251 or later.
+
+The clock line is in the zone the runtime reads. When `TZ` is set to a value `Intl` rejects, the
+runtime reads UTC: the line is in UTC and a `systemMessage` says so, on every prompt while `TZ`
+stays so (`coordinator clock: TZ "<value>" is not a time zone Intl accepts; the clock line is in UTC`).
 
 ## Config
 
@@ -57,7 +74,7 @@ so the notice judges the model alone. `PostModelSwitch` needs Claude Code 2.1.25
 | `folders` | `[]` | absolute paths; the model notice speaks only when the session's `cwd` is one of them or inside one (compared after resolving symlinks) |
 | `expectedModel` | `"claude-opus-5-5"` | the minimum model for coordinator sessions: that model or a later one passes, with or without a `-YYYYMMDD` date or a `[1m]` suffix. Families rank haiku, sonnet, opus, fable, then the version number decides within a family |
 | `modelFamilyRank` | `["haiku","sonnet","opus","fable"]` | model families, lowest first, lowercase names. A newer version of a listed family passes with no change. A family not listed is never judged: no notice, one `skipped.log` line, so a new release stays silent until you add its family here |
-| `expectedEffort` | `"medium"` | the effort named in the notice |
+| `expectedEffort` | `"medium"` | the effort named in the notice; when the hook input carries `effort.level`, any other effort raises the notice too |
 | `clock` | `true` | `false` turns off the clock line |
 
 A file that is not JSON, or has a field of the wrong type, is ignored whole: every field takes its
@@ -90,6 +107,13 @@ cd plugins/coordinator && bash e2e/live-run.sh --no-live
 
 `lib/hook-runner.mjs` and `lib/live-run.mjs` are byte copies of plugin-kit's; copy them again
 rather than editing them here.
+
+## Changes in 0.2.1
+
+Docs only. The model notice is described as the code has it since 0.2.0: it reads `effort.level`
+when the hook input carries one and fires when that differs from `expectedEffort`. The README
+documents the UTC fallback for a `TZ` that `Intl` rejects, and has an OMP install line (the skill
+only; the hooks are Claude Code only). See [CHANGELOG.md](CHANGELOG.md).
 
 ## Changes in 0.2.0
 

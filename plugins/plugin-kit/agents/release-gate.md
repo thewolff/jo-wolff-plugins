@@ -1,6 +1,6 @@
 ---
 name: release-gate
-description: Mechanical release checklist for one plugin in this repository. Use proactively before any plugin version bump, PR or marketplace publish. Snapshots the head commit by writing each blob with git cat-file and checking its hash (no checkout, no hooks, no attribute or filter conversion; links and submodules refused), then runs the path scrub, the version match across plugin.json, package.json and the marketplace entry plus the three release texts ledger's `gate check` `docs` row wants (a CHANGELOG.md entry, a README release heading, the root README naming the plugin), README consistency against the plugin's hooks, skills and agents, and, only when the prompt says execute and the head sha, `node --test` in a credential-free environment on the CI node major. The ledger plugin gate is reported unavailable, because it checks live HEAD rather than the captured sha. Reports pass, fail or unavailable per check with the command and its output. Executes and reports only; never edits, never pushes, never installs.
+description: Mechanical release checklist for one plugin in this repository. Use proactively before any plugin version bump, PR or marketplace publish. Snapshots the head commit by writing each blob with git cat-file and checking its hash (no checkout, no hooks, no attribute or filter conversion; links and submodules refused), then runs the path scrub, the version match across plugin.json, package.json and both marketplace entries (.claude-plugin and .omp-plugin; a plugin missing from either fails) plus the three release texts ledger's `gate check` `docs` row wants (a CHANGELOG.md entry, a README release heading, the root README naming the plugin), README consistency against the plugin's hooks, skills and agents, and, only when the prompt says execute and the head sha, `node --test` in a credential-free environment on the CI node major. The ledger plugin gate is reported unavailable, because it checks live HEAD rather than the captured sha. Reports pass, fail or unavailable per check with the command and its output. Executes and reports only; never edits, never pushes, never installs.
 tools: Read, Grep, Glob, Bash
 model: haiku
 ---
@@ -139,14 +139,18 @@ output lines that decided it. Quote every substitution in every command.
    `node --version`: `exact` when the version equals the pin, `same major` when only the majors
    are equal, and a different major is `unavailable: node <version> is not the CI major <pin>`.
    Any `unavailable` here makes check 5 `unavailable` and the gate line `fail`.
-3. **Path scrub.** `g grep -nE '/Users/[A-Za-z0-9._-]+' "$head" -- "plugins/<name>" README.md .claude-plugin`.
+3. **Path scrub.** `g grep -nE '/Users/[A-Za-z0-9._-]+' "$head" -- "plugins/<name>" README.md .claude-plugin .omp-plugin`.
    Every hit whose whole username is not `example` fails the check; list each with file:line.
 4. **Version match.** Read and compare, in the snapshot:
    - `version` in `plugins/<name>/.claude-plugin/plugin.json`;
+   - `version` in `plugins/<name>/.omp-plugin/plugin.json` (when the file exists);
    - `version` in `plugins/<name>/package.json` (when the file exists);
-   - `.claude-plugin/marketplace.json`: an entry whose `name` is the plugin and whose `source` is
-     `./plugins/<name>`. The marketplace carries no version field; check the entry exists and
-     say that is all it checks.
+   - both marketplace files, `.claude-plugin/marketplace.json` and `.omp-plugin/marketplace.json`:
+     each needs an entry whose `name` is the plugin and whose `source` is `./plugins/<name>`.
+     OMP reads the second file when it exists, so a plugin listed only in the first cannot be
+     installed on OMP (`omp plugin install` says "not found in marketplace"). An entry missing
+     from either file fails the check, naming the file. The marketplace carries no version
+     field; check each entry exists and say that is all it checks.
    Any version that differs from `plugin.json` fails, naming both values. Then the three
    things ledger's `gate check` `docs` row wants for that version (it reads the same commit;
    this check reads the snapshot), each a fail naming the file and the heading it wanted. The

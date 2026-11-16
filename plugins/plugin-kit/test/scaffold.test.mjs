@@ -148,6 +148,27 @@ test("refusals: an existing directory, a bad name, an unknown event, no events; 
   assert.deepEqual(readdirSync(d).sort(), ["second", "taken"]);
 });
 
+// OMP reads .omp-plugin/marketplace.json in preference to .claude-plugin/marketplace.json, so a
+// plugin listed only in the Claude Code file fails `omp plugin install` with "not found in
+// marketplace" (the repository README, "Adding a plugin", step 3). Every place the kit tells the
+// author about the marketplace entry names both files.
+const CATALOGS = [".claude-plugin/marketplace.json", ".omp-plugin/marketplace.json"];
+
+test("both marketplace files: the CLI's next-step line, the scaffolder's header, the new-plugin skill and the template README name the OMP catalog beside the Claude Code one", () => {
+  const d = dest();
+  const cli = spawnSync(process.execPath, [SCRIPT, "two-catalogs", "--events", "Stop", "--dest", d], { encoding: "utf8" });
+  assert.equal(cli.status, 0, cli.stderr);
+  const next = cli.stdout.slice(cli.stdout.indexOf("\nnext: "));
+  for (const file of CATALOGS) assert.ok(next.includes(`\`${file}\``), `the next-step line names ${file}: ${next}`);
+  const header = readFileSync(SCRIPT, "utf8").split("\nimport ")[0];
+  for (const file of CATALOGS) assert.ok(header.includes(file), `the scaffolder's header comment names ${file}`);
+  const skill = readFileSync(join(KIT_ROOT, "skills", "new-plugin", "SKILL.md"), "utf8");
+  for (const file of CATALOGS) assert.ok(skill.includes(`\`${file}\``), `the new-plugin skill names ${file}`);
+  const readme = readFileSync(join(d, "two-catalogs", "README.md"), "utf8");
+  assert.ok(readme.includes("omp plugin install two-catalogs@jo-wolff-plugins"), "the scaffolded README has the OMP install line");
+  assert.ok(readme.includes("/plugin install two-catalogs@jo-wolff-plugins"), "and keeps the Claude Code one");
+});
+
 test("--judge: the scaffold also gets lib/judge.mjs, the kit's copy byte for byte; without the flag there is none", () => {
   const d = dest();
   assert.equal(parseArgs(["fine", "--events", "Stop", "--dest", d]).judge, false);
