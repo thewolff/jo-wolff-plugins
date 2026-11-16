@@ -154,7 +154,7 @@ both its events (`test/hook-contract.test.mjs` runs every hooks.json entry).
 | `install` finds a pre-0.4.3 plist at `<state>/launchd/` | removed only after `plutil -lint` ran and passed (kept when the lint fails or plutil is missing, and install says the move is not finished); the printed command follows `launchctl print` alone (`&&` pair when loaded, `;` pair when no answer, bootstrap alone when not loaded), so a repeated install or a failed removal still gets the pair | `test/launchd.test.mjs` |
 | `install` with `HOME` unset, relative or absent | exit 1, nothing written: install never guesses whose `~/Library/LaunchAgents` to write | `test/launchd.test.mjs` |
 | `~/Library/LaunchAgents` or the plist is a symlink, not yours, or the directory is group/world writable | exit 1 naming the path, nothing written or truncated; the plist is replaced by rename from an O_EXCL temporary file, 0644 under any umask | `test/launchd.test.mjs` |
-| node, the CLI or ctx (or its real target, or a directory above either) is someone else's or writable by others | exit 1 naming the path and why, nothing written | `test/launchd.test.mjs` (untrustedReason) |
+| node, the CLI or ctx, or any entry on the way to it (a symlink included, the last one too), is someone else's, or a directory on the way lets others replace its entries | exit 1 naming the entry and why, nothing written; a symlink someone else owns in sticky `/tmp` is refused even when it points at a trusted file | `test/launchd.test.mjs` (untrustedReason) |
 
 Not exercised: a real `launchctl bootstrap` (the sandbox cannot, and the person runs it); a real
 `osascript` dialog (never opened by a test), so how long a real GUI failure takes is unmeasured,

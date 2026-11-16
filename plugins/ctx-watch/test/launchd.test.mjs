@@ -320,8 +320,9 @@ test("0.4.3 install prints the command from launchctl's answer, not from whether
   }
 });
 
-test("0.4.3 untrustedReason: an executable, its real target, and every directory above both must be yours or root's and writable by no one else", () => {
-  const root = mkdtempSync(join(tmpdir(), "ctx-watch-trust-"));
+test("0.4.3 untrustedReason: an executable, every entry on the way to it, and every directory it is reached through must be yours or root's and writable by no one else", () => {
+  // The real path, so messages name what the walk meets (on macOS /var is a symlink to /private/var).
+  const root = realpathSync(mkdtempSync(join(tmpdir(), "ctx-watch-trust-")));
   try {
     const bin = join(root, "bin");
     mkdirSync(bin);
@@ -331,15 +332,14 @@ test("0.4.3 untrustedReason: an executable, its real target, and every directory
     writeFileSync(tool, "#!/bin/sh\n");
     chmodSync(tool, 0o755);
     assert.equal(untrustedReason(tool), null, "a 0755 file of yours in 0755 directories of yours");
-    const real = realpathSync(tool);
-    const named = real === tool ? tool : `${tool} (real path ${real})`; // macOS: /var is /private/var
+    const named = tool;
 
     chmodSync(tool, 0o777);
     assert.equal(untrustedReason(tool), `${named} is writable by every user`);
     chmodSync(tool, 0o775);
-    const gid = (g) => (p) => (p === real ? statWith(statSync(p), { gid: g }) : statSync(p));
-    assert.equal(untrustedReason(tool, { stat: gid(20) }), `${named} is writable by group 20`);
-    assert.equal(untrustedReason(tool, { stat: gid(80) }), null, "group admin: its members can already act as root");
+    const gid = (g) => (p) => (p === tool ? statWith(lstatSync(p), { gid: g }) : lstatSync(p));
+    assert.equal(untrustedReason(tool, { lstat: gid(20) }), `${named} is writable by group 20`);
+    assert.equal(untrustedReason(tool, { lstat: gid(80) }), null, "group admin: its members can already act as root");
     chmodSync(tool, 0o755);
 
     chmodSync(bin, 0o777);
@@ -353,7 +353,7 @@ test("0.4.3 untrustedReason: an executable, its real target, and every directory
     symlinkSync(tool, link);
     assert.equal(untrustedReason(link), `${open} (above ${link}) is writable by every user`, "a symlink anyone can swap, to a safe target");
 
-    assert.equal(untrustedReason(tool, { owner: ME + 1 }), `${bin} (above ${tool}) is owned by uid ${ME}, not you (${ME + 1}) or root`);
+    assert.match(untrustedReason(tool, { owner: ME + 1 }), new RegExp(`^/\\S* \\(above ${rx(tool)}\\) is owned by uid ${ME}, not you \\(${ME + 1}\\) or root$`), "the first of your directories on the way");
     assert.match(untrustedReason(join(bin, "absent")), /cannot be resolved \(ENOENT\)$/);
 
     // Wired into install: refused before anything is written.
@@ -364,6 +364,31 @@ test("0.4.3 untrustedReason: an executable, its real target, and every directory
     assert.equal(r.text, `ctx-watch install: node at ${tool} is not safe for a login job to run: ${named} is writable by every user`);
     assert.equal(existsSync(join(env.HOME, "Library")), false, "nothing written");
   } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("0.4.3 untrustedReason: a symlink someone else owns in sticky /tmp is refused even when it points at a trusted file (Codex, PR #130 round 2); yours there is fine", () => {
+  // /tmp is root's, world-writable and sticky: anyone can add an entry, only its owner can
+  // retarget it. A stat-based check followed the link, saw two trusted chains, and passed.
+  const root = realpathSync(mkdtempSync(join(tmpdir(), "ctx-watch-trust-")));
+  const link = join("/tmp", `ctx-watch-attacker-link-${process.pid}-${Date.now()}`);
+  try {
+    chmodSync(root, 0o755);
+    const tool = join(root, "node");
+    writeFileSync(tool, "#!/bin/sh\n");
+    chmodSync(tool, 0o755);
+    assert.equal(untrustedReason(tool), null, "the target alone is trusted");
+    symlinkSync(tool, link);
+    assert.equal(untrustedReason(link), null, "your own link in sticky /tmp: only you can retarget it");
+
+    const ATTACKER = ME + 1000;
+    const lstat = (p) => (p === link || p === join(realpathSync("/tmp"), link.slice("/tmp/".length)) ? statWith(lstatSync(p), { uid: ATTACKER }) : lstatSync(p));
+    const reason = untrustedReason(link, { lstat });
+    assert.ok(reason !== null, "the attacker's link is inspected and refused");
+    assert.match(reason, new RegExp(`symlink owned by uid ${ATTACKER}, not you \\(${ME}\\) or root$`));
+  } finally {
+    rmSync(link, { force: true });
     rmSync(root, { recursive: true, force: true });
   }
 });

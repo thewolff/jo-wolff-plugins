@@ -38,7 +38,8 @@
 //   timerHealth({ env, stateDir, uid, check, exists }) the SessionStart check of the timer:
 //       when a plist is installed, whether launchd has the job and whether the script it runs
 //       still exists (a plugin update removes the versioned directory the plist names).
-//   untrustedReason(p, { owner }) why an executable is not safe for a login job to run, or null.
+//   untrustedReason(p, { owner }) why an executable is not safe for a login job to run, or null:
+//       a walk from / with lstat, checking every entry on the way, each symlink included.
 //   writeAgentPlist(file, text, { owner }) the checked, rename-into-place write of the plist.
 //   reachProbe({ uid, check, tmp }) `{ ok, missing, detail, label, loaded, plistRemoved }`: whether this shell can write to
 //       gui/<uid> (bootstrap and bootout a throwaway LaunchAgent running /usr/bin/true and never
@@ -56,7 +57,7 @@
 // person pastes into zsh, and a state directory with a space in it is a legal one.
 
 import { spawnSync } from "node:child_process";
-import { accessSync, chmodSync, closeSync, constants, existsSync, fchmodSync, lstatSync, mkdirSync, mkdtempSync, openSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, statSync, unlinkSync, writeFileSync, writeSync } from "node:fs";
+import { accessSync, chmodSync, closeSync, constants, existsSync, fchmodSync, lstatSync, mkdirSync, mkdtempSync, openSync, readdirSync, readFileSync, readlinkSync, renameSync, rmSync, statSync, unlinkSync, writeFileSync, writeSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { dirname, isAbsolute, join, resolve } from "node:path";
 import { randomBytes } from "node:crypto";
@@ -127,40 +128,84 @@ export function resolveCtx(path, { name = "ctx", exists = executable } = {}) {
 /** Groups whose members can already act as root (wheel, admin): group-writable for them adds no one. */
 const ROOT_EQUIVALENT_GIDS = new Set([0, 80]);
 
+/** The most symlinks untrustedReason follows for one path (the kernel's own MAXSYMLINKS is 32). */
+const MAX_LINK_HOPS = 32;
+
 /**
  * Why a path is not safe for a job running as `owner` to execute, or null. The timer runs node,
- * the CLI and ctx as that user at every login, so whoever can replace any of them, or rename a
- * directory above them, runs code as that user. Checked: the directories above the path as
- * given (who can swap a symlink there) and the path's real target with every directory above it.
- * Each must be owned by `owner` or root, and writable by no one else: not by every user (unless
- * a sticky directory such as /tmp, where only an entry's owner may rename it, and the entry is
- * checked in turn), and by its group only when that group is wheel or admin. `stat` and `real`
+ * the CLI and ctx as that user at every login, so whoever can replace any of them, or any entry
+ * on the way to them, runs code as that user. The path is walked one component at a time from /
+ * with `lstat`, never `stat`, so every symlink is itself an entry on the way:
+ *   - every entry (directory, symlink, the file) must be owned by `owner` or root;
+ *   - every directory walked through must let no one else replace its entries: writable by every
+ *     user only when sticky (/tmp: then only an entry's owner, checked above, may rename or
+ *     remove it), by its group only when sticky or the group is wheel or admin (whose members
+ *     can already act as root);
+ *   - a symlink is followed by walking its target from / (or from its directory), so the
+ *     target's own directories are checked too;
+ *   - the file at the end must be writable by no one else (group wheel or admin aside).
+ * Codex, PR #130 round 2: an attacker's symlink directly in sticky /tmp pointing at a trusted
+ * node passed a `stat`-based check and could be retargeted afterwards. `lstat` and `readlink`
  * are injectable.
  */
-export function untrustedReason(p, { owner = process.getuid?.() ?? 501, stat = statSync, real = realpathSync } = {}) {
-  let target;
-  try {
-    target = real(p);
-  } catch (err) {
-    return `${p} cannot be resolved (${err.code ?? err.message})`;
-  }
-  const chain = (start, self) => {
-    for (let cur = start; ; cur = dirname(cur)) {
-      let s;
-      try {
-        s = stat(cur);
-      } catch (err) {
-        return `${cur} cannot be read (${err.code ?? err.message})`;
-      }
-      const where = cur === target ? (target === p ? p : `${p} (real path ${target})`) : `${cur} (above ${p})`;
-      if (s.uid !== owner && s.uid !== 0) return `${where} is owned by uid ${s.uid}, not you (${owner}) or root`;
-      const sticky = !(self && cur === start) && s.isDirectory() && (s.mode & 0o1000) !== 0;
-      if ((s.mode & 0o002) !== 0 && !sticky) return `${where} is writable by every user`;
-      if ((s.mode & 0o020) !== 0 && !sticky && !ROOT_EQUIVALENT_GIDS.has(s.gid)) return `${where} is writable by group ${s.gid}`;
-      if (cur === dirname(cur)) return null;
+export function untrustedReason(p, { owner = process.getuid?.() ?? 501, lstat = lstatSync, readlink = readlinkSync } = {}) {
+  const given = resolve(p);
+  let parts = given.split("/").filter(Boolean);
+  let dir = "/";
+  let hops = 0;
+  const mine = (s) => s.uid === owner || s.uid === 0;
+  const othersMayReplace = (s) => {
+    const sticky = (s.mode & 0o1000) !== 0;
+    if ((s.mode & 0o002) !== 0 && !sticky) return "every user";
+    if ((s.mode & 0o020) !== 0 && !sticky && !ROOT_EQUIVALENT_GIDS.has(s.gid)) return `group ${s.gid}`;
+    return null;
+  };
+  const stat = (at) => {
+    try {
+      return lstat(at);
+    } catch (err) {
+      throw new Error(`${given} cannot be resolved (${err.code ?? err.message})`);
     }
   };
-  return chain(dirname(p), false) ?? chain(target, true);
+  try {
+    const root = stat("/");
+    if (!mine(root)) return `/ is owned by uid ${root.uid}, not you (${owner}) or root`;
+    if (othersMayReplace(root)) return `/ is writable by ${othersMayReplace(root)}`;
+    while (parts.length) {
+      const at = join(dir, parts.shift());
+      const s = stat(at);
+      const last = parts.length === 0;
+      if (s.isSymbolicLink()) {
+        const where = at === given ? given : `${at} (a symlink on the way to ${given})`;
+        if (!mine(s)) return `${where} is a symlink owned by uid ${s.uid}, not you (${owner}) or root`;
+        if (++hops > MAX_LINK_HOPS) return `${given} has more than ${MAX_LINK_HOPS} symlinks on the way (a loop?)`;
+        let to;
+        try {
+          to = readlink(at);
+        } catch (err) {
+          return `${given} cannot be resolved (${err.code ?? err.message})`;
+        }
+        // Walk the target from /: its own directories are entries on the way too.
+        parts = [...resolve(dir, to).split("/").filter(Boolean), ...parts];
+        dir = "/";
+        continue;
+      }
+      const where = last ? (at === given ? given : `${given} (real path ${at})`) : `${at} (above ${given})`;
+      if (!mine(s)) return `${where} is owned by uid ${s.uid}, not you (${owner}) or root`;
+      if (last && !s.isDirectory()) {
+        if ((s.mode & 0o002) !== 0) return `${where} is writable by every user`;
+        if ((s.mode & 0o020) !== 0 && !ROOT_EQUIVALENT_GIDS.has(s.gid)) return `${where} is writable by group ${s.gid}`;
+        return null;
+      }
+      if (!s.isDirectory()) return `${where} is not a directory`;
+      const who = othersMayReplace(s);
+      if (who) return `${where} is writable by ${who}`;
+      dir = at;
+    }
+    return null;
+  } catch (err) {
+    return err.message;
+  }
 }
 
 /**

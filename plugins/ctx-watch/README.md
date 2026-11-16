@@ -430,10 +430,14 @@ and refuses with the reason, writing nothing:
   and writable by no one else; an existing plist must be a regular file of yours, not a symlink.
   The plist is written to a new temporary file in that directory and renamed into place, mode
   0644 whatever the umask. A directory install creates is set to 0755.
-- node, this script and ctx, their real targets, and every directory above them must be owned
-  by you or root and writable by no one else: not by every user (except a sticky directory such
-  as `/tmp`), and by their group only when it is wheel or admin, whose members can already act
-  as root (Homebrew's `/opt/homebrew` is group admin).
+- node, this script and ctx: every entry on the way to each, walked from `/` without following
+  anything unchecked, must be owned by you or root. Each symlink met, the last one included, is
+  checked itself and then followed. Every directory walked through must let no one else replace
+  its entries: writable by every user only when sticky (`/tmp`, where only an entry's owner can
+  rename it), by its group only when sticky or the group is wheel or admin, whose members can
+  already act as root (Homebrew's `/opt/homebrew` is group admin). The file itself must be
+  writable by no one else. So a symlink in `/tmp` that someone else owns is refused even when it
+  points at a good node.
 - `HOME` must be set, absolute, and exist: install never guesses whose LaunchAgents to write.
 
 **The timer and the popup.** `install` writes

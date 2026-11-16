@@ -25,9 +25,13 @@ reloads a person's agents at login only from `~/Library/LaunchAgents`.
   symlink, not yours, or writable by group or others, or when an existing plist is a symlink or
   not yours (`writeAgentPlist`). The plist goes to an exclusive temporary file and is renamed
   into place, 0644 whatever the umask.
-- `install` refuses node, the CLI or ctx when the file, its real target, or a directory above
-  either is owned by someone other than you or root, or writable by others (every user outside
-  a sticky directory, or a group other than wheel or admin) (`untrustedReason`).
+- `install` refuses node, the CLI or ctx unless every entry on the way to it is owned by you or
+  root: the path is walked from / with `lstat`, so each symlink met (the last one included) is
+  itself checked and then followed. Every directory walked through must let no one else replace
+  its entries: writable by every user only when sticky (`/tmp`), by its group only when sticky
+  or the group is wheel or admin; the file must be writable by no one else
+  (`untrustedReason`). A symlink someone else owns in `/tmp` pointing at a trusted node is
+  refused (Codex, review round 2: a `stat`-based check followed it and passed).
 - `uninstall` prints the `rm` of the plist as well as the bootout: a plist left in
   LaunchAgents is loaded again at the next login.
 - `repair` restores a timer it paused from the plist `launchctl print` said the job came from,
