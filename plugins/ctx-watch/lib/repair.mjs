@@ -113,10 +113,11 @@ class Stop extends Error {
 /**
  * Run the repair. Resolves to `{ code, text }`. Deps: `run` (runCtx shape), `check`
  * (launchd.mjs runCheck shape, for launchctl, `defaults` and `locale`), `uid`, `exists` (ctx's
- * config path), `sleep(ms)` (may return a promise), `ctx`, `stateDir` (where the timer's plist
- * lives), `now`, `signals` (false: do not install SIGINT/SIGTERM/SIGHUP handlers).
+ * config path), `sleep(ms)` (may return a promise), `ctx`, `now`, `signals` (false: do not
+ * install SIGINT/SIGTERM/SIGHUP handlers). The timer is restored from the plist `launchctl print`
+ * named when it still exists, else from `$HOME/Library/LaunchAgents` (launchd.mjs plistPath).
  */
-export async function repair({ env: shellEnv = process.env, run = runCtx, check = runCheck, uid = process.getuid?.() ?? 501, exists = existsSync, sleep = sleepAsync, ctx = CTX, stateDir, now = Date.now, signals = true } = {}) {
+export async function repair({ env: shellEnv = process.env, run = runCtx, check = runCheck, uid = process.getuid?.() ?? 501, exists = existsSync, sleep = sleepAsync, ctx = CTX, now = Date.now, signals = true } = {}) {
   const lang = resolveLang({ env: shellEnv, check });
   const env = lang.value ? { ...shellEnv, LANG: lang.value } : shellEnv;
   const e = ctxEnv(env);
@@ -262,7 +263,10 @@ export async function repair({ env: shellEnv = process.env, run = runCtx, check 
     if (timer.paused) {
       let r;
       try {
-        r = check("launchctl", ["bootstrap", `gui/${uid}`, plistPath(env, LABEL, stateDir)]);
+        // The plist launchd had the job from, when it still exists (a 0.4.2 job paused before its
+        // person ran install's pair); else the LaunchAgents one install writes.
+        const from = l.plist && existsSync(l.plist) ? l.plist : plistPath(env, LABEL);
+        r = check("launchctl", ["bootstrap", `gui/${uid}`, from]);
       } catch (err) {
         r = { code: null, output: `${err?.message ?? err}` };
       }

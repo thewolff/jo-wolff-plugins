@@ -1,7 +1,7 @@
 {
   "name": "ctx-watch",
   "description": "Notice when the ctx daemon is dead, unsupervised or stale or its index is not ready, repair it and say so in a macOS popup; on Claude Code also say so at session start and mid-session to the agent, and warn when a resumed session skips ctx.",
-  "version": "0.4.2",
+  "version": "0.4.3",
   "author": { "name": "Jo Wolff" },
   "license": "MIT",
   "repository": "https://github.com/thewolff/jo-wolff-plugins",
@@ -12,6 +12,7 @@
     { "path": "$XDG_STATE_HOME/ctx-watch/resume", "retentionDays": 30, "prune": "node \"${CLAUDE_PLUGIN_ROOT}/scripts/ctx-watch.mjs\" prune --days 30" },
     { "path": "$XDG_STATE_HOME/ctx-watch/sessions", "retentionDays": 30, "prune": "node \"${CLAUDE_PLUGIN_ROOT}/scripts/ctx-watch.mjs\" prune --days 30" },
     { "path": "~/.claude/ctx-watch.json", "kind": "file", "retentionDays": null, "prune": null },
-    { "path": "~/.claude/.ctx-watch-off", "kind": "file", "retentionDays": null, "prune": null }
+    { "path": "~/.claude/.ctx-watch-off", "kind": "file", "retentionDays": null, "prune": null },
+    { "path": "~/Library/LaunchAgents/com.jo-wolff-plugins.ctx-watch.plist", "kind": "file", "retentionDays": null, "prune": null }
   ]
 }

@@ -49,6 +49,7 @@ function fakeCtx(statuses) {
 function box() {
   const root = mkdtempSync(join(tmpdir(), "ctx-watch-cli-"));
   const env = { XDG_STATE_HOME: join(root, "state"), HOME: join(root, "home"), PATH: "/Users/example/.local/bin:/usr/bin:/bin" };
+  mkdirSync(env.HOME, { recursive: true });
   return { root, env, release: () => rmSync(root, { recursive: true, force: true }) };
 }
 const shownPopup = async () => ({ started: true, detail: "popup started (test)" });
@@ -427,7 +428,7 @@ test("tick --state-dir: the timer's pinned directory is the state file, not the 
     // Installed from a shell with XDG_STATE_HOME; launchd runs the tick with no XDG_STATE_HOME and another HOME.
     const installEnv = b.env;
     const check = (bin) => (bin === "plutil" ? { missing: false, code: 0, output: "OK" } : { missing: false, code: 113, output: "" });
-    const inst = await main(["install"], { env: installEnv, check, node: "/Users/example/bin/node", uid: 501, ctxExists });
+    const inst = await main(["install"], { env: installEnv, check, node: "/Users/example/bin/node", uid: 501, ctxExists, trust: () => null });
     assert.equal(inst.code, 0, inst.text);
     const plist = readFileSync(inst.file, "utf8");
     const pinnedDir = /<string>--state-dir<\/string>\s*<string>([^<]+)<\/string>/.exec(plist)[1];
@@ -449,9 +450,9 @@ test("install writes the plist, records the interval in the state file, and prin
   const b = box();
   try {
     const check = (bin) => (bin === "plutil" ? { missing: false, code: 0, output: "OK" } : { missing: false, code: 113, output: "" });
-    const r = await main(["install", "--interval", "120"], { env: b.env, check, node: "/Users/example/bin/node", uid: 501, cwd: "/Users/example", ctxExists });
+    const r = await main(["install", "--interval", "120"], { env: b.env, check, node: "/Users/example/bin/node", uid: 501, cwd: "/Users/example", ctxExists, trust: () => null });
     assert.equal(r.code, 0, r.text);
-    assert.equal(r.file, join(b.env.XDG_STATE_HOME, "ctx-watch", "launchd", `${LABEL}.plist`));
+    assert.equal(r.file, join(b.env.HOME, "Library", "LaunchAgents", `${LABEL}.plist`), "0.4.3: where login loads it");
     const text = readFileSync(r.file, "utf8");
     assert.match(text, /<integer>120<\/integer>/);
     assert.match(text, new RegExp(`<string>${CLI_PATH}</string>`), "the plist names this script by its absolute path");
@@ -467,6 +468,9 @@ test("install writes the plist, records the interval in the state file, and prin
     const st2 = await main(["status"], { env: b.env, now: () => NOW, check: () => ({ missing: false, code: 0, output: "state = waiting\nlast exit code = 0\n" }), uid: 501 });
     assert.match(st2.text, /\nlast tick: \d{4}-.*Z \(overdue: more than 240 s ago\)\nlast probe: fail: the ctx daemon is not running .* at \d{4}-.*Z \| heal: `ctx index mode auto --format json`: .*\nepisode: strike \[daemon\] \(strikes 1\)\n/);
     assert.match(st2.text, new RegExp(`\\nlaunchd: launchd has ${LABEL} \\(state = waiting, last exit code = 0\\)$`));
+    const old = join(b.env.XDG_STATE_HOME, "ctx-watch", "launchd", `${LABEL}.plist`);
+    const st3 = await main(["status"], { env: b.env, now: () => NOW, check: () => ({ missing: false, code: 0, output: `\tpath = ${old}\n\tstate = waiting\n` }), uid: 501 });
+    assert.ok(st3.text.endsWith(`\nlaunchd: launchd has ${LABEL} (state = waiting); loaded from ${old}, which login does not load (run \`install\` and the pair it prints)`), st3.text);
 
     const un = await main(["uninstall"], { env: b.env, uid: 501 });
     assert.match(un.text, new RegExp(`^To stop the timer, run:\\n  launchctl bootout gui/501/${LABEL}\\n`));

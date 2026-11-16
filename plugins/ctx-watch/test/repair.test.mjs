@@ -188,6 +188,59 @@ test("7. repair: a stuck quiescing upgrade with a dead, stale owner is released 
   }
 });
 
+/**
+ * The timer's restore source (0.4.3): launchd reports the job's plist (`path =`); repair puts the
+ * timer back from that file while it exists, else from ~/Library/LaunchAgents. The double refuses
+ * (launchctl's 5) a bootstrap of any other path, or of a file that does not exist.
+ */
+function restoreDouble(b, { reported, expected }) {
+  const lc = fakeLaunchctl({ jobQuery: { missing: false, code: 0, output: `gui/501/com.jo-wolff-plugins.ctx-watch = {\n\tpath = ${reported}\n\tstate = not running\n}\n` } });
+  const boots = [];
+  const inner = lc.check;
+  lc.check = (bin, args) => {
+    if (bin === "launchctl" && args[0] === "bootstrap" && !isProbe(String(args[2]).split("/").at(-1).replace(/\.plist$/, ""))) {
+      boots.push(args[2]);
+      if (args[2] !== expected || !existsSync(args[2])) return { missing: false, code: 5, output: `Bootstrap failed: 5: unexpected plist ${args[2]}` };
+    }
+    return inner(bin, args);
+  };
+  return { lc, boots };
+}
+
+test("0.4.3 repair restores the timer from the plist launchd reported while it exists, else from ~/Library/LaunchAgents, also when the repair itself fails", async () => {
+  const b = box();
+  try {
+    const legacy = join(b.env.XDG_STATE_HOME, "ctx-watch", "launchd", "com.jo-wolff-plugins.ctx-watch.plist");
+    const agent = join(b.env.HOME, "Library", "LaunchAgents", "com.jo-wolff-plugins.ctx-watch.plist");
+    mkdirSync(dirname(legacy), { recursive: true });
+    writeFileSync(legacy, "<plist/>");
+    mkdirSync(dirname(agent), { recursive: true });
+    writeFileSync(agent, "<plist/>");
+
+    writeHandoff(b.env, { pid: deadPid(), ageMs: 40 * MIN });
+    const fromLegacy = restoreDouble(b, { reported: legacy, expected: legacy });
+    const j1 = parse(await repair(b, fakeCtx({ upgrade: "quiescing" }), fromLegacy.lc));
+    assert.deepEqual(fromLegacy.boots, [legacy], "the file launchd had the job from");
+    assert.deepEqual(j1.timer, { wasLoaded: true, paused: true, restored: true });
+
+    writeHandoff(b.env, { pid: deadPid(), ageMs: 40 * MIN });
+    const failing = restoreDouble(b, { reported: legacy, expected: legacy });
+    const r2 = await repair(b, fakeCtx({ upgrade: "quiescing", fail: "index mode auto" }), failing.lc);
+    assert.notEqual(r2.code, 0, r2.text);
+    assert.deepEqual(failing.boots, [legacy], "a failed repair still restores from the reported file");
+    assert.equal(parse(r2).timer.restored, true);
+
+    rmSync(legacy);
+    writeHandoff(b.env, { pid: deadPid(), ageMs: 40 * MIN });
+    const fallback = restoreDouble(b, { reported: legacy, expected: agent });
+    const j3 = parse(await repair(b, fakeCtx({ upgrade: "quiescing" }), fallback.lc));
+    assert.deepEqual(fallback.boots, [agent], "the reported file is gone: the LaunchAgents plist");
+    assert.equal(j3.timer.restored, true);
+  } finally {
+    b.release();
+  }
+});
+
 test("7. repair refuses while the handoff owner is alive: nothing changed, timer untouched, non-zero exit naming the pid", async () => {
   const b = box();
   try {

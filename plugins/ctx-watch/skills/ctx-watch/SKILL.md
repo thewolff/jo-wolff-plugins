@@ -36,10 +36,13 @@ consulting history`.
    minutes and the person's own Terminal shows its progress. Until it is ready, `ctx search`
    still answers, lexically (`semantic_status: unavailable` in its JSON): say so instead of
    calling history unavailable.
-4. If the line was `ctx-watch: timer has not run since …`, run
+4. If the line was `ctx-watch: timer has not run since …`, `ctx-watch: timer not in launchd
+   gui/<uid>` or `ctx-watch: timer's script no longer exists`, run
    `node "${CLAUDE_PLUGIN_ROOT}/scripts/ctx-watch.mjs" install` and hand the person the printed
-   `launchctl bootstrap gui/<uid> <plist>` line to run from a GUI login Terminal. Never run
-   `launchctl bootstrap` yourself; the timer belongs to their login session.
+   `launchctl bootstrap gui/<uid> <plist>` line (or the bootout + bootstrap pair, when install
+   prints one) to run from a GUI login Terminal. Never run `launchctl bootstrap` yourself; the
+   timer belongs to their login session. The plist goes to `~/Library/LaunchAgents`, where
+   login loads it again after a reboot.
 5. `node "${CLAUDE_PLUGIN_ROOT}/scripts/ctx-watch.mjs" status` shows the last tick, the episode
    (`up`, `strike`, `down`, with the last popup shown, pending, or not shown), the plist path, and whether
    launchd has the job, for a report. `prune` (same script) rotates the logs under

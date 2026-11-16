@@ -28,12 +28,16 @@
 //                            upgrade, releases a stuck `quiescing` one, heals, verifies, pausing
 //                            and restoring the timer. JSON first line, summary last; exit 0
 //                            repaired or healthy, 1 failed, 3 refused.
-//   install [--interval 300] write <state>/launchd/com.jo-wolff-plugins.ctx-watch.plist, lint it,
-//                            print the `launchctl bootstrap` line. Never bootstraps. The plist
+//   install [--interval 300] write ~/Library/LaunchAgents/com.jo-wolff-plugins.ctx-watch.plist
+//                            (where login loads it again after a reboot), lint it, print the
+//                            `launchctl bootstrap` line; a plist left at the pre-0.4.3 path
+//                            <state>/launchd/ is removed and the bootout + bootstrap pair printed.
+//                            Never bootstraps. The plist
 //                            pins this script, the state directory and the ctx executable, and
 //                            carries LANG (or, without one, the LANG ctx recorded, else one from
 //                            AppleLocale) and ctx's other launch-environment names.
-//   uninstall                print the `launchctl bootout` line. Removes nothing.
+//   uninstall                print the `launchctl bootout` line and the `rm` that keeps login
+//                            from loading the plist again. Removes nothing.
 //   status                   the last probe, the episode, and whether launchd has the job.
 //   prune [--days 30]        rotate the logs, remove rotated logs older than --days and stray
 //                            state temp files; `pruned: <n> file(s), <bytes> bytes freed` last.
@@ -57,6 +61,9 @@ import { rotateLogs, prune, DEFAULT_RETENTION_DAYS } from "../lib/retention.mjs"
 import { repair } from "../lib/repair.mjs";
 
 export const CLI_PATH = fileURLToPath(import.meta.url);
+
+/** status's launchd line: loaded()'s detail, and where a loaded job came from when that is not `file` (login loads only `file`). */
+const launchdStatus = (l, file) => (l.loaded === true && l.plist && l.plist !== file ? `${l.detail}; loaded from ${l.plist}, which login does not load (run \`install\` and the pair it prints)` : l.detail);
 
 export const HELP = `ctx-watch: notice when the ctx daemon is dead, unsupervised, or stale, its upgrade is stuck, or its semantic index is not ready.
 
@@ -101,7 +108,7 @@ export function parseArgs(argv) {
 }
 
 export async function main(argv, deps = {}) {
-  const { env = process.env, now = Date.now, run, exists, popup = showPopup, check: checkBin, node, uid, cwd = process.cwd(), cliPath = CLI_PATH, timeoutMs, ctxExists, lockWaitMs = LOCK_WAIT_MS, sleep, daemonAlive } = deps;
+  const { env = process.env, now = Date.now, run, exists, popup = showPopup, check: checkBin, node, uid, cwd = process.cwd(), cliPath = CLI_PATH, timeoutMs, ctxExists, trust, lockWaitMs = LOCK_WAIT_MS, sleep, daemonAlive } = deps;
   let verb;
   let opts;
   try {
@@ -124,7 +131,7 @@ export async function main(argv, deps = {}) {
       return { code: 0, text: needsYouLine(result) ?? "" };
     }
     case "repair": {
-      const r = repair({ env, run, check: checkBin, uid, exists, sleep, ctx, stateDir: dir, now });
+      const r = repair({ env, run, check: checkBin, uid, exists, sleep, ctx, now });
       return r;
     }
     case "tick": {
@@ -187,7 +194,7 @@ export async function main(argv, deps = {}) {
     }
     case "install": {
       const interval = opts.interval === undefined ? 300 : Number(opts.interval);
-      const r = install({ env, interval, cliPath, node, uid, check: checkBin, cwd, stateDir: dir, ctx: opts.ctx, exists: ctxExists });
+      const r = install({ env, interval, cliPath, node, uid, check: checkBin, cwd, stateDir: dir, ctx: opts.ctx, exists: ctxExists, ...(trust ? { trust } : {}) });
       if (r.code === 0) {
         const rec = withStateLock(dir, () => writeState(file, { ...readState(file), intervalS: interval }) || writeState.lastError, { waitMs: lockWaitMs });
         const err = !rec.ok ? rec.error : rec.value === true ? null : rec.value;
@@ -196,7 +203,7 @@ export async function main(argv, deps = {}) {
       return r;
     }
     case "uninstall":
-      return uninstall({ env, uid, stateDir: dir });
+      return uninstall({ env, uid });
     case "status": {
       const read = readState(file);
       const state = popupSettled(read, read.popupPending ? readOutcome(outcomePath(dir, read.popupPending.token)) : null, now()).state;
@@ -215,8 +222,8 @@ export async function main(argv, deps = {}) {
         `last tick: ${iso(state.lastTickAt)}${t.overdue ? ` (overdue: more than ${2 * t.intervalS} s ago)` : ""}`,
         `last probe: ${state.lastProbe ? `${state.lastProbe.ok ? "pass" : `fail: ${state.lastProbe.reason}`} at ${iso(state.lastProbe.at)}${state.lastProbe.healed ? ` | heal: ${state.lastProbe.healed}` : ""}` : "never"}`,
         `episode: ${state.episode}${state.episodeKind ? ` [${state.episodeKind}]` : ""} (strikes ${state.strikes}${state.downSince ? `, down since ${iso(state.downSince)}` : ""}${state.slowSince ? `, slow since ${iso(state.slowSince)}` : ""}${popupLine})`,
-        `plist: ${plistPath(env, undefined, dir)}${state.intervalS ? ` (every ${state.intervalS} s)` : " (not written by install yet)"}`,
-        `launchd: ${loaded({ uid, check: checkBin }).detail}`,
+        `plist: ${plistPath(env)}${state.intervalS ? ` (every ${state.intervalS} s)` : " (not written by install yet)"}`,
+        `launchd: ${launchdStatus(loaded({ uid, check: checkBin }), plistPath(env))}`,
       ];
       return { code: 0, text: lines.join("\n") };
     }

@@ -43,6 +43,8 @@ const MODE = readFileSync(join(FIX_DIR, "ctx-index-mode.txt"), "utf8");
 const UPGRADE = JSON.parse(readFileSync(join(FIX_DIR, "ctx-upgrade-status.txt"), "utf8"));
 const good = (stdout) => ({ code: 0, stdout, stderr: "" });
 const MIN = 60_000;
+/** install's trust check for made-up node, CLI and ctx paths (test/launchd.test.mjs tests the real one). */
+const TRUST_ALL = () => null;
 
 /**
  * The upgrade fixture with `.state.status` and `.state.last_attempt_at` changed and automatic
@@ -326,7 +328,7 @@ test("4. install carries LANG and ctx's other launch-environment names into the 
   try {
     const env = { ...b.env, PATH: "/Users/example/.local/bin:/usr/bin:/bin", LANG: "en_US.UTF-8", LC_ALL: "en_US.UTF-8", TMPDIR: "/var/folders/xx/T/", CTX_UPGRADE_AUTO: "off", CI: "true", CTX_SEMANTIC_EMBEDDING_TOKEN: "secret", UNRELATED: "x" };
     const check = (bin) => (bin === "plutil" ? { missing: false, code: 0, output: "OK" } : { missing: false, code: 113, output: "" });
-    const r = launchd.install({ env, cliPath: "/Users/example/plugins/ctx-watch/scripts/ctx-watch.mjs", node: "/usr/local/bin/node", uid: 501, check, stateDir: join(b.root, "s"), exists: (p) => p === "/Users/example/.local/bin/ctx" });
+    const r = launchd.install({ trust: TRUST_ALL, env, cliPath: "/Users/example/plugins/ctx-watch/scripts/ctx-watch.mjs", node: "/usr/local/bin/node", uid: 501, check, stateDir: join(b.root, "s"), exists: (p) => p === "/Users/example/.local/bin/ctx" });
     assert.equal(r.code, 0, r.text);
     const text = readFileSync(r.file, "utf8");
     assert.match(text, /<key>LANG<\/key>\s*<string>en_US\.UTF-8<\/string>/);
@@ -347,7 +349,7 @@ test("4. install from a shell without LANG, with nothing recorded and no AppleLo
   try {
     const env = { HOME: b.env.HOME, XDG_STATE_HOME: b.env.XDG_STATE_HOME, PATH: "/Users/example/.local/bin:/usr/bin:/bin" };
     const check = (bin) => (bin === "plutil" ? { missing: false, code: 0, output: "OK" } : { missing: false, code: 113, output: "" });
-    const r = launchd.install({ env, cliPath: "/Users/example/plugins/ctx-watch/scripts/ctx-watch.mjs", node: "/usr/local/bin/node", uid: 501, check, stateDir: join(b.root, "s"), exists: (p) => p === "/Users/example/.local/bin/ctx" });
+    const r = launchd.install({ trust: TRUST_ALL, env, cliPath: "/Users/example/plugins/ctx-watch/scripts/ctx-watch.mjs", node: "/usr/local/bin/node", uid: 501, check, stateDir: join(b.root, "s"), exists: (p) => p === "/Users/example/.local/bin/ctx" });
     assert.equal(r.code, 0);
     assert.match(r.text, /LANG is not set/);
     assert.match(r.text, /environment_invalid/);
@@ -378,7 +380,7 @@ test("4. install without LANG (a Claude Desktop shell) carries the LANG ctx reco
     const file = join(b.env.HOME, ".ctx", "daemon", "supervisor-environment.json");
     mkdirSync(dirname(file), { recursive: true });
     writeFileSync(file, JSON.stringify({ schema_version: 1, environment: [{ name: "HOME", value: "/Users/example" }, { name: "LANG", value: "de_DE.UTF-8" }] }));
-    const r = launchd.install({ env, cliPath: "/Users/example/plugins/ctx-watch/scripts/ctx-watch.mjs", node: "/usr/local/bin/node", uid: 501, check: installCheck("en_GB"), stateDir: join(b.root, "s"), exists: (p) => p === "/Users/example/.local/bin/ctx" });
+    const r = launchd.install({ trust: TRUST_ALL, env, cliPath: "/Users/example/plugins/ctx-watch/scripts/ctx-watch.mjs", node: "/usr/local/bin/node", uid: 501, check: installCheck("en_GB"), stateDir: join(b.root, "s"), exists: (p) => p === "/Users/example/.local/bin/ctx" });
     assert.equal(r.code, 0, r.text);
     assert.match(readFileSync(r.file, "utf8"), /<key>LANG<\/key>\s*<string>de_DE\.UTF-8<\/string>/);
     assert.match(r.text, /LANG is not set in this shell; the plist carries LANG=de_DE\.UTF-8 from .*supervisor-environment\.json/);
@@ -392,7 +394,7 @@ test("4. install without LANG and nothing recorded derives LANG from AppleLocale
   const b = box();
   try {
     const env = { HOME: b.env.HOME, XDG_STATE_HOME: b.env.XDG_STATE_HOME, PATH: "/Users/example/.local/bin:/usr/bin:/bin" };
-    const r = launchd.install({ env, cliPath: "/Users/example/plugins/ctx-watch/scripts/ctx-watch.mjs", node: "/usr/local/bin/node", uid: 501, check: installCheck("en_GB@rg=gbzzzz"), stateDir: join(b.root, "s"), exists: (p) => p === "/Users/example/.local/bin/ctx" });
+    const r = launchd.install({ trust: TRUST_ALL, env, cliPath: "/Users/example/plugins/ctx-watch/scripts/ctx-watch.mjs", node: "/usr/local/bin/node", uid: 501, check: installCheck("en_GB@rg=gbzzzz"), stateDir: join(b.root, "s"), exists: (p) => p === "/Users/example/.local/bin/ctx" });
     assert.equal(r.code, 0, r.text);
     assert.match(readFileSync(r.file, "utf8"), /<key>LANG<\/key>\s*<string>en_GB\.UTF-8<\/string>/);
     assert.match(r.text, /LANG=en_GB\.UTF-8 from AppleLocale/);
@@ -668,7 +670,7 @@ test("R1.6 install from a shell without LANG whose only candidate is unusable (A
   const b = box();
   try {
     const env = { HOME: b.env.HOME, XDG_STATE_HOME: b.env.XDG_STATE_HOME, PATH: "/Users/example/.local/bin:/usr/bin:/bin" };
-    const r = launchd.install({ env, cliPath: "/Users/example/plugins/ctx-watch/scripts/ctx-watch.mjs", node: "/usr/local/bin/node", uid: 501, check: installCheck("en_DE"), stateDir: join(b.root, "s"), exists: (p) => p === "/Users/example/.local/bin/ctx" });
+    const r = launchd.install({ trust: TRUST_ALL, env, cliPath: "/Users/example/plugins/ctx-watch/scripts/ctx-watch.mjs", node: "/usr/local/bin/node", uid: 501, check: installCheck("en_DE"), stateDir: join(b.root, "s"), exists: (p) => p === "/Users/example/.local/bin/ctx" });
     assert.equal(r.code, 0, r.text);
     assert.doesNotMatch(readFileSync(r.file, "utf8"), /<key>LANG<\/key>/);
     assert.match(r.text, /skipped en_DE\.UTF-8 \(AppleLocale\)/);
