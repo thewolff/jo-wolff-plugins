@@ -123,7 +123,8 @@ export function scaffold({ name, events, description, dest, judge = false }) {
   };
   const tpl = (rel) => readFileSync(join(TEMPLATES, rel), "utf8");
   vars.scenario = `evals/${kebab(events[0])}.scenario.json`;
-  put(".claude-plugin/plugin.json", fill(tpl(".claude-plugin/plugin.json"), vars));
+  // Not templates/.claude-plugin/plugin.json: claude.ai refuses a plugin with a nested one.
+  put(".claude-plugin/plugin.json", fill(tpl("plugin.json.template"), vars));
   put("package.json", fill(tpl("package.json"), vars));
   put("README.md", fill(tpl("README.md"), { ...vars, description }));
   put("CHANGELOG.md", fill(tpl("CHANGELOG.md"), { ...vars, description }));
