@@ -43,6 +43,18 @@ and makes `repair` test that it can load a LaunchAgent before it pauses the time
 /plugin install ctx-watch@jo-wolff-plugins
 ```
 
+On OMP, from a shell:
+
+```
+omp plugin marketplace add thewolff/jo-wolff-plugins
+omp plugin install ctx-watch@jo-wolff-plugins
+```
+
+ctx-watch ships no OMP extension, so OMP runs none of its hooks: no SessionStart line, no
+mid-session note on a prompt or a failed ctx call, and no Stop check. The skill, the CLI and the
+launchd timer below work the same on both; `<plugin dir>` is wherever the host installed the
+plugin.
+
 Then the timer, once, from your own Terminal (a GUI login session, which is where launchd's
 `gui/<uid>` domain lives; ctx's own bootstrap failed from somewhere else):
 
@@ -696,6 +708,12 @@ From the timer not coming back after the 2026-11-12 reboot (four days without a 
 - `status` says when launchd loaded the job from a plist other than the LaunchAgents one.
   `repair` restores a paused timer from the plist launchd had it from, else the LaunchAgents
   one. `uninstall` prints the `rm` too.
+
+## Changes in 0.4.2
+
+Docs only. *Install* has the OMP install lines and says what runs there: the skill, the CLI and
+the launchd timer, and none of the hooks. The description, now the same in both catalogs, says
+the session notes and the resume warning are Claude Code only. See [CHANGELOG.md](CHANGELOG.md).
 
 ## Changes in 0.4.1
 

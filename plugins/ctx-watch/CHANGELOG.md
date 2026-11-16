@@ -39,6 +39,18 @@ reloads a person's agents at login only from `~/Library/LaunchAgents`.
   When this line fires, the dead-man's line is not repeated.
 - `runCheck(bin, args, { timeoutMs })`: the bound is an option; the default stays 10 s.
 
+## [0.4.2] - 2026-11-12
+
+### Changed
+
+- README, Install: an OMP install block, and what runs there: the skill, the CLI and the timer;
+  none of the hooks, because ctx-watch ships no OMP extension. Docs only; no code changed.
+- The description, the same in `plugin.json`, `package.json`, both marketplace catalogs and the
+  repository README, says which notices are Claude Code only: the macOS popup and repair work on
+  both hosts, the session-start and mid-session notes and the resume warning only on Claude
+  Code. The OMP catalog had fallen behind the others, and the shared wording promised hooks OMP
+  never runs.
+
 ## [0.4.1] - 2026-11-12
 
 On 2026-11-12 three 0.4.0 timer ticks failed as "ctx could not run" while the ctx daemon was

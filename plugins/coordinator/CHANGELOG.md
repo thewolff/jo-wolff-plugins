@@ -3,6 +3,20 @@
 All notable changes to coordinator are recorded here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## 0.2.1 - 2026-11-12
+
+### Changed
+
+- README: the model notice reads `effort.level` when the `PostModelSwitch` input carries one and
+  fires on a passing model whose effort is not `expectedEffort`
+  (`lib/model-notice.mjs` `decide`); the README said it judged the model alone, and the 0.2.0
+  entry below said "Model-only". The `expectedEffort` config row says the same.
+- README and HOW-IT-FAILS: a `TZ` that `Intl` rejects gives the clock line in UTC plus a
+  `systemMessage` naming the zone. This came in after the 0.2.0 docs, with "diagnose a rejected
+  TZ", and was not written down.
+- README: an OMP install line. On OMP only the skill loads; the hooks are Claude Code only.
+- The 0.2.0 entry's config key list names `modelFamilyRank`.
+
 ## 0.2.0 - 2026-11-11
 
 ### Added
@@ -15,7 +29,7 @@ All notable changes to coordinator are recorded here. The format follows
   sonnet, opus, fable, then major and minor version within a family. The family order is the `modelFamilyRank` config key; a family not in it is not judged. Model-only: the hook input carries no effort level. `expectedModel`
   may carry a `[1m]` suffix or a date; both sides are normalised before the match.
 - `lib/config.mjs` and `${XDG_CONFIG_HOME:-~/.config}/coordinator/config.json` (`off`, `folders`,
-  `expectedModel`, `expectedEffort`, `clock`), the state directory with `scripts/prune.mjs`, eight
+  `expectedModel`, `modelFamilyRank`, `expectedEffort`, `clock`), the state directory with `scripts/prune.mjs`, eight
   scenarios under `evals/`, `e2e/live-run.sh`, and `HOW-IT-FAILS.md`.
 - The clock hook names an unwritable state directory in a `systemMessage` (and one `errors.log`
   line when the log can still be appended to); an unreadable config file is a fault, not a silent
