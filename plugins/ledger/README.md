@@ -865,6 +865,11 @@ Tests use a sandboxed `HOME`, `XDG_*` and `LEDGER_*` so they never touch your le
 
 ## Changes
 
+### 0.4.4
+
+- The review skill's description no longer contains angle brackets ("git diff from the base to
+  HEAD"): claude.ai stores a skill description with them removed. The skill is unchanged.
+
 ### 0.4.2
 
 - The PR-creation review check gates on the commit the PR actually opens: `--head` is

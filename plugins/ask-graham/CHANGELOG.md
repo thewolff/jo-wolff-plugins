@@ -4,6 +4,15 @@ All notable changes to the ask-graham plugin are recorded here. The format follo
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Earlier releases are described under
 "Release notes" in [README.md](README.md#release-notes).
 
+## 0.8.3 - 2026-11-16
+
+### Changed
+
+- The skill's frontmatter `description` says "`structure-check` followed by the new structure"
+  instead of a bracketed placeholder: claude.ai stores a skill description with angle brackets
+  removed ("SKILL.md description cannot contain XML tags"), so it read differently there than
+  in Claude Code. The skill body and `argument-hint` are unchanged.
+
 ## 0.8.2 - 2026-11-04
 
 ### Changed

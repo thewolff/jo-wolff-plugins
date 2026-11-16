@@ -4,6 +4,15 @@ All notable changes to ledger are recorded here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Entries before 0.2.1 are the
 "Changes" section of the README (one line per version).
 
+## 0.4.4 - 2026-11-16
+
+### Changed
+
+- The review skill's frontmatter `description` says "git diff from the base to HEAD" instead
+  of a bracketed placeholder: claude.ai stores a skill description with angle brackets removed
+  ("SKILL.md description cannot contain XML tags"), so it read differently there than in
+  Claude Code. The skill body and `argument-hint` are unchanged.
+
 ## 0.4.2 - 2026-11-12
 
 ### Fixed
