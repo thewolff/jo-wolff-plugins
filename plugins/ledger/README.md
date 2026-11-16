@@ -887,6 +887,11 @@ Tests use a sandboxed `HOME`, `XDG_*` and `LEDGER_*` so they never touch your le
 
 ## Changes
 
+### 0.4.4
+
+- The review skill's description no longer contains angle brackets ("git diff from the base to
+  HEAD"): claude.ai stores a skill description with them removed. The skill is unchanged.
+
 ### 0.4.3
 
 Docs only. The README covers 0.4.0's owed work: six forced rules with their off switches (the

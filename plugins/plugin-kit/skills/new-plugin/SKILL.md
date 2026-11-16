@@ -73,7 +73,8 @@ so a copy that drifts fails the kit's tests until it is copied again.
   installed where `CLAUDE_PLUGIN_ROOT` points. Tell the person; the templates are in
   `plugins/plugin-kit/templates/` in the repository and can be copied by hand with `{{name}}`
   and the per-hook `{{event}}`, `{{file}}`, `{{quiet}}` filled in, the runner from
-  `plugins/plugin-kit/lib/hook-runner.mjs`.
+  `plugins/plugin-kit/lib/hook-runner.mjs`. `templates/plugin.json.template` goes to the new
+  plugin's `.claude-plugin/plugin.json`, and a `.template` suffix is dropped.
 - `node --test` in the new plugin fails on `hook-contract.test.mjs` after you wrote the rule: the
   failing line names the hook and the fault input; the handler is denying or throwing on a fault
   instead of allowing. Treat the missing input as "no rule applies" and return null.

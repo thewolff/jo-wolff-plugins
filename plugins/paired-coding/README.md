@@ -497,7 +497,7 @@ How it works:
   removes that one token by name, so a lock someone else took in the meantime is untouched.
   A lock whose holder is still running (or whose token names no pid) is never taken over:
   after 10 seconds the wait fails, naming the holder's pid and the recovery command,
-  `node <plugin>/bin/pair.mjs unlock --stale <lock directory>` (prefixed with
+  `node <plugin>/scripts/pair.mjs unlock --stale <lock directory>` (prefixed with
   `PAIRED_CODING_STATE_DIR=<base>` when that is set). A token naming the waiting process
   itself is a nested lock attempt, which can never succeed: the lock is not reentrant, and
   the error says so instead of naming a recovery command. See **Lock recovery** below.
@@ -548,7 +548,7 @@ How it works:
 
 ## Lock recovery
 
-`node <plugin>/bin/pair.mjs unlock --stale [--force] <lock directory>` clears a lock a
+`node <plugin>/scripts/pair.mjs unlock --stale [--force] <lock directory>` clears a lock a
 crashed holder left behind. Run it with the same `PAIRED_CODING_STATE_DIR` the sessions use.
 
 - **What it acts on.** The lock path is resolved (its directory's real path, plus its own
@@ -1092,6 +1092,10 @@ not prevented. Snapshots cover the worktree only and leave out `.git`, so a writ
 worktree, inside an excluded directory, or after the final snapshot is not detected.
 
 ## Changes
+
+### 1.6.2
+
+- The lock recovery command moved from `bin/pair.mjs` to `scripts/pair.mjs` (see *Lock recovery*): claude.ai-hosted plugins may not ship a top-level `bin/`, and claude.ai refused to ingest the plugin while it had one. The command itself is unchanged.
 
 ### 1.6.1
 
