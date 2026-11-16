@@ -887,7 +887,7 @@ Tests use a sandboxed `HOME`, `XDG_*` and `LEDGER_*` so they never touch your le
 
 ## Changes
 
-### 0.4.2
+### 0.4.3
 
 Docs only. The README covers 0.4.0's owed work: six forced rules with their off switches (the
 owed rule and the offer rule are new), the `owe`, `start`, `drop`, `done` and `wait` verbs and
@@ -895,6 +895,12 @@ owed rule and the offer rule are new), the `owe`, `start`, `drop`, `done` and `w
 do with owed work. The offer rule's reverse match names its 20-character floor. *Install* has the
 OMP install lines: the skills and the CLI work there, the hooks are Claude Code only. See
 [CHANGELOG.md](CHANGELOG.md).
+
+### 0.4.2
+
+- The PR-creation review check gates on the commit the PR actually opens: `--head` is
+  resolved at `refs/heads/<branch>` on its remote, other options' values are skipped, attached
+  `-Hx` / `-H=x` forms are read, and a repeated `--head` checks every branch named.
 
 ### 0.4.1
 

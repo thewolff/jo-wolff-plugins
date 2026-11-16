@@ -4,7 +4,7 @@ All notable changes to ledger are recorded here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Entries before 0.2.1 are the
 "Changes" section of the README (one line per version).
 
-## [0.4.2] - 2026-11-12
+## [0.4.3] - 2026-11-16
 
 ### Changed
 
@@ -22,6 +22,18 @@ All notable changes to ledger are recorded here. The format follows
     offer's text only when it is at least 20 characters (`OFFER_MATCH_FLOOR`).
   - *Install* has the OMP install lines and says the skills and the CLI work there while the
     hooks are Claude Code only; it said the whole plugin was Claude Code only.
+
+## 0.4.2 - 2026-11-12
+
+### Fixed
+
+- The PR-creation review check (`gh pr create`) now checks the branch named by `--head`
+  at `refs/heads/<branch>` on the branch's remote (`branch.<head>.remote`, else origin),
+  not the branch's upstream merge ref, so a PR is gated on the commit it actually opens.
+- `--head` parsing skips the values of other options and stops at `--`, so a value such as
+  `--body '--head=x'` no longer counts as a head. Attached short forms (`-Hx`, `-H=x`) are
+  read. A repeated `--head` checks every local branch it names, even beside a head containing
+  `:` (a fork head); only when every head is a fork head is the call allowed with a notice.
 
 ## 0.4.1 - 2026-11-12
 
