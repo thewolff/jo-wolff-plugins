@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // pair.mjs — commands a person runs by hand, outside any session.
 //
-//   node bin/pair.mjs unlock --stale [--force] <lock directory>
+//   node scripts/pair.mjs unlock --stale [--force] <lock directory>
 //
 // unlock --stale is the recovery a lock refusal names (lib/host-io.mjs withLock). It acts only
 // on a lock paired-coding makes inside the state base ($PAIRED_CODING_STATE_DIR, else

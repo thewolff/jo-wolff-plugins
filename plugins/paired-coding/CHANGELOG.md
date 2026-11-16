@@ -5,6 +5,12 @@ All notable changes to paired-coding are recorded here. The format follows
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html). Releases before 1.4.0 are not
 listed.
 
+## 1.6.2 - 2026-11-16
+
+### Changed
+
+- The lock recovery command moved from `bin/pair.mjs` to `scripts/pair.mjs`: claude.ai-hosted plugins may not ship a top-level `bin/` (it is added to PATH on the CLI but not shown on the admin approval surface), and claude.ai refused to ingest the plugin while it had one. A lock refusal names the new path; run `node <plugin>/scripts/pair.mjs unlock --stale [--force] <lock directory>`. The command itself is unchanged.
+
 ## 1.6.1 - 2026-11-04
 
 ### Changed
