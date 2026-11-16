@@ -20,6 +20,16 @@
 // timer's downSince when the timer has declared it and null when only this hook's own probe saw
 // it, so the mid-session hook does not repeat it, adopts the timer's episode when it is declared,
 // and still says when ctx is back; a latch it cannot write is one errors.log line.
+// Then the timer itself (0.4.3, launchd.mjs timerHealth): when a plist exists at
+// ~/Library/LaunchAgents or the pre-0.4.3 <state>/launchd/, one `launchctl print gui/<uid>/<label>`
+// bounded at HOOK_LAUNCHCTL_MS and by what is left of the check's clock. launchctl's 113 (no
+// such service) → `ctx-watch: timer not in launchd gui/<uid>; fix: …install…`; loaded but the
+// script its arguments name is gone (a plugin update removed the versioned directory) →
+// `ctx-watch: timer's script no longer exists; fix: …`. At most 160 characters: the whole
+// `node <cli> install` when it fits, else the verb, and the whole command in the agent's context.
+// A print that fails any other way, times out, or has no time left says nothing; no plist at
+// either path asks launchd nothing (the dead-man's line covers a timer never installed). When
+// this line is said, the dead-man's line below is not: it would be the same news.
 // Then the dead-man's line: when the launchd tick has not stamped <state>/state.json in more than
 // twice its interval (or, never ticked, since this hook first ran), `ctx-watch: timer has not run
 // since <time>; run \`node <cli> install\` and the printed launchctl line` (as long as the
@@ -57,7 +67,8 @@ import { readState, writeState, statePath, timerOverdue, withStateLock, failureK
 import { isResume, markResumed } from "../lib/consult-history.mjs";
 import { noteTold } from "../lib/mid-session.mjs";
 import { dirname } from "node:path";
-import { shellQuote } from "../lib/launchd.mjs";
+import { existsSync } from "node:fs";
+import { runCheck, shellQuote, timerHealth } from "../lib/launchd.mjs";
 import { CLI_PATH } from "../scripts/ctx-watch.mjs";
 
 /** Per-spawn bound inside the hook (read-only spawns only: the hook never heals). */
@@ -66,6 +77,8 @@ export const HOOK_SPAWN_MS = 1_200;
 export const HOOK_DEADLINE_MS = 3_000;
 /** How long the first-seen stamp waits for a tick holding the state lock (the runner's 4 s leaves room). */
 export const HOOK_LOCK_WAIT_MS = 200;
+/** The most the hook gives `launchctl print` for the timer, further capped by what is left of HOOK_DEADLINE_MS. */
+export const HOOK_LAUNCHCTL_MS = 500;
 /** The longest reason the agent's block quotes. */
 const CONTEXT_REASON_MAX = 240;
 
@@ -77,6 +90,25 @@ export function timerLine(since, cliPath = CLI_PATH) {
 /** The line for a state file the hook could not stamp: without it the dead-man's switch cannot work. */
 export function stampLine(file, err) {
   return `ctx-watch: state not written to ${file}: ${err?.message ?? err}`.slice(0, LINE_MAX);
+}
+
+/**
+ * The line for a timer launchd does not have, or whose script is gone (launchd.mjs timerHealth),
+ * at most LINE_MAX characters: the whole install command when it fits, else the verb, with the
+ * whole command in the agent's context (timerContext). A cut path is not a command.
+ */
+export function timerHealthLine(health, cliPath = CLI_PATH) {
+  const cmd = `\`node ${shellQuote(cliPath)} install\``;
+  for (const line of [`ctx-watch: ${health.reason}; fix: ${cmd} and the launchctl line it prints`, `ctx-watch: ${health.reason}; fix: ${cmd}`]) if (line.length <= LINE_MAX) return line;
+  return `ctx-watch: ${health.reason}; fix: run ctx-watch's \`install\`, then the launchctl line it prints (the agent has the command)`.slice(0, LINE_MAX);
+}
+
+/** The agent's block for the same: what is wrong, the whole install command, and that the bootstrap is the person's. */
+export function timerContext(health, cliPath = CLI_PATH) {
+  return [
+    `ctx-watch: the launchd timer that watches ctx is not working: ${health.reason} (${health.detail}). Until it is, nothing notices when ctx goes down between sessions.`,
+    `Fix: run \`node ${shellQuote(cliPath)} install\` (it writes and lints ~/Library/LaunchAgents/com.jo-wolff-plugins.ctx-watch.plist and never loads it), then hand the person the launchctl line it prints, to run from their own Terminal. Do not run \`launchctl bootstrap\` yourself.`,
+  ].join("\n");
 }
 
 /**
@@ -123,16 +155,22 @@ export function agentContext(result, since, cliPath = CLI_PATH) {
  * @param {object} input  the host's JSON for this event
  * @returns {object|null}  { systemMessage, hookSpecificOutput? } or null for "nothing to say"
  */
-export function handle(input, { env = process.env, now = Date.now, run, exists, daemonAlive, cliPath = CLI_PATH, timeoutMs = HOOK_SPAWN_MS, deadlineMs = HOOK_DEADLINE_MS } = {}) {
+export function handle(input, { env = process.env, now = Date.now, run, exists, daemonAlive, cliPath = CLI_PATH, timeoutMs = HOOK_SPAWN_MS, deadlineMs = HOOK_DEADLINE_MS, launchctl = runCheck, fileExists = existsSync, uid = process.getuid?.() ?? 501 } = {}) {
   const lines = [];
   const file = statePath(env);
   if (isResume(input.source) && typeof input.session_id === "string" && input.session_id.trim()) {
     const err = markResumed(dirname(file), input.session_id.trim(), now());
     if (err) logError("ctx-watch", "SessionStart", `resume marker for ${input.session_id.trim()} not written (${err.message}); consult-history will not check this resume`, env);
   }
+  const started = now();
   const result = check({ env, now, run, exists, daemonAlive, timeoutMs, deadlineMs, heal: false, ctx: typeof env.CTX_WATCH_CTX === "string" && env.CTX_WATCH_CTX ? env.CTX_WATCH_CTX : CTX });
   // Slow is not down: the person gets no line for it, as the timer gives no popup.
   if (!result.ok && result.slow !== true) lines.push(needsYouLine(result));
+  // The timer itself: one `launchctl print`, inside what is left of the check's clock; a print
+  // with no time left, or killed at its bound, is no answer and says nothing.
+  const left = Math.min(HOOK_LAUNCHCTL_MS, deadlineMs - (now() - started));
+  const health = left > 0 ? timerHealth({ env, stateDir: dirname(file), uid, check: (bin, args) => launchctl(bin, args, { timeoutMs: left }), exists: fileExists }) : { ok: null };
+  if (health.ok === false) lines.push(timerHealthLine(health, cliPath));
   const state = readState(file);
   const at = now();
   if (state.lastTickAt === null && state.firstSeenAt === null) {
@@ -151,11 +189,13 @@ export function handle(input, { env = process.env, now = Date.now, run, exists, 
     }
   }
   const t = timerOverdue(state, at);
-  if (t.overdue) lines.push(timerLine(t.since, cliPath));
+  // A timer launchd does not have, or that runs a missing script, is why it is overdue: one line.
+  if (t.overdue && health.ok !== false) lines.push(timerLine(t.since, cliPath));
   if (!lines.length) return null;
-  const context = agentContext(result, (state.episode === "down" ? state.downSince : null) ?? result.at ?? at, cliPath);
+  const ctxContext = agentContext(result, (state.episode === "down" ? state.downSince : null) ?? result.at ?? at, cliPath);
+  const context = [ctxContext, health.ok === false ? timerContext(health, cliPath) : null].filter(Boolean).join("\n") || null;
   const id = typeof input.session_id === "string" ? input.session_id.trim() : "";
-  if (context && id && result.upgrading !== true) {
+  if (ctxContext && id && result.upgrading !== true) {
     const err = noteTold(dirname(file), id, { down: state.episode === "down" && state.episodeKind !== "semantic" ? state.downSince : null, toldAt: at });
     if (err) logError("ctx-watch", "SessionStart", `mid-session latch for ${id} not written (${err.message}); the first prompt will repeat this`, env);
   }

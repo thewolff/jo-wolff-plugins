@@ -12,7 +12,7 @@
 //   resume/<session id>               the SessionStart hook's resume marker, consumed by the next Stop
 //   sessions/<session id>.json        the mid-session hook's latch (what this session was told), a few bytes
 //   sessions/<session id>.json.lock   held for a few file operations by a hook claiming that latch
-//   launchd/<label>.plist             the timer (kept: the person bootstrapped it)
+//   launchd/<label>.plist             the timer until 0.4.3 (kept; install moves it to ~/Library/LaunchAgents)
 //   launchd/<label>.out.log           launchd appends every tick's summary line here
 //   launchd/<label>.err.log           and anything the tick printed on stderr
 //

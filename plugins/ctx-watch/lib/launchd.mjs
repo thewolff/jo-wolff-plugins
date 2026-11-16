@@ -4,11 +4,18 @@
 // 2026-10-28 with "Bootstrap failed: 5: Input/output error").
 //
 //   install({ env, interval, cliPath, node, uid, check, ctx })
-//       writes <state>/launchd/com.jo-wolff-plugins.ctx-watch.plist (StartInterval <interval> s,
-//       RunAtLoad, `node <cli> tick --state-dir <state> --ctx <ctx>`, logs beside it), runs
-//       `plutil -lint`, asks `launchctl print` whether the job is loaded, prints the bootstrap
-//       line. Every path in the plist is absolute: launchd runs the job from / with an
-//       environment of its own, so the plist carries
+//       writes $HOME/Library/LaunchAgents/com.jo-wolff-plugins.ctx-watch.plist (StartInterval
+//       <interval> s, RunAtLoad, `node <cli> tick --state-dir <state> --ctx <ctx>`, logs in
+//       <state>/launchd/), runs `plutil -lint`, asks `launchctl print` whether the job is loaded,
+//       prints the bootstrap line. LaunchAgents because launchd loads a person's agents from
+//       there, and only there, at login: until 0.4.3 the plist lived in <state>/launchd/, so a
+//       job bootstrapped from it was gone after the 2026-11-12 reboot and nothing said so for
+//       four days. A plist still at that old path is removed only after `plutil -lint` passed
+//       on the new one; the printed command follows `launchctl print` (loaded: bootout &&
+//       bootstrap; not loaded: bootstrap; no answer: bootout ; bootstrap). Before writing,
+//       node, the CLI and ctx must pass untrustedReason, and the plist is written by
+//       writeAgentPlist (no symlinks, yours, 0644). Every path in the plist is absolute:
+//       launchd runs the job from / with an environment of its own, so the plist carries
 //         --state-dir   the state directory this install resolved (XDG_STATE_HOME or HOME), so
 //                       the timer and the SessionStart hook read and write one state.json even
 //                       when XDG_STATE_HOME was set only in the installing shell;
@@ -24,8 +31,16 @@
 //                       LANG (one launchd started, such as Claude Desktop's) gets resolveLang's
 //                       fallback: the LANG ctx recorded, else one derived from AppleLocale;
 //       and never `CI` or CTX_SEMANTIC_EMBEDDING_TOKEN.
-//   uninstall({ env, uid })   prints the bootout line (and removes nothing).
-//   loaded({ uid, check })    `{ loaded: true|false|null, detail }` from `launchctl print`.
+//   uninstall({ env, uid })   prints the bootout line and the `rm` that keeps login from loading
+//       it again (and removes nothing).
+//   loaded({ uid, check })    `{ loaded: true|false|null, detail, plist?, args? }` from
+//       `launchctl print` (plist and args: the loaded job's `path` and `arguments`, when shown).
+//   timerHealth({ env, stateDir, uid, check, exists }) the SessionStart check of the timer:
+//       when a plist is installed, whether launchd has the job and whether the script it runs
+//       still exists (a plugin update removes the versioned directory the plist names).
+//   untrustedReason(p, { owner }) why an executable is not safe for a login job to run, or null:
+//       a walk from / with lstat, checking every entry on the way, each symlink included.
+//   writeAgentPlist(file, text, { owner }) the checked, rename-into-place write of the plist.
 //   reachProbe({ uid, check, tmp }) `{ ok, missing, detail, label, loaded, plistRemoved }`: whether this shell can write to
 //       gui/<uid> (bootstrap and bootout a throwaway LaunchAgent running /usr/bin/true and never
 //       started, labelled PROBE_LABEL.<pid>.<random> so two runs never share one, its plist in a
@@ -42,20 +57,32 @@
 // person pastes into zsh, and a state directory with a space in it is a legal one.
 
 import { spawnSync } from "node:child_process";
-import { accessSync, constants, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { accessSync, chmodSync, closeSync, constants, existsSync, fchmodSync, lstatSync, mkdirSync, mkdtempSync, openSync, readdirSync, readFileSync, readlinkSync, renameSync, rmSync, statSync, unlinkSync, writeFileSync, writeSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
-import { isAbsolute, join, resolve } from "node:path";
+import { dirname, isAbsolute, join, resolve } from "node:path";
 import { randomBytes } from "node:crypto";
 import { stateDir as defaultStateDir, INTERVAL_BOUNDS, running } from "./state.mjs";
 
 export const LABEL = "com.jo-wolff-plugins.ctx-watch";
 export const DEFAULT_PATH = "/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin";
 
+/** `<state>/launchd`: the timer's two logs (and, until 0.4.3, its plist). */
 export function launchdDir(env = process.env, stateDir = defaultStateDir(env)) {
   return join(stateDir, "launchd");
 }
 
-export function plistPath(env = process.env, label = LABEL, stateDir = defaultStateDir(env)) {
+/** `$HOME/Library/LaunchAgents`: where launchd loads a person's agents from at login. */
+export function launchAgentsDir(env = process.env) {
+  return join(env.HOME || homedir(), "Library", "LaunchAgents");
+}
+
+/** The timer's plist: `$HOME/Library/LaunchAgents/<label>.plist`, so it is loaded again after a reboot. */
+export function plistPath(env = process.env, label = LABEL) {
+  return join(launchAgentsDir(env), `${label}.plist`);
+}
+
+/** Where install wrote the plist until 0.4.3, which launchd never reloads at login. */
+export function legacyPlistPath(env = process.env, label = LABEL, stateDir = defaultStateDir(env)) {
   return join(launchdDir(env, stateDir), `${label}.plist`);
 }
 
@@ -96,6 +123,158 @@ export function resolveCtx(path, { name = "ctx", exists = executable } = {}) {
     if (exists(p)) return p;
   }
   return null;
+}
+
+/** Groups whose members can already act as root (wheel, admin): group-writable for them adds no one. */
+const ROOT_EQUIVALENT_GIDS = new Set([0, 80]);
+
+/** The most symlinks untrustedReason follows for one path (the kernel's own MAXSYMLINKS is 32). */
+const MAX_LINK_HOPS = 32;
+
+/**
+ * Why a path is not safe for a job running as `owner` to execute, or null. The timer runs node,
+ * the CLI and ctx as that user at every login, so whoever can replace any of them, or any entry
+ * on the way to them, runs code as that user. The path is resolved the way the kernel resolves
+ * it (the realpath algorithm), with `lstat` on every entry and no lexical normalization at all:
+ * a stack of unresolved components, and the physical directory reached so far.
+ *   - `.` is skipped; `..` pops the physical directory (never the text before it: in
+ *     `link/../x`, `..` is the parent of where `link` leads, not the directory holding `link`);
+ *   - every entry (directory, symlink, the file) must be owned by `owner` or root;
+ *   - every directory walked through must let no one else replace its entries: writable by every
+ *     user only when sticky (/tmp: then only an entry's owner, checked above, may rename or
+ *     remove it), by its group only when sticky or the group is wheel or admin (whose members
+ *     can already act as root);
+ *   - a symlink's raw `readlink` text is split into components and put in front of the rest,
+ *     resolved from / when it is absolute, else from the symlink's physical directory, so its
+ *     target and the target's directories are checked too; at most MAX_LINK_HOPS symlinks;
+ *   - the file at the end must be writable by no one else (group wheel or admin aside).
+ * Codex, PR #130: round 2, an attacker's symlink in sticky /tmp pointing at a trusted node passed
+ * a `stat`-based check; round 3, `path.resolve` on a link target turned `attacker-link/../good`
+ * into `good`, so the attacker's link and where it led were never checked. `lstat` and
+ * `readlink` are injectable.
+ */
+export function untrustedReason(p, { owner = process.getuid?.() ?? 501, lstat = lstatSync, readlink = readlinkSync } = {}) {
+  const given = isAbsolute(p) ? p : `${process.cwd()}/${p}`;
+  const split = (text) => text.split("/").filter(Boolean);
+  let parts = split(given);
+  let dir = "/";
+  let hops = 0;
+  const child = (name) => (dir === "/" ? `/${name}` : `${dir}/${name}`);
+  const mine = (s) => s.uid === owner || s.uid === 0;
+  const othersMayReplace = (s) => {
+    const sticky = (s.mode & 0o1000) !== 0;
+    if ((s.mode & 0o002) !== 0 && !sticky) return "every user";
+    if ((s.mode & 0o020) !== 0 && !sticky && !ROOT_EQUIVALENT_GIDS.has(s.gid)) return `group ${s.gid}`;
+    return null;
+  };
+  const stat = (at) => {
+    try {
+      return lstat(at);
+    } catch (err) {
+      throw new Error(`${given} cannot be resolved (${err.code ?? err.message})`);
+    }
+  };
+  try {
+    const root = stat("/");
+    if (!mine(root)) return `/ is owned by uid ${root.uid}, not you (${owner}) or root`;
+    if (othersMayReplace(root)) return `/ is writable by ${othersMayReplace(root)}`;
+    while (parts.length) {
+      const name = parts.shift();
+      if (name === ".") continue;
+      if (name === "..") {
+        // The parent of the physical directory reached, already checked on the way in.
+        dir = dirname(dir);
+        continue;
+      }
+      const at = child(name);
+      const s = stat(at);
+      const last = parts.length === 0;
+      if (s.isSymbolicLink()) {
+        const where = at === given ? given : `${at} (a symlink on the way to ${given})`;
+        if (!mine(s)) return `${where} is a symlink owned by uid ${s.uid}, not you (${owner}) or root`;
+        if (++hops > MAX_LINK_HOPS) return `${given} has more than ${MAX_LINK_HOPS} symlinks on the way (a loop?)`;
+        let to;
+        try {
+          to = readlink(at);
+        } catch (err) {
+          return `${given} cannot be resolved (${err.code ?? err.message})`;
+        }
+        // The raw target, never normalized: absolute from /, relative from the link's own directory.
+        if (to.startsWith("/")) dir = "/";
+        parts = [...split(to), ...parts];
+        continue;
+      }
+      const where = last ? (at === given ? given : `${given} (real path ${at})`) : `${at} (above ${given})`;
+      if (!mine(s)) return `${where} is owned by uid ${s.uid}, not you (${owner}) or root`;
+      if (last && !s.isDirectory()) {
+        if ((s.mode & 0o002) !== 0) return `${where} is writable by every user`;
+        if ((s.mode & 0o020) !== 0 && !ROOT_EQUIVALENT_GIDS.has(s.gid)) return `${where} is writable by group ${s.gid}`;
+        return null;
+      }
+      if (!s.isDirectory()) return `${where} is not a directory`;
+      const who = othersMayReplace(s);
+      if (who) return `${where} is writable by ${who}`;
+      dir = at;
+    }
+    return null;
+  } catch (err) {
+    return err.message;
+  }
+}
+
+/**
+ * Write `text` to `file`, a login-loaded agent, only into a directory chain launchd would trust
+ * and that cannot redirect the write: `~/Library` and `~/Library/LaunchAgents` must be real
+ * directories (not symlinks) owned by `owner` and writable by no one else (Apple's rule for a
+ * user's agents); one that is absent is created and set to 0755. An existing plist must be a
+ * regular file owned by `owner`, not a symlink; it is never opened, only replaced. The text goes
+ * to an exclusive temporary file (O_EXCL, O_NOFOLLOW) in the same directory, set to 0644 whatever
+ * the umask, then renamed over `file`. Throws with the reason; nothing is changed on refusal.
+ */
+export function writeAgentPlist(file, text, { owner = process.getuid?.() ?? 501, lstat = lstatSync } = {}) {
+  const agents = dirname(file);
+  const home = dirname(dirname(agents));
+  if (!existsSync(home)) throw new Error(`HOME (${home}) does not exist`);
+  for (const d of [dirname(agents), agents]) {
+    let s;
+    try {
+      s = lstat(d);
+    } catch (err) {
+      if (err.code !== "ENOENT") throw err;
+      mkdirSync(d);
+      chmodSync(d, 0o755);
+      s = lstat(d);
+    }
+    if (s.isSymbolicLink()) throw new Error(`${d} is a symlink; refusing to write a login-loaded plist through it`);
+    if (!s.isDirectory()) throw new Error(`${d} is not a directory`);
+    if (s.uid !== owner) throw new Error(`${d} is owned by uid ${s.uid}, not you (${owner}); launchd will not load your agents from it`);
+    if ((s.mode & 0o022) !== 0) throw new Error(`${d} is writable by group or others (mode ${(s.mode & 0o777).toString(8)}); launchd will not load your agents from it`);
+  }
+  let cur = null;
+  try {
+    cur = lstat(file);
+  } catch (err) {
+    if (err.code !== "ENOENT") throw err;
+  }
+  if (cur?.isSymbolicLink()) throw new Error(`${file} is a symlink; refusing to replace it`);
+  if (cur && !cur.isFile()) throw new Error(`${file} exists and is not a regular file`);
+  if (cur && cur.uid !== owner) throw new Error(`${file} is owned by uid ${cur.uid}, not you (${owner}); refusing to replace it`);
+  const tmp = join(agents, `.${randomBytes(6).toString("hex")}.plist.tmp`);
+  const fd = openSync(tmp, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW, 0o600);
+  try {
+    try {
+      writeSync(fd, text);
+      fchmodSync(fd, 0o644);
+    } finally {
+      closeSync(fd);
+    }
+    renameSync(tmp, file);
+  } catch (err) {
+    try {
+      unlinkSync(tmp);
+    } catch {}
+    throw err;
+  }
 }
 
 /**
@@ -141,9 +320,9 @@ ${Object.entries(environment)
 `;
 }
 
-/** Run `bin args` for 10 s; `{ missing, code, output }`. */
-export function runCheck(bin, args) {
-  const r = spawnSync(bin, args, { encoding: "utf8", timeout: 10_000, killSignal: "SIGKILL" });
+/** Run `bin args` for `timeoutMs` (10 s); `{ missing, code, output }`. A run killed at the bound is `code: null`. */
+export function runCheck(bin, args, { timeoutMs = 10_000 } = {}) {
+  const r = spawnSync(bin, args, { encoding: "utf8", timeout: timeoutMs, killSignal: "SIGKILL" });
   if (r.error?.code === "ENOENT") return { missing: true, code: null, output: "" };
   if (r.error) return { missing: false, code: null, output: r.error.message };
   return { missing: false, code: r.status, output: `${r.stdout ?? ""}${r.stderr ?? ""}` };
@@ -152,19 +331,50 @@ export function runCheck(bin, args) {
 /**
  * Whether launchd has the job: `launchctl print gui/<uid>/<label>`. `loaded` true (exit 0),
  * false only on launchctl's 113 ("Could not find service"), null on anything else (not found,
- * did not run, any other exit): a failed query is not an answer.
+ * did not run, killed at its bound, any other exit): a failed query is not an answer. When
+ * loaded, `plist` is the job's `path = …` (the file launchd loaded it from) and `args` its
+ * `arguments = { … }`, each only when the output shows it.
  */
 export function loaded({ uid = process.getuid?.() ?? 501, label = LABEL, check = runCheck } = {}) {
   const r = check("launchctl", ["print", `gui/${uid}/${label}`]);
   if (r.missing) return { loaded: null, detail: "launchctl not found: could not tell whether the job is loaded" };
   if (r.code === 0) {
-    const state = /\bstate = (\S+)/.exec(r.output)?.[1];
+    const state = /\bstate = ([^\n]+)/.exec(r.output)?.[1]?.trim();
     const last = /last exit code = ([^\n]+)/.exec(r.output)?.[1]?.trim();
-    return { loaded: true, detail: `launchd has ${label}${state ? ` (state = ${state}` : ""}${last ? `, last exit code = ${last})` : state ? ")" : ""}` };
+    const plist = /^[ \t]*path = ([^\n]+)$/m.exec(r.output)?.[1]?.trim();
+    const block = /^[ \t]*arguments = \{\n([\s\S]*?)\n[ \t]*\}/m.exec(r.output)?.[1];
+    const args = block?.split("\n").map((s) => s.trim()).filter(Boolean);
+    return { loaded: true, detail: `launchd has ${label}${state ? ` (state = ${state}` : ""}${last ? `, last exit code = ${last})` : state ? ")" : ""}`, ...(plist ? { plist } : {}), ...(args?.length ? { args } : {}) };
   }
   if (r.code === null) return { loaded: null, detail: `launchctl could not run: ${r.output.trim()}` };
   if (r.code === 113) return { loaded: false, detail: `launchd does not have ${label}` };
   return { loaded: null, detail: `launchctl print gui/${uid}/${label} exit ${r.code}: ${(r.output ?? "").trim().split("\n").at(-1) || "(no output)"}` };
+}
+
+/**
+ * The SessionStart check of the timer: `{ ok, kind, reason, detail }`. `ok` null says nothing:
+ * no plist at either path (never installed: the dead-man's line covers it, and nothing asks
+ * launchd) or launchctl gave no answer (not found, refused, killed at its bound). `ok` false:
+ * `kind` "not-loaded" only on launchctl's 113 for the label (loaded() false), never on a
+ * timeout; "script-missing" when the job is loaded and the script its `arguments` name (the
+ * second, after node) does not exist, as when a plugin update removes the versioned directory
+ * the plist names. `reason` is short enough for the 160-character line; `detail` is the rest.
+ * One `launchctl print`, no other launchd query; `exists` is injectable.
+ */
+export function timerHealth({ env = process.env, stateDir = defaultStateDir(env), uid = process.getuid?.() ?? 501, label = LABEL, check = runCheck, exists = existsSync } = {}) {
+  const file = plistPath(env, label);
+  const legacy = legacyPlistPath(env, label, stateDir);
+  const installed = exists(file) ? file : exists(legacy) ? legacy : null;
+  if (installed === null) return { ok: null, kind: null, reason: null, detail: `no plist at ${file} or ${legacy}` };
+  const l = loaded({ uid, label, check });
+  if (l.loaded === null) return { ok: null, kind: null, reason: null, detail: l.detail };
+  if (l.loaded === false) {
+    const where = installed === file ? "" : `; its plist at ${legacy} is outside ~/Library/LaunchAgents, so login does not load it`;
+    return { ok: false, kind: "not-loaded", reason: `timer not in launchd gui/${uid}`, detail: `launchctl print gui/${uid}/${label} found no such service${where}` };
+  }
+  const script = l.args?.[1];
+  if (typeof script === "string" && isAbsolute(script) && !exists(script)) return { ok: false, kind: "script-missing", reason: "timer's script no longer exists", detail: `the loaded job runs ${script}, which does not exist` };
+  return { ok: true, kind: null, reason: null, detail: l.detail };
 }
 
 /** The reach probes' label prefix: each run's probe is `<PROBE_LABEL>.<pid>.<random>`, never a job that runs anything. */
@@ -372,48 +582,82 @@ export function resolveLang({ env = process.env, check = runCheck } = {}) {
 }
 
 /**
- * Write, lint, report. `{ code, text, file, ctx }`. `ctx` (optional) is the executable to pin;
- * otherwise the first `ctx` on this shell's PATH, and no ctx at all is exit 1: a timer that
- * can never find ctx would only ever pop up. The plist's environment is PATH plus carriedEnv(env),
- * with resolveLang's fallback LANG when this shell has none.
+ * Write, lint, report. `{ code, text, file, ctx, migrated }`. `ctx` (optional) is the executable
+ * to pin; otherwise the first `ctx` on this shell's PATH, and no ctx at all is exit 1: a timer
+ * that can never find ctx would only ever pop up. The plist's environment is PATH plus
+ * carriedEnv(env), with resolveLang's fallback LANG when this shell has none. The plist goes to
+ * plistPath(env) (`$HOME/Library/LaunchAgents`), so `env.HOME` must be set: install never falls
+ * back to another HOME for a file launchd loads at login. node, the CLI and ctx must each pass
+ * `trust` (untrustedReason: owned by `owner` or root, writable by no one else, up to /), and the
+ * plist is written by writeAgentPlist (no symlinks, owned by `owner`, 0644); either refusal is
+ * exit 1 with nothing written. A plist at legacyPlistPath (0.4.2 and before) is removed only
+ * after `plutil -lint` ran and passed, and `migrated` names it. The printed lines follow what
+ * launchctl said, not whether a file was moved: loaded, bootout `&&` bootstrap; not loaded, the
+ * bootstrap alone; no answer, bootout `;` bootstrap (a bootout that finds nothing must not stop
+ * the bootstrap).
  */
-export function install({ env = process.env, interval = 300, cliPath, node = process.execPath, uid = process.getuid?.() ?? 501, check = runCheck, label = LABEL, cwd = process.cwd(), stateDir = defaultStateDir(env), ctx, exists } = {}) {
+export function install({ env = process.env, interval = 300, cliPath, node = process.execPath, uid = process.getuid?.() ?? 501, check = runCheck, label = LABEL, cwd = process.cwd(), stateDir = defaultStateDir(env), ctx, exists, owner = process.getuid?.() ?? 501, trust = (p) => untrustedReason(p, { owner }), lstat = lstatSync } = {}) {
   const dir = launchdDir(env, stateDir);
-  const file = plistPath(env, label, stateDir);
   const path = dedupePath(env.PATH);
+  let file;
   let text;
   let pinned;
   let lang;
   let environment;
   try {
+    if (typeof env.HOME !== "string" || !isAbsolute(env.HOME)) throw new Error(`HOME is not set to an absolute path (${JSON.stringify(env.HOME ?? null)}): the plist goes in $HOME/Library/LaunchAgents`);
+    file = plistPath(env, label);
     pinned = ctx === undefined ? resolveCtx(path, exists ? { exists } : {}) : resolve(cwd, ctx);
     if (pinned === null) throw new Error(`no executable \`ctx\` on PATH (${path}); install ctx first (\`ctx docs show getting-started\`), or pass --ctx <absolute path>`);
     if (exists ? !exists(pinned) : !executable(pinned)) throw new Error(`--ctx ${pinned} is not an executable file`);
     lang = resolveLang({ env, check });
     environment = lang.value && lang.source !== "env" ? { LANG: lang.value, ...carriedEnv(env) } : carriedEnv(env);
     text = plistText({ label, node, cliPath: resolve(cwd, cliPath), interval, logDir: dir, path, stateDir: resolve(cwd, stateDir), ctx: pinned, environment });
+    for (const [what, p] of [["node", node], ["the ctx-watch script", resolve(cwd, cliPath)], ["ctx", pinned]]) {
+      const why = trust(p);
+      if (why) throw new Error(`${what} at ${p} is not safe for a login job to run: ${why}`);
+    }
     mkdirSync(dir, { recursive: true });
-    writeFileSync(file, text);
+    writeAgentPlist(file, text, { owner, lstat });
   } catch (err) {
     return { code: 1, text: `ctx-watch install: ${err.message}` };
   }
-  const lines = [`wrote ${file} (${label}, every ${interval} s, \`tick\`; ctx pinned at ${pinned}, state in ${resolve(cwd, stateDir)})`];
+  const lines = [`wrote ${file} (${label}, every ${interval} s, \`tick\`; ctx pinned at ${pinned}, state in ${resolve(cwd, stateDir)}, logs in ${dir})`];
   const names = Object.keys(environment);
   lines.push(`environment: PATH${names.length ? `, ${names.join(", ")}` : ""}`);
   if (lang.value === null) lines.push(`LANG is not set in this shell, so the plist carries none (${lang.detail}): a heal the timer runs would have ctx record a launch environment without LANG, which it reports as supervisor \`environment_invalid\` with \`restart_required\`. Run install again from a shell with LANG set (a Terminal login shell has it).`);
   else if (lang.source !== "env") lines.push(`LANG is not set in this shell; the plist carries LANG=${lang.value} from ${lang.source === "AppleLocale" ? "AppleLocale" : lang.detail} instead, so a heal the timer runs records a launch environment with LANG.`);
   const lint = check("plutil", ["-lint", file]);
+  const linted = !lint.missing && lint.code === 0;
   if (lint.missing) lines.push("plutil not found: the plist was not checked (not macOS?)");
-  else if (lint.code !== 0) return { code: 1, text: `${lines.join("\n")}\nplutil -lint failed: ${lint.output.trim()}` };
+  else if (!linted) return { code: 1, text: `${lines.join("\n")}\nplutil -lint failed: ${lint.output.trim()}` };
   else lines.push("plutil -lint: OK");
+  const legacy = legacyPlistPath(env, label, stateDir);
+  let migrated = null;
+  if (legacy !== file && existsSync(legacy)) {
+    if (!linted) lines.push(`kept the old plist at ${legacy}: the new one was not checked, so the move is not finished. Run install again where plutil is available, or delete the old file once ${file} is known good.`);
+    else {
+      try {
+        rmSync(legacy, { force: true });
+        migrated = legacy;
+        lines.push(`moved the plist from ${legacy} (removed) to ${file}: launchd loads a person's LaunchAgents only from ~/Library/LaunchAgents at login, so a job loaded from the old path was gone after a reboot.`);
+      } catch (err) {
+        lines.push(`the old plist at ${legacy} could not be removed (${err.message}); delete it: launchd never loads it at login, and ${file} replaces it.`);
+      }
+    }
+  }
+  const boot = `launchctl bootstrap gui/${uid} ${shellQuote(file)}`;
+  const out = `launchctl bootout gui/${uid}/${label}`;
+  const then = `\nthen check with:\n  node ${shellQuote(resolve(cwd, cliPath))} status`;
   const l = loaded({ uid, label, check });
-  if (l.loaded === true) lines.push(`${l.detail}; to pick up this plist:\n  launchctl bootout gui/${uid}/${label} && launchctl bootstrap gui/${uid} ${shellQuote(file)}`);
-  else lines.push(`${l.detail}. To install it, run from your own Terminal (a GUI login, not an agent shell):\n  launchctl bootstrap gui/${uid} ${shellQuote(file)}\nthen check with:\n  node ${shellQuote(resolve(cwd, cliPath))} status`);
-  return { code: 0, text: lines.join("\n"), file, ctx: pinned };
+  if (l.loaded === true) lines.push(`${l.detail}; to pick up this plist${migrated ? " (the loaded job still runs from the old one)" : ""}:\n  ${out} && ${boot}`);
+  else if (l.loaded === false) lines.push(`${l.detail}. To install it, run from your own Terminal (a GUI login, not an agent shell):\n  ${boot}${then}`);
+  else lines.push(`${l.detail}. To load this plist whether or not a job is loaded now, run from your own Terminal (a GUI login, not an agent shell; the bootout may answer "No such process" when nothing is loaded):\n  ${out}; ${boot}${then}`);
+  return { code: 0, text: lines.join("\n"), file, ctx: pinned, migrated };
 }
 
-/** The bootout line. Removes nothing. */
-export function uninstall({ env = process.env, uid = process.getuid?.() ?? 501, label = LABEL, stateDir = defaultStateDir(env) } = {}) {
-  const file = plistPath(env, label, stateDir);
-  return { code: 0, text: `To stop the timer, run:\n  launchctl bootout gui/${uid}/${label}\nThe plist stays at ${file}; delete it yourself if you are done with it.`, file };
+/** The bootout line, and the `rm` without which login loads the plist again. Removes nothing. */
+export function uninstall({ env = process.env, uid = process.getuid?.() ?? 501, label = LABEL } = {}) {
+  const file = plistPath(env, label);
+  return { code: 0, text: `To stop the timer, run:\n  launchctl bootout gui/${uid}/${label}\nThe plist stays at ${file}, and launchd loads it again at your next login; to stop that too, delete it:\n  rm ${shellQuote(file)}`, file };
 }
