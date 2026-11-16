@@ -415,13 +415,26 @@ LaunchAgents from that directory, and only from there, when they log in. Until 0
 lived in `${XDG_STATE_HOME:-~/.local/state}/ctx-watch/launchd/`; a job bootstrapped from there
 runs until the next reboot and then is gone, which is what happened on 2026-11-12: the timer
 did not come back and nothing said so for four days. The logs stay in the state directory. When
-`install` finds a plist at the old path it removes it once the new one lints, says so, and
-prints `launchctl bootout gui/<uid>/com.jo-wolff-plugins.ctx-watch && launchctl bootstrap
-gui/<uid> ~/Library/LaunchAgents/com.jo-wolff-plugins.ctx-watch.plist` (with `;` instead of
-`&&` when launchctl could not say whether the job is loaded, and the bootstrap alone when it is
-known not to be). `uninstall` prints the bootout and the `rm` of that file: a plist left in
-LaunchAgents is loaded again at the next login. `install` refuses when `HOME` is unset rather
-than guess whose LaunchAgents to write.
+`install` finds a plist at the old path it removes it only after `plutil -lint` ran and passed
+on the new one, and says so; without plutil it keeps the old file and says the move is not
+finished. The command it prints follows what `launchctl print` said, not whether this run moved
+a file: loaded, `launchctl bootout gui/<uid>/com.jo-wolff-plugins.ctx-watch && launchctl
+bootstrap gui/<uid> ~/Library/LaunchAgents/com.jo-wolff-plugins.ctx-watch.plist`; not loaded,
+the bootstrap alone; no answer, the same pair joined by `;`. `uninstall` prints the bootout and
+the `rm` of that file: a plist left in LaunchAgents is loaded again at the next login.
+
+Because login runs this plist as you, `install` checks what it writes and what the plist runs,
+and refuses with the reason, writing nothing:
+
+- `~/Library` and `~/Library/LaunchAgents` must be real directories (not symlinks), owned by you
+  and writable by no one else; an existing plist must be a regular file of yours, not a symlink.
+  The plist is written to a new temporary file in that directory and renamed into place, mode
+  0644 whatever the umask. A directory install creates is set to 0755.
+- node, this script and ctx, their real targets, and every directory above them must be owned
+  by you or root and writable by no one else: not by every user (except a sticky directory such
+  as `/tmp`), and by their group only when it is wheel or admin, whose members can already act
+  as root (Homebrew's `/opt/homebrew` is group admin).
+- `HOME` must be set, absolute, and exist: install never guesses whose LaunchAgents to write.
 
 **The timer and the popup.** `install` writes
 `~/Library/LaunchAgents/com.jo-wolff-plugins.ctx-watch.plist`:

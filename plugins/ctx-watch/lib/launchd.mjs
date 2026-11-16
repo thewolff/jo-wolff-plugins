@@ -10,8 +10,11 @@
 //       prints the bootstrap line. LaunchAgents because launchd loads a person's agents from
 //       there, and only there, at login: until 0.4.3 the plist lived in <state>/launchd/, so a
 //       job bootstrapped from it was gone after the 2026-11-12 reboot and nothing said so for
-//       four days. A plist still at that old path is removed once the new one lints, and install
-//       says so and prints the bootout + bootstrap pair. Every path in the plist is absolute:
+//       four days. A plist still at that old path is removed only after `plutil -lint` passed
+//       on the new one; the printed command follows `launchctl print` (loaded: bootout &&
+//       bootstrap; not loaded: bootstrap; no answer: bootout ; bootstrap). Before writing,
+//       node, the CLI and ctx must pass untrustedReason, and the plist is written by
+//       writeAgentPlist (no symlinks, yours, 0644). Every path in the plist is absolute:
 //       launchd runs the job from / with an environment of its own, so the plist carries
 //         --state-dir   the state directory this install resolved (XDG_STATE_HOME or HOME), so
 //                       the timer and the SessionStart hook read and write one state.json even
@@ -35,6 +38,8 @@
 //   timerHealth({ env, stateDir, uid, check, exists }) the SessionStart check of the timer:
 //       when a plist is installed, whether launchd has the job and whether the script it runs
 //       still exists (a plugin update removes the versioned directory the plist names).
+//   untrustedReason(p, { owner }) why an executable is not safe for a login job to run, or null.
+//   writeAgentPlist(file, text, { owner }) the checked, rename-into-place write of the plist.
 //   reachProbe({ uid, check, tmp }) `{ ok, missing, detail, label, loaded, plistRemoved }`: whether this shell can write to
 //       gui/<uid> (bootstrap and bootout a throwaway LaunchAgent running /usr/bin/true and never
 //       started, labelled PROBE_LABEL.<pid>.<random> so two runs never share one, its plist in a
@@ -51,9 +56,9 @@
 // person pastes into zsh, and a state directory with a space in it is a legal one.
 
 import { spawnSync } from "node:child_process";
-import { accessSync, constants, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { accessSync, chmodSync, closeSync, constants, existsSync, fchmodSync, lstatSync, mkdirSync, mkdtempSync, openSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, statSync, unlinkSync, writeFileSync, writeSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
-import { isAbsolute, join, resolve } from "node:path";
+import { dirname, isAbsolute, join, resolve } from "node:path";
 import { randomBytes } from "node:crypto";
 import { stateDir as defaultStateDir, INTERVAL_BOUNDS, running } from "./state.mjs";
 
@@ -117,6 +122,100 @@ export function resolveCtx(path, { name = "ctx", exists = executable } = {}) {
     if (exists(p)) return p;
   }
   return null;
+}
+
+/** Groups whose members can already act as root (wheel, admin): group-writable for them adds no one. */
+const ROOT_EQUIVALENT_GIDS = new Set([0, 80]);
+
+/**
+ * Why a path is not safe for a job running as `owner` to execute, or null. The timer runs node,
+ * the CLI and ctx as that user at every login, so whoever can replace any of them, or rename a
+ * directory above them, runs code as that user. Checked: the directories above the path as
+ * given (who can swap a symlink there) and the path's real target with every directory above it.
+ * Each must be owned by `owner` or root, and writable by no one else: not by every user (unless
+ * a sticky directory such as /tmp, where only an entry's owner may rename it, and the entry is
+ * checked in turn), and by its group only when that group is wheel or admin. `stat` and `real`
+ * are injectable.
+ */
+export function untrustedReason(p, { owner = process.getuid?.() ?? 501, stat = statSync, real = realpathSync } = {}) {
+  let target;
+  try {
+    target = real(p);
+  } catch (err) {
+    return `${p} cannot be resolved (${err.code ?? err.message})`;
+  }
+  const chain = (start, self) => {
+    for (let cur = start; ; cur = dirname(cur)) {
+      let s;
+      try {
+        s = stat(cur);
+      } catch (err) {
+        return `${cur} cannot be read (${err.code ?? err.message})`;
+      }
+      const where = cur === target ? (target === p ? p : `${p} (real path ${target})`) : `${cur} (above ${p})`;
+      if (s.uid !== owner && s.uid !== 0) return `${where} is owned by uid ${s.uid}, not you (${owner}) or root`;
+      const sticky = !(self && cur === start) && s.isDirectory() && (s.mode & 0o1000) !== 0;
+      if ((s.mode & 0o002) !== 0 && !sticky) return `${where} is writable by every user`;
+      if ((s.mode & 0o020) !== 0 && !sticky && !ROOT_EQUIVALENT_GIDS.has(s.gid)) return `${where} is writable by group ${s.gid}`;
+      if (cur === dirname(cur)) return null;
+    }
+  };
+  return chain(dirname(p), false) ?? chain(target, true);
+}
+
+/**
+ * Write `text` to `file`, a login-loaded agent, only into a directory chain launchd would trust
+ * and that cannot redirect the write: `~/Library` and `~/Library/LaunchAgents` must be real
+ * directories (not symlinks) owned by `owner` and writable by no one else (Apple's rule for a
+ * user's agents); one that is absent is created and set to 0755. An existing plist must be a
+ * regular file owned by `owner`, not a symlink; it is never opened, only replaced. The text goes
+ * to an exclusive temporary file (O_EXCL, O_NOFOLLOW) in the same directory, set to 0644 whatever
+ * the umask, then renamed over `file`. Throws with the reason; nothing is changed on refusal.
+ */
+export function writeAgentPlist(file, text, { owner = process.getuid?.() ?? 501, lstat = lstatSync } = {}) {
+  const agents = dirname(file);
+  const home = dirname(dirname(agents));
+  if (!existsSync(home)) throw new Error(`HOME (${home}) does not exist`);
+  for (const d of [dirname(agents), agents]) {
+    let s;
+    try {
+      s = lstat(d);
+    } catch (err) {
+      if (err.code !== "ENOENT") throw err;
+      mkdirSync(d);
+      chmodSync(d, 0o755);
+      s = lstat(d);
+    }
+    if (s.isSymbolicLink()) throw new Error(`${d} is a symlink; refusing to write a login-loaded plist through it`);
+    if (!s.isDirectory()) throw new Error(`${d} is not a directory`);
+    if (s.uid !== owner) throw new Error(`${d} is owned by uid ${s.uid}, not you (${owner}); launchd will not load your agents from it`);
+    if ((s.mode & 0o022) !== 0) throw new Error(`${d} is writable by group or others (mode ${(s.mode & 0o777).toString(8)}); launchd will not load your agents from it`);
+  }
+  let cur = null;
+  try {
+    cur = lstat(file);
+  } catch (err) {
+    if (err.code !== "ENOENT") throw err;
+  }
+  if (cur?.isSymbolicLink()) throw new Error(`${file} is a symlink; refusing to replace it`);
+  if (cur && !cur.isFile()) throw new Error(`${file} exists and is not a regular file`);
+  if (cur && cur.uid !== owner) throw new Error(`${file} is owned by uid ${cur.uid}, not you (${owner}); refusing to replace it`);
+  const tmp = join(agents, `.${randomBytes(6).toString("hex")}.plist.tmp`);
+  const fd = openSync(tmp, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW, 0o600);
+  try {
+    try {
+      writeSync(fd, text);
+      fchmodSync(fd, 0o644);
+    } finally {
+      closeSync(fd);
+    }
+    renameSync(tmp, file);
+  } catch (err) {
+    try {
+      unlinkSync(tmp);
+    } catch {}
+    throw err;
+  }
 }
 
 /**
@@ -429,12 +528,16 @@ export function resolveLang({ env = process.env, check = runCheck } = {}) {
  * that can never find ctx would only ever pop up. The plist's environment is PATH plus
  * carriedEnv(env), with resolveLang's fallback LANG when this shell has none. The plist goes to
  * plistPath(env) (`$HOME/Library/LaunchAgents`), so `env.HOME` must be set: install never falls
- * back to another HOME for a file launchd loads at login. A plist at legacyPlistPath (0.4.2 and
- * before) is removed once the new one has lint-checked, and `migrated` names it; the printed
- * lines then boot out the job by label before bootstrapping the new path (`&&` when launchd has
- * it, `;` when launchctl could not say, the bootstrap alone when it is known not loaded).
+ * back to another HOME for a file launchd loads at login. node, the CLI and ctx must each pass
+ * `trust` (untrustedReason: owned by `owner` or root, writable by no one else, up to /), and the
+ * plist is written by writeAgentPlist (no symlinks, owned by `owner`, 0644); either refusal is
+ * exit 1 with nothing written. A plist at legacyPlistPath (0.4.2 and before) is removed only
+ * after `plutil -lint` ran and passed, and `migrated` names it. The printed lines follow what
+ * launchctl said, not whether a file was moved: loaded, bootout `&&` bootstrap; not loaded, the
+ * bootstrap alone; no answer, bootout `;` bootstrap (a bootout that finds nothing must not stop
+ * the bootstrap).
  */
-export function install({ env = process.env, interval = 300, cliPath, node = process.execPath, uid = process.getuid?.() ?? 501, check = runCheck, label = LABEL, cwd = process.cwd(), stateDir = defaultStateDir(env), ctx, exists } = {}) {
+export function install({ env = process.env, interval = 300, cliPath, node = process.execPath, uid = process.getuid?.() ?? 501, check = runCheck, label = LABEL, cwd = process.cwd(), stateDir = defaultStateDir(env), ctx, exists, owner = process.getuid?.() ?? 501, trust = (p) => untrustedReason(p, { owner }), lstat = lstatSync } = {}) {
   const dir = launchdDir(env, stateDir);
   const path = dedupePath(env.PATH);
   let file;
@@ -451,9 +554,12 @@ export function install({ env = process.env, interval = 300, cliPath, node = pro
     lang = resolveLang({ env, check });
     environment = lang.value && lang.source !== "env" ? { LANG: lang.value, ...carriedEnv(env) } : carriedEnv(env);
     text = plistText({ label, node, cliPath: resolve(cwd, cliPath), interval, logDir: dir, path, stateDir: resolve(cwd, stateDir), ctx: pinned, environment });
+    for (const [what, p] of [["node", node], ["the ctx-watch script", resolve(cwd, cliPath)], ["ctx", pinned]]) {
+      const why = trust(p);
+      if (why) throw new Error(`${what} at ${p} is not safe for a login job to run: ${why}`);
+    }
     mkdirSync(dir, { recursive: true });
-    mkdirSync(launchAgentsDir(env), { recursive: true });
-    writeFileSync(file, text);
+    writeAgentPlist(file, text, { owner, lstat });
   } catch (err) {
     return { code: 1, text: `ctx-watch install: ${err.message}` };
   }
@@ -463,26 +569,31 @@ export function install({ env = process.env, interval = 300, cliPath, node = pro
   if (lang.value === null) lines.push(`LANG is not set in this shell, so the plist carries none (${lang.detail}): a heal the timer runs would have ctx record a launch environment without LANG, which it reports as supervisor \`environment_invalid\` with \`restart_required\`. Run install again from a shell with LANG set (a Terminal login shell has it).`);
   else if (lang.source !== "env") lines.push(`LANG is not set in this shell; the plist carries LANG=${lang.value} from ${lang.source === "AppleLocale" ? "AppleLocale" : lang.detail} instead, so a heal the timer runs records a launch environment with LANG.`);
   const lint = check("plutil", ["-lint", file]);
+  const linted = !lint.missing && lint.code === 0;
   if (lint.missing) lines.push("plutil not found: the plist was not checked (not macOS?)");
-  else if (lint.code !== 0) return { code: 1, text: `${lines.join("\n")}\nplutil -lint failed: ${lint.output.trim()}` };
+  else if (!linted) return { code: 1, text: `${lines.join("\n")}\nplutil -lint failed: ${lint.output.trim()}` };
   else lines.push("plutil -lint: OK");
   const legacy = legacyPlistPath(env, label, stateDir);
   let migrated = null;
   if (legacy !== file && existsSync(legacy)) {
-    try {
-      rmSync(legacy, { force: true });
-      migrated = legacy;
-      lines.push(`moved the plist from ${legacy} (removed) to ${file}: launchd loads a person's LaunchAgents only from ~/Library/LaunchAgents at login, so a job loaded from the old path was gone after a reboot.`);
-    } catch (err) {
-      lines.push(`the old plist at ${legacy} could not be removed (${err.message}); delete it: launchd never loads it at login, and ${file} replaces it.`);
+    if (!linted) lines.push(`kept the old plist at ${legacy}: the new one was not checked, so the move is not finished. Run install again where plutil is available, or delete the old file once ${file} is known good.`);
+    else {
+      try {
+        rmSync(legacy, { force: true });
+        migrated = legacy;
+        lines.push(`moved the plist from ${legacy} (removed) to ${file}: launchd loads a person's LaunchAgents only from ~/Library/LaunchAgents at login, so a job loaded from the old path was gone after a reboot.`);
+      } catch (err) {
+        lines.push(`the old plist at ${legacy} could not be removed (${err.message}); delete it: launchd never loads it at login, and ${file} replaces it.`);
+      }
     }
   }
   const boot = `launchctl bootstrap gui/${uid} ${shellQuote(file)}`;
   const out = `launchctl bootout gui/${uid}/${label}`;
+  const then = `\nthen check with:\n  node ${shellQuote(resolve(cwd, cliPath))} status`;
   const l = loaded({ uid, label, check });
   if (l.loaded === true) lines.push(`${l.detail}; to pick up this plist${migrated ? " (the loaded job still runs from the old one)" : ""}:\n  ${out} && ${boot}`);
-  else if (l.loaded === null && migrated) lines.push(`${l.detail}. To move the job to the new plist, run from your own Terminal (a GUI login, not an agent shell; the bootout may answer "No such process" when nothing is loaded):\n  ${out}; ${boot}\nthen check with:\n  node ${shellQuote(resolve(cwd, cliPath))} status`);
-  else lines.push(`${l.detail}. To install it, run from your own Terminal (a GUI login, not an agent shell):\n  ${boot}\nthen check with:\n  node ${shellQuote(resolve(cwd, cliPath))} status`);
+  else if (l.loaded === false) lines.push(`${l.detail}. To install it, run from your own Terminal (a GUI login, not an agent shell):\n  ${boot}${then}`);
+  else lines.push(`${l.detail}. To load this plist whether or not a job is loaded now, run from your own Terminal (a GUI login, not an agent shell; the bootout may answer "No such process" when nothing is loaded):\n  ${out}; ${boot}${then}`);
   return { code: 0, text: lines.join("\n"), file, ctx: pinned, migrated };
 }
 

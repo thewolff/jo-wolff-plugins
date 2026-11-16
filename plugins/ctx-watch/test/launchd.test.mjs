@@ -8,10 +8,10 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, statSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import { LABEL, DEFAULT_PATH, plistPath, legacyPlistPath, plistText, install, uninstall, loaded, timerHealth, dedupePath, resolveCtx, shellQuote } from "../lib/launchd.mjs";
+import { LABEL, DEFAULT_PATH, plistPath, legacyPlistPath, plistText, install, uninstall, loaded, timerHealth, dedupePath, resolveCtx, shellQuote, untrustedReason } from "../lib/launchd.mjs";
 import { dialogScript, showPopup, readOutcome, outcomePath, OSASCRIPT, GIVE_UP_SECS, GRACE_MS, SUPERVISOR } from "../lib/popup.mjs";
 import { INTERVAL_BOUNDS } from "../lib/state.mjs";
 
@@ -21,6 +21,10 @@ const LOGS = "/Users/example/.local/state/ctx-watch/launchd";
 const STATE = "/Users/example/.local/state/ctx-watch";
 const CTX_BIN = "/Users/example/.local/bin/ctx";
 const rx = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+/** The trust check for tests whose node, CLI and ctx paths are made up: every path is trusted. The real check has its own tests. */
+const TRUST_ALL = () => null;
+/** `<root>/home`, created: install refuses a HOME that does not exist. */
+const homeIn = (root) => (mkdirSync(join(root, "home"), { recursive: true }), join(root, "home"));
 
 test("0.4.3 plistPath is $HOME/Library/LaunchAgents (what login loads); legacyPlistPath is the pre-0.4.3 <state>/launchd", () => {
   assert.equal(plistPath({ HOME: "/Users/example", XDG_STATE_HOME: "/Users/example/s" }), `/Users/example/Library/LaunchAgents/${LABEL}.plist`);
@@ -103,9 +107,9 @@ const ctxAt = (...paths) => (p) => paths.includes(p);
 test("0.4.3 install writes the plist to $HOME/Library/LaunchAgents with logs under <state>/launchd, absolute paths, the state directory and the resolved ctx pinned, lints it, and prints the bootstrap line naming that path (never bootstraps)", () => {
   const root = mkdtempSync(join(tmpdir(), "ctx-watch-launchd-"));
   try {
-    const env = { XDG_STATE_HOME: join(root, "state"), HOME: join(root, "home"), PATH: ".:/Users/example/.local/bin:/usr/bin:/bin", LANG: "en_US.UTF-8" };
+    const env = { XDG_STATE_HOME: join(root, "state"), HOME: homeIn(root), PATH: ".:/Users/example/.local/bin:/usr/bin:/bin", LANG: "en_US.UTF-8" };
     const { calls, check } = fakeCheck({ plutil: { missing: false, code: 0, output: `${plistPath(env)}: OK\n` }, launchctl: { missing: false, code: 113, output: "Could not find service" } });
-    const r = install({ env, interval: 300, cliPath: "scripts/ctx-watch.mjs", cwd: "/Users/example/plugins/ctx-watch", node: NODE, uid: 501, check, exists: ctxAt("./ctx", CTX_BIN) });
+    const r = install({ trust: TRUST_ALL, env, interval: 300, cliPath: "scripts/ctx-watch.mjs", cwd: "/Users/example/plugins/ctx-watch", node: NODE, uid: 501, check, exists: ctxAt("./ctx", CTX_BIN) });
     assert.equal(r.code, 0, r.text);
     assert.equal(r.file, join(root, "home", "Library", "LaunchAgents", `${LABEL}.plist`));
     assert.equal(r.migrated, null, "no old plist, nothing moved");
@@ -123,7 +127,7 @@ test("0.4.3 install writes the plist to $HOME/Library/LaunchAgents with logs und
     assert.match(r.text, /then check with:\n  node \/Users\/example\/plugins\/ctx-watch\/scripts\/ctx-watch.mjs status$/);
     assert.doesNotMatch(r.text, /bootout|moved/);
 
-    const noHome = install({ env: { ...env, HOME: undefined }, cliPath: CLI, node: NODE, uid: 501, check, exists: ctxAt(CTX_BIN) });
+    const noHome = install({ trust: TRUST_ALL, env: { ...env, HOME: undefined }, cliPath: CLI, node: NODE, uid: 501, check, exists: ctxAt(CTX_BIN) });
     assert.equal(noHome.code, 1);
     assert.match(noHome.text, /^ctx-watch install: HOME is not set to an absolute path \(null\): the plist goes in \$HOME\/Library\/LaunchAgents$/, "never another HOME's LaunchAgents");
   } finally {
@@ -138,7 +142,7 @@ test("0.4.3 install over a pre-0.4.3 plist: the old file is removed after the ne
     writeFileSync(legacyPlistPath(env), "<plist/>");
   };
   try {
-    const env = { XDG_STATE_HOME: join(root, "state"), HOME: join(root, "home"), PATH: "/usr/bin", LANG: "en_US.UTF-8" };
+    const env = { XDG_STATE_HOME: join(root, "state"), HOME: homeIn(root), PATH: "/usr/bin", LANG: "en_US.UTF-8" };
     const exists = ctxAt("/usr/bin/ctx");
     const lint = { missing: false, code: 0, output: "OK" };
     const file = plistPath(env);
@@ -147,7 +151,7 @@ test("0.4.3 install over a pre-0.4.3 plist: the old file is removed after the ne
 
     // Loaded from the old path (the 0.4.2 state on a machine not yet rebooted): `&&` pair.
     old(env);
-    const r1 = install({ env, cliPath: CLI, node: NODE, uid: 501, check: fakeCheck({ plutil: lint, launchctl: { missing: false, code: 0, output: `\tpath = ${legacyPlistPath(env)}\n\tstate = waiting\n` } }).check, exists });
+    const r1 = install({ trust: TRUST_ALL, env, cliPath: CLI, node: NODE, uid: 501, check: fakeCheck({ plutil: lint, launchctl: { missing: false, code: 0, output: `\tpath = ${legacyPlistPath(env)}\n\tstate = waiting\n` } }).check, exists });
     assert.equal(r1.code, 0, r1.text);
     assert.equal(r1.migrated, legacyPlistPath(env));
     assert.equal(existsSync(legacyPlistPath(env)), false, "the old plist is gone");
@@ -157,22 +161,208 @@ test("0.4.3 install over a pre-0.4.3 plist: the old file is removed after the ne
 
     // After a reboot: launchd does not have it, so there is nothing to boot out.
     old(env);
-    const r2 = install({ env, cliPath: CLI, node: NODE, uid: 501, check: fakeCheck({ plutil: lint, launchctl: { missing: false, code: 113, output: "" } }).check, exists });
+    const r2 = install({ trust: TRUST_ALL, env, cliPath: CLI, node: NODE, uid: 501, check: fakeCheck({ plutil: lint, launchctl: { missing: false, code: 113, output: "" } }).check, exists });
     assert.ok(r2.text.includes(moved));
     assert.match(r2.text, new RegExp(`launchd does not have ${LABEL}\\. To install it, [^\\n]*:\\n  launchctl bootstrap gui/501 ${rx(file)}\\n`));
     assert.doesNotMatch(r2.text, /bootout/);
 
     // launchctl could not say (a sandbox): the pair with `;`, so a bootout that finds nothing does not stop the bootstrap.
     old(env);
-    const r3 = install({ env, cliPath: CLI, node: NODE, uid: 501, check: fakeCheck({ plutil: lint, launchctl: { missing: false, code: null, output: "spawn EPERM" } }).check, exists });
+    const r3 = install({ trust: TRUST_ALL, env, cliPath: CLI, node: NODE, uid: 501, check: fakeCheck({ plutil: lint, launchctl: { missing: false, code: null, output: "spawn EPERM" } }).check, exists });
     assert.ok(r3.text.includes(moved));
     assert.ok(r3.text.includes(`\n  launchctl bootout gui/501/${LABEL}; launchctl bootstrap gui/501 ${file}\n`), r3.text);
 
     // A failed lint keeps the old plist: the new one is not known good.
     old(env);
-    const r4 = install({ env, cliPath: CLI, node: NODE, uid: 501, check: fakeCheck({ plutil: { missing: false, code: 1, output: "bad" } }).check, exists });
+    const r4 = install({ trust: TRUST_ALL, env, cliPath: CLI, node: NODE, uid: 501, check: fakeCheck({ plutil: { missing: false, code: 1, output: "bad" } }).check, exists });
     assert.equal(r4.code, 1);
     assert.ok(existsSync(legacyPlistPath(env)), "kept after a failed lint");
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+/** A temp root with a created HOME and the env install reads; `release` removes it. */
+function installBox() {
+  const root = mkdtempSync(join(tmpdir(), "ctx-watch-launchd-"));
+  const env = { XDG_STATE_HOME: join(root, "state"), HOME: homeIn(root), PATH: "/usr/bin", LANG: "en_US.UTF-8" };
+  return { root, env, release: () => rmSync(root, { recursive: true, force: true }) };
+}
+const LINT_OK = { plutil: { missing: false, code: 0, output: "OK" }, launchctl: { missing: false, code: 113, output: "" } };
+const ME = process.getuid?.() ?? 501;
+/** A stat result for `p` with `fields` overridden (methods such as isFile still work). */
+const statWith = (s, fields) => Object.assign(Object.create(Object.getPrototypeOf(s)), s, fields);
+/** An lstat that reports `uid` as the owner of `target` and is real for everything else. */
+const ownedBy = (target, uid) => (p) => (p === target ? statWith(lstatSync(p), { uid }) : lstatSync(p));
+
+test("0.4.3 install refuses a symlinked LaunchAgents directory or plist, and changes nothing through either", () => {
+  const b = installBox();
+  try {
+    const elsewhere = join(b.root, "elsewhere");
+    mkdirSync(elsewhere);
+    mkdirSync(join(b.env.HOME, "Library"));
+    symlinkSync(elsewhere, join(b.env.HOME, "Library", "LaunchAgents"));
+    const r = install({ trust: TRUST_ALL, env: b.env, cliPath: CLI, node: NODE, uid: 501, check: fakeCheck(LINT_OK).check, exists: ctxAt("/usr/bin/ctx") });
+    assert.equal(r.code, 1);
+    assert.equal(r.text, `ctx-watch install: ${join(b.env.HOME, "Library", "LaunchAgents")} is a symlink; refusing to write a login-loaded plist through it`);
+    assert.deepEqual(readdirSync(elsewhere), [], "nothing written through the link");
+
+    unlinkSync(join(b.env.HOME, "Library", "LaunchAgents"));
+    mkdirSync(join(b.env.HOME, "Library", "LaunchAgents"));
+    const victim = join(b.root, "victim.txt");
+    writeFileSync(victim, "keep me");
+    symlinkSync(victim, plistPath(b.env));
+    const r2 = install({ trust: TRUST_ALL, env: b.env, cliPath: CLI, node: NODE, uid: 501, check: fakeCheck(LINT_OK).check, exists: ctxAt("/usr/bin/ctx") });
+    assert.equal(r2.code, 1);
+    assert.equal(r2.text, `ctx-watch install: ${plistPath(b.env)} is a symlink; refusing to replace it`);
+    assert.equal(readFileSync(victim, "utf8"), "keep me", "the link's target is untouched");
+    assert.ok(lstatSync(plistPath(b.env)).isSymbolicLink(), "and the link is still a link");
+    assert.deepEqual(readdirSync(join(b.env.HOME, "Library", "LaunchAgents")), [`${LABEL}.plist`], "no temporary file left");
+  } finally {
+    b.release();
+  }
+});
+
+test("0.4.3 install refuses a LaunchAgents directory or plist owned by someone else, or a directory others can write, and changes nothing", () => {
+  const b = installBox();
+  try {
+    const agents = join(b.env.HOME, "Library", "LaunchAgents");
+    mkdirSync(agents, { recursive: true });
+    chmodSync(join(b.env.HOME, "Library"), 0o755);
+    chmodSync(agents, 0o755);
+    writeFileSync(plistPath(b.env), "theirs");
+    const base = { trust: TRUST_ALL, env: b.env, cliPath: CLI, node: NODE, uid: 501, check: fakeCheck(LINT_OK).check, exists: ctxAt("/usr/bin/ctx"), owner: ME };
+
+    const foreignDir = install({ ...base, lstat: ownedBy(agents, ME + 1) });
+    assert.equal(foreignDir.code, 1);
+    assert.equal(foreignDir.text, `ctx-watch install: ${agents} is owned by uid ${ME + 1}, not you (${ME}); launchd will not load your agents from it`);
+    const foreignFile = install({ ...base, lstat: ownedBy(plistPath(b.env), ME + 1) });
+    assert.equal(foreignFile.code, 1);
+    assert.equal(foreignFile.text, `ctx-watch install: ${plistPath(b.env)} is owned by uid ${ME + 1}, not you (${ME}); refusing to replace it`);
+    assert.equal(readFileSync(plistPath(b.env), "utf8"), "theirs", "a refused plist is not truncated");
+
+    chmodSync(agents, 0o775);
+    const groupWritable = install(base);
+    assert.equal(groupWritable.code, 1);
+    assert.equal(groupWritable.text, `ctx-watch install: ${agents} is writable by group or others (mode 775); launchd will not load your agents from it`);
+    assert.equal(statSync(agents).mode & 0o777, 0o775, "install does not chmod a directory it did not create");
+    assert.equal(readFileSync(plistPath(b.env), "utf8"), "theirs");
+    assert.deepEqual(readdirSync(agents), [`${LABEL}.plist`], "no temporary file left");
+  } finally {
+    b.release();
+  }
+});
+
+test("0.4.3 install under a permissive umask still creates ~/Library/LaunchAgents 0755 and the plist 0644, owned by the installing user", () => {
+  const b = installBox();
+  const old = process.umask(0);
+  try {
+    const r = install({ trust: TRUST_ALL, env: b.env, cliPath: CLI, node: NODE, uid: 501, check: fakeCheck(LINT_OK).check, exists: ctxAt("/usr/bin/ctx") });
+    assert.equal(r.code, 0, r.text);
+    assert.equal(statSync(join(b.env.HOME, "Library")).mode & 0o777, 0o755);
+    assert.equal(statSync(join(b.env.HOME, "Library", "LaunchAgents")).mode & 0o777, 0o755);
+    const s = lstatSync(r.file);
+    assert.ok(s.isFile());
+    assert.equal(s.mode & 0o777, 0o644);
+    assert.equal(s.uid, ME);
+    assert.deepEqual(readdirSync(join(b.env.HOME, "Library", "LaunchAgents")), [`${LABEL}.plist`], "the temporary file was renamed, not left");
+  } finally {
+    process.umask(old);
+    b.release();
+  }
+});
+
+test("0.4.3 install keeps the pre-0.4.3 plist when plutil is missing: no lint, no removal, and it says the move is not finished", () => {
+  const b = installBox();
+  try {
+    const legacy = legacyPlistPath(b.env);
+    mkdirSync(dirname(legacy), { recursive: true });
+    writeFileSync(legacy, "<plist>old</plist>");
+    const r = install({ trust: TRUST_ALL, env: b.env, cliPath: CLI, node: NODE, uid: 501, check: fakeCheck({ launchctl: { missing: false, code: 0, output: "state = running" } }).check, exists: ctxAt("/usr/bin/ctx") });
+    assert.equal(r.code, 0, r.text);
+    assert.equal(r.migrated, null, "no successful migration claimed");
+    assert.equal(readFileSync(legacy, "utf8"), "<plist>old</plist>", "the old plist is intact");
+    assert.ok(r.text.includes(`\nplutil not found: the plist was not checked (not macOS?)\nkept the old plist at ${legacy}: the new one was not checked, so the move is not finished.`), r.text);
+    assert.doesNotMatch(r.text, /moved the plist/);
+  } finally {
+    b.release();
+  }
+});
+
+test("0.4.3 install prints the command from launchctl's answer, not from whether this run moved a file: a repeated install and a failed removal under an unknown state still get the bootout ; bootstrap pair", () => {
+  const b = installBox();
+  try {
+    const legacy = legacyPlistPath(b.env);
+    const unknown = { plutil: { missing: false, code: 0, output: "OK" }, launchctl: { missing: false, code: null, output: "spawn EPERM" } };
+    const pair = `\n  launchctl bootout gui/501/${LABEL}; launchctl bootstrap gui/501 ${plistPath(b.env)}\n`;
+    const run = () => install({ trust: TRUST_ALL, env: b.env, cliPath: CLI, node: NODE, uid: 501, check: fakeCheck(unknown).check, exists: ctxAt("/usr/bin/ctx") });
+
+    mkdirSync(dirname(legacy), { recursive: true });
+    writeFileSync(legacy, "<plist/>");
+    const first = run();
+    assert.equal(first.migrated, legacy);
+    assert.ok(first.text.includes(pair), first.text);
+    const second = run();
+    assert.equal(second.migrated, null, "nothing left to move");
+    assert.ok(second.text.includes(pair), `the second install still offers the pair: ${second.text}`);
+
+    mkdirSync(join(legacy, "in-the-way"), { recursive: true });
+    const stuck = run();
+    assert.equal(stuck.migrated, null);
+    assert.match(stuck.text, new RegExp(`the old plist at ${rx(legacy)} could not be removed`));
+    assert.ok(stuck.text.includes(pair), stuck.text);
+
+    const absent = install({ trust: TRUST_ALL, env: b.env, cliPath: CLI, node: NODE, uid: 501, check: fakeCheck(LINT_OK).check, exists: ctxAt("/usr/bin/ctx") });
+    assert.ok(absent.text.includes(`\n  launchctl bootstrap gui/501 ${plistPath(b.env)}\n`));
+    assert.doesNotMatch(absent.text, /launchctl bootout/, "known not loaded: the bootstrap alone");
+  } finally {
+    b.release();
+  }
+});
+
+test("0.4.3 untrustedReason: an executable, its real target, and every directory above both must be yours or root's and writable by no one else", () => {
+  const root = mkdtempSync(join(tmpdir(), "ctx-watch-trust-"));
+  try {
+    const bin = join(root, "bin");
+    mkdirSync(bin);
+    chmodSync(root, 0o755);
+    chmodSync(bin, 0o755);
+    const tool = join(bin, "node");
+    writeFileSync(tool, "#!/bin/sh\n");
+    chmodSync(tool, 0o755);
+    assert.equal(untrustedReason(tool), null, "a 0755 file of yours in 0755 directories of yours");
+    const real = realpathSync(tool);
+    const named = real === tool ? tool : `${tool} (real path ${real})`; // macOS: /var is /private/var
+
+    chmodSync(tool, 0o777);
+    assert.equal(untrustedReason(tool), `${named} is writable by every user`);
+    chmodSync(tool, 0o775);
+    const gid = (g) => (p) => (p === real ? statWith(statSync(p), { gid: g }) : statSync(p));
+    assert.equal(untrustedReason(tool, { stat: gid(20) }), `${named} is writable by group 20`);
+    assert.equal(untrustedReason(tool, { stat: gid(80) }), null, "group admin: its members can already act as root");
+    chmodSync(tool, 0o755);
+
+    chmodSync(bin, 0o777);
+    assert.equal(untrustedReason(tool), `${bin} (above ${tool}) is writable by every user`, "a safe file in an unsafe directory");
+    chmodSync(bin, 0o755);
+
+    const open = join(root, "open");
+    mkdirSync(open);
+    chmodSync(open, 0o777);
+    const link = join(open, "node");
+    symlinkSync(tool, link);
+    assert.equal(untrustedReason(link), `${open} (above ${link}) is writable by every user`, "a symlink anyone can swap, to a safe target");
+
+    assert.equal(untrustedReason(tool, { owner: ME + 1 }), `${bin} (above ${tool}) is owned by uid ${ME}, not you (${ME + 1}) or root`);
+    assert.match(untrustedReason(join(bin, "absent")), /cannot be resolved \(ENOENT\)$/);
+
+    // Wired into install: refused before anything is written.
+    const env = { XDG_STATE_HOME: join(root, "state"), HOME: homeIn(root), PATH: "/usr/bin", LANG: "en_US.UTF-8" };
+    chmodSync(tool, 0o777);
+    const r = install({ env, cliPath: tool, node: tool, uid: 501, check: fakeCheck(LINT_OK).check, ctx: tool });
+    assert.equal(r.code, 1);
+    assert.equal(r.text, `ctx-watch install: node at ${tool} is not safe for a login job to run: ${named} is writable by every user`);
+    assert.equal(existsSync(join(env.HOME, "Library")), false, "nothing written");
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
@@ -181,20 +371,20 @@ test("0.4.3 install over a pre-0.4.3 plist: the old file is removed after the ne
 test("install: no ctx on PATH is exit 1 naming the PATH; --ctx pins a given executable (and must exist)", () => {
   const root = mkdtempSync(join(tmpdir(), "ctx-watch-launchd-"));
   try {
-    const env = { XDG_STATE_HOME: join(root, "state"), HOME: join(root, "home"), PATH: "/usr/bin:/bin" };
+    const env = { XDG_STATE_HOME: join(root, "state"), HOME: homeIn(root), PATH: "/usr/bin:/bin" };
     const none = fakeCheck({});
-    const r = install({ env, cliPath: CLI, node: NODE, uid: 501, check: none.check, exists: () => false });
+    const r = install({ trust: TRUST_ALL, env, cliPath: CLI, node: NODE, uid: 501, check: none.check, exists: () => false });
     assert.equal(r.code, 1);
     assert.equal(r.text, "ctx-watch install: no executable `ctx` on PATH (/usr/bin:/bin); install ctx first (`ctx docs show getting-started`), or pass --ctx <absolute path>");
     assert.equal(none.calls.length, 0, "nothing linted, nothing written");
-    const given = install({ env, cliPath: CLI, node: NODE, uid: 501, check: none.check, ctx: "/opt/ctx/bin/ctx", exists: ctxAt("/opt/ctx/bin/ctx") });
+    const given = install({ trust: TRUST_ALL, env, cliPath: CLI, node: NODE, uid: 501, check: none.check, ctx: "/opt/ctx/bin/ctx", exists: ctxAt("/opt/ctx/bin/ctx") });
     assert.equal(given.code, 0, given.text);
     assert.equal(given.ctx, "/opt/ctx/bin/ctx");
     assert.match(readFileSync(given.file, "utf8"), /<string>--ctx<\/string>\s*<string>\/opt\/ctx\/bin\/ctx<\/string>/);
-    const missing = install({ env, cliPath: CLI, node: NODE, uid: 501, check: none.check, ctx: "/opt/ctx/bin/ctx", exists: () => false });
+    const missing = install({ trust: TRUST_ALL, env, cliPath: CLI, node: NODE, uid: 501, check: none.check, ctx: "/opt/ctx/bin/ctx", exists: () => false });
     assert.equal(missing.code, 1);
     assert.equal(missing.text, "ctx-watch install: --ctx /opt/ctx/bin/ctx is not an executable file");
-    const relative = install({ env, cliPath: CLI, node: NODE, uid: 501, check: none.check, cwd: "/opt/ctx", ctx: "bin/ctx", exists: ctxAt("/opt/ctx/bin/ctx") });
+    const relative = install({ trust: TRUST_ALL, env, cliPath: CLI, node: NODE, uid: 501, check: none.check, cwd: "/opt/ctx", ctx: "bin/ctx", exists: ctxAt("/opt/ctx/bin/ctx") });
     assert.equal(relative.ctx, "/opt/ctx/bin/ctx", "a relative --ctx is resolved against cwd");
   } finally {
     rmSync(root, { recursive: true, force: true });
@@ -204,30 +394,30 @@ test("install: no ctx on PATH is exit 1 naming the PATH; --ctx pins a given exec
 test("install: a loaded job gets the bootout-then-bootstrap line; a failed lint is exit 1; missing plutil/launchctl are said", () => {
   const root = mkdtempSync(join(tmpdir(), "ctx-watch-launchd-"));
   try {
-    const env = { XDG_STATE_HOME: join(root, "state"), HOME: join(root, "home"), PATH: "/usr/bin" };
+    const env = { XDG_STATE_HOME: join(root, "state"), HOME: homeIn(root), PATH: "/usr/bin" };
     const exists = ctxAt("/usr/bin/ctx");
     const loadedJob = fakeCheck({ plutil: { missing: false, code: 0, output: "OK" }, launchctl: { missing: false, code: 0, output: `${LABEL} = {\n\tstate = waiting\n\tlast exit code = 0\n}` } });
-    const r1 = install({ env, cliPath: CLI, node: NODE, uid: 501, check: loadedJob.check, exists });
+    const r1 = install({ trust: TRUST_ALL, env, cliPath: CLI, node: NODE, uid: 501, check: loadedJob.check, exists });
     assert.equal(r1.code, 0);
     assert.match(r1.text, new RegExp(`launchd has ${LABEL} \\(state = waiting, last exit code = 0\\); to pick up this plist:\\n  launchctl bootout gui/501/${LABEL} && launchctl bootstrap gui/501 `));
 
     const badLint = fakeCheck({ plutil: { missing: false, code: 1, output: "x.plist: Unexpected character" } });
-    const r2 = install({ env, cliPath: CLI, node: NODE, uid: 501, check: badLint.check, exists });
+    const r2 = install({ trust: TRUST_ALL, env, cliPath: CLI, node: NODE, uid: 501, check: badLint.check, exists });
     assert.equal(r2.code, 1);
     assert.match(r2.text, /plutil -lint failed: x\.plist: Unexpected character$/);
     assert.deepEqual(badLint.calls.filter(([bin]) => bin === "launchctl"), [], "no launchctl after a failed lint");
 
     const none = fakeCheck({});
-    const r3 = install({ env, cliPath: CLI, node: NODE, uid: 501, check: none.check, exists });
+    const r3 = install({ trust: TRUST_ALL, env, cliPath: CLI, node: NODE, uid: 501, check: none.check, exists });
     assert.equal(r3.code, 0);
     assert.match(r3.text, /plutil not found: the plist was not checked \(not macOS\?\)/);
-    assert.match(r3.text, /launchctl not found: could not tell whether the job is loaded\. To install it/);
+    assert.ok(r3.text.includes(`launchctl not found: could not tell whether the job is loaded. To load this plist whether or not a job is loaded now, run from your own Terminal (a GUI login, not an agent shell; the bootout may answer "No such process" when nothing is loaded):\n  launchctl bootout gui/501/${LABEL}; launchctl bootstrap gui/501 ${plistPath(env)}\n`), r3.text);
 
-    const r4 = install({ env, cliPath: CLI, node: NODE, uid: 501, interval: 5, check: none.check, exists });
+    const r4 = install({ trust: TRUST_ALL, env, cliPath: CLI, node: NODE, uid: 501, interval: 5, check: none.check, exists });
     assert.equal(r4.code, 1);
     assert.match(r4.text, /^ctx-watch install: interval must be/);
     const fresh = join(root, "fresh");
-    const r5 = install({ env, cliPath: CLI, node: NODE, uid: 501, interval: 604_801, check: none.check, exists, stateDir: fresh });
+    const r5 = install({ trust: TRUST_ALL, env, cliPath: CLI, node: NODE, uid: 501, interval: 604_801, check: none.check, exists, stateDir: fresh });
     assert.equal(r5.code, 1);
     assert.match(r5.text, /^ctx-watch install: interval must be a whole number of seconds, 30\.\.604800, got 604801/);
     assert.equal(existsSync(fresh), false, "refused before any artifact is written");
@@ -239,14 +429,14 @@ test("install: a loaded job gets the bootout-then-bootstrap line; a failed lint 
 test("install: paths with spaces and metacharacters are one shell word each in the printed commands", () => {
   const root = mkdtempSync(join(tmpdir(), "ctx-watch launchd $x-"));
   try {
-    const env = { XDG_STATE_HOME: join(root, "state dir"), HOME: join(root, "home"), PATH: "/usr/bin" };
+    const env = { XDG_STATE_HOME: join(root, "state dir"), HOME: homeIn(root), PATH: "/usr/bin" };
     const { check } = fakeCheck({ plutil: { missing: false, code: 0, output: "OK" }, launchctl: { missing: false, code: 0, output: "state = waiting" } });
     const cli = "/Users/example/My Plugins/ctx-watch/scripts/ctx-watch.mjs";
-    const r = install({ env, cliPath: cli, node: NODE, uid: 501, check, exists: ctxAt("/usr/bin/ctx") });
+    const r = install({ trust: TRUST_ALL, env, cliPath: cli, node: NODE, uid: 501, check, exists: ctxAt("/usr/bin/ctx") });
     assert.equal(r.code, 0, r.text);
     assert.ok(r.file.includes(" ") && r.file.includes("$"));
     assert.match(r.text, new RegExp(`launchctl bootout gui/501/${LABEL} && launchctl bootstrap gui/501 '${rx(r.file)}'$`));
-    const r2 = install({ env, cliPath: cli, node: NODE, uid: 501, check: fakeCheck({ plutil: { missing: false, code: 0, output: "OK" }, launchctl: { missing: false, code: 113, output: "" } }).check, exists: ctxAt("/usr/bin/ctx") });
+    const r2 = install({ trust: TRUST_ALL, env, cliPath: cli, node: NODE, uid: 501, check: fakeCheck({ plutil: { missing: false, code: 0, output: "OK" }, launchctl: { missing: false, code: 113, output: "" } }).check, exists: ctxAt("/usr/bin/ctx") });
     assert.match(r2.text, new RegExp(`launchctl bootstrap gui/501 '${rx(r.file)}'\\nthen check with:\\n  node '${rx(cli)}' status$`));
     assert.match(readFileSync(r.file, "utf8"), new RegExp(`<string>${rx(cli)}</string>`), "the plist itself carries the path unquoted: launchd takes an array, not a shell line");
   } finally {

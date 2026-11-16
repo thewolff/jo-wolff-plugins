@@ -108,7 +108,7 @@ export function parseArgs(argv) {
 }
 
 export async function main(argv, deps = {}) {
-  const { env = process.env, now = Date.now, run, exists, popup = showPopup, check: checkBin, node, uid, cwd = process.cwd(), cliPath = CLI_PATH, timeoutMs, ctxExists, lockWaitMs = LOCK_WAIT_MS, sleep, daemonAlive } = deps;
+  const { env = process.env, now = Date.now, run, exists, popup = showPopup, check: checkBin, node, uid, cwd = process.cwd(), cliPath = CLI_PATH, timeoutMs, ctxExists, trust, lockWaitMs = LOCK_WAIT_MS, sleep, daemonAlive } = deps;
   let verb;
   let opts;
   try {
@@ -194,7 +194,7 @@ export async function main(argv, deps = {}) {
     }
     case "install": {
       const interval = opts.interval === undefined ? 300 : Number(opts.interval);
-      const r = install({ env, interval, cliPath, node, uid, check: checkBin, cwd, stateDir: dir, ctx: opts.ctx, exists: ctxExists });
+      const r = install({ env, interval, cliPath, node, uid, check: checkBin, cwd, stateDir: dir, ctx: opts.ctx, exists: ctxExists, ...(trust ? { trust } : {}) });
       if (r.code === 0) {
         const rec = withStateLock(dir, () => writeState(file, { ...readState(file), intervalS: interval }) || writeState.lastError, { waitMs: lockWaitMs });
         const err = !rec.ok ? rec.error : rec.value === true ? null : rec.value;

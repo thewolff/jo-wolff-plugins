@@ -15,10 +15,19 @@ reloads a person's agents at login only from `~/Library/LaunchAgents`.
 - `install` writes the plist to `$HOME/Library/LaunchAgents/com.jo-wolff-plugins.ctx-watch.plist`
   and the printed bootstrap line names that path. The logs stay in `<state>/launchd/`. `install`
   refuses (exit 1, nothing written) when `HOME` is unset or not absolute.
-- A plist at the old `<state>/launchd/` path is removed once the new one lints, and `install`
-  says so and prints `launchctl bootout gui/<uid>/<label> && launchctl bootstrap gui/<uid>
-  <new path>` when the job is loaded, the same pair joined by `;` when launchctl could not say,
-  and the bootstrap alone when the job is known not loaded. A failed lint keeps the old plist.
+- A plist at the old `<state>/launchd/` path is removed only after `plutil -lint` ran and
+  passed on the new one, and `install` says so. Without plutil the old file is kept and install
+  says the move is not finished; a failed lint keeps it too.
+- The printed command follows `launchctl print`, not whether this run moved a file: loaded,
+  `launchctl bootout gui/<uid>/<label> && launchctl bootstrap gui/<uid> <new path>`; not
+  loaded, the bootstrap alone; no answer, the same pair joined by `;`, on every install.
+- `install` refuses, writing nothing, when `~/Library` or `~/Library/LaunchAgents` is a
+  symlink, not yours, or writable by group or others, or when an existing plist is a symlink or
+  not yours (`writeAgentPlist`). The plist goes to an exclusive temporary file and is renamed
+  into place, 0644 whatever the umask.
+- `install` refuses node, the CLI or ctx when the file, its real target, or a directory above
+  either is owned by someone other than you or root, or writable by others (every user outside
+  a sticky directory, or a group other than wheel or admin) (`untrustedReason`).
 - `uninstall` prints the `rm` of the plist as well as the bootout: a plist left in
   LaunchAgents is loaded again at the next login.
 - `repair` restores a timer it paused from the plist `launchctl print` said the job came from,
@@ -38,6 +47,7 @@ reloads a person's agents at login only from `~/Library/LaunchAgents`.
   command in the agent's context. A timeout, a refusal, or launchctl missing says nothing.
   When this line fires, the dead-man's line is not repeated.
 - `runCheck(bin, args, { timeoutMs })`: the bound is an option; the default stays 10 s.
+- `launchd.loaded` reads a multi-word state (`state = not running`) whole.
 
 ## [0.4.2] - 2026-11-12
 
