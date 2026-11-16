@@ -463,28 +463,54 @@ function learnText(r) {
 }
 
 /**
- * The card as the agent gets it back. A non-empty proposedCode is lifted out of the JSON and
- * shown after it as a fenced block, so the planned code reads as code rather than as an
- * escaped string. Alternatives, when the card has them, follow as a list with the chosen one
- * marked, for the card to show side by side. A commit request follows as the message the gate
- * will commit with, fenced. A card without any of these reads exactly as it did before the
- * fields existed.
+ * The card as the agent gets it back. Fields meant to be read as text rather than as escaped
+ * JSON strings are lifted out of the JSON and follow it, in the order the card shows them: a
+ * non-empty `why` in full, under the decision (the JSON above it holds the decision), then its
+ * `sources`, one per line, then a non-empty proposedCode as a fenced block, then alternatives as
+ * a list with the chosen one marked, then a commit request as the message the gate will commit
+ * with, fenced. A field that is lifted is left out of the JSON; one that is not (an empty `why`,
+ * an empty planned code) stays in it. In learning mode (the gate result's `state.learning`) the
+ * planned code's line also asks for why-comments on its key lines. A card without any of these
+ * reads exactly as it did before the fields existed.
+ * @param {{ card: Record<string, any>, state?: { learning?: boolean } }} r
  */
-function cardText(r) {
+export function cardText(r) {
   const head = `Card ${r.card.id} recorded. Show it to your partner and wait for their reply.\n`;
-  const { proposedCode, alternatives, commit, ...rest } = r.card;
-  const hasAlternatives = Array.isArray(alternatives) && alternatives.length > 0;
-  const commitTail = commit
-    ? `\nCommit at pair_done, to show on the card: when the change set closes with a change inside the boundary, the gate commits the changed boundary files, and nothing else, with this message:\n${fenced(commit.message)}`
-    : "";
-  const tail = (hasAlternatives
-    ? `\nAlternatives, to show on the card with the chosen one marked:\n${alternatives.map((a) => `  ${a.chosen ? "[chosen]" : "[      ]"} ${a.design}`).join("\n")}`
-    : "") + commitTail;
-  if (typeof proposedCode !== "string" || proposedCode === "") {
-    const { alternatives: _lifted, commit: _commit, ...plain } = r.card;
-    return `${head}${JSON.stringify(hasAlternatives || commit ? plain : r.card, null, 2)}${tail}`;
+  const { why, sources, proposedCode, alternatives, commit } = r.card;
+  const lifted = {
+    why: typeof why === "string" && why.trim() !== "",
+    sources: Array.isArray(sources) && sources.length > 0,
+    proposedCode: typeof proposedCode === "string" && proposedCode !== "",
+    alternatives: Array.isArray(alternatives) && alternatives.length > 0,
+    commit: Boolean(commit),
+  };
+  const json = { ...r.card };
+  for (const [k, on] of Object.entries(lifted)) if (on) delete json[k];
+  const parts = [`${head}${JSON.stringify(json, null, 2)}`];
+  if (lifted.why) {
+    parts.push(`Why this approach (why), to show on the card in full as **Why this approach:**, directly under the decision and before the planned code; never shorten or summarize it. Close your message by restating the decision with this why's gist in one line:\n${why}`);
   }
-  return `${head}${JSON.stringify(rest, null, 2)}\nPlanned code (proposedCode), to show on the card:\n${fenced(proposedCode)}${tail}`;
+  if (lifted.sources) {
+    parts.push(`Sources (sources), to show on the card as **Sources:**, under the why and before the planned code:\n${sources.map((s) => `  - ${sourceLine(s)}`).join("\n")}`);
+  }
+  if (lifted.proposedCode) {
+    const annotate = r.state?.learning === true ? "; learning mode is on, so annotate its key lines with short inline comments, each saying why that line is written that way, not what it does" : "";
+    parts.push(`Planned code (proposedCode), to show on the card${annotate}:\n${fenced(proposedCode)}`);
+  }
+  if (lifted.alternatives) {
+    parts.push(`Alternatives, to show on the card with the chosen one marked:\n${alternatives.map((a) => `  ${a.chosen ? "[chosen]" : "[      ]"} ${a.design}`).join("\n")}`);
+  }
+  if (lifted.commit) {
+    parts.push(`Commit at pair_done, to show on the card: when the change set closes with a change inside the boundary, the gate commits the changed boundary files, and nothing else, with this message:\n${fenced(commit.message)}`);
+  }
+  return parts.join("\n");
+}
+
+/** One source as the card shows it: a path or "from memory" string as is, a URL with its passage, anything else as JSON. */
+function sourceLine(s) {
+  if (typeof s === "string") return s;
+  if (s && typeof s === "object" && typeof s.url === "string") return typeof s.passage === "string" ? `${s.url} ("${s.passage}")` : s.url;
+  return JSON.stringify(s);
 }
 
 /** A code fence longer than any backtick run inside `text`, so the text cannot close it. */

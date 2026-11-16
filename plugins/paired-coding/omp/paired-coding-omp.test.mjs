@@ -22,6 +22,7 @@ import { CARRIED_PHRASE, PAIR_TOOLS, fencedEnv } from "../core/gate.mjs";
 import { sandboxProblem } from "../lib/host-io.mjs";
 import pairedCodingOmp, { TREE_NOTICE, stopNotice } from "./paired-coding-omp.ts";
 import { TOOLS as MCP_TOOLS } from "../server/pair-server.mjs";
+import { cardText } from "../lib/verbs.mjs";
 
 const HAS_SANDBOX = sandboxProblem() === null;
 const sandboxOnly = HAS_SANDBOX ? test : test.skip;
@@ -516,6 +517,19 @@ sandboxOnly("pair_propose through the adapter journals proposedCode and shows it
   assert.equal(r.details.card.proposedCode, proposedCode);
   assert.ok(r.text.endsWith(`\`\`\`\n${proposedCode}\n\`\`\``), r.text);
   assert.equal(s.journal().find((e) => e.type === "card").card.proposedCode, proposedCode);
+});
+
+sandboxOnly("pair_propose through the adapter shows why and sources as the MCP server does: lifted, in full, before the planned code", async () => {
+  const s = setup();
+  assert.equal((await s.call("pair_start")).ok, true);
+  const why = `A long why that must not be cut. ${"Every sentence of it reaches the card. ".repeat(10)}\nAnd a second paragraph.`;
+  const r = await s.call("pair_propose", { boundary: ["a.txt"], decision: "d", why, sources: ["from memory"], proposedCode: "x = 1" });
+  assert.equal(r.ok, true, r.text);
+  assert.equal(r.text, cardText(r.details), "the adapter returns the shared card text unchanged, as the MCP server does");
+  const at = (needle) => r.text.indexOf(needle);
+  assert.ok(at('"decision": "d"') < at(`Why this approach (why)`) && at("Why this approach (why)") < at("Sources (sources)") && at("Sources (sources)") < at("Planned code (proposedCode)"), r.text);
+  assert.ok(r.text.includes(`\n${why}\n`), "the why whole");
+  assert.doesNotMatch(r.text.slice(0, at("\nWhy this approach")), /"why"|"sources"/);
 });
 
 const blocked = async (s, toolName = "write") => (await s.emit("tool_call", { toolName, input: {} }))?.block === true;

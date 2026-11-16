@@ -281,7 +281,7 @@ const SPECS: Record<string, ToolSpec> = {
 				whyNow: OPT_STR(z, "Why this change, now."),
 				decision: OPT_STR(z, "The decision the card asks for."),
 				currentCode: OPT_STR(z, "What the code does today."),
-				proposedCode: OPT_STR(z, "The planned code: the whole new or changed function, or a diff. Show it on the card before asking for agreement."),
+				proposedCode: OPT_STR(z, "The planned code: the whole new or changed function, or a diff. Show it on the card before asking for agreement. In learning mode, show it with short comments on its key lines saying why each line is written that way."),
 				effect: OPT_STR(z, "What will be different afterwards."),
 				checks: OPT_LIST(z, "The checks that will show it works."),
 				openPoints: OPT_LIST(z, "Questions still open. While any remain, pair_begin is refused."),
