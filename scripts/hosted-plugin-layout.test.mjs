@@ -17,7 +17,13 @@ const tracked = execFileSync("git", ["-C", ROOT, "ls-files", "-z", "--", "plugin
   .split("\0")
   .filter(Boolean);
 
-/** The text of a SKILL.md frontmatter `description`, block scalars and continuation lines included; null when absent. */
+/**
+ * The text of a SKILL.md frontmatter `description`, null when absent. Reads a block scalar
+ * (`>-`, `|`, with or without a trailing `# comment` on its header) as its indented lines; a
+ * quoted scalar as the text between its quotes, `#` included, continuation lines folded; a plain
+ * scalar with YAML's comments dropped (`#` at a line start or after whitespace), ending at a
+ * comment line.
+ */
 export function frontmatterDescription(text) {
   const lines = text.split(/\r?\n/);
   if (lines[0] !== "---") return null;
@@ -26,19 +32,51 @@ export function frontmatterDescription(text) {
   const at = front.findIndex((l) => /^description:/.test(l));
   if (at === -1) return null;
   const head = front[at].slice("description:".length).trim();
-  const parts = /^[>|][-+0-9]*$/.test(head) ? [] : [head];
+  const rest = [];
   for (const l of front.slice(at + 1)) {
     if (!/^\s/.test(l) && l !== "") break;
-    parts.push(l.trim());
+    rest.push(l.trim());
   }
-  return parts.join(" ").trim();
+  // Block scalar: every indented line is content, a `#` in it included.
+  if (/^[>|][-+0-9]*(\s+#.*)?$/.test(head)) return rest.filter(Boolean).join(" ");
+  const quote = head[0];
+  if (quote === "'" || quote === '"') {
+    const folded = [head, ...rest].filter(Boolean).join(" ");
+    let i = 1;
+    for (; i < folded.length; i++) {
+      if (quote === '"' && folded[i] === "\\") { i++; continue; }
+      if (folded[i] !== quote) continue;
+      if (quote === "'" && folded[i + 1] === "'") { i++; continue; }
+      break;
+    }
+    return folded.slice(1, i);
+  }
+  const parts = [];
+  for (const [n, l] of [head, ...rest].entries()) {
+    if (n > 0 && l.startsWith("#")) break;
+    parts.push(l.replace(/(^|\s)#.*$/, "").trim());
+  }
+  return parts.filter(Boolean).join(" ");
 }
 
 test("frontmatterDescription reads plain, quoted and block-scalar descriptions, and a block indicator is not content", () => {
   assert.equal(frontmatterDescription("---\nname: a\ndescription: run git diff <base>..HEAD\n---\n"), "run git diff <base>..HEAD");
-  assert.equal(frontmatterDescription("---\ndescription: 'quoted'\nlicense: MIT\n---\n"), "'quoted'");
+  assert.equal(frontmatterDescription("---\ndescription: 'quoted'\nlicense: MIT\n---\n"), "quoted");
   assert.equal(frontmatterDescription("---\ndescription: >-\n  folded\n  text\nname: a\n---\n"), "folded text");
   assert.equal(frontmatterDescription("---\nname: a\n---\n"), null);
+});
+
+test("frontmatterDescription drops YAML comments and keeps a # that is content", () => {
+  // A comment on a block scalar's header is not content; a # inside the block is.
+  assert.equal(frontmatterDescription("---\ndescription: >- # Folded <description>\n  folded\n  issue #12\n---\n"), "folded issue #12");
+  // A plain scalar's trailing comment is dropped; a # not after whitespace is content.
+  assert.equal(frontmatterDescription("---\ndescription: plain text # a <comment>\n---\n"), "plain text");
+  assert.equal(frontmatterDescription("---\ndescription: C#-style text\n---\n"), "C#-style text");
+  assert.equal(frontmatterDescription("---\ndescription: first\n  # a <comment> line ends it\n  never read\n---\n"), "first");
+  // A quoted scalar keeps its # and its brackets; a comment after the closing quote is dropped.
+  assert.equal(frontmatterDescription("---\ndescription: 'has # inside <x>' # trailing <comment>\n---\n"), "has # inside <x>");
+  assert.equal(frontmatterDescription('---\ndescription: "say \\"#1\\" <y>"\n---\n'), 'say \\"#1\\" <y>');
+  assert.equal(frontmatterDescription("---\ndescription: 'it''s # fine'\n---\n"), "it''s # fine");
 });
 
 test("no plugin ships a top-level bin/ directory", () => {

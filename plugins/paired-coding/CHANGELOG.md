@@ -197,7 +197,8 @@ With learning mode off, every new check is skipped and a session runs exactly as
   token names is not running and the lock is stale, by removing that one token by name; a lock
   whose holder is still running is never evicted on its age, and the wait fails naming the pid
   and the recovery command, `node <plugin>/bin/pair.mjs unlock --stale <lock directory>`, which
-  makes the same check. That command acts only on paired-coding's own lock directories inside
+  makes the same check (from 1.6.2 the command is `node <plugin>/scripts/pair.mjs unlock --stale …`).
+  That command acts only on paired-coding's own lock directories inside
   the state base (any other path, or a symlink out of it, exits 2 untouched); its refusal of a
   running pid explains pid reuse and never advises ending a process, and `--force` clears a
   reused pid's lock only when that pid's command line names neither `paired-coding` nor
