@@ -121,25 +121,19 @@ tests or artifacts, whose effect can be checked on its own.
 
 Every card shows the planned code before your partner agrees, unprompted: never wait for them
 to ask. The first card of a change set always carries it, and so does every revision. Keep the
-prose fields to a line or two; the code is what your partner reviews. Show the code whole up to
-about 80 lines; past that, show the parts the decision rests on and say what you left out. When
-your partner says "show more", expand any field.
+prose fields to a line or two; the code is what your partner reviews. The exception is `why`:
+show it in full, as written, every time; never shorten or summarize it. Show the code whole up
+to about 80 lines; past that, show the parts the decision rests on and say what you left out.
+When your partner says "show more", expand any field.
+
+Show the fields in this order:
 
 - **Why now:** one line tying it to the roadmap.
 - **The decision inside it:** the choice your partner might disagree with, stated plainly. This
   line is why pairing exists; write it first and make it specific.
-- **Current code:** the smallest excerpt of what the change set touches, as code, not a
-  description of it.
-- **Planned code:** the code you will write: the whole new or changed function, or a diff
-  against the current code. Pass it as `pair_propose`'s `proposedCode` and show it on the card
-  in a code block.
-- **Proposed effect:** what behaves differently afterward.
-- **Boundary:** the exact files it will write, as worktree-relative paths, globs, or `dir/` for
-  a whole subtree, and the checks it will run.
-- **Open points:** anything you need your partner to settle. Agreement waits until every open
-  point is settled.
-- **Why this approach** (`why`) and **Sources** (`sources`), required only in learning mode
-  (below), but a `why` that claims a codebase pattern, in any mode and however it is worded,
+- **Why this approach** (`why`) and **Sources** (`sources`), directly under the decision, the
+  why in full and the sources one per line. Required only in learning mode (below), but a
+  `why` that claims a codebase pattern, in any mode and however it is worded,
   rests on a pattern source: an absolute `file:line` inside the repository's
   `.pattern-check/` directory (pattern-check's receipt for this session), or two or more
   absolute `file:line` at distinct locations in the repository where the pattern is (one
@@ -149,6 +143,18 @@ your partner says "show more", expand any field.
   `like the rest of the codebase`, `pattern-fit`, and the like) without one, and its refusal
   quotes the claim and names the receipt path it looked for and how many sources it found;
   add the source it names, never reword the claim to get past it.
+- **Current code:** the smallest excerpt of what the change set touches, as code, not a
+  description of it.
+- **Planned code:** the code you will write: the whole new or changed function, or a diff
+  against the current code. Pass it as `pair_propose`'s `proposedCode` and show it on the card
+  in a code block. In learning mode, the code on the card carries short inline comments on
+  its key lines, each saying why that line is written that way, not restating what it does;
+  the design-level why stays in full under the decision.
+- **Proposed effect:** what behaves differently afterward.
+- **Boundary:** the exact files it will write, as worktree-relative paths, globs, or `dir/` for
+  a whole subtree, and the checks it will run.
+- **Open points:** anything you need your partner to settle. Agreement waits until every open
+  point is settled.
 - **Alternatives** (`alternatives`): the designs you weighed, each `{ "design", "chosen" }`
   with exactly one `chosen: true`. Give it whenever you weighed more than one design. When
   ask-graham ran this session (its findings file is on disk), the gate requires it on the
@@ -158,6 +164,23 @@ your partner says "show more", expand any field.
   to the same findings; a fresh ask-graham verdict holds the next card again. Show them on
   the card as **Alternatives:**, one per line, with the chosen one marked, as the gate's
   reply lists them.
+- **Commit** (`commit`): when your partner wants the change committed, pass
+  `{ "message": "subject line\n\nbody" }` and show the message on the card as **Commit:**. No
+  control characters other than newline and tab, and no line starting with three backticks or
+  tildes. The gate commits at `pair_done`, outside the sandbox, the exact bytes the read-back
+  diff shows, of only the files that changed inside the boundary; whatever your partner staged
+  themselves stays staged and out of it. It runs no git hooks, filters or signing, so say so in
+  the read-back and run the project's checks inside `pair_run` before `pair_done`. `pair_done`
+  returns the commit's SHA and subject, or why it did not commit (nothing changed, a merge,
+  rebase, cherry-pick or bisect in progress, a detached HEAD, git config read from a file in the
+  worktree, a file that changed after the snapshot); the change set closes either way, so report
+  the outcome in the read-back. Leave it out and nothing is committed. Never commit through
+  `pair_run`: it cannot write a linked worktree's git directory, nor any `.git` on Linux.
+
+When the card has a `why`, the closing ask, the last line of the message showing the card,
+restates the decision and gives the why's gist in one line, for example "Go ahead with keeping
+the cache per session? It dies with the pairing session, so no state leaks into the next one."
+The gist points back at the why shown in full above; it never replaces it.
 
 When the gate reports files changed since the last read-back, put that list at the top of the
 next card and ask your partner which changes are theirs. If they do not recognise a change,
@@ -230,14 +253,18 @@ other gate rule work exactly as written above.
 1. **The card.** `pair_propose` takes two more fields, and the gate refuses the card without
    them:
    - `why`: one paragraph on why this approach rather than the one your partner might pick
-     instead. Show it on the card as **Why this approach:**. "It's the pattern used in the
+     instead. Show it on the card as **Why this approach:**, in full, directly under the
+     decision (see *The card*). "It's the pattern used in the
      rest of the codebase" is a fine reason when it is true, and then it needs the pattern
-     source *The card* describes: a `file:line` in `.pattern-check/` or two in the code.
+     source *The card* describes: a `file:line` in `.pattern-check/` or two in the code. The
+     why reaches the code too: show the planned code with short inline comments on its key
+     lines, each saying why that line is written that way (not what it does), as
+     `pair_propose`'s reply asks in learning mode.
    - `sources`: at least one, one per claim in `why`, each one of: `{ "url", "passage" }` for a
      URL you fetched this session, with the passage you rely on; an absolute `file:line` or
      `file:line-line` you read; or a string starting `from memory` for a claim you fetched and
      read nothing for. A URL you did not fetch this session is not a source. Show them on the
-     card as **Sources:**.
+     card as **Sources:**, under the why and before the planned code.
 
    When the card has `alternatives`, show them under **Alternatives:** with the chosen one
    marked, so your partner sees the pattern-fit pick and the better design side by side and

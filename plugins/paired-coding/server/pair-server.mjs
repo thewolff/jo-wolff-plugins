@@ -52,7 +52,7 @@ export const TOOLS = [
   },
   {
     name: "pair_propose",
-    description: "Record the next change card. Its boundary is hashed now; only a turn your partner types after this card can agree to it.",
+    description: "Record the next change card. Its boundary is hashed now; only a turn your partner types after this card can agree to it. With commit, the card also asks the gate to commit the change set's boundary files at pair_done.",
     inputSchema: {
       type: "object",
       properties: {
@@ -60,7 +60,7 @@ export const TOOLS = [
         whyNow: str("One line tying it to the roadmap."),
         decision: str("The choice inside it your partner might disagree with."),
         currentCode: str("The smallest excerpt of what it touches."),
-        proposedCode: str("The planned code: the whole new or changed function, or a diff. Show it on the card before asking for agreement."),
+        proposedCode: str("The planned code: the whole new or changed function, or a diff. Show it on the card before asking for agreement. In learning mode, show it with short comments on its key lines saying why each line is written that way."),
         effect: str("What behaves differently afterward."),
         checks: strs("The checks it will run."),
         openPoints: strs("Anything your partner must settle first. A card with open points cannot be agreed."),
@@ -80,6 +80,13 @@ export const TOOLS = [
           description: "The designs weighed, exactly one with chosen: true. Required when ask-graham's findings for this session are on disk; then one entry contains their chosen design and, when they weighed a design they did not choose, one entry has chosen: false.",
           items: { type: "object", properties: { design: str("One design, in words."), chosen: { type: "boolean", description: "true for the design the card proposes." } }, required: ["design", "chosen"] },
         },
+        commit: {
+          type: "object",
+          description: "Ask the gate to commit at pair_done: it commits the read-back bytes of the changed files inside the boundary, and nothing else, with this message, running no git hooks or filters. Shown on the card, so your partner's agreement covers it. Omit it and nothing is committed.",
+          properties: { message: str("The commit message; its first line is the subject.") },
+          required: ["message"],
+          additionalProperties: false,
+        },
       },
       required: ["boundary"],
     },
@@ -91,7 +98,7 @@ export const TOOLS = [
   },
   {
     name: "pair_done",
-    description: "Close the open change set. Kills anything left from its pair_run calls, snapshots the worktree and returns the machine-produced diff of the boundary since pair_begin for the read-back.",
+    description: "Close the open change set. Kills anything left from its pair_run calls, snapshots the worktree and returns the machine-produced diff of the boundary since pair_begin for the read-back. When the agreed card asked for a commit and something inside the boundary changed, the gate commits the read-back bytes of those files, running no git hooks or filters, and returns the commit's SHA and subject, or why it did not commit; the change set closes either way.",
     inputSchema: {
       type: "object",
       properties: {

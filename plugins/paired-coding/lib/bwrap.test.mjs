@@ -12,7 +12,7 @@ import { test, describe } from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { randomBytes } from "node:crypto";
-import { chmodSync, existsSync, linkSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, renameSync, statSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, linkSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, renameSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -223,6 +223,14 @@ const fsNow = (root) => {
   return statSync(p).mtimeMs;
 };
 
+// Waits until the filesystem clock has passed `path`'s change time. Linux stamps files from a
+// coarse clock (one tick is milliseconds), so a link made just before fsNow can share its tick,
+// and newLinks rightly counts a change time equal to the floor as new.
+const pastCtime = (root, path) => {
+  const p = join(root, ".stamp-wait");
+  do writeFileSync(p, ""); while (statSync(p).mtimeMs <= lstatSync(path).ctimeMs);
+};
+
 describe("newLinks", () => {
   test("finds a new symlink, a new hard link and a new .git, under the roots only", () => {
     const root = tree();
@@ -266,6 +274,125 @@ describe("newLinks", () => {
     const since = fsNow(root);
     symlinkSync("../outside.txt", join(root, "src", "b.txt"));
     assert.deepEqual(newLinks(root, roots, since, before, []), ["src/b.txt"]);
+  });
+
+  describe("with the open change set's boundary", () => {
+    // client/node_modules/ is agreed; far/ and outside.txt are not.
+    const npmTree = () => {
+      const root = tree();
+      mkdirSync(join(root, "client", "node_modules", ".bin"), { recursive: true });
+      mkdirSync(join(root, "client", "node_modules", "vitest"));
+      writeFileSync(join(root, "client", "node_modules", "vitest", "vitest.mjs"), "v");
+      mkdirSync(join(root, "far", "deep"), { recursive: true });
+      writeFileSync(join(root, "far", "y"), "outside");
+      writeFileSync(join(root, ".git", "config"), "[core]\n");
+      return root;
+    };
+    const BOUNDARY = ["client/node_modules/"];
+    const check = (root, make, boundary = BOUNDARY) => {
+      const roots = [join(root, "client", "node_modules")];
+      const before = gitBaseline(root, roots, []);
+      const since = fsNow(root);
+      make();
+      return newLinks(root, roots, since, before, [], boundary);
+    };
+    const bin = (root, name) => join(root, "client", "node_modules", ".bin", name);
+
+    test("a relative link into the boundary (npm's node_modules/.bin) is not reported", () => {
+      const root = npmTree();
+      assert.deepEqual(check(root, () => {
+        symlinkSync("../vitest/vitest.mjs", bin(root, "vitest"));
+        symlinkSync("../vitest", bin(root, "vitest-dir"));
+        symlinkSync("../vitest/not-yet.mjs", bin(root, "dangling-inside"));
+        symlinkSync(join(root, "client", "node_modules", "vitest", "vitest.mjs"), bin(root, "absolute-inside"));
+      }), []);
+    });
+
+    test("without a boundary (no change set open) the same link is reported", () => {
+      const root = npmTree();
+      assert.deepEqual(check(root, () => symlinkSync("../vitest/vitest.mjs", bin(root, "vitest")), null), ["client/node_modules/.bin/vitest"]);
+    });
+
+    test("a ../ link escaping the boundary is reported", () => {
+      const root = npmTree();
+      assert.deepEqual(check(root, () => symlinkSync("../../../outside.txt", bin(root, "esc"))), ["client/node_modules/.bin/esc"]);
+    });
+
+    test("an absolute link outside the boundary is reported, and so is one dangling outside it", () => {
+      const root = npmTree();
+      assert.deepEqual(check(root, () => {
+        symlinkSync(join(root, "outside.txt"), bin(root, "abs"));
+        symlinkSync("/etc/hosts", bin(root, "etc"));
+        symlinkSync("../../../nowhere/x", bin(root, "dangling-out"));
+        symlinkSync("../../../nowhere/../client/node_modules/x", bin(root, "dangling-dotdot"));
+      }), ["client/node_modules/.bin/abs", "client/node_modules/.bin/dangling-dotdot", "client/node_modules/.bin/dangling-out", "client/node_modules/.bin/etc"]);
+    });
+
+    test("a target that is inside lexically but outside physically is reported", () => {
+      const root = npmTree();
+      // hop existed before the run and points outside; lexically hop/../vitest/vitest.mjs is
+      // client/node_modules/vitest/vitest.mjs, physically it is far/vitest/vitest.mjs.
+      symlinkSync("../../far/deep", join(root, "client", "node_modules", "hop"));
+      mkdirSync(join(root, "far", "vitest"));
+      writeFileSync(join(root, "far", "vitest", "vitest.mjs"), "outside");
+      pastCtime(root, join(root, "client", "node_modules", "hop"));
+      assert.deepEqual(check(root, () => {
+        symlinkSync("../hop/../vitest/vitest.mjs", bin(root, "x"));
+        symlinkSync("../hop/../..", bin(root, "up"));
+        symlinkSync("../hop/../y", bin(root, "y"));
+      }), ["client/node_modules/.bin/up", "client/node_modules/.bin/x", "client/node_modules/.bin/y"]);
+    });
+
+    test("a link reaching .git is reported, even when the boundary covers everything", () => {
+      const root = npmTree();
+      assert.deepEqual(check(root, () => {
+        symlinkSync("../../../.git/config", bin(root, "cfg"));
+        symlinkSync("../../../.GIT", bin(root, "gitdir"));
+      }, ["**"]), ["client/node_modules/.bin/cfg", "client/node_modules/.bin/gitdir"]);
+    });
+
+    test("a link to a directory only part of which is agreed is reported; a new hard link always is", () => {
+      const root = npmTree();
+      assert.deepEqual(check(root, () => {
+        symlinkSync("../vitest", bin(root, "dir"));
+        linkSync(join(root, "client", "node_modules", "vitest", "vitest.mjs"), bin(root, "hard"));
+      }, ["client/node_modules/.bin/*", "client/node_modules/vitest/*.mjs"]), ["client/node_modules/.bin/dir", "client/node_modules/.bin/hard", "client/node_modules/vitest/vitest.mjs"]);
+    });
+
+    describe("links accepted in an earlier run", () => {
+      // Probe E: w/a/b/l -> ../../../w/t resolves to w/t, inside w/. Moving w/a/b to w/b leaves
+      // the link's own change time alone and re-aims it to the worktree's parent.
+      const setup = () => {
+        const root = npmTree();
+        mkdirSync(join(root, "w", "a", "b"), { recursive: true });
+        writeFileSync(join(root, "w", "t"), "t");
+        const roots = [join(root, "w")];
+        const memory = { known: {}, accepted: {} };
+        const before = gitBaseline(root, roots, []);
+        const since = fsNow(root);
+        symlinkSync("../../../w/t", join(root, "w", "a", "b", "l"));
+        assert.deepEqual(newLinks(root, roots, since, before, [], ["w/"], memory), []);
+        assert.deepEqual(Object.values(memory.accepted), [{ path: "w/a/b/l", resolved: "w/t" }]);
+        pastCtime(root, join(root, "w", "a", "b", "l"));
+        return { root, roots, known: memory.accepted };
+      };
+      const nextRun = ({ root, roots, known }, make) => {
+        const before = gitBaseline(root, roots, []);
+        const since = fsNow(root);
+        make();
+        return newLinks(root, roots, since, before, [], ["w/"], { known, accepted: {} });
+      };
+
+      test("one re-aimed outside by moving its directory is reported", () => {
+        const s = setup();
+        assert.deepEqual(nextRun(s, () => renameSync(join(s.root, "w", "a", "b"), join(s.root, "w", "b"))), ["w/b/l"]);
+      });
+
+      test("one still resolving where it did is not reported again", () => {
+        const s = setup();
+        assert.deepEqual(nextRun(s, () => writeFileSync(join(s.root, "w", "other"), "x")), []);
+      });
+    });
   });
 });
 

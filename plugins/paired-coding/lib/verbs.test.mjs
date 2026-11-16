@@ -985,6 +985,34 @@ test("a pair_run that makes a link where it could write stops the session until 
   assert.equal(verdict("Write", { sessionDir: f.dir }).allow, true);
 });
 
+test("a pair_run that makes a symlink staying inside the boundary (npm's node_modules/.bin) leaves the session going; one leaving it still stops it", { skip: !hasSandbox || BACKEND === "landlock" ? "needs a backend that lets a run make a symlink (Landlock grants none)" : false }, async () => {
+  const f = fixture();
+  mkdirSync(join(f.root, "client", "node_modules", "vitest"), { recursive: true });
+  writeFileSync(join(f.root, "client", "node_modules", "vitest", "vitest.mjs"), "run\n");
+  const cardId = await openChangeSet(f, ["client/node_modules/"]);
+  const inside = await executeVerb("pair_run", { command: "mkdir -p client/node_modules/.bin && ln -s ../vitest/vitest.mjs client/node_modules/.bin/vitest" }, f.ctx);
+  assert.equal(inside.ok, true, inside.text);
+  assert.equal(journal(f).some((e) => e.type === "link-made"), false);
+  const out = await executeVerb("pair_run", { command: "ln -s ../../../notes.txt client/node_modules/.bin/escape" }, f.ctx);
+  assert.equal(out.ok, false);
+  assert.ok(out.text.includes("STOPPED: pair_run made a link or a .git entry inside the paths it could write (client/node_modules/.bin/escape)"), out.text);
+  assert.equal((await executeVerb("pair_done", { cardId }, f.ctx)).ok, false);
+});
+
+test("a link accepted in one pair_run and re-aimed by moving its directory in a later one stops the session", { skip: !hasSandbox || BACKEND === "landlock" ? "needs a backend that lets a run make a symlink (Landlock grants none)" : false }, async () => {
+  const f = fixture();
+  mkdirSync(join(f.root, "client", "node_modules", "a", "b"), { recursive: true });
+  writeFileSync(join(f.root, "client", "node_modules", "t"), "t\n");
+  const cardId = await openChangeSet(f, ["client/node_modules/"]);
+  // a/b/l -> ../../../node_modules/t is client/node_modules/t; moved to b/l it is node_modules/t.
+  const made = await executeVerb("pair_run", { command: "ln -s ../../../node_modules/t client/node_modules/a/b/l" }, f.ctx);
+  assert.equal(made.ok, true, made.text);
+  const moved = await executeVerb("pair_run", { command: "mv client/node_modules/a/b client/node_modules/b" }, f.ctx);
+  assert.equal(moved.ok, false);
+  assert.ok(moved.text.includes("STOPPED: pair_run made a link or a .git entry inside the paths it could write (client/node_modules/b/l)"), moved.text);
+  assert.equal((await executeVerb("pair_done", { cardId }, f.ctx)).ok, false);
+});
+
 test("a pair_run that makes no link leaves the session going", { skip: !hasSandbox }, async () => {
   const f = fixture();
   const cardId = await openChangeSet(f, ["src/**"]);
@@ -1670,6 +1698,59 @@ test("a card without proposedCode reads as before; with it, the planned code fol
     "the fence is one backtick longer than the longest run inside the code",
   );
   assert.equal(journal(f).filter((e) => e.type === "card")[1].card.proposedCode, proposedCode, "the journaled card keeps the planned code");
+});
+
+test("a card's why and sources are lifted out of the JSON and shown in full, under the decision and before the planned code; a card without a why has no Why heading", { skip: !hasSandbox }, async () => {
+  const f = fixture();
+  assert.equal((await executeVerb("pair_start", {}, f.ctx)).ok, true);
+  // A why far past "a line or two", with a newline in it: the reply carries every character.
+  const why = `Keep the cache in the session directory rather than a module global: ${"a global outlives the pairing session and leaks one partner's state into the next. ".repeat(12)}\nSecond paragraph: the session directory is already the unit the gate locks.`;
+  const sources = [`${f.root}/src/a.txt:1`, "from memory: node's module cache keeps globals for the process", { url: "https://nodejs.org/api/modules.html#caching", passage: "Modules are cached after the first time they are loaded." }];
+  const proposedCode = "x = 1";
+  const p = await executeVerb("pair_propose", { boundary: ["src/a.txt"], decision: "keep the cache per session", why, sources, proposedCode }, f.ctx);
+  assert.equal(p.ok, true, p.text);
+  const { why: _w, sources: _s, proposedCode: _c, ...rest } = p.result.card;
+  assert.equal(
+    p.text,
+    [
+      `Card card-1 recorded. Show it to your partner and wait for their reply.\n${JSON.stringify(rest, null, 2)}`,
+      `Why this approach (why), to show on the card in full as **Why this approach:**, directly under the decision and before the planned code; never shorten or summarize it. Close your message by restating the decision with this why's gist in one line:\n${why}`,
+      `Sources (sources), to show on the card as **Sources:**, under the why and before the planned code:\n  - ${f.root}/src/a.txt:1\n  - from memory: node's module cache keeps globals for the process\n  - https://nodejs.org/api/modules.html#caching ("Modules are cached after the first time they are loaded.")`,
+      `Planned code (proposedCode), to show on the card:\n\`\`\`\n${proposedCode}\n\`\`\``,
+    ].join("\n"),
+  );
+  const at = (needle) => p.text.indexOf(needle);
+  assert.ok(at('"decision": "keep the cache per session"') < at("Why this approach (why)"), "the decision comes first");
+  assert.ok(at("Why this approach (why)") < at("Sources (sources)") && at("Sources (sources)") < at("Planned code (proposedCode)"), "why, then sources, then the planned code");
+  assert.ok(p.text.includes(why), "the why is in the reply whole, not truncated");
+  const json = p.text.slice(0, at("\nWhy this approach (why)"));
+  assert.doesNotMatch(json, /"why"|"sources"/, "lifted out of the JSON, like the planned code");
+  assert.equal(journal(f).find((e) => e.type === "card").card.why, why, "the journaled card keeps the why");
+
+  const noWhy = await executeVerb("pair_propose", { boundary: ["src/a.txt"], decision: "d", why: "", proposedCode }, f.ctx);
+  assert.equal(noWhy.ok, true, noWhy.text);
+  assert.doesNotMatch(noWhy.text, /Why this approach|Sources \(sources\)/, "no empty Why heading and no Sources heading");
+  assert.match(noWhy.text, /"why": ""/, "an empty why is not lifted; it stays in the JSON");
+  const none = await executeVerb("pair_propose", { boundary: ["src/a.txt"], decision: "d" }, f.ctx);
+  assert.equal(none.text, `Card card-3 recorded. Show it to your partner and wait for their reply.\n${JSON.stringify(none.result.card, null, 2)}`);
+});
+
+test("in learning mode the planned code's line asks for why-comments on its key lines; with learning off it does not", { skip: !hasSandbox }, async () => {
+  const f = fixture();
+  assert.equal((await executeVerb("pair_start", {}, f.ctx)).ok, true);
+  const ask = /annotate its key lines with short inline comments, each saying why that line is written that way, not what it does/;
+  const off = await executeVerb("pair_propose", { boundary: ["src/a.txt"], decision: "d", proposedCode: "x = 1" }, f.ctx);
+  assert.equal(off.ok, true, off.text);
+  assert.match(off.text, /\nPlanned code \(proposedCode\), to show on the card:\n```\nx = 1\n```$/);
+  assert.doesNotMatch(off.text, ask);
+  assert.equal((await executeVerb("pair_learn", { on: true }, f.ctx)).ok, true);
+  const on = await executeVerb("pair_propose", { boundary: ["src/a.txt"], decision: "d", why: "w", sources: ["from memory"], proposedCode: "x = 1" }, f.ctx);
+  assert.equal(on.ok, true, on.text);
+  assert.match(on.text, /\nPlanned code \(proposedCode\), to show on the card; learning mode is on, so annotate its key lines with short inline comments, each saying why that line is written that way, not what it does:\n```\nx = 1\n```$/);
+  assert.ok(on.text.indexOf("\nw\n") < on.text.indexOf("Planned code"), "the design-level why still comes first, under the decision");
+  // No planned code, no instruction: it rides on the planned code's line only.
+  const bare = await executeVerb("pair_propose", { boundary: ["src/a.txt"], decision: "d", why: "w", sources: ["from memory"] }, f.ctx);
+  assert.doesNotMatch(bare.text, ask);
 });
 
 test(`the walk reads at most ${ROADMAP_WALK_LIMIT} journals, newest first`, { skip: !hasSandbox }, async () => {

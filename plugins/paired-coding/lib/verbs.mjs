@@ -21,10 +21,11 @@ import {
   pairStart, recordInput, runEnd, runStart, sessionEnd, siblingRunProblem, toolVerdict,
 } from "../core/gate.mjs";
 import {
-  activated, appendJournal, defaultTempPaths, findRoot, loadState, loadStateReport, makeIo, markActivated, reapGroups, saveState,
+  activated, addAcceptedLinks, appendJournal, defaultTempPaths, findRoot, loadState, loadStateReport, makeIo, markActivated, readAcceptedLinks, reapGroups, saveState,
   closedRunProblem, describeSandbox, realpathLoose, recordRun, runPgids, runSandboxed, sandboxBackend, sandboxJournal, sandboxProblem, sessionDir, stateBase, withLock, withSession, writeAtomic, writeSandboxed,
 } from "./host-io.mjs";
 import { cardContext } from "./card-context.mjs";
+import { commitBoundary, someOf } from "./commit.mjs";
 import { PATTERN_CHECK_DIR, siblingState } from "./sibling-state.mjs";
 
 /**
@@ -450,7 +451,7 @@ function simple(name, ctx, step, describe) {
 
 function cardArgs(a) {
   const pick = {};
-  for (const k of ["boundary", "whyNow", "decision", "currentCode", "proposedCode", "effect", "checks", "openPoints", "why", "sources", "alternatives"]) if (a[k] !== undefined) pick[k] = a[k];
+  for (const k of ["boundary", "whyNow", "decision", "currentCode", "proposedCode", "effect", "checks", "openPoints", "why", "sources", "alternatives", "commit"]) if (a[k] !== undefined) pick[k] = a[k];
   return pick;
 }
 
@@ -462,24 +463,54 @@ function learnText(r) {
 }
 
 /**
- * The card as the agent gets it back. A non-empty proposedCode is lifted out of the JSON and
- * shown after it as a fenced block, so the planned code reads as code rather than as an
- * escaped string. Alternatives, when the card has them, follow as a list with the chosen one
- * marked, for the card to show side by side. A card without either reads exactly as it did
- * before the fields existed.
+ * The card as the agent gets it back. Fields meant to be read as text rather than as escaped
+ * JSON strings are lifted out of the JSON and follow it, in the order the card shows them: a
+ * non-empty `why` in full, under the decision (the JSON above it holds the decision), then its
+ * `sources`, one per line, then a non-empty proposedCode as a fenced block, then alternatives as
+ * a list with the chosen one marked, then a commit request as the message the gate will commit
+ * with, fenced. A field that is lifted is left out of the JSON; one that is not (an empty `why`,
+ * an empty planned code) stays in it. In learning mode (the gate result's `state.learning`) the
+ * planned code's line also asks for why-comments on its key lines. A card without any of these
+ * reads exactly as it did before the fields existed.
+ * @param {{ card: Record<string, any>, state?: { learning?: boolean } }} r
  */
-function cardText(r) {
+export function cardText(r) {
   const head = `Card ${r.card.id} recorded. Show it to your partner and wait for their reply.\n`;
-  const { proposedCode, alternatives, ...rest } = r.card;
-  const hasAlternatives = Array.isArray(alternatives) && alternatives.length > 0;
-  const tail = hasAlternatives
-    ? `\nAlternatives, to show on the card with the chosen one marked:\n${alternatives.map((a) => `  ${a.chosen ? "[chosen]" : "[      ]"} ${a.design}`).join("\n")}`
-    : "";
-  if (typeof proposedCode !== "string" || proposedCode === "") {
-    const { alternatives: _lifted, ...plain } = r.card;
-    return `${head}${JSON.stringify(hasAlternatives ? plain : r.card, null, 2)}${tail}`;
+  const { why, sources, proposedCode, alternatives, commit } = r.card;
+  const lifted = {
+    why: typeof why === "string" && why.trim() !== "",
+    sources: Array.isArray(sources) && sources.length > 0,
+    proposedCode: typeof proposedCode === "string" && proposedCode !== "",
+    alternatives: Array.isArray(alternatives) && alternatives.length > 0,
+    commit: Boolean(commit),
+  };
+  const json = { ...r.card };
+  for (const [k, on] of Object.entries(lifted)) if (on) delete json[k];
+  const parts = [`${head}${JSON.stringify(json, null, 2)}`];
+  if (lifted.why) {
+    parts.push(`Why this approach (why), to show on the card in full as **Why this approach:**, directly under the decision and before the planned code; never shorten or summarize it. Close your message by restating the decision with this why's gist in one line:\n${why}`);
   }
-  return `${head}${JSON.stringify(rest, null, 2)}\nPlanned code (proposedCode), to show on the card:\n${fenced(proposedCode)}${tail}`;
+  if (lifted.sources) {
+    parts.push(`Sources (sources), to show on the card as **Sources:**, under the why and before the planned code:\n${sources.map((s) => `  - ${sourceLine(s)}`).join("\n")}`);
+  }
+  if (lifted.proposedCode) {
+    const annotate = r.state?.learning === true ? "; learning mode is on, so annotate its key lines with short inline comments, each saying why that line is written that way, not what it does" : "";
+    parts.push(`Planned code (proposedCode), to show on the card${annotate}:\n${fenced(proposedCode)}`);
+  }
+  if (lifted.alternatives) {
+    parts.push(`Alternatives, to show on the card with the chosen one marked:\n${alternatives.map((a) => `  ${a.chosen ? "[chosen]" : "[      ]"} ${a.design}`).join("\n")}`);
+  }
+  if (lifted.commit) {
+    parts.push(`Commit at pair_done, to show on the card: when the change set closes with a change inside the boundary, the gate commits the changed boundary files, and nothing else, with this message:\n${fenced(commit.message)}`);
+  }
+  return parts.join("\n");
+}
+
+/** One source as the card shows it: a path or "from memory" string as is, a URL with its passage, anything else as JSON. */
+function sourceLine(s) {
+  if (typeof s === "string") return s;
+  if (s && typeof s === "object" && typeof s.url === "string") return typeof s.passage === "string" ? `${s.url} ("${s.passage}")` : s.url;
+  return JSON.stringify(s);
 }
 
 /** A code fence longer than any backtick run inside `text`, so the text cannot close it. */
@@ -641,24 +672,124 @@ function pairDoneVerb(args, ctx) {
   const inactive = requireActive(ctx, "pair_done");
   if (inactive) return inactive;
   const dir = ctx.sessionDir;
-  const r = withSession(dir, {}, (s) => pairDone(s, { cardId: args.cardId, recall: args.recall }, ioFor(dir, s)));
+  const cardId = String(args.cardId);
+  // One lock for closing, copying the read-back bytes, and the commit, so nothing in this
+  // session moves between the snapshot the diff shows and the commit built from it.
+  const r = withLock(dir, () => {
+    const s = loadState(dir);
+    const out = pairDone(s, { cardId: args.cardId, recall: args.recall }, ioFor(dir, s));
+    if (out.state && out.state !== s) saveState(dir, out.state);
+    if (out.journal) appendJournal(dir, out.journal);
+    if (!out.ok) return out;
+    const after = keepAfterCopies(dir, out.state.root, cardId, out.changed ?? [], out.state.baseline ?? {});
+    const diff = machineDiff(dir, cardId, out.changed ?? [], after);
+    const commit = out.commit ? commitChangeSet(dir, out, cardId, ctx, after) : null;
+    return { ...out, diff, commitOutcome: commit };
+  });
   if (!r.ok) return fail("pair_done", r.reason);
-  const diff = machineDiff(dir, r.state.root, String(args.cardId), r.changed ?? []);
+  const { diff, commitOutcome: commit } = r;
   const parts = [`Change set ${args.cardId} closed.`];
   parts.push(diff ? `Diff of the boundary since pair_begin (machine-produced):\n${diff}` : "No change inside the boundary.");
+  if (commit) parts.push(commit.text);
   if (r.halted) parts.push(`STOPPED: unapproved write outside the boundary: ${r.unapproved.map((u) => `${u.change} ${u.path}`).join(", ")}. Show this to your partner; only your partner ends the session, by typing pair stop.`);
   const roadmapOpen = r.roadmapOpen ?? [];
   if (roadmapOpen.length) parts.push(`Roadmap items still open or not ready:\n${roadmapLines(roadmapOpen)}`);
   if (r.recall) parts.push(`Recall question, journaled: ${r.recall}\nAsk it in your closing message on a line starting "Recall:", after the read-back.`);
-  return { ok: true, text: parts.join("\n\n"), result: { changed: r.changed, unapproved: r.unapproved, halted: r.halted, diff, roadmapOpen, ...(r.recall ? { recall: r.recall } : {}) } };
+  return { ok: true, text: parts.join("\n\n"), result: { changed: r.changed, unapproved: r.unapproved, halted: r.halted, diff, roadmapOpen, ...(commit ? { commit: commit.result } : {}), ...(r.recall ? { recall: r.recall } : {}) } };
 }
 
-function machineDiff(dir, root, cardId, changed) {
+/**
+ * The read-back bytes: each changed boundary file copied, right after pair_done's snapshot,
+ * into `changesets/<card>/after/`, and its copy checked against the snapshot's hash. A symlink
+ * is its target as the snapshot read it; a path the snapshot does not hold is gone. A
+ * directory (a mode change) carries no bytes and is left out. `mismatched` lists the paths
+ * whose copy is not what the snapshot hashed (something wrote them in between).
+ * @returns {{ entries: Array<{ path: string, kind: "file" | "link" | "absent", source?: string, exec?: boolean, target?: string }>, mismatched: string[], other: string[] }}
+ */
+function keepAfterCopies(dir, root, cardId, changed, snap) {
+  const into = join(dir, "changesets", cardId, "after");
+  const entries = [];
+  const mismatched = [];
+  const other = [];
+  for (const { path } of changed) {
+    const fp = Object.hasOwn(snap, path) ? snap[path] : null;
+    if (fp === null) { entries.push({ path, kind: "absent" }); continue; }
+    if (fp.startsWith("link:")) { entries.push({ path, kind: "link", target: fp.slice(5) }); continue; }
+    if (fp.startsWith("dir:")) continue;
+    if (!fp.startsWith("file:")) { other.push(path); continue; }
+    const [, mode, hash] = fp.split(":");
+    const copy = join(into, path);
+    try {
+      mkdirSync(dirname(copy), { recursive: true, mode: 0o700 });
+      copyFileSync(join(root, path), copy);
+    } catch {
+      mismatched.push(path);
+      continue;
+    }
+    if (createHash("sha256").update(readFileSync(copy)).digest("hex") !== hash) mismatched.push(path);
+    entries.push({ path, kind: "file", source: copy, exec: (parseInt(mode, 8) & 0o100) !== 0 });
+  }
+  return { entries, mismatched, other };
+}
+
+/**
+ * The commit the agreed card asked for, built from the read-back bytes (keepAfterCopies) while
+ * the session lock is held, after the change set closed (it closes whatever happens here).
+ * Nothing is committed when nothing inside the boundary changed, when the change set wrote
+ * outside it (the session is stopped), or when a file changed between the snapshot and its
+ * copy. The outcome is journaled: a `commit` entry with the SHA, or `commit-refused` /
+ * `commit-failed` with the reason.
+ * @returns {{ text: string, result: object }}
+ */
+function commitChangeSet(dir, r, cardId, ctx, after) {
+  const at = () => new Date().toISOString();
+  let outcome;
+  if ((r.changed ?? []).length === 0) outcome = { ok: false, refused: true, reason: "nothing inside the boundary changed" };
+  else if (r.halted) outcome = { ok: false, refused: true, reason: "the change set wrote outside its boundary, so the session is stopped" };
+  else if (after.mismatched.length) outcome = { ok: false, refused: true, reason: `${someOf(after.mismatched)} changed after the gate's snapshot, so the diff above may not be what is on disk` };
+  else if (after.other.length) outcome = { ok: false, refused: true, reason: `${someOf(after.other)} is neither a file nor a symlink` };
+  else if (after.entries.length === 0) outcome = { ok: false, refused: true, reason: "only directory modes changed, and git does not record them" };
+  else {
+    try {
+      outcome = commitBoundary({ root: r.state.root, entries: after.entries, message: r.commit.message, env: ctx.env && typeof ctx.env === "object" ? ctx.env : process.env });
+    } catch (err) {
+      outcome = { ok: false, reason: `the commit threw: ${err instanceof Error ? err.message : String(err)}` };
+    }
+  }
+  if (outcome.ok) {
+    const { sha, subject, paths, skipped, keptStaged, indexNote } = outcome;
+    appendJournal(dir, [{ type: "commit", at: at(), cardId, sha, subject, paths, skipped, keptStaged, hooks: "not run", ...(indexNote ? { indexNote } : {}) }]);
+    const notes = [
+      skipped.length ? ` Left out because git ignores them or never tracked them: ${someOf(skipped)}.` : "",
+      keptStaged.length ? ` Your own staged version of ${someOf(keptStaged)} stays staged; the commit holds the read-back version.` : "",
+      indexNote ? ` Note: ${indexNote}.` : "",
+    ].join("");
+    return {
+      text: `Committed ${sha} "${subject}" with ${someOf(paths)}, without running git hooks: run your checks yourself after the read-back.${notes}`,
+      result: { sha, subject, paths, skipped, keptStaged, hooksRun: false, ...(indexNote ? { indexNote } : {}) },
+    };
+  }
+  appendJournal(dir, [{ type: outcome.refused ? "commit-refused" : "commit-failed", at: at(), cardId, reason: outcome.reason }]);
+  return { text: `Not committed: ${outcome.reason}. The change set is closed either way.`, result: { error: outcome.reason, ...(outcome.refused ? { refused: true } : {}) } };
+}
+
+/** The diff of each changed path from its pair_begin copy to its read-back copy (keepAfterCopies). */
+function machineDiff(dir, cardId, changed, after) {
   const before = join(dir, "changesets", cardId, "before");
+  const byPath = new Map(after.entries.map((e) => [e.path, e]));
   const out = [];
   for (const c of changed) {
+    const e = byPath.get(c.path);
+    if (e?.kind === "link") {
+      out.push(`${c.change} ${c.path} (a symlink to ${e.target})\n`);
+      continue;
+    }
+    if (!e && after.mismatched.includes(c.path)) {
+      out.push(`${c.change} ${c.path} (gone or unreadable again right after the snapshot; not shown)\n`);
+      continue;
+    }
     const a = join(before, c.path);
-    const b = join(root, c.path);
+    const b = e?.kind === "file" ? e.source : "/dev/null";
     const res = spawnSync("/usr/bin/diff", ["-u", "--label", `a/${c.path}`, "--label", `b/${c.path}`, existsSync(a) ? a : "/dev/null", existsSync(b) ? b : "/dev/null"], { encoding: "utf8", maxBuffer: 4 * 1024 * 1024 });
     out.push(res.stdout || `${c.change} ${c.path} (not a text diff)`);
   }
@@ -739,9 +870,11 @@ async function runVerb(args, ctx) {
     timeoutMs,
     signal: ctx.signal,
     onSpawn: (pgid) => recordRun(dir, runId, pgid),
-    linkCheck: { sinceMs, exclusions: start.state.exclusions ?? [] },
+    linkCheck: { sinceMs, exclusions: start.state.exclusions ?? [], known: readAcceptedLinks(dir) },
   });
   withSession(dir, {}, (s) => {
+    // Remembered before runEnd judges the run, so the next run rechecks them however this one ends.
+    addAcceptedLinks(dir, res.acceptedLinks);
     const out = runEnd(s, { runId, exitCode: res.exitCode, links: res.links, supervisorKilled: res.supervisorKilled }, makeIo({}));
     out.journal = out.journal.map((e) => ({ ...e, timedOut: res.timedOut, aborted: res.aborted, signal: res.signal }));
     return out;

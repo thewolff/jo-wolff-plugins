@@ -1112,7 +1112,12 @@ export function runSandboxed(opts) {
       resolve({ exitCode: null, signal: null, stdout: "", stderr: "", timedOut: false, aborted: false, pgid: null, links: [], error: err instanceof Error ? err.message : String(err), ...ran });
       return;
     }
-    const linksMade = () => (gitBefore ? newLinks(opts.state.root, writable, opts.linkCheck.sinceMs, gitBefore, opts.linkCheck.exclusions) : []);
+    const linkBoundary = opts.state.phase === "open" && Array.isArray(opts.state.changeSet?.boundary) ? opts.state.changeSet.boundary : null;
+    // Links accepted in earlier runs (by device and inode), rechecked on this run's walk; the
+    // ones this run adds land in `accepted` for the caller to keep.
+    const accepted = {};
+    const linkMemory = { known: opts.linkCheck?.known ?? {}, accepted };
+    const linksMade = () => (gitBefore ? newLinks(opts.state.root, writable, opts.linkCheck.sinceMs, gitBefore, opts.linkCheck.exclusions, linkBoundary, linkMemory) : []);
     const pgid = child.pid ?? null;
     let stdout = "";
     let stderr = "";
@@ -1147,7 +1152,7 @@ export function runSandboxed(opts) {
       const error = failure ?? reapError;
       // An exit signal means a helper process ran; a spawn that never made one has none.
       const killed = ran.backend === "landlock" && exitInfo.sig !== null && !HELPER_BLOCKS_BEFORE_FORK.has(exitInfo.sig);
-      resolve({ exitCode: exitInfo.code, signal: exitInfo.sig, stdout, stderr, timedOut, aborted, pgid, links: linksMade(), ...ran, ...(killed ? { supervisorKilled: exitInfo.sig } : {}), ...(error ? { error } : {}) });
+      resolve({ exitCode: exitInfo.code, signal: exitInfo.sig, stdout, stderr, timedOut, aborted, pgid, links: linksMade(), acceptedLinks: accepted, ...ran, ...(killed ? { supervisorKilled: exitInfo.sig } : {}), ...(error ? { error } : {}) });
     };
     child.on("error", (err) => {
       failure = String(err);
@@ -1198,24 +1203,141 @@ export function gitBaseline(root, roots, exclusions = []) {
  * change time is at or after `sinceMs` (making a link sets it, and so does writing a file that
  * already had a second link), and every `.git` entry that is not in `gitBefore` with the same
  * inode (a `.git` directory's own times change whenever git works in it, so it goes by inode).
- * Sorted.
- * @param {string} root
+ * With `boundary` (the open change set's), a new symlink whose target stays inside that
+ * boundary (linkTargetInBoundary) is left out, and recorded in `links.accepted` by device and
+ * inode with where it resolved: `npm install` makes such links in `node_modules/.bin/`. A link
+ * in `links.known` (accepted by an earlier run) is resolved again wherever the walk meets it,
+ * whatever its change time, and found when it no longer resolves where it did: moving a
+ * directory re-aims every relative link beneath it without touching the link itself. A hard
+ * link is always found, since its other name cannot be read. Sorted.
+ * @param {string} root  canonical (realpathSync.native)
  * @param {string[]} roots  absolute paths in the worktree
  * @param {number} sinceMs
  * @param {Record<string, number>} gitBefore  from gitBaseline before the run
  * @param {string[]} [exclusions]
+ * @param {string[] | null} [boundary]
+ * @param {{ known?: Record<string, { path: string, resolved: string }>, accepted?: Record<string, { path: string, resolved: string }> } | null} [links]
  * @returns {string[]}
  */
-export function newLinks(root, roots, sinceMs, gitBefore, exclusions = []) {
+export function newLinks(root, roots, sinceMs, gitBefore, exclusions = [], boundary = null, links = null) {
   const found = new Set();
+  const known = links?.known ?? {};
   walkRoots(root, roots, exclusions, (rel, st, isGit) => {
     if (isGit) {
       if (gitBefore[rel] !== st.ino) found.add(rel);
-    } else if (st.ctimeMs >= sinceMs && (st.isSymbolicLink() || (!st.isDirectory() && st.nlink > 1))) {
+      return;
+    }
+    const key = `${st.dev}:${st.ino}`;
+    if (st.isSymbolicLink() && st.ctimeMs < sinceMs && Object.hasOwn(known, key)) {
+      if (resolveLink(root, rel)?.out !== known[key].resolved) found.add(rel);
+      return;
+    }
+    if (st.ctimeMs >= sinceMs && (st.isSymbolicLink() || (!st.isDirectory() && st.nlink > 1))) {
+      if (st.isSymbolicLink() && boundary) {
+        const resolved = linkTargetInBoundary(root, boundary, rel);
+        if (resolved !== null) {
+          if (links?.accepted) links.accepted[key] = { path: rel, resolved };
+          return;
+        }
+      }
       found.add(rel);
     }
   });
   return [...found].sort();
+}
+
+const isGitSegment = (s) => s.toLowerCase() === ".git";
+
+/**
+ * Where the symlink at worktree-relative `rel` resolves, physically: the target string is
+ * appended to the link's own directory without lexical `..` folding and handed to realpath(3)
+ * (realpathSync.native), which follows every link component by component, so
+ * `x -> ../outside-link/../..` resolves where the kernel would take it. A target that does not
+ * exist yet resolves its deepest existing ancestor that way and appends the missing names,
+ * which must be plain names (no `.`, `..`, empty segment, or dangling link among them). Returns
+ * the worktree-relative result and whether it is an existing directory, or null when it is
+ * outside the worktree, the worktree root, has a `.git` segment in any letter case, or anything
+ * is unreadable or ambiguous.
+ * @param {string} root  canonical
+ * @param {string} rel
+ * @returns {{ out: string, isDir: boolean } | null}
+ */
+function resolveLink(root, rel) {
+  let target;
+  try { target = readlinkSync(`${root}/${rel}`); } catch { return null; }
+  if (target === "") return null;
+  // Plain concatenation: node:path's join and resolve fold ".." lexically.
+  const full = target.startsWith("/") ? target : `${root}/${rel.includes("/") ? rel.slice(0, rel.lastIndexOf("/")) : "."}/${target}`;
+  const parts = full.split("/");
+  const missing = [];
+  let real = null;
+  while (parts.length > 1) {
+    const prefix = parts.join("/");
+    try {
+      real = realpathSync.native(prefix);
+      break;
+    } catch (err) {
+      if (err?.code !== "ENOENT") return null;
+      // A dangling link at this prefix points somewhere this walk has not read.
+      try { lstatSync(prefix); return null; } catch { /* truly absent */ }
+      const name = parts.pop();
+      if (name === "" || name === "." || name === "..") return null;
+      missing.unshift(name);
+    }
+  }
+  if (real === null) return null;
+  const abs = missing.length ? `${real}/${missing.join("/")}` : real;
+  if (!abs.startsWith(`${root}/`)) return null;
+  const out = abs.slice(root.length + 1);
+  const segs = out.split("/");
+  if (segs.some(isGitSegment) || segs.some((s) => s === "" || s === "." || s === "..")) return null;
+  let isDir = false;
+  if (!missing.length) {
+    try { isDir = statSync(abs).isDirectory(); } catch { return null; }
+  }
+  return { out, isDir };
+}
+
+/**
+ * Where the symlink at worktree-relative `rel` resolves (resolveLink), when that is covered by
+ * `boundary`: a file by boundaryMatches, a directory only by a subtree entry covering it whole
+ * (`dir/`, `dir/**`, `**`), so a write anywhere beneath it stays agreed. Null otherwise, so the
+ * link is reported.
+ * @param {string} root  canonical
+ * @param {string[]} boundary
+ * @param {string} rel
+ * @returns {string | null}
+ */
+export function linkTargetInBoundary(root, boundary, rel) {
+  const r = resolveLink(root, rel);
+  if (r === null) return null;
+  const { out, isDir } = r;
+  if (!isDir) return boundaryMatches(boundary, out) ? out : null;
+  const covered = boundary.some((e) => {
+    if (e === "**" || e === "**/") return true;
+    const prefix = e.endsWith("/**") ? e.slice(0, -3) : e.endsWith("/") ? e.slice(0, -1) : null;
+    return prefix !== null && !/[*?]/.test(prefix) && (out === prefix || out.startsWith(`${prefix}/`));
+  });
+  return covered ? out : null;
+}
+
+/** The links pair_run made that stayed in their boundary, by `<dev>:<ino>` (newLinks). */
+const ACCEPTED_LINKS = "accepted-links.json";
+
+/** @returns {Record<string, { path: string, resolved: string }>} */
+export function readAcceptedLinks(dir) {
+  try {
+    const parsed = JSON.parse(readFileSync(join(dir, ACCEPTED_LINKS), "utf8"));
+    return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed : {};
+  } catch {
+    return {};
+  }
+}
+
+/** Add `accepted` to the session's accepted links. Call under the session lock. */
+export function addAcceptedLinks(dir, accepted) {
+  if (!accepted || Object.keys(accepted).length === 0) return;
+  writeAtomic(join(dir, ACCEPTED_LINKS), JSON.stringify({ ...readAcceptedLinks(dir), ...accepted }));
 }
 
 function walkRoots(root, roots, exclusions, visitFn) {

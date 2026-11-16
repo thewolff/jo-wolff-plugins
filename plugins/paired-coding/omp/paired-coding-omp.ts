@@ -273,7 +273,7 @@ const SPECS: Record<string, ToolSpec> = {
 	pair_propose: {
 		label: "Pair: propose card",
 		description:
-			"Record the next change card. Show it to your partner and wait: only a turn they type after this card can agree to it. A card with open points cannot be begun.",
+			"Record the next change card. Show it to your partner and wait: only a turn they type after this card can agree to it. A card with open points cannot be begun. With commit, the card also asks the gate to commit the change set's boundary files at pair_done.",
 		approval: "read",
 		parameters: (z) =>
 			z.object({
@@ -281,7 +281,7 @@ const SPECS: Record<string, ToolSpec> = {
 				whyNow: OPT_STR(z, "Why this change, now."),
 				decision: OPT_STR(z, "The decision the card asks for."),
 				currentCode: OPT_STR(z, "What the code does today."),
-				proposedCode: OPT_STR(z, "The planned code: the whole new or changed function, or a diff. Show it on the card before asking for agreement."),
+				proposedCode: OPT_STR(z, "The planned code: the whole new or changed function, or a diff. Show it on the card before asking for agreement. In learning mode, show it with short comments on its key lines saying why each line is written that way."),
 				effect: OPT_STR(z, "What will be different afterwards."),
 				checks: OPT_LIST(z, "The checks that will show it works."),
 				openPoints: OPT_LIST(z, "Questions still open. While any remain, pair_begin is refused."),
@@ -299,6 +299,10 @@ const SPECS: Record<string, ToolSpec> = {
 					.array(z.object({ design: STR(z, "One design, in words."), chosen: z.boolean().describe("true for the design the card proposes.") }))
 					.describe("The designs weighed, exactly one with chosen: true. Required when ask-graham's findings for this session are on disk; then one entry contains their chosen design and, when they weighed a design they did not choose, one entry has chosen: false.")
 					.optional(),
+				commit: z
+					.object({ message: STR(z, "The commit message; its first line is the subject.") })
+					.describe("Ask the gate to commit at pair_done: it commits the read-back bytes of the changed files inside the boundary, and nothing else, with this message, running no git hooks or filters. Shown on the card, so your partner's agreement covers it. Omit it and nothing is committed.")
+					.optional(),
 			}),
 	},
 	pair_begin: {
@@ -315,7 +319,7 @@ const SPECS: Record<string, ToolSpec> = {
 	pair_done: {
 		label: "Pair: done",
 		description:
-			"Close the open change set. Kills anything left running from its pair_run calls, then returns the machine-produced diff of the boundary since pair_begin for your partner to read back.",
+			"Close the open change set. Kills anything left running from its pair_run calls, then returns the machine-produced diff of the boundary since pair_begin for your partner to read back. When the agreed card asked for a commit and something inside the boundary changed, the gate commits the read-back bytes of those files, running no git hooks or filters, and returns the commit's SHA and subject, or why it did not commit; the change set closes either way.",
 		approval: "write",
 		parameters: (z) =>
 			z.object({
