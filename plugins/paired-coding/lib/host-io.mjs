@@ -385,8 +385,8 @@ export function appendJournal(dir, entries) {
 
 const sleepSync = (ms) => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
 
-/** The recovery command a lock refusal names: lib/../bin/pair.mjs, by the path this file is at. */
-export const PAIR_CLI = join(dirname(fileURLToPath(import.meta.url)), "..", "bin", "pair.mjs");
+/** The recovery command a lock refusal names: lib/../scripts/pair.mjs, by the path this file is at. */
+export const PAIR_CLI = join(dirname(fileURLToPath(import.meta.url)), "..", "scripts", "pair.mjs");
 
 /** Whether `pid` is running: kill(pid, 0) succeeds, or is refused (EPERM, another user's); only ESRCH means gone. */
 export function pidAlive(pid) {
@@ -463,7 +463,7 @@ export function describeHolder(lock, holder, env = process.env) {
  * `staleMs`. The taker unlinks that token by its name, which no other lock carries, so a lock
  * someone else made since the look is untouched (the unlink fails with ENOENT), and renames
  * again. A running pid, or a token naming none, is waited on; when the wait runs out, the
- * error names the holder and the recovery command (bin/pair.mjs unlock --stale), which makes
+ * error names the holder and the recovery command (scripts/pair.mjs unlock --stale), which makes
  * the same check. Synchronous so hooks stay simple.
  * @template T
  * @param {string} dir
@@ -598,7 +598,7 @@ const PAIRED_PROCESS_NAMES = ["paired-coding", "pair-server"];
 /**
  * Remove a paired-coding lock directory whose holder is certain to be gone, the check withLock
  * makes before a takeover, without the age: the recovery for a lock whose holder crashed, run
- * by a person (bin/pair.mjs unlock --stale). The target is checked first (lockLocation): a path
+ * by a person (scripts/pair.mjs unlock --stale). The target is checked first (lockLocation): a path
  * that is not a known lock inside the state base is refused with `code: 2` and nothing is
  * touched. The dead holder's token is unlinked by name and then the lock directory removed, so
  * a lock someone else made meanwhile is untouched; no other file and no parent is removed.

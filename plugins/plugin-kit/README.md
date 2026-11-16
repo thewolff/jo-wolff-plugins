@@ -395,6 +395,13 @@ template-following `plugins/*/scripts/prune.mjs` to check the symlink skip and t
 totals, and its drift guard checks every copy for the contract line, the usage line and the
 rotation.
 
+## Changes in 0.4.3
+
+The scaffold's manifest template is `templates/plugin.json.template`, no longer
+`templates/.claude-plugin/plugin.json`: claude.ai refuses to ingest a plugin with a
+`.claude-plugin/plugin.json` anywhere but at its root. The scaffold still writes
+`<plugin>/.claude-plugin/plugin.json`, unchanged.
+
 ## Changes in 0.4.2
 
 The kit names both marketplace files. OMP reads `.omp-plugin/marketplace.json` when it exists,

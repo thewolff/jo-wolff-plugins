@@ -1,6 +1,6 @@
 ---
 name: review
-description: 'Run the cross-lab review of this branch (ledger review): every configured lab reviews git diff <base>..HEAD and the verdicts are recorded for HEAD.'
+description: 'Run the cross-lab review of this branch (ledger review): every configured lab reviews git diff from the base to HEAD and the verdicts are recorded for HEAD.'
 argument-hint: "[--base <ref>] [--labs a,b] | status | addressed | waive <why>"
 allowed-tools: Bash(node "${CLAUDE_PLUGIN_ROOT}/scripts/ledger.mjs" review:*)
 ---

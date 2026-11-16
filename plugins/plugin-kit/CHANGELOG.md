@@ -4,6 +4,16 @@ All notable changes to plugin-kit are recorded here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Releases before 0.1.2 are described in
 the README's "Changes in" sections.
 
+## 0.4.3 - 2026-11-16
+
+### Changed
+
+- The scaffold's manifest template moved from `templates/.claude-plugin/plugin.json` to
+  `templates/plugin.json.template`: claude.ai refuses to ingest a plugin with a
+  `.claude-plugin/plugin.json` anywhere but at its root ("found nested"). `new-plugin.mjs`
+  reads the new path and still writes `<plugin>/.claude-plugin/plugin.json`; the scaffold's
+  output is unchanged. The new-plugin skill's copy-by-hand fallback names the new path.
+
 ## 0.4.2 - 2026-11-12
 
 ### Changed

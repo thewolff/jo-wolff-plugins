@@ -5,6 +5,12 @@ All notable changes to paired-coding are recorded here. The format follows
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html). Releases before 1.4.0 are not
 listed.
 
+## 1.6.2 - 2026-11-16
+
+### Changed
+
+- The lock recovery command moved from `bin/pair.mjs` to `scripts/pair.mjs`: claude.ai-hosted plugins may not ship a top-level `bin/` (it is added to PATH on the CLI but not shown on the admin approval surface), and claude.ai refused to ingest the plugin while it had one. A lock refusal names the new path; run `node <plugin>/scripts/pair.mjs unlock --stale [--force] <lock directory>`. The command itself is unchanged.
+
 ## 1.6.1 - 2026-11-04
 
 ### Changed
@@ -191,7 +197,8 @@ With learning mode off, every new check is skipped and a session runs exactly as
   token names is not running and the lock is stale, by removing that one token by name; a lock
   whose holder is still running is never evicted on its age, and the wait fails naming the pid
   and the recovery command, `node <plugin>/bin/pair.mjs unlock --stale <lock directory>`, which
-  makes the same check. That command acts only on paired-coding's own lock directories inside
+  makes the same check (from 1.6.2 the command is `node <plugin>/scripts/pair.mjs unlock --stale …`).
+  That command acts only on paired-coding's own lock directories inside
   the state base (any other path, or a symlink out of it, exits 2 untouched); its refusal of a
   running pid explains pid reuse and never advises ending a process, and `--force` clears a
   reused pid's lock only when that pid's command line names neither `paired-coding` nor

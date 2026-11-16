@@ -454,7 +454,7 @@ test("a stale lock whose holder is still running, or names no process, is never 
       () => withLock(dir, () => { ran = true; }, { waitMs: 200, staleMs: 15000 }),
       (err) => {
         assert.match(err.message, new RegExp(`^timed out waiting for the session lock ${lock}: it is held by pid ${other.pid}, which is still running`));
-        assert.match(err.message, /bin\/pair\.mjs' unlock --stale '/);
+        assert.match(err.message, /scripts\/pair\.mjs' unlock --stale '/);
         return true;
       },
     );
@@ -573,7 +573,7 @@ test("a critical-section error that cannot carry releaseError (frozen, or the pr
   }
 });
 
-const PAIR_CLI_PATH = join(PLUGIN_ROOT, "bin", "pair.mjs");
+const PAIR_CLI_PATH = join(PLUGIN_ROOT, "scripts", "pair.mjs");
 const pairCli = (env, ...args) => spawnSync(process.execPath, [PAIR_CLI_PATH, ...args], { encoding: "utf8", env: { ...process.env, ...env } });
 const lockWith = (lock, token) => { mkdirSync(lock, { recursive: true }); writeFileSync(join(lock, token), "", { flag: "wx" }); };
 
@@ -767,7 +767,7 @@ test("unlockStale --force decides on the holder's command line: no paired-coding
 test("a lock refusal names a configured state base in its recovery command, and a token naming the waiting process as a non-reentrant self-deadlock", () => {
   const lock = "/s/sess-1/lock";
   const dead = describeHolder(lock, { tokens: ["1.x"], pid: 1, alive: false, ageMs: 0 }, { PAIRED_CODING_STATE_DIR: "/state root" });
-  assert.match(dead, /run: PAIRED_CODING_STATE_DIR='\/state root' node '.*bin\/pair\.mjs' unlock --stale '\/s\/sess-1\/lock'/);
+  assert.match(dead, /run: PAIRED_CODING_STATE_DIR='\/state root' node '.*scripts\/pair\.mjs' unlock --stale '\/s\/sess-1\/lock'/);
   assert.doesNotMatch(describeHolder(lock, { tokens: ["1.x"], pid: 1, alive: false, ageMs: 0 }, {}), /PAIRED_CODING_STATE_DIR=/);
   const live = describeHolder(lock, { tokens: ["1.x"], pid: 1, alive: true, ageMs: 0 }, {});
   assert.match(live, /pids are reused/i);
