@@ -14,7 +14,8 @@ import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync 
 import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
-import { handle, timerLine, HOOK_SPAWN_MS, HOOK_DEADLINE_MS } from "../hooks/session-start.mjs";
+import { handle, timerLine, timerHealthLine, timerContext, HOOK_SPAWN_MS, HOOK_DEADLINE_MS, HOOK_LAUNCHCTL_MS } from "../hooks/session-start.mjs";
+import { LABEL } from "../lib/launchd.mjs";
 import { readState, writeState, statePath, EMPTY } from "../lib/state.mjs";
 import { LINE_MAX } from "../lib/probe.mjs";
 import { DEADLINE_MS } from "../lib/hook-runner.mjs";
@@ -139,6 +140,85 @@ test("both lines when the daemon is down and the timer is overdue, probe first",
     assert.match(lines[0], /^ctx-watch: the ctx daemon is not running/);
     assert.match(lines[1], /^ctx-watch: timer has not run since /);
     assert.ok(lines[0].length <= LINE_MAX, lines[0]);
+  } finally {
+    b.release();
+  }
+});
+
+/** A launchctl double: records calls (with the bound the hook gave), answers `answer`. */
+function fakeLaunchctl(answer) {
+  const calls = [];
+  return { calls, launchctl: (bin, args, opts) => (calls.push({ argv: [bin, ...args], timeoutMs: opts?.timeoutMs }), answer) };
+}
+const AGENT = (env) => join(env.HOME, "Library", "LaunchAgents", `${LABEL}.plist`);
+const LONG_CLI = "/Users/example/.claude/plugins/cache/jo-wolff-plugins/ctx-watch/0.4.3/scripts/ctx-watch.mjs";
+const print = (plist, script) => ({ missing: false, code: 0, output: `gui/501/${LABEL} = {\n\tpath = ${plist}\n\tstate = not running\n\targuments = {\n\t\t/usr/local/bin/node\n\t\t${script}\n\t\ttick\n\t}\n}\n` });
+
+test("0.4.3 timer not in launchd (launchctl's 113 with a plist installed): one line ≤ 160 chars naming the install command, the agent gets the whole command, the dead-man's line is not repeated", () => {
+  const b = box();
+  try {
+    writeState(statePath(b.env), { ...EMPTY, lastTickAt: NOW - 3_600_000, intervalS: 300 });
+    const lc = fakeLaunchctl({ missing: false, code: 113, output: "Could not find service" });
+    const present = (p) => p === AGENT(b.env);
+    const out = handle(input, { env: b.env, now: () => NOW, run: runWith(HEALTHY), launchctl: lc.launchctl, fileExists: present, uid: 501, cliPath: "/Users/example/cli.mjs" });
+    assert.equal(out.systemMessage, "ctx-watch: timer not in launchd gui/501; fix: `node /Users/example/cli.mjs install` and the launchctl line it prints");
+    assert.deepEqual(lc.calls.map((c) => c.argv), [["launchctl", "print", `gui/501/${LABEL}`]], "one print, nothing else");
+    assert.ok(lc.calls[0].timeoutMs <= HOOK_LAUNCHCTL_MS, "bounded");
+    assert.match(out.hookSpecificOutput.additionalContext, /^ctx-watch: the launchd timer that watches ctx is not working: timer not in launchd gui\/501 \(launchctl print gui\/501\/com\.jo-wolff-plugins\.ctx-watch found no such service\)/);
+    assert.match(out.hookSpecificOutput.additionalContext, /Fix: run `node \/Users\/example\/cli\.mjs install`.*Do not run `launchctl bootstrap` yourself\.$/s);
+
+    // An installed plugin's long path: the whole command when it fits, else the verb; never cut.
+    const long = handle(input, { env: b.env, now: () => NOW, run: runWith(HEALTHY), launchctl: lc.launchctl, fileExists: present, uid: 501, cliPath: LONG_CLI });
+    assert.ok(long.systemMessage.length <= LINE_MAX, `${long.systemMessage.length}: ${long.systemMessage}`);
+    assert.equal(long.systemMessage, `ctx-watch: timer not in launchd gui/501; fix: \`node ${LONG_CLI} install\``);
+    const longer = `/Users/a-much-longer-user-name/.omp/plugins/cache/plugins/jo-wolff-plugins___ctx-watch___0.4.3/scripts/ctx-watch.mjs`;
+    const verb = timerHealthLine({ reason: "timer not in launchd gui/501" }, longer);
+    assert.ok(verb.length <= LINE_MAX, verb);
+    assert.equal(verb, "ctx-watch: timer not in launchd gui/501; fix: run ctx-watch's `install`, then the launchctl line it prints (the agent has the command)");
+    assert.ok(timerContext({ reason: "r", detail: "d" }, longer).includes(`\`node ${longer} install\``), "and the agent's block has it whole");
+
+    // The pre-0.4.3 plist alone (a reboot dropped the job): the same line, and the context says why.
+    const old = handle(input, { env: b.env, now: () => NOW, run: runWith(HEALTHY), launchctl: lc.launchctl, fileExists: (p) => p === join(b.env.XDG_STATE_HOME, "ctx-watch", "launchd", `${LABEL}.plist`), uid: 501, cliPath: "/Users/example/cli.mjs" });
+    assert.match(old.systemMessage, /^ctx-watch: timer not in launchd gui\/501; fix: /);
+    assert.match(old.hookSpecificOutput.additionalContext, /outside ~\/Library\/LaunchAgents, so login does not load it/);
+  } finally {
+    b.release();
+  }
+});
+
+test("0.4.3 the loaded timer's script is gone (a plugin update removed its versioned directory): one line ≤ 160 chars with the install command", () => {
+  const b = box();
+  try {
+    const gone = "/Users/example/.claude/plugins/cache/jo-wolff-plugins/ctx-watch/0.4.1/scripts/ctx-watch.mjs";
+    const lc = fakeLaunchctl(print(AGENT(b.env), gone));
+    const out = handle(input, { env: b.env, now: () => NOW, run: runWith(HEALTHY), launchctl: lc.launchctl, fileExists: (p) => p === AGENT(b.env), uid: 501, cliPath: LONG_CLI });
+    assert.equal(out.systemMessage, `ctx-watch: timer's script no longer exists; fix: \`node ${LONG_CLI} install\``);
+    assert.ok(out.systemMessage.length <= LINE_MAX, out.systemMessage);
+    assert.ok(out.hookSpecificOutput.additionalContext.includes(`the loaded job runs ${gone}, which does not exist`));
+
+    // The script there: nothing to say.
+    assert.equal(handle(input, { env: b.env, now: () => NOW, run: runWith(HEALTHY), launchctl: lc.launchctl, fileExists: (p) => p === AGENT(b.env) || p === gone, uid: 501 }), null);
+  } finally {
+    b.release();
+  }
+});
+
+test("0.4.3 no answer from launchctl is not 'not loaded': a timeout, a refusal, launchctl missing, no time left, or no plist installed say nothing", () => {
+  const b = box();
+  try {
+    const present = (p) => p === AGENT(b.env);
+    for (const answer of [{ missing: false, code: null, output: "spawnSync launchctl ETIMEDOUT" }, { missing: false, code: 5, output: "Input/output error" }, { missing: true, code: null, output: "" }]) {
+      const lc = fakeLaunchctl(answer);
+      assert.equal(handle(input, { env: b.env, now: () => NOW, run: runWith(HEALTHY), launchctl: lc.launchctl, fileExists: present, uid: 501 }), null, JSON.stringify(answer));
+      assert.equal(lc.calls.length, 1);
+    }
+    const not = fakeLaunchctl({ missing: false, code: 113, output: "" });
+    assert.equal(handle(input, { env: b.env, now: () => NOW, run: runWith(HEALTHY), launchctl: not.launchctl, fileExists: () => false, uid: 501 }), null, "never installed: the dead-man's line's job");
+    assert.equal(not.calls.length, 0, "and launchd is not asked");
+    let clock = NOW;
+    const late = handle(input, { env: b.env, now: () => (clock += HOOK_DEADLINE_MS), run: runWith(HEALTHY), launchctl: not.launchctl, fileExists: present, uid: 501 });
+    assert.equal(not.calls.length, 0, "the check used the whole clock: no print");
+    assert.ok(late === null || !late.systemMessage.includes("launchd"), JSON.stringify(late));
   } finally {
     b.release();
   }

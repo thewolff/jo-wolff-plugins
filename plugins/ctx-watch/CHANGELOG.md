@@ -4,6 +4,41 @@ All notable changes to ctx-watch are recorded here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). The 0.1.0 release is described under
 *Changes in 0.1.0* in [README.md](README.md#changes-in-010).
 
+## [0.4.3] - 2026-11-16
+
+The timer's launchd job did not come back after the 2026-11-12 reboot, and nothing said so for
+four days. Its plist lived in `${XDG_STATE_HOME:-~/.local/state}/ctx-watch/launchd/`, and launchd
+reloads a person's agents at login only from `~/Library/LaunchAgents`.
+
+### Changed
+
+- `install` writes the plist to `$HOME/Library/LaunchAgents/com.jo-wolff-plugins.ctx-watch.plist`
+  and the printed bootstrap line names that path. The logs stay in `<state>/launchd/`. `install`
+  refuses (exit 1, nothing written) when `HOME` is unset or not absolute.
+- A plist at the old `<state>/launchd/` path is removed once the new one lints, and `install`
+  says so and prints `launchctl bootout gui/<uid>/<label> && launchctl bootstrap gui/<uid>
+  <new path>` when the job is loaded, the same pair joined by `;` when launchctl could not say,
+  and the bootstrap alone when the job is known not loaded. A failed lint keeps the old plist.
+- `uninstall` prints the `rm` of the plist as well as the bootout: a plist left in
+  LaunchAgents is loaded again at the next login.
+- `repair` restores a timer it paused from the plist `launchctl print` said the job came from,
+  when that file still exists, else from the LaunchAgents one. Its unused `stateDir` option is
+  gone.
+- `status` says when launchd loaded the job from a plist other than the LaunchAgents one.
+
+### Added
+
+- The SessionStart hook checks the timer when a plist is installed at either path: one
+  `launchctl print gui/<uid>/<label>` (`launchd.loaded`, which now also returns the job's
+  `plist` and `args`), bounded at 500 ms and by what is left of the hook's 3 s clock.
+  launchctl's 113 gives `ctx-watch: timer not in launchd gui/<uid>; fix: …`; a loaded job whose
+  script no longer exists (a plugin update removed its versioned directory) gives `ctx-watch:
+  timer's script no longer exists; fix: …`. The fix names `node <cli> install` and the
+  launchctl line it prints, whole when it fits in 160 characters, else the verb, with the whole
+  command in the agent's context. A timeout, a refusal, or launchctl missing says nothing.
+  When this line fires, the dead-man's line is not repeated.
+- `runCheck(bin, args, { timeoutMs })`: the bound is an option; the default stays 10 s.
+
 ## [0.4.1] - 2026-11-12
 
 On 2026-11-12 three 0.4.0 timer ticks failed as "ctx could not run" while the ctx daemon was

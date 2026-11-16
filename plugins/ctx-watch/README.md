@@ -50,12 +50,14 @@ Then the timer, once, from your own Terminal (a GUI login session, which is wher
 node <plugin dir>/scripts/ctx-watch.mjs install
 ```
 
-It writes the plist, lints it, and prints the one `launchctl bootstrap gui/<uid> <plist>` line
-to run. It never runs bootstrap itself. The plist names this script by its absolute path, and
-Claude Code installs plugins under a directory with a version segment
-(`~/.claude/plugins/cache/jo-wolff-plugins/ctx-watch/<version>/`), so after a plugin update
-the timer points at a path that may be gone: run `install` again and the printed bootout-and-
-bootstrap line. Until you do, the SessionStart dead-man's line says the timer has stopped.
+It writes the plist to `~/Library/LaunchAgents/com.jo-wolff-plugins.ctx-watch.plist`, lints
+it, and prints the one `launchctl bootstrap gui/<uid> <plist>` line to run. It never runs
+bootstrap itself. See *Where the plist lives* for why that directory. The plist names this
+script by its absolute path, and Claude Code installs plugins under a directory with a version
+segment (`~/.claude/plugins/cache/jo-wolff-plugins/ctx-watch/<version>/`), so after a plugin
+update the timer points at a path that may be gone: run `install` again and the printed
+bootout-and-bootstrap line. Until you do, the SessionStart hook says the timer's script no
+longer exists.
 
 `install` refuses to write a plist when no `ctx` is on this shell's PATH (a timer that can
 never find ctx would only ever pop up); `--ctx <path>` names one by hand.
@@ -384,10 +386,35 @@ and the hook speaks when the stamp is older than twice the interval (or, if the 
 ran, twice the interval after the hook's own first run). A watcher that is itself not running
 is the failure this plugin exists for, so it is the one thing the hook checks about itself.
 
+Since 0.4.3 the hook also asks launchd directly, when a plist is installed (at either the
+current or the pre-0.4.3 path): one `launchctl print gui/<uid>/com.jo-wolff-plugins.ctx-watch`,
+bounded at 500 ms and by what is left of the hook's 3 s clock. launchctl's "no such service"
+(exit 113) gives `ctx-watch: timer not in launchd gui/<uid>; fix: …`; a loaded job whose
+script (the second of its `arguments`) no longer exists gives `ctx-watch: timer's script no
+longer exists; fix: …`. The fix is `node <this script> install` and the launchctl line it
+prints, written whole when it fits in 160 characters, else as the verb, with the whole command
+in the agent's context. Any other launchctl answer (not found, refused, killed at its bound)
+says nothing: a warning on a timeout would fire on a loaded machine and teach you to ignore it.
+When this line fires, the dead-man's line does not; they would be the same news.
+
+**Where the plist lives.** Since 0.4.3 `install` writes the plist to
+`~/Library/LaunchAgents/com.jo-wolff-plugins.ctx-watch.plist`. launchd loads a person's
+LaunchAgents from that directory, and only from there, when they log in. Until 0.4.3 the plist
+lived in `${XDG_STATE_HOME:-~/.local/state}/ctx-watch/launchd/`; a job bootstrapped from there
+runs until the next reboot and then is gone, which is what happened on 2026-11-12: the timer
+did not come back and nothing said so for four days. The logs stay in the state directory. When
+`install` finds a plist at the old path it removes it once the new one lints, says so, and
+prints `launchctl bootout gui/<uid>/com.jo-wolff-plugins.ctx-watch && launchctl bootstrap
+gui/<uid> ~/Library/LaunchAgents/com.jo-wolff-plugins.ctx-watch.plist` (with `;` instead of
+`&&` when launchctl could not say whether the job is loaded, and the bootstrap alone when it is
+known not to be). `uninstall` prints the bootout and the `rm` of that file: a plist left in
+LaunchAgents is loaded again at the next login. `install` refuses when `HOME` is unset rather
+than guess whose LaunchAgents to write.
+
 **The timer and the popup.** `install` writes
-`${XDG_STATE_HOME:-~/.local/state}/ctx-watch/launchd/com.jo-wolff-plugins.ctx-watch.plist`:
+`~/Library/LaunchAgents/com.jo-wolff-plugins.ctx-watch.plist`:
 `StartInterval` 300 s (`--interval` to change), `RunAtLoad`, `node <this script> tick
---state-dir <state> --ctx <ctx>`, logs beside it, this shell's `PATH` (repeated, empty and
+--state-dir <state> --ctx <ctx>`, logs in `<state>/launchd/`, this shell's `PATH` (repeated, empty and
 relative entries dropped) so launchd finds `node`, and no `CI`. Every path in it is absolute.
 The two arguments are what launchd's own environment would otherwise lose: `--state-dir` is
 the directory this shell resolved (so a timer installed with `XDG_STATE_HOME` set reads and
@@ -463,8 +490,8 @@ on, or dismissed, stays latched for the episode, as before.
 | `check [--json]` | one probe (on a failure: the upgrade gate, then repair and re-probe); the needs-you line or nothing; `--json` the whole result. Exit 0 always. |
 | `tick` | the timer's run: rotate, settle a pending popup, probe, advance the episode, popup on the second failing tick (again after 4 h when unanswered). During a live upgrade: one `wait:` line, nothing else. One summary line to the launchd log. |
 | `repair` | the agent-runnable repair (see *`repair`* above). Exit 0 repaired or healthy, 1 failed, 3 refused with nothing changed. |
-| `install [--interval 300]` | write the plist (state directory and ctx pinned, `LANG` and ctx's settings carried; interval 30 s to 7 days), `plutil -lint` it, ask `launchctl print` whether the job is loaded, print the bootstrap line. |
-| `uninstall` | print the `launchctl bootout` line. Removes nothing. |
+| `install [--interval 300]` | write the plist to `~/Library/LaunchAgents` (state directory and ctx pinned, `LANG` and ctx's settings carried; interval 30 s to 7 days), `plutil -lint` it, remove a pre-0.4.3 plist from `<state>/launchd/`, ask `launchctl print` whether the job is loaded, print the bootstrap line (or the bootout + bootstrap pair). |
+| `uninstall` | print the `launchctl bootout` line and the `rm` of the plist (login loads it again otherwise). Removes nothing. |
 | `status` | the last probe, the episode (with the last popup: shown, pending, or not shown), the plist path, whether launchd has the job. |
 | `prune [--days 30] [--dry-run]` | rotate the logs; remove rotated logs older than `--days` and stray temp files; `pruned: N file(s), B bytes freed` last. A dry run reports the plan the real run carries out. |
 
@@ -537,7 +564,7 @@ outcome file per popup shown), `errors.log` (one line per hook fault or ignored 
 `checks.log` (one line per consult-history finding), `resume/<session id>` (the SessionStart
 hook's resume marker, a few bytes, consumed by the next Stop), `sessions/<session id>.json` (the
 mid-session hook's latch, a few bytes, rewritten only when that session is told something), and
-`launchd/` with the plist and the two logs launchd appends to. Any of the four logs over 256 KB
+`launchd/` with the two logs launchd appends to (and a pre-0.4.3 plist until `install` moves it). Any of the four logs over 256 KB
 is renamed to `<log>.1` (replacing the last) at the start of a tick or a prune, so each is at
 most 256 KB plus one run's lines and the pair at most twice that; `prune` removes a `.1`, a
 popup outcome, a resume marker (a session that never reached a Stop) and a session latch older
@@ -653,6 +680,22 @@ part of `node --test`); `ctx-daemon-status-semantic-not-ready.txt` is a one-off 
 not remake. `ctx-upgrade-status.txt` is the 2026-11-11 `ctx upgrade status --format json`
 (state `dry_run`, after the release); the tests derive `quiescing` and `applying` from it,
 since no capture of a live upgrade exists that did not break a real install.
+
+## Changes in 0.4.3
+
+From the timer not coming back after the 2026-11-12 reboot (four days without a word):
+
+- **The plist lives in `~/Library/LaunchAgents`.** launchd loads a person's agents from there
+  at login and from nowhere else; the old `<state>/launchd/` plist was gone after a reboot.
+  `install` moves an old plist (removes it once the new one lints) and prints the bootout +
+  bootstrap pair. Logs stay in `<state>/launchd/`. See *Where the plist lives*.
+- **SessionStart says when the timer is not loaded or its script is gone.** One `launchctl
+  print`, only when a plist is installed, bounded at 500 ms and by the hook's clock; only
+  launchctl's "no such service" counts as not loaded. The line names `install`; the agent's
+  context has the whole command.
+- `status` says when launchd loaded the job from a plist other than the LaunchAgents one.
+  `repair` restores a paused timer from the plist launchd had it from, else the LaunchAgents
+  one. `uninstall` prints the `rm` too.
 
 ## Changes in 0.4.1
 

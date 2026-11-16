@@ -93,7 +93,8 @@ compares the two installs and prints the commands for any plugin that differs (e
 
 **Session start.** output-types injects the CLAIM and CITE labels; i-have-audhd the message
 skeleton and its rule headings; ledger the questions waiting on you and its last notes; ctx-watch
-a line when the ctx daemon is dead, unsupervised or stale or its semantic index is not ready;
+a line when the ctx daemon is dead, unsupervised or stale or its semantic index is not ready,
+or when its own launchd timer is not loaded or runs a script that is gone;
 reminders-review overdue and today's reminders. delegation injects a short block with the brief
 skeleton inline, so the session knows the brief's shape before its first spawn. After a
 compaction, continuity restores this session's snapshot and leads with a liveness line on its

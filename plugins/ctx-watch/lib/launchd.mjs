@@ -4,11 +4,15 @@
 // 2026-10-28 with "Bootstrap failed: 5: Input/output error").
 //
 //   install({ env, interval, cliPath, node, uid, check, ctx })
-//       writes <state>/launchd/com.jo-wolff-plugins.ctx-watch.plist (StartInterval <interval> s,
-//       RunAtLoad, `node <cli> tick --state-dir <state> --ctx <ctx>`, logs beside it), runs
-//       `plutil -lint`, asks `launchctl print` whether the job is loaded, prints the bootstrap
-//       line. Every path in the plist is absolute: launchd runs the job from / with an
-//       environment of its own, so the plist carries
+//       writes $HOME/Library/LaunchAgents/com.jo-wolff-plugins.ctx-watch.plist (StartInterval
+//       <interval> s, RunAtLoad, `node <cli> tick --state-dir <state> --ctx <ctx>`, logs in
+//       <state>/launchd/), runs `plutil -lint`, asks `launchctl print` whether the job is loaded,
+//       prints the bootstrap line. LaunchAgents because launchd loads a person's agents from
+//       there, and only there, at login: until 0.4.3 the plist lived in <state>/launchd/, so a
+//       job bootstrapped from it was gone after the 2026-11-12 reboot and nothing said so for
+//       four days. A plist still at that old path is removed once the new one lints, and install
+//       says so and prints the bootout + bootstrap pair. Every path in the plist is absolute:
+//       launchd runs the job from / with an environment of its own, so the plist carries
 //         --state-dir   the state directory this install resolved (XDG_STATE_HOME or HOME), so
 //                       the timer and the SessionStart hook read and write one state.json even
 //                       when XDG_STATE_HOME was set only in the installing shell;
@@ -24,8 +28,13 @@
 //                       LANG (one launchd started, such as Claude Desktop's) gets resolveLang's
 //                       fallback: the LANG ctx recorded, else one derived from AppleLocale;
 //       and never `CI` or CTX_SEMANTIC_EMBEDDING_TOKEN.
-//   uninstall({ env, uid })   prints the bootout line (and removes nothing).
-//   loaded({ uid, check })    `{ loaded: true|false|null, detail }` from `launchctl print`.
+//   uninstall({ env, uid })   prints the bootout line and the `rm` that keeps login from loading
+//       it again (and removes nothing).
+//   loaded({ uid, check })    `{ loaded: true|false|null, detail, plist?, args? }` from
+//       `launchctl print` (plist and args: the loaded job's `path` and `arguments`, when shown).
+//   timerHealth({ env, stateDir, uid, check, exists }) the SessionStart check of the timer:
+//       when a plist is installed, whether launchd has the job and whether the script it runs
+//       still exists (a plugin update removes the versioned directory the plist names).
 //   reachProbe({ uid, check, tmp }) `{ ok, missing, detail, label, loaded, plistRemoved }`: whether this shell can write to
 //       gui/<uid> (bootstrap and bootout a throwaway LaunchAgent running /usr/bin/true and never
 //       started, labelled PROBE_LABEL.<pid>.<random> so two runs never share one, its plist in a
@@ -51,11 +60,23 @@ import { stateDir as defaultStateDir, INTERVAL_BOUNDS, running } from "./state.m
 export const LABEL = "com.jo-wolff-plugins.ctx-watch";
 export const DEFAULT_PATH = "/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin";
 
+/** `<state>/launchd`: the timer's two logs (and, until 0.4.3, its plist). */
 export function launchdDir(env = process.env, stateDir = defaultStateDir(env)) {
   return join(stateDir, "launchd");
 }
 
-export function plistPath(env = process.env, label = LABEL, stateDir = defaultStateDir(env)) {
+/** `$HOME/Library/LaunchAgents`: where launchd loads a person's agents from at login. */
+export function launchAgentsDir(env = process.env) {
+  return join(env.HOME || homedir(), "Library", "LaunchAgents");
+}
+
+/** The timer's plist: `$HOME/Library/LaunchAgents/<label>.plist`, so it is loaded again after a reboot. */
+export function plistPath(env = process.env, label = LABEL) {
+  return join(launchAgentsDir(env), `${label}.plist`);
+}
+
+/** Where install wrote the plist until 0.4.3, which launchd never reloads at login. */
+export function legacyPlistPath(env = process.env, label = LABEL, stateDir = defaultStateDir(env)) {
   return join(launchdDir(env, stateDir), `${label}.plist`);
 }
 
@@ -141,9 +162,9 @@ ${Object.entries(environment)
 `;
 }
 
-/** Run `bin args` for 10 s; `{ missing, code, output }`. */
-export function runCheck(bin, args) {
-  const r = spawnSync(bin, args, { encoding: "utf8", timeout: 10_000, killSignal: "SIGKILL" });
+/** Run `bin args` for `timeoutMs` (10 s); `{ missing, code, output }`. A run killed at the bound is `code: null`. */
+export function runCheck(bin, args, { timeoutMs = 10_000 } = {}) {
+  const r = spawnSync(bin, args, { encoding: "utf8", timeout: timeoutMs, killSignal: "SIGKILL" });
   if (r.error?.code === "ENOENT") return { missing: true, code: null, output: "" };
   if (r.error) return { missing: false, code: null, output: r.error.message };
   return { missing: false, code: r.status, output: `${r.stdout ?? ""}${r.stderr ?? ""}` };
@@ -152,19 +173,50 @@ export function runCheck(bin, args) {
 /**
  * Whether launchd has the job: `launchctl print gui/<uid>/<label>`. `loaded` true (exit 0),
  * false only on launchctl's 113 ("Could not find service"), null on anything else (not found,
- * did not run, any other exit): a failed query is not an answer.
+ * did not run, killed at its bound, any other exit): a failed query is not an answer. When
+ * loaded, `plist` is the job's `path = …` (the file launchd loaded it from) and `args` its
+ * `arguments = { … }`, each only when the output shows it.
  */
 export function loaded({ uid = process.getuid?.() ?? 501, label = LABEL, check = runCheck } = {}) {
   const r = check("launchctl", ["print", `gui/${uid}/${label}`]);
   if (r.missing) return { loaded: null, detail: "launchctl not found: could not tell whether the job is loaded" };
   if (r.code === 0) {
-    const state = /\bstate = (\S+)/.exec(r.output)?.[1];
+    const state = /\bstate = ([^\n]+)/.exec(r.output)?.[1]?.trim();
     const last = /last exit code = ([^\n]+)/.exec(r.output)?.[1]?.trim();
-    return { loaded: true, detail: `launchd has ${label}${state ? ` (state = ${state}` : ""}${last ? `, last exit code = ${last})` : state ? ")" : ""}` };
+    const plist = /^[ \t]*path = ([^\n]+)$/m.exec(r.output)?.[1]?.trim();
+    const block = /^[ \t]*arguments = \{\n([\s\S]*?)\n[ \t]*\}/m.exec(r.output)?.[1];
+    const args = block?.split("\n").map((s) => s.trim()).filter(Boolean);
+    return { loaded: true, detail: `launchd has ${label}${state ? ` (state = ${state}` : ""}${last ? `, last exit code = ${last})` : state ? ")" : ""}`, ...(plist ? { plist } : {}), ...(args?.length ? { args } : {}) };
   }
   if (r.code === null) return { loaded: null, detail: `launchctl could not run: ${r.output.trim()}` };
   if (r.code === 113) return { loaded: false, detail: `launchd does not have ${label}` };
   return { loaded: null, detail: `launchctl print gui/${uid}/${label} exit ${r.code}: ${(r.output ?? "").trim().split("\n").at(-1) || "(no output)"}` };
+}
+
+/**
+ * The SessionStart check of the timer: `{ ok, kind, reason, detail }`. `ok` null says nothing:
+ * no plist at either path (never installed: the dead-man's line covers it, and nothing asks
+ * launchd) or launchctl gave no answer (not found, refused, killed at its bound). `ok` false:
+ * `kind` "not-loaded" only on launchctl's 113 for the label (loaded() false), never on a
+ * timeout; "script-missing" when the job is loaded and the script its `arguments` name (the
+ * second, after node) does not exist, as when a plugin update removes the versioned directory
+ * the plist names. `reason` is short enough for the 160-character line; `detail` is the rest.
+ * One `launchctl print`, no other launchd query; `exists` is injectable.
+ */
+export function timerHealth({ env = process.env, stateDir = defaultStateDir(env), uid = process.getuid?.() ?? 501, label = LABEL, check = runCheck, exists = existsSync } = {}) {
+  const file = plistPath(env, label);
+  const legacy = legacyPlistPath(env, label, stateDir);
+  const installed = exists(file) ? file : exists(legacy) ? legacy : null;
+  if (installed === null) return { ok: null, kind: null, reason: null, detail: `no plist at ${file} or ${legacy}` };
+  const l = loaded({ uid, label, check });
+  if (l.loaded === null) return { ok: null, kind: null, reason: null, detail: l.detail };
+  if (l.loaded === false) {
+    const where = installed === file ? "" : `; its plist at ${legacy} is outside ~/Library/LaunchAgents, so login does not load it`;
+    return { ok: false, kind: "not-loaded", reason: `timer not in launchd gui/${uid}`, detail: `launchctl print gui/${uid}/${label} found no such service${where}` };
+  }
+  const script = l.args?.[1];
+  if (typeof script === "string" && isAbsolute(script) && !exists(script)) return { ok: false, kind: "script-missing", reason: "timer's script no longer exists", detail: `the loaded job runs ${script}, which does not exist` };
+  return { ok: true, kind: null, reason: null, detail: l.detail };
 }
 
 /** The reach probes' label prefix: each run's probe is `<PROBE_LABEL>.<pid>.<random>`, never a job that runs anything. */
@@ -372,20 +424,27 @@ export function resolveLang({ env = process.env, check = runCheck } = {}) {
 }
 
 /**
- * Write, lint, report. `{ code, text, file, ctx }`. `ctx` (optional) is the executable to pin;
- * otherwise the first `ctx` on this shell's PATH, and no ctx at all is exit 1: a timer that
- * can never find ctx would only ever pop up. The plist's environment is PATH plus carriedEnv(env),
- * with resolveLang's fallback LANG when this shell has none.
+ * Write, lint, report. `{ code, text, file, ctx, migrated }`. `ctx` (optional) is the executable
+ * to pin; otherwise the first `ctx` on this shell's PATH, and no ctx at all is exit 1: a timer
+ * that can never find ctx would only ever pop up. The plist's environment is PATH plus
+ * carriedEnv(env), with resolveLang's fallback LANG when this shell has none. The plist goes to
+ * plistPath(env) (`$HOME/Library/LaunchAgents`), so `env.HOME` must be set: install never falls
+ * back to another HOME for a file launchd loads at login. A plist at legacyPlistPath (0.4.2 and
+ * before) is removed once the new one has lint-checked, and `migrated` names it; the printed
+ * lines then boot out the job by label before bootstrapping the new path (`&&` when launchd has
+ * it, `;` when launchctl could not say, the bootstrap alone when it is known not loaded).
  */
 export function install({ env = process.env, interval = 300, cliPath, node = process.execPath, uid = process.getuid?.() ?? 501, check = runCheck, label = LABEL, cwd = process.cwd(), stateDir = defaultStateDir(env), ctx, exists } = {}) {
   const dir = launchdDir(env, stateDir);
-  const file = plistPath(env, label, stateDir);
   const path = dedupePath(env.PATH);
+  let file;
   let text;
   let pinned;
   let lang;
   let environment;
   try {
+    if (typeof env.HOME !== "string" || !isAbsolute(env.HOME)) throw new Error(`HOME is not set to an absolute path (${JSON.stringify(env.HOME ?? null)}): the plist goes in $HOME/Library/LaunchAgents`);
+    file = plistPath(env, label);
     pinned = ctx === undefined ? resolveCtx(path, exists ? { exists } : {}) : resolve(cwd, ctx);
     if (pinned === null) throw new Error(`no executable \`ctx\` on PATH (${path}); install ctx first (\`ctx docs show getting-started\`), or pass --ctx <absolute path>`);
     if (exists ? !exists(pinned) : !executable(pinned)) throw new Error(`--ctx ${pinned} is not an executable file`);
@@ -393,11 +452,12 @@ export function install({ env = process.env, interval = 300, cliPath, node = pro
     environment = lang.value && lang.source !== "env" ? { LANG: lang.value, ...carriedEnv(env) } : carriedEnv(env);
     text = plistText({ label, node, cliPath: resolve(cwd, cliPath), interval, logDir: dir, path, stateDir: resolve(cwd, stateDir), ctx: pinned, environment });
     mkdirSync(dir, { recursive: true });
+    mkdirSync(launchAgentsDir(env), { recursive: true });
     writeFileSync(file, text);
   } catch (err) {
     return { code: 1, text: `ctx-watch install: ${err.message}` };
   }
-  const lines = [`wrote ${file} (${label}, every ${interval} s, \`tick\`; ctx pinned at ${pinned}, state in ${resolve(cwd, stateDir)})`];
+  const lines = [`wrote ${file} (${label}, every ${interval} s, \`tick\`; ctx pinned at ${pinned}, state in ${resolve(cwd, stateDir)}, logs in ${dir})`];
   const names = Object.keys(environment);
   lines.push(`environment: PATH${names.length ? `, ${names.join(", ")}` : ""}`);
   if (lang.value === null) lines.push(`LANG is not set in this shell, so the plist carries none (${lang.detail}): a heal the timer runs would have ctx record a launch environment without LANG, which it reports as supervisor \`environment_invalid\` with \`restart_required\`. Run install again from a shell with LANG set (a Terminal login shell has it).`);
@@ -406,14 +466,28 @@ export function install({ env = process.env, interval = 300, cliPath, node = pro
   if (lint.missing) lines.push("plutil not found: the plist was not checked (not macOS?)");
   else if (lint.code !== 0) return { code: 1, text: `${lines.join("\n")}\nplutil -lint failed: ${lint.output.trim()}` };
   else lines.push("plutil -lint: OK");
+  const legacy = legacyPlistPath(env, label, stateDir);
+  let migrated = null;
+  if (legacy !== file && existsSync(legacy)) {
+    try {
+      rmSync(legacy, { force: true });
+      migrated = legacy;
+      lines.push(`moved the plist from ${legacy} (removed) to ${file}: launchd loads a person's LaunchAgents only from ~/Library/LaunchAgents at login, so a job loaded from the old path was gone after a reboot.`);
+    } catch (err) {
+      lines.push(`the old plist at ${legacy} could not be removed (${err.message}); delete it: launchd never loads it at login, and ${file} replaces it.`);
+    }
+  }
+  const boot = `launchctl bootstrap gui/${uid} ${shellQuote(file)}`;
+  const out = `launchctl bootout gui/${uid}/${label}`;
   const l = loaded({ uid, label, check });
-  if (l.loaded === true) lines.push(`${l.detail}; to pick up this plist:\n  launchctl bootout gui/${uid}/${label} && launchctl bootstrap gui/${uid} ${shellQuote(file)}`);
-  else lines.push(`${l.detail}. To install it, run from your own Terminal (a GUI login, not an agent shell):\n  launchctl bootstrap gui/${uid} ${shellQuote(file)}\nthen check with:\n  node ${shellQuote(resolve(cwd, cliPath))} status`);
-  return { code: 0, text: lines.join("\n"), file, ctx: pinned };
+  if (l.loaded === true) lines.push(`${l.detail}; to pick up this plist${migrated ? " (the loaded job still runs from the old one)" : ""}:\n  ${out} && ${boot}`);
+  else if (l.loaded === null && migrated) lines.push(`${l.detail}. To move the job to the new plist, run from your own Terminal (a GUI login, not an agent shell; the bootout may answer "No such process" when nothing is loaded):\n  ${out}; ${boot}\nthen check with:\n  node ${shellQuote(resolve(cwd, cliPath))} status`);
+  else lines.push(`${l.detail}. To install it, run from your own Terminal (a GUI login, not an agent shell):\n  ${boot}\nthen check with:\n  node ${shellQuote(resolve(cwd, cliPath))} status`);
+  return { code: 0, text: lines.join("\n"), file, ctx: pinned, migrated };
 }
 
-/** The bootout line. Removes nothing. */
-export function uninstall({ env = process.env, uid = process.getuid?.() ?? 501, label = LABEL, stateDir = defaultStateDir(env) } = {}) {
-  const file = plistPath(env, label, stateDir);
-  return { code: 0, text: `To stop the timer, run:\n  launchctl bootout gui/${uid}/${label}\nThe plist stays at ${file}; delete it yourself if you are done with it.`, file };
+/** The bootout line, and the `rm` without which login loads the plist again. Removes nothing. */
+export function uninstall({ env = process.env, uid = process.getuid?.() ?? 501, label = LABEL } = {}) {
+  const file = plistPath(env, label);
+  return { code: 0, text: `To stop the timer, run:\n  launchctl bootout gui/${uid}/${label}\nThe plist stays at ${file}, and launchd loads it again at your next login; to stop that too, delete it:\n  rm ${shellQuote(file)}`, file };
 }

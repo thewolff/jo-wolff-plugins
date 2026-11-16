@@ -8,10 +8,10 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
-import { chmodSync, existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
-import { LABEL, DEFAULT_PATH, plistPath, plistText, install, uninstall, loaded, dedupePath, resolveCtx, shellQuote } from "../lib/launchd.mjs";
+import { dirname, join } from "node:path";
+import { LABEL, DEFAULT_PATH, plistPath, legacyPlistPath, plistText, install, uninstall, loaded, timerHealth, dedupePath, resolveCtx, shellQuote } from "../lib/launchd.mjs";
 import { dialogScript, showPopup, readOutcome, outcomePath, OSASCRIPT, GIVE_UP_SECS, GRACE_MS, SUPERVISOR } from "../lib/popup.mjs";
 import { INTERVAL_BOUNDS } from "../lib/state.mjs";
 
@@ -22,9 +22,10 @@ const STATE = "/Users/example/.local/state/ctx-watch";
 const CTX_BIN = "/Users/example/.local/bin/ctx";
 const rx = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 
-test("plistPath is under <state>/launchd; a given state directory wins over the environment", () => {
-  assert.equal(plistPath({ XDG_STATE_HOME: "/Users/example/s" }), `/Users/example/s/ctx-watch/launchd/${LABEL}.plist`);
-  assert.equal(plistPath({ XDG_STATE_HOME: "/Users/example/s" }, LABEL, "/Volumes/x/ctx-watch"), `/Volumes/x/ctx-watch/launchd/${LABEL}.plist`);
+test("0.4.3 plistPath is $HOME/Library/LaunchAgents (what login loads); legacyPlistPath is the pre-0.4.3 <state>/launchd", () => {
+  assert.equal(plistPath({ HOME: "/Users/example", XDG_STATE_HOME: "/Users/example/s" }), `/Users/example/Library/LaunchAgents/${LABEL}.plist`);
+  assert.equal(legacyPlistPath({ XDG_STATE_HOME: "/Users/example/s" }), `/Users/example/s/ctx-watch/launchd/${LABEL}.plist`);
+  assert.equal(legacyPlistPath({ XDG_STATE_HOME: "/Users/example/s" }, LABEL, "/Volumes/x/ctx-watch"), `/Volumes/x/ctx-watch/launchd/${LABEL}.plist`);
   assert.equal(LABEL, "com.jo-wolff-plugins.ctx-watch");
 });
 
@@ -99,25 +100,79 @@ function fakeCheck(answers) {
 }
 const ctxAt = (...paths) => (p) => paths.includes(p);
 
-test("install writes the plist under <state>/launchd with absolute paths, the state directory and the resolved ctx pinned, lints it, and prints the bootstrap line (never bootstraps)", () => {
+test("0.4.3 install writes the plist to $HOME/Library/LaunchAgents with logs under <state>/launchd, absolute paths, the state directory and the resolved ctx pinned, lints it, and prints the bootstrap line naming that path (never bootstraps)", () => {
   const root = mkdtempSync(join(tmpdir(), "ctx-watch-launchd-"));
   try {
-    const env = { XDG_STATE_HOME: join(root, "state"), PATH: ".:/Users/example/.local/bin:/usr/bin:/bin", LANG: "en_US.UTF-8" };
+    const env = { XDG_STATE_HOME: join(root, "state"), HOME: join(root, "home"), PATH: ".:/Users/example/.local/bin:/usr/bin:/bin", LANG: "en_US.UTF-8" };
     const { calls, check } = fakeCheck({ plutil: { missing: false, code: 0, output: `${plistPath(env)}: OK\n` }, launchctl: { missing: false, code: 113, output: "Could not find service" } });
     const r = install({ env, interval: 300, cliPath: "scripts/ctx-watch.mjs", cwd: "/Users/example/plugins/ctx-watch", node: NODE, uid: 501, check, exists: ctxAt("./ctx", CTX_BIN) });
     assert.equal(r.code, 0, r.text);
-    assert.equal(r.file, plistPath(env));
+    assert.equal(r.file, join(root, "home", "Library", "LaunchAgents", `${LABEL}.plist`));
+    assert.equal(r.migrated, null, "no old plist, nothing moved");
+    assert.equal(existsSync(legacyPlistPath(env)), false, "nothing written at the old path");
     assert.equal(r.ctx, CTX_BIN, "the `ctx` in `.` was skipped");
     const text = readFileSync(r.file, "utf8");
     assert.match(text, /<string>\/Users\/example\/plugins\/ctx-watch\/scripts\/ctx-watch.mjs<\/string>/, "a relative cliPath is resolved against cwd");
     assert.match(text, new RegExp(`<string>tick</string>\\s*<string>--state-dir</string>\\s*<string>${rx(join(root, "state", "ctx-watch"))}</string>\\s*<string>--ctx</string>\\s*<string>${CTX_BIN}</string>`), "the installing shell's state directory and ctx, as absolute paths");
+    assert.match(text, new RegExp(`<key>StandardOutPath</key>\\s*<string>${rx(join(root, "state", "ctx-watch", "launchd", `${LABEL}.out.log`))}</string>`), "logs stay in the state directory");
     assert.match(text, /<key>PATH<\/key>\s*<string>\/Users\/example\/.local\/bin:\/usr\/bin:\/bin<\/string>/, "the relative PATH entry is gone");
     assert.match(text, /<integer>300<\/integer>/);
     assert.deepEqual(calls, [["plutil", "-lint", r.file], ["launchctl", "print", `gui/501/${LABEL}`]]);
-    assert.match(r.text, new RegExp(`^wrote .*ctx-watch\\.plist \\(com\\.jo-wolff-plugins\\.ctx-watch, every 300 s, \`tick\`; ctx pinned at ${CTX_BIN}, state in ${rx(join(root, "state", "ctx-watch"))}\\)\nenvironment: PATH, LANG\nplutil -lint: OK\n`));
+    assert.match(r.text, new RegExp(`^wrote ${rx(r.file)} \\(com\\.jo-wolff-plugins\\.ctx-watch, every 300 s, \`tick\`; ctx pinned at ${CTX_BIN}, state in ${rx(join(root, "state", "ctx-watch"))}, logs in ${rx(join(root, "state", "ctx-watch", "launchd"))}\\)\nenvironment: PATH, LANG\nplutil -lint: OK\n`));
     assert.match(r.text, new RegExp(`launchd does not have ${LABEL}\\. To install it, run from your own Terminal[^\\n]*:\\n  launchctl bootstrap gui/501 ${rx(r.file)}\\n`));
     assert.match(r.text, /then check with:\n  node \/Users\/example\/plugins\/ctx-watch\/scripts\/ctx-watch.mjs status$/);
-    assert.doesNotMatch(r.text, /bootout/);
+    assert.doesNotMatch(r.text, /bootout|moved/);
+
+    const noHome = install({ env: { ...env, HOME: undefined }, cliPath: CLI, node: NODE, uid: 501, check, exists: ctxAt(CTX_BIN) });
+    assert.equal(noHome.code, 1);
+    assert.match(noHome.text, /^ctx-watch install: HOME is not set to an absolute path \(null\): the plist goes in \$HOME\/Library\/LaunchAgents$/, "never another HOME's LaunchAgents");
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("0.4.3 install over a pre-0.4.3 plist: the old file is removed after the new one lints, install says so, and prints the bootout + bootstrap pair", () => {
+  const root = mkdtempSync(join(tmpdir(), "ctx-watch-launchd-"));
+  const old = (env) => {
+    mkdirSync(dirname(legacyPlistPath(env)), { recursive: true });
+    writeFileSync(legacyPlistPath(env), "<plist/>");
+  };
+  try {
+    const env = { XDG_STATE_HOME: join(root, "state"), HOME: join(root, "home"), PATH: "/usr/bin", LANG: "en_US.UTF-8" };
+    const exists = ctxAt("/usr/bin/ctx");
+    const lint = { missing: false, code: 0, output: "OK" };
+    const file = plistPath(env);
+    const pair = `launchctl bootout gui/501/${LABEL} && launchctl bootstrap gui/501 ${file}`;
+    const moved = `moved the plist from ${legacyPlistPath(env)} (removed) to ${file}: launchd loads a person's LaunchAgents only from ~/Library/LaunchAgents at login, so a job loaded from the old path was gone after a reboot.`;
+
+    // Loaded from the old path (the 0.4.2 state on a machine not yet rebooted): `&&` pair.
+    old(env);
+    const r1 = install({ env, cliPath: CLI, node: NODE, uid: 501, check: fakeCheck({ plutil: lint, launchctl: { missing: false, code: 0, output: `\tpath = ${legacyPlistPath(env)}\n\tstate = waiting\n` } }).check, exists });
+    assert.equal(r1.code, 0, r1.text);
+    assert.equal(r1.migrated, legacyPlistPath(env));
+    assert.equal(existsSync(legacyPlistPath(env)), false, "the old plist is gone");
+    assert.ok(existsSync(file), "the new one is in LaunchAgents");
+    assert.ok(r1.text.includes(`\n${moved}\n`), r1.text);
+    assert.ok(r1.text.endsWith(`(the loaded job still runs from the old one):\n  ${pair}`), r1.text);
+
+    // After a reboot: launchd does not have it, so there is nothing to boot out.
+    old(env);
+    const r2 = install({ env, cliPath: CLI, node: NODE, uid: 501, check: fakeCheck({ plutil: lint, launchctl: { missing: false, code: 113, output: "" } }).check, exists });
+    assert.ok(r2.text.includes(moved));
+    assert.match(r2.text, new RegExp(`launchd does not have ${LABEL}\\. To install it, [^\\n]*:\\n  launchctl bootstrap gui/501 ${rx(file)}\\n`));
+    assert.doesNotMatch(r2.text, /bootout/);
+
+    // launchctl could not say (a sandbox): the pair with `;`, so a bootout that finds nothing does not stop the bootstrap.
+    old(env);
+    const r3 = install({ env, cliPath: CLI, node: NODE, uid: 501, check: fakeCheck({ plutil: lint, launchctl: { missing: false, code: null, output: "spawn EPERM" } }).check, exists });
+    assert.ok(r3.text.includes(moved));
+    assert.ok(r3.text.includes(`\n  launchctl bootout gui/501/${LABEL}; launchctl bootstrap gui/501 ${file}\n`), r3.text);
+
+    // A failed lint keeps the old plist: the new one is not known good.
+    old(env);
+    const r4 = install({ env, cliPath: CLI, node: NODE, uid: 501, check: fakeCheck({ plutil: { missing: false, code: 1, output: "bad" } }).check, exists });
+    assert.equal(r4.code, 1);
+    assert.ok(existsSync(legacyPlistPath(env)), "kept after a failed lint");
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
@@ -206,12 +261,52 @@ test("loaded reads launchctl print; a refused launchctl (sandbox) is null, not f
   assert.equal(loaded({ uid: 501, check: () => ({ missing: true, code: null, output: "" }) }).loaded, null);
 });
 
-test("uninstall prints the bootout line and removes nothing", () => {
-  const env = { XDG_STATE_HOME: "/Users/example/s" };
+/** The shape of a real `launchctl print gui/501/<label>` (Darwin 25.6, 2026-11-16), trimmed, paths replaced. */
+const PRINT = (plist, script) => `gui/501/${LABEL} = {\n\tactive count = 0\n\tpath = ${plist}\n\ttype = LaunchAgent\n\tstate = not running\n\n\tprogram = ${NODE}\n\targuments = {\n\t\t${NODE}\n\t\t${script}\n\t\ttick\n\t\t--state-dir\n\t\t${STATE}\n\t}\n\n\tstdout path = ${LOGS}/${LABEL}.out.log\n\tlast exit code = 0\n}\n`;
+
+test("0.4.3 loaded also returns the job's plist path and arguments when launchctl print shows them", () => {
+  const l = loaded({ uid: 501, check: () => ({ missing: false, code: 0, output: PRINT("/Users/example/Library/LaunchAgents/x.plist", CLI) }) });
+  assert.equal(l.loaded, true);
+  assert.equal(l.detail, `launchd has ${LABEL} (state = not running, last exit code = 0)`, "a two-word state is not cut at its space");
+  assert.equal(l.plist, "/Users/example/Library/LaunchAgents/x.plist", "`path =`, not `stdout path =`");
+  assert.deepEqual(l.args, [NODE, CLI, "tick", "--state-dir", STATE]);
+});
+
+test("0.4.3 timerHealth: nothing installed asks launchd nothing; 113 is not-loaded; a loaded job's missing script is script-missing; a timeout or refusal is no answer", () => {
+  const env = { HOME: "/Users/example", XDG_STATE_HOME: "/Users/example/.local/state" };
+  const agent = plistPath(env);
+  const legacy = legacyPlistPath(env);
+  const files = (...present) => (p) => present.includes(p);
+  const calls = [];
+  const lc = (answer) => (bin, args) => (calls.push([bin, ...args]), answer);
+
+  const none = timerHealth({ env, uid: 501, check: lc({ missing: false, code: 113, output: "" }), exists: files() });
+  assert.equal(none.ok, null);
+  assert.deepEqual(calls, [], "no plist anywhere: launchctl is not asked");
+
+  const gone = timerHealth({ env, uid: 501, check: lc({ missing: false, code: 113, output: "Could not find service" }), exists: files(agent) });
+  assert.deepEqual({ ok: gone.ok, kind: gone.kind, reason: gone.reason }, { ok: false, kind: "not-loaded", reason: "timer not in launchd gui/501" });
+  assert.deepEqual(calls.at(-1), ["launchctl", "print", `gui/501/${LABEL}`]);
+  const goneOld = timerHealth({ env, uid: 501, check: lc({ missing: false, code: 113, output: "" }), exists: files(legacy) });
+  assert.equal(goneOld.kind, "not-loaded");
+  assert.match(goneOld.detail, /outside ~\/Library\/LaunchAgents, so login does not load it/);
+
+  const stale = timerHealth({ env, uid: 501, check: lc({ missing: false, code: 0, output: PRINT(agent, "/Users/example/.claude/plugins/cache/x/ctx-watch/0.4.1/scripts/ctx-watch.mjs") }), exists: files(agent) });
+  assert.deepEqual({ ok: stale.ok, kind: stale.kind, reason: stale.reason }, { ok: false, kind: "script-missing", reason: "timer's script no longer exists" });
+  assert.match(stale.detail, /0\.4\.1\/scripts\/ctx-watch\.mjs, which does not exist$/);
+
+  assert.equal(timerHealth({ env, uid: 501, check: lc({ missing: false, code: 0, output: PRINT(agent, CLI) }), exists: files(agent, CLI) }).ok, true);
+  for (const answer of [{ missing: false, code: null, output: "spawnSync launchctl ETIMEDOUT" }, { missing: false, code: 5, output: "Input/output error" }, { missing: true, code: null, output: "" }]) {
+    assert.equal(timerHealth({ env, uid: 501, check: lc(answer), exists: files(agent) }).ok, null, `no answer is not "not loaded": ${JSON.stringify(answer)}`);
+  }
+});
+
+test("uninstall prints the bootout line and the rm that keeps login from loading it again, and removes nothing", () => {
+  const env = { HOME: "/Users/example", XDG_STATE_HOME: "/Users/example/s" };
   const r = uninstall({ env, uid: 501 });
   assert.equal(r.code, 0);
-  assert.equal(r.text, `To stop the timer, run:\n  launchctl bootout gui/501/${LABEL}\nThe plist stays at ${plistPath(env)}; delete it yourself if you are done with it.`);
-  assert.equal(uninstall({ env, uid: 501, stateDir: "/Volumes/x/ctx-watch" }).file, `/Volumes/x/ctx-watch/launchd/${LABEL}.plist`);
+  assert.equal(r.text, `To stop the timer, run:\n  launchctl bootout gui/501/${LABEL}\nThe plist stays at /Users/example/Library/LaunchAgents/${LABEL}.plist, and launchd loads it again at your next login; to stop that too, delete it:\n  rm /Users/example/Library/LaunchAgents/${LABEL}.plist`);
+  assert.equal(r.file, plistPath(env));
 });
 
 /** A child double: `{ child, emit }`; `pid` 42. */
