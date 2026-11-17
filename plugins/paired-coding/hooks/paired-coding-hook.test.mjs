@@ -262,7 +262,10 @@ test("while pairing, Skill loads only this plugin's own skill, in a started sess
       assert.match(out.hookSpecificOutput.permissionDecisionReason, refusal);
     }
   };
-  check(f.common, /Skill is not on the pairing allowlist/);
+  check(f.common, /Skill is refused while pairing except paired-coding's own; to use .+'s method, Read its SKILL\.md and follow it here, turning any writes into cards\./);
+  assert.match(skill(f.common, { skill: "as2-skills:accessibility" }).hookSpecificOutput.permissionDecisionReason, /to use as2-skills:accessibility's method, Read its SKILL\.md/);
+  const other = handle("pre-tool-use", { ...f.common, tool_name: "mcp__server__tool", tool_input: {}, tool_use_id: tuid() }, { env: f.env });
+  assert.match(other.hookSpecificOutput.permissionDecisionReason, /mcp__server__tool is not on the pairing allowlist/);
   handle("session-end", { ...f.common, reason: "clear" }, { env: f.env });
   const s2 = { ...f.common, session_id: "s2" };
   assert.notEqual(handle("session-start", { ...s2, source: "clear" }, { env: f.env }), null);

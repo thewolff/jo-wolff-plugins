@@ -345,9 +345,10 @@ How it works:
 - While pairing, the host's own write, edit, shell, eval and sub-agent tools are refused, and so
   is any tool the gate does not know. On Claude Code the `Skill` tool is allowed only for this
   plugin's own skill, `paired-coding:paired-coding`, so the agent can reload it after `/clear`;
-  every other skill is refused. The agent writes through `pair_write` and `pair_edit`, which
-  accept only paths inside the open change set's boundary, and runs commands through
-  `pair_run`.
+  every other skill is refused, with a reason that names the route: Read that skill's SKILL.md
+  and follow it in the session, turning any file it would write into a card. The agent writes
+  through `pair_write` and `pair_edit`, which accept only paths inside the open change set's
+  boundary, and runs commands through `pair_run`.
 - While pairing, ledger and pattern-check calls go through `pair_run`. The host's shell is
   refused whatever the command: the host runs it with its own rights and environment, outside
   the fence, and nothing the gate can check before the call pins where the command would
@@ -1153,6 +1154,10 @@ not prevented. Snapshots cover the worktree only and leave out `.git`, so a writ
 worktree, inside an excluded directory, or after the final snapshot is not detected.
 
 ## Changes
+
+### 1.7.1
+
+- On Claude Code, a `Skill` call for another skill is still refused while pairing, and the reason now names the route: read that skill's SKILL.md and follow it in the session, turning any writes into cards. The skill says the same under *When this can't run*. Other unknown tools keep their reason.
 
 ### 1.7.0
 
