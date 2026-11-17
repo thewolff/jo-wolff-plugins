@@ -8,6 +8,9 @@
 //
 //   - a `user` entry, not a sidechain, not `isMeta` (the harness's own lines);
 //   - not only tool results;
+//   - its text, after leading whitespace, does not start with one of BASH_IO (a `!` shell
+//     command's `<bash-input>`/`<bash-stdout>`/`<bash-stderr>`, which Desktop stamps
+//     `origin.kind: human`);
 //   - when the entry carries `origin.kind` (newer Claude Code stamps it on what it injects:
 //     `task-notification`, `peer`, `coordinator`), that kind is `human`;
 //   - otherwise its text, after any leading `<system-reminder>…</system-reminder>` blocks (a real
@@ -81,6 +84,11 @@ export const NOT_HUMAN = [
   "[Subagent hand-back]",
 ];
 
+// A `!` shell command the person ran from the prompt box. Claude Code writes its input and output
+// as `user` entries, and Claude Desktop stamps them `origin.kind: "human"`, so these prefixes are
+// checked before the origin rule (0.4.5).
+export const BASH_IO = ["<bash-input>", "<bash-stdout>", "<bash-stderr>"];
+
 const LEADING_REMINDER = /^\s*<system-reminder>[\s\S]*?<\/system-reminder>/;
 
 const blocks = (entry) => {
@@ -99,6 +107,8 @@ export function isHumanPrompt(entry) {
     .map((b) => b.text)
     .join("\n");
   if (!text.trim() && parts.some((b) => b.type === "tool_result")) return false;
+  const lead = text.trimStart();
+  if (BASH_IO.some((p) => lead.startsWith(p))) return false;
   const kind = entry.origin && typeof entry.origin === "object" ? entry.origin.kind : undefined;
   if (kind !== undefined) return kind === "human";
   while (LEADING_REMINDER.test(text)) text = text.replace(LEADING_REMINDER, "");

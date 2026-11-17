@@ -104,7 +104,8 @@ recording the answer, the Stop hook sends it back once with the ids to record.
 
 Only a prompt you typed counts as your reply. Claude Code also writes lines into the
 conversation that you did not: a subagent's `<task-notification>`, a `<system-reminder>`,
-another session's message, local command output, tool results, the Stop hook's own feedback.
+another session's message, local command output, a `!` shell command's input and output (even
+when Claude Desktop marks it as yours), tool results, the Stop hook's own feedback.
 The Stop hook reads the session transcript and sends the agent back for an answer only when a
 line written since the question is one you typed (`lib/transcript.mjs`, `isHumanPrompt`); a
 transcript it cannot read, or one with no timestamped prompt, is no evidence and sends no
@@ -886,6 +887,12 @@ Tests use a sandboxed `HOME`, `XDG_*` and `LEDGER_*` so they never touch your le
 `LEDGER_CWD` and `LEDGER_BUSY_TIMEOUT_MS` environment variables exist for the tests.
 
 ## Changes
+
+### 0.4.5
+
+- A `!` shell command run from the prompt box (its `<bash-input>`, `<bash-stdout>` or
+  `<bash-stderr>` entry) no longer counts as the human replying, even when Claude Desktop stamps
+  it `origin.kind: "human"`. The Stop hook no longer nags for an answer after one.
 
 ### 0.4.4
 

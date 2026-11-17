@@ -4,6 +4,18 @@ All notable changes to ledger are recorded here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Entries before 0.2.1 are the
 "Changes" section of the README (one line per version).
 
+## 0.4.5 - 2026-11-16
+
+### Fixed
+
+- A `!` shell command run from the prompt box no longer counts as the human replying. Claude
+  Code writes its input and output as `user` entries starting `<bash-input>`, `<bash-stdout>`
+  or `<bash-stderr>`, and Claude Desktop stamps them `origin.kind: "human"`, which
+  `isHumanPrompt` took at its word. The Stop hook then blocked with "the human has written
+  since you asked" and the agent recorded a bogus non-answer and re-asked. Those prefixes are
+  now checked before the origin rule; a typed message that quotes one mid-text is still the
+  human.
+
 ## 0.4.4 - 2026-11-16
 
 ### Changed
