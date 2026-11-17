@@ -1335,3 +1335,67 @@ test("0.4.6 (d): a row written before `since` existed still judges, from that ro
   const r = review(b, [], { LEDGER_REVIEW_BIN_CODEX: stub(b, "codex", "PASS"), LEDGER_JUDGE_BIN: cond });
   assert.match(r.out, /^ {2}judge yes: \[blocking\] card\.tsx:1 x is broken \(round 1\)$/m, r.out);
 });
+
+test("0.4.6 R1-1: a finding that only says \"receipt\" is not about the pattern-check receipt and gets no receipt text", async () => {
+  const { aboutReceipt } = await import("../lib/review.mjs");
+  assert.equal(aboutReceipt({ text: "receipt.ts:1 payment receipt is accepted without signature" }), false);
+  assert.equal(aboutReceipt({ text: "notify.ts:4 read receipts are sent twice" }), false);
+  assert.equal(aboutReceipt({ text: ".pattern-check/r.md has no timeout row" }), true);
+  assert.equal(aboutReceipt({ kind: "fault-tolerance", text: "the timeout row has no recovery step" }), true);
+  const b = repo();
+  commit(b, "receipt.ts", "accept(receipt);\n");
+  review(b, [], { LEDGER_REVIEW_BIN_CODEX: stub(b, "codex", "1. [blocking] receipt.ts:1 payment receipt is accepted without signature") });
+  mkdirSync(join(b.work, ".pattern-check"));
+  writeFileSync(join(b.work, ".pattern-check", "r.md"), "| RECEIPT_BODY_MARKER | answer yes |\n");
+  const no = judge(b, "no");
+  review(b, [], { LEDGER_REVIEW_BIN_CODEX: stub(b, "codex", "PASS"), LEDGER_JUDGE_BIN: no });
+  const passage = readFileSync(`${no}.prompt`, "utf8");
+  assert.match(passage, /payment receipt is accepted without signature/);
+  assert.doesNotMatch(passage, /RECEIPT_BODY_MARKER|Pattern-check receipt \(current text\)/);
+});
+
+test("0.4.6 R1-2: a named hunk that fits the cap alone stays whole beside a large receipt or other-file diff", async () => {
+  const { passageFor, PASSAGE_CAP_BYTES } = await import("../lib/ledger-judge.mjs");
+  const tail = "\n+DECISIVE_FIX_LINE";
+  // Fits alone, but not with the cut marker beside it: the supplements are dropped, the hunk kept.
+  const near = `${"n".repeat(8000)}${tail}`;
+  const alone = passageFor("x", near);
+  assert.ok(Buffer.byteLength(alone) <= PASSAGE_CAP_BYTES && alone.endsWith(tail));
+  for (const extra of [{ receipt: "r".repeat(1000) }, { others: [{ path: "big.ts", diff: "o".repeat(20000) }] }]) {
+    const p = passageFor("x", near, extra);
+    assert.ok(Buffer.byteLength(p) <= PASSAGE_CAP_BYTES, `${Buffer.byteLength(p)} bytes`);
+    assert.ok(p.includes(tail), "the decisive last line of the named hunk survives");
+  }
+  // Leaves room: the hunk is whole, the supplement is cut after it and the marker says so.
+  const small = `${"s".repeat(2000)}${tail}`;
+  for (const extra of [{ receipt: "r".repeat(20000) }, { others: [{ path: "big.ts", diff: "o".repeat(20000) }] }]) {
+    const p = passageFor("x", small, extra);
+    assert.ok(Buffer.byteLength(p) <= PASSAGE_CAP_BYTES);
+    assert.ok(p.indexOf(tail) > 0 && p.indexOf(tail) < p.indexOf("[cut: "), "the whole hunk precedes the cut marker");
+  }
+});
+
+test("0.4.6 R1-3: a finding carried through skipped and unavailable rounds keeps the commit that raised it", () => {
+  const b = repo({ labs: ["codex", "claude"], maxRounds: 9 });
+  const raised = commit(b, "card.tsx", "const x = broken;\n");
+  review(b, ["--labs", "codex"], { LEDGER_REVIEW_BIN_CODEX: stub(b, "codex", "1. [blocking] card.tsx:1 x is broken") });
+  // The fix lands on the commit where codex is skipped, so only a window from `raised` shows it.
+  commit(b, "card.tsx", "const x = FIXED_VALUE;\n");
+  let r = review(b, ["--labs", "claude"], { LEDGER_REVIEW_BIN_CLAUDE: stub(b, "claude", "PASS") });
+  assert.match(r.out, /^codex: findings: .* · not run this time/m, r.out);
+  commit(b, "c.txt", "later\n");
+  r = review(b, ["--labs", "codex"], { LEDGER_REVIEW_BIN_CODEX: stub(b, "codex", "boom", 1) });
+  assert.match(r.out, /^codex: findings: .* · unavailable/m, r.out);
+  const db = openDb(b);
+  try {
+    const carried = db.prepare("SELECT findings_json FROM cc_reviews WHERE lab = 'codex' ORDER BY id").all().map((row) => JSON.parse(row.findings_json)[0].since);
+    assert.deepEqual(carried, [raised, raised, raised], "every carried row keeps the commit that raised the finding");
+  } finally {
+    db.close();
+  }
+  commit(b, "other.ts", "export const unrelated = 1;\n");
+  const cond = needleJudge(b, "carry", FIX);
+  r = review(b, ["--labs", "codex"], { LEDGER_REVIEW_BIN_CODEX: stub(b, "codex", "PASS"), LEDGER_JUDGE_BIN: cond });
+  assert.match(r.out, /^ {2}judge yes: \[blocking\] card\.tsx:1 x is broken/m, r.out);
+  assert.ok(readFileSync(`${cond}.prompt`, "utf8").includes(FIX));
+});

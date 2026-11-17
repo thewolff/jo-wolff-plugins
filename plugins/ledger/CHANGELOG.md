@@ -17,10 +17,12 @@ All notable changes to ledger are recorded here. The format follows
 - When none of the files a finding names had changed, the judge was handed the unscoped diff of
   every other file, cut at 8 kB. The passage now holds the named files' diff first, then the
   other changed files, each under its path, while they fit the cap; with no change at all since
-  the finding was raised it says so.
+  the finding was raised it says so. The finding and its named diff are budgeted first: when
+  they fit the cap alone, the receipt and other files get only the space left after them and the
+  cut marker, so they never cut the named hunk.
 - A finding about the pattern-check receipt (tagged `fault-tolerance:`, or naming
-  `.pattern-check` or the receipt) could not be resolved by any diff. Its passage now includes
-  the newest receipt's current text.
+  `.pattern-check`; the word "receipt" alone does not count) could not be resolved by any diff.
+  Its passage now includes the newest receipt's current text.
 
 ## 0.4.5 - 2026-11-16
 

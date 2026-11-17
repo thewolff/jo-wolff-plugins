@@ -363,9 +363,9 @@ export function outstanding(db, top, rounds, head) {
   return out;
 }
 
-/** Whether a finding is about the pattern-check receipt: tagged `fault-tolerance:`, or it names `.pattern-check` or the receipt. */
+/** Whether a finding is about the pattern-check receipt: the lab tagged it `fault-tolerance:`, or it names `.pattern-check`. The word "receipt" alone does not count. */
 export function aboutReceipt(item) {
-  return item?.kind === "fault-tolerance" || /\.pattern-check\b|\breceipts?\b/i.test(String(item?.text ?? ""));
+  return item?.kind === "fault-tolerance" || /\.pattern-check\b/i.test(String(item?.text ?? ""));
 }
 
 /**

@@ -466,10 +466,12 @@ outstanding findings, so skipping a lab does not clear them. Each finding keeps 
 commit of the round that first raised it, through every later round that carries it or judges it
 `no`. For each finding the judge gets the finding and the change from `since` to HEAD: first the
 diff of the files it names; then, for a finding about the pattern-check receipt (tagged
-`fault-tolerance:`, or naming `.pattern-check` or the receipt), the receipt as it is now; then
-the other files changed in that window, each under its path; or, when nothing changed at all,
-a line saying so. A row written before 0.4.6 has no `since` and is judged from its own commit.
-The passage is capped at 8 kB; a longer one is cut and ends with a line saying so and giving the
+`fault-tolerance:`, or naming `.pattern-check`; the word "receipt" alone does not count), the
+receipt as it is now; then the other files changed in that window, each under its path; or, when
+nothing changed at all, a line saying so. A row written before 0.4.6 has no `since` and is judged
+from its own commit. The passage is capped at 8 kB, and the finding with its named files' diff is
+budgeted first: when it fits alone, the receipt and other files get only what is left, so they
+never cut it. A longer passage is cut and ends with a line saying so and giving the
 sha256 of the whole, so the cache tells two long inputs apart. The question is "Does this change resolve the finding? Answer
 yes or no." `no` keeps the finding open (`judge: "no"` in `findings_json`, the row stays
 `findings`, the gate stays closed, and the output names it); `yes` resolves it. A judge that is
