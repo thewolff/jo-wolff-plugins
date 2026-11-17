@@ -68,11 +68,13 @@ function ioFor(dir, state) {
 /**
  * The pre-call verdict for a host tool. Inert (allow, no file touched) unless activated.
  * @param {string} toolName  the bare tool name (an adapter maps its own pair_* tool names to bare ones)
- * @param {{ sessionDir: string, allow?: string[], command?: unknown, home?: string }} ctx
+ * @param {{ sessionDir: string, allow?: string[], command?: unknown, skill?: unknown, home?: string }} ctx
  *   `command`: for the host's shell tool, the command it was asked to run. The shell is
  *   refused whatever it is; a sibling plugin's CLI call (gate.mjs siblingCliCommand,
  *   installed under `home`, the process's home directory unless the adapter names one) is
- *   refused with a reason that says to run it with pair_run instead
+ *   refused with a reason that says to run it with pair_run instead.
+ *   `skill`: for Claude Code's Skill tool, the skill it was asked to load; it only shapes the
+ *   refusal's reason (gate.mjs skillRefusal)
  * @returns {{ allow: boolean, reason?: string, active: boolean, degraded?: string | null }}
  *   `degraded`: why this read took the state as closed instead of as saved, for the adapter to report
  */
@@ -81,7 +83,7 @@ export function verdict(toolName, ctx) {
   const { state, fault } = loadStateReport(ctx.sessionDir);
   if (state.phase === "inactive") return { allow: true, active: false };
   const home = typeof ctx.home === "string" && ctx.home ? ctx.home : homedir();
-  const v = toolVerdict(state, { toolName, command: ctx.command }, { allow: ctx.allow ?? [], home, realpath: (p) => realpathSync(p) }, makeIo({}));
+  const v = toolVerdict(state, { toolName, command: ctx.command, skill: ctx.skill }, { allow: ctx.allow ?? [], home, realpath: (p) => realpathSync(p) }, makeIo({}));
   appendJournal(ctx.sessionDir, v.journal);
   return { allow: v.allow, reason: v.reason, active: true, degraded: fault };
 }

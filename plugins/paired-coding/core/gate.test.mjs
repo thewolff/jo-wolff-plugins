@@ -501,8 +501,28 @@ describe("toolVerdict while pairing", () => {
       const v = toolVerdict(started(), { toolName });
       assert.equal(v.allow, false);
       assert.match(v.reason, /not on the pairing allowlist/);
+      assert.doesNotMatch(v.reason, /Read its SKILL\.md/);
       assert.equal(v.journal[0].type, "refusal");
     }
+  });
+
+  test("Skill for another skill is refused with the route to its method; the adapter's allow still lets this plugin's own through", () => {
+    const s = started();
+    for (const skill of ["as2-skills:accessibility", "/as2-skills:accessibility"]) {
+      const v = toolVerdict(s, { toolName: "Skill", skill }, { allow: ["ToolSearch"] });
+      assert.equal(v.allow, false);
+      assert.equal(v.reason, "Skill is refused while pairing except paired-coding's own; to use as2-skills:accessibility's method, Read its SKILL.md and follow it here, turning any writes into cards.");
+      assert.equal(v.journal[0].type, "refusal");
+      assert.equal(v.journal[0].reason, v.reason);
+    }
+    // Every line break a reader may render: C0 (\n, \r, \v, \f), DEL, C1 including U+0085 next
+    // line, and U+2028/U+2029, each mid-name so trim() cannot remove it.
+    for (const skill of [undefined, "", "a\nb", "a\rb", "a\vb", "a\fb", "a\u007fb", "a\u0085b", "a\u0080b", "a\u009fb", "a\u2028b", "a\u2029b", "x".repeat(201)]) {
+      const v = toolVerdict(s, { toolName: "Skill", skill });
+      assert.equal(v.allow, false);
+      assert.match(v.reason, /to use another skill's method, Read its SKILL\.md and follow it here/, JSON.stringify(skill));
+    }
+    assert.equal(toolVerdict(s, { toolName: "Skill", skill: "paired-coding:paired-coding" }, { allow: ["Skill"] }).allow, true);
   });
 
   test("opts.allow adds lifecycle tools but cannot re-allow a mutating or dispatch tool", () => {

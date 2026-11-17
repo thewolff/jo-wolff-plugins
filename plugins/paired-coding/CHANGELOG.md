@@ -5,6 +5,12 @@ All notable changes to paired-coding are recorded here. The format follows
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html). Releases before 1.4.0 are not
 listed.
 
+## 1.7.1 - 2026-11-16
+
+### Changed
+
+- On Claude Code, a `Skill` call for any skill other than this plugin's own is still refused while pairing, now with a reason that names the route: `Skill is refused while pairing except paired-coding's own; to use <skill>'s method, Read its SKILL.md and follow it here, turning any writes into cards.` The skill name is quoted only when it is one line of at most 200 characters; otherwise the reason says "another skill's". The verdict is unchanged, and every other unknown tool keeps the "is not on the pairing allowlist" text. The skill's *When this can't run* and the README say the same: read the other skill's SKILL.md and the files it names, follow it in the session, turn any file it would write into a card, and never report the work as done "by hand" without having read it.
+
 ## 1.7.0 - 2026-11-16
 
 ### Added

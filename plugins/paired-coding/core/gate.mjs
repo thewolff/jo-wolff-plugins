@@ -1914,7 +1914,10 @@ export function fencedEnv(env) {
  * subcommand no hook demands, or a path flag, is refused naming that, since pair_run refuses
  * it too.
  * @param {State} state
- * @param {{ toolName: unknown, command?: unknown }} call
+ * Claude Code's `Skill` tool, when `opts.allow` does not name it (it names it only for this
+ * plugin's own skill), is refused with skillRefusal's route to the skill's method; `call.skill`
+ * (the call's `tool_input.skill`) shapes that reason, never the verdict.
+ * @param {{ toolName: unknown, command?: unknown, skill?: unknown }} call
  * @param {{ allow?: string[], home?: string, realpath?: (abs: string) => string }} [opts]
  *   `realpath`: strict, throws when the path does not exist; `home` and `realpath` only
  *   shape the reason for a sibling CLI call, never the verdict
@@ -1941,7 +1944,23 @@ export function toolVerdict(state, call, opts = {}, io) {
   if (state.carried) return deny(`${name || "(unnamed tool)"} is refused: ${CARRIED_REASON}`);
   if (MUTATING_SET.has(name)) return deny(`${name} is the host's own mutating tool; while pairing, write with pair_write or pair_edit and run commands with pair_run`);
   if (DISPATCH_SET.has(name)) return deny(`${name} is refused: sub-agent dispatch is refused while pairing; do the recon in this session with read-only tools, or your partner ends pairing by typing pair stop`);
+  if (name === "Skill") return deny(skillRefusal(call.skill));
   return deny(`${name || "(unnamed tool)"} is not on the pairing allowlist; while pairing, write with pair_write or pair_edit and run commands with pair_run, or your partner ends pairing by typing pair stop`);
+}
+
+/**
+ * Why Claude Code's Skill tool is refused while pairing: Read still reaches another skill's
+ * method, so the reason names that route. `skill` is the call's untrusted `tool_input.skill`;
+ * it is quoted only as a short name on one line (no C0 or C1 control, DEL, U+2028 line
+ * separator or U+2029 paragraph separator; C1 covers U+0085 next line), otherwise the reason
+ * says "another skill's".
+ * @param {unknown} skill
+ * @returns {string}
+ */
+function skillRefusal(skill) {
+  const name = typeof skill === "string" ? skill.trim().replace(/^\//, "") : "";
+  const which = name && name.length <= 200 && !/[\u0000-\u001f\u007f-\u009f\u2028\u2029]/.test(name) ? `${name}'s` : "another skill's";
+  return `Skill is refused while pairing except paired-coding's own; to use ${which} method, Read its SKILL.md and follow it here, turning any writes into cards.`;
 }
 
 /**

@@ -326,6 +326,7 @@ fits a human navigator and a model driver.
 ## When this can't run
 
 - A host write, edit, shell or sub-agent tool is refused with `paired-coding: … is refused` (`evals/pre-tool-use-write-denied.scenario.json`): pairing is on and no agreed change set is open. Propose the card, wait for your partner's typed agreement, `pair_begin` with their words, then write through `pair_write`, `pair_edit` and `pair_run`. The refusal is the gate working, not a fault.
+- The `Skill` tool is refused for any skill except this one (`Skill is refused while pairing except paired-coding's own; …`). To use another skill's method, Read its SKILL.md and the files it names with Read, follow it in this session, and turn any file it would write into a card. Never report the work as done "by hand" without having read the skill.
 - The session started with `pairing carried over closed` (`evals/session-start-carries-closed.scenario.json`): tell your partner in one line and wait; call `pair_start` only once they say to keep pairing.
 - The `pair_*` tools are not installed: the contract holds as conversation (*Tools while pairing*, above); the hooks are inert in a session that never ran `pair_start` (`evals/pre-tool-use-inert.scenario.json`).
 - `pair_begin` is refused because the boundary changed since the card, or the quote is not in a turn your partner typed: propose again; never paraphrase an agreement.
