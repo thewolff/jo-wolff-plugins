@@ -8,8 +8,7 @@
 //
 //   - a `user` entry, not a sidechain, not `isMeta` (the harness's own lines);
 //   - not only tool results;
-//   - its text, after leading whitespace, does not start with one of BASH_IO (a `!` shell
-//     command's `<bash-input>`/`<bash-stdout>`/`<bash-stderr>`, which Desktop stamps
+//   - its text is not only `!` shell-command envelopes (see isBashIo; Desktop stamps those
 //     `origin.kind: human`);
 //   - when the entry carries `origin.kind` (newer Claude Code stamps it on what it injects:
 //     `task-notification`, `peer`, `coordinator`), that kind is `human`;
@@ -85,9 +84,26 @@ export const NOT_HUMAN = [
 ];
 
 // A `!` shell command the person ran from the prompt box. Claude Code writes its input and output
-// as `user` entries, and Claude Desktop stamps them `origin.kind: "human"`, so these prefixes are
-// checked before the origin rule (0.4.5).
-export const BASH_IO = ["<bash-input>", "<bash-stdout>", "<bash-stderr>"];
+// as `user` entries, and Claude Desktop stamps them `origin.kind: "human"`, so this is checked
+// before the origin rule (0.4.5). Only a text that is wholly one or more complete envelopes, with
+// nothing but whitespace between them, is shell I/O: a typed reply that merely starts with a tag,
+// or an unclosed tag, or an envelope followed by prose, is still the human. A linear scan, not a
+// backtracking regex, since command output can be large.
+const BASH_TAG = /^<(bash-input|bash-stdout|bash-stderr)>/;
+
+export function isBashIo(text) {
+  let rest = text.trim();
+  if (!rest) return false;
+  while (rest) {
+    const open = BASH_TAG.exec(rest);
+    if (!open) return false;
+    const close = `</${open[1]}>`;
+    const end = rest.indexOf(close, open[0].length);
+    if (end < 0) return false;
+    rest = rest.slice(end + close.length).trimStart();
+  }
+  return true;
+}
 
 const LEADING_REMINDER = /^\s*<system-reminder>[\s\S]*?<\/system-reminder>/;
 
@@ -107,8 +123,7 @@ export function isHumanPrompt(entry) {
     .map((b) => b.text)
     .join("\n");
   if (!text.trim() && parts.some((b) => b.type === "tool_result")) return false;
-  const lead = text.trimStart();
-  if (BASH_IO.some((p) => lead.startsWith(p))) return false;
+  if (isBashIo(text)) return false;
   const kind = entry.origin && typeof entry.origin === "object" ? entry.origin.kind : undefined;
   if (kind !== undefined) return kind === "human";
   while (LEADING_REMINDER.test(text)) text = text.replace(LEADING_REMINDER, "");

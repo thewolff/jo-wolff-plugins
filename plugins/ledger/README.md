@@ -890,9 +890,10 @@ Tests use a sandboxed `HOME`, `XDG_*` and `LEDGER_*` so they never touch your le
 
 ### 0.4.5
 
-- A `!` shell command run from the prompt box (its `<bash-input>`, `<bash-stdout>` or
-  `<bash-stderr>` entry) no longer counts as the human replying, even when Claude Desktop stamps
-  it `origin.kind: "human"`. The Stop hook no longer nags for an answer after one.
+- A `!` shell command run from the prompt box (an entry made only of complete `<bash-input>`,
+  `<bash-stdout>` or `<bash-stderr>` envelopes) no longer counts as the human replying, even
+  when Claude Desktop stamps it `origin.kind: "human"`. The Stop hook no longer nags for an
+  answer after one. A typed reply that starts with or quotes one of those tags still counts.
 
 ### 0.4.4
 

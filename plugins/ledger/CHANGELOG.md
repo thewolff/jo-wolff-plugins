@@ -9,12 +9,13 @@ All notable changes to ledger are recorded here. The format follows
 ### Fixed
 
 - A `!` shell command run from the prompt box no longer counts as the human replying. Claude
-  Code writes its input and output as `user` entries starting `<bash-input>`, `<bash-stdout>`
-  or `<bash-stderr>`, and Claude Desktop stamps them `origin.kind: "human"`, which
-  `isHumanPrompt` took at its word. The Stop hook then blocked with "the human has written
-  since you asked" and the agent recorded a bogus non-answer and re-asked. Those prefixes are
-  now checked before the origin rule; a typed message that quotes one mid-text is still the
-  human.
+  Code writes its input and output as `user` entries made of `<bash-input>…</bash-input>`,
+  `<bash-stdout>…</bash-stdout>` and `<bash-stderr>…</bash-stderr>` envelopes, and Claude
+  Desktop stamps them `origin.kind: "human"`, which `isHumanPrompt` took at its word. The Stop
+  hook then blocked with "the human has written since you asked" and the agent recorded a bogus
+  non-answer and re-asked. A text that is wholly one or more complete envelopes, with only
+  whitespace between them, is now ruled out before the origin rule. A typed message that starts
+  with or quotes a tag, leaves one unclosed, or adds prose after an envelope is still the human.
 
 ## 0.4.4 - 2026-11-16
 
