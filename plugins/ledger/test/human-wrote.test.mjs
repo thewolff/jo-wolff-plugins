@@ -96,6 +96,54 @@ test("isHumanPrompt: a prompt led by a system-reminder block and then real text 
   assert.equal(isHumanPrompt(user("ship it")), true);
 });
 
+// 0.4.5: a `!` shell command run from the prompt box is written as `user` entries holding
+// `<bash-input>`, `<bash-stdout>` or `<bash-stderr>`; Claude Desktop stamps them origin.kind human.
+const desktopBash = () =>
+  user("<bash-input>git status</bash-input><bash-stdout>On branch main\nnothing to commit</bash-stdout><bash-stderr></bash-stderr>", { origin: { kind: "human" }, entrypoint: "claude-desktop" });
+// A typed reply that starts with a tag (Codex R1's example): not a shell envelope.
+const TAG_LED = "<bash-input> is the tag to filter. Use that option.";
+
+test("isHumanPrompt: a `!` shell command's input and output are not the human, even stamped origin.kind human", () => {
+  assert.equal(isHumanPrompt(desktopBash()), false, "Desktop-shaped bash input and output");
+  assert.equal(isHumanPrompt(user([{ type: "text", text: "\n  <bash-input>ls</bash-input>" }], { origin: { kind: "human" } })), false, "block content, leading whitespace");
+  assert.equal(isHumanPrompt(user("<bash-input>ls</bash-input>")), false, "CLI-shaped bash input");
+  assert.equal(isHumanPrompt(user("<bash-stdout>a.txt</bash-stdout>\n\n<bash-stderr></bash-stderr>")), false, "CLI-shaped bash output, whitespace between envelopes");
+  assert.equal(isHumanPrompt(user("<bash-stderr>ls: nope</bash-stderr>")), false, "CLI-shaped bash stderr");
+  // Controls: a typed prompt stays the human, including one that quotes the tag mid-text.
+  assert.equal(isHumanPrompt(user("yes ship it", { origin: { kind: "human" } })), true, "plain typed prompt");
+  assert.equal(isHumanPrompt(user("why did <bash-input> show up in the log?", { origin: { kind: "human" } })), true, "tag quoted mid-text");
+  assert.equal(isHumanPrompt(user("why did <bash-stdout> show up?")), true, "tag quoted mid-text, no origin");
+  // Only whole envelopes are shell I/O: a tag-led typed reply, an unclosed tag with prose, an
+  // envelope followed by prose, and mismatched tags are all the human.
+  const h = { origin: { kind: "human" } };
+  assert.equal(isHumanPrompt(user(TAG_LED, h)), true, "tag-led typed reply");
+  assert.equal(isHumanPrompt(user(TAG_LED)), true, "tag-led typed reply, no origin");
+  assert.equal(isHumanPrompt(user("<bash-input> go with the second option please", h)), true, "unclosed tag then prose");
+  assert.equal(isHumanPrompt(user("<bash-input>ls</bash-input>\nok, ship it", h)), true, "envelope then trailing prose");
+  assert.equal(isHumanPrompt(user("<bash-input>ls</bash-stdout>", h)), true, "mismatched closing tag");
+});
+
+test("a `!` shell command after the ask is not a reply: no answer nag; the next typed prompt is", () => {
+  const { q, stop, add } = setup();
+  add(desktopBash());
+  const r = stop("p-2");
+  assert.doesNotMatch(r.out, /the human has written since you asked/, r.out);
+  add(user("yes ship it", { origin: { kind: "human" } }));
+  const r2 = stop("p-3");
+  assert.equal(r2.json?.decision, "block", r2.out);
+  assert.match(r2.json.reason, /the human has written since you asked this question/);
+  assert.ok(r2.json.reason.includes(q));
+});
+
+test("a typed reply that starts with a shell tag after the ask is the human: the answer nag fires", () => {
+  const { q, stop, add } = setup();
+  add(user(TAG_LED, { origin: { kind: "human" }, entrypoint: "claude-desktop" }));
+  const r = stop("p-2");
+  assert.equal(r.json?.decision, "block", r.out);
+  assert.match(r.json.reason, /the human has written since you asked this question/);
+  assert.ok(r.json.reason.includes(q));
+});
+
 test("humanWroteSince: null when it cannot tell (no file, no timestamped user entries)", () => {
   const b = sandbox();
   assert.equal(humanWroteSince(join(b.root, "nope.jsonl"), "2026-01-01T00:00:00.000Z"), null);
