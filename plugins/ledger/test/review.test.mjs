@@ -344,6 +344,7 @@ test("review loop: at review.maxRounds the next round stops and says to ask the 
 test("judge: no on an addressed claim keeps the gate closed and names the finding", () => {
   const b = repo();
   review(b, [], { LEDGER_REVIEW_BIN_CODEX: stub(b, "codex", "1. [blocking] a.txt:1 wrong value") });
+  const raised = git(b, "rev-parse", "HEAD");
   commit(b, "z.txt", "unrelated\n");
   const no = judge(b, "no");
   const r = review(b, ["addressed", "it is fine"], { LEDGER_JUDGE_BIN: no });
@@ -356,7 +357,7 @@ test("judge: no on an addressed claim keeps the gate closed and names the findin
   const db = openDb(b);
   const items = JSON.parse(db.prepare("SELECT findings_json FROM cc_reviews ORDER BY id DESC LIMIT 1").get().findings_json);
   db.close();
-  assert.deepEqual(items, [{ severity: "blocking", text: "a.txt:1 wrong value", resolved: false, judge: "no" }]);
+  assert.deepEqual(items, [{ severity: "blocking", text: "a.txt:1 wrong value", since: raised, resolved: false, judge: "no" }]);
 });
 
 test("judge: no on a finding a later round dropped keeps it open in that round", () => {
@@ -1252,4 +1253,85 @@ test("R3-S1: a cd inside a subshell or command substitution does not move a late
   assert.deepEqual(pushOperations("(cd /tmp && git push origin HEAD)")[0].cds, ["/tmp"], "inside the subshell the cd holds");
   assert.deepEqual(pushOperations("cd /a; (cd b; git push); git push")[0].cds, ["/a", "b"]);
   assert.deepEqual(pushOperations("cd /a; (cd b; git push); git push")[1].cds, ["/a"]);
+});
+
+/** A judge stub that answers yes only when its prompt holds `needle`; saves the prompt to `<path>.prompt`. */
+function needleJudge(b, name, needle) {
+  const path = join(b.root, `judge-needle-${name}`);
+  writeFileSync(path, `#!/bin/sh\ncat > "${path}.prompt"\nif grep -qF -e '${needle}' "${path}.prompt"; then echo yes; else echo no; fi\n`);
+  chmodSync(path, 0o755);
+  return path;
+}
+const FIX = "+const x = FIXED_VALUE;";
+
+test("0.4.6 (a): a finding judged no keeps the round that raised it; a later round judges every change since, the named file first", () => {
+  const b = repo();
+  const raised = commit(b, "card.tsx", "const x = broken;\n");
+  review(b, [], { LEDGER_REVIEW_BIN_CODEX: stub(b, "codex", "1. [blocking] card.tsx:1 x is broken") });
+  const fixed = commit(b, "card.tsx", "const x = FIXED_VALUE;\n");
+  let r = review(b, [], { LEDGER_REVIEW_BIN_CODEX: stub(b, "codex", "PASS"), LEDGER_JUDGE_BIN: judge(b, "no") });
+  assert.match(r.out, /^ {2}judge no: \[blocking\] card\.tsx:1 x is broken \(round 1\)$/m);
+  commit(b, "other.ts", "export const unrelated = 1;\n");
+  const cond = needleJudge(b, "a", FIX);
+  r = review(b, [], { LEDGER_REVIEW_BIN_CODEX: stub(b, "codex", "PASS"), LEDGER_JUDGE_BIN: cond });
+  assert.match(r.out, /^ {2}judge yes: \[blocking\] card\.tsx:1 x is broken \(round 2\)$/m, r.out);
+  assert.match(r.out, /^codex: pass$/m);
+  const passage = readFileSync(`${cond}.prompt`, "utf8");
+  const hunk = passage.indexOf(FIX);
+  assert.ok(hunk > 0, passage);
+  assert.ok(passage.indexOf("other.ts") > hunk, "no other.ts diff precedes the card.tsx hunk");
+  assert.match(passage, /\nOther files changed since the finding was raised \(unified diff\):\nFile: other\.ts\n/);
+  assert.equal(push(b).out, "");
+  const db = openDb(b);
+  try {
+    const row = db.prepare("SELECT findings_json FROM cc_reviews WHERE head_sha = ?").get(fixed);
+    assert.equal(JSON.parse(row.findings_json)[0].since, raised, "the judged-no finding keeps the head that raised it");
+  } finally {
+    db.close();
+  }
+});
+
+test("0.4.6 (b): a fix in a sibling file the finding does not name is in the passage", () => {
+  const b = repo();
+  commit(b, "card.tsx", "const x = helper();\n");
+  review(b, [], { LEDGER_REVIEW_BIN_CODEX: stub(b, "codex", "1. [should] card.tsx:1 helper can return null") });
+  commit(b, "helper.ts", "export const helper = () => NEVER_NULL;\n");
+  const cond = needleJudge(b, "b", "+export const helper = () => NEVER_NULL;");
+  const r = review(b, [], { LEDGER_REVIEW_BIN_CODEX: stub(b, "codex", "PASS"), LEDGER_JUDGE_BIN: cond });
+  assert.match(r.out, /^ {2}judge yes: \[should\] card\.tsx:1 helper can return null \(round 1\)$/m, r.out);
+  const passage = readFileSync(`${cond}.prompt`, "utf8");
+  assert.match(passage, /Change \(unified diff\):\n\(no change to the files the finding names\)\n/);
+  assert.match(passage, /File: helper\.ts\n/);
+});
+
+test("0.4.6 (c): a finding about the pattern-check receipt is judged with the receipt as it is now; no change at all is said plainly", () => {
+  const b = repo();
+  review(b, [], { LEDGER_REVIEW_BIN_CODEX: stub(b, "codex", "1. [blocking] fault-tolerance: the timeout row has no recovery step") });
+  mkdirSync(join(b.work, ".pattern-check"));
+  writeFileSync(join(b.work, ".pattern-check", "r.md"), "| timeout | RECOVERY_STEP_KILL_GROUP |\n");
+  const cond = needleJudge(b, "c", "RECOVERY_STEP_KILL_GROUP");
+  const r = review(b, [], { LEDGER_REVIEW_BIN_CODEX: stub(b, "codex", "PASS"), LEDGER_JUDGE_BIN: cond });
+  assert.match(r.out, /^ {2}judge yes: \[blocking\] the timeout row has no recovery step \(round 1\)$/m, r.out);
+  const passage = readFileSync(`${cond}.prompt`, "utf8");
+  assert.match(passage, /Change \(unified diff\):\n\(no changes since the finding was raised\)\n\nPattern-check receipt \(current text\):\n\| timeout \| RECOVERY_STEP_KILL_GROUP \|/);
+});
+
+test("0.4.6 (d): a row written before `since` existed still judges, from that row's head", () => {
+  const b = repo();
+  commit(b, "card.tsx", "const x = broken;\n");
+  review(b, [], { LEDGER_REVIEW_BIN_CODEX: stub(b, "codex", "1. [blocking] card.tsx:1 x is broken") });
+  const db = openDb(b);
+  try {
+    for (const row of db.prepare("SELECT id, findings_json FROM cc_reviews WHERE findings_json IS NOT NULL").all()) {
+      const items = JSON.parse(row.findings_json);
+      assert.ok(items.every((i) => i.since), "new rows record since");
+      db.prepare("UPDATE cc_reviews SET findings_json = ? WHERE id = ?").run(JSON.stringify(items.map(({ since, ...rest }) => rest)), row.id);
+    }
+  } finally {
+    db.close();
+  }
+  commit(b, "card.tsx", "const x = FIXED_VALUE;\n");
+  const cond = needleJudge(b, "d", FIX);
+  const r = review(b, [], { LEDGER_REVIEW_BIN_CODEX: stub(b, "codex", "PASS"), LEDGER_JUDGE_BIN: cond });
+  assert.match(r.out, /^ {2}judge yes: \[blocking\] card\.tsx:1 x is broken \(round 1\)$/m, r.out);
 });

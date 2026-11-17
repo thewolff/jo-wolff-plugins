@@ -129,13 +129,20 @@ export function judgementsSince(db, since) {
 }
 
 /**
- * The passage for one finding: its text, then the diff. When the two together pass
- * PASSAGE_CAP_BYTES, the passage is cut to fit and ends with a marker saying how much was left
- * out and the sha256 of the whole input, so the judge knows the evidence is partial and two
- * inputs that differ only past the cut are cached apart.
+ * The passage for one finding: its text, then the diff of the files it names. Then, in order,
+ * when given: the current pattern-check receipt (`receipt`, for a finding about it), and the
+ * other files changed in the same window (`others`, [{ path, diff }], each under its path).
+ * `nothingChanged` says that no file changed at all since the finding was raised. When the
+ * whole passes PASSAGE_CAP_BYTES, the passage is cut to fit and ends with a marker saying how
+ * much was left out and the sha256 of the whole input, so the judge knows the evidence is partial
+ * and two inputs that differ only past the cut are cached apart; the named files' diff comes first
+ * so the cut takes the rest before it.
  */
-export function passageFor(findingText, diff) {
-  const full = `Finding:\n${String(findingText ?? "")}\n\nChange (unified diff):\n${String(diff ?? "") || "(no change to the files the finding names)"}`;
+export function passageFor(findingText, diff, { receipt = null, others = [], nothingChanged = false } = {}) {
+  const change = nothingChanged ? "(no changes since the finding was raised)" : String(diff ?? "") || "(no change to the files the finding names)";
+  let full = `Finding:\n${String(findingText ?? "")}\n\nChange (unified diff):\n${change}`;
+  if (receipt) full += `\n\nPattern-check receipt (current text):\n${String(receipt)}`;
+  if (others.length) full += `\n\nOther files changed since the finding was raised (unified diff):\n${others.map((o) => `File: ${o.path}\n${o.diff}`).join("\n")}`;
   const size = Buffer.byteLength(full);
   if (size <= PASSAGE_CAP_BYTES) return full;
   const digest = createHash("sha256").update(full).digest("hex");

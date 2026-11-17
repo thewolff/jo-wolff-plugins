@@ -462,10 +462,15 @@ one. Three things go to the judge: an outstanding finding the
 lab's new reply no longer lists, one it lists again only as a nit, and every outstanding finding
 on an earlier commit when the agent runs `review addressed "<why>"`. A lab that is `unavailable`
 this time, or not in this run's labs, gets a `findings` row on the new commit carrying its
-outstanding findings, so skipping a lab does not clear them. For each finding the judge gets the
-finding and the diff between the two commits for the files it names, capped at 8 kB together;
-a longer passage is cut and ends with a line saying so and giving the sha256 of the whole, so the
-cache tells two long inputs apart. The question is "Does this change resolve the finding? Answer
+outstanding findings, so skipping a lab does not clear them. Each finding keeps `since`, the
+commit of the round that first raised it, through every later round that carries it or judges it
+`no`. For each finding the judge gets the finding and the change from `since` to HEAD: first the
+diff of the files it names; then, for a finding about the pattern-check receipt (tagged
+`fault-tolerance:`, or naming `.pattern-check` or the receipt), the receipt as it is now; then
+the other files changed in that window, each under its path; or, when nothing changed at all,
+a line saying so. A row written before 0.4.6 has no `since` and is judged from its own commit.
+The passage is capped at 8 kB; a longer one is cut and ends with a line saying so and giving the
+sha256 of the whole, so the cache tells two long inputs apart. The question is "Does this change resolve the finding? Answer
 yes or no." `no` keeps the finding open (`judge: "no"` in `findings_json`, the row stays
 `findings`, the gate stays closed, and the output names it); `yes` resolves it. A judge that is
 not configured, cannot start, times out (60 seconds) or answers anything else gives
@@ -887,6 +892,14 @@ Tests use a sandboxed `HOME`, `XDG_*` and `LEDGER_*` so they never touch your le
 `LEDGER_CWD` and `LEDGER_BUSY_TIMEOUT_MS` environment variables exist for the tests.
 
 ## Changes
+
+### 0.4.6
+
+- The review judge sees every change since a finding was first raised, not only since the last
+  round, so a fix that landed before a `no` round is no longer invisible. It gets the files the
+  finding names first, then the other changed files, each under its path, never another file's
+  diff in place of the named one. A finding about the pattern-check receipt is judged with the
+  receipt as it is now.
 
 ### 0.4.5
 

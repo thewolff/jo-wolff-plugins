@@ -30,8 +30,9 @@
 // The judge (lib/ledger-judge.mjs over the shared lib/judge.mjs) checks every "this finding is resolved" claim: an outstanding
 // blocking or should finding (see `outstanding`) that a lab's new reply drops or lists only as a
 // nit, and every outstanding finding on an earlier commit when the agent runs `review addressed
-// "<why>"`. Each is asked once, with the finding and the diff
-// between the two shas for the files it names. `no` keeps it open (`judge: "no"` in
+// "<why>"`. Each is asked once, with the finding and the change since the round that first raised
+// it (`since` on the item, 0.4.6): the files it names first, then the receipt for a finding about
+// it, then the other changed files (see judgeItems). `no` keeps it open (`judge: "no"` in
 // findings_json; the row stays or becomes `findings`, the gate stays closed); `yes` resolves it;
 // `unverified` (no judge, or it failed) resolves it fail-open and the gate's notice says so.
 
@@ -43,7 +44,7 @@ import { transaction } from "./db.mjs";
 import { logError } from "./failopen.mjs";
 import { nowIso } from "./time.mjs";
 import { parseItems, receiptSection, severityCounts, which } from "./review/common.mjs";
-import { ask as askJudge, judgeCommand, passageFor } from "./ledger-judge.mjs";
+import { ask as askJudge, judgeCommand, passageFor, PASSAGE_CAP_BYTES } from "./ledger-judge.mjs";
 import * as codex from "./review/codex.mjs";
 import * as kimi from "./review/kimi.mjs";
 import * as claude from "./review/claude.mjs";
@@ -362,26 +363,67 @@ export function outstanding(db, top, rounds, head) {
   return out;
 }
 
-/** Ask the judge about each item against the change `fromSha..toSha`; returns the items with `judge` (and `resolved` unless `no`). */
-async function judgeItems({ db, dbPath, config, env, top, fromSha, toSha, items }) {
-  let changed = [];
-  try {
-    changed = git(top, ["diff", "--name-only", fromSha, toSha]).split("\n").filter(Boolean);
-  } catch {
-    /* the diff below reports the same failure as no change */
-  }
+/** Whether a finding is about the pattern-check receipt: tagged `fault-tolerance:`, or it names `.pattern-check` or the receipt. */
+export function aboutReceipt(item) {
+  return item?.kind === "fault-tolerance" || /\.pattern-check\b|\breceipts?\b/i.test(String(item?.text ?? ""));
+}
+
+/**
+ * Ask the judge about each item against the change from the head where it was first raised
+ * (`item.since`; `fromSha` for a row written before 0.4.6, or when `since` is no longer a commit)
+ * to `toSha`. The passage holds the diff of the files the finding names, then, for a finding about
+ * the pattern-check receipt, the receipt as it is now, then the other files changed in the same
+ * window, each under its path, while they fit the passage cap; when nothing changed at all it says
+ * so. Returns the items with `since` and `judge` (and `resolved` unless `no`).
+ */
+async function judgeItems({ db, dbPath, config, env, top, fromSha, toSha, items, receipt }) {
+  const windows = new Map();
+  const changedSince = (sha) => {
+    if (!windows.has(sha)) {
+      try {
+        windows.set(sha, git(top, ["diff", "--name-only", sha, toSha]).split("\n").filter(Boolean));
+      } catch {
+        windows.set(sha, null);
+      }
+    }
+    return windows.get(sha);
+  };
+  const diffOf = (sha, paths) => {
+    try {
+      return git(top, ["diff", sha, toSha, "--", ...paths]);
+    } catch {
+      return "";
+    }
+  };
+  const matches = (f, c) => c === f || c.endsWith(`/${f}`) || f.endsWith(`/${c}`);
   const out = [];
   for (const item of items) {
-    const files = namedFiles(item.text).filter((f) => changed.some((c) => c === f || c.endsWith(`/${f}`) || f.endsWith(`/${c}`)));
-    const targets = files.map((f) => changed.find((c) => c === f || c.endsWith(`/${f}`) || f.endsWith(`/${c}`)));
-    let diff = "";
-    try {
-      diff = git(top, ["diff", fromSha, toSha, ...(targets.length ? ["--", ...targets] : [])]);
-    } catch {
-      diff = "";
+    let since = item.since ?? fromSha;
+    let changed = changedSince(since);
+    if (changed === null && since !== fromSha) {
+      since = fromSha;
+      changed = changedSince(since);
     }
-    const r = await askJudge({ db, dbPath, config, env, passage: passageFor(`[${item.severity}] ${item.text}`, diff) });
-    out.push(r.verdict === "no" ? { ...item, resolved: false, judge: "no" } : { ...item, resolved: true, judge: r.verdict });
+    const targets = changed ? [...new Set(namedFiles(item.text).map((f) => changed.find((c) => matches(f, c))).filter(Boolean))] : [];
+    const diff = targets.length ? diffOf(since, targets) : "";
+    let text = null;
+    if (aboutReceipt(item)) {
+      if (receipt === undefined) receipt = newestReceipt(top, env).text;
+      text = receipt;
+    }
+    const others = [];
+    let room = PASSAGE_CAP_BYTES - Buffer.byteLength(diff) - Buffer.byteLength(text ?? "");
+    for (const path of changed ?? []) {
+      if (room <= 0) break;
+      if (targets.includes(path)) continue;
+      const d = diffOf(since, [path]);
+      others.push({ path, diff: d });
+      room -= Buffer.byteLength(d);
+    }
+    const passage = passageFor(`[${item.severity}] ${item.text}`, diff, { receipt: text, others, nothingChanged: changed?.length === 0 });
+    const r = await askJudge({ db, dbPath, config, env, passage });
+    const judged = { ...item, since };
+    out.push(r.verdict === "no" ? { ...judged, resolved: false, judge: "no" } : { ...judged, resolved: true, judge: r.verdict });
   }
   return out;
 }
@@ -442,11 +484,12 @@ export async function runReview({ db, dbPath, cwd, env = process.env, config, la
   );
   // Each lab's serious findings still open on this branch, this commit's earlier rows included:
   // a finding the new reply drops or downgrades goes to the judge, and a lab that is unavailable
-  // or not run this time carries its findings onto this commit.
+  // or not run this time carries its findings onto this commit. Every finding keeps `since`, the
+  // head of the round that first raised it (0.4.6), so the judge sees every change since then.
   const owed = outstanding(db, top, rounds, head);
   const carried = (entry, reason) => ({
     verdict: "findings",
-    items: entry.items,
+    items: entry.items.map((it) => ({ ...it, since: it.since ?? entry.row.head_sha })),
     findings: entry.items.map((it, k) => `${k + 1}. ${itemLine(it)} (from round ${entry.round})`).join("\n"),
     model: entry.row.model,
     reason,
@@ -473,10 +516,16 @@ export async function runReview({ db, dbPath, cwd, env = process.env, config, la
       record(lab, before ? { ...carried(before, `unavailable (${r.reason}); its findings from round ${before.round} stay open`), carried: true } : r);
       continue;
     }
+    // A finding the lab lists again keeps the `since` of the one it repeats; a new one starts here.
+    const sinceOf = (item) => {
+      const prev = before?.items.find((it) => stillListed(it, [item]));
+      return prev ? (prev.since ?? before.row.head_sha) : head;
+    };
+    if (r.items?.length) r = { ...r, items: r.items.map((it) => ({ ...it, since: it.since ?? sinceOf(it) })) };
     const judged = [];
     const dropped = before ? before.items.filter((it) => !stillListed(it, r.items ?? [])) : [];
     if (dropped.length) {
-      judged.push(...(await judgeItems({ db, dbPath, config, env, top, fromSha: before.row.head_sha, toSha: head, items: dropped })));
+      judged.push(...(await judgeItems({ db, dbPath, config, env, top, fromSha: before.row.head_sha, toSha: head, items: dropped, receipt: receipt.text })));
       const items = [...(r.items ?? []), ...judged];
       const stillOpen = judged.filter((it) => it.judge === "no");
       const findings = stillOpen.length ? [r.findings, ...stillOpen.map((it, k) => `${(r.items?.length ?? 0) + k + 1}. ${itemLine(it)} (from round ${before.round}; the judge says it is not resolved)`)].filter(Boolean).join("\n") : r.findings;
