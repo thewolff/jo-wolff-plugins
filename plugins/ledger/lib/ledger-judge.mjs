@@ -129,18 +129,30 @@ export function judgementsSince(db, since) {
 }
 
 /**
- * The passage for one finding: its text, then the diff. When the two together pass
- * PASSAGE_CAP_BYTES, the passage is cut to fit and ends with a marker saying how much was left
- * out and the sha256 of the whole input, so the judge knows the evidence is partial and two
- * inputs that differ only past the cut are cached apart.
+ * The passage for one finding: its text, then the diff of the files it names. Then, in order,
+ * when given: the current pattern-check receipt (`receipt`, for a finding about it), and the
+ * other files changed in the same window (`others`, [{ path, diff }], each under its path).
+ * `nothingChanged` says that no file changed at all since the finding was raised. When the
+ * whole passes PASSAGE_CAP_BYTES, the passage is cut to fit and ends with a marker saying how
+ * much was left out and the sha256 of the whole input, so the judge knows the evidence is partial
+ * and two inputs that differ only past the cut are cached apart. The finding and the named files'
+ * diff are budgeted first: when they fit the cap alone, the cut never reaches them; the receipt
+ * and other files get only what is left after them and the marker, and none of it when the
+ * marker does not fit beside them (the passage is then the finding and named diff alone).
  */
-export function passageFor(findingText, diff) {
-  const full = `Finding:\n${String(findingText ?? "")}\n\nChange (unified diff):\n${String(diff ?? "") || "(no change to the files the finding names)"}`;
+export function passageFor(findingText, diff, { receipt = null, others = [], nothingChanged = false } = {}) {
+  const change = nothingChanged ? "(no changes since the finding was raised)" : String(diff ?? "") || "(no change to the files the finding names)";
+  const primary = `Finding:\n${String(findingText ?? "")}\n\nChange (unified diff):\n${change}`;
+  let full = primary;
+  if (receipt) full += `\n\nPattern-check receipt (current text):\n${String(receipt)}`;
+  if (others.length) full += `\n\nOther files changed since the finding was raised (unified diff):\n${others.map((o) => `File: ${o.path}\n${o.diff}`).join("\n")}`;
   const size = Buffer.byteLength(full);
   if (size <= PASSAGE_CAP_BYTES) return full;
   const digest = createHash("sha256").update(full).digest("hex");
   const marker = `\n[cut: the finding and change are ${size} bytes; only the first part fits the ${PASSAGE_CAP_BYTES}-byte limit, the rest is not shown; sha256 of the whole: ${digest}]`;
   const room = Math.max(0, PASSAGE_CAP_BYTES - Buffer.byteLength(marker));
+  const primarySize = Buffer.byteLength(primary);
+  if (primarySize > room && primarySize <= PASSAGE_CAP_BYTES) return primary;
   return Buffer.from(full).subarray(0, room).toString("utf8").replace(/\uFFFD+$/, "") + marker;
 }
 

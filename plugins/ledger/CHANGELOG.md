@@ -4,6 +4,26 @@ All notable changes to ledger are recorded here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Entries before 0.2.1 are the
 "Changes" section of the README (one line per version).
 
+## 0.4.6 - 2026-11-16
+
+### Fixed
+
+- The review judge re-raised findings that were already fixed. A dropped finding was judged
+  against the diff since the previous round only, and a finding judged `no` was stored with no
+  record of the round that raised it, so a fix that landed before a `no` round was never shown
+  again. Each finding now keeps `since`, the head of the round that first raised it (carried,
+  relisted and judged-`no` findings keep theirs), and the judge reads the change from `since` to
+  HEAD. Rows written before 0.4.6 have no `since` and are judged from their own commit, as before.
+- When none of the files a finding names had changed, the judge was handed the unscoped diff of
+  every other file, cut at 8 kB. The passage now holds the named files' diff first, then the
+  other changed files, each under its path, while they fit the cap; with no change at all since
+  the finding was raised it says so. The finding and its named diff are budgeted first: when
+  they fit the cap alone, the receipt and other files get only the space left after them and the
+  cut marker, so they never cut the named hunk.
+- A finding about the pattern-check receipt (tagged `fault-tolerance:`, or naming
+  `.pattern-check`; the word "receipt" alone does not count) could not be resolved by any diff.
+  Its passage now includes the newest receipt's current text.
+
 ## 0.4.5 - 2026-11-16
 
 ### Fixed
