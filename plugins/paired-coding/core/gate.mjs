@@ -1951,13 +1951,15 @@ export function toolVerdict(state, call, opts = {}, io) {
 /**
  * Why Claude Code's Skill tool is refused while pairing: Read still reaches another skill's
  * method, so the reason names that route. `skill` is the call's untrusted `tool_input.skill`;
- * it is quoted only as a short name on one line, otherwise the reason says "another skill's".
+ * it is quoted only as a short name on one line (no C0 or C1 control, DEL, U+2028 line
+ * separator or U+2029 paragraph separator; C1 covers U+0085 next line), otherwise the reason
+ * says "another skill's".
  * @param {unknown} skill
  * @returns {string}
  */
 function skillRefusal(skill) {
   const name = typeof skill === "string" ? skill.trim().replace(/^\//, "") : "";
-  const which = name && name.length <= 200 && !/[\u0000-\u001f\u007f]/.test(name) ? `${name}'s` : "another skill's";
+  const which = name && name.length <= 200 && !/[\u0000-\u001f\u007f-\u009f\u2028\u2029]/.test(name) ? `${name}'s` : "another skill's";
   return `Skill is refused while pairing except paired-coding's own; to use ${which} method, Read its SKILL.md and follow it here, turning any writes into cards.`;
 }
 

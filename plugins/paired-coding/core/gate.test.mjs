@@ -515,10 +515,12 @@ describe("toolVerdict while pairing", () => {
       assert.equal(v.journal[0].type, "refusal");
       assert.equal(v.journal[0].reason, v.reason);
     }
-    for (const skill of [undefined, "", "a\nb", "x".repeat(201)]) {
+    // Every line break a reader may render: C0 (\n, \r, \v, \f), DEL, C1 including U+0085 next
+    // line, and U+2028/U+2029, each mid-name so trim() cannot remove it.
+    for (const skill of [undefined, "", "a\nb", "a\rb", "a\vb", "a\fb", "a\u007fb", "a\u0085b", "a\u0080b", "a\u009fb", "a\u2028b", "a\u2029b", "x".repeat(201)]) {
       const v = toolVerdict(s, { toolName: "Skill", skill });
       assert.equal(v.allow, false);
-      assert.match(v.reason, /to use another skill's method, Read its SKILL\.md and follow it here/);
+      assert.match(v.reason, /to use another skill's method, Read its SKILL\.md and follow it here/, JSON.stringify(skill));
     }
     assert.equal(toolVerdict(s, { toolName: "Skill", skill: "paired-coding:paired-coding" }, { allow: ["Skill"] }).allow, true);
   });
