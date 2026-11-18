@@ -408,3 +408,92 @@ test("refresh that finds a new unpushed head on a started or held item moves it 
     assert.equal(branchRows(b)[0].state, "owed", `${verb}: the later hook agrees`);
   }
 });
+
+test("a removed repository is a fault: the item keeps its last checked state and the refresh reports it; a missing branch in a present repository is gone", () => {
+  const b = sandbox();
+  const { work } = repos(b);
+  const sha = commitOn(b, work, "feature");
+  post(b, "git commit -m x", { cwd: work });
+  rmSync(work, { recursive: true, force: true });
+  let db = openDb(b);
+  try {
+    const res = refreshBranches(db, { dbPath: b.dbPath });
+    assert.equal(res.errors.length, 1, JSON.stringify(res));
+    assert.match(res.errors[0], /is not there; kept as last checked/);
+  } finally {
+    db.close();
+  }
+  const [r] = branchRows(b);
+  assert.deepEqual([r.state, r.branch_state, r.head_sha], ["owed", "unpushed", sha]);
+
+  const c = sandbox();
+  const { work: w2 } = repos(c);
+  commitOn(c, w2, "feature");
+  post(c, "git commit -m x", { cwd: w2 });
+  db = openDb(c);
+  try {
+    db.prepare("UPDATE cc_owed SET head_sha = ? WHERE branch IS NOT NULL").run("0".repeat(40));
+  } finally {
+    db.close();
+  }
+  git(c, w2, "switch", "-q", "main");
+  git(c, w2, "branch", "-q", "-D", "feature");
+  db = openDb(c);
+  try {
+    assert.deepEqual(refreshBranches(db, { dbPath: c.dbPath }).errors, []);
+  } finally {
+    db.close();
+  }
+  assert.equal(branchRows(c)[0].branch_state, "gone");
+});
+
+test("a commit in another session takes the open branch item over, with a move row, and that session's Stop blocks on it", () => {
+  const b = sandbox();
+  const { work } = repos(b);
+  commitOn(b, work, "feature");
+  post(b, "git commit -m x", { cwd: work });
+  const id = branchRows(b)[0].id;
+  assert.equal(branchRows(b)[0].session_id, SID);
+  const head = commitOn(b, work, null, "more.txt");
+  const B = "s-branches-b";
+  const r = hook(b, "post-tool-use", { session_id: B, cwd: work, hook_event_name: "PostToolUse", tool_name: "Bash", tool_input: { command: "git commit -m more" } }, { env: GIT_ENV });
+  assert.equal(r.code, 0, r.err);
+  const [row2] = branchRows(b);
+  assert.deepEqual([row2.id, row2.state, row2.session_id, row2.head_sha], [id, "owed", B, head]);
+  const db = openDb(b);
+  try {
+    const move = db.prepare("SELECT kind, from_state, to_state, session_id, detail FROM cc_owed_moves WHERE owed_id = ? ORDER BY id DESC LIMIT 1").get(id);
+    assert.deepEqual([move.kind, move.from_state, move.to_state, move.session_id], ["move", "owed", "owed", B]);
+    assert.match(move.detail, new RegExp(`committed ${head.slice(0, 8)}`));
+  } finally {
+    db.close();
+  }
+  const transcript_path = join(b.root, "t.jsonl");
+  writeFileSync(transcript_path, "");
+  const s = hook(b, "stop", { session_id: B, cwd: work, hook_event_name: "Stop", prompt_id: "p-b", stop_hook_active: false, last_assistant_message: "Committed more.", transcript_path });
+  assert.equal(s.json?.decision, "block", s.out);
+});
+
+test("refresh does not overwrite a row whose head changed while git ran: a landed result for the old head leaves the new head open", () => {
+  const b = sandbox();
+  const { work } = repos(b);
+  commitOn(b, work, "feature");
+  post(b, "git commit -m x", { cwd: work });
+  git(b, work, "push", "-q", "origin", "feature:main");
+  git(b, work, "fetch", "-q", "origin");
+  const newer = "f".repeat(40);
+  const db = openDb(b);
+  try {
+    // The clock runs between git calls: a commit hook recording a newer head lands in that window.
+    const clock = () => {
+      db.prepare("UPDATE cc_owed SET head_sha = ? WHERE branch IS NOT NULL").run(newer);
+      return Date.now();
+    };
+    const res = refreshBranches(db, { dbPath: b.dbPath, clock });
+    assert.deepEqual(res.done, []);
+  } finally {
+    db.close();
+  }
+  const [r] = branchRows(b);
+  assert.deepEqual([r.state, r.head_sha], ["owed", newer]);
+});

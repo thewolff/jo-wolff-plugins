@@ -39,6 +39,13 @@ All notable changes to ledger are recorded here. The format follows
   `deferred` branch item reopens it the same way the commit hook does.
 - `popd` unwinds the `pushd` stack when finding the folder a commit ran in; a `popd` the line did
   not `pushd` leaves the folder unnamed and the commit unrecorded.
+- A removed repository is a fault like a missing git: the item keeps its last checked state and
+  one `errors.log` line is written. `branch gone` is kept for a branch deleted from a repository
+  that is still there.
+- A commit on a branch whose open item belongs to another session hands the item to the
+  committing session, with a move row, so that session's Stop checks it and reminds.
+- A check writes its result only if the item's head and state are what they were when git
+  started, so a commit recorded meanwhile is never closed on the old head's result.
 - Config: `hooks.postToolUse` and `branches.enabled` (both `true`).
 - Migration 10 adds `repo`, `git_dir`, `branch`, `head_sha`, `branch_state` and `checked_at` to
   `cc_owed`, and a unique index on the open item per branch. A ledger older than 0.4.7 opening the

@@ -22,7 +22,7 @@
 //
 // Every git call has HOOK_GIT_TIMEOUT_MS; in a refresh it gets only what is left of
 // REFRESH_BUDGET_MS, and at most BRANCH_CHECK_MAX items are checked, oldest check first. A
-// non-zero git exit is an answer (no such ref); a fault (git missing, a timeout, the budget spent)
+// non-zero git exit is an answer (no such ref); a fault (the repository missing, git missing, a timeout, the budget spent)
 // keeps the item's last checked state and is reported for errors.log. Git runs outside any transaction; the writes
 // go in one transaction afterwards.
 
@@ -30,7 +30,7 @@ import { existsSync } from "node:fs";
 import { isAbsolute, resolve } from "node:path";
 import { transaction } from "./db.mjs";
 import { simpleCommands, SCOPE_OPEN, SCOPE_CLOSE } from "./gate.mjs";
-import { createOwed, moveOwed, reopenOwed } from "./owed.mjs";
+import { createOwed, moveOwed, reopenOwed, takeOverOwed } from "./owed.mjs";
 import { git, gitHead, currentBranch, HOOK_GIT_TIMEOUT_MS, NotARepository } from "./review.mjs";
 import { nowIso } from "./time.mjs";
 
@@ -183,13 +183,17 @@ function resolveRef(gitDir, ref, opts) {
   return gitAnswer(gitDir, ["rev-parse", "--verify", "-q", `${ref}^{commit}`], opts)?.trim() || null;
 }
 
+/** The error branchStatus throws when the repository itself cannot be found. */
+export class RepositoryMissing extends Error {}
+
 /**
  * What git says about one branch now: { state: 'landed'|'unpushed'|'pushed'|'gone'|'nobase', head, base }.
- * `gone`: neither the branch nor its last known head can be read. A fault (git missing, a
- * timeout, `deadline` passed) throws, so the caller keeps the last checked state.
+ * `gone`: the repository is there but neither the branch nor its last known head can be read. A
+ * fault (the repository missing, git missing, a timeout, `deadline` passed) throws, so the caller
+ * keeps the last checked state.
  */
 export function branchStatus({ gitDir, branch, headSha = null }, { deadline = null, clock = Date.now } = {}) {
-  if (!gitDir || !existsSync(gitDir)) return { state: "gone", head: headSha, base: null };
+  if (!gitDir || !existsSync(gitDir)) throw new RepositoryMissing(`the repository ${gitDir ?? "(none)"} is not there`);
   const head = resolveRef(gitDir, `refs/heads/${branch}`, within(deadline, clock)) ?? (headSha ? resolveRef(gitDir, headSha, within(deadline, clock)) : null);
   if (!head) return { state: "gone", head: headSha, base: null };
   const base = baseRef(gitDir, { deadline, clock });
@@ -262,6 +266,8 @@ export function recordBranch(db, seen, { cwd, sessionId = null, by = BRANCH_BY, 
   if (existing) {
     db.prepare("UPDATE cc_owed SET repo = ? WHERE id = ?").run(seen.repo, existing.id);
     const reopened = applyStatus(db, existing, seen.status, { by, iso, sessionId });
+    // The session that committed last owes the landing: its Stop refreshes and reminds.
+    takeOverOwed(db, existing.id, `committed ${String(seen.status.head).slice(0, 8)} in this session`, { by, iso, sessionId });
     return { item: db.prepare("SELECT * FROM cc_owed WHERE id = ?").get(existing.id), created: false, reopened };
   }
   const item = createOwed(db, { cwd, body: `land branch ${seen.branch} in ${seen.repo}`, origin: "agent", sessionId, by, iso, now });
@@ -302,6 +308,9 @@ export function refreshBranches(db, { dbPath = "", ids = null, now = Date.now(),
       db,
       () => {
         for (const { row, status } of results) {
+          // Compare-and-set: a commit recorded while git ran outside this transaction wins.
+          const current = db.prepare("SELECT head_sha, state FROM cc_owed WHERE id = ?").get(row.id);
+          if (!current || current.head_sha !== row.head_sha || current.state !== row.state) continue;
           if (status.state === "landed") {
             const m = moveOwed(db, row.id, "done", `landed on ${status.base}`, { by: BRANCH_BY, iso, sessionId: null });
             if (m.status === "ok") done.push(row.id);

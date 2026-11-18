@@ -135,6 +135,19 @@ export function reopenOwed(db, id, detail, { by, iso, sessionId = null }) {
 }
 
 /**
+ * Hand an open item to `sessionId` without changing its state, with a move row from the state to
+ * itself (as a repeated move by another session does in moveOwed). No-op when it is already that
+ * session's or not open. Call inside a transaction. Returns whether it moved.
+ */
+export function takeOverOwed(db, id, detail, { by, iso, sessionId }) {
+  const item = getOwed(db, id);
+  if (!sessionId || !item || item.session_id === sessionId || !["owed", "started", "deferred"].includes(item.state)) return false;
+  const changes = db.prepare("UPDATE cc_owed SET session_id = ?, changed_at = ? WHERE id = ? AND state = ?").run(sessionId, iso, id, item.state).changes;
+  if (changes) addMove(db, { kind: "move", owedId: id, from: item.state, to: item.state, detail: cut(detail), by, iso, sessionId });
+  return Boolean(changes);
+}
+
+/**
  * `wait <ow-id> <q-id>` links an owed item to the question it waits on; `wait <ow-id> none`
  * removes the link. Only from `owed`; the question must be open or held and this session's
  * (commands.mjs ownedBySession; with no session id, in scope for `cwd`). Call inside a transaction.
