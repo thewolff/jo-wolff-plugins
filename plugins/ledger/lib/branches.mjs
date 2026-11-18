@@ -2,7 +2,7 @@
 // it; nothing else notices a branch that was built and never pushed.
 //
 // Detection (hooks/post-tool-use.mjs): after a Bash call whose command runs `git commit` (any
-// simple command of the line, `cd` and `git -C` followed as pushOperations follows them), the
+// simple command of the line, `cd` and `git -C` followed as pushOperations follows them, plus a `pushd` stack that `popd` unwinds), the
 // branch checked out in that folder is recorded as one cc_owed row with `branch` set: body
 // `land branch <branch> in <worktree>`, the head sha and whether it is pushed. The branch is the
 // one git printed in its `[<branch> <sha>]` line, so `git commit && git switch main` still names
@@ -14,7 +14,8 @@
 // open row instead of making a second one (unique index on git_dir + branch while open).
 //
 // Landed: `git cherry <base> <branch>` prints no `+` line, which survives rebase-merge (it
-// compares patch ids, not shas). The base is origin's HEAD when set, else origin/main, else
+// compares patch ids, not shas), and, when base..branch holds a merge commit (which cherry leaves
+// out), the branch's tree is identical to the base's. The base is origin's HEAD when set, else origin/main, else
 // origin/master, read from the local remote-tracking refs only: no fetch, no network, so a branch
 // landed upstream resolves after the next fetch. A landed item moves to `done` with the base as
 // its ref. A branch deleted locally is checked by its last head sha while that object exists.
@@ -81,12 +82,12 @@ export function mayCommit(command) {
 export function commitDirs(command, cwd) {
   if (!mayCommit(command)) return [];
   const out = [];
-  let scope = { cds: [], unknown: false };
+  let scope = { cds: [], unknown: false, stack: [] };
   const outer = [];
   for (const words of simpleCommands(command)) {
     if (words.length === 1 && words[0] === SCOPE_OPEN) {
       outer.push(scope);
-      scope = { cds: [...scope.cds], unknown: scope.unknown };
+      scope = { cds: [...scope.cds], unknown: scope.unknown, stack: [...scope.stack] };
       continue;
     }
     if (words.length === 1 && words[0] === SCOPE_CLOSE) {
@@ -96,7 +97,15 @@ export function commitDirs(command, cwd) {
     const tokens = [...words];
     while (tokens.length && (/^[A-Za-z_][A-Za-z0-9_]*=/.test(tokens[0]) || PREFIX_WORDS.has(tokens[0]))) tokens.shift();
     if (!tokens.length) continue;
+    if (tokens[0] === "popd") {
+      // A popd this line did not pushd, or one with arguments, leaves a folder the text cannot name.
+      const prev = tokens.length === 1 ? scope.stack.pop() : undefined;
+      if (prev) Object.assign(scope, prev);
+      else scope.unknown = true;
+      continue;
+    }
     if (tokens[0] === "cd" || tokens[0] === "pushd") {
+      if (tokens[0] === "pushd") scope.stack.push({ cds: [...scope.cds], unknown: scope.unknown });
       const dir = tokens.slice(1).find((t) => !t.startsWith("-") || t === "-");
       if (dynamic(dir)) scope.unknown = true;
       else scope.cds.push(dir);
@@ -159,6 +168,17 @@ export function committedRefs(output) {
   return out;
 }
 
+/**
+ * With no `+` line from `git cherry`: true when that proves the branch landed. `git cherry` leaves
+ * merge commits out, so a branch with one in base..head (a conflict resolution, say) counts as
+ * landed only when its tree is byte-identical to the base's: then nothing on it is missing there.
+ */
+function landedThroughMerges(gitDir, base, head, { deadline, clock }) {
+  const merges = Number(git(gitDir, ["rev-list", "--count", "--merges", `${base}..${head}`], within(deadline, clock)).trim());
+  if (!merges) return true;
+  return gitAnswer(gitDir, ["diff", "--quiet", base, head, "--"], within(deadline, clock)) !== null;
+}
+
 function resolveRef(gitDir, ref, opts) {
   return gitAnswer(gitDir, ["rev-parse", "--verify", "-q", `${ref}^{commit}`], opts)?.trim() || null;
 }
@@ -175,7 +195,7 @@ export function branchStatus({ gitDir, branch, headSha = null }, { deadline = nu
   const base = baseRef(gitDir, { deadline, clock });
   if (!base) return { state: "nobase", head, base: null };
   const plus = unlandedCommits(git(gitDir, ["cherry", base, head], within(deadline, clock)));
-  if (!plus.length) return { state: "landed", head, base };
+  if (!plus.length && landedThroughMerges(gitDir, base, head, { deadline, clock })) return { state: "landed", head, base };
   const remote = resolveRef(gitDir, `refs/remotes/origin/${branch}`, within(deadline, clock));
   const pushed = remote && gitAnswer(gitDir, ["merge-base", "--is-ancestor", head, remote], within(deadline, clock)) !== null;
   return { state: pushed ? "pushed" : "unpushed", head, base };
@@ -219,6 +239,17 @@ function openBranchItem(db, gitDir, branch) {
 }
 
 /**
+ * Store a checked status on an open branch item. A new unpushed head on a started or deferred
+ * item moves it back to `owed`: the pull request or the reason it was held covered the old head.
+ * The commit hook and refresh both come through here. Returns whether it was reopened.
+ */
+function applyStatus(db, row, status, { by, iso, sessionId = null }) {
+  db.prepare("UPDATE cc_owed SET head_sha = ?, branch_state = ?, checked_at = ? WHERE id = ?").run(status.head, status.state, iso, row.id);
+  const reopen = row.head_sha !== status.head && status.state === "unpushed" && row.state !== "owed";
+  return reopen && reopenOwed(db, row.id, `new commit ${String(status.head).slice(0, 8)} after it was ${row.state}`, { by, iso, sessionId });
+}
+
+/**
  * Record what `inspectCommit` found: a new owed item, or the open one updated with the new head.
  * A new unpushed head on a started or deferred item moves it back to `owed`, so the Stop rule
  * reminds again: the pull request or the reason it was held covered the old head. Nothing when
@@ -229,10 +260,8 @@ export function recordBranch(db, seen, { cwd, sessionId = null, by = BRANCH_BY, 
   if (!seen || !["unpushed", "pushed"].includes(seen.status.state)) return null;
   const existing = openBranchItem(db, seen.gitDir, seen.branch);
   if (existing) {
-    const moved = existing.head_sha !== seen.status.head;
-    db.prepare("UPDATE cc_owed SET head_sha = ?, branch_state = ?, checked_at = ?, repo = ? WHERE id = ?").run(seen.status.head, seen.status.state, iso, seen.repo, existing.id);
-    const reopened = moved && seen.status.state === "unpushed" && existing.state !== "owed";
-    if (reopened) reopenOwed(db, existing.id, `new commit ${String(seen.status.head).slice(0, 8)} after it was ${existing.state}`, { by, iso, sessionId });
+    db.prepare("UPDATE cc_owed SET repo = ? WHERE id = ?").run(seen.repo, existing.id);
+    const reopened = applyStatus(db, existing, seen.status, { by, iso, sessionId });
     return { item: db.prepare("SELECT * FROM cc_owed WHERE id = ?").get(existing.id), created: false, reopened };
   }
   const item = createOwed(db, { cwd, body: `land branch ${seen.branch} in ${seen.repo}`, origin: "agent", sessionId, by, iso, now });
@@ -278,7 +307,7 @@ export function refreshBranches(db, { dbPath = "", ids = null, now = Date.now(),
             if (m.status === "ok") done.push(row.id);
             db.prepare("UPDATE cc_owed SET head_sha = ?, checked_at = ? WHERE id = ?").run(status.head, iso, row.id);
           } else {
-            db.prepare("UPDATE cc_owed SET head_sha = ?, branch_state = ?, checked_at = ? WHERE id = ?").run(status.head, status.state, iso, row.id);
+            applyStatus(db, row, status, { by: BRANCH_BY, iso });
           }
         }
       },

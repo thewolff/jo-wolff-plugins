@@ -357,3 +357,54 @@ test("the refresh budget holds inside a branch: each git call gets only what is 
   assert.equal(res.errors.length, 1, JSON.stringify(res));
   assert.equal(branchRows(b)[0].branch_state, "unpushed", "kept as last checked");
 });
+
+test("popd unwinds the pushd stack; a popd the line did not pushd leaves the folder unnamed", () => {
+  assert.deepEqual(commitDirs("pushd /repo-a && popd && git commit -m x", "/w"), ["/w"]);
+  assert.deepEqual(commitDirs("pushd /repo-a; pushd /repo-b; popd; git commit -m x", "/w"), ["/repo-a"]);
+  assert.deepEqual(commitDirs("pushd /repo-a && git commit -m x", "/w"), ["/repo-a"]);
+  assert.deepEqual(commitDirs("popd && git commit -m x", "/w"), []);
+  assert.deepEqual(commitDirs("pushd /repo-a && popd +1 && git commit -m x", "/w"), []);
+});
+
+test("a merge commit holding work the base lacks is not landed; one whose tree matches the base is", () => {
+  for (const extra of [true, false]) {
+    const b = sandbox();
+    const { work, other } = repos(b);
+    commitOn(b, other, null, "upstream.txt");
+    git(b, other, "push", "-q", "origin", "main");
+    git(b, work, "fetch", "-q", "origin");
+    git(b, work, "switch", "-q", "-c", "feature");
+    git(b, work, "merge", "-q", "--no-ff", "--no-commit", "origin/main");
+    if (extra) writeFileSync(join(work, "resolution.txt"), "only on the branch\n");
+    git(b, work, "add", ".");
+    git(b, work, "commit", "-q", "-m", "merge main");
+    assert.equal(git(b, work, "cherry", "origin/main", "feature"), "", "git cherry leaves the merge out");
+    post(b, "git commit -m 'merge main'", { cwd: work });
+    assert.deepEqual(branchRows(b).map((r) => [r.branch, r.branch_state]), extra ? [["feature", "unpushed"]] : [], `extra=${extra}`);
+  }
+});
+
+test("refresh that finds a new unpushed head on a started or held item moves it back to owed, the same as a commit does", () => {
+  for (const [verb, text] of [["start", "PR https://example.invalid/pr/1"], ["hold", "waiting for the push approval"]]) {
+    const b = sandbox();
+    const { work } = repos(b);
+    commitOn(b, work, "feature");
+    post(b, "git commit -m x", { cwd: work });
+    const id = branchRows(b)[0].id;
+    assert.equal(cli(b, [verb, id, text], { cwd: work, env: { LEDGER_SESSION_ID: SID } }).code, 0);
+    const head = commitOn(b, work, null, "more.txt");
+    const db = openDb(b);
+    try {
+      assert.deepEqual(refreshBranches(db, { dbPath: b.dbPath }).errors, []);
+      const move = db.prepare("SELECT to_state, detail FROM cc_owed_moves WHERE owed_id = ? ORDER BY rowid DESC LIMIT 1").get(id);
+      assert.equal(move.to_state, "owed", verb);
+      assert.match(move.detail, new RegExp(`new commit ${head.slice(0, 8)}`));
+    } finally {
+      db.close();
+    }
+    const [r] = branchRows(b);
+    assert.deepEqual([r.state, r.head_sha], ["owed", head], verb);
+    post(b, "git commit -m more", { cwd: work });
+    assert.equal(branchRows(b)[0].state, "owed", `${verb}: the later hook agrees`);
+  }
+});

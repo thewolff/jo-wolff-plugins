@@ -32,6 +32,13 @@ All notable changes to ledger are recorded here. The format follows
 - A non-zero git exit is an answer (no such ref); a fault (git missing, a timeout) keeps the
   item's last checked state and writes one `errors.log` line. Each git call in a refresh gets only
   what is left of the 2-second budget.
+- A branch with a merge commit in `<base>..<branch>` counts as landed only when its tree is
+  identical to the base's, because `git cherry` leaves merge commits out and a conflict
+  resolution in one would otherwise read as landed.
+- A check (SessionStart, Stop, `pending`) that finds a new unpushed head on a `started` or
+  `deferred` branch item reopens it the same way the commit hook does.
+- `popd` unwinds the `pushd` stack when finding the folder a commit ran in; a `popd` the line did
+  not `pushd` leaves the folder unnamed and the commit unrecorded.
 - Config: `hooks.postToolUse` and `branches.enabled` (both `true`).
 - Migration 10 adds `repo`, `git_dir`, `branch`, `head_sha`, `branch_state` and `checked_at` to
   `cc_owed`, and a unique index on the open item per branch. A ledger older than 0.4.7 opening the
