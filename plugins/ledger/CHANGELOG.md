@@ -23,6 +23,15 @@ All notable changes to ledger are recorded here. The format follows
   The Stop rule blocks on an unstarted branch item exactly as on other owed work, and its reason
   says to push and `start` it with the PR, `hold` it while the push waits on the human, or `drop`
   it.
+- The branch recorded is the one `git commit` printed in its `[<branch> <sha>]` line (Bash
+  stdout, or the `error` text on PostToolUseFailure), checked against the repository, so a line
+  that switches branch after committing still names the right one and two branches committed in
+  one line make two items. A quiet commit falls back to the branch checked out afterwards.
+- A new unpushed head on a `started` or `deferred` branch item moves it back to `owed` with a
+  move row (`ledger: owed again: …`), so the Stop rule reminds again.
+- A non-zero git exit is an answer (no such ref); a fault (git missing, a timeout) keeps the
+  item's last checked state and writes one `errors.log` line. Each git call in a refresh gets only
+  what is left of the 2-second budget.
 - Config: `hooks.postToolUse` and `branches.enabled` (both `true`).
 - Migration 10 adds `repo`, `git_dir`, `branch`, `head_sha`, `branch_state` and `checked_at` to
   `cc_owed`, and a unique index on the open item per branch. A ledger older than 0.4.7 opening the

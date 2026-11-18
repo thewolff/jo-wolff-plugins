@@ -122,6 +122,19 @@ export function moveOwed(db, id, verb, text, { by, iso, sessionId = null }) {
 }
 
 /**
+ * Move a started or deferred item back to `owed` (an unlanded branch got a new head the pointer
+ * or reason did not cover), with one move row whose detail says why. Call inside a transaction.
+ * Returns whether it moved.
+ */
+export function reopenOwed(db, id, detail, { by, iso, sessionId = null }) {
+  const item = getOwed(db, id);
+  if (!item || (item.state !== "started" && item.state !== "deferred")) return false;
+  const changes = db.prepare("UPDATE cc_owed SET state = 'owed', session_id = coalesce(?, session_id), changed_at = ? WHERE id = ? AND state = ?").run(sessionId, iso, id, item.state).changes;
+  if (changes) addMove(db, { kind: "move", owedId: id, from: item.state, to: "owed", detail: cut(detail), by, iso, sessionId });
+  return Boolean(changes);
+}
+
+/**
  * `wait <ow-id> <q-id>` links an owed item to the question it waits on; `wait <ow-id> none`
  * removes the link. Only from `owed`; the question must be open or held and this session's
  * (commands.mjs ownedBySession; with no session id, in scope for `cwd`). Call inside a transaction.
@@ -309,6 +322,7 @@ export function eventLine(e) {
   if (e.to_state === "deferred") return `ledger: deferred: ${e.body}: ${e.detail}`;
   if (e.to_state === "dropped") return `ledger: dropped: ${e.body}: ${e.detail}`;
   if (e.to_state === "done") return `ledger: done: ${e.body}${e.detail ? ` → ${e.detail}` : ""}`;
+  if (e.to_state === "owed") return `ledger: owed again: ${e.body}${e.detail ? `: ${e.detail}` : ""}`;
   return `ledger: ${e.to_state}: ${e.body}`;
 }
 

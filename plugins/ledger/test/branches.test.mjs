@@ -9,7 +9,7 @@ import { execFileSync } from "node:child_process";
 import { chmodSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { sandbox, hook, cli, openDb, row } from "./helpers.mjs";
-import { commitDirs, mayCommit, unlandedCommits } from "../lib/branches.mjs";
+import { commitDirs, committedRefs, mayCommit, refreshBranches, unlandedCommits } from "../lib/branches.mjs";
 
 const SID = "s-branches";
 const GIT_ENV = { GIT_AUTHOR_NAME: "t", GIT_AUTHOR_EMAIL: "t@example.invalid", GIT_COMMITTER_NAME: "t", GIT_COMMITTER_EMAIL: "t@example.invalid", GIT_CONFIG_NOSYSTEM: "1" };
@@ -256,4 +256,104 @@ test("fail-open rows on a commit: corrupt default database moved aside, unparsab
       chmodSync(dir, 0o700);
     }
   }
+});
+
+// Round-2 fixes. Each has a negative control recorded in the change report.
+
+/** Commit and return what `git commit` printed (captured from the real command, not hand-written). */
+function commitOut(b, dir, file) {
+  writeFileSync(join(dir, file), `${file} ${Math.random()}\n`);
+  git(b, dir, "add", ".");
+  return execFileSync("git", ["commit", "-m", `change ${file}`], { cwd: dir, env: { ...b.env, ...GIT_ENV }, encoding: "utf8" });
+}
+
+test("committedRefs reads the branch and sha git commit printed, including root and detached commits", () => {
+  const b = sandbox();
+  const { work } = repos(b);
+  git(b, work, "switch", "-q", "-c", "feature");
+  const out = commitOut(b, work, "x.txt");
+  assert.deepEqual(committedRefs(out), [{ branch: "feature", sha: git(b, work, "rev-parse", "--short", "HEAD") }]);
+  git(b, work, "switch", "-q", "--detach");
+  assert.equal(committedRefs(commitOut(b, work, "y.txt"))[0].branch, null);
+  const fresh = join(b.root, "fresh");
+  mkdirSync(fresh);
+  git(b, fresh, "init", "-q", "-b", "trunk");
+  assert.equal(committedRefs(commitOut(b, fresh, "z.txt"))[0].branch, "trunk");
+  assert.deepEqual(committedRefs(""), []);
+});
+
+test("the branch recorded is the one the commit printed, not the one checked out after the line; two branches in one line make two items", () => {
+  const b = sandbox();
+  const { work } = repos(b);
+  git(b, work, "switch", "-q", "-c", "one");
+  const first = commitOut(b, work, "a1.txt");
+  git(b, work, "switch", "-q", "-c", "two");
+  const second = commitOut(b, work, "a2.txt");
+  git(b, work, "switch", "-q", "main");
+  const r = post(b, "git commit -m a1 && git switch -c two && git commit -m a2 && git switch main", { cwd: work, extra: { tool_response: { stdout: `${first}Switched to a new branch 'two'\n${second}`, stderr: "", interrupted: false } } });
+  assert.equal(r.code, 0, r.err);
+  assert.deepEqual(branchRows(b).map((x) => x.branch).sort(), ["one", "two"]);
+});
+
+test("a new unpushed head on a started or held branch item moves it back to owed, and the Stop rule reminds again", () => {
+  for (const [verb, text] of [["start", "PR https://example.invalid/pr/1"], ["hold", "waiting for the push approval"]]) {
+    const b = sandbox();
+    const { work } = repos(b);
+    commitOn(b, work, "feature");
+    post(b, "git commit -m x", { cwd: work });
+    const id = branchRows(b)[0].id;
+    assert.equal(cli(b, [verb, id, text], { cwd: work, env: { LEDGER_SESSION_ID: SID } }).code, 0);
+    commitOn(b, work, null, "more.txt");
+    post(b, "git commit -m more", { cwd: work });
+    assert.equal(branchRows(b)[0].state, "owed", verb);
+    const transcript_path = join(b.root, "t.jsonl");
+    writeFileSync(transcript_path, "");
+    const s = hook(b, "stop", { session_id: SID, cwd: work, hook_event_name: "Stop", prompt_id: `p-${verb}`, stop_hook_active: false, last_assistant_message: "Committed more work.", transcript_path });
+    assert.equal(s.json?.decision, "block", `${verb}: ${s.out}`);
+  }
+});
+
+test("a git fault during a refresh keeps the last checked state and is reported, never turned into gone", () => {
+  const b = sandbox();
+  const { work } = repos(b);
+  const sha = commitOn(b, work, "feature");
+  post(b, "git commit -m x", { cwd: work });
+  const db = openDb(b);
+  const path = process.env.PATH;
+  try {
+    process.env.PATH = join(b.root, "no-git-here");
+    const res = refreshBranches(db, { dbPath: b.dbPath });
+    assert.equal(res.errors.length, 1, JSON.stringify(res));
+    assert.match(res.errors[0], /kept as last checked/);
+  } finally {
+    process.env.PATH = path;
+    db.close();
+  }
+  const [r] = branchRows(b);
+  assert.deepEqual([r.state, r.branch_state, r.head_sha], ["owed", "unpushed", sha]);
+});
+
+test("the refresh budget holds inside a branch: each git call gets only what is left of it", () => {
+  const b = sandbox();
+  const { work } = repos(b);
+  commitOn(b, work, "feature");
+  post(b, "git commit -m x", { cwd: work });
+  const bin = join(b.root, "slow-bin");
+  mkdirSync(bin);
+  writeFileSync(join(bin, "git"), "#!/bin/sh\nexec /bin/sleep 2\n", { mode: 0o755 });
+  const db = openDb(b);
+  const path = process.env.PATH;
+  const started = Date.now();
+  let res;
+  try {
+    process.env.PATH = `${bin}:${path}`;
+    res = refreshBranches(db, { dbPath: b.dbPath, budgetMs: 300 });
+  } finally {
+    process.env.PATH = path;
+    db.close();
+  }
+  const ms = Date.now() - started;
+  assert.ok(ms < 1500, `took ${ms} ms against a 300 ms budget`);
+  assert.equal(res.errors.length, 1, JSON.stringify(res));
+  assert.equal(branchRows(b)[0].branch_state, "unpushed", "kept as last checked");
 });

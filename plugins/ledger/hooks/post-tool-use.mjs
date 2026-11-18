@@ -5,7 +5,8 @@
 // reaches PostToolUseFailure; a commit that did not happen leaves nothing unlanded, so nothing
 // is recorded.
 //
-// Input read: tool_name, tool_input.command, session_id, cwd, agent_type (hooks reference
+// Input read: tool_name, tool_input.command, tool_response (stdout, stderr) or error, session_id,
+// cwd, agent_type (hooks reference
 // § PostToolUse input, § Common input fields; agent_type is present inside a subagent).
 //
 // Hot path: every Bash call reaches this script, so the command text is matched for `git` and
@@ -22,6 +23,18 @@ import { transaction } from "../lib/db.mjs";
 import { commitDirs, inspectCommit, mayCommit, recordBranch, BRANCH_BY } from "../lib/branches.mjs";
 import { nowIso } from "../lib/time.mjs";
 
+/**
+ * The text the command printed, where `git commit` writes its `[<branch> <sha>]` line: Bash's
+ * tool_response stdout and stderr (or the response itself when it is a string), and on
+ * PostToolUseFailure the `error` text.
+ */
+export function commandOutput(input) {
+  const r = input.tool_response;
+  const parts = typeof r === "string" ? [r] : r && typeof r === "object" ? [r.stdout, r.stderr, r.output] : [];
+  if (typeof input.error === "string") parts.push(input.error);
+  return parts.filter((p) => typeof p === "string").join("\n");
+}
+
 export function handle(input, { env = process.env, now = Date.now() } = {}) {
   if (input.tool_name !== "Bash" || !mayCommit(input.tool_input?.command)) return null;
   const ready = hookConfig(env, input, "postToolUse");
@@ -30,11 +43,11 @@ export function handle(input, { env = process.env, now = Date.now() } = {}) {
   const dirs = commitDirs(input.tool_input.command, cwd);
   if (!dirs.length) return null;
   const hook = input.hook_event_name === "PostToolUseFailure" ? "PostToolUseFailure" : "PostToolUse";
+  const output = commandOutput(input);
   const seen = [];
   for (const dir of dirs) {
     try {
-      const s = inspectCommit(dir);
-      if (s) seen.push(s);
+      for (const s of inspectCommit(dir, output)) if (!seen.some((x) => x.gitDir === s.gitDir && x.branch === s.branch)) seen.push(s);
     } catch (err) {
       logError(hook, `branch check in ${dir}: ${err.message}`, env);
     }
