@@ -35,7 +35,7 @@ export const DEFAULTS = Object.freeze({
   db: "~/.local/share/ledger/ledger.db",
   user: null,
   timezone: null,
-  hooks: Object.freeze({ sessionStart: true, preToolUse: true, stop: true, sessionEnd: true, userPromptCommands: true }),
+  hooks: Object.freeze({ sessionStart: true, preToolUse: true, postToolUse: true, stop: true, sessionEnd: true, userPromptCommands: true }),
   forcing: Object.freeze({
     denyAskWithoutRow: true,
     stopAskRule: true,
@@ -49,6 +49,7 @@ export const DEFAULTS = Object.freeze({
   sweep: Object.freeze({ autoWithdrawDays: 7 }),
   digest: Object.freeze({ enabled: true, issue: "thewolff/jo-issues#325" }),
   decisionLog: Object.freeze({ enabled: true }),
+  branches: Object.freeze({ enabled: true }),
   review: Object.freeze({ mode: "gate", labs: Object.freeze(["codex"]), models: null, profiles: null, maxRounds: 3, judgeCommand: null }),
 });
 
@@ -77,12 +78,13 @@ const SHAPE = {
   db: "string",
   user: "string|null",
   timezone: "string|null",
-  hooks: { sessionStart: "boolean", preToolUse: "boolean", stop: "boolean", sessionEnd: "boolean", userPromptCommands: "boolean" },
+  hooks: { sessionStart: "boolean", preToolUse: "boolean", postToolUse: "boolean", stop: "boolean", sessionEnd: "boolean", userPromptCommands: "boolean" },
   forcing: { denyAskWithoutRow: "boolean", stopAskRule: "boolean", pushNeedsNote: "boolean", stopDecisionRule: "boolean", stopOwedRule: "boolean", stopOfferRule: "boolean", decisionPhrases: "string[]" },
   inject: { notes: "integer", elsewhere: "boolean", answers: "boolean", doctor: "boolean" },
   sweep: { autoWithdrawDays: "integer" },
   digest: { enabled: "boolean", issue: "owner/repo#number" },
   decisionLog: { enabled: "boolean" },
+  branches: { enabled: "boolean" },
   review: { mode: "off|advise|gate", labs: "string[]", models: "{lab: string}|null", profiles: "{lab: string}|null", maxRounds: "positive integer", judgeCommand: "string|null" },
 };
 

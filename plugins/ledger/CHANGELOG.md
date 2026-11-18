@@ -4,6 +4,30 @@ All notable changes to ledger are recorded here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Entries before 0.2.1 are the
 "Changes" section of the README (one line per version).
 
+## 0.4.7 - 2026-11-18
+
+### Added
+
+- Unlanded branches are owed work. A Bash command that runs `git commit` (followed through `cd`
+  and `git -C`) reaches the new PostToolUse and PostToolUseFailure hook, which records the branch
+  checked out there as an `ow-` item, `land branch <branch> in <worktree>`, with its head sha and
+  whether `origin/<branch>` already holds it. Plugin hooks fire inside subagents, so a subagent's
+  commit is recorded too. A later commit on the same branch updates the open item.
+- The item closes itself as `done` (`landed on <base>`) when `git cherry <base> <branch>` prints
+  no `+` line, which holds after a rebase merge. The base is origin's HEAD, else `origin/main`,
+  else `origin/master`, read from local remote-tracking refs only (no fetch). It is re-checked at
+  SessionStart, at each Stop for the session's own branches, and on `pending`: at most 20 per run,
+  within 2 seconds.
+- `pending`, the SessionStart owed section and the Stop owed rule show each branch item's short
+  sha and `not pushed`, `pushed, not landed`, `branch gone` or `no origin/main to compare with`.
+  The Stop rule blocks on an unstarted branch item exactly as on other owed work, and its reason
+  says to push and `start` it with the PR, `hold` it while the push waits on the human, or `drop`
+  it.
+- Config: `hooks.postToolUse` and `branches.enabled` (both `true`).
+- Migration 10 adds `repo`, `git_dir`, `branch`, `head_sha`, `branch_state` and `checked_at` to
+  `cc_owed`, and a unique index on the open item per branch. A ledger older than 0.4.7 opening the
+  migrated file reports the schema version in `doctor` and keeps working.
+
 ## 0.4.6 - 2026-11-16
 
 ### Fixed

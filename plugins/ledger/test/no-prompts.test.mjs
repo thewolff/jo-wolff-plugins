@@ -68,7 +68,7 @@ test("every agent-side write goes through the one CLI path; hooks.json names onl
     assert.equal(h.args.length, 1);
     scripts.add(h.args[0].replace("${CLAUDE_PLUGIN_ROOT}/", ""));
   }
-  assert.deepEqual([...scripts].sort(), ["hooks/pre-tool-use.mjs", "hooks/session-end.mjs", "hooks/session-start.mjs", "hooks/stop.mjs", "hooks/user-prompt.mjs"]);
+  assert.deepEqual([...scripts].sort(), ["hooks/post-tool-use.mjs", "hooks/pre-tool-use.mjs", "hooks/session-end.mjs", "hooks/session-start.mjs", "hooks/stop.mjs", "hooks/user-prompt.mjs"]);
   const cliFiles = readdirSync(join(PLUGIN_ROOT, "scripts"));
   assert.deepEqual(cliFiles, ["ledger.mjs"], "exactly one script for the agent to call");
 });

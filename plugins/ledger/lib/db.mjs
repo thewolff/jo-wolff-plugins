@@ -426,6 +426,26 @@ export const MIGRATIONS = [
       ALTER TABLE cc_sessions ADD COLUMN last_owed_block_prompt TEXT;
     `);
   },
+  // 10 (0.4.7): unlanded branches. A commit a session makes on a branch records an owed item
+  // (lib/branches.mjs) that resolves itself once the branch's commits are on the base.
+  //   cc_owed.repo          the working tree the commit was made in (shown)
+  //   cc_owed.git_dir       the repository's common git directory (git runs against it, so the
+  //                         item still resolves after its worktree is removed)
+  //   cc_owed.branch        the branch name; NULL for every other owed item
+  //   cc_owed.head_sha      the branch head when last seen
+  //   cc_owed.branch_state  unpushed | pushed | gone | nobase, refreshed on each check
+  //   cc_owed.checked_at    when the branch was last checked, so the oldest is checked first
+  (db) => {
+    db.exec(`
+      ALTER TABLE cc_owed ADD COLUMN repo TEXT;
+      ALTER TABLE cc_owed ADD COLUMN git_dir TEXT;
+      ALTER TABLE cc_owed ADD COLUMN branch TEXT;
+      ALTER TABLE cc_owed ADD COLUMN head_sha TEXT;
+      ALTER TABLE cc_owed ADD COLUMN branch_state TEXT CHECK (branch_state IS NULL OR branch_state IN ('unpushed','pushed','gone','nobase'));
+      ALTER TABLE cc_owed ADD COLUMN checked_at TEXT;
+      CREATE UNIQUE INDEX cc_owed_open_branch ON cc_owed (git_dir, branch) WHERE branch IS NOT NULL AND state IN ('owed','started','deferred');
+    `);
+  },
 ];
 
 export const SCHEMA_VERSION = MIGRATIONS.length;

@@ -10,7 +10,10 @@ import { sandbox, hook, cli, openDb, HOOKS } from "./helpers.mjs";
 
 const hookCli = (box, args) => cli(box, args).out;
 
-const HOOK_NAMES = Object.keys(HOOKS);
+// post-tool-use opens the store only after a commit on an unlanded branch, so the store rows
+// below cannot reach it from these payloads; test/branches.test.mjs runs those rows on a commit.
+const ALL_HOOK_NAMES = Object.keys(HOOKS);
+const HOOK_NAMES = ALL_HOOK_NAMES.filter((n) => n !== "post-tool-use");
 const LONG_Q = "I looked through the code and found two viable designs for the cache. Should I use A or B?";
 
 /** A payload for each hook that WOULD deny/block/inject if the store were healthy. */
@@ -146,7 +149,7 @@ test("row: unknown config key → silently ignored by every hook, no systemMessa
 });
 
 test("row: stdin not JSON → every hook exits 0; `failed open` systemMessage except SessionEnd; one errors.log line each", () => {
-  for (const name of HOOK_NAMES) {
+  for (const name of ALL_HOOK_NAMES) {
     const box = sandbox();
     const r = hook(box, name, "{not json");
     assert.equal(r.code, 0, name);
@@ -303,5 +306,5 @@ test("no hook ever exits 2 or writes to stderr on the fail-open paths above", ()
 });
 
 function eventName(name) {
-  return { "session-start": "SessionStart", "session-end": "SessionEnd", "pre-tool-use": "PreToolUse", stop: "Stop", "user-prompt": "UserPromptSubmit" }[name];
+  return { "session-start": "SessionStart", "session-end": "SessionEnd", "pre-tool-use": "PreToolUse", "post-tool-use": "PostToolUse", stop: "Stop", "user-prompt": "UserPromptSubmit" }[name];
 }

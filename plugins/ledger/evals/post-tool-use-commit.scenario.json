@@ -1,0 +1,14 @@
+{
+  "$comment": "A Bash commit on a branch records the branch as owed work and prints nothing; the owed row shows at the next Stop and in `pending`.",
+  "event": "PostToolUse",
+  "expect": "silent",
+  "stdin": {
+    "session_id": "${SESSION_ID}",
+    "transcript_path": "${TRANSCRIPT}",
+    "cwd": "${CWD}",
+    "hook_event_name": "PostToolUse",
+    "tool_name": "Bash",
+    "tool_input": { "command": "git commit -m wip" },
+    "tool_response": { "stdout": "", "stderr": "", "interrupted": false }
+  }
+}

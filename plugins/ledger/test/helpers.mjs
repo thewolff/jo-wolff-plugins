@@ -12,7 +12,7 @@ import { runBatch } from "../lib/batch.mjs";
 export const PLUGIN_ROOT = fileURLToPath(new URL("..", import.meta.url));
 export const CLI = join(PLUGIN_ROOT, "scripts", "ledger.mjs");
 export const HOOKS = Object.fromEntries(
-  ["session-start", "session-end", "pre-tool-use", "stop", "user-prompt"].map((n) => [n, join(PLUGIN_ROOT, "hooks", `${n}.mjs`)]),
+  ["session-start", "session-end", "pre-tool-use", "post-tool-use", "stop", "user-prompt"].map((n) => [n, join(PLUGIN_ROOT, "hooks", `${n}.mjs`)]),
 );
 
 /** A fresh temp tree: HOME, a work folder, a sibling folder, and an env with nothing inherited from the user. */

@@ -248,6 +248,14 @@ export function owedByFolder(db) {
   return groups;
 }
 
+const BRANCH_STATE_TEXT = { unpushed: "not pushed", pushed: "pushed, not landed", gone: "branch gone; drop it if it is not needed", nobase: "no origin/main to compare with" };
+
+/** ` · <short sha> · <state>` for an unlanded-branch item (lib/branches.mjs); "" for any other owed item. */
+export function branchSuffix(i) {
+  if (!i?.branch) return "";
+  return `${i.head_sha ? ` · ${String(i.head_sha).slice(0, 8)}` : ""} · ${BRANCH_STATE_TEXT[i.branch_state] ?? "not checked yet"}`;
+}
+
 /**
  * `pending` lines for owed items: `owed|started|deferred <ow-id>  # <body>[ · <pointer or reason>][ · waits on <q-id>]`,
  * ending ` · in <folder>` when `cwd` is given and the item is outside its scope.
@@ -256,13 +264,13 @@ export function owedPendingLines(items, cwd = null) {
   return items.map((i) => {
     const extra = i.state === "started" ? ` · ${i.pointer}` : i.state === "deferred" ? ` · ${i.reason}` : "";
     const where = cwd && !inScope(cwd, i.cwd) ? ` · in ${i.cwd}` : "";
-    return `${i.state} ${i.id}  # ${i.body}${extra}${i.waits_on ? ` · waits on ${i.waits_on}` : ""}${where}`;
+    return `${i.state} ${i.id}  # ${i.body}${branchSuffix(i)}${extra}${i.waits_on ? ` · waits on ${i.waits_on}` : ""}${where}`;
   });
 }
 
 /** One line per owed item for the agent: `- <body> (<ow-id>, owed <relative>)`, at most `cap`, then a count. */
 export function owedListLines(items, { now = Date.now(), cap = 10, max = 120, cli = "ledger" } = {}) {
-  const lines = items.slice(0, cap).map((i) => `- ${cut(i.body, max)} (${i.id}, owed ${relative(i.made_at, now)})`);
+  const lines = items.slice(0, cap).map((i) => `- ${cut(i.body, max)}${branchSuffix(i)} (${i.id}, owed ${relative(i.made_at, now)})`);
   if (items.length > cap) lines.push(`… and ${items.length - cap} more; run \`${cli} pending --all\``);
   return lines;
 }
