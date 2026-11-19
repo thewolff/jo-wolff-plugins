@@ -2,7 +2,7 @@
   "$comment": "The phrase trigger: no resume, but the final message says \"as discussed\" and this turn made no ctx history call: one warn line with this turn's prompt as the topic.",
   "event": "Stop",
   "expect": "systemMessage",
-  "reason": "ctx-watch: said \"as discussed\" without consulting history — `ctx search 'and the backoff for the retry'`",
+  "reason": "ctx-watch: said \"as discussed\" without consulting history — `ctx search --refresh off 'and the backoff for the retry'`",
   "transcript": [
     { "type": "user", "timestamp": "2026-11-04T10:00:00.000Z", "message": { "role": "user", "content": "what did we decide about retries" } },
     { "type": "assistant", "timestamp": "2026-11-04T10:00:05.000Z", "message": { "role": "assistant", "content": [ { "type": "text", "text": "Three retries." } ] } },

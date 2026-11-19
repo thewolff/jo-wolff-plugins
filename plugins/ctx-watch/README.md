@@ -555,13 +555,14 @@ transcript is skipped, not a fault. A prompt is a user entry the person typed: a
 by a tag (`<task-notification>`, `<local-command-stdout>`) other than a slash command's
 `<command-…>`. So a subagent finishing mid-turn neither starts a new turn nor becomes the topic.
 
-The message, one line: `` ctx-watch: resumed without consulting history — `ctx search '<topic>'` ``
+The message, one line: `` ctx-watch: resumed without consulting history — `ctx search --refresh off '<topic>'` ``
 (or `` said "as discussed" without consulting history — … ``), where `<topic>` is the first six
 words of the prompt that resumed the thread (the phrase trigger: this turn's prompt), quoted for
 the shell. When the window holds no prompt (a compaction mid-turn, or a prompt stamped before
 the marker), the topic is the last prompt before it. A transcript with no prompt at all gets a
-bare `` `ctx search` `` and the line says the transcript has no prompt to take a topic from;
-`block`'s reason asks for the thread's subject to be added. The switch is `~/.claude/ctx-watch.json`:
+bare `` `ctx search --refresh off` `` and the line says the transcript has no prompt to take a topic from;
+`block`'s reason asks for the thread's subject to be added. `--refresh off` reads the existing
+index and never starts, wakes or recovers the daemon. The switch is `~/.claude/ctx-watch.json`:
 
 ```json
 { "checks": { "consult-history": "off" | "warn" | "block" } }
@@ -710,6 +711,14 @@ part of `node --test`); `ctx-daemon-status-semantic-not-ready.txt` is a one-off 
 not remake. `ctx-upgrade-status.txt` is the 2026-11-11 `ctx upgrade status --format json`
 (state `dry_run`, after the release); the tests derive `quiescing` and `applying` from it,
 since no capture of a live upgrade exists that did not break a real install.
+
+## Changes in 0.4.4
+
+- **The `consult-history` Stop line names `ctx search --refresh off '<topic>'`** (a bare
+  `ctx search --refresh off` when the transcript has no prompt), and so does the `block` reason
+  and the skill's step 6. `--refresh off` reads the existing index and never starts, wakes or
+  recovers the daemon; a default-mode search can, and on 2026-11-19 one booted out a healthy
+  daemon. What counts as a ctx call is unchanged: any `ctx search`.
 
 ## Changes in 0.4.3
 

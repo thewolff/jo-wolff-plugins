@@ -48,10 +48,11 @@ consulting history`.
    launchd has the job, for a report. `prune` (same script) rotates the logs under
    `${XDG_STATE_HOME:-~/.local/state}/ctx-watch` and removes rotated ones older than 30 days;
    the nightly canary runs it, so it is rarely needed by hand.
-6. If a Stop printed `ctx-watch: resumed without consulting history — \`ctx search '<topic>'\``
+6. If a Stop printed `ctx-watch: resumed without consulting history — \`ctx search --refresh off '<topic>'\``
    (or `said "as discussed" …`), the session picked a thread up without reading what ctx holds
-   on it. Run that `ctx search` (or the ctx MCP `search`) now and read the hits before going on;
-   the topic is the first six words of the prompt and may want sharpening (a bare `ctx search`
+   on it. Run that `ctx search --refresh off` (or the ctx MCP `search`) now and read the hits
+   before going on; `--refresh off` never starts, wakes or recovers the daemon. The topic is the
+   first six words of the prompt and may want sharpening (a bare `ctx search --refresh off`
    means the transcript held no prompt: add the thread's subject). In `block` mode the
    Stop was refused with the same command in the reason; running it clears the next Stop. The
    mode is `~/.claude/ctx-watch.json` `{"checks": {"consult-history": "off" | "warn" | "block"}}`
@@ -106,7 +107,7 @@ consulting history`.
 - The command printed `ctx-watch SessionStart failed open: <why>` or `ctx-watch Stop failed
   open: <why>`: the hook let the session go on without its check; the line is also in
   `${XDG_STATE_HOME:-~/.local/state}/ctx-watch/errors.log`. Tell the person once, and run step 1
-  (or, for Stop, the `ctx search` of step 6 with the prompt's words) by hand.
+  (or, for Stop, the `ctx search --refresh off` of step 6 with the prompt's words) by hand.
 - A Stop line fired on a resume (`evals/stop-resume-warn.scenario.json`; the block form is
   `evals/stop-resume-block.scenario.json`; a turn that did call ctx is silent,
   `evals/stop-resume-ctx-consulted.scenario.json`) where you did consult history through a subagent: the check
@@ -114,7 +115,7 @@ consulting history`.
   its own file). Say what the subagent found, in this thread, and move on; that is the point
   of the check.
 - The Stop check is silent under OMP: this plugin has no OMP adapter in 0.2.0, so OMP seats
-  run `ctx search` on a resume by their own rule (the shipyard ctx-first guard), not by this
+  run `ctx search --refresh off` on a resume by their own rule (the shipyard ctx-first guard), not by this
   hook. Say so if asked why it did not fire.
 - `~/.claude/ctx-watch.json` is not JSON, or names a mode that is not `off`, `warn` or `block`:
   one errors.log line and the check runs as `warn`. Show the person the line and the file; do

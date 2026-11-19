@@ -13,7 +13,7 @@ relationships with the graph. ctx retrieves evidence; you perform the analysis.
 
 ## Choose the operation
 
-- Prior work, decisions or errors: `ctx search "<query>"`.
+- Prior work, decisions or errors: `ctx search --refresh off "<query>"`.
 - Which session produced code: `ctx blame file <path>` or
   `ctx blame commit <sha>`; PR targets are also supported.
 - Code relationships or potential impact: `ctx graph search <symbol>`,
@@ -47,9 +47,9 @@ decisions, constraints, failed attempts and evidence. Start with normal language
 then narrow by workspace, file, time or session:
 
 ```bash
-ctx search "<query>" --workspace <workspace> --since 30d
-ctx search "<query>" --file <path>
-ctx search "<query>" --session <ctx-session-id>
+ctx search --refresh off "<query>" --workspace <workspace> --since 30d
+ctx search --refresh off "<query>" --file <path>
+ctx search --refresh off "<query>" --session <ctx-session-id>
 ctx show event <ctx-event-id> --window 5
 ctx show session <ctx-session-id>
 ctx locate session <ctx-session-id>
@@ -61,7 +61,8 @@ Search again within that session if the excerpt does not explain the decision.
 
 Ordinary search includes primary and subagent work and diversifies results by
 root task. `--events` returns dense event hits; `--primary-only` deliberately
-narrows to primary sessions. `--refresh off` reads the existing history index.
+narrows to primary sessions. `--refresh off` reads the existing history index
+and never starts, wakes or recovers the daemon, so pass it on every search.
 Direct CLI searches exclude the current session tree when detection is
 unambiguous; `--include-current-session` restores it. MCP does not automatically
 exclude the caller. See `ctx docs show search` for all filters and exclusions.
@@ -79,7 +80,7 @@ calls for indexing or refresh, use `ctx graph index .` or `ctx graph update`.
 Use exact node IDs for ambiguous names. Retain generation, unresolved-reference
 and truncation limits; potential impact is not proof of runtime behavior.
 
-`ctx search --scope graph "<query>"` searches graph evidence, while
+`ctx search --refresh off --scope graph "<query>"` searches graph evidence, while
 `--scope all` requests separately labeled history and graph results. Inspect
 each scope's availability and completeness. The default remains history;
 `--content-scope outputs` filters historical tool outputs, not new command runs.

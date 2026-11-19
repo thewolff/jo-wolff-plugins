@@ -4,6 +4,17 @@ All notable changes to ctx-watch are recorded here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). The 0.1.0 release is described under
 *Changes in 0.1.0* in [README.md](README.md#changes-in-010).
 
+## [0.4.4] - 2026-11-19
+
+### Changed
+
+- The `consult-history` Stop check names `ctx search --refresh off '<topic>'` (bare:
+  `ctx search --refresh off`) in its warn line, its `block` reason and `checks.log`; the skill's
+  step 6, README and HOW-IT-FAILS say the same. `--refresh off` reads the existing index and
+  never starts, wakes or recovers the daemon. On 2026-11-19 a default-mode `ctx search` (refresh
+  `background`) booted out a healthy ctx daemon. Any `ctx search` still counts as consulting
+  history.
+
 ## [0.4.3] - 2026-11-16
 
 The timer's launchd job did not come back after the 2026-11-12 reboot, and nothing said so for

@@ -119,6 +119,11 @@ the skills' shell scripts and fails when the sourced file is missing or sits out
 own skill directory. Run the test file by name: a bare `node --test` also picks up the Bun tests
 under `skills/*/test/`, which do not run under Node.
 
+## Changes in 0.1.4
+
+- The ctx skill's `ctx search` commands carry `--refresh off`, and the skill says why: it reads
+  the existing history index and never starts, wakes or recovers the daemon.
+
 ## Changes in 0.1.3
 
 - `scripts/prune.mjs` is the plugin's prune verb, declared in `.claude-plugin/plugin.json` for
