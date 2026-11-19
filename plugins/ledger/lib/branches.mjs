@@ -224,11 +224,11 @@ export function branchStatus({ gitDir, branch, headSha = null }, { deadline = nu
  * made, named by the next `checkout: moving from <branch> to …` entry, else the branch checked out
  * now (null while detached, and those are left out). [] with no `since` or no reflog.
  */
-export function reflogCommits(top, since) {
+export function reflogCommits(top, since, { deadline = null, clock = Date.now } = {}) {
   if (since == null) return [];
-  const out = gitAnswer(top, ["reflog", "show", "-n", String(REFLOG_SCAN), "--date=unix", "--format=%H%x09%gd%x09%gs", "HEAD", "--"], OPTS);
+  const out = gitAnswer(top, ["reflog", "show", "-n", String(REFLOG_SCAN), "--date=unix", "--format=%H%x09%gd%x09%gs", "HEAD", "--"], within(deadline, clock));
   if (!out) return [];
-  let branch = currentBranch(top, OPTS);
+  let branch = currentBranch(top, within(deadline, clock));
   const found = [];
   for (const line of out.split("\n")) {
     const m = /^([0-9a-f]{40,64})\t[^\t]*@\{(\d+)\}\t(.*)$/.exec(line);
@@ -246,30 +246,32 @@ export function reflogCommits(top, since) {
  * committed to. `evidence: 'header'`: a `[<branch> <sha>]` line of the command's output (`output`)
  * whose sha exists in this repository and is on that branch. `evidence: 'reflog'`: a HEAD reflog
  * commit since `since` (reflogCommits) still on its branch, for a branch no header named. [] for
- * no repository. Git only; writes nothing.
+ * no repository. Every git call gets only what is left of `deadline` (epoch ms on `clock`, or null
+ * for none); past it a DeadlineError is thrown. Git only; writes nothing.
  */
-export function inspectCommit(dir, output = "", { since = null } = {}) {
+export function inspectCommit(dir, output = "", { since = null, deadline = null, clock = Date.now } = {}) {
+  const opts = () => within(deadline, clock);
   let top;
   try {
-    top = gitHead(dir, OPTS).top;
+    top = gitHead(dir, opts()).top;
   } catch (err) {
     if (err instanceof NotARepository) return [];
     throw err;
   }
-  const common = git(top, ["rev-parse", "--git-common-dir"], OPTS).trim();
+  const common = git(top, ["rev-parse", "--git-common-dir"], opts()).trim();
   const gitDir = isAbsolute(common) ? common : resolve(top, common);
-  const onBranch = (sha, branch) => gitAnswer(gitDir, ["merge-base", "--is-ancestor", sha, `refs/heads/${branch}`], OPTS) !== null;
+  const onBranch = (sha, branch) => gitAnswer(gitDir, ["merge-base", "--is-ancestor", sha, `refs/heads/${branch}`], opts()) !== null;
   const found = [];
   const named = (branch) => found.some((f) => f.branch === branch);
   for (const { branch, sha } of committedRefs(output)) {
     if (!branch || named(branch)) continue;
-    const full = resolveRef(gitDir, sha, OPTS);
+    const full = resolveRef(gitDir, sha, opts());
     if (full && onBranch(full, branch)) found.push({ branch, evidence: "header" });
   }
-  for (const { sha, branch } of reflogCommits(top, since)) {
+  for (const { sha, branch } of reflogCommits(top, since, { deadline, clock })) {
     if (!named(branch) && onBranch(sha, branch)) found.push({ branch, evidence: "reflog" });
   }
-  return found.map(({ branch, evidence }) => ({ repo: top, gitDir, branch, status: branchStatus({ gitDir, branch }), evidence }));
+  return found.map(({ branch, evidence }) => ({ repo: top, gitDir, branch, status: branchStatus({ gitDir, branch }, { deadline, clock }), evidence }));
 }
 
 /** The open owed row for this branch, or null. */

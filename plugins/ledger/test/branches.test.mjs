@@ -6,10 +6,11 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { chmodSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { sandbox, hook, cli, openDb, row } from "./helpers.mjs";
-import { commitDirs, committedRefs, mayCommit, refreshBranches, unlandedCommits } from "../lib/branches.mjs";
+import { commitDirs, committedRefs, inspectCommit, mayCommit, refreshBranches, unlandedCommits } from "../lib/branches.mjs";
+import { handle } from "../hooks/post-tool-use.mjs";
 
 const SID = "s-branches";
 const GIT_ENV = { GIT_AUTHOR_NAME: "t", GIT_AUTHOR_EMAIL: "t@example.invalid", GIT_COMMITTER_NAME: "t", GIT_COMMITTER_EMAIL: "t@example.invalid", GIT_CONFIG_NOSYSTEM: "1" };
@@ -620,4 +621,50 @@ test("a git directory emptied or replaced is a fault, not gone: the last status 
   }
   const [r] = branchRows(b);
   assert.deepEqual([r.state, r.branch_state, r.head_sha], ["owed", "unpushed", sha]);
+});
+
+test("without duration_ms a quiet commit older than the slack is still found, within a bounded lookback", () => {
+  const b = sandbox();
+  const { work } = repos(b);
+  git(b, work, "switch", "-q", "-c", "feature");
+  writeFileSync(join(work, "slow.txt"), "slow\n");
+  git(b, work, "add", ".");
+  const minuteAgo = `${Math.floor(Date.now() / 1000) - 60} +0000`;
+  execFileSync("git", ["commit", "-q", "-m", "then the tests ran a minute"], { cwd: work, env: { ...b.env, ...GIT_ENV, GIT_COMMITTER_DATE: minuteAgo, GIT_AUTHOR_DATE: minuteAgo } });
+  const r = post(b, "git commit -q -m x && npm test", { cwd: work, event: "PostToolUseFailure", extra: { error: "Exit code 1\ntests failed" } });
+  assert.equal(r.code, 0, r.err);
+  assert.deepEqual(branchRows(b).map((x) => x.branch), ["feature"], "a commit a minute before the hook, with no duration_ms, is recorded");
+
+  const c = sandbox();
+  const { work: w2 } = repos(c);
+  git(c, w2, "switch", "-q", "-c", "stale");
+  writeFileSync(join(w2, "stale.txt"), "stale\n");
+  git(c, w2, "add", ".");
+  const longAgo = `${Math.floor(Date.now() / 1000) - 20 * 60} +0000`;
+  execFileSync("git", ["commit", "-q", "-m", "twenty minutes ago"], { cwd: w2, env: { ...c.env, ...GIT_ENV, GIT_COMMITTER_DATE: longAgo, GIT_AUTHOR_DATE: longAgo } });
+  assert.equal(post(c, "git commit -q -m x", { cwd: w2, event: "PostToolUseFailure", extra: { error: "Exit code 1\nnothing to commit" } }).code, 0);
+  assert.deepEqual(branchRows(c), [], "a commit older than the lookback is not taken for this command's");
+});
+
+test("commit inspection stops at the hook's deadline: directories already inspected are recorded, the rest are named in errors.log", () => {
+  const b = sandbox();
+  const { origin, work } = repos(b);
+  const work2 = join(b.work, "repo2");
+  git(b, b.work, "clone", "-q", origin, work2);
+  git(b, work, "switch", "-q", "-c", "first");
+  const h1 = commitOut(b, work, "one.txt");
+  git(b, work2, "switch", "-q", "-c", "second");
+  const h2 = commitOut(b, work2, "two.txt");
+  let t = 0;
+  const slow = (dir, output, opts) => {
+    const found = inspectCommit(dir, output, opts);
+    t += 8_000;
+    return found;
+  };
+  const input = { session_id: SID, cwd: b.work, hook_event_name: "PostToolUse", tool_name: "Bash", tool_input: { command: `git -C ${work} commit -m one && git -C ${work2} commit -m two` }, tool_response: { stdout: `${h1}\n${h2}`, stderr: "", interrupted: false }, duration_ms: 300 };
+  handle(input, { env: b.env, clock: () => t, inspect: slow });
+  assert.deepEqual(branchRows(b).map((x) => x.branch), ["first"], "the directory inspected before the deadline is recorded");
+  const log = readFileSync(b.errorsLog, "utf8");
+  assert.match(log, /not inspected/);
+  assert.ok(log.includes(work2), "errors.log names the directory skipped");
 });
