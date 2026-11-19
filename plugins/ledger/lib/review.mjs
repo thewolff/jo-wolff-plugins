@@ -424,9 +424,11 @@ function windows(ranges, n, { merge = true } = {}) {
  * The regions of `path` at `sha` to show the judge, [{ path, from, to, text, rank }], or
  * [{ path, missing: true }] when the file is not there: rank 0 around each cited line (never merged
  * with the rest), rank 1 around lines naming one of the finding's identifiers, rank 2 around the
- * lines changed since (`hunkRanges`), or the first lines when there is no anchor at all.
+ * lines changed since (`hunkRanges`), or the first lines when there is no anchor at all. Cited
+ * lines are carried from the finding's commit to `sha` through `sinceHunks` (diffHunks), and a
+ * region whose citation moved says where it was cited and where it is now.
  */
-function regionsAt(top, sha, path, { cited, focus, hunkRanges }) {
+function regionsAt(top, sha, path, { cited, focus, hunkRanges, sinceHunks = [] }) {
   let text;
   try {
     text = git(top, ["show", `${sha}:${path}`]);
@@ -437,11 +439,14 @@ function regionsAt(top, sha, path, { cited, focus, hunkRanges }) {
   const lines = text.replace(/\n$/, "").split("\n");
   const n = lines.length;
   const symbolLines = focus ? lines.flatMap((l, i) => (focus.test(l) ? [[i + 1, i + 1]] : [])) : [];
-  // Citations are as of when the finding was raised; one past the end of the file now is clamped
-  // to its last lines, paired with its core so the lookup below cannot miss.
+  // Citations are as of when the finding was raised: each is carried to HEAD through the diff
+  // since then, and one past the end of the file now is clamped to its last lines, paired with its
+  // core so the lookup below cannot miss.
   const cites = cited.map(([a, b]) => {
-    const at = [Math.min(a, n), Math.min(b, n)];
-    return { asked: [a, b], at, core: [Math.max(1, at[0] - CORE_CONTEXT_LINES), Math.min(n, at[1] + CORE_CONTEXT_LINES)] };
+    const [first, last] = [moveLine(sinceHunks, a), moveLine(sinceHunks, b)];
+    const moved = [first.from, Math.max(first.from, last.to)];
+    const at = [Math.min(moved[0], n), Math.min(moved[1], n)];
+    return { asked: [a, b], moved, how: first.how ?? last.how, at, core: [Math.max(1, at[0] - CORE_CONTEXT_LINES), Math.min(n, at[1] + CORE_CONTEXT_LINES)] };
   });
   const ranked = [
     ...windows(cites.map((c) => c.at), n, { merge: false }).map((w) => [...w, 0]),
@@ -456,16 +461,33 @@ function regionsAt(top, sha, path, { cited, focus, hunkRanges }) {
       .slice(from - 1, to)
       .map((l, i) => `${String(from + i).padStart(4)}| ${l}`)
       .join("\n");
-  const pastEnd = (c) => (c.asked[0] > n ? `(cited line ${c.asked[0]} is past the end: the file has ${n} lines at HEAD)\n` : "");
+  const span = ([a, b]) => (a === b ? `line ${a}` : `lines ${a}-${b}`);
+  const pastEnd = (c) => (c.asked[0] > n && (c.moved[0] > n || c.how === "removed") ? `(cited line ${c.asked[0]} is past the end: the file has ${n} lines at HEAD)\n` : "");
+  const movedNote = (c) => {
+    if (c.how === "removed") return `(cited at ${span(c.asked)} when the finding was raised; those lines were removed since, shown around ${span(c.at)} at HEAD)\n`;
+    if (c.how === "rewritten") return `(cited at ${span(c.asked)} when the finding was raised; those lines were rewritten since, now ${span(c.at)} at HEAD)\n`;
+    return c.how === "moved" ? `(cited at ${span(c.asked)} when the finding was raised; that code is now at ${span(c.at)} at HEAD)\n` : "";
+  };
   return kept.map(([from, to, rank]) => {
     const region = { path, from, to, rank, text: show(from, to) };
     const cite = rank === 0 ? cites.find((c) => c.core[0] >= from && c.core[1] <= to) : null;
     if (!cite) return region;
     const [core, [a, b]] = [cite.core, cite.at];
     const bare = Math.min(b, a + 2);
-    const note = pastEnd(cite);
+    const note = pastEnd(cite) + movedNote(cite);
     return { ...region, text: note + region.text, core: { from: core[0], to: core[1], text: note + show(core[0], core[1]), bare: { from: a, to: bare, text: note + show(a, bare) } } };
   });
+}
+
+/** The hunks of a one-file `git diff -U0`, [{ oldStart, oldCount, newStart, newCount }]; [] for a file added in it. */
+export function diffHunks(diff) {
+  if (/^--- \/dev\/null$/m.test(String(diff))) return [];
+  return [...String(diff).matchAll(/^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@/gm)].map((m) => ({
+    oldStart: Number(m[1]),
+    oldCount: Number(m[2] ?? 1),
+    newStart: Number(m[3]),
+    newCount: Number(m[4] ?? 1),
+  }));
 }
 
 /** The new-side line ranges a `git diff -U0` touched. */
@@ -474,6 +496,30 @@ function newSideRanges(diff) {
     const a = Number(m[1]);
     return [Math.max(1, a), Math.max(1, a) + Math.max(1, Number(m[2] ?? 1)) - 1];
   });
+}
+
+/**
+ * Where old-side `line` is on the new side of `hunks` (diffHunks, in file order): { from, to, how },
+ * `how` null when it did not move, "moved" when only lines above it changed, "rewritten" (the new
+ * side of its hunk) or "removed" (beside where it was) when its own line changed.
+ */
+export function moveLine(hunks, line) {
+  let delta = 0;
+  for (const h of hunks) {
+    // A zero-count old side is an insertion after line oldStart.
+    if (h.oldCount === 0) {
+      if (line <= h.oldStart) break;
+      delta += h.newCount;
+      continue;
+    }
+    if (line < h.oldStart) break;
+    if (line < h.oldStart + h.oldCount) {
+      const at = Math.max(1, h.newStart);
+      return h.newCount ? { from: at, to: at + h.newCount - 1, how: "rewritten" } : { from: at, to: at, how: "removed" };
+    }
+    delta += h.newCount - h.oldCount;
+  }
+  return { from: line + delta, to: line + delta, how: delta ? "moved" : null };
 }
 
 /**
@@ -564,9 +610,10 @@ async function judgeItems({ db, dbPath, config, env, top, fromSha, toSha, items,
         return "";
       }
     };
-    const current = named.flatMap((path) =>
-      regionsAt(top, toSha, path, { cited: citedLines(item.text, path, matches), focus, hunkRanges: targets.includes(path) ? newSideRanges(zeroContext(path)) : [] }),
-    );
+    const current = named.flatMap((path) => {
+      const u0 = targets.includes(path) ? zeroContext(path) : "";
+      return regionsAt(top, toSha, path, { cited: citedLines(item.text, path, matches), focus, hunkRanges: newSideRanges(u0), sinceHunks: diffHunks(u0) });
+    });
     let text = null;
     if (aboutReceipt(item)) {
       if (receipt === undefined) receipt = newestReceipt(top, env).text;

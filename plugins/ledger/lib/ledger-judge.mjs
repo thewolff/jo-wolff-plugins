@@ -226,8 +226,9 @@ function clipBothEnds(s, n) {
  * is filled in that order with whole units (regions, hunks, file entries), chosen by rank (a
  * region's own `rank`, else 0 for a unit mentioning a `focus` word and 1 for the rest) and shown
  * in their original order; no room is reserved for later sections. A unit over UNIT_CAP_BYTES that
- * mentions a `focus` word is shown as the lines around those mentions; a cited region that does
- * not fit whole falls back to its `core` lines; when none of a section's units fits, its
+ * mentions a `focus` word is shown as the lines around those mentions; every rank-0 unit is placed
+ * first as its `core` lines (else its bare cited lines), then expanded whole where room remains,
+ * before any lower-ranked unit, so cited lines are the last evidence removed; when none of a section's units fits, its
  * top-ranked unit is shown with its middle cut, at most UNIT_CAP_BYTES. HEAD region lines longer
  * than REGION_LINE_BYTES are clipped, also only when over the cap. Whenever anything was
  * left out or excerpted, the passage ends with a marker naming how many bytes each section left
@@ -303,14 +304,29 @@ export function passageFor(findingText, diff, { current = [], tests = [], absent
     }
     const byRank = [...s.units].sort((a, b) => a.rank - b.rank || a.order - b.order);
     const chosen = [];
+    const fits = (list) => bytes(render(s, list)) <= budget;
+    // Largest first: the unit whole, then its core, then its bare cited lines.
+    const formsOf = (u) => [{ ...u, text: shorten(u) }, ...(u.fallbacks ?? []).map((f) => ({ ...f, text: shorten(f), order: u.order }))];
+    // Every rank-0 unit is placed first in a reduced form that fits (a cited region's core, else
+    // its bare cited lines; a unit with neither, whole), so expanding one cited region cannot take
+    // the room the next one's cited lines need; only then are they expanded and lower ranks admitted.
+    const held = new Map();
     for (const u of byRank) {
-      const short = { ...u, text: shorten(u) };
-      if (bytes(render(s, [...chosen, short])) <= budget) chosen.push(short);
-      else {
-        // A cited region that does not fit whole keeps its cited lines before any lower-ranked unit.
-        const fit = (u.fallbacks ?? []).map((f) => ({ ...f, text: shorten(f), order: u.order })).find((f) => bytes(render(s, [...chosen, f])) <= budget);
-        if (fit) chosen.push(fit);
+      if (u.rank !== 0) continue;
+      const forms = formsOf(u);
+      const fit = (forms.length > 1 ? forms.slice(1) : forms).find((f) => fits([...chosen, f]));
+      if (fit) {
+        held.set(u, fit);
+        chosen.push(fit);
       }
+    }
+    for (const u of byRank) {
+      const h = held.get(u);
+      const rest = h ? chosen.filter((c) => c !== h) : chosen;
+      const fit = formsOf(u).find((f) => fits([...rest, f]));
+      if (h) {
+        if (fit && bytes(fit.text) > bytes(h.text)) chosen.splice(chosen.indexOf(h), 1, fit);
+      } else if (fit) chosen.push(fit);
     }
     let text = render(s, chosen);
     if (!chosen.length) {

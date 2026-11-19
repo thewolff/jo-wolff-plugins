@@ -1668,3 +1668,85 @@ for (const [keep, past, what] of [[15, false, "its end"], [5, true, "its start a
     else assert.doesNotMatch(passage, /past the end/);
   }
 });
+
+test("moveLine: lines before, inside and after an inserted, a rewritten and a removed hunk", async () => {
+  const { moveLine } = await import("../lib/review.mjs");
+  const inserted = [{ oldStart: 100, oldCount: 0, newStart: 101, newCount: 20 }];
+  assert.deepEqual(moveLine(inserted, 100), { from: 100, to: 100, how: null }, "the line the insertion follows stays");
+  assert.deepEqual(moveLine(inserted, 101), { from: 121, to: 121, how: "moved" }, "the first line after it moves down");
+  assert.deepEqual(moveLine(inserted, 1), { from: 1, to: 1, how: null });
+  assert.deepEqual(moveLine([{ oldStart: 0, oldCount: 0, newStart: 1, newCount: 3 }], 1), { from: 4, to: 4, how: "moved" }, "an insertion at the top");
+  const rewritten = [{ oldStart: 10, oldCount: 3, newStart: 10, newCount: 5 }];
+  assert.deepEqual(moveLine(rewritten, 9), { from: 9, to: 9, how: null });
+  assert.deepEqual(moveLine(rewritten, 10), { from: 10, to: 14, how: "rewritten" });
+  assert.deepEqual(moveLine(rewritten, 12), { from: 10, to: 14, how: "rewritten" });
+  assert.deepEqual(moveLine(rewritten, 13), { from: 15, to: 15, how: "moved" });
+  const removed = [{ oldStart: 6, oldCount: 25, newStart: 5, newCount: 0 }];
+  assert.deepEqual(moveLine(removed, 5), { from: 5, to: 5, how: null });
+  assert.deepEqual(moveLine(removed, 6), { from: 5, to: 5, how: "removed" });
+  assert.deepEqual(moveLine(removed, 30), { from: 5, to: 5, how: "removed" });
+  assert.deepEqual(moveLine(removed, 31), { from: 6, to: 6, how: "moved" });
+  const both = [...inserted.map((h) => ({ ...h, oldStart: 5, newStart: 6 })), { oldStart: 50, oldCount: 2, newStart: 70, newCount: 1 }];
+  assert.deepEqual(moveLine(both, 49), { from: 69, to: 69, how: "moved" });
+  assert.deepEqual(moveLine(both, 51), { from: 70, to: 70, how: "rewritten" });
+  assert.deepEqual(moveLine(both, 52), { from: 71, to: 71, how: "moved" });
+  assert.deepEqual(moveLine([], 7), { from: 7, to: 7, how: null });
+});
+
+test("diffHunks: reads both sides of each hunk, with a missing count as 1, and nothing for an added file", async () => {
+  const { diffHunks } = await import("../lib/review.mjs");
+  const diff = "diff --git a/f.ts b/f.ts\nindex 1..2 100644\n--- a/f.ts\n+++ b/f.ts\n@@ -100,0 +101,20 @@ fn\n+x\n@@ -150 +170,2 @@\n-y\n+z\n+w\n";
+  assert.deepEqual(diffHunks(diff), [
+    { oldStart: 100, oldCount: 0, newStart: 101, newCount: 20 },
+    { oldStart: 150, oldCount: 1, newStart: 170, newCount: 2 },
+  ]);
+  assert.deepEqual(diffHunks("diff --git a/n.ts b/n.ts\nnew file mode 100644\n--- /dev/null\n+++ b/n.ts\n@@ -0,0 +1,3 @@\n+a\n+b\n+c\n"), []);
+  assert.deepEqual(diffHunks(""), []);
+});
+
+test("regions: a cited line with 20 lines inserted above it is shown where the defect is now, with both line numbers", () => {
+  const b = repo();
+  const body = (inserted) => [...Array.from({ length: 300 }, (_, k) => (k + 1 === 254 ? "DEFECT_HERE();" : `line${k + 1}();`)).flatMap((l, k) => (inserted && k === 100 ? [...Array.from({ length: 20 }, (_, j) => `INSERTED_${j}();`), l] : [l]))].join("\n");
+  commitAt(b, "file.ts", `${body(false)}\n`);
+  review(b, [], { LEDGER_REVIEW_BIN_CODEX: stub(b, "codex", "1. [blocking] file.ts:254 the call here is wrong") });
+  commitAt(b, "file.ts", `${body(true)}\n`);
+  const no = judge(b, "no");
+  const r = review(b, [], { LEDGER_REVIEW_BIN_CODEX: stub(b, "codex", "PASS"), LEDGER_JUDGE_BIN: no });
+  assert.equal(calls(no), 1, r.out);
+  const passage = readFileSync(`${no}.prompt`, "utf8");
+  assert.match(passage, / 274\| DEFECT_HERE\(\);/, passage);
+  assert.match(passage, /\(cited at line 254 when the finding was raised; that code is now at line 274 at HEAD\)/);
+  assert.doesNotMatch(passage, / 254\| line234\(\);/, "the code that now sits at line 254 is not shown as the cited line");
+  assert.doesNotMatch(passage, /past the end/);
+});
+
+test("regions: a citation inside a rewritten hunk is shown as that hunk's new lines", () => {
+  const b = repo();
+  const old = Array.from({ length: 60 }, (_, k) => `line${k + 1}();`);
+  commitAt(b, "file.ts", `${old.join("\n")}\n`);
+  review(b, [], { LEDGER_REVIEW_BIN_CODEX: stub(b, "codex", "1. [should] file.ts:30 the guard is inverted") });
+  const now = [...Array.from({ length: 10 }, (_, j) => `TOP_${j}();`), ...old.slice(0, 27), ...Array.from({ length: 8 }, (_, j) => `NEW_${j}();`), ...old.slice(32)];
+  commitAt(b, "file.ts", `${now.join("\n")}\n`);
+  const no = judge(b, "no");
+  review(b, [], { LEDGER_REVIEW_BIN_CODEX: stub(b, "codex", "PASS"), LEDGER_JUDGE_BIN: no });
+  const passage = readFileSync(`${no}.prompt`, "utf8");
+  assert.match(passage, /\(cited at line 30 when the finding was raised; those lines were rewritten since, now lines 38-45 at HEAD\)/, passage);
+  assert.match(passage, / {2}38\| NEW_0\(\);\n {2}39\| NEW_1\(\);/);
+  assert.match(passage, / {2}45\| NEW_7\(\);/);
+});
+
+test("passageFor: two cited regions where the first alone would fill the budget both keep their cores", async () => {
+  const { passageFor, PASSAGE_CAP_BYTES } = await import("../lib/ledger-judge.mjs");
+  // 230-byte lines stay under the per-line clip, so only the budget decides what is cut.
+  const line = (tag, k) => `${String(k).padStart(4)}| ${tag}_${String(k).padStart(2, "0")} ${"é".repeat(108)}`;
+  const show = (tag, a, b) => Array.from({ length: b - a + 1 }, (_, i) => line(tag, a + i)).join("\n");
+  const region = (path, tag) => ({ path, from: 1, to: 66, rank: 0, text: show(tag, 1, 66), core: { from: 28, to: 34, text: show(tag, 28, 34), bare: { from: 31, to: 31, text: show(tag, 31, 31) } } });
+  const current = [region("a.ts", "AAA"), region("b.ts", "BBB"), ...Array.from({ length: 4 }, (_, k) => ({ path: "c.ts", from: 100 + k * 40, to: 110 + k * 40, rank: 1, text: `small ${k}` }))];
+  const [whole, core] = [Buffer.byteLength(current[0].text), Buffer.byteLength(current[0].core.text)];
+  assert.ok(whole < PASSAGE_CAP_BYTES && whole + core > PASSAGE_CAP_BYTES - 512, "the first region alone fits, but not beside the second core");
+  const p = passageFor("a.ts:31 and b.ts:31 bug", "", { current });
+  assert.ok(Buffer.byteLength(p) <= PASSAGE_CAP_BYTES, `${Buffer.byteLength(p)} bytes`);
+  for (const tag of ["AAA", "BBB"]) for (const k of [28, 31, 34]) assert.match(p, new RegExp(`${tag}_${k} `), `${tag} core line ${k}`);
+  assert.ok(p.indexOf("AAA_31") < p.indexOf("BBB_31"), "shown in their original order");
+  assert.match(p, /\[cut: .*files at HEAD \d+ bytes/);
+});
