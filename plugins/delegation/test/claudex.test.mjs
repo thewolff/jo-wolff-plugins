@@ -31,6 +31,7 @@ test("claudexLines: reads skip and log lines outside fences, trimmed, with a lis
   ]);
   assert.deepEqual(claudexLines("claudex: log: `/a b/c.md`"), [{ kind: "log", value: "`/a b/c.md`" }], "a backtick-quoted path keeps its backticks for unquote");
   assert.deepEqual(claudexLines("`claudex: log: `/a.md``"), [{ kind: "log", value: "`/a.md`" }], "a whole-line pair is dropped, the inner pair kept");
+  assert.deepEqual(claudexLines("`CLAUDEX: Skip: prototype`"), [{ kind: "skip", value: "prototype" }], "whole-line backticks with upper-case keywords");
   assert.deepEqual(claudexLines(42), []);
   assert.deepEqual(claudexLines("x\n```\nclaudex: skip: unclosed fence\n"), [], "an unclosed fence runs to the end");
 });
@@ -92,7 +93,16 @@ test("checkClaudexLine: fails open on a relative path with no cwd, and on a stat
   const { env } = box(t);
   const rel = checkClaudexLine({ prompt: "claudex: log: PLAN-REVIEW-LOG.md" }, env);
   assert.equal(rel.status, "skipped");
-  assert.match(rel.why, /relative and the payload has no cwd/);
+  assert.match(rel.why, /relative and the payload has no absolute cwd/);
+  let stats = 0;
+  const counting = () => {
+    stats++;
+    throw Object.assign(new Error("nope"), { code: "ENOENT" });
+  };
+  for (const cwd of ["project", "   ", ""]) {
+    assert.equal(checkClaudexLine({ prompt: "claudex: log: PLAN-REVIEW-LOG.md", cwd }, env, undefined, { stat: counting }).status, "skipped", JSON.stringify(cwd));
+  }
+  assert.equal(stats, 0, "a relative path with no absolute cwd is never stat'd");
   const stat = () => {
     throw Object.assign(new Error("denied"), { code: "EACCES" });
   };
@@ -171,7 +181,7 @@ test("spawn-gate gate 5: a relative log path with no cwd allows, with one skippe
   const r = runHook("spawn-gate", spawnPayload({ prompt: brief("claudex: log: PLAN-REVIEW-LOG.md") }), env);
   assert.equal(r.status, 0);
   assert.equal(deny(r), null, r.stdout);
-  assert.match(skippedLog(env), /^\S+ spawn-gate claudex line not checked: the log path "PLAN-REVIEW-LOG\.md" is relative and the payload has no cwd; spawn allowed\n/);
+  assert.match(skippedLog(env), /^\S+ spawn-gate claudex line not checked: the log path "PLAN-REVIEW-LOG\.md" is relative and the payload has no absolute cwd; spawn allowed\n/);
 });
 
 test("spawn-gate gate 5: a non-boolean requireClaudexLoop is a config fault: defaults (gate on) plus a systemMessage", (t) => {

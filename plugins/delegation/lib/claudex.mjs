@@ -15,8 +15,8 @@
 // `claudex: skip: …` or `claudex: log: …` (keywords case-insensitive). A value wrapped in `<…>`
 // is the deny template's placeholder and never counts. Any one valid line passes.
 //
-// PATHS: `~/` expands to HOME; a relative path resolves against the payload's cwd. A relative
-// path with no cwd, or a stat that fails for any reason but "not found"/"not a directory", is
+// PATHS: `~/` expands to HOME; a relative path resolves against the payload's absolute cwd. A relative
+// path with no absolute cwd, or a stat that fails for any reason but "not found"/"not a directory", is
 // `skipped` (the caller logs one skipped.log line and allows). A stat that hangs is the hook
 // runner's 4 s deadline, which also allows.
 
@@ -38,7 +38,7 @@ export function claudexLines(prompt) {
   for (const raw of linesOutsideFences(prompt)) {
     let line = raw.trim();
     // Only a pair around the whole line is dropped, so `claudex: log: \`/a b.md\`` keeps its quoted path.
-    if (line.startsWith("`claudex:") && line.endsWith("`")) line = line.slice(1, -1).trim();
+    if (/^`claudex:/i.test(line) && line.endsWith("`")) line = line.slice(1, -1).trim();
     line = line.replace(/^[-*][ \t]+/, "");
     const m = LINE_RE.exec(line);
     if (m) out.push({ kind: m[1].toLowerCase(), value: m[2].trim() });
@@ -82,9 +82,9 @@ export function checkClaudexLine({ prompt, cwd }, env = process.env, home = home
     let path;
     if (v === "~" || v.startsWith("~/")) path = join(env.HOME || home, v.slice(1));
     else if (isAbsolute(v)) path = v;
-    else if (typeof cwd === "string" && cwd !== "") path = resolve(cwd, v);
+    else if (typeof cwd === "string" && isAbsolute(cwd)) path = resolve(cwd, v);
     else {
-      skipped ??= `the log path "${v}" is relative and the payload has no cwd`;
+      skipped ??= `the log path "${v}" is relative and the payload has no absolute cwd`;
       continue;
     }
     let st;

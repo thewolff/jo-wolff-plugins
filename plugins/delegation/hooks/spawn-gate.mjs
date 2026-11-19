@@ -10,7 +10,7 @@
 // GATE 5  builder-class and the prompt has no valid claudex-loop line (lib/claudex.mjs): neither
 //         `claudex: log: <path>` naming an existing non-empty file nor `claudex: skip: <reason>`
 //         with a reason → deny, carrying both lines as a fill-in template and naming
-//         `requireClaudexLoop: false` as the way out. A relative log path with no cwd, or a stat
+//         `requireClaudexLoop: false` as the way out. A relative log path with no absolute cwd, or a stat
 //         fault other than not-found → allow, one skipped.log line. It runs before gate 2 because
 //         the line is part of the brief text: every brief repair is asked for before the receipt.
 // GATE 2  builder-class and this session has no pattern-check receipt
