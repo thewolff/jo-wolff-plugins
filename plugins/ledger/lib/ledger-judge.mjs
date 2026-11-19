@@ -35,7 +35,7 @@ import { nowIso } from "./time.mjs";
 
 export const JUDGE_QUESTION = "Does this change resolve the finding? Answer yes or no.";
 export const JUDGE_TIMEOUT_MS = 60_000;
-export const PASSAGE_CAP_BYTES = 8 * 1024;
+export const PASSAGE_CAP_BYTES = 16 * 1024;
 export const JUDGE_ENV_VAR = "LEDGER_JUDGE_BIN";
 
 /** The pluginKey lib/judge.mjs resolves with: ledger's env override and `review.judgeCommand`. */
@@ -128,32 +128,235 @@ export function judgementsSince(db, since) {
   return db.prepare("SELECT key, question, passage, answer, at FROM cc_judge_cache WHERE at >= ? ORDER BY at DESC").all(nowIso(since));
 }
 
+const bytes = (s) => Buffer.byteLength(s);
+/** The first `n` bytes of `s`, never splitting a character. */
+const clip = (s, n) => Buffer.from(s).subarray(0, Math.max(0, n)).toString("utf8").replace(/\uFFFD+$/, "");
+const escapeRe = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+/** A regex matching any of `words` as a whole word, or null when there are none. */
+export function focusPattern(words) {
+  const w = [...new Set((words ?? []).filter(Boolean))];
+  return w.length ? new RegExp(`(?<![\\w$])(?:${w.map(escapeRe).join("|")})(?![\\w$])`) : null;
+}
+
+const UNIT_CAP_BYTES = 4 * 1024;
+const FINDING_CAP_BYTES = 2 * 1024;
+const MARKER_RESERVE_BYTES = 512;
+const REGION_LINE_BYTES = 240;
+const EXCERPT_CONTEXT_LINES = 12;
+
 /**
- * The passage for one finding: its text, then the diff of the files it names. Then, in order,
- * when given: the current pattern-check receipt (`receipt`, for a finding about it), and the
- * other files changed in the same window (`others`, [{ path, diff }], each under its path).
- * `nothingChanged` says that no file changed at all since the finding was raised. When the
- * whole passes PASSAGE_CAP_BYTES, the passage is cut to fit and ends with a marker saying how
- * much was left out and the sha256 of the whole input, so the judge knows the evidence is partial
- * and two inputs that differ only past the cut are cached apart. The finding and the named files'
- * diff are budgeted first: when they fit the cap alone, the cut never reaches them; the receipt
- * and other files get only what is left after them and the marker, and none of it when the
- * marker does not fit beside them (the passage is then the finding and named diff alone).
+ * A unit longer than UNIT_CAP_BYTES that mentions `focus` becomes the lines around each mention
+ * (the first line kept as its heading), so a cut keeps what the finding is about instead of the
+ * unit's first bytes. Lines for which `pinned(line)` is true are always kept (a cited region's
+ * cited lines). Returns `text` unchanged otherwise.
  */
-export function passageFor(findingText, diff, { receipt = null, others = [], nothingChanged = false } = {}) {
+function excerpt(text, focus, pinned = null) {
+  if (!focus || bytes(text) <= UNIT_CAP_BYTES || !focus.test(text)) return text;
+  const lines = text.split("\n");
+  const keep = new Set([0]);
+  lines.forEach((l, i) => {
+    if (pinned?.(l)) keep.add(i);
+    if (focus.test(l)) for (let k = Math.max(0, i - EXCERPT_CONTEXT_LINES); k <= Math.min(lines.length - 1, i + EXCERPT_CONTEXT_LINES); k++) keep.add(k);
+  });
+  const out = [];
+  let prev = -1;
+  for (const i of [...keep].sort((a, b) => a - b)) {
+    if (i > prev + 1) out.push(`\u2026 (${i - prev - 1} lines not shown)`);
+    out.push(lines[i]);
+    prev = i;
+  }
+  if (prev < lines.length - 1) out.push(`\u2026 (${lines.length - 1 - prev} lines not shown)`);
+  return out.join("\n");
+}
+
+/**
+ * A unified diff split into units, each { head, text }: a hunk, whose `head` is its file's header
+ * lines (shown once before that file's first shown hunk), or a file entry with no hunk at all (a
+ * mode change, a rename, a binary file), whose header lines are its `text`.
+ */
+function hunks(diff) {
+  const out = [];
+  let head = "";
+  let fileHunks = 0;
+  let cur = null;
+  const endFile = () => {
+    if (cur) out.push(cur);
+    else if (head && !fileHunks) out.push({ head: "", text: head });
+    cur = null;
+    head = "";
+    fileHunks = 0;
+  };
+  for (const line of String(diff).split("\n")) {
+    if (line.startsWith("diff --git ")) {
+      endFile();
+      head = line;
+    } else if (line.startsWith("@@")) {
+      if (cur) out.push(cur);
+      cur = { head, text: line };
+      fileHunks++;
+    } else if (cur) cur.text += `\n${line}`;
+    else head += head ? `\n${line}` : line;
+  }
+  endFile();
+  return out.map((h) => ({ ...h, text: h.text.replace(/\n$/, "") })).filter((h) => h.text);
+}
+
+/** The first and last parts of `s` within `n` bytes, the middle replaced by a line saying how much is not shown. */
+function clipBothEnds(s, n) {
+  if (bytes(s) <= n) return s;
+  const gap = (k) => `\n… (${k} bytes not shown) …\n`;
+  const room = n - bytes(gap(bytes(s)));
+  if (room <= 0) return clip(s, n);
+  const headBytes = Math.ceil(room / 2);
+  const tail = Buffer.from(s).subarray(bytes(s) - (room - headBytes)).toString("utf8").replace(/^\uFFFD+/, "");
+  const front = clip(s, headBytes);
+  return front + gap(bytes(s) - bytes(front) - bytes(tail)) + tail;
+}
+
+/**
+ * The passage for one finding, in priority order: its text; `absent`, evidence that identifiers
+ * it names no longer occur at HEAD ([{ name, files, since }] or names); `current`, the files it names as they are at HEAD
+ * ([{ path, from, to, text, rank, core? }] regions, { path, missing: true } or { path, unreadable: true }); the diff of the
+ * files it names (`diff`); `tests`, test files changed in the window that refer to it
+ * ([{ path, diff }]); the pattern-check receipt (`receipt`, for a finding about it); and the other
+ * changed files (`others`, [{ path, diff }]). `nothingChanged` says no file changed at all since
+ * it was raised.
+ *
+ * Under PASSAGE_CAP_BYTES it is the plain concatenation, nothing excerpted. Over it, each section
+ * is filled in that order with whole units (regions, hunks, file entries), chosen by rank (a
+ * region's own `rank`, else 0 for a unit mentioning a `focus` word and 1 for the rest) and shown
+ * in their original order; no room is reserved for later sections. A unit over UNIT_CAP_BYTES that
+ * mentions a `focus` word is shown as the lines around those mentions; every rank-0 unit is placed
+ * first as its bare cited lines, then all are expanded to their `core` lines, then whole, where room remains,
+ * before any lower-ranked unit, so cited lines are the last evidence removed; when none of a section's units fits, its
+ * top-ranked unit is shown with its middle cut, at most UNIT_CAP_BYTES. HEAD region lines longer
+ * than REGION_LINE_BYTES are clipped, also only when over the cap. Whenever anything was
+ * left out or excerpted, the passage ends with a marker naming how many bytes each section left
+ * out and the sha256 of the whole uncut input, so the judge knows the evidence is partial and two
+ * inputs that differ anywhere are cached apart.
+ */
+export function passageFor(findingText, diff, { current = [], tests = [], absent = [], focus = [], receipt = null, others = [], nothingChanged = false } = {}) {
+  const re = focusPattern(focus);
+  const ranked = (text) => (re && re.test(text) ? 0 : 1);
   const change = nothingChanged ? "(no changes since the finding was raised)" : String(diff ?? "") || "(no change to the files the finding names)";
-  const primary = `Finding:\n${String(findingText ?? "")}\n\nChange (unified diff):\n${change}`;
-  let full = primary;
-  if (receipt) full += `\n\nPattern-check receipt (current text):\n${String(receipt)}`;
-  if (others.length) full += `\n\nOther files changed since the finding was raised (unified diff):\n${others.map((o) => `File: ${o.path}\n${o.diff}`).join("\n")}`;
-  const size = Buffer.byteLength(full);
-  if (size <= PASSAGE_CAP_BYTES) return full;
-  const digest = createHash("sha256").update(full).digest("hex");
-  const marker = `\n[cut: the finding and change are ${size} bytes; only the first part fits the ${PASSAGE_CAP_BYTES}-byte limit, the rest is not shown; sha256 of the whole: ${digest}]`;
-  const room = Math.max(0, PASSAGE_CAP_BYTES - Buffer.byteLength(marker));
-  const primarySize = Buffer.byteLength(primary);
-  if (primarySize > room && primarySize <= PASSAGE_CAP_BYTES) return primary;
-  return Buffer.from(full).subarray(0, room).toString("utf8").replace(/\uFFFD+$/, "") + marker;
+  const changeUnits = nothingChanged || !String(diff ?? "") ? [{ head: "", text: change, rank: 0 }] : hunks(change).map((h) => ({ ...h, rank: ranked(h.text) }));
+  const fileUnits = (list) => list.flatMap((o) => hunks(o.diff || "(no textual change)").map((h) => ({ head: `File: ${o.path}${h.head ? `\n${h.head}` : ""}`, text: h.text, rank: ranked(h.text) })));
+  const sections = [
+    { name: "finding", header: "Finding:\n", units: [{ text: String(findingText ?? ""), rank: 0 }], cap: FINDING_CAP_BYTES },
+    absent.length && {
+      name: "absent",
+      header: "\n\nEvidence from the tree:\n",
+      units: absent.map((a) => ({ text: typeof a === "string" ? `\`${a}\` named in the finding no longer occurs anywhere at HEAD` : `\`${a.name}\` named in the finding no longer occurs anywhere at HEAD (was in ${a.files.join(", ")} at ${a.since})`, rank: 0 })),
+    },
+    current.length && {
+      name: "files at HEAD",
+      header: "\n\nThe files the finding names, as they are at HEAD (around the cited lines, the identifiers it names, and the lines changed since):\n",
+      units: current.map((c) =>
+        c.missing
+          ? { text: `File: ${c.path}: not present at HEAD`, rank: 0 }
+          : c.unreadable
+            ? { text: `File: ${c.path}: present at HEAD, but its contents could not be retrieved`, rank: 0 }
+            : {
+                clipLines: true,
+                pinned: c.core ? [c.core.from, c.core.to] : null,
+                text: `File: ${c.path} (lines ${c.from}-${c.to} at HEAD)\n${c.text}`,
+                rank: c.rank ?? 1,
+                fallbacks: [c.core, c.core?.bare].filter(Boolean).map((r) => ({ clipLines: true, text: `File: ${c.path} (lines ${r.from}-${r.to} at HEAD)\n${r.text}`, rank: c.rank ?? 1 })),
+              },
+      ),
+    },
+    { name: "named diff", header: "\n\nChange (unified diff):\n", units: changeUnits },
+    tests.length && { name: "tests", header: "\n\nTest files changed since the finding was raised that refer to it (unified diff):\n", units: fileUnits(tests) },
+    receipt && { name: "receipt", header: "\n\nPattern-check receipt (current text):\n", units: [{ text: String(receipt), rank: 0 }] },
+    others.length && { name: "other files", header: "\n\nOther files changed since the finding was raised (unified diff):\n", units: fileUnits(others) },
+  ].filter(Boolean);
+  for (const s of sections) s.units.forEach((u, i) => (u.order = i));
+  const render = (s, chosen) => {
+    let text = "";
+    let shownHead = null;
+    for (const u of [...chosen].sort((a, b) => a.order - b.order)) {
+      const head = u.head && u.head !== shownHead ? `${u.head}\n` : "";
+      if (u.head) shownHead = u.head;
+      text += (text ? "\n" : "") + head + u.text;
+    }
+    return s.header + text;
+  };
+  const whole = sections.map((s) => render(s, s.units)).join("");
+  const size = bytes(whole);
+  if (size <= PASSAGE_CAP_BYTES) return whole;
+
+  // Only once over the cap: HEAD region lines are clipped, and the bytes they lose count as cut.
+  const shorten = (u) => {
+    const pin = u.pinned && ((l) => {
+      const m = /^\s*(\d+)\| /.exec(l);
+      return Boolean(m) && Number(m[1]) >= u.pinned[0] && Number(m[1]) <= u.pinned[1];
+    });
+    const t = excerpt(u.text, re, pin);
+    return u.clipLines ? t.split("\n").map((l) => (bytes(l) > REGION_LINE_BYTES ? `${clip(l, REGION_LINE_BYTES)}…` : l)).join("\n") : t;
+  };
+  let room = PASSAGE_CAP_BYTES - MARKER_RESERVE_BYTES;
+  const left = [];
+  let out = "";
+  for (const s of sections) {
+    const full = bytes(render(s, s.units));
+    const budget = Math.min(room, s.cap ?? Infinity);
+    if (bytes(s.header) >= budget) {
+      left.push(`${s.name} ${full} bytes`);
+      continue;
+    }
+    const byRank = [...s.units].sort((a, b) => a.rank - b.rank || a.order - b.order);
+    const chosen = [];
+    const fits = (list) => bytes(render(s, list)) <= budget;
+    // Largest first: the unit whole, then its core, then its bare cited lines.
+    const formsOf = (u) => [{ ...u, text: shorten(u) }, ...(u.fallbacks ?? []).map((f) => ({ ...f, text: shorten(f), order: u.order }))];
+    // Every rank-0 unit is placed first in its smallest form (a cited region's bare cited lines; a
+    // unit with no fallback, whole), so one region's core cannot take the room a later region's
+    // cited lines need; then all are grown to cores, then whole, and only then lower ranks admitted.
+    const forms = new Map(byRank.map((u) => [u, formsOf(u)]));
+    const held = new Map();
+    for (const u of byRank) {
+      if (u.rank !== 0) continue;
+      const fit = forms.get(u).at(-1);
+      if (fits([...chosen, fit])) {
+        held.set(u, fit);
+        chosen.push(fit);
+      }
+    }
+    for (const level of [1, 0]) {
+      for (const [u, h] of held) {
+        const f = forms.get(u)[Math.min(level, forms.get(u).length - 1)];
+        if (f === h || bytes(f.text) <= bytes(h.text)) continue;
+        const i = chosen.indexOf(h);
+        if (fits([...chosen.slice(0, i), f, ...chosen.slice(i + 1)])) {
+          chosen[i] = f;
+          held.set(u, f);
+        }
+      }
+    }
+    for (const u of byRank) {
+      if (held.has(u)) continue;
+      const fit = forms.get(u).find((f) => fits([...chosen, f]));
+      if (fit) chosen.push(fit);
+    }
+    let text = render(s, chosen);
+    if (!chosen.length) {
+      // At most one unit's worth, so one oversized unit cannot take the room later sections need.
+      const top = byRank[0];
+      const limit = Math.min(budget, bytes(s.header) + UNIT_CAP_BYTES) - bytes(render(s, [{ ...top, text: "" }]));
+      // A unit whose heading alone does not fit is left out rather than overrunning the cap.
+      text = limit > 0 ? render(s, [{ ...top, text: clipBothEnds(shorten(top), limit) }]) : "";
+    }
+    out += text;
+    room -= bytes(text);
+    if (bytes(text) !== full) left.push(`${s.name} ${Math.max(0, full - bytes(text))} bytes`);
+  }
+  const digest = createHash("sha256").update(whole).digest("hex");
+  const marker = (l) => `\n[cut: the passage was ${size} bytes, over the ${PASSAGE_CAP_BYTES}-byte limit; left out: ${l.join(", ") || "nothing whole"}; sha256 of the whole: ${digest}]`;
+  if (bytes(out) + bytes(marker(left)) > PASSAGE_CAP_BYTES) {
+    const short = [...left.slice(0, 3), ...(left.length > 3 ? [`${left.length - 3} more sections`] : [])];
+    return clip(out, PASSAGE_CAP_BYTES - bytes(marker(short))) + marker(short);
+  }
+  return `${out}\n[cut: the passage was ${size} bytes, over the ${PASSAGE_CAP_BYTES}-byte limit; left out: ${left.join(", ") || "nothing whole"}; sha256 of the whole: ${digest}]`;
 }
 
 /**
