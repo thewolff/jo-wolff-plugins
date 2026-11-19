@@ -909,6 +909,12 @@ Tests use a sandboxed `HOME`, `XDG_*` and `LEDGER_*` so they never touch your le
 
 ## Changes
 
+### 0.4.8
+
+- The review judge no longer re-raises findings on lines that have since been fixed. A
+  finding's line citations are mapped from the round that raised it to their place at HEAD, and
+  nearby citations each keep their own lines in the passage the judge reads.
+
 ### 0.4.7
 
 - A branch a session commits to is owed work until it lands. A Bash `git commit`, in the main

@@ -4,6 +4,30 @@ All notable changes to ledger are recorded here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Entries before 0.2.1 are the
 "Changes" section of the README (one line per version).
 
+## 0.4.8 - 2026-11-19
+
+### Fixed
+
+- The review judge re-raised findings on lines that had since been fixed. A finding's line
+  citations are as of the round that raised it, and the judge read them against the file at
+  HEAD, so after an edit above the cited code it was shown the wrong lines. Citations are now
+  mapped through the diff from the finding's `since` commit to HEAD, and the passage notes both
+  line numbers. Lines in a rewritten hunk map to its new lines; removed lines map to where they
+  were.
+- The judge now sees the files a finding names as they are at HEAD around the cited lines, the
+  identifiers it names and the lines changed since; then the named diff, the changed tests that
+  refer to them, the receipt and the other changed files. The cap is 16 KiB and the cut goes by
+  relevance, so the cited lines are the last thing to go.
+- Nearby citations each keep their own lines. Every cited region is first placed as its cited
+  lines before any region grows, so one large region no longer crowds out the next citation; two
+  citations with overlapping windows no longer both fall back to the first one's lines; and a
+  region split for length keeps its own cited lines.
+- A citation past the end of a file that shrank no longer crashes judging; it gets a note in the
+  passage. A file present at HEAD whose read fails is reported as "could not be retrieved", not
+  as deleted.
+- Identifiers a finding names that are gone from the tree are evidence for the judge, never a
+  verdict on their own: a rename can keep the bug.
+
 ## 0.4.7 - 2026-11-18
 
 ### Added
