@@ -497,3 +497,37 @@ test("refresh does not overwrite a row whose head changed while git ran: a lande
   const [r] = branchRows(b);
   assert.deepEqual([r.state, r.head_sha], ["owed", newer]);
 });
+
+test("a failed commit with no header neither records nor takes over: the quiet fallback needs a reflog commit since the command began", () => {
+  const b = sandbox();
+  const { work } = repos(b);
+  git(b, work, "switch", "-q", "-c", "feature");
+  writeFileSync(join(work, "old.txt"), "old\n");
+  git(b, work, "add", ".");
+  const hourAgo = `${Math.floor(Date.now() / 1000) - 3600} +0000`;
+  execFileSync("git", ["commit", "-q", "-m", "an hour ago"], { cwd: work, env: { ...b.env, ...GIT_ENV, GIT_COMMITTER_DATE: hourAgo, GIT_AUTHOR_DATE: hourAgo } });
+  const quiet = (session, event, extra = {}) =>
+    hook(b, "post-tool-use", { session_id: session, cwd: work, hook_event_name: event, tool_name: "Bash", tool_input: { command: "git commit -q -m x" }, duration_ms: 400, ...extra }, { env: GIT_ENV });
+  assert.equal(quiet(SID, "PostToolUseFailure", { error: "Exit code 1\nnothing to commit, working tree clean" }).code, 0);
+  assert.deepEqual(branchRows(b), [], "a failed commit on a branch last moved an hour ago records nothing");
+  commitOn(b, work, null, "now.txt");
+  assert.equal(quiet(SID, "PostToolUse", { tool_response: { stdout: "", stderr: "", interrupted: false } }).code, 0);
+  const [r] = branchRows(b);
+  assert.equal(r.session_id, SID, "a real quiet commit is recorded");
+  execFileSync("git", ["commit", "--amend", "-q", "--no-edit"], { cwd: work, env: { ...b.env, ...GIT_ENV, GIT_COMMITTER_DATE: hourAgo } });
+  assert.equal(quiet("s-branches-b", "PostToolUseFailure", { error: "Exit code 1\nnothing to commit, working tree clean" }).code, 0);
+  assert.equal(branchRows(b)[0].session_id, SID, "a failed commit in another session does not take the item over");
+});
+
+test("headers printed by a commit in one repository do not hide a quiet commit in another", () => {
+  const b = sandbox();
+  const { origin, work } = repos(b);
+  const work2 = join(b.work, "repo2");
+  git(b, b.work, "clone", "-q", origin, work2);
+  git(b, work, "switch", "-q", "-c", "loud");
+  const header = commitOut(b, work, "loud.txt");
+  commitOn(b, work2, "quiet", "quiet.txt");
+  const r = post(b, `git -C ${work} commit -m loud && git -C ${work2} commit -q -m quiet`, { cwd: b.work, extra: { duration_ms: 300, tool_response: { stdout: header, stderr: "", interrupted: false } } });
+  assert.equal(r.code, 0, r.err);
+  assert.deepEqual(branchRows(b).map((x) => x.branch).sort(), ["loud", "quiet"]);
+});

@@ -46,6 +46,11 @@ All notable changes to ledger are recorded here. The format follows
   committing session, with a move row, so that session's Stop checks it and reminds.
 - A check writes its result only if the item's head and state are what they were when git
   started, so a commit recorded meanwhile is never closed on the old head's result.
+- A quiet commit (no `[branch sha]` header) is recorded only when the branch's reflog shows a
+  commit since the command began (`duration_ms` plus 2 seconds), so a failed `git commit` neither
+  records an item nor takes one over from another session.
+- A printed header counts only in the repository whose sha it names, so a header from one
+  repository's commit does not hide a quiet commit in another.
 - Config: `hooks.postToolUse` and `branches.enabled` (both `true`).
 - Migration 10 adds `repo`, `git_dir`, `branch`, `head_sha`, `branch_state` and `checked_at` to
   `cc_owed`, and a unique index on the open item per branch. A ledger older than 0.4.7 opening the

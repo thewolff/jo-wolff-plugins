@@ -7,7 +7,9 @@
 // `land branch <branch> in <worktree>`, the head sha and whether it is pushed. The branch is the
 // one git printed in its `[<branch> <sha>]` line, so `git commit && git switch main` still names
 // the branch committed to, and two commits on two branches in one line make two items; a quiet
-// commit falls back to the branch checked out after the command. Plugin hooks fire
+// commit falls back to the branch checked out after the command, only when that branch's reflog
+// shows a commit since the command began (a failed commit writes none). Headers count only in
+// the repository whose sha they name. Plugin hooks fire
 // for tool calls inside subagents too, so a subagent's commit is recorded the same way. Nothing
 // is recorded for a detached HEAD, a repository with no origin base to compare against, or a
 // branch whose commits are all on the base already. A later commit on the same branch updates the
@@ -206,12 +208,26 @@ export function branchStatus({ gitDir, branch, headSha = null }, { deadline = nu
 }
 
 /**
- * What a commit in `dir` left: one { repo, gitDir, branch, status } per branch it committed to,
- * read from the `[<branch> <sha>]` lines of the command's output (`output`) when the sha exists
- * in this repository and is on that branch; else, with no such line (a quiet commit), the
- * branch checked out there. [] for no repository or a detached HEAD. Git only; writes nothing.
+ * Whether `branch` was moved by a commit at or after `since` (epoch ms): its newest reflog entry
+ * is a `commit…` one stamped then or later. A failed commit writes no entry, so the newest one
+ * predates the command. False with no `since`, no reflog, or a git non-zero exit.
  */
-export function inspectCommit(dir, output = "") {
+export function committedSince(top, branch, since) {
+  if (since == null) return false;
+  const line = gitAnswer(top, ["reflog", "show", "-n", "1", "--date=unix", "--format=%gd%x09%gs", `refs/heads/${branch}`, "--"], OPTS)?.trim();
+  const m = line && /@\{(\d+)\}\t(commit\b.*)$/.exec(line);
+  return Boolean(m && Number(m[1]) * 1000 >= since);
+}
+
+/**
+ * What a commit in `dir` left: one { repo, gitDir, branch, status } per branch it committed to,
+ * read from the `[<branch> <sha>]` lines of the command's output (`output`) whose sha exists in
+ * this repository and is on that branch. With no such line for this repository (a quiet commit,
+ * or headers printed by commits in other repositories), the branch checked out there, but only
+ * when its reflog shows a commit at or after `since` (committedSince). [] for no repository or a
+ * detached HEAD. Git only; writes nothing.
+ */
+export function inspectCommit(dir, output = "", { since = null } = {}) {
   let top;
   try {
     top = gitHead(dir, OPTS).top;
@@ -221,18 +237,18 @@ export function inspectCommit(dir, output = "") {
   }
   const common = git(top, ["rev-parse", "--git-common-dir"], OPTS).trim();
   const gitDir = isAbsolute(common) ? common : resolve(top, common);
-  const printed = committedRefs(output);
-  let branches;
+  const printed = committedRefs(output)
+    .map((p) => ({ ...p, full: resolveRef(gitDir, p.sha, OPTS) }))
+    .filter((p) => p.full);
+  let branches = [];
   if (printed.length) {
-    branches = [];
-    for (const { branch, sha } of printed) {
+    for (const { branch, full } of printed) {
       if (!branch || branches.includes(branch)) continue;
-      const full = resolveRef(gitDir, sha, OPTS);
-      if (full && gitAnswer(gitDir, ["merge-base", "--is-ancestor", full, `refs/heads/${branch}`], OPTS) !== null) branches.push(branch);
+      if (gitAnswer(gitDir, ["merge-base", "--is-ancestor", full, `refs/heads/${branch}`], OPTS) !== null) branches.push(branch);
     }
   } else {
     const current = currentBranch(top, OPTS);
-    branches = current ? [current] : [];
+    if (current && committedSince(top, current, since)) branches = [current];
   }
   return branches.map((branch) => ({ repo: top, gitDir, branch, status: branchStatus({ gitDir, branch }) }));
 }

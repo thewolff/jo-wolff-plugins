@@ -6,7 +6,7 @@
 // is recorded.
 //
 // Input read: tool_name, tool_input.command, tool_response (stdout, stderr) or error, session_id,
-// cwd, agent_type (hooks reference
+// cwd, duration_ms (when the command began, for a quiet commit), agent_type (hooks reference
 // § PostToolUse input, § Common input fields; agent_type is present inside a subagent).
 //
 // Hot path: every Bash call reaches this script, so the command text is matched for `git` and
@@ -22,6 +22,8 @@ import { withStore, hookConfig } from "../lib/store.mjs";
 import { transaction } from "../lib/db.mjs";
 import { commitDirs, inspectCommit, mayCommit, recordBranch, BRANCH_BY } from "../lib/branches.mjs";
 import { nowIso } from "../lib/time.mjs";
+
+const QUIET_SLACK_MS = 2_000;
 
 /**
  * The text the command printed, where `git commit` writes its `[<branch> <sha>]` line: Bash's
@@ -44,10 +46,14 @@ export function handle(input, { env = process.env, now = Date.now() } = {}) {
   if (!dirs.length) return null;
   const hook = input.hook_event_name === "PostToolUseFailure" ? "PostToolUseFailure" : "PostToolUse";
   const output = commandOutput(input);
+  // A quiet commit counts only if the branch's reflog moved since the command began (with a
+  // second of slack for the reflog's whole-second stamps).
+  const ran = Number.isFinite(input.duration_ms) && input.duration_ms > 0 ? input.duration_ms : 0;
+  const since = now - ran - QUIET_SLACK_MS;
   const seen = [];
   for (const dir of dirs) {
     try {
-      for (const s of inspectCommit(dir, output)) if (!seen.some((x) => x.gitDir === s.gitDir && x.branch === s.branch)) seen.push(s);
+      for (const s of inspectCommit(dir, output, { since })) if (!seen.some((x) => x.gitDir === s.gitDir && x.branch === s.branch)) seen.push(s);
     } catch (err) {
       logError(hook, `branch check in ${dir}: ${err.message}`, env);
     }
