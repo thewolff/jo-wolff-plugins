@@ -88,6 +88,11 @@ export function checkClaudexLine({ prompt, cwd }, env = process.env, home = home
       note({ problem: "placeholder" });
       continue;
     }
+    // Checked before the missing-cwd fallback, so a relative NUL path is denied, not skipped.
+    if (v.includes("\u0000")) {
+      note({ problem: "log-unusable", path: v, code: "ERR_INVALID_ARG_VALUE" });
+      continue;
+    }
     let path;
     if (v === "~" || v.startsWith("~/")) path = join(env.HOME || home, v.slice(1));
     else if (isAbsolute(v)) path = v;

@@ -149,6 +149,14 @@ test("checkClaudexLine: a log path that is too long, loops, or holds a NUL is de
   symlinkSync(join(root, "loop"), join(root, "loop"));
   assert.equal(checkClaudexLine({ prompt: `claudex: log: ${join(root, "loop")}` }, env).code, "ELOOP");
   assert.equal(checkClaudexLine({ prompt: "claudex: log: /tmp/a\u0000b.md" }, env).code, "ERR_INVALID_ARG_VALUE");
+  for (const cwd of [undefined, "", "relative"]) {
+    const rel = checkClaudexLine({ prompt: "claudex: log: a\u0000b.md", cwd }, env);
+    assert.equal(rel.status, "missing", `relative NUL path, cwd ${JSON.stringify(cwd)}`);
+    assert.equal(rel.problem, "log-unusable");
+    assert.equal(rel.code, "ERR_INVALID_ARG_VALUE");
+  }
+  const viaHook = runHook("spawn-gate", spawnPayload({ prompt: brief("claudex: log: a\u0000b.md") }), env);
+  assert.match(deny(viaHook) ?? "", /cannot be used \(ERR_INVALID_ARG_VALUE\)/, "the spawn gate denies it with no cwd in the payload");
 });
 
 test("claudexReason: names the problem, both lines, and the config switch", () => {
