@@ -391,7 +391,7 @@ export const isTestPath = (path) => /(^|\/)(test|tests|__tests__|spec)\/|\.(test
 const REGION_CONTEXT_LINES = 15;
 const REGION_MAX_LINES = 61;
 const NO_ANCHOR_LINES = 60;
-const REGION_LINE_CHARS = 240;
+const REGION_LINE_BYTES = 240;
 const CORE_CONTEXT_LINES = 3;
 
 /** The cited line ranges for `path` in a finding: `path:N` or `path:N-M`, as [from, to]. */
@@ -449,13 +449,19 @@ function regionsAt(top, sha, path, { cited, focus, hunkRanges }) {
   const show = (from, to) =>
     lines
       .slice(from - 1, to)
-      .map((l, i) => `${String(from + i).padStart(4)}| ${l.length > REGION_LINE_CHARS ? `${l.slice(0, REGION_LINE_CHARS)}…` : l}`)
+      .map((l, i) => {
+        const cut = Buffer.from(l).subarray(0, REGION_LINE_BYTES).toString("utf8").replace(/\uFFFD+$/, "");
+        return `${String(from + i).padStart(4)}| ${cut.length < l.length ? `${cut}…` : l}`;
+      })
       .join("\n");
   const cores = cited.map(([a, b]) => [Math.max(1, a - CORE_CONTEXT_LINES), Math.min(n, b + CORE_CONTEXT_LINES)]);
   return kept.map(([from, to, rank]) => {
     const region = { path, from, to, rank, text: show(from, to) };
     const core = rank === 0 && cores.find(([a, b]) => a >= from && b <= to);
-    return core ? { ...region, core: { from: core[0], to: core[1], text: show(core[0], core[1]) } } : region;
+    if (!core) return region;
+    const [a, b] = cited.find(([x, y]) => x >= core[0] && y <= core[1]);
+    const bare = Math.min(b, a + 2);
+    return { ...region, core: { from: core[0], to: core[1], text: show(core[0], core[1]), bare: { from: a, to: bare, text: show(a, bare) } } };
   });
 }
 
@@ -517,7 +523,10 @@ async function judgeItems({ db, dbPath, config, env, top, fromSha, toSha, items,
     }
   };
   const matches = (f, c) => c === f || c.endsWith(`/${f}`) || f.endsWith(`/${c}`);
-  const resolveIn = (paths, names) => [...new Set(names.map((f) => paths.find((c) => matches(f, c))).filter(Boolean))];
+  // An exact path wins; an abbreviated one resolves to every path it could mean.
+  const candidates = (paths, f) => (paths.includes(f) ? [f] : paths.filter((c) => matches(f, c)));
+  const resolveIn = (paths, names) => [...new Set(names.flatMap((f) => candidates(paths, f)))];
+  const ambiguous = (paths, names) => names.some((f) => candidates(paths, f).length > 1);
   const out = [];
   for (const item of items) {
     let since = item.since ?? fromSha;
@@ -531,7 +540,7 @@ async function judgeItems({ db, dbPath, config, env, top, fromSha, toSha, items,
     const isPath = (span) => treeAt(since).some((c) => matches(span, c)) || treeAt(toSha).some((c) => matches(span, c));
     const symbols = namedSymbols(item.text, isPath);
     const atSince = resolveIn(treeAt(since), files);
-    const absent = atSince.length ? symbols.filter((s) => occurs(since, s, atSince) === true && occurs(toSha, s) === false) : [];
+    const absent = atSince.length && !ambiguous(treeAt(since), files) ? symbols.filter((s) => occurs(since, s, atSince) === true && occurs(toSha, s) === false) : [];
     if (symbols.length && absent.length === symbols.length) {
       out.push({ ...judged, resolved: true, judge: "absent", absent });
       continue;

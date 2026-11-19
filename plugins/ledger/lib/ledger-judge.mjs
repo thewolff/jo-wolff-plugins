@@ -245,7 +245,11 @@ export function passageFor(findingText, diff, { current = [], tests = [], absent
       units: current.map((c) =>
         c.missing
           ? { text: `File: ${c.path}: not present at HEAD`, rank: 0 }
-          : { text: `File: ${c.path} (lines ${c.from}-${c.to} at HEAD)\n${c.text}`, rank: c.rank ?? 1, core: c.core && { text: `File: ${c.path} (lines ${c.core.from}-${c.core.to} at HEAD)\n${c.core.text}`, rank: c.rank ?? 1 } },
+          : {
+              text: `File: ${c.path} (lines ${c.from}-${c.to} at HEAD)\n${c.text}`,
+              rank: c.rank ?? 1,
+              fallbacks: [c.core, c.core?.bare].filter(Boolean).map((r) => ({ text: `File: ${c.path} (lines ${r.from}-${r.to} at HEAD)\n${r.text}`, rank: c.rank ?? 1 })),
+            },
       ),
     },
     { name: "named diff", header: "\n\nChange (unified diff):\n", units: changeUnits },
@@ -283,21 +287,30 @@ export function passageFor(findingText, diff, { current = [], tests = [], absent
     for (const u of byRank) {
       const short = { ...u, text: excerpt(u.text, re) };
       if (bytes(render(s, [...chosen, short])) <= budget) chosen.push(short);
-      // A cited region that does not fit whole keeps its cited lines before any lower-ranked unit.
-      else if (u.core && bytes(render(s, [...chosen, { ...u.core, order: u.order }])) <= budget) chosen.push({ ...u.core, order: u.order });
+      else {
+        // A cited region that does not fit whole keeps its cited lines before any lower-ranked unit.
+        const fit = (u.fallbacks ?? []).map((f) => ({ ...f, order: u.order })).find((f) => bytes(render(s, [...chosen, f])) <= budget);
+        if (fit) chosen.push(fit);
+      }
     }
     let text = render(s, chosen);
     if (!chosen.length) {
       // At most one unit's worth, so one oversized unit cannot take the room later sections need.
       const top = byRank[0];
       const limit = Math.min(budget, bytes(s.header) + UNIT_CAP_BYTES) - bytes(render(s, [{ ...top, text: "" }]));
-      text = render(s, [{ ...top, text: clipBothEnds(excerpt(top.text, re), Math.max(0, limit)) }]);
+      // A unit whose heading alone does not fit is left out rather than overrunning the cap.
+      text = limit > 0 ? render(s, [{ ...top, text: clipBothEnds(excerpt(top.text, re), limit) }]) : "";
     }
     out += text;
     room -= bytes(text);
     if (bytes(text) !== full) left.push(`${s.name} ${Math.max(0, full - bytes(text))} bytes`);
   }
   const digest = createHash("sha256").update(whole).digest("hex");
+  const marker = (l) => `\n[cut: the passage was ${size} bytes, over the ${PASSAGE_CAP_BYTES}-byte limit; left out: ${l.join(", ") || "nothing whole"}; sha256 of the whole: ${digest}]`;
+  if (bytes(out) + bytes(marker(left)) > PASSAGE_CAP_BYTES) {
+    const short = [...left.slice(0, 3), ...(left.length > 3 ? [`${left.length - 3} more sections`] : [])];
+    return clip(out, PASSAGE_CAP_BYTES - bytes(marker(short))) + marker(short);
+  }
   return `${out}\n[cut: the passage was ${size} bytes, over the ${PASSAGE_CAP_BYTES}-byte limit; left out: ${left.join(", ") || "nothing whole"}; sha256 of the whole: ${digest}]`;
 }
 

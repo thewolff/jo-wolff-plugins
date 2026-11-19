@@ -1544,3 +1544,41 @@ test("passageFor: a file entry with no hunk (a mode change) beside an edited fil
   const cut = passageFor("s.sh is not executable", diff, { others: [{ path: "big.ts", diff: `@@ -1 +1 @@\n+${"o".repeat(40000)}` }] });
   assert.match(cut, /new mode 100755/, "kept when the passage is cut too");
 });
+
+test("absent: an exact named path wins over a longer suffix match, and an ambiguous one disables the shortcut", () => {
+  const b = repo();
+  commitAt(b, "src/auth.ts", "login(user);\n");
+  commitAt(b, "packages/src/auth.ts", "validateToken(t);\n");
+  review(b, [], { LEDGER_REVIEW_BIN_CODEX: stub(b, "codex", "1. [blocking] src/auth.ts:1 `validateToken` is never called") });
+  commitAt(b, "packages/src/auth.ts", "check(t);\n");
+  const no = judge(b, "no");
+  const r = review(b, [], { LEDGER_REVIEW_BIN_CODEX: stub(b, "codex", "PASS"), LEDGER_JUDGE_BIN: no });
+  assert.equal(calls(no), 1, "the missing call in src/auth.ts goes to the judge");
+  assert.match(r.out, /the judge says it is not resolved/, r.out);
+  const passage = readFileSync(`${no}.prompt`, "utf8");
+  assert.match(passage, /File: src\/auth\.ts \(lines 1-1 at HEAD\)/);
+  assert.doesNotMatch(passage, /File: packages\/src\/auth\.ts \(lines/);
+});
+
+test("passageFor: a second cited region whose core does not fit keeps its bare cited lines over smaller lower-ranked units", async () => {
+  const { passageFor, PASSAGE_CAP_BYTES } = await import("../lib/ledger-judge.mjs");
+  const wide = "é".repeat(2400);
+  const current = [
+    { path: "a.ts", from: 1, to: 31, rank: 0, text: "f".repeat(PASSAGE_CAP_BYTES - 4000) },
+    { path: "a.ts", from: 50, to: 80, rank: 0, text: wide.repeat(3), core: { from: 62, to: 68, text: wide, bare: { from: 65, to: 65, text: "  65| SECOND_CITED_LINE" } } },
+    ...Array.from({ length: 8 }, (_, k) => ({ path: "a.ts", from: 200 + k * 40, to: 205 + k * 40, rank: 1, text: `small ${k}` })),
+  ];
+  const p = passageFor("a.ts:16 and a.ts:65 bug", "", { current });
+  assert.ok(Buffer.byteLength(p) <= PASSAGE_CAP_BYTES);
+  assert.match(p, /\(lines 65-65 at HEAD\)\n {2}65\| SECOND_CITED_LINE/);
+});
+
+test("passageFor: a long path with almost no room left never pushes the passage over the cap", async () => {
+  const { passageFor, PASSAGE_CAP_BYTES } = await import("../lib/ledger-judge.mjs");
+  const deep = `${"d/".repeat(1500)}f.ts`;
+  for (const pad of [600, 560, 530, 300]) {
+    const p = passageFor("x", `@@ -1 +1 @@\n+${"n".repeat(PASSAGE_CAP_BYTES - pad)}`, { others: [{ path: deep, diff: "@@ -1 +1 @@\n+y" }], tests: [{ path: `test/${deep}`, diff: "@@ -1 +1 @@\n+t" }] });
+    assert.ok(Buffer.byteLength(p) <= PASSAGE_CAP_BYTES, `pad ${pad}: ${Buffer.byteLength(p)} bytes`);
+    assert.match(p, /sha256 of the whole: [0-9a-f]{64}\]$/);
+  }
+});
