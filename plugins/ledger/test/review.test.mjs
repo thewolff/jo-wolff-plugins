@@ -1507,3 +1507,40 @@ test("namedSymbols: backticked identifiers, dotted ones by their last segment, f
   assert.deepEqual(namedSymbols("In lib/review.mjs, `worker.committedSince` keeps `foo()`; see `review.mjs`, `a.txt:1`, `x`, and plain words", isPath), ["committedSince", "foo"]);
   assert.deepEqual(namedSymbols("no backticks here: committedSince"), []);
 });
+
+test("passageFor: a near-cap primary with different omitted supplements still differs, through the digest", async () => {
+  const { passageFor, PASSAGE_CAP_BYTES } = await import("../lib/ledger-judge.mjs");
+  const near = `${"n".repeat(PASSAGE_CAP_BYTES - 200)}\n+DECISIVE`;
+  for (const [a, b] of [
+    [{ receipt: "r".repeat(3000) + "A" }, { receipt: "r".repeat(3000) + "B" }],
+    [{ others: [{ path: "o.ts", diff: "o".repeat(3000) + "A" }] }, { others: [{ path: "o.ts", diff: "o".repeat(3000) + "B" }] }],
+  ]) {
+    const one = passageFor("x", near, a);
+    const two = passageFor("x", near, b);
+    assert.ok(Buffer.byteLength(one) <= PASSAGE_CAP_BYTES);
+    assert.match(one, /sha256 of the whole: [0-9a-f]{64}\]$/);
+    assert.notEqual(one, two);
+  }
+});
+
+test("passageFor: changes outside an identifier's excerpt window are never collapsed together", async () => {
+  const { passageFor, PASSAGE_CAP_BYTES } = await import("../lib/ledger-judge.mjs");
+  const hunk = (fix) => `@@ -1,200 +1,200 @@\n+symbolX();\n${Array.from({ length: 200 }, (_, k) => `+line ${k} ${"z".repeat(20)}`).join("\n")}\n+${fix}`;
+  const under = [passageFor("x", hunk("FIX_A"), { focus: ["symbolX"] }), passageFor("x", hunk("FIX_B"), { focus: ["symbolX"] })];
+  assert.ok(Buffer.byteLength(under[0]) <= PASSAGE_CAP_BYTES);
+  assert.match(under[0], /FIX_A/, "under the cap nothing is excerpted");
+  const pad = { others: [{ path: "big.ts", diff: `@@ -1 +1 @@\n+${"o".repeat(PASSAGE_CAP_BYTES)}` }] };
+  const over = [passageFor("x", hunk("FIX_A"), { focus: ["symbolX"], ...pad }), passageFor("x", hunk("FIX_B"), { focus: ["symbolX"], ...pad })];
+  assert.notEqual(over[0], over[1]);
+  assert.match(over[0], /\[cut: .*named diff \d+ bytes.*sha256 of the whole/);
+});
+
+test("passageFor: a file entry with no hunk (a mode change) beside an edited file stays in the named diff", async () => {
+  const { passageFor } = await import("../lib/ledger-judge.mjs");
+  const diff = "diff --git a/s.sh b/s.sh\nold mode 100644\nnew mode 100755\ndiff --git a/x.ts b/x.ts\nindex 1..2 100644\n--- a/x.ts\n+++ b/x.ts\n@@ -1 +1 @@\n-a\n+b\n";
+  const p = passageFor("s.sh is not executable", diff);
+  assert.match(p, /new mode 100755/);
+  assert.match(p, /\+\+\+ b\/x\.ts\n@@ -1 \+1 @@\n-a\n\+b/);
+  const cut = passageFor("s.sh is not executable", diff, { others: [{ path: "big.ts", diff: `@@ -1 +1 @@\n+${"o".repeat(40000)}` }] });
+  assert.match(cut, /new mode 100755/, "kept when the passage is cut too");
+});

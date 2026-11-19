@@ -510,7 +510,7 @@ async function judgeItems({ db, dbPath, config, env, top, fromSha, toSha, items,
   /** true, false, or null when git could not say. */
   const occurs = (sha, word, paths = []) => {
     try {
-      git(top, ["grep", "-q", "-w", "-F", "-e", word, sha, "--", ...paths]);
+      git(top, ["grep", "-q", "-w", "-F", "-e", word, sha, "--", ...paths.map((p) => `:(literal)${p}`)]);
       return true;
     } catch (err) {
       return err.gitStatus === 1 ? false : null;
