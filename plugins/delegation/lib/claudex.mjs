@@ -11,7 +11,7 @@
 // read the log's verdict, which would bind this plugin to a format claudex-loop leaves free.
 //
 // WHAT IS MATCHED: a line outside fenced code blocks (the spawn gates' fence rule), trimmed, with
-// backticks around the whole line and one leading `- ` or `* ` list marker dropped, reading
+// one backtick pair around the whole line and one leading `- ` or `* ` list marker dropped, reading
 // `claudex: skip: …` or `claudex: log: …` (keywords case-insensitive). A value wrapped in `<…>`
 // is the deny template's placeholder and never counts. Any one valid line passes.
 //
@@ -36,7 +36,9 @@ export function claudexLines(prompt) {
   if (typeof prompt !== "string") return [];
   const out = [];
   for (const raw of linesOutsideFences(prompt)) {
-    let line = raw.trim().replace(/^`+/, "").replace(/`+$/, "").trim();
+    let line = raw.trim();
+    // Only a pair around the whole line is dropped, so `claudex: log: \`/a b.md\`` keeps its quoted path.
+    if (line.startsWith("`claudex:") && line.endsWith("`")) line = line.slice(1, -1).trim();
     line = line.replace(/^[-*][ \t]+/, "");
     const m = LINE_RE.exec(line);
     if (m) out.push({ kind: m[1].toLowerCase(), value: m[2].trim() });
@@ -118,11 +120,9 @@ claudex: skip: <why claudex-loop does not apply: prototype, one-file fix, copy c
 /** The template's Claudex section, verbatim; test/manifest.test.mjs holds templates/builder-brief.md to it. */
 export const CLAUDEX_SECTION = `## Claudex
 
-A builder-class brief carries one of these lines, alone on its line, or the spawn is refused. New features and behaviour changes go through claudex-loop first and name its plan-review log; trivial or mechanical work (one-file fixes, copy changes, regex tweaks, rebases, measurement runs, docs) and prototypes say why they skip it. The placeholders below never pass as written.
+A builder-class brief carries one of these lines, alone on its line, or the spawn is refused. New features and behaviour changes go through claudex-loop first and name its plan-review log; trivial or mechanical work (one-file fixes, copy changes, regex tweaks, rebases, measurement runs, docs) and prototypes say why they skip it. Keep one of the two lines below, fill in its placeholder, and delete the other; the placeholders never pass as written, and a line inside a fenced code block does not count.
 
-\`\`\`
-${CLAUDEX_LINES}
-\`\`\``;
+${CLAUDEX_LINES}`;
 
 /** The deny reason for gate 5: what is wrong, both ways through, and the config switch that turns it off. */
 export function claudexReason(subagentType, result) {

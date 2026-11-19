@@ -29,6 +29,8 @@ test("claudexLines: reads skip and log lines outside fences, trimmed, with a lis
     { kind: "log", value: "/a/b.md" },
     { kind: "skip", value: "prototype" },
   ]);
+  assert.deepEqual(claudexLines("claudex: log: `/a b/c.md`"), [{ kind: "log", value: "`/a b/c.md`" }], "a backtick-quoted path keeps its backticks for unquote");
+  assert.deepEqual(claudexLines("`claudex: log: `/a.md``"), [{ kind: "log", value: "`/a.md`" }], "a whole-line pair is dropped, the inner pair kept");
   assert.deepEqual(claudexLines(42), []);
   assert.deepEqual(claudexLines("x\n```\nclaudex: skip: unclosed fence\n"), [], "an unclosed fence runs to the end");
 });
@@ -54,6 +56,11 @@ test("checkClaudexLine: a log line passes only for an existing non-empty regular
   writeFileSync(join(env.HOME, "logs", "r.md"), "x");
   assert.deepEqual(checkClaudexLine({ prompt: `claudex: log: ${log}` }, env), { status: "present", path: log });
   assert.equal(checkClaudexLine({ prompt: `claudex: log: "${log}"` }, env).status, "present", "quoted");
+  assert.equal(checkClaudexLine({ prompt: `claudex: log: \`${log}\`` }, env).status, "present", "backtick-quoted absolute");
+  assert.equal(checkClaudexLine({ prompt: "claudex: log: `PLAN-REVIEW-LOG.md`", cwd: root }, env).status, "present", "backtick-quoted relative");
+  mkdirSync(join(root, "a dir"));
+  writeFileSync(join(root, "a dir", "log file.md"), "x");
+  assert.equal(checkClaudexLine({ prompt: `claudex: log: \`${join(root, "a dir", "log file.md")}\`` }, env).status, "present", "a path with spaces");
   assert.equal(checkClaudexLine({ prompt: "claudex: log: PLAN-REVIEW-LOG.md", cwd: root }, env).status, "present", "relative to cwd");
   assert.equal(checkClaudexLine({ prompt: "claudex: log: ~/logs/r.md" }, env).status, "present", "~/ is HOME");
   const missing = checkClaudexLine({ prompt: `claudex: log: ${join(root, "nope.md")}` }, env);

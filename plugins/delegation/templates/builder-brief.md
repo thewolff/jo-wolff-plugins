@@ -29,12 +29,10 @@ What the parent will check, exactly: the command, what green looks like, what is
 
 ## Claudex
 
-A builder-class brief carries one of these lines, alone on its line, or the spawn is refused. New features and behaviour changes go through claudex-loop first and name its plan-review log; trivial or mechanical work (one-file fixes, copy changes, regex tweaks, rebases, measurement runs, docs) and prototypes say why they skip it. The placeholders below never pass as written.
+A builder-class brief carries one of these lines, alone on its line, or the spawn is refused. New features and behaviour changes go through claudex-loop first and name its plan-review log; trivial or mechanical work (one-file fixes, copy changes, regex tweaks, rebases, measurement runs, docs) and prototypes say why they skip it. Keep one of the two lines below, fill in its placeholder, and delete the other; the placeholders never pass as written, and a line inside a fenced code block does not count.
 
-```
 claudex: log: <absolute path to this work's claudex-loop plan-review log>
 claudex: skip: <why claudex-loop does not apply: prototype, one-file fix, copy change, regex tweak, rebase, measurement run, docs>
-```
 
 ## Report
 

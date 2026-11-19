@@ -75,6 +75,9 @@ test("the builder brief template carries the exact section texts the deny reason
   assert.ok(tpl.includes(`\n${ACCEPTANCE_SECTION}\n`), "Acceptance section verbatim");
   assert.ok(tpl.includes(`\n${CLAUDEX_SECTION}\n`), "Claudex section verbatim");
   assert.equal(checkClaudexLine({ prompt: tpl, cwd: PLUGIN_ROOT }).status, "missing", "the template's placeholder claudex lines do not pass gate 5 unfilled");
+  const filled = tpl.replace(/^claudex: skip: <[^\n]*>$/m, "claudex: skip: one-file fix");
+  assert.notEqual(filled, tpl);
+  assert.equal(checkClaudexLine({ prompt: filled, cwd: PLUGIN_ROOT }).status, "present", "filling one line of the copied template passes gate 5");
   assert.deepEqual(missingSessionHeadings(tpl), [], "the template passes the session-brief gate");
   for (const line of ["Stopped because: acceptance met", "Stopped because: bound hit", "Stopped because: told to stop"]) {
     assert.ok(tpl.includes(`\n${line}\n`), line);
