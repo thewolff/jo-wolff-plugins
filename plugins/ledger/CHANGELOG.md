@@ -27,6 +27,9 @@ All notable changes to ledger are recorded here. The format follows
   as deleted.
 - Identifiers a finding names that are gone from the tree are evidence for the judge, never a
   verdict on their own: a rename can keep the bug.
+- A file a finding names that was renamed since the finding was raised is shown to the judge
+  under its new name, with the rename's diff among the named files, instead of as "not present
+  at HEAD" with its current code under the other changed files, where the cut could drop it.
 
 ## 0.4.7 - 2026-11-18
 

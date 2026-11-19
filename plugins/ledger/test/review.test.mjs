@@ -1838,3 +1838,25 @@ test("regions: a file the tree at HEAD no longer has is still reported as not pr
   assert.match(passage, /File: a\.txt: not present at HEAD/, passage);
   assert.doesNotMatch(passage, /could not be retrieved/);
 });
+
+test("regions: a cited file renamed since the finding is read under its new name, with the rename's diff", () => {
+  const b = repo();
+  const body = (k12) => Array.from({ length: 30 }, (_, k) => (k === 11 ? k12 : `line_${k + 1}();`)).join("\n");
+  commitAt(b, "src/old.ts", `${body("if (!guard) run();")}\n`);
+  review(b, [], { LEDGER_REVIEW_BIN_CODEX: stub(b, "codex", "1. [should] src/old.ts:12 the guard is inverted") });
+  git(b, "mv", "src/old.ts", "src/new.ts");
+  writeFileSync(join(b.work, "src/new.ts"), `${body("if (!guard) runRenamed();")}\n`);
+  git(b, "add", "src/new.ts");
+  git(b, "commit", "-qm", "rename old.ts to new.ts");
+  const no = judge(b, "no");
+  const r = review(b, [], { LEDGER_REVIEW_BIN_CODEX: stub(b, "codex", "PASS"), LEDGER_JUDGE_BIN: no });
+  assert.equal(calls(no), 1, r.out);
+  const passage = readFileSync(`${no}.prompt`, "utf8");
+  assert.doesNotMatch(passage, /not present at HEAD/, passage);
+  assert.match(passage, /File: src\/new\.ts \(lines \d+-\d+ at HEAD\)/, passage);
+  assert.match(passage, / {2}12\| if \(!guard\) runRenamed\(\);/, passage);
+  const change = passage.slice(passage.indexOf("Change (unified diff):"));
+  assert.match(change, /rename from src\/old\.ts\nrename to src\/new\.ts/, passage);
+  assert.match(change, /^\+if \(!guard\) runRenamed\(\);$/m, passage);
+  assert.doesNotMatch(passage, /Other files changed[\s\S]*src\/new\.ts/, "the destination is named evidence, not another file");
+});

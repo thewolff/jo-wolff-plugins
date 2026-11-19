@@ -477,7 +477,7 @@ so, with the file it was in. The line appears only when every path the finding n
 exactly one file at `since`, and it never resolves the finding by itself: a rename can keep the
 bug under a new name, so the judge still decides. Then the change from `since` to HEAD: first the files it names as they are at
 HEAD, with line numbers, around the cited lines, the identifiers it names and the lines changed
-since (a file gone at HEAD is said to be); then the diff of those files; then the test files
+since (a file renamed since is read under its new name; a file gone at HEAD is said to be); then the diff of those files; then the test files
 changed in that window that refer to the named files or identifiers; then, for a finding about the
 pattern-check receipt (tagged `fault-tolerance:`, or naming `.pattern-check`; the word "receipt"
 alone does not count), the receipt as it is now; then every other file changed in that window,

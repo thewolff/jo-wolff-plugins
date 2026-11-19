@@ -561,12 +561,31 @@ async function judgeItems({ db, dbPath, config, env, top, fromSha, toSha, items,
     }
     return windows.get(sha);
   };
-  const diffOf = (sha, paths) => {
+  const diffOf = (sha, paths, flags = []) => {
     try {
-      return git(top, ["diff", sha, toSha, "--", ...paths]);
+      return git(top, ["diff", ...flags, sha, toSha, "--", ...paths]);
     } catch {
       return "";
     }
+  };
+  const renameMaps = new Map();
+  /** Map of old path to new path for each rename (R status only) from `sha` to `toSha`. */
+  const renamesSince = (sha) => {
+    if (!renameMaps.has(sha)) {
+      const map = new Map();
+      try {
+        const f = git(top, ["diff", "--name-status", "-z", "-M", "--no-ext-diff", sha, toSha]).split("\0");
+        for (let i = 0; i < f.length; ) {
+          const status = f[i] ?? "";
+          if (/^[RC]/.test(status)) {
+            if (status.startsWith("R")) map.set(f[i + 1], f[i + 2]);
+            i += 3;
+          } else i += status ? 2 : 1;
+        }
+      } catch {}
+      renameMaps.set(sha, map);
+    }
+    return renameMaps.get(sha);
   };
   const trees = new Map();
   const treeAt = (sha) => {
@@ -615,20 +634,35 @@ async function judgeItems({ db, dbPath, config, env, top, fromSha, toSha, items,
       : [];
     // Resolved against the whole tree first, so an unchanged exact path never falls through to a
     // changed file that merely shares its suffix.
-    const named = resolveIn([...new Set([...treeAt(toSha), ...treeAt(since)])], files);
+    // A named path renamed since `since` and gone at `toSha` is read under its new name, and its
+    // diff pairs both names so the judge sees the edit, not the whole file as added.
+    const sourceOf = new Map();
+    const named = [
+      ...new Set(
+        resolveIn([...new Set([...treeAt(toSha), ...treeAt(since)])], files).map((p) => {
+          const to = !treeAt(toSha).includes(p) && renamesSince(since).get(p);
+          if (!to) return p;
+          sourceOf.set(to, p);
+          return to;
+        }),
+      ),
+    ];
+    const withSource = (paths) => paths.flatMap((p) => (sourceOf.has(p) ? [sourceOf.get(p), p] : [p]));
+    const renameFlags = sourceOf.size ? ["-M"] : [];
     const targets = changed ? named.filter((p) => changed.includes(p)) : [];
-    const diff = targets.length ? diffOf(since, targets) : "";
+    const diff = targets.length ? diffOf(since, withSource(targets), renameFlags) : "";
     const focus = focusPattern(symbols);
     const zeroContext = (path) => {
       try {
-        return git(top, ["diff", "-U0", since, toSha, "--", path]);
+        return git(top, ["diff", "-U0", ...renameFlags, since, toSha, "--", ...withSource([path])]);
       } catch {
         return "";
       }
     };
     const current = named.flatMap((path) => {
       const u0 = targets.includes(path) ? zeroContext(path) : "";
-      return regionsAt(top, toSha, path, { cited: citedLines(item.text, path, matches), focus, hunkRanges: newSideRanges(u0), sinceHunks: diffHunks(u0) });
+      const cited = withSource([path]).flatMap((p) => citedLines(item.text, p, matches));
+      return regionsAt(top, toSha, path, { cited, focus, hunkRanges: newSideRanges(u0), sinceHunks: diffHunks(u0) });
     });
     let text = null;
     if (aboutReceipt(item)) {
@@ -640,7 +674,7 @@ async function judgeItems({ db, dbPath, config, env, top, fromSha, toSha, items,
     const tests = [];
     const others = [];
     for (const path of changed ?? []) {
-      if (targets.includes(path)) continue;
+      if (targets.includes(path) || [...sourceOf.values()].includes(path)) continue;
       const d = diffOf(since, [path]);
       let head = "";
       if (isTestPath(path) && refersTo) {
