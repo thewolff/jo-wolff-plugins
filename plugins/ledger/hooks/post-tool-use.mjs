@@ -46,8 +46,8 @@ export function handle(input, { env = process.env, now = Date.now() } = {}) {
   if (!dirs.length) return null;
   const hook = input.hook_event_name === "PostToolUseFailure" ? "PostToolUseFailure" : "PostToolUse";
   const output = commandOutput(input);
-  // A quiet commit counts only if the branch's reflog moved since the command began (with a
-  // second of slack for the reflog's whole-second stamps).
+  // The HEAD reflog counts only entries stamped since the command began (with slack for the
+  // reflog's whole-second stamps and the hook's start-up).
   const ran = Number.isFinite(input.duration_ms) && input.duration_ms > 0 ? input.duration_ms : 0;
   const since = now - ran - QUIET_SLACK_MS;
   const seen = [];

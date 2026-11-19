@@ -454,9 +454,10 @@ test("a commit in another session takes the open branch item over, with a move r
   post(b, "git commit -m x", { cwd: work });
   const id = branchRows(b)[0].id;
   assert.equal(branchRows(b)[0].session_id, SID);
-  const head = commitOn(b, work, null, "more.txt");
+  const header = commitOut(b, work, "more.txt");
+  const head = git(b, work, "rev-parse", "HEAD");
   const B = "s-branches-b";
-  const r = hook(b, "post-tool-use", { session_id: B, cwd: work, hook_event_name: "PostToolUse", tool_name: "Bash", tool_input: { command: "git commit -m more" } }, { env: GIT_ENV });
+  const r = hook(b, "post-tool-use", { session_id: B, cwd: work, hook_event_name: "PostToolUse", tool_name: "Bash", tool_input: { command: "git commit -m more" }, tool_response: { stdout: header, stderr: "", interrupted: false } }, { env: GIT_ENV });
   assert.equal(r.code, 0, r.err);
   const [row2] = branchRows(b);
   assert.deepEqual([row2.id, row2.state, row2.session_id, row2.head_sha], [id, "owed", B, head]);
@@ -530,4 +531,93 @@ test("headers printed by a commit in one repository do not hide a quiet commit i
   const r = post(b, `git -C ${work} commit -m loud && git -C ${work2} commit -q -m quiet`, { cwd: b.work, extra: { duration_ms: 300, tool_response: { stdout: header, stderr: "", interrupted: false } } });
   assert.equal(r.code, 0, r.err);
   assert.deepEqual(branchRows(b).map((x) => x.branch).sort(), ["loud", "quiet"]);
+});
+
+test("a printed header does not hide a quiet commit on another branch of the same repository", () => {
+  const b = sandbox();
+  const { work } = repos(b);
+  git(b, work, "switch", "-q", "-c", "first");
+  const header = commitOut(b, work, "loud.txt");
+  commitOn(b, work, "second", "quiet.txt");
+  const r = post(b, "git commit -m loud && git switch -c second && git commit -q -m quiet", { cwd: work, extra: { duration_ms: 300, tool_response: { stdout: header, stderr: "", interrupted: false } } });
+  assert.equal(r.code, 0, r.err);
+  assert.deepEqual(branchRows(b).map((x) => x.branch).sort(), ["first", "second"]);
+});
+
+test("a quiet commit followed by a switch records the branch committed to, read from the HEAD reflog; two quiet branches make two items", () => {
+  const b = sandbox();
+  const { work } = repos(b);
+  commitOn(b, work, "feature");
+  git(b, work, "switch", "-q", "main");
+  let r = post(b, "git switch -c feature && git commit -q -m x && git switch main", { cwd: work, extra: { duration_ms: 300 } });
+  assert.equal(r.code, 0, r.err);
+  assert.deepEqual(branchRows(b).map((x) => x.branch), ["feature"]);
+
+  const c = sandbox();
+  const { work: w2 } = repos(c);
+  commitOn(c, w2, "one", "one.txt");
+  commitOn(c, w2, "two", "two.txt");
+  git(c, w2, "switch", "-q", "main");
+  r = post(c, "git switch -c one && git commit -q -m one && git switch -c two && git commit -q -m two && git switch main", { cwd: w2, extra: { duration_ms: 300 } });
+  assert.equal(r.code, 0, r.err);
+  assert.deepEqual(branchRows(c).map((x) => x.branch).sort(), ["one", "two"]);
+});
+
+test("a failed commit right after another session's commit does not take that session's item over", () => {
+  for (const command of ["git commit -m x", "git commit -q -m x"]) {
+    const b = sandbox();
+    const { work } = repos(b);
+    git(b, work, "switch", "-q", "-c", "feature");
+    const header = commitOut(b, work, "a.txt");
+    post(b, "git commit -m a", { cwd: work, extra: { tool_response: { stdout: header, stderr: "", interrupted: false } } });
+    assert.equal(branchRows(b)[0].session_id, SID);
+    const r = hook(b, "post-tool-use", { session_id: "s-branches-b", cwd: work, hook_event_name: "PostToolUseFailure", tool_name: "Bash", tool_input: { command }, duration_ms: 300, error: "Exit code 1\nnothing to commit, working tree clean" }, { env: GIT_ENV });
+    assert.equal(r.code, 0, r.err);
+    assert.equal(branchRows(b)[0].session_id, SID, `${command}: the item stays with the session that committed`);
+  }
+});
+
+test("failing repositories do not starve the refresh: a failed check moves the row to the back and keeps its last status", () => {
+  const b = sandbox();
+  const { work } = repos(b);
+  commitOn(b, work, "feature");
+  post(b, "git commit -m x", { cwd: work });
+  git(b, work, "push", "-q", "origin", "feature:main");
+  git(b, work, "fetch", "-q", "origin");
+  const db = openDb(b);
+  try {
+    const healthy = db.prepare("SELECT * FROM cc_owed WHERE branch IS NOT NULL").get();
+    const ins = db.prepare("INSERT INTO cc_owed (id, cwd, body, state, origin, session_id, made_by, made_at, changed_at, repo, git_dir, branch, head_sha, branch_state, checked_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)");
+    for (let i = 0; i < 20; i++) {
+      const gone = join(b.root, `removed-${i}`);
+      ins.run(`ow-fake${i}`, healthy.cwd, `land branch f${i} in ${gone}`, "owed", "agent", SID, "test", healthy.made_at, healthy.made_at, gone, join(gone, ".git"), `f${i}`, healthy.head_sha, "unpushed", "2000-01-01T00:00:00.000Z");
+    }
+    const first = refreshBranches(db, { dbPath: b.dbPath });
+    assert.equal(first.errors.length, 20, JSON.stringify(first));
+    const second = refreshBranches(db, { dbPath: b.dbPath });
+    assert.deepEqual(second.done, [healthy.id], JSON.stringify(second));
+    const kept = db.prepare("SELECT DISTINCT branch_state, head_sha FROM cc_owed WHERE id GLOB 'ow-fake*'").all().map((x) => ({ ...x }));
+    assert.deepEqual(kept, [{ branch_state: "unpushed", head_sha: healthy.head_sha }]);
+  } finally {
+    db.close();
+  }
+});
+
+test("a git directory emptied or replaced is a fault, not gone: the last status is kept and the refresh reports it", () => {
+  const b = sandbox();
+  const { work } = repos(b);
+  const sha = commitOn(b, work, "feature");
+  post(b, "git commit -m x", { cwd: work });
+  rmSync(join(work, ".git"), { recursive: true, force: true });
+  mkdirSync(join(work, ".git"));
+  const db = openDb(b);
+  try {
+    const res = refreshBranches(db, { dbPath: b.dbPath });
+    assert.equal(res.errors.length, 1, JSON.stringify(res));
+    assert.match(res.errors[0], /kept as last checked/);
+  } finally {
+    db.close();
+  }
+  const [r] = branchRows(b);
+  assert.deepEqual([r.state, r.branch_state, r.head_sha], ["owed", "unpushed", sha]);
 });

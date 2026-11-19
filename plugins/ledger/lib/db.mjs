@@ -434,7 +434,7 @@ export const MIGRATIONS = [
   //   cc_owed.branch        the branch name; NULL for every other owed item
   //   cc_owed.head_sha      the branch head when last seen
   //   cc_owed.branch_state  unpushed | pushed | gone | nobase, refreshed on each check
-  //   cc_owed.checked_at    when the branch was last checked, so the oldest is checked first
+  //   cc_owed.checked_at    when the branch was last checked or a check of it faulted, so the oldest is checked first
   (db) => {
     db.exec(`
       ALTER TABLE cc_owed ADD COLUMN repo TEXT;
