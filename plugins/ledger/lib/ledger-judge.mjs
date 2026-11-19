@@ -216,7 +216,7 @@ function clipBothEnds(s, n) {
 /**
  * The passage for one finding, in priority order: its text; `absent`, evidence that identifiers
  * it names no longer occur at HEAD ([{ name, files, since }] or names); `current`, the files it names as they are at HEAD
- * ([{ path, from, to, text, rank, core? }] regions, or { path, missing: true }); the diff of the
+ * ([{ path, from, to, text, rank, core? }] regions, { path, missing: true } or { path, unreadable: true }); the diff of the
  * files it names (`diff`); `tests`, test files changed in the window that refer to it
  * ([{ path, diff }]); the pattern-check receipt (`receipt`, for a finding about it); and the other
  * changed files (`others`, [{ path, diff }]). `nothingChanged` says no file changed at all since
@@ -227,7 +227,7 @@ function clipBothEnds(s, n) {
  * region's own `rank`, else 0 for a unit mentioning a `focus` word and 1 for the rest) and shown
  * in their original order; no room is reserved for later sections. A unit over UNIT_CAP_BYTES that
  * mentions a `focus` word is shown as the lines around those mentions; every rank-0 unit is placed
- * first as its `core` lines (else its bare cited lines), then expanded whole where room remains,
+ * first as its bare cited lines, then all are expanded to their `core` lines, then whole, where room remains,
  * before any lower-ranked unit, so cited lines are the last evidence removed; when none of a section's units fits, its
  * top-ranked unit is shown with its middle cut, at most UNIT_CAP_BYTES. HEAD region lines longer
  * than REGION_LINE_BYTES are clipped, also only when over the cap. Whenever anything was
@@ -254,13 +254,15 @@ export function passageFor(findingText, diff, { current = [], tests = [], absent
       units: current.map((c) =>
         c.missing
           ? { text: `File: ${c.path}: not present at HEAD`, rank: 0 }
-          : {
-              clipLines: true,
-              pinned: c.core ? [c.core.from, c.core.to] : null,
-              text: `File: ${c.path} (lines ${c.from}-${c.to} at HEAD)\n${c.text}`,
-              rank: c.rank ?? 1,
-              fallbacks: [c.core, c.core?.bare].filter(Boolean).map((r) => ({ clipLines: true, text: `File: ${c.path} (lines ${r.from}-${r.to} at HEAD)\n${r.text}`, rank: c.rank ?? 1 })),
-            },
+          : c.unreadable
+            ? { text: `File: ${c.path}: present at HEAD, but its contents could not be retrieved`, rank: 0 }
+            : {
+                clipLines: true,
+                pinned: c.core ? [c.core.from, c.core.to] : null,
+                text: `File: ${c.path} (lines ${c.from}-${c.to} at HEAD)\n${c.text}`,
+                rank: c.rank ?? 1,
+                fallbacks: [c.core, c.core?.bare].filter(Boolean).map((r) => ({ clipLines: true, text: `File: ${c.path} (lines ${r.from}-${r.to} at HEAD)\n${r.text}`, rank: c.rank ?? 1 })),
+              },
       ),
     },
     { name: "named diff", header: "\n\nChange (unified diff):\n", units: changeUnits },
@@ -307,26 +309,34 @@ export function passageFor(findingText, diff, { current = [], tests = [], absent
     const fits = (list) => bytes(render(s, list)) <= budget;
     // Largest first: the unit whole, then its core, then its bare cited lines.
     const formsOf = (u) => [{ ...u, text: shorten(u) }, ...(u.fallbacks ?? []).map((f) => ({ ...f, text: shorten(f), order: u.order }))];
-    // Every rank-0 unit is placed first in a reduced form that fits (a cited region's core, else
-    // its bare cited lines; a unit with neither, whole), so expanding one cited region cannot take
-    // the room the next one's cited lines need; only then are they expanded and lower ranks admitted.
+    // Every rank-0 unit is placed first in its smallest form (a cited region's bare cited lines; a
+    // unit with no fallback, whole), so one region's core cannot take the room a later region's
+    // cited lines need; then all are grown to cores, then whole, and only then lower ranks admitted.
+    const forms = new Map(byRank.map((u) => [u, formsOf(u)]));
     const held = new Map();
     for (const u of byRank) {
       if (u.rank !== 0) continue;
-      const forms = formsOf(u);
-      const fit = (forms.length > 1 ? forms.slice(1) : forms).find((f) => fits([...chosen, f]));
-      if (fit) {
+      const fit = forms.get(u).at(-1);
+      if (fits([...chosen, fit])) {
         held.set(u, fit);
         chosen.push(fit);
       }
     }
+    for (const level of [1, 0]) {
+      for (const [u, h] of held) {
+        const f = forms.get(u)[Math.min(level, forms.get(u).length - 1)];
+        if (f === h || bytes(f.text) <= bytes(h.text)) continue;
+        const i = chosen.indexOf(h);
+        if (fits([...chosen.slice(0, i), f, ...chosen.slice(i + 1)])) {
+          chosen[i] = f;
+          held.set(u, f);
+        }
+      }
+    }
     for (const u of byRank) {
-      const h = held.get(u);
-      const rest = h ? chosen.filter((c) => c !== h) : chosen;
-      const fit = formsOf(u).find((f) => fits([...rest, f]));
-      if (h) {
-        if (fit && bytes(fit.text) > bytes(h.text)) chosen.splice(chosen.indexOf(h), 1, fit);
-      } else if (fit) chosen.push(fit);
+      if (held.has(u)) continue;
+      const fit = forms.get(u).find((f) => fits([...chosen, f]));
+      if (fit) chosen.push(fit);
     }
     let text = render(s, chosen);
     if (!chosen.length) {

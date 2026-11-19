@@ -422,7 +422,8 @@ function windows(ranges, n, { merge = true } = {}) {
 
 /**
  * The regions of `path` at `sha` to show the judge, [{ path, from, to, text, rank }], or
- * [{ path, missing: true }] when the file is not there: rank 0 around each cited line (never merged
+ * [{ path, missing: true }] when the tree at `sha` has no such file, [{ path, unreadable: true }] when it
+ * does but reading it failed: rank 0 around each cited line (never merged
  * with the rest), rank 1 around lines naming one of the finding's identifiers, rank 2 around the
  * lines changed since (`hunkRanges`), or the first lines when there is no anchor at all. Cited
  * lines are carried from the finding's commit to `sha` through `sinceHunks` (diffHunks), and a
@@ -433,7 +434,12 @@ function regionsAt(top, sha, path, { cited, focus, hunkRanges, sinceHunks = [] }
   try {
     text = git(top, ["show", `${sha}:${path}`]);
   } catch {
-    return [{ path, missing: true }];
+    // Only the tree saying the path is absent counts as deletion; any other failure is a read error.
+    let absent = false;
+    try {
+      absent = !git(top, ["ls-tree", "-z", sha, "--", path]).split("\0").some((e) => e.endsWith(`\t${path}`));
+    } catch {}
+    return [absent ? { path, missing: true } : { path, unreadable: true }];
   }
   if (text.includes("\0")) return [{ path, from: 1, to: 1, text: "(binary file)", rank: 2 }];
   const lines = text.replace(/\n$/, "").split("\n");
@@ -449,7 +455,8 @@ function regionsAt(top, sha, path, { cited, focus, hunkRanges, sinceHunks = [] }
     return { asked: [a, b], moved, how: first.how ?? last.how, at, core: [Math.max(1, at[0] - CORE_CONTEXT_LINES), Math.min(n, at[1] + CORE_CONTEXT_LINES)] };
   });
   const ranked = [
-    ...windows(cites.map((c) => c.at), n, { merge: false }).map((w) => [...w, 0]),
+    // Each citation's windows carry its index, so a fragment of a split window keeps its citation.
+    ...cites.flatMap((c, i) => windows([c.at], n).map(([a, b]) => (Math.max(a, c.at[0]) <= Math.min(b, c.at[1]) ? [a, b, 0, i] : [a, b, 1]))).sort((x, y) => x[0] - y[0]),
     ...windows(symbolLines, n).map((w) => [...w, 1]),
     ...windows(hunkRanges, n).map((w) => [...w, 2]),
   ];
@@ -468,11 +475,17 @@ function regionsAt(top, sha, path, { cited, focus, hunkRanges, sinceHunks = [] }
     if (c.how === "rewritten") return `(cited at ${span(c.asked)} when the finding was raised; those lines were rewritten since, now ${span(c.at)} at HEAD)\n`;
     return c.how === "moved" ? `(cited at ${span(c.asked)} when the finding was raised; that code is now at ${span(c.at)} at HEAD)\n` : "";
   };
-  return kept.map(([from, to, rank]) => {
+  return kept.map(([from, to, rank, ci]) => {
     const region = { path, from, to, rank, text: show(from, to) };
-    const cite = rank === 0 ? cites.find((c) => c.core[0] >= from && c.core[1] <= to) : null;
+    let cite = rank === 0 ? cites.find((c) => c.core[0] >= from && c.core[1] <= to) : null;
+    let [core, [a, b]] = cite ? [cite.core, cite.at] : [null, [0, 0]];
+    if (!cite && rank === 0) {
+      // A fragment of a window split for length: a core bounded to the start of its own cited lines.
+      cite = cites[ci];
+      [a, b] = [Math.max(cite.at[0], from), Math.min(cite.at[1], to)];
+      core = [Math.max(from, a - CORE_CONTEXT_LINES), Math.min(to, a + CORE_CONTEXT_LINES)];
+    }
     if (!cite) return region;
-    const [core, [a, b]] = [cite.core, cite.at];
     const bare = Math.min(b, a + 2);
     const note = pastEnd(cite) + movedNote(cite);
     return { ...region, text: note + region.text, core: { from: core[0], to: core[1], text: note + show(core[0], core[1]), bare: { from: a, to: bare, text: note + show(a, bare) } } };

@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
-import { chmodSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { sandbox, cli, hook, openDb } from "./helpers.mjs";
 import { ask, askWord, judgeCommand, JUDGE_TIMEOUT_MS } from "../lib/ledger-judge.mjs";
@@ -1749,4 +1749,64 @@ test("passageFor: two cited regions where the first alone would fill the budget 
   for (const tag of ["AAA", "BBB"]) for (const k of [28, 31, 34]) assert.match(p, new RegExp(`${tag}_${k} `), `${tag} core line ${k}`);
   assert.ok(p.indexOf("AAA_31") < p.indexOf("BBB_31"), "shown in their original order");
   assert.match(p, /\[cut: .*files at HEAD \d+ bytes/);
+});
+
+test("passageFor: many cited regions whose cores together overrun the budget all keep their bare cited lines", async () => {
+  const { passageFor, PASSAGE_CAP_BYTES } = await import("../lib/ledger-judge.mjs");
+  // 230-byte lines stay under the per-line clip, so only the budget decides what is cut.
+  const line = (tag, k) => `${String(k).padStart(4)}| ${tag}_${String(k).padStart(2, "0")} ${"é".repeat(108)}`;
+  const show = (tag, a, b) => Array.from({ length: b - a + 1 }, (_, i) => line(tag, a + i)).join("\n");
+  const tags = Array.from({ length: 16 }, (_, k) => `R${String.fromCharCode(65 + k)}`);
+  const current = tags.map((tag) => ({ path: `${tag}.ts`, from: 16, to: 46, rank: 0, text: show(tag, 16, 46), core: { from: 28, to: 34, text: show(tag, 28, 34), bare: { from: 31, to: 31, text: show(tag, 31, 31) } } }));
+  const cores = current.reduce((n, c) => n + Buffer.byteLength(c.core.text), 0);
+  assert.ok(cores > PASSAGE_CAP_BYTES, "the cores together do not fit");
+  const p = passageFor(tags.map((t) => `${t}.ts:31`).join(" ") + " bug", "", { current });
+  assert.ok(Buffer.byteLength(p) <= PASSAGE_CAP_BYTES, `${Buffer.byteLength(p)} bytes`);
+  for (const tag of tags) assert.match(p, new RegExp(`  31\\| ${tag}_31 `), `${tag} keeps its cited line`);
+  assert.match(p, /RA_28 /, "room left after every cited line still grows the first regions to their cores");
+});
+
+test("regions: a citation inside a rewritten hunk longer than a region keeps the cited lines of every fragment under the cut", () => {
+  const b = repo();
+  const old = Array.from({ length: 60 }, (_, k) => `line${k + 1}();`);
+  commitAt(b, "file.ts", `${old.join("\n")}\n`);
+  review(b, [], { LEDGER_REVIEW_BIN_CODEX: stub(b, "codex", "1. [should] file.ts:30 the guard is inverted") });
+  // 100 new lines for old 28-32: the region around them is split into 61-line fragments.
+  const now = [...old.slice(0, 27), ...Array.from({ length: 100 }, (_, j) => `NEW_${j}(); // ${"é".repeat(100)}`), ...old.slice(32)];
+  commitAt(b, "file.ts", `${now.join("\n")}\n`);
+  const no = judge(b, "no");
+  review(b, [], { LEDGER_REVIEW_BIN_CODEX: stub(b, "codex", "PASS"), LEDGER_JUDGE_BIN: no });
+  const passage = readFileSync(`${no}.prompt`, "utf8");
+  assert.match(passage, /\[cut: /, "the passage is over the cap");
+  assert.match(passage, / {2}28\| NEW_0\(\);/, passage);
+  assert.match(passage, / {2}74\| NEW_46\(\);/, "the second fragment's first cited line survives the cut");
+  assert.match(passage, /those lines were rewritten since, now lines 28-127 at HEAD/);
+});
+
+test("regions: a file present at HEAD whose contents cannot be read is not reported as deleted", () => {
+  const b = repo();
+  review(b, [], { LEDGER_REVIEW_BIN_CODEX: stub(b, "codex", "1. [should] a.txt:1 off by one") });
+  commitAt(b, "c.txt", "three\n");
+  // Remove a.txt's blob from the object store: the tree still lists it, `git show` fails.
+  const blob = git(b, "rev-parse", "HEAD:a.txt");
+  unlinkSync(join(b.work, ".git", "objects", blob.slice(0, 2), blob.slice(2)));
+  const no = judge(b, "no");
+  const r = review(b, [], { LEDGER_REVIEW_BIN_CODEX: stub(b, "codex", "PASS"), LEDGER_JUDGE_BIN: no });
+  assert.equal(calls(no), 1, r.out);
+  const passage = readFileSync(`${no}.prompt`, "utf8");
+  assert.match(passage, /File: a\.txt: present at HEAD, but its contents could not be retrieved/, passage);
+  assert.doesNotMatch(passage, /not present at HEAD/);
+});
+
+test("regions: a file the tree at HEAD no longer has is still reported as not present", () => {
+  const b = repo();
+  review(b, [], { LEDGER_REVIEW_BIN_CODEX: stub(b, "codex", "1. [should] a.txt:1 off by one") });
+  git(b, "rm", "-q", "a.txt");
+  git(b, "commit", "-qm", "drop a.txt");
+  const no = judge(b, "no");
+  const r = review(b, [], { LEDGER_REVIEW_BIN_CODEX: stub(b, "codex", "PASS"), LEDGER_JUDGE_BIN: no });
+  assert.equal(calls(no), 1, r.out);
+  const passage = readFileSync(`${no}.prompt`, "utf8");
+  assert.match(passage, /File: a\.txt: not present at HEAD/, passage);
+  assert.doesNotMatch(passage, /could not be retrieved/);
 });
