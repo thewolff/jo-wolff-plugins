@@ -32,8 +32,8 @@
 // nit, and every outstanding finding on an earlier commit when the agent runs `review addressed
 // "<why>"`. Each is asked once, with the finding and the change since the round that first raised
 // it (`since` on the item, 0.4.6): the files it names at HEAD and their diff first, then the tests
-// that refer to them, the receipt for a finding about it, and the other changed files; a finding
-// whose named identifiers are gone from the tree is `absent` without asking (see judgeItems). `no` keeps it open (`judge: "no"` in
+// that refer to them, the receipt for a finding about it, and the other changed files; when its
+// named identifiers are gone from the tree, the passage says so first (see judgeItems). `no` keeps it open (`judge: "no"` in
 // findings_json; the row stays or becomes `findings`, the gate stays closed); `yes` resolves it;
 // `unverified` (no judge, or it failed) resolves it fail-open and the gate's notice says so.
 
@@ -391,7 +391,6 @@ export const isTestPath = (path) => /(^|\/)(test|tests|__tests__|spec)\/|\.(test
 const REGION_CONTEXT_LINES = 15;
 const REGION_MAX_LINES = 61;
 const NO_ANCHOR_LINES = 60;
-const REGION_LINE_BYTES = 240;
 const CORE_CONTEXT_LINES = 3;
 
 /** The cited line ranges for `path` in a finding: `path:N` or `path:N-M`, as [from, to]. */
@@ -449,10 +448,7 @@ function regionsAt(top, sha, path, { cited, focus, hunkRanges }) {
   const show = (from, to) =>
     lines
       .slice(from - 1, to)
-      .map((l, i) => {
-        const cut = Buffer.from(l).subarray(0, REGION_LINE_BYTES).toString("utf8").replace(/\uFFFD+$/, "");
-        return `${String(from + i).padStart(4)}| ${cut.length < l.length ? `${cut}…` : l}`;
-      })
+      .map((l, i) => `${String(from + i).padStart(4)}| ${l}`)
       .join("\n");
   const cores = cited.map(([a, b]) => [Math.max(1, a - CORE_CONTEXT_LINES), Math.min(n, b + CORE_CONTEXT_LINES)]);
   return kept.map(([from, to, rank]) => {
@@ -476,11 +472,12 @@ function newSideRanges(diff) {
 /**
  * Ask the judge about each item against the change from the head where it was first raised
  * (`item.since`; `fromSha` for a row written before 0.4.6, or when `since` is no longer a commit)
- * to `toSha`. First a mechanical check: when every identifier the finding names was in its named
- * files at `since` and occurs nowhere in the tree at `toSha`, the finding is resolved as `absent`
- * without the judge. Otherwise the passage (see passageFor) holds the finding, the named files as
- * they are at `toSha` around the relevant lines, their diff, the changed test files that refer to
- * them, the receipt for a finding about it, and every other changed file; when nothing changed at
+ * to `toSha`. The passage (see passageFor) holds the finding; then, when every file it names
+ * resolves to exactly one path at `since`, each identifier it names that was in one of those files
+ * then and occurs nowhere in the tree at `toSha`, as evidence (the judge still decides: a rename can
+ * keep the bug); then the named files as they are at `toSha` around the relevant lines, their diff,
+ * the changed test files that refer to them, the receipt for a finding about it, and every other
+ * changed file; when nothing changed at
  * all it says so. Returns the items with `since` and `judge` (and `resolved` unless `no`).
  */
 async function judgeItems({ db, dbPath, config, env, top, fromSha, toSha, items, receipt }) {
@@ -526,7 +523,7 @@ async function judgeItems({ db, dbPath, config, env, top, fromSha, toSha, items,
   // An exact path wins; an abbreviated one resolves to every path it could mean.
   const candidates = (paths, f) => (paths.includes(f) ? [f] : paths.filter((c) => matches(f, c)));
   const resolveIn = (paths, names) => [...new Set(names.flatMap((f) => candidates(paths, f)))];
-  const ambiguous = (paths, names) => names.some((f) => candidates(paths, f).length > 1);
+  const eachExactlyOne = (paths, names) => names.length > 0 && names.every((f) => candidates(paths, f).length === 1);
   const out = [];
   for (const item of items) {
     let since = item.since ?? fromSha;
@@ -540,11 +537,13 @@ async function judgeItems({ db, dbPath, config, env, top, fromSha, toSha, items,
     const isPath = (span) => treeAt(since).some((c) => matches(span, c)) || treeAt(toSha).some((c) => matches(span, c));
     const symbols = namedSymbols(item.text, isPath);
     const atSince = resolveIn(treeAt(since), files);
-    const absent = atSince.length && !ambiguous(treeAt(since), files) ? symbols.filter((s) => occurs(since, s, atSince) === true && occurs(toSha, s) === false) : [];
-    if (symbols.length && absent.length === symbols.length) {
-      out.push({ ...judged, resolved: true, judge: "absent", absent });
-      continue;
-    }
+    // Evidence for the judge, never a verdict: a rename can keep the bug under a new name.
+    const absent = eachExactlyOne(treeAt(since), files)
+      ? symbols.flatMap((s) => {
+          const where = atSince.filter((p) => occurs(since, s, [p]) === true);
+          return where.length && occurs(toSha, s) === false ? [{ name: s, files: where, since: since.slice(0, 8) }] : [];
+        })
+      : [];
     const targets = changed ? resolveIn(changed, files) : [];
     const diff = targets.length ? diffOf(since, targets) : "";
     const focus = focusPattern(symbols);
@@ -595,7 +594,6 @@ function verdictOf(items) {
 
 const itemLine = (i) => `[${i.severity}] ${i.text.split("\n")[0]}`;
 /** For a finding resolved by absence, the names that are gone; else "". */
-const absentNote = (i) => (i.judge === "absent" && i.absent?.length ? `no longer in the tree: ${i.absent.map((a) => `\`${a}\``).join(", ")}` : "");
 
 /**
  * `ledger review [--base <ref>] [--labs a,b] [--force-round]`: every lab in parallel, one row
@@ -665,7 +663,7 @@ export async function runReview({ db, dbPath, cwd, env = process.env, config, la
     } else if (r.verdict === "pass-with-nits") out.push(`${lab}: pass with nits${model}: ${countsText(severityCounts(r.items))}`, indent(r.findings));
     else if (r.verdict === "unavailable") out.push(`${lab}: unavailable: ${r.reason}`);
     else out.push(`${lab}: pass${model}${r.reason ? ` · ${r.reason}` : ""}`);
-    for (const it of judged) out.push(`  judge ${it.judge}: ${itemLine(it)} (round ${fromRound}${absentNote(it) ? `; ${absentNote(it)}` : ""})`);
+    for (const it of judged) out.push(`  judge ${it.judge}: ${itemLine(it)} (round ${fromRound})`);
   };
   for (let i = 0; i < list.length; i++) {
     const lab = list[i];
@@ -787,7 +785,7 @@ export async function addressed({ db, dbPath, cwd, reason, config = {}, env = pr
   const note = unverified.length ? `; ${unverified.length} unverified by the judge` : "";
   insertRow(db, dbPath, { sessionId, cwd: top, head, branch, lab: META_LAB, verdict: "addressed", items: all, reason: `${why} (findings on ${sources}${note})`, at });
   const out = [`recorded ${short(head)} as addressing the findings on ${sources}: ${why}`];
-  for (const i of all) out.push(`  judge ${i.judge}: ${itemLine(i)}${absentNote(i) ? ` (${absentNote(i)})` : ""}`);
+  for (const i of all) out.push(`  judge ${i.judge}: ${itemLine(i)}`);
   return { code: 0, text: out.join("\n") };
 }
 

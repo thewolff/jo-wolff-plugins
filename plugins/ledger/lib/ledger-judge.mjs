@@ -141,6 +141,7 @@ export function focusPattern(words) {
 const UNIT_CAP_BYTES = 4 * 1024;
 const FINDING_CAP_BYTES = 2 * 1024;
 const MARKER_RESERVE_BYTES = 512;
+const REGION_LINE_BYTES = 240;
 const EXCERPT_CONTEXT_LINES = 12;
 
 /**
@@ -211,8 +212,8 @@ function clipBothEnds(s, n) {
 }
 
 /**
- * The passage for one finding, in priority order: its text; `absent`, the identifiers it names
- * that no longer occur at HEAD; `current`, the files it names as they are at HEAD
+ * The passage for one finding, in priority order: its text; `absent`, evidence that identifiers
+ * it names no longer occur at HEAD ([{ name, files, since }] or names); `current`, the files it names as they are at HEAD
  * ([{ path, from, to, text, rank, core? }] regions, or { path, missing: true }); the diff of the
  * files it names (`diff`); `tests`, test files changed in the window that refer to it
  * ([{ path, diff }]); the pattern-check receipt (`receipt`, for a finding about it); and the other
@@ -225,7 +226,8 @@ function clipBothEnds(s, n) {
  * in their original order; no room is reserved for later sections. A unit over UNIT_CAP_BYTES that
  * mentions a `focus` word is shown as the lines around those mentions; a cited region that does
  * not fit whole falls back to its `core` lines; when none of a section's units fits, its
- * top-ranked unit is shown with its middle cut, at most UNIT_CAP_BYTES. Whenever anything was
+ * top-ranked unit is shown with its middle cut, at most UNIT_CAP_BYTES. HEAD region lines longer
+ * than REGION_LINE_BYTES are clipped, also only when over the cap. Whenever anything was
  * left out or excerpted, the passage ends with a marker naming how many bytes each section left
  * out and the sha256 of the whole uncut input, so the judge knows the evidence is partial and two
  * inputs that differ anywhere are cached apart.
@@ -238,7 +240,11 @@ export function passageFor(findingText, diff, { current = [], tests = [], absent
   const fileUnits = (list) => list.flatMap((o) => hunks(o.diff || "(no textual change)").map((h) => ({ head: `File: ${o.path}${h.head ? `\n${h.head}` : ""}`, text: h.text, rank: ranked(h.text) })));
   const sections = [
     { name: "finding", header: "Finding:\n", units: [{ text: String(findingText ?? ""), rank: 0 }], cap: FINDING_CAP_BYTES },
-    absent.length && { name: "absent", header: "\n\nIdentifiers the finding names that no longer occur anywhere at HEAD: ", units: [{ text: absent.map((a) => `\`${a}\``).join(", "), rank: 0 }] },
+    absent.length && {
+      name: "absent",
+      header: "\n\nEvidence from the tree:\n",
+      units: absent.map((a) => ({ text: typeof a === "string" ? `\`${a}\` named in the finding no longer occurs anywhere at HEAD` : `\`${a.name}\` named in the finding no longer occurs anywhere at HEAD (was in ${a.files.join(", ")} at ${a.since})`, rank: 0 })),
+    },
     current.length && {
       name: "files at HEAD",
       header: "\n\nThe files the finding names, as they are at HEAD (around the cited lines, the identifiers it names, and the lines changed since):\n",
@@ -246,9 +252,10 @@ export function passageFor(findingText, diff, { current = [], tests = [], absent
         c.missing
           ? { text: `File: ${c.path}: not present at HEAD`, rank: 0 }
           : {
+              clipLines: true,
               text: `File: ${c.path} (lines ${c.from}-${c.to} at HEAD)\n${c.text}`,
               rank: c.rank ?? 1,
-              fallbacks: [c.core, c.core?.bare].filter(Boolean).map((r) => ({ text: `File: ${c.path} (lines ${r.from}-${r.to} at HEAD)\n${r.text}`, rank: c.rank ?? 1 })),
+              fallbacks: [c.core, c.core?.bare].filter(Boolean).map((r) => ({ clipLines: true, text: `File: ${c.path} (lines ${r.from}-${r.to} at HEAD)\n${r.text}`, rank: c.rank ?? 1 })),
             },
       ),
     },
@@ -272,6 +279,11 @@ export function passageFor(findingText, diff, { current = [], tests = [], absent
   const size = bytes(whole);
   if (size <= PASSAGE_CAP_BYTES) return whole;
 
+  // Only once over the cap: HEAD region lines are clipped, and the bytes they lose count as cut.
+  const shorten = (u) => {
+    const t = excerpt(u.text, re);
+    return u.clipLines ? t.split("\n").map((l) => (bytes(l) > REGION_LINE_BYTES ? `${clip(l, REGION_LINE_BYTES)}…` : l)).join("\n") : t;
+  };
   let room = PASSAGE_CAP_BYTES - MARKER_RESERVE_BYTES;
   const left = [];
   let out = "";
@@ -285,11 +297,11 @@ export function passageFor(findingText, diff, { current = [], tests = [], absent
     const byRank = [...s.units].sort((a, b) => a.rank - b.rank || a.order - b.order);
     const chosen = [];
     for (const u of byRank) {
-      const short = { ...u, text: excerpt(u.text, re) };
+      const short = { ...u, text: shorten(u) };
       if (bytes(render(s, [...chosen, short])) <= budget) chosen.push(short);
       else {
         // A cited region that does not fit whole keeps its cited lines before any lower-ranked unit.
-        const fit = (u.fallbacks ?? []).map((f) => ({ ...f, order: u.order })).find((f) => bytes(render(s, [...chosen, f])) <= budget);
+        const fit = (u.fallbacks ?? []).map((f) => ({ ...f, text: shorten(f), order: u.order })).find((f) => bytes(render(s, [...chosen, f])) <= budget);
         if (fit) chosen.push(fit);
       }
     }
@@ -299,7 +311,7 @@ export function passageFor(findingText, diff, { current = [], tests = [], absent
       const top = byRank[0];
       const limit = Math.min(budget, bytes(s.header) + UNIT_CAP_BYTES) - bytes(render(s, [{ ...top, text: "" }]));
       // A unit whose heading alone does not fit is left out rather than overrunning the cap.
-      text = limit > 0 ? render(s, [{ ...top, text: clipBothEnds(excerpt(top.text, re), limit) }]) : "";
+      text = limit > 0 ? render(s, [{ ...top, text: clipBothEnds(shorten(top), limit) }]) : "";
     }
     out += text;
     room -= bytes(text);

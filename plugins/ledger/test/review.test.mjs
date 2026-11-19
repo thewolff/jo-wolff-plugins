@@ -1409,18 +1409,43 @@ function commitAt(b, name, text) {
   return commit(b, name, text);
 }
 
-test("absent: a finding whose backticked identifier was in its file and is gone from the tree is resolved without the judge", () => {
+const EVIDENCE = "`committedSince` named in the finding no longer occurs anywhere at HEAD (was in lib/card.ts at ";
+
+test("absent: an identifier gone from the tree is evidence at the top of the passage, and the judge decides", () => {
   const b = repo();
   commitAt(b, "lib/card.ts", "export function committedSince() {\n  return stale;\n}\n");
   review(b, [], { LEDGER_REVIEW_BIN_CODEX: stub(b, "codex", "1. [should] lib/card.ts:1 `committedSince` returns stale state") });
   commitAt(b, "lib/card.ts", "export function fresh() {\n  return now();\n}\n");
+  const cond = needleJudge(b, "evidence", EVIDENCE);
+  const r = review(b, [], { LEDGER_REVIEW_BIN_CODEX: stub(b, "codex", "PASS"), LEDGER_JUDGE_BIN: cond });
+  assert.match(r.out, /^ {2}judge yes: \[should\] lib\/card\.ts:1 `committedSince` returns stale state \(round 1\)$/m, r.out);
+  const passage = readFileSync(`${cond}.prompt`, "utf8");
+  const at = passage.indexOf("Evidence from the tree:\n" + EVIDENCE);
+  assert.ok(at > 0 && at < passage.indexOf("The files the finding names"), "the evidence comes right after the finding");
+  assert.equal(push(b).out, "");
+});
+
+test("absent: a rename that keeps the bug is not resolved by the absence; a judge no still prints", () => {
+  const b = repo();
+  commitAt(b, "lib/card.ts", "export function committedSince() {\n  return stale;\n}\n");
+  review(b, [], { LEDGER_REVIEW_BIN_CODEX: stub(b, "codex", "1. [should] lib/card.ts:1 `committedSince` returns stale state") });
+  commitAt(b, "lib/card.ts", "export function fresh() {\n  return stale;\n}\n");
   const no = judge(b, "no");
   const r = review(b, [], { LEDGER_REVIEW_BIN_CODEX: stub(b, "codex", "PASS"), LEDGER_JUDGE_BIN: no });
-  assert.equal(calls(no), 0, "the judge is not asked");
-  assert.match(r.out, /^ {2}judge absent: \[should\] lib\/card\.ts:1 `committedSince` returns stale state \(round 1; no longer in the tree: `committedSince`\)$/m, r.out);
-  assert.match(r.out, /^codex: pass$/m);
-  assert.doesNotMatch(r.out, /the judge says it is not resolved/);
-  assert.equal(push(b).out, "");
+  assert.equal(calls(no), 1, "the judge is asked");
+  assert.match(readFileSync(`${no}.prompt`, "utf8"), /Evidence from the tree:\n`committedSince` named in the finding/);
+  assert.match(r.out, /\[should\] lib\/card\.ts:1 `committedSince` returns stale state \(from round 1; the judge says it is not resolved\)/, r.out);
+  assert.equal(decision(push(b)), "deny");
+});
+
+test("absent: no evidence line when one named path exists and another resolves to nothing", () => {
+  const b = repo();
+  commitAt(b, "lib/card.ts", "export function committedSince() {}\n");
+  review(b, [], { LEDGER_REVIEW_BIN_CODEX: stub(b, "codex", "1. [should] lib/card.ts:1 and lib/missing.ts:2 `committedSince` is stale") });
+  commitAt(b, "lib/card.ts", "export function fresh() {}\n");
+  const no = judge(b, "no");
+  review(b, [], { LEDGER_REVIEW_BIN_CODEX: stub(b, "codex", "PASS"), LEDGER_JUDGE_BIN: no });
+  assert.doesNotMatch(readFileSync(`${no}.prompt`, "utf8"), /Evidence from the tree/);
 });
 
 test("absent: an identifier that was never there (a finding about something missing) still goes to the judge, and a no still prints", () => {
@@ -1435,7 +1460,7 @@ test("absent: an identifier that was never there (a finding about something miss
   assert.equal(decision(push(b)), "deny");
 });
 
-test("absent: a named path that resolves to no file disables the shortcut, even when the identifier left another file", () => {
+test("absent: a named path that resolves to no file gets no evidence line, even when the identifier left another file", () => {
   const b = repo();
   commitAt(b, "util.ts", "export const staleFn = () => 1;\n");
   review(b, [], { LEDGER_REVIEW_BIN_CODEX: stub(b, "codex", "1. [should] wrong/path.ts:3 `staleFn` leaks a handle") });
@@ -1444,6 +1469,7 @@ test("absent: a named path that resolves to no file disables the shortcut, even 
   const r = review(b, [], { LEDGER_REVIEW_BIN_CODEX: stub(b, "codex", "PASS"), LEDGER_JUDGE_BIN: no });
   assert.equal(calls(no), 1, "the judge decides");
   assert.match(r.out, /^ {2}judge no: \[should\] wrong\/path\.ts:3 `staleFn` leaks a handle \(round 1\)$/m, r.out);
+  assert.doesNotMatch(readFileSync(`${no}.prompt`, "utf8"), /Evidence from the tree/);
 });
 
 test("passage: a fix that lives in a test file is in the passage, with the named file as it is at HEAD", () => {
@@ -1483,7 +1509,7 @@ test("passage over the cap: the cited line survives at the end of a long run of 
 test("passageFor: a byte-heavy cited region keeps its cited lines before smaller lower-ranked regions", async () => {
   const { passageFor, PASSAGE_CAP_BYTES } = await import("../lib/ledger-judge.mjs");
   const current = [
-    { path: "a.ts", from: 1, to: 31, rank: 0, text: "x".repeat(PASSAGE_CAP_BYTES), core: { from: 13, to: 19, text: "  16| CORE_CITED_LINE" } },
+    { path: "a.ts", from: 1, to: 80, rank: 0, text: Array.from({ length: 80 }, () => "x".repeat(230)).join("\n"), core: { from: 13, to: 19, text: "  16| CORE_CITED_LINE" } },
     ...Array.from({ length: 5 }, (_, k) => ({ path: "a.ts", from: 100 + k * 40, to: 110 + k * 40, rank: 1, text: `small ${k}` })),
   ];
   const p = passageFor("a.ts:16 bug", "", { current });
@@ -1545,7 +1571,7 @@ test("passageFor: a file entry with no hunk (a mode change) beside an edited fil
   assert.match(cut, /new mode 100755/, "kept when the passage is cut too");
 });
 
-test("absent: an exact named path wins over a longer suffix match, and an ambiguous one disables the shortcut", () => {
+test("absent: an exact named path wins over a longer suffix match, and the other file's removal is no evidence", () => {
   const b = repo();
   commitAt(b, "src/auth.ts", "login(user);\n");
   commitAt(b, "packages/src/auth.ts", "validateToken(t);\n");
@@ -1558,14 +1584,15 @@ test("absent: an exact named path wins over a longer suffix match, and an ambigu
   const passage = readFileSync(`${no}.prompt`, "utf8");
   assert.match(passage, /File: src\/auth\.ts \(lines 1-1 at HEAD\)/);
   assert.doesNotMatch(passage, /File: packages\/src\/auth\.ts \(lines/);
+  assert.doesNotMatch(passage, /Evidence from the tree/);
 });
 
 test("passageFor: a second cited region whose core does not fit keeps its bare cited lines over smaller lower-ranked units", async () => {
   const { passageFor, PASSAGE_CAP_BYTES } = await import("../lib/ledger-judge.mjs");
-  const wide = "é".repeat(2400);
+  const wide = (n) => Array.from({ length: n }, () => "é".repeat(115)).join("\n");
   const current = [
-    { path: "a.ts", from: 1, to: 31, rank: 0, text: "f".repeat(PASSAGE_CAP_BYTES - 4000) },
-    { path: "a.ts", from: 50, to: 80, rank: 0, text: wide.repeat(3), core: { from: 62, to: 68, text: wide, bare: { from: 65, to: 65, text: "  65| SECOND_CITED_LINE" } } },
+    { path: "a.ts", from: 1, to: 66, rank: 0, text: Array.from({ length: 66 }, () => "f".repeat(230)).join("\n") },
+    { path: "a.ts", from: 50, to: 80, rank: 0, text: wide(31), core: { from: 62, to: 68, text: wide(7), bare: { from: 65, to: 65, text: "  65| SECOND_CITED_LINE" } } },
     ...Array.from({ length: 8 }, (_, k) => ({ path: "a.ts", from: 200 + k * 40, to: 205 + k * 40, rank: 1, text: `small ${k}` })),
   ];
   const p = passageFor("a.ts:16 and a.ts:65 bug", "", { current });
@@ -1581,4 +1608,17 @@ test("passageFor: a long path with almost no room left never pushes the passage 
     assert.ok(Buffer.byteLength(p) <= PASSAGE_CAP_BYTES, `pad ${pad}: ${Buffer.byteLength(p)} bytes`);
     assert.match(p, /sha256 of the whole: [0-9a-f]{64}\]$/);
   }
+});
+
+test("passageFor: HEAD region lines are kept whole under the cap and clipped only when cut, with the clip counted", async () => {
+  const { passageFor, PASSAGE_CAP_BYTES } = await import("../lib/ledger-judge.mjs");
+  const region = (tail) => [{ path: "a.ts", from: 1, to: 1, rank: 0, text: `   1| ${"w".repeat(400)}${tail}` }];
+  const under = [passageFor("a.ts:1 bug", "", { current: region("DEFECT_A") }), passageFor("a.ts:1 bug", "", { current: region("DEFECT_B") })];
+  assert.match(under[0], /DEFECT_A/, "a line past 240 bytes is whole under the cap");
+  assert.notEqual(under[0], under[1]);
+  const pad = { others: [{ path: "big.ts", diff: `@@ -1 +1 @@\n+${"o".repeat(PASSAGE_CAP_BYTES)}` }] };
+  const over = [passageFor("a.ts:1 bug", "", { current: region("DEFECT_A"), ...pad }), passageFor("a.ts:1 bug", "", { current: region("DEFECT_B"), ...pad })];
+  assert.doesNotMatch(over[0], /DEFECT_A/, "clipped once the passage is cut");
+  assert.match(over[0], /left out: [^\]]*files at HEAD \d+ bytes/);
+  assert.notEqual(over[0], over[1], "the digest covers the unclipped line");
 });

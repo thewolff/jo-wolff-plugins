@@ -470,12 +470,12 @@ on an earlier commit when the agent runs `review addressed "<why>"`. A lab that 
 this time, or not in this run's labs, gets a `findings` row on the new commit carrying its
 outstanding findings, so skipping a lab does not clear them. Each finding keeps `since`, the
 commit of the round that first raised it, through every later round that carries it or judges it
-`no`. Before the judge, a mechanical check: when every backticked identifier the finding names
-(`foo`, `foo()`, `a.b.foo` by its last segment) was in a file it names at `since` and occurs
-nowhere in the tree at HEAD, the finding is resolved as `absent` without asking, and the output
-names what is gone. An identifier that was never there (a finding about something missing) and a
-named path that matches no file both leave the decision to the judge. For each finding the judge
-gets the finding and the change from `since` to HEAD: first the files it names as they are at
+`no`. For each finding the judge gets the finding, then a mechanical check as evidence: each
+backticked identifier the finding names (`foo`, `foo()`, `a.b.foo` by its last segment) that was
+in one of its named files at `since` and occurs nowhere in the tree at HEAD gets a line saying
+so, with the file it was in. The line appears only when every path the finding names resolves to
+exactly one file at `since`, and it never resolves the finding by itself: a rename can keep the
+bug under a new name, so the judge still decides. Then the change from `since` to HEAD: first the files it names as they are at
 HEAD, with line numbers, around the cited lines, the identifiers it names and the lines changed
 since (a file gone at HEAD is said to be); then the diff of those files; then the test files
 changed in that window that refer to the named files or identifiers; then, for a finding about the
