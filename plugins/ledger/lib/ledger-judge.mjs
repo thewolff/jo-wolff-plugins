@@ -147,13 +147,15 @@ const EXCERPT_CONTEXT_LINES = 12;
 /**
  * A unit longer than UNIT_CAP_BYTES that mentions `focus` becomes the lines around each mention
  * (the first line kept as its heading), so a cut keeps what the finding is about instead of the
- * unit's first bytes. Returns `text` unchanged otherwise.
+ * unit's first bytes. Lines for which `pinned(line)` is true are always kept (a cited region's
+ * cited lines). Returns `text` unchanged otherwise.
  */
-function excerpt(text, focus) {
+function excerpt(text, focus, pinned = null) {
   if (!focus || bytes(text) <= UNIT_CAP_BYTES || !focus.test(text)) return text;
   const lines = text.split("\n");
   const keep = new Set([0]);
   lines.forEach((l, i) => {
+    if (pinned?.(l)) keep.add(i);
     if (focus.test(l)) for (let k = Math.max(0, i - EXCERPT_CONTEXT_LINES); k <= Math.min(lines.length - 1, i + EXCERPT_CONTEXT_LINES); k++) keep.add(k);
   });
   const out = [];
@@ -253,6 +255,7 @@ export function passageFor(findingText, diff, { current = [], tests = [], absent
           ? { text: `File: ${c.path}: not present at HEAD`, rank: 0 }
           : {
               clipLines: true,
+              pinned: c.core ? [c.core.from, c.core.to] : null,
               text: `File: ${c.path} (lines ${c.from}-${c.to} at HEAD)\n${c.text}`,
               rank: c.rank ?? 1,
               fallbacks: [c.core, c.core?.bare].filter(Boolean).map((r) => ({ clipLines: true, text: `File: ${c.path} (lines ${r.from}-${r.to} at HEAD)\n${r.text}`, rank: c.rank ?? 1 })),
@@ -281,7 +284,11 @@ export function passageFor(findingText, diff, { current = [], tests = [], absent
 
   // Only once over the cap: HEAD region lines are clipped, and the bytes they lose count as cut.
   const shorten = (u) => {
-    const t = excerpt(u.text, re);
+    const pin = u.pinned && ((l) => {
+      const m = /^\s*(\d+)\| /.exec(l);
+      return Boolean(m) && Number(m[1]) >= u.pinned[0] && Number(m[1]) <= u.pinned[1];
+    });
+    const t = excerpt(u.text, re, pin);
     return u.clipLines ? t.split("\n").map((l) => (bytes(l) > REGION_LINE_BYTES ? `${clip(l, REGION_LINE_BYTES)}…` : l)).join("\n") : t;
   };
   let room = PASSAGE_CAP_BYTES - MARKER_RESERVE_BYTES;

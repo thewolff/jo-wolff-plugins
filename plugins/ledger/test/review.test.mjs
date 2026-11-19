@@ -1622,3 +1622,30 @@ test("passageFor: HEAD region lines are kept whole under the cap and clipped onl
   assert.match(over[0], /left out: [^\]]*files at HEAD \d+ bytes/);
   assert.notEqual(over[0], over[1], "the digest covers the unclipped line");
 });
+
+test("passageFor: excerpting a cited region over 4 kB keeps the cited line even when the identifier sits far from it", async () => {
+  const { passageFor, PASSAGE_CAP_BYTES } = await import("../lib/ledger-judge.mjs");
+  const lines = Array.from({ length: 200 }, (_, k) => `${String(k + 1).padStart(4)}| ${k + 1 === 5 ? "symbolX();" : k + 1 === 190 ? "CITED_ONLY_HERE();" : `filler ${"f".repeat(30)}`}`);
+  const show = (a, b) => lines.slice(a - 1, b).join("\n");
+  const current = [{ path: "a.ts", from: 1, to: 200, rank: 0, text: show(1, 200), core: { from: 187, to: 193, text: show(187, 193), bare: { from: 190, to: 190, text: show(190, 190) } } }];
+  for (const padBytes of [PASSAGE_CAP_BYTES, 4 * PASSAGE_CAP_BYTES]) {
+    const p = passageFor("a.ts:190 `symbolX` misuse", "", { current, focus: ["symbolX"], others: [{ path: "big.ts", diff: `@@ -1 +1 @@\n+${"o".repeat(padBytes)}` }] });
+    assert.ok(Buffer.byteLength(p) <= PASSAGE_CAP_BYTES, `${Buffer.byteLength(p)} bytes`);
+    assert.match(p, / 190\| CITED_ONLY_HERE\(\);/);
+    assert.match(p, /\[cut: .*sha256 of the whole: [0-9a-f]{64}\]$/);
+  }
+});
+
+test("passage: an unchanged exact named path contributes no diff and does not fall through to a changed suffix match", () => {
+  const b = repo();
+  commitAt(b, "src/auth.ts", "login(user);\n");
+  commitAt(b, "packages/src/auth.ts", "first();\n");
+  review(b, [], { LEDGER_REVIEW_BIN_CODEX: stub(b, "codex", "1. [blocking] src/auth.ts:1 login skips the token check") });
+  commitAt(b, "packages/src/auth.ts", "PACKAGES_ONLY_CHANGE();\n");
+  const no = judge(b, "no");
+  review(b, [], { LEDGER_REVIEW_BIN_CODEX: stub(b, "codex", "PASS"), LEDGER_JUDGE_BIN: no });
+  const passage = readFileSync(`${no}.prompt`, "utf8");
+  assert.match(passage, /Change \(unified diff\):\n\(no change to the files the finding names\)\n/);
+  assert.match(passage, /File: src\/auth\.ts \(lines 1-1 at HEAD\)/);
+  assert.ok(passage.indexOf("PACKAGES_ONLY_CHANGE") > passage.indexOf("Other files changed since"), "the packages change is only under the other files");
+});

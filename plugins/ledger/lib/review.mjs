@@ -544,7 +544,10 @@ async function judgeItems({ db, dbPath, config, env, top, fromSha, toSha, items,
           return where.length && occurs(toSha, s) === false ? [{ name: s, files: where, since: since.slice(0, 8) }] : [];
         })
       : [];
-    const targets = changed ? resolveIn(changed, files) : [];
+    // Resolved against the whole tree first, so an unchanged exact path never falls through to a
+    // changed file that merely shares its suffix.
+    const named = resolveIn([...new Set([...treeAt(toSha), ...treeAt(since)])], files);
+    const targets = changed ? named.filter((p) => changed.includes(p)) : [];
     const diff = targets.length ? diffOf(since, targets) : "";
     const focus = focusPattern(symbols);
     const zeroContext = (path) => {
@@ -554,7 +557,7 @@ async function judgeItems({ db, dbPath, config, env, top, fromSha, toSha, items,
         return "";
       }
     };
-    const current = resolveIn([...new Set([...treeAt(toSha), ...atSince, ...targets])], files).flatMap((path) =>
+    const current = named.flatMap((path) =>
       regionsAt(top, toSha, path, { cited: citedLines(item.text, path, matches), focus, hunkRanges: targets.includes(path) ? newSideRanges(zeroContext(path)) : [] }),
     );
     let text = null;
