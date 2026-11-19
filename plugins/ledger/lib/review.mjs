@@ -437,8 +437,14 @@ function regionsAt(top, sha, path, { cited, focus, hunkRanges }) {
   const lines = text.replace(/\n$/, "").split("\n");
   const n = lines.length;
   const symbolLines = focus ? lines.flatMap((l, i) => (focus.test(l) ? [[i + 1, i + 1]] : [])) : [];
+  // Citations are as of when the finding was raised; one past the end of the file now is clamped
+  // to its last lines, paired with its core so the lookup below cannot miss.
+  const cites = cited.map(([a, b]) => {
+    const at = [Math.min(a, n), Math.min(b, n)];
+    return { asked: [a, b], at, core: [Math.max(1, at[0] - CORE_CONTEXT_LINES), Math.min(n, at[1] + CORE_CONTEXT_LINES)] };
+  });
   const ranked = [
-    ...windows(cited, n, { merge: false }).map((w) => [...w, 0]),
+    ...windows(cites.map((c) => c.at), n, { merge: false }).map((w) => [...w, 0]),
     ...windows(symbolLines, n).map((w) => [...w, 1]),
     ...windows(hunkRanges, n).map((w) => [...w, 2]),
   ];
@@ -450,14 +456,15 @@ function regionsAt(top, sha, path, { cited, focus, hunkRanges }) {
       .slice(from - 1, to)
       .map((l, i) => `${String(from + i).padStart(4)}| ${l}`)
       .join("\n");
-  const cores = cited.map(([a, b]) => [Math.max(1, a - CORE_CONTEXT_LINES), Math.min(n, b + CORE_CONTEXT_LINES)]);
+  const pastEnd = (c) => (c.asked[0] > n ? `(cited line ${c.asked[0]} is past the end: the file has ${n} lines at HEAD)\n` : "");
   return kept.map(([from, to, rank]) => {
     const region = { path, from, to, rank, text: show(from, to) };
-    const core = rank === 0 && cores.find(([a, b]) => a >= from && b <= to);
-    if (!core) return region;
-    const [a, b] = cited.find(([x, y]) => x >= core[0] && y <= core[1]);
+    const cite = rank === 0 ? cites.find((c) => c.core[0] >= from && c.core[1] <= to) : null;
+    if (!cite) return region;
+    const [core, [a, b]] = [cite.core, cite.at];
     const bare = Math.min(b, a + 2);
-    return { ...region, core: { from: core[0], to: core[1], text: show(core[0], core[1]), bare: { from: a, to: bare, text: show(a, bare) } } };
+    const note = pastEnd(cite);
+    return { ...region, text: note + region.text, core: { from: core[0], to: core[1], text: note + show(core[0], core[1]), bare: { from: a, to: bare, text: note + show(a, bare) } } };
   });
 }
 

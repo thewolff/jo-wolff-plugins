@@ -1649,3 +1649,22 @@ test("passage: an unchanged exact named path contributes no diff and does not fa
   assert.match(passage, /File: src\/auth\.ts \(lines 1-1 at HEAD\)/);
   assert.ok(passage.indexOf("PACKAGES_ONLY_CHANGE") > passage.indexOf("Other files changed since"), "the packages change is only under the other files");
 });
+
+for (const [keep, past, what] of [[15, false, "its end"], [5, true, "its start and end"]]) test(`regions: a cited range with ${what} past the end of the shrunken file still reaches the judge`, () => {
+  {
+    const b = repo();
+    commitAt(b, "file.ts", `${Array.from({ length: 30 }, (_, k) => `line${k + 1}();`).join("\n")}\n`);
+    review(b, [], { LEDGER_REVIEW_BIN_CODEX: stub(b, "codex", "1. [should] file.ts:10-20 the loop body is wrong") });
+    commitAt(b, "file.ts", `${Array.from({ length: keep }, (_, k) => `line${k + 1}();`).join("\n")}\n`);
+    const no = judge(b, "no");
+    const r = review(b, [], { LEDGER_REVIEW_BIN_CODEX: stub(b, "codex", "PASS"), LEDGER_JUDGE_BIN: no });
+    assert.equal(r.code, 0, r.out);
+    assert.equal(calls(no), 1, `the judge is asked (file cut to ${keep} lines)`);
+    assert.match(r.out, /\[should\] file\.ts:10-20 the loop body is wrong \(from round 1; the judge says it is not resolved\)/, r.out);
+    const passage = readFileSync(`${no}.prompt`, "utf8");
+    assert.match(passage, new RegExp(`File: file\\.ts \\(lines 1-${keep} at HEAD\\)\\n`), passage);
+    assert.match(passage, new RegExp(`\\s${keep}\\| line${keep}\\(\\);`));
+    if (past) assert.match(passage, /\(cited line 10 is past the end: the file has 5 lines at HEAD\)/);
+    else assert.doesNotMatch(passage, /past the end/);
+  }
+});
