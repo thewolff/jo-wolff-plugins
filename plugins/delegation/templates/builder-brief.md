@@ -1,6 +1,6 @@
 # Builder brief
 
-Copy this into the `prompt` of a builder-class spawn and fill every section. The spawn gate reads two headings literally (`## How it fails`, `## Spiral bound`; any heading level, case does not matter) and nothing else, so the headings stay as written. A prompt for a new desktop session (`mcp__ccd_session__start_session`) is read for all five headings below, Target through Spiral bound, each alone on its line (`## Target`, with the detail on the lines under it). A refusal from the gate carries the missing section in full, so a brief can also be repaired from the refusal alone. The builder report ends with the `Stopped because:` line.
+Copy this into the `prompt` of a builder-class spawn and fill every section. The spawn gate reads two headings literally (`## How it fails`, `## Spiral bound`; any heading level, case does not matter) and one line (`claudex: log: …` or `claudex: skip: …`, see Claudex below) and nothing else, so the headings and the line stay as written. A prompt for a new desktop session (`mcp__ccd_session__start_session`) is read for all five headings below, Target through Spiral bound, each alone on its line (`## Target`, with the detail on the lines under it). A refusal from the gate carries the missing section in full, so a brief can also be repaired from the refusal alone. The builder report ends with the `Stopped because:` line.
 
 ## Target
 
@@ -26,6 +26,13 @@ What the parent will check, exactly: the command, what green looks like, what is
 - Commit budget: at most N commits (name N). Past it, stop and report what remains.
 - When acceptance cannot be met: report what was tried, the exact failure, and the last green state. Do not loosen the check, skip the step, or substitute an easier problem.
 - Time or tool budget, when there is one: name it.
+
+## Claudex
+
+A builder-class brief carries one of these lines, alone on its line, or the spawn is refused. New features and behaviour changes go through claudex-loop first and name its plan-review log; trivial or mechanical work (one-file fixes, copy changes, regex tweaks, rebases, measurement runs, docs) and prototypes say why they skip it. Keep one of the two lines below, fill in its placeholder, and delete the other; the placeholders never pass as written, and a line inside a fenced code block does not count.
+
+claudex: log: <absolute path to this work's claudex-loop plan-review log>
+claudex: skip: <why claudex-loop does not apply: prototype, one-file fix, copy change, regex tweak, rebase, measurement run, docs>
 
 ## Report
 

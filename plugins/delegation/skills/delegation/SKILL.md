@@ -12,7 +12,9 @@ spawn gate refuses a spawn without `## How it fails` (any spawn) or `## Spiral b
 builder-class spawn: `builder`, `beefy-builder`, `task`, `sonic`, `general-purpose`, or the
 `builderClass` list in the config) and carries the missing section in its refusal, so a refused
 spawn is re-issued with the section filled in, never argued with. A builder-class spawn also
-needs this session's pattern-check receipt; the refusal names the exact command.
+needs a claudex-loop line (`claudex: log: <plan-review log path>` for a new feature or behaviour
+change, `claudex: skip: <reason>` for trivial or mechanical work and prototypes) and this
+session's pattern-check receipt; each refusal names the exact fix.
 
 ## When to delegate, and to whom
 
@@ -38,7 +40,7 @@ Spiral bound section exists for it.
 
 Headings are literal. The gate reads `## How it fails` and `## Spiral bound` as heading lines
 (any level, case does not matter, a trailing colon or a parenthetical such as
-`## Spiral bound (builder)` is fine) and nothing else, so prose that mentions the words does not
+`## Spiral bound (builder)` is fine), plus the claudex line of item 6 on a builder-class brief, and nothing else, so prose that mentions the words does not
 count and a heading inside a fenced code block does not count. On OMP the shared `context` and
 each task are read together, so a section in `context` covers every task. A read-only agent
 (`reviewer-codex`, `scout`, `reader`, `research`, `auditor` and the rest of `readOnlyAgents`)
@@ -57,7 +59,12 @@ needs `## How it fails` only on Claude Code, and nothing on OMP.
    acceptance cannot be met, report what was tried, the exact failure and the last green state,
    and do not loosen the check, skip the step, or substitute an easier problem; a time or tool
    budget when there is one.
-6. Lead the report with the outcome in its first sentence: what happened or what was found. Then: what changed, what was verified, what could not be confirmed, and anything needing the owner's decision.
+6. A claudex-loop line, alone on its line, in a builder-class brief: `claudex: log: <path>`
+   naming the plan-review log of the claudex-loop run that planned this work (it has to exist and
+   be non-empty), or `claudex: skip: <reason>` when claudex-loop does not apply (a prototype, a
+   one-file fix, a copy change, a regex tweak, a rebase, a measurement run, docs). A line inside
+   a fenced code block does not count, and the `<…>` placeholders never pass.
+7. Lead the report with the outcome in its first sentence: what happened or what was found. Then: what changed, what was verified, what could not be confirmed, and anything needing the owner's decision.
    The report's last line: exactly one of `Stopped because: acceptance met` (every acceptance
    check passed once), `Stopped because: bound hit` (a retry, commit, time or tool bound stopped
    it; the report names which after it, as in `Stopped because: bound hit (commit budget)`),
@@ -82,6 +89,11 @@ this plugin.
   offer is re-issued as an offer. Where that tool is absent (every host but the desktop app) the
   gate never fires and there is nothing to tell the person. Its offline scenario:
   `evals/session-brief-gate-deny-missing-headings.scenario.json`.
+- The reason says the spawn `needs a claudex-loop line`: add `claudex: log: <path>` naming the
+  plan-review log of this work's claudex-loop run, or `claudex: skip: <reason>` when it does not
+  apply, then re-issue. A log path that does not exist is named in the refusal. To turn the gate
+  off instead, set `requireClaudexLoop: false` in `${XDG_CONFIG_HOME:-~/.config}/delegation/config.json`.
+  Its offline scenario: `evals/spawn-gate-deny-builder-no-claudex-line.scenario.json`.
 - The reason names a pattern-check receipt and a `node "<pattern-check>/scripts/pattern-check.mjs" open …` command: run that
   command (it is pattern-check's own CLI), then re-issue. To run without the receipt instead,
   set `requirePatternCheck: false` in `${XDG_CONFIG_HOME:-~/.config}/delegation/config.json`;
@@ -103,6 +115,7 @@ The template filled in for a real task: a builder adding one config field to a C
 Repository /Users/example/code/ledger, branch `config-timeout`, worktree at `.tmp/config-timeout-wt`.
 Files: `src/config.mjs`, `src/cli.mjs`, `test/config.test.mjs`, `README.md`.
 Non-goals: no change to the SQLite schema; no new dependency; the other CLI flags stay as they are.
+claudex: log: /Users/example/code/ledger/PLAN-REVIEW-LOG.md
 
 # Change
 1. `src/config.mjs`: add `timeoutMs` (positive integer, default 5000) to the parsed config; a

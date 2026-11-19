@@ -1,12 +1,18 @@
 #!/usr/bin/env node
 // hooks/spawn-gate.mjs — PreToolUse on `Agent` (the `Task` alias fires the same matcher):
-// gates 1, 4 and 2 on every subagent spawn. Runs under lib/hook-runner.mjs: exit 0 always; a
+// gates 1, 4, 5 and 2 on every subagent spawn, in that order. Runs under lib/hook-runner.mjs: exit 0 always; a
 // fault is one errors.log line and a systemMessage, never a deny.
 //
 // GATE 1  the prompt (`tool_input.prompt`) has no `## How it fails` heading → deny.
 // GATE 4  `tool_input.subagent_type` is builder-class (config `builderClass`; a missing type is
 //         `general-purpose`) and the prompt has no `## Spiral bound` heading → deny. A type in
 //         config `readOnlyAgents` (reviewer-codex, scout, reader, …) is never builder-class.
+// GATE 5  builder-class and the prompt has no valid claudex-loop line (lib/claudex.mjs): neither
+//         `claudex: log: <path>` naming an existing non-empty file nor `claudex: skip: <reason>`
+//         with a reason → deny, carrying both lines as a fill-in template and naming
+//         `requireClaudexLoop: false` as the way out. A relative log path with no absolute cwd, or a stat
+//         fault other than not-found → allow, one skipped.log line. It runs before gate 2 because
+//         the line is part of the brief text: every brief repair is asked for before the receipt.
 // GATE 2  builder-class and this session has no pattern-check receipt
 //         (<git root of cwd>/.pattern-check/<session_id>.md, or pattern-check's state copy) → deny,
 //         naming the pattern-check command and `requirePatternCheck: false` as the way out. Not in
@@ -34,7 +40,7 @@
 //         turns it off.
 //
 // NESTED SPAWNS are gated too: a subagent's Agent call fires this hook with `agent_id` set, and
-// the brief it writes is held to the same bar. The gate reads the heading only; it does not
+// the brief it writes is held to the same bar. The gate reads the headings and the claudex line only; it does not
 // inspect `context`, `description` or anything but `tool_input.prompt` (the model line reads
 // `tool_input.model` and `tool_input.subagent_type`, and decides nothing).
 //
@@ -49,6 +55,7 @@ import { runHook, invokedDirectly } from "../lib/hook-runner.mjs";
 import { loadConfig, logSkipped, withFault } from "../lib/config.mjs";
 import { headingReason, isBuilderClass, missingHeadings } from "../lib/brief.mjs";
 import { checkReceipt, receiptReason } from "../lib/receipt.mjs";
+import { checkClaudexLine, claudexReason } from "../lib/claudex.mjs";
 import { loadTable, routingOutcome, routingWarning } from "../lib/model-routing.mjs";
 import { logRouting } from "../lib/routing-log.mjs";
 
@@ -81,6 +88,14 @@ export function handle(input, { env = process.env } = {}) {
   if (missing.length) {
     record("not-checked");
     return withFault(deny(headingReason(missing, type, { builder })), fault, HOOK);
+  }
+  if (builder && config.requireClaudexLoop) {
+    const line = checkClaudexLine({ prompt: ti.prompt, cwd: input.cwd }, env);
+    if (line.status === "skipped") logSkipped(HOOK, `claudex line not checked: ${line.why}; spawn allowed`, env);
+    else if (line.status === "missing") {
+      record("not-checked");
+      return withFault(deny(claudexReason(type, line)), fault, HOOK);
+    }
   }
   if (builder && config.requirePatternCheck) {
     const receipt = checkReceipt({ sessionId: input.session_id, cwd: input.cwd }, env);

@@ -17,6 +17,8 @@
 //   requireSpiralBound   gate 4: a builder-class spawn also needs `## Spiral bound`.
 //   requirePatternCheck  gate 2: a builder-class spawn needs this session's pattern-check receipt
 //                        (skipped, with a skipped.log line, when pattern-check is not installed).
+//   requireClaudexLoop   gate 5: a builder-class spawn's prompt carries `claudex: log: <path>`
+//                        naming an existing plan-review log, or `claudex: skip: <reason>`.
 //   warnModelRouting     the spawn gate's model line: a spawn whose `model` is above the routing
 //                        table's ceiling for its agent type, or that sets none, draws one
 //                        warning line. Never a deny. false turns the line off.
@@ -49,6 +51,7 @@ export const DEFAULTS = Object.freeze({
   requireHowItFails: true,
   requireSpiralBound: true,
   requirePatternCheck: true,
+  requireClaudexLoop: true,
   warnModelRouting: true,
   logModelRouting: true,
   checks: Object.freeze({ "delegation-guard": "warn", "worktree-spawn-guard": "warn", "repo-rules-inject": "on", "session-brief-gate": "block" }),
@@ -96,7 +99,7 @@ export function loadConfig(env = process.env, home = homedir()) {
   }
   const bad = [];
   const out = { ...DEFAULTS };
-  for (const key of ["off", "requireHowItFails", "requireSpiralBound", "requirePatternCheck", "warnModelRouting", "logModelRouting"]) {
+  for (const key of ["off", "requireHowItFails", "requireSpiralBound", "requirePatternCheck", "requireClaudexLoop", "warnModelRouting", "logModelRouting"]) {
     if (parsed[key] === undefined) continue;
     if (typeof parsed[key] === "boolean") out[key] = parsed[key];
     else bad.push(`${key} must be true or false`);

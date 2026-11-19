@@ -82,7 +82,9 @@ export function gitRepo(dir, env) {
   return realpathSync(dir);
 }
 
-export const GOOD_BRIEF = "# Target\nx\n\n## How it fails\n- it breaks\n\n## Spiral bound\n- one retry\n";
+export const GOOD_BRIEF = "# Target\nx\n\nclaudex: skip: test fixture\n\n## How it fails\n- it breaks\n\n## Spiral bound\n- one retry\n";
+/** The claudex-loop line a builder-class fixture carries to get past gate 5. */
+export const SKIP_LINE = "claudex: skip: test fixture\n";
 export const HOW_ONLY = "# Target\nx\n\n## How it fails\n- it breaks\n";
 
 // `model` defaults to haiku, which is at or under every ceiling in lib/model-routing.json, so a

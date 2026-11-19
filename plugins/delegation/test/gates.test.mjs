@@ -6,7 +6,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { box, errorsLog, gitRepo, runHook, setConfig, skippedLog, spawnPayload, GOOD_BRIEF, HOW_ONLY } from "./helpers.mjs";
+import { box, errorsLog, gitRepo, runHook, setConfig, skippedLog, spawnPayload, GOOD_BRIEF, HOW_ONLY, SKIP_LINE } from "./helpers.mjs";
 import { HOW_IT_FAILS_SECTION, SPIRAL_BOUND_SECTION, STOPPED_LINE, TEMPLATE, stoppedBecause } from "../lib/brief.mjs";
 import { compareVersionsDesc } from "../lib/receipt.mjs";
 
@@ -65,7 +65,7 @@ test("spawn-gate: both headings missing on a builder-class spawn is one deny car
   const reason = deny(r);
   assert.match(reason, /^Spawn refused: the prompt has no "## How it fails" or "## Spiral bound" heading; builder-class "builder" needs both\. Re-issue the spawn with the same prompt plus the sections below/);
   assert.ok(reason.endsWith(`\n\n${HOW_IT_FAILS_SECTION}\n\n${SPIRAL_BOUND_SECTION}`), reason);
-  const rebuilt = `just do it\n\n${reason.slice(reason.indexOf("\n\n## How it fails"))}`;
+  const rebuilt = `just do it\n${SKIP_LINE}\n${reason.slice(reason.indexOf("\n\n## How it fails"))}`;
   assert.equal(runHook("spawn-gate", spawnPayload({ cwd: repo, prompt: rebuilt }), env).out, null, "the refusal's own sections satisfy the gate");
 });
 
@@ -94,7 +94,7 @@ test("spawn-gate: headings match at any level, any case, with a trailing colon; 
   const { env } = box(t);
   const repo = repoWithReceipt(t, env);
   const ok = ["### HOW IT FAILS\nx\n#### spiral bound:\ny", "# How it fails #\n\n# Spiral Bound\n", "   ## How it fails\n## Spiral bound\n", "## How it fails (both tasks)\n## Spiral bound (builder)\n", "```\nx\n```\n## How it fails\n~~~\n## nope\n~~~\n## Spiral bound\n"];
-  for (const prompt of ok) assert.equal(runHook("spawn-gate", spawnPayload({ cwd: repo, prompt }), env).out, null, prompt);
+  for (const prompt of ok) assert.equal(runHook("spawn-gate", spawnPayload({ cwd: repo, prompt: `${SKIP_LINE}${prompt}` }), env).out, null, prompt);
   const bad = ["How it fails: it just does. Spiral bound: 3.", "**How it fails**\n**Spiral bound**", "> ## How it fails\n> ## Spiral bound\n", "x\n```\n## How it fails\n## Spiral bound\n```\ny", "x\n````md\n## How it fails\n```\n## Spiral bound\n````\n", "## How it fails (a) (b)\n## Spiral bound extra\n"];
   for (const prompt of bad) assert.ok(deny(runHook("spawn-gate", spawnPayload({ cwd: repo, prompt }), env)), prompt);
 });
@@ -189,16 +189,19 @@ test("spawn-gate: unparseable tool_input allows the call and logs one skipped.lo
   assert.match(errorsLog(env), /spawn-gate stdin not JSON/);
 });
 
-test("spawn-gate: config builderClass, requireSpiralBound, requirePatternCheck, requireHowItFails and off", (t) => {
+test("spawn-gate: config builderClass, requireSpiralBound, requirePatternCheck, requireClaudexLoop, requireHowItFails and off", (t) => {
   const { env } = box(t);
   const repo = gitRepo(join(env.HOME, "repo"), env); // no receipt
   setConfig(env, { builderClass: ["forge"] });
   assert.equal(runHook("spawn-gate", spawnPayload({ cwd: repo, prompt: HOW_ONLY, subagent_type: "builder" }), env).out, null, "builder is no longer builder-class");
   assert.match(deny(runHook("spawn-gate", spawnPayload({ cwd: repo, prompt: HOW_ONLY, subagent_type: "Forge" }), env)), /builder-class "Forge"/);
   setConfig(env, { requireSpiralBound: false });
-  assert.match(deny(runHook("spawn-gate", spawnPayload({ cwd: repo, prompt: HOW_ONLY }), env)), /pattern-check receipt/, "spiral off, receipt still required");
+  assert.match(deny(runHook("spawn-gate", spawnPayload({ cwd: repo, prompt: SKIP_LINE + HOW_ONLY }), env)), /pattern-check receipt/, "spiral off, receipt still required");
   setConfig(env, { requireSpiralBound: false, requirePatternCheck: false });
-  assert.equal(runHook("spawn-gate", spawnPayload({ cwd: repo, prompt: HOW_ONLY }), env).out, null);
+  assert.equal(runHook("spawn-gate", spawnPayload({ cwd: repo, prompt: SKIP_LINE + HOW_ONLY }), env).out, null);
+  assert.match(deny(runHook("spawn-gate", spawnPayload({ cwd: repo, prompt: HOW_ONLY }), env)), /needs a claudex-loop line/, "claudex line still required");
+  setConfig(env, { requireSpiralBound: false, requirePatternCheck: false, requireClaudexLoop: false });
+  assert.equal(runHook("spawn-gate", spawnPayload({ cwd: repo, prompt: HOW_ONLY }), env).out, null, "requireClaudexLoop: false turns gate 5 off");
   setConfig(env, { requireHowItFails: false, requirePatternCheck: false });
   assert.match(deny(runHook("spawn-gate", spawnPayload({ cwd: repo, prompt: "nothing" }), env)), /needs a "## Spiral bound" heading too/);
   setConfig(env, { off: true });

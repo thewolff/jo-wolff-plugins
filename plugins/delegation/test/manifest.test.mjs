@@ -10,6 +10,7 @@ import { join } from "node:path";
 import { PLUGIN_ROOT } from "./helpers.mjs";
 import { ACCEPTANCE_SECTION, CHANGE_SECTION, hasHeading, headingReason, HOW_IT_FAILS, HOW_IT_FAILS_SECTION, missingSessionHeadings, SESSION_HEADINGS, sessionHeadingReason, SPIRAL_BOUND, SPIRAL_BOUND_SECTION, STOPPED_SECTION, stoppedBecause, TARGET_SECTION, TEMPLATE } from "../lib/brief.mjs";
 import { DEFAULTS } from "../lib/config.mjs";
+import { CLAUDEX_SECTION, checkClaudexLine } from "../lib/claudex.mjs";
 
 const read = (p) => readFileSync(join(PLUGIN_ROOT, p), "utf8");
 const json = (p) => JSON.parse(read(p));
@@ -72,6 +73,11 @@ test("the builder brief template carries the exact section texts the deny reason
   assert.ok(tpl.includes(`\n${TARGET_SECTION}\n`), "Target section verbatim");
   assert.ok(tpl.includes(`\n${CHANGE_SECTION}\n`), "Change section verbatim");
   assert.ok(tpl.includes(`\n${ACCEPTANCE_SECTION}\n`), "Acceptance section verbatim");
+  assert.ok(tpl.includes(`\n${CLAUDEX_SECTION}\n`), "Claudex section verbatim");
+  assert.equal(checkClaudexLine({ prompt: tpl, cwd: PLUGIN_ROOT }).status, "missing", "the template's placeholder claudex lines do not pass gate 5 unfilled");
+  const filled = tpl.replace(/^claudex: skip: <[^\n]*>$/m, "claudex: skip: one-file fix");
+  assert.notEqual(filled, tpl);
+  assert.equal(checkClaudexLine({ prompt: filled, cwd: PLUGIN_ROOT }).status, "present", "filling one line of the copied template passes gate 5");
   assert.deepEqual(missingSessionHeadings(tpl), [], "the template passes the session-brief gate");
   for (const line of ["Stopped because: acceptance met", "Stopped because: bound hit", "Stopped because: told to stop"]) {
     assert.ok(tpl.includes(`\n${line}\n`), line);

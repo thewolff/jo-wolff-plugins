@@ -5,7 +5,8 @@ brief's shape before its first spawn (a SessionStart block under 25 lines, and t
 skill with a worked example). A spawn whose brief does not say how the work fails is refused
 before it starts, and the refusal carries the missing section as a fill-in template, so the
 brief can be repaired from the refusal alone. A builder-class spawn also has to say where it
-stops (the spiral bound) and has to come after the session's pattern-check receipt. A message
+stops (the spiral bound), say how claudex-loop applies (a `claudex: log:` or `claudex: skip:`
+line), and has to come after the session's pattern-check receipt. A message
 the host could not deliver is marked as undelivered next to the tool result, so the parent does
 not wait for a reply that is never coming. A builder report that does not end with `Stopped
 because: …` draws a warning, shown to the user, that says the exact line to add. Alongside: the eleven general
@@ -66,15 +67,16 @@ The text is `sessionBlock()` in `lib/brief.mjs`.
 |---|---|---|---|
 | 1 How it fails | PreToolUse `Agent`/`Task`; OMP `task` | `tool_input.prompt` (OMP: the shared `context` plus each `tasks[].task`, or the single `task`) has no heading line `## How it fails`. On OMP a `readOnlyAgents` entry is exempt | deny; reason names the heading, what the section holds, and `templates/builder-brief.md` |
 | 4 Spiral bound | same | `subagent_type` is builder-class and the prompt has no heading line `## Spiral bound` | deny; same shape |
+| 5 Claudex line | PreToolUse `Agent`/`Task`; not on OMP | builder-class and the prompt has no line `claudex: log: <path>` naming an existing non-empty file (a relative path resolves against `cwd`, `~/` against HOME) and no line `claudex: skip: <reason>` with a reason; a line in a fenced code block or a `<…>` placeholder does not count. Runs after gates 1 and 4, before gate 2 | deny; reason names what is wrong (no line, no reason, placeholder, the resolved log path that does not exist, is not a file, or is empty), both lines as a fill-in template, and `requireClaudexLoop: false` |
 | 2 Receipt | same | builder-class, pattern-check installed, and no `<git root of cwd>/.pattern-check/<session_id>.md` (nor pattern-check's state copy) | deny; reason names the path, the exact `pattern-check.mjs open … then record --session <key>` command, and `requirePatternCheck: false` |
 | 3 Not delivered | PostToolUse `SendMessage`; OMP `write agent://…` | `tool_response.success === false` (OMP: `isError`) | `decision: "block"`, reason = the tool's own `message` + `this message was NOT delivered; spawn a new agent or fix the name` + the two tool calls that do it |
 | Session brief | PreToolUse `mcp__ccd_session__start_session` (the desktop app); not on OMP | `tool_input.prompt` lacks any of the heading lines `Target`, `Change`, `Acceptance`, `How it fails`, `Spiral bound`. A `proposal_id` call with no `prompt` (starting an offered card) is not judged | deny; reason names the missing headings and the tool, says each heading line holds the heading alone, and carries each missing section. `checks["session-brief-gate"]: "warn"` allows with one `additionalContext` line instead |
-| Model line (warn-only) | PreToolUse `Agent`/`Task`; not on OMP | the spawn passed gates 1, 4 and 2, `subagent_type` is listed in `lib/model-routing.json`, and `tool_input.model` is above that type's ceiling or absent | `additionalContext`, one line; never a deny |
+| Model line (warn-only) | PreToolUse `Agent`/`Task`; not on OMP | the spawn passed gates 1, 4, 5 and 2, `subagent_type` is listed in `lib/model-routing.json`, and `tool_input.model` is above that type's ceiling or absent | `additionalContext`, one line; never a deny |
 | Stop line | SubagentStop; OMP `task` result | `agent_type` builder-class (an empty `agent_type` is not) and the last non-empty line of `last_assistant_message` is not `Stopped because: acceptance met \| bound hit \| told to stop` (a detail may follow the value, as in `bound hit (commit budget)`) | `systemMessage`, shown to the user; never a block. On OMP, additionalContext for the parent |
 
 A heading matches literally: any level `#` to `######`, case-insensitive, an optional trailing
 parenthetical (`## Spiral bound (builder)`), an optional trailing colon, up to three leading
-spaces. Nothing else in the prompt is read: not the section's content, not prose that mentions
+spaces. Apart from gate 5's `claudex:` line, nothing else in the prompt is read: not the section's content, not prose that mentions
 the words, and not a heading inside a fenced code block (``` or ~~~). A builder-class name is
 compared bare (`newdle:builder`, `agents/builder` and `Builder` all match `builder`); a missing
 `subagent_type` is Claude Code's default, `general-purpose`, which is in the default class. A
@@ -90,6 +92,7 @@ from `templates/builder-brief.md`, verbatim, one per missing heading):
 - gate 1: `Spawn refused: the prompt has no "## How it fails" heading. Re-issue the spawn with the same prompt plus the section below, filled in (keep the heading line as written; the gate reads it literally). Full template: templates/builder-brief.md in the delegation plugin.` then a blank line and the `## How it fails` section. For a builder-class type the sentence `The report ends with one line: \`Stopped because: acceptance met | bound hit | told to stop\`.` sits before `Full template`.
 - gate 4: `Spawn refused: builder-class "<type>" needs a "## Spiral bound" heading too. Re-issue the spawn …` then the `## Spiral bound` section.
 - both: `Spawn refused: the prompt has no "## How it fails" or "## Spiral bound" heading; builder-class "<type>" needs both. Re-issue the spawn with the same prompt plus the sections below …` then both sections.
+- gate 5: `Spawn refused: builder-class "<type>" needs a claudex-loop line, and <the prompt has none | its "claudex: skip:" line gives no reason | its "claudex: log:" line names no file | its claudex line is still the template placeholder | the plan-review log it names does not exist at <path> | … at <path> is not a file | … at <path> is empty>. New features and behaviour changes go through claudex-loop first. Add one of these lines to the prompt, alone on its line, filled in, then re-issue this spawn:` then a blank line, `claudex: log: <absolute path to this work's claudex-loop plan-review log>` and `claudex: skip: <why claudex-loop does not apply: prototype, one-file fix, copy change, regex tweak, rebase, measurement run, docs>`, a blank line, and ``To turn this gate off instead, set `"requireClaudexLoop": false` in <config file>.``
 - gate 2: `Spawn refused: builder-class "<type>" needs a pattern-check receipt for this session, and none exists at <root>/.pattern-check/<key>.md. Run: node "<pattern-check>/scripts/pattern-check.mjs" open "<what you are about to build>" then node "<pattern-check>/scripts/pattern-check.mjs" record --session <key> with --row "..." or --no-new-pieces "<reason>". Then re-issue this spawn. To turn this gate off instead, set \`"requirePatternCheck": false\` in <config file>.`
 - session brief: `Session start refused: the prompt lacks the heading line(s) "## Target", "## How it fails". A prompt for \`mcp__ccd_session__start_session\` carries five heading lines: Target, Change, Acceptance, How it fails, Spiral bound. Re-issue the same call with the same fields and the same prompt plus the section(s) below, filled in. Each heading line holds the heading alone, as \`## Target\` with the repository on the line under it. If the call was an offer (\`initiation: own_initiative\`), re-issue it as an offer; the owner saw nothing yet. Full template: templates/builder-brief.md in the delegation plugin.` then each missing section from `templates/builder-brief.md`, in order. A heading with text on its line (`# Target: the repo`) does not match, so the refusal says the heading line is bare.
 - session brief, downgraded to `warn`: `delegation: this \`mcp__ccd_session__start_session\` prompt lacks the heading line(s) "## How it fails". The session start goes ahead; the repair is a follow-up message to that session carrying the missing section(s) from templates/builder-brief.md in the delegation plugin, each heading alone on its line.`
@@ -193,6 +196,7 @@ narrows a gate.
   "requireHowItFails": true,
   "requireSpiralBound": true,
   "requirePatternCheck": true,
+  "requireClaudexLoop": true,
   "warnModelRouting": true,
   "logModelRouting": true,
   "checks": { "delegation-guard": "warn", "worktree-spawn-guard": "warn", "repo-rules-inject": "on", "session-brief-gate": "block" },
@@ -228,6 +232,7 @@ peer that has finished its work is not flagged.
 Every row's hook × outcome has a scenario under `evals/`, run offline by `e2e/live-run.sh`
 before its live phase: the denies (`evals/spawn-gate-deny-no-how-it-fails.scenario.json`,
 `evals/spawn-gate-deny-builder-no-spiral-bound.scenario.json`,
+`evals/spawn-gate-deny-builder-no-claudex-line.scenario.json`,
 `evals/send-message-check-deny-undelivered.scenario.json`,
 `evals/session-brief-gate-deny-missing-headings.scenario.json`), the warnings
 (`evals/subagent-stop-warn-no-stopped-line.scenario.json`,
@@ -244,6 +249,9 @@ refusal and re-issue is a manual check in `evals/manifest.json`: no scenario can
 | spawn-gate | `tool_input.prompt` is not a string | the spawn is allowed; one line in `…/delegation/skipped.log` | nothing; the line is the trace that the gate was awake |
 | spawn-gate gate 2 | the cwd is in no git repository, or the payload has no cwd | the spawn is allowed; one skipped.log line | run the spawn from inside the repository if the receipt is wanted |
 | spawn-gate gate 2 | pattern-check is not installed | the spawn is allowed; one skipped.log line naming the reason | install pattern-check if the receipt is wanted |
+| spawn-gate gate 5 | the `claudex: log:` path is relative and the payload has no absolute cwd, or the stat fails with anything but not-found, a too-long path, a symlink loop or a NUL in the path (a permissions fault, an I/O error) | the spawn is allowed; one skipped.log line `claudex line not checked: …` | give the log as an absolute path |
+| spawn-gate gate 5 | the stat hangs (an unresponsive mounted filesystem) | the runner's 4 s deadline allows the spawn; one errors.log line | give a log path on a local disk |
+| spawn-gate gate 5 | a `mcp__ccd_session__start_session` brief, or a session that edits code without spawning a builder | not gated: a started session is itself the host claudex-loop plans in, and its own builder spawns meet gate 5 | nothing |
 | spawn-gate model line | `lib/model-routing.json` is missing or malformed, or `tool_input.model` names no single family in it (`inherit`, another vendor's model) | the spawn is allowed with no model line; one skipped.log line `model not checked: …` | nothing for an unjudged model; a line naming the table file is a broken install: reinstall the plugin |
 | spawn-gate routing log | the state directory is unwritable, or `routing.jsonl` cannot be appended to | the spawn is decided as it would have been; one errors.log line `routing log not written: <code>` | nothing for one line; a repeating line means the state directory needs fixing |
 | spawn-gate routing log rotation | the full log cannot be archived or old archives cannot be pruned (a read-only state directory, a permissions fault) | the spawn is decided as it would have been; the line is appended to the full file; one errors.log line `routing log not rotated: <code>` | nothing for one line; a repeating line means the state directory needs fixing, and the log grows past 1 MiB until it is |
