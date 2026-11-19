@@ -460,8 +460,11 @@ function regionsAt(top, sha, path, { cited, focus, hunkRanges, sinceHunks = [] }
     ...windows(symbolLines, n).map((w) => [...w, 1]),
     ...windows(hunkRanges, n).map((w) => [...w, 2]),
   ];
+  // A cited region gives way only to one around the same cited lines, so a citation whose window
+  // sits inside another's (both clamped at a file edge) keeps its own core and bare lines.
+  const sameCite = (k, r) => r[2] !== 0 || String(cites[k[3]].at) === String(cites[r[3]].at);
   const kept = [];
-  for (const r of ranked) if (!kept.some((k) => k[2] <= r[2] && k[0] <= r[0] && k[1] >= r[1])) kept.push(r);
+  for (const r of ranked) if (!kept.some((k) => k[2] <= r[2] && k[0] <= r[0] && k[1] >= r[1] && sameCite(k, r))) kept.push(r);
   if (!kept.length && n) kept.push([1, Math.min(n, NO_ANCHOR_LINES), 2]);
   const show = (from, to) =>
     lines
@@ -477,15 +480,15 @@ function regionsAt(top, sha, path, { cited, focus, hunkRanges, sinceHunks = [] }
   };
   return kept.map(([from, to, rank, ci]) => {
     const region = { path, from, to, rank, text: show(from, to) };
-    let cite = rank === 0 ? cites.find((c) => c.core[0] >= from && c.core[1] <= to) : null;
-    let [core, [a, b]] = cite ? [cite.core, cite.at] : [null, [0, 0]];
-    if (!cite && rank === 0) {
+    // The region's own citation: overlapping windows of nearby citations each keep theirs.
+    const cite = rank === 0 ? cites[ci] : null;
+    if (!cite) return region;
+    let [core, [a, b]] = [cite.core, cite.at];
+    if (core[0] < from || core[1] > to) {
       // A fragment of a window split for length: a core bounded to the start of its own cited lines.
-      cite = cites[ci];
       [a, b] = [Math.max(cite.at[0], from), Math.min(cite.at[1], to)];
       core = [Math.max(from, a - CORE_CONTEXT_LINES), Math.min(to, a + CORE_CONTEXT_LINES)];
     }
-    if (!cite) return region;
     const bare = Math.min(b, a + 2);
     const note = pastEnd(cite) + movedNote(cite);
     return { ...region, text: note + region.text, core: { from: core[0], to: core[1], text: note + show(core[0], core[1]), bare: { from: a, to: bare, text: note + show(a, bare) } } };

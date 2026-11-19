@@ -1783,6 +1783,34 @@ test("regions: a citation inside a rewritten hunk longer than a region keeps the
   assert.match(passage, /those lines were rewritten since, now lines 28-127 at HEAD/);
 });
 
+// 400 lines of ~235 bytes, cited at `lines` plus far-apart fillers, so every region falls back to its bare cited lines.
+function nearbyCitations(lines) {
+  const b = repo();
+  const body = (tail) => Array.from({ length: 400 }, (_, k) => (k === 399 ? tail : `L${k + 1}_MARK(); // ${"é".repeat(110)}`)).join("\n");
+  commitAt(b, "file.ts", `${body("end();")}\n`);
+  const fillers = [80, 115, 150, 185, 220, 255, 290, 325, 360];
+  review(b, [], { LEDGER_REVIEW_BIN_CODEX: stub(b, "codex", `1. [should] ${[...lines, ...fillers].map((l) => `file.ts:${l}`).join(" ")} the guard is inverted`) });
+  commitAt(b, "file.ts", `${body("end(1);")}\n`);
+  const no = judge(b, "no");
+  review(b, [], { LEDGER_REVIEW_BIN_CODEX: stub(b, "codex", "PASS"), LEDGER_JUDGE_BIN: no });
+  return readFileSync(`${no}.prompt`, "utf8");
+}
+
+test("regions: two nearby citations with overlapping windows each keep their own bare cited lines under the cut", () => {
+  const passage = nearbyCitations([30, 40]);
+  assert.match(passage, /\[cut: /, "the passage is over the cap");
+  assert.match(passage, / {2}30\| L30_MARK\(\);/, passage);
+  assert.match(passage, / {2}40\| L40_MARK\(\);/, "the second citation's own line survives the cut");
+});
+
+test("regions: a citation whose window sits inside another's at the file end keeps its own bare cited lines", () => {
+  // Windows 377-400 and 382-400: 397 lies outside line 392's core (389-395).
+  const passage = nearbyCitations([392, 397]);
+  assert.match(passage, /\[cut: /, "the passage is over the cap");
+  assert.match(passage, / 392\| L392_MARK\(\);/, passage);
+  assert.match(passage, / 397\| L397_MARK\(\);/, "the contained citation's own line survives the cut");
+});
+
 test("regions: a file present at HEAD whose contents cannot be read is not reported as deleted", () => {
   const b = repo();
   review(b, [], { LEDGER_REVIEW_BIN_CODEX: stub(b, "codex", "1. [should] a.txt:1 off by one") });
