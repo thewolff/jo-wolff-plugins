@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased
+
+- Gate 5 in `hooks/spawn-gate.mjs`: a builder-class spawn is refused unless its prompt carries `claudex: log: <path>` naming an existing, non-empty claudex-loop plan-review log (absolute, `~/`, or relative to the payload's cwd) or `claudex: skip: <reason>` with a reason. A line inside a fenced code block and the `<…>` placeholders do not count. The deny names what is wrong, carries both lines as a fill-in template, and names `requireClaudexLoop: false`. It runs after the heading gates and before the pattern-check receipt. A relative log path with no cwd, or a stat fault other than not-found, allows with one skipped.log line. New `lib/claudex.mjs`; `lib/brief.mjs` exports `linesOutsideFences`.
+- Config `requireClaudexLoop` (default `true`).
+- `templates/builder-brief.md` gains a Claudex section (held equal to `CLAUDEX_SECTION`); the SessionStart block, the skill and the README name the line. New scenario `evals/spawn-gate-deny-builder-no-claudex-line.scenario.json`.
+- Not on OMP, and not on `mcp__ccd_session__start_session` (a started session is the host claudex-loop plans in; its builder spawns meet gate 5).
+
 ## 0.1.6 - 2026-11-12
 
 - README, Config: a file with a wrong-typed field is ignored whole by every hook except the session-brief gate, which reads it field by field (`loadConfig`'s `partial`, since 0.1.5) and keeps `off: true` and its own `checks` entry. The README said every hook ignored such a file whole. Docs only; no code changed.

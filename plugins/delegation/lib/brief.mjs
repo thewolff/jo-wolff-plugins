@@ -90,7 +90,7 @@ Stopped because: told to stop
 export function sessionBlock(builderClass) {
   return `# Delegation: how to brief a subagent (delegation plugin)
 
-Before any Agent/Task call, the prompt you hand the subagent carries these sections, in this order. A spawn without \`## How it fails\` is refused; a builder-class spawn (${builderClass.join(", ")}) without \`## Spiral bound\` or without this session's pattern-check receipt is refused. A \`mcp__ccd_session__start_session\` prompt carries all five headings below, each alone on its line, or the start is refused. The refusal carries the missing section as a fill-in template. Teaching: the \`delegation\` skill; template: templates/builder-brief.md in the plugin.
+Before any Agent/Task call, the prompt you hand the subagent carries these sections, in this order. A spawn without \`## How it fails\` is refused; a builder-class spawn (${builderClass.join(", ")}) without \`## Spiral bound\`, without a line \`claudex: log: <plan-review log path>\` or \`claudex: skip: <reason>\`, or without this session's pattern-check receipt is refused. A \`mcp__ccd_session__start_session\` prompt carries all five headings below, each alone on its line, or the start is refused. The refusal carries the missing section as a fill-in template. Teaching: the \`delegation\` skill; template: templates/builder-brief.md in the plugin.
 
 # Target
 the repository, branch, files in play, and the non-goals
@@ -174,6 +174,11 @@ function unfencedLines(text, { closeOpenFence = false } = {}) {
   }
   if (fence && closeOpenFence) for (const line of inside) out.push(line);
   return out;
+}
+
+/** The lines of `text` outside fenced code blocks, under the spawn gates' fence rule (an unclosed fence runs to the end). */
+export function linesOutsideFences(text) {
+  return typeof text === "string" ? unfencedLines(text) : [];
 }
 
 /** True when `text` has a heading line titled `title`. A non-string is false. */

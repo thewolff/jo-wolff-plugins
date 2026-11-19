@@ -1,0 +1,18 @@
+{
+  "$comment": "Gate 5: a builder-class spawn with both headings but no `claudex: log:` or `claudex: skip:` line is refused, carrying both lines as a fill-in template and the requireClaudexLoop way out.",
+  "event": "PreToolUse",
+  "expect": "deny",
+  "reason": "needs a claudex-loop line, and the prompt has none",
+  "stdin": {
+    "session_id": "${SESSION_ID}",
+    "transcript_path": "${TRANSCRIPT}",
+    "cwd": "${CWD}",
+    "hook_event_name": "PreToolUse",
+    "tool_name": "Agent",
+    "tool_input": {
+      "subagent_type": "builder",
+      "description": "add the flag",
+      "prompt": "# Target\nAdd a --timeout flag to the CLI.\n\n## How it fails\n- A wrong default shows first in the config test; one retry, then report it.\n\n## Spiral bound\n- One retry per failing step; at most 2 commits.\n"
+    }
+  }
+}
