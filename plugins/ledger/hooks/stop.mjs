@@ -55,7 +55,8 @@ import { transaction } from "../lib/db.mjs";
 import { runHook, noticeField, invokedDirectly, logError } from "../lib/failopen.mjs";
 import { elsewhereQuestions, inScope, openQuestions, ownedBySession, sessionNotes, sessionQuestions } from "../lib/commands.mjs";
 import { checkStop, offerSentences, unrecordedOffers, offerReason, offerAwayReason } from "../lib/stop-rules.mjs";
-import { blockingSet, eventLine, markShown, owedListLines, unshownEvents } from "../lib/owed.mjs";
+import { blockingSet, eventLine, markShown, owedListLines, sessionItems, unshownEvents } from "../lib/owed.mjs";
+import { refreshBranches } from "../lib/branches.mjs";
 import { brbAway, humanWroteSince } from "../lib/transcript.mjs";
 import { invocation } from "../lib/inject.mjs";
 import { withStore, hookConfig } from "../lib/store.mjs";
@@ -85,10 +86,14 @@ function offerCandidates(db, { sessionId, cwd, since }) {
 
 /** The owed rule's block text for `items`. */
 export function owedReason(items, { now = Date.now(), cli = "ledger" } = {}) {
+  const branches = items.some((i) => i.branch);
   return [
-    "ledger: work the human approved is still owed, and this turn is ending without it started:",
+    branches && items.every((i) => i.branch)
+      ? "ledger: a branch this session committed to has not landed, and this turn is ending without it started:"
+      : "ledger: work the human approved is still owed, and this turn is ending without it started:",
     ...owedListLines(items, { now, cli }),
     `For each one: start it now (dispatch the agent or run the command, then \`${cli} start <ow-id> "<agent id, session or command>"\`), or \`${cli} hold <ow-id> "<why, and until when>"\`, or \`${cli} drop <ow-id> "<why>"\`. If it waits on the human, ask through the ledger, then \`${cli} wait <ow-id> <q-id>\`. If it is already finished, \`${cli} done <ow-id> [ref]\`. Then tell the human in plain words what you did. Do not show the ids.`,
+    ...(branches ? [`A branch item closes itself once its commits are on origin/main (seen after a fetch). Until then: push it and open a pull request, then \`${cli} start <ow-id> "<PR url>"\`; or \`${cli} hold <ow-id> "<waiting for the human to approve the push>"\`; or \`${cli} drop <ow-id> "<why the branch is not needed>"\`. Tell the human which branches are not pushed.`] : []),
   ].join("\n");
 }
 
@@ -165,6 +170,16 @@ export function handle(input, { env = process.env, now = Date.now() } = {}) {
       const forcing = store.config.forcing ?? {};
       const cli = invocation();
       const owedSpent = Boolean(promptId && session?.last_owed_block_prompt === promptId);
+      // Branches this session committed to that have landed since close themselves first, so
+      // they neither block nor show as still owed. Advisory: a fault is logged, the check goes on.
+      if (sessionId && store.config.branches?.enabled !== false) {
+        try {
+          const mine = sessionItems(db, { sessionId, cwd }).filter((i) => i.branch).map((i) => i.id);
+          if (mine.length) for (const e of refreshBranches(db, { dbPath: store.dbPath, ids: mine, now }).errors) logError("Stop", `branch check: ${e}`, env);
+        } catch (err) {
+          logError("Stop", `branch check did not run: ${err.message}`, env);
+        }
+      }
       if (sessionId && promptId && !owedSpent && (forcing.stopOwedRule !== false || forcing.stopOfferRule !== false)) {
         const owed = forcing.stopOwedRule !== false ? blockingSet(db, { sessionId, cwd }) : [];
         const since = session?.started_at ?? null;

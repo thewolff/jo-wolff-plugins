@@ -22,6 +22,7 @@ import { appendFileSync } from "node:fs";
 const SESSION_ID_OK = /^[A-Za-z0-9_.-]+$/;
 import { nowIso } from "../lib/time.mjs";
 import { autoWithdraw } from "../lib/sweep.mjs";
+import { refreshBranches } from "../lib/branches.mjs";
 import { sessionStartLines, stampFirstSeen } from "../lib/digest.mjs";
 import { readDecisionLog, repoRoot } from "../lib/decision-log.mjs";
 
@@ -64,6 +65,14 @@ export function handle(input, { env = process.env, now = Date.now() } = {}) {
         appendFileSync(env.CLAUDE_ENV_FILE, `export LEDGER_SESSION_ID=${sessionId}\n`);
       } catch (err) {
         notices.push(`ledger: could not write ${env.CLAUDE_ENV_FILE} (${err.message}); CLI rows in this session will not carry its id`);
+      }
+    }
+    // Unlanded branches that have landed since close before the owed section is built.
+    if (cfg.config.branches?.enabled !== false) {
+      try {
+        for (const e of refreshBranches(store.db, { dbPath: store.dbPath, now }).errors) logError("SessionStart", `branch check: ${e}`, env);
+      } catch (err) {
+        logError("SessionStart", `branch check did not run: ${err.message}`, env);
       }
     }
     const { text } = buildInjection(store.db, cwd, store.config, { source: input.source, now, env, sessionId });

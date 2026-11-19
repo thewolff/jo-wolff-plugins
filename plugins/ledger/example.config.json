@@ -6,6 +6,7 @@
   "hooks": {
     "sessionStart": true,
     "preToolUse": true,
+    "postToolUse": true,
     "stop": true,
     "sessionEnd": true,
     "userPromptCommands": true
@@ -42,6 +43,9 @@
     "issue": "thewolff/jo-issues#325"
   },
   "decisionLog": {
+    "enabled": true
+  },
+  "branches": {
     "enabled": true
   },
   "review": {

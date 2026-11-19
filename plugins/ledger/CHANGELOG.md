@@ -4,6 +4,58 @@ All notable changes to ledger are recorded here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Entries before 0.2.1 are the
 "Changes" section of the README (one line per version).
 
+## 0.4.7 - 2026-11-18
+
+### Added
+
+- Unlanded branches are owed work. A Bash command that runs `git commit` (followed through `cd`
+  and `git -C`) reaches the new PostToolUse and PostToolUseFailure hook, which records the branch
+  checked out there as an `ow-` item, `land branch <branch> in <worktree>`, with its head sha and
+  whether `origin/<branch>` already holds it. Plugin hooks fire inside subagents, so a subagent's
+  commit is recorded too. A later commit on the same branch updates the open item.
+- The item closes itself as `done` (`landed on <base>`) when `git cherry <base> <branch>` prints
+  no `+` line, which holds after a rebase merge. The base is origin's HEAD, else `origin/main`,
+  else `origin/master`, read from local remote-tracking refs only (no fetch). It is re-checked at
+  SessionStart, at each Stop for the session's own branches, and on `pending`: at most 20 per run,
+  within 2 seconds.
+- `pending`, the SessionStart owed section and the Stop owed rule show each branch item's short
+  sha and `not pushed`, `pushed, not landed`, `branch gone` or `no origin/main to compare with`.
+  The Stop rule blocks on an unstarted branch item exactly as on other owed work, and its reason
+  says to push and `start` it with the PR, `hold` it while the push waits on the human, or `drop`
+  it.
+- The branch recorded is the one `git commit` printed in its `[<branch> <sha>]` line (Bash
+  stdout, or the `error` text on PostToolUseFailure), checked against the repository, so a line
+  that switches branch after committing still names the right one and two branches committed in
+  one line make two items. A quiet commit falls back to the branch checked out afterwards.
+- A new unpushed head on a `started` or `deferred` branch item moves it back to `owed` with a
+  move row (`ledger: owed again: …`), so the Stop rule reminds again.
+- A non-zero git exit is an answer (no such ref); a fault (git missing, a timeout) keeps the
+  item's last checked state and writes one `errors.log` line. Each git call in a refresh gets only
+  what is left of the 2-second budget.
+- A branch with a merge commit in `<base>..<branch>` counts as landed only when its tree is
+  identical to the base's, because `git cherry` leaves merge commits out and a conflict
+  resolution in one would otherwise read as landed.
+- A check (SessionStart, Stop, `pending`) that finds a new unpushed head on a `started` or
+  `deferred` branch item reopens it the same way the commit hook does.
+- `popd` unwinds the `pushd` stack when finding the folder a commit ran in; a `popd` the line did
+  not `pushd` leaves the folder unnamed and the commit unrecorded.
+- A removed repository is a fault like a missing git: the item keeps its last checked state and
+  one `errors.log` line is written. `branch gone` is kept for a branch deleted from a repository
+  that is still there.
+- A commit on a branch whose open item belongs to another session hands the item to the
+  committing session, with a move row, so that session's Stop checks it and reminds.
+- A check writes its result only if the item's head and state are what they were when git
+  started, so a commit recorded meanwhile is never closed on the old head's result.
+- A quiet commit (no `[branch sha]` header) is recorded only when the branch's reflog shows a
+  commit since the command began (`duration_ms` plus 2 seconds), so a failed `git commit` neither
+  records an item nor takes one over from another session.
+- A printed header counts only in the repository whose sha it names, so a header from one
+  repository's commit does not hide a quiet commit in another.
+- Config: `hooks.postToolUse` and `branches.enabled` (both `true`).
+- Migration 10 adds `repo`, `git_dir`, `branch`, `head_sha`, `branch_state` and `checked_at` to
+  `cc_owed`, and a unique index on the open item per branch. A ledger older than 0.4.7 opening the
+  migrated file reports the schema version in `doctor` and keeps working.
+
 ## 0.4.6 - 2026-11-16
 
 ### Fixed

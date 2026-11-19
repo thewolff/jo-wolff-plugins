@@ -29,6 +29,8 @@ import { VERBS, optionList } from "./parse.mjs";
 import { nowIso, parseDeadline, relative, formatLocal } from "./time.mjs";
 import { transaction } from "./db.mjs";
 import { renderBounces, BOUNCES_DEFAULT_SINCE } from "./bounces.mjs";
+import { refreshBranches } from "./branches.mjs";
+import { logError } from "./failopen.mjs";
 import { createOwed, cut, moveOwed, owedByFolder, owedPendingLines, pendingItems, recordNothing, waitOwed } from "./owed.mjs";
 
 const KINDS = ["question", "approval", "plan"];
@@ -401,6 +403,13 @@ export function execute(db, parsed, ctx) {
     case "disable":
       return setEnabled(ctx.cwd, parsed.verb === "enable");
     case "pending":
+      if (ctx.config?.branches?.enabled !== false) {
+        try {
+          for (const e of refreshBranches(db, { dbPath: ctx.dbPath, now }).errors) logError("CLI", `branch check: ${e}`);
+        } catch (err) {
+          logError("CLI", `branch check did not run: ${err.message}`);
+        }
+      }
       if (parsed.all) return ok(null, renderPendingAll(unresolvedByFolder(db), { now, timezone: tz }, owedByFolder(db)));
       return ok(null, [renderPending(openQuestions(db, ctx.cwd), ctx.cwd, { now, timezone: tz }, heldQuestions(db, ctx.cwd)), ...owedPendingLines(pendingItems(db, { cwd: ctx.cwd, sessionId: ctx.sessionId ?? null }), ctx.cwd)].join("\n"));
     case "review":

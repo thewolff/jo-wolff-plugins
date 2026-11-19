@@ -1,0 +1,14 @@
+{
+  "$comment": "A Bash line that committed and then failed (`git commit … && npm test`) reaches PostToolUseFailure; the hook records the branch the same way and prints nothing.",
+  "event": "PostToolUseFailure",
+  "expect": "silent",
+  "stdin": {
+    "session_id": "${SESSION_ID}",
+    "transcript_path": "${TRANSCRIPT}",
+    "cwd": "${CWD}",
+    "hook_event_name": "PostToolUseFailure",
+    "tool_name": "Bash",
+    "tool_input": { "command": "git commit -m wip && npm test" },
+    "error": "Exit code 1"
+  }
+}

@@ -13,6 +13,12 @@
       "deny",
       "silent"
     ],
+    "PostToolUse": [
+      "silent"
+    ],
+    "PostToolUseFailure": [
+      "silent"
+    ],
     "Stop": [
       "deny",
       "silent"

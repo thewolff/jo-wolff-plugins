@@ -11,7 +11,7 @@
 import { fileURLToPath } from "node:url";
 import { elsewhereQuestions, heldHead, heldQuestions, logEntries, openQuestions, pendingLines, renderLog, renderPending } from "./commands.mjs";
 import { quickIssues } from "./doctor.mjs";
-import { cut, leftover, sessionItems } from "./owed.mjs";
+import { branchSuffix, cut, leftover, sessionItems } from "./owed.mjs";
 import { relative } from "./time.mjs";
 import { findingsLine } from "./review.mjs";
 
@@ -191,7 +191,7 @@ export function owedSection(db, cwd, sessionId, { compact = false, now = Date.no
   if (!owed.length && !started.length && !deferred.length && !others.length) return "";
   const more = (items, cap) => (items.length > cap ? [`… and ${items.length - cap} more; run \`${invocation()} pending --all\``] : []);
   const list = (items, cap, line) => [...items.slice(0, cap).map(line), ...more(items, cap)];
-  const body = (i) => cut(i.body, 120);
+  const body = (i) => `${cut(i.body, 120)}${branchSuffix(i)}`;
   const waitName = (i) => (i.waits_on ? db.prepare("SELECT name FROM cc_questions WHERE id = ?").get(i.waits_on)?.name ?? i.waits_on : null);
   const out = [];
   if (owed.length || started.length || deferred.length) {

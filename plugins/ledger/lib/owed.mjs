@@ -122,6 +122,32 @@ export function moveOwed(db, id, verb, text, { by, iso, sessionId = null }) {
 }
 
 /**
+ * Move a started or deferred item back to `owed` (an unlanded branch got a new head the pointer
+ * or reason did not cover), with one move row whose detail says why. Call inside a transaction.
+ * Returns whether it moved.
+ */
+export function reopenOwed(db, id, detail, { by, iso, sessionId = null }) {
+  const item = getOwed(db, id);
+  if (!item || (item.state !== "started" && item.state !== "deferred")) return false;
+  const changes = db.prepare("UPDATE cc_owed SET state = 'owed', session_id = coalesce(?, session_id), changed_at = ? WHERE id = ? AND state = ?").run(sessionId, iso, id, item.state).changes;
+  if (changes) addMove(db, { kind: "move", owedId: id, from: item.state, to: "owed", detail: cut(detail), by, iso, sessionId });
+  return Boolean(changes);
+}
+
+/**
+ * Hand an open item to `sessionId` without changing its state, with a move row from the state to
+ * itself (as a repeated move by another session does in moveOwed). No-op when it is already that
+ * session's or not open. Call inside a transaction. Returns whether it moved.
+ */
+export function takeOverOwed(db, id, detail, { by, iso, sessionId }) {
+  const item = getOwed(db, id);
+  if (!sessionId || !item || item.session_id === sessionId || !["owed", "started", "deferred"].includes(item.state)) return false;
+  const changes = db.prepare("UPDATE cc_owed SET session_id = ?, changed_at = ? WHERE id = ? AND state = ?").run(sessionId, iso, id, item.state).changes;
+  if (changes) addMove(db, { kind: "move", owedId: id, from: item.state, to: item.state, detail: cut(detail), by, iso, sessionId });
+  return Boolean(changes);
+}
+
+/**
  * `wait <ow-id> <q-id>` links an owed item to the question it waits on; `wait <ow-id> none`
  * removes the link. Only from `owed`; the question must be open or held and this session's
  * (commands.mjs ownedBySession; with no session id, in scope for `cwd`). Call inside a transaction.
@@ -248,6 +274,14 @@ export function owedByFolder(db) {
   return groups;
 }
 
+const BRANCH_STATE_TEXT = { unpushed: "not pushed", pushed: "pushed, not landed", gone: "branch gone; drop it if it is not needed", nobase: "no origin/main to compare with" };
+
+/** ` · <short sha> · <state>` for an unlanded-branch item (lib/branches.mjs); "" for any other owed item. */
+export function branchSuffix(i) {
+  if (!i?.branch) return "";
+  return `${i.head_sha ? ` · ${String(i.head_sha).slice(0, 8)}` : ""} · ${BRANCH_STATE_TEXT[i.branch_state] ?? "not checked yet"}`;
+}
+
 /**
  * `pending` lines for owed items: `owed|started|deferred <ow-id>  # <body>[ · <pointer or reason>][ · waits on <q-id>]`,
  * ending ` · in <folder>` when `cwd` is given and the item is outside its scope.
@@ -256,13 +290,13 @@ export function owedPendingLines(items, cwd = null) {
   return items.map((i) => {
     const extra = i.state === "started" ? ` · ${i.pointer}` : i.state === "deferred" ? ` · ${i.reason}` : "";
     const where = cwd && !inScope(cwd, i.cwd) ? ` · in ${i.cwd}` : "";
-    return `${i.state} ${i.id}  # ${i.body}${extra}${i.waits_on ? ` · waits on ${i.waits_on}` : ""}${where}`;
+    return `${i.state} ${i.id}  # ${i.body}${branchSuffix(i)}${extra}${i.waits_on ? ` · waits on ${i.waits_on}` : ""}${where}`;
   });
 }
 
 /** One line per owed item for the agent: `- <body> (<ow-id>, owed <relative>)`, at most `cap`, then a count. */
 export function owedListLines(items, { now = Date.now(), cap = 10, max = 120, cli = "ledger" } = {}) {
-  const lines = items.slice(0, cap).map((i) => `- ${cut(i.body, max)} (${i.id}, owed ${relative(i.made_at, now)})`);
+  const lines = items.slice(0, cap).map((i) => `- ${cut(i.body, max)}${branchSuffix(i)} (${i.id}, owed ${relative(i.made_at, now)})`);
   if (items.length > cap) lines.push(`… and ${items.length - cap} more; run \`${cli} pending --all\``);
   return lines;
 }
@@ -301,6 +335,7 @@ export function eventLine(e) {
   if (e.to_state === "deferred") return `ledger: deferred: ${e.body}: ${e.detail}`;
   if (e.to_state === "dropped") return `ledger: dropped: ${e.body}: ${e.detail}`;
   if (e.to_state === "done") return `ledger: done: ${e.body}${e.detail ? ` → ${e.detail}` : ""}`;
+  if (e.to_state === "owed") return `ledger: owed again: ${e.body}${e.detail ? `: ${e.detail}` : ""}`;
   return `ledger: ${e.to_state}: ${e.body}`;
 }
 

@@ -754,7 +754,7 @@ test("the ledger plugin itself passes its own gate: the five static rows on the 
     CHECKS.map((c) => [c, "pass"]),
     JSON.stringify(rows),
   );
-  assert.match(rows[3].detail, new RegExp(`^\\d+ scenario\\(s\\) cover 5 event\\(s\\); canary #${id} at \\S+: live pass$`));
+  assert.match(rows[3].detail, new RegExp(`^\\d+ scenario\\(s\\) cover 7 event\\(s\\); canary #${id} at \\S+: live pass$`));
   assert.match(rows[4].detail, /^6 state path\(s\) declared \(1 with a prune, 4 kept by design\); 1 prune command\(s\) ran dry; \d+ write site\(s\) in source$/);
   const version = JSON.parse(readFileSync(join(dir, ".claude-plugin", "plugin.json"), "utf8")).version;
   assert.equal(rows[5].detail, `version ${version}, new since the base: CHANGELOG.md has its ${version} entry; README.md has its ${version} entry; the repository README names it`);

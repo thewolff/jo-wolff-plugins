@@ -32,7 +32,7 @@ import { staleCheck } from "./sweep.mjs";
 import { doctorCheck } from "./digest.mjs";
 
 export const PLUGIN_ROOT = fileURLToPath(new URL("..", import.meta.url));
-export const EXPECTED_EVENTS = Object.freeze(["SessionStart", "UserPromptSubmit", "PreToolUse", "Stop", "SessionEnd"]);
+export const EXPECTED_EVENTS = Object.freeze(["SessionStart", "UserPromptSubmit", "PreToolUse", "PostToolUse", "PostToolUseFailure", "Stop", "SessionEnd"]);
 export const ERRORS_WINDOW_MS = 7 * 86_400_000;
 export const STALE_BOUNCE_MS = 86_400_000;
 export const MISSING_DB = "db does not exist yet";

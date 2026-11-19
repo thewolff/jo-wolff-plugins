@@ -34,6 +34,12 @@ function inputs(event, cwd) {
         ],
         plain: [{ ...base, tool_name: "Bash", tool_input: { command: "ls" } }],
       };
+    case "PostToolUse":
+    case "PostToolUseFailure":
+      return {
+        gated: [{ ...base, tool_name: "Bash", tool_input: { command: "git commit -m wip" } }],
+        plain: [{ ...base, tool_name: "Bash", tool_input: { command: "ls" } }],
+      };
     case "Stop":
       return {
         gated: [{ ...base, stop_hook_active: false, last_assistant_message: "Shall I use the small cache or rewrite the loader for this change?" }],
@@ -65,8 +71,8 @@ function assertAllowed(r, what) {
   assert.notEqual(json.continue, false, `${what}: stopped: ${r.stdout}`);
 }
 
-test("hooks.json lists the five hooks this file covers", () => {
-  assert.deepEqual(HOOKS.map((h) => h.event).sort(), ["PreToolUse", "SessionEnd", "SessionStart", "Stop", "UserPromptSubmit"]);
+test("hooks.json lists the seven hook events this file covers", () => {
+  assert.deepEqual(HOOKS.map((h) => h.event).sort(), ["PostToolUse", "PostToolUseFailure", "PreToolUse", "SessionEnd", "SessionStart", "Stop", "UserPromptSubmit"]);
 });
 
 for (const { event, script } of HOOKS) {
