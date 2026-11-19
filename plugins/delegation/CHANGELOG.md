@@ -3,6 +3,7 @@
 ## Unreleased
 
 - Gate 5 in `hooks/spawn-gate.mjs`: a builder-class spawn is refused unless its prompt carries `claudex: log: <path>` naming an existing, non-empty claudex-loop plan-review log (absolute, `~/`, or relative to the payload's cwd) or `claudex: skip: <reason>` with a reason. A line inside a fenced code block and the `<…>` placeholders do not count. The deny names what is wrong, carries both lines as a fill-in template, and names `requireClaudexLoop: false`. It runs after the heading gates and before the pattern-check receipt. A relative log path with no absolute cwd, or a stat fault other than not-found, allows with one skipped.log line. New `lib/claudex.mjs`; `lib/brief.mjs` exports `linesOutsideFences`.
+- A skip reason is unquoted before it is judged and needs a letter or digit (zero-width characters removed); `<…>` followed by punctuation is still a placeholder. List, number and blockquote markers are dropped before a whole-line backtick pair. A log path that is too long, a symlink loop, or holds a NUL is denied as unusable instead of failing open.
 - Config `requireClaudexLoop` (default `true`).
 - `templates/builder-brief.md` gains a Claudex section (held equal to `CLAUDEX_SECTION`); the SessionStart block, the skill and the README name the line. New scenario `evals/spawn-gate-deny-builder-no-claudex-line.scenario.json`.
 - Not on OMP, and not on `mcp__ccd_session__start_session` (a started session is the host claudex-loop plans in; its builder spawns meet gate 5).

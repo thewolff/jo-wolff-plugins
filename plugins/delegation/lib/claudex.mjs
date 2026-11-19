@@ -11,9 +11,11 @@
 // read the log's verdict, which would bind this plugin to a format claudex-loop leaves free.
 //
 // WHAT IS MATCHED: a line outside fenced code blocks (the spawn gates' fence rule), trimmed, with
-// one backtick pair around the whole line and one leading `- ` or `* ` list marker dropped, reading
+// list (`- `, `* `, `+ `, `1. `, `1) `) and blockquote (`>`) markers, then one backtick pair around
+// the whole line, dropped, reading
 // `claudex: skip: …` or `claudex: log: …` (keywords case-insensitive). A value wrapped in `<…>`
-// is the deny template's placeholder and never counts. Any one valid line passes.
+// (trailing punctuation allowed) is the deny template's placeholder and never counts; a skip
+// reason, quotes removed, needs a letter or digit. Any one valid line passes.
 //
 // PATHS: `~/` expands to HOME; a relative path resolves against the payload's absolute cwd. A relative
 // path with no absolute cwd, or a stat that fails for any reason but "not found"/"not a directory", is
@@ -28,8 +30,13 @@ import { configPath } from "./config.mjs";
 
 const LINE_RE = /^claudex:[ \t]*(skip|log)[ \t]*:(.*)$/i;
 const NOT_FOUND = new Set(["ENOENT", "ENOTDIR"]);
+// A path the prompt got wrong rather than a fault of this machine: denied, not failed open.
+const UNUSABLE = new Set(["ENAMETOOLONG", "ELOOP", "ERR_INVALID_ARG_VALUE"]);
+const MARKER_RE = /^(?:[-*+][ \t]+|\d+[.)][ \t]+|>[ \t]*)/;
+const ZERO_WIDTH_RE = /[\u200B-\u200D\u2060\uFEFF]/g;
 
-const isPlaceholder = (v) => v.startsWith("<") && v.endsWith(">");
+const isPlaceholder = (v) => /^<[^>]*>\W*$/.test(v);
+const hasWord = (v) => /[\p{L}\p{N}]/u.test(v.replace(ZERO_WIDTH_RE, ""));
 
 /** The claudex lines of `prompt`, in order: `{ kind: "skip"|"log", value }` with `value` trimmed. */
 export function claudexLines(prompt) {
@@ -37,9 +44,10 @@ export function claudexLines(prompt) {
   const out = [];
   for (const raw of linesOutsideFences(prompt)) {
     let line = raw.trim();
+    // List, number and blockquote markers first (`> - x` is two), then the backtick pair.
+    for (let m; (m = MARKER_RE.exec(line)) && m[0] !== ""; ) line = line.slice(m[0].length).trimStart();
     // Only a pair around the whole line is dropped, so `claudex: log: \`/a b.md\`` keeps its quoted path.
     if (/^`claudex:/i.test(line) && line.endsWith("`")) line = line.slice(1, -1).trim();
-    line = line.replace(/^[-*][ \t]+/, "");
     const m = LINE_RE.exec(line);
     if (m) out.push({ kind: m[1].toLowerCase(), value: m[2].trim() });
   }
@@ -65,8 +73,9 @@ export function checkClaudexLine({ prompt, cwd }, env = process.env, home = home
   };
   for (const { kind, value } of lines) {
     if (kind === "skip") {
-      if (value === "") note({ problem: "empty-reason" });
-      else if (isPlaceholder(value)) note({ problem: "placeholder" });
+      const reason = unquote(value);
+      if (isPlaceholder(reason)) note({ problem: "placeholder" });
+      else if (!hasWord(reason)) note({ problem: "empty-reason" });
       else return { status: "present" };
       continue;
     }
@@ -92,6 +101,7 @@ export function checkClaudexLine({ prompt, cwd }, env = process.env, home = home
       st = stat(path);
     } catch (err) {
       if (NOT_FOUND.has(err?.code)) note({ problem: "log-not-found", path });
+      else if (UNUSABLE.has(err?.code)) note({ problem: "log-unusable", path, code: err.code });
       else skipped ??= `the log path ${path} could not be read (${err?.code ?? err?.message ?? "unknown error"})`;
       continue;
     }
@@ -109,6 +119,7 @@ const WHAT = Object.freeze({
   "empty-path": () => `its "claudex: log:" line names no file`,
   placeholder: () => "its claudex line is still the template placeholder",
   "log-not-found": (r) => `the plan-review log it names does not exist at ${r.path}`,
+  "log-unusable": (r) => `the plan-review log path it names cannot be used (${r.code}): ${r.path.length > 120 ? `${r.path.slice(0, 117)}...` : r.path}`,
   "log-not-file": (r) => `the plan-review log it names at ${r.path} is not a file`,
   "log-empty": (r) => `the plan-review log it names at ${r.path} is empty`,
 });

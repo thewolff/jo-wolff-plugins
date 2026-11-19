@@ -4,7 +4,7 @@
 
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdirSync, writeFileSync } from "node:fs";
+import { mkdirSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { box, gitRepo, runHook, setConfig, skippedLog, spawnPayload, HOW_ONLY } from "./helpers.mjs";
 import { CLAUDEX_LINES, checkClaudexLine, claudexLines, claudexReason } from "../lib/claudex.mjs";
@@ -110,6 +110,45 @@ test("checkClaudexLine: fails open on a relative path with no cwd, and on a stat
   assert.equal(fault.status, "skipped");
   assert.match(fault.why, /\/x\/y\.md could not be read \(EACCES\)/);
   assert.equal(checkClaudexLine({ prompt: "claudex: log: /x/y.md\nclaudex: skip: docs" }, env, undefined, { stat }).status, "present", "a valid skip still passes");
+});
+
+test("checkClaudexLine: a skip reason is unquoted first and needs a letter or digit; `<…>` with trailing punctuation is a placeholder", (t) => {
+  const { env } = box(t);
+  const cases = [
+    ['claudex: skip: ""', "empty-reason"],
+    ["claudex: skip: ``", "empty-reason"],
+    ["claudex: skip: -", "empty-reason"],
+    ["claudex: skip: \u200B", "empty-reason"],
+    ["claudex: skip: `<why claudex-loop does not apply>`", "placeholder"],
+    ['claudex: skip: "<why>"', "placeholder"],
+    ["claudex: skip: <why claudex-loop does not apply>.", "placeholder"],
+    ["claudex: log: <path>.", "placeholder"],
+  ];
+  for (const [prompt, problem] of cases) {
+    const r = checkClaudexLine({ prompt, cwd: "/" }, env);
+    assert.equal(r.status, "missing", prompt);
+    assert.equal(r.problem, problem, prompt);
+  }
+  assert.equal(checkClaudexLine({ prompt: 'claudex: skip: "one-file fix"' }, env).status, "present", "a quoted real reason passes");
+  assert.equal(checkClaudexLine({ prompt: "claudex: skip: <b>docs</b> only" }, env).status, "present", "angle brackets inside a real reason are not a placeholder");
+});
+
+test("claudexLines: list, number and blockquote markers are dropped before the backtick pair", () => {
+  for (const line of ["- `claudex: skip: one-file fix`", "1. claudex: skip: one-file fix", "2) claudex: skip: one-file fix", "+ claudex: skip: one-file fix", "> claudex: skip: one-file fix", "> - `claudex: skip: one-file fix`"]) {
+    assert.deepEqual(claudexLines(line), [{ kind: "skip", value: "one-file fix" }], line);
+  }
+});
+
+test("checkClaudexLine: a log path that is too long, loops, or holds a NUL is denied as unusable, not failed open", (t) => {
+  const { root, env } = box(t);
+  const long = checkClaudexLine({ prompt: `claudex: log: /${"a".repeat(5000)}` }, env);
+  assert.equal(long.status, "missing");
+  assert.equal(long.problem, "log-unusable");
+  assert.equal(long.code, "ENAMETOOLONG");
+  assert.match(claudexReason("builder", long), /cannot be used \(ENAMETOOLONG\): \/a{116}\.\.\.\./, "the long path is shortened in the deny");
+  symlinkSync(join(root, "loop"), join(root, "loop"));
+  assert.equal(checkClaudexLine({ prompt: `claudex: log: ${join(root, "loop")}` }, env).code, "ELOOP");
+  assert.equal(checkClaudexLine({ prompt: "claudex: log: /tmp/a\u0000b.md" }, env).code, "ERR_INVALID_ARG_VALUE");
 });
 
 test("claudexReason: names the problem, both lines, and the config switch", () => {
