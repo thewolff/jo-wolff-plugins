@@ -470,15 +470,23 @@ on an earlier commit when the agent runs `review addressed "<why>"`. A lab that 
 this time, or not in this run's labs, gets a `findings` row on the new commit carrying its
 outstanding findings, so skipping a lab does not clear them. Each finding keeps `since`, the
 commit of the round that first raised it, through every later round that carries it or judges it
-`no`. For each finding the judge gets the finding and the change from `since` to HEAD: first the
-diff of the files it names; then, for a finding about the pattern-check receipt (tagged
-`fault-tolerance:`, or naming `.pattern-check`; the word "receipt" alone does not count), the
-receipt as it is now; then the other files changed in that window, each under its path; or, when
-nothing changed at all, a line saying so. A row written before 0.4.6 has no `since` and is judged
-from its own commit. The passage is capped at 8 kB, and the finding with its named files' diff is
-budgeted first: when it fits alone, the receipt and other files get only what is left, so they
-never cut it. A longer passage is cut and ends with a line saying so and giving the
-sha256 of the whole, so the cache tells two long inputs apart. The question is "Does this change resolve the finding? Answer
+`no`. Before the judge, a mechanical check: when every backticked identifier the finding names
+(`foo`, `foo()`, `a.b.foo` by its last segment) was in a file it names at `since` and occurs
+nowhere in the tree at HEAD, the finding is resolved as `absent` without asking, and the output
+names what is gone. An identifier that was never there (a finding about something missing) and a
+named path that matches no file both leave the decision to the judge. For each finding the judge
+gets the finding and the change from `since` to HEAD: first the files it names as they are at
+HEAD, with line numbers, around the cited lines, the identifiers it names and the lines changed
+since (a file gone at HEAD is said to be); then the diff of those files; then the test files
+changed in that window that refer to the named files or identifiers; then, for a finding about the
+pattern-check receipt (tagged `fault-tolerance:`, or naming `.pattern-check`; the word "receipt"
+alone does not count), the receipt as it is now; then every other file changed in that window,
+each under its path; or, when nothing changed at all, a line saying so. A row written before 0.4.6
+has no `since` and is judged from its own commit. The passage is capped at 16 kB and cut by
+relevance: sections are filled in that order with whole regions and hunks, the ones around a cited
+line or naming an identifier first, so the cited lines are the last thing to go. A cut passage
+ends with a line naming how many bytes each section left out and the sha256 of the whole, so the
+judge knows the evidence is partial and the cache tells two long inputs apart. The question is "Does this change resolve the finding? Answer
 yes or no." `no` keeps the finding open (`judge: "no"` in `findings_json`, the row stays
 `findings`, the gate stays closed, and the output names it); `yes` resolves it. A judge that is
 not configured, cannot start, times out (60 seconds) or answers anything else gives

@@ -915,11 +915,11 @@ test("R2-S3: a branch reviewed from its root commit keeps counting from the root
 
 test("R2-S5: the judge passage is capped whole, marks the cut, and names the whole input's digest", async () => {
   const { passageFor, PASSAGE_CAP_BYTES } = await import("../lib/ledger-judge.mjs");
-  const long = "x".repeat(9000);
-  const fixed = passageFor(long, `${"d".repeat(9000)}\n+FIXED`);
-  const broken = passageFor(long, `${"d".repeat(9000)}\n+BROKEN`);
+  const long = "x".repeat(PASSAGE_CAP_BYTES);
+  const fixed = passageFor(long, `${"d".repeat(PASSAGE_CAP_BYTES)}\n+FIXED`);
+  const broken = passageFor(long, `${"d".repeat(PASSAGE_CAP_BYTES)}\n+BROKEN`);
   assert.ok(Buffer.byteLength(fixed) <= PASSAGE_CAP_BYTES, `${Buffer.byteLength(fixed)} bytes`);
-  assert.match(fixed, /\[cut: the finding and change are \d+ bytes; .* sha256 of the whole: [0-9a-f]{64}\]$/);
+  assert.match(fixed, /\[cut: the passage was \d+ bytes, over the \d+-byte limit; left out: finding \d+ bytes, named diff \d+ bytes; sha256 of the whole: [0-9a-f]{64}\]$/);
   assert.notEqual(fixed, broken, "inputs that differ only past the cut are told apart");
   assert.equal(passageFor("short", "diff"), "Finding:\nshort\n\nChange (unified diff):\ndiff");
 });
@@ -1358,7 +1358,7 @@ test("0.4.6 R1-2: a named hunk that fits the cap alone stays whole beside a larg
   const { passageFor, PASSAGE_CAP_BYTES } = await import("../lib/ledger-judge.mjs");
   const tail = "\n+DECISIVE_FIX_LINE";
   // Fits alone, but not with the cut marker beside it: the supplements are dropped, the hunk kept.
-  const near = `${"n".repeat(8000)}${tail}`;
+  const near = `${"n".repeat(PASSAGE_CAP_BYTES - 200)}${tail}`;
   const alone = passageFor("x", near);
   assert.ok(Buffer.byteLength(alone) <= PASSAGE_CAP_BYTES && alone.endsWith(tail));
   for (const extra of [{ receipt: "r".repeat(1000) }, { others: [{ path: "big.ts", diff: "o".repeat(20000) }] }]) {
@@ -1398,4 +1398,112 @@ test("0.4.6 R1-3: a finding carried through skipped and unavailable rounds keeps
   r = review(b, ["--labs", "codex"], { LEDGER_REVIEW_BIN_CODEX: stub(b, "codex", "PASS"), LEDGER_JUDGE_BIN: cond });
   assert.match(r.out, /^ {2}judge yes: \[blocking\] card\.tsx:1 x is broken/m, r.out);
   assert.ok(readFileSync(`${cond}.prompt`, "utf8").includes(FIX));
+});
+
+// The judge's passage holds the named files at HEAD and the tests, and a finding whose identifier
+// is gone from the tree is resolved without the judge.
+
+/** Commit `text` at `name`, creating its folders. */
+function commitAt(b, name, text) {
+  mkdirSync(join(b.work, name, ".."), { recursive: true });
+  return commit(b, name, text);
+}
+
+test("absent: a finding whose backticked identifier was in its file and is gone from the tree is resolved without the judge", () => {
+  const b = repo();
+  commitAt(b, "lib/card.ts", "export function committedSince() {\n  return stale;\n}\n");
+  review(b, [], { LEDGER_REVIEW_BIN_CODEX: stub(b, "codex", "1. [should] lib/card.ts:1 `committedSince` returns stale state") });
+  commitAt(b, "lib/card.ts", "export function fresh() {\n  return now();\n}\n");
+  const no = judge(b, "no");
+  const r = review(b, [], { LEDGER_REVIEW_BIN_CODEX: stub(b, "codex", "PASS"), LEDGER_JUDGE_BIN: no });
+  assert.equal(calls(no), 0, "the judge is not asked");
+  assert.match(r.out, /^ {2}judge absent: \[should\] lib\/card\.ts:1 `committedSince` returns stale state \(round 1; no longer in the tree: `committedSince`\)$/m, r.out);
+  assert.match(r.out, /^codex: pass$/m);
+  assert.doesNotMatch(r.out, /the judge says it is not resolved/);
+  assert.equal(push(b).out, "");
+});
+
+test("absent: an identifier that was never there (a finding about something missing) still goes to the judge, and a no still prints", () => {
+  const b = repo();
+  commitAt(b, "auth.ts", "login(user);\n");
+  review(b, [], { LEDGER_REVIEW_BIN_CODEX: stub(b, "codex", "1. [blocking] auth.ts:1 `validateToken` is never called before login") });
+  commitAt(b, "auth.ts", "login(user); // unchanged behaviour\n");
+  const no = judge(b, "no");
+  const r = review(b, [], { LEDGER_REVIEW_BIN_CODEX: stub(b, "codex", "PASS"), LEDGER_JUDGE_BIN: no });
+  assert.equal(calls(no), 1);
+  assert.match(r.out, /\[blocking\] auth\.ts:1 `validateToken` is never called before login \(from round 1; the judge says it is not resolved\)/, r.out);
+  assert.equal(decision(push(b)), "deny");
+});
+
+test("absent: a named path that resolves to no file disables the shortcut, even when the identifier left another file", () => {
+  const b = repo();
+  commitAt(b, "util.ts", "export const staleFn = () => 1;\n");
+  review(b, [], { LEDGER_REVIEW_BIN_CODEX: stub(b, "codex", "1. [should] wrong/path.ts:3 `staleFn` leaks a handle") });
+  commitAt(b, "util.ts", "export const other = () => 1;\n");
+  const no = judge(b, "no");
+  const r = review(b, [], { LEDGER_REVIEW_BIN_CODEX: stub(b, "codex", "PASS"), LEDGER_JUDGE_BIN: no });
+  assert.equal(calls(no), 1, "the judge decides");
+  assert.match(r.out, /^ {2}judge no: \[should\] wrong\/path\.ts:3 `staleFn` leaks a handle \(round 1\)$/m, r.out);
+});
+
+test("passage: a fix that lives in a test file is in the passage, with the named file as it is at HEAD", () => {
+  const b = repo();
+  commitAt(b, "src/parse.ts", "export const parse = (s) => s.trim();\n");
+  review(b, [], { LEDGER_REVIEW_BIN_CODEX: stub(b, "codex", "1. [should] src/parse.ts:1 `parse` has no test for empty input") });
+  commitAt(b, "test/parse.test.mjs", "import { parse } from '../src/parse.ts';\ntest('EMPTY_INPUT_CASE', () => parse(''));\n");
+  commitAt(b, "notes.md", "unrelated\n");
+  const cond = needleJudge(b, "tests", "EMPTY_INPUT_CASE");
+  const r = review(b, [], { LEDGER_REVIEW_BIN_CODEX: stub(b, "codex", "PASS"), LEDGER_JUDGE_BIN: cond });
+  assert.match(r.out, /^ {2}judge yes: \[should\] src\/parse\.ts:1 `parse` has no test for empty input \(round 1\)$/m, r.out);
+  const passage = readFileSync(`${cond}.prompt`, "utf8");
+  assert.match(passage, /The files the finding names, as they are at HEAD [^\n]*:\nFile: src\/parse\.ts \(lines 1-1 at HEAD\)\n {3}1\| export const parse = \(s\) => s\.trim\(\);/);
+  assert.match(passage, /Test files changed since the finding was raised that refer to it \(unified diff\):\nFile: test\/parse\.test\.mjs\n/);
+  const others = passage.indexOf("Other files changed since");
+  assert.ok(others > passage.indexOf("EMPTY_INPUT_CASE"), "the test comes before the other files");
+  assert.ok(passage.indexOf("File: notes.md") > others, "an unrelated file is under the other files");
+});
+
+test("passage over the cap: the cited line survives at the end of a long run of identifier mentions, and the cut is named", async () => {
+  const { PASSAGE_CAP_BYTES } = await import("../lib/ledger-judge.mjs");
+  const b = repo();
+  const line = (i) => (i === 190 ? "  CITED_LINE_MARKER(symbolX);" : `  symbolX(${"p".repeat(200)}, ${i});`);
+  commitAt(b, "big.ts", `${Array.from({ length: 200 }, (_, k) => line(k + 1)).join("\n")}\n`);
+  review(b, [], { LEDGER_REVIEW_BIN_CODEX: stub(b, "codex", "1. [should] big.ts:190 `symbolX` is called with the wrong arity") });
+  commitAt(b, "big.ts", `${Array.from({ length: 200 }, (_, k) => line(k + 1).replace("p", "q")).join("\n")}\n`);
+  for (let k = 0; k < 4; k++) commitAt(b, `other${k}.txt`, `${"o".repeat(6000)}\n`);
+  const cond = needleJudge(b, "cap", "CITED_LINE_MARKER");
+  const r = review(b, [], { LEDGER_REVIEW_BIN_CODEX: stub(b, "codex", "PASS"), LEDGER_JUDGE_BIN: cond });
+  assert.match(r.out, /^ {2}judge yes: /m, r.out);
+  const passage = readFileSync(`${cond}.prompt`, "utf8").replace(/\n\nQuestion: [\s\S]*$/, "");
+  assert.ok(Buffer.byteLength(passage) <= PASSAGE_CAP_BYTES, `${Buffer.byteLength(passage)} bytes`);
+  assert.match(passage, / 190\|   CITED_LINE_MARKER\(symbolX\);/);
+  assert.match(passage, /\[cut: the passage was \d+ bytes, over the \d+-byte limit; left out: [^\]]*other files \d+ bytes[^\]]*; sha256 of the whole: [0-9a-f]{64}\]$/);
+});
+
+test("passageFor: a byte-heavy cited region keeps its cited lines before smaller lower-ranked regions", async () => {
+  const { passageFor, PASSAGE_CAP_BYTES } = await import("../lib/ledger-judge.mjs");
+  const current = [
+    { path: "a.ts", from: 1, to: 31, rank: 0, text: "x".repeat(PASSAGE_CAP_BYTES), core: { from: 13, to: 19, text: "  16| CORE_CITED_LINE" } },
+    ...Array.from({ length: 5 }, (_, k) => ({ path: "a.ts", from: 100 + k * 40, to: 110 + k * 40, rank: 1, text: `small ${k}` })),
+  ];
+  const p = passageFor("a.ts:16 bug", "", { current });
+  assert.ok(Buffer.byteLength(p) <= PASSAGE_CAP_BYTES);
+  assert.match(p, /File: a\.ts \(lines 13-19 at HEAD\)\n {2}16\| CORE_CITED_LINE/);
+  assert.ok(p.indexOf("CORE_CITED_LINE") < p.indexOf("small 0"), "shown in file order");
+});
+
+test("passageFor: two inputs that differ only in an other file past the cut are cached apart", async () => {
+  const { passageFor } = await import("../lib/ledger-judge.mjs");
+  const others = (last) => [...Array.from({ length: 30 }, (_, k) => ({ path: `f${k}.ts`, diff: `@@ -1 +1 @@\n+${"o".repeat(1000)}` })), { path: "z.ts", diff: `@@ -1 +1 @@\n+${"o".repeat(1000)}${last}` }];
+  const one = passageFor("x", "d", { others: others("ONE") });
+  const two = passageFor("x", "d", { others: others("TWO") });
+  assert.doesNotMatch(one, /ONE/, "z.ts is past the cut");
+  assert.notEqual(one, two);
+});
+
+test("namedSymbols: backticked identifiers, dotted ones by their last segment, files left out", async () => {
+  const { namedSymbols } = await import("../lib/review.mjs");
+  const isPath = (s) => s === "lib/review.mjs" || s === "review.mjs";
+  assert.deepEqual(namedSymbols("In lib/review.mjs, `worker.committedSince` keeps `foo()`; see `review.mjs`, `a.txt:1`, `x`, and plain words", isPath), ["committedSince", "foo"]);
+  assert.deepEqual(namedSymbols("no backticks here: committedSince"), []);
 });

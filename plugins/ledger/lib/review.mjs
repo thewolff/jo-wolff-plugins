@@ -31,8 +31,9 @@
 // blocking or should finding (see `outstanding`) that a lab's new reply drops or lists only as a
 // nit, and every outstanding finding on an earlier commit when the agent runs `review addressed
 // "<why>"`. Each is asked once, with the finding and the change since the round that first raised
-// it (`since` on the item, 0.4.6): the files it names first, then the receipt for a finding about
-// it, then the other changed files (see judgeItems). `no` keeps it open (`judge: "no"` in
+// it (`since` on the item, 0.4.6): the files it names at HEAD and their diff first, then the tests
+// that refer to them, the receipt for a finding about it, and the other changed files; a finding
+// whose named identifiers are gone from the tree is `absent` without asking (see judgeItems). `no` keeps it open (`judge: "no"` in
 // findings_json; the row stays or becomes `findings`, the gate stays closed); `yes` resolves it;
 // `unverified` (no judge, or it failed) resolves it fail-open and the gate's notice says so.
 
@@ -44,7 +45,7 @@ import { transaction } from "./db.mjs";
 import { logError } from "./failopen.mjs";
 import { nowIso } from "./time.mjs";
 import { parseItems, receiptSection, severityCounts, which } from "./review/common.mjs";
-import { ask as askJudge, judgeCommand, passageFor, PASSAGE_CAP_BYTES } from "./ledger-judge.mjs";
+import { ask as askJudge, focusPattern, judgeCommand, passageFor } from "./ledger-judge.mjs";
 import * as codex from "./review/codex.mjs";
 import * as kimi from "./review/kimi.mjs";
 import * as claude from "./review/claude.mjs";
@@ -369,12 +370,112 @@ export function aboutReceipt(item) {
 }
 
 /**
+ * The identifiers a finding names: its backticked spans that are identifier-shaped (`foo`,
+ * `foo()`, `a.b.foo`, normalized to the last segment), at least 3 characters, and not a file
+ * (`isPath(span)`, a path in the tree). Bare words never count: too many English words match.
+ */
+export function namedSymbols(text, isPath = () => false) {
+  const out = [];
+  for (const m of String(text ?? "").matchAll(/`([^`\n]+)`/g)) {
+    const span = m[1].trim().replace(/\(\)$/, "").replace(/^[^\w$]+|[^\w$]+$/g, "");
+    if (!/^[A-Za-z_$][\w$]*(\.[A-Za-z_$][\w$]*)*$/.test(span) || isPath(span)) continue;
+    const name = span.split(".").at(-1);
+    if (name.length >= 3) out.push(name);
+  }
+  return [...new Set(out)];
+}
+
+/** Whether `path` looks like a test file. */
+export const isTestPath = (path) => /(^|\/)(test|tests|__tests__|spec)\/|\.(test|spec)\.[cm]?[jt]sx?$|_test\.(go|py)$|(^|\/)test_[^/]*\.py$/.test(path);
+
+const REGION_CONTEXT_LINES = 15;
+const REGION_MAX_LINES = 61;
+const NO_ANCHOR_LINES = 60;
+const REGION_LINE_CHARS = 240;
+const CORE_CONTEXT_LINES = 3;
+
+/** The cited line ranges for `path` in a finding: `path:N` or `path:N-M`, as [from, to]. */
+function citedLines(text, path, matches) {
+  const out = [];
+  for (const m of String(text ?? "").matchAll(/([A-Za-z0-9_.\/-]+\.[A-Za-z0-9]+):(\d+)(?:-(\d+))?/g)) {
+    if (!matches(m[1].replace(/^\.\//, ""), path)) continue;
+    const a = Number(m[2]);
+    out.push([a, Math.max(a, Number(m[3] ?? a))]);
+  }
+  return out;
+}
+
+/** Windows of ±REGION_CONTEXT_LINES around `ranges`, merged, each at most REGION_MAX_LINES long. */
+function windows(ranges, n, { merge = true } = {}) {
+  const w = ranges.map(([a, b]) => [Math.max(1, a - REGION_CONTEXT_LINES), Math.min(n, b + REGION_CONTEXT_LINES)]).filter(([a, b]) => a <= b).sort((x, y) => x[0] - y[0]);
+  const merged = [];
+  for (const r of w) {
+    const last = merged.at(-1);
+    if (merge && last && r[0] <= last[1] + 1) last[1] = Math.max(last[1], r[1]);
+    else merged.push([...r]);
+  }
+  return merged.flatMap(([a, b]) => {
+    const parts = [];
+    for (let s = a; s <= b; s += REGION_MAX_LINES) parts.push([s, Math.min(b, s + REGION_MAX_LINES - 1)]);
+    return parts;
+  });
+}
+
+/**
+ * The regions of `path` at `sha` to show the judge, [{ path, from, to, text, rank }], or
+ * [{ path, missing: true }] when the file is not there: rank 0 around each cited line (never merged
+ * with the rest), rank 1 around lines naming one of the finding's identifiers, rank 2 around the
+ * lines changed since (`hunkRanges`), or the first lines when there is no anchor at all.
+ */
+function regionsAt(top, sha, path, { cited, focus, hunkRanges }) {
+  let text;
+  try {
+    text = git(top, ["show", `${sha}:${path}`]);
+  } catch {
+    return [{ path, missing: true }];
+  }
+  if (text.includes("\0")) return [{ path, from: 1, to: 1, text: "(binary file)", rank: 2 }];
+  const lines = text.replace(/\n$/, "").split("\n");
+  const n = lines.length;
+  const symbolLines = focus ? lines.flatMap((l, i) => (focus.test(l) ? [[i + 1, i + 1]] : [])) : [];
+  const ranked = [
+    ...windows(cited, n, { merge: false }).map((w) => [...w, 0]),
+    ...windows(symbolLines, n).map((w) => [...w, 1]),
+    ...windows(hunkRanges, n).map((w) => [...w, 2]),
+  ];
+  const kept = [];
+  for (const r of ranked) if (!kept.some((k) => k[2] <= r[2] && k[0] <= r[0] && k[1] >= r[1])) kept.push(r);
+  if (!kept.length && n) kept.push([1, Math.min(n, NO_ANCHOR_LINES), 2]);
+  const show = (from, to) =>
+    lines
+      .slice(from - 1, to)
+      .map((l, i) => `${String(from + i).padStart(4)}| ${l.length > REGION_LINE_CHARS ? `${l.slice(0, REGION_LINE_CHARS)}…` : l}`)
+      .join("\n");
+  const cores = cited.map(([a, b]) => [Math.max(1, a - CORE_CONTEXT_LINES), Math.min(n, b + CORE_CONTEXT_LINES)]);
+  return kept.map(([from, to, rank]) => {
+    const region = { path, from, to, rank, text: show(from, to) };
+    const core = rank === 0 && cores.find(([a, b]) => a >= from && b <= to);
+    return core ? { ...region, core: { from: core[0], to: core[1], text: show(core[0], core[1]) } } : region;
+  });
+}
+
+/** The new-side line ranges a `git diff -U0` touched. */
+function newSideRanges(diff) {
+  return [...String(diff).matchAll(/^@@ -\d+(?:,\d+)? \+(\d+)(?:,(\d+))? @@/gm)].map((m) => {
+    const a = Number(m[1]);
+    return [Math.max(1, a), Math.max(1, a) + Math.max(1, Number(m[2] ?? 1)) - 1];
+  });
+}
+
+/**
  * Ask the judge about each item against the change from the head where it was first raised
  * (`item.since`; `fromSha` for a row written before 0.4.6, or when `since` is no longer a commit)
- * to `toSha`. The passage holds the diff of the files the finding names, then, for a finding about
- * the pattern-check receipt, the receipt as it is now, then the other files changed in the same
- * window, each under its path, while they fit the passage cap; when nothing changed at all it says
- * so. Returns the items with `since` and `judge` (and `resolved` unless `no`).
+ * to `toSha`. First a mechanical check: when every identifier the finding names was in its named
+ * files at `since` and occurs nowhere in the tree at `toSha`, the finding is resolved as `absent`
+ * without the judge. Otherwise the passage (see passageFor) holds the finding, the named files as
+ * they are at `toSha` around the relevant lines, their diff, the changed test files that refer to
+ * them, the receipt for a finding about it, and every other changed file; when nothing changed at
+ * all it says so. Returns the items with `since` and `judge` (and `resolved` unless `no`).
  */
 async function judgeItems({ db, dbPath, config, env, top, fromSha, toSha, items, receipt }) {
   const windows = new Map();
@@ -395,7 +496,28 @@ async function judgeItems({ db, dbPath, config, env, top, fromSha, toSha, items,
       return "";
     }
   };
+  const trees = new Map();
+  const treeAt = (sha) => {
+    if (!trees.has(sha)) {
+      try {
+        trees.set(sha, git(top, ["ls-tree", "-r", "-z", "--name-only", sha]).split("\0").filter(Boolean));
+      } catch {
+        trees.set(sha, []);
+      }
+    }
+    return trees.get(sha);
+  };
+  /** true, false, or null when git could not say. */
+  const occurs = (sha, word, paths = []) => {
+    try {
+      git(top, ["grep", "-q", "-w", "-F", "-e", word, sha, "--", ...paths]);
+      return true;
+    } catch (err) {
+      return err.gitStatus === 1 ? false : null;
+    }
+  };
   const matches = (f, c) => c === f || c.endsWith(`/${f}`) || f.endsWith(`/${c}`);
+  const resolveIn = (paths, names) => [...new Set(names.map((f) => paths.find((c) => matches(f, c))).filter(Boolean))];
   const out = [];
   for (const item of items) {
     let since = item.since ?? fromSha;
@@ -404,25 +526,52 @@ async function judgeItems({ db, dbPath, config, env, top, fromSha, toSha, items,
       since = fromSha;
       changed = changedSince(since);
     }
-    const targets = changed ? [...new Set(namedFiles(item.text).map((f) => changed.find((c) => matches(f, c))).filter(Boolean))] : [];
+    const judged = { ...item, since };
+    const files = namedFiles(item.text);
+    const isPath = (span) => treeAt(since).some((c) => matches(span, c)) || treeAt(toSha).some((c) => matches(span, c));
+    const symbols = namedSymbols(item.text, isPath);
+    const atSince = resolveIn(treeAt(since), files);
+    const absent = atSince.length ? symbols.filter((s) => occurs(since, s, atSince) === true && occurs(toSha, s) === false) : [];
+    if (symbols.length && absent.length === symbols.length) {
+      out.push({ ...judged, resolved: true, judge: "absent", absent });
+      continue;
+    }
+    const targets = changed ? resolveIn(changed, files) : [];
     const diff = targets.length ? diffOf(since, targets) : "";
+    const focus = focusPattern(symbols);
+    const zeroContext = (path) => {
+      try {
+        return git(top, ["diff", "-U0", since, toSha, "--", path]);
+      } catch {
+        return "";
+      }
+    };
+    const current = resolveIn([...new Set([...treeAt(toSha), ...atSince, ...targets])], files).flatMap((path) =>
+      regionsAt(top, toSha, path, { cited: citedLines(item.text, path, matches), focus, hunkRanges: targets.includes(path) ? newSideRanges(zeroContext(path)) : [] }),
+    );
     let text = null;
     if (aboutReceipt(item)) {
       if (receipt === undefined) receipt = newestReceipt(top, env).text;
       text = receipt;
     }
+    const stems = [...targets, ...atSince].map((p) => p.split("/").at(-1).replace(/\.[^.]*$/, "")).filter((s) => s.length >= 3);
+    const refersTo = focusPattern([...stems, ...symbols]);
+    const tests = [];
     const others = [];
-    let room = PASSAGE_CAP_BYTES - Buffer.byteLength(diff) - Buffer.byteLength(text ?? "");
     for (const path of changed ?? []) {
-      if (room <= 0) break;
       if (targets.includes(path)) continue;
       const d = diffOf(since, [path]);
-      others.push({ path, diff: d });
-      room -= Buffer.byteLength(d);
+      let head = "";
+      if (isTestPath(path) && refersTo) {
+        try {
+          head = git(top, ["show", `${toSha}:${path}`]);
+        } catch {}
+      }
+      if (refersTo && isTestPath(path) && (refersTo.test(head) || refersTo.test(d))) tests.push({ path, diff: d });
+      else others.push({ path, diff: d });
     }
-    const passage = passageFor(`[${item.severity}] ${item.text}`, diff, { receipt: text, others, nothingChanged: changed?.length === 0 });
+    const passage = passageFor(`[${item.severity}] ${item.text}`, diff, { current, tests, absent, focus: symbols, receipt: text, others, nothingChanged: changed?.length === 0 });
     const r = await askJudge({ db, dbPath, config, env, passage });
-    const judged = { ...item, since };
     out.push(r.verdict === "no" ? { ...judged, resolved: false, judge: "no" } : { ...judged, resolved: true, judge: r.verdict });
   }
   return out;
@@ -436,6 +585,8 @@ function verdictOf(items) {
 }
 
 const itemLine = (i) => `[${i.severity}] ${i.text.split("\n")[0]}`;
+/** For a finding resolved by absence, the names that are gone; else "". */
+const absentNote = (i) => (i.judge === "absent" && i.absent?.length ? `no longer in the tree: ${i.absent.map((a) => `\`${a}\``).join(", ")}` : "");
 
 /**
  * `ledger review [--base <ref>] [--labs a,b] [--force-round]`: every lab in parallel, one row
@@ -505,7 +656,7 @@ export async function runReview({ db, dbPath, cwd, env = process.env, config, la
     } else if (r.verdict === "pass-with-nits") out.push(`${lab}: pass with nits${model}: ${countsText(severityCounts(r.items))}`, indent(r.findings));
     else if (r.verdict === "unavailable") out.push(`${lab}: unavailable: ${r.reason}`);
     else out.push(`${lab}: pass${model}${r.reason ? ` · ${r.reason}` : ""}`);
-    for (const it of judged) out.push(`  judge ${it.judge}: ${itemLine(it)} (round ${fromRound})`);
+    for (const it of judged) out.push(`  judge ${it.judge}: ${itemLine(it)} (round ${fromRound}${absentNote(it) ? `; ${absentNote(it)}` : ""})`);
   };
   for (let i = 0; i < list.length; i++) {
     const lab = list[i];
@@ -627,7 +778,7 @@ export async function addressed({ db, dbPath, cwd, reason, config = {}, env = pr
   const note = unverified.length ? `; ${unverified.length} unverified by the judge` : "";
   insertRow(db, dbPath, { sessionId, cwd: top, head, branch, lab: META_LAB, verdict: "addressed", items: all, reason: `${why} (findings on ${sources}${note})`, at });
   const out = [`recorded ${short(head)} as addressing the findings on ${sources}: ${why}`];
-  for (const i of all) out.push(`  judge ${i.judge}: ${itemLine(i)}`);
+  for (const i of all) out.push(`  judge ${i.judge}: ${itemLine(i)}${absentNote(i) ? ` (${absentNote(i)})` : ""}`);
   return { code: 0, text: out.join("\n") };
 }
 
