@@ -4,7 +4,8 @@
 // Checks, in order, each printed as `ok|warn|fail <name>: <one line>`:
 //   db       the configured path resolves; the file opens and both it and its folder are writable
 //            (fail otherwise); a file that does not exist yet is `warn` (it is created on first use)
-//   schema   cc_meta schema_version equals the version this plugin ships (fail otherwise)
+//   schema   cc_meta schema_version equals the version this plugin ships, and every column and
+//            index its migrations build is present (fail otherwise, naming what is missing)
 //   config   which layer set `db` and `enabled`; warn when `enabled` resolves false or a config
 //            file did not parse
 //   hooks    hooks/hooks.json lists every event the plugin handles and each script exists
@@ -24,7 +25,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { currentLogDb, loadConfig } from "./config.mjs";
-import { probe, SCHEMA_VERSION, storeVersion } from "./db.mjs";
+import { missingSchema, probe, SCHEMA_VERSION, storeVersion } from "./db.mjs";
 import { errorsLogPath, readErrors } from "./failopen.mjs";
 import { nowIso } from "./time.mjs";
 import { labChecks } from "./review.mjs";
@@ -130,7 +131,12 @@ export function runDoctor({ env = process.env, cwd = null, now = Date.now(), plu
   if (!p.exists) checks.push(check("ok", "schema", `created at version ${SCHEMA_VERSION} on first use`));
   else if (p.version === null) checks.push(check("fail", "schema", "not readable"));
   else if (p.version !== SCHEMA_VERSION) checks.push(check("fail", "schema", `version ${p.version}, this plugin expects ${SCHEMA_VERSION}`));
-  else checks.push(check("ok", "schema", `version ${p.version}`));
+  else {
+    // A matching number is not proof: two lines once shipped different migrations under one number.
+    const missing = p.query(missingSchema);
+    if (missing.length) checks.push(check("fail", "schema", `version ${p.version}, but missing ${missing.join(", ")}`));
+    else checks.push(check("ok", "schema", `version ${p.version}`));
+  }
 
   const layers = `db from ${layerName(cfg.sources.db, cfg)}, enabled = ${cfg.config.enabled} from ${layerName(cfg.sources.enabled, cfg)}`;
   if (cfg.notices.length) checks.push(check("warn", "config", `${layers}; ${cfg.notices.length} config problem(s)`, cfg.notices));
@@ -196,7 +202,7 @@ export function renderDoctor({ checks }) {
  */
 export function quickIssues(db, { env = process.env, now = Date.now(), dbPath = currentLogDb() } = {}) {
   let n = 0;
-  if (storeVersion(db) !== SCHEMA_VERSION) n++;
+  if (storeVersion(db) !== SCHEMA_VERSION || missingSchema(db).length) n++;
   if (recentErrors(env, now, dbPath).lines.length) n++;
   return n;
 }

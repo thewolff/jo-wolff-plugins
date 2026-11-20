@@ -4,6 +4,23 @@ All notable changes to ledger are recorded here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Entries before 0.2.1 are the
 "Changes" section of the README (one line per version).
 
+## 0.4.9 - 2026-11-19
+
+### Fixed
+
+- Branch tracking recorded nothing on a store whose schema version 10 came from a different
+  migration 10 (the unreleased 0.5.0 line's advice column). Migration 10 was skipped there, so
+  `cc_owed` had no `repo`, `git_dir`, `branch`, `head_sha`, `branch_state` or `checked_at`, and
+  every SessionStart branch check and every commit hook logged `no such column`. Migration 11
+  adds each of those columns, `cc_sessions.last_advise_block_prompt` and the
+  `cc_owed_open_branch` index only where absent, so a store from either line ends at version 11
+  with all of them. No row is changed.
+
+### Changed
+
+- `ledger doctor` fails the schema check when the version matches but a column or index the
+  migrations build is missing, and names each one. The SessionStart doctor line counts it too.
+
 ## 0.4.8 - 2026-11-19
 
 ### Fixed

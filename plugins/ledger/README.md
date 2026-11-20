@@ -306,7 +306,7 @@ appends one line to `${XDG_STATE_HOME:-~/.local/state}/ledger/errors.log` and te
 | Check | ok | warn | fail |
 | :- | :- | :- | :- |
 | `db` | the configured path opens, and the file and its folder are writable | the file does not exist yet (it is created on first use) | it does not open, or it or its folder is read-only |
-| `schema` | `cc_meta` schema version equals this plugin's | | any other version |
+| `schema` | `cc_meta` schema version equals this plugin's, and every column and index its migrations build is there | | any other version, or a matching version with a column or index missing (each one named) |
 | `config` | names the layer that set `db` and the one that set `enabled` | `enabled` resolves `false`, or a config file did not parse | |
 | `hooks` | `hooks/hooks.json` lists SessionStart, UserPromptSubmit, PreToolUse, PostToolUse, PostToolUseFailure, Stop and SessionEnd, and each script exists | | an event or a script is missing |
 | `errors` | no `errors.log` lines for this database in the last 7 days | lines for this database in the last 7 days: counted per hook, the last 5 printed | |
@@ -317,7 +317,7 @@ appends one line to `${XDG_STATE_HOME:-~/.local/state}/ledger/errors.log` and te
 
 Doctor opens the database read-only and never creates or migrates it. The SessionStart doctor
 line does not run all of this on every start: it runs only the cheap checks (the database
-opened, which the hook needs anyway; the schema version; the `errors.log` count for the last 7
+opened, which the hook needs anyway; the schema version and its columns; the `errors.log` count for the last 7
 days) and adds one line, after everything else and never truncated, on `compact` too, when any
 of them finds an issue. A database that does not exist yet is not an issue.
 
@@ -908,6 +908,13 @@ Tests use a sandboxed `HOME`, `XDG_*` and `LEDGER_*` so they never touch your le
 `LEDGER_CWD` and `LEDGER_BUSY_TIMEOUT_MS` environment variables exist for the tests.
 
 ## Changes
+
+### 0.4.9
+
+- Branch tracking works again on a store stamped version 10 by another release line: migration 11
+  adds the branch columns and index where they are missing, without changing any row.
+  `ledger doctor` now fails the schema check, naming each missing column, when the version
+  number matches but the columns do not.
 
 ### 0.4.8
 

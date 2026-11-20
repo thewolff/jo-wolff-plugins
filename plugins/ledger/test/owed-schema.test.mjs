@@ -31,14 +31,14 @@ function v8Store(box) {
 
 const tablesOf = (db) => ["cc_questions", "cc_answers", "cc_notes", "cc_sessions", "cc_bounces"].map((t) => count(db, t));
 
-test("migration 9: a version 8 store opens at 9 with equal row counts, the two owed tables empty, the new session column null", () => {
+test("migration 9: a version 8 store opens at the latest version with equal row counts, the two owed tables empty, the new session column null", () => {
   const box = sandbox();
   const p = v8Store(box);
   const before = new DatabaseSync(p);
   const counts = tablesOf(before);
   before.close();
   const { db } = open(p);
-  assert.equal(storeVersion(db), 10);
+  assert.equal(storeVersion(db), 11);
   assert.deepEqual(tablesOf(db), counts);
   assert.equal(count(db, "cc_owed"), 0);
   assert.equal(count(db, "cc_owed_moves"), 0);
@@ -88,9 +88,9 @@ test("the ow- prefix is an id everywhere; ordinary words are not", () => {
   assert.equal(isId("of-course"), false);
 });
 
-test("doctor prints `ok schema version 10` on a fresh store", () => {
+test("doctor prints `ok schema version 11` on a fresh store", () => {
   const box = sandbox();
   cli(box, ["note", "seed"]);
   const r = cli(box, ["doctor"]);
-  assert.match(r.out, /^ok +schema: version 10$/m, r.out);
+  assert.match(r.out, /^ok +schema: version 11$/m, r.out);
 });
