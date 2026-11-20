@@ -3,7 +3,8 @@ import assert from "node:assert/strict";
 import { mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
-import { open, MIGRATIONS, SCHEMA_VERSION, storeVersion, missingSchema } from "../lib/db.mjs";
+import { open, MIGRATIONS, SCHEMA_VERSION, storeVersion, missingSchema, transaction } from "../lib/db.mjs";
+import { recordBranch } from "../lib/branches.mjs";
 import { quickIssues } from "../lib/doctor.mjs";
 import { sandbox, cli } from "./helpers.mjs";
 
@@ -56,6 +57,25 @@ test("a version 10 store from the other line's migration 10 (no branch columns) 
   assert.deepEqual(missingSchema(db), []);
   // The query branch tracking failed on is answerable now.
   db.prepare("SELECT id FROM cc_owed WHERE git_dir = ? AND branch = ?").all("/g", "b");
+  db.close();
+});
+
+test("after the repair, branch tracking works on a store the other line stamped 10: a branch is recorded, read back, and a later commit updates the same row", () => {
+  const box = sandbox();
+  const p = v10Store(box, "other-line-record", otherLineMigration10);
+  const { db } = open(p);
+  const seen = (head) => ({ repo: "/w/repo", gitDir: "/w/repo/.git", branch: "feature", status: { state: "unpushed", head }, evidence: "header" });
+  const first = transaction(db, () => recordBranch(db, seen("a".repeat(40)), { cwd: "/w", sessionId: "s-1", iso: T }));
+  assert.equal(first.created, true);
+  const rows = () => db.prepare("SELECT id, state, repo, git_dir, branch, head_sha, branch_state, checked_at FROM cc_owed WHERE branch IS NOT NULL").all().map((r) => ({ ...r }));
+  assert.deepEqual(rows(), [{ id: first.item.id, state: "owed", repo: "/w/repo", git_dir: "/w/repo/.git", branch: "feature", head_sha: "a".repeat(40), branch_state: "unpushed", checked_at: T }]);
+  // The second commit goes through the open-item lookup that logged `no such column: git_dir`.
+  const second = transaction(db, () => recordBranch(db, seen("b".repeat(40)), { cwd: "/w", sessionId: "s-1", iso: T }));
+  assert.equal(second.created, false);
+  assert.equal(second.item.id, first.item.id);
+  assert.equal(rows().length, 1);
+  assert.equal(rows()[0].head_sha, "b".repeat(40));
+  assert.equal(db.prepare("SELECT body FROM cc_owed WHERE id = 'ow-1'").get().body, "kept");
   db.close();
 });
 
