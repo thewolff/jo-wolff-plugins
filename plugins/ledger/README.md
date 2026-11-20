@@ -564,7 +564,8 @@ files, each at most 1 MiB). A result counts only when all of these hold:
 - its snapshot equals the one ledger recomputes from the HEAD commit: the same changed paths, each
   with the same kind and sha256 of its bytes, and the same diff digest (or the digest of the diff
   without the added files, for new files the builder had not staged when claudex inspected; their
-  bytes are still checked, their file mode is not).
+  bytes are still checked; an added executable file gets no such fallback, since the fallback
+  does not check modes).
 
 claudex-loop records no HEAD sha, so the match is on content, never on time. The newest matching
 result wins. The codex row for HEAD is then `pass` (or `pass with nits` for its `low` findings),
