@@ -21,11 +21,13 @@ import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { readdirSync, readFileSync, realpathSync, statSync } from "node:fs";
 import { homedir } from "node:os";
-import { basename, isAbsolute, join, resolve } from "node:path";
+import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 import { logError } from "../failopen.mjs";
 
 export const MAX_DEPTH = 3;
 export const MAX_FILES = 200;
+/** Directory entries the folder scan may visit in all, so a huge scratch folder cannot stall a review. */
+export const MAX_ENTRIES = 5000;
 export const MAX_BYTES = 1024 * 1024;
 export const DEFAULT_DIRS = Object.freeze(["~/agent-scratch/{repo}"]);
 const GIT_TIMEOUT_MS = 60_000;
@@ -77,23 +79,45 @@ export function snapshotAt(top, base, head) {
   return { base, files, diffs: [full, withoutAdded] };
 }
 
-/** Folders to scan: `review.claudexDirs` (default DEFAULT_DIRS), `~` expanded, `{repo}` → the repository's folder name. */
-export function claudexDirs(config, top, home = homedir()) {
+/**
+ * The repository's name: the main checkout's folder (the parent of the git common dir), so a
+ * worktree maps to its repository, not to the worktree's own folder. A bare repository's common
+ * dir is the repository itself (`name.git` → `name`). When git cannot say, the name of `top`'s
+ * folder, and the failure is logged.
+ */
+export function repoName(top, env = process.env) {
+  try {
+    const common = gitBytes(top, ["rev-parse", "--path-format=absolute", "--git-common-dir"], { timeoutMs: 10_000 }).toString("utf8").trim();
+    if (!common) throw new Error("git printed no common dir");
+    return basename(common) === ".git" ? basename(dirname(common)) : basename(common).replace(/\.git$/, "");
+  } catch (err) {
+    logError("review", `claudex: repository name for ${top} not resolvable: ${err.message}; using the folder name`, env);
+    return basename(top);
+  }
+}
+
+/** Folders to scan: `review.claudexDirs` (default DEFAULT_DIRS), `~` expanded, `{repo}` → the repository's name (repoName). */
+export function claudexDirs(config, top, home = homedir(), env = process.env) {
   const list = Array.isArray(config?.review?.claudexDirs) ? config.review.claudexDirs : DEFAULT_DIRS;
+  let name;
+  const repo = () => (name ??= repoName(top, env));
   return list
     .filter((d) => typeof d === "string" && d.trim())
-    .map((d) => d.trim().replaceAll("{repo}", basename(top)))
+    .map((d) => (d.includes("{repo}") ? d.trim().replaceAll("{repo}", repo()) : d.trim()))
     .map((d) => (d === "~" ? home : d.startsWith("~/") ? join(home, d.slice(2)) : d));
 }
 
 /**
  * Every result.json among `paths` (a file is taken as is; a folder is searched MAX_DEPTH levels
- * down), at most MAX_FILES. `explicit` paths that are missing are logged; a missing default folder is not.
+ * down), at most MAX_FILES, visiting at most `maxEntries` directory entries in all (one log line
+ * when that budget runs out). `explicit` paths that are missing are logged; a missing default folder is not.
  */
-export function candidates(paths, { env = process.env, explicit = new Set(), cwd = process.cwd() } = {}) {
+export function candidates(paths, { env = process.env, explicit = new Set(), cwd = process.cwd(), maxEntries = MAX_ENTRIES } = {}) {
   const found = [];
+  let visited = 0;
+  let exhausted = false;
   const walk = (dir, depth) => {
-    if (found.length >= MAX_FILES) return;
+    if (found.length >= MAX_FILES || exhausted) return;
     let entries;
     try {
       entries = readdirSync(dir, { withFileTypes: true });
@@ -102,7 +126,12 @@ export function candidates(paths, { env = process.env, explicit = new Set(), cwd
       return;
     }
     for (const e of entries) {
-      if (found.length >= MAX_FILES) return;
+      if (found.length >= MAX_FILES || exhausted) return;
+      if (++visited > maxEntries) {
+        exhausted = true;
+        logError("review", `claudex results scan stopped after ${maxEntries} directory entries (in ${dir}); results beyond it were not searched`, env);
+        return;
+      }
       if (e.isFile() && e.name === "result.json") found.push(join(dir, e.name));
       else if (e.isDirectory() && depth < MAX_DEPTH) walk(join(dir, e.name), depth + 1);
     }
@@ -156,14 +185,16 @@ const same = (a, b) => {
  * `snapshotOf()` returns HEAD's recomputed snapshot (memoized by the caller).
  */
 /** The mismatch reasons that mean the record itself is broken, not merely about something else. */
-const MALFORMED = new Set(["no snapshot object", "no findings list", "malformed findings", "malformed metadata", "no snapshot", "malformed snapshot files"]);
+const MALFORMED = new Set(["malformed response", "no snapshot object", "no findings list", "malformed findings", "malformed metadata", "no snapshot", "malformed snapshot files"]);
 
 export function mismatch(record, { top, base, receipt, snapshotOf }) {
   if (record.mode !== "inspect") return "not an inspection";
   if (record.status !== "completed" || record.exit_code !== 0) return "not completed";
   if (record.provider !== "codex") return "not a codex inspection";
   const r = record.response;
-  if (r?.verdict !== "APPROVED") return `verdict ${r?.verdict ?? "missing"}`;
+  // A completed inspection always carries a response with one of the runner's three verdicts.
+  if (!r || typeof r !== "object" || Array.isArray(r) || !["APPROVED", "REVISE", "BLOCKED"].includes(r.verdict)) return "malformed response";
+  if (r.verdict !== "APPROVED") return `verdict ${r.verdict}`;
   if (!Array.isArray(r.findings)) return "no findings list";
   // Every field approvalResult reads is checked here, so a candidate that passes cannot fail later.
   const str = (v) => v === undefined || v === null || typeof v === "string";
@@ -214,7 +245,7 @@ export function mismatch(record, { top, base, receipt, snapshotOf }) {
  */
 export function findApproval({ top, base, head, receipt, config, env = process.env, paths = [], cwd = process.cwd(), home = homedir() }) {
   try {
-    const list = candidates([...paths, ...claudexDirs(config, top, home)], { env, explicit: new Set(paths), cwd });
+    const list = candidates([...paths, ...claudexDirs(config, top, home, env)], { env, explicit: new Set(paths), cwd });
     let snap;
     let snapError = null;
     const snapshotOf = () => {

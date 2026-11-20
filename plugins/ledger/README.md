@@ -264,7 +264,7 @@ defaults verbatim.
 | `review.profiles` | `null` | an `omp` profile per omp-backed lab, e.g. `{"glm": "work"}`; unset means no `--profile` (omp's base profile). Each value is a non-empty string; an empty one makes the loader reject the whole `review.profiles` value and say so. User file only |
 | `review.maxRounds` | `3` | how many review rounds (reviewed commits on the branch since the merge-base) `ledger review` runs before it stops and says to ask the human: waive, or continue with `--force-round`. User file only |
 | `review.judgeCommand` | `null` | the judge that checks "this finding is resolved" claims: a shell command that gets the prompt on stdin (or in place of a literal `{prompt}`) and prints `yes` or `no`. Unset falls back to `command` in the shared judge file (`${XDG_CONFIG_HOME:-~/.config}/judge/config.json`), then to `enforcement.judgeCommand` in the i-have-audhd profile (`~/.claude/i-have-audhd.json`), so one judge is configured once. User file only |
-| `review.claudexDirs` | `["~/agent-scratch/{repo}"]` | folders searched for claudex-loop `result.json` files (3 levels down, at most 200, each at most 1 MiB); `{repo}` is the repository folder's name. A Codex inspection there that APPROVED exactly the reviewed base..HEAD change, against the current pattern-check receipt, stands in for the codex lab (see [Cross-lab review](#cross-lab-review)). `[]` turns the search off; `--claudex <path>` adds a file or folder for one run. User file only |
+| `review.claudexDirs` | `["~/agent-scratch/{repo}"]` | folders searched for claudex-loop `result.json` files (3 levels down, at most 200, each at most 1 MiB, at most 5,000 entries visited); `{repo}` is the repository's name (the main checkout's folder, also from a git worktree). A Codex inspection there that APPROVED exactly the reviewed base..HEAD change, against the current pattern-check receipt, stands in for the codex lab (see [Cross-lab review](#cross-lab-review)). `[]` turns the search off; `--claudex <path>` adds a file or folder for one run. User file only |
 
 The default `forcing.decisionPhrases`: `I decided`, `decided to`, `assumption:`, `assuming`,
 `going with`, `chose`, `I'll go with`, `trade-off`. A project file can replace the
@@ -552,8 +552,9 @@ agent's; the diff is shown to the judge rather than any edited finding being dro
 Since 0.4.10 `review` does not run the codex lab again when claudex-loop already had Codex
 inspect exactly this change. It reads claudex-loop `result.json` files from `--claudex <path>`
 (repeatable; a file, or a folder searched three levels down) and from `review.claudexDirs`
-(default `~/agent-scratch/{repo}`, where `{repo}` is the repository folder's name; at most 200
-files, each at most 1 MiB). A result counts only when all of these hold:
+(default `~/agent-scratch/{repo}`, where `{repo}` is the repository's name, taken from the main
+checkout's folder so a git worktree maps to its repository; at most 200 files, each at most 1 MiB,
+and at most 5,000 directory entries visited in all). A result counts only when all of these hold:
 
 - it is a completed `inspect` run by the `codex` provider, exit code 0, verdict `APPROVED`, with no
   `high` or `medium` finding;
@@ -573,8 +574,9 @@ its model the result's observed or requested model, else `claudex`, and its reas
 `claudex inspect APPROVED, <artifacts folder>, snapshot <sha8>`. Earlier codex findings the
 result does not list go to the judge as with any lab reply. Other labs run as usual. Anything
 else (a REVISE or BLOCKED verdict, one more commit, another base, a changed receipt, a different
-repository) runs codex as before. A result that cannot be read or parsed is skipped with one
-`errors.log` line; a missing default folder is silent. `review.claudexDirs: []` turns the search off.
+repository) runs codex as before. A result that cannot be read or parsed, or a completed inspection
+with no usable response, is skipped with one `errors.log` line, and so is a scan that runs out of
+its entry budget; a missing default folder is silent. `review.claudexDirs: []` turns the search off.
 
 ## The plugin gate
 
