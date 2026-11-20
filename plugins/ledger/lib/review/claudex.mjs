@@ -156,13 +156,15 @@ export function mismatch(record, { top, base, receipt, snapshotOf }) {
   if (!Array.isArray(r.findings)) return "no findings list";
   // Every field approvalResult reads is checked here, so a candidate that passes cannot fail later.
   const str = (v) => v === undefined || v === null || typeof v === "string";
-  if (r.findings.some((f) => !f || typeof f !== "object" || typeof f.severity !== "string" || !str(f.path) || !str(f.evidence) || !(str(f.id) || typeof f.id === "number"))) return "malformed findings";
+  // The producer's own enum (runner.py validate_review): anything else is a malformed record.
+  if (r.findings.some((f) => !f || typeof f !== "object" || !["high", "medium", "low"].includes(f.severity) || !str(f.path) || !str(f.evidence) || !(str(f.id) || typeof f.id === "number"))) return "malformed findings";
   if (r.findings.some((f) => f.severity === "high" || f.severity === "medium")) return "has material findings";
   if (!str(record.requested_model) || !str(record.artifacts) || (record.observed_models != null && !Array.isArray(record.observed_models))) return "malformed metadata";
   if (typeof record.repo !== "string" || !same(record.repo, top)) return "another repository";
   const snap = record.snapshot;
   // snapshot.base is the runner's resolved commit id; record.base is whatever ref was typed.
   if (!base || snap?.base !== base) return "another base";
+  if (receipt?.unreadable) return "the current receipt could not be read";
   if (receipt?.path) {
     let digest;
     try {

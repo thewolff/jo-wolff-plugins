@@ -862,7 +862,7 @@ export async function runReview({ db, dbPath, cwd, env = process.env, config, la
     if (r.verdict === "findings") {
       anyFindings = true;
       out.push(`${lab}: findings${model}: ${countsText(severityCounts(r.items))}${r.carried ? ` · ${r.reason}` : ""}`, indent(r.findings));
-    } else if (r.verdict === "pass-with-nits") out.push(`${lab}: pass with nits${model}: ${countsText(severityCounts(r.items))}`, indent(r.findings));
+    } else if (r.verdict === "pass-with-nits") out.push(`${lab}: pass with nits${model}: ${countsText(severityCounts(r.items))}${r.reason ? ` · ${r.reason}` : ""}`, indent(r.findings));
     else if (r.verdict === "unavailable") out.push(`${lab}: unavailable: ${r.reason}`);
     else out.push(`${lab}: pass${model}${r.reason ? ` · ${r.reason}` : ""}`);
     for (const it of judged) out.push(`  judge ${it.judge}: ${itemLine(it)} (round ${fromRound})`);
@@ -1081,7 +1081,11 @@ export function newestReceipt(top, env = process.env) {
       if (st.isFile() && (!newest || st.mtimeMs > newest.mtimeMs)) newest = { path: join(full, name), mtimeMs: st.mtimeMs };
     }
   } catch (err) {
-    if (err.code !== "ENOENT") logError("review", `pattern-check receipt directory ${full} not readable: ${err.message}; reviewing without a receipt`, env);
+    if (err.code !== "ENOENT") {
+      logError("review", `pattern-check receipt directory ${full} not readable: ${err.message}; reviewing without a receipt`, env);
+      // A receipt may exist that could not be read: a claudex approval cannot be bound to it (0.4.10).
+      return { text: null, unreadable: true };
+    }
     return { text: null };
   }
   if (!newest) return { text: null };
@@ -1090,7 +1094,7 @@ export function newestReceipt(top, env = process.env) {
     return { text, path: newest.path, sha: sha256(text) };
   } catch (err) {
     logError("review", `pattern-check receipt ${newest.path} not readable: ${err.message}; reviewing without a receipt`, env);
-    return { text: null };
+    return { text: null, path: newest.path, unreadable: true };
   }
 }
 
