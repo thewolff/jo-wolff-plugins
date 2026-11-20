@@ -184,8 +184,9 @@ export function mismatch(record, { top, base, receipt, snapshotOf }) {
     let digest;
     try {
       digest = sha256(readFileSync(receipt.path));
-    } catch {
-      return "receipt unreadable";
+    } catch (err) {
+      // The receipt was readable a moment ago (newestReceipt); a failure now is a real I/O error.
+      return `receipt not readable: ${receipt.path}: ${err.message}`;
     }
     if (record.plan_sha256 !== digest) return "inspected another plan than the current receipt";
   }
@@ -240,7 +241,7 @@ export function findApproval({ top, base, head, receipt, config, env = process.e
       }
       if (why) {
         // An ordinary non-match (another commit, a REVISE) is silent; a broken record is logged.
-        if (MALFORMED.has(why) || why.startsWith("repository path not resolvable")) logError("review", `claudex result ${path} skipped: ${why}`, env);
+        if (MALFORMED.has(why) || why.startsWith("repository path not resolvable") || why.startsWith("receipt not readable")) logError("review", `claudex result ${path} skipped: ${why}`, env);
         continue;
       }
       let result;
