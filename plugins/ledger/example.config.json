@@ -56,6 +56,7 @@
     "models": null,
     "profiles": null,
     "maxRounds": 3,
-    "judgeCommand": null
+    "judgeCommand": null,
+    "claudexDirs": ["~/agent-scratch/{repo}"]
   }
 }

@@ -264,6 +264,7 @@ defaults verbatim.
 | `review.profiles` | `null` | an `omp` profile per omp-backed lab, e.g. `{"glm": "work"}`; unset means no `--profile` (omp's base profile). Each value is a non-empty string; an empty one makes the loader reject the whole `review.profiles` value and say so. User file only |
 | `review.maxRounds` | `3` | how many review rounds (reviewed commits on the branch since the merge-base) `ledger review` runs before it stops and says to ask the human: waive, or continue with `--force-round`. User file only |
 | `review.judgeCommand` | `null` | the judge that checks "this finding is resolved" claims: a shell command that gets the prompt on stdin (or in place of a literal `{prompt}`) and prints `yes` or `no`. Unset falls back to `command` in the shared judge file (`${XDG_CONFIG_HOME:-~/.config}/judge/config.json`), then to `enforcement.judgeCommand` in the i-have-audhd profile (`~/.claude/i-have-audhd.json`), so one judge is configured once. User file only |
+| `review.claudexDirs` | `["~/agent-scratch/{repo}"]` | folders searched for claudex-loop `result.json` files (3 levels down, at most 200, each at most 1 MiB); `{repo}` is the repository folder's name. A Codex inspection there that APPROVED exactly the reviewed base..HEAD change, against the current pattern-check receipt, stands in for the codex lab (see [Cross-lab review](#cross-lab-review)). `[]` turns the search off; `--claudex <path>` adds a file or folder for one run. User file only |
 
 The default `forcing.decisionPhrases`: `I decided`, `decided to`, `assumption:`, `assuming`,
 `going with`, `chose`, `I'll go with`, `trade-off`. A project file can replace the
@@ -523,6 +524,56 @@ does not name, `[blocking] fault-tolerance:`; the parsed item keeps `kind: "faul
 A receipt over 32 KiB is cut there with a marker. No directory, no `.md` in it: the prompt is
 the diff alone, as before. A receipt or directory that cannot be read: one `errors.log` line,
 the prompt as before, the review runs.
+
+### An edited receipt and an earlier finding
+
+Since 0.4.10 every finding records `receipt`, the sha256 of the receipt in force when it was
+raised, and each distinct receipt text is kept once in `cc_meta` under `receipt:<sha256>`. A
+finding the lab lists again keeps the hash of the one it repeats. When a finding goes to the judge
+(the lab dropped it, or `review addressed`) and the receipt has changed since it was raised, the
+judge passage puts, right after the finding: the receipt diff from the text then to the text now
+(at most 4 KiB), one line for each quotation in the finding that sits on a removed line (the
+quotation only, at most 200 bytes each, five at most), and the current receipt (at most 6 KiB, cut
+in the middle with a marker beyond that). The question becomes "Does this change resolve the
+finding? A finding that holds the code to a requirement the receipt edit removed or changed no
+longer applies and counts as resolved; judge against the current receipt text." The current
+receipt is authoritative; the judge still decides, so an edit that leaves the requirement in
+place keeps the finding open. A finding with no recorded hash (written before 0.4.10), or with
+the receipt unchanged, is judged as before, under the same cache key. When the earlier text is
+not on record, the passage says so and shows the current receipt alone. A receipt longer than
+6 KiB is shown with its middle cut, so a requirement in the cut part is not in front of the judge.
+
+The labs themselves always read the receipt as it is on disk at the run; nothing is stored at
+approval time. The receipt is a working-tree file, so ledger cannot tell a human's edit from an
+agent's; the diff is shown to the judge rather than any edited finding being dropped unseen.
+
+### A claudex-loop inspection stands in for codex
+
+Since 0.4.10 `review` does not run the codex lab again when claudex-loop already had Codex
+inspect exactly this change. It reads claudex-loop `result.json` files from `--claudex <path>`
+(repeatable; a file, or a folder searched three levels down) and from `review.claudexDirs`
+(default `~/agent-scratch/{repo}`, where `{repo}` is the repository folder's name; at most 200
+files, each at most 1 MiB). A result counts only when all of these hold:
+
+- it is a completed `inspect` run by the `codex` provider, exit code 0, verdict `APPROVED`, with no
+  `high` or `medium` finding;
+- its `repo` is this repository and its `snapshot.base` is the full sha of the base this review
+  diffs against;
+- its `plan_sha256` is the sha256 of the current pattern-check receipt file, when the repository
+  has one, so an approval of an earlier plan does not count after the receipt changes;
+- its snapshot equals the one ledger recomputes from the HEAD commit: the same changed paths, each
+  with the same kind and sha256 of its bytes, and the same diff digest (or the digest of the diff
+  without the added files, for new files the builder had not staged when claudex inspected; their
+  bytes are still checked, their file mode is not).
+
+claudex-loop records no HEAD sha, so the match is on content, never on time. The newest matching
+result wins. The codex row for HEAD is then `pass` (or `pass with nits` for its `low` findings),
+its model the result's observed or requested model, else `claudex`, and its reason
+`claudex inspect APPROVED, <artifacts folder>, snapshot <sha8>`. Earlier codex findings the
+result does not list go to the judge as with any lab reply. Other labs run as usual. Anything
+else (a REVISE or BLOCKED verdict, one more commit, another base, a changed receipt, a different
+repository) runs codex as before. A result that cannot be read or parsed is skipped with one
+`errors.log` line; a missing default folder is silent. `review.claudexDirs: []` turns the search off.
 
 ## The plugin gate
 
@@ -908,6 +959,15 @@ Tests use a sandboxed `HOME`, `XDG_*` and `LEDGER_*` so they never touch your le
 `LEDGER_CWD` and `LEDGER_BUSY_TIMEOUT_MS` environment variables exist for the tests.
 
 ## Changes
+
+### 0.4.10
+
+- A finding raised under one pattern-check receipt is no longer re-asserted after the human edits
+  the criterion it quotes: the judge sees the receipt diff and the current receipt, which is
+  authoritative, and is asked whether the finding still applies.
+- `review` records codex as passed, without running it, when a claudex-loop Codex inspection
+  APPROVED exactly the reviewed base..HEAD change against the current receipt (`--claudex`,
+  `review.claudexDirs`).
 
 ### 0.4.9
 

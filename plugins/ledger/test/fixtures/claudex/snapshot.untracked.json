@@ -1,0 +1,22 @@
+{
+  "base": "850afb7d34463369edcf8b68226871ed0ae6dfa3",
+  "files": [
+    {
+      "path": "a.txt",
+      "kind": "file",
+      "sha256": "b2ef07f1e2b1b58edd8a1b35c5472177f5f1fa1ff74cad1c04cc776029511139"
+    },
+    {
+      "path": "gone.txt",
+      "kind": "deleted",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "src/new.mjs",
+      "kind": "file",
+      "sha256": "0908dc83828f3f4dd7ba16ffb2bd1a66735dbe8482eaf6318730313b6f7bed1b"
+    }
+  ],
+  "diff_sha256": "2bd89acdcb460fe0f491ff8d405b7e56480af3fd19dfaed69bf2eebc8b6ebb1d",
+  "sha256": "9753cd5491db6c475f0f2ac563185d26a5af72f7979374c7fd7ff6b52cb813ee"
+}

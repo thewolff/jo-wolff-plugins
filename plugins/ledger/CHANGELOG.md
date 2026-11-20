@@ -4,6 +4,32 @@ All notable changes to ledger are recorded here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Entries before 0.2.1 are the
 "Changes" section of the README (one line per version).
 
+## 0.4.10 - 2026-11-19
+
+### Fixed
+
+- The review judge re-asserted a finding after the human edited the acceptance criterion it
+  quotes (newdle-web, 2026-11-19: "markdown image syntax inserts nothing" was edited out of the
+  receipt, the lab dropped the finding, and the judge, shown "no changes since the finding was
+  raised", answered no). Each finding now records the sha256 of the receipt it was raised under,
+  and the receipt text is kept in `cc_meta` (`receipt:<sha256>`, no schema change). When the
+  receipt has changed since, the judge passage shows the receipt diff, the finding's quotations
+  that sit on removed lines, and the current receipt, each within its own cap and ahead of the
+  source sections, and asks whether the finding still applies with the current receipt as
+  authoritative. `review addressed` resolves the current receipt the same way. Findings with no
+  recorded hash, or an unchanged receipt, are judged as before, under the same cache key.
+
+### Added
+
+- `review` accepts a claudex-loop Codex inspection in place of running codex: `--claudex <path>`
+  (repeatable) and `review.claudexDirs` (default `["~/agent-scratch/{repo}"]`). A result counts
+  only when it is a completed codex `inspect` with an APPROVED verdict and no high or medium
+  finding, for this repository, on the review's full base sha, whose plan is the current
+  receipt, and whose snapshot equals the one recomputed from the HEAD commit, path by path and
+  byte by byte. Anything else runs codex as before; an unusable result file is skipped with one
+  `errors.log` line. Tests run against snapshots captured from the real claudex-loop runner
+  (`test/capture-claudex-fixture.mjs`) and a real inspect result.
+
 ## 0.4.9 - 2026-11-19
 
 ### Fixed

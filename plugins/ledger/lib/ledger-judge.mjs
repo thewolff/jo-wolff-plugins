@@ -34,6 +34,13 @@ import { dispatch, parseAnswer, readSharedConfig, resolveJudgeCommand, topLevelJ
 import { nowIso } from "./time.mjs";
 
 export const JUDGE_QUESTION = "Does this change resolve the finding? Answer yes or no.";
+/** The question when the pattern-check receipt changed since the finding was raised (0.4.10). */
+export const RECEIPT_CHANGED_QUESTION =
+  "Does this change resolve the finding? A finding that holds the code to a requirement the receipt edit removed or changed no longer applies and counts as resolved; judge against the current receipt text. Answer yes or no.";
+export const RECEIPT_DIFF_CAP_BYTES = 4 * 1024;
+export const RECEIPT_CURRENT_CAP_BYTES = 6 * 1024;
+export const QUOTE_CAP_BYTES = 200;
+export const QUOTES_SHOWN = 5;
 export const JUDGE_TIMEOUT_MS = 60_000;
 export const PASSAGE_CAP_BYTES = 16 * 1024;
 export const JUDGE_ENV_VAR = "LEDGER_JUDGE_BIN";
@@ -213,6 +220,40 @@ function clipBothEnds(s, n) {
   return front + gap(bytes(s) - bytes(front) - bytes(tail)) + tail;
 }
 
+/** The quotations in `text`: spans in “…”, "…" or ‘…’ of at least 8 characters, in order. */
+export function quotations(text) {
+  const out = [];
+  for (const m of String(text ?? "").matchAll(/\u201c([^\u201d\n]{8,}?)\u201d|"([^"\n]{8,}?)"|\u2018([^\u2019\n]{8,}?)\u2019/g)) out.push((m[1] ?? m[2] ?? m[3]).trim());
+  return [...new Set(out)].filter((q) => q.length >= 8);
+}
+
+/**
+ * The units of the receipt-change section, each already within its cap and marked `exact` so the
+ * allocator never excerpts it: the receipt diff (RECEIPT_DIFF_CAP_BYTES), or a line saying the
+ * earlier text is not on record; one evidence line per quotation of the finding found on a removed
+ * line (the quotation only, QUOTE_CAP_BYTES each, QUOTES_SHOWN at most); the current receipt
+ * (RECEIPT_CURRENT_CAP_BYTES). `change` is { diff: string|null, quotes: string[], current: string|null }.
+ */
+export function receiptChangeUnits(change) {
+  const units = [
+    {
+      exact: true,
+      rank: 0,
+      text: change.diff
+        ? `Receipt diff, from the text when the finding was raised to the current text:\n${clipBothEnds(String(change.diff), RECEIPT_DIFF_CAP_BYTES)}`
+        : "The receipt's text when the finding was raised is not on record; only the current text is shown.",
+    },
+  ];
+  const quotes = change.quotes ?? [];
+  if (quotes.length) {
+    const lines = quotes.slice(0, QUOTES_SHOWN).map((q) => `The finding quotes \u201c${bytes(q) > QUOTE_CAP_BYTES ? `${clip(q, QUOTE_CAP_BYTES)}\u2026` : q}\u201d, which is on a line the receipt edit removed or replaced.`);
+    if (quotes.length > QUOTES_SHOWN) lines.push(`(${quotes.length - QUOTES_SHOWN} more quotations not shown)`);
+    units.push({ exact: true, rank: 0, text: lines.join("\n") });
+  }
+  units.push({ exact: true, rank: 0, text: `Current receipt:\n${change.current ? clipBothEnds(String(change.current), RECEIPT_CURRENT_CAP_BYTES) : "(none: the repository has no pattern-check receipt now)"}` });
+  return units;
+}
+
 /**
  * The passage for one finding, in priority order: its text; `absent`, evidence that identifiers
  * it names no longer occur at HEAD ([{ name, files, since }] or names); `current`, the files it names as they are at HEAD
@@ -221,6 +262,9 @@ function clipBothEnds(s, n) {
  * ([{ path, diff }]); the pattern-check receipt (`receipt`, for a finding about it); and the other
  * changed files (`others`, [{ path, diff }]). `nothingChanged` says no file changed at all since
  * it was raised.
+ * `receiptChange` ({ diff, quotes, current }, 0.4.10) is set when the pattern-check receipt changed
+ * since the finding was raised: its section (receiptChangeUnits) comes right after the finding,
+ * and the `receipt` section is then left out.
  *
  * Under PASSAGE_CAP_BYTES it is the plain concatenation, nothing excerpted. Over it, each section
  * is filled in that order with whole units (regions, hunks, file entries), chosen by rank (a
@@ -235,14 +279,19 @@ function clipBothEnds(s, n) {
  * out and the sha256 of the whole uncut input, so the judge knows the evidence is partial and two
  * inputs that differ anywhere are cached apart.
  */
-export function passageFor(findingText, diff, { current = [], tests = [], absent = [], focus = [], receipt = null, others = [], nothingChanged = false } = {}) {
+export function passageFor(findingText, diff, { current = [], tests = [], absent = [], focus = [], receipt = null, receiptChange = null, others = [], nothingChanged = false } = {}) {
   const re = focusPattern(focus);
   const ranked = (text) => (re && re.test(text) ? 0 : 1);
-  const change = nothingChanged ? "(no changes since the finding was raised)" : String(diff ?? "") || "(no change to the files the finding names)";
+  const change = nothingChanged
+    ? receiptChange
+      ? "(no code changes since the finding was raised; the receipt changed, see above)"
+      : "(no changes since the finding was raised)"
+    : String(diff ?? "") || "(no change to the files the finding names)";
   const changeUnits = nothingChanged || !String(diff ?? "") ? [{ head: "", text: change, rank: 0 }] : hunks(change).map((h) => ({ ...h, rank: ranked(h.text) }));
   const fileUnits = (list) => list.flatMap((o) => hunks(o.diff || "(no textual change)").map((h) => ({ head: `File: ${o.path}${h.head ? `\n${h.head}` : ""}`, text: h.text, rank: ranked(h.text) })));
   const sections = [
     { name: "finding", header: "Finding:\n", units: [{ text: String(findingText ?? ""), rank: 0 }], cap: FINDING_CAP_BYTES },
+    receiptChange && { name: "receipt change", header: "\n\nThe pattern-check receipt changed since the finding was raised. The current receipt below is authoritative: a requirement the edit removed or changed no longer holds.\n", units: receiptChangeUnits(receiptChange) },
     absent.length && {
       name: "absent",
       header: "\n\nEvidence from the tree:\n",
@@ -267,7 +316,7 @@ export function passageFor(findingText, diff, { current = [], tests = [], absent
     },
     { name: "named diff", header: "\n\nChange (unified diff):\n", units: changeUnits },
     tests.length && { name: "tests", header: "\n\nTest files changed since the finding was raised that refer to it (unified diff):\n", units: fileUnits(tests) },
-    receipt && { name: "receipt", header: "\n\nPattern-check receipt (current text):\n", units: [{ text: String(receipt), rank: 0 }] },
+    receipt && !receiptChange && { name: "receipt", header: "\n\nPattern-check receipt (current text):\n", units: [{ text: String(receipt), rank: 0 }] },
     others.length && { name: "other files", header: "\n\nOther files changed since the finding was raised (unified diff):\n", units: fileUnits(others) },
   ].filter(Boolean);
   for (const s of sections) s.units.forEach((u, i) => (u.order = i));
@@ -287,6 +336,7 @@ export function passageFor(findingText, diff, { current = [], tests = [], absent
 
   // Only once over the cap: HEAD region lines are clipped, and the bytes they lose count as cut.
   const shorten = (u) => {
+    if (u.exact) return u.text;
     const pin = u.pinned && ((l) => {
       const m = /^\s*(\d+)\| /.exec(l);
       return Boolean(m) && Number(m[1]) >= u.pinned[0] && Number(m[1]) <= u.pinned[1];
