@@ -446,7 +446,68 @@ export const MIGRATIONS = [
       CREATE UNIQUE INDEX cc_owed_open_branch ON cc_owed (git_dir, branch) WHERE branch IS NOT NULL AND state IN ('owed','started','deferred');
     `);
   },
+  // 11 (0.4.9): repair of a number collision. Two lines each shipped a migration 10: unlanded
+  // branches above (0.4.7) and, on the unreleased 0.5.0 line, cc_sessions.last_advise_block_prompt.
+  // A store stamped 10 by the other line skipped this line's 10 and lacks the branch columns, so
+  // branch tracking failed on `no such column`. Every column and index of both 10s is added here
+  // only when absent, so a store from either line ends at 11 with both; no row is touched.
+  (db) => {
+    addColumnIfMissing(db, "cc_owed", "repo", "TEXT");
+    addColumnIfMissing(db, "cc_owed", "git_dir", "TEXT");
+    addColumnIfMissing(db, "cc_owed", "branch", "TEXT");
+    addColumnIfMissing(db, "cc_owed", "head_sha", "TEXT");
+    addColumnIfMissing(db, "cc_owed", "branch_state", "TEXT CHECK (branch_state IS NULL OR branch_state IN ('unpushed','pushed','gone','nobase'))");
+    addColumnIfMissing(db, "cc_owed", "checked_at", "TEXT");
+    addColumnIfMissing(db, "cc_sessions", "last_advise_block_prompt", "TEXT");
+    db.exec("CREATE UNIQUE INDEX IF NOT EXISTS cc_owed_open_branch ON cc_owed (git_dir, branch) WHERE branch IS NOT NULL AND state IN ('owed','started','deferred')");
+  },
 ];
+
+function addColumnIfMissing(db, table, column, decl) {
+  const has = db.prepare(`PRAGMA table_info(${table})`).all().some((c) => c.name === column);
+  if (!has) db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${decl}`);
+}
+
+let expectedSchema = null;
+
+/** Columns (`table.column`) and indexes of the plugin's own tables, as a fresh store has them. */
+function expected() {
+  if (expectedSchema) return expectedSchema;
+  const mem = new DatabaseSync(":memory:");
+  try {
+    mem.exec("CREATE TABLE cc_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)");
+    for (const m of MIGRATIONS) m(mem);
+    expectedSchema = schemaOf(mem);
+  } finally {
+    mem.close();
+  }
+  return expectedSchema;
+}
+
+function schemaOf(db) {
+  const columns = [];
+  const indexes = [];
+  for (const t of OWN_TABLES) {
+    for (const c of db.prepare(`PRAGMA table_info(${t})`).all()) columns.push(`${t}.${c.name}`);
+  }
+  const placeholders = OWN_TABLES.map(() => "?").join(", ");
+  for (const r of db.prepare(`SELECT name FROM sqlite_master WHERE type = 'index' AND name NOT LIKE 'sqlite_%' AND tbl_name IN (${placeholders})`).all(...OWN_TABLES)) {
+    indexes.push(r.name);
+  }
+  return { columns, indexes };
+}
+
+/**
+ * What the store lacks against the schema this plugin's migrations build: `table.column` names,
+ * then `index <name>`, in migration order. Empty when complete. Read-only.
+ */
+export function missingSchema(db) {
+  const want = expected();
+  const have = schemaOf(db);
+  const cols = new Set(have.columns);
+  const idx = new Set(have.indexes);
+  return [...want.columns.filter((c) => !cols.has(c)), ...want.indexes.filter((i) => !idx.has(i)).map((i) => `index ${i}`)];
+}
 
 export const SCHEMA_VERSION = MIGRATIONS.length;
 
