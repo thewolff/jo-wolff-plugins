@@ -150,7 +150,7 @@ const same = (a, b) => {
  * `snapshotOf()` returns HEAD's recomputed snapshot (memoized by the caller).
  */
 /** The mismatch reasons that mean the record itself is broken, not merely about something else. */
-const MALFORMED = new Set(["no findings list", "malformed findings", "malformed metadata", "no snapshot", "malformed snapshot files"]);
+const MALFORMED = new Set(["no snapshot object", "no findings list", "malformed findings", "malformed metadata", "no snapshot", "malformed snapshot files"]);
 
 export function mismatch(record, { top, base, receipt, snapshotOf }) {
   if (record.mode !== "inspect") return "not an inspection";
@@ -167,6 +167,7 @@ export function mismatch(record, { top, base, receipt, snapshotOf }) {
   if (!str(record.requested_model) || !str(record.artifacts) || (record.observed_models != null && !Array.isArray(record.observed_models))) return "malformed metadata";
   if (typeof record.repo !== "string" || !same(record.repo, top)) return "another repository";
   const snap = record.snapshot;
+  if (!snap || typeof snap !== "object" || Array.isArray(snap)) return "no snapshot object";
   // snapshot.base is the runner's resolved commit id; record.base is whatever ref was typed.
   if (!base || snap?.base !== base) return "another base";
   if (receipt?.unreadable) return "the current receipt could not be read";
