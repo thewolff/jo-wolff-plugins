@@ -26,6 +26,13 @@ All notable changes to ledger are recorded here. The format follows
   another repository, a receipt that cannot be hashed when the result is compared is logged with
   its path and error, and an added executable file disables the digest fallback that ignores
   added files' modes.
+- A completed claudex inspection with no `response` object, or with a verdict other than
+  APPROVED, REVISE or BLOCKED, is logged as a malformed response rather than skipped silently.
+- The claudex folder scan stops after 5,000 directory entries in all, with one `errors.log`
+  line, so a huge scratch folder cannot stall a review before codex starts.
+- `{repo}` in `review.claudexDirs` is the repository's name (the main checkout's folder, from
+  `git rev-parse --git-common-dir`), so a review run from a git worktree searches
+  `~/agent-scratch/<repository>` and not a folder named after the worktree.
 
 ### Added
 

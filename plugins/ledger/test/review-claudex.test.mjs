@@ -13,7 +13,8 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { sandbox, cli, openDb } from "./helpers.mjs";
 import { buildRepo, commitAll } from "./claudex-repo.mjs";
-import { findApproval, mismatch, readRecord, snapshotAt } from "../lib/review/claudex.mjs";
+import { candidates, claudexDirs, findApproval, mismatch, readRecord, repoName, snapshotAt } from "../lib/review/claudex.mjs";
+import { gitIn } from "./claudex-repo.mjs";
 
 const SID = "s-claudex";
 const fixtures = join(dirname(fileURLToPath(import.meta.url)), "fixtures", "claudex");
@@ -287,4 +288,45 @@ test("(d) the receipt vanishes between newestReceipt and the hash read: logged o
   assert.equal(found, null);
   const log = readFileSync(b.errorsLog, "utf8");
   assert.equal(log.match(/race\/result\.json skipped: receipt not readable: .*PLAN\.md: ENOENT/g)?.length, 1, log);
+});
+
+test("(d) a completed codex inspection with no response object, or a verdict outside the runner's three: logged once each as malformed, codex runs", () => {
+  const { b, snapshot } = repo("staged", { claudexDirs: [] });
+  const none = approved(b, snapshot);
+  delete none.response;
+  writeResult(join(b.root, "noresp"), none);
+  writeResult(join(b.root, "oddverdict"), approved(b, snapshot, { response: { verdict: "LGTM" } }));
+  writeResult(join(b.root, "revise"), approved(b, snapshot, { response: { verdict: "REVISE" } }));
+  const r = review(b, ["--claudex", join(b.root, "noresp"), "--claudex", join(b.root, "oddverdict"), "--claudex", join(b.root, "revise")]);
+  assert.equal(r.ran, true, r.out);
+  const log = readFileSync(b.errorsLog, "utf8");
+  assert.equal(log.match(/noresp\/result\.json skipped: malformed response/g)?.length, 1, log);
+  assert.equal(log.match(/oddverdict\/result\.json skipped: malformed response/g)?.length, 1, log);
+  assert.doesNotMatch(log, /revise\/result\.json/, "an ordinary REVISE stays silent");
+});
+
+test("(d) the folder scan visits a bounded number of directory entries and logs once when the budget runs out", () => {
+  const b = sandbox();
+  const dir = join(b.root, "scratch");
+  for (let i = 0; i < 30; i++) mkdirSync(join(dir, `d${String(i).padStart(2, "0")}`, "x"), { recursive: true });
+  writeResult(join(dir, "zz"), "{}");
+  const found = candidates([dir], { env: b.env, maxEntries: 10 });
+  assert.deepEqual(found, [], "the scan stopped before reaching the result");
+  const log = readFileSync(b.errorsLog, "utf8");
+  assert.equal(log.match(/claudex results scan stopped after 10 directory entries/g)?.length, 1, log);
+  assert.equal(candidates([dir], { env: b.env }).length, 1, "the default budget reaches it");
+});
+
+test("(d) {repo} in a git worktree is the repository's name, not the worktree folder's", () => {
+  const { b } = repo("staged", { claudexDirs: [] });
+  const wt = join(b.root, "trusting-wt-folder");
+  gitIn(b.work, b.env, "worktree", "add", "-q", "-b", "wt-branch", wt);
+  assert.equal(repoName(b.work, b.env), "work");
+  assert.equal(repoName(wt, b.env), "work");
+  assert.deepEqual(claudexDirs({}, wt, b.home, b.env), [join(b.home, "agent-scratch", "work")]);
+  assert.ok(!existsSync(b.errorsLog) || !/repository name/.test(readFileSync(b.errorsLog, "utf8")));
+  const loose = join(b.root, "not-a-repo");
+  mkdirSync(loose);
+  assert.equal(repoName(loose, b.env), "not-a-repo", "outside git: the folder's name");
+  assert.match(readFileSync(b.errorsLog, "utf8"), /repository name for .*not-a-repo not resolvable/);
 });
