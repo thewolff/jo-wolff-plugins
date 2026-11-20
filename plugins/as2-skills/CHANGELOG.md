@@ -4,6 +4,14 @@ All notable changes to as2-skills are recorded here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Releases before 0.1.3 are described
 under "Changes in" in [README.md](README.md).
 
+## 0.1.4 - 2026-11-19
+
+### Changed
+
+- The ctx skill's `ctx search` commands carry `--refresh off`, and the skill says why: it reads
+  the existing history index and never starts, wakes or recovers the daemon. On 2026-11-19 a
+  default-mode `ctx search` (refresh `background`) booted out a healthy ctx daemon.
+
 ## 0.1.3 - 2026-11-04
 
 ### Added

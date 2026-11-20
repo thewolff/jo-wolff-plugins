@@ -18,11 +18,11 @@
 // `ctx search`, `ctx show session` or `ctx show event` (the shell CLI counts: the ctx-first
 // guard tells agents to run exactly that).
 //
-// The message: `resumed without consulting history — \`ctx search '<topic>'\`` where <topic>
+// The message: `resumed without consulting history — \`ctx search --refresh off '<topic>'\`` where <topic>
 // is the first six words of the first user prompt of the window scanned (the prompt that
 // resumed the thread; for the phrase trigger, this turn's prompt), single-quoted for the shell.
 // A window with no prompt takes the last prompt before it (what the thread was about); a
-// transcript with no prompt at all gets a bare `ctx search`, and the message says so.
+// transcript with no prompt at all gets a bare `ctx search --refresh off`, and the message says so.
 //
 // The switch: ~/.claude/ctx-watch.json `{"checks": {"consult-history": "off" | "warn" | "block"}}`,
 // default warn; the flag file ~/.claude/.ctx-watch-off (existence, checked per run) is off
@@ -203,7 +203,7 @@ export function finalText(payload, entries) {
   return "";
 }
 
-/** The first `TOPIC_WORDS` words of a prompt, one line, for `ctx search '<topic>'`. */
+/** The first `TOPIC_WORDS` words of a prompt, one line, for `ctx search --refresh off '<topic>'`. */
 export function topicOf(prompt) {
   return String(prompt ?? "")
     .replace(/<[^>\n]{1,80}>/g, " ")
@@ -229,7 +229,8 @@ export function finding({ entries, resumedAt, text }) {
     const prompt = window.find(isPrompt) ?? before.findLast(isPrompt);
     const topic = topicOf(prompt ? textOf(prompt) : "");
     const head = trigger === "resume" ? "resumed without consulting history" : `said ${JSON.stringify(trigger)} without consulting history`;
-    const command = topic ? `ctx search ${shellQuote(topic)}` : "ctx search";
+    // `--refresh off` reads the existing index and never starts, wakes or recovers the daemon.
+    const command = topic ? `ctx search --refresh off ${shellQuote(topic)}` : "ctx search --refresh off";
     const message = topic ? `${head} — \`${command}\`` : `${head} — \`${command}\` (the transcript has no prompt to take a topic from: add one)`;
     return { trigger: trigger === "resume" ? "resume" : "phrase", topic: topic || null, head, command, message };
   };

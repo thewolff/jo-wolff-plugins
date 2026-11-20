@@ -1,7 +1,7 @@
 {
   "name": "ctx-watch",
   "description": "Notice when the ctx daemon is dead, unsupervised or stale or its index is not ready, repair it and say so in a macOS popup; on Claude Code also say so at session start and mid-session to the agent, and warn when a resumed session skips ctx.",
-  "version": "0.4.3",
+  "version": "0.4.4",
   "author": { "name": "Jo Wolff" },
   "license": "MIT",
   "repository": "https://github.com/thewolff/jo-wolff-plugins",

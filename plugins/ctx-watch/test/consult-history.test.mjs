@@ -196,7 +196,7 @@ test("topicOf: the first six words, tags dropped, quoted for the shell", () => {
 test("finding: the resume trigger fires when nothing since the marker consulted ctx, with the resumed prompt's words; a ctx call since the marker silences it; a call before the marker does not count", () => {
   const resumedAt = T0 + 3_600_000;
   const f = finding({ entries: resumed({ resumedAt }), resumedAt, text: "Picking the migration back up." });
-  assert.deepEqual(f, { trigger: "resume", topic: "ok continue the migration plan from", head: "resumed without consulting history", command: "ctx search 'ok continue the migration plan from'", message: "resumed without consulting history — `ctx search 'ok continue the migration plan from'`" });
+  assert.deepEqual(f, { trigger: "resume", topic: "ok continue the migration plan from", head: "resumed without consulting history", command: "ctx search --refresh off 'ok continue the migration plan from'", message: "resumed without consulting history — `ctx search --refresh off 'ok continue the migration plan from'`" });
   assert.equal(finding({ entries: resumed({ resumedAt, withCtx: true }), resumedAt, text: "Picking the migration back up." }), null);
   const earlier = [ctxSearch(T0 + 500), ...resumed({ resumedAt })];
   assert.equal(finding({ entries: earlier, resumedAt, text: "x" })?.trigger, "resume", "a search before the resume is the old thread's");
@@ -210,10 +210,10 @@ test("finding: the resume trigger fires when nothing since the marker consulted 
   // The resumed prompt landed before the marker (no prompt in the window): the last prompt before it is the topic, never a placeholder.
   const early = [...resumed({ resumedAt }).slice(0, 4), user("continue the index migration", resumedAt - 1000), assistantText("Continuing.", resumedAt + 5000)];
   const e = finding({ entries: early, resumedAt, text: "Continuing." });
-  assert.deepEqual({ topic: e.topic, command: e.command, message: e.message }, { topic: "continue the index migration", command: "ctx search 'continue the index migration'", message: "resumed without consulting history — `ctx search 'continue the index migration'`" });
-  // No prompt anywhere: a bare `ctx search`, and the sentence says why.
+  assert.deepEqual({ topic: e.topic, command: e.command, message: e.message }, { topic: "continue the index migration", command: "ctx search --refresh off 'continue the index migration'", message: "resumed without consulting history — `ctx search --refresh off 'continue the index migration'`" });
+  // No prompt anywhere: a bare `ctx search --refresh off`, and the sentence says why.
   const none = finding({ entries: [assistantText("Resumed.", resumedAt + 1)], resumedAt, text: "Resumed." });
-  assert.deepEqual({ topic: none.topic, command: none.command, message: none.message }, { topic: null, command: "ctx search", message: "resumed without consulting history — `ctx search` (the transcript has no prompt to take a topic from: add one)" });
+  assert.deepEqual({ topic: none.topic, command: none.command, message: none.message }, { topic: null, command: "ctx search --refresh off", message: "resumed without consulting history — `ctx search --refresh off` (the transcript has no prompt to take a topic from: add one)" });
 });
 
 test("finding: the phrase trigger fires on the final message alone, scoped to this turn, with this turn's prompt; a ctx call in the turn silences it; a call in an earlier turn does not", () => {
@@ -221,7 +221,7 @@ test("finding: the phrase trigger fires on the final message alone, scoped to th
   const entries = [user("what did we decide about retries", T0), ctxSearch(T0 + 1000), toolResult("t", T0 + 2000), assistantText("We decided on three.", T0 + 3000), user("and the backoff for the retry queue", turnAt), assistantText("As discussed, exponential.", turnAt + 1000)];
   const f = finding({ entries, resumedAt: null, text: "As discussed, exponential." });
   assert.equal(f.trigger, "phrase");
-  assert.equal(f.message, 'said "as discussed" without consulting history — `ctx search \'and the backoff for the retry\'`');
+  assert.equal(f.message, 'said "as discussed" without consulting history — `ctx search --refresh off \'and the backoff for the retry\'`');
   for (const text of ["We spoke previously about this.", "Earlier you said no.", "as   discussed\nabove"]) assert.equal(finding({ entries, resumedAt: null, text })?.trigger, "phrase", text);
   for (const text of ["The last timestamp is wrong.", "The cron job ran fine; the last time it failed was 03:00.", "Last time it broke.", "This is discussed below.", "Previously we spoke.", ""]) assert.equal(finding({ entries, resumedAt: null, text }), null, JSON.stringify(text));
   const withCall = [...entries.slice(0, -1), ctxSearch(turnAt + 500), toolResult("t2", turnAt + 600), assistantText("As discussed, exponential.", turnAt + 1000)];
@@ -236,7 +236,7 @@ test("finding: a task-notification is not a prompt; the topic is the person's pr
   const b = [user("what did we decide about retries", T0), ctxSearch(T0 + 1000), toolResult(`t-${T0 + 1000}`, T0 + 2000), notification(T0 + 3000), assistantText("As discussed, three.", T0 + 4000)];
   assert.equal(finding({ entries: b, resumedAt: null, text: "As discussed, three." }), null);
   const c = [user("what did we decide about retries", T0), notification(T0 + 3000), assistantText("As discussed, three.", T0 + 4000)];
-  assert.equal(finding({ entries: c, resumedAt: null, text: "As discussed, three." })?.message, 'said "as discussed" without consulting history — `ctx search \'what did we decide about retries\'`', "no call: the finding names the person's prompt");
+  assert.equal(finding({ entries: c, resumedAt: null, text: "As discussed, three." })?.message, 'said "as discussed" without consulting history — `ctx search --refresh off \'what did we decide about retries\'`', "no call: the finding names the person's prompt");
 });
 
 test("the Stop hook in-process: silent on a fresh start; warn on a resume without a ctx call (one systemMessage line, one checks.log line); silent when ctx was called; silent on the second Stop", () => {
@@ -246,9 +246,9 @@ test("the Stop hook in-process: silent on a fresh start; warn on a resume withou
     assert.equal(stop(stopInput(b), { env: b.env, now: () => NOW }), null, "fresh start: no marker");
     sessionStart(startInput("resume"), { env: b.env, now: () => T0 + 3_600_000, run: healthy });
     const out = stop(stopInput(b), { env: b.env, now: () => NOW });
-    assert.deepEqual(out, { systemMessage: "ctx-watch: resumed without consulting history — `ctx search 'ok continue the migration plan from'`" });
+    assert.deepEqual(out, { systemMessage: "ctx-watch: resumed without consulting history — `ctx search --refresh off 'ok continue the migration plan from'`" });
     assert.equal(out.systemMessage.split("\n").length, 1);
-    assert.match(readFileSync(join(b.dir, "checks.log"), "utf8"), /^\d{4}-.*Z warn s-1 resume resumed without consulting history — `ctx search 'ok continue the migration plan from'`\n$/);
+    assert.match(readFileSync(join(b.dir, "checks.log"), "utf8"), /^\d{4}-.*Z warn s-1 resume resumed without consulting history — `ctx search --refresh off 'ok continue the migration plan from'`\n$/);
     assert.equal(stop(stopInput(b), { env: b.env, now: () => NOW }), null, "the marker was consumed: the next Stop is silent");
     assert.equal(existsSync(join(b.dir, "errors.log")), false);
 
@@ -269,21 +269,21 @@ test("the Stop hook in-process: block mode blocks with the command and the way o
     sessionStart(startInput("resume"), { env: b.env, now: () => T0 + 3_600_000, run: healthy });
     const out = stop(stopInput(b), { env: b.env, now: () => NOW });
     assert.equal(out.decision, "block");
-    assert.equal(out.reason, "ctx-watch (consult-history): resumed without consulting history. Run `ctx search 'ok continue the migration plan from'` (or the ctx MCP search) and read what it finds before going on. Way out: `touch ~/.claude/.ctx-watch-off`, or {\"checks\": {\"consult-history\": \"warn\"}} in ~/.claude/ctx-watch.json.");
+    assert.equal(out.reason, "ctx-watch (consult-history): resumed without consulting history. Run `ctx search --refresh off 'ok continue the migration plan from'` (or the ctx MCP search) and read what it finds before going on. Way out: `touch ~/.claude/.ctx-watch-off`, or {\"checks\": {\"consult-history\": \"warn\"}} in ~/.claude/ctx-watch.json.");
     assert.match(readFileSync(join(b.dir, "checks.log"), "utf8"), /Z block s-1 resume /);
 
     // The phrase trigger, in block mode, on a Stop that follows a block: warn, never a second block.
     b.write([user("the retry queue again", T0), assistantText("As discussed, exponential.", T0 + 1000)]);
     const again = stop(stopInput(b, { stop_hook_active: true }), { env: b.env, now: () => NOW });
-    assert.deepEqual(again, { systemMessage: "ctx-watch: said \"as discussed\" without consulting history — `ctx search 'the retry queue again'`" });
+    assert.deepEqual(again, { systemMessage: "ctx-watch: said \"as discussed\" without consulting history — `ctx search --refresh off 'the retry queue again'`" });
     const phrase = stop(stopInput(b), { env: b.env, now: () => NOW });
     assert.equal(phrase.decision, "block");
-    assert.match(phrase.reason, /^ctx-watch \(consult-history\): said "as discussed" without consulting history\. Run `ctx search 'the retry queue again'` /);
+    assert.match(phrase.reason, /^ctx-watch \(consult-history\): said "as discussed" without consulting history\. Run `ctx search --refresh off 'the retry queue again'` /);
 
-    // A resume whose transcript holds no prompt: the reason names a bare `ctx search` and says the subject is missing.
+    // A resume whose transcript holds no prompt: the reason names a bare `ctx search --refresh off` and says the subject is missing.
     sessionStart(startInput("resume"), { env: b.env, now: () => T0 + 3_600_000, run: healthy });
     b.write([assistantText("Resumed.", T0 + 3_600_001)]);
-    assert.match(stop(stopInput(b), { env: b.env, now: () => NOW }).reason, /^ctx-watch \(consult-history\): resumed without consulting history\. Run `ctx search` with the thread's subject added \(the transcript has no prompt to take one from\) \(or the ctx MCP search\) /);
+    assert.match(stop(stopInput(b), { env: b.env, now: () => NOW }).reason, /^ctx-watch \(consult-history\): resumed without consulting history\. Run `ctx search --refresh off` with the thread's subject added \(the transcript has no prompt to take one from\) \(or the ctx MCP search\) /);
 
     writeFileSync(configPath(b.env), JSON.stringify({ checks: { "consult-history": "off" } }));
     sessionStart(startInput("resume"), { env: b.env, now: () => T0 + 3_600_000, run: healthy });
@@ -322,7 +322,7 @@ test("the Stop hook in-process: a bad config file is an errors.log line and warn
     assert.equal(stop(stopInput(b, { transcript_path: undefined }), { env: b.env, now: () => NOW }), null, "no path, no marker: nothing");
 
     b.write([user("the retry queue again", T0), assistantText("As discussed, exponential.", T0 + 1000)]);
-    assert.equal(stop(stopInput(b, { session_id: undefined }), { env: b.env, now: () => NOW }).systemMessage, "ctx-watch: said \"as discussed\" without consulting history — `ctx search 'the retry queue again'`");
+    assert.equal(stop(stopInput(b, { session_id: undefined }), { env: b.env, now: () => NOW }).systemMessage, "ctx-watch: said \"as discussed\" without consulting history — `ctx search --refresh off 'the retry queue again'`");
     assert.equal(stop(stopInput(b, { last_assistant_message: "Done; nothing was discussed." }), { env: b.env, now: () => NOW }), null, "the payload's text wins over the transcript's");
   } finally {
     b.release();
@@ -356,14 +356,14 @@ test("hooks/stop.mjs spawned as Claude Code spawns it: a resume without a ctx ca
     markResumed(b.dir, "s-1", T0 + 3_600_000);
     const warn = run(stopInput(b));
     assert.equal(warn.status, 0, warn.stderr);
-    assert.deepEqual(JSON.parse(warn.stdout), { systemMessage: "ctx-watch: resumed without consulting history — `ctx search 'ok continue the migration plan from'`" });
+    assert.deepEqual(JSON.parse(warn.stdout), { systemMessage: "ctx-watch: resumed without consulting history — `ctx search --refresh off 'ok continue the migration plan from'`" });
     writeFileSync(configPath(b.env), JSON.stringify({ checks: { "consult-history": "block" } }));
     markResumed(b.dir, "s-1", T0 + 3_600_000);
     const block = run(stopInput(b));
     assert.equal(block.status, 0, block.stderr);
     const j = JSON.parse(block.stdout);
     assert.equal(j.decision, "block");
-    assert.match(j.reason, /Run `ctx search 'ok continue the migration plan from'` /);
+    assert.match(j.reason, /Run `ctx search --refresh off 'ok continue the migration plan from'` /);
     assert.equal(existsSync(join(b.dir, "errors.log")), false);
   } finally {
     b.release();
