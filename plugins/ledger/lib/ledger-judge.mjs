@@ -232,7 +232,8 @@ export function quotations(text) {
  * allocator never excerpts it: the receipt diff (RECEIPT_DIFF_CAP_BYTES), or a line saying the
  * earlier text is not on record; one evidence line per quotation of the finding found on a removed
  * line (the quotation only, QUOTE_CAP_BYTES each, QUOTES_SHOWN at most); the current receipt
- * (RECEIPT_CURRENT_CAP_BYTES). `change` is { diff: string|null, quotes: string[], current: string|null }.
+ * (RECEIPT_CURRENT_CAP_BYTES). `change` is { diff: string|null, old?: string|null, quotes: string[], current: string|null };
+ * with no diff but `old`, the earlier text is shown whole (within the diff's cap) instead.
  */
 export function receiptChangeUnits(change) {
   const units = [
@@ -241,7 +242,9 @@ export function receiptChangeUnits(change) {
       rank: 0,
       text: change.diff
         ? `Receipt diff, from the text when the finding was raised to the current text:\n${clipBothEnds(String(change.diff), RECEIPT_DIFF_CAP_BYTES)}`
-        : "The receipt's text when the finding was raised is not on record; only the current text is shown.",
+        : change.old != null
+          ? `The receipt diff could not be built; the receipt's text when the finding was raised:\n${clipBothEnds(String(change.old), RECEIPT_DIFF_CAP_BYTES)}`
+          : "The receipt's text when the finding was raised is not on record; only the current text is shown.",
     },
   ];
   const quotes = change.quotes ?? [];
