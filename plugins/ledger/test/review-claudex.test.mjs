@@ -13,7 +13,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { sandbox, cli, openDb } from "./helpers.mjs";
 import { buildRepo, commitAll } from "./claudex-repo.mjs";
-import { mismatch, readRecord, snapshotAt } from "../lib/review/claudex.mjs";
+import { findApproval, mismatch, readRecord, snapshotAt } from "../lib/review/claudex.mjs";
 
 const SID = "s-claudex";
 const fixtures = join(dirname(fileURLToPath(import.meta.url)), "fixtures", "claudex");
@@ -276,4 +276,15 @@ test("(d) a result whose repository path cannot be resolved: logged once, codex 
   const r = review(b, ["--claudex", dir]);
   assert.equal(r.ran, true, r.out);
   assert.equal(readFileSync(b.errorsLog, "utf8").match(/gone\/result\.json skipped: repository path not resolvable/g)?.length, 1);
+});
+
+test("(d) the receipt vanishes between newestReceipt and the hash read: logged once with its path, no approval", () => {
+  const { b, base, head, snapshot } = repo("staged", { claudexDirs: [] });
+  const dir = join(b.root, "race");
+  writeResult(dir, approved(b, snapshot, { plan_sha256: "0".repeat(64) }));
+  const gone = join(b.work, ".pattern-check", "PLAN.md");
+  const found = findApproval({ top: b.work, base, head, receipt: { path: gone }, config: { review: { claudexDirs: [] } }, env: b.env, paths: [dir] });
+  assert.equal(found, null);
+  const log = readFileSync(b.errorsLog, "utf8");
+  assert.equal(log.match(/race\/result\.json skipped: receipt not readable: .*PLAN\.md: ENOENT/g)?.length, 1, log);
 });
