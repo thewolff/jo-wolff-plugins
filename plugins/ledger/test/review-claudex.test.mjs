@@ -190,6 +190,16 @@ test("(d) a JSON array and a record with malformed findings: each logged once, c
   assert.ok(!/revise\/result\.json/.test(log), "an ordinary non-match is not logged");
 });
 
+test("(d) an approval with no snapshot object: logged once as malformed, codex runs", () => {
+  const { b, snapshot } = repo("staged", { claudexDirs: [] });
+  const dir = join(b.root, "nosnap");
+  writeResult(dir, approved(b, snapshot, { snapshot: null }));
+  const r = review(b, ["--claudex", dir]);
+  assert.equal(r.code, 0, r.out);
+  assert.equal(r.ran, true);
+  assert.equal(readFileSync(b.errorsLog, "utf8").match(/nosnap\/result\.json skipped: no snapshot object/g)?.length, 1);
+});
+
 test("(d) a missing default folder is silent; review.claudexDirs [] turns the search off", () => {
   const { b } = repo("staged");
   const r = review(b);

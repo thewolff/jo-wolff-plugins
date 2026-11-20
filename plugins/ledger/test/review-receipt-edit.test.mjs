@@ -12,7 +12,7 @@ import { chmodSync, mkdirSync, readFileSync, utimesSync, writeFileSync } from "n
 import { join } from "node:path";
 import { sandbox, cli, openDb } from "./helpers.mjs";
 import { JUDGE_QUESTION, PASSAGE_CAP_BYTES, QUOTE_CAP_BYTES, RECEIPT_CHANGED_QUESTION, passageFor, receiptChangeUnits } from "../lib/ledger-judge.mjs";
-import { removedQuotes, textDiff } from "../lib/review.mjs";
+import { loadReceipt, removedQuotes, textDiff } from "../lib/review.mjs";
 
 const SID = "s-receipt-edit";
 const OLD_AC5 = "5. Image file paste -> still uploads; markdown image syntax inserts nothing.";
@@ -256,4 +256,21 @@ test("(a4) the receipt diff cannot be built (no temporary folder): null and one 
   const units = receiptChangeUnits({ diff: null, old: plan(OLD_AC5), quotes: [], current: plan(NEW_AC5) });
   assert.ok(units[0].text.startsWith("The receipt diff could not be built; the receipt's text when the finding was raised:\n"));
   assert.ok(units[0].text.includes(OLD_AC5));
+});
+
+test("(a6) the stored receipt cannot be read (closed database): one log line, an unreadable result, and the passage says so", () => {
+  const b = sandbox();
+  const db = openDb(b);
+  db.close();
+  const r = loadReceipt(db, "f".repeat(64), b.env);
+  assert.deepEqual(r, { text: null, unreadable: true });
+  assert.match(readFileSync(b.errorsLog, "utf8"), /receipt snapshot ffffffff not readable/);
+  const open = openDb(b);
+  try {
+    assert.deepEqual(loadReceipt(open, "e".repeat(64), b.env), { text: null }, "absent is not unreadable");
+  } finally {
+    open.close();
+  }
+  const units = receiptChangeUnits({ diff: null, old: null, oldUnreadable: true, quotes: [], current: plan(NEW_AC5) });
+  assert.ok(units[0].text.startsWith("The receipt's text when the finding was raised could not be read from the ledger database"));
 });

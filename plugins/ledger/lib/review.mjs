@@ -563,12 +563,16 @@ export function storeReceipt(db, dbPath, sha, text, env = process.env) {
   }
 }
 
-/** The receipt text stored under `sha`, or null. */
-export function loadReceipt(db, sha) {
+/**
+ * The receipt text stored under `sha` as { text }, { text: null } when none was stored, or
+ * { text: null, unreadable: true } with one errors.log line when the read itself failed.
+ */
+export function loadReceipt(db, sha, env = process.env) {
   try {
-    return db.prepare("SELECT value FROM cc_meta WHERE key = ?").get(`receipt:${sha}`)?.value ?? null;
-  } catch {
-    return null;
+    return { text: db.prepare("SELECT value FROM cc_meta WHERE key = ?").get(`receipt:${sha}`)?.value ?? null };
+  } catch (err) {
+    logError("review", `receipt snapshot ${String(sha).slice(0, 8)} not readable: ${err.message}; judged without the earlier text`, env);
+    return { text: null, unreadable: true };
   }
 }
 
@@ -755,9 +759,10 @@ async function judgeItems({ db, dbPath, config, env, top, fromSha, toSha, items,
       const now = currentReceipt();
       // A receipt that exists but cannot be read is not an edit: the finding is judged as before.
       if (!now.unreadable && item.receipt !== now.sha) {
-        const old = loadReceipt(db, item.receipt);
+        const stored = loadReceipt(db, item.receipt, env);
+        const old = stored.text;
         const rdiff = old != null ? textDiff(old, now.text ?? "", env) : null;
-        receiptChange = { diff: rdiff, old, quotes: rdiff ? removedQuotes(item.text, rdiff) : [], current: now.text };
+        receiptChange = { diff: rdiff, old, oldUnreadable: Boolean(stored.unreadable), quotes: rdiff ? removedQuotes(item.text, rdiff) : [], current: now.text };
       }
     }
     const stems = [...targets, ...atSince].map((p) => p.split("/").at(-1).replace(/\.[^.]*$/, "")).filter((s) => s.length >= 3);

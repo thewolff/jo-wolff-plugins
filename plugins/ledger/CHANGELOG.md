@@ -20,6 +20,8 @@ All notable changes to ledger are recorded here. The format follows
   recorded hash, or an unchanged receipt, are judged as before, under the same cache key.
   A receipt that exists but cannot be read counts as unknown, not as an edit: the finding is
   judged as before.
+  A stored receipt that cannot be read from the database leaves one `errors.log` line, and the
+  judge is told the earlier text could not be read rather than that none was kept.
 
 ### Added
 
