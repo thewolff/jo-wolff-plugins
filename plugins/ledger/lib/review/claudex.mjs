@@ -127,7 +127,9 @@ export function readRecord(path, env = process.env) {
       return null;
     }
     const value = JSON.parse(readFileSync(path, "utf8"));
-    return value && typeof value === "object" && !Array.isArray(value) ? value : null;
+    if (value && typeof value === "object" && !Array.isArray(value)) return value;
+    logError("review", `claudex result ${path} is not a JSON object; skipped`, env);
+    return null;
   } catch (err) {
     logError("review", `claudex result ${path} not usable: ${err.message}; skipped`, env);
     return null;
@@ -147,6 +149,9 @@ const same = (a, b) => {
  * `receipt` is { path } of the current pattern-check receipt, or { path: undefined } for none.
  * `snapshotOf()` returns HEAD's recomputed snapshot (memoized by the caller).
  */
+/** The mismatch reasons that mean the record itself is broken, not merely about something else. */
+const MALFORMED = new Set(["no findings list", "malformed findings", "malformed metadata", "no snapshot", "malformed snapshot files"]);
+
 export function mismatch(record, { top, base, receipt, snapshotOf }) {
   if (record.mode !== "inspect") return "not an inspection";
   if (record.status !== "completed" || record.exit_code !== 0) return "not completed";
@@ -223,7 +228,11 @@ export function findApproval({ top, base, head, receipt, config, env = process.e
         logError("review", `claudex result ${path} could not be compared: ${err.message}; skipped`, env);
         continue;
       }
-      if (why) continue;
+      if (why) {
+        // An ordinary non-match (another commit, a REVISE) is silent; a broken record is logged.
+        if (MALFORMED.has(why)) logError("review", `claudex result ${path} skipped: ${why}`, env);
+        continue;
+      }
       let result;
       try {
         result = approvalResult({ record, path });

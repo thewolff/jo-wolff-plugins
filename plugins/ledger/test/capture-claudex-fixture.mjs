@@ -29,6 +29,8 @@ if (probe.status !== 0) throw new Error(`python3 not runnable: ${probe.stderr ||
 const python = probe.stdout.trim();
 const out = join(dirname(fileURLToPath(import.meta.url)), "fixtures", "claudex");
 mkdirSync(out, { recursive: true });
+// Both snapshots are captured before either fixture is replaced, so a failure leaves them untouched.
+const captured = [];
 for (const variant of ["staged", "untracked"]) {
   const root = mkdtempSync(join(tmpdir(), "claudex-fixture-"));
   try {
@@ -47,9 +49,12 @@ for (const variant of ["staged", "untracked"]) {
     ].join("\n");
     const r = spawnSync(python, ["-I", "-c", py, runner, repo, base], { encoding: "utf8", env: { ...env, GIT_CONFIG_NOSYSTEM: "1" } });
     if (r.status !== 0) throw new Error(`snapshot failed (${r.status}): ${r.stderr || r.error}`);
-    writeFileSync(join(out, `snapshot.${variant}.json`), r.stdout);
-    console.log(`saved snapshot.${variant}.json (base ${base.slice(0, 8)})`);
+    captured.push({ variant, base, json: r.stdout });
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
+}
+for (const { variant, base, json } of captured) {
+  writeFileSync(join(out, `snapshot.${variant}.json`), json);
+  console.log(`saved snapshot.${variant}.json (base ${base.slice(0, 8)})`);
 }

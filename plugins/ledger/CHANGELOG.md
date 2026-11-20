@@ -18,6 +18,8 @@ All notable changes to ledger are recorded here. The format follows
   source sections, and asks whether the finding still applies with the current receipt as
   authoritative. `review addressed` resolves the current receipt the same way. Findings with no
   recorded hash, or an unchanged receipt, are judged as before, under the same cache key.
+  A receipt that exists but cannot be read counts as unknown, not as an edit: the finding is
+  judged as before.
 
 ### Added
 
