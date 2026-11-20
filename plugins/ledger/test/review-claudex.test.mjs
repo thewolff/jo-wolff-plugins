@@ -107,6 +107,7 @@ test("(b) low findings in an approval become nits: pass with nits, still no code
   writeResult(dir, approved(b, snapshot, { response: { findings: [{ id: "L1", severity: "low", path: "a.txt", evidence: "naming", fix: "rename" }] } }));
   const r = review(b, ["--claudex", dir]);
   assert.equal(r.ran, false, r.out);
+  assert.match(r.out, /codex: pass with nits .*: 0 blocking, 0 should, 1 nit · claudex inspect APPROVED, .*claudex-run, snapshot [0-9a-f]{8}/, r.out);
   const row = codexRow(b);
   assert.equal(row.verdict, "pass-with-nits");
   assert.deepEqual(JSON.parse(row.findings_json).map((i) => i.severity), ["nit"]);
@@ -201,4 +202,31 @@ test("(d) a matching approval whose low finding has a non-string path: skipped, 
   assert.equal(r.code, 0, r.out);
   assert.equal(r.ran, true);
   assert.equal(codexRow(b).verdict, "pass");
+});
+
+test("(c) a severity outside the runner's high/medium/low (blocking, HIGH): malformed, codex runs", () => {
+  for (const severity of ["blocking", "HIGH"]) {
+    const { b, snapshot } = repo("staged", { claudexDirs: [] });
+    const dir = join(b.root, "r");
+    writeResult(dir, approved(b, snapshot, { response: { findings: [{ id: "X1", severity, path: "a.txt", evidence: "bug", fix: "fix" }] } }));
+    assert.equal(review(b, ["--claudex", dir]).ran, true, severity);
+  }
+});
+
+test("(c2) the current receipt exists but cannot be read (the file, or its folder): no approval is reused, codex runs", () => {
+  for (const target of ["file", "folder"]) {
+    const { b, snapshot } = repo("staged", { claudexDirs: [] });
+    const folder = join(b.work, ".pattern-check");
+    mkdirSync(folder, { recursive: true });
+    const receipt = join(folder, "PLAN.md");
+    writeFileSync(receipt, "# PLAN\n");
+    const dir = join(b.root, "r");
+    writeResult(dir, approved(b, snapshot, { plan_sha256: "0".repeat(64) }));
+    chmodSync(target === "file" ? receipt : folder, 0o000);
+    try {
+      assert.equal(review(b, ["--claudex", dir]).ran, true, target);
+    } finally {
+      chmodSync(target === "file" ? receipt : folder, target === "file" ? 0o644 : 0o755);
+    }
+  }
 });
