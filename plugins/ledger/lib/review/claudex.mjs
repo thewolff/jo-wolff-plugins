@@ -19,7 +19,7 @@
 
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { readdirSync, readFileSync, realpathSync, statSync } from "node:fs";
+import { opendirSync, readFileSync, realpathSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 import { logError } from "../failopen.mjs";
@@ -110,30 +110,48 @@ export function claudexDirs(config, top, home = homedir(), env = process.env) {
 /**
  * Every result.json among `paths` (a file is taken as is; a folder is searched MAX_DEPTH levels
  * down), at most MAX_FILES, visiting at most `maxEntries` directory entries in all (one log line
- * when that budget runs out). `explicit` paths that are missing are logged; a missing default folder is not.
+ * when that budget runs out). Folders are read one entry at a time through `opendir` (fs.opendirSync
+ * unless a test injects one), so the budget applies before a huge folder is listed in full, and each
+ * handle is closed on every exit. `explicit` paths that are missing are logged; a missing default folder is not.
  */
-export function candidates(paths, { env = process.env, explicit = new Set(), cwd = process.cwd(), maxEntries = MAX_ENTRIES } = {}) {
+export function candidates(paths, { env = process.env, explicit = new Set(), cwd = process.cwd(), maxEntries = MAX_ENTRIES, opendir = opendirSync } = {}) {
   const found = [];
   let visited = 0;
   let exhausted = false;
   const walk = (dir, depth) => {
     if (found.length >= MAX_FILES || exhausted) return;
-    let entries;
+    let handle;
     try {
-      entries = readdirSync(dir, { withFileTypes: true });
+      handle = opendir(dir);
     } catch (err) {
       if (err.code !== "ENOENT" || explicit.has(dir)) logError("review", `claudex results folder ${dir} not readable: ${err.message}`, env);
       return;
     }
-    for (const e of entries) {
-      if (found.length >= MAX_FILES || exhausted) return;
-      if (++visited > maxEntries) {
-        exhausted = true;
-        logError("review", `claudex results scan stopped after ${maxEntries} directory entries (in ${dir}); results beyond it were not searched`, env);
-        return;
+    try {
+      for (;;) {
+        if (found.length >= MAX_FILES || exhausted) return;
+        let e;
+        try {
+          e = handle.readSync();
+        } catch (err) {
+          logError("review", `claudex results folder ${dir} not readable: ${err.message}`, env);
+          return;
+        }
+        if (e === null) return;
+        if (++visited > maxEntries) {
+          exhausted = true;
+          logError("review", `claudex results scan stopped after ${maxEntries} directory entries (in ${dir}); results beyond it were not searched`, env);
+          return;
+        }
+        if (e.isFile() && e.name === "result.json") found.push(join(dir, e.name));
+        else if (e.isDirectory() && depth < MAX_DEPTH) walk(join(dir, e.name), depth + 1);
       }
-      if (e.isFile() && e.name === "result.json") found.push(join(dir, e.name));
-      else if (e.isDirectory() && depth < MAX_DEPTH) walk(join(dir, e.name), depth + 1);
+    } finally {
+      try {
+        handle.closeSync();
+      } catch (err) {
+        logError("review", `claudex results folder ${dir} not closed: ${err.message}`, env);
+      }
     }
   };
   for (const raw of paths) {

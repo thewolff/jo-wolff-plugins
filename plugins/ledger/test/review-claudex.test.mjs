@@ -8,12 +8,12 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, opendirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { sandbox, cli, openDb } from "./helpers.mjs";
 import { buildRepo, commitAll } from "./claudex-repo.mjs";
-import { candidates, claudexDirs, findApproval, mismatch, readRecord, repoName, snapshotAt } from "../lib/review/claudex.mjs";
+import { MAX_ENTRIES, candidates, claudexDirs, findApproval, mismatch, readRecord, repoName, snapshotAt } from "../lib/review/claudex.mjs";
 import { gitIn } from "./claudex-repo.mjs";
 
 const SID = "s-claudex";
@@ -315,6 +315,87 @@ test("(d) the folder scan visits a bounded number of directory entries and logs 
   const log = readFileSync(b.errorsLog, "utf8");
   assert.equal(log.match(/claudex results scan stopped after 10 directory entries/g)?.length, 1, log);
   assert.equal(candidates([dir], { env: b.env }).length, 1, "the default budget reaches it");
+});
+
+/** opendirSync wrapped to count every entry read and every handle opened and closed. */
+function countingOpendir() {
+  const c = { reads: 0, opened: 0, closed: 0 };
+  c.opendir = (dir) => {
+    const h = opendirSync(dir);
+    c.opened++;
+    return {
+      readSync: () => {
+        const e = h.readSync();
+        if (e !== null) c.reads++;
+        return e;
+      },
+      closeSync: () => {
+        c.closed++;
+        h.closeSync();
+      },
+    };
+  };
+  return c;
+}
+
+test("(d) a folder with more entries than the budget is read one entry at a time: at most budget+1 reads, every handle closed", () => {
+  const b = sandbox();
+  const dir = join(b.root, "huge");
+  mkdirSync(dir, { recursive: true });
+  for (let i = 0; i < 500; i++) writeFileSync(join(dir, `f${i}`), "");
+  mkdirSync(join(dir, "sub"));
+  for (let i = 0; i < 50; i++) writeFileSync(join(dir, "sub", `g${i}`), "");
+  const c = countingOpendir();
+  assert.deepEqual(candidates([dir], { env: b.env, maxEntries: 10, opendir: c.opendir }), []);
+  assert.ok(c.reads <= 11, `read ${c.reads} entries for a budget of 10`);
+  assert.ok(c.opened >= 1);
+  assert.equal(c.closed, c.opened, "every Dir handle is closed");
+  assert.equal(readFileSync(b.errorsLog, "utf8").match(/claudex results scan stopped after 10 directory entries/g)?.length, 1);
+});
+
+test("(d) a Dir handle is closed when reading it throws, and the failure is logged, not thrown", () => {
+  const b = sandbox();
+  const dir = join(b.root, "flaky");
+  mkdirSync(dir, { recursive: true });
+  writeFileSync(join(dir, "f"), "");
+  let closed = 0;
+  const opendir = (d) => {
+    const h = opendirSync(d);
+    return {
+      readSync: () => {
+        throw Object.assign(new Error("EIO: i/o error"), { code: "EIO" });
+      },
+      closeSync: () => {
+        closed++;
+        h.closeSync();
+      },
+    };
+  };
+  assert.deepEqual(candidates([dir], { env: b.env, opendir }), []);
+  assert.equal(closed, 1);
+  assert.match(readFileSync(b.errorsLog, "utf8"), /claudex results folder .*flaky not readable: EIO/);
+});
+
+test("(d) a real match is still found through the streamed scan, and its handles are closed", () => {
+  const b = sandbox();
+  const dir = join(b.root, "scratch");
+  const want = writeResult(join(dir, "eng-inspect-r1", "claudex-abc"), "{}");
+  for (let i = 0; i < 20; i++) writeFileSync(join(dir, `noise${i}`), "");
+  const c = countingOpendir();
+  assert.deepEqual(candidates([dir], { env: b.env, opendir: c.opendir }), [want]);
+  assert.equal(c.closed, c.opened);
+});
+
+test("(d) a default folder over the default budget stops the scan, logs once, and codex still runs", () => {
+  const { b } = repo("staged");
+  const dir = join(b.home, "agent-scratch", "work");
+  mkdirSync(dir, { recursive: true });
+  for (let i = 0; i <= MAX_ENTRIES; i++) writeFileSync(join(dir, `f${i}`), "");
+  const r = review(b);
+  assert.equal(r.code, 0, r.out);
+  assert.equal(r.ran, true, "codex ran");
+  const log = readFileSync(b.errorsLog, "utf8");
+  assert.equal(log.match(new RegExp(`claudex results scan stopped after ${MAX_ENTRIES} directory entries`, "g"))?.length, 1, log);
 });
 
 test("(d) {repo} in a git worktree is the repository's name, not the worktree folder's", () => {

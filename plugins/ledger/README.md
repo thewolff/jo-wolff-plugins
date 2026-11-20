@@ -963,6 +963,11 @@ Tests use a sandboxed `HOME`, `XDG_*` and `LEDGER_*` so they never touch your le
 
 ## Changes
 
+### 0.4.11
+
+- The claudex results scan reads folders one entry at a time, so its 5,000-entry budget applies
+  before a huge folder is listed in full; every directory handle is closed on each exit.
+
 ### 0.4.10
 
 - A finding raised under one pattern-check receipt is no longer re-asserted after the human edits
