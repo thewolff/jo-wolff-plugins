@@ -4,6 +4,17 @@ All notable changes to ledger are recorded here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Entries before 0.2.1 are the
 "Changes" section of the README (one line per version).
 
+## 0.4.11 - 2026-11-20
+
+### Fixed
+
+- The claudex results scan read each folder in full with `readdirSync` before its 5,000-entry
+  budget applied, so one folder with millions of entries under `~/agent-scratch/{repo}` could
+  stall or exhaust memory in `review` before the cap took effect. The scan now reads folders one
+  entry at a time with `fs.opendirSync`, counts each entry against the budget as it is read, and
+  closes every directory handle on each exit, including a budget stop, the file cap and a read
+  error. A spent budget still logs one errors.log line and codex runs as before.
+
 ## 0.4.10 - 2026-11-19
 
 ### Fixed
