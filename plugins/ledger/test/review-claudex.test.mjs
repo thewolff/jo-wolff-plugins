@@ -174,6 +174,22 @@ test("(d) malformed JSON, a 2 MiB file and a missing folder: codex runs and the 
   assert.match(log, /no-such-folder not readable/);
 });
 
+test("(d) a JSON array and a record with malformed findings: each logged once, codex runs; a REVISE stays silent", () => {
+  const { b, snapshot } = repo("staged", { claudexDirs: [] });
+  const arr = writeResult(join(b.root, "arr"), "[1, 2]");
+  const bad = join(b.root, "bad");
+  writeResult(bad, approved(b, snapshot, { response: { findings: [{ id: "X1", severity: "blocking", path: "a.txt", evidence: "e" }] } }));
+  const revise = join(b.root, "revise");
+  writeResult(revise, approved(b, snapshot, { response: { verdict: "REVISE", findings: [] } }));
+  const r = review(b, ["--claudex", arr, "--claudex", bad, "--claudex", revise]);
+  assert.equal(r.code, 0, r.out);
+  assert.equal(r.ran, true);
+  const log = readFileSync(b.errorsLog, "utf8");
+  assert.match(log, /arr\/result\.json is not a JSON object; skipped/);
+  assert.equal(log.match(/bad\/result\.json skipped: malformed findings/g)?.length, 1);
+  assert.ok(!/revise\/result\.json/.test(log), "an ordinary non-match is not logged");
+});
+
 test("(d) a missing default folder is silent; review.claudexDirs [] turns the search off", () => {
   const { b } = repo("staged");
   const r = review(b);

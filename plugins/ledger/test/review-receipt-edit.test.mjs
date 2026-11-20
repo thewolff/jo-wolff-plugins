@@ -127,6 +127,24 @@ test("(a) the judge still decides: a no after the edit keeps the finding open", 
   assert.match(readFileSync(`${no}.prompt`, "utf8"), /receipt changed since the finding was raised/);
 });
 
+test("(a5) the current receipt exists but cannot be read: not treated as an edit; default question, no receipt-change section", () => {
+  const b = repo();
+  writeReceipt(b, plan(OLD_AC5));
+  review(b, [], { LEDGER_REVIEW_BIN_CODEX: lab(b, "codex-1", FINDING) });
+  const path = join(b.work, ".pattern-check", "PLAN.md");
+  chmodSync(path, 0o000);
+  try {
+    const no = judge(b, "no");
+    const r = review(b, [], { LEDGER_REVIEW_BIN_CODEX: lab(b, "codex-2", "PASS"), LEDGER_JUDGE_BIN: no });
+    assert.match(r.out, /codex: findings/, r.out);
+    const judged = readFileSync(`${no}.prompt`, "utf8");
+    assert.ok(!judged.includes("receipt changed"), judged.slice(0, 300));
+    assert.ok(judged.includes(`Question: ${JUDGE_QUESTION}`));
+  } finally {
+    chmodSync(path, 0o644);
+  }
+});
+
 test("(a) with the receipt unchanged, a dropped finding is judged as before: default question, no receipt-change section", () => {
   const b = repo();
   writeReceipt(b, plan(OLD_AC5));

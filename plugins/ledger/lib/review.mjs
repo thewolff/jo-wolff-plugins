@@ -617,7 +617,7 @@ export function removedQuotes(text, diff) {
  * changed file; when nothing changed at
  * all it says so. Returns the items with `since` and `judge` (and `resolved` unless `no`).
  */
-async function judgeItems({ db, dbPath, config, env, top, fromSha, toSha, items, receipt, receiptSha }) {
+async function judgeItems({ db, dbPath, config, env, top, fromSha, toSha, items, receipt, receiptSha, receiptUnreadable = false }) {
   // The current receipt, read here when the caller passed none (`review addressed`), so an item's
   // stored hash is always compared with a real current one (0.4.10).
   const currentReceipt = () => {
@@ -625,8 +625,9 @@ async function judgeItems({ db, dbPath, config, env, top, fromSha, toSha, items,
       const r = newestReceipt(top, env);
       if (receipt === undefined) receipt = r.text;
       receiptSha = r.sha ?? null;
+      receiptUnreadable = Boolean(r.unreadable);
     }
-    return { text: receipt ?? null, sha: receiptSha };
+    return { text: receipt ?? null, sha: receiptSha, unreadable: receiptUnreadable };
   };
   const windows = new Map();
   const changedSince = (sha) => {
@@ -752,7 +753,8 @@ async function judgeItems({ db, dbPath, config, env, top, fromSha, toSha, items,
     let receiptChange = null;
     if (item.receipt) {
       const now = currentReceipt();
-      if (item.receipt !== now.sha) {
+      // A receipt that exists but cannot be read is not an edit: the finding is judged as before.
+      if (!now.unreadable && item.receipt !== now.sha) {
         const old = loadReceipt(db, item.receipt);
         const rdiff = old != null ? textDiff(old, now.text ?? "", env) : null;
         receiptChange = { diff: rdiff, old, quotes: rdiff ? removedQuotes(item.text, rdiff) : [], current: now.text };
@@ -898,7 +900,7 @@ export async function runReview({ db, dbPath, cwd, env = process.env, config, la
     const judged = [];
     const dropped = before ? before.items.filter((it) => !stillListed(it, r.items ?? [])) : [];
     if (dropped.length) {
-      judged.push(...(await judgeItems({ db, dbPath, config, env, top, fromSha: before.row.head_sha, toSha: head, items: dropped, receipt: receipt.text, receiptSha })));
+      judged.push(...(await judgeItems({ db, dbPath, config, env, top, fromSha: before.row.head_sha, toSha: head, items: dropped, receipt: receipt.text, receiptSha, receiptUnreadable: Boolean(receipt.unreadable) })));
       const items = [...(r.items ?? []), ...judged];
       const stillOpen = judged.filter((it) => it.judge === "no");
       const findings = stillOpen.length ? [r.findings, ...stillOpen.map((it, k) => `${(r.items?.length ?? 0) + k + 1}. ${itemLine(it)} (from round ${before.round}; the judge says it is not resolved)`)].filter(Boolean).join("\n") : r.findings;
