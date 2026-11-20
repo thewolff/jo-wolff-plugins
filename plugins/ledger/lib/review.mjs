@@ -36,16 +36,25 @@
 // named identifiers are gone from the tree, the passage says so first (see judgeItems). `no` keeps it open (`judge: "no"` in
 // findings_json; the row stays or becomes `findings`, the gate stays closed); `yes` resolves it;
 // `unverified` (no judge, or it failed) resolves it fail-open and the gate's notice says so.
+//
+// Since 0.4.10 each finding carries `receipt`, the sha256 of the pattern-check receipt it was raised
+// under (texts kept in cc_meta as `receipt:<sha>`); when the receipt changed since, the judge gets
+// the receipt diff and the current receipt, which is authoritative (see judgeItems). A claudex-loop
+// Codex inspection that APPROVED exactly this base..HEAD change stands in for the codex lab
+// (lib/review/claudex.mjs).
 
 import { spawnSync } from "node:child_process";
-import { readFileSync, readdirSync, statSync } from "node:fs";
+import { createHash } from "node:crypto";
+import { mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join, resolve as resolvePath } from "node:path";
 import { fileURLToPath } from "node:url";
 import { transaction } from "./db.mjs";
 import { logError } from "./failopen.mjs";
 import { nowIso } from "./time.mjs";
 import { parseItems, receiptSection, severityCounts, which } from "./review/common.mjs";
-import { ask as askJudge, focusPattern, judgeCommand, passageFor } from "./ledger-judge.mjs";
+import { ask as askJudge, focusPattern, judgeCommand, passageFor, quotations, RECEIPT_CHANGED_QUESTION } from "./ledger-judge.mjs";
+import { approvalResult, findApproval } from "./review/claudex.mjs";
 import * as codex from "./review/codex.mjs";
 import * as kimi from "./review/kimi.mjs";
 import * as claude from "./review/claude.mjs";
@@ -538,6 +547,57 @@ export function moveLine(hunks, line) {
   return { from: line + delta, to: line + delta, how: delta ? "moved" : null };
 }
 
+const sha256 = (text) => createHash("sha256").update(text).digest("hex");
+
+/**
+ * Keep the receipt text the labs read under `receipt:<sha256>` in cc_meta (0.4.10), once per
+ * distinct text, so a later round can show the judge what changed. A failure is one errors.log
+ * line; the later judge then says the earlier text is not on record.
+ */
+export function storeReceipt(db, dbPath, sha, text, env = process.env) {
+  if (!sha || text == null) return;
+  try {
+    transaction(db, () => db.prepare("INSERT INTO cc_meta (key, value) VALUES (?, ?) ON CONFLICT(key) DO NOTHING").run(`receipt:${sha}`, text), dbPath);
+  } catch (err) {
+    logError("review", `receipt snapshot not stored: ${err.message}`, env);
+  }
+}
+
+/** The receipt text stored under `sha`, or null. */
+export function loadReceipt(db, sha) {
+  try {
+    return db.prepare("SELECT value FROM cc_meta WHERE key = ?").get(`receipt:${sha}`)?.value ?? null;
+  } catch {
+    return null;
+  }
+}
+
+/** `git diff --no-index` of two texts, from a scratch folder removed afterwards; null when git fails. */
+export function textDiff(before, after) {
+  const dir = mkdtempSync(join(tmpdir(), "ledger-receipt-"));
+  try {
+    writeFileSync(join(dir, "receipt.before.md"), before);
+    writeFileSync(join(dir, "receipt.after.md"), after);
+    const r = spawnSync("git", ["diff", "--no-index", "--no-color", "--no-ext-diff", "-U3", "receipt.before.md", "receipt.after.md"], { cwd: dir, encoding: "utf8", timeout: GIT_TIMEOUT_MS, killSignal: "SIGKILL", maxBuffer: 64 * 1024 * 1024 });
+    // --no-index exits 1 when the files differ: that is the answer, not a failure.
+    if (r.error || (r.status !== 0 && r.status !== 1)) return null;
+    return r.stdout;
+  } catch {
+    return null;
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+/** The quotations of `text` that occur on a removed line of `diff`. */
+export function removedQuotes(text, diff) {
+  const removed = String(diff ?? "")
+    .split("\n")
+    .filter((l) => l.startsWith("-") && !l.startsWith("---"))
+    .map((l) => l.slice(1));
+  return quotations(text).filter((q) => removed.some((l) => l.includes(q)));
+}
+
 /**
  * Ask the judge about each item against the change from the head where it was first raised
  * (`item.since`; `fromSha` for a row written before 0.4.6, or when `since` is no longer a commit)
@@ -549,7 +609,17 @@ export function moveLine(hunks, line) {
  * changed file; when nothing changed at
  * all it says so. Returns the items with `since` and `judge` (and `resolved` unless `no`).
  */
-async function judgeItems({ db, dbPath, config, env, top, fromSha, toSha, items, receipt }) {
+async function judgeItems({ db, dbPath, config, env, top, fromSha, toSha, items, receipt, receiptSha }) {
+  // The current receipt, read here when the caller passed none (`review addressed`), so an item's
+  // stored hash is always compared with a real current one (0.4.10).
+  const currentReceipt = () => {
+    if (receiptSha === undefined) {
+      const r = newestReceipt(top, env);
+      if (receipt === undefined) receipt = r.text;
+      receiptSha = r.sha ?? null;
+    }
+    return { text: receipt ?? null, sha: receiptSha };
+  };
   const windows = new Map();
   const changedSince = (sha) => {
     if (!windows.has(sha)) {
@@ -669,6 +739,17 @@ async function judgeItems({ db, dbPath, config, env, top, fromSha, toSha, items,
       if (receipt === undefined) receipt = newestReceipt(top, env).text;
       text = receipt;
     }
+    // The receipt changed since this finding was raised: the judge sees the edit and the current
+    // text, which is authoritative, and is asked whether the finding still applies (0.4.10).
+    let receiptChange = null;
+    if (item.receipt) {
+      const now = currentReceipt();
+      if (item.receipt !== now.sha) {
+        const old = loadReceipt(db, item.receipt);
+        const rdiff = old != null ? textDiff(old, now.text ?? "") : null;
+        receiptChange = { diff: rdiff, quotes: rdiff ? removedQuotes(item.text, rdiff) : [], current: now.text };
+      }
+    }
     const stems = [...targets, ...atSince].map((p) => p.split("/").at(-1).replace(/\.[^.]*$/, "")).filter((s) => s.length >= 3);
     const refersTo = focusPattern([...stems, ...symbols]);
     const tests = [];
@@ -685,8 +766,8 @@ async function judgeItems({ db, dbPath, config, env, top, fromSha, toSha, items,
       if (refersTo && isTestPath(path) && (refersTo.test(head) || refersTo.test(d))) tests.push({ path, diff: d });
       else others.push({ path, diff: d });
     }
-    const passage = passageFor(`[${item.severity}] ${item.text}`, diff, { current, tests, absent, focus: symbols, receipt: text, others, nothingChanged: changed?.length === 0 });
-    const r = await askJudge({ db, dbPath, config, env, passage });
+    const passage = passageFor(`[${item.severity}] ${item.text}`, diff, { current, tests, absent, focus: symbols, receipt: text, receiptChange, others, nothingChanged: changed?.length === 0 });
+    const r = await askJudge({ db, dbPath, config, env, passage, ...(receiptChange ? { question: RECEIPT_CHANGED_QUESTION } : {}) });
     out.push(r.verdict === "no" ? { ...judged, resolved: false, judge: "no" } : { ...judged, resolved: true, judge: r.verdict });
   }
   return out;
@@ -712,7 +793,7 @@ const itemLine = (i) => `[${i.severity}] ${i.text.split("\n")[0]}`;
  * without the judge.
  * @returns {Promise<{ code: number, text: string }>}
  */
-export async function runReview({ db, dbPath, cwd, env = process.env, config, labs = null, base = null, forceRound = false, sessionId = null, cli = "ledger", now = () => Date.now(), timeoutMs = REVIEW_TIMEOUT_MS }) {
+export async function runReview({ db, dbPath, cwd, env = process.env, config, labs = null, base = null, forceRound = false, claudex = [], sessionId = null, cli = "ledger", now = () => Date.now(), timeoutMs = REVIEW_TIMEOUT_MS }) {
   let top, head, branch, branchBase, baseSha, diff;
   try {
     ({ top, head } = gitHead(cwd));
@@ -738,10 +819,16 @@ export async function runReview({ db, dbPath, cwd, env = process.env, config, la
   // The newest pattern-check receipt in the repository, when one exists, goes in front of the
   // diff so the labs can hold the "how it fails" rows against the code (0.3.3).
   const receipt = newestReceipt(top, env);
+  const receiptSha = receipt.sha ?? null;
+  storeReceipt(db, dbPath, receiptSha, receipt.text, env);
   const input = receiptSection(receipt.text) + diff;
+  // A claudex-loop Codex inspection of exactly this base..HEAD change, against the current
+  // receipt, with an APPROVED verdict stands in for the codex lab (0.4.10; lib/review/claudex.mjs).
+  const approval = list.includes("codex") && diff.trim() && baseSha ? findApproval({ top, base: baseSha, head, receipt, config, env, paths: claudex, cwd }) : null;
   const results = await Promise.allSettled(
     list.map(async (lab) => {
       if (!diff.trim()) return { verdict: "pass", findings: null, items: [], model: null, reason: `empty diff ${range}` };
+      if (lab === "codex" && approval) return approvalResult(approval);
       const adapter = ADAPTERS[lab];
       if (!adapter) throw new Error(`unknown lab ${lab}; supported: ${Object.keys(ADAPTERS).join(", ")}`);
       return adapter.run({ diff: input, timeoutMs, env, config: config.review ?? {} });
@@ -782,15 +869,28 @@ export async function runReview({ db, dbPath, cwd, env = process.env, config, la
       continue;
     }
     // A finding the lab lists again keeps the `since` of the one it repeats; a new one starts here.
+    // Likewise its receipt hash (0.4.10): a repeat keeps the hash of the receipt it was first raised
+    // under (none, for an item from before 0.4.10); a new item gets the current receipt's.
+    const prevOf = (item) => before?.items.find((it) => stillListed(it, [item])) ?? null;
     const sinceOf = (item) => {
-      const prev = before?.items.find((it) => stillListed(it, [item]));
+      const prev = prevOf(item);
       return prev ? (prev.since ?? before.row.head_sha) : head;
     };
-    if (r.items?.length) r = { ...r, items: r.items.map((it) => ({ ...it, since: it.since ?? sinceOf(it) })) };
+    const receiptOf = (item) => {
+      const prev = prevOf(item);
+      return prev ? (prev.receipt ?? null) : receiptSha;
+    };
+    const tagged = (it) => {
+      const out = { ...it, since: it.since ?? sinceOf(it) };
+      const rs = it.receipt ?? receiptOf(it);
+      if (rs) out.receipt = rs;
+      return out;
+    };
+    if (r.items?.length) r = { ...r, items: r.items.map(tagged) };
     const judged = [];
     const dropped = before ? before.items.filter((it) => !stillListed(it, r.items ?? [])) : [];
     if (dropped.length) {
-      judged.push(...(await judgeItems({ db, dbPath, config, env, top, fromSha: before.row.head_sha, toSha: head, items: dropped, receipt: receipt.text })));
+      judged.push(...(await judgeItems({ db, dbPath, config, env, top, fromSha: before.row.head_sha, toSha: head, items: dropped, receipt: receipt.text, receiptSha })));
       const items = [...(r.items ?? []), ...judged];
       const stillOpen = judged.filter((it) => it.judge === "no");
       const findings = stillOpen.length ? [r.findings, ...stillOpen.map((it, k) => `${(r.items?.length ?? 0) + k + 1}. ${itemLine(it)} (from round ${before.round}; the judge says it is not resolved)`)].filter(Boolean).join("\n") : r.findings;
@@ -978,7 +1078,8 @@ export function newestReceipt(top, env = process.env) {
   }
   if (!newest) return { text: null };
   try {
-    return { text: readFileSync(newest.path, "utf8"), path: newest.path };
+    const text = readFileSync(newest.path, "utf8");
+    return { text, path: newest.path, sha: sha256(text) };
   } catch (err) {
     logError("review", `pattern-check receipt ${newest.path} not readable: ${err.message}; reviewing without a receipt`, env);
     return { text: null };

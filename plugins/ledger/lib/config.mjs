@@ -50,7 +50,7 @@ export const DEFAULTS = Object.freeze({
   digest: Object.freeze({ enabled: true, issue: "thewolff/jo-issues#325" }),
   decisionLog: Object.freeze({ enabled: true }),
   branches: Object.freeze({ enabled: true }),
-  review: Object.freeze({ mode: "gate", labs: Object.freeze(["codex"]), models: null, profiles: null, maxRounds: 3, judgeCommand: null }),
+  review: Object.freeze({ mode: "gate", labs: Object.freeze(["codex"]), models: null, profiles: null, maxRounds: 3, judgeCommand: null, claudexDirs: Object.freeze(["~/agent-scratch/{repo}"]) }),
 });
 
 /** Keys only the user file (and the defaults) may set: a project file's value for them is ignored. */
@@ -85,7 +85,7 @@ const SHAPE = {
   digest: { enabled: "boolean", issue: "owner/repo#number" },
   decisionLog: { enabled: "boolean" },
   branches: { enabled: "boolean" },
-  review: { mode: "off|advise|gate", labs: "string[]", models: "{lab: string}|null", profiles: "{lab: string}|null", maxRounds: "positive integer", judgeCommand: "string|null" },
+  review: { mode: "off|advise|gate", labs: "string[]", models: "{lab: string}|null", profiles: "{lab: string}|null", maxRounds: "positive integer", judgeCommand: "string|null", claudexDirs: "string[]" },
 };
 
 /** Every leaf key in dotted form, in SHAPE order. */

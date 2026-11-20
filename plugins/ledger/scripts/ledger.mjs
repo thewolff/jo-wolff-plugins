@@ -243,7 +243,7 @@ async function runReviewVerb({ store, cwd, env, sessionId, tokens, out }) {
     else if (parsed.action === "addressed") r = await addressed({ ...common, reason: parsed.reason, config: store.config, env });
     else if (parsed.action === "waive") r = waive({ ...common, reason: parsed.reason });
     else if ((store.config.review?.mode ?? "gate") === "off") r = { code: 0, text: "review.mode is off in the user config; nothing reviewed" };
-    else r = await runReview({ ...common, env, config: store.config, labs: parsed.labs, base: parsed.base, forceRound: parsed.forceRound, cli: invocation() });
+    else r = await runReview({ ...common, env, config: store.config, labs: parsed.labs, base: parsed.base, forceRound: parsed.forceRound, claudex: parsed.claudex ?? [], cli: invocation() });
     out(`${r.text}\n`);
     return r.code;
   } finally {
