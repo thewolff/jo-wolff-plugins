@@ -45,12 +45,13 @@ const nulList = (buf) => buf.toString("utf8").split("\0").filter(Boolean);
 /**
  * The runner's snapshot of `base`..`head`, recomputed from the commit: { base, files, diffs }.
  * `files` is a Map path → `${kind}:${sha256}`; `diffs` holds the sha256 of the whole diff and of
- * the diff without the added files. null when a path is a submodule or anything but a file,
+ * the diff without the added files (that one only when no added file is executable). null when a path is a submodule or anything but a file,
  * symlink or deletion (the runner refuses those too).
  */
 export function snapshotAt(top, base, head) {
   const names = nulList(gitBytes(top, ["diff", "--no-ext-diff", "--name-only", "-z", base, head]));
   const files = new Map();
+  const modes = new Map();
   for (const name of names) {
     const entry = gitBytes(top, ["ls-tree", "-z", head, "--", `:(literal)${name}`]).toString("utf8").split("\0").find(Boolean);
     if (!entry) {
@@ -61,6 +62,7 @@ export function snapshotAt(top, base, head) {
     if (!m || m[2] !== "blob") return null;
     const kind = m[1] === "120000" ? "symlink" : m[1] === "100644" || m[1] === "100755" ? "file" : null;
     if (!kind) return null;
+    modes.set(name, m[1]);
     files.set(name, `${kind}:${sha256(gitBytes(top, ["cat-file", "blob", m[3]]))}`);
   }
   const diffArgs = ["diff", "--no-ext-diff", "--no-textconv", "--binary", base, head];
@@ -68,6 +70,9 @@ export function snapshotAt(top, base, head) {
   const status = gitBytes(top, ["diff", "--no-ext-diff", "--name-status", "--no-renames", "-z", base, head]).toString("utf8").split("\0");
   const added = [];
   for (let i = 0; i + 1 < status.length; i += 2) if (status[i] === "A") added.push(status[i + 1]);
+  // The fallback digest leaves added files' modes unchecked, and the per-file kind does not tell
+  // 100644 from 100755, so an added executable gets no fallback: only the full digest matches.
+  if (added.some((p) => modes.get(p) === "100755")) return { base, files, diffs: [full] };
   const withoutAdded = added.length ? sha256(gitBytes(top, [...diffArgs, "--", ".", ...added.map((p) => `:(exclude,literal)${p}`)])) : full;
   return { base, files, diffs: [full, withoutAdded] };
 }
@@ -136,11 +141,12 @@ export function readRecord(path, env = process.env) {
   }
 }
 
+/** true or false when both paths resolve; otherwise the error, so the caller can log it. */
 const same = (a, b) => {
   try {
     return realpathSync(a) === realpathSync(b);
-  } catch {
-    return false;
+  } catch (err) {
+    return err;
   }
 };
 
@@ -165,7 +171,10 @@ export function mismatch(record, { top, base, receipt, snapshotOf }) {
   if (r.findings.some((f) => !f || typeof f !== "object" || !["high", "medium", "low"].includes(f.severity) || !str(f.path) || !str(f.evidence) || !(str(f.id) || typeof f.id === "number"))) return "malformed findings";
   if (r.findings.some((f) => f.severity === "high" || f.severity === "medium")) return "has material findings";
   if (!str(record.requested_model) || !str(record.artifacts) || (record.observed_models != null && !Array.isArray(record.observed_models))) return "malformed metadata";
-  if (typeof record.repo !== "string" || !same(record.repo, top)) return "another repository";
+  if (typeof record.repo !== "string") return "malformed metadata";
+  const here = same(record.repo, top);
+  if (here instanceof Error) return `repository path not resolvable: ${here.message}`;
+  if (!here) return "another repository";
   const snap = record.snapshot;
   if (!snap || typeof snap !== "object" || Array.isArray(snap)) return "no snapshot object";
   // snapshot.base is the runner's resolved commit id; record.base is whatever ref was typed.
@@ -231,7 +240,7 @@ export function findApproval({ top, base, head, receipt, config, env = process.e
       }
       if (why) {
         // An ordinary non-match (another commit, a REVISE) is silent; a broken record is logged.
-        if (MALFORMED.has(why)) logError("review", `claudex result ${path} skipped: ${why}`, env);
+        if (MALFORMED.has(why) || why.startsWith("repository path not resolvable")) logError("review", `claudex result ${path} skipped: ${why}`, env);
         continue;
       }
       let result;

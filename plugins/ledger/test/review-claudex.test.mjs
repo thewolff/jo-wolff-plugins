@@ -256,3 +256,24 @@ test("(c2) the current receipt exists but cannot be read (the file, or its folde
     }
   }
 });
+
+test("(c) an added executable file: no fallback digest, so an inspection of it as untracked (mode unchecked) cannot match", () => {
+  const { b, base, head } = repo("untracked", { claudexDirs: [] });
+  const plain = snapshotAt(b.work, base, head);
+  assert.equal(plain.diffs.length, 2, "no executable added: the fallback stands");
+  assert.notEqual(plain.diffs[1], plain.diffs[0], "the untracked variant adds files");
+  const file = [...plain.files.keys()].find((p) => p.startsWith("src/"));
+  chmodSync(join(b.work, file), 0o755);
+  const head2 = commitAll(b.work, b.env, "make it executable");
+  const exec = snapshotAt(b.work, base, head2);
+  assert.deepEqual(exec.diffs.length, 1, "an added executable leaves only the full digest");
+});
+
+test("(d) a result whose repository path cannot be resolved: logged once, codex runs", () => {
+  const { b, snapshot } = repo("staged", { claudexDirs: [] });
+  const dir = join(b.root, "gone");
+  writeResult(dir, approved(b, snapshot, { repo: join(b.root, "no-such-repo") }));
+  const r = review(b, ["--claudex", dir]);
+  assert.equal(r.ran, true, r.out);
+  assert.equal(readFileSync(b.errorsLog, "utf8").match(/gone\/result\.json skipped: repository path not resolvable/g)?.length, 1);
+});

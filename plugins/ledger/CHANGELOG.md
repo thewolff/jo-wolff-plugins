@@ -22,6 +22,9 @@ All notable changes to ledger are recorded here. The format follows
   judged as before.
   A stored receipt that cannot be read from the database leaves one `errors.log` line, and the
   judge is told the earlier text could not be read rather than that none was kept.
+- A claudex result whose repository path cannot be resolved is logged rather than skipped as
+  another repository, and an added executable file disables the digest fallback that ignores
+  added files' modes.
 
 ### Added
 
