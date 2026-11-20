@@ -182,3 +182,23 @@ test("(d) a missing default folder is silent; review.claudexDirs [] turns the se
   writeResult(join(off.b.home, "agent-scratch", "work", "x"), approved(off.b, off.snapshot));
   assert.equal(review(off.b).ran, true, "the default folder is not searched when the list is empty");
 });
+
+test("(c) a duplicated tracked entry standing in for an added file, with the fallback diff digest: no match, codex runs", () => {
+  const { b, snapshot } = repo("untracked", { claudexDirs: [] });
+  const a = snapshot.files.find((f) => f.path === "a.txt");
+  const forged = { ...snapshot, files: snapshot.files.map((f) => (f.path === "src/new.mjs" ? a : f)) };
+  assert.equal(forged.files.length, snapshot.files.length);
+  const dir = join(b.root, "r");
+  writeResult(dir, approved(b, forged));
+  assert.equal(review(b, ["--claudex", dir]).ran, true);
+});
+
+test("(d) a matching approval whose low finding has a non-string path: skipped, codex runs, the review is not left unavailable", () => {
+  const { b, snapshot } = repo("staged", { claudexDirs: [] });
+  const dir = join(b.root, "r");
+  writeResult(dir, approved(b, snapshot, { response: { findings: [{ id: "L1", severity: "low", path: { toString: null }, evidence: "x" }] } }));
+  const r = review(b, ["--claudex", dir]);
+  assert.equal(r.code, 0, r.out);
+  assert.equal(r.ran, true);
+  assert.equal(codexRow(b).verdict, "pass");
+});

@@ -54,7 +54,7 @@ import { logError } from "./failopen.mjs";
 import { nowIso } from "./time.mjs";
 import { parseItems, receiptSection, severityCounts, which } from "./review/common.mjs";
 import { ask as askJudge, focusPattern, judgeCommand, passageFor, quotations, RECEIPT_CHANGED_QUESTION } from "./ledger-judge.mjs";
-import { approvalResult, findApproval } from "./review/claudex.mjs";
+import { findApproval } from "./review/claudex.mjs";
 import * as codex from "./review/codex.mjs";
 import * as kimi from "./review/kimi.mjs";
 import * as claude from "./review/claude.mjs";
@@ -573,19 +573,27 @@ export function loadReceipt(db, sha) {
 }
 
 /** `git diff --no-index` of two texts, from a scratch folder removed afterwards; null when git fails. */
-export function textDiff(before, after) {
-  const dir = mkdtempSync(join(tmpdir(), "ledger-receipt-"));
+export function textDiff(before, after, env = process.env) {
+  let dir = null;
   try {
+    dir = mkdtempSync(join(tmpdir(), "ledger-receipt-"));
     writeFileSync(join(dir, "receipt.before.md"), before);
     writeFileSync(join(dir, "receipt.after.md"), after);
     const r = spawnSync("git", ["diff", "--no-index", "--no-color", "--no-ext-diff", "-U3", "receipt.before.md", "receipt.after.md"], { cwd: dir, encoding: "utf8", timeout: GIT_TIMEOUT_MS, killSignal: "SIGKILL", maxBuffer: 64 * 1024 * 1024 });
     // --no-index exits 1 when the files differ: that is the answer, not a failure.
     if (r.error || (r.status !== 0 && r.status !== 1)) return null;
     return r.stdout;
-  } catch {
+  } catch (err) {
+    logError("review", `receipt diff not built: ${err.message}; the judge gets the earlier text whole`, env);
     return null;
   } finally {
-    rmSync(dir, { recursive: true, force: true });
+    if (dir) {
+      try {
+        rmSync(dir, { recursive: true, force: true });
+      } catch (err) {
+        logError("review", `receipt diff scratch folder ${dir} not removed: ${err.message}`, env);
+      }
+    }
   }
 }
 
@@ -746,8 +754,8 @@ async function judgeItems({ db, dbPath, config, env, top, fromSha, toSha, items,
       const now = currentReceipt();
       if (item.receipt !== now.sha) {
         const old = loadReceipt(db, item.receipt);
-        const rdiff = old != null ? textDiff(old, now.text ?? "") : null;
-        receiptChange = { diff: rdiff, quotes: rdiff ? removedQuotes(item.text, rdiff) : [], current: now.text };
+        const rdiff = old != null ? textDiff(old, now.text ?? "", env) : null;
+        receiptChange = { diff: rdiff, old, quotes: rdiff ? removedQuotes(item.text, rdiff) : [], current: now.text };
       }
     }
     const stems = [...targets, ...atSince].map((p) => p.split("/").at(-1).replace(/\.[^.]*$/, "")).filter((s) => s.length >= 3);
@@ -828,7 +836,7 @@ export async function runReview({ db, dbPath, cwd, env = process.env, config, la
   const results = await Promise.allSettled(
     list.map(async (lab) => {
       if (!diff.trim()) return { verdict: "pass", findings: null, items: [], model: null, reason: `empty diff ${range}` };
-      if (lab === "codex" && approval) return approvalResult(approval);
+      if (lab === "codex" && approval) return approval.result;
       const adapter = ADAPTERS[lab];
       if (!adapter) throw new Error(`unknown lab ${lab}; supported: ${Object.keys(ADAPTERS).join(", ")}`);
       return adapter.run({ diff: input, timeoutMs, env, config: config.review ?? {} });

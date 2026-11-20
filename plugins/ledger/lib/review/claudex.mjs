@@ -153,7 +153,12 @@ export function mismatch(record, { top, base, receipt, snapshotOf }) {
   if (record.provider !== "codex") return "not a codex inspection";
   const r = record.response;
   if (r?.verdict !== "APPROVED") return `verdict ${r?.verdict ?? "missing"}`;
-  if (!Array.isArray(r.findings) || r.findings.some((f) => f?.severity === "high" || f?.severity === "medium")) return "has material findings";
+  if (!Array.isArray(r.findings)) return "no findings list";
+  // Every field approvalResult reads is checked here, so a candidate that passes cannot fail later.
+  const str = (v) => v === undefined || v === null || typeof v === "string";
+  if (r.findings.some((f) => !f || typeof f !== "object" || typeof f.severity !== "string" || !str(f.path) || !str(f.evidence) || !(str(f.id) || typeof f.id === "number"))) return "malformed findings";
+  if (r.findings.some((f) => f.severity === "high" || f.severity === "medium")) return "has material findings";
+  if (!str(record.requested_model) || !str(record.artifacts) || (record.observed_models != null && !Array.isArray(record.observed_models))) return "malformed metadata";
   if (typeof record.repo !== "string" || !same(record.repo, top)) return "another repository";
   const snap = record.snapshot;
   // snapshot.base is the runner's resolved commit id; record.base is whatever ref was typed.
@@ -170,9 +175,15 @@ export function mismatch(record, { top, base, receipt, snapshotOf }) {
   if (!Array.isArray(snap.files) || typeof snap.diff_sha256 !== "string") return "no snapshot";
   const mine = snapshotOf();
   if (!mine) return "HEAD's change has a path the runner cannot snapshot";
-  if (snap.files.length !== mine.files.size) return "different files";
+  // Set equality: unique paths in the result, the same paths as HEAD's, each with the same kind and hash.
+  const theirs = new Map();
   for (const f of snap.files) {
-    if (mine.files.get(f?.path) !== `${f?.kind}:${f?.sha256}`) return "different files";
+    if (!f || typeof f.path !== "string" || typeof f.kind !== "string" || typeof f.sha256 !== "string" || theirs.has(f.path)) return "malformed snapshot files";
+    theirs.set(f.path, `${f.kind}:${f.sha256}`);
+  }
+  if (theirs.size !== mine.files.size) return "different files";
+  for (const [path, value] of mine.files) {
+    if (theirs.get(path) !== value) return "different files";
   }
   if (!mine.diffs.includes(snap.diff_sha256)) return "different diff";
   return null;
@@ -180,7 +191,8 @@ export function mismatch(record, { top, base, receipt, snapshotOf }) {
 
 /**
  * The newest (by started_at) claudex APPROVED inspection of `base`..`head`, as
- * { record, path }, or null. Never throws.
+ * { record, path, result } (`result` the lab result it stands for, built inside the guard), or
+ * null. Never throws.
  */
 export function findApproval({ top, base, head, receipt, config, env = process.env, paths = [], cwd = process.cwd(), home = homedir() }) {
   try {
@@ -210,7 +222,14 @@ export function findApproval({ top, base, head, receipt, config, env = process.e
         continue;
       }
       if (why) continue;
-      if (!best || Number(record.started_at) > Number(best.record.started_at)) best = { record, path };
+      let result;
+      try {
+        result = approvalResult({ record, path });
+      } catch (err) {
+        logError("review", `claudex result ${path} could not be used: ${err.message}; skipped`, env);
+        continue;
+      }
+      if (!best || Number(record.started_at) > Number(best.record.started_at)) best = { record, path, result };
     }
     return best;
   } catch (err) {

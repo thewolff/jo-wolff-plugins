@@ -217,3 +217,25 @@ test("(a2b) a short quotation on a 20 KiB removed line, and seven quotations: ev
   assert.ok(passage.includes(`Current receipt:\n${plan(NEW_AC5)}`));
   assert.ok(passage.includes("(2 more quotations not shown)"));
 });
+
+test("(a4) the receipt diff cannot be built (no temporary folder): null and one log line, no throw; the judge gets the earlier text whole", () => {
+  const saved = process.env.TMPDIR;
+  const b = sandbox();
+  process.env.TMPDIR = join(b.root, "no-such-tmp");
+  const savedState = process.env.XDG_STATE_HOME;
+  process.env.XDG_STATE_HOME = b.env.XDG_STATE_HOME;
+  let out;
+  try {
+    out = textDiff(plan(OLD_AC5), plan(NEW_AC5));
+  } finally {
+    if (saved === undefined) delete process.env.TMPDIR;
+    else process.env.TMPDIR = saved;
+    if (savedState === undefined) delete process.env.XDG_STATE_HOME;
+    else process.env.XDG_STATE_HOME = savedState;
+  }
+  assert.equal(out, null);
+  assert.match(readFileSync(b.errorsLog, "utf8"), /receipt diff not built/);
+  const units = receiptChangeUnits({ diff: null, old: plan(OLD_AC5), quotes: [], current: plan(NEW_AC5) });
+  assert.ok(units[0].text.startsWith("The receipt diff could not be built; the receipt's text when the finding was raised:\n"));
+  assert.ok(units[0].text.includes(OLD_AC5));
+});
