@@ -12,7 +12,7 @@ import { createServer } from "node:net";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { probe, check, daemonAlive, connectSocket, FIX, ALIVE_TIMEOUT_MS } from "../lib/probe.mjs";
-import { EMPTY, step, statePath, writeState, readState, STRIKES_TO_DOWN, SLOW_MAX_MS } from "../lib/state.mjs";
+import { EMPTY, step, statePath, writeState, readState, isUnresponsive, STRIKES_TO_DOWN, SLOW_MAX_MS, UNRESPONSIVE_STRIKES_TO_POPUP } from "../lib/state.mjs";
 import * as lib from "../lib/mid-session.mjs";
 import * as hook from "../hooks/mid-session.mjs";
 import { handle, HOOK_SPAWN_MS, HOOK_DEADLINE_MS } from "../hooks/session-start.mjs";
@@ -65,7 +65,7 @@ test("slow: a status timeout with no live daemon stays a failure, as before (the
 
 // 0.4.1: the 0.4.0 timer logged three misses (2026-11-12) as plain failures while the daemon
 // ran, and dropped the liveness check's reason, so the log could not say which check failed.
-const MISSED = () => ({ alive: false, pid: 51357, detail: "pid 51357 runs, but its query socket /x/q.sock did not accept a connection (no connection within 2000 ms)" });
+const MISSED = () => ({ alive: false, running: true, pid: 51357, detail: "pid 51357 runs, but its query socket /x/q.sock did not accept a connection (no connection within 2000 ms)" });
 
 test("slow: a status timeout whose liveness check failed carries why, in the result and in the tick's line", async () => {
   const r = check({ env: ENV, now: () => NOW, run: timingOut().run, exists: () => true, daemonAlive: MISSED });
@@ -252,6 +252,127 @@ test("slow: slow for longer than SLOW_MAX_MS counts as down (a live daemon hung 
   assert.equal(down.state.episode, "down");
   assert.equal(down.state.episodeKind, "daemon");
   assert.equal(down.popup, true);
+});
+
+// --- 0.4.5: an unresponsive daemon (pid runs, socket does not accept) pops on the third tick ---
+// On 2026-11-20 two such ticks, 2:01 and 2:08 PM PST, popped up; the socket accepted at 2:13 PM.
+
+/** The 2026-11-20 shape: status timed out, the pid runs, the socket did not accept, the upgrade state unknown (not healed). */
+const unresponsiveResult = (at) => check({ env: ENV, now: () => at, run: timingOut().run, exists: () => true, daemonAlive: MISSED });
+/** A dead daemon: status timed out and its pid is not running. */
+const deadTimeoutResult = (at) => check({ env: ENV, now: () => at, run: timingOut().run, exists: () => true, daemonAlive: DEAD });
+
+/** Step `results` (functions of the tick's ms) from EMPTY, five minutes apart; each tick's popup ask, in order. */
+function ticks(results) {
+  let s = { ...EMPTY };
+  const asks = [];
+  results.forEach((r, i) => {
+    const at = NOW + i * 5 * MIN;
+    const out = step(s, r(at), at);
+    asks.push(out.popup);
+    s = out.state;
+  });
+  return { asks, state: s };
+}
+
+test("unresponsive: the 2026-11-20 result is unresponsive; a dead pid, a stopped daemon, slow and a pass are not", () => {
+  const r = unresponsiveResult(NOW);
+  assert.match(r.reason, /did not answer in 10 s.*not healed: upgrade state unknown/);
+  assert.equal(r.liveness.running, true);
+  assert.equal(isUnresponsive(r), true);
+  assert.equal(isUnresponsive(deadTimeoutResult(NOW)), false);
+  assert.equal(isUnresponsive(deadResult(NOW)), false);
+  assert.equal(isUnresponsive(slowResult(NOW)), false);
+  assert.equal(isUnresponsive(passResult(NOW)), false);
+});
+
+test("unresponsive: two ticks in a row go down but ask for no popup; the third asks", () => {
+  assert.equal(UNRESPONSIVE_STRIKES_TO_POPUP, 3);
+  const two = ticks([unresponsiveResult, unresponsiveResult]);
+  assert.deepEqual(two.asks, [false, false]);
+  assert.equal(two.state.episode, "down", "still down on the second tick: the agent is told as before");
+  assert.equal(two.state.episodeKind, "daemon");
+  assert.equal(two.state.unresponsiveStrikes, 2);
+  assert.equal(two.state.lastProbe.kind, "unresponsive");
+  const three = ticks([unresponsiveResult, unresponsiveResult, unresponsiveResult]);
+  assert.deepEqual(three.asks, [false, false, true]);
+  assert.equal(three.state.unresponsiveStrikes, 3);
+});
+
+test("unresponsive, then a dead daemon: the dead tick asks on the dead rule, never later than before 0.4.5", () => {
+  assert.deepEqual(ticks([unresponsiveResult, deadResult]).asks, [false, true], "a stopped daemon on the second tick");
+  assert.deepEqual(ticks([unresponsiveResult, deadTimeoutResult]).asks, [false, true], "a pid no longer running on the second tick");
+  assert.deepEqual(ticks([unresponsiveResult, unresponsiveResult, deadResult]).asks, [false, false, true]);
+  const dead = ticks([unresponsiveResult, deadResult]).state;
+  assert.equal(dead.unresponsiveStrikes, 0);
+  assert.equal(dead.lastProbe.kind, "daemon");
+  assert.deepEqual(ticks([deadResult, deadResult]).asks, [false, true], "a dead daemon alone: the second tick, as before");
+});
+
+test("unresponsive, slow, unresponsive: the slow tick starts the count over, so no popup; three more in a row ask", () => {
+  const run = ticks([unresponsiveResult, slowResult, unresponsiveResult]);
+  assert.deepEqual(run.asks, [false, false, false]);
+  assert.equal(run.state.unresponsiveStrikes, 1);
+  assert.deepEqual(ticks([unresponsiveResult, slowResult, unresponsiveResult, unresponsiveResult, unresponsiveResult]).asks, [false, false, false, false, true]);
+  const back = ticks([unresponsiveResult, unresponsiveResult, passResult, unresponsiveResult, unresponsiveResult]);
+  assert.deepEqual(back.asks, [false, false, false, false, false], "a pass starts it over too");
+});
+
+test("unresponsive: a state.json from before 0.4.5 reads unresponsiveStrikes 0; an out-of-shape count is named", () => {
+  const dir = mkdtempSync(join("/tmp", "cw-state-"));
+  try {
+    const file = join(dir, "state.json");
+    const { unresponsiveStrikes, ...old } = { ...EMPTY, episode: "strike", strikes: 1, episodeKind: "daemon", kindStrikes: 1 };
+    writeFileSync(file, JSON.stringify(old));
+    assert.equal(readState(file, { log: () => {} }).unresponsiveStrikes, 0);
+    const logged = [];
+    writeFileSync(file, JSON.stringify({ ...EMPTY, unresponsiveStrikes: -1 }));
+    assert.equal(readState(file, { log: (_p, m) => logged.push(m) }).unresponsiveStrikes, 0);
+    assert.match(logged[0], /unresponsiveStrikes is -1/);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("unresponsive: through main(['tick']), three unresponsive ticks start one popup, on the third; status shows the run", async () => {
+  const dir = mkdtempSync(join("/tmp", "cw-tick-"));
+  try {
+    const env = { ...ENV, HOME: dir, XDG_STATE_HOME: join(dir, "state") };
+    const popups = [];
+    const deps = (at) => ({ env, now: () => at, run: timingOut().run, exists: () => true, popup: (o) => (popups.push(at), { started: true, detail: "popup started (test)", token: o?.token }), daemonAlive: MISSED });
+    for (let i = 0; i < 2; i++) await main(["tick"], deps(NOW + i * 5 * MIN));
+    assert.deepEqual(popups, [], "no popup on the second unresponsive tick");
+    const s = readState(statePath(env));
+    assert.equal(s.episode, "down");
+    assert.equal(s.unresponsiveStrikes, 2);
+    const status = await main(["status"], { env, now: () => NOW + 6 * MIN, check: () => ({ missing: true, code: null, output: "" }) });
+    assert.match(status.text, /unresponsive 2 in a row/);
+    await main(["tick"], deps(NOW + 10 * MIN));
+    assert.deepEqual(popups, [NOW + 10 * MIN]);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("unresponsive: daemonAlive marks a running pid whose socket did not accept with running: true, and a dead pid without it", () => {
+  const ep = endpoint(process.pid);
+  try {
+    const env = { ...ENV, CTX_DATA_ROOT: ep.root };
+    const refused = daemonAlive({ env, connect: () => ({ ok: false, detail: "ECONNREFUSED" }) });
+    assert.equal(refused.alive, false);
+    assert.equal(refused.running, true);
+    assert.equal(daemonAlive({ env, connect: () => ({ ok: true, detail: "connected" }) }).running, undefined);
+  } finally {
+    ep.release();
+  }
+  const gone = endpoint(deadPid());
+  try {
+    const dead = daemonAlive({ env: { ...ENV, CTX_DATA_ROOT: gone.root }, connect: () => assert.fail("a dead pid is not connected to") });
+    assert.equal(dead.alive, false);
+    assert.equal(dead.running, undefined);
+  } finally {
+    gone.release();
+  }
 });
 
 test("slow: a state.json from before slowSince reads as not slow", () => {

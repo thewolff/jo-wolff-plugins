@@ -472,7 +472,17 @@ Each `tick` rotates any log over 256 KB (see Retention), probes (and repairs) as
 advances an episode in `<state>/state.json`: one failing tick is a strike, the second in a row
 is down and shows the popup, later failing ticks stay silent, and a passing tick closes the
 episode and re-arms it. So a blip between two ticks shows nothing, a real outage shows one
-dialog within ten minutes, and a second outage shows a second one. Each failure kind has its
+dialog within ten minutes, and a second outage shows a second one. One case waits a tick
+longer (0.4.5): an *unresponsive* daemon, whose status call timed out while its pid runs and its
+query socket did not accept (the tick's line ends `not slow: pid … runs, but its query socket …
+did not accept a connection`). It still strikes and goes down on the second tick, but its popup
+comes on the third unresponsive tick in a row (`UNRESPONSIVE_STRIKES_TO_POPUP`, 15 min at the
+default interval): on 2026-11-20 two such ticks popped up and the socket accepted again five
+minutes later. Any other tick (a pass, a slow tick, a live upgrade, any other failure) starts
+that count over, and a dead daemon (its pid not running, the supervisor missing, any other
+daemon failure) pops on the dead rule: the second daemon failure in a row, unresponsive ticks
+counted, so it is never later than before 0.4.5. `status` shows the run as `unresponsive N in
+a row`. Each failure kind has its
 own popup latch: *daemon* (every row the repair is tried for: ctx missing or not answering, the
 daemon down, the supervisor missing, `core_refresh` stale), *semantic* (the semantic-index
 rows, `healable: false`) and, since 0.3.0, *upgrade* (a stuck upgrade). A tick during a live
@@ -518,7 +528,7 @@ on, or dismissed, stays latched for the episode, as before.
 | Verb | What |
 |---|---|
 | `check [--json]` | one probe (on a failure: the upgrade gate, then repair and re-probe); the needs-you line or nothing; `--json` the whole result. Exit 0 always. |
-| `tick` | the timer's run: rotate, settle a pending popup, probe, advance the episode, popup on the second failing tick (again after 4 h when unanswered). During a live upgrade: one `wait:` line, nothing else. One summary line to the launchd log. |
+| `tick` | the timer's run: rotate, settle a pending popup, probe, advance the episode, popup on the second failing tick, or the third when the daemon's process runs but its query socket does not accept (again after 4 h when unanswered). During a live upgrade: one `wait:` line, nothing else. One summary line to the launchd log. |
 | `repair` | the agent-runnable repair (see *`repair`* above). Exit 0 repaired or healthy, 1 failed, 3 refused with nothing changed. |
 | `install [--interval 300]` | write the plist to `~/Library/LaunchAgents` (state directory and ctx pinned, `LANG` and ctx's settings carried; interval 30 s to 7 days), `plutil -lint` it, remove a pre-0.4.3 plist from `<state>/launchd/`, ask `launchctl print` whether the job is loaded, print the bootstrap line (or the bootout + bootstrap pair). |
 | `uninstall` | print the `launchctl bootout` line and the `rm` of the plist (login loads it again otherwise). Removes nothing. |
@@ -711,6 +721,20 @@ part of `node --test`); `ctx-daemon-status-semantic-not-ready.txt` is a one-off 
 not remake. `ctx-upgrade-status.txt` is the 2026-11-11 `ctx upgrade status --format json`
 (state `dry_run`, after the release); the tests derive `quiescing` and `applying` from it,
 since no capture of a live upgrade exists that did not break a real install.
+
+## Changes in 0.4.5
+
+- **An unresponsive daemon pops up on the third tick, not the second.** A failing tick whose
+  status call timed out while the daemon's pid runs and its query socket did not accept (the
+  line's `not slow: pid … runs, but its query socket … did not accept a connection`) is recorded
+  as `lastProbe.kind: "unresponsive"` and counted in `state.json`'s `unresponsiveStrikes`. It
+  strikes and goes down as before, but its popup waits for three such ticks in a row
+  (`UNRESPONSIVE_STRIKES_TO_POPUP`). On 2026-11-20 two of them, at 2:01 and 2:08 PM PST, popped
+  up, and the socket accepted again at 2:13 PM. Any other tick, slow ones included, zeroes the
+  count. A dead daemon keeps the second-tick popup, its unresponsive ticks counted among the
+  daemon's strikes, so an unresponsive tick followed by a dead one pops on the dead one.
+  `daemonAlive` marks a running pid whose socket did not accept with `running: true`; `status`
+  shows `unresponsive N in a row`.
 
 ## Changes in 0.4.4
 

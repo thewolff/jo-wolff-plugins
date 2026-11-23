@@ -125,8 +125,10 @@
 // sandboxed shell. A live daemon hung for good still accepts on its socket (the kernel queues
 // the connection), and so might a stranger, so the state bounds a slow run (SLOW_MAX_MS).
 // Not alive: the result is a failure as before and carries daemonAlive's answer as `liveness`
-// ({ alive, pid, detail }), so the tick's line can say which check failed (0.4.1: three 0.4.0
-// ticks on 2026-11-12 failed with the daemon running, and their lines could not say why).
+// ({ alive, pid, detail, running? }), so the tick's line can say which check failed (0.4.1: three
+// 0.4.0 ticks on 2026-11-12 failed with the daemon running, and their lines could not say why).
+// `running: true` (0.4.5) marks a pid that runs whose socket did not accept: the state waits
+// UNRESPONSIVE_STRIKES_TO_POPUP such ticks before its popup (lib/state.mjs isUnresponsive).
 
 import { spawnSync } from "node:child_process";
 import { existsSync, readFileSync, statSync } from "node:fs";
@@ -415,7 +417,9 @@ export function isCtxSocketPath(sock, env = process.env) {
  * Whether the ctx daemon's process is demonstrably alive, without running ctx: `{ alive, pid,
  * detail }`. Reads <data root>/daemon/query-endpoint.json (`pid`, `path`, `transport`); alive only
  * when its transport is unix, its path is one ctx binds (isCtxSocketPath), that pid is running,
- * and the socket accepts a connection. A dead pid is answered without connecting. Never throws.
+ * and the socket accepts a connection. A dead pid is answered without connecting. A running pid
+ * whose socket did not accept adds `running: true` (lib/state.mjs reads it as an unresponsive
+ * daemon, not a dead one). Never throws.
  */
 export function daemonAlive({ env = process.env, timeoutMs = ALIVE_TIMEOUT_MS, connect = connectSocket } = {}) {
   const file = join(dataRoot(env), "daemon", "query-endpoint.json");
@@ -436,7 +440,7 @@ export function daemonAlive({ env = process.env, timeoutMs = ALIVE_TIMEOUT_MS, c
   } catch (err) {
     c = { ok: false, detail: `${err?.message ?? err}` };
   }
-  if (!c?.ok) return { alive: false, pid, detail: `pid ${pid} runs, but its query socket ${sock} did not accept a connection (${c?.detail ?? "no answer"})` };
+  if (!c?.ok) return { alive: false, running: true, pid, detail: `pid ${pid} runs, but its query socket ${sock} did not accept a connection (${c?.detail ?? "no answer"})` };
   return { alive: true, pid, detail: `the ctx daemon's query socket accepted a connection (pid ${pid})` };
 }
 

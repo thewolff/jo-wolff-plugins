@@ -9,7 +9,9 @@
 //                            pending (from its token's <state>/popups/<token>.json), advance the
 //                            episode state in <state>/state.json, and on the second failing tick
 //                            in a row of one failure kind (daemon, semantic or upgrade) record
-//                            that kind's popup claim (pending under a fresh token).
+//                            that kind's popup claim (pending under a fresh token); the third in
+//                            a row when the daemon's pid runs but its socket does not accept
+//                            (unresponsive, lib/state.mjs isUnresponsive).
 //                            Only once that claim is on disk does the dialog start; its result is
 //                            then applied, under the lock again, to the state as it is by then.
 //                            Once per kind per episode once a person answered it; a popup that
@@ -68,7 +70,7 @@ const launchdStatus = (l, file) => (l.loaded === true && l.plist && l.plist !== 
 export const HELP = `ctx-watch: notice when the ctx daemon is dead, unsupervised, or stale, its upgrade is stuck, or its semantic index is not ready.
 
   check [--json]            probe once (on a daemon failure: skip during a live ctx upgrade, else heal with \`ctx index mode auto\` and re-probe); print the needs-you line or nothing
-  tick                      the launchd timer's run: probe, keep the episode state, popup on the second failing tick
+  tick                      the launchd timer's run: probe, keep the episode state, popup on the second failing tick (the third when the daemon runs but does not answer)
   repair                    repair a down daemon or a stuck ctx upgrade without prompts (refuses during a live upgrade); exit 0 repaired or healthy, 1 failed, 3 refused
   install [--interval 300]  write the launchd plist (carrying LANG) and print the bootstrap line (never bootstraps)
   uninstall                 print the bootout line
@@ -221,7 +223,7 @@ export async function main(argv, deps = {}) {
         `ctx: ${ctx}`,
         `last tick: ${iso(state.lastTickAt)}${t.overdue ? ` (overdue: more than ${2 * t.intervalS} s ago)` : ""}`,
         `last probe: ${state.lastProbe ? `${state.lastProbe.ok ? "pass" : `fail: ${state.lastProbe.reason}`} at ${iso(state.lastProbe.at)}${state.lastProbe.healed ? ` | heal: ${state.lastProbe.healed}` : ""}` : "never"}`,
-        `episode: ${state.episode}${state.episodeKind ? ` [${state.episodeKind}]` : ""} (strikes ${state.strikes}${state.downSince ? `, down since ${iso(state.downSince)}` : ""}${state.slowSince ? `, slow since ${iso(state.slowSince)}` : ""}${popupLine})`,
+        `episode: ${state.episode}${state.episodeKind ? ` [${state.episodeKind}]` : ""} (strikes ${state.strikes}${state.unresponsiveStrikes ? `, unresponsive ${state.unresponsiveStrikes} in a row` : ""}${state.downSince ? `, down since ${iso(state.downSince)}` : ""}${state.slowSince ? `, slow since ${iso(state.slowSince)}` : ""}${popupLine})`,
         `plist: ${plistPath(env)}${state.intervalS ? ` (every ${state.intervalS} s)` : " (not written by install yet)"}`,
         `launchd: ${launchdStatus(loaded({ uid, check: checkBin }), plistPath(env))}`,
       ];

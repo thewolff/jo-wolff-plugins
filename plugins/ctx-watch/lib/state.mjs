@@ -12,6 +12,10 @@
 //                    anything else is "daemon"
 //   kindStrikes      failing ticks of episodeKind in a row (0 when up)
 //   passStreak       passing ticks in a row (0 while failing)
+//   unresponsiveStrikes  failing ticks in a row whose daemon pid ran while its query socket did
+//                    not accept (the probe's `liveness.running`: lastProbe.kind "unresponsive");
+//                    0 after any other tick, a pass, slow or live-upgrade one included. A file
+//                    from before 0.4.5 has none: 0
 //   popupShown       { daemon, semantic, upgrade }: one latch per failure kind, true once that
 //                    kind's popup was delivered (osascript exited 0, or the person dismissed it).
 //                    The daemon and upgrade latches re-arm on a pass; the daemon latch also on a
@@ -36,10 +40,12 @@
 //   intervalS        the StartInterval the last `install` wrote, so the hook knows 2× of it
 //   lastProbe        { at, ok, reason, healed, kind? } from the last tick; `kind` (0.4.0, failing
 //                    probes only) is what that probe itself found: "daemon" | "semantic" |
-//                    "upgrade" (as episodeKind), "slow" (timed out, daemon alive) or "upgrading"
-//                    (a live upgrade). Slow and upgrading ticks hold episodeKind from an earlier
-//                    tick, so only `kind` says what the latest probe saw (lib/mid-session.mjs reads
-//                    it for a semantic-only recovery); a file from before it has none
+//                    "upgrade" (as episodeKind), "unresponsive" (0.4.5: a daemon failure whose pid
+//                    runs but whose socket did not accept; episodeKind "daemon"), "slow" (timed
+//                    out, daemon alive) or "upgrading" (a live upgrade). Slow and upgrading ticks
+//                    hold episodeKind from an earlier tick, so only `kind` says what the latest
+//                    probe saw (lib/mid-session.mjs reads it for a semantic-only recovery); a file
+//                    from before it has none
 //   slowSince        ms of the first tick of a run of slow ones (`ctx daemon status` timed out
 //                    while the daemon's process was demonstrably alive: probe.mjs daemonAlive),
 //                    else null; cleared by any tick that is not slow
@@ -50,7 +56,10 @@
 // step(state, result, now) → { state, popup }: a failing probe strikes once, then goes down on
 // the second failing tick in a row; a kind's popup is asked for once its kind has failed
 // STRIKES_TO_DOWN ticks in a row and its latch is open, so a daemon death after a semantic popup
-// gets its own popup. A passing probe closes the episode and re-arms as above. A slow result
+// gets its own popup. An unresponsive tick (the daemon's pid runs, its socket did not accept) is
+// a daemon failure that asks for the popup only once UNRESPONSIVE_STRIKES_TO_POPUP of them have
+// come in a row; a dead daemon in the same run asks on the dead rule, its unresponsive ticks
+// counted among the daemon's strikes. A passing probe closes the episode and re-arms as above. A slow result
 // (`slow: true`: the status call timed out, the daemon's process alive and its query socket
 // accepting) holds the episode as it was, like a live upgrade: no strike, no pass, no popup, only
 // the stamps, lastProbe and slowSince move; once a slow run has lasted SLOW_MAX_MS it counts as a
@@ -88,6 +97,13 @@ import { GIVE_UP_SECS, TOKEN, answered, delivered, describeExit } from "./popup.
 export const PLUGIN = "ctx-watch";
 export const DEFAULT_INTERVAL_S = 300;
 export const STRIKES_TO_DOWN = 2;
+/**
+ * Unresponsive ticks in a row (the daemon's pid runs, its query socket does not accept) before
+ * their popup: three, 15 min at the default interval. On 2026-11-20 two such ticks (2:01 and
+ * 2:08 PM PST) popped up, and the socket accepted again at 2:13 PM; a dead daemon keeps
+ * STRIKES_TO_DOWN.
+ */
+export const UNRESPONSIVE_STRIKES_TO_POPUP = 3;
 /** More failing ticks in a row than a year of 30 s ticks: anything beyond is not a count. */
 export const MAX_STRIKES = 1_100_000;
 /**
@@ -263,12 +279,23 @@ export function failureKind(result) {
   return result.healable === false ? "semantic" : "daemon";
 }
 
+/**
+ * Whether a failing check() result is an unresponsive daemon: a daemon failure whose status call
+ * timed out while the daemon's pid runs and its query socket did not accept (probe.mjs
+ * daemonAlive's `running: true`). A dead pid, a missing endpoint, a stopped daemon or supervisor,
+ * a slow or live-upgrade result is not.
+ */
+export function isUnresponsive(result) {
+  return !result.ok && result.upgrading !== true && result.slow !== true && failureKind(result) === "daemon" && result.liveness?.alive === false && result.liveness?.running === true;
+}
+
 export const EMPTY = Object.freeze({
   episode: "up",
   strikes: 0,
   episodeKind: null,
   kindStrikes: 0,
   passStreak: 0,
+  unresponsiveStrikes: 0,
   popupShown: Object.freeze({ daemon: false, semantic: false, upgrade: false }),
   popupUnseenAt: Object.freeze({ daemon: null, semantic: null, upgrade: null }),
   popupFailedAt: null,
@@ -289,8 +316,8 @@ const isBool = (v) => typeof v === "boolean";
 const isStr = (v) => typeof v === "string";
 const isProbe = (v) => v && typeof v === "object" && !Array.isArray(v) && validMs(v.at) && isBool(v.ok) && nullOr(isStr)(v.reason ?? null) && nullOr(isStr)(v.healed ?? null) && (v.kind === undefined || PROBE_KINDS.includes(v.kind));
 const isKind = (v) => FAILURE_KINDS.includes(v);
-/** What a failing probe itself found: a failure kind, or one of the two results that hold the episode. */
-export const PROBE_KINDS = Object.freeze([...FAILURE_KINDS, "slow", "upgrading"]);
+/** What a failing probe itself found: a failure kind, "unresponsive" (a daemon failure, its pid running), or one of the two results that hold the episode. */
+export const PROBE_KINDS = Object.freeze([...FAILURE_KINDS, "unresponsive", "slow", "upgrading"]);
 const isPending = (v) => v && typeof v === "object" && !Array.isArray(v) && isStr(v.token) && TOKEN.test(v.token) && validMs(v.since) && (v.kind === undefined || isKind(v.kind));
 const isLatch = (v) => isBool(v) || (v && typeof v === "object" && !Array.isArray(v) && isBool(v.daemon) && isBool(v.semantic) && (v.upgrade === undefined || isBool(v.upgrade)));
 const isUnseen = (v) => v && typeof v === "object" && !Array.isArray(v) && FAILURE_KINDS.every((k) => v[k] === undefined || v[k] === null || validMs(v[k]));
@@ -303,6 +330,7 @@ const SHAPE = Object.freeze({
   episodeKind: [nullOr(isKind), '"daemon" | "semantic" | "upgrade" | null'],
   kindStrikes: [isCount, `a whole number 0..${MAX_STRIKES}`],
   passStreak: [isCount, `a whole number 0..${MAX_STRIKES}`],
+  unresponsiveStrikes: [isCount, `a whole number 0..${MAX_STRIKES}`],
   popupShown: [isLatch, "{ daemon, semantic, upgrade? } of true | false (or one true | false from before 0.2.0)"],
   popupUnseenAt: [isUnseen, "{ daemon?, semantic?, upgrade? } of epoch ms | null"],
   popupFailedAt: [nullOr(validMs), "epoch ms | null"],
@@ -409,13 +437,18 @@ export function writeState(path, state) {
  * for: the dialog may still be up. A kind's latch that was delivered but not seen (its
  * `popupUnseenAt` stamp set) opens again POPUP_REARM_MS after that stamp. A result with
  * `upgrading: true` (ctx is mid-upgrade; the daemon reads not running by design) holds the
- * episode as it was: no strike, no pass, no popup; only the tick stamp and lastProbe move.
+ * episode as it was: no strike, no pass, no popup; only the tick stamp and lastProbe move. An
+ * unresponsive result (isUnresponsive) strikes and goes down as any daemon failure, but asks for
+ * the popup only once `unresponsiveStrikes` reaches UNRESPONSIVE_STRIKES_TO_POPUP; every other
+ * tick zeroes that count, and a dead daemon after it asks on the daemon's own kindStrikes.
  */
 export function step(state, result, now) {
   const slowSince = result.slow === true ? (state.slowSince ?? now) : null;
-  const probeKind = result.ok ? null : result.upgrading === true ? "upgrading" : result.slow === true ? "slow" : failureKind(result);
+  const unresponsive = isUnresponsive(result);
+  const probeKind = result.ok ? null : result.upgrading === true ? "upgrading" : result.slow === true ? "slow" : unresponsive ? "unresponsive" : failureKind(result);
   const lastProbe = { at: now, ok: result.ok, reason: result.reason ?? null, healed: result.healed?.detail ?? null, ...(probeKind ? { kind: probeKind } : {}) };
-  const base = { ...EMPTY, ...state, lastTickAt: now, slowSince, lastProbe };
+  const unresponsiveStrikes = unresponsive ? Math.min((state.unresponsiveStrikes ?? 0) + 1, MAX_STRIKES) : 0;
+  const base = { ...EMPTY, ...state, lastTickAt: now, slowSince, lastProbe, unresponsiveStrikes };
   if (!result.ok && result.upgrading === true) return { state: base, popup: false };
   if (!result.ok && result.slow === true && now - slowSince < SLOW_MAX_MS) return { state: base, popup: false };
   const shown = { ...EMPTY.popupShown, ...base.popupShown };
@@ -440,7 +473,8 @@ export function step(state, result, now) {
   const next = { ...base, strikes, episodeKind: kind, kindStrikes, passStreak: 0, popupShown, popupUnseenAt, popupPending };
   if (strikes < STRIKES_TO_DOWN) return { state: { ...next, episode: "strike" }, popup: false };
   const open = !popupShown[kind] || (popupUnseenAt[kind] !== null && now - popupUnseenAt[kind] >= POPUP_REARM_MS);
-  return { state: { ...next, episode: "down", downSince: base.downSince ?? now }, popup: kindStrikes >= STRIKES_TO_DOWN && open && !popupPending };
+  const due = kindStrikes >= STRIKES_TO_DOWN && (!unresponsive || unresponsiveStrikes >= UNRESPONSIVE_STRIKES_TO_POPUP);
+  return { state: { ...next, episode: "down", downSince: base.downSince ?? now }, popup: due && open && !popupPending };
 }
 
 const reason = (s) => String(s).slice(0, 200);
