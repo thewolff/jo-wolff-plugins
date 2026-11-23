@@ -4,6 +4,23 @@ All notable changes to ctx-watch are recorded here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). The 0.1.0 release is described under
 *Changes in 0.1.0* in [README.md](README.md#changes-in-010).
 
+## [0.4.5] - 2026-11-21
+
+### Changed
+
+- A failing tick whose status call timed out while the ctx daemon's pid runs and its query
+  socket did not accept (an *unresponsive* daemon) asks for its popup on the third such tick in
+  a row (`UNRESPONSIVE_STRIKES_TO_POPUP`), not the second. It still strikes and goes down on the
+  second tick. On 2026-11-20 two such ticks, at 2:01 and 2:08 PM PST, popped up, and the socket
+  accepted again at 2:13 PM. A dead daemon (pid not running, supervisor missing, any other
+  daemon failure) keeps the second-tick popup, its unresponsive ticks counted among the daemon's
+  strikes; any tick that is not unresponsive (a pass, slow, a live upgrade, another failure)
+  zeroes the count.
+- `daemonAlive` adds `running: true` to its answer when the pid runs and the socket did not
+  accept. `state.json` gains `unresponsiveStrikes` (a file without it reads 0), and
+  `lastProbe.kind` can be `"unresponsive"` (its `episodeKind` stays `"daemon"`). `status` shows
+  `unresponsive N in a row`.
+
 ## [0.4.4] - 2026-11-19
 
 ### Changed
