@@ -7,9 +7,10 @@
 #   bash plugins/output-types/test/fixtures/capture-transcripts.sh
 #   CAPTURE_SETTING_SOURCES=user bash plugins/output-types/test/fixtures/capture-transcripts.sh
 #   CAPTURE_ONLY=webfetch bash plugins/output-types/test/fixtures/capture-transcripts.sh
+#   CAPTURE_ONLY=bashexit bash plugins/output-types/test/fixtures/capture-transcripts.sh
 #
-# CAPTURE_ONLY=main runs only the main capture, CAPTURE_ONLY=webfetch only the WebFetch capture;
-# unset runs both. The WebFetch capture passes `--tools Bash WebFetch`: without that flag,
+# CAPTURE_ONLY=main runs only the main capture, CAPTURE_ONLY=webfetch only the WebFetch capture,
+# CAPTURE_ONLY=bashexit only the Bash exit-code capture; unset runs all three. The WebFetch capture passes `--tools Bash WebFetch`: without that flag,
 # Claude Code 2.1.318 offered no WebFetch tool in a `claude -p` session (the main capture's
 # ToolSearch for it answered "No matching deferred tools found").
 #
@@ -29,7 +30,11 @@
 # a page that loads (https://example.com), a cross-host redirect (httpbin.org/redirect-to → example.org),
 # a 404 (httpbin.org/status/404) and a host that does not resolve (nonexistent.invalid). It writes
 #   cc-webfetch.jsonl
-# and then states its coverage: one line per kind (success, redirect, error), `captured` or
+# The Bash exit-code capture runs three commands: one that succeeds and prints an "Exit code 2"
+# line, one that exits 3, and one that prints "Exit code 9" and exits 4. It writes
+#   cc-bash-exit.jsonl
+# and exits 3 unless it captured a success and two error results.
+# The WebFetch capture then states its coverage: one line per kind (success, redirect, error), `captured` or
 # `MISSING`. Any MISSING → exit 3, "incomplete coverage", and the tests that need that kind have
 # no captured backing.
 # It also prints whether the subagent transcript held a SubagentHandback call when SubagentStop
@@ -157,11 +162,39 @@ Then reply with one line per fetch saying what came back.'
   ' "$HERE/cc-webfetch.jsonl"
 }
 
+capture_bashexit() {
+  local dir="$CAP/bashexit"
+  mkdir -p "$dir"
+  local prompt='This is a test of exit-code logging. Use the Bash tool three separate times, exactly these commands, in this order, and do not retry any that fails:
+1. printf '"'"'Exit code 2\nall fine\n'"'"'
+2. sh -c '"'"'exit 3'"'"'
+3. sh -c '"'"'printf "first\nExit code 9\n"; exit 4'"'"'
+Then reply with one line per command saying what came back.'
+  claude -p "$prompt" --setting-sources "" --tools Bash --settings "$(settings_for "$dir")" \
+    --allowedTools "Bash(printf:*)" "Bash(sh:*)" \
+    --output-format json > "$dir/result.json" 2> "$dir/stderr.txt" || { echo "bashexit capture: claude -p failed: $(tail -3 "$dir/stderr.txt")"; exit 1; }
+  [ -f "$dir/stop.json" ] || { echo "bashexit capture: no Stop payload captured in $dir"; exit 1; }
+  local t
+  t="$(node -e 'process.stdout.write(JSON.parse(require("fs").readFileSync(process.argv[1],"utf8")).transcript_path||"")' "$dir/stop.json")"
+  [ -f "$t" ] || { echo "bashexit capture: transcript $t not found"; exit 1; }
+  scrub "$t" > "$HERE/cc-bash-exit.jsonl"
+  node -e '
+    const lines = require("fs").readFileSync(process.argv[1], "utf8").split("\n").filter(Boolean).map((l) => { try { return JSON.parse(l); } catch { return null; } }).filter(Boolean);
+    const uses = new Set();
+    for (const e of lines) for (const p of (Array.isArray(e.message?.content) ? e.message.content : [])) if (p.type === "tool_use" && p.name === "Bash") uses.add(p.id);
+    let ok = 0, err = 0;
+    for (const e of lines) for (const p of (Array.isArray(e.message?.content) ? e.message.content : [])) if (p.type === "tool_result" && uses.has(p.tool_use_id)) p.is_error ? err++ : ok++;
+    console.log(`bash calls: ${uses.size}; success results: ${ok}; error results: ${err}`);
+    if (ok < 1 || err < 2) { console.log("incomplete coverage: expected 1 success and 2 error results"); process.exit(3); }
+  ' "$HERE/cc-bash-exit.jsonl"
+}
+
 case "${CAPTURE_ONLY-}" in
   main) capture_main ;;
   webfetch) capture_webfetch ;;
-  "") capture_main; capture_webfetch ;;
-  *) echo "CAPTURE_ONLY must be main, webfetch or unset"; exit 64 ;;
+  bashexit) capture_bashexit ;;
+  "") capture_main; capture_webfetch; capture_bashexit ;;
+  *) echo "CAPTURE_ONLY must be main, webfetch, bashexit or unset"; exit 64 ;;
 esac
 echo "captured into $HERE from $WORK"
 echo "check the scrubbed files for private text (other sessions' held questions, names) before committing them"
